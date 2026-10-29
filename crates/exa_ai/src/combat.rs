@@ -665,6 +665,40 @@ fn bearing_to(estimate: Vec3, from: Vec3, chest_y: f32, previous: Vec3) -> Beari
     out
 }
 
+/// Takes a new character target: the mind is fresh (its first-foe flag
+/// set), its commitment full, its overshoot mean and stuck count cleared,
+/// and the estimate is placed on the target. The bearing is then measured
+/// from `from` (the fighter's chest) as the original's set-target does,
+/// without the estimate tick's rules: the distance is the flat length, the
+/// direction the whole offset over it (its height scaled too), and the aim
+/// takes the direction's yaw. The original runs the estimate routine on the
+/// new foe first; Exarust places the estimate directly on the foe, as its
+/// entering combat does.
+pub fn set_target(mind: &mut CombatMind, foe: Vec3, from: Vec3, previous: Vec3) -> Bearing {
+    mind.fresh_target = true;
+    mind.commitment = 1.0;
+    mind.overshoot_mean = 0.0;
+    mind.stuck = 0;
+    mind.estimate = foe;
+    let raw = foe - from;
+    let d = flat_length(raw);
+    let bearing = if d > 0.0 {
+        Bearing {
+            to_target: raw * (1.0 / d),
+            distance_cm: d,
+        }
+    } else {
+        // [Exarust's guard: the original divides by the zero length and
+        // leaves an infinite or NaN direction; the previous one is kept.]
+        Bearing {
+            to_target: previous,
+            distance_cm: d,
+        }
+    };
+    mind.aim = yaw(bearing.to_target);
+    bearing
+}
+
 /// The estimate's tick: a skill-weighted chance to look again, then the
 /// bearing from the fighter's chest (or its step's goal).
 pub fn refresh_estimate(

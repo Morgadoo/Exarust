@@ -123,6 +123,48 @@ fn practice_pays_four_per_point_past_ten() {
 }
 
 #[test]
+fn set_target_places_the_estimate_and_commits() {
+    let mut mind = CombatMind {
+        commitment: 0.25,
+        overshoot_mean: 3.0,
+        stuck: 7,
+        fresh_target: false,
+        aim: 2.0,
+        ..CombatMind::default()
+    };
+    let b = set_target(
+        &mut mind,
+        Vec3::new(100.0, 0.0, 0.0),
+        Vec3::ZERO,
+        Vec3::ZERO,
+    );
+    assert!(mind.fresh_target);
+    assert_eq!(mind.commitment, 1.0);
+    assert_eq!((mind.overshoot_mean, mind.stuck), (0.0, 0));
+    assert_eq!(mind.estimate, Vec3::new(100.0, 0.0, 0.0));
+    assert_eq!(
+        (b.distance_cm, b.to_target),
+        (100.0, Vec3::new(1.0, 0.0, 0.0))
+    );
+    // The aim is the bearing's yaw: +x is a quarter turn.
+    assert_eq!(mind.aim, yaw(Vec3::X));
+    // No 300 cm height rule and no 1 cm floor: 500 cm up and 30 cm ahead
+    // is 30 cm, the direction's height scaled by the flat length.
+    let b = set_target(
+        &mut mind,
+        Vec3::new(0.0, 500.0, 30.0),
+        Vec3::ZERO,
+        Vec3::ZERO,
+    );
+    assert_eq!(b.distance_cm, 30.0);
+    assert_eq!(b.to_target, Vec3::new(0.0, 500.0 * (1.0 / 30.0), 1.0));
+    assert_eq!(mind.aim, 0.0);
+    // On the fighter's own spot the previous direction stays.
+    let b = set_target(&mut mind, Vec3::Y, Vec3::ZERO, Vec3::X);
+    assert_eq!((b.distance_cm, b.to_target), (0.0, Vec3::X));
+}
+
+#[test]
 fn entering_sets_the_eagerness_at_a_half() {
     let mut mind = CombatMind {
         eagerness: 3.0,

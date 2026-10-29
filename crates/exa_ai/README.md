@@ -69,7 +69,20 @@ word's AI bit. A sleeper that rates the player above a notice drops the
 sleep role and wakes. A knocked-out or dead brain stops after its alert decay,
 before its morale and state (the original's condition bit `0x800`). No
 running race word selects the ally sense yet, so every level brain keeps
-the standard one.
+the standard one. The original's tick ends by registering the character's
+nav footprint unless it follows a route with its locomotion active at 1 cm
+a tick or faster (`brain::stamps_footprint`, tested, not wired: the game's
+footprint system keeps every NPC's footprint at its feet each fixed tick,
+and an NPC body has no locomotion request for the gate to read).
+The sense's familiarity drift is added to the observer's relation with the
+character it saw when that relation exists (a stranger's is dropped),
+scaled by the elapsed count the brain's ticks seen carry (the contact
+field the integration counts). A character that leaves the
+scene is forgotten by every brain and combatant (its contact, nearby entry,
+targets, attention, encounter and greeting references). Entering combat
+sets the body's in-combat word (the duellist's entry then takes the Defence
+stance, motion 3, through the set-stance helper), and leaving it copies the body's
+look into the brain's look, heading and eased offset.
 
 | module | what it holds |
 |---|---|
@@ -81,7 +94,7 @@ the standard one.
 | `search` | the companion's search: gathering over the room grid, picking, the look sweep, the forced path, arrival, kneeling, looting worn items, packs and containers, item worth, wear room, comments to the leader, re-arming, tidying, the world edits its deeds carry out (`apply_deed`), and an item record read as its weighing reads it (`Loot::of_payload`: apparel body, weapon section, operative or container part) |
 | `manager` | the AI manager's frame (dormant ticks, rising undead, the 3 cm zone check), zone deeds, the group alert (raised, held ten seconds and dropped one every ten), the approach clamp, and the scene node the level's AI start-up makes once (`_Temp`, flag `0x100000`) |
 | `lookup` | a simulation's character by record id and a status effect by a masked word (first match in list order) |
-| `brain` | the components and systems that carry roles into the running game: applying roles again when the held set changes, the attitude rating and waking, the perception pass (line of sight, the ally sense and the sense a race installs), the AI tick once a body tick (morale, the group alert's ten-second decay, the contact integration, the target pass with the room graph, the room cell and nearby list, the engagement, the look chain and the out-of-combat body turn), and the flight's walk to a room's exit |
+| `brain` | the components and systems that carry roles into the running game: applying roles again when the held set changes, the attitude rating and waking, the perception pass (line of sight, the ally sense and the sense a race installs, the familiarity drift written to the relations), the AI tick once a body tick (morale, the group alert's ten-second decay, the contact integration, the target pass with the room graph, the room cell and nearby list, the engagement with its in-combat word, the leave's copied look, the one-time attach snap, the look chain, the out-of-combat body turn and the footprint gate), the removal forget, and the flight's walk to a room's exit |
 | `presence` | the activation range (200 m, a NaN out), the 80-tick hold, the scene move's end, the entering body's reset, the level-leave reset, and the placement an entering body takes (a collapsed body keeps its stored one; others take their point and face their path goal) |
 | `idle` | roam, patrol, sentry and the wait, the wander and home-side points, follow, sleep, knock-out and waking |
 | `walker` | the idle states' head (the attention's notice score and clamped window, the 50° focus window), the roam and patrol step on the planning turn (the goal picked only on the turn, the 150 cm follow span, the forced home leg, the settle before the pause), and the walk along the followed route (100 cm flat arrival, Exarust's give-up deadline) |
@@ -89,7 +102,7 @@ the standard one.
 | `rooms` | the 600 cm room cell grid (the floored, half-offset flat index, the per-cell occupant lists, the old-cell memory and the cell's nearby characters) and the level's side of it: the cell-to-room table, a room's exits at the cell centres behind its door links with shut doors from the room tracker, a room's reference point, and the sight test (the room reach test) |
 | `lifecycle` | the script-object factory, the scripted action hook, the removal/destroy/disable hooks, the idle return, the investigation of a disturbance, the idle driver's state machine (turn, plan a room, walk, test the exit, use the object, plan home, search the room) with its exit/use/object checks and room walk (every unvisited exit weighed, the previous cell included; going back clears the avoided exits; the first avoided exit sets its marker), the go-to-object state, and the object goal |
 | `combatant` | the behaviour base: contacts, perception, the ally-class races' sense (the 3 concern floor, attitude 100 for a fellow AI, the 1200/1800 cm range, the threat to an ally weighed by the observed state, 0.3 of it as the concern target, the observed body's in-combat mark weighing 0.25 over 0.1; run by the perception pass for every AI race outside class `0x12xx`), the attitude and trust overrides, concern, references, the queued step, the nav footprint |
-| `combat` | the combat state: the follow check, practice, the foe estimate, the weapon draw and the lunge, the chase count and eagerness, the footwork drives, the seventeen-place search, the attack decision with the friend test and the keep-off, the step, the guard, the fierce stance and the body turn |
+| `combat` | the combat state: the follow check, practice, the foe estimate, setting a target (fresh, committed, stuck cleared, the estimate on the foe, the flat bearing and its aim), the weapon draw and the lunge, the chase count and eagerness, the footwork drives, the seventeen-place search, the attack decision with the friend test and the keep-off, the step, the guard, the fierce stance and the body turn |
 | `contacts` | the contact classifier (the stress flight, the engagement threshold, the concern flight, the watch and the notice score), the twelve-contact list, the per-tick contact integration (the hostility drift from the perceived attitude, the concern rising toward its target, the noticed level following the sighting, the attention, the bad-route marks, the aggregates and the readiness), the target pass (the scripted focus, the visible and nearby lists, the sleeper's waking, the clean-up, the alarm mean, the encounter and the greeting, the round-robin dialogue refresh), the nearby list (sixteen nearest seen within 30 m, by squared distance) |
 | `flee` | the flee start's morale, the way out of a room away from a threat, the fled-room memory, the flee state's tick and the cornered fall-back |
 | `cast` | the power-cast chooser (ten slots, per-slot cooldowns, the power system's word, the pool budget after a round to even, the flat 20 and the cumulative draw, the 6 s rest written to the slot of the chosen power's table place) |
@@ -297,9 +310,8 @@ by the AI tick (with the target's own contacts and the relations' trust);
 the practice opponent, which has none, perceives its target through
 `perceive` with the role database's attitude when it is loaded.
 
-Not yet: the encounter scripts and the familiarity write, the mind
-power calls the pass and a hit make, the scene's forget broadcast on
-removal, the pathfinder's footprint insert, the full candidate footwork
+Not yet: the encounter scripts, the mind
+power calls the pass and a hit make, the full candidate footwork
 search, and the AI's own parry choice (the body's auto-parry runs in
 `exa_combat::parry`).
 

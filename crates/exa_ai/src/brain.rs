@@ -167,6 +167,8 @@ pub struct Npc {
     /// The idle head (the alert look or the attention) took this tick, so
     /// the roam's phases did not run.
     pub head_took: bool,
+    /// The attach step already snapped the AI's look to the body's facing.
+    pub snapped: bool,
 }
 
 /// Where a brain stands and the room graph its flight reads: the brain's
@@ -184,6 +186,24 @@ pub struct FleePlace<'a> {
 }
 
 impl Npc {
+    /// Forgets a character that left the scene: its contact, its nearby
+    /// entry and the pass's references to it. The original's scene tells
+    /// every AI to forget a removed character.
+    pub fn forget(&mut self, id: u64) {
+        self.contacts.retain(|contact| contact.id != id);
+        self.nearby.retain(|other| *other != id);
+        for slot in [
+            &mut self.pass.target,
+            &mut self.pass.attention,
+            &mut self.pass.encounter,
+            &mut self.pass.greet,
+        ] {
+            if *slot == Some(id) {
+                *slot = None;
+            }
+        }
+    }
+
     /// Moves the brain into level room `room` (−1 none): a cell without a
     /// room unlinks it and keeps the previous room; a new room remembers
     /// the old one only when it had one.
@@ -228,6 +248,7 @@ impl Npc {
             alert: motion::AlertLook::default(),
             walk: crate::walker::IdleWalk::default(),
             head_took: false,
+            snapped: false,
         }
     }
 
@@ -740,6 +761,15 @@ pub fn perceive_all(
             {
                 combatant.alert = floor;
             }
+            // The perception's familiarity drift goes into the relations:
+            // the original adds it to the observer's relation with the one
+            // it saw only when that relation exists (an encounter makes
+            // it); a stranger's drift is dropped.
+            if let (Some(relations), Some(drift)) = (relations.as_deref_mut(), sight.familiarity)
+                && sensed.character_id != 0
+            {
+                relations.add_familiarity(sensed.character_id, drift);
+            }
             let mut record = ContactRecord::of(&combatant.contacts[index], sensed.id);
             // The integration skips the calming of a knocked-out character
             // (the out bit of its condition); the perception clears the
@@ -766,6 +796,11 @@ pub fn perceive_all(
 /// combat state and the distances, on the game clock and the brain's
 /// generator. The report stays in [`Npc::pass`] (its level, attention,
 /// stress and cursor included).
+///
+/// The original's tick also lifts and re-stamps the character's navigation
+/// footprint ([`stamps_footprint`] is its gate); in Exarust every NPC's
+/// footprint is kept at its feet each fixed tick by the game's footprint
+/// system, so this tick does not touch the grid.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn ai_tick(
     ticks: Option<Res<BodyTicks>>,
@@ -818,7 +853,8 @@ pub fn ai_tick(
             crate::manager::decay_alert(npc.alert_count, npc.alert_until_ms, now);
         // After the alert decay, a knocked-out, collapsed or dead body only
         // refreshes its nav footprint: no morale, contacts, state or look
-        // (the original's out-of-the-fight condition branch).
+        // (the original's out-of-the-fight condition branch; the footprint
+        // is the game's footprint system's, which keeps it every tick).
         if condition.0 & combatant::CONDITION_OUT != 0 {
             continue;
         }
@@ -994,6 +1030,9 @@ pub fn ai_tick(
                 theirs.hostility = c.hostility;
                 theirs.concern_target = c.concern_target;
                 theirs.noticed = c.noticed;
+                // The contact's elapsed count, which the sense's
+                // familiarity drift multiplies, is the brain's ticks seen.
+                theirs.elapsed = c.ticks_seen;
             }
         }
         // The target pass decides the engagement: an entry starts the
@@ -1006,6 +1045,10 @@ pub fn ai_tick(
             if let Some(level) = npc.pass.enter {
                 if !duellist.engaged && npc.pass.target == target_id {
                     duellist.engage();
+                    // Entering combat sets the body's in-combat flag; its
+                    // Defence stance (the set-stance helper, 30 frames) is
+                    // the duellist's entry, later this frame.
+                    combatant.in_combat = true;
                     info!(
                         "{talking}: the target pass enters combat at level {level} on tick {}",
                         ticks.as_ref().map_or(0, |t| t.0)
@@ -1014,6 +1057,18 @@ pub fn ai_tick(
             } else if npc.pass.leave && duellist.engaged {
                 duellist.leave();
                 combatant.in_combat = false;
+                // The target pass leaves through the leave-combat routine:
+                // the AI's look and aim take the body's look yaw and the
+                // next sway is drawn 500 ms out. It zeroes the heading where
+                // the leave look copies the yaw, but the out-of-combat turn
+                // rewrites the heading and eased offset from the look every
+                // tick, so the leave look's writes stand in for it.
+                if let Some(t) = transform.as_deref() {
+                    let body_look = motion::yaw_of(t.rotation * Vec3::Z);
+                    let brain = &mut *npc;
+                    motion::leave_look(&mut brain.gaze, &mut brain.turn, body_look);
+                    brain.turn.sway_at_ms = now.wrapping_add(500);
+                }
                 info!("{talking}: the target pass leaves combat");
             }
         }
@@ -1030,12 +1085,8 @@ pub fn ai_tick(
         {
             let facing = motion::yaw_of(transform.rotation * Vec3::Z);
             // A brain that has never turned takes the body's placed facing
-            // as its look (the attach step's snap).
-            if npc.turn.heading == 0.0 && npc.turn.look == 0.0 && npc.turn.offset == 0.0 {
-                npc.turn.heading = facing;
-                npc.turn.look = facing;
-                npc.turn.offset = facing;
-            }
+            // as its look through the attach step's snap, once.
+            attach_snap(&mut npc, facing);
             // The idle states' head: the alert look-around, then the
             // attention to the attended contact; only when neither takes
             // the tick is the in-combat mark cleared and the body turned
@@ -1140,6 +1191,54 @@ pub fn ai_tick(
     }
     if let (Some(ticks), Some(clock)) = (ticks.as_deref(), clock.as_deref_mut()) {
         clock.passed = ticks.0;
+    }
+}
+
+/// Whether the original's AI tick registers the nav footprint after the
+/// state: unless the character follows a planned route, its locomotion is
+/// active and its speed is at least 1 cm a tick, so a character walking a
+/// route leaves no footprint for the others' planners. The compare is
+/// unordered: a NaN speed skips the stamp.
+///
+/// Not wired: the game's footprint system stamps every NPC each fixed tick,
+/// and an NPC body carries no locomotion request whose activity and speed
+/// this gate reads.
+pub fn stamps_footprint(following_route: bool, moving: bool, speed_cm: f32) -> bool {
+    !following_route || !moving || speed_cm < 1.0
+}
+
+/// The attach step's snap, once: the AI's look yaws, aim, look and
+/// look-smoothing directions and the body's own look take the body's
+/// facing. A brain that already snapped keeps its look.
+pub fn attach_snap(npc: &mut Npc, facing_yaw: f32) {
+    if npc.snapped {
+        return;
+    }
+    motion::snap_to_body(&mut npc.gaze, &mut npc.turn, facing_yaw);
+    npc.snapped = true;
+}
+
+/// The scene's forget broadcast: when a character leaves the scene every
+/// other brain drops its contact with it and every combatant its
+/// references (the original's scene calls the AI's forget when a character
+/// is removed).
+pub fn forget_removed(
+    mut removed: RemovedComponents<Npc>,
+    mut npcs: Query<(&mut Npc, Option<&mut Combatant>)>,
+) {
+    let gone: Vec<Entity> = removed.read().collect();
+    if gone.is_empty() {
+        return;
+    }
+    for (mut npc, combatant) in &mut npcs {
+        for entity in &gone {
+            npc.forget(entity.to_bits());
+        }
+        if let Some(mut combatant) = combatant {
+            for entity in &gone {
+                combatant.forget(*entity);
+            }
+        }
     }
 }
 
@@ -1938,6 +2037,7 @@ mod tests {
             "the hostile brain engages"
         );
         assert!(w.get::<Npc>(hostile).unwrap().pass.enter.is_some());
+        assert!(w.get::<Combatant>(hostile).unwrap().in_combat);
         // The neutral brain also weighs the fighting brain beside it, so it
         // may watch that one; it never takes the player as its target and
         // its duellist waits.
@@ -2578,6 +2678,7 @@ mod tests {
             ))
             .id();
         let mut brain = Npc::new([0.0; 4]);
+        brain.snapped = true;
         brain.turn.look = std::f32::consts::FRAC_PI_2;
         brain.turn.sway_at_ms = u32::MAX;
         let npc = app
@@ -2732,5 +2833,129 @@ mod tests {
             .unwrap();
         assert!((c.soothe - -50.0).abs() < 1e-6, "{}", c.soothe);
         assert_eq!(c.tolerance, 0.0);
+    }
+
+    #[test]
+    fn the_sense_writes_its_familiarity_drift_into_the_relations() {
+        // `known` says whether the observer met the player before; the
+        // drift goes only into a relation that exists.
+        let run = |known: bool| {
+            let mut app = App::new();
+            app.insert_resource(db()).add_systems(Update, perceive_all);
+            let player = app
+                .world_mut()
+                .spawn((
+                    GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 2.0)),
+                    Fighter::default(),
+                    RatedPlayer,
+                    Roles::new_character(&db().book, 0),
+                    CharacterId(PLAYER_ID),
+                ))
+                .id();
+            let mut combatant = Combatant::default();
+            let mut seen = combatant::Contact::new(player);
+            // The contact's elapsed count is the brain's ticks seen; the
+            // sense's drift scales with it, so a long-seen character drifts.
+            seen.elapsed = 100;
+            combatant.contacts.push(seen);
+            let mut relations = Relations::default();
+            if known {
+                relations.create(PLAYER_ID, 0.0, 0, 0);
+            }
+            let npc = app
+                .world_mut()
+                .spawn((
+                    held(&[9, 2]),
+                    Npc::new([0.0; 4]),
+                    combatant,
+                    crate::Duellist::new(player),
+                    Mind::new(0.0),
+                    GlobalTransform::IDENTITY,
+                    Fighter::default(),
+                    relations,
+                    CharacterId(2),
+                ))
+                .id();
+            app.update();
+            app.world()
+                .get::<Relations>(npc)
+                .unwrap()
+                .find(PLAYER_ID)
+                .map(|r| r.base)
+        };
+        let base = run(true).expect("the relation is kept");
+        assert!(base != 0.0, "{base}");
+        assert!(base.abs() < 1.0, "{base}");
+        // A stranger's drift is dropped: no relation is made for it.
+        assert!(run(false).is_none_or(|base| base == 0.0));
+    }
+
+    #[test]
+    fn the_footprint_is_stamped_unless_a_route_walks_the_body() {
+        // Without a route it always stamps, moving or not.
+        assert!(stamps_footprint(false, false, 0.0));
+        assert!(stamps_footprint(false, true, 250.0));
+        // On a route a still body stamps, a walking one does not.
+        assert!(stamps_footprint(true, false, 250.0));
+        assert!(!stamps_footprint(true, true, 250.0));
+        // The speed gate is 1 cm a tick, exclusive, and a NaN speed skips
+        // the stamp (the parity jump), as an unordered compare does there.
+        assert!(stamps_footprint(true, true, 0.999_999_94));
+        assert!(!stamps_footprint(true, true, 1.0));
+        assert!(!stamps_footprint(true, true, f32::NAN));
+    }
+
+    #[test]
+    fn the_attach_snap_takes_the_body_facing_once() {
+        let mut npc = Npc::new([0.0; 4]);
+        attach_snap(&mut npc, 0.75);
+        assert_eq!(
+            (npc.gaze.look, npc.gaze.offset, npc.turn.look),
+            (0.75, 0.75, 0.75)
+        );
+        assert_eq!(npc.gaze.body_look, motion::dir_of(0.75));
+        assert_eq!(npc.gaze.body_smooth, motion::dir_of(0.75));
+        // A second attach (or a facing of 0) does not reset the look.
+        npc.turn.look = 2.0;
+        attach_snap(&mut npc, 0.0);
+        assert_eq!(npc.turn.look, 2.0);
+        assert_eq!(npc.gaze.body_look, motion::dir_of(0.75));
+    }
+
+    #[test]
+    fn a_removed_character_is_forgotten_by_every_brain() {
+        let mut app = App::new();
+        app.add_systems(Update, forget_removed);
+        let gone = app.world_mut().spawn(Npc::new([0.0; 4])).id();
+        let mut npc = Npc::new([0.0; 4]);
+        npc.contacts.push(contacts::ContactRecord {
+            id: gone.to_bits(),
+            ..Default::default()
+        });
+        npc.nearby.push(gone.to_bits());
+        npc.pass.target = Some(gone.to_bits());
+        npc.pass.attention = Some(gone.to_bits());
+        npc.pass.encounter = Some(gone.to_bits());
+        npc.pass.greet = Some(gone.to_bits());
+        let mut combatant = Combatant::default();
+        combatant.contacts.push(combatant::Contact::new(gone));
+        combatant.target = Some(gone);
+        combatant.look_target = Some(gone);
+        let keeper = app.world_mut().spawn((npc, combatant)).id();
+        app.update();
+        app.world_mut().entity_mut(gone).despawn();
+        app.update();
+        let npc = app.world().get::<Npc>(keeper).unwrap().clone();
+        let combatant = app.world().get::<Combatant>(keeper).unwrap().clone();
+        assert!(npc.contacts.is_empty());
+        assert!(npc.nearby.is_empty());
+        assert_eq!(
+            (npc.pass.target, npc.pass.attention),
+            (None, None),
+            "the pass's targets clear too"
+        );
+        assert_eq!((npc.pass.encounter, npc.pass.greet), (None, None));
+        assert!(combatant.contacts.is_empty());
+        assert_eq!((combatant.target, combatant.look_target), (None, None));
     }
 }
