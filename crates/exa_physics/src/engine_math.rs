@@ -379,6 +379,17 @@ pub fn project_onto_unit(v: Vec3, unit: Vec3) -> Vec3 {
     unit * along
 }
 
+/// `v` scaled to unit length by the processor's approximate reciprocal
+/// square root (`RSQRTSS`) of `(x² + z²) + y²`; a zero vector stays zero
+/// (the zero test masks the reciprocal), and a NaN length gives NaN.
+pub fn normalize_approx(v: Vec3) -> Vec3 {
+    let squared = (v.x * v.x + v.z * v.z) + (v.y * v.y + 0.0);
+    if squared == 0.0 {
+        return v * 0.0;
+    }
+    v * reciprocal_sqrt(squared)
+}
+
 /// `v` without its part along the unit vector `unit`: `v − project(v)`.
 pub fn remove_component(v: Vec3, unit: Vec3) -> Vec3 {
     v - project_onto_unit(v, unit)
@@ -961,6 +972,14 @@ mod tests {
 
     fn close(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-5
+    }
+
+    #[test]
+    fn the_approximate_normalisation() {
+        assert_eq!(normalize_approx(Vec3::ZERO), Vec3::ZERO);
+        let unit = normalize_approx(Vec3::new(3.0, 0.0, 4.0));
+        assert!((unit.length() - 1.0).abs() < 1e-3);
+        assert!(normalize_approx(Vec3::new(f32::NAN, 0.0, 0.0)).x.is_nan());
     }
 
     #[test]

@@ -25,10 +25,11 @@
 // negated compares here keep that.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
-use bevy::math::Vec3;
+use bevy::math::{Vec3, Vec4};
 use bevy::prelude::*;
 use exa_anim::{Animator, Ease, Motions};
 use exa_physics::body::{BodyTicks, Ragdoll, TickedCharacter};
+use exa_physics::engine_math;
 use exa_physics::motile::auto_parry_deadline;
 use std::f32::consts::PI;
 
@@ -126,17 +127,20 @@ pub struct Grip {
 /// The armed parry's grip. A cleaving attacker is refused. A blow that has
 /// passed sets the speed to the handling squared, or the shield weight times
 /// stamina, and disables the grips. Otherwise the falloff is 1 inside 80 cm,
-/// falls to 0 at 250 cm, and stays 0 past that. A weapon's strength is
-/// (1.4 − handling) times that falloff times 0.75 times 0.6, and its speed is
-/// the handling. A shield's speed is 1 minus half the weight times stamina,
-/// and its strength is stamina times weight times the falloff times 0.75
-/// times 0.4, with flags 0x800. The off hand is slot 1 only while attacking
-/// with a motion outside 8 through 10 and two weapons are held.
+/// falls to 0 at 250 cm, and stays 0 past that (a NaN distance falls
+/// through to the line and gives NaN); it is scaled by 0.75 at once. A
+/// weapon's strength is (1.4 − handling) times that, then times 0.6, each
+/// product in double and stored as a float, and its speed is the handling.
+/// A shield's speed is 1 minus half the weight times stamina, and its
+/// strength stamina × (weight × (falloff·0.75 × 0.4)) in double, with flags
+/// 0x800. The off hand is slot 1 only while attacking with a motion outside
+/// 8 through 10 and two weapons are held. The blend is 20 × the speed,
+/// rounded half to even.
 pub fn armed_grip(arm: &Arm) -> Option<Grip> {
     if arm.cleaving {
         return None;
     }
-    let falloff = parry_falloff(arm.horizontal_cm);
+    let falloff = parry_falloff(arm.horizontal_cm) * 0.75_f32;
     let slot = grip_slot(arm);
     if arm.passed {
         let speed = if arm.shield {
@@ -151,14 +155,17 @@ pub fn armed_grip(arm: &Arm) -> Option<Grip> {
         if !arm.has_grip {
             return Some(grip(speed, 0.0, slot, 0, false, false));
         }
-        let strength = arm.stamina * arm.shield_weight * falloff * 0.75_f32 * 0.4_f32;
+        let strength = (f64::from(arm.stamina)
+            * (f64::from(arm.shield_weight) * (f64::from(falloff) * 0.4)))
+            as f32;
         return Some(grip(speed, strength, slot, 0x800, true, arm.other_held));
     }
     let speed = arm.handling;
     if !arm.has_grip {
         return Some(grip(speed, 0.0, slot, 0, false, false));
     }
-    let strength = (1.4_f32 - arm.handling) * falloff * 0.75_f32 * 0.6_f32;
+    let gain = ((1.4 - f64::from(arm.handling)) * f64::from(falloff)) as f32;
+    let strength = (f64::from(gain) * 0.6) as f32;
     Some(grip(speed, strength, slot, 0, true, arm.other_held))
 }
 
@@ -172,7 +179,7 @@ fn grip(
 ) -> Grip {
     Grip {
         speed,
-        blend: (20.0 * speed).round() as u32,
+        blend: engine_math::round_to_i64(20.0 * speed) as u32,
         strength,
         slot,
         flags,
@@ -184,10 +191,10 @@ fn grip(
 fn parry_falloff(distance: f32) -> f32 {
     if distance < 80.0 {
         1.0
-    } else if distance <= 250.0 {
-        1.0 - (distance - 80.0) * (1.0_f32 / 170.0)
-    } else {
+    } else if distance > 250.0 {
         0.0
+    } else {
+        1.0 - (distance - 80.0) * (1.0_f32 / 170.0)
     }
 }
 
@@ -198,6 +205,116 @@ fn grip_slot(arm: &Arm) -> u8 {
         0
     };
     if arm.held < slot + 1 { 0 } else { slot }
+}
+
+/// The attack motions the armed parry's travel is not scaled for: the stab
+/// and the overhead.
+const STAB_MOTION: i32 = 0x0B;
+/// The overhead, whose parry point sits 80 cm back instead of 60.
+const OVERHEAD_MOTION: i32 = 0x0C;
+
+/// How far up the attacker's blade (cm from its origin, along its local y)
+/// the armed parry meets it. The gap is the distance between the two chest
+/// points less 20 cm. Beyond the attacker's reach the meeting point is the
+/// blade length less 20; within it, the blade length less the part of the
+/// reach not used and less 20, floored at 0 (a NaN gap takes this branch,
+/// and a NaN height is kept).
+pub fn parry_blade_height(
+    defender_chest: Vec3,
+    attacker_chest: Vec3,
+    reach_cm: f32,
+    blade_length_cm: f32,
+) -> f32 {
+    let gap = engine_math::length3(defender_chest - attacker_chest) - 20.0;
+    if gap > reach_cm {
+        return blade_length_cm - 20.0;
+    }
+    let height = blade_length_cm - (reach_cm - gap) - 20.0;
+    if height < 0.0 { 0.0 } else { height }
+}
+
+/// The blade's point at `height` on its local y axis, now and a tick ago:
+/// its barycentric weights in the blade's rest tetrahedron (the fast
+/// variant, with the approximate reciprocal) applied to the tetrahedron's
+/// corners now and before.
+pub fn blade_point(
+    height: f32,
+    rest: &[[f32; 3]; 4],
+    now: &[[f32; 3]; 4],
+    before: &[[f32; 3]; 4],
+) -> (Vec3, Vec3) {
+    let weights = Vec4::from_array(engine_math::barycentric_fast(
+        Vec3::new(0.0, height, 0.0),
+        rest,
+    ));
+    (
+        engine_math::vec4_mul_4x3(weights, now),
+        engine_math::vec4_mul_4x3(weights, before),
+    )
+}
+
+/// Where the armed parry takes the blade, and whether the blade has
+/// already passed the defender.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ParryPoint {
+    pub point: Vec3,
+    pub passed: bool,
+}
+
+/// The armed parry's point. The blade point's travel this tick (now less
+/// before) has its height scaled by 16 − 16·clock unless the motion is a
+/// stab or an overhead; the travel less its part along the (approximately
+/// normalised) direction from the attacker's chest to the blade point,
+/// normalised the same way, is the sweep direction. When the blade point
+/// lies further along it than the defender's chest the blow has passed and
+/// the point is 10 cm on along it. Otherwise the point is moved along it by
+/// the chest's lead less 60 cm (80 for an overhead), floored at 0 (a NaN
+/// lead is kept). Dots sum x, then y, then z.
+pub fn parry_point(
+    blade_now: Vec3,
+    blade_before: Vec3,
+    attacker_chest: Vec3,
+    defender_chest: Vec3,
+    motion: i32,
+    progress: f32,
+) -> ParryPoint {
+    let mut travel = blade_now - blade_before;
+    if motion != OVERHEAD_MOTION && motion != STAB_MOTION {
+        travel.y *= 16.0 - progress * 16.0;
+    }
+    let toward = engine_math::normalize_approx(blade_now - attacker_chest);
+    let sweep = engine_math::normalize_approx(engine_math::remove_component(travel, toward));
+    let dot = |v: Vec3| (v.x * sweep.x + v.y * sweep.y) + v.z * sweep.z;
+    let blade_side = dot(blade_now);
+    let chest_side = dot(defender_chest);
+    if blade_side > chest_side {
+        return ParryPoint {
+            point: blade_now + sweep * 10.0,
+            passed: true,
+        };
+    }
+    let back = if motion == OVERHEAD_MOTION {
+        80.0
+    } else {
+        60.0
+    };
+    let mut lead = (chest_side - blade_side) - back;
+    if lead < 0.0 {
+        lead = 0.0;
+    }
+    ParryPoint {
+        point: blade_now + sweep * lead,
+        passed: false,
+    }
+}
+
+/// The parry point's distance from the defender's chest across the ground
+/// (the height difference zeroed, then the length summed x and z first), the
+/// distance the grip's falloff reads.
+pub fn parry_distance(point: Vec3, defender_chest: Vec3) -> f32 {
+    let mut d = point - defender_chest;
+    d.y = 0.0;
+    engine_math::length3(d)
 }
 
 /// The unarmed parry for `threat`, or nothing when the blow is not one an
@@ -546,6 +663,128 @@ mod tests {
         })
         .unwrap();
         assert_eq!(one.slot, 0);
+        // The weapon's strength takes its products in double: a float chain
+        // would give 0x3edf_9f9f here.
+        let doubled = armed_grip(&Arm {
+            handling: 0.3,
+            horizontal_cm: 100.0,
+            ..arm()
+        })
+        .unwrap();
+        assert_eq!(doubled.strength.to_bits(), 0x3edf_9fa0);
+        let shield_doubled = armed_grip(&Arm {
+            shield: true,
+            stamina: 0.3,
+            shield_weight: 0.7,
+            horizontal_cm: 100.0,
+            ..arm()
+        })
+        .unwrap();
+        assert_eq!(shield_doubled.strength.to_bits(), 0x3d63_b07e);
+        // 20 × 0.625 is a half: the blend rounds to even.
+        let half = armed_grip(&Arm {
+            handling: 0.625,
+            ..arm()
+        })
+        .unwrap();
+        assert_eq!(half.blend, 12);
+        // A NaN distance falls through to the line.
+        let lost = armed_grip(&Arm {
+            horizontal_cm: f32::NAN,
+            ..arm()
+        })
+        .unwrap();
+        assert!(lost.strength.is_nan());
+    }
+
+    fn near(a: Vec3, b: Vec3, tolerance: f32) -> bool {
+        (a - b).abs().max_element() < tolerance
+    }
+
+    #[test]
+    fn the_blade_height_follows_the_reach() {
+        let at = |z: f32| parry_blade_height(Vec3::new(0.0, 0.0, z), Vec3::ZERO, 100.0, 90.0);
+        assert_eq!(at(200.0), 70.0);
+        assert_eq!(at(100.0), 50.0);
+        assert_eq!(at(30.0), 0.0);
+        let lost = parry_blade_height(Vec3::splat(f32::NAN), Vec3::ZERO, 100.0, 90.0);
+        assert!(lost.is_nan());
+    }
+
+    #[test]
+    fn the_blade_point_is_carried_by_the_tetrahedron() {
+        let rest = [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ];
+        let now = rest.map(|[x, y, z]| [x + 5.0, y, z]);
+        let (at, was) = blade_point(0.5, &rest, &now, &rest);
+        assert!(near(at, Vec3::new(5.0, 0.5, 0.0), 1e-2));
+        assert!(near(was, Vec3::new(0.0, 0.5, 0.0), 1e-2));
+    }
+
+    #[test]
+    fn the_parry_point_waits_ahead_of_the_chest() {
+        let blade = Vec3::new(-50.0, 0.0, 0.0);
+        let before = blade - Vec3::new(10.0, 0.0, 20.0);
+        let ahead = parry_point(
+            blade,
+            before,
+            Vec3::ZERO,
+            Vec3::new(0.0, 0.0, 100.0),
+            0x0B,
+            0.5,
+        );
+        assert!(!ahead.passed);
+        assert!(near(ahead.point, Vec3::new(-50.0, 0.0, 40.0), 0.1));
+        let overhead = parry_point(
+            blade,
+            before,
+            Vec3::ZERO,
+            Vec3::new(0.0, 0.0, 100.0),
+            0x0C,
+            0.5,
+        );
+        assert!(near(overhead.point, Vec3::new(-50.0, 0.0, 20.0), 0.1));
+        let close = parry_point(
+            blade,
+            before,
+            Vec3::ZERO,
+            Vec3::new(0.0, 0.0, 30.0),
+            0x0B,
+            0.5,
+        );
+        assert!(!close.passed);
+        assert!(near(close.point, blade, 1e-3));
+        let gone = parry_point(
+            blade,
+            before,
+            Vec3::ZERO,
+            Vec3::new(0.0, 0.0, -5.0),
+            0x0B,
+            0.5,
+        );
+        assert!(gone.passed);
+        assert!(near(gone.point, Vec3::new(-50.0, 0.0, 10.0), 0.1));
+        // A side swing's travel height is scaled by 16 − 16·0.75 = 4.
+        let rising = blade - Vec3::new(0.0, 1.0, 1.0);
+        let side = parry_point(
+            blade,
+            rising,
+            Vec3::ZERO,
+            Vec3::new(0.0, -100.0, -100.0),
+            5,
+            0.75,
+        );
+        assert!(side.passed);
+        let sweep = Vec3::new(0.0, 4.0, 1.0) / 17.0_f32.sqrt();
+        assert!(near(side.point, blade + sweep * 10.0, 0.1));
+        assert_eq!(
+            parry_distance(Vec3::new(30.0, 50.0, 40.0), Vec3::ZERO),
+            50.0
+        );
     }
 }
 
