@@ -962,12 +962,20 @@ switch (practice, story, arena, scripted modes), the session starters
 Derrin, practice from the ladder with its role, the story and arena
 continues, the arena hub), the transition screen's actions at black, the
 per-frame dialogue and session hook (with the wake-up's whole animator
-write: flags, blend, move and turn factors and the clip clock), the story's
+write: flags, blend, move and turn factors and the clip clock; the first
+animation ends on the animator's 0x20 flag, carried on the player as
+`WakeFlags`, not on the condition word), the story's
 wake-up, knockout and revival, death and the end-of-session menu, level
 exits with their save and checkpoint, the level-load finish, the story
 end-menu exit, the story respawn at `exanima05`'s portal, the application
 quit's autosave, the menu form routines (show, hide, the help flag, the title logo),
-the return to the menu form, and the pause. The rules return named steps;
+the return to the menu form, and the pause. The story start records the
+level's start point, the pre-load view and the loader's twelve-byte start
+record; a level exit that makes the sixth level's checkpoint stamps the
+level's time; the next practice fight clears the condition word; the death
+screen's CONTINUE writes the player back with its 0x100 record flag; and the
+boot applies the settings store's expert and background unlock words. The
+rules return named steps;
 `FlowPlugin` runs them on the 12 ms game clock, follows a play level's
 player as a sandbox practice-mode session (without the practice round
 hook), turns a teleporter's journey into a
