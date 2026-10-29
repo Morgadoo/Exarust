@@ -453,6 +453,33 @@ impl Background {
     }
 }
 
+/// The camera view a session start writes before it places the player: the
+/// forward direction and the point the view looks at, in centimetres.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StartView {
+    pub direction: Vec3,
+    pub target: Vec3,
+}
+
+/// The story start's view: forward along +z, looking at the room's far
+/// corner (the level-start point with its height cleared).
+pub const STORY_VIEW: StartView = StartView {
+    direction: Vec3::new(0.0, 0.0, 1.0),
+    target: Vec3::new(8200.0, 0.0, 4000.0),
+};
+
+/// The practice start's view: forward along −z, looking at the ring's middle
+/// 20 cm up.
+pub const PRACTICE_VIEW: StartView = StartView {
+    direction: Vec3::new(0.0, 0.0, -1.0),
+    target: Vec3::new(0.0, 20.0, 500.0),
+};
+
+/// The level-start point a story start hands the loader: (8200, 25, 3920).
+/// The spawn table's own poses are absolute; this is the save manager's
+/// starting point for the level.
+pub const STORY_SPAWN: Vec3 = Vec3::new(8200.0, 25.0, 3920.0);
+
 /// What a new story does for its background: the roles added to the player,
 /// the story flag word, the spawn pose, the starting light, the companion
 /// and the record writes (gear and powers) the start makes.
@@ -468,6 +495,13 @@ pub struct StoryStart {
     /// The story flag word the record gets.
     pub flags: u32,
     pub placement: Placement,
+    /// The level-start point the save manager is given before the load.
+    pub spawn_point: Vec3,
+    /// The camera view written before the player is placed.
+    pub view: StartView,
+    /// The twelve-byte start record the loader is handed for the duration
+    /// of the start: the start motion, then two zero words.
+    pub start_record: [u32; 3],
     /// The item put in the record's off hand: the knight's and proctor's
     /// item 0x1f.
     pub off_hand: Option<ItemRef>,
@@ -549,6 +583,9 @@ pub fn story_start(background: Background, body_height: f32) -> StoryStart {
                     STORY_POINT.z,
                 ),
             },
+            spawn_point: STORY_SPAWN,
+            view: STORY_VIEW,
+            start_record: [START_MOTION_ANIMATION, 0, 0],
             off_hand: None,
             carried: Some(Carried {
                 item: STORY_UNKNOWN_ITEM,
@@ -583,6 +620,9 @@ pub fn story_start(background: Background, body_height: f32) -> StoryStart {
                 rotation: yaw(-50.0),
                 position: Vec3::new(STORY_POINT.x, 210.0, STORY_POINT.z),
             },
+            spawn_point: STORY_SPAWN,
+            view: STORY_VIEW,
+            start_record: [START_MOTION_WAKING, 0, 0],
             off_hand: Some(ItemRef {
                 id: STORY_KNIGHT_ITEM,
                 flags: 0,
@@ -608,6 +648,9 @@ pub fn story_start(background: Background, body_height: f32) -> StoryStart {
                 rotation: rotation(50.0, -50.0, 2.0),
                 position: Vec3::new(STORY_POINT.x, 300.0, STORY_POINT.z),
             },
+            spawn_point: STORY_SPAWN,
+            view: STORY_VIEW,
+            start_record: [START_MOTION_VILLAGER, 0, 0],
             off_hand: None,
             carried: None,
             powers: None,
@@ -891,6 +934,39 @@ impl Default for PracticeState {
     }
 }
 
+/// The settings store's first key word: the entries the game reads at boot
+/// live under it.
+pub const SETTINGS_SECTION: u32 = 1;
+/// The expert-ladder unlock's settings key.
+pub const EXPERT_UNLOCK_KEY: u32 = 0x6431_ac01;
+/// The story-background unlock's settings key.
+pub const BACKGROUND_UNLOCK_KEY: u32 = 0x6431_ac02;
+
+/// The two unlock words the launch reads from the settings store. The
+/// running app fills it from the user's store; the boot applies it before
+/// the title page is built.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UnlockSettings {
+    /// The entry's 4 bytes, when the store holds it.
+    pub expert: Option<[u8; 4]>,
+    pub backgrounds: Option<[u8; 4]>,
+}
+
+impl UnlockSettings {
+    /// Reads the two entries from a settings store's `[1, key]` paths.
+    pub fn from_store(store: &exa_formats::settings_store::SettingsStore) -> Self {
+        let word = |key: u32| {
+            let bytes = store.get(&[SETTINGS_SECTION, key])?;
+            let four = bytes.get(0..4)?;
+            Some([four[0], four[1], four[2], four[3]])
+        };
+        Self {
+            expert: word(EXPERT_UNLOCK_KEY),
+            backgrounds: word(BACKGROUND_UNLOCK_KEY),
+        }
+    }
+}
+
 /// The settings unlock words: the practice ladder's expert difficulty and
 /// the story backgrounds. The original reads and writes them as 4-byte
 /// settings entries.
@@ -983,6 +1059,17 @@ impl Unlocks {
     /// The expert unlock as the settings entry's 4 bytes: one when unlocked.
     pub fn expert_bytes(&self) -> [u8; 4] {
         u32::from(self.expert).to_le_bytes()
+    }
+
+    /// Applies the two words the launch read. A missing entry leaves its
+    /// current value, as the original's failed read does.
+    pub fn apply_settings(&mut self, settings: UnlockSettings) {
+        if let Some(bytes) = settings.expert {
+            self.read_expert(&bytes);
+        }
+        if let Some(bytes) = settings.backgrounds {
+            self.read_backgrounds(&bytes);
+        }
     }
 }
 
@@ -1082,6 +1169,9 @@ pub enum Step {
         carried: Option<Carried>,
         powers: Option<(u32, f32)>,
     },
+    /// The twelve-byte record a story start hands the loader: the start
+    /// motion and two zero words.
+    StartRecord([u32; 3]),
     /// Create the story's starting light.
     StoryLight(StoryLight),
     /// Write the story start's condition word, animator flags and turn
@@ -1114,6 +1204,9 @@ pub enum Step {
     CloseSave,
     /// Keep the save just written as the checkpoint.
     Checkpoint,
+    /// Stamp the level-6 checkpoint with the engine clock (the level's own
+    /// time; the save unit reads it).
+    LevelTime,
     /// The screen fades out over the level change (the exit's fade bit).
     FadeOut,
     /// The AI takes over the player's body for the level change (the exit's
@@ -1156,8 +1249,11 @@ pub enum Step {
     StripPlayer,
     /// Clear the player node's story bit (the reconstruction mark).
     ClearStoryFlag,
-    /// Write the player's own record back into the save.
-    PlayerData,
+    /// Write the player's own record back into the save, with the record's
+    /// flags word (the death screen's CONTINUE passes 0x100).
+    PlayerData {
+        flags: u32,
+    },
     /// Show or hide the game's view.
     GameGui(bool),
     /// Write a wake-up or get-up pose.
@@ -1173,6 +1269,9 @@ pub enum Step {
         red_bits: u32,
         yellow_bits: u32,
     },
+    /// Replace the player's condition word (the next practice fight clears
+    /// the round's dead or waking bits).
+    Condition(u32),
     /// A scripted mode's hook.
     ScriptMode {
         mode: u32,
@@ -1276,6 +1375,8 @@ pub struct PracticeStart {
     pub boss: bool,
     pub locale: &'static str,
     pub music: Track,
+    /// The camera view the start writes before it places the player.
+    pub view: StartView,
 }
 
 /// The music a practice start plays.
@@ -1413,8 +1514,17 @@ pub fn arena_family() -> SaveFamily {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlayerReading {
     pub condition: u32,
+    /// The player's animator flags word (the get-up's 0x600, the wake's
+    /// 0x20/0x40); [`WAKING`] there ends the first wake-up animation.
+    pub animator: u32,
     pub health: f32,
 }
+
+/// The animator flags the flow's wake-up steps write on the player's body.
+/// [`Step::Wake`] replaces them (or sets bits), and the story start's pose
+/// step writes them with the condition word.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WakeFlags(pub u32);
 
 /// A level exit requested by a trigger, a teleporter or a script.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1800,6 +1910,7 @@ impl Flow {
                 spawn: 0,
                 teardown: true,
             },
+            Step::StartRecord(start.start_record),
         ];
         if let Some(light) = start.light {
             steps.push(Step::StoryLight(light));
@@ -1855,6 +1966,7 @@ impl Flow {
                 Ladder::Expert => "arenae",
             },
             music: practice_music(ladder, self.alternative_music),
+            view: PRACTICE_VIEW,
         };
         let placement = Placement {
             rotation: PRACTICE_ROTATION,
@@ -2165,7 +2277,10 @@ impl Flow {
         }
         let wake = &mut self.story.wake;
         if wake.animating {
-            if player.condition & WAKING == 0 {
+            // The original reads the animator's flags word, not the body's
+            // condition: the first animation runs while that word holds 0x20
+            // and ends once the motion has cleared the bit.
+            if player.animator & WAKING == 0 {
                 wake.animating = false;
             }
         } else if wake.getting_up {
@@ -2284,6 +2399,8 @@ impl Flow {
                 red_bits: step.red_bits,
                 yellow_bits: step.yellow_bits,
             },
+            // The next fight starts from a clear condition word.
+            Step::Condition(0),
             Step::RequestAction(PRACTICE_MOTION),
             Step::PlacePlayer(placement),
             Step::Camera(camera::frame_point(
@@ -2321,7 +2438,9 @@ impl Flow {
             Step::Controls(false),
             Step::Hook(Hook::None),
         ];
-        let alive = f64::from(health) >= ALIVE_HEALTH;
+        // A NaN health takes the alive branch too: the original's `0.01 <= h`
+        // test jumps to the alive tip on the unordered result as well.
+        let alive = f64::from(health) >= ALIVE_HEALTH || health.is_nan();
         steps.push(Step::Tip(if alive { 2 } else { 3 }));
         let mut reconstructed = false;
         if !alive && self.mode == Mode::Story {
@@ -2385,7 +2504,7 @@ impl Flow {
             delayed: false,
             start_ms: now.wrapping_add(WAKE_DELAY_MS),
         };
-        let mut steps = Vec::new();
+        let mut steps = vec![Step::ClosePrelude];
         if self.mode.is_game() {
             steps.push(Step::Save {
                 drop_on_low_health: false,
@@ -2427,6 +2546,10 @@ impl Flow {
             Step::Save {
                 drop_on_low_health: false,
             },
+            // The end menu hides and the prelude closes before the world
+            // goes.
+            Step::HideEndMenu,
+            Step::ClosePrelude,
             Step::TeardownWorld,
             Step::LoadLevel {
                 locale: "exanima05",
@@ -2567,7 +2690,9 @@ impl Flow {
     /// The end-of-life story CONTINUE of a save with no record: the player
     /// data is written back, then the respawn runs behind the transition.
     pub fn continue_after_death(&mut self) -> Vec<Step> {
-        let mut steps = vec![Step::PlayerData];
+        // The record the write-back is handed carries 0x100 in its flags
+        // word (the death screen's CONTINUE mode).
+        let mut steps = vec![Step::PlayerData { flags: 0x100 }];
         steps.extend(self.transition(Action::StoryRespawn, true));
         steps
     }
@@ -2699,6 +2824,11 @@ impl Flow {
         });
         if checkpoint {
             steps.push(Step::Checkpoint);
+            // The sixth level's checkpoint also takes the engine clock: the
+            // level's own time, read back by the save.
+            if exit.level == 6 {
+                steps.push(Step::LevelTime);
+            }
         }
         if exit.flags & 1 != 0 {
             steps.push(Step::FadeOut);
@@ -2969,6 +3099,8 @@ pub fn exit_nudge(player: Vec3, trigger: ExitTrigger) -> Option<ExitNudge> {
     let axis = if clearance_z < clearance_x { 2 } else { 0 };
     let value = local[axis];
     let push = (trigger.extent[axis] - value) + EXIT_MARGIN;
+    // Only an ordered, strictly positive offset takes the positive branch:
+    // a zero or unordered (NaN) offset takes the negated one.
     let distance = if value > 0.0 { push } else { -push };
     let row = Vec3::from_array(trigger.rotation[axis]);
     Some(ExitNudge {
@@ -3063,7 +3195,11 @@ fn boot(
     mut flow: ResMut<Flow>,
     mut queued: ResMut<FlowSteps>,
     show_title: Option<Res<BootToMenu>>,
+    unlocks: Option<Res<UnlockSettings>>,
 ) {
+    if let Some(unlocks) = unlocks.as_deref() {
+        flow.unlocks.apply_settings(*unlocks);
+    }
     for step in flow.boot() {
         debug!("game flow: {step:?}");
         if show_title.as_deref().is_some_and(|show| !show.0)
@@ -3077,12 +3213,17 @@ fn boot(
 
 /// The game clock the flow runs on is the fixed step's (12 ms a tick); the
 /// player and the other characters' conditions come from the running world.
+#[allow(clippy::type_complexity)]
 fn tick(
     mut flow: ResMut<Flow>,
     mut queued: ResMut<FlowSteps>,
     ticks: Option<Res<exa_physics::body::BodyTicks>>,
     players: Query<
-        (Option<&exa_combat::Condition>, Option<&exa_combat::Fighter>),
+        (
+            Option<&exa_combat::Condition>,
+            Option<&exa_combat::Fighter>,
+            Option<&WakeFlags>,
+        ),
         With<crate::player::PlayerBody>,
     >,
     others: Query<&exa_combat::Condition, Without<crate::player::PlayerBody>>,
@@ -3091,8 +3232,9 @@ fn tick(
     let player = players
         .single()
         .ok()
-        .map(|(condition, fighter)| PlayerReading {
+        .map(|(condition, fighter, wake)| PlayerReading {
             condition: condition.map_or(0, |condition| condition.0),
+            animator: wake.map_or(0, |wake| wake.0),
             // A body without a fighter record is treated as unhurt.
             health: fighter.map_or(0.25, |fighter| fighter.health.red),
         });
@@ -3338,6 +3480,8 @@ fn apply_steps(
     mut view: Option<ResMut<GameView>>,
     mut session: Option<ResMut<crate::player_controls::PlaySession>>,
     mut fighters: Query<&mut exa_combat::Fighter, With<crate::player::PlayerBody>>,
+    mut conditions: Query<&mut exa_combat::Condition, With<crate::player::PlayerBody>>,
+    mut wake_flags: Query<(Entity, Option<&WakeFlags>), With<crate::player::PlayerBody>>,
     mut changes: MessageWriter<exa_world::level_lifecycle::LevelChangeRequest>,
     mut forfeit: MessageWriter<ForfeitMatch>,
     mut exit: MessageWriter<AppExit>,
@@ -3437,6 +3581,28 @@ fn apply_steps(
                 for mut fighter in &mut fighters {
                     fighter.health.red = f32::from_bits(red_bits);
                     fighter.health.yellow = f32::from_bits(yellow_bits);
+                }
+            }
+            Step::Condition(word) => {
+                for mut condition in &mut conditions {
+                    condition.0 = word;
+                }
+            }
+            Step::Wake(pose) => {
+                for (entity, current) in &mut wake_flags {
+                    let flags = if pose.or_flags {
+                        current.copied().unwrap_or_default().0 | pose.flags
+                    } else {
+                        pose.flags
+                    };
+                    commands.entity(entity).insert(WakeFlags(flags));
+                }
+            }
+            Step::StoryPose { flags, .. } => {
+                if let Some(flags) = flags {
+                    for (entity, _) in &mut wake_flags {
+                        commands.entity(entity).insert(WakeFlags(flags));
+                    }
                 }
             }
             Step::Music {
@@ -3633,6 +3799,55 @@ mod tests {
             story_start(Background::Unknown, 1.8).placement.position.y,
             34.0
         );
+        // Every story start hands the loader the same spawn point and view,
+        // and the start record carries the background's wake motion.
+        for (background, motion) in [
+            (Background::Unknown, START_MOTION_ANIMATION),
+            (Background::Knight, START_MOTION_WAKING),
+            (Background::Proctor, START_MOTION_WAKING),
+            (Background::Villager, START_MOTION_VILLAGER),
+        ] {
+            let start = story_start(background, 1.0);
+            assert_eq!(start.spawn_point, Vec3::new(8200.0, 25.0, 3920.0));
+            assert_eq!(start.view, STORY_VIEW);
+            assert_eq!(start.view.direction, Vec3::new(0.0, 0.0, 1.0));
+            assert_eq!(start.view.target, Vec3::new(8200.0, 0.0, 4000.0));
+            assert_eq!(start.start_record, [motion, 0, 0]);
+        }
+        let start = story_start(Background::Knight, 1.0);
+        // The start record is the bare motion, not the spawn pose.
+        assert_eq!(start.placement.position, Vec3::new(8200.0, 210.0, 3920.0));
+    }
+
+    #[test]
+    fn a_practice_start_looks_at_the_ring_and_carries_its_view() {
+        let mut flow = Flow::default();
+        let viewport = Viewport {
+            width: 1000,
+            height: 500,
+        };
+        let steps = flow.start_practice(Ladder::Novice, 90.0, viewport, 0);
+        let start = PracticeStart {
+            ladder: Ladder::Novice,
+            fight: FIRST_FIGHT,
+            partner: *b"opponent01",
+            boss: false,
+            locale: "arena",
+            music: practice_music(Ladder::Novice, false),
+            view: PRACTICE_VIEW,
+        };
+        assert_eq!(start.view.direction, Vec3::new(0.0, 0.0, -1.0));
+        assert_eq!(start.view.target, Vec3::new(0.0, 20.0, 500.0));
+        assert!(steps.contains(&Step::PlacePlayer(Placement {
+            rotation: PRACTICE_ROTATION,
+            position: Vec3::new(0.0, 95.0, 500.0),
+        })));
+        assert!(steps.contains(&Step::Camera(camera::frame_point(
+            PRACTICE_POINT,
+            true,
+            false,
+            viewport
+        ))));
     }
 
     #[test]
@@ -3709,6 +3924,7 @@ mod tests {
                 2000,
                 Some(PlayerReading {
                     condition: DYING,
+                    animator: 0,
                     health: 0.1
                 }),
                 &[DEAD]
@@ -3719,6 +3935,7 @@ mod tests {
         // the playing phase, as the round check's own branch.
         let dead = Some(PlayerReading {
             condition: DEAD,
+            animator: 0,
             health: 0.0,
         });
         flow.practice.start_ms = 5000;
@@ -3777,6 +3994,8 @@ mod tests {
             yellow_bits: healed.to_bits()
         }));
         assert_eq!(healed.to_bits(), 0x3e66_6667);
+        // The round's condition word clears before the motion starts.
+        assert!(steps.contains(&Step::Condition(0)));
         assert!(steps.iter().any(|step| matches!(
             step,
             Step::Music {
@@ -3800,6 +4019,7 @@ mod tests {
         };
         let dead = PlayerReading {
             condition: DEAD,
+            animator: 0,
             health: 0.1,
         };
         let steps = flow.story_tick(1000, Some(dead));
@@ -3818,9 +4038,10 @@ mod tests {
                 .any(|step| matches!(step, Step::Wake(WakePose { flags: 0x40, .. })))
         );
         assert_eq!(flow.story.wake.start_ms, 8101);
-        // The revival saves the story first.
+        // The revival closes the prelude, then saves the story.
+        assert_eq!(steps.first(), Some(&Step::ClosePrelude));
         assert_eq!(
-            steps.first(),
+            steps.get(1),
             Some(&Step::Save {
                 drop_on_low_health: false
             })
@@ -3840,11 +4061,41 @@ mod tests {
             6000,
             Some(PlayerReading {
                 condition: DEAD,
+                animator: 0,
                 health: 0.0,
             }),
         );
         assert_eq!(flow.phase, Phase::Ended);
         assert!(steps.contains(&Step::Tip(3)));
+    }
+
+    #[test]
+    fn the_wake_animation_ends_on_the_animator_flag_not_the_condition() {
+        let mut flow = Flow {
+            mode: Mode::Story,
+            phase: Phase::Playing,
+            hook: Hook::Story,
+            ..Default::default()
+        };
+        flow.story.wake.animating = true;
+        // The animator's 0x20 keeps the first animation running even with a
+        // clear condition word.
+        let animator_waking = PlayerReading {
+            condition: 0,
+            animator: WAKING,
+            health: 0.2,
+        };
+        flow.story_tick(1000, Some(animator_waking));
+        assert!(flow.story.wake.animating);
+        // Once the animator flags drop the bit the animation is done; the
+        // condition's 0x20 (the waking bit) does not keep it running.
+        let condition_waking = PlayerReading {
+            condition: WAKING,
+            animator: 0,
+            health: 0.2,
+        };
+        flow.story_tick(2000, Some(condition_waking));
+        assert!(!flow.story.wake.animating);
     }
 
     #[test]
@@ -3857,6 +4108,7 @@ mod tests {
         };
         let alive = PlayerReading {
             condition: 0,
+            animator: 0,
             health: 0.2,
         };
         let steps = flow.story_tick(100, Some(alive));
@@ -3933,6 +4185,44 @@ mod tests {
     }
 
     #[test]
+    fn the_revive_closes_the_prelude_and_wakes_the_player() {
+        let mut flow = Flow {
+            mode: Mode::Story,
+            phase: Phase::Ended,
+            hook: Hook::Knockout,
+            ..Default::default()
+        };
+        let steps = flow.revive(4000);
+        assert!(steps.contains(&Step::ClosePrelude));
+        assert!(steps.contains(&Step::Save {
+            drop_on_low_health: false
+        }));
+        assert!(steps.contains(&Step::Controls(true)));
+        assert!(steps.contains(&Step::GameGui(true)));
+        assert!(steps.contains(&Step::Wake(WakePose::revived())));
+        assert!(steps.contains(&Step::Hook(Hook::Story)));
+        assert_eq!(flow.phase, Phase::Playing);
+        // The wake-up animation is watched from two seconds on.
+        assert!(flow.story.wake.animating);
+        assert!(!flow.story.wake.getting_up);
+        assert!(!flow.story.wake.delayed);
+        assert_eq!(flow.story.wake.start_ms, 6000);
+    }
+
+    #[test]
+    fn the_death_screens_continue_writes_the_player_back_first() {
+        let mut flow = Flow {
+            mode: Mode::Story,
+            phase: Phase::Ended,
+            ..Default::default()
+        };
+        let steps = flow.continue_after_death();
+        assert_eq!(steps[0], Step::PlayerData { flags: 0x100 });
+        assert!(steps.contains(&Step::Transition));
+        assert_eq!(flow.phase, Phase::Transition);
+    }
+
+    #[test]
     fn a_story_death_drops_the_save_or_strips_the_player() {
         let mut flow = Flow {
             mode: Mode::Story,
@@ -3984,6 +4274,24 @@ mod tests {
         };
         let _ = flow.die(0.0);
         assert!(flow.end_menu.unwrap().rows.contains(&"RESTART"));
+        // A NaN health takes the alive branch: tip 2, no drop and no strip,
+        // the plain end menu.
+        let mut flow = Flow {
+            mode: Mode::Story,
+            phase: Phase::Playing,
+            story: StoryState {
+                reconstruction: REBUILDABLE,
+                checkpoint: 7,
+                record: 7,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let steps = flow.die(f32::NAN);
+        assert!(steps.contains(&Step::Tip(2)));
+        assert!(!steps.contains(&Step::DropSave));
+        assert!(!steps.contains(&Step::StripPlayer));
+        assert!(steps.contains(&Step::EndMenu(end_menu(MENU_WON, Mode::Story))));
     }
 
     #[test]
@@ -4019,6 +4327,46 @@ mod tests {
         assert_eq!(level_locale(1), Some("exanima01"));
         assert_eq!(level_locale(5), Some("exanima05"));
         assert_eq!(level_locale(0), None);
+        // The sixth level's checkpoint takes the level's time; an earlier
+        // checkpoint does not.
+        let mut sixth = Flow {
+            mode: Mode::Story,
+            phase: Phase::Playing,
+            ..Default::default()
+        };
+        let steps = sixth.level_exit(
+            LevelExit {
+                level: 6,
+                spawn: 0,
+                flags: 0,
+            },
+            CheckpointRule {
+                level: 6,
+                setting: false,
+                already_saved: false,
+            },
+            0,
+            false,
+        );
+        assert!(steps.contains(&Step::Checkpoint));
+        assert!(steps.contains(&Step::LevelTime));
+        let mut third = Flow {
+            mode: Mode::Story,
+            phase: Phase::Playing,
+            ..Default::default()
+        };
+        let steps = third.level_exit(
+            LevelExit {
+                level: 3,
+                spawn: 0,
+                flags: 0,
+            },
+            rule,
+            0,
+            false,
+        );
+        assert!(steps.contains(&Step::Checkpoint));
+        assert!(!steps.contains(&Step::LevelTime));
         assert_eq!(level_locale(99), None);
         let mut flow = Flow {
             mode: Mode::Story,
@@ -4110,6 +4458,10 @@ mod tests {
         let nudge = exit_nudge(Vec3::new(0.0, 0.0, 51.0), trigger).unwrap();
         assert_eq!(nudge.axis, 2);
         assert_eq!(nudge.distance, 74.0);
+        // A zero offset takes the negative branch: -(50 + 75).
+        let nudge = exit_nudge(Vec3::ZERO, trigger).unwrap();
+        assert_eq!((nudge.axis, nudge.distance), (2, -125.0));
+        assert_eq!(nudge.position, Vec3::new(0.0, 0.0, -125.0));
         // The squared overhang is compared with the plain 50: 7 cm out
         // (49) still counts, 8 cm out (64) does not.
         assert!(exit_nudge(Vec3::new(0.0, 0.0, 57.0), trigger).is_some());
@@ -4432,6 +4784,7 @@ mod tests {
         };
         let alive = Some(PlayerReading {
             condition: 0,
+            animator: 0,
             health: 0.2,
         });
         let steps = flow.frame(1000, alive, &[]);
@@ -4638,6 +4991,11 @@ mod tests {
             drop_on_low_health: false
         }));
         assert!(steps.contains(&Step::ClearStoryFlag));
+        assert!(steps.contains(&Step::HideEndMenu));
+        assert!(steps.contains(&Step::ClosePrelude));
+        // The respawn re-attaches the player controls to the new body; it
+        // does not take them away.
+        assert!(!steps.contains(&Step::Controls(false)));
         assert!(!steps.iter().any(|step| matches!(step, Step::Camera(_))));
     }
 
@@ -5036,6 +5394,10 @@ mod tests {
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<exa_ui::gui_draw::GuiFrames>()
             .insert_resource(BootToMenu(false))
+            .insert_resource(UnlockSettings {
+                expert: Some(1u32.to_le_bytes()),
+                backgrounds: Some(5u32.to_le_bytes()),
+            })
             .add_plugins((crate::menu_screen::MenuScreenPlugin, FlowPlugin));
         app.update();
         assert!(
@@ -5043,8 +5405,40 @@ mod tests {
                 .resource::<crate::menu_screen::MenuScreen>()
                 .open
         );
-        assert_eq!(app.world().resource::<Flow>().mode, Mode::Menu);
-        assert!(app.world().resource::<Flow>().booted());
+        let flow = app.world().resource::<Flow>();
+        assert_eq!(flow.mode, Mode::Menu);
+        assert!(flow.booted());
+        // The launch's two settings words reach the boot.
+        assert!(flow.unlocks.expert);
+        assert_eq!(flow.unlocks.backgrounds, 5);
+    }
+
+    #[test]
+    fn the_unlock_entries_are_read_from_the_settings_store() {
+        use exa_formats::settings_store::SettingsStore;
+
+        let mut store = SettingsStore::new();
+        store
+            .set(&[SETTINGS_SECTION, EXPERT_UNLOCK_KEY], &[1, 0, 0, 0])
+            .unwrap();
+        store
+            .set(&[SETTINGS_SECTION, BACKGROUND_UNLOCK_KEY], &[5, 0, 0, 0])
+            .unwrap();
+        let settings = UnlockSettings::from_store(&store);
+        assert_eq!(settings.expert, Some([1, 0, 0, 0]));
+        assert_eq!(settings.backgrounds, Some([5, 0, 0, 0]));
+        let mut unlocks = Unlocks::default();
+        unlocks.apply_settings(settings);
+        assert!(unlocks.expert);
+        assert_eq!(unlocks.backgrounds, 5);
+        // A missing entry leaves the current word alone.
+        let mut unlocks = Unlocks {
+            expert: true,
+            backgrounds: 7,
+        };
+        unlocks.apply_settings(UnlockSettings::default());
+        assert!(unlocks.expert);
+        assert_eq!(unlocks.backgrounds, 7);
     }
 
     #[test]
@@ -5408,5 +5802,56 @@ mod tests {
             .resource::<crate::level_change::PlayerPlacement>();
         assert!((at.position - Vec3::new(1.0, 2.0, 3.0)).length() < 1e-6);
         assert!((at.yaw - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+
+        // The wake steps write the player's animator flags word: the
+        // get-up replaces it, the revival sets bits on it.
+        let player = app
+            .world_mut()
+            .spawn((
+                crate::player::PlayerBody::new(0.0),
+                exa_combat::Condition(DEAD),
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<FlowSteps>()
+            .steps
+            .push(Step::Wake(WakePose::hold()));
+        app.update();
+        assert_eq!(
+            app.world().get::<WakeFlags>(player),
+            Some(&WakeFlags(0x600))
+        );
+        app.world_mut()
+            .resource_mut::<FlowSteps>()
+            .steps
+            .push(Step::Wake(WakePose::revived()));
+        app.update();
+        assert_eq!(
+            app.world().get::<WakeFlags>(player),
+            Some(&WakeFlags(0x640))
+        );
+        app.world_mut()
+            .resource_mut::<FlowSteps>()
+            .steps
+            .push(Step::StoryPose {
+                condition: None,
+                flags: Some(0x600),
+                turn_factor: None,
+            });
+        app.update();
+        assert_eq!(
+            app.world().get::<WakeFlags>(player),
+            Some(&WakeFlags(0x600))
+        );
+        // The practice round's condition write lands on the body.
+        app.world_mut()
+            .resource_mut::<FlowSteps>()
+            .steps
+            .push(Step::Condition(0));
+        app.update();
+        assert_eq!(
+            app.world().get::<exa_combat::Condition>(player),
+            Some(&exa_combat::Condition(0))
+        );
     }
 }

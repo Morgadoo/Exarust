@@ -1088,13 +1088,15 @@ fn main() -> AppExit {
         app.insert_resource(exa_game::commands::KeyCommands::of_hotkeys(
             &user.settings.hotkeys,
         ));
-        app.insert_resource(user.clone()).add_systems(
-            Update,
-            (
-                user_settings::gui_size_from_display,
-                user_settings::save_applied_bindings,
-            ),
-        );
+        app.insert_resource(exa_game::flow::UnlockSettings::from_store(&user.store))
+            .insert_resource(user.clone())
+            .add_systems(
+                Update,
+                (
+                    user_settings::gui_size_from_display,
+                    user_settings::save_applied_bindings,
+                ),
+            );
     }
     app.add_systems(Startup, register_debug_commands);
     if fixed_frames {
