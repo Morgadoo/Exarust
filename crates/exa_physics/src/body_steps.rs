@@ -163,6 +163,9 @@ pub(super) struct Steps {
     jolt_latch: bool,
     jolt_quiet: i32,
     pub jolt_told: bool,
+    /// The step loudness the footwork's footstep reads
+    /// ([`super::feet::step_loudness`] of the last started step's length).
+    pub loudness: f32,
 }
 
 impl Default for Steps {
@@ -188,6 +191,7 @@ impl Default for Steps {
             jolt_decay: Vec3::ZERO,
             jolt_latch: false,
             jolt_quiet: 0,
+            loudness: 0.0,
             jolt_told: false,
         }
     }
@@ -645,6 +649,14 @@ pub(super) struct Work {
     /// as feet start and land.
     pub still_at: f32,
     pub still_plus: f32,
+    /// The body is attacking (condition 2): a step start's rustle doubles.
+    pub attacking: bool,
+    /// The body's step loudness (0.01 + 0.0139 × the last started step's
+    /// length up to 140 cm, else 1), which a step start rewrites and a step
+    /// end's footstep reads.
+    pub loudness: f32,
+    /// The foot sounds the footwork's sound pass found this tick.
+    pub cues: Vec<super::feet::FootCue>,
 }
 
 impl Work {
@@ -666,6 +678,9 @@ impl Work {
             size: 1.0,
             still_at: f32::NAN,
             still_plus: f32::NAN,
+            attacking: false,
+            loudness: 0.0,
+            cues: Vec::new(),
         }
     }
 }

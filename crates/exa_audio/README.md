@@ -137,6 +137,14 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
   (`BdyCol`) or skeleton (`SkelHit`) default, or `HitGlm`; the class rules
   are `exa_combat::sounds`. The part's sound falls silent when no layer
   covers half. A blow no longer grunts by itself.
+- The balance's foot sounds (`exa_physics::body::FootSounded`, from the
+  standing footwork): a step's start plays the character's foley set at its
+  standing place (`anchor_rustle`: the volume's draw, the pitch's, the
+  play, then its 400 ms clock's jitter), a step's end its race's step set at
+  the body root's place (`release_step` at the step loudness and footstep
+  volume, then its 250 ms clock), each only while its clock is behind the
+  game clock; the draws come from the sound bank's generator in that order
+  (`footsteps::foot_sounds`, logged at debug level).
 - A wound's pain sounds (`exa_combat::pain::PainSounded`, after the damage
   call on flesh only): the character's wound set (`WndFls`, `SkelHit`,
   `HitGlm`) at the blow, and its pain voice through its voice's request

@@ -1375,3 +1375,79 @@ fn the_down_probe_keeps_the_ground_on_a_miss() {
     assert_eq!(down_probe_ground(12.0, Some(-3.0)), (-3.0, -3.0));
     assert_eq!(down_probe_ground(12.0, None), (12.0, 12.0));
 }
+
+/// The footwork's sound pass: a foot whose anchored bit rose since the
+/// state last compared cues the rustle with the squared contact-to-anchor
+/// distance (cm²), doubled-flagged while attacking; one whose bit fell cues
+/// the footstep at the body's step loudness; the state is then copied, so
+/// the next pass cues nothing.
+#[test]
+fn the_sound_pass_cues_step_starts_and_ends() {
+    let (mut body, _) = footed(Vec3::ZERO);
+    let ankles = [Vec3::new(0.1, 0.1, 0.0), Vec3::new(-0.1, 0.1, 0.0)];
+    body.legs[0].state = FootState(FootState::ANCHORED);
+    body.legs[0].anchor = ankles[0] + Vec3::new(0.0, 0.0, 0.3);
+    body.legs[1].sounded = FootState(FootState::ANCHORED | FootState::TOUCHING);
+    body.legs[1].state = FootState(FootState::TOUCHING);
+    let mut work = super::super::steps::Work::plain(1.0);
+    work.attacking = true;
+    work.loudness = 0.5;
+    foot_cues(&mut body.legs, &ankles, &mut work);
+    assert_eq!(work.cues.len(), 2);
+    let FootCue::StepStart {
+        leg: 0,
+        gap_sq_cm,
+        attacking: true,
+    } = work.cues[0]
+    else {
+        panic!("{:?}", work.cues[0]);
+    };
+    assert!(close(gap_sq_cm, 900.0, 1e-2), "{gap_sq_cm}");
+    assert_eq!(
+        work.cues[1],
+        FootCue::StepEnd {
+            leg: 1,
+            loudness: 0.5,
+            contact_cm: 0.1 * CM,
+        }
+    );
+    work.cues.clear();
+    foot_cues(&mut body.legs, &ankles, &mut work);
+    assert!(work.cues.is_empty());
+}
+
+/// A footwork start measures its step to the stance spot before the anchor
+/// is pulled toward the other foot, and sets the body's step loudness from
+/// it: 0.01 + 0.0139 × the length up to 140 cm.
+#[test]
+fn a_step_start_sets_the_loudness_from_the_unpulled_spot() {
+    let (mut body, _) = footed(Vec3::ZERO);
+    let ankles = [Vec3::new(0.1, 0.1, 0.0), Vec3::new(-0.1, 0.1, 0.0)];
+    let spots = [Some(ankles[0] + Vec3::new(0.0, 0.0, 0.4)), Some(ankles[1])];
+    for (leg, ankle) in body.legs.iter_mut().zip(ankles) {
+        leg.state = FootState(FootState::TOUCHING);
+        leg.anchor = ankle;
+    }
+    let mut work = super::super::steps::Work::plain(1.0);
+    work.now_ms = 500.0;
+    plant(
+        &mut body.legs,
+        &ankles,
+        &spots,
+        &[Vec3::ZERO; 2],
+        &Bearing::default(),
+        true,
+        &[true; 2],
+        &mut work,
+    );
+    let Some(k) = body
+        .legs
+        .iter()
+        .position(|l| l.state.has(FootState::ANCHORED))
+    else {
+        panic!("no foot started");
+    };
+    let length = (cm(spots[k].unwrap()) - cm(ankles[k])).length();
+    assert_eq!(body.legs[k].step_length_cm, length);
+    assert_eq!(work.loudness, step_loudness(length));
+}

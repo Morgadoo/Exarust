@@ -414,6 +414,33 @@ pub(crate) fn gait_footsteps(
     }
 }
 
+/// Hands the foot sounds the balance's footwork cued this tick to the
+/// audio side, with where they play: the standing place for a rustle, the
+/// body root's place for a footstep.
+pub(crate) fn footwork_sounds(
+    ticked: Res<TickedCharacter>,
+    mut bodies: Query<&mut Ragdoll>,
+    mut sounded: MessageWriter<exa_physics::body::FootSounded>,
+) {
+    let Ok(mut body) = bodies.get_mut(ticked.body) else {
+        return;
+    };
+    let cues = body.take_foot_cues();
+    let Some(drive) = body.drive.as_ref() else {
+        return;
+    };
+    let standing = drive.standing_point();
+    let hip = drive.root_point().unwrap_or(standing);
+    for cue in cues {
+        sounded.write(exa_physics::body::FootSounded {
+            body: ticked.body,
+            cue,
+            standing,
+            hip,
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::f32::consts::FRAC_PI_2;

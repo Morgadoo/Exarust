@@ -375,9 +375,18 @@ plant's clothing rustle is a tested rule (`walk_rustle`: the foley base ×
 size, the foley clock 400 ms plus a jitter); nothing plays it yet. The
 footstep's gain is multiplied by the character's footstep volume (its
 stats': the body scale, doubled over 1.3, the ogre's 5). The balance
-routine's foot sounds are tested rules too (`anchor_rustle` when a foot
-anchors, `release_step` and `wet_release_step` when it lets go, their
-clocks 400 and 250 ms plus a jitter); nothing plays them yet. The
+routine's foot sounds are live: its footwork's sound pass (between the
+stance pick and the landing) compares each foot's anchored bit with the
+state it last compared (`Leg::sounded`, then copied) and cues a rustle
+when the bit rose (a step started: the squared contact-to-anchor distance,
+doubled while attacking) and a footstep when it fell (a step ended: the
+body's step loudness, 0.01 + 0.0139 × the last started step's length to
+its spot before the pull toward the other foot, at most 1)
+(`feet::foot_cues`, `FootCue`, `Ragdoll::take_foot_cues`, `FootSounded`);
+`exa_audio` plays them by `anchor_rustle`, `release_step` and their clocks
+(`rustle_clock` 400 ms, `release_step_clock` 250 ms, each plus a jitter).
+The wet step (`wet_release_step`) needs the level's water surface, which
+Exarust's levels do not carry. The
 post-step advances the walk's travel phase: the pelvis's travel in cm
 times 0.0002, wrapped at 1, with the phase before the tick kept
 (`body::travel_phase`); its consumer, the scene node's draw offset, is not
