@@ -71,9 +71,12 @@ before its morale and state (the original's condition bit `0x800`). No
 running race word selects the ally sense yet, so every level brain keeps
 the standard one. The original's tick ends by registering the character's
 nav footprint unless it follows a route with its locomotion active at 1 cm
-a tick or faster (`brain::stamps_footprint`, tested, not wired: the game's
-footprint system keeps every NPC's footprint at its feet each fixed tick,
-and an NPC body has no locomotion request for the gate to read).
+a tick or faster (`brain::stamps_footprint`). The game's footprint system
+asks that gate for every NPC each fixed tick: the route-following flag is a
+roam or patrol leg, a flight route or a duellist's chase route
+(`brain::follows_route`), the locomotion is the walk the AI asks of the
+body and the speed is the last fixed step's walk along the facing; a
+refused NPC keeps its footprint off the grid.
 The sense's familiarity drift is added to the observer's relation with the
 character it saw when that relation exists (a stranger's is dropped),
 scaled by the elapsed count the brain's ticks seen carry (the contact
@@ -81,8 +84,12 @@ field the integration counts). A character that leaves the
 scene is forgotten by every brain and combatant (its contact, nearby entry,
 targets, attention, encounter and greeting references). Entering combat
 sets the body's in-combat word (the duellist's entry then takes the Defence
-stance, motion 3, through the set-stance helper), and leaving it copies the body's
-look into the brain's look, heading and eased offset.
+stance, motion 3, through the set-stance helper). The target pass leaves
+combat through the leave-combat routine (`motion::leave_combat`): the
+body's look yaw goes into the brain's look, heading and head look, the
+eased offset and sway (with the head offset, its target and the alert
+pan's, which the original keeps in the same slots) are zeroed, the alert
+look's wide pan waits 3 s and the sway and narrow pan 0.5 s.
 
 | module | what it holds |
 |---|---|
@@ -94,7 +101,7 @@ look into the brain's look, heading and eased offset.
 | `search` | the companion's search: gathering over the room grid, picking, the look sweep, the forced path, arrival, kneeling, looting worn items, packs and containers, item worth, wear room, comments to the leader, re-arming, tidying, the world edits its deeds carry out (`apply_deed`), and an item record read as its weighing reads it (`Loot::of_payload`: apparel body, weapon section, operative or container part) |
 | `manager` | the AI manager's frame (dormant ticks, rising undead, the 3 cm zone check), zone deeds, the group alert (raised, held ten seconds and dropped one every ten), the approach clamp, and the scene node the level's AI start-up makes once (`_Temp`, flag `0x100000`) |
 | `lookup` | a simulation's character by record id and a status effect by a masked word (first match in list order) |
-| `brain` | the components and systems that carry roles into the running game: applying roles again when the held set changes, the attitude rating and waking, the perception pass (line of sight, the ally sense and the sense a race installs, the familiarity drift written to the relations), the AI tick once a body tick (morale, the group alert's ten-second decay, the contact integration, the target pass with the room graph, the room cell and nearby list, the engagement with its in-combat word, the leave's copied look, the one-time attach snap, the look chain, the out-of-combat body turn and the footprint gate), the removal forget, and the flight's walk to a room's exit |
+| `brain` | the components and systems that carry roles into the running game: applying roles again when the held set changes, the attitude rating and waking, the perception pass (line of sight, the ally sense and the sense a race installs, the familiarity drift written to the relations), the AI tick once a body tick (morale, the group alert's ten-second decay, the contact integration, the target pass with the room graph, the room cell and nearby list, the engagement with its in-combat word, the leave-combat look and its 3 s pan timer, the one-time attach snap, the look chain, the out-of-combat body turn and the footprint gate), the removal forget, and the flight's walk to a room's exit |
 | `presence` | the activation range (200 m, a NaN out), the 80-tick hold, the scene move's end, the entering body's reset, the level-leave reset, and the placement an entering body takes (a collapsed body keeps its stored one; others take their point and face their path goal) |
 | `idle` | roam, patrol, sentry and the wait, the wander and home-side points, follow, sleep, knock-out and waking |
 | `walker` | the idle states' head (the attention's notice score and clamped window, the 50° focus window), the roam and patrol step on the planning turn (the goal picked only on the turn, the 150 cm follow span, the forced home leg, the settle before the pause), and the walk along the followed route (100 cm flat arrival, Exarust's give-up deadline) |
@@ -148,8 +155,15 @@ step's continuation are pulled back where the grid's line walk stops, and
 the chase check counts a target behind an obstacle as out of sight; the
 snap stays the abstract pathfinder's no-op, as the level's never overrides
 it. Around its combat ticks the duellist lifts its own footprint and stamps
-it again, as the original's AI tick does around its state, so it pays only
-the others' footprints. Without a grid every answer is the abstract
+it again, as the original's AI tick does around its state, and lifts its
+foe's as the combat state does, stamping it again after the place pass
+(an exit before it leaves the foe's to the foe's own controller), so it
+pays only third parties' footprints. Entering combat takes the target
+through the set-target rule with the estimate routine's lead
+(`combat::foe_estimate`: a moving foe's chest led 30 ticks along its
+facing at its speed, read from the player's locomotor) and copies the aim's
+yaw into the brain's look; each combat tick's estimate reads the same
+lead. Without a grid every answer is the abstract
 pathfinder's (cost 1, no clamp, in sight). The per-place scorer's notice and band
 terms are overwritten by its close formula, so they are not kept. A stuck
 fighter runs its chase route through the navigation grid when there is
@@ -187,9 +201,11 @@ else it is noticed. A flight halves the courage and adds 2 to the stress;
 a cornered fighter fights on with its courage doubled. The way out is the
 open exit most opposite the threat (cosine under 0.2), and fled rooms are
 remembered (eight). A combatant's contact is classified through
-`ContactRecord::of`; the combatant's own list still drops its oldest
-contact when full, where the original's admission (`contacts::admit`)
-replaces the lightest. The classification asks the level's room graph with
+`ContactRecord::of`; both lists admit as the original does: a full list
+gives up its lightest contact (noticeability·10 + concern, the first slot's
+noticeability unsigned; `contacts::admit`, `Combatant::lightest`), and the
+perception pass puts the lightest back when the newcomer's sensed weight
+falls short of it. The classification asks the level's room graph with
 the contact as the threat (`rooms::level_room`, `rooms::room_exits`, the
 door links' cells as exit points), as the original's way-out query does,
 and `brain::flee_walk` runs a fleeing brain to that exit at the jog speed,
