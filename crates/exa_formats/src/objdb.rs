@@ -700,11 +700,20 @@ impl Appearance {
     }
 
     /// Quality, damage and dirt as the painter uses them, 0..=1.
+    ///
+    /// Each byte is widened to double, multiplied by the double 1/255 and
+    /// narrowed to float, as the original's conversion does. Damage is then
+    /// remapped as `2/(2 − d) − 1` (not the algebraically equal
+    /// `d/(2 − d)`: the two differ in the last bits) and dirt as
+    /// `(d² + d)·0.5`, both in single precision. The original stores the
+    /// three in the order damage, dirt, quality when it hands the condition
+    /// to a paint job; this tuple keeps Exarust's quality-first order.
     pub fn condition(&self) -> (f32, f32, f32) {
-        let q = self.quality as f32 / 255.0;
-        let d = self.damage as f32 / 255.0;
-        let r = self.dirt as f32 / 255.0;
-        (q, d / (2.0 - d), (r * r + r) / 2.0)
+        let fraction = |b: u8| (f64::from(b) * (1.0 / 255.0)) as f32;
+        let q = fraction(self.quality);
+        let d = fraction(self.damage);
+        let r = fraction(self.dirt);
+        (q, 2.0 / (2.0 - d) - 1.0, (r * r + r) * 0.5)
     }
 
     /// The layers the original's texture job paints: every one of the
@@ -927,6 +936,42 @@ mod tests {
         let mut v = s.as_bytes().to_vec();
         v.resize(len, 0);
         v
+    }
+
+    /// The paint job's condition: each byte through the original's
+    /// double-precision 1/255, damage as `2/(2 − d) − 1` in float (the
+    /// algebraically equal `d/(2 − d)` is one bit off for byte 128) and
+    /// dirt as `(d² + d)·0.5`.
+    #[test]
+    fn the_paint_condition_follows_the_originals_conversion() {
+        let a = Appearance {
+            quality: 0x70,
+            damage: 0x40,
+            dirt: 0x52,
+            layers: [Layer::default(); LAYERS],
+        };
+        let (q, d, r) = a.condition();
+        assert_eq!(q.to_bits(), 0x3ee0_e0e1);
+        assert_eq!(d.to_bits(), 0x3e12_f110);
+        assert_eq!(r.to_bits(), 0x3e59_9654);
+        // The two damage forms differ in the last bits at 128.
+        let x = (128f64 / 255.0) as f32;
+        assert_eq!((2.0 / (2.0 - x) - 1.0).to_bits(), 0x3eab_8f68);
+        assert_eq!((x / (2.0 - x)).to_bits(), 0x3eab_8f6a);
+        let full = Appearance {
+            quality: 255,
+            damage: 255,
+            dirt: 255,
+            layers: [Layer::default(); LAYERS],
+        };
+        assert_eq!(full.condition(), (1.0, 1.0, 1.0));
+        let none = Appearance {
+            quality: 0,
+            damage: 0,
+            dirt: 0,
+            layers: [Layer::default(); LAYERS],
+        };
+        assert_eq!(none.condition(), (0.0, 0.0, 0.0));
     }
 
     #[test]
