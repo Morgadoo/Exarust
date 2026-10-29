@@ -1219,6 +1219,9 @@ pub enum Step {
         red_bits: u32,
         yellow_bits: u32,
     },
+    /// Replace the player's condition word (the next practice fight clears
+    /// the round's dead or waking bits).
+    Condition(u32),
     /// A scripted mode's hook.
     ScriptMode {
         mode: u32,
@@ -2345,6 +2348,8 @@ impl Flow {
                 red_bits: step.red_bits,
                 yellow_bits: step.yellow_bits,
             },
+            // The next fight starts from a clear condition word.
+            Step::Condition(0),
             Step::RequestAction(PRACTICE_MOTION),
             Step::PlacePlayer(placement),
             Step::Camera(camera::frame_point(
@@ -3412,6 +3417,7 @@ fn apply_steps(
     mut view: Option<ResMut<GameView>>,
     mut session: Option<ResMut<crate::player_controls::PlaySession>>,
     mut fighters: Query<&mut exa_combat::Fighter, With<crate::player::PlayerBody>>,
+    mut conditions: Query<&mut exa_combat::Condition, With<crate::player::PlayerBody>>,
     mut wake_flags: Query<(Entity, Option<&WakeFlags>), With<crate::player::PlayerBody>>,
     mut changes: MessageWriter<exa_world::level_lifecycle::LevelChangeRequest>,
     mut forfeit: MessageWriter<ForfeitMatch>,
@@ -3512,6 +3518,11 @@ fn apply_steps(
                 for mut fighter in &mut fighters {
                     fighter.health.red = f32::from_bits(red_bits);
                     fighter.health.yellow = f32::from_bits(yellow_bits);
+                }
+            }
+            Step::Condition(word) => {
+                for mut condition in &mut conditions {
+                    condition.0 = word;
                 }
             }
             Step::Wake(pose) => {
@@ -3920,6 +3931,8 @@ mod tests {
             yellow_bits: healed.to_bits()
         }));
         assert_eq!(healed.to_bits(), 0x3e66_6667);
+        // The round's condition word clears before the motion starts.
+        assert!(steps.contains(&Step::Condition(0)));
         assert!(steps.iter().any(|step| matches!(
             step,
             Step::Music {
@@ -5610,7 +5623,10 @@ mod tests {
         // get-up replaces it, the revival sets bits on it.
         let player = app
             .world_mut()
-            .spawn(crate::player::PlayerBody::new(0.0))
+            .spawn((
+                crate::player::PlayerBody::new(0.0),
+                exa_combat::Condition(DEAD),
+            ))
             .id();
         app.world_mut()
             .resource_mut::<FlowSteps>()
@@ -5642,6 +5658,16 @@ mod tests {
         assert_eq!(
             app.world().get::<WakeFlags>(player),
             Some(&WakeFlags(0x600))
+        );
+        // The practice round's condition write lands on the body.
+        app.world_mut()
+            .resource_mut::<FlowSteps>()
+            .steps
+            .push(Step::Condition(0));
+        app.update();
+        assert_eq!(
+            app.world().get::<exa_combat::Condition>(player),
+            Some(&exa_combat::Condition(0))
         );
     }
 }
