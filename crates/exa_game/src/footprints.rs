@@ -6,13 +6,18 @@
 //! before it moves: an NPC's every tick (collapsing or dead too, while it
 //! keeps its controller); the player's only while it is not walking (any
 //! condition but the walk's), so a standing or fighting player is in an
-//! NPC's way and a walking one is not. A character that leaves takes its
+//! NPC's way and a walking one is not. An NPC walking a planned route
+//! (a roam or patrol leg, a flight, a chase) at 1 cm a tick or more keeps
+//! its footprint off, as the original's AI tick gates its stamp
+//! ([`exa_ai::brain::stamps_footprint`]). A character that leaves takes its
 //! footprint with it, and a new level's grid starts with none. Exarust's
 //! standing point is the feet.
 
 use std::collections::HashSet;
 
 use bevy::prelude::*;
+use exa_ai::Duellist;
+use exa_ai::brain::{self, Npc};
 use exa_combat::{Condition, Fighter};
 use exa_physics::CharacterBody;
 use exa_world::nav::{NavFootprints, NavGrid};
@@ -36,6 +41,16 @@ pub fn stamps(player: bool, condition: Option<Condition>) -> bool {
     !player || condition.is_none_or(|c| c != Condition::WALKING)
 }
 
+/// The AI tick's footprint gate for an NPC: `following` its route, it
+/// stamps only while its AI asks no walk (`desired`, m/s) or the last fixed
+/// step (one body tick) walked under 1 cm along its `facing` (the original's
+/// speed is the root's move projected on the heading, unsigned).
+pub fn npc_stamps(following: bool, desired: Vec3, walked_m: Vec3, facing: Vec3) -> bool {
+    let moving = desired.x != 0.0 || desired.z != 0.0;
+    let speed_cm = (walked_m.dot(facing) * 100.0).abs();
+    brain::stamps_footprint(following, moving, speed_cm)
+}
+
 /// Every character under its controller moves its footprint to where its
 /// feet are, or takes it off; the footprints of characters gone (or off
 /// their controller) come off too.
@@ -43,26 +58,61 @@ pub fn stamps(player: bool, condition: Option<Condition>) -> bool {
 pub fn keep_footprints(
     grid: Option<ResMut<NavGrid>>,
     mut prints: ResMut<NavFootprints>,
-    characters: Query<(Entity, &ChildOf, Option<&Condition>, Has<PlayerBody>), With<Fighter>>,
+    characters: Query<
+        (
+            Entity,
+            &ChildOf,
+            Option<&Condition>,
+            Has<PlayerBody>,
+            Option<&Npc>,
+            Option<&Duellist>,
+            Option<&Transform>,
+        ),
+        With<Fighter>,
+    >,
     roots: Query<(&CharacterBody, &Transform)>,
     mut seen: Local<HashSet<Entity>>,
+    mut walking: Local<HashSet<Entity>>,
 ) {
     let Some(mut grid) = grid else { return };
     if grid.is_added() {
         prints.forget();
     }
     seen.clear();
-    for (who, parent, condition, player) in &characters {
+    for (who, parent, condition, player, npc, duellist, model) in &characters {
         let Ok((capsule, at)) = roots.get(parent.parent()) else {
             continue;
         };
         seen.insert(who);
-        if stamps(player, condition.copied()) {
+        let on = if player {
+            stamps(true, condition.copied())
+        } else {
+            let facing = model.map_or(Vec3::Z, |t| t.rotation * Vec3::Z);
+            let following = brain::follows_route(npc, duellist);
+            let on = npc_stamps(
+                following,
+                capsule.desired_velocity,
+                capsule.walked(),
+                facing,
+            );
+            if on == walking.contains(&who) {
+                if on {
+                    walking.remove(&who);
+                    debug!("npc {who:?}: its footprint is stamped again");
+                } else {
+                    walking.insert(who);
+                    debug!("npc {who:?} walks its route: its footprint is off the grid");
+                }
+            }
+            on
+        };
+        if on {
             prints.stamp(&mut grid, who, capsule.feet(at));
         } else {
             prints.lift(&mut grid, who);
         }
     }
+    walking.retain(|e| seen.contains(e));
     prints.retain(&mut grid, |e| seen.contains(&e));
 }
 
@@ -94,6 +144,28 @@ mod tests {
         assert!(stamps(true, Some(Condition::COMBAT_IDLE)));
         assert!(stamps(true, None));
         assert!(!stamps(true, Some(Condition::WALKING)));
+    }
+
+    /// The AI tick's gate: an NPC off its route, or asking no walk, or
+    /// walking under 1 cm a tick along its facing, stamps; one walking its
+    /// route at 1 cm a tick or more does not, and a NaN step skips it.
+    #[test]
+    fn a_route_walker_keeps_its_footprint_off() {
+        let ahead = Vec3::new(0.0, 0.0, 0.012);
+        let walk = Vec3::new(0.0, 0.0, 1.0);
+        assert!(npc_stamps(false, walk, ahead, Vec3::Z));
+        assert!(npc_stamps(true, Vec3::ZERO, ahead, Vec3::Z));
+        assert!(!npc_stamps(true, walk, ahead, Vec3::Z));
+        // 1.2 cm sideways is 0 along the facing; 1.2 cm back is 1.2.
+        assert!(npc_stamps(true, walk, Vec3::new(0.012, 0.0, 0.0), Vec3::Z));
+        assert!(!npc_stamps(true, walk, -ahead, Vec3::Z));
+        assert!(npc_stamps(true, walk, Vec3::new(0.0, 0.0, 0.0099), Vec3::Z));
+        assert!(!npc_stamps(
+            true,
+            walk,
+            Vec3::new(0.0, 0.0, f32::NAN),
+            Vec3::Z
+        ));
     }
 
     /// An NPC's footprint follows it from tick to tick (63 where it

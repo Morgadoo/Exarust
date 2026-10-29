@@ -922,18 +922,49 @@ impl Combatant {
     }
 
     /// The index of the contact with `character`, made if there is none.
-    /// Exarust's choice when the list is full: the oldest contact goes.
+    /// A full list gives up its lightest contact ([`Combatant::lightest`]);
+    /// the others keep their places.
     pub fn contact_index(&mut self, character: Entity) -> usize {
         if let Some(i) = self.contacts.iter().position(|c| c.character == character) {
             return i;
         }
         if self.contacts.len() >= MAX_CONTACTS {
-            self.contacts.remove(0);
+            let (at, _) = self.lightest();
+            self.contacts[at] = Contact::new(character);
+            return at;
         }
         self.contacts.push(Contact::new(character));
         self.contacts.len() - 1
     }
 
+    /// The contact a full list gives up and its admission weight: the
+    /// lightest by noticeability·10 + concern, the first of equals (the
+    /// original's admission takes the first slot's noticeability term
+    /// unsigned, the others' signed; a NaN weight never replaces). An
+    /// empty list answers slot 0 and an infinite weight.
+    pub fn lightest(&self) -> (usize, f32) {
+        let Some(first) = self.contacts.first() else {
+            return (0, f32::INFINITY);
+        };
+        let mut least = (first.noticeability * 10.0).abs() + first.concern;
+        let mut at = 0;
+        for (i, c) in self.contacts.iter().enumerate().skip(1) {
+            let w = admission_weight(c);
+            if least > w {
+                least = w;
+                at = i;
+            }
+        }
+        (at, least)
+    }
+}
+
+/// A contact's admission weight: its noticeability ·10 plus its concern.
+pub fn admission_weight(c: &Contact) -> f32 {
+    c.noticeability * 10.0 + c.concern
+}
+
+impl Combatant {
     /// The contact with `character`, made if there is none.
     pub fn contact_mut(&mut self, character: Entity) -> &mut Contact {
         let i = self.contact_index(character);
@@ -1105,6 +1136,45 @@ impl Combatant {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A full list gives up its lightest contact (noticeability·10 +
+    /// concern, the first of equals, the first slot's noticeability term
+    /// unsigned) in place; the others keep their slots.
+    #[test]
+    fn a_full_list_gives_up_its_lightest_contact() {
+        let mut world = World::new();
+        let people: Vec<Entity> = (0..MAX_CONTACTS + 1)
+            .map(|_| world.spawn_empty().id())
+            .collect();
+        let mut c = Combatant::default();
+        assert_eq!(c.lightest(), (0, f32::INFINITY));
+        for (i, who) in people.iter().take(MAX_CONTACTS).enumerate() {
+            assert_eq!(c.contact_index(*who), i);
+            let k = &mut c.contacts[i];
+            k.noticeability = 0.5;
+            k.concern = i as f32;
+        }
+        // Slot 0 weighs 5; slot 4 is lighter at 0·10 + 4, slot 7 ties it
+        // at −0.25·10 + 6.5 and stays.
+        c.contacts[4].noticeability = 0.0;
+        c.contacts[7].noticeability = -0.25;
+        c.contacts[7].concern = 6.5;
+        assert_eq!(c.lightest(), (4, 4.0));
+        // The first slot's noticeability counts unsigned: −0.5 weighs 5,
+        // and a signed slot at −0.5 would weigh −5 + 1.
+        c.contacts[0].noticeability = -0.5;
+        assert_eq!(c.lightest(), (4, 4.0));
+        c.contacts[1].noticeability = -0.5;
+        assert_eq!(c.lightest(), (1, -4.0));
+        c.contacts[1].noticeability = 0.5;
+        let newcomer = people[MAX_CONTACTS];
+        assert_eq!(c.contact_index(newcomer), 4);
+        assert_eq!(c.contacts.len(), MAX_CONTACTS);
+        assert_eq!(c.contacts[4].character, newcomer);
+        assert_eq!(c.contacts[0].character, people[0]);
+        assert_eq!(c.contacts[5].character, people[5]);
+        assert_eq!(admission_weight(&c.contacts[4]), 0.0);
+    }
 
     fn ids() -> (Entity, Entity, Entity, Entity) {
         let mut world = World::new();
