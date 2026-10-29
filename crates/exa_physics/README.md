@@ -223,7 +223,14 @@ never wakes a cloth. The cloth's countdown reads the squared length of
 its particles' summed velocity (not the tick's step, which carries
 gravity), only a count that went up is capped at 32, and the tick's end
 puts an awake cloth whose count is under 2 to sleep, so a cloth held at
-rest falls asleep. The
+rest falls asleep. The cloth's pins are the original's start-up list
+(`cloth::face_flag_pins`): a particle is pinned only when every face about
+it carries a pin bit (`0xF0000000`) in the mesh's face flags, at weight 1
+when each also carries a firm bit (`0xC0000000`), else 0.1; every shipped
+cloth marks its hem with `0x80000000`, so the hem is held and the rest
+hangs free (the old guess held every vertex at 0.1 toward its rest pose,
+which fought the body pushes of the props beside five exanima01 banners
+and kept them awake). The
 object/object stage is `sector::object_pairs` (every ordered pair of the
 list, never an object with itself, no bound test in the sector); the
 cloth's own contact law for another object is outside this component and

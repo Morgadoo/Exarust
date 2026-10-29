@@ -1263,7 +1263,7 @@ impl ObjectContacts {
         parts: impl IntoIterator<Item = ObjectBodyPart<'a>>,
     ) {
         let (box_centre, box_half) = object_box;
-        for part in parts {
+        for (index, part) in parts.into_iter().enumerate() {
             // The cheap sphere test first: the box distance inverts the
             // part's matrix (the result is the same as the full test).
             let (centre, radius) = (part.centre * 100.0, part.radius * 100.0);
@@ -1283,6 +1283,7 @@ impl ObjectContacts {
             let mut body = crate::cloth_body::ClothBody {
                 spheres: Vec::new(),
                 countdown: part.countdown,
+                part: index,
             };
             for &(centre, radius) in part.spheres.iter().rev() {
                 let now = to_object.transform_point3(part.now.transform_point3(centre)) * 100.0;

@@ -2,24 +2,27 @@
 //! banners, the wraith's robe) becomes a simulated cloth over its mesh.
 //!
 //! The original gives a mesh node a cloth controller when its material is
-//! flagged as cloth and the node carries the cloth marker; each mesh vertex
-//! is a particle, the edges of its triangles are structural links and the
-//! two vertices opposite a shared edge are a bending link. The cloth hangs
-//! from pins on its owner: the shipped cloth meshes carry no skin weights,
-//! so every vertex is pinned toward its rest point. The pin's weight is a
-//! guess [?]: the original's free-vertex list marks the vertices without a
-//! fully weighted bone bind, and its loose pin weight is 0.1; unskinned
-//! cloth takes that weight on every vertex, which holds the cloth near its
-//! rest pose while gravity, wind and collisions sway it. A skinned cloth
-//! pins the vertices with a zero weight slot and leaves the others free.
+//! flagged as cloth and the node carries the cloth marker; each position
+//! element of the mesh is a particle (the vertices a UV seam splits share
+//! one), the edges of its triangles are structural links and the two
+//! vertices opposite a shared edge are a bending link. The cloth hangs from
+//! the pins its controller lists when it starts
+//! ([`exa_physics::cloth::face_flag_pins`]): an element is pinned when
+//! every face about it carries a pin bit in the mesh's face flags, firmly
+//! (weight 1) when each also carries a firm bit, else loosely (0.1); the
+//! rest hangs free. Every shipped cloth marks its hem faces firmly, so the
+//! hem stays where it was placed and the rest sways under gravity, wind and
+//! collisions. A mesh that comes without its file's data (built in code)
+//! pins every vertex loosely instead [Exarust's own: nothing ships such a
+//! cloth].
 //!
 //! Each 83 Hz body tick advances the cloth ([`exa_physics::cloth::step`])
 //! with gravity, and the mesh's positions take the particles' (the mesh is
 //! in metres, the cloth in centimetres). The simulation is local to the
 //! mesh's node, so the node's own transform carries the cloth with the
-//! body. Evidence: the original's cloth construction (a particle per vertex,
-//! triangle edges and bend links) and its step; the pin rule is a labelled
-//! guess. The draw's two passes are [`crate::cloth_draw`]'s.
+//! body. Evidence: the original's cloth construction (a particle per
+//! position element, triangle edges and bend links), its pin list and its
+//! step (REA assembly). The draw's two passes are [`crate::cloth_draw`]'s.
 
 use bevy::math::Affine3A;
 use bevy::prelude::*;
@@ -34,14 +37,24 @@ use exa_physics::sector::{self, ObjectBodyPart, ObjectBounds, ObjectContacts};
 #[derive(Component, Debug, Clone, Copy, Default)]
 pub struct ClothNode;
 
+/// What the model file says about a cloth part: its node's
+/// [`exa_assets::ClothMesh`] (position elements, faces and face flags) and
+/// which of the node's parts this is.
+#[derive(Component, Debug, Clone)]
+pub struct ClothSource {
+    pub mesh: std::sync::Arc<exa_assets::ClothMesh>,
+    /// The part's index in the node's parts.
+    pub part: usize,
+}
+
 /// A cloth node whose mesh cannot be a cloth (no positions, no triangles),
 /// so the builder does not look at it again.
 #[derive(Component, Debug, Clone, Copy)]
 pub struct ClothSkipped;
 
-/// The pin weight unskinned cloth takes on every vertex [guess: the
-/// original's loose pin weight].
-pub const LOOSE_PIN: f32 = 0.1;
+/// The pin weight a cloth built without its file's face flags takes on
+/// every vertex [Exarust's own: the original's loose pin weight].
+pub const LOOSE_PIN: f32 = cloth::LOOSE_PIN;
 
 /// A cloth simulated over a mesh part.
 #[derive(Component, Debug)]
@@ -49,6 +62,9 @@ pub struct ClothInstance {
     pub cloth: Cloth,
     /// The mesh whose vertices the cloth drives.
     pub mesh: Handle<Mesh>,
+    /// The particle each mesh vertex draws (the vertices a seam splits
+    /// draw one particle).
+    pub vertex_particle: Vec<usize>,
     /// The node's world transform at the cloth's last tick: a sleeping
     /// cloth whose frame moved meets the level again.
     pub frame: Option<Affine3A>,
@@ -120,9 +136,14 @@ pub struct ClothDebug {
     pub ticks: u32,
     /// Sums over those ticks.
     pub sum: ClothWork,
-    /// Each cloth's work in the last tick.
-    pub cloths: Vec<(Entity, ClothWork)>,
+    /// Each cloth's work in the last tick, with the body parts that
+    /// pushed it then (and their bodies' countdowns).
+    pub cloths: Vec<ClothTick>,
 }
+
+/// One cloth's line of the debug log: the cloth, its work in the last tick
+/// and the body parts that pushed it then, with their bodies' countdowns.
+pub type ClothTick = (Entity, ClothWork, Vec<(Entity, i32)>);
 
 /// What the cloth stage did in one tick (or one cloth's share of it).
 #[derive(Debug, Default, Clone, Copy)]
@@ -158,6 +179,14 @@ pub struct ClothWork {
     pub particles: u32,
     /// The cloth's countdown after its tick.
     pub sleep: i32,
+    /// The cloth's pinned particles.
+    pub pins: u32,
+    /// The squared length of the summed particle velocity its countdown
+    /// read this tick (cm² a tick²).
+    pub velocity2: f32,
+    /// The countdown's thresholds for that sum: under the first it counts
+    /// down, over the second up.
+    pub thresholds: (f32, f32),
     /// Time in the stage (µs).
     pub micros: u64,
 }
@@ -217,22 +246,32 @@ impl ClothDebug {
             s.triangles as f64 / n,
             s.level_tests as f64 / n,
         );
-        for (entity, w) in &self.cloths {
-            // The nearest named node over the cloth.
-            let mut name = String::from("?");
-            let mut at = *entity;
+        // The nearest named node over an entity.
+        let name_of = |entity: Entity| {
+            let mut at = entity;
             for _ in 0..8 {
                 if let Ok(n) = names.get(at) {
-                    name = n.as_str().to_owned();
-                    break;
+                    return n.as_str().to_owned();
                 }
                 let Ok(parent) = parents.get(at) else { break };
                 at = parent.parent();
             }
+            String::from("?")
+        };
+        for (entity, w, pushers) in &self.cloths {
+            let name = name_of(*entity);
+            let pushed: Vec<String> = pushers
+                .iter()
+                .map(|(part, countdown)| format!("'{}' {part} ({countdown})", name_of(*part)))
+                .collect();
             info!(
-                "  cloth {entity} '{name}': sleep {}, particles {}, {} us, parts {}, bodies {}, spheres {}, swept {}, body tests {}, records {} (own {}), pieces {}, triangles {}, level tests {}",
+                "  cloth {entity} '{name}': sleep {}, velocity sum² {:.6} (down < {:.6}, up > {:.6}), particles {}, pins {}, {} us, parts {}, bodies {}, spheres {}, swept {}, body tests {}, records {} (own {}), pieces {}, triangles {}, level tests {}, pushed by [{}]",
                 w.sleep,
+                w.velocity2,
+                w.thresholds.0,
+                w.thresholds.1,
                 w.particles,
+                w.pins,
                 w.micros,
                 w.parts,
                 w.bodies,
@@ -244,6 +283,7 @@ impl ClothDebug {
                 w.pieces,
                 w.triangles,
                 w.level_tests,
+                pushed.join(", "),
             );
         }
         self.ticks = 0;
@@ -294,6 +334,50 @@ pub fn cloth_of(vertices: &[Vec3], triangles: &[[usize; 3]], pins: &[(usize, f32
     cloth
 }
 
+/// Builds the cloth of a marked mesh part from its file's data, as the
+/// original's controller does: one particle per position element the part
+/// uses (at its first vertex, `vertices` in metres), the part's triangles
+/// over those particles, and the pins `pins` lists by element (from
+/// [`cloth::face_flag_pins`] over the node's faces; an element the part
+/// does not use is skipped). `elements` is each vertex's position element.
+/// Returns the cloth and the particle each vertex draws.
+pub fn cloth_of_elements(
+    vertices: &[Vec3],
+    triangles: &[[usize; 3]],
+    elements: &[u32],
+    pins: &[(usize, f32)],
+) -> (Cloth, Vec<usize>) {
+    let mut particle_of = std::collections::HashMap::<u32, usize>::new();
+    let mut points = Vec::new();
+    let vertex_particle: Vec<usize> = vertices
+        .iter()
+        .enumerate()
+        .map(|(vertex, &position)| {
+            let element = elements
+                .get(vertex)
+                .copied()
+                .unwrap_or(u32::MAX - vertex as u32);
+            *particle_of.entry(element).or_insert_with(|| {
+                points.push(position);
+                points.len() - 1
+            })
+        })
+        .collect();
+    let welded: Vec<[usize; 3]> = triangles
+        .iter()
+        .filter(|t| t.iter().all(|&i| i < vertex_particle.len()))
+        .map(|t| t.map(|i| vertex_particle[i]))
+        .collect();
+    let held: Vec<(usize, f32)> = pins
+        .iter()
+        .filter_map(|&(element, weight)| {
+            let element = u32::try_from(element).ok()?;
+            particle_of.get(&element).map(|&p| (p, weight))
+        })
+        .collect();
+    (cloth_of(&points, &welded, &held), vertex_particle)
+}
+
 /// Cloth nodes still waiting for their cloth: not built, not given up on.
 type PendingCloth = (
     With<ClothNode>,
@@ -309,10 +393,10 @@ type PendingCloth = (
 /// node alone.
 fn build_cloth_nodes(
     mut commands: Commands,
-    nodes: Query<(Entity, &Mesh3d), PendingCloth>,
+    nodes: Query<(Entity, &Mesh3d, Option<&ClothSource>), PendingCloth>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
-    for (entity, mesh) in &nodes {
+    for (entity, mesh, source) in &nodes {
         let Some(mesh_data) = meshes.get(&mesh.0) else {
             continue;
         };
@@ -340,8 +424,25 @@ fn build_cloth_nodes(
             commands.entity(entity).insert(ClothSkipped);
             continue;
         }
-        let pins = pins_from_skin(vertices.len(), None);
-        let cloth = cloth_of(&vertices, &triangles, &pins);
+        // The file's position elements and face flags, when the part's
+        // vertices are the ones they describe.
+        let elements = source.and_then(|source| {
+            let part = source.mesh.part_elements.get(source.part)?;
+            (part.len() == vertices.len()).then_some((part, &source.mesh))
+        });
+        let (cloth, vertex_particle) = match elements {
+            Some((part, file)) => {
+                let pins = cloth::face_flag_pins(file.elements, &file.faces, &file.face_flags);
+                cloth_of_elements(&vertices, &triangles, part, &pins)
+            }
+            None => {
+                let pins = pins_from_skin(vertices.len(), None);
+                (
+                    cloth_of(&vertices, &triangles, &pins),
+                    (0..vertices.len()).collect(),
+                )
+            }
+        };
         let copy = mesh_data.clone();
         let own = meshes.add(copy);
         commands.entity(entity).insert((
@@ -349,6 +450,7 @@ fn build_cloth_nodes(
             ClothInstance {
                 cloth,
                 mesh: own,
+                vertex_particle,
                 frame: None,
             },
         ));
@@ -424,6 +526,8 @@ fn step_cloths(
         };
         let cloth_started = debug.on.then(std::time::Instant::now);
         let mut work = ClothWork::default();
+        let mut offered_parts: Vec<Entity> = Vec::new();
+        let mut pushers = Vec::new();
         'cloth: {
             let (object, to_object) = cloth_bound(&instance.cloth, at);
             if rebuilt {
@@ -460,13 +564,14 @@ fn step_cloths(
                 // pre-test ([`sector::object_body_meet`]), less the cloth's own
                 // character; a sleeping cloth takes awake bodies only.
                 let object_box = cloth::bounds(&instance.cloth.particles);
-                let parts = all_parts
+                let (offered, parts): (Vec<Entity>, Vec<ObjectBodyPart>) = all_parts
                     .iter()
                     .filter(|(owner, body_asleep, _)| {
                         sector::object_takes_body(asleep, *body_asleep) && !own.contains(owner)
                     })
-                    .map(|&(_, _, part)| part);
-                let parts: Vec<ObjectBodyPart> = parts.collect();
+                    .map(|&(owner, _, part)| (owner, part))
+                    .unzip();
+                offered_parts = offered;
                 work.parts = parts.len() as u32;
                 contacts.gather_bodies(&to_object, object, object_box, parts);
                 work.bodies = contacts.bodies.len() as u32;
@@ -519,17 +624,32 @@ fn step_cloths(
             cloth::step(&mut instance.cloth, gravity);
             work.level_tests = instance.cloth.level_tests as u64;
             work.sweep_tests = instance.cloth.body_tests as u64;
+            if debug.on {
+                let count = instance.cloth.particles.len() as f32;
+                let sum = instance.cloth.mean_velocity * count;
+                work.velocity2 = sum.length_squared();
+                let threshold = (count * 1e-6).sqrt();
+                work.thresholds = (threshold, (2.0 * threshold) * (2.0 * threshold));
+                for &index in &instance.cloth.pushed_by {
+                    let Some(body) = instance.cloth.bodies.get(index) else {
+                        continue;
+                    };
+                    if let Some(&part) = offered_parts.get(body.part) {
+                        pushers.push((part, body.countdown));
+                    }
+                }
+            }
             // The object list's re-bucket after its step, as the original's.
             let (after, _) = cloth_bound(&instance.cloth, at);
             objects.grid.migrate(id, after.centre);
             let Some(mut mesh) = meshes.get_mut(&instance.mesh) else {
                 break 'cloth;
             };
+            let particles = &instance.cloth.particles;
             let positions: Vec<Vec3> = instance
-                .cloth
-                .vertices()
+                .vertex_particle
                 .iter()
-                .map(|p| *p * 0.01)
+                .map(|&p| particles.get(p).map_or(Vec3::ZERO, |p| p.position * 0.01))
                 .collect();
             let Some(attribute) = mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION) else {
                 break 'cloth;
@@ -544,8 +664,9 @@ fn step_cloths(
             work.micros = t.elapsed().as_micros() as u64;
             work.particles = instance.cloth.particles.len() as u32;
             work.sleep = instance.cloth.sleep;
+            work.pins = instance.cloth.pins.len() as u32;
             total.add(&work);
-            debug.cloths.push((entity, work));
+            debug.cloths.push((entity, work, pushers));
         }
     }
     if let Some(t) = started {
@@ -616,6 +737,35 @@ mod tests {
         assert!(cloth.pins.iter().all(|p| p.weight == LOOSE_PIN));
     }
 
+    /// A part whose seam splits a position element draws one particle for
+    /// both vertices, and the file's face flags pin only the hem.
+    #[test]
+    fn a_seam_split_vertex_is_one_particle_and_the_hem_holds() {
+        // A square of two triangles whose diagonal is a UV seam: vertices
+        // 4 and 5 repeat elements 0 and 2.
+        let vertices = [
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(1.0, 1.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+        ];
+        let elements = [0, 1, 2, 3, 0, 2];
+        let triangles = [[0, 1, 2], [4, 5, 3]];
+        // The faces over the elements: the first marked firmly.
+        let faces = [[0, 1, 2], [0, 2, 3]];
+        let pins = cloth::face_flag_pins(4, &faces, &[0x8000_0000, 0]);
+        assert_eq!(pins, vec![(1, cloth::FIRM_PIN)]);
+        let (cloth, drawn) = cloth_of_elements(&vertices, &triangles, &elements, &pins);
+        assert_eq!(cloth.particles.len(), 4);
+        assert_eq!(drawn, vec![0, 1, 2, 3, 0, 2]);
+        assert_eq!(cloth.pins.len(), 1);
+        assert_eq!((cloth.pins[0].index, cloth.pins[0].weight), (1, 1.0));
+        // Four sides and the diagonal, plus the bend link 1-3.
+        assert_eq!(cloth.edges.len(), 6);
+    }
+
     /// A free cloth falls through the air and comes to rest on the level's
     /// triangle: the sector's static grid finds the floor, the object's
     /// level contacts are in its own centimetres, and the object list knows
@@ -649,7 +799,7 @@ mod tests {
         // it took no triangle (by now it has fallen out of the floor's
         // cells).
         let debug = app.world().resource::<ClothDebug>();
-        let (counted, work) = debug.cloths[0];
+        let (counted, work, _) = debug.cloths[0];
         assert_eq!(counted, entity);
         assert_eq!(work.records, work.own_records);
         assert_eq!((work.triangles, work.level_tests), (0, 0));
@@ -731,6 +881,7 @@ mod tests {
             .world_mut()
             .spawn((
                 ClothInstance {
+                    vertex_particle: (0..cloth.particles.len()).collect(),
                     cloth,
                     mesh,
                     frame: None,

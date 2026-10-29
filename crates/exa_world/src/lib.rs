@@ -811,7 +811,7 @@ pub fn spawn_model_nodes(
         }
         let mut parts = Vec::with_capacity(node.parts.len());
         if !node.placeholder {
-            for (mesh, material) in &node.parts {
+            for (part_index, (mesh, material)) in node.parts.iter().enumerate() {
                 let part = commands
                     .spawn((MeshMaterial3d(material.clone()), ChildOf(e)))
                     .id();
@@ -827,6 +827,12 @@ pub fn spawn_model_nodes(
                 }
                 if node.cloth {
                     commands.entity(part).insert(cloth::ClothNode);
+                    if let Some(source) = &node.cloth_mesh {
+                        commands.entity(part).insert(cloth::ClothSource {
+                            mesh: source.clone(),
+                            part: part_index,
+                        });
+                    }
                 }
                 // The level the mesh ships with. Builders that set their own
                 // (grid sets, floors) replace it.
@@ -1870,6 +1876,7 @@ mod tests {
             is_skin: false,
             placeholder: false,
             cloth: false,
+            cloth_mesh: None,
             mesh: false,
             render_flags: 0,
         }
