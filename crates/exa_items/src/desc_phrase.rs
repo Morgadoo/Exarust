@@ -83,20 +83,21 @@ impl SentenceSource {
         }
     }
 
-    /// The card builder's choice: a weapon page (a weapon section that is
-    /// not withheld) uses the weapon rule on a factory model; otherwise an
-    /// apparel body uses the apparel rule, whatever its armour type;
-    /// otherwise a shield section uses the weapon rule on a factory model.
+    /// The card builder's choice: an apparel body uses the apparel rule,
+    /// whatever its armour type and whether or not a weapon page exists
+    /// (the builder tests the apparel section before the weapon sentence);
+    /// otherwise the card's weapon-or-shield section uses the weapon rule on
+    /// a factory model.
     pub fn choose(
         weapon_page: Option<&[u8]>,
         body: Option<&[u8]>,
         shield: Option<&[u8]>,
         factory: bool,
     ) -> Option<Self> {
-        if let Some(weapon) = weapon_page {
-            factory.then(|| Self::weapon(weapon))
-        } else if let Some(body) = body {
+        if let Some(body) = body {
             Some(Self::apparel(body))
+        } else if let Some(weapon) = weapon_page {
+            factory.then(|| Self::weapon(weapon))
         } else {
             shield.filter(|_| factory).map(Self::weapon)
         }
@@ -248,14 +249,24 @@ mod tests {
         let weapon = [0u8; 0x10];
         let body = [0u8; 0x1B2];
         let shield = [7u8; 0x10];
-        assert_eq!(
+        assert!(matches!(
             SentenceSource::choose(Some(&weapon), Some(&body), Some(&shield), false),
-            None
-        );
+            Some(SentenceSource::Apparel { .. })
+        ));
+        // The apparel body wins even when a factory weapon page exists: the
+        // builder tests the apparel section before the weapon sentence.
         assert!(matches!(
             SentenceSource::choose(Some(&weapon), Some(&body), None, true),
+            Some(SentenceSource::Apparel { .. })
+        ));
+        assert!(matches!(
+            SentenceSource::choose(Some(&weapon), None, None, true),
             Some(SentenceSource::Weapon { .. })
         ));
+        assert_eq!(
+            SentenceSource::choose(Some(&weapon), None, None, false),
+            None
+        );
         assert!(matches!(
             SentenceSource::choose(None, Some(&body), Some(&shield), false),
             Some(SentenceSource::Apparel { .. })
