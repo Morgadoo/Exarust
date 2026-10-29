@@ -272,6 +272,20 @@ pub struct Model {
     pub size: [u32; 2],
 }
 
+/// The counted list a database view holds at `0x3C`, as the original's
+/// accessor hands it out: no list at all when the count word at `0x38` is
+/// below one (the compare is signed), else the view's bytes from `0x3C` on.
+/// The structure that holds the count is the caller's own and its layout is
+/// not established here, so this reproduces only the accessor's test and
+/// offset. `None` when the view is too short to hold the count.
+pub fn counted_list(view: &[u8]) -> Option<&[u8]> {
+    let count = i32::from_le_bytes(view.get(0x38..0x3C)?.try_into().ok()?);
+    if count < 1 {
+        return None;
+    }
+    view.get(0x3C..)
+}
+
 /// Removes the first section with `tag` from a payload, as the original's
 /// section delete does. Returns whether one was found.
 pub fn remove_section(payload: &mut Vec<u8>, tag: u32) -> bool {
@@ -360,6 +374,20 @@ mod tests {
     use super::test_util::*;
     use super::*;
     use crate::objdb::{CONTAINER, OPERATIVE};
+
+    #[test]
+    fn a_counted_list_needs_a_count_of_one_or_more() {
+        let mut view = [0u8; 0x40];
+        // The count word at 0x38 is the list's length in some unit the
+        // caller owns; below one there is no list.
+        assert_eq!(counted_list(&view), None);
+        view[0x38..0x3C].copy_from_slice(&1i32.to_le_bytes());
+        assert_eq!(counted_list(&view), Some(&view[0x3C..]));
+        view[0x38..0x3C].copy_from_slice(&(-3i32).to_le_bytes());
+        assert_eq!(counted_list(&view), None);
+        // A view too short for the count word holds no list.
+        assert_eq!(counted_list(&view[..0x3A]), None);
+    }
 
     #[test]
     fn sections_header_and_model() {

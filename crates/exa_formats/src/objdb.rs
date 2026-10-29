@@ -878,7 +878,8 @@ pub use packed::{
     amount_total, amount_units,
 };
 pub use record::{
-    Header, Model, Record, Section, Sections, append_section, remove_section, resize_section,
+    Header, Model, Record, Section, Sections, append_section, counted_list, remove_section,
+    resize_section,
 };
 pub use store::{Store, TableEntry};
 pub use tiers::{ObjectDb, Tier, UseEffect};
