@@ -259,7 +259,7 @@ impl DoorBody {
     pub fn take_hold(&mut self, body: &mut Ragdoll, at: Vec3) {
         self.let_go(body);
         let leaf = &body.parts[0];
-        let local = Vec3::from(leaf.transform().inverse().transform_point3(at));
+        let local = leaf.transform().inverse().transform_point3(at);
         body.world.push(WorldLink {
             part: 0,
             on_part: weights(leaf, local),
