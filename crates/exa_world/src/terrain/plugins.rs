@@ -57,10 +57,10 @@ impl TerrainExtensions {
         }
     }
 
-    /// Deactivates every extension in reverse attach order (Exarust's choice:
-    /// the base hooks are empty, so the order is not read from the original).
+    /// Deactivates every extension in attach order, as the static terrain's
+    /// deactivation walks its list (first to last).
     pub fn deactivate(&mut self) {
-        for plugin in self.plugins.iter_mut().rev() {
+        for plugin in self.plugins.iter_mut() {
             plugin.deactivate();
         }
     }
@@ -100,26 +100,31 @@ pub struct TerrainShutdown {
     pub deactivated: bool,
     /// The hooks removed, as they were registered.
     pub hooks: TerrainHooks,
-    /// The background worker's wait event was signalled.
+    /// The background worker's thread was paused: the original calls its
+    /// thread-pause helper on every deactivation (a second thread helper,
+    /// run only when a manager flag is set, is not modelled).
     pub worker_stopped: bool,
     /// The composite-cache release was registered with the 100 ms timer (the
     /// first deactivation only).
     pub release_registered: bool,
-    /// Extensions deactivated, in reverse attach order.
+    /// Extensions deactivated, in attach order.
     pub extensions: usize,
 }
 
 /// The composite caches the release slot frees (`RF_Terrain_Static`'s
-/// release): the per-view program dictionary's entries, the terrain's noise
-/// texture, and the dictionary's array. The original keeps them for the whole
-/// run and frees them from a 100 ms timer after the terrain deactivates.
+/// release): the per-view program dictionary's programs (an entry whose
+/// program was never built is skipped), the shader object the terrain
+/// programs share, and the dictionary's array. The original keeps them for
+/// the whole run and frees them from a 100 ms timer after the terrain
+/// deactivates; the release then calls one more teardown outside this
+/// component, not modelled here.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TerrainCaches {
     /// Program-dictionary entries: the state words the terrain programs were
     /// built for.
     pub programs: Vec<u32>,
-    /// The terrain's noise texture exists.
-    pub texture: bool,
+    /// The shared shader object exists.
+    pub shader: bool,
 }
 
 impl TerrainCaches {
@@ -128,7 +133,7 @@ impl TerrainCaches {
     pub fn release(&mut self) -> usize {
         let freed = self.programs.len();
         self.programs.clear();
-        self.texture = false;
+        self.shader = false;
         freed
     }
 }
@@ -240,13 +245,13 @@ impl StaticTerrain {
     }
 
     /// The composite caches, for building program-dictionary entries and
-    /// loading the noise texture.
+    /// the shared shader.
     pub fn caches_mut(&mut self) -> &mut TerrainCaches {
         &mut self.caches
     }
 
     /// The terrain's deactivation: the first call clears the active flag,
-    /// removes the scene, frame, draw and debug hooks, stops the worker,
+    /// removes the scene, frame, draw and debug hooks, pauses the worker,
     /// registers the composite-cache release with its 100 ms timer (once in
     /// the process) and deactivates every extension. A second call does
     /// nothing.
@@ -286,6 +291,17 @@ mod tests {
         }
         fn deactivate(&mut self) {
             self.log.lock().unwrap().push("off");
+        }
+    }
+
+    struct Named {
+        name: &'static str,
+        log: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl TerrainExtension for Named {
+        fn deactivate(&mut self) {
+            self.log.lock().unwrap().push(self.name);
         }
     }
 
@@ -365,9 +381,9 @@ mod tests {
         assert_eq!(setup.hooks.draws, 2);
         list.activate();
         // The caches the release slot frees: two program entries and the
-        // noise texture.
+        // shared shader.
         terrain.caches_mut().programs.extend([0xff4, 0x111]);
-        terrain.caches_mut().texture = true;
+        terrain.caches_mut().shader = true;
         let down = terrain.shut_down(&mut list);
         assert!(down.deactivated && down.worker_stopped && down.release_registered);
         assert_eq!(down.extensions, 1);
@@ -381,10 +397,25 @@ mod tests {
             }
         );
         assert_eq!(*log.lock().unwrap(), ["on", "off"]);
+        // A list deactivates first to last, as it was attached.
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let mut pair = TerrainExtensions::new();
+        pair.attach(Box::new(Named {
+            name: "grass",
+            log: order.clone(),
+        }));
+        pair.attach(Box::new(Named {
+            name: "second",
+            log: order.clone(),
+        }));
+        let mut other = StaticTerrain::default();
+        other.bring_up(scene(3, 1, false));
+        other.shut_down(&mut pair);
+        assert_eq!(*order.lock().unwrap(), ["grass", "second"]);
         let freed = terrain.caches_mut().release();
         assert_eq!(freed, 2);
         assert!(terrain.caches_mut().programs.is_empty());
-        assert!(!terrain.caches_mut().texture);
+        assert!(!terrain.caches_mut().shader);
         // A second shutdown is a no-op, and the release was registered only
         // the first time.
         let again = terrain.shut_down(&mut list);

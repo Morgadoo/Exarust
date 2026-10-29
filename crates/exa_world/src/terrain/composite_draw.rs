@@ -237,11 +237,14 @@ impl CompositeDraws {
     }
 }
 
-/// The terrain's release slot: once no terrain streaming resource exists (a
-/// level teardown dropped it), drop the hosted composite sets, the queued
-/// bakes and every block's draw state, as the original's release timer does
-/// after the terrain deactivates. It runs every frame and costs nothing while
-/// a level's terrain is live.
+/// Exarust's counterpart of the terrain's release slot: once no terrain
+/// streaming resource exists (a level teardown dropped it), drop the hosted
+/// composite sets, the queued bakes and every block's draw state and own
+/// material. The original's release timer frees its program cache and
+/// shared shader instead (see `plugins::TerrainCaches`); Exarust's renderer
+/// builds its pipelines once, so the sets and per-block materials are what a
+/// level leaves behind. It runs every frame and only checks for emptiness
+/// while nothing needs freeing.
 pub fn release_terrain_caches(
     streaming: Option<Res<TerrainStreaming>>,
     host: Option<ResMut<TerrainCompositeHost>>,
