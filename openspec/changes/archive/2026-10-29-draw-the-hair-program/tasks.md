@@ -1,0 +1,4 @@
+- [x] Hair program in WESL and its Rust mirror with tests
+- [x] Shading flags from the program choice in the material loader
+- [x] No specular sum without `MatSpc`
+- [x] Docs (RENDERING.md, exa_render README)

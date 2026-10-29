@@ -59,6 +59,12 @@ Rules and evidence: [`docs/formats/FLB.md`](../../docs/formats/FLB.md) and
   Exarust bakes those textures on the CPU.
 - `texture_wait`: which of a material's first five map slots the loader
   waits for, and the poll order (above).
+- `hair_program`: the hair program (`shadehar_f`, class 3) that `hair.wesl`
+  draws for materials with `flags::HAIR`: the two anisotropic strand lobes,
+  the wrapping rim, the ambient weight, the bent reflection and the alpha
+  branches, pinned in single precision; its test validates `hair.wesl`
+  with naga. `flags::NO_SPECULAR` drops the specular sum of a record
+  without `MatSpc` in every program.
 - `shader_reload`: the `cshd` debug command's reload of the 12 embedded render shaders through the asset server (the original's command reloads its shader programs; Exarust has no file watcher, so this rebuilds the compiled-in sources).
 - `bound_sphere`: the original's smallest enclosing sphere (move-to-front over a support set of 1–4 points, in f64), which fits its sun shadow map; with the f32/f64 vector helpers ([`docs/RENDERING.md`](../../docs/RENDERING.md), Sun shadow fit).
 - `camera`: the camera node's 70° default and its near and far planes (100 and 12 500 engine units; 1 and 125 m; held as data, no camera applies them yet), and the 3D view's constructor values: exposure 1, bloom 1, post on, no scene camera slot ([`docs/RENDERING.md`](../../docs/RENDERING.md), Cameras).

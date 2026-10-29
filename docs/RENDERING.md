@@ -300,9 +300,56 @@ a guess):
   `X = round((height/width)·Y)`.
 - The PBR `Lighting` clamps `N·H` to [0, 1].
 
+**Programs drawn at run time.** The material loader turns the factory's
+program choice into shading flags that `exa.wesl` branches on (one
+pipeline, a uniform branch per material, so no extra draws or pipelines):
+
+- **Hair** (class 3, `shadehar_f`; `flags::HAIR`, `hair.wesl`,
+  `exa_render::hair_program`). The frame is the program's own: tangent and
+  bitangent from the unflipped vertex normal, that normal flipped on every
+  back face whether or not the record is two-sided, the normal map's `xy`
+  with `z = √(1 − min(xy·xy, 1))`, no normalisation; the strand frame is the
+  tangent re-orthogonalised against the shaded normal. Each light (colour
+  `C`, attenuation and shadow included) adds a specular
+  `F·C·gh·d·π·(0.1·D(0.8, 0.4r², b·h + 0.05) + 0.3·D(0.8, 0.6r², b·h − 0.05)·MatSpc)`
+  with `D(rx, ry, y) = 1/(π·rx·ry·(cos² + sin²·((t·h/rx)² + (y/ry)²))²)`, `cos = n·h`,
+  `F = 0.05 + 0.4·2^((−5.55473·h·v − 6.98316)·h·v)`, `gh = N·L/(N·L(1 − k) + k)`,
+  `k = (r + 1)²/8`, `d = 0.25/(N·V(1 − k) + k)` and `r` the roughness; and a
+  diffuse `(1 − F)·C·(0.4·N·L·MatDif + RimCol·((1.15 − |v·h|)²·max(N·L + 0.75, 0))²)`
+  with `RimCol = normalize(MatDif)·0.6 + 0.4`, so a light behind the strands
+  still rims them. The ambient adds `amb·(1.5 − 0.75·v·n)·MatDif`. The
+  diffuse map's colour multiplies the sum only under dirt mode 4 (with the
+  blood factor), as `MatDif·map·(1 − metal)` with a specular map and the map
+  alone without one; the shipped hair record (`harhps1`: type 3, material
+  flags `0x720007`, extra `0x100`, no dirt mode) therefore shows its picked
+  `MatDif` colour, and its diffuse map only shapes the strands' alpha,
+  `(a − 1 + MatEmi.a)/MatEmi.a` (MatEmi.a = 1), times `MatDif.a` once more
+  at the end (an opacity map alone gives `MatDif.a·a`, not squared). With
+  `MatSpc`, the reflection is the cube at LOD `(r − 0.05)·8` about the
+  normal bent 70 % toward `(−v × b) × b`, times
+  `amb·(1 + MatSpc)·Ambient.w·0.5` and weighted
+  `0.1 + 0.5·2^((−5.55473·N·V − 6.98316)·N·V)`; a specular map's red then
+  scales the whole specular. The emissive adds unweighted. Two guesses are
+  labelled in the shader: a hair mesh without tangents builds its strands
+  across the world's up axis, and a record with `MatSpc` but no reflection
+  layer (whose original program does not compile: its reflection is
+  undeclared) is drawn without the reflection. Not reproduced: the
+  `Wetness` terms (`Gloss = mix(Gloss, Gloss², W)`, the colour
+  `× (1 − 0.3·W)`: the Global value is the scene's wetness, which Exarust
+  does not model) and the outdoor branch's `vgi` in place of `amb`. Seen
+  on every character with hair (the arena fighters in `arenao3`/`arena1`
+  and any character in exanima01, with `--screenshot`): the strands take
+  a flat picked colour with a bright anisotropic band and a soft rim
+  instead of the textured PBR look.
+- **No `MatSpc`** (`flags::NO_SPECULAR`): every program adds its specular
+  sum (lights and reflection) only for a record whose material word has
+  `0x4`. A lit record without it but with a reflection layer, or with a
+  packed specular map, had shone in Exarust; it no longer does.
+
 Not reproduced from these programs: the legacy unlit program's vertex-colour
 branches (`vrCol × EmiTex × MatDif.a`, and `vrCol × OpcTex.a`), its
-`BlendMode = 4` multiply branch, the hair and translucent programs, and the
+`BlendMode = 4` multiply branch, the translucent program (`shadetrl_f`: no
+shipped library record selects it), and the
 `Shd.DispSdwF` pre-pass. The legacy lit program never samples an opacity
 map, so the original's alpha-tested cobweb cutout is unresolved; Exarust
 keeps the opacity map in the alpha for Bevy's alpha test (both shipped
@@ -1106,7 +1153,8 @@ record whose extra flags (`0x4C`) select dirt mode 4 (bits `0x7000` =
 types 0 and 2 have no dirt modes); and the body-model materials whose names
 start with `s` of a race that bleeds (`races.rdb` flags bit 0: the race
 loader turns the mode on for `skinogre`, `sdemona01`, `shrtogra`,
-`sknhrtghoula` and the like, not the eyes). Exarust draws no hair yet.
+`sknhrtghoula` and the like, not the eyes). Hair draws with its own
+program (above, Shader builder); the shipped hair record has no dirt mode.
 
 **Evidence**: reverse engineering of `Exanima.exe` 0.9.5 (the painter's
 constants and store, its targets, the white fill of meshes without
@@ -1121,7 +1169,7 @@ In the arena duel the struck fighters' blood pixels have a median sRGB of
 the original's (54, 25, 21) and (47, 24, 20).
 
 Not yet: blood sprays, the attacker's own blood when it strikes with a
-body part of its own (creatures), the hair program, the translucent
+body part of its own (creatures), the translucent
 program's blood ((0.5, 0.03, 0)), and dirt modes 1–3. Exarust never
 re-dresses a character, so the original's clean meshes after an equipment
 change do not arise yet.
