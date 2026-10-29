@@ -1880,6 +1880,23 @@ impl ChaseCamera {
         cam
     }
 
+    /// Turns the orbit at once to look along a shot from `eye` to `focus`
+    /// (any units; only the horizontal bearing counts): the target and
+    /// shown yaw become the bearing of the eye from the focus, the orbit
+    /// stops, and the pitch and zoom stay the camera's own. A shot with no
+    /// horizontal offset leaves the camera.
+    pub fn face_shot(&mut self, eye: Vec3, focus: Vec3) {
+        let back = eye - focus;
+        if back.x == 0.0 && back.z == 0.0 || !back.is_finite() {
+            return;
+        }
+        let yaw = back.x.atan2(back.z);
+        self.yaw = yaw;
+        self.shown_yaw = yaw;
+        self.yaw_speed = 0.0;
+        self.before = (self.backward(), self.shown_zoom);
+    }
+
     /// The unit vector from the focus to the eye the last tick left: the
     /// shown yaw and the pitch with the wall tilt, which the original adds
     /// to its (negated) pitch and holds to 1.54 rad.

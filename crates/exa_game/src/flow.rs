@@ -99,6 +99,9 @@ pub const START_MOTION_WAKING: u32 = 0x13;
 /// dead, compared in double precision.
 pub const ALIVE_HEALTH: f64 = 0.01;
 
+/// The motion the story respawn asks the reloaded player for.
+pub const RESPAWN_MOTION: u32 = 0x2f;
+
 /// The practice ladder's first fight number. The first partner is
 /// `opponent01` (novice) or `opponent09` (expert).
 pub const FIRST_FIGHT: i32 = 1;
@@ -520,6 +523,10 @@ pub struct StoryStart {
     /// The turn factor the start writes (the villager's 0.45, the knight's
     /// and proctor's 1.0; the unknown background leaves it).
     pub turn: Option<f32>,
+    /// The lie-down the start makes after its first motion: the unknown
+    /// background lies down to wake 3000 ms after the start
+    /// ([`Step::KnockOut`]); the others start standing or getting up.
+    pub knock_out_ms: Option<u32>,
     /// The starting light: the unknown background's and the villager's; the
     /// knight and proctor start without one.
     pub light: Option<StoryLight>,
@@ -546,6 +553,10 @@ pub struct Companion {
     /// The record's item flag word.
     pub flags: u32,
 }
+
+/// How long after a new story starts the unknown background's lie-down
+/// lets the player wake.
+pub const STORY_WAKE_DELAY_MS: u32 = 3000;
 
 /// The starting light's intensity (a byte-sized 256, stored as a float).
 pub const STORY_LIGHT_INTENSITY: f32 = 256.0;
@@ -599,6 +610,7 @@ pub fn story_start(background: Background, body_height: f32) -> StoryStart {
             condition: None,
             animator: None,
             turn: None,
+            knock_out_ms: Some(STORY_WAKE_DELAY_MS),
             light: Some(StoryLight {
                 position: Vec3::new(8045.0, 4.7, 4075.0),
                 rotation_degrees: Vec3::new(-48.0, 110.0, 88.0),
@@ -636,6 +648,7 @@ pub fn story_start(background: Background, body_height: f32) -> StoryStart {
             condition: None,
             animator: None,
             turn: Some(1.0),
+            knock_out_ms: None,
             light: None,
             companion: None,
         },
@@ -657,6 +670,7 @@ pub fn story_start(background: Background, body_height: f32) -> StoryStart {
             condition: Some(0x600),
             animator: Some(0x600),
             turn: Some(0.45),
+            knock_out_ms: None,
             light: Some(StoryLight {
                 position: Vec3::new(8000.0, 500.0, 4000.0),
                 rotation_degrees: Vec3::new(8.0, -150.0, 50.0),
@@ -825,14 +839,29 @@ pub struct Wake {
     pub start_ms: u32,
 }
 
-/// A clip clock write on a waking player.
+/// A wake clock write on a waking player: the knock-out's wake time
+/// ([`exa_combat::condition::KnockOut::wake_at_ms`]), which the wake tick
+/// compares with the game clock.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClipClock {
-    /// The animator's clock becomes the motion's stored value less this many
-    /// milliseconds.
+    /// The wake time becomes the character clock less this many
+    /// milliseconds. (The original reads the clock from the character
+    /// manager the body points at, the same base its lie-down adds its
+    /// delay to; it is taken as the game clock.)
     MotionMinus(i32),
-    /// The clock moves on by this many milliseconds.
+    /// The wake time moves on by this many milliseconds.
     Push(i32),
+}
+
+impl ClipClock {
+    /// The wake time after this write, from the current one and the game
+    /// clock `now` (32-bit sums, as the original's).
+    pub fn applied(self, wake_at_ms: u32, now: u32) -> u32 {
+        match self {
+            Self::MotionMinus(ms) => now.wrapping_add_signed(ms.wrapping_neg()),
+            Self::Push(ms) => wake_at_ms.wrapping_add_signed(ms),
+        }
+    }
 }
 
 /// A wake-up pose write: the fields of the player's animator the original
@@ -1243,8 +1272,27 @@ pub enum Step {
     },
     /// The end menu confirms its selected row.
     MenuConfirm,
-    /// Give or take the player's controls.
+    /// Give or take the player's controls. Taking them is the controls'
+    /// disable (the knock-out and the death path); giving them is their
+    /// enable (the revive) or their re-attach to the player at a session
+    /// start or the story respawn, which also clears the disabled flag.
     Controls(bool),
+    /// Turn the player's combat mode on or off: the player controls' setter
+    /// (the practice start and each next fight turn it on, the revive off).
+    CombatMode(bool),
+    /// Lay the player down to wake: the condition becomes down (0x200), the
+    /// state flags' wake nibble knocked-out and waking (0x30), the tone and
+    /// stance factor 0, the support pins' gain 0.08 and the wake clock the
+    /// game clock plus `delay_ms` (the new story's unknown background waits
+    /// 3000 ms, the story respawn none).
+    KnockOut {
+        delay_ms: u32,
+    },
+    /// Raise the knocked-out player's dead body (the story revive): only a
+    /// dead condition word (0xA00) is raised; combat mode is left, the
+    /// yellow health becomes half the red and the body is laid down to wake
+    /// at once.
+    ReviveBody,
     /// Strip the player's gear (the reconstruction device).
     StripPlayer,
     /// Clear the player node's story bit (the reconstruction mark).
@@ -1519,12 +1567,6 @@ pub struct PlayerReading {
     pub animator: u32,
     pub health: f32,
 }
-
-/// The animator flags the flow's wake-up steps write on the player's body.
-/// [`Step::Wake`] replaces them (or sets bits), and the story start's pose
-/// step writes them with the condition word.
-#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct WakeFlags(pub u32);
 
 /// A level exit requested by a trigger, a teleporter or a script.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1911,11 +1953,18 @@ impl Flow {
                 teardown: true,
             },
             Step::StartRecord(start.start_record),
+            // The player controls are attached to the loaded player (their
+            // disabled flag cleared) before the background's light and
+            // motion.
+            Step::Controls(true),
         ];
         if let Some(light) = start.light {
             steps.push(Step::StoryLight(light));
         }
         steps.push(Step::RequestAction(motion));
+        if let Some(delay_ms) = start.knock_out_ms {
+            steps.push(Step::KnockOut { delay_ms });
+        }
         if start.condition.is_some() || start.animator.is_some() || start.turn.is_some() {
             steps.push(Step::StoryPose {
                 condition: start.condition,
@@ -1990,7 +2039,11 @@ impl Flow {
             Step::PracticePlayer {
                 role: PRACTICE_ROLE,
             },
+            // The controls are attached to the player, then combat mode is
+            // turned on (the original skips it only in the story mode,
+            // which never starts practice).
             Step::Controls(true),
+            Step::CombatMode(true),
             Step::RequestAction(PRACTICE_MOTION),
             Step::PlacePlayer(placement),
             Step::Camera(camera::frame_point(PRACTICE_POINT, true, false, viewport)),
@@ -2394,7 +2447,9 @@ impl Flow {
             },
             Step::PracticeFilter,
             Step::MenuHelp(false),
-            Step::Controls(true),
+            // Combat mode goes on for the fight; the controls were never
+            // taken (a won round leaves them).
+            Step::CombatMode(true),
             Step::Health {
                 red_bits: step.red_bits,
                 yellow_bits: step.yellow_bits,
@@ -2491,10 +2546,11 @@ impl Flow {
     }
 
     /// The revived story player, behind the transition: a session in a game
-    /// mode is saved first (without the death rule), the controls and the
-    /// game view return, the body gets its waking flag and a two-second
-    /// delay, the wake-up animation is watched again two seconds on, and the
-    /// story hook resumes.
+    /// mode is saved first (without the death rule), combat mode is left,
+    /// the dead body is raised and laid down, its wake held (0x40) and its
+    /// wake clock pushed two seconds on, the controls and the game view
+    /// return, the wake-up animation is watched again two seconds on, and
+    /// the story hook resumes.
     pub fn revive(&mut self, now: u32) -> Vec<Step> {
         self.phase = Phase::Playing;
         self.hook = Hook::Story;
@@ -2510,10 +2566,15 @@ impl Flow {
                 drop_on_low_health: false,
             });
         }
+        // Combat mode is left before the dead body is raised and laid down
+        // (held, its wake two seconds later); the controls are enabled and
+        // the game view returns.
         steps.extend([
+            Step::CombatMode(false),
+            Step::ReviveBody,
+            Step::Wake(WakePose::revived()),
             Step::Controls(true),
             Step::GameGui(true),
-            Step::Wake(WakePose::revived()),
             Step::Hook(Hook::Story),
         ]);
         steps
@@ -2524,7 +2585,9 @@ impl Flow {
     /// down and `exanima05` loaded (the loader's second word, 1, is not
     /// traced and is read as the load's own flag); the player stands at the
     /// level's respawn portal (its pose, or the identity at the origin when
-    /// the level has none) 15 cm higher and plays the get-up motion. The
+    /// the level has none) 15 cm higher, the controls are attached to it
+    /// again (which gives them back after the death), and it lies down to
+    /// wake at once and plays the get-up motion. The
     /// reconstruction state becomes rebuildable. The camera is not moved.
     pub fn story_respawn(&mut self, now: u32) -> Vec<Step> {
         self.mode = Mode::Story;
@@ -2556,8 +2619,13 @@ impl Flow {
                 spawn: 0,
                 teardown: true,
             },
+            // The controls are attached to the reloaded player, which gives
+            // them back after the death took them; the player lies down to
+            // wake at once and plays the get-up motion where it is placed.
+            Step::Controls(true),
+            Step::KnockOut { delay_ms: 0 },
+            Step::RequestAction(RESPAWN_MOTION),
             Step::PlacePlayer(placement),
-            Step::RequestAction(0x2f),
             Step::Hook(Hook::Story),
         ]
     }
@@ -3222,7 +3290,7 @@ fn tick(
         (
             Option<&exa_combat::Condition>,
             Option<&exa_combat::Fighter>,
-            Option<&WakeFlags>,
+            Option<&exa_combat::StateFlags>,
         ),
         With<crate::player::PlayerBody>,
     >,
@@ -3232,9 +3300,9 @@ fn tick(
     let player = players
         .single()
         .ok()
-        .map(|(condition, fighter, wake)| PlayerReading {
+        .map(|(condition, fighter, flags)| PlayerReading {
             condition: condition.map_or(0, |condition| condition.0),
-            animator: wake.map_or(0, |wake| wake.0),
+            animator: flags.map_or(0, |flags| flags.0),
             // A body without a fighter record is treated as unhurt.
             health: fighter.map_or(0.25, |fighter| fighter.health.red),
         });
@@ -3479,9 +3547,9 @@ fn apply_steps(
     mut logo: Option<ResMut<TitleLogo>>,
     mut view: Option<ResMut<GameView>>,
     mut session: Option<ResMut<crate::player_controls::PlaySession>>,
-    mut fighters: Query<&mut exa_combat::Fighter, With<crate::player::PlayerBody>>,
-    mut conditions: Query<&mut exa_combat::Condition, With<crate::player::PlayerBody>>,
-    mut wake_flags: Query<(Entity, Option<&WakeFlags>), With<crate::player::PlayerBody>>,
+    ticks: Option<Res<exa_physics::body::BodyTicks>>,
+    mut players: Query<PlayerParts, With<crate::player::PlayerBody>>,
+    mut cameras: Query<&mut crate::player::ChaseCamera>,
     mut changes: MessageWriter<exa_world::level_lifecycle::LevelChangeRequest>,
     mut forfeit: MessageWriter<ForfeitMatch>,
     mut exit: MessageWriter<AppExit>,
@@ -3490,6 +3558,10 @@ fn apply_steps(
         return;
     }
     let steps = core::mem::take(&mut queued.steps);
+    let now = ticks.as_ref().map_or(0, |ticks| ticks.millis() as u32);
+    // A knock-out written on a body that did not carry one yet: its insert
+    // is deferred, so a later wake write in the batch changes this copy.
+    let mut fresh_knock: Option<(Entity, exa_combat::condition::KnockOut)> = None;
     // A teardown in the same batch as a load is the load's own; one request
     // does both, so the destination is not torn down twice.
     let loads = steps
@@ -3574,34 +3646,150 @@ fn apply_steps(
                     session.playing = on;
                 }
             }
+            Step::Camera(frame) => {
+                // The shot turns the chase camera to its bearing; the
+                // original's view position, forced speed and the cursor
+                // warp are not taken (the chase camera keeps its distance
+                // and pitch rules).
+                for mut camera in &mut cameras {
+                    camera.face_shot(frame.camera, frame.target);
+                }
+            }
+            Step::CombatMode(on) => {
+                for mut player in &mut players {
+                    player.body.set_combat(on);
+                }
+            }
             Step::Health {
                 red_bits,
                 yellow_bits,
             } => {
-                for mut fighter in &mut fighters {
-                    fighter.health.red = f32::from_bits(red_bits);
-                    fighter.health.yellow = f32::from_bits(yellow_bits);
+                for player in &mut players {
+                    if let Some(mut fighter) = player.fighter {
+                        fighter.health.red = f32::from_bits(red_bits);
+                        fighter.health.yellow = f32::from_bits(yellow_bits);
+                    }
                 }
             }
             Step::Condition(word) => {
-                for mut condition in &mut conditions {
-                    condition.0 = word;
+                for player in &mut players {
+                    if let Some(mut condition) = player.condition {
+                        condition.0 = word;
+                    }
+                }
+            }
+            Step::KnockOut { delay_ms } => {
+                for mut player in &mut players {
+                    let mut condition = player.condition.as_deref().copied().unwrap_or_default();
+                    let mut flags = player.flags.as_deref().copied().unwrap_or_default();
+                    let knock =
+                        exa_combat::condition::knock_out(&mut condition, &mut flags, now, delay_ms);
+                    if player.knock.is_none() {
+                        fresh_knock = Some((player.entity, knock));
+                    }
+                    write_player(&mut commands, &mut player, condition, flags, knock);
+                    if let Some(body) = player.ragdoll.as_mut() {
+                        body.knock_out();
+                    }
+                }
+            }
+            Step::ReviveBody => {
+                for mut player in &mut players {
+                    let mut condition = player.condition.as_deref().copied().unwrap_or_default();
+                    let mut flags = player.flags.as_deref().copied().unwrap_or_default();
+                    let red = player.fighter.as_ref().map_or(0.0, |f| f.health.red);
+                    // The record's weapon slots are left as they are (the
+                    // hands' re-arm is not part of the story revive here).
+                    let Some(revival) =
+                        exa_combat::condition::revive(&mut condition, &mut flags, red, false, now)
+                    else {
+                        continue;
+                    };
+                    player.body.set_combat(false);
+                    if let Some(fighter) = player.fighter.as_mut() {
+                        fighter.health.yellow = revival.yellow;
+                    }
+                    if player.knock.is_none() {
+                        fresh_knock = Some((player.entity, revival.knock));
+                    }
+                    write_player(&mut commands, &mut player, condition, flags, revival.knock);
+                    if let Some(body) = player.ragdoll.as_mut() {
+                        if body.drive.is_some() {
+                            body.knock_out();
+                        } else {
+                            // A limp body gets its muscles back, as a
+                            // living body's first drive is made.
+                            body.revive(exa_physics::body::Drive::default());
+                        }
+                    }
                 }
             }
             Step::Wake(pose) => {
-                for (entity, current) in &mut wake_flags {
+                for mut player in &mut players {
+                    let current = player.flags.as_deref().copied().unwrap_or_default();
                     let flags = if pose.or_flags {
-                        current.copied().unwrap_or_default().0 | pose.flags
+                        current.0 | pose.flags
                     } else {
                         pose.flags
                     };
-                    commands.entity(entity).insert(WakeFlags(flags));
+                    match player.flags.as_mut() {
+                        Some(word) => word.0 = flags,
+                        None => {
+                            commands
+                                .entity(player.entity)
+                                .insert(exa_combat::StateFlags(flags));
+                        }
+                    }
+                    let wake_write = |knock: &mut exa_combat::condition::KnockOut| {
+                        if let Some(ready) = pose.blend {
+                            knock.ready = ready;
+                        }
+                        if let Some(clock) = pose.clock {
+                            knock.wake_at_ms = clock.applied(knock.wake_at_ms, now);
+                        }
+                    };
+                    if let Some(knock) = player.knock.as_mut() {
+                        wake_write(knock);
+                    } else if let Some((entity, knock)) = fresh_knock.as_mut()
+                        && *entity == player.entity
+                    {
+                        wake_write(knock);
+                        commands.entity(*entity).insert(*knock);
+                    }
+                    if let Some(drive) = player.ragdoll.as_mut().and_then(|b| b.drive.as_mut()) {
+                        if let Some(stance) = pose.move_factor {
+                            drive.set_stance(stance);
+                        }
+                        if let Some(tone) = pose.turn_factor {
+                            drive.tone = tone;
+                        }
+                    }
                 }
             }
-            Step::StoryPose { flags, .. } => {
-                if let Some(flags) = flags {
-                    for (entity, _) in &mut wake_flags {
-                        commands.entity(entity).insert(WakeFlags(flags));
+            Step::StoryPose {
+                condition,
+                flags,
+                turn_factor,
+            } => {
+                for mut player in &mut players {
+                    if let (Some(word), Some(current)) = (condition, player.condition.as_mut()) {
+                        current.0 = word;
+                    }
+                    if let Some(word) = flags {
+                        match player.flags.as_mut() {
+                            Some(current) => current.0 = word,
+                            None => {
+                                commands
+                                    .entity(player.entity)
+                                    .insert(exa_combat::StateFlags(word));
+                            }
+                        }
+                    }
+                    if let (Some(tone), Some(drive)) = (
+                        turn_factor,
+                        player.ragdoll.as_mut().and_then(|b| b.drive.as_mut()),
+                    ) {
+                        drive.tone = tone;
                     }
                 }
             }
@@ -3625,6 +3813,49 @@ fn apply_steps(
             other => {
                 debug!("game flow step not applied by the app: {other:?}");
             }
+        }
+    }
+}
+
+/// The player body's parts the flow's steps write.
+#[derive(bevy::ecs::query::QueryData)]
+#[query_data(mutable)]
+struct PlayerParts {
+    entity: Entity,
+    body: &'static mut crate::player::PlayerBody,
+    condition: Option<&'static mut exa_combat::Condition>,
+    flags: Option<&'static mut exa_combat::StateFlags>,
+    knock: Option<&'static mut exa_combat::condition::KnockOut>,
+    fighter: Option<&'static mut exa_combat::Fighter>,
+    ragdoll: Option<&'static mut exa_physics::body::Ragdoll>,
+}
+
+/// Writes a knock-out's condition, flags and wake timer on the player,
+/// inserting what the body does not carry yet.
+fn write_player(
+    commands: &mut Commands,
+    player: &mut PlayerPartsItem,
+    condition: exa_combat::Condition,
+    flags: exa_combat::StateFlags,
+    knock: exa_combat::condition::KnockOut,
+) {
+    let mut entity = commands.entity(player.entity);
+    match player.condition.as_mut() {
+        Some(current) => **current = condition,
+        None => {
+            entity.insert(condition);
+        }
+    }
+    match player.flags.as_mut() {
+        Some(current) => **current = flags,
+        None => {
+            entity.insert(flags);
+        }
+    }
+    match player.knock.as_mut() {
+        Some(current) => **current = knock,
+        None => {
+            entity.insert(knock);
         }
     }
 }
@@ -3984,7 +4215,9 @@ mod tests {
             })
             .expect("the arena reloads");
         assert_eq!(steps[load + 1], Step::PracticeFilter);
-        assert!(steps.contains(&Step::Controls(true)));
+        // The fight turns combat mode on; the controls are not touched.
+        assert!(steps.contains(&Step::CombatMode(true)));
+        assert!(!steps.iter().any(|step| matches!(step, Step::Controls(_))));
         assert!(steps.contains(&Step::HideEndMenu));
         // 0.2f32 as a double plus a tenth of 0.25, rounded to single:
         // 0x3e666667.
@@ -4201,6 +4434,12 @@ mod tests {
         assert!(steps.contains(&Step::GameGui(true)));
         assert!(steps.contains(&Step::Wake(WakePose::revived())));
         assert!(steps.contains(&Step::Hook(Hook::Story)));
+        // Combat mode off, the body raised, then its held wake, then the
+        // controls (the combat-mode setter's 0 is not the controls').
+        let at = |wanted: Step| steps.iter().position(|step| *step == wanted).unwrap();
+        assert!(at(Step::CombatMode(false)) < at(Step::ReviveBody));
+        assert!(at(Step::ReviveBody) < at(Step::Wake(WakePose::revived())));
+        assert!(at(Step::Wake(WakePose::revived())) < at(Step::Controls(true)));
         assert_eq!(flow.phase, Phase::Playing);
         // The wake-up animation is watched from two seconds on.
         assert!(flow.story.wake.animating);
@@ -4627,6 +4866,9 @@ mod tests {
         }));
         assert!(steps.contains(&Step::RequestAction(PRACTICE_MOTION)));
         assert!(steps.contains(&Step::Controls(true)));
+        // The controls are attached, then combat mode goes on.
+        let at = |wanted: Step| steps.iter().position(|step| *step == wanted).unwrap();
+        assert_eq!(at(Step::CombatMode(true)), at(Step::Controls(true)) + 1);
         assert!(steps.contains(&Step::LoadLevel {
             locale: "arenae",
             spawn: 0,
@@ -4685,6 +4927,14 @@ mod tests {
         };
         let steps = flow.start_story(Background::Unknown, 1.8, view, 500);
         assert!(steps.contains(&Step::RequestAction(0x1d)));
+        // The unknown background lies down to wake 3000 ms on, right after
+        // its motion; the controls are attached after the load.
+        let at = |wanted: Step| steps.iter().position(|step| *step == wanted).unwrap();
+        assert_eq!(
+            at(Step::KnockOut { delay_ms: 3000 }),
+            at(Step::RequestAction(0x1d)) + 1
+        );
+        assert!(at(Step::Controls(true)) < at(Step::RequestAction(0x1d)));
         assert!(flow.story.wake.animating);
         assert_eq!(flow.story.wake.start_ms, 3500);
         assert_eq!(flow.mode, Mode::Story);
@@ -4718,6 +4968,11 @@ mod tests {
         let steps = flow.start_story(Background::Villager, 1.8, view, 500);
         assert!(flow.story.wake.getting_up);
         assert!(steps.contains(&Step::RequestAction(START_MOTION_VILLAGER)));
+        assert!(
+            !steps
+                .iter()
+                .any(|step| matches!(step, Step::KnockOut { .. }))
+        );
         assert!(steps.contains(&Step::StoryPose {
             condition: Some(0x600),
             flags: Some(0x600),
@@ -4997,6 +5252,21 @@ mod tests {
         // does not take them away.
         assert!(!steps.contains(&Step::Controls(false)));
         assert!(!steps.iter().any(|step| matches!(step, Step::Camera(_))));
+        // After the load: the controls back, the lie-down with no delay,
+        // the get-up motion, then the placement.
+        let load = steps
+            .iter()
+            .position(|step| matches!(step, Step::LoadLevel { .. }))
+            .unwrap();
+        assert_eq!(
+            steps[load + 1..load + 4],
+            [
+                Step::Controls(true),
+                Step::KnockOut { delay_ms: 0 },
+                Step::RequestAction(RESPAWN_MOTION),
+            ]
+        );
+        assert!(matches!(steps[load + 4], Step::PlacePlayer(_)));
     }
 
     #[test]
@@ -5818,8 +6088,8 @@ mod tests {
             .push(Step::Wake(WakePose::hold()));
         app.update();
         assert_eq!(
-            app.world().get::<WakeFlags>(player),
-            Some(&WakeFlags(0x600))
+            app.world().get::<exa_combat::StateFlags>(player),
+            Some(&exa_combat::StateFlags(0x600))
         );
         app.world_mut()
             .resource_mut::<FlowSteps>()
@@ -5827,8 +6097,8 @@ mod tests {
             .push(Step::Wake(WakePose::revived()));
         app.update();
         assert_eq!(
-            app.world().get::<WakeFlags>(player),
-            Some(&WakeFlags(0x640))
+            app.world().get::<exa_combat::StateFlags>(player),
+            Some(&exa_combat::StateFlags(0x640))
         );
         app.world_mut()
             .resource_mut::<FlowSteps>()
@@ -5840,8 +6110,8 @@ mod tests {
             });
         app.update();
         assert_eq!(
-            app.world().get::<WakeFlags>(player),
-            Some(&WakeFlags(0x600))
+            app.world().get::<exa_combat::StateFlags>(player),
+            Some(&exa_combat::StateFlags(0x600))
         );
         // The practice round's condition write lands on the body.
         app.world_mut()
@@ -5853,5 +6123,139 @@ mod tests {
             app.world().get::<exa_combat::Condition>(player),
             Some(&exa_combat::Condition(0))
         );
+
+        // Combat mode follows its step.
+        app.world_mut()
+            .resource_mut::<FlowSteps>()
+            .steps
+            .push(Step::CombatMode(true));
+        app.update();
+        assert!(
+            app.world()
+                .get::<crate::player::PlayerBody>(player)
+                .unwrap()
+                .combat
+        );
+
+        // The lie-down at game clock 1200 ms: down, the wake nibble 0x30
+        // (the other bits kept), the wake clock 3000 ms on.
+        app.insert_resource(exa_physics::body::BodyTicks(100));
+        app.world_mut()
+            .resource_mut::<FlowSteps>()
+            .steps
+            .push(Step::KnockOut { delay_ms: 3000 });
+        app.update();
+        assert_eq!(
+            app.world().get::<exa_combat::Condition>(player),
+            Some(&exa_combat::Condition::DOWN)
+        );
+        assert_eq!(
+            app.world().get::<exa_combat::StateFlags>(player),
+            Some(&exa_combat::StateFlags(0x630))
+        );
+        assert_eq!(
+            app.world()
+                .get::<exa_combat::condition::KnockOut>(player)
+                .map(|k| k.wake_at_ms),
+            Some(4200)
+        );
+    }
+
+    /// The story revive on a dead player body at game clock 1200 ms: combat
+    /// mode is left, the yellow health becomes half the red, the body lies
+    /// down with no delay, the held bit is set and its wake clock is pushed
+    /// 2000 ms on (to 3200), and the controls come back. A living body is
+    /// not raised.
+    #[test]
+    fn the_app_raises_the_revived_player_and_holds_its_wake() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Flow>()
+            .init_resource::<FlowSteps>()
+            .init_resource::<GameView>()
+            .init_resource::<crate::player_controls::PlaySession>()
+            .insert_resource(exa_physics::body::BodyTicks(100))
+            .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
+            .add_message::<ForfeitMatch>()
+            .add_message::<AppExit>()
+            .add_systems(Update, apply_steps);
+        let mut fighter = exa_combat::Fighter::default();
+        fighter.health.red = 0.5;
+        fighter.health.yellow = 0.0;
+        let mut body = crate::player::PlayerBody::new(0.0);
+        body.set_combat(true);
+        let player = app
+            .world_mut()
+            .spawn((body, fighter, exa_combat::Condition(DEAD)))
+            .id();
+        let mut flow = Flow {
+            mode: Mode::Story,
+            ..Default::default()
+        };
+        let steps = flow.revive(1200);
+        app.world_mut()
+            .resource_mut::<FlowSteps>()
+            .steps
+            .extend(steps);
+        app.update();
+        let world = app.world();
+        assert!(
+            !world
+                .get::<crate::player::PlayerBody>(player)
+                .unwrap()
+                .combat
+        );
+        assert_eq!(
+            world
+                .get::<exa_combat::Fighter>(player)
+                .unwrap()
+                .health
+                .yellow,
+            0.25
+        );
+        assert_eq!(
+            world.get::<exa_combat::Condition>(player),
+            Some(&exa_combat::Condition::DOWN)
+        );
+        assert_eq!(
+            world.get::<exa_combat::StateFlags>(player),
+            Some(&exa_combat::StateFlags(0x70))
+        );
+        assert_eq!(
+            world
+                .get::<exa_combat::condition::KnockOut>(player)
+                .map(|k| k.wake_at_ms),
+            Some(3200)
+        );
+        assert!(
+            world
+                .resource::<crate::player_controls::PlaySession>()
+                .playing
+        );
+
+        // A living body is left standing.
+        *app.world_mut()
+            .get_mut::<exa_combat::Condition>(player)
+            .unwrap() = exa_combat::Condition::NORMAL;
+        app.world_mut()
+            .resource_mut::<FlowSteps>()
+            .steps
+            .push(Step::ReviveBody);
+        app.update();
+        assert_eq!(
+            app.world().get::<exa_combat::Condition>(player),
+            Some(&exa_combat::Condition::NORMAL)
+        );
+    }
+
+    /// The wake clock writes: the get-up's start puts the wake time 1490 ms
+    /// before the clock, the revive pushes it 2000 ms on, both as 32-bit
+    /// sums.
+    #[test]
+    fn the_wake_clock_writes_wrap_as_32_bit_sums() {
+        assert_eq!(ClipClock::MotionMinus(1490).applied(7, 5000), 3510);
+        assert_eq!(ClipClock::MotionMinus(1490).applied(7, 1000), 0xffff_fe16);
+        assert_eq!(ClipClock::Push(2000).applied(1000, 0), 3000);
+        assert_eq!(ClipClock::Push(2000).applied(u32::MAX, 0), 1999);
     }
 }

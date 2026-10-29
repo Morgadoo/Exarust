@@ -639,3 +639,96 @@ fn a_revive_knocks_the_dead_out_with_half_the_red() {
         assert_eq!((c, f.0), (living, StateFlags::POTION));
     }
 }
+
+/// The live wake on a knocked-out body: up to the wake clock plus 1.5 s it
+/// lies (down, flags 0x30, tone and stance 0, readiness 0.4); after it the
+/// tone rises and the flags turn waking; once the readiness reaches 1 the
+/// waking bit clears and the stance is the race's again. A body without a
+/// knock-out, or without the waking bit, is left alone.
+#[test]
+fn the_wake_clears_the_waking_bit_once_the_body_is_ready() {
+    use exa_physics::body::BodyTicks;
+    let mut app = App::new();
+    app.insert_resource(BodyTicks(0))
+        .add_systems(Update, track_wake);
+    let body = Ragdoll::new(&[]).with_drive();
+    let stance = body.drive.as_ref().unwrap().race.stance;
+    let id = app
+        .world_mut()
+        .spawn((
+            Condition::DOWN,
+            StateFlags(0x30),
+            KnockOut::start(0, 3000),
+            body,
+        ))
+        .id();
+    app.insert_resource(TickedCharacter {
+        body: id,
+        character: None,
+    });
+    let at = |app: &mut App, millis: u64| {
+        app.insert_resource(BodyTicks(millis / 12));
+        app.update();
+    };
+    // 4500 ms is the wake clock plus 1.5 s: still lying.
+    at(&mut app, 4500);
+    assert_eq!(app.world().get::<Condition>(id), Some(&Condition::DOWN));
+    assert_eq!(app.world().get::<StateFlags>(id), Some(&StateFlags(0x30)));
+    let drive = app
+        .world()
+        .get::<Ragdoll>(id)
+        .unwrap()
+        .drive
+        .clone()
+        .unwrap();
+    assert_eq!((drive.tone, drive.stance()), (0.0, 0.0));
+    assert_eq!(app.world().get::<KnockOut>(id).unwrap().ready, 0.4);
+    // One tick past it the flags turn waking and the tone rises 0.001.
+    at(&mut app, 4512);
+    assert_eq!(
+        app.world().get::<StateFlags>(id),
+        Some(&StateFlags(StateFlags::WAKING))
+    );
+    let tone = app
+        .world()
+        .get::<Ragdoll>(id)
+        .unwrap()
+        .drive
+        .as_ref()
+        .unwrap()
+        .tone;
+    assert!((tone - 0.001).abs() < 1e-7);
+    // Past the clock plus 8 s the readiness climbs 0.01 a tick from 0.4:
+    // sixty ticks reach 1, and the waking bit clears.
+    for tick in 0..61 {
+        at(&mut app, 11_016 + tick * 12);
+    }
+    assert_eq!(app.world().get::<StateFlags>(id), Some(&StateFlags(0)));
+    let drive = app
+        .world()
+        .get::<Ragdoll>(id)
+        .unwrap()
+        .drive
+        .clone()
+        .unwrap();
+    assert_eq!((drive.tone, drive.stance()), (1.0, stance));
+    assert_eq!(app.world().get::<KnockOut>(id).unwrap().ready, 1.0);
+    // Without the waking bit nothing more is written.
+    app.world_mut()
+        .get_mut::<Ragdoll>(id)
+        .unwrap()
+        .drive
+        .as_mut()
+        .unwrap()
+        .tone = 0.5;
+    at(&mut app, 20_004);
+    let tone = app
+        .world()
+        .get::<Ragdoll>(id)
+        .unwrap()
+        .drive
+        .as_ref()
+        .unwrap()
+        .tone;
+    assert_eq!(tone, 0.5);
+}
