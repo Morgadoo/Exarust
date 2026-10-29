@@ -80,6 +80,7 @@ pub mod nav_camera;
 pub mod nav_drag;
 pub mod nav_pick;
 pub mod npc_search;
+pub mod object_click;
 pub mod pair_trace;
 pub mod panel_live;
 pub mod path_probe;

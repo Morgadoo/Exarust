@@ -985,6 +985,23 @@ running character view and no GUI-to-world drop yet). No drag leaves the
 player's pack while the player's body swaps its weapon sets (a swap
 requested or its hand plan pending), the inventory's drag permission.
 Taking a worn item off a corpse does not re-dress its mesh.
+`object_click` takes the hand's clicks on anything but a character
+(`ObjectClick`). The single click (outside combat mode) on a placed object
+clears its first-touch bit, runs a device's use (`player_controls::device_use`,
+its clock in `DeviceClock`) and then, by `player_controls::click`, sends a
+`item_card::WorldCard` (the card at once, or on the panel's 200 ms card
+timer; a world object's card is not closed with the last panel) or has the
+narrator say the device's description through
+`exa_script::Conversations` (`narrate_text`, 1000 ms for device kind 3,
+100 ms otherwise). A point on plain level geometry is looked up among the
+placed objects by their node box (a placeholder's 50 cm half box, else the
+model's root node bounds; sphere test, then at most 0.1 cm² off the box);
+the single click then only narrates a used device, and the double click
+uses the object found (an Exarust stand-in: the original's pick always
+returns the object's node). The double click's usable kind 0 object leaves
+the scene (despawned, its static colliders removed through
+`ColliderNodes::take_under`) with its use sound (`exa_audio::PointSounded`,
+volume 0.25, pitch 1); a consumable's doors open 2100 ms later.
 A placed chest, barrel or bag opens in its container popup from the
 interaction's double click (with Ctrl held in combat mode, in reach): the
 object's own use runs first (`player_controls::double_click_object`, the

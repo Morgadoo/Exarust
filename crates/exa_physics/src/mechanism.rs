@@ -83,6 +83,16 @@ pub struct MechanismSignal {
     pub value: i32,
 }
 
+/// The lock sound an order to open the doors under a node plays once, at
+/// the first door it finds there: the door's `LkO` sound (by its record's
+/// lock letter) at the leaf (m). The mixer draws its pitch, then its
+/// volume, from the engine's generator.
+#[derive(bevy::prelude::Message, Debug, Clone, PartialEq)]
+pub struct LockSounded {
+    pub name: String,
+    pub position: bevy::math::Vec3,
+}
+
 /// A door order from a signal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DoorOrder {

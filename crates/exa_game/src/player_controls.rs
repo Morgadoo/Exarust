@@ -354,14 +354,11 @@ pub const REACH_HEIGHT_CM: f32 = 245.0;
 pub const DOOR_HEIGHT_CM: f32 = 300.0;
 pub const DOOR_ACROSS_CM: f32 = 350.0;
 pub const REACH_ACROSS_CM: f32 = 300.0;
-/// A lock's unlock reward: 100, or 1000 when the lock section's subtype is
-/// [`MAIN_LOCK_SUBTYPE`].
-pub const UNLOCK_REWARD: u32 = 100;
-pub const UNLOCK_REWARD_MAIN: u32 = 1000;
-pub const MAIN_LOCK_SUBTYPE: u8 = 3;
-/// The usable section's kinds the click and the interaction read: a lock
-/// and a button (kinds 0 and 1 are the consumable and the hand-held item).
-pub const USABLE_LOCK: u8 = 2;
+/// The usable class of a device (a pedestal hand, a teleporter, a
+/// reconstruction device): the single click runs its use.
+pub const USABLE_DEVICE: u8 = exa_formats::objdb::operative::DEVICE;
+/// The usable kinds the click and the interaction read: a lock-and-key
+/// item (kind 0 consumable and 1 hand-held aside) and a button.
 pub const USABLE_BUTTON: u8 = 5;
 /// A click on the player's own body shows the health and focus bars for
 /// this many ms.
@@ -377,18 +374,20 @@ pub enum ClickTarget {
     /// Nothing was hit.
     Nothing,
     /// A placed object. `usable` is its usable section's kind byte when it
-    /// has one and `subtype` that section's subtype byte; `lock_open` and
-    /// `reward_ready` are the lock section's two words, `key_ok` the
-    /// player's key test, `container` whether it has a container section,
+    /// has one and `subtype` that section's subtype byte; `named` and
+    /// `described` whether its model section's name and description string
+    /// ids are set, `device_used` what the device's use answered (the click
+    /// runs it before it decides), `container` whether it has a container
+    /// section,
     /// `unmarked` whether its used-mark byte (the one a pour or a repair
     /// sets) is still clear, and `push_released` whether a button's own
     /// flag word allows it to fire.
     Placed {
         usable: Option<u8>,
         subtype: u8,
-        lock_open: bool,
-        reward_ready: bool,
-        key_ok: bool,
+        named: bool,
+        described: bool,
+        device_used: bool,
         container: bool,
         unmarked: bool,
         push_released: bool,
@@ -405,9 +404,9 @@ impl ClickTarget {
         ClickTarget::Placed {
             usable: None,
             subtype: 0,
-            lock_open: false,
-            reward_ready: false,
-            key_ok: false,
+            named: false,
+            described: false,
+            device_used: false,
             container: false,
             unmarked: true,
             push_released: true,
@@ -420,21 +419,42 @@ impl ClickTarget {
     /// section's kind (its first byte) and subtype (its second), its
     /// container section, the used mark (the placement word's bits
     /// 16..23, clear while unmarked) and a button's flag bit 4 (set: it
-    /// does not fire). The lock's two model-section words and the key test
-    /// are only read by the single click on a lock, whose card and journal
-    /// line are not wired, so they are left false here.
+    /// does not fire). The model section's string ids and the device's use
+    /// are not in the sections: [`ClickTarget::with_strings`] and
+    /// [`ClickTarget::with_device_used`] set them.
     pub fn of_object(sections: &exa_world::ObjectSections) -> Self {
         let usable = sections.usable;
         ClickTarget::Placed {
             usable: usable.map(|u| u.class),
             subtype: usable.map_or(0, |u| u.kind),
-            lock_open: false,
-            reward_ready: false,
-            key_ok: false,
+            named: false,
+            described: false,
+            device_used: false,
             container: sections.container.is_some(),
             unmarked: sections.placement & USED_MARK == 0,
             push_released: usable.is_none_or(|u| u.flags & BUTTON_HELD == 0),
         }
+    }
+
+    /// The target with its model section's name and description string ids
+    /// (set or not); anything but a placed object is unchanged.
+    pub fn with_strings(mut self, has_name: bool, has_description: bool) -> Self {
+        if let ClickTarget::Placed {
+            named, described, ..
+        } = &mut self
+        {
+            *named = has_name;
+            *described = has_description;
+        }
+        self
+    }
+
+    /// The target with its device's use answer.
+    pub fn with_device_used(mut self, used: bool) -> Self {
+        if let ClickTarget::Placed { device_used, .. } = &mut self {
+            *device_used = used;
+        }
+        self
     }
 }
 
@@ -510,15 +530,16 @@ pub fn double_click_object(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClickOutcome {
     Nothing,
-    /// Show the item (its card or the narrator's line).
-    Inspect,
+    /// Build and show the object's item card at once.
+    CardNow,
     /// Show the item's card after the card delay (the panel's delayed card
     /// request); the single click never opens a container's popup, which
     /// only the double click does.
     DelayedCard,
-    /// Unlock a lock: the journal line and the experience it pays.
-    Unlock {
-        reward: u32,
+    /// A used device without a name: the narrator says its description
+    /// after `delay_ms` (at least 500 ms while a narrator line is up).
+    Narrate {
+        delay_ms: u32,
     },
     /// The click callback (the living character's line, or an object's
     /// own click).
@@ -533,11 +554,11 @@ pub enum ClickOutcome {
 }
 
 /// The click's outcome. On a placed object: no usable section shows the
-/// item's card at once; a lock (kind 2) that is open asks for the delayed
-/// card, a closed one with the key and its reward still due pays 100 (1000
-/// for the lock subtype 3), else nothing; kinds 0 and 1 ask for the delayed
-/// card; any other kind shows the card at once. The object's first-touch bit is cleared by any
-/// hit.
+/// item's card at once; a device (class 2), its use already run, asks for
+/// the delayed card when its model section names it, else the narrator says
+/// its description when the use answered yes and it has one, after
+/// 1000 ms for the device kind 3 and 100 ms for the others; classes 0 and 1
+/// ask for the delayed card; any other class shows the card at once.
 pub fn click(target: ClickTarget) -> ClickOutcome {
     match target {
         ClickTarget::Nothing => ClickOutcome::Nothing,
@@ -547,31 +568,111 @@ pub fn click(target: ClickTarget) -> ClickOutcome {
         ClickTarget::Placed {
             usable,
             subtype,
-            lock_open,
-            reward_ready,
-            key_ok,
+            named,
+            described,
+            device_used,
             ..
         } => match usable {
-            None => ClickOutcome::Inspect,
-            Some(USABLE_LOCK) => {
-                if lock_open {
+            None => ClickOutcome::CardNow,
+            Some(USABLE_DEVICE) => {
+                if named {
                     ClickOutcome::DelayedCard
-                } else if key_ok && reward_ready {
-                    ClickOutcome::Unlock {
-                        reward: if subtype == MAIN_LOCK_SUBTYPE {
-                            UNLOCK_REWARD_MAIN
+                } else if device_used && described {
+                    ClickOutcome::Narrate {
+                        delay_ms: if subtype == DEVICE_SLOW_LINE {
+                            DEVICE_LINE_SLOW_MS
                         } else {
-                            UNLOCK_REWARD
+                            DEVICE_LINE_MS
                         },
                     }
                 } else {
                     ClickOutcome::Nothing
                 }
             }
-            Some(kind) if kind < USABLE_LOCK => ClickOutcome::DelayedCard,
-            Some(_) => ClickOutcome::Inspect,
+            Some(kind) if kind < USABLE_DEVICE => ClickOutcome::DelayedCard,
+            Some(_) => ClickOutcome::CardNow,
         },
     }
+}
+
+/// The device kind whose narrator line waits [`DEVICE_LINE_SLOW_MS`].
+pub const DEVICE_SLOW_LINE: u8 = 3;
+pub const DEVICE_LINE_SLOW_MS: u32 = 1000;
+pub const DEVICE_LINE_MS: u32 = 100;
+/// The device kind 3's use waits this long (ms) after the last one.
+pub const DEVICE_COOLDOWN_MS: u64 = 2400;
+/// The device kind that calls the signal hook (which answers no).
+pub const DEVICE_SIGNAL: u8 = 4;
+/// The one placed id whose device use runs once a game.
+pub const DEVICE_ONCE_ID: u32 = 0x24c;
+
+/// The devices' shared clock: the last kind 3 use and the once-a-game id's
+/// flag.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DeviceClock {
+    pub last_slow_ms: u64,
+    pub once_used: bool,
+}
+
+/// What a device's use answers, as the single click runs it before it
+/// decides: kind 3 answers no while `now_ms` is under the last kind 3 use
+/// plus 2400 ms, else yes and the clock takes `now_ms`; the teleporter and
+/// the reconstruction device answer through their own use (`own`); the
+/// signal kind 4 answers no (its hook only reveals a power in one game
+/// mode); the id 0x24c answers yes once a game and no after; anything else
+/// answers yes.
+pub fn device_use(
+    kind: u8,
+    id: u32,
+    now_ms: u64,
+    clock: &mut DeviceClock,
+    own: impl FnOnce() -> bool,
+) -> bool {
+    use exa_formats::objdb::operative::{RES_DEVICE, TELEPORTER};
+    match kind {
+        DEVICE_SLOW_LINE => {
+            if now_ms < clock.last_slow_ms + DEVICE_COOLDOWN_MS {
+                false
+            } else {
+                clock.last_slow_ms = now_ms;
+                true
+            }
+        }
+        TELEPORTER | RES_DEVICE => own(),
+        DEVICE_SIGNAL => false,
+        _ if id == DEVICE_ONCE_ID => !std::mem::replace(&mut clock.once_used, true),
+        _ => true,
+    }
+}
+
+/// The placement word's first-touch bit: the first click on the object
+/// clears it and runs the game's first-touch hook.
+pub const FIRST_TOUCH: u32 = 0x8000;
+
+/// The placement word after a click and whether the click was the first
+/// touch.
+pub fn first_touch(placement: u32) -> (u32, bool) {
+    (placement & !FIRST_TOUCH, placement & FIRST_TOUCH != 0)
+}
+
+/// The squared distance (cm²) under which a point lies on an object's box.
+pub const ON_BOX_CM2: f32 = 0.1;
+
+/// Whether a picked point (cm, world) lies on an object node, as the
+/// single click's search of the level's objects tests a point the pick
+/// found on plain geometry: within the node's bounding sphere (`centre`
+/// in the world, cm, `radius` cm) by the squared distance, then no more
+/// than 0.1 cm² outside its box (`bounds` in the node's frame, `frame`
+/// the node's frame in cm).
+pub fn on_object(
+    point: Vec3,
+    centre: Vec3,
+    radius: f32,
+    bounds: &exa_physics::sector::Bounds,
+    frame: &bevy::math::Affine3A,
+) -> bool {
+    point.distance_squared(centre) <= radius * radius
+        && exa_physics::sector::mesh_box_distance2(point, bounds, frame) <= ON_BOX_CM2
 }
 
 /// What the double-click interaction does with a placed object's usable
@@ -579,12 +680,14 @@ pub fn click(target: ClickTarget) -> ClickOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectInteraction {
     Nothing,
-    /// Use kind 0, subtype 1: consumed after [`CONSUME_MS`].
+    /// Use kind 0, subtype 1: the object leaves the scene and its use
+    /// sound plays at once; its target's doors open after [`CONSUME_MS`].
     Consume {
         due_ms: u32,
     },
-    /// Use kind 0, another subtype: the item is taken at once (guess: the
-    /// object database call it makes is not traced further).
+    /// Use kind 0, another subtype: the object leaves the scene, its use
+    /// sound plays, the item card's request closes and the record's use
+    /// runs at once ([`take_use`]).
     Open,
     /// Take the usable item in hand (kind 1); the interaction ends here.
     UseInHand,
@@ -625,6 +728,49 @@ pub fn interact_object(target: ClickTarget, now_ms: u32) -> (ObjectInteraction, 
         _ => ObjectInteraction::Nothing,
     };
     (action, container)
+}
+
+impl ObjectInteraction {
+    /// Whether the object leaves the scene: both kind 0 branches detach
+    /// and free its node before anything else.
+    pub fn takes_object(self) -> bool {
+        matches!(self, Self::Consume { .. } | Self::Open)
+    }
+}
+
+/// What the object database's use of a taken kind 0 object does, by its
+/// usable subtype: 7 calls the game's read hook with the record's name, 5
+/// closes the item card and opens the powers screen, 1, 0x11 and every
+/// other subtype nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TakeUse {
+    Nothing,
+    NameHook,
+    Powers,
+}
+
+/// The usable subtypes [`take_use`] reads.
+pub const TAKE_NAME_HOOK: u8 = 7;
+pub const TAKE_POWERS: u8 = 5;
+
+pub fn take_use(subtype: u8) -> TakeUse {
+    match subtype {
+        TAKE_NAME_HOOK => TakeUse::NameHook,
+        TAKE_POWERS => TakeUse::Powers,
+        _ => TakeUse::Nothing,
+    }
+}
+
+/// The use sound a taken object plays at its node: the usable section's
+/// 16-byte name at body offset 0x10, read up to its first zero; `None`
+/// when its first byte is zero.
+pub fn use_sound_name(usable: &exa_formats::objdb::Operative) -> Option<String> {
+    let end = usable
+        .atlas
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(usable.atlas.len());
+    (end > 0).then(|| String::from_utf8_lossy(&usable.atlas[..end]).into_owned())
 }
 
 /// What the Ctrl/double-click interaction does on a character.
@@ -1590,9 +1736,9 @@ mod tests {
     fn placed_with(
         usable: Option<u8>,
         subtype: u8,
-        lock_open: bool,
-        reward_ready: bool,
-        key_ok: bool,
+        named: bool,
+        described: bool,
+        device_used: bool,
         container: bool,
         unmarked: bool,
         push_released: bool,
@@ -1600,9 +1746,9 @@ mod tests {
         ClickTarget::Placed {
             usable,
             subtype,
-            lock_open,
-            reward_ready,
-            key_ok,
+            named,
+            described,
+            device_used,
             container,
             unmarked,
             push_released,
@@ -1613,11 +1759,12 @@ mod tests {
         placed_with(usable, subtype, false, false, false, false, true, true)
     }
 
-    /// No usable section inspects, container or not; a closed lock needs
-    /// the key and its reward due and pays 100, or 1000 for the lock
-    /// subtype 3; an open lock opens the container; kinds 0 and 1 always
-    /// open the container; other kinds (3 included) inspect. The player's
-    /// body shows the bars for 5000 ms.
+    /// No usable section shows the card at once, container or not; a
+    /// named device asks for the delayed card whatever its use answered; an
+    /// unnamed one narrates its description after 1000 ms (kind 3) or
+    /// 100 ms when its use answered yes, else nothing; classes 0 and 1 ask
+    /// for the delayed card; other classes show the card at once. The
+    /// player's body shows the bars for 5000 ms.
     #[test]
     fn a_click_names_the_object_and_the_character() {
         assert_eq!(click(ClickTarget::Nothing), ClickOutcome::Nothing);
@@ -1630,24 +1777,138 @@ mod tests {
             ClickOutcome::CorpseScripts
         );
         assert_eq!(click(ClickTarget::LivingCharacter), ClickOutcome::Callback);
-        let lock = placed(Some(USABLE_LOCK), 0);
-        assert_eq!(click(lock), ClickOutcome::Nothing);
-        let key = placed_with(Some(USABLE_LOCK), 0, false, true, true, false, true, true);
-        assert_eq!(click(key), ClickOutcome::Unlock { reward: 100 });
-        let main = placed_with(Some(USABLE_LOCK), 3, false, true, true, false, true, true);
-        assert_eq!(click(main), ClickOutcome::Unlock { reward: 1000 });
-        let spent = placed_with(Some(USABLE_LOCK), 3, false, false, true, false, true, true);
-        assert_eq!(click(spent), ClickOutcome::Nothing);
-        let open = placed_with(Some(USABLE_LOCK), 0, true, false, false, false, true, true);
-        assert_eq!(click(open), ClickOutcome::DelayedCard);
+        let device = placed(Some(USABLE_DEVICE), 0);
+        assert_eq!(click(device), ClickOutcome::Nothing);
+        let named = placed_with(Some(2), 3, true, true, false, false, true, true);
+        assert_eq!(click(named), ClickOutcome::DelayedCard);
+        let used = placed_with(Some(2), 0, false, true, true, false, true, true);
+        assert_eq!(click(used), ClickOutcome::Narrate { delay_ms: 100 });
+        let slow = placed_with(Some(2), 3, false, true, true, false, true, true);
+        assert_eq!(click(slow), ClickOutcome::Narrate { delay_ms: 1000 });
+        let silent = placed_with(Some(2), 3, false, false, true, false, true, true);
+        assert_eq!(click(silent), ClickOutcome::Nothing);
         assert_eq!(click(placed(Some(0), 0)), ClickOutcome::DelayedCard);
         assert_eq!(click(placed(Some(1), 0)), ClickOutcome::DelayedCard);
-        let kind3 = placed_with(Some(3), 0, false, true, true, true, true, true);
-        assert_eq!(click(kind3), ClickOutcome::Inspect);
-        assert_eq!(click(placed(Some(USABLE_BUTTON), 0)), ClickOutcome::Inspect);
-        assert_eq!(click(ClickTarget::plain()), ClickOutcome::Inspect);
+        let kind3 = placed_with(Some(3), 0, true, true, true, true, true, true);
+        assert_eq!(click(kind3), ClickOutcome::CardNow);
+        assert_eq!(click(placed(Some(USABLE_BUTTON), 0)), ClickOutcome::CardNow);
+        assert_eq!(click(ClickTarget::plain()), ClickOutcome::CardNow);
         let boxed = placed_with(None, 0, false, false, false, true, true, true);
-        assert_eq!(click(boxed), ClickOutcome::Inspect);
+        assert_eq!(click(boxed), ClickOutcome::CardNow);
+        // The builders set the strings and the use on a placed object only.
+        assert_eq!(
+            placed(Some(2), 0)
+                .with_strings(false, true)
+                .with_device_used(true),
+            used
+        );
+        assert_eq!(
+            ClickTarget::Player.with_strings(true, true),
+            ClickTarget::Player
+        );
+    }
+
+    /// Kind 3 waits 2400 ms after its last use (from a clock at 0, so not
+    /// before 2400 ms); the teleporter and the reconstruction device answer
+    /// through their own use; kind 4 answers no; the id 0x24c answers yes
+    /// once; any other device yes.
+    #[test]
+    fn a_device_use_answers_by_its_kind() {
+        let mut clock = DeviceClock::default();
+        assert!(!device_use(3, 1, 2_399, &mut clock, || true));
+        assert!(device_use(3, 1, 2_400, &mut clock, || false));
+        assert_eq!(clock.last_slow_ms, 2_400);
+        assert!(!device_use(3, 1, 4_799, &mut clock, || true));
+        assert!(device_use(3, 1, 4_800, &mut clock, || true));
+        assert!(device_use(0x0f, 1, 0, &mut clock, || true));
+        assert!(!device_use(0x12, 1, 0, &mut clock, || false));
+        assert!(!device_use(4, 0x24c, 0, &mut clock, || true));
+        assert!(device_use(0, 0x24c, 0, &mut clock, || false));
+        assert!(clock.once_used);
+        assert!(!device_use(0, 0x24c, 0, &mut clock, || true));
+        assert!(device_use(0, 0x24d, 0, &mut clock, || false));
+    }
+
+    /// The first click clears the first-touch bit and reports it once.
+    #[test]
+    fn the_first_touch_bit_clears_on_the_click() {
+        assert_eq!(first_touch(0x0001_8001), (0x0001_0001, true));
+        assert_eq!(first_touch(0x0001_0001), (0x0001_0001, false));
+    }
+
+    /// A point on a node's box (a 50 cm cube about (100, 0, 0) cm, its frame
+    /// turned a quarter about y): inside the sphere and the box; 0.3 cm off
+    /// a face (0.09 cm²) still counts, 0.4 cm (0.16 cm²) does not, nor does
+    /// a point past the sphere.
+    #[test]
+    fn a_point_on_a_node_box_finds_the_object() {
+        use bevy::math::{Affine3A, Quat};
+        let frame = Affine3A::from_rotation_translation(
+            Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+            Vec3::new(100.0, 0.0, 0.0),
+        );
+        let bounds = exa_physics::sector::Bounds::of_box(Vec3::ZERO, Vec3::splat(25.0));
+        let centre = Vec3::new(100.0, 0.0, 0.0);
+        let radius = bounds.radius;
+        assert!(on_object(
+            Vec3::new(110.0, 5.0, 0.0),
+            centre,
+            radius,
+            &bounds,
+            &frame
+        ));
+        assert!(on_object(
+            Vec3::new(100.0, 25.3, 0.0),
+            centre,
+            radius,
+            &bounds,
+            &frame
+        ));
+        assert!(!on_object(
+            Vec3::new(100.0, 25.4, 0.0),
+            centre,
+            radius,
+            &bounds,
+            &frame
+        ));
+        assert!(!on_object(
+            Vec3::new(100.0, 25.3, 0.0),
+            centre,
+            25.0,
+            &bounds,
+            &frame
+        ));
+    }
+
+    /// Both kind 0 branches take the object; subtype 7 calls the name
+    /// hook, 5 opens the powers, others nothing; the use sound is the
+    /// section's name at 0x10 up to its zero.
+    #[test]
+    fn a_taken_object_runs_its_use() {
+        assert!(ObjectInteraction::Open.takes_object());
+        assert!(ObjectInteraction::Consume { due_ms: 1 }.takes_object());
+        assert!(!ObjectInteraction::Push.takes_object());
+        assert!(!ObjectInteraction::UseInHand.takes_object());
+        assert_eq!(take_use(7), TakeUse::NameHook);
+        assert_eq!(take_use(5), TakeUse::Powers);
+        assert_eq!(take_use(1), TakeUse::Nothing);
+        assert_eq!(take_use(0x11), TakeUse::Nothing);
+        let mut usable = Operative {
+            class: 0,
+            kind: 0,
+            flags: 0,
+            value: 0,
+            time: 0,
+            target: 0,
+            second: 0,
+            atlas: [0; 16],
+            destinations: [0; exa_formats::objdb::DESTINATIONS],
+        };
+        assert_eq!(use_sound_name(&usable), None);
+        usable.atlas[..6].copy_from_slice(b"Drink1");
+        assert_eq!(use_sound_name(&usable).as_deref(), Some("Drink1"));
+        usable.atlas = *b"0123456789abcdef";
+        assert_eq!(use_sound_name(&usable).as_deref(), Some("0123456789abcdef"));
     }
 
     /// Kind 0 subtype 1 consumes after 2100 ms and another subtype is
@@ -1791,7 +2052,7 @@ mod tests {
             (ObjectInteraction::UseInHand, false)
         );
         assert_eq!(
-            double_click_object(&sections(Some((USABLE_LOCK, 0, 0)), true, 0), 0),
+            double_click_object(&sections(Some((USABLE_DEVICE, 0, 0)), true, 0), 0),
             (n, true)
         );
     }

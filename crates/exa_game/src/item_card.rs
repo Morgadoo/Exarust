@@ -65,6 +65,9 @@ pub struct ShownCard {
     /// The card form's flag word; a left press over the card sets its
     /// keep-open bit ([`DESC_KEEP_OPEN`]).
     pub form_flags: u32,
+    /// The card is a world object's (the player's click), which no item
+    /// panel holds: it is not closed when the last panel closes.
+    pub world: bool,
 }
 
 impl ShownCard {
@@ -106,6 +109,18 @@ pub struct CardView {
     /// draws from the engine's one shared generator; Exarust keeps the
     /// card's own, seeded from the clock at the first card. [Exarust stand-in]
     pub roll: u32,
+    /// The pending delayed build was asked for by a world object's click.
+    pub world_pending: bool,
+}
+
+/// A card asked for by the player's single click on a world object: its
+/// placed id (tier tag included) and placement word, built at once or
+/// after the card delay as the panel's own request is.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorldCard {
+    pub item: u32,
+    pub flags: u32,
+    pub delayed: bool,
 }
 
 impl CardView {
@@ -259,6 +274,7 @@ fn show(
     pointer: (i32, i32),
     unit: i32,
     now: u32,
+    world: bool,
 ) {
     view.close(screens, icons, now);
     if view.roll == 0 {
@@ -289,6 +305,7 @@ fn show(
         at,
         fade,
         form_flags: 0,
+        world,
     });
 }
 
@@ -372,6 +389,7 @@ fn request_card(
         // The card is built by the timer system a hundred milliseconds per
         // GUI step later; the icon is acquired then.
         screens.card.toggle(entry.id, entry.flags, now);
+        view.world_pending = false;
         if let Some(card) = &mut view.shown {
             card.fade.fade_out(now);
         }
@@ -393,7 +411,57 @@ fn request_card(
         pointer,
         unit,
         now,
+        false,
     );
+}
+
+/// The world objects' card requests ([`WorldCard`]): a delayed one goes on
+/// the panel's card timer (fading a shown card), as the original's delayed
+/// card request does; an immediate one is built and shown at the pointer.
+#[allow(clippy::too_many_arguments)]
+fn world_cards(
+    mut requests: MessageReader<WorldCard>,
+    catalogue: Option<Res<ItemCatalogue>>,
+    phrases: Option<Res<PhraseBook>>,
+    mut screens: ResMut<GameScreens>,
+    mut view: ResMut<CardView>,
+    mut icons: ResMut<PanelIcons>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    time: Res<Time>,
+) {
+    let now = time.elapsed().as_millis() as u32;
+    for request in requests.read() {
+        if request.delayed {
+            screens.card.toggle(request.item, request.flags, now);
+            view.world_pending = true;
+            if let Some(card) = &mut view.shown {
+                card.fade.fade_out(now);
+            }
+            continue;
+        }
+        let (Some(catalogue), Ok(window)) = (catalogue.as_deref(), windows.single()) else {
+            continue;
+        };
+        let Some((pointer, unit)) = pointer_and_unit(window, &screens) else {
+            continue;
+        };
+        show(
+            &mut view,
+            &mut screens,
+            &mut icons,
+            catalogue,
+            phrases.as_deref().unwrap_or(&PhraseBook::default()),
+            request.item,
+            request.flags,
+            pointer,
+            unit,
+            now,
+            true,
+        );
+        if view.shown.is_none() {
+            debug!("item card: no card for world object {:#x}", request.item);
+        }
+    }
 }
 
 /// Builds a card when its delay is due, and finishes a closed card once its
@@ -412,6 +480,7 @@ fn tick_card(
         && let Some((item, flags)) = screens.card.build_due(now)
         && let Some((pointer, unit)) = pointer_and_unit(window, &screens)
     {
+        let world = std::mem::take(&mut view.world_pending);
         show(
             &mut view,
             &mut screens,
@@ -423,11 +492,13 @@ fn tick_card(
             pointer,
             unit,
             now,
+            world,
         );
     }
     // The card belongs to the item panels: when every panel is closed it
     // goes too, holding no icon reference for a form that no longer exists.
-    if view.shown.is_some()
+    // A world object's card is held by no panel and stays.
+    if view.shown.as_ref().is_some_and(|card| !card.world)
         && screens
             .find(exa_ui::game_gui::GameScreen::Inventory)
             .is_none()
@@ -756,12 +827,14 @@ pub struct ItemCardPlugin;
 
 impl Plugin for ItemCardPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<CardView>().add_systems(
-            Update,
-            (card_press, request_card, tick_card)
-                .chain()
-                .before(crate::gui_screens::close_on_right_release),
-        );
+        app.init_resource::<CardView>()
+            .add_message::<WorldCard>()
+            .add_systems(
+                Update,
+                (card_press, request_card, world_cards, tick_card)
+                    .chain()
+                    .before(crate::gui_screens::close_on_right_release),
+            );
         app.add_systems(Update, draw_card.after(crate::gui_screens::draw_screens));
     }
 }
@@ -805,6 +878,7 @@ mod tests {
             at: (100, 100),
             fade,
             form_flags: 0,
+            world: false,
         };
         // Not hit before its shown flag is set.
         assert!(!card.hit((110, 110), 4));

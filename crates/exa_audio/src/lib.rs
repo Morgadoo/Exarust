@@ -40,7 +40,10 @@ pub use music::{
 };
 pub use playback::{ANCHOR_HEIGHT_M, ListenerAnchor};
 pub use reverb::{EaxReverb, LevelReverb, Reverb};
-pub use sounds::{FOLEY_GOLEM, FOLEY_PLAYER, HEAL, HealSound, SWING, foley_set, hit_set};
+pub use sounds::{
+    FOLEY_GOLEM, FOLEY_PLAYER, HEAL, HealSound, PointSounded, SWING, foley_set, hit_set,
+    lock_sound_levels,
+};
 
 pub struct AudioPlugin;
 
@@ -51,6 +54,8 @@ impl Plugin for AudioPlugin {
             .init_resource::<playback::SourceEntities>()
             .init_resource::<MusicSetting>()
             .add_message::<sounds::HealSound>()
+            .add_message::<sounds::PointSounded>()
+            .add_message::<exa_physics::mechanism::LockSounded>()
             .add_message::<exa_combat::impact::ImpactSounded>()
             .add_message::<exa_combat::pain::PainSounded>()
             .add_message::<exa_physics::body::FootSounded>()
@@ -64,6 +69,7 @@ impl Plugin for AudioPlugin {
                     hits::impact_sounds,
                     hits::weapon_sounds,
                     sounds::heal_sounds,
+                    sounds::named_sounds,
                     sounds::swing_voices,
                     footsteps::footsteps,
                     footsteps::foot_sounds,

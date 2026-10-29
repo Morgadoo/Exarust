@@ -100,6 +100,7 @@ use crate::bindings::{Action, Bindings};
 use crate::control_nodes::Frame;
 use crate::gui_screens::{ContainerRequest, ScreenRequest};
 use crate::item_cursor::{self, HeldItem, ItemCursor, Release};
+use crate::object_click::ObjectClick;
 use crate::pick::{self, Body, Pick, ReachTo, Target};
 use crate::player::{ChaseCamera, Player, PlayerBody, window_ray};
 use crate::player_controls::{self, CharacterInteraction, ClickOutcome, ClickTarget};
@@ -1012,7 +1013,11 @@ impl Plugin for HandPlugin {
         app.init_resource::<Hand>()
             .init_resource::<ItemCursor>()
             .init_resource::<player_controls::PendingUses>()
+            .init_resource::<player_controls::DeviceClock>()
             .add_message::<WorldClick>()
+            .add_message::<ObjectClick>()
+            .add_message::<crate::item_card::WorldCard>()
+            .add_message::<exa_audio::PointSounded>()
             .add_message::<ContainerRequest>()
             .add_message::<exa_world::mechanisms::OpenDoorsUnder>()
             .add_message::<exa_world::nav::NavMoved>()
@@ -1023,6 +1028,7 @@ impl Plugin for HandPlugin {
                     take_cloth,
                     gather_markers,
                     hold_hand,
+                    crate::object_click::run_object_clicks,
                     reach_hand,
                     run_pending_uses,
                     let_go_of_doors,
@@ -1125,33 +1131,6 @@ fn run_pending_uses(
         info!("hand: deferred use opens the doors under {:#x}", due.target);
         doors.write(exa_world::mechanisms::OpenDoorsUnder { target: due.target });
     }
-}
-
-/// What the double click reads from a placed object: its id, its sections
-/// and its parent.
-type PlacedSections = (
-    Option<&'static exa_world::PlacedItem>,
-    Option<&'static exa_world::ObjectSections>,
-    Option<&'static ChildOf>,
-);
-
-/// The placed object a picked body belongs to, its tagged id and its record
-/// sections: the first placed object at or above the body's node, as the
-/// original takes the hit node's root object. `None` when that object
-/// carries no usable or container section.
-fn placed_sections(
-    body: Entity,
-    objects: &Query<PlacedSections>,
-) -> Option<(Entity, u32, exa_world::ObjectSections)> {
-    let mut at = Some(body);
-    while let Some(entity) = at {
-        let (placed, sections, parent) = objects.get(entity).ok()?;
-        if let Some(placed) = placed {
-            return sections.map(|s| (entity, placed.tagged_id, s.clone()));
-        }
-        at = parent.map(ChildOf::parent);
-    }
-    None
 }
 
 /// The level's placement markers while the item cursor holds something:
@@ -1607,12 +1586,7 @@ fn hold_hand(
         Option<Res<crate::gamepad::PlayPad>>,
         Option<Res<crate::gamepad::PadStatus>>,
     ),
-    (mut clicks, mut containers, objects, mut uses): (
-        MessageWriter<WorldClick>,
-        MessageWriter<ContainerRequest>,
-        Query<PlacedSections>,
-        Option<ResMut<player_controls::PendingUses>>,
-    ),
+    (mut clicks, mut objects): (MessageWriter<WorldClick>, MessageWriter<ObjectClick>),
 ) {
     let released = buttons.just_released(MouseButton::Left);
     let player = player_child(&players, &player_bodies);
@@ -1675,30 +1649,38 @@ fn hold_hand(
                 glue.push(&mut ragdoll, true);
                 info!("hand: push surface {:#x} pushed", glue.id);
             }
-            // The placed object a picked body belongs to, with its record's
-            // usable and container sections.
-            let object = match picked.map(|p| p.hit) {
-                Some(Hit::Prop { body, .. } | Hit::SceneNode { node: body }) => {
-                    placed_sections(body, &objects)
+            // A click on anything but a character goes to the placed
+            // objects' click handler: the single click outside combat mode,
+            // the double click's interaction while in reach.
+            if let Some(picked) = picked
+                && !matches!(picked.hit, Hit::Character { .. })
+            {
+                let pointer = window
+                    .map(|window| (left.at * window.scale_factor()).as_ivec2())
+                    .unwrap_or(IVec2::ZERO);
+                if !combat {
+                    objects.write(ObjectClick {
+                        hit: picked.hit,
+                        at: picked.at,
+                        pointer,
+                        double: false,
+                    });
                 }
-                _ => None,
-            };
+                if interact && !hand.out_of_reach {
+                    objects.write(ObjectClick {
+                        hit: picked.hit,
+                        at: picked.at,
+                        pointer,
+                        double: true,
+                    });
+                }
+            }
             if !combat || interact {
                 let target = picked.and_then(|picked| match picked.hit {
                     Hit::Character { body, .. } if body == child => Some(ClickTarget::Player),
                     Hit::Character { dead, .. } if dead => Some(ClickTarget::DeadCharacter),
                     Hit::Character { .. } => Some(ClickTarget::LivingCharacter),
-                    Hit::Prop { .. } => Some(
-                        object
-                            .as_ref()
-                            .map_or(ClickTarget::plain(), |(_, _, sections)| {
-                                ClickTarget::of_object(sections)
-                            }),
-                    ),
-                    Hit::SceneNode { .. } => object
-                        .as_ref()
-                        .map(|(_, _, sections)| ClickTarget::of_object(sections)),
-                    Hit::Level => None,
+                    _ => None,
                 });
                 if let Some(target) = target {
                     if !combat {
@@ -1709,43 +1691,6 @@ fn hold_hand(
                             && let Some(time) = time.as_deref()
                         {
                             show.show_for(time.elapsed().as_millis() as i64, i64::from(ms));
-                        }
-                    }
-                    // The controls' double click on a placed object: its own
-                    // use runs first; unless that ends the interaction, a
-                    // container section opens the container's popup. As
-                    // the push above, it waits for the point to be in
-                    // reach (the interaction gate's reach test).
-                    if interact
-                        && !hand.out_of_reach
-                        && let Some((entity, id, sections)) = object.as_ref()
-                    {
-                        let now = time
-                            .as_deref()
-                            .map_or(0, |time| time.elapsed().as_millis() as u32);
-                        let (use_of, opens) = player_controls::double_click_object(sections, now);
-                        debug!("double click object {id:#x}: {use_of:?}, container {opens}");
-                        // The consumable joins the deferred list with its
-                        // usable section's target word.
-                        if let player_controls::ObjectInteraction::Consume { due_ms } = use_of
-                            && let Some(uses) = uses.as_deref_mut()
-                            && let Some(usable) = sections.usable
-                        {
-                            uses.0.push(player_controls::PendingUse {
-                                due_ms,
-                                target: usable.target,
-                            });
-                        }
-                        if opens {
-                            let pointer = windows
-                                .single()
-                                .map(|window| (left.at * window.scale_factor()).as_ivec2())
-                                .unwrap_or(IVec2::ZERO);
-                            containers.write(ContainerRequest {
-                                object: *entity,
-                                id: *id,
-                                pointer,
-                            });
                         }
                     }
                     if interact {
@@ -2929,7 +2874,7 @@ mod tests {
             .init_resource::<Hand>()
             .init_resource::<ItemCursor>()
             .add_message::<WorldClick>()
-            .add_message::<ContainerRequest>()
+            .add_message::<ObjectClick>()
             .add_systems(Update, (press_hand, hold_hand, reach_hand).chain());
         app.world_mut()
             .resource_mut::<ButtonInput<MouseButton>>()
