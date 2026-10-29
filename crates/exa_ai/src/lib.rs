@@ -38,6 +38,7 @@ pub mod entity;
 pub mod fight;
 pub mod flee;
 pub mod golem;
+pub mod ground;
 pub mod hear;
 pub mod idle;
 pub mod lifecycle;
@@ -284,6 +285,9 @@ struct DuelField<'a> {
     foe: Vec3,
     heading: Vec3,
     spot: place::Spot,
+    /// The level's navigation grid, the installed pathfinder (none: the
+    /// abstract one).
+    grid: Option<&'a exa_world::nav::NavGrid>,
     /// The chase's state, when the level has a navigation grid.
     chase: Option<DuelChase<'a>>,
     /// The power system, when the duellist has powers.
@@ -303,6 +307,15 @@ struct DuelChase<'a> {
 }
 
 impl combat::Field for DuelField<'_> {
+    fn ground_cost(&mut self, point: Vec3) -> f32 {
+        ground::ground_cost(self.grid, point)
+    }
+    fn walk_line(&mut self, from: Vec3, to: &mut Vec3) -> bool {
+        ground::walk_line(self.grid, from, to)
+    }
+    fn blocked(&mut self, from: Vec3, to: Vec3) -> bool {
+        ground::out_of_sight(self.grid, from, to)
+    }
     fn chase(&mut self, estimate: Vec3, roll: &mut u32) -> bool {
         let Some(c) = self.chase.as_mut() else {
             return false;
@@ -422,7 +435,10 @@ fn published_blow(
 fn duellist(
     mut commands: Commands,
     ticks: Option<Res<BodyTicks>>,
-    nav: Option<Res<exa_world::nav::NavGrid>>,
+    (mut nav, mut footprints): (
+        Option<ResMut<exa_world::nav::NavGrid>>,
+        Option<ResMut<exa_world::nav::NavFootprints>>,
+    ),
     targets: Query<(&GlobalTransform, Has<brain::MindWarded>)>,
     motions: Option<Res<Motions>>,
     bodies: Query<
@@ -788,6 +804,17 @@ fn duellist(
         {
             ai.mind.casting = false;
         }
+        // The AI tick lifts the fighter's own footprint before its state
+        // and stamps it again after, so the state's ground costs, line
+        // walks and sight see only the others' footprints.
+        let own_print = match (nav.as_deref_mut(), footprints.as_deref_mut()) {
+            (Some(grid), Some(prints)) => {
+                let at = prints.of(entity);
+                prints.lift(grid, entity);
+                at
+            }
+            _ => None,
+        };
         for _ in 0..runs {
             let yaw = yaw_of(t.rotation);
             let stepping = ai.step;
@@ -856,6 +883,7 @@ fn duellist(
                 foe: foe_chest,
                 heading: me.heading,
                 spot,
+                grid: nav.as_deref(),
                 chase: nav.as_deref().map(|grid| DuelChase {
                     mind: chase_mind,
                     turn: &mut *turn,
@@ -1022,6 +1050,11 @@ fn duellist(
                     stance.action(),
                 );
             }
+        }
+        if let (Some(at), Some(grid), Some(prints)) =
+            (own_print, nav.as_deref_mut(), footprints.as_deref_mut())
+        {
+            prints.stamp(grid, entity, at);
         }
         // Only a character in the scene moves its body. A hidden one's AI
         // still runs its combat state above, as the original's AI manager
