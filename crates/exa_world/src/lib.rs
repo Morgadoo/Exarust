@@ -1435,6 +1435,11 @@ impl LevelLoad {
             {
                 queue.clear();
             }
+            if let Some(mut queue) =
+                world.get_resource_mut::<exa_render::terrain_composite::TerrainCopyQueue>()
+            {
+                queue.clear();
+            }
         });
         commands.insert_resource(LevelLocalItems(scene.local_items.clone()));
         commands.insert_resource(LevelLocalRecords {

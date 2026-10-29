@@ -1213,6 +1213,19 @@ impl BlockComposite {
     }
 }
 
+/// A set copy the selection ordered: a block that gives up its high set (it
+/// turned low resolution) takes a low set carrying a copy of its composite,
+/// as the original's set-copy pass blits each target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockCopy {
+    /// The block whose composite is copied.
+    pub block: usize,
+    /// The high set it held (the copy's source).
+    pub from: u32,
+    /// The low set it received (the copy's destination).
+    pub to: u32,
+}
+
 /// The block selector: the original's selected list, pools, steal cursor and
 /// composite ring.
 #[derive(Clone, Debug, PartialEq)]
@@ -1224,6 +1237,9 @@ pub struct CompositeSelector {
     ring: i32,
     /// The blocks whose composite was written in the last selection.
     baked: Vec<usize>,
+    /// The set copies the last selection ordered, in the order it ordered
+    /// them.
+    copies: Vec<BlockCopy>,
     /// Scratch for the priority pass.
     scratch: Vec<super::stream::BlockPriority>,
 }
@@ -1246,6 +1262,7 @@ impl CompositeSelector {
             cursor: 0,
             ring: RING_START,
             baked: Vec::new(),
+            copies: Vec::new(),
             scratch: Vec::new(),
         }
     }
@@ -1267,6 +1284,13 @@ impl CompositeSelector {
     /// order written (a stolen set's copy counts too).
     pub fn last_baked(&self) -> &[usize] {
         &self.baked
+    }
+
+    /// The set copies the last selection ordered: a block that gave up its
+    /// high set for a low one keeps its image through a copy of its
+    /// composite rather than a rebake.
+    pub fn last_copies(&self) -> &[BlockCopy] {
+        &self.copies
     }
 
     pub fn pools(&self) -> &CompositePools {
@@ -1324,9 +1348,10 @@ impl CompositeSelector {
         base
     }
 
-    /// The distance test: a block within 44.4 m is selected, a NaN distance
-    /// kept as low; within 15 m it becomes high resolution. A block out of
-    /// reach leaves the list and hands its set back.
+    /// The distance test: a block within 44.4 m is selected, as is a NaN
+    /// distance (its unordered compare takes the keep branch), and a block
+    /// within 15 m becomes high resolution (a NaN one is low). A block
+    /// out of reach leaves the list and hands its set back.
     fn select(&mut self, focus: Vec2) {
         let (fx, fz) = (focus.x * 100.0, focus.y * 100.0);
         for index in 0..self.blocks.len() {
@@ -1334,10 +1359,7 @@ impl CompositeSelector {
             let dx = fx - centre.x * 100.0;
             let dz = fz - centre.y * 100.0;
             let d2 = dz * dz + dx * dx;
-            // Kept when the squared distance does not compare above the far
-            // cut-off; NaN is kept.
-            let kept = d2 <= FAR_D2 || d2.is_nan();
-            if kept {
+            if super::stream::within_reach(d2) {
                 if self.blocks[index].selection.is_none() {
                     if self.selected.len() >= MAX_SELECTED {
                         continue;
@@ -1345,10 +1367,8 @@ impl CompositeSelector {
                     self.blocks[index].selection = Some(self.selected.len());
                     self.selected.push(index);
                 }
-                // NaN falls into the low branch (its compare is unordered).
-                let low = d2.is_nan() || d2 >= NEAR_D2;
                 let block = &mut self.blocks[index];
-                if low {
+                if !super::stream::high_resolution(d2) {
                     block.state = (block.state & !block_flags::HIGH_RES) | block_flags::LOW_RES;
                 } else {
                     if block.state & (block_flags::LOW_RES | block_flags::HIGH_RES)
@@ -1454,6 +1474,7 @@ impl CompositeSelector {
     fn composite(&mut self) -> bool {
         self.cursor = self.selected.len().saturating_sub(1);
         self.baked.clear();
+        self.copies.clear();
         let mut changed = false;
         let mut at = 0;
         while at < self.selected.len() {
@@ -1555,11 +1576,19 @@ impl CompositeSelector {
         if state & block_flags::BLANK != 0 {
             return;
         }
+        let from = self.blocks[other].set;
         // The hand-out helper scans from the holder's place in the list.
         let at = self.blocks[other].selection.unwrap_or(0);
         if let Some(low) = self.take_low(at) {
             self.blocks[other].set = Some(low);
             self.blocks[other].state = (state & block_flags::WANTED) | 0x500;
+            if let Some(from) = from {
+                self.copies.push(BlockCopy {
+                    block: other,
+                    from,
+                    to: low,
+                });
+            }
             self.composited(other);
         } else {
             self.blocks[other].set = None;
@@ -1577,9 +1606,17 @@ impl CompositeSelector {
             self.blocks[other].set = low;
             return;
         }
+        let from = self.blocks[other].set;
         if let Some(low) = low {
             self.blocks[other].set = Some(low);
             self.blocks[other].state = (state & block_flags::WANTED) | 0x500;
+            if let Some(from) = from {
+                self.copies.push(BlockCopy {
+                    block: other,
+                    from,
+                    to: low,
+                });
+            }
             self.composited(other);
         } else {
             self.blocks[other].set = None;
@@ -2489,7 +2526,8 @@ mod tests {
         let mut sel = selector(&[Vec2::new(44.4, 0.0), Vec2::new(44.41, 0.0)]);
         assert!(sel.reselect(Vec2::ZERO));
         assert_eq!(sel.selected(), [0]);
-        // A NaN distance is kept, low.
+        // A NaN distance is kept, low: the unordered far compare jumps to
+        // the keep branch and the near compare to the low one.
         let mut sel = selector(&[Vec2::new(f32::NAN, 0.0)]);
         assert!(sel.reselect(Vec2::ZERO));
         assert_eq!(sel.blocks()[0].state() & 0xf00, 0x500);
@@ -2528,6 +2566,41 @@ mod tests {
         assert!(sel.reselect(Vec2::ZERO));
         assert_eq!(sel.blocks()[0].state(), 0xa00);
         assert_eq!((sel.pools().high_free(), sel.pools().low_free()), (20, 43));
+    }
+
+    #[test]
+    fn a_block_that_gives_up_its_high_set_keeps_a_copy_of_it() {
+        // Twenty-one blocks at 20 m and the last at the focus: the first
+        // frame bakes the twenty-one high and leaves the last blank with no
+        // high set to be had.
+        let mut centres = vec![Vec2::new(20.0, 0.0); 21];
+        centres.push(Vec2::ZERO);
+        let mut sel = selector(&centres);
+        for i in 0..22 {
+            sel.block_mut(i).unwrap().visible = true;
+        }
+        assert!(sel.reselect(Vec2::new(10.0, 0.0)));
+        assert_eq!(sel.pools().high_free(), 0);
+        assert_eq!(sel.blocks()[21].state(), 0x206);
+        assert_eq!(sel.blocks()[21].set(), None);
+        // Move onto the last block: the twenty-one turn low (holding high
+        // sets at low resolution), the last still wants a high set and steals
+        // the last holder's. The holder is not blank, so it takes a low set
+        // with a copy of its composite.
+        assert!(sel.reselect(Vec2::ZERO));
+        assert_eq!(sel.blocks()[21].state(), 0xa00);
+        let copy = sel.last_copies();
+        assert_eq!(copy.len(), 1);
+        assert_eq!(copy[0].block, 20);
+        // The copy's source is the set the holder had, the destination the
+        // set it holds now.
+        assert_eq!(sel.blocks()[20].state(), 0x500);
+        assert_eq!(sel.blocks()[20].set(), Some(copy[0].to));
+        assert_ne!(copy[0].from, copy[0].to);
+        assert_eq!((sel.pools().high_free(), sel.pools().low_free()), (0, 42));
+        // A quiet frame orders no copies.
+        let _ = sel.reselect(Vec2::ZERO);
+        assert!(sel.last_copies().is_empty());
     }
 
     #[test]

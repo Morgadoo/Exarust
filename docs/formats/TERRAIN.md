@@ -310,7 +310,10 @@ set for another) attaches each destination target in turn (colour always,
 normal, gloss and displacement when their features are on), binds the
 source's same target at unit 0 and draws a full-target quad whose vertex and
 unit-0 texcoord are the same 0/1 corner. `terrain::composite::copy_draws`
-holds those passes and their sides.
+holds those passes and their sides; the selection reports each copy it
+orders and `composite_draw` blits it through
+`exa_render::terrain_composite::TerrainCopy` (colour first, then the targets
+both sets have).
 
 The selection and the frame hook decide which block is rebaked. Blocks within
 44.4 m of the look-ahead point (the camera moved 10 m along its back axis and

@@ -25,9 +25,11 @@
 use bevy::prelude::*;
 
 use exa_render::terrain_composite::{
-    HostedSet, TerrainBake, TerrainBakeParams, TerrainBakeQueue, TerrainCompositeHost,
+    HostedSet, TerrainBake, TerrainBakeParams, TerrainBakeQueue, TerrainCompositeHost, TerrainCopy,
+    TerrainCopyQueue,
 };
 
+use super::composite::BlockCopy;
 use super::live::TerrainStreaming;
 use super::{TerrainBlock, TerrainSplat, composite, terrain_flags};
 
@@ -111,6 +113,23 @@ pub fn draw_steps(
         in_flight += 1;
     }
     steps
+}
+
+/// Whether a selection's set copy can run this frame: both sets are hosted,
+/// no bake is in flight for the block and it draws from the high set it
+/// gives up (baked into that set's current colour target). A block whose high
+/// set was never baked, or is still baking, is left to the rebake: a copy
+/// would read a target nothing has written yet. `hosted` gives a set's colour
+/// target.
+pub fn copy_ready(
+    copy: &BlockCopy,
+    hosted: impl Fn(u32) -> Option<AssetId<Image>>,
+    state: Option<&DrawState>,
+) -> bool {
+    let (Some(source), Some(_)) = (hosted(copy.from), hosted(copy.to)) else {
+        return false;
+    };
+    state.is_some_and(|state| state.baking.is_none() && state.drawn == Some((copy.from, source)))
 }
 
 /// Where a block's composite sits: its low world corner and side, its tile's
@@ -249,6 +268,7 @@ pub fn release_terrain_caches(
     streaming: Option<Res<TerrainStreaming>>,
     host: Option<ResMut<TerrainCompositeHost>>,
     queue: Option<ResMut<TerrainBakeQueue>>,
+    copy_queue: Option<ResMut<TerrainCopyQueue>>,
     mut draws: ResMut<CompositeDraws>,
 ) {
     if streaming.is_some() {
@@ -260,6 +280,11 @@ pub fn release_terrain_caches(
         host.clear();
     }
     if let Some(mut queue) = queue
+        && !queue.is_empty()
+    {
+        queue.clear();
+    }
+    if let Some(mut queue) = copy_queue
         && !queue.is_empty()
     {
         queue.clear();
@@ -277,11 +302,14 @@ pub fn draw_terrain_composites(
     streaming: Option<Res<TerrainStreaming>>,
     host: Option<Res<TerrainCompositeHost>>,
     queue: Option<ResMut<TerrainBakeQueue>>,
+    copy_queue: Option<ResMut<TerrainCopyQueue>>,
     mut draws: ResMut<CompositeDraws>,
     mut materials: ResMut<Assets<TerrainSplat>>,
     blocks: Query<(&TerrainBlock, &MeshMaterial3d<TerrainSplat>)>,
 ) {
-    let (Some(streaming), Some(host), Some(mut queue)) = (streaming, host, queue) else {
+    let (Some(streaming), Some(host), Some(mut queue), Some(mut copy_queue)) =
+        (streaming, host, queue, copy_queue)
+    else {
         return;
     };
     if !host.enabled() {
@@ -290,6 +318,48 @@ pub fn draw_terrain_composites(
     let live = streaming.blocks();
     if streaming.is_added() || draws.states.len() != live.len() {
         draws.reset(live.len());
+    }
+    // A block that gave up its high set for a low one keeps its image: the
+    // original blits the high set's targets into the low set instead of
+    // re-stacking the layers. The blits run before this frame's draws, so
+    // the block moves onto the copied set at once. A block whose high set
+    // is still baking is left to the rebake below.
+    for copy in streaming.selector().last_copies().to_vec() {
+        let index = copy.block;
+        if !copy_ready(
+            &copy,
+            |set| host.set(set).map(|hosted| hosted.colour.id()),
+            draws.states.get(index),
+        ) {
+            continue;
+        }
+        let (Some(source), Some(targets)) = (host.set(copy.from), host.set(copy.to)) else {
+            continue;
+        };
+        let Ok((block, material)) = blocks.get(live[index].entity) else {
+            continue;
+        };
+        let tile = draws.tile_materials[index]
+            .clone()
+            .unwrap_or_else(|| material.0.clone());
+        let frame = BlockFrame::new(block, live[index].centre, live[index].half);
+        let Some(own) = materials
+            .get(&tile)
+            .and_then(|source| composite_material(source, block, &frame, targets))
+        else {
+            continue;
+        };
+        let Some(job) = TerrainCopy::between(copy.from, source, copy.to, targets) else {
+            continue;
+        };
+        copy_queue.push(job);
+        let own = materials.add(own);
+        commands
+            .entity(live[index].entity)
+            .insert(MeshMaterial3d(own.clone()));
+        draws.tile_materials[index] = Some(tile);
+        draws.own[index] = Some(own);
+        draws.states[index].drawn = Some((copy.to, targets.colour.id()));
     }
     let finished = queue.finished();
     let drawn_before = draws.drawn();
@@ -400,6 +470,7 @@ mod tests {
         app.add_systems(Update, release_terrain_caches);
         app.init_resource::<CompositeDraws>();
         app.insert_resource(TerrainBakeQueue::default());
+        app.insert_resource(TerrainCopyQueue::default());
         let mut host = TerrainCompositeHost::default();
         host.set_enabled(true);
         let mut images = Assets::<Image>::default();
@@ -481,6 +552,49 @@ mod tests {
             draw_steps(&[Some(5)], hosted, &[baking], &[0], &[], 1),
             [DrawStep::Cancel(0, 3), DrawStep::Bake(0, 5)]
         );
+    }
+
+    #[test]
+    fn a_copy_waits_for_both_sets_and_a_finished_bake() {
+        let copy = BlockCopy {
+            block: 0,
+            from: 4,
+            to: 21,
+        };
+        let hosted = |set: u32| Some(image(u128::from(set)));
+        let drawing = DrawState {
+            baking: None,
+            drawn: Some((4, image(4))),
+        };
+        let baking = DrawState {
+            baking: Some((4, image(4), 1)),
+            drawn: Some((4, image(4))),
+        };
+        // Both sets hosted, the block draws its baked high set.
+        assert!(copy_ready(&copy, hosted, Some(&drawing)));
+        // The source set not hosted.
+        assert!(!copy_ready(
+            &copy,
+            |set| (set == 21).then(|| image(21)),
+            Some(&drawing)
+        ));
+        // The destination not hosted.
+        assert!(!copy_ready(
+            &copy,
+            |set| (set == 4).then(|| image(4)),
+            Some(&drawing)
+        ));
+        // The high set is still being written.
+        assert!(!copy_ready(&copy, hosted, Some(&baking)));
+        // The high set was never baked for this block, or was rebuilt since.
+        assert!(!copy_ready(&copy, hosted, Some(&DrawState::default())));
+        let stale = DrawState {
+            baking: None,
+            drawn: Some((4, image(99))),
+        };
+        assert!(!copy_ready(&copy, hosted, Some(&stale)));
+        // No state for the block.
+        assert!(!copy_ready(&copy, hosted, None));
     }
 
     #[test]

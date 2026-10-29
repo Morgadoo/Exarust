@@ -25,7 +25,7 @@
 use bevy::camera::visibility::ViewVisibility;
 use bevy::prelude::*;
 
-use super::composite::{BlockComposite, CompositePools, CompositeSelector, FAR_D2};
+use super::composite::{BlockComposite, CompositePools, CompositeSelector};
 use super::stream::{
     LightVolume, OrientedBox, TerrainStream, TileAction, composite_focus, nearest_light_distance,
 };
@@ -332,7 +332,7 @@ pub fn block_light_distances_in_rooms(
                 (focus.y - block.centre.y) * 100.0,
             );
             let d2 = dz * dz + dx * dx;
-            let in_reach = d2 <= FAR_D2 || d2.is_nan();
+            let in_reach = crate::terrain::stream::within_reach(d2);
             if shown || !in_reach || lights.is_empty() {
                 return None;
             }
