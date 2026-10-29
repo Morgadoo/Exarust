@@ -758,6 +758,24 @@ pub fn perceive_all(
             {
                 combatant.alert = floor;
             }
+            // The perception's familiarity drift goes into the relations
+            // (the original's sense routine writes it to the character's
+            // relation with the one it saw).
+            if let (Some(relations), Some(drift)) = (relations.as_deref_mut(), sight.familiarity)
+                && sensed.character_id != 0
+            {
+                // A character seen for the first time gets its relation,
+                // as the role database makes one on the first meeting.
+                if relations.find(sensed.character_id).is_none() {
+                    relations.create(
+                        sensed.character_id,
+                        0.0,
+                        now,
+                        db.as_deref().map_or(0, |db| db.locale),
+                    );
+                }
+                relations.add_familiarity(sensed.character_id, drift);
+            }
             let mut record = ContactRecord::of(&combatant.contacts[index], sensed.id);
             // The integration skips the calming of a knocked-out character
             // (the out bit of its condition); the perception clears the
@@ -1030,6 +1048,9 @@ pub fn ai_tick(
                 theirs.hostility = c.hostility;
                 theirs.concern_target = c.concern_target;
                 theirs.noticed = c.noticed;
+                // The contact's elapsed count, which the sense's
+                // familiarity drift multiplies, is the brain's ticks seen.
+                theirs.elapsed = c.ticks_seen;
             }
         }
         // The target pass decides the engagement: an entry starts the
@@ -2810,6 +2831,47 @@ mod tests {
             .unwrap();
         assert!((c.soothe - -50.0).abs() < 1e-6, "{}", c.soothe);
         assert_eq!(c.tolerance, 0.0);
+    }
+
+    #[test]
+    fn the_sense_writes_its_familiarity_drift_into_the_relations() {
+        let mut app = App::new();
+        app.insert_resource(db()).add_systems(Update, perceive_all);
+        let player = app
+            .world_mut()
+            .spawn((
+                GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 2.0)),
+                Fighter::default(),
+                RatedPlayer,
+                Roles::new_character(&db().book, 0),
+                CharacterId(PLAYER_ID),
+            ))
+            .id();
+        let mut combatant = Combatant::default();
+        let mut seen = combatant::Contact::new(player);
+        // The contact's elapsed count is the caller's; the sense's drift
+        // scales with it, so a long-known character drifts.
+        seen.elapsed = 100;
+        combatant.contacts.push(seen);
+        let npc = app
+            .world_mut()
+            .spawn((
+                held(&[9, 2]),
+                Npc::new([0.0; 4]),
+                combatant,
+                crate::Duellist::new(player),
+                Mind::new(0.0),
+                GlobalTransform::IDENTITY,
+                Fighter::default(),
+                Relations::default(),
+                CharacterId(2),
+            ))
+            .id();
+        app.update();
+        let relations = app.world().get::<Relations>(npc).unwrap();
+        let relation = relations.find(PLAYER_ID).expect("a relation was made");
+        assert!(relation.base != 0.0, "{}", relation.base);
+        assert!(relation.base.abs() < 1.0, "{}", relation.base);
     }
 
     #[test]
