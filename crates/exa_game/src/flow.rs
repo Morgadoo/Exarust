@@ -2546,7 +2546,7 @@ impl Flow {
                 drop_on_low_health: false,
             },
             // The end menu hides and the prelude closes before the world
-            // goes; the controls are taken away for the load.
+            // goes.
             Step::HideEndMenu,
             Step::ClosePrelude,
             Step::TeardownWorld,
@@ -2555,7 +2555,6 @@ impl Flow {
                 spawn: 0,
                 teardown: true,
             },
-            Step::Controls(false),
             Step::PlacePlayer(placement),
             Step::RequestAction(0x2f),
             Step::Hook(Hook::Story),
@@ -4993,7 +4992,9 @@ mod tests {
         assert!(steps.contains(&Step::ClearStoryFlag));
         assert!(steps.contains(&Step::HideEndMenu));
         assert!(steps.contains(&Step::ClosePrelude));
-        assert!(steps.contains(&Step::Controls(false)));
+        // The respawn re-attaches the player controls to the new body; it
+        // does not take them away.
+        assert!(!steps.contains(&Step::Controls(false)));
         assert!(!steps.iter().any(|step| matches!(step, Step::Camera(_))));
     }
 
