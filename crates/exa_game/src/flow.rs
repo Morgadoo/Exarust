@@ -1249,8 +1249,11 @@ pub enum Step {
     StripPlayer,
     /// Clear the player node's story bit (the reconstruction mark).
     ClearStoryFlag,
-    /// Write the player's own record back into the save.
-    PlayerData,
+    /// Write the player's own record back into the save, with the record's
+    /// flags word (the death screen's CONTINUE passes 0x100).
+    PlayerData {
+        flags: u32,
+    },
     /// Show or hide the game's view.
     GameGui(bool),
     /// Write a wake-up or get-up pose.
@@ -2687,7 +2690,9 @@ impl Flow {
     /// The end-of-life story CONTINUE of a save with no record: the player
     /// data is written back, then the respawn runs behind the transition.
     pub fn continue_after_death(&mut self) -> Vec<Step> {
-        let mut steps = vec![Step::PlayerData];
+        // The record the write-back is handed carries 0x100 in its flags
+        // word (the death screen's CONTINUE mode).
+        let mut steps = vec![Step::PlayerData { flags: 0x100 }];
         steps.extend(self.transition(Action::StoryRespawn, true));
         steps
     }
@@ -4176,6 +4181,19 @@ mod tests {
                 clock: Some(ClipClock::Push(2000)),
             }
         );
+    }
+
+    #[test]
+    fn the_death_screens_continue_writes_the_player_back_first() {
+        let mut flow = Flow {
+            mode: Mode::Story,
+            phase: Phase::Ended,
+            ..Default::default()
+        };
+        let steps = flow.continue_after_death();
+        assert_eq!(steps[0], Step::PlayerData { flags: 0x100 });
+        assert!(steps.contains(&Step::Transition));
+        assert_eq!(flow.phase, Phase::Transition);
     }
 
     #[test]
