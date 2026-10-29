@@ -540,14 +540,14 @@ fn duellist(
             ai.in_combat = true;
             combat::enter(&mut ai.mind, false, now as u32);
             ai.mind.heading = yaw_of(t.rotation);
-            // The target is set here: the estimate and the bearing start at
-            // its body, and the set-target's fresh flag, commitment and
-            // cleared overshoot and stuck counts are set.
+            // The target is set here: the estimate starts at its body, the
+            // set-target's fresh flag, commitment and cleared overshoot and
+            // stuck counts are set, and the bearing and aim are measured
+            // from the chest.
             let chest_cm = stance::chest_point(gt, ragdoll) * CM;
             let target_cm = target.translation() * CM;
             let previous = ai.bearing.0;
-            let bearing =
-                combat::set_target(&mut ai.mind, target_cm, chest_cm, chest_cm.y, previous);
+            let bearing = combat::set_target(&mut ai.mind, target_cm, chest_cm, previous);
             ai.bearing = (bearing.to_target, bearing.distance_cm);
             combatant.in_combat = true;
             combatant.clear_combat_step(gt.translation() * 100.0, t.rotation * Vec3::Z, 0.0);
