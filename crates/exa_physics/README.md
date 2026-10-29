@@ -179,7 +179,11 @@ the summed push; a pair that takes the hit event exposes the original's
 handler payload as `body::pairs::HitEvent` (the other side, the mean
 point, the fastest travel and the summed push).
 The sector's simulated-object stages (`sector::ObjectContacts`) hand a
-cloth the parts passing `sector::object_body_meet` (the bound spheres
+cloth, of the parts the grid sector's object stage walks (those bucketed
+by their mesh box's world centre in the nine 6 m cells around the
+object's own cell, `CellGrid::around`, in the neighbour table's order;
+the original's small-scene all-pairs sector offers every body, Exarust's
+levels are grid sectors), the parts passing `sector::object_body_meet` (the bound spheres
 must not be apart, then the object's centre within its radius of the
 part's mesh box, the original's point-to-box distance; a NaN passes both),
 each as a `cloth_body::ClothBody` with its body's countdown and its
