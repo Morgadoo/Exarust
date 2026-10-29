@@ -403,8 +403,12 @@ since and the radius 30·R + 10 cm; `exa_character::blood` paints it. See
 The weapon that deals a bleeding blow draws blood at the blow
 (`wounds::BladeBlood` on the entity holding its model): half the wound's
 R, up to 1, never washed off, even when the wound itself is dropped from a
-full queue. Fists have none. `exa_character::blood` draws its stain
-([`docs/RENDERING.md`](../../docs/RENDERING.md), Blood on weapons).
+full queue. Fists have none. The sum is kept by the original list's own
+rule (`weapon_blood::add_blood`: 1 when 1 is below it, 0 when 0 is above
+it; NaN and −0 pass), which `weapon_blood::WeaponBlood` (the original's
+per-scene list of spots, a tested model) shares. `exa_character::blood`
+draws its stain ([`docs/RENDERING.md`](../../docs/RENDERING.md), Blood on
+weapons).
 
 A bleeding blow also sprays at the blow (`wounds::Spray`, a message): one
 jet on the struck part at the contact point, against the striking point's

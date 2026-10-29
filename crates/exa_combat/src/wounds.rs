@@ -94,10 +94,11 @@ pub struct Spray {
 pub struct BladeBlood(pub f32);
 
 impl BladeBlood {
-    /// Draws the blood of a bleeding wound of size `size`: 0.5·R more, kept
-    /// within 0..=1.
+    /// Draws the blood of a bleeding wound of size `size`: R·0.5 more, kept
+    /// within 0..=1 by the weapon-blood list's own rule
+    /// ([`crate::weapon_blood::add_blood`]).
     pub fn draw(&mut self, size: f32) {
-        self.0 = (self.0 + BLADE_BLOOD_PER_WOUND * size).clamp(0.0, 1.0);
+        self.0 = crate::weapon_blood::add_blood(self.0, size * BLADE_BLOOD_PER_WOUND);
     }
 }
 

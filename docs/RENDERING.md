@@ -1219,10 +1219,20 @@ a full queue (`exa_combat::wounds::Spray`):
 - pointing against the striking point's swing (the blade tip's velocity),
   its frame's second axis along the jet, the first across it and the
   world's +Z, the third across both (a jet along ±Z keeps only its axis);
+  the first two are made unit as the original's normalise does, by the
+  processor's approximate reciprocal square root of (x² + z²) + y² (unit
+  to about 12 bits), the third is their cross product as it comes. The
+  frame is tied to the part by the transpose of the part's turn: each axis
+  becomes its dots with the part's axes, (x·aₓ + y·a_y) + z·a_z, and the
+  origin the same of its offset from the part's origin;
 - strength 120·R, or 200 once R exceeds 1.67 (in double precision); it
   sends round(0.3 × strength) droplets, halves to even: 36·R droplets, 60
   at most (16 for the chest cut of R 0.457), and then stops; a new jet
-  takes the first finished jet's place.
+  takes the first finished jet's place;
+- dropped, all of them, when the world is torn down (the original's world
+  reset sets the spray's source count to 0; Exarust runs it on a level
+  change's teardown, a guess for the session routines that call it). The
+  droplets already flying, the clock and the slot sizes stay.
 
 **Emission**: the scene's sprays share one clock. Each tick it drops by 1
 with probability ⅔; while it is below 1, every running jet sends a

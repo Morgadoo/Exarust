@@ -4,6 +4,9 @@
 //! two terms the stain needs from the weapon's length: the length over 80
 //! and the inverse square root of 80 over the length. The draw
 //! (`exa_render::stain`) uses the amount; this is the original's own list.
+//! The running game keeps each held weapon's spot amount as
+//! [`crate::wounds::BladeBlood`] on the weapon, raised by the same rule
+//! ([`add_blood`]).
 //!
 //! - **Adding a source** ([`WeaponBlood::add`]): a source carrying
 //!   `0x400000` adds nothing and returns 0. Otherwise the source takes the
@@ -19,7 +22,7 @@
 //! - **Clearing a spot** ([`WeaponBlood::clear`]) drops its source, amount
 //!   and scale; the slot is then free.
 //! - **Adding blood** ([`WeaponBlood::add_amount`]) raises the spot's amount
-//!   by the delta and keeps it within 0 through 1.
+//!   by the delta and keeps it within 0 through 1 ([`add_blood`]).
 //!
 //! Rules: `docs/RENDERING.md` (Blood on weapons).
 
@@ -27,6 +30,15 @@
 pub const SPOT_SPAN: f32 = 80.0;
 /// One over the span, as the original uses it (its double 0.0125).
 pub const SPOT_INV_SPAN: f64 = 0.0125;
+
+/// The blood `amount` holds after `delta` more, as the original keeps it:
+/// the sum, then 1 when 1 is below it, else 0 when 0 is above it. A NaN
+/// stays NaN and −0 stays −0 (both compares fail for them).
+pub fn add_blood(amount: f32, delta: f32) -> f32 {
+    // `clamp` makes the same two compares (strictly below 0, strictly
+    // above 1) and lets NaN and −0 through, as the original does.
+    (amount + delta).clamp(0.0, 1.0)
+}
 
 /// One source's spot in the weapon's blood list.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -107,7 +119,7 @@ impl WeaponBlood {
     /// amount within 0 through 1.
     pub fn add_amount(&mut self, index: usize, delta: f32) {
         if let Some(spot) = index.checked_sub(1).and_then(|i| self.spots.get_mut(i)) {
-            spot.amount = (spot.amount + delta).clamp(0.0, 1.0);
+            spot.amount = add_blood(spot.amount, delta);
         }
     }
 }
@@ -131,6 +143,17 @@ mod tests {
         let spot = blood.spots[1];
         assert_eq!(spot.scale, 0.5);
         assert!((spot.inv - 2.0f32.sqrt()).abs() < 1e-6);
+    }
+
+    /// The sum is kept within 0 through 1; NaN and −0 pass through.
+    #[test]
+    fn blood_is_kept_within_zero_and_one() {
+        assert_eq!(add_blood(0.75, 0.2285), 0.978_5);
+        assert_eq!(add_blood(0.9, 0.2285), 1.0);
+        assert_eq!(add_blood(0.1, -0.3), 0.0);
+        assert!(add_blood(0.2, f32::NAN).is_nan());
+        let z = add_blood(-0.0, -0.0);
+        assert!(z == 0.0 && z.is_sign_negative());
     }
 
     #[test]
