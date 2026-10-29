@@ -64,8 +64,10 @@ pub fn stick(armed: bool, depth: f32, smoothing: f32, unit: i32) -> Option<Stick
     })
 }
 
-/// The grab the body solver pulls, opened from a stick link.
-pub fn grab_of(link: &Stick) -> exa_physics::body::GrabPull {
+/// The grab the body solver pulls, opened from a stick link between a
+/// weapon of link mobility `weapon` and a struck part of `struck`: the
+/// shares are the original's share routine over the two.
+pub fn grab_of(link: &Stick, weapon: f32, struck: f32) -> exa_physics::body::GrabPull {
     exa_physics::body::GrabPull {
         strain: link.span,
         flags: link.flags,
@@ -73,6 +75,7 @@ pub fn grab_of(link: &Stick) -> exa_physics::body::GrabPull {
         axis: bevy::math::Vec3::ZERO,
         on_weapon: [1.0, 0.0, 0.0, 0.0],
         on_struck: [1.0, 0.0, 0.0, 0.0],
+        shares: exa_physics::body::grab_shares(weapon, struck),
     }
 }
 
@@ -86,8 +89,13 @@ impl exa_physics::body::SolverStage for BiteHold {
         let Some(grab) = self.grab.as_mut() else {
             return;
         };
-        if let Some(body) = bodies.first_mut() {
-            body.pull_grab(0, 1, grab);
+        // No Exarust body is disabled yet: the struck part never is.
+        if let Some(body) = bodies.first_mut()
+            && body.pull_grab(0, 1, grab, false)
+        {
+            let mut held = vec![(1, grab.clone())];
+            body.release_grabs(0, 1, &mut held);
+            self.grab = None;
         }
     }
 }
@@ -186,7 +194,7 @@ mod tests {
         let before = gap_of(&held);
         let link = stick(true, 0.25, 0.1, 1).expect("a depth past a tenth sticks");
         let mut stages: Vec<Box<dyn exa_physics::body::SolverStage>> = vec![Box::new(BiteHold {
-            grab: Some(grab_of(&link)),
+            grab: Some(grab_of(&link, 1.0, 1.0)),
         })];
         exa_physics::body::solve_with(
             &mut [&mut held],

@@ -129,6 +129,8 @@ impl Part {
             positions,
             previous: positions,
             inverse_mass: s.mobility,
+            // Registration gives the link mobility the contact mobility.
+            link_mobility: s.mobility,
             gravity: gravity_shares(s.point_masses),
             spheres: s.spheres.clone(),
             triangles: None,
@@ -289,7 +291,6 @@ impl Ragdoll {
                         },
                         length: 0.0,
                         shares,
-                        mobility: (parts[i].inverse_mass, parts[parent].inverse_mass),
                         origin: k == s.links.len(),
                         limit: false,
                         horizontal: false,
@@ -309,6 +310,9 @@ impl Ragdoll {
                     .distance(parts[l.part].point(&l.on_part));
             }
         }
+        // The group masks were built with the tree: the link shares above
+        // were taken before, the soft welds read the blended mobilities.
+        pairs::blend_link_mobilities(&mut parts);
         let (outward, inward) = tree_orders(&parts);
         Self {
             parts,

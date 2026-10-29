@@ -308,6 +308,12 @@ pub struct Part {
     /// A limb's relative inverse mass; a rigid body's mobility (larger
     /// moves more).
     pub inverse_mass: f32,
+    /// The part's link mobility: what its links' shares and a soft weld's
+    /// split are taken from. A limb's is its inverse mass times
+    /// [`LINK_MOBILITY`] (the character's init); a rigid body's is its
+    /// registered mobility, which an articulated child's tree then blends
+    /// with its parent's ([`pairs::blend_link_mobilities`]).
+    pub link_mobility: f32,
     /// Each particle's share of gravity: 1 on a limb; on a rigid body,
     /// shares summing to 4 that put gravity at its centre of mass.
     pub gravity: [f32; 4],
@@ -563,6 +569,7 @@ impl Part {
         )
         .with_mesh_box(centre, s.half);
         Self {
+            link_mobility: inverse_mass * LINK_MOBILITY,
             bone,
             entity,
             parent,
@@ -927,26 +934,53 @@ impl Default for PlacedCorpse {
 
 /// One pass of a breakable grab between a weapon part and the part it bit.
 ///
-/// The pull is the stored strength divided by 1 plus 0.001 times the gap in
-/// centimetres, shared equally and oppositely. The strain falls by
-/// 1 + 2q/|d| when q is above 0, and by 1 otherwise. Below 0 the grab
-/// lets go. Flag 0x200000 moves the struck point onto the weapon point
-/// once and pulls on the passes after that.
+/// The original keeps it as a link record on the weapon body (flags
+/// [`LINK_BODY`] | [`LINK_BREAKABLE`], [`LINK_REANCHOR`] for a deep bite),
+/// in centimetres. With gap d (the struck point minus the weapon point) at
+/// least the general epsilon squared:
+/// * a disabled struck body breaks it;
+/// * a re-anchoring grab moves its struck point onto the weapon point once
+///   and drops the flag;
+/// * otherwise q = 1 + (d in the weapon's frame)·axis, and the strain falls
+///   by (q/|d|)·2 + 1 when q > 0, by 1 otherwise (a NaN q too). Below 0 the
+///   grab breaks; else, when |d|² is strictly over the epsilon, each side
+///   moves by its share times strength/(|d|·0.001 + 1) (in double) of d.
 #[derive(Debug, Clone)]
 pub struct GrabPull {
     pub strain: f32,
     pub flags: u32,
     pub strength: f32,
+    /// The blade direction in the weapon's frame.
     pub axis: Vec3,
     pub on_weapon: [f32; 4],
     pub on_struck: [f32; 4],
+    /// The weapon's and the struck part's shares of a pull, by their link
+    /// mobilities ([`grab_shares`]); the second is negative.
+    pub shares: (f32, f32),
+}
+
+/// The shares of a code-made body link between a body of link mobility
+/// `m` and its parent's `m_parent`: m/(m + m_parent) and
+/// −m_parent/(m + m_parent), the second negated before its division as
+/// the original's share routine does.
+pub fn grab_shares(m: f32, m_parent: f32) -> (f32, f32) {
+    (m / (m + m_parent), -m_parent / (m + m_parent))
 }
 
 impl Ragdoll {
-    /// Pulls part `weapon` and part `struck` through one grab pass.
-    pub fn pull_grab(&mut self, weapon: usize, struck: usize, grab: &mut GrabPull) {
+    /// Pulls part `weapon` and part `struck` through one grab pass;
+    /// `struck_disabled` is the struck body's disabled state. Returns
+    /// whether the grab broke in this pass (the caller then drops every
+    /// breakable grab to `struck`, [`Ragdoll::release_grabs`]).
+    pub fn pull_grab(
+        &mut self,
+        weapon: usize,
+        struck: usize,
+        grab: &mut GrabPull,
+        struck_disabled: bool,
+    ) -> bool {
         if weapon == struck || weapon >= self.parts.len() || struck >= self.parts.len() {
-            return;
+            return false;
         }
         let (weapon_part, struck_part) = if weapon < struck {
             let (left, right) = self.parts.split_at_mut(struck);
@@ -955,45 +989,93 @@ impl Ragdoll {
             let (left, right) = self.parts.split_at_mut(weapon);
             (&mut right[0], &mut left[struck])
         };
-        pull_grab(weapon_part, struck_part, grab);
+        pull_grab(weapon_part, struck_part, grab, struck_disabled)
+    }
+
+    /// Lowers the grab layer's bit (0x40) on a part, its parent and its
+    /// direct children, as the original does when a grab on it is dropped
+    /// ([`Ragdoll::raise_grab_layer`] raised it).
+    pub fn lower_grab_layer(&mut self, index: usize) {
+        let parent = self.parts.get(index).and_then(|p| p.parent);
+        for (i, p) in self.parts.iter_mut().enumerate() {
+            if Some(i) == parent || i == index || p.parent == Some(index) {
+                p.class_word &= !GRAB_LAYER;
+            }
+        }
+    }
+
+    /// After a pass over the weapon part's grabs in which the one to part
+    /// `broken` broke: drops every breakable grab (`(struck, grab)`) to
+    /// that part, broken or not, keeping the others in order, and for each
+    /// dropped one lowers the grab layer on the struck part and its
+    /// neighbours and clears the weapon part's bit, as the original's
+    /// clean-up after its link loop does.
+    pub fn release_grabs(
+        &mut self,
+        weapon: usize,
+        broken: usize,
+        grabs: &mut Vec<(usize, GrabPull)>,
+    ) {
+        let mut dropped = false;
+        grabs.retain(|(struck, g)| {
+            let drop = g.flags & LINK_BREAKABLE != 0 && *struck == broken;
+            dropped |= drop;
+            !drop
+        });
+        if dropped {
+            self.lower_grab_layer(broken);
+            if let Some(p) = self.parts.get_mut(weapon) {
+                p.class_word &= !GRAB_LAYER;
+            }
+        }
     }
 }
 
-fn pull_grab(weapon: &mut Part, struck: &mut Part, grab: &mut GrabPull) {
-    if grab.flags & 0x100000 != 0 {
-        return;
+fn pull_grab(weapon: &mut Part, struck: &mut Part, grab: &mut GrabPull, disabled: bool) -> bool {
+    if grab.flags & LINK_DISABLED != 0 {
+        return false;
     }
-    if grab.flags & 0x200000 != 0 {
-        grab.flags &= !0x200000;
+    let gap = struck.point(&grab.on_struck) - weapon.point(&grab.on_weapon);
+    let d = gap * CM;
+    let len2 = (d.x * d.x + d.y * d.y) + d.z * d.z;
+    // The entry test is ordered: a NaN gap does nothing.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+    if !(len2 >= GENERAL_EPSILON) {
+        return false;
+    }
+    if disabled {
+        grab.flags |= LINK_DISABLED;
+        return true;
+    }
+    if grab.flags & LINK_REANCHOR != 0 {
+        grab.flags &= !LINK_REANCHOR;
         let at = weapon.point(&grab.on_weapon);
         if let Some(weights) = struck.weights_now(at) {
             grab.on_struck = weights;
         }
-        return;
+        return false;
     }
-    let gap = struck.point(&grab.on_struck) - weapon.point(&grab.on_weapon);
-    let len2 = gap.length_squared();
-    if len2 <= LINK_EPSILON2 {
-        return;
-    }
-    let len_cm = len2.sqrt() * CM;
-    let local = weapon
-        .transform()
-        .to_scale_rotation_translation()
-        .1
-        .inverse()
-        * gap;
-    let q = 1.0 + local.dot(grab.axis);
-    let drop = if q > 0.0 { 1.0 + 2.0 * q / len_cm } else { 1.0 };
-    grab.strain -= drop;
+    // The gap in the weapon's frame: its dot with each row of the body
+    // matrix (the transpose of the column frame).
+    let v = weapon.settled.matrix3.transpose() * Vec3A::from(d);
+    let q = ((v.x * grab.axis.x + v.y * grab.axis.y) + v.z * grab.axis.z) + 1.0;
+    grab.strain -= if q > 0.0 {
+        (q / len2.sqrt()) * 2.0 + 1.0
+    } else {
+        1.0
+    };
+    // A NaN strain keeps pulling: only an ordered "below zero" breaks.
     if grab.strain < 0.0 {
-        grab.flags |= 0x100000;
-        return;
+        grab.flags |= LINK_DISABLED;
+        return true;
     }
-    let factor = grab.strength / (1.0 + PIVOT_SOFTENING * len_cm);
-    let share = 0.5 * factor;
-    weapon.push(&grab.on_weapon, gap * share);
-    struck.push(&grab.on_struck, gap * -share);
+    let len2 = (d.x * d.x + d.y * d.y) + d.z * d.z;
+    if len2 > GENERAL_EPSILON {
+        let f = (f64::from(grab.strength) / (f64::from(len2.sqrt()) * 0.001 + 1.0)) as f32;
+        weapon.push(&grab.on_weapon, gap * (grab.shares.0 * f));
+        struck.push(&grab.on_struck, gap * (grab.shares.1 * f));
+    }
+    false
 }
 
 /// A link between a part and its parent part: a point on each, allowed to
@@ -1027,9 +1109,6 @@ pub struct Link {
     /// The shares of a correction the part and its parent take, by their
     /// mobilities: m/(m + m_parent) and m_parent/(m + m_parent).
     shares: (f32, f32),
-    /// The part's and its parent's mobilities (a soft weld shares by these
-    /// directly).
-    mobility: (f32, f32),
     /// The pivot at the part's origin, not one of the skeleton's links.
     pub origin: bool,
     /// A limit link: a skeleton link without the pivot flag. Its slack is
@@ -1182,7 +1261,7 @@ impl Link {
     /// The correction of a soft weld with gap `d` (m) whose two link points
     /// moved `moved` (m) in total this tick: a quarter of the strength times
     /// the gap, less 0.4 of the points' motion. The shares are
-    /// [`Link::weld_shares`]. None under the general epsilon (a NaN gap is
+    /// [`weld_shares`]. None under the general epsilon (a NaN gap is
     /// not under it).
     fn welded(&self, d: Vec3, moved: Vec3) -> Option<Vec3> {
         if d.length_squared() < GENERAL_EPSILON / (CM * CM) {
@@ -1190,15 +1269,54 @@ impl Link {
         }
         Some(d * (self.strength * 0.25) + moved * -0.4)
     }
+}
 
-    /// The shares a soft weld's correction takes on the part and its parent:
-    /// each mobility times a tenth over their sum, the tenth divided in
-    /// double as the original's constant is.
-    fn weld_shares(&self) -> (f32, f32) {
-        let (m, m_parent) = self.mobility;
-        let share = (0.1_f64 / f64::from(m + m_parent)) as f32;
-        (m * share, m_parent * share)
+/// Where a node clock stands within its tick, as the original's render
+/// fraction reads it: `now_ms` and `stamp_ms` are the clock's two
+/// millisecond words, `period_ms` its tick length, and `offset` (times the
+/// clock's `scale`) a sub-millisecond part. When `now_ms` has reached the
+/// stamp the fraction is 1 − ((now − stamp) − offset·scale)/period, held at
+/// −2 from below (ordered, so NaN passes); a stamp up to a period ahead
+/// gives ((stamp − now) + offset·scale)/period + 1, further ahead
+/// offset·scale/period + 2. The differences are taken in 64 bits and
+/// rounded to single precision as the original converts them. Exarust's
+/// own drawing reads Bevy's fixed-step overstep instead, the same fraction
+/// of its fixed tick; this has no caller yet.
+pub fn clock_fraction(now_ms: u32, stamp_ms: u32, period_ms: u32, offset: f32, scale: f32) -> f32 {
+    let p = offset * scale;
+    let period = period_ms as f32;
+    if now_ms >= stamp_ms {
+        let f = 1.0 - ((u64::from(now_ms - stamp_ms) as f32) - p) / period;
+        return if f < -2.0 { -2.0 } else { f };
     }
+    let ahead = u64::from(stamp_ms - now_ms);
+    if ahead > u64::from(period_ms) {
+        p / period + 2.0
+    } else {
+        ((ahead as f32) + p) / period + 1.0
+    }
+}
+
+/// A body's render fraction from its node clock's tick count `clock_ticks`,
+/// the body's own tick stamp `body_ticks` and the clock's
+/// [`clock_fraction`]: the tick difference (in 64 bits, rounded to single)
+/// plus the fraction. A body whose state carries the asleep or the state-4
+/// bit (`resting`) draws at 0; the original then also leaves its scene
+/// node alone.
+pub fn body_draw_fraction(clock_ticks: i32, body_ticks: i32, fraction: f32, resting: bool) -> f32 {
+    if resting {
+        return 0.0;
+    }
+    ((i64::from(clock_ticks) - i64::from(body_ticks)) as f32) + fraction
+}
+
+/// The shares a soft weld's correction takes on the part and its parent,
+/// from their link mobilities `m` and `m_parent` as they stand when the
+/// link runs ([`Part::link_mobility`]): each mobility times a tenth over
+/// their sum, the tenth divided in double as the original's constant is.
+fn weld_shares(m: f32, m_parent: f32) -> (f32, f32) {
+    let share = (0.1_f64 / f64::from(m + m_parent)) as f32;
+    (m * share, m_parent * share)
 }
 
 /// The per-tick retention of `r` kept per second: r^(1/83), none for r ≤ 0.
@@ -2189,7 +2307,6 @@ impl Ragdoll {
                     LINK_MOBILITY * parts[parent].inverse_mass,
                 );
                 let shares = (m / (m + m_parent), m_parent / (m + m_parent));
-                let mobility = (m, m_parent);
                 let pivot = (Vec3::ZERO, Vec3::ZERO, 0.0);
                 for (k, &(on_part, on_parent, slack)) in s.links.iter().chain([&pivot]).enumerate()
                 {
@@ -2211,7 +2328,6 @@ impl Ragdoll {
                         smoothing: setup_smoothing(on_part),
                         length: 0.0,
                         shares,
-                        mobility,
                         origin,
                         limit: false,
                         horizontal: false,
@@ -3376,10 +3492,32 @@ impl Ragdoll {
         }
     }
 
-    /// A part's link mobility: its inverse mass times the link share
-    /// ([`LINK_MOBILITY`]), as the original keeps it on a living limb.
+    /// A part's link mobility ([`Part::link_mobility`]): on a limb its
+    /// inverse mass times the link share ([`LINK_MOBILITY`]), as the
+    /// original keeps it on a living limb.
     pub fn link_mobility(&self, part: usize) -> Option<f32> {
-        self.parts.get(part).map(|p| p.inverse_mass * LINK_MOBILITY)
+        self.parts.get(part).map(|p| p.link_mobility)
+    }
+
+    /// Takes every enabled body link's shares afresh from the two parts'
+    /// link mobilities as they stand (m/(m + m_parent) and
+    /// m_parent/(m + m_parent), the second applied negated), as the
+    /// original does over the whole tree after a character's init sets its
+    /// limbs' mobilities. Disabled links and links without [`LINK_BODY`]
+    /// keep theirs.
+    pub fn recompute_link_shares(&mut self) {
+        for l in &mut self.links {
+            if l.flags & (LINK_BODY | LINK_DISABLED) != LINK_BODY {
+                continue;
+            }
+            let (Some(m), Some(m_parent)) = (
+                self.parts.get(l.part).map(|p| p.link_mobility),
+                self.parts.get(l.parent).map(|p| p.link_mobility),
+            ) else {
+                continue;
+            };
+            l.shares = (m / (m + m_parent), m_parent / (m + m_parent));
+        }
     }
 
     /// The part of `bone`.
@@ -3918,7 +4056,10 @@ impl Ragdoll {
                     continue;
                 };
                 let (own, other) = if l.flags & LINK_SOFT_WELD != 0 {
-                    l.weld_shares()
+                    weld_shares(
+                        self.parts[l.part].link_mobility,
+                        self.parts[l.parent].link_mobility,
+                    )
                 } else {
                     l.shares
                 };
@@ -4494,6 +4635,10 @@ mod tick_test;
 #[cfg(test)]
 #[path = "body_repair_test.rs"]
 mod repair_test;
+
+#[cfg(test)]
+#[path = "body_grab_test.rs"]
+mod grab_test;
 
 #[cfg(test)]
 #[path = "body_joint_test.rs"]
