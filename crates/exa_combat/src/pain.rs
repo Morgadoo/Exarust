@@ -97,7 +97,11 @@ pub fn pain_sounds(wound: f32, yellow: f32, victim: &Sufferer) -> PainSounds {
         };
     }
     // A NaN wound is not felt by its own test and falls to the yellow's.
-    if !(wound > EPSILON) && !above(yellow, FELT_YELLOW) {
+    let felt = matches!(
+        wound.partial_cmp(&EPSILON),
+        Some(std::cmp::Ordering::Greater)
+    );
+    if !felt && !above(yellow, FELT_YELLOW) {
         return PainSounds::default();
     }
     let wound_sound = (above(wound, SOUNDED) && victim.wound_sound).then(|| Loudness {
