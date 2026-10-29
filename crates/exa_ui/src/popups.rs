@@ -187,13 +187,26 @@ pub fn desc_icon_place(
     unit: i32,
     card: bool,
 ) -> (i32, i32) {
+    desc_icon_place_sized(width, height, icon_height, unit, card, ICON_SIZE)
+}
+
+/// [`desc_icon_place`] for an icon of side `icon_size` in place of the
+/// renderer's 160 (the running card scales its icon with the unit).
+pub fn desc_icon_place_sized(
+    width: i32,
+    height: i32,
+    icon_height: i32,
+    unit: i32,
+    card: bool,
+    icon_size: i32,
+) -> (i32, i32) {
     if !card {
         return (
-            (width.wrapping_sub(ICON_SIZE)) / 2,
-            (height.wrapping_sub(ICON_SIZE)) / 2 + unit * 4,
+            (width.wrapping_sub(icon_size)) / 2,
+            (height.wrapping_sub(icon_size)) / 2 + unit * 4,
         );
     }
-    let mut x = unit * 13 - ICON_SIZE / 2;
+    let mut x = unit * 13 - (icon_size >> 1);
     let y = unit;
     if unit * 11 < icon_height {
         x = x.wrapping_add(icon_height).wrapping_sub(unit * 11);

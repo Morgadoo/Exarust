@@ -11,6 +11,12 @@
 //! view whether it can take the item and equips it through that view, and
 //! Exarust has no running character view.
 //!
+//! The inventory installs a drag permission on its pack
+//! ([`exa_items::inventory_window::permission`]): nothing leaves the
+//! player's pack while the player's body swaps its weapon sets, which in
+//! Exarust is a swap requested or a hand plan not yet applied. The loot
+//! window's panels install none.
+//!
 //! The original also drops a dragged item into the world when it leaves a
 //! panel. Exarust's GUI-to-world drop is not wired, so a release outside
 //! every panel cancels the drag and the entry stays where it was.
@@ -21,7 +27,8 @@
 
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use exa_items::catalogue::ItemCatalogue;
+use exa_items::catalogue::{ItemCatalogue, PendingHands, SwapRequested};
+use exa_items::inventory_window::{DragPermission, SWAP_STATE, permission};
 use exa_items::possession::Possessions;
 use exa_ui::game_gui::GameScreen;
 use exa_ui::gui_core::GuiRect;
@@ -198,6 +205,25 @@ fn owner_present(
     }
 }
 
+/// Whether a drag may start on `panel`: the inventory's pack asks the
+/// window's permission, with the player's body in the swap state while a
+/// weapon-set swap is requested or its hand plan pending. Exarust's
+/// inventory shows no other character, so the doll's mind-control close
+/// never applies.
+pub fn drag_allowed(panel: Panel, player_swapping: bool) -> bool {
+    if panel != Panel::PlayerPack {
+        return true;
+    }
+    let state = if player_swapping { SWAP_STATE } else { 0 };
+    permission(false, true, 0, false, state) == DragPermission::Allowed
+}
+
+/// A player body in the middle of a weapon-set swap.
+type SwappingPlayer = (
+    With<crate::player::PlayerBody>,
+    Or<(With<SwapRequested>, With<PendingHands>)>,
+);
+
 /// Starts a drag on the entry under the pointer.
 fn press(
     buttons: Res<ButtonInput<MouseButton>>,
@@ -205,6 +231,7 @@ fn press(
     mut screens: ResMut<GameScreens>,
     mut drag: ResMut<PanelDrag>,
     catalogue: Option<Res<ItemCatalogue>>,
+    swapping: Query<(), SwappingPlayer>,
 ) {
     if !buttons.just_pressed(MouseButton::Left) || drag.source.is_some() {
         return;
@@ -220,6 +247,9 @@ fn press(
     let Some((panel, local)) = panel_at(&panels, at) else {
         return;
     };
+    if !drag_allowed(panel, !swapping.is_empty()) {
+        return;
+    }
     let Some(container) = container_mut(&mut screens, panel) else {
         return;
     };
@@ -534,6 +564,15 @@ impl Plugin for PanelLivePlugin {
 mod tests {
     use super::*;
     use crate::item_container::Entry;
+
+    #[test]
+    fn nothing_leaves_the_players_pack_during_a_set_swap() {
+        assert!(drag_allowed(Panel::PlayerPack, false));
+        assert!(!drag_allowed(Panel::PlayerPack, true));
+        // The loot window's panels install no permission.
+        assert!(drag_allowed(Panel::BodyPack(3), true));
+        assert!(drag_allowed(Panel::BodyEquipment(3), true));
+    }
 
     #[test]
     fn panels_have_distinct_numbers_and_record_sides() {

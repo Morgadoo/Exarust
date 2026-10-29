@@ -594,18 +594,15 @@ fn draw_card(
 
     // The icon: the panel manager's rendered slot at the card's icon place.
     let icon_size = 2 * (icons.icon_half().0 - unit).max(1);
-    let mut icon_at = if stats {
-        let mut x = unit * 13 - icon_size / 2;
-        if unit * 11 < icon_size {
-            x += icon_size - unit * 11;
-        }
-        (x, unit)
-    } else {
-        (
-            (width - icon_size) / 2,
-            ((CARD_HEIGHT * unit / 4).max(CARD_HEIGHT) - icon_size) / 2 + unit * 4,
-        )
-    };
+    // The popup's two icon places; the icon's own height is its side here.
+    let mut icon_at = exa_ui::popups::desc_icon_place_sized(
+        width,
+        (CARD_HEIGHT * unit / 4).max(CARD_HEIGHT),
+        icon_size,
+        unit,
+        stats,
+        icon_size,
+    );
     icon_at.0 += rect.left;
     icon_at.1 += rect.top;
     if let Some(handle) = card.icon.checked_sub(1)

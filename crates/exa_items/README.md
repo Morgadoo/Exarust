@@ -35,8 +35,10 @@ plan's pixel extents, the sun and a shipped weapon's non-empty icon.
 The Body loot window (`char_loot`) is 244 by 440 with a 228 by 180
 pack at the bottom of the client area and the equipment panel above it; a
 drag off the body drops a held weapon, or takes the item off the record,
-marks the character and rebuilds apparel, and Power Crystal AL (500) runs
-the body's "Activate" dialogue. The inventory (`inventory_window`) has its
+marks the character when it was the golem's core crystal and rebuilds
+apparel; the equipment panel accepts only a core crystal the body takes
+(`possession::takes_core`), and Power Crystal AL (500) runs the body's
+"Activate" dialogue. The inventory (`inventory_window`) has its
 constructor geometry, the pack's place at the client bottom, bind and close
 plans, drag permissions, drop-back rules and position memory; the arsenal
 (`arsenal`) its layout (five columns, eight controls on the top row, the

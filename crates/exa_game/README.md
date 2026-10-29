@@ -926,8 +926,10 @@ stand-in for the engine's shared one. The player's inventory pack is its carried
 panel's press, accept, drop and drag-end rules; a drop on another pack moves
 the possession entries, a drop on the same panel only repositions, and a
 drop on a body's equipment panel or outside every panel is refused (no
-running character view and no GUI-to-world drop yet). Taking a worn item
-off a corpse does not re-dress its mesh.
+running character view and no GUI-to-world drop yet). No drag leaves the
+player's pack while the player's body swaps its weapon sets (a swap
+requested or its hand plan pending), the inventory's drag permission.
+Taking a worn item off a corpse does not re-dress its mesh.
 `npc_search` hosts the original's follow state and the companion's search
 in the running game: a level brain whose roles choose the follow follows the
 player (past its 400 cm band a route through the navigation grid on its own
