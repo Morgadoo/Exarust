@@ -1,0 +1,8 @@
+- [x] Read the pin-list builder in the assembly (masks, weights, record) and its caller
+- [x] Scan the shipped cloth meshes' face flags
+- [x] `cloth::face_flag_pins` with tests
+- [x] `exa_assets::ClothMesh` on cloth-marked model nodes, with a test
+- [x] Build the cloth per position element with face-flag pins (`ClothSource`, `cloth_of_elements`, `vertex_particle`)
+- [x] Regression test: a hem-pinned banner against sleeping spheres sleeps
+- [x] Debug counters: velocity sum² and thresholds, pins, pushing parts
+- [x] READMEs and DEBUGGING.md; GPU check written down for the integrator
