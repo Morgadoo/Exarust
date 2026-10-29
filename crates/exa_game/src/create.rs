@@ -16,7 +16,7 @@ use exa_formats::characters::{
     ARMOUR, CLOSE_COMBAT, Carried, CharacterRecord, ItemRef, Pools, SHIELDS, SKILLS, Skill,
     TECHNIQUE_SLOTS,
 };
-use exa_formats::text::round_to_i32;
+use exa_ui::form::cvtss2si64;
 
 use crate::experience::{LEVEL_STEP, global_xp_for_worth, global_xp_worth, training_skill};
 
@@ -209,7 +209,11 @@ pub fn clear_creation_slots(slots: &mut [[u8; 8]; 6]) -> Option<usize> {
 /// The body form's constructor values: 172 wide with no border, 592 tall
 /// (540 in the compact layout), twelve controls in its table, the caption
 /// `VHM` and a scale of 1.0, the physique picker at 8, 64 and the tone
-/// picker at 8, 328, 160 wide and 160 tall (112 compact).
+/// picker at 8, 328, 160 wide and 160 tall (112 compact). Before the table
+/// is built the constructor writes the seventh record's fourth word: 0x7f,
+/// or 0x71 compact (its role is not traced); the physique picker reports
+/// to [`sync_physique`], the tone picker (style bit 0x80) to
+/// [`skin_changed`], and the page's own change goes to the creation form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BaseFormData {
     pub width: i32,
@@ -222,6 +226,10 @@ pub struct BaseFormData {
     pub physique: [i32; 2],
     /// The tone picker's left, top, width and height.
     pub tone: [i32; 4],
+    /// The word the constructor writes into the control table first.
+    pub table_word: u16,
+    /// The bit the constructor sets in the tone picker's style word.
+    pub tone_style: u32,
 }
 
 pub fn base_form(compact: bool) -> BaseFormData {
@@ -234,6 +242,8 @@ pub fn base_form(compact: bool) -> BaseFormData {
         scale_bits: 1.0f32.to_bits(),
         physique: [8, 0x40],
         tone: [8, 0x148, 0xa0, if compact { 0x70 } else { 0xa0 }],
+        table_word: if compact { 0x71 } else { 0x7f },
+        tone_style: 0x80,
     }
 }
 
@@ -249,6 +259,54 @@ pub struct HairFormData {
     pub controls_high: usize,
     pub attribute: u32,
     pub picker: [i32; 2],
+}
+
+/// The hair page's style list (an icon view under the colour picker).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HairList {
+    /// Left, top, width and height in the hair form.
+    pub rect: [i32; 4],
+    /// The bit set in the view's attribute word.
+    pub attribute_bit: u32,
+    /// The view's option word.
+    pub options: u32,
+    /// The icon manager's cell size (twelve GUI units), the view's row
+    /// height.
+    pub cell: i32,
+    /// The icon manager's flag and mode words.
+    pub icon_flags: u32,
+    pub icon_mode: u32,
+    /// The view's entry size, two above the cell.
+    pub entry: i32,
+    /// The view's row step: two GUI units above the cell.
+    pub step: i32,
+    /// The four colour bytes the view keeps (all 0xff).
+    pub tint: [u8; 4],
+}
+
+/// Places the hair style list: 4 in, its top the colour picker's top plus
+/// the picker's width plus 40 (as the constructor adds them), the picker's
+/// width less 8 wide and the form's height less 216 tall, with a cell of
+/// twelve `unit`s. A change of selection runs [`hair_style_changed`]; the
+/// view's refresh runs [`hair_icon_refresh`].
+pub fn hair_list(picker: [i32; 4], form_height: i32, unit: i32) -> HairList {
+    let cell = unit.wrapping_mul(0xc);
+    HairList {
+        rect: [
+            4,
+            (i64::from(picker[2]) + i64::from(picker[1]) + 0x28) as i32,
+            picker[2].wrapping_sub(8),
+            (i64::from(form_height) - 0xd8) as i32,
+        ],
+        attribute_bit: 0x200,
+        options: 0x3020_0800,
+        cell,
+        icon_flags: 0x100_e608,
+        icon_mode: 0x103,
+        entry: cell.wrapping_add(2),
+        step: unit.wrapping_mul(2).wrapping_add(cell),
+        tint: [0xff; 4],
+    }
 }
 
 pub fn hair_form(compact: bool) -> HairFormData {
@@ -337,8 +395,12 @@ pub struct PageSource {
     /// The voice pitch, 0.9…1.07 (the slider's range).
     pub pitch: f32,
     /// The profession word: bit 0 female, 0x10000 the hair flag, bits
-    /// 20–23 the appearance variant plus one.
+    /// 20–23 the appearance variant plus one, bits 8–15 the race band the
+    /// caption's label reads ([`creation_label`]).
     pub word: u32,
+    /// The page has a hair-colour picker (the hair page; the body page has
+    /// none).
+    pub hair_picker: bool,
 }
 
 /// What the character-edit page's update pushes into its controls.
@@ -351,29 +413,37 @@ pub struct EditPageState {
     /// The first and second buttons' chosen flags (male, female).
     pub male_on: bool,
     pub female_on: bool,
+    /// The form's caption: `V` and the record's appearance label.
+    pub caption: String,
     /// 0.5 − height × 0.5.
     pub height_slider: f32,
     pub age_slider: f32,
     pub slider: f32,
     pub number: i32,
-    /// The seventh control's voice letter.
+    /// The seventh control's voice letter (the form also keeps the voice).
     pub voice_letter: u8,
-    /// (pitch − 0.9) × 5.88235…, worked in double.
+    /// (pitch − 0.9) × 5.88235…, worked in double (the form also keeps
+    /// the pitch).
     pub pitch_slider: f32,
-    /// The hair-colour picker's three channels over 255, worked in double.
-    pub hair_colour: [f32; 3],
-    /// The hair buttons' chosen flags (without hair, with).
+    /// With a hair picker: its three channels over 255, worked in double,
+    /// set into the picker (whose pick result is cleared first and then
+    /// recomputed from the character's hair).
+    pub hair_colour: Option<[f32; 3]>,
+    /// With a hair picker: the hair buttons' chosen flags (without hair,
+    /// with); both false without one.
     pub hair_off_on: bool,
     pub hair_on: bool,
     /// The variant label's letter, or a dash when the variant field is 0.
     pub variant_letter: Option<u8>,
 }
 
-/// The character-edit page's update.
+/// The character-edit page's update (the base page's refresh, shared by
+/// the body and hair pages).
 pub fn edit_page(src: &PageSource) -> EditPageState {
     let female = src.word & 1 != 0;
     let hair = src.word & 0x10000 != 0;
     let variant = ((src.word >> 20) & 0xf) as i32 - 1;
+    let label = creation_label(src.word as i32).code().unwrap_or("");
     EditPageState {
         physique_point: src.physique,
         skin_point: src
@@ -381,17 +451,19 @@ pub fn edit_page(src: &PageSource) -> EditPageState {
             .map(|w| (f64::from(w) * 1.5259021896696422e-05) as f32),
         male_on: !female,
         female_on: female,
+        caption: format!("V{label}"),
         height_slider: 0.5 - src.height * 0.5,
         age_slider: src.age,
         slider: src.slider,
         number: src.number,
         voice_letter: (src.voice as u8).wrapping_add(0x41),
         pitch_slider: ((f64::from(src.pitch) - 0.9) * 5.88235294117647) as f32,
-        hair_colour: src
-            .hair_colour
-            .map(|b| (f64::from(b) * 0.00392156862745098) as f32),
-        hair_off_on: !hair,
-        hair_on: hair,
+        hair_colour: src.hair_picker.then(|| {
+            src.hair_colour
+                .map(|b| (f64::from(b) * 0.00392156862745098) as f32)
+        }),
+        hair_off_on: src.hair_picker && !hair,
+        hair_on: src.hair_picker && hair,
         variant_letter: (variant >= 0).then(|| (variant as u8).wrapping_add(0x41)),
     }
 }
@@ -583,18 +655,22 @@ pub fn update_creation_look(female: bool, variant: i32) -> CreationLook {
     }
 }
 
-/// Scales three normalised values to bytes.
+/// Scales three normalised values to bytes (the hair page's colour
+/// change).
 ///
-/// Each product converts with the processor's `CVTSS2SI` (ties to even);
-/// a NaN or an out-of-range value is the integer indefinite, whose low byte
-/// is zero.
+/// Each single-precision product converts with the processor's
+/// `CVTSS2SI` into a 64-bit register (ties to even) and the low byte is
+/// stored: a NaN or a value past 2⁶³ is the integer indefinite, whose low
+/// byte is zero, and a large in-range value keeps its own low byte.
 pub fn appearance_bytes(values: [f32; 3]) -> [u8; 3] {
-    values.map(|value| round_to_i32(value * 255.0) as u8)
+    values.map(|value| cvtss2si64(value * 255.0) as u8)
 }
 
-/// Scales two normalised values to 16-bit words, with the same conversion.
+/// Scales two normalised values to 16-bit words (the body page's skin
+/// change): each value plus 0.0, times 65535, in single precision, with
+/// the same 64-bit conversion and the low word kept.
 pub fn appearance_words(values: [f32; 2]) -> [u16; 2] {
-    values.map(|value| round_to_i32(value * 65535.0) as u16)
+    values.map(|value| cvtss2si64((value + 0.0) * 65535.0) as u16)
 }
 
 /// What stepping the creation variant did.
@@ -3708,6 +3784,161 @@ pub const PREVIEW_HEIGHT_TRIM: i32 = 4;
 pub const PREVIEW_FOG_FROM: f32 = 400.0;
 pub const PREVIEW_FOG_DENSITY: f32 = 0.34;
 
+/// The preview's floor scene.
+pub const PREVIEW_SCENE: &str = "sgccflr01.rfc";
+/// The preview camera's eye and target in centimetres (the eye is also the
+/// scene's stored eye, the target its stored target).
+pub const PREVIEW_EYE_CM: [f32; 3] = [-200.0, 210.0, 360.0];
+pub const PREVIEW_TARGET_CM: [f32; 3] = [0.0, 60.0, 0.0];
+/// The preview camera's field of view, degrees.
+pub const PREVIEW_FOV_DEG: f32 = 50.0;
+/// The preview view's scale.
+pub const PREVIEW_SCALE: f32 = 1.0;
+/// The fog mode the preview scene's environment takes (fade to black).
+pub const PREVIEW_FOG_MODE: u32 = 2;
+/// The word the preview writes into its view's render object.
+pub const PREVIEW_RENDER_WORD: u32 = 0x4100;
+/// The global the preview sets to 12 before it creates its view (its role
+/// is not traced).
+pub const PREVIEW_GLOBAL_MODE: i32 = 0xc;
+
+/// The preview viewport's form words and switches, as its builder sets
+/// them on the new view.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreviewView {
+    /// The view's border word.
+    pub border: i32,
+    /// Bits or-ed into the form-flag word.
+    pub form_flags: u32,
+    /// The style word: its bits 14 and 15 cleared and 0x90 set.
+    pub style_clear: u32,
+    pub style_set: u32,
+    /// The view's bloom switch byte and its second switch byte, both
+    /// cleared.
+    pub bloom: bool,
+    pub second_switch: bool,
+    /// The mesh-smoothing switch is raised while the preview lives (the
+    /// close lowers it), so the preview's hair is subdivided.
+    pub smoothing: bool,
+}
+
+/// The preview view's words: border 2, form flags `0xf0080`, style
+/// `(style & !0xc000) | 0x90`, both switches off and smoothing on.
+pub fn preview_view() -> PreviewView {
+    PreviewView {
+        border: 2,
+        form_flags: 0xf_0080,
+        style_clear: 0xc000,
+        style_set: 0x90,
+        bloom: false,
+        second_switch: false,
+        smoothing: true,
+    }
+}
+
+impl PreviewView {
+    /// The view's style word over `style`.
+    pub fn style(&self, style: u32) -> u32 {
+        (style & !self.style_clear) | self.style_set
+    }
+}
+
+/// What closing the creation form does, in order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreationFormClose {
+    /// The mesh-smoothing switch and the form's other global are lowered.
+    pub smoothing: bool,
+    /// Each apparel-list item's id, in list order, is handed to the item
+    /// refresh.
+    pub refreshed: Vec<u32>,
+    /// The child form, when present, is closed with argument 0.
+    pub close_child: bool,
+    /// The edit form's close then runs ([`close_edit_form`]).
+    pub edit: EditClose,
+}
+
+/// The creation form's close: lower the switches, refresh every apparel
+/// item, close the child form, refresh the game screen's item state, then
+/// the edit form's close.
+pub fn creation_form_close(
+    apparel: &[u32],
+    has_child: bool,
+    has_editor: bool,
+) -> CreationFormClose {
+    CreationFormClose {
+        smoothing: false,
+        refreshed: apparel.to_vec(),
+        close_child: has_child,
+        edit: close_edit_form(has_editor),
+    }
+}
+
+/// What the creation form's destroy does with its shared drop record (a
+/// reference-counted record the preview view also holds): a count under 2
+/// frees it; otherwise its owner is cleared and the count drops by one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropRecordRelease {
+    Freed,
+    Released { count: i32 },
+}
+
+pub fn release_drop_record(count: i32) -> DropRecordRelease {
+    if count < 2 {
+        DropRecordRelease::Freed
+    } else {
+        DropRecordRelease::Released { count: count - 1 }
+    }
+}
+
+/// The creation form's shared change callback (both editors report to it),
+/// step by step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviewChangeStep {
+    /// The busy counter rises.
+    Busy,
+    /// The character's skin and material textures are regenerated from the
+    /// record.
+    Regenerate,
+    /// The preview's character is refreshed.
+    Refresh,
+    /// The hair picker's pick result is recomputed from the character's
+    /// hair (only with a hair picker).
+    HairPick,
+    /// The texture loader's pass.
+    Textures,
+    /// The procedural material pass.
+    Materials,
+    /// The busy counter falls.
+    Idle,
+}
+
+/// The change callback's steps in order.
+pub fn preview_change(hair_picker: bool) -> Vec<PreviewChangeStep> {
+    use PreviewChangeStep::*;
+    let mut steps = vec![Busy, Regenerate, Refresh];
+    if hair_picker {
+        steps.push(HairPick);
+    }
+    steps.extend([Textures, Materials, Idle]);
+    steps
+}
+
+/// The preview's body refresh: with a hair picker its pick result is
+/// recomputed from the previewed character's hair.
+pub fn refresh_preview_body(hair_picker: bool) -> bool {
+    hair_picker
+}
+
+/// The drop into the form's mode container (the second drop routine):
+/// item 8 is ignored; with a mode list the item is added and, when added,
+/// placed.
+pub fn mode_container_drop(item: u32, mode_list: bool) -> Option<EquipDrop> {
+    (item != 8 && mode_list).then_some(EquipDrop {
+        list: DropList::Mode,
+        place: true,
+    })
+}
+
 /// The preview viewport's frame: left, top, width and height in parent
 /// units.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3788,6 +4019,52 @@ pub fn creation_layout(form_mode: i32) -> CreationLayout {
         }
     }
 }
+
+/// The words the creation form's constructor writes into the ten-element
+/// table before building it (form mode 12 only; their roles are not
+/// traced).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationTableWords {
+    /// 0 in game mode 4, else 0x110.
+    pub first: u32,
+    /// 0x10 in game mode 4, else 0x20.
+    pub second: u32,
+    /// Game mode 4 also points one record's callback at the shared
+    /// handler, after setting that handler up.
+    pub handler: bool,
+}
+
+/// The ten-element table's words for `game_mode`, in form mode 12; no
+/// words in any other form mode.
+pub fn creation_table_words(form_mode: i32, game_mode: i32) -> Option<CreationTableWords> {
+    if form_mode != TEN_ELEMENT_MODE {
+        return None;
+    }
+    Some(if game_mode == 4 {
+        CreationTableWords {
+            first: 0,
+            second: 0x10,
+            handler: true,
+        }
+    } else {
+        CreationTableWords {
+            first: 0x110,
+            second: 0x20,
+            handler: false,
+        }
+    })
+}
+
+/// The creation form's field the constructor sets to 50 (its role is not
+/// traced).
+pub const CREATION_FORM_FIFTY: i32 = 0x32;
+/// Where the body editor sits in the creation form.
+pub const BODY_EDITOR_AT: [i32; 2] = [4, 0x3c];
+/// The hair editor sits at the parent's width less this, [`HAIR_EDITOR_TOP`]
+/// down, with style bit [`HAIR_EDITOR_STYLE`].
+pub const HAIR_EDITOR_RIGHT: i32 = 0xb0;
+pub const HAIR_EDITOR_TOP: i32 = 0x20;
+pub const HAIR_EDITOR_STYLE: u32 = 0x2_0000;
 
 /// The list a drop onto the creation preview goes to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4837,6 +5114,9 @@ mod tests {
             [0, 0, 126]
         );
         assert_eq!(appearance_words([f32::NAN, f32::NEG_INFINITY]), [0, 0]);
+        // The conversion is 64-bit: 300000 · 65535 keeps its low word,
+        // where a 32-bit conversion would give the indefinite's zero.
+        assert_eq!(appearance_words([300_000.0, -0.0]), [0x7000, 0]);
     }
 
     #[test]
@@ -4902,6 +5182,7 @@ mod tests {
             voice: 2,
             pitch: 0.985,
             word: 0x0011_0001,
+            hair_picker: true,
         };
         let page = edit_page(&src);
         assert_eq!(page.physique_point, [0.25, 0.75]);
@@ -4912,15 +5193,31 @@ mod tests {
         assert_eq!((page.age_slider, page.slider, page.number), (0.25, 0.3, 3));
         assert_eq!(page.voice_letter, b'C');
         assert!((page.pitch_slider - 0.5).abs() < 1e-6);
-        assert_eq!(page.hair_colour, [1.0, 0.2, 0.0]);
+        assert_eq!(page.hair_colour, Some([1.0, 0.2, 0.0]));
         assert!(page.hair_on && !page.hair_off_on);
+        // Race band 0 with bit 0: the human female label.
+        assert_eq!(page.caption, "VHF");
         // Bits 20-23 hold 1: variant 0, the letter A.
         assert_eq!(page.variant_letter, Some(b'A'));
         // A zero variant field shows the dash; a male without hair flips
         // the buttons.
-        let plain = edit_page(&PageSource { word: 0, ..src });
+        let plain = edit_page(&PageSource {
+            word: 0,
+            ..src.clone()
+        });
         assert_eq!(plain.variant_letter, None);
         assert!(plain.male_on && !plain.female_on && plain.hair_off_on);
+        assert_eq!(plain.caption, "VHM");
+        // The body page has no hair picker: no colour, no hair buttons; a
+        // band without a label leaves the bare `V`.
+        let body = edit_page(&PageSource {
+            hair_picker: false,
+            word: 0x0001_0500,
+            ..src.clone()
+        });
+        assert_eq!(body.hair_colour, None);
+        assert!(!body.hair_on && !body.hair_off_on);
+        assert_eq!(body.caption, "V");
         // The height slider runs 1 (tallest, height -1) to 0 (shortest).
         let tall = edit_page(&PageSource {
             height: -1.0,
@@ -4943,6 +5240,7 @@ mod tests {
             voice: 0,
             pitch: 1.0,
             word: 0,
+            hair_picker: false,
         };
         // 0.5 * 65535 = 32767.5 rounds to the even 32768; 0.25 * 65535 =
         // 16383.75 to 16384.
@@ -4976,6 +5274,17 @@ mod tests {
         assert_eq!(base_form(true).height, 540);
         assert_eq!(base_form(true).tone[3], 112);
         assert_eq!(base.caption, "VHM");
+        assert_eq!((base.table_word, base.tone_style), (0x7f, 0x80));
+        assert_eq!(base_form(true).table_word, 0x71);
+        // The style list under a 160-wide picker at 4, 24 in a 612 form.
+        let list = hair_list([4, 24, 160, 112], 612, 4);
+        assert_eq!(list.rect, [4, 224, 152, 396]);
+        assert_eq!((list.cell, list.entry, list.step), (48, 50, 56));
+        assert_eq!(
+            (list.options, list.icon_flags, list.icon_mode),
+            (0x3020_0800, 0x100_e608, 0x103)
+        );
+        assert_eq!((list.attribute_bit, list.tint), (0x200, [0xff; 4]));
         let hair = hair_form(false);
         assert_eq!(
             (hair.height, hair.controls_high, hair.picker),
@@ -6951,6 +7260,73 @@ mod tests {
 
     /// Mode 12 takes the ten-element table without editors; the others
     /// seven elements and the editors.
+    #[test]
+    fn the_creation_preview_view_close_and_change() {
+        let view = preview_view();
+        assert_eq!((view.border, view.form_flags), (2, 0xf_0080));
+        assert_eq!(view.style(0xffff_ffff), 0xffff_3fff);
+        assert_eq!(view.style(0), 0x90);
+        assert!(view.smoothing && !view.bloom && !view.second_switch);
+        assert_eq!(PREVIEW_EYE_CM, [-200.0, 210.0, 360.0]);
+        assert_eq!(PREVIEW_TARGET_CM, [0.0, 60.0, 0.0]);
+        assert_eq!(
+            (PREVIEW_FOV_DEG, PREVIEW_FOG_MODE, PREVIEW_RENDER_WORD),
+            (50.0, 2, 0x4100)
+        );
+        let close = creation_form_close(&[8, 0x31], true, true);
+        assert!(!close.smoothing && close.close_child && close.edit.detach);
+        assert_eq!(close.refreshed, [8, 0x31]);
+        assert_eq!(release_drop_record(1), DropRecordRelease::Freed);
+        assert_eq!(
+            release_drop_record(3),
+            DropRecordRelease::Released { count: 2 }
+        );
+        use PreviewChangeStep::*;
+        assert_eq!(
+            preview_change(true),
+            [
+                Busy, Regenerate, Refresh, HairPick, Textures, Materials, Idle
+            ]
+        );
+        assert_eq!(preview_change(false).len(), 6);
+        assert!(refresh_preview_body(true) && !refresh_preview_body(false));
+        assert_eq!(mode_container_drop(8, true), None);
+        assert_eq!(mode_container_drop(9, false), None);
+        assert_eq!(
+            mode_container_drop(9, true),
+            Some(EquipDrop {
+                list: DropList::Mode,
+                place: true
+            })
+        );
+    }
+
+    #[test]
+    fn the_creation_table_words_follow_the_game_mode() {
+        assert_eq!(creation_table_words(3, 4), None);
+        assert_eq!(
+            creation_table_words(0xc, 4),
+            Some(CreationTableWords {
+                first: 0,
+                second: 0x10,
+                handler: true
+            })
+        );
+        assert_eq!(
+            creation_table_words(0xc, 8),
+            Some(CreationTableWords {
+                first: 0x110,
+                second: 0x20,
+                handler: false
+            })
+        );
+        assert_eq!(
+            (BODY_EDITOR_AT, HAIR_EDITOR_RIGHT, HAIR_EDITOR_TOP),
+            ([4, 60], 176, 32)
+        );
+        assert_eq!((CREATION_FORM_FIFTY, HAIR_EDITOR_STYLE), (50, 0x20000));
+    }
+
     #[test]
     fn the_creation_layout_has_two_tables() {
         assert_eq!(

@@ -777,9 +777,51 @@ pub fn mouse_code(button: MouseButton) -> Option<u32> {
     })
 }
 
+/// The window's key-state word the key-capture screen reads for a Bevy
+/// key: the key's saved-table code ([`row_code`] of its virtual-key code:
+/// the set-1 scan code with `0x100` for an extended key) in bits 16 to 27,
+/// as the window procedure's key data carries it. The right shift, control
+/// and alt keys take their own scan codes (`0x36`, `0x11d`, `0x138`). A
+/// key without a scan code gives 0, which the screen ignores.
+pub fn key_state_word(key: KeyCode) -> u32 {
+    let row = match key {
+        KeyCode::ShiftRight => 0x36,
+        KeyCode::ControlRight => 0x11D,
+        KeyCode::AltRight => 0x138,
+        _ => virtual_key(key).map_or(0, row_code),
+    };
+    (row & 0xFFF) << 16
+}
+
+/// The window procedure's bit for a mouse button, which the key-capture
+/// screen's mouse hook reads: 1 primary, 2 secondary, 4 middle, 8 and 16
+/// the two extra buttons. Other buttons have none.
+pub fn mouse_hook_bit(button: MouseButton) -> Option<u32> {
+    Some(match button {
+        MouseButton::Left => 1,
+        MouseButton::Right => 2,
+        MouseButton::Middle => 4,
+        MouseButton::Back => 8,
+        MouseButton::Forward => 0x10,
+        MouseButton::Other(_) => return None,
+    })
+}
+
 #[cfg(test)]
 mod rebind_tests {
     use super::*;
+
+    #[test]
+    fn the_key_state_words_and_mouse_bits() {
+        assert_eq!(key_state_word(KeyCode::KeyW), 0x11 << 16);
+        assert_eq!(key_state_word(KeyCode::ArrowLeft), 0x14B << 16);
+        assert_eq!(key_state_word(KeyCode::ShiftLeft), 0x2A << 16);
+        assert_eq!(key_state_word(KeyCode::ShiftRight), 0x36 << 16);
+        assert_eq!(key_state_word(KeyCode::ControlRight), 0x11D << 16);
+        assert_eq!(mouse_hook_bit(MouseButton::Middle), Some(4));
+        assert_eq!(mouse_hook_bit(MouseButton::Forward), Some(0x10));
+        assert_eq!(mouse_hook_bit(MouseButton::Other(9)), None);
+    }
 
     #[test]
     fn the_keyboard_codes() {

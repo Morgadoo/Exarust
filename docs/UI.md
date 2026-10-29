@@ -2280,11 +2280,29 @@ plain draw and input records.
   box at 2, 6.
 - **Modal screens** (`exa_ui::modal_screens`): the message box confirms
   on Enter or Space and cancels on Escape with result −1; a click with
-  `0x100` confirms, `0x600` cancels. The shader warm-up screen fades in
-  over 200 units, steps one cache entry a frame and fades out when the
-  cache is warm; the key-capture screen fades the same way, warns
-  "ALREADY IN USE" for 1000 units and captures keys, mouse buttons 4, 8
-  and 16 (`0x8004`, `0x8005`, `0x8006`) and pad scans.
+  `0x100` confirms, `0x600` cancels. The shader warm-up screen ("Applying
+  new settings...") opens when Apply changes the super-sampling, shading,
+  shadow quality or shadow detail; it fades in over 200 units (the level
+  in double, narrowed, times 128 into the form colour's alpha byte),
+  refocusing and repainting each frame, then runs the renderer's warm-up
+  one row a frame: rows 0 to 28 compile and answer true, row 29 answers
+  false and starts the fade-out, which closes the form once the level
+  (compared in double) falls under 0.001. The key-capture screen opens on
+  a Controls key cell with the cell's control id as its action, fades the
+  same way and warns "ALREADY IN USE" (raised at its own clock, cleared
+  more than 1000 units later) when the code is in any of the page's
+  first 23 rows other than row action − 1. Its codes are the window's
+  key-state scan code with the extended bit (`(word >> 16) & 0xfff`; a
+  bare `0x100` becomes the key code `| 0x4000`) and mouse buttons 4, 8
+  and 16 (`0x8004`, `0x8005`, `0x8006`); the primary and secondary
+  buttons are ignored. A capture stores the code, relabels the cell and
+  closes; Escape closes without storing. Both paints draw their text in
+  the main font, centred (64-bit differences shifted right), in the
+  palette's text colour whose alpha is the fade byte times the palette
+  alpha over 128. The running game's rebinding (`exa_game::hw_config`)
+  goes through the key-capture screen against the Controls page's rows,
+  and Apply opens the warm-up screen; the settings form itself is not yet
+  opened from the menu.
 - **Transition** (`exa_ui::transition`): the fade to black takes 600
   units, or 800/300/2000 by the mode flags, with the music faded
   alongside; then the switch callback, two hold frames, a 300/500/1000
@@ -2321,7 +2339,19 @@ plain draw and input records.
   to the second and third weights, otherwise to the first, third and fourth,
   written into the first float of the generator's first four body-shape
   entries. A press on a free field picks and answers 7; a release clears the
-  generator's dirty flag or runs the callback.
+  generator's dirty flag or runs the callback. The marker draws in the
+  skin's free colour at alpha 0xff for a free field, else in its bound
+  colour. The physique picker is built on the tone picker's constructor.
+- **Creation pages** (`exa_game::create`): the base page's refresh puts
+  the record into its controls and captions the form `V` plus the
+  appearance label (`VHM`, `VHF`, …); the hair colour and hair buttons
+  are set only on a page with a hair picker. The skin change scales the
+  two tone coordinates (plus 0.0) by 65535 and the hair change the three
+  colour channels by 255, in single precision, converted to a 64-bit
+  integer with ties to even and the low word or byte kept. The hair page's
+  style list sits under its colour picker: 4 in, the picker's top plus its
+  width plus 40 down, the width less 8 wide, the form's height less 216
+  tall, cells of twelve GUI units.
 - **Popups** (`exa_ui::popups`): the item card is 268 by 260, its fade a
   256-unit squared curve (in: the square of the elapsed share; out: the
   square of the remaining share); its icon is centred, or on the stats
@@ -2346,6 +2376,7 @@ plain draw and input records.
   variant pages the second box between one and its last page and scrolls
   its text one step with the other two page keys. A GUI task's menu
   items become `0x68`-byte records (the first loses its `0x8009` id);
+  pushing a task focuses its new layer (so it is published at once),
   focusing a task moves it to the top, and removing the active layer
   clears the published task.
 - **Tip banner** (`exa_ui::game_tips`): a translucent box eight units

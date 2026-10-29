@@ -60,6 +60,19 @@ impl Default for Picker {
     }
 }
 
+/// Which of the skin's two marker colours the marker draws in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkerInk {
+    /// A free field (marker −1): the skin's free-marker colour with its
+    /// alpha byte replaced by 0xff.
+    Free,
+    /// A bound field: the skin's bound-marker colour as it is.
+    Bound,
+}
+
+/// The alpha the free marker's colour takes.
+pub const FREE_MARKER_ALPHA: u8 = 0xff;
+
 /// What a key did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PickerKey {
@@ -85,6 +98,16 @@ impl Picker {
             (span * p).round_ties_even() as i64 as i32
         };
         (at(size.0, self.point[0]), at(size.1, self.point[1]))
+    }
+
+    /// The marker's colour: free for marker −1, bound otherwise. The
+    /// draw then hands the skin's marker routine [`Self::marker_at`].
+    pub fn marker_ink(&self) -> MarkerInk {
+        if self.marker == -1 {
+            MarkerInk::Free
+        } else {
+            MarkerInk::Bound
+        }
     }
 
     /// The base hit test's answer: it misses (−1), reporting the centre with
@@ -129,6 +152,40 @@ impl Picker {
         let moved = pick_point(&mut p, local.0, local.1, size);
         self.point = [p.u, p.v];
         moved
+    }
+}
+
+/// The physique picker's constructor (`TPhysiquePicker`): it runs the tone
+/// picker's constructor (so the same 160 × 160 field, form words and middle
+/// point, [`crate::pickers::TonePicker::new`]), then takes the character
+/// generator's body-shape array as the array its changes write
+/// ([`apply_body_shape`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PhysiquePicker {
+    pub base: crate::pickers::TonePicker,
+    /// The field's marker and keys.
+    pub field: Picker,
+    /// The picker writes the generator's body-shape array.
+    pub writes_generator_shape: bool,
+}
+
+impl PhysiquePicker {
+    pub fn new() -> Self {
+        let base = crate::pickers::TonePicker::new();
+        Self {
+            field: Picker {
+                point: [base.point.u, base.point.v],
+                ..Picker::default()
+            },
+            base,
+            writes_generator_shape: true,
+        }
+    }
+}
+
+impl Default for PhysiquePicker {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -265,6 +322,21 @@ mod tests {
         // The centre truncates toward zero, also below zero.
         assert_eq!(Picker::base_hit((101, 81)), ((50, 40), -1));
         assert_eq!(Picker::base_hit((-3, 0)), ((-1, 0), -1));
+    }
+
+    #[test]
+    fn the_marker_ink_and_the_physique_constructor() {
+        assert_eq!(Picker::default().marker_ink(), MarkerInk::Free);
+        let bound = Picker {
+            marker: 3,
+            ..Picker::default()
+        };
+        assert_eq!(bound.marker_ink(), MarkerInk::Bound);
+        assert_eq!(FREE_MARKER_ALPHA, 0xff);
+        let p = PhysiquePicker::new();
+        assert_eq!(p.base.size, (160, 160));
+        assert_eq!(p.field.point, [0.5, 0.5]);
+        assert!(p.writes_generator_shape);
     }
 
     #[test]
