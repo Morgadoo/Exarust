@@ -55,6 +55,12 @@ pub struct ClothSource {
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClothStartSleep(pub i32);
 
+/// The parameter record a cloth node's cloth is set up from, when it is not
+/// the engine's built-in one: the character build hands a hair style's
+/// cloth [`exa_physics::cloth_record::ClothRecord::HAIR`].
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct ClothParameters(pub exa_physics::cloth_record::ClothRecord);
+
 /// A cloth node whose mesh cannot be a cloth (no positions, no triangles),
 /// so the builder does not look at it again.
 #[derive(Component, Debug, Clone, Copy)]
@@ -399,6 +405,14 @@ type PendingCloth = (
     Without<ClothSkipped>,
 );
 
+/// A pending cloth node's mesh, file data and parameter record.
+type PendingClothPart<'a> = (
+    Entity,
+    &'a Mesh3d,
+    Option<&'a ClothSource>,
+    Option<&'a ClothParameters>,
+);
+
 /// Gives each cloth node its cloth, once its mesh is in place (a skinned
 /// part gets its mesh when it is bound to its skeleton, after it spawns).
 ///
@@ -407,12 +421,12 @@ type PendingCloth = (
 /// node alone.
 fn build_cloth_nodes(
     mut commands: Commands,
-    nodes: Query<(Entity, &Mesh3d, Option<&ClothSource>), PendingCloth>,
+    nodes: Query<PendingClothPart, PendingCloth>,
     starts: Query<&ClothStartSleep>,
     parents: Query<&ChildOf>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
-    for (entity, mesh, source) in &nodes {
+    for (entity, mesh, source, parameters) in &nodes {
         let Some(mesh_data) = meshes.get(&mesh.0) else {
             continue;
         };
@@ -466,6 +480,9 @@ fn build_cloth_nodes(
             starts.get(node).ok()
         });
         let mut cloth = cloth;
+        if let Some(&ClothParameters(record)) = parameters {
+            cloth.record = record;
+        }
         if let Some(&ClothStartSleep(count)) = start {
             cloth.sleep = start_countdown(count);
         }
@@ -519,6 +536,20 @@ fn step_cloths(
     // Every part of every body (asleep too) that can meet an object, with
     // its body's sleep, built once a tick for all the cloths.
     let mut all_parts = Vec::new();
+    // The particle-mode cloths (hair) follow their owner: the body part
+    // their node hangs from, whose countdown keeps them awake.
+    let any_particle = instances
+        .iter()
+        .any(|(_, instance, _)| instance.cloth.record.particle_mode());
+    let mut part_countdowns: std::collections::HashMap<Entity, i32> =
+        std::collections::HashMap::new();
+    if any_particle {
+        for body in &bodies {
+            for part in &body.parts {
+                part_countdowns.insert(part.entity, body.countdown());
+            }
+        }
+    }
     if live_contacts.0 {
         for body in &bodies {
             let asleep = body.asleep();
@@ -539,6 +570,8 @@ fn step_cloths(
                         radius,
                         mesh: &part.pairing.mesh,
                         countdown,
+                        points: part.positions,
+                        previous_points: part.previous,
                     },
                 ));
             }
@@ -555,16 +588,10 @@ fn step_cloths(
         let mut offered_parts: Vec<Entity> = Vec::new();
         let mut pushers = Vec::new();
         'cloth: {
-            let (object, to_object) = cloth_bound(&instance.cloth, at);
-            if rebuilt {
-                objects.grid.insert(object.centre);
-            } else {
-                objects.grid.migrate(id, object.centre);
-            }
-            let asleep = instance.cloth.sleep <= 0;
-            work.asleep = u32::from(asleep);
+            let particle_mode = instance.cloth.record.particle_mode();
             let frame = at.affine();
-            let moved = instance.frame != Some(frame);
+            let last_frame = instance.frame;
+            let moved = last_frame != Some(frame);
             instance.frame = Some(frame);
             // The cloth's own character, and the scene node whose static mesh
             // the cloth is drawn from: neither pushes it. The original's static
@@ -584,30 +611,80 @@ fn step_cloths(
                     break;
                 }
             }
+            // A particle-mode cloth's owner: the nearest body part above
+            // it (the original's cloth takes the body its node's parent
+            // carries). The cloth never sleeps below the owner's countdown,
+            // and its particles keep their world motion when the owner moves
+            // its node.
+            let owner = if particle_mode {
+                own.iter()
+                    .copied()
+                    .find(|e| part_countdowns.contains_key(e))
+            } else {
+                None
+            };
+            if let Some(owner) = owner {
+                instance.cloth.owner_sleep = part_countdowns[&owner];
+                if let Some(last) = last_frame
+                    && last != frame
+                {
+                    carry_into_frame(&mut instance.cloth, last, frame);
+                }
+            }
+            let (object, to_object) = cloth_bound(&instance.cloth, at);
+            if rebuilt {
+                objects.grid.insert(object.centre);
+            } else {
+                objects.grid.migrate(id, object.centre);
+            }
+            let asleep = instance.cloth.sleep <= 0;
+            work.asleep = u32::from(asleep);
             let mut contacts = ObjectContacts::default();
             if let (true, Some(physics), Some(statics)) = (live_contacts.0, &physics, &statics) {
                 // Objects against bodies: the parts passing the sector's
                 // pre-test ([`sector::object_body_meet`]), less the cloth's own
                 // character; a sleeping cloth takes awake bodies only.
                 let object_box = cloth::bounds(&instance.cloth.particles);
-                let (offered, parts): (Vec<Entity>, Vec<ObjectBodyPart>) = all_parts
-                    .iter()
-                    .filter(|(owner, body_asleep, _)| {
-                        sector::object_takes_body(asleep, *body_asleep) && !own.contains(owner)
-                    })
-                    .map(|&(owner, _, part)| (owner, part))
-                    .unzip();
-                offered_parts = offered;
-                work.parts = parts.len() as u32;
-                contacts.gather_bodies(&to_object, object, object_box, parts);
-                work.bodies = contacts.bodies.len() as u32;
+                if particle_mode {
+                    // The particle mode takes the owner's character too:
+                    // its owner's spheres without padding.
+                    let (offered, parts): (Vec<Entity>, Vec<(ObjectBodyPart, bool)>) = all_parts
+                        .iter()
+                        .filter(|(_, body_asleep, _)| {
+                            sector::object_takes_body(asleep, *body_asleep)
+                        })
+                        .map(|&(part_entity, _, part)| {
+                            (part_entity, (part, owner == Some(part_entity)))
+                        })
+                        .unzip();
+                    offered_parts = offered;
+                    work.parts = parts.len() as u32;
+                    contacts.gather_particle_bodies(&to_object, object, parts);
+                    work.bodies = contacts.particle_bodies.len() as u32;
+                } else {
+                    let (offered, parts): (Vec<Entity>, Vec<ObjectBodyPart>) = all_parts
+                        .iter()
+                        .filter(|(owner, body_asleep, _)| {
+                            sector::object_takes_body(asleep, *body_asleep) && !own.contains(owner)
+                        })
+                        .map(|&(owner, _, part)| (owner, part))
+                        .unzip();
+                    offered_parts = offered;
+                    work.parts = parts.len() as u32;
+                    contacts.gather_bodies(&to_object, object, object_box, parts);
+                    work.bodies = contacts.bodies.len() as u32;
+                }
                 for body in &contacts.bodies {
                     work.spheres += body.spheres.len() as u32;
                     work.swept += body.spheres.iter().filter(|s| s.moving).count() as u32;
                 }
                 // A sleeping cloth that no body reaches, in a frame that did
                 // not move, is the level stage's fixed point: nothing to do.
-                if asleep && !moved && contacts.bodies.is_empty() {
+                if asleep
+                    && !moved
+                    && contacts.bodies.is_empty()
+                    && contacts.particle_bodies.is_empty()
+                {
                     work.skipped = 1;
                     break 'cloth;
                 }
@@ -644,9 +721,17 @@ fn step_cloths(
                 break 'cloth;
             }
             instance.cloth.bodies = std::mem::take(&mut contacts.bodies);
+            instance.cloth.particle_bodies = std::mem::take(&mut contacts.particle_bodies);
             instance.cloth.level = std::mem::take(&mut contacts.level);
             instance.cloth.level_pieces = std::mem::take(&mut contacts.pieces);
             work.awake = u32::from(!asleep);
+            // A cloth that follows an owner falls along the world's gravity
+            // in its node's frame.
+            let gravity = if owner.is_some() {
+                frame.inverse().transform_vector3(gravity)
+            } else {
+                gravity
+            };
             cloth::step(&mut instance.cloth, gravity);
             work.level_tests = instance.cloth.level_tests as u64;
             work.sweep_tests = instance.cloth.body_tests as u64;
@@ -657,11 +742,24 @@ fn step_cloths(
                 let threshold = (count * 1e-6).sqrt();
                 work.thresholds = (threshold, (2.0 * threshold) * (2.0 * threshold));
                 for &index in &instance.cloth.pushed_by {
-                    let Some(body) = instance.cloth.bodies.get(index) else {
+                    let tagged = if particle_mode {
+                        instance
+                            .cloth
+                            .particle_bodies
+                            .get(index)
+                            .map(|b| (b.part, b.countdown))
+                    } else {
+                        instance
+                            .cloth
+                            .bodies
+                            .get(index)
+                            .map(|b| (b.part, b.countdown))
+                    };
+                    let Some((part, countdown)) = tagged else {
                         continue;
                     };
-                    if let Some(&part) = offered_parts.get(body.part) {
-                        pushers.push((part, body.countdown));
+                    if let Some(&part) = offered_parts.get(part) {
+                        pushers.push((part, countdown));
                     }
                 }
             }
@@ -698,6 +796,25 @@ fn step_cloths(
     if let Some(t) = started {
         total.micros = t.elapsed().as_micros() as u64;
         debug.tick(total, &names, &parents);
+    }
+}
+
+/// Re-expresses a cloth's particles (positions and last positions, cm)
+/// from the node frame `last` in the node frame `now` (both world, metres),
+/// so they keep their world places while the node moves under them; the
+/// pins' rest points stay in the node's frame and move with it.
+/// [Exarust's frame bookkeeping: the original keeps a cloth's particles in
+/// the world and moves its pinned rest points with the node; Exarust keeps
+/// both in the node's frame, which is the same motion.]
+pub fn carry_into_frame(cloth: &mut Cloth, last: Affine3A, now: Affine3A) {
+    let change = now.inverse() * last;
+    let carry = Affine3A {
+        matrix3: change.matrix3,
+        translation: change.translation * 100.0,
+    };
+    for particle in &mut cloth.particles {
+        particle.position = carry.transform_point3(particle.position);
+        particle.previous = carry.transform_point3(particle.previous);
     }
 }
 
@@ -824,6 +941,76 @@ mod tests {
         app.update();
         let instance = app.world().entity(part).get::<ClothInstance>().unwrap();
         assert_eq!(instance.cloth.sleep, 0);
+    }
+
+    /// A part carrying [`ClothParameters`] sets its cloth up from that
+    /// record (the hair's), any other from the built-in one.
+    #[test]
+    fn a_cloth_takes_its_nodes_parameter_record() {
+        use exa_physics::cloth_record::ClothRecord;
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Assets<Mesh>>()
+            .add_systems(Update, build_cloth_nodes);
+        let triangle = || {
+            Mesh::new(
+                bevy::mesh::PrimitiveTopology::TriangleList,
+                bevy::asset::RenderAssetUsages::default(),
+            )
+            .with_inserted_attribute(
+                Mesh::ATTRIBUTE_POSITION,
+                vec![[0.0f32, 1.0, 0.0], [1.0, 1.0, 0.0], [1.0, 0.0, 0.0]],
+            )
+            .with_inserted_indices(bevy::mesh::Indices::U32(vec![0, 1, 2]))
+        };
+        let hair_mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(triangle());
+        let banner_mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(triangle());
+        let hair = app
+            .world_mut()
+            .spawn((
+                ClothNode,
+                Mesh3d(hair_mesh),
+                ClothParameters(ClothRecord::HAIR),
+            ))
+            .id();
+        let banner = app.world_mut().spawn((ClothNode, Mesh3d(banner_mesh))).id();
+        app.update();
+        let record = |e: Entity| {
+            app.world()
+                .entity(e)
+                .get::<ClothInstance>()
+                .unwrap()
+                .cloth
+                .record
+        };
+        assert_eq!(record(hair), ClothRecord::HAIR);
+        assert_eq!(record(banner), ClothRecord::LEVEL);
+    }
+
+    /// Carried into a node frame turned a quarter about y and moved 1 m, a
+    /// particle keeps its world place (and its last place keeps its own).
+    #[test]
+    fn a_carried_cloth_keeps_its_world_places() {
+        let mut cloth = Cloth::new(vec![exa_physics::cloth::Particle {
+            position: Vec3::new(10.0, 0.0, 0.0),
+            previous: Vec3::new(9.0, 0.0, 0.0),
+        }]);
+        let last = Affine3A::IDENTITY;
+        let now = Affine3A::from_rotation_translation(
+            Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+            Vec3::new(1.0, 0.0, 0.0),
+        );
+        carry_into_frame(&mut cloth, last, now);
+        let world = |p: Vec3| now.transform_point3(p * 0.01) * 100.0;
+        let p = cloth.particles[0];
+        assert!(world(p.position).abs_diff_eq(Vec3::new(10.0, 0.0, 0.0), 1e-3));
+        assert!(world(p.previous).abs_diff_eq(Vec3::new(9.0, 0.0, 0.0), 1e-3));
     }
 
     /// A free cloth falls through the air and comes to rest on the level's

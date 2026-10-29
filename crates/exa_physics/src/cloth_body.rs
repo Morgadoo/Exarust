@@ -500,6 +500,114 @@ pub fn hold_planes(cloth: &mut Cloth, planes: &[Option<(Vec3, f32)>]) {
     }
 }
 
+/// The particle-mode contact's padding on a body that is not the cloth's
+/// owner (cm); the owner's spheres take none.
+pub const PARTICLE_PADDING_CM: f32 = 1.0;
+
+/// The squared push (cm²) under which the particle-mode contact makes no
+/// push, compared as the floats' bit patterns.
+pub const PARTICLE_PUSH_FLOOR2: f32 = 1.0e-4;
+
+/// The share of the squared push the travel across it may keep in the
+/// particle-mode contact before it is shortened.
+pub const PARTICLE_SLIDE_SHARE: f32 = 0.1;
+
+/// One rigid body as a particle-mode cloth's body contact takes it, in the
+/// cloth's frame and centimetres: its collision spheres where the body is
+/// now (centre and bare radius, in the body's own order), the padding they
+/// take ([`PARTICLE_PADDING_CM`], none on the cloth's owner), the body's
+/// tetrahedron now and where the last tick left it (four points each, the
+/// rows its point velocity is read from) and its sleep countdown.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParticleBody {
+    pub spheres: Vec<(Vec3, f32)>,
+    pub padding: f32,
+    /// The body's four points now, then its four points a tick ago.
+    pub points: [[f32; 3]; 8],
+    /// The body's sleep countdown: 0 asleep.
+    pub countdown: i32,
+    /// Which of the parts the sector offered this is: a debug tag.
+    pub part: usize,
+}
+
+impl ParticleBody {
+    /// The body's motion over the last tick at `point`: its barycentric
+    /// weights in the body's tetrahedron now (the approximate reciprocal),
+    /// the weighted sum of the points now less that of the points a tick
+    /// ago.
+    pub fn velocity_at(&self, point: Vec3) -> Vec3 {
+        let now = [
+            self.points[0],
+            self.points[1],
+            self.points[2],
+            self.points[3],
+        ];
+        let w = engine_math::barycentric_fast(point, &now);
+        engine_math::vec4_mul_4x3_difference(bevy::math::Vec4::from_array(w), &self.points)
+    }
+}
+
+/// The particle-mode body contact (the cloth's mode `0x100`, the hair's):
+/// for each of the body's spheres in order, padded, the sphere is tested
+/// against the cloth's box `(centre, half extents)`, with the padded radius
+/// squared standing in as the radius (the original hands the box test the
+/// squared radius, which squares it again). Each particle inside the padded
+/// sphere is pushed straight out to its surface; the push is taken when its
+/// squared length's bits are at least [`PARTICLE_PUSH_FLOOR2`]'s. The
+/// particle's travel over the tick, less the body's motion there, loses its
+/// part along the push; what is left across it is cancelled when its square
+/// is within a tenth of the push's square (and over the engine's small
+/// float), or else shortened by `√(0.1·push² / travel²)` of itself; the push
+/// takes that change and moves the particle at once, so later spheres see
+/// it moved. Returns whether any particle was pushed; the countdown hand-over
+/// is the caller's.
+pub fn touch_particles(
+    particles: &mut [crate::cloth::Particle],
+    cloth_box: (Vec3, Vec3),
+    body: &ParticleBody,
+) -> bool {
+    let (box_centre, box_half) = cloth_box;
+    let mut pushed = false;
+    for &(centre, radius) in &body.spheres {
+        let reach = radius + body.padding;
+        let reach2 = reach * reach;
+        if crate::intersect::sphere_aabb_separated(centre, reach2, box_centre, box_half) {
+            continue;
+        }
+        for particle in particles.iter_mut() {
+            let position = particle.position;
+            let d = centre - position;
+            let d2 = (d.x * d.x + d.y * d.y) + d.z * d.z;
+            // Over the reach skips; an unordered distance goes on.
+            if d2 > reach2 {
+                continue;
+            }
+            let distance = d2.sqrt();
+            let scale = ((radius + body.padding) - distance) / distance;
+            let mut push = (position - centre) * scale;
+            let push2 = dot(push, push);
+            if push2.to_bits() < PARTICLE_PUSH_FLOOR2.to_bits() {
+                continue;
+            }
+            let mut travel = (position - particle.previous) - body.velocity_at(position);
+            let along = -dot(travel, push) / push2;
+            travel += push * along;
+            let across2 = dot(travel, travel);
+            let limit = push2 * PARTICLE_SLIDE_SHARE;
+            if !(limit < across2) {
+                if across2 > MOTION_FLOOR2 {
+                    push -= travel;
+                }
+            } else {
+                push += travel * -(limit / across2).sqrt();
+            }
+            particle.position = position + push;
+            pushed = true;
+        }
+    }
+    pushed
+}
+
 #[cfg(test)]
 #[path = "cloth_body_test.rs"]
 mod tests;

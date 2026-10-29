@@ -8,9 +8,15 @@
 //! its nodes to the head part, tinting the hair material with the record's
 //! colour. The original swaps in its hair material only on parts whose
 //! material word (payload offset `0xC`) is over 0.5; every shipped hair
-//! material (`harhps1`) holds 1.0 there, so every part is tinted. Not
-//! done: the record's bit `0x10000` also swaps the hair textures to the
-//! `HarHPC1` set, hair as cloth and its smoothing.
+//! material (`harhps1`) holds 1.0 there, so every part is tinted.
+//!
+//! Long hair hangs as cloth: each style node carrying the cloth marker (the
+//! two meshes of `hair hula01…05` and `hair husa02`) becomes a simulated
+//! cloth ([`hang_as_cloth`]), its roots with the hair's cloth record. The
+//! cloth is pinned by its faces' flags, follows the head part it hangs from
+//! and never sleeps below that body's countdown. Not done: the record's bit
+//! `0x10000` also swaps the hair textures to the `HarHPC1` set, and the
+//! creation scene's smoothing of the hair.
 
 use bevy::prelude::*;
 use exa_assets::{Game, ModelCache, ModelLoader, PackKind};
@@ -90,6 +96,7 @@ pub fn attach_hair(
                 .collect()
         })
         .unwrap_or_default();
+    let cloth_on = hair_cloth_on();
     let started = std::time::Instant::now();
     for (body, hair) in &bodies {
         if started.elapsed() >= HAIR_BUDGET {
@@ -138,7 +145,7 @@ pub fn attach_hair(
                 ))
                 .id();
             entities[i] = e;
-            for (mesh, material) in &node.parts {
+            for (part_index, (mesh, material)) in node.parts.iter().enumerate() {
                 // The hair material takes the record's colour; a type-3
                 // material is linearised like the loader's own.
                 let tinted = match loader.materials.get(material).cloned() {
@@ -158,9 +165,60 @@ pub fn attach_hair(
                     }),
                     None => commands.entity(part).insert(Mesh3d(mesh.clone())),
                 };
+                if node.cloth && cloth_on {
+                    hang_as_cloth(
+                        &mut commands,
+                        part,
+                        node.parent.is_none(),
+                        node.cloth_mesh.as_ref(),
+                        part_index,
+                    );
+                }
             }
         }
         commands.entity(body).insert(HairAttached);
+    }
+}
+
+/// Whether long hair hangs as cloth: only with `EXA_HAIR_CLOTH=1`. Off by
+/// default: on exanima01 the living characters' hair never sleeps (a hair
+/// cloth stays awake on its head's countdown, as the original's) and each
+/// awake hair was offered every body part of the level, about 8 ms a tick
+/// and 16 FPS on the RTX 3090, until the stage culls the bodies it offers.
+pub fn hair_cloth_on() -> bool {
+    std::env::var_os("EXA_HAIR_CLOTH").is_some_and(|v| v != "0")
+}
+
+/// Gives a cloth-marked part of a hair style its cloth: the level's cloth
+/// stage builds it from the node's faces and face flags
+/// ([`exa_world::cloth`]). A style's root takes the hair's cloth record
+/// ([`ClothRecord::HAIR`]: the particle mode, 0.2 drag, no padding, two
+/// passes), as the character build hands each root whose controller is a
+/// cloth; a marked node below a root keeps the built-in record its loader
+/// gave it. The build also writes 0.1 to a cloth word (1.0 by default)
+/// whose reader is not traced [not reproduced].
+///
+/// [`ClothRecord::HAIR`]: exa_physics::cloth_record::ClothRecord::HAIR
+pub fn hang_as_cloth(
+    commands: &mut Commands,
+    part: Entity,
+    root: bool,
+    source: Option<&std::sync::Arc<exa_assets::ClothMesh>>,
+    part_index: usize,
+) {
+    use exa_world::cloth::{ClothNode, ClothParameters, ClothSource};
+    let mut entity = commands.entity(part);
+    entity.insert(ClothNode);
+    if let Some(mesh) = source {
+        entity.insert(ClothSource {
+            mesh: mesh.clone(),
+            part: part_index,
+        });
+    }
+    if root {
+        entity.insert(ClothParameters(
+            exa_physics::cloth_record::ClothRecord::HAIR,
+        ));
     }
 }
 
@@ -212,5 +270,71 @@ mod tests {
         assert!(world.get::<HairAttached>(body).is_some());
         let children = world.get::<Children>(head).unwrap();
         assert!(!children.is_empty(), "the hair style spawned no root");
+    }
+
+    /// The first long style (`hair hula01`) hangs as cloth: its root part
+    /// takes the hair's record, and its faces' flags pin some of its
+    /// vertices (the scalp) and leave the rest free.
+    #[test]
+    fn a_long_style_hangs_as_pinned_cloth() {
+        use exa_world::cloth::{ClothNode, ClothParameters, ClothSource};
+        use std::sync::Arc;
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = exa_assets::GameData::open(&dir).unwrap();
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<exa_render::material::ExaMaterial>>()
+            .init_resource::<Assets<Image>>()
+            .init_resource::<ModelCache>()
+            .insert_resource(Game(Arc::new(game)))
+            .add_plugins(exa_world::cloth::ClothPlugin)
+            .add_systems(Update, attach_hair);
+        let body = app
+            .world_mut()
+            .spawn(Hair {
+                style: 1,
+                colour: [40, 80, 40],
+                feral: 0.0,
+                light_variant: false,
+                head_word: 0,
+            })
+            .id();
+        app.world_mut().spawn((
+            BodyPart {
+                bone: HEAD,
+                rest: Transform::IDENTITY,
+            },
+            ChildOf(body),
+        ));
+        app.update();
+        app.update();
+        let world = app.world_mut();
+        // The cloth stage built each cloth, pinned, in the particle mode.
+        let mut built = world.query::<&exa_world::cloth::ClothInstance>();
+        let instances: Vec<_> = built.iter(world).collect();
+        assert!(!instances.is_empty(), "the hair cloth was never built");
+        for instance in instances {
+            assert!(instance.cloth.record.particle_mode());
+            assert!(!instance.cloth.pins.is_empty());
+        }
+        let mut cloths = world.query::<(&ClothNode, Option<&ClothParameters>, &ClothSource)>();
+        let found: Vec<_> = cloths
+            .iter(world)
+            .map(|(_, p, s)| (p.copied(), s.mesh.clone()))
+            .collect();
+        assert!(!found.is_empty(), "the long style hung no cloth");
+        for (parameters, mesh) in &found {
+            assert_eq!(
+                parameters.map(|p| p.0),
+                Some(exa_physics::cloth_record::ClothRecord::HAIR)
+            );
+            let pins =
+                exa_physics::cloth::face_flag_pins(mesh.elements, &mesh.faces, &mesh.face_flags);
+            assert!(!pins.is_empty(), "the hair cloth has no pinned vertex");
+            assert!(pins.len() < mesh.elements, "every hair vertex is pinned");
+        }
     }
 }

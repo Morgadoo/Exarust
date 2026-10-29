@@ -211,8 +211,26 @@ constraint passes (the shipped iteration count less the step's one) end
 by putting it back on its push plane. The body's share (0.002, 0.01 or
 0.015 of the push, the friction and rustle energy) is not handed back:
 the cloth stage has no mutable body.
+A cloth is set up from a parameter record (`cloth_record::ClothRecord`,
+the `3DD0C001` block the original's set-up copies): the built-in record
+every shipped marker falls back to (`LEVEL`: triangle mode `0x7208`, 0.05
+drag, 2 cm padding, 0.1 cm slide, four passes, the `CltMov` rustle) or the
+one the character build hands a hair style (`HAIR`: particle mode `0x104`,
+0.2 drag, no padding or slide, two passes, no rustle). Both keep half the
+velocity a second (`exp(ln 0.5 · 1/83)` in double, times the world's
+0.98977) and gravity 1. In the particle mode the step makes all its passes
+itself, the post-body pass does nothing, and the body contact
+(`cloth_body::touch_particles`, gathered by
+`ObjectContacts::gather_particle_bodies`) pushes each particle inside a
+body sphere straight out to its surface, padded 1 cm on any body but the
+cloth's owner (none there; the box test takes the squared padded radius as
+its radius, as the original's does), taking off its travel across the push
+less the body's own motion there (the tetrahedron's barycentric weights,
+the original's approximate reciprocal) up to a tenth of the push's square,
+else shortening it by `√(0.1·push²/travel²)`; a body that pushed hands the
+cloth its countdown when that is higher.
 The cloth's level contact (`cloth_level`) runs after its step, mesh by
-mesh: each particle that moved over 0.1 cm² sweeps a 2 cm sphere through
+mesh (the radius and slide are the record's; the built-in's below): each particle that moved over 0.1 cm² sweeps a 2 cm sphere through
 the mesh, any other is a 2 cm sphere where it is, tested against the
 piece's box and then the piece's triangles near it (a per-piece grid, as
 the mesh's own tree query hands only the triangles around the sphere) in
