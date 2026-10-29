@@ -1,7 +1,18 @@
-//! The Settings and Controls forms, rebuilt from the binary's 0x68-byte
-//! control records (`TSGSettingDlg`'s tab, Settings and Controls arrays;
-//! `docs/UI.md`, Forms). Positions are design pixels at GUI unit 4; y
-//! anchors are on the 4-px grid and are scaled by the live unit.
+//! The Settings form (`TSGSettingDlg`): its three 0x68-byte control record
+//! arrays (the tabs and buttons, the Settings page and the Controls page),
+//! laid out and rescaled by the GUI's own passes, its two child pages and
+//! how it answers the pointer (`docs/UI.md`, Settings form).
+//!
+//! The form is 434 × 536 at unit 4, centred (style 0xb810), with the
+//! upper-layer attribute; the Settings page is a child at 0, 64 of the
+//! form's width less 8 by 408, the Controls page a scrolled child of the
+//! width less 16 by 416 over 676 of content, placed by the page switch.
+//! The records are laid out at unit 4 ([`gui_controls::layout_records`])
+//! and the form, its children and records rescaled to the live unit
+//! ([`gui_rescale::rescale_form`]), as showing a form does. [`FormState`]
+//! holds the laid-out controls and routes the pointer through the control
+//! classes' own messages ([`gui_controls::dispatch`]); what a change asks
+//! of the game is a [`FormEvent`].
 //!
 //! The option rows' behaviour is here too: the row ids, what each slider
 //! step or checkbox writes ([`on_slider`], [`on_toggle`]), what the rows show
@@ -11,14 +22,51 @@
 
 use exa_formats::hw_config::{self, Options, Scale};
 
+use crate::controls::extended_class;
+use crate::form::{self, ClientRect, WheelScroll};
+use crate::gui_controls::{
+    self, Control, ControlEvent, LayoutClient, Message, layout_records, message, state,
+};
+use crate::gui_rescale::{FormPlace, RecordPlace, rescale_form};
+
 /// The design dialog size at unit 4.
 pub const DESIGN: (i32, i32) = (434, 536);
-/// The Settings list's client height at unit 4.
+/// The Settings page's height at unit 4.
 pub const SETTINGS_HEIGHT: i32 = 408;
-/// The Controls list's client height at unit 4.
+/// The Controls page's height at unit 4 (before the page switch sets it).
 pub const CONTROLS_HEIGHT: i32 = 416;
-/// The Controls list's content height at unit 4.
+/// The Controls page's content height at unit 4.
 pub const CONTROLS_CONTENT: i32 = 676;
+/// The form's style word: centred across (0x800) and down (0x8000), with
+/// the centred-title frame bits 0x3000 and 0x10.
+pub const FORM_STYLE: u32 = 0xb810;
+/// The form's attribute word: the base constructor's 0x30022 with the
+/// upper-layer bit 0x1000 the Settings constructor sets.
+pub const FORM_ATTRIBUTES: u32 = 0x3_1022;
+/// A child page's attribute word: the base constructor's.
+pub const CHILD_ATTRIBUTES: u32 = 0x3_0022;
+/// The Controls page's attribute word: the base word with 0x80 and the
+/// vertical scrollbar (0x200) its constructor sets.
+pub const CONTROLS_ATTRIBUTES: u32 = 0x3_0022 | 0x280;
+/// The Controls page's style bits (0x88), which its constructor sets.
+pub const CONTROLS_STYLE: u32 = 0x88;
+/// The forms' border, which is also their client inset (no title bar).
+pub const BORDER: i32 = 2;
+/// The vertical scrollbar's width taken off a scrolled client's right: the
+/// rail (15 at unit 4) and two pixels, as the form background draws the
+/// bar's frame 17 pixels in. A guess: the client's scroll inset was not
+/// traced.
+pub const SCROLL_INSET: i32 = 17;
+/// The form's vertical scroll step (the base constructor's), which the
+/// wheel moves the Controls page by per notch.
+pub const SCROLL_STEP: f32 = 0.25;
+/// The hidden state the page switch gives a record (0x100 with the
+/// disabled bit); the control draw skips it.
+pub const HIDDEN: u32 = 0x110;
+/// The form's title.
+pub const TITLE: &str = "Settings";
+/// The video memory readout when the driver gives no figure.
+pub const UNKNOWN: &str = "Unknown";
 
 /// A rectangle in pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -29,7 +77,17 @@ pub struct Rect {
     pub h: i32,
 }
 
-/// A control record.
+impl Rect {
+    /// Whether the point is inside (edges at the left and top included).
+    pub fn contains(&self, x: i32, y: i32) -> bool {
+        x >= self.x && y >= self.y && x < self.x + self.w && y < self.y + self.h
+    }
+}
+
+/// A control record, as the original's arrays store it: the class and id
+/// words, the place and size (16-bit, anchors 0x8000…0x800a read signed),
+/// the radio group, the text, the style and state words, the step count
+/// and whether a callback is set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Record {
     pub class: u16,
@@ -40,23 +98,16 @@ pub struct Record {
     pub y: i32,
     pub w: i32,
     pub h: i32,
+    pub group: u16,
     pub text: Option<&'static str>,
     pub style: u32,
     pub state: u32,
+    pub steps: i32,
+    /// The record has a callback: the control reports its changes.
+    pub reports: bool,
 }
 
-#[allow(clippy::too_many_arguments)]
-const fn rec(
-    class: u16,
-    id: u16,
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
-    text: Option<&'static str>,
-    style: u32,
-    state: u32,
-) -> Record {
+const fn base(class: u16, id: u16, x: i32, y: i32, w: i32, h: i32) -> Record {
     Record {
         class,
         id,
@@ -64,11 +115,67 @@ const fn rec(
         y,
         w,
         h,
-        text,
-        style,
-        state,
+        group: 0,
+        text: None,
+        style: 0,
+        state: 0,
+        steps: 0,
+        reports: false,
     }
 }
+
+const fn label(id: u16, x: i32, y: i32, w: i32, text: Option<&'static str>, style: u32) -> Record {
+    Record {
+        text,
+        style,
+        ..base(5, id, x, y, w, 0)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+const fn button(
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    group: u16,
+    text: &'static str,
+    style: u32,
+    state: u32,
+) -> Record {
+    Record {
+        group,
+        text: Some(text),
+        style,
+        state,
+        reports: true,
+        ..base(1, 0, x, y, w, h)
+    }
+}
+
+const fn rule(x: i32, y: i32, w: i32) -> Record {
+    base(SEPARATOR_CLASS, 0, x, y, w, 0)
+}
+
+const fn track(id: u16, steps: i32) -> Record {
+    Record {
+        style: 0x40_5320,
+        steps,
+        reports: true,
+        ..base(4, id, 168, 0x8000, 140, 0)
+    }
+}
+
+const fn check(id: u16, x: i32, y: i32, w: i32, text: &'static str) -> Record {
+    Record {
+        text: Some(text),
+        reports: true,
+        ..base(2, id, x, y, w, 0)
+    }
+}
+
+/// The separator's class id (an extended control).
+pub const SEPARATOR_CLASS: u16 = crate::controls::SEPARATOR;
 
 /// The default skin sizes `(w, h)` by class.
 pub fn skin(class: u16) -> (i32, i32) {
@@ -85,142 +192,52 @@ pub fn skin(class: u16) -> (i32, i32) {
     }
 }
 
-/// The y-anchor delta in grid units.
-pub fn y_delta(code: i32) -> Option<(i32, bool)> {
-    Some(match code {
-        0x8000 => (0, false),
-        0x8002 => (13, false),
-        0x8003 => (12, false),
-        0x8004 => (11, false),
-        0x8005 => (10, false),
-        0x8006 => (9, false),
-        0x8007 => (8, false),
-        0x8008 => (7, false),
-        0x8009 => (6, false),
-        0x800a => (5, false),
-        _ => return None,
-    })
-}
-
-/// The x gap after the previous record's right edge.
-pub fn x_gap(code: i32) -> Option<i32> {
-    Some(match code {
-        0x8000 => 0,
-        0x8002 => 72,
-        0x8003 => 56,
-        0x8004 => 32,
-        0x8005 => 20,
-        0x8006 => 16,
-        0x8007 => 12,
-        0x8008 => 8,
-        0x8009 => 4,
-        0x800a => 0,
-        _ => return None,
-    })
-}
-
-/// Resolves records to rectangles in design pixels, adding the child offset.
-/// The first row's absolute y is in grid units; anchors add their delta to
-/// the previous row, negated when style bit 0x80000 is set.
-pub fn place(records: &[Record], y_offset: i32) -> Vec<Rect> {
-    let mut out = Vec::with_capacity(records.len());
-    let mut prev = Rect::default();
-    let mut prev_y = 0;
-    for (i, r) in records.iter().enumerate() {
-        let (yu, negative) = if let Some((delta, neg)) = y_delta(r.y) {
-            (prev_y + delta, neg)
-        } else {
-            (r.y, false)
-        };
-        let y = if negative { prev.y - yu * 4 } else { yu * 4 } + y_offset;
-        let x = if i == 0 {
-            if r.x >= 0x8000 { 4 } else { r.x }
-        } else if r.x >= 0x8000 {
-            if r.x == 0x8000 {
-                prev.x
-            } else if r.x == 0x8001 {
-                if prev.y == y { prev.x + prev.w + 4 } else { 0 }
-            } else {
-                prev.x + prev.w + x_gap(r.x).unwrap_or(0)
-            }
-        } else {
-            r.x
-        };
-        let (dw, dh) = skin(r.class);
-        let w = if r.w == 0 { dw } else { r.w };
-        let h = if r.h == 0 { dh } else { r.h };
-        let w = (w as f32 * 0.25).round_ties_even() as i32 * 4;
-        let h = (h as f32 * 0.25).round_ties_even() as i32 * 4;
-        let rect = Rect { x, y, w, h };
-        out.push(rect);
-        prev = rect;
-        prev_y = yu;
-    }
-    out
-}
-
-/// The tab/button array (9 records; Cancel may be omitted).
+/// The tab and button array: the SETTINGS and CONTROLS tabs (radio group
+/// 1), the Keyboard and Controller tabs (group 2, hidden without a
+/// controller), the two rules, and Defaults, Apply and Cancel. The
+/// constructor sets records 0 to 8.
 pub const TABS: [Record; 9] = [
-    rec(1, 0, 12, 5, 192, 32, Some("SETTINGS"), 0x0040_3320, 0x60),
-    rec(1, 0, 212, 0x8000, 192, 32, Some("CONTROLS"), 0x0040_3320, 0),
-    rec(
-        1,
-        0,
-        12,
-        0x8006,
-        192,
-        0,
-        Some("Keyboard"),
-        0x0400_3320,
-        0x170,
-    ),
-    rec(
-        1,
-        0,
-        212,
-        0x8000,
-        192,
-        0,
-        Some("Controller"),
-        0x0040_3300,
-        0x110,
-    ),
-    rec(0x13, 0, 16, 0x8008, 400, 0, None, 0, 0),
-    rec(0x13, 0, 16, 116, 400, 0, None, 0, 0),
-    rec(1, 0, 40, 0x8009, 100, 0, Some("Defaults"), 0x2040_3300, 0),
-    rec(1, 0, 0x8002, 0x8000, 104, 0, Some("Apply"), 0x2040_3300, 0),
-    rec(1, 0, 0x8002, 0x8000, 100, 0, Some("Cancel"), 0x2040_3300, 0),
+    button(12, 5, 192, 32, 1, "SETTINGS", 0x40_3320, 0x60),
+    button(212, 0x8000, 192, 32, 1, "CONTROLS", 0x40_3320, 0),
+    button(12, 0x8006, 192, 0, 2, "Keyboard", 0x40_3320, 0x170),
+    button(212, 0x8000, 192, 0, 2, "Controller", 0x40_3300, 0x110),
+    rule(16, 0x8008, 400),
+    rule(16, 116, 400),
+    button(40, 0x8009, 100, 0, 0, "Defaults", 0x2040_3300, 0),
+    button(0x8006, 0x8000, 104, 0, 0, "Apply", 0x2040_3300, 0),
+    button(0x8006, 0x8000, 100, 0, 0, "Cancel", 0x2040_3300, 0),
 ];
 
-/// The Settings row array (27 records).
+/// The Settings page's array (27 records): the device and memory readouts,
+/// a rule, then each option's label and slider or checkbox.
 pub const SETTINGS: [Record; 27] = [
-    rec(5, 0, 16, 0, 60, 0, Some("Video Device: "), 0, 0),
-    rec(5, 1, 168, 0x8000, 248, 0, Some("Unknown"), 0, 0x2000_2380),
-    rec(5, 0, 16, 0x8008, 60, 0, Some("Video Memory: "), 0, 0),
-    rec(5, 2, 168, 0x8000, 248, 0, None, 0, 0x2380),
-    rec(0x13, 0, 16, 0x8009, 400, 0, None, 0, 0),
-    rec(5, 0, 16, 0x8009, 60, 0, Some("Audio volume: "), 0, 0),
-    rec(3, 3, 168, 0x8000, 140, 0, None, 0, 0),
-    rec(2, 4, 320, 0x8000, 56, 0, Some("Music"), 0, 0),
-    rec(5, 0, 16, 0x8006, 60, 0, Some("Super sampling: "), 0, 0),
-    rec(4, 5, 168, 0x8000, 140, 0, None, 0, 0),
-    rec(5, 0, 16, 0x8007, 60, 0, Some("Shading quality: "), 0, 0),
-    rec(4, 6, 168, 0x8000, 140, 0, None, 0, 0),
-    rec(5, 0, 16, 0x8007, 60, 0, Some("Texture detail: "), 0, 0),
-    rec(4, 7, 168, 0x8000, 140, 0, None, 0, 0),
-    rec(5, 0, 16, 0x8008, 60, 0, Some("Texture quality: "), 0, 0),
-    rec(4, 8, 168, 0x8000, 140, 0, None, 0, 0),
-    rec(5, 0, 16, 0x8007, 60, 0, Some("Shadow detail: "), 0, 0),
-    rec(4, 9, 168, 0x8000, 140, 0, None, 0, 0),
-    rec(5, 0, 16, 0x8008, 60, 0, Some("Shadow quality: "), 0, 0),
-    rec(4, 11, 168, 0x8000, 140, 0, None, 0, 0),
-    rec(5, 0, 16, 0x8007, 60, 0, Some("HW antialiasing: "), 0, 0),
-    rec(4, 12, 168, 0x8000, 140, 0, None, 0, 0),
-    rec(2, 13, 72, 0x8007, 80, 0, Some("Vertical sync "), 0, 0),
-    rec(2, 14, 228, 0x8000, 80, 0, Some("Show framerate"), 0, 0),
-    rec(2, 15, 72, 0x8008, 80, 0, Some("Window mode"), 0, 0),
-    rec(2, 16, 228, 0x8000, 80, 0, Some("Show gameplay tips"), 0, 0),
-    rec(2, 17, 148, 0x8008, 100, 0, Some("Early Checkpoints"), 0, 0),
+    label(0, 16, 0, 60, Some("Video Device: "), 0),
+    label(1, 168, 0x8000, 248, Some(UNKNOWN), 0x2000_2380),
+    label(0, 16, 0x8008, 60, Some("Video Memory: "), 0),
+    label(2, 168, 0x8000, 248, None, 0x2380),
+    rule(16, 0x8009, 400),
+    label(0, 16, 0x8009, 60, Some("Audio volume: "), 0),
+    track(3, 0),
+    check(4, 320, 0x8000, 56, "Music"),
+    label(0, 16, 0x8006, 60, Some("Super sampling: "), 0),
+    track(5, 3),
+    label(0, 16, 0x8007, 60, Some("Shading quality: "), 0),
+    track(6, 3),
+    label(0, 16, 0x8007, 60, Some("Texture detail: "), 0),
+    track(7, 1),
+    label(0, 16, 0x8008, 60, Some("Texture quality: "), 0),
+    track(8, 3),
+    label(0, 16, 0x8007, 60, Some("Shadow detail: "), 0),
+    track(9, 1),
+    label(0, 16, 0x8008, 60, Some("Shadow quality: "), 0),
+    track(11, 3),
+    label(0, 16, 0x8007, 60, Some("HW antialiasing: "), 0),
+    track(12, 3),
+    check(13, 72, 0x8007, 80, "Vertical sync "),
+    check(14, 228, 0x8000, 80, "Show framerate"),
+    check(15, 72, 0x8008, 80, "Window mode"),
+    check(16, 228, 0x8000, 80, "Show gameplay tips"),
+    check(17, 148, 0x8008, 100, "Early Checkpoints"),
 ];
 
 /// One Controls binding: a label row and its key cell.
@@ -236,7 +253,8 @@ pub struct Binding {
     pub slot: Option<usize>,
     /// The template's key text (the shipped table's key may differ).
     pub key: &'static str,
-    /// The row's y in design pixels.
+    /// The row's y in design pixels: the first row's 2 grid units plus
+    /// the anchors' rows (7, or 8 and 9 between the groups), times 4.
     pub y: i32,
     /// Whether the row has a key cell.
     pub keyed: bool,
@@ -278,80 +296,240 @@ pub const BINDINGS: [Binding; 22] = [
     bind("Power Bar", 0x11, 18, "", 532),
     bind("Previous Power", 0x13, 22, "", 560),
     bind("Next Power", 0x14, 21, "", 588),
-    bind("Power Tree", 0x12, 19, "", 616),
+    bind("Power Tree", 0x12, 19, "P", 616),
 ];
 
-/// The complete form layout at a GUI unit (4, 5, 6, 8 or 12).
-#[derive(Debug, Clone, PartialEq)]
-pub struct Layout {
-    pub form: Rect,
-    pub tabs: Vec<Rect>,
-    pub settings: Vec<Rect>,
-    pub bindings: Vec<Rect>,
-    pub separators: [Rect; 2],
-    pub buttons: [Rect; 3],
-    pub settings_viewport: Rect,
-    pub controls_viewport: Rect,
-    pub controls_content: i32,
+/// The key cells' style word: the alternate label front (0x20000000) with
+/// a frame (0x80), centred (0x3000) and the text centred down (0x300).
+pub const KEY_CELL_STYLE: u32 = 0x2000_3380;
+
+/// The Controls page's 44 records: each row's label (x 80, 68 wide, no
+/// callback) and its key cell (x 232, 100 wide, the row's action as its id,
+/// the key-read screen's opener as its callback), on the row's grid line.
+pub fn controls_records() -> Vec<Record> {
+    let mut out = Vec::with_capacity(BINDINGS.len() * 2);
+    for b in &BINDINGS {
+        let y = b.y / 4;
+        out.push(label(0, 0x50, y, 68, Some(b.label), 0));
+        let key = (!b.key.is_empty()).then_some(b.key);
+        out.push(Record {
+            reports: true,
+            ..label(b.action, 0xe8, y, 100, key, KEY_CELL_STYLE)
+        });
+    }
+    out
 }
 
-/// Builds the form at `unit`, scaling the unit-4 design by `unit/4`.
-pub fn layout(unit: i32) -> Layout {
-    let scale = unit as f32 / 4.0;
-    let s = |v: i32| (v as f32 * scale) as i32;
-    let form = Rect {
+/// A stored 16-bit word read signed, as the layout pass reads anchors.
+fn word(v: i32) -> i32 {
+    i32::from(v as u16 as i16)
+}
+
+/// A record as a control: its words copied, its anchors read signed, its
+/// style left 0 when the record has none so the layout gives the class's.
+/// An extended class (the separator) takes its registered default height,
+/// which the basic layout pass does not know.
+pub fn control(r: &Record) -> Control {
+    let mut c = Control::new(r.class, word(r.x), word(r.y), r.w, r.h);
+    c.group = i32::from(r.group);
+    c.text = r.text.unwrap_or("").as_bytes().to_vec();
+    c.style = r.style;
+    c.state = r.state;
+    c.steps = r.steps;
+    c.reports = r.reports;
+    if c.h == 0
+        && let Some(class) = extended_class(r.class)
+    {
+        c.h = class.size.1;
+    }
+    c
+}
+
+/// Lays `records` out at unit 4 inside a client `client` wide and high.
+pub fn lay_out(records: &[Record], client: (i32, i32)) -> Vec<Control> {
+    let mut controls: Vec<Control> = records.iter().map(control).collect();
+    layout_records(
+        &mut controls,
+        LayoutClient {
+            inner_right: client.0,
+            border: BORDER,
+            bottom: client.1,
+        },
+        4,
+    );
+    controls
+}
+
+/// A form's client from its size: the border all round, and the scrollbar
+/// off the right of a scrolled one ([`form::client_rect`] without a title).
+fn client_of(w: i32, h: i32, scrolled: bool) -> ClientRect {
+    let attributes = if scrolled {
+        CONTROLS_ATTRIBUTES
+    } else {
+        CHILD_ATTRIBUTES
+    };
+    form::client_rect(w, h, BORDER, 0, attributes, 0, SCROLL_INSET, 0, 15, BORDER)
+}
+
+fn place_of(rect: Rect, anchors: u32, content: i32, records: &[Control]) -> FormPlace {
+    let scrolled = content > 0;
+    FormPlace {
+        x: rect.x,
+        y: rect.y,
+        w: rect.w,
+        h: rect.h,
+        border: BORDER,
+        design_border: 0,
+        title: 0,
+        client: client_of(rect.w, rect.h, scrolled),
+        content_height: content,
+        minimum: (90, 76),
+        anchors,
+        keep_size: false,
+        title_only: false,
+        container: false,
+        children: Vec::new(),
+        records: records
+            .iter()
+            .map(|c| RecordPlace {
+                x: c.x as i16,
+                y: c.y as i16,
+                w: c.w as i16,
+                h: c.h as i16,
+                style: c.style,
+                form_bottom: false,
+            })
+            .collect(),
+    }
+}
+
+fn take_places(controls: &mut [Control], place: &FormPlace) {
+    for (c, r) in controls.iter_mut().zip(&place.records) {
+        c.x = i32::from(r.x);
+        c.y = i32::from(r.y);
+        c.w = i32::from(r.w);
+        c.h = i32::from(r.h);
+    }
+}
+
+/// Re-sizes the trackbars' knobs after a rescale: a knob bar's is
+/// `4·unit + 2` (as its set-up gives it; the rescale of a basic trackbar's
+/// knob was not traced), and a stepped bar resyncs its knob from its
+/// width.
+fn resync_trackbars(controls: &mut [Control], unit: i32) {
+    let mut events = Vec::new();
+    for i in 0..controls.len() {
+        if controls[i].class != 4 {
+            continue;
+        }
+        if controls[i].style & gui_controls::style::KIND == 0 {
+            controls[i].knob = unit * 4 + 2;
+        }
+        gui_controls::dispatch(
+            controls,
+            i,
+            Message {
+                message: message::RESYNC,
+                ..Message::default()
+            },
+            unit,
+            &mut events,
+        );
+    }
+}
+
+/// The laid-out form at a unit: its place on the screen, its two pages
+/// (form-local, the Controls page as the constructor places it), the
+/// Controls page's content height and the three record lists (each in its
+/// own form's client coordinates).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Geometry {
+    pub unit: i32,
+    pub form: Rect,
+    pub settings_page: Rect,
+    pub controls_page: Rect,
+    pub controls_content: i32,
+    pub main: Vec<Control>,
+    pub settings: Vec<Control>,
+    pub controls: Vec<Control>,
+}
+
+/// Builds the form for a `screen` (width, height) at `unit`: the records
+/// laid out at unit 4, the form, its pages and their records rescaled to
+/// the unit when it is not 4, then the form centred (truncating across,
+/// a floor down).
+pub fn geometry(screen: (i32, i32), unit: i32) -> Geometry {
+    let form_rect = Rect {
         x: 0,
         y: 0,
-        w: s(DESIGN.0),
-        h: s(DESIGN.1),
+        w: DESIGN.0,
+        h: DESIGN.1,
     };
-    let tabs = place(&TABS, 0);
-    let settings = place(&SETTINGS, 64);
-    let mut bindings = Vec::with_capacity(BINDINGS.len() * 2);
-    for b in BINDINGS {
-        bindings.push(Rect {
-            x: s(80),
-            y: s(56 + b.y),
-            w: s(68),
-            h: s(20),
-        });
-        if b.keyed {
-            bindings.push(Rect {
-                x: s(232),
-                y: s(56 + b.y),
-                w: s(100),
-                h: s(20),
-            });
-        }
+    let settings_rect = Rect {
+        x: 0,
+        y: 64,
+        w: DESIGN.0 - 8,
+        h: SETTINGS_HEIGHT,
+    };
+    let controls_rect = Rect {
+        x: 0,
+        y: 56,
+        w: DESIGN.0 - 16,
+        h: CONTROLS_HEIGHT,
+    };
+    let main_client = client_of(form_rect.w, form_rect.h, false);
+    let settings_client = client_of(settings_rect.w, settings_rect.h, false);
+    let controls_client = client_of(controls_rect.w, controls_rect.h, true);
+    let mut main = lay_out(&TABS, (main_client.width(), main_client.height()));
+    let mut settings = lay_out(
+        &SETTINGS,
+        (settings_client.width(), settings_client.height()),
+    );
+    let mut controls = lay_out(
+        &controls_records(),
+        (controls_client.width(), controls_client.height()),
+    );
+    let mut place = place_of(form_rect, FORM_STYLE, 0, &main);
+    place.children = vec![
+        place_of(settings_rect, 0, 0, &settings),
+        place_of(controls_rect, CONTROLS_STYLE, CONTROLS_CONTENT, &controls),
+    ];
+    if unit != 4 {
+        // Only the Controls page carries a content height: it is the one
+        // with a vertical scrollbar.
+        let mut realign = |f: &mut FormPlace| f.client = client_of(f.w, f.h, f.content_height > 0);
+        rescale_form(
+            &mut place,
+            4,
+            unit,
+            screen,
+            screen,
+            6 * unit - BORDER,
+            &mut realign,
+        );
+        take_places(&mut main, &place);
+        take_places(&mut settings, &place.children[0]);
+        take_places(&mut controls, &place.children[1]);
+        resync_trackbars(&mut settings, unit);
     }
-    let scale_rect = |r: Rect| Rect {
-        x: s(r.x),
-        y: s(r.y),
-        w: s(r.w),
-        h: s(r.h),
+    let rect_of = |p: &FormPlace| Rect {
+        x: p.x,
+        y: p.y,
+        w: p.w,
+        h: p.h,
     };
-    let tabs: Vec<Rect> = tabs.into_iter().map(scale_rect).collect();
-    let settings: Vec<Rect> = settings.into_iter().map(scale_rect).collect();
-    Layout {
+    let mut form = rect_of(&place);
+    form.x = (screen.0 - form.w) / 2;
+    form.y = (screen.1 - form.h) >> 1;
+    Geometry {
+        unit,
         form,
-        separators: [tabs[4], tabs[5]],
-        buttons: [tabs[6], tabs[7], tabs[8]],
-        tabs: tabs[..4].to_vec(),
+        settings_page: rect_of(&place.children[0]),
+        controls_page: rect_of(&place.children[1]),
+        controls_content: place.children[1].content_height,
+        main,
         settings,
-        bindings,
-        settings_viewport: Rect {
-            x: 0,
-            y: s(64),
-            w: s(426),
-            h: s(SETTINGS_HEIGHT),
-        },
-        controls_viewport: Rect {
-            x: 0,
-            y: s(56),
-            w: s(426),
-            h: s(CONTROLS_HEIGHT),
-        },
-        controls_content: s(CONTROLS_CONTENT),
+        controls,
     }
 }
 
@@ -359,218 +537,143 @@ pub fn layout(unit: i32) -> Layout {
 mod tests {
     use super::*;
 
+    fn rect(c: &Control) -> (i32, i32, i32, i32) {
+        (c.x, c.y, c.w, c.h)
+    }
+
     #[test]
-    fn the_skin_sizes_and_anchors() {
+    fn the_skin_sizes() {
         assert_eq!(skin(1), (80, 24));
         assert_eq!(skin(2), (16, 16));
         assert_eq!(skin(3), (28, 28));
         assert_eq!(skin(4), (0, 16));
         assert_eq!(skin(5), (0, 20));
         assert_eq!(skin(0x13), (0, 3));
-        assert_eq!(y_delta(0x8000), Some((0, false)));
-        assert_eq!(y_delta(0x8006), Some((9, false)));
-        assert_eq!(y_delta(0x8008), Some((7, false)));
-        assert_eq!(x_gap(0x8002), Some(72));
-        assert_eq!(x_gap(0x800a), Some(0));
+        assert_eq!(SEPARATOR_CLASS, 0x13);
     }
 
     #[test]
-    fn the_records_place_at_unit_four() {
-        let l = layout(4);
-        assert_eq!((l.form.w, l.form.h), (434, 536));
+    fn the_records_lay_out_at_unit_four() {
+        let g = geometry((1280, 720), 4);
         assert_eq!(
-            l.tabs[0],
+            g.form,
             Rect {
-                x: 12,
-                y: 20,
-                w: 192,
-                h: 32
-            }
-        );
-        assert_eq!(
-            l.tabs[1],
-            Rect {
-                x: 212,
-                y: 20,
-                w: 192,
-                h: 32
-            }
-        );
-        assert_eq!(
-            l.settings[0],
-            Rect {
-                x: 16,
-                y: 64,
-                w: 60,
-                h: 20
-            }
-        );
-        assert_eq!(
-            l.settings[1],
-            Rect {
-                x: 168,
-                y: 64,
-                w: 248,
-                h: 20
-            }
-        );
-        assert_eq!(
-            l.settings[3],
-            Rect {
-                x: 168,
+                x: 423,
                 y: 92,
-                w: 248,
-                h: 20
+                w: 434,
+                h: 536
+            }
+        );
+        // A 32-high tab moves up by 8; a 24-high button by 4.
+        assert_eq!(rect(&g.main[0]), (12, 12, 192, 32));
+        assert_eq!(rect(&g.main[1]), (212, 12, 192, 32));
+        // The rules are 3 high: half of (3 − 16) through the unsigned shift
+        // moves them 7 down.
+        assert_eq!(rect(&g.main[4]), (16, 91, 400, 3));
+        assert_eq!(rect(&g.main[5]), (16, 471, 400, 3));
+        // Defaults six rows below the second rule, Apply and Cancel 16
+        // pixels after the button before.
+        assert_eq!(rect(&g.main[6]), (40, 484, 100, 24));
+        assert_eq!(rect(&g.main[7]), (156, 484, 104, 24));
+        assert_eq!(rect(&g.main[8]), (276, 484, 100, 24));
+        // The Settings page: readouts, the volume slider and Music.
+        assert_eq!(rect(&g.settings[0]), (16, -2, 60, 20));
+        assert_eq!(rect(&g.settings[1]), (168, -2, 248, 20));
+        assert_eq!(rect(&g.settings[5]), (16, 74, 60, 20));
+        assert_eq!(rect(&g.settings[6]), (168, 76, 140, 16));
+        assert_eq!(rect(&g.settings[7]), (320, 76, 56, 16));
+        assert_eq!(rect(&g.settings[26]), (148, 384, 100, 16));
+        // The volume slider is a knob bar: knob 18, margin 2 widened by its
+        // frame bit 0x20 to 3; a stepped one sizes its knob from its width.
+        assert_eq!((g.settings[6].knob, g.settings[6].margin), (18, 3));
+        assert_eq!(g.settings[9].knob, 34);
+        assert_eq!(g.settings[13].knob, 68);
+        // The Controls page: the first and last rows.
+        assert_eq!(rect(&g.controls[0]), (80, 6, 68, 20));
+        assert_eq!(rect(&g.controls[1]), (232, 6, 100, 20));
+        assert_eq!(rect(&g.controls[43]), (232, 614, 100, 20));
+        assert_eq!(
+            g.settings_page,
+            Rect {
+                x: 0,
+                y: 64,
+                w: 426,
+                h: 408
             }
         );
         assert_eq!(
-            l.settings[7],
+            g.controls_page,
             Rect {
-                x: 320,
-                y: 140,
-                w: 56,
-                h: 16
+                x: 0,
+                y: 56,
+                w: 418,
+                h: 416
             }
         );
-        assert_eq!(l.settings[26].y, 448);
-        assert_eq!(l.settings[26].y + 20, 468);
-        assert_eq!(
-            l.separators[0],
-            Rect {
-                x: 16,
-                y: 84,
-                w: 400,
-                h: 4
-            }
-        );
-        assert_eq!(
-            l.buttons[0],
-            Rect {
-                x: 40,
-                y: 488,
-                w: 100,
-                h: 24
-            }
-        );
-        assert_eq!(
-            l.buttons[2],
-            Rect {
-                x: 388,
-                y: 488,
-                w: 100,
-                h: 24
-            }
-        );
+        assert_eq!(g.controls_content, 676);
     }
 
     #[test]
-    fn the_bindings_and_scroll() {
-        let l = layout(4);
+    fn the_form_rescales_through_its_client() {
+        let g = geometry((1920, 1080), 6);
+        // The client (430 × 532) scales by whole units: 107 and 133 of them.
         assert_eq!(
-            l.bindings[0],
+            g.form,
             Rect {
-                x: 80,
-                y: 64,
-                w: 68,
-                h: 20
+                x: 637,
+                y: 139,
+                w: 646,
+                h: 802
             }
         );
+        assert_eq!(rect(&g.main[0]), (18, 18, 288, 48));
         assert_eq!(
-            l.bindings[1],
+            g.settings_page,
             Rect {
-                x: 232,
-                y: 64,
-                w: 100,
-                h: 20
-            }
-        );
-        assert_eq!(l.bindings.last().unwrap().y, 56 + 616);
-        assert_eq!(l.controls_content, 676);
-        assert_eq!(l.controls_viewport.h, 416);
-    }
-
-    #[test]
-    fn the_layout_scales_with_the_unit() {
-        let l = layout(6);
-        assert_eq!((l.form.w, l.form.h), (651, 804));
-        assert_eq!(
-            l.tabs[0],
-            Rect {
-                x: 18,
-                y: 30,
-                w: 288,
-                h: 48
-            }
-        );
-        assert_eq!(
-            l.settings[0],
-            Rect {
-                x: 24,
+                x: 0,
                 y: 96,
-                w: 90,
-                h: 30
+                w: 634,
+                h: 610
             }
         );
-        assert_eq!(l.bindings[0].y, 96);
+        assert_eq!(g.controls_page.w, 615);
+        assert_eq!(g.controls_content, 1014);
+        assert_eq!(g.settings[6].knob, 26);
     }
 }
 
-/// A switched page: what is visible and the child's rectangle.
+/// A switched page: what is visible and where the Controls page goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PageSwitch {
     pub page: u8,
     pub settings_visible: bool,
     pub controls_visible: bool,
-    pub child: Rect,
+    /// The Controls page's y and height (unchanged on page 0).
+    pub controls_y: Option<(i32, i32)>,
 }
 
-/// The page switch: page 0 shows the Settings child at
-/// (0,64,426,408); page 1 shows the Controls child at a y of 56 (widescreen)
-/// or 96, height 472−y. The unit-4 values scale by `unit/4`.
-pub fn switch_page(page: u8, widescreen: bool, unit: i32) -> Option<PageSwitch> {
-    let s = |v: i32| v * unit / 4;
+/// The page switch: page 0 shows the Settings page; page 1 the Controls
+/// page at a y of 14 units, or 21 when the controller tabs show (with Steam
+/// Input, which Exarust does not have), its height 118 units less its y.
+pub fn switch_page(page: u8, controller_tabs: bool, unit: i32) -> Option<PageSwitch> {
     match page {
         0 => Some(PageSwitch {
             page,
             settings_visible: true,
             controls_visible: false,
-            child: Rect {
-                x: 0,
-                y: s(64),
-                w: s(426),
-                h: s(SETTINGS_HEIGHT),
-            },
+            controls_y: None,
         }),
         1 => {
-            let y = if widescreen { 56 } else { 96 };
+            let y = unit * if controller_tabs { 21 } else { 14 };
             Some(PageSwitch {
                 page,
                 settings_visible: false,
                 controls_visible: true,
-                child: Rect {
-                    x: 0,
-                    y: s(y),
-                    w: s(426),
-                    h: s(472 - y),
-                },
+                controls_y: Some((y, unit * 118 - y)),
             })
         }
         _ => None,
     }
-}
-
-/// The Controls list's scrollbar at fraction `f`: the 412-px client of the
-/// 416-px child over 676-px content, a 15-px rail and a minimum 9-px thumb.
-/// Returns `(thumb_height, thumb_y)` scaled by `unit/4`.
-pub fn controls_scroll(f: f32, unit: i32) -> (i32, i32) {
-    let viewport = 412;
-    let content = CONTROLS_CONTENT;
-    let rail = 15;
-    let track = viewport - 2 * rail;
-    let mut thumb = (track as f64 * viewport as f64 / content as f64) as i32;
-    thumb = thumb.clamp(9, track);
-    let y = 17 + ((track - thumb) as f32 * f.clamp(0.0, 1.0)) as i32;
-    (thumb * unit / 4, y * unit / 4)
 }
 
 #[cfg(test)]
@@ -579,46 +682,18 @@ mod page_tests {
 
     #[test]
     fn the_page_switch() {
-        let settings = switch_page(0, true, 4).unwrap();
+        let settings = switch_page(0, false, 4).unwrap();
         assert!(settings.settings_visible && !settings.controls_visible);
-        assert_eq!(
-            settings.child,
-            Rect {
-                x: 0,
-                y: 64,
-                w: 426,
-                h: 408
-            }
-        );
-        let controls = switch_page(1, true, 4).unwrap();
+        assert_eq!(settings.controls_y, None);
+        let controls = switch_page(1, false, 4).unwrap();
         assert!(!controls.settings_visible && controls.controls_visible);
+        assert_eq!(controls.controls_y, Some((56, 416)));
+        assert_eq!(switch_page(1, true, 4).unwrap().controls_y, Some((84, 388)));
         assert_eq!(
-            controls.child,
-            Rect {
-                x: 0,
-                y: 56,
-                w: 426,
-                h: 416
-            }
+            switch_page(1, false, 6).unwrap().controls_y,
+            Some((84, 624))
         );
-        let tall = switch_page(1, false, 4).unwrap();
-        assert_eq!(
-            tall.child,
-            Rect {
-                x: 0,
-                y: 96,
-                w: 426,
-                h: 376
-            }
-        );
-        assert!(switch_page(2, true, 4).is_none());
-    }
-
-    #[test]
-    fn the_controls_scroll() {
-        assert_eq!(controls_scroll(0.0, 4), (232, 17));
-        assert_eq!(controls_scroll(1.0, 4), (232, 167));
-        assert_eq!(controls_scroll(0.5, 6), (348, 138));
+        assert!(switch_page(2, false, 4).is_none());
     }
 }
 
@@ -831,8 +906,9 @@ pub enum Effect {
 /// Rounding is to even, as the processor's conversion does.
 ///
 /// The super-sampling slider also disables the hardware anti-aliasing row
-/// when its level is above 0 (and enables it at 0); it does not change that
-/// row's value. The volume, texture-detail and texture-quality sliders change
+/// when its level is above 0 (and enables it at 0), setting that row to 0
+/// through a reported set ([`FormState`]); the row's own step then writes
+/// the draft's samples, disabled or not. The volume, texture-detail and texture-quality sliders change
 /// the live options too; the other quality sliders change the draft only.
 pub fn on_slider(options: &mut Options, setting: Setting, fraction: f32) -> Effect {
     match setting {
@@ -864,10 +940,10 @@ pub fn on_slider(options: &mut Options, setting: Setting, fraction: f32) -> Effe
             options.shadow_quality = hw_config::shadow_quality_from_fraction(fraction);
             Effect::Draft
         }
+        // The callback writes whatever the slider holds: a disabled row
+        // takes no pointer input, but the super-sampling slider's reported
+        // set of 0 still reaches it.
         Setting::Multisample => {
-            if options.supersample > 0 {
-                return Effect::Ignored;
-            }
             options.multisample = hw_config::multisample_from_fraction(fraction);
             Effect::Draft
         }
@@ -961,6 +1037,752 @@ pub fn action_page(action: FormAction) -> Option<u8> {
         FormAction::SettingsTab => Some(0),
         FormAction::ControlsTab => Some(1),
         _ => None,
+    }
+}
+
+/// The label a slider shows for the draft's value, as each slider's
+/// callback writes it after a step (the super-sampling level, the quality
+/// levels and the sample count); the volume slider has none.
+pub fn draft_text(setting: Setting, o: &Options) -> Option<&'static str> {
+    match setting {
+        Setting::Supersample => o.supersample_text(),
+        Setting::ShadingQuality => o.shading_text(),
+        Setting::TextureDetail => o.texture_detail_text(),
+        Setting::TextureQuality => o.texture_quality_text(),
+        Setting::ShadowDetail => o.shadow_detail_text(),
+        Setting::ShadowQuality => o.shadow_quality_text(),
+        Setting::Multisample => o.multisample_text(),
+        _ => None,
+    }
+}
+
+/// The index in [`SETTINGS`] of the record with control id `id`.
+pub fn settings_index(id: u16) -> Option<usize> {
+    SETTINGS.iter().position(|r| r.id == id && r.class != 5)
+}
+
+/// Which of the form's record lists a control is in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Part {
+    /// The form's own records: the tabs, rules and buttons.
+    Main,
+    Settings,
+    Controls,
+}
+
+/// What a control's change asks of the game.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum FormEvent {
+    /// A tab turned on: the form shows the page (already switched).
+    Page(u8),
+    /// Defaults, Apply or Cancel.
+    Action(FormAction),
+    /// A slider moved to this fraction.
+    Slider(Setting, f32),
+    /// A checkbox changed (its lit bit, which the callbacks read).
+    Toggle(Setting, bool),
+    /// A Controls key cell was clicked: the key-read screen opens for the
+    /// row ([`BINDINGS`] index).
+    Rebind(usize),
+}
+
+/// The open Settings form: its geometry, the page in view, the Controls
+/// page's place and scroll, and the record the pointer holds and hovers.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FormState {
+    pub screen: (i32, i32),
+    pub geometry: Geometry,
+    pub page: u8,
+    /// The Controls page as the page switch placed it (form-local).
+    pub controls_page: Rect,
+    /// The Controls page's vertical scroll fraction.
+    pub scroll: f32,
+    held: Option<(Part, usize)>,
+    hovered: Option<(Part, usize)>,
+}
+
+/// Whether a record takes the pointer: shown, enabled, without the
+/// not-hit style bit 2, and not one that lets the pointer through (a rule,
+/// or a label without a callback).
+fn takes_hits(c: &Control) -> bool {
+    c.state & HIDDEN != HIDDEN
+        && c.state & state::DISABLED == 0
+        && c.style & 2 == 0
+        && c.class != SEPARATOR_CLASS
+        && !(c.class == 5 && !c.reports)
+}
+
+impl FormState {
+    /// Opens the form on its Settings page.
+    pub fn open(screen: (i32, i32), unit: i32) -> Self {
+        let geometry = geometry(screen, unit);
+        let mut form = Self {
+            screen,
+            controls_page: geometry.controls_page,
+            geometry,
+            page: 0,
+            scroll: 0.0,
+            held: None,
+            hovered: None,
+        };
+        form.switch(0);
+        form
+    }
+
+    pub fn unit(&self) -> i32 {
+        self.geometry.unit
+    }
+
+    /// Rebuilds the form for another screen size or unit, keeping its page,
+    /// scroll and every record's state, value and text.
+    pub fn resize(&mut self, screen: (i32, i32), unit: i32) {
+        let mut g = geometry(screen, unit);
+        let keep = |new: &mut [Control], old: &[Control]| {
+            for (n, o) in new.iter_mut().zip(old) {
+                n.state = o.state;
+                n.value = o.value;
+                n.text = o.text.clone();
+            }
+        };
+        keep(&mut g.main, &self.geometry.main);
+        keep(&mut g.settings, &self.geometry.settings);
+        keep(&mut g.controls, &self.geometry.controls);
+        self.controls_page = g.controls_page;
+        self.geometry = g;
+        self.screen = screen;
+        self.held = None;
+        self.hovered = None;
+        self.switch(self.page);
+    }
+
+    /// The page switch: page 0 shows the rules and hides the Keyboard and
+    /// Controller tabs; page 1 hides the rules and places the Controls page
+    /// ([`switch_page`]) on its keyboard view, which lights the Keyboard
+    /// tab and darkens the Controller one (both stay hidden without Steam
+    /// Input, so the controller view is never shown).
+    pub fn switch(&mut self, page: u8) {
+        let Some(switch) = switch_page(page, false, self.unit()) else {
+            return;
+        };
+        self.page = page;
+        let main = &mut self.geometry.main;
+        if page == 0 {
+            main[4].state = 0;
+            main[5].state = 0;
+            main[2].state = HIDDEN;
+            main[3].state = HIDDEN;
+        } else {
+            main[4].state = HIDDEN;
+            main[5].state = HIDDEN;
+            main[2].state |= state::ON | state::LIT;
+            main[3].state &= !(state::ON | state::LIT);
+        }
+        if let Some((y, h)) = switch.controls_y {
+            self.controls_page.y = y;
+            self.controls_page.h = h;
+        }
+    }
+
+    /// The form's record origin on the screen (its client's top left).
+    pub fn origin(&self) -> (i32, i32) {
+        (self.geometry.form.x + BORDER, self.geometry.form.y + BORDER)
+    }
+
+    /// The page in view and its record list.
+    pub fn page_part(&self) -> Part {
+        if self.page == 0 {
+            Part::Settings
+        } else {
+            Part::Controls
+        }
+    }
+
+    /// The page in view on the screen.
+    pub fn page_screen(&self) -> Rect {
+        let (ox, oy) = self.origin();
+        let page = if self.page == 0 {
+            self.geometry.settings_page
+        } else {
+            self.controls_page
+        };
+        Rect {
+            x: ox + page.x,
+            y: oy + page.y,
+            ..page
+        }
+    }
+
+    /// The page's client on the screen.
+    pub fn page_client(&self) -> Rect {
+        let page = self.page_screen();
+        let client = client_of(page.w, page.h, self.page == 1);
+        Rect {
+            x: page.x + client.left,
+            y: page.y + client.top,
+            w: client.width(),
+            h: client.height(),
+        }
+    }
+
+    /// The Controls page's scroll offset: the overflow times the fraction,
+    /// rounded as `CVTSS2SI` does.
+    pub fn scroll_offset(&self) -> i32 {
+        if self.page != 1 {
+            return 0;
+        }
+        let overflow = self.geometry.controls_content - self.page_client().h;
+        if overflow <= 0 {
+            0
+        } else {
+            form::cvtss2si(overflow as f32 * self.scroll)
+        }
+    }
+
+    /// The Controls page's scrollbar track and thumb (page-local).
+    pub fn scrollbar(&self) -> form::VerticalScroll {
+        let page = self.controls_page;
+        form::vertical_scroll_metrics(
+            page.h,
+            BORDER,
+            client_of(page.w, page.h, true),
+            self.geometry.controls_content,
+            4 * self.unit() - 1,
+            self.unit(),
+            CONTROLS_ATTRIBUTES,
+            self.scroll,
+            SCROLL_STEP,
+        )
+    }
+
+    /// Where a part's records are measured from on the screen.
+    pub fn part_origin(&self, part: Part) -> (i32, i32) {
+        match part {
+            Part::Main => self.origin(),
+            _ => {
+                let client = self.page_client();
+                (client.x, client.y - self.scroll_offset())
+            }
+        }
+    }
+
+    pub fn controls(&self, part: Part) -> &[Control] {
+        match part {
+            Part::Main => &self.geometry.main,
+            Part::Settings => &self.geometry.settings,
+            Part::Controls => &self.geometry.controls,
+        }
+    }
+
+    fn controls_mut(&mut self, part: Part) -> &mut Vec<Control> {
+        match part {
+            Part::Main => &mut self.geometry.main,
+            Part::Settings => &mut self.geometry.settings,
+            Part::Controls => &mut self.geometry.controls,
+        }
+    }
+
+    /// Whether a screen point is on the form.
+    pub fn contains(&self, x: i32, y: i32) -> bool {
+        self.geometry.form.contains(x, y)
+    }
+
+    /// The record under a screen point. The page in view is tried first
+    /// (a visible child before the records); off its client it answers
+    /// none. Records are hit on their rectangles, edges included, then
+    /// within two units.
+    pub fn hit(&self, x: i32, y: i32) -> Option<(Part, usize)> {
+        let part = if self.page_screen().contains(x, y) {
+            if !self.page_client().contains(x, y) {
+                return None;
+            }
+            self.page_part()
+        } else {
+            Part::Main
+        };
+        let (ox, oy) = self.part_origin(part);
+        let (x, y) = (x - ox, y - oy);
+        let unit = self.unit();
+        let controls = self.controls(part);
+        for slop in [false, true] {
+            for (i, c) in controls.iter().enumerate() {
+                if takes_hits(c)
+                    && form::control_hit(x, y, (c.x, c.y, c.x + c.w, c.y + c.h), slop, unit)
+                {
+                    return Some((part, i));
+                }
+            }
+        }
+        None
+    }
+
+    fn send(&mut self, part: Part, i: usize, m: Message) -> Vec<FormEvent> {
+        let unit = self.unit();
+        let mut events = Vec::new();
+        gui_controls::dispatch(self.controls_mut(part), i, m, unit, &mut events);
+        self.answer(part, events)
+    }
+
+    /// Turns the controls' change reports into the callbacks' events.
+    fn answer(&mut self, part: Part, events: Vec<ControlEvent>) -> Vec<FormEvent> {
+        let mut out = Vec::new();
+        for event in events {
+            let ControlEvent::Changed(i) = event else {
+                continue;
+            };
+            match part {
+                Part::Main => {
+                    let Some(action) = form_action(i) else {
+                        continue;
+                    };
+                    match action_page(action) {
+                        // The tabs' callbacks act only on the tab turning on.
+                        Some(page) => {
+                            if self.geometry.main[i].state & state::ON != 0 {
+                                self.switch(page);
+                                out.push(FormEvent::Page(page));
+                            }
+                        }
+                        None => out.push(FormEvent::Action(action)),
+                    }
+                }
+                Part::Settings => {
+                    let Some(setting) = Setting::from_id(SETTINGS[i].id) else {
+                        continue;
+                    };
+                    let c = &self.geometry.settings[i];
+                    if c.class == 4 {
+                        let value = c.value;
+                        out.push(FormEvent::Slider(setting, value));
+                        if setting == Setting::Supersample {
+                            out.extend(self.supersample_changed(value));
+                        }
+                    } else {
+                        out.push(FormEvent::Toggle(setting, c.state & state::LIT != 0));
+                    }
+                }
+                Part::Controls => {
+                    if i % 2 == 1 {
+                        out.push(FormEvent::Rebind(i / 2));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// The super-sampling slider's callback: its level is the step count
+    /// times the value rounded, one more above 1; a level of 1 or more sets
+    /// the anti-aliasing slider to 0 (a reported set, whose callback writes
+    /// the draft) and disables it, a level of 0 enables it.
+    fn supersample_changed(&mut self, value: f32) -> Vec<FormEvent> {
+        let Some(i) = settings_index(Setting::Multisample.id()) else {
+            return Vec::new();
+        };
+        let mut level = form::cvtss2si(3.0 * value);
+        if level > 1 {
+            level += 1;
+        }
+        if level < 1 {
+            self.geometry.settings[i].state &= !state::DISABLED;
+            return Vec::new();
+        }
+        let out = self.send(
+            Part::Settings,
+            i,
+            Message {
+                message: message::SET,
+                ..Message::default()
+            },
+        );
+        self.geometry.settings[i].state |= state::DISABLED;
+        out
+    }
+
+    /// A left press: the record under the pointer is held and pressed (a
+    /// trackbar takes the pointer's x, a label its click word).
+    pub fn press(&mut self, x: i32, y: i32) -> Vec<FormEvent> {
+        let Some((part, i)) = self.hit(x, y) else {
+            return Vec::new();
+        };
+        self.held = Some((part, i));
+        let (ox, _) = self.part_origin(part);
+        let param = if self.controls(part)[i].class == 5 {
+            gui_controls::LABEL_CLICK
+        } else {
+            (x - ox) as u32
+        };
+        self.send(
+            part,
+            i,
+            Message {
+                message: message::PRESS,
+                param,
+                extra: 1,
+                over: true,
+                ..Message::default()
+            },
+        )
+    }
+
+    /// The pointer moved: a held trackbar follows it; a held record lights
+    /// while the pointer is over it; otherwise the record under the pointer
+    /// lights and the one it left darkens. Trackbars take no hover (their
+    /// move message is the drag).
+    pub fn pointer(&mut self, x: i32, y: i32) -> Vec<FormEvent> {
+        let hit = self.hit(x, y);
+        if let Some((part, i)) = self.held {
+            let (ox, _) = self.part_origin(part);
+            let class = self.controls(part)[i].class;
+            let param = if class == 4 { (x - ox) as u32 } else { 0 };
+            return self.send(
+                part,
+                i,
+                Message {
+                    message: message::HOVER,
+                    param,
+                    over: hit == Some((part, i)),
+                    ..Message::default()
+                },
+            );
+        }
+        if hit != self.hovered {
+            for (target, over) in [(self.hovered, false), (hit, true)] {
+                if let Some((part, i)) = target
+                    && self.controls(part).get(i).is_some_and(|c| c.class != 4)
+                {
+                    self.send(
+                        part,
+                        i,
+                        Message {
+                            message: message::HOVER,
+                            over,
+                            ..Message::default()
+                        },
+                    );
+                }
+            }
+            self.hovered = hit;
+        }
+        Vec::new()
+    }
+
+    /// The left button's release: the held record takes it, landing when
+    /// the pointer is still over it.
+    pub fn release(&mut self, x: i32, y: i32) -> Vec<FormEvent> {
+        let Some((part, i)) = self.held.take() else {
+            return Vec::new();
+        };
+        let over = self.hit(x, y) == Some((part, i));
+        self.send(
+            part,
+            i,
+            Message {
+                message: message::RELEASE,
+                param: gui_controls::RELEASE_LANDS,
+                extra: 1,
+                over,
+                ..Message::default()
+            },
+        )
+    }
+
+    /// The wheel over the Controls page moves its scroll by whole notches
+    /// of [`SCROLL_STEP`], clamped to 0..1. Returns whether it moved.
+    pub fn wheel(&mut self, x: i32, y: i32, delta: i32) -> bool {
+        if self.page != 1 || !self.page_screen().contains(x, y) {
+            return false;
+        }
+        let WheelScroll::Vertical(f) = form::wheel_scroll(
+            CONTROLS_ATTRIBUTES,
+            delta,
+            (0.0, self.scroll),
+            (0.0, SCROLL_STEP),
+        ) else {
+            return false;
+        };
+        let f = f.clamp(0.0, 1.0);
+        let moved = f != self.scroll;
+        self.scroll = f;
+        moved
+    }
+
+    /// Fills the Settings rows as the page opens (and Defaults refills
+    /// it): each slider's value and label, each set checkbox lit and on,
+    /// the anti-aliasing row enabled or, while super-sampling is on, set to
+    /// 0 through a reported set and disabled. Returns that set's events.
+    pub fn fill(&mut self, rows: &[(Setting, RowState)]) -> Vec<FormEvent> {
+        let mut out = Vec::new();
+        for (setting, row) in rows {
+            let Some(i) = settings_index(setting.id()) else {
+                continue;
+            };
+            if setting.is_checkbox() {
+                if row.checked {
+                    self.geometry.settings[i].state |= state::ON | state::LIT;
+                }
+                continue;
+            }
+            let c = &mut self.geometry.settings[i];
+            if let Some(f) = row.fraction {
+                c.value = f;
+            }
+            if let Some(text) = row.text {
+                c.text = text.as_bytes().to_vec();
+            }
+            if row.enabled {
+                c.state &= !state::DISABLED;
+            } else {
+                out.extend(self.send(
+                    Part::Settings,
+                    i,
+                    Message {
+                        message: message::SET,
+                        ..Message::default()
+                    },
+                ));
+                self.geometry.settings[i].state |= state::DISABLED;
+            }
+        }
+        out
+    }
+
+    /// A slider's label after its callback, from the draft.
+    pub fn set_text(&mut self, setting: Setting, draft: &Options) {
+        if let (Some(i), Some(text)) = (settings_index(setting.id()), draft_text(setting, draft)) {
+            self.geometry.settings[i].text = text.as_bytes().to_vec();
+        }
+    }
+
+    /// The Controls key cells' names, in [`BINDINGS`] order.
+    pub fn set_keys(&mut self, names: &[String]) {
+        for (row, name) in names.iter().enumerate() {
+            if let Some(c) = self.geometry.controls.get_mut(row * 2 + 1) {
+                c.text = name.as_bytes().to_vec();
+            }
+        }
+    }
+
+    /// The video device readout (the renderer's name), and the memory
+    /// readout, which shows "Unknown" as the original does without a
+    /// figure (Exarust reads none).
+    pub fn set_device(&mut self, name: Option<&str>) {
+        if let Some(name) = name {
+            self.geometry.settings[1].text = name.as_bytes().to_vec();
+        }
+        self.geometry.settings[3].text = UNKNOWN.as_bytes().to_vec();
+    }
+
+    /// Whether a record is held (a press not yet released).
+    pub fn holding(&self) -> bool {
+        self.held.is_some()
+    }
+}
+
+#[cfg(test)]
+mod form_tests {
+    use super::*;
+
+    const SCREEN: (i32, i32) = (1280, 720);
+
+    fn click(form: &mut FormState, x: i32, y: i32) -> Vec<FormEvent> {
+        let mut events = form.press(x, y);
+        events.extend(form.release(x, y));
+        events
+    }
+
+    #[test]
+    fn the_form_opens_on_the_settings_page() {
+        let form = FormState::open(SCREEN, 4);
+        assert_eq!(form.page, 0);
+        assert_eq!(form.origin(), (425, 94));
+        assert_eq!(
+            form.page_screen(),
+            Rect {
+                x: 425,
+                y: 158,
+                w: 426,
+                h: 408
+            }
+        );
+        assert_eq!(
+            form.page_client(),
+            Rect {
+                x: 427,
+                y: 160,
+                w: 422,
+                h: 404
+            }
+        );
+        assert_eq!(form.geometry.main[2].state, HIDDEN);
+        assert_eq!(form.geometry.main[3].state, HIDDEN);
+        assert_eq!(form.geometry.main[4].state, 0);
+        // The hidden Keyboard tab takes no hit.
+        assert_eq!(form.hit(445, 154), None);
+        // SETTINGS is on; CONTROLS is a hit.
+        assert_eq!(form.hit(647, 116), Some((Part::Main, 1)));
+    }
+
+    #[test]
+    fn the_controls_tab_switches_the_page() {
+        let mut form = FormState::open(SCREEN, 4);
+        assert_eq!(form.press(647, 116), vec![]);
+        assert_eq!(form.release(647, 116), vec![FormEvent::Page(1)]);
+        assert_eq!(form.page, 1);
+        assert_eq!(form.geometry.main[4].state, HIDDEN);
+        assert_eq!(form.geometry.main[0].state & state::ON, 0);
+        assert_eq!(
+            form.controls_page,
+            Rect {
+                x: 0,
+                y: 56,
+                w: 418,
+                h: 416
+            }
+        );
+        assert_eq!(
+            form.page_client(),
+            Rect {
+                x: 427,
+                y: 152,
+                w: 397,
+                h: 412
+            }
+        );
+        // Clicking the tab that is on does nothing.
+        assert_eq!(click(&mut form, 647, 116), vec![]);
+        // The first key cell opens the key-read screen for its row.
+        assert_eq!(form.press(664, 163), vec![FormEvent::Rebind(0)]);
+        form.release(664, 163);
+        // A row label lets the pointer through.
+        assert_eq!(form.hit(512, 163), None);
+        // SETTINGS goes back.
+        assert_eq!(click(&mut form, 437, 116), vec![FormEvent::Page(0)]);
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_controls_page() {
+        let mut form = FormState::open(SCREEN, 4);
+        form.switch(1);
+        assert!(form.wheel(600, 300, -120));
+        assert_eq!(form.scroll, 0.25);
+        // The overflow is 676 − 412 = 264.
+        assert_eq!(form.scroll_offset(), 66);
+        assert!(form.wheel(600, 300, 240));
+        assert_eq!(form.scroll, 0.0);
+        // The thumb: round(382 · 412 / 676) = 233 on a track from 17.
+        let bar = form.scrollbar();
+        assert_eq!(
+            (bar.start, bar.end, bar.thumb, bar.thumb_y),
+            (17, 399, 233, 17)
+        );
+        // Off the page the wheel does nothing.
+        assert!(!form.wheel(10, 10, -120));
+    }
+
+    #[test]
+    fn a_slider_follows_the_pointer_and_reports() {
+        let mut form = FormState::open(SCREEN, 4);
+        // The volume bar's travel is 140 − 2·3 − 18 = 116; half of it is
+        // 58 past the margin and half the knob.
+        let x = 427 + 168 + 3 + 9 + 58;
+        assert_eq!(
+            form.press(x, 244),
+            vec![FormEvent::Slider(Setting::Volume, 0.5)]
+        );
+        assert_eq!(
+            form.pointer(x + 116, 400),
+            vec![FormEvent::Slider(Setting::Volume, 1.0)]
+        );
+        assert_eq!(
+            form.release(x + 116, 400),
+            vec![FormEvent::Slider(Setting::Volume, 1.0)]
+        );
+        // Super-sampling to its top step sets the anti-aliasing slider to 0
+        // and disables it.
+        let i = settings_index(Setting::Multisample.id()).unwrap();
+        form.geometry.settings[i].value = 1.0;
+        let ss = &form.geometry.settings[9];
+        let y = 160 + ss.y + 8;
+        let events = form.press(427 + 168 + 140, y);
+        assert_eq!(
+            events,
+            vec![
+                FormEvent::Slider(Setting::Supersample, 1.0),
+                FormEvent::Slider(Setting::Multisample, 0.0)
+            ]
+        );
+        assert_ne!(form.geometry.settings[i].state & state::DISABLED, 0);
+        assert_eq!(form.geometry.settings[i].value, 0.0);
+    }
+
+    #[test]
+    fn checkboxes_and_buttons() {
+        let mut form = FormState::open(SCREEN, 4);
+        assert_eq!(
+            click(&mut form, 427 + 324, 160 + 80),
+            vec![FormEvent::Toggle(Setting::Music, true)]
+        );
+        assert_eq!(
+            click(&mut form, 427 + 324, 160 + 80),
+            vec![FormEvent::Toggle(Setting::Music, false)]
+        );
+        assert_eq!(
+            click(&mut form, 586, 583),
+            vec![FormEvent::Action(FormAction::Apply)]
+        );
+        assert_eq!(
+            click(&mut form, 475, 583),
+            vec![FormEvent::Action(FormAction::Defaults)]
+        );
+        assert_eq!(
+            click(&mut form, 706, 583),
+            vec![FormEvent::Action(FormAction::Cancel)]
+        );
+        // A release away from the button does not land.
+        form.press(586, 583);
+        assert_eq!(form.release(10, 10), vec![]);
+    }
+
+    #[test]
+    fn the_rows_fill_and_the_labels_follow_the_draft() {
+        let mut form = FormState::open(SCREEN, 4);
+        let live = Options {
+            supersample: 3,
+            ..Options::default()
+        };
+        let rows = populate(&live, &live);
+        let events = form.fill(&rows);
+        assert_eq!(events, vec![FormEvent::Slider(Setting::Multisample, 0.0)]);
+        assert_eq!(form.geometry.settings[9].value, 2.0 / 3.0);
+        assert_eq!(form.geometry.settings[9].text, b" Medium".to_vec());
+        assert_ne!(form.geometry.settings[7].state & state::ON, 0);
+        let draft = Options {
+            shadow_quality: 2,
+            ..live
+        };
+        form.set_text(Setting::ShadowQuality, &draft);
+        assert_eq!(
+            form.geometry.settings[19].text,
+            draft.shadow_quality_text().unwrap().as_bytes().to_vec()
+        );
+        form.set_keys(&["Q".to_string()]);
+        assert_eq!(form.geometry.controls[1].text, b"Q".to_vec());
+        form.set_device(Some("GPU"));
+        assert_eq!(form.geometry.settings[1].text, b"GPU".to_vec());
+        assert_eq!(form.geometry.settings[3].text, b"Unknown".to_vec());
+    }
+
+    #[test]
+    fn a_resize_keeps_the_page_and_the_rows() {
+        let mut form = FormState::open(SCREEN, 4);
+        form.switch(1);
+        form.geometry.settings[6].value = 0.25;
+        form.resize((1920, 1080), 6);
+        assert_eq!(form.page, 1);
+        assert_eq!(form.controls_page.y, 84);
+        assert_eq!(form.controls_page.h, 624);
+        assert_eq!(form.geometry.settings[6].value, 0.25);
+        assert_eq!(form.geometry.form.w, 646);
     }
 }
 
@@ -1090,7 +1912,8 @@ mod screen_tests {
         );
         assert_eq!(o.shadow_quality, 3);
 
-        // The anti-aliasing row takes input only while super-sampling is off.
+        // The anti-aliasing step writes the samples even with super-sampling
+        // on: the set of 0 the super-sampling slider sends lands as 0.
         let mut off = Options::default();
         assert_eq!(
             on_slider(&mut off, Setting::Multisample, 1.0),
@@ -1099,10 +1922,10 @@ mod screen_tests {
         assert_eq!(off.multisample, 8);
         on_slider(&mut off, Setting::Supersample, 1.0 / 3.0);
         assert_eq!(
-            on_slider(&mut off, Setting::Multisample, 1.0 / 3.0),
-            Effect::Ignored
+            on_slider(&mut off, Setting::Multisample, 0.0),
+            Effect::Draft
         );
-        assert_eq!(off.multisample, 8);
+        assert_eq!(off.multisample, 0);
     }
 
     #[test]

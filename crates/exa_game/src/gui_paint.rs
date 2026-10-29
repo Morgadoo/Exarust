@@ -258,6 +258,21 @@ pub fn paint_panel(
     attributes: u32,
     style: u32,
 ) -> Painted {
+    paint_child(rect, unit, palette, attributes, style, 4, None)
+}
+
+/// Paints a child form's frame with its client's top inset and, for a form
+/// with a vertical scrollbar (attribute 0x200), the thumb's place and length
+/// in the form's own coordinates.
+pub fn paint_child(
+    rect: GuiRect,
+    unit: i32,
+    palette: &SkinPalette,
+    attributes: u32,
+    style: u32,
+    client_top: i32,
+    vertical: Option<exa_ui::skin::FormScroll>,
+) -> Painted {
     let metrics = FormMetrics {
         unit,
         border: BORDER,
@@ -266,7 +281,7 @@ pub fn paint_panel(
     let place = FormBackgroundPlace {
         rect: skin_rect,
         inset: BORDER,
-        client_top: 4,
+        client_top,
         client_right: rect.width() - BORDER,
         client_bottom: rect.height() - BORDER,
         state: 0,
@@ -276,7 +291,7 @@ pub fn paint_panel(
         bar: metrics.base(),
         has_lines: false,
         fill: None,
-        vertical: None,
+        vertical,
         horizontal: None,
         title_width: 0,
         title_icon: false,

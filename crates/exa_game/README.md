@@ -784,6 +784,18 @@ original's half-second warm-up and three runs). It pushes the live options into 
 frame-rate readout and the window's mode, size and present mode
 ([`docs/UI.md`](../../docs/UI.md#settings-options)).
 
+The Settings form (`settings_form`) is what opens that page: the menu's
+SETTINGS rows (title, in-game and pause pages) open it over the menu, it is
+drawn through the GUI draw path (`gui_paint`: the frame, buttons, labels,
+check boxes, sliders, rules and the scrolled Controls page) and takes the
+pointer, wheel and Escape while the menu waits under it. Its events go to
+`HardwareConfig` (slider steps and labels, checkboxes, Defaults, Apply,
+Cancel) and `BindingEditor` (a key cell opens the key-read screen); Apply
+commits the bindings to the running game and sends `BindingsApplied`, which
+the launcher saves to the store. Hiding the menu closes the form. The
+key-read and warm-up screens draw their text over a black backdrop at their
+fade. `--open-settings settings|controls` opens it once loaded.
+
 The camera's navigation unit is `nav_camera`: the align routine's wrap
 of the target yaw about the camera's, the engine's planar yaw, the orbit
 rate (4.8 rad over the screen, in double precision) and pitch limits (0.8
@@ -1030,7 +1042,8 @@ its rows follow the end-session dispatch (`exa_ui::menu::dispatch_end_session`:
 mode, then row, then menu number): the next practice fight, practice's RESTART back to the menu form,
 the story respawn or exit, and the returns to the title behind the
 transition. The title's BEGIN starts Exarust's unknown background;
-the save character screen, creator, manual and settings form are not wired.
+the save character screen, creator and manual are not wired; SETTINGS
+opens the Settings form (`settings_form`).
 
 ## Main menu screen
 
@@ -1043,7 +1056,8 @@ and Up and Down move the selection, a press marks the row and its release
 over it runs the command, and Enter runs the selected row. The title page's
 EXIT quits; page changes, the resume and the exits to the title are the
 screen's own; the session work behind BEGIN, CONTINUE, NEW CAREER,
-PRACTICE, VERSUS, MANUAL and SETTINGS is named, not performed. Escape goes
+PRACTICE, VERSUS and MANUAL is named, not performed; SETTINGS opens the
+Settings form over the menu, which then takes the input until it closes. Escape goes
 back from the arena and practice pages and closes the screen elsewhere. The
 rows are measured and drawn with the menu font's record (`titlefont.rfi`),
 the selected one through the menu text program; a missing sheet falls back

@@ -1,0 +1,8 @@
+- [x] Record arrays read whole; layout and rescale through the GUI passes (exa_ui::settings)
+- [x] Form state: hit test, control messages, events, page switch, wheel, row fill (exa_ui::settings)
+- [x] Anti-aliasing step writes through the super-sampling slider's set (exa_ui::settings)
+- [x] Running form: open from the menu, draw, input, close with the menu; modal screens' text (exa_game::settings_form)
+- [x] Apply's bindings saved to the store (exarust::user_settings)
+- [x] `--open-settings`, tests, READMEs, docs/UI.md and docs/DEBUGGING.md
+- [x] No corpus check: the change reads no game data (the record arrays are constants checked against the executable)
+- [x] fmt, clippy -D warnings and tests on the build worker

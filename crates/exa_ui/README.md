@@ -351,6 +351,20 @@ slider steps and labels for the graphics, audio and input options, the
 anti-aliasing row disabled while super-sampling is on, the checkbox and
 slider effects (live, draft or session only), the aim-speed row, the
 Controls rows' key cells and binding slots, and the tab/button actions ([`docs/UI.md`](../../docs/UI.md#settings-options)).
+The form itself is rebuilt from the original's three record arrays (the
+tabs and buttons, 27 Settings records and the 44 Controls label and key-cell
+records, read with their styles, radio groups, step counts and callbacks),
+laid out at unit 4 by `gui_controls::layout_records` and rescaled with its
+two pages by `gui_rescale::rescale_form`, then centred: at unit 4 the
+434 × 536 form's tabs sit at 12, 12, Defaults, Apply and Cancel at 40, 156
+and 276 on y 484, the Settings page at 0, 64 (426 × 408) and the Controls
+page at 0, 56 (418 × 416 over 676 of content). `FormState` hits the
+records (the page in view first, edges included, then within two units),
+sends them the control classes' press, drag and release messages and turns
+their reports into `FormEvent`s (page, Defaults, Apply, Cancel, a slider's
+fraction, a checkbox, a key cell's rebinding); the super-sampling slider
+sets the anti-aliasing slider to 0 and disables it, the wheel scrolls the
+Controls page by quarter steps.
 Its controller-mode switch feeds the saved bindings' controller flag and the
 gamepad reader in `exa_game::gamepad`; Enable Rumble still has no visible
 effect because the original's vibration call is a stub. Steam's binding
@@ -632,7 +646,8 @@ three phases, its 200-unit fades and its one-row-a-frame walk of the
 renderer's 29-row warm-up, and the key-capture screen's warning, binding
 table, Escape close and mouse codes; both screens' paints produce their
 centred text quads in the palette colour under the fade. The running
-game's rebinding and Apply drive them (`exa_game::hw_config`). `transition` is the state machine between game states
+game's rebinding and Apply drive them (`exa_game::hw_config`), and
+`exa_game::settings_form` draws them. `transition` is the state machine between game states
 (600/800/300/2000-unit fades, the switch, the hold and the fade back).
 `class_select` lays out the four story portraits and their chosen card,
 and has the picker's hit test and key steps. `dialogue_choices` is the

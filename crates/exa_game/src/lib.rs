@@ -95,6 +95,7 @@ pub mod save_scene;
 pub mod scene_bodies;
 pub mod scene_editor;
 pub mod session;
+pub mod settings_form;
 pub mod shell_draw;
 pub mod shop_stock;
 pub mod shop_window;
@@ -185,6 +186,7 @@ impl Plugin for GamePlugin {
             splash::SplashPlugin,
             div_card_screen::DivinationPlugin,
             transition_screen::TransitionScreenPlugin,
+            settings_form::SettingsFormPlugin,
         ))
         // Debug tools: idle unless their flags or keys turn them on.
         .add_plugins((
