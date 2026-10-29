@@ -1289,3 +1289,44 @@ fn a_walking_plant_rustles_the_clothing() {
     let half = walk_rustle(2.0, 5.0, 2.0, 0.5, 0.5, 1_000, &mut roll);
     assert!((half.pitch - 0.85).abs() < 1e-6);
 }
+
+/// A foot that anchors rustles at `min(1, 0.0001·d² + 0.2)` of the foley's
+/// base, by `0.02·g + 0.02`, doubled while attacking; the pitch is
+/// `0.3·p + 0.8`; the clock waits 400 ms and the generator's jitter.
+#[test]
+fn an_anchoring_foot_rustles() {
+    let mut roll = 0;
+    let near = anchor_rustle(1.0, 0.0, false, 0.0, 0.0, 1000, &mut roll);
+    assert!(close(near.volume, 0.004, 1e-7), "{}", near.volume);
+    assert!(close(near.pitch, 0.8, 1e-7));
+    // The generator stepped from 0 gives 1, whose jitter is 0.
+    assert_eq!((roll, near.next_ms), (1, 1400));
+    let far = anchor_rustle(1.0, 1.0e5, true, 1.0, 1.0, 0, &mut roll);
+    assert!(close(far.volume, 0.08, 1e-7), "{}", far.volume);
+    assert!(close(far.pitch, 1.1, 1e-6));
+    assert!(far.next_ms >= 400 && far.next_ms < 500);
+}
+
+/// A foot that lets go plays the race's step at the step's loudness times
+/// the footstep volume, and a wet step over it under water, deeper water
+/// louder up to 20 cm; the clock waits 250 ms and the jitter.
+#[test]
+fn a_releasing_foot_steps_and_splashes() {
+    let step = release_step(0.5, 2.0, 1.0, 1.0);
+    assert!(close(step.gain, 0.025, 1e-7), "{}", step.gain);
+    assert!(close(step.pitch, 0.85, 1e-6), "{}", step.pitch);
+    assert!(wet_release_step(-50.0, 0.0, 0.5, 2.0, 0.0, 0.0).is_none());
+    assert!(wet_release_step(f32::NAN, 0.0, 0.5, 2.0, 0.0, 0.0).is_none());
+    // The surface value 10 over a contact at −21: share (−10 − 1 + 21)·0.05.
+    let wet = wet_release_step(10.0, -21.0, 0.5, 2.0, 0.0, 0.0).unwrap();
+    assert!(
+        close(wet.gain, 0.5 * 0.5 * 2.0 * 0.02, 1e-7),
+        "{}",
+        wet.gain
+    );
+    assert!(close(wet.pitch, 0.5, 1e-6));
+    let deep = wet_release_step(10.0, -100.0, 0.5, 2.0, 0.0, 0.0).unwrap();
+    assert!(close(deep.gain, 0.02, 1e-7), "{}", deep.gain);
+    let mut roll = 0;
+    assert_eq!(release_step_clock(10, &mut roll), 260);
+}
