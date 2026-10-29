@@ -88,15 +88,23 @@ holder the guard's factors from the shield's record and its techniques,
 with a full arm (`damage::shield_guard`), kept on the holder's
 `block::ShieldHold` (the body tick refills its arm, `block::refill_hold`);
 the fighter's guard is not raised, since only a blow on the shield itself
-is blocked. The parry factor waits for the shield parry.
+is blocked. The parry factor waits for the shield parry. The first block
+of a swing rings the struck item's own material collision set at 1.5 times
+the blow's volume and 1.8 times its pitch (`block::ShieldRung`,
+`block::shield_ring`).
 
-Held items are struck as bodies (`block`). While a striker's window is
-open its weapon body carries the window, strike-chain (0x10000) and mark
-bits (`impact::sync_held_striking`, written only when the window opens or
-shuts), so its pair contacts with hittable bodies take the pair stage's
-hit event instead of the impact path. `block::strike_held` classifies each
-side of each hit event as the original's striking part does
-(`part::classify`, `part::faces`): a held shield is a block (refused once
+Held items are struck as bodies (`block`). A held weapon's chain keeps the
+attach's permanent weapon bit and mark (0x20001,
+`exa_physics::grip::weapon_words`); while its striker's window is open it
+also carries the strike-chain bit (0x10000, `impact::sync_held_striking`,
+written only when the window opens or shuts), so its pair contacts with
+hittable bodies take the pair stage's hit event instead of the impact
+path. A resting held weapon is therefore a clash for another's striker,
+and its own impacts ring its weapon set (the plain collision sound is a
+shield's or torch's, with the item's own material set). `block::strike_held`
+classifies each side of each hit event as the original's striking part
+does (`part::classify`, `part::faces`): a held shield or torch is a block
+(a torch blocks with the bare arm, `block::guard_for`; refused once
 the swing's 0x200 bit is set), a held weapon a clash (once a swing via
 0x100, set at once, unless the struck holder parries or counters the
 motion with a weapon other than its primary). The last accepted contact

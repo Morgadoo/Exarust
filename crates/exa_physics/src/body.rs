@@ -2696,6 +2696,12 @@ impl Ragdoll {
         crate::part::set_striking(&mut self.parts, root, on);
     }
 
+    /// Opens or shuts a held weapon's strike window on part `root` and its
+    /// chain ([`crate::part::set_strike_chain`]): only the chain bit.
+    pub fn set_strike_chain(&mut self, root: usize, on: bool) {
+        crate::part::set_strike_chain(&mut self.parts, root, on);
+    }
+
     /// Sets or clears only the strike-window bit on part `root` and its
     /// chain (the original's class bit 1, which the weapon impact branch
     /// reads), leaving the chain bit alone so the pair stage still measures

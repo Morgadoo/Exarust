@@ -549,7 +549,11 @@ Each part also keeps its state word and the part's own impact and wound
 bookkeeping (`part`): the class bits this crate reads (`part::PartState`:
 the strike window and chain, a held item, an arm, a muscled limb, a sole,
 level contacts, the living limb family), a strike marking the whole chain
-under its root (`part::set_striking`, `body::Ragdoll::set_striking`), and
+under its root (`part::set_striking`, `body::Ragdoll::set_striking`), a
+held weapon's window opening and shutting only its chain bit beside the
+attach's permanent weapon bit and mark (`grip::weapon_words`,
+`part::set_strike_chain`; shields and torches are held parts, and the
+pair stage's hittable test takes the mark too), and
 a limp part keeping its muscle mark and getting its own contact mobility
 back (`part::ragdoll_state`, `part::ragdoll_mobility`,
 `body::Ragdoll::go_limp`). The impact rules are the original's slot 38's:

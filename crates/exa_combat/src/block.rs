@@ -9,8 +9,8 @@
 //!   sides ([`exa_physics::part::classify`]). It needs the striking part's
 //!   window and chain bits, a struck body of another character, and the
 //!   point on the striking side ([`exa_physics::part::faces`]).
-//! - **The kind.** A held shield (held bit 2) is a block, refused once the
-//!   swing's shield bit (0x200) is set. A held weapon (bit 1) is a clash,
+//! - **The kind.** A held shield or torch (held bit 2) is a block, refused
+//!   once the swing's shield bit (0x200) is set. A held weapon (bit 1) is a clash,
 //!   once a swing (0x100) unless its holder parries, or counters this very
 //!   motion with a weapon other than its primary. A limb is the blade
 //!   sweep's wound ([`crate::Hit`] with [`crate::Struck::Limb`]), not
@@ -27,6 +27,10 @@
 //!   ([`crate::damage::block`]) on the holder's [`ShieldHold`]: the arm's
 //!   stamina, the leak into yellow, the daze, the sag and lock of a
 //!   parrying holder, the striker's recoil and the shield's sound clock.
+//!   A torch has no block factors of its own: its holder blocks with the
+//!   factors its last shield wrote, none for Exarust ([`guard_for`]).
+//! - **The rings.** The first block of a swing rings the struck item's own
+//!   material ([`ShieldRung`], [`shield_ring`]).
 //!
 //! [guess] A clash's or block's shove lands on the struck item's hand (the
 //! shield's left hand; a weapon's grip hand by its held slot): the
@@ -73,12 +77,55 @@ pub fn struck_bone(struck: Struck, slot: Option<Slot>) -> usize {
     }
 }
 
+/// The block factors a holder meets a blow on its held `item` with: its
+/// shield's ([`ShieldHold`]) when that item is the shield, else (a torch)
+/// the bare arm: no parry factor, leak or cost, and a full arm. The
+/// original's block reads the holder's shield words whatever was struck;
+/// they stay as the last shield equip wrote them and are zero on a holder
+/// that never held one. [deviation: Exarust drops them with the shield]
+pub fn guard_for(hold: Option<&ShieldHold>, item: Entity) -> ShieldGuard {
+    match hold {
+        Some(hold) if hold.item == item => hold.guard,
+        _ => ShieldGuard {
+            parry: 0.0,
+            leak: 0.0,
+            cost: 0.0,
+            stamina: 1.0,
+            rate: 0.0,
+            blocked_at: crate::regen::ShieldStamina::STAMP_FULL,
+            parrying: false,
+        },
+    }
+}
+
+/// The first block of a swing rings the struck shield's or torch's own
+/// material (the collision sound set its body registered with) at the
+/// blow: the item, the contact point, and the ring's volume and pitch
+/// ([`shield_ring`]).
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct ShieldRung {
+    /// The struck item's body (its root part rings).
+    pub item: Entity,
+    pub point: Vec3,
+    pub volume: f32,
+    pub pitch: f32,
+}
+
+/// The volume and pitch a block's ring plays at from the blow's hit sound
+/// ([`crate::damage::Outcome::volume`] and its pitch): the volume times
+/// 1.5 in single precision, the pitch widened and times the double 1.8.
+pub fn shield_ring(volume: f32, pitch: f32) -> (f32, f32) {
+    (volume * 1.5, (f64::from(pitch) * 1.8) as f32)
+}
+
 /// A held body's place in the pair stage's contacts: its root entity, its
-/// holder's body key, whether it is a shield, and the blade it is.
+/// holder's body key, whether it blocks (a shield or a torch) and whether
+/// it is a shield, and the blade it is.
 #[derive(Clone, Copy)]
 struct HeldBody {
     root: Entity,
     holder: Entity,
+    blocks: bool,
     shield: bool,
     slot: Option<Slot>,
 }
@@ -132,6 +179,7 @@ pub fn strike_held(
             HeldBody {
                 root,
                 holder,
+                blocks: grip.is_some_and(|g| g.kind != HeldKind::Weapon),
                 shield: grip.is_some_and(|g| g.kind == HeldKind::Shield),
                 slot: blade.map(|b| b.slot),
             },
@@ -149,6 +197,7 @@ pub fn strike_held(
         if debug {
             let what = |key: &Entity| match (items.get(key), owners.get(key)) {
                 (Some(h), _) if h.shield => "a held shield",
+                (Some(h), _) if h.blocks => "a held torch",
                 (Some(_), _) => "a held weapon",
                 (None, Some(_)) => "a limb",
                 _ => "a body",
@@ -230,7 +279,7 @@ pub fn strike_held(
                 continue;
             };
             let kind = match classified.kind {
-                ContactKind::Block if struck.shield => Struck::Shield { item: struck.root },
+                ContactKind::Block if struck.blocks => Struck::Shield { item: struck.root },
                 ContactKind::Clash => Struck::Weapon {
                     primary: contact.other_is_primary,
                 },
@@ -243,7 +292,11 @@ pub fn strike_held(
             }
             debug!(
                 "held contact: {attacker:?}'s weapon met {victim:?}'s {} ({kind:?}), y {local_y:.3} m",
-                if struck.shield { "shield" } else { "weapon" }
+                match (struck.shield, struck.blocks) {
+                    (true, _) => "shield",
+                    (_, true) => "torch",
+                    _ => "weapon",
+                }
             );
             accepted.insert(
                 attacker,
@@ -334,6 +387,57 @@ mod tests {
             struck_bone(Struck::Weapon { primary: false }, Some(Slot::Second)),
             18
         );
+    }
+
+    #[test]
+    fn a_block_rings_at_one_and_a_half_volume_and_1_8_pitch() {
+        let (volume, pitch) = shield_ring(0.5, 0.75);
+        assert_eq!(volume, 0.75);
+        assert_eq!(pitch, (0.75f64 * 1.8) as f32);
+        // The pitch's product is the double's, then narrowed.
+        let (_, pitch) = shield_ring(0.1, 0.1);
+        assert_eq!(pitch, (f64::from(0.1f32) * 1.8) as f32);
+    }
+
+    #[test]
+    fn a_torch_blocks_with_the_bare_arm() {
+        let shield = Entity::from_raw_u32(1).unwrap();
+        let torch = Entity::from_raw_u32(2).unwrap();
+        let hold = ShieldHold {
+            item: shield,
+            guard: ShieldGuard {
+                parry: 1.0,
+                leak: 0.5,
+                cost: 0.5,
+                stamina: 0.25,
+                ..ShieldGuard::default()
+            },
+        };
+        assert_eq!(guard_for(Some(&hold), shield), hold.guard);
+        let bare = guard_for(Some(&hold), torch);
+        assert_eq!(guard_for(None, torch), bare);
+        assert_eq!((bare.parry, bare.leak, bare.cost), (0.0, 0.0, 0.0));
+        assert_eq!(bare.stamina, 1.0);
+        // A blow on it costs the arm nothing and leaks no yellow; a
+        // parrying holder sags 0.2 of the impact and is dazed 0.1 of it.
+        let holder = crate::damage::Holding {
+            synchrony: false,
+            persist: false,
+            counter: false,
+            countering: false,
+            clock: 0.5,
+            potion: false,
+        };
+        let b = crate::damage::block(2.0, 0.6, &bare, &holder);
+        assert_eq!((b.stamina, b.yellow, b.daze), (1.0, 0.6, 0.0));
+        let parrying = ShieldGuard {
+            parrying: true,
+            ..bare
+        };
+        let b = crate::damage::block(2.0, 0.6, &parrying, &holder);
+        assert_eq!(b.stamina, 1.0);
+        assert_eq!(b.sag, Some(((0.7 - 0.5f64) * 2.0) as f32));
+        assert_eq!(b.daze, ((0.3 - 0.2f64) * 2.0) as f32);
     }
 
     #[test]

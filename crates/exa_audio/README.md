@@ -166,6 +166,11 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
 
 ### Rigid bodies (`bodies`)
 
+- The first block of a swing on a held shield or torch
+  (`exa_combat::block::ShieldRung`) plays the item's root part's material
+  collision set (`BodySounds::impact`, which held items now carry,
+  `exa_character::held_item_sounds`) at the blow, at the ring's volume and
+  pitch (`hits::shield_sounds`).
 - Each body tick (fixed step, after the solver), a prop's pair impacts
   (`Touch::struck`, sphere side then touched side, in pair order) and then
   its level impacts go through the plain body's collision call

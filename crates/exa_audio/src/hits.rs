@@ -58,8 +58,9 @@ pub(crate) fn hit_sounds(
         };
         env.play_set(&mut bank, weapon, hit.point, 1.0, 1.0, 0);
         // The struck part's material: its outer covering layer's class, or
-        // the flesh default. A blow on a held shield or weapon rings the
-        // weapon only (the item's own material set is not played yet).
+        // the flesh default. A blow on a held shield or torch rings the
+        // item's own material separately ([`shield_sounds`]); one on a held
+        // weapon rings the weapon only.
         if hit.struck == exa_combat::Struck::Limb
             && let Ok(fighter) = fighters.get(hit.target)
             && let Some(armour) = hit.bone.checked_sub(1).and_then(|i| fighter.armour.get(i))
@@ -203,6 +204,38 @@ pub(crate) fn weapon_sounds(
     }
 }
 
+/// The set a block's ring plays: the struck item's root part's collision
+/// sound set, none when its material names none.
+pub(crate) fn ring_set(sounds: &exa_physics::prop::BodySounds) -> Option<&str> {
+    sounds.impact.first()?.as_deref()
+}
+
+/// Plays the first block of a swing on a held shield or torch
+/// ([`exa_combat::block::ShieldRung`]): the item's own material collision
+/// set at the blow, at the ring's volume and pitch, on the plain one-shot
+/// flags. An item whose material names no set stays silent, as the
+/// original's body with no impact sound does.
+pub(crate) fn shield_sounds(
+    game: Option<Res<Game>>,
+    mut rungs: MessageReader<exa_combat::block::ShieldRung>,
+    items: Query<&exa_physics::prop::BodySounds>,
+    mut bank: ResMut<SoundBank>,
+    mut sources: ResMut<Assets<AudioSource>>,
+    mut env: ResMut<AudioEnvironment>,
+    mut sets: Local<bevy::platform::collections::HashMap<String, u32>>,
+) {
+    let Some(game) = game else { return };
+    for rung in rungs.read() {
+        let Some(name) = items.get(rung.item).ok().and_then(ring_set) else {
+            continue;
+        };
+        let id = *sets
+            .entry(name.to_owned())
+            .or_insert_with(|| bank.load_set(&game, &mut sources, name));
+        env.play_set(&mut bank, id, rung.point, rung.volume, rung.pitch, 0);
+    }
+}
+
 /// The table index a part's material takes.
 fn sound_class(sound: exa_combat::sounds::HitSound) -> u8 {
     use exa_combat::sounds::HitSound;
@@ -219,6 +252,23 @@ mod tests {
     use crate::environment::voice_flags;
     use crate::sounds::{FOLEY_PLAYER, HIT_FLESH};
     use exa_combat::damage::{Layer, PartArmour};
+
+    /// A block rings the struck item's root part's set; an item without a
+    /// material set rings nothing.
+    #[test]
+    fn a_block_rings_the_items_root_set() {
+        let sounds = exa_physics::prop::BodySounds {
+            impact: vec![Some("wodcol".into()), Some("mtlcol".into())],
+            scrapes: Vec::new(),
+        };
+        assert_eq!(ring_set(&sounds), Some("wodcol"));
+        let silent = exa_physics::prop::BodySounds {
+            impact: vec![None],
+            scrapes: Vec::new(),
+        };
+        assert_eq!(ring_set(&silent), None);
+        assert_eq!(ring_set(&exa_physics::prop::BodySounds::default()), None);
+    }
 
     /// A hit submits two one-shots on the default one-shot flags, at full and
     /// 0.8 gain, and they take voices from the pool.

@@ -174,9 +174,9 @@ impl Pairing {
 }
 
 /// Whether a part is hittable (the original's class bit 0x20000): a living
-/// limb or a held weapon, shield or torch.
+/// limb, a held weapon (its attach's mark bit), or a held shield or torch.
 pub fn hittable(state: PartState) -> bool {
-    state.is_limb() || state.has(PartState::HELD)
+    state.is_limb() || state.has(PartState::HELD) || state.has(PartState::STRIKE_MARK)
 }
 
 /// Whether a pair takes the hit event instead of the impact path: one side

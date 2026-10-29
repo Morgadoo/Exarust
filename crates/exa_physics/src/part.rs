@@ -170,30 +170,32 @@ pub fn strike_chain(states: &mut [PartState], parents: &[Option<usize>], root: u
 /// it): the original walks the body's children. The part list is a tree by
 /// [`Part::parent`].
 pub fn set_striking(parts: &mut [Part], root: usize, on: bool) {
-    let len = parts.len();
-    if root >= len {
-        return;
-    }
-    let mut stack = [0usize; MAX_TREE];
-    let mut n = 1;
-    stack[0] = root;
-    let mut visited = 0;
-    while n > 0 && visited < MAX_TREE {
-        n -= 1;
-        let i = stack[n];
-        visited += 1;
+    walk_parts(parts, root, |part| {
         if on {
-            parts[i].state.strike();
+            part.state.strike();
         } else {
-            parts[i].state.unstrike();
+            part.state.unstrike();
         }
-        for (j, part) in parts.iter().enumerate() {
-            if part.parent == Some(i) && n < MAX_TREE {
-                stack[n] = j;
-                n += 1;
-            }
-        }
-    }
+    });
+}
+
+/// Opens or shuts the strike window on a held weapon's chain under `root`:
+/// only the strike-chain bit changes, so the attach's permanent weapon bit
+/// and mark ([`crate::grip::weapon_words`]) stay.
+pub fn set_strike_chain(parts: &mut [Part], root: usize, on: bool) {
+    walk_parts(parts, root, |part| {
+        part.state = if on {
+            part.state.with(PartState::STRIKE_CHAIN)
+        } else {
+            part.state.without(PartState::STRIKE_CHAIN)
+        };
+    });
+}
+
+/// Visits every part of the tree under `root` by [`Part::parent`].
+fn walk_parts(parts: &mut [Part], root: usize, mut visit: impl FnMut(&mut Part)) {
+    let parents: Vec<Option<usize>> = parts.iter().map(|p| p.parent).collect();
+    walk_chain(parts.len(), |j| parents[j], |i| visit(&mut parts[i]), root);
 }
 
 /// A living part's state when it joins the world: a part with no foot
