@@ -90,6 +90,7 @@ pub mod player;
 pub mod player_behaviour;
 pub mod player_controls;
 pub mod player_light;
+pub mod player_practice;
 pub mod power_screen;
 pub mod practice;
 pub mod prelude;

@@ -1,25 +1,24 @@
 //! The player behaviour's own rules, outside its steering: the aim point's
 //! soft height lock and raised surface, the gamepad aim's point and screen
-//! ease, the near-contact list, the strongest engaged enemy, the character
-//! nearest the cursor on screen and the attack timing. Rules:
-//! `docs/PLAYER.md`.
+//! ease, the near-contact list, the strongest engaged enemy and the late
+//! swing's practice check, the character nearest the cursor on screen.
+//! Rules: `docs/PLAYER.md`.
 //!
 //! These are the parts of the original's player behaviour that are not the
 //! locomotion request nor the cursor's follower ([`crate::steering`]), nor
 //! the combat target and the stance ([`exa_combat::stance`]), nor the combat
-//! swing (`exa_combat`). They are plain functions so that the arithmetic,
-//! the comparisons and the branch order are pinned by tests; the running
-//! game feeds the gamepad aim's point and ease ([`crate::player`]) and
-//! the others are tested rules with no caller yet: the auto-target, the
-//! look snap and the camera's follow step ([`auto_target`],
-//! [`look_snaps`], [`camera_follow_yaw`]), the bone lock (the stance
-//! keeps no target entity and no target bones are read to the screen) and
-//! the attack timing [`windup`] (the running swing keeps its own stall and
-//! renewal clocks in `exa_combat::swing`).
+//! swing and its release (`exa_combat::swing`). They are plain functions so
+//! that the arithmetic, the comparisons and the branch order are pinned by
+//! tests. The running game feeds the gamepad aim's point and ease, the
+//! auto-target and the bone lock ([`crate::player`]), and the contact list,
+//! the engaged enemy and the late-swing check ([`crate::player_practice`]);
+//! the look snap, the camera's follow step and the screen-nearest
+//! character are tested rules with no caller yet ([`look_snaps`],
+//! [`camera_follow_yaw`], [`closest_to_cursor`]).
 //!
 //! Evidence: the behaviour's aim point, gamepad aim, contacts, engaged
-//! enemy, screen-nearest character and attack timing, read in the
-//! instructions (the tests below carry the numbers).
+//! enemy, screen-nearest character and its tick, read in the instructions
+//! (the tests below carry the numbers).
 
 // NaN-sensitive compares are kept as the original makes them.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
@@ -56,16 +55,6 @@ pub const ENGAGED_SCORE: f32 = 2.0;
 /// The minimum squared distance (cm²) at which the engaged test accepts a
 /// character.
 const SELF_RANGE2: f32 = 1.0;
-/// The wind-up step's floors.
-pub const WINDUP_FLOOR: f64 = 0.1;
-pub const WINDUP_LEAST: f64 = 0.01;
-/// The wind-up and recovery rates.
-const WINDUP_PER_FRAME: f64 = 0.03;
-const WINDUP_FRAMES: f32 = 80.0;
-const WINDUP_MS: f32 = 1000.0;
-const RECOVERY_BALANCE: f64 = 0.7;
-/// The recovery's balance scale, 1/0.7 in double precision.
-const RECOVERY_SLOPE: f64 = 1.428_571_428_571_428_6;
 /// The screen-nearest search starts from this squared distance (px²): a
 /// farther or unordered one is never taken.
 const SCREEN_FAR2: f32 = 3.4e38;
@@ -441,6 +430,40 @@ pub fn strongest_engaged(
     (found, best)
 }
 
+/// The swing clock past which the behaviour's late-swing check runs,
+/// compared in double precision.
+pub const LATE_SWING: f64 = 0.6;
+
+/// The behaviour tick's late-swing check, before its practice tick: while
+/// the body attacks (`attacking`), its swing state word `flags` has neither
+/// [`ENGAGED_FOE`](exa_combat::swing::flags::ENGAGED_FOE) nor
+/// [`NO_ENGAGED_FOE`](exa_combat::swing::flags::NO_ENGAGED_FOE) and its
+/// swing `clock` is strictly past 0.6 (a NaN clock is not), `engaged` runs
+/// the strongest-engaged search ([`strongest_engaged`]). Found, the
+/// `lesson` takes its threat when strictly below it (an unordered pair
+/// keeps the lesson) and the word gains the found bit; else it gains the
+/// none bit. Returns the new word.
+pub fn late_swing_check(
+    attacking: bool,
+    flags: u32,
+    clock: f32,
+    lesson: &mut f32,
+    engaged: impl FnOnce() -> (bool, f32),
+) -> u32 {
+    use exa_combat::swing::flags::{ENGAGED_FOE, FOE_CHECKED, NO_ENGAGED_FOE};
+    if !attacking || flags & FOE_CHECKED != 0 || !(f64::from(clock) > LATE_SWING) {
+        return flags;
+    }
+    let (found, threat) = engaged();
+    if !found {
+        return flags | NO_ENGAGED_FOE;
+    }
+    if *lesson < threat {
+        *lesson = threat;
+    }
+    flags | ENGAGED_FOE
+}
+
 /// The character closest to the cursor on screen: among the characters not
 /// dead, the one whose point shows nearest the cursor (squared pixels,
 /// `(dy)² + (dx)²`), strictly nearer than any before it and than 3.4e38.
@@ -463,68 +486,6 @@ pub fn closest_to_cursor(
         }
     }
     best
-}
-
-/// The attack timing after a swing's tick: its wind-up step, the game clock
-/// (ms) of the next attack and of the recovery. `energy` is the fighter's
-/// raw energy, `rate` its primary weapon's recoil (W17, the record field
-/// the original divides by), `swing_frames` its swing's
-/// expected length, `balance` its balance, `mode` its attack motion's
-/// number (5 to 12 being a swing's) and `no_recovery` the flag that skips
-/// the recovery's quadratic.
-pub fn windup(
-    energy: f32,
-    rate: f32,
-    swing_frames: u32,
-    balance: f32,
-    mode: i32,
-    no_recovery: bool,
-    now_ms: u32,
-) -> Windup {
-    let mut step = if energy > EPSILON {
-        (1.0 - f64::from(energy.sqrt()) * 0.05) as f32
-    } else {
-        1.0
-    };
-    if f64::from(step) < WINDUP_FLOOR {
-        step = WINDUP_FLOOR as f32;
-    }
-    step = (f64::from(step / rate) * WINDUP_PER_FRAME) as f32;
-    if f64::from(step) < WINDUP_LEAST {
-        step = WINDUP_LEAST as f32;
-    }
-    // The engine converts to an integer with the nearest-even mode.
-    let by_step = (WINDUP_MS / (WINDUP_FRAMES * step)).round_ties_even() as u32;
-    let frames = by_step.min(swing_frames);
-    let next_attack = now_ms.wrapping_add(frames);
-    let factor =
-        if f64::from(balance) > RECOVERY_BALANCE || !(5..=12).contains(&mode) || no_recovery {
-            1.0
-        } else {
-            let f = (f64::from(balance) * RECOVERY_SLOPE) as f32;
-            (3.0 - f * 2.0) * (f * f)
-        };
-    let weapon = (rate * 100.0).round_ties_even() as i32 + 100;
-    let recovery = (factor * 2.0 + 1.0) * weapon as f32;
-    Windup {
-        step,
-        next_attack,
-        recovery: now_ms.wrapping_add(recovery.round_ties_even() as u32),
-        recovery_factor: factor,
-    }
-}
-
-/// The attack timing the behaviour keeps.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Windup {
-    /// The swing strength's drain per tick.
-    pub step: f32,
-    /// The game clock (ms) of the next attack.
-    pub next_attack: u32,
-    /// The game clock (ms) the recovery ends.
-    pub recovery: u32,
-    /// The recovery's quadratic factor.
-    pub recovery_factor: f32,
 }
 
 /// The behaviour's combat mode word, one combat tick: what the buttons
@@ -988,26 +949,6 @@ mod tests {
         );
     }
 
-    /// The wind-up: 1 − 0.05·√E (1 when the energy is zero), floored at 0.1,
-    /// over the weapon's rate, times 0.03, floored at 0.01; the next attack
-    /// is 1000/(80·step) ms on, at most the swing's own length.
-    #[test]
-    fn the_attack_timing_drains_from_the_wind_up() {
-        let w = windup(1.0, 0.1, 1000, 1.0, 0, false, 10_000);
-        // step = 0.95/0.1·0.03 = 0.285, so 1000/(80·0.285) = 43.86 → 44.
-        assert!((w.step - 0.285).abs() < 1e-5, "{w:?}");
-        assert_eq!(w.next_attack, 10_044);
-        // The recovery factor 1: (100·0.1 + 100)·3 = 330 ms.
-        assert_eq!(w.recovery, 10_330);
-        // A swing only ten frames long caps the wait.
-        assert_eq!(windup(1.0, 0.1, 10, 1.0, 0, false, 0).next_attack, 10);
-        // Zero energy takes the 1.0 step: 1000/(80·0.3) = 41.67 → 42.
-        assert_eq!(windup(0.0, 0.1, 1000, 1.0, 0, false, 0).next_attack, 42);
-        // A slow weapon's step stops at 0.01.
-        let slow = windup(0.0, 100.0, 1000, 1.0, 0, false, 0);
-        assert!((slow.step - 0.01).abs() < 1e-6, "{slow:?}");
-    }
-
     /// The two-part value: setting puts all three copies on the same point,
     /// advancing shifts previous←current and current←now, and the shown
     /// value is previous + (current − previous)·t.
@@ -1033,29 +974,46 @@ mod tests {
         );
     }
 
-    /// A swing's balance gives the recovery's quadratic: balance 0.5,
-    /// f = 0.5/0.7 = 0.71428573, (3 − 2f)·f² = 0.8017492; the recovery is
-    /// then 2.6034985 of the 110 ms base = 286 ms.
+    /// The late check: only attacking, once a swing, strictly past 0.6 of
+    /// the clock in double (0.6f32 is 0.60000002 > 0.6, so it runs; 0.59999996
+    /// does not); found raises the lesson only when strictly below.
     #[test]
-    fn a_poorly_balanced_swing_recovers_later() {
-        let w = windup(0.5, 0.1, 1000, 0.5, 5, false, 0);
-        assert_eq!(w.recovery_factor, 0.801_749_2, "{w:?}");
-        assert_eq!(w.recovery, 286);
-        // Outside the leg modes' 5–12 the factor is 1.
+    fn the_late_swing_check_takes_the_engaged_enemys_lesson() {
+        use exa_combat::swing::flags::{ENGAGED_FOE, NO_ENGAGED_FOE};
+        let mut lesson = 0.25;
+        let found = || (true, 0.5);
         assert_eq!(
-            windup(0.5, 0.1, 1000, 0.5, 4, false, 0).recovery_factor,
-            1.0
+            late_swing_check(true, 0x8, 0.6, &mut lesson, found),
+            0x8 | ENGAGED_FOE
+        );
+        assert_eq!(lesson, 0.5);
+        // A lower threat leaves the lesson; a NaN one too.
+        assert_eq!(
+            late_swing_check(true, 0, 0.7, &mut lesson, || (true, 0.3)),
+            ENGAGED_FOE
         );
         assert_eq!(
-            windup(0.5, 0.1, 1000, 0.5, 13, false, 0).recovery_factor,
-            1.0
+            late_swing_check(true, 0, 0.7, &mut lesson, || (true, f32::NAN)),
+            ENGAGED_FOE
         );
-        assert_eq!(windup(0.5, 0.1, 1000, 0.5, 5, true, 0).recovery_factor, 1.0);
-        // Balance over 0.7 (in double precision) too.
+        assert_eq!(lesson, 0.5);
+        // None found: the other bit, the lesson kept.
         assert_eq!(
-            windup(0.5, 0.1, 1000, 0.71, 5, false, 0).recovery_factor,
-            1.0
+            late_swing_check(true, 0, 0.9, &mut lesson, || (false, 0.0)),
+            NO_ENGAGED_FOE
         );
+        // Once a swing, attacking only, and past 0.6 only.
+        let never = || -> (bool, f32) { panic!("searched") };
+        assert_eq!(
+            late_swing_check(true, NO_ENGAGED_FOE, 0.9, &mut lesson, never),
+            NO_ENGAGED_FOE
+        );
+        assert_eq!(late_swing_check(false, 0, 0.9, &mut lesson, never), 0);
+        assert_eq!(
+            late_swing_check(true, 0, 0.599_999_96, &mut lesson, never),
+            0
+        );
+        assert_eq!(late_swing_check(true, 0, f32::NAN, &mut lesson, never), 0);
     }
 
     /// The mode ladder: down, dazed, switching and casting are idle; the
