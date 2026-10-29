@@ -247,6 +247,34 @@ pub fn after_plan(
     }
 }
 
+/// A flight route the navigation grid planned to the way out.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlannedFlight {
+    /// The route's points (cm), the body's own point first.
+    pub route: Vec<Vec3>,
+    /// Its ground length (cm): the follower's walk deadline is this × 20 ms
+    /// plus 2 s.
+    pub length_cm: f32,
+}
+
+/// Plans the flight's route to its way-out goal through `router` (the
+/// navigation grid in the running game): none when the search finds no
+/// point to start from. The original plans the flight the same way it plans
+/// every other walk, through the pathfinder, and the route replaces the
+/// straight steer once it has one.
+pub fn plan_route(
+    router: &mut dyn crate::route::Router,
+    from_cm: Vec3,
+    goal_cm: Vec3,
+) -> Option<PlannedFlight> {
+    let route = router.route(from_cm, goal_cm);
+    if route.len() < 2 {
+        return None;
+    }
+    let length_cm = crate::route::path_length(&route);
+    Some(PlannedFlight { route, length_cm })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -424,5 +452,32 @@ mod tests {
         assert!(!far.holds(4));
         after_plan(2, 1, Vec3::ZERO, Vec3::ZERO, 4, &mut far);
         assert!(!far.holds(4));
+    }
+
+    /// A planned flight keeps the router's points and their ground length;
+    /// a router that starts nowhere plans nothing.
+    #[test]
+    fn the_flight_route_is_the_routers_path() {
+        struct Straight;
+        impl crate::route::Router for Straight {
+            fn route(&mut self, from: Vec3, to: Vec3) -> Vec<Vec3> {
+                vec![from, Vec3::new(to.x, 900.0, to.z)]
+            }
+        }
+        let from = Vec3::new(10.0, 20.0, 30.0);
+        let to = Vec3::new(310.0, 0.0, 430.0);
+        let planned = plan_route(&mut Straight, from, to).unwrap();
+        assert_eq!(planned.route.first(), Some(&from));
+        assert_eq!(planned.route.last(), Some(&Vec3::new(310.0, 900.0, 430.0)));
+        // The height is ignored: 300 cm across, 400 cm along.
+        assert_eq!(planned.length_cm, 500.0);
+
+        struct Nowhere;
+        impl crate::route::Router for Nowhere {
+            fn route(&mut self, _from: Vec3, _to: Vec3) -> Vec<Vec3> {
+                Vec::new()
+            }
+        }
+        assert!(plan_route(&mut Nowhere, from, to).is_none());
     }
 }
