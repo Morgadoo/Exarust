@@ -2278,7 +2278,8 @@ impl Flow {
         let wake = &mut self.story.wake;
         if wake.animating {
             // The original reads the animator's flags word, not the body's
-            // condition: the wake-up motion sets 0x20 when it is done.
+            // condition: the first animation runs while that word holds 0x20
+            // and ends once the motion has cleared the bit.
             if player.animator & WAKING == 0 {
                 wake.animating = false;
             }
