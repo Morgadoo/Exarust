@@ -260,7 +260,8 @@ impl GiBlockLayout {
                 let centre = block_centre(b.sector, self.grid.0, self.grid.1);
                 let dx = (p.x - centre.x).abs() - 2400.0;
                 let dz = (p.y - centre.y).abs() - 2400.0;
-                (i, dx.max(0.0).powi(2) + dz.max(0.0).powi(2))
+                // The original sums Z first: (dz² + dx²).
+                (i, dz.max(0.0).powi(2) + dx.max(0.0).powi(2))
             })
             .min_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)))
             .map(|(i, _)| i)
@@ -1254,7 +1255,9 @@ impl TerrainColumns {
 
     /// Fills terrain as the original does (whole-voxel columns): voxels below
     /// the surface hold 20, the surface voxel its covered fraction of 20; the
-    /// margins are left alone. Returns the columns filled.
+    /// margins are left alone. A surface at or above the lid clamps to the
+    /// top slice and leaves the lid there instead of overwriting it. Returns
+    /// the columns filled.
     fn apply(&self, o: &mut Occupancy) -> usize {
         let mut filled = 0;
         for z in MARGIN..SIDE - MARGIN {
@@ -1264,20 +1267,34 @@ impl TerrainColumns {
                     continue;
                 }
                 let g = (top - self.origin.y) / VOXEL;
-                if g <= 0.0 {
+                let k = g.floor() as i64;
+                if k < 0 {
                     continue;
                 }
-                let surface = (g.floor() as usize).min(o.depth);
-                for y in 0..surface {
+                // The original writes the surface voxel only below the top
+                // slice; at or above it the height clamps to the lid.
+                let (surface, write_surface) = if (k as usize) < o.depth - 1 {
+                    (k as usize, true)
+                } else {
+                    (o.depth - 1, false)
+                };
+                // Below the lid the original fills slices 0..k−1; at or
+                // above it, 0..D−2, leaving the lid untouched.
+                let fill_end = if write_surface {
+                    surface
+                } else {
+                    surface.saturating_sub(1)
+                };
+                for y in 0..fill_end {
                     o.cells[x + z * SIDE + y * SIDE * SIDE] = TERRAIN_SOLID;
                 }
-                if surface < o.depth {
+                if write_surface {
                     let frac = g - surface as f32;
                     o.cells[x + z * SIDE + surface * SIDE * SIDE] =
                         (frac * TERRAIN_SOLID as f32).round_ties_even() as u8;
                 }
                 let column = &mut o.lowest[x + z * SIDE];
-                *column = (*column).min(surface.min(o.depth - 1) as u8);
+                *column = (*column).min(surface as u8);
                 filled += 1;
             }
         }
@@ -2028,6 +2045,35 @@ mod tests {
         // A point outside the block grid has no block (the original binds
         // texture 0 and the zero offset there).
         assert!(layout.block_at(Vec3::splat(-10_000.0)).is_none());
+    }
+
+    #[test]
+    fn terrain_at_or_above_the_lid_leaves_the_lid_alone() {
+        let mut o = Occupancy::new_at(Vec3::ZERO, 64, IVec2::ZERO);
+        let mut tops = vec![f32::NEG_INFINITY; SIDE * SIDE];
+        let mut fill = |top: f32, o: &mut Occupancy| {
+            tops[20 + 20 * SIDE] = top;
+            let ground = TerrainColumns {
+                origin: Vec3::ZERO,
+                tops: tops.clone(),
+            };
+            ground.apply(o);
+        };
+        // 13.4 m is voxel 67, above the top slice: slices 0..61 fill, the
+        // lid slices 62 (5) and 63 (26) stay.
+        fill(13.4, &mut o);
+        assert_eq!(o.cells[20 + 20 * SIDE + 61 * SIDE * SIDE], 20);
+        assert_eq!(o.cells[20 + 20 * SIDE + 62 * SIDE * SIDE], 5);
+        assert_eq!(o.cells[20 + 20 * SIDE + 63 * SIDE * SIDE], 26);
+        assert_eq!(o.lowest[20 + 20 * SIDE], 63);
+        // 12.5 m is voxel 62.5: the surface byte lands in slice 62 (the
+        // lower lid, as the original overwrites it), and slice 63 stays.
+        let mut o = Occupancy::new_at(Vec3::ZERO, 64, IVec2::ZERO);
+        fill(12.5, &mut o);
+        assert_eq!(o.cells[20 + 20 * SIDE + 61 * SIDE * SIDE], 20);
+        assert_eq!(o.cells[20 + 20 * SIDE + 62 * SIDE * SIDE], 10);
+        assert_eq!(o.cells[20 + 20 * SIDE + 63 * SIDE * SIDE], 26);
+        assert_eq!(o.lowest[20 + 20 * SIDE], 62);
     }
 
     #[test]

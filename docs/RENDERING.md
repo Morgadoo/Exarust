@@ -1391,7 +1391,9 @@ in world space there too):
 - The top slice holds 26 and the slice below 5, a soft lid.
 - Terrain comes first: in each interior column (not the margins), voxels
   below the terrain surface hold 20, and the surface voxel its covered
-  fraction of 20.
+  fraction of 20. A surface at or above the top slice clamps to the lid:
+  slices 0..D−2 fill, the surface byte is not written, and the lid's 26 and 5
+  stay; a surface in slice D−2 overwrites the 5 as the original does.
 - Every mesh's stored **GI sample points** (chunk `0x3D0CEC05`: a spacing
   word, a count, then object-space points in cm) are transformed to the
   world and splatted:
@@ -1439,7 +1441,9 @@ in world space there too):
   by its y, so only rounding differs).
   A flat floor at height 0 fills the slice from −20 to 0 cm.
 - Each column remembers the lowest slice a point fell in. A sector's floor
-  is the lowest over its 30 × 30 columns.
+  is the lowest over its 30 × 30 columns less the last row and column: the
+  original scans columns 0..28 only, so geometry confined to a sector's last
+  column or row never raises it into the propagation.
 
 **Propagation**, one step per frame. A new block first gets a warm-up,
 600 steps by default, run 16 steps a frame (all of them in one frame stalled
@@ -1492,7 +1496,8 @@ its width, at the slice's middle ((slice + 0.5)/width), as the original's
   centre over the block's slice count;
 - k = min(8·Σa, 1) · (0.3·open + 0.699);
 - light = sum·k/8 + base·open + Σ lights;
-- base = level record `0x30` (as stored) × 0.001, per channel;
+- base = level record `0x30` (as stored) × 0.001, per channel, or × 0.002
+  below shading quality 4 (`GiSettings::high_quality`);
 - each point light adds
   lin(colour)·intensity·multiplier·(1 − dim)²·0.15·0.01 · (1 − d/R)⁴ ·
   open · cube shadow · shaping. The point light's uniforms are the
@@ -1562,8 +1567,16 @@ its width, at the slice's middle ((slice + 0.5)/width), as the original's
   64 (128 above 12.8 m), and any other value 128 × 128 × 16 at 40 cm.
   Exarust ships the 20 cm preset only (`preset`);
 - the eight corner offsets (1.33 voxels, X fastest, then Z, then height,
-  w = 1/8) and the shared quad index buffer (`corner_offsets`,
-  `quad_indices`);
+  w = 1/8; each axis formed in double precision and rounded once to f32 as
+  the manager's init does) and the shared quad index buffer
+  (`corner_offsets`, `quad_indices`);
+- the manager's three linked programs and their binding tables
+  (`GiPass::layout`): `gi_inject_v` + `gi_inject_g` with `gi_inject_f`
+  (`Light`, `VSmp`, `ZTrn`, `LyrOfs`, `BaseAmb`, `WrlMat`, `SdwMat`,
+  `SdwMat2`, `SliceSz`, `First`, `MPrj`; `LVox` on unit 0, `OVox` on 1 and
+  light i's `Shadow<i>` on 3 + i), with `gi_emission` (the additive extras),
+  and with `gi_blit_f` (`UVOfs`, `SliceSz`); Exarust's WESL pass replaces
+  them but keeps the same inputs;
 - the emissive shape list: registration appends, unregistration swaps the
   last entry over each match, and the draw box rounds the centre to
   voxels (ties to even) and the half extents up, clips the columns to

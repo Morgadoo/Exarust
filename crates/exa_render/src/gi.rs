@@ -1759,7 +1759,8 @@ fn shape_reaches(source: &LightSource, cell: Vec2, floor_y: f32) -> bool {
     let dx = pull(at.x - cell.x);
     let dz = pull(at.z - cell.y);
     let dy = at.y - floor_y;
-    let c = dy / (dy * dy + (dz * dz + dx * dx)).sqrt();
+    // The original forms (dy² + dz²) + dx², left to right.
+    let c = dy / (dy * dy + dz * dz + dx * dx).sqrt();
     c + (1.0 - c) * source.shaping.x > SHAPE_FLOOR
 }
 
