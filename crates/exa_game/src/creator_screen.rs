@@ -167,6 +167,7 @@ impl CreatorEntry {
         };
         Some(match name {
             "story" if (0..4).contains(&background) => Self::story(background),
+            "story-all" => Self::story(0),
             "practice" | "novice" => Self::practice(Ladder::Novice),
             "expert" => Self::practice(Ladder::Expert),
             "arena" | "career" => Self::arena(),
@@ -181,9 +182,12 @@ impl CreatorEntry {
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OpenCreator(pub CreatorEntry);
 
-/// Open the story's background picker.
-#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OpenClassSelect;
+/// Open the story's background picker. `available` overrides the unlock
+/// word's background bits (`--open-creator story-all` offers all four).
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct OpenClassSelect {
+    pub available: Option<u32>,
+}
 
 /// The record the last committed character was made from, which the
 /// player's spawn takes its body, skin, hair and name from.
@@ -1214,7 +1218,7 @@ fn open_from_menu(
     for MenuChoice(command) in choices.read() {
         match *command {
             MenuCommand::BeginStory => {
-                pickers.write(OpenClassSelect);
+                pickers.write(OpenClassSelect::default());
             }
             MenuCommand::Practice { expert } => {
                 let ladder = if expert {
@@ -1244,8 +1248,10 @@ fn open_from_menu(
         return;
     };
     on_load.done = true;
-    if word == "story" {
-        pickers.write(OpenClassSelect);
+    if word == "story" || word == "story-all" {
+        pickers.write(OpenClassSelect {
+            available: (word == "story-all").then_some(7),
+        });
     } else if let Some(entry) = CreatorEntry::parse(&word) {
         creators.write(OpenCreator(entry));
     } else {
@@ -1367,9 +1373,9 @@ fn open_screens(
     mut textures: Option<ResMut<GuiTextures>>,
     windows: Query<&Window, With<PrimaryWindow>>,
 ) {
-    let picked = pickers.read().count() > 0;
+    let picked = pickers.read().last().copied();
     let entry = creators.read().last().copied();
-    if !picked && entry.is_none() {
+    if picked.is_none() && entry.is_none() {
         return;
     }
     if let Some(menu) = menu.as_mut()
@@ -1388,9 +1394,33 @@ fn open_screens(
         ensure_texture(textures, game.as_deref(), STRIP);
         ensure_texture(textures, game.as_deref(), ICONS);
     }
-    if picked {
-        let available = flow.as_ref().map_or(0, |f| f.unlocks.backgrounds);
+    if let Some(picked) = picked {
+        let available = picked
+            .available
+            .unwrap_or_else(|| flow.as_ref().map_or(0, |f| f.unlocks.backgrounds));
+        debug!(
+            "creator: the picker's strip {STRIP} is {}",
+            textures.as_ref().and_then(|t| t.get(STRIP)).map_or(
+                "missing".to_string(),
+                |t| format!("{} x {}", t.width, t.height)
+            )
+        );
         info!("creator: the background picker opens (unlock word {available:#x})");
+        if let Ok(window) = windows.single() {
+            let (size, unit) = screen_and_unit(window);
+            let draw = exa_ui::class_select::class_select_draw(
+                (size.0.max(0) as u32, size.1),
+                available,
+                0,
+                unit,
+            );
+            for card in &draw.cards {
+                debug!(
+                    "creator: picker card {} at {:?}, uv {:?}",
+                    card.index, card.rect, card.uv
+                );
+            }
+        }
         screen.class_select = Some(ClassSelect {
             hover: 0,
             available,
@@ -1474,8 +1504,13 @@ fn input(
         let mut mask = 0u32;
         if let Some((x, y)) = pointer {
             let hover = exa_ui::class_select::hit(wide, picker.available, (x, y)).unwrap_or(0);
-            if hover > 0 {
+            if hover > 0 && hover != picker.hover {
                 picker.hover = exa_ui::class_select::class_hover(hover, false).index;
+                debug!(
+                    "creator: picker hovers {} ({})",
+                    hover,
+                    BACKGROUND_NAMES[(hover - 1).clamp(0, 3) as usize]
+                );
             }
         }
         if keys.just_pressed(KeyCode::Enter) || mouse.just_released(MouseButton::Left) {
@@ -1773,7 +1808,10 @@ fn paint_record(
                 let x = rect.left as f32 + (rect.width() as f32 - side) * 0.5;
                 let y = rect.top as f32 + (rect.height() as f32 - side) * 0.5;
                 let mut batch = SkinBatch::new();
-                batch.select(3, 0, false);
+                // The skin's textured program with the texture's colour in full
+                // (as the text batches bind it).
+                batch.select(2, 0, true);
+                batch.tex_col = Some(1.0);
                 batch.set_ink(palette.text[6]);
                 batch.begin();
                 batch.set_uv(u0, v1);
@@ -2074,11 +2112,22 @@ pub fn paint_class_select(
     let level = exa_ui::gui_font::level_for_unit(unit);
     let (font, size) =
         crate::gui_screens::screen_font(exa_ui::gui_font::gui_level(level).main, textures);
+    // Nothing is behind the picker (the world is torn down): the window
+    // clears to black, then the picker's form draws over the screen with
+    // its constructor's words (a client fill, no title).
     let mut painted = Painted::default();
     painted.push(rect_layer(
         &[(0.0, 0.0, screen.0 as f32, screen.1 as f32)],
         [0, 0, 0, 255],
     ));
+    let form = exa_ui::class_select::class_select_form();
+    let mut frame = Frame::new(GuiRect::new(0, 0, screen.0, screen.1), unit, form.title);
+    frame.attributes = form.flags;
+    frame.style = 0;
+    frame.spacing = 0;
+    painted
+        .layers
+        .extend(gui_paint::paint_frame(&frame, &palette, &font, size).layers);
     let draw = exa_ui::class_select::class_select_draw(
         (screen.0.max(0) as u32, screen.1),
         picker.available,
@@ -2087,7 +2136,10 @@ pub fn paint_class_select(
     );
     if textures.get(STRIP).is_some() {
         let mut batch = SkinBatch::new();
-        batch.select(3, 0, false);
+        // The strip is drawn through the skin's textured program, its
+        // texels tinted by the card colour.
+        batch.select(2, 0, true);
+        batch.tex_col = Some(1.0);
         for card in &draw.cards {
             let [x, y, w, h] = card.rect.map(|v| v as f32);
             // Bottom-left, top-left, top-right, bottom-right.
@@ -2101,6 +2153,8 @@ pub fn paint_class_select(
             batch.end_quads();
         }
         painted.push(GuiLayer::new(batch, LayerTexture::Named(STRIP)));
+    } else {
+        debug!("creator: the picker's strip {STRIP} is not loaded");
     }
     let chosen = (picker.hover - 1).clamp(0, 3) as usize;
     if let Some(top) = draw.name_top {
@@ -2364,6 +2418,40 @@ mod tests {
         };
         let painted = paint_class_select(&picker, (1920, 1080), 5, &GuiTextures::default());
         assert!(!painted.layers.is_empty());
+    }
+
+    #[test]
+    fn the_picker_draws_its_cards_from_the_strip_through_the_textured_program() {
+        let mut textures = GuiTextures::default();
+        textures
+            .textures
+            .insert(STRIP.into(), GuiTexture::solid([200, 100, 50, 255]));
+        let picker = ClassSelect {
+            hover: 3,
+            available: 7,
+        };
+        let painted = paint_class_select(&picker, (1920, 1080), 5, &textures);
+        let strip = painted
+            .layers
+            .iter()
+            .find(|l| l.texture == LayerTexture::Named(STRIP))
+            .expect("the strip layer");
+        assert!(
+            strip
+                .batch
+                .primitives
+                .iter()
+                .all(|p| p.mode == exa_ui::skin::SkinMode::Textured && p.tex_col == Some(1.0))
+        );
+        // Four cards of four corners each.
+        assert_eq!(strip.batch.vertices.len(), 16);
+        // The hovered card's name and description are drawn when the font
+        // is loaded; without it only the backdrop, form and cards draw.
+        assert!(painted.layers.len() >= 3);
+        assert_eq!(
+            CreatorEntry::parse("story-all"),
+            Some(CreatorEntry::story(0))
+        );
     }
 
     #[test]

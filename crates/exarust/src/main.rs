@@ -68,7 +68,8 @@
 //!          --debug-gui-form           open one empty GUI form through the draw skin's path
 //!          --open-settings <page>     once loaded, open the menu and the Settings form on its settings or controls page
 //!          --open-creator <mode>      once loaded, open the character creator: story (the background picker),
-//!                                     story:N (background N), practice, expert, arena, recruit or versus
+//!                                     story-all (the picker with every background unlocked), story:N
+//!                                     (background N), practice, expert, arena, recruit or versus
 //!          --open-container FRAME     open the container nearest the player in its popup that many frames after the load
 //!          --debug-path x,y,z         play mode: plan a path from the player's feet to this point (metres) and draw it,
 //!                                     again whenever the player has moved a metre
@@ -684,7 +685,7 @@ fn main() -> AppExit {
                 let word = args.next().unwrap_or_default();
                 if exa_game::creator_screen::CreatorEntry::parse(&word).is_none() {
                     eprintln!(
-                        "--open-creator: story, story:N, practice, expert, arena, recruit or versus, not {word:?}"
+                        "--open-creator: story, story-all, story:N, practice, expert, arena, recruit or versus, not {word:?}"
                     );
                     return AppExit::from_code(2);
                 }
