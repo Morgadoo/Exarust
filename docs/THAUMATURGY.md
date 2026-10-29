@@ -760,6 +760,9 @@ grid's penalty until the wall falls;
 wisps ride their parts. The running game opens the tree with `P` and the bar with `C` (`hotkeys`;
 the debug simulation keys never take a bound game key, so `P` no longer also pauses the game clock
 the tree's fades run on, which had left the opened tree invisible at zero fade),
+and while the tree is shown its form has the keys: the arrow keys step the bar and any other key
+closes the tree (ignored for the opening fade's first 50 ms and while it fades out); a screen that
+is not the play screen hands keys to the base form's handler (`exa_ui::form::form_key`),
 routes the pointer through the tree's hover/click/drag/zoom rules and draws
 the tree, bar, tooltip and preview with the six fragment programs in
 `exa_ui::tree_draw` and the `.rfi` sheets (`power_screen`). The bar's keys

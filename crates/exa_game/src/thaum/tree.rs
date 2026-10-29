@@ -658,14 +658,16 @@ pub struct PressInput {
 }
 
 /// A key with the form's state: the original keeps two bits in one byte,
-/// bit 0 for the opening guard and bit 1 for hidden.
+/// bit 0 while the opening fade runs (its stamp guards the keys) and bit 1
+/// while the closing fade runs. The flags are the GUI's key word: 1 for a
+/// repeat, 2 for a typed character, Shift, Control and Alt above.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KeyInput {
     pub key: i32,
     pub flags: u32,
     /// Bit 0 of the form byte: the form has a stamp that guards its keys.
     pub guarded: bool,
-    /// Bit 1 of the form byte: the screen is hidden.
+    /// Bit 1 of the form byte: the closing fade runs.
     pub hidden: bool,
     /// The form's stamp in milliseconds.
     pub stamp: u32,
@@ -675,8 +677,12 @@ pub struct KeyInput {
 /// What a key did.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct KeyResult {
-    /// The tree should open.
-    pub open: bool,
+    /// The tree's open-or-close routine runs: with the tree shown, it
+    /// closes it (the key that is neither cycle key).
+    pub toggle: bool,
+    /// The screen is not the play screen: the base form's key handler
+    /// ([`exa_ui::form::form_key`]) takes the key.
+    pub base: bool,
     /// The bar's chosen slot moved.
     pub cycled: bool,
     /// The cycle's select sound, when it moved.
@@ -1759,12 +1765,13 @@ impl TreeScreen {
         out
     }
 
-    /// The bar cycle on the right (0x27) and left (0x25) keys, and the
-    /// tree opening on the key that is neither. A guarded form ignores keys
-    /// until 950 ms before its stamp has passed (signed, in 64 bits: a stamp
-    /// under 950 never guards); a hidden form does not open. The original
-    /// hands a screen that is not the play screen to the base form's key
-    /// handler, which is not modelled.
+    /// The tree form's key slot: the bar cycle on the right (0x27) and
+    /// left (0x25) keys (not for a typed character), and on any other key
+    /// the tree's open-or-close routine, which closes the shown tree. A
+    /// form in its opening fade ignores keys until 950 ms before its stamp
+    /// has passed (signed, in 64 bits: a stamp under 950 never guards); a
+    /// form in its closing fade does not close again. A screen that is not
+    /// the play screen hands the key to the base form's key handler.
     pub fn key(
         &mut self,
         input: KeyInput,
@@ -1781,6 +1788,7 @@ impl TreeScreen {
         } = input;
         let mut out = KeyResult::default();
         if self.mode != TreeMode::Play {
+            out.base = true;
             return out;
         }
         if guarded && i64::from(stamp) - 0x3b6 > i64::from(now) {
@@ -1803,7 +1811,7 @@ impl TreeScreen {
             }
         }
         if !hidden {
-            out.open = true;
+            out.toggle = true;
         }
         out
     }
@@ -4369,7 +4377,7 @@ mod tests {
     }
 
     #[test]
-    fn a_key_cycles_the_bar_or_opens_the_tree() {
+    fn a_key_cycles_the_bar_or_toggles_the_tree() {
         let mut screen = TreeScreen::empty(DOMAIN_MIND, TreeMode::Play);
         let mut bar = PowerBar::default();
         let input = |key, flags, guarded, hidden, stamp, now| KeyInput {
@@ -4380,31 +4388,31 @@ mod tests {
             stamp,
             now,
         };
-        // Any other key opens the tree, unless the form is hidden.
+        // Any other key runs the toggle, unless the closing fade runs.
         let out = screen.key(input(0x50, 0, false, false, 0, 0), &mut bar, None);
-        assert!(out.open && !out.cycled);
+        assert!(out.toggle && !out.cycled);
         let out = screen.key(input(0x50, 0, false, true, 0, 0), &mut bar, None);
-        assert!(!out.open);
+        assert!(!out.toggle);
         // A key with bit 1 set in its flags never cycles.
         let out = screen.key(input(0x27, 2, false, false, 0, 0), &mut bar, None);
-        assert!(out.open && !out.cycled);
+        assert!(out.toggle && !out.cycled);
         // The next key steps to the first set slot and plays the select
         // sound.
         let out = screen.key(input(0x27, 0, false, false, 0, 0), &mut bar, None);
-        assert!(out.cycled && !out.open);
+        assert!(out.cycled && !out.toggle);
         assert_eq!(out.sound, Some(SLOT_SELECT_SOUND));
         // The guard holds keys until 950 ms before the stamp is past.
         let out = screen.key(input(0x50, 0, true, false, 2000, 1049), &mut bar, None);
-        assert!(!out.open);
+        assert!(!out.toggle);
         let out = screen.key(input(0x50, 0, true, false, 2000, 1050), &mut bar, None);
-        assert!(out.open);
+        assert!(out.toggle);
         // A stamp under 950 reads negative and never guards.
         let out = screen.key(input(0x50, 0, true, false, 100, 0), &mut bar, None);
-        assert!(out.open);
+        assert!(out.toggle);
         // A screen that is not the play screen takes no key.
         let mut create = TreeScreen::empty(DOMAIN_MIND, TreeMode::Create);
         let out = create.key(input(0x50, 0, false, false, 0, 0), &mut bar, None);
-        assert!(!out.open && !out.cycled);
+        assert!(!out.toggle && !out.cycled && out.base);
     }
 
     #[test]
