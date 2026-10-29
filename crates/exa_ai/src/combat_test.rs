@@ -123,6 +123,41 @@ fn practice_pays_four_per_point_past_ten() {
 }
 
 #[test]
+fn set_target_places_the_estimate_and_commits() {
+    let mut mind = CombatMind {
+        commitment: 0.25,
+        overshoot_mean: 3.0,
+        stuck: 7,
+        fresh_target: false,
+        ..CombatMind::default()
+    };
+    let b = set_target(
+        &mut mind,
+        Vec3::new(100.0, 0.0, 0.0),
+        Vec3::ZERO,
+        100.0,
+        Vec3::ZERO,
+    );
+    assert!(mind.fresh_target);
+    assert_eq!(mind.commitment, 1.0);
+    assert_eq!((mind.overshoot_mean, mind.stuck), (0.0, 0));
+    assert_eq!(mind.estimate, Vec3::new(100.0, 0.0, 0.0));
+    assert_eq!(
+        (b.distance_cm, b.to_target),
+        (100.0, Vec3::new(1.0, 0.0, 0.0))
+    );
+    // More than 300 cm of height counts as far (800).
+    let b = set_target(
+        &mut mind,
+        Vec3::new(0.0, 500.0, 300.0),
+        Vec3::ZERO,
+        100.0,
+        Vec3::ZERO,
+    );
+    assert_eq!(b.distance_cm, 800.0);
+}
+
+#[test]
 fn entering_sets_the_eagerness_at_a_half() {
     let mut mind = CombatMind {
         eagerness: 3.0,
