@@ -110,8 +110,9 @@ pub struct ModelNode {
     /// The node stores a mesh body, whatever its groups draw.
     pub mesh: bool,
     /// The node mesh's triangles in the node's space (metres), for the
-    /// pair stage's sphere-against-mesh query; `None` for a node without a
-    /// mesh, and for an index list that does not name whole triangles.
+    /// pair stage's sphere-against-mesh query; kept only for a node with a
+    /// registering body ([`ModelNode::rigid`]), `None` otherwise, for a node
+    /// without a mesh, and for an index list that leaves the positions.
     pub triangles: Option<Arc<Vec<[Vec3; 3]>>>,
     /// The mesh body's render word, which the original copies onto its
     /// mesh node as the body is read
@@ -614,7 +615,14 @@ impl ModelLoader<'_> {
                     collision_sound,
                 }
             });
-            let triangles = mesh.and_then(mesh_triangles).map(Arc::new);
+            // Only a node whose body registers needs its mesh as the pair
+            // stage's collision mesh; level geometry, characters and
+            // drawn-only nodes keep none (no copy at load).
+            let triangles = rigid
+                .as_ref()
+                .and(mesh)
+                .and_then(mesh_triangles)
+                .map(Arc::new);
             let cloth_mesh = match mesh {
                 Some(mesh) if node.cloth_marker => {
                     let groups: Vec<usize> = built.meshes.iter().map(|(g, _)| *g).collect();
@@ -3073,17 +3081,21 @@ pub fn painted_model_stem(model: &Model) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::render::render_resource::TextureFormat;
+
     #[test]
     fn a_meshs_triangles_are_its_positions_in_metres() {
-        let mut mesh = RfcMesh::default();
-        mesh.positions = vec![
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 2.0, 0.0],
-            [0.0, 0.0, 3.0],
-        ];
         // A trailing index that starts no triangle is ignored.
-        mesh.indices = vec![0, 1, 2, 0, 2, 3, 1];
+        let mut mesh = RfcMesh {
+            positions: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 2.0, 0.0],
+                [0.0, 0.0, 3.0],
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3, 1],
+            ..RfcMesh::default()
+        };
         assert_eq!(
             mesh_triangles(&mesh),
             Some(vec![
@@ -3106,8 +3118,6 @@ mod tests {
         mesh.indices.clear();
         assert_eq!(mesh_triangles(&mesh), None);
     }
-
-    use bevy::render::render_resource::TextureFormat;
 
     fn flat(w: usize, v: u8) -> Texels {
         Texels {

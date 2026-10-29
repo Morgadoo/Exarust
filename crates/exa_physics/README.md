@@ -104,15 +104,17 @@ between bodies (`body::Pairing` on each part), the more mobile one's
 spheres against the other part's collision mesh (`body::Pairs`, the
 original's mesh query: the swept/static choice on 0.1 cm² of travel, the
 mesh-box and mesh-sphere pre-tests, the one-sided per-triangle tests with
-the sphere re-read after every hit), or its spheres, pre-tested against
-their own bound, where the part has no mesh triangles (a character part,
-whose node mesh the character builder does not pass; a prop's part gets its
-node's triangles at registration, from the model's mesh, so a prop is the
-original's mesh side in every pair; `Ragdoll::set_part_triangles` sets them
-by hand). A part with 64 spheres or more, a door leaf's 1 900, has
-them bucketed in a grid, `body::SphereGrid`, so the sphere fallback visits only the
-spheres a sphere can reach, in their stored order, with the plain loop's
-results), with an immediate
+the sphere re-read after every hit; Exarust visits the triangles in file
+order where the original walks the mesh's kd-tree), or its spheres,
+pre-tested against their own bound, where the part has no mesh triangles
+(a character part, whose node mesh the character builder does not pass; a
+prop's part gets its node's triangles at registration, from the model's
+mesh, so a prop is the mesh side whenever it is the less mobile part of a
+pair; `Ragdoll::set_part_triangles` sets them by hand; a part with 64
+spheres or more, a door leaf's 1 900, has them bucketed in a grid,
+`body::SphereGrid`, so the sphere fallback visits only the spheres a sphere
+can reach, in their stored order, with the plain loop's results), with an
+immediate
 push by mobility shares and φ; up to four points per pair are solved in
 the next tick's
 iterations before the links (0.01 cm slop, the reversed pair friction,
