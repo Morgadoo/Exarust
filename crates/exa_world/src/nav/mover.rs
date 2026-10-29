@@ -15,11 +15,13 @@
 //! Where a working floor differs from the grid's, the rectangle's floors
 //! are written and the cost passes run again. A scene-wide countdown holds
 //! the merge (not the ring) and the refresh, and then hands the whole grid
-//! less its twenty-cell rim in as one rectangle. Evidence: the movement
-//! notes' planner and movers, and the refresh read instruction by
+//! less its twenty-cell rim in as one rectangle. The samples are the
+//! points of the bodies the simulation's 6 m room grid holds in the rooms a
+//! rectangle spans ([`MoverPoints`], [`refresh_movers`]). Evidence: the
+//! movement notes' planner and movers, and the refresh read instruction by
 //! instruction.
 
-use bevy::math::Vec3;
+use bevy::math::{Affine3A, Vec2, Vec3};
 
 use super::query::axis;
 use super::{Layer, NavGrid, Path, find_path, remove_footprint, stamp_footprint};
@@ -28,6 +30,9 @@ use super::{Layer, NavGrid, Path, find_path, remove_footprint, stamp_footprint};
 const SLOTS: usize = 16;
 const PAD: i32 = 3;
 const BOX_PAD: f32 = 2.5;
+/// The simulation's room grid: 600 cm rooms, as the reciprocal the
+/// original multiplies by (single precision).
+const ROOM_INVERSE: f32 = 0.001_666_666_7;
 
 /// A rectangle of cells, both ends included.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,18 +78,51 @@ impl Default for Movers {
 /// ties to even), the low side at least 3 and the high side at most
 /// `W − 4`.
 pub fn rect_around(grid: &NavGrid, centre: Vec3, half: Vec3) -> CellRect {
-    let (width, depth) = grid.size();
     let cm = |m: f32| super::centimetres_of(f64::from(m)) as f32;
+    rect_of_extent(
+        grid,
+        Vec2::new(cm(centre.x), cm(centre.z)),
+        Vec2::new(cm(half.x), cm(half.z)),
+    )
+}
+
+/// The cell rectangle of a node's box (`centre` and `half` extents in the
+/// node's space, metres) under its world frame `at`, as the original queues
+/// a node: the box centre through the frame (`(x·X + y·Y) + (z·Z + T)`),
+/// on each ground axis the extent `(|X|·hx + |Y|·hy) + |Z|·hz` of that
+/// axis's row, all in centimetres, then [`rect_around`]'s rounding and
+/// clamps.
+pub fn rect_of_box(grid: &NavGrid, at: Affine3A, centre: Vec3, half: Vec3) -> CellRect {
+    let cm = |m: f32| super::centimetres_of(f64::from(m)) as f32;
+    let [x, y, z] = [at.x_axis, at.y_axis, at.z_axis].map(Vec3::from);
+    let t = Vec3::from(at.translation);
+    let c = Vec3::new(cm(centre.x), cm(centre.y), cm(centre.z));
+    let h = Vec3::new(cm(half.x), cm(half.y), cm(half.z));
+    let t = Vec3::new(cm(t.x), cm(t.y), cm(t.z));
+    let world = (x * c.x + y * c.y) + (z * c.z + t);
+    let extent = (x.abs() * h.x + y.abs() * h.y) + z.abs() * h.z;
+    rect_of_extent(
+        grid,
+        Vec2::new(world.x, world.z),
+        Vec2::new(extent.x, extent.z),
+    )
+}
+
+/// The rectangle of a ground-plane centre and extent (centimetres): on each
+/// axis `W/2 + round((c ∓ e) · (1/30) ∓ 2.5)`, the low side at least 3 and
+/// the high side at most `W − 4`.
+fn rect_of_extent(grid: &NavGrid, centre: Vec2, extent: Vec2) -> CellRect {
+    let (width, depth) = grid.size();
     let inverse = 1.0f32 / super::CELL_CM as f32;
     let edge = |coord: f32, extent: f32, n: usize, sign: f32| {
-        let at = (cm(coord) + sign * cm(extent)) * inverse + sign * BOX_PAD;
+        let at = (coord + sign * extent) * inverse + sign * BOX_PAD;
         (n / 2) as i32 + at.round_ties_even() as i32
     };
     let rect = CellRect {
-        x0: edge(centre.x, half.x, width, -1.0).max(PAD),
-        x1: edge(centre.x, half.x, width, 1.0).min(width as i32 - PAD - 1),
-        z0: edge(centre.z, half.z, depth, -1.0).max(PAD),
-        z1: edge(centre.z, half.z, depth, 1.0).min(depth as i32 - PAD - 1),
+        x0: edge(centre.x, extent.x, width, -1.0).max(PAD),
+        x1: edge(centre.x, extent.x, width, 1.0).min(width as i32 - PAD - 1),
+        z0: edge(centre.y, extent.y, depth, -1.0).max(PAD),
+        z1: edge(centre.y, extent.y, depth, 1.0).min(depth as i32 - PAD - 1),
     };
     rect.normalized()
 }
@@ -138,6 +176,12 @@ pub fn ring_contents(movers: &Movers) -> Vec<CellRect> {
         at = (at + 1) % SLOTS;
     }
     out
+}
+
+/// Whether nothing waits for a refresh: no pending rectangle, an empty
+/// ring and no scene-wide countdown. A refresh then has nothing to do.
+pub fn movers_idle(movers: &Movers) -> bool {
+    movers.rects.is_empty() && movers.read == movers.write && movers.countdown == 0
 }
 
 /// Starts a scene-wide refresh: the next `ticks` calls hold the queues,
@@ -218,11 +262,42 @@ pub fn plan_around(grid: &mut NavGrid, standing: Vec3, goal: Vec3, size: u8) -> 
     path
 }
 
-/// Grow each queued rectangle by three cells, raise floors from `samples`,
-/// and rerun the cost passes where a floor changed. The ring is drained
-/// into the pending list first. The queues are then empty, except in the
-/// frames of the scene-wide countdown, which returns early.
-pub fn refresh_movers(grid: &mut NavGrid, movers: &mut Movers, samples: &[Vec3]) {
+/// A body the refresh may sample: its node's frame (metres) and its node's
+/// GI sample points in the node's space. The refresh walks the bodies the
+/// simulation's room grid holds by their node's position.
+#[derive(Debug, Clone, Copy)]
+pub struct MoverPoints<'a> {
+    pub at: Affine3A,
+    pub points: &'a [Vec3],
+}
+
+/// The simulation room (along an axis of `n` cells) a body at `metres`
+/// is bucketed in: `floor(cm · (1/600))` plus half the room count. The
+/// offset is Exarust's reading of the simulation grid's origin (centred on
+/// the level, as the navigation grid is), a guess.
+fn body_room(metres: f32, n: usize) -> i32 {
+    let cm = super::centimetres_of(f64::from(metres)) as f32;
+    (cm * ROOM_INVERSE).floor() as i32 + (n / (2 * super::CELLS_PER_ROOM)) as i32
+}
+
+/// The rooms a grown rectangle's side spans: from `floor(lo · 0.05)` up to,
+/// not including, `ceil(hi · 0.05)` (the cell size over 600 cm, single
+/// precision), so a side ending on a room's first cell leaves that room out.
+fn room_span(lo: i32, hi: i32) -> (i32, i32) {
+    let per = super::CELL_CM as f32 * ROOM_INVERSE;
+    (
+        (lo as f32 * per).floor() as i32,
+        (hi as f32 * per).ceil() as i32,
+    )
+}
+
+/// Grow each queued rectangle by three cells, raise floors from the bodies
+/// in the rooms it spans, and rerun the cost passes where a floor changed.
+/// The ring is drained into the pending list first. The queues are then
+/// empty, except in the frames of the scene-wide countdown, which returns
+/// early. Every pending rectangle is refreshed in the one call: the
+/// original has no per-frame budget.
+pub fn refresh_movers(grid: &mut NavGrid, movers: &mut Movers, bodies: &[MoverPoints]) {
     let (width, depth) = grid.size();
     if movers.countdown > 0 {
         movers.countdown -= 1;
@@ -242,10 +317,18 @@ pub fn refresh_movers(grid: &mut NavGrid, movers: &mut Movers, samples: &[Vec3])
     }
     let rects = std::mem::take(&mut movers.rects);
     for rect in rects {
-        let x0 = (rect.x0 - PAD).max(0);
-        let z0 = (rect.z0 - PAD).max(0);
-        let x1 = (rect.x1 + PAD).min(width as i32 - 1);
-        let z1 = (rect.z1 + PAD).min(depth as i32 - 1);
+        let grown = CellRect {
+            x0: rect.x0 - PAD,
+            z0: rect.z0 - PAD,
+            x1: rect.x1 + PAD,
+            z1: rect.z1 + PAD,
+        };
+        let (room_x0, room_x1) = room_span(grown.x0, grown.x1);
+        let (room_z0, room_z1) = room_span(grown.z0, grown.z1);
+        let x0 = grown.x0.max(0);
+        let z0 = grown.z0.max(0);
+        let x1 = grown.x1.min(width as i32 - 1);
+        let z1 = grown.z1.min(depth as i32 - 1);
         if x0 > x1 || z0 > z1 {
             continue;
         }
@@ -263,16 +346,25 @@ pub fn refresh_movers(grid: &mut NavGrid, movers: &mut Movers, samples: &[Vec3])
                 upper[i] = grid.built_floor(x as usize, z as usize, Layer::Upper);
             }
         }
-        for sample in samples {
-            let sx = axis(sample.x, width).round_ties_even() as i32;
-            let sz = axis(sample.z, depth).round_ties_even() as i32;
-            let v = sample_voxel(sample.y, grid.base());
-            if !(1..255).contains(&v) || sx < x0 || sz < z0 || sx > x1 || sz > z1 {
+        for body in bodies {
+            let position = Vec3::from(body.at.translation);
+            let room_x = body_room(position.x, width);
+            let room_z = body_room(position.z, depth);
+            if room_x < room_x0 || room_x >= room_x1 || room_z < room_z0 || room_z >= room_z1 {
                 continue;
             }
-            let i = at(sx, sz);
-            let underside = grid.cell(sx as usize, sz as usize, Layer::Lower).underside;
-            raise_static(&mut lower[i], &mut upper[i], underside, v as u8);
+            for &point in body.points {
+                let sample = body.at.transform_point3(point);
+                let sx = axis(sample.x, width).round_ties_even() as i32;
+                let sz = axis(sample.z, depth).round_ties_even() as i32;
+                let v = sample_voxel(sample.y, grid.base());
+                if !(1..255).contains(&v) || sx < x0 || sz < z0 || sx > x1 || sz > z1 {
+                    continue;
+                }
+                let i = at(sx, sz);
+                let underside = grid.cell(sx as usize, sz as usize, Layer::Lower).underside;
+                raise_static(&mut lower[i], &mut upper[i], underside, v as u8);
+            }
         }
         let mut changed = false;
         for z in z0..=z1 {
@@ -414,6 +506,14 @@ mod tests {
     fn at(grid: &NavGrid, x: usize, z: usize, y: f32) -> Vec3 {
         let centre = grid.cell_centre(x, z);
         Vec3::new(centre.x, y, centre.y)
+    }
+
+    /// World points as one body at the origin.
+    fn world(points: &[Vec3]) -> [MoverPoints<'_>; 1] {
+        [MoverPoints {
+            at: Affine3A::IDENTITY,
+            points,
+        }]
     }
 
     fn one(x: i32) -> CellRect {
@@ -609,7 +709,7 @@ mod tests {
             at(&grid, 11, 12, 0.0),
             at(&grid, 16, 12, 2.0),
         ];
-        refresh_movers(&mut grid, &mut movers, &samples);
+        refresh_movers(&mut grid, &mut movers, &world(&samples));
         assert!(queued_moves(&movers).is_empty());
         let raised = grid.cell(12, 12, Layer::Lower);
         assert_eq!(raised.floor, 20);
@@ -706,7 +806,7 @@ mod tests {
         assert_eq!(ring_contents(&movers).len(), 1);
         assert!(queued_moves(&movers).is_empty());
         let samples = [at(&grid, 12, 12, 2.0)];
-        refresh_movers(&mut grid, &mut movers, &samples);
+        refresh_movers(&mut grid, &mut movers, &world(&samples));
         assert!(ring_contents(&movers).is_empty());
         assert!(queued_moves(&movers).is_empty());
         assert_eq!(grid.cell(12, 12, Layer::Lower).floor, 20);
@@ -778,13 +878,111 @@ mod tests {
         };
         queue_moved(&mut movers, rect);
         let sample = at(&grid, 12, 12, 2.0);
-        refresh_movers(&mut grid, &mut movers, &[sample]);
+        refresh_movers(&mut grid, &mut movers, &world(&[sample]));
         assert_eq!(grid.cell(12, 12, Layer::Lower).floor, 20);
         assert_eq!(grid.built_floor(12, 12, Layer::Lower), 10);
         queue_moved(&mut movers, rect);
         refresh_movers(&mut grid, &mut movers, &[]);
         assert_eq!(grid.cell(12, 12, Layer::Lower).floor, 10);
         assert_eq!(grid.cell(12, 12, Layer::Lower).roughness, 0);
+    }
+
+    /// A node's box under its frame: unturned it gives the box's own
+    /// rectangle; a quarter turn about the vertical swaps its extents; the
+    /// centre goes through the frame.
+    #[test]
+    fn a_box_rectangle_follows_its_frame() {
+        let grid = NavGrid::empty(80, 80, 0.0);
+        let half = Vec3::new(0.6, 1.0, 0.15);
+        let flat = rect_of_box(&grid, Affine3A::IDENTITY, Vec3::ZERO, half);
+        assert_eq!(flat, rect_around(&grid, Vec3::ZERO, half));
+        assert_eq!((flat.x0, flat.x1, flat.z0, flat.z1), (36, 44, 37, 43));
+        let turned = Affine3A::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        let quarter = rect_of_box(&grid, turned, Vec3::ZERO, half);
+        assert_eq!(
+            (quarter.x0, quarter.x1, quarter.z0, quarter.z1),
+            (37, 43, 36, 44)
+        );
+        let moved = Affine3A::from_translation(Vec3::new(3.0, 0.0, 0.0));
+        let off = rect_of_box(&grid, moved, Vec3::new(0.3, 0.0, 0.0), half);
+        assert_eq!((off.x0, off.x1), (46, 56));
+    }
+
+    /// The refresh samples the bodies bucketed in the rooms the grown
+    /// rectangle spans, by their node's position: a body two rooms away
+    /// whose points reach into the rectangle raises nothing.
+    #[test]
+    fn a_refresh_samples_the_bodies_in_its_rooms() {
+        let mut grid = NavGrid::empty(80, 80, 0.0);
+        for z in 0..80 {
+            for x in 0..80 {
+                let cell = NavCell {
+                    floor: 10,
+                    ..NavCell::default()
+                };
+                grid.set_cell(x, z, Layer::Lower, cell);
+            }
+        }
+        // Cell 41 grown by three spans cells 38–44: rooms 1 and 2.
+        assert_eq!(room_span(38, 44), (1, 3));
+        assert_eq!(room_span(20, 40), (1, 2));
+        assert_eq!(body_room(0.0, 80), 2);
+        assert_eq!(body_room(7.0, 80), 3);
+        assert_eq!(body_room(-0.01, 80), 1);
+        let point = at(&grid, 41, 41, 2.0);
+        let rect = CellRect {
+            x0: 41,
+            z0: 41,
+            x1: 41,
+            z1: 41,
+        };
+        let far = Affine3A::from_translation(Vec3::new(7.0, 0.0, 0.0));
+        let far_point = far.inverse().transform_point3(point);
+        let mut movers = Movers::default();
+        queue_moved(&mut movers, rect);
+        let away = [MoverPoints {
+            at: far,
+            points: &[far_point],
+        }];
+        refresh_movers(&mut grid, &mut movers, &away);
+        assert_eq!(grid.cell(41, 41, Layer::Lower).floor, 10);
+        queue_moved(&mut movers, rect);
+        refresh_movers(&mut grid, &mut movers, &world(&[point]));
+        assert_eq!(grid.cell(41, 41, Layer::Lower).floor, 20);
+        assert!(movers_idle(&movers));
+    }
+
+    /// A door leaf that swings away after the build: the rectangle of its
+    /// closed pose, queued and refreshed with the leaf where it now stands,
+    /// puts the doorway back to its built floor and raises the cells the
+    /// leaf has moved over.
+    #[test]
+    fn a_moved_leaf_frees_its_doorway_once_refreshed() {
+        let mut grid = yard();
+        let leaf: Vec<Vec3> = (0..15)
+            .map(|k| Vec3::new(0.0, 1.05 + 0.1 * k as f32, 0.0))
+            .collect();
+        let door = at(&grid, 14, 14, 0.0);
+        let closed = Affine3A::from_translation(door);
+        raise_from_movers(&mut grid, leaf.iter().map(|&p| closed.transform_point3(p)));
+        assert_eq!(grid.cell(14, 14, Layer::Lower).floor, 25);
+        let mut movers = Movers::default();
+        assert!(movers_idle(&movers));
+        let rect = rect_of_box(&grid, closed, Vec3::ZERO, Vec3::splat(0.05));
+        ring_moved(&mut movers, &grid, rect);
+        assert!(!movers_idle(&movers));
+        let open = Affine3A::from_translation(door + Vec3::new(0.6, 0.0, 0.0));
+        refresh_movers(
+            &mut grid,
+            &mut movers,
+            &[MoverPoints {
+                at: open,
+                points: &leaf,
+            }],
+        );
+        assert_eq!(grid.cell(14, 14, Layer::Lower).floor, 10);
+        assert_eq!(grid.cell(16, 14, Layer::Lower).floor, 25);
+        assert!(movers_idle(&movers));
     }
 
     /// The sample's voxel is `y·0.1 + ½` rounded ties to even: 2.0 m is the

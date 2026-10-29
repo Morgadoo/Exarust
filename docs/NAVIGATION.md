@@ -34,7 +34,11 @@ sample; where a working floor differs from the grid's, the floors are
 written and the cost passes run again, so a mover that has gone leaves its
 floor as built. A scene-wide countdown holds the merge and the refresh (the
 ring still fills) for its frames, then hands the whole grid less its
-twenty-cell rim in as one rectangle. With no grid there
+twenty-cell rim in as one rectangle. The refresh runs each fixed tick,
+every queued rectangle at once, from the bodies in the 6 m rooms a
+rectangle spans; letting go of an item lifted onto the cursor queues the
+floor it was lifted from, and nothing that physics moves queues anything
+([The refresh in play](#the-refresh-in-play)). With no grid there
 is no path.
 
 Evidence: reverse engineering of `Exanima.exe` 0.9.5 (the grid build, its
@@ -158,8 +162,56 @@ is less than fifteen above it. Only the current floors change: the floors
 as built, which the refresh starts from, stay. So a sack or a barrel turns
 its cells into a step, a table gives an upper floor over the one under it,
 and a door leaf, whose points stand a voxel apart, walks its doorway's
-floor up to its top: **a closed door blocks the grid** until it moves and
-the refresh puts the floors back.
+floor up to its top: **a closed door blocks the grid**. Opening it does
+not unblock it: only a refresh whose rectangle covers the doorway puts the
+floors back, and the original queues none for a door
+([The refresh in play](#the-refresh-in-play)).
+
+## The refresh in play
+
+What queues a rectangle, in the original, is short:
+
+- **A node registered** in a simulation sector (at load, or a body spawned
+  later) whose third flag word has `0x100`: the node's box under its world
+  matrix is merged into the pending list. Exarust does not track that
+  flag; what is registered at load the build has covered.
+- **An item let go** from the cursor (the lift's release, in reach or
+  cancelled): the held node's box under the frame **the lift saved**, so
+  the floor the item stood on, goes into the ring. Where the item comes to
+  rest is refreshed only when a rectangle covers it. An item let go into
+  a window with no saved frame is merged at its frame once its deferred
+  placement has run (Exarust's windows take no world item).
+
+Nothing else reaches the ring or the merge: a door swung open, a crate
+knocked aside, a body that moves or falls asleep queue nothing, through
+the sector's pathfinder, the scene's or the global one. A node's box
+gives its rectangle on each ground axis as
+`W/2 + round((c ∓ e)·(1/30) ∓ 2.5)`, the centre `c` the box centre
+through the matrix and the extent `e = (|X|·hx + |Y|·hy) + |Z|·hz` of
+that axis's row, in centimetres, the low side at least 3 and the high side
+at most `W − 4`.
+
+The refresh runs once per pass of the physics thread: the pass installs
+the scene's pathfinder as the global one, steps every simulation and then
+calls the refresh, so it follows the 83 Hz step. It drains the ring and
+refreshes every pending rectangle in the one call: there is no budget per
+frame. Its samples are the bodies the simulation buckets in its 6 m
+rooms, in the rooms each grown rectangle spans (from `floor(x0 · 0.05)` up
+to, not including, `ceil(x1 · 0.05)`, so a side ending on a room's first
+cell leaves that room out), each body's node's points when the node is a
+mesh with points and no character mark, through the body's world matrix.
+
+Exarust runs the refresh in `FixedPostUpdate`, after the bodies step,
+from the moving meshes ([`MovingMesh`](#moving-props)), each bucketed by
+its node's position: `floor(cm/600)` plus half the room count (the
+simulation grid read as centred on the level, like the navigation grid;
+a guess). With nothing queued it returns before gathering anything. The
+item cursor's let-go writes the held node's box at the lift's saved frame
+(`nav::NavMoved`), which the refresh rings on the next tick.
+`--nav-refresh-moved` is Exarust's debug option: a moving mesh whose node
+has held a new frame for 32 ticks queues where the grid last saw it and
+where it rests (merged, not rung), so a door opened by the hand frees its
+doorway; the original does not.
 
 ## Cost
 
@@ -341,10 +393,11 @@ Not reproduced, with what it changes:
   centre-floor variants flagged `0x10000` or `0x8`) generated surface
   points; Exarust takes them only into the floor's heightfield, as its GI
   does.
-- The original's refresh puts a moved body's cells back when it moves
-  (a door opened, a sack kicked away); Exarust builds the grid once per
-  level and does not queue its moving bodies, so an opened door's doorway
-  stays raised until the level loads again.
+- The original queues a node registered with its third flag word's
+  `0x100` (at load or on a spawn); Exarust does not track the flag.
+- A body outside the simulation's room grid is bucketed by the original
+  in its first inner room; Exarust buckets it by its position, and the
+  room offset is read as half the room count, unconfirmed.
 - Each cell's floor points come from all tile-grid floors over its columns
   rather than from its own merged mesh; they differ only where two cells'
   floors overlap.

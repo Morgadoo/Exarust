@@ -44,16 +44,17 @@ pub use crate::terrain::ground::GroundTile;
 pub use finder::{AbstractPathFinder, FALLBACK_SIZE, InstalledPathfinder};
 pub use footprint::{NavFootprints, remove_footprint, stamp_footprint};
 pub use mover::{
-    CellRect, FootprintAdd, FootprintList, FootprintRect, Movers, plan_around, plan_footprint,
-    queue_moved, queued_moves, raise_from_movers, rect_around, refresh_movers, ring_contents,
-    ring_moved, start_full_refresh,
+    CellRect, FootprintAdd, FootprintList, FootprintRect, MoverPoints, Movers, movers_idle,
+    plan_around, plan_footprint, queue_moved, queued_moves, raise_from_movers, rect_around,
+    rect_of_box, refresh_movers, ring_contents, ring_moved, start_full_refresh,
 };
 pub use path::{ACCEPT_GOAL_CELL, Look, Path, disturbance, find_path, find_path_with, look_ahead};
 pub use query::{LineHit, line_walk, obstacle, straight_walk};
 pub use source::NavSource;
 pub use stamp::{NavPatch, stamp_line, unstamp_line};
 pub use view::{
-    MovingMesh, NavOverlay, NavPlugin, NavState, PendingNav, unload_level as unload_nav,
+    MovingMesh, NavMoved, NavMovers, NavOverlay, NavPlugin, NavRefreshMoved, NavState, PendingNav,
+    unload_level as unload_nav,
 };
 pub use walkable::{cost_at, layer_at, nearest_walkable};
 

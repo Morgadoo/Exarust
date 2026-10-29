@@ -5,7 +5,21 @@
 //! looks, a square at its floor's height, green through yellow as its
 //! clearance rises to what a walker passes, red beyond; the upper layer in
 //! cyan through blue, magenta beyond.
+//!
+//! **The refresh.** Once per fixed tick, after the bodies have stepped (the
+//! original refreshes once per pass of its physics thread, after every
+//! simulation has stepped), the grid's queued rectangles are refreshed
+//! ([`super::refresh_movers`]) from the bodies under the level's moving
+//! meshes, all of them in that one call. A rectangle comes from
+//! [`NavMoved`]: the original queues one when an item the cursor lifted is
+//! let go (at the frame the lift took it from), and nothing else in play
+//! queues one, so a door swung open or a crate knocked aside keeps the
+//! floors the build gave until a refresh near it runs.
+//! `--nav-refresh-moved` ([`NavRefreshMoved`], Exarust's debug option, not
+//! the original's) also queues a moving mesh whose node has come to rest
+//! somewhere new, so a door opened by the hand frees its doorway.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use bevy::prelude::*;
@@ -24,11 +38,21 @@ impl Plugin for NavPlugin {
         app.init_resource::<NavState>()
             .init_resource::<InstalledPathfinder>()
             .init_resource::<NavOverlay>()
+            .init_resource::<NavRefreshMoved>()
+            .add_message::<NavMoved>()
             .add_systems(
                 PostUpdate,
                 (collect_source, finish_build)
                     .chain()
                     .after(TransformSystems::Propagate),
+            )
+            .add_systems(
+                FixedPostUpdate,
+                (
+                    watch_moving_meshes.run_if(|o: Res<NavRefreshMoved>| o.0),
+                    refresh_grid,
+                )
+                    .chain(),
             )
             .add_systems(
                 Update,
@@ -76,6 +100,36 @@ pub struct MovingMesh {
     pub stamped: bool,
 }
 
+/// A node whose box should be refreshed on the grid: its world frame and
+/// its box (centre and half extents in the node's space, metres). The
+/// original's let-go of a lifted item queues the item's node at the frame
+/// the lift saved, in the refresh's ring ([`super::ring_moved`]).
+#[derive(Message, Debug, Clone, Copy)]
+pub struct NavMoved {
+    pub at: bevy::math::Affine3A,
+    pub centre: Vec3,
+    pub half: Vec3,
+}
+
+/// The rectangles waiting for the grid's refresh, kept with the level's
+/// grid (a new grid starts with none).
+#[derive(Resource, Debug, Default)]
+pub struct NavMovers(pub super::Movers);
+
+/// Exarust's debug option `--nav-refresh-moved`: a moving mesh whose node
+/// comes to rest away from where the grid last saw it queues the
+/// rectangles of both places, so doors and props moved in play update the
+/// grid. The original queues no such body.
+#[derive(Resource, Debug, Clone, Copy, Default)]
+pub struct NavRefreshMoved(pub bool);
+
+/// Fixed ticks a moved node must hold still before
+/// [`NavRefreshMoved`] queues it (about 0.4 s at 83 Hz).
+const REST_TICKS: u32 = 32;
+/// A node counts as moved when a point of its frame shifts this far,
+/// metres.
+const MOVED: f32 = 0.01;
+
 /// A terrain tile's ground, on its entity.
 #[derive(Component, Clone)]
 pub struct Ground(pub Arc<GroundTile>);
@@ -108,6 +162,7 @@ pub fn unload_level(
 ) {
     commands.remove_resource::<PendingNav>();
     commands.remove_resource::<NavGrid>();
+    commands.remove_resource::<NavMovers>();
     commands.remove_resource::<NavBuild>();
     *state = NavState::None;
     *installed = InstalledPathfinder::install_fallback();
@@ -129,6 +184,7 @@ fn collect_source(
     let pending = *pending;
     commands.remove_resource::<PendingNav>();
     commands.remove_resource::<NavGrid>();
+    commands.remove_resource::<NavMovers>();
     // A build for the previous level is dropped, which cancels it.
     commands.remove_resource::<NavBuild>();
     let mut source = NavSource {
@@ -203,8 +259,113 @@ fn finish_build(
         s.columns_by_spans, s.floors, s.passable, s.sky
     );
     commands.insert_resource(grid);
+    commands.insert_resource(NavMovers::default());
     *state = NavState::Built;
     *installed = InstalledPathfinder::install_level();
+}
+
+/// Queues the moved nodes and refreshes the grid's rectangles from the
+/// bodies under the level's moving meshes. With nothing queued it touches
+/// nothing.
+fn refresh_grid(
+    grid: Option<ResMut<NavGrid>>,
+    movers: Option<ResMut<NavMovers>>,
+    mut moved: MessageReader<NavMoved>,
+    bodies: Query<(&GiPoints, &GlobalTransform), With<MovingMesh>>,
+) {
+    let (Some(mut grid), Some(mut movers)) = (grid, movers) else {
+        moved.clear();
+        return;
+    };
+    for m in moved.read() {
+        let rect = super::rect_of_box(&grid, m.at, m.centre, m.half);
+        super::ring_moved(&mut movers.0, &grid, rect);
+    }
+    if super::movers_idle(&movers.0) {
+        return;
+    }
+    let samples: Vec<super::MoverPoints> = bodies
+        .iter()
+        .map(|(points, at)| super::MoverPoints {
+            at: at.affine(),
+            points: points.0.as_slice(),
+        })
+        .collect();
+    super::refresh_movers(&mut grid, &mut movers.0, &samples);
+}
+
+/// Where [`watch_moving_meshes`] last saw a node: the frame the grid was
+/// last refreshed for, the frame of the last tick and how many ticks it has
+/// held it.
+struct Watched {
+    refreshed: bevy::math::Affine3A,
+    last: bevy::math::Affine3A,
+    still: u32,
+}
+
+/// Whether two frames of a node differ by more than [`MOVED`] at its
+/// origin or one metre along an axis.
+fn frames_differ(a: bevy::math::Affine3A, b: bevy::math::Affine3A) -> bool {
+    let probe = [Vec3::ZERO, Vec3::X, Vec3::Y, Vec3::Z];
+    probe
+        .iter()
+        .any(|&p| a.transform_point3(p).distance(b.transform_point3(p)) > MOVED)
+}
+
+/// The rectangle a node's points cover under a frame (their box across
+/// the ground), or none without points.
+fn points_rect(
+    grid: &NavGrid,
+    points: &[Vec3],
+    at: bevy::math::Affine3A,
+) -> Option<super::CellRect> {
+    let mut world = points.iter().map(|&p| at.transform_point3(p));
+    let first = world.next()?;
+    let (lo, hi) = world.fold((first, first), |(lo, hi), p| (lo.min(p), hi.max(p)));
+    Some(super::rect_around(grid, (lo + hi) * 0.5, (hi - lo) * 0.5))
+}
+
+/// `--nav-refresh-moved`: a moving mesh whose node has held a new frame
+/// for [`REST_TICKS`] queues the rectangles of where the grid last saw it
+/// and of where it rests, in the pending list (not the ring, which a
+/// crowd of movers would wrap).
+fn watch_moving_meshes(
+    grid: Option<Res<NavGrid>>,
+    movers: Option<ResMut<NavMovers>>,
+    bodies: Query<(Entity, &GiPoints, &GlobalTransform), With<MovingMesh>>,
+    mut seen: Local<HashMap<Entity, Watched>>,
+) {
+    let (Some(grid), Some(mut movers)) = (grid, movers) else {
+        seen.clear();
+        return;
+    };
+    if grid.is_added() {
+        seen.clear();
+    }
+    for (e, points, at) in &bodies {
+        let now = at.affine();
+        let watched = seen.entry(e).or_insert(Watched {
+            refreshed: now,
+            last: now,
+            still: 0,
+        });
+        if frames_differ(now, watched.last) {
+            watched.last = now;
+            watched.still = 0;
+            continue;
+        }
+        watched.still = watched.still.saturating_add(1);
+        if watched.still != REST_TICKS || !frames_differ(watched.last, watched.refreshed) {
+            continue;
+        }
+        for frame in [watched.refreshed, watched.last] {
+            if let Some(rect) = points_rect(&grid, &points.0, frame) {
+                super::queue_moved(&mut movers.0, rect);
+            }
+        }
+        watched.refreshed = watched.last;
+    }
+    seen.retain(|e, _| bodies.contains(*e));
 }
 
 fn overlay_key(keys: Option<Res<ButtonInput<KeyCode>>>, mut overlay: ResMut<NavOverlay>) {
@@ -292,5 +453,104 @@ fn draw_overlay(
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bevy::ecs::message::Messages;
+    use bevy::ecs::system::RunSystemOnce;
+    use bevy::math::Affine3A;
+
+    use super::*;
+    use crate::nav::NavCell;
+
+    /// A 24 × 24 grid of floor at voxel 10, with a sack's points (a
+    /// column 1.05–2.45 m high) standing on cell (14, 14) raising it.
+    fn yard(world: &mut World) -> (Vec3, Arc<Vec<Vec3>>) {
+        let mut grid = NavGrid::empty(24, 24, 0.0);
+        for z in 0..24 {
+            for x in 0..24 {
+                let cell = NavCell {
+                    floor: 10,
+                    ..NavCell::default()
+                };
+                grid.set_cell(x, z, Layer::Lower, cell);
+            }
+        }
+        let points: Arc<Vec<Vec3>> = Arc::new(
+            (0..15)
+                .map(|k| Vec3::new(0.0, 1.05 + 0.1 * k as f32, 0.0))
+                .collect(),
+        );
+        let c = grid.cell_centre(14, 14);
+        let at = Vec3::new(c.x, 0.0, c.y);
+        super::super::raise_from_movers(&mut grid, points.iter().map(|&p| p + at));
+        assert_eq!(grid.cell(14, 14, Layer::Lower).floor, 25);
+        world.insert_resource(grid);
+        world.insert_resource(NavMovers::default());
+        world.init_resource::<Messages<NavMoved>>();
+        (at, points)
+    }
+
+    /// An item let go queues its box at the frame its lift took it from:
+    /// the refresh puts that floor back and raises it where the item rests.
+    #[test]
+    fn a_let_go_refreshes_the_floor_the_item_left() {
+        let mut world = World::new();
+        let (at, points) = yard(&mut world);
+        let rests = at + Vec3::new(0.6, 0.0, 0.0);
+        world.spawn((
+            GiPoints(points),
+            GlobalTransform::from_translation(rests),
+            MovingMesh::default(),
+        ));
+        world.run_system_once(refresh_grid).unwrap();
+        assert_eq!(
+            world.resource::<NavGrid>().cell(14, 14, Layer::Lower).floor,
+            25,
+            "nothing queued, nothing refreshed"
+        );
+        world.write_message(NavMoved {
+            at: Affine3A::from_translation(at),
+            centre: Vec3::new(0.0, 1.75, 0.0),
+            half: Vec3::new(0.05, 0.7, 0.05),
+        });
+        world.run_system_once(refresh_grid).unwrap();
+        let grid = world.resource::<NavGrid>();
+        assert_eq!(grid.cell(14, 14, Layer::Lower).floor, 10);
+        assert_eq!(grid.cell(16, 14, Layer::Lower).floor, 25);
+        assert!(super::super::movers_idle(&world.resource::<NavMovers>().0));
+    }
+
+    /// `--nav-refresh-moved`: a moving mesh that has held a new frame for
+    /// [`REST_TICKS`] queues where it was and where it rests; one still
+    /// moving queues nothing.
+    #[test]
+    fn a_mesh_come_to_rest_is_queued_with_the_debug_option() {
+        let mut world = World::new();
+        let (at, points) = yard(&mut world);
+        let leaf = world
+            .spawn((
+                GiPoints(points),
+                GlobalTransform::from_translation(at),
+                MovingMesh::default(),
+            ))
+            .id();
+        // One system, so its record of the nodes lasts between ticks.
+        let watch = world.register_system(watch_moving_meshes);
+        world.run_system(watch).unwrap();
+        *world.get_mut::<GlobalTransform>(leaf).unwrap() =
+            GlobalTransform::from_translation(at + Vec3::new(0.6, 0.0, 0.0));
+        for _ in 0..REST_TICKS {
+            world.run_system(watch).unwrap();
+            assert!(super::super::movers_idle(&world.resource::<NavMovers>().0));
+        }
+        world.run_system(watch).unwrap();
+        assert!(!super::super::movers_idle(&world.resource::<NavMovers>().0));
+        world.run_system_once(refresh_grid).unwrap();
+        let grid = world.resource::<NavGrid>();
+        assert_eq!(grid.cell(14, 14, Layer::Lower).floor, 10);
+        assert_eq!(grid.cell(16, 14, Layer::Lower).floor, 25);
     }
 }

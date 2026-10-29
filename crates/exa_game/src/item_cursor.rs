@@ -746,6 +746,10 @@ pub struct ItemCursor {
     /// each frame of a lift from the nodes the level loader registered
     /// (`exa_world::markers`).
     pub markers: Vec<PlacementMarker>,
+    /// The items let go since the last frame, queued for the navigation
+    /// grid's refresh at the frame their lift took them from (the original
+    /// rings the held node's box there when it lets the item go).
+    pub let_go: Vec<exa_world::nav::NavMoved>,
 }
 
 impl ItemCursor {

@@ -90,6 +90,7 @@ shift+S: cshd; msm
 | `--arena-weapons <ids>` | the weapon object id each opponent in spawn order holds, comma separated (0 or a missing entry leaves the default sword); a career launch passes the drawn event variants here |
 | `--debug-wound bone,radius_cm[,dx,dy,dz]` | a test wound on the player's or the character view's body ([Wounds](#wounds)); repeatable |
 | `--debug-nav` | start with the navigation grid drawn ([Navigation grid](#navigation-grid)) |
+| `--nav-refresh-moved` | a door or prop that comes to rest somewhere new refreshes the navigation grid under where it was and where it rests, so a door opened by the hand frees its doorway for planning; the original refreshes only where a lifted item is let go ([Navigation grid](#navigation-grid)) |
 | `--debug-path x,y,z` | play mode: plan a path from the player's feet to this point (metres) with the planner, again whenever the player has moved a metre; log each plan and draw it ([Navigation grid](#navigation-grid)) |
 | `--msm` | in the model view, every mesh smoothed once as the original's `msm` debug command smooths a scene (Loop subdivision, [formats/RFC.md](formats/RFC.md), Editable meshes), e.g. `exarust model CharExt "hair hula01" --msm` for the hair the creation scene smooths; warns of meshes with too many faces |
 | `--bevy-sun-cascades` | the sun keeps Bevy's two cascades in terrain levels too, instead of the original's one fitted map, to compare the two ([RENDERING.md](RENDERING.md), Sun shadow fit) |
@@ -556,6 +557,16 @@ plans), again whenever the player has moved more than a metre, logs each
 plan (`debug path from …`: points, cost, reached or ends short, then each
 point) and draws it: yellow when it reaches the goal, orange when it ends
 short, a ring at each point, a cyan cross at the goal. Nothing walks it.
+
+The grid's refresh runs each fixed tick that has a rectangle queued
+([NAVIGATION.md](NAVIGATION.md), The refresh in play). Lift an item that
+raised the floor it stood on (a bucket or sack on a corridor floor) onto
+the cursor and let it go elsewhere: with F6 on, the cells it was lifted
+from turn back to flat green the next tick. A door swung open keeps its
+doorway red, as in the original, unless the run has
+`--nav-refresh-moved`: then a door or prop that has held a new place for
+32 ticks (0.4 s) refreshes both places, so the opened doorway turns green
+and NPCs plan through it.
 
 `exarust --debug-nav --no-gi --no-supersample --size 960x540 play arena`
 shows the arena's floor cut by its walls. Without a window, `exa-tool nav

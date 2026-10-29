@@ -643,7 +643,10 @@ frame whole and gives 0x10, or 0x30 when its link byte reads `L`; a free
 placement gives 1. A release in reach puts the item down; a cancelled one
 puts it at its last fitting placement, leaves it on its marker (frozen for
 `L`, thawed by the next press) or puts it back at the frames the lift saved
-(`item_cursor::release`, `hand::end_lift`); a fall ends a lift the same way
+(`item_cursor::release`, `hand::end_lift`); every let-go queues the held
+node's box at the frame the lift saved for the navigation grid's refresh
+(`exa_world::nav::NavMoved`, `hand::send_let_go`), so the floor the item
+stood on is refreshed; a fall ends a lift the same way
 (`item_cursor::{hover_word, snap_to_marker}`), as are the
 GUI drop's branch (an entry, from a GUI, with a body), its spawned record
 (both drag events alike), object spawner and next-frame queue, and the
