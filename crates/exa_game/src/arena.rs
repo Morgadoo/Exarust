@@ -440,9 +440,18 @@ pub fn lookup_name(id: u32) -> Option<&'static str> {
     template(id).map(|template| template.name)
 }
 
+/// One minus the fourth power of a rank roll's unit, as the original
+/// computes it: the unit squared, then that square times itself, not a
+/// left-to-right product of four factors (the two differ in the last bits).
+pub(crate) fn rank_curve(unit: f64) -> f64 {
+    let square = unit * unit;
+    1.0 - square * square
+}
+
 /// The rolled rank of a template at a day slot. An unranked template stays
 /// −1; a flag-2 template takes the slot; otherwise the rank is
-/// `trunc(slot·(1 − r⁴))`, biased towards the slot.
+/// `round(slot·(1 − r⁴))`, biased towards the slot, with the r⁴ computed by
+/// [`rank_curve`].
 pub fn roll_rank(template: &MatchTemplate, slot: u32, r: f64) -> i32 {
     if template.preset_rank < 0 {
         return -1;
@@ -450,7 +459,7 @@ pub fn roll_rank(template: &MatchTemplate, slot: u32, r: f64) -> i32 {
     if template.flags & 2 != 0 {
         return slot as i32;
     }
-    (slot as f64 * (1.0 - r * r * r * r)).round_ties_even() as i32
+    (slot as f64 * rank_curve(r)).round_ties_even() as i32
 }
 
 /// The rank window of a rolled match: Challenger (id 8) opens 0–5, every
@@ -811,6 +820,16 @@ mod generation_tests {
         let brawl = &RANKED[5];
         assert_eq!(roll_rank(brawl, 4, 0.9), -1);
         assert_eq!(rank_window(brawl, 4, 0.9), (4, -1));
+    }
+
+    #[test]
+    fn the_rank_curve_squares_the_square() {
+        // The original multiplies the unit once (the square) and squares
+        // that; a left-to-right fourth product gives a different last bit.
+        let unit = 0.995_644_835_510_462_8;
+        let curve = rank_curve(unit);
+        assert_eq!(curve.to_bits(), 0x3f91_b8f9_68a7_0d80);
+        assert_ne!(curve.to_bits(), (1.0 - unit * unit * unit * unit).to_bits());
     }
 
     #[test]
@@ -1299,7 +1318,7 @@ pub fn roll_instance(
     } else if template.flags & 2 != 0 {
         slot as i32
     } else {
-        (slot as f64 * (1.0 - r * r * r * r)).round_ties_even() as i32
+        (slot as f64 * rank_curve(r)).round_ties_even() as i32
     };
     if template.id == 8 {
         instance.min_rank = 0;
@@ -1875,7 +1894,7 @@ mod mt_tests {
         let mut rng = Rng(1);
         let instance = roll_instance_mt(&RANKED[1], 3, &mut mt, &mut rng);
         let r = check.unit();
-        let expected = (3.0 * (1.0 - r * r * r * r)).round_ties_even() as i32;
+        let expected = (3.0 * rank_curve(r)).round_ties_even() as i32;
         assert_eq!(instance.rank, expected);
         assert_eq!(mt.next_u32(), check.next_u32());
     }

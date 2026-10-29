@@ -1286,8 +1286,7 @@ pub fn place_daily_match(
     if placed.tier < 0 {
         placed.tier = -1;
     } else if placed.flags & 2 == 0 {
-        let curved = 1.0 - unit * unit * unit * unit;
-        let scaled = f64::from(slot) * curved;
+        let scaled = f64::from(slot) * crate::arena::rank_curve(unit);
         placed.tier = scaled.round_ties_even() as i32;
     } else {
         placed.tier = placed.slot;
