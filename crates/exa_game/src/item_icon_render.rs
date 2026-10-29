@@ -72,6 +72,8 @@ pub struct IconGpuJob {
     pub root: Entity,
     pub readback: Option<Entity>,
     pub frames: u32,
+    /// How many readbacks came back empty and were asked again.
+    pub retries: u32,
     pub icon: u32,
     pub buffer: u32,
     pub screen_pass: bool,
@@ -93,6 +95,14 @@ pub struct IconGpuJob {
 pub struct IconGpuJobs {
     pub jobs: Vec<IconGpuJob>,
 }
+
+/// How many times an empty readback is asked again before the CPU paint
+/// stands in. An empty readback means the camera drew none of the scene:
+/// the first icon a session renders waits on its pipelines, which compile
+/// over several frames, and a stand-in taken then is a flat grey model
+/// with none of its textures. Each retry waits [`READBACK_DELAY`] frames
+/// more.
+pub const READBACK_RETRIES: u32 = 30;
 
 /// The frames a prepared icon waits for its materials' textures before
 /// it renders anyway (a shipped image that cannot be read keeps the 1 × 1
@@ -274,8 +284,10 @@ fn prepare_icon_scenes(
             index += 1;
             continue;
         };
-        let painted = match (model_info.appearance, model::painted_model_stem(&model)) {
+        let stem = model::painted_model_stem(&model);
+        let painted = match (model_info.appearance, stem) {
             (Some(appearance), Some(stem)) => {
+                let label = stem.clone();
                 match icon_paint(
                     &mut loader,
                     painting.as_deref_mut(),
@@ -283,7 +295,13 @@ fn prepare_icon_scenes(
                     appearance,
                     deadline,
                 ) {
-                    Some(handle) => Some(handle),
+                    Some(handle) => {
+                        debug!(
+                            "icon: {:#x} {} painted from {label}",
+                            icons.pending[index].id, model_info.model
+                        );
+                        Some(handle)
+                    }
                     // The paint is under way: the icon waits, and keeps its
                     // attempts.
                     None => {
@@ -292,7 +310,15 @@ fn prepare_icon_scenes(
                     }
                 }
             }
-            _ => None,
+            (appearance, stem) => {
+                debug!(
+                    "icon: {:#x} {} plain (appearance {}, run-time stem {stem:?})",
+                    icons.pending[index].id,
+                    model_info.model,
+                    appearance.is_some()
+                );
+                None
+            }
         };
         let variant = icons.pending[index].variant;
         let turned = framing(variant, false).turned;
@@ -551,6 +577,7 @@ fn spawn_gpu_icon(
         root,
         readback: None,
         frames: 0,
+        retries: 0,
         icon,
         buffer,
         screen_pass: plan.screen_pass,
@@ -601,6 +628,10 @@ fn expire_icon_jobs(
         .partition(|job| job.frames < ICON_JOB_TIMEOUT);
     jobs.jobs = keep;
     for job in expired {
+        debug!(
+            "icon: {:#x} key {:#x} readback never answered: CPU stand-in",
+            job.id, job.key
+        );
         let mut icon = job.scene.paint(&job.paint_camera, job.sun, job.icon);
         if job.halo {
             exa_items::item_gui::halo(
@@ -639,17 +670,35 @@ fn icon_readback_complete(
     else {
         return;
     };
-    let job = jobs.jobs.swap_remove(at);
-    let rendered = icon_from_readback(
+    let read = icon_from_readback(
         &trigger.event().data,
-        job.buffer,
-        job.icon,
-        job.screen_pass,
-        job.downsample,
+        jobs.jobs[at].buffer,
+        jobs.jobs[at].icon,
+        jobs.jobs[at].screen_pass,
+        jobs.jobs[at].downsample,
     )
-    .filter(IconPixels::any_alpha)
-    .unwrap_or_else(|| job.scene.paint(&job.paint_camera, job.sun, job.icon));
-    let mut icon = rendered;
+    .filter(IconPixels::any_alpha);
+    if read.is_none() && jobs.jobs[at].retries < READBACK_RETRIES {
+        // Nothing drawn yet (pipelines or bind groups still being made):
+        // ask again a few frames on.
+        let job = &mut jobs.jobs[at];
+        job.retries += 1;
+        job.frames = 0;
+        job.readback = None;
+        commands.entity(readback).try_despawn();
+        debug!(
+            "icon: {:#x} key {:#x} readback empty, retry {}",
+            job.id, job.key, job.retries
+        );
+        return;
+    }
+    let job = jobs.jobs.swap_remove(at);
+    let source = if read.is_some() {
+        "GPU"
+    } else {
+        "CPU stand-in (every readback empty)"
+    };
+    let mut icon = read.unwrap_or_else(|| job.scene.paint(&job.paint_camera, job.sun, job.icon));
     if job.halo {
         exa_items::item_gui::halo(
             &mut icon.pixels,
@@ -661,8 +710,8 @@ fn icon_readback_complete(
     let applied =
         icons.apply_rendered(job.id, job.key, icon, job.content_width, job.content_height);
     debug!(
-        "icon: {:#x} key {:#x} rendered on the GPU, applied {applied}",
-        job.id, job.key
+        "icon: {:#x} key {:#x} rendered by the {source} after {} retries, applied {applied}",
+        job.id, job.key, job.retries
     );
     for entity in [job.camera, job.light, job.root]
         .into_iter()
@@ -1075,6 +1124,212 @@ mod tests {
         const { assert!(TEXTURE_WAIT > 3) };
     }
 
+    /// An empty readback (the camera drew nothing yet: its pipelines are
+    /// still compiling) is asked again rather than replaced by the CPU's
+    /// flat stand-in; a drawn one fills the slot.
+    #[test]
+    fn an_empty_readback_is_asked_again() {
+        let mut app = App::new();
+        app.add_plugins(bevy::asset::AssetPlugin::default())
+            .init_asset::<Image>()
+            .init_resource::<PanelIcons>()
+            .init_resource::<IconGpuJobs>()
+            .add_observer(icon_readback_complete);
+        let (key, cell) = {
+            let mut icons = app.world_mut().resource_mut::<PanelIcons>();
+            let (handle, _) = icons.reserve(0x54, 0, None);
+            (
+                icons.cache.entries[handle - 1].variant,
+                icons.atlas.cell as u32,
+            )
+        };
+        let buffer = cell * 2;
+        let scene = IconScene::synthetic_quad();
+        let (view, _) = item_icon::scene_plan(0, false, 0, scene.bounds, cell as i32, true);
+        let world = app.world_mut();
+        let camera = world.spawn_empty().id();
+        let light = world.spawn_empty().id();
+        let root = world.spawn_empty().id();
+        let first = world.spawn_empty().id();
+        let image = world.resource_mut::<Assets<Image>>().add(Image::default());
+        world.resource_mut::<IconGpuJobs>().jobs.push(IconGpuJob {
+            id: 0x54,
+            key,
+            image,
+            camera,
+            light,
+            root,
+            readback: Some(first),
+            frames: READBACK_DELAY,
+            retries: 0,
+            icon: cell,
+            buffer,
+            screen_pass: true,
+            downsample: false,
+            halo: false,
+            halo_highlight: false,
+            content_width: 2.0,
+            content_height: 2.0,
+            scene,
+            paint_camera: view,
+            sun: sun_direction(framing(0, false)),
+        });
+        let side = buffer as usize;
+        let stride = (side * 4).next_multiple_of(256);
+        let empty = vec![0u8; stride * side];
+        world.trigger(ReadbackComplete {
+            entity: first,
+            data: empty,
+        });
+        world.flush();
+        {
+            let jobs = world.resource::<IconGpuJobs>();
+            assert_eq!(jobs.jobs.len(), 1);
+            assert_eq!(jobs.jobs[0].retries, 1);
+            assert_eq!(jobs.jobs[0].frames, 0);
+            assert!(jobs.jobs[0].readback.is_none());
+            assert!(world.resource::<PanelIcons>().cache.entries[0].cell < 0);
+        }
+        // The next readback has the model drawn: a textured brown.
+        let second = world.spawn_empty().id();
+        world.resource_mut::<IconGpuJobs>().jobs[0].readback = Some(second);
+        let mut drawn = vec![0u8; stride * side];
+        for y in 0..side {
+            for x in 0..side {
+                drawn[y * stride + x * 4..][..4].copy_from_slice(&[52, 50, 46, 255]);
+            }
+        }
+        world.trigger(ReadbackComplete {
+            entity: second,
+            data: drawn,
+        });
+        world.flush();
+        assert!(world.resource::<IconGpuJobs>().jobs.is_empty());
+        let icons = world.resource::<PanelIcons>();
+        assert!(icons.cache.entries[0].cell >= 1);
+    }
+
+    /// The chest of drawers' own icon: a level record (here with an
+    /// appearance block, the worst case) whose model binds only its own
+    /// materials keeps every loaded material handle in its icon scene
+    /// (skipped without an installation).
+    #[test]
+    fn a_shipped_furniture_icon_keeps_its_loaded_materials() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let Ok(data) = exa_assets::GameData::open(&dir) else {
+            return;
+        };
+        let model_name = "chestofdrw a";
+        if data
+            .pack(PackKind::Objects)
+            .and_then(|pack| pack.get(model_name))
+            .is_none()
+            && data
+                .pack(PackKind::Objlib)
+                .and_then(|pack| pack.get(model_name))
+                .is_none()
+        {
+            return;
+        }
+        let mut catalogue = ItemCatalogue::default();
+        let record = exa_formats::objdb::Item {
+            model: model_name.into(),
+            appearance: Some(exa_formats::objdb::Appearance {
+                quality: 160,
+                damage: 0,
+                dirt: 0,
+                layers: Default::default(),
+            }),
+            ..exa_formats::objdb::Item::parse(0x54, &[]).expect("an empty item")
+        };
+        catalogue.set_level_items(&[record]);
+        let id = exa_formats::objdb::LOCAL | 0x54;
+        assert!(catalogue.model(id).is_some());
+        // The catalogue is not empty for the pass: one game kind.
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, bevy::asset::AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<exa_render::material::ExaMaterial>()
+            .init_asset::<Image>()
+            .init_resource::<ModelCache>()
+            .init_resource::<PanelIcons>()
+            .init_resource::<IconPainting>()
+            .insert_resource(Game(std::sync::Arc::new(data)))
+            .add_systems(Update, prepare_icon_scenes);
+        let bytes = app
+            .world()
+            .resource::<Game>()
+            .0
+            .pack(PackKind::Resource)
+            .and_then(|pack| pack.get("objdb.rdb"))
+            .map(<[u8]>::to_vec);
+        if let Some(bytes) = bytes
+            && let Ok(db) = exa_formats::rdb::Database::parse(&bytes)
+        {
+            let mut full = ItemCatalogue::of_database(&db);
+            full.set_level_items(&[exa_formats::objdb::Item {
+                model: model_name.into(),
+                appearance: catalogue.model(id).and_then(|m| m.appearance),
+                ..exa_formats::objdb::Item::parse(0x54, &[]).expect("an empty item")
+            }]);
+            catalogue = full;
+        }
+        app.insert_resource(catalogue.clone());
+        let _ = app
+            .world_mut()
+            .resource_mut::<PanelIcons>()
+            .reserve(id, 0, Some(&catalogue));
+        app.update();
+        let scene = app.world().resource::<PanelIcons>().pending[0]
+            .scene
+            .clone()
+            .expect("the chest of drawers' scene is baked at once (nothing to paint)");
+        let world = app.world_mut();
+        let model = world.resource_scope(|world, game: Mut<Game>| {
+            world.resource_scope(|world, mut cache: Mut<ModelCache>| {
+                world.resource_scope(|world, mut meshes: Mut<Assets<Mesh>>| {
+                    world.resource_scope(
+                        |world, mut materials: Mut<Assets<exa_render::material::ExaMaterial>>| {
+                            let mut images = world.resource_mut::<Assets<Image>>();
+                            let loader = ModelLoader {
+                                game: &game.0,
+                                cache: &mut cache,
+                                meshes: &mut meshes,
+                                materials: &mut materials,
+                                images: &mut images,
+                                bc_supported: false,
+                            };
+                            loader
+                                .loaded_model(PackKind::Objects, model_name)
+                                .or_else(|| loader.loaded_model(PackKind::Objlib, model_name))
+                                .flatten()
+                        },
+                    )
+                })
+            })
+        });
+        let model = model.expect("the model is cached");
+        let loaded: Vec<_> = model
+            .nodes
+            .iter()
+            .filter(|node| !node.placeholder)
+            .flat_map(|node| node.parts.iter().map(|(_, material)| material.clone()))
+            .collect();
+        let used: Vec<_> = scene
+            .parts
+            .iter()
+            .map(|part| part.material.clone())
+            .collect();
+        assert!(!used.is_empty());
+        assert!(
+            used.iter().all(|material| loaded.contains(material)),
+            "the icon swapped a loaded material"
+        );
+        assert!(app.world().resource::<IconPainting>().tasks.is_empty());
+    }
+
     #[test]
     fn the_icon_plugin_caches_a_pending_icon() {
         let mut app = App::new();
@@ -1212,6 +1467,7 @@ mod tests {
             root,
             readback: None,
             frames: ICON_JOB_TIMEOUT,
+            retries: 0,
             icon: 160,
             buffer: 320,
             screen_pass: true,
