@@ -842,6 +842,7 @@ impl Plugin for GameScreensPlugin {
                 Update,
                 (
                     sync_screen_size,
+                    register_level_items,
                     open_requested_screens,
                     debug_open_container,
                     open_requested_containers,
@@ -999,6 +1000,27 @@ fn debug_open_container(
         id: placed.tagged_id,
         pointer,
     });
+}
+
+/// Hands the loaded level's own records to the item catalogue once both
+/// are there (and again after each level load), so a level-local item's
+/// icon renders and its bulk counts in the panels.
+fn register_level_items(
+    level: Option<Res<exa_world::LevelLocalItems>>,
+    catalogue: Option<ResMut<exa_items::catalogue::ItemCatalogue>>,
+    mut done: Local<bool>,
+) {
+    let (Some(level), Some(mut catalogue)) = (level, catalogue) else {
+        return;
+    };
+    if level.is_changed() {
+        *done = false;
+    }
+    if *done || catalogue.is_empty() {
+        return;
+    }
+    catalogue.set_level_items(&level.0);
+    *done = true;
 }
 
 /// Writes the records the closed popups saved back into their objects'
@@ -1510,6 +1532,19 @@ fn paint_loot(
     painted
 }
 
+/// The container popup's frame words as its constructors leave them: the
+/// attribute word the container constructor writes over the card's
+/// (`0x830023`: title bar, close mark, client fill, no rounded skin), the
+/// frame style with the card's centred-title bits (`0x3000`; the container
+/// clears the card's `0x80`) and no title string (the opener sets none).
+pub fn popup_frame(bounds: GuiRect, unit: i32) -> Frame {
+    let mut frame = Frame::new(bounds, unit, "");
+    frame.attributes = exa_ui::popups::CONTAINER_FLAGS;
+    frame.style = (gui_paint::SCREEN_STYLE | 0x3080) & !exa_ui::popups::CONTAINER_EXTRA_CLEAR;
+    frame.spacing = POPUP_BORDER;
+    frame
+}
+
 /// A container popup: the card's frame (no title, the popup's eight-pixel
 /// border), the container's icon over the icon area and the item panel
 /// with its entries' icons, clipped to the panel's client.
@@ -1520,10 +1555,12 @@ fn paint_container_popup(
     popup: &ContainerPopup,
     mut icons: Option<&mut PanelIcons>,
 ) -> gui_paint::Painted {
-    let palette = gui_paint::palette();
+    // A shown form's draw hands its fade (1) to the skin, which raises the
+    // palette's alpha ramps (form group 170, the others 125).
+    let palette = exa_ui::line_skin::shown_palette(1.0);
     let level = exa_ui::gui_font::level_for_unit(unit);
     let (font, size) = screen_font(exa_ui::gui_font::gui_level(level).main, textures);
-    let mut frame = Frame::new(bounds, unit, "");
+    let mut frame = popup_frame(bounds, unit);
     frame.spacing = POPUP_BORDER;
     let mut painted = gui_paint::paint_frame(&frame, &palette, &font, size);
     let client = ContainerPopup::client(bounds);
@@ -1723,6 +1760,15 @@ mod tests {
         assert_eq!(screens.focused(), Some(GameScreen::Inventory));
         assert_eq!(screens.close_container_family(), 2);
         assert!(screens.open.is_empty());
+    }
+
+    #[test]
+    fn the_popup_frame_takes_the_container_constructors_words() {
+        let frame = popup_frame(GuiRect::new(10, 20, 224, 308), 4);
+        assert_eq!(frame.attributes, 0x83_0023);
+        assert_eq!(frame.style, 0x3000);
+        assert_eq!(frame.spacing, 8);
+        assert!(frame.title.is_empty());
     }
 
     #[test]

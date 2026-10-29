@@ -1403,6 +1403,24 @@ mod tests {
         // unit chest.
         assert_eq!((placed.len(), children), (71, 307));
         assert_eq!(sizes[0], (65, 45));
+        let children: Vec<u32> = placed
+            .iter()
+            .flat_map(|i| i.container.as_ref().unwrap().children.iter().map(|c| c.id))
+            .collect();
+        let local = children.iter().filter(|id| *id & LOCAL != 0).count();
+        let modelled = children
+            .iter()
+            .filter(|id| {
+                level
+                    .local_items
+                    .iter()
+                    .find(|i| i.id == *id & ID_MASK)
+                    .is_some_and(|i| !i.model.is_empty() || i.parent != 0)
+            })
+            .count();
+        // 128 of the children are the level's own records, each naming a
+        // model or a template the icon can resolve through.
+        assert_eq!((local, modelled), (128, 128));
     }
 
     /// The door and operative records of the installed `objdb.rdb` and of
