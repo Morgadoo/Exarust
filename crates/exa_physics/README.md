@@ -318,6 +318,9 @@ early (before phase 0.2); a plant starts a footstep at the character plus
 `3·speed + 4` cm along its facing, with the original's gain and pitch
 from two draws made when it plays (`feet::{gait_step, step_position}`,
 the `Footstep` message), and the walking ground weights are in. The
+plant's clothing rustle is a tested rule (`walk_rustle`: the foley base ×
+(0.5g + 0.5)(0.02·speed + 0.01), pitch (0.2p + 0.9)(0.2·speed + 0.7) /
+size, the foley clock 400 ms plus a jitter); nothing plays it yet. The
 post-step advances the walk's travel phase: the pelvis's travel in cm
 times 0.0002, wrapped at 1, with the phase before the tick kept
 (`body::travel_phase`); its consumer, the scene node's draw offset, is not
@@ -341,8 +344,13 @@ holds the latch 80 ticks, and a body off its feet takes none. The
 muscles-off sampler's rules are tested (`body_limp.rs`,
 `exa_game::limp::sample_limp`): 0.9 of the race's base rate, the clip's
 full root travel, every part's particles snapped to the pose on the frame
-it had when the muscles went, the 0.05 height ease and key-flag plants
-(`limp_plant`). It is not scheduled: the original samples only a body
+it had when the muscles went, the 0.05 height ease and the feet rule
+(`limp_foot`): not walking, every loose foot is put down where it is;
+walking with support (both kept when the muscles go,
+`Ragdoll::limp_walking`/`limp_supported`), a foot the keys' flags
+(`limp_plant`, the capture's own flag as the source while leading in) do
+not ask for lifts, one they ask for plants at an anchor height of 3·scale
+cm with a step (`limp_anchor_height`, `limp_step`). It is not scheduled: the original samples only a body
 whose muscles are off and which is not dead, and a dead body's tick
 samples nothing.
 The placement's leg snap (`Ragdoll::snap_placement`) is a tested rule,

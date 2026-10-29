@@ -354,6 +354,16 @@ and above 1 gives the loop's volume (the class's volume factor). The
 golem bodies' `FoleyPlH` (2) and `Golem_Foley` (6, or 1 for race 0x1200)
 are the body loops. `exa_audio` plays them.
 
+`swing_voice` holds the swing voice's lifecycle (tested; `exa_audio` still
+plays one whoosh when the window opens): it starts silent at 0.4 × W26 on
+the first attack tick in the swing's region (`SwingState::in_region`) and
+again after leaving it, the second hand's tracker sets it for a one-hand
+striker's other-side attacks (`voice_speed2`), the start rustles the
+clothing at the foley volume × (0.02r + 0.02), pitch 0.4r + 0.8, once the
+foley clock has passed (then 400 ms plus a jitter under 100,
+`swing_rustle`), and a body that is not attacking fades each held voice by
+0.01 and 0.0005 a tick, stopping it under 0.005 (`fade_voice`).
+
 ## Wounds
 
 `wounds`: a blow bleeds when the struck fighter's race bleeds
