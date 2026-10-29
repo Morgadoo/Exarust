@@ -46,6 +46,32 @@ pub fn line_palette() -> SkinPalette {
     palette
 }
 
+/// The palette a form draws with: every form's draw hands its fade to the
+/// skin as both the alpha and the fade, and the skin scales its alpha ramps
+/// by them (the form group to the first alpha byte, 170, times the fade;
+/// the control, hot-form, label and highlight groups to the second, 125,
+/// times it). A shown form's fade is 1.
+pub fn shown_palette(fade: f32) -> SkinPalette {
+    let mut palette = line_palette();
+    crate::skin::scale_palette_alpha(&mut palette, fade, fade);
+    palette
+}
+
+/// The line skin's three control inks, the disabled, idle and on ones its
+/// slider, frame and check box bind: the constructor's colour 255, 250, 230
+/// with the alphas its fade hand-off writes, 80, 104 and 128 times the fade
+/// (rounded half to even, low byte).
+pub fn line_control_inks(fade: f32) -> [SkinInk; 3] {
+    let [r, g, b, _] = SKIN_INK;
+    [80.0, 104.0, 128.0].map(|alpha: f32| [r, g, b, round_low_word(alpha * fade) as u8])
+}
+
+/// The alpha the line skin's hovered thumb and box take: the fade times
+/// 255, rounded half to even, low byte.
+pub fn hover_alpha(fade: f32) -> u8 {
+    round_low_word(fade * 255.0) as u8
+}
+
 /// A form's title ink pairs and text ink read from the line skin's palette.
 pub fn line_inks() -> (SkinInk, SkinInk, SkinInk) {
     let palette = line_palette();
@@ -820,5 +846,29 @@ mod tests {
         assert_eq!(shade, palette.form[1]);
         assert_eq!(label, palette.text[6]);
         assert_ne!(slot, label);
+    }
+}
+
+#[cfg(test)]
+mod shown_tests {
+    use super::*;
+
+    #[test]
+    fn a_shown_form_takes_the_alpha_ramps_and_the_control_inks() {
+        let palette = shown_palette(1.0);
+        assert_eq!(palette.form[3][3], 170);
+        assert_eq!(palette.control[2][3], 125);
+        assert_eq!(palette.highlight[7][3], 125);
+        assert_eq!(
+            line_control_inks(1.0),
+            [
+                [255, 250, 230, 80],
+                [255, 250, 230, 104],
+                [255, 250, 230, 128]
+            ]
+        );
+        assert_eq!(line_control_inks(0.5)[1][3], 52);
+        assert_eq!(hover_alpha(1.0), 255);
+        assert_eq!(hover_alpha(0.5), 128);
     }
 }
