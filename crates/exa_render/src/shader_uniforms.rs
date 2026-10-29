@@ -194,7 +194,8 @@ pub struct ViewInputs {
     /// The exposure (1 in play).
     pub exposure: f32,
     /// The frame's clock: `ViewPos.w` and `TimeDlt.x` are this value after
-    /// the exposure.
+    /// the exposure, and `TimeDlt.y` is `−1/supersample_factor` times the
+    /// clock itself (not the exposure).
     pub time_delta: f32,
     /// The fog colour, linear.
     pub fog_colour: [f32; 3],
@@ -211,7 +212,7 @@ pub struct ViewInputs {
     /// The environment's wetness.
     pub wetness: f32,
     /// The super-sampling factor (the setting's 1, 2, 3, 4, 8 or 15):
-    /// `TimeDlt.y` is `−exposure` over it.
+    /// `TimeDlt.y` is minus the frame's clock over it.
     pub supersample_factor: u32,
 }
 
@@ -320,11 +321,12 @@ impl GlobalUniforms {
             sdw_mat: view.world_to_shadow,
             voxel_gi_scale: gi_scale,
             ambient,
-            // `TimeDlt` is (the frame's clock, −1/factor), both after the
-            // exposure.
+            // `TimeDlt` is (the frame's clock after the exposure, −1/factor
+            // times the frame's clock): the engine multiplies both lanes by
+            // the same clock, only the first by the exposure.
             time_delta: [
                 view.time_delta * view.exposure,
-                -(1.0 / view.supersample_factor.max(1) as f32) * view.exposure,
+                -(1.0 / view.supersample_factor.max(1) as f32) * view.time_delta,
             ],
             view_reciprocal: [1.0 / width as f32, 1.0 / height as f32],
             fog_colour: [
@@ -1025,8 +1027,8 @@ mod tests {
         assert_eq!(u.voxel_gi_scale[3], 0.5);
         assert_eq!(u.ambient, [1.5, 3.0, 6.0, 8.0]);
         // `TimeDlt` is the frame's clock after the exposure and −1 over the
-        // super-sampling factor, also after the exposure.
-        assert_eq!(u.time_delta, [0.5, -0.25]);
+        // super-sampling factor times the clock itself.
+        assert_eq!(u.time_delta, [0.5, -0.125]);
         // `FogPos` is the eye + (shadow eye − eye)·0.5 with `w` the scene's
         // height limit 340 and `y` (350) lowered to it.
         assert_eq!(u.fog_position, [200.0, 340.0, -200.0, 340.0]);
@@ -1055,10 +1057,13 @@ mod tests {
         };
         let u = GlobalUniforms::from_view(&view);
         assert_eq!(u.view_pos[3], 0.5);
-        assert_eq!(u.time_delta, [0.5, -0.25]);
+        // The second lane is the clock over the factor, not the exposure:
+        // 0.25 / 8, while the first is 0.25 × 2.
+        assert_eq!(u.time_delta, [0.5, -0.03125]);
         // The factor is floored at one rather than dividing by zero.
         let u = GlobalUniforms::from_view(&ViewInputs {
             supersample_factor: 0,
+            time_delta: 1.0,
             exposure: 1.0,
             ..ViewInputs::default()
         });

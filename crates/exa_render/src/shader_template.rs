@@ -1212,6 +1212,24 @@ pub fn interface_fragment(context: &TemplateContext) -> String {
     out
 }
 
+/// The shadow-sampler declarations the VXGI manager's builder emits, one
+/// per gathered light slot: a slot whose kind word has `0x200` takes the
+/// two-dimensional shadow sampler, every other slot a cube one. The
+/// fragment interface above instead declares only slot 0 from its kind and
+/// all later slots as cubes; this callback, the builder's separate
+/// shadow-declaration entry, tests every slot.
+pub fn interface_shadow_samplers(context: &TemplateContext) -> String {
+    let mut out = String::new();
+    for i in 0..context.numbers.lights {
+        if context.kind_of(i as usize).slot() & 0x300 == 0x200 {
+            declare_indexed(&mut out, "uniform sampler2DShadow Shadow", Some(i));
+        } else {
+            declare_indexed(&mut out, "uniform samplerCubeShadow Shadow", Some(i));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1607,6 +1625,29 @@ mod tests {
         assert!(text.contains("in vec3 vrSdw;\r\n"));
         assert!(text.contains("uniform sampler2DShadow Shadow0;\r\n"));
         assert!(!text.contains("samplerCubeShadow"));
+    }
+
+    #[test]
+    fn the_shadow_callback_tests_every_slots_kind() {
+        let mut c = context();
+        c.numbers.lights = 3;
+        c.lights = vec![LightKind::Point, LightKind::Directional, LightKind::Point];
+        assert_eq!(
+            interface_shadow_samplers(&c),
+            "uniform samplerCubeShadow Shadow0;\r\n\
+uniform sampler2DShadow Shadow1;\r\n\
+uniform samplerCubeShadow Shadow2;\r\n"
+        );
+        // No lights: nothing is declared.
+        c.numbers.lights = 0;
+        assert!(interface_shadow_samplers(&c).is_empty());
+        // The callback has no vertex input of its own.
+        c.numbers.lights = 1;
+        c.lights = vec![LightKind::Directional];
+        assert_eq!(
+            interface_shadow_samplers(&c),
+            "uniform sampler2DShadow Shadow0;\r\n"
+        );
     }
 
     #[test]

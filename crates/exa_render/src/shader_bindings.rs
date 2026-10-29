@@ -242,6 +242,27 @@ pub fn attribute_bindings(state: u32) -> Vec<AttributeBinding> {
     out
 }
 
+/// The engine's fixed eight shadow-tap offsets, `SdwSmp`, three floats each.
+/// The sun's two-dimensional shadow map reads a tap's first two components
+/// (`x`, `y`); the third component's use is not established, so it is kept
+/// only to preserve the table's exact numbers. A sub-frame's window starts
+/// at tap `first_tap` of this table ([`shadow_sample_upload`]).
+pub const SHADOW_TAPS: [[f32; 3]; 8] = [
+    [0.272_541_49, -0.548_650_44, 0.354_879_77],
+    [-0.287_996_9, 0.618_560_6, 0.653_929_1],
+    [0.361_687_48, 0.180_595_17, -0.436_745_7],
+    [-0.505_239_55, -0.239_513_4, 0.744_121_73],
+    [-0.302_779_23, -0.666_445_3, 0.875_988],
+    [-0.858_782_4, 0.471_767_72, -0.918_739_14],
+    [0.396_006_94, 0.794_749_14, -0.779_053_33],
+    [0.773_125_3, -0.369_729_2, 0.274_344_33],
+];
+
+/// The tap at `index` of [`SHADOW_TAPS`], or `None` past the table.
+pub fn shadow_tap(index: usize) -> Option<[f32; 3]> {
+    SHADOW_TAPS.get(index).copied()
+}
+
 /// How many `vec3` taps of the `SdwSmp` array a sub-frame uploads, and
 /// where in the tap table its first one is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -414,6 +435,31 @@ mod tests {
                 .locations
                 .pass_index
         );
+    }
+
+    #[test]
+    fn the_shadow_tap_table_holds_the_engines_offsets() {
+        // Each tap is the stored three-float offset; these are the exact
+        // bit patterns the engine's table holds.
+        assert_eq!(
+            SHADOW_TAPS[0].map(f32::to_bits),
+            [0x3E8B_8A8F, 0xBF0C_745B, 0x3EB5_B2CD]
+        );
+        assert_eq!(
+            SHADOW_TAPS[1].map(f32::to_bits),
+            [0xBE93_7454, 0x3F1E_59FD, 0x3F27_67E6]
+        );
+        assert_eq!(
+            SHADOW_TAPS[3].map(f32::to_bits),
+            [0xBF01_5761, 0xBE75_4300, 0x3F3E_7EC3]
+        );
+        assert_eq!(
+            SHADOW_TAPS[7].map(f32::to_bits),
+            [0x3F45_EB8A, 0xBEBD_4D25, 0x3E8C_76DC]
+        );
+        assert_eq!(shadow_tap(0), Some(SHADOW_TAPS[0]));
+        assert_eq!(shadow_tap(7), Some(SHADOW_TAPS[7]));
+        assert_eq!(shadow_tap(8), None);
     }
 
     #[test]

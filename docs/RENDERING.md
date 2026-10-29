@@ -129,12 +129,19 @@ count 0–6 for lit surfaces (none for unlit), keyed by the object and
 environment words as well: vertex colours, deformed vertices, quad rendering
 (supersampling and `PassIdx`), GI, fog mode, outdoor, wet floor, tone map
 and sharpen. The game warms 29 common material/flag rows and their light
-counts (`exa-tool shader --warmup`).
+counts (`exa-tool shader --warmup`). The builder also has a separate
+shadow-declaration callback, used by the voxel-GI manager's own builder:
+it declares one `Shadow<i>` per light slot and tests every slot's kind
+(`interface_shadow_samplers`), while the fragment interface above tests
+only the first slot and declares every later one as a cube. The `SdwSmp`
+table is eight three-float taps (`shader_bindings::SHADOW_TAPS`); the sun
+shadow map reads a tap's first two lanes.
 
 **Uniforms.** `Global` is 252 bytes, `Material` 112 bytes and each light
 three `vec4`s; the fields and their values are in `docs/formats/FLB.md`.
 `ViewPos.w` and `TimeDlt.x` are the same frame clock after the exposure;
-`TimeDlt.y` is minus the exposure over the super-sampling factor. `FogPos`
+`TimeDlt.y` is minus the frame's clock over the super-sampling factor (the
+clock, not the exposure). `FogPos`
 is the midpoint of the camera's eye and the sun camera's eye, built as
 `a + (b − a)·0.5`; its `w` is the scene's integer height limit (340 cm
 when the scene is created) and a `y` above that limit is lowered to it. The material writer's dirt block is written only by a

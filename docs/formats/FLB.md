@@ -306,7 +306,7 @@ light in the environment word (unlit rows have an empty one).
 | 96 | `SdwMat` | the sun's world-to-shadow matrix |
 | 160 | `VXGIScl` | `1/(W·20)`, `1/(H·20)`, `1/(D·20)`, `1/SdwSmps` (texels across X, Z, up) |
 | 176 | `Ambient` | linear level ambient × exposure × 15, `w` = 8 indoors or 3 outdoors |
-| 192 | `TimeDlt` | `(clock·exposure, −exposure/factor)`, the factor the super-sampling setting's 1–15 |
+| 192 | `TimeDlt` | `(clock·exposure, −clock/factor)`, the factor the super-sampling setting's 1–15; both lanes take the frame's clock |
 | 200 | `ViewRcp` | `1/width`, `1/height` |
 | 208 | `FogColr` | linear fog colour, `w` = `1/fog distance` |
 | 224 | `FogPos` | the midpoint of the camera's eye and the sun camera's eye (`eye + (sun − eye)·0.5`), `y` capped at `w`; `w` is the scene's integer height limit (340 at scene creation) |

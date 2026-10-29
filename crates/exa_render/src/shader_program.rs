@@ -499,15 +499,26 @@ pub fn supersample_passes(setting: u32) -> u32 {
 /// 32; super-sampling (the setting, its level being the setting less one
 /// from 2 up) splits them over its passes, never below one per sub-frame.
 /// At the shipped settings (shadow quality 4, super-sampling 3) that is 2.
+///
+/// The exponents are signed 32-bit fields and the shift counts are taken
+/// modulo 32, as the x86 `shl` does; the division is a signed 32-bit one.
+/// Out-of-range settings therefore follow the same wrap (a setting past 31
+/// shifts by its low five bits) rather than saturating.
 pub fn shadow_samples(quality: u32, supersample: u32) -> u32 {
-    let level = if supersample > 1 {
-        supersample - 1
-    } else {
-        supersample
-    };
-    let exponent = (quality as i32 - 1).min(5).max(level as i32).clamp(0, 31) as u32;
-    let level = level.min(31);
-    (1u32 << exponent) / (1u32 << level)
+    let mut level = supersample as i32;
+    if level > 1 {
+        level -= 1;
+    }
+    let mut exponent = (quality as i32).wrapping_sub(1);
+    if exponent > 5 {
+        exponent = 5;
+    }
+    if exponent < level {
+        exponent = level;
+    }
+    let scaled = 1i32.wrapping_shl(exponent as u32);
+    let divisor = 1i32.wrapping_shl(level as u32);
+    scaled.wrapping_div(divisor) as u32
 }
 
 /// The displacement-shadow taps per sub-frame, `DspSdws`: none without
@@ -1288,6 +1299,13 @@ mod tests {
         assert_eq!(warmup_displacement_samples(0), 4);
         // 32 taps put the count less one past bit 27.
         assert_eq!(base_object(32, 0), 31 << 24);
+        // The exponents are signed 32-bit values and the x86 shift count is
+        // taken modulo 32: a nonsensical setting past 31 wraps the level to
+        // its shift's low bits.
+        assert_eq!(shadow_samples(0, 0), 1);
+        assert_eq!(shadow_samples(0, 3), 1);
+        assert_eq!(shadow_samples(4, 32), 1);
+        assert_eq!(shadow_samples(4, 33), 1);
     }
 
     #[test]

@@ -17,10 +17,12 @@ for map binding and the emissive's doubling), the program choice
 sample splits, the warm-up variants, the surface entry's `<set>_f` name
 rule, the height layer's one-texel switch-off and the sub-frame count;
 `shader_uniforms` the 252-byte `Global` block (the frame clock in `ViewPos.w`
-and `TimeDlt.x`, `−exposure/factor` in `TimeDlt.y`, the eye/sun-eye midpoint
+and `TimeDlt.x`, `−clock/factor` in `TimeDlt.y`, the eye/sun-eye midpoint
 in `FogPos`, whose `w` is the scene height limit capping `y`), the 112-byte `Material` block, the per-light `vec4`s and the
-refraction background's choice. `exa-tool shader` prints a material's
-original GLSL for comparison.
+refraction background's choice. The builder's separate shadow-declaration
+callback is `shader_template::interface_shadow_samplers` (one `Shadow<i>`
+per slot, each tested from its own kind). `exa-tool shader` prints a
+material's original GLSL for comparison.
 `shader_cache` keeps the program cache: one bucket per material and shader
 word pair, one entry per object and environment word pair, a failed build stored and not
 retried, reference counts, the last-bound program and the stale-flags bit,
@@ -28,9 +30,13 @@ and a warm-up pass through the 29 rows and their light counts.
 `shader_bindings` holds the uniform-block bindings, the texture units the
 maps pack into (and the fixed environment, GI, screen-copy and shadow
 units), the cached uniform locations, the linker's attribute locations
-for every program, and the `SdwSmp` upload window.
+for every program, the `SdwSmp` upload window and the eight exact tap
+offsets.
 `light_slots` fills a draw's six light slots in the original's order and
 values.
+`texture_wait` is the material loader's wait for its first five maps'
+uploads before the parallax pass reads a height map's size (the original's
+`Sleep(0)` spin; Exarust loads finished images through Bevy).
 `draw_state` is the drawing state's per-draw plan: the object word, the
 gather-or-clear of the light slots, the material block's fade and emissive
 rewrites, the liquid-level and GI-corner uploads, the super-sampling
@@ -50,6 +56,8 @@ Rules and evidence: [`docs/formats/FLB.md`](../../docs/formats/FLB.md) and
   (the entry alone as a fragment shader), the six built-in vertex shaders
   the draw state's stream word picks and their fixed `MPrj` projection;
   Exarust bakes those textures on the CPU.
+- `texture_wait`: which of a material's first five map slots the loader
+  waits for, and the poll order (above).
 - `shader_reload`: the `cshd` debug command's reload of the 12 embedded render shaders through the asset server (the original's command reloads its shader programs; Exarust has no file watcher, so this rebuilds the compiled-in sources).
 - `bound_sphere`: the original's smallest enclosing sphere (move-to-front over a support set of 1–4 points, in f64), which fits its sun shadow map; with the f32/f64 vector helpers ([`docs/RENDERING.md`](../../docs/RENDERING.md), Sun shadow fit).
 - `camera`: the camera node's 70° default and its near and far planes (100 and 12 500 engine units; 1 and 125 m; held as data, no camera applies them yet), and the 3D view's constructor values: exposure 1, bloom 1, post on, no scene camera slot ([`docs/RENDERING.md`](../../docs/RENDERING.md), Cameras).
