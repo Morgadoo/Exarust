@@ -738,6 +738,7 @@ fn duellist(
             renew_ms: swinging.renew_ms,
             side_started_ms: attacker.side_started_ms,
             feint: fighter.feint(),
+            strikers: attack::held_strikers(entity, blades.iter()),
         };
         let ready = attack::execute(attack::Request::default(), busy).is_some();
         let traits = brains
