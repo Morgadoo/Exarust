@@ -289,30 +289,30 @@ pub fn panel_health(word: u16) -> f32 {
 /// The roster row's health gauge, as the GUI's gauge draw receives it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HealthMarker {
-    /// The gauge's left edge: the cell's left less six units, plus half of
-    /// five units (rounded down), plus one.
+    /// The gauge's left edge: the cell's left, unchanged.
     pub left: i32,
-    /// The gauge's top: the cell's top less one unit.
+    /// The gauge's top: the cell's top less six units, plus half of five
+    /// units (rounded down), plus one.
     pub top: i32,
-    /// The gauge's side: two units, square.
-    pub size: i32,
+    /// The gauge's length: the cell's width less one unit.
+    pub length: i32,
+    /// The gauge's thickness: two units.
+    pub thickness: i32,
     /// Both fill fractions: the record's word times the double 1/65535.
     pub fill: f32,
 }
 
-/// The roster table's health gauge from the cell's left and top, the GUI
-/// unit (4 at the base scale) and the record's word. The original draws an
-/// `2u`-sided square gauge; at unit 4 a cell at (x, y) puts it at
-/// (x − 13, y − 4) and fills both directions by the health's share. The
-/// horizontal offset is computed in 64-bit arithmetic and the half of five
-/// units is a floor.
-pub fn health_marker(left: i32, top: i32, unit: i32, word: u16) -> HealthMarker {
+/// The roster table's health gauge from the cell's left, top and width, the
+/// GUI unit (4 at the base scale) and the record's word. At unit 4 a cell
+/// at (x, y) of width w draws an 8-thick gauge at (x, y − 13), w − 4 long.
+pub fn health_marker(left: i32, top: i32, width: i32, unit: i32, word: u16) -> HealthMarker {
     let unit64 = i64::from(unit);
-    let half_five = ((unit64 * 7 - (unit64 << 1)) >> 1) as i32;
+    let half_five = ((unit64 * 7 - i64::from(unit.wrapping_mul(2))) as u64 >> 1) as i64;
     HealthMarker {
-        left: (i64::from(left) - unit64 * 6 + i64::from(half_five) + 1) as i32,
-        top: top.wrapping_sub(unit),
-        size: unit.wrapping_mul(2),
+        left,
+        top: (i64::from(top) - unit64 * 6 + half_five + 1) as i32,
+        length: width.wrapping_sub(unit),
+        thickness: unit.wrapping_mul(2),
         fill: panel_health(word),
     }
 }
@@ -1289,12 +1289,15 @@ mod tests {
 
     #[test]
     fn the_roster_health_gauge_sits_at_the_cells_corner() {
-        let marker = health_marker(100, 50, 4, 65535);
-        assert_eq!((marker.left, marker.top, marker.size), (87, 46, 8));
+        let marker = health_marker(100, 50, 60, 4, 65535);
+        assert_eq!(
+            (marker.left, marker.top, marker.length, marker.thickness),
+            (100, 37, 56, 8)
+        );
         assert_eq!(marker.fill.to_bits(), 1.0f32.to_bits());
-        // Unit 3: half of fifteen rounds down to 7, so left − 18 + 7 + 1.
-        let marker = health_marker(0, 0, 3, 32768);
-        assert_eq!((marker.left, marker.top, marker.size), (-10, -3, 6));
+        // Unit 3: half of fifteen rounds down to 7.
+        let marker = health_marker(0, 0, 30, 3, 32768);
+        assert_eq!((marker.top, marker.length, marker.thickness), (-10, 27, 6));
         assert_eq!(
             marker.fill.to_bits(),
             ((32768.0f64 * crate::arena_match::WORD_SHARE) as f32).to_bits()
