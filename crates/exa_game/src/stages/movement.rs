@@ -395,7 +395,10 @@ pub(crate) fn gait_footsteps(
     let Some(drive) = body.drive.as_ref() else {
         return;
     };
-    let Some(set) = fighter.and_then(|f| f.stats.footsteps.name()) else {
+    let Some(fighter) = fighter else {
+        return;
+    };
+    let Some(set) = fighter.stats.footsteps.name() else {
         return;
     };
     let Some(origin) = drive.anchor().or_else(|| drive.root_point()) else {
@@ -405,7 +408,7 @@ pub(crate) fn gait_footsteps(
         steps.write(Footstep {
             position: step_position(origin, drive.bearing.facing, drive.bearing.speed),
             speed_cm: drive.bearing.speed,
-            scale: drive.stats.scale,
+            volume: fighter.stats.footstep_volume,
             set: Some(set),
         });
     }

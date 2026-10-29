@@ -612,3 +612,49 @@ fn the_attack_reach() {
     // A NaN age is not negative: the aged product is NaN.
     assert!(human.attack_reach(f32::NAN).is_nan());
 }
+
+/// The init's race presets: the human keeps its race record's balance
+/// bonus and arm relaxation; the Fael, the ghouls and the gobbler take
+/// their own, golems theirs by their bit (the boss none).
+#[test]
+fn race_presets_override_the_record() {
+    let mut r = human();
+    r.body.balance_bonus = 1.25;
+    r.body.arm_relaxation = 0.75;
+    let of = |byte: u8| CharacterStats::derive(&record(byte, 0.0, 0.0), Some(&r), ALIVE);
+    let human = of(0);
+    assert_eq!((human.balance_bonus, human.arm_relaxation), (1.25, 0.75));
+    assert!(!human.golem);
+    let fael = of(FAEL);
+    assert_eq!((fael.balance_bonus, fael.arm_relaxation), (2.0, 0.0));
+    let ghoul = of(GHOUL);
+    assert_eq!((ghoul.balance_bonus, ghoul.arm_relaxation), (2.0, 0.75));
+    let hulking = of(HULKING_GHOUL);
+    assert_eq!((hulking.balance_bonus, hulking.arm_relaxation), (2.0, 0.5));
+    assert_eq!(of(GOBBLER).balance_bonus, 1.5);
+    let golem = of(0x12);
+    assert!(golem.golem);
+    assert_eq!((golem.balance_bonus, golem.arm_relaxation), (1.25, 0.5));
+    assert_eq!(golem.footsteps, FootstepSet::Golem);
+    assert_eq!(of(GOLEM_BOSS).arm_relaxation, 0.0);
+    // The wraith and the skeleton are not golems.
+    assert!(!of(WRAITH).golem && !of(SKELETON).golem);
+}
+
+/// Footstep volume: the body scale, doubled over 1.3 (compared in
+/// double precision), 5 for the ogre whatever its scale.
+#[test]
+fn footstep_volume_follows_scale() {
+    let mut r = human();
+    let of = |r: &Race, byte: u8, h: f32| {
+        CharacterStats::derive(&record(byte, h, 0.0), Some(r), ALIVE).footstep_volume
+    };
+    assert_eq!(of(&r, 0, 0.0), 1.0);
+    assert!(close(of(&r, 0, 1.0), 0.95));
+    r.body.scale = 1.3;
+    // 1.3 in single precision is under 1.3 in double: not doubled.
+    assert_eq!(of(&r, 0, 0.0), 1.3);
+    r.body.scale = 1.35;
+    assert_eq!(of(&r, 0, 0.0), 2.7);
+    assert_eq!(of(&r, OGRE, 0.0), 5.0);
+}

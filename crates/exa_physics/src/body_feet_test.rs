@@ -1183,19 +1183,22 @@ fn the_sole_floor_is_the_ground_querys_rule() {
 /// all of it. Its place is 3·speed + 4 cm along the facing.
 #[test]
 fn a_walking_footstep_follows_the_speed_and_the_draw() {
-    let low = gait_step(4.3, 0.0, 0.0);
+    let low = gait_step(4.3, 1.0, 0.0, 0.0);
     assert!(close(low.gain, 0.064_168, 1e-5), "{}", low.gain);
     assert!(close(low.pitch, 0.9585, 1e-5), "{}", low.pitch);
-    let high = gait_step(4.3, 1.0, 1.0);
+    let high = gait_step(4.3, 1.0, 1.0, 1.0);
     assert!(close(high.gain, 0.128_336, 1e-5), "{}", high.gain);
     assert!(close(high.pitch, 1.1715, 1e-4), "{}", high.pitch);
     // The draws are independent: a high pitch draw with a low gain draw.
-    let mixed = gait_step(4.3, 1.0, 0.0);
+    let mixed = gait_step(4.3, 1.0, 1.0, 0.0);
     assert!(close(mixed.gain, low.gain, 1e-7) && close(mixed.pitch, high.pitch, 1e-7));
     // Standing still there is still the smallest gain, never none.
-    assert!(gait_step(0.0, 0.0, 0.0).gain > 0.0);
+    assert!(gait_step(0.0, 1.0, 0.0, 0.0).gain > 0.0);
     let at = step_position(Vec3::ZERO, Vec3::Z, 4.3);
     assert!(close(at.z, 0.169, 1e-6));
+    // The character's footstep volume multiplies the gain (an ogre's 5).
+    let ogre = gait_step(4.3, 5.0, 0.0, 0.0);
+    assert!(close(ogre.gain, 5.0 * low.gain, 1e-5) && ogre.pitch == low.pitch);
 }
 
 /// A queued footwork step is taken at a landing through the rule the

@@ -824,15 +824,16 @@ pub fn step_loudness(length_cm: f32) -> f32 {
 /// a miss leaves the ground.
 const FLOOR_TOUCHING: f32 = 10.0;
 
-/// The loudness of a walking footstep before the random share: the
-/// original's two body fields (the character's step gain and its race's)
-/// have no Exarust counterpart, so both are 1 (a guess).
+/// The loudness of a walking footstep before the random share is this body
+/// gain times the character's footstep volume (the init's: the body scale,
+/// doubled over 1.3, the ogre's 5). The gain field has no traced writer
+/// in the character init; 1 is a guess.
 const STEP_GAIN: f32 = 1.0;
 
 /// A walking footstep's gain and pitch from its speed along the heading
 /// (cm a tick) and the engine's two draws in [0, 1), the pitch's first:
 /// the pitch is `(0.2·p + 0.9)(0.05·speed + 0.85)` and the gain
-/// `gain · (0.5·g + 0.5) · ((0.08·speed)² + 0.01)`, the draw's share in
+/// `gain · volume · (0.5·g + 0.5) · ((0.08·speed)² + 0.01)`, the draw's share in
 /// single precision and the rest in double, narrowed once, as the
 /// original's are.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -841,14 +842,14 @@ pub struct GaitStep {
     pub pitch: f32,
 }
 
-/// The walk's footstep gain and pitch from the pitch draw `p` and the gain
-/// draw `g`, drawn in that order.
-pub fn gait_step(speed_cm: f32, p: f32, g: f32) -> GaitStep {
+/// The walk's footstep gain and pitch from the character's footstep volume,
+/// the pitch draw `p` and the gain draw `g`, drawn in that order.
+pub fn gait_step(speed_cm: f32, volume: f32, p: f32, g: f32) -> GaitStep {
     let speed = f64::from(speed_cm);
     let pitch = ((0.2 * f64::from(p) + 0.9) * (0.05 * speed + 0.85)) as f32;
     let share = f64::from(g * 0.5 + 0.5);
     let loud = 0.08 * speed * (0.08 * speed) + 0.01;
-    let gain = (f64::from(STEP_GAIN) * f64::from(STEP_GAIN) * (share * loud)) as f32;
+    let gain = (f64::from(STEP_GAIN) * f64::from(volume) * (share * loud)) as f32;
     GaitStep { gain, pitch }
 }
 
@@ -902,13 +903,14 @@ pub fn step_position(character: Vec3, direction: Vec3, speed_cm: f32) -> Vec3 {
 }
 
 /// A walking footstep, as the body's sampler makes it: the sound's place,
-/// the speed along the heading (cm a tick), the body's scale and the
-/// race's footstep set (empty when the race has none).
+/// the speed along the heading (cm a tick), the character's footstep volume
+/// and the race's footstep set (empty when the race has none).
 #[derive(Debug, Clone, Copy, Message, PartialEq)]
 pub struct Footstep {
     pub position: Vec3,
     pub speed_cm: f32,
-    pub scale: f32,
+    /// The character's footstep volume (its stats' `footstep_volume`).
+    pub volume: f32,
     /// The race's footstep set's name in `Sound.rpk`; none for a race
     /// without one.
     pub set: Option<&'static str>,
