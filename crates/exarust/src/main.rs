@@ -57,6 +57,7 @@
 //!          --static-mechanisms        debug: levers and push surfaces stay static level geometry, as before they became bodies
 //!          --sliding-doors            debug: sliding doors (portcullises) become bodies too; their lift is not reproduced
 //!          --debug-gui-form           open one empty GUI form through the draw skin's path
+//!          --open-settings <page>     once loaded, open the menu and the Settings form on its settings or controls page
 //!          --debug-path x,y,z         play mode: plan a path from the player's feet to this point (metres) and draw it,
 //!                                     again whenever the player has moved a metre
 //!          --searcher <id>            play mode: the level character with this record id (hex with 0x) takes the
@@ -240,6 +241,9 @@ pub struct Options {
     pub sliding_doors: bool,
     /// Open one empty form through the GUI draw path.
     pub debug_gui_form: bool,
+    /// Open the menu and the Settings form on this page (0 Settings, 1
+    /// Controls) once loaded.
+    pub open_settings: Option<u8>,
     /// Play mode: the debug path's goal (`--debug-path`, metres).
     pub debug_path: Option<[f32; 3]>,
     /// Play mode: the level character with this record id takes the
@@ -608,6 +612,17 @@ fn main() -> AppExit {
             "--static-mechanisms" => options.static_mechanisms = true,
             "--sliding-doors" => options.sliding_doors = true,
             "--debug-gui-form" => options.debug_gui_form = true,
+            "--open-settings" => {
+                let page = args.next().unwrap_or_default();
+                options.open_settings = match page.as_str() {
+                    "settings" => Some(0),
+                    "controls" => Some(1),
+                    _ => {
+                        eprintln!("--open-settings: settings or controls, not {page:?}");
+                        return AppExit::from_code(2);
+                    }
+                };
+            }
             "--perf-log" => options.perf_log = args.next().and_then(|v| v.parse().ok()),
             "--profiler" => options.profiler = true,
             "--debug-column" => {
@@ -1000,6 +1015,10 @@ fn main() -> AppExit {
     .insert_resource(exa_game::gui_screens::DebugGuiForm {
         enabled: options.debug_gui_form,
     })
+    .insert_resource(exa_game::settings_form::OpenSettingsOnLoad {
+        page: options.open_settings,
+        done: false,
+    })
     .insert_resource(exa_ui::ScriptedPointer(options.cursor.map(Vec2::from)))
     .insert_resource(exa_render::cube_shadows::PointShadows(!options.no_shadows))
     .insert_resource(exa_world::sun_shadow::SunShadowFit(
@@ -1061,8 +1080,13 @@ fn main() -> AppExit {
         app.insert_resource(exa_game::commands::KeyCommands::of_hotkeys(
             &user.settings.hotkeys,
         ));
-        app.insert_resource(user.clone())
-            .add_systems(Update, user_settings::gui_size_from_display);
+        app.insert_resource(user.clone()).add_systems(
+            Update,
+            (
+                user_settings::gui_size_from_display,
+                user_settings::save_applied_bindings,
+            ),
+        );
     }
     app.add_systems(Startup, register_debug_commands);
     if fixed_frames {
@@ -1074,7 +1098,7 @@ fn main() -> AppExit {
     }
     let exit = app.run();
     if let Some(user) = &user {
-        user.save_store();
+        user.save_store_at_exit();
     }
     exit
 }

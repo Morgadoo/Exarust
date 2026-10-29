@@ -2301,8 +2301,9 @@ plain draw and input records.
   palette's text colour whose alpha is the fade byte times the palette
   alpha over 128. The running game's rebinding (`exa_game::hw_config`)
   goes through the key-capture screen against the Controls page's rows,
-  and Apply opens the warm-up screen; the settings form itself is not yet
-  opened from the menu.
+  and Apply opens the warm-up screen; `exa_game::settings_form` draws both
+  over a full-window black backdrop at the fade byte (the form's colour
+  word; that it fills the window is a guess) in the label ink.
 - **Transition** (`exa_ui::transition`): the fade to black takes 600
   units, or 800/300/2000 by the mode flags, with the music faded
   alongside; then the switch callback, two hold frames, a 300/500/1000
@@ -2591,10 +2592,80 @@ antialiasing sliders and the window-mode checkbox change the draft until
 Apply. The Music checkbox only mutes the session: the live music value, and
 so the file's line and the reopened checkbox, keep the startup value.
 
-Exarust has this model, but the form is not drawn yet:
 `HardwareConfig::open` prepares the page (reading the settings file when
 the launcher gave one), `rows` gives what the rows show, and the slider,
-checkbox, Defaults, Apply and Cancel calls follow the original.
+checkbox, Defaults, Apply and Cancel calls follow the original; the form
+below drives them.
+
+### Settings form
+
+The menu's SETTINGS rows (the title's fifth row, the in-game page's third,
+the pause pages' second) open the form `TSGSettingDlg` as a top-level form
+over the menu; the menu stays up and hiding it (F1) closes the form, as the
+original's menu hide does. The form (`exa_ui::settings`,
+`exa_game::settings_form`) is 434 × 536 at unit 4 with the title
+"Settings", style 0xb810 (centred both ways) and attribute 0x31022 (the
+base word with the upper-layer bit); it has no title bar. Its records are
+the original's three arrays, read with their classes, ids, places (16-bit,
+anchors read signed), radio groups, styles, states, step counts and
+callbacks:
+
+- **Tabs and buttons** (records 0 to 8): SETTINGS and CONTROLS (192 × 32,
+  group 1, SETTINGS on), Keyboard and Controller (group 2, state 0x110:
+  hidden), two 400-wide rules, and Defaults (x 40), Apply (104 wide) and
+  Cancel, each 16 pixels after the button before (anchor 0x8006).
+- **Settings page**: a child at 0, 64, the form's width less 8 by 408,
+  holding the 27 records: the device readout (the renderer's name in
+  Exarust; "Valve Steam Deck" on the Deck in the original) and the memory
+  readout ("Unknown" without a figure, which Exarust never has), a rule,
+  then each option's label at x 16 and its slider (x 168, 140 wide, style
+  0x405320, steps 0, 3, 3, 1, 3, 1, 3, 3) or checkbox.
+- **Controls page**: a child of the form's width less 16, 416 high, with a
+  vertical scrollbar over 676 pixels of content, holding the 22 rows' label
+  (x 80, 68 wide) and key cell (x 232, 100 wide, style 0x20003380, id the
+  row's action, callback the key-read screen's opener).
+
+The records are laid out at unit 4 by the control layout pass (a 32-high
+tab moves up 8, a 24-high button 4, a 20-high label 2, a 3-high rule 7 down
+through the unsigned shift), then the form, its pages and their records
+are rescaled to the live unit by whole units of their clients, and the
+form is centred (truncating across, a floor down). At unit 4 on 1280 × 720
+the form is at 423, 92; its tabs at 12, 12; the rules at y 91 and 471;
+Defaults, Apply and Cancel at 40, 156 and 276 on y 484; the volume slider at
+168, 76 of the Settings page; the first key cell at 232, 6 of the Controls
+page. At unit 6 the form is 646 × 802 (its 430 × 532 client is 107 and 133
+units), the Settings page 634 × 610 at 0, 96.
+
+The page switch shows page 0 with the rules and hides the Keyboard and
+Controller tabs; page 1 hides the rules and places the Controls page at 14
+units down, 118 units less that high (21 units with the controller tabs,
+which need Steam Input and so never show in Exarust), on its keyboard view.
+
+Input follows the form's rules: the page in view is hit before the form's
+records, a record is hit on its rectangle (edges included) and then within
+two units, rules and labels without a callback let the pointer through,
+and hidden or disabled records take nothing. A left press sends the record
+the class's press (a slider takes the pointer's x, a key cell its click
+word), a move while held drags a slider or lights the held button, the
+release lands when still over it; a tab acts when it turns on. The wheel
+scrolls the Controls page by `round(delta / 120)` steps of 0.25. Each
+callback's work: a slider's step writes the draft (and the live option for
+the volume and textures) and relabels the slider from the draft; the
+super-sampling slider at a level of 1 or more sets the anti-aliasing slider
+to 0 through a reported set (so its draft becomes 0) and disables it; a
+checkbox writes its option; a key cell opens the key-read screen for its
+row; Defaults, Apply and Cancel are those of the next section, Apply and
+Cancel closing the form. Opening fills the rows as `rows` says, the
+anti-aliasing row set to 0 and disabled while super-sampling is on.
+Escape closes the form without Apply (Exarust's; the original's form has no
+key for it), as hiding the menu does: the live changes stay, the draft is
+dropped. While the key-read or warm-up screen is up the form takes no
+input. Not reproduced: the controller view (Steam Input), the power-tree
+help text box it shows, dragging the scrollbar's thumb (the wheel scrolls),
+the check box's tick glyph (an accent square stands in) and the exact skin
+draw of the check box (its box is the record's height square at its left,
+a guess). `--open-settings settings|controls` opens the form for scripted
+runs ([DEBUGGING.md](DEBUGGING.md)).
 
 ### Apply, Cancel and Defaults
 
@@ -2706,7 +2777,7 @@ Exarust applies:
 - **Controls**: the binding file's table is read and written; the page's
   22 rows (each with a key cell, Power Tree included) show the keys' names;
   a click starts a rebinding of the page's copy and the next key or mouse
-  button replaces the slot (Escape cancels); Apply commits the copy. The
+  button replaces the slot (Escape cancels); Apply commits the copy and the launcher saves it to the store at once. The
   controller-mode switch sets `InputMode` (0 or 51) for Apply and the live
   controller flag, which the running game copies into the saved bindings'
   controller flag; the player then reads the gamepad
@@ -2742,9 +2813,9 @@ sets it on every bind, so a change rewrites every loaded material's bias
 Not reproduced, for lack of the matching feature: shading quality (Exarust
 has one shader), shadow detail (no per-detail shadow path), vertex-buffer,
 mipmap, swap-copy and GI-precision switches (the GI is already the
-original's 8-bit low-precision format), the video-device and video-memory
-readouts, and the shader-cache progress screen (Bevy compiles shaders as
-needed). The controller bindings are in: the default pad table plays the
+original's 8-bit low-precision format), the video-memory figure (the
+readout says "Unknown") and the shader cache itself (Bevy compiles shaders
+as needed; the progress screen is shown). The controller bindings are in: the default pad table plays the
 game ([PLAYER.md](PLAYER.md), Gamepad); Steam's own binding screen and
 prompts are not, since Exarust does not link Steam. The aim speed is stored
 and shown but acts nowhere yet: in the original it eases the screen cursor

@@ -276,8 +276,29 @@ impl Plugin for MenuScreenPlugin {
                 Update,
                 (toggle, input, draw)
                     .chain()
+                    .in_set(MenuScreenSystems)
                     .after(crate::gui_screens::draw_screens),
             );
+    }
+}
+
+/// The menu screen's toggle, input and draw, in that order: the forms the
+/// menu opens over itself (the Settings form) read and draw after it.
+#[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct MenuScreenSystems;
+
+/// Opens the menu as F1 does: at the flow's page for its mode and session
+/// words, telling the flow it opened; without a flow, the title page.
+pub(crate) fn open_menu(menu: &mut MenuScreen, flow: Option<&mut Flow>) {
+    match flow {
+        Some(flow) => {
+            menu.game = flow.mode.word();
+            menu.session = flow.phase.word();
+            menu.state = flow.page_state();
+            menu.open_at(flow.menu_page());
+            flow.menu_opened();
+        }
+        None => menu.open(),
     }
 }
 
@@ -318,19 +339,12 @@ fn toggle(
         }
         return;
     }
-    match flow.as_mut() {
-        Some(flow) => {
-            menu.game = flow.mode.word();
-            menu.session = flow.phase.word();
-            menu.state = flow.page_state();
-            menu.open_at(flow.menu_page());
-            flow.menu_opened();
-        }
-        None => menu.open(),
-    }
+    open_menu(&mut menu, flow.as_deref_mut());
 }
 
-/// Reads the pointer and keys while the menu is open.
+/// Reads the pointer and keys while the menu is open. The Settings form,
+/// a form above the menu, takes them while it is open.
+#[allow(clippy::too_many_arguments)]
 fn input(
     mut menu: ResMut<MenuScreen>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -339,8 +353,9 @@ fn input(
     mut exit: MessageWriter<AppExit>,
     mut choices: MessageWriter<MenuChoice>,
     mut router: ResMut<MenuRouter>,
+    settings: Option<Res<crate::settings_form::SettingsForm>>,
 ) {
-    if !menu.open {
+    if !menu.open || settings.is_some_and(|settings| settings.is_open()) {
         return;
     }
     if keys.just_pressed(KeyCode::Escape) {

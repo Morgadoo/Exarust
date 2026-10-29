@@ -10,6 +10,7 @@
 //! `--no-settings` skips them.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
 use bevy::window::{Monitor, PrimaryMonitor};
@@ -28,7 +29,15 @@ pub struct UserSettings {
     /// The text settings file Apply rewrites.
     pub ini_path: PathBuf,
     pub store_path: PathBuf,
+    /// The store as the Settings form's Apply last saved it, shared with
+    /// the launcher's copy so that the exit save writes it back.
+    pub applied: AppliedStore,
 }
+
+/// The store Apply last saved (shared between the copies of
+/// [`UserSettings`]).
+#[derive(Clone, Debug, Default)]
+pub struct AppliedStore(Arc<Mutex<Option<SettingsStore>>>);
 
 impl UserSettings {
     /// The last boolean the file gave the named setting.
@@ -132,6 +141,33 @@ impl UserSettings {
             warn!("cannot write {}", self.store_path.display());
         }
     }
+
+    /// The exit's save: the store Apply last saved when there is one (the
+    /// launcher's copy predates it), else the store as launched.
+    pub fn save_store_at_exit(&self) {
+        let applied = self.applied.0.lock().ok().and_then(|saved| saved.clone());
+        match applied {
+            Some(store) => UserSettings {
+                store,
+                ..self.clone()
+            }
+            .save_store(),
+            None => self.save_store(),
+        }
+    }
+
+    /// Puts `bindings` into the store and saves it, as the original's Apply
+    /// saves its binding file at once.
+    pub fn save_bindings(&mut self, bindings: &exa_game::bindings::Bindings) {
+        if self.store.set(&BINDINGS_PATH, &bindings.encode()).is_err() {
+            warn!("cannot store the key bindings");
+            return;
+        }
+        self.save_store();
+        if let Ok(mut saved) = self.applied.0.lock() {
+            *saved = Some(self.store.clone());
+        }
+    }
 }
 
 /// Exarust's user folder.
@@ -171,6 +207,7 @@ pub fn load(project: &str) -> Option<UserSettings> {
         store: SettingsStore::new(),
         ini_path: ini.clone(),
         store_path: settings_ini::store_file(&folder, project),
+        applied: AppliedStore::default(),
     };
     // The game's first run: its one-setting save records that it happened.
     if user.last_bool("FirstRun").unwrap_or(true) {
@@ -184,6 +221,19 @@ pub fn load(project: &str) -> Option<UserSettings> {
         store: loaded.store,
         ..user
     })
+}
+
+/// Saves the bindings the Settings form's Apply committed.
+pub fn save_applied_bindings(
+    mut applied: MessageReader<exa_game::hw_config::BindingsApplied>,
+    user: Option<ResMut<UserSettings>>,
+) {
+    let Some(exa_game::hw_config::BindingsApplied(bindings)) = applied.read().last() else {
+        return;
+    };
+    if let Some(mut user) = user {
+        user.save_bindings(bindings);
+    }
 }
 
 /// Sets the GUI size once the primary display is known: the file's
@@ -229,7 +279,31 @@ mod tests {
             store: SettingsStore::new(),
             ini_path: PathBuf::new(),
             store_path: PathBuf::new(),
+            applied: AppliedStore::default(),
         }
+    }
+
+    #[test]
+    fn applied_bindings_survive_the_exit_save() {
+        use exa_game::bindings::{Action, Bindings};
+        let dir = std::env::temp_dir().join(format!("exarust-applied-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut launched = user(b"");
+        launched.store_path = dir.join("bindings.set");
+        let mut running = launched.clone();
+        let mut bindings = Bindings::default();
+        bindings.set_key(Action::Forward, 0x26);
+        running.save_bindings(&bindings);
+        // The launcher's copy never saw the change; its exit save keeps it.
+        launched.save_store_at_exit();
+        let loaded = SettingsStore::load(read_whole_file(&launched.store_path).unwrap());
+        let back = loaded
+            .store
+            .get(&BINDINGS_PATH)
+            .and_then(Bindings::decode)
+            .unwrap();
+        assert_eq!(back.key(Action::Forward), 0x26);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -512,6 +512,12 @@ pub fn binding_rows(bindings: &Bindings) -> Vec<(&'static str, String)> {
         .collect()
 }
 
+/// Apply committed the Controls page's bindings: the running game has
+/// taken them, and the host saves them as the original saves its binding
+/// file at once.
+#[derive(Message, Debug, Clone, PartialEq, Eq)]
+pub struct BindingsApplied(pub Bindings);
+
 /// The hardware configuration's plugin.
 pub struct HardwareConfigPlugin;
 
@@ -519,6 +525,7 @@ impl Plugin for HardwareConfigPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<BindingEditor>()
             .init_resource::<ShaderWarmScreen>()
+            .add_message::<BindingsApplied>()
             .add_systems(
                 Update,
                 (
@@ -996,9 +1003,10 @@ mod tests {
         assert!(config.warm_pending);
         assert_eq!(config.live.supersample, 4);
         assert_eq!(config.live.shadow_quality, 3);
-        // Hardware anti-aliasing is stored, not pushed; super-sampling was
-        // raised first, so the row ignored the slider anyway.
+        // Hardware anti-aliasing is stored, not pushed: the draft's 8
+        // samples reach the file only.
         assert_eq!(config.live.multisample, 0);
+        assert_eq!(applied.lines[8], ("HWMultisample", "8".to_string()));
         assert!(applied.quality.supersample);
         assert!(applied.quality.shadow_quality);
         assert!(applied.quality.rebuilds_shaders());
