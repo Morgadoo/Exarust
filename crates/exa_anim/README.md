@@ -17,12 +17,22 @@ The smooth ease is (3 − 2f)·f²; the fast one 1 + 0.11f − 1/(1 + 8f), the
 first sum in double and the reciprocal single, as the original computes
 them. A start that replaces Walk or Run leaves a trailing-foot request
 (`Animator::take_left_locomotion`), which the body's tick hands to its
-footwork. A limp (muscles-off) body's sampler takes the bracket at the raw
-clock, with no blend and no hold, the root keeping its travel
-(`ragdoll_bracket`, `Animator::sample_ragdoll`), leading in from the
-start's capture without ease while it aims at the capture's key and
-keeping the clock when the lead ends (`Animator::ragdoll_lead`); Exarust
-has no clip on a corpse yet. The placement's (pose-only) sampler's key
+footwork. A limp (muscles-off) body's sampler writes the progress as the raw clock
+over the last key's time and takes the bracket at the raw clock, in the
+original's branch order (the lead-in divides by the first key alone unless
+the blend is positive, no guard between the keys, a NaN clock between the
+keys), with no hold, the root keeping its travel (`ragdoll_bracket`,
+`Animator::sample_ragdoll`), leading in from the start's capture without
+ease while it aims at the capture's key and keeping the clock when the
+lead ends (`Animator::ragdoll_lead`); it slerps every turn by √run toward
+the gait overlay clip's sample (from the capture's turn while it leads in)
+and normalises them (`ragdoll_overlay`). Before sampling it takes the
+switch to a queued clip (`Animator::queued`) when the target key changes
+(`Animator::last_target`): no sample, the current targets captured for the
+new key (`Animator::capture_targets`, the original's capture of the
+targets, shared with the living sampler's switch) and the queued clip
+playing on from the same clock (`RagdollSample::Switched`). Exarust has no
+clip on a corpse and queues no clip yet. The placement's (pose-only) sampler's key
 pick is `placement_bracket` (no ease, no clamp, no guard between the keys,
 the rebase off the capture's key) with its root source
 `placement_root_from_key`, and the living sampler's switch to a queued

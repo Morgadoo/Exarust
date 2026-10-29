@@ -400,7 +400,8 @@ while the body locomotes (`steps::jolt`, `Ragdoll::jolt_told`); each jolt
 holds the latch 80 ticks, and a body off its feet takes none. The
 muscles-off sampler's rules are tested (`body_limp.rs`,
 `exa_game::limp::sample_limp`): 0.9 of the race's base rate, the clip's
-full root travel, every part's particles snapped to the pose on the frame
+full root travel, the gait overlay by √run, the height target's (2·run + 2)·scale
+while walking (2·scale otherwise) over a −500 cm floor, every part's particles snapped to the pose on the frame
 it had when the muscles went, the 0.05 height ease and the feet rule
 (`limp_foot`): not walking, every loose foot is put down where it is;
 walking with support (both kept when the muscles go,

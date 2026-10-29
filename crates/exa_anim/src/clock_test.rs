@@ -682,8 +682,12 @@ fn the_limp_sampler_brackets_at_the_raw_clock() {
     // A sample starts from the keys and keeps the root's travel.
     let mut anim = Animator::new("Default", "Walk");
     anim.time = 110.0;
-    let (pose, _) = anim.sample_ragdoll(&walk, true).unwrap();
+    let Some(RagdollSample::Pose(pose, _)) = anim.sample_ragdoll(&walk, true, None, &[]) else {
+        panic!("no sample");
+    };
     assert_eq!(pose.rotations.len(), BONES);
+    // Its progress is the raw clock over the last key's time.
+    assert_eq!(anim.progress, 110.0 / 80.0);
 }
 
 /// The limp sampler leads in from a capture while it aims at the
@@ -700,7 +704,9 @@ fn the_limp_sampler_leads_in_from_its_capture() {
     anim.ease = Ease::Smooth;
     anim.blend = 4.0;
     anim.time = 12.0;
-    let (pose, b) = anim.sample_ragdoll(&walk, true).unwrap();
+    let Some(RagdollSample::Pose(pose, b)) = anim.sample_ragdoll(&walk, true, None, &[]) else {
+        panic!("no sample");
+    };
     assert!(b.from_capture);
     // 12 / 24 = 0.5 of the way from the capture, not eased.
     assert!((b.f - 0.5).abs() < 1e-6, "{}", b.f);
@@ -708,10 +714,119 @@ fn the_limp_sampler_leads_in_from_its_capture() {
     assert!(pose.rotations[0].angle_between(half) < 1e-5);
     // Past the first key the lead ends: no capture, no blend, same clock.
     anim.time = 30.0;
-    let (_, b) = anim.sample_ragdoll(&walk, true).unwrap();
+    let Some(RagdollSample::Pose(_, b)) = anim.sample_ragdoll(&walk, true, None, &[]) else {
+        panic!("no sample");
+    };
     assert!(!b.from_capture);
     assert!(anim.capture.is_none() && !anim.leading);
     assert_eq!((anim.blend, anim.time), (0.0, 30.0));
+}
+
+/// The limp bracket's lead-in divides by the first key alone unless the
+/// blend is positive, and gives 0 when the first key's time is at most
+/// 1.19209e-7 whatever the blend; between keys the share is unguarded; a
+/// NaN clock is not in the lead-in and falls between the keys.
+#[test]
+fn the_limp_bracket_follows_the_original_branches() {
+    let walk = clip(&[20.0, 80.0], &[Vec3::ZERO, Vec3::ZERO], true);
+    // A negative blend: time / first, not time / (first + blend).
+    let b = ragdoll_bracket(&walk, 10.0, true, -4.0).unwrap();
+    assert_eq!((b.src, b.dst, b.f), (1, 0, 0.5));
+    // A first key at 0 with a blend: 0 (the old guard took 3 / 6).
+    let zero = clip(&[0.0, 80.0], &[Vec3::ZERO, Vec3::ZERO], false);
+    let b = ragdoll_bracket(&zero, 3.0, false, 6.0).unwrap();
+    assert_eq!((b.src, b.dst, b.f), (0, 0, 0.0));
+    // Two keys at the same time, reached past a negative blend: the share
+    // is not guarded (the old guard gave 0).
+    let flat = clip(&[40.0, 40.0, 90.0], &[Vec3::ZERO; 3], false);
+    let b = ragdoll_bracket(&flat, 35.0, false, -10.0).unwrap();
+    assert_eq!((b.src, b.dst), (0, 1));
+    assert_eq!(b.f, f32::NEG_INFINITY);
+    // A NaN clock: between the keys, the last pair at a NaN share.
+    let b = ragdoll_bracket(&walk, f32::NAN, true, 0.0).unwrap();
+    assert_eq!((b.src, b.dst), (0, 1));
+    assert!(b.f.is_nan());
+}
+
+/// The muscles-off overlay slerps each turn by √run toward the overlay
+/// clip's sample at the same keys (from the capture while the bracket
+/// blends from it) and normalises every turn, with or without an overlay.
+#[test]
+fn the_limp_overlay_takes_the_root_of_the_run_blend() {
+    let run = clip(&[20.0, 80.0], &[Vec3::ZERO, Vec3::ZERO], true);
+    let b = Bracket {
+        src: 0,
+        dst: 1,
+        f: 0.5,
+        from_capture: false,
+    };
+    let base = ClipPose {
+        rotations: vec![Quat::IDENTITY; BONES],
+        root: Vec3::ZERO,
+    };
+    let mut pose = base.clone();
+    ragdoll_overlay(&mut pose, None, Some((&run, 0.25)), &b);
+    let key = |k: usize| to_quat(run.keys[k].rotations[3]);
+    let over = crate::slerp(key(0), key(1), 0.5);
+    let want = crate::slerp(Quat::IDENTITY, over, 0.5).normalize();
+    assert_eq!(pose.rotations[3], want);
+    assert!(pose.rotations[3].angle_between(turn(0, 3)) < 0.03);
+    // From the capture: its turn is the overlay's source.
+    let capture = ClipPose {
+        rotations: vec![Quat::from_rotation_x(0.6); BONES],
+        root: Vec3::ZERO,
+    };
+    let mut pose = base.clone();
+    let from = Bracket {
+        from_capture: true,
+        ..b
+    };
+    ragdoll_overlay(&mut pose, Some(&capture), Some((&run, 1.0)), &from);
+    let over = crate::slerp(Quat::from_rotation_x(0.6), key(1), 0.5);
+    let want = crate::slerp(Quat::IDENTITY, over, 1.0).normalize();
+    assert_eq!(pose.rotations[3], want);
+    assert!(pose.rotations[3].angle_between(Quat::from_rotation_x(0.6)) > 0.2);
+    // No overlay: only normalised.
+    let mut pose = base.clone();
+    pose.rotations[2] = Quat::from_xyzw(0.0, 0.0, 0.0, 2.0);
+    ragdoll_overlay(&mut pose, None, None, &b);
+    assert_eq!(pose.rotations[2], Quat::IDENTITY);
+}
+
+/// A queued clip takes over when the target key changes: the sample is
+/// skipped, the current targets become the capture for the new target key
+/// (its feet noted) and the queued clip plays from the same clock and
+/// blend; the next sample leads in from that capture. With the same target
+/// key as the last sample's, the playing clip samples on.
+#[test]
+fn a_queued_clip_takes_over_the_limp_sampler_at_a_new_key() {
+    let walk = clip(&[20.0, 80.0], &[Vec3::ZERO, Vec3::ZERO], true);
+    let mut anim = Animator::new("Default", "Walk");
+    anim.time = 10.0;
+    let Some(RagdollSample::Pose(first, _)) = anim.sample_ragdoll(&walk, true, None, &[]) else {
+        panic!("no sample");
+    };
+    assert_eq!(anim.last_target, Some(0));
+    anim.queued = Some("Idle".into());
+    // Same target key (0): it samples Walk on.
+    assert!(matches!(
+        anim.sample_ragdoll(&walk, true, None, &[]),
+        Some(RagdollSample::Pose(..))
+    ));
+    assert_eq!(anim.action, "Walk");
+    // Past the first key the target is key 1: the switch.
+    anim.time = 30.0;
+    let switched = anim.sample_ragdoll(&walk, true, None, &[(5, true)]);
+    assert_eq!(switched, Some(RagdollSample::Switched));
+    assert_eq!(anim.action, "Idle");
+    assert_eq!(anim.capture_key, 1);
+    assert!(anim.leading && anim.captured_planted(5));
+    assert_eq!(anim.time, 30.0);
+    assert_eq!(
+        anim.capture.as_ref().unwrap().rotations.len(),
+        first.rotations.len()
+    );
+    assert!(anim.queued.is_none());
 }
 
 /// Every capture notes whether each foot touched; slots never noted read
