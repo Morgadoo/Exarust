@@ -94,6 +94,42 @@ pub struct IconGpuJobs {
     pub jobs: Vec<IconGpuJob>,
 }
 
+/// The frames a prepared icon waits for its materials' textures before
+/// it renders anyway (a shipped image that cannot be read keeps the 1 × 1
+/// placeholder for good).
+pub const TEXTURE_WAIT: u32 = 120;
+
+/// Whether every texture the scene's materials bind is in the image store
+/// and is not the streamed load's 1 × 1 placeholder. A GPU icon rendered before then draws the placeholder (a
+/// flat grey-white model), and the readback is kept as the icon.
+pub fn scene_textures_ready(
+    scene: &IconScene,
+    materials: &Assets<exa_render::material::ExaMaterial>,
+    images: &Assets<Image>,
+) -> bool {
+    scene.parts.iter().all(|part| {
+        let Some(material) = materials.get(&part.material) else {
+            return false;
+        };
+        [
+            &material.diffuse_map,
+            &material.normal_map,
+            &material.specular_map,
+            &material.emissive_map,
+            &material.opacity_map,
+        ]
+        .into_iter()
+        .flatten()
+        .all(|handle| {
+            // A render-world image keeps its size after its pixels go to
+            // the GPU, so the size alone tells the placeholder apart.
+            images
+                .get(handle)
+                .is_some_and(|image| image.width().max(image.height()) > 1)
+        })
+    })
+}
+
 /// How long one frame may spend decoding the textures an icon's paint job
 /// reads: a texture set's dozen textures take too long for one frame.
 pub const ICON_PAINT_BUDGET: std::time::Duration = std::time::Duration::from_millis(4);
@@ -330,6 +366,7 @@ fn paint_icon_jobs(
     mut jobs: ResMut<IconGpuJobs>,
     mut images: Option<ResMut<Assets<Image>>>,
     cache: Option<Res<ModelCache>>,
+    materials: Option<Res<Assets<exa_render::material::ExaMaterial>>>,
 ) {
     // Nothing to start: no texture scan and no change mark on the icons.
     if !icons.pending.iter().any(|pending| pending.scene.is_some()) {
@@ -348,7 +385,19 @@ fn paint_icon_jobs(
     let mut budget = start_budget(mode.gpu, jobs.jobs.len());
     let mut index = 0;
     while index < icons.pending.len() && budget > 0 {
-        if icons.pending[index].scene.is_none() {
+        let Some(scene) = icons.pending[index].scene.as_ref() else {
+            index += 1;
+            continue;
+        };
+        // The GPU camera draws what its materials bind now: an icon waits
+        // until its textures are in, so it is not baked over the
+        // placeholder.
+        if mode.gpu
+            && icons.pending[index].waited < TEXTURE_WAIT
+            && let (Some(materials), Some(images)) = (materials.as_deref(), images.as_deref())
+            && !scene_textures_ready(scene, materials, images)
+        {
+            icons.pending[index].waited += 1;
             index += 1;
             continue;
         }
@@ -890,7 +939,16 @@ mod tests {
                                     images: &mut images,
                                     bc_supported: false,
                                 };
-                                let pack = loader.object_pack(&item.model)?;
+                                // The icon's own lookup: the objects, then the
+                                // object library.
+                                let pack = [PackKind::Objects, PackKind::Objlib]
+                                    .into_iter()
+                                    .find(|&pack| {
+                                        loader
+                                            .game
+                                            .pack(pack)
+                                            .is_some_and(|a| a.get(&item.model).is_some())
+                                    })?;
                                 let model = loader.model(pack, &item.model)?;
                                 model::painted_model_stem(&model)
                             },
@@ -903,9 +961,7 @@ mod tests {
                 break;
             }
         }
-        let Some(item) = found else {
-            return;
-        };
+        let item = found.expect("the shipped database has an apparel item with a run-time part");
         let mut icons = app.world_mut().resource_mut::<PanelIcons>();
         let _ = icons.reserve(item.id, 0, Some(&catalogue));
         // The paint runs on the async pool; the icon waits for it.
@@ -935,6 +991,88 @@ mod tests {
         });
         assert!(painted, "{} keeps its unpainted materials", item.name);
         assert!(app.world().resource::<IconPainting>().tasks.is_empty());
+    }
+
+    /// A GPU icon whose model keeps its own (non-apparel) materials waits
+    /// while a texture they bind is still the streamed load's 1 × 1
+    /// placeholder, and starts once the upload has replaced it under the
+    /// same handle; the scene keeps the loaded material, no paint.
+    #[test]
+    fn a_gpu_icon_waits_for_its_materials_textures() {
+        use exa_render::material::ExaMaterial;
+        let mut app = App::new();
+        app.add_plugins(bevy::asset::AssetPlugin::default())
+            .init_asset::<Image>()
+            .init_asset::<Mesh>()
+            .init_asset::<ExaMaterial>()
+            .init_resource::<PanelIcons>()
+            .init_resource::<IconGpuJobs>()
+            .insert_resource(IconRenderMode { gpu: true })
+            .add_systems(Update, paint_icon_jobs);
+        let placeholder = Image::new_fill(
+            Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            &[128, 128, 128, 255],
+            TextureFormat::Rgba8UnormSrgb,
+            RenderAssetUsages::RENDER_WORLD,
+        );
+        let texture = app
+            .world_mut()
+            .resource_mut::<Assets<Image>>()
+            .add(placeholder);
+        let material = app
+            .world_mut()
+            .resource_mut::<Assets<ExaMaterial>>()
+            .add(ExaMaterial {
+                diffuse_map: Some(texture.clone()),
+                ..Default::default()
+            });
+        let scene = IconScene {
+            parts: vec![item_icon::IconPart {
+                mesh: Handle::default(),
+                material: material.clone(),
+                transform: Mat4::IDENTITY,
+            }],
+            ..IconScene::synthetic_quad()
+        };
+        {
+            let mut icons = app.world_mut().resource_mut::<PanelIcons>();
+            let _ = icons.reserve(0x54, 0, None);
+            icons.pending[0].scene = Some(scene);
+        }
+        for frame in 1..=3 {
+            app.update();
+            let icons = app.world().resource::<PanelIcons>();
+            assert_eq!(icons.pending[0].waited, frame);
+            assert!(app.world().resource::<IconGpuJobs>().jobs.is_empty());
+        }
+        // The streamed upload writes the real pixels under the same handle.
+        let loaded = Image::new_fill(
+            Extent3d {
+                width: 4,
+                height: 4,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            &[90, 60, 30, 255],
+            TextureFormat::Rgba8UnormSrgb,
+            RenderAssetUsages::RENDER_WORLD,
+        );
+        let _ = app
+            .world_mut()
+            .resource_mut::<Assets<Image>>()
+            .insert(texture.id(), loaded);
+        app.update();
+        assert!(app.world().resource::<PanelIcons>().pending.is_empty());
+        let jobs = app.world().resource::<IconGpuJobs>();
+        assert_eq!(jobs.jobs.len(), 1);
+        assert_eq!(jobs.jobs[0].scene.parts[0].material, material);
+        // A placeholder that never goes renders after the wait limit.
+        const { assert!(TEXTURE_WAIT > 3) };
     }
 
     #[test]
@@ -1014,6 +1152,7 @@ mod tests {
             model_flags: 0,
             scene: None,
             attempts: 0,
+            waited: 0,
         };
         let job = world.resource_scope(|world, mut images: Mut<Assets<Image>>| {
             let mut queue = bevy::ecs::world::CommandQueue::default();

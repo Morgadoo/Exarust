@@ -51,6 +51,8 @@ pub struct PendingIcon {
     pub scene: Option<IconScene>,
     /// How often the loader missed the model.
     pub attempts: u32,
+    /// The frames the prepared scene has waited for its textures.
+    pub waited: u32,
 }
 
 /// The item manager's icon atlas and cache, and the texture the panel
@@ -181,6 +183,7 @@ impl PanelIcons {
             model_flags,
             scene: None,
             attempts: 0,
+            waited: 0,
         });
         (entry + 1, (half_width, half_height))
     }

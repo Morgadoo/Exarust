@@ -1252,7 +1252,9 @@ drawing:
   the client's bottom. These are design numbers at unit 4: showing the
   form rescales it, its children and records to the live unit (Forms), so
   at unit 8 it is 488 × 1288 with border 16, the view 452 × 764 and the
-  pack 452 × 356 (their 2-pixel borders are not scaled); the player's own goes to its remembered
+  pack 452 × 356 (their 2-pixel borders are not scaled; the loot window
+  and the journal rescale the same way, 484 × 876 and 484 × 1028 at unit
+  8); the player's own goes to its remembered
   place, another character's to the screen's right less its width and four
   units. The record flag 0x1000000 lights the fourth tab record instead of
   the third; the scene is told the first of the character's items 431,
