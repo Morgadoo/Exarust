@@ -1350,8 +1350,15 @@ The sub-chunks change nodes of the object before the level uses it:
           u32 descendants, then the descendants' records (0x4c bytes each)
 ```
 
-`0x3DE0ECAC` replaces a node's local transform and then applies its own
-sub-chunks to that node's children; `0x3DE0ECDB` replaces a mesh node's
+`0x3DE0ECAC` holds the node's frame in the level (its world matrix, as
+the exporter writes it for each body part): the importer copies it over the
+node's world matrix, derives the node's local rotation from it and the
+parent's world matrix (the object's root, already at the placement, or the
+node of the record it is nested in; the local translation is left), and
+then applies its own sub-chunks to that node's children. Every exanima01
+record matches the placement composed with the model's own local
+transform to within 1 cm, so read as a local transform each node would
+land 45–90 m away; `0x3DE0ECDB` replaces a mesh node's
 position-stream elements when `count` equals the stream's count (and
 copies `word` onto the node's copy of a soft-body record, not traced). A
 record looks its node up from the node it applies to (the object's root at
@@ -1366,7 +1373,9 @@ banner's stored drape), word 0 and no trailing data; no `0x3DE0EC00`.
 Every exanima01 record resolves, and its 14 position records match their
 meshes' counts (`shipped_props_keep_their_placement_overrides`). Exarust
 parses all three into `PropAttachment` trees and applies them when the
-prop spawns, before its bodies register: transforms on the model's nodes,
+prop spawns, before its bodies register: transforms on the model's nodes
+(the record's frame seen from the node's parent at the placement, so the
+node's frame in the level is the record's),
 positions by rebuilding the object's model from its file with the new
 elements (normals recomputed from them, cached per distinct set), and an
 `0x3DE0EC00` tree's named entries under the prop's root (each entry's

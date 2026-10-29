@@ -45,14 +45,16 @@ pub use finder::{AbstractPathFinder, FALLBACK_SIZE, InstalledPathfinder};
 pub use footprint::{NavFootprints, remove_footprint, stamp_footprint};
 pub use mover::{
     CellRect, FootprintAdd, FootprintList, FootprintRect, Movers, plan_around, plan_footprint,
-    queue_moved, queued_moves, rect_around, refresh_movers, ring_contents, ring_moved,
-    start_full_refresh,
+    queue_moved, queued_moves, raise_from_movers, rect_around, refresh_movers, ring_contents,
+    ring_moved, start_full_refresh,
 };
 pub use path::{ACCEPT_GOAL_CELL, Look, Path, disturbance, find_path, find_path_with, look_ahead};
 pub use query::{LineHit, line_walk, obstacle, straight_walk};
 pub use source::NavSource;
 pub use stamp::{NavPatch, stamp_line, unstamp_line};
-pub use view::{NavOverlay, NavPlugin, NavState, PendingNav, unload_level as unload_nav};
+pub use view::{
+    MovingMesh, NavOverlay, NavPlugin, NavState, PendingNav, unload_level as unload_nav,
+};
 pub use walkable::{cost_at, layer_at, nearest_walkable};
 
 /// Edge of a cell, metres (30 cm).
@@ -453,6 +455,14 @@ impl NavGrid {
 
     /// The grid's layers and cost bytes from its voxel columns.
     pub fn from_columns(columns: &Columns) -> Self {
+        Self::from_columns_raised(columns, std::iter::empty())
+    }
+
+    /// The grid's layers from its voxel columns, its floors raised by the
+    /// moving props' sample points (world, metres;
+    /// [`mover::raise_from_movers`]), then its cost bytes, in the
+    /// original's order.
+    pub fn from_columns_raised(columns: &Columns, movers: impl IntoIterator<Item = Vec3>) -> Self {
         let (w, d) = (columns.width, columns.depth);
         let mut grid = Self::empty(w, d, columns.base as f32);
         let mut spans_found = vec![0u8; w * d];
@@ -477,6 +487,7 @@ impl NavGrid {
                 }
             }
         }
+        mover::raise_from_movers(&mut grid, movers);
         grid.derive_costs(1, 1, w.saturating_sub(2), d.saturating_sub(2));
         grid
     }

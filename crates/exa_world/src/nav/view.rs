@@ -64,6 +64,18 @@ pub enum NavState {
 #[derive(Resource)]
 struct NavBuild(Task<NavGrid>);
 
+/// A mesh node that carries a rigid body. The original's body attach sets
+/// the node's second flag word's `0x10`, and the grid build stamps no point
+/// of such a mesh unless the node is level geometry (`0x80000`, a prop
+/// placed static: `stamped`). Every such mesh's points raise the floors
+/// under it once the layers are written ([`super::raise_from_movers`]):
+/// doors, gates, levers, chains, sacks, barrels and carts.
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct MovingMesh {
+    /// The node is level geometry, so its points are stamped too.
+    pub stamped: bool,
+}
+
 /// A terrain tile's ground, on its entity.
 #[derive(Component, Clone)]
 pub struct Ground(pub Arc<GroundTile>);
@@ -106,7 +118,7 @@ fn collect_source(
     mut commands: Commands,
     pending: Option<Res<PendingNav>>,
     children: Query<&Children>,
-    points: Query<(&GiPoints, &GlobalTransform)>,
+    points: Query<(&GiPoints, &GlobalTransform, Option<&MovingMesh>)>,
     floors: Query<(&Mesh3d, &GlobalTransform), With<GiFloor>>,
     ground: Query<&Ground>,
     meshes: Res<Assets<Mesh>>,
@@ -126,8 +138,14 @@ fn collect_source(
         ..default()
     };
     for e in std::iter::once(pending.root).chain(children.iter_descendants(pending.root)) {
-        if let Ok((gi, at)) = points.get(e) {
-            source.meshes.push((gi.0.clone(), at.affine()));
+        if let Ok((gi, at, moving)) = points.get(e) {
+            let mesh = (gi.0.clone(), at.affine());
+            if moving.is_none_or(|m| m.stamped) {
+                source.meshes.push(mesh.clone());
+            }
+            if moving.is_some() {
+                source.movers.push(mesh);
+            }
         }
         if let Ok((mesh, at)) = floors.get(e)
             && let Some(floor) = floor_mesh(meshes.get(&mesh.0), at.affine())
@@ -139,10 +157,11 @@ fn collect_source(
         }
     }
     info!(
-        "navigation grid: {} × {} cells from {} meshes' points, {} floor meshes, {} terrain tiles",
+        "navigation grid: {} × {} cells from {} meshes' points, {} meshes with bodies, {} floor meshes, {} terrain tiles",
         source.width,
         source.depth,
         source.meshes.len(),
+        source.movers.len(),
         source.floors.len(),
         source.ground.len()
     );

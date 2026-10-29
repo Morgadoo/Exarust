@@ -38,7 +38,9 @@ twenty-cell rim in as one rectangle. With no grid there
 is no path.
 
 Evidence: reverse engineering of `Exanima.exe` 0.9.5 (the grid build, its
-span, layer and cost passes, the scene fields it reads, the level loader),
+span, layer and cost passes, the moving props' raise, the sector mesh
+registration and the body attach it reads, the scene fields, the level
+loader),
 and the installed levels (`exa-tool nav`, the corpus test
 `exa_world::nav::tests::shipped_levels`).
 
@@ -80,6 +82,14 @@ In order:
    voxel it rounds to: cell `round(x/30 − ½ + W/2)`, voxel
    `round((y − base)/10 + ½)`, ties to even. Points on the grid's border
    cells or outside voxels 0–254 mark nothing. Character bodies never mark.
+   The build walks every mesh registered in every sector (the scene's own
+   first, then the rooms; registration takes a node's whole subtree). A
+   mesh whose node carries a rigid body marks nothing unless the node is
+   level geometry (node flag `0x80000`, a prop placed static): attaching a
+   body to its node (when the body is read with the node and when an
+   object's instance copies it) sets the node's second flag word's `0x10`,
+   and the stamp skips a node with that bit unless the first word has
+   `0x80000`. Such meshes raise floors instead ([Moving props](#moving-props)).
 3. **Floors.** Tile-grid cells' floors (the floor set's pieces and the wall
    pieces' `+F` strips) store no points. The original generates them for
    each cell's merged `+Floor` mesh: one ray per 10 cm column takes the
@@ -130,6 +140,26 @@ the result:
 The top span is the **upper layer** and the second the **lower layer**; a
 single span is the lower layer; a third span is dropped. Each layer keeps
 a floor byte and an underside byte per cell.
+
+## Moving props
+
+Once the layers are written, and before the cost passes, every registered
+mesh with points whose node carries a rigid body (of class `0x10000000`,
+which every shipped body has; character parts, marked `0x400`, never)
+raises the floors under it, level geometry or not. Each point goes through
+the node's world matrix, pre-scaled so that x and z come out in cells
+(`/30 − ½ + W/2`) and y in voxels (`·0.1 + ½ − base·0.1`), rounded to the
+nearest. A point in cells 1 to `W − 3` (and `D − 3`) and voxels 0–254
+raises its cell, one point after another, by the refresh's rule: a missing
+lower floor takes any higher point; a point less than fifteen above the
+lower floor takes it; one fifteen or more above, or at or under the lower
+slab's underside, raises the upper floor when that is missing or the point
+is less than fifteen above it. Only the current floors change: the floors
+as built, which the refresh starts from, stay. So a sack or a barrel turns
+its cells into a step, a table gives an upper floor over the one under it,
+and a door leaf, whose points stand a voxel apart, walks its doorway's
+floor up to its top: **a closed door blocks the grid** until it moves and
+the refresh puts the floors back.
 
 ## Cost
 
@@ -279,37 +309,42 @@ from the level's start by the planner's step rules: under 50 cm up, under
 
 | level | cells | floor cells (lower, upper) | open sky (lower, upper) | reached from the start |
 |---|---|---|---|---|
-| `arena` | 640 × 640 | 1941, 0 | 533, 0 | 1860 |
-| `arenao1` | 640 × 640 | 14684, 3676 | 2874, 270 | 5006 |
-| `exanima01` | 640 × 800 | 219539, 825 | 101540, 105 | 191331 |
+| `arena` | 640 × 640 | 1956, 10 | 516, 0 | 1861 |
+| `arenao1` | 640 × 640 | 14677, 3678 | 2867, 270 | 5005 |
+| `exanima01` | 640 × 800 | 220850, 2279 | 99982, 83 | 46113 |
 
-In exanima01 the walk from the start reaches the foot of the stair room
-(8.9, −1, 64), whose floor reads voxel 211, a metre under the corridors,
-down steps of 10–20 cm. Its terrain fills only its 682 flagged blocks: of
-the cells over its 477 closed grid cells (the rock between the rooms) 1555
-keep a floor, at the walls' edges and where props' node overrides (nested
-ones included) stamp their points. Filling the whole tiles instead (what
-Exarust did before `build-nav-terrain-only-where-blocks-are`) made the
-rock's ground, at about 0, floor too: 186 721 such cells, and a walk from
-the start reaching 338 602 cells. arenao1 fills its 34 flagged blocks of
+In exanima01 the start's rooms are closed by their doors, whose leaves
+raise the doorways' floors ([Moving props](#moving-props)): the walk from
+the start meets 46 113 cells. On the floors as built (every body away, as
+when the doors stand open) it meets 195 049 and reaches the foot of the
+stair room (8.9, −1, 64), whose floor reads voxel 211, a metre under the
+corridors, down steps of 10–20 cm. Before `place-node-records-in-the-level-frame`
+the doors' leaves, like every node a placement's records move, stood
+45–90 m from their doorways, so the doorways were open (191 331 cells).
+Its terrain fills only its 682 flagged blocks: of the cells over its 477
+closed grid cells (the rock between the rooms) 1120 keep a floor, at the
+walls' edges (1555 while the records heaped props in the rock). Filling
+the whole tiles instead (what Exarust did before
+`build-nav-terrain-only-where-blocks-are`) made the rock's ground, at
+about 0, floor too: 186 721 such cells. arenao1 fills its 34 flagged blocks of
 its one tile. The counts follow the terrain's height pass over every
 material a tile uses (`layer-every-terrain-material`); with only the four
 heaviest, arenao1 reached 5050 cells and exanima01 190 954.
 
 Not reproduced, with what it changes:
 
-- The original stamps the meshes of the scene's top-level objects' direct
-  children only, and skips nodes flagged `0x10` in their second flag word
-  unless their first has `0x80000`. Exarust stamps every mesh node with
-  points under the level root, as its GI does (30 of the 3310 meshes with
-  points carry the flag, mostly creature parts).
+- The stamp skips nodes flagged `0x10` in their second flag word unless
+  their first has `0x80000`. Exarust applies it to the nodes whose rigid
+  body sets the bit, not to the 30 of the 3310 Resource meshes with points
+  that carry it in their file (mostly creature parts), which it stamps.
 - The original also gives some floor-set details (children of the
   centre-floor variants flagged `0x10000` or `0x8`) generated surface
   points; Exarust takes them only into the floor's heightfield, as its GI
   does.
-- Moving props (physics bodies) raise the floors they stand on in the
-  original's build; Exarust's props are all static level geometry until
-  props become bodies, so they mark voxels instead.
+- The original's refresh puts a moved body's cells back when it moves
+  (a door opened, a sack kicked away); Exarust builds the grid once per
+  level and does not queue its moving bodies, so an opened door's doorway
+  stays raised until the level loads again.
 - Each cell's floor points come from all tile-grid floors over its columns
   rather than from its own merged mesh; they differ only where two cells'
   floors overlap.

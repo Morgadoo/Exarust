@@ -10,7 +10,7 @@ use bevy::math::Affine3A;
 use bevy::prelude::*;
 use exa_assets::{GameData, ModelCache, ModelLoader};
 
-use super::view::{Ground, PendingNav, floor_mesh};
+use super::view::{Ground, MovingMesh, PendingNav, floor_mesh};
 use super::{NavGrid, NavSource};
 use crate::gi_volume::{GiFloor, GiPoints};
 
@@ -68,7 +68,13 @@ pub fn level_source(game: &GameData, name: &str) -> Option<HeadlessLevel> {
         };
         globals.insert(e, global);
         if let Some(gi) = entity.get::<GiPoints>() {
-            source.meshes.push((gi.0.clone(), global));
+            let moving = entity.get::<MovingMesh>();
+            if moving.is_none_or(|m| m.stamped) {
+                source.meshes.push((gi.0.clone(), global));
+            }
+            if moving.is_some() {
+                source.movers.push((gi.0.clone(), global));
+            }
         }
         if entity.contains::<GiFloor>()
             && let Some(mesh) = entity.get::<Mesh3d>()

@@ -53,6 +53,10 @@ pub struct NavSource {
     /// Static meshes' GI sample points (their own space, metres) with
     /// their world transforms.
     pub meshes: Vec<(Arc<Vec<Vec3>>, Affine3A)>,
+    /// The meshes that carry a rigid body ([`super::view::MovingMesh`]):
+    /// their points raise the floors they stand over once the layers are
+    /// written (those of level geometry are in `meshes` too).
+    pub movers: Vec<(Arc<Vec<Vec3>>, Affine3A)>,
     /// The tile grid's floor meshes.
     pub floors: Vec<FloorMesh>,
     /// The terrain tiles the level builds, with their blocks.
@@ -78,7 +82,9 @@ pub fn grid_base(grid_top: f32) -> f32 {
 }
 
 impl NavSource {
-    /// Builds the grid: terrain, then the meshes' points, then the floors'.
+    /// Builds the grid: terrain, then the meshes' points, then the floors';
+    /// the points of the meshes with bodies raise the floors before the cost
+    /// passes.
     pub fn build(&self) -> NavGrid {
         let mut columns = Columns::new(self.width, self.depth, self.base);
         for ground in &self.ground {
@@ -92,7 +98,11 @@ impl NavSource {
         for p in floor_points(self.floors.iter().flat_map(FloorMesh::triangles)) {
             columns.stamp(p, FLOOR_LIFT);
         }
-        NavGrid::from_columns(&columns)
+        let movers = self
+            .movers
+            .iter()
+            .flat_map(|(points, at)| points.iter().map(move |&p| at.transform_point3(p)));
+        NavGrid::from_columns_raised(&columns, movers)
     }
 }
 
