@@ -532,6 +532,111 @@ pub fn bracket(clip: &Clip, lead: f32, looping: bool) -> Option<Bracket> {
     })
 }
 
+/// The pose-only sampler's (the placement's) key pick, as its
+/// instructions take it: the progress, the bracket, and whether the clip
+/// rebases.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlacementBracket {
+    /// (time − blend) / the last key's time, written first, unguarded.
+    pub progress: f32,
+    pub bracket: Bracket,
+    /// The target key is not the capture's: the capture is dropped, the
+    /// clock loses the blend and the blend clears.
+    pub rebase: bool,
+}
+
+/// The pose-only sampler's bracket of `clip` at clock `time` with lead-in
+/// `blend`, aiming from the capture while the target key is
+/// `capture_key`. With t′ = time − blend:
+///
+/// * t′ at or under the first key (a NaN is not): from key 0 (the last
+///   when `looping`) to key 0 by time / (first + blend), 0 when the first
+///   key's time is at most 1.19209e-7; no ease (the living sampler eases
+///   the capture's blend, this one does not).
+/// * t′ at or past the last key: looping, from the last to key 0 by
+///   (t′ − last) / first; otherwise the last key held.
+/// * between: the first key k ≥ 1 with t′ at or under its time, from k − 1
+///   by (t′ − T(k−1)) / (T(k) − T(k−1)). A NaN finds none (the
+///   original's indices are then whatever its registers held); this keeps
+///   the last pair at a NaN share.
+///
+/// No share is clamped or guarded (unlike [`bracket`]'s). The source is
+/// the capture when the target key is `capture_key`; otherwise the clip
+/// rebases. None for a clip without keys.
+pub fn placement_bracket(
+    clip: &Clip,
+    time: f32,
+    blend: f32,
+    looping: bool,
+    capture_key: Option<usize>,
+) -> Option<PlacementBracket> {
+    let keys = &clip.keys;
+    let n = keys.len();
+    let (first, last) = (keys.first()?.time, keys.last()?.time);
+    let progress = (time - blend) / last;
+    let lead = time - blend;
+    let (src, dst, f) = if lead <= first {
+        let src = if looping { n - 1 } else { 0 };
+        let f = if first > EPSILON {
+            time / (first + blend)
+        } else {
+            0.0
+        };
+        (src, 0, f)
+    } else if lead >= last {
+        if looping {
+            (n - 1, 0, (lead - last) / first)
+        } else {
+            (n - 1, n - 1, 0.0)
+        }
+    } else {
+        match (1..n).find(|&k| lead <= keys[k].time) {
+            Some(k) => {
+                let before = keys[k - 1].time;
+                (k - 1, k, (lead - before) / (keys[k].time - before))
+            }
+            None => (n.saturating_sub(2), n - 1, f32::NAN),
+        }
+    };
+    let from_capture = capture_key == Some(dst);
+    Some(PlacementBracket {
+        progress,
+        bracket: Bracket {
+            src,
+            dst,
+            f,
+            from_capture,
+        },
+        rebase: !from_capture,
+    })
+}
+
+/// Where the pose-only sampler takes its root from: the source key's
+/// root, even while the bones blend from the capture, when the body has
+/// its muscles and the clip is one of the first three (Walk, Run,
+/// Backpedal; their travel is then cut); the bracket's source (the
+/// capture's root while blending from it) otherwise.
+pub fn placement_root_from_key(muscles: bool, action: Option<usize>) -> bool {
+    muscles && action.is_some_and(|a| a < 3)
+}
+
+/// The living sampler's switch to a queued clip: when the clip queued is
+/// not the one playing and this tick's target key differs from the last
+/// tick's, the sampler does not sample. It clears every foot's contact
+/// bits, captures the current targets at the clock, takes this target key
+/// as the capture's key and makes the queued clip the playing one; the
+/// next tick blends from that capture. Otherwise it samples and the
+/// target key is remembered. Exarust starts clips at once and keeps no
+/// queued clip, so nothing calls this.
+pub fn switches_to_queued(
+    queued: usize,
+    playing: usize,
+    target: usize,
+    last_target: usize,
+) -> bool {
+    queued != playing && target != last_target
+}
+
 /// The gait overlay step of a sample: each bone's turn is slerped by
 /// `weight` (clamped to 0..=1) toward `over`'s sample at the same keys as
 /// the bracket's and the same share of the way between them. The root is

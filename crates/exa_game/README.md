@@ -470,7 +470,8 @@ original's per-part pipeline (the Run clip overlaid on the Walk by
 0.7 × the run blend, or by the blend with the sprint latch), the spine
 turned by the torso twist (the lumbar half), the head turned toward the
 look by its ramping weight (its anchors then on the physical thorax), the
-thorax hunch on its pinned part, the foot pitched to the ground (a
+thorax hunch on its pinned part's own placement after the twist (its
+head and arms keep theirs), the foot pitched to the ground (a
 20 cm toe, eased 0.01 rad a tick from the height the IK wrote) and the leg
 IK's knee, hip and thigh turns folded into the clip chain (the standing
 IK while it stands, the locomotion IK while it moves); the

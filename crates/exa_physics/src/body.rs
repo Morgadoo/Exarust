@@ -70,10 +70,15 @@ pub use hunch::{ease_hunch, hunch_applies, hunch_turn, step_hunch};
 mod feet;
 #[path = "body_stagger.rs"]
 pub mod stagger;
+pub use feet::{DOWN_PROBE_RADIUS, DOWN_PROBE_REACH, down_probe_ground, down_probe_origin};
 pub use feet::{
     FLAT_FLOOR_FOOT, FeetMode, FlatFloorLeg, HOVER_PROBE_MISS_RISE, HOVER_PROBE_RADIUS,
     HOVER_PROBE_REACH, HOVER_PROBE_RISE, HoverProbe, feet_mode, flat_floor_leg, flat_floor_target,
 };
+#[path = "body_placement.rs"]
+pub mod placement;
+#[path = "body_pose_heights.rs"]
+pub mod pose_heights;
 pub use feet::{
     FootSound, WalkRustle, anchor_rustle, release_step, release_step_clock, walk_rustle,
     wet_release_step,

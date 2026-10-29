@@ -1424,6 +1424,28 @@ impl HoverProbe {
     }
 }
 
+/// The down body's ground probe (the body tick, condition with the
+/// off-feet bit 0x200): one sphere of this radius (cm) cast this far (cm)
+/// straight down.
+pub const DOWN_PROBE_RADIUS: f32 = 10.0;
+pub const DOWN_PROBE_REACH: f32 = 2000.0;
+
+/// Where the down body's probe starts: the pelvis's position plus the
+/// world translation of the zone its scene node hangs under (the level
+/// sector's origin), per component in single precision. Exarust's levels
+/// share one world frame, where that origin is zero.
+pub fn down_probe_origin(pelvis: Vec3, zone_origin: Vec3) -> Vec3 {
+    pelvis + zone_origin
+}
+
+/// The down body's ground after its probe: a hit's height replaces the
+/// body's ground, a miss keeps it; the previous ground then takes the
+/// ground either way. Returns (ground, previous ground).
+pub fn down_probe_ground(ground: f32, hit: Option<f32>) -> (f32, f32) {
+    let ground = hit.unwrap_or(ground);
+    (ground, ground)
+}
+
 #[cfg(test)]
 #[path = "body_feet_test.rs"]
 mod tests;

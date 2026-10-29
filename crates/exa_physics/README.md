@@ -290,6 +290,18 @@ does not raise the lift (`src/body_lift.rs`). The feet routine's two other modes
 tested rules (`feet_mode`): a flat floor (every ground 0, the pelvis aimed
 10 cm under its standing height, `flat_floor_leg`) and a hovering race's
 single probe under the pelvis, 5 cm higher after each miss (`HoverProbe`).
+A down body's ground probe in the body tick is a tested rule too
+(`down_probe_origin`, `down_probe_ground`): one 10 cm sphere cast 2000 cm
+straight down from the pelvis plus its zone's origin (zero in Exarust's one
+world frame); a hit is the ground and the previous ground, a miss keeps
+both. The samplers' heights (`body::pose_heights`: the stand height over
+the lowest posed contact, the leg reach, the placement's and the living
+sampler's pelvis targets) and the placement routines' arithmetic
+(`body::placement`: the pose lowered by the pelvis's posed height and put
+on the frame, the foot anchors on the ground or at a matrix, the matrix
+pins 5 cm lower, the means) are tested against the original's
+instructions and not called: the carry aims the pelvis from the feet, and
+the spawn places the clip pose on the character frame.
 A golem's body links are smoothed at 0.995 (`Ragdoll::smooth_golem_links`,
 from `RaceMuscles::golem`); the init's leg order is `legs_swap`. A body
 that stands has no locomotion drive (`stand` clears it). A standing leg bends onto

@@ -791,3 +791,67 @@ fn leaving_walk_or_run_asks_for_the_trailing_foot() {
     anim.start("Walk", true, None, 0, Ease::Linear);
     assert!(!anim.take_left_locomotion());
 }
+
+/// The pose-only sampler's key pick: the lead-in by time / (first +
+/// blend) from the capture while it aims at the capture's key, unclamped
+/// and unguarded between the keys, the loop back to key 0 past the last.
+#[test]
+fn the_placement_bracket_follows_the_pose_only_sampler() {
+    let roots = [Vec3::ZERO; 3];
+    let held = clip(&[10.0, 20.0, 40.0], &roots, false);
+    // Lead-in: t′ = 4 under the first key; f = 9 / (10 + 5), no ease.
+    let b = placement_bracket(&held, 9.0, 5.0, false, Some(0)).unwrap();
+    assert_eq!(b.progress, 4.0 / 40.0);
+    assert_eq!((b.bracket.src, b.bracket.dst), (0, 0));
+    assert_eq!(b.bracket.f, 9.0 / 15.0);
+    assert!(b.bracket.from_capture && !b.rebase);
+    // Between the keys: the capture's key is past, so it rebases.
+    let b = placement_bracket(&held, 30.0, 0.0, false, Some(0)).unwrap();
+    assert_eq!((b.bracket.src, b.bracket.dst, b.bracket.f), (1, 2, 0.5));
+    assert!(!b.bracket.from_capture && b.rebase);
+    // Past the end a clip played once holds its last key...
+    let b = placement_bracket(&held, 55.0, 0.0, false, None).unwrap();
+    assert_eq!((b.bracket.src, b.bracket.dst, b.bracket.f), (2, 2, 0.0));
+    // ...a looping one blends back to key 0, unclamped.
+    let b = placement_bracket(&held, 65.0, 0.0, true, None).unwrap();
+    assert_eq!((b.bracket.src, b.bracket.dst, b.bracket.f), (2, 0, 2.5));
+    // The lead-in of a looping clip comes from its last key.
+    let b = placement_bracket(&held, 5.0, 0.0, true, None).unwrap();
+    assert_eq!((b.bracket.src, b.bracket.dst, b.bracket.f), (2, 0, 0.5));
+    // A first key at time 0 gives no share.
+    let flat = clip(&[0.0, 20.0], &roots[..2], false);
+    assert_eq!(
+        placement_bracket(&flat, 0.0, 0.0, false, None)
+            .unwrap()
+            .bracket
+            .f,
+        0.0
+    );
+    // Where both agree, the shared bracket gives the same pick.
+    for t in [3.0, 15.0, 39.0] {
+        let p = placement_bracket(&held, t, 0.0, false, None)
+            .unwrap()
+            .bracket;
+        let q = bracket(&held, t, false).unwrap();
+        assert_eq!((p.src, p.dst, p.f), (q.src, q.dst, q.f), "{t}");
+    }
+}
+
+/// The root comes from the source key for Walk, Run and Backpedal with
+/// muscles on, from the bracket's source otherwise.
+#[test]
+fn the_placement_root_comes_from_the_key_for_the_gaits() {
+    assert!(placement_root_from_key(true, Some(0)));
+    assert!(placement_root_from_key(true, Some(2)));
+    assert!(!placement_root_from_key(true, Some(3)));
+    assert!(!placement_root_from_key(false, Some(1)));
+    assert!(!placement_root_from_key(true, None));
+}
+
+/// A queued clip takes over only on a tick whose target key changed.
+#[test]
+fn a_queued_clip_waits_for_a_new_target_key() {
+    assert!(switches_to_queued(4, 3, 2, 1));
+    assert!(!switches_to_queued(4, 3, 2, 2));
+    assert!(!switches_to_queued(3, 3, 2, 1));
+}

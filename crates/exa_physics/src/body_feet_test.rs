@@ -1361,3 +1361,17 @@ fn the_hovering_probe_rises_after_a_miss() {
     let p = HoverProbe { raise: 5.0 };
     assert_eq!(p.start(0.1), (0.1_f32 + 20.0) + 5.0);
 }
+
+/// A down body probes from its pelvis plus its zone's origin; a hit is its
+/// ground and its previous ground, a miss keeps the ground for both.
+#[test]
+fn the_down_probe_keeps_the_ground_on_a_miss() {
+    assert_eq!(DOWN_PROBE_RADIUS, 10.0);
+    assert_eq!(DOWN_PROBE_REACH, 2000.0);
+    assert_eq!(
+        down_probe_origin(Vec3::new(1.0, 30.0, -2.0), Vec3::new(100.0, 0.5, 0.0)),
+        Vec3::new(101.0, 30.5, -2.0)
+    );
+    assert_eq!(down_probe_ground(12.0, Some(-3.0)), (-3.0, -3.0));
+    assert_eq!(down_probe_ground(12.0, None), (12.0, 12.0));
+}
