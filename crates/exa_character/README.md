@@ -266,10 +266,20 @@ tested rules of their own.
   word and set `0x80000`, `*` placeholders clear their value and set `0x10`.
   `attach_plan` is the attach pass over the equip pass: the main hand's
   weapon, then one off-hand item (a shield from either hand first, else
-  hand 1's torch, else its second weapon); a weapon's hand flag lights it
-  and the last weapon's sets the character's flipped grip
-  (`holds_flipped`; the dresser's `HeldFlipped` builds the grip at that
-  end of the flip). The appearance editor's hair refresh (`hair_rebuild`)
+  hand 1's torch, else its second weapon). Each weapon-section item's own
+  `0x2000000` hand flag starts it on its flipped side (`item_flipped`; the
+  main weapon's gives the dresser's `HeldFlipped`, a second weapon's its
+  `OffHeld::flip`), and the last weapon's `0x1000000` sets the character's
+  half-sword hold (`half_sword`, the `HalfSword` marker: its weapon records
+  are built heavier and less balanced, without the two-hand factor).
+  `offhand::insert_equipped` puts all of it on a spawned model, for the
+  scene bodies (arena fighters) and a level's living placed characters,
+  whose shields and second weapons are now drawn and held (27 shields and
+  12 second weapons over the 13 shipped levels with characters; four in
+  `exanima04`); the dead keep the moveset's hands but hang nothing, as the
+  corpse spawn equips without attaching. The off-hand torch is not hung:
+  the equip pass leaves it on its unflipped (unlit) side and Exarust's
+  carried torch always burns; no shipped level places one. The appearance editor's hair refresh (`hair_rebuild`)
   always removes a body's hair and grows the style again only for a race
   with hair whose head word lacks bit 1; the scene attach and registration
   are the caller's. The viewer still stands living placed characters on the ground and does
@@ -327,8 +337,9 @@ tested rules of their own.
   (started by a `FlipWeaponRequest` for the character's entity, refused
   while the character switches or the weapon section has no flipped-side
   kind byte) and rebuilds its `Blade` record from the flipped weapon
-  section, and a weapon a hand flag says starts flipped is placed half a
-  turn about y and built from the flipped side at once. A dead holder's
+  section, and a weapon whose own hand flag (`0x2000000`) says it starts
+  flipped is placed half a turn about y and built from the flipped side
+  at once. A dead holder's
   grip links are left as they are (the corpse keeps its weapon; death's
   strength-1 write belongs to the lower legs' limit links); a collapsing
   holder lets its weapons and torch go

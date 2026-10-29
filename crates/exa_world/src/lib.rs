@@ -312,6 +312,8 @@ pub struct HandItem {
     pub weapon: Option<exa_formats::objdb::Weapon>,
     /// It blocks as a shield.
     pub shield: bool,
+    /// Its shield record (block factors), when it has one.
+    pub shield_record: Option<exa_formats::weapon_record::ShieldRecord>,
     /// It has the torch section.
     pub torch: bool,
 }
@@ -358,6 +360,7 @@ pub fn record_look<'a>(
             model: item.model.clone(),
             weapon: item.weapon,
             shield: item.shield.is_some(),
+            shield_record: item.shield,
             torch: item.torch,
         })
     };

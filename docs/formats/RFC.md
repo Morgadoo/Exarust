@@ -1037,8 +1037,11 @@ profession (bit 0 female, byte 1 race, `0x0100_0000` while the second
 weapon set is out; one record sets `0x40`, another `0x10000`, and the
 reader keeps those bits), last locale, four held items {id, flags} (the
 out set's main and off hand, then the stowed set's; flags `0x0100_0000`
-flipped, `0x0200_0000` a lit light; none of the 477 level records sets a
-hand flags word or the second-set bit), then the worn items: `i32 n` and
+the character's half-sword hold (the last weapon's flag wins) and
+`0x0200_0000` the item's flipped side (the character build sets the held
+item's flip byte and builds its weapon record from the side six bytes
+on), both read for weapon-section items only; none of the 477 level
+records sets a hand flags word or the second-set bit), then the worn items: `i32 n` and
 n × {id, flags}. The flags beside the items are part of the record and
 are kept; in the inventory, bit `0x100` marks a copy that goes with the
 hands. Ids with `0x80000000` refer to the
