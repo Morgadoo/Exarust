@@ -16,7 +16,8 @@ the crates; shares of partial routines are estimates, not instruction-level diff
 day after the character-init presets, the grip and block-stamina re-check and the balance
 routine's foot sounds (see Corrections), after the wiring lane (live column), and after the
 kernel lane (the damage routine's pain sounds, the feet routine's modes, the init's golem links
-and leg order, the standing body's drive).
+and leg order, the standing body's drive), and after the sampler lane (the samplers' heights, the
+pose-only key pick, the placement arithmetic, the down body's probe, the living hunch).
 
 ## Totals
 
@@ -28,23 +29,24 @@ and leg order, the standing body's drive).
 | n.a. | 5 | 896 |
 | all | 100 | 123,719 |
 
-Weighted by the partial shares, about **92,175 of 122,823 needed bytes (75 %)** are reproduced (n.a. routines left out; counting the partial routines' shares, 71,719 of their 101,464 bytes). Counting only what the running game calls, about **80,760 bytes (66 %)**; the rest is tested but not wired.
+Weighted by the partial shares, about **95,247 of 122,823 needed bytes (78 %)** are reproduced (n.a. routines left out; counting the partial routines' shares, 74,791 of their 101,464 bytes). Counting only what the running game calls, about **80,760 bytes (66 %)**; the rest is tested but not wired.
 The wiring lane made Break Tangle (#38, 370 B), the swing voice of #34 (about 450 B) and the held-voice fade in #49 (about 100 B) live (about 80,400 B). The kernel lane then added about 1,670 B reproduced (the pain sounds and player jolt of #8, the feet modes of #50, the leg order of #73: tested only) and about 360 B live (the standing body's drive reset in #49, the golem link smoothing of #73, and the init's foot-mask union, which was live but not credited).
+The sampler lane added about 3,070 B reproduced, tested only: the pose-only sampler's key pick, root source and height tail (#76, about 890 B), the living sampler's height tail and queued-clip switch (#81, about 880 B), the down body's probe (#49, about 150 B) and the placement routines' part, anchor, pin and mean arithmetic (#62 about 715 B, #58 about 440 B). Its one live change, the living hunch moved onto the thorax's own placement (#81), corrects code that was already credited, so the live total stays.
 
 ## Largest remaining work
 
 | routine | size | left (est.) | role | missing |
 |---|---|---|---|---|
-| #49 | 20,293 | 5,885 | Body tick kernel: prologue, impacts and burn, ramps, daze, links, behaviour, posture, attack, move/stop, turn, locomotion, twist and head, sampler, frame, carry, balance and feet calls | the down body's ground probe, some state flags |
+| #49 | 20,293 | 5,735 | Body tick kernel: prologue, impacts and burn, ramps, daze, links, behaviour, posture, attack, move/stop, turn, locomotion, twist and head, sampler, frame, carry, balance and feet calls | the down body's probe not called; some state flags |
 | #8 | 13,157 | 2,631 | Damage routine: impact speed, zones, armour roll, channels, daze, block/clash/parry branches, bite, follow-through, sounds, blood, knockback, kill | bite link not attached; pain sounds and player jolt ported but not wired; script hook and callbacks; struck-item sound not called |
-| #76 | 3,562 | 2,315 | Pose-only sampler (spawn and placement) | femur posture, half twist, hunch, anchors, contacts, heights |
-| #50 | 7,185 | 1,336 | Feet routine: friction, height probe, smoothed ground, sole floor, anchor smoothing, pelvis target, support, lift servo and leg IK calls | flat-floor and hovering modes ported but not wired; some thresholds unverified |
-| #81 | 8,782 | 1,756 | Living sampler (muscles on) | head tilt and exertion read 0, dead jump branch, rebase capture |
-| #62 | 2,042 | 1,736 | Placement on the ground (teleport with snap) | the outer sequence |
-| #73 | 5,423 | 1,247 | Character init: rates, masses, gains, leg sides, placement, techniques, race and class presets, sounds, voice pitch, leg reach, head set-up | leg swap ported but not called; ghoul head-part set-up; gait scale check |
 | #18 | 8,061 | 1,612 | Balance routine: lean, score and counter, recovery steps and episodes, footwork and stance pick, grounds, support, landing and footstep sounds | foot sounds ported but not wired; nav calls; parity unverified block by block |
-| #58 | 2,194 | 1,426 | Placement at a matrix (spawn, teleport, saves, arena) | re-placing a living body, field resets, contact offsets, cloth, behaviour hook |
+| #76 | 3,562 | 1,425 | Pose-only sampler (spawn and placement) | the per-part routing (femur posture, half twist, head on the untwisted chain, hunch on the thorax alone) and the anchors as one pass; key pick and heights ported but not called |
 | #82 | 4,499 | 1,350 | Muscles-off sampler | hold, anchors; not scheduled |
+| #50 | 7,185 | 1,336 | Feet routine: friction, height probe, smoothed ground, sole floor, anchor smoothing, pelvis target, support, lift servo and leg IK calls | flat-floor and hovering modes ported but not wired; some thresholds unverified |
+| #73 | 5,423 | 1,247 | Character init: rates, masses, gains, leg sides, placement, techniques, race and class presets, sounds, voice pitch, leg reach, head set-up | leg swap ported but not called; ghoul head-part set-up; gait scale check |
+| #62 | 2,042 | 1,021 | Placement on the ground (teleport with snap) | the sequence around the arithmetic (headings, standing points, particle copy, cloth and attached bodies); not called |
+| #58 | 2,194 | 987 | Placement at a matrix (spawn, teleport, saves, arena) | re-placing a living body, field resets, cloth, behaviour hook; anchors and pins ported but not called |
+| #81 | 8,782 | 878 | Living sampler (muscles on) | exertion reads 0, dead jump branch, the queued-clip switch and the height tail ported but not called |
 
 ## Map
 
@@ -98,7 +100,7 @@ The wiring lane made Break Tangle (#38, 370 B), the swing voice of #34 (about 45
 | 46 | 472 | Femur posture (thigh turn about the femur axis) | `exa_physics body.rs femur_posture_turn`; `exa_game stages/sampler.rs femur_posture` | done | - | yes |
 | 47 | 147 | Can-locomote gate | `exa_physics body_locomotion.rs gates`; `motile.rs action_ready` | done | - | yes |
 | 48 | 41 | String release thunk (runtime library cleanup) | - | n.a. | - | n.a. |
-| 49 | 20,293 | Body tick kernel: prologue, impacts and burn, ramps, daze, links, behaviour, posture, attack, move/stop, turn, locomotion, twist and head, sampler, frame, carry, balance and feet calls | `exa_physics body_stages.rs, grip.rs HeldGrip::relax, flip_step, body_gait.rs stand`; `exa_character grip_runtime.rs`; `exa_game stages/*, balance.rs`; `exa_combat regen (ShieldStamina), condition, swing, parry, collapse` | partial (71 %) | the down body's ground probe under the pelvis; some state flags | yes |
+| 49 | 20,293 | Body tick kernel: prologue, impacts and burn, ramps, daze, links, behaviour, posture, attack, move/stop, turn, locomotion, twist and head, sampler, frame, carry, balance and feet calls | `exa_physics body_stages.rs, grip.rs HeldGrip::relax, flip_step, body_gait.rs stand, body_feet.rs down_probe_origin, down_probe_ground`; `exa_character grip_runtime.rs`; `exa_game stages/*, balance.rs`; `exa_combat regen (ShieldStamina), condition, swing, parry, collapse` | partial (72 %) | the down body's probe is not called (no Exarust ground field takes it; the sphere cast is the stand-in of #2); some state flags | yes (probe no) |
 | 50 | 7,185 | Feet routine: friction, height probe, smoothed ground, sole floor, anchor smoothing, pelvis target, support, lift servo and leg IK calls | `exa_physics body_balance.rs measure_balance`; `body_feet.rs` (and `feet_mode, flat_floor_leg, flat_floor_target, HoverProbe`); `body_lift.rs`; `body_bend.rs`; `body_steps.rs` | partial (81 %) | the flat-floor and hovering modes are not called (no Exarust body has the flat-floor bit; the wraith's hover flag is not passed to its body); some thresholds unverified | yes (modes no) |
 | 51 | 712 | Pelvis-height lift servo | `exa_physics body_lift.rs lift_unclamped, lift_factor, Ragdoll::lift` | done | - | yes |
 | 52 | 46 | Create the shared motions object once | `exa_anim lib.rs Motions` | done | - | yes |
@@ -107,11 +109,11 @@ The wiring lane made Break Tangle (#38, 370 B), the swing voice of #34 (about 45
 | 55 | 67 | Clone | - | n.a. | - | n.a. |
 | 56 | 70 | Bind the clip table to the skeleton | `exa_anim lib.rs Motions, attach_body_parts` | done | - | yes |
 | 57 | 314 | Place parts at their nodes recursively | `exa_physics body.rs Ragdoll::place_at` | partial (40 %) | recursion into attached child bodies | yes |
-| 58 | 2,194 | Placement at a matrix (spawn, teleport, saves, arena) | `exa_game limp.rs spawn_pose`; `exa_physics Ragdoll::place_at, Locomotor::placed, clear_leg_corrections` | partial (35 %) | re-placing a living body, field resets, contact offsets, cloth, behaviour hook | spawn only |
+| 58 | 2,194 | Placement at a matrix (spawn, teleport, saves, arena) | `exa_game limp.rs spawn_pose`; `exa_physics Ragdoll::place_at, Locomotor::placed, clear_leg_corrections`; `body_placement.rs placed_parts, matrix_foot_anchor, matrix_pin, mean_point` | partial (55 %) | re-placing a living body, field resets, cloth, behaviour hook; the arithmetic is not called (the spawn puts the pelvis at the frame plus the clip root instead of lowering the pose onto a frame at pelvis height) | spawn only |
 | 59 | 1,549 | Init-time placement from the model nodes | (as routine #58) | partial (35 %) | field resets, contact offsets, the full capture step | yes |
 | 60 | 1,515 | Placement leg snap (probe, mean ground, reach pick, anchors) | `exa_physics body_balance.rs snap_placement, leg_reach_cm, placement_feet`; `body_bend.rs snap_legs` | partial (85 %) | second query mode, frame height write-back | no |
 | 61 | 513 | Body reset when brought back into the scene | `exa_ai presence.rs`; `exa_physics body.rs reset_presence` | partial (50 %) | idle clip, part bit, callback, counters | yes |
-| 62 | 2,042 | Placement on the ground (teleport with snap) | (snap in routine #60 only) | partial (15 %) | the outer sequence | no |
+| 62 | 2,042 | Placement on the ground (teleport with snap) | (snap in routine #60); `exa_physics body_placement.rs placed_parts, ground_foot_anchor, mean_point` | partial (50 %) | headings and standing points, particle copy, cloth and attached bodies; nothing calls it (Exarust has no teleport onto the ground) | no |
 | 63 | 648 | Head and limb set-up: mask backup, head gains, arm and hand factors, cloth | `exa_physics body.rs pose_share`; `body_muscle.rs HEAD_SHARE` | partial (40 %) | mask backup, arm ×1.25 and hand ×1.5, hand masks, cloth | yes |
 | 64 | 33 | Set max health and fill both bars | `exa_combat fighter.rs Fighter::of_stats` | done | - | yes |
 | 65 | 685 | Technique word from learnt skills | `exa_formats characters.rs CharacterRecord::perks, Perks::body_word` | done | held-item refresh call | yes |
@@ -125,12 +127,12 @@ The wiring lane made Break Tangle (#38, 370 B), the swing voice of #34 (about 45
 | 73 | 5,423 | Character init: rates, masses, gains, leg sides, placement, techniques, race and class presets, sounds, voice pitch, leg reach, head set-up | `exa_formats character_stats.rs CharacterStats::derive (RACE_PRESETS), BodyRules`; `exa_game scene_bodies.rs character_muscles`; `exa_combat sounds.rs`; `exa_physics body.rs Ragdoll::smooth_golem_links, legs_swap`; `body_pairs.rs register_legs` (foot-mask union) | partial (77 %) | the leg swap is not called (the human's first thigh is at negative x, where nothing swaps); the ghouls' half-scale head-part set-up; a word set to 4 for creatures with no reader found; gait scale check | yes (leg swap no) |
 | 74 | 1,218 | Part classification: legs, side arms, hand chains | `exa_physics body.rs (fixed human bone order)` | partial (40 %) | data-driven walk, ankle offset, factors, roles | yes |
 | 75 | 434 | Part list from model nodes | `exa_physics body.rs`; `exa_anim attach_body_parts`; `exa_combat sounds.rs` | partial (60 %) | boneless parts, per-part foley | yes |
-| 76 | 3,562 | Pose-only sampler (spawn and placement) | `exa_game limp.rs spawn_pose`; `exa_anim sample, ClipPose::at` | partial (35 %) | femur posture, half twist, hunch, anchors, contacts, heights | yes |
+| 76 | 3,562 | Pose-only sampler (spawn and placement) | `exa_game limp.rs spawn_pose`; `exa_anim sample, ClipPose::at, placement_bracket, placement_root_from_key`; `exa_physics body_pose_heights.rs stand_heights, placement_pelvis_target` | partial (60 %) | the per-part routing as one pass (femur posture, half twist, head on the untwisted chain, hunch on the thorax alone; at a first spawn all are identity) and the anchors; the key pick and the heights are not called | yes (key pick and heights no) |
 | 77 | 494 | Head look | `exa_physics body_twist.rs head_look`; `exa_game stages/sampler.rs` | partial (85 %) | head tilt, helpless decay | yes |
 | 78 | 36 | Smooth ease | `exa_anim clock.rs Ease::apply` | done | - | yes |
 | 79 | 60 | Fast ease | `exa_anim clock.rs Ease::apply` | done | - | yes |
 | 80 | 668 | Gait floors | `exa_game limp.rs gait_floor`; `stages/movement.rs measure_ground` | done | one floor a tick instead of three | yes |
-| 81 | 8,782 | Living sampler (muscles on) | `exa_game stages/sampler.rs`; `limp.rs clip_tick, run_overlay`; `exa_anim clock.rs` | partial (80 %) | head tilt and exertion read 0, dead jump branch, rebase capture | yes |
+| 81 | 8,782 | Living sampler (muscles on) | `exa_game stages/sampler.rs`; `limp.rs clip_tick, run_overlay`; `exa_anim clock.rs` (and `switches_to_queued`); `exa_physics body_pose_heights.rs stand_heights, living_pelvis_target` | partial (90 %) | exertion reads 0, dead jump branch; the height tail and the queued-clip switch are not called (Exarust's carry aims the pelvis from the feet; clips start at once) | yes (heights and switch no) |
 | 82 | 4,499 | Muscles-off sampler | `exa_game limp.rs sample_limp, limp_foot`; `exa_anim clock.rs sample_ragdoll` | partial (70 %) | hold, anchors; not scheduled | no |
 | 83 | 553 | Full capture | `exa_anim clock.rs take_capture, capture_whole` | partial (70 %) | half lean on whole captures, femur-flag exception | yes |
 | 84 | 230 | Capture current targets at a rebase | `exa_anim clock.rs Animator::bracket` | partial (30 %) | the rebase drops the capture instead of storing targets | yes |
@@ -167,7 +169,7 @@ Byte counts are estimated from block landmarks in the research notes.
 | Move and stop branches | 735 | 90 % |  |
 | Movement decision | 490 | 80 % |  |
 | Turn | 1,150 | 90 % |  |
-| Alignment and stop | 600 | 65 % | drive cleared before the locomotion call (`stand`); the muscles-off clock counter has no writer (dead); the down body's ground probe is not ported |
+| Alignment and stop | 600 | 90 % | drive cleared before the locomotion call (`stand`); the muscles-off clock counter has no writer (dead); the down body's ground probe is ported (`down_probe_origin`, `down_probe_ground`) but not called |
 | Locomotion call and clock | 930 | 75 % |  |
 | Torso twist and head look | 670 | 90 % |  |
 | Sampler call, carry reset, jump phase, character frame, drive into the carry, part matrices, chest pins, balance and feet calls, carry propagation | 4,500 | 60 % | jump phase is dead code (its flag and timer have no writer; kept as `Locomotor::jump`); part of the movement still follows the capsule controller |
@@ -227,3 +229,23 @@ Byte counts are estimated from block landmarks in the research notes.
   aims the pelvis 10 cm under its standing height and sets support and its factors to 1;
   hovering (the race's flag 0x200, the wraith) casts one 20 cm sphere 2000 cm down from 20 cm
   over the pelvis, plus 5 cm more after each miss.
+- The down body's probe (routine #49) starts at the pelvis's position **plus the world
+  translation of the zone its scene node hangs under** (the node's zone pointer, then that node's
+  world position): the offset is the level sector's origin, as in the AI's place points, and is
+  zero in Exarust's single world frame. The cast goes straight down (0, −1, 0); a hit's height is
+  the body's ground, and the previous ground takes the ground whether it hit or not.
+- The pose-only sampler (routine #76), walking condition, sets the pelvis target to (3 − 3·run) +
+  (stand height + the pelvis's own posed height), not the living sampler's stand + 2·run + 3; off
+  the walking condition both use stand (0 under Unconscious 1) + 2·scale + 5 when not stepping,
+  × 0.7 or 0.8 (double) when crouched past the double 0.95 on the feet. Its bracket has no ease,
+  no clamp and no guard between the keys, and its root comes from the clip's source key (not the
+  capture) for the first three gaits with muscles on.
+- The living sampler's hunch (routine #81) lowers the forward row of the pinned part's posed
+  placement after the twist and leaves every other part's: Exarust pitched the thorax's local
+  turn before the clip chain, so the head and arms followed it. Fixed (feral characters only). Its
+  head tilt adds a field with no writer in the image, so the 0 Exarust reads is the original's.
+- The placement routines (#58, #62) lower every part by the pelvis's posed height before putting
+  it on the frame, so the pelvis lands at the frame's height; a foot anchor is the contact on the
+  frame less the clip root, unrotated (the ground placement's height is the snapped ground plus
+  the sole, the matrix placement's the mapped height plus the sole less 8 cm), and a matrix
+  placement's pins sit 5 cm lower.

@@ -22,7 +22,12 @@ clock, with no blend and no hold, the root keeping its travel
 (`ragdoll_bracket`, `Animator::sample_ragdoll`), leading in from the
 start's capture without ease while it aims at the capture's key and
 keeping the clock when the lead ends (`Animator::ragdoll_lead`); Exarust
-has no clip on a corpse yet. Every capture notes whether each foot
+has no clip on a corpse yet. The placement's (pose-only) sampler's key
+pick is `placement_bracket` (no ease, no clamp, no guard between the keys,
+the rebase off the capture's key) with its root source
+`placement_root_from_key`, and the living sampler's switch to a queued
+clip on a new target key is `switches_to_queued`; both are tested and not
+called (the spawn samples with `sample`, and clips start at once). Every capture notes whether each foot
 touched (`Animator::note_planted`, read back by `captured_planted`): the
 muscles-off sampler's source flag while it leads in. A sample is taken in the original's
 steps (the bracket, which writes the progress; the keys blended; the

@@ -620,6 +620,23 @@ pub fn placement_root_from_key(muscles: bool, action: Option<usize>) -> bool {
     muscles && action.is_some_and(|a| a < 3)
 }
 
+/// The living sampler's switch to a queued clip: when the clip queued is
+/// not the one playing and this tick's target key differs from the last
+/// tick's, the sampler does not sample. It clears every foot's contact
+/// bits, captures the current targets at the clock, takes this target key
+/// as the capture's key and makes the queued clip the playing one; the
+/// next tick blends from that capture. Otherwise it samples and the
+/// target key is remembered. Exarust starts clips at once and keeps no
+/// queued clip, so nothing calls this.
+pub fn switches_to_queued(
+    queued: usize,
+    playing: usize,
+    target: usize,
+    last_target: usize,
+) -> bool {
+    queued != playing && target != last_target
+}
+
 /// The gait overlay step of a sample: each bone's turn is slerped by
 /// `weight` (clamped to 0..=1) toward `over`'s sample at the same keys as
 /// the bracket's and the same share of the way between them. The root is

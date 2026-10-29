@@ -847,3 +847,11 @@ fn the_placement_root_comes_from_the_key_for_the_gaits() {
     assert!(!placement_root_from_key(false, Some(1)));
     assert!(!placement_root_from_key(true, None));
 }
+
+/// A queued clip takes over only on a tick whose target key changed.
+#[test]
+fn a_queued_clip_waits_for_a_new_target_key() {
+    assert!(switches_to_queued(4, 3, 2, 1));
+    assert!(!switches_to_queued(4, 3, 2, 2));
+    assert!(!switches_to_queued(3, 3, 2, 1));
+}

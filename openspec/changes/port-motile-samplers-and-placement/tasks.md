@@ -1,0 +1,7 @@
+- [x] Samplers' heights (stand height, leg reach, both pelvis targets), with tests
+- [x] Placement arithmetic (parts, anchors, pins, means) and the down body's probe, with tests
+- [x] Pose-only key pick and root source, queued-clip switch (exa_anim), with tests
+- [x] Hunch on the pinned part's placement after the twist (live), test updated
+- [x] Routine map statuses, live column, totals and corrections; crate READMEs (no docs/formats or docs/PLAN.md change: no format changes, PLAN is updated at the round's merge)
+- [x] Corpus check: none needed (no data read); the shipped-clip tests of exa_game run with EXANIMA_DIR set
+- [x] Remote tests and clippy -D warnings

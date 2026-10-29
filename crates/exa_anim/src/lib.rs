@@ -27,6 +27,7 @@ pub use clock::{
     ATTACKS, Bracket, Capture, Ease, FOOTWORK, LOCOMOTION, PlacementBracket, STANDING_PACE,
     bracket, follow_up_blend, hold_toward, in_place, overlay_toward, placement_bracket,
     placement_root_from_key, ragdoll_bracket, rising_frames, shock_hold, standing_frames,
+    switches_to_queued,
 };
 
 /// Body ticks a second: the clock every clip counts frames by (the
