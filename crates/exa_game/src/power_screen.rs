@@ -8,7 +8,12 @@
 //! the six fragment programs' arithmetic and the loaded `.rfi` sheets, into
 //! one screen-sized image (the same canvas path the main menu uses). Only
 //! the open screen is drawn, at most 33 ms apart; the in-game bar draws a
-//! strip `scale × 20` high.
+//! strip `scale × 20` high. The canvas is kept between redraws
+//! ([`CanvasCache`]): only the boxes of the batches that changed (on the
+//! open tree, the domain wheel's shimmer and the link glow) are drawn
+//! again, in row bands on the compute pool, giving the bytes a whole
+//! redraw gives. The image node gets the picture with straight alpha and
+//! draws it over the HUD ([`TREE_Z`]).
 //!
 //! The text is the GUI skin's own: the interface level's main font gives
 //! the advances, glyph quad and line step, and its glyphs sample the level's
@@ -30,6 +35,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::audio::AudioSource;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::tasks::{ComputeTaskPool, TaskPool};
 use bevy::window::PrimaryWindow;
 use exa_assets::{Game, RgbaImage, TreeSheets};
 use exa_audio::{AudioEnvironment, SoundBank};
@@ -46,6 +52,11 @@ use crate::thaum::tree::{BAR_CLOSING, PowerBar, PowerRecord, TreeMode, TreeScree
 const REDRAW_MS: u128 = 33;
 /// The bar's canvas height in GUI units.
 const BAR_UNITS: f32 = 20.0;
+/// The canvas's layer: over the HUD's (the heartbeat's border at 890, the
+/// death fade at 895, the compass, status and bars up to 900), as the
+/// original draws its GUI forms after the HUD; under the splash, the level
+/// transition and the cursor.
+pub const TREE_Z: i32 = 910;
 
 /// The screen's state.
 #[derive(Resource)]
@@ -67,6 +78,10 @@ pub struct PowerScreen {
     pub sound: Option<TreeSound>,
     /// A redraw is needed.
     pub dirty: bool,
+    /// The canvas kept between redraws.
+    pub canvas: CanvasCache,
+    /// The frames sheet at mip level 4, which the frame program also reads.
+    pub frames_coarse: Option<RgbaImage>,
     /// The last draw, in the frame clock's milliseconds.
     last_draw: u128,
     /// The dragged power's preview.
@@ -102,6 +117,8 @@ impl Default for PowerScreen {
             font: None,
             sound: None,
             dirty: true,
+            canvas: CanvasCache::default(),
+            frames_coarse: None,
             last_draw: 0,
             drag: None,
             press_origin: None,
@@ -198,6 +215,8 @@ fn load_screen(
             }
         }
         screen.sheets = game.load_tree_sheets();
+        screen.frames_coarse = screen.sheets.frames.as_ref().map(level_four);
+        screen.canvas.invalidate();
         load_tree_font(
             game,
             gui.as_deref().map(|gui| gui.scale as i32),
@@ -672,6 +691,83 @@ fn draw(
     // window's physical height; the tree's layout and its font level both
     // come from it.
     let scale = gui.as_deref().map_or(4, |gui| gui.scale) as f32;
+    let (draw, canvas_height) = frame_draw(&mut screen, width, height, scale, now);
+    let PowerScreen {
+        canvas: cache,
+        sheets,
+        frames_coarse,
+        font,
+        open,
+        bar_open,
+        ..
+    } = &mut *screen;
+    let size = (width, canvas_height);
+    let redrawn = cache.update(draw, sheets, frames_coarse.as_ref(), font.as_ref(), size);
+    let canvas_image = |pixels: &[u8]| {
+        Image::new(
+            Extent3d {
+                width,
+                height: canvas_height,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            pixels.to_vec(),
+            TextureFormat::Rgba8UnormSrgb,
+            RenderAssetUsages::RENDER_WORLD,
+        )
+    };
+    let ui_scale = window.scale_factor();
+    let mut spawned = false;
+    for (mut image_node, mut node, mut visibility, mut state) in &mut canvas {
+        // Only a redrawn canvas is uploaded again, into the same image
+        // while its size holds.
+        let kept = state.size == size && images.contains(&image_node.image);
+        if !kept {
+            image_node.image = images.add(canvas_image(cache.straight()));
+        } else if !redrawn.is_empty()
+            && let Some(mut image) = images.get_mut(&image_node.image)
+        {
+            image.data = Some(cache.straight().to_vec());
+        }
+        node.width = Val::Px(width as f32 / ui_scale);
+        node.height = Val::Px(canvas_height as f32 / ui_scale);
+        node.left = Val::Px(0.0);
+        node.top = Val::Px(0.0);
+        *visibility = Visibility::Inherited;
+        state.size = size;
+        state.open = *open || *bar_open;
+        spawned = true;
+    }
+    if !spawned {
+        commands.spawn((
+            PowerCanvas,
+            ImageNode::new(images.add(canvas_image(cache.straight()))),
+            Node {
+                position_type: PositionType::Absolute,
+                width: Val::Px(width as f32 / ui_scale),
+                height: Val::Px(canvas_height as f32 / ui_scale),
+                left: Val::Px(0.0),
+                top: Val::Px(0.0),
+                ..Node::default()
+            },
+            GlobalZIndex(TREE_Z),
+            CanvasState { size, open: true },
+        ));
+    }
+    screen.last_draw = now;
+    screen.dirty = false;
+}
+
+/// The open screen's draw for one frame at the interface unit `scale`:
+/// the tree, wheel, prompt, tooltip, labels and preview while the tree is
+/// shown, else the bare bar; with the canvas height it fills.
+pub fn frame_draw(
+    screen: &mut PowerScreen,
+    width: u32,
+    height: u32,
+    scale: f32,
+    now: u128,
+) -> (TreeDraw, u32) {
     let (font, font_size) = tree_font(scale as i32, screen.font_atlas);
     screen.tree.font_size = font_size;
     screen.tree.domain_cells = domain_cells(&screen.sheets);
@@ -783,58 +879,7 @@ fn draw(
     } else {
         tree_draw::bar_draw(&view)
     };
-    let pixels = render(
-        &draw,
-        &screen.sheets,
-        screen.font.as_ref(),
-        width,
-        canvas_height,
-    );
-    let image = Image::new(
-        Extent3d {
-            width,
-            height: canvas_height,
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        pixels,
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::RENDER_WORLD,
-    );
-    let handle = images.add(image);
-    let ui_scale = window.scale_factor();
-    let mut spawned = false;
-    for (mut image_node, mut node, mut visibility, mut state) in &mut canvas {
-        image_node.image = handle.clone();
-        node.width = Val::Px(width as f32 / ui_scale);
-        node.height = Val::Px(canvas_height as f32 / ui_scale);
-        node.left = Val::Px(0.0);
-        node.top = Val::Px(0.0);
-        *visibility = Visibility::Inherited;
-        state.size = (width, canvas_height);
-        state.open = screen.open || screen.bar_open;
-        spawned = true;
-    }
-    if !spawned {
-        commands.spawn((
-            PowerCanvas,
-            ImageNode::new(handle),
-            Node {
-                position_type: PositionType::Absolute,
-                width: Val::Px(width as f32 / ui_scale),
-                height: Val::Px(canvas_height as f32 / ui_scale),
-                left: Val::Px(0.0),
-                top: Val::Px(0.0),
-                ..Node::default()
-            },
-            CanvasState {
-                size: (width, canvas_height),
-                open: true,
-            },
-        ));
-    }
-    screen.last_draw = now;
-    screen.dirty = false;
+    (draw, canvas_height)
 }
 
 /// Plays the UI sound an action queued, through the original's voice
@@ -892,8 +937,57 @@ pub fn wrap_text(text: &[u8], width: usize) -> Vec<String> {
     lines
 }
 
+/// A rectangle of canvas pixels, both corners included.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Region {
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+}
+
+impl Region {
+    /// The whole `width` by `height` canvas.
+    pub fn whole(width: u32, height: u32) -> Self {
+        Self {
+            left: 0,
+            top: 0,
+            right: width as i32 - 1,
+            bottom: height as i32 - 1,
+        }
+    }
+
+    fn pixels(&self) -> usize {
+        if self.right < self.left || self.bottom < self.top {
+            return 0;
+        }
+        (self.right - self.left + 1) as usize * (self.bottom - self.top + 1) as usize
+    }
+
+    fn union(&self, other: &Self) -> Self {
+        Self {
+            left: self.left.min(other.left),
+            top: self.top.min(other.top),
+            right: self.right.max(other.right),
+            bottom: self.bottom.max(other.bottom),
+        }
+    }
+
+    fn overlaps(&self, other: &Self) -> bool {
+        self.left <= other.right + 1
+            && other.left <= self.right + 1
+            && self.top <= other.bottom + 1
+            && other.top <= self.bottom + 1
+    }
+
+    fn contains(&self, x: i32, y: i32) -> bool {
+        x >= self.left && x <= self.right && y >= self.top && y <= self.bottom
+    }
+}
+
 /// The canvas rasteriser: every batch's triangles with the program's
-/// fragment arithmetic, then the texts.
+/// fragment arithmetic, then the texts. The canvas holds premultiplied
+/// colour, as the original's blending leaves it in a transparent target.
 pub fn render(
     draw: &TreeDraw,
     sheets: &TreeSheets,
@@ -904,14 +998,113 @@ pub fn render(
     let mut canvas = vec![0u8; width as usize * height as usize * 4];
     // The frame program also reads its sheet at mip level 4.
     let coarse = sheets.frames.as_ref().map(level_four);
+    render_region(
+        &mut canvas,
+        draw,
+        sheets,
+        coarse.as_ref(),
+        font,
+        (width, height),
+        Region::whole(width, height),
+    );
+    canvas
+}
+
+/// [`render`] into the pixels of `region` only, which start transparent;
+/// `coarse` is the frames sheet at mip level 4. The region's rows are cut
+/// into bands drawn side by side on the compute pool; a pixel is drawn by
+/// one band with every batch in order, so the bytes are the same.
+fn render_region(
+    canvas: &mut [u8],
+    draw: &TreeDraw,
+    sheets: &TreeSheets,
+    coarse: Option<&RgbaImage>,
+    font: Option<&GameFont>,
+    (width, height): (u32, u32),
+    region: Region,
+) {
+    /// The fewest rows worth a band of their own.
+    const BAND_ROWS: usize = 16;
+    let row_bytes = width as usize * 4;
+    let rows =
+        &mut canvas[region.top as usize * row_bytes..(region.bottom as usize + 1) * row_bytes];
+    let row_count = (region.bottom - region.top + 1) as usize;
+    let pool = ComputeTaskPool::get_or_init(TaskPool::default);
+    let bands = pool.thread_num().max(1).min(row_count.div_ceil(BAND_ROWS));
+    let band_rows = row_count.div_ceil(bands);
+    let draw_band = |index: usize, pixels: &mut [u8]| {
+        let top = region.top + (index * band_rows) as i32;
+        let band = Region {
+            top,
+            bottom: top + (pixels.len() / row_bytes) as i32 - 1,
+            ..region
+        };
+        let mut rows = Rows {
+            pixels,
+            width,
+            height,
+            top,
+        };
+        draw_rows(&mut rows, draw, sheets, coarse, font, band);
+    };
+    if bands == 1 {
+        draw_band(0, rows);
+        return;
+    }
+    pool.scope(|scope| {
+        for (index, pixels) in rows.chunks_mut(band_rows * row_bytes).enumerate() {
+            let draw_band = &draw_band;
+            scope.spawn(async move { draw_band(index, pixels) });
+        }
+    });
+}
+
+/// Rows of a `width` by `height` canvas: `pixels` holds the rows from
+/// `top` on.
+struct Rows<'a> {
+    pixels: &'a mut [u8],
+    width: u32,
+    height: u32,
+    top: i32,
+}
+
+impl Rows<'_> {
+    /// The byte offset of pixel `(x, y)`, or `None` off the canvas or the
+    /// rows held.
+    fn index(&self, x: i32, y: i32) -> Option<usize> {
+        if x < 0 || y < self.top || x >= self.width as i32 || y >= self.height as i32 {
+            return None;
+        }
+        let at = ((y - self.top) as usize * self.width as usize + x as usize) * 4;
+        (at + 4 <= self.pixels.len()).then_some(at)
+    }
+}
+
+/// Every batch and then the texts into the pixels of `region`, all held by
+/// `rows`; they start transparent.
+fn draw_rows(
+    rows: &mut Rows,
+    draw: &TreeDraw,
+    sheets: &TreeSheets,
+    coarse: Option<&RgbaImage>,
+    font: Option<&GameFont>,
+    region: Region,
+) {
+    for y in region.top..=region.bottom {
+        let (Some(first), Some(last)) = (rows.index(region.left, y), rows.index(region.right, y))
+        else {
+            continue;
+        };
+        rows.pixels[first..last + 4].fill(0);
+    }
     for batch in &draw.batches {
         let texture = texture_of(batch.texture, sheets);
         let level = if batch.texture == Texture::Frames {
-            coarse.as_ref()
+            coarse
         } else {
             None
         };
-        raster_batch(&mut canvas, width, height, batch, texture, level);
+        raster_batch(rows, batch, texture, level, region);
     }
     // The runs are the layout's metrics; their glyph quads are in the
     // batches of the skin's text program when the atlas is loaded. The
@@ -921,10 +1114,168 @@ pub fn render(
         && let Some(font) = font
     {
         for run in &draw.texts {
-            blit_text(&mut canvas, width, height, run, font);
+            blit_text(rows, run, font, region);
         }
     }
-    canvas
+}
+
+/// The pixels a batch's triangles can touch: the union of the boxes the
+/// rasteriser walks, or `None` when it walks none.
+fn batch_region(batch: &Batch, width: u32, height: u32) -> Option<Region> {
+    let mut out: Option<Region> = None;
+    for triangle in batch.vertices.as_chunks::<3>().0 {
+        let [a, b, c] = *triangle;
+        let area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+        if area.abs() < 1e-6 {
+            continue;
+        }
+        let region = Region {
+            left: a.x.min(b.x).min(c.x).floor().max(0.0) as i32,
+            right: a.x.max(b.x).max(c.x).ceil().min(width as f32 - 1.0) as i32,
+            top: a.y.min(b.y).min(c.y).floor().max(0.0) as i32,
+            bottom: a.y.max(b.y).max(c.y).ceil().min(height as f32 - 1.0) as i32,
+        };
+        if region.pixels() == 0 {
+            continue;
+        }
+        out = Some(out.map_or(region, |out| out.union(&region)));
+    }
+    out
+}
+
+/// The screen's canvas between redraws: the last draw, its premultiplied
+/// picture and that picture with straight alpha, which the image node
+/// blends.
+///
+/// A redraw compares the new draw with the last batch by batch. A pixel
+/// outside every box a changed batch walks (its old and its new triangles)
+/// is covered by the same batches in the same order, so it keeps its
+/// value; only the changed batches' boxes are cleared and drawn again with
+/// every batch, which gives the bytes a whole redraw gives. The tree, its
+/// links and the bar hold still while the domain wheel's bands shimmer, so
+/// a frame of the open tree redraws the wheel and little else.
+#[derive(Default)]
+pub struct CanvasCache {
+    size: (u32, u32),
+    wheel_unit: i32,
+    last: Option<TreeDraw>,
+    premultiplied: Vec<u8>,
+    straight: Vec<u8>,
+}
+
+impl CanvasCache {
+    /// Forgets the last draw, so the next redraw draws everything (after
+    /// the sheets change).
+    pub fn invalidate(&mut self) {
+        self.last = None;
+    }
+
+    /// The picture with premultiplied colour, as [`render`] gives it.
+    pub fn premultiplied(&self) -> &[u8] {
+        &self.premultiplied
+    }
+
+    /// The picture with straight alpha, for the image node.
+    pub fn straight(&self) -> &[u8] {
+        &self.straight
+    }
+
+    /// Brings the canvas to `draw` and returns the regions it redrew
+    /// (none when nothing changed). `coarse` is the frames sheet at mip
+    /// level 4.
+    pub fn update(
+        &mut self,
+        draw: TreeDraw,
+        sheets: &TreeSheets,
+        coarse: Option<&RgbaImage>,
+        font: Option<&GameFont>,
+        (width, height): (u32, u32),
+    ) -> Vec<Region> {
+        let whole = Region::whole(width, height);
+        let texts_drawn = sheets.font.is_none() && font.is_some();
+        let regions = match &self.last {
+            Some(last)
+                if self.size == (width, height)
+                    && self.wheel_unit == sheets.wheel_unit
+                    && (!texts_drawn || last.texts == draw.texts) =>
+            {
+                changed_regions(&last.batches, &draw.batches, width, height)
+            }
+            _ => vec![whole],
+        };
+        if self.size != (width, height) {
+            let bytes = width as usize * height as usize * 4;
+            self.premultiplied = vec![0; bytes];
+            self.straight = vec![0; bytes];
+            self.size = (width, height);
+        }
+        self.wheel_unit = sheets.wheel_unit;
+        for region in &regions {
+            render_region(
+                &mut self.premultiplied,
+                &draw,
+                sheets,
+                coarse,
+                font,
+                (width, height),
+                *region,
+            );
+            straighten(&self.premultiplied, &mut self.straight, width, *region);
+        }
+        self.last = Some(draw);
+        regions
+    }
+}
+
+/// The regions the batches that differ between `old` and `new` can touch,
+/// with overlapping ones merged; the whole canvas when they would cover
+/// half of it.
+fn changed_regions(old: &[Batch], new: &[Batch], width: u32, height: u32) -> Vec<Region> {
+    let whole = Region::whole(width, height);
+    let mut regions: Vec<Region> = Vec::new();
+    for index in 0..old.len().max(new.len()) {
+        let (before, after) = (old.get(index), new.get(index));
+        if before == after {
+            continue;
+        }
+        for batch in [before, after].into_iter().flatten() {
+            let Some(mut region) = batch_region(batch, width, height) else {
+                continue;
+            };
+            // Merge until no kept region overlaps the new one.
+            while let Some(at) = regions.iter().position(|kept| kept.overlaps(&region)) {
+                region = region.union(&regions.swap_remove(at));
+            }
+            regions.push(region);
+        }
+    }
+    let total: usize = regions.iter().map(Region::pixels).sum();
+    if total * 2 >= whole.pixels() {
+        return vec![whole];
+    }
+    regions
+}
+
+/// Copies `region` of a premultiplied canvas into `out` with straight
+/// alpha: each colour over its alpha, rounded; a transparent pixel is
+/// black.
+fn straighten(canvas: &[u8], out: &mut [u8], width: u32, region: Region) {
+    for y in region.top..=region.bottom {
+        let row = y as usize * width as usize;
+        for x in region.left..=region.right {
+            let at = (row + x as usize) * 4;
+            let alpha = u32::from(canvas[at + 3]);
+            if alpha == 0 {
+                out[at..at + 4].fill(0);
+                continue;
+            }
+            for channel in 0..3 {
+                let colour = u32::from(canvas[at + channel]);
+                out[at + channel] = ((colour * 255 + alpha / 2) / alpha).min(255) as u8;
+            }
+            out[at + 3] = alpha as u8;
+        }
+    }
 }
 
 fn texture_of(texture: Texture, sheets: &TreeSheets) -> Option<&RgbaImage> {
@@ -1050,14 +1401,16 @@ fn sample_with(image: Option<&RgbaImage>, u: f32, v: f32, repeat: bool) -> [f32;
     ]
 }
 
-/// One batch's triangles.
+/// One batch's triangles, inside `clip`. Each row of a triangle's box tests only the
+/// columns [`row_span`] leaves, a run that holds every pixel the inside
+/// test passes; the test, its arithmetic and the order the pixels blend in
+/// are unchanged, so the picture is the same as testing the whole box.
 fn raster_batch(
-    canvas: &mut [u8],
-    width: u32,
-    height: u32,
+    rows: &mut Rows,
     batch: &Batch,
     texture: Option<&RgbaImage>,
     coarse: Option<&RgbaImage>,
+    clip: Region,
 ) {
     for triangle in batch.vertices.as_chunks::<3>().0 {
         let [a, b, c] = *triangle;
@@ -1065,14 +1418,21 @@ fn raster_batch(
         if area.abs() < 1e-6 {
             continue;
         }
-        let min_x = a.x.min(b.x).min(c.x).floor().max(0.0) as i32;
-        let max_x = a.x.max(b.x).max(c.x).ceil().min(width as f32 - 1.0) as i32;
-        let min_y = a.y.min(b.y).min(c.y).floor().max(0.0) as i32;
-        let max_y = a.y.max(b.y).max(c.y).ceil().min(height as f32 - 1.0) as i32;
+        let (width, height) = (rows.width, rows.height);
+        let min_x = (a.x.min(b.x).min(c.x).floor().max(0.0) as i32).max(clip.left);
+        let max_x = (a.x.max(b.x).max(c.x).ceil().min(width as f32 - 1.0) as i32).min(clip.right);
+        let min_y = (a.y.min(b.y).min(c.y).floor().max(0.0) as i32).max(clip.top);
+        let max_y = (a.y.max(b.y).max(c.y).ceil().min(height as f32 - 1.0) as i32).min(clip.bottom);
+        if min_x > max_x {
+            continue;
+        }
         for y in min_y..=max_y {
-            for x in min_x..=max_x {
+            let py = y as f32 + 0.5;
+            let Some((first, last)) = row_span([a, b, c], area, py, min_x, max_x) else {
+                continue;
+            };
+            for x in first..=last {
                 let px = x as f32 + 0.5;
-                let py = y as f32 + 0.5;
                 let w0 = ((b.x - px) * (c.y - py) - (b.y - py) * (c.x - px)) / area;
                 let w1 = ((c.x - px) * (a.y - py) - (c.y - py) * (a.x - px)) / area;
                 let w2 = 1.0 - w0 - w1;
@@ -1082,13 +1442,79 @@ fn raster_batch(
                 let vertex = mix_vertex(a, b, c, w0, w1, w2);
                 let colour = shade(batch, vertex, texture, coarse);
                 if batch.blend == exa_ui::wheel_draw::WHEEL_PROGRAM_BLEND {
-                    blend_premultiplied(canvas, width, height, x, y, colour);
+                    blend_premultiplied(rows, x, y, colour);
                 } else {
-                    blend(canvas, width, height, x, y, colour);
+                    blend(rows, x, y, colour);
                 }
             }
         }
     }
+}
+
+/// The columns of row `py` (a pixel centre) between `min_x` and `max_x`
+/// that may pass the triangle's inside test, or `None` when none can.
+///
+/// Along a row each barycentric weight is a line in the column, so each
+/// edge keeps the columns on one side of a root. The test computes the
+/// weights in single precision from the absolute coordinates, so its sign
+/// can be wrong only where the exact weight's numerator is within a few
+/// rounding errors of the products' magnitudes; each root is widened by
+/// that error over the edge's slope, plus two pixels. A row whose numbers
+/// are not finite keeps the whole box, as the test then may pass anywhere.
+fn row_span(
+    [a, b, c]: [TreeVertex; 3],
+    area: f32,
+    py: f32,
+    min_x: i32,
+    max_x: i32,
+) -> Option<(i32, i32)> {
+    // Each weight's numerator is `offset + px * slope`, after the edge
+    // opposite its vertex.
+    let edges = [
+        (b.x * (c.y - py) - (b.y - py) * c.x, b.y - c.y, b, c),
+        (c.x * (a.y - py) - (c.y - py) * a.x, c.y - a.y, c, a),
+        (a.x * (b.y - py) - (a.y - py) * b.x, a.y - b.y, a, b),
+    ];
+    let reach = (min_x.unsigned_abs().max(max_x.unsigned_abs()) + 1) as f32;
+    let size = |p: TreeVertex, q: TreeVertex| {
+        (p.x.abs() + reach) * (q.y.abs() + py.abs()) + (p.y.abs() + py.abs()) * (q.x.abs() + reach)
+    };
+    let magnitude: f32 = edges.iter().map(|&(_, _, p, q)| size(p, q)).sum();
+    let error = (16.0 * magnitude + 4.0 * area.abs()) * f32::EPSILON;
+    let (mut first, mut last) = (min_x as f32, max_x as f32);
+    for (offset, slope, _, _) in edges {
+        // The weight's sign follows the area's.
+        let (offset, slope) = if area < 0.0 {
+            (-offset, -slope)
+        } else {
+            (offset, slope)
+        };
+        if !(offset.is_finite() && slope.is_finite() && error.is_finite()) {
+            return Some((min_x, max_x));
+        }
+        if slope.abs() * reach <= error {
+            // Nearly level along the row: either everywhere or nowhere.
+            if offset + slope.abs() * reach < -error {
+                return None;
+            }
+            continue;
+        }
+        // The column centre `px = x + 0.5` where the numerator is zero.
+        let root = -offset / slope - 0.5;
+        let widen = error / slope.abs() + 2.0;
+        if slope > 0.0 {
+            first = first.max(root - widen);
+        } else {
+            last = last.min(root + widen);
+        }
+    }
+    if first > last {
+        return None;
+    }
+    Some((
+        first.floor().max(min_x as f32) as i32,
+        last.ceil().min(max_x as f32) as i32,
+    ))
 }
 
 fn mix_vertex(
@@ -1310,19 +1736,12 @@ fn shade(
 
 /// The blend word `0x103`: the source colour as it is over the destination
 /// scaled by one minus the source alpha.
-fn blend_premultiplied(
-    canvas: &mut [u8],
-    width: u32,
-    height: u32,
-    x: i32,
-    y: i32,
-    colour: [f32; 4],
-) {
-    if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 {
+fn blend_premultiplied(rows: &mut Rows, x: i32, y: i32, colour: [f32; 4]) {
+    let Some(at) = rows.index(x, y) else {
         return;
-    }
+    };
+    let canvas = &mut *rows.pixels;
     let a = colour[3];
-    let at = (y as usize * width as usize + x as usize) * 4;
     for (index, channel) in colour.iter().take(3).enumerate() {
         let dst = f32::from(canvas[at + index]);
         canvas[at + index] = (channel * 255.0 + dst * (1.0 - a)).clamp(0.0, 255.0) as u8;
@@ -1331,15 +1750,15 @@ fn blend_premultiplied(
     canvas[at + 3] = ((a + dst_a * (1.0 - a)) * 255.0).clamp(0.0, 255.0) as u8;
 }
 
-fn blend(canvas: &mut [u8], width: u32, height: u32, x: i32, y: i32, colour: [f32; 4]) {
-    if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 {
+fn blend(rows: &mut Rows, x: i32, y: i32, colour: [f32; 4]) {
+    let Some(at) = rows.index(x, y) else {
         return;
-    }
+    };
     let a = colour[3];
     if a <= 0.0 {
         return;
     }
-    let at = (y as usize * width as usize + x as usize) * 4;
+    let canvas = &mut *rows.pixels;
     for (index, channel) in colour.iter().take(3).enumerate() {
         let src = channel * 255.0;
         let dst = f32::from(canvas[at + index]);
@@ -1349,8 +1768,8 @@ fn blend(canvas: &mut [u8], width: u32, height: u32, x: i32, y: i32, colour: [f3
     canvas[at + 3] = ((a + dst_a * (1.0 - a)) * 255.0).clamp(0.0, 255.0) as u8;
 }
 
-/// Blits one text run with the game font, tinted.
-fn blit_text(canvas: &mut [u8], width: u32, height: u32, run: &TextRun, font: &GameFont) {
+/// Blits one text run with the game font, tinted, inside `clip`.
+fn blit_text(rows: &mut Rows, run: &TextRun, font: &GameFont, clip: Region) {
     let rendered = font.render(&run.text);
     if rendered.width == 0 || rendered.height == 0 {
         return;
@@ -1372,7 +1791,9 @@ fn blit_text(canvas: &mut [u8], width: u32, height: u32, run: &TextRun, font: &G
             ];
             for oy in 0..(scale.ceil() as i32).max(1) {
                 for ox in 0..(scale.ceil() as i32).max(1) {
-                    blend(canvas, width, height, px + ox, py + oy, colour);
+                    if clip.contains(px + ox, py + oy) {
+                        blend(rows, px + ox, py + oy, colour);
+                    }
                 }
             }
         }
@@ -1530,21 +1951,21 @@ mod tests {
         assert_eq!(pixels[15 * 16 * 4 + 3], 0);
     }
 
-    /// The tree's key, pressed the way `--press` presses it (after the
-    /// input systems, released the frame after) in an app that also runs
-    /// the simulation keys, opens the screen: the game clock keeps running,
-    /// the opening fade completes and the canvas is shown. With the
-    /// installed packs the picture covers the window (the backdrop) and
-    /// draws the wheel at the lower left. Any other key then closes it.
-    #[test]
-    fn a_scripted_tree_key_opens_and_shows_the_screen() {
+    /// The installed game, when `EXANIMA_DIR` (or the usual places) has one.
+    fn installed_game() -> Option<Game> {
+        exa_assets::locate_install(None)
+            .and_then(|dir| exa_assets::GameData::open(&dir).ok())
+            .map(|data| Game(Arc::new(data)))
+    }
+
+    /// A 1280 by 720 app with the screen, the simulation keys and a 16 ms
+    /// clock, pressing each `(frame, key)` the way `--press` does (after the
+    /// input systems, released the next frame).
+    fn scripted_tree_app(game: Option<&Game>, presses: Vec<(u32, KeyCode)>) -> App {
         use bevy::asset::AssetPlugin;
         use bevy::input::InputPlugin;
         use bevy::time::TimeUpdateStrategy;
         use bevy::window::WindowResolution;
-        let game = exa_assets::locate_install(None)
-            .and_then(|dir| exa_assets::GameData::open(&dir).ok())
-            .map(|data| Game(Arc::new(data)));
         let mut app = App::new();
         app.add_plugins((
             MinimalPlugins,
@@ -1559,8 +1980,8 @@ mod tests {
         .insert_resource(TimeUpdateStrategy::ManualDuration(
             std::time::Duration::from_millis(16),
         ));
-        if let Some(game) = game.clone() {
-            app.insert_resource(game);
+        if let Some(game) = game {
+            app.insert_resource(game.clone());
         }
         app.world_mut().spawn((
             Window {
@@ -1570,24 +1991,37 @@ mod tests {
             PrimaryWindow,
         ));
         app.add_plugins(PowerScreenPlugin);
-        let key = Bindings::default()
-            .key_code(Action::PowerTree)
-            .expect("the tree's key");
         app.add_systems(
             PreUpdate,
             (move |mut keys: ResMut<ButtonInput<KeyCode>>, mut frame: Local<u32>| {
                 *frame += 1;
-                match *frame {
-                    5 => keys.press(key),
-                    6 => keys.release(key),
-                    // Any other key closes the shown tree.
-                    110 => keys.press(KeyCode::KeyW),
-                    111 => keys.release(KeyCode::KeyW),
-                    _ => {}
+                for &(at, key) in &presses {
+                    if *frame == at {
+                        keys.press(key);
+                    } else if *frame == at + 1 {
+                        keys.release(key);
+                    }
                 }
             })
             .after(bevy::input::InputSystems),
         );
+        app
+    }
+
+    /// The tree's key, pressed the way `--press` presses it (after the
+    /// input systems, released the frame after) in an app that also runs
+    /// the simulation keys, opens the screen: the game clock keeps running,
+    /// the opening fade completes and the canvas is shown. With the
+    /// installed packs the picture covers the window (the backdrop) and
+    /// draws the wheel at the lower left. Any other key then closes it.
+    #[test]
+    fn a_scripted_tree_key_opens_and_shows_the_screen() {
+        let game = installed_game();
+        let key = Bindings::default()
+            .key_code(Action::PowerTree)
+            .expect("the tree's key");
+        // Any other key (frame 110) closes the shown tree.
+        let mut app = scripted_tree_app(game.as_ref(), vec![(5, key), (110, KeyCode::KeyW)]);
         // A hundred frames after the press, as the GPU check's screenshot.
         for _ in 0..105 {
             app.update();
@@ -1604,6 +2038,12 @@ mod tests {
             .collect();
         assert_eq!(shown.len(), 1);
         assert_eq!(shown[0].1, Visibility::Inherited);
+        // The canvas draws over the HUD's layers.
+        let mut layers = app
+            .world_mut()
+            .query_filtered::<&GlobalZIndex, With<PowerCanvas>>();
+        let layer = layers.single(app.world()).expect("the canvas's layer");
+        assert_eq!(layer.0, TREE_Z);
         if game.is_some() {
             let images = app.world().resource::<Assets<Image>>();
             let image = images.get(&shown[0].0).expect("the canvas image");
@@ -1631,5 +2071,272 @@ mod tests {
         assert!(!screen.open && !screen.bar_open);
         let mut canvases = app.world_mut().query::<&Visibility>();
         assert!(canvases.iter(app.world()).all(|v| *v == Visibility::Hidden));
+    }
+
+    /// The open tree's frames as the GPU check takes them (1280 by 720, a
+    /// hundred frames after the key): a later frame redraws only the
+    /// batches that changed (the wheel's and the shimmering link glow's
+    /// boxes), and the kept canvas is byte for byte the whole redraw.
+    /// Prints the costs; needs the installed packs.
+    #[test]
+    fn the_open_tree_redraws_only_what_changed() {
+        let Some(game) = installed_game() else {
+            return;
+        };
+        let key = Bindings::default()
+            .key_code(Action::PowerTree)
+            .expect("the tree's key");
+        let mut app = scripted_tree_app(Some(&game), vec![(5, key)]);
+        for _ in 0..105 {
+            app.update();
+        }
+        let now = app.world().resource::<Time>().elapsed().as_millis();
+        let mut screen = app.world_mut().resource_mut::<PowerScreen>();
+        assert!(screen.open);
+        let size = (1280, 720);
+        let mut cache = CanvasCache::default();
+        for (frame, later) in [0u128, 33, 66, 500, 5000].into_iter().enumerate() {
+            let (draw, height) = frame_draw(&mut screen, size.0, size.1, 4.0, now + later);
+            assert_eq!(height, size.1);
+            let started = std::time::Instant::now();
+            let whole = render(&draw, &screen.sheets, screen.font.as_ref(), size.0, size.1);
+            let whole_cost = started.elapsed();
+            let started = std::time::Instant::now();
+            let regions = cache.update(
+                draw,
+                &screen.sheets,
+                screen.frames_coarse.as_ref(),
+                screen.font.as_ref(),
+                size,
+            );
+            let kept_cost = started.elapsed();
+            let pixels: usize = regions.iter().map(Region::pixels).sum();
+            eprintln!(
+                "+{later} ms: whole render {whole_cost:?}, kept canvas {kept_cost:?} \
+                 ({} regions, {pixels} pixels)",
+                regions.len()
+            );
+            assert!(cache.premultiplied() == whole.as_slice());
+            if frame == 0 {
+                assert_eq!(regions, vec![Region::whole(size.0, size.1)]);
+            } else {
+                // The wheel and the link glow, well under the window.
+                assert!(pixels * 4 < (size.0 * size.1) as usize, "{pixels}");
+            }
+        }
+    }
+
+    /// The whole-box rasteriser [`raster_batch`] replaced: every pixel of
+    /// each triangle's box takes the inside test.
+    fn raster_batch_whole_box(rows: &mut Rows, batch: &Batch) {
+        let (width, height) = (rows.width, rows.height);
+        for triangle in batch.vertices.as_chunks::<3>().0 {
+            let [a, b, c] = *triangle;
+            let area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+            if area.abs() < 1e-6 {
+                continue;
+            }
+            let min_x = a.x.min(b.x).min(c.x).floor().max(0.0) as i32;
+            let max_x = a.x.max(b.x).max(c.x).ceil().min(width as f32 - 1.0) as i32;
+            let min_y = a.y.min(b.y).min(c.y).floor().max(0.0) as i32;
+            let max_y = a.y.max(b.y).max(c.y).ceil().min(height as f32 - 1.0) as i32;
+            for y in min_y..=max_y {
+                for x in min_x..=max_x {
+                    let px = x as f32 + 0.5;
+                    let py = y as f32 + 0.5;
+                    let w0 = ((b.x - px) * (c.y - py) - (b.y - py) * (c.x - px)) / area;
+                    let w1 = ((c.x - px) * (a.y - py) - (c.y - py) * (a.x - px)) / area;
+                    let w2 = 1.0 - w0 - w1;
+                    if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+                        continue;
+                    }
+                    let vertex = mix_vertex(a, b, c, w0, w1, w2);
+                    let colour = shade(batch, vertex, None, None);
+                    blend(rows, x, y, colour);
+                }
+            }
+        }
+    }
+
+    /// The row spans keep every pixel: random, long, thin, nearly level,
+    /// nearly flat, off-window and both-winding triangles draw the same
+    /// bytes as testing the whole box.
+    #[test]
+    fn row_spans_draw_the_same_pixels_as_the_whole_box() {
+        let mut seed = 0x2545_f491_u32;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as f32 / u32::MAX as f32
+        };
+        let (width, height) = (200u32, 120u32);
+        let mut batch = Batch::new(Program::Ring, Texture::None);
+        for index in 0..3000 {
+            let kind = index % 5;
+            let a = [next() * 260.0 - 30.0, next() * 180.0 - 30.0];
+            let (b, c) = match kind {
+                // Random.
+                0 => (
+                    [next() * 260.0 - 30.0, next() * 180.0 - 30.0],
+                    [next() * 260.0 - 30.0, next() * 180.0 - 30.0],
+                ),
+                // A long thin sliver, as a link's ribbon.
+                1 => {
+                    let b = [next() * 260.0 - 30.0, next() * 180.0 - 30.0];
+                    let t = next() * 0.6;
+                    (b, [a[0] + t, a[1] + t * 0.5 + next() * 0.01])
+                }
+                // Nearly level.
+                2 => (
+                    [a[0] + next() * 200.0, a[1] + next() * 0.02],
+                    [a[0] + next() * 200.0, a[1] - next() * 3.0],
+                ),
+                // Nearly upright.
+                3 => (
+                    [a[0] + next() * 0.02, a[1] + next() * 150.0],
+                    [a[0] - next() * 3.0, a[1] + next() * 150.0],
+                ),
+                // Nearly flat: three points almost on a line.
+                _ => {
+                    let d = [next() * 100.0 - 50.0, next() * 100.0 - 50.0];
+                    let e = next() * 1e-3;
+                    (
+                        [a[0] + d[0], a[1] + d[1]],
+                        [a[0] + d[0] * 2.0 + e, a[1] + d[1] * 2.0 - e],
+                    )
+                }
+            };
+            let colour = [next(), next(), next(), 0.2 + next() * 0.5];
+            for p in [a, b, c] {
+                batch
+                    .vertices
+                    .push(TreeVertex::new(p[0], p[1], next(), next()).with_colour(colour));
+            }
+        }
+        let rows = |pixels| Rows {
+            pixels,
+            width,
+            height,
+            top: 0,
+        };
+        let mut spans = vec![0u8; (width * height * 4) as usize];
+        let clip = Region::whole(width, height);
+        raster_batch(&mut rows(&mut spans), &batch, None, None, clip);
+        let mut whole = vec![0u8; (width * height * 4) as usize];
+        raster_batch_whole_box(&mut rows(&mut whole), &batch);
+        assert!(spans.iter().any(|&byte| byte != 0));
+        assert!(spans == whole);
+    }
+
+    fn ring_square(x: f32, y: f32, side: f32, colour: [f32; 4]) -> Batch {
+        let mut batch = Batch::new(Program::Ring, Texture::None);
+        let corner = |dx: f32, dy: f32| {
+            TreeVertex::new(x + dx, y + dy, dx / side, dy / side).with_colour(colour)
+        };
+        batch.vertices = vec![
+            corner(0.0, 0.0),
+            corner(side, 0.0),
+            corner(side, side),
+            corner(0.0, 0.0),
+            corner(side, side),
+            corner(0.0, side),
+        ];
+        batch
+    }
+
+    /// The kept canvas redraws the boxes of the batches that changed, came
+    /// or went, and always holds the bytes of a whole redraw.
+    #[test]
+    fn the_kept_canvas_redraws_the_changed_boxes() {
+        let size = (64u32, 48u32);
+        let sheets = TreeSheets::default();
+        let mut draw = TreeDraw::default();
+        draw.batches
+            .push(ring_square(0.0, 0.0, 64.0, [0.2, 0.4, 0.6, 0.8]));
+        draw.batches
+            .push(ring_square(4.0, 4.0, 10.0, [1.0, 0.0, 0.0, 0.5]));
+        draw.batches
+            .push(ring_square(40.0, 20.0, 12.0, [0.0, 1.0, 0.0, 0.7]));
+        let mut cache = CanvasCache::default();
+        let first = cache.update(draw.clone(), &sheets, None, None, size);
+        assert_eq!(first, vec![Region::whole(size.0, size.1)]);
+        assert!(cache.premultiplied() == render(&draw, &sheets, None, size.0, size.1));
+        // Nothing changed: nothing is redrawn.
+        assert!(
+            cache
+                .update(draw.clone(), &sheets, None, None, size)
+                .is_empty()
+        );
+        // The middle square moves: its old and new boxes, merged.
+        draw.batches[1] = ring_square(6.0, 5.0, 10.0, [1.0, 0.0, 0.0, 0.5]);
+        let moved = cache.update(draw.clone(), &sheets, None, None, size);
+        assert_eq!(
+            moved,
+            vec![Region {
+                left: 4,
+                top: 4,
+                right: 16,
+                bottom: 15
+            }]
+        );
+        assert!(cache.premultiplied() == render(&draw, &sheets, None, size.0, size.1));
+        // A batch comes and the last changes colour: two boxes apart.
+        draw.batches[2] = ring_square(40.0, 20.0, 12.0, [0.0, 0.0, 1.0, 0.7]);
+        draw.batches
+            .push(ring_square(20.0, 30.0, 6.0, [1.0, 1.0, 1.0, 1.0]));
+        assert_eq!(
+            cache.update(draw.clone(), &sheets, None, None, size).len(),
+            2
+        );
+        assert!(cache.premultiplied() == render(&draw, &sheets, None, size.0, size.1));
+        // It goes again.
+        draw.batches.pop();
+        assert_eq!(
+            cache.update(draw.clone(), &sheets, None, None, size).len(),
+            1
+        );
+        assert!(cache.premultiplied() == render(&draw, &sheets, None, size.0, size.1));
+        // The backdrop changes: the whole canvas.
+        draw.batches[0] = ring_square(0.0, 0.0, 64.0, [0.2, 0.4, 0.6, 0.9]);
+        assert_eq!(
+            cache.update(draw.clone(), &sheets, None, None, size),
+            vec![Region::whole(size.0, size.1)]
+        );
+        assert!(cache.premultiplied() == render(&draw, &sheets, None, size.0, size.1));
+        // A new size draws everything again.
+        let wider = (80, 48);
+        assert_eq!(
+            cache.update(draw.clone(), &sheets, None, None, wider),
+            vec![Region::whole(80, 48)]
+        );
+        assert!(cache.premultiplied() == render(&draw, &sheets, None, 80, 48));
+    }
+
+    /// The image node blends straight alpha: each colour is divided by its
+    /// alpha, rounded and capped; a transparent pixel is black.
+    #[test]
+    fn the_canvas_is_handed_over_with_straight_alpha() {
+        let canvas = [
+            64u8, 32, 0, 128, 200, 10, 255, 255, 9, 9, 9, 0, 255, 0, 0, 100,
+        ];
+        let mut out = [7u8; 16];
+        straighten(
+            &canvas,
+            &mut out,
+            4,
+            Region {
+                left: 0,
+                top: 0,
+                right: 3,
+                bottom: 0,
+            },
+        );
+        assert_eq!(
+            out,
+            [
+                128, 64, 0, 128, 200, 10, 255, 255, 0, 0, 0, 0, 255, 0, 0, 100
+            ]
+        );
     }
 }
