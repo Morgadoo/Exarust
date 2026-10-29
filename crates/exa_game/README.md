@@ -728,15 +728,24 @@ rigid body; their colliders remember the scene node they were built under
 `_null` box, which the original never draws but picks; it is kept as a
 hidden pick-only collider that nothing collides with. In `play arenahub`
 the flow runs Exarust's practice stand-in once the player spawns; with the
-hub loaded the hook takes that (and the menu) as the arena mode. Not wired: the
-shop's first stock build (`trade::update_stock` needs a live `ShopWorld`;
-`trade::ensure_first_stock` and `career::Company::first_shop_stock` hold
-the rule), the match's return to the hub (`arena_session::settle_return`
-holds the rule), the windows' own close controls, the board's
-pictures and prize items, the manage report lines and controls, and the
-trade window's item icons and character preview.
+hub loaded the hook takes that (and the menu) as the arena mode. The
+`\xaaArenaMach` side is the x of the node's world bounding centre (its
+`PartBounds` centre through the node's transform), and only a side above
+zero opens the board. A click on the shop, or on the merchant, whose shelf
+is empty builds its first stock (`shop_stock::LiveShopStock`: the resource
+pack's `objdb.rdb` read once, each table entry's flags word as its kinds,
+apparel and weapons stocked as new instance ids remembering their source):
+the shop asks the default kinds and any rank, the merchant its stock type
+and specialisation (`ArenaCareer::merchant_kinds`, `merchant_rank`, kept by
+the save's merchant chunk). The shelf's names come from the item
+catalogue, an instance under its source's name. The copies have no item
+body yet (no condition or variant is rolled onto one). Not wired: the
+windows' own close controls, the board's pictures and prize items, the
+manage report lines and controls, the trade window's item icons and
+character preview, and moving shelf items into the buy basket.
 The hub's shopkeeper and specialist placements are `arena_spawn`'s plans;
-the game does not spawn those bodies yet.
+once the manager stands, the hub asks the scene body generator for the
+shopkeeper and one body per employed specialist.
 
 ## Arena match board bridge
 

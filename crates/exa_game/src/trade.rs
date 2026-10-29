@@ -380,6 +380,23 @@ pub fn ensure_first_stock(
     stock.is_empty().then(|| first_stock(stock, rolls, world))
 }
 
+/// Fill an empty merchant's stock with the kinds and rank the merchant
+/// sells, leaving a shelf that already has items alone. The hub click's
+/// merchant guard: the original calls the stock update with the merchant's
+/// stock type (0 in a new career: the default kinds) and specialisation
+/// (−1 in a new career: any rank) when the merchant's stock is empty.
+pub fn ensure_first_stock_of(
+    stock: &mut Vec<u32>,
+    kinds: u32,
+    rank: i32,
+    rolls: [u32; 2],
+    world: &mut impl ShopWorld,
+) -> Option<StockReport> {
+    stock
+        .is_empty()
+        .then(|| update_stock(stock, kinds, rank, rolls, world))
+}
+
 /// The variant roll's next unit in [0, 1): the seed stepped, times 2^−32,
 /// as a float.
 pub fn variant_unit(seed: &mut u32) -> f32 {

@@ -95,6 +95,7 @@ pub mod scene_bodies;
 pub mod scene_editor;
 pub mod session;
 pub mod shell_draw;
+pub mod shop_stock;
 pub mod shop_window;
 pub mod sim_control;
 pub mod slots;

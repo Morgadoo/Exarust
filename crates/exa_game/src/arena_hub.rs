@@ -181,7 +181,9 @@ pub fn same_name(a: &[u8; 16], b: &[u8; 16]) -> bool {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum HubTarget<'a> {
     /// A scene object: its name and the side value that tells the two
-    /// ArenaMach objects apart (read as a float; probably its place).
+    /// ArenaMach objects apart. The side is the x of the node's world
+    /// bounding-box centre (the collider centre the scene keeps), read as
+    /// a float; the two notice boards stand on opposite sides of the hub.
     Object { name: &'a [u8; 16], side: f32 },
     /// A character: its condition word and whether it is an employed
     /// merchant.
@@ -202,6 +204,16 @@ pub enum HubAction {
     MerchantStock,
 }
 
+/// Whether an ArenaMach object opens the match board.
+///
+/// The hook compares the object's side with zero: only a side above zero
+/// opens the board; a zero, a negative side and NaN all open Manage
+/// Company instead. The compare is the original's `COMISS` with the
+/// unordered case falling through (`JP`), so NaN must not read as above.
+pub fn machine_side_opens_board(side: f32) -> bool {
+    side > 0.0
+}
+
 /// The hub's click hook.
 pub fn hub_click(busy: bool, mode: u32, confirming: bool, target: HubTarget) -> HubAction {
     if busy || mode != ARENA_MODE || confirming {
@@ -212,7 +224,7 @@ pub fn hub_click(busy: bool, mode: u32, confirming: bool, target: HubTarget) -> 
             if same_name(name, &SHOP_NAME) {
                 HubAction::Shop
             } else if same_name(name, &MACHINE_NAME) {
-                if side > 0.0 {
+                if machine_side_opens_board(side) {
                     HubAction::MatchBoard
                 } else {
                     HubAction::ManageCompany
@@ -405,6 +417,20 @@ mod tests {
         assert_eq!(
             hub_click(false, 8, false, machine(f32::NAN)),
             HubAction::ManageCompany
+        );
+        // The side is a strict "above zero": the negative zero, a negative
+        // side and a NaN all open Manage Company, an infinity the board.
+        for side in [-0.0, -1.0, f32::NEG_INFINITY, f32::NAN] {
+            assert!(!machine_side_opens_board(side), "{side}");
+            assert_eq!(
+                hub_click(false, 8, false, machine(side)),
+                HubAction::ManageCompany
+            );
+        }
+        assert!(machine_side_opens_board(f32::INFINITY));
+        assert_eq!(
+            hub_click(false, 8, false, machine(f32::MIN_POSITIVE)),
+            HubAction::MatchBoard
         );
         let plain = *b"ArenaShop\0\0\0\0\0\0\0";
         let plain = HubTarget::Object {

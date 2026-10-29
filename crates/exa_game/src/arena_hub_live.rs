@@ -22,8 +22,8 @@
 use bevy::prelude::*;
 use exa_combat::{Condition, Fighter};
 use exa_physics::body::Ragdoll;
-use exa_world::LevelRoot;
 use exa_world::start::player_start;
+use exa_world::{LevelRoot, PartBounds};
 
 use crate::arena_hub::{ARENA_MODE, HubAction, HubHook, HubTarget, enter_hub, hub_click, hub_fall};
 use crate::arena_spawn::manager_plan;
@@ -149,6 +149,7 @@ impl Plugin for ArenaHubPlugin {
             .init_resource::<HubWindows>()
             .init_resource::<crate::hub_windows::ArenaCareer>()
             .init_resource::<crate::hub_windows::HubItemNames>()
+            .init_resource::<crate::shop_stock::LiveShopStock>()
             .init_resource::<LastHubClick>()
             .init_resource::<exa_ui::gui_draw::GuiFrames>()
             .init_resource::<ButtonInput<KeyCode>>()
@@ -538,6 +539,66 @@ fn confirming(windows: &HubWindows) -> bool {
     windows.is_open()
 }
 
+/// The shop's live data, bundled so the click hook keeps a system-param
+/// count Bevy can satisfy: the game (to read the object database once), the
+/// item catalogue (for the shelf's names), the live stock world and the
+/// name table the trade window shows.
+#[derive(bevy::ecs::system::SystemParam)]
+struct HubShop<'w> {
+    game: Option<Res<'w, exa_assets::Game>>,
+    catalogue: Option<Res<'w, exa_items::catalogue::ItemCatalogue>>,
+    live: ResMut<'w, crate::shop_stock::LiveShopStock>,
+    names: ResMut<'w, crate::hub_windows::HubItemNames>,
+}
+
+impl HubShop<'_> {
+    /// Build the first stock when the shelf is empty, as the hub click does,
+    /// and open the trade window on it.
+    fn open(
+        &mut self,
+        merchant: bool,
+        career: &mut crate::hub_windows::ArenaCareer,
+        windows: &mut HubWindows,
+    ) {
+        if let Some(game) = self.game.as_deref() {
+            self.live.load_from_game(game);
+        }
+        // The original reads the performance counter twice: the draw's roll
+        // and the variant seed.
+        let rolls = || {
+            [
+                crate::arena_match::counter_now() as u32,
+                crate::arena_match::counter_now() as u32,
+            ]
+        };
+        // The shop's shelf asks the default kinds and any rank; the
+        // merchant's asks its stock type and specialisation. Either is built
+        // only when empty.
+        let (stock, kinds, rank) = if merchant {
+            (
+                &mut career.merchant_stock,
+                career.merchant_kinds,
+                career.merchant_rank,
+            )
+        } else {
+            (&mut career.company.stock, 0, -1)
+        };
+        if let Some(report) =
+            crate::trade::ensure_first_stock_of(stock, kinds, rank, rolls(), &mut *self.live)
+        {
+            bevy::log::info!(
+                "hub shop: first stock of {} items ({} invalid)",
+                stock.len(),
+                report.invalid
+            );
+        }
+        if let Some(catalogue) = self.catalogue.as_deref() {
+            self.live.fill_names(catalogue, &mut self.names);
+        }
+        windows.open_shop(merchant, career, &self.names);
+    }
+}
+
 /// The click hook: the object or character under the click, the action it
 /// answers and the window it opens.
 #[allow(clippy::too_many_arguments)]
@@ -548,10 +609,11 @@ fn hub_clicks(
     levels: Query<&LevelRoot>,
     names: Query<&Name>,
     transforms: Query<&GlobalTransform>,
+    bounds: Query<&PartBounds>,
     characters: Query<(&Condition, &exa_character::record::CharacterData)>,
     mut windows: ResMut<HubWindows>,
     mut career: ResMut<crate::hub_windows::ArenaCareer>,
-    item_names: Res<crate::hub_windows::HubItemNames>,
+    mut shop: HubShop,
     mut launches: MessageWriter<ArenaMatchLaunch>,
     mut last: ResMut<LastHubClick>,
 ) {
@@ -630,15 +692,19 @@ fn hub_clicks(
         }
         // A static object's mesh names the scene node the original's pick
         // returns; the name is on that node, not on the prop model's root.
-        let object = |node: Entity, names: &Query<&Name>, transforms: &Query<&GlobalTransform>| {
+        let object = |node: Entity,
+                      names: &Query<&Name>,
+                      transforms: &Query<&GlobalTransform>,
+                      bounds: &Query<&PartBounds>| {
             let name = names.get(node).ok().map(|name| hub_name(name.as_str()));
-            // The original reads a float of the clicked node as the side;
-            // which field it is is not traced, so the global x is a guess
-            // (the sign is what the hook compares).
-            let side = transforms
-                .get(node)
-                .map(|transform| transform.translation().x)
-                .unwrap_or(0.0);
+            // The side is the x of the node's world bounding-box centre: the
+            // collider centre the scene keeps, transformed by the node's
+            // frame. A node without bounds reads its own origin.
+            let side = match (transforms.get(node), bounds.get(node)) {
+                (Ok(transform), Ok(bounds)) => transform.transform_point(bounds.centre).x,
+                (Ok(transform), Err(_)) => transform.translation().x,
+                _ => 0.0,
+            };
             match name {
                 Some(name) => hub_click(
                     hub.busy,
@@ -650,8 +716,8 @@ fn hub_clicks(
             }
         };
         let action = match click.hit {
-            crate::hand::Hit::SceneNode { node } => object(node, &names, &transforms),
-            crate::hand::Hit::Prop { body, .. } => object(body, &names, &transforms),
+            crate::hand::Hit::SceneNode { node } => object(node, &names, &transforms, &bounds),
+            crate::hand::Hit::Prop { body, .. } => object(body, &names, &transforms, &bounds),
             crate::hand::Hit::Character { body, .. } => match characters.get(body) {
                 Ok((condition, data)) => hub_click(
                     hub.busy,
@@ -681,10 +747,10 @@ fn hub_clicks(
         match action {
             HubAction::Nothing => {}
             HubAction::Shop => {
-                windows.open_shop(false, &career, &item_names);
+                shop.open(false, &mut career, &mut windows);
             }
             HubAction::MerchantStock => {
-                windows.open_shop(true, &career, &item_names);
+                shop.open(true, &mut career, &mut windows);
             }
             HubAction::MatchBoard => {
                 // Opening the board makes the hub busy; the board's close
@@ -934,7 +1000,14 @@ mod tests {
                 .world_mut()
                 .spawn((
                     Name::new("\u{aa}ArenaMach"),
-                    GlobalTransform::from_xyz(side, 0.0, 0.0),
+                    // The side field is the bounding centre, not the node's
+                    // own origin: an origin at zero on each board.
+                    GlobalTransform::default(),
+                    PartBounds {
+                        centre: Vec3::new(side, 0.0, 0.0),
+                        radius: 1.0,
+                        half_extents: Vec3::splat(1.0),
+                    },
                 ))
                 .id();
             app.world_mut()
@@ -961,6 +1034,128 @@ mod tests {
                     .is_kind(HubWindowKind::None)
             );
             assert!(!app.world().resource::<ArenaHub>().busy);
+        }
+    }
+
+    /// A shop click on an empty shelf builds the first stock from the live
+    /// stock world (18 to 20 copies of its one listed apparel record) and a
+    /// second click leaves the shelf as it is. The merchant's shelf asks its
+    /// own kinds: a weapons merchant finds nothing among apparel.
+    #[test]
+    fn a_shop_click_builds_the_first_stock_once() {
+        use exa_formats::trade_record::{TradeModel, TradeRecord};
+        let mut app = hub_app();
+        let mut flow = Flow::default();
+        flow.mode = crate::flow::Mode::Arena;
+        flow.phase = Phase::Playing;
+        app.insert_resource(flow);
+        app.insert_resource(crate::shop_stock::LiveShopStock::from_entries(vec![
+            crate::trade::ShopEntry {
+                id: 10,
+                flags: crate::trade::APPAREL,
+                record: Some(TradeRecord {
+                    listing: Some(0),
+                    parent: 0,
+                    model: Some(TradeModel {
+                        named: true,
+                        flags: 0,
+                        rarity: 0,
+                        size: [1, 1],
+                    }),
+                    rank: 0,
+                }),
+            },
+        ]));
+        spawn_hub_level(&mut app);
+        app.update();
+        let shop = app
+            .world_mut()
+            .spawn((Name::new("\u{aa}ArenaShop"), GlobalTransform::default()))
+            .id();
+        app.world_mut()
+            .write_message(WorldClick::picked(Hit::SceneNode { node: shop }));
+        app.update();
+        let first = app
+            .world()
+            .resource::<crate::hub_windows::ArenaCareer>()
+            .company
+            .stock
+            .clone();
+        assert!((18..=20).contains(&first.len()), "{}", first.len());
+        let live = app.world().resource::<crate::shop_stock::LiveShopStock>();
+        assert!(
+            first
+                .iter()
+                .all(|&id| live.parent_of_instance(id) == Some(10))
+        );
+        app.world_mut().resource_mut::<HubWindows>().close();
+        app.world_mut()
+            .write_message(WorldClick::picked(Hit::SceneNode { node: shop }));
+        app.update();
+        assert_eq!(
+            app.world()
+                .resource::<crate::hub_windows::ArenaCareer>()
+                .company
+                .stock,
+            first
+        );
+
+        // A weapons merchant's first stock finds no candidate among the
+        // apparel and stays empty.
+        let mut live = app
+            .world()
+            .resource::<crate::shop_stock::LiveShopStock>()
+            .clone();
+        let mut merchant = Vec::new();
+        let report = crate::trade::ensure_first_stock_of(
+            &mut merchant,
+            crate::trade::ARMS,
+            -1,
+            [1, 2],
+            &mut live,
+        )
+        .unwrap();
+        assert_eq!(report.invalid, 0);
+        assert!(merchant.is_empty());
+    }
+
+    /// The ArenaMach side is the bounding centre's x, transformed by the
+    /// node, not the node's own origin.
+    #[test]
+    fn the_machine_side_is_the_bounding_centre() {
+        let mut app = hub_app();
+        let mut flow = Flow::default();
+        flow.mode = crate::flow::Mode::Arena;
+        flow.phase = Phase::Playing;
+        app.insert_resource(flow);
+        spawn_hub_level(&mut app);
+        app.update();
+        for (origin, centre, want) in [
+            (5.0, -10.0, HubAction::ManageCompany),
+            (5.0, 10.0, HubAction::MatchBoard),
+        ] {
+            let machine = app
+                .world_mut()
+                .spawn((
+                    Name::new("\u{aa}ArenaMach"),
+                    GlobalTransform::from_xyz(origin, 0.0, 0.0),
+                    PartBounds {
+                        centre: Vec3::new(centre, 0.0, 0.0),
+                        radius: 1.0,
+                        half_extents: Vec3::splat(1.0),
+                    },
+                ))
+                .id();
+            app.world_mut().resource_mut::<HubWindows>().close();
+            app.world_mut().resource_mut::<ArenaHub>().busy = false;
+            app.world_mut()
+                .write_message(WorldClick::picked(Hit::SceneNode { node: machine }));
+            app.update();
+            assert_eq!(
+                app.world().resource::<LastHubClick>().action,
+                Some(want),
+                "{origin} {centre}"
+            );
         }
     }
 
