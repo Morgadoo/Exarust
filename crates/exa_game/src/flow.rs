@@ -2382,7 +2382,9 @@ impl Flow {
             Step::Controls(false),
             Step::Hook(Hook::None),
         ];
-        let alive = f64::from(health) >= ALIVE_HEALTH;
+        // A NaN health takes the alive branch too: the original's `0.01 <= h`
+        // test jumps to the alive tip on the unordered result as well.
+        let alive = f64::from(health) >= ALIVE_HEALTH || health.is_nan();
         steps.push(Step::Tip(if alive { 2 } else { 3 }));
         let mut reconstructed = false;
         if !alive && self.mode == Mode::Story {
@@ -4157,6 +4159,24 @@ mod tests {
         };
         let _ = flow.die(0.0);
         assert!(flow.end_menu.unwrap().rows.contains(&"RESTART"));
+        // A NaN health takes the alive branch: tip 2, no drop and no strip,
+        // the plain end menu.
+        let mut flow = Flow {
+            mode: Mode::Story,
+            phase: Phase::Playing,
+            story: StoryState {
+                reconstruction: REBUILDABLE,
+                checkpoint: 7,
+                record: 7,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let steps = flow.die(f32::NAN);
+        assert!(steps.contains(&Step::Tip(2)));
+        assert!(!steps.contains(&Step::DropSave));
+        assert!(!steps.contains(&Step::StripPlayer));
+        assert!(steps.contains(&Step::EndMenu(end_menu(MENU_WON, Mode::Story))));
     }
 
     #[test]
