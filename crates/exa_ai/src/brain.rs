@@ -1088,6 +1088,14 @@ pub fn ai_tick(
             } else if npc.pass.leave && duellist.engaged {
                 duellist.leave();
                 combatant.in_combat = false;
+                // Leaving copies the body's look into the AI's look, heading
+                // and eased offset (the original's leave routine), so the
+                // head does not snap back to the fight's heading.
+                if let Some(t) = transform.as_deref() {
+                    let body_look = motion::yaw_of(t.rotation * Vec3::Z);
+                    let brain = &mut *npc;
+                    motion::leave_look(&mut brain.gaze, &mut brain.turn, body_look);
+                }
                 info!("{talking}: the target pass leaves combat");
             }
         }
