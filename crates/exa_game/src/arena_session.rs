@@ -501,10 +501,66 @@ pub fn bracket_next_fight(bracket: &mut BracketState, forced: i32, roll: &mut u3
     bracket.slots.iter().map(|slot| slot.id).collect()
 }
 
+/// A tournament's bracket at the match's end or forfeit: the scene draw's
+/// winner (`winner`, [`crate::career::draw_unwatched`]) keeps the first
+/// group, every other group draws its own, and the brackets are cleared
+/// again with no forced team while a pass still resolves more than one
+/// group; then the first event with no winner takes the first surviving
+/// team ([`crate::tournament::settle_first_undecided`]). All draws step the
+/// one shared `roll`.
+///
+/// [guess] With no team standing the original reads an unset result slot;
+/// Exarust forces no team then (0).
+pub fn finish_bracket(
+    bracket: &mut BracketState,
+    winner: Option<i32>,
+    events: &mut crate::arena::Roster,
+    roll: &mut u32,
+) {
+    let mut forced = winner.unwrap_or(0);
+    while crate::career::clear_losing_bracket(
+        &mut bracket.slots,
+        bracket.team_size,
+        bracket.sides,
+        forced,
+        roll,
+    ) {
+        forced = 0;
+    }
+    let mut winners = events.map(|row| row.team_id);
+    let field: Vec<u32> = bracket.slots.iter().map(|slot| slot.id as u32).collect();
+    crate::tournament::settle_first_undecided(&mut winners, &field, roll);
+    for (row, winner) in events.iter_mut().zip(winners) {
+        row.team_id = winner;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::arena_match::{MatchRounds, MatchState};
+
+    #[test]
+    fn the_end_clears_every_bracket_and_names_the_first_open_event() {
+        let slot = |id, strength| crate::career::BracketSlot { id, strength };
+        let mut bracket = BracketState {
+            slots: vec![slot(5, 4.0), slot(9, 10.0), slot(3, 4.0), slot(7, 2.0)],
+            team_size: 1,
+            sides: 2,
+            rounds: 2,
+        };
+        let mut events = crate::arena::Roster::default();
+        events[0].team_id = 2;
+        let mut roll = 1;
+        finish_bracket(&mut bracket, Some(5), &mut events, &mut roll);
+        // The first pass keeps 5 and draws 3 over 7; the second, unforced,
+        // draws 3 over 5 (pick 172 of 200 passes the first 100).
+        let ids: Vec<i32> = bracket.slots.iter().map(|slot| slot.id).collect();
+        assert_eq!(ids, [0, 0, 3, 0]);
+        // The first open event steps the roll once more and takes team 3.
+        assert_eq!(roll, 0x33dc_589c);
+        assert_eq!(events.map(|row| row.team_id), [2, 3, 0, 0, 0, 0]);
+    }
 
     #[test]
     fn a_won_round_opens_the_next_fight_or_the_end_menu() {
