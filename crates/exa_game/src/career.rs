@@ -947,29 +947,51 @@ pub fn draw_unwatched(
             let ratio = side.score / largest;
             let weight = ratio * ratio * 100.0;
             side.score = weight;
-            let rounded = weight.round_ties_even() as i32;
+            let rounded = round_to_i32(weight);
             weights.push(rounded);
             total = total.wrapping_add(rounded);
         }
     }
-    *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
     if sides.is_empty() {
+        return None;
+    }
+    let index = draw_weight(weights.as_slice(), total, roll).unwrap_or(0);
+    Some(sides[index].team)
+}
+
+/// The processor's single-to-int conversion: ties to even, and a NaN or a
+/// value outside the signed 32-bit range becomes the 32-bit minimum.
+fn round_to_i32(value: f32) -> i32 {
+    let rounded = value.round_ties_even();
+    if rounded.is_nan() || rounded >= 2_147_483_648.0 || rounded < -2_147_483_648.0 {
+        i32::MIN
+    } else {
+        rounded as i32
+    }
+}
+
+/// One weighted draw: step the roll, take the high half of the total plus
+/// one times it, and walk the weights until the running sum is above the
+/// pick. The first weight whose cumulative total is strictly greater wins;
+/// an equal cumulative is skipped. `None` when no weight passes, which the
+/// caller treats as the first side (the original leaves the loop's index
+/// register at its entry value).
+fn draw_weight(weights: &[i32], total: i32, roll: &mut u32) -> Option<usize> {
+    *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
+    if weights.is_empty() {
         return None;
     }
     let span = i64::from(total.wrapping_add(1));
     let product = i64::from(*roll).wrapping_mul(span);
     let pick = ((product as u64) >> 32) as i32;
     let mut reached = 0i32;
-    let mut winner = 0usize;
     for (index, weight) in weights.iter().enumerate() {
         reached = reached.wrapping_add(*weight);
-        if reached < pick {
-            continue;
+        if reached > pick {
+            return Some(index);
         }
-        winner = index;
-        break;
     }
-    Some(sides[winner].team)
+    None
 }
 
 /// One slot in a bracket group.
@@ -1907,7 +1929,36 @@ mod tests {
         assert_eq!(roll, 0x0808_8406);
         roll = 1;
         assert_eq!(draw_unwatched(&[], 1, 0, &mut roll), None);
-        assert_eq!(roll, 0x0808_8406);
+        // No group means the routine returns before it steps the roll.
+        assert_eq!(roll, 1);
+    }
+
+    #[test]
+    fn an_unwatched_draw_skips_an_exact_cumulative() {
+        // Two equal weights: total 2, and a roll whose step is exactly
+        // 0x8000_0000 picks 1. The first cumulative (1) is not above it,
+        // so the second team wins.
+        let mut roll = 0xa6b0_5733;
+        assert_eq!(draw_weight(&[1, 1], 2, &mut roll), Some(1));
+        assert_eq!(roll, 0x8000_0000);
+        // One weight is always above any pick below the total.
+        let mut roll = 0;
+        assert_eq!(draw_weight(&[5], 5, &mut roll), Some(0));
+        assert_eq!(draw_weight(&[], 0, &mut roll), None);
+    }
+
+    #[test]
+    fn the_weight_rounds_like_the_processor() {
+        // Ties to even.
+        assert_eq!(round_to_i32(0.5), 0);
+        assert_eq!(round_to_i32(1.5), 2);
+        assert_eq!(round_to_i32(-0.5), 0);
+        // NaN and out-of-range values become the indefinite integer.
+        assert_eq!(round_to_i32(f32::NAN), i32::MIN);
+        assert_eq!(round_to_i32(2_147_483_648.0), i32::MIN);
+        assert_eq!(round_to_i32(f32::INFINITY), i32::MIN);
+        assert_eq!(round_to_i32(-3.0e9), i32::MIN);
+        assert_eq!(round_to_i32(100.0), 100);
     }
 
     #[test]
