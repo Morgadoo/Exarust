@@ -1061,7 +1061,8 @@ fn main() -> AppExit {
         app.insert_resource(exa_game::commands::KeyCommands::of_hotkeys(
             &user.settings.hotkeys,
         ));
-        app.insert_resource(user.clone())
+        app.insert_resource(exa_game::flow::UnlockSettings::from_store(&user.store))
+            .insert_resource(user.clone())
             .add_systems(Update, user_settings::gui_size_from_display);
     }
     app.add_systems(Startup, register_debug_commands);

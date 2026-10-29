@@ -934,6 +934,39 @@ impl Default for PracticeState {
     }
 }
 
+/// The settings store's first key word: the entries the game reads at boot
+/// live under it.
+pub const SETTINGS_SECTION: u32 = 1;
+/// The expert-ladder unlock's settings key.
+pub const EXPERT_UNLOCK_KEY: u32 = 0x6431_ac01;
+/// The story-background unlock's settings key.
+pub const BACKGROUND_UNLOCK_KEY: u32 = 0x6431_ac02;
+
+/// The two unlock words the launch reads from the settings store. The
+/// running app fills it from the user's store; the boot applies it before
+/// the title page is built.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct UnlockSettings {
+    /// The entry's 4 bytes, when the store holds it.
+    pub expert: Option<[u8; 4]>,
+    pub backgrounds: Option<[u8; 4]>,
+}
+
+impl UnlockSettings {
+    /// Reads the two entries from a settings store's `[1, key]` paths.
+    pub fn from_store(store: &exa_formats::settings_store::SettingsStore) -> Self {
+        let word = |key: u32| {
+            let bytes = store.get(&[SETTINGS_SECTION, key])?;
+            let four = bytes.get(0..4)?;
+            Some([four[0], four[1], four[2], four[3]])
+        };
+        Self {
+            expert: word(EXPERT_UNLOCK_KEY),
+            backgrounds: word(BACKGROUND_UNLOCK_KEY),
+        }
+    }
+}
+
 /// The settings unlock words: the practice ladder's expert difficulty and
 /// the story backgrounds. The original reads and writes them as 4-byte
 /// settings entries.
@@ -1026,6 +1059,17 @@ impl Unlocks {
     /// The expert unlock as the settings entry's 4 bytes: one when unlocked.
     pub fn expert_bytes(&self) -> [u8; 4] {
         u32::from(self.expert).to_le_bytes()
+    }
+
+    /// Applies the two words the launch read. A missing entry leaves its
+    /// current value, as the original's failed read does.
+    pub fn apply_settings(&mut self, settings: UnlockSettings) {
+        if let Some(bytes) = settings.expert {
+            self.read_expert(&bytes);
+        }
+        if let Some(bytes) = settings.backgrounds {
+            self.read_backgrounds(&bytes);
+        }
     }
 }
 
@@ -3146,7 +3190,11 @@ fn boot(
     mut flow: ResMut<Flow>,
     mut queued: ResMut<FlowSteps>,
     show_title: Option<Res<BootToMenu>>,
+    unlocks: Option<Res<UnlockSettings>>,
 ) {
+    if let Some(unlocks) = unlocks.as_deref() {
+        flow.unlocks.apply_settings(*unlocks);
+    }
     for step in flow.boot() {
         debug!("game flow: {step:?}");
         if show_title.as_deref().is_some_and(|show| !show.0)
@@ -5300,6 +5348,10 @@ mod tests {
             .init_resource::<ButtonInput<MouseButton>>()
             .init_resource::<exa_ui::gui_draw::GuiFrames>()
             .insert_resource(BootToMenu(false))
+            .insert_resource(UnlockSettings {
+                expert: Some(1u32.to_le_bytes()),
+                backgrounds: Some(5u32.to_le_bytes()),
+            })
             .add_plugins((crate::menu_screen::MenuScreenPlugin, FlowPlugin));
         app.update();
         assert!(
@@ -5307,8 +5359,40 @@ mod tests {
                 .resource::<crate::menu_screen::MenuScreen>()
                 .open
         );
-        assert_eq!(app.world().resource::<Flow>().mode, Mode::Menu);
-        assert!(app.world().resource::<Flow>().booted());
+        let flow = app.world().resource::<Flow>();
+        assert_eq!(flow.mode, Mode::Menu);
+        assert!(flow.booted());
+        // The launch's two settings words reach the boot.
+        assert!(flow.unlocks.expert);
+        assert_eq!(flow.unlocks.backgrounds, 5);
+    }
+
+    #[test]
+    fn the_unlock_entries_are_read_from_the_settings_store() {
+        use exa_formats::settings_store::SettingsStore;
+
+        let mut store = SettingsStore::new();
+        store
+            .set(&[SETTINGS_SECTION, EXPERT_UNLOCK_KEY], &[1, 0, 0, 0])
+            .unwrap();
+        store
+            .set(&[SETTINGS_SECTION, BACKGROUND_UNLOCK_KEY], &[5, 0, 0, 0])
+            .unwrap();
+        let settings = UnlockSettings::from_store(&store);
+        assert_eq!(settings.expert, Some([1, 0, 0, 0]));
+        assert_eq!(settings.backgrounds, Some([5, 0, 0, 0]));
+        let mut unlocks = Unlocks::default();
+        unlocks.apply_settings(settings);
+        assert!(unlocks.expert);
+        assert_eq!(unlocks.backgrounds, 5);
+        // A missing entry leaves the current word alone.
+        let mut unlocks = Unlocks {
+            expert: true,
+            backgrounds: 7,
+        };
+        unlocks.apply_settings(UnlockSettings::default());
+        assert!(unlocks.expert);
+        assert_eq!(unlocks.backgrounds, 7);
     }
 
     #[test]
