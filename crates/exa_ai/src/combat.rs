@@ -73,6 +73,7 @@
 
 use bevy::math::Vec3;
 use exa_combat::attack::AttackMotion;
+use exa_combat::stance::{Stance, stance_by_energy};
 
 use crate::cast;
 use crate::fight;
@@ -1988,10 +1989,9 @@ pub fn tick(
         if f64::from(me.size) < 1.3 {
             let_go(me, &mut out.blow);
             if stance_free(me) {
-                let stance = if me.health < 0.01 || me.energy < me.max_energy - 0.05 {
-                    GUARD
-                } else {
-                    COMBAT_IDLE
+                let stance = match stance_by_energy(me.health, me.energy, me.max_energy) {
+                    Stance::Defence => GUARD,
+                    _ => COMBAT_IDLE,
                 };
                 if me.motion != stance {
                     let blend = me.stance_blend.map_or(40, |w| (w << 2) as u32);

@@ -20,3 +20,4 @@
 | [`research/engine-classes.md`](research/engine-classes.md) | the original engine's class map (from FPC RTTI) and technology facts |
 | [`research/openpbr.md`](research/openpbr.md) | whether and how OpenPBR fits the renderer (material model, Original vs Enhanced shading) |
 | [`research/online-research.md`](research/online-research.md) | community tools, prior reverse-engineering work, gameplay references |
+| [`re/motiledyn-map.md`](re/motiledyn-map.md) | the character body class mapped routine by routine to Exarust items, with status and byte totals |

@@ -455,6 +455,25 @@ the permission, the race and claw forbids of the permission, and the
 previous-motion record of a continued swing (nothing sets the continuation
 flag yet).
 
+The armed parry's geometry is in place as tested functions, with nothing
+calling them yet: `parry_blade_height` finds how far up the attacker's
+blade the parry meets it (the chest gap less 20 cm against the reach and
+the blade length), `blade_point` carries that point by the blade's
+tetrahedron now and a tick ago (the fast barycentrics), `parry_point`
+sweeps it (its travel's height scaled by 16 − 16·clock outside the stab
+and the overhead, less its part toward the attacker's chest, both
+normalised with the processor's approximate reciprocal square root) and
+holds it 60 cm (80 for an overhead) short of the defender's chest, or
+marks the blow passed 10 cm on, and `parry_distance` gives the ground
+distance the grip's falloff reads. `armed_grip` takes the strengths'
+products in double, lets a NaN distance through the falloff and rounds
+the blend half to even, as the original's conversion does.
+
+`stance::stance_by_energy` is the original's return to a stance by energy:
+the Defence stance while dying or dazed (energy more than 0.05 under its
+most), both compared in double, else the combat idle. The AI's guard
+choice uses it.
+
 `weapon` is the held weapon's handling: the blade lift and bend curves and
 their two guide pushes (the weapon's and the forearm's), with the weapon's
 balance W7 term, using `exa_physics::body::push_fraction`'s point weighting.
