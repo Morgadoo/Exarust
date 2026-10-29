@@ -56,6 +56,8 @@
 //!          --debug-gui-form           open one empty GUI form through the draw skin's path
 //!          --debug-path x,y,z         play mode: plan a path from the player's feet to this point (metres) and draw it,
 //!                                     again whenever the player has moved a metre
+//!          --searcher <id>            play mode: the level character with this record id (hex with 0x) takes the
+//!                                     Explorer role: it follows the player and searches the dead bodies near it
 //!          --debug-column x,z[/x,z…]  once loaded, log every mesh over each floor point: name, heights, shadow level, how it casts
 //!          --profiler                 frame profiler: main/render thread and GPU times, overlay shown (F10 toggles)
 //!          --perf-log <seconds>       frame profiler on, its report logged every so often
@@ -228,6 +230,10 @@ pub struct Options {
     pub debug_gui_form: bool,
     /// Play mode: the debug path's goal (`--debug-path`, metres).
     pub debug_path: Option<[f32; 3]>,
+    /// Play mode: the level character with this record id takes the
+    /// Explorer role and follows the player, searching the dead
+    /// (`--searcher`).
+    pub searcher: Option<u32>,
     /// Once loaded, log every mesh over these floor points (x, z in metres).
     pub debug_column: Vec<[f32; 2]>,
     /// Log the frame profiler's report every this many seconds.
@@ -737,6 +743,17 @@ fn main() -> AppExit {
                     options.camera = Some(pose);
                 }
             }
+            "--searcher" => {
+                let v = args.next().unwrap_or_default();
+                let id = match v.strip_prefix("0x") {
+                    Some(hex) => u32::from_str_radix(hex, 16).ok(),
+                    None => v.parse().ok(),
+                };
+                if id.is_none() {
+                    eprintln!("--searcher: cannot read {v:?} (a record id)");
+                }
+                options.searcher = id;
+            }
             "--corpse" => {
                 let v: Vec<f32> = args
                     .next()
@@ -964,8 +981,11 @@ fn main() -> AppExit {
     .insert_resource(exa_world::nav::NavOverlay {
         on: options.debug_nav,
     })
-    .insert_resource(exa_world::nav::NavRefreshMoved(options.nav_refresh_moved))
-    .insert_resource(match options.debug_path {
+    .insert_resource(exa_world::nav::NavRefreshMoved(options.nav_refresh_moved));
+    if let Some(id) = options.searcher {
+        app.insert_resource(exa_game::npc_search::DebugSearcher(id));
+    }
+    app.insert_resource(match options.debug_path {
         Some(goal) => exa_game::path_probe::PathProbe::to(Vec3::from(goal)),
         None => exa_game::path_probe::PathProbe::default(),
     })
