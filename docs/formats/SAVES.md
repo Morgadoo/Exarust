@@ -322,8 +322,16 @@ zero: the slot is neither listed nor loaded.
   loadout's worn list, then the carried items, before the record's
   re-derive; the stash is compacted afterwards by its own pass). The
   repair is a tested function: Exarust's load does not decode and
-  re-encode the world character database to apply it. The object-database
-  id passes are not modelled.
+  re-encode the world character database to apply it. The object database's
+  classification is `exa_game::arsenal::ItemKind::of_item`: an item with a
+  body section is apparel and its armour type byte at `0x1A8` picks the
+  armour shelf (types 3 through 6) or the clothing shelf, whatever else the
+  record holds; without a body a weapon section (`0x4000`) puts it on the
+  weapons shelf, else a shield section (`0x8000`) on the shields shelf, else
+  it goes on no shelf. The tests are on the sections' presence, not on
+  whether their contents parse. `arena_ids::kinds_from_items` builds the
+  lookup over a saved world object database's records, which
+  `arena_ids::regenerate_lists` consumes.
 * **List regeneration** (after an arena load's id pass): each employee in
   staff order whose profession byte is 4 has its own list emptied; any
   other has its record's loadouts merged into its list (each loadout's
@@ -563,8 +571,11 @@ pass, sets up each travelling character's node, activates the player's
 node, restores the GUI's audio state and resets the scene content, leaves
 the arena task, looks up the destination's locale and level ids, clears the
 portal node, stores the **previous** level's id in the portal word (the
-other entry points store −1 there), resets the load's globals, opens the save, reads the
-destination's section from the save or the archive, imports it, stores the
+other entry points store −1 there), resets the load's globals, opens the
+save, reads the
+destination's section from the save or the archive, clears the player
+node's flag bits 8 through 15 and prepares the installed player hook (the
+word `0x1000` and the game pointer beside it, then the call), imports it, stores the
 name, chooses the spawn matrix (the portal node's when one is named, else
 the identity), spawns the player, stores its transform, re-derives a
 story-mode-2 character and clears the word to 1, sets up the grid arrays

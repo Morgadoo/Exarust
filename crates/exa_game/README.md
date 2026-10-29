@@ -136,8 +136,13 @@ follower re-attach (UID and controls re-created, carry cleared, the
 minimum distance raised to 5 cm), the menu background scene
 (`menuscene.rfc`, fog 1.8, view (0, 500, 700), target (0, 0, −200)), the `<locale>.rft` terrain name and the scene-content classifier.
 The arena's save-id pass also classifies a re-added item onto its shelf
-(with flag `0x400`, once), flushes a scene character's items and registers
-its world record, and compacts the stash, employee and record lists. An
+(with flag `0x400`, once): `arsenal::ItemKind::of_item` reads the object
+record's sections — a body makes the item apparel and its armour type byte
+(3 through 6 armour, else clothing), otherwise a weapon section, else a
+shield section — and `arena_ids::kinds_from_items` turns a saved world
+object database into the lookup `regenerate_lists` uses. It also flushes a
+scene character's items and registers its world record, and compacts the
+stash, employee and record lists. An
 arena session may carry `arena_save::ArenaTables` (arsenal, stash, shop
 stock, company, day, employees, merchant, hireables, tournament); the
 player-data writer then emits them in the original's order, removes the
@@ -191,7 +196,9 @@ section or `<locale>.rfc`, by name, arena) as plans and as `load_level`
 (which imports the chosen copy), the import order with the
 terrain probe and the node, sector and grid-environment passes, the game
 scene's creation constants, the menu background scene's load, the GUI reset
-and the player's node set-up and spawn. The migration pass now keeps only
+and the player's node set-up and spawn, and the player record's reset
+(bits 8 through 15 of the node's flags cleared, then the installed hook's
+word `0x1000` and game pointer prepared). The migration pass now keeps only
 the travelling characters: a repeated address is logged as a duplicate and
 is neither flushed again nor placed. The fighters' kit passes are
 `save_kit`: the preparation resolves own item references in hand, worn and
@@ -201,7 +208,7 @@ carried duplicates, and frees the temporary database. A load imports the
 save's world character and object databases into their world tiers
 (`Slots::world_characters`/`world_objects`). `level_transition` now also
 has the transition's ordered flow: the teardown and flush, the destination
-read (save section or archive), the import, the spawn matrix choice, the
+read (save section or archive), the player record's flag reset, the import, the spawn matrix choice, the
 story respawn, the grid arrays, the followers and the post-load pass, with
 a missing destination aborting and a failed archive import disabling saves (a section read from the save always lands). The
 running game now runs that flow around every in-process level change: the
