@@ -330,6 +330,56 @@ pub fn ground(heights: &[f32], n: usize, at: Vec2) -> f32 {
     }
 }
 
+/// The ground height under a plant point with the original's normal
+/// correction, from a block's vertex positions in centimetres (the unit of
+/// the original's terrain block grid) and the point in vertex steps.
+///
+/// The original starts at the cell corner and takes the point relative to
+/// the corner's right neighbour. It tests `(z − x)·0.05 − cross.y·0.0025`
+/// against 1: a value above 1, or a NaN, picks the cell's other diagonal
+/// (a NaN takes the branch, as the original's unordered compare does). The
+/// correction is `±0.0025·(edge·(relative × diagonal))`, added on the far
+/// branch and taken off on the near one. In the original its result is
+/// discarded by the caller, which places the instance at the uncorrected
+/// height; it is kept here as the rule the baker runs. A point outside the
+/// grid returns the position's own height `[guess: the original reads on]`.
+pub fn ground_with_normal(vertices: &[[f32; 3]], n: usize, at: Vec2, position: Vec3) -> f32 {
+    /// The original's determinant test against 1.
+    const DIAGONAL: f32 = 1.0;
+    /// The original's f32 0.05.
+    const SLOPE: f32 = f32::from_bits(0x3d4c_cccd);
+    /// The original's f32 0.0025.
+    const CORRECTION: f32 = f32::from_bits(0x3b23_d70a);
+    let (i, j) = (at.x as i64, at.y as i64);
+    let corner = |di: i64, dj: i64| {
+        let (ci, cj) = (i + di, j + dj);
+        if ci < 0 || cj < 0 || ci as usize >= n || cj as usize >= n {
+            return None;
+        }
+        vertices.get(cj as usize * n + ci as usize).copied()
+    };
+    let (Some(p0), Some(p1), Some(p2), Some(p3)) =
+        (corner(0, 0), corner(1, 0), corner(0, 1), corner(1, 1))
+    else {
+        return position.y;
+    };
+    let p0 = Vec3::from(p0);
+    let p1 = Vec3::from(p1);
+    let p2 = Vec3::from(p2);
+    let p3 = Vec3::from(p3);
+    let relative = position - p1;
+    let edge = p0 - p1;
+    let other = p2 - p1;
+    let cross = relative.cross(edge);
+    let test = ((-relative.x) + relative.z) * SLOPE - cross.y * CORRECTION;
+    if test.is_nan() || test > DIAGONAL {
+        let cross = relative.cross(p3 - p1);
+        position.y + other.dot(cross) * CORRECTION
+    } else {
+        position.y - other.dot(cross) * CORRECTION
+    }
+}
+
 /// A plant shape, in metres, standing on its origin.
 #[derive(Debug, Clone, Default)]
 pub struct Variant {
@@ -648,5 +698,51 @@ mod tests {
         let heights = [0.0, 3.0, 1.0, 2.0];
         assert!((ground(&heights, 2, Vec2::new(0.2, 0.6)) - 0.8).abs() < 1e-5);
         assert!((ground(&heights, 2, Vec2::new(0.6, 0.2)) - 1.6).abs() < 1e-5);
+    }
+
+    /// A 3 × 3 block of 20 cm cells on the flat plane y = 0, in centimetres.
+    fn flat_block() -> Vec<[f32; 3]> {
+        (0..9)
+            .map(|k| {
+                let (i, j) = (k % 3, k / 3);
+                [i as f32 * 20.0, 0.0, j as f32 * 20.0]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_ground_correction_takes_the_far_diagonal() {
+        // At (0.5, 0.5) the cell corner is (0, 0) and the point lies
+        // 20 cm past its right neighbour. The test is 2, above 1: the
+        // correction uses the far diagonal and comes to −5 cm on this flat
+        // block, so the point sits back on the plane.
+        let block = flat_block();
+        let got = ground_with_normal(&block, 3, Vec2::new(0.5, 0.5), Vec3::new(20.0, 5.0, 20.0));
+        assert_eq!(got, 0.0);
+    }
+
+    #[test]
+    fn the_ground_correction_takes_the_near_diagonal() {
+        // The same block with the point 20 cm short of the cell: the test is
+        // −2, so the near diagonal applies and the correction adds 5 cm
+        // back to the plane.
+        let block = flat_block();
+        let got = ground_with_normal(&block, 3, Vec2::new(0.5, 0.5), Vec3::new(20.0, 5.0, -20.0));
+        assert_eq!(got, 0.0);
+    }
+
+    #[test]
+    fn a_nan_point_takes_the_far_diagonal_as_the_original_does() {
+        let block = flat_block();
+        let got = ground_with_normal(
+            &block,
+            3,
+            Vec2::new(0.5, 0.5),
+            Vec3::new(f32::NAN, 5.0, 20.0),
+        );
+        assert!(got.is_nan());
+        // Off the grid: the position's height, the labelled fallback.
+        let got = ground_with_normal(&block, 3, Vec2::new(5.0, 5.0), Vec3::new(0.0, 7.0, 0.0));
+        assert_eq!(got, 7.0);
     }
 }
