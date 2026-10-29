@@ -104,6 +104,9 @@ pub struct ModelNode {
     /// a controller only in a scene carrying the cloth-flag 0x10000, which
     /// every game scene does ([`exa_formats::rfc::cloth_import`]).
     pub cloth: bool,
+    /// For a cloth node, what its controller is built from beyond the
+    /// drawn parts ([`ClothMesh`]); `None` for other nodes.
+    pub cloth_mesh: Option<Arc<ClothMesh>>,
     /// The node stores a mesh body, whatever its groups draw.
     pub mesh: bool,
     /// The mesh body's render word, which the original copies onto its
@@ -111,6 +114,69 @@ pub struct ModelNode {
     /// ([`exa_formats::rfc::Mesh::render_flags`]). The dressed-mesh pass
     /// reads flag `0x40` to find overlay meshes and mark slot meshes.
     pub render_flags: u32,
+}
+
+/// What a cloth node's controller is built from beyond its drawn parts:
+/// the mesh's position elements (the original makes one particle per
+/// element, so the vertices a UV seam splits stay one particle), its
+/// triangles over those elements in file order, and their face flags
+/// (sub-chunk `0x3DC3`), whose top bits mark the faces the cloth is pinned
+/// by.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClothMesh {
+    /// How many position elements the mesh has.
+    pub elements: usize,
+    /// Each triangle's three position elements.
+    pub faces: Vec<[u32; 3]>,
+    /// Each triangle's face flags (0 when the file stores none).
+    pub face_flags: Vec<u32>,
+    /// For each drawn part of the node, in [`ModelNode::parts`] order, the
+    /// position element of each of its vertices.
+    pub part_elements: Vec<Vec<u32>>,
+}
+
+impl ClothMesh {
+    /// The cloth data of `mesh`, whose drawn parts are the groups
+    /// `groups` (in part order).
+    pub fn of(mesh: &RfcMesh, groups: &[usize]) -> Self {
+        let element = |i: u32| mesh.position_ids.get(i as usize).copied().unwrap_or(i);
+        let faces = mesh
+            .indices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|t| [element(t[0]), element(t[1]), element(t[2])])
+            .collect::<Vec<_>>();
+        let face_flags = mesh
+            .triangle_flags
+            .clone()
+            .unwrap_or_else(|| vec![0; faces.len()]);
+        let part_elements = groups
+            .iter()
+            .map(|&g| {
+                let group = &mesh.groups[g];
+                let start = group.first_index as usize;
+                let indices = mesh
+                    .indices
+                    .get(start..start + group.index_count as usize)
+                    .unwrap_or_default();
+                // The part's vertices in the order the part's mesh lists
+                // them (`group_mesh`'s first-use order).
+                let mut seen = std::collections::HashSet::with_capacity(indices.len());
+                indices
+                    .iter()
+                    .filter(|&&i| seen.insert(i))
+                    .map(|&i| element(i))
+                    .collect()
+            })
+            .collect();
+        Self {
+            elements: mesh.position_count,
+            faces,
+            face_flags,
+            part_elements,
+        }
+    }
 }
 
 /// A model node's rigid body and what its mobility is divided by when the
@@ -526,6 +592,13 @@ impl ModelLoader<'_> {
                     collision_sound,
                 }
             });
+            let cloth_mesh = match mesh {
+                Some(mesh) if node.cloth_marker => {
+                    let groups: Vec<usize> = built.meshes.iter().map(|(g, _)| *g).collect();
+                    Some(Arc::new(ClothMesh::of(mesh, &groups)))
+                }
+                _ => None,
+            };
             let (parts, part_materials, collision) = match mesh {
                 Some(mesh) => {
                     let (parts, part_materials) = built
@@ -610,6 +683,7 @@ impl ModelLoader<'_> {
                     node.cloth_marker,
                     exa_formats::rfc::CLOTH_SCENE,
                 ),
+                cloth_mesh,
                 mesh: mesh.is_some(),
                 render_flags: mesh.map_or(0, |mesh| mesh.render_flags),
             });
@@ -639,6 +713,7 @@ impl ModelLoader<'_> {
                 voxel_light,
                 fire,
                 portal,
+                cloth_mesh,
             ) = {
                 let src = &nodes[owner];
                 (
@@ -653,6 +728,7 @@ impl ModelLoader<'_> {
                     src.voxel_light,
                     src.fire,
                     src.portal,
+                    src.cloth_mesh.clone(),
                 )
             };
             let dst = &mut nodes[i];
@@ -667,6 +743,7 @@ impl ModelLoader<'_> {
             dst.voxel_light = voxel_light;
             dst.fire = fire;
             dst.portal = portal;
+            dst.cloth_mesh = cloth_mesh;
         }
         Model { nodes }
     }
@@ -2980,6 +3057,7 @@ mod tests {
             is_skin: false,
             placeholder: false,
             cloth: false,
+            cloth_mesh: None,
             mesh: false,
             render_flags: 0,
         }
@@ -3923,6 +4001,41 @@ mod tests {
         assert!(built.attribute(Mesh::ATTRIBUTE_COLOR).is_none());
         assert_eq!(built.count_vertices(), 3);
         assert!(built.attribute(Mesh::ATTRIBUTE_UV_0).is_some());
+    }
+
+    /// A cloth node's file data: its faces over the position elements with
+    /// their flags, and each part's vertices as elements in the order the
+    /// part's mesh lists them (a vertex a seam split names its element).
+    #[test]
+    fn a_cloth_mesh_keeps_its_elements_and_face_flags() {
+        let mesh = RfcMesh {
+            positions: vec![[0.0; 3]; 5],
+            normals: vec![[0.0, 0.0, 1.0]; 5],
+            // Vertex 4 repeats element 0 across a seam.
+            position_ids: vec![0, 1, 2, 3, 0],
+            indices: vec![2, 1, 0, 4, 2, 3],
+            groups: vec![exa_formats::rfc::MeshGroup {
+                material: "cloth".into(),
+                first_index: 0,
+                index_count: 6,
+            }],
+            triangle_flags: Some(vec![0x8000_0000, 0]),
+            position_count: 4,
+            ..Default::default()
+        };
+        let cloth = ClothMesh::of(&mesh, &[0]);
+        assert_eq!(cloth.elements, 4);
+        assert_eq!(cloth.faces, vec![[2, 1, 0], [0, 2, 3]]);
+        assert_eq!(cloth.face_flags, vec![0x8000_0000, 0]);
+        assert_eq!(cloth.part_elements, vec![vec![2, 1, 0, 0, 3]]);
+        let built = group_mesh(&mesh, &mesh.indices, None).expect("a group");
+        assert_eq!(built.count_vertices(), cloth.part_elements[0].len());
+        // Without stored flags every face has none.
+        let bare = RfcMesh {
+            triangle_flags: None,
+            ..mesh
+        };
+        assert_eq!(ClothMesh::of(&bare, &[0]).face_flags, vec![0, 0]);
     }
 
     /// A built part turns back into the merge's streams: its positions,

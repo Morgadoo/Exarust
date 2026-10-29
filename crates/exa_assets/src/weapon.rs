@@ -156,6 +156,7 @@ impl ModelLoader<'_> {
             is_skin: false,
             placeholder: false,
             cloth: false,
+            cloth_mesh: None,
             mesh: false,
             render_flags: 0,
         }];
@@ -265,6 +266,7 @@ impl ModelLoader<'_> {
                 is_skin: false,
                 placeholder: false,
                 cloth: false,
+                cloth_mesh: None,
                 mesh: false,
                 render_flags: 0,
             });
