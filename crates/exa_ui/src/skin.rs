@@ -12544,6 +12544,67 @@ mod tests {
         assert_eq!(client[8].ink, [10, 0, 0, 40]);
     }
 
+    #[test]
+    fn a_flat_two_ink_style_outlines_the_form_and_skips_the_client() {
+        let mut batch = SkinBatch::new();
+        let palette = palette_for_faces();
+        // Flat, style 0x20: the two-ink outline, in the form's first shade
+        // on its top and right and the seventh on its left and bottom.
+        let chrome = draw_form_chrome(
+            &mut batch,
+            FormChromePlace {
+                frame_style: 0x20,
+                flags: 0,
+                state: 1,
+                ..chrome_place()
+            },
+            &palette,
+        );
+        assert_eq!(chrome.frames, 1);
+        assert_eq!(batch.primitives.len(), 1);
+        let outline = batch.vertices_of(&batch.primitives[0]);
+        assert_eq!(outline.len(), 8);
+        assert_eq!((outline[0].x, outline[0].y), (199.0, 0.5));
+        assert_eq!(outline[0].ink, [10, 0, 0, 40]);
+        assert_eq!((outline[4].x, outline[4].y), (0.5, 99.5));
+        assert_eq!(outline[4].ink, [10, 6, 0, 40]);
+        assert_eq!((outline[5].x, outline[5].y), (199.5, 99.5));
+        assert_eq!((outline[7].x, outline[7].y), (199.5, -0.5));
+
+        // A flat form's second style field draws no client frame.
+        let mut styled = SkinBatch::new();
+        let chrome = draw_form_chrome(
+            &mut styled,
+            FormChromePlace {
+                frame_style: 0x60,
+                flags: 0,
+                state: 1,
+                ..chrome_place()
+            },
+            &palette,
+        );
+        assert_eq!(chrome.frames, 1);
+        assert_eq!(styled.primitives.len(), 1);
+
+        // Off the flat state, style 0x20 is a double frame from the form's
+        // sixth shade inside its first.
+        let mut raised = SkinBatch::new();
+        let chrome = draw_form_chrome(
+            &mut raised,
+            FormChromePlace {
+                frame_style: 0x20,
+                flags: 0,
+                state: 0,
+                ..chrome_place()
+            },
+            &palette,
+        );
+        assert_eq!(chrome.frames, 1);
+        let frame = raised.vertices_of(&raised.primitives[0]);
+        assert_eq!(frame[0].ink, [10, 5, 0, 40]);
+        assert_eq!(frame[8].ink, [10, 0, 0, 40]);
+    }
+
     fn background_place() -> FormBackgroundPlace {
         FormBackgroundPlace {
             rect: GuiRect::corners(0.0, 0.0, 200.0, 100.0),
