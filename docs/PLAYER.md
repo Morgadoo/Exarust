@@ -1170,8 +1170,10 @@ original's player behaviour and body tick skip them for mask `0xAC0`.
 ### The behaviour's aim and contact rules
 
 The player's behaviour keeps these rules (`player_behaviour`); the gamepad
-aim's point and ease, the combat auto-target and the aim point's bone lock
-are wired, the rest are tested functions with no caller yet:
+aim's point and ease, the combat auto-target, the aim point's bone lock,
+the contact list, the engaged enemy and the practice are wired
+(`player_practice` runs them each behaviour tick before the attack
+request), the rest are tested functions with no caller yet:
 
 - **Aim point.** The cursor's point on the plane 80 cm over the player's
   ground; with a target, the nearest of its bones on screen (each bone's
@@ -1196,22 +1198,29 @@ are wired, the rest are tested functions with no caller yet:
   `1 − d·0.00083333335` capped at 0.99, facing weight `0.75·(0.5 −
   0.5·facing·dir) + 0.25·(0.5 − 0.5·cursor·dir)²`, score half of each;
   twelve kept, a new one replacing the lowest it outscores.
-- **Engaged enemy.** The largest threat among the living characters within
-  the player's reach plus 70 cm, in front of the heading by more than 0.3
-  of their distance (in double precision), whose own contact score for the
-  player is over 2.
-- **Attack timing.** Computed on an attack's first tick: the wind-up step
-  `(1 − 0.05·√E)` (1 at no energy), floored at 0.1, over the primary
-  weapon's recoil (W17), times 0.03,
-  floored at 0.01; the expected end `1000/(80·step)` ms on, at most the
-  swing's length; the recovery `(2f + 1)·(round(100·recoil) + 100)` ms, f
-  being `(3 − 2b)·b²` for `b = balance/0.7` while the attack motion (5 to
-  12) is on and the balance is at most 0.7, else 1. The running game
-  records it when an attack starts and holds the next attack until the
-  recovery clock (unless the swing has been released, which keeps its own
-  stall and renewal). The fists' 0.1 recoil at
-  full energy give a 0.285 step, a 44 ms expected end and 330 ms of
-  recovery at full balance.
+- **Engaged enemy.** The largest threat among the living characters of the
+  contact list within the player's reach plus 70 cm, in front of the
+  heading by more than 0.3 of their distance (in double precision), whose
+  own concern for the player is over 2. A character's threat is its
+  fighting estimate (`experience::fighting_estimate`: 2 + 0.4 a skill
+  level + 0.02 a combat skill point, with a held weapon 0.02 of its five
+  damage hundredths times its reach, then +2 over scale 1.3 or quartered):
+  0.5 for a fighter without a record or weapon, as Exarust's duellist.
+- **Late-swing check and practice.** While the player attacks, once a
+  swing, strictly past 0.6 of its clock (in double), the engaged enemy is
+  sought: found, the practice's lesson takes its threat when strictly
+  larger and the swing's state word gains `0x100000`; none, it gains
+  `0x200000`. Then, unless the player is collapsing or dead, one practice
+  tick (`exa_ai::combat::practise`): a lesson over 0.005 adds
+  `(1 − fatigue)·lesson·0.1` to the gain and `lesson·0.0001` to the
+  fatigue (at most 0.9), a gain over 10 pays four per whole point (rounded
+  to even) to the record's practice count, and the lesson keeps 0.995 of
+  itself; the fatigue keeps 0.9998 a tick. One swing's lesson of 0.5 alone
+  feeds the gain to just under 10, so a second engaged swing pays. The
+  player has no record in Exarust: the count is kept on the behaviour and
+  logged (`practice: +40 to the practice count …`); nothing converts it
+  yet. The swing's release (button up) is the swing's own
+  (`exa_combat::swing::SwingState::release`).
 - **Movement goal.** A word's direction is the facing (W), the side
   `(facing.z, 0, −facing.x)` at 0.8 (A, D) and back (S), summed and
   flattened; the step vector sums the same keys with the full side vector

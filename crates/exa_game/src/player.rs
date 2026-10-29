@@ -113,7 +113,8 @@ pub struct Player;
     Hands,
     Stance,
     Locomotion,
-    exa_items::possession::Possessions
+    exa_items::possession::Possessions,
+    crate::player_practice::PlayerPractice
 )]
 pub struct PlayerBody {
     pub combat: bool,
@@ -504,6 +505,7 @@ impl Plugin for PlayerPlugin {
                 FixedPreUpdate,
                 (
                     pad_aim_cursor,
+                    crate::player_practice::tick_player_practice,
                     request_attacks,
                     steer_player,
                     take_player_stance,

@@ -171,6 +171,14 @@ pub mod flags {
     /// past a quarter or without Remise; such a swing follows the wound
     /// through instead of cleaving on.
     pub const HOLDS_BACK: u32 = 0xA_0012;
+    /// The player's late swing (past 0.6 of its clock) found an engaged
+    /// enemy in front, whose lesson it took (the AI's combat state sets it
+    /// too when it records its foe's) ...
+    pub const ENGAGED_FOE: u32 = 0x10_0000;
+    /// ... or found none.
+    pub const NO_ENGAGED_FOE: u32 = 0x20_0000;
+    /// Either: the late check ran once this swing.
+    pub const FOE_CHECKED: u32 = ENGAGED_FOE | NO_ENGAGED_FOE;
     /// No release over a recoil, a landed blow or an earlier release.
     pub const NO_RELEASE: u32 = CLEAVING | RELEASED | RECOILED;
     /// No chain while released, stalling or chained, or without Remise.

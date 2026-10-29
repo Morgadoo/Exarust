@@ -577,23 +577,27 @@ staying NaN, and the 80 cm pixel radius at the reference point's depth)
 and its raised
 surface, the gamepad aim's `250·|aim| + 50` cm point and its
 `(0.4·AimSpeed + 0.1)²` ease, the 12 m contact list and its 12-entry
-eviction, the strongest engaged enemy (the enemy's own contact score for
-the player over 2), the auto-target (the visible opponent within 500 cm
+eviction, the strongest engaged enemy (the enemy's own concern for the
+player over 2) and the late-swing check that takes its fighting estimate
+as the practice's lesson, the auto-target (the visible opponent within 500 cm
 maximising `(500 − d)(cos + 0.5)` from a best of zero), the look snap
 strictly beyond 30° (the gap wrapped in double precision), the camera's
 follow step (kept within 0.1π of the body's yaw, on the camera's side),
-the character nearest the cursor on screen, and the attack timing. The
+and the character nearest the cursor on screen. The
 gamepad's aim runs through the eased world cursor each behaviour tick
 (`player::AimCursor`, read by `player_combat`), and the combat auto-target
 stores its opponent on the player body each tick for the aim point's bone
 lock, which `player::cursor_ground` reads together with the raised surface
 (the bone lock reads the opponent's head, belly and pelvis part origins, a
-stand-in for the original's own three points). The running game records the
-attack timing when an attack starts and holds the next attack until its
-recovery clock (the swing's own stall and Feint renewal still rule a
-released swing). The remaining rules have no caller yet: the 12 m contact
-list, the strongest engaged enemy, the look snap, the camera's follow step
-and the character nearest the cursor. The combat mode word
+stand-in for the original's own three points). Each behaviour tick, before the attack request, `player_practice`
+rebuilds the contact list, runs the late-swing check (an attack past 0.6
+of its clock, once a swing: the swing's state word gains `0x100000` with an
+engaged enemy in front, else `0x200000`) and one practice tick
+(`exa_ai::combat::practise`), keeping the paid practice count on
+`PlayerPractice` (the player has no record). The swing's release is
+`exa_combat::swing::SwingState::release`. The remaining rules have no
+caller yet: the look snap, the camera's follow step and the character
+nearest the cursor. The combat mode word
 (`player_behaviour::combat_mode`: down, dazed under 0.85 energy, switching
 or casting idle, the right button's walk, the left button's attack) gates
 the right button's walk to the cursor in combat mode
