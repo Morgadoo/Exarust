@@ -33,7 +33,10 @@ use exa_ui::skin::SkinBatch;
 
 use crate::body_inventory;
 use crate::gui_paint::{self, Frame};
-use crate::item_container::{CardWindow, Container};
+use crate::item_container::{
+    CardWindow, Container, ContainerChild, ContainerRecord, POPUP_BORDER, POPUP_PANEL_BORDER,
+    PopupPlan, open_container, popup_form_size, popup_icon_height, popup_icon_place, popup_place,
+};
 use crate::item_panel_draw::PanelIcons;
 use crate::menu_screen::MenuScreen;
 
@@ -101,6 +104,97 @@ impl LootWindow {
             worn,
         }
     }
+}
+
+/// A request to open a placed container's popup: the double click's
+/// interaction on an object whose record has a container section.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContainerRequest {
+    /// The placed object carrying the container section
+    /// ([`exa_world::ObjectSections`]).
+    pub object: Entity,
+    /// The placed object's database id, tier tag included.
+    pub id: u32,
+    /// The pointer when the request was made, physical pixels.
+    pub pointer: IVec2,
+}
+
+/// An open container popup: the card frame hosting the container's item
+/// panel, bound to the container's record.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContainerPopup {
+    pub form: FormId,
+    /// The container's tagged database id (the popup's record id field).
+    pub id: u32,
+    /// The placed object whose record the panel saves back into.
+    pub object: Entity,
+    /// The record's header fields, which the save keeps.
+    pub stored: ContainerRecord,
+    pub panel: Container,
+    /// The panel's size and top inside the popup's client.
+    pub plan: PopupPlan,
+    /// The container's own icon (the card's icon handle) and the icon
+    /// area's height.
+    pub icon: usize,
+    pub icon_height: i32,
+}
+
+impl ContainerPopup {
+    /// The popup's client: its bounds inside its border.
+    pub fn client(bounds: GuiRect) -> GuiRect {
+        GuiRect::new(
+            bounds.left + POPUP_BORDER,
+            bounds.top + POPUP_BORDER,
+            bounds.width() - 2 * POPUP_BORDER,
+            bounds.height() - 2 * POPUP_BORDER,
+        )
+    }
+
+    /// The item panel's rectangle: at the client's left, the plan's top
+    /// down, the plan's size (its own border included).
+    pub fn panel_rect(&self, bounds: GuiRect) -> GuiRect {
+        let client = Self::client(bounds);
+        GuiRect::new(
+            client.left + exa_ui::popups::CONTAINER_INSET,
+            client.top + self.plan.inner_top,
+            self.plan.inner.0,
+            self.plan.inner.1,
+        )
+    }
+}
+
+/// A container record as the panel loads it, from the object's section.
+pub fn container_record(section: &exa_formats::containers::Container) -> ContainerRecord {
+    ContainerRecord {
+        size: (section.width, section.height),
+        capacity: section.capacity,
+        max_item: section.max_item,
+        children: section
+            .children
+            .iter()
+            .map(|child| ContainerChild {
+                id: child.id,
+                flags: child.flags,
+                x: child.x,
+                y: child.y,
+            })
+            .collect(),
+    }
+}
+
+/// Writes a saved record's children back into the object's section, as the
+/// close's save rewrites the record's container section.
+pub fn store_record(section: &mut exa_formats::containers::Container, record: &ContainerRecord) {
+    section.children = record
+        .children
+        .iter()
+        .map(|child| exa_formats::containers::Child {
+            id: child.id,
+            flags: child.flags,
+            x: child.x,
+            y: child.y,
+        })
+        .collect();
 }
 
 /// The class of the inventory's second record, whose draw and behaviour are
@@ -264,6 +358,11 @@ pub struct GameScreens {
     pub card: CardWindow,
     /// The open loot windows, one per body.
     pub loot: Vec<LootWindow>,
+    /// The open container popups.
+    pub popups: Vec<ContainerPopup>,
+    /// Records the closed popups saved, waiting to be written back into
+    /// their objects' container sections.
+    pub saved_containers: Vec<(Entity, ContainerRecord)>,
     /// Icon handles freed by a closed panel, waiting for the icon manager
     /// to drop their references (the destroy's sweep).
     pub released_icons: Vec<usize>,
@@ -282,6 +381,8 @@ impl Default for GameScreens {
             pack: Container::default(),
             card: CardWindow::default(),
             loot: Vec::new(),
+            popups: Vec::new(),
+            saved_containers: Vec::new(),
             released_icons: Vec::new(),
         }
     }
@@ -452,6 +553,90 @@ impl GameScreens {
         action
     }
 
+    /// The open popup of a container, if any.
+    pub fn popup(&self, id: u32) -> Option<&ContainerPopup> {
+        self.popups.iter().find(|popup| popup.id == id)
+    }
+
+    /// Opens a container's popup, as the original's opener does: a popup
+    /// already open on the same container is brought forward (`Focused`);
+    /// otherwise the popup is registered as an open container, its panel
+    /// sized from the record ([`open_container`] with the panel's border)
+    /// six units plus the icon area below its top, the form sized around
+    /// it ([`popup_form_size`]) and placed on the pointer
+    /// ([`popup_place`]). The panel then loads the record's children
+    /// (`resolve` gives each child's icon and bulk, as
+    /// [`Container::load_record`] takes it). `icon` is the container's own
+    /// icon handle and `icon_half` its half height.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_container_popup<F>(
+        &mut self,
+        object: Entity,
+        id: u32,
+        record: &ContainerRecord,
+        pointer: (i32, i32),
+        unit: i32,
+        icon: usize,
+        icon_half: i32,
+        resolve: F,
+    ) -> ScreenAction
+    where
+        F: FnMut(u32, u32) -> Option<(usize, i32)>,
+    {
+        if id == 0 {
+            return ScreenAction::Refused;
+        }
+        if let Some(form) = self.popup(id).map(|popup| popup.form) {
+            self.task.focus_set(Some(form), NO_CONTROL);
+            return ScreenAction::Focused;
+        }
+        let mut panel = Container::form(unit);
+        let icon_height = popup_icon_height(icon_half, panel.icon_size);
+        let Some(plan) = open_container(
+            false,
+            Some(record.size),
+            unit,
+            POPUP_PANEL_BORDER,
+            icon_height,
+        ) else {
+            return ScreenAction::Refused;
+        };
+        self.containers.open(id as i32);
+        let size = popup_form_size(plan, unit, POPUP_BORDER);
+        let (x, y) = popup_place(pointer, size, self.task.screen.0, unit);
+        let form = self.push(GameScreen::Container, GuiRect::new(x, y, size.0, size.1));
+        panel.client = (
+            plan.inner.0 - 2 * POPUP_PANEL_BORDER,
+            plan.inner.1 - 2 * POPUP_PANEL_BORDER,
+        );
+        panel.load_record(id, record, resolve);
+        self.popups.push(ContainerPopup {
+            form,
+            id,
+            object,
+            stored: ContainerRecord {
+                children: Vec::new(),
+                ..record.clone()
+            },
+            panel,
+            plan,
+            icon,
+            icon_height,
+        });
+        ScreenAction::Opened
+    }
+
+    /// Closes the popup of a container, whichever window is focused.
+    pub fn close_popup(&mut self, id: u32) -> bool {
+        let Some(form) = self.popup(id).map(|popup| popup.form) else {
+            return false;
+        };
+        let Some(index) = self.open.iter().position(|screen| screen.form == form) else {
+            return false;
+        };
+        self.close_at(index)
+    }
+
     /// The open loot window on a body, if any.
     pub fn loot_window(&self, character: i32) -> Option<&LootWindow> {
         self.loot
@@ -560,6 +745,37 @@ impl GameScreens {
                     self.released_icons.extend(released);
                 }
             }
+            GameScreen::Container => {
+                // The container close: the game forgets the open container,
+                // the panel saves its entries into the record (releasing
+                // their icons), its id is cleared and the card's close
+                // releases the container's own icon.
+                if let Some(mut popup) = self
+                    .popups
+                    .iter()
+                    .position(|popup| popup.form == screen.form)
+                    .map(|index| self.popups.remove(index))
+                {
+                    let close = exa_ui::popups::container_close(false);
+                    if close.notify_game {
+                        self.containers.close(popup.id as i32);
+                    }
+                    if close.save_contents
+                        && let Some(saved) = popup.panel.save_record(&popup.stored)
+                    {
+                        self.saved_containers.push((popup.object, saved));
+                    }
+                    let mut released = Vec::new();
+                    popup.panel.release_all_icons(|icon| released.push(icon));
+                    if close.clear_id {
+                        popup.panel.container_id = 0;
+                    }
+                    if close.run_base && exa_ui::popups::desc_close(popup.icon != 0) {
+                        released.push(popup.icon);
+                    }
+                    self.released_icons.extend(released);
+                }
+            }
             _ => {}
         }
         if let Some(next) = self.open.last() {
@@ -618,11 +834,18 @@ impl Plugin for GameScreensPlugin {
         app.init_resource::<GameScreens>()
             .init_resource::<PanelIcons>()
             .init_resource::<DebugGuiForm>()
+            .init_resource::<DebugOpenContainer>()
             .init_resource::<GuiFrames>()
             .add_message::<ScreenRequest>()
+            .add_message::<ContainerRequest>()
             .add_systems(
                 Update,
-                (sync_screen_size, open_requested_screens)
+                (
+                    sync_screen_size,
+                    open_requested_screens,
+                    debug_open_container,
+                    open_requested_containers,
+                )
                     .chain()
                     .after(crate::hotkeys::HotkeySet)
                     .before(crate::player::player_combat),
@@ -639,10 +862,151 @@ impl Plugin for GameScreensPlugin {
             )
             .add_systems(
                 Update,
-                release_closed_icons
+                (release_closed_icons, store_saved_containers)
                     .after(close_on_right_release)
                     .after(close_changed_loot_windows),
             );
+    }
+}
+
+/// Opens the popups the double click asked for: the item card's request is
+/// closed first (a pending card is cancelled and a shown one fades out),
+/// then the object's container section is loaded into a new popup at the
+/// pointer. An object without the section opens nothing.
+#[allow(clippy::too_many_arguments)]
+fn open_requested_containers(
+    mut requests: MessageReader<ContainerRequest>,
+    objects: Query<&exa_world::ObjectSections>,
+    catalogue: Option<Res<exa_items::catalogue::ItemCatalogue>>,
+    mut icons: Option<ResMut<PanelIcons>>,
+    mut card: Option<ResMut<crate::item_card::CardView>>,
+    time: Option<Res<Time>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut screens: ResMut<GameScreens>,
+) {
+    for request in requests.read() {
+        let Ok(sections) = objects.get(request.object) else {
+            continue;
+        };
+        let Some(section) = sections.container.as_ref() else {
+            continue;
+        };
+        let Some(icons) = icons.as_deref_mut() else {
+            continue;
+        };
+        screens.card.timer.cancel();
+        if let Some(shown) = card.as_deref_mut().and_then(|card| card.shown.as_mut()) {
+            let now = time
+                .as_deref()
+                .map_or(0, |t| t.elapsed().as_millis() as u32);
+            shown.fade.fade_out(now);
+        }
+        let unit = windows
+            .single()
+            .ok()
+            .map(|window| exa_ui::scale::gui_scale(window.physical_height(), 0) as i32)
+            .unwrap_or(4);
+        let record = container_record(section);
+        let (icon, (_, icon_half)) = icons.reserve(request.id, 0, catalogue.as_deref());
+        let catalogue = catalogue.as_deref();
+        let action = screens.open_container_popup(
+            request.object,
+            request.id,
+            &record,
+            (request.pointer.x, request.pointer.y),
+            unit,
+            icon,
+            icon_half,
+            |id, flags| {
+                let (slot, _) = icons.reserve(id, flags, catalogue);
+                let bulk = catalogue.and_then(|c| c.bulk(id)).map_or(0, i32::from);
+                Some((slot, bulk))
+            },
+        );
+        if action != ScreenAction::Opened && icon != 0 {
+            icons.release(icon);
+        }
+        debug!("GUI: container {:#x} {action:?}", request.id);
+    }
+}
+
+/// Exarust's debug helper (`--open-container FRAME`): this many frames after
+/// a player is first present, the placed container nearest the player is
+/// opened in its popup at the window's centre, as the double click would.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DebugOpenContainer(pub Option<u32>);
+
+/// Runs [`DebugOpenContainer`]: counts frames once a player is present and,
+/// at the frame asked for, requests the nearest container's popup.
+fn debug_open_container(
+    debug: Option<Res<DebugOpenContainer>>,
+    players: Query<&GlobalTransform, With<crate::player::Player>>,
+    objects: Query<(
+        Entity,
+        &exa_world::PlacedItem,
+        &exa_world::ObjectSections,
+        &GlobalTransform,
+    )>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    mut frames: Local<u32>,
+    mut requests: MessageWriter<ContainerRequest>,
+) {
+    let Some(at) = debug.and_then(|debug| debug.0) else {
+        return;
+    };
+    let Some(player) = players.iter().next() else {
+        return;
+    };
+    *frames += 1;
+    if *frames != at {
+        return;
+    }
+    let feet = player.translation();
+    let nearest = objects
+        .iter()
+        .filter(|(_, _, sections, _)| sections.container.is_some())
+        .min_by(|a, b| {
+            let da = a.3.translation().distance_squared(feet);
+            let db = b.3.translation().distance_squared(feet);
+            da.total_cmp(&db)
+        });
+    let Some((object, placed, _, transform)) = nearest else {
+        info!("open-container: no placed container in the level");
+        return;
+    };
+    let pointer = windows
+        .single()
+        .map(|window| {
+            IVec2::new(
+                window.physical_width() as i32 / 2,
+                window.physical_height() as i32 / 2,
+            )
+        })
+        .unwrap_or(IVec2::new(640, 360));
+    info!(
+        "open-container: {:#x} at {:.2} m",
+        placed.tagged_id,
+        transform.translation().distance(feet)
+    );
+    requests.write(ContainerRequest {
+        object,
+        id: placed.tagged_id,
+        pointer,
+    });
+}
+
+/// Writes the records the closed popups saved back into their objects'
+/// container sections.
+fn store_saved_containers(
+    mut screens: ResMut<GameScreens>,
+    mut objects: Query<&mut exa_world::ObjectSections>,
+) {
+    for (object, record) in screens.saved_containers.drain(..) {
+        if let Ok(mut sections) = objects.get_mut(object)
+            && let Some(section) = sections.container.as_mut()
+        {
+            store_record(section, &record);
+        }
     }
 }
 
@@ -1140,6 +1504,69 @@ fn paint_loot(
     painted
 }
 
+/// A container popup: the card's frame (no title, the popup's eight-pixel
+/// border), the container's icon over the icon area and the item panel
+/// with its entries' icons, clipped to the panel's client.
+fn paint_container_popup(
+    bounds: GuiRect,
+    unit: i32,
+    textures: &GuiTextures,
+    popup: &ContainerPopup,
+    mut icons: Option<&mut PanelIcons>,
+) -> gui_paint::Painted {
+    let palette = gui_paint::palette();
+    let level = exa_ui::gui_font::level_for_unit(unit);
+    let (font, size) = screen_font(exa_ui::gui_font::gui_level(level).main, textures);
+    let mut frame = Frame::new(bounds, unit, "");
+    frame.spacing = POPUP_BORDER;
+    let mut painted = gui_paint::paint_frame(&frame, &palette, &font, size);
+    let client = ContainerPopup::client(bounds);
+    if let Some(icons) = icons.as_deref_mut() {
+        let (x, y) = popup_icon_place(
+            bounds.width(),
+            popup.icon_height,
+            unit,
+            popup.panel.icon_size,
+        );
+        let mut own = Container::form(unit);
+        own.entries.push(crate::item_container::Entry {
+            cell: crate::item_container::Cell::new(x, y),
+            id: popup.id,
+            icon: popup.icon,
+            flags: 0,
+            drag: 0,
+        });
+        if let Some(mut layer) = icons.layer(&own) {
+            gui_paint::offset_batch(&mut layer.batch, client.left, client.top);
+            painted.push(layer);
+        }
+    }
+    let panel = gui_paint::paint_panel(
+        popup.panel_rect(bounds),
+        unit,
+        &palette,
+        gui_paint::PACK_ATTRIBUTES,
+        gui_paint::PACK_STYLE,
+    );
+    let panel_client = panel.client;
+    for layer in panel.layers {
+        painted.push(layer);
+    }
+    if let Some(icons) = icons
+        && let Some(mut layer) = icons.layer(&popup.panel)
+    {
+        gui_paint::offset_batch(&mut layer.batch, panel_client.left, panel_client.top);
+        layer.clip = Some([
+            panel_client.left,
+            panel_client.top,
+            panel_client.width(),
+            panel_client.height(),
+        ]);
+        painted.push(layer);
+    }
+    painted
+}
+
 /// Draws the open screens and the debug form into the GUI's queue.
 pub(crate) fn draw_screens(
     screens: Res<GameScreens>,
@@ -1173,6 +1600,12 @@ pub(crate) fn draw_screens(
             GameScreen::Journal => paint_journal(bounds, &screens.journal, unit, textures),
             GameScreen::Loot => match screens.loot.iter().find(|w| w.form == screen.form) {
                 Some(window) => paint_loot(bounds, unit, textures, window, Some(&mut icons)),
+                None => continue,
+            },
+            GameScreen::Container => match screens.popups.iter().find(|p| p.form == screen.form) {
+                Some(popup) => {
+                    paint_container_popup(bounds, unit, textures, popup, Some(&mut icons))
+                }
                 None => continue,
             },
             _ => continue,
@@ -1284,6 +1717,88 @@ mod tests {
         assert_eq!(screens.focused(), Some(GameScreen::Inventory));
         assert_eq!(screens.close_container_family(), 2);
         assert!(screens.open.is_empty());
+    }
+
+    #[test]
+    fn the_container_popup_opens_on_the_pointer_and_saves_on_close() {
+        use crate::item_container::Cell;
+        let mut screens = GameScreens::default();
+        screens.task.screen = (1280, 720);
+        let object = Entity::from_bits(42);
+        let id = exa_formats::objdb::LOCAL | 4;
+        let record = ContainerRecord {
+            size: (50, 30),
+            capacity: 400,
+            max_item: 60,
+            children: vec![ContainerChild {
+                id: 9,
+                flags: 0x2000_0000,
+                x: 800,
+                y: 400,
+            }],
+        };
+        let mut slots = 10..;
+        let action =
+            screens.open_container_popup(object, id, &record, (640, 400), 4, 3, 70, |_, flags| {
+                // The resolver sees the flags' low 28 bits.
+                assert_eq!(flags, 0);
+                Some((slots.next().unwrap(), 5))
+            });
+        assert_eq!(action, ScreenAction::Opened);
+        assert_eq!(screens.focused(), Some(GameScreen::Container));
+        assert!(screens.containers.is_open(id as i32));
+        let popup = screens.popup(id).unwrap();
+        let bounds = screens.task.form(popup.form).unwrap().bounds();
+        assert_eq!(bounds, GuiRect::new(528, 124, 224, 308));
+        assert_eq!(
+            popup.panel_rect(bounds),
+            GuiRect::new(536, 132 + 164, 208, 128)
+        );
+        assert_eq!(popup.panel.client, (200, 120));
+        assert_eq!((popup.panel.capacity, popup.panel.used), (400, 5));
+        assert_eq!(popup.panel.entries[0].cell, Cell::new(40, 20));
+        assert_eq!(popup.panel.entries[0].flags, 0x2000_0000);
+        // The same container again only comes forward.
+        assert_eq!(
+            screens.open_container_popup(object, id, &record, (0, 0), 4, 3, 70, |_, _| None),
+            ScreenAction::Focused
+        );
+        // Moving the entry and closing saves it back, in 1/80 units.
+        screens.popups[0].panel.entries[0].cell = Cell::new(8, 4);
+        assert!(screens.close_popup(id));
+        assert!(screens.popups.is_empty());
+        assert!(!screens.containers.is_open(id as i32));
+        let (saved_object, saved) = screens.saved_containers.pop().unwrap();
+        assert_eq!(saved_object, object);
+        assert_eq!(
+            (saved.size, saved.capacity, saved.max_item),
+            ((50, 30), 400, 60)
+        );
+        assert_eq!(
+            saved.children,
+            vec![ContainerChild {
+                id: 9,
+                flags: 0x2000_0000,
+                x: 160,
+                y: 80,
+            }]
+        );
+        assert_eq!(screens.released_icons, vec![10, 3]);
+        // The section takes the saved children.
+        let mut section = exa_formats::containers::Container {
+            width: 50,
+            height: 30,
+            capacity: 400,
+            max_item: 60,
+            children: Vec::new(),
+        };
+        store_record(&mut section, &saved);
+        assert_eq!(container_record(&section), saved);
+        // A container without an id opens nothing.
+        assert_eq!(
+            screens.open_container_popup(object, 0, &record, (0, 0), 4, 0, 70, |_, _| None),
+            ScreenAction::Refused
+        );
     }
 
     #[test]

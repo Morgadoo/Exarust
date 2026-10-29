@@ -936,6 +936,29 @@ running character view and no GUI-to-world drop yet). No drag leaves the
 player's pack while the player's body swaps its weapon sets (a swap
 requested or its hand plan pending), the inventory's drag permission.
 Taking a worn item off a corpse does not re-dress its mesh.
+A placed chest, barrel or bag opens in its container popup from the
+interaction's double click (with Ctrl held in combat mode, in reach): the
+object's own use runs first (`player_controls::double_click_object`, the
+usable section's consume, take or push; only the hand-held item ends the
+interaction there) and a record with a container section then sends a
+`ContainerRequest`. `open_requested_containers` cancels the item card's
+pending request (a shown card fades out) and opens the popup as the
+original's opener does: a popup already open on the container comes
+forward; otherwise the container joins the open-container registry under
+its tagged id, its panel is `2 · 4 + cells · unit` each way, six units plus
+the icon area (twice the container icon's half height, at most the icon
+size) below the popup's client top, the popup `2 · 8 + panel` wide and
+`2 · unit + panel top + 8 + panel` tall, centred across on the pointer
+(kept inside the screen's width) with its top eight units above its height
+over the pointer (at least one unit down), and the panel loads the record's
+children (positions in 1/80 unit). The popup paints the card's frame, the
+container's icon by the plain card's placement and the panel's entries;
+`panel_live` drags between it and the other panels (its side has no
+possession list), and a right click, Escape or the screen close shuts it:
+the panel saves its entries back into the object's container section
+(`exa_world::ObjectSections`, the session's copy of the record) and its
+icons are released. `--open-container FRAME` (Exarust's debug helper) opens
+the container nearest the player at that frame after the player appears.
 `npc_search` hosts the original's follow state and the companion's search
 in the running game: a level brain whose roles choose the follow follows the
 player (past its 400 cm band a route through the navigation grid on its own

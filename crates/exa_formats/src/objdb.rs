@@ -142,6 +142,10 @@ pub struct Item {
     /// The body's armour type byte at `0x1A8` (the arena's apparel class),
     /// 0 without a body.
     pub armour_type: u8,
+    /// The container section ([`CONTAINER`]): the panel size, capacity and
+    /// stored children a chest, barrel or bag opens with. `None` without
+    /// the section or when it is shorter than its stated children.
+    pub container: Option<crate::containers::Container>,
 }
 
 /// An object's volume section: a box the level places, and for a level
@@ -728,6 +732,7 @@ impl Item {
             volume: None,
             rank_word: 0,
             armour_type: 0,
+            container: None,
         };
         let mut body_rank = None;
         let mut weapon_rank = None;
@@ -797,6 +802,7 @@ impl Item {
                 OPERATIVE => item.operative = Operative::parse(body),
                 TORCH => item.torch = true,
                 VOLUME => item.volume = Volume::parse(body),
+                CONTAINER => item.container = crate::containers::Container::parse(body),
                 _ => {}
             }
             pos += size;
@@ -931,6 +937,36 @@ mod tests {
 
     /// A volume section: three extents, a zeroed word, the flags, the
     /// entrance and the previous level id. Only a marker's flags low byte
+    /// A chest's container section: its panel size, capacity, item limit
+    /// and stored children (id, flags, position in 1/80 unit).
+    #[test]
+    fn a_container_section_gives_the_item_its_contents() {
+        let mut body = vec![0u8; 0x18];
+        body[0..2].copy_from_slice(&50u16.to_le_bytes());
+        body[2..4].copy_from_slice(&30u16.to_le_bytes());
+        body[8..10].copy_from_slice(&400u16.to_le_bytes());
+        body[0xA..0xC].copy_from_slice(&60u16.to_le_bytes());
+        body[0x14..0x18].copy_from_slice(&1u32.to_le_bytes());
+        body.extend(0x8000_0007u32.to_le_bytes());
+        body.extend(0x100u32.to_le_bytes());
+        body.extend(800i16.to_le_bytes());
+        body.extend((-80i16).to_le_bytes());
+        let item = Item::parse(1, &section(CONTAINER, &body)).unwrap();
+        let container = item.container.unwrap();
+        assert_eq!((container.width, container.height), (50, 30));
+        assert_eq!((container.capacity, container.max_item), (400, 60));
+        assert_eq!(container.children.len(), 1);
+        assert_eq!(container.children[0].id, 0x8000_0007);
+        assert_eq!(container.children[0].flags, 0x100);
+        assert_eq!(
+            (container.children[0].x, container.children[0].y),
+            (800, -80)
+        );
+        // A section shorter than its stated child keeps no container.
+        let short = Item::parse(1, &section(CONTAINER, &body[..0x20])).unwrap();
+        assert!(short.container.is_none());
+    }
+
     /// gives the stream a pair to compare.
     #[test]
     fn a_level_transition_marker_is_a_volume_section() {
@@ -1322,6 +1358,51 @@ mod tests {
             .filter(|i| i.appearance.is_some_and(|a| a.layers[LAYERS - 1].mask != 0))
             .count();
         assert_eq!(eight, 0);
+    }
+
+    /// The first level's chests, barrels and bags: the placed objects whose
+    /// record has a container section, and the children they hold (skipped
+    /// without the game).
+    #[test]
+    fn shipped_level_containers() {
+        let Some(dir) = exa_rpk::locate_install(None) else {
+            return;
+        };
+        let game = exa_rpk::GameData::open(&dir).unwrap();
+        let resource = game.pack(exa_rpk::PackKind::Resource).unwrap();
+        let level = crate::rfc::Scene::parse(resource.get("exanima01.rfc").unwrap()).unwrap();
+        let db = Database::parse(resource.get("objdb.rdb").unwrap()).unwrap();
+        let global = items(&db);
+        let placed: Vec<&Item> = level
+            .placed_objects
+            .iter()
+            .filter(|o| o.slot == 0)
+            .filter_map(|o| {
+                let id = o.id & crate::rfc::PlacedObject::ID_MASK;
+                let pool = if o.is_local() {
+                    &level.local_items
+                } else {
+                    &global
+                };
+                pool.iter().find(|i| i.id == id)
+            })
+            .filter(|i| i.container.is_some())
+            .collect();
+        let children: usize = placed
+            .iter()
+            .map(|i| i.container.as_ref().unwrap().children.len())
+            .sum();
+        let sizes: Vec<(u16, u16)> = placed
+            .iter()
+            .map(|i| {
+                let c = i.container.as_ref().unwrap();
+                (c.width, c.height)
+            })
+            .collect();
+        // 71 placed containers hold 307 items; the first is a 65 x 45
+        // unit chest.
+        assert_eq!((placed.len(), children), (71, 307));
+        assert_eq!(sizes[0], (65, 45));
     }
 
     /// The door and operative records of the installed `objdb.rdb` and of

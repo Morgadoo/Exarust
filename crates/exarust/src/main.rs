@@ -57,6 +57,7 @@
 //!          --static-mechanisms        debug: levers and push surfaces stay static level geometry, as before they became bodies
 //!          --sliding-doors            debug: sliding doors (portcullises) become bodies too; their lift is not reproduced
 //!          --debug-gui-form           open one empty GUI form through the draw skin's path
+//!          --open-container FRAME     open the container nearest the player in its popup at that frame
 //!          --debug-path x,y,z         play mode: plan a path from the player's feet to this point (metres) and draw it,
 //!                                     again whenever the player has moved a metre
 //!          --searcher <id>            play mode: the level character with this record id (hex with 0x) takes the
@@ -240,6 +241,9 @@ pub struct Options {
     pub sliding_doors: bool,
     /// Open one empty form through the GUI draw path.
     pub debug_gui_form: bool,
+    /// Play mode: open the placed container nearest the player in its
+    /// popup this many frames after the load (`--open-container`).
+    pub open_container: Option<u32>,
     /// Play mode: the debug path's goal (`--debug-path`, metres).
     pub debug_path: Option<[f32; 3]>,
     /// Play mode: the level character with this record id takes the
@@ -608,6 +612,7 @@ fn main() -> AppExit {
             "--static-mechanisms" => options.static_mechanisms = true,
             "--sliding-doors" => options.sliding_doors = true,
             "--debug-gui-form" => options.debug_gui_form = true,
+            "--open-container" => options.open_container = args.next().and_then(|v| v.parse().ok()),
             "--perf-log" => options.perf_log = args.next().and_then(|v| v.parse().ok()),
             "--profiler" => options.profiler = true,
             "--debug-column" => {
@@ -1000,6 +1005,9 @@ fn main() -> AppExit {
     .insert_resource(exa_game::gui_screens::DebugGuiForm {
         enabled: options.debug_gui_form,
     })
+    .insert_resource(exa_game::gui_screens::DebugOpenContainer(
+        options.open_container,
+    ))
     .insert_resource(exa_ui::ScriptedPointer(options.cursor.map(Vec2::from)))
     .insert_resource(exa_render::cube_shadows::PointShadows(!options.no_shadows))
     .insert_resource(exa_world::sun_shadow::SunShadowFit(

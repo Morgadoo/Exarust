@@ -112,6 +112,9 @@ pub enum GameScreen {
     /// The technique selector a skill slot opens (its form is
     /// [`crate::technique_selector`]'s).
     TechniqueSelector,
+    /// An opened chest's, barrel's or bag's popup (its rules are
+    /// [`crate::popups`]' container ones); its size follows the container.
+    Container,
 }
 
 impl GameScreen {
@@ -123,6 +126,7 @@ impl GameScreen {
             GameScreen::Loot => Some(LOOT_SCREEN),
             GameScreen::Journal => Some(JOURNAL_SCREEN),
             GameScreen::TechniqueSelector => None,
+            GameScreen::Container => Some(crate::popups::CONTAINER_TAG),
         }
     }
 
@@ -133,6 +137,7 @@ impl GameScreen {
             GameScreen::Loot => Some(LOOT_SIZE),
             GameScreen::Journal => Some(JOURNAL_SIZE),
             GameScreen::TechniqueSelector => Some((FORM_WIDTH, FORM_HEIGHT)),
+            GameScreen::Container => None,
         }
     }
 }
@@ -280,7 +285,10 @@ pub const LOOT_PANEL_GAP: i32 = 4;
 /// inventory and the loot window have a right-release close handler; the
 /// journal closes on its own key mask instead.
 pub fn right_release_closes(kind: GameScreen) -> bool {
-    matches!(kind, GameScreen::Inventory | GameScreen::Loot)
+    matches!(
+        kind,
+        GameScreen::Inventory | GameScreen::Loot | GameScreen::Container
+    )
 }
 
 /// The journal's show inputs.

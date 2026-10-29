@@ -646,7 +646,7 @@ by four units) and the wrapped white text at alpha 160.
 bound colour), keys and physique cross, the physique picker's
 constructor, the point's body-shape weights and the press, release and
 change steps.
-`popups` has the item card, the container popup (its close saves the panel's contents into the container record) and the parchment (its size, alpha hit test with the factor divided in double precision, and its draw: one textured white quad at the GUI's alpha, the fade step first and the alpha scales reset after a finished fade). `dialogs` has the colour window's
+`popups` has the item card, the container popup (its close saves the panel's contents into the container record; `GameScreen::Container` is its screen kind, tagged `0xce1c2013`, closed by a right click) and the parchment (its size, alpha hit test with the factor divided in double precision, and its draw: one textured white quad at the GUI's alpha, the fade step first and the alpha scales reset after a finished fade). `dialogs` has the colour window's
 gradients and hue table and the confirmation dialogs. `help_screen`, `task_stack`,
 `game_tips`, `colour_swatch`, `view_helpers` (the viewport's super-sample
 and cursor-action list) and the journal close in `game_gui` complete the

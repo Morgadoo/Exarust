@@ -47,13 +47,16 @@ pub enum Panel {
     BodyPack(i32),
     /// A body's equipment in its loot window.
     BodyEquipment(i32),
+    /// An opened container's popup panel, by the container's tagged
+    /// database id.
+    Container(u32),
 }
 
 impl Panel {
     /// The record side the panel shows.
     pub fn kind(self) -> PanelKind {
         match self {
-            Panel::PlayerPack | Panel::BodyPack(_) => PanelKind::Pack,
+            Panel::PlayerPack | Panel::BodyPack(_) | Panel::Container(_) => PanelKind::Pack,
             Panel::BodyEquipment(_) => PanelKind::Equipment,
         }
     }
@@ -61,7 +64,7 @@ impl Panel {
     /// The body a loot panel belongs to, or `None` for the player's pack.
     pub fn body(self) -> Option<i32> {
         match self {
-            Panel::PlayerPack => None,
+            Panel::PlayerPack | Panel::Container(_) => None,
             Panel::BodyPack(body) | Panel::BodyEquipment(body) => Some(body),
         }
     }
@@ -73,6 +76,9 @@ impl Panel {
             Panel::PlayerPack => 1,
             Panel::BodyPack(body) => 2 + (body as u32) * 2,
             Panel::BodyEquipment(body) => 3 + (body as u32) * 2,
+            // Both tag bits set keep a container clear of the bodies'
+            // small numbers.
+            Panel::Container(id) => id | 0xC000_0000,
         }
     }
 }
@@ -115,6 +121,15 @@ pub(crate) fn open_panels(screens: &GameScreens) -> Vec<(Panel, GuiRect)> {
             gui_screens::panel_client(equipment),
         ));
     }
+    for popup in &screens.popups {
+        let Some(form) = screens.task.form(popup.form) else {
+            continue;
+        };
+        out.push((
+            Panel::Container(popup.id),
+            gui_screens::panel_client(popup.panel_rect(form.bounds())),
+        ));
+    }
     out
 }
 
@@ -133,6 +148,7 @@ pub(crate) fn container(screens: &GameScreens, panel: Panel) -> Option<&Containe
         Panel::PlayerPack => Some(&screens.pack),
         Panel::BodyPack(body) => screens.loot_window(body).map(|window| &window.pack),
         Panel::BodyEquipment(body) => screens.loot_window(body).map(|window| &window.worn),
+        Panel::Container(id) => screens.popup(id).map(|popup| &popup.panel),
     }
 }
 
@@ -149,6 +165,11 @@ fn container_mut(screens: &mut GameScreens, panel: Panel) -> Option<&mut Contain
             .iter_mut()
             .find(|window| window.character == body)
             .map(|window| &mut window.worn),
+        Panel::Container(id) => screens
+            .popups
+            .iter_mut()
+            .find(|popup| popup.id == id)
+            .map(|popup| &mut popup.panel),
     }
 }
 
@@ -199,6 +220,11 @@ fn owner_present(
     player: Option<Entity>,
     panel: Panel,
 ) -> bool {
+    // A container popup's panel belongs to no character: its entries go
+    // back into the container's record when it closes.
+    if matches!(panel, Panel::Container(_)) {
+        return true;
+    }
     match panel.body() {
         None => player.is_some(),
         Some(index) => body_entity(bodies, index).is_some(),
@@ -444,7 +470,7 @@ fn release(
     }
     let unit = container(&screens, destination).map_or(4, |container| container.unit);
     let vscale = container(&screens, destination).map_or(1.0, |container| container.vscale);
-    if let Some((destination, id, _flags, cell)) = drop_on_panel(
+    if let Some((destination, id, flags, cell)) = drop_on_panel(
         &mut screens,
         &icons,
         catalogue.as_deref(),
@@ -458,6 +484,7 @@ fn release(
             source,
             destination,
             id,
+            flags,
             cell,
             unit,
             vscale,
@@ -468,7 +495,10 @@ fn release(
 
 /// Moves an item's possession entry between the two sides. The player side is
 /// the body with the player's [`Possessions`]; the body side is the loot
-/// window's entity.
+/// window's entity. A container popup's side has no possession list: its
+/// panel entries are the container's contents (saved into its record when
+/// the popup closes), so taking from it hands on the dragged entry's
+/// `flags` and giving to it leaves the possessions alone.
 #[allow(clippy::too_many_arguments)]
 fn move_item(
     bodies: &mut Query<(Entity, &mut Possessions)>,
@@ -476,6 +506,7 @@ fn move_item(
     source: Panel,
     destination: Panel,
     id: u32,
+    flags: u32,
     cell: Cell,
     unit: i32,
     vscale: f32,
@@ -496,6 +527,7 @@ fn move_item(
                 let mut p = bodies.get_mut(entity).ok()?.1;
                 body_inventory::take(&mut p, PanelKind::Equipment, id)
             }
+            Panel::Container(_) => Some(flags & !exa_items::possession::HELD),
         }
     };
     let Some(flags) = take_from(bodies) else {
@@ -516,7 +548,7 @@ fn move_item(
                 body_inventory::give(&mut p, id, flags, cell, unit, vscale);
             }
         }
-        Panel::BodyEquipment(_) => {}
+        Panel::BodyEquipment(_) | Panel::Container(_) => {}
     }
 }
 
