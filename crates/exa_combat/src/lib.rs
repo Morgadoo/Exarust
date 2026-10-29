@@ -26,6 +26,7 @@
 pub mod aim;
 pub mod attack;
 pub mod bite;
+pub mod block;
 pub mod burn;
 pub mod collapse;
 pub mod condition;
@@ -247,6 +248,10 @@ pub struct Attacking {
     pub motion: AttackMotion,
     pub weapon_class: u8,
     pub struck: HashSet<Entity>,
+    /// A clash or block found by the pair stage waits for the damage
+    /// routine: the striking part keeps one pending contact, so no other is
+    /// sent until it is dealt ([`block::strike_held`]).
+    pub held_pending: bool,
 }
 
 impl Attacking {
@@ -255,6 +260,7 @@ impl Attacking {
             motion,
             weapon_class,
             struck: HashSet::new(),
+            held_pending: false,
         }
     }
 }
@@ -280,6 +286,35 @@ pub struct Hit {
     pub velocity: Vec3,
     pub weapon: WeaponRecord,
     pub strike: Strike,
+    /// What the striker met: the contact kind the striking part's
+    /// classifier recorded ([`exa_physics::part::classify`]).
+    pub struck: Struck,
+}
+
+/// What a weapon contact struck: the contact kind the original's striking
+/// part records for the damage routine (a wound on a living limb, a clash
+/// on a held weapon, a block on a held shield).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Struck {
+    /// A living limb (kind 1): the blade sweep's contact.
+    Limb,
+    /// A held weapon (kind 2); `primary` when it is its holder's primary
+    /// striker (no counter clash then).
+    Weapon { primary: bool },
+    /// A held shield (kind 3): the shield's item body.
+    Shield { item: Entity },
+}
+
+impl Struck {
+    /// The contact kind the classifier gives it.
+    pub fn kind(self) -> exa_physics::part::ContactKind {
+        use exa_physics::part::ContactKind;
+        match self {
+            Self::Limb => ContactKind::Wound,
+            Self::Weapon { .. } => ContactKind::Clash,
+            Self::Shield { .. } => ContactKind::Block,
+        }
+    }
 }
 
 /// The hands bits of a weapon class: none for fists and claws.
@@ -412,7 +447,7 @@ fn detect_hits(
         Option<&Fighter>,
         Option<&PowerFactors>,
     )>,
-    fighters: Query<(Entity, &Condition), With<Fighter>>,
+    fighters: Query<(Entity, &Condition, Has<block::ShieldHold>), With<Fighter>>,
     children: Query<&Children>,
     parts: Query<(&BodyPart, &GlobalTransform, Option<&PartBounds>)>,
     mut hits: MessageWriter<Hit>,
@@ -438,7 +473,7 @@ fn detect_hits(
         let a = gt.translation();
         let b = gt.transform_point(Vec3::Y * blade.length);
         let (a0, b0) = blade.swept_from.unwrap_or((a, b));
-        for (target, condition) in &fighters {
+        for (target, condition, shielded) in &fighters {
             if target == blade.wielder || condition.is_dead() || attack.struck.contains(&target) {
                 continue;
             }
@@ -446,6 +481,11 @@ fn detect_hits(
                 .iter_descendants(target)
                 .filter_map(|e| {
                     let (part, pgt, bounds) = parts.get(e).ok()?;
+                    // The hand holding a shield is never wounded: the
+                    // striking part's classifier refuses it.
+                    if shielded && part.bone == block::SHIELD_HAND_BONE {
+                        return None;
+                    }
                     let (c, r) = match bounds {
                         // The enclosing sphere is generous; use most of it.
                         Some(b) => (pgt.transform_point(b.centre), b.radius * 0.75),
@@ -477,25 +517,7 @@ fn detect_hits(
                     blade.tip_speed
                 );
                 attack.struck.insert(target);
-                // Where along the weapon it landed, and how fast that point
-                // moved (the weapon turns about the grip).
-                let mut along = gt.affine().inverse().transform_point3(point).y * CM_PER_M;
-                if !blade.record.armed() {
-                    along = along.min(blade.length * CM_PER_M - KNUCKLES_INSIDE);
-                }
-                let share = (along / (blade.length * CM_PER_M)).clamp(0.0, 1.0);
-                // A quadruped's stab is resolved as a swing.
-                let quadruped = wielder.is_some_and(|f| f.stats.quadruped);
-                let strike = Strike {
-                    speed: blade.tip_speed * share * CM_PER_M / BODY_HZ,
-                    stab: attack.motion == AttackMotion::Stab && !quadruped,
-                    overhead: attack.motion == AttackMotion::Overhead,
-                    clock: progress,
-                    along,
-                    unarmed: attack.weapon_class & HANDS == 0,
-                    strikes: powers.map_or(0.0, |p| p.strikes),
-                    ..Strike::default()
-                };
+                let strike = blade_strike(blade, gt, point, &attack, progress, wielder, powers);
                 hits.write(Hit {
                     attacker: blade.wielder,
                     striker,
@@ -505,9 +527,42 @@ fn detect_hits(
                     velocity: blade.tip_velocity,
                     weapon: blade.record,
                     strike,
+                    struck: Struck::Limb,
                 });
             }
         }
+    }
+}
+
+/// The strike a blade's contact at `point` (world) deals: where along the
+/// weapon it landed (cm from the grip; a fist's contact is measured
+/// [`KNUCKLES_INSIDE`] inside its far face), how fast that point moved (the
+/// weapon turns about the grip), and the swing it belongs to.
+pub(crate) fn blade_strike(
+    blade: &Blade,
+    gt: &GlobalTransform,
+    point: Vec3,
+    attack: &Attacking,
+    progress: f32,
+    wielder: Option<&Fighter>,
+    powers: Option<&PowerFactors>,
+) -> Strike {
+    let mut along = gt.affine().inverse().transform_point3(point).y * CM_PER_M;
+    if !blade.record.armed() {
+        along = along.min(blade.length * CM_PER_M - KNUCKLES_INSIDE);
+    }
+    let share = (along / (blade.length * CM_PER_M)).clamp(0.0, 1.0);
+    // A quadruped's stab is resolved as a swing.
+    let quadruped = wielder.is_some_and(|f| f.stats.quadruped);
+    Strike {
+        speed: blade.tip_speed * share * CM_PER_M / BODY_HZ,
+        stab: attack.motion == AttackMotion::Stab && !quadruped,
+        overhead: attack.motion == AttackMotion::Overhead,
+        clock: progress,
+        along,
+        unarmed: attack.weapon_class & HANDS == 0,
+        strikes: powers.map_or(0.0, |p| p.strikes),
+        ..Strike::default()
     }
 }
 
@@ -592,10 +647,13 @@ fn react_to_hits(
         Option<&Swing>,
         Option<&PowerFactors>,
     )>,
-    attacks: Query<&Attacking>,
-    slots: Query<&Blade>,
-    strikers: Query<&GlobalTransform>,
+    mut attacks: Query<&mut Attacking>,
+    (slots, strikers): (Query<&Blade>, Query<&GlobalTransform>),
     mut blades: Query<&mut BladeBlood>,
+    (mut holds, mut items): (
+        Query<&mut block::ShieldHold>,
+        Query<&mut Ragdoll, Without<Fighter>>,
+    ),
     ticks: Option<Res<BodyTicks>>,
     story: Option<Res<StoryMode>>,
     motions: Option<Res<Motions>>,
@@ -605,6 +663,14 @@ fn react_to_hits(
     let now = ticks.as_ref().map_or(0, |t| t.millis());
     let story = story.is_some_and(|s| s.0);
     for hit in hits.read() {
+        // A held item's contact is dealt: the striking part may record
+        // another.
+        if hit.struck != Struck::Limb
+            && let Ok(mut attack) = attacks.get_mut(hit.attacker)
+        {
+            attack.held_pending = false;
+        }
+        let motion = attacks.get(hit.attacker).map_or(0, |a| a.motion.index());
         // The struck side first, then (the original's routine per contact)
         // the striker's swing.
         let reaction = 'struck: {
@@ -637,8 +703,25 @@ fn react_to_hits(
                 shell: powers.map_or(0.0, |p| p.shell),
                 ..damage::Victim::new(f.health.max, f.readiness)
             };
+            // How the blow is met: a struck shield blocks it with its
+            // holder's guard (parrying with it while the holder parries); a
+            // struck weapon takes the clash; a limb meets the fighter's own
+            // guard.
+            let guard = match hit.struck {
+                Struck::Shield { .. } => {
+                    let Ok(hold) = holds.get(hit.target) else {
+                        break 'struck None;
+                    };
+                    damage::Guard::Shield(damage::ShieldGuard {
+                        parrying: f.parry.active,
+                        ..hold.guard
+                    })
+                }
+                Struck::Weapon { .. } => damage::Guard::Parry,
+                Struck::Limb => f.guard,
+            };
             // A guarded blow meets a shield or a weapon: no armour, no roll.
-            let guarded = f.guard != damage::Guard::Open;
+            let guarded = guard != damage::Guard::Open;
             let layers = (!guarded).then(|| (armour, roll.next()));
             let Some(outcome) =
                 damage::resolve(&hit.weapon, &hit.strike, layers, hit.bone, &victim)
@@ -653,7 +736,6 @@ fn react_to_hits(
                 .as_deref()
                 .and_then(|m| SwingAt::of(now, &anim, m, base));
             let swing = swing.copied().unwrap_or(Swing::FISTS);
-            let guard = f.guard;
             match guard {
                 damage::Guard::Open => {}
                 damage::Guard::Parry if flags.has(StateFlags::TURNS_BLOWS) => {
@@ -671,11 +753,11 @@ fn react_to_hits(
                     // fighter's attack state, keeps it from attacking 600 ms
                     // unless it has Riposte and sags its stance by half the
                     // impact; a counter-parry ends into its stance with no
-                    // lock or sag; a spent parry changes nothing. Exarust
-                    // strikes limbs, never weapon bodies, so no clash hits
-                    // the victim's primary weapon.
-                    let motion = attacks.get(hit.attacker).map_or(0, |a| a.motion.index());
-                    let branch = parry::clash_branch(f.parry, motion, false);
+                    // lock or sag; a spent parry changes nothing. A counter
+                    // is refused when the struck weapon is the victim's
+                    // primary (a parrying victim's limb is no weapon).
+                    let primary = matches!(hit.struck, Struck::Weapon { primary: true });
+                    let branch = parry::clash_branch(f.parry, motion, primary);
                     match branch {
                         parry::Clash::Parrying => {
                             if let Some(mut state) = state {
@@ -714,18 +796,32 @@ fn react_to_hits(
                         synchrony: f.perks.has(Perk::Synchrony),
                         persist: f.perks.has(Perk::Persist),
                         counter: f.perks.has(Perk::Counter),
-                        countering: false,
+                        countering: f.parry.counter_motion == Some(motion),
                         clock: at.as_ref().map_or(0.0, |a| a.progress),
                         potion: flags.has(StateFlags::POTION),
                     };
                     let b = damage::block(outcome.hit_impact, f.health.yellow, &shield, &holding);
                     f.health.yellow = b.yellow;
-                    f.guard = damage::Guard::Shield(damage::ShieldGuard {
+                    // The arm spends its stamina and starts its refill
+                    // again: the struck shield's holder's, else the
+                    // fighter's own guard.
+                    let spent = damage::ShieldGuard {
                         stamina: b.stamina,
                         rate: 0.0,
                         blocked_at: now as u32,
                         ..shield
-                    });
+                    };
+                    match hit.struck {
+                        Struck::Shield { .. } => {
+                            if let Ok(mut hold) = holds.get_mut(hit.target) {
+                                hold.guard = damage::ShieldGuard {
+                                    parrying: hold.guard.parrying,
+                                    ..spent
+                                };
+                            }
+                        }
+                        _ => f.guard = damage::Guard::Shield(spent),
+                    }
                     let mut state = state;
                     if b.locked
                         && let Some(state) = state.as_mut()
@@ -970,10 +1066,9 @@ fn react_to_hits(
             Some(StrikerReaction::Wounded(outcome))
         };
         // The shield's first ring in a swing draws its cooldown and stamps
-        // the struck object's clock: the shield body in the original.
-        // Exarust's shield is a held model without a body of its own, so the
-        // draw is kept and nothing is stamped (the victim's part at the bone
-        // is not the struck object).
+        // the struck object's clock: the shield's item body, the game clock
+        // plus 300 ms less the draw. A blow that met the fighter's own
+        // shield guard (no body struck) keeps the draw and stamps nothing.
         if let Some(reaction) = reaction
             && let Ok((_, f, .., Some(mut state), _, _)) = fighters.get_mut(hit.attacker)
         {
@@ -986,7 +1081,13 @@ fn react_to_hits(
                 slot: slots.get(hit.striker).map_or(Slot::First, |b| b.slot),
                 now_ms: now as i32,
             };
-            strike_back(&mut state, &striker, hit, reaction, &mut roll);
+            let draw = strike_back(&mut state, &striker, hit, reaction, &mut roll);
+            if let (Some(spread), Struck::Shield { item }) = (draw, hit.struck)
+                && let Ok(mut shield) = items.get_mut(item)
+                && let Some(part) = shield.parts.first_mut()
+            {
+                part.sound_ready_ms = part_sound_ready(now as u32, spread);
+            }
         }
     }
     for (e, _, _, _, anim, attacking, ..) in &fighters {
@@ -1001,7 +1102,7 @@ fn react_to_hits(
 /// that turns blows any striker. A clash rings the weapon once a swing; a
 /// shield the weapon and then the shield. The shield's first ring in a
 /// swing draws its sound cooldown and returns that draw, for the shield
-/// body's clock (Exarust's shield has no body, so the caller drops it).
+/// body's clock.
 fn strike_back(
     state: &mut SwingState,
     striker: &swing::Striker,
@@ -1150,6 +1251,7 @@ mod tests {
         app.world_mut().write_message(Hit {
             attacker: Entity::PLACEHOLDER,
             striker: Entity::PLACEHOLDER,
+            struck: Struck::Limb,
             target,
             bone,
             point: Vec3::ZERO,
@@ -1214,6 +1316,7 @@ mod tests {
         app.world_mut().write_message(Hit {
             attacker,
             striker: blade,
+            struck: Struck::Limb,
             target,
             bone: 9,
             point: Vec3::ZERO,
@@ -1222,6 +1325,149 @@ mod tests {
             strike,
         });
         app.update();
+    }
+
+    /// A blow that strikes a held shield's body is blocked with the
+    /// holder's shield guard, the same block as a raised shield guard: the
+    /// arm's stamina and the leak into yellow, the striker's recoil and both
+    /// rings. The fighter's own guard stays open, the shield's marker keeps
+    /// the spent arm, and the striker's pending contact is dealt. A blow on
+    /// the holder's limb is a plain wound.
+    #[test]
+    fn a_blow_on_the_shield_body_is_blocked() {
+        let leak = 1.0 - 0.5 * 0.58;
+        let guard = damage::ShieldGuard {
+            parry: 1.0,
+            leak,
+            cost: leak,
+            stamina: 0.0,
+            rate: 0.0,
+            blocked_at: 0,
+            parrying: false,
+        };
+        let mut app = reactions();
+        let (attacker, blade) = swordsman(&mut app);
+        app.world_mut()
+            .get_mut::<Attacking>(attacker)
+            .unwrap()
+            .held_pending = true;
+        let item = app.world_mut().spawn_empty().id();
+        let id = app
+            .world_mut()
+            .spawn((
+                Fighter::default(),
+                Animator::new("Default", "Idle"),
+                block::ShieldHold { item, guard },
+            ))
+            .id();
+        app.world_mut().write_message(Hit {
+            attacker,
+            striker: blade,
+            struck: Struck::Shield { item },
+            target: id,
+            bone: block::SHIELD_HAND_BONE,
+            point: Vec3::ZERO,
+            velocity: Vec3::new(3.0, 0.0, 0.0),
+            weapon: damage::sword_a(),
+            strike: cut(),
+        });
+        app.update();
+        let f = app.world().get::<Fighter>(id).unwrap();
+        assert_eq!(f.guard, damage::Guard::Open);
+        assert_eq!(f.health.red, 0.25);
+        let hold = app.world().get::<block::ShieldHold>(id).unwrap();
+        assert_eq!(hold.guard.stamina, 0.0);
+        assert_eq!(hold.guard.leak, leak);
+        // (A looping clip ends the attack, so its record may be gone.)
+        assert!(
+            app.world()
+                .get::<Attacking>(attacker)
+                .is_none_or(|a| !a.held_pending)
+        );
+        let striker = app.world().get::<SwingState>(attacker).unwrap();
+        assert!(striker.has(swing::flags::RECOILED));
+        assert!(striker.has(swing::flags::WEAPON_RUNG | swing::flags::SHIELD_RUNG));
+        // The struck shield's hand bone and the open fighter's guard give
+        // the same leak as the shield guard on the chest.
+        let mut app2 = reactions();
+        let (attacker2, blade2) = swordsman(&mut app2);
+        let id2 = app2
+            .world_mut()
+            .spawn((
+                Fighter {
+                    guard: damage::Guard::Shield(guard),
+                    ..Fighter::default()
+                },
+                Animator::new("Default", "Idle"),
+            ))
+            .id();
+        swung(&mut app2, attacker2, blade2, id2, cut());
+        assert_eq!(
+            app.world().get::<Fighter>(id).unwrap().health.yellow,
+            app2.world().get::<Fighter>(id2).unwrap().health.yellow
+        );
+
+        // A limb of the holder is wounded as any.
+        let mut app = reactions();
+        let (attacker, blade) = swordsman(&mut app);
+        let id = app
+            .world_mut()
+            .spawn((
+                Fighter::default(),
+                Animator::new("Default", "Idle"),
+                block::ShieldHold { item, guard },
+            ))
+            .id();
+        swung(&mut app, attacker, blade, id, cut());
+        assert!(app.world().get::<Fighter>(id).unwrap().health.red < 0.25);
+        assert_eq!(
+            app.world().get::<block::ShieldHold>(id).unwrap().guard,
+            guard
+        );
+    }
+
+    /// A clash on a held weapon takes the clash branch whatever the
+    /// fighter's own guard: a counter of this very motion with its primary
+    /// weapon is the plain branch (no recoil), with another weapon the
+    /// counter (the striker recoils, the parry ends).
+    #[test]
+    fn a_clash_on_the_primary_weapon_is_no_counter() {
+        for (primary, recoils) in [(true, false), (false, true)] {
+            let mut app = reactions();
+            let (attacker, blade) = swordsman(&mut app);
+            let id = app
+                .world_mut()
+                .spawn((
+                    Fighter {
+                        parry: parry::ParryState {
+                            active: false,
+                            counter_motion: Some(5),
+                            ..parry::ParryState::default()
+                        },
+                        ..Fighter::default()
+                    },
+                    Animator::new("Default", "Idle"),
+                ))
+                .id();
+            app.world_mut().write_message(Hit {
+                attacker,
+                striker: blade,
+                struck: Struck::Weapon { primary },
+                target: id,
+                bone: block::MAIN_HAND_BONE,
+                point: Vec3::ZERO,
+                velocity: Vec3::new(3.0, 0.0, 0.0),
+                weapon: damage::sword_a(),
+                strike: cut(),
+            });
+            app.update();
+            let f = app.world().get::<Fighter>(id).unwrap();
+            assert_eq!(f.health.red, 0.25);
+            let striker = app.world().get::<SwingState>(attacker).unwrap();
+            assert_eq!(striker.has(swing::flags::RECOILED), recoils);
+            assert!(striker.has(swing::flags::WEAPON_RUNG));
+            assert_eq!(f.parry.counter_motion.is_none(), recoils);
+        }
     }
 
     /// A cut by the sword's body (40 of its 90 cm, so its body zone) bogs
@@ -1722,6 +1968,7 @@ mod tests {
             let hit = |attacker, striker, target, bone, strike| Hit {
                 attacker,
                 striker,
+                struck: Struck::Limb,
                 target,
                 bone,
                 point: Vec3::ZERO,
@@ -1790,6 +2037,7 @@ mod tests {
         let hit = Hit {
             attacker: Entity::PLACEHOLDER,
             striker: Entity::PLACEHOLDER,
+            struck: Struck::Limb,
             target: Entity::PLACEHOLDER,
             bone: 9,
             point: Vec3::ZERO,
@@ -2258,6 +2506,7 @@ mod tests {
         app.world_mut().write_message(Hit {
             attacker: Entity::PLACEHOLDER,
             striker,
+            struck: Struck::Limb,
             target,
             bone,
             point,
@@ -2391,6 +2640,7 @@ mod tests {
             app.world_mut().write_message(Hit {
                 attacker: Entity::PLACEHOLDER,
                 striker: Entity::PLACEHOLDER,
+                struck: Struck::Limb,
                 target: id,
                 bone: 17,
                 point: Vec3::ZERO,
@@ -2510,6 +2760,7 @@ mod tests {
         app.world_mut().write_message(Hit {
             attacker: Entity::PLACEHOLDER,
             striker: sword,
+            struck: Struck::Limb,
             target: human,
             bone: 17,
             point: Vec3::ZERO,
@@ -2594,6 +2845,7 @@ mod tests {
         app.world_mut().write_message(Hit {
             attacker: Entity::PLACEHOLDER,
             striker: Entity::PLACEHOLDER,
+            struck: Struck::Limb,
             target: human,
             bone: 17,
             point: contact,

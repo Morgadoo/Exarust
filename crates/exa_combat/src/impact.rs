@@ -837,9 +837,13 @@ pub fn level_impacts(
 }
 
 /// Sets each held item's strike flags from its owner's swing window: a
-/// weapon body is a striker (class bit 1) while its owner's striker window
-/// is open, as the original's attack sets it, and stops being one when the
-/// window shuts.
+/// weapon body becomes an active striker (its window bit, the strike-chain
+/// bit the original's window sets, 0x10000, and the walk's mark, over its
+/// chain) when its owner's striker window opens, and stops being one when
+/// the window shuts. Only the change is written, so a hard impact's clear
+/// of the chain bit holds for the rest of the window, as in the original.
+/// While it strikes, its contacts with hittable bodies take the hit event
+/// ([`crate::block::strike_held`]) instead of the impact path.
 fn sync_held_striking(mut blades: Query<(&Blade, &mut Ragdoll)>, swings: Query<&SwingState>) {
     for (blade, mut body) in &mut blades {
         if body.held_by.is_none() {
@@ -848,7 +852,13 @@ fn sync_held_striking(mut blades: Query<(&Blade, &mut Ragdoll)>, swings: Query<&
         let open = swings
             .get(blade.wielder)
             .is_ok_and(|s| s.open[blade.slot.index()]);
-        body.set_striking_window(0, open);
+        let striking = body
+            .parts
+            .first()
+            .is_some_and(|p| p.state.has(PartState::STRIKING));
+        if open != striking {
+            body.set_striking(0, open);
+        }
     }
 }
 
@@ -860,6 +870,12 @@ pub(crate) fn plugin(app: &mut App) {
         .add_message::<CameraHit>()
         .add_systems(FixedUpdate, sync_held_striking.before(BodySystems))
         .add_systems(FixedUpdate, strike_limbs.after(BodySystems))
+        .add_systems(
+            FixedUpdate,
+            crate::block::strike_held
+                .after(BodySystems)
+                .before(strike_limbs),
+        )
         .add_systems(FixedUpdate, level_impacts.after(strike_limbs));
 }
 

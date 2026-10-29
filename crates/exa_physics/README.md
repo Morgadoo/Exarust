@@ -560,7 +560,9 @@ clash may start (`part::immediate_counter`: the basic attack for motions
 5–7, the combo for 8–10). A striking part's contact is classified as the
 damage routine's kind 1, 2 or 3 (`part::classify`: a muscled limb, a
 weapon, a shield, with its pending-hit, arm, once-a-swing, parrying and
-countering guards). A wound adds nothing over time: the part slot that
+countering guards; a parrying struck character always takes the clash),
+on the striking side only (`part::faces`: local y not below 0, NaN
+passing, unless unarmed or chained). A wound adds nothing over time: the part slot that
 once was read as a bleeding tally is the burn's dose, which only the
 particle body-contact pass feeds (`exa_combat::burn::Burn::add_dose`).
 A dazed or unsteady body's targets give way to the pose it holds by the

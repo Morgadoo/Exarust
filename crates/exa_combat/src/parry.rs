@@ -1260,6 +1260,7 @@ pub(crate) fn run_parries(
             Option<&Ragdoll>,
         )>,
     )>,
+    shields: Query<(), With<crate::block::ShieldHold>>,
 ) {
     let Some(motions) = motions else { return };
     let now = ticks.as_ref().map_or(0, |t| t.millis());
@@ -1302,7 +1303,7 @@ pub(crate) fn run_parries(
             (
                 stance::chest_point(gt, body),
                 forward(gt),
-                matches!(fighter.guard, Guard::Shield(_)),
+                matches!(fighter.guard, Guard::Shield(_)) || shields.contains(entity),
                 fighter.health.yellow,
                 condition.helpless(),
                 motions.0.action_index(&anim.action).unwrap_or(0) as u8,

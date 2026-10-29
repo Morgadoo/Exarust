@@ -606,6 +606,7 @@ mod tests {
         let blow = |attacker| exa_combat::Hit {
             attacker,
             striker: attacker,
+            struck: exa_combat::Struck::Limb,
             target: if attacker == player { foe } else { player },
             bone: 9,
             point: Vec3::ZERO,

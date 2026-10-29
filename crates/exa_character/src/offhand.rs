@@ -67,20 +67,10 @@ pub const SHIELD_CLASS: u32 = 0x10;
 #[derive(Component)]
 struct OffAttached;
 
-/// The shield a character carries in the off hand and the block factors its
-/// equip wrote on the holder ([`exa_combat::damage::shield_guard`]). The
-/// factors are kept here, not put in the fighter's guard: the original
-/// blocks only a blow that strikes the shield itself, and Exarust strikes
-/// limbs, never a shield body, so a standing guard would turn every blow
-/// on the holder into a block. When the shield leaves the world or its
-/// holder lets it go, the marker is removed.
-#[derive(Component, Debug, Clone, Copy, PartialEq)]
-pub struct ShieldHold {
-    /// The shield's item body (the entity carrying its [`HeldGrip`]).
-    pub item: Entity,
-    /// The guard the shield gives a blow that strikes it.
-    pub guard: exa_combat::damage::ShieldGuard,
-}
+/// The shield a character carries and its block factors: the combat
+/// crate's marker, which the blade striking the shield's own body reads
+/// ([`exa_combat::block`]).
+pub use exa_combat::block::ShieldHold;
 
 /// The grip an off-hand weapon takes: the table's second slot.
 fn off_weapon_grip(class: u32) -> Option<&'static Grip> {

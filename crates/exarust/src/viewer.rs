@@ -1179,8 +1179,21 @@ fn spawn_players(
         ));
         // A lit torch, as the player carries one through the original's
         // dungeons; practice and arena take it away.
-        if exa_world::start::keeps_torch(name) {
+        let player_shield = options
+            .shield
+            .as_deref()
+            .and_then(|asked| debug_shield(&items, asked));
+        if exa_world::start::keeps_torch(name) && player_shield.is_none() {
             commands.entity(model).insert(exa_game::torch::CarriesTorch);
+        }
+        if let Some(shield) = player_shield {
+            commands.entity(model).insert((
+                shield,
+                exa_character::held::Hands {
+                    shield: Some(exa_character::held::ShieldStyle::Plain),
+                    ..Default::default()
+                },
+            ));
         }
         if let Some(w) = &options.weapon {
             commands
@@ -1301,10 +1314,23 @@ fn spawn_players(
                 &Physique::of_record(&duel_record),
                 0x2F1D_3B57,
             );
+            let foe_shield = options
+                .opponent_shield
+                .as_deref()
+                .and_then(|asked| debug_shield(&items, asked));
+            let foe_hands = exa_character::held::Hands {
+                shield: foe_shield
+                    .is_some()
+                    .then_some(exa_character::held::ShieldStyle::Plain),
+                ..Default::default()
+            };
+            if let Some(shield) = foe_shield {
+                commands.entity(foe).insert(shield);
+            }
             commands.entity(foe).insert((
                 Transform::from_rotation(Quat::from_rotation_y(foe_at.yaw)),
                 anim,
-                exa_character::held::Hands::default(),
+                foe_hands,
                 exa_character::Outfit::of_models(&outfit),
                 exa_character::Wielded::model(weapon),
                 exa_assets::BodyModel(model::BODY_MODEL.into()),
@@ -2309,4 +2335,30 @@ fn spawn_placed_characters(
         started.elapsed().as_secs_f32() * 1000.0
     );
     (spawned, missing)
+}
+
+/// `--shield` and `--opponent-shield`: the off-hand shield an object
+/// model names (`any`: the first item with a shield section and a model),
+/// held unflipped. Logs and gives none when no such shield exists.
+fn debug_shield(
+    items: &[exa_formats::objdb::Item],
+    asked: &str,
+) -> Option<exa_character::offhand::OffHeld> {
+    let item = items.iter().find(|item| {
+        item.shield.is_some()
+            && !item.model.is_empty()
+            && (asked == "any" || item.model.eq_ignore_ascii_case(asked))
+    });
+    let Some(item) = item else {
+        warn!("no shield item {asked}: no debug shield");
+        return None;
+    };
+    info!("debug shield: {} ({})", item.model, item.name);
+    Some(exa_character::offhand::OffHeld {
+        model: item.model.clone(),
+        weapon: None,
+        shield: item.shield,
+        flip: false,
+        kind: exa_character::offhand::OffKind::Shield,
+    })
 }

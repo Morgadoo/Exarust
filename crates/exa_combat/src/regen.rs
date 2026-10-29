@@ -252,6 +252,7 @@ pub fn regenerate_health(
         Option<&Ragdoll>,
         Has<TickedClips>,
     )>,
+    mut holds: Query<&mut crate::block::ShieldHold>,
 ) {
     let now_ms = ticks.as_ref().map_or(0, |t| t.millis() as u32);
     let now = world_seconds(clock.as_deref(), now_ms);
@@ -271,6 +272,9 @@ pub fn regenerate_health(
             let motion = anim.zip(set).and_then(|(a, s)| s.action_index(&a.action));
             keep(entity, &mut health, *condition, motion, now_ms, &mut wind);
             refill_shield(&mut fighter.guard);
+            if let Ok(mut hold) = holds.get_mut(entity) {
+                crate::block::refill_hold(&mut hold);
+            }
         }
         if health != fighter.health {
             fighter.health = health;
@@ -313,6 +317,7 @@ pub fn keep_health(
     ticks: Option<Res<BodyTicks>>,
     motions: Option<Res<Motions>>,
     mut fighters: Query<(&mut Fighter, &Condition, Option<&Animator>)>,
+    mut holds: Query<&mut crate::block::ShieldHold>,
 ) {
     let entity = ticked.body;
     let Ok((mut fighter, condition, anim)) = fighters.get_mut(entity) else {
@@ -328,6 +333,9 @@ pub fn keep_health(
     let now = ticks.as_ref().map_or(0, |t| t.millis() as u32);
     keep(entity, &mut health, *condition, motion, now, &mut wind);
     refill_shield(&mut fighter.guard);
+    if let Ok(mut hold) = holds.get_mut(entity) {
+        crate::block::refill_hold(&mut hold);
+    }
     if health != fighter.health {
         fighter.health = health;
     }
