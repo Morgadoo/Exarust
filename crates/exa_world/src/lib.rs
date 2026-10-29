@@ -479,8 +479,10 @@ fn spawn_placed_object(
             bodies: bodies::BodyCounts::default(),
         });
     }
-    let model = placed_object_model(loader, scene, global, object)
-        .and_then(|(kind, entry)| placement_base(loader, kind, &entry, &object.attachments));
+    let model = placed_object_model(loader, scene, global, object).and_then(|(kind, entry)| {
+        let placement = transform_from_rows(&object.transform);
+        placement_base(loader, kind, &entry, &object.attachments, placement)
+    });
     let Some(model) = model else {
         // A record without a model name and with an operative section gets
         // the original's 50 cm placeholder node, so its placement exists.
@@ -524,6 +526,7 @@ fn spawn_placed_object(
         model,
         Some(transform_from_rows(&object.transform)),
     );
+    mark_cloth_starts(commands, model, &nodes, &object.attachments);
     commands.entity(e).insert((
         Name::new(item.name.clone()),
         room_view::PendingRoom::default(),
@@ -676,21 +679,29 @@ fn resolved_attachments<'a>(
 /// rebuilt from its file when the placement replaces a mesh's positions
 /// (`0x3DE0ECDB`), as the original replaces the position-stream elements of
 /// its copy of the object before it builds the render meshes (only when the
-/// count is the stream's). The normals follow the new positions. A rebuilt
-/// model is cached per distinct set of positions.
+/// count is the stream's). The record's positions are where the level saved
+/// the mesh (a banner's settled cloth), in the level's frame: every shipped
+/// record's box sits about its placement, so they are taken into the
+/// node's own frame at `placement`. The normals follow the new positions.
+/// A rebuilt model is cached per distinct set of positions.
 fn placement_base(
     loader: &mut ModelLoader<'_>,
     pack: PackKind,
     entry: &str,
     attachments: &[exa_formats::level::PropAttachment],
+    placement: Transform,
 ) -> Option<std::sync::Arc<Model>> {
     use exa_formats::level::PropAttachment;
     use std::hash::{Hash, Hasher};
     let model = loader.model(pack, entry)?;
-    let edits: Vec<(usize, &[[f32; 3]])> = resolved_attachments(&model, attachments)
+    let placed = with_placement_transforms(&model, attachments);
+    let frames: &Model = placed.as_ref().unwrap_or(&model);
+    let edits: Vec<(usize, Vec<[f32; 3]>)> = resolved_attachments(&model, attachments)
         .into_iter()
         .filter_map(|(node, a)| match a {
-            PropAttachment::MeshPositions { positions, .. } => Some((node, positions.as_slice())),
+            PropAttachment::MeshPositions { positions, .. } => {
+                Some((node, level_to_node(frames, node, placement, positions)))
+            }
             PropAttachment::Transform { .. } | PropAttachment::Tree { .. } => None,
         })
         .collect();
@@ -725,6 +736,70 @@ fn placement_base(
     })
 }
 
+/// Positions in the level's frame (metres) taken into node `node`'s own
+/// frame, with `model` spawned at `placement`.
+fn level_to_node(
+    model: &Model,
+    node: usize,
+    placement: Transform,
+    positions: &[[f32; 3]],
+) -> Vec<[f32; 3]> {
+    let to_node = node_world(model, node, placement).inverse();
+    positions
+        .iter()
+        .map(|p| to_node.transform_point3(Vec3::from_array(*p)).to_array())
+        .collect()
+}
+
+/// A node's frame in the level when `model` is spawned at `placement`
+/// ([`spawn_model_nodes`]'s rule: the placement stands for the first root,
+/// another root sits relative to it).
+fn node_world(model: &Model, node: usize, placement: Transform) -> Mat4 {
+    let first_root = model.roots().next();
+    let first_inverse = first_root
+        .map(|r| model.nodes[r].transform.to_matrix().inverse())
+        .unwrap_or(Mat4::IDENTITY);
+    let mut world = Mat4::IDENTITY;
+    let mut at = Some(node);
+    // Bounded by the node count, so a cycle in bad input ends.
+    for _ in 0..=model.nodes.len() {
+        let Some(i) = at else { break };
+        let Some(n) = model.nodes.get(i) else { break };
+        let local = match n.parent {
+            None if Some(i) == first_root => Mat4::IDENTITY,
+            None => first_inverse * n.transform.to_matrix(),
+            Some(_) => n.transform.to_matrix(),
+        };
+        world = local * world;
+        at = n.parent;
+    }
+    placement.to_matrix() * world
+}
+
+/// Each placement record that names a cloth's mesh (`0x3DE0ECDB`) also sets
+/// that cloth's sleep countdown from its word, as the original's placement
+/// load does (0 in every shipped record: a placed cloth starts asleep and
+/// wakes only for a moving body); the word goes on the node's entity for
+/// the cloth builder.
+fn mark_cloth_starts(
+    commands: &mut Commands,
+    model: &Model,
+    nodes: &[Entity],
+    attachments: &[exa_formats::level::PropAttachment],
+) {
+    use exa_formats::level::PropAttachment;
+    for (node, a) in resolved_attachments(model, attachments) {
+        if let PropAttachment::MeshPositions { word, .. } = a
+            && model.nodes[node].cloth
+            && let Some(&entity) = nodes.get(node)
+        {
+            commands
+                .entity(entity)
+                .insert(cloth::ClothStartSleep(*word as i32));
+        }
+    }
+}
+
 /// A copy of `model` with the placement's transform records (`0x3DE0ECAC`)
 /// applied, or `None` when none applies, so the model is shared as it is.
 fn with_placement_transforms(
@@ -746,6 +821,16 @@ fn with_placement_transforms(
 
 /// The transform records of a placement, applied to the model's nodes: each
 /// replaces its node's local transform ([`resolved_attachments`]).
+///
+/// [Known divergence: a node record (`0x3DE0ECAC`) holds the node's frame in
+/// the level, not its local transform. Every shipped record in exanima01
+/// matches the placement composed with the model's own local transform to
+/// within 1 cm (sacks, buckets, carts, wall rings, chains, mattresses), and
+/// the original stores it as the node's world matrix and derives the local
+/// one from the parent's, so read as a local transform each overridden
+/// node lands 45–90 m away. Reading it as a level frame changes the
+/// navigation grid's reach from exanima01's start, so it waits for its own
+/// change.]
 fn apply_transform_attachments(
     model: &mut Model,
     attachments: &[exa_formats::level::PropAttachment],
@@ -1316,7 +1401,9 @@ impl LevelLoad {
                     let placement = transform_from_rows(&prop.transform);
                     self.min = self.min.min(placement.translation);
                     self.max = self.max.max(placement.translation);
-                    let e = match placement_base(loader, kind, &prop.object, &prop.attachments) {
+                    let base =
+                        placement_base(loader, kind, &prop.object, &prop.attachments, placement);
+                    let e = match base {
                         Some(model) => {
                             self.lights += model.nodes.iter().filter(|n| n.light.is_some()).count();
                             let owned;
@@ -1329,6 +1416,7 @@ impl LevelLoad {
                                     None => &model,
                                 };
                             let (e, nodes) = spawn_model_nodes(commands, model, Some(placement));
+                            mark_cloth_starts(commands, model, &nodes, &prop.attachments);
                             // A prop placed static is level geometry.
                             let placement = if prop.is_static() {
                                 bodies::Placement::Static
@@ -1962,6 +2050,28 @@ mod tests {
         );
         let x = |i: usize| model.nodes[i].transform.translation.x;
         assert_eq!((x(0), x(1), x(2), x(3), x(4)), (0.0, 1.0, 0.0, 2.0, 0.0));
+    }
+
+    /// A banner's saved positions are in the level's frame: placed turned
+    /// half round at (19.0, 1.4, 71.2) m, a point the level saved 10 cm in
+    /// front of the placement comes back 10 cm along the node's own z.
+    #[test]
+    fn saved_mesh_positions_come_from_the_level_frame() {
+        let model = Model {
+            nodes: vec![
+                node("UW01_Banne", None, None),
+                node("UW01_Bann", Some(0), None),
+            ],
+        };
+        let placement = Transform::from_xyz(19.0, 1.4, 71.2)
+            .with_rotation(Quat::from_rotation_y(std::f32::consts::PI));
+        let saved = placement.transform_point(Vec3::new(0.0, 0.0, 0.1));
+        let local = level_to_node(&model, 1, placement, &[saved.to_array()]);
+        assert!(
+            Vec3::from_array(local[0]).abs_diff_eq(Vec3::new(0.0, 0.0, 0.1), 1e-4),
+            "{:?}",
+            local[0]
+        );
     }
 
     /// A placement tree (`0x3DE0EC00`) names direct children all the way

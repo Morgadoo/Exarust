@@ -1,0 +1,6 @@
+- [x] Read the placement loader's transform and position record handlers
+- [x] Compare every exanima01 and arena record with its model's node transforms
+- [x] Take position records from the level's frame into the node's
+- [x] Start a placed cloth with its record's countdown (asleep under 1)
+- [x] Leave transform records local, labelled, and say why
+- [x] Tests, READMEs, DEBUGGING.md, GPU check for the integrator

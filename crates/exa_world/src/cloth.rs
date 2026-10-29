@@ -47,6 +47,14 @@ pub struct ClothSource {
     pub part: usize,
 }
 
+/// The sleep countdown a level placement gives the cloth of this node (the
+/// word of its `0x3DE0ECDB` record), as the original's placement load sets
+/// the cloth's countdown and, under 1, puts it to sleep. Every shipped
+/// record stores 0, so every placed banner starts asleep: it takes only
+/// moving bodies, and the sleeping props it hangs among never push it.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClothStartSleep(pub i32);
+
 /// A cloth node whose mesh cannot be a cloth (no positions, no triangles),
 /// so the builder does not look at it again.
 #[derive(Component, Debug, Clone, Copy)]
@@ -378,6 +386,13 @@ pub fn cloth_of_elements(
     (cloth_of(&points, &welded, &held), vertex_particle)
 }
 
+/// The countdown a placement's word gives a cloth: the word itself, or
+/// asleep (0) under 1, as the original sets the countdown and marks the
+/// cloth asleep under 1.
+pub fn start_countdown(word: i32) -> i32 {
+    if word < 1 { 0 } else { word }
+}
+
 /// Cloth nodes still waiting for their cloth: not built, not given up on.
 type PendingCloth = (
     With<ClothNode>,
@@ -394,6 +409,8 @@ type PendingCloth = (
 fn build_cloth_nodes(
     mut commands: Commands,
     nodes: Query<(Entity, &Mesh3d, Option<&ClothSource>), PendingCloth>,
+    starts: Query<&ClothStartSleep>,
+    parents: Query<&ChildOf>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     for (entity, mesh, source) in &nodes {
@@ -443,6 +460,16 @@ fn build_cloth_nodes(
                 )
             }
         };
+        // A placed cloth starts with the countdown its placement gives it
+        // (on the part's node).
+        let start = starts.get(entity).ok().or_else(|| {
+            let node = parents.get(entity).ok()?.parent();
+            starts.get(node).ok()
+        });
+        let mut cloth = cloth;
+        if let Some(&ClothStartSleep(count)) = start {
+            cloth.sleep = start_countdown(count);
+        }
         let copy = mesh_data.clone();
         let own = meshes.add(copy);
         commands.entity(entity).insert((
@@ -764,6 +791,40 @@ mod tests {
         assert_eq!((cloth.pins[0].index, cloth.pins[0].weight), (1, 1.0));
         // Four sides and the diagonal, plus the bend link 1-3.
         assert_eq!(cloth.edges.len(), 6);
+    }
+
+    /// A placement's word is the cloth's starting countdown, asleep under 1
+    /// (every shipped record stores 0).
+    #[test]
+    fn a_placed_cloth_starts_with_its_records_countdown() {
+        assert_eq!(start_countdown(0), 0);
+        assert_eq!(start_countdown(-3), 0);
+        assert_eq!(start_countdown(1), 1);
+        assert_eq!(start_countdown(40), 40);
+        // The builder reads it from the part's node.
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Assets<Mesh>>()
+            .add_systems(Update, build_cloth_nodes);
+        let mesh = app.world_mut().resource_mut::<Assets<Mesh>>().add(
+            Mesh::new(
+                bevy::mesh::PrimitiveTopology::TriangleList,
+                bevy::asset::RenderAssetUsages::default(),
+            )
+            .with_inserted_attribute(
+                Mesh::ATTRIBUTE_POSITION,
+                vec![[0.0f32, 1.0, 0.0], [1.0, 1.0, 0.0], [1.0, 0.0, 0.0]],
+            )
+            .with_inserted_indices(bevy::mesh::Indices::U32(vec![0, 1, 2])),
+        );
+        let node = app.world_mut().spawn(ClothStartSleep(0)).id();
+        let part = app
+            .world_mut()
+            .spawn((ClothNode, Mesh3d(mesh), ChildOf(node)))
+            .id();
+        app.update();
+        let instance = app.world().entity(part).get::<ClothInstance>().unwrap();
+        assert_eq!(instance.cloth.sleep, 0);
     }
 
     /// A free cloth falls through the air and comes to rest on the level's
