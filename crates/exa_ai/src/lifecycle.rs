@@ -17,13 +17,10 @@
 //!   party when the character follows, frees its path, and finalises.
 //! - **Disable** ([`disabled`]): clears the AI's animation parameter and
 //!   leaves the party when the character follows.
-//! - **Restart** ([`restart_idle`]): forgets the searched-object id and the
-//!   idle activity's busy flag, then restarts the activity.
-//! - **Idle return** ([`return_to_idle`]): takes the body's look as the
-//!   brain's heading, look offset and heading again, clears the activity's
-//!   start flag and puts the idle state back.
-//! - **Stand reset** ([`stand_again`]): the idle driver's stand still, with
-//!   the body's own look as the AI's heading and a fresh 1–4 s alert timer.
+//! - **Idle return** ([`return_to_idle`]): the look after combat is left
+//!   ([`crate::motion::leave_look`]), then the activity's start flag clears,
+//!   the idle driver restarts at step 1, the idle state becomes the current
+//!   state and the body's in-combat mark clears.
 //! - **Investigation** ([`investigate`]): the idle states sample the
 //!   pathfinder's disturbance at the body's 600 cm cell (a key of cell x
 //!   and z). The same cell with a value within 0.02 of the last one does
@@ -161,80 +158,20 @@ pub fn disabled(has_animation: bool, following: bool) -> Disabled {
     }
 }
 
-/// What restarting the idle activity cleared.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Restarted {
-    /// The searched-object id was set.
-    pub cleared_search: bool,
-    /// The idle activity's busy flag was set.
-    pub cleared_busy: bool,
-    /// The idle activity had a restart routine to run.
-    pub restarted_idle: bool,
-}
+/// The idle driver's step an idle return restarts it at.
+pub const IDLE_RETURN_STEP: i32 = 1;
 
-/// The restart entry point an AI's restart slot calls: clears the
-/// searched-object id and the idle activity's busy flag, then asks the idle
-/// activity to restart.
-pub fn restart_idle(searching: bool, busy: bool, idle: bool) -> Restarted {
-    Restarted {
-        cleared_search: searching,
-        cleared_busy: busy,
-        restarted_idle: idle,
-    }
-}
-
-/// What returning a brain to its idle state did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct ReturnedToIdle {
-    /// The idle driver's step it starts at.
-    pub step: i32,
-    /// The body's in-combat mark was cleared.
-    pub mark_cleared: bool,
-    /// The activity's start flag was cleared.
-    pub start_cleared: bool,
-}
-
-/// Puts a brain back in its idle state after combat, a chase or a flight.
-/// The body's look yaw becomes the brain's heading, eased offset and
-/// heading again (the original copies the body's look into all three), the
-/// activity's start flag clears, the idle driver starts at step 1 and the
-/// body's in-combat mark clears.
-pub fn return_to_idle(gaze: &mut Gaze, turn: &mut Turning, body_look_yaw: f32) -> ReturnedToIdle {
+/// Puts a brain back in its idle state (the chase that loses its foe and
+/// the activation's end call it): the AI's look, heading and eased offset
+/// take the body's look yaw ([`crate::motion::leave_look`]), the activity's
+/// start flag clears, the idle driver restarts at step 1, the idle state
+/// becomes the current state and the body's in-combat mark clears; the
+/// flags, the state and the mark are the caller's, and the step to restart
+/// at ([`IDLE_RETURN_STEP`]) is returned. Not called by the running game
+/// yet: its chase end belongs to the combat state.
+pub fn return_to_idle(gaze: &mut Gaze, turn: &mut Turning, body_look_yaw: f32) -> i32 {
     crate::motion::leave_look(gaze, turn, body_look_yaw);
-    ReturnedToIdle {
-        step: 1,
-        mark_cleared: true,
-        start_cleared: true,
-    }
-}
-
-/// The idle driver's stand motion.
-pub const STAND_MOTION: i32 = 0x13;
-/// The alert timer a stand reset starts (ms), plus its draw span.
-pub const STAND_ALERT_MS: u32 = 1000;
-/// The span of the stand reset's alert draw, 3000 ms.
-pub const STAND_ALERT_SPAN: u64 = 3000;
-
-/// What a stand reset wrote.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Stood {
-    /// The yaw the brain's heading, heading copy and look offset take.
-    pub yaw: f32,
-    /// When the next alert pan may be drawn (ms).
-    pub alert_at_ms: u32,
-}
-
-/// The idle driver's stand reset (the original's stand-in-place entry): the
-/// body's own look yaw becomes the brain's heading, heading copy and look
-/// offset; the body stands in motion 0x13 with its in-combat mark cleared;
-/// and a draw of 3000 ms sets the next alert pan 1–4 s out.
-pub fn stand_again(body_look_yaw: f32, now_ms: u32, roll: &mut u32) -> Stood {
-    *roll = roll.wrapping_mul(0x0808_8405).wrapping_add(1);
-    let extra = ((u64::from(*roll) * STAND_ALERT_SPAN) >> 32) as u32;
-    Stood {
-        yaw: body_look_yaw,
-        alert_at_ms: now_ms.wrapping_add(STAND_ALERT_MS).wrapping_add(extra),
-    }
+    IDLE_RETURN_STEP
 }
 
 /// The disturbance inside the value's own fluctuation: the same cell whose
@@ -1161,30 +1098,8 @@ mod tests {
         assert_eq!(state.step, GoTo::Plan);
     }
 
-    /// The restart entry clears the searched-object id and the busy flag
-    /// and restarts the activity when there is one.
-    #[test]
-    fn the_restart_clears_the_search_and_restarts_the_activity() {
-        assert_eq!(
-            restart_idle(true, false, true),
-            Restarted {
-                cleared_search: true,
-                cleared_busy: false,
-                restarted_idle: true
-            }
-        );
-        assert_eq!(
-            restart_idle(false, true, false),
-            Restarted {
-                cleared_search: false,
-                cleared_busy: true,
-                restarted_idle: false
-            }
-        );
-    }
-
-    /// Returning to idle takes the body's look yaw into the brain's heading,
-    /// heading copy and eased offset, and starts the driver at step 1.
+    /// Returning to idle takes the body's look yaw into the AI's look, its
+    /// heading and the eased offset, and restarts the driver at step 1.
     #[test]
     fn returning_to_idle_takes_the_body_look() {
         let mut gaze = Gaze::at(0.2);
@@ -1194,32 +1109,10 @@ mod tests {
             offset: 0.1,
             ..Turning::default()
         };
-        let returned = return_to_idle(&mut gaze, &mut turn, 0.75);
-        assert_eq!(returned.step, 1);
-        assert!(returned.mark_cleared && returned.start_cleared);
+        assert_eq!(return_to_idle(&mut gaze, &mut turn, 0.75), 1);
         // The look yaw itself is left for the tick's head branch.
         assert_eq!(gaze.look, 0.2);
         assert_eq!(gaze.offset, 0.75);
         assert_eq!((turn.look, turn.heading, turn.offset), (0.75, 0.75, 0.75));
-    }
-
-    /// The stand reset takes the body's look yaw and draws its next alert
-    /// pan 1–4 s out: the generator at 0 gives a step of 1, so 1000 ms;
-    /// 0x40000000 gives 750 ms over the second, and 0x55555555 2968 ms.
-    #[test]
-    fn the_stand_reset_draws_its_alert_timer() {
-        let mut roll = 0u32;
-        assert_eq!(
-            stand_again(1.25, 0, &mut roll),
-            Stood {
-                yaw: 1.25,
-                alert_at_ms: 1000
-            }
-        );
-        assert_eq!(roll, 1);
-        let mut roll = 0x4000_0000u32;
-        assert_eq!(stand_again(-0.5, 5000, &mut roll).alert_at_ms, 6750);
-        let mut roll = 0x5555_5555u32;
-        assert_eq!(stand_again(0.0, 10, &mut roll).alert_at_ms, 3978);
     }
 }
