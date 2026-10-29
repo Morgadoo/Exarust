@@ -114,21 +114,20 @@ impl ClothObjects {
 }
 
 /// Whether the level's cloths gather body and level contacts each tick.
-/// Off by default; `EXA_CLOTH_CONTACTS=1` turns them on. The rules are the
+/// On by default; `EXA_CLOTH_CONTACTS=0` turns them off. The rules are the
 /// original's (a cloth never meets its own node's mesh, the level never
 /// wakes it and its slide stops it, a sleeping cloth takes only awake
 /// bodies whose padded spheres reach its box, a body pushes the cloth's
 /// triangles and trades countdowns with it, so a sleeping prop never holds
-/// it awake). They stay off until a GPU run of exanima01 shows its cloths
-/// asleep with them on (round 26 measured 12.7 ms a tick before the
-/// triangle contact, with 5 banners awake against sleeping props);
-/// [`ClothDebug`] shows where the time goes.
+/// it awake). With the face-flag pins and the placed cloths starting asleep,
+/// exanima01's 14 cloths sleep from the load on the RTX 3090 (the stage
+/// about 1.6 ms a tick, 59 FPS); [`ClothDebug`] shows where the time goes.
 #[derive(Resource, Debug, Clone, Copy)]
 pub struct ClothContacts(pub bool);
 
 impl Default for ClothContacts {
     fn default() -> Self {
-        Self(std::env::var_os("EXA_CLOTH_CONTACTS").is_some_and(|v| v != "0"))
+        Self(std::env::var_os("EXA_CLOTH_CONTACTS").is_none_or(|v| v != "0"))
     }
 }
 

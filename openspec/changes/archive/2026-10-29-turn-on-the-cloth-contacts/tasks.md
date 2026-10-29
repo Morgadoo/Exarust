@@ -1,0 +1,2 @@
+- [x] Default on
+- [x] Docs (README, DEBUGGING.md)

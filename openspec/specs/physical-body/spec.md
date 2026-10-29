@@ -2191,8 +2191,8 @@ Each body part offered to a cloth SHALL be handed over with its body's countdown
 - **WHEN** the cloth's box spans x = −74 to −46 cm and a 5 cm sphere sits at −80 cm and a 10 cm sphere at −100 cm
 - **THEN** only the 5 cm sphere is kept, with a padded radius of 7 cm
 
-### Requirement: Cloth contacts are opt-in
-The level's cloths SHALL gather body and level contacts only when the cloth contacts switch is on (`EXA_CLOTH_CONTACTS=1`). A cloth's bound radius SHALL be its particles' half-extent in centimetres, scaled by its node. A cloth SHALL NOT meet the static meshes of its own scene node. A sleeping cloth SHALL take only awake bodies, and it SHALL skip the stage while its frame is unchanged and no body sphere reaches it.
+### Requirement: Cloth contacts
+The level's cloths SHALL gather body and level contacts unless the cloth contacts switch is off (`EXA_CLOTH_CONTACTS=0`). A cloth's bound radius SHALL be its particles' half-extent in centimetres, scaled by its node. A cloth SHALL NOT meet the static meshes of its own scene node. A sleeping cloth SHALL take only awake bodies, and it SHALL skip the stage while its frame is unchanged and no body sphere reaches it.
 
 #### Scenario: A falling cloth lands and sleeps
 - **WHEN** a free cloth falls onto a level floor with the switch on and rests there
