@@ -115,6 +115,9 @@ const GROUNDED_MOVING: f32 = 30.0;
 const PELVIS_ABOVE: f32 = 20.0;
 const PELVIS_RADIUS: f32 = 20.0;
 const GET_UP_HEIGHT: f32 = 30.0;
+/// Until this share of a get-up's clip (a double constant) each leg in
+/// reach takes the clip's hip-to-contact length as its reach.
+const GET_UP_REACH_BEFORE: f64 = 0.8;
 const GET_UP_SUPPORT: f32 = 0.5;
 /// The sole height is the depth of the foot's box under its origin less
 /// this (cm).
@@ -251,6 +254,18 @@ pub struct Leg {
     /// footwork copies the state here after its sound pass): a rise of the
     /// anchored bit rustles, its fall steps ([`super::feet::foot_cues`]).
     pub(super) sounded: FootState,
+    /// The clip's hip-to-contact length squared (cm²), as the feet routine
+    /// measures it each walking tick from the animated contact and hip.
+    /// 0 until first measured (a guess at the constructor's value; it is
+    /// read only after a measure, or under the flat floor, whose legs never
+    /// relax again).
+    pub(super) animated2: f32,
+    /// The lower leg's reach squared (cm²) the leg's relaxation compares
+    /// its hip-to-contact length against, once replaced: a get-up before
+    /// 0.8 of its clip (and the flat floor) copies [`Leg::animated2`] here,
+    /// and nothing puts the rest reach back. None: the muscle set-up's
+    /// (2·contact distance)².
+    pub(super) reach2: Option<f32>,
 }
 
 /// A living body's balance, kept from tick to tick.
@@ -688,6 +703,8 @@ pub(super) fn build(setup: &[PartSetup], parts: &mut [Part]) -> (Vec<Pin>, Vec<L
             sounded: FootState::default(),
             pitch: 0.0,
             pitch_rate: 0.0,
+            animated2: 0.0,
+            reach2: None,
         });
     }
     for leg in &mut legs {
@@ -1123,6 +1140,9 @@ impl Ragdoll {
         // the support count, the stance's level, the imbalance decay and
         // the leg IK (`bend_legs`); both give full support.
         b.pelvis = pelvis.y;
+        if drive.feet_mode != mode {
+            debug!("feet mode: {:?} -> {mode:?}", drive.feet_mode);
+        }
         drive.feet_mode = mode;
         match mode {
             feet::FeetMode::FlatFloor => {
@@ -1132,6 +1152,9 @@ impl Ragdoll {
                 // is 0 and it has support.
                 let flat = feet::flat_floor_leg(cm(sole));
                 for leg in legs.iter_mut() {
+                    // The lower leg's reach becomes the clip's hip-to-contact
+                    // length as last measured.
+                    leg.reach2 = Some(leg.animated2);
                     leg.smoothed = flat.ground / CM;
                     leg.ground = Some(flat.ground / CM);
                     leg.anchor.y = flat.anchor_height / CM;
@@ -1186,6 +1209,9 @@ impl Ragdoll {
             if let Some(f) = leg.foot {
                 parts[f].friction = friction;
             }
+            // The clip's hip-to-contact length squared, the difference
+            // taken in cm and summed x, y, z.
+            leg.animated2 = cm(leg.anim_contact - leg.anim_hip).length_squared();
             // The per-leg lag: how far the contact trails its animated spot
             // along the facing, in cm. The original measures the animated
             // contact in the character frame against the physical one along
@@ -1291,6 +1317,21 @@ impl Ragdoll {
                         leg.state.0 &= !FootState::LIFTED;
                     }
                     leg.lift = 0.0;
+                } else if bearing.getting_up && f64::from(bearing.progress) < GET_UP_REACH_BEFORE {
+                    // Getting up, before 0.8 of the clip (a double compare a
+                    // NaN fails): not lifted, no step lift, and the lower
+                    // leg's reach becomes the clip's hip-to-contact length,
+                    // which it keeps after the get-up.
+                    leg.state.0 &= !FootState::LIFTED;
+                    leg.lift = 0.0;
+                    if leg.reach2 != Some(leg.animated2) {
+                        trace!(
+                            "get-up reach: leg {i} reach {:.1} cm (clip progress {:.2})",
+                            leg.animated2.sqrt(),
+                            bearing.progress
+                        );
+                    }
+                    leg.reach2 = Some(leg.animated2);
                 } else {
                     // Any other foot is not lifted; a walking foot that
                     // does not touch swings with its gait.

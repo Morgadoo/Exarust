@@ -319,15 +319,21 @@ once and the pelvis pin twice horizontally toward the frame's targets, clamped n
 the feet centre. Each foot's ground is its own: the controller's floor
 does not raise the lift (`src/body_lift.rs`). The feet routine's two other modes run
 in `measure_balance` (`feet_mode`, kept as `Drive::feet_mode`): on a flat floor
-(the state word's splay bit 0x1000, which the original's lying spawn sets and
-Exarust's spawn does not yet) every leg's ground is 0, its anchor the sole plus
-1 cm, its state 0x4a (`flat_floor_leg`) and the lift aims 10 cm under its
-standing target; a hovering race (the race factors' `hovers`, from the race
+(the state word's splay bit 0x1000, which the original's lying spawn sets;
+in Exarust only the play flag `--flat-floor` sets it, on the player) every
+leg's ground is 0, its anchor the sole plus 1 cm, its state 0x4a
+(`flat_floor_leg`), its lower leg's reach the clip's last measured
+hip-to-contact length, and the lift aims 10 cm under its standing target; a hovering race (the race factors' `hovers`, from the race
 record's hover flag: the wraith) casts one 20 cm sphere 2000 cm down from
 20 cm over its pelvis, 5 cm higher after each miss (`HoverProbe`), its feet
 unprobed and its lift aimed over that ground. Both give full support, skip
-the per-foot probes, the stance's level and the imbalance decay, and call no
-leg IK (`bend_legs` returns). Before the feet a body off its feet (condition
+the per-foot probes, the stance's level, the imbalance decay and the legs'
+relaxation (their legs keep the sampler's), and call no leg IK (`bend_legs`
+returns). A walking leg's relaxation (`relax_legs`) is 0.6 − 0.001·| hip to
+contact² − reach² | (the rest in double), clamped to 0..0.2 and rising by the
+double 0.01; the reach is twice the contact's distance from the lower leg's
+origin until a get-up before 0.8 of its clip gives each leg in reach the
+clip's own hip-to-contact length (`Leg::reach2`), which it keeps. Before the feet a body off its feet (condition
 bit 0x200) casts one 10 cm sphere 2000 cm straight down from its pelvis
 (`down_probe_origin`, plus its zone's origin, zero in Exarust's one world
 frame; `down_probe_ground`): a hit is its ground, a miss keeps it, and a
