@@ -81,6 +81,15 @@ pub struct PartBounds {
 #[derive(Resource, Debug, Clone, Default)]
 pub struct LevelLocalItems(pub Vec<Item>);
 
+/// The loaded level's own records as stored and its string table, replaced
+/// at each level load: what the item catalogue builds the level's
+/// description cards from.
+#[derive(Resource, Debug, Clone, Default)]
+pub struct LevelLocalRecords {
+    pub records: Vec<(u32, Vec<u8>)>,
+    pub strings: Option<exa_formats::objstrings::Library>,
+}
+
 /// Marks the root entity of a spawned level.
 #[derive(Component)]
 pub struct LevelRoot {
@@ -1428,6 +1437,10 @@ impl LevelLoad {
             }
         });
         commands.insert_resource(LevelLocalItems(scene.local_items.clone()));
+        commands.insert_resource(LevelLocalRecords {
+            records: scene.local_records.clone(),
+            strings: scene.local_strings.clone(),
+        });
         let root = commands
             .spawn((
                 LevelRoot {
@@ -2643,6 +2656,7 @@ mod tests {
                 placements: vec![placement(3), placement(0x4000_0004), placement(0x4000_0005)],
             }),
             local_items: Vec::new(),
+            local_records: Vec::new(),
             local_strings: None,
             local_string_error: None,
             placed_objects: Vec::new(),
@@ -2684,6 +2698,7 @@ mod tests {
                 }),
                 ..item(3, "Trouser_At", "Trouser_A", 5)
             }],
+            local_records: Vec::new(),
             local_strings: None,
             local_string_error: None,
             placed_objects: Vec::new(),
