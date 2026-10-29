@@ -57,10 +57,11 @@ pub struct ForceNoise {
     pub uploads: u32,
 }
 
+/// The force effects that bind the noise picture.
+type ForceEffect = Or<(With<LiveShellAura>, With<LiveBlast>, With<LiveTorrent>)>;
+
 /// Whether any force effect that binds the noise picture is alive.
-pub(crate) fn force_effects_alive(
-    effects: Query<(), Or<(With<LiveShellAura>, With<LiveBlast>, With<LiveTorrent>)>>,
-) -> bool {
+pub(crate) fn force_effects_alive(effects: Query<(), ForceEffect>) -> bool {
     !effects.is_empty()
 }
 
@@ -208,7 +209,7 @@ pub fn skin_box(body: &Ragdoll) -> Option<ShellBox> {
             high = high.max(y + radius);
         }
     }
-    (low <= high).then(|| ShellBox::Skinned {
+    (low <= high).then_some(ShellBox::Skinned {
         centre_y: (low + high) * 0.5 * CM,
         half_y: (high - low) * 0.5 * CM,
     })
