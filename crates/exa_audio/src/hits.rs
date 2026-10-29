@@ -104,6 +104,7 @@ pub(crate) fn pain_sounds(
             if id != SoundBank::EMPTY_SET {
                 env.play_set(&mut bank, id, pain.point, loud.volume, loud.pitch, 0);
             }
+            debug!("pain: wound set {name} (loaded {})", id != SoundBank::EMPTY_SET);
         }
         let Some((line, loud)) = pain.sounds.voice else {
             continue;
@@ -112,13 +113,15 @@ pub(crate) fn pain_sounds(
             continue;
         };
         let id = set_of(&name, &mut bank);
-        if let Answer::Played(spoken) = voice.speak(
+        let answer = voice.speak(
             line,
             id != SoundBank::EMPTY_SET,
             now,
             loud.volume,
             loud.pitch,
-        ) {
+        );
+        debug!("pain: voice {name} line {line:?}: {answer:?}");
+        if let Answer::Played(spoken) = answer {
             env.play_set(
                 &mut bank,
                 id,
