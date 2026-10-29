@@ -3,7 +3,8 @@
 //! Planned in Phase 4–7; see `README.md` next to this crate and `docs/PLAN.md`.
 //! So far: the game's bitmap font ([`font`]), the interface scale
 //! ([`scale`]), the frame-rate readout ([`fps`]), the loading screen
-//! ([`loading`]), the in-game world cursor ([`cursor`]), the health and
+//! ([`loading`]), the in-game world cursor ([`cursor`]), the window's own
+//! pointer and the menu cursor ([`system_cursor`]), the health and
 //! focus bars ([`hud`]), the low-health heartbeat's border
 //! ([`heartbeat`]) and the fade to black of a fall to death ([`fade`]),
 //! painted with gamma-space blending ([`blend`]); and the original's
@@ -80,6 +81,7 @@ pub mod skill_draw;
 pub mod skill_gui;
 pub mod skin;
 pub mod speech;
+pub mod system_cursor;
 pub mod table_view;
 pub mod task_stack;
 pub mod technique_selector;
@@ -325,6 +327,7 @@ impl Plugin for UiPlugin {
             fps::plugin,
             loading::plugin,
             cursor::plugin,
+            system_cursor::plugin,
             hud::plugin,
             hud_extra::plugin,
             hud_status::plugin,

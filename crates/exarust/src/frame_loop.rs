@@ -3,7 +3,8 @@
 //! Applies the original's frame-rate cap and unfocused hold
 //! ([`exa_game::frame`]) to the running winit event loop, empties the held
 //! keys and buttons when the focus changes, and binds Alt+Enter to the
-//! windowed/full-screen toggle ([`exa_game::window`]). The cap is off unless
+//! windowed/full-screen toggle ([`exa_game::window`]), and minimises a
+//! full-screen window that loses the focus. The cap is off unless
 //! the command line (`--max-fps`) or the settings file (`FPSLimit`) gives
 //! one, so no frame is slowed by default: the swap chain's vertical sync and
 //! Bevy's schedules already run the loop.
@@ -17,7 +18,10 @@ use std::time::Instant;
 use bevy::prelude::*;
 use bevy::window::{Monitor, PresentMode, PrimaryMonitor, PrimaryWindow, WindowMode};
 use exa_game::frame::FramePacer;
-use exa_game::window::{display_refresh_hz, toggled_style, window_mode};
+use exa_game::window::{
+    MINIMIZE_FULL_SCREEN_ON_DEACTIVATE, display_refresh_hz, minimizes_on_deactivate, toggled_style,
+    window_mode,
+};
 
 use crate::Options;
 
@@ -35,6 +39,7 @@ impl Plugin for FrameLoopPlugin {
                 (
                     toggle_windowed,
                     clear_keys_on_focus_change.after(bevy::input::InputSystems),
+                    minimize_on_deactivate,
                 ),
             );
     }
@@ -140,6 +145,35 @@ fn clear_keys_on_focus_change(
         && buttons.get_pressed().next().is_some()
     {
         buttons.release_all();
+    }
+}
+
+/// A full-screen window minimises when it loses the focus to another
+/// application, as the original's does on its activation message (its
+/// switch for this is on in the shipped game). Unattended runs (a
+/// screenshot, fixed frames) keep their window: Exarust's addition, so a
+/// scripted run in the background still draws.
+fn minimize_on_deactivate(
+    options: Option<Res<Options>>,
+    mut windows: Query<&mut Window, With<PrimaryWindow>>,
+    mut focused: Local<Option<bool>>,
+) {
+    let Ok(mut window) = windows.single_mut() else {
+        return;
+    };
+    let was = focused.replace(window.focused);
+    if was != Some(true) || window.focused {
+        return;
+    }
+    if options
+        .as_ref()
+        .is_some_and(|o| o.screenshot.is_some() || o.fixed_frames)
+    {
+        return;
+    }
+    let full_screen = !matches!(window.mode, WindowMode::Windowed);
+    if minimizes_on_deactivate(MINIMIZE_FULL_SCREEN_ON_DEACTIVATE, full_screen, false) {
+        window.set_minimized(true);
     }
 }
 

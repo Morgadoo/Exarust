@@ -17,7 +17,11 @@ for the display's rate) and, like the settings file's `FPSLimit`, is off
 unless given, so no frame is held; `src/frame_loop.rs` applies it from the
 previous frame's start, releases the held keys and buttons when the focus
 changes and binds Alt+Enter to the windowed/full-screen toggle with the
-framed window's size and position restored. A background window runs on
+framed window's size and position restored, and minimises a full-screen
+window that loses the focus (not in unattended runs). `src/message_box.rs`
+shows the original's modal message box through `zenity` or `kdialog`: the
+level-6 "minimum requirements" box when Bevy's renderer finds no usable
+graphics adapter. A background window runs on
 winit's low-power 32 ms update. A launch full screen is a borderless window
 over the primary display; the settings' `ScreenWidth`/`ScreenHeight` can
 ask for an exclusive display mode instead (`exa_game::hw_config`). The

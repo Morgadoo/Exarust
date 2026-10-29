@@ -1160,6 +1160,66 @@ pub fn resample_rgba8_to_size(
     out
 }
 
+/// Sharpens an RGBA8 image in place of its own size, as the original's image
+/// sharpen does for icons and the menu cursor: the [`sharpen_kernel`] of
+/// `amount` and `radius` run as the engine's separable axis filter at one
+/// source texel per output texel (first tap [`mip_axis_start`]), across
+/// every row and then down every column, in the filtering space
+/// [`resample_conversion`] picks for equal texel counts, wrapping or
+/// clamping by the image flags' `0x10000` and `0x20000`. Returns an empty
+/// image when the input is shorter than its size.
+pub fn sharpen_rgba8(
+    base: &[u8],
+    width: usize,
+    height: usize,
+    amount: f32,
+    radius: f32,
+    format_word: u32,
+    image_flags: u32,
+) -> Vec<u8> {
+    let Some(usable) = width.checked_mul(height).and_then(|n| n.checked_mul(4)) else {
+        return Vec::new();
+    };
+    if usable == 0 || base.len() < usable {
+        return Vec::new();
+    }
+    let weights = sharpen_kernel(amount, radius);
+    let texels = (width * height) as u64;
+    let conversion = resample_conversion(format_word, texels, texels);
+    let wrap_x = image_flags & 0x0001_0000 != 0;
+    let wrap_y = image_flags & 0x0002_0000 != 0;
+    let mut floats = vec![0.0f32; usable];
+    to_floats(&base[..usable], conversion, &mut floats);
+    let mut horizontal = vec![0.0f32; usable];
+    for y in 0..height {
+        let row = y * width * 4..(y + 1) * width * 4;
+        resample_axis(
+            &floats[row.clone()],
+            width,
+            width,
+            &weights,
+            wrap_x,
+            &mut horizontal[row],
+        );
+    }
+    let mut column = vec![0.0f32; height * 4];
+    let mut output = vec![0.0f32; height * 4];
+    for x in 0..width {
+        for y in 0..height {
+            let source = (y * width + x) * 4;
+            column[y * 4..y * 4 + 4].copy_from_slice(&horizontal[source..source + 4]);
+        }
+        resample_axis(&column, height, height, &weights, wrap_y, &mut output);
+        for y in 0..height {
+            let destination = (y * width + x) * 4;
+            floats[destination..destination + 4].copy_from_slice(&output[y * 4..y * 4 + 4]);
+        }
+    }
+    let mut out = vec![0u8; usable];
+    to_bytes(&floats, conversion, &mut out);
+    out
+}
+
 /// One axis pass with the phase-shifted window: output texel `i` is centred
 /// on source position `i·ratio` (`ratio = src/dst`, divided in f64 and
 /// rounded to f32; the truncated whole part picks the taps, the fraction
@@ -1472,5 +1532,29 @@ mod rgba_chain_tests {
         // negative lobe.
         assert!((out[0] - 127.5).abs() < 1e-3, "{out:?}");
         assert!((out[4] + 12.657_432).abs() < 1e-3, "{out:?}");
+    }
+
+    /// The image sharpen runs the kernel along each row and then each
+    /// column at the image's own size: alpha (linear in an RGBA8 image)
+    /// 100, 100, 200, 200 with amount 0.1 and radius 1 (taps −0.1, 1.2,
+    /// −0.1) becomes 100, 90, 210, 200, the clamped ends unchanged, and a
+    /// single row's column pass leaves it as it is. A flat image stays flat.
+    #[test]
+    fn the_image_sharpen_steepens_an_edge() {
+        use exa_formats::pixel::id;
+        let mut row = Vec::new();
+        for alpha in [100u8, 100, 200, 200] {
+            row.extend([0, 0, 0, alpha]);
+        }
+        let out = sharpen_rgba8(&row, 4, 1, 0.1, 1.0, id::RGBA8, 0);
+        let alphas: Vec<u8> = out.chunks(4).map(|px| px[3]).collect();
+        assert_eq!(alphas, [100, 90, 210, 200]);
+
+        let flat = vec![128u8; 3 * 3 * 4];
+        assert_eq!(sharpen_rgba8(&flat, 3, 3, 0.01, 1.0, id::RGBA8, 0), flat);
+        // Wrapping rows: the left end now sees the right one.
+        let wrapped = sharpen_rgba8(&row, 4, 1, 0.1, 1.0, id::RGBA8, 0x0001_0000);
+        assert_eq!(wrapped[3], 90);
+        assert!(sharpen_rgba8(&row, 5, 1, 0.1, 1.0, id::RGBA8, 0).is_empty());
     }
 }

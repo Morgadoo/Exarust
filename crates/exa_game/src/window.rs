@@ -254,9 +254,275 @@ pub fn toggled_style(current: WindowMode) -> WindowStyle {
     }
 }
 
+/// Whether a full-screen window minimises when another application takes
+/// the activation: the original's switch for it is on in the shipped
+/// executable.
+pub const MINIMIZE_FULL_SCREEN_ON_DEACTIVATE: bool = true;
+
+/// Whether the window minimises on an activation change, as the original's
+/// window procedure decides: only with the switch on, only while full
+/// screen (borderless or exclusive) and only when deactivated.
+pub fn minimizes_on_deactivate(switch: bool, full_screen: bool, activated: bool) -> bool {
+    switch && full_screen && !activated
+}
+
+/// How many pointer moves a warp stays in force for.
+pub const WARP_HOLD_MOVES: i32 = 4;
+/// A move that lands closer than this to the warp's target on both axes
+/// (in pixels) ends the hold.
+pub const WARP_SETTLE_PX: i64 = 41;
+
+/// The original's warp of the pointer while the game moves it itself: for
+/// the next few pointer moves the position read back is the warp's target,
+/// and a move that lands away from it puts the pointer back there, until a
+/// move lands near the target or the moves run out. This covers the
+/// moves the platform may still deliver from before the warp.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WarpHold {
+    /// Moves left; the hold is off at zero or below.
+    pub remaining: i32,
+    /// The warp's target in client pixels.
+    pub target: IVec2,
+}
+
+impl WarpHold {
+    /// Warps to `to` (client pixels). A target inside the client area
+    /// (`0 ≤ x < width`, `0 ≤ y < height`) starts a hold of
+    /// [`WARP_HOLD_MOVES`]; one outside only moves the pointer. Either way
+    /// the pointer is moved to `to` (the original sets it six times over).
+    pub fn warp(&mut self, to: IVec2, client: IVec2) -> IVec2 {
+        if to.x >= 0 && to.x < client.x && to.y >= 0 && to.y < client.y {
+            self.target = to;
+            self.remaining = WARP_HOLD_MOVES;
+        }
+        to
+    }
+
+    /// The pointer position the game reads: the target while the hold is
+    /// on, else the platform's.
+    pub fn read(&self, platform: IVec2) -> IVec2 {
+        if self.remaining >= 1 {
+            self.target
+        } else {
+            platform
+        }
+    }
+
+    /// A pointer move reported at `at`: with the hold on, a move closer
+    /// than [`WARP_SETTLE_PX`] to the target on both axes ends it;
+    /// otherwise the pointer is put back on the target (returned) and one
+    /// move is used up.
+    pub fn moved(&mut self, at: IVec2) -> Option<IVec2> {
+        if self.remaining < 1 {
+            return None;
+        }
+        let dx = (i64::from(self.target.x) - i64::from(at.x)).abs();
+        let dy = (i64::from(self.target.y) - i64::from(at.y)).abs();
+        if dx < WARP_SETTLE_PX && dy < WARP_SETTLE_PX {
+            self.remaining = 0;
+            return None;
+        }
+        self.remaining -= 1;
+        Some(self.target)
+    }
+}
+
+/// An unbounded side of a pointer clip rectangle.
+pub const CLIP_UNBOUNDED: i32 = -0x7fff_ffff;
+
+/// The original's pointer confinement for GUI drags, with its endless
+/// wrap: while a clip is set the pointer is held inside it, and a pointer
+/// that reaches the screen's edge is moved to the opposite side while a
+/// virtual offset of whole screen sizes keeps the position the game sees
+/// growing. Screen coordinates throughout.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PointerClip {
+    /// The screen's size.
+    pub screen: IVec2,
+    /// The clip rectangle in screen pixels (left, top, right, bottom).
+    pub clip: [i32; 4],
+    /// Whether a clip is set.
+    pub active: bool,
+    /// The virtual offset: whole screen widths and heights wrapped so far.
+    pub offset: IVec2,
+}
+
+impl PointerClip {
+    /// Sets the clip from a client rectangle (left, top, right, bottom)
+    /// placed at `client_origin` on the screen, or clears it. An unbounded
+    /// side ([`CLIP_UNBOUNDED`]) becomes one pixel inside the screen's edge
+    /// (1, 1, width − 1, height − 1). Either way the virtual offset starts
+    /// again from zero. Returns the rectangle the platform confines the
+    /// pointer to (`None`: free); a cleared clip leaves the full-screen
+    /// focus confinement to the caller, as the original re-applies it.
+    pub fn set(&mut self, rect: Option<[i32; 4]>, client_origin: IVec2) -> Option<[i32; 4]> {
+        // The original resets the offset from a pair that nothing writes.
+        self.offset = IVec2::ZERO;
+        let Some(rect) = rect else {
+            self.active = false;
+            return None;
+        };
+        let mut clip = [
+            rect[0].wrapping_add(client_origin.x),
+            rect[1].wrapping_add(client_origin.y),
+            rect[2].wrapping_add(client_origin.x),
+            rect[3].wrapping_add(client_origin.y),
+        ];
+        if rect[0] == CLIP_UNBOUNDED {
+            clip[0] = 1;
+        }
+        if rect[2] == CLIP_UNBOUNDED {
+            clip[2] = self.screen.x - 1;
+        }
+        if rect[1] == CLIP_UNBOUNDED {
+            clip[1] = 1;
+        }
+        if rect[3] == CLIP_UNBOUNDED {
+            clip[3] = self.screen.y - 1;
+        }
+        self.clip = clip;
+        self.active = true;
+        self.confinement()
+    }
+
+    /// The rectangle the pointer is confined to: the screen moved by the
+    /// virtual offset, clipped to the clip rectangle by the engine's
+    /// rectangle clip, moved back. `None` when they are apart or the
+    /// overlap has no area (the pointer is then free).
+    pub fn confinement(&self) -> Option<[i32; 4]> {
+        use exa_render::view::Rect;
+        let mut screen = Rect::from_edges(
+            self.offset.x,
+            self.offset.y,
+            self.offset.x + self.screen.x,
+            self.offset.y + self.screen.y,
+        );
+        let clip = Rect::from_edges(self.clip[0], self.clip[1], self.clip[2], self.clip[3]);
+        if !screen.clip_to(clip) {
+            return None;
+        }
+        let edges = [
+            screen.x - self.offset.x,
+            screen.y - self.offset.y,
+            screen.right() - self.offset.x,
+            screen.bottom() - self.offset.y,
+        ];
+        let area = i64::from(edges[2] - edges[0]) * i64::from(edges[3] - edges[1]);
+        (area >= 1).then_some(edges)
+    }
+
+    /// The pointer at screen point `at` while the clip is set: a pointer on
+    /// the left edge goes to two pixels short of the right one and the
+    /// offset loses a screen width, one on the right edge goes to x = 1 and
+    /// the offset gains a width, and likewise for the top and bottom (one
+    /// edge a call, horizontal first). Returns the position the game sees
+    /// (the point plus the offset) and, after a wrap, where the platform
+    /// pointer is moved to.
+    pub fn wrap(&mut self, at: IVec2) -> (IVec2, Option<IVec2>) {
+        let mut point = at;
+        let wrapped = if point.x == 0 {
+            self.offset.x -= self.screen.x;
+            point.x = self.screen.x - 2;
+            true
+        } else if i64::from(point.x) == i64::from(self.screen.x) - 1 {
+            self.offset.x += self.screen.x;
+            point.x = 1;
+            true
+        } else if point.y == 0 {
+            self.offset.y -= self.screen.y;
+            point.y = self.screen.y - 2;
+            true
+        } else if i64::from(point.y) == i64::from(self.screen.y) - 1 {
+            self.offset.y += self.screen.y;
+            point.y = 1;
+            true
+        } else {
+            false
+        };
+        (point + self.offset, wrapped.then_some(point))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_full_screen_window_minimises_when_deactivated() {
+        assert!(minimizes_on_deactivate(true, true, false));
+        assert!(!minimizes_on_deactivate(true, true, true));
+        assert!(!minimizes_on_deactivate(true, false, false));
+        assert!(!minimizes_on_deactivate(false, true, false));
+        const { assert!(MINIMIZE_FULL_SCREEN_ON_DEACTIVATE) };
+    }
+
+    #[test]
+    fn a_warp_holds_the_pointer_until_a_move_lands_near_it() {
+        let mut hold = WarpHold::default();
+        let client = IVec2::new(800, 600);
+        // Outside the client area: moved, no hold.
+        assert_eq!(hold.warp(IVec2::new(800, 10), client), IVec2::new(800, 10));
+        assert_eq!(hold.remaining, 0);
+        assert_eq!(hold.read(IVec2::new(5, 5)), IVec2::new(5, 5));
+        hold.warp(IVec2::new(400, 300), client);
+        assert_eq!(hold.remaining, 4);
+        assert_eq!(hold.read(IVec2::new(5, 5)), IVec2::new(400, 300));
+        // 41 px away on one axis: put back, one move used.
+        assert_eq!(hold.moved(IVec2::new(441, 300)), Some(IVec2::new(400, 300)));
+        assert_eq!(hold.remaining, 3);
+        // 40 px on both axes: settled.
+        assert_eq!(hold.moved(IVec2::new(360, 340)), None);
+        assert_eq!(hold.remaining, 0);
+        assert_eq!(hold.moved(IVec2::new(0, 0)), None);
+        // Four stale moves use the hold up.
+        hold.warp(IVec2::new(0, 0), client);
+        for left in (0..4).rev() {
+            assert_eq!(hold.moved(IVec2::new(100, 100)), Some(IVec2::ZERO));
+            assert_eq!(hold.remaining, left);
+        }
+        assert_eq!(hold.read(IVec2::new(100, 100)), IVec2::new(100, 100));
+    }
+
+    #[test]
+    fn a_pointer_clip_confines_and_wraps_at_the_screen_edges() {
+        let mut clip = PointerClip {
+            screen: IVec2::new(1920, 1080),
+            ..Default::default()
+        };
+        // A client rectangle at (100, 50) on the screen.
+        assert_eq!(
+            clip.set(Some([10, 20, 210, 120]), IVec2::new(100, 50)),
+            Some([110, 70, 310, 170])
+        );
+        // Every side unbounded: one pixel in from the screen's edges.
+        let u = CLIP_UNBOUNDED;
+        assert_eq!(
+            clip.set(Some([u, u, u, u]), IVec2::new(100, 50)),
+            Some([1, 1, 1919, 1079])
+        );
+        // Off the left edge: two short of the right, a screen width lost.
+        assert_eq!(
+            clip.wrap(IVec2::new(0, 500)),
+            (IVec2::new(1918 - 1920, 500), Some(IVec2::new(1918, 500)))
+        );
+        assert_eq!(clip.offset, IVec2::new(-1920, 0));
+        // The confinement follows the offset: apart from the clip now.
+        assert_eq!(clip.confinement(), None);
+        // The right edge wins over the top edge in the same call.
+        let (seen, moved) = clip.wrap(IVec2::new(1919, 0));
+        assert_eq!(moved, Some(IVec2::new(1, 0)));
+        assert_eq!(seen, IVec2::new(1, 0));
+        assert_eq!(clip.offset, IVec2::ZERO);
+        assert_eq!(clip.wrap(IVec2::new(5, 1079)).1, Some(IVec2::new(5, 1)));
+        assert_eq!(clip.offset, IVec2::new(0, 1080));
+        assert_eq!(clip.wrap(IVec2::new(5, 6)), (IVec2::new(5, 1086), None));
+        // Clearing frees the pointer and restarts the offset.
+        assert_eq!(clip.set(None, IVec2::ZERO), None);
+        assert!(!clip.active);
+        assert_eq!(clip.offset, IVec2::ZERO);
+        // A zero-area overlap leaves the pointer free.
+        assert_eq!(clip.set(Some([0, 0, 0, 100]), IVec2::ZERO), None);
+    }
 
     fn video(width: u32, height: u32, hz: u32) -> VideoMode {
         VideoMode {

@@ -131,6 +131,7 @@
 mod column;
 mod frame_loop;
 mod map_panel;
+mod message_box;
 mod profiler;
 mod user_settings;
 mod viewer;
@@ -337,6 +338,9 @@ pub enum Press {
     Key(KeyCode),
     Button(MouseButton),
 }
+
+/// The window's title, also the caption of the original's message boxes.
+const WINDOW_TITLE: &str = "Exarust";
 
 fn usage() -> AppExit {
     eprintln!(
@@ -1011,11 +1015,14 @@ fn main() -> AppExit {
     if let Some(trace) = pair_trace {
         app.insert_resource(trace);
     }
+    // The original's level-6 box for a graphics device that cannot run
+    // the renderer, captioned with the window's title.
+    message_box::install_gpu_failure_box(WINDOW_TITLE, !unattended);
     app.add_plugins(
         DefaultPlugins
             .set(WindowPlugin {
                 primary_window: Some(Window {
-                    title: "Exarust".into(),
+                    title: WINDOW_TITLE.into(),
                     // The Wayland app id (X11 class): without one, GNOME
                     // names the window "Unknown" in its dialogs.
                     name: Some("exarust".into()),
