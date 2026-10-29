@@ -941,8 +941,9 @@ pub struct Board {
     pub company_name: String,
     /// The rival companies, in company id order from 2.
     pub rivals: Vec<String>,
-    /// The tournament's company table: a winner from 2 reads entry
-    /// `winner - 2`, which holds a company id less one.
+    /// The tournament's company table, indexed by the winner id: a winner
+    /// from 2 reads entry `winner`, a company index (id less one), and the
+    /// winners table shows that company's name.
     pub tournament_companies: Vec<i32>,
     /// Who won each of the season's four weeks.
     pub week_winners: [u32; 4],
@@ -2057,7 +2058,8 @@ impl Board {
 
     /// The tournament winners table: the event's name, the row's tier and
     /// the winner's company. A winner from 2 goes through the tournament's
-    /// company table, whose entry is a company id less one.
+    /// company table at the winner's own index; the entry is a company id
+    /// less one, so the name comes from the companies from id 2.
     pub fn winner_cells(&self, row: usize) -> Option<[CellValue; 3]> {
         let name = self.tournament_events.get(row)?.name.clone();
         let winner = self.entries.get(row).map(|entry| entry.winner).unwrap_or(0);
@@ -2066,7 +2068,7 @@ impl Board {
         } else if winner < 1 {
             NO_RANK.to_string()
         } else {
-            usize::try_from(winner - 2)
+            usize::try_from(winner)
                 .ok()
                 .and_then(|index| self.tournament_companies.get(index))
                 .and_then(|&company| self.rival_name(i64::from(company) + 1))
@@ -3180,7 +3182,8 @@ mod tests {
         let mut board = board();
         board.company_name = "Ours".to_string();
         board.rivals = (2..=20).map(|id| format!("Company {}", id)).collect();
-        board.tournament_companies = vec![5, 1];
+        // Indexed by the winner id; each entry is a company id less one.
+        board.tournament_companies = vec![0, 0, 5, 1];
         for (index, event) in board.tournament_events.iter_mut().enumerate() {
             event.name = format!("Event {}", index);
         }
