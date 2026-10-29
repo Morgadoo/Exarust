@@ -946,9 +946,12 @@ fn open_requested_containers(
                     .and_then(|c| c.model(entry.id))
                     .map(|m| m.model.as_str());
                 debug!(
-                    "GUI: container child {:#x} flags {:#x} model {model:?} at ({}, {}) {}x{} px",
+                    "GUI: container child {:#x} flags {:#x} model {model:?} icon slot {} \
+                     rendered {} at ({}, {}) {}x{} px",
                     entry.id,
                     entry.flags,
+                    entry.icon,
+                    icons.rendered(entry.icon),
                     client.left + entry.cell.x,
                     client.top + entry.cell.y,
                     popup.panel.icon_size,
@@ -960,7 +963,7 @@ fn open_requested_containers(
 }
 
 /// Exarust's debug helper (`--open-container FRAME`): this many frames after
-/// a player is first present, the placed container nearest the player is
+/// the level load has finished and a player is present, the placed container nearest the player is
 /// opened in its popup at the window's centre, as the double click would.
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DebugOpenContainer(pub Option<u32>);
@@ -977,12 +980,18 @@ fn debug_open_container(
         &GlobalTransform,
     )>,
     windows: Query<&Window, With<PrimaryWindow>>,
+    loading: Option<Res<exa_ui::LoadingStatus>>,
     mut frames: Local<u32>,
     mut requests: MessageWriter<ContainerRequest>,
 ) {
     let Some(at) = debug.and_then(|debug| debug.0) else {
         return;
     };
+    // The frames count once the level load (and so the containers' fill)
+    // has finished.
+    if loading.is_some() {
+        return;
+    }
     let Some(player) = players.iter().next() else {
         return;
     };

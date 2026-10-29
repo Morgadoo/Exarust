@@ -988,9 +988,12 @@ picked child takes the row's item with zero flags, an empty slot id 0
 with `0x100`. Stand-ins: the row's item id is used without the
 instance copy and condition word, only placed containers are walked
 and the generator starts from `FILL_SEED`. Opening a popup logs each
-child's id, flags, model and pixel rect at debug level.
+child's id, flags, model, icon slot, whether its icon has rendered and its
+pixel rect at debug level. `item_icon_render` keeps one GPU icon job in
+flight at a time (`start_budget`): every job's scene and sun sit on the one
+icon layer, and two at once framed the second item on the first's model.
 `--open-container FRAME` (Exarust's debug helper) opens
-the container nearest the player at that frame after the player appears.
+the container nearest the player that many frames after the level load ends.
 `npc_search` hosts the original's follow state and the companion's search
 in the running game: a level brain whose roles choose the follow follows the
 player (past its 400 cm band a route through the navigation grid on its own

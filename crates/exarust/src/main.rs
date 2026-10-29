@@ -58,7 +58,7 @@
 //!          --sliding-doors            debug: sliding doors (portcullises) become bodies too; their lift is not reproduced
 //!          --debug-gui-form           open one empty GUI form through the draw skin's path
 //!          --open-settings <page>     once loaded, open the menu and the Settings form on its settings or controls page
-//!          --open-container FRAME     open the container nearest the player in its popup at that frame
+//!          --open-container FRAME     open the container nearest the player in its popup that many frames after the load
 //!          --debug-path x,y,z         play mode: plan a path from the player's feet to this point (metres) and draw it,
 //!                                     again whenever the player has moved a metre
 //!          --searcher <id>            play mode: the level character with this record id (hex with 0x) takes the

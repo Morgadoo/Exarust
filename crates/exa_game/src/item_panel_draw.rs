@@ -248,6 +248,15 @@ impl PanelIcons {
         (unit + half, half + unit)
     }
 
+    /// Whether an icon slot's pixels are in the atlas (its render
+    /// completed); a reserved slot waits for the item renderer.
+    pub fn rendered(&self, handle: usize) -> bool {
+        handle
+            .checked_sub(1)
+            .and_then(|slot| self.cache.entries.get(slot))
+            .is_some_and(|entry| entry.cell >= 0)
+    }
+
     /// The half extents of an icon slot, for the panel's clamps.
     pub fn half(&self, handle: usize) -> Option<(i32, i32)> {
         self.cache
