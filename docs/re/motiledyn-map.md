@@ -12,7 +12,9 @@ Rust does not need (string release, destructor, clone, scene list insertion). *L
 whether the running game calls the Rust item ("no" = tested but not called).
 
 The audit was made on 2026-10-29 from the pack's decompiles and assembly and a sweep of
-the crates; shares of partial routines are estimates, not instruction-level diffs.
+the crates; shares of partial routines are estimates, not instruction-level diffs. Updated the same
+day after the character-init presets, the grip and block-stamina re-check and the balance
+routine's foot sounds (see Corrections).
 
 ## Totals
 
@@ -24,20 +26,20 @@ the crates; shares of partial routines are estimates, not instruction-level diff
 | n.a. | 5 | 896 |
 | all | 100 | 123,719 |
 
-Weighted by the partial shares, about **88,227 of 122,823 needed bytes (72 %)** are reproduced (n.a. routines left out; counting the partial routines' shares, 67,771 of their 101,464 bytes). Counting only what the running game calls, about **77,618 bytes (63 %)**; the rest is tested but not wired.
+Weighted by the partial shares, about **90,504 of 122,823 needed bytes (74 %)** are reproduced (n.a. routines left out; counting the partial routines' shares, 70,048 of their 101,464 bytes). Counting only what the running game calls, about **79,492 bytes (65 %)**; the rest is tested but not wired.
 
 ## Largest remaining work
 
 | routine | size | left (est.) | role | missing |
 |---|---|---|---|---|
-| #49 | 20,293 | 6,900 | Body tick kernel: prologue, impacts and burn, ramps, daze, links, behaviour, posture, attack, move/stop, turn, locomotion, twist and head, sampler, frame, carry, balance and feet calls | grip relax and weapon flip, block stamina, alignment and stop details, jump phase, some state flags |
+| #49 | 20,293 | 6,100 | Body tick kernel: prologue, impacts and burn, ramps, daze, links, behaviour, posture, attack, move/stop, turn, locomotion, twist and head, sampler, frame, carry, balance and feet calls | alignment and stop details, jump phase, some state flags, Break Tangle call |
 | #8 | 13,157 | 3,289 | Damage routine: impact speed, zones, armour roll, channels, daze, block/clash/parry branches, bite, follow-through, sounds, blood, knockback, kill | bite link not attached, pain voices, camera nudge, script hook, struck-item sound not called |
-| #73 | 5,423 | 2,712 | Character init: rates, masses, gains, leg sides, placement, techniques, race and class presets, sounds, voice pitch, leg reach, head set-up | race-class preset branches, foot-mask union, leg swap, gait scale check |
 | #76 | 3,562 | 2,315 | Pose-only sampler (spawn and placement) | femur posture, half twist, hunch, anchors, contacts, heights |
-| #18 | 8,061 | 2,015 | Balance routine: lean, score and counter, recovery steps and episodes, footwork and stance pick, grounds, support, landing and footstep sounds | scuff and landing sound draws, nav calls; parity unverified block by block |
 | #50 | 7,185 | 1,796 | Feet routine: friction, height probe, smoothed ground, sole floor, anchor smoothing, pelvis target, support, lift servo and leg IK calls | flat-floor and no-probe modes; some thresholds unverified |
 | #81 | 8,782 | 1,756 | Living sampler (muscles on) | head tilt and exertion read 0, dead jump branch, rebase capture |
 | #62 | 2,042 | 1,736 | Placement on the ground (teleport with snap) | the outer sequence |
+| #73 | 5,423 | 1,627 | Character init: rates, masses, gains, leg sides, placement, techniques, race and class presets, sounds, voice pitch, leg reach, head set-up | foot-mask union, leg swap, ghoul head-part set-up, golem contact smoothing, gait scale check |
+| #18 | 8,061 | 1,612 | Balance routine: lean, score and counter, recovery steps and episodes, footwork and stance pick, grounds, support, landing and footstep sounds | foot sounds ported but not wired; nav calls; parity unverified block by block |
 | #58 | 2,194 | 1,426 | Placement at a matrix (spawn, teleport, saves, arena) | re-placing a living body, field resets, contact offsets, cloth, behaviour hook |
 | #82 | 4,499 | 1,350 | Muscles-off sampler | hold, anchors; not scheduled |
 
@@ -62,7 +64,7 @@ Weighted by the partial shares, about **88,227 of 122,823 needed bytes (72 %)** 
 | 15 | 1,814 | Locomoting leg IK (hip to anchor plus lag, speed-scaled easing) | `exa_physics body_bend.rs locomoting_leg, clip_hip_angle, target_hip_angle` | done | as routine #14 | yes |
 | 16 | 610 | Step end: plant the best-placed free foot and move the standing point onto it | `exa_physics body_balance.rs end_step`; `body_steps.rs end_query` | partial (75 %) | zero-leg branch, nav-mesh clamp, timers | yes |
 | 17 | 261 | Step start: AI notice, target from the base plus the step, stepping on, timers | `exa_physics body_feet.rs step_end, queued_step` | partial (55 %) | nav clamp, timers; the AI notice is read by nothing | yes |
-| 18 | 8,061 | Balance routine: lean, score and counter, recovery steps and episodes, footwork and stance pick, grounds, support, landing and footstep sounds | `exa_physics body_balance.rs measure_balance`; `body_steps.rs`; `exa_audio footsteps.rs` | partial (75 %) | scuff and landing sound draws, nav calls; parity unverified block by block | yes |
+| 18 | 8,061 | Balance routine: lean, score and counter, recovery steps and episodes, footwork and stance pick, grounds, support, landing and footstep sounds | `exa_physics body_balance.rs measure_balance`; `body_steps.rs`; `body_feet.rs anchor_rustle, release_step, wet_release_step`; `exa_audio footsteps.rs` | partial (80 %) | the foot sounds are not called (Exarust's steps come from the sampler's plants); nav calls; parity unverified block by block | yes |
 | 19 | 945 | Stance score of a candidate foot placement | `exa_physics body_steps.rs stance_score, score_reference, foot_score, pick` | done | - | yes |
 | 20 | 389 | Anchor routine: standing point follows the pelvis past a tolerance (set directly while stepping) | `exa_physics body_frame.rs follow, anchored, Ragdoll::anchor_frame` | partial (80 %) | the direct set while stepping; its 1.5 × step-length clamp is unreachable in the original (guarded by the opposite test) and is not needed | yes |
 | 21 | 85 | Full tone reset after a get-up | `exa_physics body_feet.rs full_tone` | done | no caller | no |
@@ -93,7 +95,7 @@ Weighted by the partial shares, about **88,227 of 122,823 needed bytes (72 %)** 
 | 46 | 472 | Femur posture (thigh turn about the femur axis) | `exa_physics body.rs femur_posture_turn`; `exa_game stages/sampler.rs femur_posture` | done | - | yes |
 | 47 | 147 | Can-locomote gate | `exa_physics body_locomotion.rs gates`; `motile.rs action_ready` | done | - | yes |
 | 48 | 41 | String release thunk (runtime library cleanup) | - | n.a. | - | n.a. |
-| 49 | 20,293 | Body tick kernel: prologue, impacts and burn, ramps, daze, links, behaviour, posture, attack, move/stop, turn, locomotion, twist and head, sampler, frame, carry, balance and feet calls | `exa_physics body_stages.rs`; `exa_game stages/*, balance.rs`; `exa_combat regen, condition, swing, parry, collapse` | partial (66 %) | grip relax and weapon flip, block stamina, alignment and stop details, jump phase, some state flags | yes |
+| 49 | 20,293 | Body tick kernel: prologue, impacts and burn, ramps, daze, links, behaviour, posture, attack, move/stop, turn, locomotion, twist and head, sampler, frame, carry, balance and feet calls | `exa_physics body_stages.rs, grip.rs HeldGrip::relax, flip_step`; `exa_character grip_runtime.rs`; `exa_game stages/*, balance.rs`; `exa_combat regen (ShieldStamina), condition, swing, parry, collapse` | partial (70 %) | alignment and stop details, jump phase, some state flags | yes |
 | 50 | 7,185 | Feet routine: friction, height probe, smoothed ground, sole floor, anchor smoothing, pelvis target, support, lift servo and leg IK calls | `exa_physics body_balance.rs measure_balance`; `body_feet.rs`; `body_lift.rs`; `body_bend.rs`; `body_steps.rs` | partial (75 %) | flat-floor and no-probe modes; some thresholds unverified | yes |
 | 51 | 712 | Pelvis-height lift servo | `exa_physics body_lift.rs lift_unclamped, lift_factor, Ragdoll::lift` | done | - | yes |
 | 52 | 46 | Create the shared motions object once | `exa_anim lib.rs Motions` | done | - | yes |
@@ -117,7 +119,7 @@ Weighted by the partial shares, about **88,227 of 122,823 needed bytes (72 %)** 
 | 70 | 412 | Two-hand group bit | `exa_combat strike_body.rs two_hand_group` | done | no caller | no |
 | 71 | 168 | Add to the scene's dynamics list, player first | (spawn) | n.a. | - | n.a. |
 | 72 | 360 | Part mobilities and masses | `exa_physics body.rs INVERSE_MASS, LINK_MOBILITY` | partial (40 %) | normalisation from measured size, limp parts | yes |
-| 73 | 5,423 | Character init: rates, masses, gains, leg sides, placement, techniques, race and class presets, sounds, voice pitch, leg reach, head set-up | `exa_formats character_stats.rs CharacterStats::derive, BodyRules`; `exa_combat sounds.rs`; `exa_physics body.rs` | partial (50 %) | race-class preset branches, foot-mask union, leg swap, gait scale check | yes |
+| 73 | 5,423 | Character init: rates, masses, gains, leg sides, placement, techniques, race and class presets, sounds, voice pitch, leg reach, head set-up | `exa_formats character_stats.rs CharacterStats::derive (RACE_PRESETS), BodyRules`; `exa_game scene_bodies.rs character_muscles`; `exa_combat sounds.rs`; `exa_physics body.rs` | partial (70 %) | foot-mask union, leg swap, the ghouls' half-scale head-part set-up, golem contact smoothing 0.995, a word set to 4 for creatures with no reader found, gait scale check | yes |
 | 74 | 1,218 | Part classification: legs, side arms, hand chains | `exa_physics body.rs (fixed human bone order)` | partial (40 %) | data-driven walk, ankle offset, factors, roles | yes |
 | 75 | 434 | Part list from model nodes | `exa_physics body.rs`; `exa_anim attach_body_parts`; `exa_combat sounds.rs` | partial (60 %) | boneless parts, per-part foley | yes |
 | 76 | 3,562 | Pose-only sampler (spawn and placement) | `exa_game limp.rs spawn_pose`; `exa_anim sample, ClipPose::at` | partial (35 %) | femur posture, half twist, hunch, anchors, contacts, heights | yes |
@@ -153,12 +155,12 @@ Byte counts are estimated from block landmarks in the research notes.
 | block | bytes | share | notes |
 |---|---|---|---|
 | Prologue: fatigue factors, wound painting, dead hold, look smoothing, red regeneration | 1,030 | 70 % | body timers, red regeneration, blood |
-| Impact accumulator, burn call, retention, grip helpers, readiness, stepping decay, queued motion, Break Tangle call | 980 | 50 % | grip relax and weapon flip missing; Break Tangle ported but not called |
+| Impact accumulator, burn call, retention, grip helpers, readiness, stepping decay, queued motion, Break Tangle call | 980 | 50 % | Break Tangle ported but not called |
 | Pin gain and energy ramps, blow sag, daze and shock stagger | 760 | 80 % |  |
-| Link-iteration target, jolt, grip relax and weapon flip, chest velocity, standing anchor, look target | 1,700 | 50 % |  |
+| Link-iteration target, jolt, grip relax and weapon flip, chest velocity, standing anchor, look target | 1,700 | 80 % | grip relax and flip: `exa_physics grip.rs`, run by `exa_character grip_runtime.rs` |
 | Behaviour call, waking, collapse branch | 520 | 80 % |  |
 | Posture block: falls, get-ups, weak, stance switch, clinch trigger | 4,370 | 80 % | not every state flag written |
-| Attack and engage, muscles-off snap, focus tick, item effects, health bookkeeping | 1,860 | 50 % | block stamina regeneration missing |
+| Attack and engage, muscles-off snap, focus tick, item effects, health bookkeeping | 1,860 | 65 % | block stamina: `exa_combat regen.rs ShieldStamina::tick`, live |
 | Move and stop branches | 735 | 90 % |  |
 | Movement decision | 490 | 80 % |  |
 | Turn | 1,150 | 90 % |  |
@@ -178,3 +180,13 @@ Byte counts are estimated from block landmarks in the research notes.
 - The armed parry (routine #25): its blend was rounded half away from zero, the original's
   conversion rounds half to even; its grip strengths take their products in double; a NaN
   distance gives a NaN falloff. Fixed with the geometry port.
+- The body tick's grip relax, weapon flip (routine #49 calls into the part class) and block
+  stamina regeneration were listed missing; all three were already ported and live
+  (`exa_physics grip.rs`, `exa_character grip_runtime.rs`, `exa_combat regen.rs`). Checked
+  against the assembly: the flip and the stamina match; the relax steps of the second, arm and
+  extra links are taken in double precision, fixed.
+- The character init's race-byte branches (routine #73) mostly write fields the same init
+  overwrites from the race record later; what survives is the balance bonus, the arm relaxation,
+  the footstep volume (body scale, doubled over 1.3, the ogre's 5), the golem footstep set and
+  golem suit, and the health and rule bits (already ported). Now `CharacterStats::derive`'s
+  preset table; the spawn feeds the first two into the body's race muscles.

@@ -1,0 +1,7 @@
+- [x] Race preset table in `CharacterStats::derive`, with tests
+- [x] Feed the presets into the body's race muscles and the footstep gain
+- [x] Grip relax in double precision, with a test
+- [x] Balance routine foot sounds as tested rules
+- [x] Verify against the installation: the race records are read from `races.rdb` at run time (EXANIMA_DIR checks of `exa_formats` run on the worker)
+- [x] Update docs/formats/RFC.md, the crate READMEs and docs/re/motiledyn-map.md (docs/PLAN.md is not edited by this lane)
+- [x] fmt, clippy -D warnings, tests

@@ -328,6 +328,11 @@ the `Footstep` message), and the walking ground weights are in. The
 plant's clothing rustle is a tested rule (`walk_rustle`: the foley base ×
 (0.5g + 0.5)(0.02·speed + 0.01), pitch (0.2p + 0.9)(0.2·speed + 0.7) /
 size, the foley clock 400 ms plus a jitter); nothing plays it yet. The
+footstep's gain is multiplied by the character's footstep volume (its
+stats': the body scale, doubled over 1.3, the ogre's 5). The balance
+routine's foot sounds are tested rules too (`anchor_rustle` when a foot
+anchors, `release_step` and `wet_release_step` when it lets go, their
+clocks 400 and 250 ms plus a jitter); nothing plays them yet. The
 post-step advances the walk's travel phase: the pelvis's travel in cm
 times 0.0002, wrapped at 1, with the phase before the tick kept
 (`body::travel_phase`); its consumer, the scene node's draw offset, is not
