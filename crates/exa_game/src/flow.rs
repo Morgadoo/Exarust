@@ -453,6 +453,33 @@ impl Background {
     }
 }
 
+/// The camera view a session start writes before it places the player: the
+/// forward direction and the point the view looks at, in centimetres.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StartView {
+    pub direction: Vec3,
+    pub target: Vec3,
+}
+
+/// The story start's view: forward along +z, looking at the room's far
+/// corner (the level-start point with its height cleared).
+pub const STORY_VIEW: StartView = StartView {
+    direction: Vec3::new(0.0, 0.0, 1.0),
+    target: Vec3::new(8200.0, 0.0, 4000.0),
+};
+
+/// The practice start's view: forward along −z, looking at the ring's middle
+/// 20 cm up.
+pub const PRACTICE_VIEW: StartView = StartView {
+    direction: Vec3::new(0.0, 0.0, -1.0),
+    target: Vec3::new(0.0, 20.0, 500.0),
+};
+
+/// The level-start point a story start hands the loader: (8200, 25, 3920).
+/// The spawn table's own poses are absolute; this is the save manager's
+/// starting point for the level.
+pub const STORY_SPAWN: Vec3 = Vec3::new(8200.0, 25.0, 3920.0);
+
 /// What a new story does for its background: the roles added to the player,
 /// the story flag word, the spawn pose, the starting light, the companion
 /// and the record writes (gear and powers) the start makes.
@@ -468,6 +495,13 @@ pub struct StoryStart {
     /// The story flag word the record gets.
     pub flags: u32,
     pub placement: Placement,
+    /// The level-start point the save manager is given before the load.
+    pub spawn_point: Vec3,
+    /// The camera view written before the player is placed.
+    pub view: StartView,
+    /// The twelve-byte start record the loader is handed for the duration
+    /// of the start: the start motion, then two zero words.
+    pub start_record: [u32; 3],
     /// The item put in the record's off hand: the knight's and proctor's
     /// item 0x1f.
     pub off_hand: Option<ItemRef>,
@@ -549,6 +583,9 @@ pub fn story_start(background: Background, body_height: f32) -> StoryStart {
                     STORY_POINT.z,
                 ),
             },
+            spawn_point: STORY_SPAWN,
+            view: STORY_VIEW,
+            start_record: [START_MOTION_ANIMATION, 0, 0],
             off_hand: None,
             carried: Some(Carried {
                 item: STORY_UNKNOWN_ITEM,
@@ -583,6 +620,9 @@ pub fn story_start(background: Background, body_height: f32) -> StoryStart {
                 rotation: yaw(-50.0),
                 position: Vec3::new(STORY_POINT.x, 210.0, STORY_POINT.z),
             },
+            spawn_point: STORY_SPAWN,
+            view: STORY_VIEW,
+            start_record: [START_MOTION_WAKING, 0, 0],
             off_hand: Some(ItemRef {
                 id: STORY_KNIGHT_ITEM,
                 flags: 0,
@@ -608,6 +648,9 @@ pub fn story_start(background: Background, body_height: f32) -> StoryStart {
                 rotation: rotation(50.0, -50.0, 2.0),
                 position: Vec3::new(STORY_POINT.x, 300.0, STORY_POINT.z),
             },
+            spawn_point: STORY_SPAWN,
+            view: STORY_VIEW,
+            start_record: [START_MOTION_VILLAGER, 0, 0],
             off_hand: None,
             carried: None,
             powers: None,
@@ -1082,6 +1125,9 @@ pub enum Step {
         carried: Option<Carried>,
         powers: Option<(u32, f32)>,
     },
+    /// The twelve-byte record a story start hands the loader: the start
+    /// motion and two zero words.
+    StartRecord([u32; 3]),
     /// Create the story's starting light.
     StoryLight(StoryLight),
     /// Write the story start's condition word, animator flags and turn
@@ -1276,6 +1322,8 @@ pub struct PracticeStart {
     pub boss: bool,
     pub locale: &'static str,
     pub music: Track,
+    /// The camera view the start writes before it places the player.
+    pub view: StartView,
 }
 
 /// The music a practice start plays.
@@ -1800,6 +1848,7 @@ impl Flow {
                 spawn: 0,
                 teardown: true,
             },
+            Step::StartRecord(start.start_record),
         ];
         if let Some(light) = start.light {
             steps.push(Step::StoryLight(light));
@@ -1855,6 +1904,7 @@ impl Flow {
                 Ladder::Expert => "arenae",
             },
             music: practice_music(ladder, self.alternative_music),
+            view: PRACTICE_VIEW,
         };
         let placement = Placement {
             rotation: PRACTICE_ROTATION,
@@ -3633,6 +3683,55 @@ mod tests {
             story_start(Background::Unknown, 1.8).placement.position.y,
             34.0
         );
+        // Every story start hands the loader the same spawn point and view,
+        // and the start record carries the background's wake motion.
+        for (background, motion) in [
+            (Background::Unknown, START_MOTION_ANIMATION),
+            (Background::Knight, START_MOTION_WAKING),
+            (Background::Proctor, START_MOTION_WAKING),
+            (Background::Villager, START_MOTION_VILLAGER),
+        ] {
+            let start = story_start(background, 1.0);
+            assert_eq!(start.spawn_point, Vec3::new(8200.0, 25.0, 3920.0));
+            assert_eq!(start.view, STORY_VIEW);
+            assert_eq!(start.view.direction, Vec3::new(0.0, 0.0, 1.0));
+            assert_eq!(start.view.target, Vec3::new(8200.0, 0.0, 4000.0));
+            assert_eq!(start.start_record, [motion, 0, 0]);
+        }
+        let start = story_start(Background::Knight, 1.0);
+        // The start record is the bare motion, not the spawn pose.
+        assert_eq!(start.placement.position, Vec3::new(8200.0, 210.0, 3920.0));
+    }
+
+    #[test]
+    fn a_practice_start_looks_at_the_ring_and_carries_its_view() {
+        let mut flow = Flow::default();
+        let viewport = Viewport {
+            width: 1000,
+            height: 500,
+        };
+        let steps = flow.start_practice(Ladder::Novice, 90.0, viewport, 0);
+        let start = PracticeStart {
+            ladder: Ladder::Novice,
+            fight: FIRST_FIGHT,
+            partner: *b"opponent01",
+            boss: false,
+            locale: "arena",
+            music: practice_music(Ladder::Novice, false),
+            view: PRACTICE_VIEW,
+        };
+        assert_eq!(start.view.direction, Vec3::new(0.0, 0.0, -1.0));
+        assert_eq!(start.view.target, Vec3::new(0.0, 20.0, 500.0));
+        assert!(steps.contains(&Step::PlacePlayer(Placement {
+            rotation: PRACTICE_ROTATION,
+            position: Vec3::new(0.0, 95.0, 500.0),
+        })));
+        assert!(steps.contains(&Step::Camera(camera::frame_point(
+            PRACTICE_POINT,
+            true,
+            false,
+            viewport
+        ))));
     }
 
     #[test]
