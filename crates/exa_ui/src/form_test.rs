@@ -1558,3 +1558,31 @@ fn the_set_controls_copy_takes_records_up_to_the_last_index() {
     let (table, last) = copy_control_table(&source, 9);
     assert_eq!((table.len(), last), (3, 2));
 }
+
+#[test]
+fn the_base_form_routes_a_key() {
+    let stop = ControlTab {
+        tab_stop: true,
+        disabled: false,
+    };
+    let plain = ControlTab::default();
+    let controls = [stop, plain, stop];
+    // Tab from the first record (focus code 1) to the next tab stop; Shift
+    // goes back, wrapping to the last stop.
+    assert_eq!(form_key(9, 0, 1, &controls, |_| 0), FormKey::Focus(2));
+    assert_eq!(form_key(9, 0x10, 1, &controls, |_| 0), FormKey::Focus(2));
+    assert_eq!(form_key(9, 0, 3, &controls, |_| 0), FormKey::Focus(0));
+    // A Tab with no stop to go to ends there.
+    assert_eq!(form_key(9, 0, 1, &[stop], |_| 0), FormKey::Nothing);
+    // Another key: the focused record takes it when its answer has both
+    // low bits, else it goes up.
+    assert_eq!(form_key(0x41, 0, 2, &controls, |_| 7), FormKey::Taken(1));
+    assert_eq!(form_key(0x41, 0, 2, &controls, |_| 1), FormKey::Parent);
+    // No focus (code 0, or past the records) or no records: up, unless the
+    // key repeats or was typed.
+    assert_eq!(form_key(0x41, 0, 0, &controls, |_| 3), FormKey::Parent);
+    assert_eq!(form_key(0x41, 0, 9, &controls, |_| 3), FormKey::Parent);
+    assert_eq!(form_key(9, 0, 1, &[], |_| 3), FormKey::Parent);
+    assert_eq!(form_key(0x41, 1, 0, &controls, |_| 3), FormKey::Nothing);
+    assert_eq!(form_key(0x41, 2, 2, &controls, |_| 0), FormKey::Nothing);
+}

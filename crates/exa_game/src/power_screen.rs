@@ -17,8 +17,9 @@
 //! name caption (at once) and its wrapped description box (after 600 ms),
 //! laid out at the original's places; while a power is dragged every node
 //! wears its name instead. The domain wheel child draws its own paint
-//! ([`exa_ui::wheel_draw`]) and is hovered every frame. Not modelled: the
-//! base form's key handlers. The bar's own keys (pick, step, use) belong to
+//! ([`exa_ui::wheel_draw`]) and is hovered every frame. While the tree is shown its
+//! form has the keys: the arrows step the bar and any other key closes it
+//! ([`TreeScreen::key`]). The bar's own keys (pick, step, use) belong to
 //! the hotkey handler and the cast plugin ([`crate::thaum::cast`]), which
 //! keeps the caster's record and this screen's in step.
 
@@ -303,63 +304,23 @@ fn hotkeys(
         sound,
         ..
     } = &mut *screen;
-    if bindings
-        .key_code(Action::PowerTree)
-        .is_some_and(|key| keys.just_pressed(key))
-    {
-        if *open {
-            // Closing stores the bar and the domain, then fades out over
-            // 256 ms; the draw turns the screen off at the fade's end.
-            tree.leave(bar, record);
-            tree.hide(now);
-            tree.close_bar(now);
-        } else {
-            // A record that knows no power starts with the two default
-            // pairs, as the tree's first opening seeds them.
-            crate::thaum::tree::seed_defaults(record);
-            let domain = tree.domain;
-            let file = domain_files.get(usize::from(domain)).cloned().flatten();
-            *texts = file
-                .as_deref()
-                .and_then(|bytes| exa_formats::power_tree::read_power_tree(bytes).ok())
-                .map(|tree| tree.texts)
-                .unwrap_or_default();
-            *tree = TreeScreen::load(
-                domain,
-                TreeMode::Play,
-                Some(&*record),
-                file.as_deref(),
-                width,
-                height,
-            );
-            *open = true;
-            *bar_open = true;
-            tree.bar_open = true;
-            *sound = tree.show(now).sound;
-            tree.open_bar_if_closed(bar, record, now);
-        }
-        *dirty = true;
-        return;
-    }
-    // The bar's cycle keys: the original's next (0x27) and previous
-    // (0x25) keys step the chosen slot and play the select sound. The tree
-    // screen's key handler takes them while it is open.
+    // While the tree is shown its form has the keys: every key goes to the
+    // tree's key slot, which steps the bar on the arrows and closes the
+    // tree on any other key (after the first 50 ms of the opening fade, and
+    // not again while it fades out).
     if *open {
-        let cycle = if keys.just_pressed(KeyCode::ArrowRight) {
-            Some(0x27)
-        } else if keys.just_pressed(KeyCode::ArrowLeft) {
-            Some(0x25)
-        } else {
-            None
-        };
-        if let Some(key) = cycle {
+        let pressed: Vec<u32> = keys
+            .get_just_pressed()
+            .filter_map(|&key| crate::bindings::virtual_key(key))
+            .collect();
+        for key in pressed {
             let out = tree.key(
                 crate::thaum::tree::KeyInput {
-                    key,
+                    key: key as i32,
                     flags: 0,
-                    guarded: false,
-                    hidden: false,
-                    stamp: 0,
+                    guarded: tree.fade_flags & crate::thaum::tree::FADING_IN != 0,
+                    hidden: tree.closing(),
+                    stamp: tree.open_at,
                     now,
                 },
                 bar,
@@ -368,19 +329,53 @@ fn hotkeys(
             if out.sound.is_some() {
                 *sound = out.sound;
             }
-            *dirty = true;
+            if out.toggle {
+                // Closing stores the bar and the domain, then fades out
+                // over 256 ms; the draw turns the screen off at the fade's
+                // end.
+                tree.leave(bar, record);
+                tree.hide(now);
+                tree.close_bar(now);
+            }
+            if out.toggle || out.cycled {
+                *dirty = true;
+            }
         }
+        return;
     }
-    // The bar's own keys are the hotkey handler's (the cast plugin); the
-    // tree keeps its screen and its Escape.
+    if bindings
+        .key_code(Action::PowerTree)
+        .is_some_and(|key| keys.just_pressed(key))
+    {
+        // A record that knows no power starts with the two default pairs,
+        // as the tree's first opening seeds them.
+        crate::thaum::tree::seed_defaults(record);
+        let domain = tree.domain;
+        let file = domain_files.get(usize::from(domain)).cloned().flatten();
+        *texts = file
+            .as_deref()
+            .and_then(|bytes| exa_formats::power_tree::read_power_tree(bytes).ok())
+            .map(|tree| tree.texts)
+            .unwrap_or_default();
+        *tree = TreeScreen::load(
+            domain,
+            TreeMode::Play,
+            Some(&*record),
+            file.as_deref(),
+            width,
+            height,
+        );
+        *open = true;
+        *bar_open = true;
+        tree.bar_open = true;
+        *sound = tree.show(now).sound;
+        tree.open_bar_if_closed(bar, record, now);
+        *dirty = true;
+        return;
+    }
+    // Escape with the tree closed puts the bar away.
     if keys.just_pressed(KeyCode::Escape) {
-        if *open {
-            tree.leave(bar, record);
-            tree.hide(now);
-            tree.close_bar(now);
-        } else {
-            *bar_open = false;
-        }
+        *bar_open = false;
         *dirty = true;
     }
 }
@@ -1533,5 +1528,108 @@ mod tests {
         assert_eq!(pixels.len(), 16 * 16 * 4);
         // A corner outside the triangle is transparent.
         assert_eq!(pixels[15 * 16 * 4 + 3], 0);
+    }
+
+    /// The tree's key, pressed the way `--press` presses it (after the
+    /// input systems, released the frame after) in an app that also runs
+    /// the simulation keys, opens the screen: the game clock keeps running,
+    /// the opening fade completes and the canvas is shown. With the
+    /// installed packs the picture covers the window (the backdrop) and
+    /// draws the wheel at the lower left. Any other key then closes it.
+    #[test]
+    fn a_scripted_tree_key_opens_and_shows_the_screen() {
+        use bevy::asset::AssetPlugin;
+        use bevy::input::InputPlugin;
+        use bevy::time::TimeUpdateStrategy;
+        use bevy::window::WindowResolution;
+        let game = exa_assets::locate_install(None)
+            .and_then(|dir| exa_assets::GameData::open(&dir).ok())
+            .map(|data| Game(Arc::new(data)));
+        let mut app = App::new();
+        app.add_plugins((
+            MinimalPlugins,
+            AssetPlugin::default(),
+            InputPlugin,
+            exa_physics::body::BodyPlugin,
+            crate::sim_control::SimControlPlugin,
+        ))
+        .init_asset::<Image>()
+        .init_resource::<Bindings>()
+        .insert_resource(exa_physics::Physics::default())
+        .insert_resource(TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_millis(16),
+        ));
+        if let Some(game) = game.clone() {
+            app.insert_resource(game);
+        }
+        app.world_mut().spawn((
+            Window {
+                resolution: WindowResolution::new(1280, 720),
+                ..default()
+            },
+            PrimaryWindow,
+        ));
+        app.add_plugins(PowerScreenPlugin);
+        let key = Bindings::default()
+            .key_code(Action::PowerTree)
+            .expect("the tree's key");
+        app.add_systems(
+            PreUpdate,
+            (move |mut keys: ResMut<ButtonInput<KeyCode>>, mut frame: Local<u32>| {
+                *frame += 1;
+                match *frame {
+                    5 => keys.press(key),
+                    6 => keys.release(key),
+                    // Any other key closes the shown tree.
+                    110 => keys.press(KeyCode::KeyW),
+                    111 => keys.release(KeyCode::KeyW),
+                    _ => {}
+                }
+            })
+            .after(bevy::input::InputSystems),
+        );
+        // A hundred frames after the press, as the GPU check's screenshot.
+        for _ in 0..105 {
+            app.update();
+        }
+        assert!(!app.world().resource::<Time<Virtual>>().is_paused());
+        let screen = app.world().resource::<PowerScreen>();
+        assert!(screen.open && screen.bar_open);
+        assert_eq!(screen.tree.window_alpha, 1.0);
+        assert_eq!(screen.tree.content_alpha, 1.0);
+        let mut canvases = app.world_mut().query::<(&ImageNode, &Visibility)>();
+        let shown: Vec<_> = canvases
+            .iter(app.world())
+            .map(|(image, visibility)| (image.image.clone(), *visibility))
+            .collect();
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].1, Visibility::Inherited);
+        if game.is_some() {
+            let images = app.world().resource::<Assets<Image>>();
+            let image = images.get(&shown[0].0).expect("the canvas image");
+            assert_eq!((image.width(), image.height()), (1280, 720));
+            let data = image.data.as_ref().expect("the pixels");
+            let alpha = |x: u32, y: u32| data[((y * 1280 + x) * 4 + 3) as usize];
+            let covered = data.chunks(4).filter(|p| p[3] > 8).count();
+            assert!(covered > 1280 * 720 / 2, "{covered}");
+            // The wheel's icons are lit at the lower left.
+            let lit = (440..680)
+                .flat_map(|y| (30..270).map(move |x| (x, y)))
+                .filter(|&(x, y)| {
+                    let at = ((y * 1280 + x) * 4) as usize;
+                    alpha(x, y) > 8 && data[at..at + 3].iter().any(|&c| c > 64)
+                })
+                .count();
+            assert!(lit > 200, "{lit}");
+        }
+        // Any other key (W, five frames on) closes the shown tree: after the
+        // 256 ms fade-out the screen is off and its canvas hidden.
+        for _ in 0..30 {
+            app.update();
+        }
+        let screen = app.world().resource::<PowerScreen>();
+        assert!(!screen.open && !screen.bar_open);
+        let mut canvases = app.world_mut().query::<&Visibility>();
+        assert!(canvases.iter(app.world()).all(|v| *v == Visibility::Hidden));
     }
 }

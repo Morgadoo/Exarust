@@ -49,7 +49,9 @@ constantly displaced body
 (`thaum::veil`) gets its shell effect (starting dead, fading the body's mesh and skin
 parts), its displaced collision bit, its hum start point, its tendril
 image, its visibility bits and the hit veto with the 500 ms collision
-restore; none of it is wired into a running game yet. The running screen (`power_screen`) opens the tree with P and draws the
+restore; none of it is wired into a running game yet. The running screen (`power_screen`) opens the tree with P (while it is
+shown its form has the keys: the arrows step the bar, any other key closes
+it after the opening fade's first 50 ms) and draws the
 tree and the bar through `exa_ui::tree_draw`; the bar's keys are the hotkey
 handler's, which sends `thaum::cast` the player's bar commands, and the
 drawn bar takes the caster's record and slots. `thaum::visuals` makes the
