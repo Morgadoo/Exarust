@@ -587,8 +587,11 @@ fn support_point(m: Vec3, a: Vec3, b: Vec3) -> Vec3 {
 /// the first leg's lower leg that hangs from the root (its thigh) must not
 /// sit at positive x in the root; when it does, the first two legs swap.
 /// `first_shin` is the first leg's lower leg in `setup`. A NaN x does not
-/// swap. Exarust builds the legs in part order and does not call this: the
-/// human's first thigh is on the right (negative x), where nothing swaps.
+/// swap. Exarust builds the legs in part order and does not call this:
+/// every shipped race model's first thigh (its right upper leg) sits at
+/// negative x (human −9.07 cm, ogre −16.5 cm, the demon −18 cm, …, checked
+/// on the exported models), where nothing swaps, so part order is the
+/// original's order for every body the game builds.
 pub fn legs_swap(setup: &[PartSetup], first_shin: usize, legs: usize) -> bool {
     if legs < 2 {
         return false;
