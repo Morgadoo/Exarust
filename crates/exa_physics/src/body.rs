@@ -121,6 +121,15 @@ pub use sphere_grid::SphereGrid;
 #[path = "body_door.rs"]
 pub mod door_body;
 pub use door_body::{DoorBody, PendingDoor};
+#[path = "body_lever.rs"]
+pub mod lever_body;
+pub use lever_body::{LeverBody, PendingLever};
+#[path = "body_plate.rs"]
+pub mod plate_body;
+pub use plate_body::{PendingPlate, PlateBody};
+#[path = "body_slide.rs"]
+pub mod slide_body;
+pub use slide_body::{PendingSlide, SlideBody};
 #[path = "body_rigid.rs"]
 mod rigid;
 pub use drag::{Grab, drag_pull};
@@ -1513,6 +1522,11 @@ pub struct Ragdoll {
     /// at its previous particles instead of integrating it
     /// ([`Ragdoll::freeze`]).
     frozen: bool,
+    /// The velocity a part keeps each tick in a body of the mechanism
+    /// environment (levers and push surfaces), whatever its speed band;
+    /// `None` keeps the default environment's banded retention
+    /// ([`Ragdoll::enter_mechanism_environment`]).
+    environment_keep: Option<f32>,
     /// The root's link-iteration count ([`Ragdoll::link_iterations`]).
     link_iterations: i32,
     /// The hand's grabs on its parts ([`Ragdoll::grab`]).
@@ -2283,6 +2297,7 @@ impl Ragdoll {
             simulated: false,
             fell_out: false,
             frozen: false,
+            environment_keep: None,
             link_iterations: LIVING_LINK_ITERATIONS,
             grabs: Vec::new(),
             pieces: Vec::new(),
@@ -2884,6 +2899,23 @@ impl Ragdoll {
             p.shown = (p.settled, p.settled);
             p.drawn_particles = (p.positions, p.positions);
         }
+    }
+
+    /// Moves the body into the mechanism environment levers and push
+    /// surfaces run in (the original builds it once, on the first lever or
+    /// plate set up): no gravity on any particle, and a limp part keeps
+    /// [`crate::mechanism::retention`] of its velocity each tick in every
+    /// speed band (0.001 a second). The sleep bands are the default's.
+    pub fn enter_mechanism_environment(&mut self) {
+        self.environment_keep = Some(crate::mechanism::retention());
+        for p in &mut self.parts {
+            p.gravity = [0.0; 4];
+        }
+    }
+
+    /// Whether the body runs in the mechanism environment.
+    pub fn in_mechanism_environment(&self) -> bool {
+        self.environment_keep.is_some()
     }
 
     /// Whether the body sleeps (and is not simulated).
@@ -3737,6 +3769,7 @@ impl Ragdoll {
         if settling {
             self.settle -= 1;
         }
+        let environment_keep = self.environment_keep;
         // A living part over half its tone falls by g(1 − a) + carry·a, a
         // its share of the carry; any other by gravity.
         let carried = self
@@ -3779,7 +3812,7 @@ impl Ragdoll {
                 }
                 continue;
             }
-            let keep = living.unwrap_or_else(|| {
+            let keep = living.or(environment_keep).unwrap_or_else(|| {
                 let moved = (0..4)
                     .map(|i| (p.positions[i] - p.previous[i]).length())
                     .fold(0.0, f32::max);
