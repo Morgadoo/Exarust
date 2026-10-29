@@ -190,7 +190,10 @@ pub fn attach_hair(
 /// level (which held exanima01 at 16 FPS before the stage culled them).
 /// Off by default: even culled, exanima01 stayed at 16 FPS on the RTX 3090
 /// with hair on (the cloth stage 3.8 ms a tick, the fixed schedule 12.5 ms
-/// a tick), so part of the hair's cost lies outside the counted stage.
+/// a tick). The stage now steps its cloths at once and writes their meshes
+/// once a frame instead of every tick; the switch stays off until a GPU run
+/// with `EXA_DEBUG_CLOTH=1` (whose log sets the stage against the whole
+/// fixed tick) shows the level back near 60 FPS.
 pub fn hair_cloth_on() -> bool {
     std::env::var_os("EXA_HAIR_CLOTH").is_some_and(|v| v != "0")
 }
