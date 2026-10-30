@@ -24,7 +24,9 @@ the installation is open, keeps the session's `Conversations` (engine,
 cast, player, world clock base, locale) and steps the engine every frame on
 `Time<Virtual>`. Messages: `Narrate`, `NarrateText`, `Talk`, `PickReply`,
 `LeaveDialogue` in; `ScriptEffect` (game events, inventory, checkpoint
-saves, witness roles, `StartDialogue`, script errors) out.
+saves, witness roles, `StartDialogue`, script errors) out. Systems outside
+the plugin that run scripts (corpse and encounter scripts) build the same
+scene with `Conversations::with_scene`.
 
 Formats: [`docs/formats/OTHER.md`](../../docs/formats/OTHER.md#roles-charrolesrdb).
 

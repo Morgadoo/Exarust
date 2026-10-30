@@ -1242,8 +1242,9 @@ Activity variable set to the follow (its log lines start `search:`).
 `role_scripts` runs the encounter scripts an AI's target pass reports: the
 observer's roles' encounter entries for anyone, for the partner in its
 locale, or for one of the partner's roles, with the observer as actor 0 and
-the partner as actor 1 through `exa_script`, and the effects go out as
-`ScriptEffect`. The world's own press is held while
+the partner as actor 1 through `exa_script` (`Conversations::with_scene`),
+and the effects go out as `ScriptEffect`; the meeting time is renewed on
+the AI's relation and the cast's record (`LastEnc`) before they run. The world's own press is held while
 the pointer is over an open screen. The journal's entry list and the
 controls' callbacks are not wired; the text keeps the level
 font's metrics and samples the base font's atlas while the Rayform faces

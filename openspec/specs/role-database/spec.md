@@ -27,6 +27,13 @@ The system SHALL read an entry's target, condition and value (attitude in byte 0
 - **WHEN** an entry of kind 0x60 holds one length-prefixed text `result = 1;`
 - **THEN** both its corpse script and its interaction condition are `result = 1;`
 
+### Requirement: Sections beside a corpse script
+The sections other than the corpse script SHALL be read as the original's generic section accessor reads them: its kind table holds no corpse bit, so the 0x10 block is the corpse block when both bits are set and the interaction condition is the block after it.
+
+#### Scenario: Corpse, 0x10 and condition bits together
+- **WHEN** an entry of kind 0x70 holds the texts `corpse`, `ten` and `result`
+- **THEN** its corpse script and its 0x10 block are `corpse` and its interaction condition is `ten`
+
 ### Requirement: Dialogue graphs
 The system SHALL read a dialogue graph (a role entry's or `narrator.rcd`) into its target word, actors, and nodes in order, an empty node being a single zero word, each node with its flags, title, editor position, links and nested branch groups, each branch with its flags, lines (speaker slot and text), condition, action and replies. Nodes SHALL be found by title without case over all 16 bytes. Nesting deeper than 64 levels and any size past the data SHALL be errors.
 
