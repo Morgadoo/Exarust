@@ -46,10 +46,11 @@ pub struct Session {
     /// The game clock in seconds.
     pub clock: u32,
     /// The view's camera target the header carries, centimetres (the
-    /// original writes the scene view's target into both headers and its
-    /// reader puts it back into the view).
+    /// original writes the scene view's target into both headers; its
+    /// readers drop it, so a read session keeps the default).
     pub camera: [f32; 3],
-    /// The view's zoom word the header carries (1 is the view's own).
+    /// The view's zoom word the header carries (1 by default; dropped on
+    /// read like the target).
     pub zoom: f32,
     /// The story's save seed; zero in the arena.
     pub seed: u32,
@@ -524,15 +525,11 @@ pub fn read_package(package: &PackageImage) -> Result<Session, SaveError> {
     match &data.header {
         PlayerHeader::Story(header) => {
             session.clock = header.clock;
-            session.camera = header.camera;
-            session.zoom = header.zoom;
             session.seed = header.seed;
             session.start_background = header.flags & 0xFF;
         }
         PlayerHeader::Arena(header) => {
             session.clock = header.clock;
-            session.camera = header.camera;
-            session.zoom = header.zoom;
             session.company.copper = header.money;
             session.company.day = header.day;
         }
@@ -631,15 +628,8 @@ pub fn session_from_player_data(data: &PlayerData) -> Session {
         Flavour::Story => Session::story(),
         Flavour::Arena => Session::career(""),
     };
+    // The header's camera pair is read and dropped by both readers.
     session.clock = data.header.clock();
-    session.camera = match &data.header {
-        PlayerHeader::Story(header) => header.camera,
-        PlayerHeader::Arena(header) => header.camera,
-    };
-    session.zoom = match &data.header {
-        PlayerHeader::Story(header) => header.zoom,
-        PlayerHeader::Arena(header) => header.zoom,
-    };
     // The journal is the reader's reset page replaced by the chunk's
     // entries; a chunk with no entries leaves the default page.
     let entries: Vec<Entry> = data
@@ -987,7 +977,7 @@ mod tests {
     #[test]
     fn the_header_carries_the_views_camera_and_zoom_in_both_modes() {
         // The original's writers copy the scene view's target (centimetres)
-        // and its zoom word into the header; the readers put them back.
+        // and its zoom word into the header; both readers drop them.
         let mut story = Session::story();
         story.camera = [123.5, -45.0, 678.5];
         story.zoom = 1.75;
@@ -1009,8 +999,7 @@ mod tests {
                 .collect::<Vec<u8>>()[..]
         );
         let back = read_package(&image).unwrap();
-        assert_eq!(back.camera, [123.5, -45.0, 678.5]);
-        assert_eq!(back.zoom, 1.75);
+        assert_eq!((back.camera, back.zoom), ([0.0; 3], 1.0));
 
         let mut arena = Session::career("Ash");
         arena.camera = [-168.5, 30.25, 137.0];
@@ -1025,8 +1014,7 @@ mod tests {
         assert_eq!(header.camera, [-168.5, 30.25, 137.0]);
         assert_eq!(header.zoom, 0.5);
         let back = read_package(&image).unwrap();
-        assert_eq!(back.camera, [-168.5, 30.25, 137.0]);
-        assert_eq!(back.zoom, 0.5);
+        assert_eq!((back.camera, back.zoom), ([0.0; 3], 1.0));
         // A fresh session keeps the header's defaults.
         let fresh = Session::story();
         assert_eq!((fresh.camera, fresh.zoom), ([0.0; 3], 1.0));
@@ -1279,8 +1267,7 @@ mod tests {
         assert_eq!(session.clock, 10);
         assert_eq!(session.seed, 0x1234);
         assert_eq!(session.start_background, 2);
-        assert_eq!(session.camera, [1.0, 2.0, 3.0]);
-        assert_eq!(session.zoom, 0.75);
+        assert_eq!((session.camera, session.zoom), ([0.0; 3], 1.0));
         assert_eq!(session.story.level(), "exanima03");
         let journal = session.story.journal().entries();
         assert_eq!(journal.len(), 1);

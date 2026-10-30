@@ -783,7 +783,8 @@ makes the entered hub load that slot as the original's full load does
 classification, the world clock restored, the player record's race byte
 cleared before the import, a converted old save's record repaired first,
 the hub's permadeath slot set). The header's camera target and zoom are
-stamped from the host's `SaveCamera` (a load replaces it with the save's),
+stamped from the host's optional `SaveCamera` (not set by the running
+game yet, so the defaults are written; both readers drop the pair),
 saving is refused while the last level change reports it disabled, and a
 checkpoint step saves before it copies. The level
 section and the world databases are not written yet.

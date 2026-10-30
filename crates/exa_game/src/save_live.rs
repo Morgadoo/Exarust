@@ -64,11 +64,11 @@ pub struct SaveFolder(pub PathBuf);
 
 /// The view's camera target and zoom a save stamps into its header. The
 /// original's writers copy the scene view's target (centimetres) and its
-/// zoom word into both headers, and the readers put them back into the view;
-/// the host sets this from its camera, and a load replaces it with the
-/// saved values so the character screen's preview continues where the save
-/// left the view. Without it a save writes the header's defaults (the
-/// origin, zoom 1), which is what Exarust wrote before the rule was wired.
+/// zoom word into both headers; both readers read the pair into scratch and
+/// drop it, so a load never moves the view. The host may set this from its
+/// camera; nothing in the running game does yet (Exarust's chase camera
+/// has no traced mapping onto the original's view fields), so a save writes
+/// the header's defaults (the origin, zoom 1).
 #[derive(Resource, Clone, Copy, Debug, PartialEq)]
 pub struct SaveCamera {
     /// The camera's target, centimetres.
@@ -91,14 +91,6 @@ impl SaveCamera {
     pub fn stamp(&self, session: &mut Session) {
         session.camera = self.target_cm;
         session.zoom = self.zoom;
-    }
-
-    /// The camera a loaded save restores.
-    pub fn of_session(session: &Session) -> Self {
-        Self {
-            target_cm: session.camera,
-            zoom: session.zoom,
-        }
     }
 }
 
@@ -589,6 +581,7 @@ fn run_save_steps(
         return;
     }
     let number = list.current() as u32;
+    let disabled = transition.as_ref().is_some_and(|t| t.saves_disabled());
     let health = fighters
         .iter()
         .next()
@@ -596,7 +589,7 @@ fn run_save_steps(
     for step in steps {
         match step {
             SaveStep::Save { drop_on_low_health } => {
-                if transition.as_ref().is_some_and(|t| t.saves_disabled()) {
+                if disabled {
                     warn!("save: saving is disabled after the last level change; nothing written");
                     continue;
                 }
@@ -659,7 +652,9 @@ fn run_save_steps(
                     .stamp(&mut session);
                 let player = live_story_player(&players, created.as_deref());
                 let export = story_save_world(&mut session, player.as_ref());
-                let world = export.save_world(None, false);
+                // The disable flag skips the save but not the copy: the
+                // old save becomes the checkpoint, as in the original.
+                let world = export.save_world(None, disabled);
                 match list.slots().checkpoint_full(number, &session, &world) {
                     Ok(true) => info!("save: story slot {number}'s save kept as its checkpoint"),
                     Ok(false) => {
@@ -681,10 +676,6 @@ pub struct ArenaRestore {
     pub shelved: usize,
     /// The world clock's saved seconds.
     pub clock: u32,
-    /// The view's camera target the save carried, centimetres.
-    pub camera: [f32; 3],
-    /// The view's zoom the save carried.
-    pub zoom: f32,
     /// The player's record with the load's reset applied (race byte
     /// cleared), ready for the import.
     pub player: Option<CharacterRecord>,
@@ -725,14 +716,10 @@ pub fn restore_arena(
     career.reset();
     stores.reset();
     let mut clock = 0;
-    let mut camera = [0.0; 3];
-    let mut zoom = 1.0;
     if let PlayerHeader::Arena(header) = &loaded.data.header {
         career.company.copper = header.money;
         career.company.day = header.day;
         clock = header.clock;
-        camera = header.camera;
-        zoom = header.zoom;
     }
     let chunks: Vec<save_package::Chunk<'_>> = loaded
         .data
@@ -785,8 +772,6 @@ pub fn restore_arena(
         applied,
         shelved,
         clock,
-        camera,
-        zoom,
         player,
     }
 }
@@ -893,10 +878,6 @@ fn load_arena_slot(
     let restored = restore_arena(&loaded, &kinds, career, &mut stores);
     clock.write(crate::world_clock::RestoreWorldClock {
         saved_seconds: restored.clock,
-    });
-    commands.insert_resource(SaveCamera {
-        target_cm: restored.camera,
-        zoom: restored.zoom,
     });
     commands.insert_resource(crate::arena_hub_live::HubSlots {
         slots: list.slots().clone(),
@@ -1028,7 +1009,6 @@ fn load_story_slot(
             clock.write(crate::world_clock::RestoreWorldClock {
                 saved_seconds: restored.session.clock,
             });
-            commands.insert_resource(SaveCamera::of_session(&restored.session));
             if let Some(record) = restored.player.clone() {
                 if let Some(created) = created.as_mut() {
                     created.0 = Some(record.clone());
@@ -1269,7 +1249,7 @@ mod tests {
     }
 
     #[test]
-    fn a_story_save_stamps_the_views_camera_and_its_load_restores_it() {
+    fn a_story_save_stamps_the_views_camera_and_its_load_leaves_it() {
         let dir = folder("camera");
         let mut lists = SlotLists::new(&dir);
         let career = crate::hub_windows::ArenaCareer::default();
@@ -1287,14 +1267,15 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        // The file's header carries the pair, and a load brings it back.
+        // The file's header carries the pair.
         let (_, kind) = Slots::story(&dir).load(number, false).unwrap();
         assert_eq!(kind, SlotKind::Save);
         let mut list = SlotList::new(Slots::story(&dir));
         let restored = restore_story(&mut list, number, false).unwrap();
-        assert_eq!(restored.session.camera, [7034.0, 1532.5, 4748.5]);
-        assert_eq!(restored.session.zoom, 1.25);
-        assert_eq!(SaveCamera::of_session(&restored.session), camera);
+        // The readers read the pair and drop it: the load keeps the
+        // session's defaults.
+        assert_eq!(restored.session.camera, [0.0; 3]);
+        assert_eq!(restored.session.zoom, 1.0);
         // The header itself holds the values, not only the Exarust payload.
         let bytes = std::fs::read(Slots::story(&dir).file(number, SlotKind::Save)).unwrap();
         let package = save_package::PackageImage::read(&bytes).unwrap();
@@ -1356,6 +1337,38 @@ mod tests {
         assert_eq!(
             std::fs::read(Slots::story(&dir).file(number, SlotKind::Checkpoint)).unwrap(),
             b"old"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_checkpoint_step_with_saving_disabled_copies_the_old_save() {
+        // The checkpoint routine's save returns on the disable flag, but the
+        // copy still runs: the save as it was becomes the checkpoint.
+        let dir = folder("checkpoint-disabled");
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(SaveLivePlugin)
+            .insert_resource(SaveFolder(dir.clone()));
+        app.update();
+        app.world_mut().write_message(SaveToNewSlot);
+        app.update();
+        let number = app.world().resource::<SaveReport>().saved.unwrap();
+        let save_path = Slots::story(&dir).file(number, SlotKind::Save);
+        std::fs::write(&save_path, b"stale save").unwrap();
+        let flow =
+            crate::level_transition::transition_flow(false, true, false, false, false, false, 0);
+        app.insert_resource(crate::level_transition::LiveTransition {
+            level: "nowhere".to_string(),
+            spawn: 0,
+            flow,
+        });
+        app.world_mut().write_message(SaveStep::Checkpoint);
+        app.update();
+        assert_eq!(std::fs::read(&save_path).unwrap(), b"stale save");
+        assert_eq!(
+            std::fs::read(Slots::story(&dir).file(number, SlotKind::Checkpoint)).unwrap(),
+            b"stale save"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

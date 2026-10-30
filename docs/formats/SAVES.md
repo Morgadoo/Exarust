@@ -258,12 +258,13 @@ single. Both modes share the first 36 bytes.
 
 The story reader accepts **any signature at or above** `0x6F5AEA14` (a
 newer save still loads); a lower one makes the slot legacy. It reads the
-camera target and zoom and puts them back into the view, and it
-skips the reserved word. The writers stamp the view's camera target
-(centimetres) and zoom word into the header, so the save screen's preview
-continues where the view stood; Exarust carries them on the session
-(`Session::camera`/`Session::zoom`) and the running game fills them from
-its `SaveCamera` resource, replacing it with a loaded save's pair. The flag
+camera target and zoom into scratch and does not restore them (the arena
+reader does the same), and it skips the reserved word. The writers stamp
+the view's camera target (centimetres) and zoom word into the header;
+Exarust carries them on the session (`Session::camera`/`Session::zoom`,
+dropped on read) and stamps them from the host's optional `SaveCamera`
+resource, which the running game does not set yet, so its saves write the
+defaults (origin, zoom 1). The flag
 byte at bits 16–23 is the "started" byte
 (the writer always sets it to 1). When the start background is 0 and the
 player record's own flag word is 0, the reader sets that word to `0x510000`. Before the chunks it resets the journal to one "New
