@@ -205,16 +205,15 @@ pub fn apply_body_shape(point: [f32; 2], shape: &mut [[f32; 8]]) -> bool {
 
 /// The physique field's four weights from its point, in array order.
 ///
-/// With `u` the first coordinate and `v = 1 − y`: an unordered `u`, or one
-/// above the middle, takes the right half (`f = 2u − 1`: the second weight
-/// `(1 − v/4)·f`, the third `(1 − f/2)·v`, the others 0); otherwise
-/// (`s = 2u`) the first is `(1 − v)(1 − s)`, the third `s·v`, the fourth
-/// `(1 − s)·v` and the second 0.
+/// With `u` the first coordinate and `v = 1 − y`: a `u` above the middle
+/// takes the right half (`f = 2u − 1`: the second weight `(1 − v/4)·f`, the
+/// third `(1 − f/2)·v`, the others 0); otherwise (`s = 2u`) the first is
+/// `(1 − v)(1 − s)`, the third `s·v`, the fourth `(1 − s)·v` and the second
+/// 0. The compare is ordered, so a not-a-number `u` takes the left half.
 pub fn body_shape(point: [f32; 2]) -> [f32; 4] {
     let u = point[0];
     let v = 1.0 - point[1];
-    // The original's unordered branch is the right half.
-    if u.is_nan() || u > 0.5 {
+    if u > 0.5 {
         let f = u * 2.0 - 1.0;
         let third = (1.0 - f * 0.5) * v;
         let second = (1.0 - v * 0.25) * f;
@@ -312,6 +311,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_not_a_number_point_takes_the_left_half() {
+        // 0.5 < NaN is false in the original's ordered compare, so the
+        // left branch's weights are taken (with `s = NaN`).
+        let weights = body_shape([f32::NAN, 0.5]);
+        assert!(weights[0].is_nan() && weights[2].is_nan() && weights[3].is_nan());
+        assert_eq!(weights[1], 0.0);
+        // The right half's second weight would be NaN too, so pin the
+        // branch by a finite u just above the middle.
+        let right = body_shape([0.75, 0.5]);
+        assert_eq!(right[0], 0.0);
+        assert!(right[1] > 0.0);
+    }
+
+    #[test]
     fn the_marker_follows_the_point() {
         let p = Picker::default();
         // (101 − 1) · 0.5 and (81 − 1) · 0.5.
@@ -390,10 +403,12 @@ mod tests {
         assert_eq!(body_shape([0.25, 0.25]), [0.125, 0.0, 0.375, 0.375]);
         // Right half: f = 0.5, v = 0.75.
         assert_eq!(body_shape([0.75, 0.25]), [0.0, 0.40625, 0.5625, 0.0]);
-        // The middle is the left half; an unordered point is the right half.
+        // The middle gives the same weights either way; an unordered point
+        // takes the left half (the ordered compare is false).
         assert_eq!(body_shape([0.5, 0.0]), [0.0, 0.0, 1.0, 0.0]);
         let nan = body_shape([f32::NAN, 0.0]);
-        assert!(nan[1].is_nan() && nan[0] == 0.0 && nan[3] == 0.0);
+        assert!(nan[0].is_nan() && nan[2].is_nan() && nan[3].is_nan());
+        assert_eq!(nan[1], 0.0);
     }
 
     #[test]
