@@ -239,6 +239,14 @@ blur kernel has its negative half and zero computed (sigma a third of the
 radius, taken in double), mirrored, normalised by its sequential single sum
 and widened to four equal floats an entry.
 
+The merge is byte-exact: the first used material keeps its accumulated
+byte, each later one but the last becomes `round(byte·255 / Σ)` over the
+running sum of the bytes, and the last keeps its byte (the shader draws
+the first opaque regardless). The channels are 256 × 256 with a row stride
+of 256, and the planes cover the whole 65536 texels, not only the 241²
+corner. Exarust's renderer stacks at most sixteen layers; a tile that uses
+more keeps the heaviest fifteen and material 0.
+
 ### Composition
 
 Per tile, the materials used beyond 1/510 of the tile are stacked in palette

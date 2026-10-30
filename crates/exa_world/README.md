@@ -16,7 +16,9 @@ and the grid's rooms; portal clipping is next (see
   container volume, the operative kind on the placeholder; the content
   stream's level pass dispatches on it to find the player), the
   material rules (a weapon record hides `*`, an item-body record hides
-  `*` and paints `&`), the impact-sound class, masters kept per model
+  `*` and paints `&`), the impact-sound class, the collision body a first
+  load builds (a lever's or a push surface's operative class, else a
+  door's, else none), masters kept per model
   unless painted, the release that logs a mismatch and goes on, and the
   paint seed of the object database's oldest body layout (two Mersenne
   twister words, the second's top bit cleared, low word first). Only the
@@ -42,10 +44,16 @@ and the grid's rooms; portal clipping is next (see
 - `published_light`: the light records the unit publishes to the engine's scene globals, as `PublishedLight`: the sun record's direction times its fourth lane and that lane's root, the reach (stored only when it differs by at least 0.01 from the published one, single-precision difference and double-precision compare, a NaN passing, scaling the direction and halved while the original's mode flag is clear) and re-publishing the held reach through a zeroed one when a sun is set, and the sky light's record stored verbatim. The records' identity past the sun and the sky direction, and the mode flag's meaning, are inferred guesses.
 - `terrain`: tiles, blend rules, height pass and plants; the palette's
   name-sorted brush table (the original's binary search), the
-  eleven-brush limit (wired: later layers are dropped), and, not wired,
-  the height-rule scaling, the byte channel accumulation, the
-  four-per-plane mask packing, the Gaussian blur kernel and the
-  used-material merge; the palette falls back to `default.ftb` as the original does; a tile's geometry
+  eleven-brush limit (wired: later layers are dropped), the painted
+  layers' 0.001 weight gate, the 256 × 256 byte channel accumulation per
+  vertex and leaf, the used-material list in palette order (the 1/510
+  share, material 0 forced), the used-material merge (the first keeps its
+  byte, the middles become their share of the running sum, the last keeps
+  its byte) and the four-per-mask-plane packing (wired into the tile's
+  splat, with the renderer's sixteen-layer cap keeping the heaviest
+  materials and material 0 first), and, not wired, the height-rule
+  scaling and the Gaussian blur kernel; the palette falls back to
+  `default.ftb` as the original does; a tile's geometry
   and masks are built on the async compute pool (the original's terrain
   worker), each palette material's diffuse and normal maps come through
   the original's terrain texture path (a live record, else a load queued
