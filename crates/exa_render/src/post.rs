@@ -159,6 +159,58 @@ pub fn fade_values(clock: u32, control: FadeControl, base_desaturation: f32) -> 
     }
 }
 
+/// One bloom blur kernel and the count the shader's loop reads
+/// (`0x201ED0`): `taps` weights, and `taps - 1` (the loop's last index).
+#[derive(Debug, Clone, PartialEq)]
+pub struct BloomKernel {
+    pub weights: Vec<f32>,
+    pub last: i32,
+}
+
+/// The bloom filter's weights (`0x201C10`): for `taps` samples,
+/// `x = (taps·3 − i)/(taps·3) − 0.4375`, `w = x²·24`, summed with the first
+/// weight once and every other twice. The legacy workflow scales the
+/// normalised weights by 1.5; the linear one by `level·0.016 + 1`, the
+/// level in single precision.
+pub fn bloom_weights(taps: usize, level: f32, linear: bool) -> Vec<f32> {
+    let three = (taps as f32) * 3.0;
+    let mut weights = Vec::with_capacity(taps);
+    let mut sum = 0.0f32;
+    for i in 0..taps {
+        let x = (three - i as f32) / three - 0.4375;
+        let w = x * x * 24.0;
+        weights.push(w);
+        sum += if i < 1 { w } else { w * 2.0 };
+    }
+    let scale = if linear { level * 0.016 + 1.0 } else { 1.5 };
+    for w in &mut weights {
+        *w = scale * (*w / sum);
+    }
+    weights
+}
+
+/// The bloom kernel for a tap count the original rounds from a float
+/// (`CVTSS2SI`: nearest, ties to even; an out-of-range value gives the
+/// integer indefinite, which leaves no tap).
+pub fn bloom_kernel(taps: f32, level: f32, linear: bool) -> BloomKernel {
+    let rounded = taps.round_ties_even();
+    let taps = if !rounded.is_finite() || rounded < i32::MIN as f32 || rounded > i32::MAX as f32 {
+        i32::MIN
+    } else {
+        rounded as i32
+    };
+    if taps <= 0 {
+        return BloomKernel {
+            weights: Vec::new(),
+            last: taps.wrapping_sub(1),
+        };
+    }
+    BloomKernel {
+        weights: bloom_weights(taps as usize, level, linear),
+        last: taps - 1,
+    }
+}
+
 /// Which of the two cached post programs the pass runs (`0x202AF0`): the
 /// bright variant (the sharpen and desaturation uniforms active) when the
 /// sharpen amount compares above 0.01 (a NaN does, as the unordered compare
@@ -662,5 +714,34 @@ mod fade_tests {
         );
         assert_eq!(fetches, 1);
         assert_eq!(programs.cached(PostVariant::Plain), None);
+    }
+    #[test]
+    fn the_bloom_kernel_weights_follow_the_original_curve() {
+        // Five taps: x = (15 − i)/15 − 0.4375, w = x²·24, doubled except the
+        // first, normalised to 1.5.
+        let weights = bloom_weights(5, 0.0, false);
+        let raw: Vec<f32> = (0..5)
+            .map(|i| {
+                let x = (15.0 - i as f32) / 15.0 - 0.4375;
+                x * x * 24.0
+            })
+            .collect();
+        let sum = raw[0] + 2.0 * raw[1] + 2.0 * raw[2] + 2.0 * raw[3] + 2.0 * raw[4];
+        for (w, r) in weights.iter().zip(&raw) {
+            assert_eq!(*w, 1.5 * (*r / sum));
+        }
+        // The normaliser doubles every weight but the first, so the plain
+        // sum is the scale times the raw sum over the doubled sum.
+        let plain: f32 = weights.iter().sum();
+        let ratio = (raw.iter().sum::<f32>()) / sum;
+        assert!((plain - 1.5 * ratio).abs() < 1e-5);
+        // The linear workflow uses level·0.016 + 1.
+        let linear_weights = bloom_weights(5, 4.0, true);
+        assert!((linear_weights[0] - 1.064 * (raw[0] / sum)).abs() < 1e-5);
+        // The rounded tap count and its last index.
+        assert_eq!(bloom_kernel(5.4, 0.0, false).last, 4);
+        assert_eq!(bloom_kernel(5.5, 0.0, false).last, 5);
+        assert_eq!(bloom_kernel(6.5, 0.0, false).last, 5);
+        assert!(bloom_kernel(0.0, 0.0, false).weights.is_empty());
     }
 }
