@@ -76,7 +76,7 @@
 //! - **The form's windows** ([`TreeScreen::present_window`]): showing the
 //!   tree raises a 1000 ms fade: with `r = 1 − (1 − left·0.001)` the share
 //!   still to run, the alpha is `min(2·(1 − r²), 1)` (0 at the opening, 1
-//!   from halfway) and `1 − r²` fades the bar child; hiding cuts both over 256 ms from the closing stamp.
+//!   from halfway) and `1 − r²` is the domain wheel child's show value (the bar keeps its own fades); hiding cuts both over 256 ms from the closing stamp.
 //!   The backdrop takes the first alpha and the content the second; a
 //!   domain switch cuts the content out over 256 ms, swaps the domain at
 //!   the stamp and fades the new tree in over 1000 ms ([`TreeScreen::choose_domain`]
@@ -999,7 +999,9 @@ impl TreeScreen {
                 0x1010
             },
             // The creation screen is opened with no calling form, so it has
-            // no child panel; every other opening hands one in.
+            // no child panel; every other opening hands one in. Its shown
+            // value is that calling form's own (guess: fully shown, 1.0, as
+            // Exarust has no such form object yet).
             overlay_panel: (mode != TreeMode::Create).then_some(1.0),
         }
     }
@@ -3142,10 +3144,6 @@ impl PowerBar {
         true
     }
 
-    /// Drops a power on the bar at `x`,`y`. A hit fills the slot (keeping
-    /// its bits 20 to 22) with the power word and its flags, and the slot's
-    /// old entry goes to the slot the power came from. A miss empties the
-    /// slot the power came from. Returns whether a slot was hit.
     /// Drops a dragged power at `x`,`y` on the bar laid out at `scale` (the
     /// interface unit). A drop inside the enlarged row takes the slot: the
     /// slot's old entry moves to the slot the power came from, then the slot

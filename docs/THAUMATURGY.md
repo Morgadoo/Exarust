@@ -607,7 +607,7 @@ The form's creation words and the 280-square domain wheel child at its
 lower left are kept; the child is the wheel of `effects::wheel` (its icon
 hit test, its confirm that needs a known, different domain, and the 300 ms
 ease a pick or drop starts), its eased value is the focus share and its
-show the bar child's fade. A confirmed icon starts the domain switch. The
+show value is the window's opening ease (times the window while closing). A confirmed icon starts the domain switch. The
 tree's focus total is the child's own focus value (48 when there is no
 record), which its paint eases toward from where a pick or drop began the
 fade. The form's opening has two paths: the character creator opens the
