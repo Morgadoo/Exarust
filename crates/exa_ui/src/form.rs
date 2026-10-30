@@ -1479,6 +1479,69 @@ pub fn destroy_plan(
     }
 }
 
+/// Which of the GUI's single-form slots pointed at a form when it was
+/// freed. The original tests each slot in turn and clears the ones that
+/// match; the caller fills this from what it knows of the form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FormGlobalRefs {
+    /// The main (or skin-owning) form.
+    pub main: bool,
+    /// The form the pointer pressed, kept for the drag.
+    pub pressed: bool,
+    /// The form under the pointer.
+    pub hovered: bool,
+    /// Its parent's active-child slot.
+    pub parent_active: bool,
+    /// The form that held the focus.
+    pub focused: bool,
+    /// The shown tooltip.
+    pub tooltip: bool,
+    /// The task's pressed form (kept with its press word).
+    pub task_pressed: bool,
+    /// The form being dragged.
+    pub dragging: bool,
+    /// The task's drop payload form.
+    pub drop_payload: bool,
+    /// The focused form's parent has the flag that asks the parent task to
+    /// restore its own focus rather than the form's control focus to be
+    /// reset. The original reads the parent's flag byte; what it stands
+    /// for is not established, so the caller passes the tested bit.
+    pub parent_flag: bool,
+}
+
+/// The follow-ups the free-time sweep runs beside clearing the slots: the
+/// focus restored after the main form goes, the parent task's focus call
+/// or the form's control focus reset, the tooltip owner reset, the press
+/// word cleared and the drop callback reset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FormRefSweep {
+    pub reset_main: bool,
+    pub clear_parent_active: bool,
+    pub task_focus_reset: bool,
+    pub control_focus_reset: bool,
+    pub tooltip_owner_reset: bool,
+    pub clear_press_word: bool,
+    pub drop_reset: bool,
+}
+
+/// The sweep a freed form runs over itself and, recursively, its children:
+/// every slot that pointed at it is cleared, the main form's reset and the
+/// focus restore follow, the focused form's parent flag picks the task's
+/// focus call over the control focus reset, the tooltip's owner is reset,
+/// and the task's pressed slot takes its press word with it, as does the
+/// drop payload its callback. The recursion visits children in order.
+pub fn form_ref_sweep(refs: FormGlobalRefs) -> FormRefSweep {
+    FormRefSweep {
+        reset_main: refs.main,
+        clear_parent_active: refs.parent_active,
+        task_focus_reset: refs.focused && refs.parent_flag,
+        control_focus_reset: refs.focused && !refs.parent_flag,
+        tooltip_owner_reset: refs.tooltip,
+        clear_press_word: refs.task_pressed,
+        drop_reset: refs.drop_payload,
+    }
+}
+
 /// A control record for the runtime resize: its 16-bit place and size and
 /// its style word.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

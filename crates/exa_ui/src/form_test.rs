@@ -1357,6 +1357,67 @@ fn the_close_visibility_and_destroy_plans() {
 }
 
 #[test]
+fn the_free_sweep_clears_the_global_slots() {
+    // A form in no slot runs no follow-up at all.
+    assert_eq!(
+        form_ref_sweep(FormGlobalRefs::default()),
+        FormRefSweep::default()
+    );
+    // The main form's reset and a parent-active slot clear stand alone.
+    let refs = FormGlobalRefs {
+        main: true,
+        parent_active: true,
+        ..FormGlobalRefs::default()
+    };
+    let sweep = form_ref_sweep(refs);
+    assert!(sweep.reset_main && sweep.clear_parent_active);
+    assert!(!sweep.task_focus_reset && !sweep.control_focus_reset);
+    // The focused form's parent flag picks the task focus call over the
+    // control focus reset; never both.
+    let focused = FormGlobalRefs {
+        focused: true,
+        parent_flag: true,
+        ..FormGlobalRefs::default()
+    };
+    assert_eq!(
+        form_ref_sweep(focused),
+        FormRefSweep {
+            task_focus_reset: true,
+            ..FormRefSweep::default()
+        }
+    );
+    assert_eq!(
+        form_ref_sweep(FormGlobalRefs {
+            focused: true,
+            ..FormGlobalRefs::default()
+        }),
+        FormRefSweep {
+            control_focus_reset: true,
+            ..FormRefSweep::default()
+        }
+    );
+    // The tooltip, the task's press word and the drop callback each carry
+    // their follow-up; the pressed, hovered and dragged slots only clear.
+    assert_eq!(
+        form_ref_sweep(FormGlobalRefs {
+            tooltip: true,
+            task_pressed: true,
+            drop_payload: true,
+            pressed: true,
+            hovered: true,
+            dragging: true,
+            ..FormGlobalRefs::default()
+        }),
+        FormRefSweep {
+            tooltip_owner_reset: true,
+            clear_press_word: true,
+            drop_reset: true,
+            ..FormRefSweep::default()
+        }
+    );
+}
+
+#[test]
 fn the_snap_slots() {
     let client = ClientRect {
         left: 0,
