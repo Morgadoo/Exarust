@@ -137,3 +137,10 @@ After an assembly the faces SHALL be sorted into material runs, stable within a 
 #### Scenario: Interleaved groups
 - **WHEN** faces 0, 1, 4, 5 belong to "a" and 2, 3 to "b"
 - **THEN** face 4 becomes the third face and face 2 the fifth
+
+### Requirement: Colour channel creation
+Adding a colour channel SHALL append a stream with the first stream's id or the shared-channel bit, the colour format word, the first stream's channel and element count, and opaque white bytes unless bytes are supplied.
+
+#### Scenario: A square
+- **WHEN** a colour channel is added to a four-corner square without bytes
+- **THEN** the new last stream has the colour id and format, channel 0 and four `[255, 255, 255, 255]` entries
