@@ -905,6 +905,202 @@ mod tests {
         );
     }
 
+    /// One merge step of a shipped outfit: the garment model (or `body`),
+    /// the node, the cull bits, and the triangles the node holds and the
+    /// culling append leaves out.
+    #[derive(Debug, Clone, PartialEq)]
+    struct CullRow {
+        model: String,
+        node: String,
+        cull: u32,
+        triangles: usize,
+        culled: usize,
+    }
+
+    /// Dresses the shipped human (default physique) in `outfit` (worn
+    /// models, innermost first) and reports each merge step's culling.
+    /// `None` when the game is not installed.
+    fn shipped_cull_report(outfit: &[&str]) -> Option<(DressedPlan, Vec<CullRow>)> {
+        use exa_assets::{ModelCache, ModelLoader, PackKind};
+
+        let dir = exa_assets::locate_install(None)?;
+        let game = exa_assets::GameData::open(&dir).ok()?;
+        let mut cache = ModelCache::default();
+        let mut meshes = bevy::prelude::Assets::<bevy::prelude::Mesh>::default();
+        let mut materials = bevy::prelude::Assets::<exa_render::material::ExaMaterial>::default();
+        let mut images = bevy::prelude::Assets::<bevy::prelude::Image>::default();
+        let mut loader = ModelLoader {
+            game: &game,
+            cache: &mut cache,
+            meshes: &mut meshes,
+            materials: &mut materials,
+            images: &mut images,
+            bc_supported: false,
+        };
+        let body = loader.model(PackKind::Resource, "humanbase.rfc")?;
+        let infos = crate::item_info(&game);
+        let mut models = Vec::new();
+        let mut infos_of = Vec::new();
+        for name in outfit {
+            models.push(loader.model(PackKind::Characters, name)?);
+            infos_of.push(infos.get(&name.to_ascii_lowercase())?.apparel.clone()?);
+        }
+        let garments: Vec<WornModel<'_>> = models
+            .iter()
+            .zip(&infos_of)
+            .map(|(model, info)| WornModel {
+                model,
+                occupancy: info.occupancy,
+                coverage: info.coverage,
+                level: info.level,
+                material: info.material,
+            })
+            .collect();
+        let assembled = assemble(&body, &garments)?;
+        let rows = assembled
+            .plan
+            .steps
+            .iter()
+            .map(|step| {
+                let (which, node) = assembled.model_of(*step);
+                let (model, label) = if which == 0 {
+                    (&body, "body".to_string())
+                } else {
+                    (&models[which - 1], outfit[which - 1].to_ascii_lowercase())
+                };
+                let node = &model.nodes[node];
+                let mut triangles = 0;
+                let mut culled = 0;
+                for (part, (mesh, _)) in node.parts.iter().enumerate() {
+                    let count = meshes
+                        .get(mesh)
+                        .and_then(|m| m.indices())
+                        .map_or(0, |i| i.len() / 3);
+                    triangles += count;
+                    if let Some(flags) = node.part_flags.get(part) {
+                        culled += flags
+                            .iter()
+                            .take(count)
+                            .filter(|&&f| step.cull != 0 && f & step.cull != 0)
+                            .count();
+                    }
+                }
+                CullRow {
+                    model: label,
+                    node: node.name.clone(),
+                    cull: step.cull,
+                    triangles,
+                    culled,
+                }
+            })
+            .collect();
+        Some((assembled.plan, rows))
+    }
+
+    /// Every body slot the body's visible mask leaves out is drawn by a
+    /// garment node of that slot with triangles left after the cull: a
+    /// covered body part is hidden only under a drawn garment.
+    fn assert_covered_slots_are_drawn(plan: &DressedPlan, rows: &[CullRow]) {
+        for slot in 1..=18 {
+            if plan.body_slots & crate::layers::slot_bit(slot) != 0 {
+                continue;
+            }
+            assert!(
+                rows.iter().any(|r| r.model != "body"
+                    && crate::layers::slot_of(&r.node) == Some(slot)
+                    && r.culled < r.triangles),
+                "slot {slot} is hidden without a drawn garment: {rows:?}"
+            );
+        }
+    }
+
+    /// The player's look: the braies alone. They take no cull bits (their
+    /// visible mask meets both of the pelvis's cull masks), so all 416
+    /// triangles of their pelvis node are merged, and the body keeps all
+    /// eighteen slots (the braies' coverage hides nothing).
+    #[test]
+    fn the_shipped_braies_are_merged_whole() {
+        let Some((plan, rows)) = shipped_cull_report(&["braies_a"]) else {
+            return;
+        };
+        assert_eq!(plan.garments[0].visible, 0x601C_0013);
+        assert_eq!(plan.body_visible, 0xFFFF_FFFF);
+        assert_eq!(plan.body_slots, 0x3_FFFF);
+        assert_eq!(
+            rows[0],
+            CullRow {
+                model: "braies_a".into(),
+                node: "0100 - pelvis".into(),
+                cull: 0,
+                triangles: 416,
+                culled: 0,
+            }
+        );
+        assert_eq!(rows.len(), 19);
+        assert!(rows[1..].iter().all(|r| r.model == "body" && r.culled == 0));
+    }
+
+    /// The first practice opponent's outfit (its own trousers, shirt and
+    /// sandals). The shirt's pelvis coverage hides the trousers' pelvis
+    /// slot, so their pelvis node takes cull bit `0x200000` and loses the
+    /// 126 of its 310 triangles marked for it (the waist under the shirt);
+    /// the leg nodes take `0x400000` (zero cull masks) and no triangle is
+    /// marked for it, so the legs are whole. The body keeps only its feet,
+    /// chest, head and hands.
+    #[test]
+    fn the_shipped_trousers_lose_only_the_waist_under_a_shirt() {
+        let Some((plan, rows)) = shipped_cull_report(&["trouser_a", "shirty_a", "sandals_b"])
+        else {
+            return;
+        };
+        assert_eq!(
+            plan.garments.iter().map(|g| g.visible).collect::<Vec<_>>(),
+            [0x601C_0036, 0xEFFF_FD93, 0x600C_0048]
+        );
+        assert_eq!(plan.body_visible, 0x702F_0248);
+        assert_eq!(plan.body_slots, 0x3_0348);
+        let trousers: Vec<(u32, usize, usize)> = rows
+            .iter()
+            .filter(|r| r.model == "trouser_a")
+            .map(|r| (r.cull, r.triangles, r.culled))
+            .collect();
+        assert_eq!(
+            trousers,
+            [
+                (0x20_0000, 310, 126),
+                (0x40_0000, 195, 0),
+                (0x40_0000, 201, 0),
+                (0x40_0000, 195, 0),
+                (0x40_0000, 201, 0),
+            ]
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.model != "trouser_a")
+                .map(|r| r.culled)
+                .sum::<usize>(),
+            0
+        );
+        assert_covered_slots_are_drawn(&plan, &rows);
+    }
+
+    /// The debug duellist's fixed outfit and the braies under gloves, a
+    /// helm and boots: nothing the cull drops leaves a hidden body slot
+    /// bare.
+    #[test]
+    fn shipped_outfits_hide_body_slots_only_under_drawn_garments() {
+        for outfit in [
+            &["trouser_a", "leathjac_a", "boots_b", "helm_b"][..],
+            &["braies_a", "gloves_a_lth", "helm_b", "boots_b"][..],
+        ] {
+            let Some((plan, rows)) = shipped_cull_report(outfit) else {
+                return;
+            };
+            assert_covered_slots_are_drawn(&plan, &rows);
+            assert!(rows.iter().all(|r| r.culled < r.triangles), "{outfit:?}");
+        }
+    }
+
     /// A transform turned into the file's frame and back is the same
     /// transform, and composing frames places a child as Bevy's hierarchy
     /// does: a child one metre along x under a parent turned a quarter

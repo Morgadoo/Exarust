@@ -1374,6 +1374,10 @@ fn spawn_players(
         // `--weapon` still picks the weapon.
         let mut actors = exa_game::prelude::ActorCache::new();
         let template = actors.template(game, "opponent01", false);
+        // The template's local ids name its own items (its trousers, shirt
+        // and sandals), the rest the game's.
+        let own_items = actors.own_items(game, "opponent01");
+        let template_item = |id: u32| exa_game::prelude::template_item(&own_items, &items, id);
         for (foe_index, foe_at) in foes.into_iter().enumerate() {
             let foe_root = commands
                 .spawn((
@@ -1391,25 +1395,31 @@ fn spawn_players(
             let mut duellist = exa_ai::Duellist::new(player);
             duellist.holds_ground = options.still_opponent;
             let practice = template.clone().map(exa_game::prelude::practice_opponent);
-            let outfit: Vec<String> = practice
+            // What the template wears and holds, painted as its items are.
+            let look = practice
                 .as_ref()
-                .map(|opponent| {
-                    opponent
-                        .record
-                        .worn
+                .map(|opponent| exa_world::record_look(&opponent.record, template_item));
+            let garments: Vec<exa_character::Garment> = look
+                .as_ref()
+                .map(|look| {
+                    look.worn
                         .iter()
-                        .filter_map(|worn| {
-                            let item = items.iter().find(|item| item.id == worn.index())?;
-                            (!item.worn_model.is_empty()).then(|| item.worn_model.clone())
+                        .map(|worn| exa_character::Garment {
+                            model: worn.model.clone(),
+                            appearance: worn.appearance,
+                            hides: Some(worn.hides),
+                            armour: worn.armour,
                         })
                         .collect()
                 })
-                .filter(|models: &Vec<String>| !models.is_empty())
-                .unwrap_or_else(|| {
-                    ["leathjac_a", "trouser_a", "boots_b", "helm_b"]
-                        .map(String::from)
-                        .to_vec()
-                });
+                .unwrap_or_default();
+            let outfit: Vec<String> = if garments.is_empty() {
+                ["leathjac_a", "trouser_a", "boots_b", "helm_b"]
+                    .map(String::from)
+                    .to_vec()
+            } else {
+                garments.iter().map(|g| g.model.clone()).collect()
+            };
             // A career match's drawn weapon variant names an object id;
             // its model is the weapon the foe holds. `--weapon` overrides.
             let drawn = options
@@ -1424,11 +1434,7 @@ fn spawn_players(
                 .weapon
                 .clone()
                 .or(drawn)
-                .or_else(|| {
-                    let hand = practice.as_ref()?.record.hands[0];
-                    let item = items.iter().find(|item| item.id == hand.index())?;
-                    (!item.model.is_empty()).then(|| item.model.clone())
-                })
+                .or_else(|| Some(look.as_ref()?.held.as_ref()?.0.clone()))
                 .unwrap_or_else(|| "ub05ssworda".into());
             // `--undead-opponent`: the story's body rules, under which a
             // living human may rise again.
@@ -1458,7 +1464,13 @@ fn spawn_players(
                 }
                 None => new_human(0.0),
             }
-            .with_encumbrance(outfit_encumbrance(&outfit));
+            .with_encumbrance(match &practice {
+                // The record's own worn items, as the original weighs them.
+                Some(opponent) => {
+                    exa_formats::encumbrance::of_record(&opponent.record, template_item)
+                }
+                None => outfit_encumbrance(&outfit),
+            });
             if undead {
                 info!(
                     "undead opponent: rules {:#x} (may rise {}), red {:.3}",
@@ -1494,7 +1506,11 @@ fn spawn_players(
                 Transform::from_rotation(Quat::from_rotation_y(foe_at.yaw)),
                 anim,
                 exa_character::held::Hands::default(),
-                exa_character::Outfit::of_models(&outfit),
+                if garments.is_empty() {
+                    exa_character::Outfit::of_models(&outfit)
+                } else {
+                    exa_character::Outfit(garments)
+                },
                 exa_character::Wielded::model(weapon),
                 exa_assets::BodyModel(model::BODY_MODEL.into()),
                 duel_look,
