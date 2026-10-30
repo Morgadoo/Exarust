@@ -1436,7 +1436,8 @@ and a negative step becomes 0; the audio mark subtracts half the step,
 rounded to even, from the audio clock when the viewport count is positive),
 the task tick's repaint and message rules (a cleared flag posts to the GUI
 task and repaints, all of the low three bits across the two message words
-repaint, message 2 follows while the pending count is under its limit and the
+repaint and also set the scene node's update byte, which a cleared flag sets
+too, message 2 follows while the pending count is under its limit and the
 primary word has none of `0xf0`), the maximised-viewport count, the
 run-scene set-up (viewport rectangle, flags and 15-character title, the
 renderer minimum that only rises, the camera record, the weather option bits
