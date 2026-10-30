@@ -16,12 +16,13 @@ use std::sync::Arc;
 
 use bevy::math::Affine3A;
 use bevy::prelude::*;
+use exa_assets::polyhedra::fast_sin_cos;
 use exa_assets::{Model, ModelLoader, PackKind, transform_from_rows};
 use exa_formats::level::LevelGrid;
 
 use crate::grid_sets::{SetCatalog, SetKind};
 use crate::room_view::{InRoom, RoomShell, ShellKind};
-use crate::rooms::{CELL_OPEN, CELL_TERRAIN, Rooms, rotate_edge_word};
+use crate::rooms::{CELL_OPEN, CELL_TERRAIN, INV_CELL_CM, Rooms, rotate_edge_word};
 
 /// Edge and corner codes masked out per special tile type (1-based), and
 /// whether the tile keeps a floor. The mask is turned by the cell's
@@ -1124,10 +1125,20 @@ pub fn spawn_point(grid: &LevelGrid) -> Option<Vec3> {
     best.map(|(_, p)| p)
 }
 
+/// The rotation a side applies to its piece: a quarter turn per side about
+/// +Y, built from the engine's fast sine and cosine pair in the
+/// instruction order (row 0 `c, 0, −s`; row 1 `0, 1, 0`; row 2 `s, 0, c`).
+/// A quarter turn is exact here: its sine is 1 and its cosine a negative
+/// zero, not the small residue the library cosine gives.
+pub fn side_rotation(side: u32) -> [[f32; 3]; 3] {
+    let (s, c) = fast_sin_cos(side as f32 * std::f32::consts::FRAC_PI_2);
+    [[c, 0.0, -s], [0.0, 1.0, 0.0], [s, 0.0, c]]
+}
+
 /// Rotation by a quarter turn per side about +Y, then the cell centre.
 fn side_transform(side: u32, centre: Vec3) -> Transform {
-    let (s, c) = (side as f32 * std::f32::consts::FRAC_PI_2).sin_cos();
-    let mut t = transform_from_rows(&[[c, 0.0, -s], [0.0, 1.0, 0.0], [s, 0.0, c], [0.0; 3]]);
+    let r = side_rotation(side);
+    let mut t = transform_from_rows(&[r[0], r[1], r[2], [0.0; 3]]);
     t.translation = centre;
     t
 }
@@ -1198,7 +1209,12 @@ impl FloorUvs<'_> {
                 ps.iter()
                     .map(|&p| {
                         let c = local.transform_point3(Vec3::from(p));
-                        [c.x / CELL_M + 0.5, 0.5 - c.z / CELL_M]
+                        // The original's planar mapping, in its own units
+                        // and order: the cell-local position in
+                        // centimetres times 1/600, then half a cell.
+                        let x = (c.x * 100.0) * INV_CELL_CM;
+                        let z = (c.z * 100.0) * INV_CELL_CM;
+                        [x + 0.5, 0.5 - z]
                     })
                     .collect()
             });
@@ -1214,9 +1230,6 @@ impl FloorUvs<'_> {
         handle
     }
 }
-
-/// A grid cell's side, metres.
-const CELL_M: f32 = CELL_CM / 100.0;
 
 /// Spawns `node` (with the given transform in place of its own) and its
 /// descendants under `parent`, its meshes tagged with the cell's `room`.
@@ -1772,6 +1785,49 @@ mod tests {
         let b = name_bytes("+WCA07");
         assert_eq!((b[1], b[2], variant_digits(&b)), (b'W', b'C', 7));
         assert_eq!(variant_digits(&name_bytes("+RM")), 0);
+    }
+
+    #[test]
+    fn sides_use_the_engines_quarter_turn() {
+        // The fast pair makes a quarter turn exact: sine 1, cosine a
+        // negative zero, where the library cosine leaves a residue.
+        let r = side_rotation(1);
+        assert_eq!(r[0][0].to_bits(), (-0.0f32).to_bits());
+        assert_eq!(r[0][2], -1.0);
+        assert_eq!(r[1], [0.0, 1.0, 0.0]);
+        assert_eq!(r[2][0], 1.0);
+        assert_eq!(r[2][2].to_bits(), (-0.0f32).to_bits());
+        // Side 0 is the identity, and four turns come back to it.
+        assert_eq!(
+            side_rotation(0),
+            [[1.0, 0.0, -0.0], [0.0, 1.0, 0.0], [-0.0, 0.0, 1.0]]
+        );
+        let four = side_rotation(4);
+        assert_eq!(four[0][0], 1.0);
+        assert_eq!(four[0][2].to_bits(), (-0.0f32).to_bits());
+        // Side 2 turns the back edge to +Z, side 3 to +X.
+        let back = Vec3::new(0.0, 0.0, -3.0);
+        let two = side_transform(2, Vec3::ZERO).transform_point(back);
+        assert!((two - Vec3::new(0.0, 0.0, 3.0)).length() < 1e-6);
+        let three = side_transform(3, Vec3::ZERO).transform_point(back);
+        assert!((three - Vec3::new(3.0, 0.0, 0.0)).length() < 1e-6);
+    }
+
+    #[test]
+    fn floor_uvs_multiply_in_centimetres() {
+        // One metre along each axis of the cell: 100 cm × 1/600 = 1/6,
+        // plus and minus the half-cell offset.
+        let x = (1.0f32 * 100.0) * INV_CELL_CM;
+        assert_eq!(x.to_bits(), 0x3e2a_aaab);
+        assert_eq!((x + 0.5).to_bits(), 0x3f2a_aaab);
+        // The v axis runs the other way: 0.5 − 1/6.
+        assert_eq!((0.5 - x).to_bits(), 0x3eaa_aaaa);
+        // The cell's own corners: 0 and 6 m map to 0.5 and 1.5 (or 0.5
+        // and −0.5 on the v axis).
+        assert_eq!(((0.0f32 * 100.0) * INV_CELL_CM + 0.5), 0.5);
+        let six = (6.0f32 * 100.0) * INV_CELL_CM;
+        assert_eq!(six, 1.0);
+        assert_eq!(0.5 - six, -0.5);
     }
 
     #[test]
