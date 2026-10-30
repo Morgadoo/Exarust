@@ -118,6 +118,27 @@ pub fn scene_tree<'a>(item: &'a Item, payload: &[u8]) -> SceneTree<'a> {
     SceneTree::None
 }
 
+/// The tree a model-less record gets from its parsed sections: the
+/// invisible container volume when it has a volume section, else the 50 cm
+/// placeholder of an operative record, else none. This is [`scene_tree`]'s
+/// order without the payload.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BareTree {
+    ContainerVolume(ContainerVolume),
+    Placeholder,
+}
+
+/// [`BareTree`] for `item`: the volume section wins over the operative one,
+/// as the create routine's section lookups do.
+pub fn bare_tree(item: &Item) -> Option<BareTree> {
+    if let Some(volume) = item.volume {
+        return Some(BareTree::ContainerVolume(container_volume(
+            volume.extents.map(f32::from),
+        )));
+    }
+    item.operative.is_some().then_some(BareTree::Placeholder)
+}
+
 /// A container volume of `extents`: its radius is their length, the
 /// squares summed x and z, then y.
 pub fn container_volume(extents: [f32; 3]) -> ContainerVolume {
@@ -410,6 +431,37 @@ mod tests {
         let p = PlaceholderNode::default();
         assert_eq!(p.extents, [50.0; 3]);
         assert_eq!(p.radius, container_volume([50.0; 3]).radius);
+    }
+
+    #[test]
+    fn a_model_less_record_gets_its_volume_then_its_placeholder() {
+        let mut body = vec![30, 0, 40, 0, 120, 0, 0, 0];
+        body.resize(20, 0);
+        let mut volume = Item::parse(1, &section_bytes(objdb::VOLUME, &body)).unwrap();
+        assert!(volume.volume.is_some());
+        volume.model.clear();
+        assert_eq!(
+            bare_tree(&volume),
+            Some(BareTree::ContainerVolume(ContainerVolume {
+                extents: [30.0, 40.0, 120.0],
+                radius: 130.0,
+            }))
+        );
+        // The volume wins over an operative section, as in scene_tree.
+        volume.operative = operative_item("").operative;
+        assert!(matches!(
+            bare_tree(&volume),
+            Some(BareTree::ContainerVolume(_))
+        ));
+        let bare = operative_item("");
+        assert_eq!(bare_tree(&bare), Some(BareTree::Placeholder));
+        assert_eq!(bare_tree(&item("")), None);
+        // A record with a model is not model-less, but this helper only
+        // reads the sections the create routine reads after the model miss.
+        assert!(matches!(
+            bare_tree(&operative_item("lever")),
+            Some(BareTree::Placeholder)
+        ));
     }
 
     #[test]

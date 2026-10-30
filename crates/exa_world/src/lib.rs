@@ -528,9 +528,10 @@ pub fn placed_characters(
         .collect()
 }
 
-/// The item a placed object shows, when it is the level's own and has a
-/// model.
-fn placed_item<'a>(
+/// The item a placed object names, when it is the level's own. A record
+/// without a model is included: the create routine builds its container
+/// volume or placeholder node from its sections.
+fn level_item<'a>(
     scene: &'a Scene,
     global: &'a [Item],
     object: &exa_formats::rfc::PlacedObject,
@@ -544,11 +545,18 @@ fn placed_item<'a>(
         global
     };
     let id = object.id & exa_formats::rfc::PlacedObject::ID_MASK;
+    items.iter().find(|i| i.id == id)
+}
+
+/// The item a placed object shows, when it is the level's own and has a
+/// model.
+fn placed_item<'a>(
+    scene: &'a Scene,
+    global: &'a [Item],
+    object: &exa_formats::rfc::PlacedObject,
+) -> Option<&'a Item> {
     // Triggers and markers have no model.
-    items
-        .iter()
-        .find(|i| i.id == id)
-        .filter(|i| !i.model.is_empty())
+    level_item(scene, global, object).filter(|i| !i.model.is_empty())
 }
 
 /// The pack and entry of a placed object's model (none for weapons a
@@ -600,7 +608,7 @@ fn spawn_placed_object(
     object: &exa_formats::rfc::PlacedObject,
     mechanism_bodies: bodies::MechanismBodies,
 ) -> Option<PlacedSpawn> {
-    let item = placed_item(scene, global, object)?;
+    let item = level_item(scene, global, object)?;
     // `@` names a weapon assembled by a factory.
     if let Some(factory) = item.model.strip_prefix('@') {
         let Some(model) = loader.factory_weapon(factory, item.weapon.as_ref()) else {
@@ -629,30 +637,37 @@ fn spawn_placed_object(
         placement_base(loader, kind, &entry, &object.attachments, placement)
     });
     let Some(model) = model else {
-        // A record without a model name and with an operative section gets
-        // the original's 50 cm placeholder node, so its placement exists.
-        // A named model that is not found has no tree, as in the original.
-        if db_objects::scene_tree(item, &[]) == db_objects::SceneTree::Placeholder {
-            let entity = commands
-                .spawn((
-                    transform_from_rows(&object.transform),
-                    Name::new(item.name.clone()),
-                    room_view::PendingRoom::default(),
-                    PlacedItem::of(item, object),
-                    db_objects::PlaceholderNode::default(),
-                    ChildOf(parent),
-                ))
-                .id();
-            if let Some(sections) = ObjectSections::of(item, object) {
-                commands.entity(entity).insert(sections);
+        // A record without a model name gets the original's invisible
+        // container-volume node when it has a volume section, else the
+        // 50 cm placeholder of an operative record, so its placement
+        // exists. A named model that is not found has no tree.
+        let Some(tree) = db_objects::bare_tree(item) else {
+            return Some(PlacedSpawn::Missing);
+        };
+        let mut spawn = commands.spawn((
+            transform_from_rows(&object.transform),
+            Name::new(item.name.clone()),
+            room_view::PendingRoom::default(),
+            PlacedItem::of(item, object),
+            ChildOf(parent),
+        ));
+        match tree {
+            db_objects::BareTree::ContainerVolume(volume) => {
+                spawn.insert(volume);
             }
-            return Some(PlacedSpawn::Placed {
-                entity,
-                lights: 0,
-                bodies: bodies::BodyCounts::default(),
-            });
+            db_objects::BareTree::Placeholder => {
+                spawn.insert(db_objects::PlaceholderNode::default());
+            }
         }
-        return Some(PlacedSpawn::Missing);
+        let entity = spawn.id();
+        if let Some(sections) = ObjectSections::of(item, object) {
+            commands.entity(entity).insert(sections);
+        }
+        return Some(PlacedSpawn::Placed {
+            entity,
+            lights: 0,
+            bodies: bodies::BodyCounts::default(),
+        });
     };
     let share = item.light_share(object.flags);
     let scaled;
@@ -2244,6 +2259,36 @@ mod tests {
         // No other story level has one.
         let first = Scene::parse(resource.get("exanima01.rfc").unwrap()).unwrap();
         assert!(alarm_volumes(&first, &global).is_empty());
+    }
+
+    /// Levels place records without a model (transition markers, usable
+    /// volumes); the create routine builds their invisible volume or
+    /// placeholder node, and `exanima01` places at least one such volume,
+    /// so the spawn path is exercised by shipped data.
+    #[test]
+    fn shipped_levels_place_model_less_volume_records() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(&dir).unwrap();
+        let resource = game.pack(exa_assets::PackKind::Resource).unwrap();
+        let db = exa_formats::rdb::Database::parse(resource.get("objdb.rdb").unwrap()).unwrap();
+        let global = exa_formats::objdb::items(&db);
+        let scene = Scene::parse(resource.get("exanima01.rfc").unwrap()).unwrap();
+        let mut found = 0;
+        for object in &scene.placed_objects {
+            let Some(item) = level_item(&scene, &global, object) else {
+                continue;
+            };
+            if item.model.is_empty() && item.volume.is_some() {
+                found += 1;
+                assert!(matches!(
+                    db_objects::bare_tree(item),
+                    Some(db_objects::BareTree::ContainerVolume(_))
+                ));
+            }
+        }
+        assert!(found > 0, "exanima01 places a model-less volume");
     }
 
     /// What spawning `name` produced: the level's info, the names spawned
