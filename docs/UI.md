@@ -555,22 +555,36 @@ assembly, and the standard-match and rank-label tables in `Exanima.exe`.
   a bottom-anchored record (style bit 0x80000) stands `y + 8` rows above
   the client's bottom edge, lifted the same way. A size the template
   leaves at zero is the class table's: a label is 20 tall and keeps a zero
-  width, an item icon 160 square, a coin control 128 by 24.
+  width, an item icon 160 square, a coin control 128 by 24. These are
+  unit-4 numbers: the hub builds the form at the live GUI unit, so the form
+  and its records rescale as every form does (`record_form::geometry`; at
+  unit 6 the form is 904 by 982 and "Available" 192 by 42 at 174, 483), the
+  child views as a plain child pane (`record_form::pane_at`: x and y over 4
+  times the unit, the client's width and height the same, the two-pixel
+  border kept; the match list is 292 by 268 at 0, 84 and the fighter tables
+  436 by 364 at x 0 and 444 from y 522) and the tables' columns at their
+  share of the unit (width over 4 times the unit). The tournament refresh
+  sets the lineup's height in units: 61 (56 compact), or 30 for a weapon
+  event.
 - **Drawing order.** The form and its template records (the hub draws them
   as the company windows' records are drawn), then the visible child views
   in the order the constructor made them: match, rank and tier lists,
   picture, reward panel, events, winners, message, company, lineup and
-  season tables. A table draws its frame, its column headers, then its rows
-  left to right. A coin cell's callback follows its cell: a dash four
-  pixels in for zero, else the counts of gold, silver and copper. The rows
-  are 30 pixels tall (a guess from the six-row and eight-row fits). A point
+  season tables. The tables are table views (the constructor makes them
+  with the table view's constructor; see Tables): a table draws its frame,
+  its column headers (titles a unit in and five units down its client, the
+  client inside the base form's two-pixel border), then its rows left to
+  right, six units tall under the six-unit header (the first row's text
+  eleven units down). A coin column is owner-drawn: its callback gets the
+  cell's pen, a unit into the column, and draws a dash four pixels on for
+  zero, else the counts of gold, silver and copper. A point
   maps to a tab, the primary button, the close button, the day-end button,
   the tournament's forfeit button or a visible cell (`Board::hit_test`),
   and a click selects the tab, match, rank, tier, event or winner,
   confirms the board, or reports the close, day-end or forfeit action
   (`Board::click`).
 
-Known guesses: the row height; the three one-column list widths (the
+Known guesses: the three one-column list widths (the
 constructor sets only the table widths); that the template's records draw
 before the child views; the class bytes for the three staff
 professions; the meaning of flag 1 on a daily event. The weapon check's
@@ -593,7 +607,8 @@ cells, manage refresh and `arsenalico.rfi` icon sheet are in
 - **Manage Company** (0x2c4 × 0x1d4): Roster and Report tables, Manage,
   Arsenal, Recruit and Hire, the Owned, Upkeep, Earned today and Spent today
   coins, End Day, Close and Records. The roster's columns are Name (0x84),
-  Rank (0x50) and Health (0x84). A rank cell reads Merchant, Trainer or
+  Rank (0x50) and Health (0x84) at unit 4, kept at their share of the unit;
+  both tables draw as table views (see Tables) in their rescaled panes. A rank cell reads Merchant, Trainer or
   Physician for a specialist, else the rank name, marked "+" while the
   fighter is ready to train. A name is drawn in 255, 210, 100 at three
   fifths of the skin's alpha for the manager, 220, 180, 160 at two thirds

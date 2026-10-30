@@ -40,13 +40,14 @@ use exa_ui::match_board::{
     Widget,
 };
 use exa_ui::skin::SkinPalette;
+use exa_ui::table_view;
 
 use crate::arena;
 use crate::arena::Roster;
 use crate::arena_board;
 use crate::career::{Company, Member, Profession};
 use crate::gui_paint::{self, Frame};
-use crate::manage::{ManageDay, ManageRecord, ManageRefresh, RosterRowText, manage_refresh};
+use crate::manage::{ManageDay, ManageRecord, ManageRefresh, manage_refresh};
 use crate::report::ReportFighter;
 use crate::shop_window::ShopWindow;
 
@@ -431,12 +432,15 @@ impl HubWindows {
         if let Some(state) = &self.board_state {
             board.restore(state);
         }
-        // The board's own tables and paint list are in unit-4 pixels, so
-        // its form is built at unit 4 whatever the screen's unit.
+        // The form, its template's records and the board's child views are
+        // the constructor's unit-4 numbers rescaled to the live unit, as
+        // the GUI unit's rescale leaves every form.
+        let unit = if self.unit > 0 { self.unit } else { 4 };
+        board.unit = unit;
         let form = exa_ui::record_form::RecordForm::open(
             &exa_ui::match_board::form_spec(board.compact),
             self.task.screen,
-            4,
+            unit,
         );
         let r = form.rect();
         let controls = board_controls(&form);
@@ -605,6 +609,10 @@ fn at(bounds: GuiRect, rect: Rect) -> GuiRect {
     GuiRect::new(bounds.left + rect.x, bounds.top + rect.y, rect.w, rect.h)
 }
 
+fn at_pen(bounds: GuiRect, pen: (i32, i32)) -> (i32, i32) {
+    (bounds.left + pen.0, bounds.top + pen.1)
+}
+
 fn at4(bounds: GuiRect, rect: (i32, i32, i32, i32)) -> GuiRect {
     GuiRect::new(bounds.left + rect.0, bounds.top + rect.1, rect.2, rect.3)
 }
@@ -694,19 +702,25 @@ pub(crate) fn paint_text(painted: &mut gui_paint::Painted, rect: GuiRect, text: 
     }
 }
 
-fn paint_text_ink(
+/// Text at a pen (the glyphs' left edge and baseline), as a table view
+/// draws its titles and cells; `None` is the skin's text colour.
+fn paint_pen_text(
     painted: &mut gui_paint::Painted,
-    rect: GuiRect,
+    pen: (i32, i32),
     text: &str,
     ink: Option<[u8; 4]>,
     look: &Look,
 ) {
     let (font, size) = screen_font(look.textures, look.unit);
-    let unit = look.unit;
-    for layer in
-        gui_paint::paint_label_ink(rect, 0, unit, &look.palette, &font, size, text, ink).layers
-    {
-        painted.push(layer);
+    if let Some(texture) = size {
+        let ink = ink.unwrap_or(look.palette.text[6]);
+        painted.push(gui_paint::caption_layer(
+            &font,
+            texture,
+            text.as_bytes(),
+            pen,
+            ink,
+        ));
     }
 }
 
@@ -802,10 +816,13 @@ fn paint_board(
             BoardPaint::Table { rect, .. } => {
                 paint_panel(&mut painted, at(origin, rect), look);
             }
-            BoardPaint::Column { rect, title, .. } => {
-                paint_text(&mut painted, at(origin, rect), title, look);
+            BoardPaint::Column { pen, title, .. } => {
+                paint_pen_text(&mut painted, at_pen(origin, pen), title, None, look);
             }
-            BoardPaint::Cell { rect, value, .. } => {
+            BoardPaint::Cell {
+                rect, pen, value, ..
+            } => {
+                let pen = at_pen(origin, pen);
                 let text = match value {
                     CellValue::Text(text) => text,
                     // A coin column carries a draw callback instead of a
@@ -814,16 +831,15 @@ fn paint_board(
                     CellValue::Coin(_) => String::new(),
                     CellValue::Health(word) => {
                         // The roster's health column is owner-drawn: the
-                        // table hands the gauge draw the cell's left one
-                        // unit in, its pen line five units under the row's
-                        // top and the column's width.
+                        // table hands the gauge draw the cell's pen (a unit
+                        // in, `11u + 6u·row` down) and, the column being
+                        // the last, the rest of the client's width.
                         let cell = at(origin, rect);
-                        let unit = look.unit;
                         let marker = crate::manage::health_marker(
-                            cell.left + unit,
-                            cell.top + 5 * unit,
-                            cell.width(),
-                            unit,
+                            pen.0,
+                            pen.1,
+                            cell.right - pen.0,
+                            look.unit,
                             word,
                         );
                         paint_gauge(&mut painted, &marker, look);
@@ -832,10 +848,10 @@ fn paint_board(
                     CellValue::Empty => String::new(),
                 };
                 if !text.is_empty() {
-                    paint_text(&mut painted, at(origin, rect), &text, look);
+                    paint_pen_text(&mut painted, pen, &text, None, look);
                 }
             }
-            BoardPaint::Coin { rect, draw, .. } => {
+            BoardPaint::Coin { pen, draw, .. } => {
                 let (x, text) = match draw {
                     CoinDraw::Dash { x } => (x, "-".to_string()),
                     CoinDraw::Coins {
@@ -846,8 +862,7 @@ fn paint_board(
                     } => (x, coin_text_parts(gold, silver, copper)),
                 };
                 if !text.is_empty() {
-                    let cell = Rect { x, ..rect };
-                    paint_text(&mut painted, at(origin, cell), &text, look);
+                    paint_pen_text(&mut painted, at_pen(origin, (x, pen.1)), &text, None, look);
                 }
             }
             BoardPaint::Label { rect, text, .. } => {
@@ -885,7 +900,6 @@ fn paint_manage(
         ..Default::default()
     };
     crate::hub_forms::paint_form(&mut painted, form, look);
-    let u = look.unit;
     let pane = |i: usize| {
         form.child(i)
             .map(|c| GuiRect::new(c.x, c.y, c.w, c.h))
@@ -895,81 +909,65 @@ fn paint_manage(
     let report_table = pane(1);
     paint_panel(&mut painted, roster, look);
     paint_panel(&mut painted, report_table, look);
-    let mut x = 0;
-    for (title, width) in crate::manage::ROSTER_COLUMNS {
-        if !title.is_empty() {
-            paint_text(
-                &mut painted,
-                GuiRect::new(roster.left + x, roster.top, width, 6 * u),
-                title,
-                look,
-            );
+    // Both tables are table views at the form's unit: their client is
+    // inside the base form's border, titles are a unit in and five units
+    // down, rows six units tall under the six-unit header, and the
+    // columns keep their share of the unit.
+    let unit = form.unit();
+    let inner = |r: GuiRect| {
+        let b = exa_ui::match_board::TABLE_BORDER;
+        GuiRect::new(r.left + b, r.top + b, r.width() - 2 * b, r.height() - 2 * b)
+    };
+    let roster = inner(roster);
+    let report_table = inner(report_table);
+    let width = |w: i32| {
+        if unit == 4 {
+            w
+        } else {
+            table_view::rescale_width(w, 4, unit)
         }
-        x += width;
+    };
+    let pen_in = |client: GuiRect, pen: (i32, i32)| (client.left + pen.0, client.top + pen.1);
+    let mut lefts = [0; 4];
+    let mut x = 0;
+    for (i, (title, w)) in crate::manage::ROSTER_COLUMNS.into_iter().enumerate() {
+        lefts[i] = x;
+        if !title.is_empty() {
+            let pen = pen_in(roster, table_view::title_pen(unit, x));
+            paint_pen_text(&mut painted, pen, title, None, look);
+        }
+        x += width(w);
     }
-    // The roster is a table of 6-unit rows under a 6-unit header; its
-    // health column is owner-drawn: the table hands the cell's left (one
-    // unit in, past the three columns), its pen line `11u + 6u·row` and the
-    // rest of the client's width to the gauge draw ([`health_marker`]).
-    let health_x = u + crate::manage::HEALTH_COLUMN_X;
+    // The health column is owner-drawn: the gauge draw gets the cell's pen
+    // and, the column being the last, the rest of the client's width.
     for (row, text) in refresh.roster.iter().enumerate() {
         let row = row as i32;
-        let y = roster.top + 6 * u * (row + 1);
-        paint_row(&mut painted, roster.left, y, 6 * u, text, look);
+        let name = pen_in(roster, table_view::cell_pen(unit, lefts[0], row));
+        paint_pen_text(&mut painted, name, &text.name.text, text.name.ink, look);
+        let rank = pen_in(roster, table_view::cell_pen(unit, lefts[1], row));
+        paint_pen_text(&mut painted, rank, &text.rank.text, None, look);
+        let health = pen_in(roster, table_view::cell_pen(unit, lefts[3], row));
         let marker = crate::manage::health_marker(
-            roster.left + health_x,
-            roster.top + 11 * u + 6 * u * row,
-            roster.width() - health_x,
-            u,
+            health.0,
+            health.1,
+            roster.right - health.0,
+            unit,
             text.health_word,
         );
         paint_gauge(&mut painted, &marker, look);
     }
-    // The report: one column, the table's width less 16, titled with the
-    // day; its lines in 6-unit rows.
-    let column = report_table.width() - 0x10;
-    paint_text(
-        &mut painted,
-        GuiRect::new(report_table.left, report_table.top, column, 6 * u),
-        &refresh.title,
-        look,
-    );
+    // The report: one column titled with the day, its lines in 6-unit rows
+    // that fit the client.
+    let title = pen_in(report_table, table_view::title_pen(unit, 0));
+    paint_pen_text(&mut painted, title, &refresh.title, None, look);
     for (row, line) in refresh.report.iter().enumerate() {
-        let y = report_table.top + 6 * u * (row as i32 + 1);
-        if y + 6 * u > report_table.bottom {
+        let pen = pen_in(report_table, table_view::cell_pen(unit, 0, row as i32));
+        if pen.1 > report_table.bottom {
             break;
         }
-        paint_text(
-            &mut painted,
-            GuiRect::new(report_table.left, y, column, 6 * u),
-            &line.text,
-            look,
-        );
+        paint_pen_text(&mut painted, pen, &line.text, None, look);
     }
     painted
-}
-
-fn paint_row(
-    painted: &mut gui_paint::Painted,
-    left: i32,
-    y: i32,
-    height: i32,
-    text: &RosterRowText,
-    look: &Look,
-) {
-    paint_text_ink(
-        painted,
-        GuiRect::new(left, y, 0x84, height),
-        &text.name.text,
-        text.name.ink,
-        look,
-    );
-    paint_text(
-        painted,
-        GuiRect::new(left + 0x84, y, 0x50, height),
-        &text.rank.text,
-        look,
-    );
 }
 
 /// The roster's health gauge where [`crate::manage::health_marker`] puts
@@ -1057,6 +1055,11 @@ pub fn sync_hub_screen(
             hub.task.screen = size;
             hub.unit = unit;
             hub.forms.resize(size, unit);
+            let hub = &mut *hub;
+            if let (Some(board), Some(form)) = (hub.board.as_mut(), hub.board_form.as_mut()) {
+                board.unit = unit;
+                form.resize(size, unit);
+            }
         }
     }
 }
@@ -1462,19 +1465,53 @@ mod tests {
     }
 
     #[test]
+    fn the_manage_roster_title_clears_its_table_header() {
+        // "Roster" (centred down its 28-pixel record) ends above the
+        // roster table's titles, which a table view draws five units into
+        // its client, inside the two-pixel border.
+        for unit in [4, 5, 6, 8] {
+            let font = exa_ui::gui_font::gui_level(exa_ui::gui_font::level_for_unit(unit)).main;
+            let form = exa_ui::record_form::RecordForm::open(
+                &exa_ui::arena_forms::MANAGE_FORM,
+                (1920, 1080),
+                unit,
+            );
+            let label = &form.geometry.controls[0];
+            assert_eq!(label.text, b"Roster".to_vec());
+            let baseline = label.y + (label.h + font.line_height + 2) / 2;
+            let roster = form.geometry.children[0];
+            let (_, title_y) = table_view::title_pen(unit, 0);
+            let top = roster.y + exa_ui::match_board::TABLE_BORDER + title_y - font.ascent;
+            assert!(baseline <= top, "unit {unit}: {baseline} > {top}");
+        }
+        // The roster's columns keep their share of the unit: Health's
+        // title at unit 6 is 0x84 + 0x50 + 0x10 = 228 design pixels in,
+        // 342 live.
+        assert_eq!(
+            crate::manage::ROSTER_COLUMNS[..3]
+                .iter()
+                .map(|&(_, w)| table_view::rescale_width(w, 4, 6))
+                .sum::<i32>(),
+            342
+        );
+    }
+
+    #[test]
     fn a_board_cell_rect_is_pinned() {
         let career = career();
         let board = career.board();
         let rects = board_cell_rects(&board);
         let first = rects.first().unwrap();
         assert_eq!(first.0, TableSlot::Match);
+        // The first row is under the table view's 6-unit header, inside
+        // its two-pixel border.
         assert_eq!(
             first.1,
             Rect {
-                x: 0,
-                y: 56,
-                w: 196,
-                h: exa_ui::match_board::ROW_HEIGHT
+                x: 2,
+                y: 82,
+                w: 192,
+                h: 24
             }
         );
         assert_eq!(table_layout(&board, TableSlot::Roster).rect.w, 292);

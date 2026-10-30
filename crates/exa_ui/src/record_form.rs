@@ -92,6 +92,27 @@ fn place_of(rect: Rect, border: i32, anchors: u32, records: &[Control]) -> FormP
     }
 }
 
+/// A plain child pane (form-local client rectangle at unit 4, the base
+/// form's border of 2 and no anchors) at `unit`, as the GUI unit's rescale
+/// leaves it: x and y divided by 4 and times the unit, the client's width
+/// and height the same and the border kept (it is under 4). This is the
+/// path [`geometry`] takes for a spec's children; a form whose child views
+/// are not in its spec (the match board's tables) rescales them with it.
+pub fn pane_at(rect: Rect, unit: i32) -> Rect {
+    if unit == 4 {
+        return rect;
+    }
+    let mut place = place_of(rect, crate::settings::BORDER, 0, &[]);
+    let mut realign = |f: &mut FormPlace| f.client = client_of(f.w, f.h, f.border);
+    rescale_form(&mut place, 4, unit, (0, 0), (0, 0), 0, &mut realign);
+    Rect {
+        x: place.x,
+        y: place.y,
+        w: place.w,
+        h: place.h,
+    }
+}
+
 /// The laid-out form at a unit: its place on the screen, its child panes
 /// (client-local) and its records (client-local).
 #[derive(Debug, Clone, PartialEq)]
