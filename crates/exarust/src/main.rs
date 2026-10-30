@@ -6,6 +6,15 @@
 //! exarust [--game <dir>] [options] texture <name>        one texture (first light)
 //! exarust [--game <dir>] [options] character [moveset/action]  the human body playing a motion
 //! exarust [--game <dir>] [options] play <level>          walk the level as the player (WASD, Shift, right-drag)
+//! exarust grid [grid options] <scene1> [scene2] [scene3] [scene4]
+//!                                     one window split 2x2, each quadrant a separate game (`play <scene>`, or the
+//!                                     scene's own words when it holds spaces); click a quadrant to give it the input
+//! exarust grid-swap <n> <scene>       replace quadrant n's game in the running grid
+//! exarust grid-shot <file.png>        save the running grid's window
+//!
+//! grid options: --size WxH (default 2560x1440), --game <dir>, --child-args "...", --child-fps n (default 60),
+//!          --gpu-need MiB (default 4600, 0 off), --restart, --settings, --screenshot out.png, --frames n,
+//!          --inject "click:X,Y@f;cursor:X,Y@f;KEY@f[-g];...", --socket path, --log-dir dir
 //!
 //! options: --camera x,y,z,yaw,pitch   start pose (metres, degrees)
 //!          --at x,y,z                 play mode: start here (metres)
@@ -24,6 +33,9 @@
 //!          --no-settings              ignore the user's settings files (see below)
 //!          --benchmark                run the GPU benchmark and take its quality levels
 //!          --screenshot <file.png>    save a frame and exit
+//!          --offscreen <file>         a grid quadrant's game: no window, the cameras draw into an image of --size
+//!                                     (default 1280x720) published to this shared-memory file each frame, input
+//!                                     read from stdin, exit when stdin closes
 //!          --frames <n>               frames to wait before the screenshot, after loading (default 90)
 //!          --ev <ev100>               camera exposure (default 6, lower is brighter)
 //!          --all-rooms                tile-grid levels: show every room (no black for rooms the player cannot see)
@@ -189,8 +201,10 @@
 
 mod column;
 mod frame_loop;
+mod grid;
 mod map_panel;
 mod message_box;
+mod offscreen;
 mod profiler;
 mod user_settings;
 mod viewer;
@@ -454,6 +468,9 @@ pub struct Options {
     pub opponent_feral: Option<f32>,
     /// Play mode: powers the player knows (`--powers`, hex or decimal).
     pub powers: Vec<u32>,
+    /// `--offscreen <file>`: a grid quadrant's game: no window, frames
+    /// published to this shared-memory file, input read from stdin.
+    pub offscreen: Option<PathBuf>,
 }
 
 /// What a `--press` entry presses.
@@ -663,7 +680,14 @@ fn register_debug_commands(
 }
 
 fn main() -> AppExit {
-    let mut args = std::env::args().skip(1).peekable();
+    let all: Vec<String> = std::env::args().skip(1).collect();
+    match all.first().map(String::as_str) {
+        Some("grid") => return grid::run(&all[1..]),
+        Some("grid-swap") => return grid::swap(&all[1..]),
+        Some("grid-shot") => return grid::shot(&all[1..]),
+        _ => {}
+    }
+    let mut args = all.into_iter().peekable();
     let mut game_dir: Option<PathBuf> = None;
     let mut options = Options {
         frames: 90,
@@ -675,6 +699,7 @@ fn main() -> AppExit {
         match a.as_str() {
             "--game" => game_dir = args.next().map(PathBuf::from),
             "--screenshot" => options.screenshot = args.next().map(PathBuf::from),
+            "--offscreen" => options.offscreen = args.next().map(PathBuf::from),
             "--all-rooms" => options.all_rooms = true,
             "--limp" => options.limp = true,
             "--msm" => options.msm = true,
@@ -1180,6 +1205,13 @@ fn main() -> AppExit {
     if let Some(user) = &user {
         user.apply_to(&mut options);
     }
+    if options.offscreen.is_some() {
+        // A grid quadrant: a window-sized image, never full screen.
+        options.size = Some(options.size.unwrap_or((1280, 720)));
+        options.fullscreen = false;
+        options.window_at = None;
+        options.no_vsync = true;
+    }
     // The settings screen's options as the launcher starts with them; its
     // plugin applies the renderer, audio and window parts.
     let hardware = if let Some(user) = &user {
@@ -1241,7 +1273,8 @@ fn main() -> AppExit {
     // Winit's low-power reactive mode wakes on the window's own events and
     // otherwise waits 32 ms. Unattended runs (a screenshot, fixed frames)
     // keep running at full speed in the background.
-    let unattended = options.screenshot.is_some() || options.fixed_frames;
+    let unattended =
+        options.screenshot.is_some() || options.fixed_frames || options.offscreen.is_some();
     app.insert_resource(bevy::winit::WinitSettings {
         focused_mode: bevy::winit::UpdateMode::Continuous,
         unfocused_mode: if unattended {
@@ -1283,8 +1316,8 @@ fn main() -> AppExit {
     // The original's level-6 box for a graphics device that cannot run
     // the renderer, captioned with the window's title.
     message_box::install_gpu_failure_box(WINDOW_TITLE, !unattended);
-    app.add_plugins(
-        DefaultPlugins
+    let offscreen = options.offscreen.clone();
+    let mut plugins = DefaultPlugins
             .set(WindowPlugin {
                 primary_window: Some(Window {
                     title: WINDOW_TITLE.into(),
@@ -1292,8 +1325,13 @@ fn main() -> AppExit {
                     // names the window "Unknown" in its dialogs.
                     name: Some("exarust".into()),
                     // The original's default window when the settings name
-                    // no size: 1600 x 1080.
-                    resolution: options.size.unwrap_or((1600, 1080)).into(),
+                    // no size: 1600 x 1080. Offscreen, the image's pixels.
+                    resolution: if offscreen.is_some() {
+                        let (w, h) = options.size.unwrap_or((1280, 720));
+                        bevy::window::WindowResolution::new(w, h).with_scale_factor_override(1.0)
+                    } else {
+                        options.size.unwrap_or((1600, 1080)).into()
+                    },
                     // The original's track-size minimum.
                     resize_constraints: bevy::window::WindowResizeConstraints {
                         min_width: exa_game::window::MIN_WINDOW_SIZE.x as f32,
@@ -1322,46 +1360,61 @@ fn main() -> AppExit {
             .set(bevy::log::LogPlugin {
                 filter: format!("{},rodio::stream=off", bevy::log::DEFAULT_FILTER),
                 ..default()
-            }),
-    )
-    .add_plugins(exa_game::GamePlugin)
-    .insert_resource(Game(Arc::new(data)))
-    .insert_resource(exa_game::flow::BootToMenu(false))
-    .insert_resource(view)
-    .insert_resource(options.gi)
-    .insert_resource(exa_ui::ShowFps(!options.no_fps))
-    .insert_resource(exa_game::splash::SplashAtStart(options.splash))
-    .insert_resource(exa_game::gui_screens::DebugGuiForm {
-        enabled: options.debug_gui_form,
-    })
-    .insert_resource(exa_game::settings_form::OpenSettingsOnLoad {
-        page: options.open_settings,
-        done: false,
-    })
-    .insert_resource(exa_game::creator_screen::OpenCreatorOnLoad {
-        word: options.open_creator.clone(),
-        done: false,
-    })
-    .insert_resource(exa_game::gui_screens::DebugOpenContainer(
-        options.open_container,
-    ))
-    .insert_resource(exa_ui::ScriptedPointer(options.cursor.map(Vec2::from)))
-    .insert_resource(exa_render::cube_shadows::PointShadows(!options.no_shadows))
-    .insert_resource(exa_world::sun_shadow::SunShadowFit(
-        !options.bevy_sun_cascades,
-    ))
-    .insert_resource(exa_game::body_overlay::BodyOverlay {
-        on: options.debug_bodies,
-        ..default()
-    })
-    .insert_resource(exa_world::nav::NavOverlay {
-        on: options.debug_nav,
-    })
-    .insert_resource(exa_game::light_probe::DebugLights(options.debug_lights))
-    .insert_resource(exa_game::torch::FloorTorch(
-        options.floor_torch.map(Vec3::from),
-    ))
-    .insert_resource(exa_world::nav::NavRefreshMoved(options.nav_refresh_moved));
+            });
+    if let Some(path) = &offscreen {
+        // No OS window: Bevy's schedule runner drives the frames (the
+        // frame-rate cap paces them) and the cameras draw into an image.
+        let (w, h) = options.size.unwrap_or((1280, 720));
+        plugins = plugins.disable::<bevy::winit::WinitPlugin>();
+        app.add_plugins((
+            plugins,
+            bevy::app::ScheduleRunnerPlugin::run_loop(std::time::Duration::ZERO),
+        ))
+        .add_plugins(offscreen::OffscreenPlugin {
+            path: path.clone(),
+            size: UVec2::new(w, h),
+        });
+    } else {
+        app.add_plugins(plugins);
+    }
+    app.add_plugins(exa_game::GamePlugin)
+        .insert_resource(Game(Arc::new(data)))
+        .insert_resource(exa_game::flow::BootToMenu(false))
+        .insert_resource(view)
+        .insert_resource(options.gi)
+        .insert_resource(exa_ui::ShowFps(!options.no_fps))
+        .insert_resource(exa_game::splash::SplashAtStart(options.splash))
+        .insert_resource(exa_game::gui_screens::DebugGuiForm {
+            enabled: options.debug_gui_form,
+        })
+        .insert_resource(exa_game::settings_form::OpenSettingsOnLoad {
+            page: options.open_settings,
+            done: false,
+        })
+        .insert_resource(exa_game::creator_screen::OpenCreatorOnLoad {
+            word: options.open_creator.clone(),
+            done: false,
+        })
+        .insert_resource(exa_game::gui_screens::DebugOpenContainer(
+            options.open_container,
+        ))
+        .insert_resource(exa_ui::ScriptedPointer(options.cursor.map(Vec2::from)))
+        .insert_resource(exa_render::cube_shadows::PointShadows(!options.no_shadows))
+        .insert_resource(exa_world::sun_shadow::SunShadowFit(
+            !options.bevy_sun_cascades,
+        ))
+        .insert_resource(exa_game::body_overlay::BodyOverlay {
+            on: options.debug_bodies,
+            ..default()
+        })
+        .insert_resource(exa_world::nav::NavOverlay {
+            on: options.debug_nav,
+        })
+        .insert_resource(exa_game::light_probe::DebugLights(options.debug_lights))
+        .insert_resource(exa_game::torch::FloorTorch(
+            options.floor_torch.map(Vec3::from),
+        ))
+        .insert_resource(exa_world::nav::NavRefreshMoved(options.nav_refresh_moved));
     if let Some(id) = options.searcher {
         app.insert_resource(exa_game::npc_search::DebugSearcher(id));
     }

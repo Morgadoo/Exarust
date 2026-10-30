@@ -1988,3 +1988,65 @@ the chase camera, for unattended pictures. The body overlay (F3), the joint
 readout and trace, and the pause (F8), step (`.`) and speed (`[`, `]`) keys
 are described in [DEBUGGING.md](DEBUGGING.md). The chase camera runs on
 real time, so it keeps orbiting while the simulation is paused or slowed.
+
+### Four scenes in one window (grid view)
+
+`exarust grid [options] <scene1> [scene2] [scene3] [scene4]` opens one
+window, 2560 × 1440 by default (`--size WxH`), split into four quadrants:
+1 top left, 2 top right, 3 bottom left, 4 bottom right. Each quadrant is
+a separate game playing its own scene. A scene name runs `play <scene>`;
+a scene that holds spaces runs as its own arguments, e.g.
+`"level exanima01 --all-rooms"`. Exarust's own test tool: the original has
+nothing like it.
+
+```text
+exarust grid exanima01 arenao3 exanima06 arena
+exarust grid --child-args "--no-gi --opponent" arena arenao3
+exarust grid-swap 4 arenahub          # replace quadrant 4's game
+exarust grid-shot /tmp/grid.png       # save the window as composed
+```
+
+- **One game per process.** A game's state is world-wide (the level, the
+  player, the rooms, the GI, the audio), so each quadrant's game is a
+  child `exarust` started with `--offscreen <file>`. It has no OS window.
+  Its cameras draw into an image of the quadrant's size, the HUD and menus
+  included, and each frame goes through a shared-memory file in
+  `/dev/shm`. The window splits its render with one camera a quadrant,
+  each with a viewport a quarter of the window's size, recomputed when the
+  window is resized (Bevy's split-screen pattern). A child keeps the size
+  it started with, and its quadrant scales the frame.
+- **Launching.** The games start one at a time. Each waits until the
+  previous one shows a frame and `nvidia-smi` reports enough free GPU
+  memory: 4600 MiB a game (`--gpu-need`, 0 turns the check off), plus
+  what the games still loading have yet to take. A quadrant says what it
+  waits for. Its label shows the scene, the game's frame rate and
+  "loading" while the loading screen is up. A game that ends shows its
+  exit code and last log line. Enter, with its quadrant active, starts it
+  again, and `--restart` restarts it after 3 s. Child logs go to
+  `--log-dir` (default `$TMPDIR/exarust-grid-<pid>/quadrant-N.log`).
+- **Input.** Clicking a quadrant makes it the active one (outlined): the
+  keyboard, the mouse buttons, the wheel, the mouse motion and the cursor
+  go to its game only. Hovering another quadrant does not move the focus,
+  so a right-drag look may leave the quadrant. Clicking elsewhere first
+  releases whatever was held. Each game logs the keys and buttons it
+  receives (`offscreen: forwarded key …`).
+- **Children's options.** The host passes `--no-settings` (four games
+  writing one settings store would collide; `--settings` keeps them) and
+  `--max-fps 60` (`--child-fps n`, 0 for none). `--child-args "..."` adds
+  options to every game. Each game plays its own audio.
+- **Unattended.** `--screenshot out.png` saves the window after
+  `--frames n` frames (default 600) counted once every quadrant shows its
+  scene or has ended, then closes the grid. `--inject "WHAT@frame;..."`
+  scripts host input over those frames: WHAT is `click:X,Y` (window
+  point, logical pixels), `cursor:X,Y`, a `--press` key name or `LMB`,
+  `RMB`, `MMB`, and `@a-b` holds it. For example,
+  `--inject "click:1920,360@60;F3@80"` turns the body overlay on in
+  quadrant 2 only.
+- `grid-swap` and `grid-shot` talk to the host over
+  `$XDG_RUNTIME_DIR/exarust-grid.sock` (`--socket` on both sides). The
+  game itself also takes `--offscreen <file>` on its own: `--screenshot`
+  then saves the image.
+
+The four games share the machine. All four are full games and each runs
+its own physics, so on an 8-core CPU they are usually CPU-bound before
+they are GPU-bound.
