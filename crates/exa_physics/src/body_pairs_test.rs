@@ -1305,3 +1305,22 @@ fn the_sphere_grid_leaves_the_fallback_unchanged() {
         assert_eq!(plain, fast);
     }
 }
+
+/// A disabled body (the original's state bit 0x800, an item on the cursor)
+/// meets no other body: the same pair that touches when both are enabled
+/// finds nothing once one of them is disabled.
+#[test]
+fn a_disabled_body_meets_no_other() {
+    let run = |disable: bool| {
+        let mut a = ball(1, 11, Vec3::new(-0.05, 2.0, 0.0), 0.1);
+        let mut b = ball(2, 11, Vec3::new(0.05, 2.0, 0.0), 0.1);
+        if disable {
+            a.set_disabled(true);
+        }
+        let mut stages = pairs();
+        step(&mut [&mut a, &mut b], NONE, &mut stages);
+        the_pairs(&stages).touches().len()
+    };
+    assert!(run(false) > 0);
+    assert_eq!(run(true), 0);
+}

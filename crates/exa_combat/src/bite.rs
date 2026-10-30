@@ -89,13 +89,15 @@ impl exa_physics::body::SolverStage for BiteHold {
         let Some(grab) = self.grab.as_mut() else {
             return;
         };
-        // No Exarust body is disabled yet: the struck part never is.
-        if let Some(body) = bodies.first_mut()
-            && body.pull_grab(0, 1, grab, false)
-        {
-            let mut held = vec![(1, grab.clone())];
-            body.release_grabs(0, 1, &mut held);
-            self.grab = None;
+        // A struck body that is disabled (the original's state bit 0x800)
+        // breaks the grab.
+        if let Some(body) = bodies.first_mut() {
+            let struck_disabled = body.disabled();
+            if body.pull_grab(0, 1, grab, struck_disabled) {
+                let mut held = vec![(1, grab.clone())];
+                body.release_grabs(0, 1, &mut held);
+                self.grab = None;
+            }
         }
     }
 }

@@ -346,6 +346,9 @@ pub struct Part {
     pub skips_thin: bool,
     /// Particles at the start of the tick (where the last tick left them).
     start: [Vec3; 4],
+    /// Particles where the tick before last left them: the original's third
+    /// particle set, which [`Part::two_step_point`] reads.
+    two_ticks_ago: [Vec3; 4],
     /// Each particle's displacement over the last tick, as this tick's
     /// integration found it (before its inertia): the velocity the pose
     /// drive damps.
@@ -600,6 +603,7 @@ impl Part {
                 LIMB_FRICTION
             },
             start: positions,
+            two_ticks_ago: positions,
             moved: [Vec3::ZERO; 4],
             smoothed: [Vec3::ZERO; 4],
             own_origin: [1.0 - own.x - own.y - own.z, own.x, own.y, own.z],
@@ -639,6 +643,7 @@ impl Part {
         self.settled = self.transform();
         self.shown = (self.settled, self.settled);
         self.drawn_particles = (self.positions, self.positions);
+        self.two_ticks_ago = self.positions;
         self
     }
 
@@ -731,6 +736,20 @@ impl Part {
     /// `w`: the original's impact travel reads its smoothed array so.
     fn smoothed_velocity(&self, w: &[f32; 4]) -> Vec3 {
         (0..4).map(|i| self.smoothed[i] * w[i]).sum()
+    }
+
+    /// How far the point with weights `w` moved since the post-step before
+    /// last (m): its place over the original's third particle set taken
+    /// from its place now. Each weighted sum is the original's helper's
+    /// `(w₀p₀ + w₁p₁) + (w₂p₂ + w₃p₃)`, the earlier place first. Mid-step
+    /// this spans two ticks; between ticks, one. The original's own callers
+    /// are the character code's two uses; no Exarust system reads it yet,
+    /// so this has no caller.
+    pub fn two_step_point(&self, w: &[f32; 4]) -> Vec3 {
+        let sum = |p: &[Vec3; 4]| (p[0] * w[0] + p[1] * w[1]) + (p[2] * w[2] + p[3] * w[3]);
+        let before = sum(&self.two_ticks_ago);
+        let now = sum(&self.positions);
+        now - before
     }
 
     /// A level hit on sphere `centre` (part space): the closest point `q` on
@@ -1650,6 +1669,10 @@ pub struct Ragdoll {
     /// at its previous particles instead of integrating it
     /// ([`Ragdoll::freeze`]).
     frozen: bool,
+    /// Disabled (the original's state bit 0x800): an item taken onto the
+    /// cursor, which the pair stage and the level detection skip and whose
+    /// grabs a struck body breaks ([`Ragdoll::set_disabled`]).
+    disabled: bool,
     /// The velocity a part keeps each tick in a body of the mechanism
     /// environment (levers and push surfaces), whatever its speed band;
     /// `None` keeps the default environment's banded retention
@@ -2473,6 +2496,7 @@ impl Ragdoll {
             simulated: false,
             fell_out: false,
             frozen: false,
+            disabled: false,
             environment_keep: None,
             held_environment: None,
             link_iterations: LIVING_LINK_ITERATIONS,
@@ -3290,6 +3314,23 @@ impl Ragdoll {
         self.frozen
     }
 
+    /// Disables or enables the body (the original's state bit 0x800). The
+    /// original sets it, with the asleep bit and the state-4 bit, on an
+    /// item taken onto the cursor (`state |= 0x805`), where the item hangs
+    /// in the zero-gravity environment: such a body is skipped by the
+    /// body-to-body and level stages, and a grab on it breaks (a struck
+    /// body that is disabled disables the link,
+    /// [`Ragdoll::pull_grab`]). Exarust has no cursor carry yet, so
+    /// nothing sets it in the game; the rule is here for that path.
+    pub fn set_disabled(&mut self, disabled: bool) {
+        self.disabled = disabled;
+    }
+
+    /// Whether the body is disabled ([`Ragdoll::set_disabled`]).
+    pub fn disabled(&self) -> bool {
+        self.disabled
+    }
+
     /// Whether the body is placed (the original's state bit 0x1000): the
     /// original's integration keeps the bit only while the settling
     /// countdown runs and clears it once the countdown is spent, so the
@@ -3310,6 +3351,7 @@ impl Ragdoll {
                 .iter_mut()
                 .chain(p.previous.iter_mut())
                 .chain(p.start.iter_mut())
+                .chain(p.two_ticks_ago.iter_mut())
             {
                 *x += offset;
             }
@@ -3370,6 +3412,7 @@ impl Ragdoll {
             p.positions = p.rest.map(|r| (x * r.x + y * r.y) + (z * r.z + t));
             p.previous = p.positions;
             p.start = p.positions;
+            p.two_ticks_ago = p.positions;
             p.settled = p.transform();
             p.shown = (p.settled, p.settled);
             p.drawn_particles = (p.positions, p.positions);
@@ -3410,6 +3453,19 @@ impl Ragdoll {
                 p.shown = (p.settled, p.settled);
                 p.drawn_particles = (p.positions, p.positions);
             }
+        }
+    }
+
+    /// Takes `ticks` off the body's sleep countdown, never under one, as the
+    /// original's tree-wide take does: the root takes them and hands the
+    /// same count to each child body, and a count under two is held at one
+    /// (so a body is never put to sleep by this path). Exarust keeps one
+    /// countdown for the whole body, which is the same number the recursion
+    /// leaves on every part.
+    pub fn take_ticks(&mut self, ticks: i32) {
+        self.countdown -= ticks;
+        if self.countdown < 2 {
+            self.countdown = 1;
         }
     }
 
@@ -3719,6 +3775,143 @@ impl Ragdoll {
         }
     }
 
+    /// The original's run-time link adder: appends a link from a point on
+    /// part `part` to a point on part `parent`, as the grip code, the shape
+    /// builders and the sector's placement make them after a body is built.
+    ///
+    /// `on_part` and `on_parent` are points in the two parts' own spaces
+    /// (m) and become weights over each part's rest particles. The link is
+    /// a body link made by code, carrying the two parts' mobility shares
+    /// ([`grab_shares`] without its sign, which the solver applies), the
+    /// pivot softness the registration gives a zero one, and `strength`.
+    /// `slack` (m) is squared when stored by the original and set to zero
+    /// when it compares at or under the general epsilon in centimetres, or
+    /// when it is a NaN (the original's unordered compare takes the same
+    /// branch); Exarust keeps the distance its laws compare against. The
+    /// original also measures the points' current distance into the link's
+    /// smoothed length and then overwrites it with zero before returning,
+    /// so only the zero is kept, and its freshly allocated record leaves
+    /// the smoothing at zero (a run-time link's damper has no lag).
+    ///
+    /// The link is inserted at the end of `part`'s own links, so the
+    /// per-part ranges and every index into them stay in step. Returns the
+    /// new link's index, or `None` when a part is missing or `part` is
+    /// `parent`.
+    pub fn add_link(
+        &mut self,
+        part: usize,
+        parent: usize,
+        on_part: Vec3,
+        on_parent: Vec3,
+        slack: f32,
+        strength: f32,
+    ) -> Option<usize> {
+        if part >= self.parts.len() || parent >= self.parts.len() || part == parent {
+            return None;
+        }
+        let weights_on_part = weights(&self.parts[part], on_part);
+        let weights_on_parent = weights(&self.parts[parent], on_parent);
+        let (m, m_parent) = (
+            self.parts[part].link_mobility,
+            self.parts[parent].link_mobility,
+        );
+        // The two shares as the registration stores them: the parent's is
+        // negated by the solver, as every body link's is.
+        let shares = (m / (m + m_parent), m_parent / (m + m_parent));
+        let slack = if slack * CM <= GENERAL_EPSILON || slack.is_nan() {
+            0.0
+        } else {
+            slack
+        };
+        let link = Link {
+            part,
+            parent,
+            on_part: weights_on_part,
+            on_parent: weights_on_parent,
+            slack,
+            strength,
+            flags: LINK_BODY | LINK_CODE,
+            softness: PIVOT_SOFTENING,
+            iteration_limit: None,
+            // The original's record starts zeroed and the adder does not
+            // write the smoothing.
+            smoothing: 0.0,
+            length: 0.0,
+            shares,
+            origin: false,
+            limit: false,
+            horizontal: false,
+            anchor: None,
+            kept: None,
+            history: (Vec3::ZERO, Vec3::ZERO),
+        };
+        let at = self
+            .links_of
+            .get(part)
+            .map_or(self.links.len(), |range| range.end);
+        self.links.insert(at, link);
+        for (i, range) in self.links_of.iter_mut().enumerate() {
+            if i == part {
+                range.end = at + 1;
+            } else {
+                if range.start >= at {
+                    range.start += 1;
+                }
+                if range.end >= at {
+                    range.end += 1;
+                }
+            }
+        }
+        for p in &mut self.parts {
+            if let Some(k) = p.leg_limit.as_mut()
+                && *k >= at
+            {
+                *k += 1;
+            }
+        }
+        Some(at)
+    }
+
+    /// The original's link adder for a link to a scene node rather than a
+    /// body: the point is kept in the node's frame and the record takes the
+    /// code flag alone (no body flag, no shares), so the link falls to the
+    /// plain world-link law. Exarust keeps such links as [`WorldLink`]s
+    /// with an anchor in world space, which is what the node's point stands
+    /// for. `at` is that world point (m), `on_part` a point in the part's
+    /// space (m). The slack is zeroed at or under the general epsilon (in
+    /// centimetres) and for a NaN, as the body link's is, and the smoothed
+    /// length starts at zero. Returns the new world link's index, or `None`
+    /// when the part is missing.
+    pub fn add_world_link(
+        &mut self,
+        part: usize,
+        on_part: Vec3,
+        at: Vec3,
+        slack: f32,
+        strength: f32,
+    ) -> Option<usize> {
+        let weights_on_part = weights(self.parts.get(part)?, on_part);
+        let slack = if slack * CM <= GENERAL_EPSILON || slack.is_nan() {
+            0.0
+        } else {
+            slack
+        };
+        self.world.push(WorldLink {
+            part,
+            on_part: weights_on_part,
+            anchor: at,
+            slack,
+            strength,
+            smoothing: 0.0,
+            flags: LINK_CODE,
+            axis: Vec3::ZERO,
+            length: 0.0,
+            origin: false,
+            last_pass: None,
+        });
+        Some(self.world.len() - 1)
+    }
+
     /// The part of `bone`.
     pub fn part_of(&self, bone: usize) -> Option<&Part> {
         self.parts.iter().find(|p| p.bone == bone)
@@ -3900,7 +4093,7 @@ impl Ragdoll {
                 p.start = p.previous;
                 p.positions = p.previous;
             }
-            self.countdown = (self.countdown - 1).max(SLEEP_COUNT);
+            self.take_ticks(1);
             return;
         }
         self.tick_countdown();
@@ -3947,7 +4140,8 @@ impl Ragdoll {
             if !drive.dormant {
                 self.countdown = self.countdown.max(WAKE_COUNT);
             } else {
-                self.countdown = (self.countdown - 1).max(SLEEP_COUNT);
+                // The character code's tick take of one.
+                self.take_ticks(1);
             }
             return;
         }
@@ -3991,6 +4185,9 @@ impl Ragdoll {
             p.shown = (p.shown.1, p.settled);
             p.drawn_particles.0 = p.drawn_particles.1;
             p.drawn_particles.1 = p.positions;
+            // The tick's start is where the last tick left the part, so it
+            // becomes the two-ticks-ago set the next tick reads.
+            p.two_ticks_ago = p.start;
         }
         if self.countdown <= SLEEP_COUNT {
             self.countdown = 0;
@@ -4096,8 +4293,11 @@ impl Ragdoll {
     fn sleep_tick(&mut self) {
         self.level_impacts.clear();
         if self.sleep == Sleep::Asleep {
+            // The original's sleeping branch rolls its particle sets once
+            // more before deep sleep, so the third set is where the body lies.
             for p in &mut self.parts {
                 p.previous = p.positions;
+                p.two_ticks_ago = p.positions;
             }
             self.sleep = Sleep::Deep;
         }
@@ -4378,6 +4578,12 @@ impl Ragdoll {
     }
 
     fn detect<L: Level + ?Sized>(&mut self, level: &L) {
+        // A disabled body (an item on the cursor) keeps out of the level
+        // as it keeps out of the other bodies.
+        if self.disabled {
+            self.level_impacts.clear();
+            return;
+        }
         let mut pieces = std::mem::take(&mut self.pieces);
         let mut triangles = std::mem::take(&mut self.triangles);
         let mut impacts = std::mem::take(&mut self.level_impacts);
@@ -4939,6 +5145,257 @@ mod tests {
                 spheres: None,
             },
         ])
+    }
+
+    /// The run-time link adder takes the two points' weights over each
+    /// part's rest particles, the mobility shares, the pivot softness and
+    /// the strength, and puts the link at the end of its part's own links.
+    #[test]
+    fn the_run_time_link_adder_carries_the_parts_and_the_slack() {
+        let mut body = two_parts(0.0);
+        assert_eq!(body.links.len(), 2);
+        assert_eq!(body.links_of(0).len(), 0);
+        assert_eq!(body.links_of(1).len(), 2);
+        let at = body
+            .add_link(1, 0, Vec3::ZERO, Vec3::ZERO, 0.02, 0.5)
+            .expect("both parts exist");
+        assert_eq!(at, 2);
+        assert_eq!(body.links.len(), 3);
+        assert_eq!(body.links_of(1).len(), 3);
+        let l = &body.links[at];
+        assert_eq!((l.part, l.parent), (1, 0));
+        assert_eq!(l.slack, 0.02);
+        assert_eq!(l.strength, 0.5);
+        assert_eq!(l.flags, LINK_BODY | LINK_CODE);
+        assert_eq!(l.softness, PIVOT_SOFTENING);
+        assert_eq!(l.smoothing, 0.0);
+        assert_eq!(l.length, 0.0);
+        assert!(!l.origin && !l.limit && !l.horizontal);
+        // The shares are the two link mobilities': 0.7·0.175 and
+        // 0.45·0.175 over their sum, the parent's kept positive (the
+        // solver negates it).
+        let (m, m_parent) = (body.parts[1].link_mobility, body.parts[0].link_mobility);
+        assert!((l.shares.0 - m / (m + m_parent)).abs() < 1e-7);
+        assert!((l.shares.1 - m_parent / (m + m_parent)).abs() < 1e-7);
+        assert!((l.shares.0 - 0.608_695_7).abs() < 1e-6, "{:?}", l.shares);
+        assert!((l.shares.1 - 0.391_304_3).abs() < 1e-6, "{:?}", l.shares);
+        // The weights are barycentric, so they sum to one and place the
+        // point where it was: each part's own origin.
+        assert!((l.on_part.iter().sum::<f32>() - 1.0).abs() < 1e-6);
+        assert!((l.on_parent.iter().sum::<f32>() - 1.0).abs() < 1e-6);
+        assert!(
+            body.parts[0]
+                .point(&l.on_parent)
+                .distance(body.origin_at(0).unwrap())
+                < 1e-6
+        );
+        assert!(
+            body.parts[1]
+                .point(&l.on_part)
+                .distance(body.origin_at(1).unwrap())
+                < 1e-6
+        );
+    }
+
+    /// A slack at or under the general epsilon (in centimetres), and a NaN,
+    /// store a zero slack; a missing or repeated part adds nothing.
+    #[test]
+    fn the_run_time_link_adder_zeroes_a_tiny_slack() {
+        let mut body = two_parts(0.0);
+        let tiny = body.add_link(1, 0, Vec3::ZERO, Vec3::ZERO, 1e-9, 1.0);
+        assert_eq!(tiny, Some(2));
+        assert_eq!(body.links[2].slack, 0.0);
+        let nan = body
+            .add_link(1, 0, Vec3::ZERO, Vec3::ZERO, f32::NAN, 1.0)
+            .unwrap();
+        assert_eq!(body.links[nan].slack, 0.0);
+        // 1.19209e-7 cm is the epsilon: just over it is kept.
+        let over = body
+            .add_link(1, 0, Vec3::ZERO, Vec3::ZERO, 1.2e-9, 1.0)
+            .unwrap();
+        assert_eq!(body.links[over].slack, 1.2e-9);
+        assert_eq!(body.add_link(0, 0, Vec3::ZERO, Vec3::ZERO, 0.0, 1.0), None);
+        assert_eq!(body.add_link(2, 0, Vec3::ZERO, Vec3::ZERO, 0.0, 1.0), None);
+        assert_eq!(body.add_link(1, 9, Vec3::ZERO, Vec3::ZERO, 0.0, 1.0), None);
+        assert_eq!(body.links.len(), 5);
+    }
+
+    /// A link added at run time is solved: pulled apart beyond its slack, one
+    /// iteration brings its two points closer.
+    #[test]
+    fn a_run_time_link_is_solved() {
+        let mut body = two_parts(0.0);
+        let at = body
+            .add_link(1, 0, Vec3::ZERO, Vec3::ZERO, 0.01, 1.0)
+            .unwrap();
+        for x in &mut body.parts[1].positions {
+            *x += Vec3::new(0.5, 0.0, 0.0);
+        }
+        let gap = |b: &Ragdoll| {
+            let l = &b.links[at];
+            b.parts[l.parent]
+                .point(&l.on_parent)
+                .distance(b.parts[l.part].point(&l.on_part))
+        };
+        let before = gap(&body);
+        assert!(before > 0.3, "{before}");
+        body.iterate();
+        let after = gap(&body);
+        assert!(after < before, "{after} vs {before}");
+    }
+
+    /// A disabled body is the original's state bit 0x800: set and cleared,
+    /// and its level detection leaves no impact and no contact behind.
+    #[test]
+    fn a_disabled_body_is_flagged_and_skips_the_level() {
+        let mut body = two_parts(0.0);
+        assert!(!body.disabled());
+        body.set_disabled(true);
+        assert!(body.disabled());
+        // Push a part into the floor and detect: a disabled body gathers
+        // nothing, an enabled one finds the contact.
+        struct Floor(Vec<[Vec3; 3]>);
+        impl Level for Floor {
+            fn pieces(&self, _: Vec3, _: Vec3, out: &mut Vec<u32>) {
+                out.push(0);
+            }
+            fn triangles(&self, _: u32, _: Vec3, _: Vec3, out: &mut Vec<[Vec3; 3]>) {
+                out.extend_from_slice(&self.0);
+            }
+            fn mask(&self, _: u32) -> u32 {
+                0
+            }
+            fn movable(&self, _: u32) -> bool {
+                false
+            }
+            fn floor_piece(&self, _: u32) -> bool {
+                true
+            }
+        }
+        let floor = Floor(floor_quad(0.0, 4.0));
+        body.parts[1].positions = body.parts[1].positions.map(|x| Vec3::new(x.x, 0.05, x.z));
+        body.detect(&floor);
+        assert!(body.parts[1].contacts.is_empty());
+        body.set_disabled(false);
+        body.detect(&floor);
+        assert!(!body.parts[1].contacts.is_empty());
+        body.set_disabled(false);
+        assert!(!body.disabled());
+    }
+
+    /// Taking ticks off the countdown floors it at one, so it never sleeps
+    /// through that path, and the frozen step takes one a tick.
+    #[test]
+    fn taking_ticks_holds_the_countdown_at_one() {
+        let mut body = two_parts(0.0);
+        body.wake_to(WAKE_COUNT);
+        body.take_ticks(3);
+        assert_eq!(body.countdown(), 253);
+        body.take_ticks(300);
+        assert_eq!(body.countdown(), 1);
+        body.take_ticks(-5);
+        assert_eq!(body.countdown(), 6);
+        // The frozen step takes one tick off and holds the body still.
+        let mut body = two_parts(0.0);
+        body.wake_to(WAKE_COUNT);
+        body.freeze(true);
+        let before = body.parts[0].positions;
+        body.step();
+        assert_eq!(body.countdown(), 255);
+        assert_eq!(body.parts[0].positions, before);
+        assert_eq!(body.parts[0].positions, body.parts[0].previous);
+    }
+
+    /// A link added to a scene node is a plain world link: it takes only
+    /// the code flag, keeps the point's weights and pulls the part to the
+    /// anchor it was given.
+    #[test]
+    fn a_run_time_world_link_pulls_its_part_to_the_anchor() {
+        let mut body = two_parts(0.0);
+        let start = Vec3::new(0.0, 1.0, 0.0);
+        let at = body
+            .add_world_link(0, Vec3::ZERO, start, 0.0, 1.0)
+            .expect("part 0 exists");
+        assert_eq!(at, 0);
+        assert_eq!(body.world.len(), 1);
+        let on_part = {
+            let l = &body.world[0];
+            assert_eq!(
+                (l.part, l.flags, l.slack, l.strength),
+                (0, LINK_CODE, 0.0, 1.0)
+            );
+            assert_eq!(l.anchor, start);
+            assert_eq!(l.smoothing, 0.0);
+            assert_eq!(l.length, 0.0);
+            assert!((l.on_part.iter().sum::<f32>() - 1.0).abs() < 1e-6);
+            l.on_part
+        };
+        // Pulled half a metre away, one pass takes the point back toward
+        // the anchor by the strength times its gap.
+        body.translate(Vec3::new(0.5, 0.0, 0.0));
+        let before = body.parts[0].point(&on_part);
+        body.pass = 0;
+        body.pull_world_links(0);
+        let after = body.parts[0].point(&body.world[0].on_part);
+        assert!(after.distance(start) < before.distance(start));
+        assert_eq!(body.add_world_link(9, Vec3::ZERO, start, 0.0, 1.0), None);
+        // A tiny or NaN slack is stored as zero.
+        let l = body
+            .add_world_link(0, Vec3::ZERO, start, f32::NAN, 1.0)
+            .unwrap();
+        assert_eq!(body.world[l].slack, 0.0);
+    }
+
+    /// The two-step point transform takes the point's place now from where
+    /// the tick before last left it, both as weighted sums over the
+    /// particles in index order.
+    #[test]
+    fn the_two_step_point_transform_is_now_less_two_ticks_ago() {
+        let mut body = two_parts(0.0);
+        let before = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        ];
+        let moved = Vec3::new(0.1, 0.2, 0.4);
+        body.parts[0].two_ticks_ago = before;
+        body.parts[0].positions = before.map(|x| x + moved);
+        // One particle alone moves by the whole displacement; two halves
+        // by the mean of their two displacements, summed in index order.
+        assert_eq!(
+            body.parts[0].two_step_point(&[1.0, 0.0, 0.0, 0.0]),
+            Vec3::new(0.1, 0.2, 0.4)
+        );
+        let half = [0.5, 0.5, 0.0, 0.0];
+        let want = before[0] * 0.5 + before[1] * 0.5;
+        let now = body.parts[0].positions[0] * 0.5 + body.parts[0].positions[1] * 0.5;
+        assert_eq!(body.parts[0].two_step_point(&half), now - want);
+        // A part that has not ticked reports nothing.
+        assert_eq!(body.parts[1].two_step_point(&half), Vec3::ZERO);
+        // The sums pair the particles: (1e8 + 1) + (−1e8 + 1) is 0 in
+        // single precision, where a running sum would give 1.
+        body.parts[0].two_ticks_ago = [Vec3::ZERO; 4];
+        body.parts[0].positions = [
+            Vec3::new(1e8, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(-1e8, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+        ];
+        assert_eq!(body.parts[0].two_step_point(&[1.0; 4]).x, 0.0);
+    }
+
+    /// The first tick of sleep rolls the third particle set onto where the
+    /// body lies, so a sleeper's two-step displacement is zero.
+    #[test]
+    fn falling_asleep_rolls_the_two_ticks_ago_particles() {
+        let mut body = two_parts(0.0);
+        body.parts[0].two_ticks_ago = body.parts[0]
+            .positions
+            .map(|x| x - Vec3::new(0.0, 0.01, 0.0));
+        body.sleep = Sleep::Asleep;
+        body.sleep_tick();
+        assert_eq!(body.parts[0].two_step_point(&[0.25; 4]), Vec3::ZERO);
     }
 
     /// The sole turns the solver reads are taken once when the targets are

@@ -905,7 +905,10 @@ impl Pairs {
             && bodies[sx.body].held_by == bodies[sy.body].held_by)
             || bodies[sx.body].held_by == Some(body_key(bodies[sy.body]))
             || bodies[sy.body].held_by == Some(body_key(bodies[sx.body]));
-        if skip || held {
+        // A disabled body (the original's state bit 0x800, an item on the
+        // cursor) meets neither another body nor a sleeping one.
+        let disabled = bodies[sx.body].disabled() || bodies[sy.body].disabled();
+        if skip || held || disabled {
             return;
         }
         if intersect::spheres_separated(
