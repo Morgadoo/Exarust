@@ -1655,6 +1655,11 @@ pub struct Ragdoll {
     /// `None` keeps the default environment's banded retention
     /// ([`Ragdoll::enter_mechanism_environment`]).
     environment_keep: Option<f32>,
+    /// The environment a force that holds the body put it in (Kinesis,
+    /// Throw: [`crate::dynamics::Environment::HELD`]); it replaces the
+    /// gravity and the retention of every part while it is set
+    /// ([`Ragdoll::hold_in`]).
+    held_environment: Option<crate::dynamics::Environment>,
     /// The root's link-iteration count ([`Ragdoll::link_iterations`]).
     link_iterations: i32,
     /// The hand's grabs on its parts ([`Ragdoll::grab`]).
@@ -2447,6 +2452,7 @@ impl Ragdoll {
             fell_out: false,
             frozen: false,
             environment_keep: None,
+            held_environment: None,
             link_iterations: LIVING_LINK_ITERATIONS,
             grabs: Vec::new(),
             pieces: Vec::new(),
@@ -3148,6 +3154,26 @@ impl Ragdoll {
     /// Whether the body runs in the mechanism environment.
     pub fn in_mechanism_environment(&self) -> bool {
         self.environment_keep.is_some()
+    }
+
+    /// Puts every part of the body in `environment` while a force holds
+    /// it, as the original's Kinesis and Throw swap each held node's
+    /// simulation environment for theirs: each tick a part takes that
+    /// environment's gravity and keeps its velocity by that environment's
+    /// band for how far its particles moved, in place of the body's own.
+    pub fn hold_in(&mut self, environment: crate::dynamics::Environment) {
+        self.held_environment = Some(environment);
+    }
+
+    /// Gives the body its own environment back (the held environment's end:
+    /// the original writes each node's saved environment back).
+    pub fn release_held(&mut self) {
+        self.held_environment = None;
+    }
+
+    /// The environment a force holds the body in, if one does.
+    pub fn held_environment(&self) -> Option<crate::dynamics::Environment> {
+        self.held_environment
     }
 
     /// Whether the body sleeps (and is not simulated).
@@ -4033,6 +4059,8 @@ impl Ragdoll {
             self.settle -= 1;
         }
         let environment_keep = self.environment_keep;
+        let held = self.held_environment;
+        let held_pull = held.map(|e| e.gravity_per_tick());
         // A living part over half its tone falls by g(1 − a) + carry·a, a
         // its share of the carry; any other by gravity.
         let carried = self
@@ -4063,6 +4091,7 @@ impl Ragdoll {
                     Some(gravity * (1.0 - a) + carry * a)
                 })
                 .unwrap_or(gravity);
+            let pull = held_pull.unwrap_or(pull);
             if settling {
                 // No velocity is carried or recorded: the next tick's
                 // velocity is this tick's move, and the placed offset array
@@ -4075,12 +4104,17 @@ impl Ragdoll {
                 }
                 continue;
             }
-            let keep = living.or(environment_keep).unwrap_or_else(|| {
-                let moved = (0..4)
+            let moved = || {
+                (0..4)
                     .map(|i| (p.positions[i] - p.previous[i]).length())
-                    .fold(0.0, f32::max);
-                limp_retention(moved * CM)
-            });
+                    .fold(0.0, f32::max)
+            };
+            let keep = match held {
+                Some(environment) => environment.retention(moved() * CM),
+                None => living
+                    .or(environment_keep)
+                    .unwrap_or_else(|| limp_retention(moved() * CM)),
+            };
             for i in 0..4 {
                 let v = p.positions[i] - p.previous[i];
                 p.moved[i] = v;
@@ -4749,6 +4783,10 @@ pub fn draw_bodies(
 #[cfg(test)]
 #[path = "body_floor_test.rs"]
 mod floor_test;
+
+#[cfg(test)]
+#[path = "body_held_test.rs"]
+mod held_test;
 
 #[cfg(test)]
 #[path = "body_contact_test.rs"]
