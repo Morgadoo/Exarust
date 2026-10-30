@@ -5691,8 +5691,8 @@ pub fn draw_mark_hot(batch: &mut SkinBatch, rect: GuiRect, palette: &SkinPalette
             x1: rect.x1 - 1.0,
             y1: rect.y1 - 1.0,
         },
+        palette.form_hot[8],
         palette.form_hot[7],
-        palette.form_hot[6],
     );
     batch.set_ink(palette.control[0]);
     outline_rect(batch, rect);
@@ -6594,7 +6594,9 @@ pub fn draw_form_background(
     let start = batch.primitives.len();
     let width = place.rect.x1 as i32;
     let height = place.rect.y1 as i32;
-    let pressed = |code: i32| code == place.pressed_code && place.button_down;
+    // A mark is pressed while the button is down on the code under the
+    // mouse; the stored pressed code only makes it active.
+    let pressed = |code: i32| code == place.hover_code && place.button_down;
     if (place.flags & 0x40) == 0x40 {
         rounded_textured_frame(
             batch,
@@ -12371,8 +12373,8 @@ mod tests {
         assert_eq!(hovered.primitives.len(), 3);
         let inner = hovered.vertices_of(&hovered.primitives[1]);
         assert_eq!((inner[1].x, inner[1].y), (11.5, 21.5));
-        assert_eq!(inner[0].ink, [20, 6, 0, 50]);
-        assert_eq!(inner[5].ink, [20, 7, 0, 50]);
+        assert_eq!(inner[0].ink, [20, 7, 0, 50]);
+        assert_eq!(inner[5].ink, [20, 8, 0, 50]);
         assert_eq!(hovered.primitives[2].draw, GuiDraw::Lines);
 
         let mut idle = SkinBatch::new();
@@ -12815,11 +12817,14 @@ mod tests {
             vec![[180, 24, 195, 39], [180, 80, 195, 95]]
         );
         assert_eq!(drawn.scroll_bars, vec![[180, 30, 195, 50]]);
-        // Frame, shadow, the two raised boxes (the pressed one's gradient
-        // runs from the control group's fifth shade up to its second), then
-        // the bar's gradient boxes.
-        let pressed = batch.vertices_of(&batch.primitives[5]);
+        // Frame, shadow, the raised box under the mouse with the button
+        // down (its gradient runs from the control group's fifth shade up to
+        // its second), then the second trough's idle box, then the bar's
+        // gradient boxes.
+        let pressed = batch.vertices_of(&batch.primitives[2]);
         assert_eq!(pressed[0].ink, [30, 1, 0, 60]);
+        let idle = batch.vertices_of(&batch.primitives[5]);
+        assert_eq!(idle[0].ink, [30, 6, 0, 60]);
         assert_eq!(batch.texture_shift, [0.0, 0.0]);
     }
 
