@@ -1696,7 +1696,9 @@ character body's possession routines; addresses are in the research notes.
   the −1.5 and 1.5 pitch bounds, the 10 and 10000 distance range and its
   clamp of the distance field to that range, and the speeds: 5 and 5/59
   on the stepped camera, 15 × the largest distance / 59² and 6.6/59
-  otherwise). Under the editor flag it scans the scene for a `0xA9` node
+  otherwise; a distance the editor placed by hand is kept for one
+  application of the preset, then the record's is taken again
+  (`nav_camera::apply_preset_to`)). Under the editor flag it scans the scene for a `0xA9` node
   of class word 1 and takes its place and its half extents, a `0xAE`
   marker raising its extra flag (`nav_camera::scan_target`). The callback
   set its flags ask for (the wheel, the editor's press and move, the free

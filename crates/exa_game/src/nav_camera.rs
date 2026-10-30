@@ -1014,6 +1014,10 @@ pub struct Attachment {
     /// The wheel handler saved for the detach; `false` is the empty slot,
     /// which the next preset fills again from the viewport.
     pub saved_wheel: bool,
+    /// The detach asked the viewport to reset its geometry (the
+    /// controller's dirty byte); the camera tick clears it once the
+    /// viewport has been rebuilt.
+    pub geometry_reset: bool,
 }
 
 impl Default for Attachment {
@@ -1023,6 +1027,7 @@ impl Default for Attachment {
             bound: true,
             handlers: Handlers::default(),
             saved_wheel: false,
+            geometry_reset: false,
         }
     }
 }
@@ -1060,8 +1065,14 @@ impl Attachment {
             self.handlers.free_press = false;
             self.handlers.free_move = false;
             self.handlers.wheel = self.saved_wheel;
+            self.geometry_reset = true;
         }
         true
+    }
+
+    /// The camera tick's clear of the detach's geometry-reset byte.
+    pub fn clear_geometry_reset(&mut self) {
+        self.geometry_reset = false;
     }
 }
 
@@ -1723,6 +1734,11 @@ mod tests {
         let mut attachment = Attachment::default();
         assert!(attachment.set_detached(true));
         assert!(attachment.editing && !attachment.bound);
+        // The detach asks for a geometry reset, which the camera tick
+        // clears after the viewport is rebuilt.
+        assert!(attachment.geometry_reset);
+        attachment.clear_geometry_reset();
+        assert!(!attachment.geometry_reset);
         // Setting the state it already has changes nothing.
         assert!(!attachment.set_detached(true));
         assert!(attachment.editing && !attachment.bound);

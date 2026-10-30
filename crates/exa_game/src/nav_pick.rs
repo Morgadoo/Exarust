@@ -130,6 +130,17 @@ pub fn plane_hit(ray: Ray, plane: Plane) -> PlaneHit {
     }
 }
 
+/// The plane pick against a plane carried by a node's frame: the original
+/// moves the ray's point and direction through the node's world-to-frame
+/// matrix, then picks in that space. `to_frame` is the matrix that takes a
+/// world point into the frame (the node's inverse world transform); the
+/// returned point is in the frame's space.
+pub fn plane_hit_in_frame(ray: Ray, plane: Plane, to_frame: bevy::math::Affine3A) -> PlaneHit {
+    let origin = to_frame.transform_point3(ray.origin);
+    let direction = to_frame.transform_vector3(ray.direction);
+    plane_hit(Ray::new(origin, direction), plane)
+}
+
 /// What both mesh picks record when they meet nothing: the distance along
 /// the ray to the ground plane `y = 0`, `origin.y / −direction.y` (no
 /// guard for a level ray).
@@ -682,6 +693,33 @@ mod tests {
         // The tree's front-face walk refuses a ray from below.
         let up = ray(Vec3::new(0.5, -5.0, 0.5), Vec3::Y);
         assert!(mesh.nearest_hit(up, 10.0).is_none());
+    }
+
+    #[test]
+    fn a_plane_in_a_node_frame_is_picked_in_that_frame() {
+        // A frame lifted 2 m and turned a quarter turn about Y; the pick
+        // gets the inverse, which takes world points into the frame.
+        let frame = bevy::math::Affine3A::from_rotation_translation(
+            bevy::math::Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+            Vec3::new(0.0, 2.0, 0.0),
+        )
+        .inverse();
+        // The world ray looks straight down from y = 7; in the frame it
+        // starts at (0, 5, 0) and still looks down.
+        let hit = plane_hit_in_frame(
+            ray(Vec3::new(0.0, 7.0, 0.0), -Vec3::Y),
+            Plane::new(Vec3::Y, 0.0),
+            frame,
+        );
+        assert!((hit.distance - 5.0).abs() < 1e-5, "{}", hit.distance);
+        assert!(hit.point.length() < 1e-5);
+        // The direction turns too: a world −X ray is the frame's −Z.
+        let hit = plane_hit_in_frame(
+            ray(Vec3::new(0.0, 2.0, 0.0), -Vec3::X),
+            Plane::new(Vec3::new(0.0, 0.0, -1.0), 3.0),
+            frame,
+        );
+        assert!((hit.distance - 3.0).abs() < 1e-5, "{}", hit.distance);
     }
 
     #[test]
