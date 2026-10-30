@@ -102,6 +102,32 @@ impl StatBytes {
     }
 }
 
+/// Hit sound classes of the weapon section's sound byte, in the original's
+/// table order: a sword, a mace, an axe, a hammer, a mace, a club, wood,
+/// claws, and a body-to-body collision.
+pub const IMPACT_SOUNDS: [&str; 9] = [
+    "WH_SwordA",
+    "WH_MaceMA",
+    "WH_AxeA",
+    "WH_HammerA",
+    "WH_MaceMA",
+    "WH_ClubMW",
+    "WH_WoodA",
+    "WH_ClawsL",
+    "BdyCol",
+];
+
+/// The hit sound a factory weapon's body plays, from its section's sound
+/// byte: the table's entry at that index, or a sword when the class is past
+/// the table (the build reads the table without a bounds test; [guess] an
+/// out-of-range byte cannot ship, so the fallback is Exarust's).
+pub fn impact_sound(class: u8) -> &'static str {
+    IMPACT_SOUNDS
+        .get(class as usize)
+        .copied()
+        .unwrap_or(IMPACT_SOUNDS[0])
+}
+
 /// Part roles in a factory recipe.
 mod role {
     pub const BLADE: u8 = 1;
@@ -498,5 +524,19 @@ mod tests {
         let mut s = StatBytes::default();
         s.set(at::PIERCE, 200);
         assert_eq!(condition(s, 255, 0).get(at::PIERCE), 4);
+    }
+
+    #[test]
+    fn impact_sounds_follow_the_class_table() {
+        assert_eq!(impact_sound(0), "WH_SwordA");
+        assert_eq!(impact_sound(1), "WH_MaceMA");
+        assert_eq!(impact_sound(2), "WH_AxeA");
+        assert_eq!(impact_sound(3), "WH_HammerA");
+        assert_eq!(impact_sound(4), "WH_MaceMA");
+        assert_eq!(impact_sound(5), "WH_ClubMW");
+        assert_eq!(impact_sound(6), "WH_WoodA");
+        assert_eq!(impact_sound(7), "WH_ClawsL");
+        assert_eq!(impact_sound(8), "BdyCol");
+        assert_eq!(impact_sound(9), "WH_SwordA");
     }
 }

@@ -221,6 +221,9 @@ impl ModelLoader<'_> {
                         .unwrap_or([0.0; 3]),
                 ),
                 pattern_position,
+                // The region quad's u runs over `1 − texture_parameter`.
+                texture_crop: 1.0 - part.texture_parameter,
+                texture_detail: self.cache.textures.settings().texture_detail,
             };
             let material = self.painted_factory(&paint);
             let mut parts = Vec::new();
@@ -380,6 +383,38 @@ mod tests {
         for id in EMBLEM_IDS {
             let name = emblem_picture(EMBLEM_BACKGROUND_STEM, u32::from(id));
             assert!(loader.texels(&name).is_some(), "{name}");
+        }
+    }
+
+    /// Every shipped recipe's region parameters: the source crop is
+    /// `1 − texture_parameter` and the atlas rectangle has a positive size
+    /// (skipped without the game). Some recipes store a negative texture
+    /// parameter (crop above 1, a mirrored/overhanging source), so the crop
+    /// is not clamped.
+    #[test]
+    fn shipped_factory_regions_have_finite_crops() {
+        let Some(dir) = crate::locate_install(None) else {
+            return;
+        };
+        let game = crate::GameData::open(dir).unwrap();
+        let pack = game.pack(PackKind::Factories).unwrap();
+        for entry in pack.entries() {
+            let Some(bytes) = pack.get(&entry.name) else {
+                continue;
+            };
+            let f = Factory::parse(bytes).unwrap();
+            for part in &f.parts {
+                let crop = 1.0 - part.texture_parameter;
+                assert!(crop.is_finite(), "{}: crop {crop}", entry.name);
+                assert!(
+                    part.atlas[0].is_finite()
+                        && part.atlas[1].is_finite()
+                        && part.atlas[2].is_finite()
+                        && part.atlas[3].is_finite(),
+                    "{}: atlas",
+                    entry.name
+                );
+            }
         }
     }
 

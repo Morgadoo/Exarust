@@ -442,7 +442,23 @@ seed B. An area's emblem adds a colour-only layer over the same mask
 through its `emblembkg` picture placed by the factory's `PtrnPos`
 (`paint::Pattern`), and blade layers sample their mask, shade and region
 normal stretched by the part's `UVScale` (`Tiling::uv_scale`); apparel takes its palette colour, the material's wear weight and the
-loader's condition.
+loader's condition. The region quad's width crop (`1 − texture_parameter`)
+scales the source textures' u (`Tiling::crop`), and below texture detail 3
+a job paints at half the region's size while its tiles double
+(`paint::paint_target_size`); `paint::RegionDraw::uniforms` reproduces the
+`MatTile`, `DmgTile`, `ShdTile`, `MatCol`, `Damage`, `Dirt`, `Quality`,
+`UVScale` and `PtrnPos` values the original's six passes bind.
+
+The painter's GPU-side bookkeeping is modelled in `paint_jobs`: the
+256-slot job ring (a full ring flushes all but the newly pushed job), the
+64-slot surface cache with its 4-slot extra-layer pool and the original's
+cursor arithmetic, the per-size shade scratch targets and the render-target
+formats. Exarust paints on the CPU and on Bevy's task pool, so these queues
+have no GL thread; their index arithmetic and formats are pinned by tests.
+
+The procedural material's compiled program variants are
+`exa_formats::procedural::programs`: family names, pattern/alternate-normal
+defines, the sampler counts and the uniform lists each pass fetches.
 
 Factory weapons (`weapon`): a `.fty` recipe and an item's seeds choose,
 deform (scale, band, taper, bend, radial), place (by the parent's stored
