@@ -766,6 +766,25 @@ pub fn cut_away_segment(focus: Vec3, back: Vec3, max_distance: f32) -> (Vec3, Ve
     (start, toward, max_distance * 2.0 - 1.0)
 }
 
+/// A followed object as the cut-away driver reads it: its position and,
+/// when its node reports one, the point that stands in for it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FollowedFocus {
+    pub position: Vec3,
+    pub point: Option<Vec3>,
+}
+
+/// The point the cut-away probe centres on: the camera's stored point when
+/// it follows nothing, else the followed object's own point when its node
+/// reports one, else the object's position. The original moves a local
+/// point by the followed object's parent frame; Exarust keeps world
+/// transforms, so the caller passes world points.
+pub fn cut_away_focus(stored: Vec3, followed: Option<FollowedFocus>) -> Vec3 {
+    followed.map_or(stored, |followed| {
+        followed.point.unwrap_or(followed.position)
+    })
+}
+
 /// The offset one kick puts on the eye, before the chase camera's shake
 /// carries it. Three draws make a small random offset (x and z in ±0.5, y
 /// in 0–0.15, the last scaled in double precision). The kick's
@@ -1278,6 +1297,31 @@ mod tests {
         // segment then runs the other way, as the original's does.
         let (_, _, length) = cut_away_segment(Vec3::ZERO, Vec3::Z, 0.4);
         assert!(length < 0.0);
+    }
+
+    #[test]
+    fn the_cut_away_probe_centres_on_the_followed_object() {
+        let stored = Vec3::new(1.0, 2.0, 3.0);
+        // Nothing followed keeps the camera's stored point.
+        assert_eq!(cut_away_focus(stored, None), stored);
+        // A followed object with no point of its own gives its position.
+        let followed = FollowedFocus {
+            position: Vec3::new(4.0, 5.0, 6.0),
+            point: None,
+        };
+        assert_eq!(
+            cut_away_focus(stored, Some(followed)),
+            Vec3::new(4.0, 5.0, 6.0)
+        );
+        // A node's own point wins over the object's position.
+        let followed = FollowedFocus {
+            position: Vec3::new(4.0, 5.0, 6.0),
+            point: Some(Vec3::new(7.0, 8.0, 9.0)),
+        };
+        assert_eq!(
+            cut_away_focus(stored, Some(followed)),
+            Vec3::new(7.0, 8.0, 9.0)
+        );
     }
 
     #[test]
