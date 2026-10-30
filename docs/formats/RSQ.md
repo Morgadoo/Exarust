@@ -1297,11 +1297,9 @@ death, constants read from the executable; six live retail collapses):
   lower legs leave the living lower legs' layer (0; Contacts between
   bodies, above). It asks for a groan (voice line 2) from the two draws it
   makes: volume 0.15 + 0.1·second, pitch 0.8 + 0.1·first, both sums in
-  double (`collapse_voice`). Every held item it still has then takes a
-  10 cm slack on its soft world weld
-  (`exa_physics::grip::GripLinks::slacken_soft_weld`), after the weapons
-  and torch have been dropped (the shield stays on the arm). A gobbler's
-  collapse also slackens each femur's limit link to 10 cm
+  double (`collapse_voice`). The weapons and torch have been dropped by
+  then (the shield stays on the arm, its welds unchanged). A gobbler's
+  collapse slackens each femur's limit link to 10 cm
   (`exa_physics::body::Ragdoll::slacken_femur_limits`).
   (Not yet: a grab released.)
 - **Each tick**, in place of the posture block: the frame re-anchors on
@@ -1321,10 +1319,9 @@ death, constants read from the executable; six live retail collapses):
 - **Death** at a tone of 0.25 or less (0.5 × the image's 0.5): 250 ticks,
   3.0 s from full tone. Muscles off, tone 0.01, the word `0xA00`; a plain
   ragdoll from that tick, its motion kept (Exarust gave it a made-up
-  velocity before). Every held item's soft world weld becomes as stiff as
-  its origin weld (strength 1,
-  `exa_physics::grip::GripLinks::stiffen_soft_weld`), so a corpse's item
-  stays where it fell.
+  velocity before). Each lower leg's limit link takes strength 1 again
+  (`exa_physics::body::Ragdoll::go_limp`); the held items' welds are left
+  as they were.
 - Exarust starts it in its hit reaction, with the energy the blow's
   queued daze leaves, takes the body off its controller (no carry) while
   its balance and feet are still measured standing,

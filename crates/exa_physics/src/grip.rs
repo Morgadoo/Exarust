@@ -270,9 +270,6 @@ impl HeldGrip {
 pub const SOFT_WORLD: f32 = 0.05;
 /// A stiff world weld's strength.
 pub const STIFF_WORLD: f32 = 1.0;
-/// The slack (10 cm) a collapsing holder's soft weld takes, so the item it
-/// still carries stops dragging on the falling body.
-pub const COLLAPSE_WELD_SLACK: f32 = 0.10;
 /// The link mobility a free hand has, as a share of its base mass: the
 /// original's `0.175`.
 pub const HAND_LINK_SHARE: f32 = 0.175;
@@ -1016,36 +1013,6 @@ impl GripLinks {
             false
         }
     }
-
-    /// The collapse's change to a held item's world welds: the soft weld
-    /// takes a 10 cm slack ([`COLLAPSE_WELD_SLACK`]) so the item the holder
-    /// still carries stops dragging on the falling body. The original
-    /// applies it after the collapse has dropped the weapons and torch, so
-    /// what is left is the shield on the off arm. Returns whether a soft
-    /// weld was there to change.
-    pub fn slacken_soft_weld(&mut self) -> bool {
-        let Some(soft) = self.world_soft.filter(|&i| i < self.links.len()) else {
-            return false;
-        };
-        // Only the slack is written: the smoothed length the limp law holds
-        // inside it is left as it was.
-        self.links[soft].slack = COLLAPSE_WELD_SLACK;
-        true
-    }
-
-    /// Death's change to a held item's world welds: the soft weld becomes
-    /// as stiff as the origin weld (strength 1), so a corpse's item stays
-    /// where it fell. The original applies it to every held item when the
-    /// body dies, and only to one whose soft-weld link index is above zero
-    /// (the soft weld is never the first link). It leaves the slack alone.
-    /// Returns whether a soft weld was there to change.
-    pub fn stiffen_soft_weld(&mut self) -> bool {
-        let Some(soft) = self.world_soft.filter(|&i| i > 0 && i < self.links.len()) else {
-            return false;
-        };
-        self.links[soft].strength = STIFF_WORLD;
-        true
-    }
 }
 
 /// The grip mode a clip's change asks for: a knocked-down body
@@ -1482,78 +1449,6 @@ mod tests {
         assert_eq!(mode_from_clip(0x1F, 0, false), 0);
         assert_eq!(mode_from_clip(5, 0x2C, false), 0);
         assert_eq!(mode_from_clip(5, 0, true), 0);
-    }
-
-    /// A collapse gives the soft weld a 10 cm slack and leaves the stiff
-    /// origin weld alone; death then makes the soft weld as stiff as the
-    /// origin weld. An item with no soft weld (a weapon whose holder may
-    /// not parry) is left as it is.
-    #[test]
-    fn the_collapse_and_death_change_the_soft_weld() {
-        let item = body_at(Vec3::ZERO);
-        let hand = body_at(Vec3::ZERO);
-        let mut links = torch_links(&item, &hand, bindings(), 0, Affine3A::IDENTITY).unwrap();
-        let soft = links.world_soft.unwrap();
-        assert_eq!(links.links[soft].slack, 0.0);
-        assert_eq!(links.links[soft].strength, 0.05);
-        assert!(links.slacken_soft_weld());
-        assert_eq!(links.links[soft].slack, 0.10);
-        assert_eq!(links.links[soft].length, 0.0);
-        assert!(links.stiffen_soft_weld());
-        assert_eq!(links.links[soft].strength, 1.0);
-        assert_eq!(links.links[soft].slack, 0.10);
-        // Past the slack the limp law takes back the excess.
-        let gap = Vec3::new(0.15, 0.0, 0.0);
-        let c = crate::body::limp_law(gap, 0.10, 1.0, 0.001, 0.001, &mut 0.10).unwrap();
-        assert!((c.length() - 0.05).abs() < 1e-4, "{}", c.length());
-
-        // A weapon that may parry has both welds: only the soft one changes.
-        let mut weapon = build(
-            &item,
-            &hand,
-            bindings(),
-            &grip(),
-            1.0,
-            1.0,
-            Affine3A::IDENTITY,
-            false,
-            1.0,
-        )
-        .unwrap();
-        let welds = world_links(&item, bindings(), Vec3::new(0.0, 10.0, 0.0), true).unwrap();
-        weapon.world_soft = Some(weapon.links.len());
-        weapon.world_hard = Some(weapon.links.len() + 1);
-        weapon.links.extend(welds);
-        let (soft, hard) = (weapon.world_soft.unwrap(), weapon.world_hard.unwrap());
-        assert!(weapon.slacken_soft_weld());
-        assert_eq!(weapon.links[soft].slack, 0.10);
-        assert_eq!(weapon.links[hard].slack, 0.0);
-        assert!(weapon.stiffen_soft_weld());
-        assert_eq!(weapon.links[soft].strength, 1.0);
-        assert_eq!(weapon.links[hard].strength, 1.0);
-
-        // Without a soft weld (the heavy-claws holder) neither does anything.
-        let mut stiff_only = build(
-            &item,
-            &hand,
-            bindings(),
-            &grip(),
-            1.0,
-            1.0,
-            Affine3A::IDENTITY,
-            false,
-            1.0,
-        )
-        .unwrap();
-        let one = world_links(&item, bindings(), Vec3::new(0.0, 10.0, 0.0), false).unwrap();
-        stiff_only.world_hard = Some(stiff_only.links.len());
-        stiff_only.links.extend(one);
-        assert!(!stiff_only.slacken_soft_weld());
-        assert!(!stiff_only.stiffen_soft_weld());
-        assert_eq!(
-            stiff_only.links[stiff_only.world_hard.unwrap()].strength,
-            1.0
-        );
     }
 
     #[test]

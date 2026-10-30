@@ -354,9 +354,8 @@ tested rules of their own.
   flipped is placed half a turn about y and built from the flipped side
   at once. A collapsing holder lets its weapons and torch go
   (`GripRelease`: the grip stage frees them) while the shield stays on the
-  arm; what is still held then takes the collapse's 10 cm soft-weld slack,
-  and a dead holder's item takes death's stiff soft weld (`adjust_welds`,
-  on the tick the holder enters each condition). When the switch clip passes 60% the runtime trades the two held
+  arm; neither the collapse nor death changes the held item's welds (their
+  limit-link writes are the legs', in `exa_physics::body`). When the switch clip passes 60% the runtime trades the two held
   weapons' blade slots, the attacker's primary and the `Hands` main and
   second weapon once, so `choose_held_movesets` picks the moveset again
   from the new main weapon (a two-hander and a one-hander trade "Two
