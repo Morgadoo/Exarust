@@ -305,8 +305,8 @@ makes it 100, or averages it with 100 under the resistance technique; a
 charm aimed at the other makes it 100; suspicion takes 50, not below
 −100. When the observer's concern for a character it looks at is over 1.5
 and the raw role attitude lies more than 0.1 below the effective one, the
-pass breaks the first power that holds it — a binding or command sourced
-on that character or a charm aimed at it (`break_mind_power`: the
+pass breaks the first power that holds it — a binding sourced on that
+character or a charm aimed at it, not a command (`break_mind_power`: the
 effect's state becomes 2).
 `add_concern` is the script's `AddConcern` (the flags word becomes 3,
 the attitude-weighted rise, capped at 15, the event at 1.2 or else at 4).
@@ -348,11 +348,13 @@ observer's heading and attack state, the press flag on the opponent's
 facing, and the observer's feral and skill scales keep the original's
 double-precision steps. The recovering blow lowers the close term by one
 and scales the approach by `(2·skill + 2)·2` at any level.
-`publish_arc` is the opponent's published sector and its recovering kind,
-its edges built from the head look's yaw (the body heading while
-characters do not run the head tracker) and its look from the body's
+`publish_arc` is the opponent's published sector and its recovering kind
+(the swing word's cleaving bit, which also stops the sweep and so the
+arrival time), its edges built from the head look's yaw (the body heading
+while characters do not run the head tracker) and its look from the body's
 facing (turned 20° while a weapon is held), replaced by the arc midpoint
-on a side swing; `blow_is_live`
+on a side swing; the swing's continuation bits make it committed for
+`blow_is_live`
 its is-attacking test; `between` the original's arc test; `arrival_ms` its
 time to impact. `Origin` and `measured_origin` are the point the score
 measures a place from: 10 cm ahead standing, the chest leaned 70 ticks of

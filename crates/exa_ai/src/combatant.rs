@@ -21,7 +21,9 @@
 //!
 //! Relationships come from the role database. [`effective_attitude`] and
 //! [`trust`] apply the active mind powers to a raw attitude; neither reads
-//! the role database itself, so the raw values are inputs.
+//! the role database itself, so the raw values are inputs. A character
+//! worried about one it only likes through a power breaks the hold
+//! ([`break_mind_power`]).
 //!
 //! The target, attention target, other target and holder references are kept
 //! on the combatant, so [`Combatant::forget`] and [`Combatant::replace`]
@@ -157,16 +159,16 @@ fn bound_or_charmed(effect: &Effect, other: Entity, value: f32, resist_mind: boo
     }
 }
 
-/// Break the observer's hold on `other`: the first effect that binds the
-/// observer to `other` (a binding or command sourced on it) or charms it
-/// toward `other` has its state set to [`MIND_BROKEN`]. True when one was
-/// broken. The perception runs this when its concern for the character is
-/// over 1.5 and the raw role attitude lies more than 0.1 below the
-/// effective one (the power is all that keeps the peace).
+/// Break the observer's hold on `other`: the first binding sourced on
+/// `other` or charm aimed at it has its state set to [`MIND_BROKEN`], and
+/// a command does not (the original's scan knows only those two kinds).
+/// True when one was broken. The perception runs this when its concern for
+/// the character is over 1.5 and the raw role attitude lies more than 0.1
+/// below the effective one (the power is all that keeps the peace).
 pub fn break_mind_power(other: Entity, effects: &mut [Effect]) -> bool {
     for effect in effects {
         let kind = effect.kind & EFFECT_KIND_MASK;
-        if kind == POWER_BIND || kind == POWER_COMMAND {
+        if kind == POWER_BIND {
             if effect.source == Some(other) {
                 effect.state = MIND_BROKEN;
                 return true;
@@ -482,8 +484,9 @@ pub struct Sight {
     /// The familiarity drift for the role database, when the pass reached
     /// it.
     pub familiarity: Option<f32>,
-    /// The concern and the attitude call for the mind power check the
-    /// original makes here (it is not reproduced).
+    /// The concern and the attitude called for the mind-power check: the
+    /// pass broke the first binding or charm holding this character
+    /// ([`break_mind_power`]).
     pub mind_check: bool,
 }
 
@@ -1615,7 +1618,10 @@ mod tests {
         assert_eq!(effects[0].state, 0);
         assert_eq!(effects[1].state, 0);
         assert_eq!(effects[2].state, MIND_BROKEN);
-        assert_eq!(effects[3].state, 0);
+        // A command is not one the scan breaks.
+        let mut commanded = [power(POWER_COMMAND, Some(other), None)];
+        assert!(!break_mind_power(other, &mut commanded));
+        assert_eq!(commanded[0].state, 0);
         // A hold on someone else is not broken.
         let mut elsewhere = [power(POWER_BIND, Some(third), None)];
         assert!(!break_mind_power(other, &mut elsewhere));

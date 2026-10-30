@@ -393,6 +393,9 @@ impl combat::Field for DuelField<'_> {
 }
 
 /// The attack arc a fighter publishes, as the position score reads it.
+/// `swing_flags` is the fighter's swing word: its cleaving bit makes the arc
+/// a recovery and stops the sweep, and its continuation bits mark the swing
+/// committed.
 #[allow(clippy::too_many_arguments)]
 fn published_blow(
     fighter: Entity,
@@ -402,8 +405,9 @@ fn published_blow(
     heading: f32,
     facing: f32,
     attacking: bool,
-    stunned: bool,
+    swing_flags: u32,
 ) -> place::Blow {
+    let recovering = swing_flags & swing::flags::CLEAVING != 0;
     let armed = blades
         .iter()
         .any(|b| b.wielder == fighter && b.record.armed());
@@ -422,7 +426,7 @@ fn published_blow(
         facing,
         armed,
         held: armed,
-        recovering: stunned,
+        recovering,
         hand: None,
         idle_clock: 0,
         idle_stamp: 0,
@@ -433,8 +437,8 @@ fn published_blow(
         arc_end: arc.end,
         phase,
         skill: 0.0,
-        committed: attacking && phase > 0.3,
-        sweeping: attacking && !stunned,
+        committed: swing_flags & (swing::flags::CONTINUATION | swing::flags::CONTINUED) != 0,
+        sweeping: attacking && !recovering,
         // The observer's grip link on the opponent; a duellist has none.
         forced_range: false,
         origin_in_arc: false,
@@ -464,7 +468,7 @@ fn duellist(
         Without<Duellist>,
     >,
     children: Query<&Children>,
-    blades: Query<&Blade>,
+    (blades, target_swings): (Query<&Blade>, Query<&SwingState, Without<Duellist>>),
     mut brains: Query<&mut brain::Npc>,
     role_db: Option<Res<brain::RoleDatabase>>,
     role_lists: Query<&crate::roles::Roles>,
@@ -748,6 +752,9 @@ fn duellist(
         if target_condition.is_dead() && contact.died_ms.is_none() {
             contact.died_ms = Some(now);
         }
+        let target_swing = target_fighter_entity
+            .and_then(|e| target_swings.get(e).ok())
+            .map_or(0, |state| state.flags);
         let mut blow = published_blow(
             ai.target,
             &blades,
@@ -756,7 +763,7 @@ fn duellist(
             atan2_xz(target_forward.x, target_forward.z),
             atan2_xz(target_forward.x, target_forward.z),
             target_condition == Condition::ATTACKING,
-            false,
+            target_swing,
         );
         if blow.kind == 0 {
             blow.sweeping = false;
