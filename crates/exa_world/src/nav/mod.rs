@@ -45,8 +45,8 @@ pub use finder::{AbstractPathFinder, FALLBACK_SIZE, InstalledPathfinder};
 pub use footprint::{NavFootprints, remove_footprint, stamp_footprint};
 pub use mover::{
     CellRect, FootprintAdd, FootprintList, FootprintRect, MoverPoints, Movers, movers_idle,
-    plan_around, plan_footprint, queue_moved, queued_moves, raise_from_movers, rect_around,
-    rect_of_box, refresh_movers, ring_contents, ring_moved, start_full_refresh,
+    plan_around, plan_footprint, queue_box, queue_moved, queued_moves, raise_from_movers,
+    rect_around, rect_of_box, refresh_movers, ring_contents, ring_moved, start_full_refresh,
 };
 pub use path::{ACCEPT_GOAL_CELL, Look, Path, disturbance, find_path, find_path_with, look_ahead};
 pub use query::{LineHit, line_walk, obstacle, straight_walk};

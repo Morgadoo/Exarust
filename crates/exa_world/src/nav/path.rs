@@ -327,7 +327,9 @@ fn line_blocked(
     let limit = budget.wrapping_add(SHORTCUT_SLACK);
     let mut at = ends[0];
     let mut cost = 0i32;
-    for _ in 0..count {
+    // The cells after the start up to, not including, the kept point's own
+    // cell, as the original's line helper walks them.
+    for _ in 0..count.saturating_sub(1) {
         let before = at[minor];
         at[major] += step;
         at[minor] = i64::from((at[major] as f32 * slope + intercept).round_ties_even() as i32);

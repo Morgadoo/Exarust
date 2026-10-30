@@ -108,6 +108,14 @@ pub fn rect_of_box(grid: &NavGrid, at: Affine3A, centre: Vec3, half: Vec3) -> Ce
     )
 }
 
+/// Queues a registered node's oriented box as a moved rectangle in the
+/// pending list. This is the pathfinder's "mark an object's box dirty" slot:
+/// both of the original's mark slots forward the node's box (centre and
+/// half extents in the node's space) under its world frame to the merge.
+pub fn queue_box(movers: &mut Movers, grid: &NavGrid, at: Affine3A, centre: Vec3, half: Vec3) {
+    queue_moved(movers, rect_of_box(grid, at, centre, half));
+}
+
 /// The rectangle of a ground-plane centre and extent (centimetres): on each
 /// axis `W/2 + round((c ∓ e) · (1/30) ∓ 2.5)`, the low side at least 3 and
 /// the high side at most `W − 4`.
@@ -885,6 +893,23 @@ mod tests {
         refresh_movers(&mut grid, &mut movers, &[]);
         assert_eq!(grid.cell(12, 12, Layer::Lower).floor, 10);
         assert_eq!(grid.cell(12, 12, Layer::Lower).roughness, 0);
+    }
+
+    /// A registered node's box is marked dirty through the merge (both of
+    /// the original's mark slots forward it there): the same rectangle as
+    /// the box under its frame, merged with what waits.
+    #[test]
+    fn a_nodes_box_is_marked_dirty_and_merges() {
+        let grid = NavGrid::empty(80, 80, 0.0);
+        let at = Affine3A::from_translation(Vec3::new(3.0, 0.0, 0.0));
+        let half = Vec3::new(0.6, 1.0, 0.15);
+        let mut movers = Movers::default();
+        queue_box(&mut movers, &grid, at, Vec3::ZERO, half);
+        let rect = rect_of_box(&grid, at, Vec3::ZERO, half);
+        assert_eq!(queued_moves(&movers), &[rect]);
+        queue_box(&mut movers, &grid, at, Vec3::ZERO, half);
+        assert_eq!(queued_moves(&movers).len(), 1);
+        assert!(!movers_idle(&movers));
     }
 
     /// A node's box under its frame: unturned it gives the box's own

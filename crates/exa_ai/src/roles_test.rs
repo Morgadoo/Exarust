@@ -323,6 +323,12 @@ fn the_last_attitude_moves_a_former_level_character() {
     };
     assert_eq!(rel.last_attitude(&stranger, 50, 2), 0.0);
     assert_eq!(rel.find(9).unwrap().met_ms, 50);
+    // A direct migration only takes a stored level table of that locale.
+    let mut direct = Relations::default();
+    direct.create(0x8000_0005, 4.0, 0, 7);
+    assert!(!direct.migrate_former(6, 8, 0x8000_0005));
+    assert!(direct.migrate_former(6, 7, 0x8000_0005));
+    assert_eq!(direct.find(6).unwrap().base, 4.0);
     rel.add_familiarity(9, 5.0);
     rel.add_familiarity(10, 5.0);
     assert!(rel.find(10).is_none());
@@ -546,8 +552,9 @@ fn the_condition_wrapper_uses_the_finder() {
     );
 }
 
-/// StartDialogue copies the calling context; ChangeRole is the original's
-/// missing-function error. The unit registers them in this order.
+/// StartDialogue copies the calling context and the topic it was asked for;
+/// ChangeRole is the original's missing-function error. The unit registers
+/// them in this order.
 #[test]
 fn the_roles_scripts_are_registered_and_start_dialogue_copies_its_context() {
     assert_eq!(SCRIPT_FUNCTIONS, ["StartDialogue", "ChangeRole"]);
@@ -557,7 +564,10 @@ fn the_roles_scripts_are_registered_and_start_dialogue_copies_its_context() {
         role: 21,
         partner_role: 7,
     };
-    assert_eq!(start_dialogue(context), context);
+    let topic = Name::from_bytes(b"rumours");
+    let request = start_dialogue(context, topic);
+    assert_eq!(request.start, context);
+    assert_eq!(request.topic, topic);
     let error = change_role().unwrap_err();
     assert_eq!(error.to_string(), "Function \"ChangeRole\" does not exist.");
 }

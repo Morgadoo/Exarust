@@ -369,7 +369,7 @@ fn comments_follow_the_phrase_rules() {
     let mut remarks = Remarks::default();
     let mut roll = 0;
     let first = comment(&mut phrases, &mut remarks, "Helmet", 5, &mut roll);
-    assert_eq!(first, "Look, a helmet.");
+    assert_eq!(first, "I found a helmet.");
     assert_eq!(phrases.first_one.last, [0, 8]);
     assert_eq!(phrases.first_pair.last, [0, 8]);
     let second = comment(&mut phrases, &mut remarks, "AXE", 15, &mut roll);
@@ -380,7 +380,7 @@ fn comments_follow_the_phrase_rules() {
     // After 10 s the window starts again; the first table's last draw (0)
     // is drawn twice more before 4 comes.
     let again = comment(&mut phrases, &mut late, "Helmet", 26, &mut r);
-    assert_eq!(again, "A helmet, should you want it.");
+    assert_eq!(again, "A helmet here, if you want it.");
     assert_eq!(late.names, vec!["helmet".to_string()]);
     let mut table = Phrases::default();
     table.first_one.templates[0] = "[a], should you want it.".into();
@@ -399,7 +399,7 @@ fn comments_follow_the_phrase_rules() {
         0,
         &mut r,
     );
-    assert_eq!(said, "Look, some pair of boots.");
+    assert_eq!(said, "I found some pair of boots.");
     assert_eq!(lower_but_last("HELM"), "helM");
 }
 
@@ -411,7 +411,7 @@ fn a_comment_does_not_repeat_the_last_two() {
     let mut roll = 0;
     let said = comment(&mut phrases, &mut Remarks::default(), "Cup", 0, &mut roll);
     assert_eq!(phrases.first_one.last, [4, 0]);
-    assert_eq!(said, "A cup, should you want it.");
+    assert_eq!(said, "A cup here, if you want it.");
 }
 
 #[test]
@@ -1072,6 +1072,47 @@ fn the_executors_carry_wear_wield_and_stow() {
     ));
     assert_eq!(scene.containers[&40].items, vec![7, 12]);
     assert_eq!(pack.hands[2], 0);
+}
+
+/// The object edits the deferred jobs ask for: an item's first container
+/// entry goes and the list compacts; a worn item leaves the worn list, or,
+/// when the corpse grips it in the main hand, the hand and its carried
+/// entry; a carried item leaves its entry; a container takes an item only
+/// when its size byte fits.
+#[test]
+fn the_small_object_edits_work_as_the_jobs_ask() {
+    let mut container = Container {
+        items: vec![3, 4, 5, 4],
+        max_item: 9,
+    };
+    assert!(take_from_container(&mut container, 4));
+    assert_eq!(container.items, vec![3, 5, 4]);
+    assert!(!take_from_container(&mut container, 7));
+
+    let mut pack = Pack {
+        carried: vec![Carried { item: 1, flags: 0 }, Carried { item: 2, flags: 0 }],
+        worn: vec![8, 9],
+        hands: [2, 0, 0, 0],
+        locked: false,
+    };
+    assert!(take_worn(&mut pack, 2));
+    assert_eq!(pack.hands[0], 0);
+    assert_eq!(pack.carried, vec![Carried { item: 1, flags: 0 }]);
+    assert!(take_worn(&mut pack, 9));
+    assert_eq!(pack.worn, vec![8]);
+    assert!(!take_worn(&mut pack, 9));
+    assert!(take_carried(&mut pack, 1));
+    assert!(pack.carried.is_empty());
+    assert!(!take_carried(&mut pack, 1));
+
+    let mut small = Container {
+        items: vec![],
+        max_item: 5,
+    };
+    assert!(add_to_container(&mut small, 11, Some(5)));
+    assert!(!add_to_container(&mut small, 12, Some(6)));
+    assert!(!add_to_container(&mut small, 13, None));
+    assert_eq!(small.items, vec![11]);
 }
 
 /// Dropping waits on a locked pack, needs the item in the pack and its

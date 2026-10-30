@@ -1,12 +1,14 @@
 //! The pathfinder's grid queries.
 //!
-//! The line walk steps from the cell after the start along the longer axis.
-//! A floor more than four above the current height blocks when its underside
-//! is within ten. The straight walk uses five and fifteen, and follows a
-//! floor down. A line of 40 cm or less is not an obstacle; a longer one is
-//! when a floor is more than seven too high or an early cell's penalty is
-//! above 60. The point queries (a cell's cost, the nearest walkable point)
-//! are `super::walkable`'s. Evidence: the movement notes' grid queries.
+//! The line walk steps from the cell after the start along the longer axis
+//! (Z on a tie of |dx| and |dz|), up to but not including the asked end's
+//! own cell. A floor more than four above the current height blocks when
+//! its underside is within ten. The straight walk uses five and fifteen,
+//! and follows a floor down. A line of 40 cm or less is not an obstacle; a
+//! longer one is when a floor is more than seven too high or an early
+//! cell's penalty is above 60. The point queries (a cell's cost, the
+//! nearest walkable point) are `super::walkable`'s. Evidence: the movement
+//! notes' grid queries and the three line tests' instructions.
 
 use bevy::math::Vec3;
 
@@ -29,7 +31,8 @@ pub fn line_walk(grid: &NavGrid, start: Vec3, end: Vec3) -> LineHit {
     let gz1 = axis(end.z, depth);
     let dx = gx1 - gx0;
     let dz = gz1 - gz0;
-    let x_major = dx.abs() >= dz.abs();
+    // The original takes Z as the major axis on a tie (|dx| <= |dz|).
+    let x_major = dx.abs() > dz.abs();
     let (d_major, d_minor, g_major, g_minor) = if x_major {
         (dx, dz, gx0, gz0)
     } else {
@@ -56,7 +59,9 @@ pub fn line_walk(grid: &NavGrid, start: Vec3, end: Vec3) -> LineHit {
     let mut major = start_i;
     let mut height = voxels(start.y, grid.base());
     let mut offered = count as i32;
-    for k in 0..count {
+    // The original walks the cells after the start up to, not including,
+    // the asked end's cell.
+    for k in 0..count.saturating_sub(1) {
         major += step;
         let minor = (major as f32 * slope + intercept).round_ties_even() as i32;
         let (x, z) = if x_major {
@@ -197,7 +202,8 @@ fn raster(grid: &NavGrid, start: Vec3, end: Vec3, sign_bit: bool) -> Option<Rast
     let gz0 = axis(start.z, depth);
     let dx = axis(end.x, width) - gx0;
     let dz = axis(end.z, depth) - gz0;
-    let x_major = dx.abs() >= dz.abs();
+    // The original takes Z as the major axis on a tie (|dx| <= |dz|).
+    let x_major = dx.abs() > dz.abs();
     let (d_major, d_minor, g_major, g_minor) = if x_major {
         (dx, dz, gx0, gz0)
     } else {
@@ -241,7 +247,9 @@ pub fn straight_walk(grid: &NavGrid, start: Vec3, end: Vec3) -> LineHit {
         };
     };
     let mut height = straight_height(grid, start);
-    for k in 0..walk.count {
+    // The asked end's own cell is not walked, as the original stops one
+    // cell short of it.
+    for k in 0..walk.count.saturating_sub(1) {
         let Some((x, z)) = walk.advance() else {
             break;
         };
@@ -270,7 +278,7 @@ pub fn obstacle(grid: &NavGrid, start: Vec3, end: Vec3) -> bool {
         return false;
     };
     let mut height = voxels(start.y, grid.base());
-    for k in 0..walk.count {
+    for k in 0..walk.count.saturating_sub(1) {
         let Some((x, z)) = walk.advance() else {
             break;
         };
@@ -585,6 +593,40 @@ mod tests {
             },
         );
         assert!(!obstacle(&costly, at(&costly, 1, 3), at(&costly, 5, 3)));
+    }
+
+    #[test]
+    fn a_line_walk_does_not_enter_the_asked_cells_own_cell() {
+        // The original stops one cell short of the end: a wall standing in
+        // the end cell does not block the line, one in the cell before it
+        // does.
+        let mut grid = flat(8, 8);
+        grid.set_cell(
+            6,
+            3,
+            Layer::Lower,
+            NavCell {
+                floor: 40,
+                ..NavCell::default()
+            },
+        );
+        let start = at(&grid, 1, 3);
+        let end = at(&grid, 6, 3);
+        assert!(!line_walk(&grid, start, end).blocked);
+        assert!(!straight_walk(&grid, start, end).blocked);
+        assert!(!obstacle(&grid, start, end));
+        grid.set_cell(
+            5,
+            3,
+            Layer::Lower,
+            NavCell {
+                floor: 40,
+                ..NavCell::default()
+            },
+        );
+        assert!(line_walk(&grid, start, end).blocked);
+        assert!(straight_walk(&grid, start, end).blocked);
+        assert!(obstacle(&grid, start, end));
     }
 
     #[test]

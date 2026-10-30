@@ -64,9 +64,8 @@
 //!
 //! Evidence: the original's search activity (its tick, gathering, picking,
 //! look sweep, item weighing, comments, re-equipping and tidying), the item
-//! value routines it calls, and its unit's registration and phrase tables.
-//! The phrase wording is Exarust's own: the counts, placeholders and
-//! no-repeat rule are the original's.
+//! value routines it calls, and its unit's registration and phrase tables
+//! (the templates are the original's own strings, read from the image).
 
 use std::collections::BTreeMap;
 
@@ -635,31 +634,32 @@ fn table(templates: &[&str], drawn_from: u32, last: u32) -> PhraseTable {
 }
 
 impl Default for Phrases {
-    /// Exarust's wording, in the original's shape: six templates for a
-    /// first comment of which five are drawn, four for a further comment,
-    /// the last-drawn marks starting outside the tables.
+    /// The original's wording: six templates for a first comment of which
+    /// five are drawn (the sixth, a "[i]" variant, is never reached), four
+    /// for a further comment, and the last-drawn marks starting outside the
+    /// tables.
     fn default() -> Self {
         Self {
             first_one: table(
                 &[
-                    "Look, [a].",
-                    "There is [a] over here.",
-                    "Here lies [a].",
-                    "I have [a] here.",
-                    "[a], should you want it.",
-                    "This [i] might serve.",
+                    "I found [a].",
+                    "There's [a] here.",
+                    "Found [a] here.",
+                    "Got [a] here.",
+                    "[a] here, if you want it.",
+                    "This [i] could be useful.",
                 ],
                 5,
                 8,
             ),
             first_pair: table(
                 &[
-                    "Look, some [i].",
-                    "There are some [i] over here.",
-                    "Here lie some [i].",
-                    "I have some [i] here.",
-                    "Some [i], should you want them.",
-                    "These [i] might serve.",
+                    "I found some [i].",
+                    "There's some [i] here.",
+                    "Found some [i] here.",
+                    "Got some [i] here.",
+                    "Some [i] here, if you want them.",
+                    "These [i] could be useful.",
                 ],
                 5,
                 8,
@@ -667,9 +667,9 @@ impl Default for Phrases {
             more_one: table(
                 &[
                     "And [a].",
-                    "[a] as well.",
-                    "There is also [a].",
-                    "Also [a] here.",
+                    "Found [a] too.",
+                    "Also found [a].",
+                    "There's [a] too.",
                 ],
                 4,
                 5,
@@ -677,9 +677,9 @@ impl Default for Phrases {
             more_pair: table(
                 &[
                     "And some [i].",
-                    "Some [i] as well.",
-                    "There are also some [i].",
-                    "Also some [i] here.",
+                    "Found some [i] too.",
+                    "Also found some [i].",
+                    "There's some [i] too.",
                 ],
                 4,
                 5,
@@ -1254,6 +1254,9 @@ impl Search {
             return;
         }
         if me.attend(ATTEND_WALKING) {
+            // The activity's answer is not busy while the walk takes the
+            // tick.
+            *busy = false;
             return;
         }
         me.calm_walk();
@@ -1534,6 +1537,87 @@ impl Search {
     }
 }
 
+/// Takes the first entry `item` out of a container's contents and compacts
+/// the list, as the object database's removal does. True when it was there.
+pub fn take_from_container(container: &mut Container, item: u32) -> bool {
+    let Some(at) = container.items.iter().position(|i| *i == item) else {
+        return false;
+    };
+    container.items.remove(at);
+    true
+}
+
+/// Takes a corpse's worn item off it: an item held in the main hand is
+/// released from the grip, with its carried entry, and anything else leaves
+/// the worn list. True when the item was there.
+pub fn take_worn(pack: &mut Pack, item: u32) -> bool {
+    if pack.hands[0] == item {
+        pack.hands[0] = 0;
+        if let Some(at) = pack.carried.iter().position(|c| c.item == item) {
+            pack.carried.remove(at);
+        }
+        return true;
+    }
+    let Some(at) = pack.worn.iter().position(|w| *w == item) else {
+        return false;
+    };
+    pack.worn.remove(at);
+    true
+}
+
+/// Takes `item` out of a corpse's carried entries. True when it was there.
+pub fn take_carried(pack: &mut Pack, item: u32) -> bool {
+    let Some(at) = pack.carried.iter().position(|c| c.item == item) else {
+        return false;
+    };
+    pack.carried.remove(at);
+    true
+}
+
+/// Adds `item` to a container when its record's size byte is within the
+/// container's largest item. The original appends the entry with the item's
+/// size words and grows the list; Exarust keeps ids. False without a size
+/// byte or when the item is too large.
+pub fn add_to_container(container: &mut Container, item: u32, size: Option<u8>) -> bool {
+    let Some(size) = size else {
+        return false;
+    };
+    if u16::from(size) > container.max_item {
+        return false;
+    }
+    container.items.push(item);
+    true
+}
+
+/// Drops `item` from `pack` into `container`: a locked pack refuses, the
+/// item must be carried or in a hand, and its size must fit the container.
+/// True when it went in.
+pub fn drop_item(scene: &mut Scene, pack: &mut Pack, container: u32, item: u32) -> bool {
+    if pack.locked {
+        return false;
+    }
+    let carried = pack.carried.iter().position(|c| c.item == item);
+    let hand = pack.hands.iter().position(|h| *h == item);
+    if carried.is_none() && hand.is_none() {
+        return false;
+    }
+    let size = scene.sizes.get(&item).copied();
+    let Some(c) = scene.containers.get_mut(&container) else {
+        return false;
+    };
+    if !add_to_container(c, item, size) {
+        return false;
+    }
+    match (carried, hand) {
+        (Some(at), _) => {
+            pack.carried.remove(at);
+        }
+        (None, Some(at)) => pack.hands[at] = 0,
+        (None, None) => {}
+    }
+    true
+}
+
 /// Carries out one world edit the search asked for. True when it happened.
 ///
 /// Taking a loose item despawns its object; taking from a container removes
@@ -1587,34 +1671,7 @@ pub fn apply_deed(scene: &mut Scene, pack: &mut Pack, deed: &Deed) -> bool {
             pack.hands[2] = *item;
             true
         }
-        Deed::Drop { item, container } => {
-            if pack.locked {
-                return false;
-            }
-            let carried = pack.carried.iter().position(|c| c.item == *item);
-            let hand = pack.hands.iter().position(|h| *h == *item);
-            if carried.is_none() && hand.is_none() {
-                return false;
-            }
-            let Some(&size) = scene.sizes.get(item) else {
-                return false;
-            };
-            let Some(c) = scene.containers.get_mut(container) else {
-                return false;
-            };
-            if c.max_item < u16::from(size) {
-                return false;
-            }
-            c.items.push(*item);
-            match (carried, hand) {
-                (Some(at), _) => {
-                    pack.carried.remove(at);
-                }
-                (None, Some(at)) => pack.hands[at] = 0,
-                (None, None) => {}
-            }
-            true
-        }
+        Deed::Drop { item, container } => drop_item(scene, pack, *container, *item),
         Deed::Comment { .. } => true,
     }
 }
@@ -1655,42 +1712,25 @@ fn take(scene: &mut Scene, object: usize, source: Source, item: u32) -> bool {
             let Some(c) = scene.containers.get_mut(&id) else {
                 return false;
             };
-            let Some(at) = c.items.iter().position(|i| *i == item) else {
-                return false;
-            };
-            c.items.remove(at);
-            true
+            take_from_container(c, item)
         }
-        Source::Worn | Source::Carried => {
+        Source::Worn => {
             let Some(at) = scene.objects.get(object).and_then(|o| o.corpse) else {
                 return false;
             };
             let Some(corpse) = scene.corpses.get_mut(at) else {
                 return false;
             };
-            let pack = &mut corpse.pack;
-            let carried = pack.carried.iter().position(|c| c.item == item);
-            if source == Source::Worn {
-                if pack.hands[0] == item {
-                    // Released from the grip: the hand and its carried
-                    // entry, not the worn list.
-                    pack.hands[0] = 0;
-                    if let Some(at) = carried {
-                        pack.carried.remove(at);
-                    }
-                    return true;
-                }
-                let Some(at) = pack.worn.iter().position(|w| *w == item) else {
-                    return false;
-                };
-                pack.worn.remove(at);
-                return true;
-            }
-            let Some(at) = carried else {
+            take_worn(&mut corpse.pack, item)
+        }
+        Source::Carried => {
+            let Some(at) = scene.objects.get(object).and_then(|o| o.corpse) else {
                 return false;
             };
-            pack.carried.remove(at);
-            true
+            let Some(corpse) = scene.corpses.get_mut(at) else {
+                return false;
+            };
+            take_carried(&mut corpse.pack, item)
         }
     }
 }

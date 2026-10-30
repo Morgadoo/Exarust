@@ -294,7 +294,9 @@ cell's lower and upper floor and underside):
 - **Disturbance** (`nav::disturbance`): the original's sampler is a stub
   that always answers 0.
 - **Line walk** (`nav::line_walk`; the player's look-ahead, soft stop and
-  footwork targets): one cell a step along the line's longer axis; a floor
+  footwork targets): one cell a step along the line's longer axis (Z when
+  |dx| = |dz|), from the cell after the start up to but not including the
+  asked end's own cell; a floor
   more than 4 above the running height blocks when less than 10 lie under
   its slab (an upper slab with nothing measured under it and its floor not
   below the lower one passes); a reachable floor raises the running

@@ -33,8 +33,9 @@
 //! entry finder the attitude roles use. A role's dialogue toward a key is
 //! `exa_formats::roles::Role::dialogue_for`. The unit registers `StartDialogue`
 //! (which copies the owner, partner, role and matched partner role into the
-//! engine's context) and the `ChangeRole` stub that always reports its
-//! missing function. The brain does not feed the script engine yet.
+//! engine's context and reads the script's first argument as the topic) and
+//! the `ChangeRole` stub that always reports its missing function. The brain
+//! does not feed the script engine yet.
 //!
 //! Evidence: the original's role database routines (add, remove, has,
 //! validate, relation tables, add and remove relation, familiarity, the
@@ -46,7 +47,7 @@ use std::collections::BTreeMap;
 use bevy::prelude::Component;
 use exa_formats::characters::CharacterRecord;
 use exa_formats::roles::{
-    ATTITUDE, Role, RoleDb, RoleEntry, SECTION_CORPSE, SECTION_ENCOUNTER, SECTION_INTERACTION,
+    ATTITUDE, Name, Role, RoleDb, RoleEntry, SECTION_CORPSE, SECTION_ENCOUNTER, SECTION_INTERACTION,
 };
 
 /// The Player role.
@@ -346,6 +347,24 @@ impl Relations {
         base
     }
 
+    /// Moves a global partner's relation out of an old level table into the
+    /// global one, under its whole id, as the original migrates a partner
+    /// that has left its level. True when one moved.
+    pub fn migrate_former(&mut self, id: u32, former_locale: u32, former_id: u32) -> bool {
+        if former_id == 0 {
+            return false;
+        }
+        for level in &mut self.levels {
+            if level.locale == former_locale
+                && let Some(moved) = level.table.remove(&(former_id & KEY_BITS))
+            {
+                self.global.insert(id, moved);
+                return true;
+            }
+        }
+        false
+    }
+
     /// The last attitude about `partner`. A global partner missing from the
     /// table is looked for in the stored tables of its former locale and
     /// moved to the global table, under its whole id; a partner still
@@ -354,15 +373,8 @@ impl Relations {
         if partner.id & LOCAL_ID == 0
             && !self.global.contains_key(&(partner.id & KEY_BITS))
             && let Some((former_locale, former_id)) = partner.former
-            && former_id != 0
         {
-            for level in &mut self.levels {
-                if level.locale == former_locale
-                    && let Some(moved) = level.table.remove(&(former_id & KEY_BITS))
-                {
-                    self.global.insert(partner.id, moved);
-                }
-            }
+            self.migrate_former(partner.id, former_locale, former_id);
         }
         if let Some(r) = self.find(partner.id) {
             return r.last;
@@ -684,6 +696,14 @@ pub struct DialogueStart {
     pub partner_role: u32,
 }
 
+/// What `StartDialogue` hands the dialogue engine: the role context and the
+/// topic the script asked for.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DialogueRequest {
+    pub start: DialogueStart,
+    pub topic: Name,
+}
+
 /// The names the roles unit registers with the script engine, in the order
 /// it registers them.
 pub const SCRIPT_FUNCTIONS: [&str; 2] = ["StartDialogue", "ChangeRole"];
@@ -701,11 +721,16 @@ impl std::fmt::Display for MissingScriptFunction {
 
 impl std::error::Error for MissingScriptFunction {}
 
-/// `StartDialogue`: copies the calling context and hands it to the dialogue
-/// engine. The context is returned rather than run, because the script
-/// engine is not fed from the brain yet.
-pub fn start_dialogue(context: DialogueStart) -> DialogueStart {
-    context
+/// `StartDialogue(topic)`: copies the calling context and reads the script's
+/// first argument as a 16-byte, NUL-padded topic name (the original copies
+/// the whole argument word), then hands the pair to the dialogue engine.
+/// Exarust returns the request: the brain does not run role scripts yet, and
+/// the dialogue engine is `exa_script`'s.
+pub fn start_dialogue(context: DialogueStart, topic: Name) -> DialogueRequest {
+    DialogueRequest {
+        start: context,
+        topic,
+    }
 }
 
 /// `ChangeRole`: always the original's missing-function error.
