@@ -448,6 +448,7 @@ impl RayMesh for PhysicsMesh<'_> {
 /// use where a mesh carries its tree; [`Triangles`] remains for a small
 /// mesh without one.
 pub struct KdMesh<'a> {
+    /// The mesh's built triangle kd-tree.
     pub tree: &'a exa_physics::kd_tree::KdTree,
 }
 

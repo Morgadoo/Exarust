@@ -552,6 +552,7 @@ pub struct NavController {
     /// The point-translate hook was added to the camera node's rebuild
     /// list.
     pub matrix_hook: bool,
+    /// The hook's priority there.
     pub matrix_hook_priority: i32,
     /// The viewport's GUI callback was saved for the destructor.
     pub viewport_callback_saved: bool,
@@ -559,6 +560,7 @@ pub struct NavController {
     pub destructor_installed: bool,
     /// The frame tick was added to the scene's task list.
     pub frame_tick: bool,
+    /// The frame tick's priority there.
     pub frame_tick_priority: i32,
     /// The tick clock, started at the present frame.
     pub frame: FrameDriver,
