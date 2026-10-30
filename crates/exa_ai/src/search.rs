@@ -809,13 +809,7 @@ pub fn yaw_of(v: Vec3) -> f32 {
 }
 
 /// The engine's quick arcsine.
-pub fn quick_asin(x: f32) -> f32 {
-    if x < 0.0 {
-        ((0.0535 * x + 0.2075) * x + HALF_PI) * (1.0 + x).sqrt() - HALF_PI
-    } else {
-        HALF_PI - (HALF_PI - (0.2075 - 0.0535 * x) * x) * (1.0 - x).sqrt()
-    }
-}
+pub use exa_anim::quick_asin;
 
 /// One step of the sweep. True once `target` (when there is one) is within
 /// 0.4 rad of the head's look, which also stops the timer at `now`.

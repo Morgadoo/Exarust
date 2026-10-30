@@ -545,6 +545,27 @@ pub fn quick_yaw(x: f32, z: f32) -> f32 {
     if x < 0.0 { -a } else { a }
 }
 
+/// The engine's quick arcsine: the quick arccosine's polynomial taken
+/// from a right angle, folded for a negative argument.
+pub fn quick_asin(x: f32) -> f32 {
+    const HALF_PI: f32 = 1.570_796_4;
+    if x < 0.0 {
+        ((0.0535 * x + 0.2075) * x + HALF_PI) * (1.0 + x).sqrt() - HALF_PI
+    } else {
+        HALF_PI - (HALF_PI - (0.2075 - 0.0535 * x) * x) * (1.0 - x).sqrt()
+    }
+}
+
+/// The engine's unit direction of a pitch and a yaw (radians), with its
+/// fast sine and cosine: `(cos p · sin y, −sin p, cos p · cos y)`. Yaw 0 is
+/// along +z and grows toward +x; a positive pitch looks down.
+pub fn quick_direction(pitch: f32, yaw: f32) -> Vec3 {
+    use exa_assets::polyhedra::fast_sin_cos;
+    let (sp, cp) = fast_sin_cos(pitch);
+    let (sy, cy) = fast_sin_cos(yaw);
+    Vec3::new(cp * sy, -sp, cp * cy)
+}
+
 /// The original's quaternion slerp, shortest way round: the weight of the
 /// end is `t`, of the start `1 − t`.
 ///
@@ -795,6 +816,15 @@ mod tests {
     /// own values, hand-worked: 0.0535/4 + (π/2 − 0.2075/2) times √0.5).
     #[test]
     fn the_quick_arccosine_is_the_engines_polynomial() {
+        assert_eq!(quick_asin(0.0), 0.0);
+        assert!((quick_asin(1.0) - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        assert!((quick_asin(-0.5) + 0.5f32.asin()).abs() < 0.01);
+        let d = quick_direction(0.0, 0.0);
+        assert!((d - Vec3::Z).length() < 1e-6, "{d}");
+        let d = quick_direction(0.0, std::f32::consts::FRAC_PI_2);
+        assert!((d - Vec3::X).length() < 1e-5, "{d}");
+        let d = quick_direction(0.5, 0.0);
+        assert!((d.y + 0.5f32.sin()).abs() < 1e-5 && d.y < 0.0, "{d}");
         assert_eq!(quick_acos(1.0), 0.0);
         assert_eq!(quick_acos(0.0), f32::from_bits(0x3fc9_0fdb));
         assert_eq!(quick_acos(-1.0), std::f64::consts::PI as f32);

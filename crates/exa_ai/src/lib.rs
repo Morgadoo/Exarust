@@ -184,6 +184,9 @@ pub struct Duellist {
     route: Vec<Vec3>,
     /// The last combat tick ended at the chase, following the route.
     chasing: bool,
+    /// The stab's aim, which the behaviour turns toward the foe while a
+    /// stab plays and the body's stab drive pulls the weapon onto.
+    stab_aim: exa_combat::stab::StabAim,
 }
 
 /// A step the duellist walks: where it goes (m) and when it started.
@@ -241,6 +244,7 @@ impl Duellist {
             chase: chase::ChaseMind::default(),
             route: Vec::new(),
             chasing: false,
+            stab_aim: exa_combat::stab::StabAim::default(),
         }
     }
 }
@@ -1153,6 +1157,26 @@ fn duellist(
                     go
                 }
             {
+                let (chosen, d0, dc, ap) = match (out.chosen, out.search.as_ref()) {
+                    (Some((c, _)), Some(s)) => (
+                        c,
+                        s.places[0].distance_cm,
+                        s.places[c].distance_cm,
+                        s.places[c].approach,
+                    ),
+                    _ => (0, 0.0, 0.0, 0.0),
+                };
+                debug!(
+                    "duellist {entity:?} starts {motion:?} {:.0} cm from its foe, reach {:.0} cm; \
+                     place {chosen} at {dc:.0} cm (here {d0:.0}), approach {ap:.2}",
+                    ai.bearing.1,
+                    reach * CM
+                );
+                // A stab's aim starts on the attack's aim, level.
+                if motion == AttackMotion::Stab {
+                    ai.stab_aim = exa_combat::stab::StabAim::start(ai.mind.aim);
+                    commands.entity(entity).insert(ai.stab_aim);
+                }
                 exa_combat::start_attack(
                     &mut commands,
                     entity,
@@ -1167,6 +1191,23 @@ fn duellist(
                     stance.action(),
                 );
             }
+        }
+        // While a stab plays, the behaviour's stab aim turns toward the
+        // foe's estimate each tick, from the anchor by the shoulder in the
+        // character frame, kept near the body's heading.
+        if attacking.is_some_and(|a| a.motion == AttackMotion::Stab)
+            && let Some(frame) = ragdoll
+                .and_then(|r| r.drive.as_ref())
+                .and_then(|d| d.frame())
+        {
+            let anchor = frame.transform_point3(exa_combat::stab::ANCHOR_CM / CM) * CM;
+            let forward = frame.matrix3.z_axis;
+            let heading = exa_anim::quick_yaw(forward.x, forward.z);
+            let target = ai.mind.estimate;
+            for _ in 0..runs {
+                ai.stab_aim.step(target, anchor, heading);
+            }
+            commands.entity(entity).insert(ai.stab_aim);
         }
         if let (Some(at), Some(grid), Some(prints)) =
             (own_print, nav.as_deref_mut(), footprints.as_deref_mut())
