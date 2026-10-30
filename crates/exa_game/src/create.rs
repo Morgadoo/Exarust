@@ -3422,55 +3422,72 @@ impl From<&KitItem> for KitAppearance {
     }
 }
 
-/// Resolves a kit entry by the database flags it meets.
+/// The route a kit entry takes through the item database.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KitRoute {
+    /// The item record's flag bit 0 is clear: the entry is added as itself.
+    Plain,
+    /// The item follows to an alias record. `marker` is that record's
+    /// marker byte; only ``@`` makes the alias apply, and any other byte
+    /// leaves the entry as itself.
+    Alias { marker: u8 },
+    /// A fresh instance of the item.
+    Instance,
+}
+
+/// The alias record's marker byte that makes a kit entry follow it.
+pub const ALIAS_MARKER: u8 = b'@';
+
+/// Where a kit entry's appearance lands in a made item.
 ///
-/// A plain database item is added as itself. Otherwise the database makes
-/// a new item for the entry (`created`): an item with a colour block is an
-/// alias whose target is made, any other a fresh instance of the item, and
-/// either takes the entry's variant, dyes and colours. When an alias makes
-/// nothing the item is added unchanged; when an instance cannot be made
-/// nothing is added (item 0).
+/// An instance writes its variant and the entry's three colour bytes into
+/// the item's colour layers, marking each layer with five; an alias writes
+/// the variant and colours straight into its target's record instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KitTargets {
+    /// The instance's layer marker (five), or none on an alias.
+    pub layer_marker: Option<u8>,
+    /// The two dye bytes an instance writes, only where the entry sets
+    /// them.
+    pub dyes: [Option<u8>; 2],
+}
+
+/// Resolves a kit entry by the route its database record takes.
 ///
-/// The database's sub-record flags are reduced to these cases here; their
-/// exact layout belongs to the object database.
-pub fn resolve_kit_item(
-    spec: &KitItem,
-    database_flag: bool,
-    has_colour_block: bool,
-    created: Option<u32>,
-) -> ResolvedKitItem {
-    if !database_flag {
-        return ResolvedKitItem {
-            item: spec.item,
-            appearance: None,
-            layer_marker: None,
-            dyes: [None; 2],
-        };
-    }
-    match (created, has_colour_block) {
-        // A created alias's bytes go straight into its three layers, and it
-        // takes no dye bytes.
-        (Some(item), true) => ResolvedKitItem {
+/// A plain record adds the entry as itself. An alias whose marker is
+/// [`ALIAS_MARKER`] gives the entry's variant and colours to the item the
+/// database made for it (`created`); with nothing made, or any other
+/// marker, the entry is added unchanged. An instance takes the entry's
+/// variant, colours and set dyes on the item made for it, and with nothing
+/// made nothing is added (item 0).
+///
+/// The record's sub-record layout belongs to the object database; only the
+/// route, the marker byte and the made item cross this boundary.
+pub fn resolve_kit_item(spec: &KitItem, route: KitRoute, created: Option<u32>) -> ResolvedKitItem {
+    match (route, created) {
+        // An alias writes its three colour bytes straight into the target.
+        (KitRoute::Alias { marker }, Some(item)) if marker == ALIAS_MARKER => ResolvedKitItem {
             item,
             appearance: Some(KitAppearance::from(spec)),
             layer_marker: None,
             dyes: [None; 2],
         },
-        // A made instance marks each colour layer with five and writes each
-        // dye byte that is set.
-        (Some(item), false) => ResolvedKitItem {
+        // A missing alias target, or any other marker, leaves the entry.
+        (KitRoute::Alias { .. }, _) | (KitRoute::Plain, _) => ResolvedKitItem {
+            item: spec.item,
+            appearance: None,
+            layer_marker: None,
+            dyes: [None; 2],
+        },
+        // A made instance marks each colour layer and writes the set dyes.
+        (KitRoute::Instance, Some(item)) => ResolvedKitItem {
             item,
             appearance: Some(KitAppearance::from(spec)),
             layer_marker: Some(5),
             dyes: spec.dyes.map(|dye| (dye != 0).then_some(dye)),
         },
-        (None, true) => ResolvedKitItem {
-            item: spec.item,
-            appearance: None,
-            layer_marker: None,
-            dyes: [None; 2],
-        },
-        (None, false) => ResolvedKitItem {
+        // An instance that could not be made adds nothing.
+        (KitRoute::Instance, None) => ResolvedKitItem {
             item: 0,
             appearance: None,
             layer_marker: None,
@@ -7257,7 +7274,7 @@ mod tests {
             colours: [5, 6, 7],
         };
 
-        let plain = resolve_kit_item(&spec, false, false, None);
+        let plain = resolve_kit_item(&spec, KitRoute::Plain, None);
         assert_eq!(
             plain,
             ResolvedKitItem {
@@ -7269,8 +7286,8 @@ mod tests {
         );
 
         // An instance is a new item the database made for the entry.
-        assert_eq!(resolve_kit_item(&spec, true, false, None).item, 0);
-        let instance = resolve_kit_item(&spec, true, false, Some(30));
+        assert_eq!(resolve_kit_item(&spec, KitRoute::Instance, None).item, 0);
+        let instance = resolve_kit_item(&spec, KitRoute::Instance, Some(30));
         assert_eq!(instance.item, 30);
         assert_eq!(instance.layer_marker, Some(5));
         assert_eq!(instance.dyes, [Some(3), Some(4)]);
@@ -7290,17 +7307,44 @@ mod tests {
             colours: [5, 6, 7],
         };
         assert_eq!(
-            resolve_kit_item(&no_dyes, true, false, Some(30)).dyes,
+            resolve_kit_item(&no_dyes, KitRoute::Instance, Some(30)).dyes,
             [None, Some(4)]
         );
 
-        let alias = resolve_kit_item(&spec, true, true, Some(21));
+        // An alias applies only with its marker byte; then its target takes
+        // the variant and colours, and no dye bytes.
+        let alias = resolve_kit_item(
+            &spec,
+            KitRoute::Alias {
+                marker: ALIAS_MARKER,
+            },
+            Some(21),
+        );
         assert_eq!(alias.item, 21);
-        assert!(alias.appearance.is_some());
+        assert_eq!(
+            alias.appearance,
+            Some(KitAppearance {
+                variant: 9,
+                dyes: [3, 4],
+                colours: [5, 6, 7]
+            })
+        );
         assert_eq!(alias.layer_marker, None);
         assert_eq!(alias.dyes, [None; 2]);
+        assert_eq!(ALIAS_MARKER, b'@');
 
-        let no_alias = resolve_kit_item(&spec, true, true, None);
+        // Any other marker leaves the entry as itself, and so does a marker
+        // without a made item.
+        let other = resolve_kit_item(&spec, KitRoute::Alias { marker: b'#' }, Some(21));
+        assert_eq!(other.item, 12);
+        assert!(other.appearance.is_none());
+        let no_alias = resolve_kit_item(
+            &spec,
+            KitRoute::Alias {
+                marker: ALIAS_MARKER,
+            },
+            None,
+        );
         assert_eq!(no_alias.item, 12);
         assert!(no_alias.appearance.is_none());
     }
