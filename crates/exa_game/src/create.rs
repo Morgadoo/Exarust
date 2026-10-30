@@ -196,8 +196,8 @@ pub fn creation_label(word: i32) -> CreationLabel {
 /// or 0x71 compact (its role is not traced); the physique picker reports
 /// to [`sync_physique`], the tone picker (style bit 0x80) to
 /// [`skin_changed`], and the page's own change goes to the creation form.
-/// The preview's texture handle is written into control records 7, 9 and
-/// 10.
+/// The constructor writes one image atlas handle into control records 7, 9
+/// and 10.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BaseFormData {
     pub width: i32,
@@ -214,10 +214,9 @@ pub struct BaseFormData {
     pub table_word: u16,
     /// The bit the constructor sets in the tone picker's style word.
     pub tone_style: u32,
-    /// The three control records that take the preview's texture handle
-    /// (the constructor writes the same handle into record 7's, 9's and
-    /// 10's picture field).
-    pub portrait_controls: [usize; 3],
+    /// The three control records the constructor gives the same image atlas
+    /// (each record's own image list, which an image button draws from).
+    pub atlas_controls: [usize; 3],
 }
 
 pub fn base_form(compact: bool) -> BaseFormData {
@@ -232,7 +231,7 @@ pub fn base_form(compact: bool) -> BaseFormData {
         tone: [8, 0x148, 0xa0, if compact { 0x70 } else { 0xa0 }],
         table_word: if compact { 0x71 } else { 0x7f },
         tone_style: 0x80,
-        portrait_controls: [7, 9, 10],
+        atlas_controls: [7, 9, 10],
     }
 }
 
@@ -457,54 +456,18 @@ pub fn edit_page(src: &PageSource) -> EditPageState {
     }
 }
 
-/// What the edit page pushes into its preview panel when it refreshes: the
-/// character record link, the skin point (the two 16-bit words over 65535
-/// in single precision), the hair colour (bytes over 255), the panel's
-/// texture and a rebuilt preview body.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct PreviewUpdate {
-    pub character: bool,
-    pub skin: [f32; 2],
-    pub hair: [f32; 3],
-    /// The panel takes the hair texture from the character's figure.
-    pub texture: bool,
-    pub rebuilt: bool,
-}
-
-/// The preview write at the end of the edit page's refresh: run only when
-/// the page holds a preview panel, and only with a hair picker does the
-/// hair colour and texture write.
-pub fn preview_update(src: &PageSource, has_preview: bool) -> Option<PreviewUpdate> {
-    if !has_preview {
-        return None;
-    }
-    Some(PreviewUpdate {
-        character: true,
-        skin: src
-            .skin
-            .map(|word| (f64::from(word) * 1.5259021896696422e-05) as f32),
-        hair: if src.hair_picker {
-            src.hair_colour
-                .map(|byte| (f64::from(byte) * 0.00392156862745098) as f32)
-        } else {
-            [0.0; 3]
-        },
-        texture: src.hair_picker,
-        rebuilt: true,
-    })
-}
-
-/// What destroying the edit page does: with a preview panel it removes the
-/// update hook it added to the panel before the base form's destroy runs.
+/// What destroying the edit page does: when it holds a watched view it
+/// removes the change listener it added to that view before the base
+/// form's destroy runs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct EditPageDestroy {
     pub hook_removed: bool,
     pub base: bool,
 }
 
-pub fn destroy_edit_page(has_preview: bool) -> EditPageDestroy {
+pub fn destroy_edit_page(has_view: bool) -> EditPageDestroy {
     EditPageDestroy {
-        hook_removed: has_preview,
+        hook_removed: has_view,
         base: true,
     }
 }
@@ -5661,37 +5624,7 @@ mod tests {
     }
 
     #[test]
-    fn the_edit_page_pushes_its_points_into_the_preview_panel() {
-        let src = PageSource {
-            physique: [0.5; 2],
-            height: 0.0,
-            age: 0.0,
-            skin: [0x8000, 0xffff],
-            hair_colour: [255, 51, 0],
-            slider: 0.0,
-            number: 0,
-            voice: 0,
-            pitch: 1.0,
-            word: 0,
-            hair_picker: true,
-        };
-        let update = preview_update(&src, true).expect("a preview panel");
-        assert!(update.character && update.texture && update.rebuilt);
-        assert_eq!(update.skin[1], 1.0);
-        assert!((update.skin[0] - 0.5000076).abs() < 1e-6);
-        assert_eq!(update.hair, [1.0, 0.2, 0.0]);
-        // Without a hair picker the hair write keeps the record's own.
-        let body = preview_update(
-            &PageSource {
-                hair_picker: false,
-                ..src
-            },
-            true,
-        )
-        .unwrap();
-        assert_eq!(body.hair, [0.0; 3]);
-        assert!(!body.texture);
-        assert_eq!(preview_update(&src, false), None);
+    fn the_edit_page_destroy_removes_its_listener_first() {
         assert_eq!(
             destroy_edit_page(true),
             EditPageDestroy {
@@ -5750,7 +5683,7 @@ mod tests {
         assert_eq!(base_form(true).tone[3], 112);
         assert_eq!(base.caption, "VHM");
         assert_eq!((base.table_word, base.tone_style), (0x7f, 0x80));
-        assert_eq!(base.portrait_controls, [7, 9, 10]);
+        assert_eq!(base.atlas_controls, [7, 9, 10]);
         assert_eq!(base_form(true).table_word, 0x71);
         // The style list under a 160-wide picker at 4, 24 in a 612 form.
         let list = hair_list([4, 24, 160, 112], 612, 4);
