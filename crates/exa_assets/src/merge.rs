@@ -14,10 +14,11 @@
 //!
 //! A part is appended with cull bits: the part's per-triangle flags are
 //! tested against them (`flags & cull != 0` drops the triangle), as the
-//! original's second append does. The dressed-mesh pass gives a body slot's
-//! bits (`0x200000` or `0x400000`, `exa_character::layers::cull_bits`) as
-//! the append's cull argument, so the body triangles the hidden slot covers
-//! go with it. The per-triangle flags and corner bytes are carried along
+//! original's culling append does. The dressed-mesh pass gives a garment
+//! slot's bits (`0x200000` or `0x400000`, `exa_character::layers::cull_bits`)
+//! as the append's cull argument, so the garment triangles marked for a
+//! covered slot go with it; the body's own parts take none (the original
+//! appends them with its plain append). The per-triangle flags and corner bytes are carried along
 //! from the parts; a part without flags takes the unset word `1` when the
 //! merged mesh has a flag stream. A part whose material carries the
 //! occlusion mark fades the merged vertices on the border of the marked
@@ -46,7 +47,7 @@ pub struct MergePart<'a> {
     /// word meets `cull` is not merged.
     pub triangle_flags: Option<&'a [u32]>,
     /// The cull bits of the append: a triangle is left out when
-    /// `triangle_flags[t] & cull != 0`. A body slot's append passes the
+    /// `triangle_flags[t] & cull != 0`. A garment slot's append passes the
     /// slot's bits (`0x200000` or `0x400000`, or 0) here.
     pub cull: u32,
     /// The part's material carries the occlusion mark: its vertices fade at
@@ -1197,8 +1198,8 @@ mod tests {
         assert!(merge_parts(&[]).is_none());
     }
 
-    /// The dressed-mesh pass's slot cull bits drop the body triangles whose
-    /// flags hold them; a marked part's border vertices fade, and each
+    /// The dressed-mesh pass's slot cull bits drop the garment triangles
+    /// whose flags hold them; a marked part's border vertices fade, and each
     /// mesh's position ids move past the meshes before it.
     #[test]
     fn slot_cull_bits_drop_marked_triangles_and_marked_parts_fade() {

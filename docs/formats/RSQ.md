@@ -2230,10 +2230,11 @@ names one material group of a shared mesh,
 `scene_merged_mesh` walks a scene's skinned nodes and merges their drawn
 groups by their body-space frames, `culled_indices` applies a slot's
 per-triangle cull bits and `occlusion_alpha` the per-vertex mask. The built
-meshes keep their file flags, so a body slot's cull bits
-(`exa_character::layers::cull_bits` over the body's visible mask) reach the
-append; on the shipped bodies every cull mark sits on a `_null` seam group
-(the human body has seven), so no drawn body triangle is dropped today. No
+meshes keep their file flags, so a garment slot's cull bits
+(`exa_character::layers::cull_bits` over the garment's visible mask) reach
+the culling append; the body's own slots go through the plain append and
+are never culled (on the shipped bodies every cull mark sits on a `_null`
+seam group anyway: the human body has seven). No
 shipped material carries the occlusion mark, so that pass does nothing on
 shipped data. Hidden body slots are left out of the merge (the body's
 visible mask). The per-scene skin controller and manager are Bevy's.

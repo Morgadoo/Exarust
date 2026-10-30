@@ -63,7 +63,7 @@ pub struct ModelNode {
     /// Material name of each part, as stored in the file.
     pub part_materials: Vec<String>,
     /// Per-triangle flags of each part, in the file's order (empty when the
-    /// mesh stores none). The skinning merge tests them against a body
+    /// mesh stores none). The skinning merge tests them against a garment
     /// slot's cull bits.
     pub part_flags: Vec<Arc<[u32]>>,
     /// Meshes of the node's `_null` groups: geometry the original never
@@ -2227,11 +2227,12 @@ fn node_skin(
     Some((bone, build.weights, build.pushed))
 }
 
-/// The meshes of a mesh's drawn groups (`_null` marks geometry the
-/// original never draws), by group index, built on `pool` when given.
 /// A built material group: its index in the file's group list, its mesh
 /// and its per-triangle flags (empty when the file stores none).
 type BuiltGroup = (usize, Mesh, Vec<u32>);
+
+/// The meshes of a mesh's drawn groups (`_null` marks geometry the
+/// original never draws), by group index, built on `pool` when given.
 
 fn group_meshes(
     mesh: &RfcMesh,
@@ -3096,8 +3097,8 @@ pub struct DressedPart<'a> {
     /// it stores none).
     pub triangle_flags: Option<&'a [u32]>,
     /// The cull bits the slot's append takes
-    /// ([`exa_character::layers::cull_bits`]; 0 for garment parts and
-    /// overlays).
+    /// ([`exa_character::layers::cull_bits`]; 0 for the body's own parts
+    /// and overlays).
     pub cull: u32,
 }
 
@@ -3117,8 +3118,8 @@ pub struct DressedMerge {
 ///
 /// The position-stream ids are the parts' own vertex numbers (the built
 /// meshes keep no stream ids); they only feed the occlusion fade, which no
-/// shipped material marks. Triangle flags do come with the part, so a body
-/// slot's cull bits drop the triangles it covers; the edge bytes are not
+/// shipped material marks. Triangle flags do come with the part, so a
+/// garment slot's cull bits drop the triangles marked with them; the edge bytes are not
 /// carried (they only feed the seam builder, which has already run).
 pub fn merge_dressed(parts: &[DressedPart<'_>]) -> Option<DressedMerge> {
     let streams: Vec<Option<RfcMesh>> =
@@ -4813,5 +4814,78 @@ mod tests {
             .map(|n| n.part_flags.iter().filter(|f| !f.is_empty()).count())
             .sum();
         assert_eq!(flags, parts);
+    }
+
+    /// The garments' cull marks (skipped without the game): the culling
+    /// append runs on the garment slots, so their drawn groups are where a
+    /// mark removes triangles. The marks follow the slots' cull masks: a
+    /// slot whose two masks are both zero always takes `0x400000`, and no
+    /// drawn triangle of such a slot carries that bit, so nothing there is
+    /// ever lost; the bit sits only on the slots with a second mask.
+    #[test]
+    fn shipped_garments_carry_cull_marks_on_drawn_groups() {
+        let Some(dir) = crate::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(dir).unwrap();
+        let pack = game.pack(PackKind::Characters).unwrap();
+        let (mut models, mut groups) = (0, 0);
+        // Per slot (a node name's first two digits): drawn triangles, then
+        // those marked 0x200000 and 0x400000.
+        let mut per_slot = [[0usize; 3]; 19];
+        for entry in pack.entries() {
+            let Ok(scene) = exa_formats::rfc::Scene::parse(pack.bytes(entry)) else {
+                continue;
+            };
+            let mut marked_model = false;
+            for node in &scene.nodes {
+                let exa_formats::rfc::NodeBody::Mesh(mesh) = &node.body else {
+                    continue;
+                };
+                let Some(flags) = &mesh.triangle_flags else {
+                    continue;
+                };
+                let b = node.name.as_bytes();
+                let slot = if b.len() >= 2 && b[0].is_ascii_digit() && b[1].is_ascii_digit() {
+                    usize::from(b[0] - b'0') * 10 + usize::from(b[1] - b'0')
+                } else {
+                    0
+                };
+                for group in &mesh.groups {
+                    if group.material.eq_ignore_ascii_case("_null") {
+                        continue;
+                    }
+                    let start = group.first_index as usize / 3;
+                    let words = flags
+                        .iter()
+                        .skip(start)
+                        .take(group.index_count as usize / 3);
+                    let mut marked = false;
+                    for word in words {
+                        if let Some(counts) = per_slot.get_mut(slot) {
+                            counts[0] += 1;
+                            counts[1] += usize::from(word & 0x20_0000 != 0);
+                            counts[2] += usize::from(word & 0x40_0000 != 0);
+                        }
+                        marked |= word & 0x60_0000 != 0;
+                    }
+                    groups += usize::from(marked);
+                    marked_model |= marked;
+                }
+            }
+            models += usize::from(marked_model);
+        }
+        assert_eq!((models, groups), (54, 1091));
+        let marks = per_slot
+            .iter()
+            .fold([0, 0], |[a, b], c| [a + c[1], b + c[2]]);
+        assert_eq!(marks, [201_113, 104_755]);
+        // The slots whose two cull masks are zero carry no 0x400000 mark.
+        for slot in [2, 3, 4, 5, 6, 7, 11, 14, 17, 18] {
+            assert_eq!(per_slot[slot][2], 0, "slot {slot}");
+        }
+        // The chest's drawn triangles: 97 113 marked for the first bit and
+        // 56 839 for the second.
+        assert_eq!(per_slot[9], [265_066, 97_113, 56_839]);
     }
 }

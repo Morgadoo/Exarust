@@ -1129,8 +1129,9 @@ and occlusion passes do nothing on shipped data.
   cull mask misses the visible mask, else `0x200000` when its first does,
   else none; the second test overwrites the first. Body slots take none.
   The bits are the slot append's cull argument (`MergePart::cull`): the
-  append drops the vertices whose slot mask holds them, and the triangles
-  that needed them, and writes nothing on the triangles.
+  append drops the garment triangles whose per-triangle flags meet them
+  (`flags & cull != 0`) and appends only the vertices a kept triangle
+  uses.
 - **Occlusion alpha.** A garment part whose material has the occlusion
   mark makes its merged vertices opaque and every vertex on the border of
   the marked region transparent: a vertex fades when one of its marked

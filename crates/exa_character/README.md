@@ -174,9 +174,9 @@ physique values and the body morphs they select remain the body's concern
   (bones 1 to 20, so a piece that only occupies a bone past the eighteen
   slots still sorts by it), outermost last.
 - `exa_assets::merge::merge` takes a slot's cull bits as the append's
-  cull argument (`MergePart::cull`, tested against the vertices' slot
-  masks; nothing is written on the triangles, as in the original's mesh
-  append) and, for a part whose material has the occlusion mark
+  cull argument (`MergePart::cull`, tested against the part's
+  per-triangle flags: `flags & cull != 0` drops the triangle, as the
+  original's culling append does) and, for a part whose material has the occlusion mark
   (`MergePart::occlude`), fades the border of the marked region's vertex
   alpha. Each mesh keeps its own position-stream ids, moved past the
   meshes before it. The running game merges: `dress::assemble` builds the
@@ -188,9 +188,10 @@ physique values and the body morphs they select remain the body's concern
   root part as joint 0. The body nodes the merged mesh replaced stop
   drawing, and so do the body slots a garment covers (they are left out of
   the plan). Held items, hair and cloth stay as they are drawn today; no
-  shipped material carries the occlusion mark, and the built meshes keep
-  no vertex slot masks or triangle flags, so the cull and occlusion
-  passes do nothing on shipped data (both stay tested rules).
+  shipped material carries the occlusion mark, so that pass does nothing
+  on shipped data (a tested rule). The built meshes keep their file
+  triangle flags (`ModelNode::part_flags`), so a garment slot's cull bits
+  reach the merge.
 - A character without a `BodyModel` component (or with a garment model no
   object-database item is worn as) keeps the one-mesh-per-node draw. A
   real-data test merges Kade of `exanima01` into one mesh: 30 steps, 35
