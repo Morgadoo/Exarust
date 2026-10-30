@@ -146,13 +146,19 @@ Status: **verified** for the file framing and its writer, the upgrade of the
 `0xDBAC0D08`, `0xDBAC0D07` and `0xDBAC0D06` layouts, the record chain, the
 three tiers, the string library and its writer, the sections below, the
 random-table condition word, instancing, duplication, promotion, removal,
-template migration with the condition refresh, the item-use test, and the
-packed fields and amounts (`exa_formats::objdb`, `exa_formats::objstrings`).
-Not reproduced: the item factory's regeneration of `@` weapons during
-migration. The scene lookup by database id and the entity-id rewrite walk
-the placed objects' model roots (`exa_world::object_entity` and
-`remap_placed_ids`); a model node's own id is not a database record in
-Exarust. The item fields themselves, their apparel
+template migration with the condition refresh, the item-use test, the
+editor's look roll, the container child accessor and the counted view
+list, and the packed fields and amounts (`exa_formats::objdb`,
+`exa_formats::objstrings`). The migration of a factory weapon (`@…`) hands
+the model name and the weapon body to a caller-supplied factory pass, which
+`exa_items::refresh::factory_pass` fills from the recipe (seeds, quality,
+damage and dirt, the first seed copied to the second with the stored-choice
+marks when only it is set) and the condition scaling. The oldest layout's
+paint seeds are two draws of the run-time library's Mersenne twister
+(`exa_world::db_objects::paint_seed`). The scene lookup by database id and
+the entity-id rewrite walk the placed objects' model roots
+(`exa_world::object_entity` and `remap_placed_ids`); a model node's own id
+is not a database record in Exarust. The item fields themselves, their apparel
 meaning and their readers are in
 [Object database items and apparel painting](#object-database-items-and-apparel-painting)
 below.
