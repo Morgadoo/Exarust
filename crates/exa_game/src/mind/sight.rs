@@ -76,28 +76,51 @@ pub const SPHERE_RADIUS: f32 = 15.0;
 /// The sphere's squash direction.
 pub const SQUASH: Vec3 = Vec3::new(0.0, -0.8, 0.2);
 
-/// A screen's noise texture: its side, octave count, the two halves the
-/// noise generator is given and its second-stage scale.
+/// A screen's noise texture: its side and octave count (the generator is
+/// made at amplitude 1), the field's two plane-building weights (the old
+/// value's and the ridged sample's) and its phase period in seconds.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ScreenNoise {
     pub side: u32,
     pub octaves: u32,
-    pub halves: [f32; 2],
+    pub weights: [f32; 2],
     pub scale: f32,
+}
+
+impl ScreenNoise {
+    /// The engine's noise object as the screen's setup makes it: a
+    /// `side`² field at `octaves` octaves and amplitude 1 started at `now`
+    /// (ms), its two weights set, then given the same octaves, the
+    /// `scale` s phase period and a target amplitude of 1. `seeds`
+    /// supplies the engine's random words.
+    pub fn field(
+        &self,
+        now: u32,
+        seeds: impl FnMut() -> u32,
+    ) -> exa_render::image_noise::NoiseField {
+        let side = self.side as usize;
+        let octaves = self.octaves as i32;
+        let mut field =
+            exa_render::image_noise::NoiseField::new(side, side, octaves, 1.0, now, false, seeds);
+        field.keep = self.weights[0];
+        field.add = self.weights[1];
+        field.configure(octaves, self.scale, 1.0);
+        field
+    }
 }
 
 /// The overlay's and the glow's 256² noise.
 pub const SIGHT_NOISE: ScreenNoise = ScreenNoise {
     side: 256,
     octaves: 4,
-    halves: [0.5, 0.5],
+    weights: [0.5, 0.5],
     scale: 0.25,
 };
 /// The spirit screen's 512² noise.
 pub const SPIRIT_NOISE: ScreenNoise = ScreenNoise {
     side: 512,
     octaves: 4,
-    halves: [0.5, 0.5],
+    weights: [0.5, 0.5],
     scale: 0.8,
 };
 /// The uniforms the sight program binds, in order (the texture last, on
@@ -637,9 +660,65 @@ pub struct SpiritScreen {
     pub started_ms: u32,
 }
 
+/// The glows a scene has added, in the original's list order. The
+/// constructor makes one glow per sensed body, sets its first value to 1,
+/// its stamp to 0 and its kind to 2, and appends it to the scene's effect
+/// list; [`MindGlows::add`] keeps that order and [`MindGlows::step`] ticks
+/// every glow and drops the ones whose three seconds have run out.
+#[derive(bevy::prelude::Resource, Debug, Clone, Default, PartialEq)]
+pub struct MindGlows(pub Vec<MindGlow>);
+
+impl MindGlows {
+    /// Appends a glow for `body` at the end of the list.
+    pub fn add(&mut self, body: BodyId) -> &mut MindGlow {
+        self.0.push(MindGlow::new(body));
+        self.0.last_mut().expect("a glow was just pushed")
+    }
+
+    /// Ticks every glow and drops the finished ones. Answers the bodies
+    /// whose glow ended this step, in list order.
+    pub fn step(&mut self, now_ms: u32) -> Vec<BodyId> {
+        let mut ended = Vec::new();
+        self.0.retain_mut(|glow| {
+            let alive = glow.step(now_ms);
+            if !alive {
+                ended.push(glow.entry.body);
+            }
+            alive
+        });
+        ended
+    }
+}
+
 /// The spirit screen's start sound.
 pub const SPIRIT_SCREEN_SOUND: &str = "ThmMnd_B02";
 pub const SPIRIT_SCREEN_VOLUME: f32 = 0.2;
+
+/// The spirit screen's picture: 512 by 512 one-byte (luminance) texels;
+/// its noise is [`SPIRIT_NOISE`] (four octaves at amplitude 1, both weights
+/// 0.5, a 0.8 s period).
+pub const SPIRIT_SCREEN_SIDE: u32 = 512;
+/// The screen's upload buffer, one byte a texel.
+pub const SPIRIT_SCREEN_BYTES: usize = (SPIRIT_SCREEN_SIDE * SPIRIT_SCREEN_SIDE) as usize;
+
+/// The values the spirit screen's setup builds: its picture side, its
+/// upload size and its noise.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpiritScreenInit {
+    pub side: u32,
+    pub bytes: usize,
+    pub noise: ScreenNoise,
+}
+
+/// The spirit screen's setup values, as its constructor builds the 512²
+/// one-byte picture and its noise object (whose clock it also stamps).
+pub fn spirit_screen_init() -> SpiritScreenInit {
+    SpiritScreenInit {
+        side: SPIRIT_SCREEN_SIDE,
+        bytes: SPIRIT_SCREEN_BYTES,
+        noise: SPIRIT_NOISE,
+    }
+}
 
 /// Starts the spirit screen: off, its hook is registered (true) and its
 /// noise restamped; it shows (state 3) unless already shown, its alpha
@@ -888,5 +967,30 @@ mod tests {
             (screen.state, screen.alpha, screen.started_ms),
             (3, 0.5, 20)
         );
+    }
+
+    #[test]
+    fn the_spirit_screen_builds_its_512_picture() {
+        let init = spirit_screen_init();
+        assert_eq!(init.side, 512);
+        assert_eq!(init.bytes, 512 * 512);
+        assert_eq!(init.noise.side, 512);
+        assert_eq!(init.noise.octaves, 4);
+        assert_eq!(init.noise.weights, [0.5, 0.5]);
+        assert_eq!(init.noise.scale, 0.8);
+    }
+
+    #[test]
+    fn a_glow_is_appended_and_dropped_after_its_three_seconds() {
+        let mut glows = MindGlows::default();
+        let glow = glows.add(7);
+        assert_eq!(
+            (glow.entry.body, glow.entry.first, glow.entry.kind),
+            (7, 1.0, 2)
+        );
+        assert!(glows.step(100).is_empty());
+        assert_eq!(glows.0.len(), 1);
+        assert_eq!(glows.step(3200), vec![7]);
+        assert!(glows.0.is_empty());
     }
 }

@@ -2855,6 +2855,60 @@ the shipped GLSL (`effectforce_f`, `effecttorrent_f`, `effectshell_v` /
   uniform skins, rigid, strikes); both uniforms match their WGSL structs in size and
   member offsets.
 
+## Mind sight
+
+`exa_render::mind_sight` holds the program the Mind domain's sense overlay
+and mind glow draw with; its vertex and fragment source strings are the ones
+the original compiles for its sight program (`in vec3 vPos; in vec3 vNrm; in
+vec2 vTex; …` and `in vec3 vrTex; in vec4 vrCol; uniform vec3 env0; …`).
+`exa_game::mind::draw` draws it and supplies the original's uniforms.
+
+- **Vertex stage** (`mind_sight.wesl`): `vrTex.x = dot(vPos, TexVecU)` and
+  `vrTex.y = dot(vPos, TexVecV)`, and `vrTex.z = max(dot(vNrm, EyeVec), 0)²`
+  in the sphere's own centimetre frame; Bevy's mesh stage supplies the model
+  and view-projection matrices the original's `ObjMat` holds.
+- **Fragment stage**: the noise picture's red channel cut by `MindCol1.w`
+  and `MindCol2.w` (each `clamp((tex − threshold)·8, 0, 1)`) mixes the three
+  colours, `b = clamp(1 − vrTex.z, 0, 1)` and
+  `a = clamp(b·−0.3 + tex, 0, 1)` weight them, the weighted colour is
+  clamped to 0–1, `FragColor.rgb = col²·4` and
+  `FragColor.w = MindCol0.w·vrTex.z`. Colours, alphas and thresholds are
+  `exa_game::mind::sight::entry_colours`: a living mind has
+  (0.1, 0.4, 0.6), (0.8, 0.6, 0) with alpha `(1 − first)·0.6 + 0.1` and
+  (0.4, 0, 0) toward (0.31, 0, 0.78) with the second's alpha; an undead mind
+  has (0.3, 0.3, 0.3, 1), the same, and (0.5, 0.5, 0.6, 0.5). `MindCol0.w`
+  is the overlay alpha less the entry's fade.
+- **State**: the original turns the depth test off around the draw and
+  applies a state block whose blend word is 0. Exarust draws the spheres in
+  the transparent pass with the depth compare `Always`, no depth writes and
+  both faces, blended by the fragment's alpha [guess: the blend factors and
+  the cull state].
+- **Geometry**: the engine's UV sphere of 16 segments and radius 15 cm with
+  normals (`exa_assets::polyhedra::uv_sphere`, its triangle strips unrolled
+  into a list), its points shaped once by `shape_sphere` (x × 0.8, the half
+  projection on (0, −0.8, 0.2) subtracted, a `1 − z/100` taper above the
+  middle and 2 cm up); its normals stay the unshaped sphere's. The object
+  matrix has the head node's three axes times the record's three scales as
+  its rows and the node's origin as its last row (row vectors); Bevy takes
+  them as columns, in metres.
+- **Picture**: the original's 256² noise object (four octaves at
+  amplitude 1, both plane-building weights 0.5, then a 0.25 s period and
+  target 1: `sight::ScreenNoise::field`), uploaded as one-byte `R8Unorm`
+  texels (`thaum::visuals::noise_bytes`), sampled repeating and linear. It
+  runs on the game clock with the effects' random generator, is made on the
+  first frame an anchor exists and is uploaded only when `NoiseField::tick`
+  reports a new picture.
+- **Spirit screen setup**: its constructor builds a 512² one-byte luminance
+  picture (262 144 bytes) and a noise object of four octaves at amplitude 1,
+  both weights 0.5 and a 0.8 s period (`sight::spirit_screen_init`). The
+  screen's own draw callback is not ported yet.
+- **Wiring**: `MindSightAnchor` carries a body's `SightAnchor` and
+  `SightEntry`; the `PostUpdate` system spawns one sphere entity and
+  material an anchor and updates them in place, and removes it while the
+  overlay alpha is spent. No Mind cast creates an anchor yet; without one
+  the system returns before making or ticking anything.
+
+
 ## Rooms and black fill
 
 The original paints nothing black: it clears the frame to the

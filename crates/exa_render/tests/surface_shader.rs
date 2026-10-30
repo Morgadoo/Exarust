@@ -307,3 +307,19 @@ fn the_force_shell_shader_composes_and_validates() {
         assert!(stages.contains(&naga::ShaderStage::Fragment), "{extra:?}");
     }
 }
+
+#[test]
+fn the_mind_sight_shader_composes_and_validates() {
+    let (mut cache, sight) = cache_with_every_shader_and("embedded://exa_render/mind_sight.wesl");
+    // A sphere mesh with and without normals (the shader's eye term falls
+    // back to straight up without them).
+    let variants: [&[&'static str]; 2] = [&["VERTEX_UVS", "VERTEX_NORMALS"], &[]];
+    for (pipeline, extra) in variants.iter().enumerate() {
+        let module = cache
+            .get(pipeline, sight, &defs(extra))
+            .unwrap_or_else(|error| panic!("mind_sight.wesl with {extra:?}: {error}"));
+        let stages = stages(&module);
+        assert!(stages.contains(&naga::ShaderStage::Vertex), "{extra:?}");
+        assert!(stages.contains(&naga::ShaderStage::Fragment), "{extra:?}");
+    }
+}
