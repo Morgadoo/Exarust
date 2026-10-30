@@ -96,21 +96,10 @@ impl ProgramCache {
 }
 
 /// How many times one mesh is drawn for the current supersampling pass
-/// count: once without supersampling, once per quadrant pass otherwise.
-pub fn quadrant_draws(supersample_passes: u32) -> u32 {
+/// count: once without supersampling, once per pass otherwise.
+/// [`crate::view::SupersampleLevel::passes`] gives the level's count.
+pub fn pass_draws(supersample_passes: u32) -> u32 {
     supersample_passes.max(1)
-}
-
-/// The viewport of one supersample quadrant inside a target twice the
-/// view's size: the pass count splits the target into the quadrant's cell
-/// (the original's per-pass viewport is set by the pass schedule; this is
-/// the plain tiling the icon and effect passes use).
-pub fn quadrant_viewport(width: u32, height: u32, quadrant: u32, passes: u32) -> [u32; 4] {
-    let passes = passes.max(1);
-    let cell_w = width / passes;
-    let cell_h = height / passes;
-    let q = quadrant % passes;
-    [q * cell_w, 0, cell_w, cell_h]
 }
 
 /// The smoke program's state key from a material state's 64-bit word.
@@ -255,12 +244,17 @@ mod tests {
     }
 
     #[test]
-    fn the_quadrant_count_is_one_without_supersampling() {
-        assert_eq!(quadrant_draws(0), 1);
-        assert_eq!(quadrant_draws(1), 1);
-        assert_eq!(quadrant_draws(4), 4);
-        assert_eq!(quadrant_viewport(800, 600, 0, 4), [0, 0, 200, 150]);
-        assert_eq!(quadrant_viewport(800, 600, 3, 4), [600, 0, 200, 150]);
-        assert_eq!(quadrant_viewport(800, 600, 9, 4), [200, 0, 200, 150]);
+    fn the_pass_count_is_one_without_supersampling() {
+        assert_eq!(pass_draws(0), 1);
+        assert_eq!(pass_draws(1), 1);
+        assert_eq!(pass_draws(2), 2);
+        assert_eq!(
+            pass_draws(crate::view::SupersampleLevel(3).passes() as u32),
+            1
+        );
+        assert_eq!(
+            pass_draws(crate::view::SupersampleLevel(4).passes() as u32),
+            2
+        );
     }
 }

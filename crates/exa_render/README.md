@@ -152,8 +152,8 @@ shape texel), draw box, program names, quad and shared uniforms, the three linke
 - `material_state`: the default material factory's type table (five built-ins, the reset and plug-in registration), its factory list (priority-ordered, every matching record called), the normal-map predicate, and the loader's diffuse scale order and gloss floor that `exa_assets` uses.
 - `smoke`: the original's `shadesmk_f` smoke and mist program
   (`shadesmk.wesl`, line for line without its fog and dither), its `UVOfst`
-  scroll, state key and one-program-per-state cache, and the quadrant draw
-  count and viewport (not spawned yet).
+  scroll, state key and one-program-per-state cache, and the supersampling
+  pass draw count (not spawned yet).
 - `icon_render`: the character-creation thumbnail renderer (`FLX_IconRender`):
   its private view (30° FOV, 10 cm near plane, bloom 0.8, no sharpen), the
   twice-icon sRGB target with alpha for cut-outs, the destination RGBA8

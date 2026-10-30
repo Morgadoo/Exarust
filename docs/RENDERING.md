@@ -1452,7 +1452,9 @@ state's 64-bit word under `0x0003_C00F_0048_0008`), sets `UVOfst =
 (0.5, t + 0.5, t)` with `t` = the parent node's scale plus the scene time's
 milliseconds mod 80 000 over 80 000 (summed in double precision), and draws
 the mesh; with the supersampled quad passes on it repeats the draw once per
-pass. The program (`shadesmk.wesl`, line for line): `a = |N·V|·1.5 − 1`;
+pass. `smoke::ProgramCache` holds the one program per state key and
+`pass_draws` gives the draw count. The program (`shadesmk.wesl`, line
+for line): `a = |N·V|·1.5 − 1`;
 with an opacity texture `a += A(uv + (0, z))·A(uv + (0, z) + (x, y))` for
 `UVOfst = (x, y, z)`, else `a += 0.25`; then `a = (a − 1 + vertex
 alpha)·0.8` over a black colour. The original's fog and dither snippets
