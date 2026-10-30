@@ -1042,11 +1042,13 @@ pub struct ViewTime {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Frame {
     /// The clear colour the renderer is given, linear RGBA: the level's
-    /// background, the fog's colour when it clears, or the sky gradient
-    /// under a sky.
+    /// background (also under a sky), the fog's colour when it clears, or
+    /// the halved flash colour.
     pub background: [f32; 4],
-    /// The colour the last clear used, RGBA — the original's scratch colour
-    /// that the rain effect takes as its own.
+    /// The frame's scratch colour, RGBA: the horizon under a sky, the fog
+    /// colour with fog, the flash colour during a flash, else the last
+    /// frame's. The rain effect takes it as its own. It starts at opaque
+    /// black (the constructor's alpha of 1).
     pub clear: [f32; 4],
     /// The fog the cameras draw, if the level has any.
     pub fog: Option<FrameFog>,
@@ -1054,8 +1056,9 @@ pub struct Frame {
     pub ambient: [f32; 3],
     /// The ambient cube's intensity.
     pub ambient_scale: f32,
-    /// The sky gradient's colour towards the view, sRGB (linearised when
-    /// the track is not linearised at start-up).
+    /// The scratch colour again (under a sky, the horizon gradient's
+    /// colour towards the view, linearised when the track is not
+    /// linearised at start-up).
     pub sky_colour: [f32; 4],
     /// Whether a lightning flash is on.
     pub flash: bool,
@@ -1267,7 +1270,7 @@ impl SceneEnvironment {
             sun_height: 0.0,
             frame: Frame {
                 background: DEFAULT_BACKGROUND,
-                clear: DEFAULT_BACKGROUND,
+                clear: [0.0, 0.0, 0.0, 1.0],
                 fog: None,
                 ambient: linearise([DEFAULT_AMBIENT[0], DEFAULT_AMBIENT[1], DEFAULT_AMBIENT[2]]),
                 ambient_scale: AMBIENT_SCALE_INDOOR,
@@ -1983,14 +1986,18 @@ impl SceneEnvironment {
     /// `view_forward` is the camera's forward axis, which picks the sky
     /// gradient's position.
     ///
-    /// The original clears with the level's background RGBA (linearised
-    /// when colours are managed in linear light) under a sky and, without
-    /// one, with the fog colour when the fog both runs and clears, else the
-    /// background. The sky's horizon colour is the record's two sky colours
-    /// blended by the view weight, times the fog's sky colour and 2, then
-    /// linearised when the track was not linearised at start-up. A flash
-    /// copies that colour times the three-float flash tint into the clear
-    /// and halves it, and pulls the fog in.
+    /// The frame works on a scratch colour (RGBA) beside the clear. Under a
+    /// sky the scratch takes the horizon colour (the record's two sky
+    /// colours blended by the view weight, times the fog's sky colour, then
+    /// times 2, linearised when the track was not linearised at start-up;
+    /// three floats, so its alpha is kept) and the clear is the level's
+    /// background (linearised when colours are managed in linear light).
+    /// Without a sky and with fog the scratch takes the fog colour, and the
+    /// clear is that colour when the fog clears, else the background;
+    /// without fog the scratch is left as it was and the clear is the
+    /// background. A flash (fog only) clears with the scratch times the
+    /// three-float flash tint, halved, with an alpha of 1, which becomes
+    /// the scratch, and pulls the fog in.
     pub fn apply_frame(&mut self, view_forward: [f32; 3]) -> Frame {
         let linear = self.linear;
         let fog_colour = if linear {
@@ -1998,22 +2005,9 @@ impl SceneEnvironment {
         } else {
             [self.fog.colour[0], self.fog.colour[1], self.fog.colour[2]]
         };
-        // The colour the clear takes, RGBA: the fog colour or the
-        // background, before any sky or flash replaces it. Under a sky the
-        // horizon gradient is written as three floats, so the alpha keeps
-        // whatever the last clear left there.
-        let mut clear: [f32; 4] = if !self.sky {
-            if self.fog.enabled && self.fog.colour_clears {
-                if linear {
-                    linearise4(self.fog.colour)
-                } else {
-                    self.fog.colour
-                }
-            } else {
-                self.clear_background()
-            }
-        } else {
-            // Under a sky the horizon gradient is the clear colour.
+        let mut scratch = self.frame.clear;
+        let mut clear = self.clear_background();
+        if self.sky {
             let weight = if self.sun_light {
                 // The light node's third row is the body's direction (the
                 // camera's forward is the view's own).
@@ -2029,21 +2023,31 @@ impl SceneEnvironment {
             if !TRACK_LINEARISED_AT_STARTUP {
                 horizon = linearise(horizon);
             }
-            [horizon[0], horizon[1], horizon[2], self.frame.clear[3]]
-        };
+            scratch = [horizon[0], horizon[1], horizon[2], scratch[3]];
+        } else if self.fog.enabled {
+            scratch = if linear {
+                linearise4(self.fog.colour)
+            } else {
+                self.fog.colour
+            };
+            if self.fog.colour_clears {
+                clear = scratch;
+            }
+        }
         if self.fog.enabled {
             self.weather_fog();
             if self.weather.flash {
-                // The flash colour is the clear's colour times the scene's
-                // three-float tint (zero unless the scene sets it), halved.
+                // The scratch times the scene's three-float tint (zero
+                // unless the scene sets it), halved; the product's alpha
+                // slot holds the constructor's 1.
                 let t = self.flash_tint;
-                let alph = clear[3];
-                clear = [
-                    clear[0] * t[0] * 0.5,
-                    clear[1] * t[1] * 0.5,
-                    clear[2] * t[2] * 0.5,
-                    alph,
+                scratch = [
+                    scratch[0] * t[0] * 0.5,
+                    scratch[1] * t[1] * 0.5,
+                    scratch[2] * t[2] * 0.5,
+                    1.0,
                 ];
+                clear = scratch;
                 self.fog.current_near = (-self.fog.span as f64 * 0.8) as f32;
                 self.fog.current_far = (self.fog.span as f64 * 0.1) as f32;
             }
@@ -2061,7 +2065,7 @@ impl SceneEnvironment {
         });
         self.frame = Frame {
             background: clear,
-            clear,
+            clear: scratch,
             fog,
             ambient: self.ambient_linear,
             ambient_scale: if self.sky {
@@ -2069,7 +2073,7 @@ impl SceneEnvironment {
             } else {
                 AMBIENT_SCALE_INDOOR
             },
-            sky_colour: clear,
+            sky_colour: scratch,
             flash: self.weather.flash,
             shadow_far: if (self.sun_height as f64) > 0.4 {
                 -25.0
@@ -3073,11 +3077,17 @@ mod tests {
         let plain = env.apply_frame([0.0, 0.0, 1.0]);
         env.weather.flash = true;
         let flash = env.apply_frame([0.0, 0.0, 1.0]);
-        // Half the clear colour, the same alpha.
-        assert_eq!(flash.clear[3], plain.clear[3]);
+        // Without a sky the scratch is the fog colour; the fog does not
+        // clear, so the plain frame clears with the background.
+        assert_eq!(plain.background, env.clear_background());
+        assert_eq!(plain.clear, linearise4(env.fog.colour));
+        // The flash clears with half the scratch and an alpha of 1, and the
+        // scratch keeps it.
+        assert_eq!(flash.clear[3], 1.0);
         for i in 0..3 {
             assert_eq!(flash.clear[i], plain.clear[i] * 0.5);
         }
+        assert_eq!(flash.background, flash.clear);
         // The fog reaches from −0.8 span to 0.1 span, in double then f32.
         assert_eq!(env.fog.current_near, (-env.fog.span as f64 * 0.8) as f32);
         assert_eq!(env.fog.current_far, (env.fog.span as f64 * 0.1) as f32);
@@ -3086,8 +3096,8 @@ mod tests {
         black.fog.enabled = true;
         black.weather.flash = true;
         assert_eq!(
-            black.apply_frame([0.0, 0.0, 1.0]).clear,
-            [0.0, 0.0, 0.0, 0.0]
+            black.apply_frame([0.0, 0.0, 1.0]).background,
+            [0.0, 0.0, 0.0, 1.0]
         );
     }
 
@@ -3218,6 +3228,45 @@ mod tests {
         env.sun_light_intensity = SUN_INTENSITY_SKY;
         let frame = env.apply_frame([0.0, 0.0, 1.0]);
         assert_eq!(frame.sun_intensity, SUN_INTENSITY_SKY);
+        // Without fog the scratch keeps the constructor's opaque black and
+        // the clear is the background.
+        assert_eq!(frame.clear, [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(frame.background, DEFAULT_BACKGROUND);
+    }
+
+    #[test]
+    fn under_a_sky_the_clear_is_the_background_and_the_scratch_the_horizon() {
+        let mut env = SceneEnvironment::new(5);
+        env.background = [0.5, 0.25, 0.0, 1.0];
+        env.set_sky(true);
+        let frame = env.apply_frame([0.0, 0.0, 1.0]);
+        // The clear is the level's background, linearised.
+        assert_eq!(frame.background, env.clear_background());
+        // The scratch is the horizon: the record's sky colours at the
+        // halfway weight (no sun light), times the fog's sky colour, then 2,
+        // linearised; the alpha is the scratch's own.
+        let c = lerp3(env.current.sky_away, env.current.sky_towards, 0.5);
+        let f = env.fog.sky_colour;
+        let h = [c[0] * f[0] * 2.0, c[1] * f[1] * 2.0, c[2] * f[2] * 2.0];
+        let h = if TRACK_LINEARISED_AT_STARTUP {
+            h
+        } else {
+            linearise(h)
+        };
+        assert_eq!(frame.clear, [h[0], h[1], h[2], 1.0]);
+        assert_eq!(frame.sky_colour, frame.clear);
+        // The rain effect takes the scratch, not the clear.
+        env.weather.rain = 0.5;
+        assert_eq!(env.rain_effect_colour(), Some(frame.clear));
+    }
+
+    #[test]
+    fn fog_that_clears_clears_with_its_colour() {
+        let mut env = SceneEnvironment::new(5);
+        env.fog.enabled = true;
+        env.fog.colour_clears = true;
+        let frame = env.apply_frame([0.0, 0.0, 1.0]);
+        assert_eq!(frame.background, linearise4(env.fog.colour));
         assert_eq!(frame.clear, frame.background);
     }
 }
