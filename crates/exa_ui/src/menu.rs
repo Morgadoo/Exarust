@@ -1297,6 +1297,31 @@ pub fn select_main_menu(index: i32, stamp: i32, now: i32, sound_ready: bool) -> 
 /// The sound cues the main menu asks for.
 pub const SELECT_SOUND: &str = "MenuSel";
 pub const CLICK_SOUND: &str = "MenuClick";
+/// The gain the two cues play at (a guess: the original passes a flags word
+/// rather than a linear gain to its audio front end).
+pub const MENU_SOUND_GAIN: f32 = 0.2;
+/// The cue pitch: a random roll from 0 to 1 becomes 0.8 through 1.2, the
+/// original's `roll · 0.4 + 0.8`.
+pub fn menu_sound_pitch(roll: f32) -> f32 {
+    roll * 0.4 + 0.8
+}
+
+/// The title art's texture (`maintitle01.rfi`).
+pub const MENU_TITLE_TEXTURE: &str = "maintitle01";
+/// The title art's tint.
+pub const MENU_TITLE_INK: [u8; 4] = [0xe6, 0xe6, 0xe6, 0x99];
+
+/// The title art's rectangle: the texture scaled by the row scale, centred
+/// across, its top `round(row_scale · 10)` down. The original rounds each
+/// float conversion to even.
+pub fn title_place(screen_width: i32, row_scale: f32, texture: (u32, u32)) -> [i32; 4] {
+    let round = |value: f32| crate::gui_font::round_i32(f64::from(value));
+    let width = round(texture.0 as f32 * row_scale);
+    let height = round(texture.1 as f32 * row_scale);
+    let x = round((screen_width as f32 - width as f32) * 0.5);
+    let y = round(row_scale * 10.0);
+    [x, y, width, height]
+}
 
 /// The menu music's two themes and their gains.
 pub const MENU_THEME: (&str, f32) = ("MenuTheme", 0.1);
@@ -2365,5 +2390,28 @@ mod tests {
         assert_eq!(MenuShow::Emblem.state(), 0x40);
         assert!(MenuShow::Emblem.copies_game_mode());
         assert!(!MenuShow::CharacterScreen.copies_game_mode());
+    }
+
+    #[test]
+    fn the_title_art_is_scaled_and_centred() {
+        // 1024 by 256 at row scale 1: centred at (288, 10).
+        let place = title_place(1600, 1.0, (1024, 256));
+        assert_eq!(place, [288, 10, 1024, 256]);
+        // Half scale: 512 by 128, x 544, y 5.
+        assert_eq!(title_place(1600, 0.5, (1024, 256)), [544, 5, 512, 128]);
+        // A texture odd at the scale rounds to even: 101 × 0.25 = 25.25
+        // (25), 102 × 0.25 = 25.5 (26); the x 487.5 rounds to the even 488
+        // and the y 2.5 to the even 2.
+        assert_eq!(title_place(1000, 0.25, (101, 102)), [488, 2, 25, 26]);
+        assert_eq!(MENU_TITLE_INK, [0xe6, 0xe6, 0xe6, 0x99]);
+        assert_eq!(MENU_TITLE_TEXTURE, "maintitle01");
+    }
+
+    #[test]
+    fn the_menu_cues_pitch_from_half_to_one_and_a_fifth() {
+        assert!((menu_sound_pitch(0.0) - 0.8).abs() < 1e-7);
+        assert!((menu_sound_pitch(0.5) - 1.0).abs() < 1e-7);
+        assert!((menu_sound_pitch(1.0) - 1.2).abs() < 1e-7);
+        assert_eq!((SELECT_SOUND, CLICK_SOUND), ("MenuSel", "MenuClick"));
     }
 }

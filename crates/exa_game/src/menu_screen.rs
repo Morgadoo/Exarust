@@ -3,23 +3,32 @@
 //! page table, hit test and click handler ([`crate::menu_pages`]).
 //!
 //! The original draws its row text with the menu font's letter sheet
-//! (`titlefont.rfi`). This screen draws the same rows in the game's base
-//! font until the sheet's quads are wired (`docs/UI.md`, Main menu); the row
-//! positions, widths, selection, press, commands and page flow are the
-//! original's. A row is selected under the pointer or with Up and Down, a
-//! press nudges the selected row down, and the row runs on the release over
-//! it or on Enter. Escape goes back from the arena and practice pages, as
-//! the original's does at the main menu, and closes the screen elsewhere.
+//! (`titlefont.rfi`) and its title with `maintitle01.rfi`; both load with
+//! the GUI textures, and the base font stands in only when a sheet is
+//! missing. Hovering a row and pressing one play `MenuSel` and `MenuClick`
+//! through the sound bank at a rolled 0.8–1.2 pitch. The row positions,
+//! widths, selection, press, commands and page flow are the original's. A
+//! row is selected under the pointer or with Up and Down, a press nudges
+//! the selected row down, and the row runs on the release over it or on
+//! Enter. Escape goes back from the arena and practice pages, as the
+//! original's does at the main menu, and closes the screen elsewhere.
 
 use std::sync::{Arc, Mutex};
 
+use bevy::audio::{AudioPlayer, AudioSource, PlaybackMode, PlaybackSettings, Volume};
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use exa_ui::gui_core::{FormHost, FormId, GuiRect, GuiTask};
-use exa_ui::gui_draw::{GuiFrame, GuiFrames, GuiTextures, LayerTexture, menu_batch, text_batch};
+use exa_ui::gui_draw::{
+    GuiFrame, GuiFrames, GuiTextures, LayerTexture, icon_batch, menu_batch, text_batch,
+};
 use exa_ui::gui_font::{FONTBASE_24, gui_level, level_for_unit};
 use exa_ui::gui_text::{MenuFont, menu_font_scale};
-use exa_ui::menu::{back_main_menu, menu_row_scale};
+use exa_ui::icon_atlas::IconQuad;
+use exa_ui::menu::{
+    CLICK_SOUND, MENU_SOUND_GAIN, MENU_TITLE_INK, MENU_TITLE_TEXTURE, SELECT_SOUND, back_main_menu,
+    menu_row_scale, menu_sound_pitch, title_place,
+};
 use exa_ui::skin::{SkinBatch, SkinInk};
 
 use crate::flow::Flow;
@@ -30,9 +39,44 @@ use crate::menu_pages::{
 
 /// The overlay's darkness.
 const SHADE: u8 = 210;
-/// The title drawn over the page, until the art sheet is wired.
+/// The title drawn over the page when the art sheet is not installed.
 const TITLE: &str = "EXANIMA";
 const TITLE_COLOUR: [u8; 3] = [230, 220, 190];
+
+/// Which of the menu's two cues to play.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuCue {
+    Select,
+    Click,
+}
+
+/// A cue the screen asks the audio system to play: its pitch has already
+/// been rolled from the menu's own generator.
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct MenuSound {
+    pub cue: MenuCue,
+    pub pitch: f32,
+}
+
+/// The menu's cue generator: the original draws a new pitch for every
+/// select and click. The generator's sequence is Exarust's own (the
+/// original's random call is outside this unit).
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct MenuSoundRoll(pub u32);
+
+impl Default for MenuSoundRoll {
+    fn default() -> Self {
+        Self(0x2f6b_1d43)
+    }
+}
+
+impl MenuSoundRoll {
+    /// The next roll, 0 through 1.
+    pub fn roll(&mut self) -> f32 {
+        self.0 = self.0.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (self.0 >> 8) as f32 / (1u32 << 24) as f32
+    }
+}
 
 /// The menu's screen state.
 #[derive(Resource, Debug, Clone)]
@@ -52,6 +96,8 @@ pub struct MenuScreen {
     dirty: bool,
     /// A manual opened from the menu covers it.
     covered: bool,
+    /// The clock of the last select cue, for the 200-unit limit.
+    sound_stamp: u32,
 }
 
 impl Default for MenuScreen {
@@ -66,6 +112,7 @@ impl Default for MenuScreen {
             state: PageState::default(),
             dirty: true,
             covered: false,
+            sound_stamp: 0,
         }
     }
 }
@@ -270,11 +317,13 @@ impl Plugin for MenuScreenPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MenuScreen>()
             .init_resource::<TitleLogo>()
+            .init_resource::<MenuSoundRoll>()
             .add_message::<MenuChoice>()
+            .add_message::<MenuSound>()
             .add_systems(Startup, setup_router)
             .add_systems(
                 Update,
-                (toggle, input, draw)
+                (toggle, input, draw, play_menu_sounds)
                     .chain()
                     .in_set(MenuScreenSystems)
                     .after(crate::gui_screens::draw_screens),
@@ -353,6 +402,9 @@ fn input(
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
+    time: Res<Time<Real>>,
+    mut roll: ResMut<MenuSoundRoll>,
+    mut sounds: MessageWriter<MenuSound>,
     mut exit: MessageWriter<AppExit>,
     mut choices: MessageWriter<MenuChoice>,
     mut router: ResMut<MenuRouter>,
@@ -361,6 +413,16 @@ fn input(
     if !menu.open || settings.is_some_and(|settings| settings.is_open()) {
         return;
     }
+    let now = time.elapsed().as_millis() as u32;
+    let mut cue = |menu: &mut MenuScreen, roll: &mut MenuSoundRoll, cue: MenuCue| {
+        sounds.write(MenuSound {
+            cue,
+            pitch: menu_sound_pitch(roll.roll()),
+        });
+        if cue == MenuCue::Select {
+            menu.sound_stamp = now;
+        }
+    };
     if keys.just_pressed(KeyCode::Escape) {
         if !menu.back() {
             menu.close();
@@ -375,6 +437,7 @@ fn input(
     }
     if keys.just_pressed(KeyCode::Enter) {
         let row = menu.selected + 1;
+        cue(&mut menu, &mut roll, MenuCue::Click);
         run(&mut menu, row, &mut exit, &mut choices);
         return;
     }
@@ -418,13 +481,17 @@ fn input(
         (hit.form == Some(router.form) && hit.control > 0).then_some(hit.control as usize - 1)
     };
     // The pointer selects the row under it; while a press is held only
-    // the pressed row can be selected.
+    // the pressed row can be selected. A new selection plays the select
+    // cue at most once per 200 units.
     if let Some(row) = hit_row
         && menu.selected != row
         && menu.pressed.is_none_or(|pressed| pressed == row)
     {
         menu.selected = row;
         menu.dirty = true;
+        if now.wrapping_sub(menu.sound_stamp) > 200 {
+            cue(&mut menu, &mut roll, MenuCue::Select);
+        }
     }
     if mouse.just_pressed(MouseButton::Left)
         && let Some(row) = hit_row
@@ -432,6 +499,7 @@ fn input(
         menu.selected = row;
         menu.pressed = Some(row);
         menu.dirty = true;
+        cue(&mut menu, &mut roll, MenuCue::Click);
     }
     if mouse.just_released(MouseButton::Left)
         && let Some(pressed) = menu.pressed
@@ -442,6 +510,45 @@ fn input(
             menu.pressed = None;
         }
         menu.dirty = true;
+    }
+}
+
+/// Plays a cue the input asked for: the menu's `MenuSel` or `MenuClick`
+/// set through the sound bank, at the rolled pitch. Missing audio or a
+/// missing cue leaves the menu silent.
+fn play_menu_sounds(
+    mut sounds: MessageReader<MenuSound>,
+    game: Option<Res<exa_assets::Game>>,
+    mut bank: Option<ResMut<exa_audio::SoundBank>>,
+    mut sources: Option<ResMut<Assets<AudioSource>>>,
+    mut commands: Commands,
+) {
+    let Some(game) = game else {
+        sounds.clear();
+        return;
+    };
+    for sound in sounds.read() {
+        let name = match sound.cue {
+            MenuCue::Select => SELECT_SOUND,
+            MenuCue::Click => CLICK_SOUND,
+        };
+        let Some(clip) = bank
+            .as_mut()
+            .zip(sources.as_mut())
+            .and_then(|(bank, sources)| bank.get(&game, sources, name))
+        else {
+            continue;
+        };
+        commands.spawn((
+            AudioPlayer(clip),
+            PlaybackSettings {
+                mode: PlaybackMode::Despawn,
+                volume: Volume::Linear(MENU_SOUND_GAIN),
+                speed: sound.pitch,
+                spatial: false,
+                ..default()
+            },
+        ));
     }
 }
 
@@ -583,6 +690,27 @@ pub fn menu_frame(
     ))
     .unit;
     if page == Page::Title
+        && title_logo
+        && let Some(texture) = textures.get(MENU_TITLE_TEXTURE)
+    {
+        let [x, y, w, h] = title_place(width, row_scale, (texture.width, texture.height));
+        let quad = IconQuad {
+            corners: [
+                [x as f32, y as f32, 0.0, 1.0],
+                [x as f32, (y + h) as f32, 0.0, 0.0],
+                [(x + w) as f32, (y + h) as f32, 1.0, 0.0],
+                [(x + w) as f32, y as f32, 1.0, 1.0],
+            ],
+            ink: Some(MENU_TITLE_INK),
+            blend: 0,
+            shader: 0,
+        };
+        let batch = icon_batch(&[quad], MENU_TITLE_INK);
+        frame.push(exa_ui::gui_draw::GuiLayer::new(
+            batch,
+            LayerTexture::Named(MENU_TITLE_TEXTURE),
+        ));
+    } else if page == Page::Title
         && title_logo
         && let Some(texture) = textures.get(FONTBASE_24.texture)
     {
@@ -845,6 +973,63 @@ mod tests {
                 .expect("the sheet decodes");
         let a = cell.sample(0.125, 0.9375);
         assert_eq!(a.len(), 4);
+    }
+
+    #[test]
+    fn the_title_art_draws_when_its_sheet_is_installed() {
+        use exa_ui::gui_draw::{GuiTexture, LayerTexture};
+        let mut textures = menu_textures();
+        let sheet = vec![255u8; 64 * 32 * 4];
+        textures.textures.insert(
+            MENU_TITLE_TEXTURE.into(),
+            GuiTexture::from_top_down(64, 32, &sheet).unwrap(),
+        );
+        let frame = menu_frame(
+            1600,
+            1080,
+            Page::Title,
+            PageState::default(),
+            0,
+            None,
+            true,
+            &textures,
+        );
+        let title = frame
+            .layers
+            .iter()
+            .find(|layer| layer.texture == LayerTexture::Named(MENU_TITLE_TEXTURE))
+            .expect("the title art layer");
+        assert_eq!(title.batch.primitives.len(), 1);
+        assert_eq!(title.batch.vertices.len(), 4);
+        // The art's quad carries the art's tint, (230, 230, 230, 153).
+        assert_eq!(title.batch.vertices[0].ink, MENU_TITLE_INK);
+        // The art is centred: 64 by 32 at row scale 1 is x 768, y 10.
+        assert_eq!(title_place(1600, 1.0, (64, 32)), [768, 10, 64, 32]);
+        let first = title.batch.vertices[0];
+        assert_eq!(
+            (first.x, first.y, first.u, first.v),
+            (768.0, 10.0, 0.0, 1.0)
+        );
+        let third = title.batch.vertices[2];
+        assert_eq!(
+            (third.x, third.y, third.u, third.v),
+            (832.0, 42.0, 1.0, 0.0)
+        );
+    }
+
+    #[test]
+    fn the_sound_roll_spans_the_unit_interval() {
+        let mut roll = MenuSoundRoll::default();
+        let mut low = 1.0f32;
+        let mut high = 0.0f32;
+        for _ in 0..1000 {
+            let value = roll.roll();
+            assert!((0.0..=1.0).contains(&value));
+            low = low.min(value);
+            high = high.max(value);
+        }
+        assert!(low < 0.05 && high > 0.95);
+        assert!((menu_sound_pitch(0.0) - 0.8).abs() < 1e-7);
     }
 
     #[test]
