@@ -48,17 +48,26 @@ pub fn bed_name(area: &str) -> String {
 
 /// Cuts a name to the 15 characters a short string holds.
 fn short_string(mut name: String) -> String {
-    if let Some((cut, _)) = name.char_indices().nth(MAX_NAME_LEN) {
+    if name.len() > MAX_NAME_LEN {
+        // The original's short string holds 15 bytes; a Rust string can only
+        // be cut at a character boundary.
+        let mut cut = MAX_NAME_LEN;
+        while cut > 0 && !name.is_char_boundary(cut) {
+            cut -= 1;
+        }
         name.truncate(cut);
     }
     name
 }
 
-/// The ambience a level starts with. Only the outdoor arenas' daylight case
-/// is known: the nature bed `NtrA` when it is neither raining nor windy (the
-/// weather and time-of-day callers are not in Exarust yet, so this assumes a
-/// still, dry day). Guess: the bed at full volume; the night bed is the only
-/// one with a stated volume, 0.3.
+/// The ambience a level starts with. An outdoor arena gets the nature bed
+/// `NtrA` at full volume when it is neither raining nor windy (the weather
+/// and time-of-day callers are not in Exarust yet, so this assumes a still,
+/// dry day; the night bed is the only one with a stated volume, 0.3). A
+/// story level takes the area its name's bytes pick, at full volume: the
+/// fourth level names `AmbUWBA`, whose bed and set a prefix then turns into
+/// `EnvAmbUWBA01` and `AmbAmbUWBA`, files that do not ship — the original's
+/// own naming bug, reproduced. Every other story level stops the ambience.
 pub fn ambience_for_level(level: &str) -> Option<AmbienceArea> {
     let stem = level
         .strip_suffix(".rfc")
@@ -69,6 +78,13 @@ pub fn ambience_for_level(level: &str) -> Option<AmbienceArea> {
             name: "NtrA".into(),
             volume: 1.0,
         })
+    } else if stem.starts_with("exanima0") || stem.starts_with("exanimac") {
+        crate::music::story_music(level.as_bytes())
+            .ambience
+            .map(|name| AmbienceArea {
+                name: name.into(),
+                volume: 1.0,
+            })
     } else {
         None
     }
@@ -77,6 +93,80 @@ pub fn ambience_for_level(level: &str) -> Option<AmbienceArea> {
 /// An area's ambience as the game mode chooses it.
 #[derive(Resource, Clone, Debug, Default, PartialEq)]
 pub struct LevelAmbience(pub Option<AmbienceArea>);
+
+/// An outdoor arena's ambience, as the original chooses it when the arena's
+/// scene is set up: from the scene's rain, daylight and wind, and the
+/// arena's own silent-day flag.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ArenaAmbience {
+    /// The area to play, or `None` to stop the ambience.
+    pub area: Option<AmbienceArea>,
+    /// The wind loop's own bed gain and pitch, which the original overrides
+    /// after setting the area (they replace the bed's `0.15 × volume`).
+    pub bed: Option<(f32, f32)>,
+}
+
+/// The rain amount above which the weather's own rain sound replaces the
+/// ambience.
+pub const RAIN_AMBIENCE_LIMIT: f64 = 0.01;
+/// The daylight factor below which the outdoor arenas play the night bed.
+pub const NIGHT_DAYLIGHT_LIMIT: f32 = 0.5;
+/// The night bed's volume.
+pub const NIGHT_VOLUME: f32 = 0.3;
+/// The wind strength above which the outdoor arenas play the wind bed.
+pub const WIND_LIMIT: f64 = 0.1;
+/// The wind bed's gain as a fraction of the squared strength.
+pub const WIND_GAIN: f64 = 0.2;
+/// The wind bed's pitch at no wind; it rises by half the strength (the same
+/// single 0.5 as the daylight limit, multiplied in single precision).
+pub const WIND_PITCH_BASE: f64 = 0.6;
+
+/// The outdoor arenas' ambience from the scene's weather, in the original's
+/// order: rain above 0.01 stops it; a
+/// daylight factor below 0.5 plays the night bed `NtrAN` at 0.3; a calm
+/// arena plays the day bed `NtrA` at full volume; otherwise a wind above 0.1
+/// plays `NtrW` at full volume with the bed's gain `wind² × 0.2` and pitch
+/// `0.6 + 0.5 × wind`; a still day stops it. `calm` is the arena's entry in
+/// the original's per-arena table; that table's index comes from the arena
+/// progression, which is not ported, so nothing in the running game calls
+/// this yet. The original applies the rule for arena indices of 7 and up and
+/// clears the ambience below 7; that index test is the caller's.
+pub fn arena_ambience(daylight: f32, wind: f32, raining: f32, calm: bool) -> ArenaAmbience {
+    // The original compares the single fields against double constants.
+    if f64::from(raining) > RAIN_AMBIENCE_LIMIT {
+        return ArenaAmbience::default();
+    }
+    if NIGHT_DAYLIGHT_LIMIT > daylight {
+        return ArenaAmbience {
+            area: Some(AmbienceArea {
+                name: "NtrAN".into(),
+                volume: NIGHT_VOLUME,
+            }),
+            bed: None,
+        };
+    }
+    if calm {
+        return ArenaAmbience {
+            area: Some(AmbienceArea {
+                name: "NtrA".into(),
+                volume: 1.0,
+            }),
+            bed: None,
+        };
+    }
+    if f64::from(wind) > WIND_LIMIT {
+        let gain = ((wind * wind) as f64 * WIND_GAIN) as f32;
+        let pitch = ((wind * 0.5) as f64 + WIND_PITCH_BASE) as f32;
+        return ArenaAmbience {
+            area: Some(AmbienceArea {
+                name: "NtrW".into(),
+                volume: 1.0,
+            }),
+            bed: Some((gain, pitch)),
+        };
+    }
+    ArenaAmbience::default()
+}
 
 /// The area to play and the volume the game mode asks for.
 #[derive(Clone, Debug, PartialEq)]
@@ -115,7 +205,7 @@ impl AudioEnvironment {
             }
         } else {
             if self.ambience.bed_voice.is_none() {
-                self.ambience.bed_voice = self.allocate();
+                self.ambience.bed_voice = Some(self.allocate_or_dummy());
             }
             let offset = (f64::from(bank.random_unit()) * BED_OFFSET_S) as f32;
             if let Some(id) = self.ambience.bed_voice
@@ -134,11 +224,33 @@ impl AudioEnvironment {
         self.ambience.set = set;
     }
 
+    /// Applies an arena's weather ambience: clears it when the choice has no
+    /// area, otherwise sets the area and then gives the wind loop its own bed
+    /// gain and pitch, as the arena setup overrides them after setting it.
+    pub fn apply_arena_ambience(
+        &mut self,
+        bank: &mut SoundBank,
+        choice: ArenaAmbience,
+        bed_buffer: u32,
+        set: u32,
+    ) {
+        let Some(area) = choice.area else {
+            self.clear_ambience(bank);
+            return;
+        };
+        self.apply_ambience(bank, bed_buffer, set, area.volume);
+        if let Some((gain, pitch)) = choice.bed
+            && let Some(id) = self.ambience.bed_voice
+            && let Some(voice) = self.voice_mut(id)
+        {
+            voice.gain = gain;
+            voice.pitch = pitch;
+        }
+    }
+
     /// Clears the area's ambience: the bed voice, its buffer and the set.
     pub fn clear_ambience(&mut self, bank: &mut SoundBank) {
-        if let Some(id) = self.ambience.bed_voice.take() {
-            self.free_voice(bank, id);
-        }
+        self.ambience.bed_voice = self.release_voice(bank, self.ambience.bed_voice);
         if self.ambience.bed_buffer != 0 {
             bank.release_buffer(self.ambience.bed_buffer);
             self.ambience.bed_buffer = 0;
@@ -170,22 +282,16 @@ impl AudioEnvironment {
         let default_flags = self.default_flags;
         if !bank.buffer_is_stereo(buffer) {
             // A random horizontal direction from the anchor.
-            let mut x = 0.5 - bank.random_unit();
-            let mut z = 0.5 - bank.random_unit();
-            let length2 = z * z + x * x;
-            if length2 <= SILENCE {
-                x = 1.0;
-            } else {
-                let scale = 1.0 / length2.sqrt();
-                x *= scale;
-                z *= scale;
-            }
+            let (x, z) = one_shot_direction(bank.random_unit(), bank.random_unit());
             // The original draws this distance from the runtime library's
             // own random stream, not the engine generator; its generator and
             // seed are outside the evidence, so a stand-in stream serves.
             let distance_cm = self.rtl_random.unit_f64() * f64::from(ONE_SHOT_DISTANCE_SPREAD_CM);
             let distance_cm = (distance_cm + f64::from(ONE_SHOT_DISTANCE_MIN_CM)) as f32;
-            let position = self.listener.anchor + Vec3::new(x, 0.0, z) * (distance_cm / CM_PER_M);
+            // The original scales the direction in centimetres and adds the
+            // anchor there; positions here are metres.
+            let offset_cm = Vec3::new(x, 0.0, z) * distance_cm;
+            let position = self.listener.anchor + offset_cm / CM_PER_M;
             let first_two = bank.set_last(self.ambience.set) < 2;
             // Every range is a unit draw scaled by double-precision constants.
             let gain = if first_two {
@@ -226,6 +332,25 @@ impl AudioEnvironment {
 /// double precision and stored as a single.
 fn scaled_draw(bank: &mut SoundBank, spread: f64, base: f64) -> f32 {
     (f64::from(bank.random_unit()) * spread + base) as f32
+}
+
+/// The horizontal direction of a mono one-shot from its two draws:
+/// `(0.5 − x, 0.5 − z)`, normalised in single precision. When the squared
+/// length is at or below the `f32` epsilon — or unordered, which the
+/// original's compare treats the same — it sets only the first component to
+/// 1 and keeps the second draw's value.
+fn one_shot_direction(x_draw: f32, z_draw: f32) -> (f32, f32) {
+    let mut x = 0.5 - x_draw;
+    let mut z = 0.5 - z_draw;
+    let length2 = z * z + x * x;
+    if length2 > SILENCE {
+        let scale = 1.0 / length2.sqrt();
+        x *= scale;
+        z *= scale;
+    } else {
+        x = 1.0;
+    }
+    (x, z)
 }
 
 /// Sets or clears the level's ambience when the resource changes (once the
@@ -296,6 +421,29 @@ mod tests {
         assert_eq!(ambience_for_level("arena"), None);
         assert_eq!(ambience_for_level("exanima01"), None);
         assert_eq!(ambience_for_level("charview"), None);
+    }
+
+    /// A story level takes the area its name's bytes pick at full volume: the
+    /// fourth level names `AmbUWBA`, whose bed and set names the prefixes then
+    /// build into files that do not ship; every other story level has none.
+    #[test]
+    fn the_fourth_story_level_names_its_ambience() {
+        let four = ambience_for_level("exanima04").expect("the fourth level");
+        assert_eq!(four.name, "AmbUWBA");
+        assert_eq!(four.volume, 1.0);
+        assert_eq!(bed_name(&four.name), "EnvAmbUWBA01");
+        assert_eq!(set_prefix(&four.name), "AmbAmbUWBA");
+        for level in [
+            "exanima01",
+            "exanima02",
+            "exanima05",
+            "exanima06",
+            "exanima07",
+            "exanima08",
+            "exanimac1",
+        ] {
+            assert_eq!(ambience_for_level(level), None, "{level}");
+        }
     }
 
     /// The bed plays at 0.15 × the area volume, pitch 1, on the interface
@@ -435,5 +583,103 @@ mod tests {
         let stereo = bank.insert_test_buffer(1.0, 1000, true);
         assert!(!bank.buffer_is_stereo(mono));
         assert!(bank.buffer_is_stereo(stereo));
+    }
+
+    /// The direction is the two draws taken off 0.5, normalised in single
+    /// precision. A zero vector (both draws exactly 0.5) falls back to the
+    /// original's `x = 1` and keeps z; an unordered draw does the same.
+    #[test]
+    fn a_mono_direction_is_normalised_or_falls_back_to_x() {
+        let (x, z) = one_shot_direction(0.0, 0.0);
+        let unit = 1.0f32 / 2.0f32.sqrt();
+        assert!((x - unit).abs() < 1e-7 && (z - unit).abs() < 1e-7);
+        assert_eq!(one_shot_direction(0.5, 0.5), (1.0, 0.0));
+        let (x, z) = one_shot_direction(f32::NAN, 0.25);
+        assert_eq!(x, 1.0);
+        assert_eq!(z, 0.25);
+        // The squared length and its sum keep the original's order.
+        let (x, z) = one_shot_direction(0.25, 0.75);
+        assert!((x * x + z * z - 1.0).abs() < 1e-6);
+        assert_eq!(short_string("abcdefghijklmnop".into()), "abcdefghijklmno");
+        assert_eq!(short_string("éééééééé".into()), "ééééééé");
+    }
+
+    /// A quiet or unordered remembered volume is left alone by the music
+    /// setting, as the original's unordered-safe compare does.
+    #[test]
+    fn a_quiet_or_unordered_volume_ignores_the_music_setting() {
+        let mut env = AudioEnvironment::new();
+        let mut bank = SoundBank::default();
+        let buffer = bank.insert_test_buffer(1.0, 1000, false);
+        env.music_play_now(&mut bank, "quiet", f32::NAN, |_, _| buffer);
+        env.update(&mut bank, &crate::environment::UpdateInput::default());
+        let a = env.music.a.expect("a voice");
+        env.music_set_enabled(&mut bank, false, |_, _| 0);
+        assert_ne!(env.voice(a).unwrap().flags, 0);
+        assert!(!env.music.enabled);
+    }
+
+    /// The outdoor arena's choice, in the original's order: rain stops it,
+    /// a dark scene plays the night bed at 0.3, a calm arena the day bed,
+    /// a wind above 0.1 the wind bed at `wind² × 0.2` gain and
+    /// `0.6 + 0.5 × wind` pitch, and a still day nothing.
+    #[test]
+    fn arena_ambience_follows_rain_daylight_and_wind() {
+        let rainy = arena_ambience(1.0, 0.0, 0.02, false);
+        assert_eq!(rainy, ArenaAmbience::default());
+        let night = arena_ambience(0.4, 0.0, 0.0, false);
+        assert_eq!(night.area.as_ref().map(|a| a.name.as_str()), Some("NtrAN"));
+        assert_eq!(night.area.as_ref().map(|a| a.volume), Some(0.3));
+        assert_eq!(night.bed, None);
+        let calm = arena_ambience(0.9, 0.0, 0.0, true);
+        assert_eq!(calm.area.as_ref().map(|a| a.name.as_str()), Some("NtrA"));
+        assert_eq!(calm.area.as_ref().map(|a| a.volume), Some(1.0));
+        let windy = arena_ambience(0.9, 0.5, 0.0, false);
+        assert_eq!(windy.area.as_ref().map(|a| a.name.as_str()), Some("NtrW"));
+        let (gain, pitch) = windy.bed.expect("the wind bed");
+        assert!((gain - 0.05).abs() < 1e-7, "{gain}");
+        assert!((pitch - 0.85).abs() < 1e-7, "{pitch}");
+        assert_eq!(
+            arena_ambience(0.9, 0.099, 0.0, false),
+            ArenaAmbience::default()
+        );
+        // The single 0.1 is a hair above the double threshold 0.1, so it
+        // takes the wind branch, as the original's single-to-double compare
+        // does.
+        assert_eq!(
+            arena_ambience(0.9, 0.1, 0.0, false)
+                .area
+                .as_ref()
+                .map(|a| a.name.as_str()),
+            Some("NtrW")
+        );
+        // Unordered values take the not-greater branch: no rain, no night,
+        // no wind.
+        assert_eq!(
+            arena_ambience(f32::NAN, f32::NAN, f32::NAN, false),
+            ArenaAmbience::default()
+        );
+    }
+
+    /// The wind choice's bed overrides the area's 0.15 × volume gain and
+    /// pitch 1; a night choice keeps the plain bed.
+    #[test]
+    fn the_wind_bed_takes_its_own_gain_and_pitch() {
+        let mut env = AudioEnvironment::new();
+        let mut bank = SoundBank::default();
+        let bed = bank.insert_test_buffer(3.0, 3000, false);
+        let choice = arena_ambience(0.9, 0.5, 0.0, false);
+        env.apply_arena_ambience(&mut bank, choice, bed, SoundBank::EMPTY_SET);
+        let id = env.ambience.bed_voice.expect("a bed voice");
+        assert!((env.voice(id).unwrap().gain - 0.05).abs() < 1e-7);
+        assert!((env.voice(id).unwrap().pitch - 0.85).abs() < 1e-7);
+        let night = arena_ambience(0.4, 0.0, 0.0, false);
+        env.apply_arena_ambience(&mut bank, night, bed, SoundBank::EMPTY_SET);
+        assert!((env.voice(id).unwrap().gain - 0.045).abs() < 1e-7);
+        assert_eq!(env.voice(id).unwrap().pitch, 1.0);
+        // A choice without an area clears the ambience.
+        env.apply_arena_ambience(&mut bank, ArenaAmbience::default(), 0, 0);
+        assert!(!env.ambience.installed);
+        assert_eq!(env.ambience.bed_voice, None);
     }
 }

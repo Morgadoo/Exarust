@@ -286,7 +286,7 @@ impl AudioEnvironment {
             return;
         }
         if self.music.a.is_none() {
-            self.music.a = self.allocate();
+            self.music.a = Some(self.allocate_or_dummy());
         }
         if let Some(id) = self.music.a
             && let Some(voice) = self.voice_mut(id)
@@ -322,9 +322,7 @@ impl AudioEnvironment {
     /// releasing it (the original leaks that reference), and forgets the name
     /// when asked. The crossfader's state is left as it is.
     pub fn music_stop(&mut self, bank: &mut SoundBank, forget_name: bool) {
-        if let Some(id) = self.music.a.take() {
-            self.free_voice(bank, id);
-        }
+        self.music.a = self.release_voice(bank, self.music.a);
         self.music.a_buffer = 0;
         if forget_name {
             self.music.name.clear();
@@ -354,7 +352,7 @@ impl AudioEnvironment {
         self.music.state = CROSSFADE;
         self.music.started_ms = now_ms;
         if self.music.b.is_none() {
-            self.music.b = self.allocate();
+            self.music.b = Some(self.allocate_or_dummy());
         }
         if let Some(id) = self.music.b
             && let Some(voice) = self.voice_mut(id)
@@ -395,7 +393,7 @@ impl AudioEnvironment {
         self.music.started_ms = now_ms;
         let length = bank.buffer_secs(buffer);
         if self.music.b.is_none() {
-            self.music.b = self.allocate();
+            self.music.b = Some(self.allocate_or_dummy());
         }
         // Length × 0.8 × a unit draw, in double precision.
         let offset = (f64::from(length) * 0.8 * f64::from(bank.random_unit())) as f32;
@@ -450,7 +448,8 @@ impl AudioEnvironment {
             return;
         }
         self.music.enabled = enabled;
-        if MIN_VOLUME >= self.music.a_volume {
+        // The original's compare skips an unordered volume too.
+        if self.music.a_volume <= MIN_VOLUME || self.music.a_volume.is_nan() {
             return;
         }
         if enabled {
@@ -562,9 +561,7 @@ impl AudioEnvironment {
                     }
                 } else {
                     state = IDLE;
-                    if let Some(id) = b.take() {
-                        self.free_voice(bank, id);
-                    }
+                    b = self.release_voice(bank, b);
                     if let Some(id) = a
                         && let Some(voice) = self.voice_mut(id)
                     {
@@ -949,6 +946,32 @@ mod tests {
         env.music_set_start_offset(41.0);
         let a = env.music.a.expect("a voice");
         assert_eq!(env.voice(a).unwrap().offset, 41.0);
+    }
+
+    /// With the pool full the main track takes the shared dummy voice: its
+    /// gain is written there, the mixer never binds it, and stopping lets it
+    /// go without touching the pool.
+    #[test]
+    fn a_full_pool_gives_the_main_track_the_dummy_voice() {
+        use crate::environment::{DUMMY_VOICE, VOICE_CAPACITY};
+        let mut env = AudioEnvironment::new();
+        let mut bank = SoundBank::default();
+        for _ in 0..VOICE_CAPACITY {
+            env.allocate().expect("a pool voice");
+        }
+        let buffer = bank.insert_test_buffer(1.0, 1000, false);
+        env.music_play_now(&mut bank, "msc_test", 0.4, track(buffer));
+        assert_eq!(env.music.a, Some(DUMMY_VOICE));
+        assert_eq!(env.voice(DUMMY_VOICE).unwrap().gain, 0.4);
+        env.update(&mut bank, &crate::environment::UpdateInput::default());
+        assert!(
+            !env.commands()
+                .iter()
+                .any(|command| matches!(command, SourceCommand::Play(_)))
+        );
+        env.music_stop(&mut bank, false);
+        assert_eq!(env.music.a, None);
+        assert_eq!(env.voice(DUMMY_VOICE).unwrap().source, -1);
     }
 
     /// Byte 8 picks most levels' tracks, volumes and presets; byte 11 `w`

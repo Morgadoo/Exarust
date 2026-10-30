@@ -27,7 +27,10 @@ pub mod voices;
 
 use bevy::prelude::*;
 
-pub use ambience::{AmbienceArea, LevelAmbience, ambience_for_level, bed_name, set_prefix};
+pub use ambience::{
+    AmbienceArea, ArenaAmbience, LevelAmbience, ambience_for_level, arena_ambience, bed_name,
+    set_prefix,
+};
 pub use bank::{Lcg, SoundBank, SoundSet};
 pub use environment::{
     AudioEnvironment, BusGains, Listener, SourceCommand, SourcePlay, SourceUpdate, UpdateInput,
