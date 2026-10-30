@@ -169,16 +169,18 @@ pub fn shield_desirability(byte: u8) -> f64 {
     f64::from(byte) * 0.05
 }
 
-/// Apparel's protection value: over the bones it covers, the sum of its
-/// four resistance bytes times the bone's weight times
-/// `√(coverage·0.01)·0.005`.
+/// Apparel's protection value, the AI's and the character sheet's figure:
+/// over the twenty bones, each nonzero coverage word `c` pairs with the
+/// bone's weight `w` (same index) and gives `w·(√(c·0.01)·0.005)` in double
+/// precision, rounded to single; the single-precision sum of the four
+/// resistance bytes multiplies it and the total adds it, bone by bone.
 pub fn protection_value(coverage: &[u32; 20], resist: [u8; 4]) -> f32 {
     let sum = resist.iter().map(|&r| u64::from(r)).sum::<u64>() as f32;
     let mut total = 0.0f32;
     for (bone, &c) in coverage.iter().enumerate() {
         if c != 0 {
-            let w = f64::from(BONE_WEIGHTS[bone]);
-            total += sum * (w * (f64::from(c) * 0.01).sqrt() * 0.005) as f32;
+            let w = f64::from(BONE_WEIGHTS[bone]) * ((f64::from(c) * 0.01).sqrt() * 0.005);
+            total += sum * w as f32;
         }
     }
     total
@@ -426,6 +428,12 @@ mod tests {
         let (w, most) = protection_parts(&cov, [10, 20, 30, 40]);
         assert!((most - 0.5).abs() < 1e-6);
         assert!((w - (0.5 * 4.0 + 0.125 * 0.5)).abs() < 1e-6);
+        // The first coverage entry is material one and takes the table's
+        // first weight (one): sqrt(200 · 0.01) · 0.005.
+        let mut first = [0u32; 20];
+        first[0] = 200;
+        let v = protection_value(&first, [1, 0, 0, 0]);
+        assert!((v - (2.0f64.sqrt() * 0.005) as f32).abs() < 1e-7);
     }
 
     #[test]

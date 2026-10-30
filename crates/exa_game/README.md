@@ -1005,7 +1005,10 @@ and sun on the off-screen layer (marked `Offscreen`, which the world's
 camera, light, GI, shadow, fog and post systems skip), reads the image back, resolves it (the
 alpha global's screen pass, else the Kaiser downsample and halo) and fills
 the cache slot and atlas cell; a headless App, a blank readback and a lost
-one fall back to the CPU paint of the same scene. The card
+one fall back to the CPU paint of the same scene. When the interface scale
+changes, the manager is rescaled: its atlas is rebuilt at forty units times
+the new unit and every cached icon is drawn again (its half extents are
+half its rendered size, rounded to even, plus the new unit). The card
 window (`CardWindow`) keeps the 200 ms request, its toggle and its 0x100 ms
 close fade on top of the card timer; `item_card` now draws it: a right
 click on a panel entry builds the item's page from the catalogue's card

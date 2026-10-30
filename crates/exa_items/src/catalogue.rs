@@ -127,6 +127,11 @@ pub struct CardFacts {
     pub armour: u8,
     /// The crystal-socket flag bit.
     pub sockets: bool,
+    /// The four crystal-socket words of the section the card shows (the
+    /// weapon section's socket row, else the apparel body's): the crystal kind
+    /// in bits 0–6 with `0x80` when the socket exists, and the charge in the
+    /// high byte.
+    pub socket_words: [u16; 4],
     /// The weapon card's material row gate.
     pub material: bool,
     /// The rank word's low byte: the weapon's `+0x42` or the body's
@@ -562,10 +567,12 @@ fn card_facts<'a>(
         facts.condition = byte(weapon, 0x0C);
         facts.skill = byte(weapon, 0x42);
         facts.sockets = byte(weapon, 0x48) & 0x80 != 0;
+        facts.socket_words = crate::item_gui::Sockets::of_section(weapon, 0x48).0;
     } else if let Some(body) = body.filter(|b| (1..7).contains(&byte(b, 0x1A8))) {
         facts.condition = byte(body, 0x1B0);
         facts.skill = byte(body, 0x1AB);
         facts.sockets = byte(body, 0x218) & 0x80 != 0;
+        facts.socket_words = crate::item_gui::Sockets::of_section(body, 0x218).0;
     } else if let Some(shield) = shield_section.filter(|s| word(s, 0) & WITHHELD == 0) {
         facts.skill = byte(shield, 0x08);
     }
@@ -871,6 +878,11 @@ mod tests {
         weapon[0x3a] = 1; // material row
         weapon[0x42] = 0x42; // rank
         weapon[0x48] = 0x80; // sockets
+        weapon[0x49] = 2; // the first socket's charge (empty, kind 0)
+        weapon[0x4a] = 0x84; // the C crystal
+        weapon[0x4b] = 200; // its charge
+        weapon[0x4c] = 0x91; // the AR crystal
+        weapon[0x4d] = 7; // its charge
 
         let mut payload = section_bytes(MODEL, &model);
         payload.extend(section_bytes(WEAPON, &weapon));
@@ -892,6 +904,9 @@ mod tests {
         assert_eq!(facts.coins, 1440);
         assert_eq!((facts.condition, facts.skill), (200, 0x42));
         assert!(facts.container && facts.model && !facts.map && facts.sockets);
+        // The four socket words: kind in the low seven bits, 0x80 when the
+        // socket exists, the charge in the high byte.
+        assert_eq!(facts.socket_words, [0x0280, 0xC884, 0x0791, 0]);
         assert!(facts.material);
         let w = facts.weapon.unwrap();
         assert_eq!((w.flags, w.weight, w.balance), (0x10, 40, 60));

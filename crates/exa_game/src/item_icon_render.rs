@@ -172,6 +172,7 @@ impl Plugin for ItemIconPlugin {
             .add_systems(
                 Update,
                 (
+                    rescale_icons,
                     prepare_icon_scenes,
                     paint_icon_jobs,
                     start_icon_readbacks,
@@ -182,6 +183,20 @@ impl Plugin for ItemIconPlugin {
             )
             .add_observer(icon_readback_complete);
     }
+}
+
+/// The icon manager's own unit change: the atlas's icon size is the
+/// forty-unit base times the interface scale, and when the scale moves the
+/// atlas is rebuilt at the new side and every cached icon is drawn again.
+fn rescale_icons(
+    gui: Option<Res<exa_ui::GuiScale>>,
+    mut icons: ResMut<PanelIcons>,
+    catalogue: Option<Res<ItemCatalogue>>,
+) {
+    let Some(gui) = gui else {
+        return;
+    };
+    icons.rescale(gui.scale as i32, catalogue.as_deref());
 }
 
 /// Loads the model of each pending icon, at most [`ICONS_PER_FRAME`] a
