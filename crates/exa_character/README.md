@@ -344,11 +344,20 @@ tested rules of their own.
   torch) and the parry-weld gate (off in the heavy-claws state and for a
   creature-body race, whose body rule flags carry the creature bit). The grip
   may be hung before the holder's body exists: `PendingGrip` then fills its
-  holder key once the body's first part does. A model with no stored rigid
-  node (an assembled
-  factory weapon) stays a scene child of the hand: `assembled_item_body`
-  fits one part with the original's factory-weapon shape builder, tested
-  but not attached. The physics grip stage builds the links once both
+  holder key once the body's first part does. An assembled factory weapon
+  (a `@` model, which stores no rigid node) is a body too, as the
+  original's factory builds one for every weapon it assembles but the
+  inventory icon and the colour preview: `item_bodies` falls back to
+  `assembled_item_body`, one part fitted to the merged meshes by the
+  factory-weapon shape builder with the factory's one fit record (1.1,
+  even axes, 6 cells, no free corners, tag 2, no side growth), its
+  mobility 10 000 over the fitted volume, and its sound set the factory's
+  hit set for the weapon section's sound byte
+  (`exa_formats::weapon_stats::impact_sound`). The main hand, the off hand
+  and a weapon dropped from the inventory take it; the golem halberd
+  (`@GlmHalbrd A`) fits 519 spheres from 106 cm below the grip to 176 cm
+  above it, mobility 0.653 (logged at debug at the equip). A weapon a level
+  places is still a static model. The physics grip stage builds the links once both
   bodies exist and pulls the item to the hand; the item never meets its
   holder's body. The grip runtime (`grip_runtime`) reads the holder's clip
   every tick, applies the grip table entry's mode, steps an active flip

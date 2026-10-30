@@ -764,8 +764,8 @@ pub fn held_item_sounds(model: &model::Model) -> exa_physics::prop::BodySounds {
 /// first node, a top node, is moved through `root` itself, which carries the
 /// item's grip, blade and light (its node entity sits under `root` with no
 /// offset). A model without a stored rigid node (an assembled factory
-/// weapon) gets none here: its fitted body ([`assembled_item_body`]) is
-/// not in the game yet.
+/// weapon) gets none here: [`item_bodies`] gives it its fitted body
+/// ([`assembled_item_body`]).
 pub fn held_item_bodies(
     model: &model::Model,
     root: bevy::prelude::Entity,
@@ -832,13 +832,55 @@ pub fn held_item_bodies(
     parts
 }
 
+/// An item's bodies and the sound sets they play, as the original's item
+/// builder gives them: the model's stored rigid nodes
+/// ([`held_item_bodies`], [`held_item_sounds`]), or, for an assembled
+/// factory weapon (`factory_sound`: its weapon section's sound byte, `None`
+/// for a model that is not a factory weapon), the one body the factory
+/// builds for its merged node ([`assembled_item_body`]), which plays the
+/// factory's hit set for that byte
+/// ([`exa_formats::weapon_stats::impact_sound`]). The factory builds that
+/// body for every weapon it assembles but the inventory icon and the
+/// colour preview, so a held, dropped or placed factory weapon is a body
+/// like any other item, and the hand's grip takes it the same way.
+pub fn item_bodies(
+    model: &model::Model,
+    root: bevy::prelude::Entity,
+    nodes: &[bevy::prelude::Entity],
+    meshes: &Assets<Mesh>,
+    factory_sound: Option<u8>,
+) -> (
+    Vec<exa_physics::body::RigidPart>,
+    exa_physics::prop::BodySounds,
+) {
+    let parts = held_item_bodies(model, root, nodes);
+    if !parts.is_empty() {
+        return (parts, held_item_sounds(model));
+    }
+    let Some(sound) = factory_sound else {
+        return (parts, held_item_sounds(model));
+    };
+    match assembled_item_body(model, root, meshes) {
+        Some(part) => (
+            vec![part],
+            exa_physics::prop::BodySounds {
+                impact: vec![Some(
+                    exa_formats::weapon_stats::impact_sound(sound).to_owned(),
+                )],
+                scrapes: Vec::new(),
+            },
+        ),
+        None => (Vec::new(), exa_physics::prop::BodySounds::default()),
+    }
+}
+
 /// The body of an assembled factory weapon: the original merges its parts
-/// into one mesh and fits it with the weapon builder. The triangles are
-/// brought into the weapon's frame and to centimetres; the box is their
-/// union. `None` when there is no mesh or the fit gives no solid
-/// tetrahedron. Not called by the game yet: the fitted shape has not been
-/// checked against a shipped factory weapon, so those stay bone-attached.
-/// [guess: the original may fit the merged mesh from component boxes]
+/// into one mesh node and fits it with the weapon builder and the
+/// factory's one fit record ([`exa_physics::shape::WeaponFit::SHIPPED`]).
+/// The triangles are brought into the weapon's frame and to centimetres;
+/// the node's box is their union, its sort centre the origin (the merged
+/// node is not under a node of the kind that sorts at the box). `None`
+/// when there is no mesh or the fit gives no solid tetrahedron.
 pub fn assembled_item_body(
     model: &model::Model,
     entity: bevy::prelude::Entity,
@@ -931,6 +973,37 @@ pub fn assembled_item_body(
         triangles: None,
     };
     part.is_solid().then_some(part)
+}
+
+/// Logs a factory weapon's fitted body at debug: its rest particles' span,
+/// its spheres and its mobility (centimetres, as the builder measured).
+fn log_fitted_body(model: &str, part: &exa_physics::body::RigidPart) {
+    let (mut lo, mut hi) = (Vec3::MAX, Vec3::MIN);
+    for &(c, r) in &part.spheres {
+        lo = lo.min(c - Vec3::splat(r));
+        hi = hi.max(c + Vec3::splat(r));
+    }
+    let rest: Vec<String> = part
+        .rest
+        .iter()
+        .map(|p| {
+            let p = *p * CM_PER_M;
+            format!("({:.1}, {:.1}, {:.1})", p.x, p.y, p.z)
+        })
+        .collect();
+    debug!(
+        "{model}: factory body, {} spheres spanning y {:.1}..{:.1} cm (x {:.1}..{:.1}, \
+         z {:.1}..{:.1}), mobility {:.4}, rest {}",
+        part.spheres.len(),
+        lo.y * CM_PER_M,
+        hi.y * CM_PER_M,
+        lo.x * CM_PER_M,
+        hi.x * CM_PER_M,
+        lo.z * CM_PER_M,
+        hi.z * CM_PER_M,
+        part.mobility,
+        rest.join(" ")
+    );
 }
 
 /// The bones the original's grip links attach to: the forearms, right then
@@ -1698,11 +1771,24 @@ fn equip_outfits(
                     .ok()
                     .and_then(|r| r.parts.first())
                     .map(|p| p.entity);
-                let parts = held_item_bodies(&weapon, holder, &node_entities);
+                // A factory weapon's body plays its section's sound class.
+                let factory_sound = held.model.starts_with('@').then(|| stats.get(at::SOUND));
+                let (parts, sounds) = item_bodies(
+                    &weapon,
+                    holder,
+                    &node_entities,
+                    loader.meshes,
+                    factory_sound,
+                );
+                if factory_sound.is_some()
+                    && let Some(part) = parts.first()
+                {
+                    log_fitted_body(&held.model, part);
+                }
                 if !parts.is_empty() {
                     commands.entity(holder).insert((
                         exa_physics::prop::PendingProp(parts),
-                        held_item_sounds(&weapon),
+                        sounds,
                         exa_combat::impact::ImpactBook::default(),
                         grip_runtime::HeldRecord {
                             section: Section {
@@ -2361,5 +2447,16 @@ mod tests {
         assert!(part.mobility > 0.0 && part.mobility.is_finite());
         assert!((part.rest[0] - Vec3::ZERO).length() < 2.0);
         assert_eq!(part.origin, Vec3::ZERO);
+        // As an item: a factory weapon takes that body and the factory's
+        // hit set for its sound byte; a stored model without a rigid node
+        // has no body.
+        let (parts, sounds) = item_bodies(&model, root, &[root], &meshes, Some(2));
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].entity, root);
+        assert_eq!(sounds.impact, vec![Some("WH_AxeA".to_owned())]);
+        let (_, sounds) = item_bodies(&model, root, &[root], &meshes, Some(3));
+        assert_eq!(sounds.impact, vec![Some("WH_HammerA".to_owned())]);
+        let (parts, _) = item_bodies(&model, root, &[root], &meshes, None);
+        assert!(parts.is_empty());
     }
 }
