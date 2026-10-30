@@ -29,6 +29,7 @@
 //! destroy slots and frames, the manager's list append and swap removal,
 //! and the three emissives' bounds and draws, read from `Exanima.exe`.
 
+use bevy::math::Affine3A;
 use bevy::prelude::*;
 use exa_render::gi::{GiShape, GiShapeProgram, ShapeVolume};
 
@@ -284,22 +285,22 @@ pub fn strikes_shape(
     (shape, volume_of(box_centre, half))
 }
 
-/// The barricade's light shape this frame: the `gi_cuboid_fn` box at the
-/// wall's middle, its `bExt` from [`emissive::barricade_light`] over the
-/// node's full size, the colour incl. the 1.2 gain, its texture window from
-/// the wall's two random offsets, in the node's box plus 60 cm.
+/// The barricade's light shape this frame: the `gi_cuboid_fn` box in the
+/// wall node's frame (its `bMat` the inverse of the wall's axes at the
+/// node's place), its `bExt` from [`emissive::barricade_light`] over the
+/// node's half size as the last frame wrote it (the drawn half width and
+/// height, 5 cm deep), the colour incl. the 1.2 gain, its texture window
+/// from the wall's two random offsets, in the node's turned box plus 60 cm.
 pub fn barricade_shape(wall: &Barricade, gain: f32) -> (GiShape, ShapeVolume) {
-    let light = emissive::barricade_light(wall.state, wall.progress, wall.node_half * 2.0, gain);
-    let (centre, half) = emissive::world_box(
-        wall.centre,
-        [Vec3::X, Vec3::Y, Vec3::Z],
-        wall.node_half,
-        FALLOFF_CM,
-    );
+    let light = emissive::barricade_light(wall.state, wall.progress, wall.node_half, gain);
+    let axes = [wall.frame.x, wall.frame.y, wall.frame.z];
+    let node =
+        Affine3A::from_mat3_translation(Mat3::from_cols(axes[0], axes[1], axes[2]), wall.node_at);
+    let (centre, half) = emissive::world_box(wall.node_at, axes, wall.node_half, FALLOFF_CM);
     let shape = GiShape {
         program: GiShapeProgram::CuboidFn,
         colour: light.colour,
-        matrix: Mat4::from_translation(-wall.centre),
+        matrix: Mat4::from(node.inverse()),
         half: light.extent,
         tex_pos: Vec2::from(wall.texture),
         ..default()
@@ -887,26 +888,36 @@ mod tests {
         assert_eq!(volume.half, Vec3::new(0.75, 1.1, 0.75));
     }
 
-    /// A standing barricade's `gi_cuboid_fn`: the node's full size less 60
-    /// across and 40 up, the 1.2 gain, and the box plus 60 cm.
+    /// A standing barricade's `gi_cuboid_fn`: the node's half size as the
+    /// rise left it (300 across, 100 up, 5 deep) less 60 across and 40 up,
+    /// the 1.2 gain, the wall's frame, and the turned box plus 60 cm.
     #[test]
     fn a_barricade_registers_its_textured_box() {
         use crate::thaum::barricade::{WallFrame, state};
         let frame = WallFrame::facing(Vec3::new(0.0, 100.0, 0.0), Vec3::X);
         let mut draws = Mt19937::new(1);
         let mut wall = Barricade::raise(frame, 0.25, 1000, |_, _, _| None, None, &mut draws);
+        // The last rising frame, fully risen, writes the node's size.
+        wall.shown = [1.0, 1.0];
+        wall.frame(1.0).unwrap();
+        assert_eq!(wall.node_half, Vec3::new(300.0, 100.0, 5.0));
         wall.state = state::STANDING;
-        wall.progress = 1.0;
         let (shape, volume) = barricade_shape(&wall, GI_LIGHT_SCALE);
         assert_eq!(shape.program, GiShapeProgram::CuboidFn);
-        assert_eq!(shape.half, Vec3::new(0.0, 160.0, 10.0));
+        assert_eq!(shape.half, Vec3::new(240.0, 60.0, 5.0));
         assert_eq!(
             shape.colour,
             crate::effects::emissive::DOME_COLOUR * (GI_LIGHT_SCALE * 1.2)
         );
         assert_eq!(shape.tex_pos, Vec2::from(wall.texture));
+        // The wall faces +x, so its length runs along z: a point 100 cm
+        // along the wall maps to the box's x.
+        let along = shape
+            .matrix
+            .transform_point3(Vec3::new(0.0, 100.0, 0.0) + frame.x * 100.0);
+        assert!((along - Vec3::new(100.0, 0.0, 0.0)).length() < 1e-3);
         assert_eq!(volume.position, Vec3::new(0.0, 1.0, 0.0));
-        assert_eq!(volume.half, Vec3::new(1.0, 1.7, 0.75));
+        assert_eq!(volume.half, Vec3::new(0.75, 1.7, 3.7));
     }
 
     /// A standing barrier's dome: the gi_dome shell in the cap's frame, the
