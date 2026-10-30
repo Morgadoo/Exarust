@@ -500,8 +500,8 @@ of a record with extra flag `0x40` in the loader's order (the engine's sine
 and cosine of the negated angle, scale about the centre, then the
 translation). The mesh build applies it to the group's uploaded `UV_0`
 stream (`uv_transform_point`: `(u·m0 + v·m3) + m9`,
-`(u·m1 + v·m4) + m10`) after the split tangents were taken from the stored
-channel; no shipped mesh-unit record sets the flag.
+`(u·m1 + v·m4) + m10`, each sum in that order); the split tangents still
+come from the stored, untransformed channel. No shipped mesh-unit record sets the flag.
 
 A newly constructed material object holds a 3 × 3 identity texture transform
 with a zero translation row (twelve floats), the texture load word `0x700F0`

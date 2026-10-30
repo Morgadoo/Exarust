@@ -536,7 +536,7 @@ handedness sign) and skin weights, with the smallest index type that fits
 the group (u16 up to 65 535 vertices, then u32; Bevy has no u8 indices). A
 group whose shading record asks for a texture-coordinate matrix (extra
 flags `0x40`) gets its uploaded UV_0 rewritten through it at assembly time,
-after the tangents were split from the stored channel
+while the split tangents still come from the stored channel
 (`exa_formats::material::uv_transform_point`); the loader keeps each
 resolved material's matrix in its cache. A
 mesh's box and bounding sphere are refitted from its positions as the

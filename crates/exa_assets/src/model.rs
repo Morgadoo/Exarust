@@ -761,8 +761,8 @@ impl ModelLoader<'_> {
                             let material = self.material(&entry, &scene, name);
                             // The GPU build copies the texture coordinates
                             // through the material's matrix when its record
-                            // asks for one (extra flags 0x40), after the
-                            // tangents were split from the stored channel.
+                            // asks for one (extra flags 0x40); the split
+                            // tangents still come from the stored channel.
                             if let Some(matrix) = self.uv_transform_of(&entry, &scene, name)
                                 && let Some(bevy::mesh::VertexAttributeValues::Float32x2(uvs)) =
                                     bevy_mesh.attribute_mut(Mesh::ATTRIBUTE_UV_0)
