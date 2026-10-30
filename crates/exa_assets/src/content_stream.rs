@@ -33,6 +33,7 @@
 use std::collections::VecDeque;
 
 use crate::stream::RingQueue;
+use exa_formats::chunk::ChunkCursor;
 use exa_formats::data_stream::DataStream;
 
 /// The stream thread's two data streams, which the original's constructor
@@ -290,6 +291,107 @@ pub fn saved_chunks(blob: &[u8]) -> SavedChunks<'_> {
         at = end;
     }
     chunks
+}
+
+/// The tag that ends a level's character chunk list. The reader peeks at the
+/// first entry's header and, when it is this tag, closes the list without
+/// taking an entry.
+pub const CHARACTER_LIST_END: u32 = 0xCECD_DB00;
+
+/// The bit of a character entry's id that makes the entry conditional: it is
+/// taken only when the record's variant word equals the session's.
+pub const CHARACTER_CONDITIONAL: u32 = 0x4000_0000;
+
+/// One entry of a level's character chunk: what the stream thread reads before
+/// it builds the character.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CharacterEntry<'a> {
+    /// The character record id, as stored (the conditional bit included, as
+    /// the original looks the record up by the whole word).
+    pub id: u32,
+    /// The placement's translation, in the original's centimetres: the three
+    /// floats the builder writes into the node's matrix.
+    pub position: [f32; 3],
+    /// The word the builder copies into the body spec. Its meaning is not
+    /// traced. **[guess: a body/roster word]**
+    pub word: u32,
+    /// The character class the builder chooses its generator by; `0xA00`
+    /// selects the alternate generator.
+    pub class: u32,
+    /// The saved sub-chunks copied onto the stage node (see
+    /// [`saved_chunks`]), without the reader's own length prefix.
+    pub saved: &'a [u8],
+}
+
+/// Reads a level's character chunk payload: a count, then one chunk per
+/// entry holding `{u32 id, 12 bytes translation, u32 word, u32 class, saved
+/// sub-chunks}`.
+///
+/// An entry whose record does not exist is skipped (the original drops the
+/// record and the entry with it), and so is a conditional entry whose
+/// record variant differs from `variant`, the session's value. Skipped
+/// entries leave no slot, so the result holds only what will be built.
+///
+/// `record_variant` answers the record's variant word for an id, or `None`
+/// when the database has no such record. The list ends early at the list-end
+/// tag, which is how a streamed level marks an empty list; a truncated entry
+/// ends it too, so malformed input reads nothing more rather than looping.
+pub fn character_entries<'a>(
+    payload: &'a [u8],
+    variant: u32,
+    mut record_variant: impl FnMut(u32) -> Option<u32>,
+) -> Vec<CharacterEntry<'a>> {
+    let mut cursor = ChunkCursor::new(payload);
+    let Ok(count) = cursor.read_u32() else {
+        return Vec::new();
+    };
+    if count == 0 {
+        return Vec::new();
+    }
+    // The first header may be the list's end marker instead of an entry.
+    match cursor.open() {
+        Ok(CHARACTER_LIST_END) => {
+            cursor.close();
+            return Vec::new();
+        }
+        Ok(_) => cursor.rewind_header(),
+        Err(_) => return Vec::new(),
+    }
+    let mut entries = Vec::new();
+    for _ in 0..count {
+        let parsed = (|| -> Option<CharacterEntry<'a>> {
+            cursor.open().ok()?;
+            let id = cursor.read_u32().ok()?;
+            let position: [f32; 3] = {
+                let bytes: &[u8; 12] = cursor.read_bytes(12).ok()?.try_into().expect("12 bytes");
+                let float =
+                    |at: usize| f32::from_le_bytes(bytes[at..at + 4].try_into().expect("4 bytes"));
+                [float(0), float(4), float(8)]
+            };
+            let word = cursor.read_u32().ok()?;
+            let class = cursor.read_u32().ok()?;
+            let saved = cursor.take_remaining();
+            cursor.close();
+            Some(CharacterEntry {
+                id,
+                position,
+                word,
+                class,
+                saved,
+            })
+        })();
+        let Some(entry) = parsed else {
+            break;
+        };
+        let Some(record_variant_word) = record_variant(entry.id) else {
+            continue;
+        };
+        if entry.id & CHARACTER_CONDITIONAL != 0 && record_variant_word != variant {
+            continue;
+        }
+        entries.push(entry);
+    }
+    entries
 }
 
 /// The constant the character builders multiply a stored 16-bit size word
@@ -1737,5 +1839,124 @@ mod tests {
             LevelHandoff::of(false, SCENE_ROOM_WORD),
             LevelHandoff::Append
         );
+    }
+
+    /// One character chunk entry: a tag/size header, then the id, the
+    /// translation, the word, the class and the saved bytes.
+    fn character_chunk(tag: u32, id: u32, position: [f32; 3], word: u32, class: u32) -> Vec<u8> {
+        let mut body = id.to_le_bytes().to_vec();
+        for value in position {
+            body.extend(value.to_le_bytes());
+        }
+        body.extend(word.to_le_bytes());
+        body.extend(class.to_le_bytes());
+        let mut header = tag.to_le_bytes().to_vec();
+        header.extend((body.len() as u32).to_le_bytes());
+        header.extend(body);
+        header
+    }
+
+    #[test]
+    fn a_character_chunk_reads_every_taken_entry() {
+        let mut payload = 2u32.to_le_bytes().to_vec();
+        payload.extend(character_chunk(
+            0x1234,
+            77,
+            [1200.0, 48.0, -600.0],
+            0xABCD,
+            0xA00,
+        ));
+        payload.extend(character_chunk(0x1234, 78, [1.0, 2.0, 3.0], 0, 0));
+        let entries = character_entries(&payload, 0, |id| Some(u32::from(id == 77)));
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].id, 77);
+        assert_eq!(entries[0].position, [1200.0, 48.0, -600.0]);
+        assert_eq!(entries[0].word, 0xABCD);
+        assert_eq!(entries[0].class, 0xA00);
+        assert_eq!(entries[0].saved, &[] as &[u8]);
+        assert_eq!(entries[1].id, 78);
+        assert_eq!(entries[1].position, [1.0, 2.0, 3.0]);
+    }
+
+    /// A missing record drops its entry; a conditional entry is taken only
+    /// when the record's variant word is the session's.
+    #[test]
+    fn missing_records_and_other_variants_leave_no_slot() {
+        let mut payload = 3u32.to_le_bytes().to_vec();
+        payload.extend(character_chunk(1, 10, [0.0; 3], 0, 0));
+        payload.extend(character_chunk(
+            1,
+            CHARACTER_CONDITIONAL | 11,
+            [0.0; 3],
+            0,
+            0,
+        ));
+        payload.extend(character_chunk(1, 12, [0.0; 3], 0, 0));
+        // 10 is missing, 11 carries the session's variant, 12 is another
+        // variant and is unconditional.
+        let entries = character_entries(&payload, 9, |id| match id & !CHARACTER_CONDITIONAL {
+            10 => None,
+            11 => Some(9),
+            _ => Some(4),
+        });
+        assert_eq!(
+            entries.iter().map(|entry| entry.id).collect::<Vec<_>>(),
+            [CHARACTER_CONDITIONAL | 11, 12],
+            "an unconditional entry is taken whatever its record's variant"
+        );
+    }
+
+    /// A conditional entry whose record variant differs is dropped.
+    #[test]
+    fn a_conditional_entry_of_another_variant_is_dropped() {
+        let mut payload = 1u32.to_le_bytes().to_vec();
+        payload.extend(character_chunk(
+            1,
+            CHARACTER_CONDITIONAL | 5,
+            [0.0; 3],
+            0,
+            0,
+        ));
+        assert!(character_entries(&payload, 9, |_| Some(4)).is_empty());
+        assert_eq!(character_entries(&payload, 4, |_| Some(4)).len(), 1);
+    }
+
+    /// The bytes after an entry's fields are the saved sub-chunks, kept
+    /// verbatim; the list-end tag ends an empty list.
+    #[test]
+    fn an_entry_keeps_its_saved_bytes_and_the_end_tag_ends_the_list() {
+        let mut body = 33u32.to_le_bytes().to_vec();
+        body.extend([0u8; 12]);
+        body.extend(0u32.to_le_bytes());
+        body.extend(0u32.to_le_bytes());
+        body.extend([0xAA, 0xBB, 0xCC]);
+        let mut payload = 1u32.to_le_bytes().to_vec();
+        payload.extend(1u32.to_le_bytes());
+        payload.extend((body.len() as u32).to_le_bytes());
+        payload.extend(body);
+        let entries = character_entries(&payload, 0, |_| Some(0));
+        assert_eq!(entries[0].saved, [0xAA, 0xBB, 0xCC]);
+        assert_eq!(saved_chunks(entries[0].saved).flat_pose, None);
+
+        let mut ended = 1u32.to_le_bytes().to_vec();
+        ended.extend(CHARACTER_LIST_END.to_le_bytes());
+        ended.extend(0u32.to_le_bytes());
+        assert!(character_entries(&ended, 0, |_| Some(0)).is_empty());
+    }
+
+    /// A truncated payload reads what it can and stops.
+    #[test]
+    fn a_truncated_character_chunk_reads_what_it_can() {
+        let mut payload = 5u32.to_le_bytes().to_vec();
+        payload.extend(character_chunk(1, 1, [0.0; 3], 0, 0));
+        // The second entry's header promises more than the payload holds.
+        payload.extend(1u32.to_le_bytes());
+        payload.extend(64u32.to_le_bytes());
+        payload.extend([0u8; 6]);
+        let entries = character_entries(&payload, 0, |_| Some(0));
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, 1);
+        assert!(character_entries(&[], 0, |_| Some(0)).is_empty());
+        assert!(character_entries(&[1, 0, 0], 0, |_| Some(0)).is_empty());
     }
 }
