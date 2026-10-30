@@ -16,7 +16,11 @@
 //!   event before the hold and −1 to a cast's start and to 0x100 from it;
 //!   being asked with 1, 0x10, 0x20, 0x80 or 0x100 lets the power go.
 //!   The Long Door's hook answers 0 to everything; Constant Displacement's
-//!   (once its motion starts) and the Summon's answer 0 to bits 0x29.
+//!   (once its motion starts) and the Summon's answer 0 to bits 0x29. A
+//!   vanish carries a light that follows the body and the after-image the
+//!   shared base leaves ([`VanishNode`]); both go when it is destroyed, the
+//!   image when the fade-out ends or the body shows, and its start and move
+//!   play at volume 0.4 and pitch `roll·0.2 + 0.9`.
 //! - **The Long Door** ([`LongDoor`]): starts at phase 0x10 asking the
 //!   navigation grid 300 cm along the caster's own forward vector
 //!   ([`nav_query_target`]); the grid's answer is usable only when it lies
@@ -334,6 +338,15 @@ pub fn step_vanish(base: &mut VanishBase, now: u32, drain: f32, hold: HoldEnd) -
     }
 }
 
+/// The effect node a vanish carries: the light that follows the body and
+/// the after-image the shared base leaves, both freed with the class.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VanishNode {
+    pub light: bool,
+    pub image: bool,
+    pub light_at: [f32; 3],
+}
+
 /// One tick of Vanish.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Vanish {
@@ -342,6 +355,8 @@ pub struct Vanish {
     pub drain: f32,
     /// The caster's cast hook is this vanish's.
     pub hooked: bool,
+    /// The light and the after-image it carries.
+    pub node: VanishNode,
 }
 
 impl Vanish {
@@ -351,7 +366,32 @@ impl Vanish {
             base: VanishBase::begin(now, shared, ai),
             drain,
             hooked: false,
+            node: VanishNode {
+                light: true,
+                image: true,
+                light_at: [0.0; 3],
+            },
         }
+    }
+
+    /// The light follows the body.
+    pub fn follow(&mut self, body_at: Vec3) {
+        self.node.light_at = body_at.to_array();
+    }
+
+    /// The start and the move sounds: volume 0.4, pitch `roll·0.2 + 0.9` in
+    /// double.
+    pub fn sound(roll: f64) -> (f32, f32) {
+        (long_door_pitch(roll), LONG_DOOR_SOUND_VOLUME)
+    }
+
+    /// The class's destroy: the light and the after-image go. Returns what
+    /// it had.
+    pub fn destroy(&mut self) -> (bool, bool) {
+        let had = (self.node.light, self.node.image);
+        self.node.light = false;
+        self.node.image = false;
+        had
     }
 
     /// The hook this vanish keeps at its phase: from the hold on (the
@@ -409,12 +449,18 @@ impl Vanish {
         self.base.released = true;
     }
 
-    /// One control tick. Event 2 lets the power go.
+    /// One control tick. Event 2 lets the power go. The fade-out's end and
+    /// the show both take the after-image down, as the original's phases 2
+    /// and 4 do.
     pub fn control(&mut self, event: i32, now: u32) -> VanishStep {
         if event == 2 {
             self.base.released = true;
         }
-        step_vanish(&mut self.base, now, self.drain, HoldEnd::Release)
+        let step = step_vanish(&mut self.base, now, self.drain, HoldEnd::Release);
+        if step.drop_shell || step.show {
+            self.node.image = false;
+        }
+        step
     }
 }
 
@@ -963,6 +1009,24 @@ mod tests {
         // Destroying frees both.
         assert_eq!(door.destroy(), (true, false));
         assert!(!door.node.light && !door.node.image);
+    }
+
+    #[test]
+    fn the_vanish_carries_its_light_and_after_image() {
+        let mut vanish = Vanish::new(0, false, false, 0.002);
+        assert!(vanish.node.light && vanish.node.image);
+        vanish.follow(Vec3::new(3.0, 4.0, 5.0));
+        assert_eq!(vanish.node.light_at, [3.0, 4.0, 5.0]);
+        assert_eq!(Vanish::sound(0.5), ((0.5f64 * 0.2 + 0.9) as f32, 0.4));
+        // The fade-out's end takes the after-image down.
+        vanish.control(0, 0);
+        vanish.control(0, 400);
+        assert!(vanish.node.image, "the fade-out has not ended");
+        vanish.control(0, 700);
+        assert!(!vanish.node.image);
+        assert!(vanish.node.light);
+        assert_eq!(vanish.destroy(), (true, false));
+        assert!(!vanish.node.light && !vanish.node.image);
     }
 
     #[test]
