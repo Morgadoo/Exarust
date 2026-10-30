@@ -980,6 +980,47 @@ mod sampler_tests {
     }
 
     #[test]
+    fn the_filter_bits_cover_the_original_s_eight_minification_modes() {
+        // The original's minification switch combines the min-linear bit
+        // (0x10), the mip-chain bit (0x40) and the mip-linear bit (0x80):
+        // 0x10 ? (0x40 ? (0x80 ? LINEAR_MIPMAP_LINEAR : LINEAR_MIPMAP_NEAREST)
+        // : LINEAR) : (0x40 ? (0x80 ? NEAREST_MIPMAP_LINEAR
+        // : NEAREST_MIPMAP_NEAREST) : NEAREST). Bevy splits the same
+        // decision into min_filter and mipmap_filter.
+        let settings = TextureSettings::default();
+        let linear = ImageFilterMode::Linear;
+        let nearest = ImageFilterMode::Nearest;
+        for (bits, min, mip) in [
+            (0x00, nearest, nearest),
+            (0x80, nearest, nearest),
+            (0x40, nearest, nearest),
+            (0xC0, nearest, linear),
+            (0x10, linear, nearest),
+            (0x90, linear, nearest),
+            (0x50, linear, nearest),
+            (0xD0, linear, linear),
+        ] {
+            let sampler = TextureSampler::from_flags(bits, &settings);
+            assert_eq!(sampler.min_filter, min, "{bits:#x}");
+            assert_eq!(sampler.mipmap_filter, mip, "{bits:#x}");
+            // The magnification bit is independent.
+            assert_eq!(
+                TextureSampler::from_flags(bits | 0x20, &settings).mag_filter,
+                linear
+            );
+            assert_eq!(
+                TextureSampler::from_flags(bits, &settings).mag_filter,
+                nearest
+            );
+        }
+        // The wrap bits are per axis; the cube/3D third axis is 0x40000.
+        let sampler = TextureSampler::from_flags(0x1_0000 | 0x4_0000, &settings);
+        assert_eq!(sampler.address_mode_u, ImageAddressMode::Repeat);
+        assert_eq!(sampler.address_mode_v, ImageAddressMode::ClampToEdge);
+        assert_eq!(sampler.address_mode_w, ImageAddressMode::Repeat);
+    }
+
+    #[test]
     fn the_quality_setting_writes_mask_level_and_bias() {
         let base = TextureSettings::default();
         let q = |quality| {
