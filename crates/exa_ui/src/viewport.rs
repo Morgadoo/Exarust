@@ -261,7 +261,7 @@ pub fn still_samples(setting: i32, scale: (f32, f32), view: (i32, i32)) -> Vec<S
                 offset,
                 table,
                 jitter: jitter(offset, scale, view),
-                fraction: (f64::from(i + 1) / f64::from(level.count)) as f32,
+                fraction: ((i + 1) as f32) / level.count as f32,
                 half: 0.5 - (i as f32 + 0.5) / level.count as f32,
                 blend: (i > 0).then_some(1.0 - 1.0 / (i + 1) as f32),
             }
@@ -290,7 +290,7 @@ pub fn progressive_sample(
         offset,
         table,
         jitter: jitter(offset, scale, view),
-        fraction: (f64::from(index) / f64::from(level.count)) as f32,
+        fraction: (index as f32) / level.count as f32,
         half: 0.5 - (index as f32 + 0.5) / level.count as f32,
         blend: (index > 1).then_some(1.0 - 1.0 / index as f32),
     })
@@ -577,6 +577,116 @@ pub fn view_cursor(base: i32, view_cursor: i32) -> Option<i32> {
     (base == -1).then_some(view_cursor)
 }
 
+/// The fields the viewport's draw slot reads for one frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrawInput {
+    /// The form's client size (its inner right less the border by its
+    /// bottom less its top).
+    pub client: (i32, i32),
+    /// The view's own size.
+    pub view: (i32, i32),
+    /// The supersampling setting.
+    pub setting: i32,
+    /// The view's sample counter: 0 means the frame renders whole.
+    pub index: i32,
+    /// The view's refresh flag: the frame renders whole and the counter
+    /// restarts. The 0.9.5 draw sets it every frame, so the still
+    /// accumulation never runs in the running game; pass `false` to model
+    /// the progressive branch.
+    pub refresh: bool,
+    /// The stereo mode: 0 none, 1 the right eye, 2 the left.
+    pub stereo: i32,
+    /// The camera's scale (its projection's reach).
+    pub camera_scale: f32,
+    /// The view's projection scales.
+    pub scale: (f32, f32),
+    pub unit: i32,
+    /// The form's inner right, its border, its bottom and its line index.
+    pub inner_right: i32,
+    pub border: i32,
+    pub bottom: i32,
+    pub line: i32,
+    /// The small font's gap and line height, for the frame-rate readout.
+    pub gap: i32,
+    pub line_height: i32,
+    /// The readouts the form shows.
+    pub fps: bool,
+    pub fps_len: usize,
+    pub version: bool,
+}
+
+/// What the viewport's draw slot does this frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrawPlan {
+    /// The client has a size, so there is something to render.
+    pub render: bool,
+    /// The refresh flag after the frame: a client smaller or larger than
+    /// the view forces it.
+    pub refresh: bool,
+    /// The sample counter after the frame.
+    pub index: i32,
+    /// The jittered sample a progressive frame accumulates (none on a
+    /// whole frame).
+    pub sample: Option<StillSample>,
+    /// The stereo eye's shift.
+    pub eye: [f32; 2],
+    /// The frame-rate readout's place.
+    pub fps: Option<(i32, i32)>,
+    /// The version overlay's place.
+    pub version: Option<(i32, i32)>,
+}
+
+/// The viewport's draw-slot rules: a client with a size renders; a client
+/// whose size differs from the view's, or the view's own refresh flag,
+/// forces a whole frame and restarts the sample counter; otherwise the
+/// counter advances and its jittered sample is accumulated. The stereo
+/// mode shifts the camera, and the frame-rate and version readouts take
+/// their places.
+pub fn plan_draw(input: DrawInput) -> DrawPlan {
+    let render = input.client.0 > 0 && input.client.1 > 0;
+    if !render {
+        return DrawPlan {
+            render: false,
+            refresh: input.refresh,
+            index: input.index,
+            sample: None,
+            eye: eye_offset(input.stereo, input.camera_scale),
+            fps: None,
+            version: None,
+        };
+    }
+    let refresh = input.refresh || input.client != input.view;
+    let (index, sample) = if refresh {
+        (0, None)
+    } else {
+        let index = input.index + 1;
+        (
+            index,
+            progressive_sample(input.setting, index, input.scale, input.view),
+        )
+    };
+    DrawPlan {
+        render: true,
+        refresh,
+        index,
+        sample,
+        eye: eye_offset(input.stereo, input.camera_scale),
+        fps: (input.fps && input.fps_len > 0).then(|| {
+            fps_place(
+                input.inner_right,
+                input.border,
+                input.unit,
+                input.gap,
+                input.line_height,
+                input.fps_len,
+            )
+        }),
+        version: input
+            .version
+            .then(|| version_place(input.bottom, input.unit)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -615,7 +725,7 @@ mod tests {
             ]
         );
         assert_eq!(first.blend, None);
-        assert_eq!(first.fraction, (1.0f64 / 3.0) as f32);
+        assert_eq!(first.fraction, 1.0f32 / 3.0);
         assert_eq!(first.half, 0.5 - 0.5 / 3.0);
         assert_eq!(samples[2].blend, Some(1.0 - 1.0 / 3.0));
         assert_eq!(samples[2].fraction, 1.0);
@@ -628,7 +738,7 @@ mod tests {
     fn a_progressive_sample_counts_from_one() {
         let p = progressive_sample(2, 2, (1.0, 1.0), (100, 100)).unwrap();
         assert_eq!((p.table, p.offset), (4, SAMPLE_OFFSETS[4]));
-        assert_eq!(p.fraction, (2.0f64 / 3.0) as f32);
+        assert_eq!(p.fraction, 2.0f32 / 3.0);
         assert_eq!(p.half, 0.5 - 2.5 / 3.0);
         assert_eq!(p.blend, Some(0.5));
         assert_eq!(
@@ -776,6 +886,71 @@ mod tests {
         assert!(route.running);
         assert_eq!(route.release(|| 0, || 5), 5);
         assert!(!route.running);
+    }
+
+    #[test]
+    fn the_draw_slot_plans_a_whole_or_a_sampled_frame() {
+        let whole = DrawInput {
+            client: (100, 80),
+            view: (100, 80),
+            setting: 2,
+            index: 0,
+            refresh: false,
+            stereo: 1,
+            camera_scale: 0.5,
+            scale: (1.0, 0.5),
+            unit: 5,
+            inner_right: 800,
+            border: 8,
+            bottom: 600,
+            line: 1,
+            gap: 6,
+            line_height: 16,
+            fps: true,
+            fps_len: 9,
+            version: true,
+        };
+        let plan = plan_draw(whole);
+        assert!(plan.render && !plan.refresh);
+        assert_eq!(plan.index, 1);
+        let sample = plan.sample.expect("a progressive frame samples");
+        assert_eq!(sample.table, 3);
+        assert_eq!(sample.fraction, 1.0f32 / 3.0);
+        assert_eq!(plan.eye, [0.5, 0.0]);
+        assert_eq!(plan.fps, Some((733, 21)));
+        assert_eq!(plan.version, Some((5, 595)));
+        // A client whose size differs from the view's refresh resets the
+        // counter.
+        let resized = plan_draw(DrawInput {
+            client: (120, 80),
+            index: 2,
+            ..whole
+        });
+        assert!(resized.refresh);
+        assert_eq!((resized.index, resized.sample), (0, None));
+        // The refresh flag alone does the same.
+        let refreshed = plan_draw(DrawInput {
+            index: 2,
+            refresh: true,
+            ..whole
+        });
+        assert!(refreshed.refresh && refreshed.sample.is_none());
+        assert_eq!(refreshed.index, 0);
+        // The second progressive sample continues from one.
+        let second = plan_draw(DrawInput { index: 1, ..whole });
+        let sample = second.sample.expect("the second sample");
+        assert_eq!((second.index, sample.table), (2, 4));
+        assert_eq!(sample.blend, Some(0.5));
+        // A client with no height renders nothing and shows no readout.
+        let empty = plan_draw(DrawInput {
+            client: (100, 0),
+            ..whole
+        });
+        assert!(!empty.render);
+        assert_eq!((empty.fps, empty.version, empty.sample), (None, None, None));
+        // Stereo 2 shifts the other way, and no stereo does not shift.
+        assert_eq!(plan_draw(DrawInput { stereo: 2, ..whole }).eye, [-0.5, 0.0]);
+        assert_eq!(plan_draw(DrawInput { stereo: 0, ..whole }).eye, [0.0, 0.0]);
     }
 
     #[test]
