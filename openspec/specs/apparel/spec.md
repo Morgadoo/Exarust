@@ -175,7 +175,6 @@ A garment seam group SHALL start at its first joint's distance, parent group poi
 - **WHEN** a group centre at the origin, joint 0 at 50 cm, joint 1 at 10 cm and a parent point at 20 cm along x are matched for a child placed 0.2 m along x
 - **THEN** the group keeps joint 0, and without the placement it takes joint 1
 
-
 ### Requirement: Paint job condition
 The paint job SHALL convert each appearance byte as byte × 1/255 in double narrowed to float, and SHALL remap damage as 2/(2 − d) − 1 and dirt as (d² + d)·0.5 in float.
 
@@ -203,3 +202,10 @@ The skin build SHALL hand each part's children its group centres as their parent
 #### Scenario: Shipped stream
 - **WHEN** a part keeps a shipped skin stream
 - **THEN** it hands its children an empty frame
+
+### Requirement: Texture layer strength
+A stored texture layer's strength at a wear step SHALL be 0 from its maximum step on when that is above 0, its opacity × 1000 at step 0, that times `1 − decay·0.005` in double rounded half to even at step 1, and otherwise that share in single raised to the step through the engine's fast logarithm and exponential, rounded half to even.
+
+#### Scenario: Step 1
+- **WHEN** a layer of opacity 200 and decay 40 is at step 1
+- **THEN** its strength is 160000

@@ -171,7 +171,9 @@ pub(crate) fn fall_to_death(
             && let Some(mut voice) = voice
         {
             let (gain, pitch) = scream_voice(roll.next(), roll.next());
-            let name = voice.groan_heavy.clone();
+            // Line 2 is the voice entry's heavy groan (the original's voice
+            // request of kind 2).
+            let name = voice.set(2).unwrap_or_default().to_string();
             let set = *sets
                 .entry(name.clone())
                 .or_insert_with(|| sounds.load_set(&name));

@@ -47,11 +47,15 @@ Ringing an alarm zone SHALL arm it with its box centre and pass item unless anot
 - **THEN** it keeps its statue byte, its only contact is the player at concern 10 and the ring counts
 
 ### Requirement: Alarm return
-Every awake guardian within 3000 cm of the player whose body is not already returning SHALL be put back at its home, its home filled from the body's place and angle when the home's x is exactly 0, its speed words set to 1, and SHALL fall asleep. When one did, the `Alarm_` node whose box holds the armed point (squared distance under 0.1) SHALL place the player 200 cm past the box's far face along its third axis at a height of 10, facing the axis's heading plus π plus a draw less one half.
+The alarm return SHALL offer each AI body of the 3000 cm radius query around the player to the homeward callback, which SHALL send an awake guardian not already returning home (its home filled from the body when the home's x is exactly 0, speed words 1) and asleep. When one went home, the `Alarm_` node holding the armed point SHALL place the player 200 cm past the box's far face along its third axis at height 10, facing the axis's heading plus π plus a draw less one half.
 
 #### Scenario: The post past the box
 - **WHEN** the alarm box is centred at (100, 50, 0) with a third half extent of 25 along z and the draw is 0.5
 - **THEN** the player is put at (100, 10, 225) facing π
+
+#### Scenario: Nobody in reach
+- **WHEN** the only guardian stands exactly 3000 cm from the player
+- **THEN** nobody is sent home and the player is not moved
 
 ### Requirement: Alarm reset
 A level start SHALL disarm the alarm, put its point 1.1·10⁶ cm over the origin and zero the alarm count.
