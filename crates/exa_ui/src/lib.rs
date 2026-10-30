@@ -115,9 +115,9 @@ pub use col_swatch::{
     cells as swatch_cells, index_text as swatch_index_text, selection_frames,
 };
 pub use colour_picker::{
-    COLOUR_SWATCH_CLASS, ColourPicker, FINISH_WORD, Hsv, Opened, PickerSet, REFRESH_WORD, Ramp,
-    Refresh, Rgba, SwatchControl, channel_ramps, field_corners, packed_bytes, rgb_bytes, to_byte,
-    unpacked,
+    COLOUR_SWATCH_CLASS, ColourPicker, FINISH_WORD, Hsv, Opened, PickerEvent, PickerSet,
+    REFRESH_WORD, Ramp, Refresh, Rgba, SwatchControl, channel_ramps, field_corners, packed_bytes,
+    rgb_bytes, to_byte, unpacked,
 };
 pub use compact_skill::{
     CompactBase, CompactDraw, CompactMetrics, CompactRow, CompactSkillState, NodeDraw, Pip,
