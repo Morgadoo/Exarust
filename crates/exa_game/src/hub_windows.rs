@@ -183,6 +183,8 @@ impl ArenaCareer {
         self.merchant_rank = -1;
         self.company
             .book_records(&crate::arena_match::CompanyRecords::default());
+        self.company.earned = 0;
+        self.company.spent = 0;
         self.company.day = 0;
         self.matches_today = 0;
         self.log.records.clear();
@@ -1834,6 +1836,27 @@ mod tests {
             app.update();
         }
         assert_eq!(app.world().resource::<GuiFrames>().frames.len(), 1);
+    }
+
+    #[test]
+    fn a_reset_clears_both_the_daily_and_the_lifetime_tallies() {
+        let mut career = ArenaCareer::default();
+        career.company.earned = 30;
+        career.company.spent = 40;
+        career.company.total_earned = 300;
+        career.company.total_spent = 400;
+        career.company.hires = 3;
+        career.reset();
+        assert_eq!(
+            (
+                career.company.earned,
+                career.company.spent,
+                career.company.total_earned,
+                career.company.total_spent,
+                career.company.hires
+            ),
+            (0, 0, 0, 0, 0)
+        );
     }
 
     #[test]
