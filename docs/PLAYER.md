@@ -277,7 +277,13 @@ while the body is busy (its condition word has any of 0x10202) or a lift is
 on the cursor. F toggles the record's light flag of the first held item
 when it gives light and the body is not switching weapons (0x10000), and
 then asks the grip runtime to start the held item's flip, as the original
-does in the same branch. (The original's command itself reads the weapon
+does in the same branch. Whether the light burns is read from the held
+part's own mark, not from the record: the hand's attach lights the part
+from the item's full flags while a take-in onto the doll keeps only the
+job's top bit in the record, so a lit torch dropped onto the doll burns
+with its record bit clear and the first F puts it out
+(`exa_items::possession::HeldMark`; the original's flip turns the mark
+over when it ends, Exarust at the toggle). (The original's command itself reads the weapon
 section's flipped-side kind byte, and the grip runtime refuses the flip
 for a section whose byte is zero; Exarust keeps the light test for whether
 F sends the request.)
@@ -615,10 +621,35 @@ class (a hinge, a living character, a usable item), the GUI use (a cleaning
 kit, a repair kit, a kind 0x10 moving the same item between slots) and the
 used item's removal from the scene or a container entry
 (`player_controls::{use_press, use_target, gui_use, after_use}`), and a
-sound played at a point at 0.25 and pitch 1.0 (`point_sound`). Not in
-Exarust: the right press itself is the movement request's walk and the
-combat attack, so the use cursor has no caller, and the GUI windows the use
-writes to do not take items yet.
+sound played at a point at 0.25 and pitch 1.0 (`point_sound`).
+
+The use cursor is live (`exa_game::use_cursor`). An item panel's double
+click asks the entry's double-click class (`player_controls::panel_use_class`:
+no usable section, classes 2, 4 and 8 and a plain class-0 kind open as a
+container; the GUI item kind uses until its entry is marked used; a used
+liquid or kit only closes the card; anything else uses) and class 2 closes
+the card and calls the game's use hook, which the controls install at
+start-up: `use_begin` opens the GUI item a class-0 kind-0x11 section names
+(no window for it yet) or, while play is on, lifts the cursor. The world
+view hands the cursor's callback its end event before it serves the next
+mouse event, so the next press of any button ends it and is taken (neither
+the hand nor the panels see it); the dispatcher runs for the left button
+only (the desk word's bit 0, a guess), so a right press puts the cursor
+down. The dispatcher picks under the pointer: a latched door unlocks with
+its own key (both leaves) or rattles with another, a character takes a
+liquid, a placed item a kit; over a window, the character view or an item
+entry. Exarust applies the unlock and reports the other branches
+(`use_cursor::UseReleased`); their effects, the rattle's sound and the
+readable's window are not wired.
+
+An item dragged out of the player's pack and held over the world view is
+taken by the controls (`exa_game::gui_drop`): the drop task is queued and
+runs on the next frame (`player_controls::run_spawn`). The item's model is
+built with its rigid bodies; with none it is the original's "Game object
+has no physics" error and the drag is cancelled. Otherwise it is put where
+the cursor's ray meets the level, leaves the pack, and once its body exists
+the hand lifts it onto the item cursor until the button is let go. An
+entry held in a hand is not taken.
 
 The start of play makes the AI's activation centre the player with a 40 m
 radius; the end of play puts it back at the origin with 200 m
