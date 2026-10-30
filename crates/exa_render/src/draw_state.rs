@@ -173,6 +173,11 @@ pub struct DrawScene {
     /// The view's sub-frame clock: the frame's time, the sample count and the
     /// accumulation quarter.
     pub clock: SubframeClock,
+    /// The render state's bit 2 (the engine's global drawing word): every
+    /// draw's object word gets the vertex-colour bit and the shaders' colour
+    /// stream is declared. The bit is a global option outside this pack; it
+    /// is false in play [guess].
+    pub force_vertex_colors: bool,
 }
 
 /// The inputs of the view's per-sub-frame animation clocks.
@@ -213,6 +218,19 @@ impl SubframeClock {
     }
 }
 
+impl DrawScene {
+    /// Point the scene at one of a super-sampling setting's quarters: the
+    /// pass count, the clock's sample count and quarter, and the view's
+    /// sun-shadow mode for that quarter.
+    pub fn set_quarter(&mut self, setting: u32, quarter: u32) {
+        let samples = crate::subframe::sample_count(setting);
+        self.passes = crate::subframe::passes(setting);
+        self.clock.samples = samples;
+        self.clock.quarter = quarter;
+        self.sun_shadow_mode = crate::subframe::shadow_mode(setting, quarter);
+    }
+}
+
 impl Default for DrawScene {
     fn default() -> Self {
         Self {
@@ -222,6 +240,7 @@ impl Default for DrawScene {
             sun_shadow_mode: 0,
             emissive_scale: 1.0,
             clock: SubframeClock::default(),
+            force_vertex_colors: false,
         }
     }
 }
@@ -352,7 +371,7 @@ impl DrawState {
             }
         };
         let mut object_word = object.frame_object;
-        if object.vertex_colors {
+        if object.vertex_colors || scene.force_vertex_colors {
             object_word |= crate::shader_program::object::VERTEX_COLOR;
         }
         if object.object_flags & OBJECT_VERTEX_DELTA != 0 {
@@ -804,6 +823,24 @@ mod tests {
     }
 
     #[test]
+    fn a_scene_takes_its_quarter_from_the_setting() {
+        let mut scene = DrawScene::default();
+        scene.set_quarter(3, 0);
+        assert_eq!(scene.passes, 4);
+        assert_eq!(scene.clock.samples, 4);
+        assert_eq!(scene.clock.quarter, 0);
+        assert_eq!(scene.sun_shadow_mode, 3);
+        scene.set_quarter(2, 0);
+        assert_eq!(scene.passes, 3);
+        assert_eq!(scene.clock.samples, 3);
+        scene.set_quarter(7, 3);
+        assert_eq!(scene.passes, 4);
+        assert_eq!(scene.clock.samples, 66);
+        assert_eq!(scene.clock.quarter, 3);
+        assert_eq!(scene.sun_shadow_mode, 2);
+    }
+
+    #[test]
     fn a_motion_blurred_geometry_carries_its_shutter_length() {
         let mut state = DrawState::new(scene().slot);
         let mut object = object();
@@ -830,6 +867,24 @@ mod tests {
         object.geometry.flags = MOTION_BLUR;
         let plan = state.prepare(&object, &scene, DrawPath::Plain, false);
         assert!(plan.subframes.iter().all(|s| s.depth_shutter.is_none()));
+    }
+
+    #[test]
+    fn a_render_state_that_forces_vertex_colours_sets_the_object_bit() {
+        let mut state = DrawState::new(scene().slot);
+        let mut scene = scene();
+        scene.force_vertex_colors = true;
+        let plan = state.prepare(&object(), &scene, DrawPath::Supersampled, false);
+        assert_ne!(
+            plan.object_word & crate::shader_program::object::VERTEX_COLOR,
+            0
+        );
+        scene.force_vertex_colors = false;
+        let plan = state.prepare(&object(), &scene, DrawPath::Supersampled, false);
+        assert_eq!(
+            plan.object_word & crate::shader_program::object::VERTEX_COLOR,
+            0
+        );
     }
 
     #[test]

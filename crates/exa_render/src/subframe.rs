@@ -62,6 +62,24 @@ pub fn frame_offset(quarter: u32, samples: u32) -> f32 {
     0.5 - (index + 0.5) / samples
 }
 
+/// The view's sun-shadow mode for a quarter: the first quarter of a setting
+/// with one or more samples takes 3 (2 or more samples) or 1 (5 or more),
+/// a setting with one sample takes 0, and later quarters always 2. The mode
+/// selects the half-pass objects' sub-frame count (`shader_program::draw_passes`).
+pub fn shadow_mode(setting: u32, quarter: u32) -> u32 {
+    if quarter > 0 {
+        return 2;
+    }
+    let samples = sample_count(setting);
+    if samples >= 5 {
+        1
+    } else if samples >= 2 {
+        3
+    } else {
+        0
+    }
+}
+
 /// The quarter's sample fraction, `(4·quarter + 1)/samples`. The engine keeps
 /// it as the capture's weight (`1/(4·quarter + 1)` is its reciprocal).
 pub fn sample_fraction(quarter: u32, samples: u32) -> f32 {
@@ -454,6 +472,17 @@ mod tests {
         assert_eq!(viewport_shift(2), [0, 1]);
         assert_eq!(viewport_shift(3), [1, 1]);
         assert_eq!(viewport_shift(4), [0, 0]);
+    }
+
+    #[test]
+    fn the_shadow_mode_follows_the_quarter_and_sample_count() {
+        assert_eq!(shadow_mode(0, 0), 0);
+        assert_eq!(shadow_mode(1, 0), 3);
+        assert_eq!(shadow_mode(3, 0), 3);
+        assert_eq!(shadow_mode(4, 0), 1);
+        assert_eq!(shadow_mode(7, 0), 1);
+        assert_eq!(shadow_mode(3, 1), 2);
+        assert_eq!(shadow_mode(7, 3), 2);
     }
 
     #[test]

@@ -207,7 +207,9 @@ material with a diffuse map, else the geometry record's own). On the
 super-sampled path the liquid level is the liquid point's world height and
 the GI corner is uploaded for the environment's GI bit. A surface draws
 the scene's super-sampling sub-frames (halved under sun mode 3 for the
-object's `0x40000000` frame bit), each with its own `SdwSmp` window,
+object's `0x40000000` frame bit; the view gives its first quarter mode 3
+at 2–4 samples, 1 above that and 0 at one sample, and later quarters 2),
+each with its own `SdwSmp` window,
 viewport shift, animation clock and, for a geometry whose flag word has
 `0x20`, a depth-lane offset
 `((n + 0.5)·shutter/N + lane) − shutter·0.5` in single precision (`n` the
