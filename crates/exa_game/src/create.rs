@@ -3762,9 +3762,39 @@ pub fn copy_creation_name(name: &str) -> String {
     name.to_string()
 }
 
-/// Creates the creator's icon sheet once.
-pub fn ensure_creation_icons(existing: bool) -> bool {
-    !existing
+/// What the creator's icon sheet leaves behind, and its reload hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationIconHook {
+    /// The sheet was built (the manager was missing).
+    pub built: bool,
+    /// A previous texture-reload hook exists and is called before every
+    /// rebuild ([`build_creation_icons`]'s chain).
+    pub previous_hook: bool,
+    /// This builder took the reload hook's slot, after the previous one.
+    pub installed: bool,
+}
+
+/// Gets the creator's icon sheet, building it on first use.
+///
+/// An existing manager is returned untouched: no rebuild and no chaining. A
+/// missing one is built, the texture-reload hook already installed is kept
+/// to be called first, and the builder takes the hook's slot so the sheet is
+/// cut again when the textures reload [the hook's slot is a global this unit
+/// only chains into].
+pub fn ensure_creation_icons(existing: bool, previous_hook: bool) -> CreationIconHook {
+    if existing {
+        CreationIconHook {
+            built: false,
+            previous_hook,
+            installed: false,
+        }
+    } else {
+        CreationIconHook {
+            built: true,
+            previous_hook,
+            installed: true,
+        }
+    }
 }
 
 /// The voice variants played last, so a preview does not repeat one.
@@ -4806,6 +4836,13 @@ pub const CREATION_ICON_SHEET: &str = "charcreate.rfi";
 pub const CREATION_ICON_WORD: u32 = 0x203;
 /// The icon manager's flags the sheet sets.
 pub const CREATION_ICON_FLAGS: u32 = 0x0100_2008;
+/// The sheet's height: four [`CREATION_ICON_SIZE`] cells stacked.
+pub const CREATION_ICON_HEIGHT: i32 = 4 * CREATION_ICON_SIZE;
+/// The flags the cell image is made with (the icon manager's own).
+pub const CREATION_ICON_IMAGE_FLAGS: u32 = 0x2000_0000;
+/// The mip level the Kaiser pass leaves each cell at: the whole 96 by 96
+/// image is filtered each time, then cut from the sheet.
+pub const CREATION_ICON_MIP: u32 = 0;
 
 /// What building the creator's icon sheet did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4819,17 +4856,28 @@ pub struct CreationIconSheet {
     pub icon_size: i32,
     /// The sheet loaded.
     pub loaded: bool,
-    /// The 96-pixel cells added, in the order the original cuts them.
+    /// The 96-pixel cells added, in the order the original cuts them, and
+    /// the band each is cut from (288, 192, 96 and 0).
     pub cells: usize,
+    pub bands: [i32; 4],
+    /// The cell image's size and flags, and the mip level kept.
+    pub cell_size: i32,
+    pub image_flags: u32,
+    pub mip: u32,
+    /// The manager's reset call ran (it existed).
+    pub reset: bool,
 }
 
 /// Builds or rebinds the creator's icon sheet.
 ///
-/// An existing manager is reset first; otherwise one is made with the
-/// 0x203 word and the `0x0100_2008` flags. Its icon size is set to eight
-/// GUI units (32 at unit 4) either way. A missing sheet adds no cells. A present one
-/// is cut into four 96-pixel cells at 288, 192, 96 and 0, each registered
-/// as an icon, then the manager finishes.
+/// A previous reload hook, when one exists, runs first (the chain
+/// [`ensure_creation_icons`] installs). An existing manager is reset;
+/// otherwise one is made with the 0x203 word and the `0x0100_2008` flags.
+/// Its icon size is set to eight GUI units (32 at unit 4) either way. A
+/// missing sheet adds no cells. A present one is decoded into a 96 by 96
+/// image with the `0x2000_0000` flags and the sheet's own format, filtered
+/// by the Kaiser pass and registered as four icons, cut at 288, 192, 96 and
+/// 0 from the 96 by 384 sheet, then the manager finishes.
 pub fn build_creation_icons(unit: i32, existing: bool, load_ok: bool) -> CreationIconSheet {
     CreationIconSheet {
         reused: existing,
@@ -4842,6 +4890,15 @@ pub fn build_creation_icons(unit: i32, existing: bool, load_ok: bool) -> Creatio
         } else {
             0
         },
+        bands: if load_ok {
+            CREATION_ICON_OFFSETS
+        } else {
+            [0; 4]
+        },
+        cell_size: CREATION_ICON_SIZE,
+        image_flags: CREATION_ICON_IMAGE_FLAGS,
+        mip: CREATION_ICON_MIP,
+        reset: existing,
     }
 }
 
@@ -7249,8 +7306,8 @@ mod tests {
 
     #[test]
     fn the_icon_sheet_is_created_once() {
-        assert!(ensure_creation_icons(false));
-        assert!(!ensure_creation_icons(true));
+        assert!(ensure_creation_icons(false, false).installed);
+        assert!(!ensure_creation_icons(true, false).built);
     }
 
     #[test]
@@ -7844,11 +7901,56 @@ mod tests {
         assert_eq!(build_creation_icons(5, false, true).icon_size, 40);
         assert!(built.loaded);
         assert_eq!(built.cells, 4);
+        // The cells are cut from a 96 by 384 sheet, top band first, at mip
+        // level 0 of a 96 by 96 image made with the manager's own flags.
+        assert_eq!(built.bands, [288, 192, 96, 0]);
+        assert_eq!(built.cell_size, 96);
+        assert_eq!(CREATION_ICON_HEIGHT, 384);
+        assert_eq!(built.image_flags, 0x2000_0000);
+        assert_eq!(built.mip, 0);
+        assert!(!built.reset);
 
+        // A manager that exists is reset instead of made, and a missing
+        // sheet still resets it but adds no cells.
         let missing = build_creation_icons(4, true, false);
         assert!(missing.reused);
+        assert!(missing.reset);
         assert!(!missing.loaded);
         assert_eq!(missing.cells, 0);
+        assert_eq!(missing.bands, [0; 4]);
+        assert_eq!(missing.icon_size, 32);
+    }
+
+    #[test]
+    fn the_icon_sheet_chains_the_reload_hook_once() {
+        // The first call builds the sheet and takes the reload hook's slot,
+        // keeping the hook that was already there.
+        assert_eq!(
+            ensure_creation_icons(false, true),
+            CreationIconHook {
+                built: true,
+                previous_hook: true,
+                installed: true,
+            }
+        );
+        // With no earlier hook the slot is still taken.
+        assert_eq!(
+            ensure_creation_icons(false, false),
+            CreationIconHook {
+                built: true,
+                previous_hook: false,
+                installed: true,
+            }
+        );
+        // An existing manager is returned untouched: no rebuild, no chain.
+        assert_eq!(
+            ensure_creation_icons(true, false),
+            CreationIconHook {
+                built: false,
+                previous_hook: false,
+                installed: false,
+            }
+        );
     }
 
     #[test]
