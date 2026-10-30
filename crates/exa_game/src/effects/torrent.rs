@@ -1029,11 +1029,11 @@ pub fn energy_after(energy: f32, body_mass: f32) -> f32 {
 pub fn torrent_knock(body_mass: f32, energy: f32, impulse: Vec3) -> CharacterKnock {
     let k = 1.0 / body_mass;
     let energy = energy_after(energy, body_mass);
-    let (knock, stun) = super::blast::knock_and_pins(k, impulse);
+    let (knock, pin_gain) = super::blast::knock_and_pins(k, impulse);
     CharacterKnock {
         energy,
         knock,
-        stun,
+        pin_gain,
     }
 }
 

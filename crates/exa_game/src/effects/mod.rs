@@ -133,14 +133,15 @@ impl Frame {
     /// original's inverse transform does: the first two columns, then the
     /// third.
     pub fn inverse_point(&self, point: Vec3) -> Vec3 {
-        let d = point - self.at;
-        (self.x * d.x + self.y * d.y) + self.z * d.z
+        self.inverse_direction(point - self.at)
     }
 
     /// A direction in the parent's space in the frame's own space, without
-    /// the translation.
+    /// the translation: its dot product with each basis column (the frame
+    /// is orthonormal), each summed `(x + y) + z`.
     pub fn inverse_direction(&self, direction: Vec3) -> Vec3 {
-        (self.x * direction.x + self.y * direction.y) + self.z * direction.z
+        let dot = |axis: Vec3| (axis.x * direction.x + axis.y * direction.y) + axis.z * direction.z;
+        Vec3::new(dot(self.x), dot(self.y), dot(self.z))
     }
 
     /// A frame whose parent space is this frame's space. (The burst's
@@ -212,6 +213,22 @@ pub(crate) fn level_of_detail(base: f32, camera: Vec3, at: Vec3) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A turned frame's inverse undoes it: a camera looking down (its back
+    /// axis up) takes a world point into its own space and back.
+    #[test]
+    fn a_frames_inverse_undoes_it() {
+        let frame = Frame {
+            x: Vec3::X,
+            y: Vec3::new(0.0, 0.0, -1.0),
+            z: Vec3::Y,
+            at: Vec3::new(10.0, 500.0, -20.0),
+        };
+        let world = Vec3::new(30.0, 120.0, 40.0);
+        let own = frame.inverse_point(world);
+        assert_eq!(own, Vec3::new(20.0, -60.0, -380.0));
+        assert_eq!(frame.point(own), world);
+    }
 
     #[test]
     fn the_clock_is_whole_milliseconds_of_game_time() {

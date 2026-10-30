@@ -28,9 +28,12 @@
 //! behaviour's turn spring is not wired), and the contact is Exarust's
 //! sphere test against a point's reach (its width times the limb scale,
 //! plus the margin, plus 10), as for the blast.] The stream ribbon draws
-//! with the glow stand-in ([`draw_torrents`]). Not wired: the support-pin
-//! gain and the 5 s recoil the hit sets (no body field takes them), the
-//! simulated objects' points, the sounds and the light.
+//! with the glow stand-in ([`draw_torrents`]). The hit ends as the blast's
+//! does ([`super::blast_live::loosen_pins`]): the support-pin gain becomes
+//! the knock's and the balance's landing momentum takes its full weight.
+//! The torrent's GI multi-point shape lives with it
+//! (`super::effect_light`). Not wired: the simulated objects' points and
+//! the sounds.
 //!
 //! Evidence: the torrent's creator, start, hook, tick and frame, read from
 //! `Exanima.exe`.
@@ -383,6 +386,7 @@ pub(crate) fn tick_torrents(
                     drive.energy = knock.energy;
                     let counter = drive.balance().counter() + 1;
                     drive.balance_mut().set_counter(counter);
+                    super::blast_live::loosen_pins(drive, &knock);
                     knock
                 }) else {
                     continue;

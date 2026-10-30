@@ -837,7 +837,7 @@ const MAX_VOXEL_LIGHTS: usize = 64;
 pub const MAX_SHAPES: usize = 16;
 /// The most points one multi-point shape injects (the original's list is
 /// unbounded; a shape is capped here).
-pub const MAX_SHAPE_POINTS: usize = 8;
+pub const MAX_SHAPE_POINTS: usize = 16;
 
 #[derive(Clone, ShaderType)]
 struct GiParams {
@@ -2073,9 +2073,18 @@ fn gather_shapes<'a>(
     textures: &GiTextures,
     shapes: impl Iterator<Item = (&'a GiShape, &'a ShapeVolume)>,
 ) {
+    // `gi_gradline` and `gi_multipoint` measure in the volume's units, the
+    // block's width being 1, as the original maps each point into the
+    // volume before it uploads it; their positions arrive in world
+    // centimetres and the pass evaluates them at `world / width`.
+    let unit = volume_unit(textures);
     for (shape, volume) in shapes {
         let Some(draw) = shape_draw(*volume, textures.origin, textures.dims, textures.voxel) else {
             continue;
+        };
+        let scale = match shape.program {
+            GiShapeProgram::GradLine | GiShapeProgram::Multipoint => unit,
+            _ => 1.0,
         };
         out.push(GiShapeUniform {
             head: UVec4::new(
@@ -2091,14 +2100,14 @@ fn gather_shapes<'a>(
             matrix: shape.matrix,
             half: shape.half.extend(0.0),
             tex_pos: shape.tex_pos.extend(0.0).extend(0.0),
-            line0: shape.line[0].extend(0.0),
-            line1: shape.line[1].extend(0.0),
+            line0: (shape.line[0] * scale).extend(0.0),
+            line1: (shape.line[1] * scale).extend(0.0),
             grad: shape.grad.extend(0.0),
-            point_light: shape.point_light,
+            point_light: (shape.point_light.truncate() * scale).extend(shape.point_light.w),
             point_pos: {
                 let mut a = [Vec4::ZERO; MAX_SHAPE_POINTS];
                 for (slot, &(p, _)) in a.iter_mut().zip(shape.points.iter()) {
-                    *slot = p.extend(0.0);
+                    *slot = (p * scale).extend(0.0);
                 }
                 a
             },
@@ -2114,6 +2123,13 @@ fn gather_shapes<'a>(
             break;
         }
     }
+}
+
+/// One over the block's width in centimetres: the factor that takes a world
+/// centimetre into the volume's units, where the width is 1 (the original's
+/// texture space, its height scaled by `ZTrn.x` to the same unit).
+pub fn volume_unit(textures: &GiTextures) -> f32 {
+    1.0 / (textures.extent.x * 100.0)
 }
 
 /// The voxel lights that reach into the block, nearest its centre first (the
@@ -3679,14 +3695,16 @@ mod tests {
     }
 
     #[test]
-    fn a_multipoint_shape_carries_eight_points() {
+    fn a_multipoint_shape_carries_sixteen_points_in_volume_units() {
         let mut t = fake_textures(1);
         t.dims = BLOCK;
-        let points: Vec<(Vec3, Vec3)> = (0..10)
-            .map(|i| (Vec3::splat(i as f32), Vec3::new(i as f32, 0.0, 0.0)))
+        t.extent = Vec3::splat(51.2);
+        let points: Vec<(Vec3, Vec3)> = (0..20)
+            .map(|i| (Vec3::splat(i as f32 * 512.0), Vec3::new(i as f32, 0.0, 0.0)))
             .collect();
         let shape = GiShape {
             program: GiShapeProgram::Multipoint,
+            atten: 5000.0,
             points: Arc::from(points),
             ..default()
         };
@@ -3697,14 +3715,25 @@ mod tests {
         let mut out = Vec::new();
         gather_shapes(&mut out, &t, [(shape, volume)].iter().map(|(s, v)| (s, v)));
         let u = out[0];
-        assert_eq!(u.point_pos[0], Vec4::new(0.0, 0.0, 0.0, 0.0));
-        assert_eq!(u.point_pos[7], Vec4::new(7.0, 7.0, 7.0, 0.0));
-        assert_eq!(u.point_col[7], Vec4::new(7.0, 0.0, 0.0, 0.0));
-        // Beyond the cap the points are dropped.
-        assert_eq!(
-            u.point_col[MAX_SHAPE_POINTS - 1],
-            Vec4::new(7.0, 0.0, 0.0, 0.0)
+        // A 51.2 m block: 512 cm is a tenth of its width. Atten stays the
+        // original's (5000 in the volume's units).
+        assert_eq!(volume_unit(&t), 1.0 / 5120.0);
+        assert_eq!(u.params.x, 5000.0);
+        assert_eq!(u.point_pos[0], Vec4::ZERO);
+        assert!(
+            (u.point_pos[7] - Vec4::new(0.7, 0.7, 0.7, 0.0))
+                .abs()
+                .max_element()
+                < 1e-6
         );
+        assert_eq!(u.point_col[15], Vec4::new(15.0, 0.0, 0.0, 0.0));
+        // Beyond the cap the points are dropped.
+        assert_eq!(u.point_col.len(), MAX_SHAPE_POINTS);
+        // A cuboid's frame is its own: nothing is rescaled.
+        let cuboid = GiShape::cuboid(Vec3::splat(100.0), Vec3::ONE, Vec3::ONE);
+        let mut out = Vec::new();
+        gather_shapes(&mut out, &t, [(cuboid, volume)].iter().map(|(s, v)| (s, v)));
+        assert_eq!(out[0].matrix.w_axis, Vec4::new(-100.0, -100.0, -100.0, 1.0));
     }
 
     #[test]

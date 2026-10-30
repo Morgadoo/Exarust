@@ -136,6 +136,7 @@
 //!          --debug-barricade          play mode: a force barricade raised 2 m in front of the player
 //!          --debug-wisps              play mode: the constant displacement's wisps on the player's body
 //!          --powers <id,id,...>       play mode: the powers the player knows (hex or decimal), for the power bar
+//!          --debug-force-cast <s>     play mode: every s seconds the player casts its first power at the nearest character, logging GI shapes and struck bodies' pin gain
 //!          --health yellow,red        play mode: the player's starting health (a human's full health is 0.25)
 //!          --perks a,b,...            play mode: the player's perks (e.g. `remise,feint`: hold to chain the other
 //!                                     side's attack, renew a released swing)
@@ -829,6 +830,10 @@ fn main() -> AppExit {
             "--debug-arcs" => options.thaum_debug.arcs = true,
             "--debug-barricade" => options.thaum_debug.barricade = true,
             "--debug-wisps" => options.thaum_debug.wisps = true,
+            "--debug-force-cast" => {
+                options.thaum_debug.cast_every =
+                    args.next().and_then(|v| v.parse().ok()).unwrap_or(4);
+            }
             "--powers" => {
                 let list = args.next().unwrap_or_default();
                 match exa_game::thaum::cast::parse_power_list(&list) {

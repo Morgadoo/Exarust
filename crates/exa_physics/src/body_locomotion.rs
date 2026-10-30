@@ -861,7 +861,8 @@ pub fn capsule_velocity(
 
 impl Drive {
     /// Gives the balance's landing momentum its full weight (a walking body
-    /// that lost its balance).
+    /// that lost its balance, or a character a force blast or torrent
+    /// struck).
     pub fn land(&mut self) {
         self.balance.land_fully();
     }

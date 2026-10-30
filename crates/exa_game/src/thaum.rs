@@ -41,6 +41,7 @@ pub mod cast;
 pub mod casting;
 pub mod displacement;
 pub mod effect_draw;
+pub mod effect_light;
 pub mod effect_material;
 pub mod effect_pass;
 pub mod energy;

@@ -414,6 +414,12 @@ impl Balance {
         self.airborne
     }
 
+    /// The landing momentum's weight: 5 when the body regains its footing
+    /// (or is struck by a force blast or torrent), fading 0.05 a tick.
+    pub fn landing_weight(&self) -> f32 {
+        self.landing
+    }
+
     /// Gives the landing momentum its full weight, as a walking body that
     /// loses its balance gets it (the movement decision's).
     pub(super) fn land_fully(&mut self) {
