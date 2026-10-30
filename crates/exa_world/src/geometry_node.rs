@@ -103,14 +103,15 @@ impl PartFlags {
     /// Derives a part's flags from its material's words. `class` is the
     /// material class word (`+0x1CC`), `flags` its render flags (`+0x1D0`),
     /// `extra` its extra flags (`+0x204`), `opacity` its opacity, and
-    /// `no_shadow` its no-shadow byte. `node_word` is the geometry node's own
-    /// `+0xC` word for the shadow-mode bit.
+    /// `casts_shadow` the material's shadow byte (0 when it casts none).
+    /// `node_word` is the geometry node's own `+0xC` word for the shadow-mode
+    /// bit.
     pub fn of(
         class: u32,
         flags: u32,
         extra: u32,
         opacity: f32,
-        no_shadow: bool,
+        casts_shadow: bool,
         node_word: u32,
     ) -> Self {
         let mut word = 1;
@@ -131,7 +132,7 @@ impl PartFlags {
         }
         Self {
             word,
-            casts: !no_shadow,
+            casts: casts_shadow,
             // The original compares the material's opacity with 0.75 with
             // an ordered compare, so a NaN does not cut.
             cuts: class & 0x4000 != 0 || (flags & 0x40_0000 != 0 && opacity > 0.75),
@@ -341,7 +342,7 @@ mod tests {
             0x40_0000 | 0x10,
             0x10 | 4 | 0x100,
             0.8,
-            false,
+            true,
             0x8000,
         );
         assert!(p.casts);
@@ -350,7 +351,8 @@ mod tests {
         assert!(!p.no_blend);
         assert!(!p.cull);
         assert_eq!(p.word, 1 | 0x10 | 8 | 4 | 0x40);
-        assert!(!PartFlags::of(0x3, 0, 0, 0.0, true, 0).casts);
+        assert!(!PartFlags::of(0x3, 0, 0, 0.0, false, 0).casts);
+        assert!(PartFlags::of(0x3, 0, 0, 0.0, true, 0).casts);
         assert!(!PartFlags::of(0x3, 0x40_0000, 0, 0.75, false, 0).cuts);
         assert!(!PartFlags::of(0x3, 0x40_0000, 0, f32::NAN, false, 0).cuts);
         assert!(PartFlags::of(0x3, 0x40_0000, 0, 0.750_001, false, 0).cuts);
