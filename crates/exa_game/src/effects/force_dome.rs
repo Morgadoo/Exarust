@@ -752,6 +752,22 @@ impl Barrier {
         Vec3::from_array(barrier_lerp(self.pose.first_previous, self.pose.first, t))
     }
 
+    /// The facing the frame draws at the frame's fraction `t`: from the
+    /// previous snapshot's toward the current one, normalised.
+    pub fn frame_facing(&self, t: f32) -> Vec3 {
+        normalize(Vec3::from_array(barrier_lerp(
+            self.pose.second_previous,
+            self.pose.second,
+            t,
+        )))
+    }
+
+    /// The cap's drawn centre at the frame's fraction `t`: its place moved
+    /// [`BARRIER_FORWARD_CM`] along its facing.
+    pub fn frame_centre(&self, t: f32) -> Vec3 {
+        self.frame_place(t) + self.frame_facing(t) * BARRIER_FORWARD_CM
+    }
+
     /// The node's place a tick takes from its setup's frame: the fraction
     /// is the setup's frame less the snapshot's plus its sub-frame part
     /// ([`update_barrier_position`]).
@@ -771,11 +787,7 @@ impl Barrier {
     /// is the node's own clock word the texture's second coordinate follows.
     pub fn frame(&mut self, alpha: f32, camera: Vec3, node_time: f32) -> Option<BarrierFrame> {
         let at = self.frame_place(alpha);
-        let facing = normalize(Vec3::from_array(barrier_lerp(
-            self.pose.second_previous,
-            self.pose.second,
-            alpha,
-        )));
+        let facing = self.frame_facing(alpha);
         let yaw = planar_yaw(facing);
         self.dome.tex_pos = [
             (f64::from(yaw) * 0.159_154_943_091_895_35 + f64::from(self.tex_seed[0]) + 0.5) as f32,

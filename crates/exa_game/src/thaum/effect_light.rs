@@ -158,20 +158,28 @@ pub fn bubble_shape(
 }
 
 /// The force Barrier's dome shape: the `gi_dome` program, its extent
-/// (`max(scale − 60, ...)` across and 40 up for a barrier's node), its
-/// colour times the manager's light scale and its frame (the barrier's
-/// node is unturned), in the node's world box plus 60 cm.
+/// (the node scale less 60 across and 40 up), its colour (the light's,
+/// already at the manager's light scale, as the emissive's draw takes it
+/// once) and the inverse of the cap node's frame (`bMat`), in the node's
+/// world box plus 60 cm. `axes` are the node's turned axes (columns) and
+/// `at_cm` its place.
 pub fn barrier_shape(
     light: &emissive::FacedLight,
     at_cm: Vec3,
+    axes: [Vec3; 3],
     scale_cm: Vec3,
 ) -> (GiShape, ShapeVolume) {
-    let (centre, half) =
-        emissive::world_box(at_cm, [Vec3::X, Vec3::Y, Vec3::Z], scale_cm, FALLOFF_CM);
+    let (centre, half) = emissive::world_box(at_cm, axes, scale_cm, FALLOFF_CM);
+    let node = Mat4::from_cols(
+        axes[0].extend(0.0),
+        axes[1].extend(0.0),
+        axes[2].extend(0.0),
+        at_cm.extend(1.0),
+    );
     let shape = GiShape {
         program: GiShapeProgram::Dome,
-        colour: light.colour * GI_LIGHT_SCALE,
-        matrix: Mat4::from_translation(-at_cm),
+        colour: light.colour,
+        matrix: node.inverse(),
         half: light.extent,
         ..default()
     };
@@ -179,8 +187,8 @@ pub fn barrier_shape(
 }
 
 /// The force Bubble's shell shape: the `gi_bubble` program with the light's
-/// radius plus five, its colour, its fade and its frame, in the node's
-/// world box plus 60 cm.
+/// radius plus five, its colour (already at the manager's light scale),
+/// its fade and its frame, in the node's world box plus 60 cm.
 pub fn force_bubble_shape(
     light: &emissive::BubbleLight,
     at_cm: Vec3,
@@ -190,7 +198,7 @@ pub fn force_bubble_shape(
         emissive::world_box(at_cm, [Vec3::X, Vec3::Y, Vec3::Z], scale_cm, FALLOFF_CM);
     let shape = GiShape {
         program: GiShapeProgram::Bubble,
-        colour: light.colour * GI_LIGHT_SCALE,
+        colour: light.colour,
         matrix: Mat4::from_translation(-at_cm),
         half: Vec3::splat(light.radius),
         radius: light.radius,
@@ -266,17 +274,19 @@ pub(crate) fn barrier_lights(
             continue;
         }
         let dome = &live.barrier.dome;
-        let lit = emissive::barrier_light(
-            dome.phase,
-            dome.shown_share,
-            super::super::effects::force_dome::BARRIER_DRAW_SCALE,
-            GI_LIGHT_SCALE,
-        );
-        let placed = barrier_shape(
-            &lit,
-            dome.at,
-            super::super::effects::force_dome::BARRIER_DRAW_SCALE,
-        );
+        let scale = super::super::effects::force_dome::BARRIER_DRAW_SCALE;
+        let lit = emissive::barrier_light(dome.phase, dome.shown_share, scale, GI_LIGHT_SCALE);
+        // The cap's node: its drawn centre, turned to its facing. [inf: the
+        // node's basis is taken as the engine's look basis of the facing
+        // (z along it, y up), matching the keep-out's frame.]
+        let facing = live.barrier.frame_facing(1.0);
+        let turn = exa_physics::engine_math::look_rotation(facing);
+        let axes = [
+            Vec3::from(turn.x_axis),
+            Vec3::from(turn.y_axis),
+            Vec3::from(turn.z_axis),
+        ];
+        let placed = barrier_shape(&lit, live.barrier.frame_centre(1.0), axes, scale);
         place_light(
             &mut commands,
             entity,
@@ -772,14 +782,30 @@ mod tests {
         };
         let at = Vec3::new(100.0, 50.0, 0.0);
         let scale = Vec3::splat(85.0);
-        let (shape, volume) = barrier_shape(&light, at, scale);
+        let unturned = [Vec3::X, Vec3::Y, Vec3::Z];
+        let (shape, volume) = barrier_shape(&light, at, unturned, scale);
         assert_eq!(shape.program, GiShapeProgram::Dome);
         assert_eq!(shape.half, extent);
-        assert_eq!(shape.colour, emissive::DOME_COLOUR * 0.5 * GI_LIGHT_SCALE);
+        // The light's colour already carries the manager's scale (the
+        // emissive's draw multiplies by it once).
+        assert_eq!(shape.colour, emissive::DOME_COLOUR * 0.5);
         assert_eq!(shape.matrix.transform_point3(at), Vec3::ZERO);
         assert_eq!(volume.position, at / CM);
         // The bounds are the scale plus 10 rounded, the half plus 60.
         assert_eq!(volume.half, Vec3::splat((85.0 + 10.0 + 60.0) / CM));
+        // A cap facing +x: its 25 cm depth lies along x, its 85 cm width
+        // along z, and bMat takes a point ahead of it onto its own z.
+        let turned = [Vec3::NEG_Z, Vec3::Y, Vec3::X];
+        let flat = Vec3::new(85.0, 85.0, 25.0);
+        let (shape, volume) = barrier_shape(&light, at, turned, flat);
+        assert!(
+            (shape.matrix.transform_point3(at + Vec3::X * 10.0) - Vec3::Z * 10.0).length() < 1e-4
+        );
+        assert_eq!(volume.position, at / CM);
+        assert_eq!(
+            volume.half,
+            Vec3::new(25.0 + 10.0 + 60.0, 85.0 + 10.0 + 60.0, 85.0 + 10.0 + 60.0) / CM
+        );
         // The Bubble's shell takes the radius plus five and the fade.
         let light = emissive::BubbleLight {
             radius: 105.0,
