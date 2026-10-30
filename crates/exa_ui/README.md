@@ -271,7 +271,9 @@ recorded advances and the scale levels that pick unit, fonts and icon
 cells (`gui_font`); wrapped and marked-up text, caret moves, the pointer's
 caret and the draw (`text_layout`); the multi-line text box with its keys,
 clipboard, scroll and drag (`text_box`); the icon atlases and their draws
-(`icon_atlas`); the twelve built-in glyphs and the alpha hits
+(`icon_atlas`; a renderer readback enters it through
+`IconImage::from_icon_pixels`, flipping the framebuffer's top-down rows to
+the atlas's bottom-up ones); the twelve built-in glyphs and the alpha hits
 (`gui_glyphs`); the table view (`table_view`), the item view
 (`item_view`), the basic controls (`gui_controls`), and how forms and
 their controls rescale with the unit, the glyph sheet and the message

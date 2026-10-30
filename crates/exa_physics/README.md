@@ -30,11 +30,14 @@ transcendentals are stood in for by the platform's double functions. The
 UI's `engine_math` forwards here, and the body's twist helpers are
 re-exported from it.
 
-`kdtree` holds the two pieces of the original's background kd-tree unit
-that stand alone: its builder queues' FIFO ring (256 slots, one entry
-fewer than its slots, grown by 128 when full) and a sign-magnitude
-three-bit decode. Static colliders are built by `StaticBuild` on the async
-compute pool; the original's builder thread is not reproduced.
+`kdtree` holds the pieces of the original's background kd-tree unit that
+stand alone: its builder queues' FIFO ring (256 slots, one entry fewer
+than its slots, grown by 128 when full), the two-ring `BackgroundBuilder`
+(incoming meshes, a stop flag, the built meshes the frame hook drains,
+skipping deleted meshes), the seven-slot query table the install copies
+onto a mesh and every instance, and a sign-magnitude three-bit decode.
+Static colliders are built by `StaticBuild` on the async compute pool; the
+original's builder thread is modelled but not spawned.
 
 The original's `RF_Intersection` unit is reproduced in `intersect`, a pure-maths
 module that follows the original's instructions (sums in its order, the
