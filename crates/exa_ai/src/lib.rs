@@ -35,6 +35,7 @@ pub mod combat;
 pub mod combatant;
 pub mod contacts;
 pub mod entity;
+pub mod estimate;
 pub mod fight;
 pub mod flee;
 pub mod golem;
@@ -547,7 +548,18 @@ fn duellist(
             ai.bearing = (bearing.to_target, bearing.distance_cm);
             combatant.in_combat = true;
             combatant.clear_combat_step(gt.translation() * 100.0, t.rotation * Vec3::Z, 0.0);
-            combatant.refresh_fighting(0.0, reach_of(entity, &blades) * 100.0);
+            // Publish the fighting values: the experience system's estimate
+            // from the record's skills and combat skill, the held weapon's
+            // stat bytes and reach, and the body's scale, and the body's
+            // reach.
+            let reach_cm = reach_of(entity, &blades) * 100.0;
+            let base = brains.get(entity).map_or(0.0, |brain| brain.fighting_base);
+            let weapon = attacker
+                .primary_record(entity, blades.iter())
+                .map(|record| (&record.stats, reach_cm));
+            let rating =
+                crate::estimate::fighting_estimate_with_base(base, weapon, fighter.stats.scale);
+            combatant.refresh_fighting(rating, reach_cm);
             stance::set_stance(&mut stance, &mut anim, Stance::Defence);
             info!(
                 "duellist {entity:?} enters combat: {:?} at tick {}",

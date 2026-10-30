@@ -114,6 +114,10 @@ pub struct Npc {
     pub traits: [f32; 4],
     /// What it derives from its record.
     pub personality: Option<Personality>,
+    /// The level and combat-skill part of its fighting estimate, from the
+    /// record ([`crate::estimate::fighting_base`]). The held weapon and the
+    /// body scale are added when it enters combat.
+    pub fighting_base: f32,
     /// The contacts its target passes keep.
     pub contacts: Vec<ContactRecord>,
     /// The aggregates across them.
@@ -224,6 +228,7 @@ impl Npc {
             search: None,
             traits,
             personality: None,
+            fighting_base: 0.0,
             contacts: Vec::new(),
             integration: Integration::default(),
             pass: PassReport::default(),
@@ -272,6 +277,7 @@ impl Npc {
             },
             ..Self::new(record.traits)
         };
+        brain.fighting_base = crate::estimate::fighting_base(&record.skills, record.combat_skill);
         brain.roll = *roll;
         brain
     }

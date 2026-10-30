@@ -249,6 +249,10 @@ impl Default for Holder {
 pub struct WeaponRecord {
     /// The section's flags, kept bits only (W0).
     pub flags: u32,
+    /// The section's raw stat bytes, as the section held them: the combat
+    /// rating sums five of them, and the build keeps them for rules that
+    /// read bytes rather than the derived shares.
+    pub stats: StatBytes,
     /// Type code of the striking side (W1).
     pub code: u8,
     /// The striking part's start, 0.7 below 0.15 and at most 0.99 (W3);
@@ -344,6 +348,7 @@ impl WeaponRecord {
         let armed = flags & flags::HANDS != 0;
         let mut record = Self {
             flags,
+            stats: *s,
             code: s.get(at::KIND + side),
             start_clamped,
             start,
