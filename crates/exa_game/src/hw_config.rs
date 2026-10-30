@@ -142,9 +142,7 @@ impl HardwareConfig {
     /// read again over them for the draft, and the live quality levels,
     /// sampling, vertical sync and window mode go back to the saved ones
     /// ([`Screen::open`]). The Controls page takes a copy of `bindings`.
-    /// Nothing is measured here: the auto-detection runs when the Settings
-    /// page is activated (a tab switch, [`HardwareConfig::activate_page`]) or
-    /// by Defaults.
+    /// Nothing is measured: the auto-detection runs only from Defaults.
     pub fn open(&mut self, bindings: Option<&Bindings>) {
         if self.screen.is_some() {
             return;
@@ -176,51 +174,23 @@ impl HardwareConfig {
         self.bindings = None;
     }
 
-    /// Shows the Settings (`false`) or Controls (`true`) page. A tab click
-    /// that changes the page activates it, as the tab sheet does: showing
-    /// the Settings page runs the auto-detection again (the benchmark, or
-    /// the Deck's preset), and showing the Controls page in the controller
-    /// view puts the saved aim speed back into the live one, or on the
-    /// keyboard view puts the shipped keys into the page's copy.
+    /// Shows the Settings (`false`) or Controls (`true`) page. The page
+    /// switch only places the pages and tabs; it measures nothing and leaves
+    /// the page's key copy alone (the auto-detection and the shipped keys are
+    /// the Defaults button's, [`HardwareConfig::defaults`]).
     pub fn switch_page(&mut self, controls: bool) {
-        if self.screen.is_none() || self.controls_page == controls {
-            return;
+        if self.screen.is_some() {
+            self.controls_page = controls;
         }
-        self.controls_page = controls;
-        self.activate_page();
     }
 
-    /// Whether the Controls page shows its controller view: its Keyboard and
-    /// Controller tabs need Steam Input, and the Controller tab also turns
-    /// the controller mode on ([`HardwareConfig::set_controller_view`]).
+    /// Whether the Controls page shows its controller view (the Controller
+    /// tab lit): its Keyboard and Controller tabs need Steam Input, and
+    /// without it the page switch always puts the keyboard view up. The
+    /// Controller tab also turns the controller mode on
+    /// ([`HardwareConfig::set_controller_view`]).
     pub fn controller_view(&self) -> bool {
         self.steam_input && self.live.controller
-    }
-
-    /// The page activation: the tab sheet calls it when a page becomes
-    /// visible. The Settings page runs the auto-detection again (the
-    /// benchmark, whose result then refills the rows; the Deck takes its
-    /// preset at once). The Controls page in the controller view puts the
-    /// saved aim speed back into the live one and shows its number; on the
-    /// keyboard view it refills the page's copy of the bindings from the
-    /// shipped table, dropping any edits in progress (the original copies
-    /// its shipped key table over the page's copy here).
-    pub fn activate_page(&mut self) {
-        if self.screen.is_none() {
-            return;
-        }
-        if !self.controls_page {
-            self.run_detection();
-        } else if self.controller_view() {
-            self.live.aim_speed = self.saved().aim_speed;
-        } else if let Some(bindings) = &mut self.bindings {
-            // The shipped table's codes, in the page's copy (the copy's
-            // controller flag stays).
-            let shipped = Bindings::default();
-            for action in Action::ALL {
-                bindings.set_key(action, shipped.key(action));
-            }
-        }
     }
 
     /// The Keyboard or Controller tab: it turns the controller mode and the
@@ -304,15 +274,16 @@ impl HardwareConfig {
 
     /// The Defaults button. On the Settings page it runs the GPU benchmark
     /// (the Deck takes its preset at once); on the Controls page it puts the
-    /// shipped keys into the page's copy, or in controller mode the saved
-    /// aim speed back into the live one.
+    /// shipped keys into the page's copy, or in the controller view (the
+    /// Controller tab lit, which needs Steam Input) the saved aim speed back
+    /// into the live one.
     pub fn defaults(&mut self) {
         if self.screen.is_none() {
             return;
         }
         if !self.controls_page {
             self.run_detection();
-        } else if self.live.controller {
+        } else if self.controller_view() {
             self.live.aim_speed = self.saved().aim_speed;
         } else if let Some(bindings) = &mut self.bindings {
             for action in Action::ALL {
@@ -595,6 +566,7 @@ impl Plugin for HardwareConfigPlugin {
                     apply_options,
                     apply_window,
                     start_benchmark_scene,
+                    show_benchmark_quads,
                     cleanup_benchmark,
                 )
                     .chain(),
@@ -897,11 +869,14 @@ fn benchmark_sampler() -> ImageSampler {
     })
 }
 
-/// Starts the benchmark's scene when a benchmark begins: a 1024² RGBA8
-/// target, the original's 512² source texture (every byte 0x3f) and sixteen
+/// Starts the benchmark's scene when a benchmark begins: a 1024² target
+/// (the original's RGB8, RGBA8 here), the original's 512² source texture (every byte 0x3f) and sixteen
 /// full-screen quads carrying its own fragment program, with vertical sync
-/// off so the frames are not capped. The measured protocol and score are
-/// exact; the GPU and its driver differ anyway.
+/// off so the frames are not capped. The quads share one depth: the 2D
+/// opaque pass tests greater-or-equal, so each of them is shaded, as the
+/// original's always-pass depth function shades each (staggered depths
+/// would let the depth test reject all but the nearest). The measured
+/// protocol and score are exact; the GPU and its driver differ anyway.
 fn start_benchmark_scene(
     mut commands: Commands,
     config: Option<Res<HardwareConfig>>,
@@ -930,7 +905,8 @@ fn start_benchmark_scene(
         },
         TextureDimension::D2,
         &[0, 0, 0, 255],
-        // The original's GL_RGBA8, which is a plain (not sRGB) format.
+        // The original's GL_RGB8, a plain (not sRGB) format; wgpu has no
+        // three-channel one, so the alpha is padding.
         TextureFormat::Rgba8Unorm,
         RenderAssetUsages::RENDER_WORLD,
     );
@@ -975,7 +951,8 @@ fn start_benchmark_scene(
                 Name::new(BENCHMARK_QUAD),
                 Mesh2d(mesh.clone()),
                 MeshMaterial2d(material.clone()),
-                Transform::from_xyz(0.0, 0.0, index as f32 * 0.001),
+                Transform::IDENTITY,
+                benchmark_quad_visibility(index, false),
                 layer.clone(),
             ))
             .id();
@@ -1000,6 +977,42 @@ fn start_benchmark_scene(
         material,
         present_mode,
     });
+}
+
+/// Whether the benchmark's quad `index` is drawn: the original draws
+/// [`exa_render::benchmark::WARMUP_QUADS`] quads a warm-up frame and all
+/// [`exa_render::benchmark::QUADS`] a measured one.
+fn benchmark_quad_visibility(index: usize, running: bool) -> Visibility {
+    let drawn = if running {
+        exa_render::benchmark::QUADS
+    } else {
+        exa_render::benchmark::WARMUP_QUADS
+    };
+    if index < drawn {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    }
+}
+
+/// Shows the measured runs' sixteen quads once the warm-up is over.
+fn show_benchmark_quads(
+    config: Option<Res<HardwareConfig>>,
+    scene: Option<Res<BenchmarkScene>>,
+    mut quads: Query<&mut Visibility>,
+) {
+    let (Some(config), Some(scene)) = (config, scene) else {
+        return;
+    };
+    let Some(benchmark) = &config.benchmark else {
+        return;
+    };
+    let running = benchmark.running();
+    for (index, quad) in scene.quads.iter().enumerate() {
+        if let Ok(mut visibility) = quads.get_mut(*quad) {
+            visibility.set_if_neq(benchmark_quad_visibility(index, running));
+        }
+    }
 }
 
 /// Counts the benchmark's frames on the real clock, and when the third run
@@ -1263,11 +1276,30 @@ mod tests {
         config.defaults();
         assert!(config.benchmark.is_none());
         assert_eq!(config.bindings.as_ref().unwrap().key(Action::Forward), 0x57);
-        // In controller mode it is the saved aim speed instead.
+        // Without Steam Input the controller mode alone does not make the
+        // controller view: Defaults still resets the keys.
         config.set_controller(true);
+        config
+            .bindings
+            .as_mut()
+            .unwrap()
+            .set_key(Action::Forward, 0x4C);
+        config.set_aim_speed(0.9);
+        config.defaults();
+        assert_eq!(config.bindings.as_ref().unwrap().key(Action::Forward), 0x57);
+        assert_eq!(config.live.aim_speed, 0.9);
+        // In the controller view it is the saved aim speed instead.
+        let mut config = HardwareConfig {
+            steam_input: true,
+            ..HardwareConfig::default()
+        };
+        config.open(Some(&bindings));
+        config.switch_page(true);
+        config.set_controller_view(true);
         config.set_aim_speed(0.9);
         config.defaults();
         assert_eq!(config.live.aim_speed, 0.29);
+        assert_eq!(config.bindings.as_ref().unwrap().key(Action::Forward), 0x4C);
     }
 
     #[test]
@@ -1297,62 +1329,26 @@ mod tests {
     }
 
     #[test]
-    fn showing_the_settings_page_runs_the_detection_again() {
-        let mut config = HardwareConfig::default();
-        config.open(None);
-        // The Controls page first, then back to Settings: the tab switch
-        // activates the page and starts the benchmark.
-        config.switch_page(true);
-        assert!(config.benchmark.is_none());
-        config.switch_page(false);
-        assert!(config.benchmark.is_some());
-        // A click on the page already shown does nothing.
-        let mut config = HardwareConfig::default();
-        config.open(None);
-        config.switch_page(false);
-        assert!(config.benchmark.is_none());
-        // The Deck takes its preset instead, at once.
-        let mut deck = HardwareConfig {
-            steam_deck: true,
-            ..HardwareConfig::default()
-        };
-        deck.open(None);
-        deck.switch_page(true);
-        deck.switch_page(false);
-        assert!(deck.benchmark.is_none());
-        assert_eq!(deck.live.shading_quality, 5);
-        assert_eq!(deck.live.supersample, 3);
-    }
-
-    #[test]
-    fn showing_the_controls_page_refills_its_key_copy() {
-        let mut config = HardwareConfig::default();
+    fn a_page_switch_measures_nothing_and_keeps_the_key_copy() {
         let mut bindings = Bindings::default();
         bindings.set_key(Action::Forward, 0x4C);
+        let mut config = HardwareConfig::default();
         config.open(Some(&bindings));
-        assert_eq!(config.bindings.as_ref().unwrap().key(Action::Forward), 0x4C);
         config.switch_page(true);
-        // The page's copy goes back to the shipped table (the original
-        // copies its shipped rows over the page here).
-        assert_eq!(config.bindings.as_ref().unwrap().key(Action::Forward), 0x57);
-        // In the controller view it is the saved aim speed instead, and
-        // the keys are left alone.
-        let mut config = HardwareConfig {
+        config.switch_page(false);
+        assert!(config.benchmark.is_none());
+        config.switch_page(true);
+        assert_eq!(config.bindings.as_ref().unwrap().key(Action::Forward), 0x4C);
+        // Without Steam Input there is no controller view.
+        config.set_controller_view(true);
+        assert!(!config.controller_view());
+        let mut steam = HardwareConfig {
             steam_input: true,
             ..HardwareConfig::default()
         };
-        config.open(Some(&bindings));
-        config.set_controller_view(true);
-        assert!(config.controller_view());
-        config.live.aim_speed = 0.9;
-        config.switch_page(true);
-        assert_eq!(config.live.aim_speed, 0.29);
-        assert_eq!(config.bindings.as_ref().unwrap().key(Action::Forward), 0x4C);
-        // Without Steam Input there is no controller view.
-        let mut plain = HardwareConfig::default();
-        plain.open(None);
-        plain.set_controller_view(true);
-        assert!(!plain.controller_view());
+        steam.open(None);
+        steam.set_controller_view(true);
+        assert!(steam.controller_view());
     }
 
     #[test]
@@ -1380,6 +1376,17 @@ mod tests {
         assert_eq!(vram_from(&root), 8192);
         assert_eq!(vram_from(&root.join("missing")), 0);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_warm_up_draws_four_quads_and_a_run_sixteen() {
+        let drawn = |running| {
+            (0..exa_render::benchmark::QUADS)
+                .filter(|index| benchmark_quad_visibility(*index, running) != Visibility::Hidden)
+                .count()
+        };
+        assert_eq!(drawn(false), 4);
+        assert_eq!(drawn(true), 16);
     }
 
     #[test]

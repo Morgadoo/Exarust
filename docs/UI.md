@@ -3074,19 +3074,18 @@ ones, except the window mode, which stays the one the page opened with),
 pushes it into the live options and the draft (the draft keeps its
 antialiasing and window mode; the live options keep their shadow detail) and
 refills the rows; nothing is saved. On Controls it puts the shipped keys
-into the page's copy, or, in controller mode, the saved aim speed back into
-the live one.
+into the page's copy, or, in the controller view (the Controller tab lit,
+which needs Steam Input), the saved aim speed back into the live one.
 
-The page activation runs the same auto-detection again: showing the Settings
-tab (the tab sheet's page activation, not the form's creation) starts the
-benchmark, and its result refills the rows when it ends; the Deck takes its
-preset at once. Exarust runs it the same way from the tab switch. Showing the
-Controls tab in the controller view puts the saved aim speed back into the
-live one, and on the keyboard view copies the shipped key table over the
-page's copy (dropping edits in progress, as the original does). The original
-also runs the detection at start only on a first run (when `FirstRun` is
-set), and saves its result then; Exarust does not run it at launch, since it
-would replace the saved quality. `--benchmark` runs it once, without saving.
+The tab switch does not run it: the page switch only places the pages, the
+tabs and the Controls page (14 units down, 21 with the Steam Input view
+tabs), and without Steam Input it puts the keyboard view up. The Defaults
+handler is the only one in the unit that runs the detection, copies the
+shipped key table over the page's copy, or (with the Controller tab lit)
+puts the saved aim speed back. The original also runs the detection at start
+only on a first run (when `FirstRun` is set), and saves its result then;
+Exarust does not run it at launch, since it would replace the saved quality.
+`--benchmark` runs it once, without saving.
 
 Steam Deck detection (`exa_game::hw_config::steam_deck`) reads the Steam
 runtime's `SteamDeck=1` marker or the DMI product name (`Jupiter`,
@@ -3111,7 +3110,11 @@ first drawn frame rather than just before it. Its workload is the original's
 own: sixteen full-screen quads through a reimplementation of its fragment
 program (`exa_render::benchmark`, the GLSL translated one for one) into the
 same 1024² RGBA8 target, reading the same 512² texture whose every byte is
-0x3f, with repeat addressing and linear filtering. The original's unused
+0x3f (the original's is RGB8, which wgpu lacks; the program reads only
+`.rgb`), with repeat addressing and linear filtering. All sixteen quads sit
+at one depth so the 2D depth test (greater-or-equal) passes each of them,
+as the original's always-pass depth function does, and the warm-up shows
+only four of them, as the original draws four quads a warm-up frame. The original's unused
 projection uniform (2.0) rides along. The GPU and driver still differ, so
 the score is comparable in spirit, not in number. The auto-detected quality
 is:

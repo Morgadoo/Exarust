@@ -850,10 +850,9 @@ screen after an Apply that changes a shader option and steps it each frame
 benchmark (a 1024² RGBA8 target, the original's 512² texture of one byte
 value and sixteen full-screen quads through its own fragment program,
 `exa_render::benchmark`, with the original's half-second warm-up and three
-runs); the tab switch's page activation runs the detection again (the
-Settings page's benchmark, or the Deck preset), the Controls page's
-activation refills its key copy or puts the saved aim speed back in the
-controller view, and `steam_deck`/`video_memory_mb` are the Deck and video
+runs, four quads a warm-up frame and sixteen a measured one, all at one
+depth so each is shaded); Defaults runs the detection (the benchmark, or
+the Deck preset), and `steam_deck`/`video_memory_mb` are the Deck and video
 memory probes. It pushes the live options into `exa_render::quality`
 (super-sampling on or off, shadow-map sizes, MSAA), the audio buses, the
 frame-rate readout and the window's mode, size and present mode

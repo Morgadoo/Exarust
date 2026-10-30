@@ -2,8 +2,9 @@
 //! original's own fragment program into a 1024² target, sampling a 512²
 //! texture whose bytes are all 0x3f.
 //!
-//! The original binds a 1024² RGBA8 colour target, uploads a 512² RGBA8
-//! texture filled with one value (its 0x3f bytes), sets the texture's wrap to
+//! The original binds a 1024² RGB8 colour target, uploads a 512² RGB8
+//! texture filled with one value (its 0x3f bytes; wgpu has no three-channel
+//! format, so both are RGBA8 here and the program reads only `.rgb`), sets the texture's wrap to
 //! repeat and its filters to linear, compiles a fragment shader that reads
 //! the texture at four offsets with square roots, dot products, lengths,
 //! powers, sines and cosines, and draws sixteen full-screen quads a frame
@@ -24,8 +25,11 @@ pub const SOURCE_SIZE: u32 = 512;
 pub const SOURCE_BYTE: u8 = 0x3f;
 /// The benchmark target's side, texels (1024).
 pub const TARGET_SIZE: u32 = 1024;
-/// How many full-screen quads the original draws a frame.
-pub const QUADS: usize = 16;
+/// How many full-screen quads the original draws a measured frame (it draws
+/// [`WARMUP_QUADS`] a warm-up frame).
+pub const QUADS: usize = exa_formats::hw_config::RUN_QUADS as usize;
+/// How many full-screen quads the original draws a warm-up frame.
+pub const WARMUP_QUADS: usize = exa_formats::hw_config::WARMUP_QUADS as usize;
 
 /// The fragment program's source, as compiled, for tests and the docs.
 pub const FRAGMENT_SOURCE: &str = include_str!("benchmark.wesl");
@@ -74,7 +78,8 @@ impl Material2d for BenchmarkMaterial {
 }
 
 /// The source texture's pixels: [`SOURCE_SIZE`]² RGBA8 texels whose every
-/// byte is [`SOURCE_BYTE`], as the original's one-byte fill gives.
+/// byte is [`SOURCE_BYTE`], as the original's one-byte fill of its RGB8
+/// upload gives (the padded alpha is never read).
 pub fn source_pixels() -> Vec<u8> {
     vec![SOURCE_BYTE; (SOURCE_SIZE * SOURCE_SIZE * 4) as usize]
 }

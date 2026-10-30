@@ -1212,8 +1212,6 @@ impl FormState {
         };
         self.page = page;
         let main = &mut self.geometry.main;
-        main[0].state &= !HIDDEN;
-        main[1].state &= !HIDDEN;
         if page == 0 {
             main[4].state = 0;
             main[5].state = 0;
@@ -1227,8 +1225,11 @@ impl FormState {
                 main[3].state &= !HIDDEN;
                 self.select_controller_view(self.controller_view);
             } else {
-                main[2].state = HIDDEN;
-                main[3].state = HIDDEN;
+                // The keyboard view's bits over the hidden pair: the
+                // Keyboard tab gains on and lit, the Controller tab loses
+                // them, and both stay hidden.
+                main[2].state |= state::ON | state::LIT;
+                main[3].state &= !(state::ON | state::LIT);
             }
         }
         if let Some((y, h)) = switch.controls_y {
