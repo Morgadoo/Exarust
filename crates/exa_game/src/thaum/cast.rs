@@ -1963,8 +1963,16 @@ fn tick_casters(
                     result = step.result;
                 }
                 ActiveClass::Kinesis(power) => {
+                    let was = (power.state, power.hooked, body.cast_hook, body.casting);
                     let step = power.control(event, body, entry.tick_cost);
                     result = step.result;
+                    if result & 2 != 0 {
+                        info!(
+                            "kinesis ends: event {event}, handed {}, before (state {}, hooked {}, \
+                             hook {:?}, casting {:#x}), focus {:.4} spent {:.4}",
+                            power.handed, was.0, was.1, was.2, was.3, body.focus, body.spent
+                        );
+                    }
                     // Its end closes the pick's shell and gives the body
                     // its environment back, unless a throw took them.
                     if result & 2 != 0
@@ -2209,7 +2217,10 @@ fn call_motion_hooks(
         });
         let calls = index.is_some_and(|i| !matches!(i, 0 | 1 | 5..=12));
         if calls && super::casting::motion_replaced(&mut caster.body) {
-            debug!("cast hook dropped: {} replaced", animator.action);
+            info!(
+                "cast hook dropped: the cast clip was replaced by {}",
+                animator.action
+            );
             caster.sync_body();
         }
     }

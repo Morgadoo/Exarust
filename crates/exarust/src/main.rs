@@ -36,7 +36,7 @@
 //!          --shove-props <frame>      play mode: a blow to every prop body within 3 m of the player at that frame
 //!                                     after loading, away from the player and up; logs how far each moved once
 //!                                     they all sleep again
-//!          --kinesis-pick <frame>     play mode: at that frame after loading, a running Kinesis of the player takes
+//!          --kinesis-pick <frame>     play mode: from that frame after loading (waiting for one), a running Kinesis of the player takes
 //!                                     the nearest prop body within 5 m, as the hand's pick hands it one
 //!          --outfit a,b,c             apparel for character/play (Characters.rpk entries), over the underwear
 //!          --weapon <name>            weapon in the right hand (Objects.rpk entry)
