@@ -726,7 +726,11 @@ layout: the height target, the 30/17-unit minimum, the narrator's immediate
 height and the 500-unit animation from the height being drawn. `speech` is
 the speech-bubble frame: the width fit at 320, the placement's projection
 and margins, the rounded box of radius 3 at alpha 128 (the narrator's grown
-by four units) and the wrapped white text at alpha 160.
+by four units) and the wrapped white text at alpha 160. `dialogue_window`
+syncs the conversation engine's reply panel into that list: each entry is
+measured at the panel's width less eight units, the `[Other]` toggle is
+appended unmeasured and the height is laid out once per change, so a
+running animation is not restarted.
 `picker_fields` has the creator's marker (its point and its free or
 bound colour), keys and physique cross, the physique picker's
 constructor, the point's body-shape weights and the press, release and

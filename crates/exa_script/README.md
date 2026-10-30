@@ -12,7 +12,7 @@ bubbles, scripted objects, and the story/journal state.
 |---|---|
 | `interp` | the one-pass text-walking interpreter: statements, terms, `[n]` actor slots, members, chained `Role(id)` objects, conditionals and `{ }` blocks, conditions, `{…}` line substitution |
 | `builtins` | the `Actor` and `Role` classes and the globals, and the `Host` trait they act through |
-| `cast` | characters as scripts see them: the shared role list (`exa_formats::roles::HeldRole`, inherit and reference counts), relation records with relation roles and memory blocks, AI contacts |
+| `cast` | characters as scripts see them: the shared role list (`exa_formats::roles::HeldRole`, inherit and reference counts), relation records with relation roles and memory blocks, AI contacts; `Cast::mirror` takes the running world's live fields (name, roles, health, arousal, out-of-action) and keeps the stored relations and role values, `Cast::forget` drops a character |
 | `topics` | topic memory words: cooldowns, activation counts and windows, the memory load/store (with the original's shifted load) |
 | `bubbles` | speech bubbles: durations, the queue per speaker, CR splits, fades, the hearing stimulus and the contact hearing it leaves, the width/height measure, the frame's fade step and the placement (narrator centre, projected head, margins, the camera projection) |
 | `dialogue` | the conversation engine: the role-by-role search, conversations, entry-node starts and calm filters, the node evaluator (both player slots, the original's mood tests), branches and links, ending, event nodes, topic offers, the reply panel's list and pick, the narrator, witnessed and broadcast events, `StartDialogue` and the scripted-object script entry |
@@ -22,9 +22,9 @@ bubbles, scripted objects, and the story/journal state.
 `ScriptPlugin` loads `charroles.rdb` and `narrator.rcd` (`Scripts`) once
 the installation is open, keeps the session's `Conversations` (engine,
 cast, player, world clock base, locale) and steps the engine every frame on
-`Time<Virtual>`. Messages: `Narrate`, `NarrateText`, `Talk`, `PickReply` in;
-`ScriptEffect` (game events, inventory, checkpoint saves, witness roles,
-`StartDialogue`, script errors) out.
+`Time<Virtual>`. Messages: `Narrate`, `NarrateText`, `Talk`, `PickReply`,
+`LeaveDialogue` in; `ScriptEffect` (game events, inventory, checkpoint
+saves, witness roles, `StartDialogue`, script errors) out.
 
 Formats: [`docs/formats/OTHER.md`](../../docs/formats/OTHER.md#roles-charrolesrdb).
 
