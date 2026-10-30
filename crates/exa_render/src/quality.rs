@@ -31,6 +31,27 @@ impl Default for ShadowQuality {
     }
 }
 
+/// The settings screen's shading quality, 3 through 6 (4 compiled in, 5 in
+/// the retail user's ini). The voxel GI's base ambient halves above it and
+/// the manager's light share drops to 0.9 of its value, as the original's
+/// per-frame GI entry does when the scene's shading quality is above 3.
+#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShadingQuality(pub i32);
+
+impl ShadingQuality {
+    /// Whether the level gets the higher shading path: the original's
+    /// `ShadingQuality > 3`.
+    pub fn high(self) -> bool {
+        self.0 > 3
+    }
+}
+
+impl Default for ShadingQuality {
+    fn default() -> Self {
+        Self(4)
+    }
+}
+
 /// The hardware anti-aliasing sample count: 0, 1, 2, 4 or 8 (0 shipped).
 #[derive(Resource, Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct MultisampleSetting(pub i32);
@@ -40,6 +61,7 @@ pub struct QualityPlugin;
 impl Plugin for QualityPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ShadowQuality>()
+            .init_resource::<ShadingQuality>()
             .init_resource::<MultisampleSetting>()
             .add_systems(PostUpdate, (sync_shadow_maps, sync_multisample));
     }
@@ -127,6 +149,18 @@ mod tests {
         // Out-of-range levels clamp to the ends.
         assert_eq!(shadow_map_sizes(0), (64, 512));
         assert_eq!(shadow_map_sizes(99), (1024, 4096));
+    }
+
+    /// The GI's higher path follows the original's `ShadingQuality > 3`.
+    #[test]
+    fn the_shading_quality_switches_the_gi_at_four() {
+        assert_eq!(ShadingQuality::default(), ShadingQuality(4));
+        assert!(!ShadingQuality(3).high());
+        assert!(ShadingQuality(4).high());
+        assert!(ShadingQuality(6).high());
+        // A level below the setting's own floor still uses the low path.
+        assert!(!ShadingQuality(2).high());
+        assert!(!ShadingQuality(-1).high());
     }
 
     #[test]

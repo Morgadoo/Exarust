@@ -38,13 +38,33 @@ impl Plugin for GiVolumePlugin {
             .init_resource::<GiBuiltBlocks>()
             .add_systems(
                 PostUpdate,
-                (collect_source, follow_camera, publish_sector_lights)
+                (
+                    feed_shading_quality,
+                    collect_source,
+                    follow_camera,
+                    publish_sector_lights,
+                )
                     .chain()
                     .after(TransformSystems::Propagate)
                     .after(VisibilitySystems::UpdateFrusta)
                     .after(crate::shadow_links::LightCells)
                     .before(exa_render::gi::GiSystems),
             );
+    }
+}
+
+/// Takes the settings screen's shading quality into the GI: the original's
+/// per-frame GI entry is told whether the scene's shading quality is above
+/// three, and halves the base ambient and drops the manager's light share to
+/// 0.9 when it is.
+fn feed_shading_quality(
+    quality: Option<Res<exa_render::quality::ShadingQuality>>,
+    mut settings: ResMut<GiSettings>,
+) {
+    let Some(quality) = quality else { return };
+    let high = quality.high();
+    if settings.high_quality != high {
+        settings.high_quality = high;
     }
 }
 
@@ -415,7 +435,9 @@ pub struct GiSettings {
     pub enabled: bool,
     pub warm_up: u32,
     /// The original's high shading quality (4 or above, its default): the
-    /// base ambient is the level record's `0x30` × 0.001, else × 0.002.
+    /// base ambient is the level record's `0x30` × 0.001, else × 0.002, and
+    /// the manager's light share is 0.09 rather than 0.1. Set from
+    /// [`exa_render::quality::ShadingQuality`] each frame.
     pub high_quality: bool,
 }
 
@@ -1578,6 +1600,26 @@ mod tests {
             edges: Arc::new(vec![OPEN; (size * size) as usize]),
             synthetic: false,
         }
+    }
+
+    /// The settings screen's shading quality reaches the GI settings: 4 and
+    /// up use the high path, 3 the low one.
+    #[test]
+    fn the_shading_quality_feeds_the_gi_settings() {
+        use exa_render::quality::ShadingQuality;
+        let mut app = App::new();
+        app.init_resource::<GiSettings>()
+            .add_systems(Update, feed_shading_quality);
+        app.insert_resource(ShadingQuality(3));
+        app.update();
+        assert!(!app.world().resource::<GiSettings>().high_quality);
+        app.insert_resource(ShadingQuality(5));
+        app.update();
+        assert!(app.world().resource::<GiSettings>().high_quality);
+        // Without the resource the default stays.
+        app.world_mut().remove_resource::<ShadingQuality>();
+        app.update();
+        assert!(app.world().resource::<GiSettings>().high_quality);
     }
 
     #[test]

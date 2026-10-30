@@ -806,6 +806,20 @@ const SUN_LUX: f32 = 160.0;
 const SUN_GI_SCALE: f32 = 3.0;
 /// The manager's injection share; point lights take 1.5 times it, the sun 3.
 const INJECTION_SHARE: f32 = 0.1;
+
+/// The manager's light-injection share for a shading quality: 0.1, or 0.09
+/// at the high quality (above 3), which is what the original's per-frame
+/// entry stores in the field its light sources read. The GI's own point and
+/// sun uniforms use the fixed 0.1, as the original's per-block injection
+/// reads the unqualified value; a source outside the GI manager (the effects'
+/// direct light) takes this one.
+pub fn injection_share(high_quality: bool) -> f32 {
+    if high_quality {
+        INJECTION_SHARE * 0.9
+    } else {
+        INJECTION_SHARE
+    }
+}
 /// The sun's intensity below which the original leaves it out of the GI.
 const SUN_EPSILON: f32 = 1.192_09e-7;
 /// The original's own sun shadow map for the GI: 1024², with its direct-light
@@ -2639,6 +2653,16 @@ mod tests {
         let mut groups = Vec::new();
         let of_sector = group_sectors(sectors, depth, &mut groups);
         (groups, of_sector)
+    }
+
+    #[test]
+    fn the_light_share_drops_at_the_high_shading_quality() {
+        assert_eq!(injection_share(false), 0.1);
+        // The product is single precision: 0.1 × 0.9 rounds to 0.089999996,
+        // one step below the decimal 0.09's nearest float.
+        assert_eq!(injection_share(true), 0.1f32 * 0.9);
+        assert_eq!(injection_share(true).to_bits(), 0x3db8_51eb);
+        assert!(injection_share(true) < injection_share(false));
     }
 
     #[test]

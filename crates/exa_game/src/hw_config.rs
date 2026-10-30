@@ -21,7 +21,7 @@ use exa_audio::{AudioEnvironment, MusicSetting};
 use exa_formats::file_ref::{read_whole_file, write_whole_file};
 use exa_formats::hw_config::{Benchmark, Options, QualityChange, Screen};
 use exa_formats::settings_ini;
-use exa_render::quality::{MultisampleSetting, ShadowQuality};
+use exa_render::quality::{MultisampleSetting, ShadingQuality, ShadowQuality};
 use exa_render::supersample::SuperSampling;
 use exa_ui::modal_screens::{CacheShaderScreen, KeyAnswer, ReadKeyScreen, ScreenStep, warm_row};
 use exa_ui::settings::{self, Effect, Setting};
@@ -636,6 +636,7 @@ fn apply_options(
     mut materials: Option<ResMut<Assets<exa_render::material::ExaMaterial>>>,
     mut sampling: ResMut<SuperSampling>,
     mut shadow: ResMut<ShadowQuality>,
+    mut shading: ResMut<ShadingQuality>,
     mut multisample: ResMut<MultisampleSetting>,
     mut audio: Option<ResMut<AudioEnvironment>>,
     mut music: Option<ResMut<MusicSetting>>,
@@ -668,6 +669,9 @@ fn apply_options(
     }
     if shadow.0 != live.shadow_quality {
         shadow.0 = live.shadow_quality;
+    }
+    if shading.0 != live.shading_quality {
+        shading.0 = live.shading_quality;
     }
     if multisample.0 != live.multisample {
         multisample.0 = live.multisample;
