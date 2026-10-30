@@ -996,7 +996,20 @@ editor's viewport attachment keeps the handler set a preset's flags add,
 saves the viewport's wheel handler while its slot is empty, and restores
 it while removing the free camera's press and move handlers when the
 controller detaches; the scene editor's camera switch drives that state
-as its followed record comes and goes.
+as its followed record comes and goes. The free camera's own rules are
+tested there too: its A/D/S/W movement vector (the right and forward axes
+added and subtracted in key order, the bias removed, normalised past
+2⁻²³), its follow tether (a horizontal offset past a limit pulled to
+`|offset|·limit + anchor` per axis, or the radial form that scales onto
+the radius and keeps the height), the pan velocity (change carried at
+0.96, total at 0.99, 1e-7/1e-4 squared gates), the zoom spring (the
+target within 0.001 snaps the shown zoom; otherwise `(target − motion)·
+rate − last` held to its step, carried and damped by the double 0.998,
+never under half the range) and the two cut-away scene walks: the lift out
+of the visible sectors' meshes (bounding-sphere reject, box reach, each
+mesh's contacts pushing the point a radius out) and the wall probe's
+segment walk (the shadow-side flag words, the bounding-sphere test, the
+blocking word, then each face).
 
 The arena's per-rank kits are in (`loadout`): `Member::loadouts` holds
 six of the record's own loadouts (hands and worn items); the editor takes

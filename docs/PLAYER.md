@@ -1777,7 +1777,27 @@ character body's possession routines; addresses are in the research notes.
   to the axis pitch, held to 1.54 rad. Modelled (`ChaseCamera::probe_wall`),
   but nothing answers the probe in the live game yet: the original sweeps
   only level meshes with certain flag bits, and Exarust's level colliders
-  hold every static mesh, ceilings included.
+  hold every static mesh, ceilings included. The sweep itself is
+  `nav_camera::probe_scene_hit`: the visible sectors, the mesh flag words
+  (`0x89` low bits, the render and feature words), the owner pointer and
+  blocking word, the segment-versus-bounding-sphere test (`z² + (y² + x²)`,
+  the before/past/line cases) and then the mesh's own face test. The
+  cut-away lift of the looked-at point out of the scene is
+  `nav_camera::lift_out_of_scene`: the same sector walk, a bounding-sphere
+  reject, a box-reach test, and each mesh's contacts pushing the point a
+  radius out in the order the mesh reports them.
+- **The free camera's own rules** (the editor and free-flight camera, no
+  chase caller): A/D strafe along the right axis and S/W along the forward
+  axis, the bias subtracted last and the vector normalised past 2⁻²³ when
+  the controller asks (`nav_camera::pan_input`); the looked-at point is
+  tethered to its anchor, either per axis to `|offset|·limit + anchor` or
+  radially onto the radius with the height kept (`focus_tether`); its
+  horizontal velocity carries 0.96 of its change and keeps 0.99, stopping
+  under 1e-7/1e-4 squared (`pan_velocity`); the zoom's shown value snaps
+  within 0.001 (`zoom_snap`) and its spring holds a change to its step,
+  carries it, damps it by the double 0.998 and floors it at half its range
+  (`ZoomSpring`). These are tests only; the chase camera drives its own
+  orbit, pitch and zoom springs.
 - **The idle turn.** Each frame the player's controls test whether the
   player is idle: the pointer within 2 pixels of where it was last seen on
   both axes, the condition word plain (0, so not walking or attacking), no
