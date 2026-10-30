@@ -1812,6 +1812,17 @@ item's *template* bulk (`ObjectDb::template_bulk`).
 
 The 19×8 slot table at `0xA8` is not read for armour.
 
+The armour pass also measures the character's head height: for every worn
+piece that covers the eleventh bone and whose body carries the head mark
+(the word at `0x60`, non-zero; what it marks is not established), the
+display byte at `0x1A7` (percent, 0–10 over the shipped helms) raises the
+body's extra height to the thickest such value, and the record's physique
+then moves it by (physique − 0.5) × 8 — all in single precision, the
+comparison keeping a NaN out ([guess: the mark is a model or hood flag]).
+Of the shipped layers over the eleventh bone, 85 carry the mark and 43 do
+not, so the mark decides the number:
+`exa_formats::encumbrance::head_extra`.
+
 ## Encumbrance
 
 A character's one weight stat, implemented in `exa_formats::encumbrance`.

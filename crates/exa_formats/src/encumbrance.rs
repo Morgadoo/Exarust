@@ -8,7 +8,7 @@
 //! stored as a float.
 
 use crate::characters::{CharacterRecord, Perk};
-use crate::objdb::{Burden, Item};
+use crate::objdb::{Armour, Burden, Item};
 use crate::weapon_record::ShieldRecord;
 
 /// Each unit of a worn item's encumbrance byte weighs this much.
@@ -234,6 +234,31 @@ pub fn held_shield<'a>(
         .filter(|item| item.weapon.is_none())
         .filter_map(|item| item.shield)
         .last()
+}
+
+/// The bone whose layer the armour pass measures for the head's extra
+/// height: the eleventh, index 10 in a coverage table that starts at bone 1.
+const HEAD_BONE: usize = 10;
+
+/// The head's extra height the armour pass adds to a character (the body's
+/// standing-height offset): the thickest display coverage worn over the
+/// eleventh bone, in percent, plus the wearer's physique offset
+/// (physique − 0.5) × 8, in float in the original's order. A piece counts
+/// only when it covers the bone and its body carries the head mark
+/// ([`crate::objdb::Armour::head_height_mark`]); a thinner layer never
+/// replaces the thickest, and a NaN display never counts.
+pub fn head_extra<'a>(worn: impl IntoIterator<Item = &'a Armour>, physique: f32) -> f32 {
+    let mut height = 0.0f32;
+    for piece in worn {
+        if piece.coverage[HEAD_BONE] == 0 || !piece.head_height_mark {
+            continue;
+        }
+        let display = f32::from(piece.display);
+        if display > height {
+            height = display;
+        }
+    }
+    (physique - 0.5) * 8.0 + height
 }
 
 /// The most the run blend reaches: 1 − 0.3·encumbrance, 1 − 0.4·encumbrance

@@ -1354,6 +1354,7 @@ mod tests {
             pierce: 80,
             encumbrance: 10,
             material: 4,
+            ..Armour::default()
         }
     }
 
@@ -1791,6 +1792,7 @@ mod tests {
             pierce: 30,
             encumbrance: 5,
             material: 3,
+            ..Armour::default()
         };
         let parts = armour_layers(None, &[shirt, shirt], false);
         let p = parts[0];
@@ -1822,6 +1824,7 @@ mod tests {
             pierce: 0,
             encumbrance: 0,
             material: 0,
+            ..Armour::default()
         };
         let parts = armour_layers(None, &[item(80, 30), item(51, 90), item(60, 10)], false);
         assert_eq!(parts[0].inner.slash.to_bits(), 0x3eec_e03c);
@@ -1856,6 +1859,7 @@ mod tests {
             pierce: 30,
             encumbrance: 5,
             material: 3,
+            ..Armour::default()
         };
         let parts = armour_layers(Some(&natural), &[shirt], false);
         assert_eq!(parts[0].inner.slash, 0.2);
@@ -1879,6 +1883,7 @@ mod tests {
             pierce: 30,
             encumbrance: 5,
             material: 3,
+            ..Armour::default()
         };
         let outer = armour_layers(None, &[shirt], true)[8].outer.unwrap();
         assert!((outer.coverage - 0.825).abs() < 1e-6);
@@ -1897,6 +1902,7 @@ mod tests {
             pierce: 17,
             encumbrance: 11,
             material: 1,
+            ..Armour::default()
         };
         let outer = armour_layers(None, &[trousers], false)[1].outer.unwrap();
         assert!((outer.padding - 0.085).abs() < 1e-7);
