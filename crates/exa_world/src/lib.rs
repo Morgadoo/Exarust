@@ -1770,10 +1770,11 @@ impl LevelLoad {
         }
     }
 
-    /// The level's box and vertical limits for the sun's fitted map: the
-    /// props' origins `min..max` widened by the terrain's tiles, and the
+    /// The level's box and vertical limits for the sun map: the props'
+    /// origins `min..max` widened by the terrain's tiles, and the
     /// environment record's floor and ceiling (whole centimetres in the
-    /// record). Fitted only when the level has a terrain, as in the original.
+    /// record). Fitted only when the level has a terrain, as in the
+    /// original; other levels cover the whole scene.
     fn sun_shadow_region(&self, min: Vec3, max: Vec3) -> sun_shadow::SunShadowRegion {
         let (mut min, mut max) = (min, max);
         if let Some((low, high)) = self.terrain_extent {
@@ -1786,11 +1787,11 @@ impl LevelLoad {
             .environment
             .as_ref()
             .map(|e| ((e.floor * 100.0).round(), (e.ceiling * 100.0).round()));
-        sun_shadow::SunShadowRegion {
+        sun_shadow::SunShadowRegion::new(
             scene,
-            vertical: exa_render::sun_fit::VerticalRange::of_level(&scene, record),
-            fitted: self.terrain_stats.is_some(),
-        }
+            exa_render::sun_fit::VerticalRange::of_level(&scene, record),
+            self.terrain_stats.is_some(),
+        )
     }
 
     /// Lighting and the GI request; the load's last step.

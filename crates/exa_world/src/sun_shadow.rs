@@ -1,32 +1,35 @@
-//! The sun's fitted orthographic shadow map: one map, no cascades, fitted to
-//! the camera's view each frame (`exa_render::sun_fit`).
+//! The sun's single orthographic shadow map, no cascades, fitted to the
+//! camera's view each frame (`exa_render::sun_fit`), or covering the whole
+//! scene in a level without a terrain.
 //!
 //! The original fits its sun map only in a level with a terrain. Every frame
 //! its update clips the camera's view volume by up to three planes at the
 //! scene's bounds on the sides the camera looks towards (the vertical ones at
 //! the level's floor and ceiling), fits the smallest sphere around the
 //! surviving corners, quantises that sphere's radius to 200 cm steps with a
-//! hysteresis that carries across frames, snaps the centre to the shadow
-//! map's texel grid and gives the box a fixed ±8000 cm depth. Exarust builds
-//! the same volume from each active camera's frustum, out to the original
-//! camera's default far plane ([`CAMERA_FAR_CM`]), and writes the resulting
-//! matrices into the sun's single [`Cascades`] entry for that camera, so
-//! Bevy's shadow pass, its CPU culling (through the frusta it derives from
-//! the matrix) and its shaders all use the fitted map. When a frame fits
-//! nothing (fewer than two corners survive) the previous matrices stay, as
-//! the original leaves its map alone.
+//! hysteresis that carries across frames, raises it to the scene's 1 000 cm
+//! minimum, snaps the centre to the shadow map's texel grid and gives the box
+//! a fixed ±8000 cm depth. Exarust builds the same volume from each active
+//! camera's frustum, out to the original camera's default far plane
+//! ([`CAMERA_FAR_CM`]), and writes the resulting matrices into the sun's
+//! single [`Cascades`] entry for that camera, so Bevy's shadow pass, its CPU
+//! culling (through the frusta it derives from the matrix) and its shaders
+//! all use the fitted map. When a frame fits nothing (fewer than two corners
+//! survive) the previous matrices stay, as the original leaves its map alone.
 //!
-//! Levels without a terrain get the original's whole-scene map, which is not
-//! reproduced (its minimum extent and far field are untraced); they keep
-//! Bevy's cascades, as does every level when [`SunShadowFit`] is off
-//! (`--bevy-sun-cascades`).
+//! Levels without a terrain get the original's whole-scene map instead: the
+//! scene box's centre rotated into the light's frame, its radius as the half
+//! extent and the up-sun reach, the scene's radius ([`SunShadowRegion`]'s
+//! `far_cm`) down-sun, all raised to the minimum extent, and no texel snap.
 //!
-//! Not wired: the softness the original writes into the sun light every frame
-//! ([`exa_render::sun_fit::sun_softness`], which needs a shader uniform
-//! Bevy's directional shadows do not have without its PCSS feature), and the
-//! render routine's polygon offset and caster-side depth nudge (Bevy's depth
-//! and normal biases apply instead). Rules: `docs/RENDERING.md` (Sun shadow
-//! fit).
+//! Both modes carry the render routine's caster bias: the polygon offset and
+//! the small depth nudge that push the casters away from the receivers. The
+//! nudge goes into the drawing matrix only; Bevy's shadow pass uses
+//! `clip_from_cascade` to draw and `clip_from_world` to sample, so receivers
+//! keep the unbiased lookup as in the original. The polygon offset itself has
+//! no Bevy equivalent on the caster side and stays a returned value
+//! ([`exa_render::sun_fit::SunFit::caster_bias`]). Rules:
+//! `docs/RENDERING.md` (Sun shadow fit).
 
 use bevy::light::cascade::Cascade;
 use bevy::light::{
@@ -38,23 +41,45 @@ use bevy::prelude::*;
 use exa_physics::intersect::ConvexVolume;
 use exa_render::gi::GiSunShadow;
 use exa_render::sun_fit::{
-    CAMERA_FAR_CM, LightBasis, SceneBox, SunFit, SunMatrices, VerticalRange, frustum_volume,
-    sun_softness, view_clip_planes,
+    CAMERA_FAR_CM, LightBasis, MIN_HALF_EXTENT_CM, SceneBox, SunFit, SunMatrices, VerticalRange,
+    frustum_volume, view_clip_planes,
 };
 
 /// Centimetres in a metre.
 const CM_PER_METRE: f32 = 100.0;
 
-/// The level's bounds and vertical limits for the fitted sun map, cm,
-/// replaced with each level.
+/// The level's bounds and vertical limits for the sun map, cm, replaced with
+/// each level.
 #[derive(Resource, Debug, Clone, Copy)]
 pub struct SunShadowRegion {
     /// The level's bounds: its props' origins and its terrain's tiles.
     pub scene: SceneBox,
     /// The vertical clipping limits (the record's floor and ceiling).
     pub vertical: VerticalRange,
-    /// The level has a terrain: the original fits its sun map only then.
+    /// The level has a terrain: the original fits its sun map only then and
+    /// covers the whole scene otherwise.
     pub fitted: bool,
+    /// The scene's minimum shadow half extent, cm (1 000 shipped).
+    pub min_half_extent_cm: f32,
+    /// The scene's radius, cm: the whole-scene mode's down-sun reach.
+    pub far_cm: f32,
+    /// The sun light's own softness source `c` (0 in the shipped data).
+    pub c: f32,
+}
+
+impl SunShadowRegion {
+    /// A region for a level of `min..max` cm, with the shipped minimum
+    /// extent and a zero light softness.
+    pub fn new(scene: SceneBox, vertical: VerticalRange, fitted: bool) -> Self {
+        Self {
+            scene,
+            vertical,
+            fitted,
+            min_half_extent_cm: MIN_HALF_EXTENT_CM,
+            far_cm: scene.extent.length(),
+            c: 0.0,
+        }
+    }
 }
 
 /// Whether a sun in a terrain level gets the original's fitted map (the
@@ -130,7 +155,7 @@ fn fit_sun_shadows(
     let Some(region) = region else {
         return;
     };
-    if !region.fitted || !enabled.0 {
+    if !enabled.0 {
         return;
     }
     let size = shadow_map
@@ -141,32 +166,60 @@ fn fit_sun_shadows(
         if !light.shadow_maps_enabled {
             continue;
         }
-        // One map, sampled out to the fitted range.
-        if config.bounds != [fitted_range()] {
+        let basis = LightBasis::from_towards_sun(transform.back().as_vec3());
+        // One map: the fitted region reaches the original camera's far
+        // plane, the whole-scene one the scene's radius either way.
+        let range = if region.fitted {
+            fitted_range()
+        } else {
+            (region.far_cm / CM_PER_METRE).max(1.0)
+        };
+        if config.bounds != [range] {
             *config = CascadeShadowConfig {
-                bounds: vec![fitted_range()],
+                bounds: vec![range],
                 overlap_proportion: 0.0,
                 minimum_distance: 0.0,
             };
         }
-        let basis = LightBasis::from_towards_sun(transform.back().as_vec3());
         let mut seen = Vec::new();
         for (view, camera_transform, projection, camera) in &cameras {
             if !camera.is_active {
                 continue;
             }
             seen.push(view);
-            let volume = fitted_volume(camera_transform, projection, &region);
             let entry = state.views.entry(view).or_default();
-            if entry.fit.fit(&volume, &basis, map_size) {
-                entry.fit.softness = sun_softness(0.0, entry.fit.half_extent_cm).value;
+            if region.fitted {
+                let volume = fitted_volume(camera_transform, projection, &region);
+                if entry
+                    .fit
+                    .fit(&volume, &basis, map_size, region.min_half_extent_cm)
+                {
+                    entry.fit.apply_softness(region.c);
+                    entry.matrices = Some(entry.fit.matrices(&basis, map_size));
+                }
+            } else {
+                // The whole-scene map does not depend on the camera: the
+                // scene's centre and radius, no texel snap, no hysteresis.
+                entry.fit.whole_scene(
+                    &region.scene,
+                    region.far_cm,
+                    &basis,
+                    region.min_half_extent_cm,
+                    region.c,
+                );
                 entry.matrices = Some(entry.fit.matrices(&basis, map_size));
             }
             // Fewer than two corners: the previous frame's map stays. Before
             // any fit there is none, and Bevy's cascade is left.
-            let Some(matrices) = entry.matrices else {
+            let Some(mut matrices) = entry.matrices else {
                 continue;
             };
+            // The render routine's caster-side depth nudge: its sampling
+            // matrix has no nudge, only the casters' projection does, so the
+            // drawing matrix alone is shifted. The engine's [−1, 1] shift is
+            // half as much in Bevy's [0, 1] range, and reverse-Z counts the
+            // farther way down.
+            matrices.clip_from_cascade.w_axis.z -= entry.fit.caster_bias().depth_nudge * 0.5;
             cascades.cascades.insert(
                 view,
                 vec![Cascade {
@@ -267,11 +320,11 @@ mod tests {
 
     fn region(scene_min: Vec3, scene_max: Vec3) -> SunShadowRegion {
         let scene = SceneBox::from_bounds(scene_min, scene_max);
-        SunShadowRegion {
+        SunShadowRegion::new(
             scene,
-            vertical: VerticalRange::of_level(&scene, Some((0.0, 340.0))),
-            fitted: true,
-        }
+            VerticalRange::of_level(&scene, Some((0.0, 340.0))),
+            true,
+        )
     }
 
     fn test_app() -> (App, Entity, Entity) {
@@ -407,9 +460,42 @@ mod tests {
     }
 
     #[test]
-    fn levels_without_terrain_or_the_flag_keep_bevys_cascades() {
-        let changes: [fn(&mut App); 3] = [
-            |app| app.world_mut().resource_mut::<SunShadowRegion>().fitted = false,
+    fn levels_without_terrain_get_the_whole_scene_map() {
+        let (mut app, camera, sun) = test_app();
+        app.world_mut().resource_mut::<SunShadowRegion>().fitted = false;
+        app.update();
+        // One map per camera, covering the whole scene box: its centre is
+        // the box's centre and its half extent the box's radius (raised to
+        // the 1 000 cm minimum), with no dependence on the camera.
+        let cascades = app.world().get::<Cascades>(sun).unwrap();
+        let cascade = cascades.cascades[&camera][0].clone();
+        let fit = fitted(&app, sun, camera);
+        let basis = LightBasis::from_towards_sun(
+            app.world()
+                .get::<GlobalTransform>(sun)
+                .unwrap()
+                .back()
+                .as_vec3(),
+        );
+        let scene = app.world().resource::<SunShadowRegion>().scene;
+        assert!((fit.centre_cm - basis.to_light(scene.centre)).length() < 1e-3);
+        let expected = scene.extent.length().max(MIN_HALF_EXTENT_CM);
+        assert_eq!(fit.half_extent_cm, expected);
+        assert_eq!(fit.near_cm, expected);
+        assert_eq!(fit.far_cm, expected);
+        // The map's centre sits at the near/(-near + far) fraction of the
+        // reverse-Z range and the box's sides land on the map's edges.
+        let centre = basis.from_light(fit.centre_cm) / 100.0;
+        let clip = cascade.clip_from_world * centre.extend(1.0);
+        assert!((clip.z - fit.far_cm / (fit.near_cm + fit.far_cm)).abs() < 1e-4);
+        let edge = basis.from_light(fit.centre_cm + Vec3::X * fit.half_extent_cm) / 100.0;
+        let clip = cascade.clip_from_world * edge.extend(1.0);
+        assert!((clip.x - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn the_flag_and_a_missing_region_keep_bevys_cascades() {
+        let changes: [fn(&mut App); 2] = [
             |app| {
                 app.insert_resource(SunShadowFit(false));
             },
