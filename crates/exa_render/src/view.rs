@@ -203,8 +203,8 @@ impl SupersampleLevel {
         SUBVIEW_COUNTS[self.clamped().0 as usize] as usize
     }
 
-    /// How many passes of up to four sub-views the level takes.
-    pub fn passes(self) -> usize {
+    /// How many quarters (passes of up to four sub-views) the level takes.
+    pub fn quarters(self) -> usize {
         self.subviews().div_ceil(SUBVIEWS_PER_PASS)
     }
 
@@ -817,7 +817,7 @@ mod tests {
         ] {
             let level = SupersampleLevel(level);
             assert_eq!(level.subviews(), subviews);
-            assert_eq!(level.passes(), passes);
+            assert_eq!(level.quarters(), passes);
             assert_eq!(level.jitters().len(), subviews);
         }
         // The 4× setting's jitters are the documented four.
@@ -835,7 +835,7 @@ mod tests {
         }
         assert_eq!(SupersampleLevel(0).jitters(), &[(0.0, 0.0)]);
         assert_eq!(SupersampleLevel(9).subviews(), 66);
-        assert_eq!(SupersampleLevel(9).passes(), 17);
+        assert_eq!(SupersampleLevel(9).quarters(), 17);
         // The 8-sample level's second pass continues its sequence.
         let second = SupersampleLevel(4).jitter(1, 0);
         assert_eq!(second, JITTERS[14]);
