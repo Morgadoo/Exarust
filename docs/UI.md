@@ -2656,7 +2656,14 @@ popup and the character view still wait for their hosts.
   bottom of the client area, of capacity 400 and items up to 50; only what
   the character wears counts against the pack when it is bound. A
   right-button release closes it. The running inventory is
-  `exa_game::gui_screens` with its view in `exa_game::doll_view`.
+  `exa_game::gui_screens` with its view in `exa_game::doll_view`. Binding a
+  body loads the doll's model, sets two layout words of the doll form (0x60
+  and 0, swapped when the character record has the flag 0x1000000) and,
+  when the doll view has a body, a float of the form to ten times a float
+  of that body (a guessed fade); closing releases the shared list and the
+  pane by their counts and redraws the view's panel when its flag asks.
+  These are tested rules (`inventory_window::bind_view`, `close_parts`);
+  the live window does its own bind and close.
 - **Arsenal** (`exa_items::arsenal`): up to five 236-pixel columns laid 60
   units apart (240 pixels at unit 4), as many as fit after a 12-unit margin
   (and 61 for the inventory while shown), scrolled by two arrows. The form
@@ -2664,8 +2671,19 @@ popup and the character view still wait for their hosts.
   inventory toggle. Escape or a right-button release closes it; the
   inventory key shows or hides the inventory. A borrowed item stays in its
   column marked `0x200`, which the inventory refuses, until it is returned.
-  Closing saves the five columns into the chosen set, if any. Not wired
-  into the running game.
+  Closing saves the five columns into the chosen set, if any. The form is
+  painted by `exa_game::arsenal_view`: the form and column frame, the
+  visible columns as item panels and the eight template controls (44 × 44
+  design pixels: the arrows and the six-entry row whose last entry is the
+  inventory toggle) draw through the GUI draw path with the pack's style
+  and attribute words, the controls' pictures stood in by captions;
+  Escape, the inventory key and the scroll arrows run the window's rules.
+  Nothing in the running game opens it yet and no arena store fills its
+  columns.
+- **Popups** (`exa_ui::popups`): the item card fades in and out on a 256-unit
+  squared curve; once its shown clock is reached (or the fade-in ends
+  first) the GUI's pointer test is re-run with the force flag, once, and
+  the card's hit test answers only from then on.
 - **Icons** (`exa_items::icon_cache`, `exa_items::item_gui`): one icon per
   item and variant (lit models by their condition byte), counted by
   reference; 40 units square; framed at 70 (30 for apparel, 20 close),
@@ -2872,8 +2890,12 @@ plain draw and input records.
   dropped; any other item is taken off the record and the character view
   asked to remove it, which marks the character, plays a sound and may
   rebalance it, and apparel is rebuilt either way. Power Crystal AL (500)
-  dropped on the body clears the mark and runs its "Activate" dialogue
-  before the item is added. Not wired into the running game.
+  dropped on the body clears the mark and the field word after it, runs
+  its "Activate" dialogue, sets the record's activation byte and then adds
+  the item; the live drop is `exa_game::panel_live`, which accepts a
+  crystal only through the body's race's own filter
+  (`char_loot::accepts`), wears it (`body_inventory::wear_core`) and puts
+  the activation on the body (`body_inventory::CoreActivated`).
 
 ## Character view
 

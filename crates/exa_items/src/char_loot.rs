@@ -116,19 +116,39 @@ pub fn drag_off(
 /// What dropping an item onto the equipment panel does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EquipDrop {
-    /// Clear the mark and the field after it, run the "Activate"
-    /// dialogue (the actor is a game global, not traced) and set the
-    /// record's flag byte.
-    pub activate: bool,
+    /// Clear the character's mark ([`MARK_FLAG`]) and the field word after
+    /// the mark.
+    pub clear_mark: bool,
+    pub clear_field: bool,
+    /// Run this dialogue on the body (the actor is a game global, not
+    /// traced).
+    pub dialogue: Option<&'static str>,
+    /// Set the record's activation byte.
+    pub activated: bool,
     /// The item is added to the character's record either way.
     pub add: bool,
 }
 
-/// The drop for an item id.
+/// The drop for an item id: Power Crystal AL clears the mark and the field,
+/// runs the "Activate" dialogue, sets the activation byte and then adds the
+/// item; any other item is only added.
 pub fn equip_drop(id: u32) -> EquipDrop {
-    EquipDrop {
-        activate: id == POWER_CRYSTAL_AL,
-        add: true,
+    if id == POWER_CRYSTAL_AL {
+        EquipDrop {
+            clear_mark: true,
+            clear_field: true,
+            dialogue: Some(ACTIVATE_DIALOGUE),
+            activated: true,
+            add: true,
+        }
+    } else {
+        EquipDrop {
+            clear_mark: false,
+            clear_field: false,
+            dialogue: None,
+            activated: false,
+            add: true,
+        }
     }
 }
 
@@ -231,11 +251,23 @@ mod tests {
         assert_eq!(
             equip_drop(POWER_CRYSTAL_AL),
             EquipDrop {
-                activate: true,
+                clear_mark: true,
+                clear_field: true,
+                dialogue: Some(ACTIVATE_DIALOGUE),
+                activated: true,
                 add: true
             }
         );
-        assert!(!equip_drop(499).activate && equip_drop(499).add);
+        assert_eq!(
+            equip_drop(499),
+            EquipDrop {
+                clear_mark: false,
+                clear_field: false,
+                dialogue: None,
+                activated: false,
+                add: true
+            }
+        );
         // Only a golem body without a crystal takes the AL crystal.
         assert!(accepts(TAKES_CORE_AL, POWER_CRYSTAL_AL, &[7]));
         assert!(!accepts(

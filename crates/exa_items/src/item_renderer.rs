@@ -111,6 +111,36 @@ pub fn allocations(icon: i32, alpha: bool) -> Allocations {
     }
 }
 
+/// The framebuffer the constructor makes: one depth and one colour
+/// renderbuffer at twice the icon, both attached to a framebuffer object;
+/// the draw and read buffers both name the colour attachment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Target {
+    /// The side of both renderbuffers.
+    pub buffer_side: i32,
+    pub depth_format: u32,
+    pub colour_format: u32,
+    pub depth_attachment: u32,
+    pub colour_attachment: u32,
+    /// The buffer the draw and the read bind.
+    pub draw_buffer: u32,
+    pub read_buffer: u32,
+}
+
+/// The render target for an icon size and the alpha global.
+pub fn target(icon: i32, alpha: bool) -> Target {
+    let a = allocations(icon, alpha);
+    Target {
+        buffer_side: a.buffer_side,
+        depth_format: DEPTH_FORMAT,
+        colour_format: a.colour_format,
+        depth_attachment: DEPTH_ATTACHMENT,
+        colour_attachment: COLOUR_ATTACHMENT,
+        draw_buffer: COLOUR_ATTACHMENT,
+        read_buffer: COLOUR_ATTACHMENT,
+    }
+}
+
 /// The renderer's private scene settings.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct IconScene {
@@ -678,6 +708,20 @@ mod tests {
         );
         assert_eq!(r.alpha_colour_format, 0x8c41);
         assert_eq!(CAMERA_SHIFT, [0.0, 0.0, 500.0]);
+    }
+
+    #[test]
+    fn the_target_attaches_both_renderbuffers_to_the_frame_buffer() {
+        let t = target(160, true);
+        assert_eq!(t.buffer_side, 320);
+        assert_eq!(t.depth_format, 0x1902);
+        assert_eq!(t.colour_format, 0x8c43);
+        assert_eq!(t.depth_attachment, 0x8d00);
+        assert_eq!(t.colour_attachment, 0x8ce0);
+        // Both the draw and the read buffer name the colour attachment.
+        assert_eq!((t.draw_buffer, t.read_buffer), (0x8ce0, 0x8ce0));
+        assert_eq!(target(160, false).colour_format, 0x8c41);
+        assert_eq!(target(80, true).buffer_side, 160);
     }
 
     #[test]

@@ -927,10 +927,14 @@ whose crease measure reads the painted normal map ±2 texels around.
 Palette: index = family × 8 + shade. Each of the 32 families has hue,
 saturation, base value and value step. With k = 7 − shade, the linear ramp
 (apparel) is v = min(k·(step·0.13) + base, 1) and the lifted ramp (factory
-material rolls) is v = min((k·(step·0.13) + (base + 0.1))², 1), the
-parenthesised sums and the square in double; both use s = (1 − (0.09k)²)·sat
-in double, scaled by (v + 0.6)² (double) when v < 0.4, then HSV → RGB with
-the sector ⌊6h⌋. Family 0 is the greys (0.91 down to black).
+material rolls) is v = min((k·(step·0.13) + (base + 0.1))², 1): step·0.13
+in double stored as a float, the product k·step and the linear sum in
+float, the lifted sums and the square in double. The cap is an ordered
+compare (a NaN stays). Both use s = (1 − (0.09k)²)·sat in double, scaled by
+(v + 0.6)² (double, ordered compare in double) when v < 0.4, then HSV → RGB
+with the sector ⌊6h⌋. Family 0 is the greys (0.91 down to black). The
+apparel colours are `paint::palette_colour` (linear), the factory areas
+`paint::factory_colour` (lifted, stored as bytes).
 
 **Colour space.** REA on the original's paint jobs and texture loading shows
 the following.
@@ -1409,7 +1413,12 @@ factory weapons of a real save, part for part and material for material.
   `0x200000` for the alternate normal). The compile declares `Tex0…` for the
   layer samplers, a `Nrm` sampler at unit 7 (specular) and a `Tex<n>` at
   unit 8 (painted pattern and alternate normal); the pass draws bind their
-  material layers from unit 2 (3 for the normal pass).
+  material layers from unit 2 (3 for the normal pass), every layer, and
+  the pattern picture right after them, at the colour layer count plus two
+  (`paint::draw_program`, `layer_unit`, `bound_layers`, `pattern_unit`,
+  `extra_sampler`). The normal draw tests the mask 8 in the item's flag word and
+  takes the alternate-normal program when it is set; a material that
+  compiles none has an empty slot there and binds program 0.
 - **Job ring and surface cache** (`exa_assets::paint_jobs`): pushes store at
   a 0..=255 write cursor; a full ring flushes every entry *before* the new
   one and then wraps, so the new job waits until the ring wraps to its slot.

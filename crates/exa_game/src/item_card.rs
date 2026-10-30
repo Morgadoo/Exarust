@@ -73,12 +73,12 @@ pub struct ShownCard {
 
 impl ShownCard {
     /// Whether the card takes the pointer at a physical point: inside its
-    /// form, once its shown flag is set (the popup's hit rule).
+    /// form, once its forced pointer test has run (the popup's hit rule).
     pub fn hit(&self, pointer: (i32, i32), unit: i32) -> bool {
         let (width, height) = card_size(unit);
         let inside =
             GuiRect::new(self.at.0, self.at.1, width, height).contains(pointer.0, pointer.1);
-        desc_hits(self.fade.shown, i32::from(inside)) != 0
+        desc_hits(self.fade.pointer_ready, i32::from(inside)) != 0
     }
 
     /// The card's press rule for a mouse word (button bit 1 left, 2 right):
@@ -551,7 +551,7 @@ fn tick_card(
         let pointer = pointer * window.scale_factor();
         let unit = card_unit(window, &screens);
         let at = (pointer.x as i32, pointer.y as i32);
-        if card.fade.shown && !card.hit(at, unit) {
+        if card.fade.pointer_ready && !card.hit(at, unit) {
             card.leave(now);
         }
     }

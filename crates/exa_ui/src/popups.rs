@@ -61,12 +61,15 @@ pub struct PopupFade {
     pub state: u8,
     /// The clock value the current fade ends at.
     pub fade_at: u32,
-    /// The clock value from which the card counts as shown (its page hook
-    /// runs once when the clock reaches it during the fade-in). A separate
-    /// field from [`fade_at`](Self::fade_at); the code that sets it is outside
-    /// this unit.
+    /// The clock value from which the card takes the pointer: once the
+    /// clock reaches it during the fade-in (or the fade-in ends first) the
+    /// GUI re-runs its pointer test with the force flag, once. A separate
+    /// field from [`fade_at`](Self::fade_at); the code that sets it is
+    /// outside this unit.
     pub shown_at: u32,
-    pub shown: bool,
+    /// The forced pointer test has run; the card's hit test answers only
+    /// from then on ([`desc_hits`]).
+    pub pointer_ready: bool,
 }
 
 /// One fade step.
@@ -74,8 +77,8 @@ pub struct PopupFade {
 pub struct PopupFrame {
     pub alpha: f32,
     pub close: bool,
-    /// The card just became fully shown (its page hook runs once).
-    pub shown_now: bool,
+    /// Re-run the GUI's pointer test now, forced (once per showing).
+    pub refresh_pointer: bool,
 }
 
 impl PopupFade {
@@ -110,14 +113,17 @@ impl PopupFade {
         self.state = 2;
     }
 
-    /// The per-frame step. The clock compares are unsigned.
+    /// The per-frame step. The clock compares are unsigned: a fade over
+    /// (its end at or below `now`) ends it, and the squared curve is the
+    /// remaining share (fade-out) or one less it (fade-in) squared in
+    /// double, narrowed to float.
     pub fn step(&mut self, now: u32) -> PopupFrame {
-        let mut shown_now = false;
+        let mut refresh_pointer = false;
         match self.state {
             1 => {
-                if !self.shown && self.shown_at <= now {
-                    self.shown = true;
-                    shown_now = true;
+                if !self.pointer_ready && self.shown_at <= now {
+                    self.pointer_ready = true;
+                    refresh_pointer = true;
                 }
                 if self.fade_at > now {
                     let left = i64::from(self.fade_at) - i64::from(now);
@@ -125,18 +131,18 @@ impl PopupFade {
                     return PopupFrame {
                         alpha: (t * t) as f32,
                         close: false,
-                        shown_now,
+                        refresh_pointer,
                     };
                 }
                 self.state = 0;
-                if !self.shown {
-                    self.shown = true;
-                    shown_now = true;
+                if !self.pointer_ready {
+                    self.pointer_ready = true;
+                    refresh_pointer = true;
                 }
                 PopupFrame {
                     alpha: 1.0,
                     close: false,
-                    shown_now,
+                    refresh_pointer,
                 }
             }
             2 => {
@@ -146,14 +152,14 @@ impl PopupFade {
                     PopupFrame {
                         alpha: (t * t) as f32,
                         close: false,
-                        shown_now,
+                        refresh_pointer,
                     }
                 } else {
                     self.state = 0;
                     PopupFrame {
                         alpha: 0.0,
                         close: true,
-                        shown_now,
+                        refresh_pointer,
                     }
                 }
             }
@@ -170,7 +176,7 @@ impl Default for PopupFrame {
         Self {
             alpha: 1.0,
             close: false,
-            shown_now: false,
+            refresh_pointer: false,
         }
     }
 }
@@ -249,8 +255,8 @@ pub fn desc_mouse(mask: u16) -> DescMouse {
     }
 }
 
-/// The card's hit test only works once its shown flag is set (the fade-in
-/// reached its shown clock).
+/// The card's hit test only works once its forced pointer test has run
+/// ([`PopupFade::pointer_ready`]).
 pub fn desc_hits(shown: bool, base: i32) -> i32 {
     if shown { base } else { 0 }
 }
@@ -563,7 +569,7 @@ mod tests {
         assert_eq!(f.step(1192).alpha, 0.5625);
         let step = f.step(1256);
         assert_eq!(step.alpha, 1.0);
-        assert!(step.shown_now);
+        assert!(step.refresh_pointer);
         assert_eq!(f.state, 0);
         f.fade_out(2000);
         assert_eq!(f.fade_at, 2256);
@@ -573,15 +579,22 @@ mod tests {
     }
 
     #[test]
-    fn the_page_hook_waits_for_its_own_clock() {
+    fn the_pointer_test_is_forced_once_when_the_card_is_ready() {
         let mut f = PopupFade::default();
         f.show(1000);
         f.shown_at = 1100;
-        assert!(!f.step(1099).shown_now);
-        assert!(f.step(1100).shown_now);
+        assert!(!f.step(1099).refresh_pointer);
+        assert!(f.step(1100).refresh_pointer);
         // It runs once.
-        assert!(!f.step(1101).shown_now);
-        assert!(!f.step(1256).shown_now);
+        assert!(!f.step(1101).refresh_pointer);
+        assert!(!f.step(1256).refresh_pointer);
+        // A fade-in that ends before the shown clock forces the test when
+        // it ends.
+        let mut f = PopupFade::default();
+        f.show(1000);
+        f.shown_at = 1300;
+        assert!(!f.step(1255).refresh_pointer);
+        assert!(f.step(1256).refresh_pointer);
     }
 
     #[test]
