@@ -1302,6 +1302,24 @@ also leaves its interim backpedal and combat walk alone).
   weapon's sweet spot ([formats/OTHER.md](formats/OTHER.md), Weapon
   record), 50 cm unarmed: the arena sword's 98 cm makes it guard beyond
   3.92 m.
+- **Rising again** (`exa_game::rise`). Death stamps a rise clock 10 s on
+  when the body may still rise (the story's living humans and races with
+  the may-rise flag, red health at least 0.01, red regeneration not
+  blocked). Every frame the AI manager's rule raises a dead character in
+  the scene once the game clock is strictly past that clock and its red,
+  widened to double, does not compare under 0.01; with less red and no
+  keep-rising race flag the may-rise rule clears and it stays dead. The
+  rise is the original's revive: down and knocked out at once (it wakes
+  and gets up through the knock-out's wake), yellow health half the red,
+  its voice back at body scale × the race's voice factor, its limbs
+  muscled and its muscles turned on with its race's factors and its stats
+  (a golem's or a ghoul's, not a human's), empty hands set up unarmed, and
+  an AI brain's roles applied again. Its clips and controller (taken when
+  it went limp) come back, it faces the way its chest lies over its
+  pelvis, and its controller stands under its pelvis. The player's own
+  revive stays the game flow's. `--undead-opponent <frame>` gives the
+  debug duellist the story's rules and collapses it at that frame, to
+  watch it rise (with `--still-opponent` it does not fight back).
 - **The daze.** While a fighter's energy is more than 0.05 under its most
   its body tick makes its stance the Defence stance, and, unless it is
   down or attacking (its condition word helpless or attacking,

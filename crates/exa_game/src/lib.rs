@@ -99,6 +99,7 @@ pub mod power_screen;
 pub mod practice;
 pub mod prelude;
 pub mod report;
+pub mod rise;
 pub mod save_kit;
 pub mod save_level;
 pub mod save_live;

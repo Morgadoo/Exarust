@@ -1704,6 +1704,11 @@ pub struct Ragdoll {
     /// The body was walking (its motion the walk's) when its muscles went:
     /// the muscles-off sampler plants by the keys' flags only then.
     limp_walking: bool,
+    /// The race's factors and the character's stats the muscles read when
+    /// they went. The original keeps both on the character through death
+    /// (death only turns the muscles off); Exarust drops the drive, so it
+    /// keeps them here for a revive ([`Ragdoll::revival_drive`]).
+    kept_muscles: Option<(RaceMuscles, BodyStats)>,
     /// The body's scrape and roll sound sources, each following a point in
     /// its part's frame ([`Ragdoll::add_scrape_on`]).
     scrapes: Vec<ScrapeSource>,
@@ -1924,6 +1929,23 @@ pub fn daze_energy(energy: f32, daze: f32) -> f32 {
         MIN_ENERGY
     } else {
         next
+    }
+}
+
+impl Drive {
+    /// A living body's first drive for a character of `race` and `stats`:
+    /// the default drive with the race's factors, its stance factor the
+    /// race's, and the character's stats, as building a body with
+    /// [`Ragdoll::with_drive`], [`Ragdoll::with_race`] and
+    /// [`Ragdoll::with_stats`] leaves it. The part factors and toe weights
+    /// those set stay on the body, so a revive needs only this.
+    pub fn of_character(race: RaceMuscles, stats: BodyStats) -> Self {
+        Self {
+            race,
+            stance: race.stance,
+            stats,
+            ..Self::default()
+        }
     }
 }
 
@@ -2468,6 +2490,7 @@ impl Ragdoll {
             limp_scale: 1.0,
             limp_supported: false,
             limp_walking: false,
+            kept_muscles: None,
             scrapes: Vec::new(),
             scrape_events: Vec::new(),
         }
@@ -2517,6 +2540,22 @@ impl Ragdoll {
     /// Sets the eased standing height.
     pub fn set_limp_height(&mut self, height: f32) {
         self.limp_height = height;
+    }
+
+    /// The race's factors and stats the muscles read when they went, if
+    /// the body ever had muscles.
+    pub fn kept_muscles(&self) -> Option<(RaceMuscles, BodyStats)> {
+        self.kept_muscles
+    }
+
+    /// The muscles a revive gives back: a fresh drive with the race's
+    /// factors and the character's stats the body had when its muscles
+    /// went ([`Drive::of_character`]), as the original's revive turns the
+    /// muscles on again over the race and stats the character kept. None
+    /// for a body that never had muscles (a level's placed dead).
+    pub fn revival_drive(&self) -> Option<Drive> {
+        self.kept_muscles
+            .map(|(race, stats)| Drive::of_character(race, stats))
     }
 
     /// The body scale the muscles-off sampler's height target reads.
@@ -3121,6 +3160,7 @@ impl Ragdoll {
             self.limp_scale = d.stats.scale;
             self.limp_supported = d.balance.has_support();
             self.limp_walking = d.bearing.walking;
+            self.kept_muscles = Some((d.race, d.stats));
         }
         self.drive = None;
         pairs::set_leg_layers(&mut self.parts, 0);

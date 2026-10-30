@@ -356,6 +356,7 @@ impl Ragdoll {
             limp_scale: 1.0,
             limp_supported: false,
             limp_walking: false,
+            kept_muscles: None,
             scrapes: Vec::new(),
             scrape_events: Vec::new(),
         }

@@ -3696,9 +3696,11 @@ fn apply_steps(
                         if body.drive.is_some() {
                             body.knock_out();
                         } else {
-                            // A limp body gets its muscles back, as a
-                            // living body's first drive is made.
-                            body.revive(exa_physics::body::Drive::default());
+                            // A limp body gets its muscles back over the
+                            // race and stats it had (`crate::rise` gives
+                            // its clips and controller back).
+                            let drive = body.revival_drive().unwrap_or_default();
+                            body.revive(drive);
                         }
                     }
                 }
