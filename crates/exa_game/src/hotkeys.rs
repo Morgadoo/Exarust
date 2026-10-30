@@ -31,6 +31,7 @@
 //! light requests, read in the instructions
 //! (`context/re/player-control-hand.md`, Hotkeys).
 
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use exa_character::grip_runtime::FlipWeaponRequest;
 use exa_character::held::Hands;
@@ -46,6 +47,46 @@ use crate::gui_screens::ScreenRequest;
 use crate::hand::{Hand, Holding};
 use crate::player::PlayerBody;
 use crate::thaum::cast::{BarAction, BarCommand, PowerCaster};
+
+/// The character the player is focused on for talking (the reply panel's
+/// partner once it is open). The app fills it from its focus query; the
+/// original reads the player behaviour's focus target instead. [Exarust
+/// stand-in: no focus query is modelled yet.]
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DialogueFocus(pub Option<u32>);
+
+/// What a dialogue key asks the conversation engine to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialogueCommand {
+    /// Start talking to this character.
+    Talk(u32),
+    /// Pick panel entry `n` (from zero).
+    Pick(usize),
+    /// End every conversation the player is in.
+    Leave,
+}
+
+/// The command a hotkey sends. The Talk key ends a running dialogue (it is
+/// [`Hotkey::EndDialogue`] then) and otherwise talks to the focused
+/// character, if there is one; the digits pick an entry.
+pub fn dialogue_command(action: Hotkey, focus: Option<u32>) -> Option<DialogueCommand> {
+    match action {
+        Hotkey::EndDialogue => Some(DialogueCommand::Leave),
+        Hotkey::Choose(n) => Some(DialogueCommand::Pick(usize::from(n))),
+        Hotkey::Talk => focus.map(DialogueCommand::Talk),
+        _ => None,
+    }
+}
+
+/// The dialogue state and messages the key handler reads and writes.
+#[derive(SystemParam)]
+pub struct DialogueSide<'w> {
+    conversations: Option<Res<'w, exa_script::Conversations>>,
+    focus: Option<Res<'w, DialogueFocus>>,
+    talk: MessageWriter<'w, exa_script::Talk>,
+    pick: MessageWriter<'w, exa_script::PickReply>,
+    leave: MessageWriter<'w, exa_script::LeaveDialogue>,
+}
 
 /// The permission bits of the key handler's mask.
 pub mod allow {
@@ -204,6 +245,10 @@ impl Plugin for HotkeyPlugin {
         app.add_message::<ScreenRequest>()
             .add_message::<BarCommand>()
             .add_message::<FlipWeaponRequest>()
+            .add_message::<exa_script::Talk>()
+            .add_message::<exa_script::PickReply>()
+            .add_message::<exa_script::LeaveDialogue>()
+            .init_resource::<DialogueFocus>()
             .add_systems(
                 Update,
                 press_hotkeys
@@ -240,6 +285,7 @@ fn press_hotkeys(
     mut screens: MessageWriter<ScreenRequest>,
     mut bars: MessageWriter<BarCommand>,
     mut flips: MessageWriter<FlipWeaponRequest>,
+    mut dialogue: DialogueSide,
 ) {
     let mut pressed: Vec<u32> = keys
         .get_just_pressed()
@@ -277,6 +323,10 @@ fn press_hotkeys(
         let context = Context {
             dead: word.is_dead(),
             collapsing: word.dying(),
+            dialogue: dialogue
+                .conversations
+                .as_deref()
+                .is_some_and(|c| c.engine.panel.open),
             power_bar: caster.is_some_and(|c| c.bar_open),
             powers: caster.map_or(0, |c| c.known.len() as i32),
             ..Context::default()
@@ -356,8 +406,25 @@ fn press_hotkeys(
                         action: BarAction::Step(i32::from(direction)),
                     });
                 }
-                // No skills screen or dialogue to open yet (the power tree
-                // has its own key reader).
+                // The dialogue keys: the Talk key ends a running dialogue or
+                // starts one with the focused character, the digits pick a
+                // reply.
+                Hotkey::EndDialogue | Hotkey::Choose(_) | Hotkey::Talk => {
+                    match dialogue_command(action, dialogue.focus.as_deref().and_then(|f| f.0)) {
+                        Some(DialogueCommand::Talk(who)) => {
+                            dialogue.talk.write(exa_script::Talk(who));
+                        }
+                        Some(DialogueCommand::Pick(n)) => {
+                            dialogue.pick.write(exa_script::PickReply(n));
+                        }
+                        Some(DialogueCommand::Leave) => {
+                            dialogue.leave.write(exa_script::LeaveDialogue);
+                        }
+                        None => {}
+                    }
+                }
+                // No skills screen yet (the power tree has its own key
+                // reader).
                 _ => {}
             }
         }
@@ -551,6 +618,10 @@ mod tests {
                 .add_message::<ScreenRequest>()
                 .add_message::<BarCommand>()
                 .add_message::<FlipWeaponRequest>()
+                .init_resource::<DialogueFocus>()
+                .add_message::<exa_script::Talk>()
+                .add_message::<exa_script::PickReply>()
+                .add_message::<exa_script::LeaveDialogue>()
                 .add_systems(Update, press_hotkeys);
             let player = app.world_mut().spawn((PlayerBody::new(0.0), word)).id();
             app.world_mut()
@@ -575,6 +646,10 @@ mod tests {
                 .add_message::<ScreenRequest>()
                 .add_message::<BarCommand>()
                 .add_message::<FlipWeaponRequest>()
+                .init_resource::<DialogueFocus>()
+                .add_message::<exa_script::Talk>()
+                .add_message::<exa_script::PickReply>()
+                .add_message::<exa_script::LeaveDialogue>()
                 .add_systems(Update, press_hotkeys);
             app.world_mut().spawn((PlayerBody::new(0.0), word));
             app.world_mut()
@@ -620,5 +695,29 @@ mod tests {
         hand.holding = Holding::Lift;
         assert_eq!(enter_combat(&mut hand, &mut req), None);
         assert_eq!(hand.holding, Holding::Nothing);
+    }
+
+    /// The dialogue keys: with the panel open the Talk key ends, the digits
+    /// pick (from zero); with nobody focused the Talk key sends nothing.
+    #[test]
+    fn the_dialogue_keys_send_their_commands() {
+        assert_eq!(
+            dialogue_command(Hotkey::EndDialogue, None),
+            Some(DialogueCommand::Leave)
+        );
+        assert_eq!(
+            dialogue_command(Hotkey::Choose(0), None),
+            Some(DialogueCommand::Pick(0))
+        );
+        assert_eq!(
+            dialogue_command(Hotkey::Choose(8), None),
+            Some(DialogueCommand::Pick(8))
+        );
+        assert_eq!(
+            dialogue_command(Hotkey::Talk, Some(9)),
+            Some(DialogueCommand::Talk(9))
+        );
+        assert_eq!(dialogue_command(Hotkey::Talk, None), None);
+        assert_eq!(dialogue_command(Hotkey::Inventory, Some(9)), None);
     }
 }
