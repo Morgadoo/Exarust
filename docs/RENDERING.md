@@ -45,12 +45,24 @@ draw the sub-views at `3·trunc(w/4)`, `2·trunc(w/3)`, `3·trunc(w/5)` or
 `trunc(w/2)` and offset the resolve by 0, −1/3, −0.2 or −0.5, starts at 0
 and is not changed in play. The shared buffer is twice the render size.
 The final pass's sharpen is 1.5 × (0.075·level + 0.4) in double precision.
+Each pass carries its own state: the first pass of a level of two to four
+sub-views draws in state 3, the first of a wider level in state 1 (the
+slider never reaches one), later passes in state 2 and a single view in
+state 0; the low bit raises a renderer flag and the particles' colour pass
+takes its alpha word from the whole value. The resolve reads the level's
+jitter table from entry `first jitter + 4·pass` and weights the pass
+`(4·pass + 1) / count` (a double division stored in single), the projection
+takes a depth dither of `0.5 − (4·pass + 0.5) / count` in single precision,
+and each sub-view's animation clock is `i·step + 4·pass·step + step/2 −
+duration/2` with `step = duration / count`. The resolve replaces on the
+first pass and adds on later ones.
 The view's projection takes half the field of view in single precision,
 divides the near distance by cos/sin of it (the cosine in double precision,
 the sine in single) and multiplies the half height by the aspect in single
 precision. `exa_render::view` holds the table, the jitters, the render
-scale, the projection, the point-to-window projection, the framebuffer
-viewport and region stacks and the view copy's quad, pinned by tests.
+scale, the projection, the point-to-window projection, the pass schedule,
+the framebuffer viewport and region stacks and the view copy's quad, pinned
+by tests.
 
 Exarust (`exa_render::supersample`) draws the scene at twice the window's
 resolution on each axis, an ordered 2 × 2 grid instead of the jittered
