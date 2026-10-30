@@ -138,7 +138,7 @@ pub const RESOLVE_LAYER: usize = 1;
 /// for the lights' shadow casters, so no scene camera ever sees it.
 pub const OFFSCREEN_LAYER: usize = RESOLVE_LAYER + 1;
 /// Scene resolution per window pixel, on each axis.
-const SCALE: u32 = 2;
+pub const SCALE: u32 = 2;
 
 /// The supersampled scene's image, and the quad showing it.
 #[derive(Component)]

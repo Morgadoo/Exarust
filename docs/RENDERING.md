@@ -3273,13 +3273,19 @@ the rain falls to 0.01 (`exa_world::scene_env`). While the amount is above
   original's 8-bit frame buffer), becomes `0.75·t + 3·max(t − 0.1, 0)²`
   plus the vertex colour: the streak darkens dim parts of the frame and
   brightens bright ones. Blended with source alpha and one minus source
-  alpha, depth-tested, one pixel wide.
+  alpha, depth-tested, one window pixel wide: the original draws a
+  one-pixel line in each supersample corner at window resolution, so on
+  Exarust's 2× target each line is drawn twice, one target pixel apart.
 - **The frame copy.** The streaks draw in Bevy's transmissive pass, which
   copies the opaque frame first; the scene cameras get
   `ScreenSpaceTransmission` while the effect exists. Cameras without it
   draw no rain. The original draws the effect once per supersample corner
   over that corner's frame; Exarust draws it once, at the supersampled
   resolution. The reflected pass (reflection level above 3) is not drawn.
+- **Look.** Over a dark night ground the streaks are faint dark lines (a
+  quarter darker than what lies behind them); over bright ground or sky
+  they are bright lines. `EXA_RAIN_DEBUG` and `EXA_RAIN_DRAW` (see
+  `docs/DEBUGGING.md`) show where they are.
 - **Sound levels.** The effect's update gives the rain loop its volume,
   the drift `(0.3·gust + 0.15)·I²` (0.12 at I = 0.9 in a still gust), and
   its pitch, the fall `(0.5·gust + 0.9)·I + 0.4`; the next weather tick

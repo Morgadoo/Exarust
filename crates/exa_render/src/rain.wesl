@@ -17,6 +17,10 @@ import bevy_pbr::render::{
 
 // `RainCol0`: the rain colour and alpha (`exa_game::effects::rain`).
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> rain_colour: vec4<f32>;
+// A debug aid (`EXA_RAIN_DEBUG`): x = 1 draws every streak opaque magenta,
+// frame copy or not; x = 2 draws the frame copy opaque times 4, or green
+// in a view without the copy.
+@group(constants::MATERIAL_BIND_GROUP) @binding(1) var<uniform> rain_debug: vec4<f32>;
 
 const CM_PER_METRE: f32 = 100.0;
 
@@ -32,6 +36,12 @@ fn vertex(vertex_in: Vertex) -> Varyings {
     let world_from_local = mesh_functions::get_world_from_local(vertex_in.instance_index);
     let world = mesh_functions::mesh_position_local_to_world(world_from_local, vec4(v.position, 1.0));
     out.position = position_world_to_clip(world.xyz);
+    // A copy of the line one target pixel to the right per copy index, so a
+    // supersampled target's streak is one window pixel wide, as the
+    // original's per-corner line is.
+@if(VERTEX_UVS_A) {
+    out.position.x += v.uv.x * 2.0 / mesh_view_bindings::view.viewport.z * out.position.w;
+}
     var bytes = vec4(160.0, 160.0, 160.0, 255.0);
 @if(VERTEX_COLORS) {
     bytes = v.color;
@@ -48,6 +58,9 @@ fn vertex(vertex_in: Vertex) -> Varyings {
 // camera: the off-screen and interface cameras) draws no rain.
 @fragment
 fn fragment(in: Varyings) -> @location(0) vec4<f32> {
+    if rain_debug.x > 0.5 && rain_debug.x < 1.5 {
+        return vec4(1.0, 0.0, 1.0, 1.0);
+    }
     var tex = vec3(0.0);
 @if(VIEW_TRANSMISSION_TEXTURE) {
     let size = vec2<f32>(textureDimensions(mesh_view_bindings::view_transmission_texture));
@@ -60,8 +73,14 @@ fn fragment(in: Varyings) -> @location(0) vec4<f32> {
     ).rgb;
 }
 @if(!VIEW_TRANSMISSION_TEXTURE) {
+    if rain_debug.x > 1.5 {
+        return vec4(0.0, 1.0, 0.0, 1.0);
+    }
     discard;
 }
+    if rain_debug.x > 1.5 {
+        return vec4(tex * 4.0, 1.0);
+    }
     tex = clamp(tex, vec3(0.0), vec3(1.0));
     var blm = max(tex - vec3(0.1), vec3(0.0));
     blm = blm * blm;

@@ -44,7 +44,7 @@
 //! thunder set's variant and every other engine draw from one shared
 //! generator; Exarust's sound bank keeps its own.
 
-use bevy::camera::visibility::NoFrustumCulling;
+use bevy::camera::visibility::{NoFrustumCulling, RenderLayers};
 use bevy::pbr::ScreenSpaceTransmission;
 use bevy::prelude::*;
 use exa_assets::Game;
@@ -88,6 +88,13 @@ const RAIN_RANDOM_SEED: u32 = 5489;
 #[derive(Component)]
 struct RainStreaks;
 
+/// A debug aid (`EXA_RAIN_DRAW=0`): the rain is stepped and heard but its
+/// streaks are hidden, so two captures of the same frames differ only by
+/// them.
+fn streaks_hidden() -> bool {
+    std::env::var("EXA_RAIN_DRAW").is_ok_and(|v| v.trim() == "0")
+}
+
 /// The weather's live objects: the rain effect and its draw, the rain
 /// loop's voice and the sounds it loaded.
 #[derive(Resource)]
@@ -105,6 +112,14 @@ pub struct WeatherEffects {
     rain_buffer: Option<Option<u32>>,
     /// The thunder set, once loaded.
     thunder_set: Option<u32>,
+    /// `EXA_RAIN_DRAW=0`: the streaks stay hidden.
+    hidden: bool,
+    /// `EXA_RAIN_DEBUG=1`: the streaks draw opaque magenta and the effect
+    /// logs its placement every 120 frames; `=2` draws the frame copy the
+    /// streaks read (green without one).
+    debug: f32,
+    /// Frames drawn, for the debug log.
+    frames: u32,
 }
 
 impl Default for WeatherEffects {
@@ -116,6 +131,12 @@ impl Default for WeatherEffects {
             rain_voice: None,
             rain_buffer: None,
             thunder_set: None,
+            hidden: streaks_hidden(),
+            debug: std::env::var("EXA_RAIN_DEBUG")
+                .ok()
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0.0),
+            frames: 0,
         }
     }
 }
@@ -172,12 +193,37 @@ pub fn thunder_offset(thunder: &Thunder) -> Vec3 {
 }
 
 /// The drawn streaks as line-list attributes: each drop's head and tail in
-/// the box's frame (cm), and its colour bytes as plain numbers.
-pub fn streak_vertices(rain: &Rain) -> (Vec<[f32; 3]>, Vec<[f32; 4]>) {
-    rain.vertices()
-        .into_iter()
-        .map(|(p, c)| (p.to_array(), c.map(f32::from)))
-        .unzip()
+/// the box's frame (cm), its colour bytes as plain numbers, and the copy
+/// index the shader shifts by that many target pixels; `copies` copies of
+/// every line (one window pixel's width on a supersampled target).
+pub fn streak_vertices(rain: &Rain, copies: u32) -> StreakVertices {
+    let drawn = rain.vertices();
+    let mut out = StreakVertices::default();
+    for copy in 0..copies.max(1) {
+        for (p, c) in &drawn {
+            out.positions.push(p.to_array());
+            out.colours.push(c.map(f32::from));
+            out.copies.push([copy as f32, 0.0]);
+        }
+    }
+    out
+}
+
+/// The streaks' line-list attributes ([`streak_vertices`]).
+#[derive(Debug, Default)]
+pub struct StreakVertices {
+    pub positions: Vec<[f32; 3]>,
+    pub colours: Vec<[f32; 4]>,
+    pub copies: Vec<[f32; 2]>,
+}
+
+impl StreakVertices {
+    /// Writes the attributes into the streaks' mesh.
+    fn fill(self, mesh: &mut Mesh) {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, self.positions);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, self.colours);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, self.copies);
+    }
 }
 
 /// The streaks' placement: the box at its place (cm to m), turned and
@@ -206,19 +252,31 @@ pub fn arena_setup_ambience(
     Some(exa_audio::arena_ambience(daylight, wind, rain_target, calm))
 }
 
+/// What the rain reads of a scene camera: whether it is active, where it
+/// looks from, its field of view, its layers, whether it is supersampled and
+/// whether it copies its frame for the transmissive pass.
+type RainCamera = (
+    Entity,
+    &'static Camera,
+    &'static GlobalTransform,
+    Option<&'static Projection>,
+    Option<&'static RenderLayers>,
+    Has<exa_render::supersample::Supersample>,
+    Has<ScreenSpaceTransmission>,
+);
+
 /// Creates, steps, draws and frees the rain effect from the weather's
 /// state, and writes its volume and pitch back for the next tick.
 #[allow(clippy::too_many_arguments)]
 fn rain_effect(
     mut commands: Commands,
     runtime: Option<ResMut<SceneEnvRuntime>>,
-    cameras: Query<(&GlobalTransform, Option<&Projection>), exa_render::supersample::SceneCamera>,
+    cameras: Query<RainCamera, exa_render::supersample::SceneCamera>,
     mut effects: ResMut<WeatherEffects>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<RainMaterial>>,
     mut streaks: Query<(&mut Transform, &mut Visibility), With<RainStreaks>>,
     time: Res<Time<Virtual>>,
-    copies: Query<(Entity, Has<ScreenSpaceTransmission>), exa_render::supersample::SceneCamera>,
 ) {
     let effects = &mut *effects;
     let exists = runtime
@@ -227,7 +285,7 @@ fn rain_effect(
     if !exists {
         if effects.rain.take().is_some() {
             info!("weather: rain effect freed");
-            for (camera, copied) in &copies {
+            for (camera, .., copied) in &cameras {
                 if copied {
                     commands.entity(camera).remove::<ScreenSpaceTransmission>();
                 }
@@ -238,15 +296,18 @@ fn rain_effect(
         }
         return;
     }
-    // The streaks read the frame behind them: the scene's cameras copy it
+    // The camera that sees the world: active and drawing the default layer
+    // (the inventory figure's camera draws its own layers).
+    let world = cameras.iter().find(|(_, camera, _, _, layers, ..)| {
+        camera.is_active && layers.is_none_or(|l| l.intersects(&RenderLayers::default()))
+    });
+    // The streaks read the frame behind them: the world camera copies it
     // before the transmissive pass while the effect exists (no copy is made
     // in a frame without rain to draw).
-    for (camera, copied) in &copies {
-        if !copied {
-            commands
-                .entity(camera)
-                .insert(ScreenSpaceTransmission::default());
-        }
+    if let Some((camera, .., false)) = world {
+        commands
+            .entity(camera)
+            .insert(ScreenSpaceTransmission::default());
     }
     let Some(mut runtime) = runtime else { return };
     let effect = runtime.env.weather.effect;
@@ -260,7 +321,8 @@ fn rain_effect(
     if rain.intensity != effect.intensity {
         rain.set_intensity(effect.intensity);
     }
-    let camera = cameras.iter().next();
+    let camera =
+        world.map(|(_, _, at, projection, _, supersampled, _)| (at, projection, supersampled));
     let live = runtime.env.rain_effect_live() && camera.is_some();
     if !live {
         for (_, mut visibility) in &mut streaks {
@@ -268,7 +330,7 @@ fn rain_effect(
         }
         return;
     }
-    let Some((at, projection)) = camera else {
+    let Some((at, projection, supersampled)) = camera else {
         return;
     };
     let fov = match projection {
@@ -292,13 +354,35 @@ fn rain_effect(
         backward.y,
     ));
     runtime.env.weather.effect.colour = scratch;
-    let (positions, colours) = streak_vertices(rain);
+    let copies = if supersampled {
+        exa_render::supersample::SCALE
+    } else {
+        1
+    };
+    let streaks_out = streak_vertices(rain, copies);
     let transform = streak_transform(rain, fov);
+    if effects.debug > 0.0 && effects.frames.is_multiple_of(120) {
+        let first = streaks_out
+            .positions
+            .first()
+            .map(|p| transform.transform_point(Vec3::from_array(*p)));
+        info!(
+            "rain debug frame {}: {} cameras, eye {:.2?} m, backward {:.2?}, box {:.2?} m, {} vertices, first {:.2?} m, colour {:?}",
+            effects.frames,
+            cameras.iter().count(),
+            eye / CM_PER_M,
+            backward,
+            transform.translation,
+            streaks_out.positions.len(),
+            first,
+            colour
+        );
+    }
+    effects.frames = effects.frames.wrapping_add(1);
     match &effects.streaks {
         Some((entity, mesh, material)) => {
             if let Some(mut m) = meshes.get_mut(mesh) {
-                m.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-                m.insert_attribute(Mesh::ATTRIBUTE_COLOR, colours);
+                streaks_out.fill(&mut m);
             }
             if let Some(mut m) = materials.get_mut(material)
                 && m.colour != colour
@@ -307,15 +391,19 @@ fn rain_effect(
             }
             if let Ok((mut t, mut visibility)) = streaks.get_mut(*entity) {
                 *t = transform;
-                *visibility = Visibility::Inherited;
+                *visibility = if effects.hidden {
+                    Visibility::Hidden
+                } else {
+                    Visibility::Inherited
+                };
             }
         }
         None => {
             let mut mesh = rain_mesh();
-            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colours);
+            streaks_out.fill(&mut mesh);
             let mesh = meshes.add(mesh);
-            let material = materials.add(RainMaterial { colour });
+            let debug = Vec4::new(effects.debug, 0.0, 0.0, 0.0);
+            let material = materials.add(RainMaterial { colour, debug });
             let entity = commands
                 .spawn((
                     Name::new("RainEffect"),
@@ -323,7 +411,11 @@ fn rain_effect(
                     Mesh3d(mesh.clone()),
                     MeshMaterial3d(material.clone()),
                     transform,
-                    Visibility::Inherited,
+                    if effects.hidden {
+                        Visibility::Hidden
+                    } else {
+                        Visibility::Inherited
+                    },
                     NoFrustumCulling,
                     bevy::light::NotShadowCaster,
                     bevy::light::NotShadowReceiver,
@@ -577,11 +669,17 @@ mod tests {
         let mut rain = Rain::new(&mut Mt19937::new(RAIN_RANDOM_SEED));
         rain.set_intensity(0.5);
         rain.at = Vec3::new(100.0, 200.0, -450.0);
-        let (positions, colours) = streak_vertices(&rain);
-        assert_eq!(positions.len(), 2048);
-        assert_eq!(colours[0], [160.0, 160.0, 160.0, 0.0]);
-        assert_eq!(colours[1], [160.0, 160.0, 160.0, 255.0]);
-        assert_eq!(positions[0], rain.drops[0].head.to_array());
+        let one = streak_vertices(&rain, 1);
+        assert_eq!(one.positions.len(), 2048);
+        assert_eq!(one.colours[0], [160.0, 160.0, 160.0, 0.0]);
+        assert_eq!(one.colours[1], [160.0, 160.0, 160.0, 255.0]);
+        assert_eq!(one.positions[0], rain.drops[0].head.to_array());
+        // On a supersampled target every line is drawn twice, the copy a
+        // target pixel over.
+        let two = streak_vertices(&rain, 2);
+        assert_eq!(two.positions.len(), 4096);
+        assert_eq!(two.positions[2048], one.positions[0]);
+        assert_eq!((two.copies[0], two.copies[2048]), ([0.0, 0.0], [1.0, 0.0]));
         let t = streak_transform(&rain, 70.0);
         assert_eq!(t.translation, Vec3::new(1.0, 2.0, -4.5));
         assert!((t.scale.x - 0.01).abs() < 1e-8);

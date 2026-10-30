@@ -522,7 +522,14 @@ fn sky_cameras(
 #[allow(clippy::too_many_arguments)]
 fn live_environment(
     time: Res<Time>,
-    cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
+    cameras: Query<
+        (
+            &Camera,
+            &GlobalTransform,
+            Option<&bevy::camera::visibility::RenderLayers>,
+        ),
+        exa_render::supersample::SceneCamera,
+    >,
     runtime: Option<ResMut<SceneEnvRuntime>>,
     mut fog: Option<ResMut<LevelFog>>,
     mut clear: ResMut<ClearColor>,
@@ -533,7 +540,14 @@ fn live_environment(
     let Some(mut runtime) = runtime else {
         return;
     };
-    let view = cameras.iter().next().map(|t| View {
+    // The camera that sees the world: active and drawing the default layer
+    // (the inventory figure's camera draws its own layers).
+    let world = cameras.iter().find(|(camera, _, layers)| {
+        camera.is_active
+            && layers
+                .is_none_or(|l| l.intersects(&bevy::camera::visibility::RenderLayers::default()))
+    });
+    let view = world.map(|(_, t, _)| View {
         forward: t.forward().as_vec3().to_array(),
         // The engine keeps its view in centimetres.
         position: (t.translation() * 100.0).to_array(),

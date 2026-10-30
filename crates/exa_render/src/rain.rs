@@ -14,7 +14,11 @@
 //! - **Fragment**: the frame behind the streak `t` (clamped to 1, the
 //!   original's frame buffer being 8-bit) becomes `0.75·t + 3·max(t − 0.1,
 //!   0)²`, plus the vertex colour; alpha-blended (source alpha, one minus
-//!   source alpha), depth-tested, one pixel wide.
+//!   source alpha), depth-tested, one window pixel wide: the original draws
+//!   a one-pixel line in each supersample corner at window resolution, so
+//!   on Exarust's supersampled target each line is drawn
+//!   [`crate::supersample::SCALE`] times, one target pixel apart (the copy
+//!   index in the first texture coordinate).
 
 use bevy::asset::{AssetPath, embedded_asset, embedded_path};
 use bevy::mesh::{MeshVertexBufferLayoutRef, PrimitiveTopology};
@@ -72,6 +76,9 @@ pub fn rain_mesh() -> Mesh {
 pub struct RainMaterial {
     #[uniform(0)]
     pub colour: Vec4,
+    /// A debug aid: x above 0.5 draws the streaks opaque magenta.
+    #[uniform(1)]
+    pub debug: Vec4,
 }
 
 fn rain_shader() -> ShaderRef {
