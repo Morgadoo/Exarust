@@ -1797,7 +1797,7 @@ pub struct ChaseCamera {
     /// Zoom: the target and the shown value (800–2000).
     zoom: f32,
     shown_zoom: f32,
-    /// The real time since the camera started (ms), truncated to the
+    /// The real time since the camera started (ms), rounded once to the
     /// frame stamp the tick driver compares against.
     elapsed_ms: f64,
     /// The original's integer tick clock.
@@ -2059,7 +2059,7 @@ impl ChaseCamera {
     ) -> f32 {
         // The original compares the frame's millisecond stamp with the
         // tick clock; the elapsed real time is kept unrounded so the
-        // truncation happens once, against the absolute clock.
+        // rounding happens once, against the absolute clock.
         self.elapsed_ms += f64::from(dt) * 1000.0;
         let (ran, t) = self.frame.step(self.elapsed_ms.round() as u32);
         for _ in 0..ran {
