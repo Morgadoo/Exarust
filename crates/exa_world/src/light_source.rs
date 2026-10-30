@@ -274,7 +274,11 @@ impl DerivedLight {
             ],
             inject_scale,
             luminance: luminance(colour),
-            reach: if ranged { light.radius } else { UNRANGED_FAR },
+            reach: if ranged && light.radius > 0.0 {
+                light.radius
+            } else {
+                UNRANGED_FAR
+            },
             shadow_strength: if ranged && light.radius > 0.0 {
                 ((1.0 / light.radius) as f64 * 0.8) as f32
             } else {
@@ -641,6 +645,12 @@ mod tests {
         // An unranged light reaches the far plane and has no shadow
         // strength; a zero radius does not divide.
         let l = light(0, 1.0, 0.0, false);
+        let derived = DerivedLight::of(&l, 1.0);
+        assert_eq!(derived.reach, UNRANGED_FAR);
+        assert_eq!(derived.shadow_strength, 0.0);
+        // A ranged light with a zero radius also uses the far plane and no
+        // shadow strength.
+        let l = light(RANGED, 1.0, 0.0, true);
         let derived = DerivedLight::of(&l, 1.0);
         assert_eq!(derived.reach, UNRANGED_FAR);
         assert_eq!(derived.shadow_strength, 0.0);
