@@ -213,11 +213,11 @@ pub const BUILTIN_CLASSES: [u32; 5] = [
     BUILTIN_TYPES[4].base,
 ];
 
-/// The loader's transparency flag (`0x290`): a record in refraction mode
+/// The loader's transparency flag: a record in refraction mode
 /// (loaded flags `0x300` = `0x200`) is translucent; otherwise one whose
 /// opacity is above 0.8 in double precision and whose loaded class is not
 /// the opaque nibble 1 is. The record's no-shadow flag (extra bit 2) clears
-/// it. NaN opacity is unordered: the compare falls through to translucent.
+/// it. A NaN opacity takes the unordered branch, which clears the flag.
 /// The flag is computed before the late opaque rewrite, so it uses the
 /// class the alpha-test rewrite left ([`crate::shader_program::loaded_class`]).
 pub fn draws_translucent(material: &Material) -> bool {

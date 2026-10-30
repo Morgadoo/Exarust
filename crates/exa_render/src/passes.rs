@@ -12,11 +12,11 @@
 //!
 //! Rules: `docs/RENDERING.md` (Pass order).
 
-/// The per-material list a material record's class word belongs to
-/// (`0x04D860`): the alpha-tested bit `0x8000` selects the shadow list
-/// whatever the low nibble; otherwise the low nibble `0` is the opaque
-/// list, `1`, `2` and `3` the blended list, and every other value has no
-/// list (the original returns nothing for it).
+/// The per-material list a material record's class word is looked up in:
+/// the bit `0x8000` selects the shadow list whatever the low nibble;
+/// otherwise the low nibble `0` is the opaque list, `1` to `4` the blended
+/// list, and every other value has no list (the original returns nothing
+/// for it).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MaterialList {
     Opaque,
@@ -31,13 +31,13 @@ pub fn material_list(class_word: u32) -> Option<MaterialList> {
     }
     match class_word & 0xF {
         0 => Some(MaterialList::Opaque),
-        1..=3 => Some(MaterialList::Blended),
+        1..=4 => Some(MaterialList::Blended),
         _ => None,
     }
 }
 
-/// The material factory's list a record joins (`0x04D860`'s sibling
-/// `0x04D950`): the renderer's shader version (1 or 2, from whether its
+/// The material factory's list a record joins (the registration beside
+/// [`material_list`]'s lookup): the renderer's shader version (1 or 2, from whether its
 /// second program list is empty) and the record's object word pick one of
 /// six lists. The alpha bit `0x10000` takes list 3; the shadow bit `0x8000`
 /// list 1 on version 1, else list 2; the low nibble 0 takes list 1 on
@@ -938,7 +938,8 @@ mod tests {
         assert_eq!(material_list(0x101), Some(MaterialList::Blended));
         assert_eq!(material_list(0x102), Some(MaterialList::Blended));
         assert_eq!(material_list(0x103), Some(MaterialList::Blended));
-        assert_eq!(material_list(0x104), None);
+        assert_eq!(material_list(0x104), Some(MaterialList::Blended));
+        assert_eq!(material_list(0x105), None);
         assert_eq!(material_list(0x8004), Some(MaterialList::Shadow));
         assert_eq!(material_list(0x8000), Some(MaterialList::Shadow));
         assert_eq!(material_list(0xFFFF_8000), Some(MaterialList::Shadow));

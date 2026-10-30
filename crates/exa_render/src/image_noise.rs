@@ -75,25 +75,8 @@ pub fn ridge_byte(v: u8) -> u8 {
     round_f64(d * d * 255.0) as u8
 }
 
-/// Halves every byte of a map, as the byte image's level builder does
-/// (`0x097A70`): `(v + 0)·0.5` in single precision, rounded to nearest
-/// (ties to even), clamped to 0…255. This is the byte counterpart of the
-/// generated mip levels' filter, not the ridge fold.
-pub fn halve_bytes(map: &mut [u8]) {
-    for v in map {
-        let half = f32::from(*v) * 0.5;
-        *v = if half < 0.0 {
-            0
-        } else if half > 255.0 {
-            255
-        } else {
-            round_f32(half) as u8
-        };
-    }
-}
-
-/// Fills rows `from..to` of a `width`-wide float map with white noise
-/// (`0x098970`): `width·(to − from)` draws continuing `seed`, written from
+/// Fills rows `from..to` of a `width`-wide float map with white noise:
+/// `width·(to − from)` draws continuing `seed`, written from
 /// the row `from` on. Returns the generator's state.
 pub fn white_noise_float_rows(
     out: &mut [f32],
@@ -718,14 +701,6 @@ mod tests {
         }
         assert_eq!(out[20..25], out[0..5]);
     }
-    #[test]
-    fn the_byte_level_halves_and_rounds_to_even() {
-        let mut map = [0u8, 1, 2, 3, 127, 128, 129, 255];
-        halve_bytes(&mut map);
-        // 0.5 → 0 (even), 1.5 → 2 (even), 63.5 → 64, 64.5 → 64, 127.5 → 128.
-        assert_eq!(map, [0, 0, 1, 2, 64, 64, 64, 128]);
-    }
-
     #[test]
     fn white_noise_fills_the_requested_rows_only() {
         let mut map = [9.0f32; 8];

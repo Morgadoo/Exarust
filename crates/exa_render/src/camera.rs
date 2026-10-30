@@ -106,7 +106,7 @@ impl CameraNode {
 pub const VIEW_CAMERA_START: [f32; 3] = [-300.0, 200.0, 500.0];
 /// The point the view's camera looks at when built (the origin).
 pub const VIEW_CAMERA_TARGET: [f32; 3] = [0.0, 0.0, 0.0];
-/// The view's flag word (`0x1DC`), 0x0100_C600 as constructed.
+/// The view's flag word, 0x0100_C600 as constructed (no reader yet).
 pub const VIEW_FLAGS: u32 = 0x0100_C600;
 /// The colour texture's class word for a linear workflow (alpha global
 /// clear) and for the sRGB one.
@@ -114,9 +114,6 @@ pub const VIEW_TEXTURE_WORD_LINEAR: u32 = 0x333;
 pub const VIEW_TEXTURE_WORD_SRGB: u32 = 0x233;
 /// The colour texture's format word: a 2D target.
 pub const VIEW_TEXTURE_FORMAT: u32 = 0x2000_0000;
-/// The tiny value the constructor stores in the view's near-related field
-/// (`0x17C`): the float bits 0x0000_0010.
-pub const VIEW_EPSILON: f32 = f32::from_bits(0x10);
 
 /// A rendered 3D view (the game's, the icon renderer's, the item viewer's)
 /// as its constructor leaves it: exposure 1, bloom strength 1, post on and
@@ -134,14 +131,12 @@ pub struct ViewSettings {
     /// The slot of the scene camera list the view's camera is registered
     /// in: -1 until a scene binds it.
     pub scene_slot: i32,
-    /// The view's flag word (`0x1DC`): 0x0100_C600 as constructed.
+    /// The view's flag word: 0x0100_C600 as constructed.
     pub flags: u32,
     /// The colour texture's class word (`0x333` linear, `0x233` sRGB).
     pub texture_word: u32,
     /// The colour texture's format word: a 2D target.
     pub texture_format: u32,
-    /// The tiny near-related value (`0x17C`).
-    pub epsilon: f32,
 }
 
 impl Default for ViewSettings {
@@ -154,7 +149,6 @@ impl Default for ViewSettings {
             flags: VIEW_FLAGS,
             texture_word: VIEW_TEXTURE_WORD_SRGB,
             texture_format: VIEW_TEXTURE_FORMAT,
-            epsilon: VIEW_EPSILON,
         }
     }
 }
@@ -212,7 +206,6 @@ mod tests {
         assert_eq!(v.flags, 0x0100_C600);
         assert_eq!(v.texture_word, 0x233);
         assert_eq!(v.texture_format, 0x2000_0000);
-        assert_eq!(v.epsilon.to_bits(), 0x10);
         assert_eq!(VIEW_CAMERA_TARGET, [0.0, 0.0, 0.0]);
         assert_eq!(VIEW_CAMERA_START, [-300.0, 200.0, 500.0]);
     }
