@@ -1001,13 +1001,29 @@ pub fn sync_hub_screen(
     }
 }
 
-/// Draws the open hub window into the GUI's queue.
+/// Adds the hub windows' draw to `app`, after the in-game screens' draw:
+/// that pass clears the GUI's queue every frame, so a hub frame pushed
+/// before it would never reach the canvas.
+pub fn add_hub_draw(app: &mut App) {
+    app.add_systems(
+        Update,
+        draw_hub_windows
+            .after(crate::gui_screens::draw_screens)
+            .after(crate::arena_hub_live::HubWindowSystems),
+    );
+}
+
+/// Draws the open hub window into the GUI's queue. The in-game screens'
+/// draw clears the queue each frame; without it (a host that has no game
+/// screens) the hub clears it itself.
+#[allow(clippy::too_many_arguments)]
 pub fn draw_hub_windows(
     windows: Option<Res<HubWindows>>,
     textures: Option<Res<GuiTextures>>,
     screen: Query<&Window, With<bevy::window::PrimaryWindow>>,
     mut frames: ResMut<GuiFrames>,
     time: Option<Res<Time>>,
+    game_screens: Option<Res<crate::gui_screens::GameScreens>>,
     mut fade: Local<HubFade>,
 ) {
     let Some(windows) = windows else {
@@ -1018,7 +1034,9 @@ pub fn draw_hub_windows(
         fade.form = None;
         return;
     }
-    frames.clear();
+    if game_screens.is_none() {
+        frames.clear();
+    }
     let Some(bounds) = windows.bounds() else {
         return;
     };
@@ -1052,6 +1070,7 @@ pub fn draw_hub_windows(
         HubWindowKind::None => None,
     };
     let Some(mut painted) = painted else {
+        debug!("hub windows: {:?} open but nothing to paint", windows.kind);
         return;
     };
     // The windows stacked over it, bottom to top, drawn shown.
@@ -1061,6 +1080,13 @@ pub fn draw_hub_windows(
             crate::hub_forms::paint_form(&mut painted, &open.form, &shown);
         }
     }
+    debug!(
+        "hub windows: {:?} at {:?} paints {} layers ({} stacked forms, fade {alpha})",
+        windows.kind,
+        bounds,
+        painted.layers.len(),
+        windows.forms.forms.len()
+    );
     painted.submit(&mut frames);
 }
 
@@ -1333,12 +1359,42 @@ mod tests {
     }
 
     #[test]
+    fn the_hub_draw_survives_the_game_screens_clear() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<GuiFrames>()
+            .init_resource::<crate::gui_screens::GameScreens>()
+            .init_resource::<crate::item_panel_draw::PanelIcons>()
+            .init_resource::<crate::gui_screens::DebugGuiForm>()
+            .init_resource::<HubWindows>();
+        app.add_systems(Update, crate::gui_screens::draw_screens);
+        add_hub_draw(&mut app);
+        let mut windows = HubWindows::default();
+        windows.task.screen = (1280, 720);
+        windows.unit = 4;
+        windows.open_manage(&career());
+        windows.open_records(&career());
+        app.world_mut().insert_resource(windows);
+        for _ in 0..5 {
+            app.update();
+            let frames = app.world().resource::<GuiFrames>();
+            // The game screens' pass cleared the queue, then the hub drew
+            // Manage Company and Records over it.
+            // Without font textures the captions add no layers: the frames,
+            // panels, buttons and table panes give 15.
+            assert_eq!(frames.frames.len(), 1);
+            assert_eq!(frames.frames[0].layers.len(), 15);
+            assert!(frames.primitives() > 0);
+        }
+    }
+
+    #[test]
     fn the_draw_path_runs_for_three_frames_with_a_board_open() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .init_resource::<GuiFrames>()
             .init_resource::<HubWindows>();
-        app.add_systems(Update, draw_hub_windows);
+        add_hub_draw(&mut app);
         for _ in 0..3 {
             app.update();
         }

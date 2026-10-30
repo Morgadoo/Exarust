@@ -136,6 +136,11 @@ struct ManagerReading {
     pelvis_cm: f32,
 }
 
+/// The hub's entry, click, window and session systems, which the windows'
+/// draw follows.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct HubWindowSystems;
+
 /// Runs the hub entry, the click hook and the session hook in the game.
 pub struct ArenaHubPlugin;
 
@@ -168,10 +173,11 @@ impl Plugin for ArenaHubPlugin {
                     hub_clicks,
                     hub_session_fall,
                     close_hub_windows,
-                    crate::hub_windows::draw_hub_windows,
                 )
-                    .chain(),
+                    .chain()
+                    .in_set(HubWindowSystems),
             );
+        crate::hub_windows::add_hub_draw(app);
     }
 }
 
