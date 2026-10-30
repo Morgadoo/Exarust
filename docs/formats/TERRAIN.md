@@ -387,7 +387,12 @@ One system grows grass and plants (`exa_world::terrain::vegetation`):
   above shadow quality 4 (the original's shadow hook).
 - **Points**: one Poisson-disc set for every tile, from the 32-bit LCG
   (`s = s·0x08088405 + 1`) seeded `0x17972D3E`: radius 1.3 vertex steps
-  (26 cm) over 240 × 240, 30 attempts per active point, margin r/4. The set
+  (26 cm) over 240 × 240, 30 attempts per active point, margin r/4. Draws
+  are widened to double and scaled by 2⁻³², rounded to single once. The
+  neighbour grid's cell is the quotient rounded to nearest even (not
+  truncated); each cell lists four points at most, and retiring an active
+  point swaps the list's last point into its slot (the original's range
+  delete moves the tail in). The set
   is partitioned in place into 8 × 8 chunks of 6 m, rows first.
 - **Density**: the mask pass layers each material's f13 (green), with cover
   forced to 1. A point reads it as a byte, d = G/255 − 0.2, or −1 in a hole.

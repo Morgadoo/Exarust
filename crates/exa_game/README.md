@@ -927,13 +927,18 @@ fade. `--open-settings settings|controls` opens it once loaded.
 The camera's navigation unit is `nav_camera`: the align routine's wrap
 of the target yaw about the camera's, the engine's planar yaw, the orbit
 rate (4.8 rad over the screen, in double precision) and pitch limits (0.8
-rad to 1.5, 0.000125 steeper per zoom unit, the held pitch), the frame
-clock's nine ticks, the camera placement with its height, distance and
+rad to 1.5, 0.000125 steeper per zoom unit, the held pitch), the integer
+frame clock (`FrameDriver`: the millisecond tick clock against the frame
+stamp, at most nine ticks, the backlog dropped, the fractional position
+computed in double), the camera placement with its height, distance and
 pitch clamps, the free zoom's 0.2 % per wheel unit, the preset record's
 numeric fields (the 59² view and size scales, the 59th roots of the
 retention and the rate, the pitch bounds, the 10/10000 distance range and
 both cameras' speeds, the distance raised to the smallest, and the
 editor-only target scan for the `0xA9` nodes with its `0xAE` marker), the
+controller's construction and tear-down (`NavController`: the 45° angle,
+the scene and viewport back-links, the node and task hooks, the saved
+viewport callback and the preset, with the clock set to the frame), the
 cut-away segment and the point the probe centres on (the stored point,
 the followed object's own point or its position), the kick offset and the
 123-point jittered disc table; the preset's editor target scan keeps a node
@@ -947,10 +952,12 @@ kinesis pick; both record the sphere-top crossing plus the distance the
 mesh callback writes back, shortening the segment so a nearer surface met
 later still wins; the ground-plane fallback is the miss. The cursor's aim plane and reach use them, and the
 physics world answers as the mesh callback because Exarust keeps no CPU
-triangles. Its free-camera drag and zoom handlers are `nav_drag`: the
+triangles for a picked node; where a mesh does carry the engine's kd-tree,
+`KdMesh` answers with its own front-face walk. Its free-camera drag and zoom handlers are `nav_drag`: the
 absolute drag's yaw and arc-sine pitch with its pixel bounds and
 quarter-turn release snap, the stepped wheel zoom (the chase camera's
-wheel goes through it), the stepped gamepad zoom (`gamepad_zoom`: `gamepad::zoom_step`'s
+wheel goes through it), the stepped gamepad zoom (`gamepad_zoom`: only a
+stepped camera moves, then `gamepad::zoom_step`'s
 move, which the pad drives live, then the pitch floor and held pitch), the vertical zoom slide, the zoom's cubed
 pitch offset and the editor's grab drag and face-aligned target. The
 editor's viewport attachment keeps the handler set a preset's flags add,

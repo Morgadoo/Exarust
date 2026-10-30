@@ -431,6 +431,23 @@ impl RayMesh for PhysicsMesh<'_> {
     }
 }
 
+/// A mesh answered by the engine's triangle kd-tree, as a level mesh's own
+/// ray callback answers: the tree's front-face ray walk gives the nearest
+/// face within the pick's distance. This is the CPU-mesh stand-in the picks
+/// use where a mesh carries its tree; [`Triangles`] remains for a small
+/// mesh without one.
+pub struct KdMesh<'a> {
+    pub tree: &'a exa_physics::kd_tree::KdTree,
+}
+
+impl RayMesh for KdMesh<'_> {
+    fn nearest_hit(&self, ray: Ray, within: f32) -> Option<(usize, f32)> {
+        self.tree
+            .ray(ray.origin, ray.direction, within)
+            .map(|hit| (hit.triangle as usize, hit.distance))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -636,6 +653,35 @@ mod tests {
         behind.bounds.half_extents = Vec3::splat(0.5);
         // Now both bounds hold the start; the mesh itself is met at 1 m.
         assert!(nearest_hit(r, 10.0, 1, &[behind]).is_some());
+    }
+
+    #[test]
+    fn a_kd_tree_mesh_answers_the_pick_with_its_own_faces() {
+        use exa_physics::kd_tree::{KdTree, Triangle};
+        // An upward-facing 20 m floor of two triangles.
+        let floor = [
+            Triangle::new(
+                Vec3::new(-10.0, 0.0, -10.0),
+                Vec3::new(-10.0, 0.0, 10.0),
+                Vec3::new(10.0, 0.0, -10.0),
+            ),
+            Triangle::new(
+                Vec3::new(10.0, 0.0, -10.0),
+                Vec3::new(-10.0, 0.0, 10.0),
+                Vec3::new(10.0, 0.0, 10.0),
+            ),
+        ];
+        let tree = KdTree::build(&floor, false);
+        let mesh = KdMesh { tree: &tree };
+        let down = ray(Vec3::new(0.5, 5.0, 0.5), -Vec3::Y);
+        let (face, distance) = mesh.nearest_hit(down, 10.0).unwrap();
+        assert!(face <= 1);
+        assert!((distance - 5.0).abs() < 1e-6, "{distance}");
+        // The pick's distance bounds the tree's walk.
+        assert!(mesh.nearest_hit(down, 4.0).is_none());
+        // The tree's front-face walk refuses a ray from below.
+        let up = ray(Vec3::new(0.5, -5.0, 0.5), Vec3::Y);
+        assert!(mesh.nearest_hit(up, 10.0).is_none());
     }
 
     #[test]

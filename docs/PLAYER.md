@@ -1619,7 +1619,11 @@ character body's possession routines; addresses are in the research notes.
   when the player is left idle (below).
 - The camera **ticks every 17 ms** of real time: a tick runs once the frame
   passes its start, at most nine a frame (a longer stall drops the rest).
-  Each frame shows the direction to the eye, the zoom and any shake offset
+  The clock is the original's integer millisecond form: the tick clock and
+  the frame's stamp are unsigned 32-bit milliseconds, compared as such, and
+  the frame lies `1 − (clock − frame)/17` into the last tick
+  (`nav_camera::FrameDriver`). Each frame shows the direction to the eye,
+  the zoom and any shake offset
   between the last two ticks, by how far the frame is into the last one, so
   the view moves smoothly on any refresh rate. A shake offset moves the eye
   only, and only while it is over 1e-5 cm² squared. A **kick** moves the
@@ -1697,7 +1701,15 @@ character body's possession routines; addresses are in the research notes.
   marker raising its extra flag (`nav_camera::scan_target`). The callback
   set its flags ask for (the wheel, the editor's press and move, the free
   camera's press and move) is `nav_camera::preset_handlers`; installing
-  them on a viewport has no Exarust counterpart. The
+  them on a viewport has no Exarust counterpart. The controller's
+  construction is `nav_camera::NavController`: the 45° angle, the scene
+  and viewport back-links, the camera node's rebuild hook (priority 0),
+  the viewport's saved callback and its destructor, the frame tick on the
+  scene's task list (priority 7), the preset and the tick clock set to the
+  frame; its destructor runs the saved viewport callback once and frees
+  the state. The stepped camera's look-down amount `−pitch` is held to at
+  least the held pitch and at most 1.5 rad
+  (`nav_camera::clamp_fixed_pitch`). The
   chase camera uses the shared pieces; the placement, free-zoom, preset
   and drag paths are modelled (`exa_game::nav_camera`, `nav_drag`) with
   tests but have no Exarust caller yet except the wheel.

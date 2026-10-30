@@ -126,21 +126,23 @@ fn poisson_disc() -> Vec<Vec2> {
     let cell = r * std::f32::consts::FRAC_1_SQRT_2;
     let dim = (SIDE / cell).round() as usize + 1;
     let mut grid: Vec<Vec<usize>> = vec![Vec::new(); dim * dim];
-    let cell_of = |p: Vec2| ((p.x / cell) as usize, (p.y / cell) as usize);
     let mut rng = Lcg(POINT_SEED);
     let mut points = Vec::new();
     let mut active = Vec::new();
     let add = |p: Vec2, points: &mut Vec<Vec2>, grid: &mut Vec<Vec<usize>>| {
-        let (cx, cy) = cell_of(p);
+        let (cx, cy) = grid_cell(p, cell);
         let slot = &mut grid[cy.min(dim - 1) * dim + cx.min(dim - 1)];
+        // A cell holds four points. The original writes the fifth past its
+        // end (a buffer overrun); the model keeps the first four, which is
+        // what the neighbour search can still read.
         if slot.len() < 4 {
             slot.push(points.len());
-        } else {
-            slot[3] = points.len();
         }
         points.push(p);
     };
-    let first = Vec2::new(rng.unit() * SIDE, rng.unit() * SIDE);
+    // The draws are the engine's: the 32-bit step widened to double, times
+    // 2⁻³², rounded to single once.
+    let first = Vec2::new(rng.unit_exact() * SIDE, rng.unit_exact() * SIDE);
     add(first, &mut points, &mut grid);
     active.push(0);
     let margin = r / 4.0;
@@ -148,15 +150,15 @@ fn poisson_disc() -> Vec<Vec2> {
         let pick = rng.below(active.len() as u32) as usize;
         let centre = points[active[pick]];
         for _ in 0..ATTEMPTS {
-            let angle = rng.unit() * std::f32::consts::TAU;
-            let radius = (rng.unit() + 1.0) * r;
+            let angle = rng.unit_exact() * std::f32::consts::TAU;
+            let radius = (rng.unit_exact() + 1.0) * r;
             // The engine's sine and cosine: the cosine is the x offset.
             let (sin, cos) = sin_cos(angle);
             let p = centre + Vec2::new(cos * radius, sin * radius);
             if p.x <= margin || p.y <= margin || p.x >= SIDE - margin || p.y >= SIDE - margin {
                 continue;
             }
-            let (cx, cy) = cell_of(p);
+            let (cx, cy) = grid_cell(p, cell);
             let near = (cy.saturating_sub(2)..=(cy + 2).min(dim - 1)).any(|y| {
                 (cx.saturating_sub(2)..=(cx + 2).min(dim - 1)).any(|x| {
                     grid[y * dim + x]
@@ -169,9 +171,21 @@ fn poisson_disc() -> Vec<Vec2> {
                 add(p, &mut points, &mut grid);
             }
         }
+        // The active list swaps its last point into the chosen slot, as the
+        // original's range delete moves the tail in.
         active.swap_remove(pick);
     }
     points
+}
+
+/// The scatter grid's cell of a point: each coordinate divided by the cell
+/// size and rounded to the nearest whole, ties to even, as the original's
+/// conversion (`CVTSS2SI`) does.
+fn grid_cell(p: Vec2, cell: f32) -> (usize, usize) {
+    (
+        (p.x / cell).round_ties_even() as usize,
+        (p.y / cell).round_ties_even() as usize,
+    )
 }
 
 /// Splits points into chunks by partitioning in place: rows first, then
@@ -569,12 +583,27 @@ mod tests {
     #[test]
     fn the_scatter_starts_at_the_seeds_first_two_draws() {
         let mut rng = Lcg(POINT_SEED);
-        let first = Vec2::new(rng.unit() * SIDE, rng.unit() * SIDE);
+        let first = Vec2::new(rng.unit_exact() * SIDE, rng.unit_exact() * SIDE);
+        assert_eq!(first, Vec2::new(183.017_03, 35.931_23));
         let all: Vec<Vec2> = points().iter().flatten().copied().collect();
         assert!(
             all.iter().any(|p| p.distance(first) < 1e-6),
             "{first:?} is not in the set"
         );
+        // The whole set from the seed: 21 035 points, a concrete check of
+        // every draw, the rounded grid cells and the active-list removal.
+        assert_eq!(all.len(), 21_035);
+    }
+
+    #[test]
+    fn the_scatter_grid_cell_rounds_to_the_nearest_even() {
+        // Half a cell below rounds down, half a cell above up; the exact
+        // halves go to the even cell, as the original's conversion does.
+        assert_eq!(grid_cell(Vec2::new(0.4, 0.6), 1.0), (0, 1));
+        assert_eq!(grid_cell(Vec2::new(0.5, 1.5), 1.0), (0, 2));
+        assert_eq!(grid_cell(Vec2::new(2.5, 3.5), 1.0), (2, 4));
+        // Truncation would put 0.6 in cell 0; the rounded index is 1.
+        assert_eq!(grid_cell(Vec2::new(0.6, 0.6), 1.0), (1, 1));
     }
 
     #[test]
