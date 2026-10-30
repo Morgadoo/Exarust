@@ -154,12 +154,22 @@ impl MemBlock {
         self.kind = Kind::Resource;
     }
 
-    /// A copy of the block's contents in a fresh general block of its size.
+    /// Copies the block into `dest`: `dest` is resized to this block's size
+    /// by its own kind's rules, then as many bytes as `dest` now holds are
+    /// copied over. A resource destination that refuses the resize keeps
+    /// its size; the original would then copy that many bytes (past the
+    /// source when it is shorter), Exarust copies only what both hold.
+    pub fn copy_into(&self, dest: &mut MemBlock) {
+        dest.resize(self.size);
+        let keep = dest.bytes().len().min(self.bytes().len());
+        dest.data[..keep].copy_from_slice(&self.data[..keep]);
+    }
+
+    /// A copy of the block's contents in a new general block of its size
+    /// ([`MemBlock::copy_into`] an empty general block).
     pub fn duplicate(&self) -> Self {
         let mut copy = Self::new();
-        copy.resize(self.size);
-        let keep = self.size.min(self.bytes().len());
-        copy.data[..keep].copy_from_slice(&self.data[..keep]);
+        self.copy_into(&mut copy);
         copy
     }
 
@@ -263,6 +273,17 @@ mod tests {
         assert_eq!(view.kind(), Kind::Owned);
         assert_eq!((view.size(), view.capacity()), (3, 3));
         assert_eq!(view.bytes(), &[5, 6, 7]);
+        // A copy into a global block takes its rounded allocation.
+        let mut global = MemBlock::with_kind(Kind::Global);
+        src.copy_into(&mut global);
+        assert_eq!((global.size(), global.capacity()), (5, 0x2000));
+        assert_eq!(global.bytes(), &[9, 8, 7, 0, 0]);
+        // A resource destination holding bytes refuses the resize and keeps
+        // its size: only the bytes both hold are copied.
+        let mut res = MemBlock::with_kind(Kind::Resource);
+        res.adopt_resource(vec![1, 1]);
+        src.copy_into(&mut res);
+        assert_eq!(res.bytes(), &[9, 8]);
         // An owned block is left as it is.
         view.make_owned();
         assert_eq!(view.capacity(), 3);
