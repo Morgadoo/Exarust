@@ -138,7 +138,17 @@ radius, a limb's its node box), the two-way meet test that gates a pair
 before contact generation (`sector::meet`, the original's slab test of
 each side's travel against the other's box grown by its radius), the
 overlap-only, placement and static-collider pre-tests, and the step's
-stages and budgets. Its static-collider grid (`sector::StaticGrid`: one
+stages and budgets. The placement overlap query is
+`sector::placement_scan`: the bodies bucketed in the nine cells around the
+probe's own, in the neighbour table's order, each offered when its bound
+sphere and the body's mesh sphere touch, the probe's sphere centre lies
+within its own radius of the body's oriented mesh box and the body's
+sphere centre within its own radius of the probe's
+(`sector::mesh_box_distance2`; both strict, a NaN distance passes), the
+group words share no bit for a body of the same root and the layer words
+name no shared exclusive channel for another root, and the body is not
+disabled (0x800, an item on the cursor); each pair says which side goes first (the lower pair key, as
+the original orders the two). Its static-collider grid (`sector::StaticGrid`: one
 cell per small collider, the footprint plus a one-cell margin with the
 wide bit for a larger one, a scan of the own cell then the eight
 neighbours, shared-mask and own-parent skips) and its simulated-object
@@ -252,7 +262,12 @@ the original's approximate reciprocal) up to a tenth of the push's square,
 else shortening it by `√(0.1·push²/travel²)`; a body that pushed hands the
 cloth its countdown when that is higher.
 The cloth's level contact (`cloth_level`) runs after its step, mesh by
-mesh (the radius and slide are the record's; the built-in's below): each particle that moved over 0.1 cm² sweeps a 2 cm sphere through
+mesh (the radius and slide are the record's; the built-in's below); the
+stage gathers the level's records and triangles from where the step left
+the cloth (`cloth::step_before_level` then the records, then
+`cloth::finish_step`), as the original's object loop gathers its static
+contacts after stepping it. Each particle that moved over 0.1 cm² sweeps a
+2 cm sphere through
 the mesh, any other is a 2 cm sphere where it is, tested against the
 piece's box and then the piece's triangles near it (a per-piece grid, as
 the mesh's own tree query hands only the triangles around the sphere) in

@@ -662,12 +662,29 @@ pub fn pull_toward(
 
 /// Advance one tick. Returns without changing non-finite input.
 pub fn step(cloth: &mut Cloth, gravity: Vec3) {
-    if !gravity.is_finite() || !cloth.mean_velocity.is_finite() {
+    // The original steps the simulated object and then runs its level
+    // contact, so a caller that gathers the level's meshes after the step
+    // ([`step_before_level`] and [`finish_step`]) sees the tick's moves.
+    let Some((before, awake)) = step_before_level(cloth, gravity) else {
         return;
+    };
+    crate::cloth_level::touch_level(cloth);
+    finish_step(cloth, &before, awake);
+}
+
+/// One tick up to, but not including, the level's meshes: everything
+/// [`step`] does before its level contact, returning the particles'
+/// positions where the body stage began and whether the cloth was awake
+/// by then, which [`finish_step`] needs after the level contact. None when
+/// the tick changes nothing (non-finite input or no particles), as
+/// [`step`] then skips its level contact too.
+pub fn step_before_level(cloth: &mut Cloth, gravity: Vec3) -> Option<(Vec<Vec3>, bool)> {
+    if !gravity.is_finite() || !cloth.mean_velocity.is_finite() {
+        return None;
     }
     let count = cloth.particles.len();
     if count == 0 {
-        return;
+        return None;
     }
     // The sum of the particles' velocities (their last tick's travel),
     // before drag, gravity and wind: the original's sleep, rustle and mean
@@ -803,10 +820,17 @@ pub fn step(cloth: &mut Cloth, gravity: Vec3) {
             push_plane(particle, plane, padding);
         }
     }
-    // The level's meshes last, after the step, as the sector calls them.
-    crate::cloth_level::touch_level(cloth);
-    // The end of the sector's tick: an awake cloth whose countdown is under
-    // 2 falls asleep where it is; a sleeping one stays where it is.
+    Some((before, awake))
+}
+
+/// The end of the tick, after the level's meshes have pushed the cloth
+/// ([`step_before_level`]): an awake cloth whose countdown is under 2 falls
+/// asleep where it is, a sleeping one stays where it is, and the reaction
+/// is the opposite of the particles' moves since `before` (the level's
+/// pushes included, as the original reads its reaction after its
+/// contacts). `awake` is the cloth's state at the body stage.
+pub fn finish_step(cloth: &mut Cloth, before: &[Vec3], awake: bool) {
+    let mut awake = awake;
     if awake && cloth.sleep < 2 {
         cloth.sleep = 0;
         awake = false;
@@ -818,7 +842,7 @@ pub fn step(cloth: &mut Cloth, gravity: Vec3) {
     }
     cloth.reaction = Vec3::ZERO;
     for (particle, old) in cloth.particles.iter().zip(before) {
-        cloth.reaction -= particle.position - old;
+        cloth.reaction -= particle.position - *old;
     }
 }
 
@@ -1337,6 +1361,32 @@ mod tests {
             position: at,
             previous: at,
         }
+    }
+
+    /// The tick divides at the level's meshes: the step before them leaves
+    /// the level alone, and the level contact runs between it and the
+    /// finish.
+    #[test]
+    fn the_step_stops_before_the_level_and_finishes_after_it() {
+        let mut cloth = Cloth::new(vec![still(Vec3::new(0.0, 1.0, 0.0))]);
+        // Wound so the face points up: the level meets a particle's front
+        // side only, with the particle 1 cm over it and the record's 2 cm
+        // padding.
+        cloth.level.push(LevelTri {
+            a: Vec3::new(-10.0, 0.0, -10.0),
+            b: Vec3::new(0.0, 0.0, 10.0),
+            c: Vec3::new(10.0, 0.0, -10.0),
+        });
+        let (before, awake) =
+            step_before_level(&mut cloth, gravity_cm(1.0)).expect("an awake cloth steps");
+        assert_eq!(before.len(), 1);
+        assert_eq!(cloth.level_tests, 0, "the step ran the level contact");
+        let y = cloth.particles[0].position.y;
+        assert!(crate::cloth_level::touch_level(&mut cloth));
+        assert!(cloth.level_tests > 0);
+        assert!(cloth.particles[0].position.y > y);
+        finish_step(&mut cloth, &before, awake);
+        assert!(cloth.reaction.y < 0.0);
     }
 
     #[test]
