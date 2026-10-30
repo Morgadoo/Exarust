@@ -2833,9 +2833,12 @@ mod tests {
         // Painted steel is the extra-layer family: six colour layers.
         assert_eq!(bound_layers(14, Pass::PaintedPattern), 6);
         assert_eq!(pattern_unit(14), 8);
+        // Only a material that compiles the painted-pattern program has its
+        // sampler: cloth's four colour layers name Tex6, at unit 8.
+        assert_eq!(extra_sampler(14, Pass::PaintedPattern), None);
         assert_eq!(
-            extra_sampler(14, Pass::PaintedPattern),
-            Some(("Tex8".to_string(), 8))
+            extra_sampler(1, Pass::PaintedPattern),
+            Some(("Tex6".to_string(), 8))
         );
         assert_eq!(
             extra_sampler(12, Pass::Specular),
