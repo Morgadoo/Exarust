@@ -18,7 +18,7 @@ Waking a guardian whose body rules lack bit `0x100` SHALL clear its race word's 
 - **THEN** its limb scales are unchanged
 
 ### Requirement: Guardian sleep
-Putting a guardian to sleep SHALL set the statue bit of its race word and its statue byte, with stance 1 and pose 2, clear its alarm word, install the dormant behaviour and fade its glow material out; the first time, each limb SHALL take its stored mass times 0.05 and each part its value times 0.02, both in double precision, and the latch SHALL be set.
+Putting a guardian to sleep SHALL set the statue bit of its race word and its statue byte, with stance 1 and pose 2, clear its condition word, install the dormant behaviour and fade its glow material out; the first time, each limb SHALL take its stored mass times 0.05 and each part its value times 0.02, both in double precision, and the latch SHALL be set.
 
 #### Scenario: A second sleep keeps the scales
 - **WHEN** a guardian already latched is put to sleep
@@ -47,11 +47,44 @@ Ringing an alarm zone SHALL arm it with its box centre and pass item unless anot
 - **THEN** it keeps its statue byte, its only contact is the player at concern 10 and the ring counts
 
 ### Requirement: Alarm return
-Every awake guardian within 3000 cm of the player whose body is not already returning SHALL be put back at its home, its home filled from the body's place and angle when the home's x is exactly 0, its speed words set to 1, and SHALL fall asleep. When one did, the `Alarm_` node whose box holds the armed point (squared distance under 0.1) SHALL place the player 200 cm past the box's far face along its third axis at a height of 10, facing the axis's heading plus π plus a draw less one half.
+While an alarm is armed, the alarm return SHALL offer the characters within 3000 cm of the player (x and z, strictly inside, AI-bit race words) in the player's room and the rooms behind its exits to the homeward callback, which SHALL refuse a guardian whose statue byte is set or whose condition carries the dying bit `0x800` and send any other home. The alarm SHALL stay armed.
+
+#### Scenario: Every guardian asleep
+- **WHEN** the alarm is armed and every guardian near the player is a statue
+- **THEN** none goes home, the player stays where it fell and no draw is taken
+
+#### Scenario: A dying guardian stays
+- **WHEN** an awake guardian's condition carries `0x800`
+- **THEN** the homeward callback refuses it
+
+### Requirement: Homeward callback
+A guardian sent home SHALL have its home filled from the body's place and angle when the home's x is exactly 0, its tone, stance factor and a third word set to 1 and its condition 0, ask for Stand 2, be put at its home facing its home angle and fall asleep.
+
+#### Scenario: An unset home
+- **WHEN** a guardian whose home's x is 0 is sent home
+- **THEN** its home becomes where it stands, facing its angle
+
+### Requirement: Player post after the alarm return
+When the alarm return sent a guardian home, the first `Alarm_` node whose box holds the armed point (squared distance under 0.1) SHALL place the player 200 cm past the box's face along its third axis, facing the axis's heading plus π plus a draw less one half, asking for motion `0x1d`, with its condition dead and its tone and stance factor 0.
 
 #### Scenario: The post past the box
 - **WHEN** the alarm box is centred at (100, 50, 0) with a third half extent of 25 along z and the draw is 0.5
 - **THEN** the player is put at (100, 10, 225) facing π
+
+#### Scenario: The exanima06 gate
+- **WHEN** the gate of pass 474 is armed, two awake golems stand within 3000 cm of the knocked-out player and the draw is 0.75
+- **THEN** both go home asleep and the player is put at (700, 10, 6900) cm facing the third axis's heading −π/2 plus π plus 0.25
+
+### Requirement: Alarm return in the story revive
+The story revive of a knocked-out player (five seconds after its body died with red health of at least 0.01) SHALL run the alarm return after its prelude closes and before its save and the body's revive. A guardian sent home SHALL keep its pose about its root when it stands on its controller. With its statue byte set again, a guardian's sense SHALL clear its concern for the player, so it leaves combat.
+
+#### Scenario: Golems sent home in play
+- **WHEN** the player walks into the gate of pass 474 without its token, the two golems that wake fight it, and it falls with red health left
+- **THEN** five seconds later both golems stand at their homes as statues at rest and the player lies 200 cm past the gate box's third-axis face
+
+#### Scenario: The revive's order
+- **WHEN** the story revive runs
+- **THEN** the alarm return comes after the prelude closes and before the save and the body's revive
 
 ### Requirement: Alarm reset
 A level start SHALL disarm the alarm, put its point 1.1·10⁶ cm over the origin and zero the alarm count.
