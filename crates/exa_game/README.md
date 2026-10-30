@@ -425,7 +425,14 @@ ribbon's points closing a fifth of the gap to 20 cm above its ends, lit
 by a 5.0 warm light of 800 cm whose softness walk is 0.87–1.15; its
 ability word and fuel decide ignition, `FireSizzleA` plays at 0.3 and the
 `Flaming` modifier is 0x10020000 (no Exarust item carries that ability
-yet, so nothing lights one). A displacement shell opens over 400 ms and
+yet, so nothing lights one). The ribbon is built per frame: 16 sections of
+8 vertices swept from the shifted pair of ends toward the lagging ones
+(the cross-section turned toward the lag, the far face wobbled by 0.2 of
+the line), with the fixed texture steps, black/black/white/white corner
+colours and 192 indices, in `FlameRow::ribbon_positions`/`ribbon_mesh`;
+`exa_render::flame_row` is the `_FlameMat01` program (four texture reads,
+the vertical falloff, the `Anim` roll and the 1 × 5 palette) [guess: the
+record's blend state is additive]. A displacement shell opens over 400 ms and
 closes over 300 ms from its shown value, with the fade (1 − shown²)², the
 texture offset, its fade plane and 900 over the squared distance as its
 detail; a teleporter scan opens over 4800 ms, closes over 800 ms and
@@ -445,9 +452,9 @@ sub-object of usage 35044, the 0x20 material flag and the shared
 starts the shell's aura entity yet (its caller, the shell power's visual,
 is not in); the power tree carries the wheel as its domain wheel child and
 uses its hit test, confirm and open ease; the wheel's paint is
-`exa_ui::wheel_draw`. Drawing the flame ribbon's
-vertices, the shell and scan mesh copies, the bubble geometry,
-the portal particle simulation and the bubble's GI light values is not in.
+`exa_ui::wheel_draw`. Drawing the shell and scan mesh copies, the bubble
+geometry, the portal particle simulation and the bubble's GI light values
+is not in.
 
 The force and environment effects of the same powers are in as plain
 rules: `effects::rain` (4096 drops in a 600 cm box ahead of the camera,

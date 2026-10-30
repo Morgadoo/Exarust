@@ -3250,7 +3250,19 @@ rain set. `effects::portal_effect` spawns a portal's particles one at a
 time on an 80 × 115 cm ellipse at the node's place, each starting with an
 outward step of 0.0015 of its offset, with the original's 3- or 5-bit look
 index draws. `effects::fire_node` builds the `_FlameMat01` node's warm
-800 cm light; the row itself is `effects::fire_row`.
+800 cm light; the row itself is `effects::fire_row`. The row's ribbon is
+built each frame from the two shifted ends of the line and the two lagging
+points: 16 sections of 8 vertices, the cross-section turned toward the
+interpolated lag, its width 1.5 times the line over the section count and
+its far side wobbled by 0.2 of the line times one less the direction's
+face-on weight, with the fixed 0.025-step texture coordinates, the
+black/black/white/white vertex colours and 192 indices. The row's material
+(`exa_render::flame_row`, `flame_row.wesl`) is the shipped `_FlameMat01`
+fragment stage: four `EmiTex` reads over scrolled coordinates, the vertical
+falloff, the `Anim` roll and fade, and a 1 × 5 `GrdTex` palette from
+transparent to warm white. The draw is additive [guess: the record's blend
+state is not in this path] and the original's per-supersample scissor pass
+is collapsed to one draw.
 
 The mind effects build a **UV sphere** instead: `segments` columns and
 `segments / 2` rows from pole to pole at an angle step 2π/segments on both
