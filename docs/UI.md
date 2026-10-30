@@ -858,7 +858,11 @@ The original's own forms and controls that Exarust rebuilds, with the
   randomiser (`state · 0x8088405 + 1`, each draw the high half of `state ·
   n`, four records of history), previewed by the four-texture shader,
   which runs per fragment into the preview image
-  (`emblem_form::preview_image`).
+  (`emblem_form::preview_image`). The paint draws the base form's frame,
+  then the preview at half the client width and 40 units down, 64 units
+  square with its corners bottom-left, bottom-right, top-right and
+  top-left, and then clears texture unit 0 and units 1 to 3. The draw
+  takes the four colour pickers' palette bytes into the record first.
 - **In-game screens** (`exa_ui::game_gui`, `exa_game::gui_screens`): the
   inventory, loot window and journal show rules, the eight-slot open
   container registry, the journal's entries, the power-slot and counter

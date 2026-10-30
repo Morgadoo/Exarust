@@ -287,6 +287,40 @@ impl EmblemEditor {
         self.record.colours = colours;
     }
 
+    /// Takes the four colour pickers' palette indices into the record, as
+    /// the form's draw does before it publishes the preview: only each
+    /// colour's palette byte changes; its RGB bytes stay for the renderer
+    /// to fill back.
+    pub fn sync_pickers(&mut self, palettes: [u8; 4]) {
+        for (colour, palette) in self.record.colours.iter_mut().zip(palettes) {
+            *colour = (*colour & 0x00ff_ffff) | (u32::from(palette) << 24);
+        }
+    }
+
+    /// The form's paint at a client `width` and `unit`: the draw steps, the
+    /// preview its preview step uploads and the preview quad's four corners
+    /// in the original's order (bottom-left, bottom-right, top-right,
+    /// top-left).
+    pub fn paint(
+        &self,
+        palette: impl Fn(u8) -> [u8; 3],
+        client_width: i32,
+        unit: i32,
+    ) -> EmblemPaint {
+        let quad = preview_quad(client_width, unit);
+        EmblemPaint {
+            steps: draw_order().to_vec(),
+            preview: self.preview(palette),
+            quad,
+            corners: [
+                (quad[0], quad[3]),
+                (quad[2], quad[3]),
+                (quad[2], quad[1]),
+                (quad[0], quad[1]),
+            ],
+        }
+    }
+
     /// The mirror switches the apply step lights.
     pub fn mirror_switches(&self) -> MirrorSwitches {
         MirrorSwitches {
@@ -388,8 +422,8 @@ pub struct MirrorSwitches {
     pub y: bool,
 }
 
-/// The four draw order steps of the form's paint: the frame, the emblem
-/// preview, then the three texture units cleared.
+/// The draw order steps of the form's paint: the frame, the emblem
+/// preview, then texture unit 0 and the three other units cleared.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmblemDraw {
     Frame,
@@ -398,21 +432,33 @@ pub enum EmblemDraw {
 }
 
 /// The paint's order.
-pub fn draw_order() -> [EmblemDraw; 5] {
+pub fn draw_order() -> [EmblemDraw; 6] {
     [
         EmblemDraw::Frame,
         EmblemDraw::Preview,
+        EmblemDraw::ClearUnit(0),
         EmblemDraw::ClearUnit(1),
         EmblemDraw::ClearUnit(2),
         EmblemDraw::ClearUnit(3),
     ]
 }
 
-/// The preview's quad: left, top, right, bottom, in pixels. The left is
-/// the form's half width less half the size, each halved as an integer.
-pub fn preview_quad(form_width: i32, unit: i32) -> [i32; 4] {
+/// A form paint ready to execute: its draw steps, the preview's inputs and
+/// the preview quad's rectangle and corners.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EmblemPaint {
+    pub steps: Vec<EmblemDraw>,
+    pub preview: EmblemPreview,
+    pub quad: [i32; 4],
+    pub corners: [(i32, i32); 4],
+}
+
+/// The preview's quad: left, top, right, bottom, in pixels, from the
+/// form's client width. The left is the client's half less half the size,
+/// each halved as an integer.
+pub fn preview_quad(client_width: i32, unit: i32) -> [i32; 4] {
     let size = unit * PREVIEW_UNITS as i32;
-    let left = form_width / 2 - size / 2;
+    let left = client_width / 2 - size / 2;
     let top = unit * PREVIEW_Y_UNITS as i32;
     [left, top, left + size, top + size]
 }
@@ -632,12 +678,13 @@ mod tests {
     }
 
     #[test]
-    fn the_draw_order_is_frame_preview_then_three_clears() {
+    fn the_draw_order_is_frame_preview_then_four_clears() {
         assert_eq!(
             draw_order(),
             [
                 EmblemDraw::Frame,
                 EmblemDraw::Preview,
+                EmblemDraw::ClearUnit(0),
                 EmblemDraw::ClearUnit(1),
                 EmblemDraw::ClearUnit(2),
                 EmblemDraw::ClearUnit(3),
@@ -650,6 +697,33 @@ mod tests {
         assert_eq!(PREVIEW_UNITS, 64);
         assert_eq!(FORM_WIDTH, 616);
         assert_eq!(FORM_HEIGHT, 600);
+    }
+
+    #[test]
+    fn the_paint_calls_the_preview_after_the_frame_and_clears_every_unit() {
+        let mut editor = EmblemEditor::new();
+        editor.record.layers = MIRROR_Y;
+        let paint = editor.paint(|_| [1, 2, 3], FORM_WIDTH, 4);
+        assert_eq!(paint.steps, draw_order().to_vec());
+        assert_eq!(paint.quad, [180, 160, 436, 416]);
+        // Bottom-left, bottom-right, top-right, top-left.
+        assert_eq!(
+            paint.corners,
+            [(180, 416), (436, 416), (436, 160), (180, 160)]
+        );
+        assert_eq!(paint.preview.mirror, [1.0, -1.0]);
+        assert_eq!(paint.preview.textures[0], "emblembkg001");
+        assert!((paint.preview.colours[0][0] - 1.0 / 255.0 * 0.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_draw_takes_the_pickers_palettes_into_the_record() {
+        let mut editor = EmblemEditor::new();
+        editor.record.colours[0] = 0xd3_112233;
+        editor.sync_pickers([0x0a, 0x0b, 0x0c, 0x0d]);
+        assert_eq!(editor.record.colours[0], 0x0a_112233);
+        assert_eq!(editor.record.palette(1), 0x0b);
+        assert_eq!(editor.record.palette(3), 0x0d);
     }
 
     #[test]
