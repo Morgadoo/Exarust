@@ -904,9 +904,12 @@ pub struct Weather {
     /// comes, ms. The original keeps both in one word, so a rain request
     /// during a strike moves its end.
     pub next_strike: u32,
-    /// Whether a flash lights the scene this frame. The original reads a
-    /// flag of its own here whose writer is not in the model; the strike
-    /// stands in for it.
+    /// The scene's flash-clear switch: while it is on, a fogged frame
+    /// clears with its scratch times the flash tint, halved, and pulls the
+    /// fog in. The original reads this byte in one place and nothing in the
+    /// executable writes it, so it stays off in the shipped game. A
+    /// lightning strike does not raise it: a strike lights the scene only
+    /// through the record's fog colour (see [`Frame::lightning`]).
     pub flash: bool,
     /// The last tick the rain faded at, ms.
     pub last_rain_ms: u32,
@@ -1043,7 +1046,8 @@ pub struct ViewTime {
 pub struct Frame {
     /// The clear colour the renderer is given, linear RGBA: the level's
     /// background (also under a sky), the fog's colour when it clears, or
-    /// the halved flash colour.
+    /// the halved flash colour while the flash-clear switch is on (a
+    /// lightning strike does not turn it on).
     pub background: [f32; 4],
     /// The frame's scratch colour, RGBA: the horizon under a sky, the fog
     /// colour with fog, the flash colour during a flash, else the last
@@ -1060,8 +1064,14 @@ pub struct Frame {
     /// colour towards the view, linearised when the track is not
     /// linearised at start-up).
     pub sky_colour: [f32; 4],
-    /// Whether a lightning flash is on.
+    /// Whether the scene's flash-clear switch is on (see [`Weather::flash`];
+    /// never raised by a strike).
     pub flash: bool,
+    /// The running strike's intensity, zero between strikes. It is the only
+    /// value a strike moves: the record's fog colour gains the lightning
+    /// blue by I / (I + 2) · 3. The clear, the sun and the ambient are left
+    /// as they are.
+    pub lightning: f32,
     /// The scene value the frame sets from the sun's height: −100000 while
     /// the body is at or below 0.4, −25 above it (the comparison in double
     /// precision). Guess: a shadow or clip distance in centimetres; the
@@ -1183,9 +1193,9 @@ pub struct SceneEnvironment {
     /// colour by 0.75 (the scene's own switch; the environment only reads
     /// it).
     pub dim_record_k: bool,
-    /// The three-float tint the lightning flash multiplies the clear colour
-    /// by. The constructor leaves it zero and its writer is outside this
-    /// unit; the caller may set it.
+    /// The three-float tint the flash-clear switch multiplies the clear
+    /// colour by. The constructor leaves it zero and its writer is outside
+    /// this unit; the caller may set it. Lightning never reads it.
     pub flash_tint: [f32; 3],
     /// Whether the sky cube's masked tint ran and was uploaded on the last
     /// sun placement.
@@ -1276,6 +1286,7 @@ impl SceneEnvironment {
                 ambient_scale: AMBIENT_SCALE_INDOOR,
                 sky_colour: [0.0; 4],
                 flash: false,
+                lightning: 0.0,
                 shadow_far: -100_000.0,
                 wind: 0.0,
                 tint: [1.0; 3],
@@ -1755,7 +1766,6 @@ impl SceneEnvironment {
         self.weather.rain = 0.0;
         self.weather.thunder_allowed = false;
         self.weather.lightning.active = false;
-        self.weather.flash = false;
         self.weather.effect = RainEffect::default();
         self.weather.sound.started = false;
         self.weather.sound.stop_requested = true;
@@ -1785,7 +1795,6 @@ impl SceneEnvironment {
     ) {
         let l = &mut self.weather.lightning;
         l.active = true;
-        self.weather.flash = true;
         self.weather.next_strike = rng.below(500) + now + 100;
         l.position = position;
         // The engine's length: the squares summed x, z then y.
@@ -1917,7 +1926,6 @@ impl SceneEnvironment {
                     l.intensity = 0.0;
                     if (l.intensity as f64) < RAIN_MIN {
                         l.active = false;
-                        self.weather.flash = false;
                         self.weather.next_strike = rng.below(30_000) + now + 4_000;
                     }
                 } else {
@@ -2092,6 +2100,11 @@ impl SceneEnvironment {
             },
             sky_colour: scratch,
             flash: self.weather.flash,
+            lightning: if self.weather.lightning.active {
+                self.weather.lightning.intensity
+            } else {
+                0.0
+            },
             shadow_far: if (self.sun_height as f64) > 0.4 {
                 -25.0
             } else {
@@ -2663,7 +2676,9 @@ mod tests {
         let mut system = || 0.25;
         env.strike_lightning([300.0, -100.0, 0.0], None, 10_000, &mut rng, &mut system);
         let l = env.weather.lightning;
-        assert!(l.active && env.weather.flash && env.weather.thunder_pending);
+        assert!(l.active && env.weather.thunder_pending);
+        // A strike leaves the flash-clear switch off.
+        assert!(!env.weather.flash);
         // below(500) with the first state (1) is 0: the strike ends 100 ms on.
         assert_eq!(env.weather.next_strike, 10_100);
         let reach = (300.0f32 * 300.0 + 100.0 * 100.0).sqrt();
@@ -3084,6 +3099,38 @@ mod tests {
         env.set_sky(false);
         assert_eq!(env.sun_light_intensity, SUN_INTENSITY);
         assert_eq!(env.sun_light_colour, [0.4, 0.5, 0.6]);
+    }
+
+    /// A strike the weather starts leaves the flash-clear switch off: a
+    /// fogged frame keeps its clear and its fog reach while the strike runs,
+    /// and only the record's fog colour gains the lightning blue.
+    #[test]
+    fn a_strike_keeps_the_clear_and_tints_the_fog() {
+        let mut env = SceneEnvironment::new(5);
+        env.fog.enabled = true;
+        env.record_fog = [0.1, 0.1, 0.1];
+        let plain = env.apply_frame([0.0, 0.0, 1.0]);
+        let (near, far) = (env.fog.current_near, env.fog.current_far);
+        let mut rng = WeatherRng::new(0);
+        let mut system = || 0.25;
+        env.weather.thunder_allowed = true;
+        env.weather.next_strike = 0;
+        env.tick(1_000, &mut rng, &mut system);
+        assert!(env.weather.lightning.active && !env.weather.flash);
+        // Two flicker steps on, the intensity is above zero.
+        env.tick(1_016, &mut rng, &mut system);
+        env.tick(1_032, &mut rng, &mut system);
+        let frame = env.apply_frame([0.0, 0.0, 1.0]);
+        let i = env.weather.lightning.intensity;
+        assert!(i > 0.0);
+        assert_eq!(frame.lightning, i);
+        assert!(!frame.flash);
+        assert_eq!(frame.background, plain.background);
+        assert_eq!((env.fog.current_near, env.fog.current_far), (near, far));
+        let t = (i / (i + 2.0)) * 3.0;
+        for (c, blue) in LIGHTNING_FOG.iter().enumerate() {
+            assert_eq!(env.fog.current_colour[c], 0.1 + blue * t);
+        }
     }
 
     #[test]

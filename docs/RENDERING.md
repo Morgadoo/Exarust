@@ -1838,10 +1838,15 @@ per-frame fog starts at the stored start and ends at the span; a cloudy sky
 moves the start in by (1.5 − cloudiness)² · span · 0.01 and shortens the
 span by 1 − (1.5 − cloudiness)²·0.7, and a sun below a daylight of 0.54
 narrows it further by (1 − √f·(1 − low))·f with low = 1 − (0.54 − daylight)·4
-held at 0.15 or more (a comparison, so a NaN stays NaN). A lightning
-flash closes the fog to −0.8…0.1 of the span. While a strike runs, the
-record's fog colour gets the lightning blue (0.2, 0.3, 1.0), as stored,
-added by I/(I + 2)·3 for the strike's intensity I. The original's shader
+held at 0.15 or more (a comparison, so a NaN stays NaN). The scene's
+flash-clear switch closes the fog to −0.8…0.1 of the span. While a strike
+runs, the record's fog colour gets the lightning blue (0.2, 0.3, 1.0), as
+stored, added by I/(I + 2)·3 for the strike's intensity I; this is the only
+thing a strike changes (the clear, the sun, the ambient and the fog's reach
+stay as they were, and the original has no exposure step to move). The
+intensity starts at zero, steps by (0.2 + 0.1·r) and then by ±(0.1…0.3)
+every 50…89 ms, scaled by the strike's attenuation (1 − reach·0.0002)² and
+held at zero or above, and the strike ends 100…599 ms after it began. The original's shader
 uses a linear falloff, b = min(distance · 1/fogDistance, 1), and mixes the
 surface towards the fog colour; Exarust asks Bevy for `FogFalloff::Linear`
 between the same near and far distances.
@@ -1852,7 +1857,12 @@ the sky map's word, which its constructor values never carry). Under a sky
 the colour between the record's two sky colours, weighted
 0.5 − 0.5·(light direction · view) (0.5 without a sun light), times the sky
 fog colour and 2, is the horizon colour; without a sky the fog colour is.
-A lightning flash clears to half the horizon colour. Exarust draws Bevy's
+The flash-clear switch clears with the scratch colour times the scene's
+flash tint (zero from the constructor), halved. The original reads that
+switch in one place and nothing in the executable sets it, so it is off in
+the shipped game; a lightning strike does not turn it on (Exarust's earlier
+stand-in did, and cleared each strike to black). `EXA_LIGHTNING_FRAME=<n>`
+forces a strike 316 cm from the view at frame `n` for captures. Exarust draws Bevy's
 atmosphere instead (see below) and keeps the gradient for the record. The
 frame also publishes the values the renderer's globals take: a scene value
 from the sun's height (−100000 up to 0.4, −25 above it, compared in double
