@@ -19,8 +19,10 @@
 //! words, the place and size (16-bit, anchors 0x8000…0x800a read signed),
 //! the word at 0x0e (a radio group; the trackbars carry 5 there, which the
 //! control model keeps as their group, unused by a trackbar), the text,
-//! the style and state words, the trackbar value at 0x38, the image
-//! button's icon at 0x40 and the text field's limit at 0x58. They are laid
+//! the style and state words, the callback at 0x28, the trackbar value at
+//! 0x38 (a coin control's amount there), the image button's icon at 0x40,
+//! a button's callback value at 0x48, a trackbar's steps at 0x50 and the
+//! text field's limit at 0x58. They are laid
 //! out by [`crate::gui_controls::layout_records`] at unit 4 against their
 //! form's client.
 //!
@@ -52,15 +54,24 @@ pub struct FormRecord {
     pub state: u32,
     /// A trackbar's starting value.
     pub value: f32,
-    /// An image button's icon.
+    /// The word at 0x38 read as an integer: a coin control's amount (the
+    /// coin dword, gold in the high 16 bits).
+    pub amount: u32,
+    /// The word at 0x40: an image button's icon (the arena's rank
+    /// trackbar carries 0x50 there, which no draw reads).
     pub icon: i32,
+    /// The word at 0x48: the value a button's callback reads (the arena
+    /// loadout's shelf and box index).
+    pub tag: i32,
+    /// The word at 0x50: a trackbar's steps (0: continuous).
+    pub steps: i32,
     /// A text field's byte limit (0: none set).
     pub max_len: i32,
     /// The record has a callback.
     pub reports: bool,
 }
 
-const fn record(class: u16, id: u16, x: i32, y: i32, w: i32, h: i32) -> FormRecord {
+pub(crate) const fn record(class: u16, id: u16, x: i32, y: i32, w: i32, h: i32) -> FormRecord {
     FormRecord {
         class,
         id,
@@ -73,7 +84,10 @@ const fn record(class: u16, id: u16, x: i32, y: i32, w: i32, h: i32) -> FormReco
         style: 0,
         state: 0,
         value: 0.0,
+        amount: 0,
         icon: 0,
+        tag: 0,
+        steps: 0,
         max_len: 0,
         reports: false,
     }

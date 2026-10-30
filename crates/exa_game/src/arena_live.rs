@@ -105,7 +105,7 @@ impl ArenaScene {
             weapons,
             prize,
             placed: false,
-            records: career.map_or_else(CompanyRecords::default, records_of),
+            records: career.map_or_else(CompanyRecords::default, |career| career.records()),
             bracket: if tournament {
                 bracket_for_template(template)
             } else {
@@ -129,25 +129,6 @@ impl ArenaScene {
     pub fn with_weapon_variants(mut self, variants: Option<[u32; 3]>) -> Self {
         self.weapon_variants = variants;
         self
-    }
-}
-
-/// The career's thirteen records as the match settles them.
-fn records_of(career: &crate::hub_windows::ArenaCareer) -> CompanyRecords {
-    CompanyRecords {
-        matches_won: career.company.won,
-        matches_lost: career.company.lost,
-        matches_forfeited: 0,
-        tournaments_won: career.company.tournaments_won,
-        tournaments_lost: 0,
-        seasons_won: career.company.seasons_won,
-        beasts_fought: 0,
-        beasts_defeated: 0,
-        hires: 0,
-        deaths: career.company.deaths,
-        fired: 0,
-        earned: career.company.earned,
-        spent: career.company.spent,
     }
 }
 

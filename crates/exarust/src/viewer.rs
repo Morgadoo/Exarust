@@ -111,6 +111,12 @@ fn setup(
     if options.arena_auto {
         commands.insert_resource(exa_game::arena_live::ArenaAutoContinue(true));
     }
+    if let Some(name) = &options.open_hub_window {
+        commands.insert_resource(exa_game::hub_forms::OpenHubWindow {
+            name: Some(name.clone()),
+            done: false,
+        });
+    }
     let bc = model::bc_supported(support.as_deref());
     info!("BC texture upload: {bc}");
     let mut loader = ModelLoader {

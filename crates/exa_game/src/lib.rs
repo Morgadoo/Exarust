@@ -54,6 +54,7 @@ pub mod hand;
 pub mod hirelings;
 pub mod hooks;
 pub mod hotkeys;
+pub mod hub_forms;
 pub mod hub_windows;
 pub mod hud;
 pub mod hw_config;

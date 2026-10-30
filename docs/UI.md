@@ -586,6 +586,34 @@ cells, manage refresh and `arsenalico.rfi` icon sheet are in
   above Expert, or "None"). **Company Records** lists the thirteen company
   records, the last two as coins.
 
+The windows are built from their constructors' 0x68-byte record arrays
+(`exa_ui::arena_forms`, `exa_ui::record_form`, `exa_game::hub_forms`). The
+arrays' element counts are their type records' (the constructors pass the
+last index): Manage Company 18 (the 17 named above and Status, 0x2c4 ×
+0x1d4), Company Records 27 (the 26 labels and values and CLOSE, 0x164 ×
+0x1d4), Company Status 12 (with CLOSE, 0x164 × 0x1ec), the loadout form 28
+(with the hidden "Profession: Combatant" line, 1024 × 768, attribute word
+0x802022, border 0, no placement bits) and the dismiss and yes/no dialogs 3
+each (0x188 × 0x70, border 0). Manage Company, Records, Status and the
+dialogs OR placement 0xb800 (centred both ways) into their word; Records,
+Status and the dialogs set the upper-layer attribute 0x1000. A record's
+callback (the word at 0x28) makes it report; the word at 0x38 is a
+trackbar's value or a coin control's amount, 0x40 an image button's icon,
+0x48 a button's callback value (the shelf and box indices 4 down to 0),
+0x50 a trackbar's steps (the rank slider's 5). The records lay out at unit
+4 against the form's client (the item GUI's classes fill a missing height:
+a coin control 24), the form, Manage Company's two tables and the records
+rescale to the live unit, and the form is centred by its placement bits.
+The coin controls take the copper totals packed into coin words; the
+refresh disables Recruit, Hire and End Day as above and titles the report
+column with the day. A press and release go through the control messages;
+Manage, Hire, End Day, Close, Records and Status, the records' and status's
+CLOSE, the loadout form's Previous, Next, Dismiss, rank slider, shelf and
+box buttons and CLOSE, and the dialogs' buttons run their callbacks. The
+coin icons, the encumbrance dots, the shelf icons, the list's drop-down,
+Arsenal (the stash form), Recruit (the creator) and HIRE (the hire list)
+are not built; the stacked windows draw without their show fade.
+
 ## The running hub
 
 `exa_game::arena_hub_live` enters the hub once when a play level named
@@ -618,9 +646,9 @@ colliders remember the scene node they were built under
 original reads from the clicked node; which field it is is not traced, and
 the node's world x stands in for it.
 
-Not drawn: the board's pictures, prize items and reward slots, the manage
-window's controls and report lines, the trade window's item icons and
-character preview, and the windows' own close controls.
+Not drawn: the board's pictures, prize items and reward slots, the trade
+window's item icons and character preview, and the board's and trade
+window's own close controls.
 
 ## The running arena match
 

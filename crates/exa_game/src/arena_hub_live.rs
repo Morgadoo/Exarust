@@ -151,6 +151,7 @@ impl Plugin for ArenaHubPlugin {
             .init_resource::<crate::hub_windows::HubItemNames>()
             .init_resource::<crate::shop_stock::LiveShopStock>()
             .init_resource::<LastHubClick>()
+            .init_resource::<crate::hub_forms::OpenHubWindow>()
             .init_resource::<ArenaRematch>()
             .init_resource::<crate::arena_live::ArenaAutoContinue>()
             .init_resource::<exa_ui::gui_draw::GuiFrames>()
@@ -162,6 +163,8 @@ impl Plugin for ArenaHubPlugin {
                     crate::hub_windows::sync_hub_screen,
                     enter_loaded_hub,
                     auto_rematch,
+                    crate::hub_forms::open_hub_window_on_load,
+                    crate::hub_forms::hub_form_input,
                     hub_clicks,
                     hub_session_fall,
                     close_hub_windows,
@@ -753,11 +756,20 @@ fn hub_clicks(
         return;
     }
     let mode = hub_mode(flow.as_deref(), hub_loaded);
+    let took = std::mem::take(&mut windows.took_pointer);
     for click in clicks.read() {
+        if took {
+            continue;
+        }
         // A window takes the click while it is open: the board's own hit
         // test, the trade button, or a press outside it (which closes the
         // modal form, as the window manager says).
         if windows.is_open() {
+            // The table-built forms take their own pointer
+            // ([`crate::hub_forms::hub_form_input`]).
+            if windows.forms.contains(click.pointer.x, click.pointer.y) {
+                continue;
+            }
             let inside = windows
                 .bounds()
                 .is_some_and(|bounds| bounds.contains(click.pointer.x, click.pointer.y));
@@ -964,8 +976,8 @@ fn close_hub_windows(
 ) {
     if windows.is_open()
         && (keys.just_pressed(KeyCode::Escape) || buttons.just_released(MouseButton::Right))
+        && windows.close_top()
     {
-        windows.close_window();
         hub.busy = false;
     }
 }

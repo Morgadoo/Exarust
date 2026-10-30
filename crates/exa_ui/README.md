@@ -15,7 +15,12 @@ draws the whole interface over the game's view, premultiplied), the
 character creator's labels and page captions (`creation`; the game crate
 owns the rules and places) and its three control-record tables with
 their layout and the story backgrounds' names and descriptions
-(`creation_forms`), the
+(`creation_forms`), the arena company windows' six control-record tables
+(Manage Company 18, Company Records 27, Company Status 12, the loadout form
+28, the dismiss and yes/no dialogs 3 each) and their forms' words
+(`arena_forms`), a form built from one record array, laid out, rescaled,
+placed and answering the pointer through the control messages
+(`record_form`), the
 in-game world cursor from `cursors.rfi` (`cursor`; the game crate picks
 its shape), the window's own pointer (`system_cursor`: the original's twelve-slot
 pointer table and show rule, and the menu cursor from `menucursor.rfi`
