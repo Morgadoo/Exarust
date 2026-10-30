@@ -12,6 +12,36 @@
 //!
 //! Rules: `docs/RENDERING.md` (Pass order).
 
+/// The per-material list a material record's class word belongs to
+/// (`0x04D860`): the alpha-tested bit `0x8000` selects the shadow list
+/// whatever the low nibble; otherwise the low nibble `0` is the opaque
+/// list, `1`, `2` and `3` the blended list, and every other value has no
+/// list (the original returns nothing for it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MaterialList {
+    Opaque,
+    Shadow,
+    Blended,
+}
+
+/// The list a class word selects.
+pub fn material_list(class_word: u32) -> Option<MaterialList> {
+    if class_word & 0x8000 != 0 {
+        return Some(MaterialList::Shadow);
+    }
+    match class_word & 0xF {
+        0 => Some(MaterialList::Opaque),
+        1..=3 => Some(MaterialList::Blended),
+        _ => None,
+    }
+}
+
+/// The entry of one class list holding material `id`, searched from the
+/// first in order; `None` when the list does not hold it.
+pub fn find_class_entry(entries: &[u32], id: u32) -> Option<usize> {
+    entries.iter().position(|&entry| entry == id)
+}
+
 /// One slot of the renderer's fixed frame walk, in the order the original
 /// draws it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -868,5 +898,19 @@ mod tests {
         assert!(ParticleStage::Colour.writes_colour());
         assert!(ParticleStage::TexturedDepth.writes_depth());
         assert!(!ParticleStage::TexturedDepth.writes_colour());
+    }
+    #[test]
+    fn a_class_word_picks_its_material_list_and_the_id_is_found_in_order() {
+        assert_eq!(material_list(0x000), Some(MaterialList::Opaque));
+        assert_eq!(material_list(0x101), Some(MaterialList::Blended));
+        assert_eq!(material_list(0x102), Some(MaterialList::Blended));
+        assert_eq!(material_list(0x103), Some(MaterialList::Blended));
+        assert_eq!(material_list(0x104), None);
+        assert_eq!(material_list(0x8004), Some(MaterialList::Shadow));
+        assert_eq!(material_list(0x8000), Some(MaterialList::Shadow));
+        assert_eq!(material_list(0xFFFF_8000), Some(MaterialList::Shadow));
+        assert_eq!(find_class_entry(&[4, 7, 9], 7), Some(1));
+        assert_eq!(find_class_entry(&[4, 7, 9], 5), None);
+        assert_eq!(find_class_entry(&[], 0), None);
     }
 }

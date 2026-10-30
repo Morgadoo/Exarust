@@ -123,7 +123,7 @@ shape texel), draw box, program names, quad and shared uniforms, the three linke
   dot products, lengths, powers, sines and cosines), the 512² texture of one
   byte value and its repeat/linear sampler, and the sixteen full-screen
   quads the measured scene draws ([`docs/UI.md`](../../docs/UI.md#gpu-benchmark)).
-- `passes`: the original's fixed frame walk (clear, alpha-tested and opaque
+- `passes`: the material class's list selection (the `0x8000` alpha-tested bit picks the shadow list, the low nibble 0 the opaque list and 1–3 the blended one) with the id search the renderer's lookup runs, the original's fixed frame walk (clear, alpha-tested and opaque
   classes with depth writes, hook lists, the depth-biased decal class and
   blended per-sector lists with depth writes off, the particles' depth
   pre-pass and colour, the environment's weather), the blended list's
