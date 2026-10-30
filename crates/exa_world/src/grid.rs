@@ -724,6 +724,42 @@ pub fn segment_blocks(
     ray_blocks(shells, active, a, d * (1.0 / length), length, lid)
 }
 
+/// The two meshes the original merges per cell: the cell's floor strips
+/// into one node and its ceiling strips into another. The names and words
+/// are the builder's.
+pub const MERGED_FLOOR_NAME: &str = "+Floor";
+pub const MERGED_CEILING_NAME: &str = "+Ceiling";
+/// The floor node's two words as stored (0.96 and 0.97); their meaning is
+/// not decoded.
+pub const MERGED_FLOOR_WORDS: [f32; 2] = [0.96, 0.97];
+/// The floor node's fifth word (0.5 as stored).
+pub const MERGED_FLOOR_WORD: f32 = 0.5;
+/// The first flag word both merged nodes carry.
+pub const MERGED_NODE_FLAG: u32 = 0x1000;
+/// The second flag word the floor node gains.
+pub const MERGED_FLOOR_FLAGS: u32 = 0x80_1000;
+/// The bits the ceiling node's second word clears and the value it sets
+/// there.
+pub const MERGED_CEILING_MASK: u32 = 0x0003_0000;
+pub const MERGED_CEILING_FLAGS: u32 = 0x000c_0000;
+/// The extent the merged meshes are cut to (cm).
+pub const MERGED_SUBDIVIDE_CM: f32 = 20.0;
+
+/// The two flag words of a merged cell node: the first gains
+/// [`MERGED_NODE_FLAG`]; the floor's second gains [`MERGED_FLOOR_FLAGS`], the
+/// ceiling's clears [`MERGED_CEILING_MASK`] and sets
+/// [`MERGED_CEILING_FLAGS`].
+pub fn merge_node_words(floor: bool, first: u32, second: u32) -> (u32, u32) {
+    if floor {
+        (first | MERGED_NODE_FLAG, second | MERGED_FLOOR_FLAGS)
+    } else {
+        (
+            first | MERGED_NODE_FLAG,
+            (second & !MERGED_CEILING_MASK) | MERGED_CEILING_FLAGS,
+        )
+    }
+}
+
 /// The smallest determinant the engine's mesh ray test accepts (the single
 /// precision machine epsilon, as stored: `0x33FF_FFD7`).
 const RAY_EPSILON: f32 = f32::from_bits(0x33ff_ffd7);
@@ -1785,6 +1821,31 @@ mod tests {
         let b = name_bytes("+WCA07");
         assert_eq!((b[1], b[2], variant_digits(&b)), (b'W', b'C', 7));
         assert_eq!(variant_digits(&name_bytes("+RM")), 0);
+    }
+
+    #[test]
+    fn merged_cell_nodes_carry_the_builders_words() {
+        // The floor node: the marker bit, 0x801000 more in its second word,
+        // the two material words, its 0.5 and a 20 cm cut.
+        assert_eq!(merge_node_words(true, 0x2, 0x0), (0x1002, 0x80_1000));
+        assert_eq!(merge_node_words(true, 0x2, 0x10), (0x1002, 0x80_1010));
+        assert_eq!(MERGED_FLOOR_NAME, "+Floor");
+        assert_eq!(MERGED_FLOOR_WORDS, [0.96, 0.97]);
+        assert_eq!(MERGED_FLOOR_WORD, 0.5);
+        assert_eq!(MERGED_SUBDIVIDE_CM, 20.0);
+        // The ceiling node: the same marker, its bits 16–17 cleared and
+        // 0xC0000 set there.
+        assert_eq!(merge_node_words(false, 0x2, 0), (0x1002, 0xc_0000));
+        assert_eq!(
+            merge_node_words(false, 0x1002, 0x0003_0000),
+            (0x1002, 0xc_0000)
+        );
+        // Bits already at 0xC0000 stay; bits outside the mask are kept.
+        assert_eq!(
+            merge_node_words(false, 0x1002, 0x000c_0000 | 0x0010_0000),
+            (0x1002, 0x001c_0000)
+        );
+        assert_eq!(MERGED_CEILING_NAME, "+Ceiling");
     }
 
     #[test]

@@ -850,7 +850,9 @@ pub struct SunPosition {
     /// daylight threshold, otherwise the moon.
     pub towards: [f32; 3],
     /// The sun's own unit direction, which the sky object keeps beside the
-    /// moon (the object is given the chosen body, then both again).
+    /// moon (the object is given the chosen body, then both again). Without
+    /// a sky there is no sky object, and this and [`Self::moon`] are both
+    /// the sky-less [`Self::towards`].
     pub sun: [f32; 3],
     /// The moon's unit direction.
     pub moon: [f32; 3],
