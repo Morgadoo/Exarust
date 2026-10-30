@@ -32,7 +32,8 @@ use crate::thaum::effect_material::{
     MATERIAL_FLAG, MATERIAL_PARAMS, MaterialNode, NOISE_TEXTURE, SUB_OBJECT_USAGE,
 };
 
-/// The scan's material.
+/// The name Exarust gives a scan effect's node. The original names no node;
+/// the node's material is [`AURA_MATERIAL`].
 pub const MATERIAL: &str = "ScanAura01";
 
 /// The material the scanner device gives the scan's aura: the data
