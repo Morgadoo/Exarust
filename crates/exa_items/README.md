@@ -13,13 +13,21 @@ Item database and procedural items: weapons assembled from components by factori
 ## The icon manager's tail
 
 `icon_cache` now also carries the manager's construction (`ManagerSetup`:
-the atlas's 0x103 blend and 0x100e608 format, forty-unit icons), the
-render's apparel size (`apparel_size`: 1024 at texture detail 3 or more,
-else 512), the draw, the two pixel tests on the slot's cell, the handle
-refresh that repaints a slot's own cell from the caller's record, the
-user-item tags (local, world or base) and errors with the record's own id,
-and the exact release: a freed slot clears its id, reference count and
-cell, keeping its variant and half extents.
+the atlas's 0x103 blend and 0x100e608 format, forty-unit icons, and the
+atlas's fourth word, the renderer's 160-pixel icon side, so an atlas cell
+and an off-screen image are the same size and the upload is a straight
+copy; `manager_parts` orders the object-database fetch, the shared icon
+renderer's one-time global install, the item renderer, the atlas and the
+scene reader), the render's apparel size (`apparel_size`: 1024 at texture
+detail 3 or more, else 512), the draw, the two pixel tests on the slot's
+cell, the handle refresh that repaints a slot's own cell from the caller's
+record, the user-item tags (local, world or base) and errors with the
+record's own id, and the exact release: a freed slot clears its id,
+reference count and cell, keeping its variant and half extents. The
+destructor (`IconCache::destroy`, `manager_teardown`) releases the
+children only at a positive reference count, frees the item renderer,
+clears the icon list and frees the atlas; the object database and the
+scene reader belong to the base class and are not freed there.
 
 The off-screen icon renderer (`item_renderer`) is modelled from its
 constructor: an icon-size global starting at 160 pixels, depth and colour
