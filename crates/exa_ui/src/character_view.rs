@@ -376,17 +376,22 @@ pub fn current_card(item: u32, flags: u32) -> Option<(u32, u32)> {
     (item != 0).then_some((item, flags))
 }
 
+/// Whether the character knows technique 8 of the skill the view reads: one
+/// technique per 5000 points is looked at, up to the techniques stored.
+pub fn insight_known(points: u16, techniques: &[u8]) -> bool {
+    let levels = usize::from(points / 5000);
+    techniques
+        .iter()
+        .take(levels)
+        .any(|technique| *technique == 8)
+}
+
 /// Whether the pointer is on the figure's right half while the character
 /// knows technique 8 of the skill the view reads (`points` and its
 /// technique bytes; the block at the record's fifth skill slot, Insight, by
-/// its place, a guess): one technique per 5000 points is looked at.
+/// its place, a guess).
 pub fn insight_blocks(points: u16, techniques: &[u8], cursor_x: i32, width: u32) -> bool {
-    let levels = usize::from(points / 5000);
-    let known = techniques
-        .iter()
-        .take(levels)
-        .any(|technique| *technique == 8);
-    known && ((width >> 1) as i32) < cursor_x
+    insight_known(points, techniques) && ((width >> 1) as i32) < cursor_x
 }
 
 /// The direction, in the camera's space, the figure's node is turned to
@@ -559,6 +564,9 @@ pub struct DropPlan {
     /// The mind cost the drag-over test stored is charged (a drop back on
     /// the view the drag came from).
     pub charge_cost: bool,
+    /// A weapon goes into the off hand: the pointer was on the figure's
+    /// right half and the character knows Insight's technique 8.
+    pub off_wanted: bool,
 }
 
 impl DropPlan {
@@ -573,6 +581,7 @@ impl DropPlan {
             show: false,
             clear_mark: false,
             charge_cost: false,
+            off_wanted: false,
         }
     }
 }
@@ -606,6 +615,8 @@ pub struct DropFacts {
     pub takes_core: bool,
     /// The doll's race wears apparel.
     pub race_wears_apparel: bool,
+    /// A weapon goes into the off hand ([`insight_blocks`]).
+    pub insight: bool,
 }
 
 impl Default for DropFacts {
@@ -627,6 +638,7 @@ impl Default for DropFacts {
             has_shield: false,
             takes_core: false,
             race_wears_apparel: false,
+            insight: false,
         }
     }
 }
@@ -669,6 +681,7 @@ pub fn figure_drop(facts: DropFacts) -> DropPlan {
             show: false,
             clear_mark: false,
             charge_cost: false,
+            off_wanted: false,
         },
         FigureDrop::Weapon => DropPlan {
             kind,
@@ -681,6 +694,7 @@ pub fn figure_drop(facts: DropFacts) -> DropPlan {
             show: false,
             clear_mark: false,
             charge_cost: false,
+            off_wanted: facts.insight,
         },
         FigureDrop::Shield => DropPlan {
             kind,
@@ -692,6 +706,7 @@ pub fn figure_drop(facts: DropFacts) -> DropPlan {
             show: false,
             clear_mark: false,
             charge_cost: false,
+            off_wanted: false,
         },
         FigureDrop::Hand => DropPlan {
             kind,
@@ -703,6 +718,7 @@ pub fn figure_drop(facts: DropFacts) -> DropPlan {
             show: true,
             clear_mark: facts.shown,
             charge_cost: false,
+            off_wanted: false,
         },
     }
 }
@@ -851,6 +867,83 @@ pub fn drag_over(frozen: bool, worn: Option<usize>, icon: usize) -> DragAnswer {
     }
 }
 
+/// The payload a drag started on the figure carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DragPayload {
+    /// The drag's kind: `0xFB01` (an item payload) or `u32::MAX` (a locked
+    /// view's item flagged `0x8000_0000`, which no panel takes); see
+    /// [`drag_start`].
+    pub kind: u32,
+    /// The icon the item resolves to.
+    pub icon: usize,
+    /// The item's own flags from the hover pick.
+    pub flags: u32,
+    /// The payload's half extent: half the current icon size (80 at the
+    /// default 160).
+    pub half: u32,
+}
+
+/// What a drag started on the figure does.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DragStartPlan {
+    /// The mind cost the view stores (for a drop back or a cancelled release
+    /// to charge again) and charges as `-cost` now: only with the mind-cost
+    /// flag on and a character shown. `Some(0.0)` for an item with neither a
+    /// weapon nor an apparel section.
+    pub cost: Option<f32>,
+    /// The character could not take the charge: the drag is cancelled and
+    /// nothing else happens.
+    pub cancel: bool,
+    /// The payload, answered with `0x105`; `None` leaves the answer at 1.
+    pub payload: Option<DragPayload>,
+}
+
+/// The drag start on the figure, with its mind cost and payload. A frozen
+/// view starts drags only from a held item. With the mind-cost flag on and a
+/// character shown, the item's cost ([`drag_over_cost`], 0 without a
+/// section) is stored and refunded first; a character who cannot take the
+/// charge (`refuses`) cancels the drag. The charge stands even when the
+/// item's icon then does not resolve and no drag starts. Otherwise the
+/// payload carries the [`drag_start`] kind, the icon, the item's flags and
+/// half the icon size.
+///
+/// `cost` is `Some` only when the mind cost is charged (the flag on and a
+/// character shown): the item's [`drag_over_cost`], or 0 without a section.
+#[allow(clippy::too_many_arguments)]
+pub fn drag_start_plan(
+    frozen: bool,
+    hand: usize,
+    icon: usize,
+    locked: bool,
+    flags: u32,
+    cost: Option<f32>,
+    refuses: bool,
+    icon_size: u32,
+) -> DragStartPlan {
+    let mut plan = DragStartPlan {
+        cost: None,
+        cancel: false,
+        payload: None,
+    };
+    if frozen && hand == 0 {
+        return plan;
+    }
+    if let Some(cost) = cost {
+        plan.cost = Some(cost);
+        if refuses {
+            plan.cancel = true;
+            return plan;
+        }
+    }
+    plan.payload = drag_start(false, 1, icon, locked, flags).map(|kind| DragPayload {
+        kind,
+        icon,
+        flags,
+        half: icon_size >> 1,
+    });
+    plan
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -897,6 +990,12 @@ mod tests {
         assert!(insight_blocks(5000, &[8], 100, 100));
         assert!(!insight_blocks(5000, &[8], 50, 100));
         assert!(!insight_blocks(10000, &[7, 7], 100, 100));
+        // The technique check alone (the drop's near-hand gate).
+        assert!(!insight_known(0, &[8]));
+        assert!(insight_known(5000, &[8]));
+        assert!(!insight_known(5000, &[7]));
+        // Only the levels the points fund are read.
+        assert!(!insight_known(5000, &[7, 8]));
     }
 
     #[test]
@@ -1219,16 +1318,32 @@ mod tests {
             ..Default::default()
         });
         assert!(plan.give_to_panel && plan.cost.is_none());
-        // A shield has no cost.
+        // The pointer's right half with Insight's technique 8 asks for the
+        // off hand; a shield ignores it.
+        let plan = figure_drop(DropFacts {
+            has_weapon: true,
+            insight: true,
+            ..Default::default()
+        });
+        assert!(plan.off_wanted);
+        assert!(!plan.charge_cost);
+        let plan = figure_drop(DropFacts {
+            has_weapon: true,
+            ..Default::default()
+        });
+        assert!(!plan.off_wanted);
+        // A shield has no cost, and the off-hand request does not apply.
         let plan = figure_drop(DropFacts {
             has_shield: true,
             shown: true,
+            insight: true,
             mind_cost: true,
             ..Default::default()
         });
         assert_eq!(plan.kind, FigureDrop::Shield);
         assert_eq!(plan.cost, None);
         assert_eq!(plan.attach, [true, true]);
+        assert!(!plan.off_wanted);
         // The core crystal is shown and the shown character's mark
         // cleared; with no one shown there is no mark to clear.
         let plan = figure_drop(DropFacts {
@@ -1325,5 +1440,41 @@ mod tests {
         assert_eq!(drag_over(true, None, 4), DragAnswer::Refuse);
         assert_eq!(drag_over(true, Some(1), 4), DragAnswer::Accept);
         assert_eq!(drag_over(false, Some(1), 0), DragAnswer::Refuse);
+        // The drag start with its cost and payload: a frozen view off a
+        // held item starts nothing and charges nothing.
+        let none = drag_start_plan(true, 0, 4, false, 0, Some(2.5), false, 160);
+        assert_eq!((none.cost, none.cancel, none.payload), (None, false, None));
+        // A weapon of desirability 1.25 costs 2.5, stored and refunded; the
+        // payload carries the kind, the icon, the item's own flags and half
+        // the icon size.
+        let cost = drag_over_cost(false, true, 0.0, 1.25);
+        let plan = drag_start_plan(false, 0, 4, false, 0x10, cost, false, 160);
+        assert_eq!((plan.cost, plan.cancel), (Some(2.5), false));
+        assert_eq!(
+            plan.payload,
+            Some(DragPayload {
+                kind: 0xFB01,
+                icon: 4,
+                flags: 0x10,
+                half: 80
+            })
+        );
+        // A character who cannot pay cancels; the cost is still stored.
+        let plan = drag_start_plan(false, 0, 4, false, 0, Some(2.5), true, 160);
+        assert_eq!(
+            (plan.cost, plan.cancel, plan.payload),
+            (Some(2.5), true, None)
+        );
+        // The charge stands when the icon then does not resolve.
+        let plan = drag_start_plan(false, 0, 0, false, 0, Some(2.5), false, 160);
+        assert_eq!((plan.cost, plan.payload), (Some(2.5), None));
+        // A locked view's item flagged 0x80000000 travels as kind all ones
+        // and keeps its flags; the half follows the icon size.
+        let plan = drag_start_plan(true, 2, 4, true, 0x8000_0000, None, false, 120);
+        let payload = plan.payload.expect("started");
+        assert_eq!(
+            (payload.kind, payload.flags, payload.half),
+            (u32::MAX, 0x8000_0000, 60)
+        );
     }
 }

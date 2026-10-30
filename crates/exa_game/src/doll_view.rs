@@ -267,6 +267,9 @@ pub struct DollDrop {
     pub flags: u32,
     pub icon: usize,
     pub bulk: i32,
+    /// The release was on the view's right half (a weapon then goes into
+    /// the off hand when the character knows Insight's technique 8).
+    pub right_half: bool,
 }
 
 /// The game's object records by id, read once when a drop first needs an
@@ -638,13 +641,16 @@ fn garment_of(item: &Item) -> Option<Garment> {
 
 /// Takes an item into the out set by the take-in plan: the hands it frees
 /// first (their carried copies lose the held mark), a light moving from
-/// the main hand to the off hand, then the item into its hand. `kind_of`
-/// gives a held item's sections.
+/// the main hand to the off hand, then the item into its hand. `off_wanted`
+/// is the character-view near hand (the pointer's right half with Insight's
+/// technique 8). `kind_of` gives a held item's sections. The record entry
+/// takes the attach job's flags, which keep only the top bit.
 pub fn hold_item(
     p: &mut Possessions,
     id: u32,
     flags: u32,
     kind: possession::ItemKind,
+    off_wanted: bool,
     kind_of: impl Fn(u32) -> Option<possession::ItemKind>,
 ) {
     let main_kind = (p.out[0].id != 0).then(|| kind_of(p.out[0].id).unwrap_or_default());
@@ -656,7 +662,7 @@ pub fn hold_item(
             main,
             off,
             class: class_word(main_kind.map(|k| k.grip())),
-            off_wanted: false,
+            off_wanted,
         },
         flags,
     );
@@ -675,7 +681,7 @@ pub fn hold_item(
             }
         }
     }
-    record_into(p, &into.plan, id, flags);
+    record_into(p, &into.plan, id, into.flags);
 }
 
 /// Takes a shield into the off hand, freeing it first.
@@ -707,6 +713,7 @@ fn equip_dropped(
             &mut Outfit,
             &mut Hands,
             Has<crate::torch::CarriesTorch>,
+            Option<&exa_character::record::CharacterData>,
         ),
         With<crate::player::PlayerBody>,
     >,
@@ -720,6 +727,13 @@ fn equip_dropped(
         let has_apparel = record
             .as_ref()
             .is_some_and(|item| item.burden.is_some() && !item.worn_model.is_empty());
+        let insight = drop.right_half
+            && players.iter().next().is_some_and(|entry| {
+                entry.5.is_some_and(|data| {
+                    let skill = &data.record.skills[exa_formats::characters::INSIGHT];
+                    exa_ui::character_view::insight_known(skill.points, &skill.techniques)
+                })
+            });
         let plan = figure_drop(DropFacts {
             id: drop.id,
             flags: drop.flags,
@@ -730,9 +744,10 @@ fn equip_dropped(
             has_weapon: kind.weapon.is_some(),
             has_shield: kind.shield,
             race_wears_apparel: true,
+            insight,
             ..DropFacts::default()
         });
-        let Ok((player, mut p, mut outfit, mut hands, torch)) = players.single_mut() else {
+        let Ok((player, mut p, mut outfit, mut hands, torch, _)) = players.single_mut() else {
             cancel(&mut screens, drop);
             continue;
         };
@@ -836,7 +851,7 @@ fn equip_dropped(
             }
             FigureDrop::Weapon | FigureDrop::Shield => {
                 if plan.kind == FigureDrop::Weapon {
-                    hold_item(&mut p, drop.id, flags, kind, |id| {
+                    hold_item(&mut p, drop.id, flags, kind, plan.off_wanted, |id| {
                         catalogue.and_then(|c| c.kind(id))
                     });
                 } else {
@@ -982,15 +997,23 @@ mod tests {
             x: 0,
             y: 0,
         });
-        hold_item(&mut p, 5, 0x10, sword, kinds);
-        assert_eq!(p.out[0], Hand { id: 5, flags: 0x10 });
-        hold_item(&mut p, 6, 0x10, sword, kinds);
-        assert_eq!(p.out[0], Hand { id: 6, flags: 0x10 });
+        hold_item(&mut p, 5, 0x10, sword, false, kinds);
+        // The attach job keeps only the top bit of the item's flags.
+        assert_eq!(p.out[0], Hand { id: 5, flags: 0 });
+        hold_item(&mut p, 6, 0x10, sword, false, kinds);
+        assert_eq!(p.out[0], Hand { id: 6, flags: 0 });
         assert_eq!(p.carried[0].flags, 0);
         hold_shield(&mut p, 7, 0);
         assert_eq!(p.out[1], Hand { id: 7, flags: 0 });
-        hold_item(&mut p, 8, 0x20, great, kinds);
-        assert_eq!(p.out, [Hand { id: 8, flags: 0x20 }, Hand::default()]);
+        hold_item(&mut p, 8, 0x20, great, false, kinds);
+        assert_eq!(p.out, [Hand { id: 8, flags: 0 }, Hand::default()]);
+        // A one-hander asked for the off hand (the pointer's right half
+        // with Insight's technique 8) goes there beside the main hand.
+        hold_item(&mut p, 5, 0, sword, true, kinds);
+        assert_eq!(p.out, [Hand { id: 8, flags: 0 }, Hand { id: 5, flags: 0 }]);
+        // Without the request a one-hander goes into the main hand.
+        hold_item(&mut p, 9, 0x10, sword, false, kinds);
+        assert_eq!(p.out[0], Hand { id: 9, flags: 0 });
         assert_eq!(class_word(Some(0x10)), 0x10);
         assert_eq!(class_word(Some(0x30)), 0x20);
         assert_eq!(class_word(None), 0x80);
