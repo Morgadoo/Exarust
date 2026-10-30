@@ -270,37 +270,6 @@ pub fn shock_stagger_tick(
     })
 }
 
-/// What the shocked state's own recovery writes on the body: the grab it
-/// held released, its foot-contact marks and carry point cleared, and, out
-/// of combat (condition 2), its readiness value set to 1, its other combat
-/// value to 0 and the swing flags' two low bits set. The slide word goes to
-/// 0, the body is busy for 600 ms and left in [`SHOCKED`].
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Recovered {
-    /// The body held a grab (`0x12EE` set): it is released.
-    pub released: bool,
-    /// Its condition was [`COMBAT`]: the readiness and swing values reset.
-    pub combat_reset: bool,
-    /// The body's slide word, 0.
-    pub slide: f32,
-    /// Busy until this game clock (ms).
-    pub busy_until_ms: u32,
-    /// Its condition after the recovery.
-    pub condition: u32,
-}
-
-/// The shocked state's recovery writes for a body in `condition` that is
-/// (or is not) holding a grab.
-pub fn recover(now_ms: u32, condition: u32, gripping: bool) -> Recovered {
-    Recovered {
-        released: gripping,
-        combat_reset: condition == COMBAT,
-        slide: 0.0,
-        busy_until_ms: now_ms.wrapping_add(RELEASE_BUSY_MS),
-        condition: SHOCKED,
-    }
-}
-
 /// The force release on a body that is `stepping` in `condition`.
 pub fn force_release(now_ms: u32, stepping: bool, condition: u32) -> Release {
     Release {
@@ -503,28 +472,6 @@ mod tests {
                 ..
             }
         ));
-    }
-
-    /// The recovery: the grab released, the combat values reset in
-    /// condition 2, the slide word 0, busy 600 ms and shocked.
-    #[test]
-    fn the_shock_recovery_releases_and_clears() {
-        let out = recover(2_000, 2, true);
-        assert_eq!(
-            out,
-            Recovered {
-                released: true,
-                combat_reset: true,
-                slide: 0.0,
-                busy_until_ms: 2_600,
-                condition: SHOCKED
-            }
-        );
-        let calm = recover(0, 1, false);
-        assert!(!calm.released && !calm.combat_reset);
-        assert_eq!(calm.busy_until_ms, 600);
-        // The busy time wraps as the original's 32-bit clock does.
-        assert_eq!(recover(u32::MAX - 100, 0, false).busy_until_ms, 499);
     }
 
     /// The force release: busy 600 ms, shocked, the step ended when on,
