@@ -610,7 +610,13 @@ ease a pick or drop starts), its eased value is the focus share and its
 show the bar child's fade. A confirmed icon starts the domain switch. The
 tree's focus total is the child's own focus value (48 when there is no
 record), which its paint eases toward from where a pick or drop began the
-fade. No shipped press enters the node, link-turn or link drags: the press
+fade. The form's opening has two paths: the character creator opens the
+tree with no calling form, so its task word is `0x10`, its hints are drawn
+at full alpha (`0xff`) and no child panel is handed in; the game opens it
+with its own form, so the task word is `0x1010` and the draw writes that
+form's child panel's paint alpha as the panel's shown value less twice the
+window's (unclamped, as the original's arithmetic leaves it). No shipped
+press enters the node, link-turn or link drags: the press
 clears the drag state and only the middle button starts the pan, and
 nothing else writes those states, so the move handler's edit branches are
 unreachable in the retail game (kept as the move handler has them).

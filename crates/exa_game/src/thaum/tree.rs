@@ -616,8 +616,11 @@ pub struct PowerDrag {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PressResult {
     pub result: u32,
-    /// A button's callback ran.
+    /// The creation prompt's commit button (BEGIN) ran: the creator turns
+    /// the tree's learnt nodes into the character's powers and moves on.
     pub begin: bool,
+    /// The creation prompt's cancel button (BACK) ran: the creator steps
+    /// back to the previous page.
     pub back: bool,
     /// A power drag started.
     pub drag: Option<PowerDrag>,
@@ -832,10 +835,18 @@ pub struct TreeScreen {
     pub form_word: u32,
     /// The form's text alpha byte (`0xa0`).
     pub text_alpha: u8,
-    /// The form's hint alpha byte (`0x80`).
+    /// The form's hint alpha byte (`0x80`, or `0xff` for the creation
+    /// screen, whose hints are drawn at full strength).
     pub hint_alpha: u8,
     /// The form's caption value, the engine's lowest float.
     pub caption: f32,
+    /// The form's task-style word: `0x10` for the creation screen and
+    /// `0x1010` when the game opens the tree over its own form.
+    pub task_word: u32,
+    /// The shown value of the child form the game hands in, when it does:
+    /// the draw writes that child's paint alpha as this value less twice the
+    /// window's. The creation screen hands in no such child.
+    pub overlay_panel: Option<f32>,
 }
 
 /// The original's zoom levels' thresholds and gains.
@@ -980,8 +991,16 @@ impl TreeScreen {
             form_flags: 0x800,
             form_word: 0x000f_0000,
             text_alpha: 0xa0,
-            hint_alpha: 0x80,
+            hint_alpha: if mode == TreeMode::Create { 0xff } else { 0x80 },
             caption: f32::from_bits(0xff00_0000),
+            task_word: if mode == TreeMode::Create {
+                0x10
+            } else {
+                0x1010
+            },
+            // The creation screen is opened with no calling form, so it has
+            // no child panel; every other opening hands one in.
+            overlay_panel: (mode != TreeMode::Create).then_some(1.0),
         }
     }
 
@@ -2541,6 +2560,15 @@ impl TreeScreen {
         self.wheel_child.state.shown = self.wheel_shown;
     }
 
+    /// The paint alpha the draw writes into the child form the game handed
+    /// in: its own shown value less twice the window's fade, in single
+    /// precision. A negative result is the original's too (the paint clamps
+    /// it); `None` when no child was handed in, as on the creation screen.
+    pub fn overlay_panel_alpha(&self) -> Option<f32> {
+        self.overlay_panel
+            .map(|shown| shown - self.window_alpha * 2.0)
+    }
+
     /// Starts the domain switch's 256 ms fade-out. The wheel that turns the
     /// domain is outside this module; its click calls [`TreeScreen::choose_domain`]
     /// or this.
@@ -3494,6 +3522,13 @@ mod tests {
         assert_eq!(screen.text_alpha, 0xa0);
         assert_eq!(screen.hint_alpha, 0x80);
         assert_eq!(screen.caption.to_bits(), 0xff00_0000);
+        // The game's opening hands in its own form: the task word says so
+        // and the child panel's shown value is one.
+        assert_eq!(screen.task_word, 0x1010);
+        assert_eq!(screen.overlay_panel, Some(1.0));
+        // The draw writes the child's paint alpha as its shown value less
+        // twice the window's, unclamped.
+        assert_eq!(screen.overlay_panel_alpha(), Some(-1.0));
         // The constructor's own defaults before a window gives its size:
         // the zoom at one half, the charge at −4.
         let fresh = TreeScreen::empty(DOMAIN_MIND, TreeMode::Play);
@@ -5176,6 +5211,29 @@ mod tests {
         let mut known = PowerRecord::starter();
         assert!(!seed_defaults(&mut known));
         assert_eq!(known.pairs.len(), 2);
+    }
+
+    #[test]
+    fn the_creation_screen_opens_without_a_calling_form() {
+        // The character creator opens the tree with no caller form: the
+        // form's task word is the creation screen's, its hints are drawn at
+        // full alpha, and no child panel is handed in for the draw to fade.
+        let screen = TreeScreen::empty(DOMAIN_MIND, TreeMode::Create);
+        assert_eq!(screen.task_word, 0x10);
+        assert_eq!(screen.hint_alpha, 0xff);
+        assert_eq!(screen.overlay_panel, None);
+        assert_eq!(screen.overlay_panel_alpha(), None);
+        let loaded = TreeScreen::load(DOMAIN_MIND, TreeMode::Create, None, None, 1000.0, 700.0);
+        assert_eq!(loaded.task_word, 0x10);
+        assert_eq!(loaded.hint_alpha, 0xff);
+        assert!(loaded.overlay_panel.is_none());
+        // A played tree halves its child panel at half the window's fade and
+        // zeroes it at one, in single precision.
+        let mut played = TreeScreen::load(DOMAIN_MIND, TreeMode::Play, None, None, 1000.0, 700.0);
+        played.window_alpha = 0.5;
+        assert_eq!(played.overlay_panel_alpha(), Some(0.0));
+        played.window_alpha = 0.25;
+        assert_eq!(played.overlay_panel_alpha(), Some(0.5));
     }
 
     #[test]
