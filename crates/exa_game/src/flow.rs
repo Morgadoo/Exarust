@@ -6670,10 +6670,12 @@ mod tests {
             )))
             .init_resource::<exa_ai::brain::RoleDatabase>()
             .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
+            .add_message::<exa_world::level_lifecycle::WorldReset>()
             .add_message::<ForfeitMatch>()
             .add_message::<SettingsEntry>()
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
+            .add_message::<crate::experience_live::DiscoveryTick>()
             .add_systems(Update, (release_after_load, apply_steps).chain());
         let view = Viewport {
             width: 1600,
@@ -6805,10 +6807,12 @@ mod tests {
             .init_resource::<GameView>()
             .init_resource::<crate::prelude::Tips>()
             .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
+            .add_message::<exa_world::level_lifecycle::WorldReset>()
             .add_message::<ForfeitMatch>()
             .add_message::<SettingsEntry>()
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
+            .add_message::<crate::experience_live::DiscoveryTick>()
             .add_systems(Update, apply_steps);
         let steps = app.world_mut().resource_mut::<Flow>().knock_out(0);
         assert!(steps.contains(&Step::Tip(2)));
