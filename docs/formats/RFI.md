@@ -346,14 +346,6 @@ sit in the header's block. `resize` sets `data size` and holds six times it
 for a cube; `release` frees the pixels and leaves the header. Established
 by reverse engineering of those routines (REA).
 
-The image unit registers its formats in the engine's shared format
-registry (`exa_formats::file_ref::FormatRegistry`, `rfi::image_formats`):
-at start-up the 16-byte key `rfi` with the description "Rayform Image" and
-no handler sits at index 0. The original's loader looks a stream's key up
-there, decodes index 0 itself and hands any other index to its handler;
-Exarust reads images by name from the packs, so nothing dispatches through
-the registry yet.
-
 ## Naming conventions
 
 Suffixes: `d` diffuse, `n` normal, `s` specular, `g` gloss, `h` height,

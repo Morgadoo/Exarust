@@ -640,38 +640,6 @@ impl<'a> Rfi<'a> {
     }
 }
 
-/// The image unit's registry key for the Rayform image: `rfi` padded to
-/// 16 bytes.
-pub const RFI_FORMAT_KEY: [u8; crate::file_ref::INLINE_NAME] = *b"rfi\0\0\0\0\0\0\0\0\0\0\0\0\0";
-/// The Rayform image's registry description.
-pub const RFI_FORMAT_DESCRIPTION: &str = "Rayform Image";
-
-/// The image unit's format registry as its start-up leaves it: the
-/// Rayform image alone at index 0, with no handler (the loader decodes
-/// index 0 itself and calls the registered handler for any other). It is
-/// the engine's shared [`crate::file_ref::FormatRegistry`].
-pub fn image_formats() -> crate::file_ref::FormatRegistry<()> {
-    let mut registry = crate::file_ref::FormatRegistry::new();
-    registry.add(RFI_FORMAT_KEY, (), RFI_FORMAT_DESCRIPTION);
-    registry
-}
-
-#[cfg(test)]
-mod format_tests {
-    use super::*;
-
-    #[test]
-    fn the_image_registry_starts_with_the_rayform_image() {
-        let registry = image_formats();
-        assert_eq!(registry.formats().len(), 1);
-        assert_eq!(registry.find(&RFI_FORMAT_KEY), Some(0));
-        let mut upper = RFI_FORMAT_KEY;
-        upper[..3].copy_from_slice(b"RFI");
-        assert_eq!(registry.find(&upper), Some(0));
-        assert_eq!(registry.formats()[0].description, "Rayform Image");
-    }
-}
-
 /// An image whose pixels are owned: the original's image copies and the
 /// blank images its icon renderer and noise generators create. The header
 /// keeps a cube's per-face `data_size`; `pixels` holds every face.
