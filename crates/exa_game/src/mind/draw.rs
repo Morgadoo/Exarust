@@ -159,8 +159,8 @@ pub(crate) fn draw_mind_sight(
     view: Res<MindSightView>,
     time: Res<Time<Real>>,
     cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
-    anchors: Query<(Entity, &MindSightAnchor, Option<&Children>)>,
-    spheres: Query<&MindSightSphere>,
+    anchors: Query<(Entity, &MindSightAnchor)>,
+    spheres: Query<(Entity, &MindSightSphere)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<MindSightMaterial>>,
@@ -210,16 +210,21 @@ pub(crate) fn draw_mind_sight(
     };
     let camera_cm = camera.translation() * 100.0;
     let overlay = view.overlay_alpha;
-    for (body, anchor, children) in &anchors {
+    // A sphere whose body left the scene or lost its anchor goes; the rest
+    // are updated in place.
+    let mut drawn: std::collections::HashMap<Entity, Entity> = std::collections::HashMap::new();
+    for (sphere, of) in &spheres {
+        if anchors.get(of.0).is_ok() {
+            drawn.insert(of.0, sphere);
+        } else {
+            commands.entity(sphere).despawn();
+        }
+    }
+    for (body, anchor) in &anchors {
         let alpha = overlay_entry_alpha(overlay, anchor.entry.fade);
-        let drawn = children.and_then(|children| {
-            children
-                .iter()
-                .find_map(|child| spheres.get(child).ok().map(|sphere| (*sphere, child)))
-        });
         if alpha <= 0.0 {
-            if let Some((_, child)) = drawn {
-                commands.entity(child).despawn();
+            if let Some(sphere) = drawn.remove(&body) {
+                commands.entity(sphere).despawn();
             }
             continue;
         }
@@ -231,26 +236,23 @@ pub(crate) fn draw_mind_sight(
             noise.clone(),
         );
         let transform = Transform::from_matrix(object_matrix(&anchor.anchor));
-        match drawn {
-            Some((_, child)) => {
-                commands.entity(child).insert((
+        match drawn.get(&body) {
+            Some(&sphere) => {
+                commands.entity(sphere).insert((
                     transform,
                     Mesh3d(mesh.clone()),
                     MeshMaterial3d(materials.add(material)),
                 ));
             }
             None => {
-                let child = commands
-                    .spawn((
-                        MindSightSphere(body),
-                        Mesh3d(mesh.clone()),
-                        MeshMaterial3d(materials.add(material)),
-                        transform,
-                        bevy::light::NotShadowCaster,
-                        bevy::light::NotShadowReceiver,
-                    ))
-                    .id();
-                commands.entity(body).add_child(child);
+                commands.spawn((
+                    MindSightSphere(body),
+                    Mesh3d(mesh.clone()),
+                    MeshMaterial3d(materials.add(material)),
+                    transform,
+                    bevy::light::NotShadowCaster,
+                    bevy::light::NotShadowReceiver,
+                ));
             }
         }
     }
