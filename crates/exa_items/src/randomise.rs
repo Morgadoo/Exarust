@@ -676,6 +676,80 @@ pub trait WorldSource {
     fn register_variants(&mut self, _object: u32, _table: &containers::VariantTable) {}
 }
 
+/// One row a variant list appends to an item's random table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VariantRowRef {
+    /// The object whose `0x20000` list named the item.
+    pub object: u32,
+    /// The row's offset in that object's payload; the original stores the
+    /// payload-relative offset, not the row itself.
+    pub offset: usize,
+    /// The bulk the list shares among its rows (the section's word at
+    /// `0x0A`), stored in the row's second word.
+    pub bulk: u16,
+}
+
+/// The tables the world-load walk's variant lists feed, keyed by the item
+/// they name: for each listed item the original finds a table for its id
+/// or creates one, then appends a 20-byte row carrying the source offset
+/// and the list's bulk. Two objects naming the same item append to the
+/// same table in walk order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VariantRegistry {
+    tables: Vec<(u32, Vec<VariantRowRef>)>,
+}
+
+impl VariantRegistry {
+    /// An empty registry.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Appends every row of `table` to the table of the item it names,
+    /// creating that table on first use. Returns how many rows were
+    /// appended.
+    pub fn register(&mut self, object: u32, table: &containers::VariantTable) -> usize {
+        for row in &table.rows {
+            let at = match self.tables.iter().position(|(id, _)| *id == row.id) {
+                Some(at) => at,
+                None => {
+                    self.tables.push((row.id, Vec::new()));
+                    self.tables.len() - 1
+                }
+            };
+            self.tables[at].1.push(VariantRowRef {
+                object,
+                offset: row.offset,
+                bulk: table.bulk,
+            });
+        }
+        table.rows.len()
+    }
+
+    /// The rows an item's table holds, in append order.
+    pub fn rows(&self, item: u32) -> &[VariantRowRef] {
+        self.tables
+            .iter()
+            .find(|(id, _)| *id == item)
+            .map_or(&[], |(_, rows)| rows)
+    }
+
+    /// The item ids with a table, in creation order.
+    pub fn items(&self) -> impl Iterator<Item = u32> + '_ {
+        self.tables.iter().map(|(id, _)| *id)
+    }
+
+    /// How many rows every table holds together.
+    pub fn len(&self) -> usize {
+        self.tables.iter().map(|(_, rows)| rows.len()).sum()
+    }
+
+    /// Whether no row has been appended.
+    pub fn is_empty(&self) -> bool {
+        self.tables.is_empty()
+    }
+}
+
 /// The world-load pass's walk over the database, in record order:
 ///
 /// * a record with an item body whose armour type (`0x1A8`) is not zero
@@ -1049,7 +1123,7 @@ mod tests {
         records: Vec<Record>,
         refreshed: Vec<u32>,
         palettes: Vec<f32>,
-        variants: Vec<(u32, containers::VariantTable)>,
+        variants: VariantRegistry,
     }
 
     impl WorldSource for World {
@@ -1083,7 +1157,7 @@ mod tests {
             self.palettes.push(wealth);
         }
         fn register_variants(&mut self, object: u32, table: &containers::VariantTable) {
-            self.variants.push((object, table.clone()));
+            self.variants.register(object, table);
         }
     }
 
@@ -1131,18 +1205,65 @@ mod tests {
             ],
             refreshed: Vec::new(),
             palettes: Vec::new(),
-            variants: Vec::new(),
+            variants: VariantRegistry::new(),
         };
         assert_eq!(world_load(&mut world), 2);
         assert_eq!(world.refreshed, [1, 3]);
         assert_eq!(world.palettes, [2.0]);
         assert_eq!(world.variants.len(), 1);
-        let (object, table) = &world.variants[0];
-        assert_eq!(*object, 6);
-        assert_eq!(table.bulk, 42);
-        assert_eq!(table.rows.len(), 1);
-        assert_eq!(table.rows[0].id, 0x77);
-        assert_eq!(table.rows[0].offset, 0x20);
+        let rows = world.variants.rows(0x77);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].object, 6);
+        assert_eq!(rows[0].offset, 0x20);
+        assert_eq!(rows[0].bulk, 42);
+        assert_eq!(world.variants.items().collect::<Vec<_>>(), [0x77]);
+    }
+
+    #[test]
+    fn variant_lists_append_rows_to_the_named_items_table() {
+        let table = |bulk: u16, ids: &[u32]| containers::VariantTable {
+            bulk,
+            rows: ids
+                .iter()
+                .enumerate()
+                .map(|(at, &id)| containers::VariantRow {
+                    id,
+                    offset: 0x20 + at * 12,
+                })
+                .collect(),
+        };
+        let mut registry = VariantRegistry::new();
+        assert_eq!(registry.register(10, &table(40, &[0x77, 0x88])), 2);
+        // A second object naming the same item appends to its table rather
+        // than creating one.
+        assert_eq!(registry.register(11, &table(60, &[0x77])), 1);
+        assert_eq!(registry.items().collect::<Vec<_>>(), [0x77, 0x88]);
+        assert_eq!(registry.len(), 3);
+        assert_eq!(
+            registry.rows(0x77).to_vec(),
+            [
+                VariantRowRef {
+                    object: 10,
+                    offset: 0x20,
+                    bulk: 40
+                },
+                VariantRowRef {
+                    object: 11,
+                    offset: 0x20,
+                    bulk: 60
+                }
+            ]
+        );
+        assert_eq!(
+            registry.rows(0x88).to_vec(),
+            [VariantRowRef {
+                object: 10,
+                offset: 0x2C,
+                bulk: 40
+            }]
+        );
+        assert!(registry.rows(0x99).is_empty());
+        assert!(!registry.is_empty());
     }
 
     #[test]
