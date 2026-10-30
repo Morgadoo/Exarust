@@ -220,6 +220,50 @@ pub fn force_bubble_shape(bubble: &ForceBubble, gain: f32) -> (GiShape, ShapeVol
     (shape, volume_of(centre, half))
 }
 
+/// A cuboid emissive's box shape: the `gi_cuboid` program, `max(scale −
+/// 20, 10)` half extents, the light's own colour times the manager's scale
+/// and the node's frame, in the node's world box plus 80 cm.
+pub fn cuboid_shape(
+    at_cm: Vec3,
+    axes: [Vec3; 3],
+    scale_cm: Vec3,
+    colour: Vec3,
+) -> (GiShape, ShapeVolume) {
+    let light = emissive::cuboid_light(scale_cm, colour * GI_LIGHT_SCALE);
+    let (centre, half) = emissive::world_box(at_cm, axes, scale_cm, emissive::CUBOID_FALLOFF_CM);
+    let shape = GiShape {
+        program: GiShapeProgram::Cuboid,
+        colour: light.colour,
+        matrix: Mat4::from_translation(-at_cm),
+        half: light.extent,
+        ..default()
+    };
+    (shape, volume_of(centre, half))
+}
+
+/// A tendril image's multi-point light: one point a strand anchor with its
+/// intensity, [`emissive::tendril_light`]'s colour at the image's scale and
+/// the manager's, attenuation 16000, in the points' box plus 120 cm moved
+/// by the node's place.
+pub fn tendril_shape(
+    points: &[(Vec3, f32)],
+    at_cm: Vec3,
+    scale: f32,
+    gain: f32,
+) -> Option<(GiShape, ShapeVolume)> {
+    let lit = emissive::tendril_light(points, scale, gain);
+    let places: Vec<Vec3> = points.iter().map(|&(at, _)| at).collect();
+    let (centre, half) = emissive::point_box(&places)?;
+    let (centre, half) = emissive::node_box(centre, half, at_cm);
+    let shape = GiShape {
+        program: GiShapeProgram::Multipoint,
+        atten: emissive::MULTIPOINT_ATTENUATION,
+        points: lit.into(),
+        ..default()
+    };
+    Some((shape, volume_of(centre, half)))
+}
+
 /// The barriers' lights, refreshed from their phase every frame; a
 /// barrier's light leaves with it.
 pub(crate) fn barrier_lights(
@@ -764,6 +808,41 @@ mod tests {
         assert_eq!(shape.matrix.transform_point3(at), Vec3::ZERO);
         assert_eq!(volume.position, at / CM);
         assert_eq!(volume.half, Vec3::splat((120.0 + 10.0 + 60.0) / CM));
+    }
+
+    #[test]
+    fn the_cuboid_and_tendril_lights_take_their_boxes() {
+        let at = Vec3::new(100.0, 50.0, 0.0);
+        // A cuboid: max(scale − 20, 10) per axis, its own colour and the
+        // node's box plus 80 cm.
+        let (shape, volume) = cuboid_shape(
+            at,
+            [Vec3::X, Vec3::Y, Vec3::Z],
+            Vec3::new(25.0, 50.0, 31.0),
+            Vec3::X,
+        );
+        assert_eq!(shape.program, GiShapeProgram::Cuboid);
+        assert_eq!(shape.half, Vec3::new(10.0, 30.0, 11.0));
+        assert_eq!(shape.colour, Vec3::X * GI_LIGHT_SCALE);
+        assert_eq!(
+            volume.half,
+            Vec3::new(25.0 + 10.0 + 80.0, 50.0 + 10.0 + 80.0, 31.0 + 10.0 + 80.0) / CM
+        );
+        // A tendril's points make one multipoint light each, attenuation
+        // 16000, in their box plus 120 cm moved by the node.
+        let points = [(Vec3::ZERO, 1.0), (Vec3::new(10.0, 0.0, 0.0), 2.0)];
+        let (shape, volume) = tendril_shape(&points, at, 0.5, 0.5).expect("a shape");
+        assert_eq!(shape.program, GiShapeProgram::Multipoint);
+        assert_eq!(shape.atten, emissive::MULTIPOINT_ATTENUATION);
+        assert_eq!(shape.points.len(), 2);
+        assert_eq!(
+            shape.points[1].1,
+            emissive::TENDRIL_COLOUR * (0.5 * 2.0 * 0.5)
+        );
+        // The points' middle is 5 cm out from the node's place.
+        assert_eq!(volume.position, (at + Vec3::X * 5.0) / CM);
+        assert_eq!(volume.half, Vec3::new(5.0 + 120.0, 120.0, 120.0) / CM);
+        assert_eq!(tendril_shape(&[], at, 1.0, 1.0), None);
     }
 
     /// A blast's light is registered on its first frame, kept while its

@@ -46,7 +46,9 @@ frames, mods and flamelets, and the domain wheel, which the tree's load
 resamples to 32 GUI units a side through `exa_render`'s resample-to-size
 path in its own format word and flags (`wheel_texture`; 384 → 128 pixels at
 the four-pixel unit); `TreeSheets::resample_wheel` does it again when the
-unit changes.
+unit changes. The flamelets sheet (`load_rgba_chain`) also has its mip
+chain kept, level by level: the shipped file stores eleven, and the wheel's
+three programs sample across them.
 
 Hair (`hair`): the original's hair colour picker (five decoded hue anchors,
 desaturation by the saturated value, a specular grey moved in, the engine's

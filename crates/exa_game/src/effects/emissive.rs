@@ -46,10 +46,12 @@
 //!
 //! The blast's, the torrent's, the teleporter bubble's, the Barrier's, the
 //! force Bubble's and the barricade's lights are registered as GI shapes
-//! while their effects live (`crate::thaum::effect_light`); the cuboid,
-//! strikes and tendril lights have no live effect that registers them yet.
-//! The multi-point and gradient-line attenuations are per squared volume
-//! unit (the GI block's width is 1), as the original uploads them.
+//! while their effects live (`crate::thaum::effect_light`); the cuboid and
+//! tendril lights have builders there too (`cuboid_shape`,
+//! `tendril_shape`), and the strikes light (`strikes_shape`), with no live
+//! effect that registers them yet. The multi-point and gradient-line
+//! attenuations are per squared volume unit (the GI block's width is 1), as
+//! the original uploads them.
 //!
 //! Evidence: the seven emissive classes' program setup, bounds and draw,
 //! read from `Exanima.exe`.

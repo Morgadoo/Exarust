@@ -471,7 +471,12 @@ grows over 1800 ms, rests 500 ms or holds and charges over 7000 ms
 (flashing at 5600), then shrinks in 400 ms around a 120 cm sphere; the
 domain wheel is a 280 px form of six domains (Mind, Force, Body, Energy,
 Light, Displacement) clockwise from the top of a 76 px ring, with a
-20.8 px hit, its hover, label, open ease, choice flash and confirm rules.
+20.8 px hit, its hover, label, open ease, choice flash and confirm rules,
+and its constructor's form (`effects::wheel::wheel_form`, 280 square, the
+child form word 0x10), its three program objects (`WHEEL_PROGRAMS`, the
+backdrop, sector and glow sources with their uniforms and the `Tex`
+sampler on unit 0) and the flamelets sheet's mip chain its programs sample
+trilinearly.
 Rules of the Mind casts and sight and the two force effects:
 [`docs/THAUMATURGY.md`](../../docs/THAUMATURGY.md) (Mind casts, Force blast
 and torrent).
@@ -489,7 +494,13 @@ is not in.
 The force and environment effects of the same powers are in as plain
 rules: `effects::rain` (4096 drops in a 600 cm box ahead of the camera,
 the gust walk, the fall, the tilt-dependent streak, the ground wrap on the
-effect's own generator, the colour and the two shaders kept as data),
+effect's own generator, the colour and the two shaders kept as data, the
+per-sub-frame and reflected draw passes (the set's 2° tilt scaled by
+`sqrt(field/70)`, placed at the box centre and multiplied by each
+sub-frame's composite, with its `EyeVec`; no renderer node draws them),
+the program's uniforms and frame-buffer unit, and the weather's start: the
+scene environment's effect creates the set, its rain amount sets the
+intensity and a live rain is framed at the chase camera),
 `effects::portal_effect` (one ellipse particle per call, its previous and
 current positions, the 3- and 5-bit look draws), `effects::fire_node`
 (the `_FlameMat01` node's 800 cm 1/0.68/0.43 light and the colour ramp
@@ -497,15 +508,24 @@ its object conversion derives from a record byte), `effects::force_dome`
 (the eight-ripple list, the cast sound, the Barrier's damped height,
 800 ms grow window, drain, drawn radius, frame and keep-out, the Bubble's
 1200 ms grow, break and 700 ms fall and its two keep-outs, the character
-contact and balance drain, the double-sided meshes), `effects::force_wave`
+contact and balance drain, the double-sided meshes, the Bubble's draw
+(`effectbarrier_v`/`effectbubble_f`, its seven uniforms, the eight ripple
+points, the camera in its frame and its fade), and the node attach
+(flag 0x10000, the owner back pointer and the frame hook) and destroy
+(clear hook, light, material, object) that the live bubbles and barriers
+run), `effects::force_wave`
 (32 chunks 80 cm out, the charge, release, thrown step, trails and
 lives), `effects::danger` (what the AI sees of a blast, a wave and a
 barricade, and the steps away; the live blasts and waves carry a hazard a
-sight pass can walk), `effects::emissive` (the seven GI lights'
-extents, colours and boxes, registered as GI shapes while the blast,
-torrent, teleporter bubble, Barrier, force Bubble or barricade lives), `effects::effect_geometry` (the geometry
+sight pass can walk, and a standing barricade carries one for its wall),
+`effects::emissive` (the seven GI lights' programs, extents, colours and
+boxes, registered as GI shapes while the blast, torrent, teleporter
+bubble, Barrier, force Bubble or barricade lives, with shape builders for
+the cuboid and tendril), `effects::effect_geometry` (the geometry
 flags, programs, uniforms, pass rows and fades) and `effects::vanish`
-(hide, show, lend, phase hook and finish). A cast starts its dome or wave,
+(hide, show, lend, phase hook and finish, and the displacement unit's
+phase table with its stage, reveal, show and hide entries, not run live).
+A cast starts its dome or wave,
 but none of these is drawn: the rain's caller is the scene's weather, the
 vanish's is its power effect node, and the AI's sight is not registered.
 
@@ -1337,8 +1357,19 @@ companion, Derrin (`xac_derrin`), at the story start's companion point
 
 The Energy domain's Shock creator builds its charge object with the cast
 flag 1, the base cost, the clip's charge, the hand arcs (20 tendrils of 5
-segments at −15, −5 cm), and the `thmnrg_chrga` and `thmnrg_shock` sounds
-(`exa_game::thaum::energy::shock_power`).
+segments at −15, −5 cm), the `thmnrg_chrga` and `thmnrg_shock` sounds, the
+`0x401` active-power membership and the player-controls call for a player
+owner (`exa_game::thaum::energy::shock_power`, `ShockPower::created`). The
+shock weapons creator arms every held weapon with its 0x301 arcs (40
+tendrils of 4, scale 0.75, light 0.02, `electricity03` at 0.15;
+`armed_weapon_arcs`, not yet spawned), holds the cost and joins `0x2040b`
+with the weapon-change hook; a put-away weapon's
+node takes its end flag and loses its hook. A blade strike shocks the
+struck character by 0.01 and queues the spark burst at the contact point
+in the struck body's frame (`blade_strike`, `spark_at`; no caller yet).
+Shock's release spawns its burst at the hand (`arcs::shock_burst`: ten
+tendrils of fourteen points, growth 0.25, lift 0.5, light 1 and a shock
+strength of 0.05; its aim at the controller's target is not passed).
 
 `flow` is the original's game-main flow: boot into the title, the mode
 switch (practice, story, arena, scripted modes), the session starters

@@ -309,6 +309,38 @@ pub struct Dome {
     pub quiet_until_ms: u32,
     /// The node has left the scene.
     pub removed: bool,
+    /// The scene node the dome attaches to.
+    pub node: DomeNode,
+    /// The dome's GI light object exists.
+    pub light: bool,
+    /// The dome's render material exists.
+    pub material: bool,
+}
+
+/// The scene node a dome attaches to: its flags word, its owner back
+/// pointer and the dome's frame step as its hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DomeNode {
+    pub attached: bool,
+    /// The node's flags word: the attach sets 0x10000.
+    pub flags: u32,
+    /// The node's owner slot points back at the dome.
+    pub owner: bool,
+    /// The node runs the dome's frame step.
+    pub frame_hook: bool,
+}
+
+/// What destroying a dome freed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DomeTeardown {
+    /// The class's clear hook ran (the original's real delete only).
+    pub cleared: bool,
+    /// The GI light object was freed.
+    pub light: bool,
+    /// The material was released and freed.
+    pub material: bool,
+    /// The object freed itself.
+    pub object: bool,
 }
 
 /// What a dome's frame hands the draw.
@@ -349,6 +381,9 @@ impl Dome {
             tex_pos: [random.unit() as f32, random.unit() as f32],
             quiet_until_ms: 0,
             removed: false,
+            node: DomeNode::default(),
+            light: false,
+            material: false,
         };
         let sound = Sound {
             at: Vec3::new(caster.x, sound_height(caster.y, ground_y), caster.z),
@@ -356,6 +391,38 @@ impl Dome {
             pitch: (random.unit() * 0.4 + 0.6) as f32,
         };
         (dome, sound)
+    }
+
+    /// Attach the dome to its scene node: the node takes flag 0x10000,
+    /// points its owner slot back at the dome and runs the dome's frame
+    /// step. The cast stores the node and copies its frame for the
+    /// light.
+    pub fn attach_node(&mut self) {
+        self.node.attached = true;
+        self.node.flags |= 0x0001_0000;
+        self.node.owner = true;
+        self.node.frame_hook = true;
+    }
+
+    /// Destroy the dome, as the class's destructor does: a real delete
+    /// (`owned`) first runs the class's clear hook; the light object and
+    /// the render material are freed when they exist; the base object
+    /// leaves the scene; and an owned object frees itself. Returns what it
+    /// had.
+    pub fn destroy(&mut self, owned: bool) -> DomeTeardown {
+        let teardown = DomeTeardown {
+            cleared: owned,
+            light: self.light,
+            material: self.material,
+            object: owned,
+        };
+        self.light = false;
+        self.material = false;
+        self.removed = true;
+        self.node.attached = false;
+        self.node.owner = false;
+        self.node.frame_hook = false;
+        teardown
     }
 
     /// The share the frame shows at `alpha`, while growing or shrinking.
@@ -870,10 +937,37 @@ pub struct BarrierFrame {
     pub hum_at: Vec3,
 }
 
+/// The Bubble's draw program: the Barrier's vertex shader with its own
+/// fragment shader.
+pub const BUBBLE_VERTEX_PROGRAM: &str = "effectbarrier_v";
+pub const BUBBLE_FRAGMENT_PROGRAM: &str = "effectbubble_f";
+/// The uniforms the bubble's program looks up, in the constructor's order
+/// (the `EmiTex` sampler is bound to unit 0).
+pub const BUBBLE_UNIFORMS: [&str; 7] = [
+    "ObjMat", "TexOfs", "ViewPos", "Fade", "TexPos", "ColPt", "EmiTex",
+];
+/// The unit the bubble's `EmiTex` sampler binds.
+pub const BUBBLE_TEXTURE_UNIT: u32 = 0;
+
 /// The Bubble.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Bubble {
     pub dome: Dome,
+}
+
+/// What a bubble's frame hands its draw.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BubbleFrame {
+    /// `ColPt`: the eight ripple points, their shown amount in the fourth
+    /// slot.
+    pub points: [[f32; 4]; 8],
+    /// `TexPos`.
+    pub tex_pos: [f32; 2],
+    /// `ViewPos`: the camera in the bubble's frame (the bubble is unturned).
+    pub view_pos: Vec3,
+    /// `Fade`: `max(1 − previous, 0)` while growing or holding, the
+    /// shrinking share afterwards.
+    pub fade: f32,
 }
 
 impl Bubble {
@@ -941,6 +1035,22 @@ impl Bubble {
             _ => {}
         }
         (None, false)
+    }
+
+    /// The draw the bubble's own frame uploads: the eight ripple points,
+    /// the texture position, the camera seen from the bubble's frame and
+    /// the fade. `None` once the bubble has left the scene.
+    pub fn frame(&mut self, camera: Vec3) -> Option<BubbleFrame> {
+        if self.dome.removed {
+            return None;
+        }
+        self.dome.ripples.copy_points();
+        Some(BubbleFrame {
+            points: self.dome.ripples.points,
+            tex_pos: self.dome.tex_pos,
+            view_pos: camera - self.dome.at,
+            fade: self.dome.fade(),
+        })
     }
 
     /// One of the caster's own parts, `local` its centre in the bubble's
@@ -1127,6 +1237,63 @@ mod tests {
     }
 
     #[test]
+    fn the_node_attachment_takes_the_dome_and_its_step() {
+        let mut dome = Dome::cast(
+            30.0,
+            Vec3::ZERO,
+            0,
+            Vec3::ZERO,
+            0.0,
+            BARRIER_CAST_VOLUME,
+            &mut random(),
+        )
+        .0;
+        assert_eq!(dome.node, DomeNode::default());
+        dome.attach_node();
+        assert!(dome.node.attached && dome.node.owner && dome.node.frame_hook);
+        assert_eq!(dome.node.flags, 0x0001_0000);
+        dome.attach_node();
+        assert_eq!(dome.node.flags, 0x0001_0000, "the bit is set once");
+        // A dome with a light and a material frees both on the real delete,
+        // runs its clear hook and frees itself; a plain free keeps the
+        // light and the material and only lets the base object go.
+        dome.light = true;
+        dome.material = true;
+        assert_eq!(
+            dome.destroy(true),
+            DomeTeardown {
+                cleared: true,
+                light: true,
+                material: true,
+                object: true,
+            }
+        );
+        assert!(dome.removed && !dome.light && !dome.material);
+        assert!(!dome.node.attached);
+        let mut plain = Dome::cast(
+            30.0,
+            Vec3::ZERO,
+            0,
+            Vec3::ZERO,
+            0.0,
+            BARRIER_CAST_VOLUME,
+            &mut random(),
+        )
+        .0;
+        plain.light = true;
+        assert_eq!(
+            plain.destroy(false),
+            DomeTeardown {
+                cleared: false,
+                light: true,
+                material: false,
+                object: false,
+            }
+        );
+        assert!(!plain.light && plain.removed);
+    }
+
+    #[test]
     fn the_barrier_grows_only_inside_its_800_ms_window() {
         let mut b = barrier();
         let t = b.tick(Vec3::ZERO, 0.0, Vec3::Z, 1400);
@@ -1281,6 +1448,43 @@ mod tests {
         assert_eq!(bubble.dome.share, 0.0);
         bubble.tick(2701, &mut roll);
         assert_eq!(bubble.dome.phase, Phase::Gone);
+    }
+
+    #[test]
+    fn the_bubble_draw_takes_its_points_place_and_fade() {
+        let (mut bubble, _) = Bubble::cast(
+            120.0,
+            Vec3::new(10.0, 0.0, 0.0),
+            0,
+            Vec3::ZERO,
+            0.0,
+            &mut random(),
+        );
+        bubble.dome.ripples.strike(Vec3::new(5.0, 6.0, 7.0), 1.0);
+        bubble.dome.ripples.tick();
+        bubble.dome.share = 0.25;
+        bubble.dome.shown_share = 0.25;
+        let camera = Vec3::new(10.0, 20.0, 30.0);
+        let frame = bubble.frame(camera).expect("a frame");
+        // The camera seen from the bubble's place.
+        assert_eq!(frame.view_pos, Vec3::new(0.0, 20.0, 30.0));
+        // max(1 − 0.25, 0) while growing.
+        assert_eq!(frame.fade, 0.75);
+        assert_eq!(frame.points[0][3], bubble.dome.ripples.list[0].shown);
+        assert_eq!(frame.points[1][3], 0.0);
+        assert_eq!(frame.tex_pos, bubble.dome.tex_pos);
+        // Shrinking draws the share itself.
+        bubble.dome.phase = Phase::Shrinking;
+        assert_eq!(bubble.frame(camera).unwrap().fade, 0.25);
+        // A removed bubble draws nothing.
+        bubble.dome.removed = true;
+        assert!(bubble.frame(camera).is_none());
+        assert_eq!(
+            (BUBBLE_VERTEX_PROGRAM, BUBBLE_FRAGMENT_PROGRAM),
+            ("effectbarrier_v", "effectbubble_f")
+        );
+        assert_eq!(BUBBLE_UNIFORMS[6], "EmiTex");
+        assert_eq!(BUBBLE_TEXTURE_UNIT, 0);
     }
 
     #[test]

@@ -1505,7 +1505,7 @@ fn create_energy(
                 entity,
             );
             debug!(
-                "energy shock: charge {:.3} a tick over {:.3}, burst entity not ported",
+                "energy shock: charge {:.3} a tick over {:.3}",
                 charge.length, charge.cost
             );
             entity
@@ -1566,7 +1566,11 @@ fn create_displacement(
             tick_cost,
             to,
         } => {
-            let power = LongDoor::new(context.now, to.map(|p| p.to_array()), false, tick_cost);
+            let mut power = LongDoor::new(context.now, to.map(|p| p.to_array()), false, tick_cost);
+            if let Some(head) = ragdoll.and_then(|r| r.parts.first()) {
+                let at = head.transform().translation * CM;
+                power.follow(Vec3::from_array([at.x, at.y, at.z]));
+            }
             caster.body.cast_hook = Some(super::power::displacement::LONG_DOOR_HOOK);
             let mut input = visual_input(context, ragdoll, 0.0);
             if let Some(to) = to {
@@ -1890,6 +1894,7 @@ fn tick_casters(
     mut faded: MessageWriter<super::throw_live::ThrowFade>,
     mut moves: MessageWriter<Otherwhere>,
     mut holds: MessageWriter<super::hold_live::HoldEnd>,
+    mut draws: ResMut<EffectDraws>,
 ) {
     let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
     for (
@@ -2055,6 +2060,31 @@ fn tick_casters(
                 ActiveClass::Shock(power) => {
                     let step = power.control(event, body);
                     result = step.result;
+                    // The release makes the burst at the hand: a fresh
+                    // emitter of the shock's own shape (strength 0.05, so
+                    // its tendrils shock what they reach), before the
+                    // hand's arcs leave. [inf: the original aims its first
+                    // tendril at the controller's aim point within 45° of
+                    // the heading (`effects::blast::blast_aim`); the tick
+                    // has no aim point here, so the burst starts undirected.]
+                    if step.fired
+                        && let Some(body) = ragdoll
+                    {
+                        let mut arcs =
+                            ArcEmitter::new(&crate::thaum::arcs::shock_burst(), &mut draws.0);
+                        arcs.anchor = bone_part(body, RIGHT_HAND)
+                            .and_then(|k| part_point(body, k, HAND_ARCS_OFFSET));
+                        commands.spawn((
+                            Name::new("_ShockBurst"),
+                            LiveArcs {
+                                arcs,
+                                hand: Some((caster_entity, RIGHT_HAND)),
+                                caster: Some(caster_entity),
+                                keep: false,
+                            },
+                        ));
+                        debug!("energy shock: the burst fires at the hand");
+                    }
                     if (step.fired || step.cleared)
                         && let Some(entity) = entry.entity.take()
                     {

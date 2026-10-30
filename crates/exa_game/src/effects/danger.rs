@@ -36,9 +36,11 @@
 //!
 //! The relation number, the viewer's fields and the AI that reads the
 //! words are outside this group; the live blasts and waves carry a
-//! [`Hazard`] whose place and release word `sync_hazards` keeps current, so
-//! a sight pass can walk the scene's hazards and ask each for its
-//! [`Seen`]. No AI system reads them yet.
+//! [`Hazard`] whose place and release word `sync_hazards` keeps current, and
+//! a barricade carries one while it rises or stands (its wall published by
+//! its tick, dropped when it falls), so a sight pass can walk the scene's
+//! hazards and ask each for its [`Seen`] ([`nearest_barricade`] picks the
+//! nearest wall in sight). No AI system reads them yet.
 //!
 //! Evidence: the blast, wave and barricade entities' place, assessment and
 //! avoidance routines, read from `Exanima.exe`.
@@ -74,14 +76,27 @@ pub struct Seen {
     pub face: f32,
 }
 
-/// A blast or a wave as the AI's sight walks it: its effect's place and
-/// whether it has been released. The live effects carry one (updated after
-/// each of their ticks), so a sight pass over the scene's hazards finds them
-/// without knowing the effect classes.
+/// A blast, a wave or a barricade as the AI's sight walks it: a blast's or
+/// a wave's place and whether it has been released, or a barricade's wall,
+/// rising while it grows, with the strong flag that triples the fear. The
+/// live effects carry one (updated after each of their ticks), so a sight
+/// pass over the scene's hazards finds them without knowing the effect
+/// classes.
 #[derive(Component, Debug, Clone, Copy, PartialEq)]
 pub enum Hazard {
-    Blast { at: Vec3, released: bool },
-    Wave { at: Vec3, released: bool },
+    Blast {
+        at: Vec3,
+        released: bool,
+    },
+    Wave {
+        at: Vec3,
+        released: bool,
+    },
+    Barricade {
+        wall: Wall,
+        rising: bool,
+        strong: bool,
+    },
 }
 
 impl Hazard {
@@ -95,9 +110,39 @@ impl Hazard {
                 assess_blast(at, released, viewer, caster, relation, &mut seen)
             }
             Hazard::Wave { at, released } => assess_wave(at, released, viewer, relation, &mut seen),
+            Hazard::Barricade {
+                wall,
+                rising,
+                strong,
+            } => assess_barricade(&wall, rising, strong, viewer, relation, &mut seen),
         };
         noticed.then_some(seen)
     }
+}
+
+/// The nearest barricade among `hazards` as `viewer` sees it, with the
+/// viewer's `relation` word; `None` when none is within sight. [inf: the
+/// original's sight asks each registered entity in turn; taking the nearest
+/// is Exarust's choice, and no AI reads this yet.]
+pub fn nearest_barricade<'a>(
+    hazards: impl IntoIterator<Item = (Entity, &'a Hazard)>,
+    viewer: &Viewer,
+    relation: f32,
+) -> Option<(Entity, Seen)> {
+    let mut best: Option<(Entity, Seen, f32)> = None;
+    for (entity, hazard) in hazards {
+        let Hazard::Barricade { wall, .. } = hazard else {
+            continue;
+        };
+        let Some(seen) = hazard.assess(viewer, relation, false) else {
+            continue;
+        };
+        let d = wall_point(wall, viewer.chest).distance(viewer.chest);
+        if best.as_ref().is_none_or(|(_, _, found)| d < *found) {
+            best = Some((entity, seen, d));
+        }
+    }
+    best.map(|(entity, seen, _)| (entity, seen))
 }
 
 /// Keeps every hazard's place and release word in step with its effect after
@@ -412,6 +457,37 @@ mod tests {
             look: Vec3::Z,
             facing: Vec3::Z,
         }
+    }
+
+    #[test]
+    fn the_sight_offers_the_nearest_barricade() {
+        let near = Entity::from_raw_u32(7).unwrap();
+        let far = Entity::from_raw_u32(8).unwrap();
+        let wall = |z: f32| Hazard::Barricade {
+            wall: Wall {
+                centre: Vec3::new(0.0, 0.0, z),
+                along: Vec3::X,
+                half_width: 300.0,
+            },
+            rising: false,
+            strong: false,
+        };
+        let (near_wall, far_wall) = (wall(600.0), wall(5000.0));
+        let blast = Hazard::Blast {
+            at: Vec3::new(0.0, 0.0, 100.0),
+            released: true,
+        };
+        let blast_entity = Entity::from_raw_u32(9).unwrap();
+        let hazards = [(blast_entity, &blast), (far, &far_wall), (near, &near_wall)];
+        let (found, seen) = nearest_barricade(hazards, &viewer(), 0.0).expect("seen");
+        assert_eq!(found, near);
+        assert_eq!(seen.flags & SEEN_FLAG, SEEN_FLAG);
+        assert!(seen.near > 0.0 && seen.fear > 0.0);
+        // Far away nothing is seen, and a blast is no barricade.
+        assert_eq!(
+            nearest_barricade([(blast_entity, &blast), (far, &far_wall)], &viewer(), 0.0),
+            None
+        );
     }
 
     #[test]

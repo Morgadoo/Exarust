@@ -162,20 +162,30 @@ pub struct EffectsPlugin;
 
 impl Plugin for EffectsPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<EffectClock>().add_systems(
-            FixedUpdate,
-            (
-                advance_clock,
+        app.init_resource::<EffectClock>()
+            .init_resource::<rain::LiveRain>()
+            .init_resource::<rain::RainRng>()
+            .add_systems(
+                FixedUpdate,
                 (
-                    bubble::tick_bubbles,
-                    scan::tick_scans,
-                    shell::tick_shells,
-                    fire_row::tick_rows,
-                ),
-            )
-                .chain(),
+                    advance_clock,
+                    (
+                        bubble::tick_bubbles,
+                        scan::tick_scans,
+                        shell::tick_shells,
+                        fire_row::tick_rows,
+                    ),
+                )
+                    .chain(),
+            );
+        app.add_systems(
+            Update,
+            (
+                fire_row::frame_rows,
+                portal::light_portals,
+                rain::drive_rain,
+            ),
         );
-        app.add_systems(Update, (fire_row::frame_rows, portal::light_portals));
     }
 }
 

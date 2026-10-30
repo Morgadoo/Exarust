@@ -421,6 +421,27 @@ fn tick_barricades(
         if live.wall.tick(now) {
             debug!("barricade {wall_entity}: gone");
         }
+        // The standing wall is what the AI's sight sees: it carries its
+        // hazard while it rises or stands and drops it when it falls.
+        if live.wall.state == crate::thaum::barricade::state::GONE {
+            commands
+                .entity(wall_entity)
+                .remove::<crate::effects::danger::Hazard>();
+        } else if live.wall.entity {
+            commands
+                .entity(wall_entity)
+                .insert(crate::effects::danger::Hazard::Barricade {
+                    wall: crate::effects::danger::Wall {
+                        centre: live.wall.centre,
+                        along: live.wall.frame.x,
+                        half_width: live.wall.half_width,
+                    },
+                    rising: live.wall.state == crate::thaum::barricade::state::RISING,
+                    // The entity's strong byte is not modelled (a guess: no
+                    // stronger fear).
+                    strong: false,
+                });
+        }
         for (mut body, mut swing) in &mut bodies {
             let character = body.drive.as_ref().map(|d| {
                 let chest = bone_part(&body, CHEST)

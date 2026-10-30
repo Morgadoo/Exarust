@@ -962,7 +962,17 @@ line skin's third ink; the ring frame, six segments from (64, 111) to
 box at `0.6` of its fade and its name. The three wheel programs draw with
 blend `0x103` over the flamelets sheet, which repeats; the glow program
 writes no alpha and is taken as additive (a guess). The wheel's texture is
-`domainwheel` resampled to 32 units a side. The shader
+`domainwheel` resampled to 32 units a side, and the flamelets sheet is made
+with the mip bit (`0x40`), so the three programs sample its whole chain:
+the software rasteriser takes the level from the triangle's texture step
+(the GL rule, `log2` of the larger step per pixel scaled by the sheet's
+sides, at least zero) and mixes the two neighbouring levels. The wheel's
+form is built by its constructor (`effects::wheel::wheel_form`): a 280 by
+280 client at the origin, the child form word `0x10` and the `0x80000` form
+flags, with the eased zoom at 0.5, the wheel shown and the choice on Force.
+Its three program objects (`WHEEL_PROGRAMS`) are the backdrop, sector and
+glow sources, built once and kept, each looking up `par0` and, but for the
+glow, `par1`, and the `Tex` sampler on unit 0. The shader
 bindings of the Force and Displacement effects are data in
 `thaum::effect_material` and `thaum::visuals` (the five materials, their
 blocks, node flags, sub-objects, signatures, `gi_multipoint`, the noise
@@ -971,7 +981,11 @@ matrix's depth term (double precision for the effect material and the
 tendril, single for the shader and the shell), the layer colours, the
 time and brightness uniforms and the shader's texture coordinate, with no
 draw at all while the pass count is zero — are in `thaum::effect_pass`.
-`effect_material` also runs the material routines' node transitions
+The force geometry's supersample passes upload their own object matrix
+(the node's matrix times the pass's) to `ObjMat`, pass 0 before its
+viewport is set and each later pass after its shift; with a single pass
+nothing is drawn on that path (`effects::effect_geometry::force_uploads`). `effect_material` also runs
+the material routines' node transitions
 (`dress`: the noise made before the shared shader, the flag and state
 bits, the aura's and shell's one replacement sub-object and the material's
 parameter block) and the `gi_multipoint` table's lookup, creation,
@@ -1001,13 +1015,23 @@ tendril draws it yet). The blast-family and torrent ribbons and the shell
 aura draw with their own ported programs (`effectforce_f`,
 `effecttorrent_f`, `effectshell`; The shaped-force aura). The arcs
 upload their ribbon's UVs. The barricade's navigation stamp is applied to
-the grid (`exa_world::nav::stamp`); the AI's sight of it is still
-`effects::danger`, which nothing registers yet. The domes, the wave and
+the grid (`exa_world::nav::stamp`); a standing barricade carries an
+`effects::danger::Hazard` for its wall, which no AI reads yet. The domes, the wave and
 the rain are not drawn yet (the materials' pass plans are computed but no
-renderer binds them); the GI emissive objects behind
+renderer binds them); the rain's frame passes (its tilt scaled by
+`sqrt(field/70)`, placed at the drop box's centre and multiplied by each
+sub-frame's composite, its `EyeVec`) and its shader uniforms are modelled in
+`effects::rain`, and the scene weather now starts the set and frames it at
+the camera. The GI emissive objects behind
 the domes, the bubble, the barricade, the strikes, the tendril and the
 teleporter bubble are modelled in `effects::emissive` (their programs,
-extents, colours and boxes) but not injected into the voxel volume.
+extents, colours and boxes). The force Barrier's and force Bubble's are
+injected while they live (`thaum::effect_light::barrier_lights` and
+`force_bubble_lights`, the dome and bubble programs, the colour taking the
+manager's light scale once and the Barrier's frame its cap node's, turned
+to its facing 75 cm ahead); the barricade's,
+cuboid's, strikes' and tendril's have shapes built (`cuboid_shape`,
+`tendril_shape`) with nothing live that owns one yet.
 The force blast and torrent are not drawn: their ribbon vertex builds
 are not ported. A cast blast or bolt runs as an entity, without its draw,
 sounds, light, alert or stun. Their geometry classes (`effectforce_v` with

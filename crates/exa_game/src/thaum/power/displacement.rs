@@ -16,10 +16,28 @@
 //!   event before the hold and −1 to a cast's start and to 0x100 from it;
 //!   being asked with 1, 0x10, 0x20, 0x80 or 0x100 lets the power go.
 //!   The Long Door's hook answers 0 to everything; Constant Displacement's
-//!   (once its motion starts) and the Summon's answer 0 to bits 0x29.
+//!   (once its motion starts) and the Summon's answer 0 to bits 0x29. A
+//!   vanish carries a light that follows the body and the after-image the
+//!   shared base leaves ([`VanishNode`]); both go when it is destroyed, the
+//!   image when the fade-out ends or the body shows, and its start and move
+//!   play at volume 0.4 and pitch `roll·0.2 + 0.9`.
 //! - **The Long Door** ([`LongDoor`]): starts at phase 0x10 asking the
-//!   navigation grid for the aim's place; a found place starts the phases,
-//!   an impossible one ends at once, and phase 3 moves the body there.
+//!   navigation grid for a path toward the point 300 cm behind its subject
+//!   (the caster's target, or the caster itself without one), along the
+//!   subject's own forward vector ([`nav_query_target`]); the path's last
+//!   point is usable only when its squared distance from the subject
+//!   across the floor exceeds 200 (cm², single precision: a little over
+//!   14 cm), and a path of fewer than two points is impossible
+//!   ([`nav_answer`]). The arrival's facing is the target's place less the
+//!   found point, level and scaled by the processor's approximate
+//!   reciprocal square root, or the caster's forward when there is no
+//!   target ([`destination_aim`]). A found place starts the phases, an
+//!   impossible one ends at once, and phase 3 moves the body there. The
+//!   class carries a light that follows the body and the vanish's
+//!   after-image, both freed when it is destroyed; its move plays at
+//!   volume 0.4 and pitch `roll·0.2 + 0.9` (in double), and so does its
+//!   start: at the cast for a player's door, when the grid answers for
+//!   the AI's.
 //! - **Constant Displacement** ([`ConstantDisplacement`]): a persistent
 //!   class whose hum (`thmdsp_cns01`, following the body) rises 0.002 in
 //!   volume each control tick while it is under 0.12 (in double); ending
@@ -30,6 +48,8 @@
 //!
 //! Evidence: the vanish base, the three instant classes and the constant
 //! power's control handler, read from `Exanima.exe`.
+
+use bevy::math::Vec3;
 
 use super::PowerBase;
 use crate::effects::vanish::Vanish as VanishEffect;
@@ -324,6 +344,15 @@ pub fn step_vanish(base: &mut VanishBase, now: u32, drain: f32, hold: HoldEnd) -
     }
 }
 
+/// The effect node a vanish carries: the light that follows the body and
+/// the after-image the shared base leaves, both freed with the class.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VanishNode {
+    pub light: bool,
+    pub image: bool,
+    pub light_at: [f32; 3],
+}
+
 /// One tick of Vanish.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Vanish {
@@ -332,6 +361,8 @@ pub struct Vanish {
     pub drain: f32,
     /// The caster's cast hook is this vanish's.
     pub hooked: bool,
+    /// The light and the after-image it carries.
+    pub node: VanishNode,
 }
 
 impl Vanish {
@@ -341,7 +372,32 @@ impl Vanish {
             base: VanishBase::begin(now, shared, ai),
             drain,
             hooked: false,
+            node: VanishNode {
+                light: true,
+                image: true,
+                light_at: [0.0; 3],
+            },
         }
+    }
+
+    /// The light follows the body.
+    pub fn follow(&mut self, body_at: Vec3) {
+        self.node.light_at = body_at.to_array();
+    }
+
+    /// The start and the move sounds: volume 0.4, pitch `roll·0.2 + 0.9` in
+    /// double.
+    pub fn sound(roll: f64) -> (f32, f32) {
+        (long_door_pitch(roll), LONG_DOOR_SOUND_VOLUME)
+    }
+
+    /// The class's destroy: the light and the after-image go. Returns what
+    /// it had.
+    pub fn destroy(&mut self) -> (bool, bool) {
+        let had = (self.node.light, self.node.image);
+        self.node.light = false;
+        self.node.image = false;
+        had
     }
 
     /// The hook this vanish keeps at its phase: from the hold on (the
@@ -399,12 +455,18 @@ impl Vanish {
         self.base.released = true;
     }
 
-    /// One control tick. Event 2 lets the power go.
+    /// One control tick. Event 2 lets the power go. The fade-out's end and
+    /// the show both take the after-image down, as the original's phases 2
+    /// and 4 do.
     pub fn control(&mut self, event: i32, now: u32) -> VanishStep {
         if event == 2 {
             self.base.released = true;
         }
-        step_vanish(&mut self.base, now, self.drain, HoldEnd::Release)
+        let step = step_vanish(&mut self.base, now, self.drain, HoldEnd::Release);
+        if step.drop_shell || step.show {
+            self.node.image = false;
+        }
+        step
     }
 }
 
@@ -420,23 +482,128 @@ pub enum NavAnswer {
     Impossible,
 }
 
+/// The distance the Long Door asks the navigation grid along its
+/// subject's forward vector: the query target is the subject's place
+/// moved by −300 cm along it (behind the subject).
+pub const NAV_QUERY_CM: f32 = -300.0;
+/// The squared floor distance (cm², compared in single precision) a found
+/// place must exceed: the original compares the squared xz distance with
+/// 200 itself, so anything beyond about 14.1 cm is usable.
+pub const NAV_FAR_SQUARED: f32 = 200.0;
+/// The start and the move sound's volume.
+pub const LONG_DOOR_SOUND_VOLUME: f32 = 0.4;
+
+/// Where the Long Door asks the grid: the subject's place (the caster's
+/// target, or the caster), offset along the subject's own forward vector
+/// by [`NAV_QUERY_CM`].
+pub fn nav_query_target(place: Vec3, forward: Vec3) -> Vec3 {
+    place + forward * NAV_QUERY_CM
+}
+
+/// Whether the grid's path is a place the door can use: `found` is the
+/// path's last point (`None` for a path of fewer than two points, which is
+/// impossible), usable when its squared floor distance from the subject's
+/// place exceeds [`NAV_FAR_SQUARED`] (`dz² + dx²` in single precision).
+pub fn nav_answer(place: Vec3, found: Option<Vec3>) -> NavAnswer {
+    let Some(found) = found else {
+        return NavAnswer::Impossible;
+    };
+    let dx = found.x - place.x;
+    let dz = found.z - place.z;
+    if NAV_FAR_SQUARED < dz * dz + dx * dx {
+        NavAnswer::Found
+    } else {
+        NavAnswer::Impossible
+    }
+}
+
+/// The direction the door faces on arrival: the target's place less the
+/// grid's found point, its height dropped and the vector scaled by the
+/// processor's approximate reciprocal square root (a zero vector stays
+/// zero); with no target, the caster's own forward vector.
+pub fn destination_aim(forward: Vec3, target: Option<Vec3>, found: Vec3) -> Vec3 {
+    let Some(target) = target else {
+        return forward;
+    };
+    let mut d = target - found;
+    d.y = 0.0;
+    exa_physics::engine_math::normalize_approx(d)
+}
+
+/// The Long Door's start and move sound's pitch: `roll·0.2 + 0.9` in
+/// double.
+pub fn long_door_pitch(roll: f64) -> f32 {
+    (roll * 0.2 + 0.9) as f32
+}
+
+/// The effect node the Long Door carries: the light that follows the body
+/// and the tendril image the vanish left.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LongDoorNode {
+    /// The light exists (made with the cast).
+    pub light: bool,
+    /// The tendril image is still up.
+    pub image: bool,
+    /// The light's place: the body's place (cm).
+    pub light_at: [f32; 3],
+}
+
 /// The Long Door: the phases plus the place it moves to.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LongDoor {
     pub base: VanishBase,
     pub drain: f32,
     pub destination: Option<[f32; 3]>,
+    /// The light and the after-image it carries.
+    pub node: LongDoorNode,
 }
 
 impl LongDoor {
     /// A long door that has not asked the navigation grid yet; a player's
-    /// destination is known at the cast.
+    /// destination is known at the cast. The light is made with the cast
+    /// and the vanish has left its after-image.
     pub fn new(now: u32, destination: Option<[f32; 3]>, ai: bool, drain: f32) -> Self {
         Self {
             base: VanishBase::begin(now, false, ai),
             drain,
             destination,
+            node: LongDoorNode {
+                light: true,
+                image: true,
+                light_at: [0.0; 3],
+            },
         }
+    }
+
+    /// The light follows the body: its place is the body's.
+    pub fn follow(&mut self, body_at: Vec3) {
+        self.node.light_at = body_at.to_array();
+    }
+
+    /// The start sound at the cast: a player's cast plays it at the body's
+    /// place at volume 0.4 and pitch `roll·0.2 + 0.9`; the AI's door plays
+    /// the same sound later, when the grid answers with a place.
+    pub fn start_sound(&self, ai: bool, roll: f64) -> Option<(f32, f32)> {
+        if ai {
+            None
+        } else {
+            Some((long_door_pitch(roll), LONG_DOOR_SOUND_VOLUME))
+        }
+    }
+
+    /// The move's sound, always played at the body's place.
+    pub fn move_sound(roll: f64) -> (f32, f32) {
+        (long_door_pitch(roll), LONG_DOOR_SOUND_VOLUME)
+    }
+
+    /// The class's destroy: the light and the after-image go, and the cast
+    /// hook and its id leave with them (the caller clears the cast). Returns
+    /// what it had.
+    pub fn destroy(&mut self) -> (bool, bool) {
+        let had = (self.node.light, self.node.image);
+        self.node.light = false;
+        self.node.image = false;
+        had
     }
 
     /// One control tick. The Long Door has no end event: its hold ends on
@@ -465,7 +632,12 @@ impl LongDoor {
                 }
             }
         }
-        step_vanish(&mut self.base, now, self.drain, HoldEnd::Deadline)
+        let step = step_vanish(&mut self.base, now, self.drain, HoldEnd::Deadline);
+        // The fade-out's end takes the tendril image down.
+        if step.drop_shell {
+            self.node.image = false;
+        }
+        step
     }
 }
 
@@ -775,6 +947,105 @@ mod tests {
         assert_eq!(impossible.result, DONE);
         assert!(impossible.clear_hook);
         assert_eq!(LongDoor::new(0, None, false, 0.0).base.phase, HIDDEN);
+    }
+
+    #[test]
+    fn the_long_door_asks_the_grid_and_aims_from_its_answer() {
+        // The query target stands 300 cm along the caster's forward vector.
+        let place = Vec3::new(100.0, 20.0, -50.0);
+        let forward = Vec3::new(0.0, 0.0, 1.0);
+        assert_eq!(
+            nav_query_target(place, forward),
+            Vec3::new(100.0, 20.0, -350.0)
+        );
+        // The path's last point is usable once its squared floor distance
+        // passes 200 cm² (a little over 14 cm); the height does not count
+        // and a path of fewer than two points is impossible.
+        assert_eq!(
+            nav_answer(place, Some(Vec3::new(115.0, 900.0, -50.0))),
+            NavAnswer::Found,
+            "15 cm across the floor is 225 cm²"
+        );
+        assert_eq!(
+            nav_answer(place, Some(Vec3::new(110.0, -900.0, -40.0))),
+            NavAnswer::Impossible,
+            "exactly 200 cm² is not further"
+        );
+        assert_eq!(
+            nav_answer(place, Some(Vec3::new(300.0, 0.0, -50.0))),
+            NavAnswer::Found
+        );
+        assert_eq!(nav_answer(place, None), NavAnswer::Impossible);
+        // The arrival's facing is the target less the found place, level
+        // and scaled by RSQRTSS (unit to about 12 bits); with no target it
+        // is the caster's own forward, and a zero vector stays zero.
+        let aim = destination_aim(
+            forward,
+            Some(Vec3::new(500.0, 77.0, 0.0)),
+            Vec3::new(100.0, 0.0, 0.0),
+        );
+        assert_eq!(
+            aim,
+            Vec3::new(400.0, 0.0, 0.0) * exa_physics::engine_math::reciprocal_sqrt(160_000.0)
+        );
+        assert!((aim.x - 1.0).abs() < 1e-3 && aim.y == 0.0 && aim.z == 0.0);
+        assert_eq!(destination_aim(forward, None, Vec3::ZERO), forward);
+        assert_eq!(
+            destination_aim(forward, Some(Vec3::ZERO), Vec3::ZERO),
+            Vec3::ZERO
+        );
+        // The sounds: the player's start and every move at volume 0.4 and
+        // the pitch roll·0.2 + 0.9 in double; the AI's door has no start
+        // sound at the cast (it plays when the grid answers).
+        assert_eq!(
+            LongDoor::move_sound(0.5),
+            ((0.5f64 * 0.2 + 0.9) as f32, 0.4)
+        );
+        let door = LongDoor::new(0, None, false, 0.0);
+        assert_eq!(
+            door.start_sound(false, 0.5),
+            Some(((0.5f64 * 0.2 + 0.9) as f32, 0.4))
+        );
+        assert_eq!(door.start_sound(true, 0.5), None);
+    }
+
+    #[test]
+    fn the_long_door_carries_its_light_and_after_image() {
+        let mut door = LongDoor::new(0, None, true, 0.002);
+        assert!(door.node.light && door.node.image);
+        door.follow(Vec3::new(12.0, 34.0, 56.0));
+        assert_eq!(door.node.light_at, [12.0, 34.0, 56.0]);
+        // The fade-out's end drops the after-image.
+        door.control(411, NavAnswer::Found);
+        door.control(412, NavAnswer::Found);
+        let fade = door.control(1000, NavAnswer::Found);
+        assert!(!fade.drop_shell, "not the fade-out's end yet");
+        assert!(door.node.image);
+        let end = door.control(1300, NavAnswer::Found);
+        assert!(end.drop_shell);
+        assert!(!door.node.image);
+        assert!(door.node.light);
+        // Destroying frees both.
+        assert_eq!(door.destroy(), (true, false));
+        assert!(!door.node.light && !door.node.image);
+    }
+
+    #[test]
+    fn the_vanish_carries_its_light_and_after_image() {
+        let mut vanish = Vanish::new(0, false, false, 0.002);
+        assert!(vanish.node.light && vanish.node.image);
+        vanish.follow(Vec3::new(3.0, 4.0, 5.0));
+        assert_eq!(vanish.node.light_at, [3.0, 4.0, 5.0]);
+        assert_eq!(Vanish::sound(0.5), ((0.5f64 * 0.2 + 0.9) as f32, 0.4));
+        // The fade-out's end takes the after-image down.
+        vanish.control(0, 0);
+        vanish.control(0, 400);
+        assert!(vanish.node.image, "the fade-out has not ended");
+        vanish.control(0, 700);
+        assert!(!vanish.node.image);
+        assert!(vanish.node.light);
+        assert_eq!(vanish.destroy(), (true, false));
+        assert!(!vanish.node.light && !vanish.node.image);
     }
 
     #[test]

@@ -7,8 +7,11 @@
 //!   so the shock never fires) and plays the charge (volume 0.2, pitch
 //!   `0.9 + 0.2·roll`). Each later tick adds the charge rate; not
 //!   past one (or not a number) it spends the tick's focus while charging,
-//!   and past one it fires the arc burst once, clears the hand's arcs, the
-//!   cast hook and the cast id, and plays the release (volume 1). A second
+//!   and past one it fires the arc burst once ([`super::super::arcs::shock_burst`]:
+//!   ten tendrils of fourteen points, size 10, growth 0.25, lift 0.5, light
+//!   1, shock strength 0.05),
+//!   clears the hand's arcs, the cast hook and the cast id, and plays the
+//!   release (volume 1). A second
 //!   charge past one answers 2 (the power is done). A control event carrying
 //!   bit 1 or 3 ends it, clearing the hand's arcs first when it never fired,
 //!   and stops the cast motion.
