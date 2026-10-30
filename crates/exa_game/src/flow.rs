@@ -3639,6 +3639,8 @@ fn apply_steps(
     flow: Res<Flow>,
     mut menu: Option<ResMut<MenuScreen>>,
     mut end: Option<ResMut<EndMenuScreen>>,
+    mut tips: Option<ResMut<crate::prelude::Tips>>,
+    mut banner: Option<ResMut<crate::prelude::TipBannerText>>,
     mut logo: Option<ResMut<TitleLogo>>,
     mut view: Option<ResMut<GameView>>,
     mut session: Option<ResMut<crate::player_controls::PlaySession>>,
@@ -3684,6 +3686,17 @@ fn apply_steps(
             Step::HideEndMenu => {
                 if let Some(end) = end.as_mut() {
                     end.close();
+                }
+            }
+            Step::Tip(index) => {
+                if let Some(tips) = tips.as_mut() {
+                    let shown = tips.show(usize::try_from(index).unwrap_or(usize::MAX));
+                    if let Some(banner) = banner.as_mut() {
+                        banner.0 = shown
+                            .and_then(crate::prelude::banner_text)
+                            .unwrap_or_default()
+                            .to_string();
+                    }
                 }
             }
             Step::LoadLevel {

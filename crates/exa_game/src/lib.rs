@@ -167,6 +167,7 @@ impl Plugin for GamePlugin {
             npc_search::NpcSearchPlugin,
         ))
         .init_resource::<prelude::Tips>()
+        .add_plugins(prelude::TipsScreenPlugin)
         .add_plugins((
             limp::LimpPlugin,
             balance::BalancePlugin,
