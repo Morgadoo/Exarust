@@ -3462,6 +3462,19 @@ impl Ragdoll {
         }
     }
 
+    /// Takes `ticks` off the body's sleep countdown, never under one, as the
+    /// original's tree-wide take does: the root takes them and hands the
+    /// same count to each child body, and a count under two is held at one
+    /// (so a body is never put to sleep by this path). Exarust keeps one
+    /// countdown for the whole body, which is the same number the recursion
+    /// leaves on every part.
+    pub fn take_ticks(&mut self, ticks: i32) {
+        self.countdown -= ticks;
+        if self.countdown < 2 {
+            self.countdown = 1;
+        }
+    }
+
     /// A touch from a body whose countdown is `count` (a blow, which is the
     /// weapon's contact in the original): wakes the body as
     /// [`Ragdoll::wake_to`] does, but a sleeper also drops its stored level
@@ -4086,7 +4099,7 @@ impl Ragdoll {
                 p.start = p.previous;
                 p.positions = p.previous;
             }
-            self.countdown = (self.countdown - 1).max(SLEEP_COUNT);
+            self.take_ticks(1);
             return;
         }
         self.tick_countdown();
@@ -5270,6 +5283,29 @@ mod tests {
         assert!(!body.parts[1].contacts.is_empty());
         body.set_disabled(false);
         assert!(!body.disabled());
+    }
+
+    /// Taking ticks off the countdown floors it at one, so it never sleeps
+    /// through that path, and the frozen step takes one a tick.
+    #[test]
+    fn taking_ticks_holds_the_countdown_at_one() {
+        let mut body = two_parts(0.0);
+        body.wake_to(WAKE_COUNT);
+        body.take_ticks(3);
+        assert_eq!(body.countdown(), 253);
+        body.take_ticks(300);
+        assert_eq!(body.countdown(), 1);
+        body.take_ticks(-5);
+        assert_eq!(body.countdown(), 6);
+        // The frozen step takes one tick off and holds the body still.
+        let mut body = two_parts(0.0);
+        body.wake_to(WAKE_COUNT);
+        body.freeze(true);
+        let before = body.parts[0].positions;
+        body.step();
+        assert_eq!(body.countdown(), 255);
+        assert_eq!(body.parts[0].positions, before);
+        assert_eq!(body.parts[0].positions, body.parts[0].previous);
     }
 
     /// A link added to a scene node is a plain world link: it takes only
