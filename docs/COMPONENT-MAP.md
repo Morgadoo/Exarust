@@ -5,8 +5,8 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 ## Headline
 
 - **8,783 functions**, 2,616 KB of code, in **445 components** across 16 sections.
-- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **73.4% reimplemented** by Exarust's own code and **5.0% provided** by Bevy, wgpu, rapier or the Rust standard library.
-- Weighted by function count (zero-byte imported names left out): 66.7% and 11.9%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
+- Weighted by code size, with code the retail game never runs left out (1,343 functions, 163 KB): **73.9% reimplemented** by Exarust's own code and **5.0% provided** by Bevy, wgpu, rapier or the Rust standard library.
+- Weighted by function count (zero-byte imported names left out): 67.1% and 11.9%. The runtime's many tiny RTL routines make this figure lean towards the engine, which is why code size is the headline.
 - The 24 combat-rule functions (52 KB of damage, armour and weapon-stat rules inside body, part, AI and item owners) are **45.4%** reproduced.
 
 ## By section
@@ -17,16 +17,16 @@ Every function of the retail `Exanima.exe` (Exanima 0.9.5, Free Pascal 3.2.2, Wi
 | Core, math & threading | 282 | 37 | 11 | 80% | 1% |  |
 | Data, assets & I/O | 440 | 91 | 26 | 78% | 0% |  |
 | Rendering & GPU | 823 | 334 | 63 | 78% | 1% |  |
-| World, levels & terrain | 454 | 174 | 31 | 72% | 0% |  |
+| World, levels & terrain | 454 | 174 | 31 | 73% | 0% |  |
 | Physics, bodies & cloth | 363 | 242 | 13 | 77% | 0% |  |
-| Characters, motion & animation | 506 | 198 | 23 | 76% | 0% |  |
+| Characters, motion & animation | 506 | 198 | 23 | 77% | 0% |  |
 | Combat, weapons & damage | 14 | 3 | 3 | 68% | 0% |  |
 | Items, materials & crafting | 341 | 140 | 40 | 76% | 0% | TArsenalContFrame |
 | AI & behaviour | 437 | 206 | 17 | 82% | 0% |  |
-| Thaumaturgy & effects | 697 | 296 | 83 | 75% | 0% |  |
+| Thaumaturgy & effects | 697 | 296 | 83 | 77% | 0% |  |
 | Audio | 59 | 18 | 4 | 85% | 0% |  |
 | Script, dialogue & story | 184 | 46 | 11 | 81% | 0% |  |
-| Game modes, arena & session | 646 | 193 | 23 | 79% | 0% |  |
+| Game modes, arena & session | 646 | 193 | 23 | 80% | 0% |  |
 | UI | 959 | 312 | 63 | 81% | 0% | RF_GUI_3DViewport, TMessageBox |
 | Other, tools & editor | 171 | 33 | 8 | 55% | 0% |  |
 
