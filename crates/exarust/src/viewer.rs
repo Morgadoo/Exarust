@@ -10,7 +10,9 @@ use exa_assets::{ColorSpace, Game, ModelCache, ModelLoader, PackKind, model};
 use exa_formats::character_stats::{CharacterStats, Spawn};
 use exa_formats::characters::CharacterRecord;
 use exa_formats::morph::Physique;
-use exa_game::scene_bodies::{body_stats, character_skin, human_frame, race_muscles};
+use exa_game::scene_bodies::{
+    body_stats, character_muscles, character_skin, human_frame, physical_frame, race_muscles,
+};
 use exa_physics::body::RaceMuscles;
 
 use crate::{Options, View};
@@ -2402,8 +2404,9 @@ fn pose_nodes(model: &exa_assets::model::Model) -> Vec<exa_character::pose::Pose
 /// the level puts them — or, for the dead, lying on the pose the level saved
 /// — those of human frame dressed in their own items, each with the stats its
 /// record and race give it. The living carry a brain: their record's roles,
-/// their relations and their traits; those of human frame also rate the
-/// player and duel it once their rating turns hostile. Returns how many were
+/// their relations and their traits; those with a physical body (the human
+/// frame and the golems) also rate the player and duel it once their rating
+/// turns hostile. Returns how many were
 /// spawned and how many had no body.
 fn spawn_placed_characters(
     commands: &mut Commands,
@@ -2438,7 +2441,10 @@ fn spawn_placed_characters(
             &morph.physique,
             c.record.id ^ 0x51ED_270B,
         );
-        let physical = human_frame(c.race);
+        // The human frame and the golems are built physical; only the
+        // human frame is dressed.
+        let physical = physical_frame(c.race);
+        let dressed = human_frame(c.race);
         // The init, then the armour pass's encumbrance.
         let stats = CharacterStats::derive(
             &c.record,
@@ -2523,8 +2529,10 @@ fn spawn_placed_characters(
             ));
         } else if physical {
             let body = exa_formats::races::body_of_character(races, c.race);
+            // The character init's presets over the race record (the golems'
+            // arm relaxation and link smoothing).
             commands.entity(model).insert(exa_physics::body::Physical {
-                race: race_muscles(&body),
+                race: character_muscles(&body, &stats),
                 stats: body_stats(&stats),
                 ..default()
             });
@@ -2557,7 +2565,7 @@ fn spawn_placed_characters(
             exa_character::Outfit(
                 c.worn
                     .iter()
-                    .filter(|_| physical)
+                    .filter(|_| dressed)
                     .map(|w| exa_character::Garment {
                         model: w.model.clone(),
                         appearance: w.appearance,
@@ -2606,7 +2614,12 @@ fn spawn_placed_characters(
         if !c.dead {
             commands.entity(model).insert((
                 Transform::from_rotation(Quat::from_rotation_y(c.yaw)),
-                exa_anim::Animator::new(&moveset, "Idle"),
+                // Without a saved motion a character starts in Idle, or in
+                // Stand 2 when its race word carries the AI bit (the golems).
+                exa_anim::Animator::new(
+                    &moveset,
+                    exa_ai::golem::start_action(c.record.profession()),
+                ),
             ));
         }
         if let Some((model_name, weapon)) = &c.held {

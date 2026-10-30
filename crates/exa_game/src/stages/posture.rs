@@ -43,6 +43,7 @@ pub(crate) fn take_bearing(
         Option<&Attacker>,
         Option<&exa_ai::combatant::Combatant>,
         Option<&Fighter>,
+        Option<&crate::golem_body::StatueRest>,
     )>,
 ) {
     let Some(motions) = motions else { return };
@@ -57,6 +58,7 @@ pub(crate) fn take_bearing(
         attacker,
         combatant,
         fighter,
+        statue,
     )) = bodies.get_mut(ticked.body)
     else {
         return;
@@ -84,9 +86,13 @@ pub(crate) fn take_bearing(
     bearing.progress = motions
         .clip(anim, &anim.action)
         .map_or(0.0, |c| anim.clip_progress(c));
-    bearing.dormant = state == Condition::DORMANT;
+    // Dormant (the knock-out's lying sleeper), or a statue the sentry
+    // rests (its pose word 2 and statue byte): the body counts its sleep
+    // down and its limbs keep the dormant share of their retention.
+    let dormant = state == Condition::DORMANT || statue.is_some_and(|s| s.0);
+    bearing.dormant = dormant;
     if let Some(drive) = body.drive.as_mut() {
-        drive.dormant = state == Condition::DORMANT;
+        drive.dormant = dormant;
     }
     body.set_bearing(bearing);
     // The body tick's timers, from what the bearing just measured.

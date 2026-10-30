@@ -112,8 +112,10 @@ pub const POSE_TICKS: u32 = 32;
 
 /// The race word's statue bit: the wake clears it, the sleep sets it.
 pub const STATUE_BIT: u32 = crate::personality::STATUE_FLAG;
-/// The body latch saying its sleep scales are applied.
-pub const SLEEP_SCALES_LATCH: u32 = 0x400;
+/// The state-flag latch saying a statue's sleep scales are applied: the
+/// same bit that turns blows ([`exa_combat::StateFlags::TURNS_BLOWS`]), so
+/// a resting statue recoils its strikers until it wakes.
+pub const SLEEP_SCALES_LATCH: u32 = exa_combat::StateFlags::TURNS_BLOWS;
 /// The race word's AI bit a character needs for the radius query to visit
 /// it (the golem races).
 pub const AI_BIT: u32 = crate::personality::AI_FLAG;
@@ -618,6 +620,97 @@ pub fn carries<'a>(
     inside(&mut carried.into_iter(), item, contents, 0)
 }
 
+/// The motion a placed character without a saved one starts in when its
+/// record's race word lacks [`AI_BIT`]: Idle (0x13).
+pub const IDLE_MOTION: i32 = 0x13;
+/// The motion it starts in when the race word carries [`AI_BIT`] (the
+/// golem races), which the sentry state also asks for: Stand 2 (0x19).
+pub const STAND_MOTION: i32 = crate::personality::GUARD_MOTION;
+/// The blend (frames) the spawn starts that motion with (20).
+pub const START_BLEND: u32 = 20;
+
+/// The motion a placed character without a saved motion starts in: Stand 2
+/// ([`STAND_MOTION`]) when its record's race word carries [`AI_BIT`], Idle
+/// ([`IDLE_MOTION`]) otherwise. The spawn sets both the current and the
+/// requested motion to it.
+pub fn start_motion(race_word: u32) -> i32 {
+    if race_word & AI_BIT != 0 {
+        STAND_MOTION
+    } else {
+        IDLE_MOTION
+    }
+}
+
+/// The motion set's action name of [`start_motion`]'s two motions.
+pub fn start_action(race_word: u32) -> &'static str {
+    if start_motion(race_word) == STAND_MOTION {
+        "Stand 2"
+    } else {
+        "Idle"
+    }
+}
+
+/// What one tick of the sentry state writes on its body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SentryRest {
+    /// The body's pose word: 2 for a statue standing in its motion, else 1.
+    pub pose: i32,
+    /// The body's statue rest (its tree counts its sleep down by one a
+    /// tick, and its limbs keep the dormant share of their retention).
+    pub still: bool,
+    /// The sleep scales are applied this tick: the statue's body latch
+    /// ([`SLEEP_SCALES_LATCH`]) was clear, and is set.
+    pub scales: bool,
+    /// The motion it asks for, when the body is not already asking for
+    /// [`STAND_MOTION`].
+    pub request: Option<i32>,
+}
+
+/// One tick of the sentry state, for a behaviour whose statue byte is
+/// `statue`, whose body plays `current` and asks for `requested`, with the
+/// sleep-scale latch `latch`: a statue whose current motion is the one it
+/// asks for rests (pose 2, still), anything else stands (pose 1, not
+/// still); a statue whose latch is clear takes the sleep scales
+/// ([`sleep_scales`]); a body not asking for [`STAND_MOTION`] asks for it.
+pub fn sentry_rest(statue: bool, current: i32, requested: i32, latch: bool) -> SentryRest {
+    let rests = statue && current == requested;
+    SentryRest {
+        pose: if rests { 2 } else { 1 },
+        still: rests,
+        scales: statue && !latch,
+        request: (requested != STAND_MOTION).then_some(STAND_MOTION),
+    }
+}
+
+/// The sleep scales on a body's contact mobilities: every part takes
+/// [`DORMANCY_IN_SCALE`] of its base (`bases`, parallel to the parts, in
+/// double), then every held body (`held`, part indices; unarmed, the two
+/// hands) takes [`DORMANCY_OUT_SCALE`] of what it has. Returns the new
+/// mobilities.
+pub fn sleep_scales(bases: &[f32], held: &[usize]) -> Vec<f32> {
+    let mut out: Vec<f32> = bases.iter().map(|&b| fade_in_scale(b)).collect();
+    for &h in held {
+        if let Some(m) = out.get_mut(h) {
+            *m = fade_out_scale(*m);
+        }
+    }
+    out
+}
+
+/// The wake's undoing of the sleep scales: every part takes its base back,
+/// then every held body is multiplied by [`WAKE_GLOW_SCALE`] (a held hand,
+/// which is also a part, ends at fifty times its base, as the original's
+/// order leaves it). Returns the new mobilities.
+pub fn wake_scales(bases: &[f32], held: &[usize]) -> Vec<f32> {
+    let mut out = bases.to_vec();
+    for &h in held {
+        if let Some(m) = out.get_mut(h) {
+            *m = wake_glow_scale(*m);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -926,5 +1019,68 @@ mod tests {
         // A container that holds itself ends at the depth bound.
         let looped = |id: u32| -> Option<&'static [u32]> { (id == 5).then_some(&[5][..]) };
         assert!(!carries([5], 474, &looped));
+    }
+
+    /// A placed character without a saved motion starts in Stand 2 (0x19)
+    /// when its race word carries the AI bit (0x1000, the golems), else in
+    /// Idle (0x13), with a blend of 20.
+    #[test]
+    fn a_golem_starts_in_stand_2() {
+        assert_eq!(start_motion(AI_BIT), 0x19);
+        assert_eq!(start_motion(AI_BIT | STATUE_BIT | 0x0100), 0x19);
+        assert_eq!(start_motion(0x0001), 0x13);
+        assert_eq!(start_motion(STATUE_BIT), 0x13);
+        assert_eq!(start_action(AI_BIT | 0x0100), "Stand 2");
+        assert_eq!(start_action(0), "Idle");
+        assert_eq!(START_BLEND, 20);
+    }
+
+    /// The sentry state: a statue whose current motion is the one it asks
+    /// for rests at pose 2 and is still; a statue still blending into its
+    /// motion, or a woken guardian, stands at pose 1. The sleep scales come
+    /// once, on a statue whose latch is clear. A body asking for another
+    /// motion asks for Stand 2.
+    #[test]
+    fn the_sentry_rests_a_statue_in_its_motion() {
+        let rest = sentry_rest(true, 0x19, 0x19, false);
+        assert_eq!(
+            rest,
+            SentryRest {
+                pose: 2,
+                still: true,
+                scales: true,
+                request: None,
+            }
+        );
+        // Latched: the scales are not applied again.
+        assert!(!sentry_rest(true, 0x19, 0x19, true).scales);
+        // Not yet in its motion: it stands, and still takes the scales.
+        let moving = sentry_rest(true, 0x13, 0x19, false);
+        assert_eq!((moving.pose, moving.still, moving.scales), (1, false, true));
+        // Woken: pose 1, never still, no scales.
+        let awake = sentry_rest(false, 0x19, 0x19, false);
+        assert_eq!((awake.pose, awake.still, awake.scales), (1, false, false));
+        // Asking for Idle, it asks for Stand 2.
+        assert_eq!(sentry_rest(false, 0x13, 0x13, false).request, Some(0x19));
+    }
+
+    /// The sleep scales: every part takes 0.05 of its base (in double),
+    /// then each held body 0.02 of that; the wake gives every part its base
+    /// back, then multiplies each held body by 50.
+    #[test]
+    fn the_sleep_scales_and_their_undoing() {
+        let bases = [0.3, 0.466_666_7, 1.666_666_7];
+        let held = [2];
+        let slept = sleep_scales(&bases, &held);
+        assert_eq!(slept[0], (0.3f32 as f64 * 0.05) as f32);
+        assert_eq!(slept[1], (0.466_666_7f32 as f64 * 0.05) as f32);
+        let hand = (1.666_666_7f32 as f64 * 0.05) as f32;
+        assert_eq!(slept[2], (hand as f64 * 0.02) as f32);
+        let woken = wake_scales(&bases, &held);
+        assert_eq!(woken[0], 0.3);
+        assert_eq!(woken[1], 0.466_666_7);
+        assert_eq!(woken[2], 1.666_666_7 * 50.0);
+        // A held index past the parts is skipped.
+        assert_eq!(sleep_scales(&bases, &[9]).len(), 3);
     }
 }

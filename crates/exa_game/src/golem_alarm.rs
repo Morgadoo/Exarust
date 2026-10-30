@@ -31,11 +31,14 @@
 //! radius query and wake callback, the golem wake and the alarm reset. See
 //! `exa_ai::golem` for the rules.
 //!
-//! Not reproduced: the stance byte and the posture word the wake clears
-//! (Exarust's statues never set them), the glow fade of the skin material
-//! `go` to 1 (no live skin-material fade: it is logged), the sleep scales a
-//! wake restores (no guardian is put to sleep yet, so a set latch is only
-//! cleared), the alarm return that sends awake golems home when the player
+//! The wake's clear of the pose word and statue rest follows from the
+//! cleared statue byte at the next sentry tick ([`crate::golem_body`]); the
+//! sleep scales the sentry put on a statue come off with its latch
+//! ([`crate::golem_body::undo_sleep_scales`]).
+//!
+//! Not reproduced: the stance byte the wake clears (Exarust's statues never
+//! set it), the glow fade of the skin material `go` to 1 (no live
+//! skin-material fade: it is logged), the alarm return that sends awake golems home when the player
 //! falls, the zone check's other trigger kinds (the any-character routine
 //! and the level transitions, which have their own Exarust paths), and the
 //! contents of a carried container that is a level-local item (the item
@@ -151,6 +154,7 @@ type Guardians<'w, 's> = Query<
         Option<&'static Fighter>,
         Option<&'static mut StateFlags>,
         Option<&'static mut Ragdoll>,
+        Option<&'static mut crate::golem_body::StatueRest>,
     ),
     Without<RatedPlayer>,
 >;
@@ -276,7 +280,8 @@ fn wake_one(
     bank: Option<&mut exa_audio::SoundBank>,
     sounds: &mut MessageWriter<exa_audio::PointSounded>,
 ) -> bool {
-    let Ok((_, gt, mut data, npc, combatant, fighter, flags, body)) = guardians.get_mut(entity)
+    let Ok((_, gt, mut data, npc, combatant, fighter, flags, body, rest)) =
+        guardians.get_mut(entity)
     else {
         return false;
     };
@@ -312,12 +317,25 @@ fn wake_one(
         data.record.set_profession(race_word);
         npc.statue = change.dormant;
         npc.guard_home = change.home;
-        if let (Some(mut body), Some(ticks)) = (body, change.wake_ticks) {
-            body.wake_to(ticks as i32);
+        // The wake zeroes the body's pose word and statue byte: its rest
+        // ends now, whatever state the brain is in next.
+        if let Some(mut rest) = rest {
+            rest.0 = false;
+        }
+        let unlatched = latch && !change.latch;
+        if let Some(mut body) = body {
+            if let Some(ticks) = change.wake_ticks {
+                body.wake_to(ticks as i32);
+            }
+            // The sleep scales the sentry put on the statue come off: every
+            // part takes its contact base back, each held fist fifty times
+            // what it had.
+            if unlatched {
+                crate::golem_body::undo_sleep_scales(&mut body);
+            }
         }
         if let Some(mut flags) = flags
-            && latch
-            && !change.latch
+            && unlatched
         {
             flags.0 &= !golem::SLEEP_SCALES_LATCH;
         }
@@ -483,6 +501,55 @@ mod tests {
         // Inside already: walking on does not ring again.
         walk(&mut app, player, Vec3::new(10.5, 0.0, 68.5));
         assert_eq!(app.world().resource::<GolemAlarm>().rung, 1);
+    }
+
+    /// A resting statue the sentry scaled wakes standing: its rest ends at
+    /// once, its latch (the blow-turning bit) clears and its parts take their
+    /// contact bases back, the fist fifty times its own.
+    #[test]
+    fn a_woken_statue_stands_and_loses_its_sleep_scales() {
+        use exa_physics::body::PartSetup;
+        let mut app = app();
+        let player = player(&mut app, Vec3::new(10.5, 0.0, 66.0), &[]);
+        let near = golem(&mut app, Vec3::new(9.0, 0.0, 75.0), true, 0);
+        let part = |bone: usize, parent: Option<usize>| PartSetup {
+            bone,
+            entity: Entity::PLACEHOLDER,
+            parent,
+            world: bevy::math::Affine3A::IDENTITY,
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.1),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+            spheres: None,
+        };
+        let mut body = Ragdoll::new(&[part(1, None), part(17, Some(0))]).with_drive();
+        body.set_fist(17, true);
+        crate::golem_body::apply_sleep_scales(&mut body);
+        let (pelvis, hand) = (body.contact_base(0).unwrap(), body.contact_base(1).unwrap());
+        app.world_mut().entity_mut(near).insert((
+            body,
+            StateFlags(golem::SLEEP_SCALES_LATCH),
+            crate::golem_body::StatueRest(true),
+        ));
+        app.update();
+        walk(&mut app, player, Vec3::new(10.5, 0.0, 67.5));
+        let w = app.world();
+        assert!(!w.get::<Npc>(near).unwrap().statue);
+        assert_eq!(
+            w.get::<crate::golem_body::StatueRest>(near),
+            Some(&crate::golem_body::StatueRest(false))
+        );
+        assert!(
+            !w.get::<StateFlags>(near)
+                .unwrap()
+                .has(StateFlags::TURNS_BLOWS)
+        );
+        let body = w.get::<Ragdoll>(near).unwrap();
+        assert_eq!(body.parts[0].pairing.mobility, pelvis);
+        assert_eq!(body.parts[1].pairing.mobility, hand * 50.0);
     }
 
     /// The token lets its carrier through, also inside a carried
