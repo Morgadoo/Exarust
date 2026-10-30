@@ -1052,6 +1052,23 @@ length with the squares summed x, then z, then y, its correction
 `(len − rest)/(len + len)`. A body that falls asleep empties its motion and
 smoothed buffers, as the original's post-step does.
 
+The body kernel adds links at run time as the original does
+(`Ragdoll::add_link`): a point on each part becomes weights over that
+part's rest particles, a body parent takes the two parts' mobility shares
+and the body and code flags, a slack at or under the general epsilon (in
+centimetres) or a NaN stores zero, the record's smoothing starts at zero
+and the length the routine measures is overwritten with zero. A link to a
+scene node is `Ragdoll::add_world_link`, a plain world link with the code
+flag and a world anchor. A body's four rest particles are shared with a
+clone until either writes them (`body::SharedRest`, the original's shared
+point array and its copy before the first write). The body also keeps the
+original's third particle set, so `Part::two_step_point` gives a point's
+displacement over the last two ticks, and its tree-wide take of sleep
+ticks (`Ragdoll::take_ticks`, holding the count at one) that the frozen
+step uses. `Ragdoll::set_disabled` sets the original's state bit 0x800 (an
+item on the cursor): the pair stage and the level detection skip the body
+and a grab on it breaks.
+
 The body kernel also keeps the original's class and state words
 (`Part::class_word`/`state_word`): `Ragdoll::set_class_word` writes the
 class word to every part and `word | 0x30` to each first child,
