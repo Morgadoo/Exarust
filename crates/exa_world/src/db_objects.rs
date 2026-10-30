@@ -160,6 +160,25 @@ pub fn tree_kind(item: &Item) -> u32 {
     }
 }
 
+/// The kind word the database builder leaves on the node it builds for
+/// `item`, which the level builder dispatches on: a tree with a model takes
+/// [`tree_kind`] (a door before an operative, nothing for a weapon or an
+/// item body); the container volume [`KIND_VOLUME`]; the placeholder
+/// [`KIND_OPERATIVE`]; no tree, 0. Follows [`scene_tree`]'s order. A volume
+/// section shorter than its 20-byte body is not parsed into the item, so it
+/// reads as no volume here (guess: no shipped record has one).
+pub fn node_kind(item: &Item) -> u32 {
+    if !item.model.is_empty() {
+        tree_kind(item)
+    } else if item.volume.is_some() {
+        KIND_VOLUME
+    } else if item.operative.is_some() {
+        KIND_OPERATIVE
+    } else {
+        0
+    }
+}
+
 /// How a first load draws a material of the record's model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaterialRule {
@@ -417,6 +436,29 @@ mod tests {
         assert_eq!(tree_kind(&door), KIND_DOOR);
         assert_eq!(tree_kind(&operative_item("lever")), KIND_OPERATIVE);
         assert_eq!(tree_kind(&item("chair")), 0);
+        // The node kind follows the tree: a model takes the tree kind (door
+        // first), a model-less volume record the volume kind even with an
+        // operative section, the placeholder the operative kind.
+        let mut both = operative_item("gate");
+        both.door = door.door;
+        assert_eq!(node_kind(&both), KIND_DOOR);
+        let mut volume = Item::parse(1, &section_bytes(objdb::VOLUME, &[0; 20])).unwrap();
+        assert_eq!(node_kind(&volume), KIND_VOLUME);
+        volume.operative = operative_item("").operative;
+        assert_eq!(node_kind(&volume), KIND_VOLUME);
+        volume.model = "crate".into();
+        assert_eq!(node_kind(&volume), KIND_OPERATIVE);
+        assert_eq!(node_kind(&operative_item("")), KIND_OPERATIVE);
+        assert_eq!(node_kind(&item("")), 0);
+        // The content stream dispatches on the same three words.
+        assert_eq!(
+            (KIND_OPERATIVE, KIND_DOOR, KIND_VOLUME),
+            (
+                exa_assets::content_stream::OBJECT_OPERATIVE,
+                exa_assets::content_stream::OBJECT_DOOR,
+                exa_assets::content_stream::OBJECT_VOLUME
+            )
+        );
         assert!(factory_copies_locally(0x40, 7));
         assert!(!factory_copies_locally(0x40, 0x4000_0007));
         assert!(!factory_copies_locally(0, 7));

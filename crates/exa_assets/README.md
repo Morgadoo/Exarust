@@ -384,9 +384,12 @@ queued the pending streamed character nearest the focus point (squared
 distance, strict `<`, so the first of equal distances wins), else idle. A
 request that builds nothing is dropped. `StreamThread::new` holds the
 thread's two empty data streams, as the original's constructor creates
-them (unused so far); the loop above runs on the executor that drives it. A placed actor of the operative kind
-the session's arrival word names (15 after a journey, 18 after a start or a
-load), or a placed object of the marker class whose record (type byte
+them (unused so far); the loop above runs on the executor that drives it. A placed object whose node kind
+(`LevelNode::class`, the word the database builder left on the node:
+`OBJECT_DOOR` checked first, then `OBJECT_OPERATIVE`, then `OBJECT_VOLUME`)
+is the operative one and whose operative kind is the one the session's
+arrival word names (15 after a journey, 18 after a start or a
+load), or a volume object whose record (type byte
 `0x40`) holds the session's arrival variable as its entrance word and the
 id of the level the session came from as its second, becomes the player and
 its position the point the stream orders by; an object that cannot

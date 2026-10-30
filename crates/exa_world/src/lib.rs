@@ -685,10 +685,13 @@ impl exa_assets::content_stream::ContentBuilders for PlacedObjectBuilder<'_, '_,
         // A record the database does not hold builds nothing.
         let item = items.iter().find(|item| item.id == id)?;
         let t = object.transform[3];
+        // The class is the kind word the database builder left on the node
+        // (a door before an operative on a model tree; the volume kind on a
+        // model-less volume record), which the level builder dispatches on.
+        let class = db_objects::node_kind(item);
         Some(exa_assets::content_stream::LevelNode {
             node: entity.to_bits(),
-            // The built node is of the operative class when its record has
-            // an operative section; its kind is the record's.
+            class,
             operative_kind: item.operative.map(|o| u32::from(o.kind)),
             // The original's units: centimetres.
             position: [t[0] * 100.0, t[1] * 100.0, t[2] * 100.0],
