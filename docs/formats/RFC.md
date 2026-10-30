@@ -156,7 +156,7 @@ A fire marker's four-byte float is its size, read unchanged; its import
 turns the marker into a fire only while the scene's fire flag (bit
 `0x10000`) is set, suppresses the host mesh's own emissive (its first
 part's material gains the emissive-off flag and both emissive scales go to
-zero) and copies the marker's brightness byte to the fire node
+zero) and copies one float field of the marker node (not traced) to the fire node
 (`exa_world::fire::import_marker`). Exarust reads the GI points of meshes,
 the rigid body
 (`Node::rigid_body`, below), the cloth marker (`Node::cloth_marker`) and

@@ -2483,12 +2483,13 @@ cm), buoyancy (−1.25/−0.5/−0.05/−1.5/−0.33/−1.5/−0.33 × gravity),
 scales half-size by 0.5 + 0.5s, speed by s², volume by s, rate by s
 (rounded to even), ring by 0.5s + s², buoyancy by s, the light by √s, and
 the density normaliser by 0.9s² + 0.1s. The keys' RGB are scaled by 0.7 at
-load (keys 1…n, the table's first key left alone: byte·(1/255)·0.7·255,
-rounded half to even, so 160 becomes 112; alpha untouched; the 0.35–0.5
-bed's table is not scaled). The legacy non-linear path (which the shipped
-pipeline flag never selects) encodes each channel to sRGB, pulls it 0.35 of
-the way toward its Rec. 601 luminance (0.298/0.587/0.114), scales 0.75 and
-writes three bytes back (`load_scale_legacy`). The beds'
+load (K1…Kn, the original's table starting with its count word:
+byte·(1/255)·0.7·255, rounded half to even, so 160 becomes 112; alpha
+untouched; the 0.35–0.5 bed's table is not scaled). The legacy non-linear
+path (which the shipped pipeline flag never selects) encodes each channel
+to sRGB (linear up to 0.0031308, the engine's fast power above), pulls it
+0.35 of the way toward its Rec. 601 luma (0.299/0.587/0.114), scales 0.75
+and stores three saturated bytes (`load_scale_legacy`). The beds'
 keys carry no alpha, so they add their colour without dimming; they peak
 two thirds (0.35–0.5) and half way (the others) through a particle's life.
 
@@ -2565,13 +2566,15 @@ two thirds (0.35–0.5) and half way (the others) through a particle's life.
   x² + z² first, then y².
 - Mode 1 (beds): a quad facing the line to the emitter's centre about the
   camera's up axis, half-width S + age²·growth and half-length
-  (1 + Y.y)·that, Y the quad's unit up axis (Y.y is the axis' local up
-  component). Mode 0 is a flat billboard of half-size S.
-- The screen and stretched quads keep the camera's own axes, or turn them
-  with the node's frame when the template sets flag 0x40; a template with
-  flag 0x1000 (the 0.35–0.5 bed) keeps a tenth of each axis' offset along
-  the node's up direction, flattening the quad onto the node's horizontal
-  plane. The fixed-quad path a material can ask
+  (1 + Y.y)·that, Y the quad's unit up axis (both axes the normalised
+  cross products with the line to the centre, by `RSQRTSS`). Mode 0 is a
+  flat billboard of half-size S; any other quad mode draws nothing.
+- The screen and stretched quads keep the camera's own axes, or express
+  them in the node's frame (each axis dotted with the node's three axes)
+  when the template sets flag 0x40; a template with flag 0x1000 keeps a
+  tenth of each axis' component along the node's up axis (the dot times
+  −0.9 in double) and renormalises, flattening the quad onto the node's
+  horizontal plane. No fire template sets either flag. The fixed-quad path a material can ask
   for (its flag bit 2) is the four camera corners
   (0.3 forward ± 0.5 of the right/up axes, normalised), the same for every
   particle; no Exarust material asks for it.
@@ -2596,12 +2599,12 @@ intensity and the emissive scale are worked out in double precision
 (intensity = density·(1 + 0.05x)·base, emissive = 0.8·density·(0.9 + 0.2x));
 the first frame, a one-shot template's every frame and any frame brighter
 than the peak ask for a full light update, and a new peak is 1.1× the
-intensity; the full-update bit clears once the intensity reaches the
-template's base. The emissive scale reaches `Fire::emissive` and, through
+intensity; the emitter's first-frame bit clears after every frame and a
+separate at-rest bit once the intensity reaches the template's base. The emissive scale reaches `Fire::emissive` and, through
 `exa_world::fire`'s host system, the parent mesh's first part (the
 original writes it into the parent node's own scale and its first
-sub-object's material, and into the same pair of each of its light
-children; the part gets a material copy, and its loaded emissive colour is
+sub-object's material, and into the same pair of each of its geometry
+children, which Exarust does not reach yet; the part gets a material copy, and its loaded emissive colour is
 the base the scale multiplies). Each emitter also
 keeps a *detail* value apart from its size: the material's level of
 detail is `detail·1000/d²`, d² the squared distance from the camera to the
@@ -2622,7 +2625,7 @@ is not asked for again.
 
 Still missing for fires: fires on other physics bodies (only the carried
 torch rides its item), body contacts being driven from the physics step,
-the particle material's parameter block (the 0.004 tint at slot 0xF0) and
+the particle material's parameter block (its 0.004 tint) and
 the node bookkeeping the scene hierarchy replaces (the emitter's per-frame
 node transform copies and its child lights' transform copy). The
 quality-scaled pool override is dead in the original: its branch needs the
@@ -2646,10 +2649,14 @@ rules in `exa_render::electricity` and a Bevy layer in `exa_world::arc`.
   (10 when 0), jitter 0.1, a second tendril value of 0.5, reach size/2,
   the `electricity01` hum, and a point light (0.6, 0.65, 1) of size/2,
   multiplier 2, softness 5, radius 80·size cm; no voxel light. The record's
-  fields (`DeviceFields`) are its duration (0x10), length (0x12), branches
-  (0x14) and flag byte (0x0B, bit 0x02 taking an offset direction), parsed
-  totally. The geometry is sized as the original allocates it: (4·segments
-  + 4) vertices and (4·segments + 2)·3 indices a tendril, colour 0x0019ff.
+  fields (`DeviceFields`) are its active bit (bit 0 at 0x0C, no arc
+  without it), duration (0x10), length (0x12), branches (0x14) and flag
+  byte (0x0B), parsed totally. The first segment runs along the node's
+  third axis; flag bit 0x02 adds a fixed end point the record's length
+  along it (`DeviceFields::end_point`). The geometry is sized as the
+  original allocates it: (4·segments + 4) vertices and (4·segments + 2)·3
+  indices a tendril record (twenty for a spark burst, whose six extra
+  tendrils take free records), every vertex coloured `0xff0019`.
 - **Record.** The 84-byte arc record holds flags, tendril count, segments,
   the tendrils' lifetime in ticks, size, the segment length's scale, a
   reserved word, a second tendril value (0x1C), the reach (0x20), a
@@ -2667,8 +2674,9 @@ rules in `exa_render::electricity` and a Bevy layer in `exa_world::arc`.
   equipment check scans the body's two hand slots for the item, needs its
   object record, and then runs that release or creation
   (`electrified_check`). A hit queues a discharge at a point: it steps the
-  charge (heavy when the record's kind word has 0x10) and always spawns the
-  spark burst there, charged or not (`discharge`).
+  charge (heavy when the record's kind word has 0x10; a spent charge or a
+  missing record clears the item's arc effect) and always spawns the spark
+  burst there, charged or not (`discharge`).
 - **Geometry.** Each tendril is a polyline of `segments` points between the
   arc's ends (along +X, the segments end to end, unless a record or a
   device sets the direction and length), jittered inside them; each
@@ -2676,8 +2684,10 @@ rules in `exa_render::electricity` and a Bevy layer in `exa_world::arc`.
   across it. The original builds a strip of 4·segments + 2 vertices per
   tendril; Exarust builds four vertices a segment, a model, and pins the
   original's buffer sizes in `ribbon_capacity`. A spark burst's six extra
-  tendrils start at the source, one segment long in a random direction
-  (sway 0), not at spread points. The segment count, width and timing are
+  tendrils start at the source in a random direction (sway 0), not at
+  spread points; the original makes them one segment long and grows them
+  (`exa_game::thaum::arcs::spark_burst`), this ribbon lays them out full
+  length. The segment count, width and timing are
   the original's; the tendril's own per-tick
   motion is a model (the original's tendril emitter is a separate
   component), so the zig-zag's exact shape is [guess].
@@ -2695,9 +2705,9 @@ rules in `exa_render::electricity` and a Bevy layer in `exa_world::arc`.
 Still missing: the exact per-tick tendril integration (jitter and segment
 lifetimes; the live tendril emitter is modelled in `exa_game::thaum::arcs`,
 which the Shock power and shock weapons use), the `_ElecMat01` emissive
-map, the per-branch scissor/matrix loop (its branch transforms and scissor
-rects are written by the tendril emitter's draw preparation, outside this
-component), the GI flow, the device's hum, and the callers of this crate's
+map, the draw's supersample-pass loop (one draw per pass with that pass's
+viewport and its clock, `Arc::pass_clock`; Exarust's supersampled camera
+draws the arc once), the GI flow, the device's hum, and the callers of this crate's
 arc layer (nothing spawns one yet).
 
 ## Force effects
