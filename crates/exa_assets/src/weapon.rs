@@ -221,14 +221,13 @@ impl ModelLoader<'_> {
         let (factory, built) = self.factory_recipe(name, weapon)?;
         let boxes = self.factory_boxes(&factory, &built.generated);
         let placed = factory.place(&built.generated, &boxes);
-        // Which parts had a mesh is what the build recorded: a node with no
-        // parts was an empty component.
-        let loaded: Vec<bool> = geometry
-            .nodes
-            .iter()
-            .skip(1)
-            .map(|n| !n.parts.is_empty())
-            .collect();
+        // Which parts had a mesh is what the build recorded: one node per
+        // placed part, in placement order, and a node with no parts was an
+        // empty component. The emblem placement asks by recipe part index.
+        let mut loaded = vec![false; factory.parts.len()];
+        for (node, placed) in geometry.nodes.iter().skip(1).zip(&placed) {
+            loaded[placed.part] = !node.parts.is_empty();
+        }
         let pattern_position = factory.pattern_position(&built.generated.selection, |i| {
             loaded.get(i).copied().unwrap_or(false)
         });
