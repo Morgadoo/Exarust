@@ -1294,6 +1294,7 @@ fn main() -> AppExit {
                 (
                     user_settings::gui_size_from_display,
                     user_settings::save_applied_bindings,
+                    user_settings::write_flow_settings,
                 ),
             );
     }

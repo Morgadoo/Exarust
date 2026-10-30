@@ -382,7 +382,11 @@ pub const NO_ROTATION: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 
 /// The practice spawn table's rotation: a half turn about the vertical axis.
 pub const PRACTICE_ROTATION: [[f32; 3]; 3] = [[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]];
 
-/// The practice arena's spawn point: the middle of the ring.
+/// The practice spawn table's position (x, y, z = 0, 0, 500 cm). The start
+/// and each next fight copy the table and overwrite only its vertical (y)
+/// with the body's height, so the player stands at x 0, z 500; the placement
+/// takes x and y as one 8-byte read and z on its own. The start shot frames
+/// the table's own point.
 pub const PRACTICE_POINT: Vec3 = Vec3::new(0.0, 0.0, 500.0);
 
 /// The story spawn table's position: the starting room's corner.
@@ -1333,6 +1337,12 @@ pub enum Step {
     Transition,
     /// Leave the application (the title's EXIT).
     Quit,
+    /// Write a 4-byte value into the settings store under section 1 (the
+    /// expert-ladder and story-background unlock words).
+    SettingsWrite {
+        key: u32,
+        bytes: [u8; 4],
+    },
     /// The unit's own tables are released at shutdown (the scripted-mode
     /// hook table and the three menu strings).
     Finalise,
@@ -1636,6 +1646,15 @@ pub const STRIPPED: u8 = 2;
 #[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ForfeitMatch;
 
+/// A 4-byte settings entry the flow asks the host to write. The unlock words
+/// live under section 1, as every boot-time entry does.
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SettingsEntry {
+    pub section: u32,
+    pub key: u32,
+    pub bytes: [u8; 4],
+}
+
 /// The steps the flow asked for since the last frame: every producer pushes
 /// here and [`apply_steps`] applies the ones the running app owns.
 #[derive(Resource, Debug, Default)]
@@ -1684,6 +1703,9 @@ pub struct Flow {
     pub story: StoryState,
     pub practice: PracticeState,
     pub unlocks: Unlocks,
+    /// The expert-ladder unlock has already been written to the settings
+    /// store (the original's flag, so a second win does not write it again).
+    pub expert_written: bool,
     /// The story's save slot, when it has one.
     pub slot: Option<u32>,
     /// The story and arena saves exist.
@@ -1734,6 +1756,7 @@ impl Default for Flow {
             },
             practice: PracticeState::default(),
             unlocks: Unlocks::default(),
+            expert_written: false,
             slot: None,
             has_save: [false; 2],
             versus: false,
@@ -1802,6 +1825,9 @@ impl Flow {
             return Vec::new();
         }
         self.booted = true;
+        // The boot's settings read leaves the "expert ladder already
+        // unlocked on disk" flag set when the stored word is not zero.
+        self.expert_written = self.unlocks.expert;
         let mut steps = vec![
             Step::Boot(BootTask::Scripts),
             Step::Boot(BootTask::Window),
@@ -2387,16 +2413,30 @@ impl Flow {
                 self.hook = Hook::None;
                 let menu = end_menu(MENU_WON, self.mode);
                 self.end_menu = Some(menu);
-                // The novice ladder unlocks expert and shows its tip; the
-                // expert ladder shows the other one.
+                // The end menu's own practice branch: the novice ladder shows
+                // tip 5, writes the expert-ladder setting once (a flag keeps
+                // later wins from writing it again) and unlocks the page; the
+                // expert ladder shows tip 6.
+                // The branch runs only in the practice mode.
                 let mut steps = Vec::new();
-                if self.practice.ladder == Ladder::Novice {
-                    steps.push(Step::Tip(5));
-                    if self.mode == Mode::Practice {
-                        self.unlocks.expert = true;
+                if self.mode == Mode::Practice {
+                    if self.practice.ladder == Ladder::Novice {
+                        steps.push(Step::Tip(5));
+                        if !self.expert_written {
+                            self.expert_written = true;
+                            self.unlocks.expert = true;
+                            steps.push(Step::SettingsWrite {
+                                key: EXPERT_UNLOCK_KEY,
+                                bytes: Unlocks {
+                                    expert: true,
+                                    ..Default::default()
+                                }
+                                .expert_bytes(),
+                            });
+                        }
+                    } else {
+                        steps.push(Step::Tip(6));
                     }
-                } else {
-                    steps.push(Step::Tip(6));
                 }
                 steps.push(Step::EndMenu(menu));
                 steps.push(Step::Hook(Hook::None));
@@ -3215,6 +3255,7 @@ impl Plugin for FlowPlugin {
         app.init_resource::<Flow>()
             .init_resource::<FlowSteps>()
             .add_message::<ForfeitMatch>()
+            .add_message::<SettingsEntry>()
             .add_message::<crate::save_live::SaveStep>()
             .init_resource::<GameView>()
             .init_resource::<BootToMenu>()
@@ -3225,13 +3266,8 @@ impl Plugin for FlowPlugin {
             .add_systems(
                 Update,
                 (
-                    apply_menu_choices,
-                    tick,
-                    follow_player,
-                    travel,
-                    run_transition,
-                    apply_steps,
-                    reset_level_state,
+                    (apply_menu_choices, tick, follow_player).chain(),
+                    (travel, run_transition, apply_steps, reset_level_state).chain(),
                 )
                     .chain(),
             );
@@ -3530,11 +3566,9 @@ fn apply_steps(
     mut session: Option<ResMut<crate::player_controls::PlaySession>>,
     ticks: Option<Res<exa_physics::body::BodyTicks>>,
     mut players: Query<PlayerParts, With<crate::player::PlayerBody>>,
+    motions: Option<Res<exa_anim::Motions>>,
     mut cameras: Query<&mut crate::player::ChaseCamera>,
-    mut changes: MessageWriter<exa_world::level_lifecycle::LevelChangeRequest>,
-    mut forfeit: MessageWriter<ForfeitMatch>,
-    mut exit: MessageWriter<AppExit>,
-    mut saves: MessageWriter<crate::save_live::SaveStep>,
+    mut out: FlowOutputs,
 ) {
     if queued.steps.is_empty() {
         return;
@@ -3589,12 +3623,12 @@ fn apply_steps(
                 if let Some(end) = end.as_mut() {
                     end.close();
                 }
-                crate::level_change::request(&mut changes, Some(locale), spawn, teardown);
+                crate::level_change::request(&mut out.changes, Some(locale), spawn, teardown);
             }
             Step::TeardownWorld => {
                 // A load in this batch tears down by itself.
                 if !loads {
-                    crate::level_change::request(&mut changes, None, 0, true);
+                    crate::level_change::request(&mut out.changes, None, 0, true);
                 }
             }
             Step::PlacePlayer(placement) => {
@@ -3788,19 +3822,48 @@ fn apply_steps(
                     commands.insert_resource(exa_audio::LevelMusicStart(0.0));
                 }
             }
+            Step::RequestAction(motion) => {
+                // The body's action switch, not forced: a body already in
+                // that action keeps it; otherwise the clip starts by its
+                // action name (looping when the clip loops, else once back
+                // into the combat or idle action, with no blend).
+                if let Some(motions) = motions.as_deref() {
+                    for mut player in &mut players {
+                        let Some(animator) = player.animator.as_mut() else {
+                            continue;
+                        };
+                        if motions.action_name(motion) == Some(animator.action.as_str()) {
+                            continue;
+                        }
+                        if let Some(name) = motions.start_requested(animator, motion) {
+                            debug!("game flow: requested motion {motion:#x} starts {name}");
+                        } else {
+                            debug!("game flow: requested motion {motion:#x} has no clip");
+                        }
+                    }
+                }
+            }
             Step::Forfeit => {
-                forfeit.write(ForfeitMatch);
+                out.forfeit.write(ForfeitMatch);
+            }
+            Step::SettingsWrite { key, bytes } => {
+                out.settings.write(SettingsEntry {
+                    section: SETTINGS_SECTION,
+                    key,
+                    bytes,
+                });
             }
             Step::Quit => {
-                exit.write(AppExit::Success);
+                out.exit.write(AppExit::Success);
             }
             // The save unit's work on the current slot
             // ([`crate::save_live`], idle without a save folder).
             Step::Save { drop_on_low_health } => {
-                saves.write(crate::save_live::SaveStep::Save { drop_on_low_health });
+                out.saves
+                    .write(crate::save_live::SaveStep::Save { drop_on_low_health });
             }
             Step::DropSave => {
-                saves.write(crate::save_live::SaveStep::Drop);
+                out.saves.write(crate::save_live::SaveStep::Drop);
             }
             Step::StripPlayer => {
                 // The reconstruction device's strip: the player's live body
@@ -3813,13 +3876,24 @@ fn apply_steps(
                 }
             }
             Step::Checkpoint => {
-                saves.write(crate::save_live::SaveStep::Checkpoint);
+                out.saves.write(crate::save_live::SaveStep::Checkpoint);
             }
             other => {
                 debug!("game flow step not applied by the app: {other:?}");
             }
         }
     }
+}
+
+/// The messages the flow's applied steps send: a level change, a forfeit, a
+/// settings entry, the application's exit and the save unit's work.
+#[derive(bevy::ecs::system::SystemParam)]
+struct FlowOutputs<'w> {
+    changes: MessageWriter<'w, exa_world::level_lifecycle::LevelChangeRequest>,
+    forfeit: MessageWriter<'w, ForfeitMatch>,
+    settings: MessageWriter<'w, SettingsEntry>,
+    exit: MessageWriter<'w, AppExit>,
+    saves: MessageWriter<'w, crate::save_live::SaveStep>,
 }
 
 /// The player body's parts the flow's steps write.
@@ -3833,6 +3907,7 @@ struct PlayerParts {
     knock: Option<&'static mut exa_combat::condition::KnockOut>,
     fighter: Option<&'static mut exa_combat::Fighter>,
     ragdoll: Option<&'static mut exa_physics::body::Ragdoll>,
+    animator: Option<&'static mut exa_anim::Animator>,
 }
 
 /// Writes a knock-out's condition, flags and wake timer on the player,
@@ -4200,7 +4275,8 @@ mod tests {
         flow.set_practice_health(0.2, 0.25);
         flow.stand_height = 88.5;
         let steps = flow.practice_next(9000);
-        // The body stands at its measured stand height.
+        // The body stands at its measured stand height at the table's
+        // point (only the vertical is overwritten).
         assert!(steps.contains(&Step::PlacePlayer(Placement {
             rotation: PRACTICE_ROTATION,
             position: Vec3::new(0.0, 88.5, 500.0),
@@ -4851,6 +4927,92 @@ mod tests {
     }
 
     #[test]
+    fn a_novice_win_writes_the_expert_unlock_once() {
+        let mut flow = Flow {
+            mode: Mode::Practice,
+            phase: Phase::Playing,
+            practice: PracticeState {
+                ladder: Ladder::Novice,
+                fight: 8,
+                start_ms: 0,
+                next_tip: false,
+            },
+            ..Default::default()
+        };
+        let steps = flow.practice_tick(6000, None, &[DEAD]);
+        // The novice ladder's end: tip 5, the settings word, then the menu.
+        assert!(steps.contains(&Step::Tip(5)));
+        let write = steps
+            .iter()
+            .find(|step| matches!(step, Step::SettingsWrite { .. }))
+            .copied()
+            .expect("the novice win writes the unlock");
+        assert_eq!(
+            write,
+            Step::SettingsWrite {
+                key: EXPERT_UNLOCK_KEY,
+                bytes: [1, 0, 0, 0],
+            }
+        );
+        assert!(flow.unlocks.expert);
+        assert!(flow.expert_written);
+        // A second novice win writes nothing more.
+        flow.phase = Phase::Playing;
+        let again = flow.practice_tick(7000, None, &[DEAD]);
+        assert!(again.contains(&Step::Tip(5)));
+        assert!(
+            !again
+                .iter()
+                .any(|step| matches!(step, Step::SettingsWrite { .. }))
+        );
+        // The expert ladder's end shows tip 6 and writes nothing.
+        let mut expert = Flow {
+            mode: Mode::Practice,
+            phase: Phase::Playing,
+            practice: PracticeState {
+                ladder: Ladder::Expert,
+                fight: 8,
+                start_ms: 0,
+                next_tip: false,
+            },
+            ..Default::default()
+        };
+        let steps = expert.practice_tick(6000, None, &[DEAD]);
+        assert!(steps.contains(&Step::Tip(6)));
+        assert!(
+            !steps
+                .iter()
+                .any(|step| matches!(step, Step::SettingsWrite { .. }))
+        );
+        // Outside the practice mode the end menu's practice branch does not
+        // run: no tip, no settings word.
+        let mut arena = Flow {
+            mode: Mode::Arena,
+            phase: Phase::Playing,
+            practice: PracticeState {
+                ladder: Ladder::Novice,
+                fight: 8,
+                start_ms: 0,
+                next_tip: false,
+            },
+            ..Default::default()
+        };
+        let steps = arena.practice_tick(6000, None, &[DEAD]);
+        assert!(!steps.contains(&Step::Tip(5)));
+        assert!(!arena.expert_written);
+        assert!(
+            !steps
+                .iter()
+                .any(|step| matches!(step, Step::SettingsWrite { .. }))
+        );
+        // A boot whose store already holds the unlock does not write it.
+        let mut stored = Flow::default();
+        stored.unlocks.expert = true;
+        stored.boot();
+        assert!(stored.expert_written);
+    }
+
+    #[test]
     fn a_practice_start_uses_the_ring_and_its_music() {
         let mut flow = Flow::default();
         let view = Viewport {
@@ -4859,7 +5021,8 @@ mod tests {
         };
         let steps = flow.start_practice(Ladder::Expert, 92.0, view, 500);
         assert_eq!(flow.mode, Mode::Practice);
-        // The standing height plus 5 cm, in the ring's middle, half turned.
+        // The standing height plus 5 cm at the table's point (x 0, z 500),
+        // half turned: only the table's vertical is overwritten.
         assert!(steps.contains(&Step::PlacePlayer(Placement {
             rotation: PRACTICE_ROTATION,
             position: Vec3::new(0.0, 97.0, 500.0),
@@ -6042,6 +6205,7 @@ mod tests {
             .init_resource::<GameView>()
             .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
             .add_message::<ForfeitMatch>()
+            .add_message::<SettingsEntry>()
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
             .add_systems(Update, apply_steps);
@@ -6179,6 +6343,7 @@ mod tests {
             .init_resource::<GameView>()
             .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
             .add_message::<ForfeitMatch>()
+            .add_message::<SettingsEntry>()
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
             .add_systems(Update, apply_steps);
@@ -6232,6 +6397,7 @@ mod tests {
             .insert_resource(exa_physics::body::BodyTicks(100))
             .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
             .add_message::<ForfeitMatch>()
+            .add_message::<SettingsEntry>()
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
             .add_systems(Update, apply_steps);
