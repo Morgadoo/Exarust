@@ -23,6 +23,10 @@ use crate::bank::Lcg;
 pub const VOICE_CAPACITY: usize = 512;
 /// Real sources a frame can bind.
 pub const SOURCE_CAPACITY: usize = 64;
+/// The shared stand-in voice the original hands the music and ambience
+/// callers when the pool is full. Writes to it are harmless: it is not one
+/// of the pool's voices, is never ranked, and never binds a source.
+pub const DUMMY_VOICE: u32 = u32::MAX;
 /// Flags a one-shot voice starts with: allocated, auto-free, restart.
 pub const DEFAULT_ONE_SHOT_FLAGS: u32 = 0x1104;
 /// Audibility of a voice that is not playing.
@@ -283,6 +287,8 @@ pub struct AudioEnvironment {
     pub default_flags: u32,
     /// The voices, indexed by id.
     voices: Vec<Voice>,
+    /// The shared voice handed out when the pool is full.
+    dummy: Voice,
     /// The sort order: voice ids, ranked by audibility.
     order: Vec<u32>,
     /// One past the highest voice ever allocated.
@@ -331,6 +337,10 @@ impl AudioEnvironment {
             buses: BusGains::default(),
             default_flags: DEFAULT_ONE_SHOT_FLAGS,
             voices,
+            dummy: Voice {
+                source: -1,
+                ..Voice::default()
+            },
             order: (0..VOICE_CAPACITY as u32).collect(),
             high_water: 0,
             hint: 0,
@@ -360,13 +370,20 @@ impl AudioEnvironment {
         self.object_flags & 3 == 3
     }
 
-    /// The voices, for reading a rank or a flag.
+    /// The voices, for reading a rank or a flag. The shared dummy voice is
+    /// readable by its id, with its source at −1.
     pub fn voice(&self, id: u32) -> Option<&Voice> {
+        if id == DUMMY_VOICE {
+            return Some(&self.dummy);
+        }
         self.voices.get(id as usize)
     }
 
     /// A voice, for a caller that keeps one directly.
     pub fn voice_mut(&mut self, id: u32) -> Option<&mut Voice> {
+        if id == DUMMY_VOICE {
+            return Some(&mut self.dummy);
+        }
         self.voices.get_mut(id as usize)
     }
 
@@ -454,9 +471,31 @@ impl AudioEnvironment {
         None
     }
 
+    /// Allocates a voice for the music and ambience callers: like
+    /// [`Self::allocate`], but when the pool is full it hands back the
+    /// shared dummy voice, whose writes are harmless, as the original does.
+    pub fn allocate_or_dummy(&mut self) -> u32 {
+        self.allocate().unwrap_or(DUMMY_VOICE)
+    }
+
+    /// Lets go of a voice a caller holds by option: a pool voice is freed and
+    /// the shared dummy is simply dropped. Returns the cleared holder.
+    pub fn release_voice(&mut self, bank: &mut SoundBank, slot: Option<u32>) -> Option<u32> {
+        if let Some(id) = slot
+            && id != DUMMY_VOICE
+        {
+            self.free_voice(bank, id);
+        }
+        None
+    }
+
     /// Frees a voice now: detaches the handle, stops and unbinds its source,
     /// releases an owned buffer, clears its flags and lowers the free hint.
+    /// The shared dummy voice is not in the pool, so freeing it does nothing.
     pub fn free_voice(&mut self, bank: &mut SoundBank, id: u32) {
+        if id == DUMMY_VOICE {
+            return;
+        }
         let Some(index) = usize::try_from(id)
             .ok()
             .filter(|index| *index < self.voices.len())
@@ -969,6 +1008,11 @@ impl AudioEnvironment {
     /// source its buffer, gains, pitch, position, looping and start offset.
     fn bind(&mut self, bank: &mut SoundBank, id: u32, slot: usize) {
         if slot >= SOURCE_CAPACITY {
+            // The original parks the voice on source 0 when it is handed a
+            // slot outside the source table.
+            if let Some(voice) = self.voices.get_mut(id as usize) {
+                voice.source = 0;
+            }
             return;
         }
         if let Some(old) = self.source_owner[slot].take() {
@@ -1821,5 +1865,34 @@ mod tests {
         let mut env = AudioEnvironment::new();
         assert_eq!(env.rtl_random, Lcg::default());
         assert_eq!(env.rtl_random.step(), 1);
+    }
+
+    /// A full pool hands the music and ambience callers the shared dummy
+    /// voice: its writes are harmless, it never binds a source and freeing it
+    /// only lets the caller's holder go. The nil-returning allocation still
+    /// reports no voice.
+    #[test]
+    fn a_full_pool_hands_out_the_shared_dummy_voice() {
+        let mut env = AudioEnvironment::new();
+        let mut bank = SoundBank::default();
+        for _ in 0..VOICE_CAPACITY {
+            env.allocate().expect("a pool voice");
+        }
+        assert_eq!(env.allocate(), None);
+        assert_eq!(env.allocate_or_dummy(), DUMMY_VOICE);
+        let dummy = *env.voice(DUMMY_VOICE).expect("the dummy");
+        assert_eq!(dummy.flags, 0);
+        assert_eq!(dummy.source, -1);
+        // Writes land in the stand-in and are never heard.
+        let id = env.allocate_or_dummy();
+        env.voice_mut(id).unwrap().gain = 5.0;
+        env.voice_mut(id).unwrap().buffer = 7;
+        assert_eq!(env.voice(id).unwrap().gain, 5.0);
+        assert!(!env.used_sources().iter().any(|used| *used));
+        env.free_voice(&mut bank, id);
+        assert_eq!(env.voice(id).unwrap().gain, 5.0);
+        // The holder is dropped without touching the pool.
+        assert_eq!(env.release_voice(&mut bank, Some(id)), None);
+        assert_eq!(env.high_water(), VOICE_CAPACITY);
     }
 }

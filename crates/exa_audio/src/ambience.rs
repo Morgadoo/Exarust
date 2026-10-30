@@ -115,7 +115,7 @@ impl AudioEnvironment {
             }
         } else {
             if self.ambience.bed_voice.is_none() {
-                self.ambience.bed_voice = self.allocate();
+                self.ambience.bed_voice = Some(self.allocate_or_dummy());
             }
             let offset = (f64::from(bank.random_unit()) * BED_OFFSET_S) as f32;
             if let Some(id) = self.ambience.bed_voice
@@ -136,9 +136,7 @@ impl AudioEnvironment {
 
     /// Clears the area's ambience: the bed voice, its buffer and the set.
     pub fn clear_ambience(&mut self, bank: &mut SoundBank) {
-        if let Some(id) = self.ambience.bed_voice.take() {
-            self.free_voice(bank, id);
-        }
+        self.ambience.bed_voice = self.release_voice(bank, self.ambience.bed_voice);
         if self.ambience.bed_buffer != 0 {
             bank.release_buffer(self.ambience.bed_buffer);
             self.ambience.bed_buffer = 0;
