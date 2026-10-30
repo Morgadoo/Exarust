@@ -578,9 +578,7 @@ impl Plants {
                 continue;
             }
             grown += chunk.len();
-            let baked = vegetation::bake(&self.variants, chunk, place, |p| {
-                vegetation::terrain_normal(&built.normals, n, p)
-            });
+            let baked = vegetation::bake(&self.variants, chunk, place);
             let mut mesh = Mesh::new(
                 PrimitiveTopology::TriangleList,
                 RenderAssetUsages::default(),
@@ -1627,8 +1625,6 @@ struct BuiltTile {
     /// Displaced vertex heights (metres) and vegetation density per vertex.
     heights: Vec<f32>,
     density: Vec<f32>,
-    /// The tile's vertex normals, `n` × `n`, which large plants take.
-    normals: Vec<[f32; 3]>,
     /// Palette material indices, one per layer, ascending.
     materials: Vec<usize>,
     /// The layers' over opacities per vertex, as the splat texture holds
@@ -1747,7 +1743,6 @@ fn build_tile(
         }
     }
     let normals = grid_normals(&positions, n);
-    let ground_normals = normals.clone();
     let heights: Vec<f32> = positions.iter().map(|p| p[1]).collect();
 
     // Each 6 m block draws the original's shared block patch (serpentine
@@ -1848,7 +1843,6 @@ fn build_tile(
         blocks: built,
         heights,
         density,
-        normals: ground_normals,
         materials: used,
         splat,
         unresolved,

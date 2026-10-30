@@ -374,9 +374,12 @@ One system grows grass and plants (`exa_world::terrain::vegetation`):
   (6 small) and `trn_lplnta02.rfc` (29 large) is a variant, all textured with
   `PlantSet_01D`/`N`. Grass is shrunk to 0.75. Grass and small plants are
   lit as if facing up: the plant loader sets their normals to (0, 1, 0)
-  (adding the stream when a mesh has none); the baker turns those with the
-  instance and takes the terrain's normal under the plant for every vertex
-  of a large plant. No plant library stores vertex colours,
+  (adding the stream when a mesh has none); the baker turns every variant's
+  own normals with the instance, so a large plant keeps its model normals.
+  (The original's other branch takes the terrain's blended vertex normal
+  under a large plant, but its plant loader marks every variant for that
+  branch once the small-plant library has loaded, so it never runs.)
+  No plant library stores vertex colours,
   and the plant program's fourth stream is the tangent, so the plants are
   not tinted per vertex. Alpha test 0.1, no fade.
   The original's grass program sways them in the wind; Exarust draws them
@@ -405,11 +408,13 @@ One system grows grass and plants (`exa_world::terrain::vegetation`):
   vectors: rows `(cos·s, 0, −sin·s)`, `(0, s, 0)`, `(sin·s, 0, cos·s)` and
   the ground point, each coordinate summed `(x·r0 + y·r1) + (z·r2 + t)`.
   Grass and small-plant normals turn by the same rows and are scaled by
-  `1/s`; a large plant's vertices all take the terrain normal at its point,
-  blended from the four vertex normals around it with the corner `(i, j)`
-  weighing `fx·fy`, `(i+1, j)` `(1−fx)·fy`, `(i, j+1)` `(1−fy)·fx` and
-  `(i+1, j+1)` `(1−fx)(1−fy)` (opposite to a plain bilinear blend) and
-  normalised by the approximate reciprocal square root. The density
+  `1/s`, and so do a large plant's own model normals (its vertices keep
+  them; the loader's +Y overwrite covers only grass and small plants). The
+  dead branch above would instead blend the four vertex normals around the
+  point with the corner `(i, j)` weighing `fx·fy`, `(i+1, j)` `(1−fx)·fy`,
+  `(i, j+1)` `(1−fy)·fx` and `(i+1, j+1)` `(1−fx)(1−fy)` (opposite to a plain
+  bilinear blend) and normalise by the approximate reciprocal square root;
+  `vegetation::terrain_normal` keeps that rule tested. The density
   threshold compares the density, widened to double, with the double 0.35.
   The plant program takes its
   normal-mapped variant only above shading quality 3 with

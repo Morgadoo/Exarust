@@ -462,14 +462,8 @@ pub fn density_texel(at: Vec2) -> (usize, usize) {
 }
 
 /// Bakes `growths` into one vertex set, tile-local metres, with `place`
-/// mapping a point in vertex steps to its ground position and
-/// `ground_normal` to the terrain's normal there (see [`terrain_normal`]).
-pub fn bake(
-    variants: &[Variant],
-    growths: &[Growth],
-    place: impl Fn(Vec2) -> Vec3,
-    ground_normal: impl Fn(Vec2) -> Vec3,
-) -> Variant {
+/// mapping a point in vertex steps to its ground position.
+pub fn bake(variants: &[Variant], growths: &[Growth], place: impl Fn(Vec2) -> Vec3) -> Variant {
     let mut out = Variant::default();
     for g in growths {
         let Some(v) = variants.get(g.variant) else {
@@ -493,22 +487,20 @@ pub fn bake(
                 .iter()
                 .map(|p| (rows[0] * p.x + rows[1] * p.y) + (rows[2] * p.z + at)),
         );
-        // Grass and small plants (whose normals the loader set to +Y) turn
-        // their normals by the same scaled rows without the translation,
-        // `(x·r0 + y·r1) + z·r2`, then scale them by `1/s`. A large plant
-        // takes the terrain's normal under it for every vertex instead.
-        if v.kind == Kind::Large {
-            let n = ground_normal(g.at);
-            out.normals
-                .extend(std::iter::repeat_n(n, v.positions.len()));
-        } else {
-            let inverse = 1.0 / s;
-            out.normals.extend(
-                v.normals
-                    .iter()
-                    .map(|n| ((rows[0] * n.x + rows[1] * n.y) + rows[2] * n.z) * inverse),
-            );
-        }
+        // Every plant's own normals turn by the same scaled rows without the
+        // translation, `(x·r0 + y·r1) + z·r2`, then are scaled by `1/s`.
+        // Grass and small plants carry +Y (the plant loader overwrites their
+        // normals), so they stay +Y; a large plant keeps its model normals.
+        // The original's other branch takes the terrain's blended vertex
+        // normal instead ([`terrain_normal`]), but the plant loader sets
+        // every variant's kind byte once the small-plant library has loaded,
+        // so that branch never runs.
+        let inverse = 1.0 / s;
+        out.normals.extend(
+            v.normals
+                .iter()
+                .map(|n| ((rows[0] * n.x + rows[1] * n.y) + rows[2] * n.z) * inverse),
+        );
         out.uvs.extend_from_slice(&v.uvs);
         out.indices.extend(v.indices.iter().map(|i| i + base));
     }
@@ -678,31 +670,40 @@ mod tests {
             height: 0.0,
         };
         let at = Vec3::new(10.0, 1.0, -3.0);
-        let ground = |_| Vec3::new(0.0, 0.6, 0.8);
         let mut growth = Growth {
             variant: 0,
             at: Vec2::ZERO,
             scale: 2.0,
             angle: 0.0,
         };
-        let baked = bake(std::slice::from_ref(&variant), &[growth], |_| at, ground);
+        let baked = bake(std::slice::from_ref(&variant), &[growth], |_| at);
         assert_eq!(baked.positions[0], Vec3::new(12.0, 1.0, -3.0));
         assert_eq!(baked.normals[0], Vec3::X);
         growth.angle = std::f32::consts::FRAC_PI_2;
         let (sin, cos) = sin_cos(growth.angle);
-        let baked = bake(std::slice::from_ref(&variant), &[growth], |_| at, ground);
+        let baked = bake(std::slice::from_ref(&variant), &[growth], |_| at);
         let want = Vec3::new(cos * 2.0 + 10.0, 1.0, -sin * 2.0 + -3.0);
         assert_eq!(baked.positions[0], want);
         assert!((baked.positions[0] - Vec3::new(10.0, 1.0, -5.0)).length() < 1e-5);
         // The normal turns with the scaled rows, then loses the scale.
         assert!((baked.normals[0] - Vec3::NEG_Z).length() < 1e-6);
-        // A large plant takes the terrain's normal at its point instead.
+        // A large plant keeps its own model normals too: they turn the same
+        // way and lose the scale (the original's terrain-normal branch never
+        // runs, see the loader).
         let large = Variant {
             kind: Kind::Large,
-            ..variant
+            ..variant.clone()
         };
-        let baked = bake(&[large], &[growth], |_| at, ground);
-        assert_eq!(baked.normals[0], Vec3::new(0.0, 0.6, 0.8));
+        let baked = bake(&[large], &[growth], |_| at);
+        assert!((baked.normals[0] - Vec3::NEG_Z).length() < 1e-6);
+        // A grass plant's +Y normal is unchanged by the turn.
+        let grass = Variant {
+            kind: Kind::Grass,
+            normals: vec![Vec3::Y],
+            ..variant.clone()
+        };
+        let baked = bake(&[grass], &[growth], |_| at);
+        assert!((baked.normals[0] - Vec3::Y).length() < 1e-6);
     }
 
     #[test]
