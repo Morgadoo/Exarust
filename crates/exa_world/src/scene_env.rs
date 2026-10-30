@@ -95,9 +95,10 @@ pub const DEFAULT_FOG_COLOUR: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 pub const DEFAULT_BACKGROUND: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
 /// The outdoor haze a level without a sky gets.
 pub const OUTDOOR_FOG_COLOUR: [f32; 4] = [0.47, 0.53, 0.70, 1.0];
-/// The ambient and global light a tile-grid level built the older way is
-/// forced to unless it has terrain.
-pub const GRID_AMBIENT: [f32; 3] = [0.6275; 3];
+/// The sun light's colour and the global light a tile-grid level built the
+/// older way is forced to unless it has terrain. (The forced grey goes to
+/// the sun colour setter, not to the ambient.)
+pub const GRID_SUN_COLOUR: [f32; 3] = [0.6275; 3];
 pub const GRID_GLOBAL_LIGHT: [f32; 4] = [0.75; 4];
 /// The background and fog colour that build always forces.
 pub const GRID_BACKGROUND: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
@@ -1345,11 +1346,13 @@ impl SceneEnvironment {
     }
 
     /// Forces the values a tile-grid level built the older way is lit by:
-    /// without terrain a grey ambient and global light; in every case a
-    /// black background and grey fog.
+    /// unless the level has terrain, the sun light's colour becomes the grey
+    /// 0.6275 and the global light 0.75 with its strength 0.75; in every
+    /// case the background is opaque black and the fog mid grey. The
+    /// ambient is left as the level set it.
     pub fn force_indoor(&mut self, terrain: bool) {
         if !terrain {
-            self.set_ambient([GRID_AMBIENT[0], GRID_AMBIENT[1], GRID_AMBIENT[2], 1.0]);
+            self.set_sun_colour(GRID_SUN_COLOUR);
             self.set_global_light(GRID_GLOBAL_LIGHT);
         }
         self.background = GRID_BACKGROUND;
@@ -2859,12 +2862,15 @@ mod tests {
         assert_eq!(env.background, [0.0, 0.0, 0.0, 1.0]);
         assert_eq!(env.fog.colour, [0.5, 0.5, 0.5, 1.0]);
         env.force_indoor(false);
-        assert_eq!(env.ambient, [0.6275, 0.6275, 0.6275, 1.0]);
+        // The forced grey goes to the sun light's colour, not the ambient.
+        assert_eq!(env.ambient, [0.5, 0.4, 0.3, 1.0]);
+        assert_eq!(env.sun_colour, GRID_SUN_COLOUR);
+        // The setter stores the plug-in colour; the light node keeps its
+        // own until a placement or the sky switch writes it.
+        assert_eq!(env.sun_light_colour, [0.75; 3]);
         // 0.75 through the sRGB curve; the strength stays 0.75.
         assert!((env.global_light[0] - 0.522_500_3).abs() < 1e-6);
         assert_eq!(env.global_light[3], 0.75);
-        // The sun light's own colour is not touched.
-        assert_eq!(env.sun_colour, [0.75; 3]);
     }
 
     #[test]
