@@ -56,20 +56,12 @@ pub const MANAGER_RFC_FLAGS: [u8; 2] = [1, 1];
 /// atlas with [`MANAGER_BLEND`], the icon size ([`icon_size`], set when the
 /// GUI unit is) and [`MANAGER_FORMAT`], and a scene reader whose scene is
 /// the renderer's, with [`MANAGER_RFC_FLAGS`].
-///
-/// The atlas's fourth word is the icon renderer's global icon side (160
-/// pixels at construction, not scaled by the unit): the atlas cells and the
-/// off-screen image are the same size, which is what makes the upload a
-/// straight copy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ManagerSetup {
     pub unit: i32,
     pub blend: u32,
     pub format: u32,
     pub icon_size: i32,
-    /// The side the atlas texture is told its cells are: the renderer's
-    /// global icon side.
-    pub atlas_cell: i32,
     pub rfc_flags: [u8; 2],
 }
 
@@ -81,65 +73,8 @@ impl ManagerSetup {
             blend: MANAGER_BLEND,
             format: MANAGER_FORMAT,
             icon_size: icon_size(unit),
-            atlas_cell: crate::item_renderer::ICON_SIZE,
             rfc_flags: MANAGER_RFC_FLAGS,
         }
-    }
-}
-
-/// The parts the manager's constructor builds, in order. The object
-/// database is fetched (it already exists, the database singleton); the
-/// shared icon renderer is installed in its global on the first manager
-/// only; then the manager's own item renderer, its icon atlas, and the
-/// scene reader whose scene is the item renderer's.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ManagerParts {
-    /// The object database lookup (always runs).
-    pub object_database: bool,
-    /// The shared icon renderer was created and installed (the first
-    /// manager only).
-    pub shared_renderer: bool,
-    pub item_renderer: bool,
-    pub atlas: bool,
-    /// The scene reader: the item renderer's surface at its target, with
-    /// [`MANAGER_RFC_FLAGS`].
-    pub scene: bool,
-}
-
-/// The construction of a manager, given whether the shared icon renderer's
-/// global is already set.
-pub fn manager_parts(shared_renderer_exists: bool) -> ManagerParts {
-    ManagerParts {
-        object_database: true,
-        shared_renderer: !shared_renderer_exists,
-        item_renderer: true,
-        atlas: true,
-        scene: true,
-    }
-}
-
-/// What the manager's destructor frees, in order: a positive reference
-/// count runs the object's release hook first (its child controls), then
-/// the item renderer goes, the icon list is cleared, the atlas goes and the
-/// instance is freed. The object database and the scene reader are not
-/// freed here: the base class owns them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ManagerTeardown {
-    pub release_children: bool,
-    pub item_renderer: bool,
-    pub entries: bool,
-    pub atlas: bool,
-    pub self_free: bool,
-}
-
-/// The teardown for a signed reference count.
-pub fn manager_teardown(refs: i32) -> ManagerTeardown {
-    ManagerTeardown {
-        release_children: refs > 0,
-        item_renderer: true,
-        entries: true,
-        atlas: true,
-        self_free: refs != 0,
     }
 }
 
@@ -462,14 +397,10 @@ impl IconCache {
         near(entry.cell, point.0, point.1)
     }
 
-    /// The manager's destructor: a positive reference count releases the
-    /// children first, then the item renderer and the icon atlas go and the
-    /// list is cleared. Exarust's atlas-free cache just drops its entries
-    /// and reports the order the original frees its parts in.
-    pub fn destroy(&mut self, refs: i32) -> ManagerTeardown {
-        let teardown = manager_teardown(refs);
+    /// The manager's destructor: the item renderer, the entries and the
+    /// icon atlas go. Exarust's atlas-free cache just drops its entries.
+    pub fn destroy(&mut self) {
         self.clear();
-        teardown
     }
 
     /// A level or save load empties the cache.
@@ -788,43 +719,10 @@ mod tests {
         assert_eq!(setup.blend, 0x103);
         assert_eq!(setup.format, 0x100e608);
         assert_eq!(setup.icon_size, 200);
-        // The atlas is told the renderer's global icon side, unscaled.
-        assert_eq!(setup.atlas_cell, 160);
         assert_eq!(setup.rfc_flags, [1, 1]);
         // The apparel painter follows the texture detail at each render.
         assert_eq!(apparel_size(3), 0x400);
         assert_eq!(apparel_size(2), 0x200);
-        assert!(manager_parts(false).shared_renderer);
-        assert!(!manager_parts(true).shared_renderer);
-        assert_eq!(
-            manager_parts(true),
-            ManagerParts {
-                object_database: true,
-                shared_renderer: false,
-                item_renderer: true,
-                atlas: true,
-                scene: true
-            }
-        );
-        // The teardown's order and its two branches: the release hook only
-        // with a positive reference count, the instance's free with any
-        // non-zero count.
-        assert_eq!(
-            manager_teardown(2),
-            ManagerTeardown {
-                release_children: true,
-                item_renderer: true,
-                entries: true,
-                atlas: true,
-                self_free: true
-            }
-        );
-        let zero = manager_teardown(0);
-        assert!(!zero.release_children);
-        assert!(!zero.self_free);
-        assert!(zero.item_renderer && zero.entries && zero.atlas);
-        assert!(!manager_teardown(-1).release_children);
-        assert!(manager_teardown(-1).self_free);
     }
 
     #[test]
@@ -899,17 +797,7 @@ mod tests {
         assert!(!c.loose_pixel_test(0, (0, 0), |_, _, _| true));
         assert!(c.loose_pixel_test(1, (0, 0), |cell, _, _| cell == 9));
         assert!(!c.loose_pixel_test(9, (0, 0), |_, _, _| true));
-        let teardown = c.destroy(1);
-        assert_eq!(
-            teardown,
-            ManagerTeardown {
-                release_children: true,
-                item_renderer: true,
-                entries: true,
-                atlas: true,
-                self_free: true
-            }
-        );
+        c.destroy();
         assert!(c.entries.is_empty());
     }
 
