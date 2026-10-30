@@ -1305,8 +1305,15 @@ companion, Derrin (`xac_derrin`), at the story start's companion point
 
 The Energy domain's Shock creator builds its charge object with the cast
 flag 1, the base cost, the clip's charge, the hand arcs (20 tendrils of 5
-segments at −15, −5 cm), and the `thmnrg_chrga` and `thmnrg_shock` sounds
-(`exa_game::thaum::energy::shock_power`).
+segments at −15, −5 cm), the `thmnrg_chrga` and `thmnrg_shock` sounds, the
+`0x401` active-power membership and the player-controls call for a player
+owner (`exa_game::thaum::energy::shock_power`, `ShockPower::created`). The
+shock weapons creator arms every held weapon with its 0x301 arcs (40
+tendrils of 4, scale 0.75, light 0.02, `electricity03` at 0.15), holds the
+cost and joins `0x2040b` with the weapon-change hook; a put-away weapon's
+node takes its end flag and loses its hook. A blade strike shocks the
+struck character by 0.01 and queues the spark burst at the contact point
+in the struck body's frame (`blade_strike`, `spark_at`).
 
 `flow` is the original's game-main flow: boot into the title, the mode
 switch (practice, story, arena, scripted modes), the session starters

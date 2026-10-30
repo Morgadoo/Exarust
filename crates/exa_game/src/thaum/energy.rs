@@ -14,12 +14,14 @@
 //!   ([`super::arcs::hand_arcs`]) ride the right hand, the charge plays
 //!   `thmnrg_chrga` and the release `thmnrg_shock`.
 //! - **Shock weapons**: a persistent power that needs a weapon in hand and
-//!   a free slot; it puts arcs ([`super::arcs::weapon_arcs`]) on each held
-//!   weapon, at most four, holds its cost, and follows weapon changes: a
-//!   weapon put away stops respawning its arcs and lets them end; a weapon
-//!   taken while fewer than four carry arcs gains them. A blade that strikes
-//!   a body shocks its character by 0.01 and sets a spark burst
-//!   ([`super::arcs::spark_burst`]) at the contact, on the struck part.
+//!   a free slot; its creator ([`shock_weapons`]) arms every held weapon
+//!   with an arc record ([`super::arcs::weapon_arcs`]), holds its cost and
+//!   joins the active powers with `0x2040b` and a weapon-change hook. A
+//!   later weapon put away takes its node's end flag and clears its hook,
+//!   dropping it from the armed list; a weapon taken while fewer than four
+//!   carry arcs gains them. A blade that strikes a body shocks its
+//!   character by 0.01 and queues a spark burst ([`blade_strike`],
+//!   [`spark_at`]) at the contact, on the struck part.
 //! - **AI**: shock 3 with 1.2 times the cost in focus, facing within 1, the
 //!   target within 5 m and on its feet; shock weapons as the other
 //!   persistent self powers ([`super::casting::persistent_advice`]).
@@ -28,10 +30,14 @@
 //! the shock and weapon creators and the weapon-change hook, read from
 //! `Exanima.exe` (`context/re/thaum-casts.md`).
 
+use bevy::math::Vec3;
+
+use super::arcs::{ArcEmitter, ArcParams};
 use super::casting::{
     AiView, CastBody, ID_MASK, OFF_FEET, TickScale, WEAPON_IN_HAND, advice, body_gate, code,
     free_slots, persistent_advice, price, start_cast, within,
 };
+use super::engine::Draws;
 
 /// One row of the Energy table.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -173,10 +179,9 @@ pub fn shock_charge(clip_ms: u32, cost: f32) -> ShockCharge {
 
 /// The charge object the Shock creator instantiates: its owner, the cast
 /// flag (1), the base cost it was cast with, its charge and hand arcs, the
-/// charge-up sound it looks up and the release sound it keeps. The original
-/// also adds it to the owner's active powers with the flags `0x401`, and
-/// tells the player controls first when the owner is the player; neither is
-/// modelled here.
+/// charge-up sound it looks up and the release sound it keeps. The object
+/// is added to the owner's active powers with the flags `0x401`, and a
+/// player owner is told to the player controls before it is made.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShockPower {
     pub owner: u64,
@@ -187,11 +192,27 @@ pub struct ShockPower {
     pub charge: ShockCharge,
     /// The hand arcs the charge object creates (`0x201`, 20 tendrils of 5
     /// segments at the hand's −15, −5 cm).
-    pub arcs: super::arcs::ArcParams,
+    pub arcs: ArcParams,
     /// The charge-up sound it looks up (`thmnrg_chrga`).
     pub sound: &'static str,
     /// The release sound it keeps (`thmnrg_shock`).
     pub release_sound: &'static str,
+    /// The flags the object joins the owner's active powers with.
+    pub active_flags: u32,
+    /// The owner is the player, so the player controls were told before the
+    /// object was made.
+    pub player_controls: bool,
+}
+
+impl ShockPower {
+    /// The player's own cast: the charge object with the player controls
+    /// told first (the original calls them before it builds the object).
+    pub fn created(owner: u64, player: bool, clip_ms: u32, base_cost: f32) -> Self {
+        Self {
+            player_controls: player,
+            ..shock_power(owner, clip_ms, base_cost)
+        }
+    }
 }
 
 /// Creates the Shock's charge object from the owner, the cast clip's length
@@ -205,7 +226,82 @@ pub fn shock_power(owner: u64, clip_ms: u32, base_cost: f32) -> ShockPower {
         arcs: super::arcs::hand_arcs(),
         sound: CHARGE_SOUND,
         release_sound: SHOCK_SOUND,
+        active_flags: SHOCK,
+        player_controls: false,
     }
+}
+
+/// The shock weapons power the creator makes: its owner, the weapons it
+/// armed with their arcs in creation order, the cost it holds, the word it
+/// joins the active powers with and the weapon-change hook it installs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShockWeapons {
+    pub owner: u64,
+    /// The armed weapons and their arcs, in the order the caster held them.
+    pub armed: Vec<(u64, ArcParams)>,
+    /// The cost the power holds.
+    pub cost: f32,
+    pub active_flags: u32,
+    /// The weapon-change hook is installed on the owner.
+    pub hook: bool,
+}
+
+/// Creates the shock weapons power: one arc record per held weapon (the
+/// creator arms every weapon; the four-weapon cap is the change hook's),
+/// the held cost and the `0x2040b` membership.
+pub fn shock_weapons(owner: u64, held: &[u64], cost: f32) -> ShockWeapons {
+    ShockWeapons {
+        owner,
+        armed: held
+            .iter()
+            .map(|&weapon| (weapon, super::arcs::weapon_arcs()))
+            .collect(),
+        cost,
+        active_flags: SHOCK_WEAPONS,
+        hook: true,
+    }
+}
+
+/// What a shock weapon's blade did to a struck body: the character takes a
+/// 0.01 shock and a spark burst waits at the contact, on the struck part.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BladeStrike {
+    pub character: u64,
+    pub shock: f32,
+    /// The contact point in the struck body's frame.
+    pub at: [f32; 3],
+    /// The struck part's index.
+    pub part: u32,
+}
+
+/// A shock weapon's blade striking a body. The original shocks the struck
+/// character's health field by 0.01, then queues a task with the contact
+/// point in the struck body's frame and the part; the task makes the spark
+/// burst there.
+pub fn blade_strike(character: u64, at: Vec3, part: u32) -> BladeStrike {
+    BladeStrike {
+        character,
+        shock: super::arcs::WEAPON_SHOCK,
+        at: at.to_array(),
+        part,
+    }
+}
+
+/// The spark burst a blade strike's queued task opens, at the strike's
+/// point and part.
+pub fn spark_at(strike: &BladeStrike, draws: &mut impl Draws) -> ArcEmitter {
+    let mut burst = super::arcs::spark_burst(draws);
+    burst.source = Vec3::from_array(strike.at);
+    burst
+}
+
+/// What a weapon change asks of the weapon's arc node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WeaponNode {
+    /// The node's end flag (offset 0x198) is set.
+    pub ending: bool,
+    /// The node's arc hook (offset 0x30d) is cleared.
+    pub arc_hook: bool,
 }
 
 /// What shock weapons do when the held weapons change.
@@ -246,6 +342,18 @@ impl ArmedWeapons {
             return WeaponChange::Arm(weapon);
         }
         WeaponChange::Keep
+    }
+
+    /// A weapon change and what the weapon's arc node does: a put-away
+    /// weapon's node takes its end flag and clears its arc hook; a taken
+    /// weapon's node keeps its hook.
+    pub fn change_with_node(&mut self, weapon: u64, taken: bool) -> (WeaponChange, WeaponNode) {
+        let change = self.change(weapon, taken);
+        let node = WeaponNode {
+            ending: matches!(change, WeaponChange::End(_)),
+            arc_hook: !matches!(change, WeaponChange::End(_)),
+        };
+        (change, node)
     }
 }
 
@@ -362,5 +470,55 @@ mod tests {
             super::super::arcs::HAND_ARCS_OFFSET,
             bevy::math::Vec3::new(-15.0, -5.0, 0.0)
         );
+        // The object joins the active powers with 0x401; a player owner is
+        // told to the player controls first.
+        assert_eq!(power.active_flags, SHOCK);
+        assert!(!power.player_controls);
+        assert!(ShockPower::created(42, true, 1200, 0.1).player_controls);
+    }
+
+    #[test]
+    fn shock_weapons_arms_each_held_weapon_and_holds_its_cost() {
+        let power = shock_weapons(7, &[2, 3], 0.3);
+        assert_eq!(power.active_flags, SHOCK_WEAPONS);
+        assert!(power.hook);
+        assert_eq!(power.cost, 0.3);
+        assert_eq!(
+            power.armed.iter().map(|(w, _)| *w).collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+        let (_, arcs) = &power.armed[0];
+        assert_eq!((arcs.count, arcs.segments, arcs.life), (40, 4, 20));
+        assert_eq!((arcs.size, arcs.scale, arcs.light), (2.0, 0.75, 0.02));
+        assert_eq!((arcs.sound, arcs.volume), (Some("electricity03"), 0.15));
+        let (change, node) = ArmedWeapons::arm_all(&[1]).change_with_node(1, false);
+        assert_eq!(change, WeaponChange::End(1));
+        assert_eq!(
+            node,
+            WeaponNode {
+                ending: true,
+                arc_hook: false
+            }
+        );
+        let (change, node) = ArmedWeapons::default().change_with_node(4, true);
+        assert_eq!(change, WeaponChange::Arm(4));
+        assert!(!node.ending && node.arc_hook);
+    }
+
+    #[test]
+    fn a_blade_strike_shocks_the_body_and_sparks_at_the_contact() {
+        let strike = blade_strike(11, Vec3::new(1.0, 2.0, 3.0), 7);
+        assert_eq!(strike.character, 11);
+        assert_eq!(strike.shock, 0.01);
+        assert_eq!(strike.at, [1.0, 2.0, 3.0]);
+        assert_eq!(strike.part, 7);
+        assert_eq!(BLADE_SHOCK, 0.01);
+        let mut draws = super::super::engine::testing::Fixed::new(&[0.5], &[1]);
+        let burst = spark_at(&strike, &mut draws);
+        assert_eq!(burst.source, Vec3::new(1.0, 2.0, 3.0));
+        assert_eq!(burst.tendrils.len(), 20);
+        assert!(burst.ending);
+        assert_eq!(burst.light, 8.0);
+        assert_eq!(burst.volume, 0.05);
     }
 }
