@@ -163,20 +163,6 @@ impl IconPixels {
         }
         out
     }
-
-    /// The icon downsampled to half its side by taking the top-left texel of
-    /// each 2 × 2 block, as the icon's own size is half the rendered size.
-    pub fn downsample(&self) -> IconPixels {
-        let side = self.side / 2;
-        let mut rgba = Vec::with_capacity((side * side * 4) as usize);
-        for y in 0..side {
-            for x in 0..side {
-                let at = ((y * 2 * self.side + x * 2) * 4) as usize;
-                rgba.extend_from_slice(&self.rgba[at..at + 4]);
-            }
-        }
-        IconPixels { side, rgba }
-    }
 }
 
 /// One icon's render step: which object in the renderer's list is drawn,
@@ -263,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn readback_rows_flip_and_a_two_by_two_block_becomes_one_texel() {
+    fn readback_rows_flip() {
         let side = 2;
         let rgba = vec![
             1, 0, 0, 255, 2, 0, 0, 255, // top
@@ -274,8 +260,5 @@ mod tests {
             pixels.flip_rows(),
             vec![3, 0, 0, 255, 4, 0, 0, 255, 1, 0, 0, 255, 2, 0, 0, 255]
         );
-        let half = pixels.downsample();
-        assert_eq!(half.side, 1);
-        assert_eq!(half.rgba, vec![1, 0, 0, 255]);
     }
 }

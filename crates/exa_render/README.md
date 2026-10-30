@@ -157,7 +157,7 @@ shape texel), draw box, program names, quad and shared uniforms, the three linke
 - `icon_render`: the character-creation thumbnail renderer (`FLX_IconRender`):
   its private view (30° FOV, 10 cm near plane, bloom 0.8, no sharpen), the
   twice-icon sRGB target with alpha for cut-outs, the destination RGBA8
-  image, the object-list walk, and the readback rows and half-size sample.
+  image, the object-list walk, and the readback rows.
 - `quads`: the data path of the original's 2-D immediate-draw batcher: the begin scale, flipped y, cumulative 16-level translation stack, texture coordinates and RGBA colours, the quad index template and line pairs, the projections, the six built-in vertex programs and their attribute locations (nothing draws a batch yet).
 
 ## Scope
