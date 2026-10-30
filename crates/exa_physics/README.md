@@ -43,9 +43,17 @@ set-up, point–segment and point–box distances, sphere–sphere and
 sphere–box tests, capsule–sphere, the slab tests of a swept sphere against
 a box and an oriented box, segment against oriented box (slab and
 separating-axis), point-set bounds, and the convex volumes: rebasing,
-plane refresh, box tests, polygon clipping into a portal pyramid, cutting
-a volume by a plane with its cap, and the directional shadow's caster
-volume. Its cube-face mask lives with its only user,
+plane refresh (the normal (v2−v1)×(v0−v1) with the normaliser's
+x²+z²-then-y² sum, a zero vector left zero), box tests, polygon clipping
+into a portal pyramid, cutting a volume by a plane with its cap (the cap
+turned round and chained from its start when its ends are at least 0.01 cm
+apart, closed by dropping its last point otherwise), and the directional
+shadow's caster volume (a face open to the light when its plane dot with
+the homogeneous light is ≤ 0, one side plane per open/kept face pair
+through their first reversed shared edge whose squared length is at least
+1 cm² summed z, then y, then x, the kept faces closing it; its returned
+side count is the original's last index, one less than the number of side
+planes). Its cube-face mask lives with its only user,
 `exa_render::cube_shadows::sphere_faces`. The body and level paths still
 take rapier's broad-phase queries and the pair stage its own bounding-sphere
 test (the original's needs each part's mesh box), and the render side has
