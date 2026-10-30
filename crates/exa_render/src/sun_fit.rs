@@ -282,6 +282,39 @@ fn normalised(v: Vec3) -> Vec3 {
     v * squared.sqrt().recip()
 }
 
+/// The light's view matrix (`0x08D870`): a column-major world-to-view matrix
+/// whose columns are `right = up_hint × dir` and `up = right × dir` (both
+/// normalised by the engine's reciprocal square root) and the unit `dir`,
+/// with the translation `(−right·origin, −up·origin, −dir·origin)`. The
+/// caller passes the light's travel direction and an up hint; `origin` is
+/// the point the map centres on.
+pub fn light_view_matrix(dir: Vec3, up_hint: Vec3, origin: Vec3) -> Mat4 {
+    let right = normalised(up_hint.cross(dir));
+    let up = normalised(right.cross(dir));
+    Mat4::from_cols(
+        right.extend(0.0),
+        up.extend(0.0),
+        dir.extend(0.0),
+        Vec4::new(-right.dot(origin), -up.dot(origin), -dir.dot(origin), 1.0),
+    )
+}
+
+/// The light's orthographic projection (`0x08D9D0`) for a box spanning
+/// `min`..`max`: `2/(max − min)` on the three axes and the translation
+/// `−(max + min)/(max − min)`, the depth left in the engine's [−1, 1]
+/// convention, column-major.
+pub fn orthographic_matrix(min: Vec3, max: Vec3) -> Mat4 {
+    let span = max - min;
+    let mut m = Mat4::IDENTITY.to_cols_array();
+    m[0] = 2.0 / span.x;
+    m[5] = 2.0 / span.y;
+    m[10] = 2.0 / span.z;
+    m[12] = -(max.x + min.x) / span.x;
+    m[13] = -(max.y + min.y) / span.y;
+    m[14] = -((max.z + min.z) / span.z);
+    Mat4::from_cols_array(&m)
+}
+
 /// The camera's view volume from its eight frustum corners, cm, in the order
 /// Bevy's projection gives them (near bottom right, top right, top left,
 /// bottom left, then the far ones): the near and far quads and the four
@@ -1228,6 +1261,40 @@ mod tests {
         fit.apply_softness(0.0);
         assert_eq!(fit.caster_softness, 1.125);
         assert!((fit.caster_bias().polygon_factor - (1.0 + 1.0 / 3.0 + 0.75)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_light_view_matrix_uses_the_cube_face_up_hint() {
+        // Straight down (the fixed-frame case is not used here): with dir
+        // -Y and the up hint +Z, right = Z × -Y = +X, up = X × -Y = -Z.
+        let m = light_view_matrix(-Vec3::Y, Vec3::Z, Vec3::new(10.0, 20.0, 30.0));
+        assert!((m.x_axis.truncate() - Vec3::X).length() < 1e-6);
+        assert!((m.y_axis.truncate() + Vec3::Z).length() < 1e-6);
+        assert!((m.z_axis.truncate() + Vec3::Y).length() < 1e-6);
+        assert_eq!(m.w_axis, Vec4::new(-10.0, 30.0, 20.0, 1.0));
+        // The original stores the columns right, up, dir, so a point maps
+        // by the three dot products.
+        let p = m * Vec4::new(11.0, 21.0, 31.0, 1.0);
+        assert!((p.x - 1.0).abs() < 1e-5);
+        assert!((p.y + 1.0).abs() < 1e-5);
+        assert!((p.z + 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_orthographic_matrix_maps_the_box_to_the_unit_cube() {
+        let min = Vec3::new(-100.0, -50.0, -200.0);
+        let max = Vec3::new(100.0, 150.0, 200.0);
+        let m = orthographic_matrix(min, max);
+        assert_eq!(m.x_axis.x, 2.0 / 200.0);
+        assert_eq!(m.y_axis.y, 2.0 / 200.0);
+        assert_eq!(m.z_axis.z, 2.0 / 400.0);
+        assert_eq!(m.w_axis.x, 0.0);
+        assert_eq!(m.w_axis.y, -0.5);
+        assert_eq!(m.w_axis.z, 0.0);
+        let p = m * Vec4::new(100.0, 150.0, 200.0, 1.0);
+        assert!((p.x - 1.0).abs() < 1e-6);
+        assert!((p.y - 1.0).abs() < 1e-6);
+        assert!((p.z - 1.0).abs() < 1e-6);
     }
 
     #[test]

@@ -565,7 +565,14 @@ luma, and the six-face shadow mask (each face cleared when the node lies
 beyond it by more than its flags word read as a float). `SpotShape::of`
 builds the light node's three spot constants from the record's `(q, p)`.
 The cell flood that answers the gate is the scene-node unit's; the alias's
-field copy and construction are not modelled beyond these values.
+field copy and construction are not modelled beyond these values. The sun
+map's two matrix builders are `sun_fit::light_view_matrix` (columns
+`up_hint × dir`, `right × dir` and `dir`, with the negated dot products as
+the translation) and `sun_fit::orthographic_matrix` (the box's `2/span`
+scales and `−(max + min)/span` translation). The cube map's size comes from
+the quality word through `shadow_map::cube_draw_settings` (the table
+halved, the softness and the high-detail flag), and its pooled face size is
+that key.
 
 The shape words the constructor also sets — a 0.25 exponent, a 1 factor,
 a 2 quality word and the spot's cone factor `1/(acos(cos 2 · (p + 1)) − 1)`
