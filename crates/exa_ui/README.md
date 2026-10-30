@@ -388,7 +388,15 @@ sends them the control classes' press, drag and release messages and turns
 their reports into `FormEvent`s (page, Defaults, Apply, Cancel, a slider's
 fraction, a checkbox, a key cell's rebinding); the super-sampling slider
 sets the anti-aliasing slider to 0 and disables it, the wheel scrolls the
-Controls page by quarter steps. The line skin's own control draws are in
+Controls page by quarter steps. The Keyboard and Controller tabs are
+modelled too (they need Steam Input, so they stay hidden): their actions
+turn the controller mode and view on or off, and with them showing the
+Controls page starts 21 units down. The Controls page's power-tree help is
+the original's text (`HELP`) at 2, 48 units, its parent's client less 4
+units wide and 50 units high (`help_box`), ready for the text box's draw.
+The device and memory readouts take the renderer's name or the Deck's and
+the video memory (or "Unknown").
+The line skin's own control draws are in
 `skin` too: each quad's eight-float sample record (`sample_corners`), the
 check box and its mark (`check_box_quads`) and the textured batch they go
 into (`line_skin_batch`, `push_line_quads`); `line_skin::shown_palette` is

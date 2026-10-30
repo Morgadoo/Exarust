@@ -2949,7 +2949,12 @@ callbacks:
 - **Controls page**: a child of the form's width less 16, 416 high, with a
   vertical scrollbar over 676 pixels of content, holding the 22 rows' label
   (x 80, 68 wide) and key cell (x 232, 100 wide, style 0x20003380, id the
-  row's action, callback the key-read screen's opener).
+  row's action, callback the key-read screen's opener), and the power-tree
+  help text box: a read-only child at 2, 48 units, its parent's client less
+  4 units wide and 50 units high, drawn with the page's font and the
+  console's text ink, its `[tcol=FFE399]` key names in the highlight colour,
+  scrolled with the page and clipped to it (the box's border, margin and
+  font choice were not traced; an inset of a unit each side is a guess).
 
 The records are laid out at unit 4 by the control layout pass (a 32-high
 tab moves up 8, a 24-high button 4, a 20-high label 2, a 3-high rule 7 down
@@ -3023,9 +3028,8 @@ Input, so they never show in Exarust, and clicking one would turn the
 controller mode and view on or off and place the Controls page 21 units down
 instead of 14. Not reproduced: the controller view's own four-record page
 (its records were not traced; the aim-speed reset and the page's placement
-are), the power-tree help text box it shows, dragging the scrollbar's thumb
-(the wheel scrolls), and a hovered button's caption routine (drawn as the
-off caption). `--open-settings settings|controls` opens the form for scripted
+are), dragging the scrollbar's thumb (the wheel scrolls), and a hovered
+button's caption routine (drawn as the off caption). `--open-settings settings|controls` opens the form for scripted
 runs ([DEBUGGING.md](DEBUGGING.md)).
 
 ### Apply, Cancel and Defaults

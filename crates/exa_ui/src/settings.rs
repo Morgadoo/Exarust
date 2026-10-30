@@ -72,6 +72,23 @@ pub const HOVERED: u32 = 0x1_0000;
 /// The video memory readout when the driver gives no figure.
 pub const UNKNOWN: &str = "Unknown";
 
+/// The Controls page's power-tree help text, exactly as the original's
+/// text box holds it: `[tcol=RRGGBB]` spans in the highlight colour, and
+/// `\r\r` between its three paragraphs.
+pub const HELP: &str = "Hold [tcol=FFE399]Powers[/tcol] to access the power tree.\r\rPress [tcol=FFE399]Use Power[/tcol] with the power bar open to use a power directly without changing which is active.\r\rYou can toggle in and out of dialogue mode without ending the conversation by pressing [tcol=FFE399]Talk[/tcol].";
+
+/// The help box's rectangle inside the Controls page at `unit`, for a page
+/// client `width` wide: the constructor's 2, 48, width less 4 units and 50
+/// units, scaled by whole units.
+pub fn help_box(width: i32, unit: i32) -> Rect {
+    Rect {
+        x: 2 * unit,
+        y: 48 * unit,
+        w: width - 4 * unit,
+        h: 50 * unit,
+    }
+}
+
 /// A rectangle in pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Rect {
@@ -1263,6 +1280,14 @@ impl FormState {
         }
     }
 
+    /// The help box's place inside the Controls page (page-local), from that
+    /// page's client width: [`help_box`].
+    pub fn help_box(&self) -> Rect {
+        let page = self.controls_page;
+        let client = client_of(page.w, page.h, true);
+        help_box(client.width(), self.unit())
+    }
+
     /// The Controls page's scrollbar track and thumb (page-local).
     pub fn scrollbar(&self) -> form::VerticalScroll {
         let page = self.controls_page;
@@ -1873,6 +1898,41 @@ mod form_tests {
         // units down instead of 14.
         assert_eq!(form.controls_page.y, 84);
         assert_eq!(form.controls_page.h, 388);
+    }
+
+    #[test]
+    fn the_help_box_sits_inside_the_controls_page() {
+        // At unit 4 the page's client is 397 wide: the box at 8, 192, 381
+        // wide and 200 high.
+        let form = FormState::open(SCREEN, 4);
+        assert_eq!(
+            form.help_box(),
+            Rect {
+                x: 8,
+                y: 192,
+                w: 381,
+                h: 200
+            }
+        );
+        // At unit 6 the Controls page's client is 594 wide: 12, 288, 570 by
+        // 300 (the scrollbar and borders take the rest of its 615).
+        let form = FormState::open((1920, 1080), 6);
+        assert_eq!(
+            form.help_box(),
+            Rect {
+                x: 12,
+                y: 288,
+                w: 570,
+                h: 300
+            }
+        );
+        // The text is the original's, three paragraphs with its three
+        // highlighted key names.
+        assert_eq!(HELP.matches("[tcol=FFE399]").count(), 3);
+        assert_eq!(HELP.matches("[/tcol]").count(), 3);
+        assert_eq!(HELP.matches("\r\r").count(), 2);
+        assert!(HELP.starts_with("Hold [tcol=FFE399]Powers[/tcol]"));
+        assert!(HELP.ends_with("pressing [tcol=FFE399]Talk[/tcol]."));
     }
 
     #[test]
