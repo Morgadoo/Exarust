@@ -443,7 +443,9 @@ arsenal entries the shown kit has in hand or wears with
 `EQUIPPED_MARK` (`mark_equipped`). The divination
 reading (`div_card`) deals three distinct cards out of twenty-two, eases
 the deal and the turns by `(3 − 2t)·t²`, turns each card half over about
-a swinging axis and draws the original's drop shadow. The emblem editor
+a swinging axis and draws the original's drop shadow; the side facing
+away is culled as the renderer's backface culling does, so a card shows its
+back until the turn passes edge-on and its face after. The emblem editor
 (`emblem_form`) starts on palette 0xd3, 0x72, 0x5a, 0x4e and rolls with
 `state · 0x8088405 + 1`. The destination screen (`selection`) places its
 nodes by the engine's sine and cosine (`engine_math`, forwarded from
