@@ -1686,18 +1686,23 @@ impl CompositeSelector {
 /// from half the split; the third component is the level's block side over
 /// the tile side (`2^level / 4800`), which turns the block coordinate into
 /// the tile's texture coordinate.
+///
+/// The level difference is a wrapping 32-bit subtraction whose shift count
+/// is masked to five bits, as the original's shift is: for a node deeper
+/// than the terrain's block level the block bits shift away and the
+/// coordinate is the split's half alone. The stored half is a signed 32-bit
+/// `1 << ((level − 1) & 31)` widened to 64 bits, and the level test is
+/// signed. The live draw passes a block's own level (3, the terrain's), so
+/// only the equal-level path runs.
 pub fn tex_pos(terrain_level: u32, level: u32, bx: u32, by: u32) -> bevy::math::Vec3 {
-    let scale = (1u32 << level.min(31)) as f32 / super::manager::TILE_CM;
-    if level < 1 {
+    let scale = ((1i32.wrapping_shl(level & 31)) as f32) / super::manager::TILE_CM;
+    if (level as i32) < 1 {
         return bevy::math::Vec3::new(0.5, 0.5, scale);
     }
-    let half = 1u32 << (level - 1);
-    let shift = terrain_level.saturating_sub(level);
-    bevy::math::Vec3::new(
-        (i64::from(half) - i64::from(bx >> shift)) as f32,
-        (i64::from(half) - i64::from(by >> shift)) as f32,
-        scale,
-    )
+    let half = i64::from(1i32.wrapping_shl((level.wrapping_sub(1)) & 31));
+    let shift = terrain_level.wrapping_sub(level) & 31;
+    let at = |v: u32| i64::from((v >> shift) as i32);
+    bevy::math::Vec3::new((half - at(bx)) as f32, (half - at(by)) as f32, scale)
 }
 
 /// The mask upload's side at a node level: `256 >> level` (32 for a block,
@@ -2200,7 +2205,19 @@ mod tests {
         // A shallower split shifts the tile coordinate down: level 2 has two
         // blocks a side of the tile's eight, so block 7 is block 3.
         assert_eq!(tex_pos(3, 2, 6, 7), Vec3::new(-1.0, -1.0, 4.0 / 4800.0));
-        assert_eq!(tex_pos(3, 5, 0, 0).z, 32.0 / 4800.0);
+        // A deeper split has no tile bits left to shift: the level difference
+        // wraps and the shift count is masked to five bits, so
+        // the coordinate is half the split whatever the block (the original's
+        // `bx >> 30` and `bx >> 31` are both zero).
+        assert_eq!(tex_pos(3, 4, 0, 0), Vec3::new(8.0, 8.0, 16.0 / 4800.0));
+        assert_eq!(tex_pos(3, 4, 7, 5), Vec3::new(8.0, 8.0, 16.0 / 4800.0));
+        assert_eq!(tex_pos(3, 5, 7, 5), Vec3::new(16.0, 16.0, 32.0 / 4800.0));
+        assert_eq!(tex_pos(3, 9, 3, 3).x, 256.0);
+        // The level test is signed: a level with the top bit set is whole-tile.
+        assert_eq!(
+            tex_pos(3, 0x8000_0000, 7, 5),
+            Vec3::new(0.5, 0.5, 1.0 / 4800.0)
+        );
     }
 
     #[test]
@@ -2551,6 +2568,43 @@ mod tests {
         assert_eq!(sel.blocks()[1].state(), 6);
         assert!(sel.blocks()[0].set().is_none());
         assert_eq!((sel.pools().high_free(), sel.pools().low_free()), (21, 43));
+    }
+
+    #[test]
+    fn a_moving_focus_never_hands_out_a_set_twice() {
+        // Twenty tiles' worth of blocks on a 6 m grid, driven for eighty
+        // frames while the focus sweeps across and away: every set a block
+        // holds is unique, the free and held sets always add up to the pools,
+        // the selection never passes its 189 entries and no more than 21
+        // blocks hold a high set.
+        let centres: Vec<Vec2> = (0..20)
+            .flat_map(|row| (0..20).map(move |col| Vec2::new(col as f32 * 6.0, row as f32 * 6.0)))
+            .collect();
+        let mut sel = selector(&centres);
+        for (index, block) in sel.blocks.iter_mut().enumerate() {
+            block.visible = index % 3 == 0;
+        }
+        for frame in 0..80 {
+            let focus = Vec2::new(frame as f32 * 7.5, frame as f32 * 5.0);
+            sel.reselect(focus);
+            let mut held = std::collections::HashSet::new();
+            for block in sel.blocks() {
+                if let Some(set) = block.set() {
+                    assert!(held.insert(set), "set {set} handed out twice");
+                }
+            }
+            assert_eq!(
+                held.len() + sel.pools().high_free() + sel.pools().low_free(),
+                HIGH_SETS + LOW_SETS
+            );
+            assert!(sel.selected().len() <= MAX_SELECTED);
+            let high = sel
+                .blocks()
+                .iter()
+                .filter(|block| block.set().is_some_and(|set| (set as usize) < HIGH_SETS))
+                .count();
+            assert!(high <= HIGH_SETS);
+        }
     }
 
     #[test]

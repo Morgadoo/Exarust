@@ -731,8 +731,9 @@ parallax target at the default texture detail, a low set 512² with a 256²
 parallax target, 21 high and 43 low sets, four layers a pass with additive
 groups, the program key's textured/masked/`AddPass`/`BaseNrm` bits, the
 per-layer colour/gloss/height/displacement/mask values, the block's palette
-and mask quads, its `TexPos` (block coordinates and the level's block side
-over the tile side), the compositor driver's pass list (normal, colour,
+and mask quads, its `TexPos` (half the split less the block index shifted
+down by the level difference, and the level's block side over the tile
+side), the compositor driver's pass list (normal, colour,
 gloss, displacement, four layers a group, each group's mask upload), the
 mask and height passes with their clears, blending, clamping and quads, and
 the selection's cut-offs, sort keys, set stealing and one-block-a-frame
@@ -741,7 +742,15 @@ rule. `exa_render::terrain_composite` hosts the set targets themselves
 the 8 bits gamma-encoded like the original's — normal RG8, gloss R8 and
 half-size displacement R8, at 1024²/512² from the default texture detail)
 and creates a set the first time the live selector holds it, one a frame,
-dropping it when the set returns to its pool.
+dropping it when the set returns to its pool. `TexPos` takes the terrain's
+block level (3) and the block node's own level (also 3): the block
+coordinate is half the split `2^(L−1)` less `bx` (and `by`) shifted down by
+the level difference, a wrapping 32-bit difference whose shift count is
+masked to five bits (so a node deeper than the block level would keep no
+block bits); the third component is `2^L/4800`. The lit program adds the
+tile-centred position in centimetres times it, so the set is read at 0…1
+across the block
+with v along +Z.
 
 With `EXA_TERRAIN_SETS=1` the sets are also baked and drawn, as the
 original shows its terrain:

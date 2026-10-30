@@ -252,11 +252,15 @@ The system SHALL size the composite pools from the texture detail (8192 at setti
 - **THEN** 21 sets are at level 5 (1024²) and 43 at level 4 (512²)
 
 ### Requirement: Terrain composite pass keys
-The system SHALL key a composite pass as `layers | textured<<4 | masked<<8 | add<<28 | base_normal<<29` over groups of four layers, and give a block at level L the `TexPos` `(2^(L−1) − (bx >> (3 − L)), 2^(L−1) − (by >> (3 − L)))`, (0.5, 0.5) at level 0.
+The system SHALL key a composite pass as `layers | textured<<4 | masked<<8 | add<<28 | base_normal<<29` over groups of four layers, and give a node at level L (signed; (0.5, 0.5) when L ≤ 0) of a terrain with block level T the `TexPos` `(2^(L−1) − (bx >> s), 2^(L−1) − (by >> s))` with `s = (T − L) mod 32` taken as a wrapping 32-bit difference.
 
 #### Scenario: An additive group
 - **WHEN** a normal pass covers six layers
 - **THEN** its second group of two layers carries the additive bit
+
+#### Scenario: A node deeper than the block level
+- **WHEN** a level-4 node at column 7, row 5 of a block-level-3 terrain takes its `TexPos`
+- **THEN** the shift count is 31 and the coordinate is (8, 8) with third component 16/4800
 
 ### Requirement: Terrain tile streaming bits
 The system SHALL keep each tile's streaming bits: the reader's 7, the worker's `(state & ~0x10) | 0x828`, and a frame hook that walks the tiles with bit 0x800, marks a ready, inserted tile's blocks wanted, and handles the first reload (0x1000), insert (`(state & 0x309f) == 0xf`) or upload (`(state & 0x4080) == 0x4080`), passing idle tiles.
