@@ -103,8 +103,12 @@ pub const VELOCITY_EASE: f32 = 0.2;
 pub const PUSH: f64 = 2.4;
 /// The reach a worn chunk gains a tick.
 pub const WEAR_REACH: f32 = 0.25;
-/// The wear a pierced or piercing contact sets.
-pub const CONTACT_WEAR: f32 = 0.015;
+/// The wear a pierced or piercing contact sets: the original's
+/// `0x3c75c28f`, a hair above 0.015.
+pub const CONTACT_WEAR: f32 = f32::from_bits(0x3c75_c28f);
+/// The pin gain's upper clamp when `1 − k` overshoots, the original's
+/// `0x3c03126f`.
+pub const PIN_GAIN_CLAMP: f32 = f32::from_bits(0x3c03_126f);
 /// The bounds' margin, cm.
 pub const BOUNDS_MARGIN: f32 = 40.0;
 /// The alert's reach and the band its height difference is ignored in, cm.
@@ -709,7 +713,8 @@ pub fn limb_push(
         if 1.0 < f {
             f = 1.0;
         }
-        let scale = (f * -k) * 0.2;
+        // `(double)f · ((double)(−k) · 0.2)`, then narrowed.
+        let scale = (f64::from(f) * (f64::from(-k) * 0.2)) as f32;
         Some(motion * scale)
     } else {
         None
@@ -734,7 +739,11 @@ pub fn limb_terms(
     if character {
         (0.02, 2.0, setup.character_push * (2.0 / body_mass))
     } else {
-        (0.2, (inverse_mass * 0.5 + 2.0).min(3.0), setup.body_push)
+        (
+            0.2,
+            crate::thaum::engine::least(inverse_mass * 0.5 + 2.0, 3.0),
+            setup.body_push,
+        )
     }
 }
 
@@ -786,11 +795,11 @@ pub(crate) fn knock_and_pins(k: f32, impulse: Vec3) -> (Option<(Vec3, f32)>, f32
     } else {
         None
     };
-    let mut stun = ((1.0 - f64::from(k)) * 0.08) as f32;
+    let mut stun = (f64::from(1.0f32 - k) * 0.08) as f32;
     if 0.0 > stun {
         stun = 0.0;
     } else if f64::from(stun) > 0.08 {
-        stun = 0.008;
+        stun = PIN_GAIN_CLAMP;
     }
     (knock, stun)
 }
@@ -1578,6 +1587,46 @@ mod tests {
         assert_ne!(size, 1.769_999_7_f32.sqrt() * 2.0);
         // A NaN mass leaves a NaN pin gain, as the compares fall through.
         assert!(character_knock(f32::NAN, 1.0, Vec3::ZERO).stun.is_nan());
+    }
+
+    #[test]
+    fn the_pin_gain_subtracts_in_single_precision() {
+        // A 4.92 kg body: k = 2/4.92. The single-precision `1 − k` gives
+        // 0x3d427a0d; subtracting in double and narrowing would give
+        // 0x3d427a0c.
+        let stun = character_knock(4.92, 1.0, Vec3::ZERO).stun;
+        assert_eq!(stun.to_bits(), 0x3d42_7a0d);
+        let k = f64::from(2.0f32 / 4.92);
+        assert_eq!((((1.0 - k) * 0.08) as f32).to_bits(), 0x3d42_7a0c);
+        // The upper clamp is the original's 0.0080000004, not 0.008; only a
+        // negative mass (k below zero) reaches it.
+        let over = character_knock(-10.0, 1.0, Vec3::ZERO).stun;
+        assert_eq!(over.to_bits(), 0x3c03_126f);
+    }
+
+    #[test]
+    fn the_limb_impulse_scales_in_double() {
+        // The limb moves at 7 cm/s into a 10 cm move, so f = 0.3; with
+        // k = −(1/1.2)·0.5 the impulse is the move times the scale the
+        // assembly builds in double: 0.25 cm along z.
+        let mut chunk = blast().chunks[0];
+        chunk.previous = Vec3::ZERO;
+        chunk.at = Vec3::new(0.0, 0.0, 10.0);
+        let hit = limb_push(
+            &chunk,
+            Vec3::new(0.0, 0.0, 7.0),
+            Vec3::new(0.0, 0.0, 7.0),
+            1.0,
+            0.2,
+            0.5,
+        )
+        .unwrap();
+        let impulse = hit.impulse.unwrap();
+        assert_eq!((impulse.x, impulse.y, impulse.z), (0.0, 0.0, 0.25));
+        let f = 1.0f32 - 70.0f32 / 100.0;
+        let k = -(1.0f32 / 1.2) * 0.5;
+        let scale = (f64::from(f) * (f64::from(-k) * 0.2)) as f32;
+        assert_eq!(scale, 0.025_000_001);
     }
 
     #[test]
