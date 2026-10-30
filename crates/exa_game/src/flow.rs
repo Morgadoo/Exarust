@@ -938,7 +938,10 @@ pub struct StoryState {
     pub reconstruction: u8,
     /// The player's record ID.
     pub record: u32,
-    /// The record ID the checkpoint was made at.
+    /// The record identity the reconstruction word was raised for: a
+    /// reconstruction device's scan writes the scanned player's identity
+    /// here beside [`Self::reconstruction`], and a death rebuilds only when it
+    /// matches [`Self::record`].
     pub checkpoint: u32,
 }
 
@@ -3799,6 +3802,16 @@ fn apply_steps(
             Step::DropSave => {
                 saves.write(crate::save_live::SaveStep::Drop);
             }
+            Step::StripPlayer => {
+                // The reconstruction device's strip: the player's live body
+                // loses its hands and worn data, keeps the underwear rule and
+                // is left at just under half health (the record's 0x7FFF).
+                for player in &mut players {
+                    if let Some(mut fighter) = player.fighter {
+                        crate::teleporters::strip_body(&mut commands, player.entity, &mut fighter);
+                    }
+                }
+            }
             Step::Checkpoint => {
                 saves.write(crate::save_live::SaveStep::Checkpoint);
             }
@@ -6152,6 +6165,55 @@ mod tests {
                 .map(|k| k.wake_at_ms),
             Some(4200)
         );
+    }
+
+    /// A story death of a scanned player: the flow asks for the strip and the
+    /// app applies it, clearing the hands and worn data, keeping the
+    /// underwear rule and leaving yellow and red health just under half.
+    #[test]
+    fn the_app_strips_a_reconstructed_player() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Flow>()
+            .init_resource::<FlowSteps>()
+            .init_resource::<GameView>()
+            .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
+            .add_message::<ForfeitMatch>()
+            .add_message::<AppExit>()
+            .add_message::<crate::save_live::SaveStep>()
+            .add_systems(Update, apply_steps);
+        let mut fighter = exa_combat::Fighter::default();
+        fighter.health.max = 100.0;
+        fighter.health.red = 0.0;
+        let player = app
+            .world_mut()
+            .spawn((
+                crate::player::PlayerBody::new(0.0),
+                fighter,
+                exa_character::Outfit::default(),
+                exa_character::Wielded::model("ub05ssworda"),
+            ))
+            .id();
+        let mut flow = Flow {
+            mode: Mode::Story,
+            ..Default::default()
+        };
+        flow.story.reconstruction = REBUILDABLE;
+        flow.story.record = 7;
+        flow.story.checkpoint = 7;
+        let steps = flow.die(0.0);
+        assert!(steps.contains(&Step::StripPlayer));
+        app.world_mut()
+            .resource_mut::<FlowSteps>()
+            .steps
+            .extend(steps);
+        app.update();
+        let world = app.world();
+        assert!(world.get::<exa_character::Wielded>(player).is_none());
+        assert!(world.get::<exa_character::WearsUnderwear>(player).is_some());
+        let health = world.get::<exa_combat::Fighter>(player).unwrap().health;
+        assert!((health.red - 49.999_237).abs() < 1e-3, "{health:?}");
+        assert!((health.yellow - 49.999_237).abs() < 1e-3, "{health:?}");
     }
 
     /// The story revive on a dead player body at game clock 1200 ms: combat
