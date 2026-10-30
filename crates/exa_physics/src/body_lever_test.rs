@@ -79,6 +79,7 @@ fn lever_at(at: Vec3, time: u16, saved: i32) -> (Ragdoll, LeverBody) {
         record: record(time),
         saved,
         id: 0x8000_004a,
+        light: false,
     };
     let glue =
         LeverBody::new(&body, &pending, Affine3A::IDENTITY, turn, at, 0).expect("a lever arm");
