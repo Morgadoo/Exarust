@@ -762,7 +762,7 @@ fn duellist(
             .and_then(|e| target_swings.get(e).ok())
             .map_or(0, |state| state.flags);
         let mut blow = published_blow(
-            ai.target,
+            foe_key,
             &blades,
             target_anim.unwrap_or(&anim),
             phase,
@@ -824,7 +824,7 @@ fn duellist(
         // The foe's own combat skill: a brain's personality, else 0 (the
         // player's behaviour skill is not modelled) [Exarust's default].
         let foe_skill = brains
-            .get(ai.target)
+            .get(foe_key)
             .ok()
             .and_then(|b| b.personality)
             .map_or(0.0, |p| p.skill);
@@ -855,7 +855,7 @@ fn duellist(
         let foe = combat::Foe {
             condition: target_condition.0,
             dead: target_condition.is_dead(),
-            reach_cm: reach_of(ai.target, &blades) * CM,
+            reach_cm: reach_of(foe_key, &blades) * CM,
             chest: foe_chest,
             step_goal: foe_chest,
             running: foe_motion.moving,
@@ -1669,5 +1669,33 @@ mod chase_tests {
         assert!(combatant.contacts.iter().all(|c| c.flags & 0x10 == 0));
         let body = app.world().get::<CharacterBody>(root).unwrap();
         assert!(body.desired_velocity.z > 0.0, "it walks the route");
+    }
+
+    /// The foe's swing word decides the published blow: its cleaving bit
+    /// makes the arc a recovery (kind 4) and stops the sweep, either
+    /// continuation bit marks the swing committed, and its other bits (the
+    /// release) do neither.
+    #[test]
+    fn the_swing_word_publishes_the_recovery_and_the_commitment() {
+        let mut world = World::new();
+        let foe = world.spawn_empty().id();
+        let mut blades = bevy::ecs::system::SystemState::<Query<&Blade>>::new(&mut world);
+        let blades = blades.get(&world).unwrap();
+        let anim = Animator::new("Default", "Attack Mid");
+        let blow = |flags| published_blow(foe, &blades, &anim, 0.5, 0.0, 0.0, true, flags);
+        let plain = blow(0);
+        // Empty hands publish the unarmed sector, 110° each side.
+        assert_eq!(plain.kind, 3);
+        assert!(plain.sweeping);
+        assert!(!plain.committed);
+        let cleaving = blow(swing::flags::CLEAVING);
+        assert_eq!(cleaving.kind, 4);
+        assert!(!cleaving.sweeping);
+        assert!(blow(swing::flags::CONTINUATION).committed);
+        assert!(blow(swing::flags::CONTINUED).committed);
+        let released = blow(swing::flags::RELEASED);
+        assert_eq!(released.kind, 3);
+        assert!(!released.committed);
+        assert!(released.sweeping);
     }
 }
