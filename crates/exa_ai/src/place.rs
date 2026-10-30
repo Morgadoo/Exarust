@@ -13,9 +13,11 @@
 //! candidate: 4 at the edge, down by one three-hundredth of the
 //! milliseconds until 900 ms, then 1 until 10000 ms. A live thrust scores
 //! 1 inside its arc and 8 outside it, while the candidate is closer than
-//! (skill + 3) × 20 plus the opponent's reach. The danger is scored in and
-//! out of a fight. Skill and feral then scale it, and feral halves the
-//! close term at 1. A dull fighter scores no danger and skips that scale.
+//! (skill + 3) × 20 plus the opponent's reach. The strike and the approach
+//! are scored only at the fight level (3); any other level clears them and
+//! doubles the close term. The danger is scored at every level. Skill and
+//! feral then scale the danger, and feral halves the close term at 1. A
+//! dull fighter scores no danger and skips that scale.
 //! The approach term peaks at the strike ideal: inside it the fraction is
 //! the distance over the ideal (eased when wide), past it the fraction
 //! falls to 0 over a band of 100 cm, or 150 cm when wide, plus
@@ -79,9 +81,11 @@ pub struct Spot {
     pub other_large: bool,
     /// The observer wants melee, which doubles the strike term.
     pub melee: bool,
-    /// A fight score. Otherwise the strike and approach terms are cleared
-    /// and the close term doubles; the danger stays.
-    pub fight: bool,
+    /// The contact's engagement level, the score's first word. Level 3 is
+    /// a fight: the strike and approach terms are scored there (any other
+    /// level clears them and doubles the close term). The danger of a live
+    /// swing is scored at every level.
+    pub level: i32,
     /// The observer's feral level. At 1 the close term is halved and the
     /// danger scale is 0.
     pub feral: f32,
@@ -307,7 +311,7 @@ pub fn attack_danger(distance_cm: f32, reach_cm: f32, blow: Blow) -> f32 {
         my_step_cm: 0.0,
         other_large: false,
         melee: false,
-        fight: true,
+        level: 3,
         feral: 0.0,
         dull: false,
         blow,
@@ -501,14 +505,15 @@ pub fn publish_arc(swing: Swing) -> Arc {
 /// The close term is the one that survives all the original's additions
 /// (the personal-space, crossing and approach increments it adds first are
 /// overwritten): `(2 − t)·t·4` with `t = (reach + 150 − distance)/(reach +
-/// 150)` inside the reach band, doubled outside a fight. The strike term
-/// peaks at the observer's reach plus a size correction and a large
-/// opponent's 50 cm, is 1 for one step past that and falls to 0 at 600 cm.
-/// A live side swing scores danger by its time to impact; a live thrust
-/// scores 1 inside its arc and 8 outside it. The approach term is the
-/// banded cubic. The observer's feral level halves the close term and
-/// scales the danger; the observer's "dull" rule bit clears the danger.
-/// Skill scales the danger by `skill·0.5 + 0.5`.
+/// 150)` inside the reach band, doubled off the fight level. At level 3 the
+/// strike term peaks at the observer's reach plus a size correction and a
+/// large opponent's 50 cm, is 1 for one step past that and falls to 0 at
+/// 600 cm, and the approach term is the banded cubic; levels 0 through 2
+/// and 4 score neither and clear them. The danger is scored at every
+/// level: a live side swing by its time to impact, a live thrust 1 inside
+/// its arc and 8 outside it. The observer's feral level halves the close
+/// term and scales the danger; the observer's "dull" rule bit clears the
+/// danger. Skill scales the danger by `skill·0.5 + 0.5`.
 pub fn score_place(distance_cm: f32, spot: Spot) -> PlaceScore {
     let limit = spot.other_reach_cm + CLOSE_PAST;
     let mut close = if limit < distance_cm {
@@ -517,8 +522,9 @@ pub fn score_place(distance_cm: f32, spot: Spot) -> PlaceScore {
         let t = (limit - distance_cm) / limit;
         (2.0 - t) * t * 4.0
     };
+    let fighting = spot.level == 3;
     let ideal = ideal(spot);
-    let (mut strike, mut approach) = if spot.fight {
+    let (mut strike, mut approach) = if fighting {
         let mut strike = if ideal > distance_cm {
             let ratio = distance_cm / ideal;
             ratio * ratio
@@ -541,7 +547,8 @@ pub fn score_place(distance_cm: f32, spot: Spot) -> PlaceScore {
     let mut danger = 0.0;
     if spot.blow.kind == 4 {
         // Recovering: one less close term, not below 0, and the approach
-        // pulled in at twice the skill plus two.
+        // pulled in at twice the skill plus two. Both run at every level;
+        // off the fight level the approach it scales is 0.
         close = (close - 1.0).max(0.0);
         approach = (spot.blow.skill * 2.0 + 2.0) * approach * 2.0;
     } else {
@@ -560,7 +567,7 @@ pub fn score_place(distance_cm: f32, spot: Spot) -> PlaceScore {
     } else if !spot.in_attack {
         approach *= 1.0 + (1.0 - spot.observer_ahead);
     }
-    if !spot.fight {
+    if !fighting {
         close *= 2.0;
         strike = 0.0;
         approach = 0.0;
@@ -715,59 +722,6 @@ pub fn bearing_of(origin_cm: (f32, f32), candidate_cm: (f32, f32)) -> f32 {
     }
 }
 
-/// The footwork the combat state picks around its target: hold, close,
-/// back off, or circle out of the opponent's swing.
-///
-/// Guess: the original's combat state scores eight candidate steps with
-/// the position terms; this reduces the same terms to the four decisions
-/// the interim duellist can carry out. A live swing that reaches it backs
-/// off, a candidate past the strike plateau closes, one well inside the
-/// ideal backs off, and one inside a side swing's arc circles to the nearer
-/// edge.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Footwork {
-    Hold,
-    Approach,
-    Retreat,
-    CircleLeft,
-    CircleRight,
-}
-
-/// Choose the footwork from the score at the current spot.
-pub fn choose_footwork(distance_cm: f32, spot: Spot) -> Footwork {
-    let score = score_place(distance_cm, spot);
-    let ideal = ideal(spot);
-    if score.danger > 0.0 {
-        return Footwork::Retreat;
-    }
-    if distance_cm < ideal * 0.5 {
-        return Footwork::Retreat;
-    }
-    if still_closing(distance_cm, spot) {
-        return Footwork::Approach;
-    }
-    if (1..=2).contains(&spot.blow.kind)
-        && blow_is_live(spot.blow.phase, spot.blow.skill, spot.blow.committed)
-        && arrival_ms(spot.blow) <= GONE_MS
-    {
-        // The nearer edge of the arc decides the way round.
-        let to_start = (spot.blow.arc_start - spot.blow.angle).rem_euclid(FULL_TURN);
-        let to_end = (spot.blow.angle - spot.blow.arc_end).rem_euclid(FULL_TURN);
-        return if to_start < to_end {
-            Footwork::CircleRight
-        } else {
-            Footwork::CircleLeft
-        };
-    }
-    Footwork::Hold
-}
-
-/// The candidate is past the strike plateau, so the fighter keeps closing.
-pub fn still_closing(distance_cm: f32, spot: Spot) -> bool {
-    let score = score_place(distance_cm, spot);
-    distance_cm > ideal(spot) + spot.my_step_cm && score.strike < 1.0
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -780,7 +734,7 @@ mod tests {
             my_step_cm: 80.0,
             other_large: large,
             melee,
-            fight: true,
+            level: 3,
             feral: 0.0,
             dull: false,
             blow: Blow::default(),
@@ -813,24 +767,15 @@ mod tests {
         assert_eq!(near.strike, 0.25);
         let plateau = score_place(120.0, spot);
         assert_eq!(plateau.strike, 1.0);
-        assert!(!still_closing(120.0, spot));
         let edge = score_place(130.0, spot);
         assert_eq!(edge.strike, 1.0);
-        assert!(!still_closing(130.0, spot));
         let far = score_place(600.0, spot);
         assert_eq!(far.strike, 0.0);
-        assert!(still_closing(600.0, spot));
         let limit = 50.0 + 150.0;
         let t = (limit - 25.0) / limit;
         assert_eq!(near.close, (2.0 - t) * t * 4.0);
         assert_eq!(score_place(limit + 1.0, spot).close, 0.0);
-        let doubled = score_place(
-            25.0,
-            Spot {
-                fight: false,
-                ..spot
-            },
-        );
+        let doubled = score_place(25.0, Spot { level: 0, ..spot });
         assert_eq!(doubled.strike, 0.0);
         assert_eq!(doubled.close, near.close * 2.0);
         let big = score_place(100.0, fight(true, false));
@@ -876,13 +821,15 @@ mod tests {
         assert_eq!(score_place(200.0, spot).danger, 0.0);
 
         spot.blow = side(0.5, 0.0);
-        spot.fight = false;
+        spot.level = 1;
         let outside = score_place(0.0, spot);
         assert_eq!(outside.strike, 0.0);
-        // Without the fight flag the strike is cleared; the danger stays.
+        assert_eq!(outside.approach, 0.0);
+        // Off the fight level the strike and approach are cleared; the
+        // danger of a live swing stays.
         assert_eq!(outside.danger.to_bits(), 0x4000_0000);
 
-        spot.fight = true;
+        spot.level = 3;
         spot.feral = 1.0;
         let wild = score_place(25.0, spot);
         assert_eq!(wild.close, near_close() * 0.5);
@@ -938,17 +885,7 @@ mod tests {
         let mut wide = spot;
         wide.wide = true;
         assert_eq!(score_place(25.0, wide).approach.to_bits(), 0x3f88_b000);
-        assert_eq!(
-            score_place(
-                25.0,
-                Spot {
-                    fight: false,
-                    ..spot
-                }
-            )
-            .approach,
-            0.0
-        );
+        assert_eq!(score_place(25.0, Spot { level: 0, ..spot }).approach, 0.0);
 
         let mut recovering = spot;
         recovering.blow.kind = 4;
@@ -1177,7 +1114,7 @@ mod tests {
         assert_eq!(score_place(4.0, spot).approach, 0.0);
         // A recovering swing outside a fight still lowers the close term.
         let mut idle = spot;
-        idle.fight = false;
+        idle.level = 0;
         idle.blow.kind = 4;
         let limit = 200.0_f32;
         let t = (limit - 25.0) / limit;
@@ -1208,21 +1145,48 @@ mod tests {
         assert_eq!(score.approach.to_bits(), 0x3f90_0000);
     }
 
+    /// Only the level-3 word scores the strike and approach; every other
+    /// level clears them and doubles the close term, while a live swing's
+    /// danger and the recovering blow's close reduction stay.
     #[test]
-    fn the_footwork_follows_the_terms() {
+    fn the_fight_level_alone_scores_the_extra_terms() {
         let spot = fight(false, false);
-        assert_eq!(choose_footwork(600.0, spot), Footwork::Approach);
-        assert_eq!(choose_footwork(120.0, spot), Footwork::Hold);
-        assert_eq!(choose_footwork(20.0, spot), Footwork::Retreat);
-        let mut swinging = spot;
-        swinging.blow = side(0.5, 0.0);
-        assert_eq!(choose_footwork(0.0, swinging), Footwork::Retreat);
-        swinging.blow.angle = -1.0;
-        assert_eq!(choose_footwork(120.0, swinging), Footwork::CircleLeft);
-        swinging.blow.arc_start = 0.2;
-        swinging.blow.arc_end = -0.2;
-        swinging.blow.angle = 0.1;
-        assert_eq!(choose_footwork(120.0, swinging), Footwork::CircleRight);
+        let at_three = score_place(25.0, spot);
+        for level in [0, 1, 2, 4] {
+            let quiet = score_place(25.0, Spot { level, ..spot });
+            assert_eq!(quiet.strike, 0.0, "level {level}");
+            assert_eq!(quiet.approach, 0.0, "level {level}");
+            assert_eq!(quiet.close, at_three.close * 2.0, "level {level}");
+        }
+        // A live swing's danger is not the fight level's: it is scored at
+        // every level.
+        let mut swinging = Spot {
+            blow: side(0.5, 0.0),
+            ..spot
+        };
+        assert_eq!(score_place(0.0, swinging).danger.to_bits(), 0x4000_0000);
+        swinging.level = 2;
+        assert_eq!(score_place(0.0, swinging).danger.to_bits(), 0x4000_0000);
+        let mut recovering = Spot {
+            blow: Blow {
+                kind: 4,
+                ..Blow::default()
+            },
+            level: 0,
+            ..spot
+        };
+        let limit = 50.0 + 150.0;
+        let t = (limit - 25.0) / limit;
+        assert_eq!(
+            score_place(25.0, recovering).close,
+            ((2.0 - t) * t * 4.0 - 1.0) * 2.0
+        );
+        assert_eq!(score_place(25.0, recovering).strike, 0.0);
+        recovering.level = 3;
+        // At the fight level the recovery leaves the strike it found and
+        // scales the approach by (0·2 + 2)·2.
+        assert_eq!(score_place(25.0, recovering).strike, 0.25);
+        assert_eq!(score_place(25.0, recovering).approach, 1.5);
     }
 
     #[test]

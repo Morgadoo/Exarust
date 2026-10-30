@@ -303,7 +303,12 @@ under their mask) to a raw role attitude: frenzy makes the attitude half
 the negated aggression and trust 0; binding or command sourced on the other
 makes it 100, or averages it with 100 under the resistance technique; a
 charm aimed at the other makes it 100; suspicion takes 50, not below
-−100. `add_concern` is the script's `AddConcern` (the flags word becomes 3,
+−100. When the observer's concern for a character it looks at is over 1.5
+and the raw role attitude lies more than 0.1 below the effective one, the
+pass breaks the first power that holds it — a binding sourced on that
+character or a charm aimed at it, not a command (`break_mind_power`: the
+effect's state becomes 2).
+`add_concern` is the script's `AddConcern` (the flags word becomes 3,
 the attitude-weighted rise, capped at 15, the event at 1.2 or else at 4).
 `look_direction` is the direction the original builds from a point back to
 the eye, held within 45° of the body; `candidate_cost` is the footwork
@@ -329,20 +334,27 @@ attacker's radius plus 100 cm, its offset's dot over its square); `forget`
 removed body's grid flags, resets it and has every combatant in the scene
 forget it.
 
-`place` is the combat position score against one opponent: the close band
-at its reach plus 150 cm, the strike ideal at the observer's reach plus a
-size correction, a step's plateau and a fade to 600 cm, the danger of a live
-side swing by its time to impact (4 at the edge, 1 by 900 ms, nothing past
-10 s) and of a live thrust (1 or 8 by its arc), in and out of a fight, the
-approach term peaking at the strike ideal, the recovering, never-arriving
-and thrust scales of the approach, the observer's heading and attack state,
-the press flag on the opponent's facing, and the observer's feral and
-skill scales, with the original's double-precision steps.
-`publish_arc` is the opponent's published sector and its recovering kind,
-its edges built from the head look's yaw (the body heading while
-characters do not run the head tracker) and its look from the body's
+`place` is the combat position score against one opponent. Its first word
+is the contact's engagement level, as the caller writes it: level 3
+scores the strike term (at the observer's reach plus a size correction, a
+step's plateau and a fade to 600 cm) and the approach term (peaking at the
+strike ideal). Every other level clears those two and doubles the close
+band at the opponent's reach plus 150 cm. The danger of a live swing is
+scored at every level: a side swing by its time to impact (4 at the edge,
+1 by 900 ms, nothing past 10 s), a thrust 1 or 8 by its arc, while the
+candidate is closer than (skill + 3) × 20 plus the opponent's reach. The
+recovering, never arriving and thrust scales of the approach, the
+observer's heading and attack state, the press flag on the opponent's
+facing, and the observer's feral and skill scales keep the original's
+double-precision steps. The recovering blow lowers the close term by one
+and scales the approach by `(2·skill + 2)·2` at any level.
+`publish_arc` is the opponent's published sector and its recovering kind
+(the swing word's cleaving bit, which also stops the sweep and so the
+arrival time), its edges built from the head look's yaw (the body heading
+while characters do not run the head tracker) and its look from the body's
 facing (turned 20° while a weapon is held), replaced by the arc midpoint
-on a side swing; `blow_is_live`
+on a side swing; the swing's continuation bits make it committed for
+`blow_is_live`
 its is-attacking test; `between` the original's arc test; `arrival_ms` its
 time to impact. `Origin` and `measured_origin` are the point the score
 measures a place from: 10 cm ahead standing, the chest leaned 70 ticks of
@@ -350,13 +362,11 @@ the body's speed along the heading (times one less its phase while
 attacking), or toward a step target by half the opponent's own skill and
 then 10 cm ahead; `score_place_at` scores one place
 with its own distance, bearing and heading term, and the duellist feeds
-each place's candidate angle to the danger terms. `choose_footwork` (Exarust's reduction of
-the original combat state's candidate search) turns the terms into hold,
-approach, retreat or a circle out of a live swing, and the duellist runs
-the chosen footwork (a short hold timer stands in for the switching cost)
-before it takes its stance and strikes. A duellist with a brain is perceived
-by the AI tick (with the target's own contacts and the relations' trust);
-the practice opponent, which has none, perceives its target through
+each place's candidate angle and the contact level to the danger terms.
+The combat state's seventeen-place search (`combat::search`) is the one
+that chooses the footwork; the duellist runs it. A duellist with a brain is
+perceived by the AI tick (with the target's own contacts and the relations'
+trust); the practice opponent, which has none, perceives its target through
 `perceive` with the role database's attitude when it is loaded.
 
 The duellist publishes its fighting values when it enters combat
@@ -370,10 +380,12 @@ is applied, and the held weapon's raw stat bytes, reach and the body scale
 are added at the entry. The weapon record keeps its section's raw stat
 bytes for rules that read bytes.
 
-Not yet: the encounter scripts, the mind
-power calls the pass and a hit make, the full candidate footwork
-search, and the AI's own parry choice (the body's auto-parry runs in
-`exa_combat::parry`).
+Not yet: the encounter scripts, the hit's mind
+power call (the take-a-hit rule's last branch), and the AI's own parry choice
+(the body's auto-parry runs in `exa_combat::parry`). The head tracker
+(`exa_combat::aim`) is the player and character-view behaviour's; Exarust's
+player aim is the cursor direction in `exa_game::player`, so the tracker is
+a tested rule without a caller yet.
 
 ## Scope
 

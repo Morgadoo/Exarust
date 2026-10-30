@@ -21,7 +21,9 @@
 //!
 //! Relationships come from the role database. [`effective_attitude`] and
 //! [`trust`] apply the active mind powers to a raw attitude; neither reads
-//! the role database itself, so the raw values are inputs.
+//! the role database itself, so the raw values are inputs. A character
+//! worried about one it only likes through a power breaks the hold
+//! ([`break_mind_power`]).
 //!
 //! The target, attention target, other target and holder references are kept
 //! on the combatant, so [`Combatant::forget`] and [`Combatant::replace`]
@@ -122,7 +124,14 @@ pub struct Effect {
     pub source: Option<Entity>,
     /// The character the power is aimed at, for the powers that carry one.
     pub target: Option<Entity>,
+    /// The power's own state word. The perception breaks the hold this way
+    /// when the bearer is worried enough about the bound character:
+    /// [`MIND_BROKEN`].
+    pub state: u32,
 }
+
+/// The state a broken binding or charm takes.
+pub const MIND_BROKEN: u32 = 2;
 
 /// A raw attitude and the tolerance beside it, both from the role database.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -148,6 +157,28 @@ fn bound_or_charmed(effect: &Effect, other: Entity, value: f32, resist_mind: boo
         }
         _ => None,
     }
+}
+
+/// Break the observer's hold on `other`: the first binding sourced on
+/// `other` or charm aimed at it has its state set to [`MIND_BROKEN`], and
+/// a command does not (the original's scan knows only those two kinds).
+/// True when one was broken. The perception runs this when its concern for
+/// the character is over 1.5 and the raw role attitude lies more than 0.1
+/// below the effective one (the power is all that keeps the peace).
+pub fn break_mind_power(other: Entity, effects: &mut [Effect]) -> bool {
+    for effect in effects {
+        let kind = effect.kind & EFFECT_KIND_MASK;
+        if kind == POWER_BIND {
+            if effect.source == Some(other) {
+                effect.state = MIND_BROKEN;
+                return true;
+            }
+        } else if kind == POWER_CHARM && effect.target == Some(other) {
+            effect.state = MIND_BROKEN;
+            return true;
+        }
+    }
+    false
 }
 
 /// The effective attitude toward `other`, with the observer's mind powers
@@ -293,18 +324,10 @@ impl Contact {
     }
 }
 
-/// The engine's cheap `asin`, in single precision (the record's constants:
-/// π/2, 0.2075 and 0.0535).
-pub fn asin_fast(x: f32) -> f32 {
-    const HALF_PI: f32 = f32::from_bits(0x3fc9_0fdb);
-    const LINEAR: f32 = f32::from_bits(0x3e54_7ae1);
-    const SQUARE: f32 = f32::from_bits(0x3d5b_22d1);
-    if 0.0 <= x {
-        HALF_PI - (HALF_PI - (LINEAR - SQUARE * x) * x) * (1.0 - x).sqrt()
-    } else {
-        ((SQUARE * x + LINEAR) * x + HALF_PI) * (1.0 + x).sqrt() - HALF_PI
-    }
-}
+/// The engine's cheap arc sine, in single precision (π/2, 0.2075 and
+/// 0.0535). The engine keeps one implementation; this is
+/// `exa_physics`'s, which the look chain and the blast effects share.
+pub use exa_physics::body::locomotion::asin_approx as asin_fast;
 
 /// Bring an angle back into ±π by one turn, testing the bounds in double
 /// precision.
@@ -462,8 +485,9 @@ pub struct Sight {
     /// The familiarity drift for the role database, when the pass reached
     /// it.
     pub familiarity: Option<f32>,
-    /// The concern and the attitude call for the mind power check the
-    /// original makes here (it is not reproduced).
+    /// The concern and the attitude called for the mind-power check: the
+    /// pass broke the first binding or charm holding this character
+    /// ([`break_mind_power`]).
     pub mind_check: bool,
 }
 
@@ -533,7 +557,7 @@ pub fn perceive(
     index: usize,
     raw: Attitude,
     trust_of: &dyn Fn(Entity) -> f32,
-    effects: &[Effect],
+    effects: &mut [Effect],
     now_ms: u64,
 ) -> Sight {
     own[index].threat = 0.0;
@@ -759,6 +783,10 @@ pub fn perceive(
     let unfamiliar = (1.0 - (f64::from(raw.value) * 0.01).abs()) as f32;
     sight.mind_check =
         contact.concern > 1.5 && f64::from(raw.value) + 0.1 < f64::from(contact.attitude);
+    if sight.mind_check {
+        // Worried enough about a character it only likes through a power.
+        break_mind_power(observed.entity, effects);
+    }
     let familiarity =
         (f64::from(contact.elapsed as f32 * (unfamiliar * unfamiliar) * drift) * 0.01) as f32;
     if all > contact.concern_target {
@@ -1409,7 +1437,7 @@ mod tests {
                 tolerance: 50.0,
             },
             &|_| trusted,
-            &[],
+            &mut [],
             10_000,
         )
     }
@@ -1532,6 +1560,7 @@ mod tests {
             kind,
             source,
             target,
+            state: 0,
         };
         assert_eq!(effective_attitude(other, raw, 4.0, false, &[]), 20.0);
         // The kind is compared under its mask.
@@ -1567,6 +1596,106 @@ mod tests {
             effective_attitude(other, raw, 0.0, false, &[bind, suspicion]),
             50.0
         );
+    }
+
+    /// Only a binding sourced on the character, or a charm aimed at it, is
+    /// broken (not a command), and the first match only.
+    #[test]
+    fn a_hold_is_broken_on_the_character_it_binds() {
+        let (_me, other, third, _) = ids();
+        let power = |kind, source, target| Effect {
+            kind,
+            source,
+            target,
+            state: 0,
+        };
+        let mut effects = [
+            power(POWER_CHARM, None, Some(third)),
+            power(POWER_FRENZY, None, None),
+            power(POWER_BIND, Some(other), None),
+            power(POWER_COMMAND, Some(other), None),
+        ];
+        assert!(break_mind_power(other, &mut effects));
+        assert_eq!(effects[0].state, 0);
+        assert_eq!(effects[1].state, 0);
+        assert_eq!(effects[2].state, MIND_BROKEN);
+        // A command is not one the scan breaks.
+        let mut commanded = [power(POWER_COMMAND, Some(other), None)];
+        assert!(!break_mind_power(other, &mut commanded));
+        assert_eq!(commanded[0].state, 0);
+        // A hold on someone else is not broken.
+        let mut elsewhere = [power(POWER_BIND, Some(third), None)];
+        assert!(!break_mind_power(other, &mut elsewhere));
+        assert_eq!(elsewhere[0].state, 0);
+    }
+
+    /// The perception breaks the hold when the observer both worries about
+    /// the character (concern over 1.5) and likes it more than its raw role
+    /// attitude by over 0.1.
+    #[test]
+    fn a_worried_observer_breaks_its_hold_on_the_character() {
+        let (me, them, ..) = ids();
+        let o = observer(me);
+        let mut mine = [Contact::new(them)];
+        mine[0].concern = 2.0;
+        let hold = Effect {
+            kind: POWER_BIND,
+            source: Some(them),
+            target: None,
+            state: 0,
+        };
+        let mut effects = [hold];
+        let sight = perceive(
+            &o,
+            &observed(them, 600.0),
+            &[],
+            &mut mine,
+            0,
+            Attitude::default(),
+            &|_| 0.0,
+            &mut effects,
+            10_000,
+        );
+        assert!(sight.mind_check);
+        assert_eq!(mine[0].attitude, 100.0);
+        assert_eq!(effects[0].state, MIND_BROKEN);
+        // A calm observer keeps its hold, and so does one whose concern is
+        // over the floor but whose raw attitude already matches.
+        let mut cool = [hold];
+        mine[0].concern = 1.0;
+        mine[0].attitude = 0.0;
+        let sight = perceive(
+            &o,
+            &observed(them, 600.0),
+            &[],
+            &mut mine,
+            0,
+            Attitude::default(),
+            &|_| 0.0,
+            &mut cool,
+            10_000,
+        );
+        assert!(!sight.mind_check);
+        assert_eq!(cool[0].state, 0);
+        // The raw attitude is the role database's value: 100 is no gap.
+        let mut fond = [hold];
+        mine[0].concern = 2.0;
+        let sight = perceive(
+            &o,
+            &observed(them, 600.0),
+            &[],
+            &mut mine,
+            0,
+            Attitude {
+                value: 100.0,
+                tolerance: 0.0,
+            },
+            &|_| 0.0,
+            &mut fond,
+            10_000,
+        );
+        assert!(!sight.mind_check);
+        assert_eq!(fond[0].state, 0);
     }
 
     #[test]

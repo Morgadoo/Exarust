@@ -367,10 +367,7 @@ impl combat::Field for DuelField<'_> {
         ends
     }
     fn score(&mut self, _contact: usize, level: i32, point: Vec3) -> combat::PlaceScore {
-        let spot = place::Spot {
-            fight: level == 3,
-            ..self.spot
-        };
+        let spot = place::Spot { level, ..self.spot };
         let p = place::score_place_at(point, self.foe, self.heading, self.foe_forward, spot);
         combat::PlaceScore {
             close: p.score.close,
@@ -396,6 +393,9 @@ impl combat::Field for DuelField<'_> {
 }
 
 /// The attack arc a fighter publishes, as the position score reads it.
+/// `swing_flags` is the fighter's swing word: its cleaving bit makes the arc
+/// a recovery and stops the sweep, and its continuation bits mark the swing
+/// committed.
 #[allow(clippy::too_many_arguments)]
 fn published_blow(
     fighter: Entity,
@@ -405,8 +405,9 @@ fn published_blow(
     heading: f32,
     facing: f32,
     attacking: bool,
-    stunned: bool,
+    swing_flags: u32,
 ) -> place::Blow {
+    let recovering = swing_flags & swing::flags::CLEAVING != 0;
     let armed = blades
         .iter()
         .any(|b| b.wielder == fighter && b.record.armed());
@@ -425,7 +426,7 @@ fn published_blow(
         facing,
         armed,
         held: armed,
-        recovering: stunned,
+        recovering,
         hand: None,
         idle_clock: 0,
         idle_stamp: 0,
@@ -436,8 +437,8 @@ fn published_blow(
         arc_end: arc.end,
         phase,
         skill: 0.0,
-        committed: attacking && phase > 0.3,
-        sweeping: attacking && !stunned,
+        committed: swing_flags & (swing::flags::CONTINUATION | swing::flags::CONTINUED) != 0,
+        sweeping: attacking && !recovering,
         // The observer's grip link on the opponent; a duellist has none.
         forced_range: false,
         origin_in_arc: false,
@@ -467,7 +468,7 @@ fn duellist(
         Without<Duellist>,
     >,
     children: Query<&Children>,
-    blades: Query<&Blade>,
+    (blades, target_swings): (Query<&Blade>, Query<&SwingState, Without<Duellist>>),
     mut brains: Query<&mut brain::Npc>,
     role_db: Option<Res<brain::RoleDatabase>>,
     role_lists: Query<&crate::roles::Roles>,
@@ -620,7 +621,13 @@ fn duellist(
                 ai.mind.aim
             );
             combatant.in_combat = true;
-            combatant.clear_combat_step(gt.translation() * 100.0, t.rotation * Vec3::Z, 0.0);
+            // The queued step is cleared with the body's own speed, so a
+            // far move point is pulled in to 8·speed + 20 cm ahead.
+            combatant.clear_combat_step(
+                gt.translation() * 100.0,
+                t.rotation * Vec3::Z,
+                locomotor.map_or(0.0, |l| l.speed),
+            );
             // Publish the fighting values: the experience system's estimate
             // from the record's skills and combat skill, the held weapon's
             // stat bytes and reach, and the body's scale, and the body's
@@ -735,7 +742,7 @@ fn duellist(
                 index,
                 raw,
                 &|_| 0.0,
-                &[],
+                &mut [],
                 now,
             );
             if let Some(floor) = sight.alert_floor
@@ -751,22 +758,19 @@ fn duellist(
         if target_condition.is_dead() && contact.died_ms.is_none() {
             contact.died_ms = Some(now);
         }
-        let target_angle = {
-            let to_me = gt.translation() - target.translation();
-            atan2_xz(to_me.x, to_me.z)
-        };
+        let target_swing = target_fighter_entity
+            .and_then(|e| target_swings.get(e).ok())
+            .map_or(0, |state| state.flags);
         let mut blow = published_blow(
-            ai.target,
+            foe_key,
             &blades,
             target_anim.unwrap_or(&anim),
             phase,
             atan2_xz(target_forward.x, target_forward.z),
             atan2_xz(target_forward.x, target_forward.z),
             target_condition == Condition::ATTACKING,
-            false,
+            target_swing,
         );
-        blow.angle = target_angle;
-        blow.origin_in_arc = place::between(blow.arc_end, blow.arc_start, target_angle);
         if blow.kind == 0 {
             blow.sweeping = false;
         }
@@ -820,7 +824,7 @@ fn duellist(
         // The foe's own combat skill: a brain's personality, else 0 (the
         // player's behaviour skill is not modelled) [Exarust's default].
         let foe_skill = brains
-            .get(ai.target)
+            .get(foe_key)
             .ok()
             .and_then(|b| b.personality)
             .map_or(0.0, |p| p.skill);
@@ -842,10 +846,16 @@ fn duellist(
             phase,
             skill: foe_skill,
         });
+        // The danger terms read the candidate's angle from the measured
+        // origin, and the thrust's arc test the observer's own bearing from
+        // it: its body position less that origin.
+        let me_cm = feet * CM;
+        blow.angle = atan2_xz(me_cm.x - foe_origin.x, me_cm.z - foe_origin.z);
+        blow.origin_in_arc = place::between(blow.arc_end, blow.arc_start, blow.angle);
         let foe = combat::Foe {
             condition: target_condition.0,
             dead: target_condition.is_dead(),
-            reach_cm: reach_of(ai.target, &blades) * CM,
+            reach_cm: reach_of(foe_key, &blades) * CM,
             chest: foe_chest,
             step_goal: foe_chest,
             running: foe_motion.moving,
@@ -863,7 +873,9 @@ fn duellist(
             my_step_cm: fighter.stats.step_reach(fighter.stats.encumbrance) * CM,
             other_large: target_fighter.is_some_and(|f| f.stats.rules.has(1)),
             melee: false,
-            fight: true,
+            // The duellist runs the combat state against one foe, which it
+            // always engages at the fight level.
+            level: 3,
             feral: fighter.stats.feral,
             dull: fighter.stats.rules.has(4),
             blow: place::Blow {
@@ -1657,5 +1669,33 @@ mod chase_tests {
         assert!(combatant.contacts.iter().all(|c| c.flags & 0x10 == 0));
         let body = app.world().get::<CharacterBody>(root).unwrap();
         assert!(body.desired_velocity.z > 0.0, "it walks the route");
+    }
+
+    /// The foe's swing word decides the published blow: its cleaving bit
+    /// makes the arc a recovery (kind 4) and stops the sweep, either
+    /// continuation bit marks the swing committed, and its other bits (the
+    /// release) do neither.
+    #[test]
+    fn the_swing_word_publishes_the_recovery_and_the_commitment() {
+        let mut world = World::new();
+        let foe = world.spawn_empty().id();
+        let mut blades = bevy::ecs::system::SystemState::<Query<&Blade>>::new(&mut world);
+        let blades = blades.get(&world).unwrap();
+        let anim = Animator::new("Default", "Attack Mid");
+        let blow = |flags| published_blow(foe, &blades, &anim, 0.5, 0.0, 0.0, true, flags);
+        let plain = blow(0);
+        // Empty hands publish the unarmed sector, 110° each side.
+        assert_eq!(plain.kind, 3);
+        assert!(plain.sweeping);
+        assert!(!plain.committed);
+        let cleaving = blow(swing::flags::CLEAVING);
+        assert_eq!(cleaving.kind, 4);
+        assert!(!cleaving.sweeping);
+        assert!(blow(swing::flags::CONTINUATION).committed);
+        assert!(blow(swing::flags::CONTINUED).committed);
+        let released = blow(swing::flags::RELEASED);
+        assert_eq!(released.kind, 3);
+        assert!(!released.committed);
+        assert!(released.sweeping);
     }
 }
