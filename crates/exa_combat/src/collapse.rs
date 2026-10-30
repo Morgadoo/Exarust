@@ -183,6 +183,16 @@ pub fn rebalances(size: f32, balance: f32) -> bool {
     f64::from(size) < BIG_FROM && f64::from(balance) < REBALANCE_BELOW
 }
 
+/// The collapse's voice line, from the two draws the collapse routine makes
+/// before it asks for it (the first for the pitch, the second for the
+/// volume): a groan (voice line 2) at volume 0.15 + 0.1·second and pitch
+/// 0.8 + 0.1·first, both sums worked in double and narrowed once.
+pub fn collapse_voice(first: f32, second: f32) -> (f32, f32) {
+    let pitch = (f64::from(first) * 0.1 + 0.8) as f32;
+    let volume = (f64::from(second) * 0.1 + 0.15) as f32;
+    (volume, pitch)
+}
+
 /// A dying tick's Rebalance: when the body [`rebalances`], Rebalance (a
 /// looping held pose) starts with 20 frames of blend, linear, unless it
 /// already plays (the clip start then does nothing). Returns whether it

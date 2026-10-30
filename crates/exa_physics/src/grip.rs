@@ -314,7 +314,8 @@ pub fn attack_hand_mobility(base_mass: f32, heavy_claws: bool) -> Option<f32> {
 pub fn shield_words(part: &mut crate::body::Part) {
     part.state = part
         .state
-        .with(crate::part::PartState::HELD | crate::part::PartState::STRIKE_MARK);
+        .with(crate::part::PartState::HELD | crate::part::PartState::STRIKE_MARK)
+        .without(crate::part::PartState::SOLE);
     part.link_mobility = part.pairing.mobility;
 }
 
@@ -1718,10 +1719,13 @@ mod empty_hand_tests {
         let part = &mut body.parts[0];
         part.pairing.mobility = 3.5;
         part.link_mobility = 0.1;
+        part.state = part.state.with(crate::part::PartState::SOLE);
         shield_words(part);
         assert_eq!(part.link_mobility, 3.5);
         assert_eq!(part.pairing.mobility, 3.5);
         assert_eq!(part.state.0 & 0x20002, 0x20002);
+        // The attach clears the foot sole's bit: an item is no foot.
+        assert_eq!(part.state.0 & crate::part::PartState::SOLE, 0);
     }
 
     /// A weapon's attach gives its body the permanent weapon bit and the

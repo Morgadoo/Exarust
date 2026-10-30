@@ -51,6 +51,21 @@ fn fall_backward_blends_by_the_energy_left() {
     }
 }
 
+/// The collapse's groan: the second draw sets the volume and the first the
+/// pitch, both 0.1-scaled sums in double. At 0 and 1 the pairs are
+/// (0.15, 0.8) and (0.25, 0.9).
+#[test]
+fn the_collapse_asks_for_a_groan_at_its_own_draws() {
+    assert_eq!(collapse_voice(0.0, 0.0), (0.15, 0.8));
+    assert_eq!(collapse_voice(1.0, 1.0), (0.25, 0.9));
+    // The volume comes from the second draw, the pitch from the first.
+    let (volume, pitch) = collapse_voice(0.5, 0.0);
+    assert_eq!((volume, pitch), (0.15, 0.85));
+    // A draw of 0.3 worked in single would give 0.83000004; in double the
+    // product and sum then narrow to 0.83.
+    assert_eq!(collapse_voice(0.3, 0.0).1, 0.83);
+}
+
 /// The tone falls 0.003 a tick (in double, stored as a float): from 1 the
 /// body dies on the 250th tick (3.01 s at 83 Hz), at 0.24999 its tone set
 /// to 0.01; on the 249th it is still at 0.2530.
