@@ -62,14 +62,21 @@ level the room reach test, `rooms::in_sight`: the same room, or an open
 door whose point lies within 2 m of the other character; a level without a
 grid sees everyone) and every one it already knows, with that character's own contacts, the role database's attitude
 and the relations' trust in its threat estimate, and writes the contact
-words the integration reads. A race-class-`0x12xx` brain uses the standard
-per-contact sense; the other AI races use the ally-aware one
-(`combatant::ally_sense`), in which a fellow brain stands in for the race
-word's AI bit. A sleeper that rates the player above a notice drops the
+words the integration reads. A race-class-`0x12xx` brain and every non-AI
+race run `combatant::perceive` (the standard sense `combatant::standard_sense`
+is tested but not scheduled, see below); the other AI races use the
+ally-aware one (`combatant::ally_sense`), whose fellow AI is a brain whose
+race word carries the AI bit (`Npc::race_ai`). A sleeper that rates the player above a notice drops the
 sleep role and wakes. A knocked-out or dead brain stops after its alert decay,
-before its morale and state (the original's condition bit `0x800`). No
-running race word selects the ally sense yet, so every level brain keeps
-the standard one. The original's tick ends by registering the character's
+before its morale and state (the original's condition bit `0x800`). A placed
+brain takes its sense, statue mark and effect from the record's profession
+word, the race word the attach reads: the races whose word carries bit
+`0x1000` (the golems, race ids 17–21) install a sense, the class `0x1200`
+(the Golem Suit) the standard one and the others the ally-aware one, and the
+statue bit marks a statue, whose sense clears what it sees. Every other race
+keeps the behaviour base's perception. In the original a statue keeps that
+mark until a golem alarm zone wakes it; Exarust has no live alarm-zone wake
+yet (`golem::wake` is tested only), so a placed statue stays blind. The original's tick ends by registering the character's
 nav footprint unless it follows a route with its locomotion active at 1 cm
 a tick or faster (`brain::stamps_footprint`). The game's footprint system
 asks that gate for every NPC each fixed tick: the route-following flag is a
@@ -115,7 +122,7 @@ look's wide pan waits 3 s and the sway and narrow pan 0.5 s.
 | `lifecycle` | the script-object factory, the scripted action hook, the removal/destroy/disable hooks, the idle return, the investigation of a disturbance and its goal callback (the pathfinder's nearest walkable point, mode 20, radius 100 cm), the idle driver's state machine (turn, plan a room, walk, test the exit, use the object, plan home, search the room) with its exit/use/object checks and room walk (every unvisited exit weighed, the previous cell included; going back clears the avoided exits; the first avoided exit sets its marker), the go-to-object state, and the object goal |
 | `estimate` | the fighting estimate from a record's skills and combat skill, the held weapon's stat bytes and reach, and the body scale |
 | `struck` | the hit reaction in the running game: each blow `exa_combat` notices (a wound, a clash or a block, in the damage routine's order) runs the combatant base's courage and attacker mark, then the AI's concern rise with the threat estimate over the brain's nearby list (only under the cap); a non-duellist attacker's lesson goes out as `Taught` |
-| `combatant` | the behaviour base: contacts, perception, the ally-class races' sense (the 3 concern floor, attitude 100 for a fellow AI, the 1200/1800 cm range, the threat to an ally weighed by the observed state, 0.3 of it as the concern target, the observed body's in-combat mark weighing 0.25 over 0.1; run by the perception pass for every AI race outside class `0x12xx`), the attitude and trust overrides, concern, references, the queued step, the nav footprint |
+| `combatant` | the behaviour base: contacts, perception, the AI's standard and ally-class per-contact senses, the ally-class races' sense (the 3 concern floor, attitude 100 for a fellow AI, the 1200/1800 cm range, the threat to an ally weighed by the observed state, 0.3 of it as the concern target, the observed body's in-combat mark weighing 0.25 over 0.1; run by the perception pass for every AI race outside class `0x12xx`), the attitude and trust overrides, concern, references, the queued step, the nav footprint |
 | `combat` | the combat state: the follow check, practice, the foe estimate, setting a target (fresh, committed, stuck cleared, the estimate on the foe, the flat bearing and its aim), the weapon draw and the lunge, the chase count and eagerness, the footwork drives, the seventeen-place search, the attack decision with the friend test and the keep-off, the step, the guard, the fierce stance and the body turn |
 | `contacts` | the contact classifier (the stress flight, the engagement threshold, the concern flight, the watch and the notice score), the twelve-contact list, the per-tick contact integration (the hostility drift from the perceived attitude, the concern rising toward its target, the noticed level following the sighting, the attention, the bad-route marks, the aggregates and the readiness), the target pass (the scripted focus, the visible and nearby lists, the sleeper's waking, the clean-up, the alarm mean, the encounter and the greeting, the round-robin dialogue refresh), the nearby list (sixteen nearest seen within 30 m, by squared distance) |
 | `flee` | the flee start's morale, the way out of a room away from a threat, the fled-room memory, the flee state's tick and the cornered fall-back |
@@ -269,6 +276,25 @@ across passes, closeness, view weight, the selected third party and the
 event bits), the references to its target, attention target, other target
 and holder, its published combat rating and reach, its alert level, its
 queued combat step and its nav footprint.
+
+`standard_sense` is the routine an AI race of class `0x12xx` installs
+as its per-contact sense: the threat word clears, a contact that is not a
+character ends it there, the range is 1200 cm (1800 while
+tracked, a strict squared compare) with a dead or asleep body (or an asleep
+observer) taking a zero sighting, a noticed level capped at 0.5 and no
+concern, hostility or selected third party, a knocked-out one 24·c and a
+0.99 concern ease, and a live one the look/facing/closeness product plus 10
+while it attacks. The observed body's own contacts are then weighed (the
+weight from its condition, each contact's closeness and view and the
+`min((concern + hostility)·0.15, 1)` softening in the original's mixed
+precision); the heaviest picks the selected character, which the original
+reads from the observer's own contact list at that entry's position in the
+observed's list, and only the observer
+(×multiplier×0.5) and the player (×multiplier) raise the concern target.
+The player body clears the concern and takes attitude 1. It is tested but
+not scheduled: the original installs it *instead of* the behaviour base's
+perception, and Exarust's role-driven hostility still comes from
+`perceive`'s attitude, which this routine overwrites for the player.
 
 `perceive` is one character looking at another; it writes the observer's
 contact for it. A character that cannot be perceived (an unseen power or a
