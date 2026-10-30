@@ -855,9 +855,9 @@ bits are one, its marker raising the extra flag. Its picking unit is
 walk with the class, layer and option bits, the segment against each
 bounding sphere and box, the nearest mesh within the best distance, the
 ground pick with its 5 cm/1 mm grown sphere and top-of-sphere ask, and the
-kinesis pick; both record the reach and its end point rather than a hit
-distance, and the last node whose callback answers wins; the ground-plane
-fallback is the miss. The cursor's aim plane and reach use them, and the
+kinesis pick; both record the sphere-top crossing plus the distance the
+mesh callback writes back, shortening the segment so a nearer surface met
+later still wins; the ground-plane fallback is the miss. The cursor's aim plane and reach use them, and the
 physics world answers as the mesh callback because Exarust keeps no CPU
 triangles. Its free-camera drag and zoom handlers are `nav_drag`: the
 absolute drag's yaw and arc-sine pitch with its pixel bounds and

@@ -238,21 +238,21 @@ pub fn nearest_hit(
 }
 
 /// The kinesis pick: whether the unit `ray` meets a kinesis node within
-/// [`KINESIS_FAR`], and the distance it records. Each node passes the class,
+/// [`KINESIS_FAR`], and the distance it reports. Each node passes the class,
 /// layer and no-pick bits and needs [`KINESIS_NODE`]; its bounding sphere
 /// grows by `height` for the segment test, and the mesh is asked from the
 /// point where the ray crosses that sphere's top (`(centre.y + radius +
 /// height − origin.y) / direction.y` along it) for what is left of the
-/// distance. The original's callback reports a count of hits along that
-/// segment, not a distance: a hit recomputes the far as
-/// `(far − crossing) + crossing`, so the recorded distance stays the reach
-/// (the rounding of the two operations apart), the segment is not
-/// shortened, and the last node that answers wins. With no hit the distance
-/// is [`floor_distance`].
+/// distance; a hit there sets the distance to the crossing plus the mesh's
+/// distance and shortens the segment. The original keeps no node; with no
+/// hit the distance is [`floor_distance`].
 ///
-/// [guess: Exarust's [`RayMesh`] reports the nearest face and its distance;
-/// `Some` stands in for the original's positive count, and the face is the
-/// mesh's own, not the original's count less one]
+/// The original's mesh callback writes the nearest distance it finds below
+/// the asked length back into its query and returns that face's index plus
+/// one (zero for none), so the recorded distance is the crossing plus the
+/// mesh's distance. Its column test sweeps a sphere of the query's radius
+/// against the mesh's face planes; [`RayMesh`]'s nearest hit stands in for
+/// it [guess: the swept radius is not modelled].
 pub fn kinesis_hit(
     ray: Ray,
     layer_mask: u32,
@@ -273,14 +273,11 @@ pub fn kinesis_hit(
         }
         let top = (node.bounds.centre.y + radius - ray.origin.y) * rise;
         let start = ray.at(top);
-        if node
+        if let Some((_, distance)) = node
             .mesh
             .nearest_hit(Ray::new(start, ray.direction), far - top)
-            .is_some()
         {
-            // The callback's crossing is taken out and added back, as the
-            // original does after its count test.
-            far = (far - top) + top;
+            far = distance + top;
             segment = ray.direction * far;
             found = true;
         }
@@ -292,27 +289,27 @@ pub fn kinesis_hit(
     }
 }
 
-/// The ground pick: whether the unit `ray` meets a pickable node within
-/// [`GROUND_FAR`], as the original's point-to-ground routine walks its
-/// nodes. It differs from the nearest-mesh pick in two ways: each node's
-/// bounding sphere grows by [`GROUND_RADIUS_ACCEPTED`] when the caller's
-/// accept test takes it and by [`GROUND_RADIUS_REFUSED`] when it does not;
-/// and the node's mesh is asked from the point where the ray crosses the
-/// grown sphere's top, for the stretch that is left of the reach. The
-/// original's mesh callback reports how many ground surfaces stand under
-/// that column, not a distance: a positive count recomputes the far as
-/// `(far − crossing) + crossing`, so the recorded distance stays the reach,
-/// the segment is not shortened, and the last node that answers wins. The
-/// distance and point are [`floor_distance`] and the ray's start when
-/// nothing is found.
+/// The ground pick: the highest surface under the cursor, as the original's
+/// point-to-ground routine walks its nodes. It is the nearest-mesh pick with
+/// two differences: each node's bounding sphere grows by
+/// [`GROUND_RADIUS_ACCEPTED`] when the caller's accept test takes it and by
+/// [`GROUND_RADIUS_REFUSED`] when it does not; and the node's mesh is asked
+/// from the point where the ray crosses the grown sphere's top, for the
+/// stretch that is left of the [`GROUND_FAR`] reach. The first node whose
+/// mesh answers keeps the pick; a later, nearer one still wins because the
+/// segment shortens (the original keeps the least distance reported). The
+/// distance is [`floor_distance`] when nothing is found.
 ///
-/// The original's accept test is a per-node callback. Exarust has neither
-/// it nor a CPU column query, so the accept test is the caller's closure
-/// and [`RayMesh`]'s nearest hit stands in for the column.
-///
-/// [guess: `Some` stands in for the original's positive count, and the
-/// recorded face is the mesh's own face index rather than the count less
-/// one]
+/// The original's accept test is a per-node callback, and its mesh
+/// callback sweeps a sphere of the grown radius down the column against
+/// the mesh's face planes, writing the nearest distance below the asked
+/// length back into its query and returning that face's index plus one;
+/// the pick then records the crossing plus that distance and the face.
+/// Exarust has neither callback, so the accept test is the caller's closure
+/// and [`RayMesh`]'s nearest hit stands in for the column [guess: the swept
+/// radius is not modelled]. The crossing uses the engine's `1 / direction.y`,
+/// held to zero when it is positive (the ray looks up): a level ray gives
+/// an infinite crossing, as the original's division does.
 pub fn ground_hit(
     ray: Ray,
     layer_mask: u32,
@@ -347,11 +344,11 @@ pub fn ground_hit(
         } else {
             (ray.origin, 0.0)
         };
-        if let Some((face, _)) = node
+        if let Some((face, distance)) = node
             .mesh
             .nearest_hit(Ray::new(start, ray.direction), far - crossing)
         {
-            far = (far - crossing) + crossing;
+            far = distance + crossing;
             segment = ray.direction * far;
             found = Some((index, face, far));
         }
@@ -606,14 +603,9 @@ mod tests {
         let mut target = node(u32::MAX, Vec3::ZERO, 0.5, &mesh);
         target.radius = 1.0;
         target.flags = KINESIS_NODE;
-        // The mesh answers, but the pick records its reach: the original's
-        // callback reports a count, so the far is only carried through
-        // `(far − crossing) + crossing`.
-        let crossing = 7.0f32;
-        assert_eq!(
-            kinesis_hit(r, u32::MAX, 2.0, &[target]),
-            (true, (40.0 - crossing) + crossing)
-        );
+        // The top of the sphere grown by 2 m is 3 m up, 7 m along; the
+        // mesh is met 3 m further: 10 m in all.
+        assert_eq!(kinesis_hit(r, u32::MAX, 2.0, &[target]), (true, 10.0));
         // Without the flag the node is not picked, and the miss records
         // the ground plane: 10 m.
         target.flags = 0;
@@ -681,23 +673,17 @@ mod tests {
         let mut target = node(u32::MAX, Vec3::ZERO, 0.5, &mesh);
         target.radius = 0.5;
         // Taken: the sphere grows 5 cm, its top is 0.55 m up (9.45 m
-        // along), and the floor is 0.55 m further. The original's callback
-        // reports a count, so the pick keeps its reach: 40 m, on the point
-        // that far along the ray.
-        let crossing = -(0.55f32 - 10.0);
-        let reach = (40.0f32 - crossing) + crossing;
+        // along), and the floor is 0.55 m further: 10 m in all, face 0.
         let (hit, distance) = ground_hit(down, u32::MAX, |_| true, &[target]);
         let hit = hit.unwrap();
         assert_eq!((hit.node, hit.face), (0, 0));
-        assert_eq!(distance, reach);
-        assert_eq!(reach, 40.0, "the two operations leave the reach");
-        assert!((hit.point - Vec3::new(0.0, 10.0 - reach, 0.0)).length() < 1e-5);
+        assert!((distance - 10.0).abs() < 1e-5, "{distance}");
+        assert!(hit.point.length() < 1e-5);
         // Refused: the sphere only grows 1 mm (top 0.501 m up); the floor
-        // is still met, and the reach is the same.
+        // is still 10 m away.
         let (hit, distance) = ground_hit(down, u32::MAX, |_| false, &[target]);
-        let crossing = -((0.5f32 + 0.001) - 10.0);
-        assert_eq!(hit.unwrap().distance, (40.0f32 - crossing) + crossing);
-        assert_eq!(distance, (40.0f32 - crossing) + crossing);
+        assert!((hit.unwrap().distance - 10.0).abs() < 1e-5);
+        assert!((distance - 10.0).abs() < 1e-5);
         // 52 cm beside the node only the taken 0.55 m sphere is crossed;
         // the refused 0.501 m one is missed, and the miss records the
         // ground plane below the eye: 10 m again but no hit.
@@ -712,12 +698,12 @@ mod tests {
         assert_eq!(distance, 10.0);
         // An eye inside the grown sphere, under its top: the crossing is
         // negative, so it becomes zero and the mesh is asked from the eye
-        // with the whole reach (the reach is recorded, not the floor's
-        // 0.3 m).
+        // with the whole reach. The floor is 0.3 m below (a crossing kept
+        // negative would have given 0.05 m).
         let inside = ray(Vec3::new(0.0, 0.3, 0.0), -Vec3::Y);
         let (hit, distance) = ground_hit(inside, u32::MAX, |_| true, &[target]);
         assert!(hit.is_some());
-        assert_eq!(distance, 40.0);
+        assert!((distance - 0.3).abs() < 1e-6, "{distance}");
         // The layer and class filters apply as in the nearest pick.
         assert!(ground_hit(down, 0, |_| true, &[target]).0.is_none());
         target.class = 0x09;
@@ -732,24 +718,15 @@ mod tests {
     #[test]
     fn a_ground_pick_keeps_the_last_node_that_answers_within_its_reach() {
         // A high floor at 6 m in a node about (0, 6, 0) and a low floor at
-        // the origin in a node about it, under the same downward ray. The
-        // high node's mesh has a nearer second face, so a hit's face number
-        // says which node won after the slice index ties at one.
-        let high = [
-            [
-                Vec3::new(-20.0, 6.0, -20.0),
-                Vec3::new(20.0, 6.0, -20.0),
-                Vec3::new(0.0, 6.0, 20.0),
-            ],
-            [
-                Vec3::new(-20.0, 6.1, -20.0),
-                Vec3::new(20.0, 6.1, -20.0),
-                Vec3::new(0.0, 6.1, 20.0),
-            ],
-        ];
+        // the origin in a node about it, under the same downward ray.
+        let high = [[
+            Vec3::new(-20.0, 6.0, -20.0),
+            Vec3::new(20.0, 6.0, -20.0),
+            Vec3::new(0.0, 6.0, 20.0),
+        ]];
         let low = [[
             Vec3::new(-20.0, 0.0, -20.0),
-            Vec3::new(20.0, 0.0, 20.0),
+            Vec3::new(20.0, 0.0, -20.0),
             Vec3::new(0.0, 0.0, 20.0),
         ]];
         let high = Triangles(&high);
@@ -759,20 +736,17 @@ mod tests {
         upper.radius = 0.5;
         let mut lower = node(1, Vec3::ZERO, 0.5, &low);
         lower.radius = 0.5;
-        // Both nodes answer and the original keeps no shortening: the last
-        // node in the scene order wins, whichever floor it stands on. Each
-        // hit carries the reach through its own crossing again.
-        let high_crossing = -((6.0f32 + 0.55) - 10.0);
-        let low_crossing = -((0.0f32 + 0.55) - 10.0);
+        // High first: it answers at 4 m, the segment shortens to 4 m and
+        // no longer reaches the low node's sphere, which is skipped.
         let (hit, distance) = ground_hit(down, 1, |_| true, &[upper, lower]);
-        let first = (40.0f32 - high_crossing) + high_crossing;
-        let hit = hit.unwrap();
-        assert_eq!((hit.node, hit.face), (1, 0), "the lower floor is last");
-        assert_eq!(distance, (first - low_crossing) + low_crossing);
+        assert_eq!(hit.unwrap().node, 0);
+        assert!((distance - 4.0).abs() < 1e-5, "{distance}");
+        // Low first: it answers at 10 m, then the high node is still within
+        // the reach, answers nearer and becomes the pick.
         let (hit, distance) = ground_hit(down, 1, |_| true, &[lower, upper]);
-        let first = (40.0f32 - low_crossing) + low_crossing;
         let hit = hit.unwrap();
-        assert_eq!((hit.node, hit.face), (1, 1), "the upper floor is last");
-        assert_eq!(distance, (first - high_crossing) + high_crossing);
+        assert_eq!(hit.node, 1);
+        assert!((distance - 4.0).abs() < 1e-5, "{distance}");
+        assert!((hit.point.y - 6.0).abs() < 1e-5);
     }
 }
