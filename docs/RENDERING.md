@@ -534,15 +534,6 @@ traced, so Exarust scales the part's emissive colour, on a material copy
 of the part's own). A light at rest leaves its mesh as loaded. Per-sector
 light aliases are not reproduced.
 
-The depth prepass's alpha-tested caster (`exa_prepass.wesl`) now follows the
-original's caster program for the sun and Bevy's own skinned cubes: only a
-surface the caster setup marks alpha-tested (`flags::SHADOW_CUT`, the
-`cut_shadow` rule — an alpha-tested blend word, or an opacity above 0.75
-with the opacity flag) cuts its shadow, sampling the opacity map when the
-record has one and the diffuse map otherwise, and discarding below 0.5 with
-no opacity factor and no squaring. A merely masked surface without that bit
-casts a whole shadow.
-
 The light's derived values (`LightSource::draw_colour`, `derive`,
 `injection_colour`, `update`) are a tested model, not yet consumed by the
 shader path. An update clamps an intensity under 2⁻²³ to zero and then:

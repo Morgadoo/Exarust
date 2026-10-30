@@ -1189,9 +1189,6 @@ impl ModelLoader<'_> {
         // factor is ONE never does.
         mat.no_shadows = !casts_shadow(m);
         mat.cut_shadow = cuts_shadow(m, mat.opacity_map.is_some());
-        if mat.cut_shadow {
-            mat.params.flags |= exa_render::material::flags::SHADOW_CUT;
-        }
         // The fall-off's floor comes off the opacity (after the
         // premultiplication, which takes the opacity as stored).
         if let Some((f, floor)) = opacity_falloff(m) {

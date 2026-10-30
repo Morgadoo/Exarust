@@ -1,10 +1,7 @@
-// Depth-only passes (shadow maps) for the original's materials. The
-// original's alpha-tested caster samples one cut texture, the opacity map
-// when the record has one else the diffuse map, and discards below 0.5 with
-// no opacity factor and no squaring. Only records the caster setup marks
-// alpha-tested (SHADOW_CUT) cut at all; a merely masked surface casts a
-// whole shadow, as the original's caster does. Rules: docs/RENDERING.md
-// (Lights).
+// Depth-only passes (shadow maps) for the original's materials: alpha-cut
+// surfaces (cobwebs, grates, foliage) cut their shadows the way they cut
+// their colour, with the same alpha rule as exa.wesl. Rules:
+// docs/RENDERING.md (Lights).
 
 import bevy_pbr::prepass::io::{VertexOutput, FragmentOutput};
 
@@ -25,9 +22,7 @@ struct ExaParams {
 
 const DIFFUSE_MAP: u32 = 1u;
 const OPACITY_MAP: u32 = 16u;
-// The caster setup marks the surfaces that cut their shadow.
-const SHADOW_CUT: u32 = 1073741824u;
-// The alpha-tested caster's threshold.
+// The alpha cut of masked materials.
 const CUTOFF: f32 = 0.5;
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> material: ExaParams;
@@ -41,20 +36,16 @@ fn has(bit: u32) -> bool {
 }
 
 fn cut(in: VertexOutput) {
-    if !has(SHADOW_CUT) {
-        return;
-    }
     var uv = vec2(0.0);
 @if(VERTEX_UVS_A) {
     uv = in.uv;
 }
-    // One cut texture: the opacity map when bound, otherwise the diffuse
-    // map; no factor, no squaring.
-    var alpha = 1.0;
+    var alpha = material.diffuse.a;
     if has(OPACITY_MAP) {
-        alpha = textureSample(opacity_map, opacity_sampler, uv).a;
+        let o = textureSample(opacity_map, opacity_sampler, uv).a;
+        alpha *= o * o;
     } else if has(DIFFUSE_MAP) {
-        alpha = textureSample(diffuse_map, diffuse_sampler, uv).a;
+        alpha *= textureSample(diffuse_map, diffuse_sampler, uv).a;
     }
     if alpha < CUTOFF {
         discard;
