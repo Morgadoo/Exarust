@@ -18,6 +18,7 @@ pub mod arena_session;
 pub mod arena_spawn;
 pub mod arena_tables;
 pub mod arsenal;
+pub mod arsenal_view;
 pub mod balance;
 pub mod bindings;
 pub mod body_inventory;
@@ -206,6 +207,7 @@ impl Plugin for GamePlugin {
                 gui_screens::GameScreensPlugin,
                 item_card::ItemCardPlugin,
                 item_icon_render::ItemIconPlugin,
+                arsenal_view::ArsenalViewPlugin,
                 power_screen::PowerScreenPlugin,
             thaum::visuals::VisualPlugin,
             ),
