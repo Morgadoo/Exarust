@@ -46,12 +46,13 @@ separating-axis), point-set bounds, and the convex volumes: rebasing,
 plane refresh (the normal (v2−v1)×(v0−v1) with the normaliser's
 x²+z²-then-y² sum, a zero vector left zero), box tests, polygon clipping
 into a portal pyramid, cutting a volume by a plane with its cap (the cap
-turned round and chained from its start when its ends are at least 0.01 cm
-apart, closed by dropping its last point otherwise), and the directional
+closed by dropping its last point when its ends are nearer than 0.01 cm,
+turned round and chained from its start otherwise, a NaN distance
+included), and the directional
 shadow's caster volume (a face open to the light when its plane dot with
 the homogeneous light is ≤ 0, one side plane per open/kept face pair
 through their first reversed shared edge whose squared length is at least
-1 cm² summed z, then y, then x, the kept faces closing it; its returned
+1 cm² summed (x² + y²) + z², a NaN length kept, the kept faces closing it; its returned
 side count is the original's last index, one less than the number of side
 planes). Its cube-face mask lives with its only user,
 `exa_render::cube_shadows::sphere_faces`. The body and level paths still
