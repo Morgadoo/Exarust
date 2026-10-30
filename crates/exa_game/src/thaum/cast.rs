@@ -1555,7 +1555,11 @@ fn create_displacement(
             tick_cost,
             to,
         } => {
-            let power = LongDoor::new(context.now, to.map(|p| p.to_array()), false, tick_cost);
+            let mut power = LongDoor::new(context.now, to.map(|p| p.to_array()), false, tick_cost);
+            if let Some(head) = ragdoll.and_then(|r| r.parts.first()) {
+                let at = head.transform().translation * CM;
+                power.follow(Vec3::from_array([at.x, at.y, at.z]));
+            }
             caster.body.cast_hook = Some(super::power::displacement::LONG_DOOR_HOOK);
             let mut input = visual_input(context, ragdoll, 0.0);
             if let Some(to) = to {
