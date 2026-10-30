@@ -555,6 +555,18 @@ shader path. An update clamps an intensity under 2⁻²³ to zero and then:
   that moved by more than one sets pending bit 2 and every update sets bit
   4, the shadow links' rebuild flags.
 
+A light alias's reach (`exa_world::light_alias`) is the original's
+per-node weighting: the plain test is the luma of the alias and node
+colours against the alias's 0.01 cutoff; the gated test adds the sphere
+overlap, the oriented-box distance under the light radius, the shell-or-box
+falloff distance, `max(1 − d·falloff, 0)⁴`, the spot's vertical blend and
+`max((cos(2·t·cone) − 1)·exponent, 0)`, the intensity and colour-product
+luma, and the six-face shadow mask (each face cleared when the node lies
+beyond it by more than its flags word read as a float). `SpotShape::of`
+builds the light node's three spot constants from the record's `(q, p)`.
+The cell flood that answers the gate is the scene-node unit's; the alias's
+field copy and construction are not modelled beyond these values.
+
 The shape words the constructor also sets — a 0.25 exponent, a 1 factor,
 a 2 quality word and the spot's cone factor `1/(acos(cos 2 · (p + 1)) − 1)`
 — are read by the shading uniforms elsewhere (`vertical_shaping` covers

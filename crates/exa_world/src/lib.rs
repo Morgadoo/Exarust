@@ -19,6 +19,7 @@ pub mod gi_volume;
 pub mod grid;
 pub mod grid_sets;
 pub mod level_lifecycle;
+pub mod light_alias;
 pub mod light_flood;
 pub mod light_source;
 pub mod markers;
