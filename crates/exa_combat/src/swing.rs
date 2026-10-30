@@ -23,6 +23,7 @@ use exa_physics::body::{AttackArmTune, BODY_HZ, BodyTicks, Ragdoll, TickedCharac
 use crate::attack::{AttackMotion, Attacker, Side, Slot};
 use crate::condition::OFF_BALANCE_BELOW;
 use crate::damage::{Outcome, WeaponRecord};
+use crate::stab::StabAim;
 use crate::stance::Stance;
 use crate::swing_voice::{SwingVoice, SwingVoiceCue, voice_speed2};
 use crate::{Attacking, Blade, Condition, Fighter};
@@ -773,7 +774,11 @@ pub(crate) fn run_swings(
     ticked: Res<TickedCharacter>,
     ticks: Res<BodyTicks>,
     motions: Option<Res<Motions>>,
-    blades: Query<&Blade>,
+    (blades, blade_frames, mut item_bodies): (
+        Query<&Blade>,
+        Query<(Entity, &Blade, &GlobalTransform)>,
+        Query<&mut Ragdoll, (With<Blade>, Without<Fighter>)>,
+    ),
     mut fighters: Query<(
         &mut Animator,
         &mut Attacker,
@@ -786,6 +791,7 @@ pub(crate) fn run_swings(
         &GlobalTransform,
         Option<&Stance>,
         &mut SwingVoice,
+        Option<&StabAim>,
     )>,
     mut cues: MessageWriter<SwingVoiceCue>,
 ) {
@@ -803,6 +809,7 @@ pub(crate) fn run_swings(
         gt,
         stance,
         mut voice,
+        stab_aim,
     )) = fighters.get_mut(entity)
     else {
         return;
@@ -979,7 +986,112 @@ pub(crate) fn run_swings(
             drive: arms.drive,
         }));
     }
+    // The stab's arm drive, where the arms are set: a stab (not a
+    // quadruped's) that has not landed, with a held weapon in its striking
+    // slot and an aim point from the behaviour.
+    if motion == AttackMotion::Stab
+        && !fighter.stats.quadruped
+        && state.flags & flags::CLEAVING == 0
+        && let Some(aim_cm) = stab_aim.and_then(|a| a.point_cm)
+        && let Some(slot) = attacker.primary
+        && let Some((item, blade, item_gt)) = blade_frames
+            .iter()
+            .find(|(_, b, _)| b.wielder == entity && b.slot == slot && b.record.armed())
+        && let Some(body) = body.as_deref_mut()
+    {
+        drive_stab(
+            body,
+            &mut item_bodies,
+            StabHeld {
+                item,
+                blade,
+                at: item_gt,
+                class: u32::from(attacking.weapon_class),
+            },
+            progress,
+            aim_cm,
+        );
+    }
 }
+
+/// The held weapon a stab drives: its entity, blade and frame, and the
+/// attack's weapon class (its grip's hand).
+struct StabHeld<'a> {
+    item: Entity,
+    blade: &'a Blade,
+    at: &'a GlobalTransform,
+    class: u32,
+}
+
+/// One tick of the stab drive on `body` ([`crate::stab::stab_drive`]):
+/// the weapon point's push goes to the item's own body, and the left
+/// hand's to that hand. A weapon with no body of its own (a factory
+/// weapon, attached to its hand's bone) takes its push through the hand
+/// that grips it, at that hand's centre. [Exarust's: the original pushes
+/// its item body, which its grip links tie to the hand. Turning the hand
+/// about the grip instead made a spear flail in the GPU runs.]
+fn drive_stab(
+    body: &mut Ragdoll,
+    item_bodies: &mut Query<&mut Ragdoll, (With<Blade>, Without<Fighter>)>,
+    held: StabHeld,
+    clock: f32,
+    aim_cm: Vec3,
+) {
+    let Some(frame) = body.drive.as_ref().and_then(|d| d.frame()) else {
+        return;
+    };
+    let bone_part = |body: &Ragdoll, bone: usize| body.parts.iter().position(|p| p.bone == bone);
+    let Some(left) = bone_part(body, LEFT_HAND_BONE) else {
+        return;
+    };
+    let Some(hand) = body.part_centre(left) else {
+        return;
+    };
+    let anchor = frame.transform_point3(crate::stab::ANCHOR_CM / CM) * CM;
+    let item = held
+        .at
+        .transform_point(Vec3::Y * held.blade.length * crate::stab::ITEM_POINT_SHARE);
+    let Some(push) = crate::stab::stab_drive(
+        clock,
+        anchor,
+        aim_cm,
+        item * CM,
+        hand * CM,
+        held.blade.record.balance,
+    ) else {
+        return;
+    };
+    match item_bodies.get_mut(held.item) {
+        Ok(mut own) => own.push_at(0, item, push.item / CM),
+        Err(_) => {
+            let grip_bone =
+                match crate::grip::grip(held.class & 0xFFFF, Slot::First).map(|g| g.hand) {
+                    Some(crate::grip::GripHand::Left) => LEFT_HAND_BONE,
+                    _ => RIGHT_HAND_BONE,
+                };
+            if let Some(i) = bone_part(body, grip_bone)
+                && let Some(at) = body.part_centre(i)
+            {
+                body.push_at(i, at, push.item / CM);
+            }
+        }
+    }
+    body.push_at(left, hand, push.hand / CM);
+    trace!(
+        "stab drive at clock {clock:.2}: weapon point {:.1} cm off the line, its axis {:.1} deg \
+         off it",
+        push.item_to_line.length(),
+        held.at
+            .rotation()
+            .mul_vec3(Vec3::Y)
+            .angle_between(push.dir)
+            .to_degrees()
+    );
+}
+
+/// The hands' bone numbers.
+const RIGHT_HAND_BONE: usize = 17;
+const LEFT_HAND_BONE: usize = 18;
 
 /// A class word of exactly this value is two weapons. A recoil and a
 /// follow-through compare the whole word, and skip the rest of the write

@@ -3839,6 +3839,14 @@ impl Ragdoll {
         self.parts.get(part).map(|p| p.point(w))
     }
 
+    /// Where part `part`'s centre is now (m): the centre of the box around
+    /// its spheres, through that centre's weights on its particles.
+    pub fn part_centre(&self, part: usize) -> Option<Vec3> {
+        self.parts
+            .get(part)
+            .map(|p| p.point(&p.pairing.centre_weights()))
+    }
+
     /// Moves part `part` by `delta` (m) over the particles' weights `w`:
     /// one link end's push, exactly as the body's own links apply it.
     pub fn push_weights(&mut self, part: usize, w: &[f32; 4], delta: Vec3) {

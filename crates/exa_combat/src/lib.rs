@@ -42,6 +42,7 @@ pub mod parry;
 pub mod regen;
 pub mod remedy;
 pub mod sounds;
+pub mod stab;
 pub mod stance;
 pub mod strike_body;
 pub mod swing;
@@ -563,8 +564,9 @@ fn detect_hits(
             });
             if let Some((bone, point)) = contact {
                 debug!(
-                    "blade {a} -> {b} speed {:.2} contact bone {bone} at {point}",
-                    blade.tip_speed
+                    "blade {a} -> {b} speed {:.2} contact bone {bone} at {point}: clock \
+                     {progress:.2}, motion {:?}",
+                    blade.tip_speed, attack.motion
                 );
                 attack.struck.insert(target);
                 let strike = blade_strike(blade, gt, point, &attack, progress, wielder, powers);
@@ -1117,9 +1119,9 @@ fn react_to_hits(
                 sag: outcome.sag,
             });
             info!(
-                "hit on {:?} bone {} at tick {tick} by {}, {:.0} cm, {:.1} cm/tick: impact {:.2} \
-             ({:.2} at the hit), penetration {:.2} at readiness {:.2}, wound {:.3} (yellow {:.3}, \
-             red {:.3} of {:.2})",
+                "hit on {:?} bone {} at tick {tick} by {} ({}), {:.0} of {:.0} cm, {:.1} cm/tick: \
+             impact {:.2} ({:.2} at the hit), penetration {:.2} at readiness {:.2}, wound {:.3} \
+             (yellow {:.3}, red {:.3} of {:.2})",
                 hit.target,
                 hit.bone,
                 if hit.weapon.armed() {
@@ -1127,7 +1129,15 @@ fn react_to_hits(
                 } else {
                     "a fist"
                 },
+                if hit.strike.stab {
+                    "stab"
+                } else if hit.strike.overhead {
+                    "overhead"
+                } else {
+                    "swing"
+                },
                 hit.strike.along,
+                hit.weapon.length,
                 hit.strike.speed,
                 outcome.impact,
                 outcome.hit_impact,

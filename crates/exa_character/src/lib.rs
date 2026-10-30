@@ -1627,6 +1627,20 @@ fn equip_outfits(
                 &race,
                 flipped,
             );
+            debug!(
+                "{}: held record length {:.1} cm, sweet spot {:.1} cm, reach {:.1} cm, \
+                 striking part {:.3}..{:.3}, kind {:#x}, code {}, holder size {:.2} scale {:.2}",
+                held.model,
+                record.length,
+                record.sweet_spot,
+                record.reach,
+                record.start,
+                record.end,
+                record.kind(),
+                record.code,
+                holder.size,
+                holder.scale
+            );
             // The holding pass hands the weapon's table mass to its part
             // tree's redistribution; the result waits for the body solver.
             let mass = record
