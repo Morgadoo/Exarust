@@ -2823,6 +2823,23 @@ pub fn snap_slots(
     Some(slots)
 }
 
+/// The client-area refresh a shown form runs over itself and its whole
+/// tree: each form recomputes its client rectangle from its own measures
+/// (the base class's client-area query), then visits its children in
+/// order. The walk is the same depth-first, children-in-order order
+/// [`propagation_order`] gives, the parent before its children. Returns
+/// each form's freshly measured client rectangle, in visit order.
+pub fn refresh_client_areas(
+    children: &[Vec<usize>],
+    root: usize,
+    mut measure: impl FnMut(usize) -> ClientRect,
+) -> Vec<(usize, ClientRect)> {
+    propagation_order(children, root)
+        .into_iter()
+        .map(|form| (form, measure(form)))
+        .collect()
+}
+
 #[cfg(test)]
 #[path = "form_test.rs"]
 mod tests;

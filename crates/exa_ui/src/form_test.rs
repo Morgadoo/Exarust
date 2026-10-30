@@ -1221,6 +1221,42 @@ fn the_show_plan() {
 }
 
 #[test]
+fn the_client_areas_refresh_parent_before_child() {
+    // A root with two children, the first with one: the pass measures the
+    // root, then each child in order, descending before moving right.
+    let tree = [vec![1, 2], vec![3], vec![], vec![]];
+    let mut visited = Vec::new();
+    let measured = refresh_client_areas(&tree, 0, |form| {
+        visited.push(form);
+        ClientRect {
+            left: form as i32 + 1,
+            top: form as i32 + 2,
+            right: form as i32 + 3,
+            bottom: form as i32 + 4,
+        }
+    });
+    assert_eq!(visited, vec![0, 1, 3, 2]);
+    assert_eq!(measured.len(), 4);
+    assert_eq!(
+        measured[2],
+        (
+            3,
+            ClientRect {
+                left: 4,
+                top: 5,
+                right: 6,
+                bottom: 7
+            }
+        )
+    );
+    // A leaf-only tree measures the start form once.
+    assert_eq!(
+        refresh_client_areas(&[vec![]], 0, |_| ClientRect::default()),
+        vec![(0, ClientRect::default())]
+    );
+}
+
+#[test]
 fn the_close_visibility_and_destroy_plans() {
     let base = CloseInput {
         closing: false,
