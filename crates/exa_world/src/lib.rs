@@ -737,6 +737,19 @@ fn spawn_placed_object(
         ChildOf(parent),
     ));
     insert_object_records(commands, e, item, object);
+    // A door object is bound to its room link with its object node's first
+    // child, whose body the rooms then read (`room_view::PlacedDoor`).
+    if db_objects::node_kind(item) == db_objects::KIND_DOOR
+        && let Some(leaf) = first_child_of_root(model, &nodes)
+    {
+        let [x, _, z] = object.transform[3];
+        let [fx, _, fz] = object.transform[2];
+        commands.entity(e).insert(room_view::PlacedDoor {
+            leaf,
+            position: Vec2::new(x, z),
+            facing: Vec2::new(fx, fz),
+        });
+    }
     // A hinged door's leaves, a lever's arm and a push surface register with
     // their rules (a sliding door's leaf too when asked for); any other
     // mechanism body stays static. The
@@ -756,6 +769,17 @@ fn spawn_placed_object(
         lights: model.nodes.iter().filter(|n| n.light.is_some()).count(),
         bodies: bodies::register_bodies(commands, model, &nodes, placement),
     })
+}
+
+/// The first child, in node order, of a model's first root: under a
+/// placement the first root stands where the original's object node does
+/// (it takes the placement with an identity of its own), so this is the
+/// node the original's door binding reads the body of. `None` when the root
+/// has no child (the original then binds nothing).
+fn first_child_of_root(model: &Model, nodes: &[Entity]) -> Option<Entity> {
+    let root = model.roots().next()?;
+    let child = model.nodes.iter().position(|n| n.parent == Some(root))?;
+    nodes.get(child).copied()
 }
 
 /// The content stream's level-object builder over a level's placed

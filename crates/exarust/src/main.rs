@@ -110,6 +110,8 @@
 //!                                     loading (e.g. `.@400,F8@500,LMB@600`); `key@a-b` holds it from frame a to b
 //!          --cursor x,y               play mode: the cursor stays at this window point (logical pixels), for unattended runs
 //!          --click frame,...          click the left mouse button at frames after loading
+//!          --toggle-door FRAME        debug: toggle the bound hinged door nearest the player (a shut one is driven
+//!                                     open) that many frames after the level's rooms exist, logging its angle
 //!          --object-click F[d][l],...  debug: click the placed container nearest the player at frames after
 //!                                     loading (d: the double click, l: as a hit on level geometry)
 //!          --use-item ID@FRAME        debug: put the item into the pack and call its use hook at that frame
@@ -310,6 +312,9 @@ pub struct Options {
     /// Keep hinged doors static level geometry instead of bodies under the
     /// hand (Exarust's debug option).
     pub static_doors: bool,
+    /// Debug: toggle the bound door nearest the player this many frames
+    /// after the level's rooms exist (`--toggle-door`).
+    pub toggle_door: Option<u32>,
     /// Keep levers and push surfaces static level geometry (Exarust's
     /// debug option).
     pub static_mechanisms: bool,
@@ -753,6 +758,7 @@ fn main() -> AppExit {
             "--debug-lights" => options.debug_lights = args.next().and_then(|v| v.parse().ok()),
             "--nav-refresh-moved" => options.nav_refresh_moved = true,
             "--static-doors" => options.static_doors = true,
+            "--toggle-door" => options.toggle_door = args.next().and_then(|v| v.parse().ok()),
             "--static-mechanisms" => options.static_mechanisms = true,
             "--sliding-doors" => options.sliding_doors = true,
             "--debug-gui-form" => options.debug_gui_form = true,
@@ -1336,6 +1342,9 @@ fn main() -> AppExit {
     .insert_resource(exa_game::object_click::ObjectClickScript(
         options.object_clicks.clone(),
     ))
+    .insert_resource(exa_world::room_view::DoorToggle {
+        at_frame: options.toggle_door,
+    })
     .insert_resource(options.use_item)
     .insert_resource(options.gui_drop)
     .insert_resource(options.doll_drop)

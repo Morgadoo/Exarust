@@ -7,6 +7,14 @@
 //!
 //! Only meshes are hidden: lights, GI emitters and shadow links stay as
 //! they are, and so does collision.
+//!
+//! Doors: each placed object of the door kind is bound at load to the door
+//! link its position and facing select, with the body of its object node's
+//! first child (the leaf), as the original's level loader does
+//! ([`crate::rooms::DoorBodies::bind`]). Every frame each bound link takes
+//! its open state from that body's pair flag ([`crate::rooms::link_open`]),
+//! so a shut door keeps the room behind it from turning active: that room
+//! stays adjacent, under its black lid.
 
 use std::sync::Arc;
 
@@ -15,15 +23,18 @@ use bevy::camera::visibility::VisibilitySystems;
 use bevy::math::Vec3A;
 use bevy::prelude::*;
 use bevy::transform::TransformSystems;
+use exa_physics::body::{DoorBody, Ragdoll, SlideBody};
 use exa_render::shell::ShellMaterial;
 
-use crate::rooms::{Fade, RoomState, RoomTracker, Rooms};
+use crate::rooms::{DoorBodies, DoorLink, Fade, RoomState, RoomTracker, Rooms, link_open};
 
 pub struct RoomViewPlugin;
 
 impl Plugin for RoomViewPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<RoomView>()
+            .init_resource::<DoorToggle>()
+            .add_systems(Update, toggle_nearest_door)
             .add_systems(
                 PostUpdate,
                 (assign_static_rooms, inherit_rooms)
@@ -32,7 +43,12 @@ impl Plugin for RoomViewPlugin {
             )
             .add_systems(
                 PostUpdate,
-                (give_shell_materials, track_rooms)
+                (
+                    bind_placed_doors,
+                    follow_door_bodies,
+                    give_shell_materials,
+                    track_rooms,
+                )
                     .chain()
                     .after(TransformSystems::Propagate)
                     .before(VisibilitySystems::VisibilityPropagate),
@@ -45,12 +61,170 @@ impl Plugin for RoomViewPlugin {
 pub struct LevelRooms {
     pub rooms: Arc<Rooms>,
     pub tracker: RoomTracker,
+    /// The door body bound to each door link (entity bits of the leaf).
+    pub doors: DoorBodies,
 }
 
 impl LevelRooms {
     pub fn new(rooms: Arc<Rooms>) -> Self {
         let tracker = RoomTracker::new(rooms.len());
-        Self { rooms, tracker }
+        Self {
+            rooms,
+            tracker,
+            doors: DoorBodies::new(),
+        }
+    }
+}
+
+/// A placed door object waiting to be bound to its door link: the first
+/// child of its object node (the node whose body the original binds), its
+/// position (metres, X/Z) and the X and Z of its third matrix row.
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+pub struct PlacedDoor {
+    pub leaf: Entity,
+    pub position: Vec2,
+    pub facing: Vec2,
+}
+
+/// On a bound door's leaf node: the door link it stands in.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BoundDoor(pub DoorLink);
+
+/// Binds each waiting placed door to the link its cell and facing select,
+/// once the level's rooms exist. A level without a grid binds nothing.
+fn bind_placed_doors(
+    mut commands: Commands,
+    level: Option<ResMut<LevelRooms>>,
+    placed: Query<(Entity, &PlacedDoor)>,
+) {
+    if placed.is_empty() {
+        return;
+    }
+    let mut level = level;
+    let (mut bound, mut waiting) = (0, 0);
+    for (entity, door) in &placed {
+        waiting += 1;
+        if let Some(level) = level.as_deref_mut() {
+            let LevelRooms { rooms, doors, .. } = level;
+            if let Some(link) = doors.bind(rooms, door.position, door.facing, door.leaf.to_bits()) {
+                commands.entity(door.leaf).try_insert(BoundDoor(link));
+                bound += 1;
+            }
+        }
+        commands.entity(entity).remove::<PlacedDoor>();
+    }
+    debug!("door binding: {bound} of {waiting} placed doors bound to a link");
+}
+
+/// Debug (`--toggle-door FRAME`): that many frames after the level's rooms
+/// and the anchor exist, the bound hinged leaf whose door point is nearest
+/// the anchor gets the door's own toggle (the command a lever's signal
+/// gives: a shut leaf is driven open) and is woken; its angle and its link's
+/// state are then logged every [`DOOR_LOG_FRAMES`] frames, so a check can
+/// watch the room behind a door appear as it opens.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DoorToggle {
+    pub at_frame: Option<u32>,
+}
+
+/// How often the debug toggle logs its leaf.
+pub const DOOR_LOG_FRAMES: u32 = 60;
+
+/// The debug toggle's frame count and the leaf it watches.
+#[derive(Default)]
+struct ToggleState {
+    frames: u32,
+    leaf: Option<Entity>,
+}
+
+fn toggle_nearest_door(
+    toggle: Res<DoorToggle>,
+    level: Option<Res<LevelRooms>>,
+    anchors: Query<&GlobalTransform, With<RoomAnchor>>,
+    mut leaves: Query<(Entity, &BoundDoor, &mut DoorBody, &mut Ragdoll)>,
+    mut state: Local<ToggleState>,
+) {
+    let Some(at_frame) = toggle.at_frame else {
+        return;
+    };
+    let (Some(level), Some(anchor)) = (level, anchors.iter().next()) else {
+        return;
+    };
+    state.frames += 1;
+    let feet = anchor.translation();
+    let rooms = &level.rooms;
+    if state.frames == at_frame {
+        // The leaf whose link's door point (1.5 m inside its cell) is
+        // nearest the anchor.
+        let nearest = leaves
+            .iter()
+            .map(|(e, BoundDoor(link), ..)| {
+                let own = rooms.cell_centre(link.from);
+                let point = own + (rooms.cell_centre(link.to) - own) * 0.25;
+                (e, point.distance_squared(Vec2::new(feet.x, feet.z)))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        if let Some((leaf, d2)) = nearest
+            && let Ok((_, BoundDoor(link), mut glue, mut body)) = leaves.get_mut(leaf)
+        {
+            glue.door.toggle();
+            body.wake_to(exa_physics::body::WAKE_COUNT);
+            state.leaf = Some(leaf);
+            info!(
+                "door toggle: leaf {leaf}, door point {:.2} m away, link {}->{}, open {}",
+                d2.sqrt(),
+                link.from,
+                link.to,
+                level.tracker.is_open(*link)
+            );
+        } else {
+            info!("door toggle: no bound hinged leaf");
+        }
+    }
+    let Some(leaf) = state.leaf else {
+        return;
+    };
+    if state.frames.saturating_sub(at_frame) % DOOR_LOG_FRAMES == 0
+        && let Ok((_, BoundDoor(link), glue, _)) = leaves.get(leaf)
+    {
+        info!(
+            "door toggle: angle {:.3} (shut at {:.3}), pair flag {}, link open {}",
+            glue.door.angle,
+            glue.door.shape.closed(),
+            glue.door.both_passable,
+            level.tracker.is_open(*link)
+        );
+    }
+}
+
+/// Gives each bound link the open state of its door body, both directions.
+/// A leaf without a door body (a static leaf) leaves its link open, as a
+/// link without a body is in the original; a link a later door was bound
+/// to follows that door only.
+fn follow_door_bodies(
+    level: Option<ResMut<LevelRooms>>,
+    leaves: Query<(Entity, &BoundDoor, Option<&DoorBody>, Option<&SlideBody>)>,
+) {
+    let Some(mut level) = level else {
+        return;
+    };
+    for (entity, BoundDoor(link), hinged, sliding) in &leaves {
+        if level.doors.body(*link) != Some(entity.to_bits()) {
+            continue;
+        }
+        let flag = hinged
+            .map(|g| g.door.both_passable)
+            .or(sliding.map(|g| g.door.both_passable));
+        let open = link_open(flag);
+        if level.tracker.is_open(*link) != open {
+            level.tracker.set_door(*link, open);
+            debug!(
+                "door link {}->{} {}",
+                link.from,
+                link.to,
+                if open { "opens" } else { "shuts" }
+            );
+        }
     }
 }
 
@@ -273,18 +447,51 @@ fn track_rooms(
     mut shells: ShellQuery,
     materials: Option<ResMut<Assets<ShellMaterial>>>,
     mut drawn: Local<Vec<bool>>,
+    mut last_active: Local<Vec<u16>>,
 ) {
     let Some(mut level) = level else {
         drawn.clear();
         return;
     };
     let now = time.elapsed().as_millis() as u64;
-    let LevelRooms { rooms, tracker } = &mut *level;
+    let LevelRooms { rooms, tracker, .. } = &mut *level;
     if view.all {
         tracker.show_all();
     } else if let Some(anchor) = anchors.iter().next() {
         let p = anchor.translation();
         tracker.update(rooms, Vec2::new(p.x, p.z), now);
+        if tracker.active() != last_active.as_slice() {
+            *last_active = tracker.active().to_vec();
+            let at = Vec2::new(p.x, p.z);
+            // Each door of the anchor's room: the room behind, whether it is
+            // open, and its door point (1.5 m inside the cell).
+            let doors: Vec<(u16, bool, [i32; 2])> = rooms
+                .room_at(at)
+                .and_then(|r| rooms.room(r))
+                .map(|r| {
+                    r.links
+                        .iter()
+                        .filter_map(|l| {
+                            let own = rooms.cell_centre(l.from);
+                            let point = own + (rooms.cell_centre(l.to) - own) * 0.25;
+                            Some((
+                                rooms.room_of_index(l.to)?,
+                                tracker.is_open(*l),
+                                [(point.x * 10.0) as i32, (point.y * 10.0) as i32],
+                            ))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            debug!(
+                "active rooms {:?} (anchor at {:.2}, {:.2}, room {:?}; its doors (room, open, door point dm) {:?})",
+                tracker.active(),
+                p.x,
+                p.z,
+                rooms.room_at(at),
+                doors
+            );
+        }
     }
     let shown: Vec<bool> = (0..rooms.len())
         .map(|r| tracker.state(r as u16) != RoomState::Hidden)
