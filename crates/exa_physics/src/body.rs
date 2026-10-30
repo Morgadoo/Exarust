@@ -346,6 +346,9 @@ pub struct Part {
     pub skips_thin: bool,
     /// Particles at the start of the tick (where the last tick left them).
     start: [Vec3; 4],
+    /// Particles where the tick before last left them: the original's third
+    /// particle set, which [`Part::two_step_point`] reads.
+    two_ticks_ago: [Vec3; 4],
     /// Each particle's displacement over the last tick, as this tick's
     /// integration found it (before its inertia): the velocity the pose
     /// drive damps.
@@ -600,6 +603,7 @@ impl Part {
                 LIMB_FRICTION
             },
             start: positions,
+            two_ticks_ago: positions,
             moved: [Vec3::ZERO; 4],
             smoothed: [Vec3::ZERO; 4],
             own_origin: [1.0 - own.x - own.y - own.z, own.x, own.y, own.z],
@@ -639,6 +643,7 @@ impl Part {
         self.settled = self.transform();
         self.shown = (self.settled, self.settled);
         self.drawn_particles = (self.positions, self.positions);
+        self.two_ticks_ago = self.positions;
         self
     }
 
@@ -731,6 +736,19 @@ impl Part {
     /// `w`: the original's impact travel reads its smoothed array so.
     fn smoothed_velocity(&self, w: &[f32; 4]) -> Vec3 {
         (0..4).map(|i| self.smoothed[i] * w[i]).sum()
+    }
+
+    /// How far the point with weights `w` moved over the last two ticks
+    /// (m): its place over the particles of two ticks ago (the original's
+    /// third particle set) taken from its place now, each weighted sum
+    /// summed in particle order as the original's point transform sums.
+    /// The original's own callers are the character code's two uses; no
+    /// Exarust system reads a two-tick displacement yet, so this has no
+    /// caller.
+    pub fn two_step_point(&self, w: &[f32; 4]) -> Vec3 {
+        let before: Vec3 = (0..4).map(|i| self.two_ticks_ago[i] * w[i]).sum();
+        let now: Vec3 = (0..4).map(|i| self.positions[i] * w[i]).sum();
+        now - before
     }
 
     /// A level hit on sphere `centre` (part space): the closest point `q` on
@@ -3270,6 +3288,7 @@ impl Ragdoll {
                 .iter_mut()
                 .chain(p.previous.iter_mut())
                 .chain(p.start.iter_mut())
+                .chain(p.two_ticks_ago.iter_mut())
             {
                 *x += offset;
             }
@@ -3330,6 +3349,7 @@ impl Ragdoll {
             p.positions = p.rest.map(|r| (x * r.x + y * r.y) + (z * r.z + t));
             p.previous = p.positions;
             p.start = p.positions;
+            p.two_ticks_ago = p.positions;
             p.settled = p.transform();
             p.shown = (p.settled, p.settled);
             p.drawn_particles = (p.positions, p.positions);
@@ -4048,6 +4068,9 @@ impl Ragdoll {
             p.shown = (p.shown.1, p.settled);
             p.drawn_particles.0 = p.drawn_particles.1;
             p.drawn_particles.1 = p.positions;
+            // The tick's start is where the last tick left the part, so it
+            // becomes the two-ticks-ago set the next tick reads.
+            p.two_ticks_ago = p.start;
         }
         if self.countdown <= SLEEP_COUNT {
             self.countdown = 0;
@@ -5093,6 +5116,35 @@ mod tests {
         body.iterate();
         let after = gap(&body);
         assert!(after < before, "{after} vs {before}");
+    }
+
+    /// The two-step point transform takes the point's place now from where
+    /// the tick before last left it, both as weighted sums over the
+    /// particles in index order.
+    #[test]
+    fn the_two_step_point_transform_is_now_less_two_ticks_ago() {
+        let mut body = two_parts(0.0);
+        let before = [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+            Vec3::new(0.0, 0.0, 1.0),
+        ];
+        let moved = Vec3::new(0.1, 0.2, 0.4);
+        body.parts[0].two_ticks_ago = before;
+        body.parts[0].positions = before.map(|x| x + moved);
+        // One particle alone moves by the whole displacement; two halves
+        // by the mean of their two displacements, summed in index order.
+        assert_eq!(
+            body.parts[0].two_step_point(&[1.0, 0.0, 0.0, 0.0]),
+            Vec3::new(0.1, 0.2, 0.4)
+        );
+        let half = [0.5, 0.5, 0.0, 0.0];
+        let want = before[0] * 0.5 + before[1] * 0.5;
+        let now = body.parts[0].positions[0] * 0.5 + body.parts[0].positions[1] * 0.5;
+        assert_eq!(body.parts[0].two_step_point(&half), now - want);
+        // A part that has not ticked reports nothing.
+        assert_eq!(body.parts[1].two_step_point(&half), Vec3::ZERO);
     }
 
     /// The sole turns the solver reads are taken once when the targets are

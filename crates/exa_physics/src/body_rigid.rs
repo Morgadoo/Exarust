@@ -151,6 +151,7 @@ impl Part {
             skips_thin: false,
             friction: RIGID_FRICTION,
             start: positions,
+            two_ticks_ago: positions,
             moved: [Vec3::ZERO; 4],
             smoothed: [Vec3::ZERO; 4],
             own_origin: [1.0 - own.x - own.y - own.z, own.x, own.y, own.z],
