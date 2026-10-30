@@ -309,7 +309,14 @@ body's movement bits; `foot_cell` and `stamp_footprint` are the 30 cm nav
 footprint (rounded to even, the fallback cell on the offending axis, the
 once-per-run overflow log). `take_hit` lowers courage on a clean hit (the
 factor is built in single precision and applied in double) and marks the
-attacker once; `forget` (the last contact takes the slot), `replace` and
+attacker once; `react_to_hit` then raises the attacker contact's concern by
+the threat estimate plus a base (half more for a kind-1 hit, a quarter for
+a kind 2), floored at zero, scaled by `1 − attitude/100` in double and
+capped at 15, and `threat_from_nearby` estimates that threat as 1 less the
+largest share of the attacker's look that the observer's nearby bodies take
+up (each body's aim point against the attacker's position, within the
+attacker's radius plus 100 cm, its offset's dot over its square); `forget`
+(the last contact takes the slot), `replace` and
 `reset` clear or remap references, and `remove_from_scene` clears the
 removed body's grid flags, resets it and has every combatant in the scene
 forget it.
