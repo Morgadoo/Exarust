@@ -182,7 +182,9 @@ and the grid's rooms; portal clipping is next (see
   root, the vertex-height pass, the 16 × 16 height bounds, the block
   descriptor (centre, half extents, radius; the vertical half extent is the
   raw half of the span plus the one centimetre every block gets, so a flat
-  block has 1 cm and there is no separate minimum) and the 8 × 8 translated
+  block has 1 cm and there is no separate minimum), its recursive walk over
+  a caller-built block tree (a node's descriptor, then its four children in
+  order) and the 8 × 8 translated
   block kd-trees. Only the detail displacement is shared with the running
   terrain build; its own normal keeps the exact square root.
 - `terrain::plugins`: the terrain extension list (attach order, activate

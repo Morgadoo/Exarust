@@ -530,6 +530,46 @@ impl BlockDescriptor {
     }
 }
 
+/// One node of the tile's block tree as the descriptor walk sees it: a
+/// block's level and first bounds cell, and its four children when it was
+/// split. The original builds the tree outside this unit and walks it
+/// after every tile's bounds are known.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BlockNode {
+    pub level: u32,
+    pub column: u16,
+    pub row: u16,
+    /// Four children in the original's order, or none for a leaf.
+    pub children: Vec<BlockNode>,
+}
+
+impl BlockNode {
+    /// A leaf node.
+    pub fn leaf(level: u32, column: u16, row: u16) -> Self {
+        Self {
+            level,
+            column,
+            row,
+            children: Vec::new(),
+        }
+    }
+
+    /// The descriptor walk: this node's descriptor, then each child's in
+    /// order (the original recurses into all four when the split pointer is
+    /// set).
+    pub fn walk(&self, bounds: Option<&HeightBounds>, out: &mut Vec<BlockDescriptor>) {
+        out.push(BlockDescriptor::new(
+            self.level,
+            self.column,
+            self.row,
+            bounds,
+        ));
+        for child in &self.children {
+            child.walk(bounds, out);
+        }
+    }
+}
+
 /// The opacity byte of a vertex from its height `y`: `(160 − (15 − y)) ×
 /// 0.00625`, zero below 0, 255 above 1, else `v × 255` rounded to nearest
 /// even.
@@ -837,6 +877,23 @@ mod tests {
         let block = BlockDescriptor::new(3, 0, 0, Some(&flat));
         assert_eq!(block.centre[1], 5.0);
         assert_eq!(block.half[1], 1.0);
+    }
+
+    #[test]
+    fn the_block_walk_visits_a_node_then_its_four_children() {
+        let mut root = BlockNode::leaf(0, 0, 0);
+        root.children = (0..4)
+            .map(|i| BlockNode::leaf(1, (i % 2) * 8, (i / 2) * 8))
+            .collect();
+        let mut out = Vec::new();
+        root.walk(None, &mut out);
+        assert_eq!(out.len(), 5);
+        assert_eq!(out[0].centre, [0.0, 0.0, 0.0]);
+        assert_eq!(out[0].half[0], 2400.0);
+        // A level-1 child is half the tile, centred a quarter in.
+        assert_eq!(out[1].centre, [-1200.0, 0.0, -1200.0]);
+        assert_eq!(out[1].half[0], 1200.0);
+        assert_eq!(out[4].centre, [1200.0, 0.0, 1200.0]);
     }
 
     #[test]
