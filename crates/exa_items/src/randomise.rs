@@ -53,40 +53,10 @@ fn below(state: &mut u32, n: u32) -> u32 {
     ((u64::from(step(state)) * u64::from(n)) >> 32) as u32
 }
 
-/// The engine's fast natural logarithm.
-pub fn fast_ln(x: f32) -> f32 {
-    let bits = x.to_bits();
-    let exponent = (bits >> 23) as i32 as f32;
-    let floor = if x > 0.0 || x.is_nan() {
-        f32::from_bits(0xC2B3_DE55)
-    } else {
-        f32::NEG_INFINITY
-    };
-    let m = f32::from_bits(bits & 0x007F_FFFF | 0x3F80_0000);
-    let m2 = m * m;
-    let mut t = m * f32::from_bits(0x3CCC_A7FC) - f32::from_bits(0x3E79_8F62);
-    t = t * m2 + (m - f32::from_bits(0x4011_9122));
-    t = t * m2 + exponent * f32::from_bits(0x3F31_7218);
-    (m * f32::from_bits(0x4059_7523) + floor) + t
-}
-
-/// The engine's fast exponential.
-pub fn fast_exp(x: f32) -> f32 {
-    let top = f32::from_bits(0x4EFF_0000);
-    let v = x * f32::from_bits(0x4B38_AA3B) + f32::from_bits(0x4E7E_0000);
-    let v = if v < top { v } else { top };
-    let mut i = v.round_ties_even() as i32;
-    if i <= 0 {
-        i = 0;
-    }
-    let bits = i as u32;
-    let m = f32::from_bits(bits & 0x007F_FFFF | 0x3F80_0000);
-    let mut p = m * f32::from_bits(0x3C5D_BE77) + f32::from_bits(0xBB0B_4858);
-    p = p * m + f32::from_bits(0x3E2A_9CBE);
-    p = p * m + f32::from_bits(0x3E9F_C08B);
-    p = p * m + f32::from_bits(0x3F02_8D05);
-    f32::from_bits(bits & 0x7F80_0000) * p
-}
+/// The engine's fast logarithm and exponential, from the one shared
+/// implementation in [`exa_physics::engine_math`], under the names the
+/// randomiser's row weights use.
+pub use exa_physics::engine_math::{exp as fast_exp, ln as fast_ln};
 
 /// Sets a made weapon's condition for `grade` and marks it for its roll.
 /// Grades other than −1, 0, 1 and 2 keep the stored damage.

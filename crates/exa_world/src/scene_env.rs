@@ -15,6 +15,7 @@ use exa_assets::polyhedra::{fast_sin, fast_sin_cos};
 use exa_formats::environment::{Environment, SunMode};
 
 use crate::presets::srgb_to_linear;
+use exa_physics::engine_math::reciprocal_sqrt;
 
 /// The observer's latitude the sun's path is built around, radians (45°).
 const LATITUDE: f32 = std::f32::consts::FRAC_PI_4;
@@ -739,23 +740,6 @@ impl Rotation {
             x[1] * v[0] + y[1] * v[1] + z[1] * v[2],
             x[2] * v[0] + y[2] * v[1] + z[2] * v[2],
         ]
-    }
-}
-
-/// The engine's approximate reciprocal square root (the processor's
-/// estimate, about 12 bits).
-fn reciprocal_sqrt(value: f32) -> f32 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        // SAFETY: SSE is part of the x86_64 baseline.
-        unsafe {
-            use std::arch::x86_64::{_mm_cvtss_f32, _mm_rsqrt_ss, _mm_set_ss};
-            _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(value)))
-        }
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        1.0 / value.sqrt()
     }
 }
 

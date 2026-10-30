@@ -28,6 +28,7 @@
 use bevy::math::{Vec2, Vec3};
 
 use crate::contacts::Morale;
+use exa_physics::engine_math::reciprocal_sqrt;
 
 /// One way out of a room.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -84,21 +85,6 @@ pub struct WayOut {
 pub const FLEE_MODE: i32 = 30;
 /// The radius a flight's goal is reached within (cm).
 pub const FLEE_RADIUS_CM: f32 = 150.0;
-
-fn reciprocal_sqrt(value: f32) -> f32 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        // The approximate reciprocal square root the engine units with.
-        unsafe {
-            use std::arch::x86_64::{_mm_cvtss_f32, _mm_rsqrt_ss, _mm_set_ss};
-            _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(value)))
-        }
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        1.0 / value.sqrt()
-    }
-}
 
 /// The way out of `room` (its index, −1 for none) from `at` away from
 /// `threat` (both x, z, cm), with `exits` the room's exits; `home` the
