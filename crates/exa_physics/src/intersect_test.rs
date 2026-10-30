@@ -930,7 +930,8 @@ fn a_shadow_volume_extrudes_the_silhouette_toward_the_light() {
     // face, so the four side faces give side planes; +Y shares none.
     let volume = cube(10.0, FACES);
     let (shadow, sides) = volume.shadow_volume(Vec4::new(0.0, -1.0, 0.0, 0.0));
-    assert_eq!(sides, 4);
+    // The original's answer is the planes' last index: four planes → 3.
+    assert_eq!(sides, 3);
     assert_eq!(shadow.planes.len(), 5);
     // The +X face's edge (10, −10, 10) → (10, −10, −10) is the −Y face's
     // (10, −10, −10) → (10, −10, 10) reversed: light × edge =
@@ -963,7 +964,8 @@ fn a_shadow_volume_skips_edges_under_a_centimetre() {
     // plane; only the face away from the light is kept.
     let volume = cube(0.4, FACES);
     let (shadow, sides) = volume.shadow_volume(Vec4::new(0.0, -1.0, 0.0, 0.0));
-    assert_eq!(sides, 0);
+    // No side planes: the original's last index is −1.
+    assert_eq!(sides, -1);
     assert_eq!(shadow.planes.len(), 1);
     close_vec(shadow.planes[0].normal, Vec3::NEG_Y);
 }

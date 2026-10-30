@@ -742,12 +742,17 @@ impl ConvexVolume {
             let mut cap = if turn_first { vec![b, a] } else { vec![a, b] };
             chain(&mut segments, &mut cap);
             let ends = (cap[0] - cap[cap.len() - 1]).length_squared();
-            if f64::from(ends) < CLOSED2 {
-                cap.pop();
-            } else {
+            // The original turns a cap whose ends are at least 0.01 cm
+            // apart round and chains it on from its start; a nearer (or
+            // unordered, i.e. NaN) end closes it by dropping its last
+            // point. The squared distance is compared in double against
+            // 1e-4.
+            if f64::from(ends) >= CLOSED2 {
                 cap.reverse();
                 chain(&mut segments, &mut cap);
                 cap.reverse();
+            } else {
+                cap.pop();
             }
             if cap.len() >= 3 {
                 planes.push(Plane {
@@ -770,8 +775,11 @@ impl ConvexVolume {
     /// at least 1 cm long becomes a side plane: its normal
     /// `light.xyz × edge`, normalised, through the edge, with the polygon
     /// of the edge and the edge moved 10 000 along `−light.xyz`. Returns
-    /// the volume, side planes first, and how many side planes it has.
-    pub fn shadow_volume(&self, light: Vec4) -> (ConvexVolume, usize) {
+    /// the volume, side planes first, and the original's count of them:
+    /// the original counts a volume's planes by their last index, so this
+    /// is one less than the number of side planes and −1 with none (its
+    /// only shipped caller ignores the answer).
+    pub fn shadow_volume(&self, light: Vec4) -> (ConvexVolume, i32) {
         let towards = light.truncate();
         let open: Vec<bool> = self
             .planes
@@ -789,7 +797,7 @@ impl ConvexVolume {
                 }
             }
         }
-        let sides = planes.len();
+        let sides = planes.len() as i32 - 1;
         planes.extend(
             self.planes
                 .iter()
