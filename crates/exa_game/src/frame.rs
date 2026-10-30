@@ -523,9 +523,10 @@ pub const OVERLAY_TEXT_INSET_UNITS: i32 = 2;
 pub const OVERLAY_PANEL_ALPHA: u8 = 0x80;
 /// The fill style word the panel is drawn with.
 pub const OVERLAY_PANEL_STYLE: i32 = 3;
-/// The colour word the lines are drawn with. The word's channels were not
-/// decoded; it is kept as the original passes it.
-pub const OVERLAY_TEXT_COLOUR: u32 = 0x3E8;
+/// The height, in pixels, each line's text box may fill below its origin:
+/// the text draw stops wrapping once the next font line's top would pass
+/// `origin + 1000 − line_height`.
+pub const OVERLAY_TEXT_MAX_HEIGHT: i32 = 1000;
 
 /// Where the timed on-screen log overlay draws: the panel's rectangle and
 /// each line's origin, in window pixels.
@@ -534,7 +535,9 @@ pub const OVERLAY_TEXT_COLOUR: u32 = 0x3E8;
 /// and grows the panel by the line's wrapped height plus one interface unit
 /// of gap; the panel then sits one unit in from the window's corner and the
 /// lines two units in, each advancing by its wrapped height plus the same
-/// unit. The lines are in the ring's order, oldest first, and nothing is
+/// unit (the advance takes the line count the text draw returns, which is
+/// the measured one unless a line overflows [`OVERLAY_TEXT_MAX_HEIGHT`]).
+/// The lines are in the ring's order, oldest first, and nothing is
 /// drawn while the ring is empty. `scale` is the GUI scale in pixels,
 /// `line_height` the font's line height in pixels and `wrapped` each line's
 /// height in font lines.
@@ -1374,7 +1377,7 @@ mod tests {
         assert_eq!(layout.lines, [((10, 10), 0)]);
         assert_eq!(OVERLAY_PANEL_ALPHA, 0x80);
         assert_eq!(OVERLAY_PANEL_STYLE, 3);
-        assert_eq!(OVERLAY_TEXT_COLOUR, 0x3E8);
+        assert_eq!(OVERLAY_TEXT_MAX_HEIGHT, 1000);
     }
 
     #[test]
