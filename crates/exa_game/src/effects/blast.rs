@@ -105,6 +105,9 @@ pub const PUSH: f64 = 2.4;
 pub const WEAR_REACH: f32 = 0.25;
 /// The wear a pierced or piercing contact sets.
 pub const CONTACT_WEAR: f32 = 0.015;
+/// The pin gain's value when `(1 − k)·0.08` overshoots 0.08 (compared in
+/// double): the original stores 0.008, a tenth of the bound.
+pub const PIN_GAIN_CLAMP: f32 = 0.008;
 /// The bounds' margin, cm.
 pub const BOUNDS_MARGIN: f32 = 40.0;
 /// The alert's reach and the band its height difference is ignored in, cm.
@@ -709,7 +712,8 @@ pub fn limb_push(
         if 1.0 < f {
             f = 1.0;
         }
-        let scale = (f * -k) * 0.2;
+        // `(double)f · ((double)(−k) · 0.2)`, then narrowed.
+        let scale = (f64::from(f) * (f64::from(-k) * 0.2)) as f32;
         Some(motion * scale)
     } else {
         None
@@ -734,7 +738,11 @@ pub fn limb_terms(
     if character {
         (0.02, 2.0, setup.character_push * (2.0 / body_mass))
     } else {
-        (0.2, (inverse_mass * 0.5 + 2.0).min(3.0), setup.body_push)
+        (
+            0.2,
+            exa_physics::engine_math::min(inverse_mass * 0.5 + 2.0, 3.0),
+            setup.body_push,
+        )
     }
 }
 
@@ -786,11 +794,11 @@ pub(crate) fn knock_and_pins(k: f32, impulse: Vec3) -> (Option<(Vec3, f32)>, f32
     } else {
         None
     };
-    let mut stun = ((1.0 - f64::from(k)) * 0.08) as f32;
+    let mut stun = (f64::from(1.0f32 - k) * 0.08) as f32;
     if 0.0 > stun {
         stun = 0.0;
     } else if f64::from(stun) > 0.08 {
-        stun = 0.008;
+        stun = PIN_GAIN_CLAMP;
     }
     (knock, stun)
 }
@@ -1099,17 +1107,22 @@ impl Blast {
     /// step, then the 0–1 coordinates the draw derives and smooths (ten
     /// passes, each point half way to its neighbours' middle and its
     /// coordinate `0.5·w + 0.25·(w₊ + w₋)`). The last coordinate is the
-    /// divisor the draw normalises by.
+    /// divisor the draw normalises by; every coordinate from the second
+    /// through the last becomes `1 − w/divisor`, so the last is about zero.
+    /// The third answer is that divisor as it was before the normalisation,
+    /// which the draw also uses to scale the camera-facing pass and the
+    /// second texture coordinate.
     #[allow(clippy::needless_range_loop)]
     pub fn trail_spine(
         &self,
         index: usize,
         t: f32,
-    ) -> ([Vec3; RIBBON_SAMPLES], [f32; RIBBON_SAMPLES]) {
+    ) -> ([Vec3; RIBBON_SAMPLES], [f32; RIBBON_SAMPLES], f32) {
         let (mut points, mut widths) = self.trail_curve(index, t);
-        let inverse = 1.0 / widths[RIBBON_SAMPLES - 1];
+        let divisor = widths[RIBBON_SAMPLES - 1];
+        let inverse = 1.0 / divisor;
         widths[0] = 1.0;
-        for i in 1..RIBBON_SAMPLES - 1 {
+        for i in 1..RIBBON_SAMPLES {
             widths[i] = 1.0 - widths[i] * inverse;
         }
         for _ in 0..SMOOTH_PASSES {
@@ -1119,7 +1132,7 @@ impl Blast {
                 widths[i] = widths[i] * 0.5 + (widths[i + 1] * 0.25 + widths[i - 1] * 0.25);
             }
         }
-        (points, widths)
+        (points, widths, divisor)
     }
 
     /// The raw spine samples and widths before the draw normalises and
@@ -1244,9 +1257,9 @@ impl Blast {
             let chunk = &self.chunks[index];
             let half = chunk.reach * RIBBON_HALF_OVER_REACH;
             let colour = self.chunk_colour(index);
-            let (spine, widths) = self.trail_spine(index, t);
-            let view = Self::face_camera(&spine, &widths, widths[RIBBON_SAMPLES - 1], camera);
-            let uv2 = [(RIBBON_WIDTH / half) * widths[RIBBON_SAMPLES - 1], row];
+            let (spine, widths, width_scale) = self.trail_spine(index, t);
+            let view = Self::face_camera(&spine, &widths, width_scale, camera);
+            let uv2 = [(RIBBON_WIDTH / half) * width_scale, row];
             let mut strip = RibbonMesh::default();
             let mut previous = view[0] - (view[1] - view[0]);
             strip.push_blast_quad(
@@ -1553,6 +1566,8 @@ mod tests {
             (0.02, 2.0, 0.8 * 0.025)
         );
         assert_eq!(limb_terms(&BLAST_SETUP, false, 4.0, 0.0), (0.2, 3.0, 0.5));
+        // MINSS answers its second operand, 3, for a NaN reach.
+        assert_eq!(limb_terms(&BLAST_SETUP, false, f32::NAN, 0.0).1, 3.0);
         assert_eq!(contact_weight(1.0, true, false), (0.5, CONTACT_WEAR));
     }
 
@@ -1578,6 +1593,47 @@ mod tests {
         assert_ne!(size, 1.769_999_7_f32.sqrt() * 2.0);
         // A NaN mass leaves a NaN pin gain, as the compares fall through.
         assert!(character_knock(f32::NAN, 1.0, Vec3::ZERO).stun.is_nan());
+    }
+
+    #[test]
+    fn the_pin_gain_subtracts_in_single_precision() {
+        // A 4.92 kg body: k = 2/4.92. The single-precision `1 − k` gives
+        // 0x3d427a0d; subtracting in double and narrowing would give
+        // 0x3d427a0c.
+        let stun = character_knock(4.92, 1.0, Vec3::ZERO).stun;
+        assert_eq!(stun.to_bits(), 0x3d42_7a0d);
+        let k = f64::from(2.0f32 / 4.92);
+        assert_eq!((((1.0 - k) * 0.08) as f32).to_bits(), 0x3d42_7a0c);
+        // The upper clamp stores 0.008 (single precision, 0x3c03126f), a
+        // tenth of the 0.08 bound; only a negative mass (k below zero)
+        // reaches it.
+        let over = character_knock(-10.0, 1.0, Vec3::ZERO).stun;
+        assert_eq!(over.to_bits(), 0x3c03_126f);
+    }
+
+    #[test]
+    fn the_limb_impulse_scales_in_double() {
+        // The limb moves at 7 cm/s into a 10 cm move, so f = 0.3; with
+        // k = −(1/1.2)·0.5 the impulse is the move times the scale the
+        // assembly builds in double: 0.25 cm along z.
+        let mut chunk = blast().chunks[0];
+        chunk.previous = Vec3::ZERO;
+        chunk.at = Vec3::new(0.0, 0.0, 10.0);
+        let hit = limb_push(
+            &chunk,
+            Vec3::new(0.0, 0.0, 7.0),
+            Vec3::new(0.0, 0.0, 7.0),
+            1.0,
+            0.2,
+            0.5,
+        )
+        .unwrap();
+        let impulse = hit.impulse.unwrap();
+        assert_eq!((impulse.x, impulse.y, impulse.z), (0.0, 0.0, 0.25));
+        let f = 1.0f32 - 70.0f32 / 100.0;
+        let k = -(1.0f32 / 1.2) * 0.5;
+        let scale = (f64::from(f) * (f64::from(-k) * 0.2)) as f32;
+        assert_eq!(scale, 0.025_000_001);
     }
 
     #[test]
@@ -1685,12 +1741,15 @@ mod tests {
     #[test]
     fn the_spine_normalises_and_smooths_its_widths() {
         let b = trailing_blast();
-        let (_, widths) = b.trail_spine(0, 0.0);
+        let (_, widths, divisor) = b.trail_spine(0, 0.0);
         // The draw sets the head's coordinate to 1 and spreads the rest
-        // over the last one (8.75), then smooths ten times. The head stays
-        // 1, the last stays 8.75, the middle fall between them.
+        // over the last one (6.75): every coordinate from the second on is
+        // `1 − w/6.75`, so the last becomes about zero. Ten smoothing
+        // passes then blend the middle ones. The divisor the camera pass
+        // and the texture coordinate scale by is the raw 6.75.
+        assert_eq!(divisor, 6.75);
         assert_eq!(widths[0], 1.0);
-        assert_eq!(widths[RIBBON_SAMPLES - 1], 6.75);
+        assert_eq!(widths[RIBBON_SAMPLES - 1], 0.0);
         assert!(widths[1] > 0.0 && widths[1] < 1.0);
         assert!(widths[6].is_finite() && widths[6] > 0.0);
     }

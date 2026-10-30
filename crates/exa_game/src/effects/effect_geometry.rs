@@ -279,6 +279,27 @@ mod tests {
     }
 
     #[test]
+    fn the_force_row_steps_in_double_precision() {
+        // The counter is formed in single precision, then the 0.002 step,
+        // the pass divisor, the start and the 0.001 half step are applied
+        // in double and the sum narrowed: 0.5·0.002 + 0.25 − 0.001 is
+        // exactly 0.25, where the same all in single gives 0x3e7fffff.
+        assert_eq!(force_row(0, 0, 0.25).to_bits(), 0x3e80_0000);
+        let single = ((0.5f32 * 0.002) / 1.0 + 0.25) - 0.001;
+        assert_eq!(single.to_bits(), 0x3e7f_ffff);
+    }
+
+    #[test]
+    fn a_pass_product_pairs_its_halves() {
+        // (1e8 + 1) + (−1e8 + 1) is 0, where left-to-right would give 1.
+        let node = [[1.0e8, 1.0, -1.0e8, 1.0]; 4];
+        let pass = [[1.0; 4]; 4];
+        let out = pass_matrix(node, pass);
+        assert_eq!(out[0][0], 0.0);
+        assert_ne!(out[0][0], 1.0);
+    }
+
+    #[test]
     fn the_pass_rows_step_by_the_level_of_detail() {
         // Step 1, base 0: rows 0.0, 1.0, 2.0.
         assert_eq!(effect_row(0, 0, 0.0, 1.0), 0.0);

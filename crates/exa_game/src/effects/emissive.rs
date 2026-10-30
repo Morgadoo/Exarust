@@ -396,9 +396,9 @@ pub fn blast_light(
                     BLAST_SPENT_ATTENUATION
                 };
                 if f64::from(f) > 0.666 {
-                    // MAXSS returns its second operand, 0, for a NaN.
-                    let s = 4.0 - f * 4.5;
-                    let s = if s > 0.0 { s } else { 0.0 };
+                    // The engine's max is MAXSS: its second operand, 0, on
+                    // a NaN.
+                    let s = exa_physics::engine_math::max(4.0 - f * 4.5, 0.0);
                     s * s
                 } else {
                     1.0
@@ -564,6 +564,12 @@ mod tests {
         let fresh = blast_light(&[(Vec3::ZERO, 60)], true, 0.0, 60, 0.6, 1.0);
         assert_eq!(fresh.attenuation, 5000.0);
         assert_eq!(fresh.points[0].1, BLAST_COLOUR * 0.6);
+        // A zero life makes f a NaN: the ordered `f > 0.666` is false, so
+        // the strength stays 1 (the max under it is then unreachable), and
+        // `f < 0.3` is false, so the attenuation is the spent 1000.
+        let broken = blast_light(&[(Vec3::ZERO, 0)], true, 0.0, 0, 0.6, 1.0);
+        assert_eq!(broken.attenuation, 1000.0);
+        assert_eq!(broken.points[0].1, BLAST_COLOUR * 0.6);
     }
 
     #[test]

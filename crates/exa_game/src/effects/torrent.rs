@@ -149,9 +149,41 @@ pub const STATIC_CONTACT: StaticContact = StaticContact {
 /// between frames.
 pub const NORMAL_AVERAGE: f32 = 0.1;
 pub const NORMAL_LERP: f32 = 0.03;
-/// The middle vertices' offset along the neighbours and the segment.
-pub const MID_NEIGHBOURS: f32 = 0.25;
-pub const MID_SEGMENT: f32 = -0.0625;
+/// The midpoint's parameter along each segment: the draw's fixed half,
+/// not the frame's alpha.
+pub const MIDPOINT: f32 = 0.5;
+
+/// The four Hermite weights on a segment, in the original's arithmetic
+/// order: `2s³ − 3s² + 1`, `3s² − 2s³`, `s³ − 2s² + s` and `s³ − s²`.
+pub fn hermite_weights(s: f32) -> (f32, f32, f32, f32) {
+    let squared = s * s;
+    let cubed = squared * s;
+    let h00 = (cubed * 2.0 - squared * 3.0) + 1.0;
+    let h01 = squared * 3.0 + cubed * -2.0;
+    let h10 = (cubed - squared * 2.0) + s;
+    let h11 = cubed - squared;
+    (h00, h01, h10, h11)
+}
+
+/// The doubled vertex between `a` and `b`: the cubic Hermite at
+/// [`MIDPOINT`]. Its incoming tangent is the half of the difference to
+/// `previous` (none at the first segment), its outgoing tangent the half
+/// of the difference to `next`, or the whole one-sided difference to `b`
+/// when there is no `next` (only the draw's closing segment, from the last
+/// sample to its repeat, where that difference is zero).
+pub fn hermite_midpoint(previous: Option<Vec3>, a: Vec3, b: Vec3, next: Option<Vec3>) -> Vec3 {
+    let (h00, h01, h10, h11) = hermite_weights(MIDPOINT);
+    let mut middle = a * h00;
+    middle += b * h01;
+    if let Some(previous) = previous {
+        middle += (b - previous) * (h10 * 0.5);
+    }
+    middle += match next {
+        Some(next) => (next - a) * (h11 * 0.5),
+        None => (b - a) * h11,
+    };
+    middle
+}
 
 /// The torrent's states.
 pub const FIZZLED: i32 = -2;
@@ -756,7 +788,8 @@ impl Torrent {
                 let mut k = stream.head;
                 loop {
                     let p = &stream.points[k];
-                    let s = p.life as f32 / self.point_life as f32;
+                    // The life share is a double division, then narrowed.
+                    let s = (f64::from(p.life) / f64::from(self.point_life)) as f32;
                     samples.push(StreamSample {
                         at: lerp(p.previous, p.at, t),
                         width: p.width,
@@ -796,17 +829,19 @@ impl Torrent {
         }
     }
 
-    /// The torrent's ribbon: one strip a stream, its samples doubled by
-    /// the midpoints between them — each midpoint the two neighbours'
-    /// middle, pulled a quarter of the way by the samples around it and a
-    /// sixteenth back along its own segment — and every pair widened by a
-    /// normal across the eye and the sample's age. The normals come from
-    /// the neighbour differences crossed with the eye: the first and last
-    /// averaged, the middles interpolated between the two ends' normals,
-    /// each kept between draws by [`NORMAL_LERP`]. The second texture
-    /// coordinate walks along the strip by the squared sample distance
-    /// times [`RIBBON_STEP_CHARGING`] while the torrent charges and
-    /// [`RIBBON_STEP_RUNNING`] while it runs.
+    /// The torrent's ribbon: one strip a stream. The stream's samples,
+    /// the last repeated once, are doubled by the cubic Hermite midpoints
+    /// between them ([`hermite_midpoint`]); every vertex but the last is
+    /// widened by a normal across the eye and the sample's age. The frame's
+    /// normals come from the neighbour differences crossed with the eye and
+    /// feed the stream's moving mean; the drawn normals run from the
+    /// stream's head normal to its tail normal, each blended toward the
+    /// samples' end differences ([`NORMAL_AVERAGE`] at the head,
+    /// [`NORMAL_LERP`] at the tail). The second texture coordinate walks
+    /// along the strip by the squared vertex distance times
+    /// [`RIBBON_STEP_CHARGING`] while the torrent charges and
+    /// [`RIBBON_STEP_RUNNING`] while it runs ([`walk_texture`]). Streams are
+    /// separate strips.
     ///
     /// The original crosses the differences with the eye position carried
     /// into the effect node's frame; Exarust uses the world eye, the same
@@ -824,25 +859,37 @@ impl Torrent {
             if samples.len() < 3 {
                 continue;
             }
-            let mut points = Vec::with_capacity((samples.len() - 1) * 2);
-            let mut widths = Vec::with_capacity((samples.len() - 1) * 2);
-            for i in 0..samples.len() - 1 {
-                points.push(samples[i].at);
-                let mut middle = lerp(samples[i].at, samples[i + 1].at, 0.5);
-                if i > 0 {
-                    middle += (samples[i + 1].at - samples[i - 1].at) * MID_NEIGHBOURS;
-                }
-                middle += (samples[i + 1].at - samples[i].at) * MID_SEGMENT;
+            // The draw repeats the last sample once, so the last real
+            // segment's outgoing tangent reaches the repeat and a final,
+            // degenerate segment closes the doubled spine.
+            let n = samples.len();
+            let mut extended = samples.clone();
+            extended.push(samples[n - 1]);
+            let mut points = Vec::with_capacity(n * 2);
+            let mut widths = Vec::with_capacity(n * 2);
+            for i in 0..n {
+                points.push(extended[i].at);
+                let middle = hermite_midpoint(
+                    if i > 0 {
+                        Some(extended[i - 1].at)
+                    } else {
+                        None
+                    },
+                    extended[i].at,
+                    extended[i + 1].at,
+                    extended.get(i + 2).map(|sample| sample.at),
+                );
                 points.push(middle);
                 let midpoint = |a: f32, b: f32| a + (b - a) * 0.5;
-                widths.push(samples[i]);
+                widths.push(extended[i]);
                 widths.push(StreamSample {
                     at: middle,
-                    width: midpoint(samples[i].width, samples[i + 1].width),
-                    weight: midpoint(samples[i].weight, samples[i + 1].weight),
-                    age: midpoint(samples[i].age, samples[i + 1].age),
+                    width: midpoint(extended[i].width, extended[i + 1].width),
+                    weight: midpoint(extended[i].weight, extended[i + 1].weight),
+                    age: midpoint(extended[i].age, extended[i + 1].age),
                 });
             }
+            // `count` vertices; the last is only a direction.
             let count = points.len();
             let mut normals = vec![Vec3::ZERO; count];
             let first = normalize(cross(points[1] - points[0], eye));
@@ -853,31 +900,32 @@ impl Torrent {
                 normals[i] = normal;
                 sum += normal;
             }
+            // The closing vertex takes the head's normal, then the stream's
+            // moving mean of the frame's normals is blended in.
             normals[count - 1] = first;
-            let sum = normalize(sum);
-            normals[0] = normalize(lerp(normals[0], sum, NORMAL_AVERAGE));
-            normals[count - 1] = normals[0];
+            let mean = normalize(sum);
             let stream = &mut self.records[index];
-            stream.normals[0] = normals[0];
-            stream.normals[1] = normalize(lerp(
-                stream.normals[1],
-                normalize(cross(points[1] - points[0], eye)),
-                NORMAL_LERP,
-            ));
-            stream.normals[2] = normalize(lerp(
-                stream.normals[2],
-                normalize(cross(points[count - 1] - points[count - 3], eye)),
-                NORMAL_LERP,
-            ));
+            stream.normals[0] = normalize(lerp(stream.normals[0], mean, NORMAL_AVERAGE));
+            // The two ends blend toward the normals of the samples' (not
+            // the doubled vertices') end differences; the blends are not
+            // normalised again.
+            let head_side = normalize(cross(samples[1].at - samples[0].at, eye));
+            let tail_side = normalize(cross(samples[n - 1].at - samples[n - 3].at, eye));
+            stream.normals[1] = lerp(stream.normals[1], head_side, NORMAL_AVERAGE);
+            stream.normals[2] = lerp(stream.normals[2], tail_side, NORMAL_LERP);
             normals[0] = stream.normals[1];
             for i in 1..count - 1 {
-                let t = i as f32 / (count - 2) as f32;
+                // The share is a double division, then narrowed.
+                let t = (f64::from(i as i32) / f64::from((count - 2) as i32)) as f32;
                 normals[i] = normalize(lerp(stream.normals[1], stream.normals[2], t));
             }
-            stream.normals[3] = normals[count - 2];
+            stream.normals[3] = normals[count - 4];
+            // One emitter call a vertex but the last; each call's two
+            // triangles join its pair to the next, so the last call's pair
+            // is dropped and no stream joins the one before it.
             let mut strip = RibbonMesh::default();
             let mut along = 0.0f32;
-            for i in 0..count - 2 {
+            for i in 0..count - 1 {
                 strip.push_torrent_quad(
                     points[i],
                     normals[i],
@@ -889,21 +937,21 @@ impl Torrent {
                 );
                 let delta = points[i + 1] - points[i];
                 let squared = (delta.x * delta.x + delta.y * delta.y) + delta.z * delta.z;
-                along = (f64::from(along) + f64::from(squared) * step) as f32;
+                along = walk_texture(along, squared, step);
             }
-            let base = if mesh.positions.is_empty() {
-                0
-            } else {
-                mesh.vertex_count() as i32 - 2
-            };
-            if !mesh.positions.is_empty() {
-                mesh.drop_triangles(2);
-            }
+            strip.drop_triangles(2);
+            let base = mesh.vertex_count() as i32;
             mesh.append(&strip, base, |point| point);
         }
-        mesh.drop_triangles(2);
         mesh
     }
+}
+
+/// The texture coordinate's next value along a stream: the squared
+/// sample distance times the step, added to the coordinate, both in double
+/// precision and then narrowed, as the emitter does.
+pub fn walk_texture(along: f32, squared: f32, step: f64) -> f32 {
+    (f64::from(squared) * step + f64::from(along)) as f32
 }
 
 /// `(a × b)`, each term in the original's cross order. The original's
@@ -924,7 +972,11 @@ pub fn limb_terms(character: bool, inverse_mass: f32, body_mass: f32) -> (f32, f
     if character {
         (0.5, (f64::from(1.0 / body_mass) * 0.8) as f32, ease)
     } else {
-        ((inverse_mass * 0.25 + 0.5).min(3.0), 0.5, ease)
+        (
+            exa_physics::engine_math::min(inverse_mass * 0.25 + 0.5, 3.0),
+            0.5,
+            ease,
+        )
     }
 }
 
@@ -1130,6 +1182,18 @@ mod tests {
     }
 
     #[test]
+    fn the_texture_walk_is_double_precision() {
+        // A 3 cm segment in the charging step: 9·0.005 in double narrows to
+        // 0x3d3851ec, where the product in single would be 0x3d3851eb.
+        assert_eq!(
+            walk_texture(0.0, 9.0, RIBBON_STEP_CHARGING).to_bits(),
+            0x3d38_51ec
+        );
+        assert_eq!((9.0f32 * 0.005f32).to_bits(), 0x3d38_51eb);
+        assert_eq!(walk_texture(1.0, 100.0, RIBBON_STEP_RUNNING), 1.03);
+    }
+
+    #[test]
     fn the_cosine_and_the_light_merge_carry_the_numbers() {
         assert_eq!(cosine_between(Vec3::X, Vec3::X * 2.0), 1.0);
         assert_eq!(cosine_between(Vec3::ZERO, Vec3::X), 0.0);
@@ -1158,10 +1222,77 @@ mod tests {
     }
 
     #[test]
+    fn the_stream_keeps_a_moving_mean_and_un_normalised_ends() {
+        let mut t = torrent();
+        // A straight stream along z, the eye off to +x: every normal of the
+        // frame is +y.
+        for stream in &mut t.records[..16] {
+            for (k, point) in stream.points.iter_mut().enumerate() {
+                point.life = 1;
+                point.at = Vec3::new(0.0, 0.0, 10.0 * k as f32);
+                point.previous = point.at;
+                point.width = 1.0;
+                point.age = 1.0;
+            }
+            stream.head = 3;
+            stream.source = Vec3::new(0.0, 0.0, -10.0);
+            stream.source_previous = stream.source;
+            stream.base_width = 1.0;
+            stream.split = false;
+        }
+        // The head's end normal is blended but not normalised again:
+        // lerp((0,0,4), (0,1,0), 0.1) = (0, 0.1, 3.6).
+        t.records[0].normals[1] = Vec3::new(0.0, 0.0, 4.0);
+        let frame = t.frame(0.0);
+        let _ = t.ribbon(&frame, Vec3::new(1000.0, 0.0, 0.0));
+        let stored = t.records[0].normals[1];
+        assert!((stored.x).abs() < 1e-6);
+        assert!((stored.y - 0.1).abs() < 1e-5, "{stored:?}");
+        assert!((stored.z - 3.6).abs() < 1e-5, "{stored:?}");
+        // The mean starts at zero, so it becomes the frame's mean direction
+        // (this frame's samples run back along z, so the sign is the
+        // stream's, not a fixed one).
+        assert!(t.records[0].normals[0].y.abs() > 0.99);
+    }
+
+    #[test]
+    fn the_midpoint_is_the_half_hermite() {
+        // At the half the four weights are 0.5, 0.5, 0.125 and -0.125,
+        // built in the original's order.
+        assert_eq!(hermite_weights(0.5), (0.5, 0.5, 0.125, -0.125));
+        // Samples at 0 and 10 cm along z: the middle sits at 5, the
+        // incoming tangent adds (10 − (−10))·0.0625 = 1.25 and the
+        // outgoing one takes (30 − 0)·−0.0625 = −1.875, giving 4.375.
+        let a = Vec3::ZERO;
+        let b = Vec3::new(0.0, 0.0, 10.0);
+        let previous = Vec3::new(0.0, 0.0, -10.0);
+        let next = Vec3::new(0.0, 0.0, 30.0);
+        let middle = hermite_midpoint(Some(previous), a, b, Some(next));
+        assert_eq!(middle, Vec3::new(0.0, 0.0, 4.375));
+        // The first segment has no incoming tangent; the last takes the
+        // whole one-sided difference: 5 + 1.25 − 1.25 = 5.
+        assert_eq!(
+            hermite_midpoint(None, a, b, Some(next)),
+            Vec3::new(0.0, 0.0, 5.0 - 1.875)
+        );
+        assert_eq!(
+            hermite_midpoint(Some(previous), a, b, None),
+            Vec3::new(0.0, 0.0, 5.0)
+        );
+        // The last real segment's outgoing tangent reaches the repeated
+        // last sample: (10 − 0)·−0.0625 = −0.625, so 5 + 1.25 − 0.625.
+        assert_eq!(
+            hermite_midpoint(Some(previous), a, b, Some(b)),
+            Vec3::new(0.0, 0.0, 5.625)
+        );
+    }
+
+    #[test]
     fn the_contact_rules_carry_the_numbers() {
         // (1/80)·0.8 in double rounds to 0.01; in single it is 0.010000001.
         assert_eq!(limb_terms(true, 1.0, 80.0), (0.5, 0.01, 0.25));
         assert_eq!(limb_terms(false, 12.0, 0.0), (3.0, 0.5, 0.5 / 13.0));
+        assert_eq!(limb_terms(false, f32::NAN, 0.0).0, 3.0);
         let p = StreamPoint {
             at: Vec3::new(0.0, 0.0, 10.0),
             previous: Vec3::ZERO,
@@ -1196,11 +1327,15 @@ mod tests {
         }
         let frame = t.frame(1.0);
         let mesh = t.ribbon(&frame, Vec3::new(1000.0, 1000.0, 0.0));
-        // Three samples make a four-point spine and two emitter calls a
-        // stream; the streams chain onto the previous stream's last pair
-        // and the final closing pair is dropped.
-        assert_eq!(mesh.positions.len(), 16 * 4);
-        assert_eq!(mesh.indices.len(), 96);
+        // Three samples and the repeated last make six doubled vertices,
+        // five emitter calls and four quads a stream; the last call's
+        // forward pair is dropped and no stream joins another.
+        assert!(frame.streams.iter().all(|(_, samples)| samples.len() == 3));
+        assert_eq!(mesh.positions.len(), 16 * 10);
+        assert_eq!(mesh.indices.len(), 16 * 4 * 6);
+        // The second stream's first triangle starts at its own first pair.
+        assert_eq!(mesh.indices[4 * 6], 10);
+        assert!(mesh.indices.iter().all(|&i| usize::from(i) < 160));
         let (colour, _) = &frame.streams[0];
         assert_eq!(mesh.colours[0], *colour);
         assert_eq!(mesh.uvs[0][0], 0.0);
