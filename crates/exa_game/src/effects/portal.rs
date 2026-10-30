@@ -354,16 +354,18 @@ pub struct ImportedMarker {
     pub size: f32,
 }
 
-/// The import handler: a node whose flags carry [`IMPORT_FLAG`] is replaced
-/// by a portal marker at its place. The payload is four bytes; a shorter
-/// slice is refused rather than read past its end.
+/// The import handler: a marker loaded into a world whose flags carry
+/// [`IMPORT_FLAG`] (see [`replaces_marker`]) is replaced by a fresh portal
+/// marker at its place, which keeps the loaded node's render value. The
+/// payload is four bytes, read only then; a shorter slice is refused rather
+/// than read past its end.
 pub fn imported_marker(
-    node_flags: u32,
+    world_flags: u32,
     payload: &[u8],
     at_cm: Vec3,
     render: f32,
 ) -> Option<ImportedMarker> {
-    if !replaces_marker(node_flags) {
+    if !replaces_marker(world_flags) {
         return None;
     }
     let bytes: [u8; 4] = payload.get(..4)?.try_into().ok()?;
@@ -375,8 +377,8 @@ pub fn imported_marker(
 }
 
 /// A particle system's ring: its per-slot life, look, position and previous
-/// position, its live count and capacity, the template's lifetime and the
-/// burst's pull. The original writes a slot's life at one array, its look
+/// position, its live count and capacity, and the template's lifetime. The
+/// original writes a slot's life at one array, its look
 /// at another and its two points at a third, and stops the seeding pass the
 /// moment the ring is full.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -387,20 +389,18 @@ pub struct ParticleRing {
     pub before: Vec<Vec3>,
     /// Live particles: the system's count word.
     pub count: usize,
-    pub pull: f32,
     pub lifetime_ticks: i32,
 }
 
 impl ParticleRing {
     /// A ring of `capacity` empty slots.
-    pub fn new(capacity: usize, lifetime_ticks: i32, pull: f32) -> Self {
+    pub fn new(capacity: usize, lifetime_ticks: i32) -> Self {
         Self {
             life: vec![0; capacity],
             look: vec![0; capacity],
             at: vec![Vec3::ZERO; capacity],
             before: vec![Vec3::ZERO; capacity],
             count: 0,
-            pull,
             lifetime_ticks,
         }
     }
@@ -621,7 +621,7 @@ mod tests {
 
     #[test]
     fn a_dissolve_fills_its_ring_and_clears_the_burst_flag() {
-        let mut ring = ParticleRing::new(4, 41, SEED_VELOCITY_PULL);
+        let mut ring = ParticleRing::new(4, 41);
         assert_eq!((ring.count, ring.capacity()), (0, 4));
         assert!(!ring.is_full());
         let start = start_dissolve(
@@ -644,7 +644,7 @@ mod tests {
             assert_eq!(ring.before[slot], particle.before);
         }
         // A smaller ring takes only its capacity.
-        let mut small = ParticleRing::new(1, 41, SEED_VELOCITY_PULL);
+        let mut small = ParticleRing::new(1, 41);
         let start = start_dissolve(
             &[node(Vec3::splat(6.0))],
             Vec3::ZERO,
