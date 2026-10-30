@@ -758,8 +758,8 @@ effect_geometry}`.
   close chunks separate, and the effect ends when the chunks' 58-tick
   lives run out. The chunk ribbons' mesh allocates eight trail slots a
   chunk (896 vertices, 1344 indices, `mesh_plan`), and the charge loop
-  starts at volume 1 and pitch 1 then takes `base·0.8·roll`
-  (`wave_loop`).
+  starts silent at pitch 1 with `base·0.8·roll` as its voice's gain
+  (`wave_loop`); neither has a caller yet.
 - **The vanish** (`vanish::Vanish`): hiding clears render bit 4 and the
   shown amounts; showing sets them to 1. The phase hook shows the body
   (phase 4) until the phase table ends, then hides it for good; a lent

@@ -37,10 +37,10 @@
 //!   40 cm, whose length is the bounding radius.
 //! - **Draw and sound**: the chunk ribbons' mesh allocates eight trail slots
 //!   a chunk, a quad between each neighbouring pair: 896 vertices and 1344
-//!   indices ([`mesh_plan`]). The charge loop starts at the node's place at
-//!   volume 1 and pitch 1, then takes `base·0.8·roll` as its volume
-//!   ([`wave_loop`]); the release plays its own sound at the pitch the
-//!   tick answers.
+//!   indices ([`mesh_plan`]). The charge loop starts at the node's place
+//!   silent (volume 0) at pitch 1, with `base·0.8·roll` (in double) as its
+//!   voice's gain ([`wave_loop`]); the release plays its own sound at the
+//!   pitch the tick answers.
 //!
 //! The release itself, the chunk drawing and the blast's own setup belong
 //! to the blast effect, outside this group.
@@ -91,29 +91,33 @@ pub const BOUNDS_MARGIN_CM: f32 = 40.0;
 pub const DRAW_SLOTS: usize = 8;
 pub const DRAW_VERTICES: usize = (DRAW_SLOTS - 1) * CHUNKS * 4;
 pub const DRAW_INDICES: usize = (DRAW_SLOTS - 1) * CHUNKS * 6;
-/// The charge loop's volume: the sound record's base times 0.8 and a draw.
-pub const LOOP_VOLUME_SCALE: f64 = 0.8;
+/// The charge loop's gain: the sound record's base times 0.8 and a draw.
+pub const LOOP_GAIN_SCALE: f64 = 0.8;
 
 /// The drawn mesh's sizes, as the original allocates them.
 pub fn mesh_plan() -> (usize, usize) {
     (DRAW_VERTICES, DRAW_INDICES)
 }
 
-/// The wave's charge loop: it starts at the node's place at volume 1 and
-/// pitch 1, then takes `base · 0.8 · roll` as its volume.
+/// The wave's charge loop: it starts at the node's place at volume 0 and
+/// pitch 1 (the frames raise the volume), its voice's gain
+/// `base · 0.8 · roll`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WaveLoop {
     pub at: Vec3,
     pub volume: f32,
     pub pitch: f32,
+    pub gain: f32,
 }
 
-/// The charge loop's volume from the sound record's base and a roll.
+/// The charge loop from the sound record's base and a roll: the gain is
+/// `(base · 0.8) · roll` in double.
 pub fn wave_loop(base: f32, roll: f64, at: Vec3) -> WaveLoop {
     WaveLoop {
         at,
-        volume: (f64::from(base) * LOOP_VOLUME_SCALE * roll) as f32,
+        volume: 0.0,
         pitch: 1.0,
+        gain: (f64::from(base) * LOOP_GAIN_SCALE * roll) as f32,
     }
 }
 
@@ -519,7 +523,8 @@ mod tests {
     fn the_charge_loop_takes_eight_tenths_of_its_base() {
         let loop_sound = wave_loop(0.5, 0.5, Vec3::X);
         assert_eq!(loop_sound.at, Vec3::X);
-        assert_eq!(loop_sound.volume, (0.5f64 * 0.8 * 0.5) as f32);
+        assert_eq!(loop_sound.volume, 0.0);
+        assert_eq!(loop_sound.gain, (0.5f64 * 0.8 * 0.5) as f32);
         assert_eq!(loop_sound.pitch, 1.0);
     }
 }
