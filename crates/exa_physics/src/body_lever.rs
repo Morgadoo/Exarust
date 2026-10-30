@@ -39,10 +39,13 @@
 //! the step's drive turns the arm toward it 0.02 rad a tick. The release
 //! clears the hold and wakes the lever.
 //!
-//! Not reproduced: the creak and the return's tick loop are reported by the
-//! step but not played (the audio side has no mechanism hookup), and a kind
-//! 6 lever's light fade (no light node is looked up, so every lever
-//! signals). The original runs the lever's rules in the body's own step
+//! **Sounds** (`crate::mechanism_sound`): each awake tick sends the creak
+//! voice (`leverb_mov` at the arm's centre) and the return's tick loop
+//! (`leverb_tck01`): started when a return is armed, at load too, faded
+//! while it returns and freed at its end or at the report of 0.
+//!
+//! Not reproduced: a kind 6 lever's light fade (no light node is looked
+//! up, so every lever signals). The original runs the lever's rules in the body's own step
 //! between its integration and the link passes; Exarust runs them after the
 //! solver's tick, as it does the doors'.
 //!
@@ -59,6 +62,7 @@ use crate::door;
 use crate::engine_math::{direction_from_yaw, heading};
 use crate::lever::{self, Lever, LeverTick, Record, Signal};
 use crate::mechanism::MechanismSignal;
+use crate::mechanism_sound::{self, MechanismSounded, TickCue};
 
 /// A lever's mobility, whatever its file stores.
 pub const LEVER_MOBILITY: f32 = 1.0;
@@ -369,6 +373,7 @@ pub fn swing_clamp(detent0: f32, wanted: f32, span: f32) -> f32 {
 /// Builds the lever glue of arms registered this frame and steps every
 /// awake arm after the solver. Added by [`crate::prop::PropPlugin`].
 pub(crate) fn plugin(app: &mut App) {
+    crate::mechanism_sound::register(app);
     app.add_systems(
         FixedUpdate,
         (
@@ -386,6 +391,7 @@ fn register_levers(
     mut pending: Query<(Entity, &PendingLever, &mut Ragdoll)>,
     nodes: Query<(&Transform, Option<&ChildOf>)>,
     globals: Query<&GlobalTransform>,
+    mut sounds: MessageWriter<MechanismSounded>,
 ) {
     let now = ticks.map_or(0, |t| t.millis() as i32);
     for (e, lever, mut body) in &mut pending {
@@ -409,26 +415,45 @@ fn register_levers(
         body.parts[0].inverse_mass = LEVER_MOBILITY;
         body.parts[0].pairing.mobility = LEVER_MOBILITY;
         body.enter_mechanism_environment();
+        // A return saved in the object word is armed again, and arming
+        // starts the tick loop.
+        if glue.armed {
+            sounds.write(MechanismSounded::TickLoop {
+                source: e,
+                position: Vec3::from(body.parts[0].transform().translation),
+                cue: TickCue::Start,
+            });
+        }
         commands.entity(e).insert(glue);
     }
 }
 
 /// Counts down every armed return and steps every awake arm, sending the
-/// signals its reports make.
+/// signals and the sounds its reports make.
 fn step_levers(
     ticks: Option<Res<BodyTicks>>,
-    mut levers: Query<(&mut LeverBody, &mut Ragdoll)>,
+    mut levers: Query<(Entity, &mut LeverBody, &mut Ragdoll)>,
     mut signals: MessageWriter<MechanismSignal>,
+    mut sounds: MessageWriter<MechanismSounded>,
 ) {
     let now = ticks.map_or(0, |t| t.millis() as i32);
-    for (mut glue, mut body) in &mut levers {
+    for (e, mut glue, mut body) in &mut levers {
         if glue.count_down(now) {
             body.wake_to(WAKE_COUNT);
         }
         if body.asleep() {
             continue;
         }
+        let was_playing = glue.lever.tick_playing;
         let out = glue.tick(&mut body, now);
+        let centre = Vec3::from(body.parts[0].transform().translation);
+        sounds.write_batch(mechanism_sound::lever_cues(
+            e,
+            centre,
+            &out,
+            was_playing,
+            &glue.lever,
+        ));
         for (target, value) in glue.signals(&out) {
             signals.write(MechanismSignal {
                 target,

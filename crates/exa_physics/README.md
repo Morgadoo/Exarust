@@ -1038,9 +1038,12 @@ fraction into the link; it registers only when asked
 (`exa_world::bodies::MechanismBodies::sliding`, `--sliding-doors`): the
 shipped leaves creep up to 2 cm in two seconds at rest along their level
 rails and the slider law rewrites a command's fraction every pass, so a
-plain open only shoves the leaf (see the module notes). The lever's creak
-and tick loop, the plate's grind and click and the sliding door's sounds
-are reported, not played.
+plain open only shoves the leaf (see the module notes). Each body's tick
+sends its sounds as requests (`mechanism_sound::MechanismSounded`): the
+door's creak voice (`door?_hng`), knock, slam (`slm`) and unlatch (`opn`),
+the lever's creak (`leverb_mov`) and return tick loop (`leverb_tck01`), the
+plate's grind (`Stnb_mov`) and click (`Stnb_fit`), with the original's
+points and draw order (`door::Sound::levels`); `exa_audio` plays them.
 
 The debug tools' measures are in `body::inspect` (`src/body_inspect.rs`):
 each joint's turn from its rest turn (stored when the body is built,

@@ -3,8 +3,9 @@
 //! ranked onto 64 sources (`environment`), music crossfades (`music`), area
 //! ambience (`ambience`), the global EFX reverb's parameters (`reverb`),
 //! weapon impacts and pain sounds on hits (`hits`), footsteps for moving
-//! characters (`footsteps`), and the plain rigid bodies' collision sounds
-//! and scrape loops (`bodies`).
+//! characters (`footsteps`), the plain rigid bodies' collision sounds
+//! and scrape loops (`bodies`), and the doors', levers' and push surfaces'
+//! creaks, knocks, slams, clicks and tick loops (`mechanisms`).
 //!
 //! The original mixes through OpenAL with EFX; Bevy's rodio backend has
 //! neither EFX nor per-source auxiliary sends. The mixer computes the reverb
@@ -19,6 +20,7 @@ mod environment;
 mod footsteps;
 mod hits;
 mod loops;
+mod mechanisms;
 mod music;
 mod playback;
 mod reverb;
@@ -52,6 +54,7 @@ pub struct AudioPlugin;
 
 impl Plugin for AudioPlugin {
     fn build(&self, app: &mut App) {
+        exa_physics::mechanism_sound::register(app);
         app.init_resource::<SoundBank>()
             .init_resource::<AudioEnvironment>()
             .init_resource::<playback::SourceEntities>()
@@ -75,6 +78,7 @@ impl Plugin for AudioPlugin {
                     hits::shield_sounds,
                     sounds::heal_sounds,
                     sounds::named_sounds,
+                    mechanisms::mechanism_sounds,
                     sounds::swing_voices,
                     footsteps::footsteps,
                     footsteps::foot_sounds,

@@ -21,6 +21,7 @@ pub mod kd_tree;
 pub mod kdtree;
 pub mod lever;
 pub mod mechanism;
+pub mod mechanism_sound;
 pub mod motile;
 pub mod part;
 pub mod plate;

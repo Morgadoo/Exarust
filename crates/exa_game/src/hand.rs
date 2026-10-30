@@ -94,6 +94,7 @@ use exa_physics::ColliderNodes;
 use exa_physics::Physics;
 use exa_physics::body::locomotion::{Locomotion, Locomotor};
 use exa_physics::body::{DoorBody, LeverBody, PlateBody, Ragdoll, WAKE_COUNT};
+use exa_physics::mechanism_sound::{self, MechanismSounded};
 use exa_physics::prop::{PropBody, StandIns};
 use exa_ui::ScriptedPointer;
 
@@ -1089,6 +1090,7 @@ type PressMechanisms<'w, 's> = (
     Query<'w, 's, &'static mut DoorBody>,
     Query<'w, 's, &'static mut LeverBody>,
     Option<Res<'w, player_controls::UseCursor>>,
+    Option<ResMut<'w, Messages<MechanismSounded>>>,
 );
 
 /// What a body's nodes say of the placed object they belong to: its id,
@@ -1398,7 +1400,7 @@ fn press_hand(
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
     kinesis: Option<Res<KinesisPickHook>>,
     mut kinesis_picks: Option<ResMut<Messages<KinesisPicked>>>,
-    (over_gui, objects, mut doors, mut levers, use_cursor): PressMechanisms,
+    (over_gui, objects, mut doors, mut levers, use_cursor, mut mechanism_sounds): PressMechanisms,
 ) {
     // The press that ended the use cursor was taken by the cursor's
     // callback (its answer's bit 0); the world does not see it.
@@ -1510,7 +1512,7 @@ fn press_hand(
         Press::Ignored => {}
         Press::Mechanism(pick) => {
             // A hinged door's leaf takes the hand's link: a latched one
-            // rattles and refuses (its sound is not played yet).
+            // rattles (its `LkT` at the handle) and refuses.
             if pick == Pick::Hinge
                 && let Some(Picked {
                     at,
@@ -1534,6 +1536,18 @@ fn press_hand(
                             grip.point.x, grip.point.y, grip.point.z
                         );
                         hand.holding = Holding::Door { body, grip };
+                    }
+                    MechanismPress::Rattle { .. } => {
+                        if let Some(messages) = mechanism_sounds.as_deref_mut() {
+                            messages.write(mechanism_sound::lock_cue(
+                                &glue.door.record,
+                                mechanism_sound::LOCKED,
+                                glue.handle_point(),
+                                mechanism_sound::RATTLE,
+                            ));
+                        }
+                        info!("hand: the latched door rattles");
+                        hand.holding = Holding::Refused;
                     }
                     _ => hand.holding = Holding::Refused,
                 }

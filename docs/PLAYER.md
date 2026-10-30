@@ -901,8 +901,13 @@ link (`hand::{mechanism_press, door_pull_anchor, door_drag_frame}`,
 `DoorBody::{take_hold, pull_to, let_go}`). `--static-doors` (an Exarust
 debug option) keeps doors static level geometry, as before.
 
-Not in Exarust: the door's sounds (its step reports them), the navigation
-passage report (the grid still treats every door as standing where the
+The door's step sounds its hinge creak, the stop's knock, the slam and the
+pull's unlatch; the unlock plays its `LkO` and a latched door rattles its
+`LkT` under the hand or another key (`exa_audio`'s mechanism sounds).
+`--mechanism-poke <frame>` (debug) pulls the nearest door open and turns
+the nearest lever through these steps.
+
+Not in Exarust: the navigation passage report (the grid still treats every door as standing where the
 level saved it), sliding doors (static unless `--sliding-doors`, their drag
 recorded: the cursor's offset projected on the slide; see Levers, push
 surfaces and sliding doors below), and the last-pusher stamp (the original's
@@ -997,7 +1002,7 @@ leaves become bodies running the door's sliding rules, but they creep up to
 rewrites a command's fraction every pass, so a plain open only shoves the
 leaf a little; how the original moves them that far was not traced.
 Mechanism sounds (creaks, the lever's tick loop, a plate's grind and
-click) are reported by the steps, not played.
+click) play from the steps.
 
 ## Combat mode
 

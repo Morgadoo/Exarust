@@ -88,7 +88,9 @@ impl Plugin for ViewerPlugin {
                     launch_arena_match,
                     arena_exit,
                 ),
-            );
+            )
+            // After the hand's own let-go of what it does not hold.
+            .add_systems(PostUpdate, poke_mechanisms_at_frame);
     }
 }
 
@@ -2117,6 +2119,167 @@ fn kinesis_pick_at_frame(
 
 /// How far from the player `--shove-props` reaches (m), and the blow it
 /// deals: 1.5 m/s away from the player and 1.5 m/s up.
+/// `--mechanism-poke`: how long the door is pulled and the lever held
+/// (frames), and how far ahead of the handle the pull's anchor sits (m).
+const POKE_DOOR_FRAMES: u32 = 120;
+const POKE_LEVER_FRAMES: u32 = 90;
+const POKE_DOOR_LEAD: f32 = 0.5;
+
+/// `--mechanism-poke`: at that frame after loading the hand takes the
+/// nearest unlatched hinged door at its handle and pulls it open (its
+/// anchor kept half a metre along the leaf's opening side, its local z) for
+/// [`POKE_DOOR_FRAMES`], then lets go; the nearest lever is held at its
+/// other detent for [`POKE_LEVER_FRAMES`], then let go. Everything after
+/// is the live steps': the creaks, knocks and slams they sound and the
+/// signals the lever sends. It runs after the hand's systems, which let go
+/// of whatever the hand itself does not hold.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+fn poke_mechanisms_at_frame(
+    options: Res<Options>,
+    loading: Option<Res<exa_ui::LoadingStatus>>,
+    clock: Res<exa_physics::body::BodyTicks>,
+    mut frames: Local<u32>,
+    mut poked: Local<(Option<Entity>, Option<Entity>)>,
+    players: Query<&GlobalTransform, With<exa_game::player::Player>>,
+    mut doors: Query<
+        (
+            Entity,
+            &mut exa_physics::body::DoorBody,
+            &mut exa_physics::body::Ragdoll,
+        ),
+        Without<exa_physics::body::LeverBody>,
+    >,
+    mut levers: Query<
+        (
+            Entity,
+            &mut exa_physics::body::LeverBody,
+            &mut exa_physics::body::Ragdoll,
+        ),
+        Without<exa_physics::body::DoorBody>,
+    >,
+) {
+    let Some(at) = options.mechanism_poke else {
+        return;
+    };
+    if loading.is_some() {
+        return;
+    }
+    *frames += 1;
+    // The way the leaf opens at its stop (its angle falls as it opens).
+    let opening = |glue: &exa_physics::body::DoorBody, body: &exa_physics::body::Ragdoll| {
+        let angle = glue.door.angle;
+        (glue.stop_at(body, angle - 0.3) - glue.stop_at(body, angle)).normalize_or_zero()
+    };
+    if *frames == at {
+        let Some(player) = players.iter().next().map(GlobalTransform::translation) else {
+            warn!("--mechanism-poke: no player");
+            return;
+        };
+        let door = doors
+            .iter()
+            .filter(|(_, glue, _)| !glue.latched())
+            .map(|(e, glue, _)| (e, glue.handle_point().distance(player)))
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        if let Some((e, distance)) = door
+            && let Ok((_, mut glue, mut body)) = doors.get_mut(e)
+        {
+            let handle = glue.handle_point();
+            glue.take_hold(&mut body, handle);
+            let anchor = handle + opening(&glue, &body) * POKE_DOOR_LEAD;
+            glue.pull_to(&mut body, Some(anchor));
+            info!(
+                "--mechanism-poke: pulling door {e:?} {distance:.1} m away at ({:.2}, {:.2}, {:.2})",
+                handle.x, handle.y, handle.z
+            );
+            poked.0 = Some(e);
+        }
+        let lever = levers
+            .iter()
+            .map(|(e, _, body)| {
+                let c = Vec3::from(body.parts[0].transform().translation);
+                (e, c.distance(player))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        if let Some((e, distance)) = lever
+            && let Ok((_, mut glue, mut body)) = levers.get_mut(e)
+        {
+            let l = &glue.lever;
+            let second = l.detent0 + l.span;
+            let target = if (l.last - l.detent0).abs() < (l.last - second).abs() {
+                second
+            } else {
+                l.detent0
+            };
+            glue.lever.hand = target;
+            glue.lever.held = true;
+            body.wake_to(exa_physics::body::WAKE_COUNT);
+            info!(
+                "--mechanism-poke: turning lever {e:?} {distance:.1} m away from {:.3} to {target:.3} rad",
+                glue.lever.last
+            );
+            poked.1 = Some(e);
+        }
+        return;
+    }
+    if *frames < at {
+        return;
+    }
+    let since = *frames - at;
+    if let Some(e) = poked.0
+        && let Ok((_, mut glue, mut body)) = doors.get_mut(e)
+    {
+        if since < POKE_DOOR_FRAMES {
+            // The hand's housekeeping lets go of a leaf it does not pull.
+            if !glue.door.held {
+                let handle = glue.handle_point();
+                glue.take_hold(&mut body, handle);
+            }
+            let anchor = glue.handle_point() + opening(&glue, &body) * POKE_DOOR_LEAD;
+            glue.pull_to(&mut body, Some(anchor));
+            if since.is_multiple_of(20) {
+                let d = &glue.door;
+                info!(
+                    "--mechanism-poke: tick {} door angle {:.3} (closed at {:.3}), shut {}, pull {}, latched {}, asleep {}",
+                    clock.0,
+                    d.angle,
+                    d.shape.closed(),
+                    d.closed,
+                    d.pull,
+                    d.latched,
+                    body.asleep()
+                );
+            }
+        } else {
+            glue.let_go(&mut body);
+            info!("--mechanism-poke: door {e:?} let go");
+            poked.0 = None;
+        }
+    }
+    if let Some(e) = poked.1
+        && let Ok((_, mut glue, mut body)) = levers.get_mut(e)
+    {
+        if since < POKE_LEVER_FRAMES {
+            glue.lever.held = true;
+            body.wake_to(exa_physics::body::WAKE_COUNT);
+            if since.is_multiple_of(20) {
+                let l = &glue.lever;
+                info!(
+                    "--mechanism-poke: tick {} lever angle {:.3}, hand {:.3}, last {:.3}, countdown {}",
+                    clock.0,
+                    l.angle,
+                    l.hand,
+                    l.last,
+                    body.countdown()
+                );
+            }
+        } else {
+            glue.let_go(&mut body);
+            info!("--mechanism-poke: lever {e:?} let go");
+            poked.1 = None;
+        }
+    }
+}
+
 const SHOVE_PROPS_REACH: f32 = 3.0;
 const SHOVE_PROPS_SPEED: f32 = 1.5;
 

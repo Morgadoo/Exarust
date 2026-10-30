@@ -39,6 +39,7 @@ use bevy::window::PrimaryWindow;
 use exa_assets::Game;
 use exa_items::possession::Possessions;
 use exa_physics::body::DoorBody;
+use exa_physics::mechanism_sound::{self, MechanismSounded};
 use exa_ui::ScriptedPointer;
 
 use crate::doll_view::DollItems;
@@ -287,6 +288,7 @@ fn end_use(
     mut cursor: ResMut<UseCursor>,
     mut under: UseUnder,
     mut released: MessageWriter<UseReleased>,
+    mut sounds: MessageWriter<MechanismSounded>,
 ) {
     cursor.took_press = false;
     if !cursor.up() {
@@ -373,16 +375,37 @@ fn end_use(
     {
         let now = time.map_or(0, |t| t.elapsed().as_millis() as i32);
         let partner = under.doors.get(body).ok().and_then(|leaf| leaf.partner);
-        match partner.and_then(|p| under.doors.get_many_mut([body, p]).ok()) {
-            Some([mut leaf, mut other]) => {
-                leaf.door.unlock(Some(&mut other.door), now);
-            }
-            None => {
-                if let Ok(mut leaf) = under.doors.get_mut(body) {
-                    leaf.door.unlock(None, now);
-                }
-            }
+        let unlocked = match partner.and_then(|p| under.doors.get_many_mut([body, p]).ok()) {
+            Some([mut leaf, mut other]) => Some((
+                leaf.door.unlock(Some(&mut other.door), now),
+                leaf.door.record,
+                leaf.handle_point(),
+            )),
+            None => under.doors.get_mut(body).ok().map(|mut leaf| {
+                let sound = leaf.door.unlock(None, now);
+                (sound, leaf.door.record, leaf.handle_point())
+            }),
+        };
+        // The unlock plays the door's `LkO` at its handle.
+        if let Some((sound, record, handle)) = unlocked {
+            sounds.write(mechanism_sound::lock_cue(
+                &record,
+                mechanism_sound::UNLOCKED,
+                handle,
+                sound,
+            ));
         }
+    }
+    // Another item on a latched door rattles it: its `LkT`.
+    if release == UseRelease::RattleDoor
+        && let Some(leaf) = target.and_then(|body| under.doors.get(body).ok())
+    {
+        sounds.write(mechanism_sound::lock_cue(
+            &leaf.door.record,
+            mechanism_sound::LOCKED,
+            leaf.handle_point(),
+            mechanism_sound::RATTLE,
+        ));
     }
     released.write(UseReleased {
         release,
@@ -401,6 +424,7 @@ pub struct UseCursorPlugin;
 
 impl Plugin for UseCursorPlugin {
     fn build(&self, app: &mut App) {
+        mechanism_sound::register(app);
         app.init_resource::<UseCursor>()
             .init_resource::<UseScript>()
             .init_resource::<DollItems>()

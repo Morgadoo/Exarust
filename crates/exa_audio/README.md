@@ -20,6 +20,7 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
 | `sounds` | the body's named sets: `SwingHA`, `StmHeal01`, the hit classes (`BdyCol`, `SkelHit`, `HitGlm`, cloth, leather, mail, plate) and the foley loops (`FoleyPlH`, `Golem_Foley`) |
 | `loops` | the looping sources a character keeps: one per held item and its body's voice and foley pair |
 | `bodies` | the plain rigid bodies' collision one-shots and scrape loops (`exa_physics::prop::BodySounds`) |
+| `mechanisms` | the doors', levers' and push surfaces' restarted creak voices, their one-shots and the lever's return tick loop (`exa_physics::mechanism_sound`) |
 | `playback` | one Bevy audio entity per real source slot, driven by the mixer's commands; the listener anchor |
 
 ## Rules recovered from the original
@@ -136,12 +137,21 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
   attack fades a playing voice by 0.01 and 0.0005 and stops it under
   0.005. Fists and claws are not held items and swing silently.
 - A second wind's heal plays `StmHeal01` at 0.1 and pitch 1.
-- Named one-shots (`sounds::named_sounds`, each buffer loaded once): a
-  door's lock sound (`exa_physics::mechanism::LockSounded`, the `LkO` an
-  order to open the doors under a node plays) draws its pitch first,
+- Named one-shots (`sounds::named_sounds`, each loaded once): a door's
+  lock sound (`exa_physics::mechanism::LockSounded`, the `LkO` an order to
+  open the doors under a node plays, a numbered set) draws its pitch first,
   `0.9 + 0.15·draw`, then its volume, `0.15 + 0.1·draw`, from the engine's
   generator, in double precision (`lock_sound_levels`); a `PointSounded`
   plays at its own volume and pitch (a taken object's use sound, 0.25 and 1).
+- Mechanisms (`mechanisms`): a door's, lever's or plate's creak keeps one
+  voice per body; a creaking tick restarts it on a fresh variant (not
+  looping) at the body's centre when it is not playing and only re-levels
+  it while it plays; a quiet tick zeroes, stops and frees it. One-shots
+  (knock, slam, unlatch, click, unlock `LkO`, rattle `LkT`) draw the pitch's
+  share first, then the volume's; a hinged door's knock plays the body's
+  own collision set when it has one, else its slam set. The lever's return
+  starts `leverb_tck01` looping at 0.1 and pitch 1, follows its fade and is
+  freed at its end. Every restart and one-shot is logged with its levels.
 - A blow plays the weapon's own set by its record's hit-sound class
   (`WH_SwordA`, `BdyCol` for fists, …) and the struck part's material set:
   its outer armour layer covering at least half, else the inner, its class

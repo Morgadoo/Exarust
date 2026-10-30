@@ -28,9 +28,12 @@
 //! moves its slider points down its rails, which raises the travels the
 //! step reads: the plate's own ±0.02/0.01 ramp is its spring.
 //!
-//! Not reproduced: the grind loop and the click are reported by the step
-//! but not played (the audio side has no mechanism hookup), and the class
-//! word's `0x1000` bit the original sets (nothing in Exarust reads it).
+//! **Sounds** (`crate::mechanism_sound`): each awake tick sends the grind
+//! voice (`Stnb_mov` at the plate's centre) and, when the plate goes down,
+//! the click (`Stnb_fit`).
+//!
+//! Not reproduced: the class word's `0x1000` bit the original sets
+//! (nothing in Exarust reads it).
 //!
 //! Evidence: the push-surface init and step, the signal dispatch's class 5
 //! branch, and the controls' object interaction (class 5, flag 4 clear),
@@ -40,6 +43,7 @@ use bevy::prelude::*;
 
 use super::{BodySystems, Ragdoll, WAKE_COUNT, world_link};
 use crate::mechanism::MechanismSignal;
+use crate::mechanism_sound::{self, MechanismSounded};
 use crate::plate::{self, Plate, PlateTick, Record, Signal};
 
 /// The operative flag that keeps the hand from pushing the surface.
@@ -146,6 +150,7 @@ impl PlateBody {
 /// Builds the plate glue of surfaces registered this frame and steps every
 /// awake surface after the solver. Added by [`crate::prop::PropPlugin`].
 pub(crate) fn plugin(app: &mut App) {
+    crate::mechanism_sound::register(app);
     app.add_systems(
         FixedUpdate,
         (
@@ -174,16 +179,20 @@ fn register_plates(
     }
 }
 
-/// Steps every awake surface, sending the signals its reports make.
+/// Steps every awake surface, sending the signals and the sounds its
+/// reports make.
 fn step_plates(
-    mut plates: Query<(&mut PlateBody, &mut Ragdoll)>,
+    mut plates: Query<(Entity, &mut PlateBody, &mut Ragdoll)>,
     mut signals: MessageWriter<MechanismSignal>,
+    mut sounds: MessageWriter<MechanismSounded>,
 ) {
-    for (mut glue, mut body) in &mut plates {
+    for (e, mut glue, mut body) in &mut plates {
         if body.asleep() {
             continue;
         }
         let out = glue.tick(&mut body);
+        let centre = Vec3::from(body.parts[0].transform().translation);
+        sounds.write_batch(mechanism_sound::plate_cues(e, centre, &out, &glue.plate));
         for (target, value) in glue.signals(&out) {
             signals.write(MechanismSignal {
                 target,
