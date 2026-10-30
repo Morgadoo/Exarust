@@ -2248,7 +2248,8 @@ pub fn ally_sense(
     ai_flagged: &dyn Fn(Entity) -> bool,
 ) -> i32 {
     let contact = &mut own[index];
-    contact.alarm = 0.0;
+    // The routine clears the hostility and the alarm before anything else.
+    contact.hostility = 0.0;
     contact.threat = 0.0;
     if contact.kind != 1 {
         return 0;
@@ -2359,6 +2360,159 @@ pub fn ally_sense(
     contact.selected = pick;
     if surround > concern {
         contact.concern_target = (f64::from(surround) * ALLY_CONCERN_SHARE) as f32;
+    }
+    0
+}
+
+/// The AI's standard per-contact sense, the routine every race outside the
+/// ally class installs: `observer` looks at `observed`, whose contacts are
+/// `observed_contacts`, and writes `own[index]`.
+///
+/// It clears the alarm word first. A character that cannot be perceived
+/// ends it (−1) without touching the contact; out of the 1200 cm range
+/// (1800 cm while tracked) the contact stops being tracked and the sense
+/// reports −1. In range the contact is tracked and noticed; the closeness
+/// is `1 − d/1200` (at most 0.99, compared in double), the view weight the
+/// observer's `(look·u·−0.5 + 0.5)²·0.25 + (forward·u·−0.5 + 0.5)·0.75`.
+///
+/// A dead or asleep body (or an asleep observer) zeroes the noticeability,
+/// caps the noticed level at 0.5 and clears concern, hostility and the
+/// selected third party. A knocked-out body keeps 24·c noticeability (its
+/// concern eases by 0.99 while it is out). Otherwise the noticeability is
+/// `(look·u·0.5 + 0.5)²·0.5 + 1`, times `forward·u·0.5 + 2.5`, times
+/// `2c⁴ + (1 − c²)c`, and 10 more while it attacks.
+///
+/// When the observed body is the player the concern clears and the attitude
+/// becomes 1, and the sense ends. Otherwise a dead or asleep body ends it
+/// after the view. For a live one the sense weighs every character contact
+/// of the observed: its weight from the observed's state and the contact's
+/// closeness and view, softened by `min((concern + hostility)·0.15, 1)` in
+/// the original's precision. The heaviest raw weight is the contact's
+/// selected character; only a third party that is the observer
+/// (`·multiplier·0.5`) or the player (`·multiplier`) counts toward the
+/// threat, whose largest value raises the concern target ([`Sight`]'s
+/// `threat` output).
+///
+/// The original leaves the attitude, the tolerance and the familiarity to
+/// the role side. Exarust's [`perceive`] computes them before this routine
+/// runs and this routine overwrites only the fields the original's sense
+/// owns.
+#[allow(clippy::too_many_arguments)]
+pub fn standard_sense(
+    observer: &Observer,
+    observed: &Observed,
+    observed_contacts: &[Contact],
+    own: &mut [Contact],
+    index: usize,
+    player: Option<Entity>,
+) -> i32 {
+    own[index].threat = 0.0;
+    if observed.gone {
+        return -1;
+    }
+    let mut delta = observer.position_cm - observed.position_cm;
+    if delta.y.abs() < FLAT_BAND_CM {
+        delta.y = 0.0;
+    }
+    let distance_squared = delta.x * delta.x + delta.y * delta.y + delta.z * delta.z;
+    let radius = if own[index].tracked() {
+        PERCEPTION_CM + TRACKED_CM
+    } else {
+        PERCEPTION_CM
+    };
+    if distance_squared < radius * radius {
+        own[index].flags |= CONTACT_TRACKED;
+    } else {
+        own[index].flags &= !CONTACT_TRACKED;
+        return -1;
+    }
+    own[index].flags |= CONTACT_NOTICED;
+    let distance = distance_squared.sqrt();
+    let toward_observer = delta * (1.0 / distance);
+    let mut closeness = 1.0 - distance * (1.0 / PERCEPTION_CM);
+    if f64::from(closeness) > 0.99 {
+        closeness = 0.99;
+    }
+    let facing = observed.forward.dot(toward_observer) * 0.5 + 0.5;
+    let looking = observed.look.dot(toward_observer) * 0.5 + 0.5;
+    let asleep = observer.asleep || observed.asleep;
+    let contact = &mut own[index];
+    contact.closeness = closeness;
+    if observed.condition & 0xA00 != 0 || asleep {
+        if observed.condition == CONDITION_DEAD || asleep {
+            contact.noticeability = 0.0;
+            if contact.noticed > 0.5 {
+                contact.noticed = 0.5;
+            }
+            contact.concern = 0.0;
+            contact.hostility = 0.0;
+            contact.selected = None;
+        } else {
+            if observed.condition & CONDITION_OUT != 0 {
+                contact.concern = (f64::from(contact.concern) * 0.99) as f32;
+            }
+            contact.noticeability = closeness * 24.0;
+        }
+    } else {
+        let c2 = closeness * closeness;
+        let near = c2 * c2 * 2.0 + (1.0 - c2) * closeness;
+        contact.noticeability = (looking * looking * 0.5 + 1.0) * ((facing + 2.0) * near);
+        if observed.condition == CONDITION_ATTACKING {
+            contact.noticeability += 10.0;
+        }
+    }
+    let view_look = observer.look.dot(toward_observer) * -0.5 + 0.5;
+    let view_forward = observer.forward.dot(toward_observer) * -0.5 + 0.5;
+    contact.view = view_look * view_look * 0.25 + view_forward * 0.75;
+    // The body the game watches over: the player. Concern clears and the
+    // attitude is the small positive the routine writes.
+    if Some(observed.entity) == player {
+        contact.concern = 0.0;
+        contact.attitude = 1.0;
+        return 0;
+    }
+    if observed.condition == CONDITION_DEAD || observed.asleep {
+        return 0;
+    }
+    // The threat estimate over the observed character's own contacts.
+    let multiplier = threat_multiplier(observed);
+    let mut heaviest = 0.0f32;
+    let mut selected = None;
+    let mut largest = 0.0f32;
+    for third in observed_contacts.iter() {
+        if third.kind != 1 {
+            continue;
+        }
+        let weight = contact_weight(observed, third, multiplier);
+        let soften = ((f64::from(third.concern + third.hostility) * 0.15) as f32).min(1.0);
+        let value = if soften <= 0.0 {
+            0.0
+        } else {
+            let w2 = weight * weight;
+            let w4 = w2 * w2;
+            let w8 = w4 * w4;
+            let half = soften * 0.5 + 0.5;
+            half * half * ((1.0 - soften) * w8 + weight * soften)
+        };
+        if heaviest < value {
+            selected = Some(third.character);
+            heaviest = value;
+        }
+        let scaled = if third.character == observer.entity {
+            value * multiplier * 0.5
+        } else if Some(third.character) == player {
+            value * multiplier
+        } else {
+            0.0
+        };
+        if largest < scaled {
+            largest = scaled;
+        }
+    }
+    let contact = &mut own[index];
+    contact.selected = selected;
+    if contact.concern_target < largest {
+        contact.concern_target = largest;
     }
     0
 }
@@ -2519,5 +2673,268 @@ mod ally_tests {
         own[0].concern_target = 0.0;
         ally_sense(&me_obs, false, &attacking, &mut own, 0, &flagged);
         assert_eq!(own[0].concern_target, (f64::from(gained) * 0.3) as f32);
+    }
+}
+
+#[cfg(test)]
+mod standard_tests {
+    use super::*;
+
+    fn observer(entity: Entity) -> Observer {
+        Observer {
+            entity,
+            position_cm: Vec3::ZERO,
+            look: Vec3::Z,
+            forward: Vec3::Z,
+            asleep: false,
+            perception: 0.0,
+            calm: 0.0,
+            aggression: 0.0,
+            mind_aggression: 0.0,
+            resist_mind: false,
+            target: None,
+        }
+    }
+
+    /// A body 600 cm on +Z that looks straight back along −Z.
+    fn facing(entity: Entity) -> Observed {
+        Observed {
+            entity,
+            position_cm: Vec3::new(0.0, 0.0, 600.0),
+            look: -Vec3::Z,
+            forward: -Vec3::Z,
+            condition: 0,
+            gone: false,
+            hidden: false,
+            mask: None,
+            asleep: false,
+            removed: false,
+            phase: 0.0,
+            locomotion: false,
+            in_combat: false,
+            stepping: false,
+            poised: false,
+            speed: 0.0,
+        }
+    }
+
+    /// At 600 cm the closeness is a half, the view is 1 and the
+    /// noticeability 2·(look term)·(facing term) + 2·near = 2.25.
+    #[test]
+    fn the_standard_sense_writes_closeness_view_and_noticeability() {
+        let mut world = World::new();
+        let me = world.spawn_empty().id();
+        let other = world.spawn_empty().id();
+        let mut own = vec![Contact::new(other)];
+        assert_eq!(
+            standard_sense(&observer(me), &facing(other), &[], &mut own, 0, None),
+            0
+        );
+        assert_eq!(own[0].flags, CONTACT_TRACKED | CONTACT_NOTICED);
+        assert_eq!(own[0].closeness, 0.5);
+        assert_eq!(own[0].view, 1.0);
+        assert_eq!(own[0].noticeability, 2.25);
+        assert_eq!(own[0].threat, 0.0);
+    }
+
+    /// Out of the 1200 cm radius a tracked contact stops being tracked and
+    /// the sense answers −1; exactly 1200 cm is out (the squared compare is
+    /// strict). The alarm clears either way.
+    #[test]
+    fn the_standard_sense_drops_a_contact_out_of_range() {
+        let mut world = World::new();
+        let me = world.spawn_empty().id();
+        let other = world.spawn_empty().id();
+        let mut own = vec![Contact::new(other)];
+        own[0].threat = 4.0;
+        let mut far = facing(other);
+        far.position_cm = Vec3::new(0.0, 0.0, 1200.0);
+        assert_eq!(
+            standard_sense(&observer(me), &far, &[], &mut own, 0, None),
+            -1
+        );
+        assert_eq!(own[0].flags, 0);
+        assert_eq!(own[0].threat, 0.0);
+        // Tracked the radius is 1800 cm; past it the flag clears again.
+        own[0].flags = CONTACT_TRACKED;
+        far.position_cm = Vec3::new(0.0, 0.0, 1799.0);
+        assert_eq!(
+            standard_sense(&observer(me), &far, &[], &mut own, 0, None),
+            0
+        );
+        assert_eq!(own[0].flags, CONTACT_TRACKED | CONTACT_NOTICED);
+        far.position_cm = Vec3::new(0.0, 0.0, 1800.0);
+        assert_eq!(
+            standard_sense(&observer(me), &far, &[], &mut own, 0, None),
+            -1
+        );
+        // Only the tracked bit clears: the noticed bit from the pass that
+        // saw it stays, as the original's `and 0xfffffffe` leaves it.
+        assert_eq!(own[0].flags, CONTACT_NOTICED);
+    }
+
+    /// A dead body's sighting falls to 0, its noticed level is capped at
+    /// 0.5 and its concern, hostility and selected third party clear.
+    #[test]
+    fn a_dead_body_is_capped_not_zeroed() {
+        let mut world = World::new();
+        let me = world.spawn_empty().id();
+        let other = world.spawn_empty().id();
+        let third = world.spawn_empty().id();
+        let mut own = vec![Contact::new(other)];
+        own[0].noticed = 1.0;
+        own[0].noticeability = 3.0;
+        own[0].concern = 5.0;
+        own[0].hostility = 2.0;
+        own[0].selected = Some(third);
+        let mut dead = facing(other);
+        dead.condition = CONDITION_DEAD;
+        assert_eq!(
+            standard_sense(&observer(me), &dead, &[], &mut own, 0, None),
+            0
+        );
+        assert_eq!(own[0].noticeability, 0.0);
+        assert_eq!(own[0].noticed, 0.5);
+        assert_eq!(own[0].concern, 0.0);
+        assert_eq!(own[0].hostility, 0.0);
+        assert_eq!(own[0].selected, None);
+        // An asleep observer takes the same branch.
+        let mut own = vec![Contact::new(other)];
+        own[0].noticed = 1.0;
+        let mut asleep = observer(me);
+        asleep.asleep = true;
+        assert_eq!(
+            standard_sense(&asleep, &facing(other), &[], &mut own, 0, None),
+            0
+        );
+        assert_eq!((own[0].noticed, own[0].noticeability), (0.5, 0.0));
+    }
+
+    /// A knocked-out body is seen at 24·c; while it is out its concern
+    /// eases by 0.99 in double precision, and a merely down one keeps it.
+    #[test]
+    fn a_knocked_out_body_is_seen_at_twenty_four_c() {
+        let mut world = World::new();
+        let me = world.spawn_empty().id();
+        let other = world.spawn_empty().id();
+        let mut own = vec![Contact::new(other)];
+        own[0].concern = 1.0;
+        let mut out = facing(other);
+        out.condition = CONDITION_OUT;
+        assert_eq!(
+            standard_sense(&observer(me), &out, &[], &mut own, 0, None),
+            0
+        );
+        assert_eq!(own[0].noticeability, 12.0);
+        assert_eq!(own[0].concern, (0.99f64) as f32);
+        own[0].concern = 1.0;
+        let mut down = facing(other);
+        down.condition = CONDITION_DOWN;
+        assert_eq!(
+            standard_sense(&observer(me), &down, &[], &mut own, 0, None),
+            0
+        );
+        assert_eq!(own[0].noticeability, 12.0);
+        assert_eq!(own[0].concern, 1.0);
+    }
+
+    /// The player body clears the concern and takes attitude 1, and no
+    /// threat estimate runs.
+    #[test]
+    fn the_player_body_clears_the_concern() {
+        let mut world = World::new();
+        let me = world.spawn_empty().id();
+        let player = world.spawn_empty().id();
+        let mut own = vec![Contact::new(player)];
+        own[0].concern = 5.0;
+        own[0].attitude = -20.0;
+        assert_eq!(
+            standard_sense(
+                &observer(me),
+                &facing(player),
+                &[],
+                &mut own,
+                0,
+                Some(player)
+            ),
+            0
+        );
+        assert_eq!(own[0].concern, 0.0);
+        assert_eq!(own[0].attitude, 1.0);
+        assert_eq!(own[0].selected, None);
+        assert_eq!(own[0].concern_target, 0.0);
+    }
+
+    /// One third party that is the observer itself: its weight at 600 cm,
+    /// concern 2 (soften 0.3) and multiplier 8 is the concern target
+    /// 0.102589; a third party that is neither the observer nor the player
+    /// is still selected but raises nothing.
+    #[test]
+    fn the_standard_sense_weighs_the_threat_to_itself_and_the_player() {
+        let mut world = World::new();
+        let me = world.spawn_empty().id();
+        let other = world.spawn_empty().id();
+        let player = world.spawn_empty().id();
+        let mut third = Contact::new(me);
+        third.closeness = 0.5;
+        third.view = 1.0;
+        third.concern = 2.0;
+        let mut own = vec![Contact::new(other)];
+        assert_eq!(
+            standard_sense(
+                &observer(me),
+                &facing(other),
+                &[third],
+                &mut own,
+                0,
+                Some(player)
+            ),
+            0
+        );
+        assert_eq!(own[0].selected, Some(me));
+        assert!(
+            (own[0].concern_target - 0.102589).abs() < 1e-6,
+            "{}",
+            own[0].concern_target
+        );
+
+        // The same contact as the player counts with the multiplier alone.
+        let mut theirs = Contact::new(player);
+        theirs.closeness = 0.5;
+        theirs.view = 1.0;
+        theirs.concern = 2.0;
+        let mut own = vec![Contact::new(other)];
+        standard_sense(
+            &observer(me),
+            &facing(other),
+            &[theirs],
+            &mut own,
+            0,
+            Some(player),
+        );
+        assert_eq!(own[0].selected, Some(player));
+        assert!(
+            (own[0].concern_target - 0.205178).abs() < 1e-6,
+            "{}",
+            own[0].concern_target
+        );
+
+        // A third party that is neither raises nothing.
+        let stranger_entity = world.spawn_empty().id();
+        let mut stranger = Contact::new(stranger_entity);
+        stranger.closeness = 0.5;
+        stranger.view = 1.0;
+        stranger.concern = 2.0;
+        let mut own = vec![Contact::new(other)];
+        standard_sense(
+            &observer(me),
+            &facing(other),
+            &[stranger],
+            &mut own,
+            0,
+            Some(player),
+        );
+        assert_eq!(own[0].selected, Some(stranger_entity));
+        assert_eq!(own[0].concern_target, 0.0);
     }
 }
