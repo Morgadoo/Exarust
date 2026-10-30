@@ -37,6 +37,7 @@ pub mod smoke;
 pub mod splines;
 pub mod spray;
 pub mod stain;
+pub mod sun_casters;
 pub mod sun_fit;
 pub mod supersample;
 pub mod terrain_composite;
