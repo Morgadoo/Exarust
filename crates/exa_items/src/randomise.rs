@@ -485,6 +485,11 @@ pub fn adjust_paint_seed(byte: u8, wealth: f32) -> u8 {
 /// block. Returns whether a section was written. (The original runs the
 /// weapon branch only for a copy in the world or local tier, which every
 /// pick is.)
+///
+/// The body branch also runs the shared apparel palette generator on the
+/// row's wealth before the write; Exarust's apparel painter keeps its own
+/// palette, so the call is modelled by [`WorldSource::randomise_palette`]
+/// in the world-load walk and not here.
 pub fn apply_row(payload: &mut [u8], word: u32) -> bool {
     let row = RowCondition::of(word);
     let byte = |share: f32| (share * 255.0).round_ties_even() as i64 as u8;
