@@ -77,19 +77,18 @@ pub struct LightSource {
     pub fixture_scale: f32,
     /// The pending-change bits a lever or fade step sets (`0xB`).
     pub dirty: u32,
-    /// The light's static intensity scale (`0x21C`, 1 as constructed): the
-    /// factor the derived and injected colours use.
-    pub intensity_scale: f32,
-    /// The light's reach (`0x224`), as loaded.
+    /// The record's multiplier (1 as constructed): the GI colour and the
+    /// light node's own colour scale by it.
+    pub multiplier: f32,
+    /// The light's reach in metres, as loaded.
     pub radius: f32,
-    /// The radius the last update reported (`0x2A4`); a change over 1 asks
-    /// for the shadow links to be rebuilt.
+    /// The reach the last update reported; a change of more than 1 marks
+    /// the shadow links for a rebuild.
     pub last_radius: f32,
-    /// The running offset colour (`0x1FC`): the draw colour a non-fading
-    /// light adds to it each derive, and the update replaces by the draw
-    /// colour.
+    /// The running colour sum: a derive adds the second colour to it, and
+    /// the update replaces it by the direct colour.
     pub offset: [f32; 3],
-    /// The light's colour (`0x210`), sRGB as stored.
+    /// The light's colour, sRGB as stored (white as constructed).
     pub colour: [f32; 3],
 }
 
@@ -109,11 +108,11 @@ impl LightSource {
             shadow_offset: 0,
             fixture_scale: 1.0,
             dirty: 0,
-            intensity_scale: 1.0,
+            multiplier: 1.0,
             radius: 0.0,
             last_radius: 0.0,
             offset: [0.0; 3],
-            colour: [0.0; 3],
+            colour: [1.0; 3],
         }
     }
 
@@ -123,6 +122,7 @@ impl LightSource {
         let mut source = Self::new(light.flags, light.intensity);
         source.radius = light.radius;
         source.colour = light.color;
+        source.multiplier = light.multiplier;
         if let Some(animation) = light.animation {
             source.amplitude = animation.amplitude;
             source.speed = animation.speed;
@@ -206,29 +206,28 @@ impl LightSource {
     }
 }
 
-/// One update's derived colours, all in the original's single precision
-/// (the colours already linearised where the light's workflow linearises).
+/// One update's derived colours, in the original's single precision (the
+/// colours linearised where the light's workflow linearises them).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct LightUpdate {
-    /// The draw colour (`0x1D8`): the light's colour scaled by its
-    /// intensity.
-    pub draw: [f32; 3],
-    /// The fade colour (`0x1E8`): the draw colour, or black while the fade
-    /// bit is set.
-    pub fade: [f32; 3],
-    /// The offset colour (`0x1FC`), the draw colour after the update.
+    /// The direct colour: the light's colour scaled by its intensity.
+    pub colour: [f32; 3],
+    /// The second colour slot: the direct colour, or black with node flag
+    /// [`NODE_NO_SECOND_COLOUR`].
+    pub second: [f32; 3],
+    /// The running sum after the update: the direct colour.
     pub offset: [f32; 3],
-    /// The offset's Rec. 601 luma (`0x208`), summed
-    /// `z·0.114 + y·0.587 + x·0.299`.
+    /// The sum's Rec. 601 luma ([`exa_formats::colour::luma`]).
     pub luma: f32,
-    /// The colour-scale slot (`0x1C8`): black while the light flickers,
-    /// else the draw colour times [`LightSource::intensity_scale`].
-    pub scaled: [f32; 3],
-    /// The GI injection colour (`0x278`): the colour linearised and scaled
-    /// by the intensity (legacy) or its square root (linear workflow).
-    pub injection: [f32; 3],
-    /// The reach the shadows use (`0x2A4`): the radius, or zero while the
-    /// intensity scale is below 2⁻²³.
+    /// The GI colour: the direct colour times [`LightSource::multiplier`],
+    /// or black with node flag [`NODE_NO_GI`].
+    pub gi: [f32; 3],
+    /// The light node's own colour: the colour linearised, times
+    /// `√intensity · multiplier · 3` (linear workflow) or
+    /// `√(intensity · multiplier) · 0.6` (legacy, the 0.6 in double).
+    pub node_colour: [f32; 3],
+    /// The reach the shadows use: the radius, or zero while the multiplier
+    /// is below 2⁻²³.
     pub radius: f32,
     /// The reach moved by more than one since the last update, so the
     /// shadow links are due a rebuild.
@@ -236,131 +235,91 @@ pub struct LightUpdate {
 }
 
 impl LightSource {
-    /// The light's colour scaled by its intensity (`0x1D8`): linearised
-    /// and times the intensity in the linear workflow, else the stored
-    /// colour times `√intensity · 0.75`. A NaN intensity passes through.
-    pub fn draw_colour(&self, linear: bool) -> [f32; 3] {
+    /// The direct colour: linearised and times the intensity in the linear
+    /// workflow, else the stored colour times `√intensity · 0.75`. A NaN
+    /// intensity passes through.
+    pub fn direct_colour(&self, linear: bool) -> [f32; 3] {
         if linear {
-            let c = exa_render::material::linear_rgb(self.colour()) * self.intensity;
+            let c = exa_render::material::linear_rgb(self.colour) * self.intensity;
             [c.x, c.y, c.z]
         } else {
             let scale = self.intensity.sqrt() * 0.75;
-            [
-                self.colour()[0] * scale,
-                self.colour()[1] * scale,
-                self.colour()[2] * scale,
-            ]
+            self.colour.map(|c| c * scale)
         }
     }
 
-    /// The fade colour (`0x1E8`): black while the fade bit is set, else the
-    /// draw colour.
-    pub fn fade_colour(&self, draw: [f32; 3]) -> [f32; 3] {
-        if self.flags & FADE != 0 {
-            [0.0; 3]
-        } else {
-            draw
-        }
-    }
-
-    /// The GI injection colour (`0x278`): the light's colour linearised,
-    /// then times `√intensity · intensity_scale · 3` in the linear workflow
-    /// or `√(intensity · intensity_scale) · 0.6` (the 0.6 in double) in the
-    /// legacy one.
-    pub fn injection_colour(&self, linear: bool) -> [f32; 3] {
-        let c = exa_render::material::linear_rgb(self.colour());
+    /// The light node's own colour: the colour linearised, then times
+    /// `√intensity · multiplier · 3` in the linear workflow or
+    /// `√(intensity · multiplier) · 0.6` (the 0.6 in double) in the legacy
+    /// one. Activation and the clone copy compute it the same way.
+    pub fn node_colour(&self, linear: bool) -> [f32; 3] {
+        let c = exa_render::material::linear_rgb(self.colour);
         let scale = if linear {
-            self.intensity.sqrt() * self.intensity_scale * 3.0
+            self.intensity.sqrt() * self.multiplier * 3.0
         } else {
-            (f64::from((self.intensity * self.intensity_scale).sqrt()) * 0.6) as f32
+            (f64::from((self.intensity * self.multiplier).sqrt()) * 0.6) as f32
         };
         [c.x * scale, c.y * scale, c.z * scale]
     }
 
-    /// The colour-scale slot (`0x1C8`): black while the light flickers,
-    /// else the draw colour times [`Self::intensity_scale`] (alpha 1 in
-    /// both forms).
-    pub fn scaled_colour(&self, draw: [f32; 3]) -> [f32; 3] {
-        if self.flags & FLICKER != 0 {
-            [0.0; 3]
-        } else {
-            [
-                draw[0] * self.intensity_scale,
-                draw[1] * self.intensity_scale,
-                draw[2] * self.intensity_scale,
-            ]
+    /// The derive step: the direct colour, then the second colour (black
+    /// with node flag [`NODE_NO_SECOND_COLOUR`], which also leaves the
+    /// running sum alone; otherwise the sum takes the second colour).
+    /// Returns the direct and second colours.
+    pub fn derive(&mut self, node_flags: u32, linear: bool) -> ([f32; 3], [f32; 3]) {
+        let colour = self.direct_colour(linear);
+        if node_flags & NODE_NO_SECOND_COLOUR != 0 {
+            return (colour, [0.0; 3]);
         }
+        self.offset = [
+            self.offset[0] + colour[0],
+            self.offset[1] + colour[1],
+            self.offset[2] + colour[2],
+        ];
+        (colour, colour)
     }
 
-    /// The derive step (`0x051DD0`): recompute the draw colour, add it to
-    /// the offset when the light is not fading, and return the draw and
-    /// fade colours.
-    pub fn derive(&mut self, linear: bool) -> ([f32; 3], [f32; 3]) {
-        let draw = self.draw_colour(linear);
-        let fade = self.fade_colour(draw);
-        if self.flags & FADE == 0 {
-            self.offset = [
-                self.offset[0] + fade[0],
-                self.offset[1] + fade[1],
-                self.offset[2] + fade[2],
-            ];
-        }
-        (draw, fade)
-    }
-
-    /// The light's update (`0x051EB0`): clamp an intensity under 2⁻²³ to
-    /// zero, derive the colours, take the draw colour as the offset, its
-    /// luma, the scaled and injected colours and the reach, and set the
-    /// pending bits 4 (always) and 2 (the reach changed by more than one,
-    /// unordered compares leaving it). Returns the derived values.
-    pub fn update(&mut self, linear: bool) -> LightUpdate {
-        if self.intensity < 1.192_089_982_282_595_9e-7 {
+    /// The light's update: an intensity under 2⁻²³ becomes zero (an
+    /// ordered compare, so a NaN stays), the derive runs, the running sum
+    /// becomes the direct colour and its luma is taken, the GI colour and
+    /// the node's own colour follow, and the reach is the radius (zero
+    /// while the multiplier is under 2⁻²³; a NaN multiplier keeps the
+    /// radius). Every update sets pending bit 4; a reach that moved by more
+    /// than 1 (an unordered difference does not) is stored and sets bit 2.
+    pub fn update(&mut self, node_flags: u32, linear: bool) -> LightUpdate {
+        if self.intensity < TINY {
             self.intensity = 0.0;
         }
-        let (draw, fade) = self.derive(linear);
-        self.offset = draw;
-        let luma = draw[2] * 0.114 + draw[1] * 0.587 + draw[0] * 0.299;
-        let scaled = self.scaled_colour(draw);
-        let injection = self.injection_colour(linear);
-        let radius = if self.intensity_scale >= 1.192_089_982_282_595_9e-7
-            || self.intensity_scale.is_nan()
-        {
-            self.radius
+        let (colour, second) = self.derive(node_flags, linear);
+        self.offset = colour;
+        let luma = exa_formats::colour::luma(self.offset);
+        let gi = if node_flags & NODE_NO_GI != 0 {
+            [0.0; 3]
         } else {
-            0.0
+            colour.map(|c| c * self.multiplier)
         };
-        let changed = (radius - self.last_radius).abs() > 1.0;
-        if !changed {
-            // NaN keeps the last radius, as the unordered compare does.
-            self.dirty |= 4;
-            return LightUpdate {
-                draw,
-                fade,
-                offset: self.offset,
-                luma,
-                scaled,
-                injection,
-                radius,
-                radius_changed: false,
-            };
+        let node_colour = self.node_colour(linear);
+        let radius = if self.multiplier < TINY {
+            0.0
+        } else {
+            self.radius
+        };
+        let radius_changed = (radius - self.last_radius).abs() > 1.0;
+        if radius_changed {
+            self.last_radius = radius;
+            self.dirty |= 2;
         }
-        self.last_radius = radius;
-        self.dirty |= 0x6;
+        self.dirty |= 4;
         LightUpdate {
-            draw,
-            fade,
+            colour,
+            second,
             offset: self.offset,
             luma,
-            scaled,
-            injection,
+            gi,
+            node_colour,
             radius,
-            radius_changed: true,
+            radius_changed,
         }
-    }
-
-    /// The light's stored colour as three channels.
-    fn colour(&self) -> [f32; 3] {
-        self.colour
     }
 }
 
@@ -375,11 +334,12 @@ pub fn shadow_quality_offset(flags: u32) -> i32 {
     }
 }
 
-/// Node flag (`flags2`) `0x10000`: activation gives the light no GI
-/// injection colour.
+/// Node flag (`flags2`) `0x10000`: activation and the update give the light
+/// no GI colour ([`DerivedLight::gi_colour`], [`LightUpdate::gi`]).
 pub const NODE_NO_GI: u32 = 0x1_0000;
-/// Node flag (`flags2`) `0x20000`: activation zeroes the light's second
-/// colour slot ([`DerivedLight::second_colour`]).
+/// Node flag (`flags2`) `0x20000`: activation and the update zero the
+/// light's second colour slot ([`DerivedLight::second_colour`],
+/// [`LightUpdate::second`]), and the derive leaves the running sum alone.
 pub const NODE_NO_SECOND_COLOUR: u32 = 0x2_0000;
 /// Node flag (`flags2`) `0x100000`: activation copies it into a byte of the
 /// light and the alias sync into each alias (its reader is not traced; the
@@ -879,42 +839,57 @@ mod tests {
         let mut s = LightSource::new(0, 4.0);
         s.colour = [1.0, 0.5, 0.25];
         // Legacy: √4 · 0.75 = 1.5 on every channel.
-        assert_eq!(s.draw_colour(false), [1.5, 0.75, 0.375]);
+        assert_eq!(s.direct_colour(false), [1.5, 0.75, 0.375]);
         // Linear: linearise each channel first, then times 4.
         let c = exa_render::material::linear_rgb([1.0, 0.5, 0.25]);
-        assert_eq!(s.draw_colour(true), [c.x * 4.0, c.y * 4.0, c.z * 4.0]);
-        // The injection is the linearised colour times the legacy root
-        // factor (√(4·1) · 0.6, the 0.6 in double).
-        let injection = s.injection_colour(false);
-        let scale = (f64::from((4.0f32 * 1.0).sqrt()) * 0.6) as f32;
-        assert_eq!(injection, [c.x * scale, c.y * scale, c.z * scale]);
-        // The linear injection uses √I · scale · 3.
-        let injection = s.injection_colour(true);
-        let scale = 4.0f32.sqrt() * 1.0 * 3.0;
-        assert_eq!(injection, [c.x * scale, c.y * scale, c.z * scale]);
+        assert_eq!(s.direct_colour(true), [c.x * 4.0, c.y * 4.0, c.z * 4.0]);
+        // The node colour: the linearised colour times √(4·0.5) · 0.6 with
+        // the 0.6 in double (legacy), or √4 · 0.5 · 3 (linear).
+        s.multiplier = 0.5;
+        let scale = (f64::from((4.0f32 * 0.5).sqrt()) * 0.6) as f32;
+        assert_eq!(
+            s.node_colour(false),
+            [c.x * scale, c.y * scale, c.z * scale]
+        );
+        assert_eq!(s.node_colour(true), [c.x * 3.0, c.y * 3.0, c.z * 3.0]);
+        // The record's multiplier is loaded with the light.
+        let light = Light {
+            flags: 0,
+            color: [1.0, 0.5, 0.25],
+            multiplier: 0.1,
+            intensity: 60.0,
+            radius: 6.3,
+            softness: 0.0,
+            spot: None,
+            ranged: true,
+            animation: None,
+        };
+        let s = LightSource::of(&light);
+        assert_eq!((s.multiplier, s.radius, s.colour), (0.1, 6.3, light.color));
+        // As constructed the light is white with multiplier 1.
+        let s = LightSource::new(0, 1.0);
+        assert_eq!((s.colour, s.multiplier), ([1.0; 3], 1.0));
     }
 
     #[test]
-    fn a_fading_light_takes_the_black_fade_colour() {
-        let mut s = LightSource::new(FADE, 1.0);
-        s.colour = [1.0, 1.0, 1.0];
-        let (draw, fade) = s.derive(false);
-        assert_eq!(draw, [0.75; 3]);
-        assert_eq!(fade, [0.0; 3]);
-        // The offset is left alone while fading.
+    fn the_node_flags_black_out_the_second_and_gi_colours() {
+        // The gates read the node's flags word, not the body's flicker and
+        // fade bits: a flickering body keeps both colours.
+        let mut s = LightSource::new(FLICKER | FADE, 1.0);
+        let (colour, second) = s.derive(0, false);
+        assert_eq!(colour, [0.75; 3]);
+        assert_eq!(second, colour);
+        assert_eq!(s.offset, colour);
+        // Node flag 0x20000: a black second colour and the sum untouched.
+        let mut s = LightSource::new(0, 1.0);
+        let (_, second) = s.derive(NODE_NO_SECOND_COLOUR, false);
+        assert_eq!(second, [0.0; 3]);
         assert_eq!(s.offset, [0.0; 3]);
-        // Without the fade bit the offset takes the draw colour.
-        s.flags = 0;
-        let (_, fade) = s.derive(false);
-        assert_eq!(fade, draw);
-        assert_eq!(s.offset, draw);
-        // Flickering lights take the black colour-scale slot and alpha 1;
-        // the others take the draw colour times their static scale.
-        s.flags = FLICKER;
-        assert_eq!(s.scaled_colour(draw), [0.0; 3]);
-        s.flags = 0;
-        s.intensity_scale = 0.5;
-        assert_eq!(s.scaled_colour(draw), [0.375; 3]);
+        // Node flag 0x10000: a black GI colour; otherwise the direct colour
+        // times the multiplier.
+        s.multiplier = 0.5;
+        assert_eq!(s.update(NODE_NO_GI, false).gi, [0.0; 3]);
+        assert_eq!(s.update(0, false).gi, [0.375; 3]);
     }
 
     #[test]
@@ -923,10 +898,10 @@ mod tests {
         s.colour = [0.5, 0.25, 0.0];
         s.intensity = 1e-9;
         s.radius = 10.0;
-        let update = s.update(false);
-        // Under 2^-23 the intensity is zero, so the draw colour is black.
+        let update = s.update(0, false);
+        // Under 2^-23 the intensity is zero, so the direct colour is black.
         assert_eq!(s.intensity, 0.0);
-        assert_eq!(update.draw, [0.0; 3]);
+        assert_eq!(update.colour, [0.0; 3]);
         assert_eq!(update.offset, [0.0; 3]);
         assert_eq!(update.luma, 0.0);
         // The reach moves from 0 to 10: over one, so bit 2 and bit 4.
@@ -936,31 +911,28 @@ mod tests {
         assert_eq!(s.last_radius, 10.0);
         // A second update with the same reach sets only bit 4.
         s.dirty = 0;
-        let update = s.update(false);
-        assert!(!update.radius_changed);
+        assert!(!s.update(0, false).radius_changed);
         assert_eq!(s.dirty, 4);
-        // A zero intensity scale reports a zero reach even with a radius.
+        // A zero multiplier reports a zero reach even with a radius.
         s.intensity = 1.0;
-        s.intensity_scale = 0.0;
-        let update = s.update(false);
+        s.multiplier = 0.0;
+        let update = s.update(0, false);
         assert_eq!(update.radius, 0.0);
         assert!(update.radius_changed);
-        // The luma sums z, y then x.
-        s.intensity_scale = 1.0;
+        // The luma sums red, green, then blue: (x·0.299 + y·0.587) + z·0.114.
+        s.multiplier = 1.0;
         s.colour = [1.0, 0.5, 0.25];
-        s.intensity = 1.0;
         s.radius = 0.5;
         s.last_radius = 0.5;
-        let update = s.update(true);
-        let draw = s.draw_colour(true);
-        assert_eq!(
-            update.luma,
-            draw[2] * 0.114 + draw[1] * 0.587 + draw[0] * 0.299
-        );
-        // A NaN intensity scale takes the radius branch, as the unordered
-        // compare does.
-        s.intensity_scale = f32::NAN;
-        s.last_radius = 0.5;
-        assert_eq!(s.update(true).radius, 0.5);
+        let update = s.update(0, true);
+        let c = s.direct_colour(true);
+        assert_eq!(update.luma, (c[0] * 0.299 + c[1] * 0.587) + c[2] * 0.114);
+        // A NaN multiplier takes the radius, as the unordered compare does.
+        s.multiplier = f32::NAN;
+        assert_eq!(s.update(0, true).radius, 0.5);
+        // A NaN intensity is kept by the ordered clamp.
+        s.intensity = f32::NAN;
+        s.update(0, true);
+        assert!(s.intensity.is_nan());
     }
 }
