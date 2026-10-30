@@ -2567,11 +2567,11 @@ two thirds (0.35–0.5) and half way (the others) through a particle's life.
   camera's up axis, half-width S + age²·growth and half-length
   (1 + Y.y)·that, Y the quad's unit up axis (Y.y is the axis' local up
   component). Mode 0 is a flat billboard of half-size S.
-- The screen and stretched quads take the camera's axes through the node's
-  frame unless the template sets flag 0x40 (then they keep the camera's own
-  axes), and a template with flag 0x1000 (the 0.35–0.5 bed) keeps a tenth
-  of each axis' offset along the node's up direction, flattening the quad
-  onto the node's horizontal plane. The fixed-quad path a material can ask
+- The screen and stretched quads keep the camera's own axes, or turn them
+  with the node's frame when the template sets flag 0x40; a template with
+  flag 0x1000 (the 0.35–0.5 bed) keeps a tenth of each axis' offset along
+  the node's up direction, flattening the quad onto the node's horizontal
+  plane. The fixed-quad path a material can ask
   for (its flag bit 2) is the four camera corners
   (0.3 forward ± 0.5 of the right/up axes, normalised), the same for every
   particle; no Exarust material asks for it.

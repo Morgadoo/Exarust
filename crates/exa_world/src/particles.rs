@@ -1444,25 +1444,24 @@ impl Emitter {
     }
 
     /// One camera axis as the quad builders use it: taken through the node's
-    /// frame unless the template asks for the node's own axes, flattened
-    /// onto the node's up plane when the view-plane bit is set, and returned
-    /// in world space with the axis' local up component (the stretched
-    /// quad's vertical scale reads it).
+    /// frame when the template asks for the node's axes (flag 0x40), else
+    /// the camera's own axis; flattened onto the node's up plane when the
+    /// view-plane bit is set; returned in world space with the axis' up
+    /// component (the stretched quad's vertical scale reads it).
     fn quad_axis(&self, flags: u32, world: Vec3) -> (Vec3, f32) {
         let rotation = self.node.rotation;
-        let mut local = if flags & flags::NODE_AXES != 0 {
-            rotation.transpose() * world
+        let mut axis = if flags & flags::NODE_AXES != 0 {
+            rotation * world
         } else {
             world
         };
         if flags & flags::VIEW_PLANE != 0 {
-            // The original projects onto the node's up axis as it stands in
-            // the world, then normalises in the node's frame.
+            // The original projects onto the node's up axis and normalises.
             let up = rotation * Vec3::Y;
-            local += up * (local.dot(up) * -0.9);
-            local = local.normalize_or(Vec3::Y);
+            axis += up * (axis.dot(up) * -0.9);
+            axis = axis.normalize_or(Vec3::Y);
         }
-        (rotation * local, local.y)
+        (axis, axis.y)
     }
 
     /// [`Emitter::quads`] into a buffer the caller keeps.
@@ -2058,14 +2057,14 @@ mod tests {
         e2.node.rotation = e.node.rotation;
         e2.bounds.centre = Vec3::ZERO;
         let c = e2.quads(0.0, view)[0].corners;
-        // Without the node-axes bit the camera's up axis is turned with the
-        // node: the quad's up runs along the world -x.
-        assert!((c[3] - c[0]).x.abs() > (c[3] - c[0]).y.abs());
-        // With it the quad keeps the camera's up.
+        // Without the node-axes bit the quad keeps the camera's up.
+        assert!((c[3] - c[0]).y.abs() > (c[3] - c[0]).x.abs());
+        // With it the quad turns with the node: its up runs along the world
+        // -x.
         e2.params.flags |= flags::NODE_AXES;
         e2.params.flags &= !flags::VIEW_PLANE;
         let c = e2.quads(0.0, view)[0].corners;
-        assert!((c[3] - c[0]).y.abs() > (c[3] - c[0]).x.abs());
+        assert!((c[3] - c[0]).x.abs() > (c[3] - c[0]).y.abs());
     }
 
     #[test]
