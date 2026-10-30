@@ -232,12 +232,12 @@ impl GeometryState {
         self
     }
 
-    /// Whether the node's bounds are non-zero.
+    /// Whether the node's bounds are above the engine's epsilon.
     pub fn has_bounds(&self) -> bool {
         self.bounds[0] * self.bounds[0]
             + self.bounds[1] * self.bounds[1]
             + self.bounds[2] * self.bounds[2]
-            > 0.0
+            > BOUND_EPSILON
     }
 
     /// Adds an instance to this node's list (`shared` only affects the
@@ -343,6 +343,18 @@ mod tests {
         g.activate(&[cast], [0.2, 0.0, 0.0]);
         assert_eq!(g.word & SHADOW_PART, 0);
         assert_eq!(g.word & HAS_BOUNDS, 0);
+        // A bound whose squared length is at or below the epsilon does not
+        // set the bit.
+        g.word = 0;
+        g.activate(&[cast], [1.0e-6, 0.0, 0.0]);
+        assert_eq!(g.word & HAS_BOUNDS, 0);
+        assert!(
+            !GeometryState {
+                bounds: [1.0e-6, 0.0, 0.0],
+                ..GeometryState::new()
+            }
+            .has_bounds()
+        );
     }
 
     #[test]
