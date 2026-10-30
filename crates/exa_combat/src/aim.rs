@@ -55,10 +55,12 @@ pub fn head_atan2_xz(x: f32, z: f32) -> f32 {
     heading_of(Vec3::new(x, 0.0, z))
 }
 
+/// Wraps an angle into ±π as the original does: the float widened and
+/// compared with the double π, then the float full turn added or taken.
 fn wrap(angle: f32) -> f32 {
-    if angle < -std::f32::consts::PI {
+    if f64::from(angle) < -std::f64::consts::PI {
         angle + std::f32::consts::TAU
-    } else if angle > std::f32::consts::PI {
+    } else if f64::from(angle) > std::f64::consts::PI {
         angle - std::f32::consts::TAU
     } else {
         angle
@@ -149,10 +151,9 @@ fn track_head_inner(
     };
     let pitch = step(head.pitch, want_pitch);
 
-    // The original holds the yaw within ±45° of the body both before and
-    // after the pitch step; the pitch step leaves the yaw alone, so one
-    // hold is the same. The bound is compared in double precision and the
-    // clamped angle is the body yaw plus the float quarter turn.
+    // The yaw is held within ±45° of the body once, after the pitch step.
+    // The bound is compared in double precision and the clamped angle is
+    // the body yaw plus the float quarter turn.
     let offset = wrap(yaw - body_yaw);
     if f64::from(offset) > std::f64::consts::FRAC_PI_4 {
         yaw = wrap(body_yaw + HEAD_YAW_LIMIT);
@@ -166,7 +167,9 @@ fn track_head_inner(
         -pitch.sin(),
         pitch.cos() * yaw.cos(),
     ];
-    let flat_length = (dir[0] * dir[0] + dir[2] * dir[2]).sqrt();
+    // The flat direction is scaled by the reciprocal of its length, not
+    // divided by it.
+    let flat_scale = 1.0 / (dir[0] * dir[0] + dir[2] * dir[2]).sqrt();
     HeadLook {
         dir,
         point: [
@@ -174,7 +177,7 @@ fn track_head_inner(
             eye[1] + ahead * dir[1],
             eye[2] + ahead * dir[2],
         ],
-        flat: [dir[0] / flat_length, 0.0, dir[2] / flat_length],
+        flat: [dir[0] * flat_scale, 0.0, dir[2] * flat_scale],
     }
 }
 
@@ -195,6 +198,16 @@ mod tests {
         assert_eq!(step(0.0, HEAD_STEP), HEAD_STEP);
         assert_eq!(step(0.0, 0.1), HEAD_STEP);
         assert_eq!(step(0.0, -0.1), -HEAD_STEP);
+    }
+
+    #[test]
+    fn the_wrap_compares_with_the_double_pi() {
+        // The float pi is above the double pi, so the original wraps it.
+        let pi = std::f32::consts::PI;
+        assert_eq!(wrap(pi), pi - std::f32::consts::TAU);
+        assert_eq!(wrap(-pi), -pi + std::f32::consts::TAU);
+        let under = f32::from_bits(pi.to_bits() - 1);
+        assert_eq!(wrap(under), under);
     }
 
     #[test]
