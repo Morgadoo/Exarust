@@ -620,8 +620,19 @@ struct ClothOutcome {
 }
 
 /// A body part offered to the cloths this tick: its entity, whether its
-/// body sleeps, and its contact data.
-type OfferedPart<'a> = (Entity, bool, ObjectBodyPart<'a>);
+/// body sleeps, whether its body takes object contacts at all (a disabled
+/// body, an item on the cursor, does not), and its contact data.
+type OfferedPart<'a> = (Entity, bool, bool, ObjectBodyPart<'a>);
+
+/// Whether a body takes the cloths' body contacts this tick, as the
+/// original's object-body stage masks it: a disabled body (state bit 4) is
+/// skipped, and its sleep decides between the two masks. The original also
+/// skips a body whose state carries the held-static-only bit (0x800);
+/// Exarust keeps that word on a held item's parts rather than its body, so
+/// only the disabled bit is read here [guess].
+pub fn body_meets_objects(body: &Ragdoll) -> bool {
+    !body.disabled()
+}
 
 #[allow(clippy::too_many_arguments)]
 fn step_cloths(
@@ -787,6 +798,7 @@ fn step_cloths(
                 all_parts.push((
                     part.entity,
                     body.asleep(),
+                    body_meets_objects(body),
                     ObjectBodyPart {
                         now,
                         previous: part.settled_transform(),
@@ -922,8 +934,9 @@ fn step_one(
                 .part_cells
                 .around(cell)
                 .filter(|&index| {
-                    let (part_entity, body_asleep, _) = &all_parts[index];
-                    sector::object_takes_body(asleep, *body_asleep)
+                    let (part_entity, body_asleep, meets, _) = &all_parts[index];
+                    *meets
+                        && sector::object_takes_body(asleep, *body_asleep)
                         && (particle_mode || !own.contains(part_entity))
                 })
                 .collect();
@@ -933,13 +946,13 @@ fn step_one(
             work.parts = offered.len() as u32;
             if particle_mode {
                 let parts = offered.iter().map(|&index| {
-                    let (part_entity, _, part) = all_parts[index];
+                    let (part_entity, _, _, part) = all_parts[index];
                     (part, owner == Some(part_entity))
                 });
                 contacts.gather_particle_bodies(&to_object, object, parts);
                 work.bodies = contacts.particle_bodies.len() as u32;
             } else {
-                let parts = offered.iter().map(|&index| all_parts[index].2);
+                let parts = offered.iter().map(|&index| all_parts[index].3);
                 contacts.gather_bodies(&to_object, object, object_box, parts);
                 work.bodies = contacts.bodies.len() as u32;
             }
@@ -1453,6 +1466,69 @@ mod tests {
         let objects = app.world().resource::<ClothObjects>();
         let origin = ClothObjects::ORIGIN;
         assert_eq!(objects.grid.cell_of_id(0), Some(origin));
+    }
+
+    /// The original's object-body stage masks a body by its state: a
+    /// disabled body (bit 4) takes no cloth body contacts, while its sleep
+    /// decides between the stage's two masks.
+    #[test]
+    fn a_disabled_body_is_never_offered_to_a_cloth() {
+        use exa_physics::body::PartSetup;
+        use exa_physics::{Physics, StaticColliders};
+
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, ClothPlugin))
+            .init_resource::<Assets<Mesh>>()
+            .insert_resource(Physics::default())
+            .insert_resource(StaticColliders::default())
+            .insert_resource(ClothContacts(true))
+            .insert_resource(ClothDebug {
+                on: true,
+                ..ClothDebug::default()
+            });
+        let body = Ragdoll::new(&[PartSetup {
+            bone: 1,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: Affine3A::from_translation(Vec3::new(0.5, 1.5, 0.0)),
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.1),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+            spheres: Some(vec![(Vec3::ZERO, 0.1)]),
+        }]);
+        let mut disabled = body.clone();
+        disabled.set_disabled(true);
+        app.world_mut().spawn(body);
+        app.world_mut().spawn(disabled);
+        let mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Mesh::new(
+                bevy::mesh::PrimitiveTopology::TriangleList,
+                bevy::asset::RenderAssetUsages::default(),
+            ));
+        let corners = [
+            Vec3::new(0.0, 2.0, 0.0),
+            Vec3::new(1.0, 2.0, 0.0),
+            Vec3::new(1.0, 1.0, 0.0),
+            Vec3::new(0.0, 1.0, 0.0),
+        ];
+        let cloth = cloth_of(&corners, &[[0, 1, 2], [0, 2, 3]], &[]);
+        let drawn = (0..cloth.particles.len()).collect();
+        app.world_mut().spawn((
+            ClothInstance::new(cloth, mesh, drawn),
+            GlobalTransform::default(),
+        ));
+        app.world_mut().run_schedule(FixedUpdate);
+        let debug = app.world().resource::<ClothDebug>();
+        let (_, work, _) = debug.cloths[0];
+        // Both bodies are in the cloth's cell; only the enabled one is
+        // offered.
+        assert_eq!(work.parts, 1, "offered {} parts", work.parts);
+        assert_eq!(work.bodies, 1);
     }
 
     /// The lowest vertex of a cloth, in metres.
