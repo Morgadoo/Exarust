@@ -296,6 +296,33 @@ pub fn sampler_filters(mode: u32) -> (ShadowFilter, ShadowFilter) {
 /// asks for a 16-bit depth texture.
 pub const SUN_SHADOW_DEPTH_BITS: u32 = 16;
 
+/// The debug switch that would give the sun map a second, colour texture
+/// beside its depth one. It is off in the shipped build.
+pub const SUN_COLOUR_TWIN_SWITCH: bool = false;
+
+/// A shadow map's optional colour texture: the map's size, its format and
+/// the filters its creation sets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShadowColourTwin {
+    pub size: ShadowMapSize,
+    /// Three 16-bit float channels.
+    pub rgb16f: bool,
+    pub min: ShadowFilter,
+    pub mag: ShadowFilter,
+}
+
+/// The colour twin the map creates when the switch is on: an uninitialised
+/// RGB16F image of the map's size, linearly filtered. The shipped build
+/// keeps the switch off, so the map has only its depth texture.
+pub fn sun_colour_twin(enabled: bool, size: ShadowMapSize) -> Option<ShadowColourTwin> {
+    enabled.then_some(ShadowColourTwin {
+        size,
+        rgb16f: true,
+        min: ShadowFilter::Linear,
+        mag: ShadowFilter::Linear,
+    })
+}
+
 /// Which face the caster pass culls.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CullFace {
@@ -848,6 +875,26 @@ mod tests {
             }
         );
         assert_eq!(SUN_SHADOW_DEPTH_BITS, 16);
+    }
+
+    #[test]
+    fn the_colour_twin_is_off_but_linear_rgb16f_when_switched_on() {
+        let size = ShadowMapSize {
+            width: 4096,
+            height: 4096,
+        };
+        assert_eq!(sun_colour_twin(SUN_COLOUR_TWIN_SWITCH, size), None);
+        // Switched on: the map's own size, three 16-bit float channels and
+        // the same linear filters the depth texture takes.
+        assert_eq!(
+            sun_colour_twin(true, size),
+            Some(ShadowColourTwin {
+                size,
+                rgb16f: true,
+                min: ShadowFilter::Linear,
+                mag: ShadowFilter::Linear,
+            })
+        );
     }
 
     #[test]
