@@ -290,9 +290,11 @@ pub fn flip_requests(
     }
 }
 
-/// Marks the weapons and torches a collapsing holder lets go of: the
-/// collapse routine empties the hands, while a shield stays on the off arm.
-/// A body that is dead without a collapse keeps its items.
+/// Marks the weapons and torches a collapsing holder lets go of. The
+/// original's collapse drops every weapon in the held list and then the
+/// torch it carries; a shield is not in that list (it hangs from the off
+/// hand's own array), so it stays on the arm. A body that is dead without a
+/// collapse keeps its items.
 pub fn release_collapsed(
     mut commands: Commands,
     held: Query<(Entity, &HeldGrip)>,
@@ -311,80 +313,6 @@ pub fn release_collapsed(
         };
         if owners.get(owner).is_ok_and(|c| *c == Condition::COLLAPSING) {
             commands.entity(item).insert(exa_physics::grip::GripRelease);
-        }
-    }
-}
-
-/// The holder condition a held item's world welds last answered to, so the
-/// collapse's slack and death's stiffening land on the tick the holder
-/// enters that condition, as the original's collapse and death routines
-/// write them once when they run (and again at a later collapse or death).
-/// Neither change is undone when the body rises: the original's revive does
-/// not rebuild the welds.
-#[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct HeldWeld {
-    /// The holder's condition the last time the welds were looked at; `None`
-    /// before the first look.
-    pub seen: Option<Condition>,
-}
-
-/// Applies the original's collapse and death changes to a held item's world
-/// welds: a holder that starts collapsing gives its item's soft weld the
-/// 10 cm slack (the collapse routine writes it after it has let go of the
-/// weapons, so what is left is the shield or torch that stays), and one
-/// that dies makes it stiff. Each lands on the change into the condition.
-/// The original's collapse gate also reads the motion's fall class, which
-/// Exarust's collapse always is (it starts Fall Backward) [guess on the
-/// motion class's meaning].
-#[allow(clippy::type_complexity)]
-pub fn adjust_welds(
-    mut commands: Commands,
-    mut held: Query<(
-        Entity,
-        &mut HeldGrip,
-        Option<&mut HeldWeld>,
-        Has<exa_physics::grip::GripRelease>,
-    )>,
-    owners: Query<(&Ragdoll, &Condition)>,
-) {
-    if held.is_empty() {
-        return;
-    }
-    let keys: Vec<(Entity, Condition)> = owners
-        .iter()
-        .filter_map(|(b, c)| b.parts.first().map(|p| (p.entity, *c)))
-        .collect();
-    for (item, mut grip, weld, releasing) in &mut held {
-        if grip.released || releasing || grip.links.is_none() {
-            continue;
-        }
-        let Some(condition) = keys
-            .iter()
-            .find(|(key, _)| *key == grip.holder_key)
-            .map(|(_, c)| *c)
-        else {
-            continue;
-        };
-        let seen = weld.as_ref().and_then(|w| w.seen);
-        if seen == Some(condition) {
-            continue;
-        }
-        if let Some(links) = grip.links.as_mut() {
-            if condition.is_collapsing() {
-                links.slacken_soft_weld();
-            }
-            if condition == Condition::DEAD {
-                links.stiffen_soft_weld();
-            }
-        }
-        let state = HeldWeld {
-            seen: Some(condition),
-        };
-        match weld {
-            Some(mut current) => *current = state,
-            None => {
-                commands.entity(item).insert(state);
-            }
         }
     }
 }
@@ -481,12 +409,6 @@ impl Plugin for GripRuntimePlugin {
             )
             .add_systems(
                 FixedUpdate,
-                adjust_welds
-                    .after(release_collapsed)
-                    .before(exa_physics::grip_solve::GripSolveSet::Build),
-            )
-            .add_systems(
-                FixedUpdate,
                 resolve_pending_grips.before(GripSolveSet::Sync),
             );
     }
@@ -548,7 +470,8 @@ mod tests {
     }
 
     /// A collapsing holder lets go of its weapons and torch but keeps the
-    /// shield on its arm; a dead one keeps everything.
+    /// shield on its arm (the collapse's weapon list does not hold it); a
+    /// dead one keeps everything.
     #[test]
     fn a_collapse_drops_the_weapon_and_keeps_the_shield() {
         let mut app = App::new();
@@ -582,16 +505,13 @@ mod tests {
         let torch = spawn(&mut app, exa_physics::grip::HeldKind::Torch);
         let shield = spawn(&mut app, exa_physics::grip::HeldKind::Shield);
         app.update();
-        assert!(
-            app.world()
-                .get::<exa_physics::grip::GripRelease>(weapon)
-                .is_some()
-        );
-        assert!(
-            app.world()
-                .get::<exa_physics::grip::GripRelease>(torch)
-                .is_some()
-        );
+        for item in [weapon, torch] {
+            assert!(
+                app.world()
+                    .get::<exa_physics::grip::GripRelease>(item)
+                    .is_some()
+            );
+        }
         assert!(
             app.world()
                 .get::<exa_physics::grip::GripRelease>(shield)
@@ -619,122 +539,84 @@ mod tests {
         );
     }
 
-    /// A collapse gives its held item's soft weld a 10 cm slack once, and
-    /// death then makes it stiff; a weapon the collapse lets go of takes
-    /// neither.
+    /// The flip command refuses a switching character and a section with no
+    /// flipped-side kind byte, and starts the flip otherwise.
     #[test]
-    fn a_collapse_slackens_and_death_stiffens_the_held_weld() {
-        let mut app = App::new();
-        app.add_systems(Update, adjust_welds);
-        let owner = app.world_mut().spawn(Condition::COLLAPSING).id();
-        let holder_body = holder(owner, Vec3::ZERO);
-        let key = holder_body.parts[0].entity;
-        app.world_mut().entity_mut(owner).insert(holder_body);
-        let spawn = |app: &mut App, kind, links: exa_physics::grip::GripLinks| {
-            let e = app.world_mut().spawn_empty().id();
-            let body = item(Entity::from_raw_u32(30).unwrap(), Vec3::ZERO);
-            let grip = HeldGrip {
-                spec: spec(),
-                scale: 1.0,
-                size: 1.0,
-                second_hand_factor: 1.0,
-                flip: false,
-                class: crate::offhand::SHIELD_CLASS,
-                soft_weld: true,
-                kind,
-                holder_key: key,
-                hands: [Some(Entity::from_raw_u32(2).unwrap()); 2],
-                arms: [None, None],
-                links: Some(links),
-                released: false,
-            };
-            app.world_mut().entity_mut(e).insert((body, grip));
-            e
-        };
-        let item_links = |app: &mut App| {
-            let body = item(Entity::from_raw_u32(31).unwrap(), Vec3::ZERO);
-            let hand = holder(Entity::from_raw_u32(32).unwrap(), Vec3::ZERO);
-            let _ = app;
-            exa_physics::grip::torch_links(
-                &body,
-                &hand,
+    fn the_flip_command_gate_reads_the_section_flip_side() {
+        use exa_physics::grip::HeldKind;
+        let build = |app: &mut App, condition: Condition, can_flip: bool| {
+            let owner = app.world_mut().spawn(condition).id();
+            let body = holder(owner, Vec3::ZERO);
+            let key = body.parts[0].entity;
+            app.world_mut().entity_mut(owner).insert(body);
+            let item_body = item(Entity::from_raw_u32(30).unwrap(), Vec3::ZERO);
+            let item_to_hand = Affine3A::IDENTITY;
+            let links = exa_physics::grip::build(
+                &item_body,
+                &holder(owner, Vec3::ZERO),
                 exa_physics::grip::GripBindings {
                     item_part: 0,
                     hand_parts: [0, 0],
                     arm_parts: [0, 0],
                 },
-                0,
-                Affine3A::IDENTITY,
+                &spec(),
+                1.0,
+                1.0,
+                item_to_hand,
+                false,
+                1.0,
             )
-            .unwrap()
-        };
-        let links = item_links(&mut app);
-        let shield = spawn(&mut app, exa_physics::grip::HeldKind::Shield, links);
-        app.update();
-        let links = app
-            .world()
-            .get::<HeldGrip>(shield)
-            .unwrap()
-            .links
-            .clone()
             .unwrap();
-        let soft = links.world_soft.unwrap();
-        assert_eq!(links.links[soft].slack, 0.10);
-        assert_eq!(links.links[soft].strength, 0.05);
-        assert_eq!(
-            app.world().get::<HeldWeld>(shield).unwrap().seen,
-            Some(Condition::COLLAPSING)
-        );
-        // Death stiffens it; the tick after that changes nothing more.
-        app.world_mut().entity_mut(owner).insert(Condition::DEAD);
-        app.update();
-        let links = app
-            .world()
-            .get::<HeldGrip>(shield)
-            .unwrap()
-            .links
-            .clone()
-            .unwrap();
-        assert_eq!(links.links[soft].strength, 1.0);
-        assert_eq!(links.links[soft].slack, 0.10);
-        let state = *app.world().get::<HeldWeld>(shield).unwrap();
-        assert_eq!(state.seen, Some(Condition::DEAD));
-        app.update();
-        assert_eq!(*app.world().get::<HeldWeld>(shield).unwrap(), state);
-        // Something else loosens the weld while the body lies dead; the
-        // death does not write again until the condition changes.
-        let loosen = |app: &mut App| {
+            let mut stats = StatBytes::default();
+            stats.set(at::SLASH, 80);
+            if can_flip {
+                stats.set(at::KIND + at::FLIP, 1);
+            }
+            let record = HeldRecord {
+                section: Section { flags: 0x11, stats },
+                lengths: Lengths::one_part(100.0, 0.1, 1.0),
+                holder: Holder::AVERAGE,
+            };
+            let blade = Blade::new(
+                owner,
+                1.0,
+                WeaponRecord::build(&record.section, false, record.lengths, &record.holder),
+            );
+            let app_item = app
+                .world_mut()
+                .spawn((
+                    item_body,
+                    HeldGrip {
+                        spec: spec(),
+                        scale: 1.0,
+                        size: 1.0,
+                        second_hand_factor: 1.0,
+                        flip: false,
+                        class: 0x20,
+                        soft_weld: false,
+                        kind: HeldKind::Weapon,
+                        holder_key: key,
+                        hands: [None, None],
+                        arms: [None, None],
+                        links: Some(links),
+                        released: false,
+                    },
+                    record,
+                    blade,
+                ))
+                .id();
             app.world_mut()
-                .get_mut::<HeldGrip>(shield)
-                .unwrap()
-                .links
-                .as_mut()
-                .unwrap()
-                .links[soft]
-                .slack = 0.02;
+                .write_message(FlipWeaponRequest { body: owner });
+            app.update();
+            let grip = app.world().get::<HeldGrip>(app_item).unwrap();
+            grip.links.as_ref().unwrap().flip_active
         };
-        loosen(&mut app);
-        app.update();
-        let kept = app.world().get::<HeldGrip>(shield).unwrap();
-        assert_eq!(kept.links.as_ref().unwrap().links[soft].slack, 0.02);
-        // A body that rose and collapses again takes the slack again.
-        app.world_mut()
-            .entity_mut(owner)
-            .insert(Condition::default());
-        app.update();
-        app.world_mut()
-            .entity_mut(owner)
-            .insert(Condition::COLLAPSING);
-        app.update();
-        let links = app
-            .world()
-            .get::<HeldGrip>(shield)
-            .unwrap()
-            .links
-            .clone()
-            .unwrap();
-        assert_eq!(links.links[soft].slack, 0.10);
-        assert_eq!(links.links[soft].strength, 1.0);
+        let mut a = App::new();
+        a.add_message::<FlipWeaponRequest>()
+            .add_systems(Update, flip_requests);
+        assert!(build(&mut a, Condition::COMBAT_IDLE, true));
+        assert!(!build(&mut a, Condition::COMBAT_IDLE, false));
+        assert!(!build(&mut a, Condition::SWITCHING, true));
     }
 
     fn spec() -> GripSpec {

@@ -1608,28 +1608,47 @@ impl WorldLink {
             let along = (f64::from(gap.dot(self.axis)) * PLANE_REMOVAL) as f32;
             gap -= self.axis * along;
         }
-        let len2 = gap.length_squared();
-        let slack = self.slack * CM;
-        if slack * slack >= len2 {
-            self.length = 0.0;
-            return None;
-        }
-        // A NaN slack takes the no-slack branch, as the original's compare does.
-        #[allow(clippy::neg_cmp_op_on_partial_ord)]
-        let no_slack = !(slack > GENERAL_EPSILON);
-        let factor = if no_slack {
-            let reach = self.strength * PLAIN_MAX_STEP;
-            if reach * reach >= len2 {
-                self.strength
-            } else {
-                (PLAIN_CAP_SQUARED / len2).sqrt() * self.strength * self.strength
+        match plain_law(gap, self.slack * CM, self.strength) {
+            None => {
+                self.length = 0.0;
+                None
             }
+            Some((pull, taut)) => {
+                if let Some(taut) = taut {
+                    self.length = taut / CM;
+                }
+                Some(pull / CM)
+            }
+        }
+    }
+}
+
+/// The plain (non-pivot) link law of a body solved without muscles, on
+/// `gap` and `slack` in centimetres: inside the slack nothing moves
+/// (`None`). Past it a link without slack moves its part by `strength·gap`,
+/// cut to a `10·strength²` cm move once the gap is over `10·strength` cm;
+/// a slack link takes back `strength` times its excess and reports its
+/// taut length (cm). The correction is in centimetres. Shared by
+/// [`WorldLink`] and a held item's world welds (`crate::grip_solve`).
+pub(crate) fn plain_law(gap: Vec3, slack: f32, strength: f32) -> Option<(Vec3, Option<f32>)> {
+    let len2 = gap.length_squared();
+    if slack * slack >= len2 {
+        return None;
+    }
+    // A NaN slack takes the no-slack branch, as the original's compare does.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+    let no_slack = !(slack > GENERAL_EPSILON);
+    if no_slack {
+        let reach = strength * PLAIN_MAX_STEP;
+        let factor = if reach * reach >= len2 {
+            strength
         } else {
-            let len = len2.sqrt();
-            self.length = len / CM;
-            (len - slack) / len * self.strength
+            (PLAIN_CAP_SQUARED / len2).sqrt() * strength * strength
         };
-        Some(gap * factor / CM)
+        Some((gap * factor, None))
+    } else {
+        let len = len2.sqrt();
+        Some((gap * ((len - slack) / len * strength), Some(len)))
     }
 }
 

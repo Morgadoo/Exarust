@@ -5,7 +5,7 @@ use bevy::math::Affine3A;
 use bevy::prelude::*;
 
 use crate::body::{Ragdoll, RigidPart, SolverStage};
-use crate::grip::{DISABLED, GripLink, GripLinks, PIVOT};
+use crate::grip::{DISABLED, GripLink, GripLinks, PIVOT, RUNTIME};
 use crate::grip_solve::{GripGroup, GripSolver};
 
 fn rigid(entity: Entity, at: Vec3, mobility: f32) -> Ragdoll {
@@ -137,6 +137,183 @@ fn a_disabled_link_is_skipped_and_a_world_link_moves_the_item_alone() {
     assert_eq!(holder.parts[0].positions, hand_before);
     let point = item_body.point_at(0, &[1.0, 0.0, 0.0, 0.0]).unwrap();
     assert!((point - anchor).length() < 0.001);
+}
+
+/// A dropped item keeps every state bit it had except the strike flags the
+/// attach set, takes the dropped weapon's friction and stays a free body.
+#[test]
+fn a_dropped_item_clears_its_strike_flags() {
+    use crate::grip::{GripRelease, GripSpec, HeldGrip, HeldKind};
+    use crate::part::PartState;
+    let item = Entity::from_raw_u32(20).unwrap();
+    let mut body = rigid(item, Vec3::ZERO, 1.0);
+    body.parts[0].state = PartState(
+        PartState::HELD | PartState::STRIKING | PartState::STRIKE_CHAIN | PartState::STRIKE_MARK,
+    );
+    let grip = HeldGrip {
+        spec: GripSpec {
+            hand: 0,
+            links: Vec::new(),
+            second_hand: None,
+            arm: None,
+            extra: None,
+        },
+        scale: 1.0,
+        size: 1.0,
+        second_hand_factor: 1.0,
+        flip: false,
+        class: 0x10,
+        soft_weld: false,
+        kind: HeldKind::Weapon,
+        holder_key: item,
+        hands: [None, None],
+        arms: [None, None],
+        links: Some(links(pivot(
+            [1.0, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+            (1.0, 0.0),
+        ))),
+        released: false,
+    };
+    let mut app = App::new();
+    app.add_systems(Update, crate::grip_solve::release_freed_grips);
+    let entity = app.world_mut().spawn((body, grip, GripRelease)).id();
+    app.update();
+    let body = app.world().get::<Ragdoll>(entity).unwrap();
+    let state = body.parts[0].state;
+    assert!(state.has(PartState::HELD));
+    assert!(!state.has(PartState::STRIKING));
+    assert!(!state.has(PartState::STRIKE_CHAIN));
+    assert!(!state.has(PartState::STRIKE_MARK));
+    assert_eq!(body.parts[0].friction, 0.75);
+    assert!(body.held_by.is_none());
+    assert!(app.world().get::<HeldGrip>(entity).is_none());
+    assert!(app.world().get::<GripRelease>(entity).is_none());
+}
+
+/// A torch and a shield take the held and mark bits (`0x20002`) when they
+/// are held; a weapon takes the weapon bit and the mark bit (`0x20001`).
+#[test]
+fn a_held_torch_takes_the_held_and_mark_bits() {
+    use crate::grip::{HeldGrip, HeldKind};
+    use crate::part::PartState;
+    let item = Entity::from_raw_u32(20).unwrap();
+    let grip = |kind| HeldGrip {
+        spec: crate::grip::GripSpec {
+            hand: 0,
+            links: Vec::new(),
+            second_hand: None,
+            arm: None,
+            extra: None,
+        },
+        scale: 1.0,
+        size: 1.0,
+        second_hand_factor: 1.0,
+        flip: false,
+        class: 0,
+        soft_weld: true,
+        kind,
+        holder_key: item,
+        hands: [None, None],
+        arms: [None, None],
+        links: Some(links(pivot(
+            [1.0, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+            (1.0, 0.0),
+        ))),
+        released: false,
+    };
+    for (kind, word) in [
+        (HeldKind::Torch, PartState::HELD | PartState::STRIKE_MARK),
+        (HeldKind::Shield, PartState::HELD | PartState::STRIKE_MARK),
+        (
+            HeldKind::Weapon,
+            PartState::STRIKING | PartState::STRIKE_MARK,
+        ),
+    ] {
+        let mut app = App::new();
+        app.add_systems(Update, crate::grip_solve::mark_held);
+        let entity = app
+            .world_mut()
+            .spawn((rigid(item, Vec3::ZERO, 1.0), grip(kind)))
+            .id();
+        app.update();
+        let body = app.world().get::<Ragdoll>(entity).unwrap();
+        assert_eq!(body.parts[0].state.0 & word, word, "{kind:?}");
+        assert!(body.held_by.is_some());
+        let friction = if kind == HeldKind::Torch { 0.0 } else { 0.5 };
+        assert_eq!(body.parts[0].friction, friction, "{kind:?}");
+        // A shield and a torch take their link mobility from their contact
+        // mobility and lose the sole bit.
+        if kind != HeldKind::Weapon {
+            let part = &body.parts[0];
+            assert_eq!(part.link_mobility, part.pairing.mobility, "{kind:?}");
+            assert!(!part.state.has(PartState::SOLE), "{kind:?}");
+        }
+    }
+}
+
+/// A world weld (no pivot flag) takes the plain link law whether its holder
+/// lives or not: `strength·d`, a `10·strength²` cm move at most past
+/// `10·strength` cm, or `strength` times the excess past a slack. The
+/// centroid weights make each move a pure translation, so the item's
+/// displacement is the link's correction.
+#[test]
+fn a_world_weld_takes_the_plain_link_law() {
+    let w = [1.0, 0.0, 0.0, 0.0];
+    let item = Entity::from_raw_u32(1).unwrap();
+    let hand = Entity::from_raw_u32(2).unwrap();
+    let start = rigid(item, Vec3::ZERO, 1.0).point_at(0, &w).unwrap();
+    let pass = |holder: &mut Ragdoll, strength: f32, slack: f32, gap: f32| {
+        let mut item_body = rigid(item, Vec3::ZERO, 1.0);
+        let mut weld = pivot(w, [0.0; 4], (1.0, 0.0));
+        weld.hand = None;
+        weld.flags = RUNTIME;
+        weld.anchor = Some(start + Vec3::new(0.0, gap, 0.0));
+        weld.strength = strength;
+        weld.slack = slack;
+        let mut stage = solver(item, hand, links(weld));
+        stage.links(&mut [&mut item_body, holder], 0);
+        item_body.point_at(0, &w).unwrap().y - start.y
+    };
+    for mut holder in [
+        rigid(hand, Vec3::ZERO, 1.0),
+        rigid(hand, Vec3::ZERO, 1.0).with_drive(),
+    ] {
+        // Strength 1: 5 cm closes in full (inside the 10 cm reach); 20 cm
+        // moves by the 10·1² cm cap.
+        assert!((pass(&mut holder, 1.0, 0.0, 0.05) - 0.05).abs() < 1e-6);
+        assert!((pass(&mut holder, 1.0, 0.0, 0.2) - 0.1).abs() < 1e-6);
+        // The soft weld's 0.05: 5% of a 1 mm gap (inside the 0.5 cm reach),
+        // but only 10·0.05² = 0.025 cm of a 20 cm one.
+        assert!((pass(&mut holder, 0.05, 0.0, 0.001) - 0.000_05).abs() < 1e-8);
+        assert!((pass(&mut holder, 0.05, 0.0, 0.2) - 0.000_25).abs() < 1e-7);
+        // A 10 cm slack: an 8 cm gap is inside; a 15 cm one takes back
+        // 0.05 of its 5 cm excess.
+        assert_eq!(pass(&mut holder, 0.05, 0.1, 0.08), 0.0);
+        assert!((pass(&mut holder, 0.05, 0.1, 0.15) - 0.0025).abs() < 1e-7);
+    }
+}
+
+/// A hand link is a pivot in the body solver's plain iteration whether the
+/// holder lives or not (the original's held item never takes the living
+/// part bit): a 10 cm gap closes by 1/(1 + 0.001·10²) = 1/1.1.
+#[test]
+fn a_living_holders_hand_link_keeps_the_plain_pivot_law() {
+    let w = [1.0, 0.0, 0.0, 0.0];
+    let item = Entity::from_raw_u32(1).unwrap();
+    let hand = Entity::from_raw_u32(2).unwrap();
+    for mut holder in [
+        rigid(hand, Vec3::new(0.1, 0.0, 0.0), 1.0),
+        rigid(hand, Vec3::new(0.1, 0.0, 0.0), 1.0).with_drive(),
+    ] {
+        let mut item_body = rigid(item, Vec3::ZERO, 1.0);
+        let start = item_body.point_at(0, &w).unwrap();
+        let mut stage = solver(item, hand, links(pivot(w, w, (1.0, 0.0))));
+        stage.links(&mut [&mut item_body, &mut holder], 0);
+        let point = item_body.point_at(0, &w).unwrap();
+        assert!((point.x - (start.x + 0.1 / 1.1)).abs() < 1e-6, "{point}");
+    }
 }
 
 /// The builder turns a held item and its character body into the grip's

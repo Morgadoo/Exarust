@@ -36,6 +36,8 @@ pub enum GripSolveSet {
 
 /// A pivot's softening per cm².
 const SOFTENING: f32 = 0.001;
+/// Centimetres per metre: the original's link laws work in centimetres.
+const CM: f32 = 100.0;
 
 /// One held item's links, as the solver stage reads them.
 #[derive(Debug, Clone)]
@@ -73,6 +75,15 @@ fn find_body(bodies: &[&mut Ragdoll], key: Entity) -> Option<usize> {
 
 /// The correction of one grip link and the two shares, from the item's and
 /// the character's bodies as they stand.
+///
+/// The original's held item is a child of the hand in the character's part
+/// tree, but it never takes the living-part bit (only the character's own
+/// skeleton parts with muscle anchors do), so its links always run through
+/// the body solver's plain iteration, whether the holder lives or not: a
+/// pivot link (a hand link) takes the limp link law with a pivot's 0.001
+/// softening, and a world weld (no pivot flag) the plain link law
+/// ([`crate::body::plain_law`]): `strength·d`, a `10·strength²` cm move at
+/// most past `10·strength` cm, or `strength` times the excess past a slack.
 fn link_correction(
     item: &Ragdoll,
     holder: &Ragdoll,
@@ -83,15 +94,31 @@ fn link_correction(
         Some(part) => holder.point_at(part, &link.on_hand)?,
         None => link.anchor?,
     };
-    // The limp rigid body's own link law, with a pivot's 0.001 softening.
-    let correction = crate::body::limp_law(
-        b - a,
-        link.slack,
-        link.strength,
-        SOFTENING,
-        link.smoothing,
-        &mut link.length,
-    )?;
+    let d = b - a;
+    let correction = if link.flags & crate::grip::PIVOT != 0 {
+        crate::body::limp_law(
+            d,
+            link.slack,
+            link.strength,
+            SOFTENING,
+            link.smoothing,
+            &mut link.length,
+        )?
+    } else {
+        match crate::body::plain_law(d * CM, link.slack * CM, link.strength) {
+            // Inside the slack the original zeroes the taut length.
+            None => {
+                link.length = 0.0;
+                return None;
+            }
+            Some((pull, taut)) => {
+                if let Some(taut) = taut {
+                    link.length = taut / CM;
+                }
+                pull / CM
+            }
+        }
+    };
     correction
         .is_finite()
         .then_some((correction, link.shares.0, link.shares.1))
@@ -292,9 +319,10 @@ pub fn build_grips(mut held: Query<(Entity, &mut HeldGrip)>, bodies: Query<&Ragd
 /// chain the permanent weapon bit and the mark bit (`0x20001`,
 /// [`crate::grip::weapon_words`]): a held weapon is a clash for a striker
 /// whether or not its own window is open. A shield or a torch is a held
-/// part (class bit 2, a block); a shield's equip also gives its body the
-/// mark bit (`0x20002`) and its link mobility from its contact mobility
-/// ([`crate::grip::shield_words`]).
+/// part (class bit 2, a block); a shield's equip and a torch's attach also
+/// give its body the mark bit (`0x20002`), clear its sole bit and take its
+/// link mobility from its contact mobility ([`crate::grip::shield_words`]);
+/// a torch's friction is 0.
 pub fn mark_held(mut held: Query<(&HeldGrip, &mut Ragdoll)>) {
     for (grip, mut body) in &mut held {
         if grip.links.is_none() {
@@ -306,12 +334,23 @@ pub fn mark_held(mut held: Query<(&HeldGrip, &mut Ragdoll)>) {
             if grip.kind == HeldKind::Weapon {
                 crate::grip::weapon_words(part);
             } else {
-                part.state = part.state.with(crate::part::PartState::HELD);
+                // A shield's and a torch's own attach routine writes the
+                // held and mark bits (`0x20002`).
+                part.state = part
+                    .state
+                    .with(crate::part::PartState::HELD | crate::part::PartState::STRIKE_MARK);
             }
-            // A held item's friction is the character constructor's 0.5.
-            part.friction = 0.5;
+            // A held weapon's and shield's friction is the character
+            // constructor's 0.5; the torch's own attach leaves it 0.
+            part.friction = if grip.kind == HeldKind::Torch {
+                0.0
+            } else {
+                0.5
+            };
         }
-        if grip.kind == HeldKind::Shield
+        // The torch's own attach writes the same words as the shield's:
+        // contact and link mobility from the base, the sole bit cleared.
+        if matches!(grip.kind, HeldKind::Shield | HeldKind::Torch)
             && let Some(part) = body.parts.get_mut(HeldGrip::ITEM_PART)
         {
             crate::grip::shield_words(part);
@@ -347,7 +386,13 @@ pub fn release_freed_grips(
         body.held_by = None;
         body.reset_groups();
         for part in &mut body.parts {
-            part.state = crate::part::PartState(0);
+            // The drop clears the strike flags the attach set (`0x30001`),
+            // not every bit the body carries.
+            part.state = part.state.without(
+                crate::part::PartState::STRIKING
+                    | crate::part::PartState::STRIKE_CHAIN
+                    | crate::part::PartState::STRIKE_MARK,
+            );
             part.friction = 0.75;
         }
         body.wake_to(crate::body::WAKE_COUNT);

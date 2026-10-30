@@ -356,9 +356,8 @@ tested rules of their own.
   flipped is placed half a turn about y and built from the flipped side
   at once. A collapsing holder lets its weapons and torch go
   (`GripRelease`: the grip stage frees them) while the shield stays on the
-  arm; what is still held then takes the collapse's 10 cm soft-weld slack,
-  and a dead holder's item takes death's stiff soft weld (`adjust_welds`,
-  on the tick the holder enters each condition). When the switch clip passes 60% the runtime trades the two held
+  arm; neither the collapse nor death changes the held item's welds (their
+  limit-link writes are the legs', in `exa_physics::body`). When the switch clip passes 60% the runtime trades the two held
   weapons' blade slots, the attacker's primary and the `Hands` main and
   second weapon once, so `choose_held_movesets` picks the moveset again
   from the new main weapon (a two-hander and a one-hander trade "Two
@@ -402,8 +401,9 @@ tested rules of their own.
   the class word's bit 1, as the original's unarmed set-up marks the fists
   it holds) and takes it off when a weapon is in hand, so a fist striking
   a limb is silent on the impact path and meets a blade as a weapon in the
-  classifier. A held shield's body takes
-  the held and mark bits and a link mobility equal to its contact
+  classifier. A held shield's and a held torch's body take
+  the held and mark bits (a weapon takes the weapon and mark bits), and a
+  shield's link mobility equals its contact
   mobility (`exa_physics::grip::shield_words`).
 - A wielded weapon sits under the hand its grip names
   (`exa_combat::grip`, by its weapon class as the first held item: a
