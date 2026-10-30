@@ -7,9 +7,9 @@
 //! scene's bounds on the sides the camera looks towards (the vertical ones at
 //! the level's floor and ceiling), fits the smallest sphere around the
 //! surviving corners, quantises that sphere's radius to 200 cm steps with a
-//! hysteresis that carries across frames, raises it to the scene's 1 000 cm
-//! minimum, snaps the centre to the shadow map's texel grid and gives the box
-//! a fixed ±8000 cm depth. Exarust builds the same volume from each active
+//! hysteresis that carries across frames, snaps the centre to the shadow
+//! map's texel grid and gives the box a fixed ±8000 cm depth (no minimum
+//! extent in this mode). Exarust builds the same volume from each active
 //! camera's frustum, out to the original camera's default far plane
 //! ([`CAMERA_FAR_CM`]), and writes the resulting matrices into the sun's
 //! single [`Cascades`] entry for that camera, so Bevy's shadow pass, its CPU
@@ -59,7 +59,8 @@ pub struct SunShadowRegion {
     /// The level has a terrain: the original fits its sun map only then and
     /// covers the whole scene otherwise.
     pub fitted: bool,
-    /// The scene's minimum shadow half extent, cm (1 000 shipped).
+    /// The scene's minimum shadow half extent, cm (1 000 shipped); only the
+    /// whole-scene mode reads it.
     pub min_half_extent_cm: f32,
     /// The scene's radius, cm: the whole-scene mode's down-sun reach.
     pub far_cm: f32,
@@ -190,10 +191,7 @@ fn fit_sun_shadows(
             let entry = state.views.entry(view).or_default();
             if region.fitted {
                 let volume = fitted_volume(camera_transform, projection, &region);
-                if entry
-                    .fit
-                    .fit(&volume, &basis, map_size, region.min_half_extent_cm)
-                {
+                if entry.fit.fit(&volume, &basis, map_size) {
                     entry.fit.apply_softness(region.c);
                     entry.matrices = Some(entry.fit.matrices(&basis, map_size));
                 }

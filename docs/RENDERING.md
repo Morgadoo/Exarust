@@ -2125,6 +2125,9 @@ covers the whole scene instead: the scene box's centre rotated into the light's
 frame, the box's radius (the length of its half-extent vector) as the half
 extent and as the up-sun reach, the scene's radius down-sun, each raised to
 the scene's minimum extent of 1 000 cm, and no texel snap and no hysteresis.
+The half extent's raise is `min > h` (a NaN never raises); the down-sun
+reach goes through the engine's `maxss` helper, so a NaN radius gives the
+minimum.
 Its softness is `(c + 1)·(200 / h)`, without the fitted mode's 0.15 floor.
 Exarust takes the radius as the box's half-diagonal and the down-sun reach as
 the same value (the original's own radius comes from the scene-node unit, out
@@ -2159,10 +2162,10 @@ surviving corners, and works in centimetres (×100):
   out-of-range value gives the lowest 64-bit integer). The half extent is
   kept across frames: the quantised value is taken only when it differs
   *and* `r > h + 200·0.3` (grow) or `r < h − 200·0.1` (shrink), both
-  compared in double precision. The constructor starts it at 3000 cm. The
-  scene's minimum extent (1 000 cm: the scene's constructor multiplies that
-  by a global quality factor of 1) raises the half extent afterwards, in
-  both modes, before the centre is snapped.
+  compared in double precision. The constructor starts it at 3000 cm. This
+  mode has no minimum extent: the scene's minimum (1 000 cm in a level: the
+  scene's constructor multiplies that by a global factor of 1; other scene
+  kinds store 100 cm) is read only by the whole-scene mode.
 - **Centre and depth.** The centre is rotated into the light's frame (its
   travel direction is the negated, normalised vector towards the sun, the
   length summed `(x² + z²) + y²`; `right = dir × +Y`, `up = right × dir`;

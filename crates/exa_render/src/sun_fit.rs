@@ -6,9 +6,8 @@
 //! planes at the scene's bounds on the sides the camera looks towards, fits
 //! the smallest sphere around the surviving corners ([`crate::bound_sphere`]),
 //! converts that sphere to centimetres, quantises its radius to 200 cm steps
-//! with a hysteresis, raises it to the scene's minimum extent, snaps the
-//! centre to the shadow map's texel grid and gives the box a fixed ±8000 cm
-//! depth. The quantised radius carries over to the next frame, which is what
+//! with a hysteresis, snaps the centre to the shadow map's texel grid and
+//! gives the box a fixed ±8000 cm depth. The quantised radius carries over to the next frame, which is what
 //! the hysteresis compares against. Every other level covers the whole scene
 //! instead ([`SunFit::whole_scene`]): the scene box's centre, its radius as
 //! half extent, the same radius as the up-sun reach and the scene's radius
@@ -33,9 +32,9 @@
 //!   processor's (nearest, ties to even; a NaN or an out-of-range value gives
 //!   the lowest integer, [`convert_nearest`]). A step is taken only when the
 //!   new value differs *and* the radius is more than 0.3 steps above (grow)
-//!   or 0.1 steps below (shrink) the current half extent. The scene's minimum
-//!   extent (1 000 cm in the shipped data) then raises the half extent: the
-//!   update does the same on both modes, after the hysteresis.
+//!   or 0.1 steps below (shrink) the current half extent. The fitted mode
+//!   has no minimum extent: the scene's minimum (1 000 cm in a level) is
+//!   read only by the whole-scene mode.
 //! - The centre is rotated into the light's basis and its x and y are
 //!   snapped to the texel grid (`2·half_extent / map size`), again rounding
 //!   to nearest. The grid is anchored at the light-space origin, as the
@@ -71,8 +70,8 @@ pub const INITIAL_HALF_EXTENT_CM: f32 = 3000.0;
 /// How far the box reaches on each side of its centre along the light, cm.
 pub const DEPTH_CM: f32 = 8000.0;
 /// The scene's minimum shadow half extent, cm: the scene's constructor
-/// multiplies 1 000 by a global quality factor (1.0 in the shipped build).
-/// The update applies it to both modes.
+/// multiplies 1 000 by a global factor (1.0 in the shipped build). Only the
+/// whole-scene mode reads it; the fitted mode has no minimum.
 pub const MIN_HALF_EXTENT_CM: f32 = 1000.0;
 /// A step up is taken only above this many steps (the original's `0.3`).
 pub const GROW_STEPS: f64 = 0.3;
@@ -373,24 +372,13 @@ impl SunFit {
     /// Fits the clipped view volume: its corners (kept at least
     /// [`CORNER_MERGE2`] apart) are scaled to metres, the smallest sphere is
     /// fitted in double precision, and the result returns in centimetres,
-    /// quantised, raised to `min_half_extent_cm` and snapped. Fewer than two
-    /// corners change nothing and return `false`.
-    pub fn fit(
-        &mut self,
-        volume: &ConvexVolume,
-        basis: &LightBasis,
-        map_size: UVec2,
-        min_half_extent_cm: f32,
-    ) -> bool {
+    /// quantised and snapped. Fewer than two corners change nothing and
+    /// return `false`. There is no minimum extent in this mode.
+    pub fn fit(&mut self, volume: &ConvexVolume, basis: &LightBasis, map_size: UVec2) -> bool {
         let Some(sphere) = fitted_sphere(volume) else {
             return false;
         };
-        let mut half_extent = next_half_extent(self.half_extent_cm, sphere.radius);
-        // The scene's minimum extent: `if min > h { h = min }`, NaN never.
-        if min_half_extent_cm > half_extent {
-            half_extent = min_half_extent_cm;
-        }
-        self.half_extent_cm = half_extent;
+        self.half_extent_cm = next_half_extent(self.half_extent_cm, sphere.radius);
         self.near_cm = DEPTH_CM;
         self.far_cm = DEPTH_CM;
         let centre_cm = basis.to_light(sphere.centre);
@@ -421,10 +409,13 @@ impl SunFit {
         self.half_extent_cm = half_extent;
         self.centre_cm = basis.to_light(scene.centre);
         self.near_cm = half_extent;
-        self.far_cm = if far_cm <= min_half_extent_cm {
-            min_half_extent_cm
-        } else {
+        // The engine's max helper is a single `maxss`: the first operand when
+        // it is greater, else the second, so a NaN far field gives the
+        // minimum (the pseudo-code's `a <= b ? b : a` would keep the NaN).
+        self.far_cm = if far_cm > min_half_extent_cm {
             far_cm
+        } else {
+            min_half_extent_cm
         };
         self.softness = whole_scene_softness(c, half_extent);
         self.caster_softness = c;
@@ -640,7 +631,9 @@ pub fn caster_bias(half_extent_cm: f32, caster_softness: f32, depth_cm: f32) -> 
     CasterBias {
         polygon_factor: factor,
         polygon_units: 1.0,
-        depth_nudge: f64::from(w) as f32 * 0.01,
+        // `w·0.01` in double precision, as the routine adds it to the
+        // projection's z translation (here kept apart and stored single).
+        depth_nudge: (f64::from(w) * 0.01) as f32,
     }
 }
 
@@ -911,7 +904,7 @@ mod tests {
         let empty = ConvexVolume::default();
         let mut fit = SunFit::default();
         let basis = LightBasis::from_towards_sun(Vec3::Y);
-        assert!(!fit.fit(&empty, &basis, UVec2::splat(4096), 0.0));
+        assert!(!fit.fit(&empty, &basis, UVec2::splat(4096)));
         assert_eq!(fit, SunFit::default());
         // A volume whose corners all merge into one point.
         let point = ConvexVolume {
@@ -921,7 +914,7 @@ mod tests {
                 vertices: vec![v(10.0, 10.0, 10.0); 4],
             }],
         };
-        assert!(!fit.fit(&point, &basis, UVec2::splat(4096), 0.0));
+        assert!(!fit.fit(&point, &basis, UVec2::splat(4096)));
         assert_eq!(fit, SunFit::default());
     }
 
@@ -950,7 +943,7 @@ mod tests {
         // from 3000 the shrink is taken (1484.1 < 2980).
         let basis = LightBasis::from_towards_sun(Vec3::Y);
         let mut fit = SunFit::default();
-        assert!(fit.fit(&volume, &basis, UVec2::splat(4096), 0.0));
+        assert!(fit.fit(&volume, &basis, UVec2::splat(4096)));
         assert_eq!(fit.half_extent_cm, 1600.0);
         // x and y snap to the 0.78125 cm grid; the depth is not snapped.
         assert_eq!(fit.centre_cm.x, 0.0);
@@ -968,8 +961,7 @@ mod tests {
         assert!(!fit.fit(
             &volume,
             &LightBasis::from_towards_sun(Vec3::Y),
-            UVec2::splat(4096),
-            0.0
+            UVec2::splat(4096)
         ));
         assert_eq!(fit.half_extent_cm, INITIAL_HALF_EXTENT_CM);
     }
@@ -978,7 +970,7 @@ mod tests {
     fn the_fit_quantises_and_snaps() {
         let basis = LightBasis::from_towards_sun(Vec3::Y);
         let mut fit = SunFit::default();
-        assert!(fit.fit(&cube(Vec3::ZERO, 500.0), &basis, UVec2::splat(4096), 0.0));
+        assert!(fit.fit(&cube(Vec3::ZERO, 500.0), &basis, UVec2::splat(4096)));
         // (866.025)/200 + 0.4 = 4.73 → 5 steps.
         assert_eq!(fit.half_extent_cm, 1000.0);
         // The centre is the origin: already on the grid.
@@ -1037,34 +1029,15 @@ mod tests {
     }
 
     #[test]
-    fn the_fit_raises_the_half_extent_to_the_scene_minimum() {
-        // A 200 cm cube fits 200·round(3.464/2·2…): r = 346.41, so
-        // 346.41/200 + 0.4 = 2.13 → 2 steps = 400 cm. The minimum 1 000 cm
-        // overrides it, and stays through the next fits.
+    fn the_fit_has_no_minimum_extent() {
+        // A 200 cm cube: r = 173.2, 173.2/200 + 0.4 = 1.27 → 1 step. From
+        // 3000 the shrink is taken (173.2 < 2980): 200 cm, well below the
+        // whole-scene mode's 1 000 cm minimum, which this mode never reads.
         let basis = LightBasis::from_towards_sun(Vec3::Y);
         let mut fit = SunFit::default();
-        assert!(fit.fit(&cube(Vec3::ZERO, 100.0), &basis, UVec2::splat(4096), 1000.0));
-        assert_eq!(fit.half_extent_cm, 1000.0);
-        assert!(fit.fit(&cube(Vec3::ZERO, 100.0), &basis, UVec2::splat(4096), 1000.0));
-        assert_eq!(fit.half_extent_cm, 1000.0);
-        // Exactly the minimum is not above it: no change either way.
-        let mut fit = SunFit {
-            half_extent_cm: 800.0,
-            ..Default::default()
-        };
-        assert!(fit.fit(&cube(Vec3::ZERO, 100.0), &basis, UVec2::splat(4096), 800.0));
-        // The hysteresis keeps 800 (the quantised 400 would shrink it, and
-        // r < 800 − 20 holds), then the minimum 800 does not raise it.
-        assert_eq!(fit.half_extent_cm, 800.0);
-        // A NaN minimum never raises (the original's unordered compare).
-        let mut fit = SunFit::default();
-        assert!(fit.fit(
-            &cube(Vec3::ZERO, 500.0),
-            &basis,
-            UVec2::splat(4096),
-            f32::NAN
-        ));
-        assert_eq!(fit.half_extent_cm, 1000.0);
+        assert!(fit.fit(&cube(Vec3::ZERO, 100.0), &basis, UVec2::splat(4096)));
+        assert_eq!(fit.half_extent_cm, 200.0);
+        assert_eq!((fit.near_cm, fit.far_cm), (DEPTH_CM, DEPTH_CM));
     }
 
     #[test]
@@ -1111,6 +1084,14 @@ mod tests {
         assert_eq!(fit.near_cm, 1000.0);
         assert_eq!(fit.far_cm, 1000.0);
         assert_eq!(fit.softness, 0.2);
+        // A NaN far field gives the minimum (`maxss` returns its second
+        // operand on NaN), and a NaN minimum is that second operand too.
+        fit.whole_scene(&tiny, f32::NAN, &basis, MIN_HALF_EXTENT_CM, 0.0);
+        assert_eq!(fit.far_cm, 1000.0);
+        fit.whole_scene(&tiny, 2500.0, &basis, f32::NAN, 0.0);
+        assert!(fit.far_cm.is_nan());
+        // The half extent's raise is `min > h`: a NaN minimum never raises.
+        assert_eq!(fit.half_extent_cm, v(100.0, 100.0, 100.0).length());
     }
 
     #[test]
