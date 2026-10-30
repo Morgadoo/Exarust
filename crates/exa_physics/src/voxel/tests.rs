@@ -680,3 +680,37 @@ fn generated_points_are_the_centimetre_run_scaled_back() {
         assert!(p.abs().cmple(bounds.half_extents + Vec3::splat(0.01)).all());
     }
 }
+
+#[test]
+fn the_tree_query_answers_like_the_plain_one() {
+    let mut triangles: Vec<[Vec3; 3]> = quad(-100.0, -100.0, 100.0, 100.0, 0.0).into();
+    // A wall and a steep face make the tree split more than once.
+    triangles.push([
+        Vec3::new(-100.0, 0.0, -100.0),
+        Vec3::new(-100.0, 80.0, -100.0),
+        Vec3::new(-100.0, 0.0, 100.0),
+    ]);
+    triangles.push([
+        Vec3::new(90.0, 0.0, 90.0),
+        Vec3::new(90.0, 60.0, 90.0),
+        Vec3::new(95.0, 0.0, 95.0),
+    ]);
+    let query = MeshQuery::new(&triangles);
+    let mut hits = 0;
+    for z in -110..=110 {
+        for y in -10..=10 {
+            for x in -110..=110 {
+                let p = Vec3::new(x as f32 * 5.0, y as f32 * 5.0, z as f32 * 5.0);
+                let tree = query.touches(p, 7.0);
+                assert_eq!(tree, mesh_touches(&triangles, p, 7.0), "{p:?}");
+                hits += tree as usize;
+            }
+        }
+    }
+    assert!(hits > 0);
+    // A point 6 cm over the floor touches at radius 7 and not at 5.
+    assert!(query.touches(Vec3::new(0.0, 6.0, 0.0), 7.0));
+    assert!(!query.touches(Vec3::new(0.0, 6.0, 0.0), 5.0));
+    // An empty mesh touches nothing.
+    assert!(!MeshQuery::new(&[]).touches(Vec3::ZERO, 100.0));
+}

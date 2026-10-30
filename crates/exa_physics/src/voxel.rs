@@ -772,8 +772,8 @@ pub fn floor_set_node_generates(flags2: u32) -> bool {
 /// coordinates in centimetres and the reader divides by 100, so recovering
 /// them is within a float ulp rather than bit for bit.
 ///
-/// The point query is [`mesh_touches`] over the given triangles, the
-/// stand-in for the node's collision query; see its note.
+/// The point query is [`MeshQuery`] over the given triangles, the
+/// stand-in for the node's collision query; see [`mesh_touches`]'s note.
 pub fn generated_surface_points(
     bounds: Bounds,
     triangles: &[[Vec3; 3]],
@@ -784,10 +784,11 @@ pub fn generated_surface_points(
         half_extents: bounds.half_extents * CM_PER_M,
     };
     let scaled: Vec<[Vec3; 3]> = triangles.iter().map(|t| t.map(|p| p * CM_PER_M)).collect();
+    let query = MeshQuery::new(&scaled);
     surface_points(
         bounds,
         GENERATED_POINT_PARAMETER,
-        |point, radius| mesh_touches(&scaled, point, radius),
+        |point, radius| query.touches(point, radius),
         cover,
     )
     .into_iter()
@@ -808,6 +809,150 @@ pub fn mesh_touches(triangles: &[[Vec3; 3]], centre: Vec3, radius: f32) -> bool 
     triangles
         .iter()
         .any(|t| closest_distance_squared(*t, centre) <= limit)
+}
+
+/// [`mesh_touches`] over a triangle list with a bounding-volume tree, for
+/// the millions of queries one runtime generation makes.
+///
+/// The tree changes only the cost, never the answer: a node whose box is
+/// farther than the radius is skipped, and a leaf tests its triangles with
+/// the same closest-point predicate as [`mesh_touches`]. The original
+/// reaches the same triangles through its node's kd-tree.
+#[derive(Debug, Clone)]
+pub struct MeshQuery {
+    /// Leaves are `[start, end)` ranges into `order`.
+    nodes: Vec<QueryNode>,
+    order: Vec<u32>,
+    triangles: Vec<[Vec3; 3]>,
+}
+
+#[derive(Debug, Clone)]
+struct QueryNode {
+    min: Vec3,
+    max: Vec3,
+    start: u32,
+    end: u32,
+    /// The left child's node index; `None` for a leaf.
+    left: Option<u32>,
+}
+
+/// The most triangles a leaf keeps before the tree splits it.
+const QUERY_LEAF: usize = 4;
+
+impl MeshQuery {
+    /// Builds the tree over `triangles`.
+    pub fn new(triangles: &[[Vec3; 3]]) -> Self {
+        let mut order: Vec<u32> = (0..triangles.len() as u32).collect();
+        let mut nodes = Vec::new();
+        if !triangles.is_empty() {
+            let len = order.len();
+            build_query_node(&mut nodes, &mut order, triangles, 0, len);
+        }
+        Self {
+            nodes,
+            order,
+            triangles: triangles.to_vec(),
+        }
+    }
+
+    /// Whether any triangle's closest point is within `radius` of `centre`.
+    pub fn touches(&self, centre: Vec3, radius: f32) -> bool {
+        if self.nodes.is_empty() {
+            return false;
+        }
+        let limit = radius * radius;
+        let mut stack = vec![0u32];
+        while let Some(at) = stack.pop() {
+            let Some(node) = self.nodes.get(at as usize) else {
+                continue;
+            };
+            if box_distance_squared(node.min, node.max, centre) > limit {
+                continue;
+            }
+            match node.left {
+                Some(left) => {
+                    stack.push(left);
+                    stack.push(left + 1);
+                }
+                None => {
+                    for &i in &self.order[node.start as usize..node.end as usize] {
+                        if let Some(t) = self.triangles.get(i as usize)
+                            && closest_distance_squared(*t, centre) <= limit
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+}
+
+/// Appends a node covering `order[start..end]` and returns its index.
+fn build_query_node(
+    nodes: &mut Vec<QueryNode>,
+    order: &mut [u32],
+    triangles: &[[Vec3; 3]],
+    start: usize,
+    end: usize,
+) -> u32 {
+    let mut min = Vec3::splat(f32::INFINITY);
+    let mut max = Vec3::splat(f32::NEG_INFINITY);
+    for &i in &order[start..end] {
+        if let Some(t) = triangles.get(i as usize) {
+            for p in t {
+                min = min.min(*p);
+                max = max.max(*p);
+            }
+        }
+    }
+    let at = nodes.len() as u32;
+    nodes.push(QueryNode {
+        min,
+        max,
+        start: start as u32,
+        end: end as u32,
+        left: None,
+    });
+    if end - start <= QUERY_LEAF {
+        return at;
+    }
+    let axis = {
+        let d = max - min;
+        if d.x >= d.y && d.x >= d.z {
+            0
+        } else if d.y >= d.z {
+            1
+        } else {
+            2
+        }
+    };
+    let mid = (start + end) / 2;
+    order[start..end].select_nth_unstable_by(mid - start, |&a, &b| {
+        let ca = triangle_centre(triangles, a)[axis];
+        let cb = triangle_centre(triangles, b)[axis];
+        ca.total_cmp(&cb)
+    });
+    let left = build_query_node(nodes, order, triangles, start, mid);
+    let right = build_query_node(nodes, order, triangles, mid, end);
+    debug_assert_eq!(right, left + 1);
+    nodes[at as usize].left = Some(left);
+    at
+}
+
+/// A triangle's centroid, for the tree's split.
+fn triangle_centre(triangles: &[[Vec3; 3]], i: u32) -> Vec3 {
+    match triangles.get(i as usize) {
+        Some([a, b, c]) => (*a + *b + *c) / 3.0,
+        None => Vec3::ZERO,
+    }
+}
+
+/// The squared distance from `p` to a box, zero inside it.
+fn box_distance_squared(min: Vec3, max: Vec3, p: Vec3) -> f32 {
+    let outside = (min - p).max(p - max).max(Vec3::ZERO);
+    outside.length_squared()
 }
 
 /// The squared distance from `p` to the closest point of a triangle.
