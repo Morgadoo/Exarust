@@ -3536,6 +3536,55 @@ pub fn weapon_panel_place(parent_width: i32, tall: bool) -> PanelPlace {
     }
 }
 
+/// The bit the weapons panel sets in its flag word.
+pub const WEAPON_PANEL_FLAGS: u32 = 0x2_0000;
+
+/// What showing the equipment page's weapons panel did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WeaponPanel {
+    /// The second preview panel was hidden first (it exists).
+    pub second_panel_hidden: bool,
+    /// The panel was made (none existed) rather than shown again.
+    pub created: bool,
+    pub shown: bool,
+    /// The panel's item loop finished (the made panel only).
+    pub finished: bool,
+    /// The panel's flag word gained [`WEAPON_PANEL_FLAGS`] when it was
+    /// made.
+    pub flags: u32,
+    /// The kit entries the loop added.
+    pub items: usize,
+}
+
+/// Shows the equipment page's weapons panel and fills it with the mode's
+/// kit.
+///
+/// The second preview panel is hidden first when it exists and the form's
+/// second tab is captioned WEAPONS. A missing panel is made beside the
+/// apparel one at [`weapon_panel_place`] with [`WEAPON_PANEL_FLAGS`] set,
+/// shown, and filled from [`weapon_kit_table`]'s entries: every entry whose
+/// item id none of the first two hands' base items equals is resolved and
+/// added ([`missing_weapons`], [`resolve_kit_item`]), then the panel
+/// finishes. An existing panel is only shown again. Story mode offers no
+/// weapons, so its panel is made and left empty.
+pub fn show_weapon_panel(
+    has_second_panel: bool,
+    existing: bool,
+    kit_entries: Option<usize>,
+    added: usize,
+) -> WeaponPanel {
+    let created = !existing;
+    let empty = kit_entries.is_none_or(|entries| entries == 0);
+    WeaponPanel {
+        second_panel_hidden: has_second_panel,
+        created,
+        shown: true,
+        finished: created,
+        flags: if created { WEAPON_PANEL_FLAGS } else { 0 },
+        items: if created && !empty { added } else { 0 },
+    }
+}
+
 /// The skills panel: 0xd8 wide, 0x204 tall when recruiting and 0x294
 /// otherwise, against the parent's right edge.
 pub fn skill_panel_place(parent_width: i32, screen_mode: i32) -> PanelPlace {
@@ -7232,6 +7281,45 @@ mod tests {
                 shown: true,
                 finished: false,
                 current_form: false,
+                items: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn the_weapons_panel_is_made_once_and_filled() {
+        assert_eq!(
+            show_weapon_panel(true, false, Some(6), 2),
+            WeaponPanel {
+                second_panel_hidden: true,
+                created: true,
+                shown: true,
+                finished: true,
+                flags: 0x2_0000,
+                items: 2,
+            }
+        );
+        assert_eq!(
+            show_weapon_panel(false, true, Some(6), 2),
+            WeaponPanel {
+                second_panel_hidden: false,
+                created: false,
+                shown: true,
+                finished: false,
+                flags: 0,
+                items: 0,
+            }
+        );
+        // Story mode's table is empty: the panel is made and finished with
+        // nothing in it.
+        assert_eq!(
+            show_weapon_panel(false, false, Some(0), 0),
+            WeaponPanel {
+                second_panel_hidden: false,
+                created: true,
+                shown: true,
+                finished: true,
+                flags: 0x2_0000,
                 items: 0,
             }
         );
