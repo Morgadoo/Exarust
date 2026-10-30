@@ -110,8 +110,8 @@ pub const LIGHT_MERGE_SQ: f32 = 6_400.0;
 pub const MOST_LIGHTS: usize = 16;
 /// The ribbon's texture steps along a stream while it charges and while it
 /// runs: the squared distance between two samples times one of these.
-pub const RIBBON_STEP_CHARGING: f64 = 0.005;
-pub const RIBBON_STEP_RUNNING: f64 = 0.0003;
+pub const RIBBON_STEP_CHARGING: f32 = 0.005;
+pub const RIBBON_STEP_RUNNING: f32 = 0.0003;
 /// The extra reach a torrent point tests a simulated object's points
 /// with, cm.
 pub const BODY_EXTRA: f32 = 40.0;
@@ -919,7 +919,9 @@ impl Torrent {
                 );
                 let delta = points[i + 1] - points[i];
                 let squared = (delta.x * delta.x + delta.y * delta.y) + delta.z * delta.z;
-                along = (f64::from(along) + f64::from(squared) * step) as f32;
+                // The emitter forms the squared distance times the step
+                // before adding it, in single precision.
+                along += squared * step;
             }
             let base = if mesh.positions.is_empty() {
                 0
@@ -1161,6 +1163,17 @@ mod tests {
         assert_eq!(t.count, 15);
         assert_eq!(t.records[5].draws[0], 14.0);
         assert_eq!(t.records[14].draws[0], 14.0);
+    }
+
+    #[test]
+    fn the_texture_walk_is_single_precision() {
+        // A 3 cm segment in the charging step: 9 * 0.005 = 0.045 in single,
+        // which differs from the same product taken in double and narrowed.
+        let squared = 9.0f32;
+        let single = squared * RIBBON_STEP_CHARGING;
+        assert_eq!(single.to_bits(), 0x3d38_51eb);
+        let in_double = (f64::from(squared) * 0.005) as f32;
+        assert_eq!(in_double.to_bits(), 0x3d38_51ec);
     }
 
     #[test]
