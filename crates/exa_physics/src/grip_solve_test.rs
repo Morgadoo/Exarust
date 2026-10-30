@@ -139,6 +139,58 @@ fn a_disabled_link_is_skipped_and_a_world_link_moves_the_item_alone() {
     assert!((point - anchor).length() < 0.001);
 }
 
+/// A dropped item keeps every state bit it had except the strike flags the
+/// attach set, takes the dropped weapon's friction and stays a free body.
+#[test]
+fn a_dropped_item_clears_its_strike_flags() {
+    use crate::grip::{GripRelease, GripSpec, HeldGrip, HeldKind};
+    use crate::part::PartState;
+    let item = Entity::from_raw_u32(20).unwrap();
+    let mut body = rigid(item, Vec3::ZERO, 1.0);
+    body.parts[0].state = PartState(
+        PartState::HELD | PartState::STRIKING | PartState::STRIKE_CHAIN | PartState::STRIKE_MARK,
+    );
+    let grip = HeldGrip {
+        spec: GripSpec {
+            hand: 0,
+            links: Vec::new(),
+            second_hand: None,
+            arm: None,
+            extra: None,
+        },
+        scale: 1.0,
+        size: 1.0,
+        second_hand_factor: 1.0,
+        flip: false,
+        class: 0x10,
+        soft_weld: false,
+        kind: HeldKind::Weapon,
+        holder_key: item,
+        hands: [None, None],
+        arms: [None, None],
+        links: Some(links(pivot(
+            [1.0, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+            (1.0, 0.0),
+        ))),
+        released: false,
+    };
+    let mut app = App::new();
+    app.add_systems(Update, crate::grip_solve::release_freed_grips);
+    let entity = app.world_mut().spawn((body, grip, GripRelease)).id();
+    app.update();
+    let body = app.world().get::<Ragdoll>(entity).unwrap();
+    let state = body.parts[0].state;
+    assert!(state.has(PartState::HELD));
+    assert!(!state.has(PartState::STRIKING));
+    assert!(!state.has(PartState::STRIKE_CHAIN));
+    assert!(!state.has(PartState::STRIKE_MARK));
+    assert_eq!(body.parts[0].friction, 0.75);
+    assert!(body.held_by.is_none());
+    assert!(app.world().get::<HeldGrip>(entity).is_none());
+    assert!(app.world().get::<GripRelease>(entity).is_none());
+}
+
 /// A torch and a shield take the held and mark bits (`0x20002`) when they
 /// are held; a weapon takes the weapon bit and the mark bit (`0x20001`).
 #[test]

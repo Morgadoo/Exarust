@@ -720,6 +720,86 @@ mod tests {
         assert_eq!(links.links[soft].strength, 0.2);
     }
 
+    /// The flip command refuses a switching character and a section with no
+    /// flipped-side kind byte, and starts the flip otherwise.
+    #[test]
+    fn the_flip_command_gate_reads_the_section_flip_side() {
+        use exa_physics::grip::HeldKind;
+        let build = |app: &mut App, condition: Condition, can_flip: bool| {
+            let owner = app.world_mut().spawn(condition).id();
+            let body = holder(owner, Vec3::ZERO);
+            let key = body.parts[0].entity;
+            app.world_mut().entity_mut(owner).insert(body);
+            let item_body = item(Entity::from_raw_u32(30).unwrap(), Vec3::ZERO);
+            let item_to_hand = Affine3A::IDENTITY;
+            let links = exa_physics::grip::build(
+                &item_body,
+                &holder(owner, Vec3::ZERO),
+                exa_physics::grip::GripBindings {
+                    item_part: 0,
+                    hand_parts: [0, 0],
+                    arm_parts: [0, 0],
+                },
+                &spec(),
+                1.0,
+                1.0,
+                item_to_hand,
+                false,
+                1.0,
+            )
+            .unwrap();
+            let mut stats = StatBytes::default();
+            stats.set(at::SLASH, 80);
+            if can_flip {
+                stats.set(at::KIND + at::FLIP, 1);
+            }
+            let record = HeldRecord {
+                section: Section { flags: 0x11, stats },
+                lengths: Lengths::one_part(100.0, 0.1, 1.0),
+                holder: Holder::AVERAGE,
+            };
+            let blade = Blade::new(
+                owner,
+                1.0,
+                WeaponRecord::build(&record.section, false, record.lengths, &record.holder),
+            );
+            let app_item = app
+                .world_mut()
+                .spawn((
+                    item_body,
+                    HeldGrip {
+                        spec: spec(),
+                        scale: 1.0,
+                        size: 1.0,
+                        second_hand_factor: 1.0,
+                        flip: false,
+                        class: 0x20,
+                        soft_weld: false,
+                        kind: HeldKind::Weapon,
+                        holder_key: key,
+                        hands: [None, None],
+                        arms: [None, None],
+                        links: Some(links),
+                        released: false,
+                    },
+                    record,
+                    blade,
+                ))
+                .id();
+            app.world_mut()
+                .write_message(FlipWeaponRequest { body: owner });
+            app.update();
+            let grip = app.world().get::<HeldGrip>(app_item).unwrap();
+            grip.links.as_ref().unwrap().flip_active
+        };
+        let mut a = App::new();
+        a.add_message::<FlipWeaponRequest>()
+            .add_systems(Update, flip_requests);
+        assert!(build(&mut a, Condition::COMBAT_IDLE, true));
+        assert!(!build(&mut a, Condition::COMBAT_IDLE, false));
+        assert!(!build(&mut a, Condition::SWITCHING, true));
+    }
+
     fn spec() -> GripSpec {
         GripSpec {
             hand: 0,

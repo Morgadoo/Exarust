@@ -422,7 +422,13 @@ pub fn release_freed_grips(
         body.held_by = None;
         body.reset_groups();
         for part in &mut body.parts {
-            part.state = crate::part::PartState(0);
+            // The drop clears the strike flags the attach set (`0x30001`),
+            // not every bit the body carries.
+            part.state = part.state.without(
+                crate::part::PartState::STRIKING
+                    | crate::part::PartState::STRIKE_CHAIN
+                    | crate::part::PartState::STRIKE_MARK,
+            );
             part.friction = 0.75;
         }
         body.wake_to(crate::body::WAKE_COUNT);
