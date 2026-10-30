@@ -329,7 +329,8 @@ fn shape_light(id: vec3<u32>, world: vec3<f32>, occ: f32) -> vec3<f32> {
         if any(id.xy < s.clip.xy) || any(id.xy >= s.clip.zw) {
             continue;
         }
-        if id.z < s.head.y || id.z >= s.head.y + s.head.z {
+        let first = i32(s.head.y);
+        if i32(id.z) < first || i32(id.z) >= first + i32(s.head.z) {
             continue;
         }
         let p = (s.matrix * vec4(world, 1.0)).xyz;

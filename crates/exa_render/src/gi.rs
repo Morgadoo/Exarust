@@ -786,7 +786,8 @@ const MAX_GROUP_LIGHTS: usize = MAX_GROUPS * MAX_SECTOR_LIGHTS;
 #[derive(Clone, Copy, Default, ShaderType)]
 struct GiShapeUniform {
     /// x: the program ([`GiShapeProgram::ALL`]'s index), y: the first slice
-    /// of the draw, z: its slice count.
+    /// of the draw as a signed value (the centre less the vertical half
+    /// extent, which may be below slice 0), z: its slice count.
     head: UVec4,
     /// The clipped column box: lo X, lo Z, hi X, hi Z.
     clip: UVec4,
@@ -2031,7 +2032,7 @@ fn gather_shapes<'a>(
         out.push(GiShapeUniform {
             head: UVec4::new(
                 shape.program.index(),
-                draw.first.max(0) as u32,
+                draw.first as u32,
                 draw.count.max(0) as u32,
                 0,
             ),
@@ -2811,6 +2812,19 @@ mod tests {
         let low = at(0.4).unwrap();
         assert_eq!((low.first, low.count), (0, 5));
         assert_eq!((low.lo, low.hi), (UVec2::new(48, 28), UVec2::new(52, 32)));
+        // A shape reaching below slice 0 keeps the original's negative first
+        // slice (centre 2, half 3: slices −1..5), not a shifted range.
+        let deep = shape_draw(
+            ShapeVolume {
+                position: Vec3::new(10.0, 0.4, 6.0),
+                half: Vec3::splat(0.6),
+            },
+            Vec3::ZERO,
+            BLOCK,
+            0.2,
+        )
+        .unwrap();
+        assert_eq!((deep.first, deep.count), (-1, 7));
     }
 
     #[test]
