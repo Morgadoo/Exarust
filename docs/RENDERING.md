@@ -499,6 +499,15 @@ share (`exa_formats::rfc::LightAnimation`); others keep the constructor's
 0.1, 0.5 and 0.5. `exa_world::light_source` runs what the original does
 with them:
 
+- the update's caster-sphere mode fits the smallest enclosing sphere
+  around the scene's merged caster points (points within 0.1 cm² collapse,
+  then centimetres scale to the solver's metres), multiplies the centre and
+  radius by 100, quantises the radius with the fitted mode's 200 cm steps
+  and hysteresis, snaps the centre to the texel grid and gives the box the
+  fixed ±8000 cm depth (`SunFit::sphere_scene`, `merge_caster_points`). The
+  caster list itself is `sun_casters::caster_draws`; the polygon offset and
+  caster depth nudge are `SunFit::caster_bias`, and the eight shadow taps
+  the shader filter reads are `SHADOW_TAPS`.
 - **activation** copies the base intensity into the current one and picks
   the shadow-quality offset from the low two flag bits: 00 → 0, 01 → +1,
   10 → −1, 11 → −2 (not applied: the shipped cube pool has one size);
