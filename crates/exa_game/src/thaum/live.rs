@@ -106,6 +106,7 @@ impl Plugin for ThaumEffectsPlugin {
                             super::blast_live::draw_blasts,
                             super::torrent_live::draw_torrents,
                             super::effect_draw::draw_shell_auras,
+                            super::effect_draw::draw_rigid_auras,
                             super::effect_draw::drop_shell_copies,
                         ),
                     )

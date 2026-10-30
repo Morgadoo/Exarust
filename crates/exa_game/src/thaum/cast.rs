@@ -391,6 +391,7 @@ impl Plugin for CastPlugin {
             .add_message::<AttackAskedHook>()
             .add_message::<super::kinesis_live::KinesisPicked>()
             .add_message::<super::throw_live::ThrowFade>()
+            .add_message::<super::hold_live::HoldEnd>()
             .add_message::<exa_combat::impact::LimbImpact>()
             .init_resource::<super::kinesis_live::KinesisPickHook>()
             .init_resource::<super::kinesis_live::KinesisCursor>()
@@ -430,6 +431,10 @@ impl Plugin for CastPlugin {
                         .before(BodySystems)
                         .before(tick_casters)
                         .after(super::kinesis_live::take_kinesis_picks),
+                    super::hold_live::grab_thrown
+                        .before(BodySystems)
+                        .before(tick_casters)
+                        .after(super::throw_live::sense_throws),
                     super::user_stamp::blame_impacts.after(exa_combat::impact::strike_limbs),
                 ),
             )
@@ -438,6 +443,8 @@ impl Plugin for CastPlugin {
                 (
                     tick_casters,
                     apply_otherwhere.after(tick_casters),
+                    super::hold_live::end_holds,
+                    super::hold_live::dress_strikes,
                     tick_shell_auras.after(tick_casters),
                     super::kinesis_live::steer_kinesis,
                     super::throw_live::push_throws,
@@ -1404,6 +1411,10 @@ fn create_force(
                         if let Some(target) = kinesis.hand_off(body) {
                             power.body = Some(target);
                         }
+                        // The shell and the held environment go with it.
+                        power.shell = kinesis.shell.take();
+                        power.material = kinesis.material.take();
+                        power.grabbed = true;
                         entry.state = ENDING;
                         cast_id = KINESIS;
                     }
@@ -1646,11 +1657,18 @@ fn visual_input(context: &CastContext, ragdoll: Option<&Ragdoll>, roll: f32) -> 
 fn tick_shell_auras(
     mut commands: Commands,
     ticks: Option<Res<BodyTicks>>,
-    mut auras: Query<(Entity, &mut LiveShellAura)>,
+    mut auras: Query<(
+        Entity,
+        &mut LiveShellAura,
+        Has<super::hold_live::StrikesAura>,
+    )>,
 ) {
     let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
-    for (entity, mut aura) in &mut auras {
-        aura.0.step_ripples();
+    for (entity, mut aura, strikes) in &mut auras {
+        // A strikes aura's ripples are stepped by its running power.
+        if !strikes {
+            aura.0.step_ripples();
+        }
         if aura.0.frame(now).remove {
             commands.entity(entity).despawn();
         }
@@ -1860,6 +1878,7 @@ fn tick_casters(
     pad: Option<Res<crate::gamepad::PlayPad>>,
     mut faded: MessageWriter<super::throw_live::ThrowFade>,
     mut moves: MessageWriter<Otherwhere>,
+    mut holds: MessageWriter<super::hold_live::HoldEnd>,
 ) {
     let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
     for (
@@ -1946,6 +1965,14 @@ fn tick_casters(
                 ActiveClass::Kinesis(power) => {
                     let step = power.control(event, body, entry.tick_cost);
                     result = step.result;
+                    // Its end closes the pick's shell and gives the body
+                    // its environment back, unless a throw took them.
+                    if result & 2 != 0
+                        && let Some(end) =
+                            super::hold_live::HoldEnd::of(power.material.take(), power.shell.take())
+                    {
+                        holds.write(end);
+                    }
                 }
                 ActiveClass::Throw(power) => {
                     let ending = event & 0xa != 0 || power.state == ENDING;
@@ -1964,12 +1991,43 @@ fn tick_casters(
                         if step.hold {
                             power.held_until = Some(super::power::force::hold_until(now));
                         }
+                        // The drop closes the shell; the restore (or the
+                        // end) gives the body its environment back and
+                        // closes a shell still open.
+                        if step.drop_shell
+                            && let Some(mut aura) = power
+                                .shell
+                                .take()
+                                .and_then(Entity::try_from_bits)
+                                .and_then(|e| auras.get_mut(e).ok())
+                        {
+                            aura.0.start_fade();
+                            debug!("force throw: the shell drops");
+                        }
+                        if step.restore
+                            && let Some(end) = super::hold_live::HoldEnd::of(
+                                power.material.take(),
+                                power.shell.take(),
+                            )
+                        {
+                            holds.write(end);
+                        }
                         result = step.result;
                     }
                 }
                 ActiveClass::Strikes(power) => {
+                    let shells: Vec<u64> = power.auras.iter().filter_map(|a| a.shell).collect();
                     let step = power.control(event, body);
                     result = step.result;
+                    // Its end closes every aura.
+                    if result & 2 != 0 {
+                        for shell in shells.into_iter().filter_map(Entity::try_from_bits) {
+                            if let Ok(mut aura) = auras.get_mut(shell) {
+                                aura.0.start_fade();
+                            }
+                        }
+                        debug!("force strikes ends: its auras close");
+                    }
                 }
                 ActiveClass::Remote(power) => {
                     let step = power.control(event, at, body);

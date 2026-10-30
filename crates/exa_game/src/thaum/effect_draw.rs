@@ -193,6 +193,7 @@ pub fn shell_params(uniforms: &ShellUniforms) -> ForceShellParams {
         tex_scale: uniforms.tex_scale,
         fade: uniforms.fade,
         push: SHELL_PUSH_M,
+        gradient: Vec4::ZERO,
     }
 }
 
@@ -306,6 +307,7 @@ pub(crate) fn draw_shell_auras(
                 let material = materials.add(ForceShellMaterial {
                     params,
                     noise: image.clone(),
+                    strikes: false,
                 });
                 for (source, mesh, skin) in &sources {
                     // A child of the source mesh: it sorts and hides with it.
@@ -326,6 +328,216 @@ pub(crate) fn draw_shell_auras(
                     material,
                     copies: sources.len(),
                 });
+            }
+        }
+    }
+}
+
+/// A rigid aura's fit: its body's meshes' box in the body's first part's
+/// frame (m), found when its copies are made.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct RigidFit {
+    pub centre: Vec3,
+    pub half: Vec3,
+}
+
+/// The frame of a rigid body's first part (cm): its axes and its origin.
+pub fn part_frame(world: bevy::math::Affine3A) -> ShellFrame {
+    let m = world.matrix3;
+    ShellFrame {
+        rows: [
+            Vec3::from(m.x_axis).normalize_or(Vec3::X),
+            Vec3::from(m.y_axis).normalize_or(Vec3::Y),
+            Vec3::from(m.z_axis).normalize_or(Vec3::Z),
+        ],
+        translation: Vec3::from(world.translation) * CM,
+    }
+}
+
+/// The box (m, in `frame_from_world`'s frame) around the corners of each
+/// mesh box (`centre`, `half`, its mesh's world transform).
+pub fn fit_boxes(
+    frame_from_world: bevy::math::Affine3A,
+    boxes: impl IntoIterator<Item = (Vec3, Vec3, bevy::math::Affine3A)>,
+) -> Option<RigidFit> {
+    let mut lo = Vec3::splat(f32::INFINITY);
+    let mut hi = Vec3::splat(f32::NEG_INFINITY);
+    for (centre, half, world) in boxes {
+        for k in 0..8 {
+            let sign = Vec3::new(
+                if k & 1 == 0 { -1.0 } else { 1.0 },
+                if k & 2 == 0 { -1.0 } else { 1.0 },
+                if k & 4 == 0 { -1.0 } else { 1.0 },
+            );
+            let corner = world.transform_point3(centre + half * sign);
+            let local = frame_from_world.transform_point3(corner);
+            lo = lo.min(local);
+            hi = hi.max(local);
+        }
+    }
+    (lo.x <= hi.x).then(|| RigidFit {
+        centre: (lo + hi) * 0.5,
+        half: (hi - lo) * 0.5,
+    })
+}
+
+/// A rigid aura's program uniform for this frame: the shell's uniforms over
+/// the body's first part's `frame` (the copies carry the world positions,
+/// so `LclMat` takes them into that frame, as the original's object space
+/// is), the fade plane from the fitted box; a strikes aura's fade plane,
+/// gradient and four ripple points are the strikes program's.
+pub fn rigid_params(
+    shell: &crate::thaum::ForceShell,
+    frame: &ShellFrame,
+    fit: RigidFit,
+    strikes: Option<&super::hold_live::StrikesAura>,
+    view: Vec3,
+) -> ForceShellParams {
+    let centre = fit.centre * CM;
+    let half = fit.half * CM;
+    let world_centre = frame.translation
+        + frame.rows[0] * centre.x
+        + frame.rows[1] * centre.y
+        + frame.rows[2] * centre.z;
+    let bounds = ShellBox::Rigid {
+        centre_y: world_centre.y,
+        half,
+        radius: half.length(),
+    };
+    let mut uniforms = shell_uniforms(shell, false, frame, bounds, view);
+    uniforms.local = frame.inverse();
+    let mut params = shell_params(&uniforms);
+    if let Some(strikes) = strikes {
+        params.fade_plane = Vec4::from_array(crate::thaum::strikes_fade_plane(
+            centre.y,
+            half.y,
+            shell.plane_scale,
+        ));
+        params.gradient = Vec4::from_array(crate::thaum::strikes_gradient(
+            strikes.record,
+            centre.y,
+            half.y,
+        ));
+        for point in params.colour_points.iter_mut().skip(4) {
+            *point = Vec4::ZERO;
+        }
+    }
+    params
+}
+
+/// Each frame: a rigid aura without copies copies its body's rigid meshes
+/// (a prop's, a held weapon's) and fits their box; every rigid aura's
+/// material takes this frame's uniforms in the body's first part's frame.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub(crate) fn draw_rigid_auras(
+    mut commands: Commands,
+    noise: Res<ForceNoise>,
+    auras: Query<(
+        Entity,
+        &LiveShellAura,
+        &super::hold_live::RigidAuraOf,
+        Option<&ShellAuraDraw>,
+        Option<&RigidFit>,
+        Option<&super::hold_live::StrikesAura>,
+    )>,
+    bodies: Query<&Ragdoll>,
+    globals: Query<&GlobalTransform>,
+    children: Query<&Children>,
+    meshes: Query<
+        (
+            &Mesh3d,
+            &GlobalTransform,
+            Option<&bevy::camera::primitives::Aabb>,
+        ),
+        (Without<SkinnedMesh>, Without<ShellCopy>),
+    >,
+    cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
+    mut materials: ResMut<Assets<ForceShellMaterial>>,
+) {
+    let Some(image) = noise.image.clone() else {
+        return;
+    };
+    let view = cameras
+        .iter()
+        .next()
+        .map_or(Vec3::ZERO, |c| c.translation() * CM);
+    for (entity, aura, of, drawn, fit, strikes) in &auras {
+        let target = of.0;
+        let world = match bodies.get(target).ok().and_then(|b| b.parts.first()) {
+            Some(part) => part.transform(),
+            None => match globals.get(target) {
+                Ok(g) => g.affine(),
+                Err(_) => continue,
+            },
+        };
+        let frame = part_frame(world);
+        match (drawn, fit) {
+            (Some(draw), Some(fit)) => {
+                if let Some(mut material) = materials.get_mut(&draw.material) {
+                    material.params = rigid_params(&aura.0, &frame, *fit, strikes, view);
+                }
+            }
+            _ => {
+                let sources: Vec<(Entity, Handle<Mesh>, Vec3, Vec3, bevy::math::Affine3A)> =
+                    children
+                        .iter_descendants(target)
+                        .filter_map(|e| {
+                            let (mesh, global, aabb) = meshes.get(e).ok()?;
+                            let aabb = aabb?;
+                            Some((
+                                e,
+                                mesh.0.clone(),
+                                Vec3::from(aabb.center),
+                                Vec3::from(aabb.half_extents),
+                                global.affine(),
+                            ))
+                        })
+                        .collect();
+                let rigid = bevy::math::Affine3A::from_mat3_translation(
+                    bevy::math::Mat3::from_cols(frame.rows[0], frame.rows[1], frame.rows[2]),
+                    frame.translation / CM,
+                );
+                let Some(fit) = fit_boxes(
+                    rigid.inverse(),
+                    sources.iter().map(|&(_, _, c, h, w)| (c, h, w)),
+                ) else {
+                    debug!("force aura {entity:?}: {target:?} has no bounded mesh yet");
+                    continue;
+                };
+                let material = materials.add(ForceShellMaterial {
+                    params: rigid_params(&aura.0, &frame, fit, strikes, view),
+                    noise: image.clone(),
+                    strikes: strikes.is_some(),
+                });
+                for (source, mesh, ..) in &sources {
+                    commands.spawn((
+                        Name::new(if strikes.is_some() {
+                            "effectfrcstrk copy"
+                        } else {
+                            "_ForceAura01 rigid copy"
+                        }),
+                        ShellCopy(entity),
+                        Mesh3d(mesh.clone()),
+                        MeshMaterial3d(material.clone()),
+                        Transform::IDENTITY,
+                        bevy::light::NotShadowCaster,
+                        bevy::light::NotShadowReceiver,
+                        ChildOf(*source),
+                    ));
+                }
+                info!(
+                    "force aura {entity:?}: {} rigid copies of {target:?} (strikes: {}), box half {:?} m",
+                    sources.len(),
+                    strikes.is_some(),
+                    fit.half
+                );
+                commands.entity(entity).insert((
+                    ShellAuraDraw {
+                        material,
+                        copies: sources.len(),
+                    },
+                    fit,
+                ));
             }
         }
     }
@@ -378,6 +590,70 @@ mod tests {
         assert_eq!(params.tex_scale, 0.015);
         assert_eq!(params.push, 0.02);
         assert_eq!(params.fade_plane, Vec4::from_array(uniforms.fade_plane));
+    }
+
+    #[test]
+    fn a_rigid_fit_boxes_the_meshes_in_the_part_frame() {
+        use bevy::math::{Affine3A, Mat3};
+        // A part turned a quarter about y at (1, 2, 3) m; one mesh box of
+        // half (0.1, 0.2, 0.3) at the part's origin.
+        let world = Affine3A::from_mat3_translation(
+            Mat3::from_rotation_y(std::f32::consts::FRAC_PI_2),
+            Vec3::new(1.0, 2.0, 3.0),
+        );
+        let fit = fit_boxes(
+            world.inverse(),
+            [(Vec3::ZERO, Vec3::new(0.1, 0.2, 0.3), world)],
+        )
+        .unwrap();
+        assert!(fit.centre.length() < 1e-5);
+        assert!((fit.half - Vec3::new(0.1, 0.2, 0.3)).length() < 1e-5);
+        let frame = part_frame(world);
+        assert!((frame.translation - Vec3::new(100.0, 200.0, 300.0)).length() < 1e-3);
+        assert!(fit_boxes(Affine3A::IDENTITY, []).is_none());
+    }
+
+    #[test]
+    fn a_rigid_aura_takes_world_points_into_its_part_frame() {
+        let frame = ShellFrame {
+            rows: [Vec3::Z, Vec3::Y, -Vec3::X],
+            translation: Vec3::new(100.0, 50.0, 0.0),
+        };
+        let fit = RigidFit {
+            centre: Vec3::new(0.0, 0.2, 0.0),
+            half: Vec3::new(0.1, 0.2, 0.1),
+        };
+        let shell = ForceShell::held(0, [0.0; 2], 30.0);
+        let params = rigid_params(&shell, &frame, fit, None, Vec3::ZERO);
+        let p = Vec3::new(1.3, 0.7, -0.2);
+        let lpos = params.local_from_world.transform_point3(p);
+        assert!((lpos - frame.local(p * CM)).length() < 1e-3);
+        assert_eq!(params.colour_int, 2.8);
+        assert_eq!(params.gradient, Vec4::ZERO);
+        // The box bottom is the part's origin (centre 20 cm up, half 20):
+        // the plane scale 0.5 over the 20 cm half height.
+        assert!((params.fade_plane.y - 0.5 / 20.0).abs() < 1e-6);
+        assert!(params.fade_plane.w.abs() < 1e-6);
+        let strikes = super::super::hold_live::StrikesAura {
+            record: Some([0.5, 0.9, 100.0]),
+        };
+        let mut weapon = ForceShell::strikes(0, [0.0; 2]);
+        let mut roll = || 0.5;
+        for k in 0..6 {
+            weapon.hit([k as f32, 0.0, 0.0], 1.0, 1000 + 500 * k, &mut roll);
+        }
+        weapon.step_ripples();
+        let params = rigid_params(&weapon, &frame, fit, Some(&strikes), Vec3::ZERO);
+        assert_eq!(
+            params.gradient.y,
+            crate::thaum::strikes_gradient(strikes.record, 20.0, 20.0)[1]
+        );
+        assert_eq!(
+            params.fade_plane,
+            Vec4::from_array(crate::thaum::strikes_fade_plane(20.0, 20.0, 1.0))
+        );
+        assert!(params.colour_points[3].w > 0.0);
+        assert_eq!(params.colour_points[4], Vec4::ZERO);
     }
 
     #[test]

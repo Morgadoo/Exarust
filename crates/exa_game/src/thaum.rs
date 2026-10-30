@@ -46,6 +46,7 @@ pub mod effect_pass;
 pub mod energy;
 pub mod engine;
 pub mod force;
+pub mod hold_live;
 pub mod kinesis_live;
 pub mod live;
 pub mod power;
@@ -3409,15 +3410,85 @@ mod text_tests {
     }
 }
 
-/// The kinesis effect's reach per unit (2.8).
-pub const KINESIS_REACH: f32 = 2.8;
-/// The kinesis effect's damping (0.5).
-pub const KINESIS_DAMPING: f32 = 0.5;
+/// The colour intensity of the shell a force puts on a body it holds
+/// (Kinesis's pick, Throw's grab) and on a weapon under Strikes (2.8).
+pub const KINESIS_REACH: f32 = HELD_SHELL_COLOUR;
+/// The fade-plane scale of a held body's shell (0.5).
+pub const KINESIS_DAMPING: f32 = HELD_SHELL_PLANE;
+/// The colour intensity of a held body's or a strikes weapon's shell.
+pub const HELD_SHELL_COLOUR: f32 = 2.8;
+/// The fade-plane scale of a held body's shell.
+pub const HELD_SHELL_PLANE: f32 = 0.5;
+/// A strikes weapon shell's impact sound gain and base pitch, and its
+/// ripple step scale.
+pub const STRIKES_SHELL_SOUND_GAIN: f32 = 1.5;
+pub const STRIKES_SHELL_SOUND_PITCH: f32 = 0.8;
+pub const STRIKES_SHELL_RIPPLE_SCALE: f32 = 3.0;
 
-/// The kinesis effect's scale from its speed: `(1/speed + 0.015) · 0.5`,
-/// with the division and the sum in the original's mixed precision.
-pub fn kinesis_scale(speed: f32) -> f32 {
-    ((1.0 / speed) as f64 + 0.015) as f32 * 0.5
+/// The texture scale of a held body's shell from the body node's bounding
+/// radius (cm): `(1/radius + 0.015) · 0.5`, the reciprocal in single, the
+/// sum and the halving in double, narrowed at the end.
+pub fn kinesis_scale(radius: f32) -> f32 {
+    ((f64::from(1.0 / radius) + 0.015) * 0.5) as f32
+}
+
+impl ForceShell {
+    /// The shell a force puts on a body it holds (Kinesis's pick, Throw's
+    /// grab from the cursor): the force shell with colour 2.8, fade-plane
+    /// scale 0.5 and the texture scale from the body's bounding radius
+    /// ([`kinesis_scale`]).
+    pub fn held(now: u32, tex_pos: [f32; 2], radius: f32) -> Self {
+        let mut shell = Self::new(now, tex_pos);
+        shell.colour = HELD_SHELL_COLOUR;
+        shell.plane_scale = HELD_SHELL_PLANE;
+        shell.tex_scale = kinesis_scale(radius);
+        shell
+    }
+
+    /// The aura Strikes puts on a held weapon: the force shell with colour
+    /// 2.8, fade-plane scale 1, impact sound gain 1.5 and pitch 0.8, ripple
+    /// scale 3 and the constructor's texture scale 0.015.
+    pub fn strikes(now: u32, tex_pos: [f32; 2]) -> Self {
+        let mut shell = Self::new(now, tex_pos);
+        shell.colour = HELD_SHELL_COLOUR;
+        shell.plane_scale = 1.0;
+        shell.sound_gain = STRIKES_SHELL_SOUND_GAIN;
+        shell.sound_pitch = STRIKES_SHELL_SOUND_PITCH;
+        shell.ripple_scale = STRIKES_SHELL_RIPPLE_SCALE;
+        shell.tex_scale = SHELL_TEX_SCALE;
+        shell
+    }
+}
+
+/// Where a strikes aura glows brightest and how fast it dims away from
+/// there (the weapon node's frame, cm): `(0, c, 0, 0.5/(c − s))`. With the
+/// weapon's record (`start`, `end` of its striking part as fractions and
+/// its `length`), `c` is the striking part's middle, raised half way to 0.7
+/// when under it, times the length, and `s` half the start times the
+/// length; without one, `c` and `s` are 0.6 and 0.15 of the node box's top
+/// (`centre_y + half_y`).
+pub fn strikes_gradient(record: Option<[f32; 3]>, centre_y: f32, half_y: f32) -> [f32; 4] {
+    let (centre, start) = match record {
+        Some([start, end, length]) => {
+            let mut middle = (start + end) * 0.5;
+            if middle < 0.7 {
+                middle = (middle + 0.7) * 0.5;
+            }
+            (middle * length, start * 0.5 * length)
+        }
+        None => {
+            let top = half_y + centre_y;
+            (top * 0.6, top * 0.15)
+        }
+    };
+    [0.0, centre, 0.0, 0.5 / (centre - start)]
+}
+
+/// A strikes aura's fade plane on a rigid weapon node (its frame, cm):
+/// `(0, 1, 0, centre_y − half_y)`, all four scaled by `plane_scale/half_y`.
+pub fn strikes_fade_plane(centre_y: f32, half_y: f32, plane_scale: f32) -> [f32; 4] {
+    let scale = plane_scale / half_y;
+    [0.0, scale, 0.0, (centre_y - half_y) * scale]
 }
 
 /// The force kinesis effect's state.
@@ -3483,10 +3554,51 @@ mod kinesis_tests {
     use super::*;
 
     #[test]
-    fn the_kinesis_scale_follows_the_speed() {
+    fn the_kinesis_scale_follows_the_radius() {
         assert!((kinesis_scale(1.0) - 0.5075).abs() < 1e-6);
         assert!((kinesis_scale(2.0) - 0.2575).abs() < 1e-6);
         assert!((kinesis_scale(0.5) - 1.0075).abs() < 1e-6);
+        // A 40 cm crate: (0.025 + 0.015) · 0.5.
+        assert!((kinesis_scale(40.0) - 0.02).abs() < 1e-7);
+    }
+
+    #[test]
+    fn the_held_and_strikes_shells_change_the_constructors_values() {
+        let held = ForceShell::held(10, [0.1, 0.2], 40.0);
+        assert_eq!(held.colour, 2.8);
+        assert_eq!(held.plane_scale, 0.5);
+        assert_eq!(held.tex_scale, kinesis_scale(40.0));
+        assert_eq!((held.sound_gain, held.sound_pitch), (1.0, 0.5));
+        let strikes = ForceShell::strikes(10, [0.1, 0.2]);
+        assert_eq!(strikes.colour, 2.8);
+        assert_eq!(strikes.plane_scale, 1.0);
+        assert_eq!(strikes.tex_scale, 0.015);
+        assert_eq!((strikes.sound_gain, strikes.sound_pitch), (1.5, 0.8));
+        assert_eq!(strikes.ripple_scale, 3.0);
+        assert_eq!(strikes.state, 1);
+    }
+
+    #[test]
+    fn the_strikes_gradient_follows_the_record_or_the_box() {
+        // A record striking from 0.5 to 0.9 of 100 cm: the middle 0.7.
+        let g = strikes_gradient(Some([0.5, 0.9, 100.0]), 0.0, 0.0);
+        assert!((g[1] - 70.0).abs() < 1e-4);
+        assert!((g[3] - 0.5 / (70.0 - 25.0)).abs() < 1e-7);
+        // A middle under 0.7 rises half way to it: (0.3 + 0.7)/2.
+        let low = strikes_gradient(Some([0.2, 0.4, 100.0]), 0.0, 0.0);
+        assert!((low[1] - 50.0).abs() < 1e-4);
+        // No record: 0.6 and 0.15 of the box's top (40 + 40).
+        let boxed = strikes_gradient(None, 40.0, 40.0);
+        assert!((boxed[1] - 48.0).abs() < 1e-4);
+        assert!((boxed[3] - 0.5 / 36.0).abs() < 1e-7);
+        assert_eq!((boxed[0], boxed[2]), (0.0, 0.0));
+    }
+
+    #[test]
+    fn the_strikes_plane_rises_from_the_box_bottom() {
+        let plane = strikes_fade_plane(40.0, 50.0, 1.0);
+        assert_eq!((plane[0], plane[1], plane[2]), (0.0, 0.02, 0.0));
+        assert!((plane[3] + 0.2).abs() < 1e-6, "{plane:?}");
     }
 
     #[test]

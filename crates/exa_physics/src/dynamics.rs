@@ -221,6 +221,22 @@ impl Environment {
         ..Self::DEFAULT
     };
 
+    /// The environment a body held by a force (Kinesis, Throw) takes for
+    /// as long as it is held: no gravity, and the per-second retentions
+    /// 0.125 above 40 cm/s, 0.0125 above 20 and 0.025 at rest. The original
+    /// builds this environment once, the first time a force holds a body,
+    /// from its eight-word record (the three retentions, a zero gravity
+    /// vector and the two speed thresholds) and converts it for the
+    /// simulation's 83 ticks a second ([`Self::configure_step`]).
+    pub const HELD: Self = Self {
+        gravity: 0.0,
+        fast: 0.125,
+        slow: 0.0125,
+        resting: 0.025,
+        fast_speed: 40.0,
+        slow_speed: 20.0,
+    };
+
     /// The gravity a particle takes in one tick (m): g·dt², with dt the
     /// fixed step.
     pub fn gravity_per_tick(&self) -> Vec3 {

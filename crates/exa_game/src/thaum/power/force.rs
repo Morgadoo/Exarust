@@ -269,11 +269,13 @@ impl RemotePower {
     }
 }
 
-/// One weapon aura: the item and the body holding it.
+/// One weapon aura: the item, the body holding it and the aura's shell
+/// node once the game has built it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Aura {
     pub item: u64,
     pub body: u64,
+    pub shell: Option<u64>,
 }
 
 /// Force Strikes and its auras.
@@ -298,7 +300,11 @@ impl Strikes {
     pub fn apply(&mut self, body: &mut CastBody, items: &[(u64, u64)]) {
         self.auras = items
             .iter()
-            .map(|&(item, owner)| Aura { item, body: owner })
+            .map(|&(item, owner)| Aura {
+                item,
+                body: owner,
+                shell: None,
+            })
             .collect();
         body.strike_factor = STRIKES_FACTOR;
         body.swing_factor = STRIKES_SWING_FACTOR;
@@ -351,7 +357,11 @@ impl Strikes {
             return false;
         }
         if self.auras.len() < MOST_AURAS {
-            self.auras.push(Aura { item, body: owner });
+            self.auras.push(Aura {
+                item,
+                body: owner,
+                shell: None,
+            });
             return true;
         }
         false
@@ -411,6 +421,12 @@ pub struct Kinesis {
     /// Where the held body is steered (cm): the pick's centre until a clear
     /// cursor aim replaces it.
     pub aim: [f32; 3],
+    /// The force shell the pick put on the held body, until the kinesis
+    /// ends or hands it to a throw.
+    pub shell: Option<u64>,
+    /// The body the pick put in the held environment, until the kinesis
+    /// ends (its environment comes back) or hands it to a throw.
+    pub material: Option<u64>,
 }
 
 impl Kinesis {
@@ -429,6 +445,8 @@ impl Kinesis {
             handed: false,
             depth: 0.0,
             aim: [0.0; 3],
+            shell: None,
+            material: None,
         }
     }
 
@@ -633,13 +651,13 @@ pub fn hold_until(now: u32) -> u32 {
     now.wrapping_add(HOLD_MS)
 }
 
-/// What a kinesis pick puts on the body it grabs: the force shell's speed
-/// scale, the special physics material, the 2 s user stamp and the depth it
+/// What a kinesis pick puts on the body it grabs: the force shell's texture
+/// scale from the body's bounding radius, the special physics material, the 2 s user stamp and the depth it
 /// is held at.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct KinesisPick {
     pub item: u64,
-    /// The shell's scale from the item's speed.
+    /// The shell's texture scale from the body's bounding radius (cm).
     pub shell_scale: f32,
     /// The body remembers its user until then.
     pub hold_until: u32,
@@ -657,21 +675,22 @@ pub const PICK_SHELL_FADE: f32 = 0.5;
 /// The pick sound's volume.
 pub const PICK_VOLUME: f32 = 0.3;
 
-/// The pick's shell is the force shell scaled by `(1/speed + 0.015)·0.5`;
+/// The pick's shell is the force shell with texture scale
+/// `(1/radius + 0.015)·0.5` for the body's bounding radius (cm);
 /// its depth is `(a + b + c)·0.333` of the body's extents, summed in that
 /// order in single and scaled in double. `None` is the original's empty
 /// pick, which ends the power (and, with pick mode 0, plays the failure
 /// sound).
 pub fn kinesis_pick(
     item: Option<u64>,
-    speed: f32,
+    radius: f32,
     extents: [f32; 3],
     now: u32,
 ) -> Option<KinesisPick> {
     let item = item?;
     Some(KinesisPick {
         item,
-        shell_scale: super::super::kinesis_scale(speed),
+        shell_scale: super::super::kinesis_scale(radius),
         hold_until: hold_until(now),
         material: true,
         depth: (f64::from(extents[0] + extents[1] + extents[2]) * 0.333) as f32,
@@ -724,6 +743,13 @@ pub struct Throw {
     /// The body takes the caster as its user until then
     /// ([`ThrowStep::hold`]); the game stamps it.
     pub held_until: Option<u32>,
+    /// The force shell on the thrown body until it drops.
+    pub shell: Option<u64>,
+    /// The body in the held environment until its environment comes back.
+    pub material: Option<u64>,
+    /// The game has put the shell and the environment on the body (at once
+    /// for a body handed from a kinesis, which brings both).
+    pub grabbed: bool,
 }
 
 /// A throw's sounds: the pick's at the body when the cursor's throw starts,
@@ -774,6 +800,9 @@ impl Throw {
             handed: false,
             sound: ThrowSound::default(),
             held_until: None,
+            shell: None,
+            material: None,
+            grabbed: false,
         }
     }
 

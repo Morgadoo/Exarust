@@ -429,6 +429,16 @@ fn a_throw_takes_the_kinesis_crate_and_lifts_it() {
     };
     assert_eq!(t.phase, crate::thaum::power::force::THROW_FLY);
     assert!(t.handed && !t.sound.pick);
+    // The kinesis's shell and held environment went with the crate.
+    assert!(t.grabbed && t.shell.is_some());
+    assert_eq!(t.material, Some(prop.to_bits()));
+    assert!(
+        app.world()
+            .get::<Ragdoll>(prop)
+            .unwrap()
+            .held_environment()
+            .is_some()
+    );
     assert!(
         (Vec3::from(t.aim) - before * 100.0).length() < 1e-2,
         "{:?}",
@@ -471,10 +481,104 @@ fn a_running_kinesis_takes_the_hands_pick() {
     assert_eq!(k.target, Some(prop.to_bits()));
     let aim = Vec3::from(k.aim);
     assert!((aim - at * 100.0).length() < 1e-3, "{aim}");
+    // The pick puts the crate in the held environment under a rigid shell.
+    use super::super::hold_live::RigidAuraOf;
+    use exa_physics::dynamics::Environment;
+    let shell = Entity::try_from_bits(k.shell.expect("the pick's shell")).unwrap();
+    assert_eq!(k.material, Some(prop.to_bits()));
+    assert_eq!(
+        app.world().get::<RigidAuraOf>(shell),
+        Some(&RigidAuraOf(prop))
+    );
+    let aura = &app.world().get::<LiveShellAura>(shell).unwrap().0;
+    assert_eq!((aura.colour, aura.plane_scale), (2.8, 0.5));
+    assert_eq!(
+        app.world().get::<Ragdoll>(prop).unwrap().held_environment(),
+        Some(Environment::HELD)
+    );
     cast(&mut app, caster);
     app.world_mut().run_schedule(FixedUpdate);
     app.world_mut().run_schedule(FixedUpdate);
     assert_eq!(app.world().resource::<KinesisPickHook>().0, None);
+    // Its end gives the crate its environment back and closes the shell.
+    assert_eq!(
+        app.world().get::<Ragdoll>(prop).unwrap().held_environment(),
+        None
+    );
+    assert!(app.world().get::<LiveShellAura>(shell).unwrap().0.state >= 2);
+}
+
+/// Force Strikes puts an aura on the item its caster holds, drawn with the
+/// strikes program, and closes it when the power ends.
+#[test]
+fn strikes_put_an_aura_on_the_held_weapon() {
+    use super::super::hold_live::{RigidAuraOf, StrikesAura};
+    use crate::thaum::force::STRIKES;
+    use exa_physics::grip::{GripSpec, HeldGrip, HeldKind};
+    let mut app = new_app();
+    let armed = caster(&mut app, &[STRIKES]);
+    app.world_mut().entity_mut(armed).insert(HeldMoveset {
+        weapon_class: 0x10,
+        ..HeldMoveset::default()
+    });
+    app.world_mut()
+        .get_mut::<PowerCaster>(armed)
+        .unwrap()
+        .body
+        .focus = 1.0;
+    let sword = app
+        .world_mut()
+        .spawn(HeldGrip {
+            spec: GripSpec {
+                hand: 1,
+                links: Vec::new(),
+                second_hand: None,
+                arm: None,
+                extra: None,
+            },
+            scale: 1.0,
+            size: 1.0,
+            second_hand_factor: 1.0,
+            flip: false,
+            class: 0x10,
+            soft_weld: true,
+            kind: HeldKind::Weapon,
+            // The test body's first part is a placeholder entity.
+            holder_key: Entity::PLACEHOLDER,
+            hands: [None, None],
+            arms: [None, None],
+            links: None,
+            released: false,
+        })
+        .id();
+    cast(&mut app, armed);
+    app.world_mut().run_schedule(FixedUpdate);
+    let state = app.world().get::<PowerCaster>(armed).unwrap();
+    let Some(ActiveClass::Strikes(power)) = state.active.first().map(|e| &e.class) else {
+        panic!("no strikes");
+    };
+    assert_eq!(power.auras.len(), 1);
+    assert_eq!(power.auras[0].item, sword.to_bits());
+    let shell = Entity::try_from_bits(power.auras[0].shell.expect("built")).unwrap();
+    assert_eq!(
+        app.world().get::<RigidAuraOf>(shell),
+        Some(&RigidAuraOf(sword))
+    );
+    assert_eq!(
+        app.world().get::<StrikesAura>(shell),
+        Some(&StrikesAura { record: None })
+    );
+    let aura = &app.world().get::<LiveShellAura>(shell).unwrap().0;
+    assert_eq!((aura.ripple_scale, aura.sound_gain), (3.0, 1.5));
+    // Put away: the aura closes and leaves the list.
+    app.world_mut().get_mut::<HeldGrip>(sword).unwrap().released = true;
+    app.world_mut().run_schedule(FixedUpdate);
+    let state = app.world().get::<PowerCaster>(armed).unwrap();
+    let Some(ActiveClass::Strikes(power)) = state.active.first().map(|e| &e.class) else {
+        panic!("no strikes");
+    };
+    assert!(power.auras.is_empty());
+    assert!(app.world().get::<LiveShellAura>(shell).unwrap().0.state >= 2);
 }
 
 /// A running vanish's hook keeps an attack's event 0x100, so the attack is

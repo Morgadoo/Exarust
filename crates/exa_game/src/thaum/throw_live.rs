@@ -36,7 +36,7 @@
 //! that has already freed itself is left alone.]
 //! Each tick it coasts after the shell drops it stamps the body with the
 //! caster for 2 s ([`super::user_stamp`]).
-//! The throw's shell and the special material are not wired.
+//! The throw's shell and the held environment are `super::hold_live`'s.
 
 use bevy::prelude::*;
 
@@ -200,7 +200,7 @@ pub(super) struct ThrowSets {
 }
 
 /// Plays `prefix`'s set at `at` (m): the roll first, then the variant.
-fn play(
+pub(super) fn play(
     audio: &mut ThrowAudio,
     set: &mut Option<u32>,
     prefix: &str,
