@@ -3358,8 +3358,11 @@ it is wired into the running game yet.
   the release and 0x100 write the selection back to the owner and close;
   0x4000/0x8000 step the selection. Selecting a row sets the hover and the
   selection. Only the selection draws a band, from y 1 to the client's
-  right less the border less one, with a frame a pixel inside; the close
-  clears the owner's on and lit bits and frees items the list owns.
+  right less the border less one, with a frame a pixel inside: a double
+  frame in the hot form group's seventh and first shades, a half-strength
+  gradient from the form group's fifth shade at the bottom to its first at
+  the top, and the innermost fill in the fifth shade; the close clears the
+  owner's on and lit bits and frees items the list owns.
 - **Palette swatch** (`exa_ui::col_swatch`). A fixed 400 × 112 popup of 32
   columns of 8 three-unit cells, index = column · 8 + row, in the palette's
   lifted colours as bytes; a cell starts a pixel in and ends at the next
