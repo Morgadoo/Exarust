@@ -53,6 +53,42 @@ pub const SOUND_PITCH: f32 = 1.0;
 /// Its priority.
 pub const SOUND_PRIORITY: u32 = 0x4060;
 
+/// The form flags the splash's constructor gives it (style 0).
+pub const FORM_FLAGS: u32 = 0x1020;
+/// The form's background ink: opaque black.
+pub const BACKGROUND: [u8; 4] = [0, 0, 0, 255];
+
+/// The sound front end's play record: the origin it plays from ([0, 0, 0]),
+/// the volume and pitch, and the priority word. Volume and pitch are single
+/// precision; the priority is the original's own word and has no Bevy
+/// counterpart.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SplashSound {
+    pub name: &'static str,
+    pub position: [f32; 3],
+    pub volume: f32,
+    pub pitch: f32,
+    pub priority: u32,
+}
+
+/// The hand-over sound the load resolves by name and the second logo plays.
+pub const HAND_OVER: SplashSound = SplashSound {
+    name: HAND_OVER_SOUND,
+    position: [0.0, 0.0, 0.0],
+    volume: SOUND_VOLUME,
+    pitch: SOUND_PITCH,
+    priority: SOUND_PRIORITY,
+};
+
+/// What destroying the splash releases: its two logo textures, its sound
+/// and the warm-up pass counter (the original also clears a unit flag).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SplashDestroy {
+    pub logos: bool,
+    pub sound: bool,
+    pub pass_counter: bool,
+}
+
 /// How long the renderer's programs warm up before the first fade.
 pub const WARM_UP_MS: u32 = 1000;
 /// How long the first logo stays from the start of its fade.
@@ -346,6 +382,16 @@ impl Splash {
             self.busy -= 1;
         }
     }
+
+    /// The destroy: the two logo textures and the sound record go, and the
+    /// warm-up pass counter is cleared. The caller drops the screen.
+    pub fn destroy(&self) -> SplashDestroy {
+        SplashDestroy {
+            logos: true,
+            sound: true,
+            pass_counter: true,
+        }
+    }
 }
 
 /// The frame's time less a stamp: the signed 64-bit difference of the two
@@ -564,12 +610,16 @@ fn tick_splash(
             commands.spawn((
                 AudioPlayer(clip),
                 PlaybackSettings {
-                    volume: Volume::Linear(SOUND_VOLUME),
+                    volume: Volume::Linear(HAND_OVER.volume),
+                    speed: HAND_OVER.pitch,
                     ..default()
                 },
             ));
         }
-        debug!("splash: {HAND_OVER_SOUND} at {SOUND_VOLUME}");
+        debug!(
+            "splash: {} at {} (priority {:#x})",
+            HAND_OVER.name, HAND_OVER.volume, HAND_OVER.priority
+        );
     }
     if frame.hand_over {
         // The hand-over callback: the title page is built and shown under
@@ -618,6 +668,9 @@ fn tick_splash(
     }
     if frame.closed {
         debug!("splash: closed");
+        if let Some(splash) = screen.0.as_ref() {
+            splash.destroy();
+        }
         screen.0 = None;
         for (entity, _) in &backdrops {
             commands.entity(entity).despawn();
@@ -651,6 +704,26 @@ mod tests {
     /// A tick where the frame's time and the stamp's clock agree.
     fn tick(splash: &mut Splash, now: u32, ready: bool) -> SplashFrame {
         splash.tick(now, now, VIEW, ready)
+    }
+
+    #[test]
+    fn the_hand_over_sound_record_and_the_destroy_are_pinned() {
+        assert_eq!(HAND_OVER.name, "BME Critters");
+        assert_eq!(HAND_OVER.position, [0.0, 0.0, 0.0]);
+        assert_eq!(HAND_OVER.volume, 0.2);
+        assert_eq!(HAND_OVER.pitch, 1.0);
+        assert_eq!(HAND_OVER.priority, 0x4060);
+        assert_eq!(FORM_FLAGS, 0x1020);
+        assert_eq!(BACKGROUND, [0, 0, 0, 255]);
+        let splash = Splash::new(0, logos());
+        assert_eq!(
+            splash.destroy(),
+            SplashDestroy {
+                logos: true,
+                sound: true,
+                pass_counter: true
+            }
+        );
     }
 
     #[test]

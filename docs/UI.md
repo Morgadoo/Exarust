@@ -1094,7 +1094,10 @@ comparison uses the frame's time and every stamp the system clock, so an
 elapsed time is their signed difference. The splash also drives the
 transition audio gain (silent until the second logo, silent again after the
 menu wait, rising with the last fade) and the marker outline fade. The form's
-hit-test and destroy order are `exa_ui::menu`'s. `exarust --splash` shows it
+hit-test and destroy order are `exa_ui::menu`'s. The form's constructor gives
+it style 0 and control flags 0x1020 over an opaque black background; its load
+resolves `BME Critters` and its destroy releases both logos, the sound record
+and the warm-up pass counter. `exarust --splash` shows it
 at start-up (about five seconds) and opens the main menu at the hand-over;
 without the flag nothing starts it.
 
