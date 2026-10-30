@@ -101,7 +101,7 @@ Ordered by code size; these are where most of the original still has no counterp
 | TMesh | Rendering & GPU | 25 | 82% | exa_formats/src/rfc.rs; exa_assets/src/model.rs |
 | RF_Skinning | Characters, motion & animation | 25 | 82% | exa_assets/src/skin.rs; exa_assets/src/model.rs |
 | RF_SceneNodes | World, levels & terrain | 24 | 82% | exa_world/src/scene_nodes.rs; exa_world/src/light_flood.rs |
-| XA_SaveGames | Game modes, arena & session | 27 | 73% | exa_formats/src/save_package.rs; exa_formats/src/arena_save.rs; exa_game/src/slots.rs; exa_game/src/save_live.rs |
+| XA_SaveGames | Game modes, arena & session | 27 | 70% | exa_formats/src/save_package.rs; exa_formats/src/arena_save.rs |
 | RFE_MeshTools | Rendering & GPU | 19 | 95% | exa_assets/src/mesh_weld.rs; exa_assets/src/mesh_edit.rs |
 
 ## Combat rules
