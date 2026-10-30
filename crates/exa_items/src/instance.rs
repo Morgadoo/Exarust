@@ -16,6 +16,8 @@
 
 use exa_formats::containers::{coins_of, price_of};
 
+use crate::palette::{ApparelBlock, Palette};
+
 /// Spreads below this keep the stored byte.
 pub const NO_SPREAD: f32 = 1.192_092_9e-7;
 /// The protection weight of each of bones 1..20.
@@ -267,6 +269,55 @@ pub fn roll_share(value: f32, spread: f32, state: &mut u32) -> u8 {
     nearest(((hi - lo) * w + lo) * 255.0) as u8
 }
 
+/// The protection bytes an apparel copy takes from its template before its
+/// roll: the four resists, the coverage and the encumbrance (`0x1A0` to
+/// `0x1A5` of the body).
+pub const APPAREL_PROTECTION: (usize, usize) = (0x1A0, 0x1A6);
+/// The appearance block's seed word (`0x1AC`), the block's offset plus four.
+pub const APPAREL_SEED_AT: usize = 0x1AC;
+
+/// Makes an apparel copy from a template, as the made-item walker does: a
+/// copy whose seed word is `0xFFFFFFFF` takes the template's, the six
+/// protection bytes are taken from the template, the appearance block is
+/// rolled ([`ApparelBlock::roll`]: quality, damage and dirt within their
+/// spreads, a seed when it has none, each layer's material and colour, the
+/// armour variant), and the condition pass ([`crate::refresh::copy_apparel`])
+/// scales the template's protection and price by the copy's own condition.
+///
+/// `palette` is the palette rolled for the copy's wealth (the roll reads the
+/// palette globals the caller set). Returns false when either body is too
+/// short for the block.
+pub fn copy_apparel(
+    copy: &mut [u8],
+    template: &[u8],
+    palette: &Palette,
+    entropy: u32,
+    price: Option<&mut u16>,
+    template_price: Option<u16>,
+) -> bool {
+    if copy.len() < crate::palette::BLOCK_OFFSET + 0x6C || template.len() < APPAREL_SEED_AT + 4 {
+        return false;
+    }
+    if copy[APPAREL_SEED_AT..APPAREL_SEED_AT + 4] == [0xFF; 4] {
+        copy[APPAREL_SEED_AT..APPAREL_SEED_AT + 4]
+            .copy_from_slice(&template[APPAREL_SEED_AT..APPAREL_SEED_AT + 4]);
+    }
+    let (from, to) = APPAREL_PROTECTION;
+    if let (Some(copy_bytes), Some(template_bytes)) =
+        (copy.get_mut(from..to), template.get(from..to))
+    {
+        copy_bytes.copy_from_slice(template_bytes);
+    }
+    let Some(mut block) = ApparelBlock::of_body(copy) else {
+        return false;
+    };
+    block.roll(palette, entropy);
+    if !block.write_to(copy) {
+        return false;
+    }
+    crate::refresh::copy_apparel(copy, template, price, template_price)
+}
+
 /// The condition block of a made weapon's section: its two seeds, its
 /// quality, damage and dirt, and the packed spreads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -472,6 +523,79 @@ mod tests {
         let b = roll_share(0.9, 0.5, &mut s0);
         assert_eq!(s0, 1);
         assert!(b >= 102);
+    }
+
+    fn apparel_body(seed: u32) -> Vec<u8> {
+        let mut body = vec![0u8; 0x214];
+        body[0x1A8] = 4;
+        body[0x1AC..0x1B0].copy_from_slice(&seed.to_le_bytes());
+        body[0x1B0] = 128;
+        body[0x1B3] = 0;
+        // Two used layers: layer 0 set 4, layer 1 set 3.
+        body[0x1B4 + 1] = 1;
+        body[0x1B4 + 2] = 4;
+        body[0x1B4 + 3] = 2;
+        body[0x1B4 + 12 + 1] = 1;
+        body[0x1B4 + 12 + 2] = 4;
+        body[0x1B4 + 12 + 3] = 2;
+        body[0x1B4 + 24 + 1] = 2;
+        body[0x1B4 + 24 + 2] = 3;
+        body[0x1B4 + 24 + 3] = 2;
+        body[0x1A0..0x1A6].copy_from_slice(&[9, 9, 9, 9, 9, 9]);
+        body
+    }
+
+    #[test]
+    fn an_apparel_copy_takes_the_seed_rolls_and_prices() {
+        let mut palette = Palette::default();
+        palette.roll(2.0, 1, 11);
+        let template = apparel_body(0x1234_5678);
+        let mut copy = apparel_body(u32::MAX);
+        // The copy's own condition differs from the template's.
+        copy[0x1B0] = 64;
+        copy[0x1B1] = 32;
+        let mut price = 0x1000u16;
+        assert!(copy_apparel(
+            &mut copy,
+            &template,
+            &palette,
+            0xABCD,
+            Some(&mut price),
+            Some(0x1000)
+        ));
+        // A seed of -1 takes the template's and stays.
+        assert_eq!(&copy[0x1AC..0x1B0], &0x1234_5678u32.to_le_bytes());
+        // The roll gives each used layer a material and colour and an
+        // armour variant.
+        let block = ApparelBlock::of_body(&copy).unwrap();
+        assert_ne!(block.layers[0].material, 0);
+        assert_ne!(block.layers[1].material, 0);
+        assert_ne!(block.variant, 0xFF);
+        // The condition pass scales the template's protection and price by
+        // the copy's condition.
+        assert_ne!(&copy[0x1A0..0x1A4], &[9, 9, 9, 9]);
+        assert_ne!(price, 0x1000);
+        // A template without a seed gets one from the roll.
+        let mut copy = apparel_body(0);
+        copy[0x1AC..0x1B0].copy_from_slice(&0u32.to_le_bytes());
+        assert!(copy_apparel(
+            &mut copy,
+            &apparel_body(0),
+            &palette,
+            7,
+            None,
+            None
+        ));
+        assert_ne!(&copy[0x1AC..0x1B0], &0u32.to_le_bytes());
+        // A short body is refused.
+        assert!(!copy_apparel(
+            &mut vec![0u8; 0x100],
+            &template,
+            &palette,
+            1,
+            None,
+            None
+        ));
     }
 
     #[test]

@@ -932,6 +932,15 @@ parenthesised sums and the square in double; both use s = (1 − (0.09k)²)·sat
 in double, scaled by (v + 0.6)² (double) when v < 0.4, then HSV → RGB with
 the sector ⌊6h⌋. Family 0 is the greys (0.91 down to black).
 
+**Apparel copies.** A made apparel copy walks its body sections: the copy
+seed word of `0xFFFFFFFF` takes the template's, the six protection bytes
+at `0x1A0..0x1A6` are copied, the appearance block is rolled
+(`ApparelBlock::roll`: quality, damage and dirt within their spreads, a
+seed when it has none, each used layer's material from its set by the
+palette's weights and its colour, the armour variant from the type's
+table) and the apparel condition pass then scales the template's
+protection and price by the copy's condition (`exa_items::instance::copy_apparel`).
+
 **Colour space.** REA on the original's paint jobs and texture loading shows
 the following.
 - The finishes read the shade map, the masks, the item normal and every
