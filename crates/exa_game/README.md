@@ -1534,4 +1534,7 @@ books the joining and removes the candidate, and End Day renews the list.
 The candidate's item outfit is not generated (the hub holds no item-fact
 table), so its price has no gear share [guess/limitation]. The Arsenal
 window and the kit release a dismissal makes in the original are still not
-built.
+built. End Day also rests the manager and gives him the first trainer's
+lesson before the staff, renews the hire list, rolls the next day's six
+standard matches from a fresh seed and asks the live shop world to rotate
+the shop's shelf and the employed merchant's stock (`hub_restock`).

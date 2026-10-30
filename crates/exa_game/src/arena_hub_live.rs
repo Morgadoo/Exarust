@@ -171,6 +171,7 @@ impl Plugin for ArenaHubPlugin {
                     crate::hub_forms::open_hub_window_on_load,
                     crate::hub_forms::hub_form_input,
                     hub_clicks,
+                    hub_restock,
                     hub_session_fall,
                     close_hub_windows,
                 )
@@ -737,6 +738,49 @@ impl HubShop<'_> {
         }
         windows.open_shop(merchant, career, &self.names);
     }
+
+    /// The night's restock: the shop's shelf and, with a merchant employed,
+    /// the merchant's own, using the live stock world.
+    fn restock(&mut self, career: &mut crate::hub_windows::ArenaCareer) {
+        if let Some(game) = self.game.as_deref() {
+            self.live.load_from_game(game);
+        }
+        let rolls = [
+            crate::arena_match::counter_now() as u32,
+            crate::arena_match::counter_now() as u32,
+        ];
+        career.company.restock(0, -1, rolls, &mut *self.live);
+        if career
+            .company
+            .roster
+            .iter()
+            .any(|member| member.profession == crate::career::Profession::Merchant)
+        {
+            crate::trade::update_stock(
+                &mut career.merchant_stock,
+                career.merchant_kinds,
+                career.merchant_rank,
+                rolls,
+                &mut *self.live,
+            );
+        }
+        if let Some(catalogue) = self.catalogue.as_deref() {
+            self.live.fill_names(catalogue, &mut self.names);
+        }
+    }
+}
+
+/// The night's restock, asked by the day-end button: the career's flag is
+/// cleared and the live shop world rotates both shelves.
+fn hub_restock(mut career: Option<ResMut<crate::hub_windows::ArenaCareer>>, mut shop: HubShop) {
+    let Some(career) = career.as_mut() else {
+        return;
+    };
+    if !career.restock_pending {
+        return;
+    }
+    career.restock_pending = false;
+    shop.restock(career);
 }
 
 /// The click hook: the object or character under the click, the action it
@@ -1257,6 +1301,19 @@ mod tests {
             .write_message(WorldClick::picked(Hit::SceneNode { node: shop }));
         app.update();
         assert_eq!(
+            app.world()
+                .resource::<crate::hub_windows::ArenaCareer>()
+                .company
+                .stock,
+            first
+        );
+
+        // The day's end rotates the shelf once the live world supplies it.
+        app.world_mut()
+            .resource_mut::<crate::hub_windows::ArenaCareer>()
+            .restock_pending = true;
+        app.update();
+        assert_ne!(
             app.world()
                 .resource::<crate::hub_windows::ArenaCareer>()
                 .company

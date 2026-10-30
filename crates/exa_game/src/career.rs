@@ -885,7 +885,10 @@ fn skill_level(word: u16) -> u32 {
 /// the trainer knows gains 1000 divided by one plus the six levels, the
 /// story's skill lump (`experience::add_skill_lump`). A sum that reaches a
 /// new multiple of 5000 snaps to it.
-fn teach(student: &mut Member, trainer: &Member) {
+/// A trainer's lesson: when the student's current skill is one the trainer
+/// knows at its level, the student gains [`LESSON`] experience in it. Used
+/// for the manager and then each combatant in staff order.
+pub fn teach(student: &mut Member, trainer: &Member) {
     let skills: [Skill; 6] = std::array::from_fn(|index| Skill {
         points: student.skill_xp[index],
         techniques: student.techniques[index],
@@ -938,7 +941,10 @@ pub fn copy_rank_loadout(member: &mut Member) -> bool {
     false
 }
 
-fn rested(health: u16, physician: bool) -> u16 {
+/// The night's recovery: [`REST`], or [`REST_WITH_PHYSICIAN`] with one
+/// employed, stopped at full health.
+#[must_use]
+pub fn rested(health: u16, physician: bool) -> u16 {
     let step = if physician { REST_WITH_PHYSICIAN } else { REST };
     let sum = u32::from(health) + u32::from(step);
     if sum < u32::from(FULL_HEALTH) {

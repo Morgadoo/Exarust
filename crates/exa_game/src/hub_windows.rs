@@ -102,6 +102,10 @@ pub struct ArenaCareer {
     /// The day's six standard matches, rolled once and kept until the day
     /// ends ([`crate::arena::generate_daily_board`]).
     pub daily_rows: [crate::arena::MatchInstance; 6],
+    /// The day ended and its shop and merchant shelves still need their
+    /// nightly restock, which the live shop world supplies on the next
+    /// frame.
+    pub restock_pending: bool,
     /// The roll the window actions draw from.
     pub roll: u32,
     /// The manager-entry warning is still armed: the first Begin that
@@ -139,6 +143,7 @@ impl Default for ArenaCareer {
             hire_catalog: crate::arena_outfit::ProfessionCatalog::default(),
             hire_previous: 0,
             daily_rows: crate::arena::generate_daily_board(0x1234_5678, || 0.5),
+            restock_pending: false,
             roll: 0,
             warn_manager: true,
             rivals: [0; crate::career::RIVAL_FIELD],
@@ -175,6 +180,7 @@ impl ArenaCareer {
         self.log.records.clear();
         self.hire_pool.clear();
         self.daily_rows = crate::arena::generate_daily_board(0, || 0.5);
+        self.restock_pending = false;
         self.company.roster.clear();
         self.company.copper = 0;
         self.company.weeks = [false; 4];
@@ -192,13 +198,14 @@ impl ArenaCareer {
         self.regenerate_daily_board_at(crate::arena_match::counter_now() as u32);
     }
 
-    /// Roll the day's six standard matches from `seed`. The rank draw is
-    /// supplied here as half a unit because the original's rank roll shares
-    /// the board's sequence and [`crate::arena::generate_daily_board`] takes
-    /// it separately (the shape the rule was proved with); this is a
-    /// limitation of the live wiring, not of the rule.
+    /// Roll the day's six standard matches from `seed`. The rank draw comes
+    /// from a sequence seeded with `seed`; the original draws it from the
+    /// board's own sequence and [`crate::arena::generate_daily_board`] takes
+    /// it separately, so the interleaving is a limitation of the live
+    /// wiring, not of the rule.
     pub fn regenerate_daily_board_at(&mut self, seed: u32) {
-        self.daily_rows = crate::arena::generate_daily_board(seed, || 0.5);
+        let mut ranks = crate::arena_outfit::Lcg::new(seed ^ 0x9E37_79B9);
+        self.daily_rows = crate::arena::generate_daily_board(seed, || f64::from(ranks.unit()));
     }
 
     /// Fill the hire list with ten candidates, each generated from its own

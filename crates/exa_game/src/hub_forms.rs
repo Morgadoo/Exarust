@@ -426,6 +426,23 @@ impl HubWindows {
                 manage::END_DAY => {
                     let events = career.entries.map(|row| row.team_id);
                     let entered = crate::arena_match::any_entry(&career.entries);
+                    // The manager rests and takes the first trainer's
+                    // lesson before the staff, as the day-end routine does.
+                    let physician = career
+                        .company
+                        .roster
+                        .iter()
+                        .any(|m| m.profession == Profession::Physician);
+                    career.player.health = crate::career::rested(career.player.health, physician);
+                    if let Some(trainer) = career
+                        .company
+                        .roster
+                        .iter()
+                        .find(|m| m.profession == Profession::Trainer)
+                        .cloned()
+                    {
+                        crate::career::teach(&mut career.player, &trainer);
+                    }
                     let night = career.company.end_day(events);
                     career.matches_today = 0;
                     // A resolved week the company entered but did not take
@@ -436,6 +453,7 @@ impl HubWindows {
                     }
                     career.renew_hire_pool();
                     career.regenerate_daily_board_at(crate::arena_match::counter_now() as u32);
+                    career.restock_pending = true;
                     info!(
                         "hub manage: the day ends (day {}, wages {})",
                         career.company.day, night.wages
@@ -966,6 +984,33 @@ mod tests {
         let answer = windows.answer(&mut career, FormWindow::Manage, manage::CLOSE, true);
         assert_eq!(answer, FormAnswer::ManageClosed);
         assert!(!windows.is_open());
+    }
+
+    #[test]
+    fn the_day_rests_the_manager_before_the_staff() {
+        let mut windows = HubWindows::default();
+        windows.task.screen = (1280, 720);
+        windows.unit = 4;
+        let mut career = ArenaCareer {
+            matches_today: 1,
+            ..ArenaCareer::default()
+        };
+        career.player.health = 1000;
+        career.company.roster.push(crate::career::Member {
+            name: "Brom".to_string(),
+            health: 1000,
+            ..career.player.clone()
+        });
+        windows.open_manage(&career);
+        click(
+            &mut windows,
+            &mut career,
+            FormWindow::Manage,
+            manage::END_DAY,
+        );
+        assert_eq!(career.player.health, 7_553);
+        assert_eq!(career.company.roster[0].health, 7_553);
+        assert_eq!(career.company.day, 1);
     }
 
     #[test]
