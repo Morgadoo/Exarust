@@ -2597,6 +2597,33 @@ mod ally_tests {
         assert_eq!(ally_threat_factor(&o), 0.0);
     }
 
+    /// The entry clears the hostility and the threat words before the kind
+    /// gate; the alarm word is left alone.
+    #[test]
+    fn the_ally_sense_clears_hostility_at_entry() {
+        let mut world = World::new();
+        let me = world.spawn_empty().id();
+        let other = world.spawn_empty().id();
+        let mut own = vec![Contact::new(other)];
+        own[0].kind = 2;
+        own[0].hostility = 2.0;
+        own[0].threat = 1.0;
+        own[0].alarm = 0.5;
+        let code = ally_sense(
+            &observer(me),
+            false,
+            &observed(other, Vec3::new(0.0, 0.0, 600.0)),
+            &mut own,
+            0,
+            &|_| false,
+        );
+        assert_eq!(code, 0);
+        assert_eq!(
+            (own[0].hostility, own[0].threat, own[0].alarm),
+            (0.0, 0.0, 0.5)
+        );
+    }
+
     /// The range, the floor, a fellow AI, the dead, and the threat to an
     /// ally with its concern target.
     #[test]
