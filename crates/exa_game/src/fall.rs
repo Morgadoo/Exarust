@@ -4,7 +4,8 @@
 //! In its character tick's posture stage, after the condition is written
 //! and the falls branch has started its clip, every living body that takes
 //! the falls branch runs its fall check: the
-//! scream (a heavy groan, at the body), being lost over nothing, then the
+//! scream (the character's own heavy groan through its voice request, at the
+//! body), being lost over nothing, then the
 //! player's pit sound with the start of its fade to black
 //! (`exa_ui::DeathFade`) and its death 4 s after it was lost, or another
 //! character's death 3 s after: dead, no health left, and taken out of the
@@ -16,9 +17,10 @@
 use bevy::audio::Volume;
 use bevy::prelude::*;
 use exa_assets::Game;
-use exa_audio::SoundBank;
+use exa_audio::{AudioEnvironment, SoundBank};
 use exa_combat::condition::{Branch, DeathClock, PostureBranch, settle_death};
 use exa_combat::fall::{FallDeath, FallReading, scream_voice};
+use exa_combat::voice::{Answer, CharacterVoice};
 use exa_combat::{Condition, Fighter, Roll};
 use exa_physics::body::{
     BodySystems, BodyTicks, CharacterStage, CharacterTick, Ragdoll, TickedCharacter, pairs,
@@ -45,10 +47,6 @@ impl Plugin for FallPlugin {
 /// at this gain, not placed in the world.
 pub const PIT_SOUND: &str = "pitdeath01";
 const PIT_GAIN: f32 = 0.1;
-/// The human voices the scream picks from (`vhm01`–`vhm09`, six heavy
-/// groans each) until characters carry their own voice sets.
-const VOICES: usize = 9;
-const GROANS: usize = 6;
 
 /// What a fall takes sounds from (none in tests without the game).
 #[derive(bevy::ecs::system::SystemParam)]
@@ -56,6 +54,7 @@ pub(crate) struct Sounds<'w> {
     game: Option<Res<'w, Game>>,
     bank: Option<ResMut<'w, SoundBank>>,
     sources: Option<ResMut<'w, Assets<AudioSource>>>,
+    env: Option<ResMut<'w, AudioEnvironment>>,
 }
 
 impl Sounds<'_> {
@@ -92,16 +91,24 @@ impl Sounds<'_> {
         };
     }
 
-    /// A heavy groan of a human voice.
-    fn groan(&mut self) -> String {
-        match self.bank.as_mut() {
-            Some(bank) => format!(
-                "vhm{:02}_groanh{:02}",
-                1 + bank.pick(VOICES),
-                1 + bank.pick(GROANS)
-            ),
-            None => "vhm01_groanh01".into(),
-        }
+    /// Loads (or finds) the numbered set `name`.
+    fn load_set(&mut self, name: &str) -> u32 {
+        let (Some(game), Some(bank), Some(sources)) = (
+            self.game.as_ref(),
+            self.bank.as_mut(),
+            self.sources.as_mut(),
+        ) else {
+            return SoundBank::EMPTY_SET;
+        };
+        bank.load_set(game, sources, name)
+    }
+
+    /// Plays a loaded set at `at` with the voice request's gains.
+    fn play_set(&mut self, set: u32, at: Option<Vec3>, gain: f32, pitch: f32) {
+        let (Some(bank), Some(env), Some(at)) = (self.bank.as_mut(), self.env.as_mut(), at) else {
+            return;
+        };
+        env.play_set(bank, set, at, gain, pitch, 0);
     }
 }
 
@@ -125,11 +132,22 @@ pub(crate) fn fall_to_death(
         &mut Ragdoll,
         Option<&PlayerBody>,
         Option<&ChildOf>,
+        Option<&mut CharacterVoice>,
     )>,
+    mut sets: Local<bevy::platform::collections::HashMap<String, u32>>,
 ) {
     let now = ticks.millis();
-    if let Ok((entity, branch, mut fall, mut condition, mut fighter, mut body, player, parent)) =
-        bodies.get_mut(ticked.body)
+    if let Ok((
+        entity,
+        branch,
+        mut fall,
+        mut condition,
+        mut fighter,
+        mut body,
+        player,
+        parent,
+        voice,
+    )) = bodies.get_mut(ticked.body)
     {
         let Some(drive) = body.drive.as_ref() else {
             return;
@@ -149,19 +167,20 @@ pub(crate) fn fall_to_death(
             feet: &feet,
         };
         let step = fall.check(&reading, condition.is_dead(), player.is_some(), now);
-        if step.scream {
+        if step.scream
+            && let Some(mut voice) = voice
+        {
             let (gain, pitch) = scream_voice(roll.next(), roll.next());
-            let name = sounds.groan();
-            let stats = &fighter.stats;
-            sounds.play(
-                &mut commands,
-                &name,
-                gain * stats.voice_volume,
-                pitch * stats.voice_pitch,
-                balance.chest(),
-            );
+            let name = voice.groan_heavy.clone();
+            let set = *sets
+                .entry(name.clone())
+                .or_insert_with(|| sounds.load_set(&name));
+            let answer = voice.speak(2, set != SoundBank::EMPTY_SET, now as u32, gain, pitch);
+            if let Answer::Played(spoken) = answer {
+                sounds.play_set(set, balance.chest(), spoken.volume, spoken.pitch);
+            }
             info!(
-                "{entity:?} screams as it falls, tick {} ({name}, gain {gain:.3}, pitch {pitch:.3})",
+                "{entity:?} screams as it falls, tick {} ({name}, {answer:?})",
                 ticks.0
             );
         }

@@ -554,7 +554,9 @@ body turns at the swing's rate while it attacks; `--trace` shows each
 tick's locomotion),
 the characters' footprints on the navigation grid, kept each fixed tick where their feet stand (an NPC unless it walks a planned route at 1 cm a tick or more, the AI tick's gate; the player unless it walks; `footprints`), every new fighter's voice as the character init builds it (the race's first template and the record's voice number, or the second and the undead voice when feral, the sex picking the name, the wound set by race; a fighter without a record speaks as a new human record; `character_voice`),
 falls to death and the kill plane (`fall`: the fall check of a living
-body in the falls branch, in its posture stage, its scream and the player's pit sound, the
+body in the falls branch, in its posture stage, its scream through the
+character's own voice request (line 2, its heavy groan, the request's waits
+and gains) and the player's pit sound, the
 death fade's start, death and removal from the world; dead bodies below
 −50 m taken once, the player's kept),
 the world cursor's shape from the player's condition word (`cursor`), the

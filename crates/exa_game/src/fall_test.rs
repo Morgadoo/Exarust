@@ -244,8 +244,14 @@ fn the_kill_plane() {
     assert_eq!(world.get::<Fighter>(player.1).unwrap().health.red, 0.1);
 }
 
+/// The shipped human voices: `vhm01`–`vhm09`, six heavy groans each (the
+/// scream plays the character's own race's set through its voice request,
+/// skipped without `EXANIMA_DIR`).
+const VOICES: usize = 9;
+const GROANS: usize = 6;
+
 /// The installed `Sound.rpk` holds the pit sound and the nine human voices'
-/// six heavy groans the scream picks from (skipped without `EXANIMA_DIR`).
+/// six heavy groans (skipped without `EXANIMA_DIR`).
 #[test]
 fn the_installed_fall_sounds() {
     let Some(dir) = exa_assets::locate_install(None) else {
