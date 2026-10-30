@@ -165,6 +165,11 @@ pub struct GiTextures {
     /// Per column (X fastest, then Z), the lowest slice the sky light
     /// reaches ([`sky_floors`]).
     sky_floor: Handle<Image>,
+    /// The shape programs' `Tex0`: the manager's shapes share one 2D
+    /// texture. No effect registers a shape yet, so it is a white 1×1 texel
+    /// (the ridge and bubble bodies read its red channel) [guess: the
+    /// original binds each shape class's own texture].
+    pub shape_texture: Handle<Image>,
     pub origin: Vec3,
     pub extent: Vec3,
     /// Voxel edge, metres, and the texture's size (X, Z, Y).
@@ -711,6 +716,8 @@ pub struct GiLights {
     /// Per sector (X fastest), its group or 255.
     sector_groups: [u8; SECTORS * SECTORS],
     voxel_lights: Vec<GiVoxelLight>,
+    /// The registered shapes drawn into this block, in list order.
+    shapes: Vec<GiShapeUniform>,
 }
 
 impl Default for GiLights {
@@ -721,6 +728,7 @@ impl Default for GiLights {
             groups: Vec::new(),
             sector_groups: [u8::MAX; SECTORS * SECTORS],
             voxel_lights: Vec::new(),
+            shapes: Vec::new(),
         }
     }
 }
@@ -765,6 +773,44 @@ const MAX_GROUPS: usize = SECTORS * SECTORS;
 /// The flat light array the groups index into.
 const MAX_GROUP_LIGHTS: usize = MAX_GROUPS * MAX_SECTOR_LIGHTS;
 
+/// A registered emissive shape as the pass's shape loop reads it: the
+/// manager's clipped box (the original's per-shape draw range), the shape's
+/// program and the uniforms its fragment body reads. Shape-space lengths
+/// (the body constants, `half`, the line, the points) are in centimetres,
+/// the space the original's `bMat` maps a world position into; the box is in
+/// voxels, as [`shape_draw`] works it out.
+#[derive(Clone, Copy, Default, ShaderType)]
+struct GiShapeUniform {
+    /// x: the program ([`GiShapeProgram::ALL`]'s index), y: the first slice
+    /// of the draw, z: its slice count.
+    head: UVec4,
+    /// The clipped column box: lo X, lo Z, hi X, hi Z.
+    clip: UVec4,
+    /// The injected colour.
+    colour: Vec4,
+    /// x: `Atten`, y: `Radius`, z: `Fade`, w: `Pulse`.
+    params: Vec4,
+    /// x: `Anim`.
+    extra: Vec4,
+    /// `bMat`: world centimetres into the shape's space.
+    matrix: Mat4,
+    /// `bExt`: the shape's half extents.
+    half: Vec4,
+    /// `TexPos`: the texture window's origin.
+    tex_pos: Vec4,
+    /// `Line[0]`, `Line[1]`.
+    line0: Vec4,
+    line1: Vec4,
+    /// `Grad`: the split point and its two end weights.
+    grad: Vec4,
+    /// `PointLgt`: the extra point light (position, weight).
+    point_light: Vec4,
+    /// `Light[2i]`: each multipoint's position.
+    point_pos: [Vec4; MAX_SHAPE_POINTS],
+    /// `Light[2i+1]`: each multipoint's colour.
+    point_col: [Vec4; MAX_SHAPE_POINTS],
+}
+
 /// A voxel light as the pass reads it.
 #[derive(Clone, Copy, Default, ShaderType)]
 struct GiVoxelLight {
@@ -780,6 +826,12 @@ struct GiVoxelLight {
 /// Voxel lights injected into a block at once; the corpus has at most a
 /// handful in a level.
 const MAX_VOXEL_LIGHTS: usize = 64;
+/// Registered shapes injected into a block at once. The original walks the
+/// scene's whole shape list; a level holds a handful of effects at a time.
+pub const MAX_SHAPES: usize = 16;
+/// The most points one multi-point shape injects (the original's list is
+/// unbounded; a shape is capped here).
+pub const MAX_SHAPE_POINTS: usize = 8;
 
 #[derive(Clone, ShaderType)]
 struct GiParams {
@@ -800,6 +852,9 @@ struct GiParams {
     /// x = the number of voxel lights.
     voxel_count: UVec4,
     voxel_lights: [GiVoxelLight; MAX_VOXEL_LIGHTS],
+    /// x = the number of registered shapes drawn this frame.
+    shape_count: UVec4,
+    shapes: [GiShapeUniform; MAX_SHAPES],
 }
 
 /// Lumens per unit of the original's light intensity (see `exa_world`).
@@ -1395,6 +1450,21 @@ fn create_textures(
     let sky_floor = images.add(sky_floor);
     let light = images.add(light_image(size, empty.clone()));
     let scratch = images.add(volume_image(size, TextureFormat::Rgba8Unorm, empty, true));
+    let shape_texture = images.add({
+        let mut image = Image::new(
+            Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            vec![255; 4],
+            TextureFormat::Rgba8Unorm,
+            RenderAssetUsages::RENDER_WORLD,
+        );
+        image.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST;
+        image
+    });
     let extent = Vec3::new(size.x as f32, size.z as f32, size.y as f32) * volume.voxel;
     warm_up.serial += 1;
     warm_up.steps = volume.warm_up;
@@ -1403,6 +1473,7 @@ fn create_textures(
         light,
         scratch,
         sky_floor,
+        shape_texture,
         origin: volume.origin,
         extent,
         voxel: volume.voxel,
@@ -1537,6 +1608,7 @@ fn gather_lights(
     lights: GiLightQuery,
     sky: Option<Res<GiSkyLight>>,
     voxel_lights: Query<(&VoxelLight, &GlobalTransform)>,
+    shapes: Query<(&GiShape, &ShapeVolume, &GlobalTransform)>,
     textures: Option<Res<GiTextures>>,
     pending: Option<Res<GiPendingTextures>>,
     sectors: Option<Res<GiSectorLights>>,
@@ -1547,12 +1619,18 @@ fn gather_lights(
     gi.cube_slots.clear();
     gi.groups.clear();
     gi.voxel_lights.clear();
+    gi.shapes.clear();
     gi.sector_groups = [u8::MAX; SECTORS * SECTORS];
     let textures = pending.as_ref().map(|p| &p.0).or(textures.as_deref());
     let (Some(textures), Some(sectors)) = (textures, sectors) else {
         return;
     };
     gather_voxel_lights(&mut gi.voxel_lights, textures, voxel_lights.iter());
+    gather_shapes(
+        &mut gi.shapes,
+        textures,
+        shapes.iter().map(|(shape, volume, _)| (shape, volume)),
+    );
     let sectors = &*sectors.0;
     // Marks made for another block (the frame a new block arrives) light
     // nothing; the next frame's are its own.
@@ -1766,6 +1844,61 @@ fn shape_reaches(source: &LightSource, cell: Vec2, floor_y: f32) -> bool {
     c + (1.0 - c) * source.shaping.x > SHAPE_FLOOR
 }
 
+/// The registered shapes that draw into the block, in list order, as the
+/// manager's per-shape loop prepares them: each shape's clip box from its
+/// world volume ([`shape_draw`], the original's rounding and 8-voxel
+/// clipping) and the uniforms its fragment body reads. A shape whose box
+/// falls outside the block draws nothing. The original walks the scene's
+/// shape list and, for each, calls the shape's own program builder with the
+/// block; Exarust's one compute pass evaluates the body over that box.
+fn gather_shapes<'a>(
+    out: &mut Vec<GiShapeUniform>,
+    textures: &GiTextures,
+    shapes: impl Iterator<Item = (&'a GiShape, &'a ShapeVolume)>,
+) {
+    for (shape, volume) in shapes {
+        let Some(draw) = shape_draw(*volume, textures.origin, textures.dims, textures.voxel) else {
+            continue;
+        };
+        out.push(GiShapeUniform {
+            head: UVec4::new(
+                shape.program.index(),
+                draw.first.max(0) as u32,
+                draw.count.max(0) as u32,
+                0,
+            ),
+            clip: UVec4::new(draw.lo.x, draw.lo.y, draw.hi.x, draw.hi.y),
+            colour: shape.colour.extend(0.0),
+            params: Vec4::new(shape.atten, shape.radius, shape.fade, shape.pulse),
+            extra: Vec4::new(shape.anim, 0.0, 0.0, 0.0),
+            matrix: shape.matrix,
+            half: shape.half.extend(0.0),
+            tex_pos: shape.tex_pos.extend(0.0).extend(0.0),
+            line0: shape.line[0].extend(0.0),
+            line1: shape.line[1].extend(0.0),
+            grad: shape.grad.extend(0.0),
+            point_light: shape.point_light,
+            point_pos: {
+                let mut a = [Vec4::ZERO; MAX_SHAPE_POINTS];
+                for (slot, &(p, _)) in a.iter_mut().zip(shape.points.iter()) {
+                    *slot = p.extend(0.0);
+                }
+                a
+            },
+            point_col: {
+                let mut a = [Vec4::ZERO; MAX_SHAPE_POINTS];
+                for (slot, &(_, c)) in a.iter_mut().zip(shape.points.iter()) {
+                    *slot = c.extend(0.0);
+                }
+                a
+            },
+        });
+        if out.len() == MAX_SHAPES {
+            break;
+        }
+    }
+}
+
 /// The voxel lights that reach into the block, nearest its centre first (the
 /// original injects every sector's voxel lights).
 fn gather_voxel_lights<'a>(
@@ -1912,6 +2045,7 @@ fn init_pipeline(
                 depth_texture_entry(TextureViewDimension::CubeArray),
                 sampler(SamplerBindingType::Comparison),
                 texture_2d(TextureSampleType::Uint),
+                texture_2d(TextureSampleType::Float { filterable: true }),
             ),
         ),
     );
@@ -2052,6 +2186,9 @@ fn prepare_bind_group(
     ) else {
         return;
     };
+    let Some(shape_texture) = images.get(&textures.shape_texture) else {
+        return;
+    };
     let cube = images.get(&crate::cube_shadows::CUBE_POOL);
     let mut entries = [GiLight::default(); MAX_GROUP_LIGHTS];
     for (slot, l) in entries.iter_mut().zip(&lights.lights) {
@@ -2077,6 +2214,10 @@ fn prepare_bind_group(
     for (slot, l) in voxel_entries.iter_mut().zip(&lights.voxel_lights) {
         *slot = *l;
     }
+    let mut shape_entries = [GiShapeUniform::default(); MAX_SHAPES];
+    for (slot, s) in shape_entries.iter_mut().zip(&lights.shapes) {
+        *slot = *s;
+    }
     let value = GiParams {
         origin: textures.origin.extend(0.0),
         extent: textures.extent.extend(0.0),
@@ -2093,6 +2234,8 @@ fn prepare_bind_group(
             0,
         ),
         voxel_lights: voxel_entries,
+        shape_count: UVec4::new(lights.shapes.len().min(MAX_SHAPES) as u32, 0, 0, 0),
+        shapes: shape_entries,
     };
     // One buffer, rewritten every frame (the parameters are about 42 KiB).
     let params = match &mut *buffer {
@@ -2118,6 +2261,7 @@ fn prepare_bind_group(
             cube.map_or(&pipeline.dummy_cube, |c| &c.texture_view),
             &pipeline.cube_sampler,
             &sky_floor.texture_view,
+            &shape_texture.texture_view,
         )),
     );
     if owed.serial != textures.serial {
@@ -2238,6 +2382,7 @@ mod tests {
             light: Handle::default(),
             scratch: Handle::default(),
             sky_floor: Handle::default(),
+            shape_texture: Handle::default(),
             origin: Vec3::ZERO,
             extent: Vec3::ONE,
             voxel: 0.2,
@@ -3040,6 +3185,111 @@ mod tests {
         let (slice, z) = shape_uniforms(dims);
         assert_eq!(slice, 1.0 / 64.0);
         assert_eq!(z, Vec2::new(-0.25, 0.25));
+    }
+
+    #[test]
+    fn the_shape_programs_are_numbered_in_the_shader_librarys_order() {
+        assert_eq!(GiShapeProgram::Dome.index(), 0);
+        assert_eq!(GiShapeProgram::Cuboid.index(), 1);
+        assert_eq!(GiShapeProgram::Bubble.index(), 2);
+        assert_eq!(GiShapeProgram::TeleBubble.index(), 3);
+        assert_eq!(GiShapeProgram::GradLine.index(), 4);
+        assert_eq!(GiShapeProgram::Multipoint.index(), 5);
+    }
+
+    #[test]
+    fn a_registered_shape_packs_its_clip_box_and_uniforms() {
+        let mut t = fake_textures(1);
+        t.dims = BLOCK;
+        t.origin = Vec3::ZERO;
+        t.voxel = 0.2;
+        let shape = GiShape {
+            program: GiShapeProgram::Cuboid,
+            colour: Vec3::new(1.0, 2.0, 3.0),
+            atten: 0.25,
+            half: Vec3::new(100.0, 50.0, 100.0),
+            matrix: Mat4::from_translation(Vec3::new(-5.0, -200.0, -600.0)),
+            ..default()
+        };
+        let volume = ShapeVolume {
+            position: Vec3::new(10.0, 2.0, 6.0),
+            half: Vec3::splat(1.0),
+        };
+        let mut out = Vec::new();
+        gather_shapes(
+            &mut out,
+            &t,
+            [(shape.clone(), volume)].iter().map(|(s, v)| (s, v)),
+        );
+        assert_eq!(out.len(), 1);
+        let u = out[0];
+        // The draw box: columns 45..55 and 25..35, slices 5..16 (the
+        // centre's 10 ± 5), as `shape_draw` works it out.
+        assert_eq!(u.head.x, GiShapeProgram::Cuboid.index());
+        assert_eq!((u.head.y, u.head.z), (5, 11));
+        assert_eq!(u.clip, UVec4::new(45, 25, 55, 35));
+        assert_eq!(u.colour, Vec4::new(1.0, 2.0, 3.0, 0.0));
+        assert_eq!(u.params, Vec4::new(0.25, 0.0, 0.0, 0.0));
+        assert_eq!(u.half, Vec4::new(100.0, 50.0, 100.0, 0.0));
+        assert_eq!(u.matrix.w_axis, Vec4::new(-5.0, -200.0, -600.0, 1.0));
+        // A shape whose box is below slice 2 draws nothing; one outside the
+        // block's columns too.
+        let low = ShapeVolume {
+            position: Vec3::new(10.0, -5.0, 6.0),
+            half: Vec3::splat(1.0),
+        };
+        let mut out = Vec::new();
+        gather_shapes(
+            &mut out,
+            &t,
+            [(shape.clone(), low)].iter().map(|(s, v)| (s, v)),
+        );
+        assert!(out.is_empty());
+        let out_of_block = ShapeVolume {
+            position: Vec3::new(200.0, 2.0, 6.0),
+            half: Vec3::splat(1.0),
+        };
+        let mut out = Vec::new();
+        gather_shapes(
+            &mut out,
+            &t,
+            [(shape.clone(), out_of_block)].iter().map(|(s, v)| (s, v)),
+        );
+        assert!(out.is_empty());
+        // At most MAX_SHAPES are kept.
+        let many = vec![(shape.clone(), volume); MAX_SHAPES + 4];
+        let mut out = Vec::new();
+        gather_shapes(&mut out, &t, many.iter().map(|(s, v)| (s, v)));
+        assert_eq!(out.len(), MAX_SHAPES);
+    }
+
+    #[test]
+    fn a_multipoint_shape_carries_eight_points() {
+        let mut t = fake_textures(1);
+        t.dims = BLOCK;
+        let points: Vec<(Vec3, Vec3)> = (0..10)
+            .map(|i| (Vec3::splat(i as f32), Vec3::new(i as f32, 0.0, 0.0)))
+            .collect();
+        let shape = GiShape {
+            program: GiShapeProgram::Multipoint,
+            points: Arc::from(points),
+            ..default()
+        };
+        let volume = ShapeVolume {
+            position: Vec3::new(10.0, 2.0, 6.0),
+            half: Vec3::splat(1.0),
+        };
+        let mut out = Vec::new();
+        gather_shapes(&mut out, &t, [(shape, volume)].iter().map(|(s, v)| (s, v)));
+        let u = out[0];
+        assert_eq!(u.point_pos[0], Vec4::new(0.0, 0.0, 0.0, 0.0));
+        assert_eq!(u.point_pos[7], Vec4::new(7.0, 7.0, 7.0, 0.0));
+        assert_eq!(u.point_col[7], Vec4::new(7.0, 0.0, 0.0, 0.0));
+        // Beyond the cap the points are dropped.
+        assert_eq!(
+            u.point_col[MAX_SHAPE_POINTS - 1],
+            Vec4::new(7.0, 0.0, 0.0, 0.0)
+        );
     }
 
     #[test]

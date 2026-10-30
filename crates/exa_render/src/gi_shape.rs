@@ -63,6 +63,12 @@ impl GiShapeProgram {
         }
     }
 
+    /// The program's place in [`GiShapeProgram::ALL`], the id the pass's
+    /// shape loop switches on.
+    pub fn index(self) -> u32 {
+        Self::ALL.iter().position(|&p| p == self).unwrap_or(0) as u32
+    }
+
     /// The program a shader-library name names, if the manager knows it.
     pub fn from_name(name: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|p| p.name() == name)

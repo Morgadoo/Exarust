@@ -49,6 +49,31 @@ struct GiGroup {
     _pad: u32,
 }
 
+// A registered emissive shape: the manager's clipped draw box, its program
+// and the uniforms its fragment body reads. Shape-space lengths are the
+// original's centimetres.
+struct GiShape {
+    // x: the program, y: the first slice, z: the slice count.
+    head: vec4<u32>,
+    // The clipped column box: lo X, lo Z, hi X, hi Z.
+    clip: vec4<u32>,
+    colour: vec4<f32>,
+    // x: Atten, y: Radius, z: Fade, w: Pulse.
+    params: vec4<f32>,
+    // x: Anim.
+    extra: vec4<f32>,
+    // bMat: world centimetres into the shape's space.
+    matrix: mat4x4<f32>,
+    half: vec4<f32>,
+    tex_pos: vec4<f32>,
+    line0: vec4<f32>,
+    line1: vec4<f32>,
+    grad: vec4<f32>,
+    point_light: vec4<f32>,
+    point_pos: array<vec4<f32>, 8>,
+    point_col: array<vec4<f32>, 8>,
+}
+
 struct GiParams {
     // Lowest corner of the block (m).
     origin: vec4<f32>,
@@ -68,6 +93,9 @@ struct GiParams {
     // x = the number of voxel lights.
     voxel_count: vec4<u32>,
     voxel_lights: array<GiVoxelLight, 64>,
+    // x = the number of registered shapes.
+    shape_count: vec4<u32>,
+    shapes: array<GiShape, 16>,
 }
 
 const SECTORS: u32 = 8u;
@@ -87,6 +115,8 @@ const FLIP_Z: vec3<f32> = vec3(1.0, 1.0, -1.0);
 @group(0) @binding(6) var shadow_cube_sampler: sampler_comparison;
 // Per column (x, z depth), the lowest slice the sky light reaches.
 @group(0) @binding(7) var sky_floor: texture_2d<u32>;
+// The shape programs' texture (`Tex0`); the manager's shapes share one.
+@group(0) @binding(8) var shape_texture: texture_2d<f32>;
 
 fn to_srgb(c: vec3<f32>) -> vec3<f32> {
     let l = clamp(c, vec3(0.0), vec3(1.0));
@@ -149,6 +179,176 @@ fn voxel_lights(id: vec3<u32>, dims: vec3<u32>) -> vec3<f32> {
         let blocked = 1.0 - occ * (1.0 - near);
         rgb += lt.colour.rgb * atn * 0.25 * blocked;
     }
+    return rgb;
+}
+
+// The registered shapes' contribution to voxel `id` this step: the
+// original's per-shape draw over its clipped box, evaluated per voxel. The
+// six bodies are its `shading.flb` fragment programs (see
+// `exa_render::gi_shape`, which evaluates the same bodies on the CPU).
+fn gl_min(x: f32, y: f32) -> f32 { return select(x, y, y < x); }
+fn gl_max(x: f32, y: f32) -> f32 { return select(x, y, x < y); }
+fn gl_clamp(x: f32, lo: f32, hi: f32) -> f32 { return gl_min(gl_max(x, lo), hi); }
+fn gl_mix(x: f32, y: f32, a: f32) -> f32 { return x * (1.0 - a) + y * a; }
+fn gl_sign(x: f32) -> f32 {
+    if x > 0.0 { return 1.0; }
+    if x < 0.0 { return -1.0; }
+    return x * 0.0;
+}
+fn gl_max3(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
+    return vec3(gl_max(a.x, b.x), gl_max(a.y, b.y), gl_max(a.z, b.z));
+}
+
+fn shape_texel(uv: vec2<f32>) -> f32 {
+    return textureSampleLevel(shape_texture, linear_sampler, uv, 0.0).r;
+}
+
+// `gi_dome`: a shell at radius 100 with the dome texture's ridge cubed, a
+// 70-unit inner cap and a 1 − d²/1000 shell falloff, times 6.
+fn shape_dome(s: GiShape, p: vec3<f32>) -> vec3<f32> {
+    let tc = p.xy * 0.75 * 0.00375 + s.tex_pos.xy;
+    let a0 = shape_texel(tc);
+    let a = 1.0 - abs(a0 - 0.4) * 2.0;
+    var l = abs(100.0 - length(p));
+    l = l * l;
+    let v = p - vec3(0.0, 0.0, 100.0);
+    var b = gl_max(length(v) - 70.0, 0.0);
+    b = gl_max(1.0 - b * 0.02, 0.0);
+    var atn = gl_max(1.0 - l * 0.001, 0.0);
+    atn = atn * b;
+    atn = atn * 6.0 * a * a * a;
+    return gl_max3(s.colour.rgb * atn, vec3(0.0));
+}
+
+// `gi_cuboid`: the distance outside the box, falling off as 1 − d²·0.0002.
+fn shape_cuboid(s: GiShape, p: vec3<f32>) -> vec3<f32> {
+    let d = gl_max3(abs(p) - s.half.xyz, vec3(0.0));
+    let l = dot(d, d);
+    let atn = gl_max(1.0 - l * 0.0002, 0.0);
+    return gl_max3(s.colour.rgb * atn, vec3(0.0));
+}
+
+// `gi_bubble`: a shell at Radius with the bubble texture cubed, the vertical
+// Fade cut and 4× the shell falloff.
+fn shape_bubble(s: GiShape, p: vec3<f32>) -> vec3<f32> {
+    let tc = vec2(p.x, p.z) * 0.75 * 0.00375 + s.tex_pos.xy;
+    let a0 = shape_texel(tc);
+    var a = 1.0 - abs(a0 - 0.4) * 2.0;
+    a = a * a * a;
+    let b = p.y / length(p);
+    let f = (1.5 + b) * s.params.z;
+    a = a * gl_clamp(8.0 - f * 16.0, 0.0, 1.0);
+    var l = abs(s.params.y - length(p));
+    l = l * l;
+    let atn = gl_max(1.0 - l * 0.001, 0.0);
+    return gl_max3(s.colour.rgb * (atn * 4.0 * a), vec3(0.0));
+}
+
+// `gi_telebubble`: the teleporter's pulsing bubble.
+fn shape_telebubble(s: GiShape, p: vec3<f32>) -> vec3<f32> {
+    let l_dst = length(p);
+    let nrm = p / l_dst;
+    var f = nrm.y * 0.5 + 0.5;
+    let a = (1.0 - f * 0.5) * 0.007;
+    var tcz = vec2(p.x, p.y) * a;
+    var tcy = vec2(p.x, p.z) * a;
+    var tcx = vec2(p.y, p.z) * a;
+    tcx.x += gl_sign(nrm.x) * 0.333;
+    tcy.y += gl_sign(nrm.y) * 0.333;
+    tcz.x -= gl_sign(nrm.z) * 0.333;
+    let tbw = abs(nrm * nrm) / (nrm.x * nrm.x + nrm.y * nrm.y + nrm.z * nrm.z);
+    var i1 = shape_texel(tcz * 0.5 + s.tex_pos.xy) * tbw.z;
+    i1 += shape_texel(tcx * 0.5 + s.tex_pos.xy) * tbw.x;
+    i1 += shape_texel(tcy * 0.5 + s.tex_pos.xy) * tbw.y;
+    let i1q = i1 * i1 * 2.0;
+    let fa = 1.0 - abs(f * 2.0 - 1.0);
+    var aa = gl_mix(fa, 1.0 - i1q, 0.4);
+    f = gl_max(s.params.z, 0.0);
+    aa = pow(aa, 16.0 * f);
+    let c = aa;
+    // The body squares `1 − |0.5 − c|·2` and overwrites it with the pulse
+    // term before reading it, as the original does.
+    var sc = i1q * round(c);
+    sc *= 1.0 + abs(s.params.z);
+    var an = abs(nrm.y) - s.extra.x;
+    an -= round(an);
+    let ap = an * an * s.params.w * 4.0;
+    sc += ap * i1q;
+    f = gl_max(f - 0.25, 0.0);
+    f = 1.0 + f * 4.0;
+    sc = (sc + ap * 0.5) * f;
+    var l = abs(s.params.y - l_dst);
+    l = l * l;
+    let atn = gl_max(1.0 - l * 0.001, 0.0);
+    let out = s.colour.rgb * sc * 4.0;
+    return gl_max3(out * out * atn * 4.0, vec3(0.0));
+}
+
+// `gi_gradline`: a lit segment with a two-ended gradient and one extra point
+// light.
+fn shape_gradline(s: GiShape, p: vec3<f32>) -> vec3<f32> {
+    let lv = s.line1.xyz - s.line0.xyz;
+    let sv = p - s.line0.xyz;
+    let l = gl_clamp(dot(lv, sv) / dot(lv, lv), 0.0, 1.0);
+    let near = s.line0.xyz + lv * l;
+    let a = gl_max(s.grad.x - l, 0.0);
+    let b = gl_max(l - s.grad.x, 0.0);
+    let w = a * s.grad.y + b * s.grad.z + (1.0 - a - b);
+    let dir = p - near;
+    let d = dot(dir, dir);
+    var line_atn = gl_max(1.0 - d * s.params.x, 0.0);
+    line_atn = line_atn * line_atn;
+    var out = s.colour.rgb * line_atn * w * 3.0;
+    let d2 = p - s.point_light.xyz;
+    let dd = dot(d2, d2);
+    var atn2 = gl_max(1.0 - dd * s.params.x, 0.0);
+    atn2 = atn2 * atn2;
+    out += s.colour.rgb * atn2 * s.point_light.w * w;
+    return gl_max3(out, vec3(0.0));
+}
+
+// `gi_multipoint`: each point adds its colour times max(1 − d²·Atten, 0)²·0.25.
+// The occlusion term the body computes is never applied.
+fn shape_multipoint(s: GiShape, p: vec3<f32>) -> vec3<f32> {
+    var out = vec3(0.0);
+    for (var i = 0u; i < 8u; i++) {
+        let dir = p - s.point_pos[i].xyz;
+        let d = dot(dir, dir);
+        let atn = gl_max(1.0 - d * s.params.x, 0.0);
+        out += s.point_col[i].rgb * (atn * atn) * 0.25;
+    }
+    return gl_max3(out, vec3(0.0));
+}
+
+// The shapes covering voxel `id` (texture axes X, Z, Y), with `world` the
+// voxel's centre in world centimetres and `occ` its occupancy.
+fn shape_light(id: vec3<u32>, world: vec3<f32>, occ: f32) -> vec3<f32> {
+    var rgb = vec3(0.0);
+    for (var i = 0u; i < params.shape_count.x; i++) {
+        let s = params.shapes[i];
+        if any(id.xy < s.clip.xy) || any(id.xy >= s.clip.zw) {
+            continue;
+        }
+        if id.z < s.head.y || id.z >= s.head.y + s.head.z {
+            continue;
+        }
+        let p = (s.matrix * vec4(world, 1.0)).xyz;
+        let prog = s.head.x;
+        if prog == 0u {
+            rgb += shape_dome(s, p);
+        } else if prog == 1u {
+            rgb += shape_cuboid(s, p);
+        } else if prog == 2u {
+            rgb += shape_bubble(s, p);
+        } else if prog == 3u {
+            rgb += shape_telebubble(s, p);
+        } else if prog == 4u {
+            rgb += shape_gradline(s, world);
+        } else {
+            rgb += shape_multipoint(s, world);
+        }
+    }
+    _ = occ;
     return rgb;
 }
 
@@ -261,6 +461,11 @@ fn propagate(@builtin(global_invocation_id) id: vec3<u32>) {
         let shaped = max((exp2((ly + (1.0 - ly) * lt.shaping.x) * lt.shaping.y) - 1.0) * lt.shaping.z, 0.0);
         rgb += lt.colour_shadow.rgb * atn * shaped * 0.01;
     }
+    // The shapes inject after the point lights and before the voxel lights,
+    // as the original draws them.
+    let world = params.origin.xyz
+        + vec3(at.x * params.extent.x, at.z * params.extent.x, at.y * params.extent.z);
+    rgb += shape_light(id, world * 100.0, occ0);
     rgb += voxel_lights(id, dims);
     textureStore(light_next, vec3<i32>(id), vec4(to_srgb(max(rgb, vec3(0.0))), stored_alpha));
 }
