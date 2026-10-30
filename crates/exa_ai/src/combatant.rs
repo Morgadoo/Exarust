@@ -1033,6 +1033,20 @@ impl Combatant {
         self.holder = None;
     }
 
+    /// The character is removed from the scene: clear the body's nav-grid
+    /// flags (the footprint), reset its references, and let every
+    /// combatant in `scene` forget it. The original also tells the scene
+    /// node machinery; Exarust's level lifecycle despawns the entities
+    /// itself, so only the combatant half is here.
+    pub fn remove_from_scene(who: Entity, removed: &mut Self, scene: &mut [Self]) {
+        removed.leave_grid();
+        removed.overflowed = false;
+        removed.reset();
+        for other in scene.iter_mut() {
+            other.forget(who);
+        }
+    }
+
     /// The script's `AddConcern` toward `character`, if it is a contact.
     pub fn add_concern(
         &mut self,
@@ -1569,6 +1583,48 @@ mod tests {
         combatant.reset();
         assert!(combatant.contacts.is_empty());
         assert_eq!(combatant.other_target, Some(d));
+    }
+
+    #[test]
+    fn a_removed_character_is_reset_and_the_scene_forgets_it() {
+        let (a, b, _, _) = ids();
+        let mut scene = [Combatant::default(), Combatant::default()];
+        // The scene knows `b`; the removed one has its own contacts too.
+        for combatant in &mut scene {
+            combatant.contact_mut(b);
+            combatant.target = Some(b);
+            combatant.look_target = Some(b);
+            combatant.footprint = Some(Footprint {
+                cell: (50, 50),
+                in_grid: true,
+            });
+        }
+        scene[0].other_target = Some(b);
+        let mut removed = Combatant::default();
+        removed.contact_mut(a);
+        removed.target = Some(a);
+        removed.footprint = Some(Footprint {
+            cell: (50, 50),
+            in_grid: true,
+        });
+        removed.overflowed = true;
+        Combatant::remove_from_scene(b, &mut removed, &mut scene);
+        // The removed one leaves the grid, loses its contact and the
+        // overflow mark.
+        assert!(removed.footprint.is_none());
+        assert!(!removed.overflowed);
+        assert!(removed.contacts.is_empty());
+        assert_eq!(removed.target, None);
+        // Every other combatant forgets it; its footprint stays.
+        for combatant in &scene {
+            assert!(combatant.contact(b).is_none());
+            assert_eq!(combatant.target, None);
+            assert_eq!(combatant.look_target, None);
+            assert!(combatant.footprint.is_some());
+        }
+        // Forget clears the other target too.
+        assert_eq!(scene[0].other_target, None);
+        assert_eq!(scene[1].other_target, None);
     }
 
     #[test]
