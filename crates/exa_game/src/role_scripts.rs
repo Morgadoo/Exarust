@@ -14,6 +14,11 @@
 //! its scripts once even though the game updates every frame.  A character
 //! without a record id is skipped, as the original needs a character record
 //! for the actor slot.
+//!
+//! The original keeps one relation record that both the AI and the scripts
+//! read; Exarust keeps the AI's in [`Relations`] and the scripts' in the
+//! session cast, so the meeting time the encounter renews is written to the
+//! cast's record too (scripts read it as `LastEnc`) before the scripts run.
 
 use bevy::prelude::*;
 use exa_ai::brain::{CharacterId, Npc};
@@ -29,84 +34,63 @@ impl Plugin for RoleScriptsPlugin {
 }
 
 /// Runs the encounter scripts the last target passes reported.
-#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn run_encounter_scripts(
     scripts: Option<Res<exa_script::Scripts>>,
-    mut conversations: Option<ResMut<exa_script::Conversations>>,
+    conversations: Option<ResMut<exa_script::Conversations>>,
     time: Option<Res<Time<Virtual>>>,
-    mut characters: ParamSet<(
-        Query<(&mut Npc, &Roles, &mut Relations, Option<&CharacterId>)>,
-        Query<(Entity, &Roles, Option<&CharacterId>)>,
-    )>,
+    mut observers: Query<(&mut Npc, &Roles, &mut Relations, Option<&CharacterId>)>,
+    partners: Query<(&Roles, Option<&CharacterId>)>,
     mut effects: MessageWriter<exa_script::ScriptEffect>,
 ) {
-    let (Some(scripts), Some(conversations)) = (scripts, conversations.as_mut()) else {
+    let (Some(scripts), Some(mut conversations)) = (scripts, conversations) else {
         return;
     };
     let now = time.map_or(0, |t| t.elapsed().as_millis() as u32);
-    // Who the reported contacts are: their roles and record ids. The map is
-    // built before the observer query mutably borrows the relations.
-    let partners: Vec<(u64, Roles, u32)> = characters
-        .p1()
-        .iter()
-        .map(|(entity, roles, id)| (entity.to_bits(), roles.clone(), id.map_or(0, |i| i.0)))
-        .collect();
     let locale = conversations.locale;
+    let mut met = Vec::new();
     let mut work = Vec::new();
-    for (mut npc, roles, mut relations, id) in characters.p0().iter_mut() {
+    for (mut npc, roles, mut relations, id) in &mut observers {
         let Some(target) = npc.pass.encounter.take() else {
             continue;
         };
-        let Some((_, partner_roles, partner)) = partners.iter().find(|p| p.0 == target) else {
+        let Some((partner_roles, partner)) =
+            Entity::try_from_bits(target).and_then(|e| partners.get(e).ok())
+        else {
             continue;
         };
-        let Some(observer) = id.map(|i| i.0) else {
+        let (Some(observer), Some(partner)) = (id.map(|i| i.0), partner.map(|i| i.0)) else {
             continue;
         };
-        if *partner == 0 || *partner == observer {
+        if partner == 0 || partner == observer {
             continue;
         }
         let partner = Partner {
-            id: *partner,
+            id: partner,
             roles: partner_roles,
             // A level character that left its level is not reported by this
             // pass; the migration stays the relation query's caller's job.
             former: None,
         };
+        met.push((observer, partner.id));
         for script in roles::encounter(&scripts.roles, roles, &mut relations, &partner, now, locale)
         {
             work.push((observer, partner.id, script.role, script.script.to_vec()));
         }
     }
+    for (observer, partner) in met {
+        if let Some(character) = conversations.cast.get_mut(observer) {
+            character.relation_entry(partner).last_encounter = now;
+        }
+    }
     if work.is_empty() {
         return;
     }
-    let exa_script::Conversations {
-        engine,
-        cast,
-        player,
-        player2,
-        world_base,
-        locale,
-        ..
-    } = &mut **conversations;
-    let mut scene = exa_script::dialogue::Scene {
-        library: exa_script::dialogue::Library {
-            roles: &scripts.roles,
-            narrator: scripts.narrator.as_ref(),
-        },
-        cast,
-        now,
-        world_time: exa_script::topics::world_time(*world_base, now, 0),
-        player: *player,
-        player2: *player2,
-        locale: *locale,
-        effects: Vec::new(),
-    };
-    for (observer, partner, role, text) in work {
-        engine.run_script(&mut scene, vec![Some(observer), Some(partner)], role, &text);
-    }
-    for effect in scene.effects.drain(..) {
+    let ((), out) = conversations.with_scene(&scripts, now, |engine, scene| {
+        for (observer, partner, role, text) in work {
+            engine.run_script(scene, vec![Some(observer), Some(partner)], role, &text);
+        }
+    });
+    for effect in out {
         effects.write(exa_script::ScriptEffect(effect));
     }
 }
