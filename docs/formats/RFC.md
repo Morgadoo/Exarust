@@ -1545,14 +1545,14 @@ flat pose and the motion state, and `CAC0EC00` with what the attached
 objects wrote and their count, taken out again when none wrote.
 
 **Converting a loaded level back.** `rfc_level` builds the exporter's
-scene from a section the reader decoded: `LevelScene` writes every node,
+scene from a section the reader decoded: `level_scene` writes every node,
 then the props (their part records as owned children), the placed objects,
 the placed characters, the grid, the section's material library, the local
 object database and its strings, the character database and the
-environment, at `whole_scene`. Two records the reader drops are scanned
+environment, at `whole_scene`. The records the reader drops are scanned
 separately (`LevelRaw::scan`): the material payloads, the object database
 and string bodies, the environment record, and the character database body
-(the characters section's `CECCDB00`), which a written section needs because
+(the characters section's `CECDDB00`), which a written section needs because
 its placements name records by id. Three round-trip rules follow from the
 format: the header mask clears a node's saved bit `0x40000`, so a converted
 node marks itself saved again (the walk skips non-plain nodes without it);

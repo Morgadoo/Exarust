@@ -393,25 +393,26 @@ pub struct ExportLight {
     pub softness: f32,
     /// Written when the node's `flags2 & 0x300` is `0x200`.
     pub spot: [f32; 2],
-    /// Written after a zero word when `flags & LIGHT_EXTRA`.
-    pub animation: LightAnimation,
+    /// Written after a zero word when `flags & LIGHT_EXTRA` (zeros when
+    /// `None`).
+    pub animation: Option<LightAnimation>,
 }
 
 pub const LIGHT_EXTRA: u32 = 0x3_0000;
 pub const SPOT_MASK: u32 = 0x300;
 pub const SPOT: u32 = 0x200;
 
-/// A light body's flicker parameters, stored after a zero word when its
-/// flags have any of [`LIGHT_EXTRA`], in the order the file holds them.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct LightAnimation {
-    /// How far the flicker moves the intensity.
-    pub amplitude: f32,
-    /// How fast the walk and a fade move per frame millisecond.
-    pub speed: f32,
-    /// How much of the walk the parent mesh's emissive takes.
-    pub emissive: f32,
-}
+/// A light body's flicker and fade parameters: the reader's own record,
+/// written in the order the file holds them (amplitude, speed, emissive).
+pub use crate::rfc::LightAnimation;
+
+/// The animation a light stores when its flags ask for one but the scene
+/// gives none: three zero words.
+const NO_ANIMATION: LightAnimation = LightAnimation {
+    amplitude: 0.0,
+    speed: 0.0,
+    emissive: 0.0,
+};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ExportVoxelLight {
@@ -1712,10 +1713,11 @@ fn write_light(w: &mut ChunkWriter, l: &ExportLight, flags2: u32) {
         w.f32(l.spot[1]);
     }
     if l.flags & LIGHT_EXTRA != 0 {
+        let animation = l.animation.unwrap_or(NO_ANIMATION);
         w.u32(0);
-        w.f32(l.animation.amplitude);
-        w.f32(l.animation.speed);
-        w.f32(l.animation.emissive);
+        w.f32(animation.amplitude);
+        w.f32(animation.speed);
+        w.f32(animation.emissive);
     }
 }
 

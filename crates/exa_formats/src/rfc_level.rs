@@ -17,20 +17,17 @@ use crate::rfc::{Mesh as ReadMesh, Node as ReadNode, NodeBody, Scene as ReadScen
 use crate::rfc_write::{
     ATTACH_BODY, ATTACH_CLOTH, ATTACH_EMITTER, Attachment, AttachmentData, ExportBody, ExportGrid,
     ExportLight, ExportLink, ExportMesh, ExportScene, ExportSound, ExportTrack, ExportVoxelLight,
-    GiPoints, IDENTITY, IndexMap, LightAnimation, MeshPart, NodeData, SceneNode, VertexStream,
+    GiPoints, IDENTITY, IndexMap, MeshPart, NodeData, SceneNode, VertexStream,
 };
 use crate::rigid_body::RigidBody;
 use crate::{Error, Result};
 
-/// Root chunks read here.
-const MATERIAL_LIST: u32 = 0x0000_BA00;
-const MATERIAL: u32 = 0x0000_BA01;
-const LOCAL_DATABASE: u32 = 0x0000_DBC0;
-const LOCAL_OBJECTS: u32 = 0x0000_DBDB;
-const LOCAL_STRINGS: u32 = 0x0000_DBCD;
-const ENVIRONMENT: u32 = 0xEC00_DC00;
-const CHARACTERS: u32 = 0xCAC0_0001;
-const CHARACTER_DB: u32 = 0xCECC_DB00;
+/// Root chunks read here: the writer's own tags, so a section the exporter
+/// wrote scans back.
+use crate::rfc_write::tag::{
+    CHARACTER_DB, CHARACTERS, ENVIRONMENT, LOCAL_DATABASE, LOCAL_OBJECTS, LOCAL_STRINGS, MATERIAL,
+    MATERIAL_LIST,
+};
 
 /// The GI lattice spacing (cm) every shipped mesh with points stores: the
 /// points sample a 40 cm lattice (326 point chunks over four shipped levels
@@ -54,7 +51,7 @@ pub struct LevelRaw {
     /// shipped files).
     pub environment: Option<Vec<u8>>,
     /// The character database's body inside the characters section
-    /// (`0xCECCDB00`): magic, table length, table and data. The structured
+    /// (`0xCECDDB00`): magic, table length, table and data. The structured
     /// reader parses its records and drops the raw body, which a written
     /// section needs because its placements name records by id.
     pub character_database: Option<Vec<u8>>,
@@ -430,19 +427,11 @@ fn export_body(node: &ReadNode) -> NodeData {
             multiplier: l.multiplier,
             intensity: l.intensity,
             radius: l.radius * 100.0,
-            // The word the reader skips (the original's +0x228) is zero in
-            // the shipped lights.
+            // The word the reader skips is zero in the shipped lights.
             unread: 0.0,
             softness: l.softness,
             spot: l.spot.unwrap_or([0.0; 2]),
-            animation: l
-                .animation
-                .map(|a| LightAnimation {
-                    amplitude: a.amplitude,
-                    speed: a.speed,
-                    emissive: a.emissive,
-                })
-                .unwrap_or_default(),
+            animation: l.animation,
         }),
         NodeBody::VoxelLight(l) => NodeData::VoxelLight(ExportVoxelLight {
             color: l.color,
@@ -1270,11 +1259,11 @@ mod tests {
                 unread: 0.0,
                 softness: 0.5,
                 spot: [2.0, 3.0],
-                animation: crate::rfc_write::LightAnimation {
+                animation: Some(crate::rfc_write::LightAnimation {
                     amplitude: 4.0,
                     speed: 5.0,
                     emissive: 6.0,
-                },
+                }),
             }),
             ..Default::default()
         };
@@ -1363,8 +1352,8 @@ mod tests {
         };
         assert_eq!(l.radius, 630.0);
         assert_eq!(l.spot, [2.0, 3.0]);
-        assert_eq!(l.animation.amplitude, 4.0);
-        assert_eq!(l.animation.emissive, 6.0);
+        assert_eq!(l.animation.unwrap().amplitude, 4.0);
+        assert_eq!(l.animation.unwrap().emissive, 6.0);
 
         let cam = export_node(&parsed, 3).unwrap();
         assert!(matches!(
@@ -2128,6 +2117,46 @@ mod tests {
         // The fixture places no character, so the rebuilt section has no
         // characters chunk and hence no character database.
         assert!(again_raw.character_database.is_none());
+    }
+
+    #[test]
+    fn a_written_character_database_scans_back_and_converts() {
+        // The writer's characters section with a database and one placement:
+        // the scan finds the body under the writer's tag, and the converted
+        // scene carries it again.
+        let character = crate::rfc_write::SceneNode {
+            name: name16("Guard"),
+            flags: crate::rfc_write::flags::CHARACTER | crate::rfc_write::flags::SAVED,
+            character: Some(crate::rfc_write::ExportCharacter {
+                record: 1,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let scene = crate::rfc_write::ExportScene {
+            nodes: vec![character],
+            character_db: Some(crate::rfc_write::RdbImage {
+                count: 1,
+                table: vec![0u8; 32],
+                data: vec![7, 8],
+            }),
+            ..Default::default()
+        };
+        let bytes = write(&scene);
+        let raw = LevelRaw::scan(&bytes).unwrap();
+        let body = raw.character_database.as_deref().unwrap();
+        assert_eq!(
+            body[..8],
+            [
+                crate::rfc_write::CHARACTER_DB_MAGIC.to_le_bytes(),
+                32u32.to_le_bytes()
+            ]
+            .concat()[..]
+        );
+        let parsed = crate::rfc::Scene::parse(&bytes).unwrap();
+        let rebuilt = level_scene(&parsed, &raw).unwrap();
+        let db = rebuilt.character_db.unwrap();
+        assert_eq!((db.count, db.data), (1, vec![7, 8]));
     }
 
     #[test]

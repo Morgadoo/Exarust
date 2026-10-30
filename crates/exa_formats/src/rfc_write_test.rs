@@ -651,11 +651,11 @@ fn a_light_body_is_40_bytes_plus_spot_and_extra() {
         unread: 0.0,
         softness: 0.5,
         spot: [2.0, 3.0],
-        animation: LightAnimation {
+        animation: Some(LightAnimation {
             amplitude: 4.0,
             speed: 5.0,
             emissive: 6.0,
-        },
+        }),
     });
     let b = export(&scene_of(vec![n]));
     let kids = chunks(&roots(&b)[0].1[4..]);
