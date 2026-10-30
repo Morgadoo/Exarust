@@ -143,7 +143,7 @@ pub fn draw_line_centred(
 ) -> (Vec<TextQuad>, i32) {
     let total: i32 = measure(font, text);
     let start = if total < width {
-        round_i32(f64::from((width - total) as f32 * 0.5 + x as f32))
+        round_i32(f64::from((width as f32 - total as f32) * 0.5 + x as f32))
     } else {
         x
     };

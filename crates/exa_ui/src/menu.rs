@@ -1303,7 +1303,9 @@ pub const MENU_SOUND_GAIN: f32 = 0.2;
 /// The cue pitch: a random roll from 0 to 1 becomes 0.8 through 1.2, the
 /// original's `roll · 0.4 + 0.8`.
 pub fn menu_sound_pitch(roll: f32) -> f32 {
-    roll * 0.4 + 0.8
+    // The original's roll is a double and its mix is in double precision,
+    // converted to the single the audio call takes.
+    (f64::from(roll) * 0.4 + 0.8) as f32
 }
 
 /// The title art's texture (`maintitle01.rfi`).
