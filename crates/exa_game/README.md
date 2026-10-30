@@ -666,8 +666,8 @@ consumable joins 2100 ms on (done entries shift the rest down, keeping the
 order), the deferred drop's spawn run (free, content error, or place at
 the drop's −100000 cm limit), the
 timed list that writes only while it lowers a section or arrives (the
-weapon section first; when the item has one, the apparel section is not
-looked at that frame); the reach's navigation region and walk-to point; the movement
+apparel section first; when it has one whose byte is not written, the
+weapon section is not looked at that frame); the reach's navigation region and walk-to point; the movement
 request's drag modes, the controls' gates, the key permissions and the power
 bar's 500 ms hold. A click on the player's own body shows the HUD bars for
 5000 ms; the HUD's compass shows while the player's pack carries its usable

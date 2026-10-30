@@ -95,10 +95,10 @@ pub fn repair_to(wear: u8, rating: u8) -> Option<u8> {
     Some((i32::from(wear) - 255 / step).max(0) as u8)
 }
 
-/// The weapon (0x1000) section index of [`TimedList::tick_sections`].
-pub const WEAPON_SECTION: u8 = 0;
-/// The apparel (0x4000) section index of [`TimedList::tick_sections`].
-pub const APPAREL_SECTION: u8 = 1;
+/// The apparel (0x1000) section index of [`TimedList::tick_sections`].
+pub const APPAREL_SECTION: u8 = 0;
+/// The weapon (0x4000) section index of [`TimedList::tick_sections`].
+pub const WEAPON_SECTION: u8 = 1;
 
 /// A timed value on an item: the byte's kind (cleaning or repair), the
 /// value it starts at and the value it stops at.
@@ -157,15 +157,15 @@ impl TimedList {
     }
 
     /// One frame at `now_ms` against `current`, which gives the item's byte
-    /// at section `section` ([`WEAPON_SECTION`] 0, the 0x1000 section, or
-    /// [`APPAREL_SECTION`] 1, the 0x4000 section), or `None` when the item
+    /// at section `section` ([`APPAREL_SECTION`] 0, the 0x1000 section, or
+    /// [`WEAPON_SECTION`] 1, the 0x4000 section), or `None` when the item
     /// has no such section. The value is written only while it lowers that
-    /// byte or arrives, as the original writes it. The weapon section is
+    /// byte or arrives, as the original writes it. The apparel section is
     /// looked at first; when it exists and its byte is not written, the
-    /// apparel section is not looked at this frame (the original goes
-    /// straight to the next entry). An arriving entry is removed by moving
-    /// the last into its slot. Returns the section writes in the loop's
-    /// order.
+    /// weapon section is not looked at this frame (the original goes
+    /// straight to the next entry); when it is written, the weapon section
+    /// is tested next. An arriving entry is removed by moving the last into
+    /// its slot. Returns the section writes in the loop's order.
     pub fn tick_sections(
         &mut self,
         now_ms: u32,
@@ -177,21 +177,20 @@ impl TimedList {
             let entry = self.entries[i];
             let (value, done) = entry.timed.value(now_ms);
             let mut next_section = true;
-            if let Some(old) = current(entry.item, WEAPON_SECTION) {
+            if let Some(old) = current(entry.item, APPAREL_SECTION) {
                 if old > value || done {
-                    writes.push((entry.item, WEAPON_SECTION, value));
+                    writes.push((entry.item, APPAREL_SECTION, value));
+                } else {
+                    // Not written (and not arrived): the original leaves
+                    // for the next entry without the weapon section.
+                    next_section = false;
                 }
-                // A weapon section that is present always ends the entry's
-                // section pass: written, it goes straight to the refresh;
-                // not written, the original's next test leaves for the
-                // next entry too.
-                next_section = false;
             }
             if next_section
-                && let Some(old) = current(entry.item, APPAREL_SECTION)
+                && let Some(old) = current(entry.item, WEAPON_SECTION)
                 && (old > value || done)
             {
-                writes.push((entry.item, APPAREL_SECTION, value));
+                writes.push((entry.item, WEAPON_SECTION, value));
             }
             if done {
                 self.entries.swap_remove(i);
@@ -2507,9 +2506,10 @@ mod tests {
     }
 
     /// The timed list writes a section only while the byte lowers or the
-    /// entry arrives. The weapon section is tried first; when the item has
-    /// one, the apparel section is never looked at that frame. An arrived
-    /// entry is removed by moving the last into its slot.
+    /// entry arrives. The apparel section is tried first; when the item has
+    /// one and its byte is not written, the weapon section is not looked at
+    /// that frame; when it is written, the weapon section follows. An
+    /// arrived entry is removed by moving the last into its slot.
     #[test]
     fn the_timed_list_writes_only_what_lowers() {
         let mut list = TimedList::default();
@@ -2522,45 +2522,44 @@ mod tests {
             },
             item: 7,
         });
-        // At the start the weapon section does not change: no write, and
-        // the apparel section is not looked at.
+        // At the start the apparel section does not change: no write, and
+        // the weapon section is not looked at.
         assert!(list.tick_sections(1000, |_, _| Some(100)).is_empty());
-        // Halfway: the weapon section goes to 50 and the apparel section is
-        // skipped.
+        // Halfway: both sections go to 50, the apparel section first.
         assert_eq!(
             list.tick_sections(2000, |_, _| Some(100)),
-            vec![(7, WEAPON_SECTION, 50)]
+            vec![(7, APPAREL_SECTION, 50), (7, WEAPON_SECTION, 50)]
         );
-        // The weapon section alone lowers: it is written.
+        // The apparel section alone lowers: it is written, and the weapon
+        // section (already under 25) is not.
         assert_eq!(
-            list.tick_sections(2500, |_, section| if section == WEAPON_SECTION {
+            list.tick_sections(2500, |_, section| if section == APPAREL_SECTION {
                 Some(50)
             } else {
                 Some(20)
             }),
-            vec![(7, WEAPON_SECTION, 25)]
+            vec![(7, APPAREL_SECTION, 25)]
         );
-        // The weapon section already at the value: the apparel section is
-        // skipped this frame even though it would lower.
+        // The apparel section not lowered: the weapon section is skipped
+        // this frame even though it would lower.
         assert!(
-            list.tick_sections(2600, |_, section| if section == WEAPON_SECTION {
+            list.tick_sections(2600, |_, section| if section == APPAREL_SECTION {
                 Some(10)
             } else {
                 Some(90)
             })
             .is_empty()
         );
-        // No weapon section: the apparel section is tested on its own.
+        // No apparel section: the weapon section is tested on its own.
         assert_eq!(
-            list.tick_sections(2600, |_, section| (section == APPAREL_SECTION)
-                .then_some(90)),
-            vec![(7, APPAREL_SECTION, 20)]
+            list.tick_sections(2600, |_, section| (section == WEAPON_SECTION).then_some(90)),
+            vec![(7, WEAPON_SECTION, 20)]
         );
-        // Arriving writes the end value to the weapon section and skips the
-        // apparel one.
+        // Arriving writes the end value to both sections even when one is
+        // already there.
         assert_eq!(
             list.tick_sections(3000, |_, _| Some(0)),
-            vec![(7, WEAPON_SECTION, 0)]
+            vec![(7, APPAREL_SECTION, 0), (7, WEAPON_SECTION, 0)]
         );
         assert!(list.entries.is_empty());
         // A clock behind the start raises the value and writes nothing.

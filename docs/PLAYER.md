@@ -611,10 +611,10 @@ gap a millisecond (rounded to the nearest, ties to even), and the timed
 list drops an entry once it arrives by moving the last into its place
 (`player_controls::{use_on, salve, elixir, clean_timed, repair_timed, Timed,
 TimedList}`). A timed value is written only while it lowers a section's byte
-or arrives. The weapon section (0x1000) is tried first; when the item has
-one, the apparel section (0x4000) is never looked at that frame, whether
-the weapon byte was written or not. Only an item with no weapon section
-takes its apparel section's byte. After a repair write the copy is
+or arrives. The apparel section (0x1000) is tried first; when the item has
+one and its byte is not written, the weapon section (0x4000) is not looked
+at that frame; when it is written (or the item has no apparel section), the
+weapon section's byte is tested next. After a repair write the copy is
 refreshed from its template: an apparel copy's resist, coverage and
 encumbrance and a weapon copy's slash, crush, pierce and thrust take the
 condition factor, and the model section's compact price is recomputed
