@@ -1727,6 +1727,9 @@ character body's possession routines; addresses are in the research notes.
 - **Middle mouse** orbits: 4.8 rad per screen width (the division in
   double precision), through a near critically damped spring (stiffness
   0.0718 and retention 0.616 per tick), leading by at most 45° per tick.
+  Releasing the button snaps the target a quarter turn from the shown yaw
+  once the drag passed an eighth of a turn (`nav_drag::free_drag_release`,
+  the unit's close branch).
 - The camera's **cut-away detector** runs each frame on the stepped
   camera. Its segment starts twice the camera's largest distance out
   along the backward vector from the looked-at point (beyond the eye) and
