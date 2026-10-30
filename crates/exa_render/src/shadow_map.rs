@@ -305,19 +305,20 @@ pub const SUN_COLOUR_TWIN_SWITCH: bool = false;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ShadowColourTwin {
     pub size: ShadowMapSize,
-    /// Three 16-bit float channels.
-    pub rgb16f: bool,
+    /// Three 8-bit unsigned normalised channels (the creation asks for
+    /// `RGB8`).
+    pub rgb8: bool,
     pub min: ShadowFilter,
     pub mag: ShadowFilter,
 }
 
 /// The colour twin the map creates when the switch is on: an uninitialised
-/// RGB16F image of the map's size, linearly filtered. The shipped build
+/// RGB8 image of the map's size, linearly filtered. The shipped build
 /// keeps the switch off, so the map has only its depth texture.
 pub fn sun_colour_twin(enabled: bool, size: ShadowMapSize) -> Option<ShadowColourTwin> {
     enabled.then_some(ShadowColourTwin {
         size,
-        rgb16f: true,
+        rgb8: true,
         min: ShadowFilter::Linear,
         mag: ShadowFilter::Linear,
     })
@@ -878,19 +879,19 @@ mod tests {
     }
 
     #[test]
-    fn the_colour_twin_is_off_but_linear_rgb16f_when_switched_on() {
+    fn the_colour_twin_is_off_but_linear_rgb8_when_switched_on() {
         let size = ShadowMapSize {
             width: 4096,
             height: 4096,
         };
         assert_eq!(sun_colour_twin(SUN_COLOUR_TWIN_SWITCH, size), None);
-        // Switched on: the map's own size, three 16-bit float channels and
+        // Switched on: the map's own size, three 8-bit channels and
         // the same linear filters the depth texture takes.
         assert_eq!(
             sun_colour_twin(true, size),
             Some(ShadowColourTwin {
                 size,
-                rgb16f: true,
+                rgb8: true,
                 min: ShadowFilter::Linear,
                 mag: ShadowFilter::Linear,
             })

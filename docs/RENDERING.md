@@ -2275,7 +2275,7 @@ Bevy's directional shadows only have with its PCSS feature (the value is
 computed); the polygon offset (Bevy's own depth and normal biases apply);
 the other camera mode; the caster-volume builder; the map's own GL lifecycle
 (Bevy allocates a 32-bit float depth map where the original asks for 16-bit,
-and the original's optional RGBA16F colour twin behind a debug switch that
+and the original's optional RGB8 colour twin behind a debug switch that
 ships off). The scene box is a
 stand-in: the original's comes from the scene's own bounds, Exarust's from
 prop origins and terrain tiles. Exarust's record ceiling falls back to the
