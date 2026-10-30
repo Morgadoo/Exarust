@@ -23,7 +23,7 @@
 //! `g = (3 − 2f)·f²`. A recovering swing subtracts 1 from the close term,
 //! not below 0, and multiplies the approach by 4 at skill 0. A side swing
 //! that never arrives multiplies it by skill + 2, and a thrust whose arc
-//! holds the observer multiplies it by twice the observer's skill plus 1,
+//! holds the observer multiplies it by twice the opponent's skill plus 1,
 //! doubled. A weapon hand at phase 0.4 or later sets one arc edge. When the
 //! observer is not attacking, the approach is multiplied by one more than
 //! how far the candidate lies from the observer's heading. A press
@@ -103,6 +103,9 @@ pub struct Spot {
     pub in_attack: bool,
     /// Flag bit 4. Scales the strike and the approach by the opponent's facing.
     pub presses: bool,
+    /// The opponent's combat skill, used by a thrust's approach scale (the
+    /// other terms read the observer's, [`Blow::skill`]).
+    pub other_skill: f32,
 }
 
 /// The opponent's attack arc, as the position score reads it.
@@ -288,7 +291,7 @@ fn blow_terms(distance_cm: f32, spot: Spot) -> (f32, ApproachScale) {
         }
     }
     let scale = if scales {
-        ApproachScale::Doubled(blow.skill * 2.0 + 1.0)
+        ApproachScale::Doubled(spot.other_skill * 2.0 + 1.0)
     } else {
         ApproachScale::Keep
     };
@@ -313,6 +316,7 @@ pub fn attack_danger(distance_cm: f32, reach_cm: f32, blow: Blow) -> f32 {
         other_ahead: 1.0,
         in_attack: true,
         presses: false,
+        other_skill: 0.0,
     };
     blow_terms(distance_cm, spot).0
 }
@@ -581,9 +585,9 @@ pub fn score_place(distance_cm: f32, spot: Spot) -> PlaceScore {
 ///
 /// The original measures the candidate from a point on the other body, not
 /// the body's own position: a moving body leans from its chest along its
-/// heading by 70 cm times its reach scale (less while attacking), a
-/// stepping body halfway to its step target by half the observer's skill,
-/// and a standing body 10 cm ahead. For an earlier score against the same
+/// heading by 70 ticks of its speed (times one less its phase while
+/// attacking), a stepping body moves toward its step target by half its
+/// own combat skill and then 10 cm ahead, and a standing body 10 cm ahead. For an earlier score against the same
 /// point, the node offset is added; Exarust keeps one world frame, so it is
 /// zero. Down or dead, the body itself.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -594,8 +598,8 @@ pub struct Origin {
     pub chest_cm: Vec3,
     /// Its body heading (unit).
     pub forward: Vec3,
-    /// Its reach scale.
-    pub scale: f32,
+    /// Its locomotion speed along its heading (cm a tick).
+    pub speed_cm: f32,
     /// Its condition word.
     pub condition: u32,
     /// Its locomotion is active.
@@ -608,14 +612,14 @@ pub struct Origin {
     pub attacking: bool,
     /// Its attack phase.
     pub phase: f32,
-    /// The observer's combat skill.
+    /// Its own combat skill (the scored combatant's, not the observer's).
     pub skill: f32,
 }
 
 /// The down/dead condition bits.
 const DOWN_OR_DEAD: u32 = 0xa00;
-/// The lean along the heading (cm per unit of reach scale).
-const LEAN_CM: f32 = 70.0;
+/// The lean along the heading, in ticks of the body's speed.
+const LEAN_TICKS: f32 = 70.0;
 /// The standing body's offset ahead of its position (cm).
 const AHEAD_CM: f32 = 10.0;
 
@@ -626,7 +630,7 @@ pub fn measured_origin(o: Origin) -> Vec3 {
         return o.body_cm;
     }
     if o.locomotion {
-        let lean = o.scale * LEAN_CM;
+        let lean = o.speed_cm * LEAN_TICKS;
         let lean = if o.attacking {
             (1.0 - o.phase) * lean
         } else {
@@ -652,8 +656,7 @@ pub struct Place {
     /// The bearing of the origin as seen from the place: the yaw of the
     /// candidate from the origin, turned half a turn (in double precision).
     pub bearing: f32,
-    /// The flat distance from the origin (cm). The original stores its
-    /// integer part.
+    /// The flat distance from the origin (cm).
     pub distance_cm: f32,
 }
 
@@ -787,6 +790,7 @@ mod tests {
             other_ahead: 0.0,
             in_attack: true,
             presses: false,
+            other_skill: 0.0,
         }
     }
 
@@ -1065,13 +1069,13 @@ mod tests {
         assert_eq!(score_place(25.0, spot).approach.to_bits(), 0x3ec0_0000);
         spot.blow.angle = 2.0;
         assert_eq!(score_place(25.0, spot).danger.to_bits(), 0x4080_0000);
-        spot.blow.skill = 1.0;
+        spot.other_skill = 1.0;
         spot.blow.angle = 0.5;
         spot.blow.origin_in_arc = true;
         assert_eq!(score_place(25.0, spot).approach.to_bits(), 0x4010_0000);
         // Past the gate (110 cm) there is no danger, but the observer in
         // the arc still scales the approach, wherever the candidate lies.
-        spot.blow.skill = 0.0;
+        spot.other_skill = 0.0;
         spot.blow.angle = 2.0;
         let beyond = score_place(200.0, spot);
         assert_eq!(beyond.danger, 0.0);
@@ -1089,7 +1093,7 @@ mod tests {
             body_cm: body,
             chest_cm: chest,
             forward,
-            scale: 2.0,
+            speed_cm: 2.0,
             condition: 0,
             locomotion: false,
             stepping: false,
@@ -1100,7 +1104,8 @@ mod tests {
         };
         // Standing: 10 cm ahead of the body.
         assert_eq!(measured_origin(base), Vec3::new(10.0, 0.0, 0.0));
-        // Moving: the chest leaned 2·70 cm along the heading.
+        // Moving at 2 cm a tick: the chest leaned 70 ticks of it along the
+        // heading.
         let moving = Origin {
             locomotion: true,
             ..base
@@ -1113,7 +1118,7 @@ mod tests {
             ..moving
         };
         assert_eq!(measured_origin(swinging), Vec3::new(105.0, 0.0, 100.0));
-        // Stepping: a quarter (half the skill) of the way to the goal,
+        // Stepping: a quarter (half its own skill) of the way to the goal,
         // then 10 cm ahead.
         let stepping = Origin {
             step_goal_cm: Vec3::new(100.0, 0.0, 0.0),

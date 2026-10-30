@@ -311,9 +311,10 @@ its look taken from the body's look direction (turned 20° while a weapon
 is held) and replaced by the arc midpoint on a side swing; `blow_is_live`
 its is-attacking test; `between` the original's arc test; `arrival_ms` its
 time to impact. `Origin` and `measured_origin` are the point the score
-measures a place from: 10 cm ahead standing, the chest leaned 70 cm times
-the reach scale along the heading (less while attacking), or halfway to a
-step target by half the observer's skill; `score_place_at` scores one place
+measures a place from: 10 cm ahead standing, the chest leaned 70 ticks of
+the body's speed along the heading (times one less its phase while
+attacking), or toward a step target by half the opponent's own skill and
+then 10 cm ahead; `score_place_at` scores one place
 with its own distance, bearing and heading term, and the duellist feeds
 each place's candidate angle to the danger terms. `choose_footwork` (Exarust's reduction of
 the original combat state's candidate search) turns the terms into hold,
@@ -325,7 +326,8 @@ the practice opponent, which has none, perceives its target through
 `perceive` with the role database's attitude when it is loaded.
 
 The duellist publishes its fighting values when it enters combat
-(`estimate`): two plus 0.4 a skill level plus 0.02 per combat skill, plus
+(`estimate`): two plus 0.4 a skill level (in double precision) plus 0.02
+per combat skill, plus
 with a held weapon 0.02 of its impact, thrust, slash, crush and pierce
 hundredths times its reach, then plus 2 above a body scale of 1.3 or a
 quarter below. The experience system keeps the one implementation; the

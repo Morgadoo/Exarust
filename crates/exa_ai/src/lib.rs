@@ -591,9 +591,9 @@ fn duellist(
         let target_condition = target_body.map(|(c, ..)| *c).unwrap_or(Condition::NORMAL);
         let target_fighter = target_body.map(|(_, _, _, f, _, _)| f);
         let target_anim = target_body.and_then(|(_, _, _, _, a, _)| a);
-        let target_moving = target_body
-            .and_then(|(_, _, _, _, _, l)| l)
-            .is_some_and(|l| l.amount != 0.0);
+        let target_locomotor = target_body.and_then(|(_, _, _, _, _, l)| l);
+        let target_moving = target_locomotor.is_some_and(|l| l.amount != 0.0);
+        let target_speed_cm = target_locomotor.map_or(0.0, |l| l.speed);
         let phase = target_anim
             .zip(motions.as_deref())
             .and_then(|(a, m)| m.clip(a, &a.action).map(|c| a.clip_progress(c)))
@@ -770,23 +770,30 @@ fn duellist(
             .map(|(_, tgt, tgt_body, _, _, _)| stance::chest_point(tgt, tgt_body))
             .unwrap_or_else(|| stance::chest_point(target, None))
             * CM;
+        // The foe's own combat skill: a brain's personality, else 0 (the
+        // player's behaviour skill is not modelled) [Exarust's default].
+        let foe_skill = brains
+            .get(ai.target)
+            .ok()
+            .and_then(|b| b.personality)
+            .map_or(0.0, |p| p.skill);
         // The position score measures the foe from a point on its body,
         // not its body's own position: ahead of it standing, out from its
-        // chest while it moves. The duellist's target's step flag is not
-        // exposed here, so the stepping branch is not taken [guess: only
-        // its locomotion amount is read].
+        // chest by 70 ticks of its speed while it moves. The duellist's
+        // target's step flag is not exposed here, so the stepping branch is
+        // not taken [guess: only its locomotion amount is read].
         let foe_origin = place::measured_origin(place::Origin {
             body_cm: target.translation() * CM,
             chest_cm: foe_chest,
             forward: target_forward,
-            scale: target_fighter.map_or(1.0, |f| f.stats.size),
+            speed_cm: target_speed_cm,
             condition: target_condition.0,
             locomotion: target_moving,
             stepping: false,
             step_goal_cm: foe_chest,
             attacking: target_condition == Condition::ATTACKING,
             phase,
-            skill: traits.skill,
+            skill: foe_skill,
         });
         let foe = combat::Foe {
             condition: target_condition.0,
@@ -819,6 +826,7 @@ fn duellist(
             other_ahead: target_forward.dot(dir_to_me),
             in_attack: *condition == Condition::ATTACKING,
             presses: false,
+            other_skill: foe_skill,
         };
         // The AI tick, before its state: a cast whose body is not casting
         // 500 ms after it began is let go (64-bit compare). A duellist runs

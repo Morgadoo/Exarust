@@ -489,8 +489,8 @@ struct Sensed {
     /// Its mind-masked bit ([`MindWarded`]).
     hidden: bool,
     phase: f32,
-    /// Its locomotion is active [guess: read from its speed, since the
-    /// body's locomotion flag is not exposed here].
+    /// Its locomotion is active [guess: read as a non-zero locomotion
+    /// amount, since the body's locomotion flag is not exposed here].
     locomotion: bool,
     in_combat: bool,
     stepping: bool,
