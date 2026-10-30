@@ -123,6 +123,7 @@ impl Tiling {
             material_offset: Vec2::new(a, b),
             damage_offset: Vec2::new(c, d),
             uv_scale: 1.0,
+            crop: 1.0,
         }
     }
 
