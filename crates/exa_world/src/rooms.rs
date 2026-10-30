@@ -13,6 +13,8 @@
 //!
 //! Pure data and rules; the Bevy side is [`crate::room_view`].
 
+use std::collections::HashMap;
+
 use bevy::math::{Vec2, Vec3};
 use exa_formats::level::LevelGrid;
 
@@ -249,10 +251,13 @@ impl Rooms {
         )
     }
 
-    /// The room of the cell holding a point (metres, on X/Z).
+    /// The room at a point (metres, on X/Z), as the original's world-point
+    /// query finds it: the point's cell index (row × width + column) is
+    /// checked only against the cell count, so a column off the grid's side
+    /// lands in the row before or after (the same reading the light callbacks
+    /// use), and a row off the grid finds nothing.
     pub fn room_at(&self, p: Vec2) -> Option<u16> {
-        let (x, y) = self.cell_of(p);
-        self.room_of_cell(x, y)
+        self.linear_cell(p).and_then(|c| self.room_of_index(c))
     }
 
     /// The cell coordinates a character's room lookup writes onto it (the
@@ -547,20 +552,29 @@ pub fn rotate_edge_word(word: u32, quarter: u8) -> u32 {
     }
 }
 
-/// The cell step the original takes from a direction vector: `atan2(x, z)`
-/// in `[−π, π]`, then one of the four quadrants. The step is opposite to
-/// the vector.
+/// The cell step the original takes from a direction vector: the engine's
+/// yaw of `(x, z)` ([`exa_anim::quick_yaw`], an arccosine polynomial, not
+/// an exact `atan2`) in `[−π, π]`, then one of the four quadrants. The step
+/// is opposite to the vector. The original computes `π/2` as the `f32` and widens it to
+/// double before adding or subtracting the double `π/4`, so its quarter-turn
+/// edges are slightly wider than `±π/4` and its positive third edge slightly
+/// above `3π/4`; the tests run in this order and leave the step at zero in
+/// the narrow gaps (a NaN likewise). Used to bind a door to the cell behind
+/// it.
 pub fn cell_step_from_dir(dir: Vec2) -> (i32, i32) {
-    let v = dir.x.atan2(dir.y);
-    let quarter = std::f32::consts::FRAC_PI_4;
-    if v.abs() < quarter {
+    let a = f64::from(exa_anim::quick_yaw(dir.x, dir.y));
+    let quarter = std::f64::consts::FRAC_PI_4;
+    let half_pi = std::f32::consts::FRAC_PI_2 as f64;
+    if a.abs() < quarter {
         (0, -1)
-    } else if v.abs() > 3.0 * quarter {
-        (0, 1)
-    } else if v > quarter {
+    } else if a > half_pi - quarter && a < half_pi + quarter {
         (-1, 0)
-    } else {
+    } else if a.abs() > 3.0 * quarter {
+        (0, 1)
+    } else if a > -half_pi - quarter && a < -half_pi + quarter {
         (1, 0)
+    } else {
+        (0, 0)
     }
 }
 
@@ -583,6 +597,52 @@ pub fn door_link_at(rooms: &Rooms, position: Vec2, facing: Vec2) -> Option<DoorL
                 .copied()
                 .find(|l| l.from == from && l.to == to)
         })
+}
+
+/// The door body standing in each door link, as the original binds a placed
+/// door to the portals of the two rooms it joins. A link is keyed by its
+/// `(from, to)` cells, so both sides carry the same body.
+#[derive(Debug, Clone, Default)]
+pub struct DoorBodies {
+    per_link: HashMap<(u32, u32), u32>,
+}
+
+impl DoorBodies {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Binds `body` to the door link a door at `position` (metres, X/Z) and
+    /// facing `facing` (the X and Z of its third matrix row) stands in: the
+    /// door's cell, the neighbouring cell opposite its facing, and the
+    /// room's link between the two. The body is written into both rooms'
+    /// link entries, as the original does, and `None` means the cell has no
+    /// such link. A door without a body of its own is not bound (the
+    /// original returns before the write when its data source is missing).
+    pub fn bind(
+        &mut self,
+        rooms: &Rooms,
+        position: Vec2,
+        facing: Vec2,
+        body: u32,
+    ) -> Option<DoorLink> {
+        let link = door_link_at(rooms, position, facing)?;
+        self.per_link.insert((link.from, link.to), body);
+        self.per_link.insert((link.to, link.from), body);
+        Some(link)
+    }
+
+    /// The body standing in a link, read from either side.
+    pub fn body(&self, link: DoorLink) -> Option<u32> {
+        self.per_link.get(&(link.from, link.to)).copied()
+    }
+
+    /// Forgets a link and its reverse (the original clears both rooms'
+    /// entries when a door goes).
+    pub fn remove(&mut self, link: DoorLink) {
+        self.per_link.remove(&(link.from, link.to));
+        self.per_link.remove(&(link.to, link.from));
+    }
 }
 
 /// Whether the segment from `eye` to `point` crosses the open doorway.
@@ -738,6 +798,17 @@ impl RoomTracker {
 
     pub fn fade(&self, room: u16) -> Fade {
         self.fade.get(room as usize).copied().unwrap_or_default()
+    }
+
+    /// The active flag for a grid cell, as the original's cell query answers
+    /// it: the room holding the cell, and that room's working state low bit
+    /// (true once it has faded in and while it is wanted again mid fade-out;
+    /// see [`Self::is_active`]). A cell in no room, or outside the grid, is
+    /// not active.
+    pub fn cell_active(&self, rooms: &Rooms, cell: u32) -> bool {
+        rooms
+            .room_of_index(cell)
+            .is_some_and(|room| self.is_active(room))
     }
 
     /// The original's active-room flag (the low bit of the room's working
@@ -1562,6 +1633,43 @@ mod tests {
     }
 
     #[test]
+    fn the_point_room_query_wraps_a_column_off_the_side() {
+        // Four by four cells, all open: one room covers them. The point's
+        // column 4 is off the right side, but its cell index 1×4 + 4 = 8 is
+        // cell (0, 2), so the query finds that cell's room (the original
+        // checks only the cell count).
+        let mut g = Grid::new(4, 4);
+        for y in 0..4 {
+            for x in 0..4 {
+                g.open(x, y, [0, 0, 0, 0]);
+            }
+        }
+        let rooms = Rooms::flood(&g.0);
+        assert_eq!(rooms.room_of_cell(0, 2), Some(0));
+        assert_eq!(rooms.room_at(Vec2::new(12.0, -3.0)), Some(0));
+        // A row below the grid is out of the cell count: no room.
+        assert_eq!(rooms.room_at(Vec2::new(0.0, -100.0)), None);
+    }
+
+    #[test]
+    fn a_cell_is_active_only_while_its_rooms_low_bit_is_set() {
+        let rooms = Rooms::flood(&two_rooms().0);
+        let mut t = RoomTracker::new(rooms.len());
+        let inside = Vec2::new(-8.0, 3.0);
+        let door_cell = 8; // (2, 1) of room 0
+        let behind = 9; // (3, 1) of room 1
+        t.update(&rooms, inside, 0);
+        // Entering: the low bit is clear even though the room is drawn.
+        assert!(!t.cell_active(&rooms, door_cell));
+        t.update(&rooms, inside, 1_000);
+        assert!(t.cell_active(&rooms, door_cell));
+        // The adjacent room behind the door is not active.
+        assert!(!t.cell_active(&rooms, behind));
+        // A cell in no room is not active.
+        assert!(!t.cell_active(&rooms, 0));
+    }
+
+    #[test]
     fn the_edge_word_rotates_by_quarter_turns() {
         assert_eq!(rotate_edge_word(0x1234_5678, 0), 0x1234_5678);
         assert_eq!(rotate_edge_word(0x1234_5678, 1), 0x2341_6785);
@@ -1574,11 +1682,57 @@ mod tests {
     }
 
     #[test]
+    fn a_door_binds_to_both_sides_of_its_link() {
+        let rooms = Rooms::flood(&two_rooms().0);
+        let link = rooms.room(0).unwrap().links[0];
+        let reverse = rooms.room(1).unwrap().links[0];
+        let mut doors = DoorBodies::new();
+        // The door stands in cell (2, 1) facing −X, so the neighbour is +X.
+        assert_eq!(
+            doors.bind(&rooms, Vec2::new(-1.0, 3.0), Vec2::new(-1.0, 0.0), 7),
+            Some(link)
+        );
+        assert_eq!(doors.body(link), Some(7));
+        assert_eq!(doors.body(reverse), Some(7));
+        // Facing the other way looks for a link behind the door.
+        assert_eq!(
+            doors.bind(&rooms, Vec2::new(-1.0, 3.0), Vec2::new(1.0, 0.0), 8),
+            None
+        );
+        assert_eq!(doors.body(link), Some(7));
+        // A diagonal facing: the quick yaw leaves (1, 1) just inside the
+        // first quadrant, so it steps −Z (no link there either).
+        assert_eq!(cell_step_from_dir(Vec2::new(1.0, 1.0)), (0, -1));
+        assert_eq!(
+            doors.bind(&rooms, Vec2::new(-1.0, 3.0), Vec2::new(1.0, 1.0), 9),
+            None
+        );
+        doors.remove(reverse);
+        assert_eq!(doors.body(link), None);
+        assert_eq!(doors.body(reverse), None);
+    }
+
+    #[test]
     fn the_direction_step_is_opposite_the_vector() {
         assert_eq!(cell_step_from_dir(Vec2::new(0.0, 1.0)), (0, -1));
         assert_eq!(cell_step_from_dir(Vec2::new(1.0, 0.0)), (-1, 0));
         assert_eq!(cell_step_from_dir(Vec2::new(0.0, -1.0)), (0, 1));
         assert_eq!(cell_step_from_dir(Vec2::new(-1.0, 0.0)), (1, 0));
+        // Inside each quadrant, away from the quarter turns.
+        for (angle, step) in [
+            (0.5f32, (0, -1)),
+            (2.0, (-1, 0)),
+            (-2.0, (1, 0)),
+            (-0.5, (0, -1)),
+            (std::f32::consts::PI, (0, 1)),
+        ] {
+            let (sin, cos) = angle.sin_cos();
+            assert_eq!(cell_step_from_dir(Vec2::new(sin, cos)), step, "{angle}");
+        }
+        // The quick yaw puts (1, −1) at 2.3564136, past the double 3π/4.
+        assert_eq!(cell_step_from_dir(Vec2::new(1.0, -1.0)), (0, 1));
+        // A NaN angle matches none of the ordered tests: no step.
+        assert_eq!(cell_step_from_dir(Vec2::new(f32::NAN, 0.0)), (0, 0));
     }
 
     #[test]

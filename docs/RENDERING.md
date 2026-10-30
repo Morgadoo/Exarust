@@ -2638,7 +2638,12 @@ undrawn whatever the player should not see (`exa_world::rooms`,
   checks, so the same room, or two points both in no room, always reach;
   otherwise the first link of the first point's room into the second
   point's cell decides through its door's own flag (another flag than the
-  light query's), with no distance test. The room manager's active-room
+  light query's), with no distance test. A placed door binds to its link by
+  its cell and the direction of its third matrix row (the quadrant of the
+  engine's quick-arccosine yaw
+  picks the cell behind it, with the original's widened quarter edges), and
+  the body lands in both rooms' entries (`DoorBodies`); no mechanism reads
+  it yet. The room manager's active-room
   flag (`RoomTracker::is_active`) is the low bit of a room's working state:
   set once the room has faded in (and while it is wanted again mid
   fade-out), clear while it fades in or out.

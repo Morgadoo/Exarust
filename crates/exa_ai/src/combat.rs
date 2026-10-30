@@ -87,11 +87,10 @@ pub const TWO_PI: f32 = f32::from_bits(0x40c9_0fdb);
 /// Degrees to radians.
 pub const DEGREE: f32 = f32::from_bits(0x3c8e_fa35);
 const HALF_PI: f32 = f32::from_bits(0x3fc9_0fdb);
+#[cfg(test)]
 const PI_F32: f32 = f32::from_bits(0x4049_0fdb);
 /// The "no score yet" the searches start from.
 const NO_SCORE: f32 = f32::from_bits(0x7f7f_c99e);
-/// A flat offset shorter than this, squared, has yaw 0.
-const YAW_EPS: f32 = f32::from_bits(0x322b_cc77);
 /// The clock below which a swing has not started turning.
 const CLOCK_EPS: f32 = f32::from_bits(0x33ff_ffd7);
 /// A retreating fighter re-aims past this gap (54°, a double).
@@ -144,19 +143,10 @@ pub fn gap(a: f32, b: f32) -> f32 {
 
 pub use exa_anim::quick_acos;
 
-/// The yaw of a direction (x, z), 0 along +z, positive toward +x.
+/// The yaw of a direction (x, z), 0 along +z, positive toward +x
+/// ([`exa_anim::quick_yaw`]).
 pub fn yaw(v: Vec3) -> f32 {
-    let len2 = v.z * v.z + v.x * v.x;
-    if len2 < YAW_EPS {
-        return 0.0;
-    }
-    let c = v.z / len2.sqrt();
-    let a = if c > -1.0 {
-        if c <= 1.0 { quick_acos(c) } else { 0.0 }
-    } else {
-        PI_F32
-    };
-    if v.x < 0.0 { -a } else { a }
+    exa_anim::quick_yaw(v.x, v.z)
 }
 
 /// The unit direction of a yaw.

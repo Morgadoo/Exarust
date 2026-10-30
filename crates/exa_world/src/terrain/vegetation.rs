@@ -395,11 +395,17 @@ pub fn ground(heights: &[f32], n: usize, at: Vec2) -> f32 {
 /// against 1: a value above 1, or a NaN, picks the cell's other diagonal
 /// (a NaN takes the branch, as the original's unordered compare does). The
 /// correction is `±0.0025·(edge·(relative × diagonal))`, added on the far
-/// branch and taken off on the near one. In the original its result is
-/// discarded by the caller, which places the instance at the uncorrected
-/// height (and passes a position whose height it never set, so `position.y`
-/// is whatever the previous call left); it is kept here as a tested rule
-/// that the Exarust baker does not call. A point outside the
+/// branch and taken off on the near one. The near branch solves the plane
+/// of the corner, its right neighbour and the vertex below it; the far one
+/// the plane of the right neighbour, the vertex below and the opposite
+/// corner. With the original's 20 cm vertex spacing the correction cancels
+/// `position.y` (whatever the caller starts from) and the result is that
+/// plane's height. The baker writes the result into the instance's
+/// translation (the position it passes has a height it never set: the
+/// previous plant's, which the solve cancels; see [`ground_on_grid`]).
+/// Note the test is not the split between those two triangles (on a
+/// 20 cm cell it reads `1 − fx + 2·fz > 1`), so a point can take the
+/// other triangle's plane, as the original does. A point outside the
 /// grid returns the position's own height `[guess: the original reads on]`.
 pub fn ground_with_normal(vertices: &[[f32; 3]], n: usize, at: Vec2, position: Vec3) -> f32 {
     /// The original's determinant test against 1.
@@ -440,6 +446,36 @@ pub fn ground_with_normal(vertices: &[[f32; 3]], n: usize, at: Vec2, position: V
     }
 }
 
+/// The ground height under a plant point from a tile's `n` × `n` height grid
+/// (metres per vertex, `spacing_cm` apart), as the live plant baker queries
+/// it: the point's cell corners in centimetres through
+/// [`ground_with_normal`], whose plane solve returns the triangle's height
+/// whatever estimate it starts from (exactly so only at the 20 cm spacing
+/// the original's 0.05 and 0.0025 assume). `at` is in vertex steps; its
+/// cell is the truncated step, clamped to the grid `[guess: the original
+/// does not clamp; its points never leave the tile]`. The original works in
+/// a frame centred on the tile and Exarust in one starting at its corner,
+/// which changes only the rounding.
+pub fn ground_on_grid(heights: &[f32], n: usize, at: Vec2, spacing_cm: f32) -> f32 {
+    if n < 2 || heights.len() < n * n {
+        return 0.0;
+    }
+    let i = (at.x as i64).clamp(0, n as i64 - 2) as usize;
+    let j = (at.y as i64).clamp(0, n as i64 - 2) as usize;
+    let h = |di: usize, dj: usize| heights[(j + dj) * n + i + di] * 100.0;
+    let (x0, z0) = (i as f32 * spacing_cm, j as f32 * spacing_cm);
+    let x1 = x0 + spacing_cm;
+    let z1 = z0 + spacing_cm;
+    let corners = [
+        [x0, h(0, 0), z0],
+        [x1, h(1, 0), z0],
+        [x0, h(0, 1), z1],
+        [x1, h(1, 1), z1],
+    ];
+    let position = Vec3::new(at.x * spacing_cm, 0.0, at.y * spacing_cm);
+    ground_with_normal(&corners, 2, Vec2::ZERO, position) * 0.01
+}
+
 /// A plant shape, in metres, standing on its origin.
 #[derive(Debug, Clone, Default)]
 pub struct Variant {
@@ -462,14 +498,8 @@ pub fn density_texel(at: Vec2) -> (usize, usize) {
 }
 
 /// Bakes `growths` into one vertex set, tile-local metres, with `place`
-/// mapping a point in vertex steps to its ground position and
-/// `ground_normal` to the terrain's normal there (see [`terrain_normal`]).
-pub fn bake(
-    variants: &[Variant],
-    growths: &[Growth],
-    place: impl Fn(Vec2) -> Vec3,
-    ground_normal: impl Fn(Vec2) -> Vec3,
-) -> Variant {
+/// mapping a point in vertex steps to its ground position.
+pub fn bake(variants: &[Variant], growths: &[Growth], place: impl Fn(Vec2) -> Vec3) -> Variant {
     let mut out = Variant::default();
     for g in growths {
         let Some(v) = variants.get(g.variant) else {
@@ -493,22 +523,20 @@ pub fn bake(
                 .iter()
                 .map(|p| (rows[0] * p.x + rows[1] * p.y) + (rows[2] * p.z + at)),
         );
-        // Grass and small plants (whose normals the loader set to +Y) turn
-        // their normals by the same scaled rows without the translation,
-        // `(x·r0 + y·r1) + z·r2`, then scale them by `1/s`. A large plant
-        // takes the terrain's normal under it for every vertex instead.
-        if v.kind == Kind::Large {
-            let n = ground_normal(g.at);
-            out.normals
-                .extend(std::iter::repeat_n(n, v.positions.len()));
-        } else {
-            let inverse = 1.0 / s;
-            out.normals.extend(
-                v.normals
-                    .iter()
-                    .map(|n| ((rows[0] * n.x + rows[1] * n.y) + rows[2] * n.z) * inverse),
-            );
-        }
+        // Every plant's own normals turn by the same scaled rows without the
+        // translation, `(x·r0 + y·r1) + z·r2`, then are scaled by `1/s`.
+        // Grass and small plants carry +Y (the plant loader overwrites their
+        // normals), so they stay +Y; a large plant keeps its model normals.
+        // The original's other branch takes the terrain's blended vertex
+        // normal instead ([`terrain_normal`]), but the plant loader sets
+        // every variant's kind byte once the small-plant library has loaded,
+        // so that branch never runs.
+        let inverse = 1.0 / s;
+        out.normals.extend(
+            v.normals
+                .iter()
+                .map(|n| ((rows[0] * n.x + rows[1] * n.y) + rows[2] * n.z) * inverse),
+        );
         out.uvs.extend_from_slice(&v.uvs);
         out.indices.extend(v.indices.iter().map(|i| i + base));
     }
@@ -678,31 +706,78 @@ mod tests {
             height: 0.0,
         };
         let at = Vec3::new(10.0, 1.0, -3.0);
-        let ground = |_| Vec3::new(0.0, 0.6, 0.8);
         let mut growth = Growth {
             variant: 0,
             at: Vec2::ZERO,
             scale: 2.0,
             angle: 0.0,
         };
-        let baked = bake(std::slice::from_ref(&variant), &[growth], |_| at, ground);
+        let baked = bake(std::slice::from_ref(&variant), &[growth], |_| at);
         assert_eq!(baked.positions[0], Vec3::new(12.0, 1.0, -3.0));
         assert_eq!(baked.normals[0], Vec3::X);
         growth.angle = std::f32::consts::FRAC_PI_2;
         let (sin, cos) = sin_cos(growth.angle);
-        let baked = bake(std::slice::from_ref(&variant), &[growth], |_| at, ground);
+        let baked = bake(std::slice::from_ref(&variant), &[growth], |_| at);
         let want = Vec3::new(cos * 2.0 + 10.0, 1.0, -sin * 2.0 + -3.0);
         assert_eq!(baked.positions[0], want);
         assert!((baked.positions[0] - Vec3::new(10.0, 1.0, -5.0)).length() < 1e-5);
         // The normal turns with the scaled rows, then loses the scale.
         assert!((baked.normals[0] - Vec3::NEG_Z).length() < 1e-6);
-        // A large plant takes the terrain's normal at its point instead.
+        // A large plant keeps its own model normals too: they turn the same
+        // way and lose the scale (the original's terrain-normal branch never
+        // runs, see the loader).
         let large = Variant {
             kind: Kind::Large,
-            ..variant
+            ..variant.clone()
         };
-        let baked = bake(&[large], &[growth], |_| at, ground);
-        assert_eq!(baked.normals[0], Vec3::new(0.0, 0.6, 0.8));
+        let baked = bake(&[large], &[growth], |_| at);
+        assert!((baked.normals[0] - Vec3::NEG_Z).length() < 1e-6);
+        // A grass plant's +Y normal is unchanged by the turn.
+        let grass = Variant {
+            kind: Kind::Grass,
+            normals: vec![Vec3::Y],
+            ..variant.clone()
+        };
+        let baked = bake(&[grass], &[growth], |_| at);
+        assert!((baked.normals[0] - Vec3::Y).length() < 1e-6);
+    }
+
+    #[test]
+    fn the_live_ground_query_solves_the_cell_triangle() {
+        // A flat 3 × 3 tile: every query is the floor.
+        assert_eq!(ground_on_grid(&[0.0; 9], 3, Vec2::new(0.5, 0.5), 20.0), 0.0);
+        // A plane y = 0.2·x on two vertices per side: the solve returns the
+        // plane's height at the point whichever estimate it starts from.
+        let heights = [0.0, 0.2, 0.0, 0.2];
+        let got = ground_on_grid(&heights, 2, Vec2::new(0.5, 0.5), 20.0);
+        assert!((got - 0.1).abs() < 1e-6, "{got}");
+        let got = ground_on_grid(&heights, 2, Vec2::new(0.25, 0.75), 20.0);
+        assert!((got - 0.05).abs() < 1e-6, "{got}");
+        // The same plane on a 3 × 3 tile, in the middle cell.
+        let heights: Vec<f32> = (0..9).map(|k| (k % 3) as f32 * 0.2).collect();
+        let got = ground_on_grid(&heights, 3, Vec2::new(1.5, 0.5), 20.0);
+        assert!((got - 0.3).abs() < 1e-6, "{got}");
+        // A cell that is not flat: the test `1 − fx + 2·fz > 1` is not the
+        // split between the two planes, as in the original. Corner (0, 0)
+        // raised 1 m: at (0.6, 0.2) the test is 0.8, the near plane through
+        // the raised corner gives 1 − (0.6 + 0.2) = 0.2 m; at (0.3, 0.3) the
+        // test is 1.3, so the far plane (all at 0) answers 0 although the
+        // point lies over the raised corner's triangle.
+        let raised = [1.0, 0.0, 0.0, 0.0];
+        let got = ground_on_grid(&raised, 2, Vec2::new(0.6, 0.2), 20.0);
+        assert!((got - 0.2).abs() < 1e-5, "{got}");
+        let got = ground_on_grid(&raised, 2, Vec2::new(0.3, 0.3), 20.0);
+        assert!(got.abs() < 1e-5, "{got}");
+        // Corner (1, 1) raised 1 m: at (0.75, 0.75) the far plane gives
+        // (0.75 + 0.75 − 1) = 0.5 m.
+        let raised = [0.0, 0.0, 0.0, 1.0];
+        let got = ground_on_grid(&raised, 2, Vec2::new(0.75, 0.75), 20.0);
+        assert!((got - 0.5).abs() < 1e-5, "{got}");
+        // Past the grid the edge cell is used.
+        assert_eq!(
+            ground_on_grid(&[0.0; 9], 3, Vec2::new(-5.0, 99.0), 20.0),
+            0.0
+        );
     }
 
     #[test]

@@ -475,6 +475,30 @@ pub fn quick_acos(x: f32) -> f32 {
     }
 }
 
+/// The engine's yaw of a flat direction `(x, z)`: 0 along +z, positive
+/// toward +x. A direction whose squared length (`z² + x²`) is below
+/// 1e-8 has yaw 0; otherwise the cosine `z / length` takes π at or below
+/// −1, 0 above 1 and [`quick_acos`] between (a NaN takes the arccosine
+/// and stays NaN), and the angle is negated when `x` is below zero (not
+/// for −0 or a NaN).
+pub fn quick_yaw(x: f32, z: f32) -> f32 {
+    const NEAR_ZERO: f32 = f32::from_bits(0x322b_cc77);
+    const PI_F32: f32 = f32::from_bits(0x4049_0fdb);
+    let len2 = z * z + x * x;
+    if len2 < NEAR_ZERO {
+        return 0.0;
+    }
+    let c = z / len2.sqrt();
+    let a = if c <= -1.0 {
+        PI_F32
+    } else if c > 1.0 {
+        0.0
+    } else {
+        quick_acos(c)
+    };
+    if x < 0.0 { -a } else { a }
+}
+
 /// The original's quaternion slerp, shortest way round: the weight of the
 /// end is `t`, of the start `1 − t`.
 ///
@@ -677,6 +701,25 @@ mod tests {
         let half = quick_acos(0.5);
         assert!((half - 1.047_198).abs() < 1.5e-3, "{half}");
         assert!(quick_acos(f32::NAN).is_nan());
+    }
+
+    /// The quick yaw: the axes, a near-zero direction, the diagonal the
+    /// polynomial leaves just inside π/4 (0.78517902, hand-worked from
+    /// the f32 cosine 0.70710677), −0 not negated, and NaN.
+    #[test]
+    fn the_quick_yaw_takes_the_engines_arccosine() {
+        let pi = f32::from_bits(0x4049_0fdb);
+        let half_pi = f32::from_bits(0x3fc9_0fdb);
+        assert_eq!(quick_yaw(0.0, 1.0), 0.0);
+        assert_eq!(quick_yaw(1.0, 0.0), half_pi);
+        assert_eq!(quick_yaw(-1.0, 0.0), -half_pi);
+        assert_eq!(quick_yaw(0.0, -1.0), pi);
+        assert_eq!(quick_yaw(-0.0, -1.0), pi);
+        assert_eq!(quick_yaw(1e-5, 0.0), 0.0);
+        let diagonal = quick_yaw(1.0, 1.0);
+        assert!((diagonal - 0.785_179).abs() < 1e-6, "{diagonal}");
+        assert!(f64::from(diagonal) < std::f64::consts::FRAC_PI_4);
+        assert!(quick_yaw(f32::NAN, 1.0).is_nan());
     }
 
     fn key(time: f32, angle: f32, y: f32) -> Key {

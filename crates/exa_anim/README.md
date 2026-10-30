@@ -84,6 +84,8 @@ owed to the next frame), 0.6 × the race's base a tick, added in double
   are `exa_formats::key_track`'s; `slerp` is the original's quaternion blend
   (shortest way, the 1.19e-7 linear fallback, sin weights from the engine's
   quick arccosine and fast sine) and is used by the
-  key blend, the gait overlay and the pose sampler.
+  key blend, the gait overlay and the pose sampler. `quick_yaw` is the
+  engine's yaw of a flat direction over the same arccosine (`exa_ai`'s
+  combat yaw and `exa_world`'s door cell step use it).
 - Pose sampling and blending.
 - Procedural layers: stance, aim of the weapon from mouse input, look-at, idle noise.
