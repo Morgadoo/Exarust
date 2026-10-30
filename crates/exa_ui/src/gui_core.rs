@@ -1003,15 +1003,11 @@ impl GuiTask {
     }
 
     /// Hit tests a point and focuses what it finds, setting the cursor; on
-    /// nothing, the focus goes to no form with control 1 and the cursor
-    /// to 0.
+    /// nothing, the focus goes to no form with control 1 and the cursor is
+    /// the hit test's (-1 off the screen).
     pub fn hit_and_focus(&mut self, x: i32, y: i32) -> HitResult {
         let (form, code, cursor) = self.hit(x, y);
-        let (control, cursor) = if form.is_none() {
-            (1, 0)
-        } else {
-            (code, cursor)
-        };
+        let control = if form.is_none() { 1 } else { code };
         let result = self.focus_set(form, control);
         self.set_cursor(cursor);
         HitResult {
@@ -2029,9 +2025,13 @@ mod tests {
         let (mut task, _id, _log) = task_with(|_| {});
         assert_eq!(task.hit_root(-1, 10), (None, 0, -1));
         assert_eq!(task.hit_root(800, 10), (None, 0, -1));
+        // The hit test's cursor is -1: the system pointer hides there.
         let hit = task.hit_and_focus(10, 600);
-        assert_eq!((hit.form, hit.control, hit.cursor), (None, 1, 0));
-        assert_eq!(task.cursor, 0);
+        assert_eq!((hit.form, hit.control, hit.cursor), (None, 1, -1));
+        assert_eq!(task.cursor, -1);
+        // The pointer update's own hit test stores the no-target cursor 0.
+        task.update(false, (10, 600));
+        assert_eq!((task.pointer.target, task.cursor), (None, 0));
     }
 
     #[test]
