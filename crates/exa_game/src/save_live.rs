@@ -62,6 +62,38 @@ use crate::staff::Staff;
 #[derive(Resource, Clone, Debug, PartialEq, Eq)]
 pub struct SaveFolder(pub PathBuf);
 
+/// The view's camera target and zoom a save stamps into its header. The
+/// original's writers copy the scene view's target (centimetres) and its
+/// zoom word into both headers; both readers read the pair into scratch and
+/// drop it, so a load never moves the view. The host may set this from its
+/// camera; nothing in the running game does yet (Exarust's chase camera
+/// has no traced mapping onto the original's view fields), so a save writes
+/// the header's defaults (the origin, zoom 1).
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct SaveCamera {
+    /// The camera's target, centimetres.
+    pub target_cm: [f32; 3],
+    /// The camera's zoom word.
+    pub zoom: f32,
+}
+
+impl Default for SaveCamera {
+    fn default() -> Self {
+        Self {
+            target_cm: [0.0; 3],
+            zoom: 1.0,
+        }
+    }
+}
+
+impl SaveCamera {
+    /// Stamps the pair into a session's header.
+    pub fn stamp(&self, session: &mut Session) {
+        session.camera = self.target_cm;
+        session.zoom = self.zoom;
+    }
+}
+
 /// The two slot managers' cached lists over the save folder.
 #[derive(Resource, Clone, Debug, PartialEq, Eq)]
 pub struct SlotLists {
@@ -447,11 +479,20 @@ fn save_to_new_slot(
     ticks: Option<Res<exa_physics::body::BodyTicks>>,
     career: Option<Res<crate::hub_windows::ArenaCareer>>,
     stores: Res<ArenaStores>,
+    camera: Option<Res<SaveCamera>>,
+    transition: Option<Res<crate::level_transition::LiveTransition>>,
     players: PlayerSaveQuery,
     created: Option<Res<crate::creator_screen::CreatedCharacter>>,
     mut report: ResMut<SaveReport>,
 ) {
     if requests.read().count() == 0 {
+        return;
+    }
+    // The save writer's first check: a level change whose archive copy did
+    // not import leaves saving disabled until a level loads properly, and
+    // nothing is written.
+    if transition.as_ref().is_some_and(|t| t.saves_disabled()) {
+        warn!("save: saving is disabled after the last level change; nothing written");
         return;
     }
     let Some(mut lists) = lists else {
@@ -465,6 +506,11 @@ fn save_to_new_slot(
     let fallback = crate::hub_windows::ArenaCareer::default();
     let career = career.as_deref().unwrap_or(&fallback);
     let mut session = live_session(level, seconds, career, &stores);
+    camera
+        .as_deref()
+        .copied()
+        .unwrap_or_default()
+        .stamp(&mut session);
     let (name, export) = match session.mode {
         Mode::Arena => (
             Some(career.player.name.clone()),
@@ -509,6 +555,8 @@ fn run_save_steps(
     levels: Query<&exa_world::LevelRoot>,
     clock: Option<Res<exa_combat::remedy::WorldClock>>,
     ticks: Option<Res<exa_physics::body::BodyTicks>>,
+    camera: Option<Res<SaveCamera>>,
+    transition: Option<Res<crate::level_transition::LiveTransition>>,
     players: PlayerSaveQuery,
     fighters: Query<&exa_combat::Fighter, With<crate::player::PlayerBody>>,
     created: Option<Res<crate::creator_screen::CreatedCharacter>>,
@@ -533,6 +581,7 @@ fn run_save_steps(
         return;
     }
     let number = list.current() as u32;
+    let disabled = transition.as_ref().is_some_and(|t| t.saves_disabled());
     let health = fighters
         .iter()
         .next()
@@ -540,6 +589,10 @@ fn run_save_steps(
     for step in steps {
         match step {
             SaveStep::Save { drop_on_low_health } => {
+                if disabled {
+                    warn!("save: saving is disabled after the last level change; nothing written");
+                    continue;
+                }
                 if drop_on_low_health && !exa_formats::save_chunk::save_allowed(health, false) {
                     match list.drop_after_death(health) {
                         Ok(dropped) => info!(
@@ -557,6 +610,11 @@ fn run_save_steps(
                 let mut session = Session::story();
                 session.story = story_at(level.unwrap_or(""));
                 session.clock = seconds;
+                camera
+                    .as_deref()
+                    .copied()
+                    .unwrap_or_default()
+                    .stamp(&mut session);
                 let player = live_story_player(&players, created.as_deref());
                 let export = story_save_world(&mut session, player.as_ref());
                 match list.save_current(&session, &export.save_world(None, false)) {
@@ -575,10 +633,36 @@ fn run_save_steps(
                 ),
                 Err(error) => warn!("save: cannot drop slot {number}: {error}"),
             },
-            SaveStep::Checkpoint => match list.slots().copy_save_over_checkpoint(number) {
-                Ok(()) => info!("save: story slot {number}'s save kept as its checkpoint"),
-                Err(error) => warn!("save: cannot copy slot {number}'s checkpoint: {error}"),
-            },
+            SaveStep::Checkpoint => {
+                // The original's checkpoint routine saves first (with the
+                // writer's disable check) and only then copies the save over
+                // the checkpoint; an existing checkpoint is left alone.
+                let level = levels.iter().next().map(|root| root.name.as_str());
+                let now = ticks.as_ref().map_or(0, |ticks| ticks.millis() as u32);
+                let seconds = clock
+                    .as_ref()
+                    .map_or(0, |clock| crate::world_clock::stamped(clock, now));
+                let mut session = Session::story();
+                session.story = story_at(level.unwrap_or(""));
+                session.clock = seconds;
+                camera
+                    .as_deref()
+                    .copied()
+                    .unwrap_or_default()
+                    .stamp(&mut session);
+                let player = live_story_player(&players, created.as_deref());
+                let export = story_save_world(&mut session, player.as_ref());
+                // The disable flag skips the save but not the copy: the
+                // old save becomes the checkpoint, as in the original.
+                let world = export.save_world(None, disabled);
+                match list.slots().checkpoint_full(number, &session, &world) {
+                    Ok(true) => info!("save: story slot {number}'s save kept as its checkpoint"),
+                    Ok(false) => {
+                        info!("save: story slot {number} already has a checkpoint; it stays")
+                    }
+                    Err(error) => warn!("save: cannot write slot {number}'s checkpoint: {error}"),
+                }
+            }
         }
     }
 }
@@ -652,6 +736,15 @@ pub fn restore_arena(
         .then(|| arena_save::read_tables(&chunks).ok())
         .flatten();
     let mut player = loaded.player_record();
+    // An old save's player record is repaired before the arena's id pass:
+    // the worn list, each loadout's worn list, then the carried items, each
+    // dropping the ids the arena marked with the top bit, and the record is
+    // re-derived afterwards. Hands are left alone.
+    if loaded.converted
+        && let Some(record) = player.as_mut()
+    {
+        arena_save::repair_converted_record(record);
+    }
     let mut shelved = 0;
     let applied = tables.is_some();
     if let Some(mut tables) = tables {
@@ -841,12 +934,12 @@ pub fn restore_story(
     list.select(index);
     let loaded = list.load_current(prefer_checkpoint)?;
     let locale = loaded.level_locale_name();
-    let session = crate::session::read_package(&loaded.package).unwrap_or_else(|_| {
-        let mut session = Session::story();
-        session.story = story_at(&locale);
-        session.clock = loaded.data.header.clock();
-        session
-    });
+    // Exarust's own payload when the save has one; otherwise the retail
+    // player data's globals (its journal, clock, experience and transition
+    // state), which the original's reader restores without any payload of
+    // ours.
+    let session = crate::session::read_package(&loaded.package)
+        .unwrap_or_else(|_| crate::session::session_from_player_data(&loaded.data));
     let level = story_at(&locale).level();
     let mut player = loaded.player_record();
     if let Some(record) = player.as_mut() {
@@ -1153,6 +1246,255 @@ mod tests {
         // An index outside the list answers nothing.
         assert_eq!(list.character_screen_select(5, 1).availability, 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_story_save_stamps_the_views_camera_and_its_load_leaves_it() {
+        let dir = folder("camera");
+        let mut lists = SlotLists::new(&dir);
+        let career = crate::hub_windows::ArenaCareer::default();
+        let mut session = live_session(Some("exanima02"), 77, &career, &ArenaStores::default());
+        let camera = SaveCamera {
+            target_cm: [7034.0, 1532.5, 4748.5],
+            zoom: 1.25,
+        };
+        camera.stamp(&mut session);
+        let number = save_new_slot(
+            &mut lists.story,
+            &session,
+            Some("Ash"),
+            &SaveWorld::default(),
+        )
+        .unwrap()
+        .unwrap();
+        // The file's header carries the pair.
+        let (_, kind) = Slots::story(&dir).load(number, false).unwrap();
+        assert_eq!(kind, SlotKind::Save);
+        let mut list = SlotList::new(Slots::story(&dir));
+        let restored = restore_story(&mut list, number, false).unwrap();
+        // The readers read the pair and drop it: the load keeps the
+        // session's defaults.
+        assert_eq!(restored.session.camera, [0.0; 3]);
+        assert_eq!(restored.session.zoom, 1.0);
+        // The header itself holds the values, not only the Exarust payload.
+        let bytes = std::fs::read(Slots::story(&dir).file(number, SlotKind::Save)).unwrap();
+        let package = save_package::PackageImage::read(&bytes).unwrap();
+        let data = save_package::PlayerData::parse(
+            package.section(save_package::PLAYER_DATA).unwrap(),
+            save_package::Flavour::Story,
+        )
+        .unwrap();
+        assert_eq!(data.header.locale(), save_package::name("exanima02"));
+        let save_package::PlayerHeader::Story(header) = data.header else {
+            panic!("story")
+        };
+        assert_eq!(header.camera, [7034.0, 1532.5, 4748.5]);
+        assert_eq!(header.zoom, 1.25);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_checkpoint_step_saves_first_then_copies_and_leaves_an_existing_one() {
+        let dir = folder("checkpoint-step");
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(SaveLivePlugin)
+            .insert_resource(SaveFolder(dir.clone()));
+        app.update();
+        app.world_mut().write_message(SaveToNewSlot);
+        app.update();
+        let number = app.world().resource::<SaveReport>().saved.unwrap();
+        // Creating a slot makes it current, which the flow's save steps need.
+        assert_eq!(
+            app.world().resource::<SlotLists>().story.current(),
+            number as i32
+        );
+        // No checkpoint yet: the step writes the save and copies it.
+        assert!(
+            !Slots::story(&dir)
+                .file(number, SlotKind::Checkpoint)
+                .exists()
+        );
+        app.world_mut().write_message(SaveStep::Checkpoint);
+        app.update();
+        assert!(
+            Slots::story(&dir)
+                .file(number, SlotKind::Checkpoint)
+                .is_file()
+        );
+        let save = std::fs::read(Slots::story(&dir).file(number, SlotKind::Save)).unwrap();
+        let checkpoint =
+            std::fs::read(Slots::story(&dir).file(number, SlotKind::Checkpoint)).unwrap();
+        assert_eq!(save, checkpoint);
+        // An existing checkpoint is left alone: its bytes do not change.
+        std::fs::write(
+            Slots::story(&dir).file(number, SlotKind::Checkpoint),
+            b"old",
+        )
+        .unwrap();
+        app.world_mut().write_message(SaveStep::Checkpoint);
+        app.update();
+        assert_eq!(
+            std::fs::read(Slots::story(&dir).file(number, SlotKind::Checkpoint)).unwrap(),
+            b"old"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_checkpoint_step_with_saving_disabled_copies_the_old_save() {
+        // The checkpoint routine's save returns on the disable flag, but the
+        // copy still runs: the save as it was becomes the checkpoint.
+        let dir = folder("checkpoint-disabled");
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(SaveLivePlugin)
+            .insert_resource(SaveFolder(dir.clone()));
+        app.update();
+        app.world_mut().write_message(SaveToNewSlot);
+        app.update();
+        let number = app.world().resource::<SaveReport>().saved.unwrap();
+        let save_path = Slots::story(&dir).file(number, SlotKind::Save);
+        std::fs::write(&save_path, b"stale save").unwrap();
+        let flow =
+            crate::level_transition::transition_flow(false, true, false, false, false, false, 0);
+        app.insert_resource(crate::level_transition::LiveTransition {
+            level: "nowhere".to_string(),
+            spawn: 0,
+            flow,
+        });
+        app.world_mut().write_message(SaveStep::Checkpoint);
+        app.update();
+        assert_eq!(std::fs::read(&save_path).unwrap(), b"stale save");
+        assert_eq!(
+            std::fs::read(Slots::story(&dir).file(number, SlotKind::Checkpoint)).unwrap(),
+            b"stale save"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_level_change_that_disabled_saving_refuses_a_new_slot() {
+        let dir = folder("disabled");
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(SaveLivePlugin)
+            .insert_resource(SaveFolder(dir.clone()));
+        // An archive destination whose import failed leaves saving disabled.
+        let flow =
+            crate::level_transition::transition_flow(false, true, false, false, false, false, 0);
+        assert!(flow.saves_disabled);
+        app.insert_resource(crate::level_transition::LiveTransition {
+            level: "nowhere".to_string(),
+            spawn: 0,
+            flow,
+        });
+        app.update();
+        app.world_mut().write_message(SaveToNewSlot);
+        app.update();
+        app.update();
+        assert_eq!(app.world().resource::<SaveReport>().saved, None);
+        assert!(!Slots::story(&dir).file(1, SlotKind::Save).exists());
+        // A level change that did not disable saving saves as usual.
+        app.insert_resource(crate::level_transition::live_transition(
+            "exanima01",
+            0,
+            true,
+        ));
+        app.world_mut().write_message(SaveToNewSlot);
+        app.update();
+        assert_eq!(app.world().resource::<SaveReport>().saved, Some(1));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_old_arena_load_repairs_the_players_record_before_the_id_pass() {
+        // A converted old save: the player's worn, loadout and carried lists
+        // hold the arena's top-bit markers, which the repair drops before
+        // the identity reset.
+        let mut record = CharacterRecord::new();
+        record.name = "Ash".to_string();
+        record.id = PLAYER_RECORD_ID;
+        record.worn = vec![
+            ItemRef::new(1, 0),
+            ItemRef::new(0x8000_0002, 0),
+            ItemRef::new(3, 0),
+        ];
+        record.loadouts.push(Default::default());
+        record.loadouts[0].worn = vec![ItemRef::new(1, 0), ItemRef::new(0xC000_0002, 0)];
+        record.inventory = vec![
+            Carried {
+                item: 0x8000_0001,
+                flags: 0,
+                extra: 0,
+            },
+            Carried {
+                item: 6,
+                flags: 0,
+                extra: 0,
+            },
+        ];
+        let mut db =
+            exa_formats::character_db::CharacterDb::new(exa_formats::character_db::WORLD_TAG);
+        db.add(PLAYER_RECORD_ID, record).unwrap();
+        let export =
+            crate::slots::export_world_databases(&mut db, &exa_formats::objdb::ObjectDb::default())
+                .unwrap();
+        let mut data = save_package::PlayerData::arena(save_package::name("arenahub"));
+        data.character = Some(
+            save_package::CharacterPlacement {
+                reference: exa_formats::characters::WORLD_DB | PLAYER_RECORD_ID,
+                position: [0.0, 0.0, 300.0],
+                heading: 0.0,
+                condition: 0,
+                chunks: Vec::new(),
+            }
+            .write(),
+        );
+        let PlayerHeader::Arena(header) = &mut data.header else {
+            unreachable!()
+        };
+        header.data_version = 8;
+        let mut package = save_package::PackageImage::new();
+        package.put_section(
+            save_package::WORLD_CHARACTER_DB,
+            &save_package::world_character_db(export.characters.as_deref().unwrap()),
+        );
+        package.put_section(save_package::PLAYER_DATA, &data.write_ordered());
+        let loaded = LoadedSave {
+            data,
+            package,
+            kind: save_package::SlotKind::Save,
+            forced_locale: None,
+            level_locale: save_package::name("arenahub"),
+            has_level_section: false,
+            has_world_objects: false,
+            has_world_characters: true,
+            converted: true,
+            mask: !0,
+        };
+        let mut career = crate::hub_windows::ArenaCareer::default();
+        let mut stores = ArenaStores::default();
+        let restored = restore_arena(&loaded, &HashMap::new(), &mut career, &mut stores);
+        let back = restored.player.expect("the player's record");
+        assert_eq!(
+            back.worn.iter().map(|w| w.id).collect::<Vec<_>>(),
+            vec![1, 3]
+        );
+        assert_eq!(
+            back.loadouts[0]
+                .worn
+                .iter()
+                .map(|w| w.id)
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
+        assert_eq!(
+            back.inventory.iter().map(|c| c.item).collect::<Vec<_>>(),
+            vec![6]
+        );
+        // The identity reset follows the repair (the race byte is cleared).
+        assert_eq!(back.profession() & 0x0000_FF00, 0);
     }
 
     #[test]

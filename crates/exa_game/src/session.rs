@@ -45,6 +45,13 @@ pub struct Session {
     pub focus: f32,
     /// The game clock in seconds.
     pub clock: u32,
+    /// The view's camera target the header carries, centimetres (the
+    /// original writes the scene view's target into both headers; its
+    /// readers drop it, so a read session keeps the default).
+    pub camera: [f32; 3],
+    /// The view's zoom word the header carries (1 by default; dropped on
+    /// read like the target).
+    pub zoom: f32,
     /// The story's save seed; zero in the arena.
     pub seed: u32,
     /// The character creation background the story save was started from.
@@ -79,6 +86,8 @@ impl Session {
             company: Company::new(""),
             focus: 1.0,
             clock: 0,
+            camera: [0.0; 3],
+            zoom: 1.0,
             seed: 0,
             start_background: 0,
             discovery: None,
@@ -97,6 +106,8 @@ impl Session {
             company: Company::new(name),
             focus: 1.0,
             clock: 0,
+            camera: [0.0; 3],
+            zoom: 1.0,
             seed: 0,
             start_background: 0,
             discovery: None,
@@ -215,6 +226,8 @@ pub fn player_data(session: &Session) -> PlayerData {
                 header.seed = session.seed;
                 header.flags = (session.start_background & 0xFF) | save_package::STORY_STARTED_FLAG;
                 header.clock = session.clock;
+                header.camera = session.camera;
+                header.zoom = session.zoom;
             }
             if let Some(discovery) = &session.discovery {
                 data.set_chunk(save_package::DISCOVERY_CHUNK, discovery.clone());
@@ -248,6 +261,8 @@ pub fn player_data(session: &Session) -> PlayerData {
                 header.data_version = ARENA_DATA_VERSION;
                 header.clock = session.clock;
                 header.day = session.company.day;
+                header.camera = session.camera;
+                header.zoom = session.zoom;
             }
             if let Some(tables) = &session.arena_tables {
                 let mut encoded = Vec::new();
@@ -596,6 +611,88 @@ pub fn read_package(package: &PackageImage) -> Result<Session, SaveError> {
     Ok(session)
 }
 
+/// The session a save's player data restores on its own, without an Exarust
+/// payload: the original's reader's globals. The story takes the header's
+/// clock, seed, start background and locale (the forced `exanima05` when the
+/// transition state's first word is 2), the journal chunk as the reader
+/// leaves it (the default single "New Entry" page when the chunk is absent
+/// or holds no entry), and the discovery, global-experience, memory and
+/// transition chunks; the arena takes the clock, copper and day. The arena's
+/// own tables are read when the save carries them, as [`read_package`] does.
+///
+/// This is the load path's reader for a retail save. [`read_package`] stays
+/// the strict reader of Exarust's own packages, whose payload carries what
+/// the retail chunks cannot.
+pub fn session_from_player_data(data: &PlayerData) -> Session {
+    let mut session = match data.header.flavour() {
+        Flavour::Story => Session::story(),
+        Flavour::Arena => Session::career(""),
+    };
+    // The header's camera pair is read and dropped by both readers.
+    session.clock = data.header.clock();
+    // The journal is the reader's reset page replaced by the chunk's
+    // entries; a chunk with no entries leaves the default page.
+    let entries: Vec<Entry> = data
+        .journal_or_default()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|record| Entry {
+            title: record.title,
+            text: record.text,
+        })
+        .collect();
+    let journal = Journal::from_entries(entries).unwrap_or_default();
+    match &data.header {
+        PlayerHeader::Story(header) => {
+            session.seed = header.seed;
+            session.start_background = header.flags & 0xFF;
+            session.discovery = data
+                .chunk(save_package::DISCOVERY_CHUNK)
+                .map(<[u8]>::to_vec);
+            if data.chunk(save_package::GLOBAL_XP_CHUNK).is_some() {
+                session.global_experience = Some(data.global_experience());
+            }
+            if data.chunk(save_package::MEMORY_FLAGS_CHUNK).is_some() {
+                session.memory_flags = Some(data.memory_flags());
+            }
+            if data.chunk(save_package::TRANSITION_CHUNK).is_some() {
+                session.transition = Some(data.transition_state());
+            }
+            // The level is the header's locale, or the forced exanima05 of
+            // a transition cut short; a locale outside the campaign keeps
+            // the first level (the loader's archive fallback is the
+            // caller's).
+            let locale = data.story_transition_locale().unwrap_or(header.locale);
+            let name = save_package::name_text(&locale);
+            let index = exa_script::story::CAMPAIGN
+                .iter()
+                .position(|level| *level == name)
+                .unwrap_or(0);
+            session.story = Story::restore(index, journal, Vec::new()).unwrap_or_else(Story::begin);
+        }
+        PlayerHeader::Arena(header) => {
+            session.company.copper = header.money;
+            session.company.day = header.day;
+            session.story = Story::restore(0, journal, Vec::new()).unwrap_or_else(Story::begin);
+            let chunks: Vec<save_package::Chunk<'_>> = data
+                .chunks
+                .iter()
+                .map(|chunk| save_package::Chunk {
+                    id: chunk.id,
+                    payload: &chunk.data,
+                })
+                .collect();
+            if chunks
+                .iter()
+                .any(|chunk| arena_save::is_table_chunk(chunk.id))
+            {
+                session.arena_tables = arena_save::read_tables_exact(&chunks);
+            }
+        }
+    }
+    session
+}
+
 /// Write a session's own payload: the mode, the story level, the journal,
 /// the topics already chosen, the company and its roster, the day, the
 /// weeks, the reward ids, the clock, the seed and the caster's focus.
@@ -799,6 +896,8 @@ fn read_body(bytes: &[u8]) -> Result<Session, SaveError> {
         },
         focus,
         clock,
+        camera: [0.0; 3],
+        zoom: 1.0,
         seed,
         start_background,
         discovery,
@@ -874,6 +973,52 @@ mod tests {
         title: "The gate",
         choices: &["I go on.", "I turn back."],
     };
+
+    #[test]
+    fn the_header_carries_the_views_camera_and_zoom_in_both_modes() {
+        // The original's writers copy the scene view's target (centimetres)
+        // and its zoom word into the header; both readers drop them.
+        let mut story = Session::story();
+        story.camera = [123.5, -45.0, 678.5];
+        story.zoom = 1.75;
+        let bytes = package(&story);
+        let image = exa_formats::save_package::PackageImage::read(&bytes).unwrap();
+        let section = image.section(PLAYER_DATA).unwrap();
+        let data = PlayerData::parse(section, Flavour::Story).unwrap();
+        let PlayerHeader::Story(header) = &data.header else {
+            panic!("story")
+        };
+        assert_eq!(header.camera, [123.5, -45.0, 678.5]);
+        assert_eq!(header.zoom, 1.75);
+        // The section is still 52 bytes before its first chunk.
+        assert_eq!(
+            &data.write()[20..32],
+            &[123.5f32, -45.0, 678.5]
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<u8>>()[..]
+        );
+        let back = read_package(&image).unwrap();
+        assert_eq!((back.camera, back.zoom), ([0.0; 3], 1.0));
+
+        let mut arena = Session::career("Ash");
+        arena.camera = [-168.5, 30.25, 137.0];
+        arena.zoom = 0.5;
+        let bytes = package(&arena);
+        let image = exa_formats::save_package::PackageImage::read(&bytes).unwrap();
+        let section = image.section(PLAYER_DATA).unwrap();
+        let data = PlayerData::parse(section, Flavour::Arena).unwrap();
+        let PlayerHeader::Arena(header) = &data.header else {
+            panic!("arena")
+        };
+        assert_eq!(header.camera, [-168.5, 30.25, 137.0]);
+        assert_eq!(header.zoom, 0.5);
+        let back = read_package(&image).unwrap();
+        assert_eq!((back.camera, back.zoom), ([0.0; 3], 1.0));
+        // A fresh session keeps the header's defaults.
+        let fresh = Session::story();
+        assert_eq!((fresh.camera, fresh.zoom), ([0.0; 3], 1.0));
+    }
 
     #[test]
     fn a_save_round_trips_the_session() {
@@ -1085,6 +1230,106 @@ mod tests {
         assert_eq!(data.global_experience(), 9);
         assert_eq!(data.memory_flags(), 2);
         assert_eq!(data.transition_state()[0], 2);
+    }
+
+    #[test]
+    fn retail_player_data_restores_a_session_without_an_exarust_payload() {
+        // A retail-shaped story section: the header, a journal chunk, the
+        // discovery, experience, memory and transition chunks, and no
+        // Exarust payload. The load path's reader restores the globals the
+        // original's reader restores.
+        let mut data = PlayerData::story(save_package::name("exanima03"));
+        let PlayerHeader::Story(header) = &mut data.header else {
+            unreachable!()
+        };
+        header.seed = 0x1234;
+        header.flags = 2 | save_package::STORY_STARTED_FLAG;
+        header.clock = 10;
+        header.camera = [1.0, 2.0, 3.0];
+        header.zoom = 0.75;
+        data.set_journal(&[JournalRecord {
+            id: 7,
+            title: "Day one".to_string(),
+            text: "The pit.".to_string(),
+        }]);
+        data.set_chunk(save_package::DISCOVERY_CHUNK, vec![1, 2, 3, 4]);
+        data.set_chunk(save_package::GLOBAL_XP_CHUNK, 44u32.to_le_bytes().to_vec());
+        data.set_chunk(
+            save_package::MEMORY_FLAGS_CHUNK,
+            3u32.to_le_bytes().to_vec(),
+        );
+        data.set_chunk(
+            save_package::TRANSITION_CHUNK,
+            [1u32, 5, 0, 0].map(u32::to_le_bytes).concat(),
+        );
+        let session = session_from_player_data(&data);
+        assert_eq!(session.mode, Mode::Story);
+        assert_eq!(session.clock, 10);
+        assert_eq!(session.seed, 0x1234);
+        assert_eq!(session.start_background, 2);
+        assert_eq!((session.camera, session.zoom), ([0.0; 3], 1.0));
+        assert_eq!(session.story.level(), "exanima03");
+        let journal = session.story.journal().entries();
+        assert_eq!(journal.len(), 1);
+        assert_eq!(journal[0].title, "Day one");
+        assert_eq!(journal[0].text, "The pit.");
+        assert_eq!(session.discovery.as_deref(), Some(&[1, 2, 3, 4][..]));
+        assert_eq!(session.global_experience, Some(44));
+        assert_eq!(session.memory_flags, Some(3));
+        assert_eq!(
+            session.transition,
+            Some(
+                [1u32, 5, 0, 0].map(u32::to_le_bytes).concat()[..]
+                    .try_into()
+                    .unwrap()
+            )
+        );
+        // The section is not an Exarust package: the strict reader refuses
+        // it, and only the load path's retail reader takes it.
+        let mut package = PackageImage::new();
+        package.put_section(PLAYER_DATA, &data.write_ordered());
+        assert_eq!(read_package(&package), Err(SaveError::Malformed));
+
+        // A section with no journal chunk restores the reader's single
+        // default page, and a forced transition locale lands on exanima05.
+        let mut bare = PlayerData::story(save_package::name("exanima02"));
+        let PlayerHeader::Story(header) = &mut bare.header else {
+            unreachable!()
+        };
+        header.clock = 0;
+        let session = session_from_player_data(&bare);
+        assert_eq!(session.story.journal().entries().len(), 1);
+        assert_eq!(session.story.journal().entries()[0].title, "New Entry");
+        assert_eq!(session.story.level(), "exanima02");
+        bare.set_chunk(
+            save_package::TRANSITION_CHUNK,
+            [2u32, 0, 0, 0].map(u32::to_le_bytes).concat(),
+        );
+        assert_eq!(session_from_player_data(&bare).story.level(), "exanima05");
+        // A locale outside the campaign keeps the first level.
+        let mut elsewhere = PlayerData::story(save_package::name("arenahub"));
+        elsewhere.set_journal(&[]);
+        assert_eq!(
+            session_from_player_data(&elsewhere).story.level(),
+            "exanima01"
+        );
+
+        // An arena header restores the money, day and clock and the empty
+        // company name (the slot list's name comes from the world DB).
+        let mut arena = PlayerData::arena(save_package::name("arenahub"));
+        let PlayerHeader::Arena(header) = &mut arena.header else {
+            unreachable!()
+        };
+        header.money = 45;
+        header.day = 5;
+        header.clock = 90;
+        let session = session_from_player_data(&arena);
+        assert_eq!(session.mode, Mode::Arena);
+        assert_eq!(session.company.copper, 45);
+        assert_eq!(session.company.day, 5);
+        assert_eq!(session.clock, 90);
+        assert_eq!(session.company.name, "");
+        assert!(session.arena_tables.is_none());
     }
 
     #[test]

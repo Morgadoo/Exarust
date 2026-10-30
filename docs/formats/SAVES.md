@@ -258,8 +258,14 @@ single. Both modes share the first 36 bytes.
 
 The story reader accepts **any signature at or above** `0x6F5AEA14` (a
 newer save still loads); a lower one makes the slot legacy. It reads the
-camera target and zoom into scratch and does not restore them, and it
-skips the reserved word. The flag byte at bits 16–23 is the "started" byte
+camera target and zoom into scratch and does not restore them (the arena
+reader does the same), and it skips the reserved word. The writers stamp
+the view's camera target (centimetres) and zoom word into the header;
+Exarust carries them on the session (`Session::camera`/`Session::zoom`,
+dropped on read) and stamps them from the host's optional `SaveCamera`
+resource, which the running game does not set yet, so its saves write the
+defaults (origin, zoom 1). The flag
+byte at bits 16–23 is the "started" byte
 (the writer always sets it to 1). When the start background is 0 and the
 player record's own flag word is 0, the reader sets that word to `0x510000`. Before the chunks it resets the journal to one "New
 Entry" page, the global experience to the default worth (zero), the memory
@@ -336,9 +342,10 @@ zero: the slot is neither listed nor loaded.
   record-repair order in `ArenaLists::compact`) and the player record's
   repair (`arena_save::repair_converted_record`: the worn list, each
   loadout's worn list, then the carried items, before the record's
-  re-derive; the stash is compacted afterwards by its own pass). The
-  repair is a tested function: Exarust's load does not decode and
-  re-encode the world character database to apply it. The object database's
+  re-derive; the stash is compacted afterwards by its own pass). The live
+  arena load applies the repair to the record the placement names when the
+  package was converted (`save_live::restore_arena`), before the identity
+  reset. The object database's
   classification is `exa_game::arsenal::ItemKind::of_item`: an item with a
   body section is apparel and its armour type byte at `0x1A8` picks the
   armour shelf (types 3 through 6) or the clothing shelf, whatever else the
@@ -454,6 +461,15 @@ only.
 * When the saved transition state (`0xD000C003`) is 2, the story loader
   forces the locale to `exanima05`; the load path then places the player at
   the portal node and sets the state to 1.
+* **Saving disabled.** A level change whose destination came from the
+  archive and did not import sets the "saving disabled" flag: every save
+  afterwards returns before writing (the flag is the writer's first check,
+  ahead of the manager, the scene and the health); a checkpoint step still
+  copies the old save. Loading a level by name clears the flag at its
+  entry, so a new game or a practice fight may save again. Exarust models
+  it as `LiveTransition::saves_disabled`; the running game inserts the
+  `LiveTransition` resource after each level change and the live save
+  paths read it.
 * **Placement.** The player's matrix is the saved placement; its height is
   probed down 300 cm from 100 cm up, then lifted by `108.18 − 11.1·extent`
   and 5 cm (13 cm for a body in its raised state). The body's feet are put
