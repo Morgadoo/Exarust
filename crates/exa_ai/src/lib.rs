@@ -9,9 +9,10 @@
 //! swing yet.
 //!
 //! A level's living characters carry a brain ([`brain`]): their roles
-//! choose their idle activity, every frame their perception pass fills the
-//! contacts they can sense, and their AI tick's target pass decides whether
-//! they engage the player (or leave the fight) as the duellist does.
+//! choose their idle activity, and one brain a tick, the one that has
+//! waited longest ([`pass_turn`]), runs the target pass: its perception
+//! fills the contacts it can sense and the pass decides whether it engages
+//! the player (or leaves the fight) as the duellist does.
 
 use bevy::prelude::*;
 use exa_anim::{Animator, Motions};
@@ -47,6 +48,7 @@ pub mod lookup;
 pub mod manager;
 pub mod motion;
 pub mod order;
+pub mod pass_turn;
 pub mod path;
 pub mod personality;
 pub mod place;
@@ -74,6 +76,7 @@ impl Plugin for AiPlugin {
         app.init_resource::<presence::ActivationArea>()
             .init_resource::<rooms::RoomCells>()
             .init_resource::<brain::BrainClock>()
+            .init_resource::<pass_turn::PassTurn>()
             .add_message::<presence::Entered>()
             .add_message::<exa_combat::AttackAskedHook>()
             .add_message::<exa_combat::BlowNoticed>()
@@ -93,6 +96,7 @@ impl Plugin for AiPlugin {
                 (
                     (brain::apply_new_roles, brain::rate_the_player).chain(),
                     brain::forget_removed,
+                    pass_turn::rotate_pass_turn,
                     brain::perceive_all,
                     brain::ai_tick,
                     duellist.in_set(DuelSystems),

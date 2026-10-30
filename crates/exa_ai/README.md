@@ -122,7 +122,7 @@ look's wide pan waits 3 s and the sway and narrow pan 0.5 s.
 | `search` | the companion's search: gathering over the room grid, picking, the look sweep, the forced path, arrival, kneeling, looting worn items, packs and containers, item worth, wear room, comments to the leader (the original's own phrase templates), re-arming, tidying, the small object edits its deferred jobs ask for (`take_from_container`, `take_worn`, `take_carried`, `add_to_container`, `drop_item`), the world edits its deeds carry out (`apply_deed`), and an item record read as its weighing reads it (`Loot::of_payload`: apparel body, weapon section, operative or container part) |
 | `manager` | the AI manager's frame (dormant ticks, rising undead, the 3 cm zone check), zone deeds, the group alert (raised, held ten seconds and dropped one every ten), the approach clamp, and the scene node the level's AI start-up makes once (`_Temp`, flag `0x100000`) |
 | `lookup` | a simulation's character by record id and a status effect by a masked word (first match in list order) |
-| `brain` | the components and systems that carry roles into the running game: applying roles again when the held set changes, the attitude rating and waking, the perception pass (line of sight, the ally sense and the sense a race installs, the familiarity drift written to the relations), the AI tick once a body tick (morale, the group alert's ten-second decay, the contact integration, the target pass with the room graph, the room cell and nearby list, the engagement with its in-combat word, the leave-combat look and its 3 s pan timer, the one-time attach snap, the look chain, the out-of-combat body turn and the footprint gate), the removal forget, and the flight's walk to a room's exit |
+| `brain` | the components and systems that carry roles into the running game: applying roles again when the held set changes, the attitude rating and waking, the perception pass on the brain's target-pass turn (line of sight, the ally sense and the sense a race installs, the familiarity drift written to the relations), the AI tick once a body tick (morale, the group alert's ten-second decay, the contact integration with its in-scene flag, the target pass on the brain's turn with the room graph, the room cell and nearby list, the engagement with its in-combat word, the leave-combat look and its 3 s pan timer, the one-time attach snap, the look chain, the out-of-combat body turn and the footprint gate), the removal forget, and the flight's walk to a room's exit |
 | `presence` | the activation range (200 m, a NaN out), the 80-tick hold, the scene move's end, the entering body's reset, the level-leave reset, and the placement an entering body takes (a collapsed body keeps its stored one; others take their point and face their path goal) |
 | `idle` | roam, patrol, sentry and the wait, the wander and home-side points, follow, sleep, knock-out and waking |
 | `walker` | the idle states' head (the attention's notice score and clamped window, the 50° focus window), the roam and patrol step on the planning turn (the goal picked only on the turn, the 150 cm follow span, the forced home leg, the settle before the pause), and the walk along the followed route (100 cm flat arrival, Exarust's give-up deadline) |
@@ -137,6 +137,7 @@ look's wide pan waits 3 s and the sway and narrow pan 0.5 s.
 | `flee` | the flee start's morale, the way out of a room away from a threat, the fled-room memory, the flee state's tick and the cornered fall-back |
 | `cast` | the power-cast chooser (ten slots, per-slot cooldowns, the power system's word, the pool budget after a round to even, the flat 20 and the cumulative draw, the 6 s rest written to the slot of the chosen power's table place) |
 | `chase` | the chase route: the bark, the fresh-target and moved-foe (3-D) tests, the goal on the foe's ground and the route through the navigation grid, the reach test from the estimate to the route's end, the unreachable mark and its 3 s plus draw, and the leave-without-timers case |
+| `pass_turn` | the target pass's turn: one brain a tick, the longest waiter of the last tick (strictly longer, on a wrapping tick counter), its rotation before the perception, the claim of each present brain and the forget of a removed one |
 | `route` | the one-planner-a-frame turn (the longest waiter remembered, strictly), the route start (two points and 150 cm, or forced), the path's flat length, and the navigation grid as the router (`exa_world::nav::find_path`, not a second pathfinder) |
 | `sense`, `hear`, `fight`, `place`, `path`, `order` | contact rating, noise and alert, attack choice, combat positions, path following (the planner is `exa_world::nav::path`), steering orders |
 | `ground` | the pathfinder's answers the combat state asks in centimetres: a place's ground cost (the cost sample through the combatant's formula), the line walk's clamp and the obstacle test, each the abstract pathfinder's without a grid |
@@ -265,6 +266,24 @@ filters by the room reach test, and the flight reads the level's room
 graph and routes through the navigation grid. The one-planner-a-frame
 turn (`route::PlanTurn`) is kept per system: the duellists' chase, the idle
 walk and the flight each keep their own.
+
+The target pass, the perception inside it included, runs for one brain a
+tick (`pass_turn`): at the start of each tick `pass_turn::rotate_pass_turn`
+hands the turn to the brain the last tick named, and in its AI tick each
+present brain in the fight claims it: the brain on its turn stamps the
+counter and runs `run_pass`; every other one is named for the next tick
+when its wait (the counter less its last pass, the whole counter before its
+first) is strictly longer than the longest so far, and runs
+`Npc::tick_between_passes` (the morale drift and the integration, the
+concern drifting toward the concern target its last pass left). A lone brain
+has its pass every other tick, `n` brains each every `n` ticks; a dormant
+brain (its presence other than in the scene, which also selects the
+integration's out-of-scene decay) neither perceives nor waits. The
+duellist's entry and leave act only on a tick whose pass ran. Without the
+`PassTurn` resource (unit tests) every present brain runs its pass every
+tick. `RUST_LOG=info,exa_ai::pass_turn=debug` names the brain on each turn
+and how long it waited. The counter counts AI ticks, which Exarust runs once
+a frame where the original runs them every body tick.
 
 The golem guardians' rules are plain functions with tests; the alarm zones
 of `exanima06` run live through `exa_game::golem_alarm`, and so does the
