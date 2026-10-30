@@ -3453,7 +3453,7 @@ pub fn hit_skin(
             if let Some(code) = probe_if(4, -5) {
                 return code;
             }
-            if let Some(code) = probe_if(8, -10) {
+            if let Some(code) = probe_if(8, -6) {
                 return code;
             }
             return -3;
@@ -3469,10 +3469,10 @@ pub fn hit_skin(
         return -8;
     }
     if (place.flags & 0x100) != 0 && y >= place.limit_bottom {
-        if let Some(code) = probe(-14) {
+        if let Some(code) = probe(-13) {
             return code;
         }
-        if let Some(code) = probe(-13) {
+        if let Some(code) = probe(-14) {
             return code;
         }
         return -12;
@@ -4726,18 +4726,20 @@ pub fn stripe_bar(batch: &mut SkinBatch, rect: GuiRect, inks: &[SkinInk]) {
 /// The translucent band a listing draws over a selected row: an outline
 /// whose middle is the highlight ink, then glow fans that reach from the
 /// top and bottom edges into the row. Selecting the row widens the glow by
-/// the unit. The original reads `ink` from the highlight group's fourth or
-/// fifth shade and `highlight` from its seventh or eighth, by `selected`.
+/// the unit and moves both inks up a shade: the outline reads the highlight
+/// group's fourth shade and its glow the seventh, or the fifth and eighth
+/// when selected.
 pub fn selection_band(
     batch: &mut SkinBatch,
     rect: GuiRect,
-    ink: SkinInk,
-    highlight: SkinInk,
+    highlight: &SkinGroup,
     selected: bool,
     unit: i32,
 ) {
+    let ink = highlight[if selected { 4 } else { 3 }];
+    let glow_ink = highlight[if selected { 7 } else { 6 }];
     let edge = [ink[0], ink[1], ink[2], 25];
-    let low = [highlight[0], highlight[1], highlight[2], 200];
+    let low = [glow_ink[0], glow_ink[1], glow_ink[2], 200];
     let top = [ink[0], ink[1], ink[2], 100];
     let mid = [ink[0], ink[1], ink[2], 30];
     let clear = [ink[0], ink[1], ink[2], 0];
@@ -5559,11 +5561,14 @@ pub fn draw_button_box(
     outline_rect(batch, rect);
 }
 
-/// The scroll region's frame and the panel's inset bevel and shadow.
+/// The scroll region's frame and the panel's inset bevel and shadow. Like
+/// the control shell, the panel first draws the style frames its `style`
+/// word selects, on its own rect.
 pub fn draw_panel(
     batch: &mut SkinBatch,
     rect: GuiRect,
     inset: i32,
+    style: u32,
     state: u32,
     unit: i32,
     palette: &SkinPalette,
@@ -5575,6 +5580,7 @@ pub fn draw_panel(
         x1: rect.x1 - inset,
         y1: rect.y1 - inset,
     };
+    draw_style_frames(batch, rect, style, palette);
     if (state & 0x40) == 0x40 {
         let box_rect = GuiRect {
             x0: inner.x0 + 2.0,
@@ -5604,7 +5610,7 @@ pub fn draw_panel(
             0xa0,
         );
     } else {
-        draw_frame_control(batch, inner, false, (state & 0x10) == 0x10, palette);
+        draw_button_box(batch, inner, false, (state & 0x10) == 0x10, palette);
     }
 }
 
@@ -5642,7 +5648,7 @@ pub fn draw_control_box(
         x1: rect.x1 - inset,
         y1: rect.y1 - inset,
     };
-    draw_frame_control(
+    draw_button_box(
         batch,
         inner,
         (state & 0x40) == 0x40,
@@ -5695,7 +5701,8 @@ pub fn draw_mark_pressed(batch: &mut SkinBatch, rect: GuiRect, palette: &SkinPal
 }
 
 /// The mark box under the mouse: the same outer bevel, a second one a pixel
-/// inside in the eighth and seventh shades, then the outline.
+/// inside one shade brighter (the eighth below, the seventh above), then the
+/// outline.
 pub fn draw_mark_hot(batch: &mut SkinBatch, rect: GuiRect, palette: &SkinPalette) {
     bevel_rect(
         batch,
@@ -5976,7 +5983,7 @@ pub fn draw_control_slider(
             x1: rect.x0 + inset + shift as f32 + thumb as f32,
             y1: rect.y1 - inset,
         };
-        draw_frame_control(batch, frame, false, (state & 0x10) == 0x10, palette);
+        draw_button_box(batch, frame, false, (state & 0x10) == 0x10, palette);
         batch.add_texture_shift(shift as f32, 0.0);
         SkinControlSlider {
             shift,
@@ -6044,6 +6051,8 @@ pub struct SkinScrollBar {
     pub stripe: bool,
 }
 
+/// A scroll bar control's place: its rectangle, inset, state and style words,
+/// the fraction its thumb sits at and the GUI unit.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ControlScrollPlace {
     pub rect: GuiRect,
@@ -6054,6 +6063,9 @@ pub struct ControlScrollPlace {
     pub unit: i32,
 }
 
+/// Draws a scroll bar: the control's own style frames on its frame rect, the
+/// accent-gradient trough and the raised box thumb, or a striped fill with the
+/// unit-wide bar.
 pub fn draw_control_scrollbar(
     batch: &mut SkinBatch,
     place: ControlScrollPlace,
@@ -6068,8 +6080,15 @@ pub fn draw_control_scrollbar(
     let inset = place.inset as f32;
     if mode == 0 {
         // The original moves the control down a pixel and shortens it by
-        // two while it draws, so the trough runs from y + 2 to y + h − 2 and
-        // the thumb from y + 3 to y + h − 3.
+        // two while it draws, so its style frames run on the moved rect and
+        // the trough from y + 2 to y + h − 2, the thumb from y + 3 to
+        // y + h − 3.
+        let frame = GuiRect {
+            x0: rect.x0,
+            y0: rect.y0 + 1.0,
+            x1: rect.x1,
+            y1: rect.y1 - 1.0,
+        };
         let bar = ((unit * 4) | 1) as f32;
         let trough = GuiRect {
             x0: rect.x0 + 1.0,
@@ -6083,10 +6102,10 @@ pub fn draw_control_scrollbar(
             x1: rect.x1 - 2.0,
             y1: rect.y1 - 3.0,
         };
-        // The subclass' box slot is not in this component; the base skin's
-        // raised box is its equivalent (guess).
-        draw_button_box(batch, trough, false, false, palette);
-        draw_frame_control(
+        // The trough is the accent gradient and the thumb the raised box.
+        draw_style_frames(batch, frame, place.style, palette);
+        draw_accent_bar(batch, trough, palette);
+        draw_button_box(
             batch,
             thumb,
             (state & 0x40) == 0x40,
@@ -6161,7 +6180,9 @@ pub fn draw_control_shell(
         x1: rect.x1 - inset,
         y1: rect.y1 - inset,
     };
-    draw_frame_control(
+    // The shell draws its style frames first, on the control's own rect.
+    draw_style_frames(batch, rect, style, palette);
+    draw_button_box(
         batch,
         inner,
         (state & 0x40) == 0x40,
@@ -6605,6 +6626,8 @@ pub fn draw_form_background(
     let start = batch.primitives.len();
     let width = place.rect.x1 as i32;
     let height = place.rect.y1 as i32;
+    // A mark or trough draws pressed while the button is still down on the
+    // code it went down on; the code under the mouse only makes it hot.
     let pressed = |code: i32| code == place.pressed_code && place.button_down;
     if (place.flags & 0x40) == 0x40 {
         rounded_textured_frame(
@@ -6699,7 +6722,8 @@ pub fn draw_form_background(
         let mut last = None;
         for code in [-9, -10] {
             if let Some(rect) = background_rect(&place, unit, code) {
-                draw_frame_control(batch, corner_rect(rect), pressed(code), false, palette);
+                // The trough is the raised box the skin's own slot answers.
+                draw_button_box(batch, corner_rect(rect), pressed(code), false, palette);
                 drawn.scroll_frames.push(rect);
                 last = Some(rect);
             }
@@ -6730,7 +6754,7 @@ pub fn draw_form_background(
         let mut last = None;
         for code in [-13, -14] {
             if let Some(rect) = background_rect(&place, unit, code) {
-                draw_frame_control(batch, corner_rect(rect), pressed(code), false, palette);
+                draw_button_box(batch, corner_rect(rect), pressed(code), false, palette);
                 drawn.scroll_frames.push(rect);
                 last = Some(rect);
             }
@@ -6743,7 +6767,7 @@ pub fn draw_form_background(
                 rect[3],
             ];
             batch.add_texture_shift(-(scroll.position as f32), 0.0);
-            draw_frame_control(batch, corner_rect(thumb), false, false, palette);
+            draw_button_box(batch, corner_rect(thumb), false, false, palette);
             batch.add_texture_shift(scroll.position as f32, 0.0);
             drawn.scroll_bars.push(thumb);
         }
@@ -10870,13 +10894,20 @@ mod tests {
         assert_eq!(hit_skin(place(0x3), 10, 40, 5, &none), -3);
         let five = |code: i32| (code == -5).then_some([0, 0, 200, 200]);
         assert_eq!(hit_skin(place(0x5), 10, 40, 5, &five), -5);
+        // Bit 8 is the small mark's code -6; a probe for -10 misses it.
+        let six = |code: i32| (code == -6).then_some([0, 0, 200, 200]);
+        assert_eq!(hit_skin(place(0x9), 10, 40, 5, &six), -6);
         let ten = |code: i32| (code == -10).then_some([0, 0, 200, 200]);
-        assert_eq!(hit_skin(place(0x9), 10, 40, 5, &ten), -10);
+        assert_eq!(hit_skin(place(0x9), 10, 40, 5, &ten), -3);
         assert_eq!(hit_skin(place(0x21), 10, 50, 5, &four), 0);
 
         let only_ten = |code: i32| (code == -10).then_some([0, 0, 200, 200]);
         assert_eq!(hit_skin(place(0x200), 90, 10, 5, &only_ten), -10);
         assert_eq!(hit_skin(place(0x200), 90, 10, 5, &none), -8);
+        // The horizontal scrollbar probes its up arrow (-13) before its
+        // down arrow (-14), so a point in both answers -13.
+        let both = |code: i32| matches!(code, -13 | -14).then_some([0, 0, 200, 200]);
+        assert_eq!(hit_skin(place(0x100), 10, 90, 5, &both), -13);
         assert_eq!(hit_skin(place(0x100), 10, 90, 5, &none), -12);
 
         let edge = |code: i32| (code == -4).then_some([10, 20, 30, 40]);
@@ -11526,12 +11557,16 @@ mod tests {
 
     #[test]
     fn a_selection_band_draws_its_outline_and_two_glows() {
+        let mut highlight = [[0u8; 4]; 12];
+        highlight[3] = [10, 20, 30, 255];
+        highlight[4] = [11, 21, 31, 255];
+        highlight[6] = [200, 100, 50, 255];
+        highlight[7] = [201, 101, 51, 255];
         let mut batch = SkinBatch::new();
         selection_band(
             &mut batch,
             GuiRect::corners(10.0, 20.0, 110.0, 100.0),
-            [10, 20, 30, 255],
-            [200, 100, 50, 255],
+            &highlight,
             false,
             4,
         );
@@ -11558,6 +11593,21 @@ mod tests {
         assert_eq!((glow[13].x, glow[13].y), (60.0, 94.0));
         assert_eq!((glow[14].x, glow[14].y), (10.0, 95.0));
         assert_eq!((glow[21].x, glow[21].y), (110.0, 95.0));
+        // A selected row reads the next shades up and reaches twice the unit.
+        let mut selected = SkinBatch::new();
+        selection_band(
+            &mut selected,
+            GuiRect::corners(10.0, 20.0, 110.0, 100.0),
+            &highlight,
+            true,
+            4,
+        );
+        let outline = selected.vertices_of(&selected.primitives[0]);
+        assert_eq!(outline[0].ink, [11, 21, 31, 25]);
+        assert_eq!(outline[1].ink, [201, 101, 51, 200]);
+        let glow = selected.vertices_of(&selected.primitives[1]);
+        assert_eq!((glow[0].x, glow[0].y), (60.0, 29.0));
+        assert_eq!((glow[1].x, glow[1].y), (60.0, 21.0));
     }
 
     #[test]
@@ -11998,6 +12048,7 @@ mod tests {
             &mut batch,
             GuiRect::corners(0.0, 0.0, 100.0, 40.0),
             4,
+            0,
             0x40,
             4,
             &palette,
@@ -12033,7 +12084,53 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_panel_draws_the_frame_slot() {
+    fn a_bar_draws_the_clamped_gradients_idle_and_the_boxes_pressed() {
+        let mut batch = SkinBatch::new();
+        let palette = palette_for_faces();
+        draw_bar_with_boxes(
+            &mut batch,
+            GuiRect::corners(10.0, 20.0, 30.0, 60.0),
+            4,
+            false,
+            &palette,
+        );
+        // Idle: the filled gradient from the control group's sixth shade
+        // above to its second below, the line gradient from the seventh
+        // above to the fifth below, then the outline in the first.
+        assert_eq!(batch.primitives.len(), 3);
+        let fill = batch.vertices_of(&batch.primitives[0]);
+        assert_eq!((fill[0].x, fill[0].y), (29.0, 21.0));
+        assert_eq!(fill[0].ink, [30, 5, 0, 60]);
+        assert_eq!(fill[fill.len() - 1].ink, [30, 1, 0, 60]);
+        assert!(fill.iter().any(|v| v.ink == [30, 1, 0, 60]));
+        let frame = batch.vertices_of(&batch.primitives[1]);
+        assert_eq!((frame[0].x, frame[0].y), (28.5, 21.5));
+        assert_eq!(frame[0].ink, [30, 6, 0, 60]);
+        assert!(frame.iter().any(|v| v.ink == [30, 4, 0, 60]));
+        let outline = batch.vertices_of(&batch.primitives[2]);
+        assert_eq!(outline[0].ink, [30, 0, 0, 60]);
+
+        // Pressed: the gradient boxes from the fifth shade up to the first,
+        // the bevel from the fifth above to the seventh below.
+        let mut pressed = SkinBatch::new();
+        draw_bar_with_boxes(
+            &mut pressed,
+            GuiRect::corners(10.0, 20.0, 30.0, 60.0),
+            4,
+            true,
+            &palette,
+        );
+        assert_eq!(pressed.primitives.len(), 3);
+        let face = pressed.vertices_of(&pressed.primitives[0]);
+        assert_eq!((face[0].x, face[0].y), (28.0, 22.0));
+        assert_eq!(face[0].ink, [30, 0, 0, 60]);
+        let bevel = pressed.vertices_of(&pressed.primitives[1]);
+        assert_eq!(bevel[0].ink, [30, 4, 0, 60]);
+        assert!(bevel.iter().any(|v| v.ink == [30, 6, 0, 60]));
+    }
+
+    #[test]
+    fn a_plain_panel_draws_the_raised_box() {
         let mut batch = SkinBatch::new();
         let palette = palette_for_faces();
         draw_panel(
@@ -12041,12 +12138,74 @@ mod tests {
             GuiRect::corners(0.0, 0.0, 100.0, 40.0),
             4,
             0,
+            0,
             4,
             &palette,
         );
+        // The idle raised box: its gradient runs from the control group's
+        // third shade up to its seventh, its bevel from the sixth to the
+        // fifth, then the outline in the first.
         assert_eq!(batch.primitives.len(), 3);
-        assert_eq!(batch.vertices_of(&batch.primitives[0])[0].x, 94.0);
-        assert_eq!(batch.vertices_of(&batch.primitives[0])[0].y, 6.0);
+        let face = batch.vertices_of(&batch.primitives[0]);
+        assert_eq!((face[0].x, face[0].y), (94.0, 6.0));
+        assert_eq!(face[0].ink, [30, 6, 0, 60]);
+        let bevel = batch.vertices_of(&batch.primitives[1]);
+        assert_eq!(bevel[0].ink, [30, 7, 0, 60]);
+        let outline = batch.vertices_of(&batch.primitives[2]);
+        assert_eq!(outline[0].ink, [30, 0, 0, 60]);
+    }
+
+    #[test]
+    fn a_styled_panel_draws_its_style_frames_before_the_box() {
+        let mut batch = SkinBatch::new();
+        let palette = palette_for_faces();
+        draw_panel(
+            &mut batch,
+            GuiRect::corners(0.0, 0.0, 100.0, 40.0),
+            4,
+            0x10,
+            0,
+            4,
+            &palette,
+        );
+        // Style 0x10: the outer double frame on the panel's own rect, in the
+        // hot-form group's first shade, then the idle raised box inset by 4.
+        assert_eq!(batch.primitives.len(), 4);
+        let frames = batch.vertices_of(&batch.primitives[0]);
+        assert_eq!((frames[0].x, frames[0].y), (99.0, 0.5));
+        assert_eq!(frames[0].ink, [20, 0, 0, 50]);
+        let face = batch.vertices_of(&batch.primitives[1]);
+        assert_eq!((face[0].x, face[0].y), (94.0, 6.0));
+    }
+
+    #[test]
+    fn a_control_shell_frames_itself_and_shades_its_inner_rect() {
+        let mut batch = SkinBatch::new();
+        let palette = palette_for_faces();
+        draw_control_shell(
+            &mut batch,
+            GuiRect::corners(10.0, 20.0, 110.0, 100.0),
+            4,
+            0x6000_0010,
+            0,
+            4,
+            &palette,
+        );
+        // The control's style frames run first on its own rect, then the
+        // raised box sits inset by four, and the shadow when the pressed
+        // bit is clear.
+        assert_eq!(batch.primitives.len(), 5);
+        let frames = batch.vertices_of(&batch.primitives[0]);
+        assert_eq!((frames[0].x, frames[0].y), (109.0, 20.5));
+        assert_eq!(frames[0].ink, [20, 0, 0, 50]);
+        let face = batch.vertices_of(&batch.primitives[1]);
+        assert_eq!((face[0].x, face[0].y), (104.0, 26.0));
+        assert_eq!(face[0].ink, [30, 6, 0, 60]);
+        let outline = batch.vertices_of(&batch.primitives[3]);
+        assert_eq!(outline[0].ink, [30, 0, 0, 60]);
+        let shadow = batch.vertices_of(&batch.primitives[4]);
+        assert_eq!((shadow[0].x, shadow[0].y), (10.0, 20.0));
+        assert_eq!(shadow[0].ink, [0, 0, 0, 0x50]);
     }
 
     #[test]
@@ -12078,7 +12237,11 @@ mod tests {
             (frame.x0, frame.y0, frame.x1, frame.y1),
             (42.0, 4.0, 58.0, 20.0)
         );
+        // The thumb is the idle raised box: its gradient from the control
+        // group's third shade up to its seventh.
         assert_eq!(batch.primitives.len(), 4);
+        let thumb = batch.vertices_of(&batch.primitives[1]);
+        assert_eq!(thumb[0].ink, [30, 6, 0, 60]);
         assert_eq!(batch.texture_shift, [0.0, 0.0]);
     }
 
@@ -12141,6 +12304,43 @@ mod tests {
             drawn.box_rect.expect("a box"),
             GuiRect::corners(1.0, 2.0, 99.0, 22.0)
         );
+        // The accent trough, then the idle raised box's inner gradient from
+        // the control group's third shade up to its seventh.
+        assert_eq!(batch.primitives.len(), 4);
+        let trough = batch.vertices_of(&batch.primitives[0]);
+        assert_eq!(trough[0].ink, [9, 9, 9, 255]);
+        assert_eq!(trough[7].ink, [9, 9, 9, 255]);
+        let face = batch.vertices_of(&batch.primitives[1]);
+        assert_eq!(face[0].ink, [30, 6, 0, 60]);
+    }
+
+    #[test]
+    fn a_styled_scrollbar_draws_its_style_frames_on_the_moved_rect() {
+        let mut batch = SkinBatch::new();
+        let palette = palette_for_faces();
+        let drawn = draw_control_scrollbar(
+            &mut batch,
+            ControlScrollPlace {
+                rect: GuiRect::corners(0.0, 0.0, 100.0, 24.0),
+                inset: 4,
+                state: 0,
+                style: 0x10,
+                fraction: 0.5,
+                unit: 4,
+            },
+            &[],
+            &palette,
+        );
+        assert_eq!(drawn.step, 5);
+        // The control's style field selects the inner double frame, drawn on
+        // the rect moved a pixel down and two shorter, in the hot-form
+        // group's first and eighth shades.
+        assert_eq!(batch.primitives.len(), 5);
+        let frames = batch.vertices_of(&batch.primitives[0]);
+        assert_eq!((frames[0].x, frames[0].y), (99.0, 1.5));
+        assert_eq!(frames[0].ink, [20, 0, 0, 50]);
+        assert_eq!((frames[8].x, frames[8].y), (98.0, 2.5));
+        assert_eq!(frames[8].ink, [20, 7, 0, 50]);
     }
 
     #[test]
@@ -12467,6 +12667,68 @@ mod tests {
         assert_eq!(client[8].ink, [10, 0, 0, 40]);
     }
 
+    #[test]
+    fn a_flat_two_ink_style_outlines_the_form_and_skips_the_client() {
+        let mut batch = SkinBatch::new();
+        let palette = palette_for_faces();
+        // Flat, style 0x20: the two-ink outline, in the form's first shade
+        // along its top and down its left, the seventh along its bottom and
+        // up its right.
+        let chrome = draw_form_chrome(
+            &mut batch,
+            FormChromePlace {
+                frame_style: 0x20,
+                flags: 0,
+                state: 1,
+                ..chrome_place()
+            },
+            &palette,
+        );
+        assert_eq!(chrome.frames, 1);
+        assert_eq!(batch.primitives.len(), 1);
+        let outline = batch.vertices_of(&batch.primitives[0]);
+        assert_eq!(outline.len(), 8);
+        assert_eq!((outline[0].x, outline[0].y), (199.0, 0.5));
+        assert_eq!(outline[0].ink, [10, 0, 0, 40]);
+        assert_eq!((outline[4].x, outline[4].y), (0.5, 99.5));
+        assert_eq!(outline[4].ink, [10, 6, 0, 40]);
+        assert_eq!((outline[5].x, outline[5].y), (199.5, 99.5));
+        assert_eq!((outline[7].x, outline[7].y), (199.5, -0.5));
+
+        // A flat form's second style field draws no client frame.
+        let mut styled = SkinBatch::new();
+        let chrome = draw_form_chrome(
+            &mut styled,
+            FormChromePlace {
+                frame_style: 0x60,
+                flags: 0,
+                state: 1,
+                ..chrome_place()
+            },
+            &palette,
+        );
+        assert_eq!(chrome.frames, 1);
+        assert_eq!(styled.primitives.len(), 1);
+
+        // Off the flat state, style 0x20 is a double frame from the form's
+        // sixth shade inside its first.
+        let mut raised = SkinBatch::new();
+        let chrome = draw_form_chrome(
+            &mut raised,
+            FormChromePlace {
+                frame_style: 0x20,
+                flags: 0,
+                state: 0,
+                ..chrome_place()
+            },
+            &palette,
+        );
+        assert_eq!(chrome.frames, 1);
+        let frame = raised.vertices_of(&raised.primitives[0]);
+        assert_eq!(frame[0].ink, [10, 5, 0, 40]);
+        assert_eq!(frame[8].ink, [10, 0, 0, 40]);
+    }
+
     fn background_place() -> FormBackgroundPlace {
         FormBackgroundPlace {
             rect: GuiRect::corners(0.0, 0.0, 200.0, 100.0),
@@ -12580,8 +12842,13 @@ mod tests {
             vec![[180, 24, 195, 39], [180, 80, 195, 95]]
         );
         assert_eq!(drawn.scroll_bars, vec![[180, 30, 195, 50]]);
-        // Frame, shadow, two frame slots (the pressed one in the control
-        // group's shades 4 and 1), then the bar's gradient boxes.
+        // Frame, shadow, the first trough's idle raised box (the mouse is
+        // over it, which only makes it hot for the arrow icon), then the
+        // second trough's box, pressed because the button went down on its
+        // code and is still down (its gradient runs from the control
+        // group's fifth shade up to its second), then the bar's boxes.
+        let idle = batch.vertices_of(&batch.primitives[2]);
+        assert_eq!(idle[0].ink, [30, 6, 0, 60]);
         let pressed = batch.vertices_of(&batch.primitives[5]);
         assert_eq!(pressed[0].ink, [30, 1, 0, 60]);
         assert_eq!(batch.texture_shift, [0.0, 0.0]);
