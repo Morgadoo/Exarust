@@ -445,7 +445,10 @@ impl HubWindows {
     }
 }
 
-/// The board's controls: the four tabs and the Enter button.
+/// The board's controls: the four tabs, the Enter button and the template's
+/// other bottom-row buttons (End Day, Close and Forfeit). The board's own
+/// paint list draws them; these records let the form host hit-test and
+/// select them.
 fn board_controls() -> Vec<Control> {
     let layout = exa_ui::match_board::layout(false);
     let mut records = Vec::new();
@@ -459,16 +462,18 @@ fn board_controls() -> Vec<Control> {
             .to_vec();
         records.push(control);
     }
-    let mut enter = Control::new(
-        1,
-        layout.enter_button.x,
-        layout.enter_button.y,
-        layout.enter_button.w,
-        layout.enter_button.h,
-    );
-    enter.style = BUTTON_STYLE;
-    enter.text = b"Enter".to_vec();
-    records.push(enter);
+    let buttons = [
+        (layout.end_day_button, exa_ui::match_board::END_DAY_LABEL),
+        (layout.close_button, exa_ui::match_board::CLOSE_LABEL),
+        (layout.enter_button, "Enter"),
+        (layout.forfeit_button, exa_ui::match_board::FORFEIT_LABEL),
+    ];
+    for (rect, text) in buttons {
+        let mut control = Control::new(1, rect.x, rect.y, rect.w, rect.h);
+        control.style = BUTTON_STYLE;
+        control.text = text.as_bytes().to_vec();
+        records.push(control);
+    }
     records
 }
 
@@ -1091,6 +1096,36 @@ mod tests {
     }
 
     #[test]
+    fn the_form_host_holds_the_boards_bottom_row() {
+        let records = board_controls();
+        let layout = exa_ui::match_board::layout(false);
+        // Four tabs and the four bottom-row buttons.
+        assert_eq!(records.len(), 8);
+        let bottom = exa_ui::match_board::layout(false).enter_button.y;
+        for (index, rect) in [
+            layout.end_day_button,
+            layout.close_button,
+            layout.enter_button,
+            layout.forfeit_button,
+        ]
+        .iter()
+        .enumerate()
+        {
+            let record = &records[4 + index];
+            assert_eq!(
+                (record.x, record.y, record.w, record.h),
+                (rect.x, rect.y, rect.w, rect.h)
+            );
+            assert_eq!(record.y, bottom);
+        }
+        assert_eq!(records[4].text, b"End Day".to_vec());
+        assert_eq!(records[5].text, b"Close".to_vec());
+        assert_eq!(records[6].text, b"Enter".to_vec());
+        assert_eq!(records[7].text, b"Forfeit".to_vec());
+        assert_eq!(records[1].text, b"Specials".to_vec());
+    }
+
+    #[test]
     fn the_board_enter_in_a_duel_asks_for_the_match() {
         let mut windows = HubWindows::default();
         let career = career();
@@ -1140,8 +1175,18 @@ mod tests {
         let form = windows.task.form(windows.form.unwrap()).unwrap();
         let layout = exa_ui::match_board::layout(false);
         assert_eq!(form.hit_test(layout.tabs[0].x + 1, layout.tabs[0].y + 1), 1);
+        // The Enter button is the seventh record: four tabs, End Day,
+        // Close, then Enter.
         assert_eq!(
             form.hit_test(layout.enter_button.x + 1, layout.enter_button.y + 1),
+            7
+        );
+        assert_eq!(
+            form.hit_test(layout.close_button.x + 1, layout.close_button.y + 1),
+            6
+        );
+        assert_eq!(
+            form.hit_test(layout.end_day_button.x + 1, layout.end_day_button.y + 1),
             5
         );
         assert_eq!(form.hit_test(2, 2), 0);
