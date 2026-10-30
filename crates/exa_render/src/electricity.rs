@@ -246,6 +246,7 @@ impl ArcSpec {
     pub fn device(duration: u16, length: u16, branches: i16, direction: Vec3) -> Self {
         Self::device_fields(
             DeviceFields {
+                active: true,
                 duration,
                 length,
                 branches,
@@ -255,9 +256,11 @@ impl ArcSpec {
         )
     }
 
-    /// The level-device import's fields: the same preset, with the record's
-    /// flag byte's bit 0x02 giving the arc an offset direction along the
-    /// node's third axis (and a stored first-segment reach).
+    /// The level-device import's fields: the same preset from the record's
+    /// duration, length and branches. `direction` is the device node's
+    /// third axis (its first tendril's first segment runs along it); the
+    /// record's flag bit 0x02 adds a fixed end point
+    /// ([`DeviceFields::end_point`]).
     pub fn device_fields(fields: DeviceFields, direction: Vec3) -> Self {
         let size = f32::from(fields.duration) * 0.001;
         let length = f32::from(fields.length);
@@ -355,13 +358,24 @@ impl ArcSpec {
         self.size * 2.0
     }
 
-    /// The geometry the original allocates for the arc: the
-    /// index buffer holds `(4·segments + 2) · tendrils · 3` indices and the
-    /// vertex buffer `(4·segments + 4) · tendrils` vertices, and the colour
-    /// word is `0xff0019` (red 0x19, green 0, blue 0xff).
+    /// The tendril records the original allocates: the preset's tendril
+    /// count, except a spark burst, whose six extra tendrils take free
+    /// records among its twenty rather than adding records.
+    pub fn records(&self) -> u32 {
+        match self.preset {
+            Preset::SparkBurst => 20,
+            _ => self.tendrils,
+        }
+    }
+
+    /// The geometry the original allocates for the arc, per tendril record
+    /// ([`ArcSpec::records`]): the index buffer holds
+    /// `(4·segments + 2) · records · 3` indices and the vertex buffer
+    /// `(4·segments + 4) · records` vertices, every vertex coloured with the
+    /// word `0xff0019` (red 0x19, green 0, blue 0xff).
     pub fn ribbon_capacity(&self) -> RibbonCapacity {
         let segments = self.segments.max(1);
-        let tendrils = self.tendrils.max(1);
+        let tendrils = self.records().max(1);
         RibbonCapacity {
             vertices: (segments * 4 + 4) * tendrils,
             indices: (segments * 4 + 2) * tendrils * 3,
@@ -376,11 +390,14 @@ pub struct RibbonCapacity {
     pub indices: u32,
 }
 
-/// The level-device object record's fields the arc reads: the duration
-/// (thousandths), the length in cm, the branch count and the flag byte
-/// whose bit 0x02 asks for an offset direction and a stored reach.
+/// The level-device object record's fields the arc reads: the active bit
+/// (bit 0 of the word at 0x0c; the import builds no arc without it), the
+/// duration (thousandths), the length in cm, the branch count and the flag
+/// byte (the high byte of the word at 0x0a) whose bit 0x02 gives the arc a
+/// fixed end point.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeviceFields {
+    pub active: bool,
     pub duration: u16,
     pub length: u16,
     pub branches: i16,
@@ -396,6 +413,7 @@ impl DeviceFields {
         }
         let u = |at: usize| u16::from_le_bytes([data[at], data[at + 1]]);
         Ok(Self {
+            active: data[0x0c] & 1 != 0,
             duration: u(0x10),
             length: u(0x12),
             branches: u(0x14) as i16,
@@ -403,20 +421,25 @@ impl DeviceFields {
         })
     }
 
-    /// Whether the arc takes an offset direction along the node's third axis
-    /// (the record's flag bit 0x02).
-    pub fn offset_direction(self) -> bool {
+    /// Whether the arc has a fixed end point (the record's flag bit 0x02).
+    pub fn has_end_point(self) -> bool {
         self.flags & 0x02 != 0
     }
 
-    /// The arc's direction: the node's third axis when the record's flag
-    /// bit 0x02 asks for an offset direction, else the default +X.
-    pub fn direction(self, node_third_axis: Vec3) -> Vec3 {
-        if self.offset_direction() {
-            node_third_axis.normalize_or(Vec3::X)
-        } else {
-            Vec3::X
-        }
+    /// The arc's fixed end point when the record asks for one: the node's
+    /// position plus its third axis times the record's length, each
+    /// component `position + axis·length` in single precision. Without the
+    /// flag the arc keeps the emitter's default end and only its first
+    /// segment's direction comes from the node.
+    pub fn end_point(self, position: Vec3, third_axis: Vec3) -> Option<Vec3> {
+        let length = f32::from(self.length);
+        self.has_end_point().then(|| {
+            Vec3::new(
+                position.x + third_axis.x * length,
+                position.y + third_axis.y * length,
+                position.z + third_axis.z * length,
+            )
+        })
     }
 }
 
@@ -604,28 +627,41 @@ pub struct Discharge {
 }
 
 /// What a discharge did: the charge step (when the item and its record
-/// exist) and the spark burst it spawns at the point. The original always
-/// spawns the burst, charged or not.
+/// exist), whether the item's arc effect is cleared, and the spark burst it
+/// spawns at the point. The original always spawns the burst, charged or
+/// not.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DischargeResult {
     /// The charge's outcome, when there was an item record.
     pub outcome: Option<ChargeOutcome>,
+    /// The item's arc effect is cleared: its record is gone, or the charge
+    /// was spent.
+    pub clear_effect: bool,
     /// The burst's preset and the point it is placed at.
     pub burst: (ArcSpec, Vec3),
 }
 
-/// A hit's discharge: the record's heavy bit (its kind word's 0x10) picks
-/// the 0x80 charge step, otherwise ten; the step that reaches 255 fills the
-/// charge and spends it. The spark burst then appears at the queued point,
-/// whether or not an item was there.
+/// A hit's discharge. With an item: when its record is gone the item's arc
+/// effect is cleared; otherwise the record's heavy bit (its kind word's
+/// 0x10) picks the 0x80 charge step, else ten, and the step that would
+/// reach 255 fills the charge, spends it and clears the effect. The spark
+/// burst then appears at the queued point, whether or not an item was
+/// there.
 pub fn discharge(
+    has_item: bool,
     record_kind: Option<u16>,
     charge: &mut Charge,
     request: Discharge,
 ) -> DischargeResult {
-    let outcome = record_kind.map(|kind| charge.hit(kind & 0x10 != 0));
+    let outcome = if has_item {
+        record_kind.map(|kind| charge.hit(kind & 0x10 != 0))
+    } else {
+        None
+    };
+    let clear_effect = has_item && outcome.is_none_or(|o| o == ChargeOutcome::Spent);
     DischargeResult {
         outcome,
+        clear_effect,
         burst: (ArcSpec::spark_burst(), request.point),
     }
 }
@@ -735,9 +771,11 @@ impl Arc {
         self.tendrils.clear();
         for t in 0..n {
             let mut points = Vec::with_capacity(s);
-            // A spark burst starts its six extra tendrils at the source,
-            // each one segment long in a random direction (the burst preset
-            // starts twenty and opens six more).
+            // A spark burst starts its six extra tendrils at the source in a
+            // random direction (x, sway·y, z, each a unit draw less a half).
+            // The original makes each one segment long and lets the tendril
+            // emitter grow it (`exa_game::thaum::arcs::spark_burst` is that
+            // exact rule); this ribbon model lays them out full length.
             let extra = spec.preset == Preset::SparkBurst && t >= 20;
             let from = start;
             let mut to = end;
@@ -787,24 +825,18 @@ impl Arc {
         }
     }
 
-    /// The arc's draw passes: the original draws the ribbon once per branch,
-    /// each with its own branch matrix and scissor rect, so the tendril count
-    /// is the pass count.
-    pub fn passes(&self) -> usize {
-        self.spec.tendrils.clamp(1, 1024) as usize
-    }
-
-    /// The per-branch animation clock the draw writes before each pass,
-    /// branch `i` counted from one:
-    /// `((i + base + 0.5)·0.001)/1 + previous − 0.0005`, where `base` is the
-    /// draw's branch clock base and `previous` the first branch's clock from
-    /// the last frame (the original's frame-time array). The branch
-    /// matrices themselves are built by the tendril emitter's draw
-    /// preparation, outside this component.
-    pub fn branch_time(branch: usize, base: i32, previous: f32) -> f32 {
-        let i = branch as f32;
-        let step = ((i + base as f32 + 0.5) * 0.001) / 1.0;
-        step + previous - 0.0005
+    /// The clock a supersample pass draws the arc at: the draw rewrites each
+    /// pass's clock to `((pass + frame + 0.5)·0.001)/divisor + start −
+    /// 0.0005` (pass from 0, the pass and frame counters added as integers
+    /// and the 0.5 in single precision, the rest in double, then narrowed),
+    /// where `start` is pass 0's clock before the draw and `divisor` the
+    /// engine's pass divisor (1 in the shipped build); it draws once per
+    /// pass with that pass's viewport and restores the clocks after. The
+    /// pass count is the renderer's supersample count, not the tendrils:
+    /// Exarust's supersampled camera draws the arc once.
+    pub fn pass_clock(pass: i32, frame: i32, start: f32, divisor: i32) -> f32 {
+        let counter = (i64::from(pass) + i64::from(frame)) as f32 + 0.5;
+        (f64::from(counter) * 0.001 / f64::from(divisor) + f64::from(start) - 0.0005) as f32
     }
 
     /// One tick: ages the arc and scrolls its texture; a sustained arc
@@ -1079,6 +1111,7 @@ mod tests {
     fn the_device_record_parses_its_fields() {
         let mut data = [0u8; 0x16];
         data[0x0b] = 0x02;
+        data[0x0c] = 0x01;
         data[0x10..0x12].copy_from_slice(&1500u16.to_le_bytes());
         data[0x12..0x14].copy_from_slice(&240u16.to_le_bytes());
         data[0x14..0x16].copy_from_slice(&7i16.to_le_bytes());
@@ -1087,19 +1120,26 @@ mod tests {
         assert_eq!(
             f,
             DeviceFields {
+                active: true,
                 duration: 1500,
                 length: 240,
                 branches: 7,
                 flags: 0x02
             }
         );
-        assert!(f.offset_direction());
-        // The direction follows the node's third axis only with the flag.
-        assert_eq!(f.direction(Vec3::NEG_Z), Vec3::NEG_Z);
+        assert!(f.has_end_point());
+        // The end point lies the record's length along the node's third
+        // axis, only with the flag.
         assert_eq!(
-            DeviceFields { flags: 0, ..f }.direction(Vec3::NEG_Z),
-            Vec3::X
+            f.end_point(Vec3::new(1.0, 2.0, 3.0), Vec3::NEG_Z),
+            Some(Vec3::new(1.0, 2.0, -237.0))
         );
+        assert_eq!(
+            DeviceFields { flags: 0, ..f }.end_point(Vec3::ZERO, Vec3::NEG_Z),
+            None
+        );
+        data[0x0c] = 0;
+        assert!(!DeviceFields::parse(&data).expect("the fields").active);
         let s = ArcSpec::device_fields(f, Vec3::NEG_Z);
         // 1.5 cm size, four sizes a segment: 240 / 6 = 40 segments.
         assert!((s.size - 1.5).abs() < 1e-6);
@@ -1111,15 +1151,18 @@ mod tests {
     }
 
     #[test]
-    fn the_arc_draws_once_a_branch_at_its_own_clock() {
-        let spec = ArcSpec::weapon();
-        let arc = Arc::new(spec, Vec3::ZERO, Vec3::X * 30.0);
-        assert_eq!(arc.passes(), 20);
-        // Branch 1 at base 0 from a previous 0.5000: 0.0015/1 + 0.5 −
-        // 0.0005 = 0.501.
-        assert!((Arc::branch_time(1, 0, 0.5) - 0.501).abs() < 1e-6);
-        // The clock steps a millisecond a branch.
-        assert!((Arc::branch_time(2, 0, 0.5) - Arc::branch_time(1, 0, 0.5) - 0.001).abs() < 1e-6);
+    fn a_supersample_pass_draws_the_arc_at_its_own_clock() {
+        // Pass 0, frame 0, from 0.5: (0.5·0.001)/1 + 0.5 − 0.0005 = 0.5.
+        assert_eq!(Arc::pass_clock(0, 0, 0.5, 1), 0.5);
+        // Pass 1 of frame 2: (3.5·0.001)/1 + 0.5 − 0.0005 = 0.503, worked
+        // in double and narrowed.
+        assert_eq!(
+            Arc::pass_clock(1, 2, 0.5, 1),
+            (3.5f64 * 0.001 / 1.0 + 0.5 - 0.0005) as f32
+        );
+        // Each pass steps a millisecond over the divisor.
+        let step = Arc::pass_clock(3, 0, 0.0, 2) - Arc::pass_clock(2, 0, 0.0, 2);
+        assert!((step - 0.0005).abs() < 1e-7);
     }
 
     #[test]
@@ -1133,9 +1176,11 @@ mod tests {
                 indices: 1320
             }
         );
+        // The burst allocates twenty records; its six extra tendrils reuse
+        // free ones.
         let burst = ArcSpec::spark_burst();
-        assert_eq!(burst.ribbon_capacity().vertices, (4 * 5 + 4) * 26);
-        assert_eq!(burst.ribbon_capacity().indices, (4 * 5 + 2) * 26 * 3);
+        assert_eq!(burst.ribbon_capacity().vertices, (4 * 5 + 4) * 20);
+        assert_eq!(burst.ribbon_capacity().indices, (4 * 5 + 2) * 20 * 3);
     }
 
     #[test]
@@ -1171,18 +1216,30 @@ mod tests {
         let hit = Discharge {
             point: Vec3::new(3.0, 4.0, 5.0),
         };
-        let out = discharge(Some(0x4010), &mut charge, hit);
+        let out = discharge(true, Some(0x4010), &mut charge, hit);
         // The record's 0x10 bit takes the heavy 0x80 step, which reaches the
-        // limit: the charge fills and spends.
+        // limit (0xf0 is not below 0xff − 0x80): the charge fills, spends
+        // and clears the effect.
         assert_eq!(out.outcome, Some(ChargeOutcome::Spent));
+        assert!(out.clear_effect);
         assert_eq!(charge.value, 0xff);
         assert_eq!(out.burst.0.preset, Preset::SparkBurst);
         assert_eq!(out.burst.1, Vec3::new(3.0, 4.0, 5.0));
-        // No record: no charge step, but the burst still appears.
+        // A light step below the limit only charges: 0x10 + 10.
+        let mut charge = Charge { value: 0x10 };
+        let out = discharge(true, Some(0x4000), &mut charge, hit);
+        assert_eq!(out.outcome, Some(ChargeOutcome::Charged));
+        assert!(!out.clear_effect);
+        assert_eq!(charge.value, 0x1a);
+        // An item whose record is gone: no charge step, the effect clears.
         let mut charge = Charge { value: 0 };
-        let out = discharge(None, &mut charge, hit);
+        let out = discharge(true, None, &mut charge, hit);
         assert_eq!(out.outcome, None);
+        assert!(out.clear_effect);
         assert_eq!(charge.value, 0);
+        // No item: nothing but the burst.
+        let out = discharge(false, Some(0x10), &mut charge, hit);
+        assert_eq!((out.outcome, out.clear_effect), (None, false));
         assert_eq!(out.burst.0.preset, Preset::SparkBurst);
     }
 
