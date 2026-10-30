@@ -973,7 +973,11 @@ impl Combatant {
             return;
         }
         if clean {
-            self.courage *= (trait1 + 1.0) * 0.025 + 0.95;
+            // The factor is built in single precision (trait + 1), then
+            // widened: 1.0 · (trait + 1) as double · 0.025 + 0.95, times
+            // the courage, all in double, and cut back to a float.
+            let factor = f64::from(1.0f32 + trait1) * 0.025 + 0.95;
+            self.courage = (factor * f64::from(self.courage)) as f32;
         }
         if let Some(attacker) = attacker
             && !attacker.marked
@@ -1638,8 +1642,17 @@ mod tests {
             ..Combatant::default()
         };
         struck.take_hit(Some(&mut attacker), true, 0.0, false, false);
-        let lowered = (1.0f32 * 0.025 + 0.95) * 0.5;
+        // ((1 + trait) as double · 0.025 + 0.95) · courage, in double.
+        let lowered = ((1.0f64 * 0.025 + 0.95) * 0.5) as f32;
         assert_eq!(struck.courage, lowered);
+        // A non-zero trait keeps the factor's f32 (trait + 1) step before
+        // the widening.
+        let mut hot = Combatant::default();
+        hot.take_hit(None, true, 0.1, false, false);
+        assert_eq!(
+            hot.courage,
+            (f64::from(1.0f32 + 0.1f32) * 0.025 + 0.95).mul_add(0.5, 0.0) as f32
+        );
         assert_eq!(attacker.struck_rating, 30.0);
         assert!(attacker.marked);
         struck.combat_rating = 50.0;
