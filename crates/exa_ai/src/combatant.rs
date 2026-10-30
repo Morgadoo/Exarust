@@ -49,6 +49,14 @@ pub const LOST_ALERT: f32 = 40.0;
 pub const DEAD_MEMORY_MS: u64 = 5000;
 /// The script call's concern cap.
 pub const CONCERN_CAP: f32 = 15.0;
+/// The concern a hit reaction starts from above the threat estimate.
+pub const HIT_BASE: f32 = 0.5;
+/// The extra concern a kind-1 hit adds.
+pub const HIT_KIND_1: f32 = 0.5;
+/// The extra concern a kind-2 hit adds.
+pub const HIT_KIND_2: f32 = 0.25;
+/// The margin added to the attacker's radius in the threat estimate (cm).
+pub const THREAT_MARGIN_CM: f32 = 100.0;
 /// Concern at which the contact's [`EVENT_CONCERNED`] bit is raised.
 pub const CONCERN_EVENT: f32 = f32::from_bits(0x3f99_999a);
 /// Concern at which the contact's [`EVENT_ALARMED`] bit is raised.
@@ -973,6 +981,88 @@ pub fn admission_weight(c: &Contact) -> f32 {
     c.noticeability * 10.0 + c.concern
 }
 
+/// A body of the observer's nearby list, as the hit reaction's threat
+/// estimate reads it: its id and its aim point (cm).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NearbyAim {
+    /// The body's id (an entity's `to_bits`).
+    pub id: u64,
+    /// The body's aim point (cm).
+    pub aim_cm: Vec3,
+    /// The body is at the dead condition (skipped).
+    pub dead: bool,
+}
+
+/// The threat an attacker poses, estimated from the observer's nearby
+/// bodies: for each body but the attacker, the offset from its aim point to
+/// the attacker's position is squared (in the original's addition order,
+/// `dz² + (dy² + dx²)`); it must lie within the attacker's radius plus
+/// [`THREAT_MARGIN_CM`] and be at least 1 cm². The offset's dot with the
+/// attacker's look must not be negative, and the share `dot / d²` is how
+/// much the attacker is taken up with that body. The threat is 1 less the
+/// largest share. Comparisons follow the original's `COMISS` and parity
+/// jumps, so a NaN measure passes every gate and a NaN share never wins.
+pub fn threat_from_nearby(
+    attacker: u64,
+    attacker_cm: Vec3,
+    attacker_look: Vec3,
+    attacker_radius_cm: f32,
+    nearby: &[NearbyAim],
+) -> f32 {
+    let mut best = 0.0f32;
+    let limit = attacker_radius_cm + THREAT_MARGIN_CM;
+    let limit2 = limit * limit;
+    for body in nearby {
+        if body.dead || body.id == attacker {
+            continue;
+        }
+        let d = body.aim_cm - attacker_cm;
+        let d2 = d.z * d.z + (d.y * d.y + d.x * d.x);
+        if limit2 < d2 || d2 < 1.0 {
+            continue;
+        }
+        let dot = d.z * attacker_look.z + (d.y * attacker_look.y + d.x * attacker_look.x);
+        if dot < 0.0 {
+            continue;
+        }
+        let share = dot / d2;
+        if best < share {
+            best = share;
+        }
+    }
+    1.0 - best
+}
+
+/// The concern a hit adds to the attacker's contact: the threat estimate
+/// plus [`HIT_BASE`], a further [`HIT_KIND_1`] for a kind-1 hit or
+/// [`HIT_KIND_2`] for a kind 2, floored at zero, scaled by `1 − attitude/100`
+/// in double precision and added to the old concern, capped at
+/// [`CONCERN_CAP`]. A contact already at the cap adds nothing, nor does one
+/// with a NaN concern (the original's `COMISS` gate jumps away on parity); a
+/// NaN sum is not capped.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
+pub fn hit_concern(threat: f32, hit_kind: u8, attitude: f32, concern: f32) -> Option<f32> {
+    if !(CONCERN_CAP > concern) {
+        return None;
+    }
+    let mut rise = threat + HIT_BASE;
+    if hit_kind == 1 {
+        rise += HIT_KIND_1;
+    } else if hit_kind == 2 {
+        rise += HIT_KIND_2;
+    }
+    if rise < 0.0 {
+        rise = 0.0;
+    }
+    let concern =
+        (f64::from(rise) * (1.0 - f64::from(attitude) * 0.01) + f64::from(concern)) as f32;
+    Some(if CONCERN_CAP < concern {
+        CONCERN_CAP
+    } else {
+        concern
+    })
+}
+
 impl Combatant {
     /// The contact with `character`, made if there is none.
     pub fn contact_mut(&mut self, character: Entity) -> &mut Contact {
@@ -1018,6 +1108,19 @@ impl Combatant {
             }
             attacker.marked = true;
         }
+    }
+
+    /// The concern an attacker's blow adds to its contact, through
+    /// [`hit_concern`]: the contact's own attitude scales the threat rise and
+    /// its concern events follow the new value ([`Contact::set_concern`]).
+    /// Returns the concern written, or none when the attacker has no contact
+    /// or its concern is already at the cap. The original also marks the
+    /// contact with its word 3 here; Exarust has no field for it.
+    pub fn react_to_hit(&mut self, attacker: Entity, hit_kind: u8, threat: f32) -> Option<f32> {
+        let contact = self.contacts.iter_mut().find(|c| c.character == attacker)?;
+        let next = hit_concern(threat, hit_kind, contact.attitude, contact.concern)?;
+        contact.set_concern(next);
+        Some(next)
     }
 
     /// Forget every reference to `character`: its contact (the last contact
@@ -1732,6 +1835,110 @@ mod tests {
         // Down, nothing happens.
         struck.take_hit(None, true, 0.0, true, false);
         assert_eq!(struck.courage, lowered);
+    }
+
+    #[test]
+    fn a_hit_raises_concern_by_the_threat_estimate_and_the_kind() {
+        // The base, each kind and the attitude scale, in double precision.
+        assert_eq!(hit_concern(0.0, 0, 0.0, 0.0), Some(0.5));
+        assert_eq!(hit_concern(0.0, 1, 0.0, 0.0), Some(1.0));
+        assert_eq!(hit_concern(0.0, 2, 0.0, 0.0), Some(0.75));
+        assert_eq!(hit_concern(1.0, 0, 50.0, 0.0), Some(0.75));
+        // A rise under zero is floored before the scale.
+        assert_eq!(hit_concern(-3.0, 0, 0.0, 2.0), Some(2.0));
+        // Above the cap the result is the cap.
+        assert_eq!(hit_concern(2.0, 0, 0.0, 14.9), Some(15.0));
+        // At the cap nothing is added, nor with a NaN concern (the gate's
+        // parity jump); a NaN threat gives a NaN sum that is not capped.
+        assert_eq!(hit_concern(0.0, 0, 0.0, 15.0), None);
+        assert_eq!(hit_concern(0.0, 0, 0.0, 20.0), None);
+        assert_eq!(hit_concern(0.5, 0, 0.0, f32::NAN), None);
+        assert!(hit_concern(f32::NAN, 0, 0.0, 1.0).is_some_and(f32::is_nan));
+    }
+
+    #[test]
+    fn the_threat_estimate_weighs_nearby_bodies_against_the_attacker() {
+        // No nearby body: the full threat.
+        assert_eq!(threat_from_nearby(1, Vec3::ZERO, Vec3::Z, 40.0, &[]), 1.0);
+        // A body 100 cm ahead along the attacker's look, inside radius+100:
+        // share 100/10000 = 0.01, threat 0.99.
+        let ahead = NearbyAim {
+            id: 2,
+            aim_cm: Vec3::new(0.0, 0.0, 100.0),
+            dead: false,
+        };
+        assert_eq!(
+            threat_from_nearby(1, Vec3::ZERO, Vec3::Z, 40.0, &[ahead]),
+            0.99
+        );
+        // The attacker itself is skipped.
+        let self_entry = NearbyAim {
+            id: 1,
+            aim_cm: Vec3::new(0.0, 0.0, 10.0),
+            dead: false,
+        };
+        assert_eq!(
+            threat_from_nearby(1, Vec3::ZERO, Vec3::Z, 40.0, &[self_entry]),
+            1.0
+        );
+        // A dead body is skipped, as is one outside the radius plus 100.
+        let dead = NearbyAim {
+            dead: true,
+            ..ahead
+        };
+        let far = NearbyAim {
+            id: 3,
+            aim_cm: Vec3::new(0.0, 0.0, 200.0),
+            dead: false,
+        };
+        assert_eq!(
+            threat_from_nearby(1, Vec3::ZERO, Vec3::Z, 40.0, &[dead, far]),
+            1.0
+        );
+        // Behind the attacker's look the share is not counted.
+        let behind = NearbyAim {
+            id: 4,
+            aim_cm: Vec3::new(0.0, 0.0, -100.0),
+            dead: false,
+        };
+        assert_eq!(
+            threat_from_nearby(1, Vec3::ZERO, Vec3::Z, 40.0, &[behind]),
+            1.0
+        );
+        // The largest share wins: 50 cm ahead gives 50/2500 = 0.02.
+        let closer = NearbyAim {
+            id: 5,
+            aim_cm: Vec3::new(0.0, 0.0, 50.0),
+            dead: false,
+        };
+        assert_eq!(
+            threat_from_nearby(1, Vec3::ZERO, Vec3::Z, 40.0, &[ahead, closer]),
+            0.98
+        );
+        // Within 1 cm² the body is skipped.
+        let touching = NearbyAim {
+            id: 6,
+            aim_cm: Vec3::new(0.0, 0.0, 0.5),
+            dead: false,
+        };
+        assert_eq!(
+            threat_from_nearby(1, Vec3::ZERO, Vec3::Z, 40.0, &[touching]),
+            1.0
+        );
+    }
+
+    #[test]
+    fn a_hit_reaction_raises_the_attacker_contacts_concern() {
+        let (attacker, stranger, _, _) = ids();
+        let mut victim = Combatant::default();
+        let contact = victim.contact_mut(attacker);
+        contact.attitude = 50.0;
+        contact.concern = 1.0;
+        assert_eq!(victim.react_to_hit(attacker, 1, 0.0), Some(1.5));
+        assert_eq!(victim.contact(attacker).unwrap().concern, 1.5);
+        assert!(victim.contact(attacker).unwrap().events & EVENT_CONCERNED != 0);
+        // A stranger has no contact and no concern is written.
+        assert_eq!(victim.react_to_hit(stranger, 0, 0.0), None);
     }
 
     #[test]
