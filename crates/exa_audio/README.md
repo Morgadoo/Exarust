@@ -17,7 +17,7 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
 | `ambience` | an area's looping bed and its scheduled one-shots |
 | `reverb` | the global EAX reverb parameter block and the level's decay offset |
 | `hits`, `footsteps` | the game's first two users of the mixer; the footsteps read the body's gait plants (`exa_physics::body::Footstep`) with the original's gain and pitch, and keep a speed timer for bodies without a ragdoll |
-| `sounds` | the body's named sets: `SwingHA`, `StmHeal01`, the hit classes (`BdyCol`, `SkelHit`, `HitGlm`, cloth, leather, mail, plate) and the foley loops (`FoleyPlH`, `Golem_Foley`) |
+| `sounds` | the body's named sets: `SwingHA`, `StmHeal01`, the part impact's classes in the item byte's order (`BdyCol` or `SkelHit` for 0, then `HitClt`, `HitLtr`, `HitChn`, `HitPlt`, `HitHbr`, `HitGlm`) and the foley loops (`FoleyClt`, `FoleyLtr`, `FoleyChn`, `FoleyPlt`, `FoleyHbr` by class, `FoleyPlH`, `Golem_Foley`) |
 | `loops` | the looping sources a character keeps: one per held item and its body's voice and foley pair |
 | `bodies` | the plain rigid bodies' collision one-shots and scrape loops (`exa_physics::prop::BodySounds`) |
 | `mechanisms` | the doors', levers' and push surfaces' restarted creak voices, their one-shots and the lever's return tick loop (`exa_physics::mechanism_sound`) |
@@ -183,9 +183,11 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
   and `play_buffer_attached` a named buffer (a fire's loop,
   `exa_game::fire_sound`).
 - A clothing foley loop is chosen by the summed coverage per hit-sound
-  class times the per-bone weights (`FoleyPlH`) and its volume by the
-  class's volume factor; a golem body plays `FoleyPlH` at 2, or
-  `Golem_Foley` at 6 (1 for race 0x1200).
+  class times the per-bone weights and its volume by the class's volume
+  factor, and plays that class's own set (2 `FoleyLtr`, 3 `FoleyChn`, 4
+  `FoleyPlt`, 5 `FoleyHbr`; flesh and cloth weigh nothing and never loop);
+  a golem body plays `FoleyPlH` at 2, or `Golem_Foley` at 6 (1 for race
+  0x1200). A limb impact logs its set at debug level ("limb impact: …").
 
 ### Rigid bodies (`bodies`)
 

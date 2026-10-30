@@ -29,7 +29,8 @@ pub enum HitSound {
     Skeleton,
     /// The golem's `HitGlm`.
     Golem,
-    /// An armour class (cloth, leather, mail, plate, …).
+    /// An armour layer's class as the item byte stores it (1 cloth, 2
+    /// leather, 3 mail, 4 plate, 5 `HitHbr`, 6 golem).
     Class(u8),
 }
 
@@ -71,8 +72,9 @@ pub const FOLEY_BONE_WEIGHTS: [f32; 18] = [
     0.5, 0.75, 0.75, 0.75, 0.75, 0.75, 0.75, 0.5, 0.5, 0.1, 0.3, 0.2, 0.15, 0.3, 0.2, 0.15, 0.1,
     0.1,
 ];
-/// Each hit-sound class's share of the foley weight (classes 0–5; classes
-/// 0 and 1 are flesh and bone, which have no cloth loop).
+/// Each hit-sound class's share of the foley weight, by the item byte's
+/// class (0 flesh, 1 cloth, 2 leather, 3 mail, 4 plate, 5 `HitHbr`): flesh
+/// and cloth weigh nothing, so they never loop.
 pub const FOLEY_FACTOR: [f32; 6] = [0.0, 0.0, 0.3, 0.6, 1.0, 1.0];
 /// The foley loop's volume per class, times the summed coverage.
 pub const FOLEY_VOLUME: [f32; 6] = [0.0, 0.0, 0.15, 0.6, 0.4, 0.4];
@@ -396,8 +398,8 @@ mod tests {
 
     #[test]
     fn the_foley_weights_and_volumes() {
-        // Plate on the chest (part 2, weight 0.75) and leather on the legs
-        // (parts 3–6, 0.75): plate 1.5 × 1 = 1.5, leather 3 × 0.6 = 1.8.
+        // Plate (4) on the chest (part 2, weight 0.75) and mail (3) on the
+        // legs (parts 3–6, 0.75): plate 0.75 × 1, mail 3 × 0.6 = 1.8.
         let mut armour = [PartArmour::default(); 18];
         for part in &mut armour {
             part.inner = layer(0.0, 0);
@@ -432,6 +434,30 @@ mod tests {
         assert_eq!((g.kind, g.volume, g.base), (FoleyKind::Golem, 1.0, 1.0));
         let g = foley(&armour, true, true, false);
         assert_eq!((g.kind, g.volume, g.base), (FoleyKind::Golem, 6.0, 1.5));
+    }
+
+    /// The foley factors follow the item byte's classes: a body all in
+    /// cloth (1) never loops, all in leather (2) loops at 0.3 of the
+    /// summed weights (7.6) and its volume is 0.15 of them.
+    #[test]
+    fn the_foley_factors_follow_the_item_bytes_order() {
+        let all = |class| {
+            [PartArmour {
+                inner: layer(1.0, class),
+                outer: None,
+            }; 18]
+        };
+        assert_eq!(foley(&all(0), false, false, false), Foley::NONE);
+        assert_eq!(foley(&all(1), false, false, false), Foley::NONE);
+        let leather = foley(&all(2), false, false, false);
+        assert_eq!(leather.kind, FoleyKind::Class(2));
+        assert!((leather.volume - 7.6 * 0.15).abs() < 1e-5);
+        for class in 3..6 {
+            assert_eq!(
+                foley(&all(class), false, false, false).kind,
+                FoleyKind::Class(class)
+            );
+        }
     }
 
     fn sword() -> StruckItem {
