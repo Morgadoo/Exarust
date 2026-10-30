@@ -733,3 +733,64 @@ fn the_runtime_generation_covers_a_six_metre_wall_into_496_points() {
         assert!((p.x.abs() <= 3.0) && (p.y >= 0.0) && (p.y <= 3.0) && (p.z.abs() <= 0.1));
     }
 }
+
+#[test]
+fn the_sorted_list_matches_the_originals_insertion() {
+    // Counts in scan order, inserted one by one after every equal count,
+    // give the same list as the stable ascending sort.
+    let counts = [5u16, 3, 5, 1, 27, 3, 3, 9, 1, 5, 27, 2];
+    let mut inserted: Vec<SurfaceCell> = Vec::new();
+    for (i, &count) in counts.iter().enumerate() {
+        let cell = SurfaceCell {
+            cell: [i as u16, 0, 0],
+            count,
+        };
+        inserted.insert(list_position(&inserted, count), cell);
+    }
+    let order: Vec<u16> = inserted.iter().map(|c| c.cell[0]).collect();
+    assert_eq!(order, [3, 8, 11, 1, 5, 6, 0, 2, 9, 7, 4, 10]);
+    let mut sorted: Vec<SurfaceCell> = counts
+        .iter()
+        .enumerate()
+        .map(|(i, &count)| SurfaceCell {
+            cell: [i as u16, 0, 0],
+            count,
+        })
+        .collect();
+    sorted.sort_by_key(|c| c.count);
+    assert_eq!(sorted.iter().map(|c| c.cell[0]).collect::<Vec<_>>(), order);
+}
+
+#[test]
+fn a_split_tree_answers_like_the_plain_query() {
+    // A floor of 16 x 16 quads (512 triangles) plus a slanted face: the
+    // tree splits many levels deep, and every branch must be visited.
+    let mut triangles: Vec<[Vec3; 3]> = Vec::new();
+    for i in 0..16 {
+        for j in 0..16 {
+            let (x0, z0) = (-100.0 + i as f32 * 12.5, -100.0 + j as f32 * 12.5);
+            let y = ((i * 7 + j * 3) % 5) as f32;
+            triangles.extend(quad(x0, z0, x0 + 12.5, z0 + 12.5, y));
+        }
+    }
+    triangles.push([
+        Vec3::new(60.0, 0.0, 60.0),
+        Vec3::new(60.0, 60.0, 90.0),
+        Vec3::new(95.0, 0.0, 95.0),
+    ]);
+    let query = MeshQuery::new(&triangles);
+    let mut hits = 0;
+    for z in -15..=15 {
+        for y in -2..=8 {
+            for x in -15..=15 {
+                let p = Vec3::new(x as f32 * 7.0, y as f32 * 7.0, z as f32 * 7.0);
+                let tree = query.touches(p, 5.0);
+                assert_eq!(tree, mesh_touches(&triangles, p, 5.0), "{p:?}");
+                hits += tree as usize;
+            }
+        }
+    }
+    // Points over the far (right-hand) quads are found too.
+    assert!(query.touches(Vec3::new(95.0, 6.0, 95.0), 6.0));
+    assert!(hits > 1000, "{hits}");
+}

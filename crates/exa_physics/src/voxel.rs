@@ -832,8 +832,8 @@ struct QueryNode {
     max: Vec3,
     start: u32,
     end: u32,
-    /// The left child's node index; `None` for a leaf.
-    left: Option<u32>,
+    /// The two children's node indices; `None` for a leaf.
+    children: Option<[u32; 2]>,
 }
 
 /// The most triangles a leaf keeps before the tree splits it.
@@ -869,11 +869,8 @@ impl MeshQuery {
             if box_distance_squared(node.min, node.max, centre) > limit {
                 continue;
             }
-            match node.left {
-                Some(left) => {
-                    stack.push(left);
-                    stack.push(left + 1);
-                }
+            match node.children {
+                Some(children) => stack.extend(children),
                 None => {
                     for &i in &self.order[node.start as usize..node.end as usize] {
                         if let Some(t) = self.triangles.get(i as usize)
@@ -913,7 +910,7 @@ fn build_query_node(
         max,
         start: start as u32,
         end: end as u32,
-        left: None,
+        children: None,
     });
     if end - start <= QUERY_LEAF {
         return at;
@@ -936,8 +933,7 @@ fn build_query_node(
     });
     let left = build_query_node(nodes, order, triangles, start, mid);
     let right = build_query_node(nodes, order, triangles, mid, end);
-    debug_assert_eq!(right, left + 1);
-    nodes[at as usize].left = Some(left);
+    nodes[at as usize].children = Some([left, right]);
     at
 }
 
@@ -1053,15 +1049,21 @@ fn clean_and_list(grid: &mut [u8], dims: [usize; 3]) -> Vec<SurfaceCell> {
                     }
                 }
                 let cell = [x as u16, y as u16, z as u16];
-                list.insert(list_position(&list, count), SurfaceCell { cell, count });
+                list.push(SurfaceCell { cell, count });
             }
         }
     }
+    // The original inserts each cell after every equal count (a binary
+    // search, then a walk past equals): an ascending stable sort of the scan
+    // order gives the same list without the quadratic shifting.
+    list.sort_by_key(|c| c.count);
     list
 }
 
 /// Where a count goes in the ascending list: after every equal count, as
-/// the original's binary search and its walk past equals do.
+/// the original's binary search and its walk past equals do. The reference
+/// the stable sort in [`clean_and_list`] is checked against.
+#[cfg(test)]
 fn list_position(list: &[SurfaceCell], count: u16) -> usize {
     let mut low = 0i64;
     let mut high = list.len() as i64 - 1;
