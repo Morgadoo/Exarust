@@ -613,11 +613,13 @@ pub fn tone_weight(error: f32, flag: bool, state: i32, scale: f32) -> f32 {
 ///
 /// The original converts the 1660 with `CVTSI2SS`, forms `(1 − 0.25x)·1660`
 /// and divides by 83 with `DIVSS` (both single precision), then converts
-/// with `CVTSS2SI`, which rounds to nearest with ties to even: an exertion
-/// of 0.5 gives 1452.5 / 83 = 17.5 and a target of 18, not 17.
+/// with a 64-bit `CVTSS2SI`, which rounds to nearest with ties to even, and
+/// keeps the low 32 bits: an exertion of 0.5 gives 1452.5 / 83 = 17.5 and a
+/// target of 18, not 17, and a NaN gives the 64-bit indefinite, whose low
+/// word is 0.
 pub fn cadence_target(exertion: f32) -> i32 {
     let v = (1.0 - exertion * 0.25) * 1660.0;
-    crate::engine_math::round_to_i32(v / 83.0)
+    crate::engine_math::round_to_i64(v / 83.0) as i32
 }
 
 /// One tick of the pitch impulse: a flagged impulse of `sign(v)·(v·v)·2`,
@@ -629,8 +631,7 @@ pub fn cadence_target(exertion: f32) -> i32 {
 /// sign bit copied onto one, so a NaN keeps its sign.
 pub fn pitch_step(previous: f32, v: f32, flag: bool) -> f32 {
     let p = if flag {
-        let sign = if v == 0.0 { 0.0 } else { 1.0_f32.copysign(v) };
-        sign * (v * v) * 2.0
+        crate::engine_math::sign(v) * (v * v) * 2.0
     } else {
         previous
     };
@@ -721,8 +722,9 @@ mod stage_tests {
         assert_eq!(cadence_target(0.5), 18);
         assert_eq!(cadence_target(0.75), 16);
         assert_eq!(cadence_target(1.0), 15);
-        // A NaN exertion gives the conversion's integer indefinite.
-        assert_eq!(cadence_target(f32::NAN), i32::MIN);
+        // A NaN exertion gives the 64-bit integer indefinite, whose low
+        // word is 0.
+        assert_eq!(cadence_target(f32::NAN), 0);
     }
 
     #[test]

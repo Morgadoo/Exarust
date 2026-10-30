@@ -1597,9 +1597,6 @@ impl Ragdoll {
     }
 }
 
-/// The episode ended: one support foot is put on its spot and the standing
-/// position moves so that spot is where the foot is. `spots` are the pose's
-/// ankles, not the step's shifted ones.
 /// The step's end: the free foot nearest the target becomes the new support
 /// foot and the standing position moves so that foot is where it is.
 ///
@@ -1614,7 +1611,8 @@ impl Ragdoll {
 /// is used, as the original's index starts there. That foot is set touching
 /// (its ramp bits kept) with its anchor taken from its posed point unless
 /// it had reached, and the standing position is placed so the foot's spot
-/// sits where the foot is.
+/// sits where the foot is. `spots` are the pose's ankles, not the step's
+/// shifted ones.
 fn end_step(
     steps: &mut steps::Steps,
     legs: &mut [Leg],
