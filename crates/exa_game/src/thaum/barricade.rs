@@ -276,8 +276,11 @@ pub struct Barricade {
     pub drawn: [f32; 2],
     /// The texture's two random offsets.
     pub texture: [f32; 2],
-    /// The node's half size and height (the mesh's).
+    /// The node's half size and height: the mesh build's, then what each
+    /// rising or falling frame writes (the half width and height drawn).
     pub node_half: Vec3,
+    /// The node's place: the rising frame's slid middle, else the centre.
+    pub node_at: Vec3,
     pub stamp: Option<NavStamp>,
     /// The cast hook was installed (the cast motion started).
     pub spawned: bool,
@@ -337,6 +340,7 @@ impl Barricade {
             drawn: [0.0, 0.0],
             texture,
             node_half: NODE_HALF,
+            node_at: frame.at,
             stamp,
             spawned: false,
             entity: false,
@@ -615,6 +619,9 @@ impl Barricade {
                 out.at = self.base + self.frame.x * offset;
                 out.texture = offset * 0.003_333_333_4 + self.texture[0];
                 out.slide = REACH - out.half_width;
+                self.node_half.x = out.half_width;
+                self.node_half.y = out.half_height;
+                self.node_at = out.at;
             }
             state::FALLING => {
                 out.mode = 2;
@@ -623,9 +630,12 @@ impl Barricade {
                 let t2 = t * t;
                 out.half_width = (0.5 - t2 * t2 * 0.2) * (self.drawn[0] + self.drawn[1]);
                 out.half_height = (1.0 - t2 * t2 * 0.75) * 100.0;
+                self.node_half.x = out.half_width;
+                self.node_half.y = out.half_height;
+                self.node_at = self.centre;
             }
             state::GONE => return None,
-            _ => {}
+            _ => self.node_at = self.centre,
         }
         out.hum = match self.state {
             state::STANDING => Some((0.5, 1.0)),

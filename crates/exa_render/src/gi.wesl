@@ -184,7 +184,7 @@ fn voxel_lights(id: vec3<u32>, dims: vec3<u32>) -> vec3<f32> {
 
 // The registered shapes' contribution to voxel `id` this step: the
 // original's per-shape draw over its clipped box, evaluated per voxel. The
-// six bodies are its `shading.flb` fragment programs (see
+// seven bodies are its `shading.flb` fragment programs (see
 // `exa_render::gi_shape`, which evaluates the same bodies on the CPU).
 fn gl_min(x: f32, y: f32) -> f32 { return select(x, y, y < x); }
 fn gl_max(x: f32, y: f32) -> f32 { return select(x, y, x < y); }
@@ -233,6 +233,19 @@ fn shape_cuboid(s: GiShape, p: vec3<f32>) -> vec3<f32> {
     let l = dot(d, d);
     let atn = gl_max(1.0 - l * 0.0002, 0.0);
     return gl_max3(s.colour.rgb * atn, vec3(0.0));
+}
+
+// `gi_cuboid_fn`: the barricade's box, its falloff driven by a projected
+// texture: the ridge cubed, 6×, then a hundredth taken off.
+fn shape_cuboid_fn(s: GiShape, p: vec3<f32>) -> vec3<f32> {
+    let tc = vec2(p.x * 0.00244 + s.tex_pos.x, (p.y * 0.00211 + s.tex_pos.y) + 0.25);
+    let a0 = shape_texel(tc * 0.75);
+    let a = 1.0 - abs(a0 - 0.4) * 2.0;
+    let d = gl_max3(abs(p) - s.half.xyz, vec3(0.0));
+    let l = dot(d, d);
+    let atn = gl_max(1.0 - l * 0.002, 0.0);
+    let shaped = atn * 6.0 * a * a * a;
+    return gl_max3(s.colour.rgb * shaped - vec3(0.01), vec3(0.0));
 }
 
 // `gi_bubble`: a shell at Radius with the bubble texture cubed, the vertical
@@ -355,8 +368,10 @@ fn shape_light(id: vec3<u32>, world: vec3<f32>, occ: f32) -> vec3<f32> {
             rgb += shape_telebubble(s, p);
         } else if prog == 4u {
             rgb += shape_gradline(s, world * unit);
-        } else {
+        } else if prog == 5u {
             rgb += shape_multipoint(s, world * unit);
+        } else {
+            rgb += shape_cuboid_fn(s, p);
         }
     }
     _ = occ;

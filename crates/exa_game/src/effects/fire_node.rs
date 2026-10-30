@@ -9,8 +9,15 @@
 //! intensity 0.01 to start and 5 at full, attached to the node and
 //! handed to the row; the row's sound is `FireS02`.
 //!
-//! Evidence: the node builder and its light-and-sound pass, read from
-//! `Exanima.exe`. The row's own simulation is [`super::fire_row`].
+//! The unit's object-to-descriptor conversion turns the object record's
+//! colour-ramp byte into the descriptor's two colour values
+//! ([`flame_ramp`]); its template words by kind
+//! (0x11/0x12/0x13/0x14/0x22/0x23/0x32/0x421/0x521) and the rest of the
+//! copied fields are not ported.
+//!
+//! Evidence: the node builder, its light-and-sound pass and the
+//! object-to-descriptor conversion, read from `Exanima.exe`. The node's own
+//! GL draw is not ported; the row's simulation is [`super::fire_row`].
 
 use super::fire_row;
 
@@ -36,6 +43,23 @@ pub const LIGHT_FULL_INTENSITY: f32 = fire_row::LIGHT_BASE_INTENSITY;
 pub const LIGHT_SIZE: f32 = 1.0;
 /// The loop sound.
 pub const LOOP_SOUND: &str = "FireS02";
+
+/// The descriptor's two colour-ramp bytes from the object record's byte:
+/// below 0x47 the pair (20, 200); below 0x5A `(b − 10)·2` and `(b + 10)·2`;
+/// from 0x5A `(b·2 − 100)·2` and 200. The arithmetic is the original's
+/// single-byte one and wraps.
+pub fn flame_ramp(byte: u8) -> (u8, u8) {
+    if byte < 0x47 {
+        (0x14, 0xc8)
+    } else if byte < 0x5a {
+        (
+            byte.wrapping_sub(10).wrapping_mul(2),
+            byte.wrapping_add(10).wrapping_mul(2),
+        )
+    } else {
+        (byte.wrapping_mul(2).wrapping_sub(100).wrapping_mul(2), 0xc8)
+    }
+}
 
 /// What a fire node adds to the world: its light and its loop.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -91,5 +115,19 @@ mod tests {
         assert_eq!(light.colour[2], f32::from_bits(0x3edc_28f6));
         assert_eq!(LOOP_SOUND, "FireS02");
         assert_eq!(LIGHT_FULL_INTENSITY, 5.0);
+    }
+
+    #[test]
+    fn the_flame_ramp_follows_the_records_byte() {
+        assert_eq!(flame_ramp(0x00), (20, 200));
+        assert_eq!(flame_ramp(0x46), (20, 200));
+        // 0x47: (0x3d)·2 = 122 and 0x51·2 = 162.
+        assert_eq!(flame_ramp(0x47), (122, 162));
+        // 0x59: 79·2 = 158 and 99·2 = 198.
+        assert_eq!(flame_ramp(0x59), (158, 198));
+        // 0x5A: 180 − 100 = 80, ×2 = 160 and the fixed 200.
+        assert_eq!(flame_ramp(0x5a), (160, 200));
+        // The byte's arithmetic wraps: 0x7f gives 308 → 52.
+        assert_eq!(flame_ramp(0x7f), (52, 200));
     }
 }

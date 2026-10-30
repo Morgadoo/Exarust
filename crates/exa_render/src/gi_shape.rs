@@ -6,8 +6,9 @@
 //! per-program uniforms `SliceSz` and `ZTrn`; everything else a body reads
 //! (`Colour`, `bMat`, `bExt`, `Radius`, the line and point lists) is the
 //! shape's own class's. The bodies below are the original's
-//! own `shading.flb` fragment programs (`gi_dome`, `gi_cuboid`, `gi_bubble`,
-//! `gi_telebubble`, `gi_gradline`, `gi_multipoint`), evaluated per voxel: a
+//! own `shading.flb` fragment programs (`gi_dome`, `gi_cuboid`,
+//! `gi_cuboid_fn`, `gi_bubble`, `gi_telebubble`, `gi_gradline`,
+//! `gi_multipoint`), evaluated per voxel: a
 //! shape's fragment reads only its own uniforms and the voxel's position, so
 //! evaluating it per voxel is what its quad-per-slice draw computes.
 //!
@@ -38,6 +39,9 @@ pub enum GiShapeProgram {
     Dome,
     /// `gi_cuboid`: a box with a soft edge falloff.
     Cuboid,
+    /// `gi_cuboid_fn`: a box whose falloff is driven by a projected
+    /// texture (the barricade's).
+    CuboidFn,
     /// `gi_bubble`: a sphere shell with a bubble texture.
     Bubble,
     /// `gi_telebubble`: the teleporter's pulsing bubble.
@@ -50,13 +54,14 @@ pub enum GiShapeProgram {
 
 impl GiShapeProgram {
     /// Every program, in the shader library's order.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Dome,
         Self::Cuboid,
         Self::Bubble,
         Self::TeleBubble,
         Self::GradLine,
         Self::Multipoint,
+        Self::CuboidFn,
     ];
 
     /// The entry's name in the shader library (the manager links
@@ -65,6 +70,7 @@ impl GiShapeProgram {
         match self {
             Self::Dome => "gi_dome",
             Self::Cuboid => "gi_cuboid",
+            Self::CuboidFn => "gi_cuboid_fn",
             Self::Bubble => "gi_bubble",
             Self::TeleBubble => "gi_telebubble",
             Self::GradLine => "gi_gradline",
@@ -171,6 +177,7 @@ impl GiShape {
         match self.program {
             GiShapeProgram::Dome => self.dome(at, occupancy, &texel),
             GiShapeProgram::Cuboid => self.cuboid_body(at, occupancy),
+            GiShapeProgram::CuboidFn => self.cuboid_fn(at, occupancy, &texel),
             GiShapeProgram::Bubble => self.bubble(at, occupancy, &texel),
             GiShapeProgram::TeleBubble => self.telebubble(at, occupancy, &texel),
             GiShapeProgram::GradLine => self.gradline(at),
@@ -220,6 +227,28 @@ impl GiShape {
         let atn = gl_max(1.0 - l_dst * 0.0002, 0.0);
         GiShapeSample {
             colour: (self.colour * atn).max(Vec3::ZERO),
+            alpha: 0.0,
+        }
+    }
+
+    /// `gi_cuboid_fn`: the box falloff driven by a projected texture, its
+    /// ridge cubed, 6 times, then a hundredth taken off the result.
+    fn cuboid_fn(&self, at: Vec3, occupancy: f32, texel: &impl Fn(Vec2) -> f32) -> GiShapeSample {
+        let p = self.framed(at);
+        let _ = gl_min(occupancy * 20.0, 1.0);
+        let tc = Vec2::new(
+            p.x * 0.00244 + self.tex_pos.x,
+            (p.y * 0.00211 + self.tex_pos.y) + 0.25,
+        );
+        let a = texel(tc * 0.75);
+        let a = 1.0 - (a - 0.4).abs() * 2.0;
+        let v = (p.abs() - self.half).max(Vec3::ZERO);
+        let l_dst = v.dot(v);
+        let atn = gl_max(1.0 - l_dst * 0.002, 0.0);
+        let atn = atn * 6.0 * a * a * a;
+        let out = (self.colour * atn).max(Vec3::ZERO) - Vec3::splat(0.01);
+        GiShapeSample {
+            colour: out.max(Vec3::ZERO),
             alpha: 0.0,
         }
     }
@@ -572,6 +601,35 @@ mod tests {
                 .radiance(Vec3::new(6.0, 1.0, 1.0), 0.0, |_| 0.0)
                 .colour
         );
+    }
+
+    /// `gi_cuboid_fn`: the projected texture's ridge cubed at 6×, a
+    /// hundredth off, and the texture window the body asks for.
+    #[test]
+    fn the_barricade_cuboid_takes_its_falloff_from_the_texture() {
+        let shape = GiShape {
+            colour: Vec3::splat(1.0),
+            half: Vec3::ZERO,
+            ..ident(GiShapeProgram::CuboidFn)
+        };
+        let asked = std::cell::RefCell::new(Vec::new());
+        let out = shape.radiance(Vec3::ZERO, 0.0, |uv| {
+            asked.borrow_mut().push(uv);
+            0.4
+        });
+        // At the origin the texel is 0.4 (a = 1), nothing is outside the box
+        // and the light is 1·6 less the hundredth.
+        assert_eq!(asked.borrow()[0], Vec2::new(0.0, 0.1875));
+        assert_eq!(out.colour, Vec3::splat(6.0 - 0.01));
+        // 10 units out on x: l = 100, 1 − 0.2 = 0.8, ×6.
+        let far = shape.radiance(Vec3::X * 10.0, 0.0, |_| 0.4);
+        assert_eq!(far.colour, Vec3::splat(0.8 * 6.0 - 0.01));
+        assert_eq!(far.alpha, 0.0);
+        assert_eq!(
+            GiShapeProgram::from_name("gi_cuboid_fn"),
+            Some(GiShapeProgram::CuboidFn)
+        );
+        assert_eq!(GiShapeProgram::CuboidFn.index(), 6);
     }
 
     /// `gi_dome`: at the dome's centre the ridge texture is cubed and the

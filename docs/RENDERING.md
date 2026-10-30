@@ -2773,6 +2773,19 @@ rules in `exa_render::electricity` and a Bevy layer in `exa_world::arc`.
   charge (heavy when the record's kind word has 0x10; a spent charge or a
   missing record clears the item's arc effect) and always spawns the spark
   burst there, charged or not (`discharge`).
+- **Level tone.** The template selection's per-call values are in
+  `electric_tone`: the effect level (a negative level is zero for the
+  arithmetic; the template choice reads it as passed), the brief choice
+  (`brief_effect`: level 5 never, below 3 always, 3 when the engine
+  generator's draw below 2 is 0, above 3 when its draw below 8 is 0), the
+  strength `(level·0.05 + scale) + (1 − level·0.05)·curve` with the level
+  term in double and the sum clamped above at one (a not-a-number kept),
+  the opacity `0.7 − strength·0.6` blended with a positive owner alpha as
+  `alpha·0.3 + owner·0.7` (double) and, for the peak tone (`peak_tone`:
+  level 5 with the owner's state word zero, never brief), redrawn as
+  `0.4 − curve·0.375` from a second curve sample (product in single,
+  difference in double), the intensity `roll + level·0.4` in double, and
+  the template lifetime 0x16 (brief) or 0x44. Nothing calls the tone yet.
 - **Geometry.** Each tendril is a polyline of `segments` points between the
   arc's ends (along +X, the segments end to end, unless a record or a
   device sets the direction and length), jittered inside them; each
@@ -2809,8 +2822,9 @@ arc layer (nothing spawns one yet).
 ## Force effects
 
 `exa_render::force_effects` holds the Force effects' programs, ported from
-the shipped GLSL (`effectforce_f`, `effecttorrent_f`, `effectshell_v` /
-`effectshell_f`, `effectfrcstrk_f`); `exa_game::thaum::effect_draw` submits them
+the shipped GLSL (`effectforce_f`, `effecttorrent_f`, `effectsmoke_f`,
+`effectshell_v` / `effectshell_f`, `effectfrcstrk_f`);
+`exa_game::thaum::effect_draw` submits them
 ([THAUMATURGY.md](THAUMATURGY.md), The shaped-force aura).
 
 - **Ribbons** (`ForceRibbonMaterial`, `force_ribbon.wesl`): the blast, bolt
@@ -2820,7 +2834,10 @@ the shipped GLSL (`effectforce_f`, `effecttorrent_f`, `effectshell_v` /
   first coordinate set, `vTx2` the second (`ATTRIBUTE_UV_1`), `vCol` the
   colour bytes over 255. `TexOfs` is the uniform, `EmiTex` the noise
   picture. `effectforce_f` never writes its alpha; it is taken as 0, so the
-  blast ribbon only adds.
+  blast ribbon only adds. With the `SMOKE` definition it is the
+  displacement tendril's `effectsmoke_f`: three `EmiTex` reads, the smoke's
+  vertical taper and the black, alpha-only output the premultiplied blend
+  darkens the scene with.
 - **Shell aura** (`ForceShellMaterial`, `force_shell.wesl`): its own vertex
   stage on Bevy's skinning moves each vertex out 2 cm along its skinned
   normal (the skinned copy's `position + 2·normal`); the fragment stage
@@ -3304,7 +3321,13 @@ themselves are not ported and nothing draws the domes yet.
 `effects::emissive` models the seven GI lights the effects carry
 (`gi_dome`, `gi_bubble`, `gi_cuboid_fn`, `gi_cuboid`, `gi_gradline`,
 `gi_multipoint`, `gi_telebubble`) with their extents, colours and world
-boxes; nothing injects them into the GI volume yet.
+boxes; the blast's, the torrent's, the teleporter bubble's, the Barrier's
+`gi_dome`, the force Bubble's `gi_bubble` and the barricade's
+`gi_cuboid_fn` are registered as `exa_render::gi::GiShape`s while their
+effects live. The strikes' `gi_gradline` shape is built by
+`thaum::effect_light::strikes_shape` but the strikes aura does not carry
+the weapon's two line points yet; the cuboid and tendril lights wait for a
+live effect.
 
 ## Rain and the portal's spray
 
@@ -3323,7 +3346,20 @@ rain set. `effects::portal_effect` spawns a portal's particles one at a
 time on an 80 × 115 cm ellipse at the node's place, each starting with an
 outward step of 0.0015 of its offset, with the original's 3- or 5-bit look
 index draws. `effects::fire_node` builds the `_FlameMat01` node's warm
-800 cm light; the row itself is `effects::fire_row`.
+800 cm light, and the colour ramp the unit's object conversion derives
+from a record byte (`flame_ramp`); the row itself is `effects::fire_row`. The row's ribbon is
+built each frame from the two shifted ends of the line and the two lagging
+points: 16 sections of 8 vertices, the cross-section turned toward the
+interpolated lag, its width 1.5 times the line over the section count and
+its far side wobbled by 0.2 of the line (multiplied in double) times one less the direction's
+face-on weight, with the fixed 0.025-step texture coordinates, the
+black/black/white/white vertex colours and 192 indices. The row's material
+(`exa_render::flame_row`, `flame_row.wesl`) is the shipped `_FlameMat01`
+fragment stage: four `EmiTex` reads over scrolled coordinates, the vertical
+falloff, the `Anim` roll and fade, and a 1 × 5 `GrdTex` palette from
+transparent to warm white. The draw is additive [guess: the record's blend
+state is not in this path] and the original's per-supersample scissor pass
+is collapsed to one draw.
 
 The mind effects build a **UV sphere** instead: `segments` columns and
 `segments / 2` rows from pole to pole at an angle step 2π/segments on both

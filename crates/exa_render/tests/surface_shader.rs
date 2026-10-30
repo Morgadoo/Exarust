@@ -261,8 +261,9 @@ fn stages(module: &naga::Module) -> Vec<naga::ShaderStage> {
 fn the_force_ribbon_shader_composes_and_validates() {
     let (mut cache, ribbon) =
         cache_with_every_shader_and("embedded://exa_render/force_ribbon.wesl");
-    // The blast's program, the torrent's, and a mesh missing its extra sets.
-    let variants: [&[&'static str]; 3] = [
+    // The blast's program, the torrent's, the tendril's smoke, and a mesh
+    // missing its extra sets.
+    let variants: [&[&'static str]; 4] = [
         &[
             "VERTEX_UVS",
             "VERTEX_UVS_A",
@@ -275,6 +276,13 @@ fn the_force_ribbon_shader_composes_and_validates() {
             "VERTEX_UVS_B",
             "VERTEX_COLORS",
             "TORRENT",
+        ],
+        &[
+            "VERTEX_UVS",
+            "VERTEX_UVS_A",
+            "VERTEX_UVS_B",
+            "VERTEX_COLORS",
+            "SMOKE",
         ],
         &["VERTEX_UVS", "VERTEX_UVS_A"],
     ];

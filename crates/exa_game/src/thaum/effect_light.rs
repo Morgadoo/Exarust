@@ -1,7 +1,7 @@
 //! The GI light shapes the running effects register: the force blast's and
-//! the force torrent's multi-point lights and the teleporter bubble's
-//! pulsing shell, injected into the voxel GI as
-//! [`exa_render::gi::GiShape`]s.
+//! the force torrent's multi-point lights, the teleporter bubble's pulsing
+//! shell, the force Barrier's dome and the force Bubble's shell, injected
+//! into the voxel GI as [`exa_render::gi::GiShape`]s.
 //!
 //! As the original does it:
 //!
@@ -29,16 +29,21 @@
 //! destroy slots and frames, the manager's list append and swap removal,
 //! and the three emissives' bounds and draws, read from `Exanima.exe`.
 
+use bevy::math::Affine3A;
 use bevy::prelude::*;
 use exa_render::gi::{GiShape, GiShapeProgram, ShapeVolume};
 
+use super::barrier_live::LiveBarrier;
 use super::blast_live::LiveBlast;
+use super::bubble_live::LiveBubble;
 use super::torrent_live::LiveTorrent;
 use crate::effects::Frame as ViewFrame;
 use crate::effects::blast::{Blast, THROWN};
 use crate::effects::bubble::{Bubble, BubbleEffect, SIZE_CM};
 use crate::effects::emissive::{self, FALLOFF_CM, MultiPointLight};
+use crate::effects::force_dome::{BARRIER_DRAW_SCALE, Barrier, Bubble as ForceBubble};
 use crate::effects::torrent::Torrent;
+use crate::thaum::barricade::Barricade;
 
 /// Centimetres a metre.
 const CM: f32 = 100.0;
@@ -155,6 +160,172 @@ pub fn bubble_shape(
         ..default()
     };
     (shape, volume_of(centre, half))
+}
+
+/// The Barrier's light shape this frame: the `gi_dome` shell in the cap
+/// node's own frame (its `bMat` the inverse of the node's place and facing,
+/// where the program's 100-unit shell is the cap's sphere, its cap toward
+/// +z), the colour and extent of [`emissive::barrier_light`], in the node's
+/// 85 × 85 × 25 cm box 75 cm ahead, turned with it, plus 60 cm. [inf: the
+/// node's basis is the cap frame the push uses, the facing flattened; the
+/// original orthogonalises its up against an unflattened facing.]
+pub fn barrier_shape(barrier: &Barrier, alpha: f32, gain: f32) -> (GiShape, ShapeVolume) {
+    let dome = &barrier.dome;
+    let frame =
+        super::barrier_live::cap_frame(barrier.frame_place(alpha), barrier.frame_facing(alpha));
+    let light = emissive::barrier_light(dome.phase, dome.shown_share, BARRIER_DRAW_SCALE, gain);
+    let (box_centre, half) = emissive::world_box(
+        barrier.drawn_centre(alpha),
+        [
+            frame.matrix3.x_axis.into(),
+            frame.matrix3.y_axis.into(),
+            frame.matrix3.z_axis.into(),
+        ],
+        BARRIER_DRAW_SCALE,
+        FALLOFF_CM,
+    );
+    let shape = GiShape {
+        program: GiShapeProgram::Dome,
+        colour: light.colour,
+        matrix: Mat4::from(frame.inverse()),
+        half: light.extent,
+        tex_pos: Vec2::from(dome.tex_pos),
+        ..default()
+    };
+    (shape, volume_of(box_centre, half))
+}
+
+/// The force Bubble's light shape this frame: the `gi_bubble` shell at the
+/// dome's place with the radius five past the dome's, the colour and fade
+/// of [`emissive::bubble_light`], in the dome's box plus 60 cm.
+pub fn force_bubble_shape(bubble: &ForceBubble, gain: f32) -> (GiShape, ShapeVolume) {
+    let dome = &bubble.dome;
+    let light = emissive::bubble_light(dome.phase, dome.shown_share, dome.radius, gain);
+    let (centre, half) = emissive::world_box(
+        dome.at,
+        [Vec3::X, Vec3::Y, Vec3::Z],
+        Vec3::splat(dome.radius),
+        FALLOFF_CM,
+    );
+    let shape = GiShape {
+        program: GiShapeProgram::Bubble,
+        colour: light.colour,
+        matrix: Mat4::from_translation(-dome.at),
+        half: Vec3::splat(light.radius),
+        tex_pos: Vec2::from(dome.tex_pos),
+        radius: light.radius,
+        fade: light.fade,
+        ..default()
+    };
+    (shape, volume_of(centre, half))
+}
+
+/// The barriers' lights, refreshed from their phase every frame; a
+/// barrier's light leaves with it.
+pub(crate) fn barrier_lights(
+    mut commands: Commands,
+    barriers: Query<(Entity, &LiveBarrier, Option<&EffectLight>)>,
+    mut shapes: Query<(&mut GiShape, &mut ShapeVolume)>,
+    time: Res<Time<Fixed>>,
+) {
+    let alpha = time.overstep_fraction();
+    for (entity, live, light) in &barriers {
+        let placed = barrier_shape(&live.barrier, alpha, GI_LIGHT_SCALE);
+        place_light(
+            &mut commands,
+            entity,
+            light,
+            &mut shapes,
+            placed,
+            "barrier light",
+        );
+    }
+}
+
+/// The force bubbles' lights, refreshed from their phase every frame; a
+/// bubble's light leaves with it.
+pub(crate) fn force_bubble_lights(
+    mut commands: Commands,
+    bubbles: Query<(Entity, &LiveBubble, Option<&EffectLight>)>,
+    mut shapes: Query<(&mut GiShape, &mut ShapeVolume)>,
+) {
+    for (entity, live, light) in &bubbles {
+        let placed = force_bubble_shape(&live.bubble, GI_LIGHT_SCALE);
+        place_light(
+            &mut commands,
+            entity,
+            light,
+            &mut shapes,
+            placed,
+            "force bubble light",
+        );
+    }
+}
+
+/// The strikes' light shape: the `gi_gradline` segment and point light of
+/// [`emissive::strikes_light`], in the weapon node's box (its centre, axes
+/// and half extents) plus 60 cm. The live strikes aura does not carry the
+/// two points yet, so nothing calls this.
+pub fn strikes_shape(
+    light: &emissive::StrikesLight,
+    centre: Vec3,
+    axes: [Vec3; 3],
+    scale: Vec3,
+) -> (GiShape, ShapeVolume) {
+    let (box_centre, half) = emissive::world_box(centre, axes, scale, FALLOFF_CM);
+    let shape = GiShape {
+        program: GiShapeProgram::GradLine,
+        colour: light.colour,
+        atten: light.attenuation,
+        line: light.line,
+        grad: light.gradient,
+        point_light: Vec4::from_array(light.point),
+        ..default()
+    };
+    (shape, volume_of(box_centre, half))
+}
+
+/// The barricade's light shape this frame: the `gi_cuboid_fn` box in the
+/// wall node's frame (its `bMat` the inverse of the wall's axes at the
+/// node's place), its `bExt` from [`emissive::barricade_light`] over the
+/// node's half size as the last frame wrote it (the drawn half width and
+/// height, 5 cm deep), the colour incl. the 1.2 gain, its texture window
+/// from the wall's two random offsets, in the node's turned box plus 60 cm.
+pub fn barricade_shape(wall: &Barricade, gain: f32) -> (GiShape, ShapeVolume) {
+    let light = emissive::barricade_light(wall.state, wall.progress, wall.node_half, gain);
+    let axes = [wall.frame.x, wall.frame.y, wall.frame.z];
+    let node =
+        Affine3A::from_mat3_translation(Mat3::from_cols(axes[0], axes[1], axes[2]), wall.node_at);
+    let (centre, half) = emissive::world_box(wall.node_at, axes, wall.node_half, FALLOFF_CM);
+    let shape = GiShape {
+        program: GiShapeProgram::CuboidFn,
+        colour: light.colour,
+        matrix: Mat4::from(node.inverse()),
+        half: light.extent,
+        tex_pos: Vec2::from(wall.texture),
+        ..default()
+    };
+    (shape, volume_of(centre, half))
+}
+
+/// The barricades' lights, refreshed from their state every frame; a
+/// barricade's light leaves with it.
+pub(crate) fn barricade_lights(
+    mut commands: Commands,
+    walls: Query<(Entity, &super::live::LiveBarricade, Option<&EffectLight>)>,
+    mut shapes: Query<(&mut GiShape, &mut ShapeVolume)>,
+) {
+    for (entity, live, light) in &walls {
+        let placed = barricade_shape(&live.wall, GI_LIGHT_SCALE);
+        place_light(
+            &mut commands,
+            entity,
+            light,
+            &mut shapes,
+            placed,
+            "barricade light",
+        );
+    }
 }
 
 /// Writes `shape` to the effect's light, registering one first if it has
@@ -687,5 +858,116 @@ mod tests {
                 .shapes()
                 .is_empty()
         );
+    }
+
+    /// The strikes' `gi_gradline`: the segment, its gradient and its point
+    /// light, in the weapon node's box plus 60 cm.
+    #[test]
+    fn a_strikes_light_becomes_a_gradient_line() {
+        use crate::effects::emissive::strikes_light;
+        let light = strikes_light(
+            [Vec3::ZERO, Vec3::new(0.0, 80.0, 0.0)],
+            Vec3::new(0.5, 2.0, 3.0),
+            Vec3::new(0.74, 0.24, 0.0),
+            0.25,
+            Some((Vec3::new(0.0, 40.0, 0.0), 0.5)),
+        );
+        let (shape, volume) = strikes_shape(
+            &light,
+            Vec3::new(0.0, 40.0, 0.0),
+            [Vec3::X, Vec3::Y, Vec3::Z],
+            Vec3::new(5.0, 40.0, 5.0),
+        );
+        assert_eq!(shape.program, GiShapeProgram::GradLine);
+        assert_eq!(shape.line, light.line);
+        assert_eq!(shape.grad, light.gradient);
+        assert_eq!(shape.atten, 10_000.0);
+        assert_eq!(shape.point_light, Vec4::new(0.0, 40.0, 0.0, 5.0));
+        assert_eq!(shape.colour, Vec3::new(0.74, 0.24, 0.0) * 0.75);
+        assert_eq!(volume.position, Vec3::new(0.0, 0.4, 0.0));
+        assert_eq!(volume.half, Vec3::new(0.75, 1.1, 0.75));
+    }
+
+    /// A standing barricade's `gi_cuboid_fn`: the node's half size as the
+    /// rise left it (300 across, 100 up, 5 deep) less 60 across and 40 up,
+    /// the 1.2 gain, the wall's frame, and the turned box plus 60 cm.
+    #[test]
+    fn a_barricade_registers_its_textured_box() {
+        use crate::thaum::barricade::{WallFrame, state};
+        let frame = WallFrame::facing(Vec3::new(0.0, 100.0, 0.0), Vec3::X);
+        let mut draws = Mt19937::new(1);
+        let mut wall = Barricade::raise(frame, 0.25, 1000, |_, _, _| None, None, &mut draws);
+        // The last rising frame, fully risen, writes the node's size.
+        wall.shown = [1.0, 1.0];
+        wall.frame(1.0).unwrap();
+        assert_eq!(wall.node_half, Vec3::new(300.0, 100.0, 5.0));
+        wall.state = state::STANDING;
+        let (shape, volume) = barricade_shape(&wall, GI_LIGHT_SCALE);
+        assert_eq!(shape.program, GiShapeProgram::CuboidFn);
+        assert_eq!(shape.half, Vec3::new(240.0, 60.0, 5.0));
+        assert_eq!(
+            shape.colour,
+            crate::effects::emissive::DOME_COLOUR * (GI_LIGHT_SCALE * 1.2)
+        );
+        assert_eq!(shape.tex_pos, Vec2::from(wall.texture));
+        // The wall faces +x, so its length runs along z: a point 100 cm
+        // along the wall maps to the box's x.
+        let along = shape
+            .matrix
+            .transform_point3(Vec3::new(0.0, 100.0, 0.0) + frame.x * 100.0);
+        assert!((along - Vec3::new(100.0, 0.0, 0.0)).length() < 1e-3);
+        assert_eq!(volume.position, Vec3::new(0.0, 1.0, 0.0));
+        assert_eq!(volume.half, Vec3::new(0.75, 1.7, 3.7));
+    }
+
+    /// A standing barrier's dome: the gi_dome shell in the cap's frame, the
+    /// 85/85/25 scale less 60 across and 40 up, the colour
+    /// `(0.14, 0.08, 1)·strength·gain·0.8`, and the node's box 75 cm ahead.
+    #[test]
+    fn a_barrier_registers_its_gi_dome() {
+        let (mut barrier, _) = Barrier::cast(100.0, Vec3::ZERO, 0.0, 0, &mut Mt19937::new(1));
+        barrier.dome.phase = crate::effects::force_dome::Phase::Standing;
+        barrier.dome.shown_share = 1.0;
+        let at = Vec3::new(200.0, 0.0, 0.0);
+        barrier.pose.first = at.to_array();
+        barrier.pose.first_previous = at.to_array();
+        // Facing +x: the cap's +z is world +x.
+        barrier.pose.second = [1.0, 0.0, 0.0];
+        barrier.pose.second_previous = [1.0, 0.0, 0.0];
+        let (shape, volume) = barrier_shape(&barrier, 0.0, GI_LIGHT_SCALE);
+        assert_eq!(shape.program, GiShapeProgram::Dome);
+        assert_eq!(shape.half, Vec3::new(25.0, 45.0, 25.0));
+        assert_eq!(
+            shape.colour,
+            crate::effects::emissive::DOME_COLOUR * (GI_LIGHT_SCALE * 0.8)
+        );
+        // The node's place is the shell's centre, and the cap's apex 100 cm
+        // along the facing is the shell's +z pole.
+        assert!(shape.matrix.transform_point3(at).length() < 1e-4);
+        let apex = shape.matrix.transform_point3(at + Vec3::X * 100.0);
+        assert!((apex - Vec3::new(0.0, 0.0, 100.0)).length() < 1e-3);
+        // The box: 85 × 85 × 25 turned to face +x, centred 75 cm ahead,
+        // widened 10 cm, rounded, plus 60 cm.
+        assert_eq!(volume.position, Vec3::new(2.75, 0.0, 0.0));
+        assert_eq!(volume.half, Vec3::new(0.95, 1.55, 1.55));
+    }
+
+    /// A standing force bubble's shell: `gi_bubble` with the radius five past
+    /// the dome's, its fade and the bubble's colour at the node's place.
+    #[test]
+    fn a_force_bubble_registers_its_gi_shell() {
+        let (mut bubble, _) =
+            ForceBubble::cast(120.0, Vec3::ZERO, 0, Vec3::ZERO, 0.0, &mut Mt19937::new(1));
+        bubble.dome.phase = crate::effects::force_dome::Phase::Standing;
+        bubble.dome.shown_share = 1.0;
+        let (shape, volume) = force_bubble_shape(&bubble, GI_LIGHT_SCALE);
+        assert_eq!(shape.program, GiShapeProgram::Bubble);
+        assert_eq!(shape.radius, 125.0);
+        assert_eq!(shape.fade, 0.0);
+        assert_eq!(
+            shape.colour,
+            crate::effects::emissive::BUBBLE_COLOUR * GI_LIGHT_SCALE
+        );
+        assert_eq!(volume.half, Vec3::splat(1.9));
     }
 }

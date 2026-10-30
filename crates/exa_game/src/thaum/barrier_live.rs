@@ -120,7 +120,7 @@ pub fn pay(live: &mut LiveBarrier, body: &mut CastBody) {
 }
 
 /// The cap's frame: the dome's centre, z along the flattened facing, y up.
-fn cap_frame(at: Vec3, facing: Vec3) -> Affine3A {
+pub(crate) fn cap_frame(at: Vec3, facing: Vec3) -> Affine3A {
     let z = Vec3::new(facing.x, 0.0, facing.z)
         .try_normalize()
         .unwrap_or(Vec3::Z);

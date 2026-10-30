@@ -14,9 +14,10 @@
 //!   applied). The record's previous position is that point plus the node's
 //!   place, its position the point times 1.0015 plus the place: the
 //!   particle starts moving outward by 0.0015 of its offset a step.
-//! - **Colour**: the system's colour word is copied into the particle's
-//!   slot. With flag 0x400 a 3-bit look index is drawn, with flag 0x800 a
-//!   5-bit one (the high bits of the engine generator's next word).
+//! - **Life and look**: the system's full lifetime is copied into the
+//!   particle's life slot. With flag 0x400 a 3-bit look index is drawn,
+//!   with flag 0x800 a 5-bit one (the high bits of the engine generator's
+//!   next word); with neither the slot's look is left as it was.
 //!
 //! Evidence: the effect's spawn-one-particle routine, read from
 //! `Exanima.exe`.
@@ -41,7 +42,7 @@ pub const SPREAD_BASE: f64 = 0.8;
 pub const SPREAD_RANGE: f64 = 0.4;
 /// A particle's position is its previous position's offset times this.
 pub const PLACE_SCALE: f32 = 1.0015;
-/// Colours come from a 3-bit or 5-bit random index.
+/// Look indices come from a 3-bit or 5-bit random word.
 pub const COLOUR_SMALL: u32 = 0x400;
 pub const COLOUR_LARGE: u32 = 0x800;
 /// The state of an effect that is closing.
@@ -72,14 +73,15 @@ pub struct PortalSpray {
     pub flags: u32,
     /// The particle system's own flags, of which a wrap clears bit 2.
     pub system_flags: u32,
-    /// The per-particle colour word.
-    pub colour: u32,
+    /// The system's lifetime, ticks, which each spawned particle starts
+    /// with.
+    pub lifetime: i32,
     /// The scale the effect is drawn at.
     pub scale: f32,
     /// The particles, one per ring slot.
     pub particles: Vec<Particle>,
-    /// The per-particle colour words.
-    pub colours: Vec<u32>,
+    /// The per-particle life, ticks.
+    pub lives: Vec<i32>,
     /// The per-particle look index (the short the original writes).
     pub colour_index: Vec<u16>,
     /// The engine's generator.
@@ -87,8 +89,8 @@ pub struct PortalSpray {
 }
 
 impl PortalSpray {
-    /// An emitter of `count` particles at `scale`.
-    pub fn new(count: i32, scale: f32, colour: u32, flags: u32, seed: u32) -> Self {
+    /// An emitter of `count` particles at `scale` with `lifetime` ticks.
+    pub fn new(count: i32, scale: f32, lifetime: i32, flags: u32, seed: u32) -> Self {
         let count = count.max(0);
         Self {
             index: 0,
@@ -96,7 +98,7 @@ impl PortalSpray {
             state: 0,
             flags,
             system_flags: RING_FLAG,
-            colour,
+            lifetime,
             scale,
             // The counter runs from 0 to `count`: slot 0 is only filled
             // after a wrap.
@@ -107,7 +109,7 @@ impl PortalSpray {
                 };
                 count as usize + 1
             ],
-            colours: vec![0; count as usize + 1],
+            lives: vec![0; count as usize + 1],
             colour_index: vec![0; count as usize + 1],
             roll: Roll(seed),
         }
@@ -142,20 +144,22 @@ impl PortalSpray {
         );
         let index = self.index as usize;
         let colour_index = if self.flags & COLOUR_SMALL == COLOUR_SMALL {
-            ((u64::from(self.roll.step()) << 3) >> 32) as u16
+            Some(((u64::from(self.roll.step()) << 3) >> 32) as u16)
         } else if self.flags & COLOUR_LARGE == COLOUR_LARGE {
-            ((u64::from(self.roll.step()) << 5) >> 32) as u16
+            Some(((u64::from(self.roll.step()) << 5) >> 32) as u16)
         } else {
-            0
+            None
         };
         let at = offset * PLACE_SCALE + frame.at;
         let before = offset + frame.at;
         let record = self.particles.get_mut(index)?;
         *record = Particle { before, at };
-        if let Some(slot) = self.colours.get_mut(index) {
-            *slot = self.colour;
+        if let Some(slot) = self.lives.get_mut(index) {
+            *slot = self.lifetime;
         }
-        if let Some(slot) = self.colour_index.get_mut(index) {
+        if let Some(colour_index) = colour_index
+            && let Some(slot) = self.colour_index.get_mut(index)
+        {
             *slot = colour_index;
         }
         Some(index)
@@ -172,7 +176,7 @@ mod tests {
 
     #[test]
     fn a_ring_wraps_at_its_count_and_a_closing_ring_parks() {
-        let mut spray = PortalSpray::new(3, 1.0, 0, 0, 1);
+        let mut spray = PortalSpray::new(3, 1.0, 41, 0, 1);
         let mut rng = rng();
         assert_eq!(spray.spawn(&Frame::IDENTITY, &mut rng), Some(1));
         assert_eq!(spray.spawn(&Frame::IDENTITY, &mut rng), Some(2));
@@ -193,9 +197,20 @@ mod tests {
     }
 
     #[test]
+    fn a_particle_starts_with_the_systems_lifetime_and_keeps_its_look() {
+        let mut spray = PortalSpray::new(2, 1.0, 37, 0, 1);
+        spray.colour_index[1] = 7;
+        let mut rng = rng();
+        assert_eq!(spray.spawn(&Frame::IDENTITY, &mut rng), Some(1));
+        assert_eq!(spray.lives[1], 37);
+        // No look flag: the slot's look is left alone.
+        assert_eq!(spray.colour_index[1], 7);
+    }
+
+    #[test]
     fn a_particle_sits_on_the_ellipse_in_the_frame() {
         // With the first draw 0.5 the angle is fixed; check the ratios.
-        let mut spray = PortalSpray::new(1, 2.0, 0x11223344, 0, 1);
+        let mut spray = PortalSpray::new(1, 2.0, 41, 0, 1);
         let frame = Frame {
             at: Vec3::new(10.0, 20.0, 30.0),
             ..Frame::IDENTITY
@@ -204,7 +219,7 @@ mod tests {
         spray.spawn(&frame, &mut rng);
         let p = spray.particles[1];
         assert_eq!(spray.colour_index[1], 0);
-        assert_eq!(spray.colours[1], 0x11223344);
+        assert_eq!(spray.lives[1], 41);
         // The position is 1.0015 of the offset past the node's place.
         let offset = p.at - frame.at;
         let local = p.before - frame.at;
@@ -219,7 +234,7 @@ mod tests {
         let (sin, cos) = sin_cos(angle as f32);
         let spread = (r.unit() * SPREAD_RANGE + SPREAD_BASE) as f32;
         let z = (f64::from(THICKNESS_CM) * (r.unit() - 0.5)) as f32;
-        let mut spray = PortalSpray::new(1, 1.0, 0, 0, 1);
+        let mut spray = PortalSpray::new(1, 1.0, 41, 0, 1);
         spray.spawn(&Frame::IDENTITY, &mut Mt19937::new(1));
         let v = spray.particles[1].before;
         assert!((v.x - sin * spread * RADIUS_X_CM).abs() < 1e-4);
@@ -231,17 +246,17 @@ mod tests {
 
     #[test]
     fn the_colour_index_takes_the_high_bits_of_a_step() {
-        let mut spray = PortalSpray::new(1, 1.0, 0, COLOUR_SMALL, 0);
+        let mut spray = PortalSpray::new(1, 1.0, 41, COLOUR_SMALL, 0);
         let mut draws = rng();
         spray.spawn(&Frame::IDENTITY, &mut draws);
         assert!(spray.colour_index[1] < 8);
-        let mut spray = PortalSpray::new(1, 1.0, 0, COLOUR_LARGE, 0);
+        let mut spray = PortalSpray::new(1, 1.0, 41, COLOUR_LARGE, 0);
         let mut draws = rng();
         spray.spawn(&Frame::IDENTITY, &mut draws);
         assert!(spray.colour_index[1] < 32);
         let mut once = Roll(0);
         let expected = ((u64::from(once.step()) << 5) >> 32) as u16;
-        let mut spray = PortalSpray::new(1, 1.0, 0, COLOUR_LARGE, 0);
+        let mut spray = PortalSpray::new(1, 1.0, 41, COLOUR_LARGE, 0);
         let mut draws = rng();
         spray.spawn(&Frame::IDENTITY, &mut draws);
         assert_eq!(spray.colour_index[1], expected);

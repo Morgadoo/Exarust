@@ -35,7 +35,10 @@
 //!   scaled by `(300 − keep)·0.01` under a keeping distance of 200.
 //!
 //! The relation number, the viewer's fields and the AI that reads the
-//! words are outside this group; nothing registers these entities yet.
+//! words are outside this group; the live blasts and waves carry a
+//! [`Hazard`] whose place and release word `sync_hazards` keeps current, so
+//! a sight pass can walk the scene's hazards and ask each for its
+//! [`Seen`]. No AI system reads them yet.
 //!
 //! Evidence: the blast, wave and barricade entities' place, assessment and
 //! avoidance routines, read from `Exanima.exe`.
@@ -69,6 +72,56 @@ pub struct Seen {
     pub fear: f32,
     pub urge: f32,
     pub face: f32,
+}
+
+/// A blast or a wave as the AI's sight walks it: its effect's place and
+/// whether it has been released. The live effects carry one (updated after
+/// each of their ticks), so a sight pass over the scene's hazards finds them
+/// without knowing the effect classes.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub enum Hazard {
+    Blast { at: Vec3, released: bool },
+    Wave { at: Vec3, released: bool },
+}
+
+impl Hazard {
+    /// The record a viewing body gets of this effect, `None` when it is out
+    /// of sight. A blast's own caster is ignored (the original's assessment
+    /// answers it as seen without filling the record).
+    pub fn assess(&self, viewer: &Viewer, relation: f32, caster: bool) -> Option<Seen> {
+        let mut seen = Seen::default();
+        let noticed = match *self {
+            Hazard::Blast { at, released } => {
+                assess_blast(at, released, viewer, caster, relation, &mut seen)
+            }
+            Hazard::Wave { at, released } => assess_wave(at, released, viewer, relation, &mut seen),
+        };
+        noticed.then_some(seen)
+    }
+}
+
+/// Keeps every hazard's place and release word in step with its effect after
+/// the effects tick.
+pub fn sync_hazards(
+    mut hazards: Query<(
+        &mut Hazard,
+        Option<&crate::thaum::blast_live::LiveBlast>,
+        Option<&crate::thaum::wave_live::LiveWave>,
+    )>,
+) {
+    for (mut hazard, blast, wave) in &mut hazards {
+        if let Some(live) = blast {
+            *hazard = Hazard::Blast {
+                at: live.blast.centre,
+                released: live.blast.state >= crate::effects::blast::THROWN,
+            };
+        } else if let Some(live) = wave {
+            *hazard = Hazard::Wave {
+                at: live.wave.centre,
+                released: live.wave.state == crate::effects::force_wave::WaveState::Thrown,
+            };
+        }
+    }
 }
 
 /// The viewing body's chest and its two facing axes.
@@ -359,6 +412,41 @@ mod tests {
             look: Vec3::Z,
             facing: Vec3::Z,
         }
+    }
+
+    #[test]
+    fn a_hazard_gives_the_sight_pass_the_effects_record() {
+        let viewer = viewer();
+        let blast = Hazard::Blast {
+            at: Vec3::new(0.0, 0.0, 600.0),
+            released: true,
+        };
+        let seen = blast.assess(&viewer, 0.0, false).unwrap();
+        let mut direct = Seen::default();
+        assess_blast(
+            Vec3::new(0.0, 0.0, 600.0),
+            true,
+            &viewer,
+            false,
+            0.0,
+            &mut direct,
+        );
+        assert_eq!(seen, direct);
+        // Out of the 12 m sight: nothing.
+        let far = Hazard::Wave {
+            at: Vec3::new(0.0, 0.0, 1300.0),
+            released: false,
+        };
+        assert_eq!(far.assess(&viewer, 0.0, false), None);
+        // A wave within range reports its own words.
+        let near = Hazard::Wave {
+            at: Vec3::new(0.0, 0.0, 600.0),
+            released: false,
+        };
+        let seen = near.assess(&viewer, 0.0, false).unwrap();
+        let mut direct = Seen::default();
+        assess_wave(Vec3::new(0.0, 0.0, 600.0), false, &viewer, 0.0, &mut direct);
+        assert_eq!(seen, direct);
     }
 
     #[test]

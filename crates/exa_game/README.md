@@ -442,14 +442,27 @@ not simulated), and a body stepping through one gets the seeded
 `_PrtlDisp` dissolve burst (cells 6 cm apart, two fifths taken, each
 particle's position moved halfway between the node's two frames,
 jittered ±1.5 cm and pushed 1.5 % out from the body's centre, lifetime
-41 ticks less up to a quarter) with `portaluse01` at 0.6. A lit held item
+41 ticks less up to a quarter) with `portaluse01` at 0.6. A marker
+loaded into a world whose flags carry 0x10000 is replaced by a fresh one
+at its place (the 4-byte payload read and unused), and a dissolve fills
+its system's ring slot by slot (life, look, position, previous position)
+up to the capacity and clears the burst flag; nothing in the game calls
+the seeding, the ring or the import handler yet. A lit held item
 carries a flame row from 30 to 115 cm with the `_FlameMat01` shader,
 fading in by 0.02 a tick and out by 0.015 in double precision, its
 ribbon's points closing a fifth of the gap to 20 cm above its ends, lit
 by a 5.0 warm light of 800 cm whose softness walk is 0.87–1.15; its
 ability word and fuel decide ignition, `FireSizzleA` plays at 0.3 and the
 `Flaming` modifier is 0x10020000 (no Exarust item carries that ability
-yet, so nothing lights one). A displacement shell opens over 400 ms and
+yet, so nothing lights one). The ribbon is built per frame: 16 sections of
+8 vertices swept from the shifted pair of ends toward the lagging ones
+(the cross-section turned toward the lag, the far face wobbled by 0.2 of
+the line, that share taken in double), with the fixed texture steps, black/black/white/white corner
+colours and 192 indices, in `FlameRow::ribbon_positions`/`ribbon_mesh`;
+`exa_render::flame_row` is the `_FlameMat01` program (four texture reads,
+the vertical falloff, the `Anim` roll and the 1 × 5 palette) [guess: the
+record's blend state is additive]; with no lit item, neither has a live
+caller yet. A displacement shell opens over 400 ms and
 closes over 300 ms from its shown value, with the fade (1 − shown²)², the
 texture offset, its fade plane and 900 over the squared distance as its
 detail; a teleporter scan opens over 4800 ms, closes over 800 ms and
@@ -469,9 +482,9 @@ sub-object of usage 35044, the 0x20 material flag and the shared
 starts the shell's aura entity yet (its caller, the shell power's visual,
 is not in); the power tree carries the wheel as its domain wheel child and
 uses its hit test, confirm and open ease; the wheel's paint is
-`exa_ui::wheel_draw`. Drawing the flame ribbon's
-vertices, the shell and scan mesh copies, the bubble geometry,
-the portal particle simulation and the bubble's GI light values is not in.
+`exa_ui::wheel_draw`. Drawing the shell and scan mesh copies, the bubble
+geometry, the portal particle simulation and the bubble's GI light values
+is not in.
 
 The force and environment effects of the same powers are in as plain
 rules: `effects::rain` (4096 drops in a 600 cm box ahead of the camera,
@@ -479,15 +492,18 @@ the gust walk, the fall, the tilt-dependent streak, the ground wrap on the
 effect's own generator, the colour and the two shaders kept as data),
 `effects::portal_effect` (one ellipse particle per call, its previous and
 current positions, the 3- and 5-bit look draws), `effects::fire_node`
-(the `_FlameMat01` node's 800 cm 1/0.68/0.43 light), `effects::force_dome`
+(the `_FlameMat01` node's 800 cm 1/0.68/0.43 light and the colour ramp
+its object conversion derives from a record byte), `effects::force_dome`
 (the eight-ripple list, the cast sound, the Barrier's damped height,
 800 ms grow window, drain, drawn radius, frame and keep-out, the Bubble's
 1200 ms grow, break and 700 ms fall and its two keep-outs, the character
 contact and balance drain, the double-sided meshes), `effects::force_wave`
 (32 chunks 80 cm out, the charge, release, thrown step, trails and
 lives), `effects::danger` (what the AI sees of a blast, a wave and a
-barricade, and the steps away), `effects::emissive` (the seven GI lights'
-extents, colours and boxes), `effects::effect_geometry` (the geometry
+barricade, and the steps away; the live blasts and waves carry a hazard a
+sight pass can walk), `effects::emissive` (the seven GI lights'
+extents, colours and boxes, registered as GI shapes while the blast,
+torrent, teleporter bubble, Barrier, force Bubble or barricade lives), `effects::effect_geometry` (the geometry
 flags, programs, uniforms, pass rows and fades) and `effects::vanish`
 (hide, show, lend, phase hook and finish). A cast starts its dome or wave,
 but none of these is drawn: the rain's caller is the scene's weather, the

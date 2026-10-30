@@ -22,6 +22,7 @@ use bevy::prelude::*;
 
 use crate::arena::Mt19937;
 use crate::effects::{Frame, round_i32};
+use crate::thaum::engine::{length, normalize};
 
 /// One tick's lerp of the original's helper: `a + (b − a)·t`.
 fn lerp(a: Vec3, b: Vec3, t: f32) -> Vec3 {
@@ -157,14 +158,39 @@ pub const SECTIONS: i32 = 16;
 pub const SECTION_WIDTH: f32 = 1.5;
 /// A section's texture step along the ribbon.
 pub const SECTION_U: f32 = 0.025;
-/// The vertex colours of each four ribbon vertices: the first two clear
-/// black, the last two white with zero alpha (RGBA8).
-pub const RIBBON_COLOURS: [[u8; 4]; 4] = [
+/// The vertex colours of each four-vertex quad's corners, RGBA8: two clear
+/// black, then two white with zero alpha. The fragment squares the first
+/// channel, so the pair tells the ribbon's two faces apart.
+pub const QUAD_COLOURS: [[u8; 4]; 4] = [
     [0, 0, 0, 0],
     [0, 0, 0, 0],
     [255, 255, 255, 0],
     [255, 255, 255, 0],
 ];
+
+/// The ribbon's colour buffer: [`QUAD_COLOURS`] repeated for every quad.
+pub fn ribbon_colours() -> Vec<[u8; 4]> {
+    (0..SECTIONS * 2).flat_map(|_| QUAD_COLOURS).collect()
+}
+
+/// The shader's vertex attributes, in the original's declaration order.
+pub const SHADER_ATTRIBUTES: [&str; 3] = ["vPos", "vTex", "vCol"];
+/// The texture units `EmiTex` and `GrdTex` bind to.
+pub const EMISSIVE_UNIT: i32 = 0;
+pub const GRADIENT_UNIT: i32 = 1;
+/// The direction toward the lagging line is scaled by this before its
+/// length is taken; the scale cancels in the normalisation but keeps the
+/// original's rounding.
+pub const LAG_DIRECTION_SCALE: f32 = 0.05;
+/// The ribbon's cross-section wobble: this share of the interpolated line's
+/// length (taken in double and rounded once), times one less the
+/// direction's face-on weight.
+pub const WOBBLE_SCALE: f64 = 0.2;
+
+/// The original's dot product: `(x·x + y·y) + z·z`.
+fn dot(a: Vec3, b: Vec3) -> f32 {
+    (a.x * b.x + a.y * b.y) + a.z * b.z
+}
 
 /// The ribbon's index list: each section's two quads of four vertices,
 /// split into two triangles `(0, 1, 3)` and `(3, 1, 2)`.
@@ -449,6 +475,88 @@ impl FlameRow {
         let d = a - b;
         let length = ((d.x * d.x + d.z * d.z) + d.y * d.y).sqrt();
         (lerp(self.start, self.end, 0.5), length * 0.5)
+    }
+
+    /// The row's ribbon this frame: eight vertices a section, from the
+    /// interpolated pair of ends toward the interpolated lagging line, seen
+    /// from `camera_cm`. The first four carry the section's two faces swept
+    /// one way, the next four the same pair swept the other.
+    ///
+    /// The original builds this in single precision; a zero direction or a
+    /// camera on the line divides by zero and gives a not-a-number, as the
+    /// original's does.
+    pub fn ribbon_positions(&self, camera_cm: Vec3, t: f32) -> Vec<[f32; 3]> {
+        let (pair_start, pair_end) = self.ribbon_ends(t);
+        let line = length(pair_start - pair_end);
+        let width = line / SECTIONS as f32 * SECTION_WIDTH;
+        let lag_start = lerp(self.older_lag_start, self.lag_start, t);
+        let lag_end = lerp(self.older_lag_end, self.lag_end, t);
+        let delta_start = (lag_start - pair_start) * LAG_DIRECTION_SCALE;
+        let delta_end = (lag_end - pair_end) * LAG_DIRECTION_SCALE;
+        let wobble_span = (f64::from(line) * WOBBLE_SCALE) as f32;
+        let mut out = Vec::with_capacity((SECTIONS * 8) as usize);
+        for i in 0..SECTIONS {
+            let section = (i as f32 + 0.5) / SECTIONS as f32;
+            let point = lerp(pair_start, pair_end, section);
+            let mut direction = lerp(delta_start, delta_end, section);
+            let direction_length = length(direction);
+            direction *= 1.0 / direction_length;
+            let to_camera = normalize(point - camera_cm);
+            let across = direction.cross(to_camera);
+            let side = to_camera.cross(across);
+            let across_length = length(across);
+            let half_width = width / across_length;
+            let face = across * half_width;
+            let weight = 1.0 - dot(direction, to_camera).abs();
+            let wobble = (direction_length * wobble_span) * weight;
+            let left = point + side * -half_width;
+            let right = point + side * (half_width * 2.0 + wobble);
+            let near_left = left - face;
+            let near_right = right - face;
+            let far_right = right + face;
+            let far_left = left + face;
+            for v in [
+                left, right, near_right, near_left, left, right, far_right, far_left,
+            ] {
+                out.push(v.to_array());
+            }
+        }
+        out
+    }
+
+    /// The row's mesh this frame: the positions from [`Self::ribbon_positions`],
+    /// the fixed texture coordinates, colours and indices, in metres for the
+    /// play renderer.
+    pub fn ribbon_mesh(&self, camera_cm: Vec3, t: f32) -> Mesh {
+        use bevy::asset::RenderAssetUsages;
+        use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
+
+        let positions: Vec<[f32; 3]> = self
+            .ribbon_positions(camera_cm, t)
+            .into_iter()
+            .map(|p| [p[0] * 0.01, p[1] * 0.01, p[2] * 0.01])
+            .collect();
+        let mut mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        );
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, ribbon_uvs());
+        // The vertex stage's `vCol · 0.003921568`: an RGBA8 byte over 255.
+        let colours: Vec<[f32; 4]> = ribbon_colours()
+            .into_iter()
+            .map(|c| {
+                [
+                    f32::from(c[0]) * 0.003_921_568,
+                    f32::from(c[1]) * 0.003_921_568,
+                    f32::from(c[2]) * 0.003_921_568,
+                    f32::from(c[3]) * 0.003_921_568,
+                ]
+            })
+            .collect();
+        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colours);
+        mesh.insert_indices(Indices::U16(ribbon_indices()));
+        mesh
     }
 
     /// Whether the row has been removed.
@@ -872,7 +980,11 @@ mod tests {
         assert_eq!(uvs.len(), 128);
         assert_eq!(uvs[2], [-0.025, 1.0]);
         assert_eq!(uvs[14], [0.05, 1.0]);
-        assert_eq!(RIBBON_COLOURS[2], [255, 255, 255, 0]);
+        assert_eq!(QUAD_COLOURS[2], [255, 255, 255, 0]);
+        let colours = ribbon_colours();
+        assert_eq!(colours.len(), 128);
+        assert_eq!(&colours[..4], &QUAD_COLOURS);
+        assert_eq!(&colours[128 - 4..], &QUAD_COLOURS);
     }
 
     #[test]
@@ -884,6 +996,64 @@ mod tests {
         row.has_sound = false;
         assert!(row.frame(1.0).is_none());
         assert_eq!(row.pitch, 1.0);
+    }
+
+    #[test]
+    fn the_ribbon_sections_sweep_between_the_pair_and_the_lag() {
+        let mut row = FlameRow::lit(7);
+        // The pair's ends after the frame's half step: 0 and 8 cm up. The
+        // lagging end has swung 320 cm along +x, so a section's direction
+        // is +x and the section at 0.25 cm is level with the camera.
+        row.ribbon_old = [Vec3::ZERO, Vec3::ZERO];
+        row.ribbon_prev = [Vec3::ZERO, Vec3::new(0.0, 16.0, 0.0)];
+        row.older_lag_start = Vec3::ZERO;
+        row.lag_start = Vec3::ZERO;
+        row.older_lag_end = Vec3::new(320.0, 8.0, 0.0);
+        row.lag_end = Vec3::new(320.0, 8.0, 0.0);
+        let positions = row.ribbon_positions(Vec3::new(0.0, 0.25, -1000.0), 0.5);
+        assert_eq!(positions.len(), 128);
+        // Section 0's point is (0, 0.25, 0); its direction (1, 0, 0), the
+        // line 8 cm, the width 0.75 and the wobble 0.5·1.6.
+        let want = [
+            [-0.75, 0.25, 0.0],
+            [2.3, 0.25, 0.0],
+            [2.3, 1.0, 0.0],
+            [-0.75, 1.0, 0.0],
+            [-0.75, 0.25, 0.0],
+            [2.3, 0.25, 0.0],
+            [2.3, -0.5, 0.0],
+            [-0.75, -0.5, 0.0],
+        ];
+        for (got, want) in positions[..8].iter().zip(want) {
+            let got = Vec3::from_array(*got);
+            assert!(
+                (got - Vec3::from_array(want)).length() < 2e-3,
+                "{got} != {want:?}"
+            );
+        }
+        // A camera on the line makes the cross product zero; the original
+        // divides by zero there and the vertices are not numbers.
+        let broken = row.ribbon_positions(Vec3::new(0.0, 0.25, 0.0), 0.5);
+        assert!(!broken[0][0].is_finite());
+    }
+
+    #[test]
+    fn the_ribbon_mesh_carries_the_built_positions_and_fixed_attributes() {
+        let mut row = FlameRow::lit(7);
+        row.ribbon_prev = [Vec3::ZERO, Vec3::new(0.0, 16.0, 0.0)];
+        let mesh = row.ribbon_mesh(Vec3::new(0.0, 8.0, -1000.0), 1.0);
+        let positions = mesh.attribute(Mesh::ATTRIBUTE_POSITION).unwrap();
+        assert_eq!(positions.len(), 128);
+        assert_eq!(mesh.attribute(Mesh::ATTRIBUTE_UV_0).unwrap().len(), 128);
+        assert_eq!(mesh.attribute(Mesh::ATTRIBUTE_COLOR).unwrap().len(), 128);
+        assert_eq!(mesh.indices().unwrap().len(), 192);
+        // The mesh is in metres: the line runs from 0 to 0.16 m.
+        if let bevy::mesh::VertexAttributeValues::Float32x3(p) = positions {
+            assert!(p.iter().flatten().all(|v| v.abs() < 1.0));
+            assert!(p.iter().any(|v| (v[1] - 0.16).abs() < 0.02));
+        } else {
+            panic!("positions are not floats");
+        }
     }
 
     #[test]
@@ -1048,6 +1218,12 @@ mod tests {
         assert_eq!(SIZZLE_VOLUME, 0.3);
         assert_eq!(LOOP_SOUND, "FireS02");
         assert_eq!(MATERIAL, "_FlameMat01");
+        assert_eq!(SHADER_ATTRIBUTES, ["vPos", "vTex", "vCol"]);
+        assert_eq!((EMISSIVE_UNIT, GRADIENT_UNIT), (0, 1));
+        assert_eq!(
+            exa_render::flame_row::GRADIENT_PALETTE[4],
+            [255, 230, 200, 64]
+        );
         assert_eq!(emissive_part(&["steel", "*glow", "*other"]), Some(1));
         assert_eq!(emissive_part(&["steel"]), None);
         assert_eq!(EMISSIVE_FLAG, 0x10);

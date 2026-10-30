@@ -105,7 +105,13 @@ plumbing (`casting::reserve`, `release_reserve`, `spend_tick`,
   cost, clamps the focus at zero below the double 0.001 and fades over
   1.2 s through `exa_game::mind`; the spirit body is a race 0xE00 record
   sharing the caster's known powers, 60 cm along its facing, with its
-  focus pool, techniques and running powers.
+  focus pool, techniques and running powers. Its spawn keeps the caster's
+  basis, stands on the caster's ground height before the 60 cm step,
+  flags the new node 0x1000, and gives the body the 0x220000 status
+  bits and player behaviour mode 4 (`power::spirit_spawn`); the character
+  itself is not generated yet. A power's deferred calls
+  (`power::post_deferred`/`run_deferred`) dispatch by domain and clear the
+  HUD's ending flag for a call no update handles.
 - **Force**: Shell halves a blow's energy (the body's hit damping is 0.5)
   and clears it at the end; a bubble or barricade ends once its centre is
   more than 20 m from the caster; Strikes sets the strike factor 1.0 and
@@ -164,7 +170,10 @@ plumbing (`casting::reserve`, `release_reserve`, `spend_tick`,
   handed from a kinesis is lifted at its centre and spends nothing a
   tick: that start never stores the cast's cost. Every lift plays
   `thmfrc_throw` at the body (0.6, pitch `1 + 0.2·roll`), a one-shot that
-  fades when the throw ends before its drop. Each tick moves the body's
+  fades when the throw ends before its drop. The lift collects the item and
+  every child node in depth-first order (`throw_grab`/`collect_sub_nodes`),
+  gives them all the same shell and keeps the item's own to put back when
+  the throw ends (`throw_restore`; nothing calls the pair yet). Each tick moves the body's
   first part, each particle by its origin weight, and wakes it; a body
   gone ends the throw (`exa_game::thaum::throw_live`).
 - **Energy**: Shock's first tick installs its cast hook and plays the
@@ -318,8 +327,11 @@ the body's power id's domain evaluator and, when that answers nothing,
 the hook with 0x10; a negative answer ends the cast and the AI lets it
 go. Before its state the AI lets go of a cast whose body has not read
 casting 500 ms after it began. The
-player swap, the spirit body's character generation and the effect meshes are descriptions here, not
-spawned entities. The held body's shell hum (`thmfrc_knsdr`), the swing
+player swap, the spirit body's character generation and the effect meshes
+are descriptions here, not spawned entities. The spirit body's spawn
+descriptor is in `thaum::power::spirit_spawn` and the deferred power calls
+in `thaum::power::{post_deferred, run_deferred}`. The held body's shell hum
+(`thmfrc_knsdr`), the swing
 ripple on a strikes aura and the box lights of the held body and the
 weapon are not wired. A kinesis pick,
 and each tick a throw coasts after its shell drops, stamp the body with
@@ -743,7 +755,10 @@ effect_geometry}`.
   0.0006 of its move, its trail by `0.07·move + 1`, and it moves by its
   last move plus `2.4·(1 − charge)²` along its direction, times 0.96;
   close chunks separate, and the effect ends when the chunks' 58-tick
-  lives run out.
+  lives run out. The chunk ribbons' mesh allocates eight trail slots a
+  chunk (896 vertices, 1344 indices, `mesh_plan`), and the charge loop
+  starts silent at pitch 1 with `base·0.8·roll` as its voice's gain
+  (`wave_loop`); neither has a caller yet.
 - **The vanish** (`vanish::Vanish`): hiding clears render bit 4 and the
   shown amounts; showing sets them to 1. The phase hook shows the body
   (phase 4) until the phase table ends, then hides it for good; a lent
@@ -757,7 +772,10 @@ effect_geometry}`.
   raised; the fear is `s²·k·0.5` (blast, `s²·k` above 12), `s²·k` (wave)
   or `u²·k·0.1` (barricade), `k = 1 − relation/100`, tripled when
   released; the face word mixes the viewer's look and facing. A released
-  blast within 5 m of its line pushes the viewer `(1 − 0.002·d)·6`.
+  blast within 5 m of its line pushes the viewer `(1 − 0.002·d)·6`. The
+  live blast and wave entities carry a `danger::Hazard` kept in step by
+  `sync_hazards`, so a sight pass can walk them; no AI system reads the
+  hazards yet.
 
 ## The shaped-force aura
 
@@ -977,7 +995,9 @@ class's own, not applied to Exarust's drawn body.
 The arcs', wisps' and barricade's meshes come from their own builders but
 are drawn with `exa_render::glow::GlowMaterial`, an additive stand-in: the
 original's electricity program and `effectfbrcd` are not ported, nor are
-the lights and sounds. The blast-family and torrent ribbons and the shell
+the lights and sounds. The displacement tendril's `effectforce_v` /
+`effectsmoke_f` pair is ported as `ForceRibbonMaterial::smoke` (no live
+tendril draws it yet). The blast-family and torrent ribbons and the shell
 aura draw with their own ported programs (`effectforce_f`,
 `effecttorrent_f`, `effectshell`; The shaped-force aura). The arcs
 upload their ribbon's UVs. The barricade's navigation stamp is applied to

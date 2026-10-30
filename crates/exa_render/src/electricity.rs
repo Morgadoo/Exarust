@@ -59,6 +59,101 @@ pub fn random_brightness(roll: f64) -> f32 {
     (0.8 + roll * 0.2) as f32
 }
 
+/// An electric effect's strength and opacity, from the level its owner
+/// asked for (0..5), the caller's strength scale, the emitter's curve
+/// samples, the owner's own alpha and the run-time roll.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ElectricTone {
+    /// The effect's strength, `(level·0.05 + scale) + (1 − level·0.05)·curve`
+    /// with the level term in double, clamped above at one (a not-a-number
+    /// stays).
+    pub strength: f32,
+    /// The opacity, `0.7 − strength·0.6`, blended with a positive owner
+    /// alpha as `alpha·0.3 + owner·0.7` (both in double); the peak tone
+    /// ([`peak_tone`]) overwrites it with `0.4 − curve·0.375`, the product in
+    /// single precision and the difference in double.
+    pub alpha: f32,
+    /// The glow's intensity, `roll + level·0.4` in double.
+    pub intensity: f32,
+}
+
+/// The level word's clamp: a negative level counts as zero. The template
+/// choice ([`brief_effect`], [`peak_tone`]) reads the level as passed.
+pub fn effect_level(level: i32) -> i32 {
+    if level < 0 { 0 } else { level }
+}
+
+/// One draw of the engine's integer generator below `n`: the state steps
+/// `s·0x0808_8405 + 1` and the draw is `(s·n) >> 32`.
+fn engine_below(state: &mut u32, n: u32) -> u32 {
+    *state = state.wrapping_mul(0x0808_8405).wrapping_add(1);
+    ((u64::from(*state) * u64::from(n)) >> 32) as u32
+}
+
+/// Whether this call builds the brief effect: level 5 never, below 3
+/// always, 3 on a draw below 2 that comes out 0, above 3 on a draw below 8
+/// that comes out 0. Only the last two draw from the engine's generator
+/// `state`. (The effect's own flag would refuse the last; this entry point
+/// clears it first.)
+pub fn brief_effect(level: i32, state: &mut u32) -> bool {
+    if level == 5 {
+        false
+    } else if level < 3 {
+        true
+    } else if level == 3 {
+        engine_below(state, 2) == 0
+    } else {
+        engine_below(state, 8) == 0
+    }
+}
+
+/// The peak tone: level 5 on an owner whose state word is zero. Its
+/// opacity is redrawn from the second curve sample and it takes the strong
+/// template set; it is never the brief effect.
+pub fn peak_tone(level: i32, owner_word: u32) -> bool {
+    level == 5 && owner_word == 0
+}
+
+/// The effect's strength, opacity and intensity. `curve` and `peak_curve`
+/// are the emitter's curve samples (the original draws them from its own
+/// generator, the second only for the peak tone), `scale` the caller's
+/// strength term, `owner_alpha` the owner's own alpha and `peak` the
+/// [`peak_tone`] test.
+pub fn electric_tone(
+    level: i32,
+    scale: f32,
+    curve: f32,
+    peak_curve: f32,
+    owner_alpha: f32,
+    roll: f32,
+    peak: bool,
+) -> ElectricTone {
+    let level = effect_level(level);
+    let level_part = (f64::from(level) * 0.05) as f32;
+    let mut strength = (level_part + scale) + (1.0 - level_part) * curve;
+    if strength > 1.0 {
+        strength = 1.0;
+    }
+    let mut alpha = (0.7 - f64::from(strength) * 0.6) as f32;
+    if owner_alpha > 0.0 {
+        alpha = (f64::from(alpha) * 0.3 + f64::from(owner_alpha) * 0.7) as f32;
+    }
+    if peak {
+        alpha = (0.4 - f64::from(peak_curve * 0.375)) as f32;
+    }
+    ElectricTone {
+        strength,
+        alpha,
+        intensity: (f64::from(roll) + f64::from(level) * 0.4) as f32,
+    }
+}
+
+/// The lifetime word the template choice takes: the brief effect 0x16, the
+/// long one 0x44.
+pub fn template_lifetime(brief: bool) -> u16 {
+    if brief { 0x16 } else { 0x44 }
+}
+
 /// A light an arc adds to the world: a voxel light (the weapon's and the
 /// spark's) or the point light of a level device.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1004,6 +1099,76 @@ impl Material for ArcMaterial {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tone follows the level, the caller's scale and the curve: the
+    /// level term is a double 0.05, the sum is `(level + scale) + rest`,
+    /// the clamp keeps a not-a-number, and the alpha's owner blend is in
+    /// double.
+    #[test]
+    fn an_electric_tone_follows_its_level_and_owner() {
+        let tone = electric_tone(2, 0.25, 0.5, 0.0, 0.0, 0.5, false);
+        let level_part = (2.0f64 * 0.05) as f32;
+        let strength = level_part + 0.25 + (1.0 - level_part) * 0.5;
+        assert_eq!(tone.strength, strength);
+        assert_eq!(tone.alpha, (0.7 - f64::from(strength) * 0.6) as f32);
+        assert_eq!(tone.intensity, (0.5f64 + 2.0 * 0.4) as f32);
+        // The owner's alpha blends in at 0.7 against the tone's 0.3.
+        let owned = electric_tone(2, 0.25, 0.5, 0.0, 1.0, 0.5, false);
+        assert_eq!(
+            owned.alpha,
+            (f64::from(tone.alpha) * 0.3 + 1.0 * 0.7) as f32
+        );
+        // The peak tone overwrites the alpha from its own curve, the
+        // product rounded to single first: a curve of 0.84743375 gives
+        // 0.08221235, where a double product would give 0.082212344.
+        let peak = electric_tone(5, 0.0, 0.5, 0.847_433_75, 1.0, 0.0, true);
+        assert_eq!(peak.alpha, 0.082_212_35);
+        assert_ne!(
+            peak.alpha,
+            (0.4 - f64::from(0.847_433_75f32) * 0.375) as f32
+        );
+        // Above one the strength clamps; a not-a-number stays.
+        let hot = electric_tone(5, 2.0, 1.0, 0.0, 0.0, 0.0, false);
+        assert_eq!(hot.strength, 1.0);
+        assert!(
+            electric_tone(1, f32::NAN, 0.0, 0.0, 0.0, 0.0, false)
+                .strength
+                .is_nan()
+        );
+        // A negative level counts as zero.
+        let none = electric_tone(-3, 0.5, 0.5, 0.0, 0.0, 0.0, false);
+        assert_eq!(none.strength, 0.5 + 0.5);
+        assert_eq!(effect_level(-3), 0);
+        assert_eq!(effect_level(4), 4);
+    }
+
+    /// The brief choice: level 5 never, below 3 always (no draw), 3 on a
+    /// draw below 2 of 0, above 3 on a draw below 8 of 0; the peak tone is
+    /// level 5 on an idle owner.
+    #[test]
+    fn the_brief_effect_is_chosen_by_level_and_draw() {
+        let mut state = 7;
+        assert!(!brief_effect(5, &mut state));
+        assert!(brief_effect(2, &mut state));
+        assert!(brief_effect(-1, &mut state));
+        assert_eq!(state, 7);
+        // 0·0x08088405 + 1 = 1: (1·2) >> 32 = 0, so level 3 is brief.
+        let mut state = 0;
+        assert!(brief_effect(3, &mut state));
+        assert_eq!(state, 1);
+        // 0xFFFF_FFFF·0x08088405 + 1 = 0xF7F7_7BFC: ·2 >> 32 = 1 and
+        // ·8 >> 32 = 7, so neither level 3 nor 4 is brief.
+        let mut state = u32::MAX;
+        assert!(!brief_effect(3, &mut state));
+        assert_eq!(state, 0xF7F7_7BFC);
+        let mut state = u32::MAX;
+        assert!(!brief_effect(4, &mut state));
+        assert!(peak_tone(5, 0));
+        assert!(!peak_tone(5, 1));
+        assert!(!peak_tone(4, 0));
+        assert_eq!(template_lifetime(true), 0x16);
+        assert_eq!(template_lifetime(false), 0x44);
+    }
 
     #[test]
     fn the_spark_colour_is_green() {

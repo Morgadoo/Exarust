@@ -44,9 +44,9 @@
 //! rounded, plus 60 cm of falloff (80 for the cuboid); the tendril's, the
 //! blast's and the torrent's are their points' bounds plus 120 cm.
 //!
-//! The blast's, the torrent's and the teleporter bubble's lights are
-//! registered as GI shapes while their effects live
-//! (`crate::thaum::effect_light`); the barrier, bubble, barricade, cuboid,
+//! The blast's, the torrent's, the teleporter bubble's, the Barrier's, the
+//! force Bubble's and the barricade's lights are registered as GI shapes
+//! while their effects live (`crate::thaum::effect_light`); the cuboid,
 //! strikes and tendril lights have no live effect that registers them yet.
 //! The multi-point and gradient-line attenuations are per squared volume
 //! unit (the GI block's width is 1), as the original uploads them.
