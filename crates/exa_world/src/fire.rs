@@ -389,8 +389,8 @@ pub struct EmitterSpec {
     pub ring: Option<(usize, f32)>,
     /// The particle texture (`_FirePrt01` or `_FirePrt02`).
     pub texture: &'static str,
-    /// The emitter's own flags word bits the builder ORs in: `0x9000` or
-    /// `0x8000` on a bed.
+    /// The emitter's own flags word bits the builder ORs in: `0x9000` on
+    /// the medium-small bed, `0x8000` on the medium and large beds.
     pub object_flags: u32,
     /// The scene node's flags word bits the builder ORs in: `0x20000` on a
     /// flame.
@@ -556,7 +556,7 @@ fn medium(size: f32) -> Preset {
             lift: -size * 20.0,
             ring: None,
             texture: "_FirePrt01",
-            object_flags: BED_OBJECT_FLAGS,
+            object_flags: LARGE_BED_OBJECT_FLAGS,
             node_flags: 0,
             node_flags_off: FLAME_NODE_FLAGS,
             recreate_id: 0,
@@ -698,9 +698,9 @@ pub fn import_marker(
 pub const RECREATE_FLAG_MASK: u32 = 0x0c01_f000;
 /// The scene node flag a flame's node takes (and a bed's clears).
 pub const FLAME_NODE_FLAGS: u32 = 0x0002_0000;
-/// The emitter object's own flags on the medium tiers' beds.
+/// The emitter object's own flags on the medium-small tier's bed.
 pub const BED_OBJECT_FLAGS: u32 = 0x0000_9000;
-/// The emitter object's own flags on the large bed.
+/// The emitter object's own flags on the medium and the large tiers' beds.
 pub const LARGE_BED_OBJECT_FLAGS: u32 = 0x0000_8000;
 /// The fire word a flame's node stores; the re-creation callback is
 /// registered under it.
@@ -1026,14 +1026,15 @@ mod tests {
             assert_eq!(p.flame.object_flags, 0, "size {size}");
         }
         // The beds clear 0x20000 and take their own object bits: 0x9000 on
-        // the medium tiers, 0x8000 on the large one. Their nodes store no
+        // the medium-small tier, 0x8000 on the medium and large ones (the
+        // medium builder ORs 0x8000 alone). Their nodes store no
         // re-creation word.
         let bed = preset(0.4).base.expect("a bed");
         assert_eq!((bed.node_flags, bed.node_flags_off), (0, FLAME_NODE_FLAGS));
         assert_eq!((bed.object_flags, bed.recreate_id), (BED_OBJECT_FLAGS, 0));
         let bed = preset(0.8).base.expect("a bed");
         assert_eq!((bed.node_flags, bed.node_flags_off), (0, FLAME_NODE_FLAGS));
-        assert_eq!((bed.object_flags, bed.recreate_id), (BED_OBJECT_FLAGS, 0));
+        assert_eq!((bed.object_flags, bed.recreate_id), (LARGE_BED_OBJECT_FLAGS, 0));
         let bed = preset(2.0).base.expect("a bed");
         assert_eq!((bed.node_flags, bed.node_flags_off), (0, FLAME_NODE_FLAGS));
         assert_eq!(
