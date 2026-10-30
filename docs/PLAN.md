@@ -265,6 +265,8 @@ Round 44 sweep-chars: the skin controller's CPU passes and the motion part trans
 
 Round 44 sweep-world: most of the lane's commits were invented or duplicate rules and were corrected or removed; the lever light and fire jobs are live and the terrain read-back is a tested model.
 
+Round 45 doorrooms: the room behind a shut door is black again (the golem gate the owner reported); the round 39 door binding had no caller, so every link counted open. Plus tooling (cl/gridview): `exarust grid` splits one window into four Bevy viewports, each showing an offscreen game process, for parallel visual testing.
+
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
 Done (change `add-apparel-painting`): object database items and the
@@ -1453,6 +1455,10 @@ Round 43 braies: the practice opponent was bare because its template's local-bit
 
 Round 43 rendertail2: the scene-node render tail (light activation and alias copy, geometry node activation and hand-off, append-only attach, terrain block activation, kd builder flags, smoke per sub-view) as tested models, and a material's own environment cube live; review removed invented rules and duplicated luma, registries and scene-content wrappers.
 
+Round 45 gameevents (G1, G4 in part): the trace corrected the port's reading of the GameEvent handler (voice request, not motion; delay, not duration; a power grant, not "has power") and named the record's class word and potential.
+
+Round 45 storystart (U4, G2): the story start's steps reach the live game; tips show on knock-out and death; the manual opens from the menu. The start's "light" is the torch item laid at the start pose, which Exarust applies only without a carried torch, pending the owner's decision.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
@@ -1593,6 +1599,16 @@ Round 43 alarmreturn: the golem alarm return runs live from the story revive (de
 Round 43 golembody: golems get physical bodies built as the original builds every race's (ragdoll, the character init's muscles with 0.995 link smoothing, a mind and a duellist, Stand 2 start); statue golems rest under the sentry tick (dormant body, blows turned, sleep scales on contact mobility) until the alarm wake ends it. On exanima06 two woken golems close on the player and strike while 45 statues stay at rest; their blows land with the halberd haft for no damage yet.
 
 Round 44 polereach: spear stabs now land at the point (9 of 11, was 0 of 3); golems barely improve because their factory halberd has no body. Plus tooling: test runs tile four games on the primary monitor (--window-at / EXA_WINDOW_AT).
+
+Round 45 aisense (C3): the backlog premise was wrong; humans already used the original's base perception, and only the Golem Suit runs the standard sense.
+
+Round 45 bitesocket (C2, P2): there is no separate feral bite in 0.9.5; any held weapon sticks in a wound and being feral only shortens the hold. A port bug that wrote the stick bits into a word nothing reads is fixed.
+
+Round 45 clashstain (C1, C7): the struck weapon rings on a clash and wounds ring each armour layer from the routine's own table; blade stains clear at a world reset only; an existing bug that left a cleared stain pass drawn is fixed.
+
+Round 45 matclass: the armour class off-by-one was in the audio crate only and is fixed.
+
+Round 45 weaponbody: factory weapons are bodies and wound where they touch; golem stabs still mostly land on the haft (they stand inside their halberd's span), so a retail capture of a golem stab is the next check.
 
 ### Phase 7 — Game modes and content
 
