@@ -857,17 +857,22 @@ impl Item {
         }
         item.rank_word = body_rank.or(weapon_rank).or(shield_rank).unwrap_or(0);
         item.body_rank = body_rank.unwrap_or(0);
-        item.loadout_rank = weapon_rank
-            .or(shield_rank)
-            .map_or(0, |w| i32::from(w & 0x1f));
+        // The weapon section decides when the record has one, even one too
+        // short for its word; only then is the shield's word read.
+        let hand_rank = if item.has_weapon {
+            weapon_rank
+        } else {
+            shield_rank
+        };
+        item.loadout_rank = hand_rank.map_or(0, |w| i32::from(w & 0x1f));
         item.armour_weight = body_bytes.map_or(0.0, armour_weight);
         Ok(item)
     }
 }
 
-/// Per-bone weights the armour weight scales each coverage word by: the
-/// torso and limbs weigh full, the two shoulder-adjacent bones and the
-/// feet half, the head twice and the hands two and a half and four times.
+/// Per-bone weights the armour weight scales each coverage word by, for
+/// bones 1 to 20 in order (the original's table; which body part each bone
+/// is has not been traced here).
 const BONE_WEIGHT: [f32; 20] = [
     1.0, 1.0, 1.0, 0.5, 1.0, 1.0, 0.5, 2.0, 2.5, 4.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.5, 0.5, 1.0,
     1.0,
@@ -1324,6 +1329,14 @@ mod tests {
         assert_eq!((plain.loadout_rank, plain.worn_rank()), (0, 0));
         // The trade word keeps its own priority: body first.
         assert_eq!(both.rank_word, 0x07);
+        // A weapon section too short for its word still decides: the
+        // shield is not read (the original reads past the section).
+        let stub = Item::parse(
+            1,
+            &[section(WEAPON, &[0u8; 0x10]), section(SHIELD, &shield)].concat(),
+        )
+        .unwrap();
+        assert_eq!(stub.loadout_rank, 0);
     }
 
     #[test]
