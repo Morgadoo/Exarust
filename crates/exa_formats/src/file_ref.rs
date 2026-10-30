@@ -312,7 +312,12 @@ pub fn read_referenced_file(table: &FolderTable, file: &FileRef) -> FileRead {
 
 /// Writes a block to the full path a reference gives (a long name holding a
 /// separator is a path already; otherwise the folder's path and the name).
-pub fn write_referenced_file(table: &FolderTable, file: &FileRef, base: &[u8], block: &MemBlock) -> bool {
+pub fn write_referenced_file(
+    table: &FolderTable,
+    file: &FileRef,
+    base: &[u8],
+    block: &MemBlock,
+) -> bool {
     write_file(&file.full_path(table, base), block)
 }
 
@@ -322,18 +327,13 @@ pub fn write_referenced_file(table: &FolderTable, file: &FileRef, base: &[u8], b
 /// the original logs the name; on a read failure the block is cleared.
 pub fn read_from_search_path(table: &FolderTable, name: &FileName) -> FileRead {
     let issue = std::cell::Cell::new(None);
-    let read = read_from_folders(
-        table,
-        name,
-        file_exists,
-        |path| match read_file(path) {
-            Ok(block) => Some(block.into_bytes()),
-            Err(failure) => {
-                issue.set(Some(failure));
-                None
-            }
-        },
-    );
+    let read = read_from_folders(table, name, file_exists, |path| match read_file(path) {
+        Ok(block) => Some(block.into_bytes()),
+        Err(failure) => {
+            issue.set(Some(failure));
+            None
+        }
+    });
     match read {
         Some(bytes) => Ok(MemBlock::from_bytes(bytes)),
         None => match issue.get() {
@@ -586,8 +586,16 @@ mod tests {
         // The table stores a trailing separator.
         t.register(&folder, b"");
         let stored = &t.folders()[0].path.clone();
-        std::fs::write(format!("{}old.txt", String::from_utf8_lossy(stored)), b"old").unwrap();
-        std::fs::write(format!("{}new.txt", String::from_utf8_lossy(stored)), b"new").unwrap();
+        std::fs::write(
+            format!("{}old.txt", String::from_utf8_lossy(stored)),
+            b"old",
+        )
+        .unwrap();
+        std::fs::write(
+            format!("{}new.txt", String::from_utf8_lossy(stored)),
+            b"new",
+        )
+        .unwrap();
         assert!(file_exists(&[stored.as_slice(), b"new.txt"].concat()));
         assert!(!file_exists(&[stored.as_slice(), b"gone.txt"].concat()));
         // By reference: the folder's path and the name.
