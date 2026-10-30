@@ -1166,8 +1166,9 @@ which take the mesh-side leaf test as a closure because the original
 keeps it outside the tree. `TerrainKdTree` is the 30 x 30 cell block tree:
 leaves list two triangles per cell, the range is packed in the root word,
 a block's translation moves only the split planes, and an attach caches the
-mesh's own min/max vectors (a clone owns copies of the arrays where the
-original shares them; the planes are only ever moved after the copy). Assumptions (the
+mesh's box as its centre less and plus its half extent (a clone owns copies
+of the arrays where the original shares them; the planes are only ever moved
+after the copy). Assumptions (the
 stored triangle normal's orientation and the standalone root box) are in
 the module docs. The game still takes the level's collision from rapier's
 trimesh BVH; this module has tests of its own and no game path yet, apart
@@ -1183,7 +1184,8 @@ raised to 1/83, gravity over 83², the squared per-tick speed bands; a
 retention that is not above zero, a NaN included, stores zero), the
 simulation constructor's constants (12 ms step, 11-step backlog), the
 per-frame interpolation fraction with its [−2, 2] clamp, the scene's
-sector creation (a sector node's children become the new sector's pending
-static nodes while it has no bodies; a shared scene reuses the first sector
-without replacing its node and appends the children to it) and the sector's
+sector creation (a new sector with no static nodes yet hands its node's
+children back for immediate registration; a shared scene reuses the first
+sector for every node of the batch, keeps its scene word and node, and
+queues the children as pending) and the sector's
 pending-batch append.
