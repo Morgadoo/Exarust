@@ -62,10 +62,11 @@ level the room reach test, `rooms::in_sight`: the same room, or an open
 door whose point lies within 2 m of the other character; a level without a
 grid sees everyone) and every one it already knows, with that character's own contacts, the role database's attitude
 and the relations' trust in its threat estimate, and writes the contact
-words the integration reads. A race-class-`0x12xx` brain uses the standard
-per-contact sense; the other AI races use the ally-aware one
-(`combatant::ally_sense`), in which a fellow brain stands in for the race
-word's AI bit. A sleeper that rates the player above a notice drops the
+words the integration reads. A race-class-`0x12xx` brain and every non-AI
+race run `combatant::perceive` (the standard sense `combatant::standard_sense`
+is tested but not scheduled, see below); the other AI races use the
+ally-aware one (`combatant::ally_sense`), whose fellow AI is a brain whose
+race word carries the AI bit (`Npc::race_ai`). A sleeper that rates the player above a notice drops the
 sleep role and wakes. A knocked-out or dead brain stops after its alert decay,
 before its morale and state (the original's condition bit `0x800`). A placed
 brain takes its sense, statue mark and effect from the record's profession
@@ -73,7 +74,9 @@ word, the race word the attach reads: the races whose word carries bit
 `0x1000` (the golems, race ids 17–21) install a sense, the class `0x1200`
 (the Golem Suit) the standard one and the others the ally-aware one, and the
 statue bit marks a statue, whose sense clears what it sees. Every other race
-keeps the behaviour base's perception. The original's tick ends by registering the character's
+keeps the behaviour base's perception. In the original a statue keeps that
+mark until a golem alarm zone wakes it; Exarust has no live alarm-zone wake
+yet (`golem::wake` is tested only), so a placed statue stays blind. The original's tick ends by registering the character's
 nav footprint unless it follows a route with its locomotion active at 1 cm
 a tick or faster (`brain::stamps_footprint`). The game's footprint system
 asks that gate for every NPC each fixed tick: the route-following flag is a
@@ -274,8 +277,9 @@ event bits), the references to its target, attention target, other target
 and holder, its published combat rating and reach, its alert level, its
 queued combat step and its nav footprint.
 
-`standard_sense` is the routine an AI race outside the ally class installs
-as its per-contact sense: the alarm clears, the range is 1200 cm (1800 while
+`standard_sense` is the routine an AI race of class `0x12xx` installs
+as its per-contact sense: the threat word clears, a contact that is not a
+character ends it there, the range is 1200 cm (1800 while
 tracked, a strict squared compare) with a dead or asleep body (or an asleep
 observer) taking a zero sighting, a noticed level capped at 0.5 and no
 concern, hostility or selected third party, a knocked-out one 24·c and a
@@ -283,7 +287,9 @@ concern, hostility or selected third party, a knocked-out one 24·c and a
 while it attacks. The observed body's own contacts are then weighed (the
 weight from its condition, each contact's closeness and view and the
 `min((concern + hostility)·0.15, 1)` softening in the original's mixed
-precision); the heaviest is the selected third party and only the observer
+precision); the heaviest picks the selected character, which the original
+reads from the observer's own contact list at that entry's position in the
+observed's list, and only the observer
 (×multiplier×0.5) and the player (×multiplier) raise the concern target.
 The player body clears the concern and takes attitude 1. It is tested but
 not scheduled: the original installs it *instead of* the behaviour base's
