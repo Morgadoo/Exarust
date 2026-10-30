@@ -658,7 +658,9 @@ before encoding (`exa_assets::human_skin::tone_linear`), handed to the
 owner's callback or tinting the skin; the hair picker's three columns
 over the stored hue run, its value scale, grey marker, four-vertex shade,
 attached control and set slot; and the picker base's pick (double
-divisions, flipped v, epsilon test). The hair material's shading routine
+divisions, flipped v, epsilon test). Every picker routine measures the
+form's client, the form less its border of 2 on every side
+(`field_size`, `FIELD_BORDER`), from the client's corner. The hair material's shading routine
 is not here (the character generator ports it). `skill_gui` builds the
 two skill atlases (the origin cell first, five sets cut as two rows of
 four with the origin row techniques 5–8, 8-unit icons sharpened below 96

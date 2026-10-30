@@ -237,8 +237,8 @@ pub use menu::{
     update_menu_hover,
 };
 pub use pickers::{
-    AttachedControl, FieldQuad, FieldVertex, HAIR_MARKER_SCALE, HAIR_TABLE, HairColPicker,
-    PICKER_NOTICE, PickPoint, TonePicker, ToneTarget, pick_point,
+    AttachedControl, FIELD_BORDER, FieldQuad, FieldVertex, HAIR_MARKER_SCALE, HAIR_TABLE,
+    HairColPicker, PICKER_NOTICE, PickPoint, TonePicker, ToneTarget, field_size, pick_point,
 };
 pub use scale::GuiScale;
 pub use selection::{

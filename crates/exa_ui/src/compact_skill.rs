@@ -200,7 +200,8 @@ pub struct Pip {
 /// Lays out a skill's pips from `x`, `y`: twelve units wide, each
 /// overlapping the last by a unit. A last pip with a share under 0.99
 /// (compared in double) takes `share · 0.8 + 0.1` of the width (rounded
-/// half to even) and of the texture.
+/// half to even) and of the texture's u range; the v range is kept (the
+/// original rewrites only the right-hand corners' u).
 pub fn lay_out_pips(x: i32, y: i32, unit: i32, experience: i32) -> Vec<Pip> {
     let (count, mut share) = pips(experience);
     let mut width = unit * CELL_WIDTH_UNITS;
@@ -273,6 +274,9 @@ pub struct NodeDraw {
     pub technique: Option<u8>,
     /// The colour's alpha byte (the hover highlight's when hovered).
     pub alpha: u8,
+    /// The colour word the node draws with: the line colour's or the
+    /// highlight's RGB under [`Self::alpha`].
+    pub colour: u32,
     pub hovered: bool,
 }
 
@@ -302,18 +306,30 @@ pub fn technique_nodes(
     if count == 0 {
         return nodes;
     }
+    // The alpha bytes are scaled by the screen's alpha first; the slot in
+    // training then halves the scaled line byte (a shift of the byte).
     let mut line = scaled_alpha(LINE_COLOUR, alpha);
     let highlight = scaled_alpha(HIGHLIGHT_COLOUR, alpha);
+    let word = |hovered: bool, a: u8| {
+        let rgb = if hovered {
+            HIGHLIGHT_COLOUR
+        } else {
+            LINE_COLOUR
+        } & 0x00ff_ffff;
+        rgb | u32::from(a) << 24
+    };
     for column in 0..count {
         let (nx, ny) = node_place(x, y, unit, column);
         let hovered = node_hovered(selected, skill, column);
         let technique = techniques.get(column as usize).copied().unwrap_or(0);
         if technique == 0 {
+            let a = if hovered { highlight } else { line };
             nodes.push(NodeDraw {
                 x: nx,
                 y: ny,
                 technique: None,
-                alpha: if hovered { highlight } else { line },
+                alpha: a,
+                colour: word(hovered, a),
                 hovered,
             });
             break;
@@ -321,11 +337,13 @@ pub fn technique_nodes(
         if column == count - 1 && training {
             line >>= 1;
         }
+        let a = if hovered { highlight } else { line };
         nodes.push(NodeDraw {
             x: nx,
             y: ny,
             technique: Some(technique),
-            alpha: if hovered { highlight } else { line },
+            alpha: a,
+            colour: word(hovered, a),
             hovered,
         });
     }
@@ -764,8 +782,17 @@ mod tests {
         assert_eq!(nodes.len(), 2);
         assert_eq!((nodes[0].x, nodes[0].y), (8, 118));
         assert_eq!(nodes[0].alpha, 0x78);
+        assert_eq!(nodes[0].colour, LINE_COLOUR);
         assert_eq!(nodes[1].x, 52);
         assert_eq!(nodes[1].alpha, 0x3c);
+        // Only the alpha byte is halved; the RGB keeps the line's.
+        assert_eq!(nodes[1].colour, 0x3cf0_f8ff);
+        // The halving shifts the already scaled byte: at 0.31 the line's
+        // 0x78 scales to round(37.2) = 37 and halves to 18 (halving first
+        // would give round(18.6) = 19).
+        let dim = technique_nodes(5_000, &[3, 4, 0, 0, 0, 0], false, 0, 0, 0, 100, 4, 0.31);
+        assert_eq!((dim[0].alpha, dim[1].alpha), (37, 18));
+        assert_eq!(dim[1].colour, 0x12f0_f8ff);
         // The open-slot flag shows an empty node after the level.
         let nodes = technique_nodes(5_000, &[3, 0, 0, 0, 0, 0], true, 1, 0x0202, 0, 100, 4, 1.0);
         assert_eq!(nodes.len(), 2);

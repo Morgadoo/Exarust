@@ -829,6 +829,11 @@ The original's own forms and controls that Exarust rebuilds, with the
   5 for the compact flag on a narrow interface; the hover word `row << 8 |
   column`; a hit strictly within five units (a later row wins); the wheel
   takes the nearest row (horizontal) or the row above or below (vertical).
+  A skill's experience draws a pip per 5 000 and the remainder as a
+  narrower last pip, whose u range (only; the v range is kept) shrinks
+  with its width (`share · 0.8 + 0.1`); the technique node in training
+  halves its line colour's alpha byte after the screen's fade has scaled
+  it.
 - **Arena loadout** (`exa_ui::loadout`, `exa_game::loadout`): the 1024 ×
   768 editor of one fighter's kit at one rank. The arsenal is 228 wide at
   (4, 180) and `492 · opacity` tall (the opacity 0.83739835 on a wide
@@ -2705,7 +2710,9 @@ plain draw and input records.
   down, one line height per wrapped line plus a unit apart; the colours come
   from the interface palette.
 - **Pickers** (`exa_ui::picker_fields`): the marker is the point times the
-  field's client size less one, in single precision and rounded to even.
+  field's client size less one (the picker form's size less its border of
+  2 on every side), in single precision and rounded to even, from the
+  client's corner.
   The toggle key flips the marker bit, the hide key clears it, and a move
   key adds hundredths of a stick to the point (worked in double), holds it
   to 0 to 1 (an unordered value stays unordered) and runs the callback; the
@@ -3398,8 +3405,12 @@ it is wired into the running game yet.
   pixels below itself, as wide and 40 tall, whose value (¼ at first) is
   the hair material's third input; with a material attached a refresh
   re-shades it and raises notice 7. The picker base's pick takes
-  `u = x / width` and `v = 1 − (1 − y / height)` in double, held to 0–1,
-  ignored within an epsilon of the point; a press over the field answers 7.
+  `u = x / width` and `v = 1 − (1 − y / height)` in double over the
+  client (the form less its border of 2 on every side, the point taken
+  from the client's corner), held to 0–1, ignored within an epsilon of the
+  point; a press over the field answers 7. The tone quads, hair cells and
+  shade span the same client, so a 160 × 160 picker draws and picks over
+  156 × 156.
 - **Skill resources** (`exa_ui::skill_gui`). `sgsklicons.rfi` is cut as the
   origin cell, then five sets of eight 96-pixel cells in two rows of four
   (the origin row techniques 5–8, the row below 1–4; group 1 has none),
