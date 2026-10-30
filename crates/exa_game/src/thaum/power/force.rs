@@ -990,6 +990,66 @@ pub fn throw_coast(from: [f32; 3], to: [f32; 3]) -> ([f32; 3], bool) {
     )
 }
 
+/// The flag a shell that was still held gains when the throw ends.
+pub const SHELL_END_FLAG: u32 = 0x200;
+
+/// The sub-nodes of a thrown item: the root, then every child depth first,
+/// the child order the original appends them in.
+pub fn collect_sub_nodes(root: u64, children: impl Fn(u64) -> Vec<u64>) -> Vec<u64> {
+    let mut out = Vec::new();
+    fn walk(node: u64, children: &impl Fn(u64) -> Vec<u64>, out: &mut Vec<u64>) {
+        out.push(node);
+        for child in children(node) {
+            walk(child, children, out);
+        }
+    }
+    walk(root, &children, &mut out);
+    out
+}
+
+/// What the lift does to a thrown item's sub-nodes: the shell each carried
+/// before and the shared shell they all take.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThrowGrab {
+    pub nodes: Vec<u64>,
+    pub previous_shell: u64,
+    pub shell: u64,
+}
+
+/// The lift's grab of an item: every sub-node's shell becomes `shell`; the
+/// root's own shell is kept because it comes back when the throw ends.
+pub fn throw_grab(
+    root: u64,
+    root_shell: u64,
+    shell: u64,
+    children: impl Fn(u64) -> Vec<u64>,
+) -> ThrowGrab {
+    ThrowGrab {
+        nodes: collect_sub_nodes(root, children),
+        previous_shell: root_shell,
+        shell,
+    }
+}
+
+/// What ending a throw restores: every sub-node gets the item's own shell
+/// back, and a shell still held gains [`SHELL_END_FLAG`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThrowRestore {
+    pub nodes: Vec<u64>,
+    pub shell: u64,
+    pub shell_flag: u32,
+}
+
+/// The end of a throw: `nodes` return to `shell`, and a shell still in the
+/// lift's hands gains [`SHELL_END_FLAG`].
+pub fn throw_restore(nodes: &[u64], shell: u64, shell_held: bool) -> ThrowRestore {
+    ThrowRestore {
+        nodes: nodes.to_vec(),
+        shell,
+        shell_flag: if shell_held { SHELL_END_FLAG } else { 0 },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1264,5 +1324,25 @@ mod tests {
         short.control(0, 801, &beside, &mut body);
         assert_eq!(short.state, super::super::ENDING);
         assert_eq!(short.phase, THROW_DONE);
+    }
+
+    #[test]
+    fn a_throw_collects_the_item_and_all_its_children() {
+        let children = |node: u64| match node {
+            1 => vec![2, 3],
+            2 => vec![4],
+            _ => Vec::new(),
+        };
+        assert_eq!(collect_sub_nodes(1, children), vec![1, 2, 4, 3]);
+        let grab = throw_grab(1, 7, 9, children);
+        assert_eq!(grab.nodes, vec![1, 2, 4, 3]);
+        assert_eq!(grab.previous_shell, 7);
+        assert_eq!(grab.shell, 9);
+        let restore = throw_restore(&grab.nodes, grab.previous_shell, true);
+        assert_eq!(restore.nodes, grab.nodes);
+        assert_eq!(restore.shell, 7);
+        assert_eq!(restore.shell_flag, SHELL_END_FLAG);
+        assert_eq!(SHELL_END_FLAG, 0x200);
+        assert_eq!(throw_restore(&[1], 7, false).shell_flag, 0);
     }
 }

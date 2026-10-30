@@ -169,7 +169,11 @@ plumbing (`casting::reserve`, `release_reserve`, `spend_tick`,
   handed from a kinesis is lifted at its centre and spends nothing a
   tick: that start never stores the cast's cost. Every lift plays
   `thmfrc_throw` at the body (0.6, pitch `1 + 0.2·roll`), a one-shot that
-  fades when the throw ends before its drop. Each tick moves the body's
+  fades when the throw ends before its drop. The lift collects the item and
+  every child node in depth-first order (`throw_grab`/`collect_sub_nodes`),
+  gives them all the same shell and keeps the item's own to put back when
+  the throw ends, when a shell still held gains 0x200
+  (`throw_restore`). Each tick moves the body's
   first part, each particle by its origin weight, and wakes it; a body
   gone ends the throw (`exa_game::thaum::throw_live`).
 - **Energy**: Shock's first tick installs its cast hook and plays the
