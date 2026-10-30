@@ -762,8 +762,8 @@ pub struct DrawInput {
 pub struct DrawPlan {
     /// The client has a size, so there is something to render.
     pub render: bool,
-    /// The refresh flag after the frame: a client smaller or larger than
-    /// the view forces it.
+    /// The refresh flag after the frame: a client larger than the view
+    /// forces it (the client's edges are the view's bounds).
     pub refresh: bool,
     /// The sample counter after the frame.
     pub index: i32,
@@ -779,11 +779,12 @@ pub struct DrawPlan {
 }
 
 /// The viewport's draw-slot rules: a client with a size renders; a client
-/// whose size differs from the view's, or the view's own refresh flag,
-/// forces a whole frame and restarts the sample counter; otherwise the
-/// counter advances and its jittered sample is accumulated. The stereo
-/// mode shifts the camera, and the frame-rate and version readouts take
-/// their places.
+/// larger than the view, or the view's own refresh flag, forces a whole
+/// frame and restarts the sample counter (the 0.9.5 slot sets the flag on
+/// every frame, so this branch only shows when a caller passes `false`);
+/// otherwise the counter advances and its jittered sample is accumulated.
+/// The stereo mode shifts the camera, and the frame-rate and version
+/// readouts take their places.
 pub fn plan_draw(input: DrawInput) -> DrawPlan {
     let render = input.client.0 > 0 && input.client.1 > 0;
     if !render {
@@ -797,7 +798,8 @@ pub fn plan_draw(input: DrawInput) -> DrawPlan {
             version: None,
         };
     }
-    let refresh = input.refresh || input.client != input.view;
+    let exceeds = input.client.0 > input.view.0 || input.client.1 > input.view.1;
+    let refresh = input.refresh || exceeds;
     let (index, sample) = if refresh {
         (0, None)
     } else {
@@ -1061,8 +1063,7 @@ mod tests {
         assert_eq!(plan.eye, [0.5, 0.0]);
         assert_eq!(plan.fps, Some((733, 21)));
         assert_eq!(plan.version, Some((5, 595)));
-        // A client whose size differs from the view's refresh resets the
-        // counter.
+        // A client larger than the view refreshes and resets the counter.
         let resized = plan_draw(DrawInput {
             client: (120, 80),
             index: 2,

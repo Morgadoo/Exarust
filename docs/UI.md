@@ -1311,8 +1311,8 @@ sample of its level in order: sample `i` uses the level's point, the share
 the blend `1 − 1 / (i + 1)`, the jitter `2 · scale · point / size` per
 axis. A progressive frame's sample `k` uses point `k − 1`, the share
 `k / count` and the blend `1 − 1 / k`. The draw slot renders only a client
-with a size; a client smaller or larger than the view, or the view's
-refresh flag, makes a whole frame and restarts the counter — the 0.9.5 draw
+with a size; a client whose edges pass the view's, or the view's refresh
+flag, makes a whole frame and restarts the counter — the 0.9.5 draw
 sets that flag every frame, so the still accumulation never runs — else
 the counter advances and its sample is accumulated. Stereo 1 shifts the
 camera right by the camera scale and stereo 2 left. The frame-rate readout
