@@ -4,7 +4,7 @@
   parent), which the living sampler multiplies into the thigh's clip turn;
   Exarust computes the same turn per sample (`femur_posture_turn`). Nothing
   turns the feet.
-- The 0xAE8 share is (1 − balance)(1 − r) + r with r the race's limb ratio;
+- The posture block's retention share is (1 − balance)(1 − r) + r with r the race's limb ratio;
   `retention_factor` already computes it where the living retention reads
   it, so a second stored copy is not kept.
 - The link-iteration count only marks the solve's passes and sizes the

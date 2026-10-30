@@ -12,7 +12,7 @@ link-iteration count, which Exarust left fixed at 20.
 
 Evidence: REA (Ghidra) and the objdump listing of the femur posture routine
 and its lerp, normalise and axis-angle helpers; the body tick's femur
-posture calls and 0xAE8 share (balance and the race ratio); the body tick's
+posture calls and retention share (balance and the race ratio); the body tick's
 attack grip block (two scalars, pose 3's 0.6 and 0.4); and the body tick's
 link-iteration block (the dormant state test, the 5, the feral level
 target with its single-precision divide and half-even conversion).
