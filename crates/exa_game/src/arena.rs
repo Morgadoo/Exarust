@@ -1244,18 +1244,18 @@ pub fn weapon_tier(tier: u32) -> Option<&'static [WeaponEntry]> {
 
 /// Picks one of an entry's variant ids, the engine's way.
 ///
-/// The original counts the row's three slots whose value is positive (the
-/// compare is unsigned, so a zero or a negative slot is left out), steps
-/// the roll once and takes the slot at `(count · roll) >> 32` **without**
-/// skipping the empty slots in between: a row of `[7, 0, 9]` can draw the
-/// zero. A drawn zero means no weapon. The original then passes the id to
+/// The original counts the row's three slots that are set (an unsigned
+/// compare against zero, so any non-zero word counts, one with the top bit
+/// set included), steps the roll once and takes the slot at
+/// `(count · roll) >> 32` **without** skipping the empty slots in between:
+/// a row of `[7, 0, 9]` can draw the zero. A drawn zero means no weapon. The original then passes the id to
 /// the item variant and condition roll, which Exarust applies when the
 /// item is instantiated.
 pub fn pick_variant(entry: &WeaponEntry, rng: &mut crate::item_container::Rng) -> u32 {
     let count = entry
         .variants
         .iter()
-        .filter(|&&variant| (variant as i32) > 0)
+        .filter(|&&variant| variant != 0)
         .count() as u32;
     entry
         .variants
@@ -1311,7 +1311,8 @@ mod weapon_tests {
     fn the_variant_draw_keeps_the_empty_slots() {
         // Two set slots (7 and 9) and an interior zero: the count is two but
         // the draw indexes the row as it stands, so the high roll takes the
-        // zero. A negative slot does not count either.
+        // zero. The compare is unsigned, so a word with the top bit set
+        // counts like any other non-zero slot.
         let row = WeaponEntry {
             name: "Interior",
             variants: &[7, 0, 9],
@@ -1323,7 +1324,7 @@ mod weapon_tests {
             variants: &[7, 0x8000_0000, 9],
         };
         assert_eq!(pick_variant(&negative, &mut Rng(0)), 7);
-        assert_eq!(pick_variant(&negative, &mut Rng(u32::MAX)), 0x8000_0000);
+        assert_eq!(pick_variant(&negative, &mut Rng(u32::MAX)), 9);
     }
 
     #[test]
