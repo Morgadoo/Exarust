@@ -2233,7 +2233,6 @@ type BuiltGroup = (usize, Mesh, Vec<u32>);
 
 /// The meshes of a mesh's drawn groups (`_null` marks geometry the
 /// original never draws), by group index, built on `pool` when given.
-
 fn group_meshes(
     mesh: &RfcMesh,
     skin: Option<&[VertexSkin]>,
