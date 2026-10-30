@@ -310,6 +310,48 @@ impl PanelIcons {
         released
     }
 
+    /// The icon manager's own unit change: its icon size is the forty-unit
+    /// base times the GUI unit, its renderer is resized (the atlas is
+    /// rebuilt at the new cell side, so every cell is given back), and every
+    /// cached icon is drawn again. A slot's cell is gone until the render
+    /// finishes, and its half extents become the new unit plus half the
+    /// icon's own side. Does nothing when the unit is unchanged.
+    pub fn rescale(&mut self, unit: i32, catalogue: Option<&ItemCatalogue>) {
+        let unit = unit.max(1);
+        if unit == self.cache.unit {
+            return;
+        }
+        self.cache.unit = unit;
+        self.atlas = IconAtlas::new(40 * unit, 4);
+        self.texture = None;
+        self.revision = (0, 0, 0);
+        self.version = self.version.wrapping_add(1);
+        let (half_width, half_height) = self.icon_half();
+        self.pending.clear();
+        for at in 0..self.cache.entries.len() {
+            let entry = &mut self.cache.entries[at];
+            entry.cell = -1;
+            entry.half_width = half_width;
+            entry.half_height = half_height;
+            if entry.id == 0 || entry.refs == 0 {
+                continue;
+            }
+            let model_flags = catalogue
+                .and_then(|catalogue| catalogue.model(entry.id))
+                .map_or(0, |model| model.flags);
+            self.pending.push_back(PendingIcon {
+                id: entry.id,
+                key: entry.variant,
+                variant: entry.variant,
+                entry: at,
+                model_flags,
+                scene: None,
+                attempts: 0,
+                waited: 0,
+            });
+        }
+    }
+
     /// The atlas's texture, rebuilt when its image changed.
     fn texture(&mut self) -> Option<&GuiTexture> {
         let image = &self.atlas.image;
@@ -561,5 +603,29 @@ mod tests {
         let layer = manager.layer(&container).unwrap();
         let vertices = layer.batch.vertices_of(&layer.batch.primitives[0]);
         assert_eq!((vertices[2].x, vertices[2].y), (90.0, 100.0));
+    }
+
+    #[test]
+    fn a_unit_change_redraws_every_icon_at_forty_units() {
+        let mut manager = manager();
+        manager.rescale(5, None);
+        // The renderer is resized to forty units a side.
+        assert_eq!(manager.atlas.cell, 200);
+        assert_eq!(manager.cache.unit, 5);
+        // The drawn icon lost its cell and waits for the render, with the
+        // new unit added to half the icon's own side.
+        let slot = manager.cache.entries[0];
+        assert_eq!((slot.id, slot.refs, slot.cell), (7, 1, -1));
+        assert_eq!((slot.half_width, slot.half_height), (105, 105));
+        assert_eq!(manager.pending.len(), 1);
+        assert_eq!(manager.pending[0].id, 7);
+        assert_eq!(manager.pending[0].entry, 0);
+        // A freed slot is not drawn again, and an unchanged unit is a no-op.
+        manager.pending.clear();
+        manager.cache.entries[0].refs = 0;
+        manager.rescale(4, None);
+        assert_eq!(manager.atlas.cell, 160);
+        assert!(manager.pending.is_empty());
+        assert_eq!(manager.atlas.cell, 160);
     }
 }
