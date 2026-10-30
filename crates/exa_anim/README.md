@@ -69,9 +69,10 @@ owed to the next frame), 0.6 × the race's base a tick, added in double
   transform summed `(x·a + y·b) + (z·c + t)`), the joint numbering and
   inverse binds a mesh registers (bone `n` = joint `n`, sized by the
   highest bone number, a gap taking the mesh's own part with an identity
-  inverse, each inverse relative to the mesh's part in rest), the first
-  frame met for a bone number winning as the original's joint capture
-  walks the body, and a mesh's vertex translation. Bevy's GPU
+  inverse, each inverse relative to the mesh's part in rest), the joints
+  captured in the original's walk (`capture_joints`: depth first in child
+  order, the first node of a bone number setting its frame and a repeated
+  bone ending its branch), and a mesh's vertex translation. Bevy's GPU
   skinning performs the per-frame deform; the bind uses these numbers.
   Meshes bind under an `Animator` body root or a `SkinnedRoot` one (a
   level's placed dead have no clips, but their skin still binds).

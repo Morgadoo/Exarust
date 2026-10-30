@@ -414,14 +414,27 @@ fn bind_skins(
         };
         let key = (root, skinned.bone);
         if let std::collections::hash_map::Entry::Vacant(slot) = bound.entry(key) {
-            // Rest pose of every body part relative to the root. The first
-            // node met for a bone number sets its frame; a later node of the
-            // same bone leaves it alone, as the original's joint capture
-            // does.
-            let captured: Vec<(usize, (Entity, Mat4))> = children
-                .iter_descendants(root)
-                .filter_map(|e| {
-                    let part = parts.get(e).ok()?;
+            // Rest pose of every captured body part relative to the root,
+            // in the original's joint-capture walk: depth first in child
+            // order, the first node of a bone number setting its frame and
+            // a repeated bone ending its branch.
+            let roots: Vec<Entity> = children
+                .get(root)
+                .map(|c| c.iter().collect())
+                .unwrap_or_default();
+            let order = skin::capture_joints(
+                &roots,
+                |e| {
+                    children
+                        .get(e)
+                        .map(|c| c.iter().collect())
+                        .unwrap_or_default()
+                },
+                |e| parts.get(e).ok().map(|p| p.bone),
+            );
+            let rest: HashMap<usize, (Entity, Mat4)> = order
+                .into_iter()
+                .map(|(bone, e)| {
                     let mut m = Mat4::IDENTITY;
                     let mut node = e;
                     while node != root {
@@ -435,10 +448,9 @@ fn bind_skins(
                             Err(_) => break,
                         }
                     }
-                    Some((part.bone, (e, m)))
+                    (bone, (e, m))
                 })
                 .collect();
-            let rest: HashMap<usize, (Entity, Mat4)> = skin::first_of(captured.into_iter());
             let Some(&(own_entity, own_rest)) = rest.get(&(skinned.bone as usize)) else {
                 continue; // the skeleton is not attached yet
             };
