@@ -35,6 +35,7 @@ use crate::cloth_parts::{self, PartCells};
 use exa_physics::Physics;
 use exa_physics::body::Ragdoll;
 use exa_physics::cloth::{self, Cloth};
+use exa_physics::cloth_level;
 use exa_physics::contact::Level;
 use exa_physics::sector::{self, ObjectBodyPart, ObjectBounds, ObjectContacts};
 
@@ -917,9 +918,7 @@ fn step_one(
     work.asleep = u32::from(asleep);
     'cloth: {
         let mut contacts = ObjectContacts::default();
-        if let (true, Some(physics), Some(statics)) =
-            (shared.live_contacts, shared.physics, shared.statics)
-        {
+        if shared.live_contacts && shared.physics.is_some() && shared.statics.is_some() {
             let bodies_started = on.then(std::time::Instant::now);
             // Objects against bodies: the parts the grid sector's object
             // stage walks (those bucketed in the nine cells around the
@@ -970,47 +969,16 @@ fn step_one(
                 work.skipped = 1;
                 break 'cloth;
             }
-            let level_started = on.then(std::time::Instant::now);
-            // Objects against the level: the static grid's records around
-            // the object's cell that pass its pre-test, less the cloth's own
-            // node's meshes, each one's triangles within the object's bound
-            // box as one piece.
-            let centre_m = object.centre * 0.01;
-            let radius_m = object.radius * 0.01;
-            let (lo, hi) = (
-                centre_m - Vec3::splat(radius_m),
-                centre_m + Vec3::splat(radius_m),
-            );
-            let own_index = own_node.map(|n| n.index().index());
-            let mut near = Vec::new();
-            let mut triangles = Vec::new();
-            statics.near_object(object.centre, object.radius, &mut near);
-            for &record_id in &near {
-                let Some(record) = statics.grid().get(record_id) else {
-                    continue;
-                };
-                work.records += 1;
-                if own_index.is_some_and(|n| n != 0 && n == record.node) {
-                    work.own_records += 1;
-                    continue;
-                }
-                triangles.clear();
-                physics.0.triangles(record.piece, lo, hi, &mut triangles);
-                contacts.gather_level(&to_object, triangles.iter().copied());
-            }
-            work.pieces = contacts.pieces.len() as u32;
-            work.triangles = contacts.level.len() as u32;
-            if let Some(t) = level_started {
-                work.level_micros = t.elapsed().as_micros() as u64;
-            }
         } else if asleep {
             // A sleeping cloth with no contacts does not step.
             break 'cloth;
         }
+        let level_stage =
+            shared.live_contacts && shared.physics.is_some() && shared.statics.is_some();
         instance.cloth.bodies = std::mem::take(&mut contacts.bodies);
         instance.cloth.particle_bodies = std::mem::take(&mut contacts.particle_bodies);
-        instance.cloth.level = std::mem::take(&mut contacts.level);
-        instance.cloth.level_pieces = std::mem::take(&mut contacts.pieces);
+        instance.cloth.level.clear();
+        instance.cloth.level_pieces.clear();
         work.awake = u32::from(!asleep);
         // A cloth that follows an owner falls along the world's gravity in
         // its node's frame.
@@ -1020,9 +988,57 @@ fn step_one(
             shared.gravity
         };
         let step_started = on.then(std::time::Instant::now);
-        cloth::step(&mut instance.cloth, gravity);
+        // The original steps the object and then gathers its level
+        // contacts, so the level's records are culled by where the step
+        // left the cloth ([`cloth::step_before_level`] and
+        // [`cloth::finish_step`]).
+        let stepped = cloth::step_before_level(&mut instance.cloth, gravity);
         if let Some(t) = step_started {
             work.step_micros = t.elapsed().as_micros() as u64;
+        }
+        if let Some((before, awake)) = stepped {
+            if level_stage && let (Some(physics), Some(statics)) = (shared.physics, shared.statics)
+            {
+                let level_started = on.then(std::time::Instant::now);
+                // Objects against the level, after their step: the static
+                // grid's records around the stepped object's cell that pass
+                // its pre-test, less the cloth's own node's meshes, each
+                // one's triangles within the object's bound box as one
+                // piece.
+                let (object, _) = cloth_bound(&instance.cloth, at);
+                let centre_m = object.centre * 0.01;
+                let radius_m = object.radius * 0.01;
+                let (lo, hi) = (
+                    centre_m - Vec3::splat(radius_m),
+                    centre_m + Vec3::splat(radius_m),
+                );
+                let own_index = own_node.map(|n| n.index().index());
+                let mut near = Vec::new();
+                let mut triangles = Vec::new();
+                statics.near_object(object.centre, object.radius, &mut near);
+                for &record_id in &near {
+                    let Some(record) = statics.grid().get(record_id) else {
+                        continue;
+                    };
+                    work.records += 1;
+                    if own_index.is_some_and(|n| n != 0 && n == record.node) {
+                        work.own_records += 1;
+                        continue;
+                    }
+                    triangles.clear();
+                    physics.0.triangles(record.piece, lo, hi, &mut triangles);
+                    contacts.gather_level(&to_object, triangles.iter().copied());
+                }
+                work.pieces = contacts.pieces.len() as u32;
+                work.triangles = contacts.level.len() as u32;
+                instance.cloth.level = std::mem::take(&mut contacts.level);
+                instance.cloth.level_pieces = std::mem::take(&mut contacts.pieces);
+                cloth_level::touch_level(&mut instance.cloth);
+                if let Some(t) = level_started {
+                    work.level_micros = t.elapsed().as_micros() as u64;
+                }
+            }
+            cloth::finish_step(&mut instance.cloth, &before, awake);
         }
         work.level_tests = instance.cloth.level_tests as u64;
         work.sweep_tests = instance.cloth.body_tests as u64;

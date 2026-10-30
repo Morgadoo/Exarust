@@ -261,7 +261,12 @@ the original's approximate reciprocal) up to a tenth of the push's square,
 else shortening it by `√(0.1·push²/travel²)`; a body that pushed hands the
 cloth its countdown when that is higher.
 The cloth's level contact (`cloth_level`) runs after its step, mesh by
-mesh (the radius and slide are the record's; the built-in's below): each particle that moved over 0.1 cm² sweeps a 2 cm sphere through
+mesh (the radius and slide are the record's; the built-in's below); the
+stage gathers the level's records and triangles from where the step left
+the cloth (`cloth::step_before_level` then the records, then
+`cloth::finish_step`), as the original's object loop gathers its static
+contacts after stepping it. Each particle that moved over 0.1 cm² sweeps a
+2 cm sphere through
 the mesh, any other is a 2 cm sphere where it is, tested against the
 piece's box and then the piece's triangles near it (a per-piece grid, as
 the mesh's own tree query hands only the triangles around the sphere) in
