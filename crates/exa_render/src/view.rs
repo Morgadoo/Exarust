@@ -14,43 +14,166 @@
 
 use bevy::prelude::{IVec2, UVec2, Vec2};
 
-/// The highest super-sampling level Exarust models. The settings slider's
-/// 4× choice is level 3 and its top is 4; the original's level table goes
-/// on to levels 5–7 (15, 24 and 66 sub-views from jitter entries 18, 33 and
-/// 57), which the slider never selects.
-pub const MAX_SUPERSAMPLE_LEVEL: u8 = 4;
-/// Sub-views drawn at each level, from the original's level table.
-const SUBVIEW_COUNTS: [u8; 5] = [1, 2, 3, 4, 8];
+/// The highest super-sampling level the original's table holds. The
+/// settings slider offers levels 0–4 (the 4× choice is level 3); levels 5–7
+/// (15, 24 and 66 samples) exist in the table but the slider never selects
+/// them.
+pub const MAX_SUPERSAMPLE_LEVEL: u8 = 7;
+/// Samples drawn at each level, from the original's level table.
+const SUBVIEW_COUNTS: [u8; 8] = [1, 2, 3, 4, 8, 15, 24, 66];
 /// The first jitter entry each level uses in [`JITTERS`].
-const JITTER_OFFSETS: [usize; 5] = [0, 1, 3, 6, 10];
+const JITTER_OFFSETS: [usize; 8] = [0, 1, 3, 6, 10, 18, 33, 57];
 /// The sharpen strength's base at the original's settings, before the level
 /// term.
 pub const SHARPEN_BASE: f32 = 1.5;
 /// Sub-views drawn in one pass, one per quadrant of the shared buffer.
 pub const SUBVIEWS_PER_PASS: usize = 4;
 
-/// Sub-pixel jitter of every sub-view, in pixels: x and y offsets from the
-/// window pixel's centre. The table is the original's, in level order.
-pub const JITTERS: [(f32, f32); 18] = [
-    (0.0, 0.0),
-    (0.246_49, 0.249_999),
-    (-0.246_49, -0.249_999),
-    (0.117_148, -0.117_57),
-    (0.256_263, 0.368_119),
-    (-0.373_411, -0.250_55),
-    (-0.292_626, -0.149_945),
-    (0.296_924, 0.149_994),
-    (0.203_849, -0.353_78),
-    (-0.208_147, 0.353_73),
-    (0.164_216, -0.054_399),
-    (-0.183_79, 0.082_102),
-    (0.102_254, 0.299_133),
-    (-0.079_263, -0.317_383),
-    (0.286_438, -0.393_495),
-    (-0.334_818, 0.435_331),
-    (0.459_462, 0.141_54),
-    (-0.414_498, -0.192_829),
+/// The whole-pixel offset of each of the four sub-views in a pass: the
+/// values a draw subtracts from the viewport's origin.
+pub const VIEWPORT_SHIFTS: [[i32; 2]; 4] = [[0, 0], [1, 0], [0, 1], [1, 1]];
+
+/// Sub-pixel jitter of every sub-view of every level, in pixels: x and y
+/// offsets from the window pixel's centre, levels in order and each level's
+/// samples continuing where the previous level's ended (124 entries; the
+/// last is zero padding). The entries are stored as bit patterns so the
+/// table is exact.
+pub const JITTERS: [(f32, f32); 124] = [
+    (f(0x00000000), f(0x00000000)),
+    (f(0x3E7C67E0), f(0x3E7FFFBD)),
+    (f(0xBE7C67E0), f(0xBE7FFFBD)),
+    (f(0x3DEFEB4A), f(0xBDF0C88A)),
+    (f(0x3E8334E7), f(0x3EBC7A18)),
+    (f(0xBEBF2FBA), f(0xBE804817)),
+    (f(0xBE95D313), f(0xBE198B2F)),
+    (f(0x3E98066C), f(0x3E199807)),
+    (f(0x3E50BDCB), f(0xBEB522A7)),
+    (f(0xBE55247D), f(0x3EB51C19)),
+    (f(0x3E28283D), f(0xBD5ED17C)),
+    (f(0xBE3C3372), f(0x3DA82518)),
+    (f(0x3DD16A8C), f(0x3E9927F6)),
+    (f(0xBDA254A4), f(0xBEA28006)),
+    (f(0x3E92A800), f(0xBEC9782D)),
+    (f(0xBEAB6D44), f(0x3EDEE3B4)),
+    (f(0x3EEB3E9A), f(0x3E10EFDD)),
+    (f(0xBED43915), f(0xBE4574F7)),
+    (f(0x3DD7C3D7), f(0xBC257647)),
+    (f(0xBE1DE15D), f(0x3CB28955)),
+    (f(0xBD650A46), f(0xBE5C5C9A)),
+    (f(0x3E92350D), f(0x3E40F5A1)),
+    (f(0xBEBD8256), f(0xBDEE703B)),
+    (f(0x3EB868FD), f(0xBD86876E)),
+    (f(0xBDE4DDB5), f(0x3E8CCF4A)),
+    (f(0x3E3792D1), f(0xBEA99286)),
+    (f(0xBEBDC098), f(0x3EC666ED)),
+    (f(0x3EE73CD5), f(0xBE999B4E)),
+    (f(0xBEE8F191), f(0x3E094E5D)),
+    (f(0xBE9D3587), f(0xBEBAD7B6)),
+    (f(0x3EC4AB60), f(0x3EEAC083)),
+    (f(0xBDA45027), f(0xBEF12253)),
+    (f(0x3E0E0CE1), f(0x3ED17E78)),
+    (f(0x3CF7C45D), f(0x3E0BA83F)),
+    (f(0x3C9A8AC6), f(0xBEB29EB2)),
+    (f(0xBEB34224), f(0xBEF1D27C)),
+    (f(0x3E63836B), f(0x3E191CD2)),
+    (f(0xBEC98F1D), f(0xBE88A394)),
+    (f(0x3ECF2389), f(0x3E6BF76A)),
+    (f(0x3DC97BFA), f(0x3EEE40A7)),
+    (f(0x3EECE337), f(0x3EE25D07)),
+    (f(0x3ECCFDB1), f(0xBE59D346)),
+    (f(0xBED1E9F2), f(0x3E86D528)),
+    (f(0xBDED5172), f(0xBB01D3AA)),
+    (f(0x3EB264C3), f(0xBC1756C9)),
+    (f(0xBEED9381), f(0x3D881FDA)),
+    (f(0xBE0E008F), f(0xBEEF9E7C)),
+    (f(0x3E14690E), f(0xBCBA9D1F)),
+    (f(0xBE80198F), f(0x3E19C3CE)),
+    (f(0xBE39C0EC), f(0xBE8747B6)),
+    (f(0x3E48CDA7), f(0xBE6FC222)),
+    (f(0xBE9F4624), f(0xBDA169C2)),
+    (f(0x3E8968F9), f(0x3EBBCA53)),
+    (f(0xBD264D3C), f(0x3EA77AD5)),
+    (f(0xBE700475), f(0x3EB595DD)),
+    (f(0xBB4B4AED), f(0xBE1E1B8F)),
+    (f(0x3E989310), f(0xBED5FF82)),
+    (f(0x3C15D91B), f(0x3C775D9A)),
+    (f(0x3DFE4580), f(0xBC8A1BE3)),
+    (f(0xBDDD3240), f(0xBB21F080)),
+    (f(0xBDABE942), f(0xBDF8B589)),
+    (f(0x3DAAF4F1), f(0x3DEFAC60)),
+    (f(0x3D28C79F), f(0xBDD98202)),
+    (f(0xBD267946), f(0x3DFCD4ED)),
+    (f(0x3E53779F), f(0xBDD65C2D)),
+    (f(0xBE4D2BF5), f(0x3D91209F)),
+    (f(0x3DFF811F), f(0xBE49D6F1)),
+    (f(0xBDF8E326), f(0x3E5744B3)),
+    (f(0x3C993709), f(0xBE86099A)),
+    (f(0x3C586EC1), f(0x3E7006D1)),
+    (f(0xBDDFE2A4), f(0xBE783276)),
+    (f(0x3E1491B0), f(0x3E630C24)),
+    (f(0xBE65FC7E), f(0xBE4218DF)),
+    (f(0x3E886291), f(0xBE5F6838)),
+    (f(0xBE565F96), f(0xBD85E786)),
+    (f(0x3E7DD4C7), f(0x3E1BA882)),
+    (f(0xBE784231), f(0x3E3F6BA0)),
+    (f(0xBD9593E6), f(0xBEB5CAF3)),
+    (f(0x3D9C27E9), f(0x3EF502EF)),
+    (f(0xBE2F0564), f(0xBEDBD61F)),
+    (f(0xBE41D6D0), f(0x3EE0BFC2)),
+    (f(0x3E70470B), f(0x3D0D8341)),
+    (f(0xBE9A6CA0), f(0x3C18AEB8)),
+    (f(0xBE62F512), f(0xBEA0A633)),
+    (f(0x3DA241C4), f(0x3EB0A698)),
+    (f(0x3D41F85D), f(0xBEC6368F)),
+    (f(0xBEB8F5A1), f(0xBDD61DC9)),
+    (f(0x3EA86F26), f(0xBDD0B84A)),
+    (f(0x3EAEC7EB), f(0x3DA6E43B)),
+    (f(0x3E3270B0), f(0xBE9FAB54)),
+    (f(0xBEC2F987), f(0x3E052828)),
+    (f(0x3E968F2A), f(0x3E86D7A5)),
+    (f(0xBDEB2F23), f(0x3EA80863)),
+    (f(0xBEAD9C6B), f(0xBEB61F3A)),
+    (f(0xBCB21E60), f(0x3ECECBB8)),
+    (f(0x3E978855), f(0xBEAB5DAB)),
+    (f(0xBE6E9BBF), f(0x3E9C4391)),
+    (f(0x3E4DBA4D), f(0x3EAAA561)),
+    (f(0xBE92CB86), f(0xBEF0BFE4)),
+    (f(0x3E9ECA25), f(0x3ED6E2EB)),
+    (f(0xBEB08F65), f(0xBE6C5A81)),
+    (f(0xBEB10929), f(0x3E81EF52)),
+    (f(0x3EC9C7BD), f(0xBE57F66F)),
+    (f(0xBEA0094E), f(0x3ECB9991)),
+    (f(0x3EE7EF5B), f(0x3CD00D5F)),
+    (f(0xBEEC3244), f(0xBE34E69F)),
+    (f(0x3E47164C), f(0x3EE83276)),
+    (f(0xBD637DE9), f(0xBEF4B620)),
+    (f(0x3EE5247D), f(0xBDC49DBF)),
+    (f(0xBEDA8438), f(0x3BA3161A)),
+    (f(0x3ECEDFC6), f(0x3E665F96)),
+    (f(0xBEE833E8), f(0xBE998B0D)),
+    (f(0x3E224745), f(0xBEDC8CD6)),
+    (f(0x3EF95465), f(0x3E0E80BF)),
+    (f(0x3E90826B), f(0xBEEAD6ED)),
+    (f(0xBEEEB314), f(0x3E7ECFA7)),
+    (f(0x3EF6CEBC), f(0x3EE3458D)),
+    (f(0xBEF488C6), f(0xBED9899C)),
+    (f(0x3ED13BE2), f(0x3EB1101B)),
+    (f(0xBEDC3138), f(0x3EBA1145)),
+    (f(0x3ED99A41), f(0xBEAA2FF1)),
+    (f(0xBECCCF8D), f(0x3EF6E243)),
+    (f(0x3ED101B0), f(0xBEEA5786)),
+    (f(0x00000000), f(0x00000000)),
 ];
+
+/// `f32::from_bits` as a `const fn` for the table above.
+const fn f(bits: u32) -> f32 {
+    f32::from_bits(bits)
+}
+
+/// The whole-pixel viewport shift of a pass's sub-view.
+pub fn viewport_shift(subview: usize) -> [i32; 2] {
+    VIEWPORT_SHIFTS.get(subview).copied().unwrap_or([0; 2])
+}
 
 /// One super-sampling level: how many jittered sub-views it draws, where
 /// its jitters start and the sharpen strength it gives the final pass.
@@ -75,7 +198,7 @@ impl SupersampleLevel {
         self.0 > 0
     }
 
-    /// How many sub-views the level draws.
+    /// How many sub-views (samples) the level draws.
     pub fn subviews(self) -> usize {
         SUBVIEW_COUNTS[self.clamped().0 as usize] as usize
     }
@@ -91,6 +214,27 @@ impl SupersampleLevel {
         let level = self.clamped().0 as usize;
         let first = JITTER_OFFSETS[level];
         &JITTERS[first..first + SUBVIEW_COUNTS[level] as usize]
+    }
+
+    /// One sub-view's jitter, read as the engine reads it: entry
+    /// `first + 4·pass + subview` of the shared sequence, with no stop at
+    /// the level's own run. A level whose sample count is not a multiple of
+    /// four therefore reads the next level's first entries in its last
+    /// pass (the 15-sample level's sixteenth sub-view takes entry 33), and
+    /// the 66-sample level's last pass runs past the table's zero padding
+    /// into the first two numbers of the shadow-tap table the original
+    /// stores after it. Anything further is zero.
+    pub fn jitter(self, pass: usize, subview: usize) -> (f32, f32) {
+        let index = JITTER_OFFSETS[self.clamped().0 as usize] + pass * SUBVIEWS_PER_PASS + subview;
+        if let Some(&jitter) = JITTERS.get(index) {
+            return jitter;
+        }
+        let taps = crate::shader_bindings::SHADOW_TAPS.as_flattened();
+        let past = (index - JITTERS.len()) * 2;
+        match (taps.get(past), taps.get(past + 1)) {
+            (Some(&x), Some(&y)) => (x, y),
+            _ => (0.0, 0.0),
+        }
     }
 
     /// The sharpen strength the final pass gets: zero at level 0, then
@@ -676,7 +820,16 @@ mod tests {
 
     #[test]
     fn levels_pick_their_subviews_and_jitters() {
-        for (level, subviews, passes) in [(0, 1, 1), (1, 2, 1), (2, 3, 1), (3, 4, 1), (4, 8, 2)] {
+        for (level, subviews, passes) in [
+            (0, 1, 1),
+            (1, 2, 1),
+            (2, 3, 1),
+            (3, 4, 1),
+            (4, 8, 2),
+            (5, 15, 4),
+            (6, 24, 6),
+            (7, 66, 17),
+        ] {
             let level = SupersampleLevel(level);
             assert_eq!(level.subviews(), subviews);
             assert_eq!(level.passes(), passes);
@@ -696,7 +849,19 @@ mod tests {
             assert!(j.0.abs() <= 0.5 && j.1.abs() <= 0.5);
         }
         assert_eq!(SupersampleLevel(0).jitters(), &[(0.0, 0.0)]);
-        assert_eq!(SupersampleLevel(9).subviews(), 8);
+        assert_eq!(SupersampleLevel(9).subviews(), 66);
+        assert_eq!(SupersampleLevel(9).passes(), 17);
+        // The 8-sample level's second pass continues its sequence.
+        let second = SupersampleLevel(4).jitter(1, 0);
+        assert_eq!(second, JITTERS[14]);
+        // Past its own run a level keeps reading the shared sequence.
+        assert_eq!(SupersampleLevel(4).jitter(2, 0), JITTERS[18]);
+        assert_eq!(SupersampleLevel(5).jitter(3, 3), JITTERS[33]);
+        let tap = crate::shader_bindings::SHADOW_TAPS[0];
+        assert_eq!(SupersampleLevel(7).jitter(16, 3), (tap[0], tap[1]));
+        assert_eq!(SupersampleLevel(7).jitter(100, 0), (0.0, 0.0));
+        assert_eq!(viewport_shift(0), [0, 0]);
+        assert_eq!(viewport_shift(3), [1, 1]);
     }
 
     #[test]

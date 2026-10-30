@@ -67,6 +67,10 @@ scale, the projection, the point-to-window projection, the pass schedule,
 the framebuffer viewport and region stacks and the view copy's quad, pinned
 by tests.
 
+The original's per-sub-frame projection, view and object matrices and their
+viewport shifts, animation clocks and depth-lane offsets are
+`exa_render::subframe`, built from the view's tables.
+
 Exarust (`exa_render::supersample`) draws the scene at twice the window's
 resolution on each axis, an ordered 2 × 2 grid instead of the jittered
 four. A display camera resolves each 2 × 2 block by bilinear sampling at
@@ -138,6 +142,10 @@ sub-frame takes 2 of the 8 taps (so an output pixel averages 8); without
 supersampling it takes all 8. `ShadeQual` is `quality − 3` from quality 4,
 in shader-word bits 20–21, and `DspSdws` is 0 without displacement shadows,
 else 4 over the super-sampling factor, at least 1 (1 at the 4× setting).
+The super-sampling setting's table has eight entries, 1, 2, 3, 4, 8, 15, 24
+and 66 samples; a quarter draws `min(samples, 4)` sub-frames (three at the
+3-sample setting) and a frame `ceil(samples/4)` quarters, whose sub-frames
+share `0.5 − (4q + 0.5)/N` as `Global`'s frame offset.
 
 **Permutations.** For a material the builder compiles one key per light
 count 0–6 for lit surfaces (none for unlit), keyed by the object and
@@ -154,15 +162,15 @@ shadow map reads a tap's first two lanes.
 
 **Uniforms.** `Global` is 252 bytes, `Material` 112 bytes and each light
 three `vec4`s; the fields and their values are in `docs/formats/FLB.md`.
-`ViewPos.w` and `TimeDlt.x` are the same value: the sub-frame's time offset
-(0 outside super-sampling, `0.5 − (i + 0.5)/N` for sub-frame `i` of `N`)
-times the frame scale (1 when the last frame took at most 1/60 s, else
-16.666… ms over the frame's time); `TimeDlt.y` is minus the frame scale over
-the super-sampling factor. The exposure enters neither. `FogPos`
+`ViewPos.w` and `TimeDlt.x` are the same value: the quarter's time offset
+(0 outside super-sampling, `0.5 − (4q + 0.5)/N` for quarter `q` of `N`
+samples) times the frame scale (1 when the last frame took at most 1/60 s,
+else 16.666… ms over the frame's time); `TimeDlt.y` is minus the frame scale
+over the setting's sample count. The exposure enters neither. `FogPos`
 is the midpoint of the camera's eye and the sun camera's eye, built as
 `a + (b − a)·0.5`; its `w` is the scene's integer height limit (340 cm
-when the scene is created) and a `y` above that limit is lowered to it. The material writer's dirt block is written only by a
-dirt mode: modes 1–3 store `2 − strength` in `MatDrt.w` and the diffuse
+when the scene is created) and a `y` above that limit is lowered to it.
+The material writer's dirt block is written only by a dirt mode: modes 1–3 store `2 − strength` in `MatDrt.w` and the diffuse
 texture's aspect in `DrtUVs`, blood (4) copies the material record's dirt
 tint and skips `DrtUVs`, and a material with no dirt mode writes neither.
 A spawned weapon's record tint is `(1.0, 0.06, 0.04, 0.3)`, the hair
@@ -180,27 +188,40 @@ compare widens the opacity to double; a NaN takes the low branch), or, when
 the scene asks for its own refraction, that texture's low and high fields; a
 program with local reflections binds the scene texture's low field.
 
-**Draw state.** A draw rebuilds its object word from the frame's word plus a
-vertex-colour stream and an animated node's vertex-delta stream. It gathers
-lights only when the object has a list and the material has the diffuse or
-specular bit; otherwise it clears the six slots. Its program is keyed on
-that object and environment pair. The material block is rewritten when the
-frame's fade bit is set and `1 − fade` differs from the stored diffuse
+**Draw state.** A draw reads the drawing state's material key (taken from
+the material; its lit bits gather lights) and three words of the render
+object: its own word (`0x20000` picks the object's own emissive scale over
+the geometry record's), its flag word
+(`0x10` the sub-frame animation clock, `0x8000` the vertex-delta stream,
+`0x800000` the specular GI lookup) and its frame word (`0x20000000` the
+fade, `0x40000000` half passes). It rebuilds its object word from the
+factory's word plus a vertex-colour stream and the vertex-delta bit. It
+gathers lights only when the object has a list and the material has the
+diffuse or specular bit; otherwise it clears the six slots. Its program is
+keyed on that object and environment pair; binding another program raises
+the drawing state's one stale flag, which a later lit draw consumes even
+when the changing draw had no lights. The material block is rewritten when
+the frame's fade bit is set and `1 − fade` differs from the stored diffuse
 alpha by more than `0x33FFFFD7` (an unordered compare does not rewrite),
-and when the geometry asks for a per-draw emissive scale (the scene's or
-the object's, by the frame word's `0x20000`). The liquid level is uploaded
-for the refracting bit and the GI corner for the environment's GI bit. A
-surface draws the scene's super-sampling sub-frames (halved under sun mode
-3 for the object's `0x40000000` frame bit), each with its own `SdwSmp`
-window and, for an animated node, its own clock. A node with the
-motion-blur flag (`0x20`) gets a shutter time per sub-frame,
-`((i + first + 0.5)·d / factor + clock) − d·0.5` in single precision, `d`
-the node's shutter length (`draw_state::motion_blur_time`). With super-sampling off
-the draw takes the single-pass variant (the one the terrain and grass draws
-share): one matrix, the taps uploaded once and no sub-frame clock. Effect
-draws take their parent's world matrix when they have none of their own
-and the material word lacks `0x20`. `exa_render::draw_state` holds these
-rules; Bevy owns the real draws.
+and when the geometry asks for a per-draw emissive scale (the object's own
+when its own word has `0x20000`, else the geometry record's). On the
+super-sampled path the liquid level is the liquid point's world height and
+the GI corner is uploaded for the environment's GI bit. A surface draws
+the scene's super-sampling sub-frames (halved under sun mode 3 for the
+object's `0x40000000` frame bit; the view gives its first quarter mode 3
+at 2–4 samples, 1 above that and 0 at one sample, and later quarters 2),
+each with its own `SdwSmp` window,
+viewport shift, animation clock and, for a geometry whose flag word has
+`0x20`, a depth-lane offset
+`((n + 0.5)·shutter/N + lane) − shutter·0.5` in single precision (`n` the
+frame's sample index, `N` the setting's sample count, `shutter` the
+geometry's length), after which the sub-frame composite is rebuilt
+(`exa_render::subframe`). With super-sampling off the draw takes the
+single-pass variant (the one the terrain and grass draws share): one
+matrix, the taps uploaded once and no sub-frame clock. Effect draws take
+their parent's world matrix when they have none of their own and the
+material word lacks `0x20`. `exa_render::draw_state` holds these rules;
+Bevy owns the real draws.
 
 **Program cache.** A draw interns its material and shader word pair (one
 64-bit key) as a cache bucket, then asks the bucket for its object and

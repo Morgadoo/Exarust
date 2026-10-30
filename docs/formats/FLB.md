@@ -274,9 +274,20 @@ the super-sampling setting `L`: with `l = L` for `L ≤ 1` and `l = L−1`
 otherwise, it is `2^max(q−1, l) / 2^l`. At shadow quality 4 and the
 original's 4× setting (`L = 3`) that is 2 taps per sub-frame; without
 super-sampling it is 8. The object word carries `SdwSmps − 1` from bit 24
-(not masked) and `0x1000` with super-sampling on. `DspSdws` is 0 without
-`DispSdw`, otherwise 4 over the setting's factor (1, 2, 3, 4, 8, 15 for
-settings 0–5), at least 1: 4 without super-sampling, 1 at the 4× setting.
+(not masked) and `0x1000` with super-sampling on.
+
+The setting's table holds eight entries: the sample count a frame
+accumulates (1, 2, 3, 4, 8, 15, 24, 66) and the first entry of the shared
+jitter table (0, 1, 3, 6, 10, 18, 33, 57, whose differences are the counts).
+A quarter draws at most four sub-frames (`min(samples, 4)`, so the 3-sample
+setting draws three), and a frame draws `ceil(samples/4)` quarters.
+Sub-frame `i` of quarter `q` reads jitter entry `first + 4q + i` with no
+stop at the setting's own run, so the 15-sample setting's sixteenth
+sub-frame takes entry 33 and the 66-sample setting's last two take the
+table's zero padding and the first two numbers of the `SdwSmp` table stored
+after it.
+`DspSdws` is 0 without `DispSdw`, otherwise 4 over the setting's sample
+count, at least 1: 4 without super-sampling, 1 at the 4× setting.
 
 `exa-tool shader <library> --all` lists every record's key words and
 program; in the four shipped libraries all 30 records with a reflection
@@ -299,14 +310,14 @@ light in the environment word (unlit rows have an empty one).
 
 | offset | field | value |
 |---|---|---|
-| 0 | `ViewPos` | camera eye (cm), `w` = the sub-frame offset × the frame scale (as `TimeDlt.x`) |
+| 0 | `ViewPos` | camera eye (cm), `w` = the quarter's sub-frame offset × the frame scale (as `TimeDlt.x`) |
 | 16 | `ViewSiz` | viewport width, height (one less when multisampled) |
 | 24 | `ViewPrj` | `tan(fov/2)·500`, `aspect·tan(fov/2)·500` |
-| 32 | `CamMat` | camera view-projection, column-major |
+| 32 | `CamMat` | the camera's view matrix; the templates read its 3×3 rotation (`mat3(CamMat)`) |
 | 96 | `SdwMat` | the sun's world-to-shadow matrix |
 | 160 | `VXGIScl` | `1/(W·20)`, `1/(H·20)`, `1/(D·20)`, `1/SdwSmps` (texels across X, Z, up) |
-| 176 | `Ambient` | linear level ambient × exposure × 15, `w` = 8 indoors or 3 outdoors |
-| 192 | `TimeDlt` | `(offset·scale, −scale/factor)`: `offset` the sub-frame's time offset (0 outside super-sampling, `0.5 − (i + 0.5)/N`), `scale` the frame scale (1 up to a 1/60 s frame, else 16.666… ms over the frame's time), the factor the super-sampling setting's 1–15 |
+| 176 | `Ambient` | linear level ambient × exposure, then ×15 when the scene has voxel GI; `w` = 8 indoors or 3 outdoors |
+| 192 | `TimeDlt` | `(offset·scale, −scale/factor)`: `offset` the quarter's time offset (0 outside super-sampling, `0.5 − (4q + 0.5)/N` for quarter `q` of `N` samples), `scale` the frame scale (1 up to a 1/60 s frame, else 16.666… ms over the frame's time), the factor the setting's sample count (1–66) |
 | 200 | `ViewRcp` | `1/width`, `1/height` |
 | 208 | `FogColr` | linear fog colour, `w` = `1/fog distance` |
 | 224 | `FogPos` | the midpoint of the camera's eye and the sun camera's eye (`eye + (sun − eye)·0.5`), `y` capped at `w`; `w` is the scene's integer height limit (340 at scene creation) |
@@ -335,6 +346,27 @@ the scene refraction texture's high or low field by the same test, or
 nothing when the scene has no such texture. Any other program whose shader
 word (scene bits included) has local reflections (`0x400000`) binds the
 scene texture's low field when there is one.
+
+### Sub-frame matrices
+
+A quarter builds one projection per sub-frame from the camera's near-plane
+half extents as the view stores them (aspect times the vertical one, then
+the vertical one, both negative) shifted by the sample's jitter: `d = 2·half·jitter/viewport`
+per axis, the frustum edges `half + d` and `−half + d`, and the usual
+perspective terms `2n/(right−left)`, `2n/(top−bottom)`, the two centre
+offsets and the depth terms (an infinite projection for a zero far plane).
+The view matrix transposes the camera's world rotation, and its translation
+row is the negated camera position dotted with each camera axis row; the composite is `view · projection`, and a draw
+uploads the object's world matrix and the object times that composite.
+
+Each sub-frame also shifts its viewport by the sample's whole-pixel offset
+((0,0), (1,0), (0,1), (1,1)), carries `((n + 0.5)/N − 0.5)·frame time` as
+its animation clock (`n = 4q + subframe`; summed as
+`(q·step)·4 + (step·0.5 − time·0.5)` plus `subframe·step`), and, for a geometry whose flag
+word has `0x20`, rewrites the projection's depth lane (`m22`) to
+`((n + 0.5)·shutter/N + m22) − shutter·0.5` and rebuilds the composite.
+`exa_render::view` holds the level and jitter tables and
+`exa_render::subframe` the projection, view and composite fill.
 
 ### Lights
 

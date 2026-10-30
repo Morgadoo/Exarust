@@ -28,6 +28,13 @@ material's original GLSL for comparison.
 word pair, one entry per object and environment word pair, a failed build stored and not
 retried, reference counts, the last-bound program and the stale-flags bit,
 and a warm-up pass through the 29 rows and their light counts.
+`view` holds the original's 3-D view rules (the level table with its eight
+sample counts and 124 sub-pixel jitters, the frustum half extents, the
+jitter offset, the viewport and region stacks and the view copy);
+`subframe` the per-quarter sub-frame fill: the projection from the stored
+half extents and a sample's jitter, the transposing view matrix, their
+row-major product, the object pair, the viewport shifts, the animation
+clock and the shutter depth-lane offset of a motion-blurred geometry.
 `shader_bindings` holds the uniform-block bindings, the texture units the
 maps pack into (and the fixed environment, GI, screen-copy and shadow
 units), the cached uniform locations, the linker's attribute locations
@@ -40,9 +47,10 @@ uploads before the parallax pass reads a height map's size (the original's
 `Sleep(0)` spin; Exarust loads finished images through Bevy).
 `draw_state` is the drawing state's per-draw plan: the object word, the
 gather-or-clear of the light slots, the material block's fade and emissive
-rewrites, the liquid-level and GI-corner uploads, the super-sampling
-sub-frames with their tap windows and clocks, the single-pass (no super-sampling)
-variant, and the effect parent matrix. Nothing is wired into the WESL
+rewrites, the liquid-level value and GI-corner uploads, the super-sampling
+sub-frames with their tap windows, viewport shifts, clocks and depth
+offsets, the single-pass (no super-sampling) variant, and the effect parent
+matrix. Nothing is wired into the WESL
 renderer (Bevy owns the pipelines, draws and lights).
 Rules and evidence: [`docs/formats/FLB.md`](../../docs/formats/FLB.md) and
 [`docs/RENDERING.md`](../../docs/RENDERING.md) (Shader builder).
@@ -51,6 +59,7 @@ Rules and evidence: [`docs/formats/FLB.md`](../../docs/formats/FLB.md) and
 
 - `shader_template`, `shader_program`, `shader_uniforms`: the original's
   template expansion, program choice and uniform blocks (above).
+- `subframe`: the super-sampling view's per-quarter matrices (above).
 - `shader_cache`, `shader_bindings`, `light_slots`: the program cache, the
   per-program bindings and the per-draw light slots (above).
 - `texture_program`: the procedural texture programs of `textures.flb`

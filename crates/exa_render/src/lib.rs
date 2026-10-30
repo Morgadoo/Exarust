@@ -39,6 +39,7 @@ pub mod smoke;
 pub mod splines;
 pub mod spray;
 pub mod stain;
+pub mod subframe;
 pub mod sun_casters;
 pub mod sun_fit;
 pub mod supersample;

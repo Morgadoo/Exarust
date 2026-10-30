@@ -175,7 +175,8 @@ pub struct ViewInputs {
     pub multisampled: bool,
     /// The vertical field of view, radians.
     pub fov_y: f32,
-    /// The camera's view-projection matrix, column-major.
+    /// The camera's view matrix; the templates read only its 3×3 rotation
+    /// (`mat3(CamMat)` for reflection and refraction directions).
     pub camera_from_world: [[f32; 4]; 4],
     /// The sun's world-to-shadow matrix, column-major.
     pub world_to_shadow: [[f32; 4]; 4],
