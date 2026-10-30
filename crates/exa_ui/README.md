@@ -528,7 +528,13 @@ unless the key repeats or was typed), the key/press/drag routes, the frame codes
 grip drag and release act on, the snap slots and the records' rescale,
 the maximise and restore steps with the window-state hook's words, the
 close cascade over owned popups and children, and the control table's
-copy.
+copy. A shown form refreshes the client areas of its whole tree, parent
+before children; and freeing a form sweeps its tree, parent first,
+through the GUI's single-form slots (`sweep_freed_form`): most slots that
+held it clear, the task's pressed slot with its press word, while the
+main form's focus fallback, the focused form's parent focus or cleared
+focus (by the parent's visibility), the tooltip reset and the drop
+callback reset come back as ordered follow-ups.
 
 `game_gui` is the in-game unit's non-drawing half: the screens' tags
 (0xce1c2010 inventory, 0xce1c2040 loot window, 0xce1c2030 journal), the

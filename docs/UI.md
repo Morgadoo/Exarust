@@ -1353,9 +1353,9 @@ tab stop, 0x100000 no keys) and state word (0x10 disabled, 0x400 focus,
   `2·unit`; its setter does nothing for an unchanged fraction. The wheel
   moves a form with a vertical bar by `round(delta / 120)` vertical steps
   and otherwise its horizontal bar by `round(−delta / 120)` horizontal
-  steps, both the same way; held arrows -10/-9 and -13/-14 repeat one step.
-  A dragged thumb's fraction is the pointer's offset less the grab over the
-  track left for it.
+  steps, both the same way, then asks for a redraw; held arrows -10/-9
+  and -13/-14 repeat one step. A dragged thumb's fraction is the pointer's offset
+  less the grab over the track left for it.
 - **Points.** Scroll offsets are the overflow times the fraction rounded
   with `CVTSS2SI`. A root point reaches a form through each ancestor's
   place, inset and scroll; a form-local point reaches the screen through
@@ -1397,6 +1397,18 @@ tab stop, 0x100000 no keys) and state word (0x10 disabled, 0x400 focus,
   control's id reaches the first record with that id anywhere in the tree
   with its message code and two words; with no such record the original's default
   control takes it and ignores it.
+- **Client areas and the free sweep.** Showing a form recomputes the
+  client rectangle of the form and, depth first with children in order,
+  every descendant, the parent always before its children (a second
+  per-form hook runs after each, empty in the base class). Freeing a form
+  walks its tree in the same order and, for each form, tests the GUI's
+  single-form slots in turn: the main form runs the focus fallback (which
+  clears that slot); the pressed and saved-focus slots clear; the
+  parent's active child clears; the focused form asks a visible parent to
+  restore its focus, else clears the focus (returning it to the saved
+  focus or the root); the tooltip clears with its reset; the task's
+  pressed form clears with its press word; the dragged form clears; and
+  the drop payload clears with its callback reset.
 - **Snap slots and rescale.** A snap container (attribute 0x20) cuts the
   space between its client's edges and its visible children's widened
   client rectangles into slots: from each free cell the longer free run

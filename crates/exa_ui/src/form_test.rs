@@ -1221,6 +1221,42 @@ fn the_show_plan() {
 }
 
 #[test]
+fn the_client_areas_refresh_parent_before_child() {
+    // A root with two children, the first with one: the pass measures the
+    // root, then each child in order, descending before moving right.
+    let tree = [vec![1, 2], vec![3], vec![], vec![]];
+    let mut visited = Vec::new();
+    let measured = refresh_client_areas(&tree, 0, |form| {
+        visited.push(form);
+        ClientRect {
+            left: form as i32 + 1,
+            top: form as i32 + 2,
+            right: form as i32 + 3,
+            bottom: form as i32 + 4,
+        }
+    });
+    assert_eq!(visited, vec![0, 1, 3, 2]);
+    assert_eq!(measured.len(), 4);
+    assert_eq!(
+        measured[2],
+        (
+            3,
+            ClientRect {
+                left: 4,
+                top: 5,
+                right: 6,
+                bottom: 7
+            }
+        )
+    );
+    // A leaf-only tree measures the start form once.
+    assert_eq!(
+        refresh_client_areas(&[vec![]], 0, |_| ClientRect::default()),
+        vec![(0, ClientRect::default())]
+    );
+}
+
+#[test]
 fn the_close_visibility_and_destroy_plans() {
     let base = CloseInput {
         closing: false,
@@ -1272,6 +1308,79 @@ fn the_close_visibility_and_destroy_plans() {
         }
     );
     assert_eq!(destroy_plan(0, -1, true, false, false).records_freed, 0);
+}
+
+#[test]
+fn the_free_sweep_clears_the_global_slots() {
+    // Form 1 (child of the root 0) has children 2 and 3; 1 is freed.
+    let children = [vec![1], vec![2, 3], vec![], vec![]];
+    let parent = [None, Some(0), Some(1), Some(1)];
+    // Form 2's parent (1) is visible, form 3's is taken as hidden.
+    let parent_visible = [false, true, true, false];
+    let mut active = [Some(1), Some(3), None, None];
+    let mut slots = FormSlots {
+        main: Some(1),
+        pressed: Some(2),
+        saved_focus: Some(3),
+        focused: Some(2),
+        tooltip: Some(3),
+        task_pressed: Some(2),
+        task_press_word: 7,
+        dragging: Some(1),
+        drop_payload: Some(0),
+    };
+    let follow = sweep_freed_form(
+        &mut slots,
+        &mut active,
+        &children,
+        &parent,
+        &parent_visible,
+        1,
+    );
+    // Visit order 1, 2, 3: the fallback for the main form, the focused
+    // form's visible parent restores the focus, the tooltip resets.
+    assert_eq!(
+        follow,
+        vec![
+            SweepFollowUp::FallBack,
+            SweepFollowUp::ParentFocus(1),
+            SweepFollowUp::TooltipReset,
+        ]
+    );
+    // The main and focused slots are left to their follow-ups; the root
+    // (not swept) keeps the drop payload.
+    assert_eq!(
+        slots,
+        FormSlots {
+            main: Some(1),
+            focused: Some(2),
+            drop_payload: Some(0),
+            ..FormSlots::default()
+        }
+    );
+    assert_eq!(active, [None, None, None, None]);
+
+    // A focused form under a hidden parent clears the focus; the drop
+    // payload clears with its reset.
+    let mut slots = FormSlots {
+        focused: Some(3),
+        drop_payload: Some(3),
+        ..FormSlots::default()
+    };
+    let mut active = [None; 4];
+    assert_eq!(
+        sweep_freed_form(
+            &mut slots,
+            &mut active,
+            &children,
+            &parent,
+            &parent_visible,
+            3
+        ),
+        vec![SweepFollowUp::ClearFocus, SweepFollowUp::DropReset]
+    );
+    assert_eq!(slots.drop_payload, None);
+    assert_eq!(slots.focused, Some(3));
 }
 
 #[test]
