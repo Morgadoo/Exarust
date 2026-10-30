@@ -54,7 +54,9 @@
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
 use bevy::math::{Mat3, Vec2, Vec3};
-use exa_physics::intersect::{ConvexVolume, Obb, segment_sphere};
+use exa_physics::intersect::{
+    ConvexVolume, Obb, point_obb_distance_squared, segment_sphere, spheres_separated,
+};
 
 use crate::light_flood::CellLights;
 use crate::rooms::RoomState;
@@ -141,6 +143,9 @@ pub const LIGHT_NO_SNAPSHOT: u32 = 0x10;
 pub const NEEDS_BUCKETS: u32 = 0x3_0000;
 /// Light word ([`SceneNode::light_flags`]): the light flickers.
 pub const LIGHT_FLICKER: u32 = 0x1_0000;
+/// Light word ([`SceneNode::light_flags`]): the light has a shadow cube map.
+/// Such a light only spreads an alias to a sector its sphere reaches.
+pub const LIGHT_SHADOW_CUBE: u32 = 0x4_0000;
 /// Option word bits that pick how a light's activation snapshot is taken;
 /// [`SNAPSHOT_FLAT`] in them drops the snapshot's height.
 pub const SNAPSHOT_MODE: u32 = 0x300;
@@ -818,6 +823,10 @@ pub struct LightAlias {
     /// The shadow map's linked-face word: the visible pass ORs the alias's
     /// link mask into it (only while the light has a shadow map).
     pub shadow_links: u32,
+    /// The light's update stamp this alias copied. An alias whose stamp
+    /// matches its light is current; one that does not is refreshed and
+    /// marked moved, as the original compares the two update words.
+    pub stamp: u32,
 }
 
 /// One entry of a light node's link list: the weight one of the light's
@@ -946,6 +955,10 @@ pub struct SceneNode {
     /// The light's link records, in alias order before
     /// [`Scene::order_links`] sorts their chain.
     pub links: Vec<LightLink>,
+    /// A light's update stamp: the tick its links were last built, with 1
+    /// meaning they are due. An alias copies it so a spread walk knows
+    /// whether the alias is current.
+    pub link_stamp: u32,
 }
 
 impl SceneNode {
@@ -988,6 +1001,7 @@ impl SceneNode {
             buckets: Vec::new(),
             link_head: -1,
             links: Vec::new(),
+            link_stamp: 1,
         }
     }
 
@@ -1105,6 +1119,13 @@ pub struct Sector {
     pub rotation: Mat3,
     /// The bounds of its meshes.
     pub bounds: SectorBounds,
+    /// The sectors this one is linked to through its doorways, as the
+    /// original keeps a sector's linked-sector list. A light's aliases
+    /// spread along it.
+    pub linked: Vec<usize>,
+    /// A spread walk is inside this sector (the original's busy byte): a
+    /// link back to it is skipped so a loop terminates.
+    pub spreading: bool,
 }
 
 impl Sector {
@@ -1132,6 +1153,8 @@ impl Sector {
             origin: Vec3::ZERO,
             rotation: Mat3::IDENTITY,
             bounds: SectorBounds::default(),
+            linked: Vec::new(),
+            spreading: false,
         }
     }
 
@@ -2181,6 +2204,96 @@ impl Scene {
         }
     }
 
+    /// Whether a light's bounding sphere reaches a sector's box, as the
+    /// original's alias gate tests it: the sphere test first (touching
+    /// counts as reaching, the sign bit of reach² − distance²), then the
+    /// squared point-to-box distance against the squared radius, where a
+    /// distance that is not greater than the radius reaches (a NaN also
+    /// reaches, as the original's unordered compare falls through to it).
+    pub fn light_reaches(&self, light: usize, sector: usize) -> bool {
+        let sphere = self.nodes[light].world;
+        let radius = radius_of(self.nodes[light].half_extents);
+        let Some(node) = self.sectors[sector].node else {
+            // The scene's own sector has no node box in this model; the
+            // light is taken to reach it (a guess: the original's scene
+            // sector carries a frame block of its own).
+            return true;
+        };
+        let (box_, box_radius) = self.nodes[node].obb();
+        if spheres_separated(sphere, radius, box_.centre, box_radius) {
+            return false;
+        }
+        let distance = point_obb_distance_squared(sphere, &box_);
+        !(radius * radius < distance)
+    }
+
+    /// Finds the light's alias in `sector`, or makes one, as the original's
+    /// alias routine does. A light that carries a shadow cube only reaches a
+    /// sector its sphere meets ([`Scene::light_reaches`]). An alias already
+    /// copying the light's update stamp is current and gives nothing back
+    /// (the spread walk stops there); an alias with an older stamp is
+    /// refreshed — its stamp copied and marked moved — and its index is
+    /// returned; without an alias one is made, owned by the sector, marked
+    /// moved, with the light's needed shadow faces at all six when the
+    /// light has a shadow cube, and it marks the sector's lights changed.
+    pub fn find_or_create_alias(&mut self, light: usize, sector: usize) -> Option<usize> {
+        if self.nodes[light].light_flags & LIGHT_SHADOW_CUBE != 0
+            && !self.light_reaches(light, sector)
+        {
+            return None;
+        }
+        let stamp = self.nodes[light].link_stamp;
+        let shadow = self.nodes[light].light_flags & LIGHT_SHADOW_CUBE != 0;
+        if let Some(index) = self.sectors[sector]
+            .aliases
+            .iter()
+            .position(|a| a.light == light)
+        {
+            if self.sectors[sector].aliases[index].stamp == stamp {
+                return None;
+            }
+            let alias = &mut self.sectors[sector].aliases[index];
+            alias.stamp = stamp;
+            alias.moved = true;
+            if shadow {
+                alias.shadow_faces = Some(0x3f);
+            }
+            return Some(index);
+        }
+        self.sectors[sector].aliases.push(LightAlias {
+            light,
+            owner: Some(sector),
+            moved: true,
+            mask: 0,
+            shadow_faces: shadow.then_some(0x3f),
+            shadow_links: 0,
+            stamp,
+        });
+        self.sectors[sector].changes |= LIGHT_ADDED;
+        Some(self.sectors[sector].aliases.len() - 1)
+    }
+
+    /// Spreads a light's aliases from `sector` along the linked sectors, as
+    /// the original's recursive walk does: the sector is marked busy (a
+    /// link back to it is skipped, so a loop ends), each linked sector not
+    /// busy gets [`Scene::find_or_create_alias`], and the walk goes on into
+    /// it only when an alias was made or refreshed there. A current alias
+    /// prunes the walk past its sector. The busy marks are cleared on the
+    /// way out.
+    pub fn spread_aliases(&mut self, light: usize, sector: usize) {
+        self.sectors[sector].spreading = true;
+        let linked = self.sectors[sector].linked.clone();
+        for neighbour in linked {
+            if self.sectors[neighbour].spreading {
+                continue;
+            }
+            if self.find_or_create_alias(light, neighbour).is_some() {
+                self.spread_aliases(light, neighbour);
+            }
+        }
+        self.sectors[sector].spreading = false;
+    }
+
     /// Finishes the sectors' newly registered meshes: each whose option word
     /// asks for buckets gets them, then the processed count takes the whole
     /// list and the "mesh added" change bit clears.
@@ -2249,6 +2362,7 @@ impl Scene {
                 .iter()
                 .any(|a| a.light == light)
             {
+                let stamp = self.nodes[light].link_stamp;
                 self.sectors[sector].aliases.push(LightAlias {
                     light,
                     owner: Some(sector),
@@ -2256,6 +2370,7 @@ impl Scene {
                     mask: 0,
                     shadow_faces: None,
                     shadow_links: 0,
+                    stamp,
                 });
                 self.sectors[sector].changes |= LIGHT_ADDED;
             }
@@ -4458,6 +4573,7 @@ mod tests {
                 mask: 0,
                 shadow_faces: None,
                 shadow_links: 0,
+                stamp: 0,
                 owner: Some(sector),
             };
             3
@@ -4477,6 +4593,7 @@ mod tests {
             mask: 0,
             shadow_faces: None,
             shadow_links: 0,
+            stamp: 0,
             owner: Some(sector),
         });
         scene.rebuild_buckets(sector, mesh, 3);
@@ -4500,6 +4617,7 @@ mod tests {
                 mask: 0,
                 shadow_faces: None,
                 shadow_links: 0,
+                stamp: 0,
                 owner: Some(sector),
             };
             2
@@ -4554,6 +4672,7 @@ mod tests {
             mask: 0,
             shadow_faces: None,
             shadow_links: 0,
+            stamp: 0,
         }
     }
 
@@ -4989,6 +5108,143 @@ mod tests {
         // Unrotated, the x extent stays 3: the first box runs x 0…13.
         let flat = scene_bounds(SectorBounds::default(), &[(room, Mat3::IDENTITY)]);
         assert_eq!(flat.first.half_extents, Vec3::new(6.5, 1.0, 1.0));
+    }
+
+    #[test]
+    fn a_light_spreads_aliases_along_the_linked_sectors() {
+        // Three rooms in a ring: 1 - 2 - 3 - 1.
+        let mut scene = Scene::new((0, 0));
+        for _ in 0..3 {
+            let sector = scene.add_node(NodeKind::Sector, None);
+            scene.add_batch(&[sector]);
+        }
+        scene.sectors[1].linked = vec![2, 3];
+        scene.sectors[2].linked = vec![1, 3];
+        scene.sectors[3].linked = vec![1, 2];
+        let light = scene.add_node(NodeKind::Light, None);
+        scene.register(light, 1);
+        scene.nodes[light].link_stamp = 5;
+        scene.sectors[1].aliases.clear();
+        scene.spread_aliases(light, 1);
+        let aliases = |scene: &Scene| {
+            let mut of: Vec<(usize, usize, bool, u32)> = scene
+                .sectors
+                .iter()
+                .enumerate()
+                .flat_map(|(s, sector)| {
+                    sector
+                        .aliases
+                        .iter()
+                        .map(move |a| (s, a.light, a.moved, a.stamp))
+                })
+                .collect();
+            of.sort();
+            of
+        };
+        // The walk reaches every room once and ends on the ring's loop.
+        assert_eq!(
+            aliases(&scene),
+            vec![(2, light, true, 5), (3, light, true, 5)]
+        );
+        assert!(scene.sectors.iter().all(|s| !s.spreading));
+        assert_ne!(scene.sectors[2].changes & LIGHT_ADDED, 0);
+        assert_ne!(scene.sectors[3].changes & LIGHT_ADDED, 0);
+    }
+
+    #[test]
+    fn a_current_alias_prunes_the_walk_and_an_old_one_is_refreshed() {
+        let mut scene = Scene::new((0, 0));
+        for _ in 0..3 {
+            let sector = scene.add_node(NodeKind::Sector, None);
+            scene.add_batch(&[sector]);
+        }
+        scene.sectors[1].linked = vec![2];
+        scene.sectors[2].linked = vec![3];
+        let light = scene.add_node(NodeKind::Light, None);
+        scene.register(light, 1);
+        scene.nodes[light].link_stamp = 7;
+        // Sector 2 already holds a current alias: the walk stops there and
+        // never reaches sector 3.
+        scene.sectors[2].aliases.push(LightAlias {
+            light,
+            owner: Some(2),
+            moved: false,
+            mask: 0,
+            shadow_faces: None,
+            shadow_links: 0,
+            stamp: 7,
+        });
+        scene.spread_aliases(light, 1);
+        assert!(scene.sectors[3].aliases.is_empty());
+        // An older stamp is refreshed in place and the walk goes on.
+        scene.nodes[light].link_stamp = 9;
+        scene.spread_aliases(light, 1);
+        assert_eq!(scene.sectors[2].aliases[0].stamp, 9);
+        assert!(scene.sectors[2].aliases[0].moved);
+        assert_eq!(scene.sectors[3].aliases.len(), 1);
+        assert_eq!(scene.sectors[3].aliases[0].stamp, 9);
+    }
+
+    #[test]
+    fn a_shadow_cube_light_only_spreads_where_it_reaches() {
+        let mut scene = Scene::new((0, 0));
+        let near = scene.add_node(NodeKind::Sector, None);
+        let far = scene.add_node(NodeKind::Sector, None);
+        scene.add_batch(&[near, far]);
+        scene.set_frame(near, Vec3::ZERO, Mat3::IDENTITY, Vec3::splat(5.0));
+        scene.set_frame(
+            far,
+            Vec3::new(12.0, 0.0, 0.0),
+            Mat3::IDENTITY,
+            Vec3::splat(5.0),
+        );
+        scene.refresh(near);
+        scene.refresh(far);
+        scene.sectors[1].linked = vec![2];
+        let light = scene.add_node(NodeKind::Light, None);
+        scene.register(light, 1);
+        scene.set_frame(light, Vec3::ZERO, Mat3::IDENTITY, Vec3::ONE);
+        scene.refresh(light);
+        // Without a shadow cube the far sector gets an alias whatever the
+        // distance.
+        scene.spread_aliases(light, 1);
+        assert_eq!(scene.sectors[2].aliases.len(), 1);
+        assert_eq!(scene.sectors[2].aliases[0].shadow_faces, None);
+        // With one, the sphere (radius sqrt 3 at the origin) misses the far
+        // box: no alias.
+        scene.nodes[light].light_flags |= LIGHT_SHADOW_CUBE;
+        scene.nodes[light].link_stamp = 2;
+        scene.sectors[2].aliases.clear();
+        scene.spread_aliases(light, 1);
+        assert!(scene.sectors[2].aliases.is_empty());
+        // Moved to 6 from the box face, the sphere's squared radius (3)
+        // covers the squared overhang (1): the alias is made and needs all
+        // six faces.
+        scene.set_frame(light, Vec3::new(6.0, 0.0, 0.0), Mat3::IDENTITY, Vec3::ONE);
+        scene.refresh(light);
+        scene.nodes[light].link_stamp = 3;
+        scene.spread_aliases(light, 1);
+        assert_eq!(scene.sectors[2].aliases.len(), 1);
+        assert_eq!(scene.sectors[2].aliases[0].shadow_faces, Some(0x3f));
+    }
+
+    #[test]
+    fn the_reach_gate_is_the_sphere_then_the_squared_box_distance() {
+        let mut scene = Scene::new((0, 0));
+        let sector = scene.add_node(NodeKind::Sector, None);
+        scene.add_batch(&[sector]);
+        scene.set_frame(sector, Vec3::ZERO, Mat3::IDENTITY, Vec3::splat(2.0));
+        scene.refresh(sector);
+        let light = scene.add_node(NodeKind::Light, None);
+        scene.set_frame(light, Vec3::new(4.0, 0.0, 0.0), Mat3::IDENTITY, Vec3::ONE);
+        scene.refresh(light);
+        // Centre 4, radius 1, box half 2: distance 2 > 1: out of reach.
+        assert!(!scene.light_reaches(light, 1));
+        // Centre 3: the sphere touches the box face (touching reaches),
+        // and the squared point distance 1 equals the squared radius.
+        scene.set_frame(light, Vec3::new(3.0, 0.0, 0.0), Mat3::IDENTITY, Vec3::ONE);
+        scene.refresh(light);
+        assert!(scene.light_reaches(light, 1));
     }
 
     #[test]
