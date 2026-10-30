@@ -797,6 +797,20 @@ pub struct SelectionPalette {
     pub backdrop: [u8; 4],
 }
 
+/// The destination screen's colours from the active skin: the symbol's
+/// base is the skin's own clean ink (`255, 250, 230, 100`), its add is the
+/// highlight group's seventh shade (`skin + 0x114`, the palette's index 6)
+/// and the backdrop the clean ink again. Each byte becomes a float by one
+/// multiply with 1/255 in single precision.
+pub fn skinned_palette(palette: &crate::skin::SkinPalette) -> SelectionPalette {
+    let to_float = |bytes: [u8; 4]| bytes.map(|byte| f32::from(byte) * (1.0 / 255.0));
+    SelectionPalette {
+        symbol_base: to_float(crate::skin::SKIN_INK),
+        symbol_add: to_float(palette.highlight[6]),
+        backdrop: crate::skin::SKIN_INK,
+    }
+}
+
 /// The layer a symbol image draws as: a textured quad over its corners.
 fn symbol_layer(
     quad: &SymbolQuad,
@@ -877,6 +891,21 @@ pub fn frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_screen_colours_come_from_the_skins_clean_ink_and_highlight() {
+        let mut palette = crate::skin::SkinPalette::filled(crate::skin::SKIN_INK);
+        palette.highlight[6] = [10, 20, 30, 40];
+        let skinned = skinned_palette(&palette);
+        let byte = 1.0 / 255.0;
+        assert_eq!(skinned.backdrop, crate::skin::SKIN_INK);
+        assert!((skinned.symbol_base[0] - 255.0 * byte).abs() < 1e-7);
+        assert!((skinned.symbol_base[1] - 250.0 * byte).abs() < 1e-7);
+        assert!((skinned.symbol_base[2] - 230.0 * byte).abs() < 1e-7);
+        assert!((skinned.symbol_base[3] - 100.0 * byte).abs() < 1e-7);
+        assert!((skinned.symbol_add[0] - 10.0 * byte).abs() < 1e-7);
+        assert!((skinned.symbol_add[2] - 30.0 * byte).abs() < 1e-7);
+    }
 
     #[test]
     fn rows_fill_in_the_originals_order() {

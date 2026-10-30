@@ -878,9 +878,12 @@ The original's own forms and controls that Exarust rebuilds, with the
   orbit nodes; only the adapter's orbit wobbles. The row fill is the
   original's: the shipped 7, 10, 12, 13 show as 13, 7, 10, 12. The symbol
   shader runs per fragment into an image per row (`selection::symbol_image`),
-  drawn with the backdrop, coloured `base + add · mix` from two skin
-  colours (the line skin stands in); rows carry their marker word to the
-  journey. A click
+  drawn with the backdrop, coloured `base + add · mix`: the base is the
+  skin's clean ink (255, 250, 230, 100) and the add the highlight group's
+  seventh shade, both converted by 1/255; the symbol atlas
+  (`prtlsmbla.rfi`) loads with the other GUI textures. Rows carry their
+  marker word to the journey (the shipped teleporter record has only level
+  ids, so Exarust's rows carry none and the journey flags its own device). A click
   closes the screen and starts the journey: the bubble 98 cm above the
   teleporter, the teleporter's glow (1.5 s up and 7 s held for the
   adapter, 1 s and 1.4 s otherwise) and a small crystal charging a point
