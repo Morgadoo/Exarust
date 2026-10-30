@@ -51,14 +51,37 @@ pub fn strip_coords(i: usize) -> [[f32; 2]; 2] {
     [[u, 1.0], [u, 0.0]]
 }
 
-/// The line program's three width values from the line width: `x = width/2
-/// + √(4·width)` and `z = √(6·width)` in single precision, `y = −(0.3·width
-/// + 0.15)` computed in double precision and rounded once.
+/// The line program's three width values from the line width, all in single
+/// precision in the original's order: `x = width/2 + √(4·width)`,
+/// `y = −(0.3·width + 0.15)` and `z = √(6·width)`.
 pub fn line_widths(width: f32) -> [f32; 3] {
     let x = width * 0.5 + (width * 4.0).sqrt();
-    let y = -((f64::from(width) * 0.3 + 0.15) as f32);
+    let y = -(width * 0.3 + 0.15);
     let z = (width * 6.0).sqrt();
     [x, y, z]
+}
+
+/// The line draw's uniform values (`0x28E740`): the three width values and
+/// the reciprocal viewport width and height, all single precision.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SplineUniforms {
+    pub widths: [f32; 3],
+    pub inv_width: f32,
+    pub inv_height: f32,
+}
+
+/// The uniforms of a strip drawn at `width` into the viewport rectangle
+/// `(left, top, right, bottom)` in pixels: the reciprocal of its width and
+/// height, each difference widened to 64 bits and narrowed before the
+/// division, as the original does.
+pub fn line_uniforms(width: f32, viewport: [i32; 4]) -> SplineUniforms {
+    let inv_width = 1.0 / (i64::from(viewport[2]) - i64::from(viewport[0])) as f32;
+    let inv_height = 1.0 / (i64::from(viewport[3]) - i64::from(viewport[1])) as f32;
+    SplineUniforms {
+        widths: line_widths(width),
+        inv_width,
+        inv_height,
+    }
 }
 
 /// The fragment rule of the built-in line program, as a WGSL function. The
@@ -462,5 +485,17 @@ mod tests {
         assert_eq!(&bytes[20..24], &[0, 0, 0, 0]);
         assert_eq!(&bytes[24..28], &[7, 8, 9, 10]);
         assert_eq!(&bytes[28..32], &[0, 0, 0, 0]);
+    }
+    #[test]
+    fn the_line_uniforms_are_single_precision() {
+        let widths = line_widths(0.1);
+        assert_eq!(widths[0], 0.1f32 * 0.5 + (0.1f32 * 4.0).sqrt());
+        // y in single, not the double-rounded 0.18000001 of a wider sum.
+        assert_eq!(widths[1], -(0.1f32 * 0.3 + 0.15));
+        assert_eq!(widths[2], (0.1f32 * 6.0).sqrt());
+        let u = line_uniforms(0.1, [0, 0, 1920, 1080]);
+        assert_eq!(u.inv_width, 1.0 / 1920.0f32);
+        assert_eq!(u.inv_height, 1.0 / 1080.0f32);
+        assert_eq!(u.widths, widths);
     }
 }
