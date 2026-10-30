@@ -259,6 +259,12 @@ Round 43 coretail2: terrain material byte channels and rule walk live, model-les
 
 Round 43 worldtail2: second world-tail pass; the capsule world now uses the body solver's gravity constant, the rest stays tested models; review fixed sector creation and removed an invented kd-tree attach and a guessed snapshot call.
 
+Round 44 mechsound (E2): the mechanisms play their sounds; the lock sound, silent before (it asked for a single file), now plays its set; the teleport bubble double step did not reproduce and is pinned by a test.
+
+Round 44 sweep-chars: the skin controller's CPU passes and the motion part transfer as tested functions and the fall scream live; review fixed the matrix order and the part walk and removed two duplicates.
+
+Round 44 sweep-world: most of the lane's commits were invented or duplicate rules and were corrected or removed; the lever light and fire jobs are live and the terrain read-back is a tested model.
+
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
 Done (change `add-apparel-painting`): object database items and the
@@ -1225,6 +1231,8 @@ Round 40 itemgui5: the icon atlas follows the interface scale live and the model
 
 Round 42 motilepart11: held item grip laws and drop and torch words; review reverted a wrong limit-link law and removed round 39's invented held-weld writes at death and collapse (those routines write the legs' limit links).
 
+Round 44 sweep-items: the golem core drop accepts both crystals live; review restored the palette precision and paint units and reverted a misread item-manager model and a duplicated apparel walk.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
@@ -1583,6 +1591,8 @@ Round 43 ai3: encounter scripts run in the game and the script scene setup is sh
 Round 43 alarmreturn: the golem alarm return runs live from the story revive (dead player with red at least 0.01, five seconds later): every awake, non-dying guardian within 3000 cm goes home and sleeps as a statue, and the player is reset 200 cm past the Alarm_ box facing back with motion 0x1d; carrying the zone's key token lets the player cross without waking anything (GPU-checked). New debug flags --story-session, --give and --fell-player.
 
 Round 43 golembody: golems get physical bodies built as the original builds every race's (ragdoll, the character init's muscles with 0.995 link smoothing, a mind and a duellist, Stand 2 start); statue golems rest under the sentry tick (dormant body, blows turned, sleep scales on contact mobility) until the alarm wake ends it. On exanima06 two woken golems close on the player and strike while 45 statues stay at rest; their blows land with the halberd haft for no damage yet.
+
+Round 44 polereach: spear stabs now land at the point (9 of 11, was 0 of 3); golems barely improve because their factory halberd has no body. Plus tooling: test runs tile four games on the primary monitor (--window-at / EXA_WINDOW_AT).
 
 ### Phase 7 — Game modes and content
 
@@ -2109,6 +2119,16 @@ Round 43 savehealth: a story save now keeps the player's wounds (yellow, red, fo
 
 Round 43 thaummind2: the Mind sight draw ported (no anchor creator yet); review dropped a duplicate force-light registration, fixed a transposed matrix and a reinvented sphere, and stopped an idle per-frame noise upload.
 
+Round 44 sweep-modes: the loadout's equipped marks, the tip banner and the story experience write-back live; review fixed the loadout record states, the arsenal return and release and the card culling.
+
+Round 44 sweep-thaum-a: the Barrier, force Bubble and barricade GI lights run live in their node frames; review restored the Bubble's own hum and fixed the electric opacity, flame wobble, spirit spawn height and wave gain, and removed invented or duplicated pieces.
+
+Round 44 sweep-thaum-b (reviewed, change correct-the-thaumaturgy-sweep-b): sixteen effect components checked against the assembly; the shock burst, the Barrier and Bubble GI lights and the barricade hazard are live; the lane's invented vanish rule and duplicate classes were removed; its overlap with sweep-thaum-a was folded into a's GI and Hazard code at merge.
+
+Round 44 sweep-ui-a: a UI sweep found most rules present; review fixed the lane's three changes (end pages' forfeit word, compact pip v range and node alpha order) and put the creation pickers on the form's client.
+
+Round 44 sweep-ui-b: control draws reuse the existing skin ports and the destination screen's skin colours are live; review fixed nine wrong or duplicated rules (physique NaN, colour picker callbacks, edit-page preview, drop-down band, picture corners, choice list).
+
 ### Phase 8 — Polish and release
 
 Performance (streaming, culling, GPU timings), settings, controller
@@ -2348,4 +2368,8 @@ Round 38 settingsio3: the engine's memory blocks, whole-file reads and the setti
 Round 40 gamegui6: the form base's client-area refresh and freed-form slot sweep; review removed a duplicate wheel rule and rewrote the sweep over real slot state.
 
 Round 40 osmain4: the super-sampled pass schedule, the renderer's list walk, the particle pass and the overlay layout as tested models; review fixed the scissor bit, the particle masks and the overlay box height.
+
+Round 44 sweep-render (reviewed): mostly tested models with no caller; the lane's invented sphere shadow mode, interleaved layout, upload copy and prepass change were removed.
+
+Round 44 weather (E1, cl/weather): rain and thunder are live, GPU-checked on arenao3 with night storm, day storm and dry seeds.
 
