@@ -3248,8 +3248,10 @@ themselves are not ported and nothing draws the domes yet.
 boxes; the blast's, the torrent's, the teleporter bubble's, the Barrier's
 `gi_dome`, the force Bubble's `gi_bubble` and the barricade's
 `gi_cuboid_fn` are registered as `exa_render::gi::GiShape`s while their
-effects live, and the cuboid, strikes and tendril lights wait for a live
-effect.
+effects live. The strikes' `gi_gradline` shape is built by
+`thaum::effect_light::strikes_shape` but the strikes aura does not carry
+the weapon's two line points yet; the cuboid and tendril lights wait for a
+live effect.
 
 ## Rain and the portal's spray
 

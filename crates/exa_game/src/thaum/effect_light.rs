@@ -254,6 +254,29 @@ pub(crate) fn force_bubble_lights(
     }
 }
 
+/// The strikes' light shape: the `gi_gradline` segment and point light of
+/// [`emissive::strikes_light`], in the weapon node's box (its centre, axes
+/// and half extents) plus 60 cm. The live strikes aura does not carry the
+/// two points yet, so nothing calls this.
+pub fn strikes_shape(
+    light: &emissive::StrikesLight,
+    centre: Vec3,
+    axes: [Vec3; 3],
+    scale: Vec3,
+) -> (GiShape, ShapeVolume) {
+    let (box_centre, half) = emissive::world_box(centre, axes, scale, FALLOFF_CM);
+    let shape = GiShape {
+        program: GiShapeProgram::GradLine,
+        colour: light.colour,
+        atten: light.attenuation,
+        line: light.line,
+        grad: light.gradient,
+        point_light: Vec4::from_array(light.point),
+        ..default()
+    };
+    (shape, volume_of(box_centre, half))
+}
+
 /// The barricade's light shape this frame: the `gi_cuboid_fn` box at the
 /// wall's middle, its `bExt` from [`emissive::barricade_light`] over the
 /// node's full size, the colour incl. the 1.2 gain, its texture window from
@@ -827,6 +850,34 @@ mod tests {
                 .shapes()
                 .is_empty()
         );
+    }
+
+    /// The strikes' `gi_gradline`: the segment, its gradient and its point
+    /// light, in the weapon node's box plus 60 cm.
+    #[test]
+    fn a_strikes_light_becomes_a_gradient_line() {
+        use crate::effects::emissive::strikes_light;
+        let light = strikes_light(
+            [Vec3::ZERO, Vec3::new(0.0, 80.0, 0.0)],
+            Vec3::new(0.5, 2.0, 3.0),
+            Vec3::new(0.74, 0.24, 0.0),
+            0.25,
+            Some((Vec3::new(0.0, 40.0, 0.0), 0.5)),
+        );
+        let (shape, volume) = strikes_shape(
+            &light,
+            Vec3::new(0.0, 40.0, 0.0),
+            [Vec3::X, Vec3::Y, Vec3::Z],
+            Vec3::new(5.0, 40.0, 5.0),
+        );
+        assert_eq!(shape.program, GiShapeProgram::GradLine);
+        assert_eq!(shape.line, light.line);
+        assert_eq!(shape.grad, light.gradient);
+        assert_eq!(shape.atten, 10_000.0);
+        assert_eq!(shape.point_light, Vec4::new(0.0, 40.0, 0.0, 5.0));
+        assert_eq!(shape.colour, Vec3::new(0.74, 0.24, 0.0) * 0.75);
+        assert_eq!(volume.position, Vec3::new(0.0, 0.4, 0.0));
+        assert_eq!(volume.half, Vec3::new(0.75, 1.1, 0.75));
     }
 
     /// A standing barricade's `gi_cuboid_fn`: the node's full size less 60
