@@ -650,7 +650,22 @@ the GUI globals (lazily made default skin, active skin prepared once per
 skin, the alpha/fade pair with its unclamped alpha and rounded byte), the
 `guiskin.rfi` atlas at 40 by 20 units with the textured frame's slots, the
 texture-bind `TexCol` rule and the textured skin's vertex and fragment
-sources. None of it is called by the running UI.
+sources. The control parts go through the skin's own slots: a panel's plain
+arm, the control box, the control shell and the slider's thumb draw the
+raised box (its gradient, bevel and outline in the control group's shades),
+the scroll bar's trough is the accent gradient with a raised-box thumb and
+its style frames run first on the moved rectangle, and the shell frames its
+own rect before that box. The form background's two scroll troughs and its
+horizontal thumb are raised boxes; the vertical thumb's idle line gradient
+and its pressed bevel take the control group's eighth shade. A mark is
+pressed while the button is down on the code under the mouse (the stored
+pressed code only makes it active), and its hovered box's inner bevel is one
+shade darker than the outer. The selection band reads the highlight group's
+fourth or fifth shade and its seventh or eighth by the selected state, and
+the form hit test answers the close, large and small mark codes (-4, -5, -6)
+in that order and the horizontal scrollbar's two arrows before its fallback.
+A form draw's temporary string is released once (`DrawTempText`). Part of it
+is called by the running UI through `gui_paint`; the rest waits for a form.
 
 `blend::UiBlendCache` is the GUI blend-state switch with the original's
 one-word cache: a word equal to the last does nothing; the word `0x100`
