@@ -278,39 +278,40 @@ pub fn rgb_to_hsv(c: [f32; 3]) -> [f32; 3] {
 }
 
 /// The saturation both ramps share: `(1 − (0.09k)²)·s`, then, below a value
-/// of 0.4, `(v + 0.6)²` times that, each in double precision and stored as
-/// a float.
+/// of 0.4, `(v + 0.6)²` times that. The first factor and the square are in
+/// double precision, the lift in single, as the original mixes them; the
+/// comparison is ordered, so a not-a-number value skips the lift.
 fn ramp_saturation(family: &Family, k: f32, value: f32) -> f32 {
     let d = f64::from(k) * 0.09;
     let mut saturation = ((1.0 - d * d) * f64::from(family.saturation)) as f32;
-    if f64::from(value) < 0.4 {
-        let lift = f64::from(value) + 0.6;
-        saturation = (lift * lift * f64::from(saturation)) as f32;
+    if value < 0.4 {
+        saturation *= (value + 0.6) * (value + 0.6);
     }
     saturation
 }
 
-/// The step a shade darkens by: the family step times 0.13 in double,
-/// stored as a float.
-fn ramp_step(family: &Family) -> f32 {
-    (f64::from(family.step) * 0.13) as f32
-}
-
 /// The colour's value and saturation before HSV conversion, on the linear
-/// ramp (the apparel painter's): `k·step + base` in float, at most 1.
+/// ramp (the apparel painter's): `(k·step)·0.13 + base`, every term single
+/// precision, capped at 1 by an ordered compare (a not-a-number stays).
 fn linear_ramp(family: &Family, shade: f32) -> (f32, f32) {
     let k = 7.0 - shade;
-    let value = (k * ramp_step(family) + family.base).min(1.0);
+    let mut value = (k * family.step) * 0.13 + family.base;
+    if 1.0 < value {
+        value = 1.0;
+    }
     (value, ramp_saturation(family, k, value))
 }
 
 /// The colour's value and saturation before HSV conversion, on the lifted
-/// ramp (the factory's area colours): `(k·step + (base + 0.1))²` in double,
-/// at most 1.
+/// ramp (the factory's area colours): `(((k·step)·0.13 + base) + 0.1)²`,
+/// every term single precision, capped at 1 by the same ordered compare.
 fn lifted_ramp(family: &Family, shade: f32) -> (f32, f32) {
     let k = 7.0 - shade;
-    let raised = f64::from(k * ramp_step(family)) + (f64::from(family.base) + 0.1);
-    let value = ((raised * raised) as f32).min(1.0);
+    let mut value = (k * family.step) * 0.13 + family.base + 0.1;
+    value = value * value;
+    if 1.0 < value {
+        value = 1.0;
+    }
     (value, ramp_saturation(family, k, value))
 }
 
@@ -349,6 +350,39 @@ mod tests {
         assert!(near(linear(7), [0.0, 0.0, 0.0]));
         assert!(near(linear(8), [0.928, 0.803_3, 0.774_4]));
         assert!(near(linear(15), [0.2, 0.171_5, 0.164_9]));
+    }
+
+    /// The two ramps' arithmetic, at the bits the original's single-precision
+    /// sequence gives (family 1: base 0.2, step 0.8, saturation
+    /// 0.27450982).
+    #[test]
+    fn the_ramps_follow_the_originals_float_order() {
+        let family = &FAMILIES[1];
+        // Shade 1 (k = 6): linear 6·0.8·0.13 + 0.2; lifted ((…) + 0.1)².
+        assert_eq!(
+            linear_ramp(family, 1.0),
+            (f32::from_bits(0x3f52_f1aa), f32::from_bits(0x3e47_213f))
+        );
+        assert_eq!(
+            lifted_ramp(family, 1.0),
+            (f32::from_bits(0x3f5a_9111), f32::from_bits(0x3e47_213f))
+        );
+        // Shade 0 is the lightest (k = 7, 0.928); shade 7 is the family's
+        // base with its unfaded saturation.
+        assert_eq!(
+            linear_ramp(family, 0.0),
+            (f32::from_bits(0x3f6d_9168), f32::from_bits(0x3e29_87be))
+        );
+        // Below 0.4 the saturation takes the (v + 0.6)² lift in single.
+        assert_eq!(linear_ramp(family, 7.0), (0.2, f32::from_bits(0x3e33_e71c)));
+        // The lifted ramp clamps the brightest shade at 1; a not-a-number
+        // value passes both ordered branches unchanged.
+        assert_eq!(lifted_ramp(family, 1.0).0, f32::from_bits(0x3f5a_9111));
+        let nan = f32::NAN;
+        assert!(linear_ramp(family, nan).0.is_nan());
+        // The ordered value compare skips the lift for a not-a-number
+        // value, so a finite k keeps the saturation finite.
+        assert!(ramp_saturation(family, 1.0, f32::NAN).is_finite());
     }
 
     #[test]

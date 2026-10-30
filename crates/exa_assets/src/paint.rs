@@ -452,6 +452,14 @@ pub fn palette_colour(index: u8) -> Vec3 {
     Vec3::from_array(palette::linear(index))
 }
 
+/// Palette colour `index` on the lifted ramp, the factory's area colours
+/// (`exa_formats::palette::lifted`): `(((k·step)·0.13 + base) + 0.1)²` in
+/// single precision, saturation `(1 − (0.09k)²)·sat`, lifted by
+/// `(v + 0.6)²` below 0.4.
+pub fn palette_lifted_colour(index: u8) -> Vec3 {
+    Vec3::from_array(palette::lifted(index))
+}
+
 /// A factory area's colour as its paint layer takes it: the lifted ramp
 /// stored as bytes, read back as `b × 1/255`.
 pub fn factory_colour(index: u8) -> Vec3 {
@@ -2803,6 +2811,24 @@ mod tests {
             assert!(o.x >= -0.5 && o.x <= 0.5 && o.y >= -0.5 && o.y <= 0.5);
             assert_eq!((o.x * 512.0).fract(), 0.0);
         }
+    }
+
+    #[test]
+    fn the_lifted_palette_colour_is_the_factory_ramp() {
+        // Family 1 shade 1: the lifted value 0.853776 against the linear
+        // 0.824, so the factory colour is the brighter of the two.
+        let lifted = palette_lifted_colour(9);
+        let linear = palette_colour(9);
+        assert!(lifted.x > linear.x && lifted.y > linear.y);
+        // Family 0's greys stay greys.
+        let grey = palette_lifted_colour(0);
+        assert_eq!(grey.x, grey.y);
+        assert_eq!(grey.y, grey.z);
+        // The stored factory bytes are the lifted colour quantised.
+        assert_eq!(
+            factory_colour(9),
+            lifted.map(|c| f32::from(byte(c)) * pixel::BYTE_UNIT)
+        );
     }
 
     #[test]

@@ -926,11 +926,14 @@ whose crease measure reads the painted normal map ±2 texels around.
 
 Palette: index = family × 8 + shade. Each of the 32 families has hue,
 saturation, base value and value step. With k = 7 − shade, the linear ramp
-(apparel) is v = min(k·(step·0.13) + base, 1) and the lifted ramp (factory
-material rolls) is v = min((k·(step·0.13) + (base + 0.1))², 1), the
-parenthesised sums and the square in double; both use s = (1 − (0.09k)²)·sat
-in double, scaled by (v + 0.6)² (double) when v < 0.4, then HSV → RGB with
-the sector ⌊6h⌋. Family 0 is the greys (0.91 down to black).
+(apparel) is v = min(k·step·0.13 + base, 1) and the lifted ramp (factory
+material rolls) is v = min(((k·step·0.13 + base) + 0.1)², 1), the products,
+the two sums and the square all in single precision in that order, the cap
+an ordered compare (a NaN stays); both use s = (1 − (0.09k)²)·sat with the
+first factor in double, scaled by (v + 0.6)² in single when v < 0.4
+(ordered), then HSV → RGB with the sector ⌊6h⌋. Family 0 is the greys (0.91
+down to black). The apparel colours are `paint::palette_colour` (linear),
+the factory areas `paint::palette_lifted_colour` (lifted).
 
 **Apparel copies.** A made apparel copy walks its body sections: the copy
 seed word of `0xFFFFFFFF` takes the template's, the six protection bytes
