@@ -823,7 +823,11 @@ fn silhouette_side(a: &Plane, b: &Plane, light: Vec3) -> Option<Plane> {
             continue;
         }
         let edge = va[next] - va[k];
-        if edge.length_squared() < MIN_EDGE2 {
+        // The original sums the edge's squares z, then y, then x, and only
+        // makes a plane when the squared length is at least 1 cm² (an
+        // unordered one makes none).
+        let length_squared = (edge.z * edge.z + edge.y * edge.y) + edge.x * edge.x;
+        if !(length_squared >= MIN_EDGE2) {
             continue;
         }
         let normal = normalised(light.cross(edge));
