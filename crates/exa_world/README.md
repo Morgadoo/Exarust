@@ -16,9 +16,7 @@ and the grid's rooms; portal clipping is next (see
   container volume, the operative kind on the placeholder; the content
   stream's level pass dispatches on it to find the player), the
   material rules (a weapon record hides `*`, an item-body record hides
-  `*` and paints `&`), the impact-sound class, the collision body a first
-  load builds (a lever's or a push surface's operative class, else a
-  door's, else none), masters kept per model
+  `*` and paints `&`), the impact-sound class, masters kept per model
   unless painted, the release that logs a mismatch and goes on, and the
   paint seed of the object database's oldest body layout (two Mersenne
   twister words, the second's top bit cleared, low word first). The spawn

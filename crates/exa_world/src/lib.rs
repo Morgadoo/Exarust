@@ -596,9 +596,37 @@ enum PlacedSpawn {
     Missing,
 }
 
+/// What a placed object's node carries besides its tree: its sections,
+/// its door and operative records (for the signals and mechanisms) and,
+/// for a teleporter or reconstruction device, its device.
+fn insert_object_records(
+    commands: &mut Commands,
+    entity: Entity,
+    item: &Item,
+    object: &exa_formats::rfc::PlacedObject,
+) {
+    if let Some(sections) = ObjectSections::of(item, object) {
+        commands.entity(entity).insert(sections);
+    }
+    if let Some(records) = mechanisms::MechanismRecords::of(object.id, item) {
+        commands.entity(entity).insert(records);
+    }
+    if let Some(operative) = item.operative.filter(|o| {
+        o.class == exa_formats::objdb::operative::DEVICE
+            && (o.kind == exa_formats::objdb::operative::TELEPORTER
+                || o.kind == exa_formats::objdb::operative::RES_DEVICE)
+    }) {
+        commands.entity(entity).insert(TeleportDevice {
+            kind: operative.kind,
+            operative,
+        });
+    }
+}
+
 /// Spawns an object-database object a level places (an item, door or
-/// container) as a static model. `None` for objects without a model
-/// (triggers, markers) or of a slot other than the level's.
+/// container) as a static model, or a model-less record as its container
+/// volume or placeholder node. `None` for objects of a slot other than the
+/// level's.
 fn spawn_placed_object(
     commands: &mut Commands,
     loader: &mut ModelLoader<'_>,
@@ -641,9 +669,13 @@ fn spawn_placed_object(
         // container-volume node when it has a volume section, else the
         // 50 cm placeholder of an operative record, so its placement
         // exists. A named model that is not found has no tree.
-        let Some(tree) = db_objects::bare_tree(item) else {
+        let tree = db_objects::scene_tree(item);
+        if !matches!(
+            tree,
+            db_objects::SceneTree::ContainerVolume(_) | db_objects::SceneTree::Placeholder
+        ) {
             return Some(PlacedSpawn::Missing);
-        };
+        }
         let mut spawn = commands.spawn((
             transform_from_rows(&object.transform),
             Name::new(item.name.clone()),
@@ -652,32 +684,17 @@ fn spawn_placed_object(
             ChildOf(parent),
         ));
         match tree {
-            db_objects::BareTree::ContainerVolume(volume) => {
+            db_objects::SceneTree::ContainerVolume(volume) => {
                 spawn.insert(volume);
             }
-            db_objects::BareTree::Placeholder => {
+            _ => {
                 spawn.insert(db_objects::PlaceholderNode::default());
             }
         }
         let entity = spawn.id();
-        if let Some(sections) = ObjectSections::of(item, object) {
-            commands.entity(entity).insert(sections);
-        }
         // A model-less operative still signals and can be a teleporter, as
         // the create routine's placeholder node is dispatched on.
-        if let Some(records) = mechanisms::MechanismRecords::of(object.id, item) {
-            commands.entity(entity).insert(records);
-        }
-        if let Some(operative) = item.operative.filter(|o| {
-            o.class == exa_formats::objdb::operative::DEVICE
-                && (o.kind == exa_formats::objdb::operative::TELEPORTER
-                    || o.kind == exa_formats::objdb::operative::RES_DEVICE)
-        }) {
-            commands.entity(entity).insert(TeleportDevice {
-                kind: operative.kind,
-                operative,
-            });
-        }
+        insert_object_records(commands, entity, item, object);
         return Some(PlacedSpawn::Placed {
             entity,
             lights: 0,
@@ -712,23 +729,7 @@ fn spawn_placed_object(
         markers::PlacedTemplate(item.parent),
         ChildOf(parent),
     ));
-    if let Some(sections) = ObjectSections::of(item, object) {
-        commands.entity(e).insert(sections);
-    }
-    // Its door and operative records, for the signals and mechanisms.
-    if let Some(records) = mechanisms::MechanismRecords::of(object.id, item) {
-        commands.entity(e).insert(records);
-    }
-    if let Some(operative) = item.operative.filter(|o| {
-        o.class == exa_formats::objdb::operative::DEVICE
-            && (o.kind == exa_formats::objdb::operative::TELEPORTER
-                || o.kind == exa_formats::objdb::operative::RES_DEVICE)
-    }) {
-        commands.entity(e).insert(TeleportDevice {
-            kind: operative.kind,
-            operative,
-        });
-    }
+    insert_object_records(commands, e, item, object);
     // A hinged door's leaves, a lever's arm and a push surface register with
     // their rules (a sliding door's leaf too when asked for); any other
     // mechanism body stays static. The
@@ -2298,8 +2299,8 @@ mod tests {
             if item.model.is_empty() && item.volume.is_some() {
                 found += 1;
                 assert!(matches!(
-                    db_objects::bare_tree(item),
-                    Some(db_objects::BareTree::ContainerVolume(_))
+                    db_objects::scene_tree(item),
+                    db_objects::SceneTree::ContainerVolume(_)
                 ));
             }
         }

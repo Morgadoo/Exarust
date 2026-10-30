@@ -17,8 +17,7 @@
 //! carries node flag `0x4000`, and each of its children `0x5000` plus the
 //! parent's hidden bit; a create asked to hide marks the whole tree
 //! hidden. The collision body a first load uses is the record's mechanism
-//! ([`collision_body`]: a lever's, a push surface's or a door's class, in
-//! the original's section order).
+//! ([`Item::mechanism`]).
 //!
 //! Evidence: the object manager's routines (RF_DBObjects) in the assembly.
 
@@ -26,8 +25,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bevy::prelude::Component;
-use exa_formats::containers;
-use exa_formats::objdb::{self, Item, operative};
+use exa_formats::objdb::{self, Item};
 
 /// The node flag every tree the manager makes carries (the model's root,
 /// a factory weapon's, the container volume and the placeholder).
@@ -94,49 +92,24 @@ pub enum SceneTree<'a> {
     None,
 }
 
-/// The tree `item` gets, `payload` being its section chain: with a model
-/// name, the factory weapon or the model; without one (or an empty one),
-/// the container volume when the volume section is there, else the
-/// placeholder for an operative record, else none.
-pub fn scene_tree<'a>(item: &'a Item, payload: &[u8]) -> SceneTree<'a> {
+/// The tree `item` gets: with a model name, the factory weapon or the
+/// model; without one (or an empty one), the container volume when the
+/// record has a volume section, else the placeholder for an operative
+/// record, else none.
+pub fn scene_tree(item: &Item) -> SceneTree<'_> {
     if !item.model.is_empty() {
         return match item.model.strip_prefix('@') {
             Some(factory) => SceneTree::FactoryWeapon(factory),
             None => SceneTree::Model(&item.model),
         };
     }
-    if let Some(body) = containers::section(payload, objdb::VOLUME) {
-        let extent = |at: usize| {
-            body.get(at..at + 2)
-                .map_or(0.0, |b| f32::from(u16::from_le_bytes([b[0], b[1]])))
-        };
-        return SceneTree::ContainerVolume(container_volume([extent(0), extent(2), extent(4)]));
+    if let Some(volume) = item.volume {
+        return SceneTree::ContainerVolume(container_volume(volume.extents.map(f32::from)));
     }
     if item.operative.is_some() {
         return SceneTree::Placeholder;
     }
     SceneTree::None
-}
-
-/// The tree a model-less record gets from its parsed sections: the
-/// invisible container volume when it has a volume section, else the 50 cm
-/// placeholder of an operative record, else none. This is [`scene_tree`]'s
-/// order without the payload.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum BareTree {
-    ContainerVolume(ContainerVolume),
-    Placeholder,
-}
-
-/// [`BareTree`] for `item`: the volume section wins over the operative one,
-/// as the create routine's section lookups do.
-pub fn bare_tree(item: &Item) -> Option<BareTree> {
-    if let Some(volume) = item.volume {
-        return Some(BareTree::ContainerVolume(container_volume(
-            volume.extents.map(f32::from),
-        )));
-    }
-    item.operative.is_some().then_some(BareTree::Placeholder)
 }
 
 /// A container volume of `extents`: its radius is their length, the
@@ -233,42 +206,6 @@ pub fn material_rule(item: &Item, name: &str) -> MaterialRule {
 /// byte: a class only up to 6 (an index into the original's sound table).
 pub fn impact_sound_class(byte: u8) -> Option<u8> {
     (byte <= 6).then_some(byte)
-}
-
-/// The collision body the manager builds a model's tree with. On a first
-/// load the original picks one of three rigid-body classes from the
-/// record's sections, before the model's own bodies are read: an
-/// operative section takes the class its operative class names (a lever's
-/// or a push surface's), a door's section the door's, and any other record
-/// none. Because the operative test comes first, an operative record that
-/// is not a lever or a push surface takes none even when it also has a
-/// door section.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CollisionBody {
-    /// The record's model needs no mechanism body.
-    None,
-    /// A hinged or sliding door's.
-    Door,
-    /// A lever's.
-    Lever,
-    /// A pressure plate's or button's push surface.
-    PushSurface,
-}
-
-/// The collision body `item` is built with, from its sections' record
-/// flags in the original's order (see [`CollisionBody`]).
-pub fn collision_body(item: &Item) -> CollisionBody {
-    if let Some(operative) = item.operative {
-        match operative.class {
-            operative::LEVER => CollisionBody::Lever,
-            operative::PUSH_SURFACE => CollisionBody::PushSurface,
-            _ => CollisionBody::None,
-        }
-    } else if item.door.is_some() {
-        CollisionBody::Door
-    } else {
-        CollisionBody::None
-    }
 }
 
 /// Whether a factory weapon of `id` is first copied to the local database:
@@ -409,21 +346,27 @@ mod tests {
 
     #[test]
     fn a_tree_is_a_model_a_factory_weapon_a_volume_or_a_placeholder() {
-        assert_eq!(scene_tree(&item("chair"), &[]), SceneTree::Model("chair"));
+        assert_eq!(scene_tree(&item("chair")), SceneTree::Model("chair"));
         assert_eq!(
-            scene_tree(&item("@ub05ssworda"), &[]),
+            scene_tree(&item("@ub05ssworda")),
             SceneTree::FactoryWeapon("ub05ssworda")
         );
-        assert_eq!(scene_tree(&item(""), &[]), SceneTree::None);
-        assert_eq!(scene_tree(&operative_item(""), &[]), SceneTree::Placeholder);
+        assert_eq!(scene_tree(&item("")), SceneTree::None);
+        assert_eq!(scene_tree(&operative_item("")), SceneTree::Placeholder);
         // A named model wins over the operative section.
         assert_eq!(
-            scene_tree(&operative_item("lever"), &[]),
+            scene_tree(&operative_item("lever")),
             SceneTree::Model("lever")
         );
         // The volume section wins over the operative section.
-        let volume = section_bytes(objdb::VOLUME, &[30, 0, 40, 0, 120, 0]);
-        let SceneTree::ContainerVolume(v) = scene_tree(&operative_item(""), &volume) else {
+        let mut body = vec![30, 0, 40, 0, 120, 0];
+        body.resize(20, 0);
+        let mut with_volume = operative_item("");
+        with_volume.volume = Item::parse(1, &section_bytes(objdb::VOLUME, &body))
+            .unwrap()
+            .volume;
+        assert!(with_volume.volume.is_some());
+        let SceneTree::ContainerVolume(v) = scene_tree(&with_volume) else {
             panic!("a volume");
         };
         assert_eq!(v.extents, [30.0, 40.0, 120.0]);
@@ -431,37 +374,6 @@ mod tests {
         let p = PlaceholderNode::default();
         assert_eq!(p.extents, [50.0; 3]);
         assert_eq!(p.radius, container_volume([50.0; 3]).radius);
-    }
-
-    #[test]
-    fn a_model_less_record_gets_its_volume_then_its_placeholder() {
-        let mut body = vec![30, 0, 40, 0, 120, 0, 0, 0];
-        body.resize(20, 0);
-        let mut volume = Item::parse(1, &section_bytes(objdb::VOLUME, &body)).unwrap();
-        assert!(volume.volume.is_some());
-        volume.model.clear();
-        assert_eq!(
-            bare_tree(&volume),
-            Some(BareTree::ContainerVolume(ContainerVolume {
-                extents: [30.0, 40.0, 120.0],
-                radius: 130.0,
-            }))
-        );
-        // The volume wins over an operative section, as in scene_tree.
-        volume.operative = operative_item("").operative;
-        assert!(matches!(
-            bare_tree(&volume),
-            Some(BareTree::ContainerVolume(_))
-        ));
-        let bare = operative_item("");
-        assert_eq!(bare_tree(&bare), Some(BareTree::Placeholder));
-        assert_eq!(bare_tree(&item("")), None);
-        // A record with a model is not model-less, but this helper only
-        // reads the sections the create routine reads after the model miss.
-        assert!(matches!(
-            bare_tree(&operative_item("lever")),
-            Some(BareTree::Placeholder)
-        ));
     }
 
     #[test]
@@ -551,42 +463,6 @@ mod tests {
         assert!(factory_copies_locally(0x40, 7));
         assert!(!factory_copies_locally(0x40, 0x4000_0007));
         assert!(!factory_copies_locally(0, 7));
-    }
-
-    #[test]
-    fn the_collision_body_follows_the_records_sections_in_the_originals_order() {
-        let mut lever = item("lever");
-        lever.operative = Some(Operative {
-            class: operative::LEVER,
-            ..operative_item("").operative.unwrap()
-        });
-        assert_eq!(collision_body(&lever), CollisionBody::Lever);
-        let mut plate = item("plate");
-        plate.operative = Some(Operative {
-            class: operative::PUSH_SURFACE,
-            ..operative_item("").operative.unwrap()
-        });
-        assert_eq!(collision_body(&plate), CollisionBody::PushSurface);
-        let mut door = item("door");
-        door.door = Some(Door {
-            flags: 0,
-            key: 0,
-            lock_sound: 0,
-            slam_sound: 0,
-            hinge_sound: 0,
-            unlatch_sound: 0,
-        });
-        assert_eq!(collision_body(&door), CollisionBody::Door);
-        // The operative section is tested first: a lever that is also a
-        // door takes the lever's class, and an operative of another class
-        // takes none even with a door section.
-        let mut both = lever;
-        both.door = door.door;
-        assert_eq!(collision_body(&both), CollisionBody::Lever);
-        let mut other = operative_item("gate");
-        other.door = door.door;
-        assert_eq!(collision_body(&other), CollisionBody::None);
-        assert_eq!(collision_body(&item("chair")), CollisionBody::None);
     }
 
     #[test]
