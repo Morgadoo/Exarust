@@ -162,6 +162,11 @@ pub enum Step {
 pub struct LevelNode {
     /// The built scene node.
     pub node: u64,
+    /// The section tag the builder registered the object as, which the
+    /// original reads off the node's class word before it decides what the
+    /// object is: [`OBJECT_OPERATIVE`], [`OBJECT_DOOR`] or [`OBJECT_VOLUME`],
+    /// else 0.
+    pub class: u32,
     /// For an object of the operative class (the actors), the kind its
     /// operative record carries: the placed player is the object whose kind
     /// is the one the arrival word names. `None` for every other class.
@@ -169,20 +174,33 @@ pub struct LevelNode {
     /// The node's position (centimetres, the original's world units), which
     /// becomes the focus point when the object is the player.
     pub position: [f32; 3],
-    /// For a placed object of the player-marker class whose marker record
-    /// exists with type byte `0x40`: the two words the record stores, in
-    /// file order, `[entrance, previous level]` (`exa_formats::objdb::Volume::marker`).
+    /// For a placed volume object whose marker record exists with type byte
+    /// `0x40`: the two words the record stores, in file order,
+    /// `[entrance, previous level]` (`exa_formats::objdb::Volume::marker`).
     /// The marker names the player when the entrance is the session's
     /// arrival variable and the previous level is the level the session
     /// came from.
     pub marker: Option<[u32; 2]>,
 }
 
+/// The section tag the level builder registered a placed object as, for an
+/// object with an operative section: the original registers it with the
+/// dynamics system and reads the operative kind back, which can name the
+/// player.
+pub const OBJECT_OPERATIVE: u32 = 0x0001_0000;
+/// The section tag for an object with a door section: the original registers
+/// it with the scene's grid environment.
+pub const OBJECT_DOOR: u32 = 0x0004_0000;
+/// The section tag for an object with a volume section: the original runs
+/// the transition-marker test on it.
+pub const OBJECT_VOLUME: u32 = 0x8000_AC07;
+
 impl LevelNode {
     /// A node with nothing the stream can read as the player.
     pub fn new(node: u64) -> Self {
         Self {
             node,
+            class: 0,
             operative_kind: None,
             position: [0.0; 3],
             marker: None,
@@ -870,17 +888,20 @@ impl ContentStream {
         Step::Idle
     }
 
-    /// Adopts a built placed object as the player when it is an actor of the
-    /// arrival word's kind or its marker record matches the arrival word:
-    /// its position becomes the focus point the streamed characters are
-    /// ordered by. A later match replaces an earlier one, as the original's
-    /// globals are overwritten.
+    /// Adopts a built placed object as the player when it is an operative
+    /// object whose kind is the arrival word's, or a volume object whose
+    /// marker record matches the arrival word and the previous level: its
+    /// position becomes the focus point the streamed characters are ordered
+    /// by. A later match replaces an earlier one, as the original's globals
+    /// are overwritten.
     fn adopt(&mut self, object: &LevelNode) {
-        let by_kind =
-            object.operative_kind.is_some() && self.level.player_kind == object.operative_kind;
+        let by_kind = object.class == OBJECT_OPERATIVE
+            && object.operative_kind.is_some()
+            && self.level.player_kind == object.operative_kind;
         // The marker's volume section stores the entrance and the previous
         // level's id; both are compared with the session's two variables.
-        let by_marker = object.marker == Some([self.level.arrival, self.level.previous_level]);
+        let by_marker = object.class == OBJECT_VOLUME
+            && object.marker == Some([self.level.arrival, self.level.previous_level]);
         let player = by_kind || by_marker;
         if player {
             self.level.player = Some(object.node);
@@ -1026,7 +1047,6 @@ mod tests {
 
     /// A builder that records what it was asked for and answers with the
     /// encoded request.
-    #[derive(Default)]
     struct Recorder {
         calls: Arc<Mutex<Vec<String>>>,
         level: Vec<Option<u64>>,
@@ -1038,6 +1058,28 @@ mod tests {
         /// A placed object with a marker record: index, the record's words
         /// and the position.
         marker: Option<(usize, [u32; 2], [f32; 3])>,
+        /// The class word the placed actor's node carries; the operative
+        /// class unless a test wants another.
+        player_class: u32,
+        /// The class word the marker object's node carries; the volume class
+        /// unless a test wants another.
+        marker_class: u32,
+    }
+
+    impl Default for Recorder {
+        fn default() -> Self {
+            Self {
+                calls: Arc::default(),
+                level: Vec::new(),
+                objects: Vec::new(),
+                characters: Vec::new(),
+                streamed_ok: false,
+                player: None,
+                marker: None,
+                player_class: OBJECT_OPERATIVE,
+                marker_class: OBJECT_VOLUME,
+            }
+        }
     }
 
     impl ContentBuilders for Recorder {
@@ -1048,12 +1090,14 @@ mod tests {
             if let Some((at, kind, position)) = self.player
                 && at == index
             {
+                object.class = self.player_class;
                 object.operative_kind = Some(kind);
                 object.position = position;
             }
             if let Some((at, words, position)) = self.marker
                 && at == index
             {
+                object.class = self.marker_class;
                 object.marker = Some(words);
                 object.position = position;
             }
@@ -1520,6 +1564,39 @@ mod tests {
         stream.begin_level(7, 1, 0, 0);
         stream.step(&mut builders);
         assert_eq!(stream.player(), Some(45));
+    }
+
+    /// The class word decides before the kind: an operative kind on a node
+    /// the builder registered as a door, and a matching marker on a node it
+    /// registered as an operative object, name no player.
+    #[test]
+    fn the_objects_class_word_gates_the_player_test() {
+        let mut stream = ContentStream::new();
+        let mut as_door = Recorder {
+            level: vec![Some(51)],
+            player: Some((0, ARRIVAL_PLAYER_KIND, [1.0, 2.0, 3.0])),
+            player_class: OBJECT_DOOR,
+            ..Recorder::default()
+        };
+        stream.begin_level(7, 1, ARRIVAL_WORD, NO_PREVIOUS_LEVEL);
+        stream.step(&mut as_door);
+        assert_eq!(stream.player(), None);
+        assert_eq!(stream.focus(), [0.0; 3]);
+
+        let mut as_operative = Recorder {
+            level: vec![Some(52)],
+            marker: Some((0, [NO_ARRIVAL_WORD, 5], [4.0, 5.0, 6.0])),
+            marker_class: OBJECT_OPERATIVE,
+            ..Recorder::default()
+        };
+        stream.begin_level(7, 1, NO_ARRIVAL_WORD, 5);
+        stream.step(&mut as_operative);
+        assert_eq!(stream.player(), None);
+        // The classes are the section tags the object was built as.
+        assert_eq!(
+            (OBJECT_OPERATIVE, OBJECT_DOOR, OBJECT_VOLUME),
+            (0x10000, 0x40000, 0x8000_AC07)
+        );
     }
 
     /// An object that is not an actor has no operative kind, so no kind can

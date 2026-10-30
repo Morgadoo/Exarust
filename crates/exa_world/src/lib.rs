@@ -685,10 +685,24 @@ impl exa_assets::content_stream::ContentBuilders for PlacedObjectBuilder<'_, '_,
         // A record the database does not hold builds nothing.
         let item = items.iter().find(|item| item.id == id)?;
         let t = object.transform[3];
+        // The class is the section the original registers the object as, in
+        // its order: an operative object with the dynamics system, else a door
+        // with the grid environment, else a volume object's marker test. An
+        // object with both an operative and a door section is registered as
+        // the operative one, as the spawn path's own mechanism choice does.
+        // **[guess: the precedence when a record has several sections]**
+        let class = if item.operative.is_some() {
+            exa_assets::content_stream::OBJECT_OPERATIVE
+        } else if item.door.is_some() {
+            exa_assets::content_stream::OBJECT_DOOR
+        } else if item.volume.is_some() {
+            exa_assets::content_stream::OBJECT_VOLUME
+        } else {
+            0
+        };
         Some(exa_assets::content_stream::LevelNode {
             node: entity.to_bits(),
-            // The built node is of the operative class when its record has
-            // an operative section; its kind is the record's.
+            class,
             operative_kind: item.operative.map(|o| u32::from(o.kind)),
             // The original's units: centimetres.
             position: [t[0] * 100.0, t[1] * 100.0, t[2] * 100.0],
