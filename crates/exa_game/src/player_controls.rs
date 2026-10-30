@@ -95,6 +95,11 @@ pub fn repair_to(wear: u8, rating: u8) -> Option<u8> {
     Some((i32::from(wear) - 255 / step).max(0) as u8)
 }
 
+/// The weapon (0x1000) section index of [`TimedList::tick_sections`].
+pub const WEAPON_SECTION: u8 = 0;
+/// The apparel (0x4000) section index of [`TimedList::tick_sections`].
+pub const APPAREL_SECTION: u8 = 1;
+
 /// A timed value on an item: the byte's kind (cleaning or repair), the
 /// value it starts at and the value it stops at.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -152,14 +157,15 @@ impl TimedList {
     }
 
     /// One frame at `now_ms` against `current`, which gives the item's byte
-    /// at section `section` (0 the usable section, 1 the weapon section),
-    /// or `None` when the item has no such section. The value is written
-    /// only while it lowers that byte or arrives, as the original writes
-    /// it. When the item has the usable section and its byte is not
-    /// written, the weapon section is not looked at this frame (the
-    /// original goes straight to the next entry). An arriving entry is
-    /// removed by moving the last into its slot. Returns the section writes
-    /// in the loop's order.
+    /// at section `section` ([`WEAPON_SECTION`] 0, the 0x1000 section, or
+    /// [`APPAREL_SECTION`] 1, the 0x4000 section), or `None` when the item
+    /// has no such section. The value is written only while it lowers that
+    /// byte or arrives, as the original writes it. The weapon section is
+    /// looked at first; when it exists and its byte is not written, the
+    /// apparel section is not looked at this frame (the original goes
+    /// straight to the next entry). An arriving entry is removed by moving
+    /// the last into its slot. Returns the section writes in the loop's
+    /// order.
     pub fn tick_sections(
         &mut self,
         now_ms: u32,
@@ -171,18 +177,21 @@ impl TimedList {
             let entry = self.entries[i];
             let (value, done) = entry.timed.value(now_ms);
             let mut next_section = true;
-            if let Some(old) = current(entry.item, 0) {
+            if let Some(old) = current(entry.item, WEAPON_SECTION) {
                 if old > value || done {
-                    writes.push((entry.item, 0, value));
-                } else {
-                    next_section = false;
+                    writes.push((entry.item, WEAPON_SECTION, value));
                 }
+                // A weapon section that is present always ends the entry's
+                // section pass: written, it goes straight to the refresh;
+                // not written, the original's next test leaves for the
+                // next entry too.
+                next_section = false;
             }
             if next_section
-                && let Some(old) = current(entry.item, 1)
+                && let Some(old) = current(entry.item, APPAREL_SECTION)
                 && (old > value || done)
             {
-                writes.push((entry.item, 1, value));
+                writes.push((entry.item, APPAREL_SECTION, value));
             }
             if done {
                 self.entries.swap_remove(i);
@@ -1739,16 +1748,31 @@ pub enum GameMode {
     Spectate,
 }
 
-/// One mode-table entry.
+/// The entry and leave routines a mode record names. The original stores
+/// two function pointers in each record; both modes use the same pair, the
+/// controls' start and end of play.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GameModeHook {
+    StartOfPlay,
+    EndOfPlay,
+}
+
+/// One mode-table entry: the original's 0x28-byte record (a sixteen-byte
+/// name, then the enter and leave hooks).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GameModeEntry {
     pub name: &'static str,
+    /// The name bytes the original copies into the record's first sixteen
+    /// bytes, zero padded.
+    pub name_bytes: [u8; 16],
     pub mode: GameMode,
     /// Its place in the table, from zero.
     pub index: u32,
     /// The id the session asks for: the table's length after the append
     /// plus two, so the place plus three.
     pub id: u32,
+    pub enter: GameModeHook,
+    pub leave: GameModeHook,
 }
 
 impl GameMode {
@@ -1759,6 +1783,15 @@ impl GameMode {
             GameMode::Spectate => "Spectate",
         }
     }
+
+    /// The record's sixteen name bytes, zero padded.
+    pub fn name_bytes(self) -> [u8; 16] {
+        let mut bytes = [0u8; 16];
+        let name = self.name().as_bytes();
+        let end = name.len().min(bytes.len());
+        bytes[..end].copy_from_slice(&name[..end]);
+        bytes
+    }
 }
 
 /// The two mode entries the unit init appends to a table of `registered`
@@ -1768,12 +1801,59 @@ pub fn register_game_modes(registered: u32) -> [GameModeEntry; 2] {
         let index = registered + mode as u32;
         GameModeEntry {
             name: mode.name(),
+            name_bytes: mode.name_bytes(),
             mode,
             index,
             // The table's new length (place + 1) plus two.
             id: index + 3,
+            enter: GameModeHook::StartOfPlay,
+            leave: GameModeHook::EndOfPlay,
         }
     })
+}
+
+/// The game's mode table as the controls unit registers its two modes into
+/// it. The original appends to the live table at unit init; Exarust keeps
+/// the table as a resource so the two modes and their ids exist from
+/// start-up.
+#[derive(bevy::prelude::Resource, Debug, Clone, PartialEq, Eq)]
+pub struct GameModes {
+    pub entries: Vec<GameModeEntry>,
+}
+
+impl Default for GameModes {
+    /// The table as the controls unit leaves it: its two modes registered
+    /// after no earlier entries.
+    fn default() -> Self {
+        Self::with_registered(0)
+    }
+}
+
+impl GameModes {
+    /// The table with the controls' modes registered after `registered`
+    /// entries.
+    pub fn with_registered(registered: u32) -> Self {
+        Self {
+            entries: register_game_modes(registered).to_vec(),
+        }
+    }
+
+    /// Appends the controls' modes after the entries already in the table.
+    pub fn register(&mut self) {
+        let registered = self.entries.len() as u32;
+        self.entries.extend(register_game_modes(registered));
+    }
+
+    /// The mode's record.
+    pub fn get(&self, mode: GameMode) -> Option<&GameModeEntry> {
+        self.entries.iter().find(|entry| entry.mode == mode)
+    }
+
+    /// The id the session asks for the mode, or none when the table has no
+    /// such record.
+    pub fn id(&self, mode: GameMode) -> Option<u32> {
+        self.get(mode).map(|entry| entry.id)
+    }
 }
 
 #[cfg(test)]
@@ -2426,8 +2506,9 @@ mod tests {
     }
 
     /// The timed list writes a section only while the byte lowers or the
-    /// entry arrives, applies the same value to both sections, and removes
-    /// an arrived entry by moving the last into its slot.
+    /// entry arrives. The weapon section is tried first; when the item has
+    /// one, the apparel section is never looked at that frame. An arrived
+    /// entry is removed by moving the last into its slot.
     #[test]
     fn the_timed_list_writes_only_what_lowers() {
         let mut list = TimedList::default();
@@ -2440,41 +2521,45 @@ mod tests {
             },
             item: 7,
         });
-        // At the start neither section changes: no write.
+        // At the start the weapon section does not change: no write, and
+        // the apparel section is not looked at.
         assert!(list.tick_sections(1000, |_, _| Some(100)).is_empty());
-        // Halfway: both sections go to 50.
+        // Halfway: the weapon section goes to 50 and the apparel section is
+        // skipped.
         assert_eq!(
             list.tick_sections(2000, |_, _| Some(100)),
-            vec![(7, 0, 50), (7, 1, 50)]
+            vec![(7, WEAPON_SECTION, 50)]
         );
-        // The weapon section alone lower: it is written.
+        // The weapon section alone lowers: it is written.
         assert_eq!(
-            list.tick_sections(2500, |_, section| if section == 0 {
+            list.tick_sections(2500, |_, section| if section == WEAPON_SECTION {
                 Some(50)
             } else {
                 Some(20)
             }),
-            vec![(7, 0, 25)]
+            vec![(7, WEAPON_SECTION, 25)]
         );
-        // The usable section not lowered: the weapon section is skipped
-        // this frame even though it would lower.
+        // The weapon section already at the value: the apparel section is
+        // skipped this frame even though it would lower.
         assert!(
-            list.tick_sections(2600, |_, section| if section == 0 {
+            list.tick_sections(2600, |_, section| if section == WEAPON_SECTION {
                 Some(10)
             } else {
                 Some(90)
             })
             .is_empty()
         );
-        // No usable section: the weapon section is tested on its own.
+        // No weapon section: the apparel section is tested on its own.
         assert_eq!(
-            list.tick_sections(2600, |_, section| (section == 1).then_some(90)),
-            vec![(7, 1, 20)]
+            list.tick_sections(2600, |_, section| (section == APPAREL_SECTION)
+                .then_some(90)),
+            vec![(7, APPAREL_SECTION, 20)]
         );
-        // Done writes both even when one is already at the target.
+        // Arriving writes the end value to the weapon section and skips the
+        // apparel one.
         assert_eq!(
             list.tick_sections(3000, |_, _| Some(0)),
-            vec![(7, 0, 0), (7, 1, 0)]
+            vec![(7, WEAPON_SECTION, 0)]
         );
         assert!(list.entries.is_empty());
         // A clock behind the start raises the value and writes nothing.
@@ -2694,19 +2779,39 @@ mod tests {
     }
 
     /// The unit init appends Character then Spectate, each id the table's
-    /// new length plus two.
+    /// new length plus two, its name bytes zero padded and the same start
+    /// and end hooks.
     #[test]
     fn the_game_modes_register_in_order() {
         let modes = register_game_modes(0);
         assert_eq!(modes[0].name, "Character");
         assert_eq!(modes[0].mode, GameMode::Character);
         assert_eq!((modes[0].index, modes[0].id), (0, 3));
+        assert_eq!(*b"Character\0\0\0\0\0\0\0", modes[0].name_bytes);
+        assert_eq!(
+            (modes[0].enter, modes[0].leave),
+            (GameModeHook::StartOfPlay, GameModeHook::EndOfPlay)
+        );
         assert_eq!(modes[1].name, "Spectate");
         assert_eq!(modes[1].mode, GameMode::Spectate);
         assert_eq!((modes[1].index, modes[1].id), (1, 4));
+        assert_eq!(*b"Spectate\0\0\0\0\0\0\0\0", modes[1].name_bytes);
+        assert_eq!(
+            (modes[1].enter, modes[1].leave),
+            (GameModeHook::StartOfPlay, GameModeHook::EndOfPlay)
+        );
         let modes = register_game_modes(7);
         assert_eq!((modes[0].index, modes[0].id), (7, 10));
         assert_eq!((modes[1].index, modes[1].id), (8, 11));
+        // The live table grows after whatever it already holds.
+        let mut table = GameModes::with_registered(2);
+        assert_eq!(table.entries.len(), 2);
+        assert_eq!(table.id(GameMode::Character), Some(5));
+        table.register();
+        assert_eq!(table.entries.len(), 4);
+        assert_eq!(table.id(GameMode::Spectate), Some(6));
+        assert_eq!(table.entries[2].index, 2);
+        assert_eq!(table.entries[3].index, 3);
     }
 
     /// The right press: a usable kind zero opens the container, another

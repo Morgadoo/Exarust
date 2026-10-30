@@ -99,12 +99,14 @@ pub fn parse_id(text: &str) -> Option<u32> {
 
 /// Whether the controls take a pack drag over the world: the drag comes
 /// from the player's pack and is not a held entry, the button is down and
-/// no form is under the pointer, then the controls' own claim rule.
+/// no form is under the pointer, then the controls' own claim rule, which
+/// also refuses a point that is out of reach (the hand's flag).
 pub fn claims(
     source: Option<Panel>,
     flags: u32,
     button_down: bool,
     over_gui: bool,
+    out_of_reach: bool,
     pending: bool,
     holding: bool,
 ) -> bool {
@@ -112,7 +114,8 @@ pub fn claims(
         && flags & HELD == 0
         && button_down
         && !over_gui
-        && item_cursor::claim_drag(ITEM_PAYLOAD, false, false, pending, holding) == DragClaim::Take
+        && item_cursor::claim_drag(ITEM_PAYLOAD, false, out_of_reach, pending, holding)
+            == DragClaim::Take
 }
 
 /// Claims a pack drag held over the world view (see the module notes).
@@ -121,6 +124,7 @@ pub fn claim_gui_drag(
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     over: Res<PointerOverGui>,
+    hand: Res<crate::hand::Hand>,
     mut drag: ResMut<PanelDrag>,
     mut items: ResMut<ItemCursor>,
     mut drop: ResMut<GuiDrop>,
@@ -134,6 +138,7 @@ pub fn claim_gui_drag(
         drag.flags,
         buttons.pressed(MouseButton::Left),
         over.0,
+        hand.out_of_reach,
         pending,
         items.held.is_some(),
     ) {
@@ -409,26 +414,29 @@ mod tests {
     use super::*;
 
     /// Only a pack drag that is not a held entry, held down over the world
-    /// with nothing pending or lifted, is the controls'.
+    /// in reach with nothing pending or lifted, is the controls'.
     #[test]
     fn the_controls_claim_a_pack_drag_over_the_world() {
         let pack = Some(Panel::PlayerPack);
-        assert!(claims(pack, 0, true, false, false, false));
-        assert!(!claims(None, 0, true, false, false, false));
+        assert!(claims(pack, 0, true, false, false, false, false));
+        assert!(!claims(None, 0, true, false, false, false, false));
         assert!(!claims(
             Some(Panel::BodyPack(3)),
             0,
             true,
             false,
             false,
+            false,
             false
         ));
-        assert!(!claims(pack, HELD, true, false, false, false));
-        assert!(!claims(pack, 0, false, false, false, false));
-        assert!(!claims(pack, 0, true, true, false, false));
+        assert!(!claims(pack, HELD, true, false, false, false, false));
+        assert!(!claims(pack, 0, false, false, false, false, false));
+        assert!(!claims(pack, 0, true, true, false, false, false));
+        // The point under the cursor out of reach: the drag is not taken.
+        assert!(!claims(pack, 0, true, false, true, false, false));
         // A drop already pending, or an item on the cursor, keeps it.
-        assert!(!claims(pack, 0, true, false, true, false));
-        assert!(!claims(pack, 0, true, false, false, true));
+        assert!(!claims(pack, 0, true, false, false, true, false));
+        assert!(!claims(pack, 0, true, false, false, false, true));
     }
 
     #[test]

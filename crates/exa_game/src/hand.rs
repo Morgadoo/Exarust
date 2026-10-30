@@ -497,13 +497,12 @@ pub fn ray_plane(origin: Vec3, dir: Vec3, normal: Vec3, offset: f32) -> Option<V
 }
 
 /// Whether the wheel turns by its first grip: the camera's view axis lies
-/// along the lever's axle by at least 0.2 (its absolute dot with the first
-/// plane's normal, widened to double; a NaN takes the first grip).
+/// along the lever's axle by at least 0.2. The dot is single precision and
+/// its absolute value is widened to double and compared with the double
+/// 0.2 in the original's ordered form, so a NaN takes the second grip.
 pub fn first_wheel_grip(view: Vec3, across: Vec3) -> bool {
     let along = (view.x * across.x + view.y * across.y + view.z * across.z).abs();
-    #[allow(clippy::neg_cmp_op_on_partial_ord)]
-    let below = f64::from(along) < FIRST_GRIP;
-    !below
+    f64::from(along) >= FIRST_GRIP
 }
 
 /// A door's drag link: its flags (the iteration limit alone), its last
@@ -1320,6 +1319,9 @@ fn lift(
         centre,
         half,
         target: at,
+        // Before any placement holds, a failed frame returns the item
+        // to the frame its lift took it from.
+        last: Some(saved_frame),
         item: ids.0,
         model: ids.1,
     })
@@ -1987,15 +1989,15 @@ fn hold_hand(
                 // The cursor's ray places the item against the level, the
                 // held item itself left out of the pick (as the original
                 // flags its node while it picks). The item goes there
-                // whether or not its box fits. A cursor over nothing keeps
-                // the last point (its pick has no navigation mesh behind
-                // every pixel). As in the original, the item then slides
-                // along the ray from 600 cm before the picked point and
-                // stops at its first contact: every collision sphere of
+                // whether or not its box fits. A hit under the player's
+                // height, and a cursor over nothing, fall to the height the
+                // player stands at. As in the original, the item then
+                // slides along the ray from 600 cm before that placed point
+                // and stops at its first contact: every collision sphere of
                 // every part is swept from there, and the nearest contact
                 // under 1000 cm of the sweep's start wins. A sweep that
                 // starts inside the level is no contact, so the item keeps
-                // the pick.
+                // the placed point.
                 let ray = cursor_ray(&scripted, &windows, &cameras);
                 if let Some(ray) = ray {
                     let (origin, dir) = (ray.origin, *ray.direction);
@@ -2035,26 +2037,38 @@ fn hold_hand(
                                 .collect()
                         })
                         .unwrap_or_default();
-                    let point = hit.and_then(|(_, t)| {
-                        // The sweep starts 600 cm before the picked point
-                        // (Exarust never starts it behind the eye).
-                        let back = t.min(item_cursor::SWEEP_BACK_CM / CM);
-                        let start = t - back;
-                        let from = origin + dir * start;
-                        let contact = item_cursor::per_sphere_contact(
-                            spheres.iter().copied(),
-                            dir,
-                            |_, offset, dir, reach, radius| {
-                                sources
-                                    .physics
-                                    .level_sweep(from + offset, dir, reach, radius)
-                                    .filter(|toi| *toi > 0.0)
-                            },
-                        )
-                        .map(|hit| start * CM + hit.contact);
-                        let distance = item_cursor::placement_distance(t * CM, contact);
-                        item_cursor::placement_point(origin, dir, distance)
+                    // The point the cursor places: a hit at or above the
+                    // player's height is kept, anything under it (and a
+                    // cursor over nothing) falls to the height the player
+                    // stands at. That is the lift's limit; a GUI drop uses
+                    // the far placement limit instead.
+                    let limit =
+                        player.map_or(item_cursor::PLACEMENT_LIMIT_CM, |(feet, _)| feet.y * CM);
+                    let hit_at = hit.map(|(_, t)| {
+                        let at = origin + dir * t;
+                        (at, at.y * CM)
                     });
+                    let point =
+                        item_cursor::place_point(origin, dir, hit_at, limit).and_then(|base| {
+                            // The sweep starts 600 cm before the placed point
+                            // (Exarust never starts it behind the eye).
+                            let distance_cm = ((base - origin).dot(dir) * CM).max(0.0);
+                            let start = (distance_cm - item_cursor::SWEEP_BACK_CM).max(0.0) / CM;
+                            let from = origin + dir * start;
+                            let contact = item_cursor::per_sphere_contact(
+                                spheres.iter().copied(),
+                                dir,
+                                |_, offset, dir, reach, radius| {
+                                    sources
+                                        .physics
+                                        .level_sweep(from + offset, dir, reach, radius)
+                                        .filter(|toi| *toi > 0.0)
+                                },
+                            )
+                            .map(|hit| start * CM + hit.contact);
+                            let distance = item_cursor::placement_distance(distance_cm, contact);
+                            item_cursor::placement_point(origin, dir, distance)
+                        });
                     // A placement marker named for the item (its id or its
                     // template) snaps it onto the marker's frame: the ray's
                     // segment runs to the picked point, or 10 000 cm
@@ -2162,6 +2176,10 @@ fn hold_hand(
                             if let Some(held) = items.held.as_mut() {
                                 held.shown = frame;
                                 held.target = free.unwrap_or(frame.position);
+                                // The frame the original keeps in the hand
+                                // (its held-body frame) is this one; a
+                                // later failed frame is put back here.
+                                held.last = Some(frame);
                             }
                             if let Ok((_, mut ragdoll, ..)) = bodies.get_mut(body) {
                                 match free {
@@ -2189,7 +2207,27 @@ fn hold_hand(
                         }
                         None => {
                             if let Ok((_, mut ragdoll, ..)) = bodies.get_mut(body) {
-                                ragdoll.pull_grab_to(held_target);
+                                // A frame that does not hold puts the item
+                                // back at the last placement that did (the
+                                // original copies the held frame it kept);
+                                // before any placement held, the grab stays
+                                // on its last point.
+                                match items.held.as_ref().and_then(|held| held.last) {
+                                    Some(last) => {
+                                        let worlds = item_cursor::snapped_parts(
+                                            &ragdoll
+                                                .parts
+                                                .iter()
+                                                .map(|p| p.transform())
+                                                .collect::<Vec<_>>(),
+                                            part,
+                                            last,
+                                        );
+                                        ragdoll.place_at(&worlds);
+                                        ragdoll.hold_grab_still();
+                                    }
+                                    None => ragdoll.pull_grab_to(held_target),
+                                }
                             }
                         }
                     }
@@ -3309,6 +3347,7 @@ mod tests {
         assert!(!first_wheel_grip(Vec3::new(0.199_999, 0.0, 0.98), Vec3::X));
         // The single-precision 0.2 is above the double 0.2.
         assert!(first_wheel_grip(Vec3::new(-0.2, 0.0, 0.98), Vec3::X));
-        assert!(first_wheel_grip(Vec3::NAN, Vec3::X));
+        // The ordered compare refuses a NaN: it takes the second grip.
+        assert!(!first_wheel_grip(Vec3::NAN, Vec3::X));
     }
 }

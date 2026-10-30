@@ -495,6 +495,9 @@ impl Plugin for PlayerPlugin {
             .init_resource::<AimCursor>()
             .init_resource::<CameraKickRng>()
             .init_resource::<crate::player_controls::PlaySession>()
+            // The controls unit's mode records (Character and Spectate),
+            // registered at unit init in the original.
+            .init_resource::<crate::player_controls::GameModes>()
             .add_message::<exa_combat::AttackAskedHook>()
             .add_message::<exa_combat::pain::BlowFelt>()
             .add_message::<exa_combat::pain::ClashFelt>()

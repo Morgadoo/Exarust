@@ -17,8 +17,10 @@
 //! - The double click (in reach; with Ctrl in combat mode) runs the
 //!   object's own interaction ([`player_controls::double_click_object`]):
 //!   a usable kind 0 object leaves the scene with its use sound (a
-//!   consumable's doors open 2100 ms later through the deferred list), and
-//!   a container section opens the container's popup.
+//!   consumable's doors open 2100 ms later through the deferred list), a
+//!   usable kind 1 item lifts the use cursor and stays in the scene
+//!   (`crate::use_cursor`), and a container section opens the container's
+//!   popup.
 //!
 //! Evidence: REA on the controls' click hook, double-click hook, object
 //! interaction and the device use they call (`docs/UI.md`, player
@@ -199,6 +201,9 @@ pub struct ClickOutputs<'w> {
     devices: ResMut<'w, DeviceClock>,
     screens: Option<ResMut<'w, GameScreens>>,
     card: Option<ResMut<'w, CardView>>,
+    /// The use cursor a hand-held world item lifts
+    /// (the controls' use state word and its dispatcher).
+    use_cursor: Option<ResMut<'w, crate::player_controls::UseCursor>>,
 }
 
 /// The dialogue side a narration goes through.
@@ -363,6 +368,20 @@ pub fn run_object_clicks(
         };
         let (use_of, opens) = player_controls::double_click_object(s, now as u32);
         info!("double click object {id:#x}: {use_of:?}, container {opens}");
+        // A usable item taken in hand lifts the use cursor: the controls'
+        // state word 0x100 and the shared cursor mode 0x40. The next mouse
+        // press ends it and runs the use under the pointer
+        // ([`crate::use_cursor`]). The object itself stays in the scene.
+        if use_of == ObjectInteraction::UseInHand {
+            let kind = s.usable.as_ref().map_or(1, |u| u.kind);
+            if let Some(cursor) = out.use_cursor.as_deref_mut() {
+                // The object's record id (untagged): a door's key section
+                // names the record the use unlocks with.
+                cursor.lift(placed.id, placed.id, 0, 0, kind);
+                info!("double click object {id:#x}: the use cursor is up for it");
+            }
+            continue;
+        }
         if use_of.takes_object() {
             let usable = s.usable;
             if let Some(name) = usable.as_ref().and_then(player_controls::use_sound_name)
@@ -564,6 +583,7 @@ mod tests {
             .add_message::<exa_audio::PointSounded>()
             .init_resource::<PendingUses>()
             .init_resource::<DeviceClock>()
+            .init_resource::<crate::player_controls::UseCursor>()
             .init_resource::<ColliderNodes>()
             .insert_resource(Physics::default())
             .add_systems(Update, run_object_clicks);
@@ -702,6 +722,50 @@ mod tests {
             }]
         );
         assert!(app.world().get_entity(jar).is_err());
+    }
+
+    /// A usable kind 1 item taken in hand lifts the use cursor and stays in
+    /// the scene; a marked one does not lift it, and a kind 0 consumable
+    /// leaves without one.
+    #[test]
+    fn a_hand_held_item_lifts_the_use_cursor() {
+        use crate::player_controls::{USE_CURSOR_MODE, USE_STATE, UseCursor};
+
+        let mut app = app();
+        let key = placed(
+            &mut app,
+            0x21,
+            Some(sections(Some((1, 1)), false, 0)),
+            Vec3::ZERO,
+        );
+        click(&mut app, Hit::SceneNode { node: key }, Vec3::ZERO, true);
+        let cursor = *app.world().resource::<UseCursor>();
+        assert_eq!(cursor.state, USE_STATE);
+        assert_eq!(cursor.cursor_mode, USE_CURSOR_MODE);
+        assert_eq!((cursor.item, cursor.kind), (0x21, 1));
+        assert!(cursor.up());
+        assert!(app.world().get_entity(key).is_ok());
+
+        // A used mark on the item keeps the interaction from taking it.
+        let marked = placed(
+            &mut app,
+            0x22,
+            Some(sections(Some((1, 1)), false, player_controls::USED_MARK)),
+            Vec3::X * 10.0,
+        );
+        click(&mut app, Hit::SceneNode { node: marked }, Vec3::ZERO, true);
+        assert_eq!(app.world().resource::<UseCursor>().state, USE_STATE);
+        assert!(app.world().get_entity(marked).is_ok());
+
+        // The consumable of kind 0 is taken and leaves no cursor.
+        let jar = placed(
+            &mut app,
+            0x23,
+            Some(sections(Some((0, 1)), false, 0)),
+            Vec3::X * 20.0,
+        );
+        click(&mut app, Hit::SceneNode { node: jar }, Vec3::ZERO, true);
+        assert_eq!(app.world().resource::<UseCursor>().state, USE_STATE);
     }
 
     /// The script list reads frames with `d` (double) and `l` (level).

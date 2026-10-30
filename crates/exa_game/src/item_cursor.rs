@@ -22,10 +22,11 @@
 //! at the fast one.
 //!
 //! **Where it may go.** Each frame the cursor's ray is picked against the
-//! level; a hit whose height is not under the placement limit (−100000 cm,
-//! which no level reaches) places the item there. Otherwise the item goes
-//! where the ray crosses that height; a ray that climbs (its height
-//! component over −1.19209e−7) refuses the placement. The item is put there
+//! level; a hit at or above the height the player stands at places the item
+//! there. Otherwise the item goes where the ray crosses that height; a ray
+//! that climbs (its height component over −1.19209e−7) refuses the
+//! placement. (A GUI drop uses the far placement limit −100000 cm instead,
+//! which no level reaches.) The item is put there
 //! and the box test (its rest points and half extents in its turned saved
 //! frame at most 280 cm high and at least −1000 cm low,
 //! `hand::box_ok_local`) decides the routine's answer.
@@ -34,8 +35,8 @@
 //! collision sphere of every part, carried with the placed point, is swept
 //! against the level, and the nearest contact wins (Exarust sweeps
 //! rapier's level colliders, not the CPU triangles, and starts no nearer
-//! than the eye); a cursor that picks nothing keeps the last point (its
-//! pick has no navigation mesh behind every pixel). A level placement
+//! than the eye); a cursor that picks nothing places on the plane at the
+//! player's height. A level placement
 //! marker whose eight-character hexadecimal name gives the item's object
 //! or model id snaps the item onto the marker's frame when the cursor's
 //! segment (to the pick, or 10 000 cm) meets the marker's sphere and the
@@ -93,8 +94,9 @@ pub const TURN_PER_MS: f64 = 0.0025;
 pub const STICK_DEAD_ZONE: f64 = 0.1;
 /// A turn under this is no turn (the engine's float epsilon).
 pub const TURN_EPSILON: f32 = 1.192_09e-7;
-/// The placement's height limit (cm): a hit under it, or no hit, falls
-/// back to where the ray crosses this height.
+/// The GUI drop's placement height limit (cm): a hit under it, or no hit,
+/// falls back to where the ray crosses this height. The lift itself uses
+/// the height the player stands at.
 pub const PLACEMENT_LIMIT_CM: f32 = -100_000.0;
 /// The placement sweep's reach (cm): the original's nearest-contact search
 /// starts from it and keeps only nearer contacts.
@@ -675,6 +677,10 @@ pub struct HeldItem {
     pub half: Vec3,
     /// The last point the box fitted at (m).
     pub target: Vec3,
+    /// The frame of the last placement that held (m): the original keeps
+    /// the body's frame from it and puts the item back there when a later
+    /// frame fails.
+    pub last: Option<Frame>,
     /// The object's id and its model's id, which a level placement marker
     /// is named for (zero when the item carries no object id).
     pub item: u32,
@@ -705,24 +711,24 @@ pub enum DragClaim {
     Take,
     /// An item is already held: the drag is left to it.
     Busy,
-    /// A dialogue, a suppressed movement request, a pending drop or
-    /// another payload: the drag is not the controls'.
+    /// A dialogue is open, the point is out of reach, a drop is pending or
+    /// the payload is another kind: the drag is not the controls'.
     Ignore,
 }
 
-/// Whether the controls take a GUI drag of `kind`: no dialogue, the
-/// movement request free (a lift or a walk not pending), no drop already
-/// queued, and an item or object payload; an item already held makes it
-/// busy instead.
+/// Whether the controls take a GUI drag of `kind`: no dialogue, the point
+/// under the cursor in reach, no drop already queued, and an item or object
+/// payload; an item already held makes it busy instead. (The original's
+/// third test is the hand's out-of-reach flag, set when the cursor's point
+/// is too far away.)
 pub fn claim_drag(
     kind: u32,
     dialogue: bool,
-    request_suppressed: bool,
+    out_of_reach: bool,
     pending: bool,
     holding: bool,
 ) -> DragClaim {
-    if dialogue || request_suppressed || pending || (kind != ITEM_PAYLOAD && kind != OBJECT_PAYLOAD)
-    {
+    if dialogue || out_of_reach || pending || (kind != ITEM_PAYLOAD && kind != OBJECT_PAYLOAD) {
         return DragClaim::Ignore;
     }
     if holding {
@@ -760,8 +766,10 @@ pub struct ItemCursor {
 
 impl ItemCursor {
     /// Begins a lift with `held`.
-    pub fn begin(&mut self, held: HeldItem) {
+    pub fn begin(&mut self, mut held: HeldItem) {
         self.rotation = held.saved_frame.rotation;
+        let saved = held.saved_frame;
+        held.last.get_or_insert(saved);
         self.held = Some(held);
         self.offset = Vec2f::ZERO;
         self.hover = 0;
@@ -1096,6 +1104,16 @@ mod tests {
         // A NaN height is not "under" the limit: the hit is kept.
         assert_eq!(place_point(o, down, Some((at, f32::NAN)), 0.0), Some(at));
         assert_eq!(place_point(o, down, Some((at, f32::NAN)), 5.0), Some(at));
+        // The lift's limit is the player's height: a hit at the floor
+        // (0 cm) under a player standing at 170 cm falls to the plane at
+        // 170 cm, while a hit at 180 cm (a table) is kept.
+        let floor = place_point(o, down, Some((at, 0.0)), 170.0).unwrap();
+        assert!((floor.y - 1.7).abs() < 1e-5, "{floor}");
+        let table = Vec3::new(0.5, 1.8, 0.5);
+        assert_eq!(
+            place_point(o, down, Some((table, table.y * 100.0)), 170.0),
+            Some(table)
+        );
     }
 
     /// The placement frame is placed either way; its answer says whether
@@ -1122,8 +1140,8 @@ mod tests {
     }
 
     /// The GUI drag claim: only an item or object payload with no dialogue,
-    /// no suppressed request and no queued drop is taken; an item already
-    /// held makes it busy.
+    /// a point in reach and no queued drop is taken; an item already held
+    /// makes it busy.
     #[test]
     fn the_gui_drag_claim() {
         assert_eq!(
@@ -1171,10 +1189,14 @@ mod tests {
             centre: Vec3::ZERO,
             half: Vec3::ONE,
             target: Vec3::ZERO,
+            last: None,
             item: 0,
             model: 0,
         });
         assert!(cursor.held.is_some());
+        // Before any placement holds, the lift frame is where a failed
+        // frame returns the item.
+        assert_eq!(cursor.held.as_ref().unwrap().last, Some(Frame::default()));
         assert_eq!(cursor.rotation, Mat3::IDENTITY);
         assert!(cursor.turn_frame(0, 100.0, Vec2f::new(0.0, 1.0), [false; 4], Vec3::X));
         assert!((cursor.offset.x - 0.0625).abs() < 1e-6);
