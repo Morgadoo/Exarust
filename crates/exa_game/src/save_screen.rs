@@ -913,6 +913,7 @@ fn saves_input(
     mut commands: Commands,
     mut loads: MessageWriter<crate::save_live::StorySlotLoad>,
     mut roll: Local<u32>,
+    levels: Query<(), With<exa_world::level_lifecycle::LevelEntity>>,
 ) {
     let Some(saves) = screen.saves.as_mut() else {
         return;
@@ -932,7 +933,10 @@ fn saves_input(
         &mut lists.story
     };
     let mut actions = Vec::new();
-    if let Some((number, checkpoint)) = scripted.load.take() {
+    // The scripted CONTINUE waits until the screen's own teardown has taken
+    // the old level down, as a player's click comes frames later.
+    let settled = levels.is_empty();
+    if settled && let Some((number, checkpoint)) = scripted.load.take() {
         scripted.done = true;
         match list.numbers().iter().position(|&n| n == number) {
             Some(index) => {

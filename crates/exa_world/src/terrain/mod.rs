@@ -1824,11 +1824,23 @@ fn build_tile(
             let Some(indices) = groups[by * side + bx].take().filter(|i| !i.is_empty()) else {
                 continue;
             };
+            let (mesh, dropped) = vertices.part(&indices);
+            if dropped > 0 {
+                // A diagnostic: the block patch never names a vertex past
+                // the tile, so this means corrupted input.
+                bevy::log::warn!(
+                    "terrain: tile ({}, {}) block ({bx}, {by}) dropped {dropped} triangles naming vertices past its {} (largest index {:?})",
+                    tile.x,
+                    tile.y,
+                    vertices.positions.len(),
+                    indices.iter().max()
+                );
+            }
             built.push(BuiltBlock {
                 bx,
                 by,
                 room: blocks.and_then(|b| b.room(bx, by)),
-                mesh: vertices.part(&indices),
+                mesh,
             });
         }
     }
@@ -1921,15 +1933,26 @@ impl TileVertices {
         mesh
     }
 
-    /// A mesh of these triangles and only the vertices they use.
-    fn part(&self, indices: &[u32]) -> Mesh {
+    /// A mesh of these triangles and only the vertices they use. A
+    /// triangle naming a vertex the tile does not have is left out (the
+    /// count is returned with the mesh) instead of failing the tile worker.
+    fn part(&self, indices: &[u32]) -> (Mesh, usize) {
         let mut remap = vec![u32::MAX; self.positions.len()];
         let mut kept = TileVertices {
             positions: Vec::new(),
             normals: Vec::new(),
             uvs: Vec::new(),
         };
-        let indices = indices
+        let len = self.positions.len();
+        let (triangles, rest) = indices.as_chunks::<3>();
+        let valid: Vec<u32> = triangles
+            .iter()
+            .filter(|t| t.iter().all(|&v| (v as usize) < len))
+            .flatten()
+            .copied()
+            .collect();
+        let dropped = triangles.len() - valid.len() / 3 + usize::from(!rest.is_empty());
+        let indices = valid
             .iter()
             .map(|&v| {
                 let v = v as usize;
@@ -1942,7 +1965,7 @@ impl TileVertices {
                 remap[v]
             })
             .collect();
-        kept.mesh(indices)
+        (kept.mesh(indices), dropped)
     }
 }
 
@@ -2251,7 +2274,8 @@ mod tests {
             normals: vec![[0.0, 1.0, 0.0]; 4],
             uvs: vec![[0.0; 2]; 4],
         };
-        let part = v.part(&[3, 1, 2, 2, 1, 3]);
+        let (part, dropped) = v.part(&[3, 1, 2, 2, 1, 3]);
+        assert_eq!(dropped, 0);
         let p = part
             .attribute(Mesh::ATTRIBUTE_POSITION)
             .and_then(|a| a.as_float3())
@@ -2259,6 +2283,10 @@ mod tests {
         assert_eq!(p, [[3.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]]);
         let i: Vec<usize> = part.indices().unwrap().iter().collect();
         assert_eq!(i, [0, 1, 2, 2, 1, 0]);
+        // A triangle naming a vertex past the tile is left out, not a panic.
+        let (part, dropped) = v.part(&[3, 1, 2, 2, 1, 1_055_204]);
+        assert_eq!(dropped, 1);
+        assert_eq!(part.indices().unwrap().len(), 3);
     }
 
     /// A tile becomes one mesh per 6 m block, each covering its own 30 × 30
