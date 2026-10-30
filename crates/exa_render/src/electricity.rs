@@ -638,11 +638,12 @@ impl Arc {
     pub fn tick(&mut self) -> bool {
         self.age = self.age.saturating_add(1);
         // The texture scroll the tendril emitter keeps: a step of 0.015 a
-        // tick, wrapping past 2. The emitter's own tick is modelled in the
-        // game's arc emitter; this is the shader's offset for one arc.
-        self.tex_offset.y += 0.015;
-        if self.tex_offset.y > 2.0 {
-            self.tex_offset.y -= 2.0;
+        // tick added in double precision, and past 2 it drops back by one.
+        // The emitter's own tick is modelled in the game's arc emitter; this
+        // is the shader's offset for one arc.
+        self.tex_offset.y = (f64::from(self.tex_offset.y) + 0.015) as f32;
+        if 2.0 < self.tex_offset.y {
+            self.tex_offset.y -= 1.0;
         }
         if self.lifetime == 0 || self.age < self.lifetime {
             return true;
@@ -1069,12 +1070,12 @@ mod tests {
         assert_eq!(arc.tex_offset, Vec2::ZERO);
         arc.tick();
         assert!((arc.tex_offset.y - 0.015).abs() < 1e-6);
-        // 134 ticks of 0.015 reach 2.01, which wraps to 0.01.
+        // 134 ticks of 0.015 pass 2 (2.01), which drops back by one.
         for _ in 0..133 {
             arc.tick();
         }
         assert!(
-            (arc.tex_offset.y - 0.01).abs() < 1e-5,
+            (arc.tex_offset.y - 1.01).abs() < 1e-4,
             "{}",
             arc.tex_offset.y
         );
