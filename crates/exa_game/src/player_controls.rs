@@ -1270,29 +1270,47 @@ pub enum SpawnRun {
     /// nothing is placed.
     Dropped,
     /// The node's body has no physics: the original's "Game object has no
-    /// physics: <name>" content error, the node freed.
-    ContentError,
+    /// physics: <name>" content error, the node freed and the state word
+    /// reset to [`SPAWN_ARMED`] with the node forgotten.
+    ContentError { word: u32 },
     /// The node is attached at its frame, its condition word written, the
-    /// lift begun and the placement run at the lift's height limit.
-    Placed { condition: u32, place_limit_cm: f32 },
+    /// lift begun and the placement run at the lift's height limit. The
+    /// body's frame is copied to the controls only when the state word
+    /// lacks [`SPAWN_DONE`]; the run ends with the word at [`SPAWN_DONE`]
+    /// and the drag-end callback installed.
+    Placed {
+        condition: u32,
+        place_limit_cm: f32,
+        end_word: u32,
+        copy_frame: bool,
+    },
 }
 
+/// The controls' state word bit that arms a GUI drop (a node is queued).
+pub const SPAWN_ARMED: u32 = 0x1000;
+/// The controls' state word bit that ends a drop: placed. The same bit
+/// set before the run keeps the body's frame out of the controls.
+pub const SPAWN_DONE: u32 = 0x2000;
+
 /// The deferred drop task's run: a node is required, the controls' state
-/// word must hold bit 0x1000 (`armed`), and the node's body must have
-/// physics. A placed node takes the drag's condition word and the lift's
-/// −100000 cm placement limit. [The content error also resets the state
-/// word to 0x1000 and forgets the node.]
-pub fn run_spawn(queued: bool, armed: bool, has_body: bool, condition: u32) -> SpawnRun {
+/// word must hold bit [`SPAWN_ARMED`], and the node's body must have
+/// physics. A placed node takes the drag's condition word, the lift's
+/// −100000 cm placement limit, [`SPAWN_DONE`] as its end word, and the
+/// body's frame when the word lacked [`SPAWN_DONE`]. The content error
+/// resets the word to [`SPAWN_ARMED`].
+pub fn run_spawn(queued: bool, word: u32, has_body: bool, condition: u32) -> SpawnRun {
     if !queued {
         SpawnRun::Nothing
-    } else if !armed {
+    } else if word & SPAWN_ARMED == 0 {
         SpawnRun::Dropped
     } else if !has_body {
-        SpawnRun::ContentError
+        SpawnRun::ContentError { word: SPAWN_ARMED }
     } else {
         SpawnRun::Placed {
             condition,
             place_limit_cm: -100_000.0,
+            end_word: SPAWN_DONE,
+            copy_frame: word & SPAWN_DONE == 0,
         }
     }
 }
@@ -2809,15 +2827,41 @@ mod tests {
     /// lift's −100000 cm limit.
     #[test]
     fn the_deferred_spawn_runs_in_order() {
-        assert_eq!(run_spawn(false, true, true, 7), SpawnRun::Nothing);
-        assert_eq!(run_spawn(true, false, true, 7), SpawnRun::Dropped);
-        assert_eq!(run_spawn(true, true, false, 7), SpawnRun::ContentError);
+        // No node queued: nothing runs.
+        assert_eq!(run_spawn(false, SPAWN_ARMED, true, 7), SpawnRun::Nothing);
+        // The word without the armed bit frees the node and places nothing.
+        assert_eq!(run_spawn(true, 0, true, 7), SpawnRun::Dropped);
         assert_eq!(
-            run_spawn(true, true, true, 7),
+            run_spawn(true, SPAWN_DONE, true, 7),
+            SpawnRun::Dropped,
+            "0x2000 is not the armed bit"
+        );
+        // A node without physics is the content error, the word back to the
+        // armed value.
+        assert_eq!(
+            run_spawn(true, SPAWN_ARMED, false, 7),
+            SpawnRun::ContentError { word: SPAWN_ARMED }
+        );
+        // A placed node takes the condition, the −100000 cm placement limit,
+        // the done word, and copies the frame when the word lacked it.
+        assert_eq!(
+            run_spawn(true, SPAWN_ARMED, true, 7),
             SpawnRun::Placed {
                 condition: 7,
-                place_limit_cm: -100_000.0
+                place_limit_cm: -100_000.0,
+                end_word: SPAWN_DONE,
+                copy_frame: true
             }
         );
+        assert_eq!(
+            run_spawn(true, SPAWN_ARMED | SPAWN_DONE, true, 7),
+            SpawnRun::Placed {
+                condition: 7,
+                place_limit_cm: -100_000.0,
+                end_word: SPAWN_DONE,
+                copy_frame: false
+            }
+        );
+        assert_eq!((SPAWN_ARMED, SPAWN_DONE), (0x1000, 0x2000));
     }
 }
