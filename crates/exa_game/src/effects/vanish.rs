@@ -23,12 +23,17 @@
 //!   flags 0x30 and is hidden again before the vanish frees itself.
 //!
 //! The displacement unit's phase table ([`PHASE_TABLE`], [`VanishPhase`])
-//! and its own step ([`Vanish::advance`]: an entry whose end has passed
-//! runs its callback and the phase moves on; the last entry hides and lets
-//! go) and its shown amount ([`Vanish::phase_fade`]: a 0x400 entry fades
-//! between its start and end, reversed without 0x800; 0x1000 shows one).
-//! The phased body object itself and the two calls the start ends with
-//! belong to the displacement unit outside this group.
+//! and its own step ([`Vanish::advance`]: an entry whose end has passed,
+//! compared unsigned, runs its callback and the phase moves on; the −16 and
+//! −1 entries wait for the phased body's hook, which reads the −1 entry as
+//! the table's end, [`Vanish::phased_body_done`]) and its shown amount
+//! ([`Vanish::phase_fade`]: a 0x400 entry fades between its start and end,
+//! reversed without 0x800; 0x1000 shows one). Entries 1 and 5 stage the
+//! bodies, 2 reveals them (show call 0x20), 3 shows them (0x30) and 6 hides
+//! them. Nothing runs the table live yet (the casts drive the vanish
+//! through the power classes' own phases). The phased body object itself
+//! and the two calls the start ends with belong to the displacement unit
+//! outside this group.
 //!
 //! Evidence: the effect's show, hide, start, finish and phase-hook
 //! routines, read from `Exanima.exe`.
@@ -47,6 +52,8 @@ pub const LENT_CLEAR: u32 = 0x30;
 pub const SHOW_CALL: u32 = 0x30;
 pub const HIDE_CALL: u32 = 0;
 pub const STAGE_CALL: u32 = 0x10;
+/// The show call's argument of the table's revealing phase.
+pub const REVEAL_CALL: u32 = 0x20;
 /// The mode word of an instant start, and of a phased one.
 pub const INSTANT_MODE: u32 = 0x10;
 pub const PHASED_MODE: u32 = 1;
@@ -75,6 +82,9 @@ pub enum PhaseCall {
     /// Sets render bit 4 and calls each body's show with 0x10 (the staged
     /// phase).
     Stage,
+    /// Reveals the bodies: shown 1 and the show call with 0x20, the items
+    /// shown 1, the render bit left alone.
+    Reveal,
     /// Shows the bodies (bit 4 already set, the show call with 0x30).
     Show,
     /// Hides the bodies (bit 4 cleared, the show call with 0).
@@ -88,9 +98,9 @@ pub enum PhaseCall {
 pub struct VanishPhase {
     pub flags: u32,
     pub start: u32,
-    /// The end, an unsigned comparison against the elapsed time; a −1
-    /// marks the table's last entry (read as a signed compare by the
-    /// hook).
+    /// The end, compared unsigned against the elapsed time, so the −16
+    /// and −1 entries never pass on their own (the phased body's hook moves
+    /// them on); a −1 marks the table's last entry, which the hook reads.
     pub end: i64,
     pub call: PhaseCall,
 }
@@ -114,7 +124,7 @@ pub const PHASE_TABLE: [VanishPhase; 8] = [
         flags: 0x600,
         start: 350,
         end: 450,
-        call: PhaseCall::Stage,
+        call: PhaseCall::Reveal,
     },
     VanishPhase {
         flags: 0x300,
@@ -268,19 +278,15 @@ impl Vanish {
         }
     }
 
-    /// The table's own step at `now_ms` (the original's phase tick ran
-    /// before the phase hook): when the current entry's end has passed, its
-    /// callback runs and the phase advances; a table entry whose end is −1
-    /// hides and lets go of the body (the phase hook's end).
+    /// The table's own step at `now_ms` (the original's frame callback):
+    /// when the elapsed time passes the current entry's end, compared
+    /// unsigned, its callback runs and the phase advances. The −16 and −1
+    /// ends never pass; those entries wait for the phased body's hook
+    /// ([`Vanish::phased_body_done`]). Returns whether the phase moved.
     pub fn advance(&mut self, now_ms: u32) -> bool {
         let entry = self.phase_entry();
-        // The last entry (its end −1) is the table's end: hide and let go.
-        if entry.end == -1 {
-            self.phase_hook(true);
-            return true;
-        }
         let elapsed = now_ms.wrapping_sub(self.since_ms);
-        if entry.end >= 0 && (entry.end as u64) < u64::from(elapsed) {
+        if (entry.end as u32) < elapsed {
             match entry.call {
                 PhaseCall::None => {}
                 PhaseCall::Stage => {
@@ -289,12 +295,29 @@ impl Vanish {
                         body.call = STAGE_CALL;
                     }
                 }
+                PhaseCall::Reveal => {
+                    for body in &mut self.bodies {
+                        body.shown = 1.0;
+                        body.call = REVEAL_CALL;
+                    }
+                    self.items.fill(1.0);
+                }
                 PhaseCall::Show => self.show(),
                 PhaseCall::Hide => self.hide(),
             }
             self.phase = self.phase.wrapping_add(1);
+            return true;
         }
         false
+    }
+
+    /// The phased body's hook at the end of its own phase, reading the
+    /// table: on the table's last entry (its end −1) the bodies hide and the
+    /// vanish lets the body go; otherwise the phase moves to 4 and they
+    /// show.
+    pub fn phased_body_done(&mut self) {
+        let table_end = self.phase_entry().end == -1;
+        self.phase_hook(table_end);
     }
 
     /// The finish: true while the vanish keeps running. `fade` is the own
@@ -408,28 +431,37 @@ mod tests {
         assert_eq!(vanish.phase_fade(1_250), 0.25);
         assert_eq!(vanish.phase_fade(1_300), 0.5);
         assert_eq!(vanish.phase_fade(1_450), 1.0);
-        // Advancing runs the callbacks: phase 1 stages, phase 2 stages,
-        // phase 3 shows, and the last entry hides and lets go.
-        vanish.phase = 1;
-        let mut staged = Vanish::start(None, false, 0, vec![body()], vec![]);
+        // Advancing runs the callbacks: phase 1 stages, phase 2 reveals
+        // (shown 1 with the 0x20 call, the items shown), and an entry whose
+        // end is -16 or -1 never passes on its own.
+        assert_eq!(PHASE_TABLE[2].call, PhaseCall::Reveal);
+        let mut staged = Vanish::start(None, false, 0, vec![body()], vec![0.0]);
         staged.hide();
         assert!(!staged.advance(350), "the end is not passed yet");
-        assert!(!staged.advance(351));
+        assert!(staged.advance(351));
         assert_eq!(staged.phase, 2);
         assert_eq!(staged.bodies[0].flags, 0xf);
         assert_eq!(staged.bodies[0].call, STAGE_CALL);
-        assert!(!staged.advance(451));
+        assert!(staged.advance(451));
         assert_eq!(staged.phase, 3);
+        assert_eq!(staged.bodies[0].shown, 1.0);
+        assert_eq!(staged.bodies[0].call, REVEAL_CALL);
+        assert_eq!(staged.items, vec![1.0]);
         // Entries 3 and 4 wait on the phased body's own hook (their end is
-        // −16, never passed): the hook shows and moves to phase 4.
+        // -16, never passed): the hook shows and moves to phase 4.
         assert!(!staged.advance(501));
+        assert!(!staged.advance(u32::MAX - 20));
         assert_eq!(staged.phase, 3);
-        staged.phase_hook(false);
+        staged.phased_body_done();
         assert_eq!(staged.phase, 4);
         assert_eq!(staged.bodies[0].shown, 1.0);
         assert_eq!(staged.bodies[0].call, SHOW_CALL);
+        // The last entry (end -1) does not advance; the hook reads it as
+        // the table's end, hides the bodies and lets the body go.
         staged.phase = 7;
-        assert!(staged.advance(1));
+        assert!(!staged.advance(1_000));
+        assert_eq!(staged.phase, 7);
+        staged.phased_body_done();
         assert_eq!(staged.bodies[0].shown, 0.0);
         assert_eq!(staged.phased, None);
     }
