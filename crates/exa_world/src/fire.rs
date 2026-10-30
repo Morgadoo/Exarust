@@ -1034,7 +1034,10 @@ mod tests {
         assert_eq!((bed.object_flags, bed.recreate_id), (BED_OBJECT_FLAGS, 0));
         let bed = preset(0.8).base.expect("a bed");
         assert_eq!((bed.node_flags, bed.node_flags_off), (0, FLAME_NODE_FLAGS));
-        assert_eq!((bed.object_flags, bed.recreate_id), (LARGE_BED_OBJECT_FLAGS, 0));
+        assert_eq!(
+            (bed.object_flags, bed.recreate_id),
+            (LARGE_BED_OBJECT_FLAGS, 0)
+        );
         let bed = preset(2.0).base.expect("a bed");
         assert_eq!((bed.node_flags, bed.node_flags_off), (0, FLAME_NODE_FLAGS));
         assert_eq!(

@@ -22,16 +22,22 @@
 //!   image when the fade-out ends or the body shows, and its start and move
 //!   play at volume 0.4 and pitch `roll·0.2 + 0.9`.
 //! - **The Long Door** ([`LongDoor`]): starts at phase 0x10 asking the
-//!   navigation grid 300 cm along the caster's own forward vector
-//!   ([`nav_query_target`]); the grid's answer is usable only when it lies
-//!   more than 200 cm away across the floor ([`nav_answer`]). The arrival's
-//!   facing is the target's place less the found point, level and unit
-//!   length, or the caster's forward when there is no target
-//!   ([`destination_aim`]). A found place starts the phases, an impossible
-//!   one ends at once, and phase 3 moves the body there. The class carries
-//!   a light that follows the body and the vanish's after-image, both freed
-//!   when it is destroyed; its start and its move play at volume 0.4 and
-//!   pitch `roll·0.2 + 0.9`.
+//!   navigation grid for a path toward the point 300 cm behind its subject
+//!   (the caster's target, or the caster itself without one), along the
+//!   subject's own forward vector ([`nav_query_target`]); the path's last
+//!   point is usable only when its squared distance from the subject
+//!   across the floor exceeds 200 (cm², single precision: a little over
+//!   14 cm), and a path of fewer than two points is impossible
+//!   ([`nav_answer`]). The arrival's facing is the target's place less the
+//!   found point, level and scaled by the processor's approximate
+//!   reciprocal square root, or the caster's forward when there is no
+//!   target ([`destination_aim`]). A found place starts the phases, an
+//!   impossible one ends at once, and phase 3 moves the body there. The
+//!   class carries a light that follows the body and the vanish's
+//!   after-image, both freed when it is destroyed; its move plays at
+//!   volume 0.4 and pitch `roll·0.2 + 0.9` (in double), and so does its
+//!   start: at the cast for a player's door, when the grid answers for
+//!   the AI's.
 //! - **Constant Displacement** ([`ConstantDisplacement`]): a persistent
 //!   class whose hum (`thmdsp_cns01`, following the body) rises 0.002 in
 //!   volume each control tick while it is under 0.12 (in double); ending
@@ -476,29 +482,35 @@ pub enum NavAnswer {
     Impossible,
 }
 
-/// The distance the Long Door asks the navigation grid past its aim: the
-/// query target is the caster's place along its own forward vector by
-/// −300 cm.
+/// The distance the Long Door asks the navigation grid along its
+/// subject's forward vector: the query target is the subject's place
+/// moved by −300 cm along it (behind the subject).
 pub const NAV_QUERY_CM: f32 = -300.0;
-/// The found place the door refuses: no further than this horizontally
-/// from the caster (its 200 cm arrives as the squared 40000 but the test
-/// is on the squared xz distance).
-pub const NAV_FAR_CM: f32 = 200.0;
+/// The squared floor distance (cm², compared in single precision) a found
+/// place must exceed: the original compares the squared xz distance with
+/// 200 itself, so anything beyond about 14.1 cm is usable.
+pub const NAV_FAR_SQUARED: f32 = 200.0;
 /// The start and the move sound's volume.
 pub const LONG_DOOR_SOUND_VOLUME: f32 = 0.4;
 
-/// Where the Long Door asks the grid: the caster's place, offset along its
-/// own forward vector by [`NAV_QUERY_CM`].
+/// Where the Long Door asks the grid: the subject's place (the caster's
+/// target, or the caster), offset along the subject's own forward vector
+/// by [`NAV_QUERY_CM`].
 pub fn nav_query_target(place: Vec3, forward: Vec3) -> Vec3 {
     place + forward * NAV_QUERY_CM
 }
 
-/// Whether the grid's answer is a place the door can use: more than
-/// [`NAV_FAR_CM`] away across the floor.
-pub fn nav_answer(place: Vec3, found: Vec3) -> NavAnswer {
+/// Whether the grid's path is a place the door can use: `found` is the
+/// path's last point (`None` for a path of fewer than two points, which is
+/// impossible), usable when its squared floor distance from the subject's
+/// place exceeds [`NAV_FAR_SQUARED`] (`dz² + dx²` in single precision).
+pub fn nav_answer(place: Vec3, found: Option<Vec3>) -> NavAnswer {
+    let Some(found) = found else {
+        return NavAnswer::Impossible;
+    };
     let dx = found.x - place.x;
     let dz = found.z - place.z;
-    if f64::from(dx * dx + dz * dz) > f64::from(NAV_FAR_CM * NAV_FAR_CM) {
+    if NAV_FAR_SQUARED < dz * dz + dx * dx {
         NavAnswer::Found
     } else {
         NavAnswer::Impossible
@@ -506,19 +518,16 @@ pub fn nav_answer(place: Vec3, found: Vec3) -> NavAnswer {
 }
 
 /// The direction the door faces on arrival: the target's place less the
-/// grid's found point, its height dropped and the vector unit length; with
-/// no target, the caster's own forward vector.
+/// grid's found point, its height dropped and the vector scaled by the
+/// processor's approximate reciprocal square root (a zero vector stays
+/// zero); with no target, the caster's own forward vector.
 pub fn destination_aim(forward: Vec3, target: Option<Vec3>, found: Vec3) -> Vec3 {
     let Some(target) = target else {
         return forward;
     };
     let mut d = target - found;
     d.y = 0.0;
-    let len = (d.x * d.x + d.z * d.z).sqrt();
-    if len == 0.0 {
-        return Vec3::ZERO;
-    }
-    d / len
+    exa_physics::engine_math::normalize_approx(d)
 }
 
 /// The Long Door's start and move sound's pitch: `roll·0.2 + 0.9` in
@@ -571,8 +580,9 @@ impl LongDoor {
         self.node.light_at = body_at.to_array();
     }
 
-    /// The start sound: a player's cast plays it at the body's place at
-    /// volume 0.4 and pitch `roll·0.2 + 0.9`; the AI's is silent.
+    /// The start sound at the cast: a player's cast plays it at the body's
+    /// place at volume 0.4 and pitch `roll·0.2 + 0.9`; the AI's door plays
+    /// the same sound later, when the grid answers with a place.
     pub fn start_sound(&self, ai: bool, roll: f64) -> Option<(f32, f32)> {
         if ai {
             None
@@ -948,36 +958,45 @@ mod tests {
             nav_query_target(place, forward),
             Vec3::new(100.0, 20.0, -350.0)
         );
-        // The answer is usable only more than 200 cm away across the floor,
-        // and the height does not count.
+        // The path's last point is usable once its squared floor distance
+        // passes 200 cm² (a little over 14 cm); the height does not count
+        // and a path of fewer than two points is impossible.
         assert_eq!(
-            nav_answer(place, Vec3::new(100.0, 900.0, 250.0)),
+            nav_answer(place, Some(Vec3::new(115.0, 900.0, -50.0))),
+            NavAnswer::Found,
+            "15 cm across the floor is 225 cm²"
+        );
+        assert_eq!(
+            nav_answer(place, Some(Vec3::new(110.0, -900.0, -40.0))),
+            NavAnswer::Impossible,
+            "exactly 200 cm² is not further"
+        );
+        assert_eq!(
+            nav_answer(place, Some(Vec3::new(300.0, 0.0, -50.0))),
             NavAnswer::Found
         );
-        assert_eq!(
-            nav_answer(place, Vec3::new(100.0, -900.0, -250.0)),
-            NavAnswer::Impossible
-        );
-        assert_eq!(
-            nav_answer(place, Vec3::new(300.0, 0.0, -50.0)),
-            NavAnswer::Impossible,
-            "exactly 200 cm is not further"
-        );
+        assert_eq!(nav_answer(place, None), NavAnswer::Impossible);
         // The arrival's facing is the target less the found place, level
-        // and unit length; with no target it is the caster's own forward.
+        // and scaled by RSQRTSS (unit to about 12 bits); with no target it
+        // is the caster's own forward, and a zero vector stays zero.
         let aim = destination_aim(
             forward,
             Some(Vec3::new(500.0, 77.0, 0.0)),
             Vec3::new(100.0, 0.0, 0.0),
         );
-        assert_eq!(aim, Vec3::new(1.0, 0.0, 0.0));
+        assert_eq!(
+            aim,
+            Vec3::new(400.0, 0.0, 0.0) * exa_physics::engine_math::reciprocal_sqrt(160_000.0)
+        );
+        assert!((aim.x - 1.0).abs() < 1e-3 && aim.y == 0.0 && aim.z == 0.0);
         assert_eq!(destination_aim(forward, None, Vec3::ZERO), forward);
         assert_eq!(
             destination_aim(forward, Some(Vec3::ZERO), Vec3::ZERO),
             Vec3::ZERO
         );
         // The sounds: the player's start and every move at volume 0.4 and
-        // the pitch roll·0.2 + 0.9 in double; the AI's start is silent.
+        // the pitch roll·0.2 + 0.9 in double; the AI's door has no start
+        // sound at the cast (it plays when the grid answers).
         assert_eq!(
             LongDoor::move_sound(0.5),
             ((0.5f64 * 0.2 + 0.9) as f32, 0.4)
