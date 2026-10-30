@@ -92,23 +92,70 @@ impl RuleTree {
 
     /// Material weights of one vertex. `layers` pairs each painted layer's
     /// node with its weight (0..=1); `out` has one slot per material.
+    ///
+    /// A layer weighing 0.001 or less is not walked, as the original
+    /// skips every descent whose weight is not above that (a painted
+    /// layer's weight still counts against the leftover). The same bound
+    /// gates the leftover sent to node 0.
     pub fn weigh(&self, layers: &[(usize, f32)], inputs: &[f32; INPUTS], out: &mut [f32]) {
         let mut painted = 0.0;
         for &(node, w) in layers {
-            if w > 0.0 {
-                painted += w;
-                self.descend(node, w, inputs, out, 0);
+            painted += w;
+            if w > LEFTOVER_EPSILON {
+                self.descend(node, w, inputs, 0, &mut |m, w| out[m] += w);
             }
         }
         let leftover = 1.0 - painted;
         if leftover > LEFTOVER_EPSILON && !self.nodes.is_empty() {
-            self.descend(0, leftover, inputs, out, 0);
+            self.descend(0, leftover, inputs, 0, &mut |m, w| out[m] += w);
         }
     }
 
-    fn descend(&self, node: usize, w: f32, inputs: &[f32; INPUTS], out: &mut [f32], depth: usize) {
+    /// One vertex's material channels as bytes, accumulated the original's
+    /// way: each leaf's weight is added to its material's byte as
+    /// [`accumulate`] does (times 255, rounded to even, capped), so a
+    /// material reached by two leaves rounds twice. `totals` receives the
+    /// leaf weights in single precision, which the used-material list
+    /// reads. `bytes` has one slot per material and should start zeroed for
+    /// the vertex.
+    pub fn weigh_bytes(
+        &self,
+        layers: &[(usize, f32)],
+        inputs: &[f32; INPUTS],
+        bytes: &mut [u8],
+        totals: &mut [f32],
+    ) {
+        let mut add = |m: usize, w: f32| {
+            if let Some(byte) = bytes.get_mut(m) {
+                *byte = accumulate(*byte, w);
+            }
+            if let Some(total) = totals.get_mut(m) {
+                *total += w;
+            }
+        };
+        let mut painted = 0.0;
+        for &(node, w) in layers {
+            painted += w;
+            if w > LEFTOVER_EPSILON {
+                self.descend(node, w, inputs, 0, &mut add);
+            }
+        }
+        let leftover = 1.0 - painted;
+        if leftover > LEFTOVER_EPSILON && !self.nodes.is_empty() {
+            self.descend(0, leftover, inputs, 0, &mut add);
+        }
+    }
+
+    fn descend(
+        &self,
+        node: usize,
+        w: f32,
+        inputs: &[f32; INPUTS],
+        depth: usize,
+        add: &mut dyn FnMut(usize, f32),
+    ) {
         match self.nodes.get(node) {
-            Some(&Node::Material(m)) => out[m] += w,
+            Some(&Node::Material(m)) => add(m, w),
             Some(&Node::Rule { kind, lo, hi, a, b }) if depth < MAX_DEPTH => {
                 let v = inputs.get(kind).copied().unwrap_or(0.0);
                 let t = if v <= lo {
@@ -121,17 +168,35 @@ impl RuleTree {
                 if t < 1.0
                     && let Some(a) = a
                 {
-                    self.descend(a, w * (1.0 - t), inputs, out, depth + 1);
+                    self.descend(a, w * (1.0 - t), inputs, depth + 1, add);
                 }
                 if t > 0.0
                     && let Some(b) = b
                 {
-                    self.descend(b, w * t, inputs, out, depth + 1);
+                    self.descend(b, w * t, inputs, depth + 1, add);
                 }
             }
             _ => {}
         }
     }
+}
+
+/// The share of a tile's total weight below which a material is dropped:
+/// `1/510` of the vertices (the original forces material 0 in regardless).
+pub const MIN_TILE_SHARE: f32 = 1.0 / 510.0;
+
+/// The materials the original keeps for a tile, in palette order: every
+/// material whose total weight is above `1/510` of the vertices, and (with
+/// `merge`, the original's tile-flag test) material 0 always. Over a
+/// renderer's maximum the caller decides what to drop.
+pub fn used_materials(totals: &[f32], vertices: usize, merge: bool) -> Vec<usize> {
+    let threshold = MIN_TILE_SHARE * vertices as f32;
+    totals
+        .iter()
+        .enumerate()
+        .filter(|&(at, &total)| (merge && at == 0) || total > threshold)
+        .map(|(at, _)| at)
+        .collect()
 }
 
 /// The three repeating noise maps rules can read.
@@ -577,6 +642,71 @@ mod tests {
         let mut out = [0.0; 3];
         tree.weigh(&[(0, 1.0)], &inputs(0.5, 1.0), &mut out);
         assert_eq!(out, [0.0; 3]);
+    }
+
+    #[test]
+    fn a_layer_of_a_thousandth_or_less_is_skipped_but_still_subtracted() {
+        // The original walks a layer only when its weight is above 0.001;
+        // a smaller one still counts against the leftover sent to node 0.
+        let p = palette(vec![rule("Fixed", 8, "Rock", "Rock", 1.5, 2.0)]);
+        let tree = RuleTree::new(&p);
+        let sand = RuleTree::node(&p, "Sand").unwrap();
+        let mut out = [0.0; 3];
+        tree.weigh(&[(sand, 0.001)], &inputs(0.0, 1.0), &mut out);
+        assert_eq!(
+            out,
+            [0.0, 0.999, 0.0],
+            "the layer is skipped, the leftover is 0.999"
+        );
+        let mut out = [0.0; 3];
+        tree.weigh(&[(sand, 0.0011)], &inputs(0.0, 1.0), &mut out);
+        assert!((out[0] - 0.0011).abs() < 1e-7, "{out:?}");
+        assert!((out[1] - 0.9989).abs() < 1e-7, "{out:?}");
+    }
+
+    #[test]
+    fn channel_bytes_round_each_leaf_not_the_sum() {
+        // A rule splitting a weight equally between the same material:
+        // each leaf adds round(w/2 · 255), so a small weight rounds twice
+        // where a single total would round once. A second painted layer
+        // takes the rest of the coverage, so no leftover is walked.
+        let p = palette(vec![rule("Split", 8, "Sand", "Sand", 0.0, 1.0)]);
+        let tree = RuleTree::new(&p);
+        let split = RuleTree::node(&p, "Split").unwrap();
+        let rock = RuleTree::node(&p, "Rock").unwrap();
+        let mut bytes = [0u8; 3];
+        let mut totals = [0.0f32; 3];
+        tree.weigh_bytes(
+            &[(split, 0.005), (rock, 0.995)],
+            &inputs(0.0, 1.0),
+            &mut bytes,
+            &mut totals,
+        );
+        assert_eq!(bytes[0], 2, "two leaves of 0.0025 round to 1 each");
+        assert_eq!(bytes[1], 254);
+        assert!((totals[0] - 0.005).abs() < 1e-7);
+        let mut out = [0.0f32; 3];
+        tree.weigh(
+            &[(split, 0.005), (rock, 0.995)],
+            &inputs(0.0, 1.0),
+            &mut out,
+        );
+        assert_eq!(accumulate(0, out[0]), 1, "the weight path rounds once");
+        // A material above 255 saturates.
+        let mut bytes = [0u8; 3];
+        let mut totals = [0.0f32; 3];
+        tree.weigh_bytes(&[(split, 1.0)], &inputs(0.0, 1.0), &mut bytes, &mut totals);
+        assert_eq!(bytes[0], 255);
+        assert!((totals[0] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_used_list_keeps_the_share_threshold_and_forces_material_zero() {
+        // Four vertices give a threshold of 4/510 ≈ 0.00784.
+        let totals = [0.0, 2.0, 0.0078, 0.0079];
+        assert_eq!(used_materials(&totals, 4, false), vec![1, 3]);
+        assert_eq!(used_materials(&totals, 4, true), vec![0, 1, 3]);
+        assert_eq!(used_materials(&[], 4, true), Vec::<usize>::new());
     }
 
     #[test]

@@ -65,8 +65,6 @@ const UV_PER_METRE: f32 = 4.0 / 48.0;
 const TINT_GAIN: f32 = 1.5;
 /// Depth of the skirt below each tile's edge, metres.
 const SKIRT_DEPTH: f32 = 0.5;
-/// Materials whose share of a tile is below this are dropped.
-const MIN_TILE_SHARE: f32 = 1.0 / 510.0;
 
 pub struct TerrainPlugin;
 
@@ -1773,6 +1771,12 @@ fn build_tile(
     let m = tree.material_count();
     let mut weights = vec![0.0f32; n * n * m];
     let mut totals = vec![0.0f32; m];
+    // The original's 256 × 256 byte channel per material, of which the
+    // tile's 241 × 241 corner is used: vertex (row, column) is at
+    // `row · 256 + column`, each leaf added with its rounding.
+    let plane = blend::CHANNEL_SIDE * blend::CHANNEL_SIDE;
+    let mut channels = vec![0u8; m * plane];
+    let mut vertex_bytes = vec![0u8; m];
     let mut painted = Vec::with_capacity(layers.len());
     for j in 0..n {
         for i in 0..n {
@@ -1784,19 +1788,43 @@ fn build_tile(
                     .filter_map(|(node, w)| node.map(|node| (node, w[v] as f32 / 255.0))),
             );
             let inputs = noise.inputs(positions[v][1], normals[v][1], tile.x, tile.y, i, j);
-            let out = &mut weights[v * m..(v + 1) * m];
-            tree.weigh(&painted, &inputs, out);
-            for (t, w) in totals.iter_mut().zip(out.iter()) {
-                *t += w;
+            vertex_bytes.fill(0);
+            tree.weigh_bytes(&painted, &inputs, &mut vertex_bytes, &mut totals);
+            for (material, &byte) in vertex_bytes.iter().enumerate() {
+                channels[material * plane + j * blend::CHANNEL_SIDE + i] = byte;
+                weights[v * m + material] = f32::from(byte) / 255.0;
             }
         }
     }
-    let threshold = MIN_TILE_SHARE * (n * n) as f32;
-    let mut used: Vec<usize> = (0..m).filter(|&i| totals[i] > threshold).collect();
+    // Materials above the share threshold, material 0 always (the
+    // original's merge leaves it in). A palette with more materials than
+    // the renderer stacks keeps the heaviest, material 0 first.
+    let mut used = blend::used_materials(&totals, n * n, true);
     let truncated = used.len() > SPLAT_LAYERS;
-    used.sort_by(|a, b| totals[*b].total_cmp(&totals[*a]));
-    used.truncate(SPLAT_LAYERS);
+    if truncated {
+        let mut ranked: Vec<usize> = used.iter().copied().filter(|&at| at != 0).collect();
+        ranked.sort_by(|a, b| totals[*b].total_cmp(&totals[*a]));
+        ranked.truncate(SPLAT_LAYERS - 1);
+        ranked.push(0);
+        used = ranked;
+    }
     used.sort_unstable();
+
+    // Merging the used channels the original's way gives each layer's
+    // over opacity: the first keeps its weight byte, each middle material
+    // is its byte over the running sum, and the last keeps its byte.
+    let merged = match used.split_first() {
+        Some((&first, rest)) => {
+            let mut rest: Vec<Vec<u8>> = rest
+                .iter()
+                .map(|&at| channels[at * plane..(at + 1) * plane].to_vec())
+                .collect();
+            let first = channels[first * plane..(first + 1) * plane].to_vec();
+            let _ = blend::merge_material_masks(&first, &mut rest);
+            std::iter::once(first).chain(rest).collect::<Vec<_>>()
+        }
+        None => Vec::new(),
+    };
 
     // Opacities for the shader, and the height pass moving the vertices.
     let centre = terrain.tile_centre(tile);
@@ -1821,8 +1849,8 @@ fn build_tile(
             p[2] + centre[1],
             normals[v][1],
         );
-        for (k, a) in alphas.iter().enumerate() {
-            splat[splat_index(k, v, n)] = (a.clamp(0.0, 1.0) * 255.0).round() as u8;
+        for k in 0..merged.len() {
+            splat[splat_index(k, v, n)] = merged[k][(v / n) * blend::CHANNEL_SIDE + v % n];
         }
     }
     let normals = grid_normals(&positions, n);
