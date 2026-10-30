@@ -403,6 +403,64 @@ fn comments_follow_the_phrase_rules() {
     assert_eq!(lower_but_last("HELM"), "helM");
 }
 
+/// The four phrase tables are the original's, with its drawn counts and
+/// starting last marks: six first templates of which five are drawn, four
+/// further ones.
+#[test]
+fn the_phrase_tables_are_the_originals() {
+    let p = Phrases::default();
+    assert_eq!(
+        p.first_one.templates,
+        [
+            "I found [a].",
+            "There's [a] here.",
+            "Found [a] here.",
+            "Got [a] here.",
+            "[a] here, if you want it.",
+            "This [i] could be useful.",
+        ]
+    );
+    assert_eq!(
+        p.first_pair.templates,
+        [
+            "I found some [i].",
+            "There's some [i] here.",
+            "Found some [i] here.",
+            "Got some [i] here.",
+            "Some [i] here, if you want them.",
+            "These [i] could be useful.",
+        ]
+    );
+    assert_eq!(
+        p.more_one.templates,
+        [
+            "And [a].",
+            "Found [a] too.",
+            "Also found [a].",
+            "There's [a] too.",
+        ]
+    );
+    assert_eq!(
+        p.more_pair.templates,
+        [
+            "And some [i].",
+            "Found some [i] too.",
+            "Also found some [i].",
+            "There's some [i] too.",
+        ]
+    );
+    assert_eq!(
+        (
+            p.first_one.drawn_from,
+            p.first_pair.drawn_from,
+            p.more_one.drawn_from,
+            p.more_pair.drawn_from
+        ),
+        (5, 5, 4, 4)
+    );
+    assert_eq!((p.first_one.last, p.more_pair.last), ([8, 8], [5, 5]));
+}
+
 /// A draw equal to one of the last two is drawn again.
 #[test]
 fn a_comment_does_not_repeat_the_last_two() {
