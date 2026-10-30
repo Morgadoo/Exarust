@@ -381,24 +381,37 @@ pub struct GiPoints {
 /// An omni light's body.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ExportLight {
-    /// Body flags; under [`LIGHT_EXTRA`] the three extra values follow.
+    /// Body flags; under [`LIGHT_EXTRA`] the animation follows.
     pub flags: u32,
     pub color: [f32; 3],
     pub multiplier: f32,
     pub intensity: f32,
     /// cm.
     pub radius: f32,
+    /// The word the original keeps unread.
     pub unread: f32,
     pub softness: f32,
     /// Written when the node's `flags2 & 0x300` is `0x200`.
     pub spot: [f32; 2],
     /// Written after a zero word when `flags & LIGHT_EXTRA`.
-    pub extra: [f32; 3],
+    pub animation: LightAnimation,
 }
 
 pub const LIGHT_EXTRA: u32 = 0x3_0000;
 pub const SPOT_MASK: u32 = 0x300;
 pub const SPOT: u32 = 0x200;
+
+/// A light body's flicker parameters, stored after a zero word when its
+/// flags have any of [`LIGHT_EXTRA`], in the order the file holds them.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LightAnimation {
+    /// How far the flicker moves the intensity.
+    pub amplitude: f32,
+    /// How fast the walk and a fade move per frame millisecond.
+    pub speed: f32,
+    /// How much of the walk the parent mesh's emissive takes.
+    pub emissive: f32,
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ExportVoxelLight {
@@ -617,8 +630,77 @@ pub struct ExportOptions {
     pub rfi_extension: bool,
     /// Leave the per-triangle sub-chunks out.
     pub skip_triangle_data: bool,
+    /// Skip the meshes' part-preparation pass: the walk then calls no
+    /// [`ExportHooks::prepare_part`] before collecting materials. The
+    /// switch's purpose is not established; only its effect is (the
+    /// original's option bit 3). Material collection still runs.
+    pub skip_part_prepare: bool,
     /// Save-game export: characters store their AI home and motion state.
     pub save_mode: bool,
+}
+
+/// The scene's own objects get a chance to bring themselves up to date
+/// before the exporter writes them, as the original's virtual calls do.
+/// Every method does nothing by default; an exporter without hooks writes
+/// the scene exactly as given.
+pub trait ExportHooks {
+    /// A mesh's part, before the node is collected (the original calls each
+    /// part's own preparation method with its node, last part first). The
+    /// part index is into [`ExportMesh::parts`].
+    fn prepare_part(&mut self, _node: usize, _part: usize) {}
+
+    /// A node's attached body, cloth or emitter, just before the node's
+    /// chunk is opened. The original calls the attachment's own method
+    /// there (guarded by node flag [`flags::ATTACHED`]).
+    fn prepare_attachment(&mut self, _node: usize) {}
+
+    /// A character written with its body (a class-1 node is written without
+    /// one and is not offered), before the character chunks. The original
+    /// refreshes the character record's condition words here
+    /// ([`character_condition_words`]).
+    fn prepare_character(&mut self, _node: usize) {}
+}
+
+/// Hooks that do nothing.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoHooks;
+
+impl ExportHooks for NoHooks {}
+
+/// The four condition words the original refreshes on a character's record
+/// before an export, in the order it stores them: the health share of the
+/// maximum, the dazed share (zero unless it is above zero), the third word
+/// scaled by 65535, and the fourth word, which is `0xFFFF` because the
+/// original's helper returns its argument unchanged.
+///
+/// A share is `ROUND(value / max * 65535)` with the engine's `CVTSS2SI`:
+/// halves round to even and a value the conversion cannot represent gives
+/// the integer indefinite word (whose low half is zero).
+pub fn character_condition_words(health: f32, dazed: f32, max: f32, third: f32) -> [u16; 4] {
+    let dazed = if dazed > 0.0 {
+        rounded_word(dazed / max * 65535.0)
+    } else {
+        0
+    };
+    [
+        rounded_word(health / max * 65535.0),
+        dazed,
+        rounded_word(third * 65535.0),
+        0xFFFF,
+    ]
+}
+
+/// `CVTSS2SI` on a 32-bit float: round to nearest even and keep the low
+/// half of the 64-bit result; NaN, an infinity or an out-of-range value
+/// gives the integer indefinite value, `i64::MIN`, whose low half is zero.
+fn rounded_word(value: f32) -> u16 {
+    let rounded = value.round_ties_even();
+    const LIMIT: f32 = 9_223_372_036_854_775_808.0;
+    if rounded.is_nan() || !(-LIMIT..LIMIT).contains(&rounded) {
+        0
+    } else {
+        rounded as i64 as u16
+    }
 }
 
 /// A texture layer renamed by [`ExportOptions::rename_textures`].
@@ -1561,7 +1643,9 @@ fn write_light(w: &mut ChunkWriter, l: &ExportLight, flags2: u32) {
     }
     if l.flags & LIGHT_EXTRA != 0 {
         w.u32(0);
-        w.vec3(l.extra);
+        w.f32(l.animation.amplitude);
+        w.f32(l.animation.speed);
+        w.f32(l.animation.emissive);
     }
 }
 

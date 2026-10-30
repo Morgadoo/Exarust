@@ -651,7 +651,11 @@ fn a_light_body_is_40_bytes_plus_spot_and_extra() {
         unread: 0.0,
         softness: 0.5,
         spot: [2.0, 3.0],
-        extra: [4.0, 5.0, 6.0],
+        animation: LightAnimation {
+            amplitude: 4.0,
+            speed: 5.0,
+            emissive: 6.0,
+        },
     });
     let b = export(&scene_of(vec![n]));
     let kids = chunks(&roots(&b)[0].1[4..]);
@@ -659,6 +663,11 @@ fn a_light_body_is_40_bytes_plus_spot_and_extra() {
     assert_eq!(body.len(), 40 + 8 + 16);
     assert_eq!(words(&body[16..20]), [1.0f32.to_bits()]);
     assert_eq!(words(&body[48..52]), [0]);
+    // The animation keeps the file's order: amplitude, speed, emissive.
+    assert_eq!(
+        words(&body[52..64]),
+        [4.0f32.to_bits(), 5.0f32.to_bits(), 6.0f32.to_bits()]
+    );
     let s = Scene::parse(&b).unwrap();
     let NodeBody::Light(l) = s.nodes[0].body else {
         panic!("not a light")
@@ -666,6 +675,30 @@ fn a_light_body_is_40_bytes_plus_spot_and_extra() {
     assert_eq!((l.flags, l.multiplier, l.intensity), (0x1_0010, 0.1, 60.0));
     assert_eq!((l.radius, l.softness), (630.0 * CM, 0.5));
     assert_eq!(l.spot, Some([2.0, 3.0]));
+}
+
+#[test]
+fn condition_words_round_to_even_and_zero_non_positive_daze() {
+    // The shares are value / max * 65535, rounded as CVTSS2SI rounds:
+    // 0.5 gives 32767.5 (ties to even, 32768), 0.75 gives 49151.25.
+    let w = character_condition_words(0.5, 0.75, 1.0, 0.25);
+    assert_eq!(w, [32768, 49151, 16384, 0xFFFF]);
+    // A zero, negative or NaN daze stores zero, not a share.
+    for dazed in [0.0, -1.0, f32::NAN] {
+        assert_eq!(character_condition_words(1.0, dazed, 1.0, 0.0)[1], 0);
+    }
+    // An unrepresentable share (a zero maximum) stores the indefinite
+    // conversion's low half, zero; so does a NaN health.
+    assert_eq!(character_condition_words(1.0, 0.0, 0.0, 0.0)[0], 0);
+    assert_eq!(character_condition_words(f32::NAN, 0.0, 1.0, 0.0)[0], 0);
+    // The conversion itself: halves to even, out of range and NaN to zero.
+    assert_eq!(rounded_word(2.5), 2);
+    assert_eq!(rounded_word(3.5), 4);
+    assert_eq!(rounded_word(-2.5), 0xFFFE);
+    assert_eq!(rounded_word(-1.0), 0xFFFF);
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 1e30, -1e30] {
+        assert_eq!(rounded_word(bad), 0, "{bad}");
+    }
 }
 
 #[test]
