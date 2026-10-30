@@ -1150,7 +1150,7 @@ fn the_small_object_edits_work_as_the_jobs_ask() {
     let mut pack = Pack {
         carried: vec![Carried { item: 1, flags: 0 }, Carried { item: 2, flags: 0 }],
         worn: vec![8, 9],
-        hands: [2, 0, 0, 0],
+        hands: [2, 0, 0, 1],
         locked: false,
     };
     assert!(take_worn(&mut pack, 2));
@@ -1160,6 +1160,7 @@ fn the_small_object_edits_work_as_the_jobs_ask() {
     assert_eq!(pack.worn, vec![8]);
     assert!(!take_worn(&mut pack, 9));
     assert!(take_carried(&mut pack, 1));
+    assert_eq!(pack.hands[3], 0);
     assert!(pack.carried.is_empty());
     assert!(!take_carried(&mut pack, 1));
 

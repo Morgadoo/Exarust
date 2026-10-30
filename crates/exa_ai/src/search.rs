@@ -1565,12 +1565,16 @@ pub fn take_worn(pack: &mut Pack, item: u32) -> bool {
     true
 }
 
-/// Takes `item` out of a corpse's carried entries. True when it was there.
+/// Takes `item` out of a corpse's carried entries and clears the fourth
+/// hand when it holds the same item. True when the entry was there.
 pub fn take_carried(pack: &mut Pack, item: u32) -> bool {
     let Some(at) = pack.carried.iter().position(|c| c.item == item) else {
         return false;
     };
     pack.carried.remove(at);
+    if pack.hands[3] == item {
+        pack.hands[3] = 0;
+    }
     true
 }
 
