@@ -128,7 +128,7 @@ pub fn refresh_holds(
             if is_first || first.is_none() {
                 let rest = item_body
                     .and_then(|b| b.parts.get(HeldGrip::ITEM_PART))
-                    .map(|p| p.rest);
+                    .map(|p| *p.rest);
                 first = Some((*spec, grip.soft_weld, rest));
             }
         }
@@ -754,7 +754,7 @@ mod tests {
         // An item with a body: the aim point 0.9 of its 97.1 cm up is
         // weighted on its rest particles and comes back from them.
         let item_body = holder(second, Vec3::ZERO);
-        let rest = item_body.parts[0].rest;
+        let rest = *item_body.parts[0].rest;
         app.world_mut().entity_mut(second).insert(item_body);
         app.update();
         let refresh = app.world().get::<HeldRefresh>(owner).unwrap().0;

@@ -295,6 +295,52 @@ const TEMPLATE: [Vec3; 4] = [
 /// The template, laid out over the part's box, is enlarged by this.
 const TEMPLATE_SCALE: f32 = 1.25;
 
+/// A part's four rest particles, in its own space: shared with a clone
+/// until either writes one, as the original's body clone shares its
+/// template's point array (the array's owner pointer) and copies it, once,
+/// before the first write.
+#[derive(Debug, Clone)]
+pub struct SharedRest(Arc<[Vec3; 4]>);
+
+impl SharedRest {
+    /// A new array of these points.
+    pub fn new(points: [Vec3; 4]) -> Self {
+        Self(Arc::new(points))
+    }
+
+    /// How many parts hold this array: one, or more after a clone.
+    pub fn holders(&self) -> usize {
+        Arc::strong_count(&self.0)
+    }
+
+    /// Whether the two parts' arrays are the same one.
+    pub fn shares_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl std::ops::Deref for SharedRest {
+    type Target = [Vec3; 4];
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for SharedRest {
+    /// A write to a shared array first copies it, leaving the other holder
+    /// with the points it had.
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Arc::make_mut(&mut self.0)
+    }
+}
+
+impl From<[Vec3; 4]> for SharedRest {
+    fn from(points: [Vec3; 4]) -> Self {
+        Self::new(points)
+    }
+}
+
 /// A rigid part of a simulated body.
 #[derive(Debug, Clone)]
 pub struct Part {
@@ -303,8 +349,9 @@ pub struct Part {
     /// Entity whose world transform the part's local transform is relative
     /// to: its parent part's, or the body root's.
     pub parent: Option<usize>,
-    /// Rest positions of the particles in the part's space.
-    pub rest: [Vec3; 4],
+    /// Rest positions of the particles in the part's space, shared with a
+    /// clone until either writes them ([`SharedRest`]).
+    pub rest: SharedRest,
     pub positions: [Vec3; 4],
     pub previous: [Vec3; 4],
     /// A limb's relative inverse mass; a rigid body's mobility (larger
@@ -585,7 +632,7 @@ impl Part {
             bone,
             entity,
             parent,
-            rest,
+            rest: SharedRest::new(rest),
             positions,
             previous: positions,
             inverse_mass,
@@ -5183,6 +5230,28 @@ mod tests {
         assert!(!body.parts[1].contacts.is_empty());
         body.set_disabled(false);
         assert!(!body.disabled());
+    }
+
+    /// A clone shares its template's rest points, as the original's clone
+    /// shares the point array: one holder each until either writes, and the
+    /// writer's points then differ while the other keeps what it had.
+    #[test]
+    fn a_clone_shares_its_rest_points_until_one_writes() {
+        let body = two_parts(0.0);
+        let twin = body.clone();
+        for (a, b) in body.parts.iter().zip(&twin.parts) {
+            assert!(a.rest.shares_with(&b.rest));
+            assert_eq!(a.rest.holders(), 2);
+        }
+        // A write through one part copies its array first.
+        let mut twin = twin;
+        twin.parts[0].rest[1] = Vec3::new(0.3, 0.3, 0.3);
+        assert_eq!(twin.parts[0].rest[1], Vec3::new(0.3, 0.3, 0.3));
+        assert_ne!(body.parts[0].rest[1], twin.parts[0].rest[1]);
+        assert_eq!(body.parts[0].rest.holders(), 1);
+        assert_eq!(twin.parts[0].rest.holders(), 1);
+        // The part that was not written still shares its array.
+        assert!(body.parts[1].rest.shares_with(&twin.parts[1].rest));
     }
 
     /// The two-step point transform takes the point's place now from where

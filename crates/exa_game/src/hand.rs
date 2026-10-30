@@ -1489,7 +1489,7 @@ fn press_hand(
             let (centre, half) = ragdoll
                 .parts
                 .get(part)
-                .map(|p| item_cursor::rest_box(p.rest))
+                .map(|p| item_cursor::rest_box(*p.rest))
                 .unwrap_or((Vec3::ZERO, Vec3::ZERO));
             // The lift saves the part's frame, rotation included, as the
             // original copies the held node's frame.

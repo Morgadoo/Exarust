@@ -34,7 +34,7 @@ fn orientation(p: &[Vec3; 4]) -> f32 {
 #[test]
 fn an_inverted_tetrahedron_is_rebuilt_on_its_rest_tetrahedron() {
     let mut body = one_part();
-    let rest = body.parts[0].rest;
+    let rest = *body.parts[0].rest;
     // Mirror the fourth particle through the origin: the tetrahedron is
     // inside out, the edge midpoints' vector leans along the cross of the
     // opposite edges.
@@ -405,13 +405,13 @@ fn the_edge_restore_moves_both_ends_half_way() {
     let mut b = ball(Vec3::ZERO);
     let p = &mut b.parts[0];
     // A rest tetrahedron and a stretched copy of it.
-    p.rest = [
+    p.rest = crate::body::SharedRest::new([
         Vec3::ZERO,
         Vec3::new(0.4, 0.0, 0.0),
         Vec3::new(0.0, 0.5, 0.0),
         Vec3::new(0.0, 0.0, 0.6),
-    ];
-    p.positions = p.rest;
+    ]);
+    p.positions = *p.rest;
     p.positions[1] = Vec3::new(0.8, 0.0, 0.0);
     p.strain = 0.7;
     let before: Vec<f32> = [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)]

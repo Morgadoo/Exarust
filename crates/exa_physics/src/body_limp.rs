@@ -240,7 +240,7 @@ mod tests {
     #[test]
     fn snapping_a_part_puts_its_particles_on_the_target() {
         let mut body = body();
-        let rest = body.parts[0].rest;
+        let rest = *body.parts[0].rest;
         let target = Affine3A::from_translation(Vec3::new(1.0, 2.0, 3.0));
         snap_part(&mut body.parts[0], target);
         for (i, r) in rest.iter().enumerate() {
