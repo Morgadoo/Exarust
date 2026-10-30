@@ -324,12 +324,13 @@ impl AliasValues {
         }
     }
 
-    /// Copies the light's values onto every alias. The flags keep their low
-    /// byte (the original copies only the top byte) and the scale and spot
-    /// follow. Returns how many aliases were written.
+    /// Copies the light's values onto every alias. The flags keep their
+    /// bits outside 16–23 (the original copies those eight bits from the
+    /// light) and the scale and spot follow. Returns how many aliases were
+    /// written.
     pub fn sync(&self, aliases: &mut [AliasValues]) -> usize {
         for alias in aliases.iter_mut() {
-            alias.flags = self.flags & 0xFF00_0000 | alias.flags & 0x00FF_FFFF;
+            alias.flags = self.flags & 0x00FF_0000 | alias.flags & 0xFF00_FFFF;
             alias.colour = self.colour;
             alias.intensity = self.intensity;
             alias.radius = self.radius;
@@ -662,14 +663,14 @@ mod tests {
         let mut source = LightSource::new(1, 2.0);
         source.activate();
         source.set_scale(0.5);
-        let l = light(0x0100_0001, 2.0, 4.0, true);
+        let l = light(0x0001_0001, 2.0, 4.0, true);
         let values = AliasValues::of(&l, &source);
         let mut aliases = [AliasValues {
             flags: 0x0000_00AB,
             ..values
         }];
         assert_eq!(values.sync(&mut aliases), 1);
-        assert_eq!(aliases[0].flags, 0x0100_00AB);
+        assert_eq!(aliases[0].flags, 0x0001_00AB);
         assert_eq!(aliases[0].intensity, 1.0);
         assert_eq!(aliases[0].scale, 0.5);
         assert_eq!(aliases[0].shadow_offset, 1);
