@@ -2357,12 +2357,36 @@ two thirds (0.35–0.5) and half way (the others) through a particle's life.
   placeholder until the loader's upload arrives, and the flame material's
   bind group is prepared again when the image under its handle changes.
 
+**Per-frame values.** The light's and sound's walks run once a rendered
+frame, as the original's per-frame pass does, not once a tick. The
+intensity and the emissive scale are worked out in double precision
+(intensity = density·(1 + 0.05x)·base, emissive = 0.8·density·(0.9 + 0.2x));
+the first frame, a one-shot template's every frame and any frame brighter
+than the peak ask for a full light update, and a new peak is 1.1× the
+intensity. The emissive scale reaches `Fire::emissive`. Each emitter also
+keeps a *detail* value apart from its size: the material's level of
+detail is `detail·1000/d²`, d² the squared distance from the camera to the
+node held at one or more (the original's distance helper returns the
+squared length; `Emitter::lod_scale`, not yet bound to a material). The small
+and medium flames' detail is the fire's, the medium-small and large
+flames' twice it, and every bed's twice its own size. A one-shot template
+records its ring deadline (start life + the ring's span + ½, rounded half
+to even), which the original stores for the game to read.
+
+The template's looping sound (`FireS02`, `FireS01`, `FireL01`) plays from
+`exa_game::fire_sound`: one looping voice a flame on a handle of its own,
+loaded once through the sound bank by name, moved to the flame's node and
+given the emitter's walked volume and pitch every frame, and freed with its
+buffer reference when the flame is despawned. A template with no sound, no
+game data or no audio device plays nothing, and a sound that fails to load
+is not asked for again.
+
 Still missing for fires: fires on other physics bodies (only the carried
 torch rides its item), the source frame following the body, body contacts
-being driven from the physics step, the emissive scale on the fire's
-parent mesh, the per-node detail value (size·1000/distance), the
-quality-scaled pool override, and the looping sound (its walks run at the
-tick, not per frame).
+being driven from the physics step, and applying the emissive scale to the
+parent mesh's material. The quality-scaled pool override is dead in the
+original: its branch needs the quality constant to be below 4 and the
+shipped constant is 5, so the template's pool is always used.
 
 ## Electricity
 
@@ -2399,21 +2423,27 @@ rules in `exa_render::electricity` and a Bevy layer in `exa_world::arc`.
   arc's ends (along +X, the segments end to end, unless a record or a
   device sets the direction and length), jittered inside them; each
   segment becomes a camera-facing quad of width 2·size, U along it and V
-  across it. The segment count, width and timing are the original's; the
-  tendril's own per-tick motion is a model (the original's tendril emitter
-  is a separate component), so the zig-zag's exact shape is [guess].
+  across it. The original builds a strip of 4·segments + 2 vertices per
+  tendril; Exarust builds four vertices a segment, a model. The segment
+  count, width and timing are the original's; the tendril's own per-tick
+  motion is a model (the original's tendril emitter is a separate
+  component), so the zig-zag's exact shape is [guess].
 - **Shader.** `_ElecMat01`: `tc = (uv + TexOfs)·0.25` with TexOfs =
-  (0, the tendril emitter's scroll); a = the texture's red mixed a third
+  (0, the tendril emitter's scroll, which each arc advances by 0.015 a
+  tick, dropping back by one once past 2; its own material carries the
+  offset); a = the
+  texture's red mixed a third
   into the ribbon's V (across it); a = 1 − |2a − 1|; b = a²⁴; a = a⁶;
   colour = mix(vertex, EleCol (0.65, 0.4, 1), b)·b +
   EdgCol (0.15, 0.2, 0.4)·a·2; then squared. Additive, two-sided, unlit.
   The material's emissive texture is a white stand-in until its library
   texture is available.
 
-Still missing: the exact per-tick tendril integration (jitter, segment
-lifetimes and the texture-scroll rate), the `_ElecMat01` emissive map, the
-per-branch scissor/uniform loop, the GI flow, the device's hum, and the
-callers (nothing spawns an arc yet).
+Still missing: the exact per-tick tendril integration (jitter and segment
+lifetimes; the live tendril emitter is modelled in `exa_game::thaum::arcs`,
+which the Shock power and shock weapons use), the `_ElecMat01` emissive
+map, the per-branch scissor loop, the GI flow, the device's hum, and the
+callers of this crate's arc layer (nothing spawns one yet).
 
 ## Force effects
 

@@ -315,6 +315,11 @@ pub struct Params {
     pub stretch: f32,
     /// Velocity kept per tick.
     pub retention: f32,
+    /// A one-shot template's ring deadline: the tick its first particle's
+    /// life plus the ring's span reaches (rounded half to even), or
+    /// `i32::MAX` for other templates. The original stores it for the game
+    /// to read; the tick itself does not.
+    pub deadline: i32,
     /// Ring capacity, excluding the spare slot.
     pub capacity: usize,
     /// Live count the density divides by.
@@ -337,6 +342,15 @@ impl Params {
         };
         // A record from an untrusted file cannot ask for an unbounded pool.
         let capacity = capacity.min(1 << 20);
+        // A one-shot emitter also records when it finishes: the ring's whole
+        // span plus its first particle's life and a half, rounded half to
+        // even (the original's conversion of a single).
+        let deadline = if d.flags & flags::ONE_SHOT != 0 {
+            let ticks = start_life as f32 + capacity as f32 * interval + 0.5;
+            ticks.round_ties_even() as i32
+        } else {
+            i32::MAX
+        };
         let density_count = if d.density < 1 {
             if d.flags & flags::LIFE_RANDOM != 0 {
                 sources as i32 * (d.rate as f32 * d.life * 0.875) as i32
@@ -377,6 +391,7 @@ impl Params {
             centring: d.centring,
             stretch,
             retention,
+            deadline,
             capacity,
             density_count,
             keys: d.keys,
@@ -517,6 +532,25 @@ pub struct LightState {
     pub density: f32,
     /// The highest intensity reached, times 1.1.
     pub peak: f32,
+    /// A full light update is due next frame (the emitter starts asking for
+    /// one).
+    pub full: bool,
+}
+
+/// The light a frame asks for.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LightFrame {
+    /// The intensity the light has this frame.
+    pub intensity: f32,
+    /// Its shadow softness.
+    pub softness: f32,
+    /// The emissive scale an emissive parent mesh gets.
+    pub emissive: f32,
+    /// The light needs a full update this frame (its first, a one-shot
+    /// emitter's, or a brighter one than ever before).
+    pub full_update: bool,
+    /// The light has reached its template's intensity.
+    pub at_base: bool,
 }
 
 impl LightState {
@@ -530,6 +564,7 @@ impl LightState {
             softness: 2.0,
             density: 0.0,
             peak: 0.0,
+            full: true,
         }
     }
 
@@ -560,20 +595,30 @@ impl LightState {
         self.softness * self.jitter
     }
 
-    /// The light's intensity this frame, and whether it set a new peak.
-    pub fn intensity(&mut self) -> (f32, bool) {
-        let intensity = self.density * (self.walk * 0.05 + 1.0) * self.base;
-        if self.peak < intensity {
-            self.peak = intensity * 1.1;
-            (intensity, true)
-        } else {
-            (intensity, false)
+    /// One frame of the light: the intensity, the softness, the emissive
+    /// scale of an emissive parent and whether a full update is due. The
+    /// original works the two scales out in double precision, the intensity
+    /// as the density times the flicker times the template's intensity.
+    pub fn frame(&mut self, template_flags: u32) -> LightFrame {
+        let intensity = (f64::from(self.density)
+            * ((f64::from(self.walk) * 0.05 + 1.0) * f64::from(self.base)))
+            as f32;
+        let brighter = intensity > self.peak;
+        let full_update = self.full || template_flags & flags::ONE_SHOT != 0 || brighter;
+        if full_update {
+            if brighter {
+                self.peak = (f64::from(intensity) * 1.1) as f32;
+            }
+            self.full = false;
         }
-    }
-
-    /// The emissive scale an emissive parent mesh gets.
-    pub fn emissive(&self) -> f32 {
-        (f64::from(self.density) * (f64::from(self.walk) * 0.2 + 0.9) * 0.8) as f32
+        let emissive = (f64::from(self.density) * (f64::from(self.walk) * 0.2 + 0.9) * 0.8) as f32;
+        LightFrame {
+            intensity,
+            softness: self.softness(),
+            emissive,
+            full_update,
+            at_base: self.base <= intensity,
+        }
     }
 }
 
@@ -607,10 +652,15 @@ impl SoundState {
         if template_flags & flags::SOUND_MOTION == 0 {
             self.volume =
                 (f64::from(self.base) * 0.05 * (rng.unit() - 0.5) + f64::from(self.volume)) as f32;
-            if self.volume < self.base * 0.8 {
-                self.volume = self.base * 0.8;
-            } else if self.base * 1.2 < self.volume {
-                self.volume = self.base * 1.2;
+            // The bounds are worked out and compared in double precision; a
+            // NaN volume fails both unordered compares and is kept.
+            let low = f64::from(self.base) * 0.8;
+            let high = f64::from(self.base) * 1.2;
+            let volume = f64::from(self.volume);
+            if volume < low {
+                self.volume = low as f32;
+            } else if high < volume {
+                self.volume = high as f32;
             }
         }
         if template_flags & flags::ONE_SHOT != 0 {
@@ -622,10 +672,12 @@ impl SoundState {
             (0.05, 0.6, 1.4)
         };
         self.pitch = ((rng.unit() - 0.5) * step + f64::from(self.pitch)) as f32;
-        if self.pitch < low {
-            self.pitch = low;
-        } else if high < self.pitch {
-            self.pitch = high;
+        // The bounds compare in double precision.
+        let pitch = f64::from(self.pitch);
+        if pitch < low {
+            self.pitch = low as f32;
+        } else if high < pitch {
+            self.pitch = high as f32;
         }
     }
 }
@@ -661,8 +713,15 @@ pub struct Emitter {
     /// The template's size: the fire presets store their fire size here,
     /// and the ageing's distance cap uses it.
     pub size: f32,
+    /// The emitter's detail value, which the renderer's level of detail
+    /// scales by: the fire presets set it to twice a bed's size and, for
+    /// some flames, twice the fire's.
+    pub detail: f32,
     /// A body carrying the emitter, if any.
     pub body: Option<BodyMotion>,
+    /// The looping sound a template names (a single-letter name is no
+    /// sound, as the original checks the string's length).
+    pub sound_name: Option<&'static str>,
     slots: Vec<Slot>,
     first: usize,
     next: usize,
@@ -728,7 +787,9 @@ impl Emitter {
             node: NodeFrame::default(),
             last_node: Vec3::ZERO,
             size,
+            detail: size,
             body: None,
+            sound_name: template.sound,
             slots,
             first: 0,
             next: 0,
@@ -936,7 +997,8 @@ impl Emitter {
             None => self.last_node - current,
         };
         let radius = 140.0 * self.size;
-        self.smoothed += (delta - self.smoothed) * 0.1;
+        // The original eases the node's motion in by 7.5% a tick.
+        self.smoothed += (delta - self.smoothed) * 0.075;
         let s = self.smoothed;
         self.motion_squared = s.z * s.z + (s.y * s.y + s.x * s.x);
         self.motion_average =
@@ -983,7 +1045,8 @@ impl Emitter {
             }
             let mut d = s.p - current;
             d.y = (f64::from(d.y) * 0.7) as f32;
-            let distance = (d.x * d.x + d.y * d.y + d.z * d.z).sqrt();
+            // The squares add as the original adds them: z², then y², then x².
+            let distance = (d.z * d.z + (d.y * d.y + d.x * d.x)).sqrt();
             let cap = ((radius - distance) * ratio).round_ties_even();
             // The conversion of a NaN or out-of-range value gives the
             // integer indefinite.
@@ -1120,8 +1183,14 @@ impl Emitter {
         self.bounds.centre = min + (max - min) * 0.5;
         let e = (max - self.bounds.centre) + Vec3::splat(5.0);
         self.bounds.extent = e;
-        let squared = e.z * e.z + e.y * e.y + e.x * e.x;
-        self.bounds.radius = if 0.0 < squared { squared.sqrt() } else { 0.0 };
+        let squared = e.z * e.z + (e.y * e.y + e.x * e.x);
+        // The original keeps the squared value unless it is positive (so a
+        // NaN stays NaN).
+        self.bounds.radius = if 0.0 < squared {
+            squared.sqrt()
+        } else {
+            squared
+        };
     }
 
     /// A body contact pass over a slot range: particles inside the body are
@@ -1161,9 +1230,46 @@ impl Emitter {
         n * dose
     }
 
-    /// One frame of the sound walk.
-    pub fn sound_frame<R: Draws>(&mut self, rng: &mut R) {
+    /// The looping sound the template names, if any.
+    pub fn sound_name(&self) -> Option<&'static str> {
+        self.sound_name
+    }
+
+    /// One frame of the light and sound walks, at the original's per-frame
+    /// point: the calls run once a rendered frame, not once a tick.
+    pub fn frame<R: Draws>(&mut self, rng: &mut R) -> LightFrame {
+        let frame = self.light.frame(self.params.flags);
         self.sound.frame(self.light.density, self.params.flags, rng);
+        frame
+    }
+
+    /// The material's level-of-detail scalar for a camera at `eye` (cm):
+    /// the emitter's detail value times 1000 over the *squared* distance to
+    /// its node, the squared distance held at one or more. The original's
+    /// distance helper returns the squared length (`(x² + y²) + z²`, no
+    /// square root); a NaN distance fails the compare and is kept.
+    pub fn lod_scale(&self, eye: Vec3) -> f32 {
+        let d = eye - self.node.position;
+        let mut squared = d.x * d.x + d.y * d.y + d.z * d.z;
+        if squared < 1.0 {
+            squared = 1.0;
+        }
+        self.detail * 1000.0 / squared
+    }
+
+    /// The four corners of the fixed screen quad a material that draws one
+    /// asks for: each corner is 0.3 of the camera's back axis (the camera
+    /// row the original negates for its forward axis, so pointing at the
+    /// viewer) displaced half a unit along its right or up axis, normalised,
+    /// in the original's corner order (−up, +right, −right, +up).
+    pub fn camera_quad(view: View) -> [Vec3; 4] {
+        let forward = -view.forward * 0.3;
+        [
+            (forward - view.up * 0.5).normalize_or(Vec3::NEG_Y),
+            (forward + view.right * 0.5).normalize_or(Vec3::X),
+            (forward - view.right * 0.5).normalize_or(Vec3::NEG_X),
+            (forward + view.up * 0.5).normalize_or(Vec3::Y),
+        ]
     }
 }
 
@@ -1699,11 +1805,215 @@ mod tests {
     #[test]
     fn the_light_peak_needs_a_strictly_brighter_frame() {
         let mut light = LightState::new(SMALL.light);
-        assert!(!light.intensity().1);
+        // The emitter starts with a full update due.
+        let frame = light.frame(0);
+        assert!(frame.full_update);
         light.density = 1.0;
-        let (i, new_peak) = light.intensity();
-        assert!(new_peak);
-        assert!((light.peak - i * 1.1).abs() < 1e-6);
+        let frame = light.frame(0);
+        assert!(frame.full_update);
+        assert!((light.peak - frame.intensity * 1.1).abs() < 1e-6);
+        // A dimmer frame walks the light without a full update.
+        let frame = light.frame(0);
+        assert!(!frame.full_update);
+        // A one-shot emitter asks for one every frame.
+        assert!(light.frame(crate::particles::flags::ONE_SHOT).full_update);
+    }
+
+    #[test]
+    fn the_light_scales_work_in_double_precision() {
+        let mut light = LightState::new(SMALL.light);
+        light.density = 0.7;
+        light.walk = 0.3;
+        // The exact double-precision result, narrowed once.
+        let want = (0.7f64 * ((0.3f64 * 0.05 + 1.0) * f64::from(SMALL.light.intensity))) as f32;
+        let frame = light.frame(0);
+        assert_eq!(frame.intensity, want);
+        // 0.7 · (0.3 · 0.2 + 0.9) · 0.8 = 0.5376.
+        assert!((frame.emissive - 0.5376).abs() < 1e-6, "{}", frame.emissive);
+        // The softness follows the jitter.
+        light.jitter = 1.05;
+        assert!((light.frame(0).softness - 2.1).abs() < 1e-6);
+        // The light reaches its template intensity at full density.
+        light.density = 1.0;
+        assert!(light.frame(0).at_base);
+    }
+
+    #[test]
+    fn a_template_names_its_looping_sound() {
+        assert_eq!(torch().sound_name(), Some("FireS02"));
+        let mut d = SMALL.scaled(0.2);
+        d.sound = None;
+        assert_eq!(
+            Emitter::new(d, 0.2, vec![Source::at_node()]).sound_name(),
+            None
+        );
+    }
+
+    #[test]
+    fn the_sound_walk_stays_within_its_template() {
+        let mut sound = SoundState::new(0.5, true);
+        sound.volume = 0.1;
+        let mut rng = Scripted::new(&[], &[0.0, 0.0]);
+        sound.frame(1.0, 0, &mut rng);
+        // The volume fell to the low bound; the pitch walks a little.
+        assert_eq!(sound.volume, 0.4);
+        assert_eq!(sound.pitch, 0.9975);
+        sound.volume = 1.0;
+        let mut rng = Scripted::new(&[], &[1.0, 1.0]);
+        sound.frame(1.0, 0, &mut rng);
+        assert_eq!(sound.volume, 0.6);
+        // The pitch walks by a hundredth of the template's step.
+        sound.pitch = 0.851;
+        let mut rng = Scripted::new(&[], &[0.0, 0.0]);
+        sound.frame(1.0, 0, &mut rng);
+        assert_eq!(sound.pitch, 0.85);
+        sound.pitch = 1.149;
+        let mut rng = Scripted::new(&[], &[1.0, 1.0]);
+        sound.frame(1.0, 0, &mut rng);
+        assert_eq!(sound.pitch, 1.15);
+        // A wide-pitch template spans 0.6 to 1.4.
+        let mut wide = SoundState::new(1.0, true);
+        wide.pitch = 0.601;
+        let mut rng = Scripted::new(&[], &[0.0, 0.0]);
+        wide.frame(1.0, crate::particles::flags::SOUND_WIDE_PITCH, &mut rng);
+        assert_eq!(wide.pitch, 0.6);
+        // A one-shot emitter scales its volume by the light's density.
+        let mut one = SoundState::new(1.0, true);
+        one.volume = 1.0;
+        let mut rng = Scripted::new(&[], &[0.5, 0.5]);
+        one.frame(0.5, crate::particles::flags::ONE_SHOT, &mut rng);
+        assert!((one.volume - 0.5).abs() < 1e-6, "{}", one.volume);
+        // A NaN volume fails both unordered compares and is kept.
+        let mut lost = SoundState::new(0.5, true);
+        lost.volume = f32::NAN;
+        let mut rng = Scripted::new(&[], &[0.5, 0.5]);
+        lost.frame(1.0, 0, &mut rng);
+        assert!(lost.volume.is_nan());
+        // The bound itself is the double-precision product, narrowed once.
+        let mut odd = SoundState::new(0.7, true);
+        odd.volume = 10.0;
+        let mut rng = Scripted::new(&[], &[0.5, 0.5]);
+        odd.frame(1.0, 0, &mut rng);
+        assert_eq!(odd.volume, (f64::from(0.7f32) * 1.2) as f32);
+        // A template with no sound does not walk at all.
+        let mut silent = SoundState::new(0.5, false);
+        let mut rng = Scripted::new(&[], &[0.0, 0.0]);
+        silent.frame(1.0, 0, &mut rng);
+        assert_eq!((silent.volume, silent.pitch), (1.0, 1.0));
+    }
+
+    #[test]
+    fn a_one_shot_deadline_spans_the_ring_and_the_life() {
+        let mut d = SMALL.scaled(0.2);
+        d.flags |= crate::particles::flags::ONE_SHOT;
+        let e = Emitter::new(d, 0.2, vec![Source::at_node()]);
+        // 103 + 97 · 1.10667 + 0.5 = 210.85 → 211 (the conversion rounds
+        // half to even).
+        let want = (103.0f32 + 97.0 * e.params.interval + 0.5).round_ties_even() as i32;
+        assert_eq!(e.params.deadline, want);
+        // A template that is not one-shot has no ring deadline.
+        assert_eq!(torch().params.deadline, i32::MAX);
+    }
+
+    #[test]
+    fn the_node_motion_is_eased_in_by_seven_and_a_half_percent() {
+        let mut e = torch();
+        e.slots[0] = Slot::default();
+        e.first = 0;
+        e.next = 0;
+        e.last_node = Vec3::new(-10.0, 0.0, 0.0);
+        e.age(&mut Scripted::new(&[1], &[]));
+        // The node moved 10 cm back: the eased delta is a 7.5% step.
+        assert!((e.smoothed.x + 0.75).abs() < 1e-6, "{:?}", e.smoothed);
+    }
+
+    #[test]
+    fn the_bounds_radius_adds_the_squares_from_z() {
+        let mut e = torch();
+        e.first = 0;
+        e.next = 3;
+        e.slots[0] = Slot {
+            p: Vec3::new(1.0, 2.0, 3.0),
+            life: 10,
+            ..Slot::default()
+        };
+        e.slots[1] = Slot {
+            p: Vec3::new(-4.0, 5.0, -6.0),
+            life: 10,
+            ..Slot::default()
+        };
+        e.slots[2] = Slot::default();
+        e.update_bounds();
+        let extent = e.bounds.extent;
+        // Extent = max − midpoint + 5 = half the span + 5.
+        // The last slot (dead) seeds the box, as the original seeds it.
+        assert_eq!(extent, Vec3::new(7.5, 7.5, 9.5));
+        let squared = extent.z * extent.z + (extent.y * extent.y + extent.x * extent.x);
+        assert_eq!(e.bounds.radius, squared.sqrt());
+    }
+
+    #[test]
+    fn the_flat_quad_fades_on_the_age_square() {
+        // (1 − f²) · 255 with f = 1 − life/start_life = 1 − 52/103.
+        let mut e = torch();
+        e.first = 0;
+        e.next = 1;
+        e.slots[0] = Slot {
+            p: Vec3::ZERO,
+            q: Vec3::new(0.0, -1.0, 0.0),
+            life: 52,
+            ..Slot::default()
+        };
+        e.params.flags &= !crate::particles::flags::KEYS;
+        e.params.flags &= !crate::particles::flags::KEYS_PARITY;
+        let view = View {
+            eye: Vec3::new(0.0, 0.0, 100.0),
+            right: Vec3::X,
+            up: Vec3::Y,
+            forward: Vec3::NEG_Z,
+        };
+        let colour = e.quads(0.0, view)[0].colour;
+        // 0.75483 · 255 = 192.48, rounded half to even.
+        assert_eq!(colour[..3], [192, 192, 192]);
+    }
+
+    #[test]
+    fn the_level_of_detail_is_the_detail_over_the_squared_distance() {
+        let mut e = torch();
+        e.size = 0.2;
+        e.detail = 0.4;
+        e.node.position = Vec3::new(100.0, 0.0, 0.0);
+        // The detail, not the size, over the squared distance:
+        // 0.4 · 1000 / 100² = 0.04.
+        assert!((e.lod_scale(Vec3::ZERO) - 0.04).abs() < 1e-7);
+        // A camera 10 cm away: 400 / 100 = 4.
+        assert!((e.lod_scale(Vec3::new(110.0, 0.0, 0.0)) - 4.0).abs() < 1e-6);
+        // A squared distance under one is held at one: 400.
+        assert_eq!(e.lod_scale(Vec3::new(100.5, 0.0, 0.0)), 400.0);
+        // A NaN eye fails the compare and stays NaN.
+        assert!(e.lod_scale(Vec3::splat(f32::NAN)).is_nan());
+    }
+
+    #[test]
+    fn the_fixed_camera_quad_has_the_originals_corner_order() {
+        let view = View {
+            eye: Vec3::ZERO,
+            right: Vec3::X,
+            up: Vec3::Y,
+            forward: Vec3::NEG_Z,
+        };
+        let q = Emitter::camera_quad(view);
+        // Each corner is 0.3 along the camera's back axis (+Z here, towards
+        // the viewer), half along right or up, then normalised: 0.3/0.5831
+        // = 0.5145 and 0.5/0.5831 = 0.8575.
+        let want = [0.514_495_7, 0.857_492_9];
+        assert!((q[0].y + want[1]).abs() < 1e-5 && (q[0].z - want[0]).abs() < 1e-5);
+        assert!((q[1].x - want[1]).abs() < 1e-5 && (q[1].z - want[0]).abs() < 1e-5);
+        assert!((q[2].x + want[1]).abs() < 1e-5 && (q[2].z - want[0]).abs() < 1e-5);
+        assert!((q[3].y - want[1]).abs() < 1e-5 && (q[3].z - want[0]).abs() < 1e-5);
+        for corner in q {
+            assert!((corner.length() - 1.0).abs() < 1e-5);
+        }
     }
 
     #[test]
