@@ -149,9 +149,40 @@ pub const STATIC_CONTACT: StaticContact = StaticContact {
 /// between frames.
 pub const NORMAL_AVERAGE: f32 = 0.1;
 pub const NORMAL_LERP: f32 = 0.03;
-/// The middle vertices' offset along the neighbours and the segment.
-pub const MID_NEIGHBOURS: f32 = 0.25;
-pub const MID_SEGMENT: f32 = -0.0625;
+/// The midpoint's parameter along each segment: the draw's fixed half,
+/// not the frame's alpha.
+pub const MIDPOINT: f32 = 0.5;
+
+/// The four Hermite weights on a segment, in the original's arithmetic
+/// order: `2s³ − 3s² + 1`, `3s² − 2s³`, `s³ − 2s² + s` and `s³ − s²`.
+pub fn hermite_weights(s: f32) -> (f32, f32, f32, f32) {
+    let squared = s * s;
+    let cubed = squared * s;
+    let h00 = (cubed * 2.0 - squared * 3.0) + 1.0;
+    let h01 = squared * 3.0 + cubed * -2.0;
+    let h10 = (cubed - squared * 2.0) + s;
+    let h11 = cubed - squared;
+    (h00, h01, h10, h11)
+}
+
+/// The doubled vertex between `a` and `b`: the cubic Hermite at
+/// [`MIDPOINT`]. Its incoming tangent is the half of the difference to
+/// `previous` (none at the first segment), its outgoing tangent the half
+/// of the difference to `next`, or the whole one-sided difference to `b`
+/// at the last segment.
+pub fn hermite_midpoint(previous: Option<Vec3>, a: Vec3, b: Vec3, next: Option<Vec3>) -> Vec3 {
+    let (h00, h01, h10, h11) = hermite_weights(MIDPOINT);
+    let mut middle = a * h00;
+    middle += b * h01;
+    if let Some(previous) = previous {
+        middle += (b - previous) * (h10 * 0.5);
+    }
+    middle += match next {
+        Some(next) => (next - a) * (h11 * 0.5),
+        None => (b - a) * h11,
+    };
+    middle
+}
 
 /// The torrent's states.
 pub const FIZZLED: i32 = -2;
@@ -828,11 +859,12 @@ impl Torrent {
             let mut widths = Vec::with_capacity((samples.len() - 1) * 2);
             for i in 0..samples.len() - 1 {
                 points.push(samples[i].at);
-                let mut middle = lerp(samples[i].at, samples[i + 1].at, 0.5);
-                if i > 0 {
-                    middle += (samples[i + 1].at - samples[i - 1].at) * MID_NEIGHBOURS;
-                }
-                middle += (samples[i + 1].at - samples[i].at) * MID_SEGMENT;
+                let middle = hermite_midpoint(
+                    if i > 0 { Some(samples[i - 1].at) } else { None },
+                    samples[i].at,
+                    samples[i + 1].at,
+                    samples.get(i + 2).map(|sample| sample.at),
+                );
                 points.push(middle);
                 let midpoint = |a: f32, b: f32| a + (b - a) * 0.5;
                 widths.push(samples[i]);
@@ -1159,6 +1191,32 @@ mod tests {
         assert_eq!(samples.len(), 3);
         assert_eq!(samples[0].weight, 1.0);
         assert_eq!(samples[2].weight, 0.0);
+    }
+
+    #[test]
+    fn the_midpoint_is_the_half_hermite() {
+        // At the half the four weights are 0.5, 0.5, 0.125 and -0.125,
+        // built in the original's order.
+        assert_eq!(hermite_weights(0.5), (0.5, 0.5, 0.125, -0.125));
+        // Samples at 0 and 10 cm along z: the middle sits at 5, the
+        // incoming tangent adds (10 − (−10))·0.0625 = 1.25 and the
+        // outgoing one takes (30 − 0)·−0.0625 = −1.875, giving 4.375.
+        let a = Vec3::ZERO;
+        let b = Vec3::new(0.0, 0.0, 10.0);
+        let previous = Vec3::new(0.0, 0.0, -10.0);
+        let next = Vec3::new(0.0, 0.0, 30.0);
+        let middle = hermite_midpoint(Some(previous), a, b, Some(next));
+        assert_eq!(middle, Vec3::new(0.0, 0.0, 4.375));
+        // The first segment has no incoming tangent; the last takes the
+        // whole one-sided difference: 5 + 1.25 − 1.25 = 5.
+        assert_eq!(
+            hermite_midpoint(None, a, b, Some(next)),
+            Vec3::new(0.0, 0.0, 5.0 - 1.875)
+        );
+        assert_eq!(
+            hermite_midpoint(Some(previous), a, b, None),
+            Vec3::new(0.0, 0.0, 5.0)
+        );
     }
 
     #[test]
