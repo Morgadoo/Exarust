@@ -764,7 +764,7 @@ impl Barrier {
 
     /// The cap's drawn centre at the frame's fraction `t`: its place moved
     /// [`BARRIER_FORWARD_CM`] along its facing.
-    pub fn frame_centre(&self, t: f32) -> Vec3 {
+    pub fn drawn_centre(&self, t: f32) -> Vec3 {
         self.frame_place(t) + self.frame_facing(t) * BARRIER_FORWARD_CM
     }
 

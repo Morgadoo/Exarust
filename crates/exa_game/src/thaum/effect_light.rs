@@ -286,7 +286,7 @@ pub(crate) fn barrier_lights(
             Vec3::from(turn.y_axis),
             Vec3::from(turn.z_axis),
         ];
-        let placed = barrier_shape(&lit, live.barrier.frame_centre(1.0), axes, scale);
+        let placed = barrier_shape(&lit, live.barrier.drawn_centre(1.0), axes, scale);
         place_light(
             &mut commands,
             entity,
