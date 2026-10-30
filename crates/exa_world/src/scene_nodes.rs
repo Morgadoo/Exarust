@@ -1466,6 +1466,139 @@ impl Scene {
         }
     }
 
+    /// Takes a subtree out of the scene while leaving its owner and parent
+    /// links alone, as the content helper's detach does: every node loses
+    /// [`IN_SCENE`], leaves its sector's lists and the scene's geometry
+    /// list, and a light drops its aliases. Returns how many nodes changed.
+    pub fn detach_subtree(&mut self, node: usize) -> usize {
+        let Some(n) = self.nodes.get(node) else {
+            return 0;
+        };
+        let children = n.children.clone();
+        let sector = n.sector;
+        let kind = n.kind;
+        let mut count = 0;
+        if let Some(s) = sector.and_then(|s| self.sectors.get_mut(s)) {
+            s.meshes.retain(|&m| m != node);
+            s.lights.retain(|&l| l != node);
+            s.auxiliary.retain(|&a| a != node);
+            if kind == NodeKind::Light {
+                s.changes |= LINKS_CHANGED;
+            }
+        }
+        self.geometry.retain(|&g| g != node);
+        let aliases = std::mem::take(&mut self.nodes[node].aliases);
+        for alias in aliases {
+            if let Some(alias) = self.nodes.get_mut(alias) {
+                alias.sector = None;
+            }
+        }
+        let was_in_scene = self.nodes[node].scene_flags & IN_SCENE != 0;
+        self.nodes[node].scene_flags &= !IN_SCENE;
+        if was_in_scene {
+            count += 1;
+        }
+        for child in children.into_iter().flatten() {
+            count += self.detach_subtree(child);
+        }
+        count
+    }
+
+    /// Releases a subtree at once, without the removal queue's ownership
+    /// wait: the nodes leave their sector and parent, are marked removed
+    /// and lose the scene bit. Returns how many were newly removed.
+    pub fn release_subtree(&mut self, node: usize) -> usize {
+        let sector = self.nodes.get(node).and_then(|n| n.sector);
+        self.remove_subtree(node, sector)
+    }
+
+    /// Attaches `nodes` as the children of `parent`, as the content helper's
+    /// attach does: each node leaves its old parent's list, takes `parent`
+    /// and the parent's owner, and has its frame refreshed. The list is
+    /// appended in order. Returns how many nodes were attached.
+    pub fn attach_nodes(&mut self, parent: usize, nodes: &[usize]) -> usize {
+        let owner = self.owner_of(parent);
+        let mut attached = 0;
+        for &node in nodes {
+            if node >= self.nodes.len() || node == parent {
+                continue;
+            }
+            if let Some(old) = self.nodes[node].parent
+                && let Some(old) = self.nodes.get_mut(old)
+            {
+                old.children.retain(|&child| child != Some(node));
+            }
+            self.nodes[node].parent = Some(parent);
+            self.nodes[node].sector = owner;
+            self.nodes[node].stale = true;
+            self.nodes[parent].children.push(Some(node));
+            self.refresh(node);
+            attached += 1;
+        }
+        attached
+    }
+
+    /// The sector a node's child belongs to: the sector whose node is
+    /// `parent`, else the parent's own owner.
+    fn owner_of(&self, parent: usize) -> Option<usize> {
+        if let Some(sector) = self.sectors.iter().position(|s| s.node == Some(parent)) {
+            return Some(sector);
+        }
+        self.nodes.get(parent).and_then(|n| n.sector)
+    }
+
+    /// Clears the scene's content as the content helper does: every
+    /// top-level node's subtree is detached and released, sector lists,
+    /// geometry, transitions, removals and the free list are emptied. The
+    /// scene's own sector stays. Returns the released nodes' indices.
+    pub fn clear_content(&mut self) -> Vec<usize> {
+        let roots: Vec<usize> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.parent.is_none())
+            .map(|(i, _)| i)
+            .collect();
+        let mut removed = Vec::new();
+        for root in roots {
+            let subtree = self.subtree_nodes(root);
+            self.detach_subtree(root);
+            self.release_subtree(root);
+            removed.extend(subtree);
+        }
+        self.sectors.truncate(1);
+        self.geometry.clear();
+        self.transitions.clear();
+        self.removals = RemovalQueue::default();
+        self.pending_free.clear();
+        self.material_adds.clear();
+        self.material_removes.clear();
+        if let Some(own) = self.sectors.first_mut() {
+            own.meshes.clear();
+            own.lights.clear();
+            own.auxiliary.clear();
+            own.aliases.clear();
+            own.materials.clear();
+        }
+        removed
+    }
+
+    /// A node and its descendants, in pre-order.
+    pub fn subtree_nodes(&self, node: usize) -> Vec<usize> {
+        let mut out = Vec::new();
+        let mut stack = vec![node];
+        while let Some(at) = stack.pop() {
+            let Some(n) = self.nodes.get(at) else {
+                continue;
+            };
+            out.push(at);
+            for &child in n.children.iter().flatten() {
+                stack.push(child);
+            }
+        }
+        out
+    }
+
     /// Moves a node's subtree to `sector` keeping its place in the world,
     /// as the original's move does: the local position gains the old
     /// sector's origin less the new one's, the frame is refreshed, the old
@@ -5355,5 +5488,34 @@ mod tests {
         scene.sectors[1].rotation = Mat3::IDENTITY;
         scene.classify(Vec3::ZERO, std::slice::from_ref(&view), &no_project);
         assert_eq!(scene.sectors[1].mask, 0);
+    }
+
+    #[test]
+    fn detach_attach_and_clear_content_follow_the_helpers() {
+        let (mut scene, _sector, mesh) = node_scene();
+        let child = scene.add_node(NodeKind::Geometry, Some(mesh));
+        scene.register(child, 1);
+        assert_eq!(scene.sectors[1].meshes, [mesh]);
+        assert_eq!(scene.geometry, [child]);
+        // Detaching takes the subtree out of the lists but keeps the owner.
+        assert_eq!(scene.detach_subtree(mesh), 1);
+        assert!(scene.sectors[1].meshes.is_empty());
+        assert!(scene.geometry.is_empty());
+        assert_eq!(scene.nodes[mesh].sector, Some(1));
+        assert_eq!(scene.nodes[child].sector, Some(1));
+        assert_eq!(scene.nodes[mesh].scene_flags & IN_SCENE, 0);
+        // Attaching under a parent takes the parent's owner and appends.
+        let parent = scene.add_node(NodeKind::Node, None);
+        scene.nodes[parent].sector = Some(1);
+        assert_eq!(scene.attach_nodes(parent, &[mesh]), 1);
+        assert_eq!(scene.nodes[mesh].parent, Some(parent));
+        assert_eq!(scene.nodes[parent].children, [Some(mesh)]);
+        assert_eq!(scene.nodes[mesh].sector, Some(1));
+        // Clearing releases every root and its subtree and empties the
+        // scene's lists; the scene's own sector stays.
+        let removed = scene.clear_content();
+        assert!(removed.contains(&mesh) && removed.contains(&child) && removed.contains(&parent));
+        assert!(scene.nodes[mesh].removed);
+        assert_eq!(scene.sectors.len(), 1);
     }
 }

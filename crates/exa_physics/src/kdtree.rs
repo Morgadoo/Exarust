@@ -112,6 +112,157 @@ pub fn decode_three_bits(word: u16) -> i16 {
     if word & 8 != 0 { -value } else { value }
 }
 
+/// How many query callbacks a mesh receives: the original installs seven
+/// (ray, sphere, capsule and four more), each with the mesh as its context.
+pub const QUERY_CALLBACKS: usize = 7;
+/// The callback slot order the install writes, as the mesh's callback table
+/// stores it. The first three are the ray, sphere and capsule queries the
+/// task names; the rest are the other mesh queries the same table holds.
+pub const QUERY_RAY: usize = 0;
+pub const QUERY_SPHERE: usize = 1;
+pub const QUERY_CAPSULE: usize = 2;
+
+/// A mesh's query callback table. The original stores a function pointer
+/// and a context per slot; Exarust keeps opaque callback ids, which the
+/// installer copies from a built mesh to every instance that shares it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct QueryTable {
+    pub callbacks: [u32; QUERY_CALLBACKS],
+}
+
+impl QueryTable {
+    /// The table a build installs on a mesh.
+    pub fn new(callbacks: [u32; QUERY_CALLBACKS]) -> Self {
+        Self { callbacks }
+    }
+
+    /// Copies the table onto a mesh and every instance that shares it,
+    /// returning how many targets were written (the mesh counts too).
+    pub fn install(&self, mesh: &mut QueryTable, instances: &mut [QueryTable]) -> usize {
+        *mesh = *self;
+        for instance in instances.iter_mut() {
+            *instance = *self;
+        }
+        1 + instances.len()
+    }
+}
+
+/// The background builder's two queues and its stop flag.
+///
+/// The original's idle-priority thread pops a mesh from the incoming ring,
+/// builds its kd-tree, and pushes the built mesh to the outgoing ring, which
+/// the frame hook drains and installs the query callbacks on. Meshes queued
+/// while the thread is stopping are still built but not handed back. A mesh
+/// that has been deleted is skipped, and its reference count is dropped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackgroundBuilder<T> {
+    incoming: Ring<T>,
+    outgoing: Ring<T>,
+    stop: bool,
+    /// Whether a queued mesh has not yet woke the thread. The original sets
+    /// its "kick" status bit once per push and clears it when the thread
+    /// starts.
+    kick: bool,
+}
+
+impl<T> Default for BackgroundBuilder<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> BackgroundBuilder<T> {
+    pub fn new() -> Self {
+        Self {
+            incoming: Ring::new(),
+            outgoing: Ring::new(),
+            stop: false,
+            kick: false,
+        }
+    }
+
+    /// Queues a mesh. A stopped builder takes no more work.
+    pub fn enqueue(&mut self, mesh: T) -> bool {
+        if self.stop {
+            return false;
+        }
+        self.incoming.push(mesh);
+        self.kick = true;
+        true
+    }
+
+    /// Takes the next mesh to build, clearing the kick. `None` when the
+    /// queue is empty (the thread goes to sleep).
+    pub fn take_incoming(&mut self) -> Option<T> {
+        let mesh = self.incoming.pop()?;
+        self.kick = false;
+        Some(mesh)
+    }
+
+    /// Hands a built mesh back to the frame hook. A stopping builder drops
+    /// it instead.
+    pub fn finish(&mut self, mesh: T) -> bool {
+        if self.stop {
+            return false;
+        }
+        self.outgoing.push(mesh);
+        true
+    }
+
+    /// Runs one build step with the caller's deleted test and build: a
+    /// deleted mesh is dropped, a live one is built and handed back.
+    /// Returns whether a mesh was processed.
+    pub fn build_one<D, B>(&mut self, mut deleted: D, mut build: B) -> bool
+    where
+        D: FnMut(&T) -> bool,
+        B: FnMut(&T),
+    {
+        let Some(mesh) = self.take_incoming() else {
+            return false;
+        };
+        if !deleted(&mesh) {
+            build(&mesh);
+            self.finish(mesh);
+        }
+        true
+    }
+
+    /// The frame hook: takes the next built mesh for callback installation.
+    pub fn take_built(&mut self) -> Option<T> {
+        self.outgoing.pop()
+    }
+
+    /// Asks the builder to stop after its current mesh.
+    pub fn stop(&mut self) {
+        self.stop = true;
+    }
+
+    pub fn is_stopping(&self) -> bool {
+        self.stop
+    }
+
+    /// Whether a push is waiting to wake the thread.
+    pub fn kick_pending(&self) -> bool {
+        self.kick
+    }
+
+    pub fn queued(&self) -> usize {
+        self.incoming.len()
+    }
+
+    pub fn built(&self) -> usize {
+        self.outgoing.len()
+    }
+
+    /// Empties both queues, as a session end does.
+    pub fn clear(&mut self) {
+        self.incoming.clear();
+        self.outgoing.clear();
+        self.kick = false;
+        self.stop = false;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -163,5 +314,49 @@ mod tests {
         assert_eq!(decode_three_bits(0x8 | 3), -3);
         assert_eq!(decode_three_bits(0x8 | 7), -7);
         assert_eq!(decode_three_bits(0xFFF0 | 2), 2);
+    }
+
+    #[test]
+    fn the_builder_queues_drains_and_hands_built_meshes_back() {
+        let mut builder = BackgroundBuilder::new();
+        assert!(builder.enqueue(10));
+        assert!(builder.enqueue(11));
+        assert_eq!(builder.queued(), 2);
+        assert!(builder.kick_pending());
+        let mut built = Vec::new();
+        assert!(builder.build_one(|m| *m == 11, |m| built.push(*m)));
+        assert_eq!(built, [10]);
+        assert_eq!(builder.built(), 1);
+        assert_eq!(builder.take_built(), Some(10));
+        assert!(builder.take_built().is_none());
+        // The deleted mesh is dropped rather than built.
+        assert!(builder.build_one(|m| *m == 11, |m| built.push(*m)));
+        assert_eq!(built, [10]);
+        assert_eq!(builder.queued(), 0);
+    }
+
+    #[test]
+    fn a_stopping_builder_takes_no_work_and_hands_nothing_back() {
+        let mut builder = BackgroundBuilder::new();
+        builder.enqueue(1);
+        builder.stop();
+        assert!(!builder.enqueue(2));
+        assert_eq!(builder.queued(), 1);
+        assert!(builder.build_one(|_| false, |_| {}));
+        assert_eq!(builder.queued(), 0);
+        assert_eq!(builder.built(), 0);
+    }
+
+    #[test]
+    fn the_query_table_installs_on_the_mesh_and_every_instance() {
+        let table = QueryTable::new([1, 2, 3, 4, 5, 6, 7]);
+        let mut mesh = QueryTable::default();
+        let mut instances = [QueryTable::default(); 2];
+        assert_eq!(table.install(&mut mesh, &mut instances), 3);
+        assert_eq!(mesh, table);
+        assert_eq!(instances, [table; 2]);
+        assert_eq!(table.callbacks[QUERY_RAY], 1);
+        assert_eq!(table.callbacks[QUERY_SPHERE], 2);
+        assert_eq!(table.callbacks[QUERY_CAPSULE], 3);
     }
 }

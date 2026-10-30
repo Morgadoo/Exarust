@@ -196,6 +196,131 @@ pub fn shadow_quality_offset(flags: u32) -> i32 {
     }
 }
 
+/// Light flag (`0x40000`): the light has a finite reach (otherwise it is
+/// treated as unbounded).
+pub const RANGED: u32 = 0x4_0000;
+/// The falloff's far end, in radii: the shader reaches zero at 1.25 R.
+pub const REACH_RADII: f32 = 1.25;
+/// The far plane an unranged light uses (the original's `3.4e38`).
+pub const UNRANGED_FAR: f32 = 3.4e38;
+
+/// The light values activation derives from a record: the linear colour
+/// times the current intensity, its Rec. 601 luminance, the GI's injection
+/// radius and the shadow parameters.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DerivedLight {
+    /// The linear colour multiplied by the current intensity (the shader's
+    /// direct colour source).
+    pub colour: [f32; 3],
+    /// Rec. 601 luminance of [`DerivedLight::colour`].
+    pub luminance: f32,
+    /// The radius the voxel GI injects over: `√intensity · radius · 3`.
+    pub gi_radius: f32,
+    /// The point light's falloff end: 1.25 radii when ranged, else the
+    /// unranged far plane.
+    pub reach: f32,
+    /// The shadow filter's strength: `0.8 / radius` when ranged with a
+    /// positive radius, else 0.
+    pub shadow_strength: f32,
+    /// The light's shadow-quality offset (`0`, `+1`, `−1` or `−2`).
+    pub shadow_offset: i32,
+    /// The vertical shaping's `y` when the light has a spot, else 1.
+    pub shaping_y: f32,
+    /// The vertical shaping's `z` when the light has a spot, else 1.
+    pub shaping_z: f32,
+}
+
+/// Rec. 601 luminance in double precision, summed as the converter does:
+/// `b·0.114 + (g·0.587 + r·0.299)`.
+pub fn luminance(rgb: [f32; 3]) -> f32 {
+    let sum = f64::from(rgb[1]) * 0.587 + f64::from(rgb[0]) * 0.299;
+    (f64::from(rgb[2]) * 0.114 + sum) as f32
+}
+
+impl DerivedLight {
+    /// Derives a light's render values from its record and current
+    /// intensity.
+    pub fn of(light: &Light, intensity: f32) -> Self {
+        let linear = exa_render::material::linear_rgb(light.color);
+        let colour = [
+            linear.x * intensity,
+            linear.y * intensity,
+            linear.z * intensity,
+        ];
+        let (shaping_y, shaping_z) = crate::vertical_shaping(light);
+        let ranged = light.flags & RANGED != 0 || light.ranged;
+        Self {
+            colour,
+            luminance: luminance(colour),
+            gi_radius: intensity.max(0.0).sqrt() * light.radius * 3.0,
+            reach: if ranged {
+                light.radius * REACH_RADII
+            } else {
+                UNRANGED_FAR
+            },
+            shadow_strength: if ranged && light.radius > 0.0 {
+                ((1.0 / light.radius) as f64 * 0.8) as f32
+            } else {
+                0.0
+            },
+            shadow_offset: shadow_quality_offset(light.flags),
+            shaping_y,
+            shaping_z,
+        }
+    }
+}
+
+/// The values copied to a light's aliases: the record's flags, colour,
+/// current intensity, radius, softness, spot, ranged bit, scale and the
+/// shadow-quality offset.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AliasValues {
+    pub flags: u32,
+    pub colour: [f32; 3],
+    pub intensity: f32,
+    pub radius: f32,
+    pub softness: f32,
+    pub spot: Option<[f32; 2]>,
+    pub ranged: bool,
+    pub scale: f32,
+    pub shadow_offset: i32,
+}
+
+impl AliasValues {
+    /// The alias copy of a light with its current state.
+    pub fn of(light: &Light, source: &LightSource) -> Self {
+        Self {
+            flags: light.flags,
+            colour: light.color,
+            intensity: source.intensity,
+            radius: light.radius,
+            softness: light.softness,
+            spot: light.spot,
+            ranged: light.ranged,
+            scale: source.scale,
+            shadow_offset: source.shadow_offset,
+        }
+    }
+
+    /// Copies the light's values onto every alias. The flags keep their low
+    /// byte (the original copies only the top byte) and the scale and spot
+    /// follow. Returns how many aliases were written.
+    pub fn sync(&self, aliases: &mut [AliasValues]) -> usize {
+        for alias in aliases.iter_mut() {
+            alias.flags = self.flags & 0xFF00_0000 | alias.flags & 0x00FF_FFFF;
+            alias.colour = self.colour;
+            alias.intensity = self.intensity;
+            alias.radius = self.radius;
+            alias.softness = self.softness;
+            alias.spot = self.spot;
+            alias.ranged = self.ranged;
+            alias.scale = self.scale;
+            alias.shadow_offset = self.shadow_offset;
+        }
+        aliases.len()
+    }
+}
+
 /// The scene's frame time for the flicker: whole milliseconds since the
 /// last frame, held to 0…[`FRAME_MS_CAP`].
 pub fn frame_ms(delta_ms: u128) -> f32 {
@@ -456,5 +581,61 @@ mod tests {
             rng.draw(),
             (f64::from(0x0808_8406u32) / 4_294_967_296.0) as f32
         );
+    }
+
+    fn light(flags: u32, intensity: f32, radius: f32, ranged: bool) -> Light {
+        Light {
+            flags,
+            color: [1.0, 0.5, 0.25],
+            multiplier: 1.0,
+            intensity,
+            radius,
+            softness: 0.25,
+            spot: None,
+            ranged,
+            animation: None,
+        }
+    }
+
+    #[test]
+    fn derived_light_values_follow_the_modern_gi_and_shadow_rules() {
+        let l = light(1, 4.0, 2.0, true);
+        let derived = DerivedLight::of(&l, 4.0);
+        let c = exa_render::material::linear_rgb([1.0, 0.5, 0.25]);
+        assert_eq!(derived.colour, [c.x * 4.0, c.y * 4.0, c.z * 4.0]);
+        assert_eq!(derived.gi_radius, 4.0f32.sqrt() * 2.0 * 3.0);
+        assert_eq!(derived.reach, 2.5);
+        assert_eq!(derived.shadow_strength, 0.4);
+        assert_eq!(derived.shadow_offset, 1);
+        assert_eq!((derived.shaping_y, derived.shaping_z), (1.0, 1.0));
+        let expected = (f64::from(derived.colour[2]) * 0.114
+            + (f64::from(derived.colour[1]) * 0.587 + f64::from(derived.colour[0]) * 0.299))
+            as f32;
+        assert_eq!(derived.luminance, expected);
+        // An unranged light reaches the far plane and has no shadow
+        // strength; a zero radius does not divide.
+        let l = light(0, 1.0, 0.0, false);
+        let derived = DerivedLight::of(&l, 1.0);
+        assert_eq!(derived.reach, UNRANGED_FAR);
+        assert_eq!(derived.shadow_strength, 0.0);
+    }
+
+    #[test]
+    fn alias_sync_copies_the_light_and_keeps_the_alias_low_flag_byte() {
+        let mut source = LightSource::new(1, 2.0);
+        source.activate();
+        source.set_scale(0.5);
+        let l = light(0x0100_0001, 2.0, 4.0, true);
+        let values = AliasValues::of(&l, &source);
+        let mut aliases = [AliasValues {
+            flags: 0x0000_00AB,
+            ..values
+        }];
+        assert_eq!(values.sync(&mut aliases), 1);
+        assert_eq!(aliases[0].flags, 0x0100_00AB);
+        assert_eq!(aliases[0].intensity, 1.0);
+        assert_eq!(aliases[0].scale, 0.5);
+        assert_eq!(aliases[0].shadow_offset, 1);
+        assert_eq!(aliases[0].colour, [1.0, 0.5, 0.25]);
     }
 }

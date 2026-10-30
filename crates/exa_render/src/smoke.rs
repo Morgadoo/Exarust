@@ -41,6 +41,78 @@ pub const STATE_KEY_MASK: u64 = 0x0003_C00F_0048_0008;
 /// The texture scroll's cycle, milliseconds.
 pub const SCROLL_PERIOD_MS: u64 = 80_000;
 
+/// A cached smoke program: the state key it was built for, and the program
+/// id (0 when the build is still running, `-1` when it failed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CachedProgram {
+    pub state: u64,
+    pub program: i32,
+}
+
+/// The smoke program cache: one entry per state key, created on first use.
+/// The original's entry also holds the program's uniform locations, which
+/// Exarust's material binding supplies instead.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProgramCache {
+    entries: Vec<CachedProgram>,
+}
+
+impl ProgramCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Finds the program for `state`, or builds it with `build` and stores
+    /// the result. A failed build is stored as `-1` and not retried.
+    pub fn get_or_build(&mut self, state: u64, build: impl FnOnce() -> Option<i32>) -> i32 {
+        if let Some(entry) = self.entries.iter().find(|e| e.state == state) {
+            return entry.program;
+        }
+        let program = build().unwrap_or(-1);
+        self.entries.push(CachedProgram { state, program });
+        program
+    }
+
+    /// The cached program for a state, if any.
+    pub fn get(&self, state: u64) -> Option<i32> {
+        self.entries
+            .iter()
+            .find(|e| e.state == state)
+            .map(|e| e.program)
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Frees every cached program.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+}
+
+/// How many times one mesh is drawn for the current supersampling pass
+/// count: once without supersampling, once per quadrant pass otherwise.
+pub fn quadrant_draws(supersample_passes: u32) -> u32 {
+    supersample_passes.max(1)
+}
+
+/// The viewport of one supersample quadrant inside a target twice the
+/// view's size: the pass count splits the target into the quadrant's cell
+/// (the original's per-pass viewport is set by the pass schedule; this is
+/// the plain tiling the icon and effect passes use).
+pub fn quadrant_viewport(width: u32, height: u32, quadrant: u32, passes: u32) -> [u32; 4] {
+    let passes = passes.max(1);
+    let cell_w = width / passes;
+    let cell_h = height / passes;
+    let q = quadrant % passes;
+    [q * cell_w, 0, cell_w, cell_h]
+}
+
 /// The smoke program's state key from a material state's 64-bit word.
 pub fn smoke_state_key(state: u64) -> u64 {
     state & STATE_KEY_MASK
@@ -147,5 +219,48 @@ mod tests {
             smoke_state_key(0x0002_0000_0040_0000),
             0x0002_0000_0040_0000
         );
+    }
+
+    #[test]
+    fn a_program_is_cached_per_state_and_a_failure_is_not_retried() {
+        let mut cache = ProgramCache::new();
+        let mut builds = 0;
+        assert_eq!(
+            cache.get_or_build(7, || {
+                builds += 1;
+                Some(42)
+            }),
+            42
+        );
+        assert_eq!(
+            cache.get_or_build(7, || {
+                builds += 1;
+                Some(99)
+            }),
+            42
+        );
+        assert_eq!(builds, 1);
+        assert_eq!(
+            cache.get_or_build(9, || {
+                builds += 1;
+                None
+            }),
+            -1
+        );
+        assert_eq!(cache.get(9), Some(-1));
+        assert_eq!(cache.get_or_build(9, || Some(100)), -1);
+        assert_eq!(cache.len(), 2);
+        cache.clear();
+        assert!(cache.is_empty());
+    }
+
+    #[test]
+    fn the_quadrant_count_is_one_without_supersampling() {
+        assert_eq!(quadrant_draws(0), 1);
+        assert_eq!(quadrant_draws(1), 1);
+        assert_eq!(quadrant_draws(4), 4);
+        assert_eq!(quadrant_viewport(800, 600, 0, 4), [0, 0, 200, 150]);
+        assert_eq!(quadrant_viewport(800, 600, 3, 4), [600, 0, 200, 150]);
+        assert_eq!(quadrant_viewport(800, 600, 9, 4), [200, 0, 200, 150]);
     }
 }
