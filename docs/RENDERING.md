@@ -2769,15 +2769,18 @@ rules in `exa_render::electricity` and a Bevy layer in `exa_world::arc`.
   missing record clears the item's arc effect) and always spawns the spark
   burst there, charged or not (`discharge`).
 - **Level tone.** The template selection's per-call values are in
-  `electric_tone`: the effect level (a negative level is zero), the brief
-  choice (level 5 never, below 3 always, 3 on an even roll, above 3 only
-  on a roll divisible by eight), the strength
-  `level·0.05 + scale + (1 − level·0.05)·curve` with the level term in
-  double and the sum clamped above at one (a not-a-number kept), the
-  opacity `0.7 − strength·0.6` blended with the node's own alpha as
-  `alpha·0.3 + node·0.7` (double) and overwritten for the brief effect by
-  `0.4 − curve·0.375`, the intensity `roll + level·0.4` in double, and the
-  template lifetime 0x16 (brief) or 0x44.
+  `electric_tone`: the effect level (a negative level is zero for the
+  arithmetic; the template choice reads it as passed), the brief choice
+  (`brief_effect`: level 5 never, below 3 always, 3 when the engine
+  generator's draw below 2 is 0, above 3 when its draw below 8 is 0), the
+  strength `(level·0.05 + scale) + (1 − level·0.05)·curve` with the level
+  term in double and the sum clamped above at one (a not-a-number kept),
+  the opacity `0.7 − strength·0.6` blended with a positive owner alpha as
+  `alpha·0.3 + owner·0.7` (double) and, for the peak tone (`peak_tone`:
+  level 5 with the owner's state word zero, never brief), redrawn as
+  `0.4 − curve·0.375` from a second curve sample (product in single,
+  difference in double), the intensity `roll + level·0.4` in double, and
+  the template lifetime 0x16 (brief) or 0x44. Nothing calls the tone yet.
 - **Geometry.** Each tendril is a polyline of `segments` points between the
   arc's ends (along +X, the segments end to end, unless a record or a
   device sets the direction and length), jittered inside them; each
