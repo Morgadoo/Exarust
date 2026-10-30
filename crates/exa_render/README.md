@@ -16,7 +16,7 @@ for map binding and the emissive's doubling), the program choice
 (`shading/shadeopt/shadehar/shadesss/shadetrl`), the shadow and displacement
 sample splits, the warm-up variants, the surface entry's `<set>_f` name
 rule, the height layer's one-texel switch-off and the sub-frame count;
-`shader_uniforms` the 252-byte `Global` block (the sub-frame offset times
+`shader_uniforms` the 252-byte `Global` block; the factory's shader-word level mask (`0x200000` below level 3, `0x800000` below level 4, the simplified word `& 0x600011`, the flat-colour bits 1–2); (the sub-frame offset times
 the frame scale in `ViewPos.w` and `TimeDlt.x`, `−scale/factor` in
 `TimeDlt.y`, the eye/sun-eye midpoint
 in `FogPos`, whose `w` is the scene height limit capping `y`), the 112-byte `Material` block, the per-light `vec4`s and the
@@ -76,9 +76,9 @@ Rules and evidence: [`docs/formats/FLB.md`](../../docs/formats/FLB.md) and
   without `MatSpc` in every program.
 - `shader_reload`: the `cshd` debug command's reload of the 12 embedded render shaders through the asset server (the original's command reloads its shader programs; Exarust has no file watcher, so this rebuilds the compiled-in sources).
 - `bound_sphere`: the original's smallest enclosing sphere (move-to-front over a support set of 1–4 points, in f64), which fits its sun shadow map; with the f32/f64 vector helpers ([`docs/RENDERING.md`](../../docs/RENDERING.md), Sun shadow fit).
-- `camera`: the camera node's 70° default and its near and far planes (100 and 12 500 engine units; 1 and 125 m; held as data, no camera applies them yet), and the 3D view's constructor values: exposure 1, bloom 1, post on, no scene camera slot ([`docs/RENDERING.md`](../../docs/RENDERING.md), Cameras).
+- `camera`: the camera node's 70° default and its near and far planes (100 and 12 500 engine units; 1 and 125 m; held as data, no camera applies them yet), and the 3D view's constructor values: exposure 1, bloom 1, post on, no scene camera slot, its flag word 0x0100C600 and the colour texture's class and 2D format words (no reader yet) ([`docs/RENDERING.md`](../../docs/RENDERING.md), Cameras).
 - `shadow_map`: the shadow-map plumbing, pinned by tests and not driving the renderer yet: the allocator's quality index and class pick by light kind, the size tables with the cube halving, shift and signed hardware cap, the separate draw-time cube sizing and its light offset, the pool of equally sized cube maps handed to lights, the base map-size slot, the directional map's near/far/mask/offset seeds and its 16-bit linear clamped compare sampler, the caster pass's cull face, the caster program selection, the shared cube texture pool (unused by the shipped game), and the directional view and orthographic matrices ([`docs/RENDERING.md`](../../docs/RENDERING.md), Lights).
-- `splines`: the thaumaturgy skill tree's lines: the pre-built 2 049-quad index table, strip coordinates, line widths, the tessellation with its chord normal, curvature term (join modes), vertex-index fade and extrapolated close, the 32-byte vertex layout and the line fragment rule in WGSL ([`docs/RENDERING.md`](../../docs/RENDERING.md), Skill-tree splines).
+- `splines`: the thaumaturgy skill tree's lines: the pre-built 2 049-quad index table, strip coordinates, line widths and the draw's uniform values (the three width terms, `y` summed in double, and the reciprocal viewport size), the tessellation with its chord normal, curvature term (join modes), vertex-index fade and extrapolated close, the 32-byte vertex layout and the line fragment rule in WGSL ([`docs/RENDERING.md`](../../docs/RENDERING.md), Skill-tree splines).
 - `glow`: `GlowMaterial`, the thaumaturgy effects' additive stand-in (vertex colour times a tint, both faces, no shadows) until their own programs are ported; the arcs, barricades and wisps draw with it ([`docs/THAUMATURGY.md`](../../docs/THAUMATURGY.md), Drawing).
 - `force_effects`: the Force effects' ported programs as materials — `ForceRibbonMaterial` (`effectforce_f`, `effecttorrent_f`, and the tendril's `effectsmoke_f` as its `smoke` variant) and `ForceShellMaterial` (`effectshell_v`/`effectshell_f` with the skinned 2 cm push) — with the records' blend word 0x163 (premultiplied) and the `_ForceNoise` texture and mip chain ([`docs/RENDERING.md`](../../docs/RENDERING.md), Force effects).
 - `sun_fit`: the orthographic region of the sun's one shadow map: in a terrain level the fitted mode's clipping planes (the camera's view direction picks them at the scene's edges and the level's floor and ceiling, cut with `exa_physics::intersect::ConvexVolume`), the corner merge, the 200 cm radius quantisation with its 0.3/0.1 step hysteresis, the texel-grid centre snap, the fixed ±8000 cm depth and the light's frame; in every other level the whole-scene mode's centre, radius, near and far, raised to the scene's 1 000 cm minimum extent. Both give the cascade matrices Bevy's shadow pass uses, the light's softness (with its 0.15 floor only in the fitted mode) and the render routine's caster bias (polygon offset `1 + 1000/h + 2000c'/h` with one unit, and the caster depth nudge); `SunFit` keeps the half extent between frames ([`docs/RENDERING.md`](../../docs/RENDERING.md), Sun shadow fit).
@@ -88,9 +88,10 @@ Rules and evidence: [`docs/formats/FLB.md`](../../docs/formats/FLB.md) and
 evaluated per voxel, with their uniforms, tracked from each shape entity's
 component; no effect registers one yet, so the pass also carries a white
 shape texel), draw box, program names, quad and shared uniforms, the three linked programs' sampler units and uniforms (`GiPass::layout`: `Shadow<i>` on 2 + i, `LVox` 0, `OVox` 1; the emission program sets only `OVox`), the neighbour margin copy's columns, UV offsets and quad, the dynamic update's dirty region, and the occupancy sub-upload
-(`GiOccupancyPatch`) a moving mesh's changed box goes out as. A voxel light carries the node's base colour, current and base intensity, base and active radius and flag word, with the 3× modern and double-precision 0.6 legacy colour paths, the activation copy and the clone copy.
+(`GiOccupancyPatch`) a moving mesh's changed box goes out as. A voxel light carries the node's base colour, current and base intensity, base and active radius and flag word, with the 3× modern and double-precision 0.6 legacy colour paths, the activation copy, the clone copy and the constructor's class 0x41 white unit-intensity default.
+- `post`: the original's grading chain (the fade and desaturation controls with their exact ramps, the two cached program variants the sharpen amount and shader-restore switch pick, the bloom filter's `(x²·24)` weight curve over one sample more than it uploads, with its doubled-sum normalisation and 1.5 or double `level·0.016 + 1` scale, and the pass's uniform values); the `post` files hold Exarust's Bevy implementation of the bloom/grade chain.
 - `image_noise`: the original's procedural noise: white noise from its
-  linear congruential sequence, byte octaves (the terrain's blend-rule
+  linear congruential sequence (whole maps and float row ranges), byte octaves (the terrain's blend-rule
   maps) and their ridge fold, ridged float octaves, and `NoiseField`, the
   animated field of the force and spirit powers ([`docs/RENDERING.md`](../../docs/RENDERING.md),
   Procedural noise).
@@ -123,7 +124,7 @@ shape texel), draw box, program names, quad and shared uniforms, the three linke
   dot products, lengths, powers, sines and cosines), the 512² texture of one
   byte value and its repeat/linear sampler, and the sixteen full-screen
   quads the measured scene draws ([`docs/UI.md`](../../docs/UI.md#gpu-benchmark)).
-- `passes`: the original's fixed frame walk (clear, alpha-tested and opaque
+- `passes`: the shader factory's list choice (the object word's alpha and shadow bits and the renderer's version pick one of six lists) and the material class's list selection (the `0x8000` alpha-tested bit picks the shadow list, the low nibble 0 the opaque list and 1–4 the blended one) with the id search the renderer's lookup runs, the original's fixed frame walk (clear, alpha-tested and opaque
   classes with depth writes, hook lists, the depth-biased decal class and
   blended per-sector lists with depth writes off, the particles' depth
   pre-pass and colour, the environment's weather), the blended list's
@@ -151,7 +152,7 @@ shape texel), draw box, program names, quad and shared uniforms, the three linke
 - `material`: the original's surface material, its programs and the
   `set_texture_bias` pass that a texture-quality change runs over every
   loaded material (the original sets the LOD bias on each bind).
-- `material_state`: the default material factory's type table (five built-ins, the reset and plug-in registration), its factory list (priority-ordered, every matching record called), the normal-map predicate, and the loader's diffuse scale order and gloss floor that `exa_assets` uses.
+- `material_state`: the default material factory's type table (five built-ins, the reset and plug-in registration; its masks and program classes are the ones `shader_program` uses, so the two cannot drift), its factory list (priority-ordered, every matching record called), the normal-map predicate, the loader's diffuse scale order, gloss floor and shared diffuse/specular colour slot, and the loader's transparency flag (refraction mode, or opacity above 0.8 in double with an opaque class not of nibble 1, cleared by the no-shadow bit); `exa_assets` uses the diffuse and gloss rules, the flag is a tested model (the draw path uses the blend word).
 - `smoke`: the original's `shadesmk_f` smoke and mist program
   (`shadesmk.wesl`, line for line without its fog and dither), its `UVOfst`
   scroll, state key and program cache, and the per-pass sub-view draw count
@@ -161,7 +162,7 @@ shape texel), draw box, program names, quad and shared uniforms, the three linke
   bloom), the twice-icon sRGB target with alpha for cut-outs, the
   destination RGBA8 image, the object-list walk, and the readback rows (not
   spawned yet; the item renderer is the live icon path).
-- `quads`: the data path of the original's 2-D immediate-draw batcher: the begin scale, flipped y, cumulative 16-level translation stack, texture coordinates and RGBA colours, the quad index template and line pairs, the projections, the six built-in vertex programs and their attribute locations (nothing draws a batch yet).
+- `quads`: the data path of the original's 2-D immediate-draw batcher: the begin scale, flipped y, cumulative 16-level translation stack, texture coordinates and RGBA colours, the quad and textured-quad conveniences, the quad index template and line pairs, the projections, the six built-in vertex programs, their attribute locations, the lazily built program slots and the vertex-format attribute switches. The GUI rasteriser uses the index template (`exa_ui::gui_draw`); its pixels stay in window space, so the clip projection and the vertex buffers are not on that path.
 
 ## Scope
 

@@ -12,6 +12,69 @@
 //!
 //! Rules: `docs/RENDERING.md` (Pass order).
 
+/// The per-material list a material record's class word is looked up in:
+/// the bit `0x8000` selects the shadow list whatever the low nibble;
+/// otherwise the low nibble `0` is the opaque list, `1` to `4` the blended
+/// list, and every other value has no list (the original returns nothing
+/// for it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MaterialList {
+    Opaque,
+    Shadow,
+    Blended,
+}
+
+/// The list a class word selects.
+pub fn material_list(class_word: u32) -> Option<MaterialList> {
+    if class_word & 0x8000 != 0 {
+        return Some(MaterialList::Shadow);
+    }
+    match class_word & 0xF {
+        0 => Some(MaterialList::Opaque),
+        1..=4 => Some(MaterialList::Blended),
+        _ => None,
+    }
+}
+
+/// The material factory's list a record joins (the registration beside
+/// [`material_list`]'s lookup): the renderer's shader version (1 or 2, from whether its
+/// second program list is empty) and the record's object word pick one of
+/// six lists. The alpha bit `0x10000` takes list 3; the shadow bit `0x8000`
+/// list 1 on version 1, else list 2; the low nibble 0 takes list 1 on
+/// version 1, list 3 on version 2 (list 4 on a version 3 the factory never
+/// builds) and 1–4 take list 5 on version 1, list 6 on versions 2 and 3.
+/// Returns the list's index (1–6), or `None` for no record.
+pub fn factory_list(version: u32, object: u32) -> Option<u8> {
+    let version = version.clamp(1, 3);
+    if object & 0x1_0000 != 0 {
+        return Some(match version {
+            1 | 2 => 3,
+            _ => 4,
+        });
+    }
+    if object & 0x8000 == 0 {
+        return Some(match (object & 0xF, version) {
+            (0, 1) => 1,
+            (0, 2) => 3,
+            (0, _) => 4,
+            (1..=4, 1) => 5,
+            (1..=4, _) => 6,
+            _ => return None,
+        });
+    }
+    Some(match version {
+        1 => 2,
+        2 => 3,
+        _ => 4,
+    })
+}
+
+/// The entry of one class list holding material `id`, searched from the
+/// first in order; `None` when the list does not hold it.
+pub fn find_class_entry(entries: &[u32], id: u32) -> Option<usize> {
+    entries.iter().position(|&entry| entry == id)
+}
+
 /// One slot of the renderer's fixed frame walk, in the order the original
 /// draws it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -868,5 +931,34 @@ mod tests {
         assert!(ParticleStage::Colour.writes_colour());
         assert!(ParticleStage::TexturedDepth.writes_depth());
         assert!(!ParticleStage::TexturedDepth.writes_colour());
+    }
+    #[test]
+    fn a_class_word_picks_its_material_list_and_the_id_is_found_in_order() {
+        assert_eq!(material_list(0x000), Some(MaterialList::Opaque));
+        assert_eq!(material_list(0x101), Some(MaterialList::Blended));
+        assert_eq!(material_list(0x102), Some(MaterialList::Blended));
+        assert_eq!(material_list(0x103), Some(MaterialList::Blended));
+        assert_eq!(material_list(0x104), Some(MaterialList::Blended));
+        assert_eq!(material_list(0x105), None);
+        assert_eq!(material_list(0x8004), Some(MaterialList::Shadow));
+        assert_eq!(material_list(0x8000), Some(MaterialList::Shadow));
+        assert_eq!(material_list(0xFFFF_8000), Some(MaterialList::Shadow));
+        assert_eq!(find_class_entry(&[4, 7, 9], 7), Some(1));
+        assert_eq!(find_class_entry(&[4, 7, 9], 5), None);
+        assert_eq!(find_class_entry(&[], 0), None);
+    }
+    #[test]
+    fn the_shader_factory_picks_its_list_from_the_object_word_and_version() {
+        assert_eq!(factory_list(1, 0), Some(1));
+        assert_eq!(factory_list(2, 0), Some(3));
+        assert_eq!(factory_list(3, 0), Some(4));
+        assert_eq!(factory_list(1, 1), Some(5));
+        assert_eq!(factory_list(2, 1), Some(6));
+        assert_eq!(factory_list(2, 4), Some(6));
+        assert_eq!(factory_list(1, 5), None);
+        assert_eq!(factory_list(1, 0x8000), Some(2));
+        assert_eq!(factory_list(2, 0x8000), Some(3));
+        assert_eq!(factory_list(1, 0x1_0000), Some(3));
+        assert_eq!(factory_list(2, 0x1_0000 | 0x8000), Some(3));
     }
 }

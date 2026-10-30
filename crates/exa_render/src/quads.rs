@@ -16,8 +16,9 @@
 //! picked by the vertex-format word ([`builtin_for`], [`BUILTIN_SHADERS`]),
 //! with the projection [`NORMALIZED_PROJECTION`] for these 0..1 vertices or
 //! [`QuadBatcher::projection`] for raw pixel vertices. Exarust keeps the
-//! arithmetic as data and turns a batch into a Bevy `Mesh`; nothing draws
-//! one yet.
+//! arithmetic as data and turns a batch into a Bevy `Mesh`. The GUI's CPU
+//! rasteriser takes the same quads in window pixels and uses the index
+//! template directly ([`QUAD_INDICES`]); it never enters clip space.
 //!
 //! Rules: `docs/RENDERING.md` (pixel-space batcher).
 
@@ -291,6 +292,79 @@ impl QuadBatcher {
         batch.colours.truncate(whole);
         batch
     }
+
+    /// Adds a four-vertex quad in pixel coordinates: the default texture
+    /// coordinates, then the corners in top-left/top-right/bottom-right/
+    /// bottom-left order (the order [`QUAD_INDICES`] expects). An Exarust
+    /// convenience over the batcher's own calls; the original's callers
+    /// issue the vertex calls themselves.
+    pub fn quad(&mut self, left: f32, top: f32, right: f32, bottom: f32) {
+        self.quad_texcoords_default();
+        self.vertex(left, top);
+        self.vertex(right, top);
+        self.vertex(right, bottom);
+        self.vertex(left, bottom);
+    }
+
+    /// [`Self::quad`] with its own texture-coordinate rectangle, the four
+    /// coordinates in the same vertex order.
+    pub fn quad_uv(&mut self, left: f32, top: f32, right: f32, bottom: f32, uv: [[f32; 2]; 4]) {
+        self.quad_texcoords(uv);
+        self.vertex(left, top);
+        self.vertex(right, top);
+        self.vertex(right, bottom);
+        self.vertex(left, bottom);
+    }
+}
+
+/// The attribute switches one vertex-format change makes, in the original's
+/// order: position (always enabled when the old word did not have it), the
+/// texture channel (attribute 1), the second texture channel (4) and the
+/// colour (3). Each entry is the attribute location and whether to enable
+/// it. A word with `0x10`, `0x20` or `0x4` enables that channel, without it
+/// disables it.
+pub fn format_switches(old: u32, new: u32) -> Vec<(u32, bool)> {
+    let mut out = Vec::new();
+    if old & 1 == 0 {
+        out.push((0, true));
+    }
+    for (bit, location) in [(0x10, 1), (0x20, 4), (0x4, 3)] {
+        if old & bit != new & bit {
+            out.push((location, new & bit != 0));
+        }
+    }
+    out
+}
+
+/// The six built-in programs' lazily created handles, in the order
+/// [`builtin_for`] picks them. A slot is built on first use and kept; a
+/// build that returns `None` leaves the slot empty, so the next call tries
+/// again (the original's zero handle does the same).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BuiltinPrograms {
+    slots: [Option<u64>; 6],
+}
+
+impl BuiltinPrograms {
+    /// The program for a vertex-format word, building it through `build`
+    /// when the slot is still empty. The build receives the slot index and
+    /// its shader source; `None` leaves the slot empty.
+    pub fn get_or_build(
+        &mut self,
+        word: u32,
+        mut build: impl FnMut(usize, &'static str) -> Option<u64>,
+    ) -> Option<u64> {
+        let slot = builtin_for(word);
+        if self.slots[slot].is_none() {
+            self.slots[slot] = build(slot, BUILTIN_SHADERS[slot]);
+        }
+        self.slots[slot]
+    }
+
+    /// The handle in one slot, if built.
+    pub fn slot(&self, slot: usize) -> Option<u64> {
+        self.slots.get(slot).copied().flatten()
+    }
 }
 
 /// The six built-in immediate-draw vertex programs, as the original stores
@@ -462,6 +536,74 @@ mod tests {
         b.translate(400.0, 300.0);
         let m = b.projection();
         assert!(m.w_axis.x.abs() < 1e-6 && m.w_axis.y.abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_quad_helper_adds_four_corners_and_their_texture_coordinates() {
+        let mut b = QuadBatcher::new();
+        b.begin(0, 0, 100, 100);
+        b.set_colour([1, 2, 3, 4]);
+        b.quad(10.0, 20.0, 50.0, 80.0);
+        let batch = b.flush();
+        assert_eq!(
+            batch.positions,
+            [
+                [10.0 * 0.01, 80.0 * 0.01, 0.0],
+                [50.0 * 0.01, 80.0 * 0.01, 0.0],
+                [50.0 * 0.01, 20.0 * 0.01, 0.0],
+                [10.0 * 0.01, 20.0 * 0.01, 0.0]
+            ]
+        );
+        assert_eq!(batch.uvs, QUAD_TEXCOORDS);
+        assert_eq!(batch.colours, [[1, 2, 3, 4]; 4]);
+        assert_eq!(batch.indices, QUAD_INDICES.map(u16::from));
+        // Its own coordinates, in the same vertex order.
+        b.begin(0, 0, 100, 100);
+        b.quad_uv(0.0, 0.0, 10.0, 10.0, QUAD_TEXCOORDS);
+        assert_eq!(b.flush().uvs, QUAD_TEXCOORDS);
+    }
+
+    #[test]
+    fn a_format_word_change_switches_only_its_channels() {
+        // From bare positions to textured and coloured: texture 1 then
+        // colour 3, both enabled.
+        assert_eq!(
+            format_switches(0, 0x14),
+            vec![(0, true), (1, true), (3, true)]
+        );
+        // Position already on: nothing for it.
+        assert_eq!(format_switches(1, 0x10), vec![(1, true)]);
+        // Removing a channel, and the second texture channel.
+        assert_eq!(format_switches(0x14, 0x34), vec![(0, true), (4, true)]);
+        assert_eq!(
+            format_switches(0x34, 0x4),
+            vec![(0, true), (1, false), (4, false)]
+        );
+        // A colour channel is added and removed.
+        assert_eq!(format_switches(0x10, 0x14), vec![(0, true), (3, true)]);
+        // No change: nothing.
+        assert!(format_switches(0x11, 0x11).is_empty());
+    }
+
+    #[test]
+    fn the_builtin_programs_are_built_once_per_slot() {
+        let mut programs = BuiltinPrograms::default();
+        let mut builds = 0;
+        let first = programs.get_or_build(0x10, |slot, source| {
+            builds += 1;
+            assert_eq!(slot, 1);
+            assert!(source.contains("vrTex"));
+            Some(7)
+        });
+        assert_eq!(first, Some(7));
+        assert_eq!(builds, 1);
+        // The same word reuses the slot.
+        assert_eq!(programs.get_or_build(0x10, |_, _| Some(9)), Some(7));
+        assert_eq!(builds, 1);
+        assert_eq!(programs.slot(1), Some(7));
+        // A failed build is retried.
+        assert_eq!(programs.get_or_build(0x4, |_, _| None), None);
+        assert_eq!(programs.get_or_build(0x4, |_, _| Some(8)), Some(8));
     }
 
     #[test]

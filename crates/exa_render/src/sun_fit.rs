@@ -27,7 +27,8 @@
 //!   engine's convex-volume clip ([`exa_physics::intersect::ConvexVolume`]).
 //! - The corners are merged within 0.1 cm² and scaled by 0.01 (the
 //!   centimetre world into the metre units the sphere solver is tuned for),
-//!   and the fitted centre and radius are multiplied by 100 again.
+//!   and the fitted centre and radius are multiplied by 100 again
+//!   ([`volume_corners`], [`fitted_sphere`]).
 //! - The radius becomes `200·round(r/200 + 0.4)`; the conversion is the
 //!   processor's (nearest, ties to even; a NaN or an out-of-range value gives
 //!   the lowest integer, [`convert_nearest`]). A step is taken only when the
@@ -46,9 +47,10 @@
 //! the render routine are computed and returned ([`SunFit::caster_bias`])
 //! but Bevy's shadow pass has no caster-side bias state of its own; the
 //! softness the update writes into the sun's light is computed
-//! ([`sun_softness`]) and can be read by a shader filter, but Bevy's
-//! directional shadows have no filter-radius uniform without its PCSS
-//! feature. Rules: `docs/RENDERING.md` (Sun shadow fit).
+//! ([`sun_softness`], [`whole_scene_softness`]) and can be read by a shader
+//! filter, but Bevy's directional shadows have no filter-radius uniform
+//! without its PCSS feature. The eight-tap `SdwSmp` upload itself is
+//! [`crate::shader_bindings::SHADOW_TAPS`]. Rules: `docs/RENDERING.md` (Sun shadow fit).
 //!
 //! Evidence: the procedure listings and decompiler dump of the component, the
 //! vector helpers they call (squared distance, normalise, negate, scale,
@@ -277,6 +279,39 @@ fn normalised(v: Vec3) -> Vec3 {
         return Vec3::ZERO;
     }
     v * squared.sqrt().recip()
+}
+
+/// The light's view matrix, column-major as the original stores it: the
+/// rows are `right = dir × up_hint` and `up = right × dir` (each normalised
+/// by the engine's normalise) and `dir`, and the translation is
+/// `(−right·origin, −up·origin, −dir·origin)`, so a point maps to its three
+/// dot products. The caller passes the light's travel direction and an up
+/// hint; `origin` is the point the map centres on.
+pub fn light_view_matrix(dir: Vec3, up_hint: Vec3, origin: Vec3) -> Mat4 {
+    let right = normalised(dir.cross(up_hint));
+    let up = normalised(right.cross(dir));
+    Mat4::from_cols(
+        Vec4::new(right.x, up.x, dir.x, 0.0),
+        Vec4::new(right.y, up.y, dir.y, 0.0),
+        Vec4::new(right.z, up.z, dir.z, 0.0),
+        Vec4::new(-right.dot(origin), -up.dot(origin), -dir.dot(origin), 1.0),
+    )
+}
+
+/// The light's orthographic projection for a box spanning
+/// `min`..`max`: `2/(max − min)` on the three axes and the translation
+/// `−(max + min)/(max − min)`, the depth left in the engine's [−1, 1]
+/// convention, column-major.
+pub fn orthographic_matrix(min: Vec3, max: Vec3) -> Mat4 {
+    let span = max - min;
+    let mut m = Mat4::IDENTITY.to_cols_array();
+    m[0] = 2.0 / span.x;
+    m[5] = 2.0 / span.y;
+    m[10] = 2.0 / span.z;
+    m[12] = -(max.x + min.x) / span.x;
+    m[13] = -(max.y + min.y) / span.y;
+    m[14] = -((max.z + min.z) / span.z);
+    Mat4::from_cols_array(&m)
 }
 
 /// The camera's view volume from its eight frustum corners, cm, in the order
@@ -1158,5 +1193,42 @@ mod tests {
         fit.apply_softness(0.0);
         assert_eq!(fit.caster_softness, 1.125);
         assert!((fit.caster_bias().polygon_factor - (1.0 + 1.0 / 3.0 + 0.75)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_light_view_matrix_holds_the_basis_as_rows() {
+        // dir -Z with the up hint +Y: right = -Z × Y = +X, up = X × -Z = +Y.
+        let origin = Vec3::new(10.0, 20.0, 30.0);
+        let m = light_view_matrix(Vec3::NEG_Z, Vec3::Y, origin);
+        assert_eq!(m.row(0), Vec4::new(1.0, 0.0, 0.0, -10.0));
+        assert_eq!(m.row(1), Vec4::new(0.0, 1.0, 0.0, -20.0));
+        assert_eq!(m.row(2), Vec4::new(0.0, 0.0, -1.0, 30.0));
+        // A tilted direction: the rows (not the columns) are the basis, so
+        // a point maps to its dot products with right, up and dir.
+        let dir = Vec3::new(0.0, -0.6, -0.8);
+        let m = light_view_matrix(dir, Vec3::Y, Vec3::ZERO);
+        let right = normalised(dir.cross(Vec3::Y));
+        let up = normalised(right.cross(dir));
+        let p = Vec3::new(3.0, 5.0, 7.0);
+        let v = m * p.extend(1.0);
+        assert_eq!(v.truncate(), Vec3::new(right.dot(p), up.dot(p), dir.dot(p)));
+        assert_eq!(m.x_axis, Vec4::new(right.x, up.x, dir.x, 0.0));
+    }
+
+    #[test]
+    fn the_orthographic_matrix_maps_the_box_to_the_unit_cube() {
+        let min = Vec3::new(-100.0, -50.0, -200.0);
+        let max = Vec3::new(100.0, 150.0, 200.0);
+        let m = orthographic_matrix(min, max);
+        assert_eq!(m.x_axis.x, 2.0 / 200.0);
+        assert_eq!(m.y_axis.y, 2.0 / 200.0);
+        assert_eq!(m.z_axis.z, 2.0 / 400.0);
+        assert_eq!(m.w_axis.x, 0.0);
+        assert_eq!(m.w_axis.y, -0.5);
+        assert_eq!(m.w_axis.z, 0.0);
+        let p = m * Vec4::new(100.0, 150.0, 200.0, 1.0);
+        assert!((p.x - 1.0).abs() < 1e-6);
+        assert!((p.y - 1.0).abs() < 1e-6);
+        assert!((p.z - 1.0).abs() < 1e-6);
     }
 }

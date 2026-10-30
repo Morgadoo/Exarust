@@ -81,17 +81,11 @@ pub const SHADER_KEY_MASK: u32 = 0x0043_CB7F;
 
 /// The plug-in mask of each material type: the record bits the material
 /// factory takes.
-pub const PLUGIN_MASKS: [u32; 5] = [
-    0x01FE_001F,
-    0x09FE_031F,
-    0x0040_0018,
-    0x09FE_001F,
-    0x09FE_001F,
-];
+pub const PLUGIN_MASKS: [u32; 5] = crate::material_state::BUILTIN_MASKS;
 
 /// The program class each material type's plug-in starts the shader word
 /// with.
-pub const PLUGIN_CLASSES: [u32; 5] = [0, 1, 2, 3, 6];
+pub const PLUGIN_CLASSES: [u32; 5] = crate::material_state::BUILTIN_CLASSES;
 
 /// The five surface programs of the material shader set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -155,6 +149,29 @@ pub fn program_for_shader_word(word: u32) -> SurfaceProgram {
 /// this returns `None` for it.
 pub fn surface_entry(set: &str) -> Option<String> {
     (set.len() < 15).then(|| format!("{set}_f"))
+}
+
+/// The shader word the renderer's factory keeps for a shading level: from
+/// the record's object word, bit `0x200000` is cleared
+/// below level 3 and bit `0x800000` below level 4. When the renderer's
+/// simplified-shader flag is set the *original* word masked with `0x600011`
+/// is returned instead; when its flat-colour flag is set the level-masked
+/// word has bits 1 and 2 cleared.
+pub fn shader_word_for_level(level: u32, object: u32, simplified: bool, flat: bool) -> u32 {
+    let mut word = object;
+    if level < 3 {
+        word &= !0x20_0000;
+    }
+    if level < 4 {
+        word &= !0x80_0000;
+    }
+    if simplified {
+        return object & 0x60_0011;
+    }
+    if flat {
+        word &= !0b110;
+    }
+    word
 }
 
 /// The material type of a record: the low byte of its kind word (`0x50`).
@@ -1518,5 +1535,30 @@ mod tests {
         assert_eq!(draw_passes(0, 0, 0), 0);
         // An empty list's last index −1 halves to 0: one pass.
         assert_eq!(draw_passes(0, HALF_PASSES, 3), 1);
+    }
+    #[test]
+    fn the_factory_masks_the_shader_word_by_the_shading_level() {
+        let object = 0x60_0017;
+        // Level 3 keeps both bits, level 2 clears 0x200000, level 1 both.
+        assert_eq!(shader_word_for_level(4, object, false, false), object);
+        assert_eq!(shader_word_for_level(3, object, false, false), object);
+        assert_eq!(
+            shader_word_for_level(2, object, false, false),
+            object & !0x20_0000
+        );
+        assert_eq!(
+            shader_word_for_level(1, object, false, false),
+            object & !0xA0_0000
+        );
+        // The simplified-shader flag returns the original word masked.
+        assert_eq!(
+            shader_word_for_level(1, object, true, false),
+            object & 0x60_0011
+        );
+        // The flat-colour flag clears bits 1 and 2 of the level-masked word.
+        assert_eq!(
+            shader_word_for_level(1, object, false, true),
+            (object & !0xA0_0000) & !0b110
+        );
     }
 }

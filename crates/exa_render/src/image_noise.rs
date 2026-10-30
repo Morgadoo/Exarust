@@ -75,6 +75,24 @@ pub fn ridge_byte(v: u8) -> u8 {
     round_f64(d * d * 255.0) as u8
 }
 
+/// Fills rows `from..to` of a `width`-wide float map with white noise:
+/// `width·(to − from)` draws continuing `seed`, written from
+/// the row `from` on. Returns the generator's state.
+pub fn white_noise_float_rows(
+    out: &mut [f32],
+    width: usize,
+    from: usize,
+    to: usize,
+    seed: u32,
+) -> u32 {
+    let start = width.saturating_mul(from);
+    let len = width.saturating_mul(to.saturating_sub(from));
+    let Some(slice) = out.get_mut(start..start.saturating_add(len)) else {
+        return seed;
+    };
+    white_noise_floats(slice, seed)
+}
+
 /// Folds every byte of a map by [`ridge_byte`].
 pub fn ridge_bytes(map: &mut [u8]) {
     for v in map {
@@ -682,5 +700,19 @@ mod tests {
             assert_eq!(out[row * 5 + 4], out[row * 5]);
         }
         assert_eq!(out[20..25], out[0..5]);
+    }
+    #[test]
+    fn white_noise_fills_the_requested_rows_only() {
+        let mut map = [9.0f32; 8];
+        // Rows 1..3 of a 2-wide map: the four middle values.
+        let state = white_noise_float_rows(&mut map, 2, 1, 3, 0);
+        assert_eq!(map[0..2], [9.0, 9.0]);
+        assert_eq!(map[6..8], [9.0, 9.0]);
+        let mut expected = [0.0f32; 4];
+        let expected_state = white_noise_floats(&mut expected, 0);
+        assert_eq!(state, expected_state);
+        assert_eq!(map[2..6], expected);
+        // A range past the map leaves it alone.
+        assert_eq!(white_noise_float_rows(&mut map, 2, 5, 7, 1), 1);
     }
 }

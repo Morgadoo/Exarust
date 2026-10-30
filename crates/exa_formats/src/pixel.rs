@@ -1068,4 +1068,21 @@ mod tests {
         assert_eq!(mip_conversion(0x813B_C600), None);
         assert_eq!(mip_conversion(id::LF), None);
     }
+    #[test]
+    fn the_four_channel_order_formats_keep_their_names_and_fallbacks() {
+        // The original registers BGR8/BGRA8/ZYX8/ZYXV8 in its second table,
+        // each with the plain format as its fallback and its own converter.
+        for (id, name, fallback, source) in [
+            (id::BGR8, "BGR8", id::RGB8, Source::Bgr),
+            (id::BGRA8, "BGRA8", id::RGBA8, Source::Bgra),
+            (id::ZYX8, "ZYX8", id::XYZ8, Source::Zyx),
+            (id::ZYXV8, "ZYXV8", id::XYZV8, Source::Zyxv),
+        ] {
+            let f = lookup(id).expect("registered");
+            assert_eq!(f.name, name);
+            assert_eq!(f.fallback, fallback);
+            assert_eq!(f.source, source);
+        }
+        assert!(lookup(0x1234_5678).is_none());
+    }
 }

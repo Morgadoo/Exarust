@@ -753,10 +753,18 @@ fn triangles(draw: GuiDraw, count: usize) -> Vec<[usize; 3]> {
     let mut out = Vec::new();
     match draw {
         GuiDraw::Quads => {
+            // The original's quad template, the one the immediate-draw
+            // batcher's index buffer is filled with: six indices, two
+            // triangles.
             let mut i = 0;
             while i + 3 < count {
-                out.push([i, i + 1, i + 2]);
-                out.push([i, i + 2, i + 3]);
+                for triangle in exa_render::quads::QUAD_INDICES.as_chunks::<3>().0 {
+                    out.push([
+                        i + usize::from(triangle[0]),
+                        i + usize::from(triangle[1]),
+                        i + usize::from(triangle[2]),
+                    ]);
+                }
                 i += 4;
             }
         }

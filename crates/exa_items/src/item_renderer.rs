@@ -17,6 +17,8 @@
 //! Evidence: the renderer's constructor, its image allocator and its
 //! destroy (`docs/RENDERING.md`, item icons).
 
+use bevy::math::Vec3;
+
 /// The icon size global's start value, in pixels.
 pub const ICON_SIZE: i32 = 160;
 /// The alpha global's start value: set, so the screen-quad pass draws the
@@ -231,9 +233,35 @@ pub fn frame_distance(half: [f32; 3], framing: f32, fov_degrees: f32) -> f32 {
         let bent = (f64::from(r) * 0.11 + 1.0) - f64::from(lift);
         h = (f64::from(framing) * bent) as f32;
     }
-    let tan = (f64::from(fov_degrees) * std::f64::consts::PI / 360.0).tan();
-    let distance = (f64::from(h) / tan) as f32;
+    let sin = (f64::from(fov_degrees) * std::f64::consts::PI / 360.0).sin();
+    let distance = (f64::from(h) / sin) as f32;
     half[2] * weight + distance
+}
+
+/// Where the scene fit puts the node it moves (the view's eye node): the
+/// box's centre plus the direction from that node's old world position
+/// towards the view node's, times [`frame_distance`]. The original first
+/// sets the node's position to the centre, then adds the direction it
+/// measured before, normalised with the engine's normalise (the squares
+/// summed `(x² + z²) + y²`, times the approximate reciprocal square root;
+/// a zero direction stays zero).
+pub fn frame_node(
+    centre: Vec3,
+    eye: Vec3,
+    view: Vec3,
+    half: [f32; 3],
+    framing: f32,
+    fov_degrees: f32,
+) -> Vec3 {
+    let distance = frame_distance(half, framing, fov_degrees);
+    let d = view - eye;
+    let sum = d.y * d.y + (d.x * d.x + d.z * d.z);
+    let direction = if sum == 0.0 {
+        Vec3::ZERO
+    } else {
+        d * exa_formats::rfc::reciprocal_sqrt(sum)
+    };
+    centre + direction * distance
 }
 
 /// A 3 × 4 row-major transform: three rows of `[x, y, z, w]`.
@@ -549,13 +577,13 @@ mod tests {
         // 5 cm across at the 70 cm framing: r = 1/14, the half becomes
         // 70 · ((r · 0.11 + 1) − 1/(8r + 1)) = 26.0045, over tan(20°), plus
         // the depth half at weight 1.
-        assert!((frame_distance([5.0, 2.0, 1.0], 70.0, 40.0) - 72.446_91).abs() < 1.0e-3);
+        assert!((frame_distance([5.0, 2.0, 1.0], 70.0, 40.0) - 77.032_20).abs() < 1.0e-3);
         // The second cross half wins only when the first is below it, and
         // halves the depth weight; a half above the framing is not bent.
-        assert!((frame_distance([2.0, 50.0, 10.0], 30.0, 40.0) - 142.373_87).abs() < 1.0e-3);
+        assert!((frame_distance([2.0, 50.0, 10.0], 30.0, 40.0) - 151.190_22).abs() < 1.0e-3);
         // Equal halves keep the first and its full depth weight.
         let equal = frame_distance([0.5, 0.5, 0.5], 0.3, 40.0);
-        assert!((equal - (0.5 / 20.0f64.to_radians().tan() + 0.5) as f32).abs() < 1.0e-5);
+        assert!((equal - (0.5 / 20.0f64.to_radians().sin() + 0.5) as f32).abs() < 1.0e-5);
         // An unordered half takes neither branch: the framing is not above
         // it, so the distance is unordered too, never a panic.
         assert!(frame_distance([f32::NAN, 1.0, 1.0], 70.0, 40.0).is_nan());
@@ -590,6 +618,22 @@ mod tests {
             (2.0001, 3.0001)
         );
         assert!(projected_extents(&[], &IDENTITY).is_none());
+    }
+
+    #[test]
+    fn the_scene_fit_puts_its_node_at_the_centre_plus_the_old_direction() {
+        // The node sat 10 m down +Z from the view node: the direction to
+        // the view is -Z, so the node lands the fit distance from the box's
+        // centre along -Z, wherever it was before.
+        let centre = Vec3::new(5.0, 6.0, 7.0);
+        let eye = Vec3::new(0.0, 0.0, 1000.0);
+        let view = Vec3::ZERO;
+        let moved = frame_node(centre, eye, view, [5.0, 5.0, 5.0], 70.0, 40.0);
+        let distance = frame_distance([5.0, 5.0, 5.0], 70.0, 40.0);
+        let unit = exa_formats::rfc::reciprocal_sqrt(1_000_000.0) * -1000.0;
+        assert_eq!(moved, centre + Vec3::new(0.0, 0.0, unit) * distance);
+        // A node at the view node's position has no direction: the centre.
+        assert_eq!(frame_node(centre, view, view, [5.0; 3], 70.0, 40.0), centre);
     }
 
     #[test]

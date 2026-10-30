@@ -525,6 +525,54 @@ traced, so Exarust scales the part's emissive colour, on a material copy
 of the part's own). A light at rest leaves its mesh as loaded. Per-sector
 light aliases are not reproduced.
 
+The light's derived values (`LightSource::direct_colour`, `derive`,
+`node_colour`, `update`) are a tested model, not yet consumed by the
+shader path. An update clamps an intensity under 2⁻²³ to zero (an ordered
+compare: a NaN stays) and then:
+
+- the direct colour is the light's colour times `√intensity · 0.75` in the
+  legacy workflow, or the linearised colour times the intensity in the
+  linear one;
+- the second colour slot is the direct colour, or black when the light
+  node's flags word (`flags2`, not the body's flicker and fade bits)
+  carries `0x20000`; without that bit the derive adds it to the running
+  colour sum, which the update then replaces by the direct colour and
+  takes its Rec. 601 luma (`exa_formats::colour::luma`, red first);
+- the GI colour is the direct colour times the record's multiplier, or
+  black with node flag `0x10000`;
+- the light node's own colour is the linearised colour times
+  `√intensity · multiplier · 3` (linear) or `√(intensity · multiplier) · 0.6`
+  (legacy, the 0.6 in double);
+- the reach is the radius while the multiplier is at least 2⁻²³ (a NaN
+  multiplier keeps it too, as the unordered compare does), else zero; a
+  reach that moved by more than one sets pending bit 2 and every update
+  sets bit 4, the shadow links' rebuild flags.
+
+A light alias's reach (`exa_world::light_alias`) is the original's
+per-node weighting, a tested model with no caller yet: the plain test is
+the luma of the alias and node colours against the alias's 0.01 cutoff;
+the gated test (behind the cell flood when the light's flags carry
+`0x2000000`) adds the sphere overlap, the oriented-box distance under the
+light radius, the falloff distance (the box distance, or the squared
+sphere shell when that is larger), `max(1 − d·falloff, 0)⁴`, the spot's
+vertical blend from the box's lowest point and
+`max((2^(t·cone) − 1)·exponent, 0)` with the engine's fast logarithm and
+exponential, the intensity gate, the colour-product luma times the
+unscaled weight, and the six-face shadow mask (each face cleared when the
+node lies beyond it by more than the node's bounding radius).
+`SpotShape::of` builds the light's three spot constants from the record's
+`(q, p)`: `1/(2^(p+1) − 1)` with the same fast functions, the flat factor
+`sin(q·π/2)/2` (or `3 − 3/cos(q·π/2)` below zero) in double, and `p + 1`.
+The cell flood that answers the gate is the scene-node unit's; the alias's
+field copy and construction are not modelled beyond these values. The sun
+map's two matrix builders are `sun_fit::light_view_matrix` (rows
+`dir × up_hint`, `right × dir` and `dir`, column-major, with the negated
+dot products as the translation) and `sun_fit::orthographic_matrix` (the box's `2/span`
+scales and `−(max + min)/span` translation). The cube map's size comes from
+the quality word through `shadow_map::cube_draw_settings` (the table
+halved, the softness and the high-detail flag), and its pooled face size is
+that key.
+
 ## Surfaces
 
 `exa_render::material::ExaMaterial` with `exa.wesl` reproduces the main lit
@@ -582,7 +630,10 @@ of the loaded slots, a list of objects waiting to be freed and the slot of
 from the last to the first and falls back to `_Default` for an unknown name
 or unreadable data. Dropping a count below zero is an error; reaching zero
 queues the object for freeing and empties its slot
-(`exa_assets::material_manager`, bookkeeping only, not driven by the loader).
+(`exa_assets::material_manager`, bookkeeping only, not driven by the
+loader; it also answers whether a provider can give a material's data and
+whether any provider knows the name, the two presence probes the original's
+own provider and import pass use).
 An unknown name in Exarust shades with the `_Default` record, shared by all
 such names.
 
@@ -3135,8 +3186,11 @@ after it [guess: the near plane]. The render starts the camera node at
 extents h (the second only when the first is below it, which also halves
 the depth weight), bent toward F while F is above it,
 `h = F·((r·0.11 + 1) − 1/(8r + 1))` with `r = h/F`, then
-`distance = h / tan(fov/2) + depth half · weight`; the camera moves to that
-distance from the box's centre along +Z. A small item thus draws small in
+`distance = h / sin(fov/2) + depth half · weight` (the runtime's sine, as
+the original divides by it); the camera moves to that distance from the
+box's centre along +Z. The engine's fit itself puts the node it moves at
+the box's centre plus the old direction from that node to the view node,
+times the distance (`item_renderer::frame_node`, a tested model). A small item thus draws small in
 its cell and one at least F across fills it. The plan's screen scale is
 the perspective scale, `icon · 1/tan(fov/2) / distance · 0.5` [guess: the
 view's scale field read as `1/tan(fov/2)`], so the plan's extents are the

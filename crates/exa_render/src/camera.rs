@@ -104,6 +104,16 @@ impl CameraNode {
 /// side, above and in front of the origin, looking at a target node at the
 /// origin. The viewers that own a view set their own pose afterwards.
 pub const VIEW_CAMERA_START: [f32; 3] = [-300.0, 200.0, 500.0];
+/// The point the view's camera looks at when built (the origin).
+pub const VIEW_CAMERA_TARGET: [f32; 3] = [0.0, 0.0, 0.0];
+/// The view's flag word, 0x0100_C600 as constructed (no reader yet).
+pub const VIEW_FLAGS: u32 = 0x0100_C600;
+/// The colour texture's class word for a linear workflow (alpha global
+/// clear) and for the sRGB one.
+pub const VIEW_TEXTURE_WORD_LINEAR: u32 = 0x333;
+pub const VIEW_TEXTURE_WORD_SRGB: u32 = 0x233;
+/// The colour texture's format word: a 2D target.
+pub const VIEW_TEXTURE_FORMAT: u32 = 0x2000_0000;
 
 /// A rendered 3D view (the game's, the icon renderer's, the item viewer's)
 /// as its constructor leaves it: exposure 1, bloom strength 1, post on and
@@ -121,6 +131,12 @@ pub struct ViewSettings {
     /// The slot of the scene camera list the view's camera is registered
     /// in: -1 until a scene binds it.
     pub scene_slot: i32,
+    /// The view's flag word: 0x0100_C600 as constructed.
+    pub flags: u32,
+    /// The colour texture's class word (`0x333` linear, `0x233` sRGB).
+    pub texture_word: u32,
+    /// The colour texture's format word: a 2D target.
+    pub texture_format: u32,
 }
 
 impl Default for ViewSettings {
@@ -130,6 +146,9 @@ impl Default for ViewSettings {
             bloom: 1.0,
             post: true,
             scene_slot: -1,
+            flags: VIEW_FLAGS,
+            texture_word: VIEW_TEXTURE_WORD_SRGB,
+            texture_format: VIEW_TEXTURE_FORMAT,
         }
     }
 }
@@ -180,5 +199,14 @@ mod tests {
         assert_eq!(v.scene_slot, -1);
         assert!(!v.binds_camera());
         assert!(ViewSettings { scene_slot: 0, ..v }.binds_camera());
+    }
+    #[test]
+    fn a_view_carries_the_constructor_s_flags_and_texture_words() {
+        let v = ViewSettings::default();
+        assert_eq!(v.flags, 0x0100_C600);
+        assert_eq!(v.texture_word, 0x233);
+        assert_eq!(v.texture_format, 0x2000_0000);
+        assert_eq!(VIEW_CAMERA_TARGET, [0.0, 0.0, 0.0]);
+        assert_eq!(VIEW_CAMERA_START, [-300.0, 200.0, 500.0]);
     }
 }

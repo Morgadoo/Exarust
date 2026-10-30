@@ -14,6 +14,7 @@ use bevy::math::Vec3;
 use exa_ai::search::quick_asin;
 
 use crate::thaum::engine::{length, normalize, sin_cos};
+use exa_physics::intersect::{Obb, point_obb_distance_squared, segment_sphere, spheres_separated};
 
 /// Orbit and camera-look sensitivity on a screen 1920 pixels wide (rad per
 /// pixel); [`orbit_per_pixel`] gives it for any width.
@@ -471,6 +472,308 @@ pub fn lift_out_of_geometry(
     contacts.into_iter().fold(centre, |centre, point| {
         centre + hit_offset(centre, point, radius)
     })
+}
+
+/// The four movement keys of the free camera, by the original's key codes:
+/// A and D strafe along the camera's right axis, S and W along its forward
+/// axis.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PanKeys {
+    pub left: bool,
+    pub right: bool,
+    pub back: bool,
+    pub forward: bool,
+}
+
+/// The free camera's movement vector for one tick: A subtracts the right
+/// axis, D adds it, S subtracts the forward axis and W adds it (the
+/// original adds and subtracts its frame's third row, which points back),
+/// each in single precision in that order, then the controller's movement
+/// vector `bias` is added. When the controller asks for it the height is
+/// zeroed and the vector normalised, but only when its squared length
+/// `(x² + y²) + z²` is above 2⁻²³ (an unordered length is left alone).
+/// Engine units.
+pub fn pan_input(right: Vec3, forward: Vec3, keys: PanKeys, bias: Vec3, normalise: bool) -> Vec3 {
+    let mut vector = Vec3::ZERO;
+    if keys.left {
+        vector -= right;
+    }
+    if keys.right {
+        vector += right;
+    }
+    if keys.back {
+        vector -= forward;
+    }
+    if keys.forward {
+        vector += forward;
+    }
+    vector += bias;
+    if normalise {
+        vector.y = 0.0;
+        let squared = (vector.x * vector.x + vector.y * vector.y) + vector.z * vector.z;
+        if squared > KICK_EPSILON {
+            vector = normalize(vector);
+        }
+    }
+    vector
+}
+
+/// The zoom spring's stored state: the spring value, its value the tick
+/// before, the target, the largest change per tick, the pull rate and the
+/// range the spring may not fall under half of.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ZoomSpring {
+    pub motion: f32,
+    pub previous: f32,
+    pub target: f32,
+    pub step: f32,
+    pub rate: f32,
+    pub half_range: f32,
+}
+
+impl ZoomSpring {
+    /// One tick: the change `(target − motion)·rate − last` (`last` the
+    /// motion's own last move), held to `step` unless its size is below it
+    /// (a single-precision compare; a NaN is held), carried by the last
+    /// move; a carried move above 0.0002 (compared in double) adds
+    /// `carried·0.998` in double to the motion, anything else (a NaN too)
+    /// snaps the motion to the target. The motion never falls under half
+    /// the range.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+    pub fn step(&mut self) {
+        let last = self.motion - self.previous;
+        self.previous = self.motion;
+        let mut change = (self.target - self.motion) * self.rate - last;
+        if !(change.abs() < self.step) {
+            change = (self.step / change.abs()) * change;
+        }
+        let carried = last + change;
+        if f64::from(carried.abs()) > 0.0002 {
+            self.motion = (f64::from(carried) * 0.998 + f64::from(self.motion)) as f32;
+        } else {
+            self.motion = self.target;
+            self.previous = self.motion;
+        }
+        let half = self.half_range * 0.5;
+        if half > self.motion {
+            self.motion = half;
+            self.previous = self.motion;
+        }
+    }
+}
+
+/// The shown zoom's snap: a target within 0.001 (the gap in single, the
+/// compare in double; an unordered gap too) takes the target at once,
+/// otherwise the spring runs ([`ZoomSpring::step`]).
+pub fn zoom_snap(shown: f32, target: f32) -> f32 {
+    let gap = (target - shown).abs();
+    if f64::from(gap) > 0.001 {
+        shown
+    } else {
+        target
+    }
+}
+
+/// The follow tether of the free camera: the looked-at point is held near
+/// its anchor, the offset's height ignored. Without the radial flag an axis
+/// whose offset is past its limit is held at `sign(offset)·limit + anchor`
+/// (x and z each); with it, an offset past the radius is scaled onto the
+/// radius, the height kept. Engine units; the squared length sums
+/// `(x² + y²) + z²`, and every compare is ordered.
+pub fn focus_tether(
+    anchor: Vec3,
+    focus: Vec3,
+    limit_x: f32,
+    limit_z: f32,
+    radius: Option<f32>,
+) -> Vec3 {
+    let mut offset = focus - anchor;
+    offset.y = 0.0;
+    match radius {
+        Some(radius) => {
+            let squared = (offset.x * offset.x + offset.y * offset.y) + offset.z * offset.z;
+            if radius * radius < squared {
+                let held = anchor + offset * (radius / squared.sqrt());
+                Vec3::new(held.x, focus.y, held.z)
+            } else {
+                focus
+            }
+        }
+        None => {
+            let mut held = focus;
+            if offset.x.abs() > limit_x {
+                held.x = sign_or_zero(offset.x) * limit_x + anchor.x;
+            }
+            if offset.z.abs() > limit_z {
+                held.z = sign_or_zero(offset.z) * limit_z + anchor.z;
+            }
+            held
+        }
+    }
+}
+
+/// One tick of the free camera's drift: its change since the last tick is
+/// carried at 0.96 and the sum kept at 0.99 (both single), while either the
+/// change squared passes 1e-7 or the velocity squared passes 1e-4 (each
+/// summed `(x² + y²) + z²`, compared in double; an unordered change falls
+/// to the second test). A still camera zeroes both. Returns the new
+/// velocity and the one it replaces.
+pub fn pan_velocity(current: Vec3, previous: Vec3) -> (Vec3, Vec3) {
+    let change = current - previous;
+    let change_sq = (change.x * change.x + change.y * change.y) + change.z * change.z;
+    let current_sq = (current.x * current.x + current.y * current.y) + current.z * current.z;
+    if f64::from(change_sq) > 1e-7 || f64::from(current_sq) > 0.0001 {
+        let carried = current + change * 0.96;
+        (carried * 0.99, current)
+    } else {
+        (Vec3::ZERO, Vec3::ZERO)
+    }
+}
+
+/// A mesh the camera's scene walks test, as the original's node reads it:
+/// its class word, its two flag words, the owner pointer's presence and
+/// the blocking word, plus the mesh frame's origin and the oriented box
+/// with its bounding radius. Engine units; the box is in the sector's
+/// space and contacts are in mesh space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ProbeMesh {
+    /// The node's class word (its `0x89` bits mark a drawn mesh).
+    pub flags: u32,
+    /// The node's flags word: `0x200000` (both walks), `0x10000000` (the
+    /// wall probe) and the `0x70000000` kind the probe's face test reads.
+    pub render_flags: u32,
+    /// The node's state word (`0x1000000` in the wall probe).
+    pub feature_flags: u32,
+    /// The node's owner pointer is set.
+    pub owned: bool,
+    /// The node's blocking word (bit 0 skips it in the wall probe).
+    pub blocking: u32,
+    /// The mesh frame's origin in sector space.
+    pub offset: Vec3,
+    /// The box's centre in sector space.
+    pub centre: Vec3,
+    /// The box's half extents.
+    pub half: Vec3,
+    /// The box's unit axes, as rows.
+    pub axes: [Vec3; 3],
+    /// The box's bounding radius.
+    pub radius: f32,
+}
+
+impl Default for ProbeMesh {
+    fn default() -> Self {
+        Self {
+            flags: 0,
+            render_flags: 0,
+            feature_flags: 0,
+            owned: false,
+            blocking: 0,
+            offset: Vec3::ZERO,
+            centre: Vec3::ZERO,
+            half: Vec3::ZERO,
+            axes: [Vec3::X, Vec3::Y, Vec3::Z],
+            radius: 0.0,
+        }
+    }
+}
+
+/// A sector the camera's walks visit: its visible bit (the wall probe
+/// reads it; the lift walks every sector), its frame and its meshes.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ProbeSector {
+    /// The sector's visible bit.
+    pub visible: bool,
+    /// The sector frame's origin in scene space.
+    pub offset: Vec3,
+    pub meshes: Vec<ProbeMesh>,
+}
+
+/// The camera's per-tick lift of its looked-at point out of the scene: for
+/// every sector, in the sector's space, each mesh whose class word holds
+/// `0x89` and whose flags word holds `0x200000` is asked when the point's
+/// ball meets its bounding sphere and the box is within reach
+/// ([`mesh_in_reach`] on the squared distance to the oriented box); `lift`
+/// receives the mesh index and the point in mesh space and returns the
+/// lifted point and whether a contact moved it. A moved point is taken
+/// back into sector space, and a sector whose meshes moved it hands it
+/// back to the scene.
+pub fn lift_out_of_scene(
+    point: Vec3,
+    radius: f32,
+    sectors: &[ProbeSector],
+    mut lift: impl FnMut(usize, Vec3) -> (Vec3, bool),
+) -> Vec3 {
+    let mut point = point;
+    for sector in sectors {
+        let mut local = point - sector.offset;
+        let mut moved = false;
+        for (index, mesh) in sector.meshes.iter().enumerate() {
+            if mesh.flags & 0x89 != 0x89 || mesh.render_flags & 0x20_0000 == 0 {
+                continue;
+            }
+            if spheres_separated(local, radius, mesh.centre, mesh.radius) {
+                continue;
+            }
+            let obb = Obb::new(mesh.centre, mesh.half, mesh.axes);
+            if !mesh_in_reach(radius, point_obb_distance_squared(local, &obb)) {
+                continue;
+            }
+            let (lifted, hit) = lift(index, local - mesh.offset);
+            if hit {
+                local = lifted + mesh.offset;
+                moved = true;
+            }
+        }
+        if moved {
+            point = local + sector.offset;
+        }
+    }
+    point
+}
+
+/// Whether the wall probe hits anything in the scene: in each visible
+/// sector, the meshes whose class word holds `0x89`, whose flags word holds
+/// `0x10000000` and `0x200000`, whose state word holds `0x1000000`, that
+/// have no owner, whose bounding sphere the probe's segment meets
+/// ([`segment_sphere`]) and that do not block are asked through `hit` (the
+/// mesh index, the mesh-space start and segment, and the segment's length);
+/// the first that reports a face ends the walk. The original asks a mesh
+/// of flags kind `0x50000000` through a different face callback than the
+/// others; `hit` stands for both. Engine units.
+pub fn probe_scene_hit(
+    start: Vec3,
+    direction: Vec3,
+    length: f32,
+    sectors: &[ProbeSector],
+    mut hit: impl FnMut(usize, Vec3, Vec3, f32) -> bool,
+) -> bool {
+    let segment = direction * length;
+    for sector in sectors {
+        if !sector.visible {
+            continue;
+        }
+        let local = start - sector.offset;
+        for (index, mesh) in sector.meshes.iter().enumerate() {
+            if mesh.flags & 0x89 != 0x89
+                || mesh.render_flags & 0x1000_0000 == 0
+                || mesh.feature_flags & 0x0100_0000 == 0
+                || mesh.owned
+                || mesh.render_flags & 0x20_0000 == 0
+            {
+                continue;
+            }
+            if !segment_sphere(local, segment, mesh.centre, mesh.radius) {
+                continue;
+            }
+            if mesh.blocking & 1 != 0 {
+                continue;
+            }
+            if hit(index, local - mesh.offset, segment, length) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// One camera frame's ticks, as the original's integer clock runs them: the
@@ -1925,5 +2228,256 @@ mod tests {
         let mut bare = NavController::new(PresetFields::default(), 0, false);
         assert!(!bare.viewport_callback_saved && bare.destructor_installed);
         assert!(!bare.release());
+    }
+
+    #[test]
+    fn the_free_camera_keys_add_right_and_forward_in_order() {
+        let right = Vec3::X;
+        let forward = Vec3::Z;
+        let keys = PanKeys {
+            right: true,
+            forward: true,
+            ..PanKeys::default()
+        };
+        assert_eq!(
+            pan_input(right, forward, keys, Vec3::ZERO, false),
+            Vec3::new(1.0, 0.0, 1.0)
+        );
+        // A and S subtract, and the controller's vector is added last.
+        let keys = PanKeys {
+            left: true,
+            back: true,
+            ..PanKeys::default()
+        };
+        assert_eq!(
+            pan_input(right, forward, keys, Vec3::new(0.5, 1.0, -0.5), false),
+            Vec3::new(-0.5, 1.0, -1.5)
+        );
+        // Normalising zeroes the height first and needs a length past 2^-23.
+        let normalised = pan_input(
+            right,
+            forward,
+            PanKeys::default(),
+            Vec3::new(3.0, 7.0, 4.0),
+            true,
+        );
+        assert_eq!(normalised.y, 0.0);
+        assert_eq!(normalised, normalize(Vec3::new(3.0, 0.0, 4.0)));
+        assert_eq!(
+            pan_input(right, forward, PanKeys::default(), Vec3::Y, true),
+            Vec3::ZERO
+        );
+    }
+
+    #[test]
+    fn the_zoom_spring_snaps_within_a_thousandth() {
+        assert_eq!(zoom_snap(10.0, 10.0005), 10.0005);
+        assert_eq!(zoom_snap(10.0, 10.002), 10.0);
+        assert!(zoom_snap(10.0, f32::NAN).is_nan());
+        // last = 0.1, change = (1 − 0.5)·1 − 0.1 = 0.4, carried 0.5, and the
+        // double 0.998 product added to the old motion.
+        let mut spring = ZoomSpring {
+            motion: 0.5,
+            previous: 0.4,
+            target: 1.0,
+            step: 10.0,
+            rate: 1.0,
+            half_range: 0.0,
+        };
+        spring.step();
+        assert_eq!(spring.motion, (f64::from(0.5f32) * 0.998 + 0.5) as f32);
+        assert_eq!(spring.previous, 0.5);
+        // A change over the step is held to it: target 100, last 0, step 2.
+        let mut spring = ZoomSpring {
+            motion: 0.0,
+            previous: 0.0,
+            target: 100.0,
+            step: 2.0,
+            rate: 1.0,
+            half_range: 0.0,
+        };
+        spring.step();
+        assert_eq!(spring.motion, (2.0f64 * 0.998) as f32);
+        // A carried move of at most 0.0002 snaps to the target.
+        let mut spring = ZoomSpring {
+            motion: 1.0,
+            previous: 1.0,
+            target: 1.0001,
+            step: 10.0,
+            rate: 1.0,
+            half_range: 0.0,
+        };
+        spring.step();
+        assert_eq!((spring.motion, spring.previous), (1.0001, 1.0001));
+        // A NaN rate: the held change is NaN, which snaps to the target.
+        let mut spring = ZoomSpring {
+            motion: 1.0,
+            previous: 1.0,
+            target: 3.0,
+            step: 10.0,
+            rate: f32::NAN,
+            half_range: 0.0,
+        };
+        spring.step();
+        assert_eq!(spring.motion, 3.0);
+        // The motion never falls under half the range.
+        let mut spring = ZoomSpring {
+            motion: 2.0,
+            previous: 2.0,
+            target: -100.0,
+            step: 1000.0,
+            rate: 1.0,
+            half_range: 10.0,
+        };
+        spring.step();
+        assert_eq!(spring.motion, 5.0);
+    }
+
+    #[test]
+    fn the_follow_tether_holds_each_axis_at_its_signed_limit() {
+        let held = focus_tether(Vec3::ZERO, Vec3::new(500.0, 7.0, 0.0), 50.0, 50.0, None);
+        assert_eq!(held, Vec3::new(50.0, 7.0, 0.0));
+        // The sign follows the offset.
+        let held = focus_tether(
+            Vec3::new(10.0, 0.0, 10.0),
+            Vec3::new(0.0, 7.0, -400.0),
+            50.0,
+            50.0,
+            None,
+        );
+        assert_eq!(held, Vec3::new(0.0, 7.0, -40.0));
+        // Inside the limit the point stays.
+        assert_eq!(
+            focus_tether(Vec3::ZERO, Vec3::new(0.4, 0.0, 0.4), 0.5, 0.5, None),
+            Vec3::new(0.4, 0.0, 0.4)
+        );
+        // The radial form keeps the height and scales to the radius.
+        let held = focus_tether(
+            Vec3::ZERO,
+            Vec3::new(300.0, 7.0, 400.0),
+            0.0,
+            0.0,
+            Some(100.0),
+        );
+        assert_eq!(held, Vec3::new(300.0 * 0.2, 7.0, 400.0 * 0.2));
+        assert_eq!(
+            focus_tether(
+                Vec3::ZERO,
+                Vec3::new(30.0, 0.0, 40.0),
+                0.0,
+                0.0,
+                Some(100.0)
+            ),
+            Vec3::new(30.0, 0.0, 40.0)
+        );
+    }
+
+    #[test]
+    fn the_free_camera_drift_carries_ninety_six_percent() {
+        let (current, previous) = pan_velocity(Vec3::new(0.001, 0.0, 0.0), Vec3::ZERO);
+        assert_eq!(current.x, (0.001f32 + 0.001 * 0.96) * 0.99);
+        assert_eq!(previous, Vec3::new(0.001, 0.0, 0.0));
+        let (current, previous) = pan_velocity(Vec3::ZERO, Vec3::ZERO);
+        assert_eq!((current, previous), (Vec3::ZERO, Vec3::ZERO));
+        // An unordered change falls to the velocity test, which a NaN
+        // velocity fails too.
+        let (current, _) = pan_velocity(Vec3::NAN, Vec3::ZERO);
+        assert_eq!(current, Vec3::ZERO);
+    }
+
+    #[test]
+    fn the_cut_away_lift_walks_every_sector() {
+        let mesh = ProbeMesh {
+            flags: 0x89,
+            render_flags: 0x20_0000,
+            radius: 1.0,
+            centre: Vec3::ZERO,
+            half: Vec3::new(10.0, 10.0, 10.0),
+            ..ProbeMesh::default()
+        };
+        // The sector's visible bit is not read by the lift.
+        let sectors = [ProbeSector {
+            visible: false,
+            offset: Vec3::new(100.0, 0.0, 0.0),
+            meshes: vec![mesh],
+        }];
+        // The point sits at the mesh origin and the contact at x = 2: the
+        // 20 cm ball moves the point 18 cm the other way.
+        let lifted = lift_out_of_scene(Vec3::new(100.0, 0.0, 0.0), 20.0, &sectors, |_, point| {
+            assert_eq!(point, Vec3::ZERO);
+            (
+                lift_out_of_geometry(point, 20.0, [Vec3::new(2.0, 0.0, 0.0)]),
+                true,
+            )
+        });
+        assert_eq!(
+            lifted,
+            Vec3::new(100.0, 0.0, 0.0) + lift_out_of_geometry(Vec3::ZERO, 20.0, [Vec3::X * 2.0])
+        );
+        // A mesh without 0x200000 in its flags word, or whose class word is
+        // not 0x89, is skipped; so is one whose sphere the ball misses.
+        for skipped in [
+            ProbeMesh {
+                render_flags: 0,
+                ..mesh
+            },
+            ProbeMesh {
+                flags: 0x88,
+                ..mesh
+            },
+            ProbeMesh {
+                centre: Vec3::new(0.0, 500.0, 0.0),
+                ..mesh
+            },
+        ] {
+            let sectors = [ProbeSector {
+                visible: true,
+                offset: Vec3::ZERO,
+                meshes: vec![skipped],
+            }];
+            let lifted = lift_out_of_scene(Vec3::ZERO, 20.0, &sectors, |_, p| (p + Vec3::X, true));
+            assert_eq!(lifted, Vec3::ZERO);
+        }
+    }
+
+    #[test]
+    fn the_wall_probe_skips_owned_and_blocking_meshes() {
+        let mesh = ProbeMesh {
+            flags: 0x89,
+            render_flags: 0x1000_0000 | 0x20_0000,
+            feature_flags: 0x0100_0000,
+            radius: 10.0,
+            centre: Vec3::new(0.0, 0.0, 50.0),
+            ..ProbeMesh::default()
+        };
+        let probe = |mesh: ProbeMesh, start: Vec3, visible: bool| {
+            let sectors = [ProbeSector {
+                visible,
+                offset: Vec3::ZERO,
+                meshes: vec![mesh],
+            }];
+            probe_scene_hit(start, Vec3::Z, 100.0, &sectors, |_, _, _, _| true)
+        };
+        assert!(probe(mesh, Vec3::ZERO, true));
+        // A hidden sector is skipped.
+        assert!(!probe(mesh, Vec3::ZERO, false));
+        assert!(!probe(
+            ProbeMesh {
+                owned: true,
+                ..mesh
+            },
+            Vec3::ZERO,
+            true
+        ));
+        assert!(!probe(
+            ProbeMesh {
+                blocking: 1,
+                ..mesh
+            },
+            Vec3::ZERO,
+            true
+        ));
+        // A segment that misses the bounding sphere never asks the faces.
+        assert!(!probe(mesh, Vec3::new(100.0, 0.0, 0.0), true));
     }
 }

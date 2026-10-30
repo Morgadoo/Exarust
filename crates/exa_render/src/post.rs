@@ -159,6 +159,104 @@ pub fn fade_values(clock: u32, control: FadeControl, base_desaturation: f32) -> 
     }
 }
 
+/// One bloom blur kernel as the filter uploads it: the first `taps`
+/// weights and `taps − 1`, the loop's last index.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BloomKernel {
+    pub weights: Vec<f32>,
+    pub last: i32,
+}
+
+/// The bloom filter's weights for `n` samples: `x = (3n − i)/3n − 0.4375`
+/// (the `3n` an integer product converted once), `w = x²·24`, summed with
+/// the first weight once and every other twice. The legacy workflow scales
+/// each normalised weight by 1.5 in single precision; the linear one by
+/// `level·0.016 + 1`, the scale and the product in double.
+pub fn bloom_weights(n: usize, level: f32, linear: bool) -> Vec<f32> {
+    let three = (n as i64 * 3) as f32;
+    let mut weights = Vec::with_capacity(n);
+    let mut sum = 0.0f32;
+    for i in 0..n {
+        let x = (three - i as f32) / three - 0.4375;
+        let w = x * x * 24.0;
+        weights.push(w);
+        sum += if i < 1 { w } else { w * 2.0 };
+    }
+    for w in &mut weights {
+        *w = if linear {
+            ((f64::from(level) * 0.016 + 1.0) * f64::from(*w / sum)) as f32
+        } else {
+            *w / sum * 1.5
+        };
+    }
+    weights
+}
+
+/// The bloom kernel for a tap count the original rounds from a float with
+/// the processor's 64-bit conversion (nearest, ties to even; an
+/// out-of-range value gives the integer indefinite, whose low 32 bits are
+/// zero). The filter computes one weight more than it uploads: the curve
+/// spans `taps + 1` samples and the first `taps` are kept.
+pub fn bloom_kernel(taps: f32, level: f32, linear: bool) -> BloomKernel {
+    let taps = crate::sun_fit::convert_nearest(f64::from(taps)) as i32;
+    let computed = usize::try_from(taps.wrapping_add(1)).unwrap_or(0);
+    let mut weights = bloom_weights(computed, level, linear);
+    weights.truncate(usize::try_from(taps).unwrap_or(0));
+    BloomKernel {
+        weights,
+        last: taps.wrapping_sub(1),
+    }
+}
+
+/// Which of the two cached post programs the pass runs: the bright variant
+/// (the sharpen and desaturation uniforms active) when the sharpen amount,
+/// widened to double, is above 0.01 (a NaN is not) and the shader-restore
+/// switch is clear, else the plain one. Each variant keeps its own program
+/// and uniform locations; a missing program is fetched once and
+/// remembered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostVariant {
+    Plain,
+    Bright,
+}
+
+/// The variant for a sharpen amount and the renderer's shader-restore
+/// switch.
+pub fn post_variant(sharpness: f32, restore_shaders: bool) -> PostVariant {
+    if f64::from(sharpness) > 0.01 && !restore_shaders {
+        PostVariant::Bright
+    } else {
+        PostVariant::Plain
+    }
+}
+
+/// The two variants' cached program ids and uniform locations; `None`
+/// until the variant is first fetched.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PostPrograms {
+    plain: Option<u32>,
+    bright: Option<u32>,
+}
+
+impl PostPrograms {
+    /// The program for a variant, fetched through `fetch` and remembered.
+    pub fn get(&mut self, variant: PostVariant, fetch: impl FnOnce() -> u32) -> u32 {
+        let slot = match variant {
+            PostVariant::Plain => &mut self.plain,
+            PostVariant::Bright => &mut self.bright,
+        };
+        *slot.get_or_insert_with(fetch)
+    }
+
+    /// The cached program of a variant.
+    pub fn cached(&self, variant: PostVariant) -> Option<u32> {
+        match variant {
+            PostVariant::Plain => self.plain,
+            PostVariant::Bright => self.bright,
+        }
+    }
+}
+
 /// The original's post-processing settings, on a 3D camera.
 #[derive(Component, ExtractComponent, ShaderType, Clone, Copy, Debug)]
 #[extract_app(RenderApp)]
@@ -587,5 +685,67 @@ mod fade_tests {
             (done.bloom, done.desaturation, done.weight),
             (0.0, 0.75, 1.0)
         );
+    }
+    #[test]
+    fn the_post_params_pick_the_bright_variant() {
+        assert_eq!(post_variant(0.9375, false), PostVariant::Bright);
+        assert_eq!(post_variant(0.01, false), PostVariant::Plain);
+        assert_eq!(post_variant(0.0, false), PostVariant::Plain);
+        assert_eq!(post_variant(0.9375, true), PostVariant::Plain);
+        assert_eq!(post_variant(f32::NAN, false), PostVariant::Plain);
+        let mut programs = PostPrograms::default();
+        let mut fetches = 0;
+        assert_eq!(
+            programs.get(PostVariant::Bright, || {
+                fetches += 1;
+                7
+            }),
+            7
+        );
+        assert_eq!(
+            programs.get(PostVariant::Bright, || {
+                fetches += 1;
+                9
+            }),
+            7
+        );
+        assert_eq!(fetches, 1);
+        assert_eq!(programs.cached(PostVariant::Plain), None);
+    }
+    #[test]
+    fn the_bloom_kernel_weights_follow_the_original_curve() {
+        // Five samples: x = (15 − i)/15 − 0.4375, w = x²·24, doubled except
+        // the first, normalised and scaled by 1.5.
+        let weights = bloom_weights(5, 0.0, false);
+        let raw: Vec<f32> = (0..5)
+            .map(|i| {
+                let x = (15.0 - i as f32) / 15.0 - 0.4375;
+                x * x * 24.0
+            })
+            .collect();
+        let mut sum = raw[0];
+        for r in &raw[1..] {
+            sum += r * 2.0;
+        }
+        for (w, r) in weights.iter().zip(&raw) {
+            assert_eq!(*w, r / sum * 1.5);
+        }
+        // The linear workflow scales by level·0.016 + 1 in double.
+        let linear = bloom_weights(5, 4.0, true);
+        assert_eq!(
+            linear[0],
+            ((4.0f64 * 0.016 + 1.0) * f64::from(raw[0] / sum)) as f32
+        );
+        // Five taps: the curve spans six samples and five are uploaded.
+        let kernel = bloom_kernel(5.4, 0.0, false);
+        assert_eq!(kernel.last, 4);
+        assert_eq!(kernel.weights, bloom_weights(6, 0.0, false)[..5]);
+        assert_eq!(bloom_kernel(5.5, 0.0, false).last, 5);
+        assert_eq!(bloom_kernel(6.5, 0.0, false).last, 5);
+        assert!(bloom_kernel(0.0, 0.0, false).weights.is_empty());
+        // An indefinite count keeps its low 32 bits: no taps, last −1.
+        let kernel = bloom_kernel(f32::NAN, 0.0, false);
+        assert!(kernel.weights.is_empty());
+        assert_eq!(kernel.last, -1);
     }
 }

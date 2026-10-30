@@ -61,6 +61,29 @@ pub fn line_widths(width: f32) -> [f32; 3] {
     [x, y, z]
 }
 
+/// The line draw's uniform values: the three width values ([`line_widths`])
+/// and the reciprocal viewport width and height in single precision.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SplineUniforms {
+    pub widths: [f32; 3],
+    pub inv_width: f32,
+    pub inv_height: f32,
+}
+
+/// The uniforms of a strip drawn at `width` into the viewport rectangle
+/// `(left, top, right, bottom)` in pixels: the reciprocal of its width and
+/// height, each difference widened to 64 bits and narrowed before the
+/// division, as the original does.
+pub fn line_uniforms(width: f32, viewport: [i32; 4]) -> SplineUniforms {
+    let inv_width = 1.0 / (i64::from(viewport[2]) - i64::from(viewport[0])) as f32;
+    let inv_height = 1.0 / (i64::from(viewport[3]) - i64::from(viewport[1])) as f32;
+    SplineUniforms {
+        widths: line_widths(width),
+        inv_width,
+        inv_height,
+    }
+}
+
 /// The fragment rule of the built-in line program, as a WGSL function. The
 /// vertex stage passes the texture coordinate, the curvature term and the
 /// colour (bytes scaled by 0.003921568, the original's constant, not an
@@ -462,5 +485,17 @@ mod tests {
         assert_eq!(&bytes[20..24], &[0, 0, 0, 0]);
         assert_eq!(&bytes[24..28], &[7, 8, 9, 10]);
         assert_eq!(&bytes[28..32], &[0, 0, 0, 0]);
+    }
+    #[test]
+    fn the_line_uniforms_are_single_precision() {
+        let widths = line_widths(0.1);
+        assert_eq!(widths[0], 0.1f32 * 0.5 + (0.1f32 * 4.0).sqrt());
+        // y is summed in double and rounded once.
+        assert_eq!(widths[1], -((f64::from(0.1f32) * 0.3 + 0.15) as f32));
+        assert_eq!(widths[2], (0.1f32 * 6.0).sqrt());
+        let u = line_uniforms(0.1, [0, 0, 1920, 1080]);
+        assert_eq!(u.inv_width, 1.0 / 1920.0f32);
+        assert_eq!(u.inv_height, 1.0 / 1080.0f32);
+        assert_eq!(u.widths, widths);
     }
 }
