@@ -2550,6 +2550,12 @@ popup and the character view still wait for their hosts.
   the inventory toggle), armoured with the pack's style and attribute
   words; Escape, the inventory key and the scroll arrows run the window's
   rules, and the arena's store fills the columns.
+- **Popups** (`exa_ui::popups`): the item card fades in and out on a 256-unit
+  squared curve, brings its task child to the front once its shown clock is
+  reached (or a fade-in already past it ends) and gates its hit test on that
+  placement; a close request of −1 stores −3 in the result slot, and a
+  request of 0 on a visible card without the keep-open bit starts a plain
+  256-unit fade-out from now rather than closing.
 - **Icons** (`exa_items::icon_cache`, `exa_items::item_gui`): one icon per
   item and variant (lit models by their condition byte), counted by
   reference; 40 units square; framed at 70 (30 for apparel, 20 close),

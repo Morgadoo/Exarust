@@ -61,12 +61,14 @@ pub struct PopupFade {
     pub state: u8,
     /// The clock value the current fade ends at.
     pub fade_at: u32,
-    /// The clock value from which the card counts as shown (its page hook
-    /// runs once when the clock reaches it during the fade-in). A separate
-    /// field from [`fade_at`](Self::fade_at); the code that sets it is outside
-    /// this unit.
+    /// The clock value from which the card counts as placed (the task brings
+    /// its child to the front once when the clock reaches it, and again when
+    /// a fade-in that was already past it ends). A separate field from
+    /// [`fade_at`](Self::fade_at); the code that sets it is outside this
+    /// unit.
     pub shown_at: u32,
-    pub shown: bool,
+    /// The card has been brought to the front once.
+    pub placed: bool,
 }
 
 /// One fade step.
@@ -74,8 +76,8 @@ pub struct PopupFade {
 pub struct PopupFrame {
     pub alpha: f32,
     pub close: bool,
-    /// The card just became fully shown (its page hook runs once).
-    pub shown_now: bool,
+    /// The task's child is brought to the front once.
+    pub bring_front: bool,
 }
 
 impl PopupFade {
@@ -110,14 +112,17 @@ impl PopupFade {
         self.state = 2;
     }
 
-    /// The per-frame step. The clock compares are unsigned.
+    /// The per-frame step. The clock compares are unsigned: a fade over
+    /// (its end at or below `now`) ends it, and the squared curve is the
+    /// remaining share (fade-out) or one less it (fade-in) squared in
+    /// double, narrowed to float.
     pub fn step(&mut self, now: u32) -> PopupFrame {
-        let mut shown_now = false;
+        let mut bring_front = false;
         match self.state {
             1 => {
-                if !self.shown && self.shown_at <= now {
-                    self.shown = true;
-                    shown_now = true;
+                if !self.placed && self.shown_at <= now {
+                    self.placed = true;
+                    bring_front = true;
                 }
                 if self.fade_at > now {
                     let left = i64::from(self.fade_at) - i64::from(now);
@@ -125,18 +130,18 @@ impl PopupFade {
                     return PopupFrame {
                         alpha: (t * t) as f32,
                         close: false,
-                        shown_now,
+                        bring_front,
                     };
                 }
                 self.state = 0;
-                if !self.shown {
-                    self.shown = true;
-                    shown_now = true;
+                if !self.placed {
+                    self.placed = true;
+                    bring_front = true;
                 }
                 PopupFrame {
                     alpha: 1.0,
                     close: false,
-                    shown_now,
+                    bring_front,
                 }
             }
             2 => {
@@ -146,14 +151,14 @@ impl PopupFade {
                     PopupFrame {
                         alpha: (t * t) as f32,
                         close: false,
-                        shown_now,
+                        bring_front,
                     }
                 } else {
                     self.state = 0;
                     PopupFrame {
                         alpha: 0.0,
                         close: true,
-                        shown_now,
+                        bring_front,
                     }
                 }
             }
@@ -170,7 +175,7 @@ impl Default for PopupFrame {
         Self {
             alpha: 1.0,
             close: false,
-            shown_now: false,
+            bring_front: false,
         }
     }
 }
@@ -277,6 +282,44 @@ pub fn desc_hover(
         fade.fade_at = now.wrapping_add(POPUP_FADE);
     }
     None
+}
+
+/// What a close request on the card does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DescCloseRequest {
+    /// The base close always runs.
+    pub base: bool,
+    /// The form's result slot takes this value (-1 request only).
+    pub result: Option<i32>,
+    /// The card is not closing: it starts a plain fade-out from `now`.
+    pub fade_out: bool,
+}
+
+/// The card's close request (its close slot), applied after the base form
+/// handler: a request of -1 stores -3 in the result slot; a request of 0 on
+/// a visible card whose keep-open bit is clear and which is not already
+/// fading out starts a fade-out of [`POPUP_FADE`] units from `now` (not the
+/// reversed remaining time the hover path uses) and does not close.
+pub fn desc_close_request(
+    arg: i32,
+    visible: bool,
+    flags: u32,
+    fade: &mut PopupFade,
+    now: u32,
+) -> DescCloseRequest {
+    let mut out = DescCloseRequest {
+        base: true,
+        result: None,
+        fade_out: false,
+    };
+    if arg == -1 {
+        out.result = Some(-3);
+    } else if arg == 0 && visible && flags & DESC_KEEP_OPEN == 0 && fade.state != 2 {
+        fade.state = 2;
+        fade.fade_at = now.wrapping_add(POPUP_FADE);
+        out.fade_out = true;
+    }
+    out
 }
 
 /// The container popup's tag and its inner panel's layout.
@@ -529,7 +572,7 @@ mod tests {
         assert_eq!(f.step(1192).alpha, 0.5625);
         let step = f.step(1256);
         assert_eq!(step.alpha, 1.0);
-        assert!(step.shown_now);
+        assert!(step.bring_front);
         assert_eq!(f.state, 0);
         f.fade_out(2000);
         assert_eq!(f.fade_at, 2256);
@@ -539,15 +582,52 @@ mod tests {
     }
 
     #[test]
-    fn the_page_hook_waits_for_its_own_clock() {
+    fn the_task_brings_the_card_to_the_front_once() {
         let mut f = PopupFade::default();
         f.show(1000);
         f.shown_at = 1100;
-        assert!(!f.step(1099).shown_now);
-        assert!(f.step(1100).shown_now);
+        assert!(!f.step(1099).bring_front);
+        assert!(f.step(1100).bring_front);
         // It runs once.
-        assert!(!f.step(1101).shown_now);
-        assert!(!f.step(1256).shown_now);
+        assert!(!f.step(1101).bring_front);
+        assert!(!f.step(1256).bring_front);
+        // A fade-in whose end was already past the shown clock places the
+        // card when it ends.
+        let mut f = PopupFade::default();
+        f.show(1000);
+        f.shown_at = 1300;
+        assert!(!f.step(1255).bring_front);
+        assert!(f.step(1256).bring_front);
+    }
+
+    #[test]
+    fn a_close_request_can_start_a_plain_fade_out() {
+        let mut f = PopupFade::default();
+        f.show(1000);
+        let close = desc_close_request(0, true, 0, &mut f, 1200);
+        assert_eq!(
+            close,
+            DescCloseRequest {
+                base: true,
+                result: None,
+                fade_out: true
+            }
+        );
+        assert_eq!(f.state, 2);
+        assert_eq!(f.fade_at, 1200 + 256);
+        // The keep-open bit, a hidden card and a fading-out card close.
+        let mut f = PopupFade::default();
+        f.show(1000);
+        assert!(!desc_close_request(0, true, DESC_KEEP_OPEN, &mut f, 1200).fade_out);
+        assert_eq!(f.state, 1);
+        assert!(!desc_close_request(0, false, 0, &mut f, 1200).fade_out);
+        // A -1 request stores -3 in the result slot.
+        let mut f = PopupFade::default();
+        assert_eq!(
+            desc_close_request(-1, true, 0, &mut f, 0).result,
+            Some(DESC_HOVER_SLOT)
+        );
+        assert_eq!(DESC_HOVER_SLOT, -3);
     }
 
     #[test]
