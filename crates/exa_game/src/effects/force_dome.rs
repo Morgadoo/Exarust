@@ -301,6 +301,38 @@ pub struct Dome {
     pub quiet_until_ms: u32,
     /// The node has left the scene.
     pub removed: bool,
+    /// The scene node the dome attaches to.
+    pub node: DomeNode,
+    /// The dome's GI light object exists.
+    pub light: bool,
+    /// The dome's render material exists.
+    pub material: bool,
+}
+
+/// The scene node a dome attaches to: its flags word, its owner back
+/// pointer and the dome's frame step as its hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DomeNode {
+    pub attached: bool,
+    /// The node's flags word: the attach sets 0x10000.
+    pub flags: u32,
+    /// The node's owner slot points back at the dome.
+    pub owner: bool,
+    /// The node runs the dome's frame step.
+    pub frame_hook: bool,
+}
+
+/// What destroying a dome freed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DomeTeardown {
+    /// The class's clear hook ran (the original's real delete only).
+    pub cleared: bool,
+    /// The GI light object was freed.
+    pub light: bool,
+    /// The material was released and freed.
+    pub material: bool,
+    /// The object freed itself.
+    pub object: bool,
 }
 
 /// What a dome's frame hands the draw.
@@ -341,6 +373,9 @@ impl Dome {
             tex_pos: [random.unit() as f32, random.unit() as f32],
             quiet_until_ms: 0,
             removed: false,
+            node: DomeNode::default(),
+            light: false,
+            material: false,
         };
         let sound = Sound {
             at: Vec3::new(caster.x, sound_height(caster.y, ground_y), caster.z),
@@ -348,6 +383,38 @@ impl Dome {
             pitch: (random.unit() * 0.4 + 0.6) as f32,
         };
         (dome, sound)
+    }
+
+    /// Attach the dome to its scene node: the node takes flag 0x10000,
+    /// points its owner slot back at the dome and runs the dome's frame
+    /// step. The cast stores the node and copies its frame for the
+    /// light.
+    pub fn attach_node(&mut self) {
+        self.node.attached = true;
+        self.node.flags |= 0x0001_0000;
+        self.node.owner = true;
+        self.node.frame_hook = true;
+    }
+
+    /// Destroy the dome, as the class's destructor does: a real delete
+    /// (`owned`) first runs the class's clear hook; the light object and
+    /// the render material are freed when they exist; the base object
+    /// leaves the scene; and an owned object frees itself. Returns what it
+    /// had.
+    pub fn destroy(&mut self, owned: bool) -> DomeTeardown {
+        let teardown = DomeTeardown {
+            cleared: owned,
+            light: self.light,
+            material: self.material,
+            object: owned,
+        };
+        self.light = false;
+        self.material = false;
+        self.removed = true;
+        self.node.attached = false;
+        self.node.owner = false;
+        self.node.frame_hook = false;
+        teardown
     }
 
     /// The share the frame shows at `alpha`, while growing or shrinking.
@@ -1102,6 +1169,63 @@ mod tests {
         let (mut b, _) = Barrier::cast(100.0, Vec3::new(0.0, 0.0, 0.0), 0.0, 1000, &mut random());
         b.rate = 0.002;
         b
+    }
+
+    #[test]
+    fn the_node_attachment_takes_the_dome_and_its_step() {
+        let mut dome = Dome::cast(
+            30.0,
+            Vec3::ZERO,
+            0,
+            Vec3::ZERO,
+            0.0,
+            BARRIER_CAST_VOLUME,
+            &mut random(),
+        )
+        .0;
+        assert_eq!(dome.node, DomeNode::default());
+        dome.attach_node();
+        assert!(dome.node.attached && dome.node.owner && dome.node.frame_hook);
+        assert_eq!(dome.node.flags, 0x0001_0000);
+        dome.attach_node();
+        assert_eq!(dome.node.flags, 0x0001_0000, "the bit is set once");
+        // A dome with a light and a material frees both on the real delete,
+        // runs its clear hook and frees itself; a plain free keeps the
+        // light and the material and only lets the base object go.
+        dome.light = true;
+        dome.material = true;
+        assert_eq!(
+            dome.destroy(true),
+            DomeTeardown {
+                cleared: true,
+                light: true,
+                material: true,
+                object: true,
+            }
+        );
+        assert!(dome.removed && !dome.light && !dome.material);
+        assert!(!dome.node.attached);
+        let mut plain = Dome::cast(
+            30.0,
+            Vec3::ZERO,
+            0,
+            Vec3::ZERO,
+            0.0,
+            BARRIER_CAST_VOLUME,
+            &mut random(),
+        )
+        .0;
+        plain.light = true;
+        assert_eq!(
+            plain.destroy(false),
+            DomeTeardown {
+                cleared: false,
+                light: true,
+                material: false,
+                object: false,
+            }
+        );
+        assert!(!plain.light && plain.removed);
     }
 
     #[test]

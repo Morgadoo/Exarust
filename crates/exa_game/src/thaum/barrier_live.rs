@@ -226,6 +226,7 @@ pub(crate) fn tick_barriers(
         live.barrier.snapshot(0);
         live.barrier.tick(place, place.y, facing, now);
         if live.barrier.dome.phase == Phase::Gone {
+            live.barrier.dome.destroy(true);
             commands.entity(entity).despawn();
             continue;
         }
@@ -270,6 +271,7 @@ pub fn new_barrier(
     let hooked = start_barrier(body);
     let generation = body.cast_generation;
     let (mut barrier, _sound) = Barrier::cast(BARRIER_RADIUS, at, at.y, now, &mut draws.0);
+    barrier.dome.attach_node();
     barrier.rate = cost;
     LiveBarrier {
         barrier,

@@ -70,7 +70,9 @@ pub fn new_bubble(
     if motion {
         body.cast_hook = Some(BUBBLE_HOOK);
     }
-    let (bubble, _sound) = Bubble::cast(BUBBLE_RADIUS, at, now, standing, standing.y, &mut draws.0);
+    let (mut bubble, _sound) =
+        Bubble::cast(BUBBLE_RADIUS, at, now, standing, standing.y, &mut draws.0);
+    bubble.dome.attach_node();
     (LiveBubble { bubble, caster }, motion)
 }
 
@@ -171,6 +173,7 @@ pub(crate) fn tick_bubbles(
             caster.sync_body();
         }
         if live.bubble.dome.phase == Phase::Gone {
+            live.bubble.dome.destroy(true);
             commands.entity(entity).despawn();
             continue;
         }

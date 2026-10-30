@@ -475,7 +475,10 @@ current positions, the 3- and 5-bit look draws), `effects::fire_node`
 (the eight-ripple list, the cast sound, the Barrier's damped height,
 800 ms grow window, drain, drawn radius, frame and keep-out, the Bubble's
 1200 ms grow, break and 700 ms fall and its two keep-outs, the character
-contact and balance drain, the double-sided meshes), `effects::force_wave`
+contact and balance drain, the double-sided meshes, and the node attach
+(flag 0x10000, the owner back pointer and the frame hook) and destroy
+(clear hook, light, material, object) that the live bubbles and barriers
+run), `effects::force_wave`
 (32 chunks 80 cm out, the charge, release, thrown step, trails and
 lives), `effects::danger` (what the AI sees of a blast, a wave and a
 barricade, and the steps away), `effects::emissive` (the seven GI lights'
