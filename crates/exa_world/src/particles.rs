@@ -1509,36 +1509,45 @@ impl Emitter {
                 let (y, _) = axis(view.up);
                 screen_quad(at, p.half_size, x, y)
             };
-            let variant = self.slots[index].variant;
-            let uv: [Vec2; 4] = if p.flags & flags::UV_8 != 0 {
-                std::array::from_fn(|i| Vec2::from(SYMMETRIES[usize::from(variant & 7)][i]))
-            } else if p.flags & flags::UV_32 != 0 {
-                let v = variant & 31;
-                let cell = v >> 3;
-                let sym = SYMMETRIES[usize::from(v & 7)];
-                let origin = [f32::from(cell & 1) * 0.5, f32::from((cell >> 1) & 1) * 0.5];
-                std::array::from_fn(|i| {
-                    Vec2::new(origin[0] + sym[i][0] * 0.5, origin[1] + sym[i][1] * 0.5)
-                })
-            } else {
-                std::array::from_fn(|i| Vec2::from(SYMMETRIES[0][i]))
-            };
-            let colour = if p.flags & flags::KEYS_PARITY == flags::KEYS_PARITY {
-                p.keys.sample(p.keys.count as f32 * age, index & 1 == 1)
-            } else if p.flags & flags::KEYS != 0 {
-                p.keys.sample(p.keys.count as f32 * age, false)
-            } else {
-                let f = 1.0 - (life as f32 - alpha) / p.start_life as f32;
-                let a = ((1.0 - f * f) * 255.0).round_ties_even() as i32 as u8;
-                let o = (self.flat_opacity * 255.0).round_ties_even() as i32 as u8;
-                [a, a, a, o]
-            };
+            let (uv, colour) = self.look(index, alpha, life);
             out.push(Quad {
                 corners,
                 uv,
                 colour,
             });
         }
+    }
+
+    /// A particle's atlas UVs and colour at `alpha`, as the original's
+    /// texture-variant and colour builders produce them.
+    fn look(&self, index: usize, alpha: f32, life: i32) -> ([Vec2; 4], Key) {
+        let p = self.params;
+        let age = 1.0 - (life as f32 - alpha) * p.inverse_life;
+        let variant = self.slots[index].variant;
+        let uv: [Vec2; 4] = if p.flags & flags::UV_8 != 0 {
+            std::array::from_fn(|i| Vec2::from(SYMMETRIES[usize::from(variant & 7)][i]))
+        } else if p.flags & flags::UV_32 != 0 {
+            let v = variant & 31;
+            let cell = v >> 3;
+            let sym = SYMMETRIES[usize::from(v & 7)];
+            let origin = [f32::from(cell & 1) * 0.5, f32::from((cell >> 1) & 1) * 0.5];
+            std::array::from_fn(|i| {
+                Vec2::new(origin[0] + sym[i][0] * 0.5, origin[1] + sym[i][1] * 0.5)
+            })
+        } else {
+            std::array::from_fn(|i| Vec2::from(SYMMETRIES[0][i]))
+        };
+        let colour = if p.flags & flags::KEYS_PARITY == flags::KEYS_PARITY {
+            p.keys.sample(p.keys.count as f32 * age, index & 1 == 1)
+        } else if p.flags & flags::KEYS != 0 {
+            p.keys.sample(p.keys.count as f32 * age, false)
+        } else {
+            let f = 1.0 - (life as f32 - alpha) / p.start_life as f32;
+            let a = ((1.0 - f * f) * 255.0).round_ties_even() as i32 as u8;
+            let o = (self.flat_opacity * 255.0).round_ties_even() as i32 as u8;
+            [a, a, a, o]
+        };
+        (uv, colour)
     }
 
     /// The fixed quads a material that draws them asks for: each live
@@ -1548,24 +1557,9 @@ impl Emitter {
     /// flag, so nothing calls this yet.
     pub fn quads_fixed(&self, alpha: f32, view: View) -> Vec<Quad> {
         let corners = Emitter::camera_quad(view);
-        let p = self.params;
         self.particles()
             .map(|(index, _, _, life)| {
-                let age = 1.0 - (life as f32 - alpha) * p.inverse_life;
-                let variant = self.slots[index].variant;
-                let uv: [Vec2; 4] = if p.flags & flags::UV_8 != 0 {
-                    std::array::from_fn(|i| Vec2::from(SYMMETRIES[usize::from(variant & 7)][i]))
-                } else {
-                    std::array::from_fn(|i| Vec2::from(SYMMETRIES[0][i]))
-                };
-                let colour = if p.flags & flags::KEYS != 0 {
-                    p.keys.sample(p.keys.count as f32 * age, index & 1 == 1)
-                } else {
-                    let f = 1.0 - (life as f32 - alpha) / p.start_life as f32;
-                    let a = ((1.0 - f * f) * 255.0).round_ties_even() as i32 as u8;
-                    let o = (self.flat_opacity * 255.0).round_ties_even() as i32 as u8;
-                    [a, a, a, o]
-                };
+                let (uv, colour) = self.look(index, alpha, life);
                 Quad {
                     corners,
                     uv,
