@@ -25,6 +25,7 @@
 //! extras and close/save scopes live in [`game_gui`]; the form base class's
 //! ordering, fade, traversal, scroll and hit rules in [`form`].
 
+pub mod arena_forms;
 pub mod blend;
 pub mod character_view;
 pub mod class_select;
@@ -76,6 +77,7 @@ pub mod picker_fields;
 pub mod pickers;
 pub mod popup_menu;
 pub mod popups;
+pub mod record_form;
 pub mod scale;
 pub mod selection;
 pub mod settings;
@@ -195,12 +197,12 @@ pub use line_skin::{
 };
 pub use loading::LoadingStatus;
 pub use loadout::{
-    CONTROLS as LOADOUT_CONTROLS, DropOrigin, DropResult, DropSource, EquipFacts, EquipKind,
-    FORM_HEIGHT, FORM_OPACITY, FORM_WIDTH, FormControl, HeldWeapon, LoadoutEditor, LoadoutItem,
-    LoadoutLayout, LoadoutMode, LoadoutSave, OFFHAND_FLAG, Slot, StockReturn, apply_drop,
-    can_equip, container_copies, controls as loadout_controls, copies, encumbrance, item_cost,
-    layout as loadout_layout, may_equip, opacity as loadout_opacity, points_used, return_to_stock,
-    save_on_close, sort_drop, unequip,
+    DropOrigin, DropResult, DropSource, EquipFacts, EquipKind, FORM_HEIGHT, FORM_OPACITY,
+    FORM_WIDTH, HeldWeapon, LoadoutEditor, LoadoutItem, LoadoutLayout, LoadoutMode, LoadoutSave,
+    OFFHAND_FLAG, Slot, StockReturn, apply_drop, can_equip, container_copies,
+    controls as loadout_controls, copies, encumbrance, item_cost, layout as loadout_layout,
+    may_equip, opacity as loadout_opacity, points_used, return_to_stock, save_on_close, sort_drop,
+    unequip,
 };
 pub use match_board::{
     Board, BoardAction, BoardHit, BoardInput, BoardLayout, BoardPaint, BoardTab, CellValue,

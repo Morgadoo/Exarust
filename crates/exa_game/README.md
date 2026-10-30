@@ -773,7 +773,15 @@ side, or a character's condition and merchant profession, calls
 `arena_board::open`, Manage Company from `manage_refresh`, and the trade
 window from `shop_window` with the shop's or the merchant's stock. The board's
 own paint list, the manage roster rows and the shop's panels and stock draw
-through `gui_paint`; Escape or a right-button release closes the window. A
+through `gui_paint`. Manage Company, Company Records, Company Status, the
+loadout form and the dismiss and yes/no dialogs are built from their
+constructors' record tables (`hub_forms`, on `exa_ui::record_form`): the
+records lay out at unit 4, rescale to the live unit and draw in the shown
+palette and line skin; the pointer goes through the control messages and the
+callbacks run the arena's rules (the manage refresh and End Day, the arsenal
+form's rows, steps, slider, shelves and dismissal, the tourney forfeit).
+`--open-hub-window <name>` opens one for a scripted screenshot. Escape or a
+right-button release closes the top window. A
 board Enter, Begin or Continue takes the event's entry fee from the purse
 (a short purse stops at 0; nothing refuses the match), warns once when the
 board's Begin enters the manager, drops the first unhealthy specialist,

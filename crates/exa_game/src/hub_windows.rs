@@ -14,10 +14,14 @@
 //! a new career would (343 copper, day 0) until a session host replaces it.
 //! The game's own career is not fabricated beyond those constructor values.
 //!
+//! Manage Company and the windows it opens (Company Records, Company
+//! Status, the loadout form and its dismiss dialog, and the yes/no dialog)
+//! are built from their constructors' record tables ([`crate::hub_forms`]).
+//!
 //! What is not drawn: the board's pictures, prize items and reward slots,
-//! the manage window's controls and report column text, the trade window's
-//! item icons and character preview, and the two windows' own close
-//! controls. Escape and a right-button release close an open window.
+//! the trade window's item icons and character preview, and the board's
+//! and trade window's own close controls. Escape and a right-button release
+//! close the top window.
 
 use std::collections::HashMap;
 
@@ -44,11 +48,7 @@ use crate::shop_window::ShopWindow;
 /// The board's form title.
 pub const BOARD_TITLE: &str = exa_ui::match_board::TITLE;
 /// Manage Company's size in pixels, from its constructor.
-pub const MANAGE_SIZE: (i32, i32) = (0x2c4, 0x1d4);
-/// The roster table's place and size in Manage Company.
-pub const MANAGE_ROSTER: (i32, i32, i32, i32) = (0, 0x18, 0x158, 0x128);
-/// The report table's place and size in Manage Company.
-pub const MANAGE_REPORT: (i32, i32, i32, i32) = (0x15c, 0x18, 0x158, 0x128);
+pub const MANAGE_SIZE: (i32, i32) = exa_ui::arena_forms::MANAGE_FORM.size;
 /// The trade window's size in pixels.
 pub const SHOP_SIZE: (i32, i32) = (
     crate::shop_window::WINDOW_SIZE.0,
@@ -183,6 +183,41 @@ impl ArenaCareer {
         board.matches_played = self.matches_today as i32;
         board.show();
         board
+    }
+
+    /// The company's thirteen records as the records window and the match
+    /// read them (the counts the career does not keep read 0).
+    pub fn records(&self) -> crate::arena_match::CompanyRecords {
+        crate::arena_match::CompanyRecords {
+            matches_won: self.company.won,
+            matches_lost: self.company.lost,
+            matches_forfeited: 0,
+            tournaments_won: self.company.tournaments_won,
+            tournaments_lost: 0,
+            seasons_won: self.company.seasons_won,
+            beasts_fought: 0,
+            beasts_defeated: 0,
+            hires: 0,
+            deaths: self.company.deaths,
+            fired: 0,
+            earned: self.company.earned,
+            spent: self.company.spent,
+        }
+    }
+
+    /// Company Status's lines from this career.
+    pub fn status(&self) -> crate::manage::CompanyStatus {
+        let employees: Vec<(Profession, u32)> = self
+            .company
+            .roster
+            .iter()
+            .map(|m| (m.profession, crate::manage::rank_of(&m.skill_xp) as u32))
+            .collect();
+        crate::manage::company_status(
+            &self.company.name,
+            crate::manage::rank_of(&self.player.skill_xp) as u32,
+            &employees,
+        )
     }
 
     /// The manage window's refresh from this career.
@@ -328,6 +363,13 @@ pub struct HubWindows {
     pub board: Option<Board>,
     pub manage: Option<ManageRefresh>,
     pub shop: Option<ShopModel>,
+    /// The table-built forms: Manage Company and the windows stacked on it.
+    pub forms: crate::hub_forms::HubForms,
+    /// The GUI unit the forms are built at (0 until the screen is known).
+    pub unit: i32,
+    /// A table-built form took this frame's press or release; the world
+    /// click it makes is not the hub's.
+    pub took_pointer: bool,
 }
 
 impl HubWindows {
@@ -384,11 +426,21 @@ impl HubWindows {
     /// Opens Manage Company on a career.
     pub fn open_manage(&mut self, career: &ArenaCareer) {
         self.close();
-        self.manage = Some(career.manage());
+        let unit = if self.unit > 0 { self.unit } else { 4 };
+        let mut form = exa_ui::record_form::RecordForm::open(
+            &exa_ui::arena_forms::MANAGE_FORM,
+            self.task.screen,
+            unit,
+        );
+        let refresh = career.manage();
+        crate::hub_forms::fill_manage(&mut form, &refresh);
+        let r = form.rect();
+        self.manage = Some(refresh);
         self.kind = HubWindowKind::Manage;
+        self.forms.push(crate::hub_forms::FormWindow::Manage, form);
         self.push(
             HubWindowKind::Manage,
-            centred(MANAGE_SIZE, self.task.screen),
+            GuiRect::new(r.x, r.y, r.w, r.h),
             Vec::new(),
         );
     }
@@ -451,6 +503,7 @@ impl HubWindows {
         self.board = None;
         self.manage = None;
         self.shop = None;
+        self.forms.clear();
     }
 
     fn push(&mut self, kind: HubWindowKind, bounds: GuiRect, controls: Vec<Control>) {
@@ -539,7 +592,7 @@ fn at4(bounds: GuiRect, rect: (i32, i32, i32, i32)) -> GuiRect {
 }
 
 /// The font and unit a hub window draws with, as the screens do.
-fn screen_font(
+pub(crate) fn screen_font(
     textures: &GuiTextures,
     unit: i32,
 ) -> (exa_ui::gui_font::GuiFont, Option<(u16, u16)>) {
@@ -550,11 +603,11 @@ fn screen_font(
 /// What a hub window paints with: the palette its fade hands the skin, the
 /// fade itself (for the line skin's control inks), the GUI unit and the
 /// textures.
-struct Look<'a> {
-    palette: SkinPalette,
-    fade: f32,
-    unit: i32,
-    textures: &'a GuiTextures,
+pub(crate) struct Look<'a> {
+    pub(crate) palette: SkinPalette,
+    pub(crate) fade: f32,
+    pub(crate) unit: i32,
+    pub(crate) textures: &'a GuiTextures,
 }
 
 impl<'a> Look<'a> {
@@ -615,7 +668,7 @@ fn paint_window(painted: &mut gui_paint::Painted, bounds: GuiRect, title: &str, 
     }
 }
 
-fn paint_text(painted: &mut gui_paint::Painted, rect: GuiRect, text: &str, look: &Look) {
+pub(crate) fn paint_text(painted: &mut gui_paint::Painted, rect: GuiRect, text: &str, look: &Look) {
     let (font, size) = screen_font(look.textures, look.unit);
     for layer in gui_paint::paint_label(rect, 0, look.unit, &look.palette, &font, size, text).layers
     {
@@ -639,7 +692,7 @@ fn paint_text_ink(
     }
 }
 
-fn paint_panel(painted: &mut gui_paint::Painted, rect: GuiRect, look: &Look) {
+pub(crate) fn paint_panel(painted: &mut gui_paint::Painted, rect: GuiRect, look: &Look) {
     let attributes = gui_paint::FORM_ATTRIBUTES;
     for layer in gui_paint::paint_panel(rect, look.unit, &look.palette, attributes, 0).layers {
         painted.push(layer);
@@ -758,15 +811,28 @@ fn coin_text(packed: u32) -> String {
     }
 }
 
-/// The manage window's two tables, headers and roster rows.
-fn paint_manage(refresh: &ManageRefresh, bounds: GuiRect, look: &Look) -> gui_paint::Painted {
+/// Manage Company: its table-built form, then its two tables (the roster's
+/// headers, rows and health gauges, the report's day title and lines).
+fn paint_manage(
+    refresh: &ManageRefresh,
+    form: &exa_ui::record_form::RecordForm,
+    look: &Look,
+) -> gui_paint::Painted {
+    let r = form.rect();
+    let bounds = GuiRect::new(r.x, r.y, r.w, r.h);
     let mut painted = gui_paint::Painted {
         client: client(bounds),
         ..Default::default()
     };
-    paint_window(&mut painted, bounds, crate::manage::MANAGE_TITLE, look);
-    let roster = at4(bounds, MANAGE_ROSTER);
-    let report_table = at4(bounds, MANAGE_REPORT);
+    crate::hub_forms::paint_form(&mut painted, form, look);
+    let u = look.unit;
+    let pane = |i: usize| {
+        form.child(i)
+            .map(|c| GuiRect::new(c.x, c.y, c.w, c.h))
+            .unwrap_or(bounds)
+    };
+    let roster = pane(0);
+    let report_table = pane(1);
     paint_panel(&mut painted, roster, look);
     paint_panel(&mut painted, report_table, look);
     let mut x = 0;
@@ -774,7 +840,7 @@ fn paint_manage(refresh: &ManageRefresh, bounds: GuiRect, look: &Look) -> gui_pa
         if !title.is_empty() {
             paint_text(
                 &mut painted,
-                GuiRect::new(roster.left + x, roster.top, width, 6 * look.unit),
+                GuiRect::new(roster.left + x, roster.top, width, 6 * u),
                 title,
                 look,
             );
@@ -785,7 +851,6 @@ fn paint_manage(refresh: &ManageRefresh, bounds: GuiRect, look: &Look) -> gui_pa
     // health column is owner-drawn: the table hands the cell's left (one
     // unit in, past the three columns), its pen line `11u + 6u·row` and the
     // rest of the client's width to the gauge draw ([`health_marker`]).
-    let u = look.unit;
     let health_x = u + crate::manage::HEALTH_COLUMN_X;
     for (row, text) in refresh.roster.iter().enumerate() {
         let row = row as i32;
@@ -800,8 +865,27 @@ fn paint_manage(refresh: &ManageRefresh, bounds: GuiRect, look: &Look) -> gui_pa
         );
         paint_gauge(&mut painted, &marker, look);
     }
-    // The report's roster-id lines are not drawn: the report table's own
-    // rows carry no column labels in the constructor.
+    // The report: one column, the table's width less 16, titled with the
+    // day; its lines in 6-unit rows.
+    let column = report_table.width() - 0x10;
+    paint_text(
+        &mut painted,
+        GuiRect::new(report_table.left, report_table.top, column, 6 * u),
+        &refresh.title,
+        look,
+    );
+    for (row, line) in refresh.report.iter().enumerate() {
+        let y = report_table.top + 6 * u * (row as i32 + 1);
+        if y + 6 * u > report_table.bottom {
+            break;
+        }
+        paint_text(
+            &mut painted,
+            GuiRect::new(report_table.left, y, column, 6 * u),
+            &line.text,
+            look,
+        );
+    }
     painted
 }
 
@@ -908,8 +992,11 @@ pub fn sync_hub_screen(
             window.physical_width() as i32,
             window.physical_height() as i32,
         );
-        if size != hub.task.screen {
+        let unit = exa_ui::scale::gui_scale(window.physical_height(), 0) as i32;
+        if size != hub.task.screen || unit != hub.unit {
             hub.task.screen = size;
+            hub.unit = unit;
+            hub.forms.resize(size, unit);
         }
     }
 }
@@ -952,19 +1039,29 @@ pub fn draw_hub_windows(
             .board
             .as_ref()
             .map(|board| paint_board(board, bounds, &look)),
-        HubWindowKind::Manage => windows
-            .manage
-            .as_ref()
-            .map(|manage| paint_manage(manage, bounds, &look)),
+        HubWindowKind::Manage => windows.manage.as_ref().and_then(|manage| {
+            windows
+                .forms
+                .get(crate::hub_forms::FormWindow::Manage)
+                .map(|form| paint_manage(manage, form, &look))
+        }),
         HubWindowKind::Shop => windows
             .shop
             .as_ref()
             .map(|shop| paint_shop(shop, bounds, &look)),
         HubWindowKind::None => None,
     };
-    if let Some(painted) = painted {
-        painted.submit(&mut frames);
+    let Some(mut painted) = painted else {
+        return;
+    };
+    // The windows stacked over it, bottom to top, drawn shown.
+    let shown = Look::new(1.0, unit, textures);
+    for open in &windows.forms.forms {
+        if open.window != crate::hub_forms::FormWindow::Manage {
+            crate::hub_forms::paint_form(&mut painted, &open.form, &shown);
+        }
     }
+    painted.submit(&mut frames);
 }
 
 /// Lays the board's painter rects out in a form-local frame for tests.

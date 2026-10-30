@@ -61,6 +61,8 @@
 //!          --arena-auto               the original's dormant auto-match switch: a round's end continues by itself and,
 //!                                     4 s after the return to the hub, the last board match starts again with the
 //!                                     company's combatants (a debug tool for unattended arena runs)
+//!          --open-hub-window <name>   play arenahub: once the manager stands, open a hub window built from its control
+//!                                     table: manage, records, status, loadout, hire, dismiss, yesno (also board, shop)
 //!          --trace <file.csv>         the player's body (else every simulated body) after every 83 Hz tick, in cm
 //!          --trace-all                with --trace: every simulated character body, the player's among them
 //!          --debug-bodies             start with the body overlay and joint readout shown (F3 toggles it)
@@ -361,6 +363,9 @@ pub struct Options {
     pub arena_fell: Option<u32>,
     /// `--arena-auto`: the auto-match switch (continue and rematch alone).
     pub arena_auto: bool,
+    /// `--open-hub-window <name>`: open a hub window once the hub is
+    /// entered (a debug tool for screenshots).
+    pub open_hub_window: Option<String>,
     /// Play mode: the player's record's feral level (0..=1).
     pub feral: Option<f32>,
     /// Play mode: powers the player knows (`--powers`, hex or decimal).
@@ -766,6 +771,17 @@ fn main() -> AppExit {
             "--undying" => options.undying = true,
             "--arena-fell" => options.arena_fell = args.next().and_then(|v| v.parse().ok()),
             "--arena-auto" => options.arena_auto = true,
+            "--open-hub-window" => {
+                let name = args.next().unwrap_or_default();
+                if !exa_game::hub_forms::HUB_WINDOW_NAMES.contains(&name.as_str()) {
+                    eprintln!(
+                        "--open-hub-window: one of {:?}, not {name:?}",
+                        exa_game::hub_forms::HUB_WINDOW_NAMES
+                    );
+                    return AppExit::from_code(2);
+                }
+                options.open_hub_window = Some(name);
+            }
             "--debug-arcs" => options.thaum_debug.arcs = true,
             "--debug-barricade" => options.thaum_debug.barricade = true,
             "--debug-wisps" => options.thaum_debug.wisps = true,
