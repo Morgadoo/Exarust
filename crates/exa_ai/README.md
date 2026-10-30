@@ -255,8 +255,9 @@ walk and the flight each keep their own.
 
 The golem guardians' rules are plain functions with tests; the alarm zones
 of `exanima06` run live through `exa_game::golem_alarm`, while the alarm
-return (`golem::alarm_return`, the original's save-and-leave sweep that puts
-every awake guardian within 3000 cm of the player back home and the player
+return (`golem::alarm_return`, the original's save-and-leave sweep: the
+radius query of 3000 cm around the player offers each AI body to the
+homeward callback, and when any guardian went home the player is posted
 past the armed `Alarm_` box) and the sleep have no live caller yet: Exarust
 writes no level on leaving.
 

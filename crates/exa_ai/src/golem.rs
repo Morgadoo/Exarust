@@ -390,49 +390,29 @@ pub fn go_home(state: &GolemState, alarm: u32, home: (Vec3, f32)) -> Option<GoHo
     })
 }
 
-/// One guardian the alarm return considers.
-#[derive(Debug, Clone, Copy)]
-pub struct ReturnCandidate<'a> {
-    /// The body's place (cm).
-    pub at: Vec3,
-    /// Its record, body and behaviour state.
-    pub state: &'a GolemState,
-    /// The body's alarm word ([`RETURNING`] skips it).
-    pub alarm_word: u32,
-    /// The home the wake took: place and angle.
-    pub home: (Vec3, f32),
-}
-
-/// The alarm return: every awake guardian of `candidates` within
-/// [`HOME_RADIUS`] of `player` (x and z, squared, strictly) is sent home
-/// ([`go_home`]); when any was, the first `Alarm_` node whose box holds the
-/// armed point gives the player's post ([`alarm_post`]). The original runs
-/// this when the game is saved and left; Exarust writes no level on leaving,
-/// so nothing calls it yet (the rule is tested).
+/// The alarm return: the original's [`radius_query`] of [`HOME_RADIUS`]
+/// around `player` offers each body to the homeward callback, which `home`
+/// answers ([`go_home`] on the body's guardian, `None` for anything else);
+/// when it sent any home, the first `Alarm_` node whose box holds the armed
+/// point gives the player's post ([`alarm_post`]). The original runs this
+/// when the game is saved and left; Exarust writes no level on leaving, so
+/// nothing calls it yet (the rule is tested).
 pub fn alarm_return<'a>(
     player: Vec3,
-    candidates: impl IntoIterator<Item = ReturnCandidate<'a>>,
+    bodies: impl IntoIterator<Item = QueryBody>,
+    mut home: impl FnMut(QueryBody) -> Option<GoHome>,
     armed: Vec3,
     nodes: impl IntoIterator<Item = (&'a str, AlarmNode)>,
     roll: f64,
 ) -> (Vec<GoHome>, Option<AlarmPost>) {
-    let r2 = HOME_RADIUS * HOME_RADIUS;
     let mut homes = Vec::new();
-    for candidate in candidates {
-        let dx = candidate.at.x - player.x;
-        let dz = candidate.at.z - player.z;
-        let d2 = dx * dx + dz * dz;
-        // An ordered compare: a distance that is not a number is not inside.
-        if d2 < r2
-            && let Some(home) = go_home(candidate.state, candidate.alarm_word, candidate.home)
-        {
-            homes.push(home);
-        }
-    }
-    let post = if homes.is_empty() {
-        None
-    } else {
+    let sent = radius_query(player, HOME_RADIUS, bodies, |body| {
+        home(body).map(|h| homes.push(h)).is_some()
+    });
+    let post = if sent > 0 {
         alarm_lookup(armed, nodes).map(|node| alarm_post(&node, roll))
+    } else {
+        None
     };
     (homes, post)
 }
@@ -988,9 +968,9 @@ mod tests {
         }
     }
 
-    /// The alarm return: every awake guardian within 3000 cm of the player
-    /// (x and z only) is sent home; the post follows only when one was, and
-    /// a home at x = 0 is filled from the body.
+    /// The alarm return: every awake AI guardian within 3000 cm of the
+    /// player (x and z only, strictly) is sent home; the post follows only
+    /// when one was.
     #[test]
     fn the_alarm_return_sends_the_awake_guardians_home() {
         let player = Vec3::new(0.0, 50.0, 0.0);
@@ -1001,60 +981,48 @@ mod tests {
         let edge = guardian(Vec3::new(3_000.0, 0.0, 0.0), false);
         let dormant = guardian(Vec3::ZERO, true);
         let returning = guardian(Vec3::ZERO, false);
-        let candidates = [
-            ReturnCandidate {
-                at: near.at,
-                state: &near,
-                alarm_word: 0,
-                home: (Vec3::ZERO, 0.25),
-            },
-            ReturnCandidate {
-                at: edge.at,
-                state: &edge,
-                alarm_word: 0,
-                home: (Vec3::ZERO, 0.0),
-            },
-            ReturnCandidate {
-                at: dormant.at,
-                state: &dormant,
-                alarm_word: 0,
-                home: (Vec3::ZERO, 0.0),
-            },
-            ReturnCandidate {
-                at: returning.at,
-                state: &returning,
-                alarm_word: RETURNING,
-                home: (Vec3::ZERO, 0.0),
-            },
-        ];
+        let not_ai = guardian(Vec3::ZERO, false);
+        let states = [&near, &edge, &dormant, &returning, &not_ai];
+        let words = [0, 0, 0, RETURNING, 0];
+        let bodies: Vec<QueryBody> = states
+            .iter()
+            .enumerate()
+            .map(|(i, s)| QueryBody {
+                at: s.at,
+                race_word: if i == 4 { 0 } else { AI_BIT },
+                character: i as u64,
+            })
+            .collect();
+        let home = |b: QueryBody| {
+            let i = b.character as usize;
+            go_home(states[i], words[i], (Vec3::ZERO, 0.25))
+        };
         let node = AlarmNode {
             bounds: Obb::axis_aligned(Vec3::new(100.0, 50.0, 0.0), Vec3::new(170.0, 100.0, 25.0)),
         };
         let (homes, post) = alarm_return(
             player,
-            candidates,
+            bodies.clone(),
+            home,
             Vec3::new(100.0, 50.0, 0.0),
             [("Alarm_1", node)],
             0.5,
         );
+        // Only the near one: the edge is not strictly inside, the dormant
+        // and returning ones refuse, and the last is no AI body.
         assert_eq!(homes.len(), 1);
-        // The home's x was 0: the body's place, with the angle filled in?
-        // The angle is kept from the stored home.
+        // Its stored home's x was 0: filled from the body's place.
         assert_eq!(homes[0].home, (near.at, 0.25));
         assert_eq!(homes[0].sleep.race_word & STATUE_BIT, STATUE_BIT);
         let post = post.expect("a post");
         assert_eq!(post.at, Vec3::new(100.0, 10.0, 225.0));
         assert!((post.angle - std::f32::consts::PI).abs() < 1e-6);
-        // Nothing in range: no post.
+        // Nobody sent home: no post.
         let (homes, post) = alarm_return(
             player,
-            [ReturnCandidate {
-                at: returning.at,
-                state: &returning,
-                alarm_word: RETURNING,
-                home: (Vec3::ZERO, 0.0),
-            }],
-            Vec3::ZERO,
+            bodies[2..].to_vec(),
+            home,
+            Vec3::new(100.0, 50.0, 0.0),
             [("Alarm_1", node)],
             0.5,
         );
