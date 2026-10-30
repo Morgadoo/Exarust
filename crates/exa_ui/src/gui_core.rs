@@ -452,20 +452,23 @@ pub fn clamp_form(x: i32, y: i32, width: i32, unit: i32, screen_width: i32) -> (
     (x, y.max(unit))
 }
 
-/// Switches a toggle control on or off. Off clears its on bit. On first
-/// clears the on and lit bits of every control of its group that is on
-/// (itself included), reporting each unless `quiet`, then sets its on bit.
-/// The lit bit then follows the on bit, and the control reports itself
-/// unless `quiet`. A control of group 0 has no group.
+/// Switches a toggle control on or off (the GUI task's show/hide helper).
+/// Off clears its on bit. On first clears the on and lit bits of every
+/// control of its group that is on (itself included; the original walks
+/// the parent's records up to and including its last index), reporting
+/// each unless `quiet`, then sets its on bit. The lit bit then follows the
+/// on bit, and the control reports itself unless `quiet`. A control of
+/// group 0 has no group. Returns the state's low byte with the lit bit
+/// masked off, as the original does (0 for a missing control).
 pub fn set_control_on(
     controls: &mut [Control],
     index: usize,
     on: bool,
     quiet: bool,
     events: &mut Vec<ControlEvent>,
-) {
+) -> u8 {
     let Some(control) = controls.get(index) else {
-        return;
+        return 0;
     };
     let group = control.group;
     if on {
@@ -484,74 +487,20 @@ pub fn set_control_on(
         controls[index].state &= !control_state::ON;
     }
     let control = &mut controls[index];
-    control.state =
-        (control.state & !control_state::LIT) | ((control.state & control_state::ON) << 1);
-    if !quiet && control.reports {
-        events.push(ControlEvent::Changed(index));
-    }
-}
-
-/// What showing a control did besides its own state: the other controls of
-/// its group that were hidden, and the state word's low byte after the
-/// call with the lit bit masked off.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct ControlVisibility {
-    /// The other controls of the group whose shown and lit bits cleared.
-    pub hidden: usize,
-    /// The control's state's low byte, with the lit bit masked off.
-    pub state_byte: u8,
-}
-
-/// Shows or hides a control (the original's visibility helper). Hiding
-/// clears its shown bit (the lit bit then follows it down). Showing first
-/// clears the shown and lit bits of every control of its group that is
-/// shown (the control itself included; a group of 0 has none), reporting
-/// each unless `quiet`, then sets its own shown bit; the lit bit then
-/// follows the shown bit. Unless `quiet`, the control itself reports too.
-/// Returns the other controls hidden and the state's low byte (lit masked
-/// off).
-pub fn set_control_visible(
-    controls: &mut [Control],
-    index: usize,
-    show: bool,
-    quiet: bool,
-    events: &mut Vec<ControlEvent>,
-) -> ControlVisibility {
-    let Some(control) = controls.get(index) else {
-        return ControlVisibility::default();
-    };
-    let group = control.group;
-    let mut hidden = 0;
-    if !show {
-        controls[index].state &= !control_state::ON;
-    } else {
-        if group != 0 {
-            for (other, control) in controls.iter_mut().enumerate() {
-                if control.group == group && control.state & control_state::ON != 0 {
-                    control.state &= !(control_state::ON | control_state::LIT);
-                    if !quiet && control.reports {
-                        events.push(ControlEvent::Changed(other));
-                    }
-                    if other != index {
-                        hidden += 1;
-                    }
-                }
-            }
-        }
-        controls[index].state |= control_state::ON;
-    }
-    let control = &mut controls[index];
-    control.state =
-        (control.state & !control_state::LIT) | ((control.state & control_state::ON) << 1);
     let state_byte = (control.state & !control_state::LIT) as u8;
+    control.state =
+        (control.state & !control_state::LIT) | ((control.state & control_state::ON) << 1);
     if !quiet && control.reports {
         events.push(ControlEvent::Changed(index));
     }
-    ControlVisibility { hidden, state_byte }
+    state_byte
 }
 
-/// Where a message box's result goes: the box stores its parent's result
-/// field and tells the parent to close.
+/// What a message box's button callback does: it stores a result in the
+/// form that owns the button (the box) and sends the box one of two of its
+/// own messages. Which form behaviour those two messages are ("close" for
+/// the buttons, "destroy" for the close mark) is a guess; the stored
+/// values and which callback sends which are the original's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MessageBoxButton {
     /// The value stored: 1 for Ok, 0 for Cancel or the close mark.
@@ -1005,11 +954,16 @@ impl GuiTask {
     }
 
     /// Hit tests a point and focuses what it finds, setting the cursor; on
-    /// nothing, the focus goes to no form with control 1 and the cursor is
-    /// the hit test's (-1 off the screen).
+    /// nothing (off the screen or no form there), the focus goes to no form
+    /// with control 1 and the cursor to the constant 0, not the hit test's
+    /// -1.
     pub fn hit_and_focus(&mut self, x: i32, y: i32) -> HitResult {
         let (form, code, cursor) = self.hit(x, y);
-        let control = if form.is_none() { 1 } else { code };
+        let (control, cursor) = if form.is_none() {
+            (1, 0)
+        } else {
+            (code, cursor)
+        };
         let result = self.focus_set(form, control);
         self.set_cursor(cursor);
         HitResult {
@@ -1277,8 +1231,11 @@ impl GuiTask {
             return;
         }
         let near = |a: i32, b: i32| (i64::from(a) - i64::from(b)).abs() < 2;
-        let result = if u64::from(self.clock.wrapping_sub(self.pointer.press_stamp))
-            < u64::from(DOUBLE_CLICK)
+        // The two clock words widen to 64 bits before the subtraction and
+        // the compare is signed: a clock behind the stamp is a negative
+        // difference, inside the window.
+        let result = if i64::from(self.clock) - i64::from(self.pointer.press_stamp)
+            < i64::from(DOUBLE_CLICK)
             && word == self.pointer.last_word
             && near(self.pointer.x, self.pointer.press_x)
             && near(self.pointer.y, self.pointer.press_y)
@@ -1791,7 +1748,12 @@ mod tests {
         controls[2].state = control_state::ON;
         controls[0].state = control_state::ON | control_state::LIT;
         let mut events = Vec::new();
-        set_control_on(&mut controls, 1, true, false, &mut events);
+        // The answer is the state's low byte with the lit bit masked off:
+        // 0x20, not 0x60.
+        assert_eq!(
+            set_control_on(&mut controls, 1, true, false, &mut events),
+            0x20
+        );
         assert_eq!(
             controls[0].state & (control_state::ON | control_state::LIT),
             0
@@ -1815,7 +1777,10 @@ mod tests {
         );
         // Quietly off: the lit bit follows, nothing is reported.
         events.clear();
-        set_control_on(&mut controls, 1, false, true, &mut events);
+        assert_eq!(
+            set_control_on(&mut controls, 1, false, true, &mut events),
+            0
+        );
         assert_eq!(
             controls[1].state & (control_state::ON | control_state::LIT),
             0
@@ -2008,10 +1973,10 @@ mod tests {
         let (mut task, _id, _log) = task_with(|_| {});
         assert_eq!(task.hit_root(-1, 10), (None, 0, -1));
         assert_eq!(task.hit_root(800, 10), (None, 0, -1));
-        // The hit test's cursor is -1: the system pointer hides there.
+        // The hit test's cursor is -1 there, but the step stores 0.
         let hit = task.hit_and_focus(10, 600);
-        assert_eq!((hit.form, hit.control, hit.cursor), (None, 1, -1));
-        assert_eq!(task.cursor, -1);
+        assert_eq!((hit.form, hit.control, hit.cursor), (None, 1, 0));
+        assert_eq!(task.cursor, 0);
         // The pointer update's own hit test stores the no-target cursor 0.
         task.update(false, (10, 600));
         assert_eq!((task.pointer.target, task.cursor), (None, 0));
@@ -2198,65 +2163,6 @@ mod tests {
     }
 
     #[test]
-    fn showing_a_control_clears_its_group_and_follows_the_shown_bit() {
-        let mut controls = vec![
-            Control::new(2, 0, 0, 16, 16),
-            Control::new(2, 0, 0, 16, 16),
-            Control::new(2, 0, 0, 16, 16),
-        ];
-        for control in controls.iter_mut() {
-            control.group = 1;
-            control.reports = true;
-        }
-        controls[0].state = control_state::ON | control_state::LIT;
-        controls[2].group = 2;
-        controls[2].state = control_state::ON | control_state::LIT;
-        let mut events = Vec::new();
-        let shown = set_control_visible(&mut controls, 1, true, false, &mut events);
-        // The previous member of the group hides; the other group stays.
-        assert_eq!(shown.hidden, 1);
-        assert_eq!(
-            controls[0].state & (control_state::ON | control_state::LIT),
-            0
-        );
-        assert_eq!(
-            controls[1].state & (control_state::ON | control_state::LIT),
-            control_state::ON | control_state::LIT
-        );
-        assert_eq!(
-            controls[2].state & (control_state::ON | control_state::LIT),
-            control_state::ON | control_state::LIT
-        );
-        assert_eq!(
-            events,
-            vec![ControlEvent::Changed(0), ControlEvent::Changed(1)]
-        );
-        // The returned byte is the new shown bit, with the lit bit masked
-        // off: 0x20 and the restored low bits, not 0x60.
-        assert_eq!(shown.state_byte, 0x20);
-        // A quiet show reports nothing but still hides.
-        events.clear();
-        let quiet = set_control_visible(&mut controls, 0, true, true, &mut events);
-        assert_eq!(quiet.hidden, 1);
-        assert!(events.is_empty());
-        // Hiding clears the shown bit; the lit bit follows it, so it
-        // clears too.
-        let hidden = set_control_visible(&mut controls, 0, false, false, &mut events);
-        assert_eq!(
-            controls[0].state & (control_state::ON | control_state::LIT),
-            0
-        );
-        assert_eq!(hidden.state_byte, 0);
-        assert_eq!(events, vec![ControlEvent::Changed(0)]);
-        // A control of no group hides nobody.
-        controls[2].group = 0;
-        assert_eq!(
-            set_control_visible(&mut controls, 2, true, false, &mut events).hidden,
-            0
-        );
-    }
-
-    #[test]
     fn a_message_box_button_stores_its_result_and_closes_the_parent() {
         assert_eq!(message_box_button(true, false), MESSAGE_OK);
         assert_eq!(message_box_button(false, false), MESSAGE_CANCEL);
@@ -2283,25 +2189,35 @@ mod tests {
     }
 
     #[test]
-    fn a_double_click_uses_an_unsigned_clock_difference() {
+    fn a_double_click_uses_a_signed_wide_clock_difference() {
         let (mut task, _id, log) = task_with(|f| f.press_result = 0);
         task.update(false, (50, 50));
-        task.clock = 400;
+        task.clock = 1000;
         task.press(1);
         task.release(1);
-        // A clock wrap makes the difference huge as unsigned, so this is a
-        // single press even though it looks negative as a signed number.
+        // A clock behind the stamp is a negative difference, inside the
+        // window: a double click (0x8001, then the press it falls back to).
         task.clock = 100;
-        task.press(1);
-        assert_eq!(log.lock().unwrap().presses, vec![0x1001, 0x2001, 0x1001]);
-        // Just inside the window it is a double click again.
-        task.release(1);
-        task.clock = 401;
         task.press(1);
         assert_eq!(
             log.lock().unwrap().presses,
-            vec![0x1001, 0x2001, 0x1001, 0x2001, 0x8001, 0x1001]
+            vec![0x1001, 0x2001, 0x8001, 0x1001]
         );
+        // 450 or more after the stamp is a single press again.
+        task.release(1);
+        task.clock = 1450;
+        task.press(1);
+        assert_eq!(
+            log.lock().unwrap().presses,
+            vec![0x1001, 0x2001, 0x8001, 0x1001, 0x2001, 0x1001]
+        );
+        // A 32-bit wrap does not wrap the difference: from the stamp 1450
+        // a clock of u32::MAX is far outside the window.
+        task.release(1);
+        task.clock = u32::MAX;
+        task.press(1);
+        let presses = log.lock().unwrap().presses.clone();
+        assert_eq!(&presses[6..], &[0x2001, 0x1001]);
     }
 
     #[test]
