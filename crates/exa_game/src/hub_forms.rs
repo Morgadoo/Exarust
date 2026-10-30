@@ -451,12 +451,17 @@ impl HubWindows {
                         career.company.tournaments_lost =
                             career.company.tournaments_lost.wrapping_add(1);
                     }
+                    // The original's order: the shop and merchant restock,
+                    // the hire list's renewal, a new week's tournament the
+                    // day after a tournament day, then the day's matches.
+                    // The restock waits for the live shop world on the next
+                    // frame.
+                    career.restock_pending = true;
                     career.renew_hire_pool();
-                    career.regenerate_daily_board_at(crate::arena_match::counter_now() as u32);
                     if career.company.day % 7 == 1 {
                         career.regenerate_tournament_at(crate::arena_match::counter_now() as u32);
                     }
-                    career.restock_pending = true;
+                    career.regenerate_daily_board_at(crate::arena_match::counter_now() as u32);
                     info!(
                         "hub manage: the day ends (day {}, wages {})",
                         career.company.day, night.wages
@@ -1018,6 +1023,43 @@ mod tests {
         // weekly tournament (day 1 is the day after a tournament day).
         assert!(career.restock_pending);
         assert!(career.tournament.is_some());
+    }
+
+    #[test]
+    fn an_entered_week_a_rival_takes_counts_one_more_tournament_lost() {
+        let mut windows = HubWindows::default();
+        windows.task.screen = (1280, 720);
+        windows.unit = 4;
+        let mut career = ArenaCareer::default();
+        // Day 7 ends into day 8, the day after a tournament day: the week is
+        // resolved. The company entered event 0; company 2 won all six.
+        career.company.day = 7;
+        career.entries[0].count = 1;
+        for row in &mut career.entries {
+            row.team_id = 2;
+        }
+        windows.open_manage(&career);
+        click(
+            &mut windows,
+            &mut career,
+            FormWindow::Manage,
+            manage::END_DAY,
+        );
+        assert_eq!(career.company.day, 8);
+        assert_eq!(career.company.tournaments_lost, 1);
+        assert_eq!(career.company.tournaments_won, 0);
+        // The new week's board cleared the entries.
+        assert!(!crate::arena_match::any_entry(&career.entries));
+        // A week the company did not enter books nothing.
+        let mut idle = ArenaCareer::default();
+        idle.company.day = 7;
+        idle.matches_today = 1;
+        for row in &mut idle.entries {
+            row.team_id = 2;
+        }
+        windows.open_manage(&idle);
+        click(&mut windows, &mut idle, FormWindow::Manage, manage::END_DAY);
+        assert_eq!(idle.company.tournaments_lost, 0);
     }
 
     #[test]
