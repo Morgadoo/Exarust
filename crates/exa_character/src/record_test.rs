@@ -867,3 +867,79 @@ fn shipped_apparel_follows_the_underwear_and_conflict_rules() {
     assert_eq!(data.record.worn, refs(&[shirt.id]));
     assert_eq!(data.record.worn[0].id, shirt.id);
 }
+
+/// A character entry's own item references are copied into the live tier,
+/// the inventory copies of a hand following the hand.
+#[test]
+fn importing_an_entry_copies_its_items() {
+    use exa_formats::objdb::{LOCAL, Store};
+    use exa_formats::objstrings::Library;
+
+    fn item_payload(name: &str) -> Vec<u8> {
+        let mut body = name.as_bytes().to_vec();
+        body.resize(16, 0);
+        body.extend(0u32.to_le_bytes());
+        body.extend(0u32.to_le_bytes());
+        let mut model = body.clone();
+        model.resize(0x28, 0);
+        let mut out = 0x1000_0000u32.to_le_bytes().to_vec();
+        out.extend(((body.len() as u32) + 8).to_le_bytes());
+        out.extend(body);
+        out.extend(0x0010_0000u32.to_le_bytes());
+        out.extend(((model.len() as u32) + 8).to_le_bytes());
+        out.extend(model);
+        out
+    }
+
+    let payloads: Vec<(u32, Vec<u8>)> = (1..=3)
+        .map(|id| (id, item_payload(&format!("item{id}"))))
+        .collect();
+    let mut own = ObjectDb::default();
+    let store = Store::from_records(
+        payloads
+            .iter()
+            .map(|(id, b)| (*id, 0x1000u32 | 0x0010_0000, b.as_slice())),
+    );
+    own.base = store;
+    own.strings = Library::default();
+
+    let mut data = CharacterData::new();
+    data.record.hands[0] = ItemRef::new(LOCAL | 1, 0);
+    data.record.hands[1] = ItemRef::new(0, 0);
+    data.record.worn = refs(&[LOCAL | 2]);
+    data.record.inventory = vec![
+        Carried {
+            item: LOCAL | 1,
+            ..Carried::default()
+        },
+        Carried {
+            item: LOCAL | 2,
+            ..Carried::default()
+        },
+        Carried {
+            item: LOCAL | 3,
+            ..Carried::default()
+        },
+        Carried {
+            item: LOCAL | 9,
+            ..Carried::default()
+        },
+    ];
+    let mut live = ObjectDb::default();
+    let copied = data.import_items(&own, &mut live, Tier::Local);
+    // The hand, the worn item and the two inventory entries of their own;
+    // the hand's repeat is no copy and the missing id is not counted.
+    assert_eq!(copied, 4);
+    assert_eq!(data.record.hands[0].id, LOCAL | 1);
+    assert_eq!(data.record.worn[0].id, LOCAL | 2);
+    assert_eq!(data.record.inventory[0].item, data.record.hands[0].id);
+    // The inventory copy of a worn item is a second record: only the hands
+    // are aliased.
+    assert_eq!(data.record.inventory[1].item, LOCAL | 3);
+    assert_ne!(data.record.inventory[1].item, data.record.worn[0].id);
+    assert_eq!(data.record.inventory[2].item, LOCAL | 4);
+    assert_eq!(data.record.inventory[3].item, LOCAL | 9);
+    assert_eq!(live.local.len(), 4);
+    // The entry database is left as it was.
+    assert_eq!(own.base.len(), 3);
+}

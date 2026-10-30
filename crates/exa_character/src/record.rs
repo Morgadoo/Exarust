@@ -18,7 +18,7 @@ use exa_formats::characters::{
 /// database and `0x80000000` the level's own.
 const RECORD_WORLD: u32 = 0x4000_0000;
 const RECORD_LOCAL: u32 = 0x8000_0000;
-use exa_formats::objdb::{EQUIP_LOCK_LIMIT, Item};
+use exa_formats::objdb::{EQUIP_LOCK_LIMIT, Item, ObjectDb, Tier};
 
 /// The techniques a technique depends on, by skill slot and technique id
 /// (1-based): unlearning either one also unlearns it. Close Combat's Dual
@@ -558,6 +558,48 @@ impl CharacterData {
         for entry in &mut self.record.inventory {
             entry.item = remap(entry.item);
         }
+    }
+
+    /// Copies the record's item references out of a character entry's own
+    /// database into `target`, as the prelude loader does after reading the
+    /// entry: the first hand pair, then the worn list, then the inventory.
+    /// A hand keeps its old id so an inventory entry that repeats it takes
+    /// the hand's new id instead of another copy; every other inventory
+    /// entry is copied like the worn items. The second hand pair, the
+    /// staged list and the loadouts are left alone. Returns how many
+    /// references were copied (an id without database bits or one the
+    /// entry's database lacks stays as it is and is not counted).
+    pub fn import_items(&mut self, own: &ObjectDb, db: &mut ObjectDb, target: Tier) -> usize {
+        let mut copied = 0;
+        let mut old = [0u32; 2];
+        let holds = |id: u32| own.base.find(id).is_some();
+        for (at, hand) in self.record.hands[..2].iter_mut().enumerate() {
+            if !hand.is_shared() {
+                continue;
+            }
+            old[at] = hand.id;
+            copied += usize::from(holds(hand.id & ID_MASK));
+            hand.id = db.copy_record_from(hand.id, own, Tier::Base, target);
+        }
+        for worn in &mut self.record.worn {
+            if !worn.is_shared() {
+                continue;
+            }
+            copied += usize::from(holds(worn.id & ID_MASK));
+            worn.id = db.copy_record_from(worn.id, own, Tier::Base, target);
+        }
+        for entry in &mut self.record.inventory {
+            if entry.item & (WORLD_DB | 0x8000_0000) == 0 {
+                continue;
+            }
+            if let Some(at) = old.iter().position(|old| *old != 0 && *old == entry.item) {
+                entry.item = self.record.hands[at].id;
+            } else {
+                copied += usize::from(holds(entry.item & ID_MASK));
+                entry.item = db.copy_record_from(entry.item, own, Tier::Base, target);
+            }
+        }
+        copied
     }
 
     /// [`CharacterData::remap_items`] as a record moves between two
