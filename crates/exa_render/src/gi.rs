@@ -1708,6 +1708,7 @@ fn gather_lights(
             textures.origin,
             textures.extent,
             textures.voxel,
+            sun_active,
         );
         return;
     }
@@ -1756,11 +1757,44 @@ fn gather_lights(
         textures.origin,
         textures.extent,
         textures.voxel,
+        sun_active,
     );
+}
+
+/// Orders a group's lights as the injection does just before it draws the
+/// group: the first light whose shadow is a 2D matrix (`kind` 2: the sun, a
+/// spot) at or after index 2 moves to slot 1 when the sun is up (it owns
+/// slot 0), or the first at or after index 1 moves to slot 0 when it is
+/// down. The scan checks the last light too, as the original's do-while
+/// does; a group shorter than the start needs no scan.
+pub fn plan_light_slots(lights: &mut [u32], matrix_shadow: impl Fn(u32) -> bool, sun_up: bool) {
+    let n = lights.len();
+    if sun_up {
+        if n < 3 {
+            return;
+        }
+        for i in 2..n {
+            if matrix_shadow(lights[i]) {
+                lights.swap(1, i);
+                return;
+            }
+        }
+    } else {
+        if n < 2 {
+            return;
+        }
+        for i in 1..n {
+            if matrix_shadow(lights[i]) {
+                lights.swap(0, i);
+                return;
+            }
+        }
+    }
 }
 
 /// Lays the groups' lights out for the pass, dropping the lights the
 /// injection does not know.
+#[allow(clippy::too_many_arguments)]
 fn push_groups(
     gi: &mut GiLights,
     groups: &[GiGroupPlan],
@@ -1769,6 +1803,7 @@ fn push_groups(
     origin: Vec3,
     extent: Vec3,
     voxel: f32,
+    sun_up: bool,
 ) {
     // `extent` is in world axes (X, height, Z): the texture's second axis
     // is world Z, its third the height over the block's width.
@@ -1786,8 +1821,18 @@ fn push_groups(
     let below = (-origin.y / voxel.max(1e-6)).round();
     for group in groups {
         let first = gi.lights.len();
-        for id in group.lights.ids() {
-            let Some(source) = sources.get(id) else {
+        // The injection drops the lights without their GI flag, then moves
+        // a matrix-shadow light to its slot.
+        let mut ids: Vec<u32> = group
+            .lights
+            .ids()
+            .iter()
+            .copied()
+            .filter(|id| sources.contains_key(id))
+            .collect();
+        plan_light_slots(&mut ids, |id| id == SUN_LIGHT_ID, sun_up);
+        for id in ids {
+            let Some(source) = sources.get(&id) else {
                 continue;
             };
             let colour = source.injection_colour() * source.multiplier;
@@ -2744,6 +2789,7 @@ mod tests {
             // World axes: 51.2 m across, 12.8 m tall.
             Vec3::new(51.2, 12.8, 51.2),
             0.2,
+            false,
         );
         let light = gi.lights[0];
         // The original's order: (cm − the block's centre cm)·(1/5120) + 0.5,
@@ -2787,6 +2833,7 @@ mod tests {
             Vec3::ZERO,
             Vec3::ONE,
             0.2,
+            true,
         );
         assert!((gi.lights[0].colour_shadow.x - 0.9).abs() < 1e-6);
         assert_eq!(gi.lights[0].shaping.w, 1.0);
@@ -3327,6 +3374,41 @@ mod tests {
             u.point_col[MAX_SHAPE_POINTS - 1],
             Vec4::new(7.0, 0.0, 0.0, 0.0)
         );
+    }
+
+    #[test]
+    fn a_matrix_shadow_light_moves_to_the_sun_slots_place() {
+        let is_matrix = |id: u32| id == 99;
+        // Sun up: it owns slot 0, so the first matrix light from index 2
+        // moves to slot 1.
+        let mut ids = vec![SUN_LIGHT_ID, 7, 99, 11];
+        plan_light_slots(&mut ids, is_matrix, true);
+        assert_eq!(ids, vec![SUN_LIGHT_ID, 99, 7, 11]);
+        // Index 1 is never scanned while the sun is up.
+        let mut ids = vec![5, 99, 9];
+        plan_light_slots(&mut ids, is_matrix, true);
+        assert_eq!(ids, vec![5, 99, 9]);
+        // The scan reaches the last light even when the group is only three
+        // long (the original's do-while checks one past its bound).
+        let mut ids = vec![5, 7, 99];
+        plan_light_slots(&mut ids, is_matrix, true);
+        assert_eq!(ids, vec![5, 99, 7]);
+        // Sun down: the first matrix light from index 1 moves to slot 0.
+        let mut ids = vec![5, 99, 9];
+        plan_light_slots(&mut ids, is_matrix, false);
+        assert_eq!(ids, vec![99, 5, 9]);
+        // Only the first one moves.
+        let mut ids = vec![5, 9, 11];
+        plan_light_slots(&mut ids, |id| id == 11, false);
+        assert_eq!(ids, vec![11, 9, 5]);
+        // A group too short to hold a slot is left alone; so is one with no
+        // matrix light.
+        let mut one = vec![5];
+        plan_light_slots(&mut one, is_matrix, true);
+        assert_eq!(one, vec![5]);
+        let mut plain = vec![5, 7, 9];
+        plan_light_slots(&mut plain, is_matrix, true);
+        assert_eq!(plain, vec![5, 7, 9]);
     }
 
     #[test]
