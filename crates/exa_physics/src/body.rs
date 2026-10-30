@@ -3865,6 +3865,46 @@ impl Ragdoll {
         Some(at)
     }
 
+    /// The original's link adder for a link to a scene node rather than a
+    /// body: the point is kept in the node's frame and the record takes the
+    /// code flag alone (no body flag, no shares), so the link falls to the
+    /// plain world-link law. Exarust keeps such links as [`WorldLink`]s
+    /// with an anchor in world space, which is what the node's point stands
+    /// for. `at` is that world point (m), `on_part` a point in the part's
+    /// space (m). The slack is zeroed at or under the general epsilon (in
+    /// centimetres) and for a NaN, as the body link's is, and the smoothed
+    /// length starts at zero. Returns the new world link's index, or `None`
+    /// when the part is missing.
+    pub fn add_world_link(
+        &mut self,
+        part: usize,
+        on_part: Vec3,
+        at: Vec3,
+        slack: f32,
+        strength: f32,
+    ) -> Option<usize> {
+        let weights_on_part = weights(self.parts.get(part)?, on_part);
+        let slack = if slack * CM <= GENERAL_EPSILON || slack.is_nan() {
+            0.0
+        } else {
+            slack
+        };
+        self.world.push(WorldLink {
+            part,
+            on_part: weights_on_part,
+            anchor: at,
+            slack,
+            strength,
+            smoothing: 0.0,
+            flags: LINK_CODE,
+            axis: Vec3::ZERO,
+            length: 0.0,
+            origin: false,
+            last_pass: None,
+        });
+        Some(self.world.len() - 1)
+    }
+
     /// The part of `bone`.
     pub fn part_of(&self, bone: usize) -> Option<&Part> {
         self.parts.iter().find(|p| p.bone == bone)
@@ -5230,6 +5270,46 @@ mod tests {
         assert!(!body.parts[1].contacts.is_empty());
         body.set_disabled(false);
         assert!(!body.disabled());
+    }
+
+    /// A link added to a scene node is a plain world link: it takes only
+    /// the code flag, keeps the point's weights and pulls the part to the
+    /// anchor it was given.
+    #[test]
+    fn a_run_time_world_link_pulls_its_part_to_the_anchor() {
+        let mut body = two_parts(0.0);
+        let start = Vec3::new(0.0, 1.0, 0.0);
+        let at = body
+            .add_world_link(0, Vec3::ZERO, start, 0.0, 1.0)
+            .expect("part 0 exists");
+        assert_eq!(at, 0);
+        assert_eq!(body.world.len(), 1);
+        let on_part = {
+            let l = &body.world[0];
+            assert_eq!(
+                (l.part, l.flags, l.slack, l.strength),
+                (0, LINK_CODE, 0.0, 1.0)
+            );
+            assert_eq!(l.anchor, start);
+            assert_eq!(l.smoothing, 0.0);
+            assert_eq!(l.length, 0.0);
+            assert!((l.on_part.iter().sum::<f32>() - 1.0).abs() < 1e-6);
+            l.on_part
+        };
+        // Pulled half a metre away, one pass takes the point back toward
+        // the anchor by the strength times its gap.
+        body.translate(Vec3::new(0.5, 0.0, 0.0));
+        let before = body.parts[0].point(&on_part);
+        body.pass = 0;
+        body.pull_world_links(0);
+        let after = body.parts[0].point(&body.world[0].on_part);
+        assert!(after.distance(start) < before.distance(start));
+        assert_eq!(body.add_world_link(9, Vec3::ZERO, start, 0.0, 1.0), None);
+        // A tiny or NaN slack is stored as zero.
+        let l = body
+            .add_world_link(0, Vec3::ZERO, start, f32::NAN, 1.0)
+            .unwrap();
+        assert_eq!(body.world[l].slack, 0.0);
     }
 
     /// A clone shares its template's rest points, as the original's clone
