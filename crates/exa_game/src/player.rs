@@ -2061,7 +2061,8 @@ impl ChaseCamera {
         // tick clock; the elapsed real time is kept unrounded so the
         // rounding happens once, against the absolute clock.
         self.elapsed_ms += f64::from(dt) * 1000.0;
-        let (ran, t) = self.frame.step(self.elapsed_ms.round() as u32);
+        // The stamp wraps at 2³² ms as the original's tick count does.
+        let (ran, t) = self.frame.step(self.elapsed_ms.round() as u64 as u32);
         for _ in 0..ran {
             self.tick();
             self.probe_wall(focus, obstructed);
