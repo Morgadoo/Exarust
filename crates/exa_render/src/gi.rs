@@ -30,6 +30,7 @@ use bevy::render::render_resource::{
     Texture, TextureDimension, TextureFormat, TextureSampleType, TextureUsages, TextureView,
     TextureViewDescriptor, TextureViewDimension, UniformBuffer,
 };
+use bevy::render::render_resource::{Origin3d, TexelCopyBufferLayout};
 use bevy::render::renderer::{RenderContext, RenderDevice, RenderQueue, ViewQuery};
 use bevy::render::texture::GpuImage;
 use bevy::render::view::ExtractedView;
@@ -51,6 +52,7 @@ impl Plugin for GiPlugin {
                 crate::gi_shape::GiShapePlugin,
                 ExtractResourcePlugin::<GiTextures>::default(),
                 ExtractResourcePlugin::<GiPendingTextures>::default(),
+                ExtractResourcePlugin::<GiOccupancyPatches>::default(),
                 ExtractResourcePlugin::<GiLights>::default(),
                 ExtractResourcePlugin::<GiSunShadow>::default(),
                 ExtractResourcePlugin::<GiSunSky>::default(),
@@ -75,7 +77,9 @@ impl Plugin for GiPlugin {
             .add_systems(RenderStartup, init_pipeline)
             .add_systems(
                 Render,
-                prepare_bind_group.in_set(RenderSystems::PrepareBindGroups),
+                (apply_occupancy_patches, prepare_bind_group)
+                    .chain()
+                    .in_set(RenderSystems::PrepareBindGroups),
             )
             .add_systems(Core3d, propagate.in_set(Core3dSystems::Prepass));
     }
@@ -234,6 +238,24 @@ impl GiTextures {
 #[derive(Resource, Clone, ExtractResource)]
 #[extract_app(RenderApp)]
 pub struct GiPendingTextures(pub GiTextures);
+
+/// One changed sub-rectangle of a block's occupancy, for a sub-upload: the
+/// block's first 6 m cell, the region in texture axes (X, Z depth, Y height)
+/// and its bytes, X fastest, then Z, then height.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GiOccupancyPatch {
+    pub sector: IVec2,
+    pub lo: UVec3,
+    pub hi: UVec3,
+    pub bytes: Vec<u8>,
+}
+
+/// The occupancy patches the world found this frame (a moving mesh took its
+/// old points out and put its new ones in). The world drains the list every
+/// frame, so each patch is applied once.
+#[derive(Resource, Default, Clone, ExtractResource)]
+#[extract_app(RenderApp)]
+pub struct GiOccupancyPatches(pub Vec<GiOccupancyPatch>);
 
 /// A light's share of the GI injection (its record's multiplier); lights
 /// without one inject in full.
@@ -1932,6 +1954,60 @@ struct GiOwed {
 
 /// Warm-up steps done in one frame at most; the rest follow in later frames.
 const MAX_STEPS_PER_FRAME: u32 = 16;
+
+/// Writes a moving mesh's changed occupancy region into the block's texture,
+/// as the original's sub-upload does (`glTexSubImage3D` over the dirty box).
+fn apply_occupancy_patches(
+    patches: Option<Res<GiOccupancyPatches>>,
+    textures: Option<Res<GiTextures>>,
+    pending: Option<Res<GiPendingTextures>>,
+    images: Res<RenderAssets<GpuImage>>,
+    queue: Res<RenderQueue>,
+) {
+    let Some(patches) = patches else { return };
+    if patches.0.is_empty() {
+        return;
+    }
+    let textures = pending.as_ref().map(|p| &p.0).or(textures.as_deref());
+    let Some(textures) = textures else { return };
+    let Some(occupancy) = images.get(&textures.occupancy) else {
+        return;
+    };
+    for patch in &patches.0 {
+        // Only the block whose texture is bound takes the write; a patch for
+        // another resident block waits until it is bound.
+        if patch.sector != textures.sector {
+            continue;
+        }
+        let size = patch.hi.saturating_sub(patch.lo);
+        if size.min_element() == 0 || patch.bytes.is_empty() {
+            continue;
+        }
+        queue.write_texture(
+            TexelCopyTextureInfo {
+                texture: &occupancy.texture,
+                mip_level: 0,
+                origin: Origin3d {
+                    x: patch.lo.x,
+                    y: patch.lo.y,
+                    z: patch.lo.z,
+                },
+                aspect: Default::default(),
+            },
+            &patch.bytes,
+            TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(size.x),
+                rows_per_image: Some(size.y),
+            },
+            Extent3d {
+                width: size.x,
+                height: size.y,
+                depth_or_array_layers: size.z,
+            },
+        );
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 fn prepare_bind_group(

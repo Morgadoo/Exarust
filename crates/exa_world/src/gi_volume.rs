@@ -36,12 +36,14 @@ impl Plugin for GiVolumePlugin {
             .init_resource::<GiState>()
             .init_resource::<GiSectorLights>()
             .init_resource::<GiBuiltBlocks>()
+            .init_resource::<exa_render::gi::GiOccupancyPatches>()
             .add_systems(
                 PostUpdate,
                 (
                     feed_shading_quality,
                     collect_source,
                     follow_camera,
+                    update_dynamic,
                     publish_sector_lights,
                 )
                     .chain()
@@ -50,6 +52,87 @@ impl Plugin for GiVolumePlugin {
                     .after(crate::shadow_links::LightCells)
                     .before(exa_render::gi::GiSystems),
             );
+    }
+}
+
+/// Takes a moving GI mesh's old points out of every built block it left and
+/// puts its new ones in, as the original's dynamic update does: the box is
+/// the old and new frames' padded extent, only the blocks it meets are
+/// touched, the weight is ∓20 (a quarter for a thin mesh), and the changed
+/// region goes to the renderer as a sub-upload. The mesh's frame is kept in
+/// [`GiMoved`], its old frame; a mesh that has not moved is left alone.
+/// The moving GI meshes the dynamic update looks at.
+type GiMoverQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static GiPoints,
+        &'static GlobalTransform,
+        Option<&'static GiMoved>,
+        Has<GiThinMesh>,
+        Has<GiCentredMesh>,
+    ),
+>;
+
+#[allow(clippy::too_many_arguments)]
+fn update_dynamic(
+    mut commands: Commands,
+    movers: GiMoverQuery,
+    mut built: ResMut<GiBuiltBlocks>,
+    mut patches: Option<ResMut<exa_render::gi::GiOccupancyPatches>>,
+) {
+    for (entity, points, at, moved, thin, centred) in &movers {
+        let now = at.affine();
+        let Some(GiMoved(old)) = moved else {
+            // The first frame the mesh is seen only records where it is.
+            commands.entity(entity).insert(GiMoved(now));
+            continue;
+        };
+        if *old == now {
+            continue;
+        }
+        let (Some(before), Some(after)) =
+            (point_bounds(&points.0, *old), point_bounds(&points.0, now))
+        else {
+            commands.entity(entity).insert(GiMoved(now));
+            continue;
+        };
+        // The union of the two frames' boxes, which every touched block must
+        // meet.
+        let bounds = (before.0.min(after.0), before.1.max(after.1));
+        let old_points: Vec<Vec3> = points.0.iter().map(|&p| old.transform_point3(p)).collect();
+        let new_points: Vec<Vec3> = points.0.iter().map(|&p| now.transform_point3(p)).collect();
+        for (index, block) in built.0.iter_mut() {
+            if !boxes_meet(bounds, block.bounds()) {
+                continue;
+            }
+            let dirty = Arc::make_mut(block);
+            let mut occupancy = dirty.occupancy();
+            let Some(region) = occupancy.update_dynamic(&old_points, &new_points, thin, centred)
+            else {
+                continue;
+            };
+            let Some(bytes) = sub_upload(
+                &occupancy.cells,
+                UVec3::new(SIDE as u32, SIDE as u32, dirty.depth as u32),
+                region,
+            ) else {
+                continue;
+            };
+            let sector = dirty.sector;
+            dirty.set_occupancy(occupancy);
+            if let Some(patches) = patches.as_mut() {
+                patches.0.push(exa_render::gi::GiOccupancyPatch {
+                    sector,
+                    lo: region.lo,
+                    hi: region.hi,
+                    bytes,
+                });
+            }
+            let _ = index;
+        }
+        commands.entity(entity).insert(GiMoved(now));
     }
 }
 
@@ -601,6 +684,7 @@ struct GiBuild {
 struct GiBuiltBlocks(HashMap<usize, Arc<BuiltBlock>>);
 
 /// A finished block and what its build counted.
+#[derive(Clone)]
 struct BuiltBlock {
     origin: Vec3,
     depth: usize,
@@ -609,6 +693,65 @@ struct BuiltBlock {
     floors: Arc<Vec<u8>>,
     terrain_columns: usize,
     floor_points: usize,
+}
+
+impl BuiltBlock {
+    /// The block's occupancy as the editable block the dynamic update needs:
+    /// its origin, height and first sector with the built cells.
+    fn occupancy(&self) -> Occupancy {
+        Occupancy {
+            origin: self.origin,
+            depth: self.depth,
+            cells: self.cells.as_ref().clone(),
+            // The dynamic update never touches the per-column floors; the
+            // block's own are rebuilt when it is next built from scratch.
+            lowest: vec![255u8; SIDE * SIDE],
+            sector: self.sector,
+        }
+    }
+
+    /// Replaces the block's cells with an edited occupancy's.
+    fn set_occupancy(&mut self, occupancy: Occupancy) {
+        self.cells = Arc::new(occupancy.cells);
+    }
+
+    /// The world box the block's voxels cover.
+    fn bounds(&self) -> (Vec3, Vec3) {
+        let lo = self.origin;
+        let hi = self.origin + Vec3::new(SIDE as f32, self.depth as f32, SIDE as f32) * VOXEL;
+        (lo, hi)
+    }
+}
+
+/// Whether two world boxes (lowest and highest corner) meet.
+fn boxes_meet(a: (Vec3, Vec3), b: (Vec3, Vec3)) -> bool {
+    a.0.x <= b.1.x
+        && b.0.x <= a.1.x
+        && a.0.y <= b.1.y
+        && b.0.y <= a.1.y
+        && a.0.z <= b.1.z
+        && b.0.z <= a.1.z
+}
+
+/// A GI mesh that moves: its last frame's world transform, so the update can
+/// take the points out where they were and put them in where they are, as the
+/// original's node keeps its old and new frames. The original only updates
+/// nodes whose kind is a GI mesh and that hold points.
+#[derive(Component, Clone, Copy, Debug)]
+pub struct GiMoved(pub Affine3A);
+
+/// The extent of a point set transformed by `at`, padded 1.5 voxels each
+/// side in world space (the original's dirty box).
+fn point_bounds(points: &[Vec3], at: Affine3A) -> Option<(Vec3, Vec3)> {
+    let mut lo = Vec3::splat(f32::INFINITY);
+    let mut hi = Vec3::splat(f32::NEG_INFINITY);
+    for &p in points {
+        let p = at.transform_point3(p);
+        lo = lo.min(p);
+        hi = hi.max(p);
+    }
+    (lo.is_finite() && hi.is_finite())
+        .then_some((lo - Vec3::splat(1.5 * VOXEL), hi + Vec3::splat(1.5 * VOXEL)))
 }
 
 /// How far ahead of the camera the manager's focus sits (metres): the sector
@@ -1600,6 +1743,76 @@ mod tests {
             edges: Arc::new(vec![OPEN; (size * size) as usize]),
             synthetic: false,
         }
+    }
+
+    /// A moving GI mesh takes its old points out of every built block it
+    /// meets and puts its new ones in, and the changed region goes out as a
+    /// sub-upload; a mesh that has not moved is left alone.
+    #[test]
+    fn a_moving_gi_mesh_updates_the_blocks_it_meets() {
+        use exa_render::gi::{GiOccupancyPatch, GiOccupancyPatches};
+
+        // A block at the origin, 64 slices, with a point at the centre of
+        // voxel (100, 100) of slice 5, so it fills exactly that cell.
+        let at = Vec3::new(20.1, 1.1, 20.1);
+        let mut occupancy = Occupancy::new_at(Vec3::ZERO, 64, IVec2::new(4, 4));
+        occupancy.splat(at);
+        let block = Arc::new(BuiltBlock {
+            origin: occupancy.origin,
+            depth: occupancy.depth,
+            sector: occupancy.sector,
+            cells: Arc::new(occupancy.cells.clone()),
+            floors: Arc::new(occupancy.floors()),
+            terrain_columns: 1,
+            floor_points: 1,
+        });
+        let mut built = GiBuiltBlocks::default();
+        built.0.insert(0, block);
+
+        let mut app = App::new();
+        app.insert_resource(built)
+            .insert_resource(GiOccupancyPatches::default())
+            .add_systems(Update, update_dynamic);
+        let points: Arc<Vec<Vec3>> = Arc::new(vec![at]);
+        let e = app
+            .world_mut()
+            .spawn((
+                GiPoints(points),
+                GlobalTransform::from_translation(Vec3::ZERO),
+            ))
+            .id();
+        // The first frame records the frame and changes nothing.
+        app.update();
+        assert!(app.world().resource::<GiOccupancyPatches>().0.is_empty());
+        assert_eq!(app.world().get::<GiMoved>(e).unwrap().0, Affine3A::IDENTITY);
+        // Moving it one voxel along x takes the old point out and puts the
+        // new one in.
+        *app.world_mut().get_mut::<GlobalTransform>(e).unwrap() =
+            GlobalTransform::from_translation(Vec3::new(VOXEL, 0.0, 0.0));
+        app.update();
+        let patches = app.world().resource::<GiOccupancyPatches>();
+        assert_eq!(patches.0.len(), 1);
+        let patch: &GiOccupancyPatch = &patches.0[0];
+        assert_eq!(patch.sector, IVec2::new(4, 4));
+        // The region spans the old and new cells, padded 1.5 voxels each
+        // side and rounded ties to even: x 100.5 − 1.5 = 99 and 101.5 + 1.5
+        // = 103; the texture's Z (world z) 99 and 102; the height 4 and 7.
+        assert_eq!(patch.lo, UVec3::new(99, 99, 4));
+        assert_eq!(patch.hi, UVec3::new(103, 102, 7));
+        let cells = &app.world().resource::<GiBuiltBlocks>().0[&0].cells;
+        let at_old = at;
+        let at_new = at + Vec3::X * VOXEL;
+        assert_eq!(
+            Occupancy::new_at(Vec3::ZERO, 64, IVec2::ZERO).at(at_old),
+            Some(0)
+        );
+        let read = |p: Vec3| {
+            let g = (p / VOXEL).floor().as_ivec3();
+            cells[(g.x + g.y * SIDE as i32 * SIDE as i32 + g.z * SIDE as i32) as usize]
+        };
+        // The old cell is empty, the new one holds the point's 20.
+        assert_eq!(read(at_old), 0);
+        assert_eq!(read(at_new), 20);
     }
 
     /// The settings screen's shading quality reaches the GI settings: 4 and
