@@ -614,13 +614,13 @@ pub const GEOMETRY_KIND: u32 = 0x5f;
 /// flags and the two emissive scales the import clears.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct HostMesh {
-    /// The sub-object's kind word (`+8`); a geometry's low bits are 9.
+    /// The sub-object's kind word; a geometry's low bits are 9.
     pub kind: u32,
-    /// The material's flag word (`+0xf0`).
+    /// The material's flag word.
     pub material_flags: u32,
-    /// The material's emissive scale (`+0xf4`).
+    /// The material's emissive scale.
     pub material_emissive: f32,
-    /// The host node's emissive scale (`+0x244`).
+    /// The host node's emissive scale.
     pub node_emissive: f32,
 }
 
@@ -629,7 +629,7 @@ pub struct HostMesh {
 pub struct ImportedFire {
     /// The marker's size (the four bytes after its record).
     pub size: f32,
-    /// The marker's brightness field (`+0x17c`), copied to the fire.
+    /// The marker's brightness field, copied to the fire.
     pub brightness: f32,
 }
 

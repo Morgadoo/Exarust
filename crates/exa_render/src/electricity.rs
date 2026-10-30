@@ -355,7 +355,7 @@ impl ArcSpec {
         self.size * 2.0
     }
 
-    /// The geometry the original allocates for the arc (`0x1001a6c40`): the
+    /// The geometry the original allocates for the arc: the
     /// index buffer holds `(4·segments + 2) · tendrils · 3` indices and the
     /// vertex buffer `(4·segments + 4) · tendrils` vertices, and the colour
     /// word is `0xff0019` (red 0x19, green 0, blue 0xff).
@@ -787,9 +787,9 @@ impl Arc {
         }
     }
 
-    /// The arc's draw passes: the original draws the ribbon once per branch
-    /// (`DAT_10049acb0` passes, each with its own branch matrix and scissor
-    /// rect), so the tendril count is the pass count.
+    /// The arc's draw passes: the original draws the ribbon once per branch,
+    /// each with its own branch matrix and scissor rect, so the tendril count
+    /// is the pass count.
     pub fn passes(&self) -> usize {
         self.spec.tendrils.clamp(1, 1024) as usize
     }

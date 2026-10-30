@@ -639,9 +639,9 @@ impl LightState {
 /// scale and its first sub-object's material scale.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct EmissiveNode {
-    /// The node's emissive scale (`0x244`).
+    /// The node's emissive scale.
     pub node: f32,
-    /// The first sub-object's material emissive scale (`0xf4`).
+    /// The first sub-object's material emissive scale.
     pub material: f32,
     /// A light node (its kind's low bits are 9).
     pub light: bool,
@@ -666,11 +666,11 @@ pub fn apply_emissive(value: f32, parent: &mut EmissiveNode, children: &mut [Emi
 /// A node an emitter hangs under: the scene flags the attach sets.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AttachedNode {
-    /// The node's flag word (`+8`): it has a child.
+    /// The node's flag word: it has a child.
     pub flags: u32,
-    /// The node's render word (`+0xc`).
+    /// The node's render word.
     pub render: u32,
-    /// The first sub-object's material flag word (`+0xf0`).
+    /// The first sub-object's material flag word.
     pub material_flags: u32,
     /// Whether the node already had a non-zero frame when the emitter
     /// attached.
