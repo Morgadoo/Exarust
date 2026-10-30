@@ -293,10 +293,11 @@ impl QuadBatcher {
         batch
     }
 
-    /// Adds a four-vertex quad in pixel coordinates through the same helper
-    /// sequence the original's callers use: the corners in
-    /// top-left/top-right/bottom-right/bottom-left order (the order
-    /// [`QUAD_INDICES`] expects), then the default texture coordinates.
+    /// Adds a four-vertex quad in pixel coordinates: the default texture
+    /// coordinates, then the corners in top-left/top-right/bottom-right/
+    /// bottom-left order (the order [`QUAD_INDICES`] expects). An Exarust
+    /// convenience over the batcher's own calls; the original's callers
+    /// issue the vertex calls themselves.
     pub fn quad(&mut self, left: f32, top: f32, right: f32, bottom: f32) {
         self.quad_texcoords_default();
         self.vertex(left, top);
