@@ -5534,11 +5534,14 @@ pub fn draw_button_box(
     outline_rect(batch, rect);
 }
 
-/// The scroll region's frame and the panel's inset bevel and shadow.
+/// The scroll region's frame and the panel's inset bevel and shadow. Like
+/// the control shell, the panel first draws the style frames its `style`
+/// word selects, on its own rect.
 pub fn draw_panel(
     batch: &mut SkinBatch,
     rect: GuiRect,
     inset: i32,
+    style: u32,
     state: u32,
     unit: i32,
     palette: &SkinPalette,
@@ -5550,6 +5553,7 @@ pub fn draw_panel(
         x1: rect.x1 - inset,
         y1: rect.y1 - inset,
     };
+    draw_style_frames(batch, rect, style, palette);
     if (state & 0x40) == 0x40 {
         let box_rect = GuiRect {
             x0: inner.x0 + 2.0,
@@ -6958,39 +6962,6 @@ pub fn draw_form_page(
         control_calls: place.controls,
         child_calls,
         shadow,
-    }
-}
-
-/// The temporary text a form's draw keeps while it paints its page. The
-/// original's draw record is finalised after the page, releasing the one
-/// string it holds; a record that never took a string releases nothing.
-/// Exarust's page model keeps no text, so this is the owner of that slot: a
-/// caller hands its label text in, the draw reads it, and the release frees
-/// it exactly once.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct DrawTempText(Option<String>);
-
-impl DrawTempText {
-    /// An empty slot: nothing to release.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// A slot holding `text`, as the draw takes a form's label text.
-    pub fn holding(text: &str) -> Self {
-        Self(Some(text.to_string()))
-    }
-
-    /// The text the slot holds, if any.
-    pub fn text(&self) -> Option<&str> {
-        self.0.as_deref()
-    }
-
-    /// Releases the temporary string: true when the slot held one, false when
-    /// it was already empty. The original's finaliser frees an empty slot
-    /// never.
-    pub fn release(&mut self) -> bool {
-        self.0.take().is_some()
     }
 }
 
@@ -12050,6 +12021,7 @@ mod tests {
             &mut batch,
             GuiRect::corners(0.0, 0.0, 100.0, 40.0),
             4,
+            0,
             0x40,
             4,
             &palette,
@@ -12139,6 +12111,7 @@ mod tests {
             GuiRect::corners(0.0, 0.0, 100.0, 40.0),
             4,
             0,
+            0,
             4,
             &palette,
         );
@@ -12153,6 +12126,29 @@ mod tests {
         assert_eq!(bevel[0].ink, [30, 7, 0, 60]);
         let outline = batch.vertices_of(&batch.primitives[2]);
         assert_eq!(outline[0].ink, [30, 0, 0, 60]);
+    }
+
+    #[test]
+    fn a_styled_panel_draws_its_style_frames_before_the_box() {
+        let mut batch = SkinBatch::new();
+        let palette = palette_for_faces();
+        draw_panel(
+            &mut batch,
+            GuiRect::corners(0.0, 0.0, 100.0, 40.0),
+            4,
+            0x10,
+            0,
+            4,
+            &palette,
+        );
+        // Style 0x10: the outer double frame on the panel's own rect, in the
+        // hot-form group's first shade, then the idle raised box inset by 4.
+        assert_eq!(batch.primitives.len(), 4);
+        let frames = batch.vertices_of(&batch.primitives[0]);
+        assert_eq!((frames[0].x, frames[0].y), (99.0, 0.5));
+        assert_eq!(frames[0].ink, [20, 0, 0, 50]);
+        let face = batch.vertices_of(&batch.primitives[1]);
+        assert_eq!((face[0].x, face[0].y), (94.0, 6.0));
     }
 
     #[test]
@@ -12649,7 +12645,8 @@ mod tests {
         let mut batch = SkinBatch::new();
         let palette = palette_for_faces();
         // Flat, style 0x20: the two-ink outline, in the form's first shade
-        // on its top and right and the seventh on its left and bottom.
+        // along its top and down its left, the seventh along its bottom and
+        // up its right.
         let chrome = draw_form_chrome(
             &mut batch,
             FormChromePlace {
@@ -12856,21 +12853,6 @@ mod tests {
         assert_eq!(thumb.texture_shift, [-40.0 / 512.0, 0.0]);
         assert_eq!(batch.texture_shift, [0.0, 0.0]);
         assert_eq!(drawn.arrow_icons.len(), 2);
-    }
-
-    #[test]
-    fn a_form_draw_releases_its_temporary_string_once() {
-        // An empty slot releases nothing.
-        let mut slot = DrawTempText::new();
-        assert_eq!(slot.text(), None);
-        assert!(!slot.release());
-        assert_eq!(slot.text(), None);
-        // A held string is released on the first call and gone on the second.
-        let mut slot = DrawTempText::holding("Journal");
-        assert_eq!(slot.text(), Some("Journal"));
-        assert!(slot.release());
-        assert_eq!(slot.text(), None);
-        assert!(!slot.release());
     }
 
     fn page_place() -> FormPagePlace {

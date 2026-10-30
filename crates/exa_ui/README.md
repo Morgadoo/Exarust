@@ -129,8 +129,7 @@ with argument 0. A close mark of -4 still counts one, and the square
 remains. A style that is not that band, and a wide bit, count none. Every dispatch then passes the frame to one call, restores
 the saved register, sets the stack to the frame, and pops the frame. A held
 band, a wide form, and a style that is not that band each do so. The helper then releases one string slot that starts
-empty, and an empty slot is not freed (`skin::DrawTempText`, whose
-`release` answers whether the slot held one). A held band, a wide form, and
+empty, and an empty slot is not freed. A held band, a wide form, and
 a style that is not that band each release it once. The bytes the jump skips
 do not run. A span bar at unit 5 from 10, 20 with span 100 and stored word 4
 draws a middle from 15, 20 to 105, 28, a left cap from 10, 20 to 15, 28, and
@@ -657,15 +656,16 @@ the scroll bar's trough is the accent gradient with a raised-box thumb and
 its style frames run first on the moved rectangle, and the shell frames its
 own rect before that box. The form background's two scroll troughs and its
 horizontal thumb are raised boxes; the vertical thumb's idle line gradient
-and its pressed bevel take the control group's eighth shade. A mark is
-pressed while the button is down on the code under the mouse (the stored
-pressed code only makes it active), and its hovered box's inner bevel is one
-shade darker than the outer. The selection band reads the highlight group's
+and its pressed bevel run between the control group's seventh and fifth
+shades. A mark or trough is pressed while the button is still down on the
+stored pressed code (the code under the mouse only makes a mark hot), and
+the hovered mark box's inner bevel is one shade brighter than the outer.
+The panel, like the shell, draws its style frames on its own rect first. The selection band reads the highlight group's
 fourth or fifth shade and its seventh or eighth by the selected state, and
 the form hit test answers the close, large and small mark codes (-4, -5, -6)
 in that order and the horizontal scrollbar's two arrows before its fallback.
-A form draw's temporary string is released once (`DrawTempText`). Part of it
-is called by the running UI through `gui_paint`; the rest waits for a form.
+The form draw's temporary string release is compiler-generated string
+cleanup; Rust ownership covers it, so it has no item. Part of it is called by the running UI through `gui_paint`; the rest waits for a form.
 
 `blend::UiBlendCache` is the GUI blend-state switch with the original's
 one-word cache: a word equal to the last does nothing; the word `0x100`
