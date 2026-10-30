@@ -351,9 +351,9 @@ pub struct CompactSkillState {
     pub used: [u8; 8],
 }
 
-/// The six 16-bit fields a compact skill window copies from its owner: the
-/// owner's words at 0xc0, 0xc8, 0xd0, 0xd8, 0xe0 and 0xe8, or zeroes when
-/// the owner asks for that; the window refreshes its layout after either.
+/// The six 16-bit fields a compact skill window copies from its owner (six
+/// consecutive eight-byte slots of the owner's record), or zeroes when the
+/// owner asks for that; the window refreshes its layout after either.
 pub fn attach_owner(owner: [i16; 6], zero: bool) -> [i16; 6] {
     if zero { [0; 6] } else { owner }
 }

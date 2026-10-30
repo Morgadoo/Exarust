@@ -798,16 +798,16 @@ pub struct SelectionPalette {
 }
 
 /// The destination screen's colours from the active skin: the symbol's
-/// base is the skin's own clean ink (`255, 250, 230, 100`), its add is the
-/// highlight group's seventh shade (`skin + 0x114`, the palette's index 6)
-/// and the backdrop the clean ink again. Each byte becomes a float by one
-/// multiply with 1/255 in single precision.
+/// base is the skin's own clean ink (`255, 250, 230, 100`) and its add the
+/// highlight group's seventh shade, each byte made a float by one multiply
+/// with 1/255 in single precision. The backdrop's own draw is not traced:
+/// the form group's fourth shade stands in (a guess, as before).
 pub fn skinned_palette(palette: &crate::skin::SkinPalette) -> SelectionPalette {
     let to_float = |bytes: [u8; 4]| bytes.map(|byte| f32::from(byte) * (1.0 / 255.0));
     SelectionPalette {
         symbol_base: to_float(crate::skin::SKIN_INK),
         symbol_add: to_float(palette.highlight[6]),
-        backdrop: crate::skin::SKIN_INK,
+        backdrop: palette.form[3],
     }
 }
 
@@ -898,7 +898,7 @@ mod tests {
         palette.highlight[6] = [10, 20, 30, 40];
         let skinned = skinned_palette(&palette);
         let byte = 1.0 / 255.0;
-        assert_eq!(skinned.backdrop, crate::skin::SKIN_INK);
+        assert_eq!(skinned.backdrop, palette.form[3]);
         assert!((skinned.symbol_base[0] - 255.0 * byte).abs() < 1e-7);
         assert!((skinned.symbol_base[1] - 250.0 * byte).abs() < 1e-7);
         assert!((skinned.symbol_base[2] - 230.0 * byte).abs() < 1e-7);

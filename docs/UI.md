@@ -884,7 +884,8 @@ The original's own forms and controls that Exarust rebuilds, with the
   shader runs per fragment into an image per row (`selection::symbol_image`),
   drawn with the backdrop, coloured `base + add · mix`: the base is the
   skin's clean ink (255, 250, 230, 100) and the add the highlight group's
-  seventh shade, both converted by 1/255; the symbol atlas
+  seventh shade, both converted by 1/255 (the backdrop's ink is not traced
+  and keeps the form group's fourth shade); the symbol atlas
   (`prtlsmbla.rfi`) loads with the other GUI textures. Rows carry their
   marker word to the journey (the shipped teleporter record has only level
   ids, so Exarust's rows carry none and the journey flags its own device). A click
@@ -2374,7 +2375,7 @@ pass a sixth level read the next skill's bytes, as the original's do.
   after the unit-change hook that was installed before it (it runs first on
   every build), cuts the two icon atlases once and then rebuilds them on
   later unit changes. A compact skill window copies its owner's six 16-bit
-  fields at 0xc0 to 0xe8, or zeroes them, before it refreshes. A group's pentagon points are
+  fields, or zeroes them, before it refreshes. A group's pentagon points are
   18.3 units out at fifths of a turn from straight up, the sine across and
   the cosine up, rounded in double precision.
 - **Press state.** A level the points fund is learnt (a press asks to
