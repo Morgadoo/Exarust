@@ -1668,6 +1668,10 @@ pub struct Ragdoll {
     /// at its previous particles instead of integrating it
     /// ([`Ragdoll::freeze`]).
     frozen: bool,
+    /// Disabled (the original's state bit 0x800): an item taken onto the
+    /// cursor, which the pair stage and the level detection skip and whose
+    /// grabs a struck body breaks ([`Ragdoll::set_disabled`]).
+    disabled: bool,
     /// The velocity a part keeps each tick in a body of the mechanism
     /// environment (levers and push surfaces), whatever its speed band;
     /// `None` keeps the default environment's banded retention
@@ -2469,6 +2473,7 @@ impl Ragdoll {
             simulated: false,
             fell_out: false,
             frozen: false,
+            disabled: false,
             environment_keep: None,
             held_environment: None,
             link_iterations: LIVING_LINK_ITERATIONS,
@@ -3266,6 +3271,23 @@ impl Ragdoll {
     /// Whether the body is frozen ([`Ragdoll::freeze`]).
     pub fn frozen(&self) -> bool {
         self.frozen
+    }
+
+    /// Disables or enables the body (the original's state bit 0x800). The
+    /// original sets it, with the asleep bit and the state-4 bit, on an
+    /// item taken onto the cursor (`state |= 0x805`), where the item hangs
+    /// in the zero-gravity environment: such a body is skipped by the
+    /// body-to-body and level stages, and a grab on it breaks (a struck
+    /// body that is disabled disables the link,
+    /// [`Ragdoll::pull_grab`]). Exarust has no cursor carry yet, so
+    /// nothing sets it in the game; the rule is here for that path.
+    pub fn set_disabled(&mut self, disabled: bool) {
+        self.disabled = disabled;
+    }
+
+    /// Whether the body is disabled ([`Ragdoll::set_disabled`]).
+    pub fn disabled(&self) -> bool {
+        self.disabled
     }
 
     /// Whether the body is placed (the original's state bit 0x1000): the
@@ -4458,6 +4480,12 @@ impl Ragdoll {
     }
 
     fn detect<L: Level + ?Sized>(&mut self, level: &L) {
+        // A disabled body (an item on the cursor) keeps out of the level
+        // as it keeps out of the other bodies.
+        if self.disabled {
+            self.level_impacts.clear();
+            return;
+        }
         let mut pieces = std::mem::take(&mut self.pieces);
         let mut triangles = std::mem::take(&mut self.triangles);
         let mut impacts = std::mem::take(&mut self.level_impacts);
@@ -5116,6 +5144,45 @@ mod tests {
         body.iterate();
         let after = gap(&body);
         assert!(after < before, "{after} vs {before}");
+    }
+
+    /// A disabled body is the original's state bit 0x800: set and cleared,
+    /// and its level detection leaves no impact and no contact behind.
+    #[test]
+    fn a_disabled_body_is_flagged_and_skips_the_level() {
+        let mut body = two_parts(0.0);
+        assert!(!body.disabled());
+        body.set_disabled(true);
+        assert!(body.disabled());
+        // Push a part into the floor and detect: a disabled body gathers
+        // nothing, an enabled one finds the contact.
+        struct Floor(Vec<[Vec3; 3]>);
+        impl Level for Floor {
+            fn pieces(&self, _: Vec3, _: Vec3, out: &mut Vec<u32>) {
+                out.push(0);
+            }
+            fn triangles(&self, _: u32, _: Vec3, _: Vec3, out: &mut Vec<[Vec3; 3]>) {
+                out.extend_from_slice(&self.0);
+            }
+            fn mask(&self, _: u32) -> u32 {
+                0
+            }
+            fn movable(&self, _: u32) -> bool {
+                false
+            }
+            fn floor_piece(&self, _: u32) -> bool {
+                true
+            }
+        }
+        let floor = Floor(floor_quad(0.0, 4.0));
+        body.parts[1].positions = body.parts[1].positions.map(|x| Vec3::new(x.x, 0.05, x.z));
+        body.detect(&floor);
+        assert!(body.parts[1].contacts.is_empty());
+        body.set_disabled(false);
+        body.detect(&floor);
+        assert!(!body.parts[1].contacts.is_empty());
+        body.set_disabled(false);
+        assert!(!body.disabled());
     }
 
     /// The two-step point transform takes the point's place now from where
