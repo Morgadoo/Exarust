@@ -905,8 +905,9 @@ body yet (no condition or variant is rolled onto one). Not drawn: the
 board's pictures, prize items and reward slots as images, the manage report
 lines and controls, and the trade window's item icons and character
 preview; a stock row taken into the buy basket and the basket's items
-settling across the shelf are in `ShopWindow` (`take_stock_row`,
-`offer_item`, `confirm` through `Company::settle`). The board's own close, day-end
+settling across the shelf are Exarust's list model in `ShopWindow`
+(`take_stock_row`, `offer_item`, `confirm` through `Company::settle`), not
+yet called by the live hub, whose baskets stay coin-only. The board's own close, day-end
 and forfeit buttons are on its form host and report their actions; the hub
 closes it through the window manager.
 The hub's shopkeeper and specialist placements are `arena_spawn`'s plans;

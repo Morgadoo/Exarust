@@ -314,9 +314,11 @@ impl ShopWindow {
     }
 
     /// Takes a stock row into the buy basket: the item leaves the bound
-    /// [`Self::stock`] list at its first place and joins the basket with
-    /// `price` (the original's character-view drop of the stock list). An
-    /// index past the stock list or a zero id does nothing.
+    /// [`Self::stock`] list at its place and joins the basket with `price`.
+    /// An index past the stock list or a zero id does nothing. [guess:
+    /// Exarust's list model of dragging a stock item onto the buy panel;
+    /// the original's container drag callbacks are not read, and nothing
+    /// in the live hub calls this yet]
     pub fn take_stock_row(&mut self, at: usize, price: u16) -> Option<Balance> {
         let id = *self.stock.get(at)?;
         if id == 0 {
@@ -327,7 +329,8 @@ impl ShopWindow {
     }
 
     /// Offers a carried item to the sell basket: the item joins the basket
-    /// with `price`.
+    /// with `price`. [guess: list model, as [`Self::take_stock_row`]; not
+    /// called by the live hub yet]
     pub fn offer_item(&mut self, id: u32, price: u16) -> Option<Balance> {
         (id != 0).then(|| self.add_sell_item(id, price))
     }
