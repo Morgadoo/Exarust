@@ -236,21 +236,21 @@ pub fn held_shield<'a>(
         .last()
 }
 
-/// The bone whose layer the armour pass measures for the head's extra
-/// height: the eleventh, index 10 in a coverage table that starts at bone 1.
-const HEAD_BONE: usize = 10;
-
-/// The head's extra height the armour pass adds to a character (the body's
-/// standing-height offset): the thickest display coverage worn over the
-/// eleventh bone, in percent, plus the wearer's physique offset
-/// (physique − 0.5) × 8, in float in the original's order. A piece counts
-/// only when it covers the bone and its body carries the head mark
-/// ([`crate::objdb::Armour::head_height_mark`]); a thinner layer never
-/// replaces the thickest, and a NaN display never counts.
+/// The head's extra height the armour pass adds to a character: the
+/// thickest display byte among the worn pieces whose body carries the head
+/// mark ([`crate::objdb::Armour::head_height_mark`]), plus the wearer's
+/// physique offset (physique − 0.5) × 8, in single precision in the
+/// original's order. The pass takes a piece's display while walking the
+/// body's node of the eleventh slot, whatever the piece's coverage there
+/// (the coverage test comes after and only gates the layer fold); `worn`
+/// is therefore every worn piece of a body that has that node. A thinner
+/// piece never replaces the thickest. The part-box update reads the
+/// result (its box's third coordinate gains half of it, the second a tenth
+/// in double); nothing in Exarust consumes it yet.
 pub fn head_extra<'a>(worn: impl IntoIterator<Item = &'a Armour>, physique: f32) -> f32 {
     let mut height = 0.0f32;
     for piece in worn {
-        if piece.coverage[HEAD_BONE] == 0 || !piece.head_height_mark {
+        if !piece.head_height_mark {
             continue;
         }
         let display = f32::from(piece.display);

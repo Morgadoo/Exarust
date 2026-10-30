@@ -492,14 +492,14 @@ pub struct Armour {
     pub encumbrance: u8,
     /// Hit sound class: 0 flesh, 1 cloth, 2 leather, 3 mail, 4 plate, 6 golem.
     pub material: u8,
-    /// Coverage display, percent (the byte at `0x1A7`): the armour pass
-    /// reads the thickest one worn over the eleventh bone as extra body
-    /// height ([`crate::encumbrance::head_extra`]).
+    /// Coverage display (the byte at `0x1A7`): the armour pass reads the
+    /// thickest one among the pieces carrying the head mark as the head's
+    /// extra height ([`crate::encumbrance::head_extra`]).
     pub display: u8,
-    /// The body's word at `0x60` is non-zero. The armour pass requires it
-    /// before a layer's display coverage raises the head's extra height.
-    /// [guess: what the word marks is not established; a qword read as a
-    /// flag is all the pass uses of it]
+    /// The body's per-slot qword for the eleventh slot (at `0x60`, in the
+    /// table that starts at `0x08`) is non-zero. The armour pass requires it
+    /// before a piece's display raises the head's extra height. [guess: what
+    /// the entry holds is not established; the pass only tests it]
     pub head_height_mark: bool,
 }
 
