@@ -135,8 +135,15 @@ pub fn plane_hit(ray: Ray, plane: Plane) -> PlaneHit {
 /// matrix, then picks in that space. `to_frame` is the matrix that takes a
 /// world point into the frame (the node's inverse world transform); the
 /// returned point is in the frame's space.
+///
+/// The engine's point transform sums `(x·c₀ + y·c₁) + (z·c₂ + t)`, the
+/// translation joining the third column before the pairs meet; its vector
+/// transform sums `(x·c₀ + y·c₁) + z·c₂`.
 pub fn plane_hit_in_frame(ray: Ray, plane: Plane, to_frame: bevy::math::Affine3A) -> PlaneHit {
-    let origin = to_frame.transform_point3(ray.origin);
+    let m = to_frame.matrix3;
+    let o = ray.origin;
+    let origin =
+        Vec3::from((m.x_axis * o.x + m.y_axis * o.y) + (m.z_axis * o.z + to_frame.translation));
     let direction = to_frame.transform_vector3(ray.direction);
     plane_hit(Ray::new(origin, direction), plane)
 }
@@ -721,6 +728,27 @@ mod tests {
             frame,
         );
         assert!((hit.distance - 3.0).abs() < 1e-5, "{}", hit.distance);
+    }
+
+    #[test]
+    fn the_node_frame_adds_the_translation_to_the_third_column_first() {
+        // A shear whose third column feeds x: x' = x + z + t. With x = 1
+        // and z = t = 2⁻²⁴ the engine's `x + (z + t)` is 1 + 2⁻²³, where a
+        // left-to-right sum would round to 1 twice.
+        let tiny = f32::EPSILON / 2.0;
+        let to_frame = bevy::math::Affine3A::from_cols(
+            bevy::math::Vec3A::X,
+            bevy::math::Vec3A::Y,
+            bevy::math::Vec3A::new(1.0, 0.0, 1.0),
+            bevy::math::Vec3A::new(tiny, 0.0, 0.0),
+        );
+        let hit = plane_hit_in_frame(
+            ray(Vec3::new(1.0, 0.0, tiny), Vec3::Y),
+            Plane::new(Vec3::Y, 5.0),
+            to_frame,
+        );
+        assert_eq!(hit.distance, 5.0);
+        assert_eq!(hit.point.x, 1.0 + f32::EPSILON);
     }
 
     #[test]
