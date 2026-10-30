@@ -54,9 +54,12 @@ pub struct BodyTimers {
     pub look_rate: f32,
     /// A countdown the tick decrements every tick.
     pub countdown: i32,
-    /// The weapon switch counter: the switch rules move it within its
-    /// range, and the tick steps it one toward zero.
+    /// The weapon switch timer (the original's `0x444`): 5 with an item in
+    /// the hands, else moved one a tick toward [`weapon_switch_target`].
     pub weapon_switch: i32,
+    /// The weapon switch's flags (the original's `0x109C`): bit 8 is set
+    /// while the hands are empty and the state flag is to be raised.
+    pub switch_flags: u32,
 }
 
 impl Default for BodyTimers {
@@ -67,7 +70,51 @@ impl Default for BodyTimers {
             look_rate: LOOK_RATE_STANDING,
             countdown: 0,
             weapon_switch: 0,
+            switch_flags: 0,
         }
+    }
+}
+
+/// The weapon switch timer's target: `round((1 − field·0.25)·1660 / 83)`
+/// in single precision, the original's 0x67C over the tick rate, rounded
+/// half to even. The field is the character record's at `+0x90`.
+pub fn weapon_switch_target(field: f32) -> i32 {
+    let target = ((1.0 - field * 0.25) * 1660.0) / 83.0;
+    // CVTSS2SI rounds half to even.
+    target.round_ties_even() as i32
+}
+
+/// One tick of the weapon switch block. With an item in the hands
+/// (`hands`, the low 24 bits of the held word) the timer is 5; empty, it
+/// is 5 and bit 8 of the flags is set, raising the state flag unless
+/// `state_flag4` is already set. Otherwise (flags 6 clear) the timer moves
+/// one toward [`weapon_switch_target`] and bit 8 clears. Returns the timer,
+/// the flags and whether the state flag is to be raised.
+pub fn weapon_switch_step(
+    timer: i32,
+    flags: u32,
+    hands: u32,
+    state_flag4: bool,
+    field: f32,
+) -> (i32, u32, bool) {
+    if flags & 6 != 0 {
+        if hands != 0 {
+            (5, flags & !8, false)
+        } else if state_flag4 {
+            (5, flags | 8, false)
+        } else {
+            (5, flags | 8, true)
+        }
+    } else {
+        let target = weapon_switch_target(field);
+        let timer = if timer < target {
+            timer + 1
+        } else if timer > target {
+            target
+        } else {
+            timer
+        };
+        (timer, flags & !8, false)
     }
 }
 
@@ -105,7 +152,21 @@ impl BodyTimers {
         self.rest = rest;
         self.support = support;
         self.countdown = self.countdown.wrapping_sub(1);
-        self.weapon_switch -= self.weapon_switch.signum();
+    }
+
+    /// Runs the weapon switch block, which the posture stage calls when it
+    /// knows the hands and the record's field.
+    pub fn tick_switch(&mut self, hands: u32, state_flag4: bool, field: f32) -> bool {
+        let (timer, flags, raise) = weapon_switch_step(
+            self.weapon_switch,
+            self.switch_flags,
+            hands,
+            state_flag4,
+            field,
+        );
+        self.weapon_switch = timer;
+        self.switch_flags = flags;
+        raise
     }
 }
 
@@ -213,11 +274,29 @@ mod tests {
         assert_eq!(t.look_rate, LOOK_RATE_MOVING);
         t.tick(&input());
         assert_eq!(t.look_rate, LOOK_RATE_STANDING);
-        t.weapon_switch = 2;
-        t.tick(&input());
-        assert_eq!(t.weapon_switch, 1);
-        t.weapon_switch = -3;
-        t.tick(&input());
-        assert_eq!(t.weapon_switch, -2);
+    }
+
+    /// The weapon switch block: an item of 5; empty with the flags 6 clear
+    /// moves toward the target and clears bit 8; empty with a flag set
+    /// raises the state flag once.
+    #[test]
+    fn the_weapon_switch_timer() {
+        assert_eq!(weapon_switch_target(0.0), 20);
+        assert_eq!(weapon_switch_target(1.0), 15);
+        assert_eq!(weapon_switch_target(0.5), 18);
+        assert_eq!(weapon_switch_step(10, 0, 0x30, false, 0.0), (11, 0, false));
+        assert_eq!(weapon_switch_step(20, 0, 0, false, 0.0), (20, 0, false));
+        assert_eq!(weapon_switch_step(25, 0, 0, false, 0.0), (20, 0, false));
+        assert_eq!(weapon_switch_step(10, 0xa, 0x30, false, 1.0), (5, 2, false));
+        assert_eq!(weapon_switch_step(10, 0xa, 0, false, 1.0), (5, 0xa, true));
+        assert_eq!(weapon_switch_step(10, 0xa, 0, true, 1.0), (5, 0xa, false));
+        let mut t = BodyTimers {
+            weapon_switch: 18,
+            switch_flags: 8,
+            ..BodyTimers::default()
+        };
+        assert!(!t.tick_switch(0, false, 0.5));
+        assert_eq!(t.weapon_switch, 18);
+        assert_eq!(t.switch_flags, 0);
     }
 }

@@ -314,7 +314,13 @@ the head's gain and factor and the walking arms of the undead)
 (`src/body_muscle.rs`);
 a pose drive turns the pelvis, spine, head and feet toward the clip's
 orientation about each part's own origin, scaled by the support S²
-(`body::Drive`); and the carry holds the body up in place of gravity, with
+(`body::Drive`); the posture block's pose factor (`body::pose_factor`,
+`Drive::pose_factor`) is s² out of combat, 0.5·s + 0.5 while down or
+walking, s in combat, or s²·0.97 in double for a body over 1.3 scale in
+combat that is not attacking, with s = (1 − sag)(1 − energy) + energy;
+the attack grip block's six poses give the two arm drives and stiffnesses
+(`body::motile::grip_arms`, from the race's arm reach and the attack
+strength); and the carry holds the body up in place of gravity, with
 a lift servo holding its pelvis at a target height over the ground under
 its feet, a full crouch at 60 cm times the body scale (`src/body_lift.rs`). A character moves through a locomotion request its
 behaviour writes (`body::locomotion::Locomotion`: heading, look, the
@@ -392,7 +398,10 @@ before the fold, bends the thigh and shin and re-places the foot under the
 bent shin, as the original's IK chain places every part by its parent's;
 the next aim puts the record in the world after its carry), the chain the
 muscles follow, and
-the foot's height over its floor, which the foot pitch levels. Each foot's sole floor is the
+the foot's height over its floor, which the foot pitch levels, and the
+foot's rest turn (`body::foot_rest_turn`): −1.5° × (1 − the record's
+height) about (−1, 0, 0) in combat and on its feet, else 5° with the state
+word's splay bit, else none, the second leg the other way. Each foot's sole floor is the
 original's Ground Query (`contact::Level::floor_below`, a point ray from
 30 cm over the foot's ground 60 cm down against floor-flagged pieces): the
 hit, or the ground plus the leg's offset where it misses, never over the
