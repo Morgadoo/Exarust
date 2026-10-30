@@ -673,6 +673,11 @@ pub struct TileUpload {
 /// height plane keeps its own; every upload sets the resident bit. A tile
 /// with neither bit only becomes resident.
 pub fn tile_upload(state: &mut u32, vertex_stride: usize, bound: bool) -> TileUpload {
+    // A tile with no record bound is not touched (the original returns
+    // without clearing or setting anything).
+    if !bound {
+        return TileUpload::default();
+    }
     let packed = *state & UPLOAD_PACKED != 0;
     let heights = *state & UPLOAD_HEIGHTS != 0;
     let upload = TileUpload {
@@ -1051,11 +1056,16 @@ mod tests {
         assert_eq!(plan.packed_bytes, 0);
         assert_eq!(plan.height_bytes, TILE_HEIGHT_UPLOAD_BYTES);
         assert_eq!(state, RESIDENT | UPLOAD_HEIGHTS);
-        // Nothing to write still marks the tile resident.
+        // Nothing to write still marks a bound tile resident.
         let mut idle = 0;
-        let plan = tile_upload(&mut idle, 0, false);
+        let plan = tile_upload(&mut idle, 0, true);
         assert_eq!((plan.packed_bytes, plan.height_bytes), (0, 0));
         assert_eq!(idle, RESIDENT);
+        // An unbound tile is left alone and uploads nothing.
+        let mut unbound = UPLOAD_PACKED;
+        let plan = tile_upload(&mut unbound, 24, false);
+        assert_eq!(plan, TileUpload::default());
+        assert_eq!(unbound, UPLOAD_PACKED);
         // A release frees the four texture slots and every state bit.
         let sides = tile_release(&mut idle);
         assert_eq!(sides, [244, 244, 244, 122]);
