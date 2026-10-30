@@ -1349,8 +1349,9 @@ factory weapons of a real save, part for part and material for material.
   region has no shade tile; `MatCol` = the layer colour and wear weight;
   `Damage`, `Dirt` and `Quality` = the region's remapped values; `UVScale`
   the texture-stretch factor; `PtrnPos` the emblem placement. The colour and
-  alpha passes fold `UVScale` into `ShdTile.x`; the pattern, specular and
-  normal passes bind it without folding.
+  alpha passes fold `UVScale` into `ShdTile.y` (the uniform's second
+  component); the pattern, specular and normal passes bind it without
+  folding.
 - **Programs** (`exa_formats::procedural::programs`): each material compiles
   `<family>_d` (plus defines `0x20000` pattern and `0x400000` painted
   pattern), `<family>_a` when its alpha bit is set, `<alt>_s` (silk for

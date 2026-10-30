@@ -206,7 +206,7 @@ pub struct PassUniforms {
     pub damage: f32,
     pub dirt: f32,
     pub quality: f32,
-    /// `UVScale`; only the colour and alpha passes fold it into `ShdTile.x`.
+    /// `UVScale`; only the colour and alpha passes fold it into `ShdTile.y`.
     pub uv_scale: f32,
     /// `PtrnPos`, only for the painted-pattern pass.
     pub pattern_position: Vec4,
@@ -228,7 +228,8 @@ impl RegionDraw {
     /// material's first colour texture (`MatTile` divides by it). The
     /// colour and alpha passes multiply `ShdTile.x` by `UVScale`; the others
     /// bind `UVScale` without folding it, and only the painted-pattern pass
-    /// binds `PtrnPos`.
+    /// binds `PtrnPos`. The fold multiplies the shade tile's **y** scale (the
+    /// uniform's second component), not its x.
     #[allow(clippy::too_many_arguments)]
     pub fn uniforms(
         &self,
@@ -252,7 +253,7 @@ impl RegionDraw {
         };
         let fold = matches!(pass, Pass::Colour | Pass::Alpha);
         let shd = if fold {
-            Vec4::new(shd.x * self.uv_scale, shd.y, shd.z, shd.w)
+            Vec4::new(shd.x, shd.y * self.uv_scale, shd.z, shd.w)
         } else {
             shd
         };
@@ -2511,8 +2512,8 @@ mod tests {
         assert_eq!(full.mat_tile, Vec4::new(1.0, 0.5, 0.25, -0.5));
         // DmgTile = job · region size / 1024.
         assert_eq!(full.dmg_tile, Vec4::new(0.25, 0.125, -0.25, 0.5));
-        // The colour pass folds UVScale into the shade tile's x.
-        assert_eq!(full.shd_tile, Vec4::new(0.25, 0.5, 0.25, 0.5));
+        // The colour pass folds UVScale into the shade tile's y.
+        assert_eq!(full.shd_tile, Vec4::new(0.5, 0.25, 0.25, 0.5));
         assert_eq!(full.mat_col, col);
         assert_eq!(full.uv_scale, 0.5);
         assert_eq!(full.pattern_position, Vec4::new(1.5, 1.0, 0.1, -0.1));
@@ -2555,7 +2556,7 @@ mod tests {
             Vec2::ZERO,
             Vec2::ZERO,
         );
-        assert_eq!(plain.shd_tile, Vec4::new(0.5, 1.0, 0.0, 0.0));
+        assert_eq!(plain.shd_tile, Vec4::new(1.0, 0.5, 0.0, 0.0));
     }
 
     #[test]
