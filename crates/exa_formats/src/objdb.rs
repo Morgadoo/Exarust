@@ -139,6 +139,21 @@ pub struct Item {
     /// fields). The low five bits are the bulk in points and the low byte's
     /// top three bits the rank.
     pub rank_word: u16,
+    /// The body section's word at `0x1AB` as stored; [`Item::worn_rank`]
+    /// reads its low five bits. 0 without a body section.
+    pub body_rank: u16,
+    /// The rank of the item held in a hand, as the arena's loadout total
+    /// reads it: the low five bits of the weapon section's word at `0x42`
+    /// when the record has one, else of the shield section's word at
+    /// `0x08`, else 0. Unlike [`Item::rank_word`] the body is not
+    /// consulted. A section shorter than its word (none ships) reads as 0,
+    /// where the original reads past it.
+    pub loadout_rank: i32,
+    /// What the item's armour weighs, as the equip pass converts it: the
+    /// sum over its twenty coverage words of the bone's weight times the
+    /// sum of its four protection bytes; 0 without coverage. See
+    /// `armour_weight`.
+    pub armour_weight: f32,
     /// The body's armour type byte at `0x1A8` (the arena's apparel class),
     /// 0 without a body.
     pub armour_type: u8,
@@ -751,6 +766,9 @@ impl Item {
             torch: false,
             volume: None,
             rank_word: 0,
+            body_rank: 0,
+            loadout_rank: 0,
+            armour_weight: 0.0,
             armour_type: 0,
             container: None,
             random_table: None,
@@ -761,6 +779,7 @@ impl Item {
         let mut body_rank = None;
         let mut weapon_rank = None;
         let mut shield_rank = None;
+        let mut body_bytes: Option<&[u8]> = None;
         let mut pos = 0;
         while pos + 8 <= payload.len() {
             let tag = crate::read_u32(payload, pos)?;
@@ -788,6 +807,7 @@ impl Item {
                 }
                 BODY => {
                     item.has_body = true;
+                    body_bytes = Some(body);
                     item.worn_model = name(body);
                     body_rank = body
                         .get(0x1AB..0x1AD)
@@ -836,7 +856,56 @@ impl Item {
             pos += size;
         }
         item.rank_word = body_rank.or(weapon_rank).or(shield_rank).unwrap_or(0);
+        item.body_rank = body_rank.unwrap_or(0);
+        item.loadout_rank = weapon_rank
+            .or(shield_rank)
+            .map_or(0, |w| i32::from(w & 0x1f));
+        item.armour_weight = body_bytes.map_or(0.0, armour_weight);
         Ok(item)
+    }
+}
+
+/// Per-bone weights the armour weight scales each coverage word by: the
+/// torso and limbs weigh full, the two shoulder-adjacent bones and the
+/// feet half, the head twice and the hands two and a half and four times.
+const BONE_WEIGHT: [f32; 20] = [
+    1.0, 1.0, 1.0, 0.5, 1.0, 1.0, 0.5, 2.0, 2.5, 4.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.5, 0.5, 1.0,
+    1.0,
+];
+
+/// What an item's armour weighs, from its body section: for each of the
+/// twenty coverage words (at `0x150`, one per bone) at least one, the
+/// bone's weight times `sqrt(coverage/100) × 0.005` (both constants double,
+/// the product rounded to single) times the sum of the four protection
+/// bytes at `0x1A0`; summed in single precision. A short body reads zeroes
+/// for the bytes past it.
+fn armour_weight(body: &[u8]) -> f32 {
+    let mut sum = 0.0f32;
+    for (bone, &weight) in BONE_WEIGHT.iter().enumerate() {
+        let at = COVERAGE_OFFSET + 4 * bone;
+        let Some(word) = body.get(at..at + 4) else {
+            break;
+        };
+        let coverage = u32::from_le_bytes(word.try_into().expect("4 bytes"));
+        if coverage < 1 {
+            continue;
+        }
+        let weighed = (f64::from(weight) * (((f64::from(coverage) * 0.01).sqrt()) * 0.005)) as f32;
+        let protection: u32 = [0x1A0, 0x1A1, 0x1A2, 0x1A3]
+            .iter()
+            .map(|&o| u32::from(body.get(o).copied().unwrap_or(0)))
+            .sum();
+        sum += protection as f32 * weighed;
+    }
+    sum
+}
+
+impl Item {
+    /// The rank of a worn item, as the arena's loadout total reads it: the
+    /// low five bits of the body section's word at `0x1AB`, 0 without a
+    /// body.
+    pub fn worn_rank(&self) -> i32 {
+        i32::from(self.body_rank & 0x1f)
     }
 }
 
@@ -1189,6 +1258,72 @@ mod tests {
         }
         body.resize(APPEARANCE_OFFSET + APPEARANCE_LEN, 0);
         body
+    }
+
+    /// The weight the equip pass subtracts: per covered bone the bone's
+    /// weight times sqrt(coverage/100)·0.005 (double, rounded once) times
+    /// the protection byte sum, summed in single precision.
+    #[test]
+    fn armour_weight_from_coverage_and_protection() {
+        let mut body = vec![0u8; SET_OFFSET + 4];
+        // Bone 1 fully covered, protection 10+20+30+40 = 100.
+        body[COVERAGE_OFFSET..COVERAGE_OFFSET + 4].copy_from_slice(&100u32.to_le_bytes());
+        body[PROTECTION_OFFSET..PROTECTION_OFFSET + 4].copy_from_slice(&[10, 20, 30, 40]);
+        let item = Item::parse(1, &section(BODY, &body)).unwrap();
+        assert_eq!(item.armour_weight, 0.5);
+        // Bone 9 (index 8) weighs 2.5; coverage 25 is a quarter.
+        body[COVERAGE_OFFSET..COVERAGE_OFFSET + 4].copy_from_slice(&0u32.to_le_bytes());
+        let ninth = COVERAGE_OFFSET + 4 * 8;
+        body[ninth..ninth + 4].copy_from_slice(&25u32.to_le_bytes());
+        let item = Item::parse(1, &section(BODY, &body)).unwrap();
+        // 2.5 * (sqrt(0.25) * 0.005) = 0.00625; times 100.
+        assert_eq!(item.armour_weight, 0.625);
+        // Two bones add in single precision, in bone order.
+        body[COVERAGE_OFFSET..COVERAGE_OFFSET + 4].copy_from_slice(&50u32.to_le_bytes());
+        let item = Item::parse(1, &section(BODY, &body)).unwrap();
+        let one = (50.0f32).sqrt() / 10.0 * 0.005 * 100.0;
+        assert_eq!(item.armour_weight, 0.625 + one);
+        // No coverage, no body or a body short of the protection bytes.
+        let bare = Item::parse(1, &section(BODY, &vec![0u8; 0x224])).unwrap();
+        assert_eq!(bare.armour_weight, 0.0);
+        // A body cut after the padding and slash bytes reads the other two
+        // as zero: the protection sum is 30 for both bones.
+        let short = Item::parse(1, &section(BODY, &body[..PROTECTION_OFFSET + 2])).unwrap();
+        assert!((short.armour_weight - 0.29356602).abs() < 1e-7);
+    }
+
+    /// The two ranks the arena's loadout reads: a hand item's weapon-first
+    /// word and a worn item's body word.
+    #[test]
+    fn loadout_and_worn_ranks() {
+        let mut weapon = vec![0u8; 0x60];
+        weapon[0x42] = 0xE5; // low five bits: 5
+        let mut shield = [0u8; 80];
+        shield[8] = 0x23; // low five bits: 3
+        let mut body = vec![0u8; SET_OFFSET + 4];
+        body[0x1AB] = 0x07;
+        // A weapon's rank wins over a shield's and the body is not read.
+        let both = Item::parse(
+            1,
+            &[
+                section(WEAPON, &weapon),
+                section(SHIELD, &shield),
+                section(BODY, &body),
+            ]
+            .concat(),
+        )
+        .unwrap();
+        assert_eq!((both.loadout_rank, both.worn_rank()), (5, 7));
+        // A shield without a weapon ranks by its own word.
+        let shield_only = Item::parse(1, &section(SHIELD, &shield)).unwrap();
+        assert_eq!((shield_only.loadout_rank, shield_only.worn_rank()), (3, 0));
+        // An armour piece has no hand rank; a bare body has neither.
+        let armour = Item::parse(1, &section(BODY, &body)).unwrap();
+        assert_eq!((armour.loadout_rank, armour.worn_rank()), (0, 7));
+        let plain = Item::parse(1, &section(NAME, &padded("Box", 0x20))).unwrap();
+        assert_eq!((plain.loadout_rank, plain.worn_rank()), (0, 0));
+        // The trade word keeps its own priority: body first.
+        assert_eq!(both.rank_word, 0x07);
     }
 
     #[test]
