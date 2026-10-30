@@ -11,7 +11,7 @@
 //! Conversion starts here: [`LevelRaw::scan`] is the first piece, and the
 //! scene builder over a [`crate::rfc::Scene`] follows it.
 
-use crate::chunk::{Chunks, list_children, rfc_chunks};
+use crate::chunk::{Chunks, rfc_chunks};
 use crate::level::{LevelGrid, PropAttachment};
 use crate::rfc::{Mesh as ReadMesh, Node as ReadNode, NodeBody, Scene as ReadScene};
 use crate::rfc_write::{
@@ -74,22 +74,24 @@ impl LevelRaw {
         }
         Ok(out)
     }
+    /// The material list's records. Its count word is the number of names
+    /// the export listed, which includes the materials the shared libraries
+    /// provide and the file does not hold (a shipped level lists 20 and holds
+    /// 19), so every record present is taken and the count bounds nothing.
     fn read_materials(&mut self, list: &crate::chunk::Chunk<'_>) -> Result<()> {
-        let Some((count, children)) = list_children(list) else {
-            return Err(Error::Malformed("material list is not a list".into()));
-        };
-        self.materials.reserve(count as usize);
-        for child in children {
-            if child.tag != MATERIAL {
+        crate::read_u32(list.data, 0)?;
+        for record in Chunks::new(list.data, 4) {
+            let record = record?;
+            if record.tag != MATERIAL {
                 continue;
             }
             let mut name = [0u8; 16];
-            name.copy_from_slice(child.data.get(..16).ok_or(Error::Truncated {
-                offset: child.offset,
+            name.copy_from_slice(record.data.get(..16).ok_or(Error::Truncated {
+                offset: record.offset,
                 needed: 16,
-                len: child.data.len(),
+                len: record.data.len(),
             })?);
-            self.materials.push((name, child.data[16..].to_vec()));
+            self.materials.push((name, record.data[16..].to_vec()));
         }
         Ok(())
     }
@@ -1022,8 +1024,18 @@ mod tests {
         let empty = LevelRaw::scan(&section(&[])).unwrap();
         assert_eq!(empty, LevelRaw::default());
         assert!(LevelRaw::scan(b"not a tree").is_err());
-        // A list that is not shaped like a list is an error, not a panic.
+        // The count names more materials than the list holds when shared
+        // libraries provide the rest: two listed, none held, none kept.
         let bytes = section(&[chunk(MATERIAL_LIST, b"\x02\x00\x00\x00")]);
+        assert!(LevelRaw::scan(&bytes).unwrap().materials.is_empty());
+        // A list too short for its count word, or with a cut record, is an
+        // error, not a panic.
+        let bytes = section(&[chunk(MATERIAL_LIST, b"\x02\x00")]);
+        assert!(LevelRaw::scan(&bytes).is_err());
+        let mut cut = 1u32.to_le_bytes().to_vec();
+        cut.extend_from_slice(&MATERIAL.to_le_bytes());
+        cut.extend_from_slice(&40u32.to_le_bytes());
+        let bytes = section(&[chunk(MATERIAL_LIST, &cut)]);
         assert!(LevelRaw::scan(&bytes).is_err());
         // A material record shorter than its name is truncated.
         let mut list = 1u32.to_le_bytes().to_vec();
@@ -2164,6 +2176,36 @@ mod tests {
         let rebuilt = level_scene(&parsed, &raw).unwrap();
         let db = rebuilt.character_db.unwrap();
         assert_eq!((db.count, db.data), (1, vec![7, 8]));
+    }
+
+    /// A whole installed level converts, writes and reads back with the
+    /// same nodes, props, placed objects, characters and databases.
+    #[test]
+    fn a_shipped_level_converts_whole() {
+        let Some(dir) = exa_rpk::locate_install(None) else {
+            return;
+        };
+        let game = exa_rpk::GameData::open(&dir).unwrap();
+        let resource = game.pack(exa_rpk::PackKind::Resource).unwrap();
+        for name in ["exanima01.rfc", "exanima02.rfc"] {
+            let bytes = resource.get(name).unwrap();
+            let scene = crate::rfc::Scene::parse(bytes).unwrap();
+            let raw = LevelRaw::scan(bytes).unwrap();
+            let again_bytes = write(&level_scene(&scene, &raw).unwrap());
+            let again = crate::rfc::Scene::parse(&again_bytes).unwrap();
+            assert!(again.level_errors.is_empty(), "{:?}", again.level_errors);
+            assert_eq!(again.nodes.len(), scene.nodes.len(), "{name}");
+            assert_eq!(again.props.len(), scene.props.len(), "{name}");
+            assert_eq!(again.placed_objects.len(), scene.placed_objects.len());
+            assert_eq!(again.local_records.len(), scene.local_records.len());
+            let count = |s: &crate::rfc::Scene| s.characters.as_ref().map(|c| c.placements.len());
+            assert_eq!(count(&again), count(&scene), "{name}");
+            let again_raw = LevelRaw::scan(&again_bytes).unwrap();
+            assert_eq!(again_raw.materials, raw.materials, "{name}");
+            assert_eq!(again_raw.object_database, raw.object_database);
+            assert_eq!(again_raw.character_database, raw.character_database);
+            assert_eq!(again_raw.environment, raw.environment);
+        }
     }
 
     #[test]
