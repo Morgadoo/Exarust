@@ -445,8 +445,9 @@ fn the_corpse_script_follows_the_first_four_sections() {
         Some(&b"result = 1;"[..])
     );
 
-    // With a 0x10 block after the corpse, the generic accessor reads the
-    // corpse block as that block and the block after it as the condition.
+    // With a 0x10 bit beside the corpse bit, the generic accessor reads the
+    // corpse block as the 0x10 block (the kind table has no corpse bit) and
+    // the block after it as the condition.
     let mut tail = sized(b"corpse");
     tail.extend(sized(b"ten"));
     tail.extend(sized(b"result"));
@@ -460,7 +461,7 @@ fn the_corpse_script_follows_the_first_four_sections() {
     let r = Role::parse(25, &role(0, "Corlian", 1, 50, "", &[], &[three])).unwrap();
     assert_eq!(r.entries[0].corpse.as_deref(), Some(&b"corpse"[..]));
     assert_eq!(r.entries[0].section_10.as_deref(), Some(&b"corpse"[..]));
-    assert_eq!(r.entries[0].interaction.as_deref(), Some(&b"corpse"[..]));
+    assert_eq!(r.entries[0].interaction.as_deref(), Some(&b"ten"[..]));
 }
 
 /// An entry aimed at one character: both top bits of the condition set and
