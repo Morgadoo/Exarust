@@ -270,8 +270,12 @@ pub(crate) fn decide_movement(
     } else {
         *gaits
     };
+    // The interim footwork's step moves the capsule even on a body that
+    // walks by its carry: the step does not locomote, so the carry has no
+    // push of its own, and the body is carried with the capsule's motion
+    // (as a duellist's step moves its capsule).
     if let Some((c, _)) = controller.as_mut() {
-        c.desired_velocity = if held || carry_walk {
+        c.desired_velocity = if held || (carry_walk && req.stepping.is_none()) {
             Vec3::ZERO
         } else {
             locomotion::capsule_velocity(&req, &body, &gaits, c.desired_velocity, standing)
@@ -584,6 +588,35 @@ mod tests {
         assert_eq!(velocity(&app, root), Vec3::X * 1.4);
         let body = app.world().get::<Locomotor>(model).unwrap();
         assert_eq!(body.stop, Stop::Stepping);
+    }
+
+    /// A muscled body walks by its carry, so its capsule takes no walk of
+    /// its own; the interim footwork's step still moves it at the step's
+    /// 1.4 m/s, and it stops with the step.
+    #[test]
+    fn a_muscled_body_still_takes_the_footwork_step() {
+        let (mut app, root, model) = setup();
+        app.world_mut()
+            .entity_mut(model)
+            .insert(Ragdoll::new(&[]).with_drive());
+        {
+            let mut req = request(&mut app, model);
+            req.moving = true;
+            req.free_walk = true;
+        }
+        app.update();
+        assert_eq!(velocity(&app, root), Vec3::ZERO);
+        {
+            let mut req = request(&mut app, model);
+            req.moving = false;
+            req.free_walk = false;
+            req.stepping = Some(Vec3::X * 1.4);
+        }
+        app.update();
+        assert_eq!(velocity(&app, root), Vec3::X * 1.4);
+        request(&mut app, model).stepping = None;
+        app.update();
+        assert_eq!(velocity(&app, root), Vec3::ZERO);
     }
 
     /// The sprint latch tightens the run cap: at encumbrance 0.5 a run
