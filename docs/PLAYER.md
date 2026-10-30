@@ -1313,6 +1313,14 @@ also leaves its interim backpedal and combat walk alone).
   physically in (standing on its feet, in full), so the guard does not
   rise; when its energy is back the player's stance turns to Cmbt - Idle
   again (with its target near) and the posture switch blends back.
+- **A power's clip.** The posture switch (a balanced body's looping clip
+  other than its stance's starts the stance) never takes a power's clip
+  (actions 0x22–0x28, Force Blast … Disp Form): the original's body tick
+  sends such a clip down its own branch, which writes the casting
+  condition and skips the switch, so the looping Force Barrier clip of a
+  kinesis or a barrier, and the Force Torrent's, play on under their cast
+  hook instead of turning into Idle or the Defence stance (which dropped
+  the hook and ended a kinesis on its first ticks).
 - **The blends.** Every stance change starts the stance's clip from
   where the body is (the root and the legs' last targets, the upper
   body's physical turns) and blends it to the clip's first key over
