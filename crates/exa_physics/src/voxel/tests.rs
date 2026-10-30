@@ -714,3 +714,22 @@ fn the_tree_query_answers_like_the_plain_one() {
     // An empty mesh touches nothing.
     assert!(!MeshQuery::new(&[]).touches(Vec3::ZERO, 100.0));
 }
+
+#[test]
+fn the_runtime_generation_covers_a_six_metre_wall_into_496_points() {
+    // A vertical 6 m x 3 m wall, generated at the runtime parameter: the
+    // greedy cover turns its 4 cm on cells into 496 points.
+    let mut triangles: Vec<[Vec3; 3]> = Vec::new();
+    for t in quad(-3.0, -3.0, 3.0, 3.0, 0.0) {
+        triangles.push(t.map(|p| Vec3::new(p.x, p.z * 0.5 + 1.5, p.y)));
+    }
+    let bounds = Bounds {
+        centre: Vec3::new(0.0, 1.5, 0.0),
+        half_extents: Vec3::new(3.0, 1.5, 0.1),
+    };
+    let points = generated_surface_points(bounds, &triangles, SurfaceCover::Greedy);
+    assert_eq!(points.len(), 496);
+    for p in &points {
+        assert!((p.x.abs() <= 3.0) && (p.y >= 0.0) && (p.y <= 3.0) && (p.z.abs() <= 0.1));
+    }
+}
