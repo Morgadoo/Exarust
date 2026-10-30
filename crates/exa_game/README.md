@@ -1400,8 +1400,9 @@ the selected one through the menu text program, and the title page with
 `maintitle01.rfi`'s art at the row scale and its (230, 230, 230, 153)
 tint; a missing sheet falls back to the base font through the same draw
 path. A newly hovered row plays `MenuSel` (at most once per 200 ms) and a
-press plays `MenuClick`, both through the sound bank at a rolled
-0.8–1.2 pitch.
+press or Enter plays `MenuClick`, both one-shots of the audio environment
+at gain 0.06 with the interface flags 0x4060 and a 0.8–1.2 pitch drawn
+from the run-time library's Mersenne twister.
 
 ## The trade window and the camera's wall probe
 
