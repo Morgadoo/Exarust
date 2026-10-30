@@ -405,8 +405,9 @@ its dialogs.
 ## Speech bubbles and the reply panel
 
 The logic is in `exa_script` (`bubbles`, `dialogue`); `exa_ui::speech`
-turns a frame's bubbles into batches and `exa_ui::dialogue_choices` does the
-same for the reply list, but no form is painted by the running app yet.
+turns a frame's bubbles into batches and `exa_ui::dialogue_choices` and
+`exa_ui::dialogue_window` do the same for the reply list;
+`exa_game::dialogue_live` paints both in play, after the open screens.
 A spoken line shows for 1000 ms + 50 ms per byte, the narrator's under 10 s
 stretched by (2 − d/10 000), the player's halved. A speaker's new line closes
 its old bubble (fading four times as fast) and waits 375 ms past its end; a
@@ -431,6 +432,19 @@ the two can hold; when both exist an `[Other]` entry switches between them.
 A pick shows the player's line, then either takes that reply or starts the
 topic; the panel closes when nothing can follow. A conversation waiting for
 a reply ends after 30 s.
+
+The Talk key talks to one of the player's nearby characters (its room and
+the rooms behind its exits, seen, within 30 m, the sixteen nearest): of
+those not collapsing or dead, the one whose chest shows nearest the cursor,
+however far on screen; there is no facing test. The panel is made on the
+first talk, 400 by 120, centred and 152 pixels above the bottom, and stays
+up while the conversation runs, also with an empty list while the partner
+speaks. Its draw eases the height, fills a rounded box of radius 2 at alpha
+160 and writes each row's "N." a unit in and its text six units in, in the
+main GUI font: the hovered or held row in the highlight group's ninth ink
+(alpha raised by half again), the others in the label group's ninth (its
+fifth while a pick is held), both fading over the second the pick is held.
+The pointer hovers the bands and a released left click picks one.
 
 ## Arena match board
 

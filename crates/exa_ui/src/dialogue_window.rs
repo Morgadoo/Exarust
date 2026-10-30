@@ -8,18 +8,38 @@
 //! slot holds, zero), and the height is laid out once per change so a
 //! running height animation is not restarted every frame.
 //!
+//! The panel is one form, made the first time the player talks: 400 by 120,
+//! centred across its parent and seated 120 + 32 pixels above the parent's
+//! bottom. It is shown while the engine's panel is open, also while its list
+//! is empty (a conversation step empties the list and the pick but leaves
+//! the form up, so the box stays while the partner speaks), and hidden when
+//! the engine closes it. The engine's pick (its entry number from one) is
+//! the panel's pick: when it turns on, the panel holds it for a second.
+//!
+//! A frame's draw ([`DialogueWindow::paint`]) eases the height, then draws
+//! a rounded box of radius two at alpha 160 and, while the list has entries,
+//! each row's "N." and its wrapped text in the main GUI font: the hovered
+//! or held row in the highlight ink (its alpha raised by half again), the
+//! others in the label ink, both fading with the held pick.
+//!
 //! The panel's geometry, hit test, height animation and draw data are
 //! [`crate::dialogue_choices`]; the engine's entries and their selection
 //! are [`exa_script::dialogue`]'s.
 //!
-//! Evidence: the add-entry, `[Other]` and height routines of the dialogue
-//! unit (REA on `Exanima.exe` 0.9.5).
+//! Evidence: the talk routine (the panel's creation and placement), the
+//! panel's constructor, add-entry, `[Other]`, height, hit test, input and
+//! draw routines, and the conversation step that empties the list (REA on
+//! `Exanima.exe` 0.9.5).
 
 use exa_script::bubbles::Speaker;
 use exa_script::dialogue::{Choice, Panel};
 
-use crate::dialogue_choices::{ChoicesView, PANEL_WIDTH};
+use crate::dialogue_choices::{
+    BOX_RADIUS, CREATE_GAP, ChoicePalette, ChoicesView, FontMetrics, PANEL_HEIGHT, PANEL_WIDTH,
+};
 use crate::gui_font::GuiFont;
+use crate::gui_text::{TextQuad, draw_line, draw_wrapped};
+use crate::skin::{GuiRect, SkinBatch, rounded_fill_fixed};
 
 /// The `[Other]` entry's topic word.
 pub const OTHER_TOPIC: u32 = 0xFFFF;
@@ -28,15 +48,52 @@ pub const OTHER_TOPIC: u32 = 0xFFFF;
 #[derive(Debug, Clone, Default)]
 pub struct DialogueWindow {
     pub view: ChoicesView,
-    /// The panel is up with entries to show.
+    /// The form is shown (the engine's panel is open).
     pub open: bool,
     /// The narrator is the partner: its height is taken at once and its
     /// minimum is 17 units rather than 30.
     pub narrator: bool,
+    /// The form has been made (the first talk places it).
+    pub created: bool,
+    /// The form's x in its parent, set when it is made.
+    pub x: i32,
     /// The engine entries the view was built from, to notice a change.
     entries: Vec<Choice>,
     /// The narrator flag the view was laid out with.
     laid_out_as_narrator: bool,
+    /// The engine's pick the view last mirrored.
+    chosen: usize,
+}
+
+/// One frame of the panel's draw: the box, then the rows' glyphs in their
+/// two inks.
+#[derive(Debug, Clone, Default)]
+pub struct PanelPaint {
+    /// The box: x, y, width, height.
+    pub rect: [i32; 4],
+    pub box_alpha: u8,
+    /// The rows drawn in the ordinary ink and in the highlight ink.
+    pub normal: Vec<TextQuad>,
+    pub highlight: Vec<TextQuad>,
+    /// The two inks, as `[r, g, b, a]`.
+    pub normal_ink: [u8; 4],
+    pub highlight_ink: [u8; 4],
+}
+
+impl PanelPaint {
+    /// The box as one rounded-fill batch.
+    pub fn box_batch(&self, unit: i32) -> SkinBatch {
+        let mut batch = SkinBatch::new();
+        let [x, y, w, h] = self.rect;
+        rounded_fill_fixed(
+            &mut batch,
+            GuiRect::sized(x as f32, y as f32, w as f32, h as f32),
+            unit,
+            BOX_RADIUS,
+            self.box_alpha,
+        );
+        batch
+    }
 }
 
 impl DialogueWindow {
@@ -45,9 +102,24 @@ impl DialogueWindow {
         Self::default()
     }
 
-    /// Syncs the panel: opens it when the engine has entries, closes it
-    /// (and clears the view) otherwise. The entry list is rebuilt, measured
-    /// and laid out only when it changed. Returns whether it changed.
+    /// Makes the form if it has not been made: 400 by 120, centred across
+    /// the parent and 32 pixels plus its height above the parent's bottom.
+    /// Later talks reuse it where it is.
+    pub fn create(&mut self, parent_width: i32, parent_height: i32) {
+        if self.created {
+            return;
+        }
+        self.created = true;
+        self.x = (parent_width - PANEL_WIDTH) / 2;
+        self.view.height = PANEL_HEIGHT;
+        self.view.y = parent_height - PANEL_HEIGHT - CREATE_GAP;
+    }
+
+    /// Syncs the panel: shown while the engine's panel is open (an empty
+    /// list leaves only the box), hidden and cleared when it closes. The
+    /// entry list is rebuilt, measured and laid out only when it changed;
+    /// the engine's pick turning on starts the panel's one-second hold.
+    /// Returns whether the list changed.
     pub fn sync(
         &mut self,
         panel: &Panel,
@@ -57,15 +129,15 @@ impl DialogueWindow {
         now: u32,
     ) -> bool {
         let narrator = panel.partner == Some(Speaker::Narrator);
-        if !panel.open || panel.entries.is_empty() {
-            self.narrator = narrator;
+        self.narrator = narrator;
+        self.open = panel.open;
+        if !panel.open {
             self.entries.clear();
             self.view.entries.clear();
-            self.open = false;
+            self.view.picked = 0;
+            self.chosen = 0;
             return false;
         }
-        self.open = true;
-        self.narrator = narrator;
         let changed = self.entries != panel.entries || self.laid_out_as_narrator != narrator;
         if changed {
             self.view.entries.clear();
@@ -73,9 +145,14 @@ impl DialogueWindow {
                 if choice.topic == OTHER_TOPIC {
                     self.view.push_other();
                 } else {
-                    let text = String::from_utf8_lossy(&choice.text);
-                    self.view
-                        .push(&text, choice.topic, choice.branch, font, PANEL_WIDTH, unit);
+                    self.view.push(
+                        &choice.text,
+                        choice.topic,
+                        choice.branch,
+                        font,
+                        PANEL_WIDTH,
+                        unit,
+                    );
                 }
             }
             self.view.layout(font, unit, parent_height, narrator, now);
@@ -83,7 +160,99 @@ impl DialogueWindow {
             self.entries = panel.entries.clone();
             self.laid_out_as_narrator = narrator;
         }
+        if panel.chosen != self.chosen {
+            self.chosen = panel.chosen;
+            if panel.chosen > 0 {
+                self.view.pick(panel.chosen - 1, now);
+            } else {
+                self.view.picked = 0;
+            }
+        }
         changed
+    }
+
+    /// The pointer moved to `(x, y)` (parent pixels): over the panel the hit
+    /// test's entry number from one becomes the hover, elsewhere the hover
+    /// clears. Returns whether the pointer is over the shown panel.
+    pub fn point(&mut self, x: i32, y: i32, unit: i32) -> bool {
+        let inside = self.contains(x, y);
+        self.view.hover = if inside {
+            self.view.hit(-1, true, y - self.view.y, unit)
+        } else {
+            0
+        };
+        inside
+    }
+
+    /// Whether `(x, y)` lies on the shown panel.
+    pub fn contains(&self, x: i32, y: i32) -> bool {
+        self.open
+            && x >= self.x
+            && x < self.x + PANEL_WIDTH
+            && y >= self.view.y
+            && y < self.view.y + self.view.height
+    }
+
+    /// A left click released over the panel: the hovered entry it picks
+    /// (from zero), as the panel's input answers a click.
+    pub fn click(&self) -> Option<usize> {
+        self.view.input(0x2001, 0).select
+    }
+
+    /// One frame of the draw at `now`: the height eased toward its target
+    /// (the panel moving to stay above the parent's bottom), the box at the
+    /// interface alpha `ui_alpha`, and the rows while the list has entries.
+    #[allow(clippy::too_many_arguments)]
+    pub fn paint(
+        &mut self,
+        font: &GuiFont,
+        palette: &ChoicePalette,
+        unit: i32,
+        parent_height: i32,
+        ui_alpha: f32,
+        now: u32,
+    ) -> PanelPaint {
+        self.view.step_height(now, parent_height, unit);
+        let colours = self.view.colours(palette, now);
+        let mut out = PanelPaint {
+            rect: [self.x, self.view.y, PANEL_WIDTH, self.view.height],
+            box_alpha: (ChoicesView::box_alpha(ui_alpha) & 0xff) as u8,
+            normal_ink: colours.normal.to_le_bytes(),
+            highlight_ink: colours.highlight.to_le_bytes(),
+            ..PanelPaint::default()
+        };
+        let metrics = FontMetrics {
+            line_height: font.line_height,
+            text_offset: font.glyph.1,
+        };
+        for row in self.view.rows(PANEL_WIDTH, unit, &metrics, now) {
+            let quads = if row.highlighted {
+                &mut out.highlight
+            } else {
+                &mut out.normal
+            };
+            quads.extend(draw_line(
+                font,
+                row.prefix.as_bytes(),
+                self.x + row.prefix_at[0],
+                self.view.y + row.prefix_at[1],
+            ));
+            let [bx, by, bw, bh] = row.body;
+            quads.extend(
+                draw_wrapped(
+                    font,
+                    &row.text,
+                    self.x + bx,
+                    self.view.y + by,
+                    bw,
+                    bh,
+                    0,
+                    false,
+                )
+                .quads,
+            );
+        }
+        out
     }
 }
 
@@ -159,10 +328,145 @@ mod tests {
         assert_eq!(window.view.anim_end, 2500);
         assert_eq!(window.view.entries[1].topic, 3);
         assert_eq!(window.view.entries[1].branch, 9);
-        // The engine closes the panel: the window clears.
+        // A step empties the list: the form stays up with its box.
+        p.entries.clear();
+        assert!(window.sync(&p, &FONT, 4, 600, 2600));
+        assert!(window.open);
+        assert!(window.view.entries.is_empty());
+        // The engine closes the panel: the window hides and clears.
         p.open = false;
         assert!(!window.sync(&p, &FONT, 4, 600, 3000));
         assert!(!window.open);
         assert!(window.view.entries.is_empty());
+    }
+
+    /// The first talk makes the form: 400 × 120, centred on a 1280 × 720
+    /// parent, its top 720 − 120 − 32 = 568; the first list then eases the
+    /// height from those 120 pixels.
+    #[test]
+    fn the_first_talk_places_the_form() {
+        let mut window = DialogueWindow::new();
+        window.create(1280, 720);
+        assert_eq!(
+            (window.x, window.view.y, window.view.height),
+            (440, 568, 120)
+        );
+        // Made once: a later talk on another parent leaves it in place.
+        window.create(800, 600);
+        assert_eq!((window.x, window.view.y), (440, 568));
+        let lines: Vec<Choice> = (0..6)
+            .map(|i| {
+                choice(
+                    "aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa",
+                    i,
+                    0,
+                )
+            })
+            .collect();
+        let p = panel(lines, Some(Speaker::Character(5)));
+        window.sync(&p, &FONT, 4, 720, 1000);
+        // 8 + 6·(16·2 + 4) = 224 above the 120 minimum; the base is the
+        // 120 the form was made with.
+        assert_eq!((window.view.base, window.view.target), (120, 224));
+        // Half way through the 500 ms the eased share is a half: 172.
+        window.view.step_height(1250, 720, 4);
+        assert_eq!(window.view.height, 172);
+        assert_eq!(window.view.y, 720 - 172 - 32);
+    }
+
+    /// The engine's pick starts the one-second hold; a step's reset to
+    /// zero drops it, and the next pick of the same number starts it again.
+    #[test]
+    fn the_engines_pick_is_held_for_a_second() {
+        let mut window = DialogueWindow::new();
+        let mut p = panel(
+            vec![choice("One", 0, 0), choice("Two", 0, 1)],
+            Some(Speaker::Character(5)),
+        );
+        window.sync(&p, &FONT, 4, 600, 1000);
+        p.chosen = 2;
+        window.sync(&p, &FONT, 4, 600, 1100);
+        assert_eq!((window.view.picked, window.view.pick_end), (2, 2100));
+        // Unchanged: the hold keeps its end.
+        window.sync(&p, &FONT, 4, 600, 1200);
+        assert_eq!(window.view.pick_end, 2100);
+        p.chosen = 0;
+        window.sync(&p, &FONT, 4, 600, 1300);
+        assert_eq!(window.view.picked, 0);
+        p.chosen = 2;
+        window.sync(&p, &FONT, 4, 600, 1400);
+        assert_eq!((window.view.picked, window.view.pick_end), (2, 2400));
+    }
+
+    /// The pointer's hover is the hit test's band under it, the click picks
+    /// the hovered entry, and off the panel the hover clears.
+    #[test]
+    fn the_pointer_hovers_and_clicks_the_bands() {
+        let mut window = DialogueWindow::new();
+        window.create(1280, 720);
+        let p = panel(
+            vec![choice("One", 0, 0), choice("Two", 0, 1)],
+            Some(Speaker::Character(5)),
+        );
+        window.sync(&p, &FONT, 4, 720, 0);
+        // The panel spans x 440..840 and y 568..688 (no step yet).
+        assert!(!window.point(439, 600, 4));
+        assert_eq!(window.view.hover, 0);
+        assert_eq!(window.click(), None);
+        // The first band is 4..24 below the top, the second 24..44.
+        assert!(window.point(500, 568 + 10, 4));
+        assert_eq!(window.view.hover, 1);
+        assert_eq!(window.click(), Some(0));
+        window.point(500, 568 + 30, 4);
+        assert_eq!(window.click(), Some(1));
+        // Above the first band and below the last: the form's own answer.
+        window.point(500, 568 + 2, 4);
+        assert_eq!(window.view.hover, -1);
+        assert_eq!(window.click(), None);
+        window.point(500, 568 + 60, 4);
+        assert_eq!(window.click(), None);
+    }
+
+    /// The draw: the box at 160, the rows "N." a unit in and the text six
+    /// units in, the hovered row in the highlight ink with its alpha raised
+    /// by half again; an empty list draws only the box.
+    #[test]
+    fn the_paint_draws_the_box_and_the_rows() {
+        let palette = ChoicePalette {
+            highlight: 0x6400_80ff,
+            normal: 0xdc10_2030,
+            normal_while_picked: 0x8000_0001,
+        };
+        let mut window = DialogueWindow::new();
+        window.create(1280, 720);
+        let p = panel(
+            vec![choice("One", 0, 0), choice("Two", 0, 1)],
+            Some(Speaker::Character(5)),
+        );
+        window.sync(&p, &FONT, 4, 720, 0);
+        window.point(500, 568 + 10, 4);
+        // Past the animation the 120-pixel target holds: no change.
+        let paint = window.paint(&FONT, &palette, 4, 720, 1.0, 600);
+        assert_eq!(paint.rect, [440, 568, 400, 120]);
+        assert_eq!(paint.box_alpha, 160);
+        assert_eq!(paint.highlight_ink, [0xff, 0x80, 0x00, 0x96]);
+        assert_eq!(paint.normal_ink, [0x30, 0x20, 0x10, 0xdc]);
+        // "1." and "One" highlighted, "2." and "Two" not.
+        assert_eq!(paint.highlight.len(), 5);
+        assert_eq!(paint.normal.len(), 5);
+        // The number sits a unit in, its bottom a line and a unit down.
+        let first = &paint.highlight[0];
+        assert_eq!(first.rect[0], 444);
+        assert_eq!(first.rect[1] + first.rect[3], 568 + 16 + 4);
+        // The text starts six units in.
+        assert_eq!(paint.highlight[2].rect[0], 440 + 24);
+        assert!(!paint.box_batch(4).vertices.is_empty());
+        // An empty list (a conversation step) leaves the box alone.
+        let mut empty = p.clone();
+        empty.entries.clear();
+        window.sync(&empty, &FONT, 4, 720, 700);
+        let paint = window.paint(&FONT, &palette, 4, 720, 1.0, 700);
+        assert!(paint.normal.is_empty() && paint.highlight.is_empty());
+        assert_eq!(paint.rect[3], 120);
     }
 }

@@ -23,9 +23,10 @@
 //! branch); I and J send a
 //! [`crate::gui_screens::ScreenRequest`], which opens the inventory and the
 //! journal on the window manager; C, the digits, Q and the arrows send the
-//! power bar's commands to [`crate::thaum::cast`]. The skills screen's
-//! opening is not in Exarust, the power tree has its own key reader, and
-//! there is no dialogue.
+//! power bar's commands to [`crate::thaum::cast`]; Talk, the digits and
+//! the leave key send the conversation engine's messages, Talk to the
+//! character [`crate::dialogue_live`] found. The skills screen's opening is
+//! not in Exarust and the power tree has its own key reader.
 //!
 //! Evidence: the controls' key handler, the combat toggle and the swap and
 //! light requests, read in the instructions
@@ -48,10 +49,10 @@ use crate::hand::{Hand, Holding};
 use crate::player::PlayerBody;
 use crate::thaum::cast::{BarAction, BarCommand, PowerCaster};
 
-/// The character the player is focused on for talking (the reply panel's
-/// partner once it is open). The app fills it from its focus query; the
-/// original reads the player behaviour's focus target instead. [Exarust
-/// stand-in: no focus query is modelled yet.]
+/// The character the Talk key talks to, by character id. The talk
+/// routine's target query fills it on the frame the key is pressed
+/// ([`crate::dialogue_live`]): the nearby character whose chest shows
+/// nearest the cursor.
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DialogueFocus(pub Option<u32>);
 

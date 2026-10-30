@@ -10,6 +10,9 @@
 //! cast's list is the newer one: it is written back to the AI's [`Roles`]
 //! and the change flag is cleared, so the AI applies the roles anew.
 //!
+//! The player's own character id is the session's player: the conversation
+//! engine speaks the player's lines and lists its replies for it.
+//!
 //! The original keeps one character object the AI and the scripts both use;
 //! Exarust keeps the saved relation record in the script cast and mirrors
 //! the live fields (the split is Exarust's).
@@ -21,11 +24,13 @@ use exa_combat::{Condition, Fighter};
 use exa_script::Conversations;
 use exa_script::cast::Reading;
 
+use crate::player::PlayerBody;
+
 pub struct ScriptCastPlugin;
 
 impl Plugin for ScriptCastPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, mirror_cast);
+        app.add_systems(Update, (mirror_player, mirror_cast).chain());
     }
 }
 
@@ -37,7 +42,22 @@ type LiveCharacter<'a> = (
     Option<&'a Fighter>,
     Option<&'a Condition>,
     Option<&'a Npc>,
+    Has<PlayerBody>,
 );
+
+/// The session's player is the player body's character id.
+fn mirror_player(
+    conversations: Option<ResMut<Conversations>>,
+    players: Query<&CharacterId, With<PlayerBody>>,
+) {
+    let Some(mut conversations) = conversations else {
+        return;
+    };
+    let player = players.iter().next().map(|id| id.0);
+    if conversations.player != player {
+        conversations.player = player;
+    }
+}
 
 /// Copies every character's live fields into the session's cast. Health is
 /// the body's red (lasting) pool and its maximum, the pair the script
@@ -52,7 +72,14 @@ fn mirror_cast(
     let Some(mut conversations) = conversations else {
         return;
     };
-    for (id, mut roles, name, fighter, condition, npc) in &mut characters {
+    let player = conversations.player;
+    for (id, mut roles, name, fighter, condition, npc, is_player) in &mut characters {
+        // A level character that shares the player's id stays out of the
+        // cast, so the player's entry keeps the player's roles (Exarust's
+        // player id is a guess that a level's first record shares).
+        if Some(id.0) == player && !is_player {
+            continue;
+        }
         if let Some(c) = conversations.cast.get_mut(id.0)
             && c.roles_changed
         {
@@ -138,6 +165,44 @@ mod tests {
         let c = conversations.cast.get(4).unwrap();
         assert_eq!(ids(&c.roles), [7, 5]);
         assert!(!c.roles_changed);
+    }
+
+    /// The player body's character id becomes the session's player.
+    #[test]
+    fn the_player_body_is_the_sessions_player() {
+        let mut app = App::new();
+        app.add_plugins(ScriptCastPlugin);
+        app.insert_resource(Conversations::default());
+        app.world_mut().spawn((CharacterId(6), Roles(Vec::new())));
+        app.world_mut()
+            .spawn((CharacterId(1), Roles(Vec::new()), PlayerBody::new(0.0)));
+        app.update();
+        let conversations = app.world().resource::<Conversations>();
+        assert_eq!(conversations.player, Some(1));
+        assert!(conversations.cast.get(1).is_some());
+    }
+
+    /// A level character sharing the player's id does not overwrite the
+    /// player's cast entry.
+    #[test]
+    fn a_character_sharing_the_players_id_stays_out_of_the_cast() {
+        let mut app = App::new();
+        app.add_plugins(ScriptCastPlugin);
+        app.insert_resource(Conversations::default());
+        app.world_mut()
+            .spawn((CharacterId(1), Roles(vec![role(8)]), Name::new("Zombie01")));
+        app.world_mut().spawn((
+            CharacterId(1),
+            Roles(vec![role(7)]),
+            Name::new("Ermus"),
+            PlayerBody::new(0.0),
+        ));
+        app.update();
+        app.update();
+        let conversations = app.world().resource::<Conversations>();
+        let c = conversations.cast.get(1).unwrap();
+        assert_eq!(c.name, "Ermus");
+        assert_eq!(c.roles.iter().map(|r| r.id).collect::<Vec<_>>(), [7]);
     }
 
     /// The health scripts see is the red pool over the maximum.

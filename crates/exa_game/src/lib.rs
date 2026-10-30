@@ -33,6 +33,7 @@ pub mod creator_screen;
 pub mod creator_view;
 pub mod cursor;
 pub mod destination;
+pub mod dialogue_live;
 pub mod div_card_screen;
 pub mod doll_view;
 pub mod drag;
@@ -180,7 +181,11 @@ impl Plugin for GamePlugin {
                 player_light::PlayerLightPlugin,
                 commands::CommandPlugin,
             ),
-            (script_cast::ScriptCastPlugin, hud::HudPlugin),
+            (
+                script_cast::ScriptCastPlugin,
+                hud::HudPlugin,
+                dialogue_live::DialogueLivePlugin,
+            ),
             torch::TorchPlugin,
             trace::TracePlugin,
             effects::EffectsPlugin,
