@@ -1117,6 +1117,90 @@ pub fn use_press(has_body: bool, usable: Option<u8>) -> UsePress {
     }
 }
 
+/// The operative kind that opens the GUI item it names instead of lifting
+/// the use cursor over the world: class 0, kind 0x11, its second word the
+/// item the use opens.
+pub const GUI_ITEM_KIND: u8 = 0x11;
+/// The controls' state word while the use cursor is up (bit 8).
+pub const USE_STATE: u32 = 0x100;
+/// The shared cursor-mode word while the use cursor is up.
+pub const USE_CURSOR_MODE: u32 = 0x40;
+/// The cursor mode the use cursor's end restores.
+pub const RESTING_CURSOR_MODE: u32 = 4;
+/// The event word that ends the use cursor: the right button's release.
+pub const USE_END_EVENT: u32 = 0x80;
+/// The answer the use cursor's end gives (the other events answer 1).
+pub const USE_END_ANSWER: u32 = 0x81;
+/// The answer an event other than the release gives.
+pub const USE_KEEP_ANSWER: u32 = 1;
+/// The player behaviour's action byte the use cursor's end sets.
+pub const USE_ACTION: u8 = 4;
+
+/// What the right press asks of the use cursor, before the use itself
+/// runs: class 0, kind 0x11 opens the item its second word names (the
+/// cancel then puts it back); any other section lifts the cursor over the
+/// world, but only while play is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UseBegin {
+    /// Open the GUI item at the section's second word, with the cancel
+    /// callback (which puts the item back).
+    OpenGui { item: u32 },
+    /// The use cursor is up: the controls' state word is [`USE_STATE`]
+    /// and the shared cursor mode [`USE_CURSOR_MODE`].
+    Cursor,
+    /// Play is off: nothing begins.
+    Nothing,
+}
+
+/// The use cursor's begin, in the original's order: the operative section
+/// (class 0, kind 0x11) opens the GUI item its second word names whatever
+/// else is on; any other section lifts the cursor when play is on, and
+/// nothing happens when it is off.
+pub fn use_begin(class: u8, kind: u8, second: u32, playing: bool) -> UseBegin {
+    if class == 0 && kind == GUI_ITEM_KIND {
+        UseBegin::OpenGui { item: second }
+    } else if playing {
+        UseBegin::Cursor
+    } else {
+        UseBegin::Nothing
+    }
+}
+
+/// What the use cursor's callback answers on one event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UseEnd {
+    /// The cursor ended: only the right button's release ends it.
+    pub ended: bool,
+    /// The use dispatcher runs: the release came over the world, as the
+    /// view's own word says (bit 0; [guess: its setter is not traced]).
+    pub dispatch: bool,
+    /// The callback's answer: [`USE_END_ANSWER`] on the release, and
+    /// [`USE_KEEP_ANSWER`] on any other event.
+    pub answer: u32,
+}
+
+/// The use cursor's end: the release (event [`USE_END_EVENT`]) ends the
+/// cursor and runs the use when the release is over the world, answering
+/// [`USE_END_ANSWER`]; every other event keeps the callback, which answers
+/// [`USE_KEEP_ANSWER`]. The end also sets the player's action byte to
+/// [`USE_ACTION`], clears the controls' use state and restores the shared
+/// cursor mode to [`RESTING_CURSOR_MODE`].
+pub fn use_end(event: u32, over_world: bool) -> UseEnd {
+    if event == USE_END_EVENT {
+        UseEnd {
+            ended: true,
+            dispatch: over_world,
+            answer: USE_END_ANSWER,
+        }
+    } else {
+        UseEnd {
+            ended: false,
+            dispatch: false,
+            answer: USE_KEEP_ANSWER,
+        }
+    }
+}
+
 /// The values the use cursor reads from a world item: its operative
 /// section and the condition bytes of its weapon or apparel section. The
 /// material byte the repair kit's step divides by is the model section's
@@ -2521,6 +2605,65 @@ mod tests {
         assert_eq!(use_target(1), UseTarget::Nothing);
         assert_eq!(use_target(0x40), UseTarget::Nothing);
         assert_eq!(use_target(0), UseTarget::Nothing);
+    }
+
+    /// The use cursor's begin: class 0, kind 0x11 opens the item its second
+    /// word names whatever else is on; any other section lifts the cursor
+    /// only while play is on; with play off nothing begins.
+    #[test]
+    fn the_use_cursor_begin() {
+        assert_eq!(
+            use_begin(0, 0x11, 0x1234, false),
+            UseBegin::OpenGui { item: 0x1234 }
+        );
+        assert_eq!(
+            use_begin(0, 0x11, 0x1234, true),
+            UseBegin::OpenGui { item: 0x1234 }
+        );
+        // The kind alone does not open: the class must be zero.
+        assert_eq!(use_begin(3, 0x11, 7, true), UseBegin::Cursor);
+        assert_eq!(use_begin(0, 9, 7, true), UseBegin::Cursor);
+        assert_eq!(use_begin(0, 0, 0, true), UseBegin::Cursor);
+        assert_eq!(use_begin(0, 9, 7, false), UseBegin::Nothing);
+    }
+
+    /// The use cursor's end: only the 0x80 release ends it, answers 0x81 and
+    /// runs the use when the release is over the world; any other event
+    /// keeps the callback and answers 1. The end's fixed effects are the
+    /// action byte 4, the cleared use state and the resting cursor mode 4.
+    #[test]
+    fn the_use_cursor_end() {
+        assert_eq!(
+            use_end(USE_END_EVENT, true),
+            UseEnd {
+                ended: true,
+                dispatch: true,
+                answer: 0x81
+            }
+        );
+        assert_eq!(
+            use_end(USE_END_EVENT, false),
+            UseEnd {
+                ended: true,
+                dispatch: false,
+                answer: 0x81
+            }
+        );
+        assert_eq!(
+            use_end(0, true),
+            UseEnd {
+                ended: false,
+                dispatch: false,
+                answer: 1
+            }
+        );
+        assert_eq!(use_end(0xfb01, true).answer, USE_KEEP_ANSWER);
+        assert_eq!(USE_ACTION, 4);
+        assert_eq!(
+            (USE_STATE, USE_CURSOR_MODE, RESTING_CURSOR_MODE),
+            (0x100, 0x40, 4)
+        );
+        assert_eq!(GUI_ITEM_KIND, 0x11);
     }
 
     /// A GUI use: a cleaning or repair kit works on the entry; a kind 0x10
