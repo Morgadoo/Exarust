@@ -2868,6 +2868,23 @@ impl Ragdoll {
             .map(|p| p.inverse_mass * pairs::LIMB_CONTACT_SCALE)
     }
 
+    /// Gives the part of `bone` the permanent weapon bit (the class word's
+    /// bit 1, [`crate::part::PartState::STRIKING`]) or takes it away: the
+    /// original's unarmed set-up makes both hands the held items and marks
+    /// them so, and emptying the hands before an equip clears it. Only that
+    /// bit changes. Returns whether a part took it.
+    pub fn set_fist(&mut self, bone: usize, on: bool) -> bool {
+        let Some(part) = self.parts.iter_mut().find(|p| p.bone == bone) else {
+            return false;
+        };
+        part.state = if on {
+            part.state.with(crate::part::PartState::STRIKING)
+        } else {
+            part.state.without(crate::part::PartState::STRIKING)
+        };
+        true
+    }
+
     /// Writes the contact mobility of the part of `bone` from its base:
     /// `share(base)`, a single-precision product as the original's. A bone
     /// with no part leaves the body as it is. Returns whether a part took

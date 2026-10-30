@@ -1136,26 +1136,43 @@ fn react_to_hits(
             };
             let rung_before = state.flags & swing::flags::WEAPON_RUNG != 0;
             let draw = strike_back(&mut state, &striker, hit, reaction, &mut roll);
-            // The swing's first clash or block rings the striking weapon
-            // (its haft class's set or its own sound), stamps its body's
-            // sound clock, and rumbles the player's pad when the player is
-            // either side.
+            // The swing's first clash or block rings the striking weapon. A
+            // clash rings its haft class's set or its own sound at the
+            // blow's share, stamps its body's sound clock, and rumbles the
+            // player's pad when the player is either side; a block rings
+            // only its own sound, twice as loud and at its body's scale,
+            // stamps the clock only when it rang, and rumbles nothing.
             if let (false, StrikerReaction::Clashed { blow, .. } | StrikerReaction::Blocked(blow)) =
                 (rung_before, reaction)
             {
-                let ring = sounds::weapon_ring(
-                    hit.weapon.flags,
-                    blow.haft,
-                    hit.weapon.hit_sound_name(),
-                    blow.volume,
-                    blow.sound_share,
-                    blow.pitch,
-                );
+                let clash = matches!(reaction, StrikerReaction::Clashed { .. });
+                let ring = if clash {
+                    sounds::weapon_ring(
+                        hit.weapon.flags,
+                        blow.haft,
+                        hit.weapon.hit_sound_name(),
+                        blow.volume,
+                        blow.sound_share,
+                        blow.pitch,
+                    )
+                } else {
+                    // [inf] The weapon body's scale is its holder's body
+                    // scale: the character's build copies its scale onto
+                    // every dynamic part it holds.
+                    sounds::block_ring(
+                        hit.weapon.hit_sound_name(),
+                        blow.volume,
+                        blow.sound_share,
+                        striker_scale,
+                        blow.pitch,
+                    )
+                };
                 if let Some((set, volume, pitch)) = ring {
                     debug!(
-                        "{:?}'s weapon rings on its swing's first clash: {set} at {volume:.3}, \
+                        "{:?}'s weapon rings on its swing's first {}: {set} at {volume:.3}, \
                          pitch {pitch:.3}",
-                        hit.attacker
+                        hit.attacker,
+                        if clash { "clash" } else { "block" }
                     );
                     weapon_rings.write(impact::WeaponSounded {
                         target: hit.striker,
@@ -1166,16 +1183,19 @@ fn react_to_hits(
                         kind: None,
                     });
                 }
-                if let Ok(mut weapon) = items.get_mut(hit.striker)
+                if (clash || ring.is_some())
+                    && let Ok(mut weapon) = items.get_mut(hit.striker)
                     && let Some(part) = weapon.parts.first_mut()
                 {
                     part.sound_ready_ms = sounds::ring_clock(now as u32, blow.volume);
                 }
-                clashes.write(pain::ClashFelt {
-                    target: hit.target,
-                    attacker: hit.attacker,
-                    volume: blow.volume,
-                });
+                if clash {
+                    clashes.write(pain::ClashFelt {
+                        target: hit.target,
+                        attacker: hit.attacker,
+                        volume: blow.volume,
+                    });
+                }
             }
             if let (Some(spread), Struck::Shield { item }) = (draw, hit.struck) {
                 // The struck item's own material rings at the blow, once a
@@ -1602,6 +1622,14 @@ mod tests {
         assert_eq!(rungs[0].item, torch);
         assert_eq!(rungs[0].point, Vec3::new(1.0, 2.0, 3.0));
         assert!(rungs[0].volume > 0.0 && rungs[0].pitch > 0.0);
+        // The block also rings the sword's own set once (never a haft
+        // class), and rumbles no pad.
+        let rings = app.world().resource::<Messages<impact::WeaponSounded>>();
+        let rung: Vec<_> = rings.iter_current_update_messages().collect();
+        assert_eq!(rung.len(), 1);
+        assert_eq!(rung[0].set.as_deref(), Some("WH_SwordA"));
+        let clashes = app.world().resource::<Messages<pain::ClashFelt>>();
+        assert_eq!(clashes.iter_current_update_messages().count(), 0);
     }
 
     /// A clash on a held weapon takes the clash branch whatever the

@@ -383,7 +383,12 @@ tested rules of their own.
   emptying of the hands and its equip refresh leave them; every attack
   start in the heavy-claws state quarters both hands; a collapse empties
   an unarmed character's hands back to the base; and a gobbler's collapse
-  gives each femur's limit link 10 cm of slack. A held shield's body takes
+  gives each femur's limit link 10 cm of slack. The same refresh gives an
+  unarmed character's hands the permanent weapon bit (`Ragdoll::set_fist`,
+  the class word's bit 1, as the original's unarmed set-up marks the fists
+  it holds) and takes it off when a weapon is in hand, so a fist striking
+  a limb is silent on the impact path and meets a blade as a weapon in the
+  classifier. A held shield's body takes
   the held and mark bits and a link mobility equal to its contact
   mobility (`exa_physics::grip::shield_words`).
 - A wielded weapon sits under the hand its grip names

@@ -244,6 +244,32 @@ pub fn weapon_ring(
     set.map(|s| (s, volume * share, (f64::from(pitch) * STRUCK_PITCH) as f32))
 }
 
+/// A block's ring is twice the clash's, in single precision.
+const BLOCK_RING_GAIN: f32 = 2.0;
+/// A block's ring plays at 1.125 times the blow's pitch (single).
+const BLOCK_RING_PITCH: f32 = 1.125;
+
+/// The striking weapon's ring on its swing's first block (a held shield or
+/// torch): always the weapon's own sound `own` (the haft classes play only
+/// on a clash), none without one. It plays at ((`volume` · `share`) · 2) ·
+/// `scale` (single, in that order; `scale` is the weapon body's scale) and
+/// `pitch` · 1.125 (single).
+pub fn block_ring(
+    own: Option<&'static str>,
+    volume: f32,
+    share: f32,
+    scale: f32,
+    pitch: f32,
+) -> Option<(&'static str, f32, f32)> {
+    own.map(|s| {
+        (
+            s,
+            volume * share * BLOCK_RING_GAIN * scale,
+            pitch * BLOCK_RING_PITCH,
+        )
+    })
+}
+
 /// A struck item's blow: when its sound may play again (the 32-bit game
 /// clock `now_ms` plus 200 ms less round(`strength` · 80), rounded half to
 /// even as the original's conversion, whose NaN or out-of-range value
@@ -402,6 +428,22 @@ mod tests {
         assert_eq!(ring_clock(1_000, 0.5), 1_160);
         assert_eq!(ring_clock(1_000, 0.00625), 1_200);
         assert_eq!(ring_clock(1_000, f32::NAN), 1_200);
+    }
+
+    /// The swing's first block rings the weapon's own sound (never a haft
+    /// class) at ((0.5 · 0.5) · 2) · 1.2 and pitch 0.8 · 1.125 (0.90000004
+    /// in single); a weapon without its own sound rings nothing.
+    #[test]
+    fn a_block_rings_the_weapons_own_sound_twice_as_loud() {
+        assert_eq!(
+            block_ring(Some("WH_SwordA"), 0.5, 0.5, 1.2, 0.8),
+            Some(("WH_SwordA", 0.5f32 * 0.5 * 2.0 * 1.2, 0.8f32 * 1.125))
+        );
+        assert_eq!(
+            block_ring(Some("WH_SwordA"), 0.5, 0.5, 1.0, 0.8),
+            Some(("WH_SwordA", 0.5, 0.900_000_04))
+        );
+        assert_eq!(block_ring(None, 0.5, 1.0, 1.0, 1.0), None);
     }
 
     #[test]

@@ -5,7 +5,8 @@
 //! - **Frame.** A dormant AI (out of the scene) gets its tick from the
 //!   manager. For one in the scene: a dead character whose rise flag is set
 //!   (and not its blocking bit) rises once its revival time has passed and
-//!   its health pool B is at least 0.01, and its roles are applied again;
+//!   its health pool B, widened, does not compare under the double 0.01 (a NaN
+//!   pool rises), and its roles are applied again;
 //!   with less in the pool and no keep-rising mark, the rise flag clears.
 //!   Then a character that moved more than 3 cm since the last check looks
 //!   at the trigger zones.
@@ -48,8 +49,9 @@ pub fn decay_alert(count: i32, until_ms: u32, now_ms: u32) -> (i32, u32) {
 
 /// A character that moved more than this (cm), squared, checks the zones.
 pub const MOVED_CM2: f32 = 9.0;
-/// The least health pool B a rising body needs.
-pub const RISE_POOL: f32 = 0.01;
+/// The least health pool B a rising body needs, compared in double: the
+/// pool widened is tested against the double 0.01.
+pub const RISE_POOL: f64 = 0.01;
 /// How long a raised group alert holds, ms.
 pub const ALERT_HOLD_MS: u32 = 10_000;
 /// A shape distance at most this is inside the zone; the previous check
@@ -101,7 +103,10 @@ pub fn frame(state: FrameState) -> Frame {
     if !(state.may_rise && state.dead && state.due) {
         return Frame::Stay;
     }
-    if RISE_POOL <= state.pool {
+    // The original rises unless the widened pool compares below the double
+    // 0.01: a NaN pool rises, and a pool of exactly 0.01 in single
+    // (0.0099999998) does not.
+    if f64::from(state.pool) >= RISE_POOL || state.pool.is_nan() {
         Frame::Rise
     } else if !state.keeps_rising {
         Frame::StopRising
@@ -259,13 +264,13 @@ mod tests {
             may_rise: true,
             dead: true,
             due: true,
-            pool: 0.01,
+            pool: 0.0101,
             keeps_rising: false,
         }
     }
 
-    /// Dormant AIs are ticked; a due undead with pool B of 0.01 rises, with
-    /// 0.0099 its flag clears unless marked; not due, it waits.
+    /// Dormant AIs are ticked; a due undead with pool B of 0.0101 rises,
+    /// with 0.0099 its flag clears unless marked; not due, it waits.
     #[test]
     fn the_frame_ticks_the_dormant_and_raises_the_dead() {
         assert_eq!(
@@ -281,6 +286,17 @@ mod tests {
             ..alive()
         };
         assert_eq!(frame(low), Frame::StopRising);
+        // 0.01 in single is under the double 0.01; a NaN pool rises.
+        let single = FrameState {
+            pool: 0.01,
+            ..alive()
+        };
+        assert_eq!(frame(single), Frame::StopRising);
+        let nan = FrameState {
+            pool: f32::NAN,
+            ..alive()
+        };
+        assert_eq!(frame(nan), Frame::Rise);
         assert_eq!(
             frame(FrameState {
                 keeps_rising: true,

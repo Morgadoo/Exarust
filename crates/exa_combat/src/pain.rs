@@ -53,7 +53,7 @@ pub struct BlowFelt {
     pub direction: Vec3,
 }
 
-/// A swing's first clash or block, which rumbles the player's pad by half
+/// A swing's first clash (a block rumbles nothing), which rumbles the player's pad by half
 /// the blow's volume when the player struck it or was struck.
 #[derive(Message, Debug, Clone, Copy, PartialEq)]
 pub struct ClashFelt {

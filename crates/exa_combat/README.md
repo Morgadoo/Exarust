@@ -129,12 +129,16 @@ struck; a guard (for a striker under 1.4) or a body that turns blows
 (`StateFlags::TURNS_BLOWS`, checked before a parry) recoils it
 (`SwingState::recoil_from`), and a clash or a block marks the swing's
 weapon and shield sounds once a swing (`strike_back`). The swing's first
-clash or block rings the striking weapon (`sounds::weapon_ring`): the haft
+clash rings the striking weapon (`sounds::weapon_ring`): the haft
 class's shared set (`WH_HaftWoodA`, `WH_HaftMA`, `WH_HaftLA`) when the haft
 took it, else its own set, at volume × share and pitch × 1.2 (double), as an
 `impact::WeaponSounded`; its body's sound clock waits 200 ms less 80 a unit
 of the volume (`sounds::ring_clock`), and `pain::ClashFelt` rumbles the
-player's pad by half the volume when the player is either side. Each contact's
+player's pad by half the volume when the player is either side. The swing's
+first block (when no clash rang before) rings only the weapon's own set
+(`sounds::block_ring`) at ((volume × share) × 2) × the striker's body scale
+and pitch × 1.125 (single), stamps the clock only when a set rang, and
+rumbles nothing. Each contact's
 striker is dealt right after its struck side, as the original's routine
 runs per contact. The blow sag rides the `Shove` to the struck body.
 
@@ -376,7 +380,10 @@ still on its wait is refused. Lines 1, 2 and 3 play the voice's short
 groan, heavy groan and grunt sets (`_GroanS`, `_GroanH`, `_GruntS`: the
 voice entry's slots 1, 2 and 0, from the assembly). Every fighter carries
 its voice (`CharacterVoice`: the sets, the wound set, the gains and the
-clock), built by `exa_game::character_voice`.
+clock), built by `exa_game::character_voice`. Death takes the voice
+volume (the first gain) to 0 on the tick the condition becomes dead
+(`condition::silence_the_dead`), as the original's death routine does, so
+a corpse voices nothing.
 
 The damage routine's pain sounds (`pain`): after the damage call, the
 victim's wound sound (its own, `WndFls`, `SkelHit` or `HitGlm`) and its
