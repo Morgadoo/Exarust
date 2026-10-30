@@ -27,15 +27,27 @@ pub const ANIM_MS: u32 = 500;
 pub const PICK_HOLD_MS: u32 = 1000;
 /// The box's alpha before the global interface alpha scales it.
 pub const BOX_ALPHA: f32 = 160.0;
-/// The box's skin index.
-pub const BOX_SKIN: i32 = 2;
+/// The box's corner radius, in units: the draw's rounded fill takes 2 (the
+/// speech bubbles' takes 3).
+pub const BOX_RADIUS: i32 = 2;
+/// How far below its parent's bottom the constructor first seats the panel
+/// (`parent height − 120 − 32`), in pixels, not units.
+pub const CREATE_GAP: i32 = 32;
+/// The palette inks the draw reads: the highlight group's ninth entry (its
+/// alpha raised by half again), the label group's ninth for an ordinary
+/// row, and the label group's fifth while a pick is held.
+pub const HIGHLIGHT_INK: usize = 8;
+pub const NORMAL_INK: usize = 8;
+pub const PICKED_NORMAL_INK: usize = 4;
 /// What follows the entry's number.
 pub const NUMBER_SUFFIX: &str = ".";
 
 /// A choice entry as the panel shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
-    pub text: String,
+    /// The text's bytes, as the GUI font draws them (the shipped lines use
+    /// single-byte characters such as the 0x85 ellipsis).
+    pub text: Vec<u8>,
     /// The wrapped line count.
     pub lines: i32,
     /// The topic number the choice starts (0: a reply of the running
@@ -77,6 +89,17 @@ pub struct ChoicePalette {
     pub normal: u32,
     /// An ordinary entry's colour while a pick is held and fading.
     pub normal_while_picked: u32,
+}
+
+impl ChoicePalette {
+    /// The three inks of a skin palette, as the draw reads them.
+    pub fn of_skin(palette: &crate::skin::SkinPalette) -> Self {
+        Self {
+            highlight: u32::from_le_bytes(palette.highlight[HIGHLIGHT_INK]),
+            normal: u32::from_le_bytes(palette.text[NORMAL_INK]),
+            normal_while_picked: u32::from_le_bytes(palette.text[PICKED_NORMAL_INK]),
+        }
+    }
 }
 
 /// The two text colours one frame draws with.
@@ -125,16 +148,16 @@ impl ChoicesView {
     /// count is kept. The entry list is flagged for a relayout.
     pub fn push(
         &mut self,
-        text: &str,
+        text: &[u8],
         topic: u32,
         branch: usize,
         font: &GuiFont,
         panel_width: i32,
         unit: i32,
     ) -> &mut Entry {
-        let lines = count_lines(font, text.as_bytes(), panel_width - unit * 8);
+        let lines = count_lines(font, text, panel_width - unit * 8);
         self.entries.push(Entry {
-            text: text.to_string(),
+            text: text.to_vec(),
             lines,
             topic,
             branch,
@@ -148,7 +171,7 @@ impl ChoicesView {
     /// its text, so its line count stays whatever the fresh slot holds (0).
     pub fn push_other(&mut self) {
         self.entries.push(Entry {
-            text: "[Other]".to_string(),
+            text: b"[Other]".to_vec(),
             lines: 0,
             topic: 0xFFFF,
             branch: 0,
@@ -364,7 +387,7 @@ pub struct ChoiceRow {
     pub number: i32,
     /// The entry's number and its suffix.
     pub prefix: String,
-    pub text: String,
+    pub text: Vec<u8>,
     pub prefix_at: [i32; 2],
     /// The wrapped body's box: x, y, width and the height left.
     pub body: [i32; 4],
@@ -379,14 +402,14 @@ mod tests {
         ChoicesView {
             entries: vec![
                 Entry {
-                    text: "One".into(),
+                    text: b"One".to_vec(),
                     lines: 1,
                     topic: 0,
                     branch: 0,
                     other: false,
                 },
                 Entry {
-                    text: "Two".into(),
+                    text: b"Two".to_vec(),
                     lines: 2,
                     topic: 1,
                     branch: 0,
@@ -410,12 +433,12 @@ mod tests {
     fn entries_are_measured_and_the_height_follows_them() {
         use crate::gui_font::RAYFORM_08 as FONT;
         let mut v = ChoicesView::default();
-        let e = v.push("One", 7, 2, &FONT, PANEL_WIDTH, 4);
+        let e = v.push(b"One", 7, 2, &FONT, PANEL_WIDTH, 4);
         assert_eq!((e.lines, e.topic, e.branch, e.other), (1, 7, 2, false));
         assert!(v.dirty);
         // Ten five-byte words wrap at 368 into two lines.
         let e = v.push(
-            "aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa",
+            b"aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa",
             3,
             1,
             &FONT,
@@ -426,11 +449,11 @@ mod tests {
         v.push_other();
         assert_eq!(
             (
-                v.entries[2].text.as_str(),
+                v.entries[2].text.as_slice(),
                 v.entries[2].lines,
                 v.entries[2].topic
             ),
-            ("[Other]", 0, 0xFFFF)
+            (&b"[Other]"[..], 0, 0xFFFF)
         );
         // Target: 8 + (16·1 + 4) + (16·2 + 4) + (16·0 + 4) = 72, under the
         // 120 minimum.
@@ -450,7 +473,7 @@ mod tests {
     fn a_narrator_panel_takes_its_height_at_once() {
         use crate::gui_font::RAYFORM_08 as FONT;
         let mut v = ChoicesView::default();
-        v.push("One", 0, 0, &FONT, PANEL_WIDTH, 4);
+        v.push(b"One", 0, 0, &FONT, PANEL_WIDTH, 4);
         // 8 + 20 = 28 → the narrator's 17-unit minimum is 68.
         v.layout(&FONT, 4, 600, true, 1000);
         assert_eq!((v.height, v.base, v.target), (68, 68, 68));
@@ -460,7 +483,7 @@ mod tests {
         let mut v = ChoicesView::default();
         for _ in 0..5 {
             v.push(
-                "aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa",
+                b"aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa aaaa",
                 0,
                 0,
                 &FONT,

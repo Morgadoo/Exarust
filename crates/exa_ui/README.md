@@ -736,7 +736,13 @@ by four units) and the wrapped white text at alpha 160. `dialogue_window`
 syncs the conversation engine's reply panel into that list: each entry is
 measured at the panel's width less eight units, the `[Other]` toggle is
 appended unmeasured and the height is laid out once per change, so a
-running animation is not restarted.
+running animation is not restarted. It also makes the form on the first
+talk (400 × 120, centred, 152 pixels above the bottom), keeps it shown
+while the engine's panel is open (an emptied list leaves the box), holds
+the engine's pick for a second, hovers the bands under the pointer, answers
+a click with the hovered entry and builds a frame's draw (the eased height,
+the rounded box of radius 2 at alpha 160, "N." and the wrapped text in the
+label or highlight ink).
 `picker_fields` has the creator's marker (its point and its free or
 bound colour), keys and physique cross, the physique picker's
 constructor, the point's body-shape weights and the press, release and

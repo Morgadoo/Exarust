@@ -1244,6 +1244,25 @@ controls' callbacks are not wired; the text keeps the level
 font's metrics and samples the base font's atlas while the Rayform faces
 are not shipped. The skills key's screen and the power tree are not opened.
 
+## Dialogue in play
+
+`dialogue_live` lets the player talk. On the frame the Talk key is pressed
+with no dialogue open it finds the character to talk to as the original's
+talk routine does: of the player's nearby characters (its room and the
+rooms behind its exits, seen, within 30 m, the sixteen nearest), not
+collapsing or dead, the one whose chest projects nearest the cursor (no
+range on screen, no facing test); `hotkeys` then sends `Talk` for it. The
+reply panel (`exa_ui::dialogue_window`) follows the engine's panel, the
+pointer hovers its bands and a released left click picks one
+(`PickReply`); the pointer over it counts as over the GUI. After the open
+screens the bubbles are placed and drawn (a character's over its body
+position lifted 120 cm) and then the panel, both in the main GUI font of
+the window's level. `script_cast` makes the player body's character id
+the session's player and keeps a level character sharing that id out of
+the cast. A new story in `exanima01` places the unknown background's
+companion, Derrin (`xac_derrin`), at the story start's companion point
+(`exarust`'s viewer), so the first level has someone to talk to.
+
 ## Scope
 
 - App states (boot → menu → loading → in-game).
