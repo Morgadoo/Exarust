@@ -1686,18 +1686,21 @@ impl CompositeSelector {
 /// from half the split; the third component is the level's block side over
 /// the tile side (`2^level / 4800`), which turns the block coordinate into
 /// the tile's texture coordinate.
+///
+/// The level difference is a wrapping byte subtraction and the shift count
+/// is masked to five bits, as the original's `(char)terrain − (char)level`
+/// and x86 shift are: below the terrain's block level the two block bits
+/// shift away and the coordinate is the split's half alone. The stored half
+/// is a signed 32-bit `1 << ((level − 1) & 31)` widened to 64 bits.
 pub fn tex_pos(terrain_level: u32, level: u32, bx: u32, by: u32) -> bevy::math::Vec3 {
-    let scale = (1u32 << level.min(31)) as f32 / super::manager::TILE_CM;
+    let scale = ((1i32.wrapping_shl(level & 31)) as f32) / super::manager::TILE_CM;
     if level < 1 {
         return bevy::math::Vec3::new(0.5, 0.5, scale);
     }
-    let half = 1u32 << (level - 1);
-    let shift = terrain_level.saturating_sub(level);
-    bevy::math::Vec3::new(
-        (i64::from(half) - i64::from(bx >> shift)) as f32,
-        (i64::from(half) - i64::from(by >> shift)) as f32,
-        scale,
-    )
+    let half = i64::from(1i32.wrapping_shl((level.wrapping_sub(1)) & 31));
+    let shift = terrain_level.wrapping_sub(level) & 31;
+    let at = |v: u32| i64::from((v >> shift) as i32);
+    bevy::math::Vec3::new((half - at(bx)) as f32, (half - at(by)) as f32, scale)
 }
 
 /// The mask upload's side at a node level: `256 >> level` (32 for a block,
@@ -2200,7 +2203,14 @@ mod tests {
         // A shallower split shifts the tile coordinate down: level 2 has two
         // blocks a side of the tile's eight, so block 7 is block 3.
         assert_eq!(tex_pos(3, 2, 6, 7), Vec3::new(-1.0, -1.0, 4.0 / 4800.0));
-        assert_eq!(tex_pos(3, 5, 0, 0).z, 32.0 / 4800.0);
+        // A deeper split has no tile bits left to shift: the level difference
+        // is a wrapping byte and the shift count is masked to five bits, so
+        // the coordinate is half the split whatever the block (the original's
+        // `bx >> 30` and `bx >> 31` are both zero).
+        assert_eq!(tex_pos(3, 4, 0, 0), Vec3::new(8.0, 8.0, 16.0 / 4800.0));
+        assert_eq!(tex_pos(3, 4, 7, 5), Vec3::new(8.0, 8.0, 16.0 / 4800.0));
+        assert_eq!(tex_pos(3, 5, 7, 5), Vec3::new(16.0, 16.0, 32.0 / 4800.0));
+        assert_eq!(tex_pos(3, 9, 3, 3).x, 256.0);
     }
 
     #[test]
