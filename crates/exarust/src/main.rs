@@ -108,6 +108,12 @@
 //!          --click frame,...          click the left mouse button at frames after loading
 //!          --object-click F[d][l],...  debug: click the placed container nearest the player at frames after
 //!                                     loading (d: the double click, l: as a hit on level geometry)
+//!          --use-item ID@FRAME        debug: put the item into the pack and call its use hook at that frame
+//!                                     after loading, as its double click in the pack would (the use cursor)
+//!          --gui-drop ID@FRAME        debug: put the item into the pack and drop it into the world at that frame
+//!                                     after loading, as a drag out of the window would (hold LMB to lift it)
+//!          --doll-drop ID:FLAGS@FRAME debug: put the item with its flags into the pack and drop it onto the
+//!                                     inventory's character view at that frame after loading
 //!          --save-dir <dir>           the folder the game saves into (a new slot only; a slot file that holds bytes is
 //!                                     never written over) and loads `--arena-slot` from
 //!          --save-at frame,...        with --save-dir: save the session to a new slot at frames after the load (the
@@ -344,6 +350,12 @@ pub struct Options {
     pub clicks: Vec<u32>,
     /// `--object-click`: scripted clicks on the nearest placed container.
     pub object_clicks: Vec<exa_game::object_click::ScriptedObjectClick>,
+    /// `--use-item ID@FRAME`: the item's use hook, as its double click.
+    pub use_item: exa_game::use_cursor::UseScript,
+    /// `--gui-drop ID@FRAME`: the item dropped out of the pack.
+    pub gui_drop: exa_game::gui_drop::GuiDropScript,
+    /// `--doll-drop ID:FLAGS@FRAME`: the item dropped onto the doll.
+    pub doll_drop: exa_game::doll_view::DollDropScript,
     /// Play mode: in-process level changes at frames after the first load
     /// (`level@frame`), each logged with an entity, physics and asset count.
     pub level_changes: Vec<(String, u32)>,
@@ -861,6 +873,22 @@ fn main() -> AppExit {
                     }
                 }
             }
+            "--use-item" | "--gui-drop" | "--doll-drop" => {
+                let text = args.next().unwrap_or_default();
+                let ok = match a.as_str() {
+                    "--use-item" => {
+                        exa_game::use_cursor::UseScript::parse(&text).map(|s| options.use_item = s)
+                    }
+                    "--gui-drop" => exa_game::gui_drop::GuiDropScript::parse(&text)
+                        .map(|s| options.gui_drop = s),
+                    _ => exa_game::doll_view::DollDropScript::parse(&text)
+                        .map(|s| options.doll_drop = s),
+                };
+                if ok.is_none() {
+                    eprintln!("{a}: cannot read {text:?} (ID@FRAME)");
+                    return AppExit::from_code(2);
+                }
+            }
             "--object-click" => {
                 let list = args.next().unwrap_or_default();
                 match exa_game::object_click::ScriptedObjectClick::parse_list(&list) {
@@ -1254,6 +1282,9 @@ fn main() -> AppExit {
     .insert_resource(exa_game::object_click::ObjectClickScript(
         options.object_clicks.clone(),
     ))
+    .insert_resource(options.use_item)
+    .insert_resource(options.gui_drop)
+    .insert_resource(options.doll_drop)
     .insert_resource(exa_game::save_live::ScriptedSaves(options.save_at.clone()));
     if let Some(dir) = &options.save_dir {
         app.insert_resource(exa_game::save_live::SaveFolder(dir.clone()));

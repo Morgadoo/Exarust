@@ -710,10 +710,18 @@ GUI use), the GUI use and the used item's removal, the point sound at 0.25
 and pitch 1.0, and the door link's stop bit (`hand::door_drag_frame`) are
 likewise rules; the use cursor's begin opens the GUI item a class-0 kind-0x11
 section names and otherwise lifts the cursor only while play is on (state
-word 0x100, shared cursor mode 0x40), and its end answers only the right
-button's release (event 0x80, answer 0x81), runs the use only over the
-world, sets the player's action word to 4, clears the use state and restores
-cursor mode 4 (`player_controls::{use_begin, use_end}`). The deferred drop
+word 0x100, shared cursor mode 0x40), and its end answers only the
+end event (0x80, which the world view hands its callback before the next
+mouse event; answer 0x81), runs the use only for the left button (the desk
+word's bit 0, a guess), sets the player's action word to 4, clears the use
+state and restores cursor mode 4 (`player_controls::{use_begin, use_end,
+UseCursor}`). `use_cursor` runs it live: the item panels' double click and
+its class (`panel_use_class`) call the use hook, the next press of any
+button ends the cursor and is taken, and the dispatcher's door unlock is
+applied (the other branches are reported in `UseReleased`). `gui_drop`
+runs the GUI drop: a pack drag held over the world is claimed, run on the
+next frame through `run_spawn`, put where the cursor's ray meets the level
+and lifted onto the item cursor once its body exists. The deferred drop
 ends with the state word at 0x2000 and keeps the body's frame out of the
 controls when the word already had that bit. The wheel's set wraps its
 grip angle into ±π (the single π
@@ -1295,6 +1303,10 @@ the memory role), the raise-dead lines, Corlian's line, the three domain
 awakenings (the potential plus ten less the fragments seen, the voice, wail
 and swing, the mind domain for the second and third codes, the force domain
 for the first and third, and the class word) and the background-unlock bit.
+`flow` consumes the scripts' `GameEvent` calls (`Flow::game_event`): the
+unlock sets bit 4 in the background word and writes the whole word to the
+settings store once, as the original does; the player's effects have no
+consumer yet.
 
 The main menu screen's F1 takes the flow's mode, phase and page state, and
 its in-game page in a session; while the page is open the flow's dialogue
