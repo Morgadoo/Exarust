@@ -469,28 +469,18 @@ pub fn key_words(material: &Material, quality: u32) -> Option<(u32, u32)> {
     })
 }
 
-/// The super-sampling factor of each setting (the table the setting
-/// indexes): off, then 2, 3, 4, 8 and 15. Other values count as off.
+/// The super-sampling factor of each setting: the sample count the
+/// engine's setting table holds (1, 2, 3, 4, 8, 15, 24 and 66). Other
+/// settings count as off.
 pub fn supersample_factor(setting: u32) -> u32 {
-    match setting {
-        1 => 2,
-        2 => 3,
-        3 => 4,
-        4 => 8,
-        5 => 15,
-        _ => 1,
-    }
+    crate::subframe::setting(setting).map_or(1, |s| s.samples)
 }
 
-/// The sub-frames a super-sampling setting draws: one with super-sampling
-/// off, two at setting 1 and four from setting 2 up (the engine stores the
-/// pass count less one: 0, 1 or 3).
+/// The sub-frames a super-sampling quarter draws: the sample count capped at
+/// four (so 1, 2, 3 or 4; the engine stores the pass count less one). A
+/// setting past the table draws one.
 pub fn supersample_passes(setting: u32) -> u32 {
-    match setting {
-        0 => 1,
-        1 => 2,
-        _ => 4,
-    }
+    crate::subframe::passes(setting)
 }
 
 /// The shadow taps one sub-frame takes, `SdwSmps`.
@@ -1492,16 +1482,27 @@ mod tests {
     }
 
     #[test]
-    fn a_supersampling_setting_picks_one_two_or_four_subframes() {
+    fn a_supersampling_setting_picks_up_to_four_subframes() {
         assert_eq!(supersample_passes(0), 1);
         assert_eq!(supersample_passes(1), 2);
-        assert_eq!(supersample_passes(2), 4);
+        // The 3-sample setting draws three sub-frames, not four.
+        assert_eq!(supersample_passes(2), 3);
         assert_eq!(supersample_passes(3), 4);
+        assert_eq!(supersample_passes(4), 4);
         assert_eq!(supersample_passes(5), 4);
-        // The sample factor used by the displacement taps and the time term
-        // is a different table.
+        assert_eq!(supersample_passes(6), 4);
+        assert_eq!(supersample_passes(7), 4);
+        assert_eq!(supersample_passes(8), 1);
+        // The factor is the setting table's sample count.
+        assert_eq!(supersample_factor(0), 1);
+        assert_eq!(supersample_factor(1), 2);
         assert_eq!(supersample_factor(2), 3);
+        assert_eq!(supersample_factor(3), 4);
+        assert_eq!(supersample_factor(4), 8);
         assert_eq!(supersample_factor(5), 15);
+        assert_eq!(supersample_factor(6), 24);
+        assert_eq!(supersample_factor(7), 66);
+        assert_eq!(supersample_factor(8), 1);
     }
 
     #[test]
