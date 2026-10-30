@@ -1749,12 +1749,16 @@ pub enum GameMode {
 }
 
 /// The entry and leave routines a mode record names. The original stores
-/// two function pointers in each record; both modes use the same pair, the
-/// controls' start and end of play.
+/// two function pointers in each record: Character names the controls'
+/// start and end of play, Spectate its own pair (its enter routine
+/// switches the input to spectating; Exarust has no spectate session to
+/// run them).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GameModeHook {
     StartOfPlay,
     EndOfPlay,
+    StartOfSpectate,
+    EndOfSpectate,
 }
 
 /// One mode-table entry: the original's 0x28-byte record (a sixteen-byte
@@ -1806,8 +1810,14 @@ pub fn register_game_modes(registered: u32) -> [GameModeEntry; 2] {
             index,
             // The table's new length (place + 1) plus two.
             id: index + 3,
-            enter: GameModeHook::StartOfPlay,
-            leave: GameModeHook::EndOfPlay,
+            enter: match mode {
+                GameMode::Character => GameModeHook::StartOfPlay,
+                GameMode::Spectate => GameModeHook::StartOfSpectate,
+            },
+            leave: match mode {
+                GameMode::Character => GameModeHook::EndOfPlay,
+                GameMode::Spectate => GameModeHook::EndOfSpectate,
+            },
         }
     })
 }
@@ -2779,8 +2789,8 @@ mod tests {
     }
 
     /// The unit init appends Character then Spectate, each id the table's
-    /// new length plus two, its name bytes zero padded and the same start
-    /// and end hooks.
+    /// new length plus two, its name bytes zero padded; Character names the
+    /// start and end of play, Spectate its own pair.
     #[test]
     fn the_game_modes_register_in_order() {
         let modes = register_game_modes(0);
@@ -2798,7 +2808,7 @@ mod tests {
         assert_eq!(*b"Spectate\0\0\0\0\0\0\0\0", modes[1].name_bytes);
         assert_eq!(
             (modes[1].enter, modes[1].leave),
-            (GameModeHook::StartOfPlay, GameModeHook::EndOfPlay)
+            (GameModeHook::StartOfSpectate, GameModeHook::EndOfSpectate)
         );
         let modes = register_game_modes(7);
         assert_eq!((modes[0].index, modes[0].id), (7, 10));

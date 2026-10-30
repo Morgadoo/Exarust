@@ -747,7 +747,7 @@ grip angle into ±π (the single π
 over the double one) before turning toward it; a NaN view/axle dot is not
 under 0.2 and takes its first grip. The controls unit also
 appends the Character and Spectate game modes in that order, each id the
-table's new length plus two, its 16 name bytes and the same start/end hooks;
+table's new length plus two, its 16 name bytes and its hooks (Character the start and end of play, Spectate its own pair);
 `GameModes` is the live table and registers them at start-up
 (`register_game_modes`). The pad's
 camera look takes the frame from the mouse-look capture, as the original's
