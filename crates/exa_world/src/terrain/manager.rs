@@ -632,6 +632,22 @@ pub const UPLOAD_PACKED: u32 = 0x2000;
 pub const UPLOAD_HEIGHTS: u32 = 0x1000;
 /// Manager state word: the tile is resident on the GPU.
 pub const RESIDENT: u32 = 0x4000;
+/// A vertex's position bytes.
+pub const VERTEX_STRIDE_PLAIN: usize = 12;
+/// A vertex's position and normal bytes (the tile's full vertex buffer).
+pub const VERTEX_STRIDE_FULL: usize = 24;
+
+/// Bytes the vertex buffer upload writes: every vertex's position, and its
+/// normal when the renderer's normals flag is on (the original's 0xc and
+/// 0x18 strides over the manager's vertex count).
+pub fn vertex_upload_bytes(config: &ManagerConfig, with_normals: bool) -> usize {
+    let stride = if with_normals {
+        VERTEX_STRIDE_FULL
+    } else {
+        VERTEX_STRIDE_PLAIN
+    };
+    config.vertex_count as usize * stride
+}
 
 /// What one tile's upload writes, in bytes: the packed plane and the height
 /// plane, and whether either was bound. A Bevy mesh/image upload takes the
@@ -1004,6 +1020,13 @@ mod tests {
         moved[15][15] = (0.0, 4.0);
         tree.update(&moved);
         assert_eq!(tree.leaf(14, 14).unwrap().descriptor.centre[1], 2.5);
+    }
+
+    #[test]
+    fn the_vertex_upload_is_every_vertex_at_twelve_or_twenty_four_bytes() {
+        let c = config();
+        assert_eq!(vertex_upload_bytes(&c, false), 58081 * 12);
+        assert_eq!(vertex_upload_bytes(&c, true), VERTEX_BUFFER_BYTES);
     }
 
     #[test]
