@@ -41,9 +41,8 @@ pub const RANK_LABELS: [&str; 11] = [
 pub const RANKS: [&str; 6] = ["Inept", "Aspirant", "Novice", "Adept", "Expert", "Master"];
 /// The six always-listed standard match types.
 pub const MATCH_TYPES: [&str; 6] = ["Duel", "Doubles", "Skirmish", "Fray", "Reserve", "Pugilism"];
-/// The four tab labels. The first three are the original's titles; the last
-/// is a guess (`docs/UI.md` names the tab "the season").
-pub const TABS: [&str; 4] = ["Matches", "Events", "Tournament", "Season"];
+/// The four tab captions, from the form template.
+pub const TABS: [&str; 4] = ["Standard", "Specials", "Tournament", "Season"];
 /// The board's title.
 pub const TITLE: &str = "Matches";
 /// The template's label above the company table.
@@ -54,6 +53,12 @@ pub const CLOSE_LABEL: &str = "Close";
 pub const END_DAY_LABEL: &str = "End Day";
 /// The template's tournament forfeit button caption.
 pub const FORFEIT_LABEL: &str = "Forfeit";
+/// The template's entry-fee caption on the standard tab.
+pub const ENTRY_CAPTION: &str = "Entry:";
+/// The template's prize caption on the standard tab.
+pub const PRIZE_CAPTION: &str = "Prize:";
+/// The template's prize caption on the tournament tab.
+pub const TOURNAMENT_PRIZE_CAPTION: &str = "Prize";
 /// Matches a company may enter in one day.
 pub const MATCHES_PER_DAY: u32 = 3;
 /// Pugilism's match type id. The standard tab stores no tier for it.
@@ -247,6 +252,9 @@ pub struct BoardLayout {
     pub entered_label: Rect,
     pub available_label: Rect,
     pub status_label: Rect,
+    pub entry_caption: Rect,
+    pub prize_caption: Rect,
+    pub tournament_prize_caption: Rect,
     pub season_picture: Rect,
     pub reward_slots: [Rect; 4],
 }
@@ -467,6 +475,27 @@ pub fn layout(compact: bool) -> BoardLayout {
             w: 160,
             h: 28,
         },
+        // The template's three captions. Their x and y are the template's;
+        // a label's height is its class's default, which is not decoded, so
+        // they take a single 16-pixel line.
+        entry_caption: Rect {
+            x: 200,
+            y: 62,
+            w: 160,
+            h: 16,
+        },
+        prize_caption: Rect {
+            x: 360,
+            y: 62,
+            w: 160,
+            h: 16,
+        },
+        tournament_prize_caption: Rect {
+            x: 412,
+            y: 58,
+            w: 160,
+            h: 16,
+        },
         season_picture: Rect {
             x: 372,
             y: 28,
@@ -557,7 +586,11 @@ pub mod control {
     /// The standard tab's four controls; the second holds the entry fee and
     /// the fourth the prize.
     pub const STANDARD_FIRST: usize = 4;
+    /// The standard tab's "Entry:" caption.
+    pub const STANDARD_ENTRY_CAPTION: usize = 4;
     pub const STANDARD_FEE: usize = 5;
+    /// The standard tab's "Prize:" caption.
+    pub const STANDARD_PRIZE_CAPTION: usize = 6;
     pub const STANDARD_PRIZE: usize = 7;
     pub const STANDARD_LAST: usize = 7;
     /// A control shared by the non-season tabs, hidden on the season tab.
@@ -2410,6 +2443,27 @@ impl Board {
                 text: END_DAY_LABEL.to_string(),
             });
         }
+        if !control::hidden(self.control_state(control::STANDARD_ENTRY_CAPTION)) {
+            paint.push(BoardPaint::Label {
+                widget: Widget::EntryCaption,
+                rect: Some(layout.entry_caption),
+                text: ENTRY_CAPTION.to_string(),
+            });
+        }
+        if !control::hidden(self.control_state(control::STANDARD_PRIZE_CAPTION)) {
+            paint.push(BoardPaint::Label {
+                widget: Widget::PrizeCaption,
+                rect: Some(layout.prize_caption),
+                text: PRIZE_CAPTION.to_string(),
+            });
+        }
+        if !control::hidden(self.control_state(control::PRIZE_CAPTION)) {
+            paint.push(BoardPaint::Label {
+                widget: Widget::TournamentPrizeCaption,
+                rect: Some(layout.tournament_prize_caption),
+                text: TOURNAMENT_PRIZE_CAPTION.to_string(),
+            });
+        }
         if self.tab != BoardTab::Season {
             paint.push(BoardPaint::Label {
                 widget: Widget::AvailableLabel,
@@ -2589,6 +2643,12 @@ pub enum Widget {
     ForfeitButton,
     /// The season's reward picture.
     SeasonPicture,
+    /// The standard tab's "Entry:" caption.
+    EntryCaption,
+    /// The standard tab's "Prize:" caption.
+    PrizeCaption,
+    /// The tournament tab's "Prize" caption.
+    TournamentPrizeCaption,
 }
 
 /// One entry in the board's paint list.
@@ -3974,6 +4034,45 @@ mod tests {
             _ => None,
         });
         assert_eq!(greyed, Some(true));
+    }
+
+    #[test]
+    fn the_template_captions_follow_their_controls() {
+        assert_eq!(TABS, ["Standard", "Specials", "Tournament", "Season"]);
+        let mut board = board();
+        // The standard tab shows its entry and prize captions.
+        let captions = |board: &Board| -> Vec<(&'static str, String)> {
+            board
+                .paint()
+                .into_iter()
+                .filter_map(|item| match item {
+                    BoardPaint::Label {
+                        widget: Widget::EntryCaption,
+                        text,
+                        ..
+                    } => Some(("entry", text)),
+                    BoardPaint::Label {
+                        widget: Widget::PrizeCaption,
+                        text,
+                        ..
+                    } => Some(("prize", text)),
+                    BoardPaint::Label {
+                        widget: Widget::TournamentPrizeCaption,
+                        text,
+                        ..
+                    } => Some(("tournament", text)),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(
+            captions(&board),
+            vec![("entry", "Entry:".into()), ("prize", "Prize:".into())]
+        );
+        assert!(board.switch_tab(BoardTab::Tournament).is_some());
+        assert_eq!(captions(&board), vec![("tournament", "Prize".into())]);
+        assert!(board.switch_tab(BoardTab::Season).is_some());
+        assert!(captions(&board).is_empty());
     }
 
     #[test]
