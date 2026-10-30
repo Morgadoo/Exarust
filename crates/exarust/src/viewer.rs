@@ -1800,17 +1800,35 @@ fn shove_at_frame(
 
 /// How far from the player `--kinesis-pick` looks for a prop (m).
 const KINESIS_PICK_REACH: f32 = 5.0;
+/// Frames past its frame `--kinesis-pick` waits for a kinesis to run.
+const KINESIS_PICK_WAIT: u32 = 300;
 
-/// `--kinesis-pick`: at that frame after loading, the player's running
-/// Kinesis takes the nearest prop body within [`KINESIS_PICK_REACH`] (not a
-/// held item), as the hand's pick hands it the prop it would lift.
-#[allow(clippy::type_complexity)]
+/// The nearest of `bodies` (entity and centre, m) within
+/// [`KINESIS_PICK_REACH`] of `player`, with its distance.
+fn nearest_prop(
+    player: Vec3,
+    bodies: impl Iterator<Item = (Entity, Vec3)>,
+) -> Option<(Entity, f32)> {
+    bodies
+        .map(|(e, c)| (e, (c - player).length()))
+        .filter(|&(_, d)| d <= KINESIS_PICK_REACH)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+}
+
+/// `--kinesis-pick`: from that frame after loading, as soon as the player's
+/// Kinesis runs (waiting up to [`KINESIS_PICK_WAIT`] frames), it takes the
+/// nearest prop body within [`KINESIS_PICK_REACH`] (not a held item), as
+/// the hand's pick hands it the prop it would lift. At the frame, a player
+/// whose kinesis does not run has its powers and cast state logged.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn kinesis_pick_at_frame(
     options: Res<Options>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
     mut frames: Local<u32>,
+    mut done: Local<bool>,
     hook: Option<Res<exa_game::thaum::kinesis_live::KinesisPickHook>>,
     players: Query<&GlobalTransform, With<exa_game::player::Player>>,
+    casters: Query<&exa_game::thaum::cast::PowerCaster, With<exa_game::player::PlayerBody>>,
     bodies: Query<
         (Entity, &exa_physics::body::Ragdoll),
         (
@@ -1823,31 +1841,48 @@ fn kinesis_pick_at_frame(
     let Some(at) = options.kinesis_pick else {
         return;
     };
-    if loading.is_some() {
+    if loading.is_some() || *done {
         return;
     }
     *frames += 1;
-    if *frames != at {
+    if *frames < at {
         return;
     }
     let Some(caster) = hook.and_then(|h| h.0) else {
-        warn!("--kinesis-pick: the player runs no kinesis at frame {at}");
+        if *frames == at {
+            for c in &casters {
+                let active: Vec<String> = c
+                    .active
+                    .iter()
+                    .map(|e| format!("{:#x} state {}", e.id, e.state))
+                    .collect();
+                warn!(
+                    "--kinesis-pick: the player runs no kinesis yet at frame {at} (active {active:?}, \
+                     casting {:#x}, hook {:?}, focus {:.3}, last result {}); waiting",
+                    c.body.casting, c.body.cast_hook, c.body.focus, c.last_result
+                );
+            }
+        }
+        if *frames > at + KINESIS_PICK_WAIT {
+            warn!("--kinesis-pick: no kinesis ran within {KINESIS_PICK_WAIT} frames; giving up");
+            *done = true;
+        }
         return;
     };
+    *done = true;
     let Some(player) = players.iter().next().map(GlobalTransform::translation) else {
         warn!("--kinesis-pick: no player");
         return;
     };
-    let nearest = bodies
+    let centres = bodies
         .iter()
-        .filter_map(|(e, body)| {
-            let d = (Vec3::from(body.parts.first()?.transform().translation) - player).length();
-            (d <= KINESIS_PICK_REACH).then_some((e, d))
-        })
-        .min_by(|a, b| a.1.total_cmp(&b.1));
-    match nearest {
+        .filter_map(|(e, body)| Some((e, Vec3::from(body.parts.first()?.transform().translation))));
+    match nearest_prop(player, centres) {
         Some((body, d)) => {
-            info!("--kinesis-pick: the kinesis takes {body:?}, {d:.2} m from the player");
+            info!(
+                "--kinesis-pick: frame {}: the kinesis takes {body:?}, {d:.2} m from the player",
+                *frames
+            );
             picks.write(exa_game::thaum::kinesis_live::KinesisPicked { caster, body });
         }
         None => warn!("--kinesis-pick: no prop body within {KINESIS_PICK_REACH} m"),
@@ -2535,4 +2570,100 @@ fn debug_shield(
         flip: false,
         kind: exa_character::offhand::OffKind::Shield,
     })
+}
+
+#[cfg(test)]
+mod kinesis_pick_tests {
+    use super::*;
+    use bevy::math::Affine3A;
+    use exa_game::thaum::kinesis_live::{KinesisPickHook, KinesisPicked};
+    use exa_physics::body::RigidPart;
+    use exa_physics::prop::{PendingProp, PropPlugin};
+
+    #[test]
+    fn the_nearest_prop_within_reach_is_picked() {
+        let mut world = World::new();
+        let (a, b, c) = (
+            world.spawn_empty().id(),
+            world.spawn_empty().id(),
+            world.spawn_empty().id(),
+        );
+        let bodies = [
+            (a, Vec3::new(3.0, 0.0, 0.0)),
+            (b, Vec3::new(0.0, 1.0, 1.0)),
+            (c, Vec3::new(9.0, 0.0, 0.0)),
+        ];
+        let (got, d) = nearest_prop(Vec3::ZERO, bodies.into_iter()).unwrap();
+        assert_eq!(got, b);
+        assert!((d - 2f32.sqrt()).abs() < 1e-6);
+        assert!(nearest_prop(Vec3::ZERO, [(c, Vec3::X * 9.0)].into_iter()).is_none());
+    }
+
+    fn crate_part(entity: Entity) -> RigidPart {
+        RigidPart {
+            entity,
+            parent: None,
+            world: Affine3A::IDENTITY,
+            rest: [
+                Vec3::new(-0.2, 0.0, -0.2),
+                Vec3::new(0.2, 0.0, -0.2),
+                Vec3::new(0.0, 0.0, 0.2),
+                Vec3::new(0.0, 0.4, 0.0),
+            ],
+            point_masses: [4.0; 4],
+            parent_world: Affine3A::IDENTITY,
+            mobility: 1.0,
+            spheres: vec![(Vec3::new(0.0, 0.2, 0.0), 0.2)],
+            origin: Vec3::ZERO,
+            links: Vec::new(),
+            mesh: None,
+            triangles: None,
+        }
+    }
+
+    /// The pick waits past its frame until the kinesis runs, then hands it
+    /// the prop once.
+    #[test]
+    fn the_pick_waits_for_the_kinesis_and_fires_once() {
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, TransformPlugin, PropPlugin))
+            .insert_resource(exa_physics::Physics::default())
+            .insert_resource(Options {
+                kinesis_pick: Some(2),
+                ..Options::default()
+            })
+            .init_resource::<KinesisPickHook>()
+            .add_message::<KinesisPicked>()
+            .init_resource::<Seen>()
+            .add_systems(Update, (kinesis_pick_at_frame, see).chain());
+        app.world_mut()
+            .spawn((exa_game::player::Player, Transform::default()));
+        let prop = app
+            .world_mut()
+            .spawn(Transform::from_xyz(1.0, 0.0, 0.0))
+            .id();
+        app.world_mut()
+            .entity_mut(prop)
+            .insert(PendingProp(vec![crate_part(prop)]));
+        let caster = app.world_mut().spawn_empty().id();
+        let picked = |app: &mut App| std::mem::take(&mut app.world_mut().resource_mut::<Seen>().0);
+        for _ in 0..5 {
+            app.update();
+            assert!(picked(&mut app).is_empty(), "no kinesis runs yet");
+        }
+        app.world_mut().resource_mut::<KinesisPickHook>().0 = Some(caster);
+        app.update();
+        assert_eq!(picked(&mut app), vec![KinesisPicked { caster, body: prop }]);
+        for _ in 0..3 {
+            app.update();
+        }
+        assert!(picked(&mut app).is_empty(), "the pick fires once");
+    }
+
+    #[derive(Resource, Default)]
+    struct Seen(Vec<KinesisPicked>);
+
+    fn see(mut reader: MessageReader<KinesisPicked>, mut seen: ResMut<Seen>) {
+        seen.0.extend(reader.read().copied());
+    }
 }

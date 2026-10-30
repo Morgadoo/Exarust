@@ -1611,3 +1611,39 @@ fn the_players_blast_throws_in_combat_mode() {
     assert!(run(true), "the blast throws in combat mode");
     assert!(!run(false), "out of combat mode the hook ends the charge");
 }
+
+/// A kinesis cast out of combat mode keeps running (its hook keeps the
+/// controller's event 8) and its pick keeps waiting, tick after tick.
+#[test]
+fn a_kinesis_out_of_combat_keeps_waiting_for_its_pick() {
+    use super::super::kinesis_live::KinesisPickHook;
+    let mut app = new_app();
+    let caster = caster(&mut app, &[crate::thaum::force::KINESIS]);
+    app.world_mut()
+        .get_mut::<PlayerBody>(caster)
+        .unwrap()
+        .set_combat(false);
+    app.world_mut()
+        .get_mut::<PowerCaster>(caster)
+        .unwrap()
+        .body
+        .focus = 1.0;
+    cast(&mut app, caster);
+    for tick in 0..120 {
+        app.world_mut().run_schedule(FixedUpdate);
+        app.update();
+        let state = app.world().get::<PowerCaster>(caster).unwrap();
+        assert_eq!(
+            app.world().resource::<KinesisPickHook>().0,
+            Some(caster),
+            "tick {tick}: {:?} body {:?}",
+            state.active.first().map(|e| (e.state, e.id)),
+            (
+                state.body.casting,
+                state.body.cast_hook,
+                state.body.focus,
+                state.body.spent
+            )
+        );
+    }
+}
