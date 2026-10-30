@@ -515,7 +515,9 @@ pub struct Weapon {
 }
 
 impl Weapon {
-    fn parse(b: &[u8]) -> Option<Self> {
+    /// Reads a weapon section body; `None` when it is shorter than the
+    /// section's fields.
+    pub fn parse(b: &[u8]) -> Option<Self> {
         if b.len() < 0x5A {
             return None;
         }

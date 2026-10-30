@@ -17,6 +17,8 @@ use crate::instance::{
     weapon_condition,
 };
 use crate::palette::{ApparelBlock, Palette};
+use exa_formats::factory::{DEFAULT_METAL, Factory, STORED, STORED_AND_REROLLED, WeaponSpec};
+use exa_formats::weapon_stats::{self, StatBytes};
 
 /// A seed that asks for the template's.
 pub const TEMPLATE_SEED: u32 = 0xFFFF_FFFF;
@@ -41,6 +43,50 @@ pub fn take_weapon_template(copy: &mut [u8], template: &[u8]) -> bool {
     }
     for (a, b) in WEAPON_TAKES {
         copy[a..b].copy_from_slice(&template[a..b]);
+    }
+    true
+}
+
+/// The migration's factory pass over a weapon body whose model names a
+/// factory (`@…`), as the item factory's stat pass runs it when a template
+/// is migrated: the body's seeds and stored choices build the weapon. A
+/// body with no stored choices and only its first seed set takes that seed
+/// for both and the two stored-choice marks, then the choice roll follows
+/// from the seeds. The stat bytes are written from the recipe and then
+/// scaled by the body's own quality and damage. Returns false when the
+/// body is too short to hold a weapon section.
+///
+/// The rolled selection is the factory's own state in the original and is
+/// not written back to the body here: a guess, since no shipped database
+/// migrates a factory weapon and the store path belongs to the factory.
+pub fn factory_pass(factory: &Factory, body: &mut [u8]) -> bool {
+    let Some(weapon) = exa_formats::objdb::Weapon::parse(body) else {
+        return false;
+    };
+    let Some(mut condition) = made_condition(body) else {
+        return false;
+    };
+    if condition.flags & STORED == 0 && condition.seeds[0] != 0 && condition.seeds[1] == 0 {
+        condition.seeds[1] = condition.seeds[0];
+        condition.flags |= STORED_AND_REROLLED;
+        write_condition(body, &condition);
+    }
+    let choice = weapon.has_stored_choices().then(|| weapon.choices());
+    let spec = WeaponSpec {
+        flags: condition.flags,
+        seeds: condition.seeds,
+        quality: condition.quality,
+        metal: DEFAULT_METAL,
+        choices: choice,
+    };
+    let built = factory.build(&spec);
+    let Some(base) = StatBytes::from_section(body) else {
+        return false;
+    };
+    let stats = weapon_stats::factory_stats(factory, &built.generated, base);
+    let scaled = weapon_stats::condition(stats, condition.quality, condition.damage);
+    for (at, byte) in scaled.0.iter().enumerate() {
+        body[0x30 + at] = *byte;
     }
     true
 }
@@ -172,6 +218,62 @@ mod tests {
         b[8..12].copy_from_slice(&5u32.to_le_bytes());
         b[0xC] = 255;
         b
+    }
+
+    fn empty_factory() -> Factory {
+        Factory {
+            version: 2,
+            atlas: [0, 0],
+            parts: Vec::new(),
+            areas: Vec::new(),
+            tags: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_migration_factory_pass_fixes_the_seed_and_scales_the_stats() {
+        // A body with one seed only and no stored choices takes that seed
+        // for both and the two stored-choice marks; the stat bytes are then
+        // scaled by the condition (quality 255, no damage: one).
+        let mut body = weapon_body();
+        body[4..8].copy_from_slice(&0x1234_5678u32.to_le_bytes());
+        body[8..12].fill(0);
+        body[0..4].fill(0);
+        body[0x30..=0x42].fill(20);
+        assert!(factory_pass(&empty_factory(), &mut body));
+        assert_eq!(&body[4..8], &0x1234_5678u32.to_le_bytes());
+        assert_eq!(&body[8..12], &0x1234_5678u32.to_le_bytes());
+        assert_eq!(
+            u32::from_le_bytes(body[0..4].try_into().unwrap()),
+            STORED_AND_REROLLED
+        );
+        // With no parts the recipe adds nothing, and the condition factor
+        // at quality 255 and no damage is 1.3: slash, crush, pierce and
+        // thrust scale (20·1.3 = 26, crush (0.91 + 0.3)·20 = 24.2 → 24),
+        // the weight, balance, impact, striking sides and adjust stay.
+        let expected = weapon_stats::condition(StatBytes([20; 0x13]), 255, 0);
+        assert_eq!(&body[0x30..0x43], &expected.0);
+        assert_eq!(
+            &body[0x30..0x43],
+            &[
+                20, 20, 20, 26, 20, 20, 20, 26, 24, 26, 20, 20, 20, 26, 24, 26, 20, 20, 20
+            ]
+        );
+
+        // A damaged body scales them down: quality 255 with damage 128
+        // leaves a factor of 1.0389804 against the undamaged 1.3, so slash
+        // and crush fall from 26 and 24 to 21 and 21.
+        let mut worn = weapon_body();
+        worn[4..8].copy_from_slice(&7u32.to_le_bytes());
+        worn[8..12].copy_from_slice(&7u32.to_le_bytes());
+        worn[0xD] = 128;
+        worn[0x30..=0x42].fill(20);
+        assert!(factory_pass(&empty_factory(), &mut worn));
+        let damaged = weapon_stats::condition(StatBytes([20; 0x13]), 255, 128);
+        assert_eq!(&worn[0x30..0x43], &damaged.0);
+        assert_eq!((worn[0x37], worn[0x38]), (21, 21));
+        // A body too short for a weapon section copies nothing.
+        assert!(!factory_pass(&empty_factory(), &mut [0u8; 0x30]));
     }
 
     #[test]
