@@ -72,6 +72,23 @@ pub const HOVERED: u32 = 0x1_0000;
 /// The video memory readout when the driver gives no figure.
 pub const UNKNOWN: &str = "Unknown";
 
+/// The Controls page's power-tree help text, exactly as the original's
+/// text box holds it: `[tcol=RRGGBB]` spans in the highlight colour, and
+/// `\r\r` between its three paragraphs.
+pub const HELP: &str = "Hold [tcol=FFE399]Powers[/tcol] to access the power tree.\r\rPress [tcol=FFE399]Use Power[/tcol] with the power bar open to use a power directly without changing which is active.\r\rYou can toggle in and out of dialogue mode without ending the conversation by pressing [tcol=FFE399]Talk[/tcol].";
+
+/// The help box's rectangle inside the Controls page at `unit`, for a page
+/// client `width` wide: the constructor's 2, 48, width less 4 units and 50
+/// units, scaled by whole units.
+pub fn help_box(width: i32, unit: i32) -> Rect {
+    Rect {
+        x: 2 * unit,
+        y: 48 * unit,
+        w: width - 4 * unit,
+        h: 50 * unit,
+    }
+}
+
 /// A rectangle in pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Rect {
@@ -1011,6 +1028,12 @@ pub enum FormAction {
     SettingsTab,
     /// The CONTROLS tab (page 1).
     ControlsTab,
+    /// The Keyboard tab (hidden without Steam Input): the keyboard view and
+    /// the controller mode off.
+    KeyboardView,
+    /// The Controller tab (hidden without Steam Input): the controller view
+    /// and the controller mode on.
+    ControllerView,
     /// The Defaults button. On the Settings page: run the benchmark (or take
     /// the Deck preset), push its quality and refill the rows. On the
     /// Controls page: the shipped keys back into the page's copy, or, in
@@ -1023,11 +1046,13 @@ pub enum FormAction {
 }
 
 /// The action of the tab/button at `index` in [`TABS`]. The two rule records
-/// and the Keyboard/Controller tabs are not form actions.
+/// are not form actions.
 pub fn form_action(index: usize) -> Option<FormAction> {
     Some(match index {
         0 => FormAction::SettingsTab,
         1 => FormAction::ControlsTab,
+        2 => FormAction::KeyboardView,
+        3 => FormAction::ControllerView,
         6 => FormAction::Defaults,
         7 => FormAction::Apply,
         8 => FormAction::Cancel,
@@ -1035,11 +1060,21 @@ pub fn form_action(index: usize) -> Option<FormAction> {
     })
 }
 
-/// The page an action shows, for the two tabs.
+/// The page an action shows, for the two page tabs.
 pub fn action_page(action: FormAction) -> Option<u8> {
     match action {
         FormAction::SettingsTab => Some(0),
         FormAction::ControlsTab => Some(1),
+        _ => None,
+    }
+}
+
+/// The controller mode a controller-view tab selects; `None` for the other
+/// actions.
+pub fn controller_view_tab(action: FormAction) -> Option<bool> {
+    match action {
+        FormAction::KeyboardView => Some(false),
+        FormAction::ControllerView => Some(true),
         _ => None,
     }
 }
@@ -1101,6 +1136,11 @@ pub struct FormState {
     pub controls_page: Rect,
     /// The Controls page's vertical scroll fraction.
     pub scroll: f32,
+    /// Whether the Keyboard and Controller tabs show (they need Steam Input).
+    pub controller_tabs: bool,
+    /// Whether the Controls page shows its controller view (the Controller
+    /// tab lit) rather than the keyboard one.
+    pub controller_view: bool,
     held: Option<(Part, usize)>,
     hovered: Option<(Part, usize)>,
 }
@@ -1126,6 +1166,8 @@ impl FormState {
             geometry,
             page: 0,
             scroll: 0.0,
+            controller_tabs: false,
+            controller_view: false,
             held: None,
             hovered: None,
         };
@@ -1161,11 +1203,11 @@ impl FormState {
 
     /// The page switch: page 0 shows the rules and hides the Keyboard and
     /// Controller tabs; page 1 hides the rules and places the Controls page
-    /// ([`switch_page`]) on its keyboard view, which lights the Keyboard
-    /// tab and darkens the Controller one (both stay hidden without Steam
-    /// Input, so the controller view is never shown).
+    /// ([`switch_page`]). With Steam Input the view tabs show on page 1 and
+    /// light the view in use (the keyboard one by default); without it they
+    /// stay hidden, so the controller view is never shown.
     pub fn switch(&mut self, page: u8) {
-        let Some(switch) = switch_page(page, false, self.unit()) else {
+        let Some(switch) = switch_page(page, self.controller_tabs, self.unit()) else {
             return;
         };
         self.page = page;
@@ -1178,10 +1220,40 @@ impl FormState {
         } else {
             main[4].state = HIDDEN;
             main[5].state = HIDDEN;
-            main[2].state |= state::ON | state::LIT;
-            main[3].state &= !(state::ON | state::LIT);
+            if self.controller_tabs {
+                main[2].state &= !HIDDEN;
+                main[3].state &= !HIDDEN;
+                self.select_controller_view(self.controller_view);
+            } else {
+                // The keyboard view's bits over the hidden pair: the
+                // Keyboard tab gains on and lit, the Controller tab loses
+                // them, and both stay hidden.
+                main[2].state |= state::ON | state::LIT;
+                main[3].state &= !(state::ON | state::LIT);
+            }
         }
         if let Some((y, h)) = switch.controls_y {
+            self.controls_page.y = y;
+            self.controls_page.h = h;
+        }
+    }
+
+    /// The Keyboard (`false`) or Controller (`true`) view tab: lights the one
+    /// and darkens the other, and re-places the Controls page (the controller
+    /// tabs push it 21 units down instead of 14).
+    pub fn select_controller_view(&mut self, controller: bool) {
+        self.controller_view = controller;
+        let main = &mut self.geometry.main;
+        for (record, on) in [(2, !controller), (3, controller)] {
+            main[record].state &= !(state::ON | state::LIT);
+            if on {
+                main[record].state |= state::ON | state::LIT;
+            }
+        }
+        let switch = switch_page(1, self.controller_tabs, self.unit());
+        if self.page == 1
+            && let Some((y, h)) = switch.and_then(|switch| switch.controls_y)
+        {
             self.controls_page.y = y;
             self.controls_page.h = h;
         }
@@ -1240,6 +1312,14 @@ impl FormState {
         } else {
             form::cvtss2si(overflow as f32 * self.scroll)
         }
+    }
+
+    /// The help box's place inside the Controls page (page-local), from that
+    /// page's client width: [`help_box`].
+    pub fn help_box(&self) -> Rect {
+        let page = self.controls_page;
+        let client = client_of(page.w, page.h, true);
+        help_box(client.width(), self.unit())
     }
 
     /// The Controls page's scrollbar track and thumb (page-local).
@@ -1339,11 +1419,21 @@ impl FormState {
                         continue;
                     };
                     match action_page(action) {
-                        // The tabs' callbacks act only on the tab turning on.
+                        // The page tabs' callbacks act only on turning on.
                         Some(page) => {
                             if self.geometry.main[i].state & state::ON != 0 {
                                 self.switch(page);
                                 out.push(FormEvent::Page(page));
+                            }
+                        }
+                        // The controller-view tabs do too.
+                        None if matches!(
+                            action,
+                            FormAction::KeyboardView | FormAction::ControllerView
+                        ) =>
+                        {
+                            if self.geometry.main[i].state & state::ON != 0 {
+                                out.push(FormEvent::Action(action));
                             }
                         }
                         None => out.push(FormEvent::Action(action)),
@@ -1579,14 +1669,14 @@ impl FormState {
         }
     }
 
-    /// The video device readout (the renderer's name), and the memory
-    /// readout, which shows "Unknown" as the original does without a
-    /// figure (Exarust reads none).
-    pub fn set_device(&mut self, name: Option<&str>) {
-        if let Some(name) = name {
-            self.geometry.settings[1].text = name.as_bytes().to_vec();
-        }
-        self.geometry.settings[3].text = UNKNOWN.as_bytes().to_vec();
+    /// The video device and memory readouts: the renderer's name (the Deck's
+    /// fixed one on a Deck) and the driver's video memory, "Unknown" when it
+    /// reports none, as the original's form creation fills them.
+    pub fn set_device(&mut self, renderer: Option<&str>, steam_deck: bool, megabytes: u32) {
+        let device = hw_config::device_text(renderer, steam_deck);
+        self.geometry.settings[1].text = device.into_bytes();
+        let memory = hw_config::memory_text(megabytes);
+        self.geometry.settings[3].text = memory.into_bytes();
     }
 
     /// Whether a record is held (a press not yet released).
@@ -1784,8 +1874,12 @@ mod form_tests {
         );
         form.set_keys(&["Q".to_string()]);
         assert_eq!(form.geometry.controls[1].text, b"Q".to_vec());
-        form.set_device(Some("GPU"));
+        form.set_device(Some("GPU"), false, 8192);
         assert_eq!(form.geometry.settings[1].text, b"GPU".to_vec());
+        assert_eq!(form.geometry.settings[3].text, b"8192 MB".to_vec());
+        // No figure: "Unknown"; a Deck names itself.
+        form.set_device(None, true, 0);
+        assert_eq!(form.geometry.settings[1].text, b"Valve Steam Deck".to_vec());
         assert_eq!(form.geometry.settings[3].text, b"Unknown".to_vec());
     }
 
@@ -1800,6 +1894,86 @@ mod form_tests {
         assert_eq!(form.geometry.settings[6].state & HOVER_BITS, HOVERED);
         // A trackbar takes no hover message: its value is unchanged.
         assert_eq!(form.geometry.settings[6].value, 0.0);
+    }
+
+    /// The Keyboard and Controller tabs show only with Steam Input; clicking
+    /// the one that turns on reports its action, the one already on nothing.
+    #[test]
+    fn the_controller_tabs_report_their_view() {
+        let mut form = FormState::open(SCREEN, 4);
+        form.controller_tabs = true;
+        form.switch(1);
+        // With Steam Input the view pair shows below the page pair, the
+        // keyboard view lit.
+        assert_eq!(form.geometry.main[2].state & HIDDEN, 0);
+        assert_ne!(form.geometry.main[2].state & state::ON, 0);
+        assert_eq!(form.geometry.main[3].state & state::ON, 0);
+        // At unit 4 the view tabs sit 40 pixels below the page tabs: x 12
+        // and 212 from the client, y 52, 192 wide and 24 high.
+        let controller = (437 + 212 + 20, 94 + 52 + 10);
+        assert_eq!(
+            click(&mut form, controller.0, controller.1),
+            vec![FormEvent::Action(FormAction::ControllerView)]
+        );
+        assert_ne!(form.geometry.main[3].state & state::ON, 0);
+        assert_eq!(form.geometry.main[2].state & state::ON, 0);
+        // Clicking it again (still on) does nothing; the Keyboard tab
+        // reports the other view.
+        assert_eq!(click(&mut form, controller.0, controller.1), vec![]);
+        let keyboard = (437 + 12 + 20, 94 + 52 + 10);
+        assert_eq!(
+            click(&mut form, keyboard.0, keyboard.1),
+            vec![FormEvent::Action(FormAction::KeyboardView)]
+        );
+        // The Keyboard tab lights again; the page stays 21 units down.
+        assert_ne!(form.geometry.main[2].state & state::ON, 0);
+        assert_eq!(form.geometry.main[3].state & state::ON, 0);
+        assert_eq!(form.controls_page.y, 84);
+        assert_eq!(form.controls_page.h, 388);
+        // Going back to the Settings page hides the view pair.
+        form.switch(0);
+        assert_eq!(form.geometry.main[2].state, HIDDEN);
+        assert_eq!(form.geometry.main[3].state, HIDDEN);
+        // Selecting the controller view by hand lights its tab.
+        form.switch(1);
+        form.select_controller_view(true);
+        assert_ne!(form.geometry.main[3].state & state::ON, 0);
+        assert_eq!(form.geometry.main[2].state & state::ON, 0);
+    }
+
+    #[test]
+    fn the_help_box_sits_inside_the_controls_page() {
+        // At unit 4 the page's client is 397 wide: the box at 8, 192, 381
+        // wide and 200 high.
+        let form = FormState::open(SCREEN, 4);
+        assert_eq!(
+            form.help_box(),
+            Rect {
+                x: 8,
+                y: 192,
+                w: 381,
+                h: 200
+            }
+        );
+        // At unit 6 the Controls page's client is 594 wide: 12, 288, 570 by
+        // 300 (the scrollbar and borders take the rest of its 615).
+        let form = FormState::open((1920, 1080), 6);
+        assert_eq!(
+            form.help_box(),
+            Rect {
+                x: 12,
+                y: 288,
+                w: 570,
+                h: 300
+            }
+        );
+        // The text is the original's, three paragraphs with its three
+        // highlighted key names.
+        assert_eq!(HELP.matches("[tcol=FFE399]").count(), 3);
+        assert_eq!(HELP.matches("[/tcol]").count(), 3);
+        assert_eq!(HELP.matches("\r\r").count(), 2);
+        assert!(HELP.starts_with("Hold [tcol=FFE399]Powers[/tcol]"));
+        assert!(HELP.ends_with("pressing [tcol=FFE399]Talk[/tcol]."));
     }
 
     #[test]
@@ -2018,8 +2192,9 @@ mod screen_tests {
     fn the_form_actions() {
         assert_eq!(form_action(0), Some(FormAction::SettingsTab));
         assert_eq!(form_action(1), Some(FormAction::ControlsTab));
-        assert_eq!(form_action(2), None);
-        assert_eq!(form_action(3), None);
+        assert_eq!(form_action(2), Some(FormAction::KeyboardView));
+        assert_eq!(form_action(3), Some(FormAction::ControllerView));
+        assert_eq!(form_action(4), None);
         assert_eq!(form_action(6), Some(FormAction::Defaults));
         assert_eq!(form_action(7), Some(FormAction::Apply));
         assert_eq!(form_action(8), Some(FormAction::Cancel));
@@ -2027,5 +2202,8 @@ mod screen_tests {
         assert_eq!(action_page(FormAction::SettingsTab), Some(0));
         assert_eq!(action_page(FormAction::ControlsTab), Some(1));
         assert_eq!(action_page(FormAction::Apply), None);
+        assert_eq!(controller_view_tab(FormAction::KeyboardView), Some(false));
+        assert_eq!(controller_view_tab(FormAction::ControllerView), Some(true));
+        assert_eq!(controller_view_tab(FormAction::Defaults), None);
     }
 }

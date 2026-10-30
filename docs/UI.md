@@ -2958,13 +2958,19 @@ callbacks:
 - **Settings page**: a child at 0, 64, the form's width less 8 by 408,
   holding the 27 records: the device readout (the renderer's name in
   Exarust; "Valve Steam Deck" on the Deck in the original) and the memory
-  readout ("Unknown" without a figure, which Exarust never has), a rule,
+  readout ("Unknown" without a figure; Exarust reads the DRM cards'
+  `mem_info_vram_total` when it can and says "Unknown" otherwise), a rule,
   then each option's label at x 16 and its slider (x 168, 140 wide, style
   0x405320, steps 0, 3, 3, 1, 3, 1, 3, 3) or checkbox.
 - **Controls page**: a child of the form's width less 16, 416 high, with a
   vertical scrollbar over 676 pixels of content, holding the 22 rows' label
   (x 80, 68 wide) and key cell (x 232, 100 wide, style 0x20003380, id the
-  row's action, callback the key-read screen's opener).
+  row's action, callback the key-read screen's opener), and the power-tree
+  help text box: a read-only child at 2, 48 units, its parent's client less
+  4 units wide and 50 units high, drawn with the page's font and the
+  console's text ink, its `[tcol=FFE399]` key names in the highlight colour,
+  scrolled with the page and clipped to it (the box's border, margin and
+  font choice were not traced; an inset of a unit each side is a guess).
 
 The records are laid out at unit 4 by the control layout pass (a 32-high
 tab moves up 8, a 24-high button 4, a 20-high label 2, a 3-high rule 7 down
@@ -3032,10 +3038,15 @@ ink the colour), each corner with its sample record's u and v
 
 The three inks are the skin constructor's 255, 250, 230 with the alphas the
 line skin's fade hand-off writes, 80, 104 and 128 times the fade
-(`line_skin::line_control_inks`). Not reproduced: the controller view
-(Steam Input), the power-tree help text box it shows, dragging the
-scrollbar's thumb (the wheel scrolls), and a hovered button's caption
-routine (drawn as the off caption). `--open-settings settings|controls` opens the form for scripted
+(`line_skin::line_control_inks`). The Keyboard and Controller tabs
+(`FormAction::KeyboardView`, `ControllerView`) are modelled: they need Steam
+Input, so they never show in Exarust. With it they would sit in a second row
+40 pixels below the page tabs on the Controls page (the Keyboard one lit),
+and clicking one would turn the controller mode and view on or off, light
+its tab and place the Controls page 21 units down instead of 14. Not reproduced: the controller view's own four-record page
+(its records were not traced; the aim-speed reset and the page's placement
+are), dragging the scrollbar's thumb (the wheel scrolls), and a hovered
+button's caption routine (drawn as the off caption). `--open-settings settings|controls` opens the form for scripted
 runs ([DEBUGGING.md](DEBUGGING.md)).
 
 ### Apply, Cancel and Defaults
@@ -3078,14 +3089,25 @@ ones, except the window mode, which stays the one the page opened with),
 pushes it into the live options and the draft (the draft keeps its
 antialiasing and window mode; the live options keep their shadow detail) and
 refills the rows; nothing is saved. On Controls it puts the shipped keys
-into the page's copy, or, in controller mode, the saved aim speed back into
-the live one.
+into the page's copy, or, in the controller view (the Controller tab lit,
+which needs Steam Input), the saved aim speed back into the live one.
 
-The original runs the same auto-detection at start only on a first run
-(when `FirstRun` is set), and saves its result then. Exarust does not run it
-at launch (its workload and GPU differ, and it would replace the saved
-quality); `--benchmark` runs it once, without saving, and Steam Deck
-detection is not wired.
+The tab switch does not run it: the page switch only places the pages, the
+tabs and the Controls page (14 units down, 21 with the Steam Input view
+tabs), and without Steam Input it puts the keyboard view up. The Defaults
+handler is the only one in the unit that runs the detection, copies the
+shipped key table over the page's copy, or (with the Controller tab lit)
+puts the saved aim speed back. The original also runs the detection at start
+only on a first run (when `FirstRun` is set), and saves its result then;
+Exarust does not run it at launch, since it would replace the saved quality.
+`--benchmark` runs it once, without saving.
+
+Steam Deck detection (`exa_game::hw_config::steam_deck`) reads the Steam
+runtime's `SteamDeck=1` marker or the DMI product name (`Jupiter`,
+`Galileo`); a Deck takes the preset instead of the benchmark and its name in
+the device readout. The video-memory readout asks the DRM cards'
+`mem_info_vram_total` (best effort; wgpu has no portable query) and shows
+"Unknown" when none is readable, as the original does without a figure.
 
 ### GPU benchmark
 
@@ -3099,10 +3121,18 @@ vertical sync off.
 
 Exarust measures the same protocol (`exa_formats::hw_config::Benchmark`)
 over the same half-second boundaries and score; its clock starts at the
-first drawn frame rather than just before it. Its workload is sixteen
-full-screen sprites through Bevy's sprite pipeline into the same 1024²
-target, not the original's shader: the score is comparable in spirit, not in
-number. The auto-detected quality is:
+first drawn frame rather than just before it. Its workload is the original's
+own: sixteen full-screen quads through a reimplementation of its fragment
+program (`exa_render::benchmark`, the GLSL translated one for one) into the
+same 1024² RGBA8 target, reading the same 512² texture whose every byte is
+0x3f (the original's is RGB8, which wgpu lacks; the program reads only
+`.rgb`), with repeat addressing and linear filtering. All sixteen quads sit
+at one depth so the 2D depth test (greater-or-equal) passes each of them,
+as the original's always-pass depth function does, and the warm-up shows
+only four of them, as the original draws four quads a warm-up frame. The original's unused
+projection uniform (2.0) rides along. The GPU and driver still differ, so
+the score is comparable in spirit, not in number. The auto-detected quality
+is:
 
 | performance index | super sampling | shading | texture detail | texture quality | shadow detail | shadow quality |
 |---|---|---|---|---|---|---|
@@ -3125,6 +3155,10 @@ Exarust applies:
   levels above zero are not distinguished.
   A settings file that does not name `Supersample` keeps Exarust's level on
   (live level 4); `Supersample = 0` or `--no-supersample` turns it off.
+- **Shading quality**: the original's live setter stores the level and
+  sets its renderer's high-quality flag when it is above 5
+  (`exa_render::quality::shading_high`); Exarust's lighting has one path,
+  so only the rule is kept.
 - **Shadow quality**: the point lights' cube face size and the sun map
   size. Level 4 (the default) keeps the shipped 512 and 4096; 3 gives 256
   and 2048, 2 gives 128 and 1024, 1 gives 64 and 512, 5 gives 1024 and 4096.
@@ -3181,12 +3215,12 @@ and those already decoded keep theirs. The LOD bias is not: the original
 sets it on every bind, so a change rewrites every loaded material's bias
 (`exa_render::material::set_texture_bias`).
 
-Not reproduced, for lack of the matching feature: shading quality (Exarust
-has one shader), shadow detail (no per-detail shadow path), vertex-buffer,
-mipmap, swap-copy and GI-precision switches (the GI is already the
-original's 8-bit low-precision format), the video-memory figure (the
-readout says "Unknown") and the shader cache itself (Bevy compiles shaders
-as needed; the progress screen is shown). The controller bindings are in: the default pad table plays the
+Not reproduced, for lack of the matching feature: the shading quality's
+high path (Exarust has one shader; its `> 5` flag rule is kept), shadow
+detail (no per-detail shadow path), vertex-buffer, mipmap, swap-copy and
+GI-precision switches (the GI is already the original's 8-bit low-precision
+format) and the shader cache itself (Bevy compiles shaders as needed; the
+progress screen is shown). The controller bindings are in: the default pad table plays the
 game ([PLAYER.md](PLAYER.md), Gamepad); Steam's own binding screen and
 prompts are not, since Exarust does not link Steam. The aim speed is stored
 and shown but acts nowhere yet: in the original it eases the screen cursor

@@ -147,7 +147,12 @@ fn open_settings(
     let fallback = Bindings::default();
     config.open(Some(bindings.as_deref().unwrap_or(&fallback)));
     let mut form = FormState::open(screen, unit);
-    form.set_device(adapter.as_deref().map(|info| info.name.as_str()));
+    form.controller_tabs = config.steam_input;
+    form.set_device(
+        adapter.as_deref().map(|info| info.name.as_str()),
+        config.steam_deck,
+        crate::hw_config::video_memory_mb(),
+    );
     if let Some(rows) = config.rows() {
         let events = form.fill(&rows);
         apply_rows(&mut form, &mut config, &events);
@@ -301,7 +306,18 @@ fn form_input(
                 keep = false;
                 break;
             }
-            FormEvent::Action(_) => {}
+            FormEvent::Action(action) => {
+                if let Some(controller) = settings::controller_view_tab(action) {
+                    // The Keyboard or Controller tab: the controller mode
+                    // and view; the rows stay the key rows, since Exarust
+                    // draws no controller page.
+                    config.set_controller_view(controller);
+                    form.select_controller_view(controller);
+                    if let Some(copy) = &config.bindings {
+                        form.set_keys(&key_names(copy));
+                    }
+                }
+            }
         }
     }
     if keep {
@@ -581,7 +597,62 @@ pub fn paint_form(form: &FormState, textures: &GuiTextures) -> Painted {
         }
         paint_control(c, origin, unit, &palette, &text, clip, &mut painted);
     }
+    // The Controls page's power-tree help, a read-only text box child of the
+    // page at 2, 48 units, 50 units high, scrolled with the page.
+    if part == Part::Controls {
+        let help = form.help_box();
+        let rect = GuiRect::new(origin.0 + help.x, origin.1 + help.y, help.w, help.h);
+        paint_help(rect, unit, &palette, &text, clip, &mut painted);
+    }
     painted
+}
+
+/// Paints a read-only text box's wrapped, markup-aware text into `rect`,
+/// with the console's text ink and its tag colour at full alpha. The box's
+/// border, margin and font choice were not traced: the page's own font and
+/// an inset of a unit each side stand in (a guess).
+fn paint_help(
+    rect: GuiRect,
+    unit: i32,
+    palette: &SkinPalette,
+    text: &Text,
+    clip: Option<[i32; 4]>,
+    painted: &mut Painted,
+) {
+    let level = exa_ui::gui_font::level_for_unit(unit);
+    let fonts = exa_ui::gui_font::gui_level(level);
+    let client = exa_ui::form::ClientRect {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+    };
+    let mut help = exa_ui::text_box::TextBox::new(unit, fonts.main, fonts.small, client);
+    help.read_only = true;
+    help.markup = true;
+    help.set_text(settings::HELP.as_bytes(), None);
+    let inks = exa_ui::text_layout::TextInks {
+        text: palette.text[6],
+        tag_alpha: 255,
+        selection: palette.highlight[2],
+        slant: text.font.slant,
+    };
+    let draw = help.draw(&inks, &|_| None);
+    if let Some(size) = text.size
+        && !draw.glyphs.is_empty()
+    {
+        let mut glyphs = draw.glyphs;
+        for glyph in &mut glyphs {
+            glyph.x += rect.left;
+            glyph.y += rect.top;
+        }
+        let mut layer = GuiLayer::new(
+            exa_ui::gui_draw::glyph_batch(text.font, &glyphs, size, 1.0),
+            LayerTexture::Named(text.font.texture),
+        );
+        layer.clip = clip;
+        painted.push(layer);
+    }
 }
 
 /// A modal screen's paint: the black backdrop at the fade byte (the form's
@@ -760,6 +831,31 @@ mod tests {
                 .filter_map(|l| l.clip)
                 .all(|c| c == [427, 160, 422, 404])
         );
+    }
+
+    #[test]
+    fn the_controls_page_draws_the_power_tree_help() {
+        let mut form = FormState::open((1280, 720), 4);
+        form.switch(1);
+        let mut textures = GuiTextures::default();
+        textures.textures.insert(
+            SKIN_TEXTURE.into(),
+            exa_ui::gui_draw::GuiTexture::solid([10, 20, 30, 255]),
+        );
+        // The level's font atlas, so the help's glyphs are drawn.
+        let level = exa_ui::gui_font::level_for_unit(4);
+        let font = exa_ui::gui_font::gui_level(level).main;
+        textures.textures.insert(
+            font.texture.into(),
+            exa_ui::gui_draw::GuiTexture::solid([255; 4]),
+        );
+        let painted = paint_form(&form, &textures);
+        let help = painted.layers.iter().filter(|layer| {
+            layer.texture == LayerTexture::Named(font.texture)
+                && layer.batch.vertices.len() > 200
+                && layer.clip == Some([427, 152, 397, 412])
+        });
+        assert_eq!(help.count(), 1, "the help's glyph layer is missing");
     }
 
     #[test]

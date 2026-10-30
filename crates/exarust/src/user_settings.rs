@@ -121,6 +121,7 @@ impl UserSettings {
         exa_game::hw_config::HardwareConfig {
             window_size: size,
             screen_size: (self.settings.screen_width, self.settings.screen_height),
+            steam_deck: exa_game::hw_config::steam_deck(),
             ..exa_game::hw_config::HardwareConfig::new(live).with_file(self.ini_path.clone())
         }
     }
