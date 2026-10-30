@@ -812,10 +812,12 @@ the shop asks the default kinds and any rank, the merchant its stock type
 and specialisation (`ArenaCareer::merchant_kinds`, `merchant_rank`, kept by
 the save's merchant chunk). The shelf's names come from the item
 catalogue, an instance under its source's name. The copies have no item
-body yet (no condition or variant is rolled onto one). Not wired: the
-windows' own close controls, the board's pictures and prize items, the
-manage report lines and controls, the trade window's item icons and
-character preview, and moving shelf items into the buy basket.
+body yet (no condition or variant is rolled onto one). Not drawn: the
+board's pictures, prize items and reward slots as images, the manage report
+lines and controls, the trade window's item icons and character preview,
+and moving shelf items into the buy basket. The board's own close, day-end
+and forfeit buttons are on its form host and report their actions; the hub
+closes it through the window manager.
 The hub's shopkeeper and specialist placements are `arena_spawn`'s plans;
 once the manager stands, the hub asks the scene body generator for the
 shopkeeper and one body per employed specialist.
@@ -831,7 +833,8 @@ an event record field for field: kind, flags, rank window, side size and
 weapon row, the day slot in the rank column, the rolled rank in the tier
 column, the slot-scaled secondary value as the entry fee and the cash as the
 prize. It also carries the rival company names, the four seasons' reward ids
-and the tournament weapon tiers.
+and the tournament weapon tiers. The hub keeps the board's close state and
+restores its tab and list selections on the next opening.
 
 The hardware configuration (`hw_config`) runs the settings screen: it holds
 the live options, the saved set and the open page's draft; opens the page

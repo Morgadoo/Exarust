@@ -32,7 +32,8 @@ use exa_ui::gui_core::{FormHost, FormId, GuiRect, GuiTask, NO_CONTROL};
 use exa_ui::gui_draw::{GuiFrames, GuiTextures};
 use exa_ui::line_skin::shown_palette;
 use exa_ui::match_board::{
-    Board, BoardAction, BoardPaint, BoardTab, CellValue, Rect, TableLayout, TableSlot, Widget,
+    Board, BoardAction, BoardPaint, BoardTab, CellValue, CloseState, CoinDraw, Rect, TableLayout,
+    TableSlot, Widget,
 };
 use exa_ui::skin::SkinPalette;
 
@@ -361,6 +362,9 @@ pub struct HubWindows {
     pub kind: HubWindowKind,
     pub form: Option<FormId>,
     pub board: Option<Board>,
+    /// The closed board's saved tab and list selections, restored when it
+    /// is opened again.
+    pub board_state: Option<CloseState>,
     pub manage: Option<ManageRefresh>,
     pub shop: Option<ShopModel>,
     /// The table-built forms: Manage Company and the windows stacked on it.
@@ -414,7 +418,11 @@ impl HubWindows {
     /// Opens the board on a career.
     pub fn open_board(&mut self, career: &ArenaCareer) {
         self.close();
-        self.board = Some(career.board());
+        let mut board = career.board();
+        if let Some(state) = &self.board_state {
+            board.restore(state);
+        }
+        self.board = Some(board);
         self.kind = HubWindowKind::Board;
         self.push(
             HubWindowKind::Board,
@@ -472,7 +480,7 @@ impl HubWindows {
         match self.kind {
             HubWindowKind::Board => {
                 if let Some(board) = self.board.as_mut() {
-                    board.close();
+                    self.board_state = Some(board.close());
                 }
             }
             HubWindowKind::Manage => {
@@ -528,7 +536,10 @@ impl HubWindows {
     }
 }
 
-/// The board's controls: the four tabs and the Enter button.
+/// The board's controls: the four tabs, the Enter button and the template's
+/// other bottom-row buttons (End Day, Close and Forfeit). The board's own
+/// paint list draws them; these records let the form host hit-test and
+/// select them.
 fn board_controls() -> Vec<Control> {
     let layout = exa_ui::match_board::layout(false);
     let mut records = Vec::new();
@@ -542,16 +553,18 @@ fn board_controls() -> Vec<Control> {
             .to_vec();
         records.push(control);
     }
-    let mut enter = Control::new(
-        1,
-        layout.enter_button.x,
-        layout.enter_button.y,
-        layout.enter_button.w,
-        layout.enter_button.h,
-    );
-    enter.style = BUTTON_STYLE;
-    enter.text = b"Enter".to_vec();
-    records.push(enter);
+    let buttons = [
+        (layout.end_day_button, exa_ui::match_board::END_DAY_LABEL),
+        (layout.close_button, exa_ui::match_board::CLOSE_LABEL),
+        (layout.enter_button, "Enter"),
+        (layout.forfeit_button, exa_ui::match_board::FORFEIT_LABEL),
+    ];
+    for (rect, text) in buttons {
+        let mut control = Control::new(1, rect.x, rect.y, rect.w, rect.h);
+        control.style = BUTTON_STYLE;
+        control.text = text.as_bytes().to_vec();
+        records.push(control);
+    }
     records
 }
 
@@ -766,7 +779,10 @@ fn paint_board(board: &Board, bounds: GuiRect, look: &Look) -> gui_paint::Painte
             BoardPaint::Cell { rect, value, .. } => {
                 let text = match value {
                     CellValue::Text(text) => text,
-                    CellValue::Coin(coins) => coin_text(coins),
+                    // A coin column carries a draw callback instead of a
+                    // text value: the following Coin item draws its dash or
+                    // its coin counts.
+                    CellValue::Coin(_) => String::new(),
                     CellValue::Health(word) => {
                         // The roster's health column is owner-drawn: the
                         // table hands the gauge draw the cell's left one
@@ -790,6 +806,21 @@ fn paint_board(board: &Board, bounds: GuiRect, look: &Look) -> gui_paint::Painte
                     paint_text(&mut painted, at(bounds, rect), &text, look);
                 }
             }
+            BoardPaint::Coin { rect, draw, .. } => {
+                let (x, text) = match draw {
+                    CoinDraw::Dash { x } => (x, "-".to_string()),
+                    CoinDraw::Coins {
+                        x,
+                        copper,
+                        silver,
+                        gold,
+                    } => (x, coin_text_parts(gold, silver, copper)),
+                };
+                if !text.is_empty() {
+                    let cell = Rect { x, ..rect };
+                    paint_text(&mut painted, at(bounds, cell), &text, look);
+                }
+            }
             BoardPaint::Label { rect, text, .. } => {
                 if let Some(rect) = rect {
                     paint_text(&mut painted, at(bounds, rect), &text, look);
@@ -800,10 +831,10 @@ fn paint_board(board: &Board, bounds: GuiRect, look: &Look) -> gui_paint::Painte
     painted
 }
 
-/// A packed coin amount as the text a table cell can show: "g s c", leaving
-/// out the leading zeroes.
-fn coin_text(packed: u32) -> String {
-    let (copper, silver, gold) = exa_ui::match_board::coin_parts(packed);
+/// A coin amount's text as a table cell can show it: "g s c", leaving out
+/// the leading zeroes. The board's coin draw gives the counts; a zero cell
+/// is the dash and never reaches this.
+fn coin_text_parts(gold: u32, silver: u32, copper: u32) -> String {
     match (gold, silver, copper) {
         (0, 0, coins) => format!("{coins}c"),
         (0, silver, coins) => format!("{silver}s {coins}c"),
@@ -1205,6 +1236,17 @@ mod tests {
     }
 
     #[test]
+    fn a_coin_draw_shows_its_counts_and_zero_is_the_dash() {
+        assert_eq!(coin_text_parts(0, 0, 4), "4c");
+        assert_eq!(coin_text_parts(0, 3, 4), "3s 4c");
+        assert_eq!(coin_text_parts(2, 3, 4), "2g 3s 4c");
+        // A zero amount is never formatted: the board's coin draw is the
+        // dash at its offset instead.
+        let zero = exa_ui::match_board::Board::coin_draw(0, 10);
+        assert_eq!(zero, exa_ui::match_board::CoinDraw::Dash { x: 14 });
+    }
+
+    #[test]
     fn the_manage_refresh_lists_the_manager_first() {
         let mut career = career();
         career.company.roster.push(Member {
@@ -1224,6 +1266,26 @@ mod tests {
         assert_eq!(refresh.roster[1].name.text, "Anna");
         assert_eq!(refresh.roster[0].rank.text, "Inept+");
         assert_eq!(refresh.money, 343);
+    }
+
+    #[test]
+    fn the_board_reopens_on_its_last_tab_and_lists() {
+        let mut windows = HubWindows::default();
+        let career = career();
+        windows.open_board(&career);
+        {
+            let board = windows.board.as_mut().unwrap();
+            assert!(board.switch_tab(BoardTab::Events).is_some());
+            board.match_type = 2;
+            board.rank = 3;
+            board.tier = 1;
+        }
+        windows.close_window();
+        assert!(windows.board_state.is_some());
+        windows.open_board(&career);
+        let board = windows.board.as_ref().unwrap();
+        assert_eq!(board.tab, BoardTab::Events);
+        assert_eq!((board.match_type, board.rank, board.tier), (2, 3, 1));
     }
 
     #[test]
@@ -1282,6 +1344,36 @@ mod tests {
     }
 
     #[test]
+    fn the_form_host_holds_the_boards_bottom_row() {
+        let records = board_controls();
+        let layout = exa_ui::match_board::layout(false);
+        // Four tabs and the four bottom-row buttons.
+        assert_eq!(records.len(), 8);
+        let bottom = exa_ui::match_board::layout(false).enter_button.y;
+        for (index, rect) in [
+            layout.end_day_button,
+            layout.close_button,
+            layout.enter_button,
+            layout.forfeit_button,
+        ]
+        .iter()
+        .enumerate()
+        {
+            let record = &records[4 + index];
+            assert_eq!(
+                (record.x, record.y, record.w, record.h),
+                (rect.x, rect.y, rect.w, rect.h)
+            );
+            assert_eq!(record.y, bottom);
+        }
+        assert_eq!(records[4].text, b"End Day".to_vec());
+        assert_eq!(records[5].text, b"Close".to_vec());
+        assert_eq!(records[6].text, b"Enter".to_vec());
+        assert_eq!(records[7].text, b"Forfeit".to_vec());
+        assert_eq!(records[1].text, b"Specials".to_vec());
+    }
+
+    #[test]
     fn the_board_enter_in_a_duel_asks_for_the_match() {
         let mut windows = HubWindows::default();
         let career = career();
@@ -1331,8 +1423,18 @@ mod tests {
         let form = windows.task.form(windows.form.unwrap()).unwrap();
         let layout = exa_ui::match_board::layout(false);
         assert_eq!(form.hit_test(layout.tabs[0].x + 1, layout.tabs[0].y + 1), 1);
+        // The Enter button is the seventh record: four tabs, End Day,
+        // Close, then Enter.
         assert_eq!(
             form.hit_test(layout.enter_button.x + 1, layout.enter_button.y + 1),
+            7
+        );
+        assert_eq!(
+            form.hit_test(layout.close_button.x + 1, layout.close_button.y + 1),
+            6
+        );
+        assert_eq!(
+            form.hit_test(layout.end_day_button.x + 1, layout.end_day_button.y + 1),
             5
         );
         assert_eq!(form.hit_test(2, 2), 0);
