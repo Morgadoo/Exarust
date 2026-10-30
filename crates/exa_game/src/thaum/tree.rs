@@ -810,8 +810,9 @@ pub struct TreeScreen {
     pub window_alpha: f32,
     /// The tree content's fade this frame.
     pub content_alpha: f32,
-    /// The bar child's fade this frame.
-    pub bar_alpha: f32,
+    /// The domain wheel child's show value this frame: the opening ease, or
+    /// the window times it while closing. The bar draws with its own fade.
+    pub wheel_shown: f32,
     /// The bar's animation flags: bit 1 closing, bit 2 opening.
     pub bar_flags: u8,
     /// The stamp the bar's opening began.
@@ -969,7 +970,7 @@ impl TreeScreen {
             pending_domain: domain,
             window_alpha: 1.0,
             content_alpha: 1.0,
-            bar_alpha: 1.0,
+            wheel_shown: 1.0,
             bar_flags: 0,
             bar_open_at: 0,
             bar_close_at: 0,
@@ -2350,7 +2351,7 @@ impl TreeScreen {
             domain_cells: self.domain_cells,
             window: self.window_alpha,
             content: self.content_alpha,
-            bar_alpha: self.bar_alpha,
+            wheel_shown: self.wheel_shown,
             zoom: self.shown_zoom,
             icon_size: self.zoom_fixed,
             mode: match self.mode {
@@ -2491,7 +2492,7 @@ impl TreeScreen {
                 self.fade_flags &= !FADING_OUT;
                 self.window_alpha = 0.0;
                 self.content_alpha = 0.0;
-                self.bar_alpha = 0.0;
+                self.wheel_shown = 0.0;
                 self.ease_share = 1.0;
                 self.faded_out = true;
                 return;
@@ -2499,9 +2500,9 @@ impl TreeScreen {
             let left = (u64::from(self.close_at) as i64 - u64::from(now) as i64) as f32;
             window = left * window / 256.0;
         }
-        // The bar child's own fade is read before the domain switch reuses
-        // the second value.
-        let bar_second = second;
+        // The wheel child's own show value is read before the domain switch
+        // reuses the second value.
+        let wheel_second = second;
         let mut content = window;
         if self.domain_flags & DOMAIN_IN != 0 {
             if now < self.domain_at {
@@ -2526,16 +2527,18 @@ impl TreeScreen {
                 content = 0.0;
             }
         }
+        // The domain wheel child's show value is the opening ease read
+        // before the domain switch reused it; a closing window multiplies
+        // it. The bar child draws with its own animation only.
         self.ease_share = second;
         self.window_alpha = window;
         self.content_alpha = content;
-        self.bar_alpha = if self.fade_flags & FADING_OUT != 0 {
-            window * bar_second
+        self.wheel_shown = if self.fade_flags & FADING_OUT != 0 {
+            window * wheel_second
         } else {
-            bar_second
+            wheel_second
         };
-        // The domain wheel child is shown with the same value.
-        self.wheel_child.state.shown = self.bar_alpha;
+        self.wheel_child.state.shown = self.wheel_shown;
     }
 
     /// Starts the domain switch's 256 ms fade-out. The wheel that turns the
@@ -5185,19 +5188,19 @@ mod tests {
         tree.present_window(1500);
         assert_eq!(tree.window_alpha, 1.0);
         assert_eq!(tree.content_alpha, 1.0);
-        assert_eq!(tree.bar_alpha, 0.75);
+        assert_eq!(tree.wheel_shown, 0.75);
         // A millisecond after the opening the fade has barely begun: 999 ms
         // are left, the shown share is 1 − 0.001 = 0.999, its square's
         // complement 0.001998961, and the window that doubled, 0.003997922.
         tree.present_window(1001);
         assert!((tree.window_alpha - 0.003_997_922).abs() < 1e-9);
         assert!((tree.content_alpha - 0.003_997_922).abs() < 1e-9);
-        assert!((tree.bar_alpha - 0.001_998_961).abs() < 1e-9);
+        assert!((tree.wheel_shown - 0.001_998_961).abs() < 1e-9);
         // A millisecond before the stamp it is nearly whole: the bar's fade
         // is 0.999999 and the window is held at one.
         tree.present_window(1999);
         assert_eq!(tree.window_alpha, 1.0);
-        assert!((tree.bar_alpha - 0.999_999).abs() < 1e-6);
+        assert!((tree.wheel_shown - 0.999_999).abs() < 1e-6);
         // At the stamp the flag clears and the window is whole.
         tree.present_window(2000);
         assert_eq!(tree.fade_flags, 0);
@@ -5208,7 +5211,7 @@ mod tests {
         tree.present_window(3128);
         assert_eq!(tree.window_alpha, 0.5);
         assert_eq!(tree.content_alpha, 0.5);
-        assert_eq!(tree.bar_alpha, 0.5);
+        assert_eq!(tree.wheel_shown, 0.5);
         tree.present_window(3256);
         assert_eq!(tree.fade_flags, 0);
         assert!(tree.faded_out);

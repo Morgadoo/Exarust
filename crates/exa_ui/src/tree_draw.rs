@@ -45,8 +45,10 @@
 //!   the dragged power's 13-unit icon and 6 × 2.5 glow.
 //!
 //! The window's two fades are the caller's numbers: the backdrop's
-//! [`TreeView::window`], the content's [`TreeView::content`] and the bar
-//! child's [`TreeView::bar_alpha`]. The texts' widths, glyph quads and line
+//! [`TreeView::window`] and the content's [`TreeView::content`]. The domain
+//! wheel child's show value ([`TreeView::wheel_shown`]) is not the bar's:
+//! the bar draws with its own opening and closing fades. The texts'
+//! widths, glyph quads and line
 //! steps are the GUI level's main font's ([`TreeView::font`], by default
 //! [`TREE_FONT`]); its glyphs sample the level's atlas, or the base font's
 //! scaled to the level's quad when only that ships. The links' texture unit
@@ -790,8 +792,9 @@ pub struct TreeView {
     /// The tree's content fade, 0 to 1: the links, icons, marks, rings and
     /// glows. It follows `window` and is cut by the domain switch.
     pub content: f32,
-    /// The bar child's fade under the tree, 0 to 1.
-    pub bar_alpha: f32,
+    /// The domain wheel child's show value, 0 to 1. The bar does not use
+    /// it: its slots fade with its own opening and closing animation.
+    pub wheel_shown: f32,
     pub zoom: f32,
     /// The zoom in 8.8 fixed point, rounded to even: the icon size.
     pub icon_size: f32,
@@ -1410,10 +1413,6 @@ fn bar_pose(view: &TreeView) -> Option<BarPose> {
         let shrink = elapsed * 0.001_111_111_111_111_111_1;
         pose.size *= (1.0 - shrink * shrink) as f32;
     }
-    // The bar is a child form under the tree: its own fade multiplies the
-    // slots' two alphas.
-    pose.a11 *= view.bar_alpha;
-    pose.a12 *= view.bar_alpha;
     Some(pose)
 }
 
@@ -2269,7 +2268,7 @@ mod tests {
             domain_cells: [0, 4, 4, 4, 1, 1, 1],
             window: 1.0,
             content: 1.0,
-            bar_alpha: 1.0,
+            wheel_shown: 1.0,
             zoom: 0.293,
             icon_size: 75.0,
             mode: ScreenMode::Play,
@@ -2989,6 +2988,35 @@ mod tests {
             52.0 * rise * (1.0 - shrink * shrink) as f32
         ));
         assert!(close(pose.pitch, 68.0 * smoothstep(ease(300.0 / 900.0))));
+    }
+
+    #[test]
+    fn the_bar_fades_with_its_own_animation_not_the_wheel() {
+        // The bar's slots take the bar's own opening and closing alphas; the
+        // domain wheel child's show value does not touch them, as the bar's
+        // draw reads no window and only its own flags and stamps.
+        let mut view = view();
+        view.bar[0] = SlotView {
+            word: 0x101,
+            state: state::LIT,
+            ..SlotView::default()
+        };
+        view.bar_phase = Some(BarPhase::Steady);
+        view.wheel_shown = 0.0;
+        let pose = bar_pose(&view).unwrap();
+        assert_eq!((pose.a11, pose.a12), (1.0, 1.0));
+        let draw = bar_draw(&view);
+        let icon = draw
+            .batches
+            .iter()
+            .find(|b| b.program == Program::Icon)
+            .unwrap();
+        assert_eq!(icon.vertices[0].colour[3], 1.0);
+        // And with the wheel fully shown but the bar closing it still fades.
+        view.wheel_shown = 1.0;
+        view.bar_phase = Some(BarPhase::Closing { elapsed: 300 });
+        let disappearing = bar_pose(&view).unwrap();
+        assert!(disappearing.a12 < 1.0);
     }
 
     #[test]
