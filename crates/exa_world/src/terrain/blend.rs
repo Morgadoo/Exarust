@@ -15,8 +15,11 @@ pub const NOISE_SIDE: usize = 480;
 /// Noise maps are generated from these seeds (inputs 3, 4 and 7).
 const NOISE_SEEDS: [u32; 3] = [137, 476, 7359];
 const NOISE_OCTAVES: u32 = 4;
-/// Leftover weight below this is ignored.
-const LEFTOVER_EPSILON: f32 = 0.001;
+/// The weight below which the original walks no layer or leftover: its
+/// compare widens the single weight to double and tests it against the
+/// exact double 0.001, so an f32 weight that rounds up to exactly the
+/// nearest 0.001 still passes.
+const LEFTOVER_EPSILON: f64 = 0.001;
 /// Deeper rule chains are treated as cycles.
 const MAX_DEPTH: usize = 32;
 /// The most painted brushes a tile evaluates: the original keeps eleven
@@ -101,12 +104,12 @@ impl RuleTree {
         let mut painted = 0.0;
         for &(node, w) in layers {
             painted += w;
-            if w > LEFTOVER_EPSILON {
+            if f64::from(w) > LEFTOVER_EPSILON {
                 self.descend(node, w, inputs, 0, &mut |m, w| out[m] += w);
             }
         }
         let leftover = 1.0 - painted;
-        if leftover > LEFTOVER_EPSILON && !self.nodes.is_empty() {
+        if f64::from(leftover) > LEFTOVER_EPSILON && !self.nodes.is_empty() {
             self.descend(0, leftover, inputs, 0, &mut |m, w| out[m] += w);
         }
     }
@@ -136,12 +139,12 @@ impl RuleTree {
         let mut painted = 0.0;
         for &(node, w) in layers {
             painted += w;
-            if w > LEFTOVER_EPSILON {
+            if f64::from(w) > LEFTOVER_EPSILON {
                 self.descend(node, w, inputs, 0, &mut add);
             }
         }
         let leftover = 1.0 - painted;
-        if leftover > LEFTOVER_EPSILON && !self.nodes.is_empty() {
+        if f64::from(leftover) > LEFTOVER_EPSILON && !self.nodes.is_empty() {
             self.descend(0, leftover, inputs, 0, &mut add);
         }
     }
@@ -165,15 +168,17 @@ impl RuleTree {
                 } else {
                     (v - lo) / (hi - lo)
                 };
-                if t < 1.0
-                    && let Some(a) = a
-                {
-                    self.descend(a, w * (1.0 - t), inputs, depth + 1, add);
-                }
-                if t > 0.0
-                    && let Some(b) = b
-                {
+                // The original pushes the below child with `(1 − t)·w`
+                // and follows the above child with `t·w`, taking the
+                // below subtree when the above one is done. It enters
+                // both even at `t` 0 or 1, and a NaN input (neither
+                // compare ordered) splits into two NaN weights, so both
+                // children are always walked here.
+                if let Some(b) = b {
                     self.descend(b, w * t, inputs, depth + 1, add);
+                }
+                if let Some(a) = a {
+                    self.descend(a, w * (1.0 - t), inputs, depth + 1, add);
                 }
             }
             _ => {}
@@ -645,23 +650,50 @@ mod tests {
     }
 
     #[test]
-    fn a_layer_of_a_thousandth_or_less_is_skipped_but_still_subtracted() {
-        // The original walks a layer only when its weight is above 0.001;
-        // a smaller one still counts against the leftover sent to node 0.
+    fn the_walk_gate_is_the_double_comparison_against_a_thousandth() {
+        // The original widens the single weight to double and walks the
+        // layer only when that is above the double 0.001. f32 0.001 is a
+        // little above it, so it walks; the f32 just below does not, and
+        // its weight still counts against the leftover sent to node 0.
         let p = palette(vec![rule("Fixed", 8, "Rock", "Rock", 1.5, 2.0)]);
         let tree = RuleTree::new(&p);
         let sand = RuleTree::node(&p, "Sand").unwrap();
+        let below = f32::from_bits(0x3A83_126E);
+        assert!(below < 0.001f32);
         let mut out = [0.0; 3];
-        tree.weigh(&[(sand, 0.001)], &inputs(0.0, 1.0), &mut out);
-        assert_eq!(
-            out,
-            [0.0, 0.999, 0.0],
-            "the layer is skipped, the leftover is 0.999"
-        );
+        tree.weigh(&[(sand, below)], &inputs(0.0, 1.0), &mut out);
+        assert_eq!(out[0], 0.0, "the layer is skipped, the leftover is 0.999");
+        assert!((out[1] - (1.0 - below)).abs() < 1e-7, "{out:?}");
+        let mut out = [0.0; 3];
+        tree.weigh(&[(sand, 0.001f32)], &inputs(0.0, 1.0), &mut out);
+        assert!((out[0] - 0.001f32).abs() < 1e-9, "{out:?}");
+        assert!((out[1] - (1.0 - 0.001f32)).abs() < 1e-7, "{out:?}");
         let mut out = [0.0; 3];
         tree.weigh(&[(sand, 0.0011)], &inputs(0.0, 1.0), &mut out);
         assert!((out[0] - 0.0011).abs() < 1e-7, "{out:?}");
         assert!((out[1] - 0.9989).abs() < 1e-7, "{out:?}");
+    }
+
+    #[test]
+    fn a_nan_rule_input_splits_into_two_nan_weights() {
+        // Both compares are unordered, so the original falls into the
+        // split path with t = NaN and walks both children: the totals turn
+        // NaN while each channel's byte add rounds NaN to zero and leaves
+        // the byte alone.
+        let p = palette(vec![rule("Height", 0, "Sand", "Rock", 0.0, 1.0)]);
+        let tree = RuleTree::new(&p);
+        let height = RuleTree::node(&p, "Height").unwrap();
+        let mut nan = inputs(0.0, 1.0);
+        nan[0] = f32::NAN;
+        let mut bytes = [0u8; 3];
+        let mut totals = [0.0f32; 3];
+        tree.weigh_bytes(&[(height, 1.0)], &nan, &mut bytes, &mut totals);
+        assert_eq!(bytes, [0, 0, 0]);
+        assert!(totals[0].is_nan() && totals[1].is_nan());
+        assert_eq!(totals[2], 0.0);
+        let mut out = [0.0f32; 3];
+        tree.weigh(&[(height, 1.0)], &nan, &mut out);
+        assert!(out[0].is_nan() && out[1].is_nan());
     }
 
     #[test]
