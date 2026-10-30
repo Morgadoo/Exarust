@@ -235,8 +235,11 @@ impl ArenaCareer {
         self.daily_rows = crate::arena::generate_daily_board(seed, || random.unit());
     }
 
-    /// Fill the hire list with ten candidates, each generated from its own
-    /// performance-counter seed as the original's list does.
+    /// Fill the hire list with ten candidates. The original reseeds from the
+    /// performance counter before each candidate; the live counter is read
+    /// once and each later candidate's seed is moved on by a fixed odd step,
+    /// so two candidates never share a seed [guess: the real counter's
+    /// spacing depends on the machine].
     pub fn fill_hire_pool_at(&mut self, counter: u64) {
         let mut pool = Vec::with_capacity(crate::hirelings::POOL_SIZE);
         for index in 0..crate::hirelings::POOL_SIZE {
@@ -258,6 +261,8 @@ impl ArenaCareer {
 
     /// Renew the list for a new day: the oldest candidate leaves, and one or
     /// two come while fewer than eight are listed ([`crate::hirelings::renew_pool`]).
+    /// The count draw steps the career's roll; the original steps the
+    /// engine's shared LCG wherever the restock left it [guess].
     pub fn renew_hire_pool(&mut self) {
         if self.hire_pool.is_empty() {
             self.fill_hire_pool();
