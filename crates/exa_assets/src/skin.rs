@@ -837,7 +837,7 @@ impl ParentFrame<'_> {
     /// per component. The translation is scaled back to centimetres; the
     /// original reads it in the file's centimetres directly, so a value that
     /// does not survive the metre round trip may differ in the last bit.
-    fn to_parent(&self, centre: Vec3) -> Vec3 {
+    fn place(&self, centre: Vec3) -> Vec3 {
         let [r0, r1, r2, t] = self.placement;
         let axis = |i: usize| {
             (centre.x * r0[i] + centre.y * r1[i]) + (centre.z * r2[i] + t[i] * CM_PER_METRE)
@@ -864,7 +864,7 @@ pub(crate) fn match_apparel_with_context(
     }
     for group in groups {
         let mut best = distance_squared(group.centre, joints[0].pivot * CM_PER_METRE);
-        let in_parent = parent.to_parent(group.centre);
+        let in_parent = parent.place(group.centre);
         for &centre in parent.centres {
             let d = distance_squared(in_parent, centre);
             if d < best {
@@ -1661,11 +1661,11 @@ mod tests {
             ],
         };
         assert_eq!(
-            frame.to_parent(Vec3::new(3.0, 0.0, 0.0)),
+            frame.place(Vec3::new(3.0, 0.0, 0.0)),
             Vec3::new(0.0, 3.0, 100.0)
         );
         assert_eq!(
-            ParentFrame::NONE.to_parent(Vec3::new(1.5, -2.0, 7.0)),
+            ParentFrame::NONE.place(Vec3::new(1.5, -2.0, 7.0)),
             Vec3::new(1.5, -2.0, 7.0)
         );
     }
