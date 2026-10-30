@@ -837,7 +837,8 @@ const INJECTION_SHARE: f32 = 0.1;
 /// direct light) takes this one.
 pub fn injection_share(high_quality: bool) -> f32 {
     if high_quality {
-        INJECTION_SHARE * 0.9
+        // The product is taken in double precision and narrowed.
+        (INJECTION_SHARE as f64 * 0.9) as f32
     } else {
         INJECTION_SHARE
     }
@@ -2739,10 +2740,12 @@ mod tests {
     #[test]
     fn the_light_share_drops_at_the_high_shading_quality() {
         assert_eq!(injection_share(false), 0.1);
-        // The product is single precision: 0.1 × 0.9 rounds to 0.089999996,
-        // one step below the decimal 0.09's nearest float.
-        assert_eq!(injection_share(true), 0.1f32 * 0.9);
-        assert_eq!(injection_share(true).to_bits(), 0x3db8_51eb);
+        // The product is double precision: 0.1f32 × 0.9 = 0.09000000134,
+        // which narrows to 0.09's own nearest float (a single-precision
+        // product would give 0.089999996, one step lower).
+        assert_eq!(injection_share(true), 0.09);
+        assert_eq!(injection_share(true).to_bits(), 0x3db8_51ec);
+        assert_ne!(injection_share(true), 0.1f32 * 0.9);
         assert!(injection_share(true) < injection_share(false));
     }
 

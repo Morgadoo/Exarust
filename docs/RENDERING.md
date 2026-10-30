@@ -1567,7 +1567,8 @@ its width, at the slice's middle ((slice + 0.5)/width), as the original's
 - base = level record `0x30` (as stored) × 0.001, per channel, or × 0.002
   below shading quality 4 (`GiSettings::high_quality`, fed every frame from
   the settings screen's `ShadingQuality`; the same flag drops the manager's
-  light share from 0.1 to 0.1 × 0.9 = 0.089999996, which only sources
+  light share from 0.1 to 0.1 × 0.9 (taken in double precision and narrowed:
+  0.09's nearest float), which only sources
   outside the GI manager read — `gi::injection_share`);
 - each point light adds
   lin(colour)·intensity·multiplier·(1 − dim)²·0.15·0.01 · (1 − d/R)⁴ ·
