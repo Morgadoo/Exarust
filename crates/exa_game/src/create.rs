@@ -3916,10 +3916,6 @@ pub fn use_template(has_record: bool) -> TemplateUse {
     }
 }
 
-/// The preview list's entry stride and the offset its icon sits at.
-pub const PREVIEW_ICON_ENTRY: usize = 0x18;
-pub const PREVIEW_ICON_AT: usize = 8;
-
 /// Adding an item preview to the panel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PreviewPush {
@@ -3937,9 +3933,8 @@ pub struct PreviewPush {
 /// last one.
 ///
 /// The icon is registered with the icon manager first, then the list grows
-/// by one entry ([`PREVIEW_ICON_ENTRY`] bytes, the icon at
-/// [`PREVIEW_ICON_AT`]), the item view's entries are refreshed and the
-/// manager finishes. The selection then follows the hover rule.
+/// by one entry holding the new icon, the item view's entries are refreshed
+/// and the manager finishes. The selection then follows the hover rule.
 pub fn push_preview(count: i32, hovered: Option<i32>) -> PreviewPush {
     let count = count.wrapping_add(1);
     // The hovered index is zero-extended and the count sign-extended, both
@@ -7717,9 +7712,6 @@ mod tests {
 
     #[test]
     fn adding_a_preview_selects_it_after_the_last_was_hovered() {
-        // The list's entry is 0x18 bytes with its icon at +8.
-        assert_eq!(PREVIEW_ICON_ENTRY, 0x18);
-        assert_eq!(PREVIEW_ICON_AT, 8);
         // A hovered -1 is 2^32 - 1 unsigned and never matches.
         assert_eq!(push_preview(0, Some(-1)).selected, None);
         assert_eq!(
