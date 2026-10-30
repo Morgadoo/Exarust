@@ -444,6 +444,23 @@ fn the_corpse_script_follows_the_first_four_sections() {
         r.entries[2].interaction.as_deref(),
         Some(&b"result = 1;"[..])
     );
+
+    // With a 0x10 block after the corpse, the generic accessor reads the
+    // corpse block as that block and the block after it as the condition.
+    let mut tail = sized(b"corpse");
+    tail.extend(sized(b"ten"));
+    tail.extend(sized(b"result"));
+    let three = entry(
+        SECTION_CORPSE | SECTION_10 | SECTION_INTERACTION,
+        7,
+        0,
+        0,
+        &tail,
+    );
+    let r = Role::parse(25, &role(0, "Corlian", 1, 50, "", &[], &[three])).unwrap();
+    assert_eq!(r.entries[0].corpse.as_deref(), Some(&b"corpse"[..]));
+    assert_eq!(r.entries[0].section_10.as_deref(), Some(&b"corpse"[..]));
+    assert_eq!(r.entries[0].interaction.as_deref(), Some(&b"corpse"[..]));
 }
 
 /// An entry aimed at one character: both top bits of the condition set and

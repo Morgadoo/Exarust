@@ -10,7 +10,10 @@
 //! (`0x8`, `0x10`) and an interaction condition (`0x40`). The corpse script
 //! (`0x20`, run when the player handles the holder's corpse) is read after
 //! the sections of bits `0x1` to `0x8` only, where the original's corpse
-//! accessor looks for it. `narrator.rcd` is one dialogue graph on its own.
+//! accessor looks for it. The generic section accessor walks the kind-bit
+//! table, which has no corpse bit, so after a corpse section it reads the
+//! block after it as the next section: the parser stores the interaction
+//! condition the same way. `narrator.rcd` is one dialogue graph on its own.
 //!
 //! A dialogue graph: target word, block size, actor records (name[16],
 //! colour, a word, a sized extra block), then nodes. An empty node is a
@@ -475,7 +478,20 @@ impl RoleEntry {
             e.section_10 = Some(r.sized()?.to_vec());
         }
         if kind & SECTION_INTERACTION != 0 {
-            e.interaction = Some(r.sized()?.to_vec());
+            let block = r.sized()?.to_vec();
+            // The generic section accessor walks the kind-bit table, which
+            // has no corpse bit: after a corpse section it reads the block
+            // the corpse bit stored as the one after it (the 0x10 block, or
+            // the corpse block itself when there is none).
+            e.interaction = if kind & SECTION_CORPSE != 0 {
+                if kind & SECTION_10 != 0 {
+                    e.section_10.clone()
+                } else {
+                    e.corpse.clone()
+                }
+            } else {
+                Some(block)
+            };
         }
         Ok(e)
     }
