@@ -432,25 +432,32 @@ fn bind_skins(
                 },
                 |e| parts.get(e).ok().map(|p| p.bone),
             );
-            let rest: HashMap<usize, (Entity, Mat4)> = order
-                .into_iter()
-                .map(|(bone, e)| {
-                    let mut m = Mat4::IDENTITY;
-                    let mut node = e;
-                    while node != root {
-                        let local = match parts.get(node) {
-                            Ok(p) => p.rest,
-                            Err(_) => transforms.get(node).copied().unwrap_or_default(),
-                        };
-                        m = local.to_matrix() * m;
-                        match parents.get(node) {
-                            Ok(p) => node = p.parent(),
-                            Err(_) => break,
-                        }
+            let rest_of = |e: Entity| {
+                let mut m = Mat4::IDENTITY;
+                let mut node = e;
+                while node != root {
+                    let local = match parts.get(node) {
+                        Ok(p) => p.rest,
+                        Err(_) => transforms.get(node).copied().unwrap_or_default(),
+                    };
+                    m = local.to_matrix() * m;
+                    match parents.get(node) {
+                        Ok(p) => node = p.parent(),
+                        Err(_) => break,
                     }
-                    (bone, (e, m))
-                })
+                }
+                m
+            };
+            let mut rest: HashMap<usize, (Entity, Mat4)> = order
+                .into_iter()
+                .map(|(bone, e)| (bone, (e, rest_of(e))))
                 .collect();
+            // Bone 0 is the mesh's own part, which the capture never takes:
+            // a mesh on bone 0 (the merged character's runs) is its own
+            // joint 0.
+            if skinned.bone == 0 {
+                rest.entry(0).or_insert_with(|| (mesh, rest_of(mesh)));
+            }
             let Some(&(own_entity, own_rest)) = rest.get(&(skinned.bone as usize)) else {
                 continue; // the skeleton is not attached yet
             };
@@ -675,6 +682,55 @@ fn play_clips(
 mod tests {
     use super::*;
     use exa_formats::rsq::{Key, MovesetConfig};
+
+    /// The merged character's runs sit on bone 0 under the body root: the
+    /// capture never takes bone 0, so each run binds with itself as joint
+    /// 0 and the captured parts after it.
+    #[test]
+    fn a_bone_zero_mesh_binds_to_itself() {
+        let mut app = App::new();
+        app.init_resource::<Assets<SkinnedMeshInverseBindposes>>()
+            .init_resource::<Assets<Mesh>>()
+            .add_systems(Update, bind_skins);
+        let root = app
+            .world_mut()
+            .spawn((SkinnedRoot, Transform::IDENTITY))
+            .id();
+        let pelvis_rest = Transform::from_xyz(0.0, 1.0, 0.0);
+        let pelvis = app
+            .world_mut()
+            .spawn((
+                BodyPart {
+                    bone: 1,
+                    rest: pelvis_rest,
+                },
+                pelvis_rest,
+                ChildOf(root),
+            ))
+            .id();
+        let mesh = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(Mesh::new(
+                bevy::mesh::PrimitiveTopology::TriangleList,
+                bevy::asset::RenderAssetUsages::default(),
+            ));
+        let run = app
+            .world_mut()
+            .spawn((
+                BodyPart {
+                    bone: 0,
+                    rest: Transform::IDENTITY,
+                },
+                Transform::IDENTITY,
+                SkinnedPart { bone: 0, mesh },
+                ChildOf(root),
+            ))
+            .id();
+        app.update();
+        let skinned = app.world().get::<SkinnedMesh>(run).expect("the run binds");
+        assert_eq!(skinned.joints, [run, pelvis]);
+    }
 
     /// Without `humanoid.rsq` the library is one empty `Default` moveset
     /// and one unnamed action: no character has a clip.
