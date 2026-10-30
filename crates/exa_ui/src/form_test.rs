@@ -364,6 +364,52 @@ fn the_held_arrows_repeat() {
 }
 
 #[test]
+fn the_scroll_timer_moves_one_step_a_tick() {
+    let (scroll, steps) = ((0.2, 0.5), (0.05, 0.25));
+    // One step per 120 ms; a short tick moves nothing.
+    assert_eq!(
+        scroll_by_elapsed(attribute::VSCROLL, 120, scroll, steps),
+        ScrollBy::Vertical(0.25)
+    );
+    assert_eq!(
+        scroll_by_elapsed(attribute::VSCROLL, 119, scroll, steps),
+        ScrollBy::Vertical(0.25)
+    );
+    assert_eq!(
+        scroll_by_elapsed(attribute::VSCROLL, 59, scroll, steps),
+        ScrollBy::Vertical(0.5)
+    );
+    // Ties go to even: 0.5 tick is none, 1.5 ticks are two, 2.5 are two.
+    assert_eq!(
+        scroll_by_elapsed(attribute::VSCROLL, 60, scroll, steps),
+        ScrollBy::Vertical(0.5)
+    );
+    assert_eq!(
+        scroll_by_elapsed(attribute::VSCROLL, 180, scroll, steps),
+        ScrollBy::Vertical(0.0)
+    );
+    assert_eq!(
+        scroll_by_elapsed(attribute::VSCROLL, 300, scroll, steps),
+        ScrollBy::Vertical(0.0)
+    );
+    assert_eq!(
+        scroll_by_elapsed(attribute::VSCROLL, 420, scroll, steps),
+        ScrollBy::Vertical(-0.5)
+    );
+    // The horizontal timer runs the other way.
+    let ScrollBy::Horizontal(x) = scroll_by_elapsed(attribute::HSCROLL, 120, scroll, steps) else {
+        panic!("a horizontal scroll");
+    };
+    assert!((x - 0.15).abs() < 1e-7);
+    assert_eq!(scroll_by_elapsed(0, 1000, scroll, steps), ScrollBy::None);
+    // The vertical bar wins when a form has both.
+    assert_eq!(
+        scroll_by_elapsed(attribute::VSCROLL | attribute::HSCROLL, 120, scroll, steps),
+        ScrollBy::Vertical(0.25)
+    );
+}
+
+#[test]
 fn the_thumb_drags() {
     // 50 − 17 = 33 less the grab 5, over 398 − 30 − 121 = 247.
     assert!((drag_thumb_x(50, 5, 2, 400, 15, 121) - 28.0 / 247.0).abs() < 1e-7);

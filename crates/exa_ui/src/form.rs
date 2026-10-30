@@ -2235,6 +2235,43 @@ pub fn repeat_scroll(held: i32, over: bool, scroll: (f32, f32), steps: (f32, f32
     }
 }
 
+/// A scroll moved by elapsed time rather than by a tick: the original's
+/// scroll-timer step, one step every 120 ms.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ScrollBy {
+    Vertical(f32),
+    Horizontal(f32),
+    /// No scrollbar: nothing moves and the original does not ask for a
+    /// redraw.
+    None,
+}
+
+/// The elapsed-time scroll step: a form with a vertical scrollbar moves its
+/// vertical fraction down by `round(ms / 120)` vertical steps, else one with
+/// a horizontal scrollbar moves its horizontal fraction by `round(−ms / 120)`
+/// horizontal steps. The conversion is the engine's `CVTSD2SI` (a double,
+/// ties to even), the step is then a single-precision multiply and add.
+/// Returns the fraction to set and whether the form redraws.
+pub fn scroll_by_elapsed(
+    attributes: u32,
+    ms: i32,
+    scroll: (f32, f32),
+    steps: (f32, f32),
+) -> ScrollBy {
+    if attributes & attribute::VSCROLL != 0 {
+        let ticks = cvtsd2si64(f64::from(ms) * STEP_PER_MS) as f32;
+        ScrollBy::Vertical(scroll.1 - ticks * steps.1)
+    } else if attributes & attribute::HSCROLL != 0 {
+        let ticks = cvtsd2si64(f64::from(ms) * -STEP_PER_MS) as f32;
+        ScrollBy::Horizontal(ticks * steps.0 + scroll.0)
+    } else {
+        ScrollBy::None
+    }
+}
+
+/// The scroll timer's rate: `1 / 120` steps per millisecond.
+const STEP_PER_MS: f64 = 0.008_333_333_333_333_333;
+
 /// The vertical scrollbar's track and thumb.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VerticalScroll {
