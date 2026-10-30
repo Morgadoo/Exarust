@@ -12,7 +12,7 @@
 use crate::controls::{ListMetrics, item_at, step_selection};
 use crate::form::attribute;
 use crate::gui_font::GuiFont;
-use crate::skin::{GuiRect, SkinBatch, SkinPalette, double_frame, faded_rect, solid_rect};
+use crate::skin::{GuiRect, SkinBatch, SkinPalette, double_frame, faded_rect, selection_band};
 
 pub use crate::controls::ROW_UNITS;
 /// The most rows shown before the list scrolls.
@@ -347,8 +347,9 @@ impl DropDownList {
     /// Paints the selection's band through the skin, in the original's
     /// order: the double frame in the hot form group's seventh and first
     /// shades, a half-strength gradient from the form group's fifth shade
-    /// at the bottom to its first at the top, and the innermost fill in the
-    /// fifth shade. Nothing draws without a selected row.
+    /// at the bottom to its first at the top, and the skin's unselected
+    /// selection band (the highlight outline and glows) over the inner
+    /// rectangle. Nothing draws without a selected row.
     pub fn paint(&self, batch: &mut SkinBatch, palette: &SkinPalette, scrollbar_width: i32) {
         let Some(band) = self.band(scrollbar_width) else {
             return;
@@ -372,8 +373,20 @@ impl DropDownList {
             palette.form[0],
             0.5,
         );
-        batch.set_ink(palette.form[4]);
-        solid_rect(batch, rect(band.inner));
+        // The last call takes a left, top, width and height.
+        let [x, y, w, h] = band.inner;
+        selection_band(
+            batch,
+            GuiRect {
+                x0: x as f32,
+                y0: y as f32,
+                x1: (x + w) as f32,
+                y1: (y + h) as f32,
+            },
+            &palette.highlight,
+            false,
+            self.unit,
+        );
     }
 
     /// The rows' text, top to bottom. The pen sits a unit and a pixel in,
@@ -586,8 +599,12 @@ mod tests {
         let mut batch = SkinBatch::new();
         list.paint(&mut batch, &palette, 15);
         assert!(!batch.primitives.is_empty());
-        // The innermost fill's ink is the form group's fifth shade.
-        assert_eq!(batch.ink, [1, 2, 3, 4]);
+        // The double frame, the gradient and the band's outline and glows.
+        assert_eq!(batch.primitives.len(), 4);
+        // The band is the highlight group's unselected outline, over the
+        // inner rectangle from (2, row top + 1).
+        let outline = batch.vertices_of(&batch.primitives[2]);
+        assert_eq!((outline[0].x, outline[0].y), (2.0, 26.0));
     }
 
     #[test]

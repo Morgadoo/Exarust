@@ -3365,7 +3365,8 @@ it is wired into the running game yet.
   right less the border less one, with a frame a pixel inside: a double
   frame in the hot form group's seventh and first shades, a half-strength
   gradient from the form group's fifth shade at the bottom to its first at
-  the top, and the innermost fill in the fifth shade; the close clears the
+  the top, and the skin's unselected selection band (the highlight outline
+  and glows) over the inner rectangle; the close clears the
   owner's on and lit bits and frees items the list owns.
 - **Palette swatch** (`exa_ui::col_swatch`). A fixed 400 × 112 popup of 32
   columns of 8 three-unit cells, index = column · 8 + row, in the palette's
