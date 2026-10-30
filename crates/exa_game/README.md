@@ -323,9 +323,10 @@ per 50 ms of its cost, `4 + skill levels`, into 2 points of its trained
 skill; the player's paid cost levels the power in training, a companion's
 level adds 10 combat skill and courage and picks its next technique; the
 account pool converts at `(global / 5000 + 1) × 4` up to 25000. The
-account experience's worth and its inverse, the companions' list, the
-fighting estimate and the discovery chunk of a save are in; the arena's
-lesson goes through the same skill lump. Nothing calls the tick in a
+account experience's worth and its inverse, the companions' list and the
+discovery chunk of a save are in; the fighting estimate is the one shared
+implementation in `exa_ai::estimate` (exa_game's wrappers call it for the
+practice lesson), and the arena's lesson goes through the same skill lump. Nothing calls the tick in a
 running story level yet. The shop (`trade`): a first stock of 18 to 20, the
 rotation by size, candidates by kind, listing, model and rank weighed by
 rarity through the original's quick logarithm and exponential (duplicates

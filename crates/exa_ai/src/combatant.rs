@@ -9,7 +9,7 @@
 //! estimate points at, and its event bits.
 //!
 //! [`perceive`] is one character looking at another once. It skips an
-//! invisible character, measures the distance with vertical offsets under
+//! character that cannot be perceived, measures the distance with vertical offsets under
 //! 150 cm ignored, keeps the contact tracked inside a 1200 cm radius
 //! (halved while asleep, cut for a hidden character, 600 cm more for a
 //! contact already tracked) and drops it outside both of its two radii; a
@@ -418,9 +418,10 @@ pub struct Observed {
     pub forward: Vec3,
     /// Its condition word ([`CONDITION_DEAD`], …).
     pub condition: u32,
-    /// Perception skips it.
-    pub invisible: bool,
-    /// Hidden: the detection radius shrinks with the observer's perception.
+    /// Not perceivable: it carries an unseen power or its body is leaving
+    /// the scene.
+    pub gone: bool,
+    /// Hidden: the observer's detection radius shrinks with its perception.
     pub hidden: bool,
     /// A masking power's two radius factors, if it carries one.
     pub mask: Option<(f32, f32)>,
@@ -431,9 +432,11 @@ pub struct Observed {
     pub removed: bool,
     /// Its attack or getting-up phase.
     pub phase: f32,
-    /// In its combat stance.
+    /// Its locomotion is active.
+    pub locomotion: bool,
+    /// Its behaviour is in combat.
     pub in_combat: bool,
-    /// A queued combat step is moving it (picks 16 over 8 in combat).
+    /// Its body's movement flag bit 2, which weighs a moving one 16.
     pub stepping: bool,
     /// A body byte that picks 16 over 8 out of combat (not identified).
     pub poised: bool,
@@ -458,7 +461,8 @@ pub struct Sight {
 
 /// The weight the observed character's condition puts on a third party's
 /// threat: 32 while it attacks, 2 down, `(phase·0.5 + 0.5)·4` getting up
-/// with a phase, otherwise 16 or 8.
+/// with a phase, otherwise 16 or 8 by its locomotion flag (16 with body
+/// flag bit 2) or its in-combat behaviour.
 fn threat_multiplier(observed: &Observed) -> f32 {
     if observed.condition == CONDITION_ATTACKING {
         32.0
@@ -468,9 +472,9 @@ fn threat_multiplier(observed: &Observed) -> f32 {
         } else {
             2.0
         }
-    } else if observed.in_combat {
+    } else if observed.locomotion {
         if observed.stepping { 16.0 } else { 8.0 }
-    } else if observed.poised {
+    } else if observed.in_combat {
         16.0
     } else {
         8.0
@@ -489,7 +493,7 @@ fn contact_weight(observed: &Observed, contact: &Contact, multiplier: f32) -> f3
     if observed.condition & CONDITION_DOWN != 0 {
         return (v * 0.75 + 0.25) * (c * c);
     }
-    let weight = if observed.in_combat {
+    let weight = if observed.locomotion {
         (v * v * 0.75 + 0.25) * c
     } else {
         (v * 0.5 + 0.5) * c
@@ -525,7 +529,7 @@ pub fn perceive(
     now_ms: u64,
 ) -> Sight {
     own[index].threat = 0.0;
-    if observed.invisible {
+    if observed.gone {
         return Sight::default();
     }
     let mut delta = observer.position_cm - observed.position_cm;
@@ -562,6 +566,8 @@ pub fn perceive(
     } else if distance_squared.partial_cmp(&(inner * inner)) != Some(std::cmp::Ordering::Less) {
         let mut sight = Sight::default();
         if contact.tracked() {
+            // The observer loses the character its body targets: its own
+            // alert takes the floor.
             if observer.target == Some(observed.entity) {
                 sight.alert_floor = Some(LOST_ALERT);
             }
@@ -639,6 +645,8 @@ pub fn perceive(
         if third.kind != 1 {
             continue;
         }
+        // A third party dead for over five seconds is not trusted (the
+        // original reads the third character's own death bit and clock).
         if third
             .died_ms
             .is_some_and(|t| now_ms > t.saturating_add(DEAD_MEMORY_MS))
@@ -736,6 +744,7 @@ pub fn perceive(
         contact.threat = 0.0;
     }
     contact.selected = selected;
+    // The original widens the body speed and compares with the double 1.3.
     if f64::from(observed.speed) > 1.3 {
         contact.threat *= 4.0;
     }
@@ -995,7 +1004,11 @@ impl Combatant {
             return;
         }
         if clean {
-            self.courage *= (trait1 + 1.0) * 0.025 + 0.95;
+            // The factor is built in single precision (trait + 1), then
+            // widened: 1.0 · (trait + 1) as double · 0.025 + 0.95, times
+            // the courage, all in double, and cut back to a float.
+            let factor = f64::from(1.0f32 + trait1) * 0.025 + 0.95;
+            self.courage = (factor * f64::from(self.courage)) as f32;
         }
         if let Some(attacker) = attacker
             && !attacker.marked
@@ -1053,6 +1066,20 @@ impl Combatant {
         self.look_target = None;
         self.target = None;
         self.holder = None;
+    }
+
+    /// The character is removed from the scene: clear the body's nav-grid
+    /// flags (the footprint), reset its references, and let every
+    /// combatant in `scene` forget it. The original also tells the scene
+    /// node machinery; Exarust's level lifecycle despawns the entities
+    /// itself, so only the combatant half is here.
+    pub fn remove_from_scene(who: Entity, removed: &mut Self, scene: &mut [Self]) {
+        removed.leave_grid();
+        removed.overflowed = false;
+        removed.reset();
+        for other in scene.iter_mut() {
+            other.forget(who);
+        }
     }
 
     /// The script's `AddConcern` toward `character`, if it is a contact.
@@ -1210,12 +1237,13 @@ mod tests {
             look: -Vec3::Z,
             forward: -Vec3::Z,
             condition: 0,
-            invisible: false,
+            gone: false,
             hidden: false,
             mask: None,
             asleep: false,
             removed: false,
             phase: 0.0,
+            locomotion: false,
             in_combat: false,
             stepping: false,
             poised: false,
@@ -1266,10 +1294,11 @@ mod tests {
         let kept = look(&o, &observed(them, 1799.0), &[], &mut mine, 0.0, 0.0);
         assert!(kept.seen && mine[0].tracked());
         assert_ne!(mine[0].flags & CONTACT_NOTICED, 0);
-        // An invisible character is skipped, and its threat cleared.
+        // A character that cannot be perceived is skipped, and its threat
+        // cleared.
         mine[0].threat = 3.0;
         let mut ghost = observed(them, 100.0);
-        ghost.invisible = true;
+        ghost.gone = true;
         assert!(!look(&o, &ghost, &[], &mut mine, 0.0, 0.0).seen);
         assert_eq!(mine[0].threat, 0.0);
     }
@@ -1631,6 +1660,48 @@ mod tests {
     }
 
     #[test]
+    fn a_removed_character_is_reset_and_the_scene_forgets_it() {
+        let (a, b, _, _) = ids();
+        let mut scene = [Combatant::default(), Combatant::default()];
+        // The scene knows `b`; the removed one has its own contacts too.
+        for combatant in &mut scene {
+            combatant.contact_mut(b);
+            combatant.target = Some(b);
+            combatant.look_target = Some(b);
+            combatant.footprint = Some(Footprint {
+                cell: (50, 50),
+                in_grid: true,
+            });
+        }
+        scene[0].other_target = Some(b);
+        let mut removed = Combatant::default();
+        removed.contact_mut(a);
+        removed.target = Some(a);
+        removed.footprint = Some(Footprint {
+            cell: (50, 50),
+            in_grid: true,
+        });
+        removed.overflowed = true;
+        Combatant::remove_from_scene(b, &mut removed, &mut scene);
+        // The removed one leaves the grid, loses its contact and the
+        // overflow mark.
+        assert!(removed.footprint.is_none());
+        assert!(!removed.overflowed);
+        assert!(removed.contacts.is_empty());
+        assert_eq!(removed.target, None);
+        // Every other combatant forgets it; its footprint stays.
+        for combatant in &scene {
+            assert!(combatant.contact(b).is_none());
+            assert_eq!(combatant.target, None);
+            assert_eq!(combatant.look_target, None);
+            assert!(combatant.footprint.is_some());
+        }
+        // Forget clears the other target too.
+        assert_eq!(scene[0].other_target, None);
+        assert_eq!(scene[1].other_target, None);
+    }
+
+    #[test]
     fn a_clean_hit_lowers_courage_and_marks_the_attacker_once() {
         let mut struck = Combatant {
             combat_rating: 30.0,
@@ -1641,8 +1712,17 @@ mod tests {
             ..Combatant::default()
         };
         struck.take_hit(Some(&mut attacker), true, 0.0, false, false);
-        let lowered = (1.0f32 * 0.025 + 0.95) * 0.5;
+        // ((1 + trait) as double · 0.025 + 0.95) · courage, in double.
+        let lowered = ((1.0f64 * 0.025 + 0.95) * 0.5) as f32;
         assert_eq!(struck.courage, lowered);
+        // A non-zero trait keeps the factor's f32 (trait + 1) step before
+        // the widening.
+        let mut hot = Combatant::default();
+        hot.take_hit(None, true, 0.1, false, false);
+        assert_eq!(
+            hot.courage,
+            (f64::from(1.0f32 + 0.1f32) * 0.025 + 0.95).mul_add(0.5, 0.0) as f32
+        );
         assert_eq!(attacker.struck_rating, 30.0);
         assert!(attacker.marked);
         struck.combat_rating = 50.0;
@@ -1711,7 +1791,7 @@ pub fn ally_threat_factor(observed: &Observed) -> f32 {
 /// guardians): `observer` looks at `observed`, whose contact is
 /// `own[index]` among the observer's contacts. `ai_flagged` tells whether a
 /// character's race word has the AI flag (the observer itself counts as
-/// one). Returns the sense's level: −1 out of range, invisible or a fellow
+/// one). Returns the sense's level: −1 out of range, not perceivable or a fellow
 /// AI character, otherwise 0.
 ///
 /// The alarm and threat clear. Only a character contact is sensed. A statue
@@ -1758,7 +1838,7 @@ pub fn ally_sense(
     if 1.0 < contact.concern && contact.concern < ALLY_CONCERN_FLOOR {
         contact.concern = ALLY_CONCERN_FLOOR;
     }
-    if observed.invisible {
+    if observed.gone {
         return -1;
     }
     let mut delta = observer.position_cm - observed.position_cm;
@@ -1887,12 +1967,13 @@ mod ally_tests {
             look: Vec3::Z,
             forward: Vec3::Z,
             condition: 0,
-            invisible: false,
+            gone: false,
             hidden: false,
             mask: None,
             asleep: false,
             removed: false,
             phase: 0.0,
+            locomotion: false,
             in_combat: false,
             stepping: false,
             poised: false,

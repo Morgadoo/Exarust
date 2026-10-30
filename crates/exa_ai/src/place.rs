@@ -36,6 +36,8 @@
 //! phase thresholds, the wrap of an angle, the danger ramp, the thrust wait,
 //! the approach's 0.1 floor); they are kept so here.
 
+use bevy::math::Vec3;
+
 /// The strike term is 0 at this distance (cm).
 pub const PLACE_FADE_CM: f32 = 600.0;
 /// Added to the other fighter's reach for the close term (cm).
@@ -101,7 +103,8 @@ pub struct Spot {
     pub in_attack: bool,
     /// Flag bit 4. Scales the strike and the approach by the opponent's facing.
     pub presses: bool,
-    /// The opponent's combat skill, used by a thrust's approach scale.
+    /// The opponent's combat skill, used by a thrust's approach scale (the
+    /// other terms read the observer's, [`Blow::skill`]).
     pub other_skill: f32,
 }
 
@@ -353,7 +356,12 @@ pub struct Swing {
     /// Body action. 5 to 7 are one side, 8 to 10 the other, 11 and 12 thrusts.
     pub action: i32,
     pub phase: f32,
+    /// The head look's yaw: the arc edges are built from it. Exarust does
+    /// not run the head tracker on characters yet, so callers pass the
+    /// body heading.
     pub heading: f32,
+    /// The body's facing yaw, published as the arc's look (20° more with a
+    /// held weapon).
     pub facing: f32,
     /// The class word has a side-weapon bit.
     pub armed: bool,
@@ -569,6 +577,127 @@ pub fn score_place(distance_cm: f32, spot: Spot) -> PlaceScore {
         strike,
         danger,
         approach,
+    }
+}
+
+/// The other fighter's measured origin for the position score.
+///
+/// The original measures the candidate from a point on the other body, not
+/// the body's own position: a moving body leans from its chest along its
+/// heading by 70 ticks of its speed (times one less its phase while
+/// attacking), a stepping body moves toward its step target by half its
+/// own combat skill and then 10 cm ahead, and a standing body 10 cm ahead. For an earlier score against the same
+/// point, the node offset is added; Exarust keeps one world frame, so it is
+/// zero. Down or dead, the body itself.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Origin {
+    /// The other's body position (cm).
+    pub body_cm: Vec3,
+    /// Its chest point (cm).
+    pub chest_cm: Vec3,
+    /// Its body heading (unit).
+    pub forward: Vec3,
+    /// Its locomotion speed along its heading (cm a tick).
+    pub speed_cm: f32,
+    /// Its condition word.
+    pub condition: u32,
+    /// Its locomotion is active.
+    pub locomotion: bool,
+    /// Its step is running.
+    pub stepping: bool,
+    /// Its step target (cm).
+    pub step_goal_cm: Vec3,
+    /// Its body is in the attack state.
+    pub attacking: bool,
+    /// Its attack phase.
+    pub phase: f32,
+    /// Its own combat skill (the scored combatant's, not the observer's).
+    pub skill: f32,
+}
+
+/// The down/dead condition bits.
+const DOWN_OR_DEAD: u32 = 0xa00;
+/// The lean along the heading, in ticks of the body's speed.
+const LEAN_TICKS: f32 = 70.0;
+/// The standing body's offset ahead of its position (cm).
+const AHEAD_CM: f32 = 10.0;
+
+/// The point the position score measures the other fighter from.
+pub fn measured_origin(o: Origin) -> Vec3 {
+    let ahead = |p: Vec3| p + o.forward * AHEAD_CM;
+    if o.condition & DOWN_OR_DEAD != 0 {
+        return o.body_cm;
+    }
+    if o.locomotion {
+        let lean = o.speed_cm * LEAN_TICKS;
+        let lean = if o.attacking {
+            (1.0 - o.phase) * lean
+        } else {
+            lean
+        };
+        return o.chest_cm + o.forward * lean;
+    }
+    if o.stepping {
+        let t = o.skill * 0.5;
+        let body = o.body_cm + (o.step_goal_cm - o.body_cm) * t;
+        return ahead(body);
+    }
+    ahead(o.body_cm)
+}
+
+/// One place's score and the geometry the original records beside it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Place {
+    /// The four distance terms.
+    pub score: PlaceScore,
+    /// One less the candidate's flat cosine off the observer's heading.
+    pub ahead: f32,
+    /// The bearing of the origin as seen from the place: the yaw of the
+    /// candidate from the origin, turned half a turn (in double precision).
+    pub bearing: f32,
+    /// The flat distance from the origin (cm).
+    pub distance_cm: f32,
+}
+
+/// Score a place against the other fighter from the measured origin.
+///
+/// The distance, the candidate's bearing from the origin and the candidate
+/// off the observer's heading are all measured per place; the bearing feeds
+/// the danger terms and the heading term scales the approach when the
+/// observer is not attacking.
+pub fn score_place_at(
+    place_cm: Vec3,
+    origin_cm: Vec3,
+    heading: Vec3,
+    other_forward: Vec3,
+    spot: Spot,
+) -> Place {
+    let dx = place_cm.x - origin_cm.x;
+    let dz = place_cm.z - origin_cm.z;
+    let distance = (dx * dx + dz * dz).sqrt();
+    let yaw = crate::combatant::atan2_xz(dx, dz);
+    let bearing = if yaw < 0.0 {
+        (f64::from(yaw) + std::f64::consts::PI) as f32
+    } else {
+        (f64::from(yaw) - std::f64::consts::PI) as f32
+    };
+    let cosine = (dx * heading.x + dz * heading.z) / distance;
+    let other_cosine = (dx * other_forward.x + dz * other_forward.z) / distance;
+    let ahead = 1.0 - cosine;
+    let spot = Spot {
+        observer_ahead: cosine,
+        other_ahead: other_cosine,
+        blow: Blow {
+            angle: yaw,
+            ..spot.blow
+        },
+        ..spot
+    };
+    Place {
+        score: score_place(distance, spot),
+        ahead,
+        bearing,
+        distance_cm: distance,
     }
 }
 
@@ -848,6 +977,33 @@ mod tests {
     }
 
     #[test]
+    fn the_published_look_is_the_facing_turned_by_a_held_weapon() {
+        let base = Swing {
+            heading: 0.0,
+            facing: 0.5,
+            ..swing(11, 0.5)
+        };
+        // A thrust publishes the body's facing as its look, not the head
+        // look its edges come from.
+        let arc = publish_arc(base);
+        assert_eq!(arc.kind, 3);
+        assert_eq!(arc.look.to_bits(), 0.5f32.to_bits());
+        let held = publish_arc(Swing { held: true, ..base });
+        let turned = f32::from_bits((0.5f32 + crate::place::DEG * 20.0).to_bits());
+        assert_eq!(held.look.to_bits(), turned.to_bits());
+        // Outside a swing the look is the facing too, not the heading.
+        let idle = publish_arc(Swing {
+            action: 0,
+            idle_stamp: 2,
+            idle_clock: 1,
+            ..base
+        });
+        assert_eq!(idle.kind, 4);
+        assert_eq!(idle.look.to_bits(), 0.5f32.to_bits());
+        assert_eq!(idle.start.to_bits(), 0.0f32.to_bits());
+    }
+
+    #[test]
     fn a_facing_scales_the_place_and_an_idle_stamp_recovers() {
         let mut spot = fight(false, false);
         spot.in_attack = false;
@@ -923,6 +1079,86 @@ mod tests {
         assert_eq!(beyond.approach.to_bits(), 0x3f40_0000);
         spot.blow.origin_in_arc = false;
         assert_eq!(score_place(200.0, spot).approach.to_bits(), 0x3ec0_0000);
+    }
+
+    #[test]
+    fn the_origin_leans_from_the_chest_and_holds_ahead() {
+        let body = Vec3::new(0.0, 0.0, 0.0);
+        let chest = Vec3::new(0.0, 0.0, 100.0);
+        let forward = Vec3::new(1.0, 0.0, 0.0);
+        let base = Origin {
+            body_cm: body,
+            chest_cm: chest,
+            forward,
+            speed_cm: 2.0,
+            condition: 0,
+            locomotion: false,
+            stepping: false,
+            step_goal_cm: Vec3::ZERO,
+            attacking: false,
+            phase: 0.0,
+            skill: 0.5,
+        };
+        // Standing: 10 cm ahead of the body.
+        assert_eq!(measured_origin(base), Vec3::new(10.0, 0.0, 0.0));
+        // Moving at 2 cm a tick: the chest leaned 70 ticks of it along the
+        // heading.
+        let moving = Origin {
+            locomotion: true,
+            ..base
+        };
+        assert_eq!(measured_origin(moving), Vec3::new(140.0, 0.0, 100.0));
+        // Attacking: the lean is scaled by 1 − phase.
+        let swinging = Origin {
+            attacking: true,
+            phase: 0.25,
+            ..moving
+        };
+        assert_eq!(measured_origin(swinging), Vec3::new(105.0, 0.0, 100.0));
+        // Stepping: a quarter (half its own skill) of the way to the goal,
+        // then 10 cm ahead.
+        let stepping = Origin {
+            step_goal_cm: Vec3::new(100.0, 0.0, 0.0),
+            forward: Vec3::Z,
+            ..base
+        };
+        assert_eq!(
+            measured_origin(Origin {
+                stepping: true,
+                ..stepping
+            }),
+            Vec3::new(25.0, 0.0, 10.0)
+        );
+        // Down or dead: the body itself.
+        let down = Origin {
+            condition: 0x200,
+            ..moving
+        };
+        assert_eq!(measured_origin(down), body);
+    }
+
+    #[test]
+    fn a_place_is_measured_from_the_origin_with_its_own_bearing() {
+        let origin = Vec3::ZERO;
+        let heading = Vec3::Z;
+        let spot = fight(false, false);
+        let ahead = score_place_at(Vec3::new(0.0, 0.0, 100.0), origin, heading, Vec3::Z, spot);
+        assert_eq!(ahead.distance_cm, 100.0);
+        // The yaw of the candidate is 0; the recorded bearing is it minus
+        // pi, the bearing of the origin from the place.
+        assert_eq!(ahead.bearing, -std::f32::consts::PI);
+        assert_eq!(ahead.ahead, 0.0);
+        assert_eq!(ahead.score.close, 3.0);
+        assert_eq!(ahead.score.strike, 1.0);
+        // Behind the heading the facing term is 2; the yaw is the float pi,
+        // so the double turn leaves the float gap from pi.
+        let behind = score_place_at(Vec3::new(0.0, 0.0, -100.0), origin, heading, Vec3::Z, spot);
+        assert_eq!(behind.ahead, 2.0);
+        assert_eq!(
+            behind.bearing,
+            (f64::from(std::f32::consts::PI) - std::f64::consts::PI) as f32
+        );
+        assert_eq!(behind.score.close, 3.0);
     }
 
     #[test]

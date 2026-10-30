@@ -108,6 +108,7 @@ look's wide pan waits 3 s and the sway and narrow pan 0.5 s.
 | `motion` | the AI's look and body motion: the head look toward a point (a quarter turn, 0.02 easing), the whole-look smoothing (`(0.0062831854·gap + sway)·0.7`, a 30° write threshold), the idle look (0.1 of the gap, 1 % pitch), the out-of-combat look chain (the body look toward the head offset, the 0.4/0.64 smoothing and the gait helper's 30° write, with the stepping, live-target and combat cases), the step/combat walk (the 0.7/0.007 facing threshold, the 150 cm goal hold, the run and sprint flags), the walk stop (8·crouch + 20), the steer line (120 cm, 3600 cm²), the way share, the body in the way (each body shifted 20 cm along the walk direction, skipping the remembered and carried bodies), the alert pan (both draws every tick, one in 300 and 75, the body turned by the sway with a foe), the out-of-combat sway, and the aim, settle and snap |
 | `rooms` | the 600 cm room cell grid (the floored, half-offset flat index, the per-cell occupant lists, the old-cell memory and the cell's nearby characters) and the level's side of it: the cell-to-room table, a room's exits at the cell centres behind its door links with shut doors from the room tracker, a room's reference point, and the sight test (the room reach test) |
 | `lifecycle` | the script-object factory, the scripted action hook, the removal/destroy/disable hooks, the idle return, the investigation of a disturbance, the idle driver's state machine (turn, plan a room, walk, test the exit, use the object, plan home, search the room) with its exit/use/object checks and room walk (every unvisited exit weighed, the previous cell included; going back clears the avoided exits; the first avoided exit sets its marker), the go-to-object state, and the object goal |
+| `estimate` | the fighting estimate from a record's skills and combat skill, the held weapon's stat bytes and reach, and the body scale |
 | `combatant` | the behaviour base: contacts, perception, the ally-class races' sense (the 3 concern floor, attitude 100 for a fellow AI, the 1200/1800 cm range, the threat to an ally weighed by the observed state, 0.3 of it as the concern target, the observed body's in-combat mark weighing 0.25 over 0.1; run by the perception pass for every AI race outside class `0x12xx`), the attitude and trust overrides, concern, references, the queued step, the nav footprint |
 | `combat` | the combat state: the follow check, practice, the foe estimate, setting a target (fresh, committed, stuck cleared, the estimate on the foe, the flat bearing and its aim), the weapon draw and the lunge, the chase count and eagerness, the footwork drives, the seventeen-place search, the attack decision with the friend test and the keep-off, the step, the guard, the fierce stance and the body turn |
 | `contacts` | the contact classifier (the stress flight, the engagement threshold, the concern flight, the watch and the notice score), the twelve-contact list, the per-tick contact integration (the hostility drift from the perceived attitude, the concern rising toward its target, the noticed level following the sighting, the attention, the bad-route marks, the aggregates and the readiness), the target pass (the scripted focus, the visible and nearby lists, the sleeper's waking, the clean-up, the alarm mean, the encounter and the greeting, the round-robin dialogue refresh), the nearby list (sixteen nearest seen within 30 m, by squared distance) |
@@ -265,7 +266,8 @@ struck rating and mark a blow leaves on the attacker, its alert level, its
 queued combat step and its nav footprint.
 
 `perceive` is one character looking at another; it writes the observer's
-contact for it. An invisible character is skipped. The distance ignores
+contact for it. A character that cannot be perceived (an unseen power or a
+body leaving the scene) is skipped. The distance ignores
 vertical offsets under 150 cm. The contact stays tracked inside 1200 cm
 (halved while asleep; a hidden character's radius is cut by
 `1 − 0.9·(1 − v)` and its inner radius by `1 − 0.8·(1 − v)` in double
@@ -280,9 +282,11 @@ The view weight is `0.25·((1 − look·u)/2)² + 0.75·(1 − fwd·u)/2`. For a
 character neither dead nor asleep the attitude is blended halfway toward
 the best trusted third party the other likes, and the threat is estimated
 from the other's contacts: each third party's weight (its closeness and
-the other's view of it; 32 while the other attacks, 2 down, 16 or 8 in or
-out of combat) to the eighth power, the share of trust against the
-observer's own blended attitude, the largest term, the observer's own and
+the other's view of it; 32 while the other attacks, 2 down, otherwise 16
+or 8 by the other's locomotion flag — 16 with its body movement bit 2 —
+or, not moving, by its in-combat mark) raised through the eighth power,
+the share of trust against the observer's own blended attitude, the
+largest term, the observer's own and
 the worst crowd term; it raises the concern target of the observer's
 contacts with threatened third parties, sets the quick-swing event for a
 mid-swing attack with a threat over 16 and concern over 1, quadruples the
@@ -303,9 +307,12 @@ point is put 8·speed + 20 cm straight ahead) are the carry and move
 clamps; `Movement`'s two clear routines drop the queued step and set the
 body's movement bits; `foot_cell` and `stamp_footprint` are the 30 cm nav
 footprint (rounded to even, the fallback cell on the offending axis, the
-once-per-run overflow log). `take_hit` lowers courage on a clean hit and
-marks the attacker once; `forget` (the last contact takes the slot),
-`replace` and `reset` clear or remap references.
+once-per-run overflow log). `take_hit` lowers courage on a clean hit (the
+factor is built in single precision and applied in double) and marks the
+attacker once; `forget` (the last contact takes the slot), `replace` and
+`reset` clear or remap references, and `remove_from_scene` clears the
+removed body's grid flags, resets it and has every combatant in the scene
+forget it.
 
 `place` is the combat position score against one opponent: the close band
 at its reach plus 150 cm, the strike ideal at the observer's reach plus a
@@ -316,9 +323,19 @@ approach term peaking at the strike ideal, the recovering, never-arriving
 and thrust scales of the approach, the observer's heading and attack state,
 the press flag on the opponent's facing, and the observer's feral and
 skill scales, with the original's double-precision steps.
-`publish_arc` is the opponent's published sector and its recovering kind;
-`blow_is_live` its is-attacking test; `between` the original's arc test;
-`arrival_ms` its time to impact. `choose_footwork` (Exarust's reduction of
+`publish_arc` is the opponent's published sector and its recovering kind,
+its edges built from the head look's yaw (the body heading while
+characters do not run the head tracker) and its look from the body's
+facing (turned 20° while a weapon is held), replaced by the arc midpoint
+on a side swing; `blow_is_live`
+its is-attacking test; `between` the original's arc test; `arrival_ms` its
+time to impact. `Origin` and `measured_origin` are the point the score
+measures a place from: 10 cm ahead standing, the chest leaned 70 ticks of
+the body's speed along the heading (times one less its phase while
+attacking), or toward a step target by half the opponent's own skill and
+then 10 cm ahead; `score_place_at` scores one place
+with its own distance, bearing and heading term, and the duellist feeds
+each place's candidate angle to the danger terms. `choose_footwork` (Exarust's reduction of
 the original combat state's candidate search) turns the terms into hold,
 approach, retreat or a circle out of a live swing, and the duellist runs
 the chosen footwork (a short hold timer stands in for the switching cost)
@@ -326,6 +343,17 @@ before it takes its stance and strikes. A duellist with a brain is perceived
 by the AI tick (with the target's own contacts and the relations' trust);
 the practice opponent, which has none, perceives its target through
 `perceive` with the role database's attitude when it is loaded.
+
+The duellist publishes its fighting values when it enters combat
+(`estimate`): two plus 0.4 a skill level (in double precision) plus 0.02
+per combat skill, plus
+with a held weapon 0.02 of its impact, thrust, slash, crush and pierce
+hundredths times its reach, then plus 2 above a body scale of 1.3 or a
+quarter below. The experience system keeps the one implementation; the
+record's skill and combat-skill part is kept on the brain when its record
+is applied, and the held weapon's raw stat bytes, reach and the body scale
+are added at the entry. The weapon record keeps its section's raw stat
+bytes for rules that read bytes.
 
 Not yet: the encounter scripts, the mind
 power calls the pass and a hit make, the full candidate footwork

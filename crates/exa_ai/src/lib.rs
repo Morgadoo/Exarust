@@ -35,6 +35,7 @@ pub mod combat;
 pub mod combatant;
 pub mod contacts;
 pub mod entity;
+pub mod estimate;
 pub mod fight;
 pub mod flee;
 pub mod golem;
@@ -294,6 +295,8 @@ fn motion_of(attacking: Option<&Attacking>, stance: Stance) -> i32 {
 struct DuelField<'a> {
     foe: Vec3,
     heading: Vec3,
+    /// The foe's body facing (unit).
+    foe_forward: Vec3,
     spot: place::Spot,
     /// The level's navigation grid, the installed pathfinder (none: the
     /// abstract one).
@@ -355,27 +358,19 @@ impl combat::Field for DuelField<'_> {
         ends
     }
     fn score(&mut self, _contact: usize, level: i32, point: Vec3) -> combat::PlaceScore {
-        let to = self.foe - point;
-        let d = (to.x * to.x + to.z * to.z).sqrt();
         let spot = place::Spot {
             fight: level == 3,
             ..self.spot
         };
-        let s = place::score_place(d, spot);
-        let away = point - self.foe;
-        let ahead = if d > 0.0 {
-            1.0 - (away.x * self.heading.x + away.z * self.heading.z) / d
-        } else {
-            1.0
-        };
+        let p = place::score_place_at(point, self.foe, self.heading, self.foe_forward, spot);
         combat::PlaceScore {
-            close: s.close,
-            danger: s.danger,
-            approach: s.approach,
-            strike: s.strike,
-            bearing: combat::yaw(to),
-            distance_cm: d,
-            ahead,
+            close: p.score.close,
+            danger: p.score.danger,
+            approach: p.score.approach,
+            strike: p.score.strike,
+            bearing: p.bearing,
+            distance_cm: p.distance_cm,
+            ahead: p.ahead,
         }
     }
     fn powers(&mut self) -> Option<&mut dyn cast::Powers> {
@@ -613,7 +608,18 @@ fn duellist(
             );
             combatant.in_combat = true;
             combatant.clear_combat_step(gt.translation() * 100.0, t.rotation * Vec3::Z, 0.0);
-            combatant.refresh_fighting(0.0, reach_of(entity, &blades) * 100.0);
+            // Publish the fighting values: the experience system's estimate
+            // from the record's skills and combat skill, the held weapon's
+            // stat bytes and reach, and the body's scale, and the body's
+            // reach.
+            let reach_cm = reach_of(entity, &blades) * 100.0;
+            let base = brains.get(entity).map_or(0.0, |brain| brain.fighting_base);
+            let weapon = attacker
+                .primary_record(entity, blades.iter())
+                .map(|record| (&record.stats, reach_cm));
+            let rating =
+                crate::estimate::fighting_estimate_with_base(base, weapon, fighter.stats.scale);
+            combatant.refresh_fighting(rating, reach_cm);
             stance::set_stance(&mut stance, &mut anim, Stance::Defence);
             info!(
                 "duellist {entity:?} enters combat: {:?} at tick {}",
@@ -638,8 +644,11 @@ fn duellist(
         // One perception pass on the target (the combatant's), then the
         // published arc the position score reads.
         let target_condition = target_body.map(|(c, ..)| *c).unwrap_or(Condition::NORMAL);
-        let target_fighter = target_body.map(|(_, _, _, f, ..)| f);
+        let target_fighter = target_body.map(|(_, _, _, f, _, _)| f);
         let target_anim = target_body.and_then(|(_, _, _, _, a, _)| a);
+        let target_locomotor = target_body.and_then(|(_, _, _, _, _, l)| l);
+        let target_moving = target_locomotor.is_some_and(|l| l.amount != 0.0);
+        let target_speed_cm = target_locomotor.map_or(0.0, |l| l.speed);
         let phase = target_anim
             .zip(motions.as_deref())
             .and_then(|(a, m)| m.clip(a, &a.action).map(|c| a.clip_progress(c)))
@@ -650,12 +659,13 @@ fn duellist(
             look: target_forward,
             forward: target_forward,
             condition: target_condition.0,
-            invisible: false,
+            gone: false,
             hidden: target_warded,
             mask: None,
             asleep: false,
             removed: false,
             phase,
+            locomotion: target_moving,
             in_combat: target_condition != Condition::NORMAL,
             stepping: false,
             poised: false,
@@ -794,6 +804,31 @@ fn duellist(
             strikers: attack::held_strikers(entity, blades.iter()),
         };
         let ready = attack::execute(attack::Request::default(), busy).is_some();
+        // The foe's own combat skill: a brain's personality, else 0 (the
+        // player's behaviour skill is not modelled) [Exarust's default].
+        let foe_skill = brains
+            .get(ai.target)
+            .ok()
+            .and_then(|b| b.personality)
+            .map_or(0.0, |p| p.skill);
+        // The position score measures the foe from a point on its body,
+        // not its body's own position: ahead of it standing, out from its
+        // chest by 70 ticks of its speed while it moves. The duellist's
+        // target's step flag is not exposed here, so the stepping branch is
+        // not taken [guess: only its locomotion amount is read].
+        let foe_origin = place::measured_origin(place::Origin {
+            body_cm: target.translation() * CM,
+            chest_cm: foe_chest,
+            forward: target_forward,
+            speed_cm: target_speed_cm,
+            condition: target_condition.0,
+            locomotion: target_moving,
+            stepping: false,
+            step_goal_cm: foe_chest,
+            attacking: target_condition == Condition::ATTACKING,
+            phase,
+            skill: foe_skill,
+        });
         let foe = combat::Foe {
             condition: target_condition.0,
             dead: target_condition.is_dead(),
@@ -827,7 +862,7 @@ fn duellist(
             other_ahead: target_forward.dot(dir_to_me),
             in_attack: *condition == Condition::ATTACKING,
             presses: false,
-            other_skill: 0.0,
+            other_skill: foe_skill,
         };
         // The AI tick, before its state: a cast whose body is not casting
         // 500 ms after it began is let go (64-bit compare). A duellist runs
@@ -935,8 +970,9 @@ fn duellist(
                 ..
             } = &mut *ai;
             let mut field = DuelField {
-                foe: foe_chest,
+                foe: foe_origin,
                 heading: me.heading,
+                foe_forward: target_forward,
                 spot,
                 grid: nav.as_deref(),
                 chase: nav.as_deref().map(|grid| DuelChase {

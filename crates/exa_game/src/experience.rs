@@ -24,7 +24,7 @@
 //! on the arena's lesson, which adds a lump to the trained skill.
 
 use exa_formats::characters::{Power, SKILLS, Skill, TECHNIQUE_SLOTS};
-use exa_formats::weapon_stats::{StatBytes, at};
+use exa_formats::weapon_stats::StatBytes;
 
 /// Skill experience in one level.
 pub const LEVEL_STEP: u16 = 5000;
@@ -88,12 +88,12 @@ pub const ARMOUR_SKILL: usize = 2;
 
 /// A skill word's level.
 pub fn level(points: u16) -> u32 {
-    u32::from(points) / u32::from(LEVEL_STEP)
+    exa_ai::estimate::skill_level(points)
 }
 
 /// The six skills' levels summed.
 pub fn total_levels(skills: &[Skill; SKILLS]) -> i32 {
-    skills.iter().map(|s| level(s.points) as i32).sum()
+    exa_ai::estimate::total_levels(skills)
 }
 
 /// The skill being trained: the first under level 5 whose technique at its
@@ -216,30 +216,7 @@ pub fn fighting_estimate(
     weapon: Option<(&StatBytes, f32)>,
     scale: f32,
 ) -> f32 {
-    let levels = total_levels(skills);
-    let base = (f64::from(levels) * 0.4 + f64::from(2.0f32)) as f32;
-    let mut estimate = (f64::from(combat_skill) * 0.02 + f64::from(base)) as f32;
-    if let Some((stats, reach)) = weapon {
-        let mut sum = 0.0f32;
-        for (index, byte) in [at::IMPACT, at::SLASH, at::CRUSH, at::PIERCE, at::THRUST]
-            .into_iter()
-            .enumerate()
-        {
-            let part = f64::from(stats.get(byte)) * 0.01;
-            sum = if index == 0 {
-                part as f32
-            } else {
-                (part + f64::from(sum)) as f32
-            };
-        }
-        let weighted = sum * reach;
-        estimate = (f64::from(weighted) * 0.02 + f64::from(estimate)) as f32;
-    }
-    if f64::from(scale) > 1.3 {
-        estimate + 2.0
-    } else {
-        estimate * 0.25
-    }
+    exa_ai::estimate::fighting_estimate(skills, combat_skill, weapon, scale)
 }
 
 /// Someone who learns from discovery: the player or a companion.
