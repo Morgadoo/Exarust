@@ -100,6 +100,23 @@ pub struct SceneEnvRuntime {
     pub library: Rng,
     /// The frame values last written to the renderer's resources.
     pub published: Option<Frame>,
+    /// Frames run since the level loaded.
+    pub frames: u32,
+    /// A debug aid (`EXA_LIGHTNING_FRAME=<n>`): from this frame on, a
+    /// lightning strike is forced whenever none is running, so every frame
+    /// after it is inside a strike and a capture always shows one.
+    pub force_strike_at: Option<u32>,
+}
+
+/// The forced strike's offset from the view, centimetres: 316 cm out, the
+/// distance the lightning tests use (an attenuation of about 0.877).
+pub const FORCED_STRIKE_OFFSET: [f32; 3] = [300.0, -100.0, 0.0];
+
+/// The frame `EXA_LIGHTNING_FRAME` asks a strike at, if any.
+fn forced_strike_frame() -> Option<u32> {
+    std::env::var("EXA_LIGHTNING_FRAME")
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
 }
 
 impl SceneEnvRuntime {
@@ -110,6 +127,8 @@ impl SceneEnvRuntime {
             weather: WeatherRng::new(seed),
             library: Rng::new(seed),
             published: None,
+            frames: 0,
+            force_strike_at: forced_strike_frame(),
         }
     }
 }
@@ -504,11 +523,26 @@ fn live_environment(
         weather,
         library,
         published,
+        frames,
+        force_strike_at,
     } = &mut *runtime;
     env.view = view;
     let mut draws = || library.unit();
+    if force_strike_at.is_some_and(|at| *frames >= at) && !env.weather.lightning.active {
+        env.strike_lightning(FORCED_STRIKE_OFFSET, view, now, weather, &mut draws);
+        info!("EXA_LIGHTNING_FRAME: strike forced at frame {frames} ({now} ms)");
+    }
     env.tick(now, weather, &mut draws);
     let frame = env.apply_frame(forward);
+    if force_strike_at.is_some() && (frame.lightning > 0.0 || env.weather.lightning.active) {
+        info!(
+            "lightning frame {frames}: intensity {:.4}, clear {:?}, fog {:?}",
+            frame.lightning,
+            frame.background,
+            frame.fog.map(|f| (f.colour, f.near, f.far))
+        );
+    }
+    *frames = frames.saturating_add(1);
     if published.as_ref() == Some(&frame) {
         return;
     }
@@ -593,7 +627,7 @@ fn fog_cameras(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scene_env::{SceneEnvironment, WeatherRng};
+    use crate::scene_env::{LIGHTNING_FOG, SceneEnvironment, WeatherRng};
 
     #[test]
     fn presets_by_level() {
@@ -732,11 +766,11 @@ mod tests {
 
     /// The live frame republishes the load's lighting unchanged: the same
     /// sun (in lux, its unit direction and colour), the same ambient before
-    /// the ×16, the same fog and clear colour. Only a lightning flash moves
-    /// the fog and the clear, and nothing moves the sun or the ambient.
+    /// the ×16, the same fog and clear colour. Only a lightning strike moves
+    /// the fog's colour; nothing moves the clear, the sun or the ambient.
     #[test]
     fn the_live_frames_republish_the_load_s_lighting() {
-        let mut flashes = 0;
+        let mut strikes = 0;
         for seed in 1..=64u32 {
             let input = PresetInput {
                 seed,
@@ -768,18 +802,21 @@ mod tests {
                 assert!(close(s.colour, sun.colour), "seed {seed}");
                 assert!(close(s.towards, sun.towards), "seed {seed}");
                 assert!((s.towards.length() - 1.0).abs() < 1e-6);
-                if frame.flash {
-                    flashes += 1;
+                // A strike never clears black: the clear and the fog's
+                // reach stay the load's.
+                assert!(!frame.flash, "seed {seed}");
+                assert!(close(live.background, load.background), "seed {seed}");
+                let (a, b) = (live.fog.unwrap(), load.fog.unwrap());
+                assert!((a.near - b.near).abs() < 1e-4 && (a.far - b.far).abs() < 1e-3);
+                if env.weather.lightning.active {
+                    strikes += 1;
                     continue;
                 }
-                let (a, b) = (live.fog.unwrap(), load.fog.unwrap());
                 assert!(close(a.colour, b.colour), "seed {seed}");
-                assert!((a.near - b.near).abs() < 1e-4 && (a.far - b.far).abs() < 1e-3);
-                assert!(close(live.background, load.background), "seed {seed}");
             }
         }
-        // Flashes are rare enough not to hide the check above.
-        assert!(flashes < 64 * 600 / 10);
+        // Strikes are rare enough not to hide the check above.
+        assert!(strikes < 64 * 600 / 10);
         // A level lit by its record's sun keeps the sky-less 3 units.
         let env = Environment {
             sun_mode: SunMode::On,
@@ -800,6 +837,70 @@ mod tests {
         let mut runtime = SceneEnvRuntime::new(scene.env, 1);
         let frame = runtime.env.apply_frame([0.0, 0.0, 1.0]);
         assert!(republished(&runtime.env, &frame).sun.is_none());
+    }
+
+    /// A strike in an outdoor arena brightens the fog towards the lightning
+    /// blue by I / (I + 2) · 3 along its flicker and leaves the clear, the
+    /// fog's reach, the sun and the ambient as they loaded; once it ends the
+    /// fog colour is the record's again.
+    #[test]
+    fn a_strike_brightens_the_fog_and_never_clears_black() {
+        let input = PresetInput {
+            seed: 1,
+            engine_seed: 7,
+            now: 0,
+        };
+        let scene = level_lighting_scene("arenao3", None, 0, None, Some(input));
+        let load = scene.lighting.clone();
+        let mut runtime = SceneEnvRuntime::new(scene.env, 1);
+        let SceneEnvRuntime {
+            env,
+            weather,
+            library,
+            ..
+        } = &mut runtime;
+        let record = env.record_fog;
+        let mut draws = || library.unit();
+        env.strike_lightning(FORCED_STRIKE_OFFSET, None, 1_000, weather, &mut draws);
+        let attenuation = env.weather.lightning.attenuation;
+        // 316.23 cm out: (1 − 316.23 · 0.0002)² = 0.877 5.
+        assert!((attenuation - 0.877_5).abs() < 1e-4, "{attenuation}");
+        let end = env.weather.next_strike;
+        let mut brightest = 0.0f32;
+        let mut now = 1_000;
+        while env.weather.lightning.active {
+            now += 16;
+            env.tick(now, weather, &mut draws);
+            let frame = env.apply_frame([0.0, -0.7, -0.7]);
+            let live = republished(env, &frame);
+            assert!(!frame.flash);
+            assert!(close(live.background, load.background));
+            assert!(close(live.ambient, load.ambient));
+            let (sun, s) = (live.sun.unwrap(), load.sun.unwrap());
+            assert_eq!(sun.illuminance, s.illuminance);
+            assert!(close(sun.colour, s.colour));
+            let fog = frame.fog.unwrap();
+            let lf = load.fog.unwrap();
+            assert!((fog.near - lf.near).abs() < 1e-4 && (fog.far - lf.far).abs() < 1e-3);
+            if env.weather.lightning.active {
+                let i = frame.lightning;
+                assert_eq!(i, env.weather.lightning.intensity);
+                let t = (i / (i + 2.0)) * 3.0;
+                for (c, blue) in LIGHTNING_FOG.iter().enumerate() {
+                    let want = record[c] + blue * t;
+                    assert!((fog.colour[c] - want).abs() < 1e-6, "{c}: {fog:?}");
+                }
+                brightest = brightest.max(i);
+            } else {
+                // The strike ended this tick: the record's colour again.
+                assert_eq!(frame.lightning, 0.0);
+                assert!(close(Vec3::from_array(fog.colour), lf.colour));
+            }
+            assert!(now < 10_000, "the strike ends");
+        }
+        // The flicker lit the fog, and the strike ended when it was due.
+        assert!(brightest > 0.1, "{brightest}");
+        assert!(now > end && now <= end + 16);
     }
 
     #[test]
