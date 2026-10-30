@@ -731,9 +731,10 @@ fn the_constructor_constants() {
     assert_eq!(sim.environments, 5);
 }
 
-/// A scene of its own appends a sector per sector node, each taking the
-/// node's children as pending nodes; a shared scene reuses the first one
-/// without replacing its node and adds the children to it.
+/// A scene of its own appends a sector per sector node and hands back the
+/// node's children for immediate registration; a shared scene reuses the
+/// first sector for every node of the batch, keeps its scene word and node,
+/// and queues the children as pending.
 #[test]
 fn a_simulation_adds_or_reuses_scene_sectors() {
     let mut sim = Simulation::new(
@@ -745,19 +746,20 @@ fn a_simulation_adds_or_reuses_scene_sectors() {
     );
     assert_eq!(
         sim.add_sector_nodes(4, &[(10, vec![7, 8]), (11, vec![9])], false),
-        2
+        [7, 8, 9]
     );
     assert_eq!(sim.sectors.len(), 2);
     assert_eq!(sim.sectors[0].scene, 4);
     assert_eq!(sim.sectors[0].node, Some(10));
     assert!(sim.sectors[0].uses_grid);
-    assert_eq!(sim.sectors[0].pending, [7, 8]);
-    assert_eq!(sim.sectors[1].pending, [9]);
-    assert_eq!(sim.add_sector_nodes(9, &[(20, vec![30])], true), 1);
+    assert!(sim.sectors[0].pending.is_empty());
+    assert_eq!(sim.sectors[0].flags & sector::PENDING, 0);
+    let shared = sim.add_sector_nodes(9, &[(20, vec![30]), (21, vec![31, 32])], true);
+    assert!(shared.is_empty());
     assert_eq!(sim.sectors.len(), 2);
-    assert_eq!(sim.sectors[0].scene, 9);
-    // A shared scene keeps the first sector's node and appends the batch's
-    // children behind the ones already waiting.
+    assert_eq!(sim.sectors[0].scene, 4);
     assert_eq!(sim.sectors[0].node, Some(10));
-    assert_eq!(sim.sectors[0].pending, [7, 8, 30]);
+    assert_eq!(sim.sectors[0].pending, [30, 31, 32]);
+    assert_ne!(sim.sectors[0].flags & sector::PENDING, 0);
+    assert!(sim.sectors[1].pending.is_empty());
 }

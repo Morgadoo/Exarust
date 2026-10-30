@@ -1349,58 +1349,59 @@ impl Simulation {
         }
     }
 
-    /// Creates the simulation's sector for a scene (the original's
-    /// sector-creation slot) and registers the scene node's children in it.
-    /// A scene of its own appends a sector with the scene's node and, while
-    /// the sector has no bodies, gives it the node's children as pending
-    /// static nodes; every new sector uses the simulation's grids. A shared
-    /// scene reuses the first sector: it only takes the scene word and the
-    /// children (the original does not replace the sector's node), and the
-    /// scene's node-add hook points at that sector.
+    /// Creates the simulation's sector for a scene node (the original's
+    /// sector-creation slot) and hands it the node's children.
+    ///
+    /// A scene of its own appends a sector with the node and, while that
+    /// sector holds no static nodes yet, returns the node's `children` for
+    /// the caller to register at once (the original registers each child's
+    /// subtree immediately, not through the pending list); every new sector
+    /// uses the simulation's grids. A shared scene reuses the first sector
+    /// and leaves its scene word and node as they are: the children are
+    /// appended to its pending list (registered by the next update) and
+    /// nothing is returned for immediate registration. The original also
+    /// points the node's add hook at that sector and can reuse a simulation
+    /// object the node already carries; neither is modelled here.
     pub fn add_sector(
         &mut self,
         scene: u32,
         node: Option<usize>,
         children: &[usize],
         shared: bool,
-    ) -> usize {
+    ) -> (usize, Vec<usize>) {
         if shared && let Some(first) = self.sectors.first_mut() {
-            first.scene = scene;
             first.add_nodes(children);
-            return 0;
+            return (0, Vec::new());
         }
         let mut sector = Sector::new(scene);
         sector.node = node;
         sector.uses_grid = true;
-        if sector.bodies.is_empty() && !children.is_empty() {
-            sector.add_nodes(children);
-        }
+        let register = if sector.nodes.is_empty() {
+            children.to_vec()
+        } else {
+            Vec::new()
+        };
         self.sectors.push(sector);
-        self.sectors.len() - 1
+        (self.sectors.len() - 1, register)
     }
 
-    /// The scene's node-added hook: a batch of sector nodes becomes sectors
-    /// (one when the scene is shared), each taking its own children; the
-    /// batch's other nodes are left to the caller's hook. Returns how many
-    /// sectors now stand for the batch.
+    /// The scene's node-added hook for a batch of sector nodes: every node
+    /// in the batch goes through [`Self::add_sector`] in order, shared or
+    /// not (the original tests only the first node's class; the caller
+    /// passes the batch once that test holds). Returns the children to
+    /// register at once, in order.
     pub fn add_sector_nodes(
         &mut self,
         scene: u32,
         sectors: &[(usize, Vec<usize>)],
         shared: bool,
-    ) -> usize {
-        if shared {
-            let (node, children) = sectors
-                .first()
-                .map(|(node, children)| (Some(*node), children.as_slice()))
-                .unwrap_or((None, &[]));
-            self.add_sector(scene, node, children, true);
-            return 1;
-        }
+    ) -> Vec<usize> {
+        let mut register = Vec::new();
         for (node, children) in sectors {
-            self.add_sector(scene, Some(*node), children, false);
+            let (_, now) = self.add_sector(scene, Some(*node), children, shared);
+            register.extend(now);
         }
-        sectors.len()
+        register
     }
 
     /// Adds a body to the watch list, last.
