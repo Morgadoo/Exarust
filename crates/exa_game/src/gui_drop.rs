@@ -19,9 +19,11 @@
 //! put where the cursor's ray meets the level (or the placement limit's
 //! height, [`item_cursor::place_point`]), takes the drag's condition word,
 //! leaves the pack (the panel's entry and the record's), and the word ends
-//! at [`player_controls::SPAWN_DONE`]. Once its body exists the hand begins
-//! the lift on it (`hand::lift_gui_drops`), so the item rides the cursor
-//! until the button that dragged it is let go.
+//! at [`player_controls::SPAWN_DONE`]. The spawned node carries the record's
+//! template word, usable and container sections and mechanism records, as a
+//! level-placed object does (`exa_world::dropped_object`); once its body
+//! exists the hand begins the lift on it (`hand::lift_gui_drops`), so the
+//! item rides the cursor until the button that dragged it is let go.
 //!
 //! The debug flag `--gui-drop ID@FRAME` gives the player's pack the item
 //! and queues its drop at that frame after the load, as a drag out of the
@@ -257,12 +259,14 @@ pub struct DropAssets<'w> {
 }
 
 /// Runs the drops queued on the previous frame (see the module notes).
+#[allow(clippy::too_many_arguments)]
 pub fn run_gui_drops(
     mut commands: Commands,
     mut items: ResMut<ItemCursor>,
     mut drop: ResMut<GuiDrop>,
     mut screens: ResMut<GameScreens>,
     mut assets: DropAssets,
+    mut records: Option<ResMut<crate::doll_view::DollItems>>,
     place: DropPlace,
     mut players: Query<&mut Possessions, With<PlayerBody>>,
 ) {
@@ -375,6 +379,29 @@ pub fn run_gui_drops(
                         copy_frame,
                     },
                 ));
+                // The spawned record carries what a placed object does:
+                // its template word, its usable and container sections and
+                // its mechanism records, from the object database record
+                // the drag named. The catalogue record stands in when the
+                // database has none.
+                let object = exa_world::dropped_object(task.item, condition);
+                if let Some(records) = records.as_deref_mut() {
+                    records.ensure(assets.game.as_deref());
+                    if let Some(record) = records.get(task.item) {
+                        commands.entity(root).insert((
+                            exa_world::PlacedItem::of(record, &object),
+                            exa_world::markers::PlacedTemplate(record.parent),
+                        ));
+                        if let Some(sections) = exa_world::ObjectSections::of(record, &object) {
+                            commands.entity(root).insert(sections);
+                        }
+                        if let Some(mechanisms) =
+                            exa_world::mechanisms::MechanismRecords::of(task.item, record)
+                        {
+                            commands.entity(root).insert(mechanisms);
+                        }
+                    }
+                }
                 drop.word = end_word;
                 // The item leaves the pack: the panel's entry and the
                 // record's carried entry.

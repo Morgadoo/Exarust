@@ -654,9 +654,13 @@ taken by the controls (`exa_game::gui_drop`): the drop task is queued and
 runs on the next frame (`player_controls::run_spawn`). The item's model is
 built with its rigid bodies; with none it is the original's "Game object
 has no physics" error and the drag is cancelled. Otherwise it is put where
-the cursor's ray meets the level, leaves the pack, and once its body exists
-the hand lifts it onto the item cursor until the button is let go. An
-entry held in a hand is not taken.
+the cursor's ray meets the level (or the far placement limit's height),
+leaves the pack, and once its body exists the hand lifts it onto the item
+cursor until the button is let go. The spawned node carries the record's
+template word, usable and container sections and mechanism records, as a
+level-placed object does (`exa_world::dropped_object`). An entry held in a
+hand is not taken, and neither is one dropped while the point under the
+cursor is out of reach.
 
 The start of play makes the AI's activation centre the player with a 40 m
 radius; the end of play puts it back at the origin with 200 m
@@ -827,8 +831,8 @@ puts it into the scene and lifts it; an entry with no body is the
 "Game object has no physics" content error and spawns nothing. Both are
 rules with no inventory window to originate them: Exarust's inventory form
 has no item panel. A GUI drag (an item or object payload `0xFB01`/`0xFB02`)
-is the controls' while no dialogue is open, the movement request is free
-and no drop is queued; an item already held makes it busy
+is the controls' while no dialogue is open, the point under the cursor is
+in reach and no drop is queued; an item already held makes it busy
 (`item_cursor::claim_drag`).
 
 Each frame of a drag the grabbed point is let go once it is farther than

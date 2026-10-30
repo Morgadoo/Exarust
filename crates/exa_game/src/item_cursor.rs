@@ -298,6 +298,41 @@ pub struct SphereHit {
     pub contact: f32,
 }
 
+/// The sweep's per-sphere pull-back (cm), one per sphere, as the original
+/// computes it before a sphere is swept: with `world` the scene's world
+/// point, `up` its support axis and `offset` its plane constant, the plane
+/// term is `world·up − offset − frame.position·world`, the frame term is
+/// `frame.rotation · world`, and a sphere whose `plane + radius − centre·frame`
+/// is under zero (an ordered compare; a NaN is not) is pulled back by that
+/// gap over `world·dir`. A gap at or over zero pulls back nothing. [The
+/// runtime sweeps rapier's level colliders, which expose no support plane, so
+/// this correction is a tested rule without a caller.]
+pub fn support_corrections(
+    world: Vec3,
+    up: Vec3,
+    offset: f32,
+    frame: Frame,
+    dir: Vec3,
+    spheres: &[SweepSphere],
+) -> Vec<f32> {
+    let plane = (world.x * up.x + world.y * up.y + world.z * up.z)
+        - offset
+        - (frame.position.x * world.x + frame.position.y * world.y + frame.position.z * world.z);
+    let in_frame = frame.rotation * world;
+    let denominator = world.x * dir.x + world.y * dir.y + world.z * dir.z;
+    let inverse = 1.0 / denominator;
+    spheres
+        .iter()
+        .map(|sphere| {
+            let gap = plane + sphere.radius
+                - (sphere.centre.x * in_frame.x
+                    + sphere.centre.y * in_frame.y
+                    + sphere.centre.z * in_frame.z);
+            if gap < 0.0 { gap * inverse } else { 0.0 }
+        })
+        .collect()
+}
+
 /// The first contact of every collision sphere of every part of the dragged
 /// item, in part and sphere order: `sweep` takes the part, the sphere's
 /// centre, the unit direction, the reach and the radius (all m) and gives
@@ -944,6 +979,45 @@ mod tests {
         assert_eq!(drag_hit([999.9]), Some(999.9));
         assert_eq!(drag_hit([f32::NAN, 5.0]), Some(5.0));
         assert_eq!(drag_hit([]), None);
+    }
+
+    /// The per-sphere pull-back: a sphere below the support plane is moved
+    /// up by the ordered gap over the world/direction dot; one at or above
+    /// it, and a NaN gap, is not moved.
+    #[test]
+    fn the_sphere_support_correction() {
+        let frame = Frame::default();
+        let world = Vec3::Y;
+        let up = Vec3::Y;
+        let dir = Vec3::NEG_Y;
+        let spheres = [
+            SweepSphere {
+                centre: Vec3::ZERO,
+                radius: 0.5,
+            },
+            SweepSphere {
+                centre: Vec3::new(0.0, 2.0, 0.0),
+                radius: 0.5,
+            },
+            SweepSphere {
+                centre: Vec3::new(0.0, 2.0, 0.0),
+                radius: f32::NAN,
+            },
+        ];
+        // The plane term is 1: the first sphere's gap is 1 + 0.5 − 1 = 0.5
+        // and is not under; the second's is 1 + 0.5 − 2 = −0.5, pulled back
+        // by −0.5 / −1 = 0.5 cm; the third's NaN is not under either.
+        assert_eq!(
+            support_corrections(world, up, 0.0, frame, dir, &spheres),
+            vec![0.0, 0.5, 0.0]
+        );
+        // A turned frame makes the frame term the transformed world point.
+        let turned = Frame::new(
+            Vec3::ZERO,
+            Mat3::from_rotation_z(std::f32::consts::FRAC_PI_2),
+        );
+        let corrections = support_corrections(world, up, 0.0, turned, dir, &spheres);
+        assert_eq!(corrections[0], 0.0);
     }
 
     /// The first contact starts at the 1000 cm reach, keeps only a strictly
