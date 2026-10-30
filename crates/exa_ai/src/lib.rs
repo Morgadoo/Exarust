@@ -367,10 +367,7 @@ impl combat::Field for DuelField<'_> {
         ends
     }
     fn score(&mut self, _contact: usize, level: i32, point: Vec3) -> combat::PlaceScore {
-        let spot = place::Spot {
-            fight: level == 3,
-            ..self.spot
-        };
+        let spot = place::Spot { level, ..self.spot };
         let p = place::score_place_at(point, self.foe, self.heading, self.foe_forward, spot);
         combat::PlaceScore {
             close: p.score.close,
@@ -863,7 +860,9 @@ fn duellist(
             my_step_cm: fighter.stats.step_reach(fighter.stats.encumbrance) * CM,
             other_large: target_fighter.is_some_and(|f| f.stats.rules.has(1)),
             melee: false,
-            fight: true,
+            // The duellist runs the combat state against one foe, which it
+            // always engages at the fight level.
+            level: 3,
             feral: fighter.stats.feral,
             dull: fighter.stats.rules.has(4),
             blow: place::Blow {
