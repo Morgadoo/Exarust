@@ -81,17 +81,11 @@ pub const SHADER_KEY_MASK: u32 = 0x0043_CB7F;
 
 /// The plug-in mask of each material type: the record bits the material
 /// factory takes.
-pub const PLUGIN_MASKS: [u32; 5] = [
-    0x01FE_001F,
-    0x09FE_031F,
-    0x0040_0018,
-    0x09FE_001F,
-    0x09FE_001F,
-];
+pub const PLUGIN_MASKS: [u32; 5] = crate::material_state::BUILTIN_MASKS;
 
 /// The program class each material type's plug-in starts the shader word
 /// with.
-pub const PLUGIN_CLASSES: [u32; 5] = [0, 1, 2, 3, 6];
+pub const PLUGIN_CLASSES: [u32; 5] = crate::material_state::BUILTIN_CLASSES;
 
 /// The five surface programs of the material shader set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

@@ -196,6 +196,39 @@ pub fn builder_gloss(material: &Material) -> f32 {
     }
 }
 
+/// The blend class each built-in type starts from, derived from
+/// [`BUILTIN_TYPES`] so the table and the program classes cannot drift.
+pub const BUILTIN_MASKS: [u32; 5] = [
+    BUILTIN_TYPES[0].mask,
+    BUILTIN_TYPES[1].mask,
+    BUILTIN_TYPES[2].mask,
+    BUILTIN_TYPES[3].mask,
+    BUILTIN_TYPES[4].mask,
+];
+pub const BUILTIN_CLASSES: [u32; 5] = [
+    BUILTIN_TYPES[0].base,
+    BUILTIN_TYPES[1].base,
+    BUILTIN_TYPES[2].base,
+    BUILTIN_TYPES[3].base,
+    BUILTIN_TYPES[4].base,
+];
+
+/// The loader's transparency flag (`0x290`): a record in refraction mode
+/// (loaded flags `0x300` = `0x200`) is translucent; otherwise one whose
+/// opacity is above 0.8 in double precision and whose loaded class is not
+/// the opaque nibble 1 is. The record's no-shadow flag (extra bit 2) clears
+/// it. NaN opacity is unordered: the compare falls through to translucent.
+/// The flag is computed before the late opaque rewrite, so it uses the
+/// class the alpha-test rewrite left ([`crate::shader_program::loaded_class`]).
+pub fn draws_translucent(material: &Material) -> bool {
+    if material.extra & 0x4 != 0 {
+        return false;
+    }
+    let flags = crate::shader_program::loaded_flags(material);
+    let class = crate::shader_program::loaded_class(material);
+    flags & 0x300 == 0x200 || ((material.opacity as f64) > 0.8 && class & 0xF != 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,5 +324,37 @@ mod tests {
         m.kind = 1;
         assert_eq!(builder_gloss(&m), 0.001);
         assert_eq!(builder_diffuse(&m), linear_rgb([0.5, 0.5, 0.5]).to_array());
+    }
+
+    #[test]
+    fn the_loader_flags_a_record_translucent_by_its_class_and_opacity() {
+        let mut m = record(1);
+        m.class = 0x203;
+        m.opacity = 0.9;
+        assert!(draws_translucent(&m));
+        // Below 0.8 is opaque; the compare widens the stored single to
+        // double, so the single 0.8 (0.80000001) is already translucent.
+        m.opacity = 0.79;
+        assert!(!draws_translucent(&m));
+        m.opacity = 0.8;
+        assert!(draws_translucent(&m));
+        // The opaque class nibble 1 is opaque above the bound. (never reached)
+        m.opacity = 0.9;
+        m.class = 0x201;
+        assert!(!draws_translucent(&m));
+        // Refraction mode is always translucent.
+        m.class = 0x201;
+        m.flags = 0x200;
+        assert!(draws_translucent(&m));
+        // The no-shadow extra bit clears it last.
+        m.extra = 0x4;
+        assert!(!draws_translucent(&m));
+        m.extra = 0;
+        // A NaN opacity takes the unordered branch, which is opaque, as
+        // the original's JP goes to the clear.
+        m.flags = 0;
+        m.class = 0x203;
+        m.opacity = f32::NAN;
+        assert!(!draws_translucent(&m));
     }
 }

@@ -150,7 +150,7 @@ shape texel), draw box, program names, quad and shared uniforms, the three linke
 - `material`: the original's surface material, its programs and the
   `set_texture_bias` pass that a texture-quality change runs over every
   loaded material (the original sets the LOD bias on each bind).
-- `material_state`: the default material factory's type table (five built-ins, the reset and plug-in registration), its factory list (priority-ordered, every matching record called), the normal-map predicate, and the loader's diffuse scale order and gloss floor that `exa_assets` uses.
+- `material_state`: the default material factory's type table (five built-ins, the reset and plug-in registration; its masks and program classes are the ones `shader_program` uses, so the two cannot drift), its factory list (priority-ordered, every matching record called), the normal-map predicate, the loader's diffuse scale order, gloss floor and shared diffuse/specular colour slot, and the loader's transparency flag (refraction mode, or opacity above 0.8 in double with an opaque class not of nibble 1, cleared by the no-shadow bit); `exa_assets` uses the diffuse and gloss rules, the flag is a tested model (the draw path uses the blend word).
 - `smoke`: the original's `shadesmk_f` smoke and mist program
   (`shadesmk.wesl`, line for line without its fog and dither), its `UVOfst`
   scroll, state key and program cache, and the per-pass sub-view draw count

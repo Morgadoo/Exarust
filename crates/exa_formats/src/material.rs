@@ -430,6 +430,22 @@ impl Material {
         r * r + g * g + b * b > 0.0
     }
 
+    /// The colour the material loader keeps in the shared colour slot: the
+    /// specular colour times its level plus the diffuse colour, each channel
+    /// in single precision in that order. A legacy (type 0) record's diffuse
+    /// is already scaled by 1.5, as [`crate::material`]'s loader rule has
+    /// it. The original keeps this slot beside the unscaled specular copy and
+    /// the scaled one; the surface builder reads it for the record's
+    /// combined diffuse-and-reflection colour.
+    pub fn shared_colour(&self) -> [f32; 3] {
+        let scale = if self.kind & 0xFF == 0 { 1.5 } else { 1.0 };
+        [
+            self.specular[0] * self.specular_level + self.diffuse[0] * scale,
+            self.specular[1] * self.specular_level + self.diffuse[1] * scale,
+            self.specular[2] * self.specular_level + self.diffuse[2] * scale,
+        ]
+    }
+
     /// What a rigid body's stored mobility is divided by when the body is
     /// registered: the physical divisor, 1 when it is stored as 0 (as the
     /// original's material loader does).
@@ -783,5 +799,25 @@ mod tests {
         assert_eq!(m.mobility_divisor(), 1.0);
         assert_eq!(DEFAULT_MATERIAL_NAME, "_Default");
         assert_eq!(DEFAULT_MATERIAL_REFERENCES, 0x3FFF_FFFF);
+    }
+
+    #[test]
+    fn the_shared_colour_is_specular_level_plus_diffuse() {
+        let mut m = Material {
+            diffuse: [0.1, 0.2, 0.3, 1.0],
+            specular: [1.0, 2.0, 4.0, 0.0],
+            specular_level: 0.5,
+            kind: 1,
+            ..Default::default()
+        };
+        assert_eq!(m.shared_colour(), [0.6, 1.2, 2.3]);
+        // A legacy record scales the diffuse by 1.5 first.
+        m.kind = 0;
+        assert_eq!(m.shared_colour(), [0.65, 1.3, 2.45]);
+        // The sums are single precision, in the original's order.
+        m.diffuse = [0.3, 0.0, 0.0, 1.0];
+        m.specular = [0.1, 0.0, 0.0, 0.0];
+        m.specular_level = 3.0;
+        assert_eq!(m.shared_colour()[0], 0.1f32 * 3.0 + 0.3f32 * 1.5);
     }
 }
