@@ -558,27 +558,64 @@ pub fn model_marks(flags: u32) -> ModelMarks {
     }
 }
 
+/// The job a model attach leaves for the next step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AttachJob {
+    /// A weapon hands over to the take-in job, which lights the part,
+    /// aims the swing, restarts the stance and runs a finaliser.
+    #[default]
+    TakeIn,
+    /// A shield hands over to the node finaliser, which takes the node
+    /// out and refreshes the body.
+    NodeFinal,
+}
+
 /// What taking a weapon's model into a hand does before the take-in job
-/// runs: an item flagged `0x2000000` lights its held part, and a body with
-/// no weapon class bits has its weapon part cleared first.
+/// runs: an item flagged `0x2000000` lights its held part, an apparel
+/// item's textures are rebuilt (`0x100`), a body with no weapon class bits
+/// has its weapon part cleared first, and the job is the take-in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct WeaponAttach {
     pub lit: bool,
+    pub rebuilds_apparel: bool,
     pub clears_part: bool,
+    pub job: AttachJob,
 }
 
-/// The weapon model's marks and the body's part reset.
-pub fn weapon_attach(flags: u32, class: u32) -> WeaponAttach {
+/// The weapon model's marks, the body's part reset and its job.
+pub fn weapon_attach(flags: u32, class: u32, apparel: bool) -> WeaponAttach {
     WeaponAttach {
         lit: flags & LIT != 0,
+        rebuilds_apparel: apparel,
         clears_part: class & 0x30 == 0,
+        job: AttachJob::TakeIn,
     }
 }
 
 /// What a shield's model does: the body's weapon part is cleared the same
-/// way, and a shield never lights.
-pub fn shield_attach(class: u32) -> bool {
-    class & 0x30 == 0
+/// way, the node finaliser follows, and a shield neither lights nor
+/// rebuilds the apparel.
+pub fn shield_attach(class: u32) -> WeaponAttach {
+    WeaponAttach {
+        lit: false,
+        rebuilds_apparel: false,
+        clears_part: class & 0x30 == 0,
+        job: AttachJob::NodeFinal,
+    }
+}
+
+/// The take-in job's gate: it runs only for an item whose record flags
+/// carry `0x2000000` and whose part carries `0x10000`. Any other item
+/// leaves the job without touching the hand.
+pub fn take_in_runs(item_flags: u32, part_flags: u32) -> bool {
+    item_flags & LIT != 0 && part_flags & 0x1_0000 != 0
+}
+
+/// The take-out a drag off the figure leaves behind: it exists only while
+/// the hand's model slot is filled, and is armed so the off hand's weapon
+/// or light is promoted into the main hand.
+pub fn scheduled_take_out(hand_filled: bool, hand: usize) -> Option<TakeOut> {
+    (hand_filled && hand < 2).then(|| TakeOut::scheduled(hand))
 }
 
 /// What attaching a node's item does when the job is over: the node leaves
@@ -1190,24 +1227,52 @@ mod tests {
     #[test]
     fn the_model_attach_and_the_node_finaliser() {
         assert_eq!(
-            weapon_attach(0x0200_0000, 0x10),
+            weapon_attach(0x0200_0000, 0x10, false),
             WeaponAttach {
                 lit: true,
-                clears_part: false
+                rebuilds_apparel: false,
+                clears_part: false,
+                job: AttachJob::TakeIn
             }
         );
         assert_eq!(
-            weapon_attach(0, 0x80),
+            weapon_attach(0, 0x80, true),
             WeaponAttach {
                 lit: false,
-                clears_part: true
+                rebuilds_apparel: true,
+                clears_part: true,
+                job: AttachJob::TakeIn
             }
         );
-        assert!(!shield_attach(0x20));
-        assert!(shield_attach(0));
+        // A shield never lights or rebuilds the apparel, and hands over to
+        // the node finaliser whatever the class word says.
+        assert_eq!(shield_attach(0x20).job, AttachJob::NodeFinal);
+        assert!(!shield_attach(0x20).lit && !shield_attach(0x20).rebuilds_apparel);
+        assert!(!shield_attach(0x20).clears_part);
+        assert!(shield_attach(0).clears_part);
         let finaliser = node_final(7, true);
         assert!(finaliser.detach_node && finaliser.refresh_body && finaliser.restart);
         assert!(!node_final(0, false).refresh_body);
         assert!(!node_final(0, true).restart);
+    }
+
+    #[test]
+    fn a_take_in_needs_both_marks_and_a_scheduled_take_out_needs_a_model() {
+        // The take-in job runs for a lit item whose part reports itself
+        // loaded; either mark missing leaves the hand alone.
+        assert!(take_in_runs(0x0200_0000, 0x1_0000));
+        assert!(!take_in_runs(0, 0x1_0000));
+        assert!(!take_in_runs(0x0200_0000, 0));
+        assert!(!take_in_runs(0x0200_0000, 0xFFFF));
+        // A drag off the figure can only take out a hand that holds a
+        // model, and the job is the armed one for that hand.
+        assert_eq!(scheduled_take_out(false, 0), None);
+        assert_eq!(scheduled_take_out(true, 0), Some(TakeOut::scheduled(0)));
+        assert_eq!(scheduled_take_out(true, 1), Some(TakeOut::scheduled(1)));
+        assert_eq!(scheduled_take_out(true, 2), None);
+        let armed = scheduled_take_out(true, 1).unwrap();
+        assert_eq!(armed.mode, 7);
+        assert_eq!(armed.instead, None);
+        assert!(armed.record && armed.scheduled);
     }
 }
