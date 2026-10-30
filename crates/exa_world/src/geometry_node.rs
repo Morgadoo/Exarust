@@ -39,6 +39,8 @@ pub const EXTERNAL_DRAW: u32 = 0x0008_0000;
 pub const HAS_BOUNDS: u32 = 0x0002_0000;
 /// The node word's bit that selects the 0.5/1 alpha threshold.
 pub const THRESHOLD_FULL: u32 = 0x0800_0000;
+/// The smallest non-zero squared bound the activation marks as present.
+pub const BOUND_EPSILON: f32 = 1.192_089_98e-7;
 /// The node word's class word the activation clears (`0x30000`).
 pub const NODE_CLASS_MASK: u32 = 0x0003_0000;
 /// The node word's per-part shadow flag.
@@ -200,22 +202,17 @@ impl GeometryState {
         }
     }
 
-    /// Activation: derives the shadow scales, clears the node's class bits and
-    /// resets the part bounds. The caller supplies each part's
-    /// [`PartFlags`].
-    pub fn activate(&mut self, parts: &[PartFlags]) {
+    /// Activation: derives the shadow scales, clears the node's class bits
+    /// and takes the parts' maximum bound. The caller supplies each part's
+    /// [`PartFlags`] and the bound the parts' materials give.
+    pub fn activate(&mut self, parts: &[PartFlags], bounds: [f32; 3]) {
         self.shadow = shadow_scales(self.option);
         self.word &= !NODE_CLASS_MASK;
         self.option |= 0x10;
-        self.bounds = [0.0; 3];
+        self.bounds = bounds;
         self.parts = parts.to_vec();
-        let mut any_cast = false;
-        for part in &self.parts {
-            if part.casts {
-                any_cast = true;
-            }
-        }
-        if any_cast {
+        let any_cast = self.parts.iter().any(|part| part.casts);
+        if any_cast && self.word & EXTERNAL_DRAW == 0 {
             self.word |= SHADOW_PART;
         }
         self.fade = if self.word & THRESHOLD_FULL != 0 {
@@ -223,6 +220,9 @@ impl GeometryState {
         } else {
             DEFAULT_THRESHOLD
         };
+        if self.word & EXTERNAL_DRAW == 0 && self.has_bounds() {
+            self.word |= HAS_BOUNDS;
+        }
     }
 
     /// Sets the raw part flags, as activation does before the per-part
@@ -330,9 +330,20 @@ mod tests {
         assert_eq!((g.emissive, g.fade), (1.0, 1.0));
         assert_eq!(g.threshold, 0.5);
         g.option = 3 << 16;
-        g.activate(&[]);
+        g.activate(&[], [0.0; 3]);
         assert_eq!(g.shadow, shadow_scales(3 << 16));
         assert_eq!(g.option & 0x10, 0x10);
+        // A casting part sets the node's shadow bit unless the node is
+        // external; a non-zero bound sets the bounds bit.
+        let cast = PartFlags::of(0x3, 0, 0, 1.0, true, 0);
+        g.word = 0;
+        g.activate(&[cast], [0.2, 0.0, 0.0]);
+        assert_eq!(g.word & SHADOW_PART, SHADOW_PART);
+        assert_eq!(g.word & HAS_BOUNDS, HAS_BOUNDS);
+        g.word = EXTERNAL_DRAW;
+        g.activate(&[cast], [0.2, 0.0, 0.0]);
+        assert_eq!(g.word & SHADOW_PART, 0);
+        assert_eq!(g.word & HAS_BOUNDS, 0);
     }
 
     #[test]
