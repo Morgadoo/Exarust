@@ -514,9 +514,10 @@ impl FrameDriver {
             self.clock = self.frame;
         }
         // The original widens the zero-extended difference to a signed
-        // 64-bit word and then to double.
+        // 64-bit word, divides in double, subtracts in double and narrows
+        // once.
         let behind = u64::from(self.clock).wrapping_sub(u64::from(self.frame)) as i64;
-        let into = 1.0 - (behind as f64 / f64::from(TICK_MS)) as f32;
+        let into = (1.0 - behind as f64 / f64::from(TICK_MS)) as f32;
         (ran, into)
     }
 }
@@ -1367,6 +1368,8 @@ mod tests {
         let (ran, t) = driver.step(10);
         assert_eq!((ran, driver.clock), (1, 17));
         assert!((t - (1.0 - 7.0 / 17.0)).abs() < 1e-6, "{t}");
+        // The subtraction is double and the narrowing happens once.
+        assert_eq!(t.to_bits(), ((1.0f64 - 7.0 / 17.0) as f32).to_bits());
         // The next frame at 17 ms runs no tick and is all the way in.
         let (ran, t) = driver.step(17);
         assert_eq!((ran, driver.clock), (0, 17));
