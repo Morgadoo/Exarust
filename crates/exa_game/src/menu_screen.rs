@@ -27,7 +27,7 @@ use exa_ui::gui_text::{MenuFont, menu_font_scale};
 use exa_ui::icon_atlas::IconQuad;
 use exa_ui::menu::{
     CLICK_SOUND, MENU_SOUND_GAIN, MENU_TITLE_INK, MENU_TITLE_TEXTURE, SELECT_SOUND, back_main_menu,
-    menu_row_scale, menu_sound_pitch, title_place,
+    menu_row_scale, menu_sound_pitch, select_main_menu, title_place,
 };
 use exa_ui::skin::{SkinBatch, SkinInk};
 
@@ -414,14 +414,11 @@ fn input(
         return;
     }
     let now = time.elapsed().as_millis() as u32;
-    let mut cue = |menu: &mut MenuScreen, roll: &mut MenuSoundRoll, cue: MenuCue| {
+    let mut cue = |roll: &mut MenuSoundRoll, cue: MenuCue| {
         sounds.write(MenuSound {
             cue,
             pitch: menu_sound_pitch(roll.roll()),
         });
-        if cue == MenuCue::Select {
-            menu.sound_stamp = now;
-        }
     };
     if keys.just_pressed(KeyCode::Escape) {
         if !menu.back() {
@@ -437,7 +434,7 @@ fn input(
     }
     if keys.just_pressed(KeyCode::Enter) {
         let row = menu.selected + 1;
-        cue(&mut menu, &mut roll, MenuCue::Click);
+        cue(&mut roll, MenuCue::Click);
         run(&mut menu, row, &mut exit, &mut choices);
         return;
     }
@@ -481,17 +478,19 @@ fn input(
         (hit.form == Some(router.form) && hit.control > 0).then_some(hit.control as usize - 1)
     };
     // The pointer selects the row under it; while a press is held only
-    // the pressed row can be selected. A new selection plays the select
-    // cue at most once per 200 units.
+    // the pressed row can be selected. The select rule stores the row and
+    // plays the cue at most once per 200 units.
     if let Some(row) = hit_row
         && menu.selected != row
         && menu.pressed.is_none_or(|pressed| pressed == row)
     {
-        menu.selected = row;
-        menu.dirty = true;
-        if now.wrapping_sub(menu.sound_stamp) > 200 {
-            cue(&mut menu, &mut roll, MenuCue::Select);
+        let selected = select_main_menu(row as i32 + 1, menu.sound_stamp as i32, now as i32, true);
+        menu.selected = (selected.index - 1).max(0) as usize;
+        menu.sound_stamp = selected.stamp as u32;
+        if selected.sound {
+            cue(&mut roll, MenuCue::Select);
         }
+        menu.dirty = true;
     }
     if mouse.just_pressed(MouseButton::Left)
         && let Some(row) = hit_row
@@ -499,7 +498,7 @@ fn input(
         menu.selected = row;
         menu.pressed = Some(row);
         menu.dirty = true;
-        cue(&mut menu, &mut roll, MenuCue::Click);
+        cue(&mut roll, MenuCue::Click);
     }
     if mouse.just_released(MouseButton::Left)
         && let Some(pressed) = menu.pressed
