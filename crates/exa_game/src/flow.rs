@@ -1340,6 +1340,12 @@ pub enum Step {
     Transition,
     /// Leave the application (the title's EXIT).
     Quit,
+    /// Write a 4-byte value into the settings store under section 1 (the
+    /// expert-ladder and story-background unlock words).
+    SettingsWrite {
+        key: u32,
+        bytes: [u8; 4],
+    },
     /// The unit's own tables are released at shutdown (the scripted-mode
     /// hook table and the three menu strings).
     Finalise,
@@ -1643,6 +1649,15 @@ pub const STRIPPED: u8 = 2;
 #[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ForfeitMatch;
 
+/// A 4-byte settings entry the flow asks the host to write. The unlock words
+/// live under section 1, as every boot-time entry does.
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SettingsEntry {
+    pub section: u32,
+    pub key: u32,
+    pub bytes: [u8; 4],
+}
+
 /// The steps the flow asked for since the last frame: every producer pushes
 /// here and [`apply_steps`] applies the ones the running app owns.
 #[derive(Resource, Debug, Default)]
@@ -1691,6 +1706,9 @@ pub struct Flow {
     pub story: StoryState,
     pub practice: PracticeState,
     pub unlocks: Unlocks,
+    /// The expert-ladder unlock has already been written to the settings
+    /// store (the original's flag, so a second win does not write it again).
+    pub expert_written: bool,
     /// The story's save slot, when it has one.
     pub slot: Option<u32>,
     /// The story and arena saves exist.
@@ -1741,6 +1759,7 @@ impl Default for Flow {
             },
             practice: PracticeState::default(),
             unlocks: Unlocks::default(),
+            expert_written: false,
             slot: None,
             has_save: [false; 2],
             versus: false,
@@ -1809,6 +1828,9 @@ impl Flow {
             return Vec::new();
         }
         self.booted = true;
+        // The boot's settings read leaves the "expert ladder already
+        // unlocked on disk" flag set when the stored word is not zero.
+        self.expert_written = self.unlocks.expert;
         let mut steps = vec![
             Step::Boot(BootTask::Scripts),
             Step::Boot(BootTask::Window),
@@ -2394,13 +2416,24 @@ impl Flow {
                 self.hook = Hook::None;
                 let menu = end_menu(MENU_WON, self.mode);
                 self.end_menu = Some(menu);
-                // The novice ladder unlocks expert and shows its tip; the
-                // expert ladder shows the other one.
+                // The end menu's own practice branch: the novice ladder shows
+                // tip 5, writes the expert-ladder setting once (a flag keeps
+                // later wins from writing it again) and unlocks the page; the
+                // expert ladder shows tip 6.
                 let mut steps = Vec::new();
                 if self.practice.ladder == Ladder::Novice {
                     steps.push(Step::Tip(5));
-                    if self.mode == Mode::Practice {
+                    if !self.expert_written {
+                        self.expert_written = true;
                         self.unlocks.expert = true;
+                        steps.push(Step::SettingsWrite {
+                            key: EXPERT_UNLOCK_KEY,
+                            bytes: Unlocks {
+                                expert: true,
+                                ..Default::default()
+                            }
+                            .expert_bytes(),
+                        });
                     }
                 } else {
                     steps.push(Step::Tip(6));
@@ -3222,6 +3255,7 @@ impl Plugin for FlowPlugin {
         app.init_resource::<Flow>()
             .init_resource::<FlowSteps>()
             .add_message::<ForfeitMatch>()
+            .add_message::<SettingsEntry>()
             .add_message::<crate::save_live::SaveStep>()
             .init_resource::<GameView>()
             .init_resource::<BootToMenu>()
@@ -3540,6 +3574,7 @@ fn apply_steps(
     mut cameras: Query<&mut crate::player::ChaseCamera>,
     mut changes: MessageWriter<exa_world::level_lifecycle::LevelChangeRequest>,
     mut forfeit: MessageWriter<ForfeitMatch>,
+    mut settings: MessageWriter<SettingsEntry>,
     mut exit: MessageWriter<AppExit>,
     mut saves: MessageWriter<crate::save_live::SaveStep>,
 ) {
@@ -3797,6 +3832,13 @@ fn apply_steps(
             }
             Step::Forfeit => {
                 forfeit.write(ForfeitMatch);
+            }
+            Step::SettingsWrite { key, bytes } => {
+                settings.write(SettingsEntry {
+                    section: SETTINGS_SECTION,
+                    key,
+                    bytes,
+                });
             }
             Step::Quit => {
                 exit.write(AppExit::Success);
@@ -4856,6 +4898,71 @@ mod tests {
             mode: VERSUS_MODE,
             hook: ScriptHook::Enter
         }));
+    }
+
+    #[test]
+    fn a_novice_win_writes_the_expert_unlock_once() {
+        let mut flow = Flow {
+            mode: Mode::Practice,
+            phase: Phase::Playing,
+            practice: PracticeState {
+                ladder: Ladder::Novice,
+                fight: 8,
+                start_ms: 0,
+                next_tip: false,
+            },
+            ..Default::default()
+        };
+        let steps = flow.practice_tick(6000, None, &[DEAD]);
+        // The novice ladder's end: tip 5, the settings word, then the menu.
+        assert!(steps.contains(&Step::Tip(5)));
+        let write = steps
+            .iter()
+            .find(|step| matches!(step, Step::SettingsWrite { .. }))
+            .copied()
+            .expect("the novice win writes the unlock");
+        assert_eq!(
+            write,
+            Step::SettingsWrite {
+                key: EXPERT_UNLOCK_KEY,
+                bytes: [1, 0, 0, 0],
+            }
+        );
+        assert!(flow.unlocks.expert);
+        assert!(flow.expert_written);
+        // A second novice win writes nothing more.
+        flow.phase = Phase::Playing;
+        let again = flow.practice_tick(7000, None, &[DEAD]);
+        assert!(again.contains(&Step::Tip(5)));
+        assert!(
+            !again
+                .iter()
+                .any(|step| matches!(step, Step::SettingsWrite { .. }))
+        );
+        // The expert ladder's end shows tip 6 and writes nothing.
+        let mut expert = Flow {
+            mode: Mode::Practice,
+            phase: Phase::Playing,
+            practice: PracticeState {
+                ladder: Ladder::Expert,
+                fight: 8,
+                start_ms: 0,
+                next_tip: false,
+            },
+            ..Default::default()
+        };
+        let steps = expert.practice_tick(6000, None, &[DEAD]);
+        assert!(steps.contains(&Step::Tip(6)));
+        assert!(
+            !steps
+                .iter()
+                .any(|step| matches!(step, Step::SettingsWrite { .. }))
+        );
+        // A boot whose store already holds the unlock does not write it.
+        let mut stored = Flow::default();
+        stored.unlocks.expert = true;
+        stored.boot();
+        assert!(stored.expert_written);
     }
 
     #[test]
@@ -6051,6 +6158,7 @@ mod tests {
             .init_resource::<GameView>()
             .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
             .add_message::<ForfeitMatch>()
+            .add_message::<SettingsEntry>()
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
             .add_systems(Update, apply_steps);
@@ -6188,6 +6296,7 @@ mod tests {
             .init_resource::<GameView>()
             .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
             .add_message::<ForfeitMatch>()
+            .add_message::<SettingsEntry>()
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
             .add_systems(Update, apply_steps);
@@ -6241,6 +6350,7 @@ mod tests {
             .insert_resource(exa_physics::body::BodyTicks(100))
             .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
             .add_message::<ForfeitMatch>()
+            .add_message::<SettingsEntry>()
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
             .add_systems(Update, apply_steps);

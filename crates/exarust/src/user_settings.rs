@@ -167,6 +167,35 @@ impl UserSettings {
             *saved = Some(self.store.clone());
         }
     }
+
+    /// Writes one 4-byte settings entry and saves the store, as the original's
+    /// settings writer flushes after an unlock word. The saved copy is kept
+    /// for the exit save.
+    pub fn save_entry(&mut self, path: &[u32], bytes: &[u8]) {
+        if self.store.set(path, bytes).is_err() {
+            warn!("cannot store the settings entry {path:?}");
+            return;
+        }
+        self.save_store();
+        if let Ok(mut saved) = self.applied.0.lock() {
+            *saved = Some(self.store.clone());
+        }
+    }
+}
+
+/// Writes the flow's settings entries (the expert-ladder and story-background
+/// unlock words) into the store as they arrive, one flush each.
+pub fn write_flow_settings(
+    mut entries: MessageReader<exa_game::flow::SettingsEntry>,
+    mut user: Option<ResMut<UserSettings>>,
+) {
+    let Some(user) = user.as_mut() else {
+        entries.clear();
+        return;
+    };
+    for entry in entries.read() {
+        user.save_entry(&[entry.section, entry.key], &entry.bytes);
+    }
 }
 
 /// Exarust's user folder.
