@@ -1071,9 +1071,56 @@ the title, and it applies the flow's menu, end-menu, title-logo, interface,
 controls, health and music steps, and a level load or teardown becomes an
 in-process level change. The creator's rows (BEGIN through the
 background picker, the practice rows, NEW CAREER, VERSUS) open the
-creator, whose commit starts the story or practice session; the saves'
-character screen (CONTINUE), the manual and the live save and export
-steps are not wired.
+creator, whose commit starts the story or practice session. The CONTINUE
+rows open the saves' character screen (`exa_game::save_screen`, the
+creation form in its continue mode, screen mode 12), whose CONTINUE loads
+the slot (the story's full load into the running game, or the arena hub
+with that slot); the flow's save, drop and checkpoint steps run on the
+current story slot. The manual and the level export are not wired.
+
+### The saves' character screen
+
+The creation form's constructor in form mode 12 builds the continue table
+(it passes the last index, 10, so eleven records; the seven-record
+creation table is likewise passed index 7): the centred `CONTINUE` title
+(200, 1, 160 wide, style 0x3b00); the slot combo box (class 0x12, 4,
+anchor 0x8009, 228 wide, style 0x8403320, selection word 1); `Previous`
+(4, anchor 0x8007, 76 × 24), `Next` (gap 4, 76 × 24) and `Delete` (gap 8,
+64 × 24), style 0x403320; the `Inventory` (4, anchor 0x8006) and `Journal`
+(4, row 78) captions, 228 wide; a text-less right-aligned caption (8, 1,
+200, style 0x23300); `BACK` (36 from the left, bottom, 160 × 28, style
+0x483300); the image button 0xcc `Continue from checkpoint` (192 from the
+right, bottom, 24 wide, icon 4, style 0x4a0080) and `CONTINUE` (bottom
+right, 160 × 28, style 0x4a3300). Before building it the constructor
+writes, in the story (game mode 4), state 0 on the image button and 16 as
+CONTINUE's x, else 0x110 (hidden) and 32. The item container sits at 4,
+116 (228 × 180) and the journal form at 0, 328 (236 × 320, 260 compact)
+with its one record, the entry combo box `New Entry` (8, 2, 220 wide,
+style 0x8003320, no arrow), and a text box at 4, 40 down to its bottom.
+The delete box (`Delete Character`, 392 × 112, attributes | 0x800 |
+0x8000 | 0x3000) has the question `Are you sure you want to delete `
+(4, 4, 352 wide, style 0x3b00) followed by the name (fifteen bytes) and
+`?`, `Delete` (108, anchor 0x8005, 76 wide) and `Cancel` (gap 8, 76).
+
+The entry scans the manager: none falls back to the free creator;
+otherwise it selects slot 0 with kind 1 directly and the form keeps index
+0 and kind 0. The form's select stores the index, makes kind 0 kind 1,
+asks the manager (availability; on nonzero the character becomes the
+form's record and the kind moves to the file that is there), then the
+refresh writes the record's name (fifteen bytes) as the combo box's text,
+the manager's count and names as its items, state 0x10 on Previous at
+index 0 and on Next at the last index, and the image button's label (`from
+save` with the mirror bit for kind 2, else `from checkpoint`), disabled
+unless the kind is below the availability. Previous and Next step with
+kind 1; the combo box's report selects its item with kind 1 when it is not
+the shown one; the image button swaps the kind when the other file is
+there; Delete opens the box, whose Delete deletes the slot by index, clamps
+the index to the list and selects it again, or returns to the menu when
+the list is empty; BACK returns to the menu; CONTINUE copies the record's
+words and the kind and starts the mode's game (the story's full load with
+that kind, the arena hub's). In the story a save holding `exanima06`, or
+`exanima04` with an old object database, also asks `Do you wish to reset
+all progress after the portal?` (not built in Exarust).
 
 ### The window manager
 

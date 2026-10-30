@@ -684,10 +684,25 @@ writer lays it out, and a retail save read and written back is unchanged.
 Exarust's `#playerdata` carries the mode's header, the journal, the
 story's always-written discovery and global-experience chunks (an old
 save's chunks are kept and reordered, never lost) and its own chunk. It
-has no world to export yet, so a save Exarust writes **from nothing** has
+has no world database to export yet; a save written without a player has
 no character placement: the original's reader would take its first chunk
 (the empty discovery chunk) as the character, fail the record lookup, and
-leave the slot out of its list (without deleting it). A session saved
+leave the slot out of its list (without deleting it). The running game's
+story saves (`exa_game::save_live`) write the player: its record (with its
+live possessions) goes into `#worldchrdb` as world record 1 [Exarust's
+choice of id] and the player data carries the placement exporter's
+placement for it (the reference with bit 30, the body's position with its
+height as the floor, its heading, a living condition, no AI home or pose),
+so the slot is listed under the player's name and a load restores the
+character. The saves' character screen's select
+(`SlotList::character_screen_select`) is the original's: the slot becomes
+current without moving, the availability is 2 for an opening `.rsg` plus 1
+for an opening `.rcp` (the test only opens the file), the `.rsg` is read
+when it is there and asked for (kind 2) or alone, else the `.rcp`, with
+mask `0x100010`; a failed read answers 0. Its CONTINUE passes the form's
+kind to the full load, which reads the `.rsg` first only for kind 2 (the
+form starts at kind 0, so a fresh screen continues from the checkpoint
+when there is one). A session saved
 **over** a retail save of the same mode keeps the save's placement, its
 other sections and the chunks Exarust does not produce, so the original
 still loads it; the Exarust chunk is an id it skips. Exarust lists its own

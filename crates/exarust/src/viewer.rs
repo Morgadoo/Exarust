@@ -317,6 +317,7 @@ fn setup(
                     &options,
                     None,
                     None,
+                    None,
                 );
             }
             return;
@@ -927,6 +928,14 @@ struct PendingCollision {
     since: std::time::Instant,
 }
 
+/// What a new player is made from: the level change's hold, the created
+/// character and a loaded save's player.
+type SpawnSources<'w> = (
+    Option<Res<'w, LevelChangeHold>>,
+    Option<Res<'w, exa_game::creator_screen::CreatedCharacter>>,
+    Option<Res<'w, exa_game::save_live::SavedPlayer>>,
+);
+
 /// Spawns the player and the level's characters once the level's collision
 /// is built (the level root loses its `StaticGeometry`).
 #[allow(clippy::too_many_arguments)]
@@ -952,10 +961,7 @@ fn finish_collision(
         ),
     >,
     mut time: ResMut<Time<Virtual>>,
-    (hold, created): (
-        Option<Res<LevelChangeHold>>,
-        Option<Res<exa_game::creator_screen::CreatedCharacter>>,
-    ),
+    (hold, created, saved): SpawnSources,
 ) {
     if building.contains(pending.root) {
         if pending.since.elapsed() < STAGE_TIMEOUT {
@@ -999,6 +1005,7 @@ fn finish_collision(
         &options,
         existing,
         created.as_ref().and_then(|c| c.0.as_ref()),
+        saved.as_deref(),
     );
 }
 
@@ -1018,8 +1025,12 @@ fn spawn_players(
     options: &Options,
     existing: Option<Entity>,
     created: Option<&CharacterRecord>,
+    saved: Option<&exa_game::save_live::SavedPlayer>,
 ) {
     let (position, yaw) = (start.position, start.yaw);
+    // A loaded save's player is its record: the record the save restored
+    // wins over the creator's.
+    let created = saved.map(|saved| &saved.record).or(created);
     let races = game
         .0
         .pack(PackKind::Resource)
@@ -1181,7 +1192,57 @@ fn spawn_players(
             commands.entity(model).insert(m);
         }
         let feral = options.feral.unwrap_or(0.0);
-        let stats = new_human(feral).with_encumbrance(outfit_encumbrance(&options.outfit));
+        let mut stats = new_human(feral).with_encumbrance(outfit_encumbrance(&options.outfit));
+        if let Some(saved) = saved {
+            // A loaded save's player wears and holds what its record does,
+            // and its stats are its record's.
+            let find = |id: u32| {
+                let id = id & exa_formats::characters::ID_MASK;
+                items.iter().find(|item| item.id == id).or_else(|| {
+                    saved
+                        .items
+                        .iter()
+                        .find(|item| item.id & exa_formats::characters::ID_MASK == id)
+                })
+            };
+            let record = &player_record;
+            let look = exa_world::record_look(record, find);
+            stats = CharacterStats::derive(
+                record,
+                exa_formats::races::of_character(&races, exa_character::HUMAN),
+                Spawn { story, dead: false },
+            )
+            .with_encumbrance(exa_formats::encumbrance::of_record(record, find));
+            info!(
+                "player: the saved character {:?} wears {} items and holds {:?}",
+                record.name,
+                look.worn.len(),
+                look.held.as_ref().map(|(model, _)| model.clone())
+            );
+            commands.entity(model).insert((
+                exa_character::Outfit(
+                    look.worn
+                        .iter()
+                        .map(|worn| exa_character::Garment {
+                            model: worn.model.clone(),
+                            appearance: worn.appearance,
+                            hides: Some(worn.hides),
+                            armour: worn.armour,
+                        })
+                        .collect(),
+                ),
+                exa_character::record::CharacterData::of_record(record.clone()),
+                exa_items::possession::Possessions::of_record(record),
+            ));
+            if options.weapon.is_none()
+                && let Some((model_name, weapon)) = look.held.clone()
+            {
+                commands.entity(model).insert(exa_character::Wielded {
+                    model: model_name,
+                    weapon,
+                });
+            }
+        }
         log_encumbrance("player", &stats);
         if feral != 0.0 {
             info!(
@@ -1495,6 +1556,10 @@ fn apply_player_placement(
     let Some(placement) = placement else {
         return;
     };
+    if players.is_empty() {
+        // A new player (a loaded save's) is still being spawned.
+        return;
+    }
     for (_, mut transform) in &mut players {
         transform.translation = placement.position;
     }

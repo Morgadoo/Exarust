@@ -105,6 +105,10 @@
 //!                                     story at the loaded level, or the arena company when the hub is loaded)
 //!          --arena-slot <n>           with --save-dir: the arena hub, once entered, loads ArenaNNN.rsg as the original's
 //!                                     full load does (tables, shelf regeneration, world clock, player record reset)
+//!          --open-saves story|arena   with --save-dir: once loaded, open the saves' character screen (the menu's
+//!                                     CONTINUE): the slot list, the character, delete, CONTINUE
+//!          --load-slot n[:save|:checkpoint]  with --save-dir: once loaded, open the story saves' screen and CONTINUE
+//!                                     ExanimaNNN from it (the checkpoint first by default)
 //!          --level-change lvl@frame,...  play mode: change level in process at frames after the first load (loading
 //!                                     frames do not count), logging entity, physics-body and asset counts per level
 //!          --debug-wound b,r[,dx,dy,dz]  a test wound on the player's (or the character view's) body part b
@@ -340,6 +344,12 @@ pub struct Options {
     pub save_at: Vec<u32>,
     /// `--arena-slot`: the arena slot the hub loads once entered.
     pub arena_slot: Option<u32>,
+    /// `--open-saves`: the game mode the saves' screen opens for once
+    /// loaded (4 the story, 8 the arena).
+    pub open_saves: Option<i32>,
+    /// `--load-slot`: the story slot continued from the saves' screen, and
+    /// whether its checkpoint is read first.
+    pub load_slot: Option<(u32, bool)>,
     /// Test wounds on the player's or the character view's body.
     pub debug_wounds: Vec<exa_character::blood::DebugWound>,
     /// Test blood jets from the player's or the character view's body.
@@ -839,6 +849,32 @@ fn main() -> AppExit {
                     }
                 }
             }
+            "--open-saves" => {
+                let word = args.next().unwrap_or_default();
+                options.open_saves = match word.as_str() {
+                    "story" => Some(exa_game::save_screen::STORY),
+                    "arena" => Some(exa_game::save_screen::ARENA),
+                    _ => {
+                        eprintln!("--open-saves: story or arena, not {word:?}");
+                        return AppExit::from_code(2);
+                    }
+                };
+            }
+            "--load-slot" => {
+                let text = args.next().unwrap_or_default();
+                let (number, kind) = text
+                    .split_once(':')
+                    .unwrap_or((text.as_str(), "checkpoint"));
+                match (number.parse::<u32>(), kind) {
+                    (Ok(n), "save" | "checkpoint") if (1..=999).contains(&n) => {
+                        options.load_slot = Some((n, kind == "checkpoint"));
+                    }
+                    _ => {
+                        eprintln!("--load-slot: cannot read {text:?} (1-999[:save|:checkpoint])");
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
             "--arena-slot" => {
                 let text = args.next().unwrap_or_default();
                 match text.parse::<u32>() {
@@ -1187,6 +1223,13 @@ fn main() -> AppExit {
         if let Some(number) = options.arena_slot {
             app.insert_resource(exa_game::save_live::ArenaSlotLoad { number });
         }
+        app.insert_resource(exa_game::save_screen::ScriptedSaveScreen {
+            open: options
+                .open_saves
+                .or(options.load_slot.map(|_| exa_game::save_screen::STORY)),
+            load: options.load_slot,
+            done: false,
+        });
     }
     app.insert_resource(options).add_plugins((
         frame_loop::FrameLoopPlugin,
