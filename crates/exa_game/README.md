@@ -452,7 +452,9 @@ the portal particle simulation and the bubble's GI light values is not in.
 The force and environment effects of the same powers are in as plain
 rules: `effects::rain` (4096 drops in a 600 cm box ahead of the camera,
 the gust walk, the fall, the tilt-dependent streak, the ground wrap on the
-effect's own generator, the colour and the two shaders kept as data),
+effect's own generator, the colour and the two shaders kept as data; run
+live with the rain loop, thunder and the outdoor arenas' wind bed by
+`weather`),
 `effects::portal_effect` (one ellipse particle per call, its previous and
 current positions, the 3- and 5-bit look draws), `effects::fire_node`
 (the `_FlameMat01` node's 800 cm 1/0.68/0.43 light), `effects::force_dome`

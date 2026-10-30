@@ -94,6 +94,13 @@ pub fn ambience_for_level(level: &str) -> Option<AmbienceArea> {
 #[derive(Resource, Clone, Debug, Default, PartialEq)]
 pub struct LevelAmbience(pub Option<AmbienceArea>);
 
+/// The bed gain and pitch the arena setup writes over the area's own once
+/// the area is set (the wind bed's `wind² × 0.2` and `0.6 + 0.5 × wind`);
+/// `None` keeps the area's `0.15 × volume` at pitch 1. A level that sets
+/// [`LevelAmbience`] without an override clears this.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
+pub struct LevelAmbienceBed(pub Option<(f32, f32)>);
+
 /// An outdoor arena's ambience, as the original chooses it when the arena's
 /// scene is set up: from the scene's rain, daylight and wind, and the
 /// arena's own silent-day flag.
@@ -127,10 +134,11 @@ pub const WIND_PITCH_BASE: f64 = 0.6;
 /// arena plays the day bed `NtrA` at full volume; otherwise a wind above 0.1
 /// plays `NtrW` at full volume with the bed's gain `wind² × 0.2` and pitch
 /// `0.6 + 0.5 × wind`; a still day stops it. `calm` is the arena's entry in
-/// the original's per-arena table; that table's index comes from the arena
-/// progression, which is not ported, so nothing in the running game calls
-/// this yet. The original applies the rule for arena indices of 7 and up and
-/// clears the ambience below 7; that index test is the caller's.
+/// the original's per-arena table (`exa_game::arena_match::ArenaMap`'s
+/// steady bed); `raining` is the weather's rain target, which the setup
+/// reads right after the scene preset. The original applies the rule for
+/// the outdoor arenas (indices 7 and up) and clears the ambience for the
+/// indoor ones; that index test is the caller's (`exa_game::weather`).
 pub fn arena_ambience(daylight: f32, wind: f32, raining: f32, calm: bool) -> ArenaAmbience {
     // The original compares the single fields against double constants.
     if f64::from(raining) > RAIN_AMBIENCE_LIMIT {
@@ -358,6 +366,7 @@ fn one_shot_direction(x_draw: f32, z_draw: f32) -> (f32, f32) {
 pub(crate) fn set_level_ambience(
     mut env: ResMut<AudioEnvironment>,
     ambience: Option<Res<LevelAmbience>>,
+    bed_override: Option<Res<LevelAmbienceBed>>,
     game: Option<Res<Game>>,
     mut bank: ResMut<SoundBank>,
     mut sources: ResMut<Assets<AudioSource>>,
@@ -366,7 +375,7 @@ pub(crate) fn set_level_ambience(
     let Some(ambience) = ambience else {
         return;
     };
-    if ambience.is_changed() {
+    if ambience.is_changed() || bed_override.as_ref().is_some_and(|b| b.is_changed()) {
         *pending = true;
     }
     if !*pending {
@@ -385,7 +394,11 @@ pub(crate) fn set_level_ambience(
         .load_buffer(&game, &mut sources, &bed_name(&area.name))
         .unwrap_or(0);
     let set = bank.load_set(&game, &mut sources, &set_prefix(&area.name));
-    env.apply_ambience(&mut bank, bed, set, area.volume);
+    let choice = ArenaAmbience {
+        area: Some(area.clone()),
+        bed: bed_override.and_then(|b| b.0),
+    };
+    env.apply_arena_ambience(&mut bank, choice, bed, set);
 }
 
 #[cfg(test)]
@@ -681,5 +694,24 @@ mod tests {
         env.apply_arena_ambience(&mut bank, ArenaAmbience::default(), 0, 0);
         assert!(!env.ambience.installed);
         assert_eq!(env.ambience.bed_voice, None);
+    }
+
+    /// An override replaces the bed's own gain and pitch once the area is
+    /// applied, as the arena setup writes them after setting the area.
+    #[test]
+    fn a_bed_override_follows_the_area() {
+        let mut env = AudioEnvironment::new();
+        let mut bank = SoundBank::default();
+        let bed = bank.insert_test_buffer(1.0, 1000, false);
+        let choice = ArenaAmbience {
+            area: Some(AmbienceArea {
+                name: "NtrW".into(),
+                volume: 1.0,
+            }),
+            bed: Some((0.072, 0.9)),
+        };
+        env.apply_arena_ambience(&mut bank, choice, bed, 0);
+        let voice = env.voice(env.ambience.bed_voice.unwrap()).unwrap();
+        assert_eq!((voice.gain, voice.pitch), (0.072, 0.9));
     }
 }

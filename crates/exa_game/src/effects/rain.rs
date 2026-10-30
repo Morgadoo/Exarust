@@ -20,8 +20,9 @@
 //!   `f·(0.003·r − 0.0015)`; below 0 it rises by `f·0.0015·r` (double
 //!   precision). From it come the fall figure
 //!   `(0.5·gust + 0.9)·intensity + 0.4` and the drift
-//!   `(0.3·gust + 0.15)·intensity²`, which the update stores but nothing in
-//!   this group reads. Each drawn drop's head moves by the drops' move; a
+//!   `(0.3·gust + 0.15)·intensity²`: the scene's weather gives the rain loop
+//!   the fall figure as its pitch and the drift as its volume
+//!   (`crate::weather`). Each drawn drop's head moves by the drops' move; a
 //!   head whose height has its sign bit set goes up by the box's height
 //!   (600 cm) and takes a new x from the effect's own generator word, then
 //!   a new z from the next word (`(w/2³² − 0.5)·300·2`). The tail is the
@@ -29,18 +30,25 @@
 //!   `y` the camera's backward axis's height (so a streak lengthens as the
 //!   view tilts up or down); while `f ≤ 30` the streak is
 //!   `1.5·(8·intensity + 8)·(y⁴ + 0.2)` cm long.
-//! - **Colour** ([`Rain::colour`]): the environment's colour times 2.2, times
-//!   `0.075·intensity + 0.075` (or `0.03·intensity + 0.03` with the bright
-//!   setting), over 255; its alpha `(0.5·intensity + 0.5)·(|y| + 0.5)`. The
-//!   vertex shader multiplies the drop's colour bytes by it and fades a
-//!   drop by `(0.6 − 0.000667·|p − eye|)⁴`; the fragment shader adds it to
-//!   the frame buffer behind the streak and that colour's bright pass.
+//! - **Colour** ([`Rain::colour`]): the environment's colour (the scene's
+//!   scratch colour) times 2.2, times `0.075·intensity + 0.075` (or
+//!   `0.03·intensity + 0.03` while the game is paused: the test reads the
+//!   global pause counter), over 255; its alpha
+//!   `(0.5·intensity + 0.5)·(|y| + 0.5)`. The vertex shader multiplies the
+//!   drop's colour bytes by it, read as plain numbers (the vertex format
+//!   does not normalise them: 160 for the grey, alpha 0 at the head and 255
+//!   at the tail), and fades a drop by `(0.6 − 0.000667·|p − eye|)⁴`; the
+//!   fragment shader adds it to the frame buffer behind the streak and that
+//!   colour's bright pass, alpha-blended over the frame.
 //! - **The draw**: the vertices are drawn as lines, the first
-//!   `round(4096·intensity)` vertices, so half that many drops show.
+//!   `round(4096·intensity)` vertices, so half that many drops show, with
+//!   the box turned 2° about its x axis and scaled by `√(fov / 70)`
+//!   ([`box_rotation`], [`box_scale`]).
 //!
-//! The frame-buffer passes (one per supersample corner, and a second,
-//! reflected one at a reflection level above 3) are not reproduced, and
-//! nothing starts a rain set yet: its caller is the scene's weather.
+//! The draw runs once over the frame, through `exa_render::rain` (the
+//! original repeats it per supersample corner, and a second, reflected
+//! pass at a reflection level above 3 is not reproduced). The scene's
+//! weather starts and frees the set (`crate::weather`).
 //!
 //! Evidence: the drop set's constructor, the intensity setter, the update
 //! and the frame routine with its shader sources, read from `Exanima.exe`.
@@ -69,6 +77,24 @@ pub const COLOUR_SCALE: f64 = 0.075;
 pub const BRIGHT_COLOUR_SCALE: f64 = 0.03;
 /// One over 255, as the original's single-precision literal.
 pub const BYTE_SCALE: f32 = f32::from_bits(0x3b80_8081);
+/// The box's turn about its x axis, degrees.
+pub const BOX_TILT_DEGREES: f32 = 2.0;
+/// The field of view the box's scale is relative to, degrees.
+pub const BOX_FOV_DEGREES: f32 = 70.0;
+
+/// The box's turn: 2° about its x axis, the matrix the original builds from
+/// the angle's sine and cosine (`y′ = c·y + s·z`, `z′ = c·z − s·y`). The
+/// sense of the turn follows the stored matrix read as acting on column
+/// vectors; a guess, as the turn's sign is not visible at 2°.
+pub fn box_rotation() -> Quat {
+    Quat::from_rotation_x(-BOX_TILT_DEGREES.to_radians())
+}
+
+/// The box's scale for a view of `fov_degrees`: `√(fov / 70)`, the
+/// original's `√(fov · 0.014285714)`.
+pub fn box_scale(fov_degrees: f32) -> f32 {
+    (fov_degrees * 0.014_285_714).sqrt()
+}
 
 /// The vertex shader, as the original compiles it.
 pub const VERTEX_SHADER: &str = "in vec3 vPos;\r\nin vec4 vCol;\r\nout vec4 vrCol;\r\n\
@@ -217,10 +243,10 @@ impl Rain {
     }
 
     /// The `RainCol0` colour: red, green, blue and alpha. `environment` is
-    /// the scene environment's colour for the rain, `bright` its bright
-    /// setting, `view_height` the camera's backward-axis height.
-    pub fn colour(&self, environment: Vec3, bright: bool, view_height: f32) -> [f32; 4] {
-        let scale = if bright {
+    /// the scene environment's colour for the rain, `paused` whether the
+    /// game is paused, `view_height` the camera's backward-axis height.
+    pub fn colour(&self, environment: Vec3, paused: bool, view_height: f32) -> [f32; 4] {
+        let scale = if paused {
             BRIGHT_COLOUR_SCALE
         } else {
             COLOUR_SCALE
@@ -370,9 +396,22 @@ mod tests {
         let amount = (1.0f64 * 0.075 + 0.075) as f32;
         assert_eq!(c[0], 2.2 * amount * BYTE_SCALE);
         assert_eq!(c[3], 1.0 * (0.5 + 0.5));
-        let bright = rain.colour(Vec3::ONE, true, 0.0);
-        assert_eq!(bright[0], 2.2 * (0.06f64 as f32) * BYTE_SCALE);
+        let paused = rain.colour(Vec3::ONE, true, 0.0);
+        assert_eq!(paused[0], 2.2 * (0.06f64 as f32) * BYTE_SCALE);
         let d = 0.6f32 * 0.6;
         assert_eq!(eye_fade(Vec3::ZERO, Vec3::ZERO), d * d);
+    }
+
+    /// The box turns 2° about x, so a drop straight above the box's
+    /// origin leans a little along z; at the default 70° view the scale is
+    /// one.
+    #[test]
+    fn the_box_turns_two_degrees_and_scales_with_the_view() {
+        let up = box_rotation() * Vec3::new(0.0, 600.0, 0.0);
+        let (s, c) = 2f32.to_radians().sin_cos();
+        assert!((up.y - 600.0 * c).abs() < 1e-3);
+        assert!((up.z + 600.0 * s).abs() < 1e-3);
+        assert!((box_scale(70.0) - 1.0).abs() < 1e-6);
+        assert!((box_scale(35.0) - 0.5f32.sqrt()).abs() < 1e-6);
     }
 }

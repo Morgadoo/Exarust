@@ -134,6 +134,7 @@ pub mod trace;
 pub mod trade;
 pub mod transition_screen;
 pub mod use_cursor;
+pub mod weather;
 pub mod window;
 pub mod world_clock;
 
@@ -216,6 +217,7 @@ impl Plugin for GamePlugin {
         ))
         .add_plugins(thaum::cast::CastPlugin)
         .add_plugins(fire_sound::FireSoundPlugin)
+        .add_plugins(weather::WeatherPlugin)
         .add_plugins(world_clock::WorldClockPlugin)
         .add_plugins(save_live::SaveLivePlugin)
         .add_plugins((

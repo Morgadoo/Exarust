@@ -24,7 +24,7 @@ use exa_formats::environment::{Environment, SunMode};
 
 use crate::particles::{Draws, Rng};
 use crate::scene_env::{
-    Frame, OUTDOOR_FOG_COLOUR, SUN_LIGHT_RANGE, SceneEnvironment, View, WeatherRng,
+    Frame, OUTDOOR_FOG_COLOUR, SUN_LIGHT_RANGE, SceneEnvironment, View, WeatherEvents, WeatherRng,
 };
 
 /// The render quality the original reads when it builds the environment's
@@ -54,13 +54,21 @@ const SUN_SHADOW_RANGE: f32 = 60.0;
 
 pub struct EnvironmentPlugin;
 
+/// The frame's environment tick and the camera updates that follow it.
+/// Systems that act on the tick's [`SceneEnvRuntime::events`] (the rain
+/// effect, the rain loop, thunder) run after it.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LiveEnvironment;
+
 impl Plugin for EnvironmentPlugin {
     fn build(&self, app: &mut App) {
         // The sun's map size comes from `exa_render` (the original's top
         // shadow detail); do not override it here.
         app.add_systems(
             PostUpdate,
-            (live_environment, fog_cameras, sky_cameras).chain(),
+            (live_environment, fog_cameras, sky_cameras)
+                .chain()
+                .in_set(LiveEnvironment),
         );
     }
 }
@@ -103,6 +111,12 @@ pub struct SceneEnvRuntime {
     pub library: Rng,
     /// The frame values last written to the renderer's resources.
     pub published: Option<Frame>,
+    /// What this frame's weather tick asked for (stop the rain effect,
+    /// start or stop the rain loop, a thunderclap); read after
+    /// [`LiveEnvironment`].
+    pub events: WeatherEvents,
+    /// The game clock of this frame's tick, ms.
+    pub now: u32,
     /// Frames run since the level loaded.
     pub frames: u32,
     /// A debug aid (`EXA_LIGHTNING_FRAME=<n>`): from this frame on, a
@@ -130,6 +144,8 @@ impl SceneEnvRuntime {
             weather: WeatherRng::new(seed),
             library: Rng::new(seed),
             published: None,
+            events: WeatherEvents::default(),
+            now: 0,
             frames: 0,
             force_strike_at: forced_strike_frame(),
         }
@@ -529,6 +545,8 @@ fn live_environment(
         weather,
         library,
         published,
+        events,
+        now: tick_now,
         frames,
         force_strike_at,
     } = &mut *runtime;
@@ -538,7 +556,8 @@ fn live_environment(
         env.strike_lightning(FORCED_STRIKE_OFFSET, view, now, weather, &mut draws);
         info!("EXA_LIGHTNING_FRAME: strike forced at frame {frames} ({now} ms)");
     }
-    env.tick(now, weather, &mut draws);
+    *events = env.tick(now, weather, &mut draws);
+    *tick_now = now;
     let frame = env.apply_frame(forward);
     if force_strike_at.is_some() && (frame.lightning > 0.0 || env.weather.lightning.active) {
         info!(
