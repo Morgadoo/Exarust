@@ -352,9 +352,12 @@ fn use_devices(
                 sounds.write(DeviceSound::scan(user_transform.translation()));
                 let identity = identities.get(use_it.user).map(|i| i.0).unwrap_or(0);
                 latch.begin(identity);
-                // The same word the story session reads when the player dies.
+                // The same words the story session reads when the player dies:
+                // the reconstruction word and, beside it, the identity it
+                // compares with the dying player's record.
                 if let Some(flow) = flow.as_mut() {
                     flow.story.reconstruction = crate::flow::REBUILDABLE;
+                    flow.story.checkpoint = identity;
                 }
                 commands.entity(use_it.device).insert(DeviceGlow {
                     start_ms: clock.now_ms,
@@ -715,6 +718,11 @@ mod tests {
                 .story
                 .reconstruction,
             crate::flow::REBUILDABLE
+        );
+        // The identity beside it is the scanned player's record identity.
+        assert_eq!(
+            app.world().resource::<crate::flow::Flow>().story.checkpoint,
+            7
         );
         assert!(app.world().get::<DeviceGlow>(device).is_some());
         // A second use while the scan is on the player starts nothing more.

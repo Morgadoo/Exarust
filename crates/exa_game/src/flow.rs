@@ -938,7 +938,10 @@ pub struct StoryState {
     pub reconstruction: u8,
     /// The player's record ID.
     pub record: u32,
-    /// The record ID the checkpoint was made at.
+    /// The record identity the reconstruction word was raised for: a
+    /// reconstruction device's scan writes the scanned player's identity
+    /// here beside [`Self::reconstruction`], and a death rebuilds only when it
+    /// matches [`Self::record`].
     pub checkpoint: u32,
 }
 

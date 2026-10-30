@@ -29,7 +29,7 @@ use crate::effects::Frame;
 use crate::effects::SceneLock;
 use crate::effects::shell::{PlaneBounds, fade_plane};
 use crate::thaum::effect_material::{
-    MATERIAL_FLAG, MATERIAL_PARAMS, MaterialNode, NOISE_TEXTURE, SUB_OBJECT_USAGE,
+    AURA_FLAGS, MATERIAL_FLAG, MATERIAL_PARAMS, MaterialNode, NOISE_TEXTURE, SUB_OBJECT_USAGE,
 };
 
 /// The name Exarust gives a scan effect's node. The original names no node;
@@ -41,11 +41,13 @@ pub const MATERIAL: &str = "ScanAura01";
 pub const AURA_MATERIAL: &str = "_ScanAura01";
 /// The aura material's parameter block, bytes.
 pub const AURA_BLOCK: usize = 0xB8;
-/// The four words the block starts with: a grey, opaque colour (the rest is
-/// zero).
+/// The four words the block starts with: a grey, opaque colour. The rest of
+/// the block is the material's own definition data (a 0.5 and flag words
+/// among zeros), not reproduced.
 pub const AURA_COLOUR: [f32; 4] = MATERIAL_PARAMS;
-/// The bits the aura build adds to the node's state word.
-pub const AURA_STATE: u32 = 0x9000;
+/// The bits the aura build adds to the node's state word: the same bits the
+/// force aura and the displacement shell add.
+pub const AURA_STATE: u32 = AURA_FLAGS;
 
 /// The aura material's shader object exists: the original makes it once and
 /// keeps it for the run.
