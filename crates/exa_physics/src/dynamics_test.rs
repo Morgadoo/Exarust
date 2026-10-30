@@ -719,6 +719,16 @@ fn the_constructor_constants() {
     assert_eq!(f64::from(TICK_HZ), crate::STEP_HZ);
     assert_eq!(STEP_MS, (1000.0 / f64::from(TICK_HZ)).round() as u32);
     assert_eq!(DEFAULT_ENVIRONMENTS, 5);
+    let sim = Simulation::new(
+        STEP_MS,
+        GridSize {
+            width: 1,
+            height: 1,
+        },
+    );
+    assert_eq!(sim.scale, 1.0);
+    assert_eq!(sim.backlog, 11);
+    assert_eq!(sim.environments, 5);
 }
 
 /// A scene of its own appends a sector per sector node, each taking the

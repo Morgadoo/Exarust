@@ -1300,6 +1300,13 @@ pub struct Simulation {
     pub watch: Vec<usize>,
     /// The listeners, called with a removed watch entry.
     pub listeners: Vec<usize>,
+    /// The simulation's time scale word: 1.0 from the constructor.
+    pub scale: f32,
+    /// The most steps a frame catches up on: `1000/83 − 1` = 11.
+    pub backlog: u32,
+    /// How many dynamics environments exist: 5, or 1 when the process
+    /// shares one.
+    pub environments: u32,
 }
 
 impl Simulation {
@@ -1316,6 +1323,9 @@ impl Simulation {
             shift: [0, 0],
             watch: Vec::new(),
             listeners: Vec::new(),
+            scale: 1.0,
+            backlog: MAX_BACKLOG_STEPS,
+            environments: DEFAULT_ENVIRONMENTS,
         }
     }
 
