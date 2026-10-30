@@ -766,6 +766,125 @@ fn parent_node(number: i32, nodes: usize, props: &[usize], objects: &[usize]) ->
     }
 }
 
+/// The scene nodes of a level's placed characters, in placement order.
+///
+/// A placement stores its feet position, facing and condition, and the
+/// exporter writes the body's position words as (x, floor, z): the first and
+/// third position values, with the second kept as the floor height. A saved
+/// bone tree becomes the exporter's pose tree in centimetres; a legacy flat
+/// pose has no tree to write back, so it is an error rather than a guess at a
+/// hierarchy. The AI home is stored with the home kind so the writer emits it:
+/// the reader does not keep the record's kind word (a stand-in, labelled).
+pub fn export_characters(level: &ReadScene) -> Result<Vec<SceneNode>> {
+    let mut out = Vec::new();
+    for placement in level
+        .characters
+        .iter()
+        .flat_map(|chars| chars.placements.iter())
+    {
+        let name = level
+            .characters
+            .as_ref()
+            .and_then(|chars| chars.record(placement.id))
+            .and_then(|record| stored_name(&record.name))
+            .unwrap_or([0; 16]);
+        let pose = pose_tree(&placement.pose)?;
+        let parts = match &placement.pose {
+            crate::characters::SavedPose::Flat(frames) => frames.iter().map(matrix_cm).collect(),
+            _ => Vec::new(),
+        };
+        let motion = placement.motion.unwrap_or(crate::characters::MotionState {
+            state: 0,
+            value: 0.0,
+        });
+        let ai = Some(crate::rfc_write::ExportAi {
+            motile: true,
+            skip_home: false,
+            mode: if placement.motion.is_some() { 1 } else { 0 },
+            home: placement
+                .ai_home
+                .map(|home| home.position.map(|v| v * 100.0))
+                .unwrap_or([0.0; 3]),
+            home_heading: placement.ai_home.map_or(0.0, |home| home.heading),
+        });
+        out.push(SceneNode {
+            name,
+            // A character is not a class-1 node: it is written with its body.
+            flags: crate::rfc_write::flags::CHARACTER | crate::rfc_write::flags::SAVED,
+            parent: None,
+            character: Some(crate::rfc_write::ExportCharacter {
+                record: placement.id,
+                // The record's kind word is not kept; a placement that
+                // carries a home gets the home kind so the writer stores it.
+                record_kind: if placement.ai_home.is_some() {
+                    crate::rfc_write::RECORD_KIND_HOME
+                } else {
+                    0
+                },
+                body_position: [
+                    placement.position[0] * 100.0,
+                    0.0,
+                    placement.position[2] * 100.0,
+                ],
+                floor_height: placement.position[1] * 100.0,
+                heading: placement.yaw,
+                condition: placement.condition,
+                motion_state: motion.state,
+                motion_value: motion.value,
+                pose,
+                parts,
+                ai,
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+    }
+    Ok(out)
+}
+
+/// The exporter's pose tree from the placement's saved pose.
+fn pose_tree(pose: &crate::characters::SavedPose) -> Result<Option<crate::rfc_write::PoseNode>> {
+    match pose {
+        crate::characters::SavedPose::None => Ok(None),
+        crate::characters::SavedPose::Tree(records) => {
+            let mut at = 0;
+            let node = pose_node(records, &mut at)?;
+            if at != records.len() {
+                return Err(Error::Malformed(format!(
+                    "{} pose records after the tree",
+                    records.len() - at
+                )));
+            }
+            Ok(Some(node))
+        }
+        crate::characters::SavedPose::Flat(_) => Err(Error::Unsupported(
+            "a legacy flat pose has no bone tree to write".into(),
+        )),
+    }
+}
+
+/// One pose record and its children, in the reader's depth-first order.
+fn pose_node(
+    records: &[crate::characters::PoseRecord],
+    at: &mut usize,
+) -> Result<crate::rfc_write::PoseNode> {
+    let record = records
+        .get(*at)
+        .ok_or_else(|| Error::Malformed("a pose tree ends before its children".into()))?;
+    *at += 1;
+    let mut children = Vec::with_capacity(record.children as usize);
+    for _ in 0..record.children {
+        children.push(pose_node(records, at)?);
+    }
+    Ok(crate::rfc_write::PoseNode {
+        matrix: matrix_cm(&record.frame),
+        word: record.word,
+        class: crate::rfc_write::POSE_CHILD_CLASS,
+        kind: 0,
+        children,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1650,6 +1769,201 @@ mod tests {
             .iter()
             .map(|p| 1 + attachments_nodes(&p.attachments))
             .sum()
+    }
+
+    fn pose_node(
+        word: u32,
+        children: Vec<crate::rfc_write::PoseNode>,
+    ) -> crate::rfc_write::PoseNode {
+        crate::rfc_write::PoseNode {
+            matrix: at([0.0, 50.0, 0.0]),
+            word,
+            class: crate::rfc_write::POSE_CHILD_CLASS,
+            kind: 0,
+            children,
+        }
+    }
+
+    #[test]
+    fn characters_convert_with_their_pose_motion_and_home() {
+        let mut dead = SceneNode {
+            name: name16("Corpse"),
+            flags: crate::rfc_write::flags::CHARACTER | crate::rfc_write::flags::SAVED,
+            character: Some(crate::rfc_write::ExportCharacter {
+                record: 0x4000_0003,
+                body_position: [500.0, 0.0, -200.0],
+                floor_height: 12.0,
+                heading: 1.5,
+                condition: crate::rfc_write::DEAD,
+                pose: Some(pose_node(5, vec![pose_node(7, Vec::new())])),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        dead.tail = 0;
+        let mut live = SceneNode {
+            name: name16("Bandit"),
+            flags: crate::rfc_write::flags::CHARACTER | crate::rfc_write::flags::SAVED,
+            character: Some(crate::rfc_write::ExportCharacter {
+                record: 0x4000_0004,
+                // The AI home is written only for the home record kind.
+                record_kind: crate::rfc_write::RECORD_KIND_HOME,
+                body_position: [600.0, 0.0, 100.0],
+                floor_height: 20.0,
+                heading: -0.5,
+                condition: 0,
+                motion_state: 6,
+                motion_value: 0.25,
+                // AI mode 1 stores the pose and the motion state together.
+                pose: Some(pose_node(9, Vec::new())),
+                ai: Some(crate::rfc_write::ExportAi {
+                    motile: true,
+                    skip_home: false,
+                    mode: 1,
+                    home: [650.0, 20.0, 120.0],
+                    home_heading: 0.75,
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        live.tail = 0;
+        let scene = crate::rfc_write::ExportScene {
+            nodes: vec![plain_level(), dead, live],
+            ..Default::default()
+        };
+        // The level export writes a dead body's tree and a save the AI home.
+        let options = crate::rfc_write::ExportOptions {
+            save_mode: true,
+            ..Default::default()
+        };
+        let bytes = crate::rfc_write::Exporter::new()
+            .export(&scene, &options, None)
+            .unwrap();
+        let parsed = crate::rfc::Scene::parse(&bytes).unwrap();
+        assert!(parsed.level_errors.is_empty(), "{:?}", parsed.level_errors);
+        let chars = parsed.characters.as_ref().unwrap();
+        assert_eq!(chars.placements.len(), 2);
+
+        let nodes = export_characters(&parsed).unwrap();
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(
+            nodes[0].flags & crate::rfc_write::flags::CHARACTER,
+            crate::rfc_write::flags::CHARACTER
+        );
+        let first = nodes[0].character.as_ref().unwrap();
+        assert_eq!(first.record, 0x4000_0003);
+        assert_eq!(first.body_position, [500.0, 0.0, -200.0]);
+        assert_eq!(first.floor_height, 12.0);
+        assert_eq!(first.heading, 1.5);
+        assert_eq!(first.condition, crate::rfc_write::DEAD);
+        let pose = first.pose.as_ref().unwrap();
+        assert_eq!(pose.word, 5);
+        assert_eq!(pose.children.len(), 1);
+        assert_eq!(pose.children[0].word, 7);
+        assert_eq!(pose.children[0].matrix[3], [0.0, 50.0, 0.0]);
+        let second = nodes[1].character.as_ref().unwrap();
+        assert_eq!((second.motion_state, second.motion_value), (6, 0.25));
+        assert_eq!(second.pose.as_ref().unwrap().word, 9);
+        let ai = second.ai.as_ref().unwrap();
+        assert_eq!(ai.mode, 1);
+        for (a, b) in ai.home.iter().zip([650.0, 20.0, 120.0]) {
+            assert!((a - b).abs() < 1e-3);
+        }
+        assert_eq!(ai.home_heading, 0.75);
+        assert_eq!(second.record_kind, crate::rfc_write::RECORD_KIND_HOME);
+
+        // Writing the converted nodes again as a save keeps the placements,
+        // their pose, the motion state and the home.
+        let again = crate::rfc::Scene::parse(
+            &crate::rfc_write::Exporter::new()
+                .export(
+                    &crate::rfc_write::ExportScene {
+                        nodes: nodes.clone(),
+                        ..Default::default()
+                    },
+                    &crate::rfc_write::ExportOptions {
+                        save_mode: true,
+                        ..Default::default()
+                    },
+                    None,
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        let again_chars = again.characters.as_ref().unwrap();
+        assert_eq!(again_chars.placements.len(), 2);
+        let a = &again_chars.placements[0];
+        assert_eq!(a.id, 0x4000_0003);
+        assert_eq!(a.condition, crate::rfc_write::DEAD);
+        assert_eq!(a.position, [5.0, 0.12, -2.0]);
+        assert_eq!(a.yaw, 1.5);
+        assert!(matches!(a.pose, crate::characters::SavedPose::Tree(_)));
+        let b = &again_chars.placements[1];
+        assert_eq!(b.id, 0x4000_0004);
+        assert_eq!(b.motion.unwrap().state, 6);
+        assert_eq!(b.ai_home.unwrap().heading, 0.75);
+    }
+
+    #[test]
+    fn a_flat_pose_has_no_tree_to_write() {
+        let flat = crate::characters::SavedPose::Flat(vec![crate::rfc_write::IDENTITY]);
+        assert!(matches!(pose_tree(&flat), Err(Error::Unsupported(_))));
+        // A record list with leftovers past the tree is malformed.
+        let records = vec![
+            crate::characters::PoseRecord {
+                frame: crate::rfc_write::IDENTITY,
+                word: 1,
+                children: 0,
+            },
+            crate::characters::PoseRecord {
+                frame: crate::rfc_write::IDENTITY,
+                word: 2,
+                children: 0,
+            },
+        ];
+        assert!(poses_parse(&records).is_err());
+    }
+
+    fn poses_parse(records: &[crate::characters::PoseRecord]) -> Result<()> {
+        pose_tree(&crate::characters::SavedPose::Tree(records.to_vec())).map(|_| ())
+    }
+
+    /// A level without a character section converts no characters, and one
+    /// with placements (the installed root level, when it has one) keeps
+    /// them through a second write.
+    #[test]
+    fn a_shipped_level_converts_its_characters() {
+        let Some(dir) = exa_rpk::locate_install(None) else {
+            return;
+        };
+        let game = exa_rpk::GameData::open(&dir).unwrap();
+        let resource = game.pack(exa_rpk::PackKind::Resource).unwrap();
+        for name in ["exanima01.rfc", "arenao1.rfc", "exanima02.rfc"] {
+            let scene = crate::rfc::Scene::parse(resource.get(name).unwrap()).unwrap();
+            let Some(chars) = &scene.characters else {
+                continue;
+            };
+            if chars.placements.is_empty() {
+                continue;
+            }
+            let nodes = export_characters(&scene).unwrap();
+            assert_eq!(nodes.len(), chars.placements.len());
+            let again = crate::rfc::Scene::parse(&write(&crate::rfc_write::ExportScene {
+                nodes,
+                ..Default::default()
+            }))
+            .unwrap();
+            let again_chars = again.characters.as_ref().unwrap();
+            assert_eq!(again_chars.placements.len(), chars.placements.len());
+            for (a, b) in chars.placements.iter().zip(&again_chars.placements) {
+                assert_eq!(a.id, b.id);
+                assert_eq!(a.condition, b.condition);
+                for k in 0..3 {
+                    assert!((a.position[k] - b.position[k]).abs() < 1e-3);
+                }
+            }
+        }
     }
 
     /// Every prop of the installed level converts and writes back: the same
