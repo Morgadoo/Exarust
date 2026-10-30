@@ -1037,11 +1037,12 @@ pub fn threat_from_nearby(
 /// plus [`HIT_BASE`], a further [`HIT_KIND_1`] for a kind-1 hit or
 /// [`HIT_KIND_2`] for a kind 2, floored at zero, scaled by `1 − attitude/100`
 /// in double precision and added to the old concern, capped at
-/// [`CONCERN_CAP`]. A contact already at the cap adds nothing; a NaN concern
-/// passes the gate and a NaN sum is not capped, as the original's ordered
-/// compares do.
+/// [`CONCERN_CAP`]. A contact already at the cap adds nothing, nor does one
+/// with a NaN concern (the original's `COMISS` gate jumps away on parity); a
+/// NaN sum is not capped.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 pub fn hit_concern(threat: f32, hit_kind: u8, attitude: f32, concern: f32) -> Option<f32> {
-    if concern >= CONCERN_CAP {
+    if !(CONCERN_CAP > concern) {
         return None;
     }
     let mut rise = threat + HIT_BASE;
@@ -1847,10 +1848,12 @@ mod tests {
         assert_eq!(hit_concern(-3.0, 0, 0.0, 2.0), Some(2.0));
         // Above the cap the result is the cap.
         assert_eq!(hit_concern(2.0, 0, 0.0, 14.9), Some(15.0));
-        // At the cap nothing is added; a NaN concern passes the gate.
+        // At the cap nothing is added, nor with a NaN concern (the gate's
+        // parity jump); a NaN threat gives a NaN sum that is not capped.
         assert_eq!(hit_concern(0.0, 0, 0.0, 15.0), None);
         assert_eq!(hit_concern(0.0, 0, 0.0, 20.0), None);
-        assert!(hit_concern(0.5, 0, 0.0, f32::NAN).is_some_and(f32::is_nan));
+        assert_eq!(hit_concern(0.5, 0, 0.0, f32::NAN), None);
+        assert!(hit_concern(f32::NAN, 0, 0.0, 1.0).is_some_and(f32::is_nan));
     }
 
     #[test]
