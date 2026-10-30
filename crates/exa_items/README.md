@@ -31,7 +31,9 @@ scene reader belong to the base class and are not freed there.
 
 The off-screen icon renderer (`item_renderer`) is modelled from its
 constructor: an icon-size global starting at 160 pixels, depth and colour
-renderbuffers at twice that, the two RGBA image headers, the sun along
+renderbuffers at twice that with the framebuffer target both attach to
+(`target`: depth `0x1902`, colour `0x8c43` with the alpha global else
+`0x8c41`, both draw and read buffers naming the colour attachment), the two RGBA image headers, the sun along
 (0.46, 0.47, 0.48) in the colour (0.75, 0.75, 0.75, 0.5), and the camera at
 (0, 0, 350) with a 40° field of view and a 10 cm near field;
 `frame_distance` is the engine's scene fit the render frames the item with.
