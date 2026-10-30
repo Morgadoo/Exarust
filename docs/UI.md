@@ -476,8 +476,8 @@ assembly, and the standard-match and rank-label tables in `Exanima.exe`.
   while the selected record stays.
 - **Tournament.** Six winner rows (event, tier, winner). A winner of 1 is
   the player's company, below 1 a dash, and from 2 the tournament's company
-  table at the winner's own index, which holds a company id less one, so
-  the name comes from the companies from id 2. The status
+  table at entry `winner - 2`, which holds a company id less one, so the
+  name comes from the companies from id 2. The status
   line says "Tournament begins tomorrow." or "Tournament begins in N days."
   off the tournament day; on it, "Tournament is in progress." with no
   entries, "The tournament has ended." when every entered event is settled
@@ -487,10 +487,9 @@ assembly, and the standard-match and rank-label tables in `Exanima.exe`.
   appears. A weapon event shows the reward panel with the weapon row's
   name, shortens the lineup to 120 pixels and marks the panel when the
   first fighter entered in the event's tier does not carry one of the row's
-  up to three weapons (the first zero ends the list); nobody entered leaves
-  the mark set. On a tournament day with entries the tab is forced to the
-  tournament (the show clears its current tab first, so it does not hide
-  the tab it leaves) and fighter assignment is locked. Leaving the tab restores the
+  up to three weapons (the first zero ends the list); nobody entered clears
+  the mark. On a tournament day with entries the tab is forced to the
+  tournament (hiding the tab it leaves) and fighter assignment is locked. Leaving the tab restores the
   primary button and its "Enter" label.
 - **Season.** Four weekly winner lines. A week already played with no
   winner says "No winner"; a zero winner or one above 20 is a dash. The
@@ -535,15 +534,20 @@ assembly, and the standard-match and rank-label tables in `Exanima.exe`.
   The season table is 280 by 132 at 32, 60, one 160-wide column.
   The form template places the rest: the four tabs 128 by 28 with captions
   Standard, Specials, Tournament and Season at x 20, 160, 300 and 440 (the
-  template's 162 quarters round down to 160) and y 14; the bottom row 46
-  pixels above the form's bottom edge, 129 by 28, End Day at 20, Close at
-  160, Enter (or Begin/Continue, or the status text in its place) at 300 and
-  Forfeit at 440; "Available" at 116, 322 and "Entered n/m" at 408, 322;
-  "Entry:" at 200, 62 and "Prize:" at 360, 62; the tournament's "Prize" at
-  412, 58; the season picture 160 by 600 at 372, 28 and its four item slots
-  at 12 and 172 from y 218 and 378. Template x, width and y are quarter
-  pixels rounded to a multiple of four (half to even), y times four and
-  lifted by half the control's height less eight.
+  template's 162 rounds to 160) and y 14; the bottom row 46 pixels above
+  the form's bottom edge, 128 by 28, End Day at 20, Close at 160, Enter (or
+  Begin/Continue) at 300 and Forfeit at 440, with the status text at 300,
+  40 pixels above the edge; "Available" at 116, 322 and "Entered n/m" at
+  408, 322; "Entry:" at 200, 248 and "Prize:" at 360, 248; the tournament's
+  "Prize" at 412, 64; "Prize for this season" at 32, 216; the season
+  picture 160 by 600 at 372, 28 and its four item slots at 12 and 172 from
+  y 236 and 396. The template's x is snapped to a multiple of four (the
+  quarter rounded half to even); its y is in four-pixel rows, lifted by
+  half the control's height less eight up to 32 pixels tall and by four
+  above; a bottom-anchored control stands `y + 8` rows above the parent's
+  bottom edge (taken as the form's height, a guess), lifted the same way.
+  A label left at zero height is taken as 16 pixels and an item slot as 60
+  (the class defaults are not decoded).
 - **Drawing order.** The form, the four tabs, then the visible child views
   in the order the constructor made them: match, rank and tier lists,
   picture, reward panel, events, winners, message, company, lineup and

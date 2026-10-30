@@ -59,6 +59,8 @@ pub const ENTRY_CAPTION: &str = "Entry:";
 pub const PRIZE_CAPTION: &str = "Prize:";
 /// The template's prize caption on the tournament tab.
 pub const TOURNAMENT_PRIZE_CAPTION: &str = "Prize";
+/// The template's caption above the season's reward items.
+pub const SEASON_CAPTION: &str = "Prize for this season";
 /// Matches a company may enter in one day.
 pub const MATCHES_PER_DAY: u32 = 3;
 /// Pugilism's match type id. The standard tab stores no tier for it.
@@ -255,6 +257,7 @@ pub struct BoardLayout {
     pub entry_caption: Rect,
     pub prize_caption: Rect,
     pub tournament_prize_caption: Rect,
+    pub season_caption: Rect,
     pub season_picture: Rect,
     pub reward_slots: [Rect; 4],
 }
@@ -264,29 +267,78 @@ pub struct BoardLayout {
 /// board's methods, so this is a guess from those fits.
 pub const ROW_HEIGHT: i32 = 30;
 
+/// A template control's x: the form template stores it in pixels and the
+/// placement snaps it to a multiple of four, rounding the quarter half to
+/// even (162 lands on 160, 166 on 168).
+pub fn template_x(x: i32) -> i32 {
+    let quarter = f64::from(x) * 0.25;
+    // The instruction rounds to nearest with ties to even.
+    let rounded = quarter.round_ties_even();
+    (rounded as i32) * 4
+}
+
+/// A template control's y from the top: the template's y is in four-pixel
+/// rows; a control up to 32 pixels tall is lifted by half its height less
+/// eight, a taller one by four pixels.
+pub fn template_y(y: i32, h: i32) -> i32 {
+    if h < 33 {
+        y * 4 - ((h - 16) >> 1)
+    } else {
+        y * 4 - 4
+    }
+}
+
+/// A bottom-anchored template control's y: `y + 8` rows above the parent's
+/// bottom edge, lifted by half its height less eight.
+pub fn template_bottom_y(bottom: i32, y: i32, h: i32) -> i32 {
+    bottom - (y + 8) * 4 - ((h - 16) >> 1)
+}
+
+/// The label class's default height, used where the template leaves a
+/// label's height at zero. The class table is filled at run time and not
+/// decoded; one 16-pixel text line is a guess.
+pub const LABEL_HEIGHT: i32 = 16;
+
+/// The item slot's default size, used for the template's item slots. The
+/// class table is not decoded; 60 pixels is a guess.
+pub const ITEM_SLOT_SIZE: i32 = 60;
+
 /// Builds the board's layout. `compact` shortens the form, the team table
 /// and the reward panel.
 ///
 /// The tables and the two child panels come from the constructor. The tab
-/// strip, the four bottom buttons and the two labels above the fighter
-/// tables come from the form template: the template stores x, width and y
-/// in quarter pixels, the layout rounds x and width down to a multiple of
-/// four (round half to even), multiplies y by four and lifts every control
-/// by half its height less eight. The bottom row is anchored to the form's
-/// bottom edge. The status label shares the primary button's place; its
-/// height is the label class's default, which is not decoded, so it takes
-/// the button row's height. Reward-slot sizes are the label class's default
-/// too and stay a guess.
+/// strip, the four bottom buttons, the labels and captions, the season
+/// picture and its item slots come from the form template through
+/// [`template_x`], [`template_y`] and [`template_bottom_y`]. The bottom row
+/// and the status label are anchored to the parent's bottom edge, taken to
+/// be the form's height (a guess: the parent field is not decoded). Heights
+/// the template leaves at zero are the class defaults [`LABEL_HEIGHT`] and
+/// [`ITEM_SLOT_SIZE`], which are guesses, as are the caption widths.
 pub fn layout(compact: bool) -> BoardLayout {
     let height = if compact { 636 } else { 656 };
     let team_height = if compact { 224 } else { 244 };
     let reward_height = if compact { 100 } else { 120 };
-    // The bottom row: the template's y of two quarters, ten quarters above
-    // the bottom edge less half the button height less eight.
-    let bottom = height - 46;
-    // The template's season item slots: two rows at y 60 and 100 quarters.
-    let slot = 60;
-    let slot_y = |row: i32| row * 4 - (slot - 16) / 2;
+    // The bottom row: the template's y of two rows, bottom-anchored.
+    let bottom = template_bottom_y(height, 2, 28);
+    let slot = ITEM_SLOT_SIZE;
+    let button = |x: i32| Rect {
+        x: template_x(x),
+        y: bottom,
+        w: template_x(128),
+        h: 28,
+    };
+    let label = |x: i32, y: i32, w: i32| Rect {
+        x: template_x(x),
+        y: template_y(y, LABEL_HEIGHT),
+        w,
+        h: LABEL_HEIGHT,
+    };
+    let item = |x: i32, y: i32| Rect {
+        x: template_x(x),
+        y: template_y(y, slot),
+        w: slot,
+        h: slot,
+    };
     BoardLayout {
         form: Rect {
             x: 0,
@@ -296,37 +348,18 @@ pub fn layout(compact: bool) -> BoardLayout {
         },
         title_y: 8,
         tab_strip: Rect {
-            x: 20,
-            y: 14,
-            w: 548,
+            x: template_x(20),
+            y: template_y(5, 28),
+            w: template_x(440) + 128 - template_x(20),
             h: 28,
         },
-        tabs: [
-            Rect {
-                x: 20,
-                y: 14,
-                w: 128,
-                h: 28,
-            },
-            Rect {
-                x: 160,
-                y: 14,
-                w: 128,
-                h: 28,
-            },
-            Rect {
-                x: 300,
-                y: 14,
-                w: 128,
-                h: 28,
-            },
-            Rect {
-                x: 440,
-                y: 14,
-                w: 128,
-                h: 28,
-            },
-        ],
+        // The template's four tabs: x 20, 162, 300 and 440 on row 5.
+        tabs: [20, 162, 300, 440].map(|x| Rect {
+            x: template_x(x),
+            y: template_y(5, 28),
+            w: 128,
+            h: 28,
+        }),
         match_table: TableLayout {
             slot: TableSlot::Match,
             rect: Rect {
@@ -433,101 +466,43 @@ pub fn layout(compact: bool) -> BoardLayout {
             w: 292,
             h: reward_height,
         },
-        enter_button: Rect {
-            x: 300,
-            y: bottom,
-            w: 129,
-            h: 28,
-        },
-        close_button: Rect {
-            x: 160,
-            y: bottom,
-            w: 129,
-            h: 28,
-        },
-        end_day_button: Rect {
-            x: 20,
-            y: bottom,
-            w: 129,
-            h: 28,
-        },
-        forfeit_button: Rect {
-            x: 440,
-            y: bottom,
-            w: 129,
+        end_day_button: button(20),
+        close_button: button(160),
+        enter_button: button(300),
+        forfeit_button: button(440),
+        available_label: Rect {
+            x: template_x(116),
+            y: template_y(82, 28),
+            w: 128,
             h: 28,
         },
         entered_label: Rect {
-            x: 408,
-            y: 322,
+            x: template_x(408),
+            y: template_y(82, 28),
             w: 128,
             h: 28,
         },
-        available_label: Rect {
-            x: 116,
-            y: 322,
-            w: 128,
-            h: 28,
-        },
+        // The status text shares the primary button's row and x; its width
+        // is the template's, its height the label default.
         status_label: Rect {
-            x: 300,
-            y: bottom,
+            x: template_x(300),
+            y: template_bottom_y(height, 2, LABEL_HEIGHT),
             w: 160,
-            h: 28,
+            h: LABEL_HEIGHT,
         },
-        // The template's three captions. Their x and y are the template's;
-        // a label's height is its class's default, which is not decoded, so
-        // they take a single 16-pixel line.
-        entry_caption: Rect {
-            x: 200,
-            y: 62,
-            w: 160,
-            h: 16,
-        },
-        prize_caption: Rect {
-            x: 360,
-            y: 62,
-            w: 160,
-            h: 16,
-        },
-        tournament_prize_caption: Rect {
-            x: 412,
-            y: 58,
-            w: 160,
-            h: 16,
-        },
+        // The template leaves the two standard captions' widths at the
+        // class default; 160 is a guess.
+        entry_caption: label(200, 62, 160),
+        prize_caption: label(360, 62, 160),
+        tournament_prize_caption: label(412, 16, 160),
+        season_caption: label(32, 54, 280),
         season_picture: Rect {
-            x: 372,
-            y: 28,
+            x: template_x(372),
+            y: template_y(8, 600),
             w: 160,
             h: 600,
         },
-        reward_slots: [
-            Rect {
-                x: 12,
-                y: slot_y(60),
-                w: slot,
-                h: slot,
-            },
-            Rect {
-                x: 172,
-                y: slot_y(60),
-                w: slot,
-                h: slot,
-            },
-            Rect {
-                x: 12,
-                y: slot_y(100),
-                w: slot,
-                h: slot,
-            },
-            Rect {
-                x: 172,
-                y: slot_y(100),
-                w: slot,
-                h: slot,
-            },
-        ],
+        reward_slots: [item(12, 60), item(172, 60), item(12, 100), item(172, 100)],
     }
 }
 
@@ -618,7 +593,7 @@ pub mod control {
     pub const SEASON_ITEM_1: usize = 19;
     pub const SEASON_ITEM_2: usize = 20;
     pub const SEASON_ITEM_3: usize = 21;
-    /// The season tab's last control.
+    /// The season tab's last control: the "Prize for this season" caption.
     pub const SEASON_TAIL: usize = 22;
 
     /// A shown, enabled control.
@@ -1064,9 +1039,9 @@ pub struct Board {
     pub company_name: String,
     /// The rival companies, in company id order from 2.
     pub rivals: Vec<String>,
-    /// The tournament's company table, indexed by the winner id: a winner
-    /// from 2 reads entry `winner`, a company index (id less one), and the
-    /// winners table shows that company's name.
+    /// The tournament's company table: a winner from 2 reads entry
+    /// `winner - 2`, which holds a company id less one, and the winners
+    /// table shows that company's name.
     pub tournament_companies: Vec<i32>,
     /// Who won each of the season's four weeks.
     pub week_winners: [u32; 4],
@@ -1722,10 +1697,10 @@ impl Board {
     /// The weapon check's mark on the reward panel. `None` leaves the mark
     /// as it is (no weapon event); otherwise the mark is set when the first
     /// fighter entered in the event's tier does not carry one of the row's
-    /// weapons, or when nobody is entered (the original starts from "no
-    /// match" and only clears the mark after a successful check), and
-    /// cleared when that fighter's weapon is accepted. A tier or row
-    /// outside the tables counts as no match.
+    /// weapons, and cleared when that weapon is accepted or when nobody is
+    /// entered (the check starts from "accepted" and only runs with an
+    /// entrant). A row outside the table counts as no match; a tier outside
+    /// the entries counts as nobody entered.
     pub fn weapon_mark(&self) -> Option<bool> {
         if !self.weapon_event() {
             return None;
@@ -1735,7 +1710,7 @@ impl Board {
             .and_then(|tier| self.entries.get(tier))
             .and_then(|entry| entry.participants.first());
         let Some(first) = first else {
-            return Some(true);
+            return Some(false);
         };
         let accepted = tier
             .and_then(|tier| self.weapon_row(tier))
@@ -1820,22 +1795,22 @@ impl Board {
     }
 
     /// The show method: release the tournament reward item, recompute the
-    /// day's flags, and open the tournament tab on a tournament day with
-    /// entries, or re-open the current tab. The original clears its current
-    /// tab field before applying the tab, so the tab it leaves is never
-    /// hidden and keeps its control states: a forced tournament tab shows
-    /// over the previous tab's controls. This quirk is kept.
+    /// day's flags, and switch to the tournament tab on a tournament day
+    /// with entries (hiding the tab it leaves), or re-open the current tab.
+    /// Only the re-open clears the current tab before applying it, so the
+    /// tab's own show runs again; the forced switch keeps the current tab
+    /// and goes through the normal hide. A forced switch onto an already
+    /// open tournament tab takes the re-open path.
     pub fn show(&mut self) -> ShowState {
         self.tournament_reward = None;
         let tournament_day = self.tournament_day();
         let has_entrants = self.has_entrants();
         let forced = tournament_day && has_entrants;
-        let target = if forced {
-            BoardTab::Tournament
+        if forced && self.tab != BoardTab::Tournament {
+            self.apply_tab(Some(self.tab), BoardTab::Tournament);
         } else {
-            self.tab
-        };
-        self.apply_tab(None, target);
+            self.apply_tab(None, self.tab);
+        }
         ShowState {
             tournament_day,
             has_entrants,
@@ -2227,8 +2202,8 @@ impl Board {
 
     /// The tournament winners table: the event's name, the row's tier and
     /// the winner's company. A winner from 2 goes through the tournament's
-    /// company table at the winner's own index; the entry is a company id
-    /// less one, so the name comes from the companies from id 2.
+    /// company table at entry `winner - 2`; the entry is a company id less
+    /// one, so the name comes from the companies from id 2.
     pub fn winner_cells(&self, row: usize) -> Option<[CellValue; 3]> {
         let name = self.tournament_events.get(row)?.name.clone();
         let winner = self.entries.get(row).map(|entry| entry.winner).unwrap_or(0);
@@ -2237,7 +2212,7 @@ impl Board {
         } else if winner < 1 {
             NO_RANK.to_string()
         } else {
-            usize::try_from(winner)
+            usize::try_from(winner - 2)
                 .ok()
                 .and_then(|index| self.tournament_companies.get(index))
                 .and_then(|&company| self.rival_name(i64::from(company) + 1))
@@ -2464,6 +2439,13 @@ impl Board {
                 text: TOURNAMENT_PRIZE_CAPTION.to_string(),
             });
         }
+        if !control::hidden(self.control_state(control::SEASON_TAIL)) {
+            paint.push(BoardPaint::Label {
+                widget: Widget::SeasonCaption,
+                rect: Some(layout.season_caption),
+                text: SEASON_CAPTION.to_string(),
+            });
+        }
         if self.tab != BoardTab::Season {
             paint.push(BoardPaint::Label {
                 widget: Widget::AvailableLabel,
@@ -2649,6 +2631,8 @@ pub enum Widget {
     PrizeCaption,
     /// The tournament tab's "Prize" caption.
     TournamentPrizeCaption,
+    /// The season tab's "Prize for this season" caption.
+    SeasonCaption,
 }
 
 /// One entry in the board's paint list.
@@ -2973,12 +2957,31 @@ mod tests {
     }
 
     #[test]
+    fn the_template_placement_rounds_and_lifts() {
+        // x snaps to a multiple of four with ties to even.
+        assert_eq!(template_x(162), 160);
+        assert_eq!(template_x(166), 168);
+        assert_eq!(template_x(161), 160);
+        assert_eq!(template_x(163), 164);
+        assert_eq!(template_x(-6), -8);
+        // y: rows of four, lifted by half the height less eight up to 32
+        // pixels, by four above.
+        assert_eq!(template_y(5, 28), 14);
+        assert_eq!(template_y(5, 32), 12);
+        assert_eq!(template_y(5, 33), 16);
+        assert_eq!(template_y(5, 0), 28);
+        assert_eq!(template_y(5, 15), 21);
+        assert_eq!(template_bottom_y(656, 2, 28), 610);
+        assert_eq!(template_bottom_y(636, 2, 16), 596);
+    }
+
+    #[test]
     fn the_form_template_places_the_tabs_and_the_bottom_row() {
         let wide = layout(false);
         let rect = |x, y, w, h| Rect { x, y, w, h };
-        // The template's tabs: x 20, 162, 300, 440 quarter pixels, of which
-        // the rounding to a multiple of four takes 162 down to 160; y is
-        // five quarters less half the height less eight.
+        // The template's tabs: x 20, 162, 300, 440, of which the snap to
+        // a multiple of four takes 162 down to 160 (40.5 quarters, ties to
+        // even); y is row 5 (20 pixels) lifted by half of 28 less 8.
         assert_eq!(
             wide.tabs,
             [
@@ -2988,26 +2991,35 @@ mod tests {
                 rect(440, 14, 128, 28),
             ]
         );
-        // The bottom row sits 46 pixels above the form's bottom edge; its
-        // buttons are 128 pixels wide plus the template's one-pixel nudge.
-        assert_eq!(wide.end_day_button, rect(20, 610, 129, 28));
-        assert_eq!(wide.close_button, rect(160, 610, 129, 28));
-        assert_eq!(wide.enter_button, rect(300, 610, 129, 28));
-        assert_eq!(wide.forfeit_button, rect(440, 610, 129, 28));
-        assert_eq!(wide.status_label, rect(300, 610, 160, 28));
-        // The labels above the two fighter tables, and the season picture.
+        // The bottom row: row 2, bottom-anchored, sits (2 + 8) * 4 plus
+        // half of 28 less 8 = 46 pixels above the form's bottom edge; the
+        // buttons keep the template's 128-pixel width.
+        assert_eq!(wide.end_day_button, rect(20, 610, 128, 28));
+        assert_eq!(wide.close_button, rect(160, 610, 128, 28));
+        assert_eq!(wide.enter_button, rect(300, 610, 128, 28));
+        assert_eq!(wide.forfeit_button, rect(440, 610, 128, 28));
+        // The status text: a 16-pixel label 40 pixels above the edge.
+        assert_eq!(wide.status_label, rect(300, 616, 160, 16));
+        // The labels above the two fighter tables: row 82 is 328, lifted
+        // by 6; the season picture is taller than 32, so lifted by 4.
         assert_eq!(wide.available_label, rect(116, 322, 128, 28));
         assert_eq!(wide.entered_label, rect(408, 322, 128, 28));
         assert_eq!(wide.season_picture, rect(372, 28, 160, 600));
-        // The season's four item slots: two rows, x 12 and 172.
-        assert_eq!(wide.reward_slots[0], rect(12, 218, 60, 60));
-        assert_eq!(wide.reward_slots[1], rect(172, 218, 60, 60));
-        assert_eq!(wide.reward_slots[2], rect(12, 378, 60, 60));
-        assert_eq!(wide.reward_slots[3], rect(172, 378, 60, 60));
+        // The captions sit on their rows unlifted (a 16-pixel label).
+        assert_eq!(wide.entry_caption, rect(200, 248, 160, 16));
+        assert_eq!(wide.prize_caption, rect(360, 248, 160, 16));
+        assert_eq!(wide.tournament_prize_caption, rect(412, 64, 160, 16));
+        assert_eq!(wide.season_caption, rect(32, 216, 280, 16));
+        // The season's four item slots: rows 60 and 100, x 12 and 172; a
+        // 60-pixel slot is taller than 32, so lifted by 4.
+        assert_eq!(wide.reward_slots[0], rect(12, 236, 60, 60));
+        assert_eq!(wide.reward_slots[1], rect(172, 236, 60, 60));
+        assert_eq!(wide.reward_slots[2], rect(12, 396, 60, 60));
+        assert_eq!(wide.reward_slots[3], rect(172, 396, 60, 60));
 
         let compact = layout(true);
-        assert_eq!(compact.end_day_button, rect(20, 590, 129, 28));
-        assert_eq!(compact.enter_button, rect(300, 590, 129, 28));
+        assert_eq!(compact.end_day_button, rect(20, 590, 128, 28));
+        assert_eq!(compact.enter_button, rect(300, 590, 128, 28));
         assert_eq!(compact.available_label, wide.available_label);
     }
 
@@ -3493,8 +3505,9 @@ mod tests {
         let mut board = board();
         board.company_name = "Ours".to_string();
         board.rivals = (2..=20).map(|id| format!("Company {}", id)).collect();
-        // Indexed by the winner id; each entry is a company id less one.
-        board.tournament_companies = vec![0, 0, 5, 1];
+        // A winner from 2 reads entry `winner - 2`; each entry is a company
+        // id less one.
+        board.tournament_companies = vec![5, 1];
         for (index, event) in board.tournament_events.iter_mut().enumerate() {
             event.name = format!("Event {}", index);
         }
@@ -3582,9 +3595,9 @@ mod tests {
         assert_eq!(board.tournament_note, "Mace");
         assert_eq!(board.lineup_height(), WEAPON_LINEUP_HEIGHT);
         assert!(!board.reward_panel_locked());
-        // Nobody is entered: the check starts from "no match", so the
-        // reward panel carries the mark.
-        assert_eq!(board.weapon_mark(), Some(true));
+        // Nobody is entered: the check starts from "accepted", so the
+        // reward panel carries no mark.
+        assert_eq!(board.weapon_mark(), Some(false));
         assert!(board.team.is_empty());
 
         // Anna joins and is recorded with her event value and weapon.
@@ -3824,7 +3837,7 @@ mod tests {
         let mut board = board();
         assert_eq!(board.hit_test((30, 20)), BoardHit::Tab(0));
         assert_eq!(board.hit_test((200, 20)), BoardHit::Tab(1));
-        // The second tab's template x of 162 quarter pixels rounds to 160.
+        // The second tab's template x of 162 snaps to 160.
         assert_eq!(board.hit_test((150, 20)), BoardHit::Outside);
         assert_eq!(
             board.hit_test((10, 70)),
@@ -3888,7 +3901,7 @@ mod tests {
     }
 
     #[test]
-    fn the_show_switches_to_the_tournament_and_keeps_the_old_tabs_controls() {
+    fn the_show_switches_to_the_tournament_and_hides_the_old_tab() {
         let entrant = vec![Participant {
             slot: 1,
             value: 4,
@@ -3905,9 +3918,9 @@ mod tests {
         assert!(control::selected(board.controls[control::TAB_TOURNAMENT]));
         assert!(!control::selected(board.controls[control::TAB_MATCHES]));
         assert_eq!(board.controls[control::TAB_MATCHES], control::DISABLED);
-        // The original clears its current tab before showing the forced
-        // one, so the standard tab's controls are not hidden on the way.
-        assert_eq!(board.controls[control::STANDARD_FEE], control::SHOWN);
+        // The forced switch keeps the current tab, so the standard tab it
+        // leaves is hidden on the way.
+        assert_eq!(board.controls[control::STANDARD_FEE], control::HIDDEN);
         assert_eq!(board.switch_tab(BoardTab::Season), None);
 
         let mut quiet = Board::new(true, 7, fighters());
@@ -4198,12 +4211,12 @@ mod tests {
         assert!(!board.paint().is_empty());
 
         // Out-of-range records stay total; a tier past the entries table
-        // reads as no entrants, which leaves the mark set.
+        // reads as no entrants, which clears the mark.
         let mut board = board_for(1, i32::MIN, i32::MIN);
         board.selected.max_rank = i32::MAX;
         board.selected.weapon_row = i32::MIN;
         board.selected.flags = FLAG_WEAPON;
-        assert_eq!(board.weapon_mark(), Some(true));
+        assert_eq!(board.weapon_mark(), Some(false));
         board.entries[0].participants = vec![Participant {
             slot: usize::MAX,
             value: 0,
