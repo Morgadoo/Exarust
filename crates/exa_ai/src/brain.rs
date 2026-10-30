@@ -11,16 +11,19 @@
 //!   ([`crate::roles::attitude`]) and kept in its contact rating, together
 //!   with its record's traits. A sleeper that rates the player above a
 //!   notice loses the sleep role and wakes, and its roles are applied again.
-//! - Every frame each brain perceives every character it can sense
-//!   ([`perceive_all`]): the combatant's perception pass writes the contact
-//!   words with the observed's own contacts, the role-derived attitude and
-//!   the relations' trust, and the brain's contact list takes them.
-//! - The AI tick ([`ai_tick`]) then drifts the morale
-//!   ([`combat::drift_morale`]), integrates the contacts
-//!   ([`contacts::integrate`]) and runs the target pass
-//!   ([`contacts::target_pass`]) over this tick's sighting of its target;
-//!   its report stays on the brain. A target pass that enters combat
-//!   engages the brain's duellist, and one that calms down leaves it.
+//! - One brain a tick, the one that has waited longest
+//!   ([`crate::pass_turn`]), runs the target pass: it perceives every
+//!   character it can sense ([`perceive_all`]): the combatant's perception
+//!   pass writes the contact words with the observed's own contacts, the
+//!   role-derived attitude and the relations' trust, and the brain's
+//!   contact list takes them.
+//! - The AI tick ([`ai_tick`]) then drifts every present brain's morale
+//!   ([`combat::drift_morale`]) and integrates its contacts
+//!   ([`contacts::integrate`]); the brain whose turn it is runs the target
+//!   pass ([`contacts::target_pass`]) over this tick's sighting of its
+//!   target, and its report stays on the brain until its next pass. A
+//!   target pass that enters combat engages the brain's duellist, and one
+//!   that calms down leaves it.
 //!
 //! - Out of combat the AI tick runs the idle states' head (the alert
 //!   look-around, then the attention to the attended contact), and the
@@ -446,6 +449,39 @@ impl Npc {
         level
     }
 
+    /// The AI tick of a brain whose target pass does not run this tick
+    /// ([`crate::pass_turn`]): the morale drifts and the contacts are
+    /// integrated, the concern following the concern target the last pass
+    /// left, as on a tick with the pass, but nothing is classified and the
+    /// pass's report stays as the last pass left it.
+    pub fn tick_between_passes(
+        &mut self,
+        sight: contacts::FoeSight,
+        health: (f32, f32),
+        down: bool,
+        now_ms: u32,
+        roll: &mut u32,
+    ) {
+        combat::drift_morale(
+            &mut self.morale,
+            combat::MoraleBody {
+                health: health.0,
+                max_health: health.1,
+                down,
+            },
+            roll,
+        );
+        if let Some(p) = self.personality {
+            self.integration.restraint = p.restraint;
+            self.integration.soothe_scale = p.eagerness;
+        }
+        self.integration.courage = self.morale.courage;
+        self.integration.stress = self.morale.stress;
+        self.integration.alarm = self.morale.alarm;
+        contacts::integrate(&mut self.integration, &mut self.contacts, &sight, now_ms);
+        self.morale.total = self.integration.total;
+    }
+
     /// Keeps the words a perception pass wrote for contact `record` without
     /// disturbing the integration's own hostility, concern, noticed level
     /// and counters. The combatant's contact does not carry the
@@ -551,6 +587,8 @@ pub fn perceive_all(
     db: Option<Res<RoleDatabase>>,
     ticks: Option<Res<BodyTicks>>,
     mut clock: Option<ResMut<BrainClock>>,
+    turn: Option<Res<crate::pass_turn::PassTurn>>,
+    presences: Query<&crate::presence::Presence>,
     motions: Option<Res<Motions>>,
     level: Option<Res<exa_world::room_view::LevelRooms>>,
     players: Query<Entity, With<RatedPlayer>>,
@@ -663,6 +701,18 @@ pub fn perceive_all(
                 )
             })
             .or(player);
+        // The perception runs inside the target pass, which only the brain
+        // whose turn it is runs, and only while it is in the scene
+        // ([`crate::pass_turn`]); the others keep what their last pass
+        // perceived.
+        if turn
+            .as_deref()
+            .is_some_and(|t| !t.is_turn(entity.to_bits()))
+            || presences.get(entity).is_ok_and(|p| !p.moves())
+        {
+            combatant.target = target;
+            continue;
+        }
         let position_cm = gt.map_or(Vec3::ZERO, |g| g.translation() * 100.0);
         let forward = gt.map_or(Vec3::Z, |g| g.rotation() * Vec3::Z);
         let observer = Observer {
@@ -890,6 +940,7 @@ pub fn perceive_all(
 pub fn ai_tick(
     ticks: Option<Res<BodyTicks>>,
     mut clock: Option<ResMut<BrainClock>>,
+    mut turn: Option<ResMut<crate::pass_turn::PassTurn>>,
     mut rooms: Option<ResMut<RoomCells>>,
     level: Option<Res<exa_world::room_view::LevelRooms>>,
     players: Query<(Entity, &GlobalTransform), With<RatedPlayer>>,
@@ -1072,18 +1123,47 @@ pub fn ai_tick(
             home: npc.previous_room,
             exits: &exits,
         };
-        let _ = npc.run_pass(
-            &visible,
-            sight,
-            &distance2,
-            in_combat,
-            asleep,
-            (fighter.health.yellow, fighter.health.max),
-            down,
-            now,
-            &mut roll,
-            &place,
-        );
+        // The integration's present branch: only a brain in the scene
+        // perceives, waits for the target pass and runs it on its turn
+        // ([`crate::pass_turn`]); without a turn every present brain runs
+        // it every tick.
+        npc.integration.active = presence.is_none_or(|p| p.moves());
+        let passed = if !npc.integration.active {
+            false
+        } else if let Some(turn) = turn.as_deref_mut() {
+            turn.claim(_entity.to_bits())
+        } else {
+            true
+        };
+        if passed {
+            if turn.is_some() {
+                debug!(
+                    target: "exa_ai::pass_turn",
+                    "{talking} {_entity:?}: runs the target pass on its turn (AI tick {})",
+                    turn.as_ref().map_or(0, |t| t.turn.clock)
+                );
+            }
+            let _ = npc.run_pass(
+                &visible,
+                sight,
+                &distance2,
+                in_combat,
+                asleep,
+                (fighter.health.yellow, fighter.health.max),
+                down,
+                now,
+                &mut roll,
+                &place,
+            );
+        } else {
+            npc.tick_between_passes(
+                sight,
+                (fighter.health.yellow, fighter.health.max),
+                down,
+                now,
+                &mut roll,
+            );
+        }
         // A debug trace of how the brain rates its target, once a second
         // (`RUST_LOG=exa_ai::brain=debug`).
         if let Some(c) = npc.contacts.iter().find(|c| Some(c.id) == target_id)
@@ -1145,13 +1225,15 @@ pub fn ai_tick(
                 theirs.elapsed = c.ticks_seen;
             }
         }
-        // The target pass decides the engagement: an entry starts the
-        // duel, a calm pass while fighting leaves it. The mind's own
-        // rating no longer decides it. Exarust's duellist fights only its
-        // own target, so an entry against another character does not
-        // start it [guess: the original turns its body to whichever
+        // The target pass decides the engagement, on the ticks it runs: an
+        // entry starts the duel, a calm pass while fighting leaves it. The
+        // mind's own rating no longer decides it. Exarust's duellist fights
+        // only its own target, so an entry against another character does
+        // not start it [guess: the original turns its body to whichever
         // character the pass picked].
-        if let Some(duellist) = duellist.as_deref_mut() {
+        if let Some(duellist) = duellist.as_deref_mut()
+            && passed
+        {
             if let Some(level) = npc.pass.enter {
                 if !duellist.engaged && npc.pass.target == target_id {
                     duellist.engage();
@@ -1415,10 +1497,16 @@ pub fn attach_snap(npc: &mut Npc, facing_yaw: f32) {
 pub fn forget_removed(
     mut removed: RemovedComponents<Npc>,
     mut npcs: Query<(&mut Npc, Option<&mut Combatant>)>,
+    mut turn: Option<ResMut<crate::pass_turn::PassTurn>>,
 ) {
     let gone: Vec<Entity> = removed.read().collect();
     if gone.is_empty() {
         return;
+    }
+    if let Some(turn) = turn.as_deref_mut() {
+        for entity in &gone {
+            turn.forget(entity.to_bits());
+        }
     }
     for (mut npc, combatant) in &mut npcs {
         for entity in &gone {
@@ -2241,6 +2329,134 @@ mod tests {
         // The combatant's contact follows the brain's integrated hostility.
         let cb = w.get::<Combatant>(hostile).unwrap();
         assert!(cb.contact(player).unwrap().hostility > 0.0);
+    }
+
+    /// With the target pass's turn, one brain a tick perceives and runs the
+    /// pass: none on the first tick (nobody has waited yet), then each in
+    /// turn, and the hostile brain still engages.
+    #[test]
+    fn one_brain_a_tick_runs_the_target_pass() {
+        let mut app = App::new();
+        app.insert_resource(db())
+            .init_resource::<crate::pass_turn::PassTurn>()
+            .add_systems(
+                Update,
+                (
+                    apply_new_roles,
+                    rate_the_player,
+                    crate::pass_turn::rotate_pass_turn,
+                    perceive_all,
+                    ai_tick,
+                )
+                    .chain(),
+            );
+        let player = app
+            .world_mut()
+            .spawn((
+                GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 2.0)),
+                Fighter::default(),
+                RatedPlayer,
+                Roles::new_character(&db().book, 0),
+                CharacterId(PLAYER_ID),
+            ))
+            .id();
+        let spawn = |app: &mut App, roles: Roles, at: Vec3| {
+            app.world_mut()
+                .spawn((
+                    roles,
+                    Relations::default(),
+                    Npc::new([0.0; 4]),
+                    Combatant::default(),
+                    crate::Duellist::new(player),
+                    Mind::new(0.0),
+                    GlobalTransform::from_translation(at),
+                    Fighter::default(),
+                    Condition::NORMAL,
+                    CharacterId(2),
+                ))
+                .id()
+        };
+        let hostile = spawn(&mut app, held(&[8, 2]), Vec3::ZERO);
+        let neutral = spawn(&mut app, held(&[2]), Vec3::new(0.5, 0.0, 0.0));
+        let perceived =
+            |app: &App, e: Entity| !app.world().get::<Npc>(e).unwrap().contacts.is_empty();
+        app.update();
+        assert!(!perceived(&app, hostile) && !perceived(&app, neutral));
+        app.update();
+        let turn = app.world().resource::<crate::pass_turn::PassTurn>();
+        let first = turn.turn.current.expect("a brain's turn");
+        let second = if first == hostile.to_bits() {
+            neutral
+        } else {
+            hostile
+        };
+        assert_eq!(turn.turn.last_plan(first), Some(2));
+        assert!(!perceived(&app, second));
+        app.update();
+        assert!(perceived(&app, second));
+        let turn = app.world().resource::<crate::pass_turn::PassTurn>();
+        assert_eq!(turn.turn.last_plan(second.to_bits()), Some(3));
+        assert_eq!(turn.turn.last_plan(first), Some(2));
+        for _ in 0..700 {
+            app.update();
+        }
+        let turn = app.world().resource::<crate::pass_turn::PassTurn>();
+        // The two alternate: by tick 703 each last ran on one of the last
+        // two ticks.
+        let mut last = [
+            turn.turn.last_plan(hostile.to_bits()).unwrap(),
+            turn.turn.last_plan(neutral.to_bits()).unwrap(),
+        ];
+        last.sort_unstable();
+        assert_eq!(last, [702, 703]);
+        assert!(
+            app.world().get::<crate::Duellist>(hostile).unwrap().engaged,
+            "the hostile brain engages"
+        );
+    }
+
+    /// A brain out of the scene neither perceives nor waits for the target
+    /// pass, so the present brain has the pass every other tick.
+    #[test]
+    fn a_brain_out_of_the_scene_does_not_wait_for_the_pass() {
+        let (mut app, player, npc) = perception();
+        app.init_resource::<crate::pass_turn::PassTurn>();
+        app.add_systems(
+            Update,
+            (
+                crate::pass_turn::rotate_pass_turn.before(perceive_all),
+                ai_tick.after(perceive_all),
+            ),
+        );
+        let gone = app
+            .world_mut()
+            .spawn((
+                Npc::new([0.0; 4]),
+                Combatant::default(),
+                crate::Duellist::new(player),
+                Mind::new(0.0),
+                GlobalTransform::from_translation(Vec3::new(1.0, 0.0, 0.0)),
+                Fighter::default(),
+                Condition::NORMAL,
+                Roles::default(),
+                Relations::default(),
+                CharacterId(3),
+                crate::presence::Presence {
+                    state: crate::presence::PresenceState::Dormant,
+                    hold: 0,
+                },
+            ))
+            .id();
+        for _ in 0..6 {
+            app.update();
+        }
+        let turn = app.world().resource::<crate::pass_turn::PassTurn>();
+        assert_eq!(turn.turn.last_plan(gone.to_bits()), None);
+        assert!(app.world().get::<Npc>(gone).unwrap().contacts.is_empty());
+        assert!(!app.world().get::<Npc>(gone).unwrap().integration.active);
+        // The present brain: named on tick 1, 3, 5, its pass on 2, 4, 6.
+        assert_eq!(turn.turn.last_plan(npc.to_bits()), Some(6));
+        assert!(!app.world().get::<Npc>(npc).unwrap().contacts.is_empty());
     }
 
     /// A duellist aims at the player's root, which carries no fighter; the
