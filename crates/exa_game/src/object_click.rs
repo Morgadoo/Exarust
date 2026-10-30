@@ -374,10 +374,13 @@ pub fn run_object_clicks(
         // ([`crate::use_cursor`]). The object itself stays in the scene.
         if use_of == ObjectInteraction::UseInHand {
             let kind = s.usable.as_ref().map_or(1, |u| u.kind);
+            // The item card's close runs first, as in the take.
+            close_card(&mut out, now as u32);
             if let Some(cursor) = out.use_cursor.as_deref_mut() {
-                // The object's record id (untagged): a door's key section
-                // names the record the use unlocks with.
-                cursor.lift(placed.id, placed.id, 0, 0, kind);
+                // The scene object's id word, tag included (the original
+                // stores the node's id): a door's key section names the
+                // key that way. Slot and panel are zero.
+                cursor.lift(placed.tagged_id, placed.tagged_id, 0, 0, kind);
                 info!("double click object {id:#x}: the use cursor is up for it");
             }
             continue;
@@ -738,11 +741,18 @@ mod tests {
             Some(sections(Some((1, 1)), false, 0)),
             Vec3::ZERO,
         );
+        // A level-placed key carries its tier tag: the cursor holds the
+        // tagged id a door's key section names.
+        app.world_mut()
+            .get_mut::<PlacedItem>(key)
+            .unwrap()
+            .tagged_id = 0x8000_0021;
         click(&mut app, Hit::SceneNode { node: key }, Vec3::ZERO, true);
         let cursor = *app.world().resource::<UseCursor>();
         assert_eq!(cursor.state, USE_STATE);
         assert_eq!(cursor.cursor_mode, USE_CURSOR_MODE);
-        assert_eq!((cursor.item, cursor.kind), (0x21, 1));
+        assert_eq!((cursor.item, cursor.kind), (0x8000_0021, 1));
+        assert_eq!((cursor.slot, cursor.panel), (0, 0));
         assert!(cursor.up());
         assert!(app.world().get_entity(key).is_ok());
 
