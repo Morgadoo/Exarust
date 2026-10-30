@@ -110,8 +110,8 @@ pub const LIGHT_MERGE_SQ: f32 = 6_400.0;
 pub const MOST_LIGHTS: usize = 16;
 /// The ribbon's texture steps along a stream while it charges and while it
 /// runs: the squared distance between two samples times one of these.
-pub const RIBBON_STEP_CHARGING: f32 = 0.005;
-pub const RIBBON_STEP_RUNNING: f32 = 0.0003;
+pub const RIBBON_STEP_CHARGING: f64 = 0.005;
+pub const RIBBON_STEP_RUNNING: f64 = 0.0003;
 /// The extra reach a torrent point tests a simulated object's points
 /// with, cm.
 pub const BODY_EXTRA: f32 = 40.0;
@@ -919,9 +919,7 @@ impl Torrent {
                 );
                 let delta = points[i + 1] - points[i];
                 let squared = (delta.x * delta.x + delta.y * delta.y) + delta.z * delta.z;
-                // The emitter forms the squared distance times the step
-                // before adding it, in single precision.
-                along += squared * step;
+                along = walk_texture(along, squared, step);
             }
             let base = if mesh.positions.is_empty() {
                 0
@@ -936,6 +934,13 @@ impl Torrent {
         mesh.drop_triangles(2);
         mesh
     }
+}
+
+/// The texture coordinate's next value along a stream: the squared
+/// sample distance times the step, added to the coordinate, both in double
+/// precision and then narrowed, as the emitter does.
+pub fn walk_texture(along: f32, squared: f32, step: f64) -> f32 {
+    (f64::from(squared) * step + f64::from(along)) as f32
 }
 
 /// `(a × b)`, each term in the original's cross order. The original's
@@ -1166,14 +1171,15 @@ mod tests {
     }
 
     #[test]
-    fn the_texture_walk_is_single_precision() {
-        // A 3 cm segment in the charging step: 9 * 0.005 = 0.045 in single,
-        // which differs from the same product taken in double and narrowed.
-        let squared = 9.0f32;
-        let single = squared * RIBBON_STEP_CHARGING;
-        assert_eq!(single.to_bits(), 0x3d38_51eb);
-        let in_double = (f64::from(squared) * 0.005) as f32;
-        assert_eq!(in_double.to_bits(), 0x3d38_51ec);
+    fn the_texture_walk_is_double_precision() {
+        // A 3 cm segment in the charging step: 9·0.005 in double narrows to
+        // 0x3d3851ec, where the product in single would be 0x3d3851eb.
+        assert_eq!(
+            walk_texture(0.0, 9.0, RIBBON_STEP_CHARGING).to_bits(),
+            0x3d38_51ec
+        );
+        assert_eq!((9.0f32 * 0.005f32).to_bits(), 0x3d38_51eb);
+        assert_eq!(walk_texture(1.0, 100.0, RIBBON_STEP_RUNNING), 1.03);
     }
 
     #[test]
