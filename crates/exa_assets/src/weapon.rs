@@ -629,6 +629,69 @@ mod tests {
         assert!(loader.factory_weapon_stats(&name, Some(&damaged)).is_some());
     }
 
+    /// A factory region is the part's atlas rectangle, not its source
+    /// texture's size: shipped recipes scale the source over the region
+    /// (a 128×128 hookbolt fills 256×256, a 128×512 falchion blade 128×256,
+    /// quarterstaff_b1's cap has a negative height), and the painted target
+    /// is the region at full detail, so its material tiles repeat once per
+    /// source texture. Skipped without the game.
+    #[test]
+    fn factory_regions_are_the_paint_targets() {
+        let Some(dir) = crate::locate_install(None) else {
+            return;
+        };
+        let game = crate::GameData::open(dir).unwrap();
+        let pack = game.pack(PackKind::Factories).unwrap();
+        let mut checked = 0;
+        let mut stretched = 0;
+        for entry in pack.entries() {
+            let Some(bytes) = pack.get(&entry.name) else {
+                continue;
+            };
+            let f = Factory::parse(bytes).unwrap();
+            for part in &f.parts {
+                for variant in &part.variants {
+                    let region = Vec2::new(
+                        f.atlas[0] as f32 * part.atlas[2],
+                        f.atlas[1] as f32 * part.atlas[3],
+                    );
+                    if region.x == 0.0 || region.y == 0.0 {
+                        continue;
+                    }
+                    checked += 1;
+                    let target = crate::paint::paint_target_size(region, 3);
+                    assert_eq!(
+                        target,
+                        Vec2::new(
+                            region.x.abs().round_ties_even().max(1.0),
+                            region.y.abs().round_ties_even().max(1.0)
+                        )
+                    );
+                    let tiling = crate::paint::Tiling::factory(region, target, 0);
+                    // One source texel per region texel; a negative atlas
+                    // scale mirrors the tiles (the quad is flipped).
+                    assert!(
+                        (tiling.density.abs() - Vec2::ONE).max_element() < 0.01,
+                        "{}: density {:?}",
+                        entry.name,
+                        tiling.density
+                    );
+                    if let Some(texture) = game.texture(&format!("{}d", variant.model))
+                        && let Ok(rfi) = exa_formats::rfi::Rfi::parse(texture)
+                        && (rfi.header.width as f32, rfi.header.height as f32)
+                            != (target.x, target.y)
+                    {
+                        stretched += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked > 100, "only {checked} checked");
+        // Many parts draw a source texture of another size over the region;
+        // this is why the region, not the texture, is the target.
+        assert!(stretched > 20, "only {stretched} stretched");
+    }
+
     /// Assembles the first few shipped factories (skipped without the game):
     /// every node must have a finite transform, a mesh and a painted
     /// material, and the stat pass must know the assembled striking extent.

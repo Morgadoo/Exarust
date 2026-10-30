@@ -1236,11 +1236,13 @@ impl ModelLoader<'_> {
             layers.extend(emblem);
         }
         let item_normal = self.texels(&format!("{stem}n"));
-        let source = Vec2::new(shade.width as f32, shade.height as f32);
-        // A job below texture detail 3 paints at half the region's size; the
-        // same region over the smaller target doubles every tile, so the
-        // pattern keeps its scale (`RegionDraw::uniforms`).
-        let painted_size = paint_target_size(source, paint.texture_detail);
+        // The target is the part's atlas rectangle: the region quad stretches
+        // the source texture (shade, masks, normal) over it, so painting at
+        // the region's size samples one source texel per region texel and
+        // keeps the library tiles at their material scale. Below texture
+        // detail 3 the target halves and every tile doubles
+        // (`RegionDraw::uniforms`).
+        let painted_size = paint_target_size(paint.region_texels, paint.texture_detail);
         let job = PaintJob {
             key: PaintKey::Factory(stem, key.clone()),
             shade,

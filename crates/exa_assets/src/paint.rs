@@ -141,12 +141,27 @@ impl Tiling {
 /// half of it (integer division) when the texture detail is below 3. The
 /// original's draw passes then double every tile uniform, so a low-detail
 /// item shows the same pattern at half the resolution.
+///
+/// The target is the part's atlas rectangle (the factory atlas times the
+/// part's atlas scale), not the source texture's size: shipped parts often
+/// differ (a 128×128 hookbolt fills a 256×256 region, a 128×512 falchion
+/// blade a 128×256 one), and the region quad stretches the source over it.
+/// A recipe can store a negative atlas scale (quarterstaff_b1's cap); the
+/// quad is then flipped, and the target takes the magnitude. [guess]
 pub fn paint_target_size(region_texels: Vec2, texture_detail: u32) -> Vec2 {
-    let size = region_texels.max(Vec2::ONE).as_uvec2();
+    // The atlas rectangle is a fraction of the factory atlas; its texel
+    // size rounds to nearest (a 204.8-texel cap is 205 texels).
+    let size = region_texels.abs().max(Vec2::ONE);
     let (w, h) = if texture_detail < 3 {
-        (size.x / 2, size.y / 2)
+        (
+            (size.x.round_ties_even() as u32) / 2,
+            (size.y.round_ties_even() as u32) / 2,
+        )
     } else {
-        (size.x, size.y)
+        (
+            size.x.round_ties_even() as u32,
+            size.y.round_ties_even() as u32,
+        )
     };
     Vec2::new(w.max(1) as f32, h.max(1) as f32)
 }
@@ -2466,6 +2481,11 @@ mod tests {
         );
         // A single-texel region never halves to nothing.
         assert_eq!(paint_target_size(Vec2::ONE, 1), Vec2::ONE);
+        // A negative region size (a flipped quad) takes the magnitude.
+        assert_eq!(
+            paint_target_size(Vec2::new(256.0, -128.0), 3),
+            Vec2::new(256.0, 128.0)
+        );
         let region = RegionDraw {
             offset: Vec2::new(0.25, 0.5),
             size: Vec2::new(0.5, 0.5),

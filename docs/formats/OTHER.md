@@ -1330,7 +1330,12 @@ factory weapons of a real save, part for part and material for material.
   `exa_assets::paint::Tiling::crop` carries it. Shipped recipes store a
   negative texture parameter for a few parts (combknifea1's crop is 1.05),
   and the value is not clamped.
-- **Targets and detail**: a job allocates three textures: colour (sRGB RGBA8),
+- **Targets and detail**: a per-part target is the region's texel size
+  (the factory atlas times the part's atlas scale, rounded to nearest), not
+  the source texture's: shipped parts stretch a source of another size over
+  the region (a 128×128 hookbolt fills 256×256, a 128×512 falchion blade
+  128×256, quarterstaff_b1's cap stores a negative height and mirrors). A
+  job allocates three textures: colour (sRGB RGBA8),
   normal (linear RG two channels, z rebuilt when read) and surface (linear
   RGBA8: intensity, gloss, metal). A job with an extra layer takes an
   sRGB-alpha colour target instead. Below texture detail 3 the target's
