@@ -2689,16 +2689,16 @@ plain draw and input records.
   modelled item with none of those sections as a weapon. The item's
   `0x1000000` flag is written to the body's flip byte and `0x2000000`
   lights its held part. A weapon node settles at −1, a shield's at the
-  largest word. The stance restarts with blend 20 after every re-dress,
-  and the dynamics restarted too unless the body is in its weapon-swap
-  state (`0x1F`); the body is refreshed when no hand attached a shield or
-  a light, and the sets then trade only when a hand changed. A weapon's
+  largest word. Every re-dress recomputes the body's grip and restarts
+  the stance with blend 20 unless the body is in its weapon-swap state
+  (`0x1F`); the body is refreshed when both target items are 0, and the
+  sets then trade only when a hand changed. A weapon's
   or light's take-in writes only the top bit of the dragged item's flags
   into the record (a shield keeps all of them); the model still takes its
   lit and flipped marks from the full flags. Releasing a hand's old model
   detaches its scene node, refreshes the body when neither record hand
-  names an item, and restarts the stance when the model's flags carry bit
-  1. A set swap writes the view's two `0x60`-frame counters onto the side
+  names an item, and restarts the stance when the take-out job's mode has
+  bit 1. A set swap writes the view's two `0x60`-frame counters onto the side
   the second-set flag leaves. A weapon's take-out clears
   the record entry that names it (either hand's) and, when it was scheduled
   for the main hand and the weapon was the body's first attached weapon,

@@ -36,10 +36,10 @@
 //! refreshes the body after the attaches when both hands of the stowed set
 //! the plan read are empty.
 //!
-//! Every completed re-dress restarts the figure's stance, and its dynamics
-//! too unless the body is in its weapon-swap state (its animation does it
-//! then), and clears the body's first attach flag. The body is refreshed
-//! when no hand attached a shield or a light.
+//! Every completed re-dress recomputes the body's grip (its weapon class
+//! word from the parts it holds), restarts the figure's stance with blend
+//! 20 unless the body is in its weapon-swap state (its animation does it
+//! then), and clears the body's first attach flag.
 //!
 //! The doll's hand scene is built from the record's other set: each hand
 //! whose item differs gets a model when the item has one, attached as a
@@ -51,7 +51,7 @@
 //! burning item's lit mark and its flipped mark are set on the model from
 //! the full flags. Releasing a hand's old model detaches its scene node,
 //! refreshes the body when neither record hand names an item, and restarts
-//! the stance when the model's flags carry bit 1. A set swap writes the
+//! the stance when the take-out job's mode has bit 1. A set swap writes the
 //! view's two `0x60`-frame counters onto the side the second-set flag
 //! leaves.
 //!
@@ -66,12 +66,11 @@ use crate::possession::{
 /// The blend a re-dress restarts the stance with.
 pub const STANCE_BLEND: u32 = 0x14;
 /// The body state whose animation swaps the weapon sets; the apply step
-/// does not restart the dynamics then.
+/// does not restart the stance then.
 pub const SWAP_STATE: u32 = 0x1F;
-/// A hand model's flag bit that restarts the stance when the model is
-/// released. [guess: the original reads bit 1 of the model's flags word; its
-/// meaning is not traced]
-pub const MODEL_RESTART: u32 = 0x2;
+/// The take-out job's mode bit that restarts the stance (and refreshes the
+/// textures) when the hand's old model is released.
+pub const RESTART_MODE: u32 = 0x2;
 /// The only flag bits an item taken into a hand keeps in the record: the
 /// weapon's and the off-hand light's record entry is `flags &` this.
 pub const KEPT_HAND_FLAGS: u32 = 0x8000_0000;
@@ -113,7 +112,8 @@ pub struct HandAttach {
 pub struct AttachPlan {
     pub changed: [bool; 2],
     pub attach: [Option<HandAttach>; 2],
-    /// The record's stowed set's item ids as the plan read them.
+    /// The record's stowed set's item ids as the plan read them; the
+    /// rebuild refreshes the body when both are 0.
     pub targets: [u32; 2],
     /// The record's second set is out after this plan (the plan was made
     /// for the swap, so the sets trade when it is applied).
@@ -126,22 +126,19 @@ impl AttachPlan {
         self.changed[0] || self.changed[1]
     }
 
-    /// Whether the rebuild refreshes the body: no hand attaches a shield or
-    /// a light, so both of the job's mode words are the weapon's `0`.
+    /// Whether the rebuild refreshes the body: both target item ids the
+    /// plan read are 0 (the job's own copies of the record's other set).
     pub fn refresh_body(&self) -> bool {
-        self.attach
-            .iter()
-            .flatten()
-            .all(|attach| attach.kind == AttachKind::Weapon)
+        self.targets == [0, 0]
     }
 
     /// The scene rebuild's steps in the original's order: each changed hand
     /// whose body model is present detaches it, the body's weapon parts are
     /// cleared when the class word has no `0x30` bits, the new models are
-    /// attached in hand order, the body is refreshed when neither hand
-    /// attaches a shield or a light, the stance is restarted, the dynamics
-    /// are restarted unless the body is in [`SWAP_STATE`], the body's first
-    /// attach flag is cleared, and a swap plan trades the record's sets.
+    /// attached in hand order, the body is refreshed when both targets are
+    /// 0, the body's grip is recomputed, the stance is restarted unless the
+    /// body is in [`SWAP_STATE`], the body's first attach flag is cleared,
+    /// and a swap plan trades the record's sets.
     /// `current` are the item ids the body's hand models hold now.
     pub fn rebuild_steps(
         &self,
@@ -169,9 +166,9 @@ impl AttachPlan {
         if self.refresh_body() {
             steps.push(ApplyStep::RefreshBody);
         }
-        steps.push(ApplyStep::RestartStance);
+        steps.push(ApplyStep::RefreshGrip);
         if body_state != SWAP_STATE {
-            steps.push(ApplyStep::RestartDynamics);
+            steps.push(ApplyStep::RestartStance);
         }
         steps.push(ApplyStep::ClearAttachFlag);
         steps
@@ -243,14 +240,15 @@ pub enum ApplyStep {
         hand: usize,
         kind: AttachKind,
     },
-    /// The body is refreshed because no hand attached a shield or a light
-    /// (both of the job's mode words are the weapon's 0).
+    /// The body is refreshed because both of the plan's target item ids
+    /// are 0.
     RefreshBody,
-    /// The stance is restarted with blend [`STANCE_BLEND`], always.
+    /// The body's grip is recomputed from the parts it holds (its weapon
+    /// class word and hold kind), always.
+    RefreshGrip,
+    /// The stance is restarted with blend [`STANCE_BLEND`] unless the body
+    /// is in the swap state [`SWAP_STATE`].
     RestartStance,
-    /// The dynamics are restarted with blend [`STANCE_BLEND`] unless the
-    /// body is in the swap state [`SWAP_STATE`].
-    RestartDynamics,
     /// The body's first attach flag is cleared.
     ClearAttachFlag,
     /// The record's sets trade places.
@@ -305,10 +303,10 @@ impl Busy {
 pub struct TakeOut {
     /// The hand it was made for.
     pub hand: usize,
-    /// The job mode word: bit 2 asks for the light finaliser (apparel
-    /// rebuilt only) on an off-hand light or shield; bit 1 is set by the
-    /// scheduled job but not read by the take-out. The stance restart comes
-    /// from the released model's own flag bit 1 ([`MODEL_RESTART`]).
+    /// The job mode word: bit 1 ([`RESTART_MODE`]) restarts the stance and
+    /// refreshes the textures when the old model is released, bit 2 asks
+    /// for the light finaliser (apparel rebuilt only) on an off-hand light
+    /// or shield.
     pub mode: u32,
     /// The item the take-out makes room for: the hand's model must not
     /// already hold it (a second job for the same hand does nothing). `None`
@@ -382,9 +380,7 @@ pub struct Released {
 /// Takes an item out of a hand, as a drag off the figure, a take-in and a
 /// shield take do. `held` is the item in the hand's model and where it sits
 /// (`None` when the hand is empty), `off` the off hand's model's item and
-/// kind as it is once the item has left, and `model_flags` the flags word
-/// of the model that leaves (its bit 1 restarts the stance, as the model's
-/// own finaliser does).
+/// kind as it is once the item has left.
 ///
 /// The hand must be one of the two, must hold a model, and that model must
 /// not be the item the take-out makes room for (a hand that already holds
@@ -400,10 +396,9 @@ pub fn take_out(
     job: &TakeOut,
     held: Option<(u32, HeldPlace)>,
     off: Option<(u32, ItemKind)>,
-    model_flags: u32,
 ) -> Released {
     let mut released = Released {
-        restarts: model_flags & MODEL_RESTART != 0,
+        restarts: job.mode & RESTART_MODE != 0,
         ..Default::default()
     };
     let hand = job.hand;
@@ -565,7 +560,7 @@ pub fn take_shield(
             record: true,
             ..TakeOut::plain(1, item)
         };
-        take_out(p, &job, off, None, 0);
+        take_out(p, &job, off, None);
     }
     p.record_hold(1, item, flags);
     ShieldTaken {
@@ -807,32 +802,35 @@ where
 
 /// A hand model's scene node: the model is attached (the node's visible
 /// mark), owned by the body, and its settle word says whether its item
-/// counts as settled. A weapon's is -1, a shield's the largest word, and a
-/// light's node is attached with the shield's settle word [the light's
-/// settle is not written by its own attach routine, so it keeps the word
-/// the node had; modelled as the shield's].
+/// counts as settled. The settle word is written by the part the item goes
+/// into: -1 for an item with a weapon section (an off-hand weapon that also
+/// lights included), the largest word for a shield; an item with only a
+/// light section writes none (`None`: the node keeps its word).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HandNode {
     pub attached: bool,
-    pub settle: i32,
+    pub settle: Option<i32>,
 }
 
-/// The scene node an attached hand model gets.
-pub fn hand_node(kind: AttachKind) -> HandNode {
+/// The scene node an attached hand model gets, by the item's sections in
+/// the hand-scene builder's order (weapon, then shield).
+pub fn hand_node(kind: ItemKind) -> HandNode {
     HandNode {
         attached: true,
-        settle: if kind == AttachKind::Weapon {
-            WEAPON_SETTLE
+        settle: if kind.weapon.is_some() {
+            Some(WEAPON_SETTLE)
+        } else if kind.shield {
+            Some(SHIELD_SETTLE)
         } else {
-            SHIELD_SETTLE
+            None
         },
     }
 }
 
 /// What releasing a hand's old model does: its scene node is detached, the
 /// body is refreshed when neither of the record's two hands names an item
-/// any more, and a model whose flags carry [`MODEL_RESTART`] restarts the
-/// stance.
+/// any more, and a take-out job whose mode carries [`RESTART_MODE`]
+/// restarts the stance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ModelRelease {
     pub detach_node: bool,
@@ -842,12 +840,12 @@ pub struct ModelRelease {
 
 /// The release of a hand's old model, as the take-out's finaliser makes it.
 /// `both_hands_empty` is the record's two out hand items both 0 after the
-/// take-out, and `model_flags` the released model's flags word.
-pub fn release_model(both_hands_empty: bool, model_flags: u32) -> ModelRelease {
+/// take-out, and `mode` the take-out job's mode word.
+pub fn release_model(both_hands_empty: bool, mode: u32) -> ModelRelease {
     ModelRelease {
         detach_node: true,
         refresh_body: both_hands_empty,
-        restart: model_flags & MODEL_RESTART != 0,
+        restart: mode & RESTART_MODE != 0,
     }
 }
 
@@ -999,18 +997,18 @@ mod tests {
                     hand: 1,
                     kind: AttachKind::Shield
                 },
+                ApplyStep::RefreshGrip,
                 ApplyStep::RestartStance,
-                ApplyStep::RestartDynamics,
                 ApplyStep::ClearAttachFlag,
             ]
         );
         // A redress plan does not trade the sets.
         assert_eq!(p.out, [hand(5, 0), hand(6, 0)]);
-        // A swap plan does; the stance always restarts, the dynamics only
-        // outside the swap state. A body without weapon class bits has its
-        // weapon parts cleared after the detaches, and a rebuild that
-        // attaches no shield or light refreshes the body after the
-        // attaches. The body holds no models, so nothing detaches.
+        // A swap plan does; the grip is always recomputed, the stance
+        // restarted only outside the swap state. A body without weapon
+        // class bits has its weapon parts cleared after the detaches, and
+        // targets both 0 refresh the body after the attaches. The body
+        // holds no models, so nothing detaches.
         let plan = AttachPlan {
             changed: [true, false],
             attach: [None, None],
@@ -1024,7 +1022,7 @@ mod tests {
             vec![
                 ApplyStep::ClearWeaponPart,
                 ApplyStep::RefreshBody,
-                ApplyStep::RestartStance,
+                ApplyStep::RefreshGrip,
                 ApplyStep::ClearAttachFlag,
                 ApplyStep::ExchangeSets
             ]
@@ -1052,10 +1050,16 @@ mod tests {
         assert_eq!(plan.attach[0], None);
         assert_eq!(plan.attach[1].unwrap().kind, AttachKind::Shield);
         assert!(!plan.refresh_body());
-        // A model-less item changes the hand but builds nothing.
+        // A model-less item changes the hand but builds nothing; the body
+        // is not refreshed while a target names an item.
         let plan = scene_plan(&current, &targets, kinds, |id| id != 9, true).unwrap();
         assert!(plan.changed[1]);
         assert_eq!(plan.attach[1], None);
+        assert!(!plan.refresh_body());
+        // Both targets 0: the hands change to nothing and the body is
+        // refreshed.
+        let plan = scene_plan(&current, &[hand(0, 0), hand(0, 0)], kinds, |_| true, true).unwrap();
+        assert_eq!(plan.changed, [true, false]);
         assert!(plan.refresh_body());
         // The off hand's weapon that also lights is built as that light.
         let plan = scene_plan(
@@ -1075,9 +1079,9 @@ mod tests {
 
     #[test]
     fn a_released_model_detaches_and_may_restart() {
-        // Both hands empty and the model's flag bit 1: everything runs.
+        // Both hands empty and the job mode's bit 1: everything runs.
         assert_eq!(
-            release_model(true, MODEL_RESTART),
+            release_model(true, RESTART_MODE),
             ModelRelease {
                 detach_node: true,
                 refresh_body: true,
@@ -1086,9 +1090,20 @@ mod tests {
         );
         assert!(!release_model(false, 0x800).refresh_body);
         assert!(!release_model(false, 0x800).restart);
-        assert_eq!(hand_node(AttachKind::Weapon).settle, -1);
-        assert_eq!(hand_node(AttachKind::Shield).settle, 0x7FFF_FFFF);
-        assert!(hand_node(AttachKind::Light).attached);
+        assert_eq!(hand_node(weapon(0x10)).settle, Some(-1));
+        // An off-hand weapon that lights still settles as a weapon.
+        assert_eq!(hand_node(torch()).settle, Some(-1));
+        let shield_kind = ItemKind {
+            shield: true,
+            ..Default::default()
+        };
+        assert_eq!(hand_node(shield_kind).settle, Some(0x7FFF_FFFF));
+        let lamp = ItemKind {
+            light: true,
+            ..Default::default()
+        };
+        assert_eq!(hand_node(lamp).settle, None);
+        assert!(hand_node(lamp).attached);
         // The swap's counters sit on the side the second-set flag leaves.
         assert_eq!(swap_timings(true), (0x60, 0));
         assert_eq!(swap_timings(false), (0, 0x60));
@@ -1152,23 +1167,23 @@ mod tests {
             record: true,
             ..TakeOut::plain(1, 99)
         };
-        let r = take_out(&mut p, &job, Some((5, FIRST)), None, 0);
+        let r = take_out(&mut p, &job, Some((5, FIRST)), None);
         assert!(r.done);
         assert_eq!(r.flags, 0);
         assert_eq!(p.out[0].id, 0);
         assert_eq!(p.out[1].id, 7);
         // An empty hand, a hand out of range, and a hand that already holds
         // the item the take-out makes room for do nothing.
-        assert!(!take_out(&mut p, &TakeOut::plain(0, 5), None, None, 0).done);
-        assert!(!take_out(&mut p, &TakeOut::plain(2, 5), Some((5, FIRST)), None, 0).done);
-        assert!(!take_out(&mut p, &TakeOut::plain(1, 7), Some((7, LATER)), None, 0).done);
-        assert!(take_out(&mut p, &TakeOut::plain(1, 99), Some((7, LATER)), None, 0).done);
+        assert!(!take_out(&mut p, &TakeOut::plain(0, 5), None, None).done);
+        assert!(!take_out(&mut p, &TakeOut::plain(2, 5), Some((5, FIRST)), None).done);
+        assert!(!take_out(&mut p, &TakeOut::plain(1, 7), Some((7, LATER)), None).done);
+        assert!(take_out(&mut p, &TakeOut::plain(1, 99), Some((7, LATER)), None).done);
         // A plain take-out keeps the record.
         let mut p = Possessions {
             out: [hand(5, 0x0200_0000), hand(0, 0)],
             ..Default::default()
         };
-        let r = take_out(&mut p, &TakeOut::plain(0, 99), Some((5, FIRST)), None, 0);
+        let r = take_out(&mut p, &TakeOut::plain(0, 99), Some((5, FIRST)), None);
         assert!(r.done);
         assert_eq!(r.flags, 0x0200_0000);
         assert_eq!(p.out[0].id, 5);
@@ -1187,7 +1202,7 @@ mod tests {
             record: true,
             ..TakeOut::plain(1, 99)
         };
-        let r = take_out(&mut p, &job, Some((7, HeldPlace::Light)), None, 0);
+        let r = take_out(&mut p, &job, Some((7, HeldPlace::Light)), None);
         assert!(r.done && r.light_finish);
         assert_eq!(r.flags, 0x40);
         assert_eq!(p.out, [hand(5, 0), hand(0, 0x40)]);
@@ -1196,7 +1211,7 @@ mod tests {
             out: [hand(5, 0), hand(9, 0x10)],
             ..Default::default()
         };
-        let r = take_out(&mut p, &job, Some((9, HeldPlace::Shield)), None, 0);
+        let r = take_out(&mut p, &job, Some((9, HeldPlace::Shield)), None);
         assert!(!r.light_finish);
         assert_eq!(r.flags, 0x10);
         assert_eq!(p.out[1].id, 0);
@@ -1213,7 +1228,6 @@ mod tests {
             &TakeOut::scheduled(0),
             Some((5, FIRST)),
             Some((7, torch())),
-            0,
         );
         assert_eq!(r.promoted, Some(7));
         // The promoted item takes the off hand's flags.
@@ -1230,7 +1244,6 @@ mod tests {
             &TakeOut::scheduled(0),
             Some((5, FIRST)),
             Some((9, shield())),
-            0,
         );
         assert_eq!(r.promoted, None);
         assert_eq!(p.out, [hand(0, 0), hand(9, 0)]);
@@ -1245,7 +1258,6 @@ mod tests {
             &TakeOut::scheduled(0),
             Some((5, LATER)),
             Some((7, weapon(0x10))),
-            0,
         );
         assert_eq!(r.promoted, None);
         assert_eq!(p.out, [hand(0, 0), hand(7, 0)]);
@@ -1260,25 +1272,16 @@ mod tests {
             &TakeOut::scheduled(1),
             Some((7, FIRST)),
             Some((5, torch())),
-            0,
         );
         assert_eq!(r.promoted, None);
         assert_eq!(p.out[0].id, 5);
-        let r = take_out(&mut p, &TakeOut::scheduled(0), Some((5, FIRST)), None, 0);
+        let r = take_out(&mut p, &TakeOut::scheduled(0), Some((5, FIRST)), None);
         assert!(r.both_empty && r.done);
-        // The released model's flag bit 1 asks for the stance restart;
-        // the job mode does not.
-        assert!(!take_out(&mut p, &TakeOut::plain(0, 1), Some((5, FIRST)), None, 0).restarts);
-        assert!(
-            take_out(
-                &mut p,
-                &TakeOut::scheduled(0),
-                Some((5, FIRST)),
-                None,
-                MODEL_RESTART
-            )
-            .restarts
-        );
+        // The job mode's bit 1 (the scheduled job's mode 7) asks for the
+        // stance restart when the old model is released; a plain job's
+        // mode 0 does not.
+        assert!(!take_out(&mut p, &TakeOut::plain(0, 1), Some((5, FIRST)), None).restarts);
+        assert!(take_out(&mut p, &TakeOut::scheduled(0), Some((5, FIRST)), None).restarts);
     }
 
     #[test]

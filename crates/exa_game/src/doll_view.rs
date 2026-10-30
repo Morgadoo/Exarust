@@ -1011,7 +1011,7 @@ mod tests {
         // with Insight's technique 8) goes there beside the main hand.
         hold_item(&mut p, 5, 0, sword, true, kinds);
         assert_eq!(p.out, [Hand { id: 8, flags: 0 }, Hand { id: 5, flags: 0 }]);
-        // A shield ignores the request.
+        // Without the request a one-hander goes into the main hand.
         hold_item(&mut p, 9, 0x10, sword, false, kinds);
         assert_eq!(p.out[0], Hand { id: 9, flags: 0 });
         assert_eq!(class_word(Some(0x10)), 0x10);
