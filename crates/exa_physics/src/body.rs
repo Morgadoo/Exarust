@@ -738,16 +738,17 @@ impl Part {
         (0..4).map(|i| self.smoothed[i] * w[i]).sum()
     }
 
-    /// How far the point with weights `w` moved over the last two ticks
-    /// (m): its place over the particles of two ticks ago (the original's
-    /// third particle set) taken from its place now, each weighted sum
-    /// summed in particle order as the original's point transform sums.
-    /// The original's own callers are the character code's two uses; no
-    /// Exarust system reads a two-tick displacement yet, so this has no
-    /// caller.
+    /// How far the point with weights `w` moved since the post-step before
+    /// last (m): its place over the original's third particle set taken
+    /// from its place now. Each weighted sum is the original's helper's
+    /// `(w₀p₀ + w₁p₁) + (w₂p₂ + w₃p₃)`, the earlier place first. Mid-step
+    /// this spans two ticks; between ticks, one. The original's own callers
+    /// are the character code's two uses; no Exarust system reads it yet,
+    /// so this has no caller.
     pub fn two_step_point(&self, w: &[f32; 4]) -> Vec3 {
-        let before: Vec3 = (0..4).map(|i| self.two_ticks_ago[i] * w[i]).sum();
-        let now: Vec3 = (0..4).map(|i| self.positions[i] * w[i]).sum();
+        let sum = |p: &[Vec3; 4]| (p[0] * w[0] + p[1] * w[1]) + (p[2] * w[2] + p[3] * w[3]);
+        let before = sum(&self.two_ticks_ago);
+        let now = sum(&self.positions);
         now - before
     }
 
@@ -4099,7 +4100,8 @@ impl Ragdoll {
             if !drive.dormant {
                 self.countdown = self.countdown.max(WAKE_COUNT);
             } else {
-                self.countdown = (self.countdown - 1).max(SLEEP_COUNT);
+                // The character code's tick take of one.
+                self.take_ticks(1);
             }
             return;
         }
@@ -4251,8 +4253,11 @@ impl Ragdoll {
     fn sleep_tick(&mut self) {
         self.level_impacts.clear();
         if self.sleep == Sleep::Asleep {
+            // The original's sleeping branch rolls its particle sets once
+            // more before deep sleep, so the third set is where the body lies.
             for p in &mut self.parts {
                 p.previous = p.positions;
+                p.two_ticks_ago = p.positions;
             }
             self.sleep = Sleep::Deep;
         }
@@ -5328,6 +5333,29 @@ mod tests {
         assert_eq!(body.parts[0].two_step_point(&half), now - want);
         // A part that has not ticked reports nothing.
         assert_eq!(body.parts[1].two_step_point(&half), Vec3::ZERO);
+        // The sums pair the particles: (1e8 + 1) + (−1e8 + 1) is 0 in
+        // single precision, where a running sum would give 1.
+        body.parts[0].two_ticks_ago = [Vec3::ZERO; 4];
+        body.parts[0].positions = [
+            Vec3::new(1e8, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(-1e8, 0.0, 0.0),
+            Vec3::new(1.0, 0.0, 0.0),
+        ];
+        assert_eq!(body.parts[0].two_step_point(&[1.0; 4]).x, 0.0);
+    }
+
+    /// The first tick of sleep rolls the third particle set onto where the
+    /// body lies, so a sleeper's two-step displacement is zero.
+    #[test]
+    fn falling_asleep_rolls_the_two_ticks_ago_particles() {
+        let mut body = two_parts(0.0);
+        body.parts[0].two_ticks_ago = body.parts[0]
+            .positions
+            .map(|x| x - Vec3::new(0.0, 0.01, 0.0));
+        body.sleep = Sleep::Asleep;
+        body.sleep_tick();
+        assert_eq!(body.parts[0].two_step_point(&[0.25; 4]), Vec3::ZERO);
     }
 
     /// The sole turns the solver reads are taken once when the targets are
