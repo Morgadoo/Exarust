@@ -1102,10 +1102,11 @@ pub fn mark_used(target: MarkTarget, flags: u32, mark: u32) -> Option<u32> {
     }
 }
 
-/// What the right press on the picked object asks for (the use cursor): a
-/// usable section whose kind byte is zero opens its container; any other
-/// kind starts the use; an object with no usable section is left to the
-/// GUI's own release callback. No body under the node starts nothing.
+/// What the double click on the picked object asks for (the use cursor): a
+/// usable section whose class byte is zero runs the record's use (a
+/// consumable); any other class starts the use cursor; an object with no
+/// usable section is left to the GUI's own release callback. No body under
+/// the node starts nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UsePress {
     Ignore,
@@ -1115,11 +1116,11 @@ pub enum UsePress {
     Begin,
 }
 
-pub fn use_press(has_body: bool, usable: Option<u8>) -> UsePress {
+pub fn use_press(has_body: bool, usable_class: Option<u8>) -> UsePress {
     if !has_body {
         return UsePress::Ignore;
     }
-    match usable {
+    match usable_class {
         Some(0) => UsePress::Open,
         Some(_) => UsePress::Begin,
         None => UsePress::Ignore,
@@ -2819,11 +2820,11 @@ mod tests {
     /// for nothing.
     #[test]
     fn the_use_press_and_its_target() {
-        assert_eq!(use_press(false, Some(9)), UsePress::Ignore);
+        assert_eq!(use_press(false, Some(1)), UsePress::Ignore);
         assert_eq!(use_press(true, None), UsePress::Ignore);
         assert_eq!(use_press(true, Some(0)), UsePress::Open);
-        assert_eq!(use_press(true, Some(9)), UsePress::Begin);
-        assert_eq!(use_press(true, Some(14)), UsePress::Begin);
+        assert_eq!(use_press(true, Some(1)), UsePress::Begin);
+        assert_eq!(use_press(true, Some(5)), UsePress::Begin);
         assert_eq!(use_target(4), UseTarget::Door);
         assert_eq!(use_target(0x10), UseTarget::Character);
         assert_eq!(use_target(3), UseTarget::Item);
