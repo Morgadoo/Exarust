@@ -92,10 +92,10 @@ pub const DEFAULT_FOG_COLOUR: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 pub const DEFAULT_BACKGROUND: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
 /// The outdoor haze a level without a sky gets.
 pub const OUTDOOR_FOG_COLOUR: [f32; 4] = [0.47, 0.53, 0.70, 1.0];
-/// The sun light's colour and the global light a tile-grid level built the
-/// older way is forced to unless it has terrain. (The forced grey goes to
-/// the sun colour setter, not to the ambient.)
-pub const GRID_SUN_COLOUR: [f32; 3] = [0.6275; 3];
+/// The ambient and global light a tile-grid level built the older way is
+/// forced to unless it has terrain (the build calls the ambient setter, the
+/// one the constructor's 0.314 grey goes through, with this grey).
+pub const GRID_AMBIENT: [f32; 3] = [0.6275; 3];
 pub const GRID_GLOBAL_LIGHT: [f32; 4] = [0.75; 4];
 /// The background and fog colour that build always forces.
 pub const GRID_BACKGROUND: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
@@ -1071,9 +1071,6 @@ pub struct Frame {
     /// The tint the renderer is given: the tint colour times the tint
     /// strength (the tint's fourth slot).
     pub tint: [f32; 3],
-    /// The sun light's colour as the frame publishes it: the level's sun
-    /// colour, linearised when colours are managed in linear light.
-    pub sun_colour: [f32; 3],
     /// The sun light's intensity word (3 without a sky, 4.5 under one).
     pub sun_intensity: f32,
 }
@@ -1135,9 +1132,6 @@ pub struct SceneEnvironment {
     pub ambient_linear: [f32; 3],
     /// The sun's colour without a sky, sRGB.
     pub sun_colour: [f32; 3],
-    /// The same colour in the form the renderer takes: linearised when
-    /// colours are managed in linear light, else the sRGB values.
-    pub sun_colour_linear: [f32; 3],
     /// The sun light's current colour (the `_Sunlight` node's light word):
     /// the day record's under a sky, the level's own without one. The sky
     /// switch writes the level's colour back.
@@ -1233,7 +1227,6 @@ impl SceneEnvironment {
         };
         let fog = Fog::default();
         let sun_colour = DEFAULT_SUN_COLOUR;
-        let sun_colour_linear = linearise(sun_colour);
         Self {
             sun_mode: SunMode::Auto,
             sky: false,
@@ -1248,7 +1241,6 @@ impl SceneEnvironment {
             ambient: DEFAULT_AMBIENT,
             ambient_linear: linearise([DEFAULT_AMBIENT[0], DEFAULT_AMBIENT[1], DEFAULT_AMBIENT[2]]),
             sun_colour,
-            sun_colour_linear,
             sun_light_colour: sun_colour,
             sun_light_intensity: SUN_INTENSITY,
             sky_sun_colour: DEFAULT_SUN_COLOUR,
@@ -1284,7 +1276,6 @@ impl SceneEnvironment {
                 shadow_far: -100_000.0,
                 wind: 0.0,
                 tint: [1.0; 3],
-                sun_colour: sun_colour_linear,
                 sun_intensity: SUN_INTENSITY,
             },
             linear: true,
@@ -1321,11 +1312,11 @@ impl SceneEnvironment {
         };
     }
 
-    /// Sets the sun light's sky-less colour (sRGB) and keeps the linear form
-    /// the renderer takes.
+    /// Sets the sun light's sky-less colour (sRGB). The original keeps it
+    /// as given: the sky switch and the light's creation copy it onto the
+    /// light unconverted.
     pub fn set_sun_colour(&mut self, rgb: [f32; 3]) {
         self.sun_colour = rgb;
-        self.sun_colour_linear = if self.linear { linearise(rgb) } else { rgb };
     }
 
     /// Sets the global light colour and strength (sRGB RGBA), linearising
@@ -1345,13 +1336,13 @@ impl SceneEnvironment {
     }
 
     /// Forces the values a tile-grid level built the older way is lit by:
-    /// unless the level has terrain, the sun light's colour becomes the grey
-    /// 0.6275 and the global light 0.75 with its strength 0.75; in every
-    /// case the background is opaque black and the fog mid grey. The
-    /// ambient is left as the level set it.
+    /// unless the level has terrain, the ambient becomes the grey 0.6275
+    /// and the global light 0.75 with its strength 0.75; in every case the
+    /// background is opaque black and the fog mid grey. The sun light's
+    /// colour is not touched.
     pub fn force_indoor(&mut self, terrain: bool) {
         if !terrain {
-            self.set_sun_colour(GRID_SUN_COLOUR);
+            self.set_ambient([GRID_AMBIENT[0], GRID_AMBIENT[1], GRID_AMBIENT[2], 1.0]);
             self.set_global_light(GRID_GLOBAL_LIGHT);
         }
         self.background = GRID_BACKGROUND;
@@ -2091,7 +2082,6 @@ impl SceneEnvironment {
                 self.tint[1] * self.tint[3],
                 self.tint[2] * self.tint[3],
             ],
-            sun_colour: self.sun_colour_linear,
             sun_intensity: self.sun_light_intensity,
         };
         self.frame
@@ -2861,12 +2851,11 @@ mod tests {
         assert_eq!(env.background, [0.0, 0.0, 0.0, 1.0]);
         assert_eq!(env.fog.colour, [0.5, 0.5, 0.5, 1.0]);
         env.force_indoor(false);
-        // The forced grey goes to the sun light's colour, not the ambient.
-        assert_eq!(env.ambient, [0.5, 0.4, 0.3, 1.0]);
-        assert_eq!(env.sun_colour, GRID_SUN_COLOUR);
-        // The setter stores the plug-in colour; the light node keeps its
-        // own until a placement or the sky switch writes it.
-        assert_eq!(env.sun_light_colour, [0.75; 3]);
+        // The forced grey goes through the ambient setter.
+        assert_eq!(env.ambient, [0.6275, 0.6275, 0.6275, 1.0]);
+        assert_eq!(env.ambient_linear, linearise(GRID_AMBIENT));
+        // The sun light's own colour is not touched.
+        assert_eq!(env.sun_colour, [0.75; 3]);
         // 0.75 through the sRGB curve; the strength stays 0.75.
         assert!((env.global_light[0] - 0.522_500_3).abs() < 1e-6);
         assert_eq!(env.global_light[3], 0.75);
@@ -3069,7 +3058,6 @@ mod tests {
         let mut env = SceneEnvironment::new(5);
         env.sun_light = true;
         env.set_sun_colour([0.4, 0.5, 0.6]);
-        assert_eq!(env.sun_colour_linear, linearise([0.4, 0.5, 0.6]));
         env.set_sky(true);
         assert_eq!(env.sun_light_intensity, SUN_INTENSITY_SKY);
         env.set_sky(false);
@@ -3229,7 +3217,6 @@ mod tests {
         let mut env = SceneEnvironment::new(5);
         env.sun_light_intensity = SUN_INTENSITY_SKY;
         let frame = env.apply_frame([0.0, 0.0, 1.0]);
-        assert_eq!(frame.sun_colour, env.sun_colour_linear);
         assert_eq!(frame.sun_intensity, SUN_INTENSITY_SKY);
         assert_eq!(frame.clear, frame.background);
     }

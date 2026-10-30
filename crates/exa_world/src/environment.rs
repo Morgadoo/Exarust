@@ -776,17 +776,17 @@ mod tests {
             ambient: [0.5, 0.4, 0.3],
             ..Default::default()
         };
-        // The legacy build forces the sun light's colour and the global
-        // light, and a black background with a grey fog colour; the
-        // record's ambient stands in every case.
         let lit = level_lighting_with("menuscene", Some(&env), 0, Some(false));
-        assert!((lit.ambient.x - 0.2140).abs() < 1e-3);
-        assert!((lit.ambient.y - 0.1332).abs() < 1e-3);
+        // 0.6275 grey through the ambient setter, laid over the record.
+        assert!((lit.ambient.x - 0.3516).abs() < 1e-3);
+        assert!((lit.ambient.y - 0.3516).abs() < 1e-3);
+        assert_eq!(lit.ambient.z, lit.ambient.y);
+        // A black background and a grey fog colour in every case.
         assert_eq!(lit.background, Vec3::ZERO);
         let scene = level_lighting_scene("menuscene", Some(&env), 0, Some(false), None);
         assert_eq!(scene.env.fog.colour, [0.5, 0.5, 0.5, 1.0]);
-        // With terrain the same forced values, and without the legacy build
-        // the record's own look.
+        // With terrain, or without the legacy build, the record's own
+        // ambient stands.
         let lit = level_lighting_with("menuscene", Some(&env), 0, Some(true));
         assert!((lit.ambient.x - 0.2140).abs() < 1e-3);
         let lit = level_lighting_with("menuscene", Some(&env), 0, None);
