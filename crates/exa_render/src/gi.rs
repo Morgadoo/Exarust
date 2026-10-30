@@ -47,6 +47,7 @@ impl Plugin for GiPlugin {
         let report = WarmUpReport(warm_up.report.clone());
         app.init_resource::<GiLights>()
             .init_resource::<GiSectorLights>()
+            .init_resource::<GiTextureCache>()
             .insert_resource(warm_up)
             .add_plugins((
                 crate::gi_shape::GiShapePlugin,
@@ -768,6 +769,9 @@ const SECTOR_VOXELS: u32 = 30;
 const MARGIN: u32 = 8;
 /// The most lights one sector records and one group injects.
 pub const MAX_SECTOR_LIGHTS: usize = 12;
+/// The light textures the manager keeps for the level's blocks: the
+/// original's nine.
+pub const RESIDENT_BLOCKS: usize = 9;
 /// Groups of sectors a block draws at once, one per sector at most.
 const MAX_GROUPS: usize = SECTORS * SECTORS;
 /// The flat light array the groups index into.
@@ -1413,12 +1417,97 @@ fn light_image(size: UVec3, data: Vec<u8>) -> Image {
     image
 }
 
+/// The light textures the manager keeps for the level's blocks: up to
+/// [`RESIDENT_BLOCKS`] blocks, as the original's manager owns nine. A block
+/// keeps its light and scratch textures after the camera leaves it, so
+/// walking back into a block reuses its accumulated light (the original
+/// steps all nine every frame; Exarust steps one and keeps the others'
+/// light as it was). A block's occupancy is always uploaded fresh from the
+/// world's cells.
+#[derive(Resource, Default)]
+pub struct GiTextureCache {
+    entries: Vec<CachedGiTextures>,
+    /// The frame counter that ranks the entries for eviction.
+    clock: u64,
+}
+
+/// The light textures one block keeps while the camera is elsewhere.
+struct CachedGiTextures {
+    sector: IVec2,
+    dims: UVec3,
+    light: Handle<Image>,
+    scratch: Handle<Image>,
+    used: u64,
+}
+
+impl GiTextureCache {
+    /// The textures of `sector` at `dims`, if the block is resident.
+    fn take_reusable(
+        &mut self,
+        sector: IVec2,
+        dims: UVec3,
+    ) -> Option<(Handle<Image>, Handle<Image>)> {
+        self.clock += 1;
+        let entry = self
+            .entries
+            .iter_mut()
+            .find(|e| e.sector == sector && e.dims == dims)?;
+        entry.used = self.clock;
+        Some((entry.light.clone(), entry.scratch.clone()))
+    }
+
+    /// Records a block's textures, evicting the least recently used entry
+    /// beyond [`RESIDENT_BLOCKS`] that is not `keep`.
+    fn insert(
+        &mut self,
+        sector: IVec2,
+        dims: UVec3,
+        light: Handle<Image>,
+        scratch: Handle<Image>,
+        keep: IVec2,
+    ) {
+        self.clock += 1;
+        self.entries
+            .retain(|e| !(e.sector == sector && e.dims == dims));
+        self.entries.push(CachedGiTextures {
+            sector,
+            dims,
+            light,
+            scratch,
+            used: self.clock,
+        });
+        while self.entries.len() > RESIDENT_BLOCKS {
+            let victim = self
+                .entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.sector != keep)
+                .min_by_key(|(_, e)| e.used)
+                .map(|(i, _)| i);
+            match victim {
+                Some(i) => {
+                    self.entries.remove(i);
+                }
+                None => break,
+            }
+        }
+    }
+
+    /// The resident blocks, oldest use first.
+    pub fn sectors(&self) -> Vec<IVec2> {
+        let mut out: Vec<(u64, IVec2)> = self.entries.iter().map(|e| (e.used, e.sector)).collect();
+        out.sort_unstable_by_key(|(used, _)| *used);
+        out.into_iter().map(|(_, s)| s).collect()
+    }
+}
+
 fn create_textures(
     mut commands: Commands,
     volume: Option<Res<GiVolume>>,
     active: Option<Res<GiTextures>>,
     mut images: ResMut<Assets<Image>>,
     mut warm_up: ResMut<GiWarmUp>,
+    mut cache: Option<ResMut<GiTextureCache>>,
 ) {
     let Some(volume) = volume else { return };
     if !volume.is_changed() {
@@ -1433,7 +1522,6 @@ fn create_textures(
         volume.cells.as_ref().clone(),
         false,
     ));
-    let empty = vec![0u8; voxels * 4];
     let floors = sky_floors(&volume.cells, size);
     let mut sky_floor = Image::new(
         Extent3d {
@@ -1448,8 +1536,29 @@ fn create_textures(
     );
     sky_floor.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST;
     let sky_floor = images.add(sky_floor);
-    let light = images.add(light_image(size, empty.clone()));
-    let scratch = images.add(volume_image(size, TextureFormat::Rgba8Unorm, empty, true));
+    // A block the camera is returning to keeps the light it accumulated, and
+    // took with it the steps it had already run. A new block starts black.
+    let (light, scratch, warm_up_steps) = match cache
+        .as_deref_mut()
+        .and_then(|c| c.take_reusable(volume.sector, size))
+    {
+        Some((light, scratch)) => (light, scratch, 0),
+        None => {
+            let empty = vec![0u8; voxels * 4];
+            let light = images.add(light_image(size, empty.clone()));
+            let scratch = images.add(volume_image(size, TextureFormat::Rgba8Unorm, empty, true));
+            if let Some(cache) = cache.as_deref_mut() {
+                cache.insert(
+                    volume.sector,
+                    size,
+                    light.clone(),
+                    scratch.clone(),
+                    volume.sector,
+                );
+            }
+            (light, scratch, volume.warm_up)
+        }
+    };
     let shape_texture = images.add({
         let mut image = Image::new(
             Extent3d {
@@ -1467,7 +1576,7 @@ fn create_textures(
     });
     let extent = Vec3::new(size.x as f32, size.z as f32, size.y as f32) * volume.voxel;
     warm_up.serial += 1;
-    warm_up.steps = volume.warm_up;
+    warm_up.steps = warm_up_steps;
     let textures = GiTextures {
         occupancy,
         light,
@@ -1481,7 +1590,7 @@ fn create_textures(
         floors: volume.floors.clone(),
         sector: volume.sector,
         base_ambient: volume.base_ambient,
-        warm_up: volume.warm_up,
+        warm_up: warm_up_steps,
         top_slice: volume.top_slice,
         serial: warm_up.serial,
     };
@@ -3409,6 +3518,68 @@ mod tests {
         let mut plain = vec![5, 7, 9];
         plan_light_slots(&mut plain, is_matrix, true);
         assert_eq!(plain, vec![5, 7, 9]);
+    }
+
+    #[test]
+    fn a_block_the_camera_returns_to_keeps_its_light_texture() {
+        let mut app = App::new();
+        app.insert_resource(Assets::<Image>::default())
+            .init_resource::<GiWarmUp>()
+            .init_resource::<GiTextureCache>()
+            .add_systems(Update, (create_textures, swap_warm_textures).chain());
+        let current = |app: &App| {
+            app.world()
+                .get_resource::<GiPendingTextures>()
+                .map(|p| p.0.light.id())
+                .unwrap_or_else(|| app.world().resource::<GiTextures>().light.id())
+        };
+        let mut volume = block_volume(Vec3::ZERO);
+        volume.sector = IVec2::new(4, 4);
+        app.insert_resource(volume);
+        app.update();
+        let first = app.world().resource::<GiTextures>().light.id();
+        assert_eq!(app.world().resource::<GiTextures>().warm_up, 10);
+        // Leaving the block and coming back reuses its light texture and
+        // skips the warm-up (the block already holds its light).
+        let mut other = block_volume(Vec3::ZERO);
+        other.sector = IVec2::new(12, 4);
+        app.insert_resource(other);
+        app.update();
+        assert_ne!(current(&app), first);
+        let mut back = block_volume(Vec3::ZERO);
+        back.sector = IVec2::new(4, 4);
+        app.insert_resource(back);
+        app.update();
+        assert_eq!(app.world().resource::<GiTextures>().light.id(), first);
+        assert_eq!(app.world().resource::<GiTextures>().warm_up, 0);
+        assert!(app.world().resource::<GiWarmUp>().finished());
+    }
+
+    #[test]
+    fn the_cache_keeps_nine_blocks_and_evicts_the_least_recent() {
+        let mut cache = GiTextureCache::default();
+        let dims = UVec3::new(4, 4, 4);
+        for i in 0..12 {
+            let sector = IVec2::new(i, 0);
+            let light = Handle::<Image>::default();
+            cache.insert(sector, dims, light.clone(), light.clone(), sector);
+            // Touch the older entries after the first nine are in, so the
+            // last-used order is not creation order.
+            if i >= 8 {
+                cache.take_reusable(IVec2::new(0, 0), dims);
+            }
+        }
+        assert_eq!(cache.sectors().len(), RESIDENT_BLOCKS);
+        // Block 0 was touched, so block 1 (the least recently used) went.
+        assert!(!cache.sectors().contains(&IVec2::new(1, 0)));
+        assert!(cache.sectors().contains(&IVec2::new(0, 0)));
+        assert!(cache.sectors().contains(&IVec2::new(11, 0)));
+        // A different size is a different entry.
+        assert!(
+            cache
+                .take_reusable(IVec2::new(0, 0), UVec3::splat(8))
+                .is_none()
+        );
     }
 
     #[test]
