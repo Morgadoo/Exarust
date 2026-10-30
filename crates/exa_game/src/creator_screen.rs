@@ -853,7 +853,8 @@ impl Creator {
             Target::Physique => {
                 let r = self.physique_rect();
                 let local = (x - r.left, y - r.top);
-                if self.physique.drag(local, (r.width(), r.height())) {
+                let size = exa_ui::pickers::field_size((r.width(), r.height()));
+                if self.physique.drag(local, size) {
                     // The point goes into the record at once.
                     self.record.physique = self.physique.point;
                     self.changed();
@@ -1731,7 +1732,8 @@ fn marker_layer(field: GuiRect, point: [f32; 2], ink: [u8; 4]) -> GuiLayer {
         point,
         ..Picker::default()
     };
-    let (mx, my) = picker.marker_at((field.width(), field.height()));
+    let size = exa_ui::pickers::field_size((field.width(), field.height()));
+    let (mx, my) = picker.marker_at(size);
     let (x, y) = ((field.left + mx) as f32, (field.top + my) as f32);
     let h = MARKER_HALF;
     rect_layer(
@@ -2346,7 +2348,9 @@ mod tests {
         // The physique picker's point goes into the record.
         let r = c.physique_rect();
         click(&mut c, (r.left + 40, r.top + 120));
-        assert_eq!(c.record.physique, [0.25, 0.75]);
+        // The point normalises against the drawable width (160 less 2 inset).
+        let u = (40.0f64 / 158.0) as f32;
+        assert_eq!(c.record.physique, [u, 0.75]);
         // A hair style row (row 2 is the second entry).
         let (list, step) = c.hair_list_rect();
         click(&mut c, (list.left + 5, list.top + step * 2 + 1));

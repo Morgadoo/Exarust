@@ -73,6 +73,16 @@ pub const PICKER_OPTION_BITS: u32 = 0x400;
 /// [`tone_blend_target`] on a material whose level is under 0.1.
 const TONE_BLEND: f32 = 0.25;
 
+/// The picker form's own insets, in pixels: the field's drawable width is
+/// its client width less two and its height the client height. The point
+/// normalises against, and the marker traverses, that drawable size.
+pub const FIELD_INSET: [i32; 2] = [2, 0];
+
+/// The drawable size of a picker whose client is `size`.
+pub fn field_size(size: (i32, i32)) -> (i32, i32) {
+    (size.0 - FIELD_INSET[0], size.1 - FIELD_INSET[1])
+}
+
 /// A picker's picked point, both coordinates nominally 0–1.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PickPoint {
@@ -199,7 +209,7 @@ impl TonePicker {
         let Some((x, y)) = at else {
             return base_answer;
         };
-        if pick_point(&mut self.point, x, y, self.size) {
+        if pick_point(&mut self.point, x, y, field_size(self.size)) {
             self.refresh();
         }
         PICK_ANSWER | PRESS_ANSWER
@@ -212,8 +222,9 @@ impl TonePicker {
     /// bottom-right/top-right/top-left.
     pub fn quads(&self) -> [FieldQuad; 4] {
         let bytes = tone_field_bytes();
-        let half_w = self.size.0 as f32 * 0.5;
-        let half_h = self.size.1 as f32 * 0.5;
+        let (width, height) = field_size(self.size);
+        let half_w = width as f32 * 0.5;
+        let half_h = height as f32 * 0.5;
         let mut quads = [[FieldVertex {
             colour: [0; 3],
             at: (0.0, 0.0),
@@ -390,7 +401,7 @@ impl HairColPicker {
         let Some((x, y)) = at else {
             return base_answer;
         };
-        if pick_point(&mut self.point, x, y, self.size) {
+        if pick_point(&mut self.point, x, y, field_size(self.size)) {
             self.refresh_with();
         }
         PICK_ANSWER | PRESS_ANSWER
@@ -398,11 +409,12 @@ impl HairColPicker {
 
     /// The field's cells: three columns of three rows, each a quad whose
     /// left edge takes the column's hue and right edge the next one's (all
-    /// rows alike). The cell size is a third of the field, in double,
-    /// narrowed.
+    /// rows alike). The cell size is a third of the drawable field, in
+    /// double, narrowed.
     pub fn cells(&self) -> Vec<[FieldVertex; 4]> {
-        let cell_w = (f64::from(self.size.0) * (1.0 / 3.0)) as f32;
-        let cell_h = (f64::from(self.size.1) * (1.0 / 3.0)) as f32;
+        let (width, height) = field_size(self.size);
+        let cell_w = (f64::from(width) * (1.0 / 3.0)) as f32;
+        let cell_h = (f64::from(height) * (1.0 / 3.0)) as f32;
         let mut out = Vec::with_capacity(9);
         for row in 0..3usize {
             let (y0, y1) = (row as f32 * cell_h, (row + 1) as f32 * cell_h);
@@ -428,8 +440,9 @@ impl HairColPicker {
     /// black along the top, white at 1.2 times the field's height (in
     /// double, narrowed), across the whole width.
     pub fn shade_quad(&self) -> [FieldVertex; 4] {
-        let height = (f64::from(self.size.1) * 1.2) as f32;
-        let width = self.size.0 as f32;
+        let (width, height) = field_size(self.size);
+        let height = (f64::from(height) * 1.2) as f32;
+        let width = width as f32;
         [
             FieldVertex {
                 colour: [0, 0, 0],
@@ -474,12 +487,12 @@ mod tests {
         // Cell (0, 0) is even: top-left, bottom-left, bottom-right first.
         assert_eq!(quads[0][0].colour, bytes[0][0]);
         assert_eq!(quads[0][2].colour, bytes[1][1]);
-        assert_eq!(quads[0][2].at, (80.0, 80.0));
+        assert_eq!(quads[0][2].at, (79.0, 80.0));
         assert_eq!(quads[0][4].colour, bytes[0][1]);
         // Cell (0, 1) is odd: its third vertex is the top-right.
         assert_eq!(quads[1][2].colour, bytes[0][2]);
-        assert_eq!(quads[1][2].at, (160.0, 0.0));
-        assert_eq!(quads[3][5].at, (80.0, 80.0));
+        assert_eq!(quads[1][2].at, (158.0, 0.0));
+        assert_eq!(quads[3][5].at, (79.0, 80.0));
     }
 
     #[test]
@@ -510,8 +523,10 @@ mod tests {
         assert_eq!(picker.press(None, 0x10), 0x10);
         picker.callback = false;
         assert_eq!(picker.press(Some((40, 120)), 0x10), 7);
-        assert_eq!(picker.point, PickPoint { u: 0.25, v: 0.75 });
-        assert_eq!(picker.colour, tone_linear(0.25, 0.75));
+        // The pick normalises against the drawable 158 × 160: 40 / 158.
+        let u = (f64::from(40) / f64::from(158)) as f32;
+        assert_eq!(picker.point, PickPoint { u, v: 0.75 });
+        assert_eq!(picker.colour, tone_linear(u, 0.75));
         // Out-of-field points are held to the edges.
         assert!(pick_point(&mut picker.point, -100, 1000, picker.size));
         assert_eq!(picker.point, PickPoint { u: 0.0, v: 1.0 });
@@ -547,6 +562,9 @@ mod tests {
         // = 68, scaled by ¾: 120.75 → 121, 76.5 → 76, 51.
         assert_eq!(picker.colour, [121, 76, 51, 255]);
         assert_eq!(picker.marker[0], 140);
+        // The base's insets leave a 158 × 112 drawable field.
+        assert_eq!(field_size(picker.size), (158, 112));
+        assert_eq!(FIELD_INSET, [2, 0]);
         // Attaching places the control 120 below, picker-wide, 40 tall.
         let control = picker.attach();
         assert_eq!(control.place, (10, 140, 160, 40));
@@ -584,10 +602,10 @@ mod tests {
         assert_eq!(cells[0][0].colour, [164, 98, 48]);
         assert_eq!(cells[0][3].colour, [170, 130, 82]);
         assert_eq!(cells[8][2].colour, [164, 98, 48]);
-        let third = (160.0f64 * (1.0 / 3.0)) as f32;
+        let third = (158.0f64 * (1.0 / 3.0)) as f32;
         assert_eq!(cells[0][3].at, (third, 0.0));
         let quad = picker.shade_quad();
-        assert_eq!(quad[0].at, (160.0, 0.0));
+        assert_eq!(quad[0].at, (158.0, 0.0));
         assert_eq!(quad[2].at, (0.0, (112.0f64 * 1.2) as f32));
         assert_eq!((quad[1].colour, quad[3].colour), ([0; 3], [255; 3]));
     }

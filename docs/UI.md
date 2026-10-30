@@ -2644,7 +2644,8 @@ plain draw and input records.
   down, one line height per wrapped line plus a unit apart; the colours come
   from the interface palette.
 - **Pickers** (`exa_ui::picker_fields`): the marker is the point times the
-  field's client size less one, in single precision and rounded to even.
+  field's drawable size less one (the base insets two pixels from the width
+  and none from the height), in single precision and rounded to even.
   The toggle key flips the marker bit, the hide key clears it, and a move
   key adds hundredths of a stick to the point (worked in double), holds it
   to 0 to 1 (an unordered value stays unordered) and runs the callback; the
@@ -3337,8 +3338,10 @@ it is wired into the running game yet.
   pixels below itself, as wide and 40 tall, whose value (¼ at first) is
   the hair material's third input; with a material attached a refresh
   re-shades it and raises notice 7. The picker base's pick takes
-  `u = x / width` and `v = 1 − (1 − y / height)` in double, held to 0–1,
-  ignored within an epsilon of the point; a press over the field answers 7.
+  `u = x / (width − 2)` and `v = 1 − (1 − y / height)` in double, held to
+  0–1, ignored within an epsilon of the point; a press over the field
+  answers 7. The field's drawable size is its client width less two and
+  its full height, which the tone quads, hair cells and shade all use.
 - **Skill resources** (`exa_ui::skill_gui`). `sgsklicons.rfi` is cut as the
   origin cell, then five sets of eight 96-pixel cells in two rows of four
   (the origin row techniques 5–8, the row below 1–4; group 1 has none),
