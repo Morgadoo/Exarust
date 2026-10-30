@@ -881,13 +881,17 @@ impl Attachment {
 }
 
 /// One node the preset's editor scan reads: the class byte and marker at
-/// the node's two flags, its world position and its box's half extents.
+/// the node's two flags, its class word, its world position and its box's
+/// half extents.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EditorNode {
     /// The node's class byte (`0xA9` is the editor's target).
     pub class: u8,
     /// The node's second class byte (`0xAE` raises the preset's extra flag).
     pub marker: u8,
+    /// The node's class word; the scan keeps only nodes whose low twelve
+    /// bits are one.
+    pub class_word: u32,
     pub position: Vec3,
     pub half_extents: Vec3,
 }
@@ -903,11 +907,10 @@ pub struct TargetBox {
 
 /// The editor preset's scan (the preset flag `0x400000`): start from the
 /// view's `fallback` centre with an 800 by 0 by 1000 box and no raised flag;
-/// every node of class `0xA9` whose class word's low twelve bits are one
-/// replaces the box with its position and its three half extents, and a
-/// marker of `0xAE` raises the flag. The last such
-/// node in the scene order wins. The class word's low bits are the caller's
-/// [`EditorNode::class`] check here.
+/// every node whose class byte is `0xA9` and whose class word's low twelve
+/// bits are one replaces the box with its position and its three half
+/// extents, and such a node's marker of `0xAE` raises the flag. The last
+/// such node in the scene order wins.
 pub fn scan_target(nodes: &[EditorNode], fallback: Vec3) -> TargetBox {
     let mut target = TargetBox {
         centre: fallback,
@@ -915,12 +918,13 @@ pub fn scan_target(nodes: &[EditorNode], fallback: Vec3) -> TargetBox {
         raised: false,
     };
     for node in nodes {
-        if node.class == 0xA9 && node.marker == 0xAE {
-            target.raised = true;
+        if node.class != 0xA9 || node.class_word & 0xfff != 1 {
+            continue;
         }
-        if node.class == 0xA9 {
-            target.centre = node.position;
-            target.half_extents = node.half_extents;
+        target.centre = node.position;
+        target.half_extents = node.half_extents;
+        if node.marker == 0xAE {
+            target.raised = true;
         }
     }
     target
@@ -1507,25 +1511,28 @@ mod tests {
             EditorNode {
                 class: 0xA9,
                 marker: 0,
+                class_word: 1,
                 position: Vec3::new(10.0, 20.0, 30.0),
                 half_extents: Vec3::new(5.0, 6.0, 7.0),
             },
             EditorNode {
                 class: 0xA8,
                 marker: 0xAE,
+                class_word: 1,
                 position: Vec3::ZERO,
                 half_extents: Vec3::ZERO,
             },
             EditorNode {
                 class: 0xA9,
                 marker: 0xAE,
+                class_word: 0x1001,
                 position: Vec3::new(40.0, 50.0, 60.0),
                 half_extents: Vec3::new(8.0, 9.0, 10.0),
             },
         ];
         let target = scan_target(&nodes, view);
-        // The last 0xA9 wins with all three half extents; the 0xAE marks it
-        // raised.
+        // The last 0xA9 whose class word ends in one wins with all three
+        // half extents; the 0xAE marks it raised.
         assert_eq!(target.centre, Vec3::new(40.0, 50.0, 60.0));
         assert_eq!(target.half_extents, Vec3::new(8.0, 9.0, 10.0));
         assert!(target.raised);
@@ -1533,6 +1540,22 @@ mod tests {
         let target = scan_target(&nodes[..2], view);
         assert_eq!(target.centre, Vec3::new(10.0, 20.0, 30.0));
         assert!(!target.raised);
+        // A 0xA9 node whose class word's low twelve bits are not one is
+        // not the editor's target at all, marker or not.
+        let other = EditorNode {
+            class: 0xA9,
+            marker: 0xAE,
+            class_word: 2,
+            position: Vec3::new(70.0, 80.0, 90.0),
+            half_extents: Vec3::new(1.0, 2.0, 3.0),
+        };
+        let target = scan_target(&[other], view);
+        assert_eq!(target.centre, view);
+        assert_eq!(target.half_extents, Vec3::new(800.0, 0.0, 1000.0));
+        assert!(!target.raised);
+        // The high bits do not matter.
+        let target = scan_target(&[nodes[2]], view);
+        assert_eq!(target.centre, Vec3::new(40.0, 50.0, 60.0));
         // The preset only scans under its editor flag.
         assert!(preset_target(&PresetFields::default(), &nodes, view).is_none());
         let fields = PresetFields {
