@@ -898,8 +898,10 @@ the save's merchant chunk). The shelf's names come from the item
 catalogue, an instance under its source's name. The copies have no item
 body yet (no condition or variant is rolled onto one). Not drawn: the
 board's pictures, prize items and reward slots as images, the manage report
-lines and controls, the trade window's item icons and character preview,
-and moving shelf items into the buy basket. The board's own close, day-end
+lines and controls, and the trade window's item icons and character
+preview; a stock row taken into the buy basket and the basket's items
+settling across the shelf are in `ShopWindow` (`take_stock_row`,
+`offer_item`, `confirm` through `Company::settle`). The board's own close, day-end
 and forfeit buttons are on its form host and report their actions; the hub
 closes it through the window manager.
 The hub's shopkeeper and specialist placements are `arena_spawn`'s plans;
@@ -1431,7 +1433,11 @@ close releases the preview and the trade-mode bytes. The opener's layout
 binds the stock list (the shop's or the merchant's) to the stock panel and
 takes the list's own number when one is supplied, writes the preview
 camera's turn factor 0.05 and view word 0x1000, and re-runs when an item is
-picked in the preview.
+picked in the preview. A basket row now carries its catalogue item beside
+its price word: a taken stock row leaves the bound list and joins the buy
+basket with its price, an offered carried item joins the sell basket, and
+the confirmation moves the bought items off the company's shelf and the
+sold ones onto it through the transaction settle.
 
 `nav_camera` has the stepped camera's per-tick wall probe: from 50 cm under
 the followed point along the camera's yaw, alternately a 30 cm probe at the
