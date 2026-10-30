@@ -58,6 +58,7 @@ pub mod gui_drop;
 pub mod gui_paint;
 pub mod gui_screens;
 pub mod hand;
+pub mod help_live;
 pub mod hirelings;
 pub mod hooks;
 pub mod hotkeys;
@@ -226,6 +227,7 @@ impl Plugin for GamePlugin {
         .add_plugins(weather::WeatherPlugin)
         .add_plugins(world_clock::WorldClockPlugin)
         .add_plugins(save_live::SaveLivePlugin)
+        .add_plugins(help_live::HelpLivePlugin)
         .add_plugins((
             flow::FlowPlugin,
             splash::SplashPlugin,

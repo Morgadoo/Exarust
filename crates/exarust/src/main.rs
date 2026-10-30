@@ -79,7 +79,8 @@
 //!          --trace-all                with --trace: every simulated character body, the player's among them
 //!          --debug-bodies             start with the body overlay and joint readout shown (F3 toggles it)
 //!          --debug-nav                draw the level's navigation grid around the view (F6 toggles it)
-//!          --no-torch                 play mode: the player starts without the carried torch
+//!          --no-torch                 play mode: the player starts without the carried torch (a new story then
+//!                                     lays the start's torch beside the player, as the original's start does)
 //!          --floor-torch x,y,z        a lit torch lying on the floor here (metres), as the story start has it
 //!          --debug-lights M           log the point lights within M metres of the player, once
 //!          --nav-refresh-moved        debug: a door or prop that comes to rest somewhere new refreshes the navigation grid
@@ -91,7 +92,9 @@
 //!          --open-settings <page>     once loaded, open the menu and the Settings form on its settings or controls page
 //!          --open-creator <mode>      once loaded, open the character creator: story (the background picker),
 //!                                     story-all (the picker with every background unlocked), story:N
-//!                                     (background N), practice, expert, arena, recruit or versus
+//!                                     (background N), begin:N (background N's creator commits its opening
+//!                                     record at once: a new story starts unattended), practice, expert,
+//!                                     arena, recruit or versus
 //!          --open-container FRAME     open the container nearest the player in its popup that many frames after the load
 //!          --debug-path x,y,z         play mode: plan a path from the player's feet to this point (metres) and draw it,
 //!                                     again whenever the player has moved a metre
@@ -110,7 +113,7 @@
 //!          --pause-after-jet <n>      pause the simulation n body ticks after the first blood jet
 //!          --pause-on-hit <n>         pause the simulation n ticks after the player's first blow lands
 //!          --pause-after-collapse <n> pause the simulation n ticks after the first killing blow starts a collapse
-//!          --press key@frame,...      press keys (Ctrl, Shift and Esc among them) or mouse buttons (LMB, RMB, MMB) at frames after
+//!          --press key@frame,...      press keys (Ctrl, Shift, Esc, Enter, Up and Down among them) or mouse buttons (LMB, RMB, MMB) at frames after
 //!                                     loading (e.g. `.@400,F8@500,LMB@600`); `key@a-b` holds it from frame a to b
 //!          --cursor x,y               play mode: the cursor stays at this window point (logical pixels), for unattended runs
 //!          --click frame,...          click the left mouse button at frames after loading
@@ -459,8 +462,8 @@ fn usage() -> AppExit {
     AppExit::from_code(2)
 }
 
-/// The key a `--press` entry names: a letter, `.`, `[`, `]`, `Tab`, `Ctrl`,
-/// `Shift` or `F1`–`F12`.
+/// The key a `--press` entry names: a letter, a digit, `.`, `[`, `]`,
+/// `Tab`, `Esc`, `Enter`, `Ctrl`, `Shift`, `Up`, `Down` or `F1`–`F12`.
 fn key_named(name: &str) -> Option<KeyCode> {
     let fkeys = [
         KeyCode::F1,
@@ -525,6 +528,8 @@ fn key_named(name: &str) -> Option<KeyCode> {
         "Enter" => Some(KeyCode::Enter),
         "Ctrl" => Some(KeyCode::ControlLeft),
         "Shift" => Some(KeyCode::ShiftLeft),
+        "Up" => Some(KeyCode::ArrowUp),
+        "Down" => Some(KeyCode::ArrowDown),
         _ => {
             if let Some(n) = name.strip_prefix('F').and_then(|n| n.parse::<usize>().ok()) {
                 return n.checked_sub(1).and_then(|i| fkeys.get(i)).copied();
@@ -781,9 +786,11 @@ fn main() -> AppExit {
             }
             "--open-creator" => {
                 let word = args.next().unwrap_or_default();
-                if exa_game::creator_screen::CreatorEntry::parse(&word).is_none() {
+                if exa_game::creator_screen::CreatorEntry::parse(&word).is_none()
+                    && exa_game::creator_screen::begin_entry(&word).is_none()
+                {
                     eprintln!(
-                        "--open-creator: story, story-all, story:N, practice, expert, arena, recruit or versus, not {word:?}"
+                        "--open-creator: story, story-all, story:N, begin:N, practice, expert, arena, recruit or versus, not {word:?}"
                     );
                     return AppExit::from_code(2);
                 }

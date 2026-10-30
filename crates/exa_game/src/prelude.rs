@@ -11,8 +11,11 @@
 //! loop that walks the ties stores its tie counter, not the table
 //! position), so the tip shown, and counted, is the draw-th of the table
 //! whether or not it is one of the least shown. Shown counts start at one;
-//! a count of zero goes to two, any other counts up. The texts are retail
-//! data, so the selection lives here and the caller supplies them.
+//! a count of zero goes to two, any other counts up. The lines are the
+//! banner's ([`exa_ui::game_tips::TIPS`] and
+//! [`exa_ui::game_tips::HINTS`]); [`Shown::text`] picks one. The
+//! game shows them through `Step::Tip` (the knock-out and death lines, the
+//! practice ladder's round and win lines); a new story shows none.
 //!
 //! The cached template reader looks for a cached record whose own name
 //! matches (sixteen bytes, ASCII letters case-blind), reads the template
@@ -61,6 +64,13 @@ pub enum Shown {
     Tip(usize),
     /// A control hint, by its table position.
     Hint(usize),
+}
+
+impl Shown {
+    /// The banner's line for what the popup shows.
+    pub fn text(self) -> Option<&'static str> {
+        banner_text(self)
+    }
 }
 
 /// The original's generator step.
@@ -164,8 +174,8 @@ pub fn sync_tips_setting(config: Option<Res<HardwareConfig>>, mut tips: ResMut<T
 #[must_use]
 pub fn banner_text(shown: Shown) -> Option<&'static str> {
     match shown {
-        Shown::Tip(index) => tip_banner::TIPS.get(index).copied(),
-        Shown::Hint(index) => tip_banner::HINTS.get(index).copied(),
+        Shown::Tip(index) => tip_banner::tip_text(index),
+        Shown::Hint(index) => tip_banner::hint_text(index),
     }
 }
 
@@ -527,6 +537,27 @@ mod tests {
         let mut tips = Tips::default();
         assert_eq!(tips.show(HINTS + 1), None);
         assert_eq!(tips.current, None);
+    }
+
+    /// The knock-out shows hint 2 and the death hint 3, whatever the
+    /// setting; the first automatic tip is the table's draw-th line.
+    #[test]
+    fn the_shown_tip_names_the_banner_line() {
+        let mut tips = Tips {
+            show_game_tips: false,
+            ..Tips::default()
+        };
+        assert_eq!(
+            tips.show(2).and_then(Shown::text),
+            Some("You have been defeated.")
+        );
+        assert_eq!(tips.show(3).and_then(Shown::text), Some("You have died."));
+        assert_eq!(tips.show(0), None, "the setting gates the rotating tip");
+        tips.show_game_tips = true;
+        let shown = tips.show(0).unwrap();
+        assert!(matches!(shown, Shown::Tip(_)));
+        assert!(shown.text().is_some());
+        assert_eq!(Shown::Tip(18).text(), None);
     }
 
     #[test]

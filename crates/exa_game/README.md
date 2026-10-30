@@ -14,7 +14,8 @@ The original's prelude helpers (`prelude`): the tips popup with its two
 tables (eighteen rotating tips and six control hints; index 0 draws a
 rotating tip under the `ShowGameTips` setting and, as the original does,
 shows the draw-th tip rather than the draw-th least-shown one; index `n`
-shows hint `n − 1`), the `actors.rpk` template reader with and without its
+shows hint `n − 1`; `Shown::text` names the banner's line from
+`exa_ui::game_tips`), the `actors.rpk` template reader with and without its
 cache (records matched by their own sixteen-byte name, letter case
 ignored; a nameless template takes the asked-for name; each template keeps
 its own item database, which its local-bit references name:
@@ -647,7 +648,11 @@ blow's low-health check on the player's body (`exa_combat::Weakened`;
 held torch (`torch`, which fills its hand and holds it by the grip
 table's one-handed or off-hand grip for the holder's size and race; its
 tests pin the "Torch" clips' arm on the body model; `--floor-torch` lays
-one on the floor for retail comparisons), the debug light listing around
+one on the floor for retail comparisons; a story start without a carried
+torch lays the start's torch, item 0x1f, at its pose: `StoryTorch`), the
+tip banner and the manual in play (`help_live`: `Step::Tip` shows the
+prelude's line, the menu's MANUAL rows open `manualkm.fds` over the
+covered menu), the debug light listing around
 the player (`light_probe`, `--debug-lights`), the teleporter and reconstruction devices (`teleporters`: a `UseDevice`
 request finds the device's crystal slot and the placed object on it; a
 teleporter asks for the destination screen with its rows and level ids, a
@@ -1404,6 +1409,12 @@ record; a level exit that makes the sixth level's checkpoint stamps the
 level's time; the next practice fight clears the condition word; the death
 screen's CONTINUE writes the player back with its 0x100 record flag; and the
 boot applies the settings store's expert and background unlock words.
+The running game holds what follows a level load in a step batch
+(`AfterLoad`) until the load has shown and ended, the player stands in the
+level and its placement is applied, as the original runs it after its
+synchronous load; the story start's record writes go on the record the
+load spawns the player from, and the spawned player takes the spawn word,
+roles, gear and start motion (`StartRecord`).
 The player controls' combat-mode setter is its own step (`CombatMode`):
 the practice start and each next fight turn combat mode on, the revive off.
 A new story's unknown background and the story respawn lay the player down
