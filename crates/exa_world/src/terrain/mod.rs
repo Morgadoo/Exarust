@@ -402,7 +402,6 @@ fn apply_splats(
 /// materials as they come.
 fn give_terrain_gi(
     textures: Option<Res<exa_render::gi::GiTextures>>,
-    outdoor: Option<Res<exa_render::gi::GiOutdoor>>,
     mut materials: ResMut<Assets<TerrainMaterial>>,
     mut events: MessageReader<AssetEvent<TerrainMaterial>>,
 ) {
@@ -417,9 +416,7 @@ fn give_terrain_gi(
             _ => None,
         })
         .collect();
-    let open_sky = outdoor.as_ref().is_some_and(|o| o.sky);
-    let sky_changed = outdoor.as_ref().is_some_and(|o| o.is_changed());
-    let ids: Vec<AssetId<TerrainMaterial>> = if textures.is_changed() || sky_changed {
+    let ids: Vec<AssetId<TerrainMaterial>> = if textures.is_changed() {
         materials.ids().collect()
     } else {
         added
@@ -434,11 +431,6 @@ fn give_terrain_gi(
         m.params.gi_origin = textures.sample_origin_floor();
         m.params.gi_extent = textures.sample_extent();
         m.params.flags |= terrain_flags::GI;
-        if open_sky {
-            m.params.flags |= terrain_flags::OUTDOOR;
-        } else {
-            m.params.flags &= !terrain_flags::OUTDOOR;
-        }
         if std::env::var_os("EXA_GI_DEBUG").is_some() {
             m.params.flags |= terrain_flags::DEBUG_GI;
         }
@@ -447,13 +439,15 @@ fn give_terrain_gi(
 
 /// Binds the level's environment cube ([`exa_render::gi::GiOutdoor::cube`]) to every
 /// material that has a cube, when the level changes it and as materials
-/// come: the original swaps its one cube for the open sky's.
+/// come (the original swaps its one cube for the open sky's), and marks
+/// them with the open-sky switch ([`exa_render::gi::GiOutdoor::sky`]), with or without
+/// voxel GI.
 fn bind_level_cube(
     outdoor: Option<Res<exa_render::gi::GiOutdoor>>,
     mut materials: ResMut<Assets<TerrainMaterial>>,
     mut events: MessageReader<AssetEvent<TerrainMaterial>>,
 ) {
-    let Some(cube) = outdoor.as_ref().and_then(|o| o.cube.clone()) else {
+    let Some(outdoor) = outdoor else {
         events.clear();
         return;
     };
@@ -464,17 +458,33 @@ fn bind_level_cube(
             _ => None,
         })
         .collect();
-    let ids: Vec<AssetId<TerrainMaterial>> = if outdoor.is_some_and(|o| o.is_changed()) {
+    let ids: Vec<AssetId<TerrainMaterial>> = if outdoor.is_changed() {
         materials.ids().collect()
     } else {
         added
     };
     for id in ids {
-        let rebind = materials
-            .get(id)
-            .is_some_and(|m| m.environment.as_ref().is_some_and(|e| *e != cube));
-        if rebind && let Some(mut m) = materials.get_mut(id) {
-            m.environment = Some(cube.clone());
+        let Some(m) = materials.get(id) else {
+            continue;
+        };
+        let rebind = outdoor
+            .cube
+            .as_ref()
+            .is_some_and(|cube| m.environment.as_ref().is_some_and(|e| e != cube));
+        let sky = m.params.flags & terrain_flags::OUTDOOR != 0;
+        if !rebind && sky == outdoor.sky {
+            continue;
+        }
+        let Some(mut m) = materials.get_mut(id) else {
+            continue;
+        };
+        if rebind {
+            m.environment = outdoor.cube.clone();
+        }
+        if outdoor.sky {
+            m.params.flags |= terrain_flags::OUTDOOR;
+        } else {
+            m.params.flags &= !terrain_flags::OUTDOOR;
         }
     }
 }

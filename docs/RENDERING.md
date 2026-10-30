@@ -547,10 +547,18 @@ such names.
 - The cube is `genref01r` for every indoor level (six 256² sRGB faces, each
   with nine mips); outdoors it is `genref02r` masked by `genref02rm`. The
   level record's `EnvMapIA01` is unread. Exarust binds `genref02r` to
-  every lit surface of a level with an open sky (`GiOutdoor::cube`), as
-  stored: the mask's tint is not applied [guess: by the day record's sky
-  tint; it would pull the bright horizon face's red and green down by up
-  to about a quarter].
+  every lit surface of a level with an open sky (`GiOutdoor::cube`). At
+  each sun placement the original tints a copy of the cube through the
+  mask by the environment record's sky tint, texel by texel over every
+  face's chain (mixed from white towards the tint by the mask byte, then
+  multiplied and rounded to a byte), and uploads it over the cube;
+  Exarust does the same when the frame's tint changes
+  (`environment::SkyCube`, `scene_env::tint_environment_cube`).
+- The stored faces go to the original's face targets −X, −Y, −Z, +X, +Y,
+  +Z in that order (`texture::CUBE_LAYER_FACES`), so stored face 4, the
+  sky of `genref02r` and the vault of `genref01r`, is up (+Y) and face 1
+  down. Exarust uploaded them in stored order before, which put the sky
+  on +Z.
 - Reflections sample the cube along the mirror direction at mip
   (rough − 0.1)·8, as (e + e²) × level ambient × 8 × the geometry term,
   for every surface outside the GI volume. Inside it only a record with a
@@ -1797,6 +1805,14 @@ menu.
   is likewise l outdoors. The world material (`exa.wesl`) and the terrain
   (`terrain.wesl`) share the curves (`shading.wesl`, mirrored and tested
   in `exa_render::gi_ambient`).
+- Status: with the cube on its right faces, an open arena at noon is
+  overbright inside the GI block. Exarust's volume holds 0.3 to 0.95 per
+  channel in open air (the sky light and the base ambient through the
+  0.999 step), and the level ambient is 0.28 linear, so an upward surface
+  takes about 0.3 × 4.2 × 0.5 × 15 ≈ 10. For the original to look as it
+  does, its open-air volume would have to hold tens of times less. Where
+  the difference comes from (the sky light's map, the top slice, the
+  ambient) is not found yet.
 
 ## Environment and weather
 
@@ -1938,8 +1954,8 @@ are double precision; its power goes through the engine's fast logarithm
 and exponent, for which Exarust uses `powf`. Exarust's shading takes the
 cube path's ×16 stand-in when GI is off (see [Voxel GI](#voxel-gi)); the
 level's ambient colour itself is reproduced. The GI shading takes the
-8/3 scale through the open-sky flag (3 under a sky); the cube path
-outside the volume keeps 8.
+8/3 scale through the open-sky flag (3 under a sky), on the cube path's
+reflections as well; the cube path's ambient has no `Ambient.w` term.
 
 **The sun light.** `_Sunlight` is a directional light of sRGB 0.75 grey
 (4.5 units under a sky, 3 without; 160 lux a unit in Exarust) taking the
@@ -3075,8 +3091,7 @@ several resident GI blocks (and their margin copies), the GI injection's
 cube-shadow test and dynamic occupancy updates, vertex dirt (dirt modes
 1–3), glass
 refraction, effect programs (smoke, powers), the hair program, terrain
-parallax and wetness, the outdoor environment cube's masked tint (the rule
-is in `scene_env::tint_environment_cube`, not uploaded), the day record table
+parallax and wetness, the day record table
 (a constant table in the executable, not decoded) and a driven time of day
 and weather, and the sun light's cloud dimmer (the model has it, the light
 does not apply it). A shut door leaves the room behind it hidden. A point

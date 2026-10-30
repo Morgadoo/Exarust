@@ -1821,6 +1821,19 @@ impl LevelLoad {
         } else {
             loader.environment_map()
         };
+        // Under a sky the cube is tinted by the record's sky tint through
+        // its mask once the environment's first sun placement has run.
+        let source = if sky { loader.sky_cube_source() } else { None };
+        match (&cube, source) {
+            (Some(image), Some(source)) => {
+                commands.insert_resource(environment::SkyCube {
+                    source,
+                    image: image.clone(),
+                    tinted: None,
+                });
+            }
+            _ => commands.remove_resource::<environment::SkyCube>(),
+        }
         commands.insert_resource(exa_render::gi::GiOutdoor { sky, cube });
         // The live scene environment keeps ticking the preset's weather and
         // republishes its frame; both of its streams start from the same

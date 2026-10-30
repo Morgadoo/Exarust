@@ -432,6 +432,8 @@ fn fragment(
     let k = (s.rough + 1.0) * (s.rough + 1.0) / 8.0;
     let gv = s.ndv / (s.ndv * (1.0 - k) + k);
     var reflected: vec3<f32>;
+    // `Ambient.w`: 8, 3 under an open sky.
+    let ambient_w = select(REFLECTION_STRENGTH, AMBIENT_W_OUTDOOR, has(OUTDOOR));
     let gi_origin = splat.gi_origin.xyz;
     let gi_extent = splat.gi_extent.xyz;
     if has(GI) && in_gi(gi_origin, gi_extent, wp) {
@@ -445,7 +447,6 @@ fn fragment(
         // `Ambient.w`·5, and the reflection × the light before that factor
         // × `Ambient.w` (3 there, 8 indoors).
         var gi_light: vec3<f32>;
-        var ambient_w = REFLECTION_STRENGTH;
         if has(OUTDOOR) {
             var cube = vec3(ENVIRONMENT_FALLBACK);
             if has(ENVIRONMENT) {
@@ -454,7 +455,6 @@ fn fragment(
             let o = gi_ambient_outdoor(g, level, cube);
             ambient = o.ambient;
             gi_light = o.light;
-            ambient_w = AMBIENT_W_OUTDOOR;
         } else {
             ambient = gi_ambient(g, level);
             gi_light = ambient;
@@ -468,7 +468,7 @@ fn fragment(
             ambient = textureSampleLevel(environment_map, environment_sampler, n, 5.0).rgb * level;
             mirrored = textureSampleLevel(environment_map, environment_sampler, r, max(s.rough - 0.1, 0.0) * 8.0).rgb;
         }
-        reflected = (mirrored + mirrored * mirrored) * level / AMBIENT_SCALE * REFLECTION_STRENGTH * gv;
+        reflected = (mirrored + mirrored * mirrored) * level / AMBIENT_SCALE * ambient_w * gv;
     }
     var out: FragmentOutput;
     let specular = lit.specular + reflected * schlick(s.f0, s.ndv);

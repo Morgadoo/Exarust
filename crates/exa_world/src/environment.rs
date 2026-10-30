@@ -60,9 +60,67 @@ impl Plugin for EnvironmentPlugin {
         // shadow detail); do not override it here.
         app.add_systems(
             PostUpdate,
-            (live_environment, fog_cameras, sky_cameras).chain(),
+            (live_environment, tint_sky_cube, fog_cameras, sky_cameras).chain(),
         );
     }
+}
+
+/// The open sky's environment cube while a level with a sky is loaded:
+/// its stored bytes and mask, the image every lit surface binds, and the
+/// tint it was last made with.
+#[derive(Resource)]
+pub struct SkyCube {
+    pub source: exa_assets::model::SkyCubeSource,
+    pub image: Handle<Image>,
+    pub tinted: Option<[f32; 3]>,
+}
+
+/// The cube tinted by `tint` through the mask, texel by texel over every
+/// face's chain, as the original tints its copy of the cube: `None` when
+/// either image's texels cannot be read.
+pub fn tinted_sky_cube(
+    source: &exa_assets::model::SkyCubeSource,
+    tint: [f32; 3],
+) -> Option<Vec<u8>> {
+    use exa_assets::model::SkyCubeSource;
+    let texels = SkyCubeSource::texels(&source.cube)?;
+    let mask = SkyCubeSource::texels(&source.mask)?;
+    let mut cube = source.cube.clone();
+    let (rgb, _) = cube[texels].as_chunks_mut::<3>();
+    crate::scene_env::tint_environment_cube(rgb, &source.mask[mask], tint);
+    Some(cube)
+}
+
+/// Tints the open sky's cube again when the frame's record sky tint changes
+/// (the original does it at each sun placement and uploads the copy over
+/// the cube texture).
+fn tint_sky_cube(
+    runtime: Option<Res<SceneEnvRuntime>>,
+    cube: Option<ResMut<SkyCube>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    let (Some(runtime), Some(mut cube)) = (runtime, cube) else {
+        return;
+    };
+    let Some(tint) = runtime.published.and_then(|f| f.sky_cube_tint) else {
+        return;
+    };
+    if cube.tinted == Some(tint) {
+        return;
+    }
+    cube.tinted = Some(tint);
+    let Some(image) = tinted_sky_cube(&cube.source, tint).and_then(|b| cube.source.image(&b))
+    else {
+        warn!("the open sky's cube could not be tinted");
+        return;
+    };
+    if let Some(f) = runtime.published {
+        debug!(
+            "open sky cube tinted by {tint:?} (ambient {:?}, GI sky light {:?}, fill {:?})",
+            f.ambient, f.sky_light, runtime.env.fill
+        );
+    }
+    let _ = images.insert(cube.image.id(), image);
 }
 
 /// How a level is lit.

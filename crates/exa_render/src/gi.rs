@@ -1823,7 +1823,6 @@ fn gather_voxel_lights<'a>(
 /// materials as they come).
 fn give_materials_gi(
     textures: Option<Res<GiTextures>>,
-    outdoor: Option<Res<GiOutdoor>>,
     mut materials: ResMut<Assets<ExaMaterial>>,
     mut events: MessageReader<AssetEvent<ExaMaterial>>,
 ) {
@@ -1838,9 +1837,7 @@ fn give_materials_gi(
             _ => None,
         })
         .collect();
-    let open_sky = outdoor.as_ref().is_some_and(|o| o.sky);
-    let sky_changed = outdoor.as_ref().is_some_and(|o| o.is_changed());
-    let ids: Vec<AssetId<ExaMaterial>> = if textures.is_changed() || sky_changed {
+    let ids: Vec<AssetId<ExaMaterial>> = if textures.is_changed() {
         materials.ids().collect()
     } else {
         added
@@ -1856,11 +1853,6 @@ fn give_materials_gi(
         m.params.gi_origin = textures.sample_origin();
         m.params.gi_extent = textures.sample_extent();
         m.params.flags |= flags::GI;
-        if open_sky {
-            m.params.flags |= flags::OUTDOOR;
-        } else {
-            m.params.flags &= !flags::OUTDOOR;
-        }
         if std::env::var_os("EXA_GI_DEBUG").is_some() {
             m.params.flags |= flags::DEBUG_GI;
         }
@@ -1869,13 +1861,15 @@ fn give_materials_gi(
 
 /// Binds the level's environment cube ([`GiOutdoor::cube`]) to every
 /// material that has a cube, when the level changes it and as materials
-/// come: the original swaps its one cube for the open sky's.
+/// come (the original swaps its one cube for the open sky's), and marks
+/// them with the open-sky switch ([`GiOutdoor::sky`]), with or without
+/// voxel GI.
 fn bind_level_cube(
     outdoor: Option<Res<GiOutdoor>>,
     mut materials: ResMut<Assets<ExaMaterial>>,
     mut events: MessageReader<AssetEvent<ExaMaterial>>,
 ) {
-    let Some(cube) = outdoor.as_ref().and_then(|o| o.cube.clone()) else {
+    let Some(outdoor) = outdoor else {
         events.clear();
         return;
     };
@@ -1886,17 +1880,33 @@ fn bind_level_cube(
             _ => None,
         })
         .collect();
-    let ids: Vec<AssetId<ExaMaterial>> = if outdoor.is_some_and(|o| o.is_changed()) {
+    let ids: Vec<AssetId<ExaMaterial>> = if outdoor.is_changed() {
         materials.ids().collect()
     } else {
         added
     };
     for id in ids {
-        let rebind = materials
-            .get(id)
-            .is_some_and(|m| m.environment.as_ref().is_some_and(|e| *e != cube));
-        if rebind && let Some(mut m) = materials.get_mut(id) {
-            m.environment = Some(cube.clone());
+        let Some(m) = materials.get(id) else {
+            continue;
+        };
+        let rebind = outdoor
+            .cube
+            .as_ref()
+            .is_some_and(|cube| m.environment.as_ref().is_some_and(|e| e != cube));
+        let sky = m.params.flags & flags::OUTDOOR != 0;
+        if !rebind && sky == outdoor.sky {
+            continue;
+        }
+        let Some(mut m) = materials.get_mut(id) else {
+            continue;
+        };
+        if rebind {
+            m.environment = outdoor.cube.clone();
+        }
+        if outdoor.sky {
+            m.params.flags |= flags::OUTDOOR;
+        } else {
+            m.params.flags &= !flags::OUTDOOR;
         }
     }
 }

@@ -565,10 +565,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let gv = s.ndv / (s.ndv * (1.0 - k) + k);
     var reflected: vec3<f32>;
     // The GI's light before the outdoor cube factor (the original's `vgi`
-    // outdoors), `Ambient.w`, and the hair reflection's share of them: the
-    // ambient, 8 and one half except under an open sky.
+    // outdoors), `Ambient.w` (8, 3 under an open sky), and the hair
+    // reflection's share: the ambient and one half except under a sky.
     var gi_light = vec3(0.0);
-    var ambient_w = REFLECTION_STRENGTH;
+    let ambient_w = select(REFLECTION_STRENGTH, AMBIENT_W_OUTDOOR, has(OUTDOOR));
     var hair_share = 0.5;
     let gi_origin = material.gi_origin.xyz;
     let gi_extent = material.gi_extent.xyz;
@@ -587,7 +587,6 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             let o = gi_ambient_outdoor(g, level, cube);
             ambient = o.ambient;
             gi_light = o.light;
-            ambient_w = AMBIENT_W_OUTDOOR;
             hair_share = 0.25;
         } else {
             ambient = gi_ambient(g, level);
@@ -606,7 +605,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // with or without a reflection layer of its own.
         ambient = textureSampleLevel(environment_map, environment_sampler, n, 5.0).rgb * level;
         mirrored = textureSampleLevel(environment_map, environment_sampler, r, max(s.rough - 0.1, 0.0) * 8.0).rgb;
-        reflected = (mirrored + mirrored * mirrored) * level / AMBIENT_SCALE * REFLECTION_STRENGTH * gv;
+        reflected = (mirrored + mirrored * mirrored) * level / AMBIENT_SCALE * ambient_w * gv;
         gi_light = ambient;
     }
     // The hair program: the ambient × (1.5 − 0.75·v·n) × MatDif, the map's
