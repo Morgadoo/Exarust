@@ -662,6 +662,63 @@ pub fn begin_route(delegates: ViewDelegates, begin: impl FnOnce() -> u32) -> u32
     if delegates.begin { begin() } else { 0 }
 }
 
+/// The redraw-request the draw slot sends the task: 7 when the view's
+/// callback answered with either redraw bit, none without a callback.
+pub fn redraw_message(delegates: ViewDelegates, answer: u32) -> Option<u32> {
+    (delegates.redraw && requests_redraw(answer)).then_some(7)
+}
+
+/// The viewport's hit test when the form finds no control: the port's own
+/// hit callback answers (the port's default cursor code replaces the hit's
+/// code); otherwise no code is stored.
+pub fn hit_route(
+    delegates: ViewDelegates,
+    hit: i32,
+    port_code: i32,
+    view: impl FnOnce() -> i32,
+) -> Option<i32> {
+    if hit == -1 && delegates.hit {
+        view();
+        Some(port_code)
+    } else {
+        None
+    }
+}
+
+/// The cursor-shape route: the form's own shape answer, and the view's
+/// callback hears the shape when it has one.
+pub fn shape_route(
+    delegates: ViewDelegates,
+    base: impl FnOnce() -> i32,
+    view: impl FnOnce() -> i32,
+) -> i32 {
+    let shape = base();
+    if delegates.shape {
+        view();
+    }
+    shape
+}
+
+/// The extra key-up callback's answer, none without one.
+pub fn extra_key_route(delegates: ViewDelegates, key: impl FnOnce() -> u32) -> Option<u32> {
+    delegates.extra_key.then(key)
+}
+
+/// The view the port hosts: attaching one stores it and answers it back
+/// (the original sets the view's target and keeps its pointer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ViewSlot {
+    pub view: Option<u32>,
+}
+
+impl ViewSlot {
+    /// Attaches `view` to the port, returning it.
+    pub fn attach(&mut self, view: u32) -> u32 {
+        self.view = Some(view);
+        view
+    }
+}
+
 /// The fields the viewport's draw slot reads for one frame.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DrawInput {
@@ -1069,6 +1126,31 @@ mod tests {
         assert_eq!(key_route(none, 0x1000, || 1, || 2), (1, false));
         assert_eq!(begin_route(view, || 9), 9);
         assert_eq!(begin_route(none, || 9), 0);
+        // The draw's redraw request is the task's message 7.
+        assert_eq!(redraw_message(view, 3), None);
+        let redraw = ViewDelegates {
+            redraw: true,
+            ..none
+        };
+        assert_eq!(redraw_message(redraw, 3), Some(7));
+        assert_eq!(redraw_message(redraw, 0), None);
+        // A view hit callback gives its own code where the form misses.
+        let hit = ViewDelegates {
+            hit: true,
+            shape: true,
+            extra_key: true,
+            ..none
+        };
+        assert_eq!(hit_route(hit, -1, 0, || 0), Some(0));
+        assert_eq!(hit_route(hit, 3, 0, || 0), None);
+        assert_eq!(shape_route(hit, || 5, || 0), 5);
+        assert_eq!(shape_route(none, || 5, || 0), 5);
+        assert_eq!(extra_key_route(hit, || 9), Some(9));
+        assert_eq!(extra_key_route(none, || 9), None);
+        // Attaching a view keeps it.
+        let mut slot = ViewSlot::default();
+        assert_eq!(slot.attach(7), 7);
+        assert_eq!(slot.view, Some(7));
     }
 
     #[test]
