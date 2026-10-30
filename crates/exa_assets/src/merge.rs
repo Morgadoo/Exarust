@@ -12,13 +12,15 @@
 //! stores a run's last vertex inclusively and starts the next one past it;
 //! `docs/formats/RSQ.md`, Skinning).
 //!
-//! A part is appended with cull bits: vertices whose per-vertex slot mask
-//! meets them are left out, and triangles that needed one of them go with
-//! them. The dressed-mesh pass gives a slot's bits (`0x200000` or
-//! `0x400000`, `exa_character::layers::cull_bits`) as the append's cull
-//! argument, which the append only tests against the vertex masks; it
-//! writes nothing on the triangles. The per-triangle flags and corner bytes
-//! are carried along from the parts. A part whose material carries the
+//! A part is appended with cull bits: the part's per-triangle flags are
+//! tested against them (`flags & cull != 0` drops the triangle), as the
+//! original's culling append does. The dressed-mesh pass gives a garment
+//! slot's bits (`0x200000` or `0x400000`, `exa_character::layers::cull_bits`)
+//! as the append's cull argument, so the garment triangles marked for a
+//! covered slot go with it; the body's own parts take none (the original
+//! appends them with its plain append). The per-triangle flags and corner bytes are carried along
+//! from the parts; a part without flags takes the unset word `1` when the
+//! merged mesh has a flag stream. A part whose material carries the
 //! occlusion mark fades the merged vertices on the border of the marked
 //! region ([`occlusion_alpha`]).
 
@@ -40,12 +42,13 @@ pub struct MergePart<'a> {
     pub material: &'a str,
     /// A hidden body slot's part is left out.
     pub visible: bool,
-    /// The body slot mask of each vertex, when the file stores one; a
-    /// vertex whose mask meets `cull` is not merged.
-    pub vertex_masks: Option<&'a [u32]>,
-    /// The cull bits of the append: a vertex is left out when
-    /// `vertex_masks[v] & cull != 0`. The dressed-mesh pass passes the
-    /// slot's cull bits (`0x200000` or `0x400000`, or 0) here.
+    /// The part's per-triangle flags, aligned with its slice of the mesh's
+    /// index buffer (`index_range`, or the whole buffer). A triangle whose
+    /// word meets `cull` is not merged.
+    pub triangle_flags: Option<&'a [u32]>,
+    /// The cull bits of the append: a triangle is left out when
+    /// `triangle_flags[t] & cull != 0`. A garment slot's append passes the
+    /// slot's bits (`0x200000` or `0x400000`, or 0) here.
     pub cull: u32,
     /// The part's material carries the occlusion mark: its vertices fade at
     /// the border of the marked region ([`occlusion_alpha`]).
@@ -71,7 +74,7 @@ impl<'a> MergePart<'a> {
             bone,
             material,
             visible: true,
-            vertex_masks: None,
+            triangle_flags: None,
             cull: 0,
             occlude: false,
             index_range: None,
@@ -194,20 +197,30 @@ pub fn merge(parts: &[MergePart]) -> Option<Merged> {
             .unwrap_or((0, source.indices.len()))
             .clamp_to(source.indices.len());
         let triangles_slice = &source.indices[from..to];
+        // The part's own triangle flags: its given slice, else the file's
+        // stream at the part's range.
+        let part_flags = part.triangle_flags.or(source.triangle_flags.as_deref());
         let mut keep: Vec<bool> = vec![false; count];
-        for &v in triangles_slice {
-            let v = v as usize;
-            if v >= count {
+        let mut kept_triangles = Vec::new();
+        for (offset, tri) in triangles_slice.as_chunks::<3>().0.iter().enumerate() {
+            let flag_index = if part.triangle_flags.is_some() {
+                offset
+            } else {
+                from / 3 + offset
+            };
+            let culled = part.cull != 0
+                && part_flags.is_some_and(|flags| {
+                    flags.get(flag_index).copied().unwrap_or(1) & part.cull != 0
+                });
+            if culled || tri.iter().any(|&v| (v as usize) >= count) {
                 continue;
             }
-            keep[v] = match part.vertex_masks {
-                Some(masks) if part.cull != 0 => {
-                    masks.get(v).copied().unwrap_or(0) & part.cull == 0
-                }
-                _ => true,
-            };
+            keep[tri[0] as usize] = true;
+            keep[tri[1] as usize] = true;
+            keep[tri[2] as usize] = true;
+            kept_triangles.push(offset);
         }
-        if !keep.iter().any(|&k| k) {
+        if kept_triangles.is_empty() {
             continue;
         }
         if !last_mesh.is_some_and(|m| std::ptr::eq(m, source)) {
@@ -233,7 +246,13 @@ pub fn merge(parts: &[MergePart]) -> Option<Merged> {
         if colours.is_some() {
             appended.has_colour = true;
         }
-        if source.triangle_flags.is_some() {
+        if part_flags.is_some() {
+            if !appended.has_flags {
+                // The first part with flags gives the triangles appended
+                // before it the unset word 1, as the original's mask stream
+                // does.
+                appended.flags = vec![1; appended.triangles.len()];
+            }
             appended.has_flags = true;
         }
         if source.triangle_edges.is_some() {
@@ -280,35 +299,34 @@ pub fn merge(parts: &[MergePart]) -> Option<Merged> {
             position_count = position_count.max(position_id.saturating_add(1));
             uv_count = uv_count.max(uv_id.saturating_add(1));
         }
-        for (offset, tri) in triangles_slice.as_chunks::<3>().0.iter().enumerate() {
+        for &offset in &kept_triangles {
+            let tri = &triangles_slice[offset * 3..offset * 3 + 3];
             let t = from / 3 + offset;
-            if tri
-                .iter()
-                .all(|&v| keep.get(v as usize).copied().unwrap_or(false))
-            {
-                appended.triangles.push([
-                    local[tri[0] as usize],
-                    local[tri[1] as usize],
-                    local[tri[2] as usize],
-                ]);
-                appended.flags.push(
-                    source
-                        .triangle_flags
-                        .as_ref()
-                        .and_then(|f| f.get(t))
-                        .copied()
-                        .unwrap_or(0),
-                );
-                appended.edges.push(
-                    source
-                        .triangle_edges
-                        .as_ref()
-                        .and_then(|e| e.get(t))
-                        .copied()
-                        .unwrap_or(0),
-                );
-                appended.marked.push(part.occlude);
-            }
+            let flag_index = if part.triangle_flags.is_some() {
+                offset
+            } else {
+                t
+            };
+            appended.triangles.push([
+                local[tri[0] as usize],
+                local[tri[1] as usize],
+                local[tri[2] as usize],
+            ]);
+            appended.flags.push(
+                part_flags
+                    .and_then(|f| f.get(flag_index))
+                    .copied()
+                    .unwrap_or(1),
+            );
+            appended.edges.push(
+                source
+                    .triangle_edges
+                    .as_ref()
+                    .and_then(|e| e.get(t))
+                    .copied()
+                    .unwrap_or(0),
+            );
+            appended.marked.push(part.occlude);
         }
     }
     if appended.positions.is_empty() {
@@ -1079,10 +1097,10 @@ mod tests {
         assert!(merged.skin.is_none());
     }
 
-    /// A cull mask leaves out the vertices whose stored slot mask meets it,
-    /// and the triangles that used them.
+    /// The append's cull bits drop a triangle whose per-triangle flags meet
+    /// them; the other triangles and their vertices stay.
     #[test]
-    fn a_cull_mask_drops_vertices_and_their_triangles() {
+    fn a_cull_mask_drops_the_flagged_triangles() {
         let m = mesh(
             &[
                 [0.0, 0.0, 0.0],
@@ -1092,17 +1110,51 @@ mod tests {
             ],
             &[0, 1, 2, 1, 3, 2],
         );
-        let masks = [0x1, 0x1, 0x2, 0x2];
+        let flags = [0x20_0000, 0];
         let parts = [MergePart {
-            vertex_masks: Some(&masks),
-            cull: 0x1,
+            triangle_flags: Some(&flags),
+            cull: 0x20_0000,
             ..part(&m, None, 1, "m")
         }];
         let merged = merge_parts(&parts).unwrap();
-        // Vertices 2 and 3 survive; both triangles needed a culled vertex.
-        assert_eq!(merged.positions.len(), 2);
-        assert!(merged.indices.is_empty());
-        assert_eq!(merged.position_count, 4);
+        // The first triangle's flags meet the cull bits; the second stays,
+        // and only the vertices it uses are appended.
+        assert_eq!(merged.indices, [0, 2, 1]);
+        assert_eq!(merged.positions.len(), 3);
+        assert_eq!(merged.triangle_flags.as_deref(), Some(&[0u32][..]));
+        // A different bit keeps both triangles.
+        let parts = [MergePart {
+            triangle_flags: Some(&flags),
+            cull: 0x40_0000,
+            ..part(&m, None, 1, "m")
+        }];
+        assert_eq!(merge_parts(&parts).unwrap().indices.len(), 6);
+    }
+
+    /// The merged mesh's flag stream: a part without flags takes the unset
+    /// word `1`, and a part met before the first flagged one does too, as
+    /// the original's mask stream fills.
+    #[test]
+    fn parts_without_flags_take_the_unset_word() {
+        let plain = mesh(&[[0.0; 3]; 3], &[0, 1, 2]);
+        let mut flagged = mesh(&[[1.0; 3]; 3], &[0, 1, 2]);
+        flagged.triangle_flags = Some(vec![0x20_0000]);
+        let parts = [
+            part(&plain, None, 1, "a"),
+            MergePart {
+                triangle_flags: Some(&[0x20_0000]),
+                ..part(&flagged, None, 1, "b")
+            },
+        ];
+        let merged = merge_parts(&parts).unwrap();
+        assert_eq!(merged.triangle_flags.as_deref(), Some(&[1, 0x20_0000][..]));
+        // Without any flagged part no stream is written.
+        assert!(
+            merge_parts(&[part(&plain, None, 1, "a")])
+                .unwrap()
+                .triangle_flags
+                .is_none()
+        );
     }
 
     /// A closed fan of three marked triangles around vertex 0: the centre
@@ -1146,12 +1198,11 @@ mod tests {
         assert!(merge_parts(&[]).is_none());
     }
 
-    /// The dressed-mesh pass's slot cull bits are the append's cull
-    /// argument: they drop the vertices whose slot mask holds them and write
-    /// nothing on the triangles. A marked part's border vertices fade, and
-    /// each mesh's position ids move past the meshes before it.
+    /// The dressed-mesh pass's slot cull bits drop the garment triangles
+    /// whose flags hold them; a marked part's border vertices fade, and each
+    /// mesh's position ids move past the meshes before it.
     #[test]
-    fn slot_cull_bits_drop_masked_vertices_and_marked_parts_fade() {
+    fn slot_cull_bits_drop_marked_triangles_and_marked_parts_fade() {
         let plain = mesh(
             &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             &[0, 1, 2],
@@ -1161,10 +1212,14 @@ mod tests {
             &[0, 1, 2],
         );
         let covered = mesh(
-            &[[5.0, 0.0, 0.0], [6.0, 0.0, 0.0], [5.0, 1.0, 0.0]],
-            &[0, 1, 2],
+            &[
+                [5.0, 0.0, 0.0],
+                [6.0, 0.0, 0.0],
+                [5.0, 1.0, 0.0],
+                [6.0, 1.0, 0.0],
+            ],
+            &[0, 1, 2, 1, 3, 2],
         );
-        let masks = [0x20_0000, 0, 0];
         let parts = [
             MergePart {
                 cull: 0x40_0000,
@@ -1175,26 +1230,28 @@ mod tests {
                 ..part(&marked, None, 1, "m")
             },
             MergePart {
-                vertex_masks: Some(&masks),
+                triangle_flags: Some(&[0x20_0000, 0]),
                 cull: 0x20_0000,
                 ..part(&covered, None, 1, "m")
             },
         ];
         let merged = merge_parts(&parts).unwrap();
-        // The covered part loses its masked vertex and its only triangle.
-        assert_eq!(merged.positions.len(), 8);
-        assert_eq!(merged.indices.len(), 6);
-        // No part's mesh has triangle flags, and the cull bits add none.
-        assert!(merged.triangle_flags.is_none());
+        // The covered part keeps its second triangle only, and the vertex
+        // the first triangle alone used is not appended.
+        assert_eq!(merged.indices.len(), 9);
+        assert_eq!(merged.positions.len(), 9);
+        // Only the covered part has flags: the two parts before it take the
+        // unset word.
+        assert_eq!(merged.triangle_flags.as_deref(), Some(&[1, 1, 0][..]));
         // The marked triangle hangs alone: all three of its vertices fade,
         // the others keep opaque.
         let colours = merged.colors.unwrap();
         assert_eq!(
             colours.iter().map(|c| c[3]).collect::<Vec<_>>(),
-            [255, 255, 255, 0, 0, 0, 255, 255]
+            [255, 255, 255, 0, 0, 0, 255, 255, 255]
         );
-        assert_eq!(merged.position_ids, [0, 1, 2, 3, 4, 5, 7, 8]);
-        assert_eq!(merged.position_count, 9);
+        assert_eq!(merged.position_ids, [0, 1, 2, 3, 4, 5, 7, 8, 9]);
+        assert_eq!(merged.position_count, 10);
         // Groups of one mesh share its position stream.
         let parts = [
             MergePart {

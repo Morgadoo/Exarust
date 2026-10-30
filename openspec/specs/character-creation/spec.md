@@ -730,11 +730,15 @@ The system SHALL set a centred creation slider's weight to its position less one
 - **THEN** its weight is a negative zero
 
 ### Requirement: Decomposition maps and layers
-The system SHALL name the decomposition passes' maps by their shipped unit order (diffuse: humandcmpw, ancientdifm, skindecomp, humandcmpf; specular: humandcmpw, ancientdifm, humandcmpg; normal: ancientnrmm0, humandcmpn) and SHALL cap the normal pass at four layers.
+The system SHALL name the decomposition passes' maps by their shipped unit order (mask: humanseams, humandcmpw; diffuse: humandcmpw, ancientdifm, skindecomp, humandcmpf; specular: humandcmpw, ancientdifm, humandcmpg; normal: ancientnrmm0, humandcmpn) and SHALL blend up to five normal layers, the fifth reading the mask rebound at `Tex5`.
+
+#### Scenario: Fifth layer
+- **WHEN** five normal layers carry weights and the mask texel is (0.25, 0, 0) with flat other maps
+- **THEN** the fifth layer at full weight moves the stored normal to (0.375, 0.25), and four layers leave it flat
 
 #### Scenario: More than four weights
 - **WHEN** five normal layers carry weights
-- **THEN** only the first four are blended
+- **THEN** all five are blended, the fifth reading the mask in place of its own map
 
 ### Requirement: Creation back switch
 The equipment page's tab SHALL hide only the first built of the weapons panel, the skills panel and the versus lobby form, sliding the skills panel by `0x2d` only when it is the one hidden, then hide the versus skills panel and the versus equipment form when they exist. A non-continued character SHALL show its two appearance panels again and set both tab words to `0x110`. From the appearance page the tab SHALL leave the creator: to the arena for a recruit, otherwise to the menu.
