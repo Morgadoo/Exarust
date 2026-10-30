@@ -380,7 +380,7 @@ pub const ROW_UNITS: f32 = 70.0;
 /// The row scale from the client height: `0.5·round(H/135)/4`. The live
 /// value is 0.375 at 453 px and 1.0 at 1080 px.
 pub fn row_h(height: i32) -> f32 {
-    let step = (height as f64 / 135.0).round_ties_even();
+    let step = (height as f64 * 0.007407407407407_408).round_ties_even();
     (step as f32 * 0.5) / 4.0
 }
 

@@ -2,7 +2,7 @@
 
 /// Quantises a 32-bit clock to 1/135 and scales it by 1/8.
 pub fn menu_clock_scale(value: i32) -> f32 {
-    let step = (f64::from(value) * 0.007407407407407408).round_ties_even();
+    let step = (f64::from(value) * 0.007407407407407_408).round_ties_even();
     ((step as i64) as f64 * 0.125) as f32
 }
 
@@ -1357,7 +1357,7 @@ pub fn toggle_menu_music(flag: bool) -> MusicToggle {
 
 /// The row scale a main menu takes: `round(H/135) × 0.125`.
 pub fn menu_row_scale(height: i32) -> f32 {
-    (round_even(f64::from(height) / 135.0) as f32) * 0.125
+    (round_even(f64::from(height) * 0.007407407407407_408) as f32) * 0.125
 }
 
 /// Round to even through a 64-bit integer, as the original's conversion

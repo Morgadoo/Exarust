@@ -320,10 +320,11 @@ impl GuiMetrics {
     }
 }
 
-/// The pointer's drag distance at a screen height: one pixel per 540 of
-/// height, rounded half to even in double precision, at least 2.
+/// The pointer's drag distance at a screen height: the height times the
+/// original's double literal `0.001851851851851852` (one five-hundred-and-
+/// fortieth), rounded half to even in double precision, at least 2.
 pub fn drag_limit(screen_height: i32) -> i32 {
-    let limit = (f64::from(screen_height) * (1.0 / 540.0)).round_ties_even() as i32;
+    let limit = (f64::from(screen_height) * 0.001851851851851_852).round_ties_even() as i32;
     limit.max(2)
 }
 
