@@ -16,8 +16,8 @@ use crate::level::{LevelGrid, PropAttachment};
 use crate::rfc::{Mesh as ReadMesh, Node as ReadNode, NodeBody, Scene as ReadScene};
 use crate::rfc_write::{
     ATTACH_BODY, ATTACH_CLOTH, ATTACH_EMITTER, Attachment, AttachmentData, ExportBody, ExportGrid,
-    ExportLight, ExportLink, ExportMesh, ExportSound, ExportTrack, ExportVoxelLight, GiPoints,
-    IDENTITY, IndexMap, LightAnimation, MeshPart, NodeData, SceneNode, VertexStream,
+    ExportLight, ExportLink, ExportMesh, ExportScene, ExportSound, ExportTrack, ExportVoxelLight,
+    GiPoints, IDENTITY, IndexMap, LightAnimation, MeshPart, NodeData, SceneNode, VertexStream,
 };
 use crate::rigid_body::RigidBody;
 use crate::{Error, Result};
@@ -29,6 +29,8 @@ const LOCAL_DATABASE: u32 = 0x0000_DBC0;
 const LOCAL_OBJECTS: u32 = 0x0000_DBDB;
 const LOCAL_STRINGS: u32 = 0x0000_DBCD;
 const ENVIRONMENT: u32 = 0xEC00_DC00;
+const CHARACTERS: u32 = 0xCAC0_0001;
+const CHARACTER_DB: u32 = 0xCECC_DB00;
 
 /// The GI lattice spacing (cm) every shipped mesh with points stores: the
 /// points sample a 40 cm lattice (326 point chunks over four shipped levels
@@ -51,6 +53,11 @@ pub struct LevelRaw {
     /// The environment record's body (`0xEC00DC00`, 0xF8 bytes in the
     /// shipped files).
     pub environment: Option<Vec<u8>>,
+    /// The character database's body inside the characters section
+    /// (`0xCECCDB00`): magic, table length, table and data. The structured
+    /// reader parses its records and drops the raw body, which a written
+    /// section needs because its placements name records by id.
+    pub character_database: Option<Vec<u8>>,
 }
 
 impl LevelRaw {
@@ -64,6 +71,7 @@ impl LevelRaw {
                 MATERIAL_LIST => out.read_materials(&chunk)?,
                 LOCAL_DATABASE => out.read_database(&chunk)?,
                 ENVIRONMENT => out.environment = Some(chunk.data.to_vec()),
+                CHARACTERS => out.read_characters(&chunk)?,
                 _ => {}
             }
         }
@@ -85,6 +93,17 @@ impl LevelRaw {
                 len: child.data.len(),
             })?);
             self.materials.push((name, child.data[16..].to_vec()));
+        }
+        Ok(())
+    }
+
+    fn read_characters(&mut self, section: &crate::chunk::Chunk<'_>) -> Result<()> {
+        // The section starts with its placement count, then its chunks.
+        for sub in Chunks::new(section.data, 4) {
+            let sub = sub?;
+            if sub.tag == CHARACTER_DB {
+                self.character_database = Some(sub.data.to_vec());
+            }
         }
         Ok(())
     }
@@ -208,7 +227,11 @@ pub fn export_mesh(mesh: &ReadMesh) -> ExportMesh {
         parts.push(MeshPart {
             vertices: [low, high],
             triangles: [first as u32, (first + tris.saturating_sub(1)) as u32],
-            material: stored_name(&group.material),
+            // The writer stores `_Default` for a part with no material, so
+            // that name reads back as no material, not as a phantom one the
+            // library would be asked for.
+            material: stored_name(&group.material)
+                .filter(|name| name != &crate::rfc_write::DEFAULT_MATERIAL),
         });
     }
 
@@ -307,7 +330,11 @@ pub fn export_node(level: &ReadScene, index: usize) -> Result<SceneNode> {
     let transform = matrix_cm(&node.transform);
     let mut out = SceneNode {
         name: stored_name(&node.name).unwrap_or([0; 16]),
-        flags: node.flags,
+        // The file masks the saved bit out of the stored flags, so a node
+        // read back carries the class but not 0x40000; the exporter's walk
+        // skips every non-plain node without it. A node that came from a
+        // stored section is one the export keeps.
+        flags: node.flags | crate::rfc_write::flags::SAVED,
         flags2: node.flags2,
         parent,
         local: transform,
@@ -764,6 +791,64 @@ fn parent_node(number: i32, nodes: usize, props: &[usize], objects: &[usize]) ->
     } else {
         objects.get(number - nodes - props.len()).copied()
     }
+}
+
+/// The whole exporter scene of a loaded level section: its scene nodes, the
+/// props and placed objects after them, its placed characters, the tile grid,
+/// the section's material library, the local object database and its strings,
+/// the character database and the environment record.
+///
+/// The scene is the game's whole scene for an export of the current level, so
+/// the environment is written; the shared material libraries are left empty,
+/// which lists every material the meshes use and writes the ones the level
+/// itself holds (the rest fall to the shared libraries by name, as the
+/// original's lookup does when the level's library lacks them).
+pub fn level_scene(level: &ReadScene, raw: &LevelRaw) -> Result<ExportScene> {
+    let mut nodes = Vec::with_capacity(level.nodes.len());
+    for i in 0..level.nodes.len() {
+        nodes.push(export_node(level, i)?);
+    }
+    let prop_start = nodes.len();
+    nodes.extend(export_props(level, prop_start)?);
+    let object_start = nodes.len();
+    nodes.extend(export_objects(level, object_start)?);
+    nodes.extend(export_characters(level)?);
+    Ok(ExportScene {
+        nodes,
+        grid: level.grid.as_ref().map(export_grid),
+        shared_materials: Vec::new(),
+        material_library: raw.materials.clone(),
+        object_db: raw
+            .object_database
+            .as_deref()
+            .and_then(|body| rdb_image(body, crate::rfc_write::OBJECT_DB_MAGIC)),
+        object_strings: raw.object_strings.clone().unwrap_or_default(),
+        character_db: raw
+            .character_database
+            .as_deref()
+            .and_then(|body| rdb_image(body, crate::rfc_write::CHARACTER_DB_MAGIC)),
+        environment: raw.environment.clone(),
+        whole_scene: true,
+    })
+}
+
+/// A database body (magic, table length, table, data) as the writer's image.
+/// A body of another magic or one too short for its table is no database.
+fn rdb_image(body: &[u8], magic: u32) -> Option<crate::rfc_write::RdbImage> {
+    let stored = u32::from_le_bytes(body.get(..4)?.try_into().ok()?);
+    if stored != magic {
+        return None;
+    }
+    let len = u32::from_le_bytes(body.get(4..8)?.try_into().ok()?) as usize;
+    if len < 16 || !len.is_multiple_of(16) {
+        return None;
+    }
+    let table = body.get(8..8 + len)?.to_vec();
+    Some(crate::rfc_write::RdbImage {
+        count: (len / 16 - 1) as u32,
+        table,
+        data: body.get(8 + len..)?.to_vec(),
+    })
 }
 
 /// The scene nodes of a level's placed characters, in placement order.
@@ -1964,6 +2049,109 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_level_scene_gathers_every_section() {
+        // A level with a room, a mesh carrying a material, a prop, a placed
+        // object, a grid, a local database, an environment and a character
+        // database.
+        let mut mesh = SceneNode {
+            name: name16("Floor"),
+            flags: class::MESH | flags::SAVED,
+            body: NodeData::Mesh(Box::new(export_mesh(&read_mesh()))),
+            ..Default::default()
+        };
+        mesh.tail = 0;
+        let prop = SceneNode {
+            name: name16("Table"),
+            flags: crate::rfc_write::flags::PROP | crate::rfc_write::flags::SAVED,
+            ..Default::default()
+        };
+        let mut object = placed(0xC000_0009, 0x0020_0000, 0);
+        object.local = at([10.0, 20.0, 30.0]);
+        object.world = object.local;
+        let grid = ExportGrid {
+            wall_sets: vec![name16("gews_a")],
+            floor_sets: vec![name16("gefs_a")],
+            width: 4,
+            height: 4,
+            plane_a: (0..16).collect(),
+            plane_b: (16..32).collect(),
+            plane_c: (32..48).collect(),
+        };
+        let mut payload = vec![0u8; 184];
+        payload[0] = 0x5A;
+        let scene = crate::rfc_write::ExportScene {
+            nodes: vec![plain_level(), mesh, prop, object],
+            grid: Some(grid),
+            material_library: vec![(name16("Wood"), payload.clone())],
+            object_db: Some(crate::rfc_write::RdbImage {
+                count: 1,
+                table: vec![0u8; 32],
+                data: vec![1, 2, 3],
+            }),
+            object_strings: vec![4, 5, 6],
+            environment: Some(vec![0u8; 0xF8]),
+            whole_scene: true,
+            ..Default::default()
+        };
+        let bytes = write(&scene);
+        let parsed = crate::rfc::Scene::parse(&bytes).unwrap();
+        assert!(parsed.level_errors.is_empty(), "{:?}", parsed.level_errors);
+        let raw = LevelRaw::scan(&bytes).unwrap();
+        assert_eq!(raw.materials.len(), 1);
+
+        let rebuilt = level_scene(&parsed, &raw).unwrap();
+        // The fixture's prop and object carry no part records, so the
+        // rebuilt scene holds exactly the four nodes it was given.
+        assert_eq!(rebuilt.nodes.len(), 4);
+        assert!(rebuilt.grid.is_some());
+        assert!(rebuilt.object_db.is_some());
+        assert_eq!(rebuilt.object_strings, [4, 5, 6]);
+        assert_eq!(rebuilt.environment.as_deref(), Some(&vec![0u8; 0xF8][..]));
+        assert!(rebuilt.whole_scene);
+
+        // The rebuilt scene writes and parses back with every section.
+        let again = write(&rebuilt);
+        let reread = crate::rfc::Scene::parse(&again).unwrap();
+        assert!(reread.level_errors.is_empty(), "{:?}", reread.level_errors);
+        assert_eq!(reread.nodes.len(), parsed.nodes.len());
+        assert_eq!(reread.props.len(), parsed.props.len());
+        assert_eq!(reread.placed_objects.len(), parsed.placed_objects.len());
+        assert_eq!(reread.local_records.len(), parsed.local_records.len());
+        // The fixture's string table is raw bytes, not a library the reader
+        // decodes; the scan shows the body itself is carried through.
+        let again_raw = LevelRaw::scan(&again).unwrap();
+        assert_eq!(again_raw.object_strings.as_deref(), Some(&[4, 5, 6][..]));
+        assert!(reread.grid.is_some());
+        // The fixture places no character, so the rebuilt section has no
+        // characters chunk and hence no character database.
+        assert!(again_raw.character_database.is_none());
+    }
+
+    #[test]
+    fn the_character_database_body_is_scanned() {
+        let mut section = 1u32.to_le_bytes().to_vec();
+        let db = chunk(CHARACTER_DB, b"magicdb");
+        section.extend(db.clone());
+        let bytes = crate::chunk::RFC_MAGIC.to_le_bytes().to_vec();
+        let mut file = bytes;
+        file.extend(chunk(CHARACTERS, &section));
+        let raw = LevelRaw::scan(&file).unwrap();
+        assert_eq!(raw.character_database.as_deref(), Some(&b"magicdb"[..]));
+
+        // A database body keeps its table and data.
+        let mut body = 0xDBAC_0D09u32.to_le_bytes().to_vec();
+        body.extend_from_slice(&32u32.to_le_bytes());
+        body.extend_from_slice(&[7u8; 32]);
+        body.extend_from_slice(&[9u8; 5]);
+        let image = rdb_image(&body, 0xDBAC_0D09).unwrap();
+        assert_eq!(
+            (image.count, image.table.len(), image.data.len()),
+            (1, 32, 5)
+        );
+        assert!(rdb_image(&body, 0xDBAC_CD00).is_none());
     }
 
     /// Every prop of the installed level converts and writes back: the same
