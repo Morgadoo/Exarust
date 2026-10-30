@@ -748,10 +748,6 @@ fn duellist(
         if target_condition.is_dead() && contact.died_ms.is_none() {
             contact.died_ms = Some(now);
         }
-        let target_angle = {
-            let to_me = gt.translation() - target.translation();
-            atan2_xz(to_me.x, to_me.z)
-        };
         let mut blow = published_blow(
             ai.target,
             &blades,
@@ -762,8 +758,6 @@ fn duellist(
             target_condition == Condition::ATTACKING,
             false,
         );
-        blow.angle = target_angle;
-        blow.origin_in_arc = place::between(blow.arc_end, blow.arc_start, target_angle);
         if blow.kind == 0 {
             blow.sweeping = false;
         }
@@ -839,6 +833,12 @@ fn duellist(
             phase,
             skill: foe_skill,
         });
+        // The danger terms read the candidate's angle from the measured
+        // origin, and the thrust's arc test the observer's own bearing from
+        // it: its body position less that origin.
+        let me_cm = feet * CM;
+        blow.angle = atan2_xz(me_cm.x - foe_origin.x, me_cm.z - foe_origin.z);
+        blow.origin_in_arc = place::between(blow.arc_end, blow.arc_start, blow.angle);
         let foe = combat::Foe {
             condition: target_condition.0,
             dead: target_condition.is_dead(),

@@ -337,17 +337,17 @@ forget it.
 `place` is the combat position score against one opponent. Its first word
 is the contact's engagement level, as the caller writes it: level 3
 scores the strike term (at the observer's reach plus a size correction, a
-step's plateau and a fade to 600 cm), the approach term (peaking at the
-strike ideal) and the danger of a live swing (a side swing by its time to
-impact: 4 at the edge, 1 by 900 ms, nothing past 10 s; a thrust 1 or 8 by
-its arc, while the candidate is closer than (skill + 3) × 20 plus the
-opponent's reach). Every other level clears those three terms and doubles
-the close band at the opponent's reach plus 150 cm. The recovering, never
-arriving and thrust scales of the approach, the observer's heading and
-attack state, the press flag on the opponent's facing, and the observer's
-feral and skill scales keep the original's double-precision steps. The
-recovering blow lowers the close term by one and scales the approach by
-`(2·skill + 2)·2` at any level.
+step's plateau and a fade to 600 cm) and the approach term (peaking at the
+strike ideal). Every other level clears those two and doubles the close
+band at the opponent's reach plus 150 cm. The danger of a live swing is
+scored at every level: a side swing by its time to impact (4 at the edge,
+1 by 900 ms, nothing past 10 s), a thrust 1 or 8 by its arc, while the
+candidate is closer than (skill + 3) × 20 plus the opponent's reach. The
+recovering, never arriving and thrust scales of the approach, the
+observer's heading and attack state, the press flag on the opponent's
+facing, and the observer's feral and skill scales keep the original's
+double-precision steps. The recovering blow lowers the close term by one
+and scales the approach by `(2·skill + 2)·2` at any level.
 `publish_arc` is the opponent's published sector and its recovering kind,
 its edges built from the head look's yaw (the body heading while
 characters do not run the head tracker) and its look from the body's

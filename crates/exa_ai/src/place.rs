@@ -13,11 +13,11 @@
 //! candidate: 4 at the edge, down by one three-hundredth of the
 //! milliseconds until 900 ms, then 1 until 10000 ms. A live thrust scores
 //! 1 inside its arc and 8 outside it, while the candidate is closer than
-//! (skill + 3) × 20 plus the opponent's reach. The strike, approach and
-//! danger terms are scored only at the fight level (3); any other level
-//! leaves them 0 and doubles the close term. Skill and feral then scale
-//! the danger, and feral halves the close term at 1. A dull fighter scores
-//! no danger and skips that scale.
+//! (skill + 3) × 20 plus the opponent's reach. The strike and the approach
+//! are scored only at the fight level (3); any other level clears them and
+//! doubles the close term. The danger is scored at every level. Skill and
+//! feral then scale the danger, and feral halves the close term at 1. A
+//! dull fighter scores no danger and skips that scale.
 //! The approach term peaks at the strike ideal: inside it the fraction is
 //! the distance over the ideal (eased when wide), past it the fraction
 //! falls to 0 over a band of 100 cm, or 150 cm when wide, plus
@@ -82,9 +82,9 @@ pub struct Spot {
     /// The observer wants melee, which doubles the strike term.
     pub melee: bool,
     /// The contact's engagement level, the score's first word. Level 3 is
-    /// a fight: the strike, approach and danger terms are scored. Any
-    /// other level clears them and doubles the close term; the danger
-    /// never survives a level other than 3.
+    /// a fight: the strike and approach terms are scored there (any other
+    /// level clears them and doubles the close term). The danger of a live
+    /// swing is scored at every level.
     pub level: i32,
     /// The observer's feral level. At 1 the close term is halved and the
     /// danger scale is 0.
@@ -508,12 +508,12 @@ pub fn publish_arc(swing: Swing) -> Arc {
 /// 150)` inside the reach band, doubled off the fight level. At level 3 the
 /// strike term peaks at the observer's reach plus a size correction and a
 /// large opponent's 50 cm, is 1 for one step past that and falls to 0 at
-/// 600 cm; a live side swing scores danger by its time to impact and a
-/// live thrust 1 inside its arc and 8 outside it, and the approach term is
-/// the banded cubic. Level 0 through 2 and 4 score no strike, approach or
-/// danger. The observer's feral level halves the close term and scales the
-/// danger; the observer's "dull" rule bit clears the danger. Skill scales
-/// the danger by `skill·0.5 + 0.5`.
+/// 600 cm, and the approach term is the banded cubic; levels 0 through 2
+/// and 4 score neither and clear them. The danger is scored at every
+/// level: a live side swing by its time to impact, a live thrust 1 inside
+/// its arc and 8 outside it. The observer's feral level halves the close
+/// term and scales the danger; the observer's "dull" rule bit clears the
+/// danger. Skill scales the danger by `skill·0.5 + 0.5`.
 pub fn score_place(distance_cm: f32, spot: Spot) -> PlaceScore {
     let limit = spot.other_reach_cm + CLOSE_PAST;
     let mut close = if limit < distance_cm {
@@ -547,11 +547,11 @@ pub fn score_place(distance_cm: f32, spot: Spot) -> PlaceScore {
     let mut danger = 0.0;
     if spot.blow.kind == 4 {
         // Recovering: one less close term, not below 0, and the approach
-        // pulled in at twice the skill plus two. This runs off the fight
-        // level too, where the strike and approach it scales are 0.
+        // pulled in at twice the skill plus two. Both run at every level;
+        // off the fight level the approach it scales is 0.
         close = (close - 1.0).max(0.0);
         approach = (spot.blow.skill * 2.0 + 2.0) * approach * 2.0;
-    } else if fighting {
+    } else {
         let (blow_danger, scale) = blow_terms(distance_cm, spot);
         danger = blow_danger;
         match scale {
@@ -825,9 +825,9 @@ mod tests {
         let outside = score_place(0.0, spot);
         assert_eq!(outside.strike, 0.0);
         assert_eq!(outside.approach, 0.0);
-        // Off the fight level the danger is 0 too: the score writes it
-        // only in the level-3 block.
-        assert_eq!(outside.danger, 0.0);
+        // Off the fight level the strike and approach are cleared; the
+        // danger of a live swing stays.
+        assert_eq!(outside.danger.to_bits(), 0x4000_0000);
 
         spot.level = 3;
         spot.feral = 1.0;
@@ -1145,9 +1145,9 @@ mod tests {
         assert_eq!(score.approach.to_bits(), 0x3f90_0000);
     }
 
-    /// Only the level-3 word scores the strike, approach and danger; every
-    /// other level clears them and doubles the close term, the recovering
-    /// blow still lowering the close term.
+    /// Only the level-3 word scores the strike and approach; every other
+    /// level clears them and doubles the close term, while a live swing's
+    /// danger and the recovering blow's close reduction stay.
     #[test]
     fn the_fight_level_alone_scores_the_extra_terms() {
         let spot = fight(false, false);
@@ -1156,16 +1156,17 @@ mod tests {
             let quiet = score_place(25.0, Spot { level, ..spot });
             assert_eq!(quiet.strike, 0.0, "level {level}");
             assert_eq!(quiet.approach, 0.0, "level {level}");
-            assert_eq!(quiet.danger, 0.0, "level {level}");
             assert_eq!(quiet.close, at_three.close * 2.0, "level {level}");
         }
+        // A live swing's danger is not the fight level's: it is scored at
+        // every level.
         let mut swinging = Spot {
             blow: side(0.5, 0.0),
             ..spot
         };
         assert_eq!(score_place(0.0, swinging).danger.to_bits(), 0x4000_0000);
         swinging.level = 2;
-        assert_eq!(score_place(0.0, swinging).danger, 0.0);
+        assert_eq!(score_place(0.0, swinging).danger.to_bits(), 0x4000_0000);
         let mut recovering = Spot {
             blow: Blow {
                 kind: 4,

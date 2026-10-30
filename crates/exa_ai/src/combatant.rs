@@ -321,18 +321,10 @@ impl Contact {
     }
 }
 
-/// The engine's cheap `asin`, in single precision (the record's constants:
-/// π/2, 0.2075 and 0.0535).
-pub fn asin_fast(x: f32) -> f32 {
-    const HALF_PI: f32 = f32::from_bits(0x3fc9_0fdb);
-    const LINEAR: f32 = f32::from_bits(0x3e54_7ae1);
-    const SQUARE: f32 = f32::from_bits(0x3d5b_22d1);
-    if 0.0 <= x {
-        HALF_PI - (HALF_PI - (LINEAR - SQUARE * x) * x) * (1.0 - x).sqrt()
-    } else {
-        ((SQUARE * x + LINEAR) * x + HALF_PI) * (1.0 + x).sqrt() - HALF_PI
-    }
-}
+/// The engine's cheap arc sine, in single precision (π/2, 0.2075 and
+/// 0.0535). The engine keeps one implementation; this is
+/// `exa_physics`'s, which the look chain and the blast effects share.
+pub use exa_physics::body::locomotion::asin_approx as asin_fast;
 
 /// Bring an angle back into ±π by one turn, testing the bounds in double
 /// precision.
