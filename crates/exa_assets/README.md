@@ -445,11 +445,12 @@ normal stretched by the part's `UVScale` (`Tiling::uv_scale`); apparel takes its
 loader's condition. The per-part target is the part's atlas region (the
 factory atlas times its atlas scale, rounded to nearest), over which the
 region quad stretches the source textures; the region quad's width crop
-(`1 − texture_parameter`) scales their u (`Tiling::crop`), and below texture
+(`1 − texture_parameter`) limits the drawn columns without rescaling the
+source (`Tiling::crop`), and below texture
 detail 3 a job paints at half the region's size while its tiles double
 (`paint::paint_target_size`); `paint::RegionDraw::uniforms` reproduces the
 `MatTile`, `DmgTile`, `ShdTile`, `MatCol`, `Damage`, `Dirt`, `Quality`,
-`UVScale` and `PtrnPos` values the original's six passes bind.
+`UVScale`, `PtrnPos` and `NrmTile` values the original's six passes bind.
 
 The painter's GPU-side bookkeeping is modelled in `paint_jobs`: the
 256-slot job ring (a full ring flushes all but the newly pushed job), the

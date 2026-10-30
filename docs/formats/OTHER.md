@@ -1322,14 +1322,17 @@ factory weapons of a real save, part for part and material for material.
   6 (texture only) gives the region `UVScale` = F(−value) with the
   deform's amount, else 1. Only the blade programs (`steelbld_*`) read it:
   their mask, shade and region normal are sampled at (u, v · UVScale).
-- **Region geometry**: a region is drawn as one quad at its atlas rectangle
-  (offset, then size, both atlas fractions) with its u texture coordinate
-  scaled by `1 − texture_parameter` (the width crop). The shade and normal
-  textures, every layer mask and the region normal therefore sample
-  `u ∈ 0..(1 − texture_parameter)`, stretched over the region;
-  `exa_assets::paint::Tiling::crop` carries it. Shipped recipes store a
-  negative texture parameter for a few parts (combknifea1's crop is 1.05),
-  and the value is not clamped.
+- **Region geometry**: a region is drawn as one quad from its atlas
+  offset to `offset + size · crop`, where the crop is
+  (`1 − texture_parameter`, 1), with texture coordinates `0..crop`. The
+  source therefore keeps its scale (region u reads source u) and only the
+  part of the region left of the crop is drawn; the rest keeps the cleared
+  target. The assembler maps each mesh's texture coordinates to
+  `uv · size + offset` without the crop. `exa_assets::paint::Tiling::crop`
+  carries it: columns whose centre lies past `crop · width` are left
+  unpainted. Shipped recipes store a negative texture parameter for a few
+  parts (combknifea1's crop is 1.05); such a quad overhangs the region and
+  the whole region is drawn.
 - **Targets and detail**: a per-part target is the region's texel size
   (the factory atlas times the part's atlas scale, rounded to nearest), not
   the source texture's: shipped parts stretch a source of another size over
@@ -1348,10 +1351,11 @@ factory weapons of a real save, part for part and material for material.
   `ShdTile` = the region rectangle (size, offset) or (1, 1, 0, 0) when the
   region has no shade tile; `MatCol` = the layer colour and wear weight;
   `Damage`, `Dirt` and `Quality` = the region's remapped values; `UVScale`
-  the texture-stretch factor; `PtrnPos` the emblem placement. The colour and
-  alpha passes fold `UVScale` into `ShdTile.y` (the uniform's second
-  component); the pattern, specular and normal passes bind it without
-  folding.
+  the texture-stretch factor; `PtrnPos` the emblem placement (painted
+  pattern only); `NrmTile` the bare region rectangle (specular only). Every
+  pass whose program declares `UVScale` (the blade family) binds it and
+  multiplies `ShdTile.y` (the uniform's second component) by it, the white
+  default included; `NrmTile` is not folded.
 - **Programs** (`exa_formats::procedural::programs`): each material compiles
   `<family>_d` (plus defines `0x20000` pattern and `0x400000` painted
   pattern), `<family>_a` when its alpha bit is set, `<alt>_s` (silk for
