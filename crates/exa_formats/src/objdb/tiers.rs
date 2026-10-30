@@ -459,6 +459,55 @@ impl ObjectDb {
         }
     }
 
+    /// Copies a record from one tier into another, as the character-data
+    /// unit copies a record's item: the payload comes along, the table flags
+    /// are the source's, and the model's name and description string ids
+    /// whose own text the source tier holds are re-allocated in the target
+    /// tier's library. An id with no database bits or no record number, and
+    /// one whose record the source tier lacks, come back unchanged. The new
+    /// id carries the target tier's tag.
+    pub fn copy_record(&mut self, id: u32, source: Tier, target: Tier) -> u32 {
+        if id & ID_MASK == 0 || id & TAG_MASK == 0 {
+            return id;
+        }
+        let Some(at) = self.store(source).find_index(id & ID_MASK) else {
+            return id;
+        };
+        let Some(view) = self.store(source).view(at) else {
+            return id;
+        };
+        let flags = self.store(source).entries()[at].flags;
+        let mut payload = view.payload().to_vec();
+        if let Some(model) = section_range(&payload, MODEL) {
+            for field in [0x14, 0x18] {
+                let raw = u32_at(&payload[model.clone()], field);
+                // Only an own-library id (bit 31 with a record number) is
+                // remapped; an inherit and a shared id stay as they are.
+                if raw <= INHERIT {
+                    continue;
+                }
+                let new = match self
+                    .library(source)
+                    .bytes(raw & ID_MASK)
+                    .map(<[u8]>::to_vec)
+                {
+                    Some(text) => {
+                        let slot = self.library_mut(target).alloc();
+                        self.library_mut(target).set(slot, &text);
+                        slot | 0x8000_0000
+                    }
+                    None => INHERIT,
+                };
+                set_u32(&mut payload[model.clone()], field, new);
+            }
+        }
+        let new = self.store(target).first_free_id();
+        let (_, to) = self.store_mut(target).insert(new);
+        self.store_mut(target).set_flags(to, flags);
+        self.store_mut(target).store(to, &payload);
+        new | target.tag()
+    }
+
     /// Promotes an object to the world tier, as the original does. A local
     /// object (tag exactly bit 31) comes back as its recorded world id when
     /// the id remap table holds it; otherwise its container children are
@@ -1086,6 +1135,79 @@ mod tests {
         );
         let lost = db.promote(LOCAL | 6);
         assert_eq!(db.find(lost).unwrap().model().unwrap().name_id, INHERIT);
+    }
+
+    #[test]
+    fn copying_a_record_remaps_only_its_own_strings() {
+        let mut db = db();
+        let own = db.local_strings.add(b"Local name");
+        let desc = db.local_strings.add(b"A local blade.");
+        put(
+            &mut db.local,
+            4,
+            NAME | MODEL,
+            &item("Blade", 0, 0, own | 0x8000_0000, desc | 0x8000_0000),
+        );
+        // A shared string id and an inherit are left alone.
+        put(
+            &mut db.local,
+            5,
+            NAME | MODEL,
+            &item("Plain", 0, 0, 1, INHERIT),
+        );
+        // The copy takes the target tier's first free id and its tag, keeps
+        // the source flags and gets its own text in the target library.
+        let copied = db.copy_record(LOCAL | 4, Tier::Local, Tier::World);
+        assert_eq!(copied, WORLD | 1);
+        assert_eq!(db.find(WORLD | 1).unwrap().flags, NAME | MODEL);
+        let model = db.find(WORLD | 1).unwrap().model().unwrap();
+        assert_eq!(
+            model.name_id & 0x8000_0000,
+            0x8000_0000,
+            "an own name stays own"
+        );
+        assert_eq!(
+            db.world_strings
+                .bytes(model.name_id & ID_MASK)
+                .map(<[u8]>::to_vec)
+                .as_deref(),
+            Some(&b"Local name"[..])
+        );
+        assert_eq!(
+            db.world_strings
+                .bytes(model.description_id & ID_MASK)
+                .map(<[u8]>::to_vec)
+                .as_deref(),
+            Some(&b"A local blade."[..])
+        );
+        // The source record and its strings are untouched.
+        assert!(db.find(LOCAL | 4).is_some());
+        assert_eq!(db.local_strings.refs(own), 1);
+        // A shared id and an inherit come across unchanged.
+        let plain = db.copy_record(LOCAL | 5, Tier::Local, Tier::World);
+        let model = db.find(plain).unwrap().model().unwrap();
+        assert_eq!((model.name_id, model.description_id), (1, INHERIT));
+        // A record without a database bit, without a record number or
+        // missing from the source tier comes back as it went in.
+        assert_eq!(db.copy_record(7, Tier::Local, Tier::World), 7);
+        assert_eq!(db.copy_record(LOCAL, Tier::Local, Tier::World), LOCAL);
+        assert_eq!(
+            db.copy_record(LOCAL | 99, Tier::Local, Tier::World),
+            LOCAL | 99
+        );
+        // An own string whose text the source tier lost reads as inherit.
+        put(
+            &mut db.local,
+            6,
+            NAME | MODEL,
+            &item("Lost", 0, 0, 0x8000_0009, 0),
+        );
+        let lost = db.copy_record(LOCAL | 6, Tier::Local, Tier::World);
+        assert_eq!(db.find(lost).unwrap().model().unwrap().name_id, INHERIT);
+        // The same tier as source and target copies into it.
+        let again = db.copy_record(WORLD | 2, Tier::World, Tier::World);
+        assert_eq!(again, WORLD | 4);
+        assert!(db.find(WORLD | 2).is_some());
     }
 
     #[test]
