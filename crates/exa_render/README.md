@@ -90,7 +90,8 @@ component; no effect registers one yet, so the pass also carries a white
 shape texel), draw box, program names, quad and shared uniforms, the three linked programs' sampler units and uniforms (`GiPass::layout`: `Shadow<i>` on 2 + i, `LVox` 0, `OVox` 1; the emission program sets only `OVox`), the neighbour margin copy's columns, UV offsets and quad, the dynamic update's dirty region, and the occupancy sub-upload
 (`GiOccupancyPatch`) a moving mesh's changed box goes out as. A voxel light carries the node's base colour, current and base intensity, base and active radius and flag word, with the 3× modern and double-precision 0.6 legacy colour paths, the activation copy and the clone copy.
 - `image_noise`: the original's procedural noise: white noise from its
-  linear congruential sequence, byte octaves (the terrain's blend-rule
+  linear congruential sequence (whole maps, float rows and byte levels'
+  halving with ties to even), byte octaves (the terrain's blend-rule
   maps) and their ridge fold, ridged float octaves, and `NoiseField`, the
   animated field of the force and spirit powers ([`docs/RENDERING.md`](../../docs/RENDERING.md),
   Procedural noise).
