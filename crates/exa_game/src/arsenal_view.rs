@@ -449,6 +449,7 @@ pub struct ArsenalViewPlugin;
 impl Plugin for ArsenalViewPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ArsenalWindow>()
+            .init_resource::<GuiFrames>()
             .add_message::<ArsenalKey>()
             .add_message::<ArsenalScroll>()
             .add_systems(
