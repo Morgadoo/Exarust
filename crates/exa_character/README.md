@@ -46,8 +46,8 @@ Characters: races, body morphs, appearance, apparel fitting, stats/attributes/sk
   of those has an equip lock over 50), the pack's worn weight (each worn
   item's template bulk byte), the arena's loadout rank (the four hands'
   weapon-or-shield rank and every worn item's body rank), and the prelude
-  loader's import of an entry's item references into a live tier (the first
-  hand pair, the worn list and the inventory, with an inventory repeat of a
+  loader's import of an entry's item references into a live tier (the entry's
+  items migrated from the live templates first, then the first hand pair, the worn list and the inventory, with an inventory repeat of a
   hand taking the hand's new id).
 - Health: `save_health` writes yellow and red as shares of the maximum
   (red 0 unless positive), focus as its share, all in single precision and

@@ -562,14 +562,20 @@ impl CharacterData {
 
     /// Copies the record's item references out of a character entry's own
     /// database into `target`, as the prelude loader does after reading the
-    /// entry: the first hand pair, then the worn list, then the inventory.
+    /// entry ([`exa_formats::characters::read_entry_items`]). Every record of the entry's database is first migrated from
+    /// its template in `db` (the original runs its whole-tier migration on
+    /// the scratch tier it loaded them into), so a template whose material
+    /// class changed drops the item's own strings before the copy. Then
+    /// come the first hand pair, the worn list and the inventory.
     /// A hand keeps its old id so an inventory entry that repeats it takes
     /// the hand's new id instead of another copy; every other inventory
     /// entry is copied like the worn items. The second hand pair, the
     /// staged list and the loadouts are left alone. Returns how many
     /// references were copied (an id without database bits or one the
     /// entry's database lacks stays as it is and is not counted).
-    pub fn import_items(&mut self, own: &ObjectDb, db: &mut ObjectDb, target: Tier) -> usize {
+    pub fn import_items(&mut self, own: &mut ObjectDb, db: &mut ObjectDb, target: Tier) -> usize {
+        db.migrate_store(&mut own.base);
+        let own = &*own;
         let mut copied = 0;
         let mut old = [0u32; 2];
         let holds = |id: u32| own.base.find(id).is_some();

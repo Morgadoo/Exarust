@@ -929,7 +929,7 @@ fn importing_an_entry_copies_its_items() {
         },
     ];
     let mut live = ObjectDb::default();
-    let copied = data.import_items(&own, &mut live, Tier::Local);
+    let copied = data.import_items(&mut own, &mut live, Tier::Local);
     // The hand, the worn item and the two inventory entries of their own;
     // the hand's repeat is no copy and the missing id is not counted.
     assert_eq!(copied, 4);
