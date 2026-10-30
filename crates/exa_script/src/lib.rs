@@ -35,6 +35,7 @@ impl Plugin for ScriptPlugin {
             .add_message::<Talk>()
             .add_message::<NarrateText>()
             .add_message::<PickReply>()
+            .add_message::<LeaveDialogue>()
             .add_message::<ScriptEffect>()
             .add_systems(
                 Update,
@@ -118,6 +119,11 @@ pub struct Talk(pub u32);
 #[derive(Message, Debug, Clone, Copy)]
 pub struct PickReply(pub usize);
 
+/// The player ends every conversation it is in (the Talk key while a
+/// dialogue is open).
+#[derive(Message, Debug, Clone, Copy, Default)]
+pub struct LeaveDialogue;
+
 /// What a script asked the game to do.
 #[derive(Message, Debug, Clone, PartialEq, Eq)]
 pub struct ScriptEffect(pub Effect);
@@ -148,6 +154,7 @@ fn run_conversations(
     mut narrate_text: MessageReader<NarrateText>,
     mut talk: MessageReader<Talk>,
     mut pick: MessageReader<PickReply>,
+    mut leave: MessageReader<LeaveDialogue>,
     mut effects: MessageWriter<ScriptEffect>,
 ) {
     let now = time.elapsed().as_millis() as u32;
@@ -184,6 +191,11 @@ fn run_conversations(
     }
     for p in pick.read() {
         engine.pick(&mut scene, p.0);
+    }
+    for _ in leave.read() {
+        if let Some(who) = *player {
+            engine.leave(&mut scene, who);
+        }
     }
     engine.update(&mut scene);
     for e in scene.effects.drain(..) {
