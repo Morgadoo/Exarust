@@ -188,24 +188,6 @@ pub fn creation_label(word: i32) -> CreationLabel {
     }
 }
 
-/// Clears the first used creation slot and every slot after it, the last
-/// included. The first used slot keeps its first technique byte.
-pub fn clear_creation_slots(slots: &mut [[u8; 8]; 6]) -> Option<usize> {
-    let first = slots
-        .iter()
-        .position(|slot| u16::from_le_bytes([slot[0], slot[1]]) != 0)?;
-    let slot = &mut slots[first];
-    slot[0] = 0;
-    slot[1] = 0;
-    for byte in &mut slot[3..] {
-        *byte = 0;
-    }
-    for later in &mut slots[first + 1..] {
-        *later = [0; 8];
-    }
-    Some(first)
-}
-
 /// The body form's constructor values: 172 wide with no border, 592 tall
 /// (540 in the compact layout), twelve controls in its table, the caption
 /// `VHM` and a scale of 1.0, the physique picker at 8, 64 and the tone
@@ -4976,30 +4958,6 @@ mod tests {
     }
 
     #[test]
-    fn the_creation_slots_clear_from_the_first_used() {
-        let mut slots = [[0u8; 8]; 6];
-        slots[1] = [1, 2, 3, 4, 5, 6, 7, 8];
-        slots[5] = [7; 8];
-        assert_eq!(clear_creation_slots(&mut slots), Some(1));
-        assert_eq!(slots[0], [0; 8]);
-        assert_eq!(slots[1], [0, 0, 3, 0, 0, 0, 0, 0]);
-        assert_eq!(slots[2], [0; 8]);
-        assert_eq!(slots[3], [0; 8]);
-        assert_eq!(slots[4], [0; 8]);
-        // The clear runs through the sixth slot too.
-        assert_eq!(slots[5], [0; 8]);
-
-        let mut empty = [[0u8; 8]; 6];
-        assert_eq!(clear_creation_slots(&mut empty), None);
-        assert!(empty.iter().all(|slot| slot == &[0u8; 8]));
-
-        let mut last = [[0u8; 8]; 6];
-        last[5] = [7; 8];
-        assert_eq!(clear_creation_slots(&mut last), Some(5));
-        assert_eq!(last[5], [0, 0, 7, 0, 0, 0, 0, 0]);
-    }
-
-    #[test]
     fn the_creation_appearance_settles_toward_its_target() {
         let settled = settle_appearance(0.25, 0.5, 0, 0);
         assert_eq!(settled.stored, None);
@@ -6041,6 +5999,14 @@ mod tests {
         assert_eq!(skills[1], skill(0, [1, 0, 0, 0, 0, 0]));
         assert_eq!(skills[2], Skill::default());
         assert_eq!(skills[3], Skill::default());
+
+        // The first used slot keeps its first technique byte and loses the
+        // other five; every later slot is cleared whole, the last included.
+        let mut last = [Skill::default(); SKILLS];
+        last[5] = skill(25000, [1, 2, 3, 4, 5, 6]);
+        assert_eq!(clear_skills_from_first_used(&mut last), Some(5));
+        assert_eq!(last[5], skill(0, [1, 0, 0, 0, 0, 0]));
+        assert_eq!(last[0], Skill::default());
 
         let mut empty = [Skill::default(); SKILLS];
         assert_eq!(clear_skills_from_first_used(&mut empty), None);
