@@ -382,15 +382,12 @@ pub const NO_ROTATION: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 
 /// The practice spawn table's rotation: a half turn about the vertical axis.
 pub const PRACTICE_ROTATION: [[f32; 3]; 3] = [[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]];
 
-/// The point the practice shots look at: 5 m past the ring's middle, where
-/// the partner stands (the start view's target keeps its 20 cm height).
+/// The practice spawn table's position (x, y, z = 0, 0, 500 cm). The start
+/// and each next fight copy the table and overwrite only its vertical (y)
+/// with the body's height, so the player stands at x 0, z 500; the placement
+/// takes x and y as one 8-byte read and z on its own. The start shot frames
+/// the table's own point.
 pub const PRACTICE_POINT: Vec3 = Vec3::new(0.0, 0.0, 500.0);
-
-/// Where the practice ladder's player stands: the ring's middle, with the
-/// body's own height for the vertical. The spawn table's own vertical (500)
-/// is the placeholder the start and each next fight overwrite, so the
-/// horizontal position is the origin and only the height varies.
-pub const PRACTICE_SPAWN: Vec3 = Vec3::new(0.0, 0.0, 0.0);
 
 /// The story spawn table's position: the starting room's corner.
 pub const STORY_POINT: Vec3 = Vec3::new(8200.0, 0.0, 3920.0);
@@ -2052,9 +2049,9 @@ impl Flow {
         let placement = Placement {
             rotation: PRACTICE_ROTATION,
             position: Vec3::new(
-                PRACTICE_SPAWN.x,
+                PRACTICE_POINT.x,
                 practice_height(standing),
-                PRACTICE_SPAWN.z,
+                PRACTICE_POINT.z,
             ),
         };
         self.viewport = viewport;
@@ -2420,23 +2417,26 @@ impl Flow {
                 // tip 5, writes the expert-ladder setting once (a flag keeps
                 // later wins from writing it again) and unlocks the page; the
                 // expert ladder shows tip 6.
+                // The branch runs only in the practice mode.
                 let mut steps = Vec::new();
-                if self.practice.ladder == Ladder::Novice {
-                    steps.push(Step::Tip(5));
-                    if !self.expert_written {
-                        self.expert_written = true;
-                        self.unlocks.expert = true;
-                        steps.push(Step::SettingsWrite {
-                            key: EXPERT_UNLOCK_KEY,
-                            bytes: Unlocks {
-                                expert: true,
-                                ..Default::default()
-                            }
-                            .expert_bytes(),
-                        });
+                if self.mode == Mode::Practice {
+                    if self.practice.ladder == Ladder::Novice {
+                        steps.push(Step::Tip(5));
+                        if !self.expert_written {
+                            self.expert_written = true;
+                            self.unlocks.expert = true;
+                            steps.push(Step::SettingsWrite {
+                                key: EXPERT_UNLOCK_KEY,
+                                bytes: Unlocks {
+                                    expert: true,
+                                    ..Default::default()
+                                }
+                                .expert_bytes(),
+                            });
+                        }
+                    } else {
+                        steps.push(Step::Tip(6));
                     }
-                } else {
-                    steps.push(Step::Tip(6));
                 }
                 steps.push(Step::EndMenu(menu));
                 steps.push(Step::Hook(Hook::None));
@@ -2470,7 +2470,7 @@ impl Flow {
         self.hook = Hook::Practice;
         let placement = Placement {
             rotation: PRACTICE_ROTATION,
-            position: Vec3::new(PRACTICE_SPAWN.x, self.stand_height, PRACTICE_SPAWN.z),
+            position: Vec3::new(PRACTICE_POINT.x, self.stand_height, PRACTICE_POINT.z),
         };
         let mut steps = self.close_end_menu();
         steps.extend([
@@ -3823,14 +3823,18 @@ fn apply_steps(
                 }
             }
             Step::RequestAction(motion) => {
-                // The body tick's start of a requested motion: the clip by
-                // its action name, looping when the clip loops, else once
-                // back into the combat or idle action, with no blend.
+                // The body's action switch, not forced: a body already in
+                // that action keeps it; otherwise the clip starts by its
+                // action name (looping when the clip loops, else once back
+                // into the combat or idle action, with no blend).
                 if let Some(motions) = motions.as_deref() {
                     for mut player in &mut players {
                         let Some(animator) = player.animator.as_mut() else {
                             continue;
                         };
+                        if motions.action_name(motion) == Some(animator.action.as_str()) {
+                            continue;
+                        }
                         if let Some(name) = motions.start_requested(animator, motion) {
                             debug!("game flow: requested motion {motion:#x} starts {name}");
                         } else {
@@ -4147,7 +4151,7 @@ mod tests {
         assert_eq!(start.view.target, Vec3::new(0.0, 20.0, 500.0));
         assert!(steps.contains(&Step::PlacePlayer(Placement {
             rotation: PRACTICE_ROTATION,
-            position: Vec3::new(0.0, 95.0, 0.0),
+            position: Vec3::new(0.0, 95.0, 500.0),
         })));
         assert!(steps.contains(&Step::Camera(camera::frame_point(
             PRACTICE_POINT,
@@ -4271,11 +4275,11 @@ mod tests {
         flow.set_practice_health(0.2, 0.25);
         flow.stand_height = 88.5;
         let steps = flow.practice_next(9000);
-        // The body stands at its measured stand height, over the ring's
-        // middle; the shot still looks 5 m ahead at the partner's place.
+        // The body stands at its measured stand height at the table's
+        // point (only the vertical is overwritten).
         assert!(steps.contains(&Step::PlacePlayer(Placement {
             rotation: PRACTICE_ROTATION,
-            position: Vec3::new(0.0, 88.5, 0.0),
+            position: Vec3::new(0.0, 88.5, 500.0),
         })));
         assert_eq!(flow.practice.fight, 8);
         assert_eq!(flow.phase, Phase::Playing);
@@ -4980,6 +4984,27 @@ mod tests {
                 .iter()
                 .any(|step| matches!(step, Step::SettingsWrite { .. }))
         );
+        // Outside the practice mode the end menu's practice branch does not
+        // run: no tip, no settings word.
+        let mut arena = Flow {
+            mode: Mode::Arena,
+            phase: Phase::Playing,
+            practice: PracticeState {
+                ladder: Ladder::Novice,
+                fight: 8,
+                start_ms: 0,
+                next_tip: false,
+            },
+            ..Default::default()
+        };
+        let steps = arena.practice_tick(6000, None, &[DEAD]);
+        assert!(!steps.contains(&Step::Tip(5)));
+        assert!(!arena.expert_written);
+        assert!(
+            !steps
+                .iter()
+                .any(|step| matches!(step, Step::SettingsWrite { .. }))
+        );
         // A boot whose store already holds the unlock does not write it.
         let mut stored = Flow::default();
         stored.unlocks.expert = true;
@@ -4996,11 +5021,11 @@ mod tests {
         };
         let steps = flow.start_practice(Ladder::Expert, 92.0, view, 500);
         assert_eq!(flow.mode, Mode::Practice);
-        // The standing height plus 5 cm, over the ring's middle, half turned;
-        // the shot looks 5 m ahead at the partner's place.
+        // The standing height plus 5 cm at the table's point (x 0, z 500),
+        // half turned: only the table's vertical is overwritten.
         assert!(steps.contains(&Step::PlacePlayer(Placement {
             rotation: PRACTICE_ROTATION,
-            position: Vec3::new(0.0, 97.0, 0.0),
+            position: Vec3::new(0.0, 97.0, 500.0),
         })));
         assert_eq!(flow.practice.fight, 1);
         assert!(steps.contains(&Step::PracticeFilter));
