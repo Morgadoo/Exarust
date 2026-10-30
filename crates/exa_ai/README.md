@@ -381,7 +381,7 @@ are added at the entry. The weapon record keeps its section's raw stat
 bytes for rules that read bytes.
 
 Not yet: the encounter scripts, the hit's mind
-power call (`0x1000af4a0`'s last branch), and the AI's own parry choice
+power call (the take-a-hit rule's last branch), and the AI's own parry choice
 (the body's auto-parry runs in `exa_combat::parry`). The head tracker
 (`exa_combat::aim`) is the player and character-view behaviour's; Exarust's
 player aim is the cursor direction in `exa_game::player`, so the tracker is
