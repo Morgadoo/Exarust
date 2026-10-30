@@ -61,7 +61,7 @@ use exa_ui::gui_text::draw_line;
 use exa_ui::line_skin::shown_palette;
 use exa_ui::menu::MenuShow;
 use exa_ui::picker_fields::{Picker, physique_cross};
-use exa_ui::pickers::{FieldVertex, HairColPicker, PickPoint, TonePicker};
+use exa_ui::pickers::{FIELD_BORDER, FieldVertex, HairColPicker, PickPoint, TonePicker};
 use exa_ui::skin::{SkinBatch, SkinPalette};
 
 use crate::create::{
@@ -851,10 +851,9 @@ impl Creator {
     fn pick(&mut self, target: Target, x: i32, y: i32) {
         match target {
             Target::Physique => {
-                let r = self.physique_rect();
-                let local = (x - r.left, y - r.top);
-                let size = exa_ui::pickers::field_size((r.width(), r.height()));
-                if self.physique.drag(local, size) {
+                let c = picker_client(self.physique_rect());
+                let local = (x - c.left, y - c.top);
+                if self.physique.drag(local, (c.width(), c.height())) {
                     // The point goes into the record at once.
                     self.record.physique = self.physique.point;
                     self.changed();
@@ -864,7 +863,8 @@ impl Creator {
                 let r = self.tone_rect();
                 self.tone.size = (r.width(), r.height());
                 let before = self.tone.point;
-                self.tone.press(Some((x - r.left, y - r.top)), 0);
+                let c = picker_client(r);
+                self.tone.press(Some((x - c.left, y - c.top)), 0);
                 if self.tone.point != before {
                     let mut source = self.page_source();
                     create::skin_changed(&mut source, [self.tone.point.u, self.tone.point.v]);
@@ -877,7 +877,8 @@ impl Creator {
                 let size = self.hair_colour.size;
                 self.hair_colour.size = (r.width(), r.height());
                 let before = self.hair_colour.point;
-                self.hair_colour.press(Some((x - r.left, y - r.top)), 0);
+                let c = picker_client(r);
+                self.hair_colour.press(Some((x - c.left, y - c.top)), 0);
                 self.hair_colour.size = size;
                 if self.hair_colour.point != before {
                     self.hair_colour_changed();
@@ -1726,15 +1727,28 @@ fn rect_layer(rects: &[(f32, f32, f32, f32)], ink: [u8; 4]) -> GuiLayer {
     GuiLayer::new(batch, LayerTexture::None)
 }
 
-/// The marker square at a field's point [guess at the skin's marker].
+/// A picker form's client rectangle: the form's rectangle inset by the
+/// picker's border on every side. Picks are taken and the field drawn from
+/// its top-left corner.
+fn picker_client(form: GuiRect) -> GuiRect {
+    let (width, height) = exa_ui::pickers::field_size((form.width(), form.height()));
+    GuiRect::new(
+        form.left + FIELD_BORDER,
+        form.top + FIELD_BORDER,
+        width,
+        height,
+    )
+}
+
+/// The marker square at a picker form's point [guess at the skin's marker].
 fn marker_layer(field: GuiRect, point: [f32; 2], ink: [u8; 4]) -> GuiLayer {
     let picker = Picker {
         point,
         ..Picker::default()
     };
-    let size = exa_ui::pickers::field_size((field.width(), field.height()));
-    let (mx, my) = picker.marker_at(size);
-    let (x, y) = ((field.left + mx) as f32, (field.top + my) as f32);
+    let client = picker_client(field);
+    let (mx, my) = picker.marker_at((client.width(), client.height()));
+    let (x, y) = ((client.left + mx) as f32, (client.top + my) as f32);
     let h = MARKER_HALF;
     rect_layer(
         &[
@@ -1960,14 +1974,15 @@ fn paint_editors(
     }
     // The physique field: the cross in the field's grey, then the marker.
     let field = creator.physique_rect();
-    let cross = physique_cross((field.width(), field.height()));
+    let client = picker_client(field);
+    let cross = physique_cross((client.width(), client.height()));
     let mut batch = SkinBatch::new();
     batch.select(1, 0, false);
     batch.set_ink(exa_ui::picker_fields::CROSS_COLOUR);
     batch.begin();
     for [from, to] in cross {
-        batch.vertex(field.left as f32 + from[0], field.top as f32 + from[1]);
-        batch.vertex(field.left as f32 + to[0], field.top as f32 + to[1]);
+        batch.vertex(client.left as f32 + from[0], client.top as f32 + from[1]);
+        batch.vertex(client.left as f32 + to[0], client.top as f32 + to[1]);
     }
     batch.end_lines();
     painted.push(GuiLayer::new(batch, LayerTexture::None));
@@ -1983,9 +1998,10 @@ fn paint_editors(
         .iter()
         .flat_map(|q| [[q[0], q[1], q[2], q[2]], [q[3], q[4], q[5], q[5]]])
         .collect();
+    let client = picker_client(field);
     painted.push(gradient_layer(
         &quads,
-        (field.left as f32, field.top as f32),
+        (client.left as f32, client.top as f32),
         None,
     ));
     painted.push(marker_layer(
@@ -2020,7 +2036,8 @@ fn paint_editors(
     let field = creator.hair_colour_rect();
     let mut picker = creator.hair_colour.clone();
     picker.size = (field.width(), field.height());
-    let origin = (field.left as f32, field.top as f32);
+    let client = picker_client(field);
+    let origin = (client.left as f32, client.top as f32);
     painted.push(gradient_layer(&picker.cells(), origin, None));
     // The shade multiplies the columns, black at the top to white at 1.2
     // times the height [guess at the blend].
@@ -2032,7 +2049,7 @@ fn paint_editors(
             exa_ui::gui_draw::BlendFactor::Zero,
         )),
     );
-    shade.clip = Some([field.left, field.top, field.width(), field.height()]);
+    shade.clip = Some([client.left, client.top, client.width(), client.height()]);
     painted.push(shade);
     let m = creator.hair_colour.marker;
     painted.push(marker_layer(
@@ -2347,10 +2364,10 @@ mod tests {
         assert_eq!(c.record.skin, [0, 0]);
         // The physique picker's point goes into the record.
         let r = c.physique_rect();
-        click(&mut c, (r.left + 40, r.top + 120));
-        // The point normalises against the drawable width (160 less 2 inset).
-        let u = (40.0f64 / 158.0) as f32;
-        assert_eq!(c.record.physique, [u, 0.75]);
+        // The pick is taken from the client's corner (2 in) and normalised
+        // against the 156 × 156 client: (39, 117) is (¼, ¾).
+        click(&mut c, (r.left + 2 + 39, r.top + 2 + 117));
+        assert_eq!(c.record.physique, [0.25, 0.75]);
         // A hair style row (row 2 is the second entry).
         let (list, step) = c.hair_list_rect();
         click(&mut c, (list.left + 5, list.top + step * 2 + 1));
