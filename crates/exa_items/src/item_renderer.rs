@@ -583,6 +583,19 @@ mod tests {
     }
 
     #[test]
+    fn the_scene_fit_moves_an_existing_camera_along_its_direction() {
+        // A camera 10 m down -Z from the target: the fit puts it at the
+        // distance from where it was, along the unchanged direction.
+        let camera = Vec3::new(0.0, 0.0, 1000.0);
+        let target = Vec3::ZERO;
+        let moved = frame_camera(camera, target, [5.0, 5.0, 5.0], 70.0, 40.0);
+        let distance = frame_distance([5.0, 5.0, 5.0], 70.0, 40.0);
+        assert!((moved - Vec3::new(0.0, 0.0, 1000.0 - distance)).length() < 1e-3);
+        // A camera at the target has no direction: it stays.
+        assert_eq!(frame_camera(target, target, [5.0; 3], 70.0, 40.0), target);
+    }
+
+    #[test]
     fn the_box_corners_are_its_eight_corners() {
         // A box's centre ± half, its x halved by the transform.
         let tf: Transform3 = [
