@@ -1396,18 +1396,10 @@ fn spawn_players(
             // living human may rise again.
             let undead = options.undead_opponent.is_some();
             let stats = match &practice {
-                Some(opponent) => {
-                    let race = exa_formats::races::of_character(&races, opponent.record.race);
-                    CharacterStats::derive(
-                        &opponent.record,
-                        race,
-                        Spawn {
-                            story: undead,
-                            dead: false,
-                        },
-                    )
-                }
-                None if undead => CharacterStats::derive(
+                // A feral record loses the may-rise rule under any rules, so
+                // the undead flag derives the stats of the creator's new
+                // human (not feral) instead of the template's.
+                _ if undead => CharacterStats::derive(
                     &CharacterRecord::reset(),
                     exa_formats::races::of_character(&races, exa_character::HUMAN),
                     Spawn {
@@ -1415,9 +1407,30 @@ fn spawn_players(
                         dead: false,
                     },
                 ),
+                Some(opponent) => {
+                    let race = exa_formats::races::of_character(&races, opponent.record.race);
+                    CharacterStats::derive(
+                        &opponent.record,
+                        race,
+                        Spawn {
+                            story: false,
+                            dead: false,
+                        },
+                    )
+                }
                 None => new_human(0.0),
             }
             .with_encumbrance(outfit_encumbrance(&outfit));
+            if undead {
+                info!(
+                    "undead opponent: rules {:#x} (may rise {}), red {:.3}",
+                    stats.rules.0,
+                    stats
+                        .rules
+                        .has(exa_formats::character_stats::BodyRules::MAY_RISE),
+                    stats.red
+                );
+            }
             log_encumbrance("duellist", &stats);
             if let Some(opponent) = &practice {
                 duellist.reaction_ms = opponent.reaction_ms;
@@ -1455,6 +1468,7 @@ fn spawn_players(
                 // The arena's Unaligned role, team 0x10.
                 exa_ai::roles::Roles::arena(&book),
                 duellist,
+                DebugDuellist,
                 ChildOf(foe_root),
             ));
             if let Some(job) = duel_composite {
@@ -2230,8 +2244,13 @@ fn fell_arena_opponents(
     info!("arena fell: {felled} opponents drop dead");
 }
 
-/// `--undead-opponent <frame>`: at that frame after the load every living
-/// duellist collapses (as a killing blow starts it: the collapse clip, its
+/// The debug duellist `--opponent` spawns (not a level's characters, which
+/// carry a duellist too).
+#[derive(Component, Debug, Clone, Copy)]
+struct DebugDuellist;
+
+/// `--undead-opponent <frame>`: at that frame after the load the living
+/// debug duellist ([`DebugDuellist`]) collapses (as a killing blow starts it: the collapse clip, its
 /// dying tick, then death writing the rise clock), so the AI manager's rise
 /// rule can raise it 10 s after it dies. A debug tool.
 #[allow(clippy::type_complexity)]
@@ -2249,10 +2268,7 @@ fn fell_undead_opponent(
             &mut exa_physics::body::Ragdoll,
             &exa_combat::Fighter,
         ),
-        (
-            With<exa_ai::Duellist>,
-            Without<exa_game::player::PlayerBody>,
-        ),
+        (With<DebugDuellist>, Without<exa_game::player::PlayerBody>),
     >,
 ) {
     let Some(at) = options.undead_opponent else {
