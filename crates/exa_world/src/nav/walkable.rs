@@ -9,7 +9,8 @@
 //!   on its floor, when its cell's clearance plus penalty is under 80;
 //!   else the cell of least cost a best-first flood by the planner's step
 //!   rules reaches (at most 220 cells, stopping at one under 80), from the
-//!   point's cell or, off the floors, from the nearest cell with a floor.
+//!   point's cell or, off the floors, from the nearest cell by the squared
+//!   3-D distance to the point that has room for a walker.
 //!
 //! Points in and out are Exarust's metres; the rules are the original's
 //! centimetres and 10 cm voxels. Evidence: `docs/NAVIGATION.md` (Queries).
@@ -350,22 +351,21 @@ impl<'a> Flood<'a> {
                         continue;
                     }
                     let distance = Self::spread(at);
-                    let m = Met {
-                        at,
-                        layer,
-                        key: distance,
-                    };
+                    // The original orders these by the squared 3-D distance
+                    // (the cell's floor less the point's height) but only
+                    // accepts a cell whose ground distance is within the
+                    // bound so far.
+                    let up = i64::from(i32::from(own.floor) - self.height);
+                    let key = distance + up * up;
+                    let m = Met { at, layer, key };
                     let Some(i) = self.meet(m) else {
                         return best;
                     };
-                    if distance > bound {
-                        continue;
-                    }
                     self.waiting.push(i);
                     let roomy = other.floor <= own.floor
                         || i32::from(other.underside) - i32::from(own.floor) > FLOOR_ROOM;
-                    if own.floor != SKY && roomy && distance < bound {
-                        bound = distance;
+                    if own.floor != SKY && roomy && distance <= bound && key < bound {
+                        bound = key;
                         best = Some(m);
                     }
                 }

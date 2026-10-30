@@ -227,19 +227,30 @@ impl Roles {
     }
 }
 
-/// Whether any role, or any relation role toward `partner`, is missing
-/// from the book.
-pub fn invalid(roles: &Roles, relations: &Relations, book: &RoleDb, partner: u32) -> bool {
-    if roles.ids().any(|id| book.get(id).is_none()) {
-        return true;
+/// The first role of `roles`, or relation role toward `partner`, that the
+/// book does not hold; none when every one is known.
+pub fn first_invalid(
+    roles: &Roles,
+    relations: &Relations,
+    book: &RoleDb,
+    partner: u32,
+) -> Option<u32> {
+    if let Some(id) = roles.ids().find(|id| book.get(*id).is_none()) {
+        return Some(id);
     }
     if partner == 0 {
-        return false;
+        return None;
     }
     relations
         .find(partner)
         .and_then(|r| r.roles.as_ref())
-        .is_some_and(|rs| rs.iter().any(|r| book.get(r.id).is_none()))
+        .and_then(|rs| rs.iter().map(|r| r.id).find(|id| book.get(*id).is_none()))
+}
+
+/// Whether any role, or any relation role toward `partner`, is missing
+/// from the book.
+pub fn invalid(roles: &Roles, relations: &Relations, book: &RoleDb, partner: u32) -> bool {
+    first_invalid(roles, relations, book, partner).is_some()
 }
 
 impl Relations {

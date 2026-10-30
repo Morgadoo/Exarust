@@ -130,14 +130,15 @@ fn an_edge_point_moves_to_the_first_cheaper_neighbour() {
     assert!(close(p, at(-105.0, 0.0, -15.0)), "{:?}", p * 100.0);
 }
 
-/// Cell (5, 15) has no floor: the original takes the nearest cell across
-/// the ground, a lower layer without a floor included, (5, 14), and floods
-/// from it, reaching nothing: its centre at the grid's base.
+/// Cell (5, 15) has no floor: the original takes the nearest cell by the
+/// squared 3-D distance to the point (a lower layer without a floor
+/// included), here the first floor cell of the half plane, and floods from
+/// it.
 #[test]
 fn a_point_off_the_floors_takes_the_nearest_cell_as_the_original() {
     let g = half_plane();
     let p = nearest_walkable(&g, at(-285.0, 0.0, 15.0));
-    assert!(close(p, at(-285.0, -2210.0, -15.0)), "{:?}", p * 100.0);
+    assert!(close(p, at(-105.0, 0.0, -15.0)), "{:?}", p * 100.0);
 }
 
 /// Every cell costs 100 but one walkable cell 9 cells away: past the

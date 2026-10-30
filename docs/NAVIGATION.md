@@ -319,8 +319,9 @@ cell's lower and upper floor and underside):
   layer whose clearance plus penalty is under 80 the point stays, on its
   floor. Else a best-first flood in a 256-cell window round the point's
   cell: from a point off the floors (no layer, or clearance 255) first the
-  nearest cell across the ground that has a floor (not open sky, with
-  more than 10 between its floor and the other layer's slab); then, from
+  nearest cell by the squared 3-D distance to the point (a lower layer
+  without a floor included) that is not open sky and has more than 10
+  between its floor and the other layer's slab; then, from
   the cell, each neighbour in the original's order the line walk's reach
   steps onto (under 50 cm up, under 2.1 m down), keyed by its distance
   from the point (×10, in 3-D), keeping the cheapest; it stops at a cell

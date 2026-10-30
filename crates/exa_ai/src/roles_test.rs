@@ -484,6 +484,10 @@ fn a_record_gives_its_roles() {
     let legacy = Roles::of_record(&record, &b);
     assert_eq!(legacy.ids().collect::<Vec<_>>(), vec![9, 2]);
     assert!(invalid(&roles_of(&b, &[999]), &Relations::default(), &b, 0));
+    assert_eq!(
+        first_invalid(&roles_of(&b, &[9, 999]), &Relations::default(), &b, 0),
+        Some(999)
+    );
     assert!(!invalid(&legacy, &Relations::default(), &b, 0));
 }
 
