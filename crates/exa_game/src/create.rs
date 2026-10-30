@@ -1972,6 +1972,7 @@ pub struct SkillPage {
     pub second_panel_hidden: bool,
     /// The skills panel was made (none existed) rather than shown again.
     pub created: bool,
+    /// The panel is shown, made or not.
     pub shown: bool,
     /// The panel's flag word gained `0x20000` when it was made.
     pub panel_flags: u32,
@@ -1981,7 +1982,8 @@ pub struct SkillPage {
 
 /// Picks the skills page for the game and screen modes. `account` is the
 /// account's global experience and `committed_worth` the worth of the last
-/// committed character.
+/// committed character; `second_panel` says whether the second preview
+/// panel exists and `existing` whether the skills panel was already made.
 ///
 /// The second preview panel is hidden first when it exists. The skills
 /// panel is made at [`skill_panel_place`] with its flag word gaining
@@ -1994,8 +1996,12 @@ pub fn skill_page(
     screen_mode: i32,
     account: u32,
     committed_worth: u32,
+    second_panel: bool,
+    existing: bool,
 ) -> SkillPage {
     let continuing = screen_mode == 12;
+    let created = !existing;
+    let panel_flags = if created { 0x2_0000 } else { 0 };
     let new_global = new_global_experience(account, committed_worth);
     let tab = (!continuing).then_some(exa_ui::creation::SKILLS);
     if game_mode == 8 {
@@ -2009,11 +2015,11 @@ pub fn skill_page(
             apply_budget: false,
             editable: false,
             page: 4,
-            second_panel_hidden: true,
-            created: true,
+            second_panel_hidden: second_panel,
+            created,
             shown: true,
-            panel_flags: 0x2_0000,
-            record_rebound: false,
+            panel_flags,
+            record_rebound: existing,
         }
     } else if continuing {
         SkillPage {
@@ -2026,11 +2032,11 @@ pub fn skill_page(
             apply_budget: false,
             editable: false,
             page: 6,
-            second_panel_hidden: true,
-            created: true,
+            second_panel_hidden: second_panel,
+            created,
             shown: true,
-            panel_flags: 0x2_0000,
-            record_rebound: false,
+            panel_flags,
+            record_rebound: existing,
         }
     } else {
         SkillPage {
@@ -2043,11 +2049,11 @@ pub fn skill_page(
             apply_budget: true,
             editable: true,
             page: 6,
-            second_panel_hidden: true,
-            created: true,
+            second_panel_hidden: second_panel,
+            created,
             shown: true,
-            panel_flags: 0x2_0000,
-            record_rebound: false,
+            panel_flags,
+            record_rebound: existing,
         }
     }
 }
@@ -6513,7 +6519,7 @@ mod tests {
 
     #[test]
     fn the_skills_page_follows_the_mode() {
-        let arena = skill_page(8, 0, 20000, 0);
+        let arena = skill_page(8, 0, 20000, 0, true, false);
         assert_eq!(arena.mode, SkillPageMode::Arena);
         assert_eq!(arena.tab, Some("SKILLS"));
         assert_eq!(arena.heading, None);
@@ -6522,12 +6528,12 @@ mod tests {
         assert!(!arena.editable);
         assert_eq!(arena.page, 4);
 
-        let arena_continue = skill_page(8, 12, 20000, 0);
+        let arena_continue = skill_page(8, 12, 20000, 0, true, false);
         assert_eq!(arena_continue.tab, None);
         assert_eq!(arena_continue.heading, Some("Current skill progress"));
         assert!(!arena_continue.clear_skills);
 
-        let global = skill_page(4, 0, 12000, 0);
+        let global = skill_page(4, 0, 12000, 0, true, false);
         assert_eq!(global.mode, SkillPageMode::Global);
         assert_eq!(global.heading, Some("Global experience"));
         assert_eq!(global.value, Some(12000));
@@ -6537,7 +6543,7 @@ mod tests {
 
         // 30000 experience is worth 48750; less a committed 37500 leaves
         // 11250, which buys back 10000 experience.
-        let continued = skill_page(4, 12, 30000, 37500);
+        let continued = skill_page(4, 12, 30000, 37500, true, false);
         assert_eq!(continued.mode, SkillPageMode::NewGlobal);
         assert_eq!(continued.heading, Some("New global experience"));
         assert_eq!(continued.value, Some(10000));
@@ -6553,6 +6559,15 @@ mod tests {
             assert_eq!(page.panel_flags, 0x2_0000);
             assert!(!page.record_rebound);
         }
+        // A second visit shows the existing panel again with its record
+        // pointer rebound and no new flags; a missing second preview panel
+        // is not hidden.
+        let again = skill_page(4, 0, 12000, 0, false, true);
+        assert!(!again.second_panel_hidden);
+        assert!(!again.created && again.shown);
+        assert_eq!(again.panel_flags, 0);
+        assert!(again.record_rebound);
+        assert_eq!(again.value, Some(12000));
         // Of the three pages, the arena's reads the character's skills, not
         // the account's, so its experience word stays empty. 20000 experience
         // is worth 27500.
