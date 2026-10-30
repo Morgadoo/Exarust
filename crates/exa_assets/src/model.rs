@@ -250,10 +250,13 @@ pub fn is_body_model(entry: &str) -> bool {
 pub type Part = (Handle<Mesh>, Handle<ExaMaterial>);
 
 /// Which nodes the original's floor-set load generates surface points for:
-/// the walk starts at the children of every centre-floor variant (`+FM…`),
-/// skips a child (and its subtree) named `#…`, `+…` or `[…]`, and marks a
-/// class-`0x89` node whose second flag word has bit `0x10000` or bit `0x8`.
-/// The walk continues into every kept child.
+/// the walk starts at the children of every centre-floor variant (`+FM…`)
+/// and skips a direct child (with its subtree) named `#…`, `+…` or `[…]`;
+/// below that first level it recurses into every child without a name
+/// test. A class-`0x89` node whose second flag word has bit `0x10000` or
+/// bit `0x8` is marked, and the generator then runs on its master: an
+/// instance node marks the node it shares (whose points every instance
+/// then copies).
 fn floor_set_generation_nodes(nodes: &[Node]) -> Vec<bool> {
     let mut children: Vec<Vec<usize>> = vec![Vec::new(); nodes.len() + 1];
     for (i, node) in nodes.iter().enumerate() {
@@ -265,60 +268,81 @@ fn floor_set_generation_nodes(nodes: &[Node]) -> Vec<bool> {
     let mut stack: Vec<usize> = Vec::new();
     for (i, node) in nodes.iter().enumerate() {
         if node.name.starts_with("+FM") {
-            stack.extend(children[i + 1].iter().copied());
+            stack.extend(
+                children[i + 1]
+                    .iter()
+                    .copied()
+                    .filter(|&c| !nodes[c].name.starts_with(['#', '+', '['])),
+            );
         }
     }
+    let mut visited = vec![false; nodes.len()];
     while let Some(i) = stack.pop() {
-        let node = &nodes[i];
-        if node.name.starts_with(['#', '+', '[']) {
+        if std::mem::replace(&mut visited[i], true) {
             continue;
         }
+        let node = &nodes[i];
         if node.flags & 0xfff == 0x89 && exa_physics::voxel::floor_set_node_generates(node.flags2) {
-            out[i] = true;
+            out[master_of(nodes, i)] = true;
         }
         stack.extend(children[i + 1].iter().copied());
     }
     out
 }
 
-/// The GI sample points a mesh node carries at load: the chunk's points
-/// when it has one, otherwise the original's runtime generation for a body
-/// model's part or a floor-set child.
+/// The node an instance chain ends at (1-based `instance` links); the node
+/// itself when it is no instance or the chain is broken.
+fn master_of(nodes: &[Node], index: usize) -> usize {
+    let mut at = index;
+    for _ in 0..=nodes.len() {
+        match nodes[at].instance.and_then(|o| o.checked_sub(1)) {
+            Some(owner) if owner < nodes.len() && owner != at => at = owner,
+            _ => return at,
+        }
+    }
+    index
+}
+
+/// The GI sample points a mesh node carries at load: the chunk's points,
+/// or the original's runtime generation for a floor-set node its loader
+/// marks ([`floor_set_generation_nodes`]).
 ///
-/// The original runs its surface generator at load for every class-`0x89`
-/// body-part node of a character's physics body, at 20 cm-parameter
-/// (a 4 cm sampling step) through the body builder whose collision level
-/// is 2. Exarust keeps one model per part and has no collision level, so
-/// every mesh node of a body model is taken as a body part (guess), the
-/// node's stored triangles answer the sphere query, and the greedy cover
-/// is the builder's default. A floor-set child follows the loader's walk
-/// and flag test. A node with a stored chunk keeps its points.
+/// The floor-set load runs the surface generator at parameter 20 (a 4 cm
+/// sampling step) on every marked node and stores the result over whatever
+/// the node had, so a marked node's chunk does not survive. The node's
+/// stored triangles answer the sphere query in place of its collision
+/// data, and the cover is the builder's default greedy one.
+///
+/// The original also generates points for a character's class-`0x89` body
+/// parts when their physics bodies are made; Exarust's characters carry no
+/// GI points (nothing gathers them), so that trigger is not run here and
+/// stays a tested function ([`exa_physics::voxel::generated_surface_points`]).
 fn gi_points_for(
     node: &Node,
     mesh: Option<&RfcMesh>,
     skin_bone: Option<u16>,
-    entry: &str,
     floor_set: bool,
 ) -> Vec<Vec3> {
-    if let Some(mesh) = mesh
-        && skin_bone.is_none()
-    {
-        return mesh.gi_points.iter().map(|&p| Vec3::from(p)).collect();
-    }
-    if !(floor_set || is_body_model(entry)) {
-        return Vec::new();
-    }
-    let Some(triangles) = mesh.and_then(mesh_triangles) else {
+    let Some(mesh) = mesh else {
         return Vec::new();
     };
-    exa_physics::voxel::generated_surface_points(
-        exa_physics::voxel::Bounds {
-            centre: Vec3::from(node.bounds_centre),
-            half_extents: Vec3::from(node.bounds_half_extents),
-        },
-        &triangles,
-        exa_physics::voxel::SurfaceCover::Greedy,
-    )
+    if floor_set
+        && skin_bone.is_none()
+        && let Some(triangles) = mesh_triangles(mesh)
+    {
+        return exa_physics::voxel::generated_surface_points(
+            exa_physics::voxel::Bounds {
+                centre: Vec3::from(node.bounds_centre),
+                half_extents: Vec3::from(node.bounds_half_extents),
+            },
+            &triangles,
+            exa_physics::voxel::SurfaceCover::Greedy,
+        );
+    }
+    if skin_bone.is_some() {
+        return Vec::new();
+    }
+    mesh.gi_points.iter().map(|&p| Vec3::from(p)).collect()
 }
 
 /// The triangles of a stored mesh in its node's space (metres), for the
@@ -762,7 +786,7 @@ impl ModelLoader<'_> {
                 skin_bone,
                 bounds: (Vec3::from(node.bounds_centre), node.bounds_radius),
                 half_extents: Vec3::from(node.bounds_half_extents),
-                gi_points: Arc::new(gi_points_for(node, mesh, skin_bone, &entry, floor_set[i])),
+                gi_points: Arc::new(gi_points_for(node, mesh, skin_bone, floor_set[i])),
                 gi_centred: node.flags2 & 0x10 != 0,
                 gi_thin: mesh
                     .and_then(|mesh| mesh.groups.first())
@@ -3439,8 +3463,9 @@ mod tests {
     }
 
     /// The floor-set loader starts at the children of every centre-floor
-    /// variant, skips `#`/`+`/`[` subtrees, and marks only class-0x89 nodes
-    /// whose second flag word has 0x10000 or 0x8.
+    /// variant, skips `#`/`+`/`[` direct children with their subtrees, then
+    /// recurses without a name test, and marks the master of every class-0x89
+    /// node whose second flag word has 0x10000 or 0x8.
     #[test]
     fn floor_set_children_are_generated_through_the_loaders_walk() {
         let nodes = vec![
@@ -3460,10 +3485,20 @@ mod tests {
             generation_node("loose", None, 0x89, 0x8),
             // 8: a kept grandchild with the flag.
             generation_node("deepok", Some(5), 0x89, 0x10000),
+            // 9: below the first level names are not tested: a '+' grandchild
+            // with the flag is generated.
+            generation_node("+deep", Some(5), 0x89, 0x8),
+            // 10: a flagged instance of node 7 marks its master instead.
+            Node {
+                instance: Some(7),
+                ..generation_node("copy", Some(5), 0x89, 0x8)
+            },
         ];
         assert_eq!(
             floor_set_generation_nodes(&nodes),
-            vec![true, false, false, false, false, false, false, true]
+            vec![
+                true, false, false, false, false, false, true, true, true, false
+            ]
         );
         // A model with no centre-floor variant generates nothing.
         let nodes = vec![generation_node("loose", None, 0x89, 0x8)];
