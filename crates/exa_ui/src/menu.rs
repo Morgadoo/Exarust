@@ -1399,6 +1399,54 @@ impl MenuShow {
     pub fn copies_game_mode(self) -> bool {
         !matches!(self, MenuShow::CharacterScreen)
     }
+
+    /// The form the show opens.
+    pub fn opens(self) -> MenuOpen {
+        match self {
+            MenuShow::Creator | MenuShow::CharacterScreen => MenuOpen::Creator,
+            MenuShow::ClassSelect => MenuOpen::ClassSelect,
+            MenuShow::Emblem => MenuOpen::Emblem,
+        }
+    }
+}
+
+/// The form a [`MenuShow`] opens after the menu closes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuOpen {
+    /// The character creator.
+    Creator,
+    /// The story's class select.
+    ClassSelect,
+    /// The arena's emblem generator.
+    Emblem,
+}
+
+/// What a show does to the running menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MenuShowPlan {
+    /// The menu's row marks clear and it shows the title page again.
+    pub closes_to_title: bool,
+    /// The session's world is torn down.
+    pub tears_down_world: bool,
+    /// The show copies the game mode into the creator's mode.
+    pub copies_game_mode: bool,
+    /// The session state the show leaves behind.
+    pub state: u32,
+    pub opens: MenuOpen,
+}
+
+/// The show's work: every one closes the menu to its title page and tears
+/// the world down; then the character screen, the class select or the
+/// emblem form opens, and the session state becomes the creator's 2 or the
+/// setup forms' 0x40.
+pub fn menu_show(show: MenuShow) -> MenuShowPlan {
+    MenuShowPlan {
+        closes_to_title: true,
+        tears_down_world: true,
+        copies_game_mode: show.copies_game_mode(),
+        state: show.state(),
+        opens: show.opens(),
+    }
 }
 
 /// The main menu's constructor values.
@@ -2390,6 +2438,22 @@ mod tests {
         assert_eq!(MenuShow::Emblem.state(), 0x40);
         assert!(MenuShow::Emblem.copies_game_mode());
         assert!(!MenuShow::CharacterScreen.copies_game_mode());
+    }
+
+    #[test]
+    fn the_shows_close_to_the_title_and_open_their_form() {
+        let story = menu_show(MenuShow::Creator);
+        assert!(story.closes_to_title && story.tears_down_world);
+        assert!(story.copies_game_mode);
+        assert_eq!((story.state, story.opens), (2, MenuOpen::Creator));
+        let class = menu_show(MenuShow::ClassSelect);
+        assert_eq!((class.state, class.opens), (0x40, MenuOpen::ClassSelect));
+        assert!(class.copies_game_mode);
+        let emblem = menu_show(MenuShow::Emblem);
+        assert_eq!((emblem.state, emblem.opens), (0x40, MenuOpen::Emblem));
+        let screen = menu_show(MenuShow::CharacterScreen);
+        assert_eq!((screen.state, screen.opens), (2, MenuOpen::Creator));
+        assert!(!screen.copies_game_mode);
     }
 
     #[test]
