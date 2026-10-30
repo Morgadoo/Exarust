@@ -32,6 +32,35 @@ pub mod column {
 /// A row flag: the row is greyed and cannot be selected.
 pub const ROW_DISABLED: u32 = 0x2;
 
+/// The header's height and the row pitch, in GUI units.
+pub const ROW_UNITS: i32 = 6;
+
+/// A column width kept at its share of the unit when the unit changes
+/// from `old_unit` (divided by the old unit, then times the new; a zero
+/// old unit keeps it).
+pub fn rescale_width(width: i32, old_unit: i32, unit: i32) -> i32 {
+    if old_unit == 0 {
+        width
+    } else {
+        width / old_unit * unit
+    }
+}
+
+/// A column title's pen (the glyphs' left and bottom edge), client-local:
+/// a unit in from the column's left edge and five units down, inside the
+/// six-unit header.
+pub fn title_pen(unit: i32, column_left: i32) -> (i32, i32) {
+    (unit + column_left, 5 * unit)
+}
+
+/// A cell's pen for the 0-based drawn `row`, client-local: a unit in from
+/// the column's left edge, the first row eleven units down (under the
+/// header) and each next row six units lower. An owner-drawn column gets
+/// the same place.
+pub fn cell_pen(unit: i32, column_left: i32, row: i32) -> (i32, i32) {
+    (column_left + unit, 11 * unit + ROW_UNITS * unit * row)
+}
+
 /// Pointer flags the table reads.
 pub mod pointer {
     /// The event comes from the gamepad's stick (with a direction bit).
@@ -262,10 +291,8 @@ impl TableView {
     /// Keeps each column's share of the unit when it changes from
     /// `old_unit`.
     pub fn rescale(&mut self, old_unit: i32, unit: i32) {
-        if old_unit != 0 {
-            for c in &mut self.columns {
-                c.width = c.width / old_unit * unit;
-            }
+        for c in &mut self.columns {
+            c.width = rescale_width(c.width, old_unit, unit);
         }
         self.unit = unit;
     }
@@ -829,7 +856,7 @@ impl TableView {
         for (i, c) in self.columns.iter().enumerate() {
             if !c.custom {
                 for r in first..self.row_count() {
-                    let y = 6 * u * r + 11 * u;
+                    let y = cell_pen(u, x, r).1;
                     let is_edit =
                         self.editing && self.selected == r + 1 && i as i32 == self.edit_column;
                     if is_edit {
@@ -855,7 +882,7 @@ impl TableView {
             } else {
                 u + (c.width - font.text_width(&c.title)) / 2 + x
             };
-            out.titles.push((i as i32, (pen, 5 * u)));
+            out.titles.push((i as i32, (pen, title_pen(u, x).1)));
             if c.icon > 0 {
                 out.icons
                     .push((c.icon, (x + (c.width - icon_cell) / 2, u >> 1)));

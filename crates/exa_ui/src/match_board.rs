@@ -23,6 +23,7 @@
 
 use crate::creation_forms::{FormRecord, record};
 use crate::record_form::FormSpec;
+use crate::table_view;
 
 /// The rank labels in the original's table order. A fighter's rank is one
 /// of the first six; a record's rank index past Master reads the dash and
@@ -127,13 +128,121 @@ pub struct Column {
     pub width: i32,
 }
 
-/// A table's fixed layout.
+/// A table's fixed layout: a table view (`docs/UI.md`, Tables) at the
+/// board's GUI unit. `rect` is the view's place in the form's client,
+/// `columns` carry the constructor's widths at unit 4.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TableLayout {
     pub slot: TableSlot,
     pub rect: Rect,
     pub columns: &'static [Column],
     pub rows: usize,
+    /// The GUI unit the view is laid out at.
+    pub unit: i32,
+}
+
+impl TableLayout {
+    /// The view's client: inside the base form's border, which the table
+    /// view's constructor keeps.
+    pub fn client(&self) -> Rect {
+        Rect {
+            x: self.rect.x + TABLE_BORDER,
+            y: self.rect.y + TABLE_BORDER,
+            w: self.rect.w - 2 * TABLE_BORDER,
+            h: self.rect.h - 2 * TABLE_BORDER,
+        }
+    }
+
+    /// A column's width at the view's unit: the constructor's width at
+    /// unit 4, kept at its share of the unit when the unit is not 4.
+    pub fn column_width(&self, column: usize) -> i32 {
+        let width = self.columns.get(column).map_or(0, |c| c.width);
+        if self.unit == 4 {
+            width
+        } else {
+            table_view::rescale_width(width, 4, self.unit)
+        }
+    }
+
+    /// A column's left edge in the client: the widths before it.
+    pub fn column_left(&self, column: usize) -> i32 {
+        (0..column).map(|c| self.column_width(c)).sum()
+    }
+
+    /// A column's right edge in the client: the last column runs to the
+    /// client's right edge.
+    fn column_right(&self, column: usize) -> i32 {
+        if column + 1 >= self.columns.len() {
+            self.client().w
+        } else {
+            self.column_left(column) + self.column_width(column)
+        }
+    }
+
+    /// A column's header cell, in the form's client: the client's top six
+    /// units.
+    pub fn header(&self, column: usize) -> Rect {
+        let client = self.client();
+        let left = self.column_left(column);
+        Rect {
+            x: client.x + left,
+            y: client.y,
+            w: self.column_right(column) - left,
+            h: table_view::ROW_UNITS * self.unit,
+        }
+    }
+
+    /// A cell of the 0-based `row`, in the form's client: six units tall,
+    /// under the six-unit header.
+    pub fn cell(&self, row: usize, column: usize) -> Rect {
+        let pitch = table_view::ROW_UNITS * self.unit;
+        Rect {
+            y: self.client().y + pitch * (row as i32 + 1),
+            ..self.header(column)
+        }
+    }
+
+    /// A column title's pen in the form's client
+    /// ([`table_view::title_pen`]).
+    pub fn title_pen(&self, column: usize) -> (i32, i32) {
+        let client = self.client();
+        let (x, y) = table_view::title_pen(self.unit, self.column_left(column));
+        (client.x + x, client.y + y)
+    }
+
+    /// A cell's pen in the form's client ([`table_view::cell_pen`]); an
+    /// owner-drawn column's callback gets the same place.
+    pub fn cell_pen(&self, row: usize, column: usize) -> (i32, i32) {
+        let client = self.client();
+        let (x, y) = table_view::cell_pen(self.unit, self.column_left(column), row as i32);
+        (client.x + x, client.y + y)
+    }
+
+    /// The 0-based row under a form-client `y`, as the table view finds
+    /// it: nothing in the header, the rows six units tall below it.
+    pub fn row_at(&self, y: i32) -> Option<usize> {
+        let u = self.unit.max(1);
+        let y = y - self.client().y + u;
+        if y < table_view::ROW_UNITS * u {
+            return None;
+        }
+        let row = (y - u) / (table_view::ROW_UNITS * u);
+        (row >= 1).then(|| row as usize - 1)
+    }
+
+    /// The column under a form-client `x`: the first whose right edge
+    /// reaches it (the last past them all).
+    pub fn column_at(&self, x: i32) -> usize {
+        let x = x - self.client().x;
+        let mut right = 0;
+        for column in 0..self.columns.len() {
+            right += self.column_width(column);
+            if x <= right {
+                return column;
+            }
+        }
+        self.columns.len().saturating_sub(1)
+    }
 }
 
 /// A rectangle in the form's client coordinates.
@@ -267,10 +376,15 @@ pub struct BoardLayout {
     pub reward_slots: [Rect; 4],
 }
 
-/// The row height. Six event rows fill the table's 180 pixels; the roster's
-/// eight rows fill 240 of its 244. The toolkit's own row pitch is not in the
-/// board's methods, so this is a guess from those fits.
-pub const ROW_HEIGHT: i32 = 30;
+/// A table's border: the base form's, which the table view's constructor
+/// leaves alone (the board's tables are table views).
+pub const TABLE_BORDER: i32 = crate::settings::BORDER;
+
+/// The lineup's height in GUI units after a tournament refresh: 61 (56 in
+/// the compact form), or 30 for a weapon event.
+pub const LINEUP_UNITS: i32 = 0x3d;
+pub const COMPACT_LINEUP_UNITS: i32 = 0x38;
+pub const WEAPON_LINEUP_UNITS: i32 = 0x1e;
 
 /// The form template's 23 records, as the board's constructor hands them
 /// to the form's table builder (it passes the last index, 22), in control
@@ -404,8 +518,14 @@ pub const fn form_spec(compact: bool) -> FormSpec {
 /// eight up to 32 pixels and by four above, and stands a bottom-anchored
 /// record `y + 8` rows above the client's bottom edge.
 pub fn template_rects(compact: bool) -> [Rect; CONTROL_COUNT] {
+    template_rects_at(compact, 4)
+}
+
+/// [`template_rects`] at a GUI unit: the records laid out at unit 4 and
+/// rescaled with the form ([`crate::record_form::geometry`]).
+pub fn template_rects_at(compact: bool, unit: i32) -> [Rect; CONTROL_COUNT] {
     let spec = form_spec(compact);
-    let geometry = crate::record_form::geometry(&spec, spec.size, 4);
+    let geometry = crate::record_form::geometry(&spec, spec.size, unit);
     let mut rects = [Rect::default(); CONTROL_COUNT];
     for (rect, c) in rects.iter_mut().zip(&geometry.controls) {
         *rect = Rect {
@@ -426,10 +546,64 @@ pub fn template_rects(compact: bool) -> [Rect; CONTROL_COUNT] {
 /// item, the season picture and its item slots are the form template's
 /// records as the toolkit lays them out ([`template_rects`]).
 pub fn layout(compact: bool) -> BoardLayout {
+    layout_at(compact, 4)
+}
+
+/// [`layout`] at a GUI unit: the form and its template records rescaled
+/// from unit 4 ([`template_rects_at`]), the child views as the rescale
+/// leaves a plain child pane ([`crate::record_form::pane_at`]) and the
+/// tables' columns at their share of the unit ([`TableLayout`]).
+pub fn layout_at(compact: bool, unit: i32) -> BoardLayout {
+    if unit == 4 {
+        return design_layout(compact, template_rects(compact));
+    }
+    let mut layout = design_layout(compact, template_rects_at(compact, unit));
+    let spec = form_spec(compact);
+    let form = crate::record_form::geometry(&spec, spec.size, unit).form;
+    layout.form.w = form.w;
+    layout.form.h = form.h;
+    let pane = |r: Rect| {
+        let p = crate::record_form::pane_at(
+            crate::settings::Rect {
+                x: r.x,
+                y: r.y,
+                w: r.w,
+                h: r.h,
+            },
+            unit,
+        );
+        Rect {
+            x: p.x,
+            y: p.y,
+            w: p.w,
+            h: p.h,
+        }
+    };
+    for table in [
+        &mut layout.match_table,
+        &mut layout.rank_table,
+        &mut layout.tier_table,
+        &mut layout.events_table,
+        &mut layout.winners_table,
+        &mut layout.roster_table,
+        &mut layout.lineup_table,
+        &mut layout.season_table,
+    ] {
+        table.rect = pane(table.rect);
+        table.unit = unit;
+    }
+    layout.message = pane(layout.message);
+    layout.picture = pane(layout.picture);
+    layout.reward_panel = pane(layout.reward_panel);
+    layout
+}
+
+/// The layout at unit 4, the constructor's own numbers, with the
+/// template's records at `t`.
+fn design_layout(compact: bool, t: [Rect; CONTROL_COUNT]) -> BoardLayout {
     let height = if compact { 636 } else { 656 };
     let team_height = if compact { 224 } else { 244 };
     let reward_height = if compact { 100 } else { 120 };
-    let t = template_rects(compact);
     BoardLayout {
         form: Rect {
             x: 0,
@@ -460,6 +634,7 @@ pub fn layout(compact: bool) -> BoardLayout {
             },
             columns: &MATCH_COLUMNS,
             rows: 6,
+            unit: 4,
         },
         rank_table: TableLayout {
             slot: TableSlot::Rank,
@@ -471,6 +646,7 @@ pub fn layout(compact: bool) -> BoardLayout {
             },
             columns: &RANK_COLUMNS,
             rows: 6,
+            unit: 4,
         },
         tier_table: TableLayout {
             slot: TableSlot::Tier,
@@ -482,6 +658,7 @@ pub fn layout(compact: bool) -> BoardLayout {
             },
             columns: &TIER_COLUMNS,
             rows: 6,
+            unit: 4,
         },
         events_table: TableLayout {
             slot: TableSlot::Events,
@@ -493,6 +670,7 @@ pub fn layout(compact: bool) -> BoardLayout {
             },
             columns: &EVENT_COLUMNS,
             rows: 6,
+            unit: 4,
         },
         winners_table: TableLayout {
             slot: TableSlot::Winners,
@@ -504,6 +682,7 @@ pub fn layout(compact: bool) -> BoardLayout {
             },
             columns: &WINNER_COLUMNS,
             rows: 6,
+            unit: 4,
         },
         roster_table: TableLayout {
             slot: TableSlot::Roster,
@@ -515,6 +694,7 @@ pub fn layout(compact: bool) -> BoardLayout {
             },
             columns: &FIGHTER_COLUMNS,
             rows: 8,
+            unit: 4,
         },
         lineup_table: TableLayout {
             slot: TableSlot::Lineup,
@@ -526,6 +706,7 @@ pub fn layout(compact: bool) -> BoardLayout {
             },
             columns: &FIGHTER_COLUMNS,
             rows: 8,
+            unit: 4,
         },
         season_table: TableLayout {
             slot: TableSlot::Season,
@@ -537,6 +718,7 @@ pub fn layout(compact: bool) -> BoardLayout {
             },
             columns: &SEASON_COLUMNS,
             rows: 4,
+            unit: 4,
         },
         message: Rect {
             x: 40,
@@ -1150,9 +1332,13 @@ pub struct Board {
     /// [`control::STANDARD_FEE`] and [`control::STANDARD_PRIZE`].
     pub standard_fee: u32,
     pub standard_prize: u32,
-    /// The lineup table's height after a tournament refresh of a weapon
-    /// event.
+    /// The lineup table's height in GUI units after a tournament refresh
+    /// ([`LINEUP_UNITS`], [`COMPACT_LINEUP_UNITS`] or
+    /// [`WEAPON_LINEUP_UNITS`]).
     pub lineup_height_override: Option<i32>,
+    /// The GUI unit the board's form and child views are laid out at
+    /// (4 is the constructor's own numbers).
+    pub unit: i32,
 }
 
 impl Board {
@@ -1198,6 +1384,7 @@ impl Board {
             standard_fee: STANDARD_MATCHES[0].fee,
             standard_prize: STANDARD_MATCHES[0].prize,
             lineup_height_override: None,
+            unit: 4,
         };
         board.rebuild_lineups();
         board.apply_tab(None, BoardTab::Matches);
@@ -1206,7 +1393,7 @@ impl Board {
 
     /// The layout for the board's form size.
     pub fn layout(&self) -> BoardLayout {
-        layout(self.compact)
+        layout_at(self.compact, self.unit)
     }
 
     /// The selected match's type id.
@@ -1776,19 +1963,24 @@ impl Board {
 
     /// The tournament tab's refresh: copy the selected tournament event; a
     /// weapon event shows the reward panel with the weapon row's name and
-    /// shortens the lineup to four rows. The message box is cleared and the
-    /// lineup rebuilt from the event's entry.
+    /// shortens the lineup to 30 units (four rows), any other sets it to 61
+    /// units (56 compact). The message box is cleared and the lineup
+    /// rebuilt from the event's entry.
     pub fn refresh_tournament(&mut self) {
         let event = self.winner_selection.min(self.tournament_events.len() - 1);
         self.selected = self.tournament_events[event].clone();
         if self.weapon_event() {
-            self.lineup_height_override = Some(WEAPON_LINEUP_HEIGHT);
+            self.lineup_height_override = Some(WEAPON_LINEUP_UNITS);
             self.tournament_note = self
                 .weapon_row(event)
                 .map(|row| row.name.clone())
                 .unwrap_or_default();
         } else {
-            self.lineup_height_override = None;
+            self.lineup_height_override = Some(if self.compact {
+                COMPACT_LINEUP_UNITS
+            } else {
+                LINEUP_UNITS
+            });
         }
         self.standard_message.clear();
         self.rebuild_lineups();
@@ -2059,8 +2251,8 @@ impl Board {
     }
 
     /// The board's hit test: a tab, the primary button, or a visible table
-    /// cell. The row height is the layout's guess, so cells below it follow
-    /// that guess.
+    /// cell, found as the table view finds its row and column
+    /// ([`TableLayout::row_at`], [`TableLayout::column_at`]).
     pub fn hit_test(&self, point: (i32, i32)) -> BoardHit {
         let layout = self.layout();
         for (index, rect) in layout.tabs.iter().enumerate() {
@@ -2091,17 +2283,14 @@ impl Board {
             if !table.rect.contains(point.0, point.1) {
                 continue;
             }
-            let row = ((point.1 - table.rect.y) / ROW_HEIGHT) as usize;
+            let Some(row) = table.row_at(point.1) else {
+                continue;
+            };
             if row >= table.rows {
                 continue;
             }
-            let mut x = table.rect.x;
-            for (column, spec) in table.columns.iter().enumerate() {
-                if point.0 >= x && point.0 < x + spec.width {
-                    return BoardHit::Table { slot, row, column };
-                }
-                x += spec.width;
-            }
+            let column = table.column_at(point.0);
+            return BoardHit::Table { slot, row, column };
         }
         BoardHit::Outside
     }
@@ -2296,15 +2485,19 @@ impl Board {
         Some([CellValue::Text(self.season_winner(row))])
     }
 
-    /// The lineup table's height after the last tournament refresh.
+    /// The lineup table's height: the last tournament refresh's units
+    /// times the unit, else the constructor's (rescaled) height.
     pub fn lineup_height(&self) -> i32 {
-        self.lineup_height_override
-            .unwrap_or_else(|| self.layout().lineup_table.rect.h)
+        self.lineup_height_override.map_or_else(
+            || self.layout().lineup_table.rect.h,
+            |units| units * self.unit,
+        )
     }
 
     /// A coin cell's drawing. The column callback receives the cell's low
-    /// dword: zero is the dash four pixels right, anything else coin icons
-    /// at the cell's left edge.
+    /// dword and the owner-drawn cell's x (its pen, a unit in from the
+    /// column's left edge): zero is the dash four pixels right, anything
+    /// else coin icons at that x.
     pub fn coin_draw(packed: u32, x: i32) -> CoinDraw {
         if packed == 0 {
             CoinDraw::Dash { x: x + 4 }
@@ -2390,7 +2583,7 @@ impl Board {
                         x: layout.reward_panel.x + 4,
                         y: layout.reward_panel.y + 4,
                         w: layout.reward_panel.w - 8,
-                        h: ROW_HEIGHT,
+                        h: table_view::ROW_UNITS * self.unit,
                     };
                     paint.push(BoardPaint::Label {
                         widget: Widget::RewardPanel,
@@ -2705,19 +2898,23 @@ pub enum BoardPaint {
     },
     /// A table's frame.
     Table { slot: TableSlot, rect: Rect },
-    /// A table's column header.
+    /// A table's column header: its header cell and its title's pen (the
+    /// glyphs' left and bottom edge).
     Column {
         slot: TableSlot,
         index: usize,
         rect: Rect,
+        pen: (i32, i32),
         title: &'static str,
     },
-    /// A table cell.
+    /// A table cell: its rectangle under the header and its text's pen,
+    /// which an owner-drawn column's callback also gets.
     Cell {
         slot: TableSlot,
         row: usize,
         column: usize,
         rect: Rect,
+        pen: (i32, i32),
         value: CellValue,
         disabled: bool,
     },
@@ -2728,6 +2925,8 @@ pub enum BoardPaint {
         row: usize,
         column: usize,
         rect: Rect,
+        /// The cell's pen: the callback's x and its text line.
+        pen: (i32, i32),
         draw: CoinDraw,
     },
     /// A label; its rectangle is absent when the form template places it
@@ -2749,36 +2948,27 @@ fn paint_table_rows(
         slot: table.slot,
         rect: table.rect,
     });
-    let mut x = table.rect.x;
     for (index, column) in table.columns.iter().enumerate() {
         paint.push(BoardPaint::Column {
             slot: table.slot,
             index,
-            rect: Rect {
-                x,
-                y: table.rect.y,
-                w: column.width,
-                h: ROW_HEIGHT,
-            },
+            rect: table.header(index),
+            pen: table.title_pen(index),
             title: column.title,
         });
-        x += column.width;
     }
     for (row, &source) in rows.iter().enumerate() {
         let Some((values, disabled)) = cells(source) else {
             continue;
         };
-        let mut x = table.rect.x;
-        for (index, column) in table.columns.iter().enumerate() {
+        for index in 0..table.columns.len() {
             let value = values.get(index).cloned().unwrap_or(CellValue::Empty);
-            let rect = Rect {
-                x,
-                y: table.rect.y + row as i32 * ROW_HEIGHT,
-                w: column.width,
-                h: ROW_HEIGHT,
-            };
+            let rect = table.cell(row, index);
+            let pen = table.cell_pen(row, index);
+            // A coin column is owner-drawn: its callback gets the cell's
+            // pen x.
             let coin = match &value {
-                CellValue::Coin(packed) => Some(Board::coin_draw(*packed, x)),
+                CellValue::Coin(packed) => Some(Board::coin_draw(*packed, pen.0)),
                 _ => None,
             };
             paint.push(BoardPaint::Cell {
@@ -2786,6 +2976,7 @@ fn paint_table_rows(
                 row,
                 column: index,
                 rect,
+                pen,
                 value,
                 disabled,
             });
@@ -2795,10 +2986,10 @@ fn paint_table_rows(
                     row,
                     column: index,
                     rect,
+                    pen,
                     draw,
                 });
             }
-            x += column.width;
         }
     }
 }
@@ -2952,6 +3143,202 @@ mod tests {
     /// A board on a weekday with the Duel at Inept selected.
     fn board() -> Board {
         Board::new(true, 3, fighters())
+    }
+
+    #[test]
+    fn the_tables_draw_where_the_table_view_draws() {
+        use crate::form::ClientRect;
+        use crate::gui_font::RAYFORM_10;
+        use crate::table_view::{TableColumn, TableRow, TableView};
+        for unit in [4, 5, 6] {
+            let mut board = Board::new(false, 3, fighters());
+            board.unit = unit;
+            assert!(board.switch_tab(BoardTab::Events).is_some());
+            let table = board.table_layout(TableSlot::Events);
+            let c = table.client();
+            let mut view = TableView::new(
+                4,
+                ClientRect {
+                    left: 0,
+                    top: 0,
+                    right: c.w,
+                    bottom: c.h,
+                },
+            );
+            view.columns = table
+                .columns
+                .iter()
+                .map(|column| TableColumn {
+                    title: column.title.as_bytes().to_vec(),
+                    width: column.width,
+                    ..Default::default()
+                })
+                .collect();
+            if unit != 4 {
+                view.rescale(4, unit);
+            }
+            view.rows = (0..6)
+                .map(|_| TableRow {
+                    flags: 0,
+                    cells: vec![Vec::new(); 5],
+                })
+                .collect();
+            let draw = view.draw(&RAYFORM_10, 28);
+            let paint = board.paint();
+            let titles: Vec<(i32, i32)> = paint
+                .iter()
+                .filter_map(|item| match item {
+                    BoardPaint::Column {
+                        slot: TableSlot::Events,
+                        pen,
+                        ..
+                    } => Some(*pen),
+                    _ => None,
+                })
+                .collect();
+            let expected: Vec<(i32, i32)> = draw
+                .titles
+                .iter()
+                .map(|&(_, (x, y))| (c.x + x, c.y + y))
+                .collect();
+            assert_eq!(titles, expected, "unit {unit}");
+            let cells: Vec<(usize, usize, (i32, i32))> = paint
+                .iter()
+                .filter_map(|item| match item {
+                    BoardPaint::Cell {
+                        slot: TableSlot::Events,
+                        row,
+                        column,
+                        pen,
+                        ..
+                    } => Some((*row, *column, *pen)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(cells.len(), draw.cells.len());
+            for &(row, column, (x, y), _) in &draw.cells {
+                let want = ((row - 1) as usize, column as usize, (c.x + x, c.y + y));
+                assert!(cells.contains(&want), "unit {unit}: {want:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_tables_rows_start_under_its_header() {
+        let layout = layout(false);
+        let table = layout.match_table;
+        // The client is inside the two-pixel border: the header is its
+        // top six units, the first row the next six.
+        assert_eq!(
+            table.header(0),
+            Rect {
+                x: 2,
+                y: 58,
+                w: 192,
+                h: 24
+            }
+        );
+        assert_eq!(
+            table.cell(0, 0),
+            Rect {
+                x: 2,
+                y: 82,
+                w: 192,
+                h: 24
+            }
+        );
+        assert_eq!(table.title_pen(0), (6, 78));
+        assert_eq!(table.cell_pen(0, 0), (6, 102));
+        assert_eq!(table.cell_pen(1, 0), (6, 126));
+        let roster = layout.roster_table;
+        assert_eq!(roster.title_pen(1), (2 + 4 + 140, 350 + 20));
+        assert_eq!(roster.cell_pen(0, 2), (2 + 4 + 208, 350 + 44));
+        // Rows hit as the table view finds them: nothing in the header.
+        assert_eq!(table.row_at(58 + 19), None);
+        assert_eq!(table.row_at(58 + 20), None);
+        assert_eq!(table.row_at(82), Some(0));
+        assert_eq!(table.row_at(105), Some(0));
+        assert_eq!(table.row_at(106), Some(1));
+    }
+
+    #[test]
+    fn the_board_rescales_to_the_live_unit() {
+        let layout = layout_at(false, 6);
+        assert_eq!((layout.form.w, layout.form.h), (904, 982));
+        // A child view keeps its border: x and y over 4 times 6, the
+        // client's width and height the same.
+        assert_eq!(
+            layout.match_table.rect,
+            Rect {
+                x: 0,
+                y: 84,
+                w: 292,
+                h: 268
+            }
+        );
+        assert_eq!(
+            layout.roster_table.rect,
+            Rect {
+                x: 0,
+                y: 522,
+                w: 436,
+                h: 364
+            }
+        );
+        assert_eq!(layout.lineup_table.rect.x, 444);
+        assert_eq!(layout.lineup_table.unit, 6);
+        // The columns keep their share of the unit.
+        let widths: Vec<i32> = (0..5)
+            .map(|c| layout.events_table.column_width(c))
+            .collect();
+        assert_eq!(widths, [210, 150, 150, 168, 156]);
+        assert_eq!(
+            layout.available_label,
+            Rect {
+                x: 174,
+                y: 483,
+                w: 192,
+                h: 42
+            }
+        );
+        // The tournament refresh sets the lineup in units of the live
+        // unit.
+        let mut board = Board::new(false, 3, fighters());
+        board.unit = 6;
+        board.refresh_tournament();
+        assert_eq!(board.lineup_height(), 61 * 6);
+        let mut compact = Board::new(true, 3, fighters());
+        compact.refresh_tournament();
+        assert_eq!(compact.lineup_height(), 224);
+    }
+
+    #[test]
+    fn the_headers_clear_their_rows_and_the_labels_above() {
+        for unit in [4, 5, 6, 8] {
+            let font = crate::gui_font::gui_level(crate::gui_font::level_for_unit(unit)).main;
+            let layout = layout_at(false, unit);
+            for table in [
+                layout.match_table,
+                layout.events_table,
+                layout.roster_table,
+                layout.lineup_table,
+            ] {
+                let title = table.title_pen(0);
+                let first = table.cell_pen(0, 0);
+                assert_eq!(first.1 - title.1, 6 * unit);
+                assert!(title.1 < table.cell(0, 0).y, "unit {unit}");
+                assert!(first.1 - font.ascent >= title.1, "unit {unit}");
+            }
+            // "Available" and "Entered n/m" (labels centred down their
+            // rectangle) end above the fighter tables' header glyphs.
+            for label in [layout.available_label, layout.entered_label] {
+                let baseline = label.y + (label.h + font.line_height + 2) / 2;
+                for table in [layout.roster_table, layout.lineup_table] {
+                    let top = table.title_pen(0).1 - font.ascent;
+                    assert!(baseline <= top, "unit {unit}: {baseline} > {top}");
+                }
+            }
+        }
     }
 
     /// A board whose selected match has this kind, floor and side size.
@@ -3836,12 +4223,13 @@ mod tests {
             })
             .collect();
         assert_eq!(cells.len(), 30);
-        assert_eq!(cells[0], (0, 0, 0));
-        assert_eq!(cells[1], (0, 1, 140));
-        assert_eq!(cells[2], (0, 2, 240));
-        assert_eq!(cells[3], (0, 3, 340));
-        assert_eq!(cells[4], (0, 4, 454));
-        assert_eq!(cells[5], (1, 0, 0));
+        // Inside the table view's two-pixel border.
+        assert_eq!(cells[0], (0, 0, 2));
+        assert_eq!(cells[1], (0, 1, 142));
+        assert_eq!(cells[2], (0, 2, 242));
+        assert_eq!(cells[3], (0, 3, 342));
+        assert_eq!(cells[4], (0, 4, 456));
+        assert_eq!(cells[5], (1, 0, 2));
     }
 
     #[test]
@@ -3870,24 +4258,25 @@ mod tests {
             .collect();
         // Six rows, an entry and a prize cell each.
         assert_eq!(coins.len(), 12);
-        // Row 0's entry sits at the fourth column's left edge; its zero
-        // prize is the dash four pixels into the fifth.
+        // Row 0's entry is drawn at the owner-drawn cell's x, a unit into
+        // the fourth column (2 + 340 + 4); its zero prize is the dash four
+        // pixels past the fifth's (2 + 454 + 4 + 4).
         assert_eq!(
             coins[0],
             (
                 0,
                 3,
                 CoinDraw::Coins {
-                    x: 340,
+                    x: 346,
                     copper: 4,
                     silver: 3,
                     gold: 2,
                 }
             )
         );
-        assert_eq!(coins[1], (0, 4, CoinDraw::Dash { x: 458 }));
-        // Row 1's entry is zero too, so the dash sits four pixels in.
-        assert_eq!(coins[2], (1, 3, CoinDraw::Dash { x: 344 }));
+        assert_eq!(coins[1], (0, 4, CoinDraw::Dash { x: 464 }));
+        // Row 1's entry is zero too, so the dash sits four pixels on.
+        assert_eq!(coins[2], (1, 3, CoinDraw::Dash { x: 350 }));
         // The coin item follows its cell.
         let paint = board.paint();
         let at = paint
@@ -3911,8 +4300,11 @@ mod tests {
         assert_eq!(board.hit_test((200, 20)), BoardHit::Tab(1));
         // The second tab's template x of 162 snaps to 160.
         assert_eq!(board.hit_test((150, 20)), BoardHit::Outside);
+        // The header (the client's top six units, from y 58) takes no
+        // row; the first row starts at 82.
+        assert_eq!(board.hit_test((10, 70)), BoardHit::Outside);
         assert_eq!(
-            board.hit_test((10, 70)),
+            board.hit_test((10, 82)),
             BoardHit::Table {
                 slot: TableSlot::Match,
                 row: 0,
@@ -3920,7 +4312,7 @@ mod tests {
             }
         );
         assert_eq!(
-            board.hit_test((400, 100)),
+            board.hit_test((400, 110)),
             BoardHit::Table {
                 slot: TableSlot::Tier,
                 row: 1,
@@ -3933,8 +4325,18 @@ mod tests {
         assert_eq!(board.hit_test((350, 600)), BoardHit::Enter);
         assert_eq!(board.hit_test((200, 600)), BoardHit::Close);
         assert_eq!(board.handle(BoardInput::SelectTab(1)), BoardAction::Changed);
+        // A column reaches its right edge: client x 454 is still the
+        // fourth.
         assert_eq!(
-            board.hit_test((454, 70)),
+            board.hit_test((456, 90)),
+            BoardHit::Table {
+                slot: TableSlot::Events,
+                row: 0,
+                column: 3
+            }
+        );
+        assert_eq!(
+            board.hit_test((457, 90)),
             BoardHit::Table {
                 slot: TableSlot::Events,
                 row: 0,
@@ -3952,18 +4354,15 @@ mod tests {
         assert_eq!(board.tab, BoardTab::Events);
         assert_eq!(board.click((30, 20)), BoardAction::Changed);
         assert_eq!(board.tab, BoardTab::Matches);
-        assert_eq!(
-            board.click((10, 56 + 2 * ROW_HEIGHT + 5)),
-            BoardAction::Changed
-        );
+        assert_eq!(board.click((10, 56 + 2 + 3 * 24 + 5)), BoardAction::Changed);
         assert_eq!(board.match_type, 2);
         assert_eq!(board.selected.name, "Skirmish");
         assert_eq!(
-            board.click((10, 348 + ROW_HEIGHT + 5)),
+            board.click((10, 348 + 2 + 2 * 24 + 5)),
             BoardAction::Changed
         );
         assert_eq!(board.available_selection, Some(1));
-        assert_eq!(board.click((300, 348 + 5)), BoardAction::Changed);
+        assert_eq!(board.click((300, 348 + 2 + 24 + 5)), BoardAction::Changed);
         assert_eq!(board.team_selection, Some(0));
         // Skirmish takes three: Anna, Borin and Cael fill it.
         assert_eq!(board.click((350, 600)), BoardAction::EnterMatch);
