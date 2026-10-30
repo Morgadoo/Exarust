@@ -113,6 +113,10 @@ physique values and the body morphs they select remain the body's concern
   slots merge (the per-node fallback still hides whole parts by the first
   byte). Real-data tests read `objdb.rdb` (`EXANIMA_DIR`) and check a helm
   on the head, boots on the feet and braies that hide nothing.
+- `factory::PreviewJob` is the player's inventory preview job: it starts
+  only when the shown item's model differs from the one the last job
+  painted (the original compares model records; equal model names are the
+  same record) at the side the setting gives (`preview_side`).
 - `look` reads the race's look word (`races.rdb` `0x14`): the skin texture
   set (men's or women's; both sexes take the men's extra normal map), the
   six beards and their `bearda0N d/n` maps, the normal-map layers (weight

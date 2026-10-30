@@ -659,7 +659,9 @@ q = x, damage = x/(2−x), dirt = (x²+x)/2 with x = byte/255), their packed
 spreads ([Armour](#armour)), then eight 12-byte layers: +0 flags (`0x1` the
 first layer's material sets the armour variants a leather adds and later
 such layers copy it, `0x2` layers of one random set share a material), +1
-mask number (`<stem>m<n>`, 0 = unused), +2 material set (used when the
+mask number (`<stem>m<n>`, 0 = unused; the texture name appends `m` and the
+byte plus `'0'` as a single character, so mask 10 would name `m:` and no
+shipped mask passes 9), +2 material set (used when the
 material is 0), +3 wealth level, +4 material, +8 palette colour, +0xB
 colour mode (5 once rolled). The roll of a copy (`exa_items::palette`,
 REA on the apparel roll) draws a missing material from its set: sets 1, 3,
@@ -872,7 +874,11 @@ material-scale textures (weave, worn weave, impurities, quality) repeat
 once per as many target texels as the material's first colour texture is
 wide (`MatTile`, the same divisor in all three passes), damage, dirt, rust
 and scuff maps once per 1024 target texels (`DmgTile`), and the steel
-normal programs lay their scuff normal once over the region. The blade
+normal programs lay their scuff normal once over the region. A texture job
+draws four offsets from its seed with the engine's sequence, each
+`round(r·512)/512 − ½` in double, for `MatTile.zw` then `DmgTile.zw`; an
+apparel block draws them from its own seed too (a guess: the pack shows the
+draws but only the procedural programs read the result). The blade
 reads its quality maps at twice the material scale. The cloth programs'
 specular pass reads its damage and dirt at the material scale, the hide
 programs' at the damage scale. Each layer's `MatCol` is its colour and a

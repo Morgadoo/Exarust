@@ -27,11 +27,15 @@ splits on the groups, and up to three damped distance blends elsewhere
 ([`docs/formats/RSQ.md`](../../docs/formats/RSQ.md), Skinning). The shipped
 human and ogre bodies are checked watertight. The weights run in the model
 build on the compute pool; a mesh that ships weights keeps them. The
-builder's group stack (sixteen frames, an empty frame for a node without
-groups, a cleared top frame that keeps its depth) is `skin::GroupStack`;
-`skin::auto_skin_with_context` matches a garment's groups against an
-enclosing part's joints as the stack's reader does, and the per-node model
-build passes no context.
+builder's group stack (`skin::GroupStack`: sixteen group-bearing frames of
+their groups' centres in centimetres, an empty frame for a node without
+groups, an empty push past the limit accepted, and a depth-only clear)
+drives `skin::auto_skin_build`, which returns each part's frame for its
+children (`pushed`; a mesh that keeps a shipped skin stream pushes none).
+The per-node model build walks the tree from its roots with the inherited
+frame, so a garment child's nearest-joint match reads its parent part's
+group centres as the stack's reader does (a parent centre only lowers the
+bar and is never taken).
 `model::underscore_skinned_child` and `model::skinned_mesh_under` are the
 wound and effect lookups (the `_`-named child, then the deepest skinned
 mesh in reverse child order).
@@ -130,6 +134,9 @@ precision and times 0.8 in double) are `tone_blend_target`.
 
 The decomposition pass (`decomp`): the original's `chardecomp_d`, `_s`
 and `_n` programs evaluated per texel for a corpse's or undead's skin —
+`TEXTURES` names the draw's two units (`Tex0`, `Tex1`), `AMOUNT_UNIFORM`
+and `UV_OFFSET_UNIFORM` its uniforms, and `Draw::new` the positive-amount
+gate —
 the skin scaling and decay mixes, the green specular sheen and the decay
 normals with the height-map cavity normal — from shader texels, the skin
 colour and the amount; `DIFFUSE_MAPS`, `SPECULAR_MAPS` and `NORMAL_MAPS`
@@ -442,7 +449,11 @@ seed B. An area's emblem adds a colour-only layer over the same mask
 through its `emblembkg` picture placed by the factory's `PtrnPos`
 (`paint::Pattern`), and blade layers sample their mask, shade and region
 normal stretched by the part's `UVScale` (`Tiling::uv_scale`); apparel takes its palette colour, the material's wear weight and the
-loader's condition.
+loader's condition. `paint::jitters` draws the four offsets from a job's
+seed (the factory's seed B, or an apparel block's seed; the apparel use is a
+labelled guess since only the procedural programs read them), and a layer's
+mask texture is the stem, `m` and the mask byte plus `'0'` as one character
+(`paint::mask_texture`, so mask 10 names `m:`; no shipped mask passes 9).
 
 Factory weapons (`weapon`): a `.fty` recipe and an item's seeds choose,
 deform (scale, band, taper, bend, radial), place (by the parent's stored
