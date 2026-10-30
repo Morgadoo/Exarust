@@ -1800,7 +1800,11 @@ row. The default row is the first when none is selected, and the table's
 centre is half its client's width and height. A header's inset rectangle
 runs two pixels in from its sides and top to two pixels short of six units
 down, and the drop shadow starts at the header's bottom line, the client's
-height less six units tall. Down
+height less six units tall. With the skin's first flag bit set the header
+grid is replaced by one line at the row height less half a unit and one,
+and the shadow is skipped. The table answers its owner's query callback
+with the owner's answer, or 0 when it has none. The choice list it opens
+is a drop-down list a row's height plus a unit less one tall. Down
 passes greyed rows, Up does not. Owner-drawn columns start at the first
 visible row. The table never sorts.
 
