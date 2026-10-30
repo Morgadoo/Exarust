@@ -743,13 +743,15 @@ impl Part {
         (0..4).map(|i| self.smoothed[i] * w[i]).sum()
     }
 
-    /// How far the point with weights `w` moved since the post-step before
-    /// last (m): its place over the original's third particle set taken
-    /// from its place now. Each weighted sum is the original's helper's
-    /// `(w₀p₀ + w₁p₁) + (w₂p₂ + w₃p₃)`, the earlier place first. Mid-step
-    /// this spans two ticks; between ticks, one. The original's own callers
-    /// are the character code's two uses; no Exarust system reads it yet,
-    /// so this has no caller.
+    /// How far the point with weights `w` moved over the two particle
+    /// steps since the post-step before last (m): its place now less its
+    /// place over the original's third particle set. Each weighted sum is
+    /// the original's helper's `(w₀p₀ + w₁p₁) + (w₂p₂ + w₃p₃)`, and the
+    /// subtraction is the reverse one (now − then), so a point moving +X by
+    /// a metre a tick reads +2 in X. Mid-step this spans two ticks; between
+    /// ticks, one. The original's only readers are the character motion
+    /// code's grip and pose routines; Exarust models those without it, so
+    /// this has no caller yet.
     pub fn two_step_point(&self, w: &[f32; 4]) -> Vec3 {
         let sum = |p: &[Vec3; 4]| (p[0] * w[0] + p[1] * w[1]) + (p[2] * w[2] + p[3] * w[3]);
         let before = sum(&self.two_ticks_ago);
