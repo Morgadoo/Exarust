@@ -66,6 +66,12 @@ fn effective(c: f32) -> f32 {
 /// A resistance byte's share: 1/140.
 const PER_RESISTANCE: f32 = 1.0 / 140.0;
 
+/// A share kept at most all of it: the original's compare is ordered, so a
+/// NaN share passes through unchanged rather than becoming the cap.
+fn at_most_all(c: f32) -> f32 {
+    if c > 1.0 { 1.0 } else { c }
+}
+
 /// The share of a part an item covering `percent` of it covers: 0.01 per
 /// percent; with Deflection learnt c + 0.1 up to half, else c + 0.1·(1 − c)
 /// + 0.05; at most all of it.
@@ -76,7 +82,7 @@ pub fn coverage(percent: u8, deflection: bool) -> f32 {
         (true, false) => (f64::from(c) + 0.1) as f32,
         (true, true) => (f64::from(1.0 - c) * 0.1 + (f64::from(c) + 0.05)) as f32,
     };
-    c.min(1.0)
+    at_most_all(c)
 }
 
 /// Armour of every body part (bones 1..18) from the race's natural layer and
@@ -1354,6 +1360,7 @@ mod tests {
             pierce: 80,
             encumbrance: 10,
             material: 4,
+            ..Armour::default()
         }
     }
 
@@ -1791,6 +1798,7 @@ mod tests {
             pierce: 30,
             encumbrance: 5,
             material: 3,
+            ..Armour::default()
         };
         let parts = armour_layers(None, &[shirt, shirt], false);
         let p = parts[0];
@@ -1822,6 +1830,7 @@ mod tests {
             pierce: 0,
             encumbrance: 0,
             material: 0,
+            ..Armour::default()
         };
         let parts = armour_layers(None, &[item(80, 30), item(51, 90), item(60, 10)], false);
         assert_eq!(parts[0].inner.slash.to_bits(), 0x3eec_e03c);
@@ -1856,6 +1865,7 @@ mod tests {
             pierce: 30,
             encumbrance: 5,
             material: 3,
+            ..Armour::default()
         };
         let parts = armour_layers(Some(&natural), &[shirt], false);
         assert_eq!(parts[0].inner.slash, 0.2);
@@ -1871,6 +1881,11 @@ mod tests {
         assert!((coverage(75, true) - 0.825).abs() < 1e-6);
         assert_eq!(coverage(95, true), 1.0);
         assert_eq!(coverage(100, false), 1.0);
+        // The cap is the original's ordered compare: a NaN share stays NaN
+        // (the assemble keeps it where a MINSS-style clamp would take 1).
+        assert!(at_most_all(f32::NAN).is_nan());
+        assert_eq!(at_most_all(1.5), 1.0);
+        assert_eq!(at_most_all(0.5), 0.5);
         let shirt = Armour {
             coverage: [75; 18],
             padding: 10,
@@ -1879,6 +1894,7 @@ mod tests {
             pierce: 30,
             encumbrance: 5,
             material: 3,
+            ..Armour::default()
         };
         let outer = armour_layers(None, &[shirt], true)[8].outer.unwrap();
         assert!((outer.coverage - 0.825).abs() < 1e-6);
@@ -1897,6 +1913,7 @@ mod tests {
             pierce: 17,
             encumbrance: 11,
             material: 1,
+            ..Armour::default()
         };
         let outer = armour_layers(None, &[trousers], false)[1].outer.unwrap();
         assert!((outer.padding - 0.085).abs() < 1e-7);

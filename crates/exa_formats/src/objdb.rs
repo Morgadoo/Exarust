@@ -479,7 +479,7 @@ pub enum Mechanism {
 }
 
 /// Protection of a worn item.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Armour {
     /// Coverage per bone 1..18, percent.
     pub coverage: [u8; BONES],
@@ -492,7 +492,20 @@ pub struct Armour {
     pub encumbrance: u8,
     /// Hit sound class: 0 flesh, 1 cloth, 2 leather, 3 mail, 4 plate, 6 golem.
     pub material: u8,
+    /// Coverage display (the byte at `0x1A7`): the armour pass reads the
+    /// thickest one among the pieces carrying the head mark as the head's
+    /// extra height ([`crate::encumbrance::head_extra`]).
+    pub display: u8,
+    /// The body's per-slot qword for the eleventh slot (at `0x60`, in the
+    /// table that starts at `0x08`) is non-zero. The armour pass requires it
+    /// before a piece's display raises the head's extra height. [guess: what
+    /// the entry holds is not established; the pass only tests it]
+    pub head_height_mark: bool,
 }
+
+/// The body word the head-height rule tests for a piece over the eleventh
+/// bone.
+const HEAD_MARK_OFFSET: usize = 0x60;
 
 impl Armour {
     fn parse(body: &[u8]) -> Option<Self> {
@@ -509,6 +522,10 @@ impl Armour {
             pierce: p[3],
             encumbrance: p[5],
             material: p[6],
+            display: body.get(PROTECTION_OFFSET + 7).copied().unwrap_or(0),
+            head_height_mark: body
+                .get(HEAD_MARK_OFFSET..HEAD_MARK_OFFSET + 8)
+                .is_some_and(|w| w.iter().any(|&b| b != 0)),
         })
     }
 }

@@ -8,7 +8,7 @@
 //! stored as a float.
 
 use crate::characters::{CharacterRecord, Perk};
-use crate::objdb::{Burden, Item};
+use crate::objdb::{Armour, Burden, Item};
 use crate::weapon_record::ShieldRecord;
 
 /// Each unit of a worn item's encumbrance byte weighs this much.
@@ -234,6 +234,31 @@ pub fn held_shield<'a>(
         .filter(|item| item.weapon.is_none())
         .filter_map(|item| item.shield)
         .last()
+}
+
+/// The head's extra height the armour pass adds to a character: the
+/// thickest display byte among the worn pieces whose body carries the head
+/// mark ([`crate::objdb::Armour::head_height_mark`]), plus the wearer's
+/// physique offset (physique − 0.5) × 8, in single precision in the
+/// original's order. The pass takes a piece's display while walking the
+/// body's node of the eleventh slot, whatever the piece's coverage there
+/// (the coverage test comes after and only gates the layer fold); `worn`
+/// is therefore every worn piece of a body that has that node. A thinner
+/// piece never replaces the thickest. The part-box update reads the
+/// result (its box's third coordinate gains half of it, the second a tenth
+/// in double); nothing in Exarust consumes it yet.
+pub fn head_extra<'a>(worn: impl IntoIterator<Item = &'a Armour>, physique: f32) -> f32 {
+    let mut height = 0.0f32;
+    for piece in worn {
+        if !piece.head_height_mark {
+            continue;
+        }
+        let display = f32::from(piece.display);
+        if display > height {
+            height = display;
+        }
+    }
+    (physique - 0.5) * 8.0 + height
 }
 
 /// The most the run blend reaches: 1 − 0.3·encumbrance, 1 − 0.4·encumbrance

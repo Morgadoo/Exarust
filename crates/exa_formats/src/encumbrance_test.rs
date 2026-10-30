@@ -34,6 +34,41 @@ const NONE: Skills = Skills {
     mobility: false,
 };
 
+/// A layer covering `bones` (1..18) with the display coverage `display`,
+/// carrying the head mark when `mark` is set.
+fn helmet(display: u8, bones: &[usize], mark: bool) -> objdb::Armour {
+    objdb::Armour {
+        coverage: std::array::from_fn(|i| if bones.contains(&(i + 1)) { 50 } else { 0 }),
+        display,
+        head_height_mark: mark,
+        ..objdb::Armour::default()
+    }
+}
+
+/// The extra body height the armour pass takes from a layer over the
+/// eleventh bone: the thickest display coverage, plus (physique − ½) × 8.
+#[test]
+fn the_head_extra_is_the_thickest_layer_and_the_physique() {
+    // 60 % over the eleventh bone, 40 % over a leg: 60.
+    let worn = [helmet(60, &[11], true), helmet(40, &[9], true)];
+    assert_eq!(head_extra(&worn, 0.5), 60.0);
+    // A physique of 1 (the default average is ½) adds 8 × ½.
+    assert_eq!(head_extra(&worn, 1.0), 64.0);
+    // A thinner layer over the same bone never replaces the thickest.
+    assert_eq!(
+        head_extra(&[helmet(30, &[11], true), helmet(60, &[11], true)], 0.5),
+        60.0
+    );
+    // Without the body's head mark the layer counts not at all.
+    assert_eq!(head_extra(&[helmet(60, &[11], false)], 0.5), 0.0);
+    // The pass reads the display at the head node whatever the piece covers
+    // there: a marked piece over other bones still counts.
+    assert_eq!(head_extra(&[helmet(60, &[3, 10], true)], 0.5), 60.0);
+    assert_eq!(head_extra(&[helmet(25, &[], true)], 0.5), 25.0);
+    // Nothing worn: the physique offset alone, negative below ½.
+    assert_eq!(head_extra(&[], 0.25), -2.0);
+}
+
 /// The duellist's outfit: a leather jacket (10), trousers and boots (0)
 /// and a full helm (60) weigh 70 × 0.0025.
 #[test]
@@ -542,4 +577,43 @@ fn shipped_special_kinds() {
             .iter()
             .any(|e| e.special == Burden::HEALING)
     );
+}
+
+/// The shipped database's worn pieces and the body's head mark: the mark
+/// decides which pieces' display bytes count, and the thickest marked one
+/// gives the extra height at an average physique. Skipped without the game.
+#[test]
+fn shipped_head_marks() {
+    let Some(dir) = exa_rpk::locate_install(None) else {
+        return;
+    };
+    let game = exa_rpk::GameData::open(&dir).unwrap();
+    let resource = game.pack(exa_rpk::PackKind::Resource).unwrap();
+    let global = objdb::items(&Database::parse(resource.get("objdb.rdb").unwrap()).unwrap());
+    let pieces: Vec<objdb::Armour> = global.iter().filter_map(|i| i.armour).collect();
+    let marked: Vec<objdb::Armour> = pieces
+        .iter()
+        .copied()
+        .filter(|a| a.head_height_mark)
+        .collect();
+    let thickest = marked.iter().map(|a| a.display).max().unwrap_or(0);
+    let unmarked_with_display = pieces
+        .iter()
+        .filter(|a| !a.head_height_mark && a.display != 0)
+        .count();
+    // Marked pieces with no coverage over the eleventh bone still count:
+    // ten ship, one of them with a display of 2.
+    let marked_off_head: Vec<u8> = marked
+        .iter()
+        .filter(|a| a.coverage[10] == 0)
+        .map(|a| a.display)
+        .collect();
+    assert_eq!(
+        (pieces.len(), marked.len(), thickest, unmarked_with_display),
+        (380, 95, 10, 2)
+    );
+    assert_eq!(marked_off_head, [0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+    assert_eq!(head_extra(&marked, 0.5), f32::from(thickest));
+    // A tenth of a physique above the average adds 0.8.
+    assert!((head_extra(&marked, 0.6) - (f32::from(thickest) + 0.8)).abs() < 1e-5);
 }
