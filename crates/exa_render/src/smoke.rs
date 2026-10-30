@@ -95,11 +95,11 @@ impl ProgramCache {
     }
 }
 
-/// How many times one mesh is drawn for the current supersampling pass
-/// count: once without supersampling, once per pass otherwise.
-/// [`crate::view::SupersampleLevel::passes`] gives the level's count.
-pub fn pass_draws(supersample_passes: u32) -> u32 {
-    supersample_passes.max(1)
+/// How many times one mesh is drawn for the current supersampling sub-view
+/// count: once without supersampling, once per sub-view (quadrant) otherwise.
+/// [`crate::view::SupersampleLevel::subviews`] gives the level's count.
+pub fn quadrant_draws(supersample_subviews: u32) -> u32 {
+    supersample_subviews.max(1)
 }
 
 /// The smoke program's state key from a material state's 64-bit word.
@@ -244,17 +244,17 @@ mod tests {
     }
 
     #[test]
-    fn the_pass_count_is_one_without_supersampling() {
-        assert_eq!(pass_draws(0), 1);
-        assert_eq!(pass_draws(1), 1);
-        assert_eq!(pass_draws(2), 2);
+    fn the_quadrant_count_is_one_without_supersampling() {
+        assert_eq!(quadrant_draws(0), 1);
+        assert_eq!(quadrant_draws(1), 1);
+        assert_eq!(quadrant_draws(2), 2);
         assert_eq!(
-            pass_draws(crate::view::SupersampleLevel(3).passes() as u32),
-            1
+            quadrant_draws(crate::view::SupersampleLevel(3).subviews() as u32),
+            4
         );
         assert_eq!(
-            pass_draws(crate::view::SupersampleLevel(4).passes() as u32),
-            2
+            quadrant_draws(crate::view::SupersampleLevel(4).subviews() as u32),
+            8
         );
     }
 }
