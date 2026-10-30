@@ -567,7 +567,8 @@ aura (the `_ScanAura01` material, its 184-byte grey block, the state bits
 picture), rolls the node's two creation draws in order, plays
 `devicescna01` at 0.3, scales
 the device's voxel lights by the glow pulse and raises the reconstruction
-latch, writing the same word the story session's death handler reads;
+latch, writing the same word the story session's death handler reads
+(and the scanned record identity beside it);
 `SlotReleased` powers it down with `devicepwra01` at 0.1 and clears that
 word; `EndSession` reconstructs a scanned player who dies in the story,
 stripping them the first time (hand and worn data cleared, health just
