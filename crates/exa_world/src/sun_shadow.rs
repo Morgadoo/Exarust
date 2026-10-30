@@ -169,11 +169,19 @@ fn fit_sun_shadows(
         }
         let basis = LightBasis::from_towards_sun(transform.back().as_vec3());
         // One map: the fitted region reaches the original camera's far
-        // plane, the whole-scene one the scene's radius either way.
+        // plane. The whole-scene map covers the scene's sphere, so a camera
+        // anywhere inside it sees receivers up to twice the (raised) radius
+        // away; Bevy stops sampling the cascade past this bound.
         let range = if region.fitted {
             fitted_range()
         } else {
-            (region.far_cm / CM_PER_METRE).max(1.0)
+            let radius = region
+                .scene
+                .extent
+                .length()
+                .max(region.far_cm)
+                .max(region.min_half_extent_cm);
+            (2.0 * radius / CM_PER_METRE).max(1.0)
         };
         if config.bounds != [range] {
             *config = CascadeShadowConfig {
@@ -479,6 +487,9 @@ mod tests {
         assert!((fit.centre_cm - basis.to_light(scene.centre)).length() < 1e-3);
         let expected = scene.extent.length().max(MIN_HALF_EXTENT_CM);
         assert_eq!(fit.half_extent_cm, expected);
+        // Receivers are sampled out to the scene's diameter.
+        let config = app.world().get::<CascadeShadowConfig>(sun).unwrap();
+        assert_eq!(config.bounds, vec![2.0 * expected / 100.0]);
         assert_eq!(fit.near_cm, expected);
         assert_eq!(fit.far_cm, expected);
         // The map's centre sits at the near/(-near + far) fraction of the

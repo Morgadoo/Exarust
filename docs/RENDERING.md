@@ -2254,7 +2254,7 @@ culling follows the map too). The sun's `CascadeShadowConfig` then has one
 bound at 125 m. A frame that fits nothing keeps the previous matrices.
 Levels without a terrain get the whole-scene map the same way (one cascade per
 active camera, independent of the camera's view, with the bound set to the
-scene's radius). Every level with `--bevy-sun-cascades` keeps Bevy's two
+scene's diameter so that a camera anywhere in the scene keeps sampling it). Every level with `--bevy-sun-cascades` keeps Bevy's two
 cascades over 60 m. Both
 use the 4096² map.
 
