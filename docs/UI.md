@@ -1821,7 +1821,11 @@ height less six units tall. With the skin's first flag bit set the header
 grid is replaced by one line at the row height less half a unit and one,
 and the shadow is skipped. The table answers its owner's query callback
 with the owner's answer, or 0 when it has none. The choice list it opens
-is a drop-down list a row's height plus a unit less one tall. Down
+is placed by the general form placement: under the header row (the row
+height less one below the corner) at the corner's x, else at the x plus
+the table's width, and lifted to end a pixel below the corner when it
+overflows the bottom; with the skin's first flag bit set the corner moves
+up a unit less one first. Down
 passes greyed rows, Up does not. Owner-drawn columns start at the first
 visible row. The table never sorts.
 

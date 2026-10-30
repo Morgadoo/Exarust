@@ -160,9 +160,6 @@ pub struct ChoiceList {
     pub at: (i32, i32),
     /// The list's width.
     pub width: i32,
-    /// The list's height: a row's height plus a unit less one (the list
-    /// control's own opening height before it fits its rows).
-    pub height: i32,
     pub open: bool,
 }
 
@@ -182,8 +179,35 @@ impl ChoiceList {
             selected: 0,
             at,
             width,
-            height: table.row_height + table.unit - 1,
             open: true,
+        }
+    }
+
+    /// The placement the list opens with, for the general form placement
+    /// ([`crate::gui_core::place_form`]): the original converts the list's
+    /// corner to the screen first, and with the skin's first flag bit set
+    /// moves it up by a unit less one (clearing the list's style bit 0x80,
+    /// not modelled). The list wants to open under the header row (its top
+    /// at the row height less one) at its own x; when it overflows the
+    /// screen's right edge it tries the x plus the table's width, and when
+    /// it overflows the bottom its bottom goes to one pixel below the
+    /// corner.
+    pub fn place_request(
+        &self,
+        row_height: i32,
+        unit: i32,
+        table_width: i32,
+        skin_flat: bool,
+    ) -> crate::gui_core::PlaceRequest {
+        let (x, mut y) = self.at;
+        if skin_flat {
+            y = y - unit + 1;
+        }
+        crate::gui_core::PlaceRequest {
+            desired_x: x,
+            fallback_x: table_width + x,
+            desired_y: row_height + y - 1,
+            fallback_bottom: y + 1,
         }
     }
 }
@@ -1333,10 +1357,25 @@ mod tests {
     }
 
     #[test]
-    fn the_choice_list_takes_a_rows_height_plus_a_unit() {
+    fn the_choice_list_opens_under_the_header_row() {
         let t = table(3);
         let list = ChoiceList::for_column(&t, 1, (105, 5), 80);
-        assert_eq!((list.height, list.width), (34, 80));
+        assert_eq!(list.width, 80);
+        // Under the 30-pixel header row at its own x, or the x plus the
+        // table's width; lifted above the corner's next pixel.
+        let place = list.place_request(30, 5, 300, false);
+        assert_eq!(
+            (
+                place.desired_x,
+                place.fallback_x,
+                place.desired_y,
+                place.fallback_bottom
+            ),
+            (105, 405, 34, 6)
+        );
+        // A flat skin moves the corner up a unit less one first.
+        let flat = list.place_request(30, 5, 300, true);
+        assert_eq!((flat.desired_y, flat.fallback_bottom), (30, 2));
         assert_eq!(list.entries.len(), 2);
     }
 
