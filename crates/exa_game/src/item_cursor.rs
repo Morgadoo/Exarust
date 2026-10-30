@@ -304,7 +304,8 @@ pub struct SphereHit {
 /// computes it before a sphere is swept: with `world` the scene's world
 /// point, `up` its support axis and `offset` its plane constant, the plane
 /// term is `world·up − offset − frame.position·world`, the frame term is
-/// `frame.rotation · world`, and a sphere whose `plane + radius − centre·frame`
+/// `world` in the frame's own axes (its dot with each axis, the transposed
+/// rotation), and a sphere whose `plane + radius − centre·frame`
 /// is under zero (an ordered compare; a NaN is not) is pulled back by that
 /// gap over `world·dir`. A gap at or over zero pulls back nothing. [The
 /// runtime sweeps rapier's level colliders, which expose no support plane, so
@@ -320,7 +321,14 @@ pub fn support_corrections(
     let plane = (world.x * up.x + world.y * up.y + world.z * up.z)
         - offset
         - (frame.position.x * world.x + frame.position.y * world.y + frame.position.z * world.z);
-    let in_frame = frame.rotation * world;
+    // The world point taken into the frame: its dot with each of the
+    // frame's axes (the rotation's columns), summed x, y, then z.
+    let axis_dot = |axis: Vec3| world.x * axis.x + world.y * axis.y + world.z * axis.z;
+    let in_frame = Vec3::new(
+        axis_dot(frame.rotation.x_axis),
+        axis_dot(frame.rotation.y_axis),
+        axis_dot(frame.rotation.z_axis),
+    );
     let denominator = world.x * dir.x + world.y * dir.y + world.z * dir.z;
     let inverse = 1.0 / denominator;
     spheres
@@ -1034,13 +1042,21 @@ mod tests {
             support_corrections(world, up, 0.0, frame, dir, &spheres),
             vec![0.0, 0.5, 0.0]
         );
-        // A turned frame makes the frame term the transformed world point.
+        // A frame turned a quarter about z has the axes (0, 1, 0) and
+        // (−1, 0, 0): the world point (0, 1, 0) is (1, 0, 0) in it, so a
+        // sphere at (2, 0, 0) has the gap 1 + 0.5 − 2 = −0.5 and is pulled
+        // back 0.5 (turning the point the other way would give −2 and no
+        // pull).
         let turned = Frame::new(
             Vec3::ZERO,
             Mat3::from_rotation_z(std::f32::consts::FRAC_PI_2),
         );
-        let corrections = support_corrections(world, up, 0.0, turned, dir, &spheres);
-        assert_eq!(corrections[0], 0.0);
+        let along_x = [SweepSphere {
+            centre: Vec3::new(2.0, 0.0, 0.0),
+            radius: 0.5,
+        }];
+        let corrections = support_corrections(world, up, 0.0, turned, dir, &along_x);
+        assert!((corrections[0] - 0.5).abs() < 1e-6, "{corrections:?}");
     }
 
     /// The first contact starts at the 1000 cm reach, keeps only a strictly
