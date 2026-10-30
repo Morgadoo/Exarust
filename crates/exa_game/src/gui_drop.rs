@@ -361,45 +361,54 @@ pub fn run_gui_drops(
                     .as_deref()
                     .map(exa_character::held_item_sounds)
                     .unwrap_or_default();
-                commands.entity(root).insert((
-                    Transform::from_translation(at),
-                    exa_physics::prop::PendingProp(parts),
-                    sounds,
-                    exa_combat::impact::ImpactBook::default(),
-                    // The new node is the item's object, as a placed one
-                    // is: its id word and the condition's third byte.
+                // The spawned record carries what a placed object does:
+                // its template word, its usable and container sections and
+                // its mechanism records, from the object database record
+                // the drag named. Only a game record is looked up (the
+                // database is keyed by untagged ids, so a level-tagged id
+                // would find another record); without one the node keeps
+                // its id word and condition alone.
+                let object = exa_world::dropped_object(task.item, condition);
+                let record = records
+                    .as_deref_mut()
+                    .filter(|_| task.item & !exa_formats::characters::ID_MASK == 0)
+                    .and_then(|records| {
+                        records.ensure(assets.game.as_deref());
+                        records.get(task.item).cloned()
+                    });
+                // The new node is the item's object, as a placed one is:
+                // its id word and the condition's third byte.
+                let placed = record.as_ref().map_or(
                     exa_world::PlacedItem {
                         id: task.item,
                         tagged_id: task.item,
                         condition: ((condition >> 16) & 0xff) as u8,
                     },
+                    |record| exa_world::PlacedItem::of(record, &object),
+                );
+                commands.entity(root).insert((
+                    Transform::from_translation(at),
+                    exa_physics::prop::PendingProp(parts),
+                    sounds,
+                    exa_combat::impact::ImpactBook::default(),
+                    placed,
                     GuiDropLift {
                         item: task.item,
                         condition,
                         copy_frame,
                     },
                 ));
-                // The spawned record carries what a placed object does:
-                // its template word, its usable and container sections and
-                // its mechanism records, from the object database record
-                // the drag named. The catalogue record stands in when the
-                // database has none.
-                let object = exa_world::dropped_object(task.item, condition);
-                if let Some(records) = records.as_deref_mut() {
-                    records.ensure(assets.game.as_deref());
-                    if let Some(record) = records.get(task.item) {
-                        commands.entity(root).insert((
-                            exa_world::PlacedItem::of(record, &object),
-                            exa_world::markers::PlacedTemplate(record.parent),
-                        ));
-                        if let Some(sections) = exa_world::ObjectSections::of(record, &object) {
-                            commands.entity(root).insert(sections);
-                        }
-                        if let Some(mechanisms) =
-                            exa_world::mechanisms::MechanismRecords::of(task.item, record)
-                        {
-                            commands.entity(root).insert(mechanisms);
-                        }
+                if let Some(record) = record.as_ref() {
+                    commands
+                        .entity(root)
+                        .insert(exa_world::markers::PlacedTemplate(record.parent));
+                    if let Some(sections) = exa_world::ObjectSections::of(record, &object) {
+                        commands.entity(root).insert(sections);
+                    }
+                    if let Some(mechanisms) =
+                        exa_world::mechanisms::MechanismRecords::of(task.item, record)
+                    {
+                        commands.entity(root).insert(mechanisms);
                     }
                 }
                 drop.word = end_word;
