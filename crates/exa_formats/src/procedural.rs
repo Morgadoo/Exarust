@@ -885,9 +885,9 @@ mod tests {
     }
 
     /// The three steel subclass constructors write their eight-byte code
-    /// name and three per-pass layer counts (`0x150`, `0x198`, `0x1E0`)
-    /// before compiling: chain mail `steelchn` 5/5/5, painted steel
-    /// `steelpnt` 6/5/5 and the plate `steelplt` 5/5/5.
+    /// name and the colour, specular and normal layer counts before
+    /// compiling: chain mail `steelchn` 5/5/5, painted steel `steelpnt`
+    /// 6/5/5 and the plate `steelplt` 5/5/5.
     #[test]
     fn the_steel_family_constructors_words() {
         let family = |id: u8| {
@@ -937,13 +937,70 @@ mod tests {
         );
         // Painted steel adds the dirt layer to its colour pass.
         let painted = material(14);
-        assert_eq!(painted.colour[5], "mtldirta01d");
-        assert_eq!(painted.normal[1], "mtlrusta03n");
+        assert_eq!(
+            painted.colour,
+            vec![
+                "mtlstlbas01d",
+                "mtlimpure01d",
+                "mtlrusta03d",
+                "mtlscufa01",
+                "mtlrusta01g",
+                "mtldirta01d"
+            ]
+        );
+        assert_eq!(
+            painted.specular,
+            vec![
+                "mtlstlbas01d",
+                "mtlimpure01d",
+                "mtlscufa01",
+                "mtlrusta01g",
+                "scuffsgnra01"
+            ]
+        );
+        assert_eq!(
+            painted.normal,
+            vec![
+                "mtlimpure02n",
+                "mtlrusta03n",
+                "mtlscufa01",
+                "mtlrusta01g",
+                "mtlscufa01n"
+            ]
+        );
         // The plate takes the A04 rust grain in all three passes.
         let plate = material(15);
-        assert_eq!(plate.colour[4], "mtlrusta04g");
-        assert_eq!(plate.specular[3], "mtlrusta04g");
-        assert_eq!(plate.normal[1], "mtlrusta04n");
+        assert_eq!(
+            plate.colour,
+            vec![
+                "mtlstlbas01d",
+                "mtlimpure01d",
+                "mtlrusta03d",
+                "mtlscufa01",
+                "mtlrusta04g"
+            ]
+        );
+        assert_eq!(
+            plate.specular,
+            vec![
+                "mtlstlbas01d",
+                "mtlimpure01d",
+                "mtlscufa01",
+                "mtlrusta04g",
+                "scuffsgnra01"
+            ]
+        );
+        assert_eq!(
+            plate.normal,
+            vec![
+                "mtlimpure02n",
+                "mtlrusta04n",
+                "mtlscufa01",
+                "mtlrusta04g",
+                "mtlscufa01n"
+            ]
+        );
+        assert_eq!(material(13).colour, plate.colour);
     }
 
     #[test]
