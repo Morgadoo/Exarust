@@ -115,20 +115,22 @@ pub const NIGHT_DAYLIGHT_LIMIT: f32 = 0.5;
 pub const NIGHT_VOLUME: f32 = 0.3;
 /// The wind strength above which the outdoor arenas play the wind bed.
 pub const WIND_LIMIT: f64 = 0.1;
-/// The wind bed's gain as a fraction of the squared strength, and its pitch
-/// base and rise.
+/// The wind bed's gain as a fraction of the squared strength.
 pub const WIND_GAIN: f64 = 0.2;
+/// The wind bed's pitch at no wind; it rises by half the strength (the same
+/// single 0.5 as the daylight limit, multiplied in single precision).
 pub const WIND_PITCH_BASE: f64 = 0.6;
 
 /// The outdoor arenas' ambience from the scene's weather, in the original's
-/// order: heavy rain stops it (the weather code plays the rain instead); a
+/// order: rain above 0.01 stops it; a
 /// daylight factor below 0.5 plays the night bed `NtrAN` at 0.3; a calm
 /// arena plays the day bed `NtrA` at full volume; otherwise a wind above 0.1
 /// plays `NtrW` at full volume with the bed's gain `wind² × 0.2` and pitch
 /// `0.6 + 0.5 × wind`; a still day stops it. `calm` is the arena's entry in
 /// the original's per-arena table; that table's index comes from the arena
 /// progression, which is not ported, so nothing in the running game calls
-/// this yet.
+/// this yet. The original applies the rule for arena indices of 7 and up and
+/// clears the ambience below 7; that index test is the caller's.
 pub fn arena_ambience(daylight: f32, wind: f32, raining: f32, calm: bool) -> ArenaAmbience {
     // The original compares the single fields against double constants.
     if f64::from(raining) > RAIN_AMBIENCE_LIMIT {

@@ -247,7 +247,11 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
 - A story level takes the area its name's bytes pick at full volume: the
   fourth level names `AmbUWBA`, whose prefixes then build `EnvAmbUWBA01` and
   `AmbAmbUWBA`, files that do not ship (the original's naming bug, kept);
-  every other story level clears the ambience.
+  every other story level clears the ambience. The original's level hook
+  sets the ambience only when the level's track differs from the one
+  playing (on 15 characters); Exarust applies it on every level load, which
+  differs only when a story level is re-entered with its own track playing
+  (the bed restarts at a new offset).
 - Only the outdoor arenas' calm daylight case is wired: `NtrA` at volume 1
   (a still, dry day; the weather and time-of-day callers are not in Exarust).
   `arena_ambience` holds the recovered full rule — rain > 0.01 stops the
@@ -255,7 +259,8 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
   1, wind > 0.1 gives `NtrW` at 1 with bed gain `wind² × 0.2` and pitch
   `0.6 + 0.5 × wind`, otherwise none — but the per-arena calm flag comes from
   the arena progression's tables, which are not ported, so nothing calls it
-  yet.
+  yet. The rule covers arena indices of 7 and up; the setup clears the
+  ambience below 7, which `arena_ambience` leaves to its caller.
 
 ### Reverb (`reverb`)
 
@@ -321,7 +326,8 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
   generator and seed are outside the evidence; Exarust uses a stand-in stream
   from 0.
 - **Music setting / ambience choice.** `MusicSetting` has no options screen
-  yet, and only the outdoor arena ambience is chosen from the level name.
+  yet; the ambience is chosen from the level name for the outdoor arenas
+  (calm daylight only) and the story levels.
 - **Transition fade.** The transition screen's own fade of A and of the
   transition bus is outside this crate; a level change cuts A at once.
 
