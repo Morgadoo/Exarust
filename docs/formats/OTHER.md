@@ -1409,7 +1409,12 @@ factory weapons of a real save, part for part and material for material.
   `0x200000` for the alternate normal). The compile declares `Tex0…` for the
   layer samplers, a `Nrm` sampler at unit 7 (specular) and a `Tex<n>` at
   unit 8 (painted pattern and alternate normal); the pass draws bind their
-  material layers from unit 2 (3 for the normal pass).
+  material layers from unit 3 (4 for the normal pass), all but the last
+  layer, and the pattern picture at the colour layer count plus two
+  (`paint::draw_program`, `layer_unit`, `bound_layers`, `pattern_unit`,
+  `extra_sampler`). The normal draw reads bit 8 of the item's flag word and
+  takes the alternate-normal program when it is set; a material that
+  compiles none has a null program there and draws nothing.
 - **Job ring and surface cache** (`exa_assets::paint_jobs`): pushes store at
   a 0..=255 write cursor; a full ring flushes every entry *before* the new
   one and then wraps, so the new job waits until the ring wraps to its slot.

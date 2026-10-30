@@ -436,9 +436,10 @@ pub struct Program {
     pub textures: usize,
     /// An extra sampler bound after the layer samplers: its name and unit.
     pub extra_sampler: Option<(String, u32)>,
-    /// The texture unit the first material layer binds to (the draw loops
-    /// start at 2 for the colour, alpha, pattern and specular programs and
-    /// at 3 for the normal program).
+    /// The texture unit the first material layer binds to: 3 for the
+    /// colour, pattern, painted-pattern, alpha and specular draws, 4 for
+    /// the normal ones (units 0–2 hold the scene's shade, damage and dirt
+    /// targets).
     pub units_from: u32,
     /// Uniform names in the order the compile fetches them.
     pub uniforms: &'static [&'static str],
@@ -536,7 +537,7 @@ pub fn programs(id: u8) -> Vec<Program> {
         define: 0,
         textures: colour + 2,
         extra_sampler: None,
-        units_from: 2,
+        units_from: 3,
         uniforms: PASS_UNIFORMS,
     });
     if m.passes.pattern {
@@ -546,7 +547,7 @@ pub fn programs(id: u8) -> Vec<Program> {
             define: DEFINE_PATTERN,
             textures: colour + 3,
             extra_sampler: None,
-            units_from: 2,
+            units_from: 3,
             uniforms: PASS_UNIFORMS,
         });
     }
@@ -557,7 +558,7 @@ pub fn programs(id: u8) -> Vec<Program> {
             define: DEFINE_PAINTED_PATTERN,
             textures: colour + 2,
             extra_sampler: Some((sampler_name(colour + 2), 8)),
-            units_from: 2,
+            units_from: 3,
             uniforms: PAINTED_PATTERN_UNIFORMS,
         });
     }
@@ -568,7 +569,7 @@ pub fn programs(id: u8) -> Vec<Program> {
             define: 0,
             textures: colour + 2,
             extra_sampler: None,
-            units_from: 2,
+            units_from: 3,
             uniforms: PASS_UNIFORMS,
         });
     }
@@ -580,7 +581,7 @@ pub fn programs(id: u8) -> Vec<Program> {
         // The specular program reads the painted normal target through a
         // sampler of its own, at unit 7.
         extra_sampler: Some(("Nrm".to_string(), 7)),
-        units_from: 2,
+        units_from: 3,
         uniforms: SPECULAR_UNIFORMS,
     });
     out.push(Program {
@@ -589,7 +590,7 @@ pub fn programs(id: u8) -> Vec<Program> {
         define: 0,
         textures: normal + 3,
         extra_sampler: None,
-        units_from: 3,
+        units_from: 4,
         uniforms: PASS_UNIFORMS,
     });
     if m.passes.alternate_normal {
@@ -599,7 +600,7 @@ pub fn programs(id: u8) -> Vec<Program> {
             define: DEFINE_ALTERNATE_NORMAL,
             textures: normal + 3,
             extra_sampler: Some((sampler_name(normal + 3), 8)),
-            units_from: 3,
+            units_from: 4,
             uniforms: PASS_UNIFORMS,
         });
     }
@@ -799,14 +800,14 @@ mod tests {
         );
         assert_eq!(p[0].name, "steel_d");
         assert_eq!(p[0].textures, 7);
-        assert_eq!(p[0].units_from, 2);
+        assert_eq!(p[0].units_from, 3);
         assert_eq!(p[0].uniforms, PASS_UNIFORMS);
         assert_eq!(p[1].name, "steel_s");
         assert_eq!(p[1].extra_sampler, Some(("Nrm".to_string(), 7)));
         assert_eq!(p[1].uniforms, SPECULAR_UNIFORMS);
         assert_eq!(p[2].name, "steel_n");
         assert_eq!(p[2].textures, 8);
-        assert_eq!(p[2].units_from, 3);
+        assert_eq!(p[2].units_from, 4);
         assert_eq!(p[3].define, DEFINE_ALTERNATE_NORMAL);
         assert_eq!(p[3].extra_sampler, Some(("Tex8".to_string(), 8)));
     }

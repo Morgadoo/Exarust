@@ -317,6 +317,92 @@ pub fn jitters(seed: u32) -> [f32; 4] {
     })
 }
 
+/// The texture-stretch factor's uniform.
+pub const UV_SCALE_UNIFORM: &str = "UVScale";
+
+/// The item flag bit that sends the normal draw to the alternate-normal
+/// program: the draw tests bit 8 of the part's flag word and takes the
+/// program compiled with `0x200000` instead of the plain one.
+pub const ALTERNATE_NORMAL_FLAG: u32 = 0x8;
+
+/// The texture unit the specular program's painted-normal sampler binds
+/// to (the compile gives it unit 7).
+pub const NORMAL_SAMPLER_UNIT: u32 = 7;
+
+/// The program a draw of `pass` on a material compiles: the material's
+/// variants ([`procedural::programs`]) with, for the normal pass, the
+/// alternate-normal variant when the item's flag word has
+/// [`ALTERNATE_NORMAL_FLAG`]. A pass the material does not compile (a
+/// pattern on a plain cloth, an alpha on a metal) gives `None`, as the
+/// draw's null program is skipped.
+pub fn draw_program(
+    material: u8,
+    pass: procedural::Pass,
+    item_flags: u32,
+) -> Option<procedural::Program> {
+    let programs = procedural::programs(material);
+    let want = if pass == procedural::Pass::Normal && item_flags & ALTERNATE_NORMAL_FLAG != 0 {
+        procedural::Pass::AlternateNormal
+    } else {
+        pass
+    };
+    programs.into_iter().find(|program| program.pass == want)
+}
+
+/// The texture unit a material layer binds to in a pass's draw: 2 for the
+/// colour, pattern, painted-pattern, alpha and specular programs, 3 for the
+/// normal ones (which reserve one more unit before the layers).
+pub fn layer_unit(pass: procedural::Pass, material: u8, layer: usize) -> u32 {
+    let program = procedural::programs(material)
+        .into_iter()
+        .find(|program| program.pass == pass);
+    let from = program.map_or(2, |program| program.units_from);
+    from + layer as u32
+}
+
+/// How many of a material's layer textures a pass's draw actually binds:
+/// the loop runs to the layer count less one, the last entry being the
+/// pass's own extra sampler.
+pub fn bound_layers(material: u8, pass: procedural::Pass) -> usize {
+    let m = procedural::material(material);
+    let count = match pass {
+        procedural::Pass::Specular => m.specular.len(),
+        procedural::Pass::Normal | procedural::Pass::AlternateNormal => m.normal.len(),
+        _ => m.colour.len(),
+    };
+    count.saturating_sub(1)
+}
+
+/// The texture unit the pattern picture binds to in the pattern and
+/// painted-pattern draws: the material's colour layer count plus two. The
+/// picture is the item's own texture (`param_2[5]` in the draw), not one of
+/// the material's library textures; the plain colour pass does not bind it.
+pub fn pattern_unit(material: u8) -> u32 {
+    procedural::material(material).colour.len() as u32 + 2
+}
+
+/// The extra sampler a pass binds after its layers, as `(name, unit)`:
+/// the pattern picture for the pattern and painted-pattern passes, the
+/// painted-normal target for the specular pass, and the alternate normal
+/// target for the alternate-normal pass. The plain colour, alpha and normal
+/// passes bind none.
+pub fn extra_sampler(material: u8, pass: procedural::Pass) -> Option<(String, u32)> {
+    match pass {
+        // The pattern picture is bound by the draw at the unit after its
+        // materials; the painted pattern's program names that sampler and
+        // sets it to unit 8.
+        procedural::Pass::PaintedPattern => {
+            Some((procedural::sampler_name(pattern_unit(material) as usize), 8))
+        }
+        procedural::Pass::Specular => Some(("Nrm".to_string(), NORMAL_SAMPLER_UNIT)),
+        procedural::Pass::AlternateNormal => {
+            let normal = procedural::material(material).normal.len();
+            Some((procedural::sampler_name(normal + 3), 8))
+        }
+        _ => None,
+    }
+}
+
 /// A paint layer's mask texture: the stem, an `m` and the mask byte plus
 /// `b'0'` written as a single character. The original patches one byte into
 /// the two-character suffix, so a mask of 10 names `m:` rather than `m10`
@@ -2717,6 +2803,76 @@ mod tests {
             assert!(o.x >= -0.5 && o.x <= 0.5 && o.y >= -0.5 && o.y <= 0.5);
             assert_eq!((o.x * 512.0).fract(), 0.0);
         }
+    }
+
+    #[test]
+    fn the_alternate_normal_program_is_chosen_by_the_item_flag() {
+        // Steel compiles both normal programs; bit 8 of the item's flags
+        // picks the alternate one.
+        let plain = draw_program(12, procedural::Pass::Normal, 0).expect("normal");
+        assert_eq!(plain.pass, procedural::Pass::Normal);
+        assert_eq!(plain.define, 0);
+        let alternate = draw_program(12, procedural::Pass::Normal, 0x8).expect("alternate");
+        assert_eq!(alternate.pass, procedural::Pass::AlternateNormal);
+        assert_eq!(alternate.define, procedural::DEFINE_ALTERNATE_NORMAL);
+        // The bit does not change another pass.
+        assert_eq!(
+            draw_program(12, procedural::Pass::Colour, 0x8)
+                .expect("colour")
+                .pass,
+            procedural::Pass::Colour
+        );
+        // A plate compiles no alternate program: the draw reads the flag's
+        // program slot, which is null there, so nothing is drawn.
+        assert!(draw_program(13, procedural::Pass::Normal, 0x8).is_none());
+        assert_eq!(
+            draw_program(13, procedural::Pass::Normal, 0)
+                .expect("plate normal")
+                .pass,
+            procedural::Pass::Normal
+        );
+        assert!(draw_program(11, procedural::Pass::AlternateNormal, 0).is_none());
+    }
+
+    #[test]
+    fn the_draws_bind_their_layers_and_extra_samplers() {
+        use procedural::Pass;
+        // Steel: five colour layers, the draw binds all but the last from
+        // unit 3; the normal draws start at unit 4.
+        assert_eq!(layer_unit(Pass::Colour, 12, 0), 3);
+        assert_eq!(layer_unit(Pass::Colour, 12, 4), 7);
+        assert_eq!(bound_layers(12, Pass::Colour), 4);
+        assert_eq!(layer_unit(Pass::Normal, 12, 0), 4);
+        assert_eq!(bound_layers(12, Pass::Normal), 4);
+        assert_eq!(layer_unit(Pass::Specular, 12, 0), 3);
+        assert_eq!(bound_layers(12, Pass::Specular), 4);
+        // The pattern picture binds at the colour layer count plus two.
+        assert_eq!(pattern_unit(12), 7);
+        assert_eq!(pattern_unit(11), 7);
+        assert_eq!(pattern_unit(1), 6);
+        // Painted steel is the extra-layer family: six colour layers.
+        assert_eq!(bound_layers(14, Pass::PaintedPattern), 5);
+        assert_eq!(pattern_unit(14), 8);
+        assert_eq!(
+            extra_sampler(14, Pass::PaintedPattern),
+            Some(("Tex8".to_string(), 8))
+        );
+        assert_eq!(
+            extra_sampler(12, Pass::Specular),
+            Some(("Nrm".to_string(), NORMAL_SAMPLER_UNIT))
+        );
+        assert_eq!(extra_sampler(12, Pass::Colour), None);
+        assert_eq!(extra_sampler(12, Pass::Normal), None);
+        // The alternate normal's sampler follows the normal layers.
+        assert_eq!(
+            extra_sampler(12, Pass::AlternateNormal),
+            Some(("Tex8".to_string(), 8))
+        );
+        // Gemstone compiles its pattern and alpha programs.
+        assert!(draw_program(23, Pass::Pattern, 0).is_some());
+        assert!(draw_program(23, Pass::Alpha, 0).is_some());
+        assert!(draw_program(1, Pass::PaintedPattern, 0).is_some());
+        assert!(draw_program(12, Pass::PaintedPattern, 0).is_none());
     }
 
     #[test]
