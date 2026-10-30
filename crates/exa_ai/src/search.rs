@@ -1253,10 +1253,9 @@ impl Search {
             *busy = false;
             return;
         }
+        // A walking attention that takes the tick leaves the answer busy:
+        // only the open-pack test above answers not busy.
         if me.attend(ATTEND_WALKING) {
-            // The activity's answer is not busy while the walk takes the
-            // tick.
-            *busy = false;
             return;
         }
         me.calm_walk();
@@ -1547,12 +1546,18 @@ pub fn take_from_container(container: &mut Container, item: u32) -> bool {
     true
 }
 
-/// Takes a corpse's worn item off it: an item held in the main hand is
-/// released from the grip, with its carried entry, and anything else leaves
-/// the worn list. True when the item was there.
+/// Takes a corpse's worn item off it: the item the corpse grips is released,
+/// its second hand slot cleared and its carried entry dropped (the worn
+/// list keeps it); anything else leaves the worn list. True when the item
+/// was there.
+///
+/// The original tests the item of the corpse's gripped object and clears
+/// the second hand slot (the slot after the first hand's id and flags);
+/// Exarust has no grip object and takes the item in that second slot as the
+/// gripped one (a stand-in, labelled as such).
 pub fn take_worn(pack: &mut Pack, item: u32) -> bool {
-    if pack.hands[0] == item {
-        pack.hands[0] = 0;
+    if pack.hands[1] == item {
+        pack.hands[1] = 0;
         if let Some(at) = pack.carried.iter().position(|c| c.item == item) {
             pack.carried.remove(at);
         }
@@ -1626,8 +1631,8 @@ pub fn drop_item(scene: &mut Scene, pack: &mut Pack, container: u32, item: u32) 
 ///
 /// Taking a loose item despawns its object; taking from a container removes
 /// the first matching entry and compacts the list; taking a corpse's worn
-/// item releases it from the corpse's grip when it holds it there (main
-/// hand, and its carried entry), and otherwise removes it from the worn
+/// item releases it from the corpse's grip when it holds it there (the
+/// second hand slot, and its carried entry), and otherwise removes it from the worn
 /// list; taking a carried entry removes that entry. Carrying adds to the
 /// pack; wearing puts the item on, takes it out of the carried list and
 /// then out of its source; wielding fills the main hand and stowing the

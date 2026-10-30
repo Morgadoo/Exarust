@@ -755,7 +755,8 @@ fn a_search_loots_a_chest() {
 }
 
 /// Short of the chest after the walk it paths again; the third time it lets
-/// the chest go. Its own pack open in the window pauses it, not busy.
+/// the chest go. Its own pack open in the window pauses it, not busy; a
+/// walking attention that takes the tick keeps it busy.
 #[test]
 fn three_short_walks_give_up() {
     let mut scene = looted_scene();
@@ -772,6 +773,12 @@ fn three_short_walks_give_up() {
     assert!(!busy);
     assert_eq!(s.state, State::Approach);
     scene.open.clear();
+    // A walking attention that takes the tick leaves it busy, in place.
+    me.attends = true;
+    let (busy, _) = step(&mut s, &mut me, &mut scene, anchor);
+    assert!(busy);
+    assert_eq!((s.state, s.tries), (State::Approach, 0));
+    me.attends = false;
     for tries in 1..3 {
         step(&mut s, &mut me, &mut scene, anchor);
         assert_eq!((s.state, s.tries), (State::Path, tries));
@@ -1026,7 +1033,7 @@ fn executor_scene() -> Scene {
                 Carried { item: 11, flags: 0 },
             ],
             worn: vec![9],
-            hands: [10, 0, 0, 0],
+            hands: [0, 10, 0, 0],
             locked: false,
         },
         object: 1,
@@ -1062,13 +1069,13 @@ fn the_executors_take_from_each_source() {
 
     assert!(apply_deed(&mut scene, &mut pack, &take(1, Source::Worn, 9)));
     assert!(scene.corpses[0].pack.worn.is_empty());
-    assert_eq!(scene.corpses[0].pack.hands[0], 10);
+    assert_eq!(scene.corpses[0].pack.hands[1], 10);
     assert!(apply_deed(
         &mut scene,
         &mut pack,
         &take(1, Source::Worn, 10)
     ));
-    assert_eq!(scene.corpses[0].pack.hands[0], 0);
+    assert_eq!(scene.corpses[0].pack.hands[1], 0);
     assert_eq!(
         scene.corpses[0].pack.carried,
         vec![Carried { item: 11, flags: 0 }]
@@ -1134,8 +1141,8 @@ fn the_executors_carry_wear_wield_and_stow() {
 
 /// The object edits the deferred jobs ask for: an item's first container
 /// entry goes and the list compacts; a worn item leaves the worn list, or,
-/// when the corpse grips it in the main hand, the hand and its carried
-/// entry; a carried item leaves its entry; a container takes an item only
+/// when the corpse grips it (the second hand slot), that slot and its
+/// carried entry; a carried item leaves its entry; a container takes an item only
 /// when its size byte fits.
 #[test]
 fn the_small_object_edits_work_as_the_jobs_ask() {
@@ -1150,11 +1157,11 @@ fn the_small_object_edits_work_as_the_jobs_ask() {
     let mut pack = Pack {
         carried: vec![Carried { item: 1, flags: 0 }, Carried { item: 2, flags: 0 }],
         worn: vec![8, 9],
-        hands: [2, 0, 0, 1],
+        hands: [0, 2, 0, 1],
         locked: false,
     };
     assert!(take_worn(&mut pack, 2));
-    assert_eq!(pack.hands[0], 0);
+    assert_eq!(pack.hands[1], 0);
     assert_eq!(pack.carried, vec![Carried { item: 1, flags: 0 }]);
     assert!(take_worn(&mut pack, 9));
     assert_eq!(pack.worn, vec![8]);

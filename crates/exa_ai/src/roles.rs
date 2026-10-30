@@ -34,8 +34,10 @@
 //! `exa_formats::roles::Role::dialogue_for`. The unit registers `StartDialogue`
 //! (which copies the owner, partner, role and matched partner role into the
 //! engine's context and reads the script's first argument as the topic) and
-//! the `ChangeRole` stub that always reports its missing function. The brain
-//! does not feed the script engine yet.
+//! the `ChangeRole` stub that always reports its missing function. In the
+//! running game the scripts run on `exa_script`'s engine (encounter scripts
+//! through `exa_game::role_scripts`), whose own `StartDialogue` builtin
+//! starts the conversation; [`start_dialogue`] is the unit's model of it.
 //!
 //! Evidence: the original's role database routines (add, remove, has,
 //! validate, relation tables, add and remove relation, familiarity, the
@@ -735,8 +737,8 @@ impl std::error::Error for MissingScriptFunction {}
 /// `StartDialogue(topic)`: copies the calling context and reads the script's
 /// first argument as a 16-byte, NUL-padded topic name (the original copies
 /// the whole argument word), then hands the pair to the dialogue engine.
-/// Exarust returns the request: the brain does not run role scripts yet, and
-/// the dialogue engine is `exa_script`'s.
+/// Exarust returns the request; the live call is `exa_script`'s
+/// `StartDialogue` builtin, which reads the same topic argument.
 pub fn start_dialogue(context: DialogueStart, topic: Name) -> DialogueRequest {
     DialogueRequest {
         start: context,
