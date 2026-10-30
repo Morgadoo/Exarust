@@ -143,7 +143,7 @@ fn stored_contacts_hold_a_limb_dragged_by_its_links() {
     }
     let shin = &body.parts[1];
     let t = shin.transform();
-    for &(c, r) in &shin.spheres {
+    for &(c, r) in shin.spheres.iter() {
         let y = t.transform_point3(c).y;
         assert!(y > r - 0.01, "the links pulled the shin's centre to {y:.3}");
     }
@@ -184,7 +184,7 @@ fn a_limp_body_rests_on_the_floor_and_sleeps() {
     );
     for p in &ragdoll.parts {
         let t = p.transform();
-        for &(c, r) in &p.spheres {
+        for &(c, r) in p.spheres.iter() {
             let gap = t.transform_point3(c).y - at.y - r;
             assert!(gap > -0.003, "bone {} sphere sunk {:.4} m", p.bone, -gap);
         }

@@ -320,7 +320,12 @@ pub struct Part {
     /// shares summing to 4 that put gravity at its centre of mass.
     pub gravity: [f32; 4],
     /// Collision spheres in the part's space: centre, radius.
-    pub spheres: Vec<(Vec3, f32)>,
+    ///
+    /// The original keeps this list behind one pointer shared by a body and
+    /// its clone, and copies it (once) only when the clone writes to it.
+    /// Cloning a part here shares the array the same way; nothing changes it
+    /// after the body is built, so the copy is never forced.
+    pub spheres: Arc<Vec<(Vec3, f32)>>,
     /// The part's collision mesh in its space, when its node's model gives
     /// one: the triangles the other side's spheres are tested against (the
     /// original's mesh query). Empty for a part whose mesh was never handed
@@ -590,7 +595,7 @@ impl Part {
             previous: positions,
             inverse_mass,
             gravity: [1.0; 4],
-            spheres,
+            spheres: Arc::new(spheres),
             triangles: None,
             sphere_grid: None,
             pairing,
@@ -1628,7 +1633,7 @@ impl WorldLink {
 
 /// A simulated body: limp, or driven by its muscles when it has a
 /// [`Drive`].
-#[derive(Component, Debug, Clone)]
+#[derive(Component, Debug)]
 pub struct Ragdoll {
     pub parts: Vec<Part>,
     /// Every part's links, the skeleton's then its origin pivot, part by part.
@@ -1737,6 +1742,103 @@ pub struct Ragdoll {
     scrapes: Vec<ScrapeSource>,
     /// What this tick's scrape sources reported, for the audio side.
     scrape_events: Vec<ScrapeEvent>,
+}
+
+impl Ragdoll {
+    /// The state copy both [`Clone`] and [`Ragdoll::runtime_clone`] are made
+    /// from. `drop_runtime_links` takes the original's clone slot's link
+    /// filter: a link that code made at run time or that can break (the
+    /// flags' [`LINK_CODE`] | [`LINK_BREAKABLE`]) is left behind.
+    fn copy(&self, drop_runtime_links: bool) -> Self {
+        let mut links = Vec::with_capacity(self.links.len());
+        let mut remap = vec![None; self.links.len()];
+        for (k, l) in self.links.iter().enumerate() {
+            if drop_runtime_links && l.flags & (LINK_CODE | LINK_BREAKABLE) != 0 {
+                continue;
+            }
+            remap[k] = Some(links.len());
+            links.push(l.clone());
+        }
+        let mut parts = self.parts.clone();
+        if drop_runtime_links {
+            for p in &mut parts {
+                p.leg_limit = p.leg_limit.and_then(|k| remap.get(k).copied().flatten());
+            }
+        }
+        // A kept list stays grouped by part, so each part's range is the run
+        // of its links in the copied list.
+        let mut links_of = vec![0..0; parts.len()];
+        let mut at = 0;
+        for (i, range) in links_of.iter_mut().enumerate() {
+            let start = at;
+            while at < links.len() && links[at].part == i {
+                at += 1;
+            }
+            *range = start..at;
+        }
+        Self {
+            parts,
+            links,
+            world: self.world.clone(),
+            links_of,
+            outward: self.outward.clone(),
+            inward: self.inward.clone(),
+            chest: self.chest.clone(),
+            legs: self.legs.clone(),
+            sole: self.sole,
+            drive: self.drive.clone(),
+            ticks: self.ticks,
+            countdown: self.countdown,
+            settle: self.settle,
+            sleep: self.sleep,
+            simulated: self.simulated,
+            fell_out: self.fell_out,
+            frozen: self.frozen,
+            disabled: self.disabled,
+            environment_keep: self.environment_keep,
+            held_environment: self.held_environment,
+            link_iterations: self.link_iterations,
+            grabs: self.grabs.clone(),
+            pieces: self.pieces.clone(),
+            triangles: self.triangles.clone(),
+            pass: self.pass,
+            held_flags: self.held_flags,
+            held_count: self.held_count,
+            held_by: self.held_by,
+            level_impacts: self.level_impacts.clone(),
+            limp_frame: self.limp_frame,
+            limp_clip_rate: self.limp_clip_rate,
+            limp_height: self.limp_height,
+            limp_scale: self.limp_scale,
+            limp_supported: self.limp_supported,
+            limp_walking: self.limp_walking,
+            kept_muscles: self.kept_muscles,
+            scrapes: self.scrapes.clone(),
+            scrape_events: self.scrape_events.clone(),
+        }
+    }
+
+    /// The original's clone slot: a duplicate of the body for a copy that
+    /// then re-runs its own setup. It keeps the part states, points and axes
+    /// and shares the sphere array with its template (a clone copies the
+    /// array's pointer and copies the array itself only if something writes
+    /// to it), and it copies no link that code made at run time ([`LINK_CODE`],
+    /// which includes every origin pivot) and no link that can break
+    /// ([`LINK_BREAKABLE`]); the indices into the kept links are remapped,
+    /// so a leg's limit link follows its link. World links and every other
+    /// field are copied.
+    pub fn runtime_clone(&self) -> Self {
+        self.copy(true)
+    }
+}
+
+/// Cloning a body copies its whole state, links included, as the tests and
+/// the tooling need; the original's own clone slot, which drops the links
+/// code made and the breakable ones, is [`Ragdoll::runtime_clone`].
+impl Clone for Ragdoll {
+    fn clone(&self) -> Self {
+        self.copy(false)
+    }
 }
 
 /// Muscles of a living body: the animated pose it follows.
@@ -4603,7 +4705,7 @@ impl Ragdoll {
             let before = p.settled;
             let (mut lo, mut hi) = (Vec3::MAX, Vec3::MIN);
             let now = p.transform();
-            for &(c, r) in &p.spheres {
+            for &(c, r) in p.spheres.iter() {
                 for x in [before.transform_point3(c), now.transform_point3(c)] {
                     lo = lo.min(x - Vec3::splat(2.0 * r));
                     hi = hi.max(x + Vec3::splat(2.0 * r));
@@ -5218,6 +5320,55 @@ mod tests {
         assert_eq!(body.add_link(2, 0, Vec3::ZERO, Vec3::ZERO, 0.0, 1.0), None);
         assert_eq!(body.add_link(1, 9, Vec3::ZERO, Vec3::ZERO, 0.0, 1.0), None);
         assert_eq!(body.links.len(), 5);
+    }
+
+    /// The original's body clone leaves behind every link code made at run
+    /// time and every link made to break (their flags' 0x401000 mask). The
+    /// origin pivot is such a link, so a clone keeps only the skeleton's
+    /// stored links and the indices into them are remapped; the sphere
+    /// array is shared with the template rather than copied.
+    #[test]
+    fn a_cloned_body_keeps_only_its_stored_links_and_shares_its_spheres() {
+        let mut body = two_parts(0.0);
+        // [0] is the skeleton's own link, [1] its origin pivot (a code link).
+        let added = body
+            .add_link(1, 0, Vec3::ZERO, Vec3::ZERO, 0.02, 0.5)
+            .expect("both parts exist");
+        assert_eq!(added, 2);
+        assert_eq!(body.links.len(), 3);
+        // Make the added link a plain body link and the skeleton's link
+        // breakable, and point the leg's limit at the added one.
+        body.links[added].flags &= !LINK_CODE;
+        body.links[0].flags |= LINK_BREAKABLE;
+        body.parts[1].leg_limit = Some(added);
+        let clone = body.runtime_clone();
+        assert_eq!(clone.links.len(), 1);
+        assert_eq!(clone.links[0].part, 1);
+        assert_eq!(clone.links[0].slack, 0.02);
+        assert_eq!(clone.links[0].strength, 0.5);
+        assert_eq!(clone.parts[1].leg_limit, Some(0));
+        assert_eq!(clone.links_of[0], 0..0);
+        assert_eq!(clone.links_of[1], 0..1);
+        // One sphere array behind both bodies.
+        assert!(!body.parts[0].spheres.is_empty());
+        assert!(std::sync::Arc::ptr_eq(
+            &body.parts[0].spheres,
+            &clone.parts[0].spheres
+        ));
+        // The kept link is still solvable: the pivot pulls its part back.
+        let mut moved = clone;
+        for x in &mut moved.parts[1].positions {
+            *x += Vec3::new(0.5, 0.0, 0.0);
+        }
+        let gap = |b: &Ragdoll| {
+            let l = &b.links[0];
+            b.parts[l.parent]
+                .point(&l.on_parent)
+                .distance(b.parts[l.part].point(&l.on_part))
+        };
+        let before = gap(&moved);
+        moved.iterate();
+        assert!(gap(&moved) < before);
     }
 
     /// A link added at run time is solved: pulled apart beyond its slack, one

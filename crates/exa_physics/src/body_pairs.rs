@@ -1071,9 +1071,9 @@ fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch, pla
     // The fallback's sphere list is taken out of B only when the mesh is
     // absent (and put back at the end), with its grid when it has one.
     let spheres = if triangles.is_none() {
-        std::mem::take(&mut pb.spheres)
+        std::mem::replace(&mut pb.spheres, std::sync::Arc::new(Vec::new()))
     } else {
-        Vec::new()
+        std::sync::Arc::new(Vec::new())
     };
     let grid = triangles
         .is_none()

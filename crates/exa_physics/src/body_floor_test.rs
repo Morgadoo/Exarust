@@ -64,7 +64,7 @@ pub(super) fn lowest(body: &Ragdoll) -> (f32, usize) {
     let mut low = (f32::MAX, 0);
     for p in &body.parts {
         let t = p.transform();
-        for &(c, _) in &p.spheres {
+        for &(c, _) in p.spheres.iter() {
             let y = t.transform_point3(c).y;
             if y < low.0 {
                 low = (y, p.bone);

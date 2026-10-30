@@ -871,7 +871,7 @@ pub(crate) fn character_hit<'a>(
     for (body, ragdoll, condition) in characters {
         for (part, p) in ragdoll.parts.iter().enumerate() {
             let at = p.transform();
-            for &(centre, radius) in &p.spheres {
+            for &(centre, radius) in p.spheres.iter() {
                 let reach = best.map_or(max, |b| b.0);
                 if let Some(t) = ray_sphere(origin, dir, at.transform_point3(centre), radius, reach)
                     && best.is_none_or(|b| t < b.0)

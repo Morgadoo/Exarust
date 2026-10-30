@@ -882,7 +882,7 @@ fn the_dying_tick_steps_the_dropped_weapon() {
     let part = &weapon.parts[0];
     assert_eq!(part.friction.to_bits(), 0x3f40_0000);
     assert_eq!(part.inverse_mass.to_bits(), 0x3fa0_0000);
-    assert_eq!(part.spheres, vec![(Vec3::new(0.0, 0.2, 0.0), 0.2)]);
+    assert_eq!(*part.spheres, vec![(Vec3::new(0.0, 0.2, 0.0), 0.2)]);
     let back = 1.5 / 83.0;
     assert_eq!(part.previous[0].x, part.positions[0].x - back);
     assert_eq!(part.positions[3], Vec3::new(0.0, 1.4, 0.0));

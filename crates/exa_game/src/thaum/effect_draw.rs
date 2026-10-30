@@ -204,7 +204,7 @@ pub fn skin_box(body: &Ragdoll) -> Option<ShellBox> {
     let mut high = f32::NEG_INFINITY;
     for part in &body.parts {
         let world = part.transform();
-        for &(centre, radius) in &part.spheres {
+        for &(centre, radius) in part.spheres.iter() {
             let y = world.transform_point3(centre).y;
             low = low.min(y - radius);
             high = high.max(y + radius);
