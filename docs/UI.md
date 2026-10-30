@@ -57,7 +57,11 @@ or the tail that fits, measured with the GUI level's main font, the first
 drawn byte replaced by the ellipsis, placed where it would sit had the
 whole line been drawn. Shortening a text with the ellipsis counts the
 ellipsis and then the bytes before the last; at the k-th byte that passes
-the width the first k − 1 bytes stay. A wrapped block breaks like the text
+the width the first k − 1 bytes stay. An inline `[rimg=NAME]` picture is
+its texture size over six in units, centred in the frame at the current
+baseline, drawn with white ink under the premultiplied blend 0x103 (the
+text's colour and blend 0x203 are restored after it) and pushes the
+baseline down by its height less a pitch. A wrapped block breaks like the text
 box, draws its glyphs hanging down from each line's top while the top is
 within the height less a line, draws the lines it skips at the block's top,
 and moves a centred line right by half its last break's spare width. The
