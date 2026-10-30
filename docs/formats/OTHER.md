@@ -1368,11 +1368,16 @@ factory weapons of a real save, part for part and material for material.
   `WH_MaceMA`, `WH_ClubMW`, `WH_WoodA`, `WH_ClawsL`, `BdyCol`
   (`weapon_stats::impact_sound`). A build without a weapon record uses a
   sword.
+- **Repaint**: a condition change (quality, damage, dirt) rolls the recipe
+  again from the same seeds — the area colours follow the new quality —
+  and repaints the existing assembled node, keeping its meshes; the
+  striking extents are recomputed from the same geometry
+  (`ModelLoader::repaint_factory`, keyed by the seeds and stored choices).
 - Not reproduced yet: texture-only overlay parts (part flag 1) and the
   mask-gated shade of parts flagged 2, the alternate normal program (part
   flag 4), the shared factory atlas with one `_PROCITE` merged mesh and one
-  material per weapon, the weapon's rigid body and impact sound attachment,
-  and the in-place repaint after a condition change.
+  material per weapon, and the weapon's rigid body and impact sound
+  attachment.
 - **Items** name a factory by a model name starting with `@`. Their weapon
   section (`0x4000`, 96 bytes) holds flags, seeds, quality, damage, dirt,
   4 material slots (material, finish, colour, mode), stats, and the stored

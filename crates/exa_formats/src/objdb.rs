@@ -499,7 +499,7 @@ impl Armour {
 }
 
 /// The weapon section of an item (`0x4000`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Weapon {
     pub flags: u32,
     pub seeds: [u32; 2],

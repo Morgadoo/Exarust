@@ -464,7 +464,10 @@ Factory weapons (`weapon`): a `.fty` recipe and an item's seeds choose,
 deform (scale, band, taper, bend, radial), place (by the parent's stored
 node box, scaled by the parent's recipe scale, turned X, Z, Y) and paint
 `Components.rpk` parts, then assemble the striking extent and the stat
-bytes. Item quality, condition and stored choices are honoured.
+bytes. Item quality, condition and stored choices are honoured. A change of
+condition repaints the assembled node from the same seeds (the area colours
+follow the new quality) and keeps its meshes, as the original's repaint
+does.
 
 Physique (`morph`): `ModelLoader::morphed_model` / `morphed_job` build a
 character's variant of a race body or garment at its `BodyMorph` (race

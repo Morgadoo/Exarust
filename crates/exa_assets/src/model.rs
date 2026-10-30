@@ -39,6 +39,20 @@ pub struct Model {
     pub nodes: Vec<ModelNode>,
 }
 
+impl Model {
+    /// Replaces the material of every part in the tree, as the original's
+    /// merged-mesh material assignment does: the one material a weapon is
+    /// drawn with is written into every group, recursively, so a repaint
+    /// after a condition change keeps the assembled geometry.
+    pub fn assign_material(&mut self, material: &Handle<ExaMaterial>) {
+        for node in &mut self.nodes {
+            for part in &mut node.parts {
+                part.1 = material.clone();
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ModelNode {
     pub name: String,
@@ -287,6 +301,10 @@ pub struct ModelCache {
     factory_painted: HashMap<String, Handle<ExaMaterial>>,
     /// Factory weapon stats once its assembled extents are known.
     pub(crate) factory_stats: HashMap<String, exa_formats::weapon_stats::StatBytes>,
+    /// Assembled factory weapon geometry by the seeds and stored choices it
+    /// depends on. A condition change (quality, damage, dirt) keeps the
+    /// meshes and only repaints them.
+    pub(crate) factory_geometry: HashMap<String, Arc<Model>>,
     /// Parsed factory recipes, by lower-case name.
     pub(crate) factories: HashMap<String, Arc<exa_formats::factory::Factory>>,
     /// The environment cube, once looked for.
