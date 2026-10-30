@@ -820,6 +820,21 @@ pub struct LightAlias {
     pub shadow_links: u32,
 }
 
+/// One entry of a light node's link list: the weight one of the light's
+/// sector aliases gives it and the doubly linked list's neighbours, as the
+/// original's 24-byte records hold them. The list runs heaviest first and
+/// a NaN weight counts as heavier than any number.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct LightLink {
+    /// The weight the alias's link method gave this link (the original's
+    /// float at the record's start).
+    pub weight: f32,
+    /// The heavier neighbour, or −1 at the head.
+    pub prev: i32,
+    /// The lighter neighbour, or −1 at the end.
+    pub next: i32,
+}
+
 /// One entry of a node's per-alias bucket list: a doubly linked list over
 /// the sector's aliases, as [`Scene::rebuild_buckets`] builds it.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -925,6 +940,12 @@ pub struct SceneNode {
     pub bucket_head: i32,
     /// One bucket per sector alias.
     pub buckets: Vec<Bucket>,
+    /// The head of the light's link list (−1 for none): one link per sector
+    /// alias, heaviest first.
+    pub link_head: i32,
+    /// The light's link records, in alias order before
+    /// [`Scene::order_links`] sorts their chain.
+    pub links: Vec<LightLink>,
 }
 
 impl SceneNode {
@@ -965,6 +986,8 @@ impl SceneNode {
             active_frame: Vec3::ZERO,
             bucket_head: -1,
             buckets: Vec::new(),
+            link_head: -1,
+            links: Vec::new(),
         }
     }
 
@@ -2082,6 +2105,82 @@ impl Scene {
         n.buckets[count - 1].next = -1;
     }
 
+    /// Sets the light's link records from one weight per sector alias, in
+    /// alias order, and chains them in that order with the first as the
+    /// head — the state the per-alias link writes leave before
+    /// [`Scene::order_links`] runs. A light with no aliases has no head.
+    pub fn reset_links(&mut self, light: usize, weights: &[f32]) {
+        let n = &mut self.nodes[light];
+        n.links.clear();
+        n.links.reserve(weights.len());
+        for (i, &weight) in weights.iter().enumerate() {
+            n.links.push(LightLink {
+                weight,
+                prev: i as i32 - 1,
+                next: if i + 1 == weights.len() {
+                    -1
+                } else {
+                    i as i32 + 1
+                },
+            });
+        }
+        n.link_head = if weights.is_empty() { -1 } else { 0 };
+    }
+
+    /// Orders the light's link list heaviest first, as the original's
+    /// weight sort does: every entry after the head is taken off the chain
+    /// and walked back over the heavier entries until one is at least as
+    /// heavy (`<=`, so an equal weight stops it and a NaN weight walks past
+    /// every number), then linked in behind it — at the head when none is.
+    /// The starting chain's order does not matter; the result is the
+    /// stable order by descending weight.
+    ///
+    /// A model whose chain is malformed (an index out of range or a cycle)
+    /// is left as it is instead of trapping; the original trusts its list.
+    pub fn order_links(&mut self, light: usize) {
+        let n = &mut self.nodes[light];
+        if n.link_head < 0 || !links_valid(n) {
+            return;
+        }
+        let head = n.link_head as usize;
+        let mut next = n.links[head].next;
+        while next >= 0 {
+            let item = next as usize;
+            next = n.links[item].next;
+            let before = n.links[item].prev;
+            // Take the entry off the chain it is on.
+            if next >= 0 {
+                n.links[next as usize].prev = before;
+            }
+            n.links[before as usize].next = next;
+            // Walk back while the entry is heavier than the one before it.
+            let mut at = before;
+            loop {
+                if n.links[item].weight <= n.links[at as usize].weight {
+                    break;
+                }
+                at = n.links[at as usize].prev;
+                if at < 0 {
+                    break;
+                }
+            }
+            let after = if at < 0 {
+                let old_head = n.link_head;
+                n.link_head = item as i32;
+                old_head
+            } else {
+                let after = n.links[at as usize].next;
+                n.links[at as usize].next = item as i32;
+                after
+            };
+            n.links[item].prev = at;
+            n.links[item].next = after;
+            if after >= 0 {
+                n.links[after as usize].prev = item as i32;
+            }
+        }
+    }
+
     /// Finishes the sectors' newly registered meshes: each whose option word
     /// asks for buckets gets them, then the processed count takes the whole
     /// list and the "mesh added" change bit clears.
@@ -2836,6 +2935,24 @@ impl Scene {
         }
         changed
     }
+}
+
+/// Whether a node's link chain is safe to walk: the head is in range and
+/// following `next` reaches the end without leaving the array or cycling.
+/// The original trusts its list; the model checks so a malformed one is
+/// left unordered rather than trapping.
+fn links_valid(node: &SceneNode) -> bool {
+    let len = node.links.len();
+    let mut at = node.link_head;
+    let mut steps = 0;
+    while at >= 0 {
+        if at as usize >= len || steps > len {
+            return false;
+        }
+        at = node.links[at as usize].next;
+        steps += 1;
+    }
+    true
 }
 
 /// Remaps a node's bucket chain after the membership rebuild moved the
@@ -4872,6 +4989,59 @@ mod tests {
         // Unrotated, the x extent stays 3: the first box runs x 0…13.
         let flat = scene_bounds(SectorBounds::default(), &[(room, Mat3::IDENTITY)]);
         assert_eq!(flat.first.half_extents, Vec3::new(6.5, 1.0, 1.0));
+    }
+
+    #[test]
+    fn a_link_list_is_ordered_heaviest_first() {
+        let mut scene = Scene::new((0, 0));
+        let light = scene.add_node(NodeKind::Light, None);
+        scene.reset_links(light, &[1.0, 3.0, 2.0]);
+        scene.order_links(light);
+        let chain = chain_of(&scene.nodes[light]);
+        assert_eq!(chain, vec![1, 2, 0]);
+        assert_eq!(scene.nodes[light].link_head, 1);
+        // The lightest entry ends the list and the head starts it.
+        assert_eq!(scene.nodes[light].links[0].next, -1);
+        assert_eq!(scene.nodes[light].links[1].prev, -1);
+    }
+
+    #[test]
+    fn equal_weights_keep_their_order_and_a_nan_is_heaviest() {
+        let mut scene = Scene::new((0, 0));
+        let light = scene.add_node(NodeKind::Light, None);
+        scene.reset_links(light, &[2.0, 2.0, 1.0]);
+        scene.order_links(light);
+        assert_eq!(chain_of(&scene.nodes[light]), vec![0, 1, 2]);
+        scene.reset_links(light, &[1.0, f32::NAN, 2.0]);
+        scene.order_links(light);
+        // The NaN entry goes to the head when it is taken; every later
+        // weight compares false against it and walks past, so the last
+        // numeric entry ends up ahead of it.
+        assert_eq!(chain_of(&scene.nodes[light]), vec![2, 1, 0]);
+    }
+
+    #[test]
+    fn an_empty_and_a_malformed_link_list_are_left_alone() {
+        let mut scene = Scene::new((0, 0));
+        let light = scene.add_node(NodeKind::Light, None);
+        scene.reset_links(light, &[]);
+        scene.order_links(light);
+        assert_eq!(scene.nodes[light].link_head, -1);
+        // A chain that points past the array is not walked.
+        scene.reset_links(light, &[1.0, 2.0]);
+        scene.nodes[light].links[0].next = 7;
+        scene.order_links(light);
+        assert_eq!(scene.nodes[light].links[0].next, 7);
+    }
+
+    fn chain_of(node: &SceneNode) -> Vec<usize> {
+        let mut chain = Vec::new();
+        let mut at = node.link_head;
+        while at >= 0 {
+            chain.push(at as usize);
+            at = node.links[at as usize].next;
+        }
+        chain
     }
 
     #[test]
