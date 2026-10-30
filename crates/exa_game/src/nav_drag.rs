@@ -57,26 +57,20 @@ pub fn zoom_slide(dy: f32, base: f32, low: f32, high: f32) -> f32 {
     (high - low) * (t * t) + low
 }
 
-/// The stepped camera's zoom and pitch after a gamepad stick of `stick`
-/// units (the original's integer axis value): the step is
-/// `stick · 0.008333334 · (max − min) · 0.2`, subtracted from the zoom and
-/// held between the bounds by the original's two unordered-aware compares
-/// (a NaN zoom keeps its NaN). Only the stepped camera moves at all (the
-/// preset's flag `0x200000`). The pitch floor follows the new zoom
-/// ([`pitch_floor`]) and the held pitch is the steeper of it and the asked
-/// pitch ([`pitch_held`]).
+/// The stepped camera's zoom and held pitch after `stick` zoom steps (the
+/// original's integer step count): the zoom moves as
+/// [`crate::gamepad::zoom_step`] moves it (the step
+/// `(stick · 0.008333334) · ((max − min) · 0.2)`, held between the bounds,
+/// a NaN kept), then the pitch floor follows the new zoom ([`pitch_floor`])
+/// and the held pitch is the steeper of it and the asked pitch
+/// ([`pitch_held`]). Only the stepped camera moves at all (the preset's
+/// flag `0x200000`); the running game's pad already moves its zoom through
+/// `zoom_step` and holds the pitch each frame.
 ///
 /// The original first derives the zoom's current stop level, rounds it to
 /// an integer and discards it; that dead work is left out here.
 pub fn gamepad_zoom(zoom: f32, stick: i32, low: f32, high: f32, asked_pitch: f32) -> (f32, f32) {
-    let stop = (high - low) * ZOOM_STOP_SHARE;
-    let step = stick as f32 * WHEEL_UNIT * stop;
-    let mut zoom = zoom - step;
-    if zoom < low {
-        zoom = low;
-    } else if zoom > high {
-        zoom = high;
-    }
+    let zoom = crate::gamepad::zoom_step(zoom, stick, low, high);
     let pitch = pitch_held(asked_pitch, pitch_floor(zoom));
     (zoom, pitch)
 }

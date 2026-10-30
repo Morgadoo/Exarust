@@ -862,8 +862,8 @@ physics world answers as the mesh callback because Exarust keeps no CPU
 triangles. Its free-camera drag and zoom handlers are `nav_drag`: the
 absolute drag's yaw and arc-sine pitch with its pixel bounds and
 quarter-turn release snap, the stepped wheel zoom (the chase camera's
-wheel goes through it), the stepped gamepad stick zoom (`gamepad_zoom`,
-the stick's share of a stop), the vertical zoom slide, the zoom's cubed
+wheel goes through it), the stepped gamepad zoom (`gamepad_zoom`: `gamepad::zoom_step`'s
+move, which the pad drives live, then the pitch floor and held pitch), the vertical zoom slide, the zoom's cubed
 pitch offset and the editor's grab drag and face-aligned target. The
 editor's viewport attachment keeps the handler set a preset's flags ask
 for, saves the wheel handler once, and restores it while removing the
