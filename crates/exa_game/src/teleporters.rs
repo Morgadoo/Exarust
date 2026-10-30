@@ -745,6 +745,41 @@ mod tests {
         );
     }
 
+    /// A teleporter whose screen is already showing opens nothing more: the
+    /// original finds the destination form by its id and answers "already
+    /// open". The crystal stays on the slot.
+    #[test]
+    fn a_teleporter_opens_nothing_while_its_screen_shows() {
+        let mut app = app();
+        let (device, user) = device(&mut app, operative::TELEPORTER, 0x1AF);
+        let state = crate::destination::PortalScreenState {
+            open: Some(crate::destination::OpenScreen {
+                screen: exa_ui::selection::DestinationScreen::open_with_markers(
+                    vec![7, 10, 12, 13],
+                    Vec::new(),
+                    4,
+                    false,
+                    0,
+                ),
+                device,
+                user,
+                item: Entity::PLACEHOLDER,
+                width: 0,
+                height: 0,
+                unit: 4,
+                random: crate::arena::Mt19937::new(0),
+            }),
+        };
+        app.insert_resource(state);
+        app.world_mut().write_message(UseDevice { device, user });
+        at(&mut app, 0);
+        assert!(
+            app.world()
+                .resource::<Messages<OpenPortalScreen>>()
+                .is_empty()
+        );
+    }
+
     #[test]
     fn a_teleporter_asks_for_its_screen_and_refuses_a_large_crystal() {
         let mut app = app();
