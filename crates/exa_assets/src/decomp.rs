@@ -9,18 +9,14 @@
 //! the normal pass adds the decay layers' normals and a cavity normal from
 //! the neighbouring height texels.
 //!
-//! Before the three passes the material draws its mask pass ([`mask`]) into
-//! a one-channel target of the job's size: `humanseams` in `Tex0` times
-//! `humandcmpw` fetched at the `UVOfs` offset in `Tex1`, times the amount,
-//! smoothed twice. The compositor then supplies the first texture units:
-//! the race's colour or gloss map in `Tex0` and that mask in `Tex1` for the
-//! diffuse and specular passes, and for the normal pass the base normal
-//! and its layers in `Tex0`..`Tex4` with the mask rebound at `Tex5`. The
-//! passes themselves bind the maps named by [`DIFFUSE_MAPS`] from unit 2,
-//! [`SPECULAR_MAPS`] from unit 2 and [`NORMAL_MAPS`] from unit 6
-//! (`humanseams` heads the diffuse and specular lists and the passes skip
-//! it: their binding loops start at the second entry). The functions below
-//! take shader texels, not file names.
+//! The compositor supplies the first texture units (the skin or gloss in
+//! `Tex0`, the seam mask's red channel in `Tex1`, and for the normal pass
+//! the base normal and its layers in `Tex0`..`Tex4` and the height in
+//! `Tex5`); the passes themselves bind the maps named by [`DIFFUSE_MAPS`]
+//! from unit 2, [`SPECULAR_MAPS`] from unit 2 and [`NORMAL_MAPS`] from
+//! unit 6. `humanseams` heads the diffuse and specular lists and the passes
+//! skip it (their binding loops start at the second entry). The functions
+//! below take shader texels, not file names.
 //!
 //! The UV offset (`UVOfs`) shifts only the `skindecomp` fetch of the
 //! diffuse pass; the amount (`Decomp`) is the material's uniform and the
@@ -38,14 +34,9 @@ pub const DIFFUSE_MAPS: [&str; 4] = ["humandcmpw", "ancientdifm", "skindecomp", 
 pub const SPECULAR_MAPS: [&str; 3] = ["humandcmpw", "ancientdifm", "humandcmpg"];
 /// The maps the normal pass binds at units 6 and 7.
 pub const NORMAL_MAPS: [&str; 2] = ["ancientnrmm0", "humandcmpn"];
-/// Normal layers the normal program can take: layer `i` is read from
-/// `Tex{i + 1}`. The callback binds up to five, and the mask is rebound at
-/// `Tex5` after them, so a fifth layer reads the mask (its red channel,
-/// green and blue zero) in place of its own map, as the original does.
-pub const MAX_NORMAL_LAYERS: usize = 5;
-/// The mask pass's two maps: `Tex0` and `Tex1` (the second fetched at the
-/// `UVOfs` offset).
-pub const MASK_MAPS: [&str; 2] = ["humanseams", "humandcmpw"];
+/// Decay-normal layers the normal program can take: layer `i` is read from
+/// `Tex{i + 1}`, and `Tex5` is the height.
+pub const MAX_NORMAL_LAYERS: usize = 4;
 
 /// The decomposition material exists when its amount is above zero. A NaN
 /// amount creates none, as the original's ordered compare does.
@@ -53,10 +44,11 @@ pub fn created(amount: f32) -> bool {
     0.0 < amount
 }
 
-/// The two textures the mask pass binds, in unit order ([`MASK_MAPS`]
-/// gives their maps). The decay maps of each later pass bind from unit 2
-/// (diffuse and specular) or unit 6 (normal), as [`DIFFUSE_MAPS`],
-/// [`SPECULAR_MAPS`] and [`NORMAL_MAPS`] name them.
+/// The two textures the decomposition draw binds, in unit order: the skin
+/// or gloss in `Tex0` and the seam mask's red channel in `Tex1`. The decay
+/// maps of each pass bind from unit 2 (diffuse and specular) or unit 6
+/// (normal), as [`DIFFUSE_MAPS`], [`SPECULAR_MAPS`] and [`NORMAL_MAPS`]
+/// name them.
 pub const TEXTURES: [&str; 2] = ["Tex0", "Tex1"];
 /// The draw's amount uniform.
 pub const AMOUNT_UNIFORM: &str = "Decomp";
@@ -77,16 +69,6 @@ impl Draw {
     pub fn new(amount: f32, uv_offset: [f32; 2]) -> Option<Self> {
         created(amount).then_some(Self { amount, uv_offset })
     }
-}
-
-/// The mask pass at one texel: `humanseams`' red `seams` times
-/// `humandcmpw`'s red `weight` (fetched at the offset), times the amount,
-/// then smoothed twice (`a·a·(3 − 2a)`), in the shader's order. The target
-/// is one 8-bit channel, so the caller stores the value as a byte.
-pub fn mask(seams: f32, weight: f32, amount: f32) -> f32 {
-    let a = (seams * weight) * amount;
-    let a = a * a * (3.0 - 2.0 * a);
-    a * a * (3.0 - 2.0 * a)
 }
 
 /// The GLSL `min`: the second operand when it is strictly below the first,
@@ -163,8 +145,8 @@ pub fn specular(tex: &[[f32; 3]; 5], amount: f32) -> [f32; 3] {
 /// `tex` holds the eight rgb samples the shader names (`Tex0` … `Tex7`),
 /// `neighbours` the red channel of `Tex5` at the eight texel offsets in the
 /// shader's order (−1,−1), (0,−1), (1,−1), (−1,0), (1,0), (−1,1), (0,1),
-/// (1,1), and `weights` the `lamt` array, one per normal layer (at most
-/// [`MAX_NORMAL_LAYERS`] are read; a fifth reads `Tex5`, the mask).
+/// (1,1), and `weights` the `lamt` array, one per decay layer (at most
+/// [`MAX_NORMAL_LAYERS`] are read).
 pub fn normal(
     tex: &[[f32; 3]; 8],
     neighbours: &[f32; 8],
@@ -296,36 +278,5 @@ mod tests {
         tilted[1] = [1.0, 0.5, 1.0];
         let n = normal(&tilted, &neighbours, &[0.5, 0.0], 0.0);
         assert!(n[0] > 0.5, "{n:?}");
-    }
-
-    /// A fifth normal layer reads `Tex5`, the mask, as the callback rebinds
-    /// it there: the mask texel (0.25, 0, 0) decodes to (−0.5, −1, −1), so
-    /// at full weight rn = (−0.5, −1, −1); the mask's square root (0.5) then
-    /// mixes x and y halfway to the flat decay normal: (−0.25, −0.5), stored
-    /// as 0.375 and 0.25. Four layers leave the flat normal alone.
-    #[test]
-    fn a_fifth_normal_layer_reads_the_mask() {
-        let flat = [0.5, 0.5, 1.0];
-        let mut texels = [flat; 8];
-        texels[5] = [0.25, 0.0, 0.0];
-        let neighbours = [0.25; 8];
-        let n = normal(&texels, &neighbours, &[0.0, 0.0, 0.0, 0.0, 1.0], 0.0);
-        assert!((n[0] - 0.375).abs() < 1e-6, "{n:?}");
-        assert!((n[1] - 0.25).abs() < 1e-6, "{n:?}");
-        let n = normal(&texels, &neighbours, &[0.0, 0.0, 0.0, 0.0], 0.0);
-        assert!((n[0] - 0.5).abs() < 1e-6, "{n:?}");
-        assert!((n[1] - 0.5).abs() < 1e-6, "{n:?}");
-    }
-
-    /// The mask pass: seams × weight × amount, smoothed twice. 1 × 0.5 × 1
-    /// is a fixed point (0.5); 0.5 × 0.5 × 1 = 0.25 → 0.15625 →
-    /// 0.0656128 (0.15625² × 2.6875); no amount gives none.
-    #[test]
-    fn the_mask_pass_smooths_the_product_twice() {
-        assert!((mask(1.0, 0.5, 1.0) - 0.5).abs() < 1e-7);
-        assert!((mask(0.5, 0.5, 1.0) - 0.065_612_79).abs() < 1e-7);
-        assert_eq!(mask(1.0, 1.0, 0.0), 0.0);
-        // The product is taken before the amount: 0.5 × 0.5 then × 2.
-        assert!((mask(0.5, 0.5, 2.0) - mask(1.0, 0.5, 1.0)).abs() < 1e-7);
     }
 }

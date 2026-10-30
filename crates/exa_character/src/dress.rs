@@ -1,18 +1,16 @@
 //! The dressed character mesh: the order the original appends the body and
-//! its garments into one skinned mesh, the cull bits each garment slot's
-//! append takes, and the overlay meshes past the eighteen body slots.
+//! its garments into one skinned mesh, the cull bits each slot's append
+//! takes (tested against the vertices' slot masks), and the overlay meshes
+//! past the eighteen body slots.
 //!
 //! The builder assembles each garment into a chosen node per slot
 //! ([`crate::layers`]); this module turns that choice into the merge the
-//! skinning builder runs: the chosen garment nodes are appended in slot
-//! order (1 to 18) where the slot's select mask meets the garment's visible
-//! mask, each with the cull bits of [`crate::layers::cull_bits`] over that
-//! same mask: the garment triangles whose per-triangle flags hold them are
-//! left out. The body's slots follow in slot order where the body's visible
-//! mask selects them, appended whole (the original's plain append, without
-//! cull bits), and the overlays (hair and other meshes numbered past the
-//! slots) come last. [`crate::rebuild::dress_plan`] gives the assembly; this module is
-//! the merge list a caller with model meshes turns into
+//! skinning builder runs: the chosen nodes are appended in slot order (1 to
+//! 18) where the slot's select mask meets the garment's visible mask, and a garment's slots take the cull bits of
+//! [`crate::layers::cull_bits`]. The body's own visible slots follow, without
+//! cull bits, and the overlays (hair and other meshes numbered past the
+//! slots) come last. [`crate::rebuild::dress_plan`] gives the assembly; this
+//! module is the merge list a caller with model meshes turns into
 //! `exa_assets::model::DressedPart`s.
 //!
 //! The running game drives it: [`assemble`] builds the character's runtime
@@ -59,9 +57,7 @@ pub struct DressedPlan {
 /// A garment's merge list: its chosen nodes in slot order (1 to 18, the
 /// order the skin builder appends them; the slot-tree walk before it only
 /// builds the skin weights), each gated by the slot's select mask against
-/// `visible` and carrying the slot's cull bits over that mask: the
-/// original's culling append drops the node's triangles whose flags meet
-/// them.
+/// `visible` and carrying the slot's cull bits.
 pub fn garment_steps(chosen: &[Option<usize>; 19], visible: u32) -> Vec<MergeStep> {
     (1..=18)
         .filter_map(|slot| {
@@ -77,8 +73,7 @@ pub fn garment_steps(chosen: &[Option<usize>; 19], visible: u32) -> Vec<MergeSte
 
 /// The body's merge list: the nodes its slot table holds, in slot order,
 /// where the slot's select mask meets the body's visible mask. The body's
-/// own parts take no cull bits: the original appends them with its plain
-/// append, which tests no flags.
+/// own parts take no cull bits.
 pub fn body_steps(slots: &[Option<usize>; 19], visible: u32) -> Vec<MergeStep> {
     (1..=18)
         .filter(|&slot| slot_selected(slot, visible))
@@ -681,7 +676,6 @@ mod tests {
                 transform: Transform::from_translation(translation.into()),
                 parts: Vec::new(),
                 part_materials: Vec::new(),
-                part_flags: Vec::new(),
                 collision: Vec::new(),
                 skin_bone: Some(1),
                 light: None,
@@ -847,7 +841,6 @@ mod tests {
                     bone: *bone,
                     material,
                     handle: handle.clone(),
-                    triangle_flags: None,
                     cull: *cull,
                 },
             )

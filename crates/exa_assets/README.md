@@ -63,14 +63,11 @@ triangles grouped by material in first-seen order, and each mesh's own
 position-stream ids kept and moved past the meshes before it (groups of one
 mesh share its stream). The final renumber pass is the original's: each
 material's vertices in order, each run starting right after the previous
-one's last vertex. A part's `triangle_flags` and `cull` drop the triangles
-whose per-triangle flags meet the cull bits (`flags & cull != 0`); a part
-without flags takes the unset word `1` once the mesh has a flag stream. The
-dressed-mesh pass gives each garment slot's append its cull bits
-(`0x200000`/`0x400000`, `exa_character::layers::cull_bits` over the
-garment's visible mask; the body's own parts take none, as the original
-appends them with its plain append), and `ModelNode::part_flags` carries
-each built group's file flags to the merge. A part whose material has the occlusion mark
+one's last vertex. A part's `vertex_masks` and `cull` drop the vertices
+whose slot mask meets the cull bits and the triangles that needed them; the
+dressed-mesh pass passes a slot's cull bits (`0x200000`/`0x400000`,
+`exa_character::layers::cull_bits`) as that argument, and the append writes
+nothing on the triangles. A part whose material has the occlusion mark
 (`occlude`) fades the vertices on the border of the marked region
 (`occlusion_alpha`). `culled_indices` drops triangles by per-triangle flag
 bits (which triangle flags the original's draw tests is not traced).
@@ -115,25 +112,11 @@ alpha, the 0.1 mix and the 1.5 alpha), `beard_normal` and
 the sRGB colour target and linear surface and normal targets, its rows
 split over the machine's threads (up to eight; the same texels on every
 machine). The race maps are read unshifted: the look seed's two offsets
-(`UVOfs`) belong to the decomposition programs only (`decomp`).
-`compose_with_decomp` runs the callback's decomposition branch: with a
-`Decomp` amount above zero the material's mask pass is drawn first
-(`decomposition_mask`: `humanseams` times `humandcmpw` at the seed offset
-times the amount, smoothed twice, into one 8-bit channel), then the three
-`chardecomp` passes replace the base programs, fed the race's colour or
-gloss in `Tex0`, the mask in `Tex1` (and at `Tex5` for the normal pass,
-where a fifth normal layer reads it) and the job's tone as `SknCol`; the
-beard overlays draw on top. The running loader draws it: a job whose
-feral level is above zero carries `SkinDecomp` (amount and offsets, part
-of the cache key) and `skin_compose_inputs` decodes the eight maps
-(`human_skin::DECOMP_MAPS`; a map that does not decode leaves the pass
-out).
-`SkinCompositeJob` is
+(`UVOfs`) belong to the decomposition programs only (`decomp`). `SkinCompositeJob` is
 the job as data: `ModelLoader::composited_skin` decodes the race, layer and
 beard maps on the CPU, composes and uploads the three maps as an
 `ExaMaterial` (white diffuse, packed surface, normal, subsurface, blood),
-cached by the job's key (stem, tone, side, beard, layers and
-decomposition);
+cached by the job's key (stem, tone, side, beard and layers);
 `skin_compose_inputs`, `SkinComposeInputs::generate` (pure, for a task
 thread) and `finish_composited_skin` split it for the async dressing pass.
 `run_mesh` rebuilds each run's tangents with the splitter, as every drawn
@@ -152,8 +135,7 @@ precision and times 0.8 in double) are `tone_blend_target`.
 
 The decomposition pass (`decomp`): the original's `chardecomp_d`, `_s`
 and `_n` programs evaluated per texel for a corpse's or undead's skin —
-`mask` is the mask pass (its maps `MASK_MAPS`), `TEXTURES` names that
-pass's two units (`Tex0`, `Tex1`), `AMOUNT_UNIFORM`
+`TEXTURES` names the draw's two units (`Tex0`, `Tex1`), `AMOUNT_UNIFORM`
 and `UV_OFFSET_UNIFORM` its uniforms, and `Draw::new` the positive-amount
 gate —
 the skin scaling and decay mixes, the green specular sheen and the decay
