@@ -526,16 +526,25 @@ pub struct Integrated {
     pub room: i32,
 }
 
-/// One tick over the contacts: the aim point and freshness, hostility
-/// calming, the concern rising toward its target, the noticed level
-/// following the noticeability, the attention, the bad-route marks
-/// expiring, and the aggregates the brain reads.
+/// One tick over the contacts: [`aim`] then [`drift`] with nothing in
+/// between. The brain's tick runs the target pass between the two, as the
+/// original's does.
 pub fn integrate(
     state: &mut Integration,
     contacts: &mut [ContactRecord],
     sight: &FoeSight,
     now_ms: u32,
 ) -> Integrated {
+    let out = aim(state, sight);
+    drift(state, contacts, now_ms);
+    out
+}
+
+/// The integration's head, which the original runs before the target
+/// pass: the aim point and its freshness from the foe (or the focus), the
+/// flight's alarm easing without one, the worst hostility cleared and the
+/// soothe damping's 0.001 step.
+pub fn aim(state: &mut Integration, sight: &FoeSight) -> Integrated {
     let mut out = Integrated {
         target: None,
         room: state.room,
@@ -571,6 +580,15 @@ pub fn integrate(
     if state.decay < 0.0 {
         state.decay = 0.0;
     }
+    out
+}
+
+/// The integration's drift, which the original runs after the target pass
+/// has classified the contacts: hostility calming, the concern rising
+/// toward its target, the noticed level following the noticeability, the
+/// attention, the bad-route marks expiring, and the aggregates the brain
+/// reads (the next tick's target pass reads them).
+pub fn drift(state: &mut Integration, contacts: &mut [ContactRecord], now_ms: u32) {
     let drift = (f64::from(1.0 - state.restraint) * 5e-05) as f32;
     let one_minus = 1.0 - state.decay;
     let soothe_scale = state.soothe_scale;
@@ -678,7 +696,6 @@ pub fn integrate(
     } else if f64::from(state.readiness) > READINESS_STEP {
         state.readiness = (f64::from(state.readiness) - READINESS_STEP) as f32;
     }
-    out
 }
 
 /// A sighting the pass weighs: a character (or object) and its fresh

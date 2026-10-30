@@ -251,7 +251,7 @@ impl Npc {
             room: RoomCell::default(),
             nearby: Vec::new(),
             fled: crate::flee::FledRooms::default(),
-            sense: personality::Sense::Standard,
+            sense: personality::Sense::Base,
             statue: false,
             guard_home: None,
             race_ai: false,
@@ -271,7 +271,8 @@ impl Npc {
     /// drawing the jitter from `roll` and keeping the generator's next
     /// state. The record's profession word is the race word the attach
     /// reads, so the golem races take the ally or, for the race class
-    /// `0x12xx`, the standard sense, and a statue bit marks a sentry.
+    /// `0x12xx`, the standard sense, the races without the AI bit keep the
+    /// base perception, and a statue bit marks a sentry.
     pub fn of_record(record: &CharacterRecord, roll: &mut u32) -> Self {
         let personality = personality::personality(
             record.combat_skill,
@@ -295,6 +296,12 @@ impl Npc {
         }
         brain.statue = attached.statue;
         brain.race_ai = record.profession() & personality::AI_FLAG != 0;
+        info!(
+            "brain of race word {:#010x}: the {:?} sense{}",
+            record.profession(),
+            brain.sense,
+            if brain.statue { ", a statue" } else { "" }
+        );
         brain.fighting_base = crate::estimate::fighting_base(&record.skills, record.combat_skill);
         brain.roll = *roll;
         brain
@@ -332,8 +339,8 @@ impl Npc {
         self.applied.as_ref().map(|a| a.state)
     }
 
-    /// Integrates the brain's contacts and runs the target pass over the
-    /// characters `visible` this tick: the level to fight at, 0 when
+    /// Runs the target pass over the characters `visible` this tick between
+    /// the integration's aim and its drift: the level to fight at, 0 when
     /// nothing is noticed. `distance2` gives a character's squared distance
     /// (cm²) for the greeting. `place` is where it stands and the room
     /// graph it flees through: its position (cm), its room and the room
@@ -370,23 +377,12 @@ impl Npc {
         self.integration.courage = courage;
         self.integration.stress = self.morale.stress;
         self.integration.alarm = self.morale.alarm;
-        contacts::integrate(&mut self.integration, &mut self.contacts, &sight, now_ms);
-        // The target pass reads the contacts after the integration has
-        // moved their hostility and concern; the sightings were taken
-        // before that, so each takes the integrated record for its id.
-        let visible: Vec<contacts::Sighting> = visible
-            .iter()
-            .map(|s| {
-                let mut s = *s;
-                if let Some(c) = self.contacts.iter().find(|c| c.id == s.contact.id) {
-                    s.contact = *c;
-                }
-                s
-            })
-            .collect();
-        // The integration's concern total feeds the next tick's courage
-        // floor.
-        self.morale.total = self.integration.total;
+        // The integration's head (the aim point, its freshness and the
+        // soothe damping's step) runs before the target pass; the drift of
+        // the hostility, the concern and the noticed level runs after it,
+        // so the pass classifies the contacts as the perception left them,
+        // as the original's tick does.
+        contacts::aim(&mut self.integration, &sight);
         let mut morale = contacts::Morale {
             courage,
             stress: self.integration.stress,
@@ -424,7 +420,7 @@ impl Npc {
                 attended_id: attended,
                 greet_gates: (self.integration.notice_scale, self.integration.readiness),
             },
-            &visible,
+            visible,
             &[],
             distance2,
             &mut way_out,
@@ -440,6 +436,12 @@ impl Npc {
         if let Some(attention) = report.attention {
             self.integration.attention = Some(attention);
         }
+        // The drift reads the level, the attention and the stress the pass
+        // has just written.
+        contacts::drift(&mut self.integration, &mut self.contacts, now_ms);
+        // The integration's concern total feeds the next tick's courage
+        // floor.
+        self.morale.total = self.integration.total;
         self.cursor = report.cursor;
         let level = report.level;
         self.pass = report;
@@ -539,8 +541,11 @@ pub fn foe_of(
         .unwrap_or(target)
 }
 
-/// Runs one perception pass for every brain over every character it can
-/// sense ([`combatant::perceive`]), with the observed character's own
+/// Runs one perception pass for every brain whose body is in the fight over
+/// every character it can sense, through the sense its race installed
+/// ([`personality::Sense`]: the base [`combatant::perceive`], the Golem
+/// Suit's [`combatant::standard_sense`] or [`combatant::ally_sense`]), with
+/// the observed character's own
 /// contacts, the role-derived attitude, the relations' trust in the threat
 /// estimate and the observer's active mind effects (none in the running
 /// game). It then writes the words the contact integration reads
@@ -654,6 +659,16 @@ pub fn perceive_all(
     for (entity, mut npc, mut combatant, duellist, mind, gt, fighter, roles, mut relations) in
         &mut chars.p1()
     {
+        // A knocked-out, collapsed or dead brain senses nothing: the
+        // original's tick leaves before the target pass that senses (its
+        // condition bit 0x800).
+        if candidates
+            .iter()
+            .find(|c| c.entity == entity)
+            .is_some_and(|c| c.condition & combatant::CONDITION_OUT != 0)
+        {
+            continue;
+        }
         let target = duellist
             .map(|d| {
                 foe_of(
@@ -793,8 +808,12 @@ pub fn perceive_all(
                     .find(|(e, _)| *e == third)
                     .map_or(0.0, |(_, v)| *v)
             };
+            let was_tracked = combatant.contacts[index].tracked();
+            let was_selected = combatant.contacts[index].selected;
             let sight = match npc.sense {
-                personality::Sense::Standard => combatant::perceive(
+                // No sense installed: the observed character's own
+                // perception, the role-driven base one.
+                personality::Sense::Base => combatant::perceive(
                     &observer,
                     &observed,
                     &sensed.contacts,
@@ -829,7 +848,47 @@ pub fn perceive_all(
                         ..combatant::Sight::default()
                     }
                 }
+                personality::Sense::Standard => {
+                    // The Golem Suit's sense: the player is a friend, every
+                    // other character keeps the attitude it was admitted
+                    // with, and the threat the observed poses to the
+                    // observer or the player raises the concern target.
+                    let code = combatant::standard_sense(
+                        &observer,
+                        npc.statue,
+                        &observed,
+                        &sensed.contacts,
+                        &mut combatant.contacts,
+                        index,
+                        player,
+                    );
+                    let _ = code;
+                    combatant::Sight {
+                        seen: combatant.contacts[index].tracked(),
+                        ..combatant::Sight::default()
+                    }
+                }
             };
+            let contact = &combatant.contacts[index];
+            if contact.tracked() != was_tracked {
+                info!(
+                    "{entity:?}: the {:?} sense {} {:?} (closeness {:.2}, concern target {:.2})",
+                    npc.sense,
+                    if was_tracked { "loses" } else { "tracks" },
+                    sensed.entity,
+                    contact.closeness,
+                    contact.concern_target
+                );
+            }
+            if npc.sense != personality::Sense::Base
+                && contact.selected != was_selected
+                && contact.selected.is_some()
+            {
+                info!(
+                    "{entity:?}: the {:?} sense picks {:?} as the one {:?} threatens",
+                    npc.sense, contact.selected, sensed.entity
+                );
+            }
             if let Some((at, least, old)) = evicted
                 && least > combatant::admission_weight(&combatant.contacts[at])
             {
@@ -2087,8 +2146,8 @@ mod tests {
         // the next morale drift.
         assert_eq!(npc.morale.stress, npc.integration.stress);
         assert_eq!(npc.morale.total, npc.integration.total);
-        // The target pass reads the stored contact after integration, so a
-        // calm tick is one whose contact has cooled.
+        // The target pass reads the sightings as the perception left them,
+        // so a calm tick is one whose contact has cooled.
         if let Some(c) = npc.contacts.iter_mut().find(|c| c.id == 1) {
             c.hostility = 0.0;
             c.concern = 0.0;
@@ -2107,6 +2166,47 @@ mod tests {
         );
         assert_eq!(level, 0);
         assert_eq!(npc.pass.target, None);
+    }
+
+    /// The target pass classifies a contact before the integration drifts
+    /// it, as the original's tick does: hostility 2.0015 is past the
+    /// engagement threshold of 2 (no tolerance, no stress) and engages,
+    /// though the drift then takes it under 2 (×0.999).
+    #[test]
+    fn the_target_pass_classifies_before_the_drift() {
+        let mut npc = Npc::new([0.0; 4]);
+        let mut roll = 0;
+        npc.personality = Some(personality::personality(
+            50.0, [0.0; 4], 0.0, false, &mut roll,
+        ));
+        let contact = ContactRecord {
+            id: 1,
+            sighting: 1.0,
+            seen: 1.0,
+            hostility: 2.0015,
+            ..ContactRecord::default()
+        };
+        npc.contacts.push(contact);
+        let sighting = contacts::Sighting {
+            contact,
+            character: true,
+            position_cm: bevy::math::Vec3::ZERO,
+            room: -1,
+        };
+        let level = npc.run_pass(
+            &[sighting],
+            contacts::FoeSight::default(),
+            &|_| 300.0 * 300.0,
+            false,
+            false,
+            (1.0, 1.0),
+            false,
+            0,
+            &mut roll,
+            &FleePlace::default(),
+        );
+        assert_eq!(level, 3);
+        assert!(npc.contacts[0].hostility < 2.0);
     }
 
     /// An idle activity of 6 creates the search; one of 0 drops it.
@@ -2789,6 +2889,48 @@ mod tests {
         assert_eq!(contact.attitude, 0.0);
     }
 
+    /// A Golem Suit brain perceives through the standard sense: the player
+    /// is a friend (attitude 1, no concern), and the noticeability is the
+    /// look and facing product, not the closeness the ally sense keeps.
+    #[test]
+    fn a_suit_class_brain_perceives_through_the_standard_sense() {
+        let (mut app, player, npc) = perception();
+        app.world_mut().get_mut::<Npc>(npc).unwrap().sense = personality::Sense::Standard;
+        {
+            let mut combatant = app.world_mut().get_mut::<Combatant>(npc).unwrap();
+            let at = combatant.contact_index(player);
+            combatant.contacts[at].concern = 2.0;
+        }
+        app.update();
+        let combatant = app.world().get::<Combatant>(npc).unwrap();
+        let contact = combatant.contact(player).unwrap();
+        assert!(contact.tracked());
+        assert_eq!((contact.attitude, contact.concern), (1.0, 0.0));
+        let closeness = 1.0 - 200.0f32 / 1200.0;
+        assert!((contact.closeness - closeness).abs() < 1e-6);
+        // The player looks away (+Z) from the brain at the origin: the look
+        // and facing terms are 0, so the noticeability is 2·near.
+        let c2 = closeness * closeness;
+        let near = c2 * c2 * 2.0 + (1.0 - c2) * closeness;
+        assert!((contact.noticeability - 2.0 * near).abs() < 1e-5);
+    }
+
+    /// A knocked-out brain (condition bit 0x800) senses nothing, as the
+    /// original's tick leaves before its target pass; standing again, it
+    /// perceives.
+    #[test]
+    fn a_knocked_out_brain_senses_nothing() {
+        let (mut app, player, npc) = perception();
+        *app.world_mut().get_mut::<Condition>(npc).unwrap() = Condition(combatant::CONDITION_DEAD);
+        app.update();
+        let combatant = app.world().get::<Combatant>(npc).unwrap();
+        assert!(combatant.contact(player).is_none());
+        *app.world_mut().get_mut::<Condition>(npc).unwrap() = Condition::NORMAL;
+        app.update();
+        let combatant = app.world().get::<Combatant>(npc).unwrap();
+        assert!(combatant.contact(player).is_some_and(|c| c.tracked()));
+    }
+
     /// A brain that has seen nobody keeps the yaw its model was placed
     /// with; the first tick takes it as the look.
     #[test]
@@ -3249,8 +3391,8 @@ mod race_word_tests {
     /// The record's profession word is the race word the attach reads: the
     /// Golem Guard (race byte 16, class `0x1100`) carries the AI bit and
     /// takes the ally sense; the Golem Suit (race byte 18, class `0x1200`)
-    /// the standard sense; a human has no AI bit and keeps the standard
-    /// sense; the statue bit marks a sentry.
+    /// the standard sense; a human has no AI bit, installs no sense and
+    /// keeps the base perception; the statue bit marks a sentry.
     #[test]
     fn the_profession_word_picks_the_sense() {
         let guard = CharacterRecord {
@@ -3278,7 +3420,7 @@ mod race_word_tests {
         );
         assert_eq!(
             Npc::of_record(&human, &mut roll).sense,
-            personality::Sense::Standard
+            personality::Sense::Base
         );
         assert!(Npc::of_record(&statue, &mut roll).statue);
         // The ally sense's fellow mark is the race word's AI bit, not the
