@@ -3241,7 +3241,10 @@ themselves are not ported and nothing draws the domes yet.
 `effects::emissive` models the seven GI lights the effects carry
 (`gi_dome`, `gi_bubble`, `gi_cuboid_fn`, `gi_cuboid`, `gi_gradline`,
 `gi_multipoint`, `gi_telebubble`) with their extents, colours and world
-boxes; nothing injects them into the GI volume yet.
+boxes; the blast's, the torrent's, the teleporter bubble's, the Barrier's
+`gi_dome` and the force Bubble's `gi_bubble` are registered as
+`exa_render::gi::GiShape`s while their effects live, and the barricade,
+cuboid, strikes and tendril lights wait for a live effect.
 
 ## Rain and the portal's spray
 

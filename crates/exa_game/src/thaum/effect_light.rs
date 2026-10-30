@@ -1,7 +1,7 @@
 //! The GI light shapes the running effects register: the force blast's and
-//! the force torrent's multi-point lights and the teleporter bubble's
-//! pulsing shell, injected into the voxel GI as
-//! [`exa_render::gi::GiShape`]s.
+//! the force torrent's multi-point lights, the teleporter bubble's pulsing
+//! shell, the force Barrier's dome and the force Bubble's shell, injected
+//! into the voxel GI as [`exa_render::gi::GiShape`]s.
 //!
 //! As the original does it:
 //!
@@ -32,12 +32,15 @@
 use bevy::prelude::*;
 use exa_render::gi::{GiShape, GiShapeProgram, ShapeVolume};
 
+use super::barrier_live::LiveBarrier;
 use super::blast_live::LiveBlast;
+use super::bubble_live::LiveBubble;
 use super::torrent_live::LiveTorrent;
 use crate::effects::Frame as ViewFrame;
 use crate::effects::blast::{Blast, THROWN};
 use crate::effects::bubble::{Bubble, BubbleEffect, SIZE_CM};
 use crate::effects::emissive::{self, FALLOFF_CM, MultiPointLight};
+use crate::effects::force_dome::{BARRIER_DRAW_SCALE, Barrier, Bubble as ForceBubble};
 use crate::effects::torrent::Torrent;
 
 /// Centimetres a metre.
@@ -155,6 +158,99 @@ pub fn bubble_shape(
         ..default()
     };
     (shape, volume_of(centre, half))
+}
+
+/// The Barrier's light shape this frame: the `gi_dome` shell at the drawn
+/// cap's centre, its `bMat` the translation there and the `100/r` scale that
+/// makes the program's 100-unit shell the barrier's radius, the colour and
+/// extent of [`emissive::barrier_light`], in the mesh node's box plus 60 cm.
+pub fn barrier_shape(barrier: &Barrier, alpha: f32, gain: f32) -> (GiShape, ShapeVolume) {
+    let dome = &barrier.dome;
+    let centre = barrier.drawn_centre(alpha);
+    let light = emissive::barrier_light(dome.phase, dome.shown_share, BARRIER_DRAW_SCALE, gain);
+    let scale = 100.0 / dome.radius;
+    let (box_centre, half) = emissive::world_box(
+        centre,
+        [Vec3::X, Vec3::Y, Vec3::Z],
+        Vec3::splat(dome.radius),
+        FALLOFF_CM,
+    );
+    let shape = GiShape {
+        program: GiShapeProgram::Dome,
+        colour: light.colour,
+        matrix: Mat4::from_translation(-centre) * Mat4::from_scale(Vec3::splat(scale)),
+        half: light.extent,
+        tex_pos: Vec2::from(dome.tex_pos),
+        ..default()
+    };
+    (shape, volume_of(box_centre, half))
+}
+
+/// The force Bubble's light shape this frame: the `gi_bubble` shell at the
+/// dome's place with the radius five past the dome's, the colour and fade
+/// of [`emissive::bubble_light`], in the dome's box plus 60 cm.
+pub fn force_bubble_shape(bubble: &ForceBubble, gain: f32) -> (GiShape, ShapeVolume) {
+    let dome = &bubble.dome;
+    let light = emissive::bubble_light(dome.phase, dome.shown_share, dome.radius, gain);
+    let (centre, half) = emissive::world_box(
+        dome.at,
+        [Vec3::X, Vec3::Y, Vec3::Z],
+        Vec3::splat(dome.radius),
+        FALLOFF_CM,
+    );
+    let shape = GiShape {
+        program: GiShapeProgram::Bubble,
+        colour: light.colour,
+        matrix: Mat4::from_translation(-dome.at),
+        half: Vec3::splat(light.radius),
+        tex_pos: Vec2::from(dome.tex_pos),
+        radius: light.radius,
+        fade: light.fade,
+        ..default()
+    };
+    (shape, volume_of(centre, half))
+}
+
+/// The barriers' lights, refreshed from their phase every frame; a
+/// barrier's light leaves with it.
+pub(crate) fn barrier_lights(
+    mut commands: Commands,
+    barriers: Query<(Entity, &LiveBarrier, Option<&EffectLight>)>,
+    mut shapes: Query<(&mut GiShape, &mut ShapeVolume)>,
+    time: Res<Time<Fixed>>,
+) {
+    let alpha = time.overstep_fraction();
+    for (entity, live, light) in &barriers {
+        let placed = barrier_shape(&live.barrier, alpha, GI_LIGHT_SCALE);
+        place_light(
+            &mut commands,
+            entity,
+            light,
+            &mut shapes,
+            placed,
+            "barrier light",
+        );
+    }
+}
+
+/// The force bubbles' lights, refreshed from their phase every frame; a
+/// bubble's light leaves with it.
+pub(crate) fn force_bubble_lights(
+    mut commands: Commands,
+    bubbles: Query<(Entity, &LiveBubble, Option<&EffectLight>)>,
+    mut shapes: Query<(&mut GiShape, &mut ShapeVolume)>,
+) {
+    for (entity, live, light) in &bubbles {
+        let placed = force_bubble_shape(&live.bubble, GI_LIGHT_SCALE);
+        place_light(
+            &mut commands,
+            entity,
+            light,
+            &mut shapes,
+            placed,
+            "force bubble light",
+        );
+    }
 }
 
 /// Writes `shape` to the effect's light, registering one first if it has
@@ -687,5 +783,46 @@ mod tests {
                 .shapes()
                 .is_empty()
         );
+    }
+
+    /// A standing barrier's dome: the gi_dome shell at the drawn centre, the
+    /// 85/85/25 scale less 60 across and 40 up, and the colour
+    /// `(0.14, 0.08, 1)·strength·gain·0.8`.
+    #[test]
+    fn a_barrier_registers_its_gi_dome() {
+        let (mut barrier, _) = Barrier::cast(100.0, Vec3::ZERO, 0.0, 0, &mut Mt19937::new(1));
+        barrier.dome.phase = crate::effects::force_dome::Phase::Standing;
+        barrier.dome.shown_share = 1.0;
+        barrier.pose.first = barrier.dome.at.to_array();
+        barrier.pose.first_previous = barrier.dome.at.to_array();
+        let (shape, volume) = barrier_shape(&barrier, 0.0, GI_LIGHT_SCALE);
+        assert_eq!(shape.program, GiShapeProgram::Dome);
+        assert_eq!(shape.half, Vec3::new(25.0, 45.0, 25.0));
+        assert_eq!(
+            shape.colour,
+            crate::effects::emissive::DOME_COLOUR * (GI_LIGHT_SCALE * 0.8)
+        );
+        assert_eq!(shape.matrix.transform_point3(Vec3::ZERO), -barrier.dome.at);
+        assert_eq!(volume.position, Vec3::new(0.0, 1.0, 0.0));
+        assert_eq!(volume.half, Vec3::splat(1.7));
+    }
+
+    /// A standing force bubble's shell: `gi_bubble` with the radius five past
+    /// the dome's, its fade and the bubble's colour at the node's place.
+    #[test]
+    fn a_force_bubble_registers_its_gi_shell() {
+        let (mut bubble, _) =
+            ForceBubble::cast(120.0, Vec3::ZERO, 0, Vec3::ZERO, 0.0, &mut Mt19937::new(1));
+        bubble.dome.phase = crate::effects::force_dome::Phase::Standing;
+        bubble.dome.shown_share = 1.0;
+        let (shape, volume) = force_bubble_shape(&bubble, GI_LIGHT_SCALE);
+        assert_eq!(shape.program, GiShapeProgram::Bubble);
+        assert_eq!(shape.radius, 125.0);
+        assert_eq!(shape.fade, 0.0);
+        assert_eq!(
+            shape.colour,
+            crate::effects::emissive::BUBBLE_COLOUR * GI_LIGHT_SCALE
+        );
+        assert_eq!(volume.half, Vec3::splat(1.9));
     }
 }

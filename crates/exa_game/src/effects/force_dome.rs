@@ -44,7 +44,12 @@
 //!   1 to standing; ending flips the share, plays the break sound (volume
 //!   0.3, pitch `0.6 + 0.2·r`) and shrinks at `ms/700` to state 4. Its glow
 //!   is the ripples' summed shown values times 0.04, `(2 − x)·x/2` while at
-//!   most 1 and 0.5 above.
+//!   most 1 and 0.5 above. The hum's base is 0.2/0.75 standing, the
+//!   four-times-share curve under a quarter growing, and
+//!   `(1 − |0.5 − 1.5·share|)·0.4`, `(1 − share)·0.75` shrinking; the glow
+//!   adds four times itself to the volume and nine times to the pitch. The
+//!   Barrier's `gi_dome` and the Bubble's `gi_bubble` are registered as GI
+//!   shapes while they live ([`crate::thaum::effect_light`]).
 //! - **Keeping out**: each body part (a sphere in the dome's frame) is
 //!   tested against the shell. The Barrier skips its caster; a part within
 //!   the radius plus its own, not below half the radius, inside the drawn
@@ -389,30 +394,27 @@ impl Dome {
     pub fn frame(&mut self, alpha: f32, camera: Vec3) -> Option<DomeFrame> {
         let (lod, total, remove) = self.frame_common(alpha, camera, self.at)?;
         self.glow = ripple_glow(total);
-        let mut gain = 1.0;
+        let shown = self.shown_share;
         let mut hum = [0.2f32, 0.75];
         match self.phase {
             Phase::Standing => hum = [f32::from_bits(0x3e4c_cccd), 0.75],
-            Phase::Growing => {
-                gain = self.shown_share;
-                if self.shown_share < 0.25 {
-                    let x = self.shown_share * 4.0;
-                    let x = x * (2.0 - x);
-                    hum = [x * 0.2, 1.0 - x * 0.25];
-                }
+            Phase::Growing if shown < 0.25 => {
+                let x = shown * 4.0;
+                let x = x * (2.0 - x);
+                hum = [(f64::from(x) * 0.2) as f32, 1.0 - x * 0.25];
             }
-            Phase::Ending => {}
+            Phase::Growing | Phase::Ending => {}
             _ => {
-                gain = 1.0 - self.shown_share;
                 hum = [
-                    (2.0 - (1.5 - self.shown_share * 3.5).abs()) * 0.4,
-                    (1.0 - self.shown_share) * 0.75,
+                    ((1.0 - (0.5 - shown * 1.5).abs()) as f64 * 0.4) as f32,
+                    (1.0 - shown) * 0.75,
                 ];
             }
         }
-        let gain = gain * self.glow.abs();
-        hum[0] += gain * 1.0;
-        hum[1] += gain * 2.25;
+        // The node's own glow, added whether it grows, stands or shrinks:
+        // four times it to the volume, nine times to the pitch.
+        hum[0] += (self.glow * 4.0).abs();
+        hum[1] += (self.glow * 9.0).abs();
         Some(DomeFrame {
             lod,
             fade: self.fade(),
@@ -685,6 +687,21 @@ impl Barrier {
         Vec3::from_array(barrier_lerp(self.pose.first_previous, self.pose.first, t))
     }
 
+    /// The cap's facing at the frame's fraction: the pose's second point
+    /// pair blended and normalised by the engine's fast root.
+    pub fn frame_facing(&self, t: f32) -> Vec3 {
+        normalize(Vec3::from_array(barrier_lerp(
+            self.pose.second_previous,
+            self.pose.second,
+            t,
+        )))
+    }
+
+    /// The drawn cap's centre: 75 cm ahead of its place along the facing.
+    pub fn drawn_centre(&self, t: f32) -> Vec3 {
+        self.frame_place(t) + self.frame_facing(t) * BARRIER_FORWARD_CM
+    }
+
     /// The node's place a tick takes from its setup's frame: the fraction
     /// is the setup's frame less the snapshot's plus its sub-frame part
     /// ([`update_barrier_position`]).
@@ -704,11 +721,7 @@ impl Barrier {
     /// is the node's own clock word the texture's second coordinate follows.
     pub fn frame(&mut self, alpha: f32, camera: Vec3, node_time: f32) -> Option<BarrierFrame> {
         let at = self.frame_place(alpha);
-        let facing = normalize(Vec3::from_array(barrier_lerp(
-            self.pose.second_previous,
-            self.pose.second,
-            alpha,
-        )));
+        let facing = self.frame_facing(alpha);
         let yaw = planar_yaw(facing);
         self.dome.tex_pos = [
             (f64::from(yaw) * 0.159_154_943_091_895_35 + f64::from(self.tex_seed[0]) + 0.5) as f32,
@@ -1154,6 +1167,35 @@ mod tests {
         b.tick(Vec3::new(0.0, 200.0, 0.0), 0.0, Vec3::Z, 1024);
         let carried = f64::from(h1 - 100.0) * 0.95 + f64::from(h1);
         assert_eq!(b.height, (f64::from(210.0 - h1) * 0.003 + carried) as f32);
+    }
+
+    #[test]
+    fn the_bubble_glow_adds_four_and_nine_times_to_its_hum() {
+        let (mut bubble, _) =
+            Bubble::cast(120.0, Vec3::ZERO, 0, Vec3::ZERO, 0.0, &mut Mt19937::new(1));
+        bubble.dome.ripples.list.push(Ripple {
+            place: Vec3::Z,
+            target: Vec3::Z,
+            shown: 25.0,
+            strength: 25.0,
+            sum: Vec3::ZERO,
+            strikes: 0,
+        });
+        bubble.dome.phase = Phase::Standing;
+        let frame = bubble.dome.frame(0.5, Vec3::new(0.0, 0.0, 1000.0)).unwrap();
+        // The ripple's glow is 25·0.04 = 1 through (2 − 1)·1·0.5 = 0.5.
+        assert_eq!(bubble.dome.glow, 0.5);
+        assert_eq!(frame.hum, [0.2 + 0.5 * 4.0, 0.75 + 0.5 * 9.0]);
+        // Shrinking at half the share: the base hum is
+        // (1 − |0.5 − 0.75|)·0.4 and (1 − 0.5)·0.75.
+        let mut bubble =
+            Bubble::cast(120.0, Vec3::ZERO, 0, Vec3::ZERO, 0.0, &mut Mt19937::new(1)).0;
+        bubble.dome.phase = Phase::Shrinking;
+        bubble.dome.share = 0.5;
+        bubble.dome.previous_share = 0.5;
+        bubble.dome.shown_share = 0.5;
+        let frame = bubble.dome.frame(0.5, Vec3::new(0.0, 0.0, 1000.0)).unwrap();
+        assert_eq!(frame.hum, [(0.75f64 * 0.4) as f32, 0.375]);
     }
 
     #[test]
