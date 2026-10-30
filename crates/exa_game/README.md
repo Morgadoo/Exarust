@@ -712,10 +712,11 @@ likewise rules; the use cursor's begin opens the GUI item a class-0 kind-0x11
 section names and otherwise lifts the cursor only while play is on (state
 word 0x100, shared cursor mode 0x40), and its end answers only the right
 button's release (event 0x80, answer 0x81), runs the use only over the
-world, sets the player's action byte to 4, clears the use state and restores
+world, sets the player's action word to 4, clears the use state and restores
 cursor mode 4 (`player_controls::{use_begin, use_end}`). The deferred drop
 ends with the state word at 0x2000 and keeps the body's frame out of the
-controls when the word already had that bit. The wheel's set wraps its grip angle into ±π (the single π
+controls when the word already had that bit. The wheel's set wraps its
+grip angle into ±π (the single π
 over the double one) before turning toward it. The controls unit also
 appends the Character and Spectate game modes in that order, each id the
 table's new length plus two (`register_game_modes`). The pad's

@@ -1993,43 +1993,55 @@ fn hold_hand(
                     // the other bodies' part spheres, its stand-in for the
                     // original's sphere-against-mesh narrow phase.
                     let length = hit.map_or(item_cursor::MARKER_RAY_CM / CM, |(_, t)| t);
-                    let held_frames: Vec<(Affine3A, Vec<(Vec3, f32)>)> = bodies
-                        .get(body)
-                        .map(|(_, ragdoll, ..)| {
-                            ragdoll
-                                .parts
-                                .iter()
-                                .map(|p| (p.transform(), p.spheres.clone()))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    let others: Vec<(Vec3, f32)> = bodies
-                        .iter()
-                        .filter(|(entity, ..)| *entity != body)
-                        .flat_map(|(_, ragdoll, ..)| {
-                            ragdoll.parts.iter().flat_map(|p| {
-                                let frame = p.transform();
-                                p.spheres.iter().map(move |(centre, radius)| {
-                                    (frame.transform_point(*centre), *radius)
-                                })
-                            })
-                        })
-                        .collect();
+                    // The spheres are gathered only when a marker named
+                    // for the item is met, once per frame.
+                    type Spheres = Vec<(Vec3, f32)>;
+                    let mut gathered: Option<(Vec<(Affine3A, Spheres)>, Spheres)> = None;
+                    let bodies_ref = &bodies;
+                    let held_part = items.held.as_ref().map(|held| held.part);
                     let overlaps = |frame: Frame| {
-                        let Some(held) = items.held.as_ref() else {
+                        let Some(held_part) = held_part else {
                             return false;
                         };
+                        let (held_frames, others) = gathered.get_or_insert_with(|| {
+                            let held_frames = bodies_ref
+                                .get(body)
+                                .map(|(_, ragdoll, ..)| {
+                                    ragdoll
+                                        .parts
+                                        .iter()
+                                        .map(|p| (p.transform(), p.spheres.clone()))
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            let others = bodies_ref
+                                .iter()
+                                .filter(|(entity, ..)| *entity != body)
+                                .flat_map(|(_, ragdoll, ..)| {
+                                    ragdoll.parts.iter().flat_map(|p| {
+                                        let frame = p.transform();
+                                        p.spheres.iter().map(move |(centre, radius)| {
+                                            (frame.transform_point(*centre), *radius)
+                                        })
+                                    })
+                                })
+                                .collect();
+                            (held_frames, others)
+                        });
                         let parts: Vec<Affine3A> = held_frames.iter().map(|(f, _)| *f).collect();
-                        let placed = item_cursor::snapped_parts(&parts, held.part, frame);
-                        placed.iter().zip(&held_frames).any(|(at, (_, spheres))| {
-                            spheres.iter().any(|(centre, radius)| {
-                                let world = at.transform_point(*centre);
-                                others.iter().any(|(other, other_radius)| {
-                                    world.distance_squared(*other)
-                                        <= (*radius + *other_radius) * (*radius + *other_radius)
+                        let placed = item_cursor::snapped_parts(&parts, held_part, frame);
+                        placed
+                            .iter()
+                            .zip(held_frames.iter())
+                            .any(|(at, (_, spheres))| {
+                                spheres.iter().any(|(centre, radius)| {
+                                    let world = at.transform_point(*centre);
+                                    others.iter().any(|(other, other_radius)| {
+                                        world.distance_squared(*other)
+                                            <= (*radius + *other_radius) * (*radius + *other_radius)
+                                    })
                                 })
                             })
-                        })
                     };
                     let snapped = items.snap(origin, dir, length, overlaps);
                     // Each placement holds only within reach of the hip

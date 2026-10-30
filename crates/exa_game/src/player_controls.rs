@@ -1133,8 +1133,9 @@ pub const USE_END_EVENT: u32 = 0x80;
 pub const USE_END_ANSWER: u32 = 0x81;
 /// The answer an event other than the release gives.
 pub const USE_KEEP_ANSWER: u32 = 1;
-/// The player behaviour's action byte the use cursor's end sets.
-pub const USE_ACTION: u8 = 4;
+/// The player behaviour's action word the use cursor's end sets (a
+/// 32-bit word, written only when a player exists).
+pub const USE_ACTION: u32 = 4;
 
 /// What the right press asks of the use cursor, before the use itself
 /// runs: class 0, kind 0x11 opens the item its second word names (the
@@ -1182,7 +1183,7 @@ pub struct UseEnd {
 /// The use cursor's end: the release (event [`USE_END_EVENT`]) ends the
 /// cursor and runs the use when the release is over the world, answering
 /// [`USE_END_ANSWER`]; every other event keeps the callback, which answers
-/// [`USE_KEEP_ANSWER`]. The end also sets the player's action byte to
+/// [`USE_KEEP_ANSWER`]. The end also sets the player's action word to
 /// [`USE_ACTION`], clears the controls' use state and restores the shared
 /// cursor mode to [`RESTING_CURSOR_MODE`].
 pub fn use_end(event: u32, over_world: bool) -> UseEnd {
@@ -2648,7 +2649,7 @@ mod tests {
     /// The use cursor's end: only the 0x80 release ends it, answers 0x81 and
     /// runs the use when the release is over the world; any other event
     /// keeps the callback and answers 1. The end's fixed effects are the
-    /// action byte 4, the cleared use state and the resting cursor mode 4.
+    /// action word 4, the cleared use state and the resting cursor mode 4.
     #[test]
     fn the_use_cursor_end() {
         assert_eq!(
