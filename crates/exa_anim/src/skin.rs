@@ -81,6 +81,18 @@ pub fn skin_vertex(
     }))
 }
 
+/// The first value met for each bone, as the original's joint capture
+/// takes it: the first node reached for a bone number sets its frame and a
+/// later node of the same bone leaves it alone. The walk's order is the
+/// caller's (the original recurses in child order, depth first).
+pub fn first_of<T>(iter: impl Iterator<Item = (usize, T)>) -> HashMap<usize, T> {
+    let mut values = HashMap::new();
+    for (bone, value) in iter {
+        values.entry(bone).or_insert(value);
+    }
+    values
+}
+
 /// The joint numbering and inverse binds of a mesh on bone `own_bone`
 /// whose bones' rest transforms under the mesh's own part are `rest`:
 /// joint `n` is bone `n` (0 to the highest bone), an absent bone taking
@@ -119,6 +131,24 @@ pub fn translate_mesh(mesh: &mut Mesh, by: Vec3) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The joint capture keeps the first frame met for a bone and sizes the
+    /// list by the highest bone number, an absent bone taking the own part.
+    #[test]
+    fn the_first_frame_of_a_bone_wins() {
+        let a = Mat4::from_translation(Vec3::new(1.0, 0.0, 0.0));
+        let b = Mat4::from_translation(Vec3::new(2.0, 0.0, 0.0));
+        let frames = first_of([(3, a), (5, b), (3, b)].into_iter());
+        assert_eq!(frames[&3], a);
+        assert_eq!(frames[&5], b);
+        let own = Mat4::from_translation(Vec3::new(0.5, 0.0, 0.0));
+        let (bones, inverse) = bindings(&frames, 3, own);
+        // Joints 0 to 5: the gaps take the own bone with an identity bind.
+        assert_eq!(bones, [3, 3, 3, 3, 3, 5]);
+        assert_eq!(inverse[3], a.inverse() * own);
+        assert_eq!(inverse[0], Mat4::IDENTITY);
+        assert_eq!(inverse[5], b.inverse() * own);
+    }
 
     /// A translation joint with no inverse bind skins a point to the
     /// translated place; an inverse bind of the joint's rest brings it back

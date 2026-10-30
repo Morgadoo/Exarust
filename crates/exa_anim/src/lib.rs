@@ -414,25 +414,31 @@ fn bind_skins(
         };
         let key = (root, skinned.bone);
         if let std::collections::hash_map::Entry::Vacant(slot) = bound.entry(key) {
-            // Rest pose of every body part relative to the root.
-            let mut rest: HashMap<usize, (Entity, Mat4)> = HashMap::new();
-            for e in children.iter_descendants(root) {
-                let Ok(part) = parts.get(e) else { continue };
-                let mut m = Mat4::IDENTITY;
-                let mut node = e;
-                while node != root {
-                    let local = match parts.get(node) {
-                        Ok(p) => p.rest,
-                        Err(_) => transforms.get(node).copied().unwrap_or_default(),
-                    };
-                    m = local.to_matrix() * m;
-                    match parents.get(node) {
-                        Ok(p) => node = p.parent(),
-                        Err(_) => break,
+            // Rest pose of every body part relative to the root. The first
+            // node met for a bone number sets its frame; a later node of the
+            // same bone leaves it alone, as the original's joint capture
+            // does.
+            let captured: Vec<(usize, (Entity, Mat4))> = children
+                .iter_descendants(root)
+                .filter_map(|e| {
+                    let part = parts.get(e).ok()?;
+                    let mut m = Mat4::IDENTITY;
+                    let mut node = e;
+                    while node != root {
+                        let local = match parts.get(node) {
+                            Ok(p) => p.rest,
+                            Err(_) => transforms.get(node).copied().unwrap_or_default(),
+                        };
+                        m = local.to_matrix() * m;
+                        match parents.get(node) {
+                            Ok(p) => node = p.parent(),
+                            Err(_) => break,
+                        }
                     }
-                }
-                rest.insert(part.bone, (e, m));
-            }
+                    Some((part.bone, (e, m)))
+                })
+                .collect();
+            let rest: HashMap<usize, (Entity, Mat4)> = skin::first_of(captured.into_iter());
             let Some(&(own_entity, own_rest)) = rest.get(&(skinned.bone as usize)) else {
                 continue; // the skeleton is not attached yet
             };
