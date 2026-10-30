@@ -1014,6 +1014,10 @@ mod tests {
         assert_eq!(career.player.health, 7_553);
         assert_eq!(career.company.roster[0].health, 7_553);
         assert_eq!(career.company.day, 1);
+        // The new day asks for the shop and merchant restock and the new
+        // weekly tournament (day 1 is the day after a tournament day).
+        assert!(career.restock_pending);
+        assert!(career.tournament.is_some());
     }
 
     #[test]
