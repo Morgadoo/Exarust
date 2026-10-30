@@ -1203,16 +1203,7 @@ same but shocked: the exploration cursor's cross, the blow sag zeroed),
 `0x200` (down, getting up, dormant, dead), `0x800` (collapsing or dead),
 `0x10203` (no queued motion starts). State flags sit beside the word
 (dormant `0x10`, waking `0x20`, a scripted hold `0x40`, the shock's stagger
-`0x100`, a potion `0x800000`). The posture block also writes the pose
-factor each tick (`exa_physics::motile::tone_weight`): with
-s = (1 − sag)(1 − energy) + energy, s² out of combat or 0.5·s + 0.5 while
-down or walking, s in combat, and s²·0.97 in double for a body over 1.3
-scale in combat that is not attacking. Beside it the weapon switch block
-(`exa_physics::body::timers::weapon_switch_step`) holds the timer at 5
-while a held item's class word is set, sets flag bit 8 and raises the
-state flag once while the hands are empty, and otherwise moves the timer
-one a tick toward `round((1 − the record's field)·1660 / 83)` in single
-precision, rounded half to even. While the stagger flag is set, the body tick
+`0x100`, a potion `0x800000`). While the stagger flag is set, the body tick
 after the energy recovery sets energy to its most minus 0.5 and starts
 Rebalance with no blend unless it already plays, then clears the flag once
 the clock is past the next shock; that tick does not start the daze's

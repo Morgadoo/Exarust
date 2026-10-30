@@ -1933,9 +1933,6 @@ pub struct Drive {
     /// [`Shove::sag`]); it fades 0.01 a tick in double precision, and is 0
     /// while the condition is down, getting up, dormant, collapsing or dead.
     pub sag: f32,
-    /// The posture block's pose factor ([`pose_factor`]), written every
-    /// body tick from the sag, the energy, the bearing and the scale.
-    pub pose_factor: f32,
     /// The support pins' gain factor (the 0.08 of the pins' gain
     /// S²·pin-gain·P·pin factor): it recovers toward 0.08 every tick while
     /// the body lives ([`recover_pins`]) and fades while it collapses. The
@@ -2112,7 +2109,6 @@ impl Default for Drive {
             lift: 0.0,
             lift_raw: 0.0,
             sag: 0.0,
-            pose_factor: 1.0,
             pin_gain: PIN_GAIN,
             hunch: 0.0,
             posture_wait: 0,
@@ -3208,20 +3204,6 @@ impl Ragdoll {
             progress: d.bearing.progress,
         };
         d.timers.tick(&input);
-        // The original's stance share: (1 − sag)·(1 − energy) + energy,
-        // in that order in single precision, then the tone weight
-        // (`motile::tone_weight`, the original's 0xAE8).
-        let s = (1.0 - d.sag) * (1.0 - d.energy) + d.energy;
-        let state = if d.bearing.off_feet {
-            0x200
-        } else if d.bearing.walking {
-            1
-        } else if d.bearing.attacking {
-            2
-        } else {
-            0
-        };
-        d.pose_factor = crate::motile::tone_weight(s, d.bearing.in_combat, state, d.stats.scale);
     }
 
     /// Tells a living body what its character does this tick (before it is
