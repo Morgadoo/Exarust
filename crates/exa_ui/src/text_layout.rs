@@ -559,11 +559,39 @@ impl GlyphQuad {
     }
 }
 
-/// An inline picture: its name and rectangle.
+/// An inline picture: its name and rectangle (x, top, width, height).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TextPicture {
     pub name: Vec<u8>,
     pub rect: [i32; 4],
+}
+
+/// The blend an inline picture draws under (premultiplied) and the one the
+/// text restores after it.
+pub const PICTURE_BLEND: u16 = 0x103;
+pub const TEXT_BLEND: u16 = 0x203;
+
+impl TextPicture {
+    /// The picture's four vertex corners as x, y, u and v: the top edge at
+    /// the rectangle's top with `v = 1`, the bottom edge at its bottom with
+    /// `v = 0`, in the original's order (bottom-left, top-left, top-right,
+    /// bottom-right). The caller binds the picture's texture,
+    /// draws it with white ink under [`PICTURE_BLEND`] and restores the
+    /// text's colour and [`TEXT_BLEND`] after it.
+    pub fn corners(&self) -> [[f32; 4]; 4] {
+        let [x, y, w, h] = self.rect;
+        let (x0, y0) = (x as f32, y as f32);
+        let (x1, y1) = (
+            (i64::from(x) + i64::from(w)) as f32,
+            (i64::from(y) + i64::from(h)) as f32,
+        );
+        [
+            [x0, y1, 0.0, 0.0],
+            [x0, y0, 0.0, 1.0],
+            [x1, y0, 1.0, 1.0],
+            [x1, y1, 1.0, 0.0],
+        ]
+    }
 }
 
 /// What a text draw emits, in order within each list.
@@ -1243,6 +1271,18 @@ mod tests {
         );
         assert_eq!(d.pictures[0].rect, [25, 0, 50, 50]);
         assert_eq!(d.glyphs.last().map(|g| g.y), Some(50));
+        // The picture's corners, bottom-left to bottom-right with v 1 at
+        // the top.
+        assert_eq!(
+            d.pictures[0].corners(),
+            [
+                [25.0, 50.0, 0.0, 0.0],
+                [25.0, 0.0, 0.0, 1.0],
+                [75.0, 0.0, 1.0, 1.0],
+                [75.0, 50.0, 1.0, 0.0],
+            ]
+        );
+        assert_eq!((PICTURE_BLEND, TEXT_BLEND), (0x103, 0x203));
     }
 
     #[test]

@@ -3183,7 +3183,7 @@ mod tests {
                     cells: vec![Vec::new(); 5],
                 })
                 .collect();
-            let draw = view.draw(&RAYFORM_10, 28);
+            let draw = view.draw(&RAYFORM_10, 28, false);
             let paint = board.paint();
             let titles: Vec<(i32, i32)> = paint
                 .iter()

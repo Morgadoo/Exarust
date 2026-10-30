@@ -325,6 +325,65 @@ pub enum Opened {
     Created(usize),
 }
 
+/// A control event the picker's controls dispatch to it, one per control
+/// callback: the RGB and HSV sliders (a 0–255 slider divided by 255, or a
+/// value already 0–1), the colour field's point (hue and saturation), a
+/// colour control's bytes, the finish button and the revert button.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PickerEvent {
+    /// An RGB slider on `channel`, its value 0–255.
+    RgbSlider { channel: usize, value: f32 },
+    /// An RGB control whose value is already 0–1.
+    RgbRaw { channel: usize, value: f32 },
+    /// An HSV slider on `channel`, its value 0–255.
+    HsvSlider { channel: usize, value: f32 },
+    /// An HSV control whose value is already 0–1.
+    HsvRaw { channel: usize, value: f32 },
+    /// The colour field's point: its two coordinates as hue and saturation.
+    Field { hue: f32, saturation: f32 },
+    /// A colour control's packed bytes.
+    Bytes([u8; 4]),
+    /// The finish button.
+    Finish,
+    /// The revert button: the colour the swatch had when the picker opened.
+    Revert,
+}
+
+impl ColourPicker {
+    /// Dispatches one control event to the picker's own rule: every event
+    /// but the finish refreshes and answers its [`Refresh`]; the finish
+    /// sets its word and answers nothing.
+    pub fn dispatch(
+        &mut self,
+        event: PickerEvent,
+        swatch: Option<&mut SwatchControl>,
+    ) -> Option<Refresh> {
+        match event {
+            PickerEvent::RgbSlider { channel, value } => {
+                Some(self.set_rgb_slider(channel, value, swatch))
+            }
+            PickerEvent::RgbRaw { channel, value } => {
+                Some(self.set_rgb_slider_raw(channel, value, swatch))
+            }
+            PickerEvent::HsvSlider { channel, value } => {
+                Some(self.set_hsv_slider(channel, value, swatch))
+            }
+            PickerEvent::HsvRaw { channel, value } => {
+                Some(self.set_hsv_slider_raw(channel, value, swatch))
+            }
+            PickerEvent::Field { hue, saturation } => {
+                Some(self.set_hue_saturation(hue, saturation, swatch))
+            }
+            PickerEvent::Bytes(bytes) => Some(self.set_bytes(bytes, swatch)),
+            PickerEvent::Finish => {
+                self.finish();
+                None
+            }
+            PickerEvent::Revert => Some(self.revert(swatch)),
+        }
+    }
+}
+
 /// The unit's list of pickers, one per swatch control.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PickerSet {
@@ -364,6 +423,47 @@ mod tests {
 
     fn swatch() -> SwatchControl {
         SwatchControl::new([51, 102, 153, 255])
+    }
+
+    #[test]
+    fn the_events_reach_the_pickers_own_rules() {
+        let mut swatch = swatch();
+        let mut picker = ColourPicker::new(0, &mut swatch);
+        // An HSV slider writes the HSV side over 255 and refreshes from it.
+        assert!(
+            picker
+                .dispatch(
+                    PickerEvent::HsvSlider {
+                        channel: 2,
+                        value: 255.0
+                    },
+                    Some(&mut swatch)
+                )
+                .is_some()
+        );
+        assert_eq!(picker.hsv[2], 1.0);
+        // The field's point is the hue and the saturation, not RGB.
+        picker.dispatch(
+            PickerEvent::Field {
+                hue: 0.25,
+                saturation: 0.75,
+            },
+            None,
+        );
+        assert_eq!((picker.hsv[0], picker.hsv[1]), (0.25, 0.75));
+        // The revert takes the opening colour back.
+        picker.dispatch(
+            PickerEvent::RgbSlider {
+                channel: 0,
+                value: 0.0,
+            },
+            None,
+        );
+        assert!(picker.dispatch(PickerEvent::Revert, None).is_some());
+        assert_eq!(picker.colour, picker.original);
+        // The finish sets the word and answers nothing.
+        assert_eq!(picker.dispatch(PickerEvent::Finish, None), None);
+        assert_eq!(picker.word, FINISH_WORD);
     }
 
     #[test]

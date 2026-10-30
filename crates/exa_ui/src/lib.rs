@@ -115,9 +115,9 @@ pub use col_swatch::{
     cells as swatch_cells, index_text as swatch_index_text, selection_frames,
 };
 pub use colour_picker::{
-    COLOUR_SWATCH_CLASS, ColourPicker, FINISH_WORD, Hsv, Opened, PickerSet, REFRESH_WORD, Ramp,
-    Refresh, Rgba, SwatchControl, channel_ramps, field_corners, packed_bytes, rgb_bytes, to_byte,
-    unpacked,
+    COLOUR_SWATCH_CLASS, ColourPicker, FINISH_WORD, Hsv, Opened, PickerEvent, PickerSet,
+    REFRESH_WORD, Ramp, Refresh, Rgba, SwatchControl, channel_ramps, field_corners, packed_bytes,
+    rgb_bytes, to_byte, unpacked,
 };
 pub use compact_skill::{
     CompactBase, CompactDraw, CompactMetrics, CompactRow, CompactSkillState, NodeDraw, Pip,
@@ -142,16 +142,19 @@ pub use drop_down::{
 };
 pub use emblem_form::{
     BACKGROUND_MAX, BACKGROUND_STEM, COLOUR_THREE_TABLE, COLOUR_UNIFORMS, DESIGN_MAX, DESIGN_STEM,
-    EMBLEM_SHADER, EmblemDraw, EmblemEditor, EmblemPreview, EmblemRandom, EmblemRecord,
-    MIRROR_UNIFORM, PictureSelection, draw_order as emblem_draw_order, emblem_sample, picture,
-    preview_colours, preview_image, preview_quad, preview_textures, select_background,
+    EMBLEM_SHADER, EmblemDraw, EmblemEditor, EmblemPaint, EmblemPreview, EmblemRandom,
+    EmblemRecord, MIRROR_UNIFORM, PictureSelection, draw_order as emblem_draw_order, emblem_sample,
+    picture, preview_colours, preview_image, preview_quad, preview_textures, select_background,
     select_design,
 };
 pub use fade::DeathFade;
 pub use fps::ShowFps;
 pub use gui_controls::{
-    CheckLabelInk, ClassRegistry, LabelDraw, LabelFront, LayoutClient, append_records,
-    check_label_ink, label_draw, layout_records, register_class, register_default_classes,
+    BackOp, CheckLabelInk, ClassRegistry, ControlText, FrontDraw, FrontOp, LabelDraw, LabelFront,
+    LayoutClient, PICTURE_BLEND, PictureQuad, SHARED_ICON_CELL, SKIN_BLEND, TICK_ICON,
+    append_records, check_label_ink, clear_classes, control_area, draw_back, draw_front, held_fade,
+    label_draw, label_place, layout_records, paint_back, picture_quad, register_class,
+    register_default_classes, text_origin,
 };
 pub use gui_core::{
     DropState, EdgeForm, FormHost, FormId, GuiMetrics, GuiTask, HitResult, MESSAGE_CANCEL,
@@ -173,18 +176,19 @@ pub use gui_task::{
     modifier_score,
 };
 pub use gui_text::{
-    ELLIPSIS, FontBinding, MENU_FONT, MenuFont, TextQuad, WrappedDraw, add_gap, add_gap_to_fonts,
-    count_lines, draw_line, draw_line_centred, draw_line_plain, draw_span, draw_tail,
-    draw_truncated, draw_wrapped, draw_wrapped_at, ellipsis_fit, fit_menu_width, fit_width,
-    font_uv, glyph_cell, measure, measure_in, menu_font_scale, needs_rescale,
+    ELLIPSIS, FONT_TEXTURE_BIT, FontBinding, MENU_FONT, MenuFont, TextQuad, WrappedDraw, add_gap,
+    add_gap_to_fonts, count_lines, draw_line, draw_line_centred, draw_line_plain, draw_span,
+    draw_tail, draw_truncated, draw_wrapped, draw_wrapped_at, ellipsis_fit, fit_menu_width,
+    fit_width, font_texture_word, font_uv, glyph_cell, measure, measure_in, menu_font_scale,
+    needs_rescale,
 };
 pub use heartbeat::Heartbeat;
 pub use help_system::{
     MANUAL_ATTRIBUTES, MANUAL_CONTROLLER, MANUAL_KEYBOARD, MANUAL_LIST_TOP, MANUAL_LIST_WIDTH,
-    MANUAL_OPTIONS, MANUAL_SIZE, MANUAL_TITLE, Manual, ManualSource, TIP_ATTRIBUTES, TIP_CONTROLS,
-    TIP_EXTRA_HEIGHT, TIP_OPTIONS, TIP_PRESET, TIP_TEXT_INSET, TIP_TITLES, TIP_WIDTH, TOPIC_INDEX,
-    TOPIC_RECORD, TOPIC_TITLE, Tip, TipPlan, TipStore, TopicRef, close_manual, manual_file,
-    parse_topics, show_tip, tip_index, tip_plan,
+    MANUAL_OPTIONS, MANUAL_SIZE, MANUAL_TITLE, MANUAL_WINDOW, Manual, ManualSource, ManualWindow,
+    TIP_ATTRIBUTES, TIP_CONTROLS, TIP_EXTRA_HEIGHT, TIP_OPTIONS, TIP_PRESET, TIP_TEXT_INSET,
+    TIP_TITLES, TIP_WIDTH, TOPIC_INDEX, TOPIC_RECORD, TOPIC_TITLE, Tip, TipPlan, TipStore,
+    TopicRef, close_manual, manual_file, parse_topics, show_tip, tip_index, tip_plan,
 };
 pub use hud::{DrawHud, HudBars};
 pub use hud_extra::{
@@ -310,12 +314,13 @@ pub use skin::{
     draw_skin_strip, draw_span_bar, draw_span_square, draw_style_frames, edge_frame, expand_group,
     fade_label, fade_rect, faded_rect, form_rect, four_ink_frame, four_stop_rect, glow_text,
     gradient_box, gradient_frame, guiskin_size, hit_line, hit_skin, load_scheme, mark_active,
-    open_line, open_skin, outline_rect, pair_rect, place_line_label, place_skin_label,
-    prepare_skin_programs, prepare_skin_renderer, rounded_fill, rounded_fill_fixed, rounded_grow,
-    rounded_scale, rounded_textured_frame, scale_line, scale_palette_alpha, scale_skin_alpha,
-    scroll_arrow_horizontal, scroll_arrow_vertical, selection_band, set_skin_metrics, shadow_ring,
-    skin_constructor, skin_measures, solid_rect, stripe_bar, sunken_ring, textured_skin_draw,
-    two_ink_band, two_ink_outline, vertical_gradient, vertical_gradient_frame, with_alpha,
+    open_line, open_skin, outline_rect, pair_rect, place_control_text, place_line_label,
+    place_skin_label, prepare_skin_programs, prepare_skin_renderer, rounded_fill,
+    rounded_fill_fixed, rounded_grow, rounded_scale, rounded_textured_frame, scale_line,
+    scale_palette_alpha, scale_skin_alpha, scroll_arrow_horizontal, scroll_arrow_vertical,
+    selection_band, set_skin_metrics, shadow_ring, skin_constructor, skin_measures, solid_rect,
+    stripe_bar, sunken_ring, textured_skin_draw, two_ink_band, two_ink_outline, vertical_gradient,
+    vertical_gradient_frame, with_alpha,
 };
 pub use technique_selector::{
     CONFIRM_TEXT, FORGET_WORDS, LEVEL_XP, NodeState, SelectorDraw, SelectorKey, SkillColumn,

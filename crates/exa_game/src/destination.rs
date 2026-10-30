@@ -25,8 +25,7 @@
 use bevy::prelude::*;
 use exa_ui::gui_draw::{GuiFrames, GuiTextures};
 use exa_ui::selection::{
-    self, BUBBLE_LIFT_CM, Click, DestinationScreen, Journey, MARK_FLAG, SelectionPalette,
-    TravelStep,
+    self, BUBBLE_LIFT_CM, Click, DestinationScreen, Journey, MARK_FLAG, TravelStep,
 };
 use exa_world::{PlacedItem, TeleportDevice};
 
@@ -262,16 +261,7 @@ fn paint_screen(
     let Some(atlas) = textures.get(selection::SCREEN_ATLAS) else {
         return;
     };
-    let palette = exa_ui::line_skin::line_palette();
-    // The skin's bytes become floats by one multiply with 1/255 in single
-    // precision, as the engine's colour conversion does.
-    let unit_colour =
-        |bytes: [u8; 4]| bytes.map(|byte| f32::from(byte) * f32::from_bits(0x3b80_8081));
-    let palette = SelectionPalette {
-        symbol_base: unit_colour(palette.text[6]),
-        symbol_add: unit_colour(palette.highlight[9]),
-        backdrop: palette.form[3],
-    };
+    let palette = selection::skinned_palette(&exa_ui::line_skin::shown_palette(1.0));
     frames.push(selection::frame(&draws, atlas, &palette, width, height));
 }
 

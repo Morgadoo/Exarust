@@ -326,6 +326,10 @@ pub struct ReadKeyForm {
     /// The form's colour word (opaque black); the fade writes its alpha
     /// byte.
     pub colour: u32,
+    /// The form's left edge (0: the constructor centres it in the window).
+    pub left: i32,
+    /// The fade byte the constructor starts the form at (nothing shown).
+    pub fade: u8,
 }
 
 pub fn read_key_form() -> ReadKeyForm {
@@ -334,6 +338,8 @@ pub fn read_key_form() -> ReadKeyForm {
         form_flags: 0xf0008,
         digit: 0,
         colour: 0xff00_0000,
+        left: 0,
+        fade: 0,
     }
 }
 
@@ -711,6 +717,7 @@ mod tests {
         assert_eq!(warm.draw(99, 20, 20, 100, 255).0, [-1, 0]);
         let r = read_key_form();
         assert_eq!((r.flags, r.colour), (0x1020, 0xff000000));
+        assert_eq!((r.form_flags, r.left, r.fade), (0xf0008, 0, 0));
         let mut screen = ReadKeyScreen::new(2, 0);
         assert_eq!(screen.hit(), -1);
         assert!(screen.release());

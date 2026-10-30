@@ -410,6 +410,27 @@ pub fn parchment_form() -> ParchmentForm {
     }
 }
 
+/// What destroying the parchment releases: its texture object, its format
+/// list and the base form.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ParchmentDestroy {
+    pub texture: bool,
+    pub format: bool,
+    pub base: bool,
+}
+
+impl ParchmentForm {
+    /// The destroy: the texture object and the format list go, then the
+    /// base form's own destroy runs.
+    pub fn destroy(&self) -> ParchmentDestroy {
+        ParchmentDestroy {
+            texture: true,
+            format: true,
+            base: true,
+        }
+    }
+}
+
 /// The parchment's press slot: any right-button event (press or click)
 /// hides it and answers 3; any other event runs the base handler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -515,6 +536,19 @@ pub fn parchment_hits(sample_alpha: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_parchment_destroy_releases_its_texture_and_format() {
+        let form = parchment_form();
+        assert_eq!(
+            form.destroy(),
+            ParchmentDestroy {
+                texture: true,
+                format: true,
+                base: true
+            }
+        );
+    }
 
     #[test]
     fn the_card_fades_on_a_squared_curve() {

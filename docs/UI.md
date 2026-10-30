@@ -25,7 +25,10 @@ italic (1 to 8), a gap (6, 8, 10, 12, 17, 24) and a line height (12, 16,
 original adds the gap to once at start-up. In `fontbase24r` a space
 advances 21, "A" 28, "i" 12 and "m" 37. A glyph's texture cell is its
 column and row over 16; the quad's top samples the cell's far edge (the
-glyphs are stored upside down).
+glyphs are stored upside down). A font record loads its texture with the
+requested word or, for a request of −1, the GUI's default word (0x33),
+with bit 0x100 set; the sample step is the glyph quad over that texture's
+size.
 
 A GUI scale level (0 to 5, the index of the scale in the table below)
 sets the GUI unit, the main and small fonts and the cells of the two icon
@@ -54,7 +57,11 @@ or the tail that fits, measured with the GUI level's main font, the first
 drawn byte replaced by the ellipsis, placed where it would sit had the
 whole line been drawn. Shortening a text with the ellipsis counts the
 ellipsis and then the bytes before the last; at the k-th byte that passes
-the width the first k − 1 bytes stay. A wrapped block breaks like the text
+the width the first k − 1 bytes stay. An inline `[rimg=NAME]` picture is
+its texture size over six in units, centred in the frame at the current
+baseline, drawn with white ink under the premultiplied blend 0x103 (the
+text's colour and blend 0x203 are restored after it) and pushes the
+baseline down by its height less a pitch. A wrapped block breaks like the text
 box, draws its glyphs hanging down from each line's top while the top is
 within the height less a line, draws the lines it skips at the block's top,
 and moves a centred line right by half its last break's spare width. The
@@ -860,7 +867,11 @@ The original's own forms and controls that Exarust rebuilds, with the
   randomiser (`state · 0x8088405 + 1`, each draw the high half of `state ·
   n`, four records of history), previewed by the four-texture shader,
   which runs per fragment into the preview image
-  (`emblem_form::preview_image`).
+  (`emblem_form::preview_image`). The paint draws the base form's frame,
+  then the preview at half the client width and 40 units down, 64 units
+  square with its corners bottom-left, bottom-right, top-right and
+  top-left, and then clears texture unit 0 and units 1 to 3. The draw
+  takes the four colour pickers' palette bytes into the record first.
 - **In-game screens** (`exa_ui::game_gui`, `exa_game::gui_screens`): the
   inventory, loot window and journal show rules, the eight-slot open
   container registry, the journal's entries, the power-slot and counter
@@ -876,9 +887,13 @@ The original's own forms and controls that Exarust rebuilds, with the
   orbit nodes; only the adapter's orbit wobbles. The row fill is the
   original's: the shipped 7, 10, 12, 13 show as 13, 7, 10, 12. The symbol
   shader runs per fragment into an image per row (`selection::symbol_image`),
-  drawn with the backdrop, coloured `base + add · mix` from two skin
-  colours (the line skin stands in); rows carry their marker word to the
-  journey. A click
+  drawn with the backdrop, coloured `base + add · mix`: the base is the
+  skin's clean ink (255, 250, 230, 100) and the add the highlight group's
+  seventh shade, both converted by 1/255 (the backdrop's ink is not traced
+  and keeps the form group's fourth shade); the symbol atlas
+  (`prtlsmbla.rfi`) loads with the other GUI textures. Rows carry their
+  marker word to the journey (the shipped teleporter record has only level
+  ids, so Exarust's rows carry none and the journey flags its own device). A click
   closes the screen and starts the journey: the bubble 98 cm above the
   teleporter, the teleporter's glow (1.5 s up and 7 s held for the
   adapter, 1 s and 1.4 s otherwise) and a small crystal charging a point
@@ -1089,7 +1104,10 @@ comparison uses the frame's time and every stamp the system clock, so an
 elapsed time is their signed difference. The splash also drives the
 transition audio gain (silent until the second logo, silent again after the
 menu wait, rising with the last fade) and the marker outline fade. The form's
-hit-test and destroy order are `exa_ui::menu`'s. `exarust --splash` shows it
+hit-test and destroy order are `exa_ui::menu`'s. The form's constructor gives
+it style 0 and control flags 0x1020 over an opaque black background; its load
+resolves `BME Critters` and its destroy releases both logos, the sound record
+and the warm-up pass counter. `exarust --splash` shows it
 at start-up (about five seconds) and opens the main menu at the hand-over;
 without the flag nothing starts it.
 
@@ -1866,7 +1884,15 @@ row. The default row is the first when none is selected, and the table's
 centre is half its client's width and height. A header's inset rectangle
 runs two pixels in from its sides and top to two pixels short of six units
 down, and the drop shadow starts at the header's bottom line, the client's
-height less six units tall. Down
+height less six units tall. With the skin's first flag bit set the header
+grid is replaced by one line at the row height less half a unit and one,
+and the shadow is skipped. The table answers its owner's query callback
+with the owner's answer, or 0 when it has none. The choice list it opens
+is placed by the general form placement: under the header row (the row
+height less one below the corner) at the corner's x, else at the x plus
+the table's width, and lifted to end a pixel below the corner when it
+overflows the bottom; with the skin's first flag bit set the corner moves
+up a unit less one first. Down
 passes greyed rows, Up does not. Owner-drawn columns start at the first
 visible row. The table never sorts.
 
@@ -2223,10 +2249,39 @@ texture's size over 12, in units, centred.
   registry order is button, check box, image button, label, trackbar, icon
   button, picture.
 - **Label draw.** A label draws a panel inset by a pixel with style
-  0x10000000 and the skin frame with any of 0xf0; its front is the held
-  variant while a button bit of its state is set, else the alternate with
-  style 0x20000000, else the pictured or the plain one. A check box's
-  label sits five units in, in the disabled ink while disabled.
+  0x10000000, a four-stop gradient from the hot form group's fourth shade
+  at the bottom to its third at the top, and the skin frame with any of
+  0xf0; its front is the held variant while a button bit of its state is
+  set, else the alternate with style 0x20000000 (a block truncated to the
+  width less twice the margin over the font's step, right-aligned with
+  style 0x4000), else the pictured one (its own colour, in the fourth
+  label shade while the focus bit is set) or the plain slot matrix. A
+  held label fades over a third of a second: its start clock is stored on
+  the first draw, the elapsed clock over 300 is taken in double precision
+  and compared as a float, and the sixth shade's alpha scales by it (a
+  clock that runs backwards wraps; the fourth shade whole while the focus
+  bit is set) while a frame is asked for again; past the fade the state's
+  held bit clears and the label draws plainly. A check box's label sits five
+  units in, in the disabled ink while disabled, and its tick is centred
+  at four units (an unsigned half of the sign-extended difference, so a
+  smaller box wraps) in the sixth shade, the shared atlas's eighth cell.
+- **Class draw.** `draw_back` orders each class's skin calls: a button is
+  a shell (frames, the face inset by the margin, a shadow with style
+  0x20000000 while not pressed, the sunken ring on style 0x40000000 pressed
+  or state 0x80), a check box its sunken face (the frames and, while lit,
+  the sunken box two pixels inside the margin), an image button its frames
+  then the box, a trackbar its frames then the slider, a label its panel then its
+  frames, an icon button and a picture their frames. `draw_front` orders
+  the fronts: a button's text through the slot matrix (small font with
+  style 0x100000), a check box's label and tick, an image button's image
+  through the skin's image draw (its own atlas or the shared one), a
+  trackbar's plain text, a label's variant, an icon button's shared-atlas
+  icon (index from its step field) or its own atlas's icon (in the fourth,
+  eleventh or ninth shade, or as it is while pressed), and a picture's
+  quad. A marker trackbar's stripes are the record's own ink list. Text places by the
+  style's 0x7000 and 0x700 fields: left of the box, centred, ending before
+  the right edge or past it; half a unit up, centred by the line height,
+  at the base or below; else the margin and half a unit plus one.
 
 The extended controls (`exa_ui::controls`) are registered in this order,
 with their records' default sizes: text field 80 × 24, combo box 80 × 24,
@@ -2382,7 +2437,11 @@ pass a sixth level read the next skill's bytes, as the original's do.
   unit times the engine's sine across (stretched) and its cosine down,
   each rounded; the radius is 64 units, or 58 with the global inset-layout
   flag (which also moves a page's ring a unit left). The engine's
-  sine-cosine helper returns the sine first. A group's pentagon points are
+  sine-cosine helper returns the sine first. The unit initialiser chains
+  after the unit-change hook that was installed before it (it runs first on
+  every build), cuts the two icon atlases once and then rebuilds them on
+  later unit changes. A compact skill window copies its owner's six 16-bit
+  fields, or zeroes them, before it refreshes. A group's pentagon points are
   18.3 units out at fifths of a turn from straight up, the sine across and
   the cosine up, rounded in double precision.
 - **Press state.** A level the points fund is learnt (a press asks to
@@ -3365,8 +3424,11 @@ it is wired into the running game yet.
   refresh from HSV sets the HSV sliders and fields, converts to RGB unless
   syncing, builds the field's corners `(h,0,v)`, `(h,1,v)`, `(h,s,0)` and
   `(h,s,1)` and refreshes the RGB side under the guard. The field point
-  sets hue and saturation; the finish button leaves 0x1000. The conversions
-  are the engine's colour helpers.
+  sets hue and saturation; the finish button leaves 0x1000. Each control
+  callback dispatches to one of these rules (`ColourPicker::dispatch`):
+  the RGB and HSV sliders over 255 or raw, the field's point, a colour
+  control's bytes, the finish and the revert. The conversions are the
+  engine's colour helpers.
 - **Drop-down list** (`exa_ui::drop_down`). Style 0x98, attributes
   0x4a1470, border 3. Rows are six units; up to sixteen make the list that
   tall plus twice the border; more cut it at sixteen, set the scrollbar
@@ -3376,8 +3438,12 @@ it is wired into the running game yet.
   the release and 0x100 write the selection back to the owner and close;
   0x4000/0x8000 step the selection. Selecting a row sets the hover and the
   selection. Only the selection draws a band, from y 1 to the client's
-  right less the border less one, with a frame a pixel inside; the close
-  clears the owner's on and lit bits and frees items the list owns.
+  right less the border less one, with a frame a pixel inside: a double
+  frame in the hot form group's seventh and first shades, a half-strength
+  gradient from the form group's fifth shade at the bottom to its first at
+  the top, and the skin's unselected selection band (the highlight outline
+  and glows) over the inner rectangle; the close clears the
+  owner's on and lit bits and frees items the list owns.
 - **Palette swatch** (`exa_ui::col_swatch`). A fixed 400 × 112 popup of 32
   columns of 8 three-unit cells, index = column · 8 + row, in the palette's
   lifted colours as bytes; a cell starts a pixel in and ends at the next
@@ -3421,7 +3487,9 @@ it is wired into the running game yet.
 - **Help** (`exa_ui::help_system`). The manual opens `manualkm.fds`, or
   `manualcn.fds` in controller mode, as a 0x2fc × 0x1e6 "MANUAL" page with
   a 0x90-wide topic list (list style, full rows, no icon space) and a text
-  box. Each 0x20-byte directory record's 16-byte title is title-cased (a
+  box (form options 0x120 and style flags 0xb800 over an upper layer; the
+  text box's own options 0x280, flags 0xc0000, style bit 0x4000000 and
+  spacing 8). Each 0x20-byte directory record's 16-byte title is title-cased (a
   lower-case letter after a space or `_` upper-cased) and its word at 0x1c
   is its place in the list; picking a topic loads its block and shows the
   text without its last byte. A tip whose single bit (0–30) is not in the

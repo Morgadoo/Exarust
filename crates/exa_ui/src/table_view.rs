@@ -182,6 +182,34 @@ impl ChoiceList {
             open: true,
         }
     }
+
+    /// The placement the list opens with, for the general form placement
+    /// ([`crate::gui_core::place_form`]): the original converts the list's
+    /// corner to the screen first, and with the skin's first flag bit set
+    /// moves it up by a unit less one (clearing the list's style bit 0x80,
+    /// not modelled). The list wants to open under the header row (its top
+    /// at the row height less one) at its own x; when it overflows the
+    /// screen's right edge it tries the x plus the table's width, and when
+    /// it overflows the bottom its bottom goes to one pixel below the
+    /// corner.
+    pub fn place_request(
+        &self,
+        row_height: i32,
+        unit: i32,
+        table_width: i32,
+        skin_flat: bool,
+    ) -> crate::gui_core::PlaceRequest {
+        let (x, mut y) = self.at;
+        if skin_flat {
+            y = y - unit + 1;
+        }
+        crate::gui_core::PlaceRequest {
+            desired_x: x,
+            fallback_x: table_width + x,
+            desired_y: row_height + y - 1,
+            fallback_bottom: y + 1,
+        }
+    }
 }
 
 /// A table view's state.
@@ -809,10 +837,11 @@ pub struct TableDraw {
     pub icons: Vec<(i32, (i32, i32))>,
     /// The drop shadow below the header line: x, y, width and height (the
     /// client's height less the header's six units, which can be negative
-    /// for a short client). The original also passes the skin unit and the
-    /// word 0x30 (what they select is not established) and skips the call
-    /// when the skin's first flag bit is set; that flag is not modelled.
+    /// for a short client). It draws at the skin unit with the word 0x30.
     pub shadow: Option<[i32; 4]>,
+    /// With the skin's first flag bit set the header boxes are replaced by
+    /// one line: x, y (the row height less half a unit and one) and width.
+    pub flat_header: Option<[i32; 3]>,
 }
 
 impl TableView {
@@ -820,17 +849,21 @@ impl TableView {
     /// from the first drawn row (owner-drawn columns from the first row),
     /// titles (centred ones by their width in `font`) and header icons
     /// centred in the `icon_cell`-pixel cells of the large atlas.
-    pub fn draw(&self, font: &GuiFont, icon_cell: i32) -> TableDraw {
+    pub fn draw(&self, font: &GuiFont, icon_cell: i32, skin_flat: bool) -> TableDraw {
         let u = self.unit;
         let width = self.client.width();
         let mut out = TableDraw::default();
         let n = self.columns.len();
-        let mut x0 = 0;
-        for (i, c) in self.columns.iter().enumerate() {
-            let x1 = if i + 1 == n { width } else { c.width + x0 };
-            out.headers.push((x0, x1));
-            out.header_insets.push([x0 + 2, 2, x1 - 2, 6 * u - 2]);
-            x0 = x1;
+        if skin_flat {
+            out.flat_header = Some([0, self.row_height - (u >> 1) - 1, width]);
+        } else {
+            let mut x0 = 0;
+            for (i, c) in self.columns.iter().enumerate() {
+                let x1 = if i + 1 == n { width } else { c.width + x0 };
+                out.headers.push((x0, x1));
+                out.header_insets.push([x0 + 2, 2, x1 - 2, 6 * u - 2]);
+                x0 = x1;
+            }
         }
         out.scroll_offset = -round_i32(f64::from(
             (self.content_height - self.client.height()) as f32 * self.scroll,
@@ -889,8 +922,16 @@ impl TableView {
             }
             x += c.width;
         }
-        out.shadow = Some([0, 6 * u, width, self.client.height() - 6 * u]);
+        if !skin_flat {
+            out.shadow = Some([0, 6 * u, width, self.client.height() - 6 * u]);
+        }
         out
+    }
+
+    /// The owner's query callback, which the original asks when the table's
+    /// own virtual query runs: the owner's answer, or 0 when it has none.
+    pub fn owner_query(&self, owner: Option<&dyn Fn() -> u32>) -> u32 {
+        owner.map_or(0, |query| query())
     }
 
     /// The dragged row's label: its box (x, y, w, h) at the pointer less
@@ -1281,15 +1322,61 @@ mod tests {
         t.columns[2].custom = true;
         t.scroll = 0.5;
         assert_eq!(t.first_visible(), 2);
-        let d = t.draw(&RAYFORM_10, 28);
+        let d = t.draw(&RAYFORM_10, 28, false);
         assert_eq!(d.custom[0], (3, 2, 185, 11 * 5 + 6 * 5 * 2, 300 - 185));
         assert_eq!(d.custom.len(), 3);
         assert_eq!(d.header_insets[0], [2, 2, 98, 28]);
         assert_eq!(d.header_insets[2], [182, 2, 298, 28]);
         assert_eq!(d.shadow, Some([0, 30, 300, 200 - 30]));
+        assert_eq!(d.flat_header, None);
         // A client shorter than the header gives a negative height.
         t.client.bottom = t.client.top + 20;
-        assert_eq!(t.draw(&RAYFORM_10, 28).shadow, Some([0, 30, 300, -10]));
+        assert_eq!(
+            t.draw(&RAYFORM_10, 28, false).shadow,
+            Some([0, 30, 300, -10])
+        );
+    }
+
+    #[test]
+    fn a_flat_skin_replaces_the_header_grid_with_a_line() {
+        let t = table(3);
+        let d = t.draw(&RAYFORM_10, 28, true);
+        // Row height 30 less half a unit and one.
+        assert_eq!(d.flat_header, Some([0, 27, 300]));
+        assert!(d.headers.is_empty() && d.header_insets.is_empty());
+        assert_eq!(d.shadow, None);
+        // The rows still draw under it.
+        assert!(d.cells.contains(&(1, 0, (5, 55), false)));
+    }
+
+    #[test]
+    fn the_owner_query_answers_or_is_zero() {
+        let t = table(1);
+        assert_eq!(t.owner_query(None), 0);
+        assert_eq!(t.owner_query(Some(&|| 7)), 7);
+    }
+
+    #[test]
+    fn the_choice_list_opens_under_the_header_row() {
+        let t = table(3);
+        let list = ChoiceList::for_column(&t, 1, (105, 5), 80);
+        assert_eq!(list.width, 80);
+        // Under the 30-pixel header row at its own x, or the x plus the
+        // table's width; lifted above the corner's next pixel.
+        let place = list.place_request(30, 5, 300, false);
+        assert_eq!(
+            (
+                place.desired_x,
+                place.fallback_x,
+                place.desired_y,
+                place.fallback_bottom
+            ),
+            (105, 405, 34, 6)
+        );
+        // A flat skin moves the corner up a unit less one first.
+        let flat = list.place_request(30, 5, 300, true);
+        assert_eq!((flat.desired_y, flat.fallback_bottom), (30, 2));
+        assert_eq!(list.entries.len(), 2);
     }
 
     #[test]
@@ -1298,7 +1385,7 @@ mod tests {
         t.selected = 2;
         t.hover = 2;
         t.columns[2].icon = 4;
-        let d = t.draw(&RAYFORM_10, 28);
+        let d = t.draw(&RAYFORM_10, 28, false);
         assert_eq!(d.headers, vec![(0, 100), (100, 180), (180, 300)]);
         assert_eq!(d.selection, Some(([0, 60, 300, 28], true)));
         // Row 1 at 11 units, the second column a unit in from 100.

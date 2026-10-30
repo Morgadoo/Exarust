@@ -6,6 +6,13 @@
 //! box goes off, on, partly on), a trackbar takes its value from the
 //! pointer or steps by keys and the stick. Rules: `docs/UI.md` (Controls).
 
+use crate::skin::{
+    ControlLabelPlace, ControlSliderPlace, GuiRect, LabelVariant, SkinBatch, SkinImageDraw,
+    SkinImageInks, SkinImagePlace, SkinInk, SkinPalette, draw_control_box, draw_control_shell,
+    draw_control_slider, draw_panel, draw_skin_image, draw_style_frames, fade_rect,
+    place_control_text, with_alpha,
+};
+
 /// A control class as the form's control registry holds it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ControlClass {
@@ -141,6 +148,10 @@ pub mod style {
     /// A trackbar's kind (0: knob with a 2-pixel margin; this: a 5-pixel
     /// marker).
     pub const KIND: u32 = 0x3000_0000;
+    /// A trackbar whose slider is a striped fill and a unit-wide marker.
+    pub const MARKER: u32 = 0x1000_0000;
+    /// A label with a background panel.
+    pub const PANEL: u32 = 0x1000_0000;
 }
 
 /// State bits.
@@ -206,8 +217,22 @@ pub struct Control {
     pub knob: i32,
     /// A trackbar's steps (0: continuous).
     pub steps: i32,
-    /// An icon button's icon and atlas cell.
+    /// An icon's index: an icon button's own icon or the picture an image
+    /// button shows.
     pub icon: i32,
+    /// The cell size of the record's own icon atlas; 0 means the shared
+    /// GUI icon atlas, whose cells are 22 pixels.
+    pub icon_cell: i32,
+    /// The record carries its own icon atlas (an icon button's second
+    /// choice of icon source).
+    pub icon_atlas: bool,
+    /// A label's own colour (its pictured front, and a marker trackbar's
+    /// stripe): red, green, blue and alpha.
+    pub colour: Option<[u8; 4]>,
+    /// A picture's texture size in pixels.
+    pub picture_size: (u16, u16),
+    /// The clock a held label started fading at.
+    pub held_start: u32,
     /// The control reports changes (its callback is set).
     pub reports: bool,
     /// An image button's right-press has its own handler.
@@ -234,6 +259,11 @@ impl Control {
             knob: 0,
             steps: 0,
             icon: 0,
+            icon_cell: 0,
+            icon_atlas: false,
+            colour: None,
+            picture_size: (0, 0),
+            held_start: 0,
             reports: false,
             alt_press: false,
             laid_out: false,
@@ -624,11 +654,13 @@ pub fn tick_at(c: &Control, unit: i32) -> Option<(f32, f32)> {
         c.state & state::PARTIAL != 0
     };
     shown.then(|| {
-        let half = |span: i32| ((i64::from(span) - i64::from(unit << 2)) as u64 >> 1) as f64;
-        (
-            (f64::from(c.x) + half(c.w)) as f32,
-            (f64::from(c.y) + half(c.h)) as f32,
-        )
+        // The half is an unsigned shift of the sign-extended difference, so a
+        // box narrower than the tick wraps to a huge positive, as in the
+        // original; the origin is a wrapping 64-bit sum converted to float.
+        let half = |span: i32| (i64::from(span) - i64::from(unit.wrapping_mul(4))) as u64 >> 1;
+        let place =
+            |base: i32, span: i32| (i64::from(base) as u64).wrapping_add(half(span)) as i64 as f32;
+        (place(c.x, c.w), place(c.y, c.h))
     })
 }
 
@@ -944,6 +976,465 @@ pub fn check_label_ink(state: u32) -> CheckLabelInk {
     }
 }
 
+/// The font measurements a control's label draws with: the text's measured
+/// width, the font's line height and base, its character step and the byte
+/// count of the text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ControlText {
+    pub width: i32,
+    pub line_height: i32,
+    pub base: i32,
+    pub step: i32,
+    pub len: usize,
+}
+
+/// A control's rectangle in its own coordinates.
+pub fn control_area(c: &Control) -> GuiRect {
+    GuiRect {
+        x0: c.x as f32,
+        y0: c.y as f32,
+        x1: (c.x + c.w) as f32,
+        y1: (c.y + c.h) as f32,
+    }
+}
+
+/// The place a control's label is measured at: its rectangle, the margin as
+/// the inset, its style and state words, the caller's vertical offset and
+/// the font measurements.
+pub fn label_place(c: &Control, text: &ControlText, offset: i32) -> ControlLabelPlace {
+    ControlLabelPlace {
+        rect: control_area(c),
+        inset: c.margin,
+        style: c.style,
+        state: c.state,
+        offset,
+        text_width: text.width,
+        line_height: text.line_height,
+        base: text.base,
+        text_len: text.len,
+        step: text.step,
+    }
+}
+
+/// Where a control's label text starts: the style's horizontal and vertical
+/// alignment from its own rectangle and the font's measurements.
+pub fn text_origin(c: &Control, text: &ControlText, unit: i32) -> (i32, i32) {
+    place_control_text(&label_place(c, text, 0), unit)
+}
+
+/// One call a control's back makes, in order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackOp {
+    /// A label's panel: the control one pixel in, a gradient from the hot
+    /// form group's fourth shade at the bottom to its third at the top.
+    Panel,
+    /// The style frames on the control's own rectangle.
+    Frames,
+    /// A button's shell: the frames, the face inset by the margin, its
+    /// shadow and the sunken ring.
+    Shell,
+    /// A box face inset by the margin, with the fixed pressed bevel.
+    Box,
+    /// A check box's face: the style frames and, while lit, the sunken box
+    /// two pixels inside the margin.
+    Sunken,
+    /// A trackbar's slider: a faded track and a framed thumb, or a striped
+    /// fill and the unit-wide marker.
+    Slider { marker: bool },
+}
+
+/// The skin calls a control's back makes, in the original's order.
+///
+/// A button is a shell, a check box its sunken face. An image button frames
+/// and then boxes; a trackbar frames and then draws its slider. A label draws its
+/// panel (style 0x1000_0000) and then any of the 0xf0 frames. An icon
+/// button and a picture only draw their frames.
+pub fn draw_back(c: &Control) -> Vec<BackOp> {
+    let frames = c.style & 0xf0 != 0;
+    let mut ops = Vec::new();
+    match c.class {
+        1 => ops.push(BackOp::Shell),
+        2 => ops.push(BackOp::Sunken),
+        3 => {
+            if frames {
+                ops.push(BackOp::Frames);
+            }
+            ops.push(BackOp::Box);
+        }
+        4 => {
+            if frames {
+                ops.push(BackOp::Frames);
+            }
+            ops.push(BackOp::Slider {
+                marker: c.style & style::KIND == style::MARKER,
+            });
+        }
+        5 => {
+            if c.style & style::PANEL != 0 {
+                ops.push(BackOp::Panel);
+            }
+            if frames {
+                ops.push(BackOp::Frames);
+            }
+        }
+        6 | 7 if frames => ops.push(BackOp::Frames),
+        6 | 7 => {}
+        _ => {}
+    }
+    ops
+}
+
+/// Draws a control's back through the skin, in the order its class makes
+/// its calls. A marker trackbar's stripes are the record's own ink list
+/// (the colour list the original reads from the record, unguarded).
+pub fn paint_back(
+    batch: &mut SkinBatch,
+    c: &Control,
+    unit: i32,
+    palette: &SkinPalette,
+    stripes: &[SkinInk],
+) {
+    for op in draw_back(c) {
+        match op {
+            BackOp::Panel => {
+                let rect = GuiRect {
+                    x0: (c.x + 1) as f32,
+                    y0: (c.y + 1) as f32,
+                    x1: (c.x + c.w - 1) as f32,
+                    y1: (c.y + c.h - 1) as f32,
+                };
+                fade_rect(batch, rect, palette.form_hot[3], palette.form_hot[2]);
+            }
+            BackOp::Frames => draw_style_frames(batch, control_area(c), c.style, palette),
+            BackOp::Shell => draw_control_shell(
+                batch,
+                control_area(c),
+                c.margin,
+                c.style,
+                c.state,
+                unit,
+                palette,
+            ),
+            BackOp::Box => {
+                draw_control_box(batch, control_area(c), c.margin as f32, c.state, palette)
+            }
+            BackOp::Sunken => draw_panel(
+                batch,
+                control_area(c),
+                c.margin,
+                c.style,
+                c.state,
+                unit,
+                palette,
+            ),
+            BackOp::Slider { .. } => {
+                draw_control_slider(
+                    batch,
+                    ControlSliderPlace {
+                        rect: control_area(c),
+                        inset: c.margin,
+                        thumb: c.knob,
+                        state: c.state,
+                        style: c.style,
+                        fraction: c.value,
+                        unit,
+                    },
+                    stripes,
+                    palette,
+                );
+            }
+        }
+    }
+}
+
+/// A textured quad's four corners: x, y, u and v in the original's order,
+/// and the blend word it draws under.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PictureQuad {
+    pub corners: [(f32, f32, f32, f32); 4],
+    pub blend: u16,
+}
+
+/// The blend a picture quad draws under (premultiplied) and the skin's
+/// usual one the caller restores afterwards.
+pub const PICTURE_BLEND: u16 = 0x103;
+pub const SKIN_BLEND: u16 = 0x203;
+
+/// The cell of the shared GUI icon atlas, in pixels.
+pub const SHARED_ICON_CELL: i32 = 22;
+/// The shared atlas's check-tick cell.
+pub const TICK_ICON: i32 = 8;
+
+/// A picture's quad: its texture's size over 12 units, centred in the
+/// control, with the texture's rows running bottom-up (v 1 at the top).
+/// `None` until the record carries a texture.
+pub fn picture_quad(c: &Control, unit: i32) -> Option<PictureQuad> {
+    if c.picture_size == (0, 0) {
+        return None;
+    }
+    let [x, y, w, h] = picture_rect(c, c.picture_size, unit);
+    let (x, y, w, h) = (x as f32, y as f32, w as f32, h as f32);
+    Some(PictureQuad {
+        corners: [
+            (x, y + h, 0.0, 0.0),
+            (x, y, 0.0, 1.0),
+            (x + w, y, 1.0, 1.0),
+            (x + w, y + h, 1.0, 0.0),
+        ],
+        blend: PICTURE_BLEND,
+    })
+}
+
+/// A held label's fade: `(alpha byte, asks for another frame)`. The elapsed
+/// clock over 300 in double precision, compared as a float; inside the
+/// third of a second the sixth text shade's alpha scales by the fade
+/// (rounded half to even, its low byte kept) and the draw asks for another
+/// frame, else the state's held bit is cleared by the caller and the label
+/// draws plainly.
+pub fn held_fade(now: u32, start: u32, alpha: u8) -> (u8, bool) {
+    let elapsed = (i64::from(now) - i64::from(start)) as f64;
+    let fade = (elapsed * (1.0 / 300.0)) as f32;
+    // The original leaves the fade only when the compare is ordered and
+    // above 1, so a not-a-number fade would keep fading.
+    if fade > 1.0 {
+        (0, false)
+    } else {
+        let scaled = (f32::from(alpha) * fade).round_ties_even() as i64 as i32 as u8;
+        (scaled, true)
+    }
+}
+
+/// One call a control's front makes.
+#[derive(Debug, Clone, PartialEq)]
+pub enum FrontOp {
+    /// The control's text through the skin's label matrix.
+    Label {
+        variant: LabelVariant,
+        small_font: bool,
+    },
+    /// A label in one colour: its own colour (alpha scaled by the global
+    /// GUI alpha), a held label's faded sixth text shade, or the fourth
+    /// text shade while the focus bit is set.
+    Coloured(SkinInk),
+    /// Plain text at the given place, in its own ink.
+    Text {
+        x: i32,
+        y: i32,
+        ink: SkinInk,
+    },
+    /// The check tick centred in its box.
+    Tick {
+        x: f32,
+        y: f32,
+        cell: i32,
+        index: i32,
+        ink: SkinInk,
+    },
+    /// A centred icon in an ink, or drawn as it is (its own colours at
+    /// alpha 1) without one.
+    Icon {
+        x: i32,
+        y: i32,
+        cell: i32,
+        index: i32,
+        ink: Option<SkinInk>,
+    },
+    /// An image button's image through the skin's image draw.
+    Image(SkinImageDraw),
+    Picture(PictureQuad),
+}
+
+/// A control's front: its calls and whether a held label still fades (so
+/// the frame is asked for again).
+#[derive(Debug, Clone, PartialEq)]
+pub struct FrontDraw {
+    pub ops: Vec<FrontOp>,
+    pub again: bool,
+}
+
+/// The cell of the atlas a record draws its icons from: its own atlas's
+/// cell, or the shared GUI atlas's.
+fn icon_cell(c: &Control) -> i32 {
+    if c.icon_atlas && c.icon_cell > 0 {
+        c.icon_cell
+    } else {
+        SHARED_ICON_CELL
+    }
+}
+
+/// The GUI's white ink alpha, which an image button's full-alpha inks take.
+const WHITE_ALPHA: u8 = 0xff;
+
+/// The skin calls a control's front makes, in the original's order and with
+/// its inks.
+///
+/// A button draws its text through the slot matrix, in the small font with
+/// style 0x100000. A check box draws its label five units in, in the
+/// focused shade while its focus bit is set, and then the tick of a plain
+/// box while it is on or lit or of a three-state box while it is partly on
+/// (the original skips the tick when the skin's first flag bit is set; the
+/// caller's skin never sets it). An image button draws its image through
+/// the skin's image draw ([`draw_skin_image`]) from its own atlas or the
+/// shared one. A trackbar draws plain text. A label's front follows its
+/// style: held fades, 0x20000000 truncates a right-aligned block, its own
+/// colour draws coloured or focused, else the slot matrix. An icon button
+/// shows the shared atlas's icon while its step field is positive, else its
+/// own atlas's icon (as it is while pressed). A picture draws its quad.
+pub fn draw_front(
+    c: &mut Control,
+    text: &ControlText,
+    unit: i32,
+    palette: &SkinPalette,
+    now: u32,
+) -> FrontDraw {
+    let mut draw = FrontDraw {
+        ops: Vec::new(),
+        again: false,
+    };
+    let origin = text_origin(c, text, unit);
+    let pressed = c.state & 0xf_0000 == 0x1_0000;
+    let focused = c.state & state::DISABLED == state::DISABLED;
+    match c.class {
+        1 => draw.ops.push(FrontOp::Label {
+            variant: LabelVariant::Slot,
+            small_font: c.style & style::SMALL_FONT != 0,
+        }),
+        2 => {
+            let ink = if focused {
+                palette.text[2]
+            } else {
+                palette.text[6]
+            };
+            draw.ops.push(FrontOp::Text {
+                x: label_x(c, unit),
+                y: origin.1,
+                ink,
+            });
+            if let Some((x, y)) = tick_at(c, unit) {
+                draw.ops.push(FrontOp::Tick {
+                    x,
+                    y,
+                    cell: unit.wrapping_mul(4),
+                    index: TICK_ICON,
+                    ink: palette.text[6],
+                });
+            }
+        }
+        3 => {
+            let place = SkinImagePlace {
+                x: c.x as i16,
+                y: c.y as i16,
+                w: c.w as i16,
+                h: c.h as i16,
+                image: c.icon,
+                size: icon_cell(c),
+                style: c.style,
+                flags: c.state,
+                default_image: !c.icon_atlas,
+            };
+            let rgb = |ink: SkinInk| [ink[0], ink[1], ink[2]];
+            let inks = SkinImageInks {
+                plain: rgb(palette.text[6]),
+                raised: rgb(palette.text[10]),
+                alpha: WHITE_ALPHA,
+            };
+            draw.ops.push(FrontOp::Image(draw_skin_image(place, inks)));
+        }
+        4 => draw.ops.push(FrontOp::Label {
+            variant: LabelVariant::Plain,
+            small_font: false,
+        }),
+        5 => {
+            let front = label_draw(c.style, c.state, c.colour.is_some()).front;
+            match front {
+                LabelFront::Held => {
+                    if c.held_start == 0 {
+                        c.held_start = now;
+                    }
+                    let (alpha, again) = held_fade(now, c.held_start, palette.text[6][3]);
+                    draw.again = again;
+                    if again {
+                        let ink = if focused {
+                            palette.text[3]
+                        } else {
+                            with_alpha(palette.text[6], alpha)
+                        };
+                        draw.ops.push(FrontOp::Coloured(ink));
+                    } else {
+                        // Past the fade the held bit clears and the label
+                        // draws plainly.
+                        c.state &= !1;
+                        draw.ops.push(FrontOp::Label {
+                            variant: LabelVariant::Slot,
+                            small_font: false,
+                        });
+                    }
+                }
+                LabelFront::Alternate => draw.ops.push(FrontOp::Label {
+                    variant: LabelVariant::Block,
+                    small_font: false,
+                }),
+                LabelFront::Pictured => {
+                    let ink = if focused {
+                        palette.text[3]
+                    } else {
+                        let colour = c.colour.unwrap_or(palette.text[6]);
+                        // The global GUI alpha is a constant 1.0, so the
+                        // colour's own alpha is kept.
+                        with_alpha(
+                            colour,
+                            (f32::from(colour[3]) * 1.0).round_ties_even() as i64 as i32 as u8,
+                        )
+                    };
+                    draw.ops.push(FrontOp::Coloured(ink));
+                }
+                LabelFront::Plain => draw.ops.push(FrontOp::Label {
+                    variant: LabelVariant::Slot,
+                    small_font: false,
+                }),
+            }
+        }
+        6 => {
+            if c.steps > 0 {
+                let (x, y) = icon_at(c, SHARED_ICON_CELL);
+                draw.ops.push(FrontOp::Icon {
+                    x,
+                    y,
+                    cell: SHARED_ICON_CELL,
+                    index: c.steps,
+                    ink: Some(palette.text[6]),
+                });
+            } else if c.icon_atlas {
+                let cell = icon_cell(c);
+                let (x, y) = icon_at(c, cell);
+                let ink = if pressed {
+                    None
+                } else if focused {
+                    Some(palette.text[3])
+                } else if c.state & 0x40 == 0x40 {
+                    Some(palette.text[10])
+                } else {
+                    Some(palette.text[8])
+                };
+                draw.ops.push(FrontOp::Icon {
+                    x,
+                    y,
+                    cell,
+                    index: c.icon,
+                    ink,
+                });
+            }
+        }
+        7 => {
+            if let Some(quad) = picture_quad(c, unit) {
+                draw.ops.push(FrontOp::Picture(quad));
+            }
+        }
+        _ => {}
+    }
+    draw
+}
+
 /// A control's class registry as the running app keeps it.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ClassRegistry {
@@ -965,6 +1456,17 @@ impl ClassRegistry {
     pub fn register(&mut self, class: ControlClass) -> usize {
         register_class(&mut self.classes, class)
     }
+
+    /// Unregisters every class, as the unit's finalisation does.
+    pub fn clear(&mut self) {
+        clear_classes(&mut self.classes);
+    }
+}
+
+/// Unregisters the class table: a freed registry holds no classes, so the
+/// next registration starts again at index 0.
+pub fn clear_classes(classes: &mut Vec<ControlClass>) {
+    classes.clear();
 }
 
 #[cfg(test)]
@@ -1482,5 +1984,311 @@ mod tests {
         assert_eq!(picture_rect(&c, (120, 60), 3), [10, 27, 30, 15]);
         c.state = state::LIT | state::DISABLED;
         assert_eq!(icon_ink(&c), IconInk::Disabled);
+    }
+
+    fn text(width: i32, len: usize) -> ControlText {
+        ControlText {
+            width,
+            line_height: 20,
+            base: 15,
+            step: 7,
+            len,
+        }
+    }
+
+    fn shades() -> SkinPalette {
+        let mut palette = SkinPalette::filled([0, 0, 0, 255]);
+        for (i, ink) in palette.text.iter_mut().enumerate() {
+            *ink = [i as u8, 0, 0, 70];
+        }
+        for (i, ink) in palette.form_hot.iter_mut().enumerate() {
+            *ink = [0x40 + i as u8, 0, 0, 70];
+        }
+        for (i, ink) in palette.highlight.iter_mut().enumerate() {
+            *ink = [0x50 + i as u8, 0, 0, 70];
+        }
+        palette
+    }
+
+    #[test]
+    fn the_text_origin_follows_the_style_word() {
+        let mut c = Control::new(5, 10, 20, 100, 80);
+        c.margin = 2;
+        c.style = 0;
+        assert_eq!(text_origin(&c, &text(40, 20), 5), (15, 23));
+        c.style = 0x1000;
+        assert_eq!(text_origin(&c, &text(40, 20), 5), (-35, 23));
+        c.style = 0x3000;
+        assert_eq!(text_origin(&c, &text(40, 20), 5), (39, 23));
+        c.style = 0x4000;
+        assert_eq!(text_origin(&c, &text(40, 20), 5), (65, 23));
+        c.style = 0x5000;
+        assert_eq!(text_origin(&c, &text(40, 20), 5), (115, 23));
+        c.style = 0x100;
+        assert_eq!(text_origin(&c, &text(40, 20), 5).1, 18);
+        c.style = 0x300;
+        assert_eq!(text_origin(&c, &text(40, 20), 5).1, 71);
+        c.style = 0x400;
+        assert_eq!(text_origin(&c, &text(40, 20), 5).1, 114);
+        c.style = 0x500;
+        assert_eq!(text_origin(&c, &text(40, 20), 5).1, 100);
+    }
+
+    #[test]
+    fn each_class_makes_its_own_back_calls() {
+        let back = |id, style| {
+            let mut c = Control::new(id, 0, 0, 20, 20);
+            c.style = style;
+            draw_back(&c)
+        };
+        assert_eq!(back(1, 0), [BackOp::Shell]);
+        assert_eq!(back(2, 0), [BackOp::Sunken]);
+        assert_eq!(back(3, 0), [BackOp::Box]);
+        assert_eq!(back(3, 0x10), [BackOp::Frames, BackOp::Box]);
+        assert_eq!(back(4, 0), [BackOp::Slider { marker: false }]);
+        assert_eq!(back(4, 0x1000_0000), [BackOp::Slider { marker: true }]);
+        assert_eq!(back(4, 0x2000_0000), [BackOp::Slider { marker: false }]);
+        assert_eq!(back(5, 0), []);
+        assert_eq!(back(5, 0x1000_0000), [BackOp::Panel]);
+        assert_eq!(back(5, 0x1000_0000 | 0x10), [BackOp::Panel, BackOp::Frames]);
+        assert_eq!(back(6, 0), []);
+        assert_eq!(back(6, 0x80), [BackOp::Frames]);
+        assert_eq!(back(7, 0x40), [BackOp::Frames]);
+    }
+
+    #[test]
+    fn the_picture_quad_runs_bottom_up_at_premultiplied_alpha() {
+        let mut c = Control::new(7, 10, 20, 30, 30);
+        c.picture_size = (120, 60);
+        let quad = picture_quad(&c, 3).expect("a picture");
+        assert_eq!(quad.blend, 0x103);
+        assert_eq!(
+            quad.corners,
+            [
+                (10.0, 42.0, 0.0, 0.0),
+                (10.0, 27.0, 0.0, 1.0),
+                (40.0, 27.0, 1.0, 1.0),
+                (40.0, 42.0, 1.0, 0.0),
+            ]
+        );
+        c.picture_size = (0, 0);
+        assert_eq!(picture_quad(&c, 3), None);
+    }
+
+    #[test]
+    fn a_held_label_fades_over_a_third_of_a_second() {
+        assert_eq!(held_fade(0, 0, 70), (0, true));
+        assert_eq!(held_fade(150, 0, 70), (35, true));
+        assert_eq!(held_fade(300, 0, 70), (70, true));
+        assert_eq!(held_fade(301, 0, 70), (0, false));
+        // A clock that runs backwards gives a negative fade whose low byte
+        // wraps, as the original's signed convert and byte cut do.
+        assert_eq!(held_fade(0, 150, 70), ((-35_i32) as u8, true));
+    }
+
+    #[test]
+    fn the_front_calls_and_inks_by_class() {
+        let palette = shades();
+        let mut button = Control::new(1, 10, 20, 80, 24);
+        button.style = 0x100000;
+        let draw = draw_front(&mut button, &text(20, 2), 4, &palette, 0);
+        assert_eq!(
+            draw.ops,
+            [FrontOp::Label {
+                variant: LabelVariant::Slot,
+                small_font: true
+            }]
+        );
+        assert!(!draw.again);
+
+        let mut box_ = Control::new(2, 10, 20, 16, 16);
+        box_.state = state::ON;
+        let draw = draw_front(&mut box_, &text(10, 2), 4, &palette, 0);
+        assert_eq!(
+            draw.ops[0],
+            FrontOp::Text {
+                x: 30,
+                y: 39,
+                ink: [6, 0, 0, 70]
+            }
+        );
+        // The tick cell is four units, centred in the 16-pixel box.
+        assert_eq!(
+            draw.ops[1],
+            FrontOp::Tick {
+                x: 10.0,
+                y: 20.0,
+                cell: 16,
+                index: TICK_ICON,
+                ink: [6, 0, 0, 70]
+            }
+        );
+        box_.state = state::DISABLED | state::ON;
+        let draw = draw_front(&mut box_, &text(10, 2), 4, &palette, 0);
+        assert_eq!(
+            draw.ops[0],
+            FrontOp::Text {
+                x: 30,
+                y: 39,
+                ink: [2, 0, 0, 70]
+            }
+        );
+
+        // A label's own colour draws with its alpha; focused takes the
+        // fourth label shade.
+        let mut label = Control::new(5, 0, 0, 100, 20);
+        label.colour = Some([1, 2, 3, 0x80]);
+        let draw = draw_front(&mut label, &text(10, 2), 4, &palette, 0);
+        assert_eq!(draw.ops, [FrontOp::Coloured([1, 2, 3, 0x80])]);
+        label.state = state::DISABLED;
+        let draw = draw_front(&mut label, &text(10, 2), 4, &palette, 0);
+        assert_eq!(draw.ops, [FrontOp::Coloured([3, 0, 0, 70])]);
+
+        // The held label starts at the first draw and asks for another
+        // frame in the sixth shade at the faded alpha; once the fade ends
+        // the state bit is cleared and the label draws plainly.
+        let mut held = Control::new(5, 0, 0, 100, 20);
+        held.state = 1;
+        let draw = draw_front(&mut held, &text(10, 2), 4, &palette, 1000);
+        assert_eq!(held.held_start, 1000);
+        assert_eq!(draw.ops, [FrontOp::Coloured([6, 0, 0, 0])]);
+        assert!(draw.again);
+        let draw = draw_front(&mut held, &text(10, 2), 4, &palette, 1150);
+        assert_eq!(draw.ops, [FrontOp::Coloured([6, 0, 0, 35])]);
+        // A focused held label takes the fourth shade whole.
+        held.state |= state::DISABLED;
+        let draw = draw_front(&mut held, &text(10, 2), 4, &palette, 1150);
+        assert_eq!(draw.ops, [FrontOp::Coloured([3, 0, 0, 70])]);
+        let draw = draw_front(&mut held, &text(10, 2), 4, &palette, 1400);
+        assert_eq!(
+            draw.ops,
+            [FrontOp::Label {
+                variant: LabelVariant::Slot,
+                small_font: false
+            }]
+        );
+        assert!(!draw.again);
+        assert_eq!(held.state & 1, 0);
+
+        // A trackbar's text is plain.
+        let mut bar = Control::new(4, 0, 0, 100, 16);
+        let draw = draw_front(&mut bar, &text(10, 2), 4, &palette, 0);
+        assert_eq!(
+            draw.ops,
+            [FrontOp::Label {
+                variant: LabelVariant::Plain,
+                small_font: false
+            }]
+        );
+
+        // An icon button with a step uses the shared atlas's 22-pixel cell
+        // and the sixth text shade; without one it draws nothing.
+        let mut icon = Control::new(6, 0, 0, 28, 28);
+        icon.steps = 3;
+        let draw = draw_front(&mut icon, &text(0, 0), 4, &palette, 0);
+        assert_eq!(
+            draw.ops,
+            [FrontOp::Icon {
+                x: 3,
+                y: 3,
+                cell: SHARED_ICON_CELL,
+                index: 3,
+                ink: Some([6, 0, 0, 70]),
+            }]
+        );
+        assert!(
+            draw_front(
+                &mut Control::new(6, 0, 0, 28, 28),
+                &text(0, 0),
+                4,
+                &palette,
+                0
+            )
+            .ops
+            .is_empty()
+        );
+        icon.steps = 0;
+        icon.icon_atlas = true;
+        icon.icon = 5;
+        icon.state = state::LIT;
+        let draw = draw_front(&mut icon, &text(0, 0), 4, &palette, 0);
+        assert_eq!(
+            draw.ops,
+            [FrontOp::Icon {
+                x: 3,
+                y: 3,
+                cell: SHARED_ICON_CELL,
+                index: 5,
+                ink: Some([10, 0, 0, 70]),
+            }]
+        );
+        // Pressed, its own atlas's icon draws as it is.
+        icon.state = 0x1_0000;
+        let draw = draw_front(&mut icon, &text(0, 0), 4, &palette, 0);
+        assert!(matches!(draw.ops[0], FrontOp::Icon { ink: None, .. }));
+
+        // An image button goes through the skin's image draw: with style
+        // 0x1000000 the sixth shade's colour at the white alpha, and pressed
+        // its image as it is, a pixel down when on and lit.
+        let mut image = Control::new(3, 0, 0, 28, 28);
+        image.icon = 2;
+        image.style = 0x1000000;
+        let draw = draw_front(&mut image, &text(0, 0), 4, &palette, 0);
+        let FrontOp::Image(drawn) = draw.ops[0] else {
+            panic!("an image draw")
+        };
+        assert_eq!((drawn.x, drawn.y, drawn.image), (3, 3, 2));
+        assert_eq!(drawn.colour, Some([6, 0, 0, 255]));
+        assert!(drawn.default_image);
+        image.state = 0x1_0000 | 0x40;
+        let draw = draw_front(&mut image, &text(0, 0), 4, &palette, 0);
+        let FrontOp::Image(drawn) = draw.ops[0] else {
+            panic!("an image draw")
+        };
+        assert_eq!((drawn.y, drawn.ink, drawn.scale), (4, None, Some(1.0)));
+    }
+
+    #[test]
+    fn the_back_paints_through_the_skin() {
+        let palette = shades();
+        for (id, style) in [
+            (1, 0),
+            (2, 0),
+            (3, 0x10),
+            (4, 0),
+            (4, 0x1000_0000),
+            (5, 0x1000_0000 | 0x10),
+            (6, 0x80),
+            (7, 0x40),
+        ] {
+            let mut c = Control::new(id, 10, 20, 100, 28);
+            c.style = style;
+            c.knob = 10;
+            c.margin = 2;
+            let mut batch = SkinBatch::new();
+            paint_back(&mut batch, &c, 4, &palette, &[]);
+            assert!(!batch.primitives.is_empty(), "class {id} draws");
+        }
+        // An unknown class draws nothing.
+        let mut batch = SkinBatch::new();
+        paint_back(&mut batch, &Control::new(9, 0, 0, 10, 10), 4, &palette, &[]);
+        assert!(batch.primitives.is_empty());
+    }
+
+    #[test]
+    fn clearing_the_registry_starts_the_table_again() {
+        let mut registry = ClassRegistry::shipped();
+        registry.clear();
+        assert!(registry.classes.is_empty());
+        assert_eq!(
+            registry.register(ControlClass {
+                id: 9,
+                name: "custom",
+                size: (10, 10),
+                style: 0,
+                picture: false,
+            }),
+            0
+        );
     }
 }

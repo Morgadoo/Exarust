@@ -119,7 +119,7 @@ pub fn close_skill_screen(open: bool, has_controls: bool) -> SkillClose {
 }
 
 /// What opening (or toggling) the skill screen did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SkillOpenPlan {
     /// The screen was already open, so the open routine only closed it.
     pub close_existing: bool,
@@ -135,6 +135,10 @@ pub struct SkillOpenPlan {
     pub groups: i32,
     /// A page's ring radius in units (the ring keeps the constructor's).
     pub radius: i32,
+    /// A page's horizontal stretch (1.25, or 0.9 with the inset layout).
+    pub stretch: f32,
+    /// The constructor's flag word (1).
+    pub flag: i32,
     pub show: bool,
     pub activate: bool,
     /// The Steam action bindings were set up for the screen.
@@ -145,14 +149,16 @@ pub struct SkillOpenPlan {
 /// it and does nothing else; otherwise it builds the unit's atlases, starts
 /// the reveal sound when the handle is ready, suspends the player's
 /// controls, builds the screen as a ring (a positive page then turns it into
-/// a four-group page at a 72-unit radius with the page group and slot
-/// tables, its stretch left as built), stores the character, refreshes its
-/// ready flag, binds the Steam actions and shows and activates it.
+/// a four-group page with the page group and slot tables), stores the
+/// character, refreshes its ready flag, binds the Steam actions and shows
+/// and activates it. The window's constructor fixes the page's radius and
+/// stretch: 72 units by 1.25, or 64 by 0.9 with the inset layout flag.
 pub fn open_skill_screen(
     open: bool,
     page: i32,
     has_controls: bool,
     sound_ready: bool,
+    inset_layout: bool,
 ) -> SkillOpenPlan {
     if open {
         return SkillOpenPlan {
@@ -163,6 +169,8 @@ pub fn open_skill_screen(
             page: 0,
             groups: 0,
             radius: 0,
+            stretch: 0.0,
+            flag: 0,
             show: false,
             activate: false,
             steam_bind: false,
@@ -177,7 +185,17 @@ pub fn open_skill_screen(
         suspend_controls: has_controls,
         page,
         groups: if paged { 4 } else { 6 },
-        radius: if paged { 72 } else { 0 },
+        radius: if paged {
+            if inset_layout { 64 } else { 72 }
+        } else {
+            0
+        },
+        stretch: if paged {
+            if inset_layout { 0.9 } else { 1.25 }
+        } else {
+            0.0
+        },
+        flag: 1,
         show: true,
         activate: true,
         steam_bind: true,
@@ -2385,14 +2403,19 @@ mod tests {
 
     #[test]
     fn the_screen_opens_or_closes_and_restores_controls() {
-        let opened = open_skill_screen(false, 2, true, true);
+        let opened = open_skill_screen(false, 2, true, true, false);
         assert!(opened.build_resources && opened.play_sound && opened.suspend_controls);
         assert_eq!((opened.page, opened.groups, opened.radius), (2, 4, 72));
+        assert_eq!((opened.stretch, opened.flag), (1.25, 1));
         assert!(opened.show && opened.activate && opened.steam_bind);
-        let ring = open_skill_screen(false, 0, false, false);
+        // The inset-layout flag picks the 64-unit, 0.9-stretch page.
+        let inset = open_skill_screen(false, 1, false, false, true);
+        assert_eq!((inset.radius, inset.stretch), (64, 0.9));
+        let ring = open_skill_screen(false, 0, false, false, false);
         assert_eq!((ring.groups, ring.radius), (6, 0));
+        assert_eq!(ring.stretch, 0.0);
         assert!(!ring.play_sound && !ring.suspend_controls);
-        let toggle = open_skill_screen(true, 2, true, true);
+        let toggle = open_skill_screen(true, 2, true, true, false);
         assert!(toggle.close_existing);
         assert!(!toggle.build_resources && !toggle.show);
 

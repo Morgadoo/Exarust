@@ -177,6 +177,19 @@ impl SkillResources {
         self.built = true;
         self.builds += 1;
     }
+
+    /// The unit initialiser: the hook installed before the skill build runs
+    /// first (on every run), then the atlases are cut. The first call cuts
+    /// them and installs this build as the unit-change hook; later calls
+    /// rebuild them. Returns whether this call cut them.
+    pub fn initialise(&mut self, previous: &mut dyn FnMut()) -> bool {
+        previous();
+        let first = self.ensure();
+        if !first {
+            self.rebuild();
+        }
+        first
+    }
 }
 
 /// The eight cells of one skill group at an atlas origin, by technique
@@ -320,6 +333,17 @@ mod tests {
         assert_eq!(table, [1, 2, 3, 4, 5, 6]);
         let empty = build_single_icons(&IconImage::new(1, 1, 4), |_| 9);
         assert_eq!(empty, [0; 6]);
+    }
+
+    #[test]
+    fn the_previous_unit_hook_runs_first_on_every_build() {
+        let mut resources = SkillResources::default();
+        let mut calls = 0;
+        assert!(resources.initialise(&mut || calls += 1));
+        assert_eq!((calls, resources.builds), (1, 1));
+        // A later unit change runs the previous hook first and rebuilds.
+        assert!(!resources.initialise(&mut || calls += 1));
+        assert_eq!((calls, resources.builds), (2, 2));
     }
 
     #[test]

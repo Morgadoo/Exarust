@@ -12,6 +12,7 @@
 use crate::controls::{ListMetrics, item_at, step_selection};
 use crate::form::attribute;
 use crate::gui_font::GuiFont;
+use crate::skin::{GuiRect, SkinBatch, SkinPalette, double_frame, faded_rect, selection_band};
 
 pub use crate::controls::ROW_UNITS;
 /// The most rows shown before the list scrolls.
@@ -343,6 +344,51 @@ impl DropDownList {
         })
     }
 
+    /// Paints the selection's band through the skin, in the original's
+    /// order: the double frame in the hot form group's seventh and first
+    /// shades, a half-strength gradient from the form group's fifth shade
+    /// at the bottom to its first at the top, and the skin's unselected
+    /// selection band (the highlight outline and glows) over the inner
+    /// rectangle. Nothing draws without a selected row.
+    pub fn paint(&self, batch: &mut SkinBatch, palette: &SkinPalette, scrollbar_width: i32) {
+        let Some(band) = self.band(scrollbar_width) else {
+            return;
+        };
+        let rect = |r: [i32; 4]| GuiRect {
+            x0: r[0] as f32,
+            y0: r[1] as f32,
+            x1: r[2] as f32,
+            y1: r[3] as f32,
+        };
+        double_frame(
+            batch,
+            rect(band.fill),
+            palette.form_hot[6],
+            palette.form_hot[0],
+        );
+        faded_rect(
+            batch,
+            rect(band.frame),
+            palette.form[4],
+            palette.form[0],
+            0.5,
+        );
+        // The last call takes a left, top, width and height.
+        let [x, y, w, h] = band.inner;
+        selection_band(
+            batch,
+            GuiRect {
+                x0: x as f32,
+                y0: y as f32,
+                x1: (x + w) as f32,
+                y1: (y + h) as f32,
+            },
+            &palette.highlight,
+            false,
+            self.unit,
+        );
+    }
+
     /// The rows' text, top to bottom. The pen sits a unit and a pixel in,
     /// or with the style's 0x7000 bits at 0x3000 is centred in the form's
     /// width plus a unit; the first baseline is `(row + ascent + 1) / 2 + 1`
@@ -538,6 +584,27 @@ mod tests {
         owned.close(&mut owner);
         assert!(owned.items.is_empty());
         assert_eq!(owner.closed, 2);
+    }
+
+    #[test]
+    fn the_band_paints_through_the_skin() {
+        let mut palette = SkinPalette::filled([10, 20, 30, 255]);
+        palette.form[4] = [1, 2, 3, 4];
+        palette.form_hot[6] = [5, 6, 7, 8];
+        let mut list = list(3);
+        let mut batch = SkinBatch::new();
+        list.paint(&mut batch, &palette, 15);
+        assert!(batch.primitives.is_empty());
+        list.selected = 2;
+        let mut batch = SkinBatch::new();
+        list.paint(&mut batch, &palette, 15);
+        assert!(!batch.primitives.is_empty());
+        // The double frame, the gradient and the band's outline and glows.
+        assert_eq!(batch.primitives.len(), 4);
+        // The band is the highlight group's unselected outline, over the
+        // inner rectangle from (2, row top + 1).
+        let outline = batch.vertices_of(&batch.primitives[2]);
+        assert_eq!((outline[0].x, outline[0].y), (2.0, 26.0));
     }
 
     #[test]

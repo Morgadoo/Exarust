@@ -281,6 +281,16 @@ box (`gui_rescale`). `GuiLevelState`
 (`gui_level`) keeps the level and the atlases with the GUI scale in the
 app; the other widgets wait for forms that use them.
 
+The basic controls also draw: `gui_controls` orders each class's back
+calls (a button's shell, a check box's sunken face, an image button's
+frames and box, a trackbar's frames and slider, a label's panel and frames, an icon
+button's and a picture's frames) and its front calls (the slot text
+matrix, the check box's label and tick, the image button's skin image, the
+trackbar's plain text, the label's held, block, coloured and plain
+variants, the icon button's shared or own atlas and the picture's
+bottom-up premultiplied quad), with the style's text alignment; the text
+and icon quads still join a frame from the caller.
+
 The game's own skin is a thin-line subclass of the draw skin. Most of its
 methods are modelled in `skin` beside the parent's: the opening (whose
 fifth length is four units, set by the parent constructor's call to the

@@ -507,6 +507,7 @@ fn load_gui_textures(
         crate::gui_font::FONTBASE_24.texture,
         crate::gui_text::MENU_FONT_TEXTURE,
         crate::menu::MENU_TITLE_TEXTURE,
+        crate::selection::SCREEN_ATLAS,
     ] {
         if textures.textures.contains_key(name) || textures.missing.iter().any(|n| n == name) {
             continue;

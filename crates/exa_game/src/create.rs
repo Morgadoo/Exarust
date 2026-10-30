@@ -196,6 +196,8 @@ pub fn creation_label(word: i32) -> CreationLabel {
 /// or 0x71 compact (its role is not traced); the physique picker reports
 /// to [`sync_physique`], the tone picker (style bit 0x80) to
 /// [`skin_changed`], and the page's own change goes to the creation form.
+/// The constructor writes one image atlas handle into control records 7, 9
+/// and 10.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BaseFormData {
     pub width: i32,
@@ -212,6 +214,9 @@ pub struct BaseFormData {
     pub table_word: u16,
     /// The bit the constructor sets in the tone picker's style word.
     pub tone_style: u32,
+    /// The three control records the constructor gives the same image atlas
+    /// (each record's own image list, which an image button draws from).
+    pub atlas_controls: [usize; 3],
 }
 
 pub fn base_form(compact: bool) -> BaseFormData {
@@ -226,6 +231,7 @@ pub fn base_form(compact: bool) -> BaseFormData {
         tone: [8, 0x148, 0xa0, if compact { 0x70 } else { 0xa0 }],
         table_word: if compact { 0x71 } else { 0x7f },
         tone_style: 0x80,
+        atlas_controls: [7, 9, 10],
     }
 }
 
@@ -447,6 +453,22 @@ pub fn edit_page(src: &PageSource) -> EditPageState {
         hair_off_on: src.hair_picker && !hair,
         hair_on: src.hair_picker && hair,
         variant_letter: (variant >= 0).then(|| (variant as u8).wrapping_add(0x41)),
+    }
+}
+
+/// What destroying the edit page does: when it holds a watched view it
+/// removes the change listener it added to that view before the base
+/// form's destroy runs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EditPageDestroy {
+    pub hook_removed: bool,
+    pub base: bool,
+}
+
+pub fn destroy_edit_page(has_view: bool) -> EditPageDestroy {
+    EditPageDestroy {
+        hook_removed: has_view,
+        base: true,
     }
 }
 
@@ -5602,6 +5624,18 @@ mod tests {
     }
 
     #[test]
+    fn the_edit_page_destroy_removes_its_listener_first() {
+        assert_eq!(
+            destroy_edit_page(true),
+            EditPageDestroy {
+                hook_removed: true,
+                base: true
+            }
+        );
+        assert!(!destroy_edit_page(false).hook_removed);
+    }
+
+    #[test]
     fn the_pickers_write_the_record_with_half_even_rounding() {
         let mut skin = PageSource {
             physique: [0.0; 2],
@@ -5649,6 +5683,7 @@ mod tests {
         assert_eq!(base_form(true).tone[3], 112);
         assert_eq!(base.caption, "VHM");
         assert_eq!((base.table_word, base.tone_style), (0x7f, 0x80));
+        assert_eq!(base.atlas_controls, [7, 9, 10]);
         assert_eq!(base_form(true).table_word, 0x71);
         // The style list under a 160-wide picker at 4, 24 in a 612 form.
         let list = hair_list([4, 24, 160, 112], 612, 4);
