@@ -108,9 +108,9 @@ pub struct CharacterData {
     /// The second item list the game keeps beside the inventory (its staged
     /// or trade items); `None` when it has none. Not saved.
     pub staged: Option<Vec<Carried>>,
-    /// A value the save copies from the body into the record. It is not
-    /// stored in the record file, so its meaning is not traced.
-    pub body_value: f32,
+    /// The body's condition word, which the save copies from the body into
+    /// the live record. It is not stored in the record file.
+    pub condition: u32,
 }
 
 impl Default for CharacterData {
@@ -141,7 +141,7 @@ impl CharacterData {
             record: CharacterRecord::new(),
             refs: 1,
             staged: None,
-            body_value: 0.0,
+            condition: 0,
         }
     }
 
@@ -152,7 +152,7 @@ impl CharacterData {
             record: CharacterRecord::reset(),
             refs: 1,
             staged: None,
-            body_value: 0.0,
+            condition: 0,
         }
     }
 
@@ -162,7 +162,7 @@ impl CharacterData {
             record,
             refs: 1,
             staged: None,
-            body_value: 0.0,
+            condition: 0,
         }
     }
 
@@ -751,7 +751,8 @@ impl CharacterData {
     /// unless it is positive), focus as `focus × 65535`, each converted to
     /// the nearest even integer and cut to 16 bits ([`Pools::save`]); the
     /// seed as 0xFFFF; the saved entries anew, a heal pool still owed (when
-    /// positive) and then a potion's expiry; and the body's untraced value.
+    /// positive) and then a potion's expiry; and the body's condition word
+    /// into the live record (not into the file).
     pub fn save_health(&mut self, health: Health) {
         const UNIT: f32 = 65535.0;
         self.record.pools.yellow = Pools::save(health.yellow / health.max * UNIT);
@@ -775,31 +776,13 @@ impl CharacterData {
                 value: expiry,
             });
         }
-        self.body_value = health.body_value;
+        self.condition = health.condition;
     }
 
-    /// Loads the record's health onto a body of maximum `body.max`, as the
-    /// game does: red, then yellow, as their shares of the maximum and
-    /// focus as its share ([`Pools::restore`]), then for each saved entry of
-    /// a known tag the heal pool or the potion. The game's loop reads the
-    /// *last* entry's value for every tag (harmless with one entry; with
-    /// both the heal pool takes the potion's expiry). What no entry names
-    /// keeps its value, as does the body's untraced value.
+    /// Loads the record's health onto a body of maximum `body.max`
+    /// ([`restore_record_health`]).
     pub fn restore_health(&self, body: &mut Health) {
-        let pools = self.record.pools;
-        body.red = Pools::restore(pools.red, body.max);
-        body.yellow = Pools::restore(pools.yellow, body.max);
-        body.focus = Pools::restore_focus(pools.focus);
-        let Some(last) = self.record.saved.last().map(|saved| saved.value) else {
-            return;
-        };
-        for saved in &self.record.saved {
-            match saved.tag {
-                SAVED_HEAL_POOL => body.heal_pool = f32::from_bits(last),
-                SAVED_POTION => body.potion = Some(last),
-                _ => {}
-            }
-        }
+        restore_record_health(&self.record, body);
     }
 
     // ---- skills -----------------------------------------------------
@@ -965,6 +948,30 @@ fn overlaps(a: &Item, b: &Item) -> bool {
 #[path = "record_test.rs"]
 mod tests;
 
+/// Loads a record's health onto a body of maximum `body.max`, as the game
+/// does when it spawns a character from its record: red, then yellow, as
+/// their shares of the maximum and focus as its share ([`Pools::restore`]),
+/// then for each saved entry of a known tag the heal pool or the potion.
+/// The game's loop reads the *last* entry's value for every tag (harmless
+/// with one entry; with both the heal pool takes the potion's expiry).
+/// What no entry names keeps its value, as does the body's condition word.
+pub fn restore_record_health(record: &CharacterRecord, body: &mut Health) {
+    let pools = record.pools;
+    body.red = Pools::restore(pools.red, body.max);
+    body.yellow = Pools::restore(pools.yellow, body.max);
+    body.focus = Pools::restore_focus(pools.focus);
+    let Some(last) = record.saved.last().map(|saved| saved.value) else {
+        return;
+    };
+    for saved in &record.saved {
+        match saved.tag {
+            SAVED_HEAL_POOL => body.heal_pool = f32::from_bits(last),
+            SAVED_POTION => body.potion = Some(last),
+            _ => {}
+        }
+    }
+}
+
 /// A body's health, as the save hook reads it and the load hook writes it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Health {
@@ -977,9 +984,9 @@ pub struct Health {
     pub heal_pool: f32,
     /// A drunk potion's expiry on the game clock.
     pub potion: Option<u32>,
-    /// The value the save copies out of the body (not part of the record
-    /// file).
-    pub body_value: f32,
+    /// The body's condition word, which the save copies into the live
+    /// record (not part of the record file).
+    pub condition: u32,
 }
 
 impl Default for Health {
@@ -991,7 +998,7 @@ impl Default for Health {
             focus: 0.0,
             heal_pool: 0.0,
             potion: None,
-            body_value: 0.0,
+            condition: 0,
         }
     }
 }

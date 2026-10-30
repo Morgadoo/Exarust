@@ -710,7 +710,11 @@ choice of id] and the player data carries the placement exporter's
 placement for it (the reference with bit 30, the body's position with its
 height as the floor, its heading, a living condition, no AI home or pose),
 so the slot is listed under the player's name and a load restores the
-character. The saves' character screen's select
+character. Before it writes, the record takes the player body's health as
+the original's story writer stores it (the three pools, the seed, the
+heal-pool and potion entries; [RFC.md](RFC.md), Saving), and the player
+spawned from a loaded record loads it back, so a load restores the
+player's wounds, focus, heal pool and potion. The saves' character screen's select
 (`SlotList::character_screen_select`) is the original's: the slot becomes
 current without moving, the availability is 2 for an opening `.rsg` plus 1
 for an opening `.rcp` (the test only opens the file), the `.rsg` is read

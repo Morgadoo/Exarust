@@ -1137,13 +1137,20 @@ included), focus ×
 infinities and values past the 64-bit range give the indefinite integer)
 and cut to 16 bits; the seed as 0xFFFF (a random one when a body is
 released); the saved-state list anew (a heal pool when positive, then the
-potion when the body has one); and a body value into a record field that is
-not in the file. The load works in double precision: red, then yellow, as
+potion when the body has one); and the body's condition word into a field
+of the live record that is not in the file (established from the store's
+source field, the body's condition word, in the REA listing). The load works in double precision: red, then yellow, as
 f32(max × (stored × u)) with u the double nearest 1/65535
 (`0x3EF0001000100010`), focus as f32(stored × u); the spawn computes the
 pools the same way. Its saved-state loop reads the last entry's value for
 every known tag (harmless with one entry; with both, the heal pool gets the
 potion's expiry), and what no entry names keeps its value on the body.
+The store's only caller is the story save writer, which runs it for every
+scene character before it writes; the load is the last write of the player
+spawn and of the spawn from a placement (whose reader first fills the
+yellow and red pools of a living record that saved no red). Exarust: the
+story saves store the player's health (`exa_game::save_live`, the other
+characters are not saved) and the player spawn loads it.
 
 **Writing.** The game's writer stores version 7 only: the fields in the
 order above, then the roles as `u32 count`, `u32 length` and the entries
