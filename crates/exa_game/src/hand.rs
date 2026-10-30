@@ -86,6 +86,7 @@
 //! per-frame request's reach and the controls' frame, read in the
 //! instructions (`context/re/player-control-hand.md`).
 
+use bevy::math::Affine3A;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use exa_combat::Condition;
@@ -1985,11 +1986,52 @@ fn hold_hand(
                     // segment runs to the picked point, or 10 000 cm
                     // without one. The held node takes the marker's frame
                     // whole, as the original copies the marker's matrix
-                    // into it [the original's space-free test of the item's
-                    // spheres against the other bodies at that frame is not
-                    // run: Exarust has no body overlap query there].
+                    // into it. A marker the item would overlap there is
+                    // refused: the original asks the scene whether the
+                    // item's body (or a child) meets another body at that
+                    // frame. Exarust tests the item's own spheres against
+                    // the other bodies' part spheres, its stand-in for the
+                    // original's sphere-against-mesh narrow phase.
                     let length = hit.map_or(item_cursor::MARKER_RAY_CM / CM, |(_, t)| t);
-                    let snapped = items.snap(origin, dir, length, |_| true);
+                    let held_frames: Vec<(Affine3A, Vec<(Vec3, f32)>)> = bodies
+                        .get(body)
+                        .map(|(_, ragdoll, ..)| {
+                            ragdoll
+                                .parts
+                                .iter()
+                                .map(|p| (p.transform(), p.spheres.clone()))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let others: Vec<(Vec3, f32)> = bodies
+                        .iter()
+                        .filter(|(entity, ..)| *entity != body)
+                        .flat_map(|(_, ragdoll, ..)| {
+                            ragdoll.parts.iter().flat_map(|p| {
+                                let frame = p.transform();
+                                p.spheres.iter().map(move |(centre, radius)| {
+                                    (frame.transform_point(*centre), *radius)
+                                })
+                            })
+                        })
+                        .collect();
+                    let overlaps = |frame: Frame| {
+                        let Some(held) = items.held.as_ref() else {
+                            return false;
+                        };
+                        let parts: Vec<Affine3A> = held_frames.iter().map(|(f, _)| *f).collect();
+                        let placed = item_cursor::snapped_parts(&parts, held.part, frame);
+                        placed.iter().zip(&held_frames).any(|(at, (_, spheres))| {
+                            spheres.iter().any(|(centre, radius)| {
+                                let world = at.transform_point(*centre);
+                                others.iter().any(|(other, other_radius)| {
+                                    world.distance_squared(*other)
+                                        <= (*radius + *other_radius) * (*radius + *other_radius)
+                                })
+                            })
+                        })
+                    };
+                    let snapped = items.snap(origin, dir, length, overlaps);
                     // Each placement holds only within reach of the hip
                     // (and a free one only when its box fitted): the
                     // item's new place is measured as the walk-to point.
