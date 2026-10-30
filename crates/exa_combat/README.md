@@ -249,6 +249,12 @@ branch is not reproduced.
 routine adds 3 to the striker's score for every wound and 1 to the struck
 body's own score for every clash or block it takes while parrying; the arena
 reads it as a fighter's share of a round's experience.
+At the same three points the routine tells the struck body's behaviour of
+the blow, and `react_to_hits` writes `BlowNoticed` (kind 1 a clash and 2 a
+block, first in their branch; kind 0 a wound, after the damage call, its
+sounds and the damage-taken notice; `down` when the struck body is down,
+collapsing or dead, a killing wound included); `exa_ai::struck` runs the AI's
+reaction from it. A turned blow tells nothing.
 
 `fighter`: a `Fighter` (health bars, natural armour and armour layers,
 readiness, whether it bleeds, its spawn stats, its record's perks, of

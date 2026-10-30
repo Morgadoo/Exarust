@@ -1474,6 +1474,17 @@ fn spawn_players(
             if let Some(job) = duel_composite {
                 commands.entity(foe).insert(job);
             }
+            // `--opponent-brain`: the brain a level's physical character
+            // carries beside its duellist, from the duel record.
+            if options.opponent_brain {
+                let mut roll = 0x2F1D_3B57;
+                commands.entity(foe).insert((
+                    exa_ai::roles::Relations::default(),
+                    exa_ai::brain::Npc::of_record(&duel_record, &mut roll),
+                    exa_ai::brain::CharacterId(duel_record.id),
+                    exa_ai::Mind::new(0.0),
+                ));
+            }
             if let Some(options) = practice.as_ref() {
                 insert_duel_powers(commands, foe, &options.record, &Default::default());
             }

@@ -185,9 +185,49 @@ pub(crate) fn tick_player_practice(
     }
 }
 
+/// The lessons the AI's hit reactions offer the player: a blow that marks
+/// the player's swing gives the struck character's combat rating as the
+/// lesson when it is larger ([`exa_ai::struck::Taught`]).
+pub(crate) fn take_lessons(
+    mut taught: MessageReader<exa_ai::struck::Taught>,
+    mut players: Query<&mut PlayerPractice>,
+) {
+    for t in taught.read() {
+        if let Ok(mut kept) = players.get_mut(t.attacker) {
+            let before = kept.practice.lesson;
+            exa_ai::combatant::raise_lesson(&mut kept.practice.lesson, t.rating);
+            debug!(
+                "the struck teach the player: lesson {before:.3} -> {:.3}",
+                kept.practice.lesson
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A struck character's rating raises the player's lesson only when it
+    /// is larger.
+    #[test]
+    fn a_struck_character_teaches_the_player_a_larger_lesson() {
+        let mut app = App::new();
+        app.add_message::<exa_ai::struck::Taught>()
+            .add_systems(Update, take_lessons);
+        let mut kept = PlayerPractice::default();
+        kept.practice.lesson = 2.0;
+        let player = app.world_mut().spawn(kept).id();
+        for rating in [1.0, 3.5] {
+            app.world_mut().write_message(exa_ai::struck::Taught {
+                attacker: player,
+                rating,
+            });
+        }
+        app.update();
+        let kept = app.world().get::<PlayerPractice>(player).unwrap();
+        assert_eq!(kept.practice.lesson, 3.5);
+    }
 
     /// A fighter without a record or weapon is estimated at 2 (no skill
     /// levels, no combat skill), quartered at a human's scale: 0.5.

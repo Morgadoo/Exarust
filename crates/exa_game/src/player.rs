@@ -499,6 +499,11 @@ impl Plugin for PlayerPlugin {
             .add_message::<exa_combat::AttackAskedHook>()
             .add_message::<exa_combat::pain::BlowFelt>()
             .add_message::<exa_combat::pain::ClashFelt>()
+            .add_message::<exa_ai::struck::Taught>()
+            .add_systems(
+                PostUpdate,
+                crate::player_practice::take_lessons.after(exa_ai::struck::HitReactions),
+            )
             .add_systems(
                 RunFixedMainLoop,
                 latch_attack_button.in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop),

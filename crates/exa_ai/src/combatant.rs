@@ -889,13 +889,6 @@ pub struct Combatant {
     pub combat_rating: f32,
     /// The published reach (cm).
     pub reach_cm: f32,
-    /// Courage, which a clean blow lowers.
-    pub courage: f32,
-    /// The highest combat rating among those it struck (raised once per
-    /// mark by the struck).
-    pub struck_rating: f32,
-    /// Its body carries the mark a blow leaves on the attacker.
-    pub marked: bool,
     /// Attention or alert level.
     pub alert: f32,
     /// The contacts. At most [`MAX_CONTACTS`].
@@ -919,9 +912,6 @@ impl Default for Combatant {
             holder: None,
             combat_rating: 0.0,
             reach_cm: 0.0,
-            courage: 0.5,
-            struck_rating: 0.0,
-            marked: false,
             alert: 0.0,
             contacts: Vec::new(),
             movement: Movement::default(),
@@ -1007,7 +997,7 @@ pub fn threat_from_nearby(
     attacker_cm: Vec3,
     attacker_look: Vec3,
     attacker_radius_cm: f32,
-    nearby: &[NearbyAim],
+    nearby: impl IntoIterator<Item = NearbyAim>,
 ) -> f32 {
     let mut best = 0.0f32;
     let limit = attacker_radius_cm + THREAT_MARGIN_CM;
@@ -1031,6 +1021,70 @@ pub fn threat_from_nearby(
         }
     }
     1.0 - best
+}
+
+/// The condition bits that stop the base's hit rules: down, knocked out or
+/// collapsing, and dead.
+pub const DOWN_OR_DEAD: u32 = 0xA00;
+
+/// The mark a blow leaves on its attacker's swing: the striker's swing word
+/// bit ([`exa_combat::swing::flags::ENGAGED_FOE`]) the player's late swing
+/// check sets too.
+pub const ATTACKER_MARK: u32 = exa_combat::swing::flags::ENGAGED_FOE;
+
+/// A blow as the struck body's behaviour is told of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Blow {
+    /// 0 a wound on flesh, 1 a clash on a held weapon, 2 a block on a
+    /// held shield.
+    pub kind: u8,
+    /// The struck character's condition has a [`DOWN_OR_DEAD`] bit.
+    pub down_or_dead: bool,
+    /// The struck character is being removed.
+    pub removed: bool,
+}
+
+/// The combatant base's part of a blow, which the motile AI runs before
+/// its own: nothing while the struck character is down or dead, or being
+/// removed. A wound (kind 0) lowers its courage to
+/// `((confidence + 1)·0.025 + 0.95)·courage`, the factor's `confidence + 1`
+/// in single precision and the rest in double. An attacker whose swing word
+/// lacks [`ATTACKER_MARK`] is marked, and the result is true: the attacker's
+/// practice then takes this character's combat rating as its lesson when
+/// higher ([`raise_lesson`]). An attacker without a swing word is not
+/// marked and always takes the lesson. A character without a courage
+/// (`None`) keeps none.
+pub fn take_hit(
+    blow: Blow,
+    courage: Option<&mut f32>,
+    confidence: f32,
+    attacker_swing: Option<&mut u32>,
+) -> bool {
+    if blow.down_or_dead || blow.removed {
+        return false;
+    }
+    if blow.kind == 0
+        && let Some(courage) = courage
+    {
+        let factor = f64::from(1.0f32 + confidence) * 0.025 + 0.95;
+        *courage = (factor * f64::from(*courage)) as f32;
+    }
+    match attacker_swing {
+        Some(flags) if *flags & ATTACKER_MARK != 0 => false,
+        Some(flags) => {
+            *flags |= ATTACKER_MARK;
+            true
+        }
+        None => true,
+    }
+}
+
+/// A practice lesson raised to a struck character's combat rating when
+/// that is higher (a NaN rating never is).
+pub fn raise_lesson(lesson: &mut f32, rating: f32) {
+    if *lesson < rating {
+        *lesson = rating;
+    }
 }
 
 /// The concern a hit adds to the attacker's contact: the threat estimate
@@ -1077,48 +1131,30 @@ impl Combatant {
         self.reach_cm = reach_cm * 1.0;
     }
 
-    /// A blow landed on this character. Nothing happens while it is down or
-    /// dead, or being removed. A clean hit lowers its courage to
-    /// `((trait1 + 1)·0.025 + 0.95)·courage`. An attacker without the mark
-    /// takes this character's combat rating as its struck rating, if
-    /// higher, and is marked.
-    pub fn take_hit(
+    /// The motile AI's reaction to an attacker's blow, after the base's
+    /// ([`take_hit`]): the attacker's contact, the first whose character it
+    /// is, has its flags word set to [`CONTACT_CONCERN_FLAGS`] (3) whatever
+    /// its concern; then, below the cap, the concern rises by
+    /// [`hit_concern`] with the threat estimate, which is asked for only
+    /// then (the original computes it after the cap gate). The contact's
+    /// own attitude scales the rise and its concern events follow the new
+    /// value ([`Contact::set_concern`]). Returns the concern written, or
+    /// none when the attacker has no contact or its concern is already at
+    /// the cap (or NaN). It runs while the struck character is down or
+    /// dead too: only the base is gated.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+    pub fn react_to_hit(
         &mut self,
-        attacker: Option<&mut Combatant>,
-        clean: bool,
-        trait1: f32,
-        down_or_dead: bool,
-        removed: bool,
-    ) {
-        if down_or_dead || removed {
-            return;
-        }
-        if clean {
-            // The factor is built in single precision (trait + 1), then
-            // widened: 1.0 · (trait + 1) as double · 0.025 + 0.95, times
-            // the courage, all in double, and cut back to a float.
-            let factor = f64::from(1.0f32 + trait1) * 0.025 + 0.95;
-            self.courage = (factor * f64::from(self.courage)) as f32;
-        }
-        if let Some(attacker) = attacker
-            && !attacker.marked
-        {
-            if attacker.struck_rating < self.combat_rating {
-                attacker.struck_rating = self.combat_rating;
-            }
-            attacker.marked = true;
-        }
-    }
-
-    /// The concern an attacker's blow adds to its contact, through
-    /// [`hit_concern`]: the contact's own attitude scales the threat rise and
-    /// its concern events follow the new value ([`Contact::set_concern`]).
-    /// Returns the concern written, or none when the attacker has no contact
-    /// or its concern is already at the cap. The original also marks the
-    /// contact with its word 3 here; Exarust has no field for it.
-    pub fn react_to_hit(&mut self, attacker: Entity, hit_kind: u8, threat: f32) -> Option<f32> {
+        attacker: Entity,
+        hit_kind: u8,
+        threat: impl FnOnce() -> f32,
+    ) -> Option<f32> {
         let contact = self.contacts.iter_mut().find(|c| c.character == attacker)?;
-        let next = hit_concern(threat, hit_kind, contact.attitude, contact.concern)?;
+        contact.flags = CONTACT_CONCERN_FLAGS;
+        if !(CONCERN_CAP > contact.concern) {
+            return None;
+        }
+        let next = hit_concern(threat(), hit_kind, contact.attitude, contact.concern)?;
         contact.set_concern(next);
         Some(next)
     }
@@ -1805,36 +1841,58 @@ mod tests {
     }
 
     #[test]
-    fn a_clean_hit_lowers_courage_and_marks_the_attacker_once() {
-        let mut struck = Combatant {
-            combat_rating: 30.0,
-            ..Combatant::default()
+    fn a_wound_lowers_courage_and_marks_the_attacker_once() {
+        let wound = Blow {
+            kind: 0,
+            down_or_dead: false,
+            removed: false,
         };
-        let mut attacker = Combatant {
-            struck_rating: 10.0,
-            ..Combatant::default()
+        // A new brain's courage is (confidence + 1)·0.5; confidence 0.4
+        // gives 0.7. ((1 + confidence) as double · 0.025 + 0.95) · courage.
+        let mut courage = 0.7f32;
+        let mut swing = 0x26u32;
+        assert!(take_hit(wound, Some(&mut courage), 0.4, Some(&mut swing)));
+        let lowered = (f64::from(1.0f32 + 0.4f32) * 0.025 + 0.95) * f64::from(0.7f32);
+        assert_eq!(courage, lowered as f32);
+        assert_eq!(swing, 0x26 | 0x10_0000);
+        // The mark holds for the swing: no second lesson.
+        assert!(!take_hit(wound, Some(&mut courage), 0.4, Some(&mut swing)));
+        // A clash or a block leaves the courage alone but marks.
+        let before = courage;
+        let mut fresh = 0;
+        let clash = Blow { kind: 1, ..wound };
+        assert!(take_hit(clash, Some(&mut courage), 0.4, Some(&mut fresh)));
+        assert_eq!((courage, fresh), (before, 0x10_0000));
+        let mut fresh = 0;
+        let block = Blow { kind: 2, ..wound };
+        assert!(take_hit(block, Some(&mut courage), 0.4, Some(&mut fresh)));
+        assert_eq!(courage, before);
+        // Down or dead, or being removed, nothing happens.
+        let mut fresh = 0;
+        let down = Blow {
+            down_or_dead: true,
+            ..wound
         };
-        struck.take_hit(Some(&mut attacker), true, 0.0, false, false);
-        // ((1 + trait) as double · 0.025 + 0.95) · courage, in double.
-        let lowered = ((1.0f64 * 0.025 + 0.95) * 0.5) as f32;
-        assert_eq!(struck.courage, lowered);
-        // A non-zero trait keeps the factor's f32 (trait + 1) step before
-        // the widening.
-        let mut hot = Combatant::default();
-        hot.take_hit(None, true, 0.1, false, false);
-        assert_eq!(
-            hot.courage,
-            (f64::from(1.0f32 + 0.1f32) * 0.025 + 0.95).mul_add(0.5, 0.0) as f32
-        );
-        assert_eq!(attacker.struck_rating, 30.0);
-        assert!(attacker.marked);
-        struck.combat_rating = 50.0;
-        struck.take_hit(Some(&mut attacker), false, 0.0, false, false);
-        assert_eq!(struck.courage, lowered);
-        assert_eq!(attacker.struck_rating, 30.0);
-        // Down, nothing happens.
-        struck.take_hit(None, true, 0.0, true, false);
-        assert_eq!(struck.courage, lowered);
+        assert!(!take_hit(down, Some(&mut courage), 0.4, Some(&mut fresh)));
+        let removed = Blow {
+            removed: true,
+            ..wound
+        };
+        assert!(!take_hit(
+            removed,
+            Some(&mut courage),
+            0.4,
+            Some(&mut fresh)
+        ));
+        assert_eq!((courage, fresh), (before, 0));
+        // An attacker without a swing word takes the lesson every time.
+        assert!(take_hit(wound, None, 0.0, None));
+        // The lesson is raised only to a higher rating; NaN never wins.
+        let mut lesson = 10.0;
+        raise_lesson(&mut lesson, 30.0);
+        raise_lesson(&mut lesson, 20.0);
+        raise_lesson(&mut lesson, f32::NAN);
+        assert_eq!(lesson, 30.0);
     }
 
     #[test]
@@ -1859,7 +1917,7 @@ mod tests {
     #[test]
     fn the_threat_estimate_weighs_nearby_bodies_against_the_attacker() {
         // No nearby body: the full threat.
-        assert_eq!(threat_from_nearby(1, Vec3::ZERO, Vec3::Z, 40.0, &[]), 1.0);
+        assert_eq!(threat_from_nearby(1, Vec3::ZERO, Vec3::Z, 40.0, []), 1.0);
         // A body 100 cm ahead along the attacker's look, inside radius+100:
         // share 100/10000 = 0.01, threat 0.99.
         let ahead = NearbyAim {
@@ -1868,7 +1926,7 @@ mod tests {
             dead: false,
         };
         assert_eq!(
-            threat_from_nearby(1, Vec3::ZERO, Vec3::Z, 40.0, &[ahead]),
+            threat_from_nearby(1, Vec3::ZERO, Vec3::Z, 40.0, [ahead]),
             0.99
         );
         // The attacker itself is skipped.
@@ -1878,7 +1936,7 @@ mod tests {
             dead: false,
         };
         assert_eq!(
-            threat_from_nearby(1, Vec3::ZERO, Vec3::Z, 40.0, &[self_entry]),
+            threat_from_nearby(1, Vec3::ZERO, Vec3::Z, 40.0, [self_entry]),
             1.0
         );
         // A dead body is skipped, as is one outside the radius plus 100.
@@ -1892,7 +1950,7 @@ mod tests {
             dead: false,
         };
         assert_eq!(
-            threat_from_nearby(1, Vec3::ZERO, Vec3::Z, 40.0, &[dead, far]),
+            threat_from_nearby(1, Vec3::ZERO, Vec3::Z, 40.0, [dead, far]),
             1.0
         );
         // Behind the attacker's look the share is not counted.
@@ -1902,7 +1960,7 @@ mod tests {
             dead: false,
         };
         assert_eq!(
-            threat_from_nearby(1, Vec3::ZERO, Vec3::Z, 40.0, &[behind]),
+            threat_from_nearby(1, Vec3::ZERO, Vec3::Z, 40.0, [behind]),
             1.0
         );
         // The largest share wins: 50 cm ahead gives 50/2500 = 0.02.
@@ -1912,7 +1970,7 @@ mod tests {
             dead: false,
         };
         assert_eq!(
-            threat_from_nearby(1, Vec3::ZERO, Vec3::Z, 40.0, &[ahead, closer]),
+            threat_from_nearby(1, Vec3::ZERO, Vec3::Z, 40.0, [ahead, closer]),
             0.98
         );
         // Within 1 cm² the body is skipped.
@@ -1922,7 +1980,7 @@ mod tests {
             dead: false,
         };
         assert_eq!(
-            threat_from_nearby(1, Vec3::ZERO, Vec3::Z, 40.0, &[touching]),
+            threat_from_nearby(1, Vec3::ZERO, Vec3::Z, 40.0, [touching]),
             1.0
         );
     }
@@ -1934,11 +1992,40 @@ mod tests {
         let contact = victim.contact_mut(attacker);
         contact.attitude = 50.0;
         contact.concern = 1.0;
-        assert_eq!(victim.react_to_hit(attacker, 1, 0.0), Some(1.5));
-        assert_eq!(victim.contact(attacker).unwrap().concern, 1.5);
-        assert!(victim.contact(attacker).unwrap().events & EVENT_CONCERNED != 0);
+        contact.flags = CONTACT_NOTICED;
+        // A kind-1 hit at threat 0: (0 + 0.5 + 0.5)·(1 − 0.5) + 1.
+        assert_eq!(victim.react_to_hit(attacker, 1, || 0.0), Some(1.5));
+        let contact = victim.contact(attacker).unwrap();
+        assert_eq!(contact.concern, 1.5);
+        assert!(contact.events & EVENT_CONCERNED != 0);
+        // The flags word becomes 3.
+        assert_eq!(contact.flags, CONTACT_CONCERN_FLAGS);
+        // A wound with the threat estimate of one body 100 cm ahead of
+        // the attacker (0.99): (0.99 + 0.5)·0.5 + 1.5.
+        let ahead = NearbyAim {
+            id: 9,
+            aim_cm: Vec3::new(0.0, 0.0, 100.0),
+            dead: false,
+        };
+        let threat = || threat_from_nearby(1, Vec3::ZERO, Vec3::Z, 40.0, [ahead]);
+        let expected = (f64::from(0.99f32 + 0.5) * (1.0 - 50.0 * 0.01) + 1.5) as f32;
+        assert_eq!(victim.react_to_hit(attacker, 0, threat), Some(expected));
+        // At the cap the flags word is still written, and the threat is not
+        // asked for.
+        let contact = victim.contact_mut(attacker);
+        contact.concern = CONCERN_CAP;
+        contact.flags = 0;
+        assert_eq!(
+            victim.react_to_hit(attacker, 0, || unreachable!("no threat at the cap")),
+            None
+        );
+        assert_eq!(
+            victim.contact(attacker).unwrap().flags,
+            CONTACT_CONCERN_FLAGS
+        );
         // A stranger has no contact and no concern is written.
-        assert_eq!(victim.react_to_hit(stranger, 0, 0.0), None);
+        assert_eq!(victim.react_to_hit(stranger, 0, || 0.0), None);
+        assert!(victim.contact(stranger).is_none());
     }
 
     #[test]
