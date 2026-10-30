@@ -305,10 +305,10 @@ pub enum NodeData {
     Mesh(Box<ExportMesh>),
     Light(ExportLight),
     VoxelLight(ExportVoxelLight),
-    /// Class 3: another node's export number and a word (guess: an aim
-    /// target).
+    /// Class 3: another node's export number (0 for none) and a word
+    /// (guess: an aim target).
     Target {
-        node: usize,
+        node: Option<usize>,
         value: u32,
     },
 }
@@ -381,24 +381,38 @@ pub struct GiPoints {
 /// An omni light's body.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ExportLight {
-    /// Body flags; under [`LIGHT_EXTRA`] the three extra values follow.
+    /// Body flags; under [`LIGHT_EXTRA`] the animation follows.
     pub flags: u32,
     pub color: [f32; 3],
     pub multiplier: f32,
     pub intensity: f32,
     /// cm.
     pub radius: f32,
+    /// The word the original keeps unread.
     pub unread: f32,
     pub softness: f32,
     /// Written when the node's `flags2 & 0x300` is `0x200`.
     pub spot: [f32; 2],
-    /// Written after a zero word when `flags & LIGHT_EXTRA`.
-    pub extra: [f32; 3],
+    /// Written after a zero word when `flags & LIGHT_EXTRA` (zeros when
+    /// `None`).
+    pub animation: Option<LightAnimation>,
 }
 
 pub const LIGHT_EXTRA: u32 = 0x3_0000;
 pub const SPOT_MASK: u32 = 0x300;
 pub const SPOT: u32 = 0x200;
+
+/// A light body's flicker and fade parameters: the reader's own record,
+/// written in the order the file holds them (amplitude, speed, emissive).
+pub use crate::rfc::LightAnimation;
+
+/// The animation a light stores when its flags ask for one but the scene
+/// gives none: three zero words.
+const NO_ANIMATION: LightAnimation = LightAnimation {
+    amplitude: 0.0,
+    speed: 0.0,
+    emissive: 0.0,
+};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ExportVoxelLight {
@@ -424,8 +438,11 @@ pub enum AttachmentData {
     Cloth {
         /// The cloth marker's word.
         marker: u32,
-        /// Particle positions (cm).
-        particles: Vec<[f32; 3]>,
+        /// Particle records in the original's 16-byte stride (cm); only the
+        /// first three words of each are stored, by the compacting copy
+        /// that turns the stride into 12 bytes. The fourth word is not
+        /// written.
+        particles: Vec<[f32; 4]>,
     },
     Emitter {
         /// `0x3DD0E002` (fire) or `0x3DD0E004`.
@@ -617,8 +634,77 @@ pub struct ExportOptions {
     pub rfi_extension: bool,
     /// Leave the per-triangle sub-chunks out.
     pub skip_triangle_data: bool,
+    /// Skip the meshes' part-preparation pass: the walk then calls no
+    /// [`ExportHooks::prepare_part`] before collecting materials. The
+    /// switch's purpose is not established; only its effect is (the
+    /// original's option bit 3). Material collection still runs.
+    pub skip_part_prepare: bool,
     /// Save-game export: characters store their AI home and motion state.
     pub save_mode: bool,
+}
+
+/// The scene's own objects get a chance to bring themselves up to date
+/// before the exporter writes them, as the original's virtual calls do.
+/// Every method does nothing by default; an exporter without hooks writes
+/// the scene exactly as given.
+pub trait ExportHooks {
+    /// A mesh's part, before the node is collected (the original calls each
+    /// part's own preparation method with its node, last part first). The
+    /// part index is into [`ExportMesh::parts`].
+    fn prepare_part(&mut self, _node: usize, _part: usize) {}
+
+    /// A node's attached body, cloth or emitter, just before the node's
+    /// chunk is opened. The original calls the attachment's own method
+    /// there (guarded by node flag [`flags::ATTACHED`]).
+    fn prepare_attachment(&mut self, _node: usize) {}
+
+    /// A character written with its body (a class-1 node is written without
+    /// one and is not offered), before the character chunks. The original
+    /// refreshes the character record's condition words here
+    /// ([`character_condition_words`]).
+    fn prepare_character(&mut self, _node: usize) {}
+}
+
+/// Hooks that do nothing.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoHooks;
+
+impl ExportHooks for NoHooks {}
+
+/// The four condition words the original refreshes on a character's record
+/// before an export, in the order it stores them: the health share of the
+/// maximum, the dazed share (zero unless it is above zero), the third word
+/// scaled by 65535, and the fourth word, which is `0xFFFF` because the
+/// original's helper returns its argument unchanged.
+///
+/// A share is `ROUND(value / max * 65535)` with the engine's `CVTSS2SI`:
+/// halves round to even and a value the conversion cannot represent gives
+/// the integer indefinite word (whose low half is zero).
+pub fn character_condition_words(health: f32, dazed: f32, max: f32, third: f32) -> [u16; 4] {
+    let dazed = if dazed > 0.0 {
+        rounded_word(dazed / max * 65535.0)
+    } else {
+        0
+    };
+    [
+        rounded_word(health / max * 65535.0),
+        dazed,
+        rounded_word(third * 65535.0),
+        0xFFFF,
+    ]
+}
+
+/// `CVTSS2SI` on a 32-bit float: round to nearest even and keep the low
+/// half of the 64-bit result; NaN, an infinity or an out-of-range value
+/// gives the integer indefinite value, `i64::MIN`, whose low half is zero.
+fn rounded_word(value: f32) -> u16 {
+    let rounded = value.round_ties_even();
+    const LIMIT: f32 = 9_223_372_036_854_775_808.0;
+    if rounded.is_nan() || !(-LIMIT..LIMIT).contains(&rounded) {
+        0
+    } else {
+        rounded as i64 as u16
+    }
 }
 
 /// A texture layer renamed by [`ExportOptions::rename_textures`].
@@ -703,6 +789,21 @@ impl Exporter {
         options: &ExportOptions,
         extra: Option<&mut ExtraChunks<'_>>,
     ) -> Result<Vec<u8>> {
+        let mut hooks = NoHooks;
+        self.export_with(scene, options, extra, &mut hooks)
+    }
+
+    /// [`Self::export`] with the scene's preparation hooks: the walk offers
+    /// each mesh part and the character writer offers each character with a
+    /// body, and the node writer offers each attachment, exactly where the
+    /// original calls the scene's own methods.
+    pub fn export_with(
+        &mut self,
+        scene: &ExportScene,
+        options: &ExportOptions,
+        extra: Option<&mut ExtraChunks<'_>>,
+        hooks: &mut dyn ExportHooks,
+    ) -> Result<Vec<u8>> {
         let mut walk = Walk::new(scene)?;
         let roots: Vec<usize> = (0..scene.nodes.len())
             .filter(|&i| scene.nodes[i].parent.is_none())
@@ -710,10 +811,10 @@ impl Exporter {
         for r in roots {
             if scene.nodes[r].flags & flags::CLASS == class::GROUP {
                 for c in walk.children[r].clone() {
-                    walk.visit(c)?;
+                    walk.visit(c, options, hooks)?;
                 }
             } else {
-                walk.visit(r)?;
+                walk.visit(r, options, hooks)?;
             }
         }
         let entries = walk.number()?;
@@ -736,7 +837,7 @@ impl Exporter {
             w.open(tag::NODE_LIST);
             w.u32(entries.len() as u32);
             for e in &entries {
-                walk.write_node(&mut w, e, options)?;
+                walk.write_node(&mut w, e, options, hooks)?;
             }
             w.close()?;
         }
@@ -749,7 +850,7 @@ impl Exporter {
         if !walk.characters.is_empty() {
             w.open(tag::CHARACTERS);
             w.u32(walk.characters.len() as u32);
-            walk.write_characters(&mut w, options)?;
+            walk.write_characters(&mut w, options, hooks)?;
             w.close()?;
         }
         if scene.whole_scene
@@ -868,6 +969,26 @@ pub fn lowercase_name(name: &[u8; 16]) -> [u8; 16] {
     name.map(|c| c.to_ascii_lowercase())
 }
 
+/// Appends a name to a mixed-case list unless the list already holds it
+/// lowercased, returning whether it was added. The original lowercases the
+/// name and compares all sixteen bytes against every entry before growing
+/// the list by one.
+pub fn add_unique_name(list: &mut Vec<[u8; 16]>, name: &[u8; 16]) -> bool {
+    let name = lowercase_name(name);
+    if list.contains(&name) {
+        return false;
+    }
+    list.push(name);
+    true
+}
+
+/// Whether a shared library already holds a name, compared lowercased: a
+/// material a library provides is not written into the file.
+pub fn library_holds(name: &[u8; 16], libraries: &[[u8; 16]]) -> bool {
+    let name = lowercase_name(name);
+    libraries.iter().any(|l| lowercase_name(l) == name)
+}
+
 /// A name with its extension replaced: from the last `.` (or the end of
 /// the name) on, the bytes become `suffix` and then zeros, cut at 16.
 pub fn replace_extension(name: &[u8; 16], suffix: &[u8; 4]) -> [u8; 16] {
@@ -940,7 +1061,12 @@ impl<'a> Walk<'a> {
     }
 
     /// The collection pass over one node and its subtree.
-    fn visit(&mut self, i: usize) -> Result<()> {
+    fn visit(
+        &mut self,
+        i: usize,
+        options: &ExportOptions,
+        hooks: &mut dyn ExportHooks,
+    ) -> Result<()> {
         let f = self.flags[i];
         if f & flags::OWNED != 0 {
             return Ok(());
@@ -963,9 +1089,24 @@ impl<'a> Walk<'a> {
             self.objects.push(i);
         } else {
             if f & flags::CLASS == class::MESH {
-                let NodeData::Mesh(mesh) = &self.scene.nodes[i].body else {
+                // A node sharing another's data has the master's mesh in
+                // the original (one mesh object behind both), so its parts
+                // are the master's.
+                let node = &self.scene.nodes[i];
+                let body = match (&node.body, node.shares) {
+                    (NodeData::None, Some(master)) => &self.node(master)?.body,
+                    (body, _) => body,
+                };
+                let NodeData::Mesh(mesh) = body else {
                     return Err(Error::Malformed(format!("mesh node {i} has no mesh")));
                 };
+                // The original keeps a second part list for this pass and
+                // offers its parts last-first; Exarust has one part list.
+                if !options.skip_part_prepare && !mesh.parts.is_empty() {
+                    for part in (0..mesh.parts.len()).rev() {
+                        hooks.prepare_part(i, part);
+                    }
+                }
                 for part in &mesh.parts {
                     if let Some(m) = &part.material {
                         self.add_material(m);
@@ -976,23 +1117,16 @@ impl<'a> Walk<'a> {
             self.index[i] = self.nodes.len() as i32;
         }
         for c in self.children[i].clone() {
-            self.visit(c)?;
+            self.visit(c, options, hooks)?;
         }
         Ok(())
     }
 
     fn add_material(&mut self, name: &[u8; 16]) {
-        let name = lowercase_name(name);
-        if self.materials.contains(&name)
-            || self
-                .scene
-                .shared_materials
-                .iter()
-                .any(|s| lowercase_name(s) == name)
-        {
+        if library_holds(name, &self.scene.shared_materials) {
             return;
         }
-        self.materials.push(name);
+        add_unique_name(&mut self.materials, name);
     }
 
     /// Numbers props and placed objects after the scene nodes (the first
@@ -1041,7 +1175,13 @@ impl<'a> Walk<'a> {
             .map_or(0, |p| self.index[p] as u32)
     }
 
-    fn write_node(&self, w: &mut ChunkWriter, e: &Entry, options: &ExportOptions) -> Result<()> {
+    fn write_node(
+        &self,
+        w: &mut ChunkWriter,
+        e: &Entry,
+        options: &ExportOptions,
+        hooks: &mut dyn ExportHooks,
+    ) -> Result<()> {
         let node = self.node(e.node)?;
         let f = self.flags[e.node];
         let kind = if f & flags::PROP != 0 {
@@ -1056,6 +1196,11 @@ impl<'a> Walk<'a> {
                 _ => tag::NODE_PLAIN,
             }
         };
+        // The original lets the attachment bring itself up to date before
+        // its node's chunk is opened, whatever the node's data source.
+        if f & flags::ATTACHED != 0 && node.attachment.is_some() {
+            hooks.prepare_attachment(e.node);
+        }
         w.open(kind);
         w.bytes(&node.name);
         w.u32(f & flags::HEADER_MASK);
@@ -1126,8 +1271,10 @@ impl<'a> Walk<'a> {
             },
             tag::NODE_TARGET => match &node.body {
                 NodeData::Target { node: t, value } => {
-                    self.node(*t)?;
-                    w.u32(self.index[*t] as u32);
+                    if let Some(t) = t {
+                        self.node(*t)?;
+                    }
+                    w.u32(t.map_or(0, |t| self.index[t] as u32));
                     w.u32(*value);
                     Ok(())
                 }
@@ -1197,7 +1344,9 @@ impl<'a> Walk<'a> {
                 w.u32(a.id);
                 w.u32(particles.len() as u32);
                 for p in particles {
-                    w.vec3(*p);
+                    // The original's compacting copy: the first three words
+                    // of each 16-byte particle.
+                    w.vec3([p[0], p[1], p[2]]);
                 }
             } else {
                 return Ok(());
@@ -1243,7 +1392,19 @@ impl<'a> Walk<'a> {
         w.close()
     }
 
-    fn write_characters(&self, w: &mut ChunkWriter, options: &ExportOptions) -> Result<()> {
+    fn write_characters(
+        &self,
+        w: &mut ChunkWriter,
+        options: &ExportOptions,
+        hooks: &mut dyn ExportHooks,
+    ) -> Result<()> {
+        // Every character written with its body refreshes its record first;
+        // a class-1 node is written without a body and is not offered.
+        for &i in &self.characters {
+            if self.flags[i] & flags::CLASS != class::PLAIN {
+                hooks.prepare_character(i);
+            }
+        }
         if let Some(db) = self.scene.character_db.as_ref().filter(|d| d.count > 0) {
             w.open(tag::CHARACTER_DB);
             write_rdb(w, CHARACTER_DB_MAGIC, db)?;
@@ -1560,8 +1721,11 @@ fn write_light(w: &mut ChunkWriter, l: &ExportLight, flags2: u32) {
         w.f32(l.spot[1]);
     }
     if l.flags & LIGHT_EXTRA != 0 {
+        let animation = l.animation.unwrap_or(NO_ANIMATION);
         w.u32(0);
-        w.vec3(l.extra);
+        w.f32(animation.amplitude);
+        w.f32(animation.speed);
+        w.f32(animation.emissive);
     }
 }
 

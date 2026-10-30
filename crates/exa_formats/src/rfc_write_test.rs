@@ -400,6 +400,29 @@ fn a_sharer_stores_only_the_lowest_numbered_source() {
 }
 
 #[test]
+fn a_mesh_sharer_without_its_own_mesh_uses_the_masters() {
+    // A loaded level's instance node is mesh-class with no body of its own:
+    // the walk collects its parts from the master it shares, and the node
+    // stores only the reference.
+    let mut q = quad();
+    q.parts[0].material = Some(name("Brick"));
+    let master = mesh_node("A", q);
+    let mut sharer = mesh_node("B", quad());
+    sharer.body = NodeData::None;
+    sharer.shares = Some(0);
+    let s = Scene::parse(&export(&scene_of(vec![master, sharer]))).unwrap();
+    assert!(matches!(s.nodes[1].body, NodeBody::Instance(1)));
+    // Without a master the node is still malformed.
+    let mut lone = mesh_node("C", quad());
+    lone.body = NodeData::None;
+    assert!(
+        Exporter::new()
+            .export(&scene_of(vec![lone]), &ExportOptions::default(), None)
+            .is_err()
+    );
+}
+
+#[test]
 fn materials_missing_from_the_shared_libraries_are_listed() {
     let mut a = quad();
     a.parts[1].material = Some(name("STONE"));
@@ -651,7 +674,11 @@ fn a_light_body_is_40_bytes_plus_spot_and_extra() {
         unread: 0.0,
         softness: 0.5,
         spot: [2.0, 3.0],
-        extra: [4.0, 5.0, 6.0],
+        animation: Some(LightAnimation {
+            amplitude: 4.0,
+            speed: 5.0,
+            emissive: 6.0,
+        }),
     });
     let b = export(&scene_of(vec![n]));
     let kids = chunks(&roots(&b)[0].1[4..]);
@@ -659,6 +686,11 @@ fn a_light_body_is_40_bytes_plus_spot_and_extra() {
     assert_eq!(body.len(), 40 + 8 + 16);
     assert_eq!(words(&body[16..20]), [1.0f32.to_bits()]);
     assert_eq!(words(&body[48..52]), [0]);
+    // The animation keeps the file's order: amplitude, speed, emissive.
+    assert_eq!(
+        words(&body[52..64]),
+        [4.0f32.to_bits(), 5.0f32.to_bits(), 6.0f32.to_bits()]
+    );
     let s = Scene::parse(&b).unwrap();
     let NodeBody::Light(l) = s.nodes[0].body else {
         panic!("not a light")
@@ -666,6 +698,107 @@ fn a_light_body_is_40_bytes_plus_spot_and_extra() {
     assert_eq!((l.flags, l.multiplier, l.intensity), (0x1_0010, 0.1, 60.0));
     assert_eq!((l.radius, l.softness), (630.0 * CM, 0.5));
     assert_eq!(l.spot, Some([2.0, 3.0]));
+}
+
+#[test]
+fn condition_words_round_to_even_and_zero_non_positive_daze() {
+    // The shares are value / max * 65535, rounded as CVTSS2SI rounds:
+    // 0.5 gives 32767.5 (ties to even, 32768), 0.75 gives 49151.25.
+    let w = character_condition_words(0.5, 0.75, 1.0, 0.25);
+    assert_eq!(w, [32768, 49151, 16384, 0xFFFF]);
+    // A zero, negative or NaN daze stores zero, not a share.
+    for dazed in [0.0, -1.0, f32::NAN] {
+        assert_eq!(character_condition_words(1.0, dazed, 1.0, 0.0)[1], 0);
+    }
+    // An unrepresentable share (a zero maximum) stores the indefinite
+    // conversion's low half, zero; so does a NaN health.
+    assert_eq!(character_condition_words(1.0, 0.0, 0.0, 0.0)[0], 0);
+    assert_eq!(character_condition_words(f32::NAN, 0.0, 1.0, 0.0)[0], 0);
+    // The conversion itself: halves to even, out of range and NaN to zero.
+    assert_eq!(rounded_word(2.5), 2);
+    assert_eq!(rounded_word(3.5), 4);
+    assert_eq!(rounded_word(-2.5), 0xFFFE);
+    assert_eq!(rounded_word(-1.0), 0xFFFF);
+    for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 1e30, -1e30] {
+        assert_eq!(rounded_word(bad), 0, "{bad}");
+    }
+}
+
+#[derive(Default)]
+struct Recording {
+    calls: Vec<(&'static str, usize, usize)>,
+}
+
+impl ExportHooks for Recording {
+    fn prepare_part(&mut self, node: usize, part: usize) {
+        self.calls.push(("part", node, part));
+    }
+
+    fn prepare_attachment(&mut self, node: usize) {
+        self.calls.push(("attachment", node, 0));
+    }
+
+    fn prepare_character(&mut self, node: usize) {
+        self.calls.push(("character", node, 0));
+    }
+}
+
+#[test]
+fn the_walk_offers_parts_last_first_attachments_and_characters() {
+    let mesh = mesh_node("M", quad());
+    let mut attached = node("Body", class::PLAIN | flags::SAVED | flags::ATTACHED, None);
+    attached.attachment = Some(Attachment {
+        class: ATTACH_BODY,
+        id: 0,
+        data: AttachmentData::Body(Box::new(body())),
+    });
+    let mut character = character(0);
+    character.flags = flags::CHARACTER | flags::SAVED;
+    let scene = scene_of(vec![mesh, attached, character]);
+
+    let mut record = Recording::default();
+    Exporter::new()
+        .export_with(&scene, &ExportOptions::default(), None, &mut record)
+        .unwrap();
+    assert_eq!(
+        record.calls,
+        [
+            ("part", 0, 1),
+            ("part", 0, 0),
+            ("attachment", 1, 0),
+            ("character", 2, 0),
+        ]
+    );
+
+    // The part-preparation switch leaves out the part pass alone: the
+    // materials are still collected and the other hooks still run.
+    let mut record = Recording::default();
+    let options = ExportOptions {
+        skip_part_prepare: true,
+        ..ExportOptions::default()
+    };
+    let bytes = Exporter::new()
+        .export_with(&scene, &options, None, &mut record)
+        .unwrap();
+    assert_eq!(record.calls, [("attachment", 1, 0), ("character", 2, 0)]);
+    assert!(roots(&bytes).iter().any(|(t, _)| *t == tag::MATERIAL_LIST));
+}
+
+#[test]
+fn a_name_list_takes_each_lowercased_name_once() {
+    let mut list = Vec::new();
+    assert!(add_unique_name(&mut list, &name("Brick01.dds")));
+    assert!(!add_unique_name(&mut list, &name("brick01.DDS")));
+    assert!(!add_unique_name(&mut list, &name("BRICK01.DDS")));
+    assert!(add_unique_name(&mut list, &name("Stone")));
+    assert_eq!(list, [name("brick01.dds"), name("stone")]);
+
+    // A library's name is found lowercased, so a mixed-case material is
+    // not written into the file.
+    let libraries = [name("stone"), name("Wood")];
+    assert!(library_holds(&name("STONE"), &libraries));
+    assert!(library_holds(&name("wood"), &libraries));
+    assert!(!library_holds(&name("iron"), &libraries));
 }
 
 #[test]
@@ -688,13 +821,31 @@ fn a_voxel_light_reads_back() {
 fn a_target_node_stores_the_target_number() {
     let mut t = node("Cam", class::TARGET | flags::SAVED, None);
     t.body = NodeData::Target {
-        node: 1,
+        node: Some(1),
         value: 0x3F80_0000,
     };
     let b = export(&scene_of(vec![t, plain("Aim", None)]));
     let kids = chunks(&roots(&b)[0].1[4..]);
     assert_eq!(kids[0].0, tag::NODE_TARGET);
     assert_eq!(words(&kids[0].1[112..]), [2, 0x3F80_0000]);
+
+    // No target stores 0, as the reader keeps a zero target as none.
+    let mut none = node("Cam", class::TARGET | flags::SAVED, None);
+    none.body = NodeData::Target {
+        node: None,
+        value: 7,
+    };
+    let b = export(&scene_of(vec![none]));
+    let kids = chunks(&roots(&b)[0].1[4..]);
+    assert_eq!(words(&kids[0].1[112..]), [0, 7]);
+    let s = Scene::parse(&b).unwrap();
+    assert!(matches!(
+        s.nodes[0].body,
+        NodeBody::Camera {
+            target: None,
+            value: 7
+        }
+    ));
 }
 
 #[test]
@@ -772,7 +923,7 @@ fn owned(n: &str, parent: usize, class: u32) -> SceneNode {
             data: if class == ATTACH_CLOTH {
                 AttachmentData::Cloth {
                     marker: 0,
-                    particles: vec![[1.0, 2.0, 3.0]],
+                    particles: vec![[1.0, 2.0, 3.0, 9.0]],
                 }
             } else {
                 AttachmentData::None
@@ -825,6 +976,7 @@ fn a_cloth_part_stores_its_particles() {
     let rec = &chunks(&roots(&b)[0].1[4..])[0].1;
     let parts = chunks(&rec[4 + 16 + 48 + 8..]);
     assert_eq!(parts[0].0, tag::PART_CLOTH);
+    // The fourth word of each 16-byte particle is not stored.
     let mut want = name("Cloth").to_vec();
     want.extend(le(&[0x77, 1]));
     want.extend(f32s(&[1.0, 2.0, 3.0]));
