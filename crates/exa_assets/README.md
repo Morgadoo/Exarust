@@ -117,15 +117,23 @@ split over the machine's threads (up to eight; the same texels on every
 machine). The race maps are read unshifted: the look seed's two offsets
 (`UVOfs`) belong to the decomposition programs only (`decomp`).
 `compose_with_decomp` runs the callback's decomposition branch: with a
-`Decomp` amount above zero the three `chardecomp` passes replace the base
-programs (the seam mask's red channel square-rooted, the decay maps, the
-height map's cavity and the ancient normal), then the beard overlays draw
-on top. The living load no amount, so the running path draws `compose`.
+`Decomp` amount above zero the material's mask pass is drawn first
+(`decomposition_mask`: `humanseams` times `humandcmpw` at the seed offset
+times the amount, smoothed twice, into one 8-bit channel), then the three
+`chardecomp` passes replace the base programs, fed the race's colour or
+gloss in `Tex0`, the mask in `Tex1` (and at `Tex5` for the normal pass,
+where a fifth normal layer reads it) and the job's tone as `SknCol`; the
+beard overlays draw on top. The running loader draws it: a job whose
+feral level is above zero carries `SkinDecomp` (amount and offsets, part
+of the cache key) and `skin_compose_inputs` decodes the eight maps
+(`human_skin::DECOMP_MAPS`; a map that does not decode leaves the pass
+out).
 `SkinCompositeJob` is
 the job as data: `ModelLoader::composited_skin` decodes the race, layer and
 beard maps on the CPU, composes and uploads the three maps as an
 `ExaMaterial` (white diffuse, packed surface, normal, subsurface, blood),
-cached by the job's key (stem, tone, side, beard and layers);
+cached by the job's key (stem, tone, side, beard, layers and
+decomposition);
 `skin_compose_inputs`, `SkinComposeInputs::generate` (pure, for a task
 thread) and `finish_composited_skin` split it for the async dressing pass.
 `run_mesh` rebuilds each run's tangents with the splitter, as every drawn
@@ -144,7 +152,8 @@ precision and times 0.8 in double) are `tone_blend_target`.
 
 The decomposition pass (`decomp`): the original's `chardecomp_d`, `_s`
 and `_n` programs evaluated per texel for a corpse's or undead's skin —
-`TEXTURES` names the draw's two units (`Tex0`, `Tex1`), `AMOUNT_UNIFORM`
+`mask` is the mask pass (its maps `MASK_MAPS`), `TEXTURES` names that
+pass's two units (`Tex0`, `Tex1`), `AMOUNT_UNIFORM`
 and `UV_OFFSET_UNIFORM` its uniforms, and `Draw::new` the positive-amount
 gate —
 the skin scaling and decay mixes, the green specular sheen and the decay

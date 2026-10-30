@@ -1044,14 +1044,16 @@ result). The `chargen_*` programs bind no `UVOfs`: the record's two seed
 offsets shift only the decomposition pass's `skindecomp` fetch.
 `compose_with_decomp` runs the callback's decomposition branch
 (`exa_assets::decomp`, the `chardecomp_d/_s/_n` passes): when the `Decomp`
-amount is above zero the three base programs are not drawn and the
-decomposition material replaces their result, the seam mask's red channel
-square-rooted, the skin's own colour used as `SknCol`, the decay maps added,
-the normal pass carving the height map's cavity and adding
-`ancientnrmm0` and `humandcmpn`. The beard overlays draw on top and the
-apparel layers last. The amount comes from the creator's decomposition
-slider; a living character draws none, so the loader still calls
-`compose`.
+amount is above zero the material first draws its mask pass into a
+one-channel 8-bit target of the job's size (`humanseams` times `humandcmpw`
+fetched at `UVOfs`, times the amount, smoothed twice), then replaces the
+three base programs: the race's colour or gloss in `Tex0`, the mask in
+`Tex1`, the job's tone as `SknCol`, and for the normal pass the base normal
+and layers in `Tex0`..`Tex4` with the mask rebound at `Tex5` (so a fifth
+layer reads the mask). The beard overlays draw on top and the apparel
+layers last. The amount is the job's feral level (a race whose look
+darkens, `look::skin_darkening`); the loader draws the pass whenever it is
+above zero (Kade of `exanima01` is fully feral).
 
 The running skin is the composite, not the race maps plus tint.
 `SkinJob::composite_job` describes the job
@@ -2888,15 +2890,19 @@ textures.flb --dump <dir>`).
   `Tex0`) are added as differences from the base by their weights (`lamt`,
   one per layer, the layer count the caller names). `ancientnrmm0`
   (`Tex6`)'s xy is added by `amount/(1 + amount)`, then `humandcmpn`
-  (`Tex7`)'s xy is mixed in by `√w`, w the height texel (`Tex5`). A cavity
-  normal from the eight neighbouring height texels (squared,
+  (`Tex7`)'s xy is mixed in by `√w`, w the mask texel (`Tex5`). A cavity
+  normal from the eight neighbouring mask texels (squared,
   sobel-weighted, normalised, z = 0.5) is added by `3·(1 − w)²`; z is
   rebuilt from the xy length. The result is stored as `0.5·n + 0.5`.
 
 The diffuse and specular passes bind their maps from unit 2 (`humanseams`,
 the head of both lists, is skipped by the binding loops) and the normal pass
-binds its two maps at units 6 and 7. `decomp::created` is the amount's
-ordered test. No corpse path calls the passes yet.
+binds its two maps at units 6 and 7. The seam mask `w` all three passes
+read is the material's own first pass (`decomp::mask`): `humanseams`'
+red times `humandcmpw`'s red at the shifted coordinate, times the amount,
+smoothed twice (`a·a·(3 − 2a)`), stored in an 8-bit red target.
+`decomp::created` is the amount's ordered test. The composite draws the
+passes for every job whose feral level is above zero.
 
 ## Item icons
 

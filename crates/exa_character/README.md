@@ -249,8 +249,9 @@ tested rules of their own.
   (`PendingSkins`; the skin run draws the race maps until they are
   uploaded): 14 ms at 512² and 124 ms at 1024² on 8 threads, so a level's
   dressing stage takes no longer than the per-node draw's. The race maps are read unshifted (the
-  seed's offsets move only the decomposition pass). The darkening (the feral level) is not applied by
-  the shader yet; a body whose race texture set does not decode keeps the
+  seed's offsets move only the decomposition pass). The feral level is the job's
+  decomposition amount: above zero, `composite_job` carries it with the
+  seed's offsets and the composite draws the `chardecomp` passes; a body whose race texture set does not decode keeps the
   race maps plus tone.
 - `rebuild` keeps the look rebuild's own steps (job reset and first
   apparel, frame save, dynamics rebuild, frame restore, the root lift by
