@@ -47,6 +47,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let tex_ofs = ribbon.tex_ofs.xyz;
     var out = vec4(0.0);
 @if(!TORRENT) {
+@if(!SMOKE) {
     // effectforce_f
     var tc: vec2<f32>;
     tc.x = tex.x * 0.5;
@@ -85,6 +86,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     rgb = rgb + vec3(0.04, 0.0, 0.6) * c * 0.6;
     out = vec4(rgb * 0.25, 0.0);
 }
+}
 @if(TORRENT) {
     // effecttorrent_f (its first `d`, computed and overwritten before any
     // read, is left out).
@@ -121,6 +123,34 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     rgb = (rgb * rgb + rgb) * 0.5;
     rgb = rgb + vec3(0.04, 0.0, 0.6) * c * 0.6;
     out = vec4(rgb * 0.25 * col.a, c * tx2.x * 0.1 * col.a);
+}
+@if(SMOKE) {
+    // effectsmoke_f, the displacement tendril's smoke.
+    var tc = vec2(0.0);
+    tc.x = tex.x - 0.5;
+    tc.x = tc.x * (tx2.x * 0.7 + 0.3) + 0.5;
+    tc.x = tc.x * 0.13;
+    tc.y = tex.y * 0.38;
+    tc += col.xy;
+    tc = tc * tex_ofs.z;
+    var a = emi(tc * 0.5);
+    tc.y = tc.y + 0.3 - tex_ofs.y * 0.25;
+    tc.y = tc.y * 1.2;
+    var b = emi(tc * 1.25) * 1.5;
+    a = a * b * (1.5 - a * a);
+    tc.y = tc.y - tex_ofs.y * 0.25;
+    tc = tc * 1.75;
+    b = emi(tc) * 0.5;
+    b = max(b * 3.0 - 1.0, 0.0);
+    a = a + b * b * (2.0 - a * a);
+    a = a * a;
+    b = 1.0 - abs(tex.x + tex.x - 1.0);
+    let c = b * b * tx2.x + (1.0 - tx2.x);
+    a = a * b * c;
+    b = min(tx2.y, 1.0);
+    let d = tx2.x * (2.0 - tx2.x);
+    a = a * d;
+    out = vec4(vec3(0.0), a * col.a * b);
 }
     return clamp(out, vec4(0.0), vec4(1.0));
 }

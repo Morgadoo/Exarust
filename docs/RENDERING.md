@@ -2814,8 +2814,9 @@ arc layer (nothing spawns one yet).
 ## Force effects
 
 `exa_render::force_effects` holds the Force effects' programs, ported from
-the shipped GLSL (`effectforce_f`, `effecttorrent_f`, `effectshell_v` /
-`effectshell_f`, `effectfrcstrk_f`); `exa_game::thaum::effect_draw` submits them
+the shipped GLSL (`effectforce_f`, `effecttorrent_f`, `effectsmoke_f`,
+`effectshell_v` / `effectshell_f`, `effectfrcstrk_f`);
+`exa_game::thaum::effect_draw` submits them
 ([THAUMATURGY.md](THAUMATURGY.md), The shaped-force aura).
 
 - **Ribbons** (`ForceRibbonMaterial`, `force_ribbon.wesl`): the blast, bolt
@@ -2825,7 +2826,10 @@ the shipped GLSL (`effectforce_f`, `effecttorrent_f`, `effectshell_v` /
   first coordinate set, `vTx2` the second (`ATTRIBUTE_UV_1`), `vCol` the
   colour bytes over 255. `TexOfs` is the uniform, `EmiTex` the noise
   picture. `effectforce_f` never writes its alpha; it is taken as 0, so the
-  blast ribbon only adds.
+  blast ribbon only adds. With the `SMOKE` definition it is the
+  displacement tendril's `effectsmoke_f`: three `EmiTex` reads, the smoke's
+  vertical taper and the black, alpha-only output the premultiplied blend
+  darkens the scene with.
 - **Shell aura** (`ForceShellMaterial`, `force_shell.wesl`): its own vertex
   stage on Bevy's skinning moves each vertex out 2 cm along its skinned
   normal (the skinned copy's `position + 2·normal`); the fragment stage

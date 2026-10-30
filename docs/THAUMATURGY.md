@@ -992,7 +992,9 @@ class's own, not applied to Exarust's drawn body.
 The arcs', wisps' and barricade's meshes come from their own builders but
 are drawn with `exa_render::glow::GlowMaterial`, an additive stand-in: the
 original's electricity program and `effectfbrcd` are not ported, nor are
-the lights and sounds. The blast-family and torrent ribbons and the shell
+the lights and sounds. The displacement tendril's `effectforce_v` /
+`effectsmoke_f` pair is ported as `ForceRibbonMaterial::smoke` (no live
+tendril draws it yet). The blast-family and torrent ribbons and the shell
 aura draw with their own ported programs (`effectforce_f`,
 `effecttorrent_f`, `effectshell`; The shaped-force aura). The arcs
 upload their ribbon's UVs. The barricade's navigation stamp is applied to

@@ -1,6 +1,8 @@
 //! The Force effects' GPU programs: the blast, bolt and wave chunk ribbons
 //! and the torrent's streams (`effectforce_v` with `effectforce_f` or
-//! `effecttorrent_f`, [`ForceRibbonMaterial`]), the force-shell aura
+//! `effecttorrent_f`, [`ForceRibbonMaterial`]), the displacement tendril's
+//! smoke (`effectsmoke_f` over the same vertex stage, also
+//! [`ForceRibbonMaterial`] with `smoke`), the force-shell aura
 //! (`effectshell_v`/`effectshell_f` over a copy of the caster's skinned
 //! meshes or of a held body's or weapon's rigid ones, and `effectfrcstrk_f`
 //! for a Force Strikes weapon aura, [`ForceShellMaterial`]), and the animated `_ForceNoise` picture
@@ -97,6 +99,9 @@ pub struct ForceRibbonMaterial {
     pub noise: Handle<Image>,
     /// The torrent's program instead of the blast's.
     pub torrent: bool,
+    /// The tendril's smoke program (`effectsmoke_f`) instead of the
+    /// ribbon's: black with the smoke's alpha, premultiplied.
+    pub smoke: bool,
 }
 
 impl ForceRibbonMaterial {
@@ -108,6 +113,19 @@ impl ForceRibbonMaterial {
             },
             noise,
             torrent,
+            smoke: false,
+        }
+    }
+
+    /// The tendril's smoke ribbon with `TexOfs` = `tex_ofs`.
+    pub fn smoke(noise: Handle<Image>, tex_ofs: Vec3) -> Self {
+        Self {
+            params: ForceRibbonParams {
+                tex_ofs: tex_ofs.extend(0.0),
+            },
+            noise,
+            torrent: false,
+            smoke: true,
         }
     }
 }
@@ -115,11 +133,15 @@ impl ForceRibbonMaterial {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct ForceRibbonKey {
     torrent: bool,
+    smoke: bool,
 }
 
 impl From<&ForceRibbonMaterial> for ForceRibbonKey {
     fn from(m: &ForceRibbonMaterial) -> Self {
-        Self { torrent: m.torrent }
+        Self {
+            torrent: m.torrent,
+            smoke: m.smoke,
+        }
     }
 }
 
@@ -157,6 +179,11 @@ impl Material for ForceRibbonMaterial {
             && let Some(fragment) = descriptor.fragment.as_mut()
         {
             fragment.shader_defs.push("TORRENT".into());
+        }
+        if key.bind_group_data.smoke
+            && let Some(fragment) = descriptor.fragment.as_mut()
+        {
+            fragment.shader_defs.push("SMOKE".into());
         }
         Ok(())
     }
@@ -521,10 +548,17 @@ mod tests {
         assert_eq!(AURA_RECORD_FLAGS & TWO_SIDED, 0);
         let noise = Handle::<Image>::default();
         let blast = ForceRibbonMaterial::new(noise.clone(), Vec3::new(0.0, 4.0, 1.5), false);
+        let smoke = ForceRibbonMaterial::smoke(noise.clone(), Vec3::new(0.0, 0.3, 2.0));
         let torrent = ForceRibbonMaterial::new(noise, Vec3::Z, true);
         assert_eq!(blast.alpha_mode(), AlphaMode::Premultiplied);
         assert_eq!(blast.params.tex_ofs, Vec4::new(0.0, 4.0, 1.5, 0.0));
         assert_ne!(ForceRibbonKey::from(&blast), ForceRibbonKey::from(&torrent));
+        // The tendril's smoke shares the vertex stage and the blend but not
+        // the fragment body.
+        assert!(smoke.smoke && !smoke.torrent);
+        assert_eq!(smoke.alpha_mode(), AlphaMode::Premultiplied);
+        assert_eq!(smoke.params.tex_ofs, Vec4::new(0.0, 0.3, 2.0, 0.0));
+        assert_ne!(ForceRibbonKey::from(&blast), ForceRibbonKey::from(&smoke));
     }
 
     #[test]
