@@ -83,6 +83,25 @@ pub struct Hands {
     pub off_light: bool,
 }
 
+impl Hands {
+    /// The hands after their held items came loose (a collapse dropping
+    /// them): every hand that does not hold a shield is empty, as the
+    /// holder's came-loose hook clears every non-shield hand of the record's
+    /// out set at the first drop. A shield stays on the off arm.
+    pub fn let_go(self) -> Self {
+        Self {
+            shield: self.shield,
+            ..Self::default()
+        }
+    }
+
+    /// Whether both hands are empty: no item in the main hand and nothing
+    /// (weapon, shield or light) in the off hand.
+    pub fn is_empty(&self) -> bool {
+        self.main.is_none() && self.second.is_none() && self.shield.is_none() && !self.off_light
+    }
+}
+
 /// The original's stance class: what the other arm does while one swings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StanceClass {

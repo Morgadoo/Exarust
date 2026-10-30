@@ -16,7 +16,12 @@
 //!   muscled again and the muscles turned on with the race's factors and
 //!   the character's stats the body had ([`Ragdoll::revival_drive`], not
 //!   the human default), empty hands are set up unarmed again (the hands'
-//!   refresh), and an AI brain applies its roles again.
+//!   refresh), and an AI brain applies its roles again. The hands count as
+//!   empty when both out-set hands of the record are
+//!   ([`weapon_slots_empty`]): the collapse's drop cleared every hand but a
+//!   shield's ([`exa_character::body_words::drop_collapsed_hands`],
+//!   [`crate::equip::forget_collapsed_hands`]). The collapse record goes
+//!   with the death clock, so a second collapse drops again.
 //! - **Undo go-limp.** A body whose muscles are back while it still keeps
 //!   what go-limp took ([`LimpKept`]) gets its clip player and its
 //!   character's controller back, faces the way its chest lies over its
@@ -30,8 +35,10 @@
 //! calls after it (the skin material `go` faded to 1.0).
 //!
 //! Not reproduced: the glow fade (Exarust has no live skin-material fade:
-//! it is logged), combat mode left on an AI controller (the duellist keeps
-//! its own), the revive's per-limb node-turn copy, the two unknown byte
+//! it is logged), the combat-mode byte the revive clears on every body
+//! (Exarust keeps no Tab combat mode on an AI body: its in-combat flag is
+//! the behaviour's, which the duellist's own entry and exit drive), the
+//! revive's per-limb node-turn copy, the two unknown byte
 //! writes beside it, the loop sound sources (Bevy's) and the attack reach
 //! refresh (Exarust computes the reach on demand). The player is left to
 //! the game flow's own revive.
@@ -39,10 +46,12 @@
 use bevy::prelude::*;
 use exa_anim::TickedClips;
 use exa_character::held::{Hands, HeldMoveset};
+use exa_combat::collapse::Collapse;
 use exa_combat::condition::{DeathClock, KnockOut, revive};
 use exa_combat::voice::CharacterVoice;
 use exa_combat::{Condition, Fighter, StateFlags};
 use exa_formats::character_stats::BodyRules;
+use exa_items::possession::Possessions;
 use exa_physics::CharacterBody;
 use exa_physics::body::{BodyTicks, OutOfScene, Ragdoll, reset_heading};
 
@@ -79,6 +88,17 @@ pub fn rise_state(
     }
 }
 
+/// The revive's test for the unarmed set-up: both of the record's out-set
+/// hands are empty. A collapse's drop has emptied every non-shield hand of
+/// it, so a shield bearer is not set up unarmed. A body without a record
+/// reads its hands, whose off hand counts a shield or a light too.
+pub fn weapon_slots_empty(possessions: Option<&Possessions>, hands: Option<&Hands>) -> bool {
+    match possessions {
+        Some(p) => p.out.iter().all(|hand| hand.id == 0),
+        None => hands.is_none_or(Hands::is_empty),
+    }
+}
+
 /// The yaw (about +y, from +z) of a reset heading, none for a zero one.
 pub fn heading_yaw(heading: Vec2) -> Option<f32> {
     (heading != Vec2::ZERO).then(|| heading.x.atan2(heading.y))
@@ -104,6 +124,7 @@ pub fn rise_the_dead(
             Option<&mut Hands>,
             Option<&mut exa_ai::brain::Npc>,
             Option<&exa_ai::roles::Roles>,
+            Option<&Possessions>,
             Has<OutOfScene>,
         ),
         (With<LimpKept>, Without<PlayerBody>),
@@ -122,6 +143,7 @@ pub fn rise_the_dead(
         hands,
         npc,
         roles,
+        possessions,
         dormant,
     ) in &mut bodies
     {
@@ -151,11 +173,7 @@ pub fn rise_the_dead(
             continue;
         };
         let mut word = flags.as_deref().copied().unwrap_or_default();
-        // The original reads the record's two weapon slots; Exarust's
-        // record keeps a dropped weapon, so the hands are read instead.
-        let empty = hands
-            .as_deref()
-            .is_none_or(|h| h.main.is_none() && h.second.is_none());
+        let empty = weapon_slots_empty(possessions, hands.as_deref());
         let red = fighter.health.red;
         let Some(revival) = revive(&mut condition, &mut word, red, empty, now) else {
             continue;
@@ -191,7 +209,9 @@ pub fn rise_the_dead(
         if let (Some(mut npc), Some(roles)) = (npc, roles) {
             npc.roles_key = !exa_ai::brain::roles_key(roles);
         }
-        commands.entity(entity).remove::<DeathClock>();
+        // The collapse is over: a later one starts afresh (its drop and its
+        // collapse-start writes run again).
+        commands.entity(entity).remove::<(DeathClock, Collapse)>();
         info!(
             "{entity:?} rises at {now} ms ({} ms after its death): red {red:.3}, yellow {:.3}, \
              race stance {stance}, scale {scale}, voice volume {volume}, unarmed set-up {}",

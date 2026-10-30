@@ -9,7 +9,9 @@
 //! fist pushes as a heavier part; and every attack start in the heavy-claws
 //! state quarters both hands, armed or not. A collapse empties an unarmed
 //! character's hands (back to the base), and a gobbler's collapse gives
-//! each femur's limit link 10 cm of slack.
+//! each femur's limit link 10 cm of slack. The collapse's drop then lets go
+//! of every held item but a shield, so the hands record empties as the
+//! original's out set does.
 //!
 //! Each system runs only on the tick its trigger changes (the hands, a new
 //! body, an attack's start, a collapse's start), so it costs nothing on a
@@ -128,6 +130,22 @@ pub fn collapse_words(
     }
 }
 
+/// The collapse's drop of the held items, as the holder's hands record it:
+/// on the tick a collapse starts, every hand but a shield's lets go
+/// ([`Hands::let_go`]). It runs after [`collapse_words`], which reads the
+/// hands as they were, so an armed character's emptied hands run the
+/// equip refresh on the next tick through the hands' change (the drop's
+/// own refresh). The item bodies fall free through
+/// [`crate::grip_runtime::release_collapsed`].
+pub fn drop_collapsed_hands(mut bodies: Query<&mut Hands, (With<Fighter>, Added<Collapse>)>) {
+    for mut hands in &mut bodies {
+        let kept = hands.let_go();
+        if hands.set_if_neq(kept) {
+            debug!("a collapse lets go of the hands' items (a shield stays)");
+        }
+    }
+}
+
 /// The body word systems, on the fixed tick before the solver.
 pub struct BodyWordsPlugin;
 
@@ -135,7 +153,12 @@ impl Plugin for BodyWordsPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             FixedUpdate,
-            (refresh_hand_contacts, attack_hand_contacts, collapse_words)
+            (
+                refresh_hand_contacts,
+                attack_hand_contacts,
+                collapse_words,
+                drop_collapsed_hands,
+            )
                 .chain()
                 .before(exa_physics::grip_solve::GripSolveSet::Sync),
         );
@@ -366,5 +389,41 @@ mod tests {
             ..Hands::default()
         })));
         assert!(!armed(None));
+    }
+
+    /// An armed collapse lets go of the weapon but keeps a shield, and the
+    /// emptied hands run the refresh on the next tick: the fists come back
+    /// halved, with their weapon bit.
+    #[test]
+    fn an_armed_collapse_drops_its_weapon_and_keeps_a_shield() {
+        let mut app = App::new();
+        app.add_systems(
+            Update,
+            (refresh_hand_contacts, collapse_words, drop_collapsed_hands).chain(),
+        );
+        let body = arms();
+        let base = body.contact_base(1).unwrap();
+        let e = app
+            .world_mut()
+            .spawn((
+                Fighter::default(),
+                Hands {
+                    main: Some(HeldItem::weapon(0x11)),
+                    shield: Some(crate::held::ShieldStyle::Plain),
+                    ..Hands::default()
+                },
+                body,
+            ))
+            .id();
+        app.update();
+        assert_eq!(mobility(&app, e, 1), base);
+        app.world_mut().entity_mut(e).insert(Collapse::default());
+        app.update();
+        let hands = *app.world().get::<Hands>(e).unwrap();
+        assert_eq!(hands.main, None);
+        assert_eq!(hands.shield, Some(crate::held::ShieldStyle::Plain));
+        assert!(!hands.is_empty());
+        app.update();
+        assert_eq!(mobility(&app, e, 1), base * 0.5);
     }
 }
