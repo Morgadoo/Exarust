@@ -19,7 +19,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
-use exa_formats::rfi::{ImageData, PixelFormat, Rfi, level_dims};
+use exa_formats::rfi::{PixelFormat, Rfi, level_dims};
 
 /// How an image's colour should be interpreted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -453,17 +453,6 @@ pub fn rfi_to_texture(
     flags: u32,
     settings: &TextureSettings,
 ) -> exa_formats::Result<Image> {
-    // The original's loader copies the image before it uploads it: the whole
-    // chain when the image stores one, else the base level. The copy owns
-    // its pixels, so the rest of the upload reads them (a source that cannot
-    // be copied is read in place).
-    let owned = if rfi.header.has_mip_chain() {
-        ImageData::copy_of(rfi).ok()
-    } else {
-        ImageData::copy_base(rfi).ok()
-    };
-    let copied = owned.as_ref().map(|image| image.as_rfi());
-    let rfi = copied.as_ref().unwrap_or(rfi);
     // The word's target kind picks the upload: a cube map stores six faces,
     // each with its own chain; every shipped image asks for 2D.
     if TextureTarget::from_flags(flags | (rfi.header.flags & IMAGE_FLAG_MASK))
@@ -1287,65 +1276,6 @@ mod level_tests {
             data_size: size,
         };
         (data, header)
-    }
-
-    #[test]
-    fn the_uploader_reads_the_copied_image() {
-        // The loader copies the image first (the whole chain, else the base
-        // level); the upload must equal the one made from the stored bytes.
-        let (data, header) = rgba_image(4, 4, 3, 0);
-        let mut bytes = Vec::new();
-        for v in [
-            exa_formats::rfi::RFI_MAGIC,
-            header.width,
-            header.height,
-            header.depth,
-            header.format_word,
-            header.flags,
-            header.storage,
-            header.data_size,
-        ] {
-            bytes.extend_from_slice(&v.to_le_bytes());
-        }
-        bytes.extend_from_slice(&data);
-        let rfi = Rfi::parse(&bytes).unwrap();
-        let direct = rfi_to_texture(
-            &rfi,
-            ColorSpace::Srgb,
-            false,
-            default_flags(),
-            &TextureSettings::default(),
-        )
-        .unwrap();
-        let chain = ImageData::copy_of(&rfi).unwrap();
-        let copied = rfi_to_texture(
-            &chain.as_rfi(),
-            ColorSpace::Srgb,
-            false,
-            default_flags(),
-            &TextureSettings::default(),
-        )
-        .unwrap();
-        assert_eq!(direct.data, copied.data);
-        assert_eq!(
-            direct.texture_descriptor.mip_level_count,
-            copied.texture_descriptor.mip_level_count
-        );
-        // A base-only copy clears the chain flag and holds the base level.
-        let base = ImageData::copy_base(&rfi).unwrap();
-        assert!(!base.header.has_mip_chain());
-        let copied = rfi_to_texture(
-            &base.as_rfi(),
-            ColorSpace::Srgb,
-            false,
-            default_flags(),
-            &TextureSettings::default(),
-        )
-        .unwrap();
-        assert_eq!(
-            copied.texture_descriptor.mip_level_count,
-            direct.texture_descriptor.mip_level_count
-        );
     }
 
     #[test]

@@ -230,10 +230,7 @@ instructions order them.
 ## Textures
 
 `texture` turns a `.rfi` into a Bevy image with the original's texture
-parameters. Before it decodes, the loader copies the image the way the
-original's loader does: the whole stored chain (`ImageData::copy_of`) when
-the header carries one, else the base level alone (`ImageData::copy_base`),
-which also clears the chain flag. A texture's creation word (`texture::flags`) holds the
+parameters. A texture's creation word (`texture::flags`) holds the
 magnification, minification and mip filters, the data bit (`0x100`: linear,
 never sRGB), the skip-LOD-bias bit (`0x200`), one wrap bit per axis, the
 anisotropy mode (`& 3`), the two-bit detail class and the target kind. A
