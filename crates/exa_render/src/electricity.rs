@@ -777,6 +777,26 @@ impl Arc {
         }
     }
 
+    /// The arc's draw passes: the original draws the ribbon once per branch
+    /// (`DAT_10049acb0` passes, each with its own branch matrix and scissor
+    /// rect), so the tendril count is the pass count.
+    pub fn passes(&self) -> usize {
+        self.spec.tendrils.clamp(1, 1024) as usize
+    }
+
+    /// The per-branch animation clock the draw writes before each pass,
+    /// branch `i` counted from one:
+    /// `((i + base + 0.5)·0.001)/1 + previous − 0.0005`, where `base` is the
+    /// draw's branch clock base and `previous` the first branch's clock from
+    /// the last frame (the original's frame-time array). The branch
+    /// matrices themselves are built by the tendril emitter's draw
+    /// preparation, outside this component.
+    pub fn branch_time(branch: usize, base: i32, previous: f32) -> f32 {
+        let i = branch as f32;
+        let step = ((i + base as f32 + 0.5) * 0.001) / 1.0;
+        step + previous - 0.0005
+    }
+
     /// One tick: ages the arc and scrolls its texture; a sustained arc
     /// renews its tendrils when they expire. False once it is finished (a
     /// permanent arc never is).
@@ -1072,6 +1092,18 @@ mod tests {
         assert!((s.segment_length - 6.0).abs() < 1e-6);
         // The record's flags do not change the preset's own.
         assert_eq!(s.flags, 0);
+    }
+
+    #[test]
+    fn the_arc_draws_once_a_branch_at_its_own_clock() {
+        let spec = ArcSpec::weapon();
+        let arc = Arc::new(spec, Vec3::ZERO, Vec3::X * 30.0);
+        assert_eq!(arc.passes(), 20);
+        // Branch 1 at base 0 from a previous 0.5000: 0.0015/1 + 0.5 −
+        // 0.0005 = 0.501.
+        assert!((Arc::branch_time(1, 0, 0.5) - 0.501).abs() < 1e-6);
+        // The clock steps a millisecond a branch.
+        assert!((Arc::branch_time(2, 0, 0.5) - Arc::branch_time(1, 0, 0.5) - 0.001).abs() < 1e-6);
     }
 
     #[test]

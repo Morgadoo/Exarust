@@ -1540,6 +1540,40 @@ impl Emitter {
             });
         }
     }
+
+    /// The fixed quads a material that draws them asks for: each live
+    /// particle copies the same four corner offsets
+    /// ([`Emitter::camera_quad`], the original's fixed template vertices)
+    /// with its own atlas variant and colour. No Exarust material sets the
+    /// flag, so nothing calls this yet.
+    pub fn quads_fixed(&self, alpha: f32, view: View) -> Vec<Quad> {
+        let corners = Emitter::camera_quad(view);
+        let p = self.params;
+        self.particles()
+            .map(|(index, _, _, life)| {
+                let age = 1.0 - (life as f32 - alpha) * p.inverse_life;
+                let variant = self.slots[index].variant;
+                let uv: [Vec2; 4] = if p.flags & flags::UV_8 != 0 {
+                    std::array::from_fn(|i| Vec2::from(SYMMETRIES[usize::from(variant & 7)][i]))
+                } else {
+                    std::array::from_fn(|i| Vec2::from(SYMMETRIES[0][i]))
+                };
+                let colour = if p.flags & flags::KEYS != 0 {
+                    p.keys.sample(p.keys.count as f32 * age, index & 1 == 1)
+                } else {
+                    let f = 1.0 - (life as f32 - alpha) / p.start_life as f32;
+                    let a = ((1.0 - f * f) * 255.0).round_ties_even() as i32 as u8;
+                    let o = (self.flat_opacity * 255.0).round_ties_even() as i32 as u8;
+                    [a, a, a, o]
+                };
+                Quad {
+                    corners,
+                    uv,
+                    colour,
+                }
+            })
+            .collect()
+    }
 }
 
 /// The original's fast arc cosine of a non-negative argument:
@@ -2089,6 +2123,36 @@ mod tests {
         // The spawn sits on the body, not on the node at the origin.
         assert!((p.x - 100.0).abs() < 1e-4, "{p:?}");
         assert!((q.x - 100.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn the_fixed_quad_is_the_same_for_every_particle() {
+        let mut e = torch();
+        e.first = 0;
+        e.next = 2;
+        e.slots[0] = Slot {
+            p: Vec3::new(1.0, 2.0, 3.0),
+            q: Vec3::ZERO,
+            life: 50,
+            variant: 3,
+            ..Slot::default()
+        };
+        e.slots[1] = Slot {
+            p: Vec3::new(-4.0, 5.0, 6.0),
+            q: Vec3::ZERO,
+            life: 40,
+            ..Slot::default()
+        };
+        let view = View {
+            eye: Vec3::new(0.0, 0.0, 100.0),
+            right: Vec3::X,
+            up: Vec3::Y,
+            forward: Vec3::NEG_Z,
+        };
+        let quads = e.quads_fixed(0.0, view);
+        assert_eq!(quads.len(), 2);
+        assert_eq!(quads[0].corners, quads[1].corners);
+        assert_eq!(quads[0].corners, Emitter::camera_quad(view));
     }
 
     #[test]

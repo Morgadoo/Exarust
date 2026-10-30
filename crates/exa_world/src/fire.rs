@@ -1078,6 +1078,62 @@ mod tests {
     }
 
     #[test]
+    fn a_fire_drives_its_hosts_emissive() {
+        use bevy::asset::AssetPlugin;
+
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<exa_render::material::ExaMaterial>()
+            .add_systems(Update, drive_hosts);
+        let base = Vec4::new(0.4, 0.2, 0.1, 1.0);
+        let handle = app
+            .world_mut()
+            .resource_mut::<Assets<exa_render::material::ExaMaterial>>()
+            .add(exa_render::material::ExaMaterial {
+                params: exa_render::material::ExaParams {
+                    emissive: base,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        let part = app
+            .world_mut()
+            .spawn((Mesh3d(Handle::default()), MeshMaterial3d(handle)))
+            .id();
+        let node = app.world_mut().spawn(FireHost { part, base: None }).id();
+        app.world_mut().spawn((
+            Fire {
+                intensity: 1.0,
+                softness: 2.0,
+                density: 0.5,
+                emissive: 0.5,
+                ticks: 1,
+            },
+            ChildOf(node),
+        ));
+        app.update();
+        let handle = app
+            .world()
+            .get::<MeshMaterial3d<exa_render::material::ExaMaterial>>(part)
+            .expect("the part's material")
+            .0
+            .clone();
+        let material = app
+            .world()
+            .resource::<Assets<exa_render::material::ExaMaterial>>()
+            .get(&handle)
+            .expect("the copied material");
+        // The host starts dark at import and takes half the loaded colour.
+        assert_eq!(
+            material.params.emissive.truncate(),
+            base.truncate() * 0.5,
+            "{:?}",
+            material.params.emissive
+        );
+        assert_eq!(material.params.emissive.w, base.w);
+    }
+
+    #[test]
     fn the_keys_are_the_load_time_ones() {
         assert_eq!(load_scale(RAW_SMALL_KEYS, 9), SMALL_KEYS);
         assert_eq!(load_scale(RAW_MEDIUM_SMALL_KEYS, 9), MEDIUM_SMALL_KEYS);
