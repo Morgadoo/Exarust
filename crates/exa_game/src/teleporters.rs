@@ -368,9 +368,8 @@ fn use_devices(
 }
 
 /// The scan a reconstruction device starts: waiting for `at_ms`, its close
-/// looping with the flash, carrying the node's two creation draws (which
-/// nothing reads). Its two stored random values are stored as the device's
-/// effect node draws them.
+/// looping with the flash, carrying the two creation draws the device's
+/// effect node rolls (the original stores them and never reads them).
 pub fn scan_for_device(at_ms: u32, tex_pos: [f32; 2]) -> Scan {
     let mut scan = Scan::delayed(at_ms, tex_pos);
     scan.looping = true;
