@@ -2181,6 +2181,20 @@ Rules (`exa_assets::skin`):
    m ≤ 10⁻⁶), damp with s = Σw, q = Σw², k = 1/q when s > 1 else s/q, and w =
    w²k where that is smaller. Each neighbour receives 0.5·w; the own bone
    keeps the rest. Weights are per position id.
+8. The recursive pass pushes a frame for a part's children holding every
+   group's centre in centimetres (twelve bytes each, room for eight per
+   frame; the push is refused at a depth of sixteen whatever its group
+   count, and a separate empty push used outside the pass has no limit).
+   A child garment reads only the top frame's centres when it matches its
+   joints: its bar starts at the first joint's squared distance, its group
+   centre is carried into the parent's space by its own node transform
+   (`(x·r0 + y·r1) + (z·r2 + t)`), and a parent centre strictly nearer
+   lowers the bar; a centre is never taken, so a group closer to a centre
+   than to any later joint keeps the first joint. A part that keeps a
+   shipped skin stream, or that finds no group, clears its group count and
+   pushes an empty frame. Exarust keeps every centre of a part with more
+   than eight groups (the original's extra centres spill into the next
+   frame's slot).
 
 Checked against the shipped bodies: every pair of vertices of different
 parts at one rest position weighs its bones alike, on the human body (3 818

@@ -22,7 +22,7 @@ use crate::paint::{
     factory_colour, factory_wear, layer_material, library, normal_library, paint_sized,
     paint_target_size, specular_library,
 };
-use crate::skin::{Joint, Seams, VertexSkin, auto_skin};
+use crate::skin::{Joint, ParentFrame, Seams, VertexSkin, auto_skin_build};
 use crate::texture::{self, ColorSpace, has_alpha, material_word, rfi_to_texture};
 use crate::texture_cache::{TextureCache, TextureKey};
 use exa_formats::factory::EmblemLayer;
@@ -1190,7 +1190,7 @@ impl ModelLoader<'_> {
         };
         let mut layers: Vec<OwnedLayer> = Vec::new();
         for layer in &paint.layers {
-            let mask_name = format!("{stem}m{}", layer.mask);
+            let mask_name = crate::paint::mask_texture(&stem, layer.mask);
             if self.game.texture(&mask_name).is_none() {
                 // The original stops at the first missing mask.
                 break;
@@ -1293,7 +1293,7 @@ impl ModelLoader<'_> {
         }
         let mut names = vec![format!("{stem}d")];
         for layer in appearance.used_layers() {
-            let mask = format!("{stem}m{}", layer.mask);
+            let mask = crate::paint::mask_texture(stem, layer.mask);
             // A layer whose mask the set lacks ends the list: the original
             // stops reading there.
             if self.game.texture(&mask).is_none() {
@@ -1354,7 +1354,7 @@ impl ModelLoader<'_> {
         for layer in appearance.used_layers() {
             // A layer whose mask the set lacks ends the list, as the
             // original's job stops reading there.
-            let mask_name = format!("{stem}m{}", layer.mask);
+            let mask_name = crate::paint::mask_texture(stem, layer.mask);
             if self.game.texture(&mask_name).is_none() {
                 break;
             }
@@ -1968,28 +1968,86 @@ pub(crate) fn scene_skins(
     skinned: bool,
     pack: PackKind,
 ) -> Vec<Option<(u16, Vec<VertexSkin>)>> {
-    scene
-        .nodes
-        .iter()
-        .enumerate()
-        .map(|(index, node)| match &node.body {
-            NodeBody::Mesh(mesh) if skinned => node_skin(scene, index, mesh, pack),
+    if !skinned {
+        return vec![None; scene.nodes.len()];
+    }
+    let len = scene.nodes.len();
+    let mut pass = SkinPass {
+        scene,
+        pack,
+        results: vec![None; len],
+        state: vec![0; len],
+    };
+    for root in 0..len {
+        if scene.nodes[root].parent.is_none_or(|p| p == 0 || p > len) {
+            pass.visit(root, &[]);
+        }
+    }
+    for index in 0..len {
+        pass.visit(index, &[]);
+    }
+    pass.results
+}
+
+/// The recursive per-node pass of the skin builder. Each part pushes its
+/// groups' centres for the parts below it and the apparel matching reads the
+/// frame on top, the one its parent part pushed. A part that keeps a shipped
+/// skin stream, or that has no group, pushes an empty frame. Only bone-named
+/// mesh children are visited, as the original's skinned-mesh test admits
+/// them.
+struct SkinPass<'a> {
+    scene: &'a Scene,
+    pack: PackKind,
+    results: Vec<Option<(u16, Vec<VertexSkin>)>>,
+    /// 0 not visited, 1 visiting (a malformed cycle stops there), 2 done.
+    state: Vec<u8>,
+}
+
+impl SkinPass<'_> {
+    fn visit(&mut self, index: usize, incoming: &[Vec3]) {
+        if self.state.get(index).copied() != Some(0) {
+            return;
+        }
+        self.state[index] = 1;
+        let build = match &self.scene.nodes[index].body {
+            NodeBody::Mesh(mesh) => node_skin(self.scene, index, mesh, self.pack, incoming),
             _ => None,
-        })
-        .collect()
+        };
+        let Some((bone, weights, outgoing)) = build else {
+            self.state[index] = 2;
+            return;
+        };
+        self.results[index] = Some((bone, weights));
+        let children: Vec<usize> = (0..self.scene.nodes.len())
+            .filter(|&i| {
+                let node = &self.scene.nodes[i];
+                node.parent == Some(index + 1)
+                    && node.flags & 0x20 == 0
+                    && matches!(node.body, NodeBody::Mesh(_))
+                    && bone_index(&node.name).is_some()
+            })
+            .collect();
+        self.state[index] = 2;
+        for child in children {
+            self.visit(child, &outgoing);
+        }
+    }
 }
 
 /// Skin weights of a node's mesh: worked out from its seams for body parts
 /// and garments alike (nodes named after a bone), with the parent and the
-/// bone-named children as joints. A `Resource` model of a race body is a
-/// body part; a `Characters` model is apparel, whose seams are the marked
+/// bone-named children as joints and the enclosing part's group centres as
+/// the apparel matching's parent frame (read through the node's own
+/// transform). A `Resource` model of a race body is
+/// a body part; a `Characters` model is apparel, whose seams are the marked
 /// ones.
 fn node_skin(
     scene: &Scene,
     index: usize,
     mesh: &RfcMesh,
     pack: PackKind,
-) -> Option<(u16, Vec<VertexSkin>)> {
+    parents: &[Vec3],
+) -> Option<(u16, Vec<VertexSkin>, Vec<Vec3>)> {
     let node = &scene.nodes[index];
     // Nodes the original leaves out of the skin (its flag bit 5).
     if node.flags & 0x20 != 0 {
@@ -2026,7 +2084,12 @@ fn node_skin(
     } else {
         Seams::Body
     };
-    Some((bone, auto_skin(mesh, bone, &joints, seams)))
+    let frame = ParentFrame {
+        centres: parents,
+        placement: node.transform,
+    };
+    let build = auto_skin_build(mesh, bone, &joints, seams, &frame);
+    Some((bone, build.weights, build.pushed))
 }
 
 /// The meshes of a mesh's drawn groups (`_null` marks geometry the
@@ -3093,10 +3156,11 @@ pub fn underscore_skinned_child(model: &Model, parent: usize) -> Option<usize> {
     })
 }
 
-/// The first skinned mesh in `parent`'s subtree, searched in reverse child
-/// order then depth first, as the shell, scan and GUI effects find the mesh
-/// they draw on. `ModelNode::skin_bone` stands for the original's skin
-/// controller pointer.
+/// The first skinned mesh in `parent`'s subtree, as the shell, scan and GUI
+/// effects find the mesh they draw on. The original first looks for a
+/// skinned mesh among the children themselves, in reverse child order, and
+/// only then recurses, in forward child order and depth first.
+/// `ModelNode::skin_bone` stands for the original's skin controller pointer.
 pub fn skinned_mesh_under(model: &Model, parent: usize) -> Option<usize> {
     let children: Vec<usize> = (0..model.nodes.len())
         .filter(|&i| model.nodes[i].parent == Some(parent))
@@ -3105,6 +3169,8 @@ pub fn skinned_mesh_under(model: &Model, parent: usize) -> Option<usize> {
         if model.nodes[child].skin_bone.is_some() {
             return Some(child);
         }
+    }
+    for &child in &children {
         if let Some(found) = skinned_mesh_under(model, child) {
             return Some(found);
         }
@@ -3368,6 +3434,38 @@ mod tests {
         assert_eq!(skinned_mesh_under(&model, 0), Some(3));
         assert_eq!(skinned_mesh_under(&model, 1), Some(2));
         assert_eq!(skinned_mesh_under(&model, 2), None);
+    }
+
+    /// The effect lookup's two passes: the children themselves in reverse
+    /// order first, and only when none is skinned the subtrees, in forward
+    /// child order. A later child with a skinned descendant does not win
+    /// over an earlier child's.
+    #[test]
+    fn a_direct_skinned_child_wins_and_then_the_first_subtree() {
+        let mut root = material_node(&[]);
+        root.name = "12RUArm".into();
+        let mut first = material_node(&[]);
+        first.name = "plainA".into();
+        first.parent = Some(0);
+        let mut first_under = material_node(&[]);
+        first_under.name = "_a".into();
+        first_under.parent = Some(1);
+        first_under.skin_bone = Some(1);
+        let mut second = material_node(&[]);
+        second.name = "plainB".into();
+        second.parent = Some(0);
+        let mut second_under = material_node(&[]);
+        second_under.name = "_b".into();
+        second_under.parent = Some(3);
+        second_under.skin_bone = Some(2);
+        let model = Model {
+            nodes: vec![root, first, first_under, second, second_under],
+        };
+        assert_eq!(skinned_mesh_under(&model, 0), Some(2));
+        // A direct skinned child is taken before any subtree, reverse first.
+        let mut model = model;
+        model.nodes[3].skin_bone = Some(3);
+        assert_eq!(skinned_mesh_under(&model, 0), Some(3));
     }
 
     fn record(class: u32, flags: u32, opacity: f32) -> Material {
