@@ -92,7 +92,9 @@ impl DangerSight {
     }
 
     /// The nearest registered barricade as `viewer` sees it, with the
-    /// viewer's `relation` word; `None` when none is within sight.
+    /// viewer's `relation` word; `None` when none is within sight. [inf:
+    /// the original's sight asks each registered entity in turn; taking the
+    /// nearest is Exarust's choice, and no AI reads this yet.]
     pub fn barricade_seen(&self, viewer: &Viewer, relation: f32) -> Option<(Entity, Seen)> {
         let mut best: Option<(Entity, Seen, f32)> = None;
         for (entity, danger) in &self.entries {

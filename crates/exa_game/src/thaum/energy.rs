@@ -298,9 +298,9 @@ pub fn spark_at(strike: &BladeStrike, draws: &mut impl Draws) -> ArcEmitter {
 /// What a weapon change asks of the weapon's arc node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WeaponNode {
-    /// The node's end flag (offset 0x198) is set.
+    /// The node's end flag is set.
     pub ending: bool,
-    /// The node's arc hook (offset 0x30d) is cleared.
+    /// The node's arc hook is cleared.
     pub arc_hook: bool,
 }
 

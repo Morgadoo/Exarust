@@ -83,6 +83,7 @@ impl Plugin for ThaumEffectsPlugin {
             .insert_resource(EffectDraws(Mt19937::new(5489)))
             .init_resource::<EffectRoll>()
             .init_resource::<super::effect_draw::ForceNoise>()
+            .init_resource::<crate::effects::danger::DangerSight>()
             .add_systems(
                 FixedUpdate,
                 (tick_arcs, tick_barricades, tick_wisps, shock_fighters)
