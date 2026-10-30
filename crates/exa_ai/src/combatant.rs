@@ -2429,7 +2429,7 @@ pub fn standard_sense(
     own[index].flags |= CONTACT_NOTICED;
     let distance = distance_squared.sqrt();
     let toward_observer = delta * (1.0 / distance);
-    let mut closeness = 1.0 - distance * (1.0 / PERCEPTION_CM);
+    let mut closeness = 1.0 - distance / PERCEPTION_CM;
     if f64::from(closeness) > 0.99 {
         closeness = 0.99;
     }
