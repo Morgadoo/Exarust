@@ -614,7 +614,11 @@ TimedList}`). A timed value is written only while it lowers a section's byte
 or arrives. The weapon section (0x1000) is tried first; when the item has
 one, the apparel section (0x4000) is never looked at that frame, whether
 the weapon byte was written or not. Only an item with no weapon section
-takes its apparel section's byte.
+takes its apparel section's byte. After a repair write the copy is
+refreshed from its template: an apparel copy's resist, coverage and
+encumbrance and a weapon copy's slash, crush, pierce and thrust take the
+condition factor, and the model section's compact price is recomputed
+(`exa_items::instance::{copy_apparel, copy_weapon}`).
 The sounds are `player_controls::use_sound`: the pour at 0.25, the cleaning
 kit at 0.3 and the repair kit at 0.15, each pitch 0.9 + 0.2 times one draw.
 Tested rules with no running caller: the right press's use-start answer
