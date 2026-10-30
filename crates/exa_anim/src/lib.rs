@@ -117,6 +117,25 @@ impl Motions {
         self.0.table_clip(&table, action)
     }
 
+    /// Starts a motion the game requested by its number, as the body tick
+    /// starts the requested action: the clip loops when it is a looping one,
+    /// else plays once back into the current combat or idle action, from
+    /// where the body is, with no blend past its first key. `None` when the
+    /// motion set has no clip of that number. Returns the clip's name.
+    pub fn start_requested(&self, anim: &mut Animator, motion: u32) -> Option<String> {
+        let name = self.action_name(motion)?.to_string();
+        let follow = match anim.action.as_str() {
+            "Cmbt - Idle" | "Defence stance" => anim.action.clone(),
+            _ => "Idle".to_string(),
+        };
+        if self.clip(anim, &name).is_some_and(|clip| clip.loops()) {
+            anim.start(&name, true, None, 0, Ease::Linear);
+        } else {
+            anim.play_once(&name, &follow);
+        }
+        Some(name)
+    }
+
     /// The name of the action at `index`, which is the original's motion id
     /// (0x22 Force Blast … 0x28 Disp Form), when the motion set has it.
     pub fn action_name(&self, index: u32) -> Option<&str> {
@@ -629,6 +648,11 @@ mod tests {
         let animator = Animator::new(DEFAULT_MOVESET, "Idle");
         assert!(motions.clip(&animator, "Idle").is_none());
         assert!(motions.table("Other", MovesetConfig::NONE).is_none());
+        // A requested motion with no clip of that number starts nothing, as
+        // the body tick's start does on a library without the action.
+        let mut animator = animator;
+        assert_eq!(motions.start_requested(&mut animator, 0x13), None);
+        assert_eq!(motions.start_requested(&mut animator, 0x2d), None);
     }
 
     /// The shortest-way slerp. Half way from no turn to +90° about Y is

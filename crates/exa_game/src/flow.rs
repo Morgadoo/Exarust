@@ -3266,13 +3266,8 @@ impl Plugin for FlowPlugin {
             .add_systems(
                 Update,
                 (
-                    apply_menu_choices,
-                    tick,
-                    follow_player,
-                    travel,
-                    run_transition,
-                    apply_steps,
-                    reset_level_state,
+                    (apply_menu_choices, tick, follow_player).chain(),
+                    (travel, run_transition, apply_steps, reset_level_state).chain(),
                 )
                     .chain(),
             );
@@ -3571,12 +3566,9 @@ fn apply_steps(
     mut session: Option<ResMut<crate::player_controls::PlaySession>>,
     ticks: Option<Res<exa_physics::body::BodyTicks>>,
     mut players: Query<PlayerParts, With<crate::player::PlayerBody>>,
+    motions: Option<Res<exa_anim::Motions>>,
     mut cameras: Query<&mut crate::player::ChaseCamera>,
-    mut changes: MessageWriter<exa_world::level_lifecycle::LevelChangeRequest>,
-    mut forfeit: MessageWriter<ForfeitMatch>,
-    mut settings: MessageWriter<SettingsEntry>,
-    mut exit: MessageWriter<AppExit>,
-    mut saves: MessageWriter<crate::save_live::SaveStep>,
+    mut out: FlowOutputs,
 ) {
     if queued.steps.is_empty() {
         return;
@@ -3631,12 +3623,12 @@ fn apply_steps(
                 if let Some(end) = end.as_mut() {
                     end.close();
                 }
-                crate::level_change::request(&mut changes, Some(locale), spawn, teardown);
+                crate::level_change::request(&mut out.changes, Some(locale), spawn, teardown);
             }
             Step::TeardownWorld => {
                 // A load in this batch tears down by itself.
                 if !loads {
-                    crate::level_change::request(&mut changes, None, 0, true);
+                    crate::level_change::request(&mut out.changes, None, 0, true);
                 }
             }
             Step::PlacePlayer(placement) => {
@@ -3830,26 +3822,44 @@ fn apply_steps(
                     commands.insert_resource(exa_audio::LevelMusicStart(0.0));
                 }
             }
+            Step::RequestAction(motion) => {
+                // The body tick's start of a requested motion: the clip by
+                // its action name, looping when the clip loops, else once
+                // back into the combat or idle action, with no blend.
+                if let Some(motions) = motions.as_deref() {
+                    for mut player in &mut players {
+                        let Some(animator) = player.animator.as_mut() else {
+                            continue;
+                        };
+                        if let Some(name) = motions.start_requested(animator, motion) {
+                            debug!("game flow: requested motion {motion:#x} starts {name}");
+                        } else {
+                            debug!("game flow: requested motion {motion:#x} has no clip");
+                        }
+                    }
+                }
+            }
             Step::Forfeit => {
-                forfeit.write(ForfeitMatch);
+                out.forfeit.write(ForfeitMatch);
             }
             Step::SettingsWrite { key, bytes } => {
-                settings.write(SettingsEntry {
+                out.settings.write(SettingsEntry {
                     section: SETTINGS_SECTION,
                     key,
                     bytes,
                 });
             }
             Step::Quit => {
-                exit.write(AppExit::Success);
+                out.exit.write(AppExit::Success);
             }
             // The save unit's work on the current slot
             // ([`crate::save_live`], idle without a save folder).
             Step::Save { drop_on_low_health } => {
-                saves.write(crate::save_live::SaveStep::Save { drop_on_low_health });
+                out.saves
+                    .write(crate::save_live::SaveStep::Save { drop_on_low_health });
             }
             Step::DropSave => {
-                saves.write(crate::save_live::SaveStep::Drop);
+                out.saves.write(crate::save_live::SaveStep::Drop);
             }
             Step::StripPlayer => {
                 // The reconstruction device's strip: the player's live body
@@ -3862,13 +3872,24 @@ fn apply_steps(
                 }
             }
             Step::Checkpoint => {
-                saves.write(crate::save_live::SaveStep::Checkpoint);
+                out.saves.write(crate::save_live::SaveStep::Checkpoint);
             }
             other => {
                 debug!("game flow step not applied by the app: {other:?}");
             }
         }
     }
+}
+
+/// The messages the flow's applied steps send: a level change, a forfeit, a
+/// settings entry, the application's exit and the save unit's work.
+#[derive(bevy::ecs::system::SystemParam)]
+struct FlowOutputs<'w> {
+    changes: MessageWriter<'w, exa_world::level_lifecycle::LevelChangeRequest>,
+    forfeit: MessageWriter<'w, ForfeitMatch>,
+    settings: MessageWriter<'w, SettingsEntry>,
+    exit: MessageWriter<'w, AppExit>,
+    saves: MessageWriter<'w, crate::save_live::SaveStep>,
 }
 
 /// The player body's parts the flow's steps write.
@@ -3882,6 +3903,7 @@ struct PlayerParts {
     knock: Option<&'static mut exa_combat::condition::KnockOut>,
     fighter: Option<&'static mut exa_combat::Fighter>,
     ragdoll: Option<&'static mut exa_physics::body::Ragdoll>,
+    animator: Option<&'static mut exa_anim::Animator>,
 }
 
 /// Writes a knock-out's condition, flags and wake timer on the player,

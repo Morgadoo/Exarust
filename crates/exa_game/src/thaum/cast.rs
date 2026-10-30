@@ -2171,28 +2171,15 @@ fn play_cast_motions(
         let Some(motion) = caster.body.cast_motion.take() else {
             continue;
         };
-        let follow = if matches!(animator.action.as_str(), "Cmbt - Idle" | "Defence stance") {
-            animator.action.clone()
-        } else {
-            "Idle".to_string()
-        };
         let Some(motions) = motions.as_deref() else {
             continue;
         };
-        match motions.action_name(motion) {
+        match motions.start_requested(&mut animator, motion) {
             Some(name) => {
-                let name = name.to_string();
                 info!(
                     "cast clip {name} (action {motion:#x}) starts; the posture switch leaves a \
                      power's clip alone"
                 );
-                if motions.clip(&animator, &name).is_some_and(|c| c.loops()) {
-                    animator.start(&name, true, None, 0, exa_anim::Ease::Linear);
-                    debug!("cast motion {motion:#x}: {name}, looping");
-                } else {
-                    animator.play_once(&name, &follow);
-                    debug!("cast motion {motion:#x}: {name} then {follow}");
-                }
                 caster.seen_action = Some(name);
             }
             None => debug!("cast motion {motion:#x}: no action of that name"),
