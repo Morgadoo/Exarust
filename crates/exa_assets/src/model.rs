@@ -19,8 +19,8 @@ use crate::mesh_smooth::smooth_mesh;
 use crate::morph::{BuiltMorph, JobMorph, MorphCache, model_key};
 use crate::paint::{
     Condition, Encoding, PaintLayer, Painted, Pattern, Texels, Tiling, apparel_tint,
-    factory_colour, factory_wear, layer_material, library, normal_library, paint_with,
-    specular_library,
+    factory_colour, factory_wear, layer_material, library, normal_library, paint_sized,
+    paint_target_size, specular_library,
 };
 use crate::skin::{Joint, Seams, VertexSkin, auto_skin};
 use crate::texture::{self, ColorSpace, has_alpha, material_word, rfi_to_texture};
@@ -37,6 +37,20 @@ use exa_render::material::{
 #[derive(Debug, Clone)]
 pub struct Model {
     pub nodes: Vec<ModelNode>,
+}
+
+impl Model {
+    /// Replaces the material of every part in the tree, as the original's
+    /// merged-mesh material assignment does: the one material a weapon is
+    /// drawn with is written into every group, recursively, so a repaint
+    /// after a condition change keeps the assembled geometry.
+    pub fn assign_material(&mut self, material: &Handle<ExaMaterial>) {
+        for node in &mut self.nodes {
+            for part in &mut node.parts {
+                part.1 = material.clone();
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -287,6 +301,10 @@ pub struct ModelCache {
     factory_painted: HashMap<String, Handle<ExaMaterial>>,
     /// Factory weapon stats once its assembled extents are known.
     pub(crate) factory_stats: HashMap<String, exa_formats::weapon_stats::StatBytes>,
+    /// Assembled factory weapon geometry by the seeds and stored choices it
+    /// depends on. A condition change (quality, damage, dirt) keeps the
+    /// meshes and only repaints them.
+    pub(crate) factory_geometry: HashMap<String, Arc<Model>>,
     /// Parsed factory recipes, by lower-case name.
     pub(crate) factories: HashMap<String, Arc<exa_formats::factory::Factory>>,
     /// The environment cube, once looked for.
@@ -1219,7 +1237,13 @@ impl ModelLoader<'_> {
             layers.extend(emblem);
         }
         let item_normal = self.texels(&format!("{stem}n"));
-        let painted_size = Vec2::new(shade.width as f32, shade.height as f32);
+        // The target is the part's atlas rectangle: the region quad stretches
+        // the source texture (shade, masks, normal) over it, so painting at
+        // the region's size samples one source texel per region texel and
+        // keeps the library tiles at their material scale. Below texture
+        // detail 3 the target halves and every tile doubles
+        // (`RegionDraw::uniforms`).
+        let painted_size = paint_target_size(paint.region_texels, paint.texture_detail);
         let job = PaintJob {
             key: PaintKey::Factory(stem, key.clone()),
             shade,
@@ -1227,7 +1251,9 @@ impl ModelLoader<'_> {
             layers,
             condition: Condition::factory(&paint.condition),
             tiling: Tiling::factory(paint.region_texels, painted_size, paint.seed_b)
-                .with_uv_scale(paint.uv_scale),
+                .with_uv_scale(paint.uv_scale)
+                .with_crop(paint.texture_crop),
+            target: Some((painted_size.x as usize, painted_size.y as usize)),
         };
         let painted = job.paint();
         self.painted_material(painted)
@@ -1357,6 +1383,7 @@ impl ModelLoader<'_> {
             layers,
             condition,
             tiling: Tiling::default(),
+            target: None,
         })
     }
 
@@ -2140,6 +2167,12 @@ pub struct FactoryPaint {
     pub uv_scale: f32,
     /// Where emblem pictures fall on the region (`Factory::pattern_position`).
     pub pattern_position: [f32; 4],
+    /// The region's horizontal source crop, `1 − texture_parameter`: the
+    /// shade and normal textures are drawn over `u ∈ 0..crop`.
+    pub texture_crop: f32,
+    /// The user's texture detail; below 3 the target is half size and the
+    /// tiles double.
+    pub texture_detail: u32,
 }
 
 impl FactoryPaint {
@@ -2147,7 +2180,7 @@ impl FactoryPaint {
     pub fn key(&self) -> String {
         let c = &self.condition;
         format!(
-            "{}|{},{},{}|{:?}|{},{}|{}|{}|{:?}",
+            "{}|{},{},{}|{:?}|{},{}|{}|{}|{:?}|{}|{}",
             self.stem.to_ascii_lowercase(),
             c.quality,
             c.damage,
@@ -2157,7 +2190,9 @@ impl FactoryPaint {
             self.region_texels.y,
             self.seed_b,
             self.uv_scale,
-            self.pattern_position
+            self.pattern_position,
+            self.texture_crop,
+            self.texture_detail
         )
     }
 }
@@ -2351,6 +2386,9 @@ pub struct PaintJob {
     layers: Vec<OwnedLayer>,
     condition: Condition,
     tiling: Tiling,
+    /// The painted target's size; `None` paints at the shade map's size (an
+    /// apparel set). A low-detail factory job paints at half the region's.
+    target: Option<(usize, usize)>,
 }
 
 /// A painted texture set's images, for [`ModelLoader::painted_material`].
@@ -2401,25 +2439,25 @@ impl PaintJob {
             })
             .collect();
         let shade = &self.shade;
-        let painted = paint_with(
+        let (w, h) = self.target.unwrap_or((shade.width, shade.height));
+        let painted = paint_sized(
             shade,
             self.item_normal.as_deref(),
             &layers,
             self.condition,
             self.tiling,
+            (w, h),
         );
         let mut rgba = painted.colour;
-        // Keep the cut-outs of the shade map.
-        for (o, s) in rgba
-            .as_chunks_mut::<4>()
-            .0
-            .iter_mut()
-            .zip(shade.rgba.as_chunks::<4>().0)
-        {
-            o[3] = s[3];
+        // Keep the cut-outs of the shade map, sampled at the target's
+        // resolution (the shade texture is drawn over the whole region).
+        for (i, o) in rgba.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let (x, y) = (i % w, i / w);
+            let (sx, sy) = (x * shade.width / w, y * shade.height / h);
+            o[3] = shade.rgba[(sy * shade.width + sx) * 4 + 3];
         }
         let alpha = shade.rgba.as_chunks::<4>().0.iter().any(|p| p[3] < 128);
-        let (w, h) = (shade.width as u32, shade.height as u32);
+        let (w, h) = (w as u32, h as u32);
         // The painter's surface map is already packed as the original's:
         // intensity, gloss, metal.
         let surface = painted.surface;

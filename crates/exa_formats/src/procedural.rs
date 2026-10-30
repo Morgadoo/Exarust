@@ -415,6 +415,197 @@ fn stem_normal(stem: &'static str) -> &'static str {
     }
 }
 
+/// A GPU program variant of a material (`TProcMaterial`'s compile pass).
+///
+/// The original compiles up to seven variants for one material: the colour
+/// program and its pattern and painted-pattern defines, the alpha program,
+/// the specular program and the normal program with its alternate-normal
+/// define. Each variant declares its material-layer samplers (`Tex0…`), the
+/// uniforms the draw passes fetch by name, and the texture unit its first
+/// material layer binds to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Program {
+    /// Which pass this variant draws.
+    pub pass: Pass,
+    /// The program's name, `<family>_<letter>`.
+    pub name: String,
+    /// The define word the variant compiles with (0 for the plain program).
+    pub define: u32,
+    /// Material-layer samplers the program declares, `Tex0…`; sampler `i`
+    /// is bound to texture unit `i` (see [`sampler_name`]).
+    pub textures: usize,
+    /// An extra sampler bound after the layer samplers: its name and unit.
+    pub extra_sampler: Option<(String, u32)>,
+    /// The texture unit the first material layer binds to (the draw loops
+    /// start at 2 for the colour, alpha, pattern and specular programs and
+    /// at 3 for the normal program).
+    pub units_from: u32,
+    /// Uniform names in the order the compile fetches them.
+    pub uniforms: &'static [&'static str],
+}
+
+/// The passes a procedural material can draw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Pass {
+    Colour,
+    Pattern,
+    PaintedPattern,
+    Alpha,
+    Specular,
+    Normal,
+    AlternateNormal,
+}
+
+/// The uniforms every pass fetches, in the compile's order.
+pub const PASS_UNIFORMS: &[&str] = &[
+    "MatTile", "DmgTile", "MatCol", "Damage", "Dirt", "Quality", "ShdTile", "UVScale",
+];
+
+/// The specular pass's uniforms: the material-scale tile of the painted
+/// normal map sits between the shade tile and the texture scale.
+pub const SPECULAR_UNIFORMS: &[&str] = &[
+    "MatTile", "DmgTile", "MatCol", "Damage", "Dirt", "Quality", "ShdTile", "NrmTile", "UVScale",
+];
+
+/// The painted-pattern pass's uniforms: `PtrnPos` follows the texture scale.
+pub const PAINTED_PATTERN_UNIFORMS: &[&str] = &[
+    "MatTile", "DmgTile", "MatCol", "Damage", "Dirt", "Quality", "ShdTile", "UVScale", "PtrnPos",
+];
+
+/// Shader define words.
+pub const DEFINE_PATTERN: u32 = 0x2_0000;
+pub const DEFINE_ALTERNATE_NORMAL: u32 = 0x20_0000;
+pub const DEFINE_PAINTED_PATTERN: u32 = 0x40_0000;
+
+/// The family name a material's programs compile from, and the optional
+/// alternate specular and normal families. The subclasses' setups name
+/// them.
+fn families(id: u8, m: &Material) -> (&'static str, Option<&'static str>, Option<&'static str>) {
+    match m.family {
+        Family::Cloth => {
+            // ClothSilk's specular family is silk; the padded cloths take
+            // the padded normal family.
+            let alt = (id == 3).then_some("silk");
+            let nrm = matches!(id, 5 | 6).then_some("clothp");
+            ("cloth", alt, nrm)
+        }
+        Family::Velvet => ("velvet", None, None),
+        Family::Leather | Family::Suede => ("leather", None, None),
+        Family::Wood => ("wood", None, None),
+        Family::Steel => ("steel", None, None),
+        Family::SteelBlade => ("steelbld", None, None),
+        Family::SteelPlate => ("steelplt", None, None),
+        Family::SteelPainted => ("steelpnt", None, None),
+        Family::Chain => ("steelchn", None, None),
+        Family::CopperAlloy => ("copperal", None, None),
+        Family::CopperSatin => ("coppersa", None, Some("copperal")),
+        Family::Gemstone => ("gemstone", None, None),
+        Family::Resin => ("resin", None, None),
+        Family::PlanksPainted => ("plankpai", None, None),
+    }
+}
+
+/// The name of layer sampler `index`: `Tex` and one character, `'0'` plus
+/// the index, as the original writes it (index 10 would be `Tex:`; the
+/// shipped materials stay below it).
+pub fn sampler_name(index: usize) -> String {
+    let c = char::from(b'0'.wrapping_add(index as u8));
+    format!("Tex{c}")
+}
+
+/// Every program variant a material compiles, in the compile pass's order:
+/// colour, pattern, painted pattern, alpha, specular, normal and alternate
+/// normal. A variant whose pass flag is clear is not compiled.
+///
+/// The program names follow the setup's families: `<family>_d` for the
+/// colour family's three variants, `<family>_a` for the alpha pass,
+/// `<alt>_s` (the alternate family when the material sets one, else the
+/// colour family) for the specular pass, and `<nrm>_n` for the normal pass.
+pub fn programs(id: u8) -> Vec<Program> {
+    let m = material(id);
+    let (family, alt, nrm) = families(id, m);
+    let spec_family = alt.unwrap_or(family);
+    let nrm_family = nrm.unwrap_or(family);
+    let mut out = Vec::new();
+    let colour = m.colour.len();
+    let spec = m.specular.len();
+    let normal = m.normal.len();
+    out.push(Program {
+        pass: Pass::Colour,
+        name: format!("{family}_d"),
+        define: 0,
+        textures: colour + 2,
+        extra_sampler: None,
+        units_from: 2,
+        uniforms: PASS_UNIFORMS,
+    });
+    if m.passes.pattern {
+        out.push(Program {
+            pass: Pass::Pattern,
+            name: format!("{family}_d"),
+            define: DEFINE_PATTERN,
+            textures: colour + 3,
+            extra_sampler: None,
+            units_from: 2,
+            uniforms: PASS_UNIFORMS,
+        });
+    }
+    if m.passes.painted_pattern {
+        out.push(Program {
+            pass: Pass::PaintedPattern,
+            name: format!("{family}_d"),
+            define: DEFINE_PAINTED_PATTERN,
+            textures: colour + 2,
+            extra_sampler: Some((sampler_name(colour + 2), 8)),
+            units_from: 2,
+            uniforms: PAINTED_PATTERN_UNIFORMS,
+        });
+    }
+    if m.passes.alpha {
+        out.push(Program {
+            pass: Pass::Alpha,
+            name: format!("{family}_a"),
+            define: 0,
+            textures: colour + 2,
+            extra_sampler: None,
+            units_from: 2,
+            uniforms: PASS_UNIFORMS,
+        });
+    }
+    out.push(Program {
+        pass: Pass::Specular,
+        name: format!("{spec_family}_s"),
+        define: 0,
+        textures: spec + 2,
+        // The specular program reads the painted normal target through a
+        // sampler of its own, at unit 7.
+        extra_sampler: Some(("Nrm".to_string(), 7)),
+        units_from: 2,
+        uniforms: SPECULAR_UNIFORMS,
+    });
+    out.push(Program {
+        pass: Pass::Normal,
+        name: format!("{nrm_family}_n"),
+        define: 0,
+        textures: normal + 3,
+        extra_sampler: None,
+        units_from: 3,
+        uniforms: PASS_UNIFORMS,
+    });
+    if m.passes.alternate_normal {
+        out.push(Program {
+            pass: Pass::AlternateNormal,
+            name: format!("{nrm_family}_n"),
+            define: DEFINE_ALTERNATE_NORMAL,
+            textures: normal + 3,
+            extra_sampler: Some((sampler_name(normal + 3), 8)),
+            units_from: 3,
+            uniforms: PASS_UNIFORMS,
+        });
+    }
+    out
+}
+
 /// The material with `id`, or ClothBasic for an unknown id (the original
 /// reports "Invalid Procedural Material ID." and falls back to it).
 pub fn material(id: u8) -> &'static Material {
@@ -592,5 +783,117 @@ mod tests {
         assert_eq!(EMBLEM_IDS.len(), 40);
         assert_eq!(EMBLEM_IDS[0], 1);
         assert_eq!(EMBLEM_IDS[39], 51);
+    }
+
+    #[test]
+    fn a_steel_material_compiles_its_four_programs() {
+        let p = programs(12);
+        assert_eq!(
+            p.iter().map(|p| p.pass).collect::<Vec<_>>(),
+            vec![
+                Pass::Colour,
+                Pass::Specular,
+                Pass::Normal,
+                Pass::AlternateNormal
+            ]
+        );
+        assert_eq!(p[0].name, "steel_d");
+        assert_eq!(p[0].textures, 7);
+        assert_eq!(p[0].units_from, 2);
+        assert_eq!(p[0].uniforms, PASS_UNIFORMS);
+        assert_eq!(p[1].name, "steel_s");
+        assert_eq!(p[1].extra_sampler, Some(("Nrm".to_string(), 7)));
+        assert_eq!(p[1].uniforms, SPECULAR_UNIFORMS);
+        assert_eq!(p[2].name, "steel_n");
+        assert_eq!(p[2].textures, 8);
+        assert_eq!(p[2].units_from, 3);
+        assert_eq!(p[3].define, DEFINE_ALTERNATE_NORMAL);
+        assert_eq!(p[3].extra_sampler, Some(("Tex8".to_string(), 8)));
+    }
+
+    #[test]
+    fn plates_and_low_metals_skip_the_alternate_normal_variant() {
+        assert!(programs(13).iter().all(|p| p.pass != Pass::AlternateNormal));
+        assert!(programs(16).iter().all(|p| p.pass != Pass::AlternateNormal));
+        assert!(programs(19).iter().any(|p| p.pass == Pass::AlternateNormal));
+    }
+
+    #[test]
+    fn cloth_basic_compiles_the_painted_pattern_program() {
+        let p = programs(1);
+        let painted = p
+            .iter()
+            .find(|p| p.pass == Pass::PaintedPattern)
+            .expect("painted pattern");
+        assert_eq!(painted.name, "cloth_d");
+        assert_eq!(painted.define, DEFINE_PAINTED_PATTERN);
+        // Four colour layers, then Tex0..Tex5 for the layers and the
+        // pattern at Tex6, unit 8.
+        assert_eq!(painted.textures, 6);
+        assert_eq!(painted.extra_sampler, Some(("Tex6".to_string(), 8)));
+        assert_eq!(painted.uniforms, PAINTED_PATTERN_UNIFORMS);
+        // Its plain specular and normal programs are the cloth ones.
+        assert_eq!(programs(1)[0].name, "cloth_d");
+    }
+
+    #[test]
+    fn silk_padded_and_copper_satin_compile_their_own_families() {
+        let silk = programs(3);
+        assert_eq!(
+            silk.iter().find(|p| p.pass == Pass::Specular).unwrap().name,
+            "silk_s"
+        );
+        let padded = programs(5);
+        assert_eq!(
+            padded.iter().find(|p| p.pass == Pass::Normal).unwrap().name,
+            "clothp_n"
+        );
+        let satin = programs(21);
+        assert_eq!(
+            satin
+                .iter()
+                .find(|p| p.pass == Pass::Specular)
+                .unwrap()
+                .name,
+            "coppersa_s"
+        );
+        assert_eq!(
+            satin.iter().find(|p| p.pass == Pass::Normal).unwrap().name,
+            "copperal_n"
+        );
+    }
+
+    #[test]
+    fn gemstone_and_resin_compile_the_alpha_programs() {
+        let gem = programs(23);
+        let passes: Vec<Pass> = gem.iter().map(|p| p.pass).collect();
+        assert_eq!(
+            passes,
+            vec![
+                Pass::Colour,
+                Pass::Pattern,
+                Pass::Alpha,
+                Pass::Specular,
+                Pass::Normal
+            ]
+        );
+        assert_eq!(gem[1].define, DEFINE_PATTERN);
+        assert_eq!(gem[2].name, "gemstone_a");
+        let resin = programs(24);
+        assert!(resin.iter().any(|p| p.pass == Pass::Alpha));
+        assert!(!resin.iter().any(|p| p.pass == Pass::Pattern));
+    }
+
+    #[test]
+    fn sampler_names_are_one_character_past_tex() {
+        assert_eq!(sampler_name(0), "Tex0");
+        assert_eq!(sampler_name(8), "Tex8");
+        assert_eq!(sampler_name(10), "Tex:");
+    }
+
+    #[test]
+    fn an_unknown_material_compiles_cloth_basic() {
+        assert_eq!(programs(0), programs(1));
+        assert_eq!(programs(200), programs(1));
     }
 }

@@ -442,13 +442,35 @@ seed B. An area's emblem adds a colour-only layer over the same mask
 through its `emblembkg` picture placed by the factory's `PtrnPos`
 (`paint::Pattern`), and blade layers sample their mask, shade and region
 normal stretched by the part's `UVScale` (`Tiling::uv_scale`); apparel takes its palette colour, the material's wear weight and the
-loader's condition.
+loader's condition. The per-part target is the part's atlas region (the
+factory atlas times its atlas scale, rounded to nearest), over which the
+region quad stretches the source textures; the region quad's width crop
+(`1 − texture_parameter`) limits the drawn columns without rescaling the
+source (`Tiling::crop`), and below texture
+detail 3 a job paints at half the region's size while its tiles double
+(`paint::paint_target_size`); `paint::RegionDraw::uniforms` reproduces the
+`MatTile`, `DmgTile`, `ShdTile`, `MatCol`, `Damage`, `Dirt`, `Quality`,
+`UVScale`, `PtrnPos` and `NrmTile` values the original's six passes bind.
+
+The painter's GPU-side bookkeeping is modelled in `paint_jobs`: the
+256-slot job ring (a full ring flushes all but the newly pushed job), the
+64-slot surface cache with its 4-slot extra-layer pool and the original's
+cursor arithmetic, the per-size shade scratch targets and the render-target
+formats. Exarust paints on the CPU and on Bevy's task pool, so these queues
+have no GL thread; their index arithmetic and formats are pinned by tests.
+
+The procedural material's compiled program variants are
+`exa_formats::procedural::programs`: family names, pattern/alternate-normal
+defines, the sampler counts and the uniform lists each pass fetches.
 
 Factory weapons (`weapon`): a `.fty` recipe and an item's seeds choose,
 deform (scale, band, taper, bend, radial), place (by the parent's stored
 node box, scaled by the parent's recipe scale, turned X, Z, Y) and paint
 `Components.rpk` parts, then assemble the striking extent and the stat
-bytes. Item quality, condition and stored choices are honoured.
+bytes. Item quality, condition and stored choices are honoured. A change of
+condition repaints the assembled node from the same seeds (the area colours
+follow the new quality) and keeps its meshes, as the original's repaint
+does.
 
 Physique (`morph`): `ModelLoader::morphed_model` / `morphed_job` build a
 character's variant of a race body or garment at its `BodyMorph` (race

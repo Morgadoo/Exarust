@@ -19,6 +19,7 @@ pub mod morph;
 pub mod morph_controller;
 pub mod noise;
 pub mod paint;
+pub mod paint_jobs;
 pub mod polyhedra;
 pub mod skin;
 pub mod skin_composite;

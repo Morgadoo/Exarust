@@ -1322,10 +1322,72 @@ factory weapons of a real save, part for part and material for material.
   6 (texture only) gives the region `UVScale` = F(−value) with the
   deform's amount, else 1. Only the blade programs (`steelbld_*`) read it:
   their mask, shade and region normal are sampled at (u, v · UVScale).
+- **Region geometry**: a region is drawn as one quad from its atlas
+  offset to `offset + size · crop`, where the crop is
+  (`1 − texture_parameter`, 1), with texture coordinates `0..crop`. The
+  source therefore keeps its scale (region u reads source u) and only the
+  part of the region left of the crop is drawn; the rest keeps the cleared
+  target. The assembler maps each mesh's texture coordinates to
+  `uv · size + offset` without the crop. `exa_assets::paint::Tiling::crop`
+  carries it: columns whose centre lies past `crop · width` are left
+  unpainted. Shipped recipes store a negative texture parameter for a few
+  parts (combknifea1's crop is 1.05); such a quad overhangs the region and
+  the whole region is drawn.
+- **Targets and detail**: a per-part target is the region's texel size
+  (the factory atlas times the part's atlas scale, rounded to nearest), not
+  the source texture's: shipped parts stretch a source of another size over
+  the region (a 128×128 hookbolt fills 256×256, a 128×512 falchion blade
+  128×256, quarterstaff_b1's cap stores a negative height and mirrors). A
+  job allocates three textures: colour (sRGB RGBA8),
+  normal (linear RG two channels, z rebuilt when read) and surface (linear
+  RGBA8: intensity, gloss, metal). A job with an extra layer takes an
+  sRGB-alpha colour target instead. Below texture detail 3 the target's
+  width and height are halved (integer `>> 1`) while every draw pass doubles
+  its tile uniforms (`job << 1`), so the pattern keeps its scale at half the
+  resolution (`paint::paint_target_size`, `paint::RegionDraw::uniforms`).
+- **Pass uniforms** (`RegionDraw::uniforms`): `MatTile` = job · region
+  size / the layer material's first colour texture size, plus two offsets
+  from seed B; `DmgTile` = job · region size / 1024, plus two more offsets;
+  `ShdTile` = the region rectangle (size, offset) or (1, 1, 0, 0) when the
+  region has no shade tile; `MatCol` = the layer colour and wear weight;
+  `Damage`, `Dirt` and `Quality` = the region's remapped values; `UVScale`
+  the texture-stretch factor; `PtrnPos` the emblem placement (painted
+  pattern only); `NrmTile` the bare region rectangle (specular only). Every
+  pass whose program declares `UVScale` (the blade family) binds it and
+  multiplies `ShdTile.y` (the uniform's second component) by it, the white
+  default included; `NrmTile` is not folded.
+- **Programs** (`exa_formats::procedural::programs`): each material compiles
+  `<family>_d` (plus defines `0x20000` pattern and `0x400000` painted
+  pattern), `<family>_a` when its alpha bit is set, `<alt>_s` (silk for
+  ClothSilk, else the family), and `<nrm>_n` (copper alloy's normals for
+  copper satin, cloth padded's for the padded cloths, plus define
+  `0x200000` for the alternate normal). The compile declares `Tex0…` for the
+  layer samplers, a `Nrm` sampler at unit 7 (specular) and a `Tex<n>` at
+  unit 8 (painted pattern and alternate normal); the pass draws bind their
+  material layers from unit 2 (3 for the normal pass).
+- **Job ring and surface cache** (`exa_assets::paint_jobs`): pushes store at
+  a 0..=255 write cursor; a full ring flushes every entry *before* the new
+  one and then wraps, so the new job waits until the ring wraps to its slot.
+  The surface cache keeps 64 free surfaces and a second ring of 4 for
+  extra-layer jobs; a ring is full when its read cursor is one past its
+  write cursor, and a full return frees the entry at the write cursor after
+  moving it back (the ring's usable capacity is `size`, its empty state is
+  `read == write`). The shade scratch targets are reused by exact size.
+- **Impact sound**: the weapon section's sound byte (0x41) indexes the
+  hit-sound table `WH_SwordA`, `WH_MaceMA`, `WH_AxeA`, `WH_HammerA`,
+  `WH_MaceMA`, `WH_ClubMW`, `WH_WoodA`, `WH_ClawsL`, `BdyCol`
+  (`weapon_stats::impact_sound`). A build without a weapon record uses a
+  sword.
+- **Repaint**: a condition change (quality, damage, dirt) rolls the recipe
+  again from the same seeds — the area colours follow the new quality —
+  and repaints the existing assembled node, keeping its meshes; the
+  striking extents are recomputed from the same geometry
+  (`ModelLoader::repaint_factory`, keyed by the seeds and stored choices).
 - Not reproduced yet: texture-only overlay parts (part flag 1) and the
-  mask-gated shade of parts flagged 2, the region's width crop by the
-  part's texture parameter, the alternate normal program (part flag 4),
-  and the low-quality half-size atlas.
+  mask-gated shade of parts flagged 2, the alternate normal program (part
+  flag 4), the shared factory atlas with one `_PROCITE` merged mesh and one
+  material per weapon, and the weapon's rigid body and impact sound
+  attachment.
 - **Items** name a factory by a model name starting with `@`. Their weapon
   section (`0x4000`, 96 bytes) holds flags, seeds, quality, damage, dirt,
   4 material slots (material, finish, colour, mode), stats, and the stored

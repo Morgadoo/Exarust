@@ -19,7 +19,7 @@
 //! are plain linear data. [`Painted::COLOUR`], [`Painted::SURFACE`] and
 //! [`Painted::NORMAL`] state this for the upload.
 
-use bevy::math::{Vec2, Vec3};
+use bevy::math::{Vec2, Vec3, Vec4};
 use exa_formats::objdb::{Appearance, Layer};
 use exa_formats::procedural::{self, Family};
 use exa_formats::{palette, pixel};
@@ -73,16 +73,25 @@ pub struct Tiling {
     /// `exa_formats::factory::Part::uv_scale`). Only the blade family reads
     /// it: its mask, shade and region normal are sampled at `(u, v·scale)`.
     pub uv_scale: f32,
+    /// The region's width crop (the part's `1 − texture_parameter`). The
+    /// original's region quad spans `offset + size·crop` with u texture
+    /// coordinates `0..crop`, so the source keeps its scale (region u reads
+    /// source u) and only the columns left of `crop` are drawn; the rest of
+    /// the region keeps the cleared target. A crop of 1 or more draws the
+    /// whole region (what lies past it falls outside the region).
+    pub crop: f32,
 }
 
 impl Default for Tiling {
-    /// Apparel: one target texel per painted texel, no offsets.
+    /// Apparel: one target texel per painted texel, no offsets, the whole
+    /// source texture.
     fn default() -> Self {
         Self {
             density: Vec2::ONE,
             material_offset: Vec2::ZERO,
             damage_offset: Vec2::ZERO,
             uv_scale: 1.0,
+            crop: 1.0,
         }
     }
 }
@@ -105,12 +114,25 @@ impl Tiling {
             material_offset: Vec2::new(a, b),
             damage_offset: Vec2::new(c, d),
             uv_scale: 1.0,
+            crop: 1.0,
         }
     }
 
     /// This tiling with the region's vertical texture scale.
     pub fn with_uv_scale(self, uv_scale: f32) -> Self {
         Self { uv_scale, ..self }
+    }
+
+    /// This tiling with the region's horizontal source crop.
+    pub fn with_crop(self, crop: f32) -> Self {
+        Self { crop, ..self }
+    }
+
+    /// Whether target column `x` of `w` lies inside the region quad: the
+    /// quad covers `0..crop·w` texels and a texel is drawn when its centre
+    /// is inside.
+    fn drawn(&self, x: usize, w: usize) -> bool {
+        (x as f32 + 0.5) < self.crop * w as f32
     }
 
     /// The vertical texture scale a family's programs apply: only the
@@ -120,6 +142,155 @@ impl Tiling {
             self.uv_scale
         } else {
             1.0
+        }
+    }
+}
+
+/// The size of a factory paint job's target: the region's texel size, or
+/// half of it (integer division) when the texture detail is below 3. The
+/// original's draw passes then double every tile uniform, so a low-detail
+/// item shows the same pattern at half the resolution.
+///
+/// The target is the part's atlas rectangle (the factory atlas times the
+/// part's atlas scale), not the source texture's size: shipped parts often
+/// differ (a 128×128 hookbolt fills a 256×256 region, a 128×512 falchion
+/// blade a 128×256 one), and the region quad stretches the source over it.
+/// A recipe can store a negative atlas scale (quarterstaff_b1's cap); the
+/// quad is then flipped, and the target takes the magnitude. [guess]
+pub fn paint_target_size(region_texels: Vec2, texture_detail: u32) -> Vec2 {
+    // The atlas rectangle is a fraction of the factory atlas; its texel
+    // size rounds to nearest (a 204.8-texel cap is 205 texels).
+    let size = region_texels.abs().max(Vec2::ONE);
+    let (w, h) = if texture_detail < 3 {
+        (
+            (size.x.round_ties_even() as u32) / 2,
+            (size.y.round_ties_even() as u32) / 2,
+        )
+    } else {
+        (
+            size.x.round_ties_even() as u32,
+            size.y.round_ties_even() as u32,
+        )
+    };
+    Vec2::new(w.max(1) as f32, h.max(1) as f32)
+}
+
+/// A factory paint region: its rectangle in the job and the values every
+/// pass reads from it. This is the original's region record, which the item
+/// factory fills and the material's passes consume.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RegionDraw {
+    /// The region's offset in the job, in atlas fractions (`ShdTile.zw`).
+    pub offset: Vec2,
+    /// The region's size in the job, in atlas fractions (`ShdTile.xy`).
+    pub size: Vec2,
+    /// Whether the region has its own shade tile (`ShdTile` = the rectangle;
+    /// without the flag every pass reads `ShdTile` = (1, 1, 0, 0)).
+    pub shade_tile: bool,
+    pub quality: f32,
+    /// Already remapped by the condition (`2/(2 − d) − 1`).
+    pub damage: f32,
+    pub dirt: f32,
+    /// The `UVScale` uniform (`1` unless a texture-stretch deform set it).
+    pub uv_scale: f32,
+    /// `PtrnPos`: scale x, y and offset x, y of an emblem pattern.
+    pub pattern_position: [f32; 4],
+}
+
+/// The uniforms one material pass binds for one region, as the original's
+/// draw functions compute them. The tile uniforms are scales and offsets in
+/// the pass's own coordinates; the material and condition values come from
+/// the layer and the region.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PassUniforms {
+    /// Material-scale tile: `job · region size / reference texture size`,
+    /// with its offset.
+    pub mat_tile: Vec4,
+    /// Damage-scale tile: `job · region size / 1024`, with its offset.
+    pub dmg_tile: Vec4,
+    /// Shade tile: the region rectangle (scale, offset) or the white default.
+    pub shd_tile: Vec4,
+    /// The layer's colour and wear (`MatCol`).
+    pub mat_col: Vec4,
+    pub damage: f32,
+    pub dirt: f32,
+    pub quality: f32,
+    /// `UVScale`; every pass whose program declares it also folds it into
+    /// `ShdTile.y`.
+    pub uv_scale: f32,
+    /// `PtrnPos`, bound only by the painted-pattern pass.
+    pub pattern_position: Option<Vec4>,
+    /// `NrmTile` (the region rectangle: size, then offset), bound only by
+    /// the specular pass, which samples the painted normal target with it.
+    pub nrm_tile: Option<Vec4>,
+}
+
+/// The tile size a pass uses: the job's target size, doubled when the
+/// texture detail is below 3 (the draw passes shift each half left once).
+fn tile_size(job_size: Vec2, texture_detail: u32) -> Vec2 {
+    if texture_detail < 3 {
+        job_size * 2.0
+    } else {
+        job_size
+    }
+}
+
+impl RegionDraw {
+    /// The uniforms of `pass` for this region and layer. `job_size` is the
+    /// painted target's size and `reference` the size of the layer
+    /// material's first colour texture (`MatTile` divides by it, in every
+    /// pass, the specular and normal ones included). Every pass binds
+    /// `UVScale` and multiplies the shade tile's **y** scale (the uniform's
+    /// second component) by it, the white default (1, 1, 0, 0) included;
+    /// only the painted-pattern pass binds `PtrnPos`, and the specular pass
+    /// binds `NrmTile` as the region rectangle without the fold. The
+    /// original folds only when the program declares `UVScale` (the blade
+    /// family); every other family's region carries 1.
+    #[allow(clippy::too_many_arguments)]
+    pub fn uniforms(
+        &self,
+        pass: procedural::Pass,
+        job_size: Vec2,
+        texture_detail: u32,
+        reference: Vec2,
+        mat_col: Vec4,
+        mat_tile_offset: Vec2,
+        dmg_tile_offset: Vec2,
+    ) -> PassUniforms {
+        use procedural::Pass;
+        let tile = tile_size(job_size, texture_detail);
+        let reference = reference.max(Vec2::ONE);
+        let mat_scale = tile * self.size / reference;
+        let dmg_scale = tile * self.size / DAMAGE_TEXELS;
+        let rect = Vec4::new(self.size.x, self.size.y, self.offset.x, self.offset.y);
+        let shd = if self.shade_tile {
+            rect
+        } else {
+            Vec4::new(1.0, 1.0, 0.0, 0.0)
+        };
+        let shd = Vec4::new(shd.x, shd.y * self.uv_scale, shd.z, shd.w);
+        PassUniforms {
+            mat_tile: Vec4::new(
+                mat_scale.x,
+                mat_scale.y,
+                mat_tile_offset.x,
+                mat_tile_offset.y,
+            ),
+            dmg_tile: Vec4::new(
+                dmg_scale.x,
+                dmg_scale.y,
+                dmg_tile_offset.x,
+                dmg_tile_offset.y,
+            ),
+            shd_tile: shd,
+            mat_col,
+            damage: self.damage,
+            dirt: self.dirt,
+            quality: self.quality,
+            uv_scale: self.uv_scale,
+            pattern_position: (pass == Pass::PaintedPattern)
+                .then(|| Vec4::from_array(self.pattern_position)),
+            nrm_tile: (pass == Pass::Specular).then_some(rect),
         }
     }
 }
@@ -1810,7 +1981,29 @@ pub fn paint_with(
     condition: Condition,
     tiling: Tiling,
 ) -> Painted {
-    let (w, h) = (shade.width, shade.height);
+    paint_sized(
+        shade,
+        item_normal,
+        layers,
+        condition,
+        tiling,
+        (shade.width, shade.height),
+    )
+}
+
+/// [`paint_with`] at an explicit target size. A factory job's target is the
+/// region's texel size, which is half the source texture's when the texture
+/// detail is below 3; the source maps are then sampled at the target's
+/// resolution, as the original's region quad draws them scaled.
+pub fn paint_sized(
+    shade: &Texels,
+    item_normal: Option<&Texels>,
+    layers: &[PaintLayer<'_>],
+    condition: Condition,
+    tiling: Tiling,
+    target: (usize, usize),
+) -> Painted {
+    let (w, h) = (target.0.max(1), target.1.max(1));
     let mut normal_out = vec![Vec2::ZERO; w * h];
     let mut out = vec![Vec3::ZERO; w * h];
     // The original clears the surface target to (0, 0.01, 0).
@@ -1823,6 +2016,9 @@ pub fn paint_with(
             (0..w * h)
                 .map(|i| {
                     let (x, y) = (i % w, i / w);
+                    if !tiling.drawn(x, w) {
+                        return 0.0;
+                    }
                     let mask = sample_stretched(layer.mask, x, y, w, h, s).x;
                     pattern.map_or(mask, |p| mask * p.at(x, y, w, h))
                 })
@@ -2248,6 +2444,175 @@ mod tests {
         }
         // Row 3 of 4 at scale 2: v = 6 wraps to texel row 2.
         assert_eq!(sample_stretched(&t, 0, 3, 4, 4, 2.0).x, 100.0 / 255.0);
+    }
+
+    #[test]
+    fn the_width_crop_limits_the_drawn_columns_without_rescaling() {
+        // A horizontal gradient: texel u holds u.
+        let t = grey(256, |x, _| x as u8);
+        // Region u reads source u whatever the crop: column 7 of 8 reads
+        // texel 224 (the quad's u texture coordinate is 0..crop over a
+        // width of size·crop).
+        assert_eq!((sample_stretched(&t, 7, 0, 8, 8, 1.0).x * 255.0) as u8, 224);
+        // A crop of 0.5 over 8 columns draws columns 0..=3 only.
+        let half = Tiling::default().with_crop(0.5);
+        assert!(half.drawn(3, 8));
+        assert!(!half.drawn(4, 8));
+        // A texel is drawn when its centre is inside: 0.45 · 10 = 4.5
+        // covers column 4's centre only up to it, so column 4 is out.
+        let c = Tiling::default().with_crop(0.45);
+        assert!(c.drawn(3, 10));
+        assert!(!c.drawn(4, 10));
+        // A crop above 1 (a negative texture parameter) draws everything.
+        let wide = Tiling::default().with_crop(1.05);
+        assert!((0..8).all(|x| wide.drawn(x, 8)));
+    }
+
+    #[test]
+    fn columns_past_the_crop_keep_the_cleared_target() {
+        let shade = grey(4, |_, _| 200);
+        let mask = grey(4, |_, _| 255);
+        let layers = [bare_layer(&mask, 1, Vec3::new(0.8, 0.6, 0.4))];
+        let full = paint_sized(&shade, None, &layers, PLAIN, Tiling::default(), (4, 1));
+        let half = Tiling::default().with_crop(0.5);
+        let cut = paint_sized(&shade, None, &layers, PLAIN, half, (4, 1));
+        // Columns 0 and 1 paint as without the crop.
+        assert_eq!(&cut.colour[0..8], &full.colour[0..8]);
+        assert_eq!(&cut.surface[0..8], &full.surface[0..8]);
+        // Columns 2 and 3 keep the cleared colour and surface (0, 0.01, 0).
+        assert_eq!(&cut.colour[8..16], &[0, 0, 0, 255, 0, 0, 0, 255]);
+        assert_eq!(&cut.surface[8..16], &[0, 3, 0, 255, 0, 3, 0, 255]);
+    }
+
+    #[test]
+    fn a_low_detail_job_halves_the_target_and_doubles_the_tiles() {
+        assert_eq!(
+            paint_target_size(Vec2::new(512.0, 256.0), 3),
+            Vec2::new(512.0, 256.0)
+        );
+        assert_eq!(
+            paint_target_size(Vec2::new(512.0, 256.0), 2),
+            Vec2::new(256.0, 128.0)
+        );
+        assert_eq!(
+            paint_target_size(Vec2::new(512.0, 256.0), 0),
+            Vec2::new(256.0, 128.0)
+        );
+        // A single-texel region never halves to nothing.
+        assert_eq!(paint_target_size(Vec2::ONE, 1), Vec2::ONE);
+        // A negative region size (a flipped quad) takes the magnitude.
+        assert_eq!(
+            paint_target_size(Vec2::new(256.0, -128.0), 3),
+            Vec2::new(256.0, 128.0)
+        );
+        let region = RegionDraw {
+            offset: Vec2::new(0.25, 0.5),
+            size: Vec2::new(0.5, 0.5),
+            shade_tile: true,
+            quality: 0.5,
+            damage: 0.2,
+            dirt: 0.1,
+            uv_scale: 0.5,
+            pattern_position: [1.5, 1.0, 0.1, -0.1],
+        };
+        let reference = Vec2::new(256.0, 256.0);
+        let col = Vec4::new(0.8, 0.6, 0.4, 0.75);
+        let full = region.uniforms(
+            procedural::Pass::Colour,
+            Vec2::new(512.0, 256.0),
+            3,
+            reference,
+            col,
+            Vec2::new(0.25, -0.5),
+            Vec2::new(-0.25, 0.5),
+        );
+        // MatTile = job · region size / reference texture size.
+        assert_eq!(full.mat_tile, Vec4::new(1.0, 0.5, 0.25, -0.5));
+        // DmgTile = job · region size / 1024.
+        assert_eq!(full.dmg_tile, Vec4::new(0.25, 0.125, -0.25, 0.5));
+        // The colour pass folds UVScale into the shade tile's y.
+        assert_eq!(full.shd_tile, Vec4::new(0.5, 0.25, 0.25, 0.5));
+        assert_eq!(full.mat_col, col);
+        assert_eq!(full.uv_scale, 0.5);
+        assert_eq!(full.pattern_position, None);
+        assert_eq!(full.nrm_tile, None);
+        // The same job at low detail has the same tiles: a half-size target
+        // and doubled tile uniforms.
+        let low = region.uniforms(
+            procedural::Pass::Colour,
+            Vec2::new(256.0, 128.0),
+            2,
+            reference,
+            col,
+            Vec2::new(0.25, -0.5),
+            Vec2::new(-0.25, 0.5),
+        );
+        assert_eq!(low.mat_tile, full.mat_tile);
+        assert_eq!(low.dmg_tile, full.dmg_tile);
+        // The pattern pass folds UVScale into the shade tile's y as well
+        // (every pass does).
+        let pattern = region.uniforms(
+            procedural::Pass::Pattern,
+            Vec2::new(512.0, 256.0),
+            3,
+            reference,
+            col,
+            Vec2::ZERO,
+            Vec2::ZERO,
+        );
+        assert_eq!(pattern.shd_tile, Vec4::new(0.5, 0.25, 0.25, 0.5));
+        assert_eq!(pattern.uv_scale, 0.5);
+        let normal = region.uniforms(
+            procedural::Pass::Normal,
+            Vec2::new(512.0, 256.0),
+            3,
+            reference,
+            col,
+            Vec2::ZERO,
+            Vec2::ZERO,
+        );
+        assert_eq!(normal.shd_tile, Vec4::new(0.5, 0.25, 0.25, 0.5));
+        let painted = region.uniforms(
+            procedural::Pass::PaintedPattern,
+            Vec2::new(512.0, 256.0),
+            3,
+            reference,
+            col,
+            Vec2::ZERO,
+            Vec2::ZERO,
+        );
+        assert_eq!(
+            painted.pattern_position,
+            Some(Vec4::new(1.5, 1.0, 0.1, -0.1))
+        );
+        // The specular pass binds NrmTile as the bare region rectangle
+        // (no UVScale fold), after its folded shade tile.
+        let specular = region.uniforms(
+            procedural::Pass::Specular,
+            Vec2::new(512.0, 256.0),
+            3,
+            reference,
+            col,
+            Vec2::ZERO,
+            Vec2::ZERO,
+        );
+        assert_eq!(specular.shd_tile, Vec4::new(0.5, 0.25, 0.25, 0.5));
+        assert_eq!(specular.nrm_tile, Some(Vec4::new(0.5, 0.5, 0.25, 0.5)));
+        // A region without its own shade tile reads (1, 1, 0, 0).
+        let plain = RegionDraw {
+            shade_tile: false,
+            ..region
+        }
+        .uniforms(
+            procedural::Pass::Colour,
+            Vec2::new(512.0, 256.0),
+            3,
+            reference,
+            col,
+            Vec2::ZERO,
+            Vec2::ZERO,
+        );
+        assert_eq!(plain.shd_tile, Vec4::new(1.0, 0.5, 0.0, 0.0));
     }
 
     #[test]
