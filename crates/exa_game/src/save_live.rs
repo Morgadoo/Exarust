@@ -725,6 +725,15 @@ pub fn restore_arena(
         .then(|| arena_save::read_tables(&chunks).ok())
         .flatten();
     let mut player = loaded.player_record();
+    // An old save's player record is repaired before the arena's id pass:
+    // the worn list, each loadout's worn list, then the carried items, each
+    // dropping the ids the arena marked with the top bit, and the record is
+    // re-derived afterwards. Hands are left alone.
+    if loaded.converted
+        && let Some(record) = player.as_mut()
+    {
+        arena_save::repair_converted_record(record);
+    }
     let mut shelved = 0;
     let applied = tables.is_some();
     if let Some(mut tables) = tables {
@@ -1311,6 +1320,96 @@ mod tests {
         app.update();
         assert_eq!(app.world().resource::<SaveReport>().saved, Some(1));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_old_arena_load_repairs_the_players_record_before_the_id_pass() {
+        // A converted old save: the player's worn, loadout and carried lists
+        // hold the arena's top-bit markers, which the repair drops before
+        // the identity reset.
+        let mut record = CharacterRecord::new();
+        record.name = "Ash".to_string();
+        record.id = PLAYER_RECORD_ID;
+        record.worn = vec![
+            ItemRef::new(1, 0),
+            ItemRef::new(0x8000_0002, 0),
+            ItemRef::new(3, 0),
+        ];
+        record.loadouts.push(Default::default());
+        record.loadouts[0].worn = vec![ItemRef::new(1, 0), ItemRef::new(0xC000_0002, 0)];
+        record.inventory = vec![
+            Carried {
+                item: 0x8000_0001,
+                flags: 0,
+                extra: 0,
+            },
+            Carried {
+                item: 6,
+                flags: 0,
+                extra: 0,
+            },
+        ];
+        let mut db =
+            exa_formats::character_db::CharacterDb::new(exa_formats::character_db::WORLD_TAG);
+        db.add(PLAYER_RECORD_ID, record).unwrap();
+        let export =
+            crate::slots::export_world_databases(&mut db, &exa_formats::objdb::ObjectDb::default())
+                .unwrap();
+        let mut data = save_package::PlayerData::arena(save_package::name("arenahub"));
+        data.character = Some(
+            save_package::CharacterPlacement {
+                reference: exa_formats::characters::WORLD_DB | PLAYER_RECORD_ID,
+                position: [0.0, 0.0, 300.0],
+                heading: 0.0,
+                condition: 0,
+                chunks: Vec::new(),
+            }
+            .write(),
+        );
+        let PlayerHeader::Arena(header) = &mut data.header else {
+            unreachable!()
+        };
+        header.data_version = 8;
+        let mut package = save_package::PackageImage::new();
+        package.put_section(
+            save_package::WORLD_CHARACTER_DB,
+            &save_package::world_character_db(export.characters.as_deref().unwrap()),
+        );
+        package.put_section(save_package::PLAYER_DATA, &data.write_ordered());
+        let loaded = LoadedSave {
+            data,
+            package,
+            kind: save_package::SlotKind::Save,
+            forced_locale: None,
+            level_locale: save_package::name("arenahub"),
+            has_level_section: false,
+            has_world_objects: false,
+            has_world_characters: true,
+            converted: true,
+            mask: !0,
+        };
+        let mut career = crate::hub_windows::ArenaCareer::default();
+        let mut stores = ArenaStores::default();
+        let restored = restore_arena(&loaded, &HashMap::new(), &mut career, &mut stores);
+        let back = restored.player.expect("the player's record");
+        assert_eq!(
+            back.worn.iter().map(|w| w.id).collect::<Vec<_>>(),
+            vec![1, 3]
+        );
+        assert_eq!(
+            back.loadouts[0]
+                .worn
+                .iter()
+                .map(|w| w.id)
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
+        assert_eq!(
+            back.inventory.iter().map(|c| c.item).collect::<Vec<_>>(),
+            vec![6]
+        );
+        // The identity reset follows the repair (the race byte is cleared).
+        assert_eq!(back.profession() & 0x0000_FF00, 0);
     }
 
     #[test]
