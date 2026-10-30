@@ -769,21 +769,24 @@ fn paint_manage(refresh: &ManageRefresh, bounds: GuiRect, look: &Look) -> gui_pa
     let report_table = at4(bounds, MANAGE_REPORT);
     paint_panel(&mut painted, roster, look);
     paint_panel(&mut painted, report_table, look);
-    let columns = [("Name", 0), ("Rank", 0x84), ("Health", 0x84 + 0x50)];
-    for (title, x) in columns {
-        paint_text(
-            &mut painted,
-            GuiRect::new(roster.left + x, roster.top, 84, 6 * look.unit),
-            title,
-            look,
-        );
+    let mut x = 0;
+    for (title, width) in crate::manage::ROSTER_COLUMNS {
+        if !title.is_empty() {
+            paint_text(
+                &mut painted,
+                GuiRect::new(roster.left + x, roster.top, width, 6 * look.unit),
+                title,
+                look,
+            );
+        }
+        x += width;
     }
     // The roster is a table of 6-unit rows under a 6-unit header; its
     // health column is owner-drawn: the table hands the cell's left (one
-    // unit in, past the two columns), its pen line `11u + 6u·row` and the
+    // unit in, past the three columns), its pen line `11u + 6u·row` and the
     // rest of the client's width to the gauge draw ([`health_marker`]).
     let u = look.unit;
-    let health_x = u + 0x84 + 0x50;
+    let health_x = u + crate::manage::HEALTH_COLUMN_X;
     for (row, text) in refresh.roster.iter().enumerate() {
         let row = row as i32;
         let y = roster.top + 6 * u * (row + 1);

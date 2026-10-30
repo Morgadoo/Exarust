@@ -235,6 +235,11 @@ branch is not reproduced.
 
 ## Fighters and their condition
 
+`fighter::CombatScore` is the counter a body's behaviour keeps: the damage
+routine adds 3 to the striker's score for every wound and 1 to the struck
+body's own score for every clash or block it takes while parrying; the arena
+reads it as a fighter's share of a round's experience.
+
 `fighter`: a `Fighter` (health bars, natural armour and armour layers,
 readiness, whether it bleeds, its spawn stats, its record's perks, of
 which Remise and Feint change its swings) and `Health` (yellow, red,

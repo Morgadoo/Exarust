@@ -73,8 +73,14 @@ pub const MANAGE_CONTROLS: [&str; 11] = [
     "Spent today",
     "End Day",
 ];
-/// The roster table's three columns and their widths.
-pub const ROSTER_COLUMNS: [(&str, i32); 3] = [("Name", 0x84), ("Rank", 0x50), ("Health", 0x84)];
+/// The roster table's four columns and their widths, from the window's
+/// constructor: Name (owner-drawn in its role's ink), Rank, an untitled
+/// 16-pixel gap and Health (the owner-drawn gauge; the last column runs to
+/// the client's edge).
+pub const ROSTER_COLUMNS: [(&str, i32); 4] =
+    [("Name", 0x84), ("Rank", 0x50), ("", 0x10), ("Health", 0x84)];
+/// The roster's health column's left: the three columns before it.
+pub const HEALTH_COLUMN_X: i32 = 0x84 + 0x50 + 0x10;
 /// The arsenal form's title.
 pub const ARSENAL_TITLE: &str = "ARSENAL";
 /// The status window's title.
