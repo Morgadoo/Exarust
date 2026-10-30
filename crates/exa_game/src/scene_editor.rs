@@ -332,6 +332,10 @@ pub struct TaskTick {
     pub repaint: bool,
     /// Message `2` goes to the message.
     pub post_message: bool,
+    /// The scene node's update byte (offset 0x28c) is set: both input
+    /// words together carry every [`REPAINT_BITS`] bit, or the scene
+    /// update's flag was cleared.
+    pub scene_flag: bool,
 }
 
 /// The message word bits that, set in either input word, force a repaint.
@@ -382,7 +386,9 @@ impl SceneTask {
     /// step. A cleared flag posts the GUI message and repaints; so do both
     /// input words together carrying every [`REPAINT_BITS`] bit. A repaint
     /// sets the viewport's byte. With the pending count below its limit and
-    /// no [`BLOCKING_BITS`] in the primary word, message 2 is posted.
+    /// no [`BLOCKING_BITS`] in the primary word, message 2 is posted. The
+    /// scene node's update byte is set when the flag is cleared or both
+    /// input words carry every [`REPAINT_BITS`] bit.
     pub fn tick(&mut self, input: &TickInputs) -> TaskTick {
         if self.paused {
             return TaskTick::default();
@@ -399,9 +405,14 @@ impl SceneTask {
             post_gui_task: !flag,
             repaint: !flag,
             post_message: false,
+            scene_flag: false,
         };
         if (input.primary | input.secondary) & REPAINT_BITS == REPAINT_BITS {
             tick.repaint = true;
+            tick.scene_flag = true;
+        }
+        if !flag {
+            tick.scene_flag = true;
         }
         if self.pending < self.pending_limit && input.primary & BLOCKING_BITS == 0 {
             tick.post_message = true;
@@ -641,11 +652,12 @@ mod tests {
         let mut busy = input(20, 0);
         busy.weather_busy = true;
         let tick = task.tick(&busy);
-        assert!(tick.post_gui_task && tick.repaint);
+        assert!(tick.post_gui_task && tick.repaint && tick.scene_flag);
         // So does the scene update clearing its own byte.
         let mut cleared = input(30, 0);
         cleared.scene_update_flag = false;
-        assert!(task.tick(&cleared).post_gui_task);
+        let tick = task.tick(&cleared);
+        assert!(tick.post_gui_task && tick.scene_flag);
     }
 
     #[test]
@@ -655,7 +667,7 @@ mod tests {
         a.primary = 0x3;
         a.secondary = 0x4;
         let tick = task.tick(&a);
-        assert!(tick.repaint && !tick.post_gui_task);
+        assert!(tick.repaint && !tick.post_gui_task && tick.scene_flag);
         a.secondary = 0x0;
         assert!(!task.tick(&a).repaint);
     }
