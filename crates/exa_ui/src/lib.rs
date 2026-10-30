@@ -184,10 +184,10 @@ pub use gui_text::{
 pub use heartbeat::Heartbeat;
 pub use help_system::{
     MANUAL_ATTRIBUTES, MANUAL_CONTROLLER, MANUAL_KEYBOARD, MANUAL_LIST_TOP, MANUAL_LIST_WIDTH,
-    MANUAL_OPTIONS, MANUAL_SIZE, MANUAL_TITLE, Manual, ManualSource, TIP_ATTRIBUTES, TIP_CONTROLS,
-    TIP_EXTRA_HEIGHT, TIP_OPTIONS, TIP_PRESET, TIP_TEXT_INSET, TIP_TITLES, TIP_WIDTH, TOPIC_INDEX,
-    TOPIC_RECORD, TOPIC_TITLE, Tip, TipPlan, TipStore, TopicRef, close_manual, manual_file,
-    parse_topics, show_tip, tip_index, tip_plan,
+    MANUAL_OPTIONS, MANUAL_SIZE, MANUAL_TITLE, MANUAL_WINDOW, Manual, ManualSource, ManualWindow,
+    TIP_ATTRIBUTES, TIP_CONTROLS, TIP_EXTRA_HEIGHT, TIP_OPTIONS, TIP_PRESET, TIP_TEXT_INSET,
+    TIP_TITLES, TIP_WIDTH, TOPIC_INDEX, TOPIC_RECORD, TOPIC_TITLE, Tip, TipPlan, TipStore,
+    TopicRef, close_manual, manual_file, parse_topics, show_tip, tip_index, tip_plan,
 };
 pub use hud::{DrawHud, HudBars};
 pub use hud_extra::{

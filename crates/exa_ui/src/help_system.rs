@@ -123,6 +123,43 @@ pub fn manual_text_rect(size: (i32, i32)) -> (i32, i32, i32, i32) {
     )
 }
 
+/// The manual window's construction, as its open builds it: the form's
+/// title, size, attributes (the upper layer), options word and style flags,
+/// the topic list's style and the text box's own flags and options.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ManualWindow {
+    pub title: &'static str,
+    pub size: (i32, i32),
+    pub attributes: u32,
+    pub options: u32,
+    pub flags: u32,
+    pub list_style: u32,
+    pub list_flags: u32,
+    pub text_options: u32,
+    pub text_flags: u32,
+    pub text_style: u32,
+    /// The word the text box keeps at its spacing field.
+    pub text_spacing: i32,
+}
+
+/// The manual window's constants: the form's 0x120 options and 0xb800
+/// style flags over an upper-layer window, the list's 0x9100000 style, and
+/// the text box's 0x280 options, 0xc0000 flags, 0x4000000 style bit and
+/// spacing 8.
+pub const MANUAL_WINDOW: ManualWindow = ManualWindow {
+    title: MANUAL_TITLE,
+    size: MANUAL_SIZE,
+    attributes: MANUAL_ATTRIBUTES,
+    options: MANUAL_OPTIONS,
+    flags: POPUP_STYLE,
+    list_style: MANUAL_LIST_STYLE,
+    list_flags: 0,
+    text_options: 0x280,
+    text_flags: 0xc0000,
+    text_style: 0x400_0000,
+    text_spacing: 8,
+};
+
 /// A list entry's title from a record's first 16 bytes: cut at the first
 /// NUL, and a lower-case letter that starts a word (the first byte, or one
 /// after a space or an underscore) made upper case; nothing else changes.
@@ -452,6 +489,26 @@ mod tests {
         assert_eq!(manual_text_rect(MANUAL_SIZE), (0x94, 0x14, 612, 446));
         assert_eq!(MANUAL_LIST_STYLE, 0x0910_0000);
         assert_eq!(POPUP_STYLE, 0xb800);
+        assert_eq!(MANUAL_WINDOW.title, "MANUAL");
+        assert_eq!(MANUAL_WINDOW.size, (0x2fc, 0x1e6));
+        assert_eq!(
+            (
+                MANUAL_WINDOW.attributes,
+                MANUAL_WINDOW.options,
+                MANUAL_WINDOW.flags
+            ),
+            (0x1000, 0x120, 0xb800)
+        );
+        assert_eq!(
+            (
+                MANUAL_WINDOW.text_options,
+                MANUAL_WINDOW.text_flags,
+                MANUAL_WINDOW.text_style,
+                MANUAL_WINDOW.text_spacing
+            ),
+            (0x280, 0xc0000, 0x400_0000, 8)
+        );
+        assert_eq!(MANUAL_WINDOW.list_flags, 0);
         assert_eq!(MANUAL_ATTRIBUTES, 0x1000);
         assert_eq!(TIP_ATTRIBUTES, 0x9000);
     }

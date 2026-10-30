@@ -3396,7 +3396,9 @@ it is wired into the running game yet.
 - **Help** (`exa_ui::help_system`). The manual opens `manualkm.fds`, or
   `manualcn.fds` in controller mode, as a 0x2fc × 0x1e6 "MANUAL" page with
   a 0x90-wide topic list (list style, full rows, no icon space) and a text
-  box. Each 0x20-byte directory record's 16-byte title is title-cased (a
+  box (form options 0x120 and style flags 0xb800 over an upper layer; the
+  text box's own options 0x280, flags 0xc0000, style bit 0x4000000 and
+  spacing 8). Each 0x20-byte directory record's 16-byte title is title-cased (a
   lower-case letter after a space or `_` upper-cased) and its word at 0x1c
   is its place in the list; picking a topic loads its block and shows the
   text without its last byte. A tip whose single bit (0–30) is not in the
