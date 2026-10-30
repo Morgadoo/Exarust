@@ -631,6 +631,68 @@ impl CharacterData {
         }
     }
 
+    /// What a new item weighs on the character, as the equip pass reads it:
+    /// its [`Item::armour_weight`] less that of every worn item whose
+    /// occupancy overlaps it on any bone, and 0 when one of those refuses to
+    /// come off (its [`Item::equip_lock`] is over the limit). Worn items
+    /// whose record cannot be read, or that have no body section, are left
+    /// out of the sum.
+    pub fn equip_weight<'a>(&self, new: &Item, find: impl Fn(u32) -> Option<&'a Item>) -> f32 {
+        let mut weight = new.armour_weight;
+        for worn in &self.record.worn {
+            let Some(item) = find(worn.id) else {
+                continue;
+            };
+            if !item.has_body
+                || !item
+                    .occupancy
+                    .iter()
+                    .zip(new.occupancy.iter())
+                    .any(|(worn, new)| worn & new != 0)
+            {
+                continue;
+            }
+            if item.equip_lock > EQUIP_LOCK_LIMIT {
+                return 0.0;
+            }
+            weight -= item.armour_weight;
+        }
+        weight
+    }
+
+    /// The weight of what the character wears, as the pack's total reads
+    /// it: each worn item's template bulk (the item's own record's model
+    /// bulk byte), summed as an integer. `template_bulk` resolves the bulk
+    /// of an item id, as [`exa_formats::objdb::ObjectDb::template_bulk`]
+    /// does.
+    pub fn worn_weight(&self, template_bulk: impl Fn(u32) -> u8) -> i32 {
+        self.record
+            .worn
+            .iter()
+            .map(|worn| i32::from(template_bulk(worn.id)))
+            .sum()
+    }
+
+    /// The rank of a set of hands and worn items, as the arena compares
+    /// loadouts: each held item's [`Item::loadout_rank`] (a shield and a
+    /// second weapon count too) plus each worn item's
+    /// [`Item::worn_rank`]. Items whose record cannot be read count 0.
+    pub fn loadout_rank<'a>(set: &Loadout, find: impl Fn(u32) -> Option<&'a Item>) -> i32 {
+        let mut rank = 0;
+        for hand in &set.hands {
+            if hand.id == 0 {
+                continue;
+            }
+            rank += find(hand.id).map_or(0, |item| item.loadout_rank);
+        }
+        for worn in &set.worn {
+            if let Some(item) = find(worn.id) {
+                rank += item.worn_rank();
+            }
+        }
+        rank
+    }
+
     /// Appends an item to the worn list (the underwear rule's append and
     /// every equip).
     pub fn add_worn(&mut self, item: ItemRef) {

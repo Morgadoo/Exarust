@@ -946,3 +946,70 @@ fn importing_an_entry_copies_its_items() {
     // The entry database is left as it was.
     assert_eq!(own.base.len(), 3);
 }
+
+/// The equip pass's weight: the new item's armour less every overlapping
+/// worn item's, refused (0) when one of them will not come off.
+#[test]
+fn equip_weight_subtracts_overlapping_armour() {
+    let mut new = item(1, 0x01);
+    new.armour_weight = 1.0;
+    new.has_body = true;
+    let mut overlapping = item(2, 0x01);
+    overlapping.armour_weight = 0.4;
+    overlapping.has_body = true;
+    let mut elsewhere = item(3, 0x04);
+    elsewhere.armour_weight = 0.3;
+    elsewhere.has_body = true;
+    let mut locked = item(4, 0x01);
+    locked.armour_weight = 0.2;
+    locked.equip_lock = 51;
+    locked.has_body = true;
+    let items = [new.clone(), overlapping, elsewhere, locked];
+    let find = |id: u32| items.iter().find(|item| item.id == id);
+
+    let mut data = CharacterData::new();
+    assert_eq!(data.equip_weight(&new, find), 1.0);
+    data.record.worn = refs(&[2, 3]);
+    assert!((data.equip_weight(&new, find) - 0.6).abs() < 1e-6);
+    // A lock at the limit is allowed; one over it refuses the whole change.
+    data.record.worn = refs(&[4]);
+    assert_eq!(data.equip_weight(&new, find), 0.0);
+    // A worn item with no body section is left out of the sum.
+    let mut bodyless = item(5, 0x01);
+    bodyless.has_body = false;
+    bodyless.armour_weight = 5.0;
+    let find = |id: u32| [&new, &bodyless].into_iter().find(|item| item.id == id);
+    data.record.worn = refs(&[5]);
+    assert_eq!(data.equip_weight(&new, find), 1.0);
+}
+
+/// The worn weight sums each worn item's template bulk; the loadout rank
+/// sums the hands' and worn items' ranks.
+#[test]
+fn worn_weight_and_loadout_rank() {
+    let mut data = CharacterData::new();
+    data.record.worn = refs(&[1, 2, 0]);
+    let bulk = |id: u32| match id {
+        1 => 6,
+        2 => 3,
+        _ => 0,
+    };
+    assert_eq!(data.worn_weight(bulk), 9);
+    assert_eq!(CharacterData::new().worn_weight(bulk), 0);
+
+    let mut weapon = item(10, 0);
+    weapon.loadout_rank = 5;
+    let mut shield = item(11, 0);
+    shield.loadout_rank = 3;
+    let mut armour = item(12, 0);
+    armour.body_rank = 0x27;
+    let items = [weapon, shield, armour];
+    let find = |id: u32| items.iter().find(|item| item.id == id);
+    let mut set = Loadout::default();
+    set.hands[0] = ItemRef::new(10, 0);
+    set.hands[1] = ItemRef::new(11, 0);
+    set.hands[2] = ItemRef::new(99, 0);
+    set.worn = refs(&[12, 99]);
+    assert_eq!(CharacterData::loadout_rank(&set, find), 5 + 3 + 7);
+    assert_eq!(CharacterData::loadout_rank(&Loadout::default(), find), 0);
+}
