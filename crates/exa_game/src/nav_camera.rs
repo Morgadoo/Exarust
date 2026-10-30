@@ -554,7 +554,9 @@ pub struct NavController {
     pub matrix_hook: bool,
     /// The hook's priority there.
     pub matrix_hook_priority: i32,
-    /// The viewport's GUI callback was saved for the destructor.
+    /// The constructor saved a viewport GUI callback for the destructor.
+    /// It copies whatever slot the viewport had, so this is clear when the
+    /// viewport had none, and the destructor then runs nothing.
     pub viewport_callback_saved: bool,
     /// The destructor is the viewport's GUI callback.
     pub destructor_installed: bool,
@@ -572,7 +574,9 @@ impl NavController {
     /// and viewport back-links, the rebuild hook, the saved viewport
     /// callback and the destructor, the frame tick, then the preset (which
     /// may place the camera), and the clock set to the frame.
-    pub fn new(fields: PresetFields, frame_time: u32) -> Self {
+    /// `viewport_callback` is whether the viewport had a GUI callback for
+    /// the constructor to save.
+    pub fn new(fields: PresetFields, frame_time: u32, viewport_callback: bool) -> Self {
         let preset = apply_preset(fields);
         Self {
             preset,
@@ -581,7 +585,7 @@ impl NavController {
             viewport_bound: true,
             matrix_hook: true,
             matrix_hook_priority: MATRIX_HOOK_PRIORITY,
-            viewport_callback_saved: true,
+            viewport_callback_saved: viewport_callback,
             destructor_installed: true,
             frame_tick: true,
             frame_tick_priority: FRAME_TICK_PRIORITY,
@@ -590,8 +594,8 @@ impl NavController {
     }
 
     /// Takes the controller apart: the destructor runs the viewport
-    /// callback it saved and then frees the controller. Returns whether a
-    /// saved callback ran; the ECS drop frees the state. The back-pointers
+    /// callback it saved, when the slot is not empty, and then frees the
+    /// controller. Returns whether a saved callback ran; the ECS drop frees the state. The back-pointers
     /// are cleared, as the host would.
     pub fn release(&mut self) -> bool {
         self.camera_bound = false;
@@ -1017,10 +1021,11 @@ pub struct Attachment {
     /// The wheel handler saved for the detach; `false` is the empty slot,
     /// which the next preset fills again from the viewport.
     pub saved_wheel: bool,
-    /// The detach asked the viewport to reset its geometry (the
-    /// controller's dirty byte); the camera tick clears it once the
-    /// viewport has been rebuilt.
-    pub geometry_reset: bool,
+    /// The controller's redraw byte, which the detach sets: while it is set
+    /// the frame driver leaves the scene's and its caller's redraw requests
+    /// standing; once the camera tick clears it (and nothing forces a
+    /// redraw) the frame driver clears them.
+    pub redraw: bool,
 }
 
 impl Default for Attachment {
@@ -1030,7 +1035,7 @@ impl Default for Attachment {
             bound: true,
             handlers: Handlers::default(),
             saved_wheel: false,
-            geometry_reset: false,
+            redraw: false,
         }
     }
 }
@@ -1068,14 +1073,14 @@ impl Attachment {
             self.handlers.free_press = false;
             self.handlers.free_move = false;
             self.handlers.wheel = self.saved_wheel;
-            self.geometry_reset = true;
+            self.redraw = true;
         }
         true
     }
 
-    /// The camera tick's clear of the detach's geometry-reset byte.
-    pub fn clear_geometry_reset(&mut self) {
-        self.geometry_reset = false;
+    /// The camera tick's clear of the redraw byte.
+    pub fn clear_redraw(&mut self) {
+        self.redraw = false;
     }
 }
 
@@ -1739,11 +1744,10 @@ mod tests {
         let mut attachment = Attachment::default();
         assert!(attachment.set_detached(true));
         assert!(attachment.editing && !attachment.bound);
-        // The detach asks for a geometry reset, which the camera tick
-        // clears after the viewport is rebuilt.
-        assert!(attachment.geometry_reset);
-        attachment.clear_geometry_reset();
-        assert!(!attachment.geometry_reset);
+        // The detach sets the redraw byte, which the camera tick clears.
+        assert!(attachment.redraw);
+        attachment.clear_redraw();
+        assert!(!attachment.redraw);
         // Setting the state it already has changes nothing.
         assert!(!attachment.set_detached(true));
         assert!(attachment.editing && !attachment.bound);
@@ -1887,7 +1891,7 @@ mod tests {
 
     #[test]
     fn the_controller_is_built_with_the_preset_and_torn_down() {
-        let mut controller = NavController::new(PresetFields::default(), 1234);
+        let mut controller = NavController::new(PresetFields::default(), 1234, true);
         // The constructor stores 45°, binds the scene and viewport, hooks
         // the camera node's rebuild (priority 0) and the frame tick
         // (priority 7), keeps the viewport callback and installs the
@@ -1916,5 +1920,10 @@ mod tests {
         assert!(!controller.release());
         assert!(!controller.camera_bound && !controller.viewport_bound);
         assert!(!controller.destructor_installed);
+        // A viewport without a callback leaves the saved slot empty, and
+        // the destructor runs nothing.
+        let mut bare = NavController::new(PresetFields::default(), 0, false);
+        assert!(!bare.viewport_callback_saved && bare.destructor_installed);
+        assert!(!bare.release());
     }
 }
