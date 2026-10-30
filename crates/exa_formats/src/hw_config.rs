@@ -531,6 +531,54 @@ pub fn floor_log2(value: i32) -> i32 {
     result
 }
 
+/// The older dialog's slider steps, as a second record table still holds
+/// them: the same graphics options with different multipliers and bases
+/// (shading `round(3f) + 2`, texture detail and quality `round(3f) + 2`,
+/// shadow detail `round(4f) + 1`, shadow quality `round(4f) + 2`, hardware
+/// anti-aliasing `1 << round(3f)`). Which dialog shows that table was not
+/// traced; the Settings form's table uses the newer steps
+/// ([`shading_from_fraction`] and its neighbours). Kept as tested functions
+/// with the original's numbers.
+pub mod legacy {
+    use super::round_even;
+
+    /// The older shading quality: `round(3f) + 2`.
+    pub fn shading_from_fraction(fraction: f32) -> i32 {
+        round_even(3.0 * fraction) + 2
+    }
+
+    /// The older texture detail: `round(3f) + 2`.
+    pub fn texture_detail_from_fraction(fraction: f32) -> i32 {
+        round_even(3.0 * fraction) + 2
+    }
+
+    /// The older texture quality: `round(3f) + 2`.
+    pub fn texture_quality_from_fraction(fraction: f32) -> i32 {
+        round_even(3.0 * fraction) + 2
+    }
+
+    /// The older shadow detail: `round(4f) + 1`.
+    pub fn shadow_detail_from_fraction(fraction: f32) -> i32 {
+        round_even(4.0 * fraction) + 1
+    }
+
+    /// The older shadow quality: `round(4f) + 2`.
+    pub fn shadow_quality_from_fraction(fraction: f32) -> i32 {
+        round_even(4.0 * fraction) + 2
+    }
+
+    /// The older hardware anti-aliasing samples: `1 << round(3f)` when that
+    /// is positive, the step itself (0) otherwise.
+    pub fn multisample_from_fraction(fraction: f32) -> i32 {
+        let step = round_even(3.0 * fraction);
+        if step > 0 {
+            1i32.wrapping_shl(step as u32)
+        } else {
+            step
+        }
+    }
+}
+
 /// The processor's single-precision conversion to an integer: to nearest,
 /// ties to even, into 64 bits, of which the original keeps the low 32. A NaN
 /// or a value outside the 64-bit range gives the "integer indefinite", whose

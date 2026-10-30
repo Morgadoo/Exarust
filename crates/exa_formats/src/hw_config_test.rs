@@ -664,3 +664,31 @@ fn the_hardware_settings_are_read_from_the_file() {
     assert_eq!(settings.shading_quality, 4);
     assert!(settings.vertical_sync);
 }
+
+/// The older dialog's steps: the same multipliers the second record table's
+/// callbacks use, with their different bases.
+#[test]
+fn the_legacy_slider_steps() {
+    assert_eq!(legacy::shading_from_fraction(0.0), 2);
+    assert_eq!(legacy::shading_from_fraction(1.0 / 3.0), 3);
+    assert_eq!(legacy::shading_from_fraction(2.0 / 3.0), 4);
+    assert_eq!(legacy::shading_from_fraction(1.0), 5);
+    assert_eq!(legacy::texture_detail_from_fraction(0.0), 2);
+    assert_eq!(legacy::texture_detail_from_fraction(1.0), 5);
+    assert_eq!(legacy::texture_quality_from_fraction(1.0 / 3.0), 3);
+    // An eighth of the way is 0.5, which rounds to even (0): detail 1; at
+    // 0.375 the product is 1.5, which rounds to 2: detail 3.
+    assert_eq!(legacy::shadow_detail_from_fraction(0.125), 1);
+    assert_eq!(legacy::shadow_detail_from_fraction(0.375), 3);
+    assert_eq!(legacy::shadow_detail_from_fraction(1.0), 5);
+    assert_eq!(legacy::shadow_quality_from_fraction(0.0), 2);
+    assert_eq!(legacy::shadow_quality_from_fraction(0.25), 3);
+    assert_eq!(legacy::shadow_quality_from_fraction(1.0), 6);
+    assert_eq!(legacy::multisample_from_fraction(0.0), 0);
+    assert_eq!(legacy::multisample_from_fraction(1.0 / 3.0), 2);
+    assert_eq!(legacy::multisample_from_fraction(2.0 / 3.0), 4);
+    assert_eq!(legacy::multisample_from_fraction(1.0), 8);
+    // The newer steps differ: the bases are not the same.
+    assert_eq!(shading_from_fraction(0.0), SHADING_BASE);
+    assert_eq!(legacy::shading_from_fraction(0.0), 2);
+}
