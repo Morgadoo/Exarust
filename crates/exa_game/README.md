@@ -1244,7 +1244,20 @@ world fade reset, a black hold while a level change it asked for loads, and
 its alpha drawn as a black form over the game.
 `BootToMenu` keeps the launcher from covering the level or the splash with
 the boot title; the splash path shows it at the hand-over. F1 opens the
-in-game page while a session runs. The camera shots (offsets added to the framed point)
+in-game page while a session runs. A practice start stands the player over
+the ring's middle (the spawn table's vertical placeholder is overwritten by
+the body's height) while its shots frame a point 5 m ahead, where the
+partner stands. A requested motion (`RequestAction`: the story start's and
+the respawn's get-up, the delayed wake, the practice start and each next
+fight) starts on the player's animator through the same rule the cast
+pipeline uses (`exa_anim::Motions::start_requested`: the numbered clip's
+name, looping when the clip loops, else once back into the combat or idle
+action, with no blend). The end menu's practice branch shows tip 5 on a
+novice win and writes the expert-ladder settings word once (the flow keeps
+the original's written flag, seeded at boot from the stored word); the
+step becomes a `SettingsEntry` message that the binary writes and flushes
+into the user's store, as the original's settings writer does, so a later
+launch greys EXPERT differently. The camera shots (offsets added to the framed point)
 with their cursor warps, the spawn turns (the engine's angle builder), the
 exit-trigger nudge, the practice scene filter, the practice and menu music,
 the unlock words and the save managers' signatures are pinned by tests.
