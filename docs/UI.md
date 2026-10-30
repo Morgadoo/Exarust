@@ -2359,7 +2359,11 @@ pass a sixth level read the next skill's bytes, as the original's do.
   unit times the engine's sine across (stretched) and its cosine down,
   each rounded; the radius is 64 units, or 58 with the global inset-layout
   flag (which also moves a page's ring a unit left). The engine's
-  sine-cosine helper returns the sine first. A group's pentagon points are
+  sine-cosine helper returns the sine first. The unit initialiser chains
+  after the unit-change hook that was installed before it (it runs first on
+  every build), cuts the two icon atlases once and then rebuilds them on
+  later unit changes. A compact skill window copies its owner's six 16-bit
+  fields at 0xc0 to 0xe8, or zeroes them, before it refreshes. A group's pentagon points are
   18.3 units out at fifths of a turn from straight up, the sine across and
   the cosine up, rounded in double precision.
 - **Press state.** A level the points fund is learnt (a press asks to

@@ -351,6 +351,13 @@ pub struct CompactSkillState {
     pub used: [u8; 8],
 }
 
+/// The six 16-bit fields a compact skill window copies from its owner: the
+/// owner's words at 0xc0, 0xc8, 0xd0, 0xd8, 0xe0 and 0xe8, or zeroes when
+/// the owner asks for that; the window refreshes its layout after either.
+pub fn attach_owner(owner: [i16; 6], zero: bool) -> [i16; 6] {
+    if zero { [0; 6] } else { owner }
+}
+
 /// The base skill screen's parts the key handler calls.
 pub trait CompactBase {
     /// The base's answer to the confirm key on the hovered word: 1 makes it
@@ -1029,5 +1036,11 @@ mod tests {
         };
         let draw = draw_order(m, 4, 1, &[0], None, false, false, &chosen, 0);
         assert_eq!(draw.last(), Some(&CompactDraw::Choice));
+    }
+
+    #[test]
+    fn a_compact_window_takes_six_owner_fields_or_zeroes() {
+        assert_eq!(attach_owner([1, 2, 3, 4, 5, 6], false), [1, 2, 3, 4, 5, 6]);
+        assert_eq!(attach_owner([1, 2, 3, 4, 5, 6], true), [0; 6]);
     }
 }
