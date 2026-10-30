@@ -2465,37 +2465,17 @@ fn run_corpse_scripts(
             continue;
         }
         let now = time.as_ref().map_or(0, |t| t.elapsed().as_millis() as u32);
-        let exa_script::Conversations {
-            engine,
-            cast,
-            player: scene_player,
-            player2,
-            world_base,
-            locale,
-            ..
-        } = &mut *conversations;
-        let mut scene = exa_script::dialogue::Scene {
-            library: exa_script::dialogue::Library {
-                roles: &scripts.roles,
-                narrator: scripts.narrator.as_ref(),
-            },
-            cast,
-            now,
-            world_time: exa_script::topics::world_time(*world_base, now, 0),
-            player: *scene_player,
-            player2: *player2,
-            locale: *locale,
-            effects: Vec::new(),
-        };
-        for script in list {
-            engine.run_script(
-                &mut scene,
-                vec![Some(corpse), Some(player)],
-                script.role,
-                script.script,
-            );
-        }
-        for effect in scene.effects.drain(..) {
+        let ((), out) = conversations.with_scene(&scripts, now, |engine, scene| {
+            for script in list {
+                engine.run_script(
+                    scene,
+                    vec![Some(corpse), Some(player)],
+                    script.role,
+                    script.script,
+                );
+            }
+        });
+        for effect in out {
             effects.write(exa_script::ScriptEffect(effect));
         }
     }

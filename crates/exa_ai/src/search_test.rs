@@ -369,7 +369,7 @@ fn comments_follow_the_phrase_rules() {
     let mut remarks = Remarks::default();
     let mut roll = 0;
     let first = comment(&mut phrases, &mut remarks, "Helmet", 5, &mut roll);
-    assert_eq!(first, "Look, a helmet.");
+    assert_eq!(first, "I found a helmet.");
     assert_eq!(phrases.first_one.last, [0, 8]);
     assert_eq!(phrases.first_pair.last, [0, 8]);
     let second = comment(&mut phrases, &mut remarks, "AXE", 15, &mut roll);
@@ -380,7 +380,7 @@ fn comments_follow_the_phrase_rules() {
     // After 10 s the window starts again; the first table's last draw (0)
     // is drawn twice more before 4 comes.
     let again = comment(&mut phrases, &mut late, "Helmet", 26, &mut r);
-    assert_eq!(again, "A helmet, should you want it.");
+    assert_eq!(again, "A helmet here, if you want it.");
     assert_eq!(late.names, vec!["helmet".to_string()]);
     let mut table = Phrases::default();
     table.first_one.templates[0] = "[a], should you want it.".into();
@@ -399,8 +399,66 @@ fn comments_follow_the_phrase_rules() {
         0,
         &mut r,
     );
-    assert_eq!(said, "Look, some pair of boots.");
+    assert_eq!(said, "I found some pair of boots.");
     assert_eq!(lower_but_last("HELM"), "helM");
+}
+
+/// The four phrase tables are the original's, with its drawn counts and
+/// starting last marks: six first templates of which five are drawn, four
+/// further ones.
+#[test]
+fn the_phrase_tables_are_the_originals() {
+    let p = Phrases::default();
+    assert_eq!(
+        p.first_one.templates,
+        [
+            "I found [a].",
+            "There's [a] here.",
+            "Found [a] here.",
+            "Got [a] here.",
+            "[a] here, if you want it.",
+            "This [i] could be useful.",
+        ]
+    );
+    assert_eq!(
+        p.first_pair.templates,
+        [
+            "I found some [i].",
+            "There's some [i] here.",
+            "Found some [i] here.",
+            "Got some [i] here.",
+            "Some [i] here, if you want them.",
+            "These [i] could be useful.",
+        ]
+    );
+    assert_eq!(
+        p.more_one.templates,
+        [
+            "And [a].",
+            "Found [a] too.",
+            "Also found [a].",
+            "There's [a] too.",
+        ]
+    );
+    assert_eq!(
+        p.more_pair.templates,
+        [
+            "And some [i].",
+            "Found some [i] too.",
+            "Also found some [i].",
+            "There's some [i] too.",
+        ]
+    );
+    assert_eq!(
+        (
+            p.first_one.drawn_from,
+            p.first_pair.drawn_from,
+            p.more_one.drawn_from,
+            p.more_pair.drawn_from
+        ),
+        (5, 5, 4, 4)
+    );
+    assert_eq!((p.first_one.last, p.more_pair.last), ([8, 8], [5, 5]));
 }
 
 /// A draw equal to one of the last two is drawn again.
@@ -411,7 +469,7 @@ fn a_comment_does_not_repeat_the_last_two() {
     let mut roll = 0;
     let said = comment(&mut phrases, &mut Remarks::default(), "Cup", 0, &mut roll);
     assert_eq!(phrases.first_one.last, [4, 0]);
-    assert_eq!(said, "A cup, should you want it.");
+    assert_eq!(said, "A cup here, if you want it.");
 }
 
 #[test]
@@ -697,7 +755,8 @@ fn a_search_loots_a_chest() {
 }
 
 /// Short of the chest after the walk it paths again; the third time it lets
-/// the chest go. Its own pack open in the window pauses it, not busy.
+/// the chest go. Its own pack open in the window pauses it, not busy; a
+/// walking attention that takes the tick keeps it busy.
 #[test]
 fn three_short_walks_give_up() {
     let mut scene = looted_scene();
@@ -714,6 +773,12 @@ fn three_short_walks_give_up() {
     assert!(!busy);
     assert_eq!(s.state, State::Approach);
     scene.open.clear();
+    // A walking attention that takes the tick leaves it busy, in place.
+    me.attends = true;
+    let (busy, _) = step(&mut s, &mut me, &mut scene, anchor);
+    assert!(busy);
+    assert_eq!((s.state, s.tries), (State::Approach, 0));
+    me.attends = false;
     for tries in 1..3 {
         step(&mut s, &mut me, &mut scene, anchor);
         assert_eq!((s.state, s.tries), (State::Path, tries));
@@ -968,7 +1033,7 @@ fn executor_scene() -> Scene {
                 Carried { item: 11, flags: 0 },
             ],
             worn: vec![9],
-            hands: [10, 0, 0, 0],
+            hands: [0, 10, 0, 0],
             locked: false,
         },
         object: 1,
@@ -1004,13 +1069,13 @@ fn the_executors_take_from_each_source() {
 
     assert!(apply_deed(&mut scene, &mut pack, &take(1, Source::Worn, 9)));
     assert!(scene.corpses[0].pack.worn.is_empty());
-    assert_eq!(scene.corpses[0].pack.hands[0], 10);
+    assert_eq!(scene.corpses[0].pack.hands[1], 10);
     assert!(apply_deed(
         &mut scene,
         &mut pack,
         &take(1, Source::Worn, 10)
     ));
-    assert_eq!(scene.corpses[0].pack.hands[0], 0);
+    assert_eq!(scene.corpses[0].pack.hands[1], 0);
     assert_eq!(
         scene.corpses[0].pack.carried,
         vec![Carried { item: 11, flags: 0 }]
@@ -1072,6 +1137,48 @@ fn the_executors_carry_wear_wield_and_stow() {
     ));
     assert_eq!(scene.containers[&40].items, vec![7, 12]);
     assert_eq!(pack.hands[2], 0);
+}
+
+/// The object edits the deferred jobs ask for: an item's first container
+/// entry goes and the list compacts; a worn item leaves the worn list, or,
+/// when the corpse grips it (the second hand slot), that slot and its
+/// carried entry; a carried item leaves its entry; a container takes an item only
+/// when its size byte fits.
+#[test]
+fn the_small_object_edits_work_as_the_jobs_ask() {
+    let mut container = Container {
+        items: vec![3, 4, 5, 4],
+        max_item: 9,
+    };
+    assert!(take_from_container(&mut container, 4));
+    assert_eq!(container.items, vec![3, 5, 4]);
+    assert!(!take_from_container(&mut container, 7));
+
+    let mut pack = Pack {
+        carried: vec![Carried { item: 1, flags: 0 }, Carried { item: 2, flags: 0 }],
+        worn: vec![8, 9],
+        hands: [0, 2, 0, 1],
+        locked: false,
+    };
+    assert!(take_worn(&mut pack, 2));
+    assert_eq!(pack.hands[1], 0);
+    assert_eq!(pack.carried, vec![Carried { item: 1, flags: 0 }]);
+    assert!(take_worn(&mut pack, 9));
+    assert_eq!(pack.worn, vec![8]);
+    assert!(!take_worn(&mut pack, 9));
+    assert!(take_carried(&mut pack, 1));
+    assert_eq!(pack.hands[3], 0);
+    assert!(pack.carried.is_empty());
+    assert!(!take_carried(&mut pack, 1));
+
+    let mut small = Container {
+        items: vec![],
+        max_item: 5,
+    };
+    assert!(add_to_container(&mut small, 11, Some(5)));
+    assert!(!add_to_container(&mut small, 12, Some(6)));
+    assert!(!add_to_container(&mut small, 13, None));
+    assert_eq!(small.items, vec![11]);
 }
 
 /// Dropping waits on a locked pack, needs the item in the pack and its

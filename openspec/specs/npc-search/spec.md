@@ -94,11 +94,15 @@ Re-arming SHALL take the best weapon in the main hand and stow the next best, on
 - **THEN** the 4 is wielded and the 2.4 stowed, and the 3 and the half-good piece are left
 
 ### Requirement: Takes carried out
-A take SHALL despawn a loose item, remove a container's first matching entry, release an item from the corpse's grip (the hand and its carried entry) or else remove it from the worn list, or remove a carried entry. Wearing SHALL put the item on and out of the carried list before taking it from its source.
+A take SHALL despawn a loose item, remove a container's first matching entry, release an item from the corpse's grip (the second hand slot and its carried entry) or else remove it from the worn list, or remove a carried entry and clear the fourth hand slot when it holds the same item. Wearing SHALL put the item on and out of the carried list before taking it from its source.
 
 #### Scenario: Each source
 - **WHEN** a container, a corpse wearing one item and gripping a carried one, and a loose item are taken from
-- **THEN** each take edits its source, and the gripped item leaves the hand and the carried list but not the worn list
+- **THEN** each take edits its source, and the gripped item leaves the second hand slot and the carried list but not the worn list
+
+#### Scenario: A carried take clears the fourth hand
+- **WHEN** a carried item that the fourth hand slot also holds is taken
+- **THEN** its entry goes and the fourth hand slot is empty
 
 ### Requirement: Drops carried out
 Dropping SHALL wait while the pack is locked, need the item in the pack, and refuse an item whose size is unknown or over the container's largest item; otherwise the item SHALL go into the container and out of the pack.
@@ -134,3 +138,17 @@ The search's candidates in the running game SHALL be the level's dead bodies. Ea
 #### Scenario: A follower takes a dead body's sword
 - **WHEN** a follower stands 1.5 m from the player, with a dead body 3 m away that wears a sword better than the one the follower carries
 - **THEN** the follower gathers the body, looks it over, walks to it, kneels and takes the sword: the body's worn list no longer holds it and the follower carries it
+
+### Requirement: Phrase tables
+The comment templates SHALL be the original's: for one item "I found [a].", "There's [a] here.", "Found [a] here.", "Got [a] here.", "[a] here, if you want it." and the never-drawn "This [i] could be useful."; for a pair the same with "some [i]" ("Some [i] here, if you want them.", "These [i] could be useful."); for a further item "And [a].", "Found [a] too.", "Also found [a].", "There's [a] too.", and for a further pair the same with "some [i]".
+
+#### Scenario: A first helmet
+- **WHEN** the first comment names a helmet and draws the first template
+- **THEN** it reads "I found a helmet."
+
+### Requirement: Approach answer
+While approaching, its own pack open on screen SHALL answer not busy; a walking attention that takes the tick SHALL leave the answer busy and the state unchanged.
+
+#### Scenario: The walk takes the tick
+- **WHEN** the approach's attention of 5.1 takes the tick
+- **THEN** the tick answers busy and the search stays approaching with no try counted

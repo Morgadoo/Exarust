@@ -96,6 +96,44 @@ pub struct Conversations {
     pub objects: objects::Objects,
 }
 
+impl Conversations {
+    /// Runs `f` on the engine with the session's scene at game time `now`
+    /// (ms): the role library, the cast, the world clock, the players and
+    /// the locale. Returns `f`'s answer and the effects the scripts asked
+    /// for, in order.
+    pub fn with_scene<R>(
+        &mut self,
+        scripts: &Scripts,
+        now: u32,
+        f: impl FnOnce(&mut Engine, &mut Scene<'_>) -> R,
+    ) -> (R, Vec<Effect>) {
+        let Self {
+            engine,
+            cast,
+            player,
+            player2,
+            world_base,
+            locale,
+            ..
+        } = self;
+        let mut scene = Scene {
+            library: Library {
+                roles: &scripts.roles,
+                narrator: scripts.narrator.as_ref(),
+            },
+            cast,
+            now,
+            world_time: topics::world_time(*world_base, now, 0),
+            player: *player,
+            player2: *player2,
+            locale: *locale,
+            effects: Vec::new(),
+        };
+        let answer = f(engine, &mut scene);
+        (answer, std::mem::take(&mut scene.effects))
+    }
+}
+
 /// Start the narrator at a node of `narrator.rcd` (after `delay` ms).
 #[derive(Message, Debug, Clone)]
 pub struct Narrate {
@@ -158,47 +196,28 @@ fn run_conversations(
     mut effects: MessageWriter<ScriptEffect>,
 ) {
     let now = time.elapsed().as_millis() as u32;
-    let Conversations {
-        engine,
-        cast,
-        player,
-        player2,
-        world_base,
-        locale,
-        ..
-    } = &mut *conversations;
-    let mut scene = Scene {
-        library: Library {
-            roles: &scripts.roles,
-            narrator: scripts.narrator.as_ref(),
-        },
-        cast,
-        now,
-        world_time: topics::world_time(*world_base, now, 0),
-        player: *player,
-        player2: *player2,
-        locale: *locale,
-        effects: Vec::new(),
-    };
-    for n in narrate.read() {
-        engine.narrate(&mut scene, Name::from_bytes(n.topic.as_bytes()), n.delay);
-    }
-    for n in narrate_text.read() {
-        engine.narrate_text(&mut scene, n.text.as_bytes(), n.delay);
-    }
-    for t in talk.read() {
-        engine.talk(&mut scene, t.0);
-    }
-    for p in pick.read() {
-        engine.pick(&mut scene, p.0);
-    }
-    for _ in leave.read() {
-        if let Some(who) = *player {
-            engine.leave(&mut scene, who);
+    let player = conversations.player;
+    let ((), out) = conversations.with_scene(&scripts, now, |engine, scene| {
+        for n in narrate.read() {
+            engine.narrate(scene, Name::from_bytes(n.topic.as_bytes()), n.delay);
         }
-    }
-    engine.update(&mut scene);
-    for e in scene.effects.drain(..) {
+        for n in narrate_text.read() {
+            engine.narrate_text(scene, n.text.as_bytes(), n.delay);
+        }
+        for t in talk.read() {
+            engine.talk(scene, t.0);
+        }
+        for p in pick.read() {
+            engine.pick(scene, p.0);
+        }
+        for _ in leave.read() {
+            if let Some(who) = player {
+                engine.leave(scene, who);
+            }
+        }
+        engine.update(scene);
+    });
+    for e in out {
         effects.write(ScriptEffect(e));
     }
 }

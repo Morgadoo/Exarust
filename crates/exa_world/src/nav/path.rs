@@ -327,6 +327,8 @@ fn line_blocked(
     let limit = budget.wrapping_add(SHORTCUT_SLACK);
     let mut at = ends[0];
     let mut cost = 0i32;
+    // The cells after the start up to and including the kept point's own
+    // cell: the original's loop runs once per cell of the major span.
     for _ in 0..count {
         let before = at[minor];
         at[major] += step;

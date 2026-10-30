@@ -294,7 +294,9 @@ cell's lower and upper floor and underside):
 - **Disturbance** (`nav::disturbance`): the original's sampler is a stub
   that always answers 0.
 - **Line walk** (`nav::line_walk`; the player's look-ahead, soft stop and
-  footwork targets): one cell a step along the line's longer axis; a floor
+  footwork targets): one cell a step along the line's longer axis (Z when
+  |dx| = |dz|), from the cell after the start up to and including the
+  asked end's own cell; a floor
   more than 4 above the running height blocks when less than 10 lie under
   its slab (an upper slab with nothing measured under it and its floor not
   below the lower one passes); a reachable floor raises the running
@@ -302,8 +304,9 @@ cell's lower and upper floor and underside):
   passes the last free cell's centre (the start when the first cell
   blocks), keeping the asked end's height.
 - **Straight walk** (`nav::straight_walk`, a walker without feet): from the
-  floor under the start, 5 up and 15 under, following the floors down too;
-  it reads the floors as built, not those movers raised.
+  floor under the start, 5 up and 15 under, following the floors down too,
+  over the cells after the start up to and including the asked end's own
+  cell; it reads the floors as built, not those movers raised.
 - **Obstacle** (`nav::obstacle`): none on lines of 40 cm or less; longer,
   a floor more than 7 up with less than 15 under it, or, before the
   line's last two cells, a penalty over 60.

@@ -194,13 +194,15 @@ fn a_failed_path_stops_before_rough_ground() {
     assert!(find_path(&grid, from, to, 1).points.is_empty());
 }
 
-/// The line walk steps every cell to the kept point, holds the far
-/// corner's floor and doubles the penalty against the budget plus ten.
+/// The line walk steps every cell after the far corner up to and including
+/// the kept point's, holds the far corner's floor and doubles the penalty
+/// against the budget plus ten.
 #[test]
 fn the_line_walk_holds_its_floor_and_counts_every_step() {
     let mut grid = corridor();
     let far = (10, 20);
     let anchor = (15, 20);
+    // Five steps of 5.
     assert!(!line_blocked(&grid, far, Layer::Lower, anchor, 15, 0));
     assert!(line_blocked(&grid, far, Layer::Lower, anchor, 14, 0));
     set(&mut grid, 12, 20, |c| c.penalty = 3);

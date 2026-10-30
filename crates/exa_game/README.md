@@ -1238,7 +1238,13 @@ path the grid's route), carrying out each take, wear or wield on both sides'
 come from the game's object database; level-local ids, containers and loose
 items are not searched, nothing is re-dressed and no kneel clip plays.
 `--searcher <record id>` gives a level character the Explorer role with its
-Activity variable set to the follow (its log lines start `search:`). The world's own press is held while
+Activity variable set to the follow (its log lines start `search:`).
+`role_scripts` runs the encounter scripts an AI's target pass reports: the
+observer's roles' encounter entries for anyone, for the partner in its
+locale, or for one of the partner's roles, with the observer as actor 0 and
+the partner as actor 1 through `exa_script` (`Conversations::with_scene`),
+and the effects go out as `ScriptEffect`; the meeting time is renewed on
+the AI's relation and the cast's record (`LastEnc`) before they run. The world's own press is held while
 the pointer is over an open screen. The journal's entry list and the
 controls' callbacks are not wired; the text keeps the level
 font's metrics and samples the base font's atlas while the Rayform faces
