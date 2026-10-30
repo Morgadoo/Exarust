@@ -195,6 +195,13 @@ fn gl_sign(x: f32) -> f32 {
     if x < 0.0 { return -1.0; }
     return x * 0.0;
 }
+// The shipped drivers' `round`: a half away from zero, as `gi_shape`'s CPU
+// body takes it [guess, as there]; WGSL's own `round` takes a half to even.
+fn gl_round(x: f32) -> f32 {
+    let t = trunc(x);
+    if abs(x - t) >= 0.5 { return t + sign(x); }
+    return t;
+}
 fn gl_max3(a: vec3<f32>, b: vec3<f32>) -> vec3<f32> {
     return vec3(gl_max(a.x, b.x), gl_max(a.y, b.y), gl_max(a.z, b.z));
 }
@@ -268,10 +275,10 @@ fn shape_telebubble(s: GiShape, p: vec3<f32>) -> vec3<f32> {
     let c = aa;
     // The body squares `1 − |0.5 − c|·2` and overwrites it with the pulse
     // term before reading it, as the original does.
-    var sc = i1q * round(c);
+    var sc = i1q * gl_round(c);
     sc *= 1.0 + abs(s.params.z);
     var an = abs(nrm.y) - s.extra.x;
-    an -= round(an);
+    an -= gl_round(an);
     let ap = an * an * s.params.w * 4.0;
     sc += ap * i1q;
     f = gl_max(f - 0.25, 0.0);
