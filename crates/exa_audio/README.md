@@ -152,13 +152,16 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
   own collision set when it has one, else its slam set. The lever's return
   starts `leverb_tck01` looping at 0.1 and pitch 1, follows its fade and is
   freed at its end. Every restart and one-shot is logged with its levels.
-- A blow plays the weapon's own set by its record's hit-sound class
-  (`WH_SwordA`, `BdyCol` for fists, …) and the struck part's material set:
-  its outer armour layer covering at least half, else the inner, its class
-  (`foley` classes 2 cloth, 3 leather, 4 mail, 5 plate), the flesh
-  (`BdyCol`) or skeleton (`SkelHit`) default, or `HitGlm`; the class rules
-  are `exa_combat::sounds`. The part's sound falls silent when no layer
-  covers half. A blow no longer grunts by itself.
+- A blow's rings come from `exa_combat` at the damage routine's volumes
+  and pitches: the striking weapon's set and, on a clash, the struck
+  weapon's (`exa_combat::impact::WeaponSounded`, `weapon_sounds`), and each
+  armour layer a wound met from the routine's layer table (`FlsCol`,
+  `HitClt`, `HitLtr`, `HitChn`, `HitPlt`, `HitHbr`, `HitGlm`;
+  `exa_combat::sounds::LayerSounded`, `layer_sounds`). A body's impact on a
+  limb plays the part's material set (`impact_sounds`): its outer armour
+  layer covering at least half, else the inner, the flesh (`BdyCol`) or
+  skeleton (`SkelHit`) default, or `HitGlm`. A blow no longer grunts by
+  itself.
 - The balance's foot sounds (`exa_physics::body::FootSounded`, from the
   standing footwork): a step's start plays the character's foley set at its
   standing place (`anchor_rustle`: the volume's draw, the pitch's, the

@@ -138,7 +138,20 @@ player's pad by half the volume when the player is either side. The swing's
 first block (when no clash rang before) rings only the weapon's own set
 (`sounds::block_ring`) at ((volume × share) × 2) × the striker's body scale
 and pitch × 1.125 (single), stamps the clock only when a set rang, and
-rumbles nothing. Each contact's
+rumbles nothing. The swing's first clash then rings the struck weapon
+(`Struck::Weapon` carries its item body; `sounds::struck_item_sound` on its
+blade's record and frame): its record's class set when the blow lands
+strictly below the record's split along it from the grip, else its own
+set (a NaN projection too), at the blow's volume (no share) and pitch × 1.2
+(double), and stamps that weapon's sound clock whether or not it rang
+(logged at info: "struck weapon … rings on the clash"). A wound on flesh (a
+turned one too) rings the striking weapon on every contact
+(`damage::hit_sounds`): its haft class's set when the haft took it, else its
+own set, at volume × share × the striker's scale × the muffling and pitch ×
+the muffling; it stamps the weapon's clock, and each armour layer above the
+epsilon rings its class's set from the damage routine's own table
+(`sounds::LAYER_SETS`: `FlsCol`, `HitClt`, `HitLtr`, `HitChn`, `HitPlt`,
+`HitHbr`, `HitGlm`) as a `sounds::LayerSounded`. Each contact's
 striker is dealt right after its struck side, as the original's routine
 runs per contact. The blow sag rides the `Shove` to the struck body.
 
@@ -455,7 +468,7 @@ Rust's, not the engine's fast trig.
 `sounds` chooses a struck item's blow sound (`struck_item_sound`, tested:
 its record's class set below the record's split along the item, else its
 own sound, the clock 200 ms less round-half-even(80 · strength) on, the
-pitch × 1.2 in double; no item record feeds it yet) and a body part's hit
+pitch × 1.2 in double; a clash's struck weapon plays it) and a body part's hit
 sound and its clothing foley from the armour layers the crate already keeps: the first layer (outer, then inner)
 covering at least half the part gives its class, or the flesh/skeleton
 default, or the golem's `HitGlm`; the foley sums each layer's coverage times
@@ -497,10 +510,19 @@ since and the radius 30·R + 10 cm; `exa_character::blood` paints it. See
 The weapon that deals a bleeding blow draws blood at the blow
 (`wounds::BladeBlood` on the entity holding its model): half the wound's
 R, up to 1, never washed off, even when the wound itself is dropped from a
-full queue. Fists have none. The sum is kept by the original list's own
-rule (`weapon_blood::add_blood`: 1 when 1 is below it, 0 when 0 is above
-it; NaN and −0 pass), which `weapon_blood::WeaponBlood` (the original's
-per-scene list of spots, a tested model) shares. `exa_character::blood`
+full queue. Fists have none. The weapons' blood list
+(`weapon_blood::WeaponBlood`, a resource, the original's per-scene list of
+spots) holds it: the weapon's first bleeding wound registers it (a clean
+spot with its tip's length; `BladeBlood`'s second field keeps the 1-based
+spot), the wound adds to its spot by the list's rule
+(`weapon_blood::add_blood`: 1 when 1 is below it, 0 when 0 is above it; NaN
+and −0 pass), and `BladeBlood` mirrors the spot's amount. A despawned
+weapon releases its spot (`release_gone_blades`). The original's world
+reset (`exa_world::level_lifecycle::WorldReset`: a new session, a save
+load, an arena round's start or end, a scripted jump, a quit) drops the
+list, and the bodies it rebuilds are clean; Exarust keeps the player and
+its weapon, so `clear_at_world_reset` also cleans every weapon. A door's
+level change keeps them, as the original does. `exa_character::blood`
 draws its stain ([`docs/RENDERING.md`](../../docs/RENDERING.md), Blood on
 weapons).
 

@@ -65,6 +65,16 @@ impl LevelChangeRequest {
     }
 }
 
+/// The original's world reset: the session routines that destroy every
+/// body before a new session, a save load, an arena round's start or end, a
+/// scripted jump or a quit, ahead of the teardown request. A door's level
+/// change keeps the player and what it holds and sends none. Systems that the reset clears (the weapons' blood list)
+/// read it; the bodies the original rebuilds afterwards are kept by
+/// Exarust, so those systems also clear what the rebuilt bodies would not
+/// carry.
+#[derive(Message, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WorldReset;
+
 /// A change whose teardown is done, waiting for the host to load `level`.
 #[derive(Resource, Debug, Clone, PartialEq, Eq)]
 pub struct LevelChangeReady {
@@ -88,6 +98,7 @@ pub struct LevelChangePlugin;
 impl Plugin for LevelChangePlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<LevelChangeRequest>()
+            .add_message::<WorldReset>()
             .init_resource::<LevelChangeState>()
             .add_systems(Update, apply_requests.in_set(LevelChangeSystems::Teardown));
     }

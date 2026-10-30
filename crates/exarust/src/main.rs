@@ -133,7 +133,8 @@
 //!          --load-slot n[:save|:checkpoint]  with --save-dir: once loaded, open the story saves' screen and CONTINUE
 //!                                     ExanimaNNN from it (the checkpoint first by default)
 //!          --level-change lvl@frame,...  play mode: change level in process at frames after the first load (loading
-//!                                     frames do not count), logging entity, physics-body and asset counts per level
+//!                                     frames do not count), logging entity, physics-body and asset counts per level;
+//!                                     reset:lvl changes behind a world reset (session start, save load, arena round)
 //!          --debug-wound b,r[,dx,dy,dz]  a test wound on the player's (or the character view's) body part b
 //!                                     (1–18 or chest, luarm, …), radius r cm, smeared along d cm; repeatable
 //!          --weapon-blood <a>         the player's (or the character view's) weapon holds blood a (0–1) from the start

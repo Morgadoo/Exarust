@@ -66,12 +66,13 @@ impl Plugin for AudioPlugin {
             .add_message::<exa_combat::pain::PainSounded>()
             .add_message::<exa_physics::body::FootSounded>()
             .add_message::<exa_combat::impact::WeaponSounded>()
+            .add_message::<exa_combat::sounds::LayerSounded>()
             .add_message::<exa_combat::block::ShieldRung>()
             .add_message::<exa_combat::swing_voice::SwingVoiceCue>()
             .add_systems(
                 Update,
                 (
-                    hits::hit_sounds,
+                    hits::layer_sounds,
                     hits::pain_sounds,
                     hits::impact_sounds,
                     hits::weapon_sounds,
@@ -135,5 +136,23 @@ mod tests {
         let past = SoundSet::new(&past_voices[0], hits::GRUNTS).name(0);
         assert_eq!(past, "vhm10_grunts01");
         assert!(sounds.get(&past).is_none());
+    }
+
+    /// Every set a blow's rings name is installed: the wound layers' seven
+    /// and the three haft classes' (skipped without `EXANIMA_DIR`).
+    #[test]
+    fn the_ring_sets_are_installed() {
+        let Some(dir) = locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(&dir).unwrap();
+        let sounds = game.pack(PackKind::Sound).unwrap();
+        let sets = exa_combat::sounds::LAYER_SETS
+            .iter()
+            .chain(exa_combat::sounds::HAFT_SETS.iter());
+        for set in sets {
+            let first = format!("{}01", set.to_ascii_lowercase());
+            assert!(sounds.get(&first).is_some(), "{first}");
+        }
     }
 }

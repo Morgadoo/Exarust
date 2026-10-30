@@ -282,6 +282,7 @@ pub fn strike_held(
                 ContactKind::Block if struck.blocks => Struck::Shield { item: struck.root },
                 ContactKind::Clash => Struck::Weapon {
                     primary: contact.other_is_primary,
+                    item: struck.root,
                 },
                 _ => continue,
             };
@@ -380,11 +381,23 @@ mod tests {
         let item = Entity::PLACEHOLDER;
         assert_eq!(struck_bone(Struck::Shield { item }, None), 18);
         assert_eq!(
-            struck_bone(Struck::Weapon { primary: true }, Some(Slot::First)),
+            struck_bone(
+                Struck::Weapon {
+                    primary: true,
+                    item
+                },
+                Some(Slot::First)
+            ),
             17
         );
         assert_eq!(
-            struck_bone(Struck::Weapon { primary: false }, Some(Slot::Second)),
+            struck_bone(
+                Struck::Weapon {
+                    primary: false,
+                    item
+                },
+                Some(Slot::Second)
+            ),
             18
         );
     }

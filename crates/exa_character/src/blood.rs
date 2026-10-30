@@ -481,6 +481,8 @@ pub struct WeaponStain {
     pub parts: Vec<(Entity, Mat4)>,
     /// The stain pass's materials, one per mesh, once it is drawn.
     pub materials: Vec<Handle<StainMaterial>>,
+    /// The stain pass's entities, one per mesh, once it is drawn.
+    pub passes: Vec<Entity>,
 }
 
 impl WeaponStain {
@@ -503,6 +505,7 @@ impl WeaponStain {
             tip,
             parts,
             materials: Vec::new(),
+            passes: Vec::new(),
         })
     }
 }
@@ -540,7 +543,8 @@ fn load_stain_gradient(
 
 /// Draws the stain of every weapon whose blood shows (over 0.01): the first
 /// time, a stain pass over each of its stained meshes; then the pass
-/// follows the blood.
+/// follows the blood. A weapon whose blood no longer shows (a world reset
+/// cleans it) is not drawn: its passes go, to come back with new blood.
 #[allow(clippy::type_complexity)]
 fn stain_weapons(
     mut commands: Commands,
@@ -551,6 +555,13 @@ fn stain_weapons(
 ) {
     for (weapon, blood, mut stain) in &mut weapons {
         if !stain_shows(blood.0) {
+            if !stain.passes.is_empty() {
+                for pass in stain.passes.drain(..) {
+                    commands.entity(pass).despawn();
+                }
+                stain.materials.clear();
+                info!("weapon {weapon:?} stain cleared: blood {:.3}", blood.0);
+            }
             continue;
         }
         if !stain.materials.is_empty() {
@@ -567,6 +578,7 @@ fn stain_weapons(
             return;
         };
         let mut drawn = Vec::new();
+        let mut passes = Vec::new();
         for &(part, placement) in &stain.parts {
             let Ok((mesh, at)) = parts.get(part) else {
                 continue;
@@ -576,14 +588,17 @@ fn stain_weapons(
                 gradient: gradient.0.clone(),
             });
             // Where its mesh is this frame, until the transforms propagate.
-            commands.spawn((
-                Mesh3d(mesh.0.clone()),
-                MeshMaterial3d(material.clone()),
-                Transform::IDENTITY,
-                *at,
-                ChildOf(part),
-            ));
+            let pass = commands
+                .spawn((
+                    Mesh3d(mesh.0.clone()),
+                    MeshMaterial3d(material.clone()),
+                    Transform::IDENTITY,
+                    *at,
+                    ChildOf(part),
+                ))
+                .id();
             drawn.push(material);
+            passes.push(pass);
         }
         if drawn.is_empty() {
             continue;
@@ -595,6 +610,7 @@ fn stain_weapons(
             drawn.len()
         );
         stain.materials = drawn;
+        stain.passes = passes;
     }
 }
 
@@ -611,16 +627,33 @@ impl DebugWeaponBlood {
     }
 }
 
-/// Gives a [`DebugWoundTarget`]'s new weapon its [`DebugWeaponBlood`].
+/// Gives a [`DebugWoundTarget`]'s new weapon its [`DebugWeaponBlood`]: it
+/// registers in the weapons' blood list as a first wound would and its
+/// spot takes the blood.
 fn bloody_debug_weapons(
     blood: Res<DebugWeaponBlood>,
+    mut list: Option<ResMut<exa_combat::WeaponBlood>>,
     mut weapons: Query<(Entity, &Blade, &mut BladeBlood), Added<BladeBlood>>,
     targets: Query<(), With<DebugWoundTarget>>,
 ) {
     for (weapon, blade, mut held) in &mut weapons {
         if targets.contains(blade.wielder) {
-            held.0 = blood.0.clamp(0.0, 1.0);
-            info!("debug weapon blood: {weapon:?} holds {:.3}", held.0);
+            let amount = blood.0.clamp(0.0, 1.0);
+            match list.as_deref_mut() {
+                Some(list) => {
+                    if held.1 == 0 {
+                        held.1 =
+                            list.add(weapon.to_bits() as usize, blade.length * 100.0, 0.0, false);
+                    }
+                    list.add_amount(held.1, amount);
+                    held.0 = list.amount(held.1).unwrap_or(amount);
+                }
+                None => held.0 = amount,
+            }
+            info!(
+                "debug weapon blood: {weapon:?} holds {:.3} (spot {})",
+                held.0, held.1
+            );
         }
     }
 }
@@ -1383,7 +1416,8 @@ mod tests {
 
     /// A weapon's stain is drawn once its blood passes 0.01: one pass on
     /// its stained mesh, where that mesh is, with the gradient's offset for
-    /// the blood; more blood moves the same pass's offset.
+    /// the blood; more blood moves the same pass's offset; blood cleaned
+    /// away takes the pass off.
     #[test]
     fn blood_over_a_hundredth_stains_the_weapon() {
         use exa_render::stain::stain_offset;
@@ -1403,6 +1437,7 @@ mod tests {
                     tip: 0.6005,
                     parts: vec![(part, Mat4::IDENTITY)],
                     materials: Vec::new(),
+                    passes: Vec::new(),
                 },
             ))
             .id();
@@ -1429,6 +1464,13 @@ mod tests {
             app.world().resource::<Assets<StainMaterial>>().len(),
             materials
         );
+        // A world reset cleans the weapon: its pass goes; new blood draws
+        // a new one.
+        bleed(&mut app, 0.0);
+        assert!(stain_passes(&mut app, part).is_empty());
+        assert!(app.world().get_entity(pass).is_err());
+        bleed(&mut app, 0.3);
+        assert_eq!(stain_passes(&mut app, part).len(), 1);
     }
 
     /// A bleeding cut stains the blade that dealt it in the frame of the
@@ -1466,6 +1508,7 @@ mod tests {
                     tip: 0.9,
                     parts: vec![(part, Mat4::IDENTITY)],
                     materials: Vec::new(),
+                    passes: Vec::new(),
                 },
             ))
             .id();

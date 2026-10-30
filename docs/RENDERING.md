@@ -1328,17 +1328,22 @@ weapon's model): each bleeding blow it deals adds 0.5·R at the blow (R the
 wound's size, [Blood](#blood)), kept within 0 to 1, whether or not the
 wound itself waits or is dropped from a full queue. Nothing washes it off.
 Each held weapon keeps its own; fists have none, so punches never bloody
-them. The original frees a weapon's blood when its body leaves the
-simulation and clears all of it at the end of a session or a respawn;
-Exarust despawns the weapon with its holder and has no session end yet.
+them.
 
-The original's own list (`exa_combat::weapon_blood::WeaponBlood`) keeps a
-spot per source: the source, the amount it has left, and the stain's two
-length terms (its two lengths over 80, and the square root of 80 over
-them). A hidden source adds nothing; a source takes the first free spot or
-grows the list; clearing the count empties it; clearing a spot frees it;
-adding clamps the amount to 0 through 1. The shipped stain reads the
-scalar above.
+The weapons' blood list (`exa_combat::weapon_blood::WeaponBlood`, one for
+the world) keeps a spot per weapon: the weapon, the amount it has left, and
+the stain's two length terms (its two lengths over 80, and the square root
+of 80 over them). A hidden source adds nothing; a source takes the first
+free spot or grows the list; clearing the count empties it; clearing a spot
+frees it; adding clamps the amount to 0 through 1. A weapon registers on
+its first bleeding wound (a clean spot) and its blood above is its spot's
+amount. A weapon whose body is destroyed frees its spot. The original's
+world reset (a new session, a save load, an arena round's start or end, a
+scripted jump, a quit) clears the count and destroys every body; the bodies
+it rebuilds hold no blood. Exarust keeps the player and its weapon, so the
+reset also cleans every weapon and its stain pass goes. A door's level
+change keeps the player, the weapon, its spot and its stain: the original's
+door path never touches the list (traced 2026-10-30).
 
 **Which meshes** (`exa_character::blood::WeaponStain`): the original
 stains its weapon node's first sub-object. For a model whose root node

@@ -1424,7 +1424,9 @@ level exit, and hides the session hook while F1's in-game page is up (the
 menu screen calls `menu_opened`/`menu_closed`). Every producer queues its
 steps in `FlowSteps`; the app applies the menu, end-menu, title-logo,
 game-view, controls, health and music ones, and turns `LoadLevel` and
-`TeardownWorld` into `exa_world::level_lifecycle` requests. The viewer loads
+`TeardownWorld` into `exa_world::level_lifecycle` requests (`TeardownWorld`,
+the original's world reset, also sends `WorldReset`, even when a load in the
+batch does the teardown). The viewer loads
 the destination through the same staged `LevelLoad` as a start-up load, and
 `PlacePlayer` is carried across it in `level_change::PlayerPlacement`.
 The transition screen runs live (`run_transition`, `transition_screen`):

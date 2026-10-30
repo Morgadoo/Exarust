@@ -1,0 +1,8 @@
+- [x] Struck weapon's entity on a clash contact; its ring and sound clock (exa_combat)
+- [x] Wound rings: the weapon's on every flesh contact and its clock, the layers' from the routine's table (exa_combat); the audio side plays the layer rings and drops its own full-volume limb sounds (exa_audio)
+- [x] Weapons' blood list as a resource: register on first blood, release on despawn, clear and clean at a world reset (exa_combat); world reset message from the flow's world teardown (exa_world, exa_game); debug weapon blood through the list and stain passes dropped when blood stops showing (exa_character)
+- [x] `--level-change reset:` (exarust)
+- [x] Unit tests; installed-sets check for the ring sets (skipped without EXANIMA_DIR)
+- [x] READMEs, docs/RENDERING.md
+- [x] GPU checks: duel clash log, door vs world-reset stain shots
+- [x] fmt, clippy -D warnings, tests for the touched crates
