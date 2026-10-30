@@ -45,12 +45,27 @@ draw the sub-views at `3·trunc(w/4)`, `2·trunc(w/3)`, `3·trunc(w/5)` or
 `trunc(w/2)` and offset the resolve by 0, −1/3, −0.2 or −0.5, starts at 0
 and is not changed in play. The shared buffer is twice the render size.
 The final pass's sharpen is 1.5 × (0.075·level + 0.4) in double precision.
+Each pass carries its own state: the first pass of a level of two to four
+sub-views draws in state 3, the first of a wider level in state 1 (the
+slider never reaches one), later passes in state 2 and a single view in
+state 0; the low bit raises a renderer flag and the particle pass swaps in
+the visibility mask `0x6000_0000` for state 0 and `0x2000_0000` otherwise.
+Every pass draws `min(count, 4)` sub-views; the pass's shared jitter is the
+level's entry `first jitter + pass` (not `+ 4·pass`). The resolve reads the
+level's jitter table from entry `first jitter + 4·pass` with the tap
+fraction `(4·pass + 1) / count` (a double division stored in single) and
+is drawn with the weight `1 / (4·pass + 1)` in single precision; the projection
+takes a depth dither of `0.5 − (4·pass + 0.5) / count` in single precision,
+and each sub-view's animation clock is `i·step + 4·pass·step + step/2 −
+duration/2` with `step = duration / count`. The resolve replaces on the
+first pass and adds on later ones.
 The view's projection takes half the field of view in single precision,
 divides the near distance by cos/sin of it (the cosine in double precision,
 the sine in single) and multiplies the half height by the aspect in single
 precision. `exa_render::view` holds the table, the jitters, the render
-scale, the projection, the point-to-window projection, the framebuffer
-viewport and region stacks and the view copy's quad, pinned by tests.
+scale, the projection, the point-to-window projection, the pass schedule,
+the framebuffer viewport and region stacks and the view copy's quad, pinned
+by tests.
 
 Exarust (`exa_render::supersample`) draws the scene at twice the window's
 resolution on each axis, an ordered 2 × 2 grid instead of the jittered
@@ -386,6 +401,32 @@ orderings, pinned by tests):
 A render state's blend layer is bits 4–7 of its blend word
 (`passes::blend_layer`); the low four bits are blend factors and play no
 part in the order.
+
+The draw of a list (`passes::plan_list`) walks its material groups in list
+order, binds a group's program once, and draws the group's entries whose
+flag word shares a bit with the renderer's visibility mask; a group with no
+visible entry is not bound at all. Sectors are walked in scene order under
+the same test (`passes::visible_sectors`); a sector with its own rectangle
+sets it as the scissor region and turns the scissor test off before its
+lists are drawn. Within a list the test is switched on for visible entries
+whose word has bit `0x1000_0000` and off for those without it, only when
+the bit changes from the last visible entry, starting from off
+(`passes::scissor_switches`). A blended entry binds the group's full state
+for itself, with the group's alpha at `1 − opacity` and the blend word
+`0x203`, then puts back the saved alpha and `0x100`
+(`passes::entry_alpha`, `passes::ENTRY_BLEND_WORD`).
+
+The particles own two lists (`passes::ParticleList`; the second's groups
+bind a texture in the depth pass, so it is called the textured one). Their
+pass swaps the renderer's visibility mask for `0x6000_0000` (single view)
+or `0x2000_0000` (super-sampled) and walks the scene's particle sectors
+(flag word bit 0) twice over: first depth-only with the colour writes
+masked, the first list for all sectors untextured and then the second for
+all sectors with each group's texture bound at its first visible entry;
+then, with the colour writes back on and depth writes off, per sector the
+first list and the second (with one shared program-state bit, `0x80`,
+cleared) with the per-entry `1 − opacity` alpha. The old mask is restored
+after the pass (`passes::particle_pass`).
 
 The opaque list is grouped by material program key: the first state stays
 first, each next slot takes the first unused state with the current key,

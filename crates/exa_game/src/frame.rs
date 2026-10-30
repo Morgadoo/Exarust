@@ -513,6 +513,66 @@ impl LogOverlay {
     }
 }
 
+/// The overlay panel's width in interface units: eighty of the GUI scale.
+pub const OVERLAY_PANEL_UNITS: i32 = 80;
+/// The panel's inset from the window's corner, in interface units.
+pub const OVERLAY_PANEL_INSET_UNITS: i32 = 1;
+/// The lines' inset inside the panel, in interface units.
+pub const OVERLAY_TEXT_INSET_UNITS: i32 = 2;
+/// The panel's fill alpha.
+pub const OVERLAY_PANEL_ALPHA: u8 = 0x80;
+/// The fill style word the panel is drawn with.
+pub const OVERLAY_PANEL_STYLE: i32 = 3;
+/// The height, in pixels, each line's text box may fill below its origin:
+/// the text draw stops wrapping once the next font line's top would pass
+/// `origin + 1000 − line_height`.
+pub const OVERLAY_TEXT_MAX_HEIGHT: i32 = 1000;
+
+/// Where the timed on-screen log overlay draws: the panel's rectangle and
+/// each line's origin, in window pixels.
+///
+/// The draw measures every live line first, wrapping at the panel's width,
+/// and grows the panel by the line's wrapped height plus one interface unit
+/// of gap; the panel then sits one unit in from the window's corner and the
+/// lines two units in, each advancing by its wrapped height plus the same
+/// unit (the advance takes the line count the text draw returns, which is
+/// the measured one unless a line overflows [`OVERLAY_TEXT_MAX_HEIGHT`]).
+/// The lines are in the ring's order, oldest first, and nothing is
+/// drawn while the ring is empty. `scale` is the GUI scale in pixels,
+/// `line_height` the font's line height in pixels and `wrapped` each line's
+/// height in font lines.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OverlayLayout {
+    /// The panel's origin and size.
+    pub panel: ((i32, i32), (i32, i32)),
+    /// Each line's origin and its height in font lines.
+    pub lines: Vec<((i32, i32), i32)>,
+}
+
+/// The overlay's layout for a GUI scale and the measured line heights.
+pub fn overlay_layout(scale: i32, line_height: i32, wrapped: &[i32]) -> OverlayLayout {
+    if wrapped.is_empty() {
+        return OverlayLayout::default();
+    }
+    let width = OVERLAY_PANEL_UNITS * scale;
+    let mut height = 0;
+    for &lines in wrapped {
+        height += lines * line_height + scale;
+    }
+    let inset = OVERLAY_PANEL_INSET_UNITS * scale;
+    let mut y = OVERLAY_TEXT_INSET_UNITS * scale;
+    let mut out = OverlayLayout {
+        panel: ((inset, inset), (width, height)),
+        lines: Vec::with_capacity(wrapped.len()),
+    };
+    for &lines in wrapped {
+        out.lines
+            .push(((OVERLAY_TEXT_INSET_UNITS * scale, y), lines));
+        y += lines * line_height + scale;
+    }
+    out
+}
+
 /// The frame and game clocks of one tick.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FrameStep {
@@ -1292,5 +1352,60 @@ mod tests {
         calls.run();
         assert_eq!(*log.borrow(), [1, 2, 4, 5]);
         assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn the_overlay_panel_grows_with_the_measured_lines() {
+        // An empty ring draws nothing at all.
+        let empty = overlay_layout(4, 20, &[]);
+        assert_eq!(empty, OverlayLayout::default());
+
+        // Two lines of one and two font lines at scale 4: the panel is 80·4
+        // wide and grows by (20 + 4) and (40 + 4), one unit in from the
+        // corner; the lines start two units in, the second after the first
+        // line's height plus a unit.
+        let layout = overlay_layout(4, 20, &[1, 2]);
+        assert_eq!(layout.panel, ((4, 4), (320, 68)));
+        assert_eq!(layout.lines, [((8, 8), 1), ((8, 32), 2)]);
+        // A single full-height line: three font lines and a 3-unit gap.
+        let layout = overlay_layout(3, 12, &[3]);
+        assert_eq!(layout.panel, ((3, 3), (240, 39)));
+        assert_eq!(layout.lines, [((6, 6), 3)]);
+        // A line that wraps to nothing still takes the gap.
+        let layout = overlay_layout(5, 10, &[0]);
+        assert_eq!(layout.panel.1, (400, 5));
+        assert_eq!(layout.lines, [((10, 10), 0)]);
+        assert_eq!(OVERLAY_PANEL_ALPHA, 0x80);
+        assert_eq!(OVERLAY_PANEL_STYLE, 3);
+        assert_eq!(OVERLAY_TEXT_MAX_HEIGHT, 1000);
+    }
+
+    #[test]
+    fn the_overlay_ring_holds_fifteen_lines_and_expires_one_a_tick() {
+        let mut overlay = LogOverlay::default();
+        for i in 0..20 {
+            overlay.push("t", "m", 0);
+            assert!(overlay.len() < LOG_OVERLAY_SLOTS, "{i}");
+        }
+        assert_eq!(overlay.len(), LOG_OVERLAY_SLOTS - 1);
+        // "t : m" is five bytes: two seconds plus 250 ms.
+        let expiry = overlay.lines().next().unwrap().expires_ms;
+        assert_eq!(expiry, 2250);
+        // A line stays at its expiry and goes one tick after it, oldest
+        // first and only one a call; every line pushed at the same time has
+        // the same expiry, so the next call goes too.
+        assert!(!overlay.expire(expiry));
+        assert!(overlay.expire(expiry + 1));
+        assert_eq!(overlay.len(), LOG_OVERLAY_SLOTS - 2);
+        assert!(overlay.expire(expiry + 1));
+        // A line pushed later waits for its own expiry.
+        let mut later = LogOverlay::default();
+        later.push("t", "m", 0);
+        later.push("t", "m", 1000);
+        assert!(later.expire(2251));
+        assert_eq!(later.len(), 1);
+        assert!(!later.expire(2251));
+        assert!(!later.expire(3250));
+        assert!(later.expire(3251));
     }
 }

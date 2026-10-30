@@ -104,6 +104,150 @@ impl SupersampleLevel {
             (f64::from(SHARPEN_BASE) * (f64::from(level) * 0.075 + 0.4)) as f32
         }
     }
+
+    /// The render state a pass draws with, from the original's per-pass word:
+    /// 0 for a single view, 3 for the first pass of a level of two to four
+    /// sub-views, 1 for the first pass of a wider level (the slider stops
+    /// below those), and 2 for every later pass.
+    pub fn pass_state(self, pass: usize) -> PassState {
+        if pass > 0 {
+            PassState::Later
+        } else if self.subviews() > 4 {
+            PassState::WideFirst
+        } else if self.subviews() > 1 {
+            PassState::NarrowFirst
+        } else {
+            PassState::Single
+        }
+    }
+
+    /// The level's passes for a scene whose animation clip lasts `duration`
+    /// milliseconds: which sub-views each pass draws, the tap window the
+    /// resolve reads, the depth dither and the animation clock the sub-views
+    /// sample.
+    pub fn schedule(self, duration: f32) -> Vec<SubViewPass> {
+        let count = self.subviews();
+        let base = JITTER_OFFSETS[self.clamped().0 as usize];
+        // The sub-view clock's step: the clip's length over the level's
+        // sub-view count, in single precision as the original divides it.
+        let step = duration / count as f32;
+        // The first sub-view's clock: half a step back from half the clip,
+        // added in the order the original's instructions use.
+        let origin = step * 0.5 + duration * -0.5;
+        (0..self.passes())
+            .map(|index| {
+                let first = index * SUBVIEWS_PER_PASS;
+                SubViewPass {
+                    index,
+                    first_subview: first,
+                    // Every pass draws the level's first-pass count of
+                    // sub-views, whatever is left over.
+                    subviews: count.min(SUBVIEWS_PER_PASS),
+                    jitter: JITTERS[base + index],
+                    animation_offset: index as f32 * step * 4.0 + origin,
+                    animation_step: step,
+                    tap_start: base + first,
+                    // A double division stored in single: (first + 1) / count.
+                    tap_fraction: ((first + 1) as f64 / count as f64) as f32,
+                    // Half less the pass's share of the frame, in single.
+                    depth_dither: 0.5 - (first as f32 + 0.5) / count as f32,
+                    state: self.pass_state(index),
+                    resolve_blend: if index == 0 { 0x100 } else { 0x203 },
+                    // One over (first + 1), from an integer in single.
+                    resolve_weight: 1.0 / (first + 1) as f32,
+                }
+            })
+            .collect()
+    }
+}
+
+/// The render state a super-sampled pass draws with (the original's per-pass
+/// word). Its low bit decides a renderer flag; the particle pass picks its
+/// visibility mask by whether it is zero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PassState {
+    /// A single view, no super-sampling.
+    Single,
+    /// The first pass of a level drawing more than four sub-views.
+    WideFirst,
+    /// Any pass after the first.
+    Later,
+    /// The first pass of a level drawing two to four sub-views.
+    NarrowFirst,
+}
+
+impl PassState {
+    /// The original's word.
+    pub fn word(self) -> u32 {
+        match self {
+            Self::Single => 0,
+            Self::WideFirst => 1,
+            Self::Later => 2,
+            Self::NarrowFirst => 3,
+        }
+    }
+
+    /// Whether the renderer raises its flag while drawing the pass (the
+    /// word's low bit).
+    pub fn raises_flag(self) -> bool {
+        self.word() & 1 != 0
+    }
+
+    /// The visibility mask the particle pass swaps in while it draws: one
+    /// for a single view, another for any super-sampled pass.
+    pub fn particle_mask(self) -> u32 {
+        if self == Self::Single {
+            crate::passes::PARTICLE_MASK_SINGLE
+        } else {
+            crate::passes::PARTICLE_MASK_SUPERSAMPLED
+        }
+    }
+}
+
+/// One pass of the original's super-sampled draw.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SubViewPass {
+    /// The pass's index from zero.
+    pub index: usize,
+    /// The first sub-view's index within the level.
+    pub first_subview: usize,
+    /// How many sub-views the pass draws (up to four).
+    pub subviews: usize,
+    /// The jitter the pass's shared uniforms carry (the level table's entry
+    /// at the pass's own index).
+    pub jitter: (f32, f32),
+    /// The first sub-view's animation clock, milliseconds from the clip's
+    /// start (negative: before it).
+    pub animation_offset: f32,
+    /// What each later sub-view's clock adds.
+    pub animation_step: f32,
+    /// The first jitter entry the resolve's tap window reads.
+    pub tap_start: usize,
+    /// The resolve's tap fraction, `(first + 1) / count` divided in double
+    /// precision and stored in single: 1/4 for the single pass of the 4x
+    /// level, 1/8 then 5/8 for the two passes of the 8x one.
+    pub tap_fraction: f32,
+    /// The depth dither added to the pass's projection: half less the
+    /// pass's share of the frame.
+    pub depth_dither: f32,
+    /// The render state the pass draws with.
+    pub state: PassState,
+    /// The blend state word the pass's resolve draws with: replaced on the
+    /// first pass, added on later ones.
+    pub resolve_blend: u16,
+    /// The weight the pass's resolve draw is given: `1 / (first + 1)` in
+    /// single precision (1, then 1/5 on the second pass of eight). Its
+    /// meaning inside the resolve was not traced.
+    pub resolve_weight: f32,
+}
+
+impl SubViewPass {
+    /// The animation clock sub-view `i` of the pass samples, milliseconds:
+    /// its own step before the pass's offset. The original sets the clocks
+    /// from the pass's last sub-view down to the first; each keeps its own.
+    pub fn animation_time(&self, subview: usize) -> f32 {
+        subview as f32 * self.animation_step + self.animation_offset
+    }
 }
 
 /// The view's render-scale mode: the share of the window each sub-view is
@@ -764,5 +908,83 @@ mod tests {
         );
         assert_eq!(CopyBlend::for_opacity(1.0), CopyBlend::Replace);
         assert_eq!(CopyBlend::for_opacity(0.25), CopyBlend::ConstantAlpha(0.25));
+    }
+
+    #[test]
+    fn a_pass_schedule_walks_the_levels_table() {
+        // The 4x setting: four sub-views from jitter entry 6 in one pass.
+        let schedule = SupersampleLevel(3).schedule(2000.0);
+        assert_eq!(schedule.len(), 1);
+        let pass = schedule[0];
+        assert_eq!(pass.index, 0);
+        assert_eq!(pass.first_subview, 0);
+        assert_eq!(pass.subviews, 4);
+        assert_eq!(pass.jitter, JITTERS[6]);
+        assert_eq!(pass.tap_start, 6);
+        assert_eq!(pass.tap_fraction, 0.25);
+        assert_eq!(pass.depth_dither, 0.375);
+        assert_eq!(pass.state, PassState::NarrowFirst);
+        assert_eq!(pass.state.word(), 3);
+        assert_eq!(pass.resolve_blend, 0x100);
+        // A 2 s clip in four: half a second a sub-view, the first a quarter
+        // of a second before the clip's start.
+        assert_eq!(pass.animation_step, 500.0);
+        assert_eq!(pass.animation_offset, -750.0);
+        assert_eq!(pass.animation_time(0), -750.0);
+        assert_eq!(pass.animation_time(3), 750.0);
+
+        // The 8x level: two passes of four.
+        let schedule = SupersampleLevel(4).schedule(1600.0);
+        assert_eq!(schedule.len(), 2);
+        assert_eq!(schedule[0].first_subview, 0);
+        assert_eq!(schedule[0].tap_start, 10);
+        assert_eq!(schedule[0].tap_fraction, 0.125);
+        assert_eq!(schedule[0].depth_dither, 0.4375);
+        assert_eq!(schedule[0].state, PassState::WideFirst);
+        assert_eq!(schedule[0].resolve_blend, 0x100);
+        assert_eq!(schedule[1].first_subview, 4);
+        assert_eq!(schedule[1].subviews, 4);
+        // The second pass's own jitter and the frame's remaining share.
+        assert_eq!(schedule[1].jitter, JITTERS[11]);
+        assert_eq!(schedule[1].tap_start, 14);
+        assert_eq!(schedule[1].tap_fraction, 0.625);
+        // 0.5 - 4.5/8 in single.
+        assert_eq!(schedule[1].depth_dither, -0.0625);
+        assert_eq!(schedule[1].state, PassState::Later);
+        assert_eq!(schedule[1].state.word(), 2);
+        assert_eq!(schedule[1].resolve_blend, 0x203);
+        assert_eq!(schedule[0].resolve_weight, 1.0);
+        assert_eq!(schedule[1].resolve_weight, 0.2);
+        // The second pass starts where the first left off: step 200 ms, so
+        // pass 1's first sub-view is 0.8 s in and its last 1.4 s.
+        assert_eq!(schedule[1].animation_step, 200.0);
+        assert_eq!(schedule[1].animation_offset, 100.0);
+        assert_eq!(schedule[1].animation_time(0), 100.0);
+        assert_eq!(schedule[1].animation_time(3), 700.0);
+
+        // One sub-view: no super-sampling, the plain render state.
+        let schedule = SupersampleLevel(0).schedule(1000.0);
+        assert_eq!(schedule.len(), 1);
+        assert_eq!(schedule[0].subviews, 1);
+        assert_eq!(schedule[0].tap_fraction, 1.0);
+        assert_eq!(schedule[0].depth_dither, 0.0);
+        assert_eq!(schedule[0].state, PassState::Single);
+        assert_eq!(schedule[0].state.particle_mask(), 0x6000_0000);
+        assert_eq!(schedule[0].animation_offset, 0.0);
+
+        // Two and three sub-views keep the narrow first-pass state.
+        for level in [1, 2] {
+            let level = SupersampleLevel(level);
+            let schedule = level.schedule(300.0);
+            assert_eq!(schedule.len(), 1);
+            assert_eq!(schedule[0].state, PassState::NarrowFirst);
+            assert_eq!(schedule[0].state.particle_mask(), 0x2000_0000);
+            assert!(schedule[0].state.raises_flag());
+        }
+        // Level 2's thirds: the tap window divides in double precision, the
+        // depth dither in single, so the two thirds differ in the last bit.
+        let schedule = SupersampleLevel(2).schedule(900.0);
+        assert_eq!(schedule[0].tap_fraction, 0.333_333_34);
+        assert_eq!(schedule[0].depth_dither, 0.333_333_3);
     }
 }
