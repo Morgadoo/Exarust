@@ -79,7 +79,7 @@ The system SHALL build a level's voxel light volume as the original does. Each m
 - **THEN** its block is 256 × 256 × 128 voxels instead of 256 × 256 × 64
 
 ### Requirement: Voxel GI shading
-The system SHALL light surfaces inside the volume from it. The ambient is the volume 20 cm along the normal × the level ambient × 15 × openness. Reflections are the environment cube × that ambient × 16.
+The system SHALL light surfaces inside the volume from it. Indoors the ambient is the volume's light g (20 cm along the normal, averaged over the taps) × (the level ambient × 15 × b × openness) with a = |g| and b = (1 − a)²·0.03/(a + 0.016) + (0.47a + 0.53); reflections are the environment cube × that ambient × 8 × 2.
 
 #### Scenario: Torchlit room
 - **WHEN** a level with torches has been shown for its warm-up
@@ -1009,6 +1009,28 @@ The system SHALL inject the GI manager's sky light into every drawn GI sector's 
 #### Scenario: Indoors
 - **WHEN** an indoor level, whose record fog colour is zero, is lit
 - **THEN** its GI has no sky light
+
+### Requirement: Outdoor GI shading
+Under an open sky the system SHALL shade the GI's light g with the openness raised to max(1 − (1 − openness)·a·32, openness) and b = (1 − a)²·0.08/(a + 0.035) + a, the light l = g × (level ambient × 15 × b × openness), and the ambient l × (the environment cube around the normal at mip 7 × 3 × 5). Reflections and the fog SHALL take l, with 3 in place of 8.
+
+#### Scenario: Faint light outdoors
+- **WHEN** the GI's light at a surface under an open sky has length 0.1 and openness 0.5
+- **THEN** its lift is 0.81·0.08/0.135 + 0.1 and its openness is 1 − 0.5·0.1·32 held at 0.5, so 0.5
+
+#### Scenario: Strong light outdoors
+- **WHEN** the GI's light under an open sky has length 1 and openness 0.5
+- **THEN** its lift is 1 and its openness stays 0.5
+
+### Requirement: Open-sky environment cube
+The system SHALL bind the open sky's environment cube (`genref02r`) to every lit surface of a level with an open sky, and the indoor cube (`genref01r`) otherwise, with or without voxel GI.
+
+#### Scenario: Outdoor arena
+- **WHEN** an outdoor arena loads after an indoor level
+- **THEN** its surfaces and the materials reused from the indoor level light and reflect with `genref02r`
+
+#### Scenario: Back indoors
+- **WHEN** an indoor level loads after an outdoor arena
+- **THEN** the reused materials bind `genref01r` again
 
 ### Requirement: GI sky visibility
 A voxel SHALL see the GI sky light when it is at or above its column's sky floor: the slice above the column's highest voxel with an occupancy byte of 10 or more, or slice 0 for a column without one.

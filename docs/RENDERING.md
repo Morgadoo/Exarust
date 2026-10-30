@@ -546,13 +546,18 @@ such names.
   the GI block or with `--no-gi`.
 - The cube is `genref01r` for every indoor level (six 256² sRGB faces, each
   with nine mips); outdoors it is `genref02r` masked by `genref02rm`. The
-  level record's `EnvMapIA01` is unread.
+  level record's `EnvMapIA01` is unread. Exarust binds `genref02r` to
+  every lit surface of a level with an open sky (`GiOutdoor::cube`), as
+  stored: the mask's tint is not applied [guess: by the day record's sky
+  tint; it would pull the bright horizon face's red and green down by up
+  to about a quarter].
 - Reflections sample the cube along the mirror direction at mip
   (rough − 0.1)·8, as (e + e²) × level ambient × 8 × the geometry term,
   for every surface outside the GI volume. Inside it only a record with a
   reflection layer kept by the factory (`Mat.TexRef`, slot `0x100000`:
   metals, glass, eyes, skin) samples it, at mip (rough − 0.05)·8, × the GI
-  ambient × 8 × 2; every other surface's specular GI there is **a quarter
+  ambient × 8 × 2 (under an open sky × the GI light before the cube
+  factor × 3 × 2, see Voxel GI); every other surface's specular GI there is **a quarter
   of the ambient** (the shader's `{?Mat.TexRef?}` alternate). The original
   loads the layer's own cube; Exarust binds the level's.
 - Roughness ("Gloss" in the shaders) depends on the maps present:
@@ -1623,13 +1628,14 @@ its width, at the slice's middle ((slice + 0.5)/width), as the original's
   sees the sky at or above its column's floor, the slice above the
   column's highest voxel with an occupancy byte of 10 or more (openness
   under one half), uploaded once per block (moving meshes do not move it).
-  The colour is used as the frame keeps it [guess: the light node's own
-  activation was not followed]. The scene's sun light does not reach the
+  The colour is used as the frame keeps it: the manager writes it into
+  the light node's colour, which nothing else writes, and the injection
+  reads that colour for a directional light and scales it by the
+  manager's 3 and the 0.1 share, with no linearising step of its own (the
+  record's fog colour is already linear, from the blend). The scene's sun light does not reach the
   volume (Exarust injected it here before, with the same factor 3: a
-  misreading of this light). Under a sky the original's GI shading takes
-  an outdoor curve, (1 − a)²·0.08/(a + 0.035) + a and the environment cube
-  × `Ambient.w`·5, which Exarust does not have yet (it keeps the indoor
-  curve), so the outdoor GI ambient is fainter than the original's;
+  misreading of this light). Under a sky the surfaces shade the GI with
+  the outdoor curve and the environment cube (see Shading below);
 - a light's shading is (2^((ly + (1 − ly)·y)·z) − 1)/(2^z − 1), ly the
   light's vertical direction; unshaped lights carry (1, 1, 1);
 - the original's program carries two matrix-shadow light slots (`SdwMat`,
@@ -1775,11 +1781,22 @@ menu.
 - The shadow filter's disc taps (below), turned the same way, spread half a
   unit across the normal and taken 20 cm out along it, averaged. Light
   gives g, alpha gives the occlusion o.
-- a = |g|; b = (1 − a)²·0.03/(a + 0.016) + 0.47a + 0.53, which lifts faint
-  light.
-- ambient = g · lin(level ambient) · 15 · b · o.
+- Indoors: a = |g|; b = (1 − a)²·0.03/(a + 0.016) + (0.47a + 0.53), which
+  lifts faint light; ambient = g · (lin(level ambient) · 15 · b · o).
+- Under an open sky (the original's `Env.Outdoor` switch, the
+  environment's sky flag; Exarust's `GiOutdoor` resource and the
+  materials' `OUTDOOR` flag): o = max(1 − (1 − o)·a·32, o), so faint light
+  is not darkened by the occupancy; b = (1 − a)²·0.08/(a + 0.035) + a;
+  the light l = g · (lin(level ambient) · 15 · b · o), and the ambient is
+  l × (the environment cube around the normal at mip 7 × `Ambient.w`·5),
+  `Ambient.w` being 3 there (8 indoors), so the cube counts × 15.
 - Reflections are the cube along the mirror direction at mip
-  (rough − 0.05)·8 × ambient × 8 × 2 × the geometry term.
+  (rough − 0.05)·8 × the ambient (outdoors l, the light before the cube
+  factor) × `Ambient.w` × 2 × the geometry term; hair takes
+  × `Ambient.w` × 0.5 indoors and × 0.25 on l outdoors. The fog's `amb`
+  is likewise l outdoors. The world material (`exa.wesl`) and the terrain
+  (`terrain.wesl`) share the curves (`shading.wesl`, mirrored and tested
+  in `exa_render::gi_ambient`).
 
 ## Environment and weather
 
@@ -1878,8 +1895,8 @@ ambient indoors; an unlit surface with only an opacity map has its alpha
 scaled by 1 − b. Exarust hands the scratch colour and the span (start 0,
 in metres) to the cameras' linear `DistanceFog`, and the world material
 (`exa.wesl`, every lit program including hair) reads Bevy's fog uniform
-and applies the original's mix with its own ambient for `amb` (its GI
-ambient has no cube factor). So a clear noon fogs over about 250 m towards
+and applies the original's mix with the GI's light before the outdoor
+cube factor for `amb` (the ambient indoors). So a clear noon fogs over about 250 m towards
 the horizon colour, a storm over about 100 m; indoor levels have no fog.
 The 16-step voxel fog march of the top shading quality, and fog on the
 terrain's own draw and the effect shaders, are not ported.
@@ -1920,8 +1937,9 @@ sRGB transfer, scaled by the environment cube at 8 indoors and 3 outdoors
 are double precision; its power goes through the engine's fast logarithm
 and exponent, for which Exarust uses `powf`. Exarust's shading takes the
 cube path's ×16 stand-in when GI is off (see [Voxel GI](#voxel-gi)); the
-level's ambient colour itself is reproduced, and the model exposes the
-8/3 scale.
+level's ambient colour itself is reproduced. The GI shading takes the
+8/3 scale through the open-sky flag (3 under a sky); the cube path
+outside the volume keeps 8.
 
 **The sun light.** `_Sunlight` is a directional light of sRGB 0.75 grey
 (4.5 units under a sky, 3 without; 160 lux a unit in Exarust) taking the
