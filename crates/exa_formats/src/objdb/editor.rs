@@ -41,16 +41,18 @@ pub struct LookRoll {
     /// A colour and its shade from the seven trim rows, or `(3, 0)` when
     /// the roll is not the full one or the one-in-five chance passes.
     pub trim: (u8, u8),
-    /// The editor's flag byte, which the roll always clears.
-    pub flag: u8,
+    /// Two of the editor's bytes the roll always clears (one after the
+    /// third colour, one after the light).
+    pub cleared: [u8; 2],
     /// One when the roll's draw had its top bit clear, else zero.
     pub light: u8,
-    /// A finish of 3, or of 3–5 from the trim draw.
+    /// One in three: a shade of 3 or 4 from a top-bit draw; otherwise
+    /// `0x53` plus a draw below three (83–85).
     pub finish: u8,
 }
 
-/// One step of the engine's integer generator (`state ← state·0x0D + 1`, the
-/// multiplier `0x8088405`).
+/// One step of the engine's integer generator: `state ← state·0x0808_8405 +
+/// 1`, wrapping.
 fn step(state: &mut u32) -> u32 {
     *state = state.wrapping_mul(0x0808_8405).wrapping_add(1);
     *state
@@ -90,7 +92,6 @@ pub fn look_roll(full: bool, state: &mut u32, random: &mut dyn FnMut() -> f64) -
         TRIM[below(state, 7) as usize]
     };
 
-    let flags = 0;
     let light = u8::from(step(state) >> 31 == 0);
 
     let kind = below(state, 3);
@@ -105,7 +106,7 @@ pub fn look_roll(full: bool, state: &mut u32, random: &mut dyn FnMut() -> f64) -
         secondary,
         tertiary,
         trim,
-        flag: flags,
+        cleared: [0; 2],
         light,
         finish,
     }
@@ -152,7 +153,7 @@ mod tests {
                 secondary: 223,
                 tertiary: 3,
                 trim: (3, 0),
-                flag: 0,
+                cleared: [0; 2],
                 light: 1,
                 finish: 84,
             }

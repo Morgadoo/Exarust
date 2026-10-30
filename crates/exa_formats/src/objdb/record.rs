@@ -272,12 +272,13 @@ pub struct Model {
     pub size: [u32; 2],
 }
 
-/// The counted list a database view holds at `0x3C`, as the original's
-/// accessor hands it out: no list at all when the count word at `0x38` is
-/// below one (the compare is signed), else the view's bytes from `0x3C` on.
-/// The structure that holds the count is the caller's own and its layout is
-/// not established here, so this reproduces only the accessor's test and
-/// offset. `None` when the view is too short to hold the count.
+/// The counted list of a block the object database unit hands out (its
+/// count word at `0x38`, the list from `0x3C`), as the original's accessor
+/// does: no list at all when the count is below one (the compare is
+/// signed), else the bytes from `0x3C` on; the caller reads the count as
+/// the list's length. The block belongs to the accessor's one caller and
+/// its other fields are not established, so only the accessor's test and
+/// offsets are reproduced. `None` when the block is too short for the count.
 pub fn counted_list(view: &[u8]) -> Option<&[u8]> {
     let count = i32::from_le_bytes(view.get(0x38..0x3C)?.try_into().ok()?);
     if count < 1 {
