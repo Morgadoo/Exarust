@@ -1814,7 +1814,11 @@ mod tests {
             .health
             .yellow = 0.011;
         swung(&mut app, attacker, blade, victim, cut());
-        assert!(blow_notices(&app).iter().all(|n| n.down), "{:?}", blow_notices(&app));
+        assert!(
+            blow_notices(&app).iter().all(|n| n.down),
+            "{:?}",
+            blow_notices(&app)
+        );
         assert_eq!(blow_notices(&app).len(), 1);
         // A blow the body turns tells its behaviour nothing.
         let turning = app
