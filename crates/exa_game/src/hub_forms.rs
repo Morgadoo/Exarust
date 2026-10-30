@@ -453,6 +453,9 @@ impl HubWindows {
                     }
                     career.renew_hire_pool();
                     career.regenerate_daily_board_at(crate::arena_match::counter_now() as u32);
+                    if career.company.day % 7 == 1 {
+                        career.regenerate_tournament_at(crate::arena_match::counter_now() as u32);
+                    }
                     career.restock_pending = true;
                     info!(
                         "hub manage: the day ends (day {}, wages {})",

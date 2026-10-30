@@ -106,6 +106,11 @@ pub struct ArenaCareer {
     /// nightly restock, which the live shop world supplies on the next
     /// frame.
     pub restock_pending: bool,
+    /// The week's tournament board: six event rows, its prize and the
+    /// shuffled company field.
+    pub tournament: Option<crate::arena::TournamentBoard>,
+    /// The last eight weekly prizes, so a new draw avoids them.
+    pub prize_history: [u32; 8],
     /// The roll the window actions draw from.
     pub roll: u32,
     /// The manager-entry warning is still armed: the first Begin that
@@ -144,6 +149,8 @@ impl Default for ArenaCareer {
             hire_previous: 0,
             daily_rows: crate::arena::generate_daily_board(0x1234_5678, || 0.5),
             restock_pending: false,
+            tournament: None,
+            prize_history: [0; 8],
             roll: 0,
             warn_manager: true,
             rivals: [0; crate::career::RIVAL_FIELD],
@@ -152,6 +159,7 @@ impl Default for ArenaCareer {
         // candidates, drawn from a fixed seed until a session host replaces
         // the career.
         career.fill_hire_pool_at(0x1234_5678);
+        career.regenerate_tournament_at(0x1234_5678);
         career
     }
 }
@@ -179,6 +187,7 @@ impl ArenaCareer {
         self.matches_today = 0;
         self.log.records.clear();
         self.hire_pool.clear();
+        self.tournament = None;
         self.daily_rows = crate::arena::generate_daily_board(0, || 0.5);
         self.restock_pending = false;
         self.company.roster.clear();
@@ -196,6 +205,18 @@ impl ArenaCareer {
         self.hire_previous = 0;
         self.fill_hire_pool_at(crate::arena_match::counter_now());
         self.regenerate_daily_board_at(crate::arena_match::counter_now() as u32);
+        self.regenerate_tournament_at(crate::arena_match::counter_now() as u32);
+    }
+
+    /// Roll the week's tournament from `seed`: its prize (avoiding the last
+    /// eight), six event rows at tier 5 down and the sixteen-company field.
+    pub fn regenerate_tournament_at(&mut self, seed: u32) {
+        let mut ranks = crate::arena_outfit::Lcg::new(seed ^ 0x51ED_2701);
+        self.tournament = Some(crate::arena::generate_tournament_board(
+            seed,
+            &mut self.prize_history,
+            || f64::from(ranks.unit()),
+        ));
     }
 
     /// Roll the day's six standard matches from `seed`. The rank draw comes
@@ -314,6 +335,16 @@ impl ArenaCareer {
             &self.daily_rows,
         );
         board.matches_played = self.matches_today as i32;
+        if let Some(tournament) = &self.tournament {
+            board.tournament_events = arena_board::daily_events(&tournament.rows);
+            // The winners table stores a company id less one.
+            board.tournament_companies = tournament
+                .companies
+                .iter()
+                .map(|&company| i32::from(company) - 1)
+                .collect();
+            board.tournament_prize_item = Some(tournament.prize_id);
+        }
         board.show();
         board
     }
@@ -1822,6 +1853,30 @@ mod tests {
             first.iter().map(|e| e.kind).collect::<Vec<_>>(),
             second.iter().map(|e| e.kind).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn the_board_carries_the_weeks_tournament() {
+        let mut career = ArenaCareer::default();
+        let tournament = career.tournament.clone().expect("the week's board");
+        let board = career.board();
+        for (event, row) in board.tournament_events.iter().zip(&tournament.rows) {
+            assert_eq!(event.kind, row.id);
+        }
+        assert_eq!(board.tournament_prize_item, Some(tournament.prize_id));
+        // The company field is stored less one, as the winners table reads
+        // it.
+        assert_eq!(
+            board.tournament_companies.first().copied(),
+            Some(i32::from(tournament.companies[0]) - 1)
+        );
+        // A new week draws a new prize and avoids the last eight.
+        let old = career.tournament.as_ref().expect("the old board").clone();
+        career.regenerate_tournament_at(0x2468_ACE0);
+        let new = career.tournament.as_ref().expect("the new board");
+        assert_ne!(new.prize_id, 0);
+        assert_ne!(career.prize_history[0], 0);
+        assert_ne!(old.companies, new.companies);
     }
 
     #[test]

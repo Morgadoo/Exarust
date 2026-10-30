@@ -1537,4 +1537,8 @@ window and the kit release a dismissal makes in the original are still not
 built. End Day also rests the manager and gives him the first trainer's
 lesson before the staff, renews the hire list, rolls the next day's six
 standard matches from a fresh seed and asks the live shop world to rotate
-the shop's shelf and the employed merchant's stock (`hub_restock`).
+the shop's shelf and the employed merchant's stock (`hub_restock`). A new
+career and each tournament week also roll the week's board
+(`ArenaCareer::regenerate_tournament_at`): six event rows, the weekly prize
+that avoids the last eight, and the sixteen-company field, which the board's
+tournament tab and its winners table read.
