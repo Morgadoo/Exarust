@@ -219,7 +219,14 @@ established by reverse engineering of the terrain texture renderer and the
 noise unit (REA), and are pinned by tests on a separate model of the rules.
 
 Painted layer weights descend through the rules. Weight the layers leave over
-(1 − Σ) goes to node 0, the first rule.
+goes to node 0, the first rule: a running remainder starts at 1 and loses
+each layer's weight in turn (`(1 − w₀) − w₁ …` in single precision), and a
+layer's or the remainder's walk starts only when its weight, widened to
+double, is above the double 0.001. A layer's weight byte is read as
+`byte × f32(1/255)`, a product. At a rule an input at or below the low bound
+sends the whole weight to the below child, one at or above the high bound
+to the above child; otherwise (in range, or a NaN input) the weight splits,
+`w·t` to the above child (walked first) and `(1 − t)·w` to the below child.
 
 The palette's rules and materials also build a **brush table**: one entry per
 name, sorted by its sixteen bytes with `A`–`Z` lowered (compared as raw

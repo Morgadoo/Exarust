@@ -1782,11 +1782,9 @@ fn build_tile(
         for i in 0..n {
             let v = j * n + i;
             painted.clear();
-            painted.extend(
-                layers
-                    .iter()
-                    .filter_map(|(node, w)| node.map(|node| (node, w[v] as f32 / 255.0))),
-            );
+            painted.extend(layers.iter().filter_map(|(node, w)| {
+                node.map(|node| (node, f32::from(w[v]) * blend::BYTE_SHARE))
+            }));
             let inputs = noise.inputs(positions[v][1], normals[v][1], tile.x, tile.y, i, j);
             vertex_bytes.fill(0);
             tree.weigh_bytes(&painted, &inputs, &mut vertex_bytes, &mut totals);
