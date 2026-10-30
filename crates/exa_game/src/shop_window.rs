@@ -135,6 +135,11 @@ pub struct ShopWindow {
     pub buy: Vec<u16>,
     /// The sell basket's price words.
     pub sell: Vec<u16>,
+    /// The buy basket's item ids, parallel to [`Self::buy`]: zero for a
+    /// line that carries no catalogue item (the coin-only path).
+    pub buy_items: Vec<u32>,
+    /// The sell basket's item ids, parallel to [`Self::sell`].
+    pub sell_items: Vec<u32>,
     /// The two totals as the last basket change left them (buy, sell).
     pub totals: (u32, u32),
     /// The player's loose items, as (kind, item) in arrival order.
@@ -176,6 +181,8 @@ impl ShopWindow {
         Self {
             buy: Vec::new(),
             sell: Vec::new(),
+            buy_items: Vec::new(),
+            sell_items: Vec::new(),
             totals: (0, 0),
             pack: Vec::new(),
             money,
@@ -282,21 +289,58 @@ impl ShopWindow {
         self.balance()
     }
 
-    /// Adds a price word to the buy basket.
+    /// Adds a price word to the buy basket with no catalogue item.
     pub fn add_buy(&mut self, word: u16) -> Balance {
+        self.add_buy_item(0, word)
+    }
+
+    /// Adds a price word and the item it prices to the buy basket.
+    pub fn add_buy_item(&mut self, id: u32, word: u16) -> Balance {
         self.buy.push(word);
+        self.buy_items.push(id);
         self.buy_changed()
     }
 
-    /// Adds a price word to the sell basket.
+    /// Adds a price word to the sell basket with no catalogue item.
     pub fn add_sell(&mut self, word: u16) -> Balance {
+        self.add_sell_item(0, word)
+    }
+
+    /// Adds a price word and the item it prices to the sell basket.
+    pub fn add_sell_item(&mut self, id: u32, word: u16) -> Balance {
         self.sell.push(word);
+        self.sell_items.push(id);
         self.sell_changed()
+    }
+
+    /// Takes a stock row into the buy basket: the item leaves the bound
+    /// [`Self::stock`] list at its place and joins the basket with `price`.
+    /// An index past the stock list or a zero id does nothing. [guess:
+    /// Exarust's list model of dragging a stock item onto the buy panel;
+    /// the original's container drag callbacks are not read, and nothing
+    /// in the live hub calls this yet]
+    pub fn take_stock_row(&mut self, at: usize, price: u16) -> Option<Balance> {
+        let id = *self.stock.get(at)?;
+        if id == 0 {
+            return None;
+        }
+        self.stock.remove(at);
+        Some(self.add_buy_item(id, price))
+    }
+
+    /// Offers a carried item to the sell basket: the item joins the basket
+    /// with `price`. [guess: list model, as [`Self::take_stock_row`]; not
+    /// called by the live hub yet]
+    pub fn offer_item(&mut self, id: u32, price: u16) -> Option<Balance> {
+        (id != 0).then(|| self.add_sell_item(id, price))
     }
 
     /// Removes an item from the buy basket by place.
     pub fn remove_buy(&mut self, at: usize) -> Option<u16> {
         let word = (at < self.buy.len()).then(|| self.buy.remove(at))?;
+        if at < self.buy_items.len() {
+            self.buy_items.remove(at);
+        }
         self.buy_changed();
         Some(word)
     }
@@ -304,6 +348,9 @@ impl ShopWindow {
     /// Removes an item from the sell basket by place.
     pub fn remove_sell(&mut self, at: usize) -> Option<u16> {
         let word = (at < self.sell.len()).then(|| self.sell.remove(at))?;
+        if at < self.sell_items.len() {
+            self.sell_items.remove(at);
+        }
         self.sell_changed();
         Some(word)
     }
@@ -386,17 +433,49 @@ impl ShopWindow {
     }
 
     /// Settles the two baskets through the company's coins while the
-    /// button takes a press. [guess: the "Trade" button's callback lies
-    /// outside this window; Exarust settles through
-    /// [`Company::trade_lines`] and empties the baskets on success]
+    /// button takes a press. A basket with catalogue items settles through
+    /// [`Company::settle`]: the bought items leave the shelf and the sold
+    /// ones join it. A basket of bare price words keeps the coin-only
+    /// [`Company::trade_lines`]. [guess: the "Trade" button's callback lies
+    /// outside this window]
     pub fn confirm(&mut self, company: &mut Company) -> bool {
         if !self.shown_balance.enabled() {
             return false;
         }
-        let done = company.trade_lines(&self.buy, &self.sell);
+        let bought: Vec<u32> = self
+            .buy_items
+            .iter()
+            .copied()
+            .filter(|&id| id != 0)
+            .collect();
+        let sold: Vec<u32> = self
+            .sell_items
+            .iter()
+            .copied()
+            .filter(|&id| id != 0)
+            .collect();
+        let done = if bought.is_empty() && sold.is_empty() {
+            company.trade_lines(&self.buy, &self.sell)
+        } else {
+            let (buy, sell) = self.totals;
+            let due = buy.wrapping_sub(sell) as i32;
+            let tallies = [due.max(0), (-due).max(0)];
+            let trade = crate::trade::Transaction {
+                due,
+                tallies,
+                sold,
+                bought,
+            };
+            company.settle(&trade);
+            // The settle writes the purse already; a refused trade cannot
+            // reach here because the row's own gate checked the balance.
+            true
+        };
         if done {
             self.buy.clear();
             self.sell.clear();
+            self.buy_items.clear();
+            self.sell_items.clear();
             self.money = company.copper;
             self.buy_changed();
             self.sell_changed();
@@ -561,5 +640,49 @@ mod tests {
         assert!(!window.confirm(&mut poor));
         assert_eq!(poor.copper, 10);
         assert_eq!(window.buy, [UNIT_GOLD | 1]);
+    }
+
+    #[test]
+    fn a_stock_row_taken_joins_the_buy_basket_and_the_shelf() {
+        let mut window = ShopWindow::new(100, false);
+        window.bind_stock(&[7, 9], None);
+        let row = window.take_stock_row(0, 5).unwrap();
+        assert_eq!(window.stock, [9]);
+        assert_eq!(
+            (window.buy.as_slice(), window.buy_items.as_slice()),
+            (&[5u16][..], &[7u32][..])
+        );
+        assert_eq!(row.buy, 5);
+        // A row past the list and a zero id do nothing.
+        assert!(window.take_stock_row(9, 5).is_none());
+        window.bind_stock(&[0], None);
+        assert!(window.take_stock_row(0, 5).is_none());
+        // Offering to the sell basket carries the item too.
+        assert!(window.offer_item(11, 12).is_some());
+        assert_eq!(
+            (window.sell.as_slice(), window.sell_items.as_slice()),
+            (&[12u16][..], &[11u32][..])
+        );
+        assert!(window.offer_item(0, 12).is_none());
+    }
+
+    #[test]
+    fn a_basket_with_items_moves_them_across_the_shelf() {
+        let mut company = Company::new("Trader");
+        company.copper = 100;
+        company.stock = vec![7, 9];
+        let mut window = ShopWindow::new(company.copper, false);
+        window.bind_stock(&company.stock, None);
+        // Buy item 7 for 5 and sell item 9 for a silver quartered to 3: 2
+        // copper due.
+        window.take_stock_row(0, 5);
+        window.offer_item(9, UNIT_SILVER | 1);
+        assert!(window.confirm(&mut company));
+        // The bought item left the shelf and the sold one joined it.
+        assert_eq!(company.stock, [9, 9]);
+        assert_eq!((company.copper, company.spent), (98, 2));
+        assert!(window.buy.is_empty() && window.buy_items.is_empty());
+        assert!(window.sell.is_empty() && window.sell_items.is_empty());
+        assert_eq!(window.stock, [9]);
     }
 }

@@ -735,6 +735,9 @@ pub fn frame(
                 frame.push(shadow_layer(unit, &m, place));
             }
             CardDraw::Back { .. } => {
+                // The card draw turns face culling off before it draws
+                // and back on after, so both sides are painted, the back
+                // first.
                 let par_z = light_z(turn_now.as_ref());
                 if let Some(image) = back_image(sheet, image_w, image_h, [255; 4], par_z) {
                     let quad = back_quad(half_w, half_h);
@@ -1056,9 +1059,27 @@ mod tests {
             },
         ];
         let frame_turning = frame(&turning, &sheet, 6, 600, 400);
-        // Shadow, back, face.
+        // Shadow, back, face: the card draw paints both sides with face
+        // culling off.
         assert_eq!(frame_turning.layers.len(), 3);
         assert!(frame_turning.layers[0].batch.vertices.len() > 18);
+        // Past edge-on both sides are still painted.
+        let turned = [
+            place,
+            CardDraw::Turn {
+                index: 0,
+                axis: [0.0, 1.0, 0.0],
+                angle: 2.0,
+            },
+            CardDraw::Back { index: 0 },
+            CardDraw::Face {
+                index: 0,
+                card: 0,
+                mirrored: false,
+            },
+        ];
+        let frame_turned = frame(&turned, &sheet, 6, 600, 400);
+        assert_eq!(frame_turned.layers.len(), 3);
         let held = |mirrored| {
             let draws = [
                 place,

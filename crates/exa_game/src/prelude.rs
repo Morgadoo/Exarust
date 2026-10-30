@@ -32,6 +32,7 @@
 use exa_assets::{Archive, Game, PackKind};
 use exa_formats::characters::{CharacterRecord, ID_MASK, LOCAL_ITEM};
 use exa_formats::objdb::Item;
+use exa_ui::game_tips as tip_banner;
 
 use bevy::prelude::{Res, ResMut};
 
@@ -155,6 +156,92 @@ pub fn sync_tips_setting(config: Option<Res<HardwareConfig>>, mut tips: ResMut<T
         return;
     };
     tips.show_game_tips = config.live.show_tips;
+}
+
+/// The text the popup shows for a choice: the tip from [`TIPS`] or the
+/// indexed message from [`HINTS`]. An index past a table shows nothing
+/// (the original reads past it).
+#[must_use]
+pub fn banner_text(shown: Shown) -> Option<&'static str> {
+    match shown {
+        Shown::Tip(index) => tip_banner::TIPS.get(index).copied(),
+        Shown::Hint(index) => tip_banner::HINTS.get(index).copied(),
+    }
+}
+
+/// The text the running popup shows. The flow's [`crate::flow::Step::Tip`]
+/// writes it; the draw system paints it.
+#[derive(bevy::prelude::Resource, Debug, Clone, Default, PartialEq, Eq)]
+pub struct TipBannerText(pub String);
+
+/// Draws the popup's banner through the GUI draw path: the translucent box
+/// [`tip_banner::GameTips::draw`] places and the text in the interface's base
+/// font. Colour of the box is not traced (guess: black at the drawn alpha).
+pub struct TipsScreenPlugin;
+
+impl bevy::prelude::Plugin for TipsScreenPlugin {
+    fn build(&self, app: &mut bevy::prelude::App) {
+        app.init_resource::<TipBannerText>()
+            .add_systems(bevy::prelude::Update, draw_tips);
+    }
+}
+
+fn draw_tips(
+    banner: bevy::prelude::Res<TipBannerText>,
+    textures: Option<bevy::prelude::Res<exa_ui::gui_draw::GuiTextures>>,
+    windows: bevy::prelude::Query<
+        &bevy::prelude::Window,
+        bevy::prelude::With<bevy::window::PrimaryWindow>,
+    >,
+    mut frames: bevy::prelude::ResMut<exa_ui::gui_draw::GuiFrames>,
+) {
+    if banner.0.is_empty() {
+        return;
+    }
+    let Ok(window) = windows.single() else {
+        return;
+    };
+    let width = window.physical_width() as i32;
+    let height = window.physical_height() as i32;
+    if width <= 0 || height <= 0 {
+        return;
+    }
+    let unit = exa_ui::scale::gui_scale(height.max(0) as u32, 0) as i32;
+    let font = &exa_ui::gui_font::FONTBASE_24;
+    let text_width = font.text_width(banner.0.as_bytes());
+    let place = tip_banner::GameTips {
+        text: banner.0.clone(),
+    }
+    .draw(width, unit, text_width);
+    let Some(textures) = textures else {
+        return;
+    };
+    let Some(texture) = textures.get(font.texture) else {
+        return;
+    };
+    use exa_ui::gui_draw::{GuiFrame, GuiLayer, LayerTexture, text_batch};
+    use exa_ui::skin::SkinBatch;
+    let mut frame = GuiFrame::new();
+    let [x, y] = place.box_at;
+    let [w, h] = place.box_size;
+    let mut box_batch = SkinBatch::new();
+    box_batch.select(1, 0, false);
+    box_batch.set_ink([0, 0, 0, place.alpha]);
+    box_batch.begin();
+    box_batch.vertex(x as f32, y as f32);
+    box_batch.vertex(x as f32, (y + h) as f32);
+    box_batch.vertex((x + w) as f32, (y + h) as f32);
+    box_batch.vertex((x + w) as f32, y as f32);
+    box_batch.end_quads();
+    frame.push(GuiLayer::new(box_batch, LayerTexture::None));
+    let baseline = place.text_at[1] + font.ascent;
+    let quads = exa_ui::gui_text::draw_line(font, banner.0.as_bytes(), place.text_at[0], baseline);
+    let size = (texture.width as u16, texture.height as u16);
+    frame.push(GuiLayer::new(
+        text_batch(font, &quads, [255, 255, 255, 255], size),
+        LayerTexture::Named(font.texture),
+    ));
+    frames.push(frame);
 }
 
 /// Every named actor template in an archive, with the items its own
@@ -504,6 +591,29 @@ mod tests {
         assert_eq!(opponent.record.traits[..3], [-100.0, 100.0, 100.0]);
         assert_eq!(opponent.team, 0x10);
         assert_eq!(opponent.reaction_ms, 3000);
+    }
+
+    #[test]
+    fn a_shown_tip_or_hint_names_its_banner_text() {
+        assert_eq!(
+            banner_text(Shown::Tip(0)),
+            Some(exa_ui::game_tips::FIRST_TIP)
+        );
+        assert_eq!(banner_text(Shown::Tip(1)), Some(exa_ui::game_tips::TIPS[1]));
+        assert_eq!(banner_text(Shown::Tip(18)), None);
+        assert_eq!(
+            banner_text(Shown::Hint(0)),
+            Some(exa_ui::game_tips::HINTS[0])
+        );
+        assert_eq!(
+            banner_text(Shown::Hint(5)),
+            Some(exa_ui::game_tips::HINTS[5])
+        );
+        assert_eq!(banner_text(Shown::Hint(6)), None);
+        // An automatic draw picks a tip and gives it text.
+        let mut tips = Tips::default();
+        let shown = tips.show_automatic().unwrap();
+        assert!(banner_text(shown).is_some());
     }
 
     #[test]

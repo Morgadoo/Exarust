@@ -295,3 +295,10 @@ A story script's `GameEvent(4)` SHALL, when the background word lacks bit 4, set
 #### Scenario: Two calls on a word of 1
 - **WHEN** a script calls `GameEvent(4)` twice with the background word 1
 - **THEN** the first call writes [5, 0, 0, 0] under [1, 0x6431ac02] and the second writes nothing
+
+### Requirement: Applied tip and discovery steps
+The running app SHALL apply `Step::Tip` by showing the popup's choice in the tip banner, SHALL hide the banner on `Step::HideEndMenu` and `Step::ClosePrelude`, and SHALL turn `Step::Discovery` into a discovery pass at the game clock.
+
+#### Scenario: A practice round's tip is hidden at the next fight
+- **WHEN** a practice round ends with tip 0 and the next fight's start closes the end menu and the prelude
+- **THEN** the banner shows a tip and is then empty

@@ -12,6 +12,37 @@
 /// The banner's default text, until the prelude sets one.
 pub const FIRST_TIP: &str =
     "Augmenting strikes by swinging and moving your body can greatly increase damage.";
+/// The eighteen rotating tips, in the original's table order.
+pub const TIPS: [&str; 18] = [
+    FIRST_TIP,
+    "Your character is subject to physics, your inputs must work in harmony with them.",
+    "Even when a parry is not successful, attempting to defend will reduce damage taken.",
+    "Let go of LMB at any time to perform a feint or abandon your attack to defend instead.",
+    "To successfully block or parry you must turn and position yourself to face the blow.",
+    "NPCs play by the same exact rules, make human errors and have slow reaction times.",
+    "To attack from your left, move the cursor to your character's left before pressing LMB.",
+    "To deliver significant damage you must land clean hits with the correct part of your weapon.",
+    "Use dashes to attack your opponents from unexpected angles and bypass their defences.",
+    "Watch your opponent closely and land your attacks when they are most vulnerable.",
+    "Overhead attacks can deliver devastating head blows and hit prone opponents.",
+    "Slash damage is effective on weak and slicing blows but easily mitigated by armour.",
+    "Piercing damage is better at finding potential gaps and weak spots in armour.",
+    "Crushing damage is reliant on strong blows but typically most effective against armour.",
+    "Weapons with a higher balance are quicker and more responsive.",
+    "Impact mainly deals stamina damage but also affects all other damage types.",
+    "Armour can be worn in layers for even better protection.",
+    "Higher coverage armour has fewer exposed parts and weaknesses.",
+];
+/// The six indexed messages the same popup shows: the control hint, the
+/// defeat and death notices and the three victory notices.
+pub const HINTS: [&str; 6] = [
+    "Press TAB to toggle combat mode or I to toggle the inventory. Double click bodies to loot them.",
+    "You have been defeated.",
+    "You have died.",
+    "Congratulations! You have defeated all ten opponents.",
+    "Congratulations! You have defeated all opponents in the novice arena!",
+    "Congratulations! You have defeated all opponents in the expert arena!",
+];
 /// The banner's box alpha.
 pub const BOX_ALPHA: u8 = 160;
 /// The banner's height, in units.
@@ -93,6 +124,20 @@ mod tests {
         assert_eq!(b.box_at, [266, 32]);
         assert_eq!(b.text_at, [270, 48]);
         assert_eq!(b.alpha, 160);
+    }
+
+    #[test]
+    fn the_tables_are_the_original_seventeen_plus_one_and_six() {
+        assert_eq!(TIPS.len(), 18);
+        assert_eq!(HINTS.len(), 6);
+        assert_eq!(TIPS[0], FIRST_TIP);
+        assert_eq!(
+            TIPS[17],
+            "Higher coverage armour has fewer exposed parts and weaknesses."
+        );
+        assert!(HINTS[0].starts_with("Press TAB"));
+        assert_eq!(HINTS[2], "You have died.");
+        assert!(HINTS[5].contains("expert arena"));
     }
 
     #[test]

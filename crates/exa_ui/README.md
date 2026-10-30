@@ -448,10 +448,19 @@ holds are counted for the rank's record; an off-hand copy frees the worn
 entry a hand holds. `apply_drop` is the list model's equip onto the kit
 behind the equip gate. Its paint frame lays the backdrop, the two
 containers and the preview out at the constructor's rectangles as flat
-fills, in the paint's order. Its list model of the kit is Exarust's own. The divination
+fills, in the paint's order. Its list model of the kit is Exarust's own.
+The constructor's per-mode record changes are `mode_records` (used by
+`controls_for`): mode word 1 widens Previous and Next, hides Dismiss, the
+rank, points and encumbrance rows and the shelf and box buttons, and shows
+the hire block (HIRE, fee, upkeep, profession); mode 3 disables the list,
+the rank and four shelf buttons and hides Previous, Next, Dismiss and the
+points row. Every refresh marks the arsenal entries the shown kit has in
+hand or wears with `EQUIPPED_MARK` (`mark_equipped`). The divination
 reading (`div_card`) deals three distinct cards out of twenty-two, eases
 the deal and the turns by `(3 − 2t)·t²`, turns each card half over about
-a swinging axis and draws the original's drop shadow. The emblem editor
+a swinging axis and draws the original's drop shadow; the card draw turns
+face culling off around itself, so both sides are painted, the back first.
+The emblem editor
 (`emblem_form`) starts on palette 0xd3, 0x72, 0x5a, 0x4e and rolls with
 `state · 0x8088405 + 1`. The destination screen (`selection`) places its
 nodes by the engine's sine and cosine (`engine_math`, forwarded from
@@ -769,7 +778,7 @@ constructor, the point's body-shape weights and the press, release and
 change steps.
 `popups` has the item card, the container popup (its close saves the panel's contents into the container record; `GameScreen::Container` is its screen kind, tagged `0xce1c2013`, closed by a right click) and the parchment (its size, alpha hit test with the factor divided in double precision, and its draw: one textured white quad at the GUI's alpha, the fade step first and the alpha scales reset after a finished fade). `dialogs` has the colour window's
 gradients and hue table and the confirmation dialogs. `help_screen`, `task_stack`,
-`game_tips`, `colour_swatch`, `view_helpers` (the viewport's super-sample
+`game_tips` (its eighteen tips and six indexed messages), `colour_swatch`, `view_helpers` (the viewport's super-sample
 and cursor-action list) and the journal close in `game_gui` complete the
 unit. The draw records are plain data; no new form is painted by the
 running app yet.

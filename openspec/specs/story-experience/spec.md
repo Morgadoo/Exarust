@@ -88,3 +88,10 @@ The account experience SHALL be stored in the settings store as its four little-
 #### Scenario: Round trip
 - **WHEN** 12345 is saved and read back, and an empty value is read
 - **THEN** 12345 returns and the empty value changes nothing
+
+### Requirement: Live discovery pass
+In the running story, each of the flow's once-a-second discovery passes SHALL convert the account pool, the player and each companion at the game clock, and SHALL write the player's remaining experience, skills and powers back to the player's record.
+
+#### Scenario: One pass after the level start
+- **WHEN** a player carrying 600 experience, training its first skill from 5000 points, starts at 0 and a pass runs at 1000
+- **THEN** the record holds 580 experience and the first skill 5008 points

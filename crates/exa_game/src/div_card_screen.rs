@@ -9,6 +9,7 @@
 //! game sends [`OpenDivination`] from the host that knows an item is a
 //! divination card [guess].
 
+use bevy::audio::PlaybackMode;
 use bevy::prelude::*;
 use exa_ui::div_card::{self, Reading, SHEET};
 use exa_ui::gui_draw::{GuiFrames, GuiTextures};
@@ -35,6 +36,9 @@ pub struct OpenReading {
     pub random: Mt19937,
     pub width: i32,
     pub height: i32,
+    /// The last paint asked for the `PprMov` sound at this step. The draw
+    /// system plays it and clears the flag.
+    pub sound_step: bool,
 }
 
 /// The open reading, if one is.
@@ -54,6 +58,7 @@ impl DivinationScreen {
                 random,
                 width: 0,
                 height: 0,
+                sound_step: false,
             }),
         }
     }
@@ -78,6 +83,9 @@ impl DivinationScreen {
         let open = self.open.as_mut()?;
         let elapsed = now.wrapping_sub(open.reading.start_ms);
         let draws = div_card::draw_order(&mut open.reading, open.width.max(0) as u32, 4, elapsed);
+        open.sound_step = draws
+            .iter()
+            .any(|draw| matches!(draw, div_card::CardDraw::Sound));
         let sheet = textures.get(SHEET)?;
         Some(div_card::frame(
             &draws,
@@ -123,12 +131,17 @@ fn click_reading(mut clicks: MessageReader<DivinationClick>, mut screen: ResMut<
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn paint_reading(
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     clock: Res<EffectClock>,
     textures: Option<Res<GuiTextures>>,
     mut frames: Option<ResMut<GuiFrames>>,
     mut screen: ResMut<DivinationScreen>,
+    game: Option<Res<exa_assets::Game>>,
+    bank: Option<ResMut<exa_audio::SoundBank>>,
+    mut sources: Option<ResMut<Assets<AudioSource>>>,
+    mut commands: Commands,
 ) {
     if let Some(open) = screen.open.as_mut()
         && let Ok(window) = windows.single()
@@ -142,6 +155,24 @@ fn paint_reading(
     let Some(frame) = screen.paint(clock.now_ms, textures) else {
         return;
     };
+    // The paint's sound step plays `PprMov` once, as the original's paint
+    // does at a deal step and the first three turns.
+    let play = screen
+        .open
+        .as_mut()
+        .is_some_and(|open| core::mem::take(&mut open.sound_step));
+    if play
+        && let (Some(game), Some(mut bank), Some(sources)) = (game, bank, sources.as_mut())
+        && let Some(clip) = bank.get(&game, sources, div_card::SOUND)
+    {
+        commands.spawn((
+            AudioPlayer(clip),
+            PlaybackSettings {
+                mode: PlaybackMode::Despawn,
+                ..default()
+            },
+        ));
+    }
     // Pushed beside the other screens' frames; the renderer takes and
     // clears the list each frame.
     if let Some(frames) = frames.as_mut() {
@@ -182,6 +213,9 @@ mod tests {
         screen.open.as_mut().unwrap().width = 800;
         screen.open.as_mut().unwrap().height = 600;
         assert!(screen.paint(1_100, &textures).is_some());
+        // The deal step asked for the paper sound; the draw system plays it
+        // once and clears the flag.
+        assert!(screen.open.as_ref().unwrap().sound_step);
         assert!(screen.paint(6_000, &textures).is_some());
         assert_eq!(
             screen.open.as_ref().unwrap().reading.phase,

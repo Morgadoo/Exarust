@@ -3309,6 +3309,7 @@ impl Plugin for FlowPlugin {
             .add_message::<SettingsEntry>()
             .add_message::<exa_script::ScriptEffect>()
             .add_message::<crate::save_live::SaveStep>()
+            .add_message::<crate::experience_live::DiscoveryTick>()
             .init_resource::<GameView>()
             .init_resource::<BootToMenu>()
             .init_resource::<crate::transition_screen::TransitionOverlay>()
@@ -3663,6 +3664,19 @@ fn apply_menu_choices(
     }
 }
 
+/// Hides the tips popup: the counts stay, the banner goes.
+fn hide_tip(
+    tips: Option<&mut crate::prelude::Tips>,
+    banner: Option<&mut crate::prelude::TipBannerText>,
+) {
+    if let Some(tips) = tips {
+        tips.hide();
+    }
+    if let Some(banner) = banner {
+        banner.0.clear();
+    }
+}
+
 /// Applies the flow's steps to the running app's own pieces: the menu and
 /// end-menu forms, the title logo, the interface and controls flags and the
 /// practice heal's health. A level load or world teardown becomes an
@@ -3677,6 +3691,8 @@ fn apply_steps(
     flow: Res<Flow>,
     mut menu: Option<ResMut<MenuScreen>>,
     mut end: Option<ResMut<EndMenuScreen>>,
+    mut tips: Option<ResMut<crate::prelude::Tips>>,
+    mut banner: Option<ResMut<crate::prelude::TipBannerText>>,
     mut logo: Option<ResMut<TitleLogo>>,
     mut view: Option<ResMut<GameView>>,
     mut session: Option<ResMut<crate::player_controls::PlaySession>>,
@@ -3722,6 +3738,22 @@ fn apply_steps(
             Step::HideEndMenu => {
                 if let Some(end) = end.as_mut() {
                     end.close();
+                }
+                // The end menu's hide also hides the tips popup.
+                hide_tip(tips.as_deref_mut(), banner.as_deref_mut());
+            }
+            Step::ClosePrelude => {
+                hide_tip(tips.as_deref_mut(), banner.as_deref_mut());
+            }
+            Step::Tip(index) => {
+                if let Some(tips) = tips.as_mut() {
+                    let shown = tips.show(usize::try_from(index).unwrap_or(usize::MAX));
+                    if let Some(banner) = banner.as_mut() {
+                        banner.0 = shown
+                            .and_then(crate::prelude::banner_text)
+                            .unwrap_or_default()
+                            .to_string();
+                    }
                 }
             }
             Step::LoadLevel {
@@ -3994,6 +4026,10 @@ fn apply_steps(
             Step::Checkpoint => {
                 out.saves.write(crate::save_live::SaveStep::Checkpoint);
             }
+            Step::Discovery => {
+                out.discovery
+                    .write(crate::experience_live::DiscoveryTick { now });
+            }
             other => {
                 debug!("game flow step not applied by the app: {other:?}");
             }
@@ -4002,7 +4038,8 @@ fn apply_steps(
 }
 
 /// The messages the flow's applied steps send: a level change, a forfeit, a
-/// settings entry, the application's exit and the save unit's work.
+/// settings entry, the application's exit, the save unit's work and the
+/// discovery pass.
 #[derive(bevy::ecs::system::SystemParam)]
 struct FlowOutputs<'w> {
     changes: MessageWriter<'w, exa_world::level_lifecycle::LevelChangeRequest>,
@@ -4010,6 +4047,7 @@ struct FlowOutputs<'w> {
     settings: MessageWriter<'w, SettingsEntry>,
     exit: MessageWriter<'w, AppExit>,
     saves: MessageWriter<'w, crate::save_live::SaveStep>,
+    discovery: MessageWriter<'w, crate::experience_live::DiscoveryTick>,
 }
 
 /// The player body's parts the flow's steps write.
@@ -4081,6 +4119,24 @@ pub(crate) fn run_to_black(flow: &mut Flow) -> Vec<Step> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hiding_the_tip_clears_the_banner_and_keeps_the_counts() {
+        let mut tips = crate::prelude::Tips::default();
+        let shown = tips.show(3);
+        let mut banner = crate::prelude::TipBannerText(
+            shown
+                .and_then(crate::prelude::banner_text)
+                .unwrap_or_default()
+                .to_string(),
+        );
+        assert_eq!(banner.0, "You have died.");
+        let counts = tips.shown;
+        hide_tip(Some(&mut tips), Some(&mut banner));
+        assert!(banner.0.is_empty());
+        assert_eq!(tips.current, None);
+        assert_eq!(tips.shown, counts);
+    }
 
     #[test]
     fn the_mode_and_phase_words_round_trip() {
@@ -6310,7 +6366,7 @@ mod tests {
             let mut screen = EndMenuScreen::default();
             screen.show(end_menu(MENU_NEXT, Mode::Practice));
             screen.selected = Some(0);
-            assert_eq!(screen.confirm(&mut flow), vec![Step::Transition]);
+            assert_eq!(screen.confirm(&mut flow, &[]), vec![Step::Transition]);
             let input = TransitionInput {
                 clock_ms: 0,
                 music: Some(1.0),
@@ -6336,6 +6392,7 @@ mod tests {
             .add_message::<SettingsEntry>()
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
+            .add_message::<crate::experience_live::DiscoveryTick>()
             .add_systems(Update, apply_steps);
         let placement = Placement {
             rotation: yaw(90.0),
@@ -6474,6 +6531,7 @@ mod tests {
             .add_message::<SettingsEntry>()
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
+            .add_message::<crate::experience_live::DiscoveryTick>()
             .add_systems(Update, apply_steps);
         let mut fighter = exa_combat::Fighter::default();
         fighter.health.max = 100.0;
@@ -6528,6 +6586,7 @@ mod tests {
             .add_message::<SettingsEntry>()
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
+            .add_message::<crate::experience_live::DiscoveryTick>()
             .add_systems(Update, apply_steps);
         let mut fighter = exa_combat::Fighter::default();
         fighter.health.red = 0.5;
