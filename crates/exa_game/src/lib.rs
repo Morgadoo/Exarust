@@ -104,6 +104,7 @@ pub mod practice;
 pub mod prelude;
 pub mod report;
 pub mod rise;
+pub mod role_scripts;
 pub mod save_kit;
 pub mod save_level;
 pub mod save_live;
@@ -164,6 +165,7 @@ impl Plugin for GamePlugin {
             golem_alarm::GolemAlarmPlugin,
             use_cursor::UseCursorPlugin,
             npc_search::NpcSearchPlugin,
+            role_scripts::RoleScriptsPlugin,
         ))
         .init_resource::<prelude::Tips>()
         .add_plugins((

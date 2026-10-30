@@ -259,8 +259,11 @@ return and the sleep have no live caller yet.
 
 Not in yet: role init scripts other than Activity and IdleActivity have no
 effect (the interpreter runs them, but the AI's host exposes only those two
-slots); encounter, corpse, dialogue and condition scripts and
-`StartDialogue` are found and modelled, not run from the AI; the brain feeding the
+slots); encounter scripts are collected by `roles::encounter` and run by the
+game's `role_scripts` bridge, while corpse scripts run on the player's
+double-click and dialogue and condition scripts are found and modelled but
+not run from the AI; `StartDialogue` returns a `DialogueRequest` rather than
+calling the dialogue engine; the brain feeding the
 combatant's mind-power overrides and group blend (they are in `combatant`);
 the roam and patrol choose
 their wander and home points from the level's rooms (`rooms::room_exits`,
