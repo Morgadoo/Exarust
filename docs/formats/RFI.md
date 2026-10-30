@@ -346,6 +346,12 @@ sit in the header's block. `resize` sets `data size` and holds six times it
 for a cube; `release` frees the pixels and leaves the header. Established
 by reverse engineering of those routines (REA).
 
+`LoaderRegistry` is the unit's extension registry: it starts with the
+`rfi` key and the description "Rayform Image", a registration replaces the
+same key, and clearing it frees every entry. The actual read callback is
+the pack/name path in Exarust, so the registry keeps the key and
+description the original registers.
+
 ## Naming conventions
 
 Suffixes: `d` diffuse, `n` normal, `s` specular, `g` gloss, `h` height,
