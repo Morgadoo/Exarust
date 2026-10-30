@@ -552,10 +552,16 @@ and parent. `ModelLoader` follows instance chains to the first stored node
 and copies its parts, GI points and GI flags (centred, thin), light, emitters and shadow bias onto the
 instance's model node (`instance_root`).
 
-A node that ships without a GI point chunk is generated at load only where
-the original does: a body model's mesh part, and a floor-set child reached
-through the loader's walk from the centre-floor variants (`+FM…`) that skips
-`#…`, `+…` and `[…]` subtrees and tests bit `0x10000` or bit `0x8` of the
-node's second flag word. The generator runs in the original's centimetres at
-parameter 20 with the greedy cover (`exa_physics::voxel::generated_surface_points`);
-a stored chunk wins, and walls take none.
+A floor-set node gets runtime GI points at load where the original's
+floor-set loader generates them: the walk starts at the children of the
+centre-floor variants (`+FM…`), skips a direct child named `#…`, `+…` or
+`[…]` with its subtree, recurses below that without a name test, and marks
+every class-`0x89` node whose second flag word has bit `0x10000` or bit
+`0x8` (an instance marks its master, whose points every instance copies).
+The generator runs in the original's centimetres at parameter 20 with the
+greedy cover (`exa_physics::voxel::generated_surface_points`) and replaces
+any stored chunk, as the original's does; every other mesh keeps its chunk
+and walls take none. In the shipped sets only `gefs_uwa01` (164 points, a
+box) and `gefs_uwb02` (964 points, the chute; about 130 ms in a release
+build, once per loaded set) have marked nodes. The character physics-body
+trigger is not run: Exarust's characters carry no GI points.

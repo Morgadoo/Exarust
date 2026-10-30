@@ -664,7 +664,9 @@ sample a mesh into a fine grid. The load-time rules sit beside them: a
 floor-set child gets generated points when bit `0x10000` or bit `0x8` of
 its second flag word is set, and `generated_surface_points` runs the
 surface generator in the original's centimetres at its runtime parameter
-20 (a 4 cm step) and returns points in the mesh's space. `volume` is the
+20 (a 4 cm step) and returns points in the mesh's space, answering its
+sphere queries through `MeshQuery`, a triangle tree that gives the plain
+closest-point query's answers. `volume` is the
 dynamics volume: the
 shape builders' fit over that map, in their order (`volume::fit`). The
 grid is the mesh's stored box: the longest half extent gets
