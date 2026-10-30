@@ -252,13 +252,20 @@ pub struct Subframes {
 }
 
 impl Subframes {
-    /// Build a quarter's sub-frames: one projection per pass, the view (the
-    /// same for a static camera) and their product.
+    /// Build a quarter's sub-frames for a camera that does not move between
+    /// them.
+    pub fn build(setting: u32, quarter: u32, view: &ViewFrame) -> Self {
+        let camera = view.camera;
+        Self::build_with(setting, quarter, view, |_| camera)
+    }
+
+    /// Build a quarter's sub-frames: one projection per pass, the view and
+    /// their product.
     ///
     /// `camera_for` returns the camera transform for a sub-frame, in the
-    /// engine's descending pass order, so a caller can animate it between
-    /// passes as the view does.
-    pub fn build(
+    /// engine's descending pass order, so a caller can animate the camera
+    /// between passes as the view does.
+    pub fn build_with(
         setting: u32,
         quarter: u32,
         view: &ViewFrame,
@@ -608,7 +615,7 @@ mod tests {
 
     #[test]
     fn a_quarter_builds_a_pair_per_pass() {
-        let frames = Subframes::build(3, 0, &view(), static_camera);
+        let frames = Subframes::build(3, 0, &view());
         assert_eq!(frames.len(), 4);
         assert_eq!(frames.setting(), 3);
         assert_eq!(frames.quarter(), 0);
@@ -646,7 +653,7 @@ mod tests {
 
     #[test]
     fn a_depth_offset_moves_the_projection_lane_and_rebuilds_the_composite() {
-        let mut frames = Subframes::build(3, 0, &view(), static_camera);
+        let mut frames = Subframes::build(3, 0, &view());
         let before = *frames.projection(1).unwrap();
         frames.apply_depth_offset(0.1);
         let after = *frames.projection(1).unwrap();
@@ -662,8 +669,33 @@ mod tests {
     }
 
     #[test]
+    fn an_animated_camera_is_sampled_in_descending_pass_order() {
+        let mut order = Vec::new();
+        let frames = Subframes::build_with(3, 0, &view(), |i| {
+            order.push(i);
+            [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [i as f32, 0.0, 0.0],
+            ]
+        });
+        assert_eq!(order, vec![3, 2, 1, 0]);
+        // Each pass kept the view built from its own camera.
+        assert_eq!(frames.view(0).unwrap()[3][0], 0.0);
+        assert_eq!(frames.view(3).unwrap()[3][0], -3.0);
+        assert_eq!(
+            frames.composite(2),
+            Some(&multiply(
+                frames.view(2).unwrap(),
+                frames.projection(2).unwrap()
+            ))
+        );
+    }
+
+    #[test]
     fn a_three_sample_setting_draws_three_passes() {
-        let frames = Subframes::build(2, 0, &view(), static_camera);
+        let frames = Subframes::build(2, 0, &view());
         assert_eq!(frames.len(), 3);
         // The third sample's jitter is entry 5 of the table.
         assert_eq!(

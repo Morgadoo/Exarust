@@ -238,9 +238,11 @@ pub struct Subframe {
     pub time: Option<f32>,
     /// The whole-pixel viewport shift of the sub-frame.
     pub viewport_shift: [i32; 2],
-    /// The depth offset added to the sub-frame projection's depth lane for a
-    /// geometry with [`MOTION_BLUR`]; the composite is rebuilt after it.
-    pub depth_offset: Option<f32>,
+    /// The shutter length of a geometry with [`MOTION_BLUR`]: the sub-frame's
+    /// projection depth lane is rewritten to
+    /// `subframe::depth_lane(base, slot, duration, samples)` and the
+    /// composite rebuilt (`Subframes::apply_depth_offset`).
+    pub depth_shutter: Option<f32>,
 }
 
 /// What a draw does, in the order it does it.
@@ -418,16 +420,12 @@ impl DrawState {
             let time = (path == DrawPath::Supersampled
                 && object.object_flags & OBJECT_SUBFRAME_CLOCK != 0)
                 .then(|| scene.clock.time(index));
-            let depth_offset = depth_shutter.map(|duration| {
-                let slot = scene.clock.quarter.wrapping_mul(4).wrapping_add(index);
-                crate::subframe::shutter_offset(slot, duration, scene.clock.samples)
-            });
             subframes.push(Subframe {
                 index,
                 taps,
                 time,
                 viewport_shift: crate::subframe::viewport_shift(index),
-                depth_offset,
+                depth_shutter,
             });
         }
         DrawPlan {
@@ -806,7 +804,7 @@ mod tests {
     }
 
     #[test]
-    fn a_motion_blurred_geometry_offsets_each_subframes_depth_lane() {
+    fn a_motion_blurred_geometry_carries_its_shutter_length() {
         let mut state = DrawState::new(scene().slot);
         let mut object = object();
         object.geometry.flags = MOTION_BLUR;
@@ -818,23 +816,20 @@ mod tests {
             quarter: 0,
         };
         let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
-        // (((i + 0.5)·0.1)/4) − 0.05: −0.0375, −0.0125, 0.0125, 0.0375.
-        assert_eq!(plan.subframes[0].depth_offset, Some(0.0125 - 0.05));
-        assert_eq!(plan.subframes[3].depth_offset, Some(0.0875 - 0.05));
-        // The second quarter shifts the slot by four.
-        scene.clock.quarter = 1;
-        let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
+        assert!(plan.subframes.iter().all(|s| s.depth_shutter == Some(0.1)));
+        // The lane's value: (((i + 0.5)·0.1)/4 + base) − 0.05.
+        let base = -1.0;
         assert_eq!(
-            plan.subframes[0].depth_offset,
-            Some(crate::subframe::shutter_offset(4, 0.1, 4))
+            crate::subframe::depth_lane(base, 0, 0.1, 4),
+            ((0.5f32 * 0.1) / 4.0 + base) - 0.05
         );
-        // A geometry without the flag, and the plain path, take no offset.
+        // A geometry without the flag, and the plain path, take no shutter.
         object.geometry.flags = 0;
         let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
-        assert!(plan.subframes.iter().all(|s| s.depth_offset.is_none()));
+        assert!(plan.subframes.iter().all(|s| s.depth_shutter.is_none()));
         object.geometry.flags = MOTION_BLUR;
         let plan = state.prepare(&object, &scene, DrawPath::Plain, false);
-        assert!(plan.subframes.iter().all(|s| s.depth_offset.is_none()));
+        assert!(plan.subframes.iter().all(|s| s.depth_shutter.is_none()));
     }
 
     #[test]
