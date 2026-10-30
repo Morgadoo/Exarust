@@ -2702,7 +2702,13 @@ popup and the character view still wait for their hosts.
   (64, 64). The coins draw into a `4·unit` manager in the colour format,
   the grip sides into an `8·unit` one in the single-channel format and the
   crystals into one of the interface's large-icon cell (22 before a GUI
-  level is chosen; Exarust keeps 22); all blend 0x203.
+  level is chosen); all blend 0x203. The live card (`exa_game::item_card`)
+  draws the socket row after its striking rows: 0x18 high and 0x78 wide at
+  unit 4, the empty ring (the dot sheet's third cell) of each existing
+  socket five units after the last in the label group's eighth ink, then
+  at each crystal's own slot the crystal sheet's frame (cell 1, 2 for a
+  kind with bit 0x10) opaque and the crystal (cells 3–6) added at alpha
+  255 less its charge, at the level's large-icon side.
 - **Panel drawing** (`exa_game::item_panel_draw`): every visible entry is
   drawn at its stored cell (inside the pack panel's client area, clipped
   to it) from the manager's atlas through the item

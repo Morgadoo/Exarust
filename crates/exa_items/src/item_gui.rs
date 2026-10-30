@@ -856,7 +856,8 @@ pub struct LoadedSheet {
 /// pixel format and copies each stored place into it; an image or a place
 /// that does not fit leaves the sheet out. The running inventory reads the
 /// dot sheet for its encumbrance dots (`exa_game::doll_view`); the card
-/// paints no rating dots, coins, grip buttons or sockets yet.
+/// reads the dot and crystal sheets for its socket row
+/// (`exa_game::item_card`) and paints no coins or grip buttons yet.
 pub fn load_sheet(sheet: &SpriteSheet, bytes: &[u8]) -> Option<LoadedSheet> {
     let rfi = exa_formats::rfi::Rfi::parse(bytes).ok()?;
     let width = i32::try_from(rfi.header.width).ok()?;

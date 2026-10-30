@@ -199,7 +199,7 @@ fn a_broken_grab_drops_every_grab_to_its_part_and_the_grab_layers() {
     let mut body = pair(0.1);
     body.raise_grab_layer(1);
     body.raise_grab_layer(2);
-    body.parts[0].class_word = 0xC0;
+    body.parts[0].pairing.layer = 0xC0;
     let mut grabs = vec![
         (1, grab(1.0, LINK_BODY | LINK_BREAKABLE, Vec3::X)),
         (2, grab(1.0, LINK_BODY | LINK_BREAKABLE, Vec3::X)),
@@ -209,12 +209,14 @@ fn a_broken_grab_drops_every_grab_to_its_part_and_the_grab_layers() {
     body.release_grabs(0, 1, &mut grabs);
     let left: Vec<(usize, u32)> = grabs.iter().map(|(s, g)| (*s, g.flags)).collect();
     assert_eq!(left, vec![(2, LINK_BODY | LINK_BREAKABLE), (1, LINK_BODY)]);
-    assert_eq!(body.parts[0].class_word, 0x80);
-    assert_eq!(body.parts[1].class_word, 0);
-    assert_eq!(body.parts[2].class_word, GRAB_LAYER);
+    assert_eq!(body.parts[0].pairing.layer, 0x80);
+    assert_eq!(body.parts[1].pairing.layer, 0);
+    assert_eq!(body.parts[2].pairing.layer, GRAB_LAYER);
+    // The grab layers are layer masks, not class words.
+    assert_eq!(body.parts[2].class_word, 0);
     // Nothing to drop: no layer changes.
-    body.parts[1].class_word = GRAB_LAYER;
+    body.parts[1].pairing.layer = GRAB_LAYER;
     let mut none = Vec::new();
     body.release_grabs(0, 1, &mut none);
-    assert_eq!(body.parts[1].class_word, GRAB_LAYER);
+    assert_eq!(body.parts[1].pairing.layer, GRAB_LAYER);
 }

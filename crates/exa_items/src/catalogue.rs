@@ -1090,4 +1090,40 @@ mod tests {
         assert_eq!(cat.contents(9), Some(&[7u32][..]));
         assert_eq!(cat.contents(7), None);
     }
+
+    /// The installed object database has socketed records, whose cards
+    /// carry the socket row; the ids are printed for a run's `--give`.
+    /// Skipped without an installation.
+    #[test]
+    fn the_installed_objects_have_socketed_cards() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let Ok(game) = exa_assets::GameData::open(&dir) else {
+            return;
+        };
+        let Some(resource) = game.pack(exa_assets::PackKind::Resource) else {
+            return;
+        };
+        let Some(db) = resource
+            .get("objdb.rdb")
+            .and_then(|bytes| Database::parse(bytes).ok())
+        else {
+            return;
+        };
+        let cat = ItemCatalogue::of_database(&db);
+        let mut socketed: Vec<(u32, [u16; 4])> = cat
+            .cards
+            .iter()
+            .filter(|(_, facts)| facts.sockets)
+            .map(|(id, facts)| (*id, facts.socket_words))
+            .collect();
+        socketed.sort();
+        for (id, words) in socketed.iter().take(20) {
+            eprintln!("socketed {id}: {words:04x?}");
+        }
+        assert!(!socketed.is_empty());
+        // The row's flag is the first socket's existence bit.
+        assert!(socketed.iter().all(|(_, words)| words[0] & 0x80 != 0));
+    }
 }

@@ -160,8 +160,13 @@ pub const HELD_MOTION_FLAG: u32 = 0x10000;
 /// A held item body's static-only flag: every level query uses the current
 /// pose, never a sweep.
 pub const HELD_STATIC_ONLY: u32 = 0x80000;
-/// The grab layer bit the bite-grab raises on a part and its neighbours.
+/// The grab layer bit the bite-grab raises on a part and its neighbours, in
+/// their layer masks ([`Pairing::layer`]).
 pub const GRAB_LAYER: u32 = 0x40;
+/// A biting weapon's layer mask while it is stuck: channel 3's member and
+/// exclusive bits, so it passes through the parts that carry
+/// [`GRAB_LAYER`].
+pub const STUCK_WEAPON_LAYER: u32 = 0xC0;
 /// The sleep countdown a woken body starts from, and a living body's every
 /// tick: at rest it falls asleep 128 ticks (1.54 s) later.
 pub const WAKE_COUNT: i32 = 256;
@@ -406,8 +411,9 @@ pub struct Part {
     /// a held item body's are in the original's static-only mode.
     pub static_only: bool,
     /// The original's class word, which carries the body's
-    /// collision class bits (the grab layer, the strike window and the
-    /// static-only mode among them).
+    /// collision class bits (the strike window and the static-only mode
+    /// among them). The grab layer is in the layer mask
+    /// ([`Pairing::layer`]).
     pub class_word: u32,
     /// The original's controller state word (on the node's
     /// controller), which the body tick sets bits of (bit 4 marks a part
@@ -1035,8 +1041,47 @@ impl Ragdoll {
         let parent = self.parts.get(index).and_then(|p| p.parent);
         for (i, p) in self.parts.iter_mut().enumerate() {
             if Some(i) == parent || i == index || p.parent == Some(index) {
-                p.class_word &= !GRAB_LAYER;
+                p.pairing.layer &= !GRAB_LAYER;
             }
+        }
+    }
+
+    /// Pulls part `weapon` of `weapon_body` and part `struck` of
+    /// `struck_body` through one grab pass: [`Ragdoll::pull_grab`] for a
+    /// weapon that is a body of its own (a held item) and the part it bit on
+    /// another body. Returns whether the grab broke in this pass.
+    pub fn pull_grab_across(
+        weapon_body: &mut Ragdoll,
+        weapon: usize,
+        struck_body: &mut Ragdoll,
+        struck: usize,
+        grab: &mut GrabPull,
+        struck_disabled: bool,
+    ) -> bool {
+        let (Some(weapon_part), Some(struck_part)) = (
+            weapon_body.parts.get_mut(weapon),
+            struck_body.parts.get_mut(struck),
+        ) else {
+            return false;
+        };
+        pull_grab(weapon_part, struck_part, grab, struck_disabled)
+    }
+
+    /// The weights of a world point over part `part`'s particles where they
+    /// are now: how the original turns a contact into a link end.
+    pub fn weights_now(&self, part: usize, at: Vec3) -> Option<[f32; 4]> {
+        self.parts.get(part)?.weights_now(at)
+    }
+
+    /// The part's layer mask ([`Pairing::layer`]).
+    pub fn layer(&self, part: usize) -> Option<u32> {
+        self.parts.get(part).map(|p| p.pairing.layer)
+    }
+
+    /// Sets the part's layer mask.
+    pub fn set_layer(&mut self, part: usize, layer: u32) {
+        if let Some(p) = self.parts.get_mut(part) {
+            p.pairing.layer = layer;
         }
     }
 
@@ -1061,7 +1106,7 @@ impl Ragdoll {
         if dropped {
             self.lower_grab_layer(broken);
             if let Some(p) = self.parts.get_mut(weapon) {
-                p.class_word &= !GRAB_LAYER;
+                p.pairing.layer &= !GRAB_LAYER;
             }
         }
     }
@@ -3168,7 +3213,7 @@ impl Ragdoll {
             .chain(children)
         {
             if let Some(p) = self.parts.get_mut(i) {
-                p.class_word |= GRAB_LAYER;
+                p.pairing.layer |= GRAB_LAYER;
             }
         }
     }
