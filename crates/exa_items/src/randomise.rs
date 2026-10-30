@@ -16,6 +16,12 @@
 //! times the row's weight in hundredths, and a pick inside it continues
 //! into that table. A slot takes no row bigger than it allows. Evidence:
 //! the item-variant notes (`context/re/item-gui-lane.md`).
+//!
+//! The world-load walk goes through the database in record order: an item
+//! body whose armour type byte is not zero runs the apparel palette
+//! generator on its palette byte's wealth plus signed variance and is
+//! refreshed; else a weapon record is refreshed; else a variant list is
+//! appended to the tables the fill will use.
 
 use crate::instance::{MadeCondition, Spreads};
 use crate::refresh::{made_condition, write_condition};
@@ -30,8 +36,6 @@ const WEAPON: u32 = 0x4000;
 const APPEARANCE: usize = 0x1B0;
 /// The item body's palette byte, which a row's wealth rewrites.
 const PALETTE: usize = 0x1A9;
-/// The item body's byte the world-load walk tests before refreshing.
-const WALK_BYTE: usize = 0x1A8;
 
 /// The dirt every graded weapon starts with.
 pub const GRADE_DIRT: u8 = 0x35;
@@ -641,6 +645,32 @@ pub fn grade_object(source: &mut dyn GradeSource, id: u32, level: i32) -> u32 {
     copy
 }
 
+/// The palette byte an item body carries at `0x1A9`: its low two bits the
+/// wealth, bits 2 through 6 the variance magnitude (0..=31) and bit 7 the
+/// variance's sign.
+pub const PALETTE_BYTE: usize = 0x1A9;
+
+/// The armour type byte at `0x1A8`; the world-load walk reads a body's
+/// palette only when it is not zero.
+pub const ARMOUR_TYPE: usize = 0x1A8;
+
+/// The wealth the palette byte names (`byte & 3`), as a float.
+pub fn palette_wealth(palette: u16) -> f32 {
+    (palette & 3) as f32
+}
+
+/// The variance the palette byte names: bits 2 through 6 over 31, positive
+/// in single precision and, with bit 7 set, negated in double precision,
+/// as the original's two readers do.
+pub fn palette_variance(palette: u16) -> f32 {
+    let magnitude = i32::from((palette & 0x7C) >> 2);
+    if palette & 0x80 != 0 {
+        (-f64::from(magnitude) / 31.0) as f32
+    } else {
+        magnitude as f32 * (1.0 / 31.0)
+    }
+}
+
 /// What the world-load pass reads of the object database: each record's
 /// section tags, an item body's byte, and the refresh it runs.
 pub trait WorldSource {
@@ -650,27 +680,57 @@ pub trait WorldSource {
     fn sections(&self, id: u32) -> Vec<u32>;
     /// The byte at `offset` of a record's item body.
     fn body_byte(&self, id: u32, offset: usize) -> Option<u8>;
+    /// A record's whole payload, for the variant-list walk.
+    fn payload(&self, id: u32) -> Option<Vec<u8>>;
     /// Refreshes a record's description and stats.
     fn refresh(&mut self, id: u32);
+    /// The palette byte (`0x1A9`) of a record's item body, as the two
+    /// bytes it spans. Defaults to reading [`WorldSource::body_byte`].
+    fn palette_byte(&self, id: u32) -> Option<u16> {
+        let low = self.body_byte(id, PALETTE_BYTE)?;
+        let high = self.body_byte(id, PALETTE_BYTE + 1).unwrap_or(0);
+        Some(u16::from_le_bytes([low, high]))
+    }
+    /// Starts the apparel palette generator on a wealth value with mode 1
+    /// (the original's shared palette, consumed by the texture painter).
+    /// Exarust's painter keeps its own palette, so nothing is generated;
+    /// the call is kept so the walk's reads and order are pinned.
+    fn randomise_palette(&mut self, _wealth: f32) {}
+    /// Appends an object's variant list to the tables the walk builds:
+    /// each listed variant gets a table row at `row.offset` with `bulk`.
+    fn register_variants(&mut self, _object: u32, _table: &containers::VariantTable) {}
 }
 
-/// The world-load pass's walk over the database: a record with an item
-/// body is refreshed when its body's byte at `0x1A8` is not zero; else a
-/// weapon record is refreshed; the others (container records) feed the
-/// fill, [`Fill::run`], which the original runs after the walk. Returns how
-/// many records were refreshed.
+/// The world-load pass's walk over the database, in record order:
+///
+/// * a record with an item body whose armour type (`0x1A8`) is not zero
+///   reads its palette byte's wealth and variance, runs the palette
+///   generator on their sum and refreshes the record;
+/// * else a weapon record is refreshed;
+/// * else a record with a variant list (`0x20000`) hands it to
+///   [`WorldSource::register_variants`].
+///
+/// Returns how many records were refreshed. The original runs the
+/// container fill right after this walk, which `Fill::run` does.
 pub fn world_load(source: &mut dyn WorldSource) -> usize {
     let mut refreshed = 0;
     for id in source.ids() {
         let tags = source.sections(id);
         if tags.contains(&BODY) {
-            if source.body_byte(id, WALK_BYTE).is_some_and(|b| b != 0) {
+            if source.body_byte(id, ARMOUR_TYPE).is_some_and(|b| b != 0) {
+                let palette = source.palette_byte(id).unwrap_or(0);
+                source.randomise_palette(palette_wealth(palette) + palette_variance(palette));
                 source.refresh(id);
                 refreshed += 1;
             }
         } else if tags.contains(&WEAPON) {
             source.refresh(id);
             refreshed += 1;
+        } else if tags.contains(&containers::VARIANT_TABLE)
+            && let Some(payload) = source.payload(id)
+            && let Some(table) = containers::variant_table(&payload)
+        {
+            source.register_variants(id, &table);
         }
     }
     refreshed
@@ -1003,45 +1063,122 @@ mod tests {
         assert_eq!(grade_object(&mut plain, 9, 1), 0);
     }
 
+    struct Record {
+        id: u32,
+        tags: Vec<u32>,
+        body: Vec<u8>,
+        payload: Vec<u8>,
+    }
+
     struct World {
-        records: Vec<(u32, Vec<u32>, Option<u8>)>,
+        records: Vec<Record>,
         refreshed: Vec<u32>,
+        palettes: Vec<f32>,
+        variants: Vec<(u32, containers::VariantTable)>,
     }
 
     impl WorldSource for World {
         fn ids(&self) -> Vec<u32> {
-            self.records.iter().map(|r| r.0).collect()
+            self.records.iter().map(|r| r.id).collect()
         }
         fn sections(&self, id: u32) -> Vec<u32> {
             self.records
                 .iter()
-                .find(|r| r.0 == id)
-                .map(|r| r.1.clone())
+                .find(|r| r.id == id)
+                .map(|r| r.tags.clone())
                 .unwrap_or_default()
         }
         fn body_byte(&self, id: u32, offset: usize) -> Option<u8> {
-            assert_eq!(offset, 0x1A8);
-            self.records.iter().find(|r| r.0 == id).and_then(|r| r.2)
+            self.records
+                .iter()
+                .find(|r| r.id == id)
+                .and_then(|r| r.body.get(offset))
+                .copied()
+        }
+        fn payload(&self, id: u32) -> Option<Vec<u8>> {
+            self.records
+                .iter()
+                .find(|r| r.id == id)
+                .map(|r| r.payload.clone())
         }
         fn refresh(&mut self, id: u32) {
             self.refreshed.push(id);
         }
+        fn randomise_palette(&mut self, wealth: f32) {
+            self.palettes.push(wealth);
+        }
+        fn register_variants(&mut self, object: u32, table: &containers::VariantTable) {
+            self.variants.push((object, table.clone()));
+        }
+    }
+
+    fn record(id: u32, tags: Vec<u32>, body: Vec<u8>, payload: Vec<u8>) -> Record {
+        Record {
+            id,
+            tags,
+            body,
+            payload,
+        }
     }
 
     #[test]
-    fn the_world_load_walks_apparel_and_weapon_records() {
+    fn the_world_load_walks_apparel_weapons_and_variant_lists() {
+        // A body of armour type 1 with palette byte 0x82: wealth 2, a
+        // negative variance of 0. 0x82 & 0x7c = 0, so variance 0.
+        let mut armour = vec![0u8; 0x1AC];
+        armour[0x1A8] = 1;
+        armour[0x1A9] = 0x82;
+        let mut plain = vec![0u8; 0x1AC];
+        plain[0x1A9] = 0xFF;
+        // A variant list of one row.
+        let mut variant_body = vec![0u8; 0x18];
+        variant_body[0x0A..0x0C].copy_from_slice(&42u16.to_le_bytes());
+        variant_body[0x14..0x18].copy_from_slice(&1u32.to_le_bytes());
+        variant_body.extend_from_slice(&0x77u32.to_le_bytes());
+        variant_body.extend_from_slice(&[0; 8]);
+        let mut variant_payload = containers::VARIANT_TABLE.to_le_bytes().to_vec();
+        variant_payload.extend_from_slice(&((variant_body.len() + 8) as u32).to_le_bytes());
+        variant_payload.extend_from_slice(&variant_body);
+
         let mut world = World {
             records: vec![
-                (1, vec![0x1000], Some(1)),
-                (2, vec![0x1000], Some(0)),
-                (3, vec![0x4000], None),
-                (4, vec![0x200], None),
-                (5, vec![0x1000], None),
+                record(1, vec![0x1000], armour, Vec::new()),
+                record(2, vec![0x1000], plain, Vec::new()),
+                record(3, vec![0x4000], Vec::new(), Vec::new()),
+                record(4, vec![0x200], Vec::new(), Vec::new()),
+                record(5, vec![0x1000], Vec::new(), Vec::new()),
+                record(
+                    6,
+                    vec![containers::VARIANT_TABLE],
+                    Vec::new(),
+                    variant_payload,
+                ),
             ],
             refreshed: Vec::new(),
+            palettes: Vec::new(),
+            variants: Vec::new(),
         };
         assert_eq!(world_load(&mut world), 2);
         assert_eq!(world.refreshed, [1, 3]);
+        assert_eq!(world.palettes, [2.0]);
+        assert_eq!(world.variants.len(), 1);
+        let (object, table) = &world.variants[0];
+        assert_eq!(*object, 6);
+        assert_eq!(table.bulk, 42);
+        assert_eq!(table.rows.len(), 1);
+        assert_eq!(table.rows[0].id, 0x77);
+        assert_eq!(table.rows[0].offset, 0x20);
+    }
+
+    #[test]
+    fn the_palette_byte_splits_into_wealth_and_a_signed_variance() {
+        assert_eq!(palette_wealth(0b10), 2.0);
+        assert_eq!(palette_wealth(0xFF), 3.0);
+        assert_eq!(palette_variance(0), 0.0);
+        // Bits 2..6: 31 over 31 is 1.
+        assert_eq!(palette_variance(31 << 2), 1.0);
+        // Bit 7 negates in double precision.
+        assert_eq!(palette_variance(0x80 | (5 << 2)), -(5.0 / 31.0) as f32);
     }
 
     #[test]

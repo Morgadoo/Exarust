@@ -224,6 +224,57 @@ impl RandomTable {
     }
 }
 
+/// The random variant list an object carries (`0x20000`): the items its
+/// appearance can be rolled from, with the bulk every listed variant
+/// shares.
+pub const VARIANT_TABLE: u32 = 0x20000;
+
+/// One entry of an object's variant list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct VariantRow {
+    /// The variant's item id.
+    pub id: u32,
+    /// Where the row sits in the record's payload (the original stores
+    /// this offset, not the row itself, in the table it builds).
+    pub offset: usize,
+}
+
+/// An object's variant list, as the world-load walk reads it: a shared
+/// bulk at byte `0x0A`, the row count at `0x14` and twelve-byte rows from
+/// `0x18`, the first word of each the variant's id.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct VariantTable {
+    pub bulk: u16,
+    pub rows: Vec<VariantRow>,
+}
+
+impl VariantTable {
+    /// `None` when the body is shorter than its header or its stated rows.
+    pub fn parse(body: &[u8]) -> Option<Self> {
+        let header = body.get(..0x18)?;
+        let bulk = u16::from_le_bytes(header[0x0A..0x0C].try_into().ok()?);
+        let count = u32::from_le_bytes(header[0x14..0x18].try_into().ok()?) as usize;
+        let rest = body.get(0x18..0x18usize.checked_add(count.checked_mul(12)?)?)?;
+        let rows = rest
+            .as_chunks::<12>()
+            .0
+            .iter()
+            .enumerate()
+            .map(|(at, row)| VariantRow {
+                id: u32::from_le_bytes(row[..4].try_into().expect("4 bytes")),
+                // The body starts eight bytes into the payload.
+                offset: 8 + 0x18 + at * 12,
+            })
+            .collect();
+        Some(Self { bulk, rows })
+    }
+}
+
+/// The variant list of a record's payload ([`VARIANT_TABLE`]).
+pub fn variant_table(payload: &[u8]) -> Option<VariantTable> {
+    VariantTable::parse(section(payload, VARIANT_TABLE)?)
+}
+
 /// The condition a table row gives what it picks, as shares.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RowCondition {
@@ -263,6 +314,38 @@ mod tests {
         v.extend((body.len() as u32 + 8).to_le_bytes());
         v.extend_from_slice(body);
         v
+    }
+
+    #[test]
+    fn a_variant_list_reads_its_bulk_count_and_rows() {
+        let mut body = vec![0u8; 0x18];
+        body[0x0A..0x0C].copy_from_slice(&60u16.to_le_bytes());
+        body[0x14..0x18].copy_from_slice(&2u32.to_le_bytes());
+        for id in [0x11u32, 0x22] {
+            body.extend_from_slice(&id.to_le_bytes());
+            body.extend_from_slice(&[9, 8, 7, 6, 5, 4, 3, 2]);
+        }
+        let payload = section_bytes(VARIANT_TABLE, &body);
+        let table = variant_table(&payload).unwrap();
+        assert_eq!(table.bulk, 60);
+        assert_eq!(
+            table.rows,
+            vec![
+                VariantRow {
+                    id: 0x11,
+                    offset: 0x20
+                },
+                VariantRow {
+                    id: 0x22,
+                    offset: 0x2C
+                }
+            ]
+        );
+        assert_eq!(variant_table(&payload[..0x10]), None);
+        // A count past the body is no table, not a panic.
+        let mut short = payload.clone();
+        short[8 + 0x14..8 + 0x18].copy_from_slice(&9u32.to_le_bytes());
+        assert_eq!(variant_table(&short), None);
     }
 
     #[test]
