@@ -409,6 +409,7 @@ fn pointer(
     mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
     windows: Query<&Window, With<PrimaryWindow>>,
     time: Res<Time>,
+    gui: Option<Res<exa_ui::GuiScale>>,
     mut screen: ResMut<PowerScreen>,
     mut router: Option<ResMut<PowerRouter>>,
 ) {
@@ -473,7 +474,10 @@ fn pointer(
         let hit = tree.wheel_child.domain_at(x, y);
         tree.wheel_child.state.hover(i32::from(hit), now);
     }
-    let hover = tree.hover(x, y, width, height, hidden);
+    // The bar's slots and the prompt's buttons are laid out at the
+    // interface unit, as the original's hit test reads it.
+    let unit = gui.as_deref().map_or(4, |gui| gui.scale) as f32;
+    let hover = tree.hover(x, y, width, height, hidden, unit);
     if hover != tree.focus {
         tree.set_focus(hover, now);
         *dirty = true;
@@ -544,7 +548,7 @@ fn pointer(
                 kind: crate::thaum::tree::press::POWER_DRAG,
                 origin: held.origin,
             };
-            let (_, drop_sound) = bar.drop(x, y, width, &power);
+            let (_, drop_sound) = bar.drop(x, y, width, unit, &power);
             if drop_sound.is_some() {
                 *sound = drop_sound;
             }

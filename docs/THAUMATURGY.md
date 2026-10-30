@@ -607,10 +607,16 @@ The form's creation words and the 280-square domain wheel child at its
 lower left are kept; the child is the wheel of `effects::wheel` (its icon
 hit test, its confirm that needs a known, different domain, and the 300 ms
 ease a pick or drop starts), its eased value is the focus share and its
-show the bar child's fade. A confirmed icon starts the domain switch. The
+show value is the window's opening ease (times the window while closing). A confirmed icon starts the domain switch. The
 tree's focus total is the child's own focus value (48 when there is no
 record), which its paint eases toward from where a pick or drop began the
-fade. No shipped press enters the node, link-turn or link drags: the press
+fade. The form's opening has two paths: the character creator opens the
+tree with no calling form, so its task word is `0x10`, its hints are drawn
+at full alpha (`0xff`) and no child panel is handed in; the game opens it
+with its own form, so the task word is `0x1010` and the draw writes that
+form's child panel's paint alpha as the panel's shown value less twice the
+window's (unclamped, as the original's arithmetic leaves it). No shipped
+press enters the node, link-turn or link drags: the press
 clears the drag state and only the middle button starts the pan, and
 nothing else writes those states, so the move handler's edit branches are
 unreachable in the retail game (kept as the move handler has them).
@@ -651,7 +657,11 @@ height and size rise as the smooth step `(3 − 2x)·x²` over the first 400,
 the pitch as the smooth step of the tree's ease over 900);
 closing runs 900 ms, the marked slots falling as `1 − f⁴` and the rest as
 `1 − 1.5f`, then clears the slots' flash and picked bits. The bar's slots
-step their own flashes (200 ms to lit, then a fade over their duration). The running-power budget is the highest Concentration
+step their own flashes (200 ms to lit, then a fade over their duration).
+Their hit test and the creation prompt's buttons are laid out at the live
+interface unit (a 17-unit pitch, an 8-unit top, a 12- or 7-unit radius, and
+the prompt's 5/37-unit button bounds), so the pointer tracks the drawing at
+every interface level. The running-power budget is the highest Concentration
 technique of 2 to 4, one less without the focus item; powers past it are
 told to end. The grant routine (`grant_power`) adds a power to a record
 that holds Insight's seventh technique when its node's first link names a

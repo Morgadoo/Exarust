@@ -76,7 +76,7 @@
 //! - **The form's windows** ([`TreeScreen::present_window`]): showing the
 //!   tree raises a 1000 ms fade: with `r = 1 − (1 − left·0.001)` the share
 //!   still to run, the alpha is `min(2·(1 − r²), 1)` (0 at the opening, 1
-//!   from halfway) and `1 − r²` fades the bar child; hiding cuts both over 256 ms from the closing stamp.
+//!   from halfway) and `1 − r²` is the domain wheel child's show value (the bar keeps its own fades); hiding cuts both over 256 ms from the closing stamp.
 //!   The backdrop takes the first alpha and the content the second; a
 //!   domain switch cuts the content out over 256 ms, swaps the domain at
 //!   the stamp and fades the new tree in over 1000 ms ([`TreeScreen::choose_domain`]
@@ -616,8 +616,11 @@ pub struct PowerDrag {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PressResult {
     pub result: u32,
-    /// A button's callback ran.
+    /// The creation prompt's commit button (BEGIN) ran: the creator turns
+    /// the tree's learnt nodes into the character's powers and moves on.
     pub begin: bool,
+    /// The creation prompt's cancel button (BACK) ran: the creator steps
+    /// back to the previous page.
     pub back: bool,
     /// A power drag started.
     pub drag: Option<PowerDrag>,
@@ -810,8 +813,9 @@ pub struct TreeScreen {
     pub window_alpha: f32,
     /// The tree content's fade this frame.
     pub content_alpha: f32,
-    /// The bar child's fade this frame.
-    pub bar_alpha: f32,
+    /// The domain wheel child's show value this frame: the opening ease, or
+    /// the window times it while closing. The bar draws with its own fade.
+    pub wheel_shown: f32,
     /// The bar's animation flags: bit 1 closing, bit 2 opening.
     pub bar_flags: u8,
     /// The stamp the bar's opening began.
@@ -831,10 +835,18 @@ pub struct TreeScreen {
     pub form_word: u32,
     /// The form's text alpha byte (`0xa0`).
     pub text_alpha: u8,
-    /// The form's hint alpha byte (`0x80`).
+    /// The form's hint alpha byte (`0x80`, or `0xff` for the creation
+    /// screen, whose hints are drawn at full strength).
     pub hint_alpha: u8,
     /// The form's caption value, the engine's lowest float.
     pub caption: f32,
+    /// The form's task-style word: `0x10` for the creation screen and
+    /// `0x1010` when the game opens the tree over its own form.
+    pub task_word: u32,
+    /// The shown value of the child form the game hands in, when it does:
+    /// the draw writes that child's paint alpha as this value less twice the
+    /// window's. The creation screen hands in no such child.
+    pub overlay_panel: Option<f32>,
 }
 
 /// The original's zoom levels' thresholds and gains.
@@ -969,7 +981,7 @@ impl TreeScreen {
             pending_domain: domain,
             window_alpha: 1.0,
             content_alpha: 1.0,
-            bar_alpha: 1.0,
+            wheel_shown: 1.0,
             bar_flags: 0,
             bar_open_at: 0,
             bar_close_at: 0,
@@ -979,8 +991,18 @@ impl TreeScreen {
             form_flags: 0x800,
             form_word: 0x000f_0000,
             text_alpha: 0xa0,
-            hint_alpha: 0x80,
+            hint_alpha: if mode == TreeMode::Create { 0xff } else { 0x80 },
             caption: f32::from_bits(0xff00_0000),
+            task_word: if mode == TreeMode::Create {
+                0x10
+            } else {
+                0x1010
+            },
+            // The creation screen is opened with no calling form, so it has
+            // no child panel; every other opening hands one in. Its shown
+            // value is that calling form's own (guess: fully shown, 1.0, as
+            // Exarust has no such form object yet).
+            overlay_panel: (mode != TreeMode::Create).then_some(1.0),
         }
     }
 
@@ -1888,25 +1910,35 @@ impl TreeScreen {
     /// The hover id at `x`,`y`: a bar slot (`0x40_0000 | slot`), the
     /// creation prompt's BACK and BEGIN buttons, a node, or a link of a
     /// node (`0x200_0000` for an incoming link). A hidden screen hovers
-    /// nothing.
-    pub fn hover(&mut self, x: f32, y: f32, width: f32, height: f32, hidden: bool) -> i32 {
+    /// nothing. `scale` is the interface unit the bar's slots and the
+    /// prompt's buttons are laid out at.
+    pub fn hover(
+        &mut self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        hidden: bool,
+        scale: f32,
+    ) -> i32 {
         if hidden {
             return 0;
         }
         // The pointer and the form's size are whole pixels.
         let (x, y) = (x as i32, y as i32);
         let (width, height) = (width as i32, height as i32);
+        let unit = scale as i32;
         if self.mode == TreeMode::Create {
-            if height - 9 * 4 < y && y < height - 2 * 4 {
-                if x < 37 * 4 {
-                    if 5 * 4 < x {
+            if height - 9 * unit < y && y < height - 2 * unit {
+                if x < 37 * unit {
+                    if 5 * unit < x {
                         return focus::BACK;
                     }
-                } else if width - 37 * 4 < x && x < width - 5 * 4 {
+                } else if width - 37 * unit < x && x < width - 5 * unit {
                     return focus::BEGIN;
                 }
             }
-        } else if let Some(slot) = bar_slot_at(x as f32, y as f32, width as f32, false, 4.0) {
+        } else if let Some(slot) = bar_slot_at(x as f32, y as f32, width as f32, false, scale) {
             return focus::SLOT | (slot as i32 + 1);
         }
         let (x, y) = (x as f32, y as f32);
@@ -2350,7 +2382,7 @@ impl TreeScreen {
             domain_cells: self.domain_cells,
             window: self.window_alpha,
             content: self.content_alpha,
-            bar_alpha: self.bar_alpha,
+            wheel_shown: self.wheel_shown,
             zoom: self.shown_zoom,
             icon_size: self.zoom_fixed,
             mode: match self.mode {
@@ -2491,7 +2523,7 @@ impl TreeScreen {
                 self.fade_flags &= !FADING_OUT;
                 self.window_alpha = 0.0;
                 self.content_alpha = 0.0;
-                self.bar_alpha = 0.0;
+                self.wheel_shown = 0.0;
                 self.ease_share = 1.0;
                 self.faded_out = true;
                 return;
@@ -2499,9 +2531,9 @@ impl TreeScreen {
             let left = (u64::from(self.close_at) as i64 - u64::from(now) as i64) as f32;
             window = left * window / 256.0;
         }
-        // The bar child's own fade is read before the domain switch reuses
-        // the second value.
-        let bar_second = second;
+        // The wheel child's own show value is read before the domain switch
+        // reuses the second value.
+        let wheel_second = second;
         let mut content = window;
         if self.domain_flags & DOMAIN_IN != 0 {
             if now < self.domain_at {
@@ -2526,16 +2558,27 @@ impl TreeScreen {
                 content = 0.0;
             }
         }
+        // The domain wheel child's show value is the opening ease read
+        // before the domain switch reused it; a closing window multiplies
+        // it. The bar child draws with its own animation only.
         self.ease_share = second;
         self.window_alpha = window;
         self.content_alpha = content;
-        self.bar_alpha = if self.fade_flags & FADING_OUT != 0 {
-            window * bar_second
+        self.wheel_shown = if self.fade_flags & FADING_OUT != 0 {
+            window * wheel_second
         } else {
-            bar_second
+            wheel_second
         };
-        // The domain wheel child is shown with the same value.
-        self.wheel_child.state.shown = self.bar_alpha;
+        self.wheel_child.state.shown = self.wheel_shown;
+    }
+
+    /// The paint alpha the draw writes into the child form the game handed
+    /// in: its own shown value less twice the window's fade, in single
+    /// precision. A negative result is the original's too (the paint clamps
+    /// it); `None` when no child was handed in, as on the creation screen.
+    pub fn overlay_panel_alpha(&self) -> Option<f32> {
+        self.overlay_panel
+            .map(|shown| shown - self.window_alpha * 2.0)
     }
 
     /// Starts the domain switch's 256 ms fade-out. The wheel that turns the
@@ -3101,21 +3144,24 @@ impl PowerBar {
         true
     }
 
-    /// Drops a power on the bar at `x`,`y`. A hit fills the slot (keeping
-    /// its bits 20 to 22) with the power word and its flags, and the slot's
-    /// old entry goes to the slot the power came from. A miss empties the
-    /// slot the power came from. Returns whether a slot was hit.
+    /// Drops a dragged power at `x`,`y` on the bar laid out at `scale` (the
+    /// interface unit). A drop inside the enlarged row takes the slot: the
+    /// slot's old entry moves to the slot the power came from, then the slot
+    /// takes the power, keeping its bits 20 to 22, and the slot sound plays.
+    /// A drop outside puts the power's old slot back to empty. Returns
+    /// whether a slot took the power and the sound it plays.
     pub fn drop(
         &mut self,
         x: f32,
         y: f32,
         width: f32,
+        scale: f32,
         drag: &PowerDrag,
     ) -> (bool, Option<TreeSound>) {
         if drag.kind != press::POWER_DRAG {
             return (false, None);
         }
-        let hit = bar_slot_at(x, y, width, true, 4.0);
+        let hit = bar_slot_at(x, y, width, true, scale);
         let Some(slot) = hit else {
             if drag.origin > 0
                 && let Some(source) = self.slots.get_mut(drag.origin - 1)
@@ -3491,6 +3537,13 @@ mod tests {
         assert_eq!(screen.text_alpha, 0xa0);
         assert_eq!(screen.hint_alpha, 0x80);
         assert_eq!(screen.caption.to_bits(), 0xff00_0000);
+        // The game's opening hands in its own form: the task word says so
+        // and the child panel's shown value is one.
+        assert_eq!(screen.task_word, 0x1010);
+        assert_eq!(screen.overlay_panel, Some(1.0));
+        // The draw writes the child's paint alpha as its shown value less
+        // twice the window's, unclamped.
+        assert_eq!(screen.overlay_panel_alpha(), Some(-1.0));
         // The constructor's own defaults before a window gives its size:
         // the zoom at one half, the charge at −4.
         let fresh = TreeScreen::empty(DOMAIN_MIND, TreeMode::Play);
@@ -4251,7 +4304,7 @@ mod tests {
             kind: press::POWER_DRAG,
             origin: 1,
         };
-        let (hit, sound) = bar.drop(194.0 + 68.0 * 9.0, 32.0, 1000.0, &drag);
+        let (hit, sound) = bar.drop(194.0 + 68.0 * 9.0, 32.0, 1000.0, 4.0, &drag);
         assert!(hit);
         assert_eq!(sound, Some(SLOT_SOUND));
         // The slot keeps its bits 20 to 22 and takes the power; its old
@@ -4259,7 +4312,7 @@ mod tests {
         assert_eq!(bar.slots[9].word, 0x102 | 0x20_0000);
         assert_eq!(bar.slots[9].state, 0x4000);
         assert_eq!(bar.slots[0].word, 0x103 | 0x20_0000);
-        let (hit, _) = bar.drop(0.0, 0.0, 1000.0, &drag);
+        let (hit, _) = bar.drop(0.0, 0.0, 1000.0, 4.0, &drag);
         assert!(!hit);
         assert_eq!(bar.slots[0].word, 0);
     }
@@ -4832,9 +4885,22 @@ mod tests {
         screen.shown_zoom = 1.0;
         screen.refresh_placement();
         screen.zoom_fixed = 4.0;
-        assert_eq!(screen.hover(194.0, 32.0, 1000.0, 700.0, false), 0x40_0001);
-        assert_eq!(screen.hover(0.0, 0.0, 1000.0, 700.0, false), 1);
-        assert_eq!(screen.hover(0.0, 0.0, 1000.0, 700.0, true), 0);
+        assert_eq!(
+            screen.hover(194.0, 32.0, 1000.0, 700.0, false, 4.0),
+            0x40_0001
+        );
+        // The bar and the prompt follow the interface unit: at unit 8 the
+        // pitch is 8·17 = 136, the row starts at (1000 − 8·17·9)/2 = −112
+        // and the top is 64, so slot 7's centre is at −112 + 6·136 = 704.
+        // The same point misses every slot at unit 4, whose row starts at
+        // 194 with a 68 pitch.
+        assert_eq!(
+            screen.hover(704.0, 64.0, 1000.0, 700.0, false, 8.0),
+            0x40_0007
+        );
+        assert_eq!(screen.hover(704.0, 64.0, 1000.0, 700.0, false, 4.0), 0);
+        assert_eq!(screen.hover(0.0, 0.0, 1000.0, 700.0, false, 4.0), 1);
+        assert_eq!(screen.hover(0.0, 0.0, 1000.0, 700.0, true, 4.0), 0);
         // A node's link: at 10 px straight above the second node with an
         // incoming turn of zero.
         let mut link = [0u8; 16];
@@ -4848,15 +4914,18 @@ mod tests {
         }];
         // 0.01 of a circle above the first node's centre is straight up:
         // the first node's link leaves at turn zero.
-        let id = screen.hover(0.0, 10.0, 1000.0, 700.0, false);
+        let id = screen.hover(0.0, 10.0, 1000.0, 700.0, false, 4.0);
         assert_eq!(id, 1 << 16 | 1);
         // The creation prompt's buttons.
         let mut create = TreeScreen::empty(DOMAIN_MIND, TreeMode::Create);
         assert_eq!(
-            create.hover(900.0, 675.0, 1000.0, 700.0, false),
+            create.hover(900.0, 675.0, 1000.0, 700.0, false, 4.0),
             focus::BEGIN
         );
-        assert_eq!(create.hover(60.0, 675.0, 1000.0, 700.0, false), focus::BACK);
+        assert_eq!(
+            create.hover(60.0, 675.0, 1000.0, 700.0, false, 4.0),
+            focus::BACK
+        );
     }
 
     #[test]
@@ -4878,12 +4947,12 @@ mod tests {
         screen.zoom_fixed = 100.0;
         // Inside 0.45 of the circle's size: the node; outside it, and with no
         // link there, nothing.
-        assert_eq!(screen.hover(500.0, 544.0, 1000.0, 700.0, false), 1);
-        assert_eq!(screen.hover(500.0, 546.0, 1000.0, 700.0, false), 0);
+        assert_eq!(screen.hover(500.0, 544.0, 1000.0, 700.0, false, 4.0), 1);
+        assert_eq!(screen.hover(500.0, 546.0, 1000.0, 700.0, false, 4.0), 0);
         // A framed node's circle is half the size.
         screen.nodes[0].power |= 0x100_0000;
-        assert_eq!(screen.hover(500.0, 522.0, 1000.0, 700.0, false), 1);
-        assert_eq!(screen.hover(500.0, 524.0, 1000.0, 700.0, false), 0);
+        assert_eq!(screen.hover(500.0, 522.0, 1000.0, 700.0, false, 4.0), 1);
+        assert_eq!(screen.hover(500.0, 524.0, 1000.0, 700.0, false, 4.0), 0);
         // A link that leaves the second node and ends at the first is named
         // by the second node when the first is hovered where it arrives.
         screen.nodes[0].power = 0x101;
@@ -4894,12 +4963,12 @@ mod tests {
             end: 1,
         }];
         assert_eq!(
-            screen.hover(500.0, 540.0, 1000.0, 700.0, false),
+            screen.hover(500.0, 540.0, 1000.0, 700.0, false, 4.0),
             (1 << 16) | 2 | focus::INCOMING
         );
         // The creation prompt does not read the quick bar.
         let mut create = TreeScreen::empty(DOMAIN_MIND, TreeMode::Create);
-        assert_eq!(create.hover(194.0, 32.0, 1000.0, 700.0, false), 0);
+        assert_eq!(create.hover(194.0, 32.0, 1000.0, 700.0, false, 4.0), 0);
     }
 
     #[test]
@@ -5176,6 +5245,29 @@ mod tests {
     }
 
     #[test]
+    fn the_creation_screen_opens_without_a_calling_form() {
+        // The character creator opens the tree with no caller form: the
+        // form's task word is the creation screen's, its hints are drawn at
+        // full alpha, and no child panel is handed in for the draw to fade.
+        let screen = TreeScreen::empty(DOMAIN_MIND, TreeMode::Create);
+        assert_eq!(screen.task_word, 0x10);
+        assert_eq!(screen.hint_alpha, 0xff);
+        assert_eq!(screen.overlay_panel, None);
+        assert_eq!(screen.overlay_panel_alpha(), None);
+        let loaded = TreeScreen::load(DOMAIN_MIND, TreeMode::Create, None, None, 1000.0, 700.0);
+        assert_eq!(loaded.task_word, 0x10);
+        assert_eq!(loaded.hint_alpha, 0xff);
+        assert!(loaded.overlay_panel.is_none());
+        // A played tree halves its child panel at half the window's fade and
+        // zeroes it at one, in single precision.
+        let mut played = TreeScreen::load(DOMAIN_MIND, TreeMode::Play, None, None, 1000.0, 700.0);
+        played.window_alpha = 0.5;
+        assert_eq!(played.overlay_panel_alpha(), Some(0.0));
+        played.window_alpha = 0.25;
+        assert_eq!(played.overlay_panel_alpha(), Some(0.5));
+    }
+
+    #[test]
     fn the_window_fades_in_and_out_by_its_stamps() {
         let mut tree = TreeScreen::empty(DOMAIN_MIND, TreeMode::Play);
         tree.show(1000);
@@ -5185,19 +5277,19 @@ mod tests {
         tree.present_window(1500);
         assert_eq!(tree.window_alpha, 1.0);
         assert_eq!(tree.content_alpha, 1.0);
-        assert_eq!(tree.bar_alpha, 0.75);
+        assert_eq!(tree.wheel_shown, 0.75);
         // A millisecond after the opening the fade has barely begun: 999 ms
         // are left, the shown share is 1 − 0.001 = 0.999, its square's
         // complement 0.001998961, and the window that doubled, 0.003997922.
         tree.present_window(1001);
         assert!((tree.window_alpha - 0.003_997_922).abs() < 1e-9);
         assert!((tree.content_alpha - 0.003_997_922).abs() < 1e-9);
-        assert!((tree.bar_alpha - 0.001_998_961).abs() < 1e-9);
+        assert!((tree.wheel_shown - 0.001_998_961).abs() < 1e-9);
         // A millisecond before the stamp it is nearly whole: the bar's fade
         // is 0.999999 and the window is held at one.
         tree.present_window(1999);
         assert_eq!(tree.window_alpha, 1.0);
-        assert!((tree.bar_alpha - 0.999_999).abs() < 1e-6);
+        assert!((tree.wheel_shown - 0.999_999).abs() < 1e-6);
         // At the stamp the flag clears and the window is whole.
         tree.present_window(2000);
         assert_eq!(tree.fade_flags, 0);
@@ -5208,7 +5300,7 @@ mod tests {
         tree.present_window(3128);
         assert_eq!(tree.window_alpha, 0.5);
         assert_eq!(tree.content_alpha, 0.5);
-        assert_eq!(tree.bar_alpha, 0.5);
+        assert_eq!(tree.wheel_shown, 0.5);
         tree.present_window(3256);
         assert_eq!(tree.fade_flags, 0);
         assert!(tree.faded_out);
