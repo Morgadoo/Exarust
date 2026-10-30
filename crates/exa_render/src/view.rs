@@ -140,7 +140,9 @@ impl SupersampleLevel {
                 SubViewPass {
                     index,
                     first_subview: first,
-                    subviews: (count - first).min(SUBVIEWS_PER_PASS),
+                    // Every pass draws the level's first-pass count of
+                    // sub-views, whatever is left over.
+                    subviews: count.min(SUBVIEWS_PER_PASS),
                     jitter: JITTERS[base + index],
                     animation_offset: index as f32 * step * 4.0 + origin,
                     animation_step: step,
@@ -151,6 +153,8 @@ impl SupersampleLevel {
                     depth_dither: 0.5 - (first as f32 + 0.5) / count as f32,
                     state: self.pass_state(index),
                     resolve_blend: if index == 0 { 0x100 } else { 0x203 },
+                    // One over (first + 1), from an integer in single.
+                    resolve_weight: 1.0 / (first + 1) as f32,
                 }
             })
             .collect()
@@ -158,8 +162,8 @@ impl SupersampleLevel {
 }
 
 /// The render state a super-sampled pass draws with (the original's per-pass
-/// word). Its low bit decides a renderer flag; the particle pass takes its
-/// alpha word from the whole value.
+/// word). Its low bit decides a renderer flag; the particle pass picks its
+/// visibility mask by whether it is zero.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PassState {
     /// A single view, no super-sampling.
@@ -189,14 +193,13 @@ impl PassState {
         self.word() & 1 != 0
     }
 
-    /// The alpha state word the particles' colour pass is drawn with: the
-    /// plain blended state for a single view, the super-sampled one
-    /// otherwise.
-    pub fn particle_alpha(self) -> u32 {
+    /// The visibility mask the particle pass swaps in while it draws: one
+    /// for a single view, another for any super-sampled pass.
+    pub fn particle_mask(self) -> u32 {
         if self == Self::Single {
-            0x6000_0000
+            crate::passes::PARTICLE_MASK_SINGLE
         } else {
-            0x2000_0000
+            crate::passes::PARTICLE_MASK_SUPERSAMPLED
         }
     }
 }
@@ -220,8 +223,9 @@ pub struct SubViewPass {
     pub animation_step: f32,
     /// The first jitter entry the resolve's tap window reads.
     pub tap_start: usize,
-    /// The share of the frame the pass covers: 1 on the first pass, then
-    /// 5/8 on the second of two, as the original weights the resolve.
+    /// The resolve's tap fraction, `(first + 1) / count` divided in double
+    /// precision and stored in single: 1/4 for the single pass of the 4x
+    /// level, 1/8 then 5/8 for the two passes of the 8x one.
     pub tap_fraction: f32,
     /// The depth dither added to the pass's projection: half less the
     /// pass's share of the frame.
@@ -231,6 +235,10 @@ pub struct SubViewPass {
     /// The blend state word the pass's resolve draws with: replaced on the
     /// first pass, added on later ones.
     pub resolve_blend: u16,
+    /// The weight the pass's resolve draw is given: `1 / (first + 1)` in
+    /// single precision (1, then 1/5 on the second pass of eight). Its
+    /// meaning inside the resolve was not traced.
+    pub resolve_weight: f32,
 }
 
 impl SubViewPass {
@@ -945,6 +953,8 @@ mod tests {
         assert_eq!(schedule[1].state, PassState::Later);
         assert_eq!(schedule[1].state.word(), 2);
         assert_eq!(schedule[1].resolve_blend, 0x203);
+        assert_eq!(schedule[0].resolve_weight, 1.0);
+        assert_eq!(schedule[1].resolve_weight, 0.2);
         // The second pass starts where the first left off: step 200 ms, so
         // pass 1's first sub-view is 0.8 s in and its last 1.4 s.
         assert_eq!(schedule[1].animation_step, 200.0);
@@ -959,7 +969,7 @@ mod tests {
         assert_eq!(schedule[0].tap_fraction, 1.0);
         assert_eq!(schedule[0].depth_dither, 0.0);
         assert_eq!(schedule[0].state, PassState::Single);
-        assert_eq!(schedule[0].state.particle_alpha(), 0x6000_0000);
+        assert_eq!(schedule[0].state.particle_mask(), 0x6000_0000);
         assert_eq!(schedule[0].animation_offset, 0.0);
 
         // Two and three sub-views keep the narrow first-pass state.
@@ -968,7 +978,7 @@ mod tests {
             let schedule = level.schedule(300.0);
             assert_eq!(schedule.len(), 1);
             assert_eq!(schedule[0].state, PassState::NarrowFirst);
-            assert_eq!(schedule[0].state.particle_alpha(), 0x2000_0000);
+            assert_eq!(schedule[0].state.particle_mask(), 0x2000_0000);
             assert!(schedule[0].state.raises_flag());
         }
         // Level 2's thirds: the tap window divides in double precision, the
