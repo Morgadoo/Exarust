@@ -393,6 +393,13 @@ mod tests {
         assert_eq!(states[1].instances, vec![2]);
         assert!(states[0].instances.is_empty());
         assert_eq!(states[0].master, Some(1));
+        // When the new master is not in the old list the list is copied
+        // unchanged, and the old master is not appended.
+        let mut states = vec![GeometryState::new(); 4];
+        states[0].instances = vec![2, 3];
+        hand_off_master(&mut states, 0, 1, false);
+        assert_eq!(states[1].instances, vec![2, 3]);
+        assert_eq!(states[0].master, Some(1));
     }
 
     #[test]
