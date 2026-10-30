@@ -621,7 +621,13 @@ fn duellist(
                 ai.mind.aim
             );
             combatant.in_combat = true;
-            combatant.clear_combat_step(gt.translation() * 100.0, t.rotation * Vec3::Z, 0.0);
+            // The queued step is cleared with the body's own speed, so a
+            // far move point is pulled in to 8·speed + 20 cm ahead.
+            combatant.clear_combat_step(
+                gt.translation() * 100.0,
+                t.rotation * Vec3::Z,
+                locomotor.map_or(0.0, |l| l.speed),
+            );
             // Publish the fighting values: the experience system's estimate
             // from the record's skills and combat skill, the held weapon's
             // stat bytes and reach, and the body's scale, and the body's
