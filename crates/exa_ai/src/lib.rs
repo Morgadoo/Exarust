@@ -403,6 +403,7 @@ fn published_blow(
         action,
         phase,
         heading,
+        look: facing,
         facing,
         armed,
         held: armed,

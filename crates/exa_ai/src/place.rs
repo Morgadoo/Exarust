@@ -352,7 +352,13 @@ pub struct Swing {
     /// Body action. 5 to 7 are one side, 8 to 10 the other, 11 and 12 thrusts.
     pub action: i32,
     pub phase: f32,
+    /// Body heading: the yaw the arc edges are built from.
     pub heading: f32,
+    /// The body's look direction yaw, which is published as the arc's look.
+    /// Exarust does not run the head tracker on characters yet, so callers
+    /// pass the facing.
+    pub look: f32,
+    /// The body's facing yaw (kept for callers that need it).
     pub facing: f32,
     /// The class word has a side-weapon bit.
     pub armed: bool,
@@ -432,7 +438,7 @@ fn arc_mid(start: f32, end: f32) -> f32 {
 /// outside a swing keeps both edges on the heading, and recovers while
 /// the body's idle stamp is strictly above the clock.
 pub fn publish_arc(swing: Swing) -> Arc {
-    let mut look = swing.facing;
+    let mut look = swing.look;
     if swing.held {
         look = wrap(look + DEG * 20.0);
     }
@@ -910,6 +916,7 @@ mod tests {
             action,
             phase,
             heading: 0.0,
+            look: 0.0,
             facing: 0.0,
             armed: true,
             held: false,
@@ -965,6 +972,34 @@ mod tests {
         });
         assert_eq!(recovering_arc.kind, 4);
         assert_eq!(recovering_arc.end.to_bits(), early.end.to_bits());
+    }
+
+    #[test]
+    fn the_published_look_is_the_head_look_turned_by_a_held_weapon() {
+        let base = Swing {
+            heading: 0.0,
+            look: 0.5,
+            facing: 0.0,
+            ..swing(11, 0.5)
+        };
+        // A thrust publishes the head look; a side swing publishes the arc
+        // midpoint instead.
+        let arc = publish_arc(base);
+        assert_eq!(arc.kind, 3);
+        assert_eq!(arc.look.to_bits(), 0.5f32.to_bits());
+        let held = publish_arc(Swing { held: true, ..base });
+        let turned = f32::from_bits((0.5f32 + crate::place::DEG * 20.0).to_bits());
+        assert_eq!(held.look.to_bits(), turned.to_bits());
+        // Outside a swing the look is the head look too, not the heading.
+        let idle = publish_arc(Swing {
+            action: 0,
+            idle_stamp: 2,
+            idle_clock: 1,
+            ..base
+        });
+        assert_eq!(idle.kind, 4);
+        assert_eq!(idle.look.to_bits(), 0.5f32.to_bits());
+        assert_eq!(idle.start.to_bits(), 0.0f32.to_bits());
     }
 
     #[test]
