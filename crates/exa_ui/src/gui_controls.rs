@@ -1196,11 +1196,11 @@ pub fn held_fade(now: u32, start: u32, alpha: u8) -> (u8, bool) {
     let fade = (elapsed * (1.0 / 300.0)) as f32;
     // The original leaves the fade only when the compare is ordered and
     // above 1, so a not-a-number fade would keep fading.
-    if !(fade > 1.0) {
+    if fade > 1.0 {
+        (0, false)
+    } else {
         let scaled = (f32::from(alpha) * fade).round_ties_even() as i64 as i32 as u8;
         (scaled, true)
-    } else {
-        (0, false)
     }
 }
 
