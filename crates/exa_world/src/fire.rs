@@ -378,6 +378,10 @@ pub struct EmitterSpec {
     pub template_size: f32,
     /// The emitter's size field: the fire size, or twice it for a bed.
     pub size: f32,
+    /// The emitter's detail value: the renderer's level of detail divides
+    /// the distance into it. It is twice a bed's size and, for the
+    /// medium-small and large flames, twice the fire's.
+    pub detail: f32,
     /// The emitter's height below the fire node (cm).
     pub lift: f32,
     /// The spawn ring: source count and radius (cm).
@@ -455,6 +459,7 @@ fn small(size: f32) -> Preset {
             template,
             template_size: size,
             size,
+            detail: size,
             lift: 0.0,
             ring: None,
             texture: "_FirePrt02",
@@ -474,6 +479,7 @@ fn medium_small(size: f32) -> Preset {
             template,
             template_size: size,
             size,
+            detail: size * 2.0,
             lift: 0.0,
             ring: Some((count(size, 5), size * 40.0)),
             texture: "_FirePrt01",
@@ -483,6 +489,7 @@ fn medium_small(size: f32) -> Preset {
             template: base,
             template_size: size * 0.5,
             size: size * 2.0,
+            detail: size * 4.0,
             lift: -size * 15.0,
             ring: None,
             texture: "_FirePrt01",
@@ -506,6 +513,7 @@ fn medium(size: f32) -> Preset {
             template,
             template_size: size,
             size,
+            detail: size,
             lift: 0.0,
             ring: Some((count(size, 4), size * 40.0)),
             texture: "_FirePrt01",
@@ -515,6 +523,7 @@ fn medium(size: f32) -> Preset {
             template: base,
             template_size: size,
             size: size * 2.0,
+            detail: size * 4.0,
             lift: -size * 20.0,
             ring: None,
             texture: "_FirePrt01",
@@ -541,6 +550,7 @@ fn large(size: f32) -> Preset {
             template,
             template_size: size,
             size: size * 2.0,
+            detail: size * 4.0,
             lift: 0.0,
             ring: Some((count(size, 4), size * 40.0)),
             texture: "_FirePrt01",
@@ -550,6 +560,7 @@ fn large(size: f32) -> Preset {
             template: base,
             template_size: size,
             size: size * 2.0,
+            detail: size * 4.0,
             lift: -size * 40.0,
             ring: None,
             texture: "_FirePrt01",
@@ -622,6 +633,8 @@ pub struct Fire {
     pub(crate) softness: f32,
     /// The fire's smoothed density.
     pub(crate) density: f32,
+    /// The emissive scale an emissive parent mesh gets this frame.
+    pub(crate) emissive: f32,
     /// Ticks the fire has run.
     pub(crate) ticks: u32,
 }
@@ -631,6 +644,12 @@ impl Fire {
     /// have built up (two seconds).
     pub fn settled(&self) -> bool {
         self.ticks as f32 >= 2.0 * TICK_HZ
+    }
+
+    /// The emissive scale the mesh the fire burns on gets: the emitter's
+    /// density times its flicker, 0.8 at rest.
+    pub fn emissive(&self) -> f32 {
+        self.emissive
     }
 }
 
@@ -654,7 +673,8 @@ pub fn spawn_fire(commands: &mut Commands, node: Entity, size: f32) {
             }
             _ => vec![Source::at_node()],
         };
-        let emitter = Emitter::new(spec.template, spec.size, sources);
+        let mut emitter = Emitter::new(spec.template, spec.size, sources);
+        emitter.detail = spec.detail;
         let mut entity = if index == 0 {
             let light = p.light;
             let bundle = crate::light_bundle(&exa_formats::rfc::Light {
@@ -676,6 +696,7 @@ pub fn spawn_fire(commands: &mut Commands, node: Entity, size: f32) {
                     intensity: 0.0,
                     softness: SOFTNESS,
                     density: 0.0,
+                    emissive: 0.0,
                     ticks: 0,
                 },
                 crate::flame::Flame::new(emitter, light.lift, spec.texture, seed(node, index)),
@@ -753,6 +774,39 @@ mod tests {
         assert!((p.light.desc.intensity - 12.0).abs() < 1e-6);
         assert!(p.flame.template.flags & crate::particles::flags::ONE_SHOT != 0);
         assert!(p.base.as_ref().unwrap().template.flags & crate::particles::flags::ONE_SHOT != 0);
+    }
+
+    #[test]
+    fn the_detail_values_are_twice_a_bed_and_some_flames() {
+        // The small flame's detail is its size.
+        assert_eq!(preset(0.2).flame.detail, 0.2);
+        // The 0.35-0.5 pair doubles the flame's, and the bed's detail is
+        // twice its own (doubled) size.
+        let p = preset(0.4);
+        assert_eq!(p.flame.detail, 0.8);
+        assert_eq!(p.base.as_ref().unwrap().detail, 1.6);
+        // The 0.5-1 flame keeps its size; its bed is four times that.
+        let p = preset(0.8);
+        assert_eq!(p.flame.detail, 0.8);
+        assert_eq!(p.base.as_ref().unwrap().detail, 3.2);
+        // The large pair is built at half the size, and its detail is
+        // twice the whole fire's: a size-2 fire gets 4.
+        let p = preset(2.0);
+        assert_eq!(p.flame.detail, 4.0);
+        assert_eq!(p.base.as_ref().unwrap().detail, 4.0);
+    }
+
+    #[test]
+    fn a_built_emitter_takes_its_detail_from_the_spec() {
+        let p = preset(0.8);
+        let emitter = crate::particles::Emitter::new(
+            p.base.as_ref().unwrap().template,
+            p.base.as_ref().unwrap().size,
+            vec![crate::particles::Source::at_node()],
+        );
+        // The constructor starts at the size; the builder sets the detail.
+        assert_eq!(emitter.detail, emitter.size);
+        assert_eq!(p.base.as_ref().unwrap().detail, 3.2);
     }
 
     #[test]

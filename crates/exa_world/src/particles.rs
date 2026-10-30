@@ -711,6 +711,10 @@ pub struct Emitter {
     /// The template's size: the fire presets store their fire size here,
     /// and the ageing's distance cap uses it.
     pub size: f32,
+    /// The emitter's detail value, which the renderer's level of detail
+    /// scales by: the fire presets set it to twice a bed's size and, for
+    /// some flames, twice the fire's.
+    pub detail: f32,
     /// A body carrying the emitter, if any.
     pub body: Option<BodyMotion>,
     slots: Vec<Slot>,
@@ -778,6 +782,7 @@ impl Emitter {
             node: NodeFrame::default(),
             last_node: Vec3::ZERO,
             size,
+            detail: size,
             body: None,
             slots,
             first: 0,
@@ -1223,11 +1228,11 @@ impl Emitter {
     }
 
     /// The material's level-of-detail scalar for a camera at `eye`: the
-    /// emitter's size over the distance to its node, never sharper than
-    /// one (`size · 1000 / distance`).
+    /// emitter's detail value over the distance to its node, never sharper
+    /// than one (`detail · 1000 / distance`).
     pub fn lod_scale(&self, eye: Vec3) -> f32 {
         let distance = (self.node.position - eye).length().max(1.0);
-        self.size * 1000.0 / distance
+        self.detail * 1000.0 / distance
     }
 
     /// The four corners of the fixed screen quad a material that draws one
@@ -1930,13 +1935,14 @@ mod tests {
     fn the_level_of_detail_is_the_size_over_the_distance() {
         let mut e = torch();
         e.size = 0.2;
+        e.detail = 0.4;
         e.node.position = Vec3::new(100.0, 0.0, 0.0);
-        // 0.2 · 1000 / 100 = 2.
-        assert!((e.lod_scale(Vec3::ZERO) - 2.0).abs() < 1e-6);
-        // A camera 1000 cm away gets a fifth.
-        assert!((e.lod_scale(Vec3::new(1100.0, 0.0, 0.0)) - 0.2).abs() < 1e-6);
+        // The detail, not the size: 0.4 · 1000 / 100 = 4.
+        assert!((e.lod_scale(Vec3::ZERO) - 4.0).abs() < 1e-6);
+        // A camera 1000 cm away gets four tenths.
+        assert!((e.lod_scale(Vec3::new(1100.0, 0.0, 0.0)) - 0.4).abs() < 1e-6);
         // Closer than a centimetre is held at one.
-        assert!((e.lod_scale(Vec3::new(100.5, 0.0, 0.0)) - 200.0).abs() < 1e-3);
+        assert!((e.lod_scale(Vec3::new(100.5, 0.0, 0.0)) - 400.0).abs() < 1e-3);
     }
 
     #[test]

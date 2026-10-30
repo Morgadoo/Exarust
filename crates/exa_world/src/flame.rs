@@ -220,6 +220,7 @@ fn simulate(
             fire.intensity = frame.intensity;
             fire.softness = frame.softness;
             fire.density = flame.emitter.light.density;
+            fire.emissive = frame.emissive;
             fire.ticks = fire.ticks.saturating_add(steps);
         }
     }
