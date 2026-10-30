@@ -315,6 +315,77 @@ pub fn release_collapsed(
     }
 }
 
+/// What a held item's world welds have already taken from its holder's
+/// condition: the collapse's 10 cm soft-weld slack and death's stiffening
+/// land once each, and a body that rises again keeps them (the original's
+/// revive does not rebuild the welds).
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HeldWeld {
+    pub collapsed: bool,
+    pub stiff: bool,
+}
+
+/// Applies the original's collapse and death changes to a held item's world
+/// welds: a collapsing holder's item takes the 10 cm soft-weld slack (the
+/// collapse routine's, which runs after it has let go of the weapons, so
+/// what is left is the shield or torch that stays), and a dead holder's
+/// item takes the stiff soft weld. The original's collapse gate also reads
+/// the motion's fall class, which Exarust's collapse always is (it starts
+/// Fall Backward) [guess on the motion class's meaning].
+#[allow(clippy::type_complexity)]
+pub fn adjust_welds(
+    mut commands: Commands,
+    mut held: Query<(
+        Entity,
+        &mut HeldGrip,
+        Option<&mut HeldWeld>,
+        Has<exa_physics::grip::GripRelease>,
+    )>,
+    owners: Query<(&Ragdoll, &Condition)>,
+) {
+    if held.is_empty() {
+        return;
+    }
+    let keys: Vec<(Entity, Condition)> = owners
+        .iter()
+        .filter_map(|(b, c)| b.parts.first().map(|p| (p.entity, *c)))
+        .collect();
+    for (item, mut grip, weld, releasing) in &mut held {
+        if grip.released || releasing || grip.links.is_none() {
+            continue;
+        }
+        let Some(condition) = keys
+            .iter()
+            .find(|(key, _)| *key == grip.holder_key)
+            .map(|(_, c)| *c)
+        else {
+            continue;
+        };
+        let mut state = weld.as_ref().map_or(HeldWeld::default(), |w| **w);
+        let before = state;
+        if let Some(links) = grip.links.as_mut() {
+            if condition.is_collapsing() && !state.collapsed {
+                links.slacken_soft_weld();
+                state.collapsed = true;
+            }
+            if condition == Condition::DEAD && !state.stiff {
+                links.stiffen_soft_weld();
+                state.stiff = true;
+            }
+        }
+        if state != before {
+            match weld {
+                Some(mut current) => {
+                    *current = state;
+                }
+                None => {
+                    commands.entity(item).insert(state);
+                }
+            }
+        }
+    }
+}
+
 /// Derives each held item's grip mode from its holder's clip, then steps an
 /// active flip and rebuilds the weapon record when it lands. The item
 /// itself turns with its body, which the flip link pulls round.
@@ -404,6 +475,12 @@ impl Plugin for GripRuntimePlugin {
             .add_systems(
                 FixedUpdate,
                 release_collapsed.before(exa_physics::grip_solve::GripSolveSet::Build),
+            )
+            .add_systems(
+                FixedUpdate,
+                adjust_welds
+                    .after(release_collapsed)
+                    .before(exa_physics::grip_solve::GripSolveSet::Build),
             )
             .add_systems(
                 FixedUpdate,
@@ -537,6 +614,87 @@ mod tests {
                 .get::<exa_physics::grip::GripRelease>(weapon)
                 .is_none()
         );
+    }
+
+    /// A collapse gives its held item's soft weld a 10 cm slack once, and
+    /// death then makes it stiff; a weapon the collapse lets go of takes
+    /// neither.
+    #[test]
+    fn a_collapse_slackens_and_death_stiffens_the_held_weld() {
+        let mut app = App::new();
+        app.add_systems(Update, adjust_welds);
+        let owner = app.world_mut().spawn(Condition::COLLAPSING).id();
+        let holder_body = holder(owner, Vec3::ZERO);
+        let key = holder_body.parts[0].entity;
+        app.world_mut().entity_mut(owner).insert(holder_body);
+        let spawn = |app: &mut App, kind, links: exa_physics::grip::GripLinks| {
+            let e = app.world_mut().spawn_empty().id();
+            let body = item(Entity::from_raw_u32(30).unwrap(), Vec3::ZERO);
+            let grip = HeldGrip {
+                spec: spec(),
+                scale: 1.0,
+                size: 1.0,
+                second_hand_factor: 1.0,
+                flip: false,
+                class: crate::offhand::SHIELD_CLASS,
+                soft_weld: true,
+                kind,
+                holder_key: key,
+                hands: [Some(Entity::from_raw_u32(2).unwrap()); 2],
+                arms: [None, None],
+                links: Some(links),
+                released: false,
+            };
+            app.world_mut().entity_mut(e).insert((body, grip));
+            e
+        };
+        let item_links = |app: &mut App| {
+            let body = item(Entity::from_raw_u32(31).unwrap(), Vec3::ZERO);
+            let hand = holder(Entity::from_raw_u32(32).unwrap(), Vec3::ZERO);
+            let _ = app;
+            exa_physics::grip::torch_links(
+                &body,
+                &hand,
+                exa_physics::grip::GripBindings {
+                    item_part: 0,
+                    hand_parts: [0, 0],
+                    arm_parts: [0, 0],
+                },
+                0,
+                Affine3A::IDENTITY,
+            )
+            .unwrap()
+        };
+        let links = item_links(&mut app);
+        let shield = spawn(&mut app, exa_physics::grip::HeldKind::Shield, links);
+        app.update();
+        let links = app
+            .world()
+            .get::<HeldGrip>(shield)
+            .unwrap()
+            .links
+            .clone()
+            .unwrap();
+        let soft = links.world_soft.unwrap();
+        assert_eq!(links.links[soft].slack, 0.10);
+        assert_eq!(links.links[soft].strength, 0.05);
+        assert!(app.world().get::<HeldWeld>(shield).unwrap().collapsed);
+        // Death stiffens it; the tick after that changes nothing more.
+        app.world_mut().entity_mut(owner).insert(Condition::DEAD);
+        app.update();
+        let links = app
+            .world()
+            .get::<HeldGrip>(shield)
+            .unwrap()
+            .links
+            .clone()
+            .unwrap();
+        assert_eq!(links.links[soft].strength, 1.0);
+        assert_eq!(links.links[soft].slack, 0.10);
+        let state = *app.world().get::<HeldWeld>(shield).unwrap();
+        assert!(state.stiff && state.collapsed);
+        app.update();
+        assert_eq!(*app.world().get::<HeldWeld>(shield).unwrap(), state);
     }
 
     fn spec() -> GripSpec {
