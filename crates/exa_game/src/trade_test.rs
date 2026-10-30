@@ -251,6 +251,25 @@ fn the_merchant_specialises() {
     assert_eq!(RANKS[(rank_for_option(4) + 1) as usize], "Novice");
 }
 
+/// The player's own list: what the player takes joins it, what the player
+/// gives leaves at its first place, and a taken instance already held is
+/// reported as a duplicate.
+#[test]
+fn a_transaction_moves_the_players_basket() {
+    let mut basket = vec![7, 0x8000_0002];
+    let pairs = apply_to_basket(&mut basket, &[9, 0x8000_0002], &[7, 5]);
+    assert_eq!(basket, [0x8000_0002, 9, 0x8000_0002]);
+    assert_eq!(pairs, [(0, 2)]);
+    // Given first, taken second: the take lands after the give.
+    let mut basket = vec![4, 6];
+    apply_to_basket(&mut basket, &[], &[6]);
+    assert_eq!(basket, [4]);
+    // Nothing given and nothing taken leaves the list alone.
+    let mut basket = vec![1, 2];
+    assert!(apply_to_basket(&mut basket, &[], &[]).is_empty());
+    assert_eq!(basket, [1, 2]);
+}
+
 /// 1 gold 3 silver 5 copper is 185 copper. Paying 100 leaves 85, 7 silver
 /// 1 copper; paying more than held empties the purse.
 #[test]

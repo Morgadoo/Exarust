@@ -549,6 +549,25 @@ pub fn settle(
     duplicates(stock)
 }
 
+/// Apply a trade to the player's basket, the list the original moves: the
+/// items the player takes join it and every item the player gives leaves at
+/// its first place, the rest keeping their order. An item the basket does
+/// not hold is passed over, as the original's own search does. Returns the
+/// basket's duplicate pairs afterwards.
+pub fn apply_to_basket(
+    basket: &mut Vec<u32>,
+    gained: &[u32],
+    given: &[u32],
+) -> Vec<(usize, usize)> {
+    basket.extend(gained);
+    for id in given {
+        if let Some(at) = basket.iter().position(|held| held == id) {
+            basket.remove(at);
+        }
+    }
+    duplicates(basket)
+}
+
 #[cfg(test)]
 #[path = "trade_test.rs"]
 mod tests;
