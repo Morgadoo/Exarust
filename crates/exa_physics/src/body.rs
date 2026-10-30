@@ -2014,36 +2014,6 @@ pub fn travel_phase(last: f32, before: &mut f32, moved2_cm: f32) -> f32 {
 /// getting up t = (1 − progress)·0.01 is computed first, the difference
 /// taken in single precision, and added to u. The sum narrows to single
 /// precision and a value above `max_energy` becomes it; a NaN stays.
-/// The body tick's pose factor (the original's `0xAE8`): the share the
-/// posture block gives the pose drive, from `s = (1 − sag)·(1 − energy) +
-/// energy` (each product and sum in single precision, as the tick does).
-///
-/// In combat, on its feet and not walking, it is `s`, or `s² · 0.97` in
-/// double when the body's scale is over 1.3 (double compare, a NaN is
-/// not) and it is not attacking; down, getting up, dormant, dead or
-/// walking it is `0.5·s + 0.5`. Out of combat it is `s²`, and
-/// `0.5·s + 0.5` in those same conditions. The constructor starts it at
-/// 1.
-pub fn pose_factor(
-    s: f32,
-    in_combat: bool,
-    off_feet_or_walking: bool,
-    attacking: bool,
-    scale: f32,
-) -> f32 {
-    if in_combat && !off_feet_or_walking {
-        if f64::from(scale) > 1.3 && !attacking {
-            (f64::from(s * s) * 0.97) as f32
-        } else {
-            s * 1.0
-        }
-    } else if off_feet_or_walking {
-        s * 0.5 + 0.5
-    } else {
-        s * s
-    }
-}
-
 pub fn recover_energy(energy: f32, max_energy: f32, getting_up: bool, progress: f32) -> f32 {
     let sum = if getting_up {
         f64::from(1.0 - progress) * 0.01 + (f64::from(energy) + 0.005)
@@ -3239,16 +3209,19 @@ impl Ragdoll {
         };
         d.timers.tick(&input);
         // The original's stance share: (1 − sag)·(1 − energy) + energy,
-        // in that order in single precision.
+        // in that order in single precision, then the tone weight
+        // (`motile::tone_weight`, the original's 0xAE8).
         let s = (1.0 - d.sag) * (1.0 - d.energy) + d.energy;
-        let off_or_walking = d.bearing.off_feet || d.bearing.walking;
-        d.pose_factor = pose_factor(
-            s,
-            d.bearing.in_combat,
-            off_or_walking,
-            d.bearing.attacking,
-            d.stats.scale,
-        );
+        let state = if d.bearing.off_feet {
+            0x200
+        } else if d.bearing.walking {
+            1
+        } else if d.bearing.attacking {
+            2
+        } else {
+            0
+        };
+        d.pose_factor = crate::motile::tone_weight(s, d.bearing.in_combat, state, d.stats.scale);
     }
 
     /// Tells a living body what its character does this tick (before it is

@@ -55,7 +55,8 @@ pub struct BodyTimers {
     /// A countdown the tick decrements every tick.
     pub countdown: i32,
     /// The weapon switch timer (the original's `0x444`): 5 with an item in
-    /// the hands, else moved one a tick toward [`weapon_switch_target`].
+    /// the hands, else moved one a tick toward the record field's cadence
+    /// target (`motile::cadence_target`).
     pub weapon_switch: i32,
     /// The weapon switch's flags (the original's `0x109C`): bit 8 is set
     /// while the hands are empty and the state flag is to be raised.
@@ -75,21 +76,14 @@ impl Default for BodyTimers {
     }
 }
 
-/// The weapon switch timer's target: `round((1 − field·0.25)·1660 / 83)`
-/// in single precision, the original's 0x67C over the tick rate, rounded
-/// half to even. The field is the character record's at `+0x90`.
-pub fn weapon_switch_target(field: f32) -> i32 {
-    let target = ((1.0 - field * 0.25) * 1660.0) / 83.0;
-    // CVTSS2SI rounds half to even.
-    target.round_ties_even() as i32
-}
-
 /// One tick of the weapon switch block. With an item in the hands
 /// (`hands`, the low 24 bits of the held word) the timer is 5; empty, it
 /// is 5 and bit 8 of the flags is set, raising the state flag unless
 /// `state_flag4` is already set. Otherwise (flags 6 clear) the timer moves
-/// one toward [`weapon_switch_target`] and bit 8 clears. Returns the timer,
-/// the flags and whether the state flag is to be raised.
+/// one toward the step/breath cadence target of the character record's
+/// field (`motile::cadence_target`, the original's own formula) and bit 8
+/// clears. Returns the timer, the flags and whether the state flag is to
+/// be raised.
 pub fn weapon_switch_step(
     timer: i32,
     flags: u32,
@@ -106,7 +100,7 @@ pub fn weapon_switch_step(
             (5, flags | 8, true)
         }
     } else {
-        let target = weapon_switch_target(field);
+        let target = crate::motile::cadence_target(field);
         let timer = if timer < target {
             timer + 1
         } else if timer > target {
@@ -281,9 +275,9 @@ mod tests {
     /// raises the state flag once.
     #[test]
     fn the_weapon_switch_timer() {
-        assert_eq!(weapon_switch_target(0.0), 20);
-        assert_eq!(weapon_switch_target(1.0), 15);
-        assert_eq!(weapon_switch_target(0.5), 18);
+        assert_eq!(crate::motile::cadence_target(0.0), 20);
+        assert_eq!(crate::motile::cadence_target(1.0), 15);
+        assert_eq!(crate::motile::cadence_target(0.5), 18);
         assert_eq!(weapon_switch_step(10, 0, 0x30, false, 0.0), (11, 0, false));
         assert_eq!(weapon_switch_step(20, 0, 0, false, 0.0), (20, 0, false));
         assert_eq!(weapon_switch_step(25, 0, 0, false, 0.0), (20, 0, false));

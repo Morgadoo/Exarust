@@ -1203,7 +1203,16 @@ same but shocked: the exploration cursor's cross, the blow sag zeroed),
 `0x200` (down, getting up, dormant, dead), `0x800` (collapsing or dead),
 `0x10203` (no queued motion starts). State flags sit beside the word
 (dormant `0x10`, waking `0x20`, a scripted hold `0x40`, the shock's stagger
-`0x100`, a potion `0x800000`). While the stagger flag is set, the body tick
+`0x100`, a potion `0x800000`). The posture block also writes the pose
+factor each tick (`exa_physics::motile::tone_weight`): with
+s = (1 − sag)(1 − energy) + energy, s² out of combat or 0.5·s + 0.5 while
+down or walking, s in combat, and s²·0.97 in double for a body over 1.3
+scale in combat that is not attacking. Beside it the weapon switch block
+(`exa_physics::body::timers::weapon_switch_step`) holds the timer at 5
+while a held item's class word is set, sets flag bit 8 and raises the
+state flag once while the hands are empty, and otherwise moves the timer
+one a tick toward `round((1 − the record's field)·1660 / 83)` in single
+precision, rounded half to even. While the stagger flag is set, the body tick
 after the energy recovery sets energy to its most minus 0.5 and starts
 Rebalance with no blend unless it already plays, then clears the flag once
 the clock is past the next shock; that tick does not start the daze's
@@ -1906,7 +1915,7 @@ not landed is the identity and says which:
 | 5 | the clip chain: each part placed by its rest translation and its posed turn under its parent's placement; the foot contacts read it | `clip_chain` |
 | 6 | the IK chain: each IK part's turn times its leg IK corrections, the chain recomposed; the targets and the pins read it | the standing IK (`body_bend::standing_leg`) and the locomotion IK (`locomoting_leg`), their knee, hip and thigh turns folded into the clip chain, and the foot pitch from the height the IK wrote |
 | 7 | the torso twist ([below](#torso-twist)): the midline chain's turns (the lumbar half) toward the look | `spine`, `exa_physics::body::locomotion::twist_spine` |
-| 8 | the head look ([below](#head-look): yaw, pitch and roll by a ramping weight), the foot pitch to the ground (smoothed), the thorax's attack hunch | the head look (`look_with_head`); the thorax hunch on the pinned part's local turn before the chain; the foot pitch (`foot_pitch`: a 20 cm toe, eased 0.01 rad a tick, 0.1 while a recovery step is on; a placement stores the angle and clears the rate) |
+| 8 | the head look ([below](#head-look): yaw, pitch and roll by a ramping weight), the foot pitch to the ground (smoothed), the thorax's attack hunch | the head look (`look_with_head`); the thorax hunch on the pinned part's local turn before the chain; each foot's body-tick rest turn first (`foot_rest_turn`: (1 − the record's height)·−1.5° in combat, 5° with the splay bit, none otherwise, about (−1, 0, 0), the second leg back), then the foot pitch (`foot_pitch`: a 20 cm toe, eased 0.01 rad a tick, 0.1 while a recovery step is on; a placement stores the angle and clears the rate) |
 | 9 | the anchors of every slack link and the pelvis height | the drive's, in the carry stage (`Ragdoll::aim`): a looking head's relative to the physical thorax, a head that does not look relative to its parent's pose from before the twist |
 | 10 | the foot contacts' ground offsets and the gait plant events | the feet routine's; the plants with M16 |
 
