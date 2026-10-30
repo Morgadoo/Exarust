@@ -1623,7 +1623,10 @@ its width, at the slice's middle ((slice + 0.5)/width), as the original's
   and 3 is the manager's constant, then three times the 0.1 injection
   share; it is left out when the scaled colour's third component is at
   most 1.19e−7. The light shines straight down, with its own 1024² map of
-  depth reach 1600, whose first comparison alone counts under a sky.
+  depth reach 1600, whose first comparison alone counts under a sky (its
+  set-up, `sky_shadow_setup`: two depth fields both 1600, a softness of
+  (1024·10)·0.5 and a view that keeps X and sends the scene's Y to −Z and Z
+  to −Y).
   Exarust stands the volume's columns in for that map [adaptation]: a voxel
   sees the sky at or above its column's floor, the slice above the
   column's highest voxel with an occupancy byte of 10 or more (openness
@@ -1741,8 +1744,10 @@ its width, at the slice's middle ((slice + 0.5)/width), as the original's
   it, and its bytes from `sub_upload`) into the bound block and one warming
   behind it; the world drains the patches every frame. A whole-block upload
   stands in when a texture is created;
-- a neighbour block's margin copy: one margin column or row, the interior
-  on the other axis, UV offset ∓240/256, every slice but the top, and the
+- a neighbour block's margin copy, from the original's fixed table of
+  texture fractions: on the neighbour's side the strip 0..1/32 (or
+  31/32..1) with the UV offset ±15/16, on the other axis the interior
+  1/32..31/32; every slice but the top, and the
   destination quad's four corners with the original's base z of
   −0.5/depth (`margin_blit`, `margin_quad`). The pass runs every step for
   each resident neighbour the manager holds (`GiTextureCache`): the step
