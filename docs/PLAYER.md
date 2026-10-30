@@ -565,13 +565,14 @@ as for a living character). Exarust wires the bars: a click on the own
 body sets `exa_ui::hud::HudShowUntil` 5000 ms ahead. The double-click
 interaction (in combat mode only with Ctrl held) is
 [`player_controls::{interaction_allowed, interact_object, interact_character}`]:
-while the object's used mark is clear, kind 0 subtype 1 is used after 2100
-ms and any other kind 0 subtype is used at once (both leave the scene first,
+while the object's used mark is clear, class 0 kind 1 is used after 2100
+ms and any other class 0 kind is used at once (both leave the scene first,
 the usable section's 16-byte sound name at body offset 0x10 playing at the
 node at volume 0.25, pitch 1; the immediate use closes the item card and
-runs the record's use: subtype 7 the game's read hook, 5 the powers
-screen), and kind 1 is taken in hand (which ends the interaction); kind 5 is
-pushed while its flag allows; then a container section opens. A double
+runs the record's use: kind 7 the game's read hook, 5 the powers
+screen), and class 1 is taken in hand: the object stays in the scene and
+lifts the use cursor, which the next mouse press ends and dispatches (below);
+class 5 is pushed while its flag allows; then a container section opens. A double
 click out of reach does nothing (the gate's reach flag; only a pending GUI
 drag callback runs): the original does not walk the player to the object. The player's
 inventory opens, a corpse is looted, and a living character talks when its
@@ -610,18 +611,27 @@ gap a millisecond (rounded to the nearest, ties to even), and the timed
 list drops an entry once it arrives by moving the last into its place
 (`player_controls::{use_on, salve, elixir, clean_timed, repair_timed, Timed,
 TimedList}`). A timed value is written only while it lowers a section's byte
-or arrives, and the same entry applies to the usable and weapon sections;
-when the item has the usable section and its byte is not written, the
-weapon section waits for the next frame.
+or arrives. The apparel section (0x1000) is tried first; when the item has
+one and its byte is not written, the weapon section (0x4000) is not looked
+at that frame; when it is written (or the item has no apparel section), the
+weapon section's byte is tested next. After a repair write the copy is
+refreshed from its template: the copy takes the template's model price
+word; an apparel copy's protection, coverage and encumbrance come from the
+template's at the copy's quality, damage and variant, its price based on the
+template's quality; a weapon copy takes the template's bytes 0x30..0x40 and
+is scaled by its own condition, its price based on its own quality
+(`exa_items::refresh::{copy_apparel, copy_weapon}`, sharing the refresh's
+condition passes; the weapon's factory stat pass is not run there).
 The sounds are `player_controls::use_sound`: the pour at 0.25, the cleaning
 kit at 0.3 and the repair kit at 0.15, each pitch 0.9 + 0.2 times one draw.
-Wired in Exarust: the right press's use start (a usable kind of zero opens
-its container, any other kind begins the use), the target by the pick's
-class (a hinge, a living character, a usable item), the GUI use (a cleaning
-kit, a repair kit, a kind 0x10 moving the same item between slots) and the
-used item's removal from the scene or a container entry
-(`player_controls::{use_press, use_target, gui_use, after_use}`), and a
-sound played at a point at 0.25 and pitch 1.0 (`point_sound`).
+Tested rules with no running caller: the right press's use-start answer
+(a usable class of zero opens its container, any other class begins the
+use), the target by the pick's class (a hinge, a living character, a usable
+item), the GUI use (a cleaning kit, a repair kit, a kind 0x10 moving the
+same item between slots) and the used item's removal from the scene or a
+container entry (`player_controls::{use_press, use_target, gui_use,
+after_use}`), and a sound played at a point at 0.25 and pitch 1.0
+(`point_sound`).
 
 The use cursor is live (`exa_game::use_cursor`). An item panel's double
 click asks the entry's double-click class (`player_controls::panel_use_class`:
@@ -630,7 +640,11 @@ container; the GUI item kind uses until its entry is marked used; a used
 liquid or kit only closes the card; anything else uses) and class 2 closes
 the card and calls the game's use hook, which the controls install at
 start-up: `use_begin` opens the GUI item a class-0 kind-0x11 section names
-(no window for it yet) or, while play is on, lifts the cursor. The world
+(no window for it yet) or, while play is on, lifts the cursor. A world
+object whose usable class is 1, double-clicked without a used mark, also
+lifts the cursor (`object_click`): the object stays in the scene and the
+cursor holds its record id and kind byte, so the release dispatches the
+use (a key unlocks a door, a tool works on an item). The world
 view hands the cursor's callback its end event before it serves the next
 mouse event, so the next press of any button ends it and is taken (neither
 the hand nor the panels see it); the dispatcher runs for the left button
@@ -647,9 +661,13 @@ taken by the controls (`exa_game::gui_drop`): the drop task is queued and
 runs on the next frame (`player_controls::run_spawn`). The item's model is
 built with its rigid bodies; with none it is the original's "Game object
 has no physics" error and the drag is cancelled. Otherwise it is put where
-the cursor's ray meets the level, leaves the pack, and once its body exists
-the hand lifts it onto the item cursor until the button is let go. An
-entry held in a hand is not taken.
+the cursor's ray meets the level (or the far placement limit's height),
+leaves the pack, and once its body exists the hand lifts it onto the item
+cursor until the button is let go. The spawned node carries the record's
+template word, usable and container sections and mechanism records, as a
+level-placed object does (`exa_world::dropped_object`). An entry held in a
+hand is not taken, and neither is one dropped while the point under the
+cursor is out of reach.
 
 The start of play makes the AI's activation centre the player with a 40 m
 radius; the end of play puts it back at the origin with 200 m
@@ -752,27 +770,32 @@ the last starts from `0.25` again; the product is taken in double. A piece
 under 1.19209e−7 is no turn.
 
 Each frame the cursor's ray is picked against the level, the held item left
-out. A hit whose height is not under the limit (−100000 cm) places the item
-there; otherwise it goes where the ray crosses that height, unless the ray
-climbs (its height part over −1.19209e−7) and the placement is refused.
+out. The lift's limit is the height the player stands at: a hit strictly
+over it places the item there; a hit at or under it (or a NaN height), and a
+cursor over nothing, fall to the point where the ray crosses the player's
+height. A ray that climbs (its height part over −1.19209e−7) refuses the
+placement whether or not it hit (`item_cursor::lift_point`). A GUI drop
+instead uses the far placement limit −100000 cm, which no level reaches,
+keeps a hit at or over it (a NaN height too) and tests the climb only when
+it falls to the plane (`item_cursor::place_point`).
 The placement holds only when the item's box (its rest points' centre and
 half extents in its saved frame, turned as above) stays within 280 cm up
 and −1000 cm down and the item's new place is within reach of the hip
 (the walk-to point's test: at most 245 cm high, 300 cm across the ground,
 a NaN passing); a frame that does not hold puts the item back at the last
-placement that held, keeps the hover word, and counts as out of reach
-(the cursor a cross, and a release then is a cancelled one)
-(`item_cursor::lift_frame`). The original
+placement that held (its frame restored, not only its point), keeps the
+hover word, and counts as out of reach (the cursor a cross, and a release
+then is a cancelled one) (`item_cursor::lift_frame`,
+`item_cursor::HeldItem::last`). The original
 then backs the ray's point off 600 cm along the ray and sweeps every
 collision sphere of every part of the item against the level's meshes from
 there, starting at a 1000 cm reach and keeping a contact only when it is
 strictly nearer. Exarust carries each sphere with the grab point the
 cursor places, sweeps it at its own radius against rapier's level
-colliders from 600 cm before the pick (never from behind the eye), and
-stops at the nearer of that contact and the pick; a sweep that starts
-inside the level is no contact, and a cursor over nothing keeps the last
-point (`item_cursor::{per_sphere_contact, placement_distance,
-placement_point}`).
+colliders from 600 cm before the placed point (never from behind the eye),
+and stops at the nearer of that contact and the placed point; a sweep that
+starts inside the level is no contact (`item_cursor::{per_sphere_contact,
+placement_distance, placement_point}`).
 
 The lift's hover word comes from its frame: an item that snaps onto a
 placement marker within reach gives 0x10, or 0x30 when the marker's link
@@ -817,8 +840,8 @@ puts it into the scene and lifts it; an entry with no body is the
 "Game object has no physics" content error and spawns nothing. Both are
 rules with no inventory window to originate them: Exarust's inventory form
 has no item panel. A GUI drag (an item or object payload `0xFB01`/`0xFB02`)
-is the controls' while no dialogue is open, the movement request is free
-and no drop is queued; an item already held makes it busy
+is the controls' while no dialogue is open, the point under the cursor is
+in reach and no drop is queued; an item already held makes it busy
 (`item_cursor::claim_drag`).
 
 Each frame of a drag the grabbed point is let go once it is farther than

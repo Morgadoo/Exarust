@@ -22,10 +22,13 @@
 //! at the fast one.
 //!
 //! **Where it may go.** Each frame the cursor's ray is picked against the
-//! level; a hit whose height is not under the placement limit (−100000 cm,
-//! which no level reaches) places the item there. Otherwise the item goes
-//! where the ray crosses that height; a ray that climbs (its height
-//! component over −1.19209e−7) refuses the placement. The item is put there
+//! level; a hit strictly over the height the player stands at places the
+//! item there. Otherwise (a hit at or under it, a NaN height, or no hit) the
+//! item goes where the ray crosses that height; a ray that climbs (its
+//! height component over −1.19209e−7) refuses the placement whether or not
+//! it hit ([`lift_point`]). (A GUI drop uses the far placement limit
+//! −100000 cm instead, which no level reaches, and [`place_point`]'s tests.)
+//! The item is put there
 //! and the box test (its rest points and half extents in its turned saved
 //! frame at most 280 cm high and at least −1000 cm low,
 //! `hand::box_ok_local`) decides the routine's answer.
@@ -34,8 +37,8 @@
 //! collision sphere of every part, carried with the placed point, is swept
 //! against the level, and the nearest contact wins (Exarust sweeps
 //! rapier's level colliders, not the CPU triangles, and starts no nearer
-//! than the eye); a cursor that picks nothing keeps the last point (its
-//! pick has no navigation mesh behind every pixel). A level placement
+//! than the eye); a cursor that picks nothing places on the plane at the
+//! player's height. A level placement
 //! marker whose eight-character hexadecimal name gives the item's object
 //! or model id snaps the item onto the marker's frame when the cursor's
 //! segment (to the pick, or 10 000 cm) meets the marker's sphere and the
@@ -93,8 +96,9 @@ pub const TURN_PER_MS: f64 = 0.0025;
 pub const STICK_DEAD_ZONE: f64 = 0.1;
 /// A turn under this is no turn (the engine's float epsilon).
 pub const TURN_EPSILON: f32 = 1.192_09e-7;
-/// The placement's height limit (cm): a hit under it, or no hit, falls
-/// back to where the ray crosses this height.
+/// The GUI drop's placement height limit (cm): a hit under it, or no hit,
+/// falls back to where the ray crosses this height. The lift itself uses
+/// the height the player stands at.
 pub const PLACEMENT_LIMIT_CM: f32 = -100_000.0;
 /// The placement sweep's reach (cm): the original's nearest-contact search
 /// starts from it and keeps only nearer contacts.
@@ -296,6 +300,49 @@ pub struct SphereHit {
     pub contact: f32,
 }
 
+/// The sweep's per-sphere pull-back (cm), one per sphere, as the original
+/// computes it before a sphere is swept: with `world` the scene's world
+/// point, `up` its support axis and `offset` its plane constant, the plane
+/// term is `world·up − offset − frame.position·world`, the frame term is
+/// `world` in the frame's own axes (its dot with each axis, the transposed
+/// rotation), and a sphere whose `plane + radius − centre·frame`
+/// is under zero (an ordered compare; a NaN is not) is pulled back by that
+/// gap over `world·dir`. A gap at or over zero pulls back nothing. [The
+/// runtime sweeps rapier's level colliders, which expose no support plane, so
+/// this correction is a tested rule without a caller.]
+pub fn support_corrections(
+    world: Vec3,
+    up: Vec3,
+    offset: f32,
+    frame: Frame,
+    dir: Vec3,
+    spheres: &[SweepSphere],
+) -> Vec<f32> {
+    let plane = (world.x * up.x + world.y * up.y + world.z * up.z)
+        - offset
+        - (frame.position.x * world.x + frame.position.y * world.y + frame.position.z * world.z);
+    // The world point taken into the frame: its dot with each of the
+    // frame's axes (the rotation's columns), summed x, y, then z.
+    let axis_dot = |axis: Vec3| world.x * axis.x + world.y * axis.y + world.z * axis.z;
+    let in_frame = Vec3::new(
+        axis_dot(frame.rotation.x_axis),
+        axis_dot(frame.rotation.y_axis),
+        axis_dot(frame.rotation.z_axis),
+    );
+    let denominator = world.x * dir.x + world.y * dir.y + world.z * dir.z;
+    let inverse = 1.0 / denominator;
+    spheres
+        .iter()
+        .map(|sphere| {
+            let gap = plane + sphere.radius
+                - (sphere.centre.x * in_frame.x
+                    + sphere.centre.y * in_frame.y
+                    + sphere.centre.z * in_frame.z);
+            if gap < 0.0 { gap * inverse } else { 0.0 }
+        })
+        .collect()
+}
+
 /// The first contact of every collision sphere of every part of the dragged
 /// item, in part and sphere order: `sweep` takes the part, the sphere's
 /// centre, the unit direction, the reach and the radius (all m) and gives
@@ -390,6 +437,27 @@ pub fn place_point(origin: Vec3, dir: Vec3, hit: Option<(Vec3, f32)>, limit: f32
             if dir.y > -TURN_EPSILON {
                 return None;
             }
+            let t = (limit / 100.0 - origin.y) / dir.y;
+            let at = origin + dir * t;
+            at.is_finite().then_some(at)
+        }
+    }
+}
+
+/// Where the lift's own placement puts the item (m), with `limit` the
+/// height the player stands at (cm). It differs from [`place_point`] in
+/// its tests: the hit is kept only when it is strictly over the limit (an
+/// ordered "limit under height", so a NaN height or a hit at the limit
+/// takes the plane), and a ray climbing more than the float epsilon gives
+/// no point whether or not the pick hit (the original tests the ray after
+/// both branches). Otherwise the item goes where the ray crosses `limit`.
+pub fn lift_point(origin: Vec3, dir: Vec3, hit: Option<(Vec3, f32)>, limit: f32) -> Option<Vec3> {
+    if dir.y > -TURN_EPSILON {
+        return None;
+    }
+    match hit {
+        Some((at, height_cm)) if limit < height_cm => Some(at),
+        _ => {
             let t = (limit / 100.0 - origin.y) / dir.y;
             let at = origin + dir * t;
             at.is_finite().then_some(at)
@@ -675,6 +743,10 @@ pub struct HeldItem {
     pub half: Vec3,
     /// The last point the box fitted at (m).
     pub target: Vec3,
+    /// The frame of the last placement that held (m): the original keeps
+    /// the body's frame from it and puts the item back there when a later
+    /// frame fails.
+    pub last: Option<Frame>,
     /// The object's id and its model's id, which a level placement marker
     /// is named for (zero when the item carries no object id).
     pub item: u32,
@@ -705,24 +777,24 @@ pub enum DragClaim {
     Take,
     /// An item is already held: the drag is left to it.
     Busy,
-    /// A dialogue, a suppressed movement request, a pending drop or
-    /// another payload: the drag is not the controls'.
+    /// A dialogue is open, the point is out of reach, a drop is pending or
+    /// the payload is another kind: the drag is not the controls'.
     Ignore,
 }
 
-/// Whether the controls take a GUI drag of `kind`: no dialogue, the
-/// movement request free (a lift or a walk not pending), no drop already
-/// queued, and an item or object payload; an item already held makes it
-/// busy instead.
+/// Whether the controls take a GUI drag of `kind`: no dialogue, the point
+/// under the cursor in reach, no drop already queued, and an item or object
+/// payload; an item already held makes it busy instead. (The original's
+/// third test is the hand's out-of-reach flag, set when the cursor's point
+/// is too far away.)
 pub fn claim_drag(
     kind: u32,
     dialogue: bool,
-    request_suppressed: bool,
+    out_of_reach: bool,
     pending: bool,
     holding: bool,
 ) -> DragClaim {
-    if dialogue || request_suppressed || pending || (kind != ITEM_PAYLOAD && kind != OBJECT_PAYLOAD)
-    {
+    if dialogue || out_of_reach || pending || (kind != ITEM_PAYLOAD && kind != OBJECT_PAYLOAD) {
         return DragClaim::Ignore;
     }
     if holding {
@@ -760,8 +832,10 @@ pub struct ItemCursor {
 
 impl ItemCursor {
     /// Begins a lift with `held`.
-    pub fn begin(&mut self, held: HeldItem) {
+    pub fn begin(&mut self, mut held: HeldItem) {
         self.rotation = held.saved_frame.rotation;
+        let saved = held.saved_frame;
+        held.last.get_or_insert(saved);
         self.held = Some(held);
         self.offset = Vec2f::ZERO;
         self.hover = 0;
@@ -938,6 +1012,53 @@ mod tests {
         assert_eq!(drag_hit([]), None);
     }
 
+    /// The per-sphere pull-back: a sphere below the support plane is moved
+    /// up by the ordered gap over the world/direction dot; one at or above
+    /// it, and a NaN gap, is not moved.
+    #[test]
+    fn the_sphere_support_correction() {
+        let frame = Frame::default();
+        let world = Vec3::Y;
+        let up = Vec3::Y;
+        let dir = Vec3::NEG_Y;
+        let spheres = [
+            SweepSphere {
+                centre: Vec3::ZERO,
+                radius: 0.5,
+            },
+            SweepSphere {
+                centre: Vec3::new(0.0, 2.0, 0.0),
+                radius: 0.5,
+            },
+            SweepSphere {
+                centre: Vec3::new(0.0, 2.0, 0.0),
+                radius: f32::NAN,
+            },
+        ];
+        // The plane term is 1: the first sphere's gap is 1 + 0.5 − 1 = 0.5
+        // and is not under; the second's is 1 + 0.5 − 2 = −0.5, pulled back
+        // by −0.5 / −1 = 0.5 cm; the third's NaN is not under either.
+        assert_eq!(
+            support_corrections(world, up, 0.0, frame, dir, &spheres),
+            vec![0.0, 0.5, 0.0]
+        );
+        // A frame turned a quarter about z has the axes (0, 1, 0) and
+        // (−1, 0, 0): the world point (0, 1, 0) is (1, 0, 0) in it, so a
+        // sphere at (2, 0, 0) has the gap 1 + 0.5 − 2 = −0.5 and is pulled
+        // back 0.5 (turning the point the other way would give −2 and no
+        // pull).
+        let turned = Frame::new(
+            Vec3::ZERO,
+            Mat3::from_rotation_z(std::f32::consts::FRAC_PI_2),
+        );
+        let along_x = [SweepSphere {
+            centre: Vec3::new(2.0, 0.0, 0.0),
+            radius: 0.5,
+        }];
+        let corrections = support_corrections(world, up, 0.0, turned, dir, &along_x);
+        assert!((corrections[0] - 0.5).abs() < 1e-6, "{corrections:?}");
+    }
+
     /// The first contact starts at the 1000 cm reach, keeps only a strictly
     /// nearer sphere contact and ignores a NaN; a placement takes the
     /// nearer of the pick and the contact.
@@ -1098,6 +1219,39 @@ mod tests {
         assert_eq!(place_point(o, down, Some((at, f32::NAN)), 5.0), Some(at));
     }
 
+    /// The lift's own placement: its limit is the player's height, a hit
+    /// strictly over it is kept, one at or under it (or a NaN height) goes
+    /// to the plane, and a climbing ray gives nothing even with a hit.
+    #[test]
+    fn the_lift_point_tests() {
+        let o = Vec3::new(0.0, 10.0, 0.0);
+        let down = Vec3::new(0.6, -0.8, 0.0);
+        let at = Vec3::new(1.0, 2.0, 0.0);
+        // A hit at the floor (0 cm) under a player standing at 170 cm
+        // falls to the plane at 170 cm: t = (1.7 − 10) / −0.8 = 10.375 m.
+        let floor = lift_point(o, down, Some((at, 0.0)), 170.0).unwrap();
+        assert!((floor.y - 1.7).abs() < 1e-5, "{floor}");
+        assert!((floor.x - 6.225).abs() < 1e-5, "{floor}");
+        // A hit at 180 cm (a table) is kept.
+        let table = Vec3::new(0.5, 1.8, 0.5);
+        assert_eq!(
+            lift_point(o, down, Some((table, 180.0)), 170.0),
+            Some(table)
+        );
+        // At the limit, or a NaN height: the plane.
+        let level = lift_point(o, down, Some((table, 170.0)), 170.0).unwrap();
+        assert!((level.y - 1.7).abs() < 1e-5);
+        let nan = lift_point(o, down, Some((table, f32::NAN)), 170.0).unwrap();
+        assert!((nan.y - 1.7).abs() < 1e-5);
+        // No hit: the plane.
+        assert!(lift_point(o, down, None, 170.0).is_some());
+        // A climbing (or level) ray refuses even with a hit over the limit.
+        assert_eq!(lift_point(o, Vec3::Y, Some((table, 180.0)), 170.0), None);
+        assert_eq!(lift_point(o, Vec3::X, Some((table, 180.0)), 170.0), None);
+        // A NaN ray passes the climb test and gives no finite plane point.
+        assert_eq!(lift_point(o, Vec3::NAN, None, 170.0), None);
+    }
+
     /// The placement frame is placed either way; its answer says whether
     /// the item's box stays within 280 cm up and −1000 cm down in the
     /// turned frame.
@@ -1122,8 +1276,8 @@ mod tests {
     }
 
     /// The GUI drag claim: only an item or object payload with no dialogue,
-    /// no suppressed request and no queued drop is taken; an item already
-    /// held makes it busy.
+    /// a point in reach and no queued drop is taken; an item already held
+    /// makes it busy.
     #[test]
     fn the_gui_drag_claim() {
         assert_eq!(
@@ -1171,10 +1325,14 @@ mod tests {
             centre: Vec3::ZERO,
             half: Vec3::ONE,
             target: Vec3::ZERO,
+            last: None,
             item: 0,
             model: 0,
         });
         assert!(cursor.held.is_some());
+        // Before any placement holds, the lift frame is where a failed
+        // frame returns the item.
+        assert_eq!(cursor.held.as_ref().unwrap().last, Some(Frame::default()));
         assert_eq!(cursor.rotation, Mat3::IDENTITY);
         assert!(cursor.turn_frame(0, 100.0, Vec2f::new(0.0, 1.0), [false; 4], Vec3::X));
         assert!((cursor.offset.x - 0.0625).abs() < 1e-6);

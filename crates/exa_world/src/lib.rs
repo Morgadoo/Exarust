@@ -122,6 +122,28 @@ impl PlacedItem {
     }
 }
 
+/// The placement an item record gets when it is spawned into the scene by a
+/// GUI drag rather than loaded from a level: its record id as both the
+/// record and the scene id, the drag's condition word in the flags, and an
+/// identity frame (the drop's own point is written separately).
+pub fn dropped_object(id: u32, condition: u32) -> exa_formats::rfc::PlacedObject {
+    exa_formats::rfc::PlacedObject {
+        id,
+        flags: condition,
+        object_flags: 0,
+        transform: [
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, 0.0, 0.0],
+        ],
+        slot: 0,
+        second_word: 0,
+        word_3d22: None,
+        attachments: Vec::new(),
+    }
+}
+
 /// What the player's interactions read off a placed object's record and
 /// placement: the placement word (the scene node's instance word: bit 0 a
 /// saved latch the container open tests, bits 16..23 the condition or used
@@ -2083,6 +2105,23 @@ mod tests {
         eprintln!(
             "shipped lights: {lights}, range flag without a radius: {flagged_without_radius}"
         );
+    }
+
+    /// A spawned record's placement is its own id in both id words, the
+    /// drag's condition word in the flags (its third byte the placed
+    /// condition), and an identity frame.
+    #[test]
+    fn a_dropped_record_takes_its_id_and_condition() {
+        let object = dropped_object(0x4000_0007, 0x0012_3400);
+        assert_eq!(object.id, 0x4000_0007);
+        assert_eq!(object.flags, 0x0012_3400);
+        assert_eq!(object.slot, 0);
+        assert_eq!(object.transform[3], [0.0, 0.0, 0.0]);
+        let record = item(7, "", "", 0);
+        let placed = PlacedItem::of(&record, &object);
+        assert_eq!(placed.id, 7);
+        assert_eq!(placed.tagged_id, 0x4000_0007);
+        assert_eq!(placed.condition, 0x12);
     }
 
     /// Every level's transition marker is an object whose volume section

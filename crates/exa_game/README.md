@@ -666,8 +666,10 @@ value, target and name, the copy's wear and dirt bytes and the model's
 material byte), the deferred interaction list the double click's
 consumable joins 2100 ms on (done entries shift the rest down, keeping the
 order), the deferred drop's spawn run (free, content error, or place at
-the lift's −100000 cm limit), the
-timed list that writes only while it lowers a section or arrives; the reach's navigation region and walk-to point; the movement
+the drop's −100000 cm limit), the
+timed list that writes only while it lowers a section or arrives (the
+apparel section first; when it has one whose byte is not written, the
+weapon section is not looked at that frame); the reach's navigation region and walk-to point; the movement
 request's drag modes, the controls' gates, the key permissions and the power
 bar's 500 ms hold. A click on the player's own body shows the HUD bars for
 5000 ms; the HUD's compass shows while the player's pack carries its usable
@@ -689,14 +691,16 @@ on the cursor; the movement inputs (the pad's raw move stick past a squared
 0.1, else the move keys) turn it by `0.25·frame ms·0.0025` rad a frame,
 ramping to `1.0` after 300 ms of turning and falling back after 500 ms of
 quiet; each frame the cursor's ray, the held item left out, places it at
-the level hit (a miss keeps the last point), then slides it along the ray
+the level hit when that is strictly over the height the player stands at,
+and at the ray's crossing of that height otherwise (a miss too; a climbing
+ray places nothing, `lift_point`), then slides it along the ray
 from 600 cm before that point (never behind the eye) to the nearest
 contact of every collision sphere of every part, each carried with the
 placed grab point (a sweep starting inside the level is no contact),
 and a placement holds only when its rest-point box (280 cm up, −1000 cm
 down) fits and the item stays in the hip's reach (`item_cursor::lift_frame`);
-a frame that fails puts the item back at the last placement that held and
-counts as out of reach. A placement marker (a model node whose name starts
+a frame that fails puts the item back at the frame of the last placement
+that held (the lift frame before any) and counts as out of reach. A placement marker (a model node whose name starts
 with `[`, registered by `exa_world::markers` and gathered each frame of a
 lift) whose eight hexadecimal name characters give the placed object's id
 or template, whose sphere the cursor's segment meets, takes the held node's
@@ -728,18 +732,26 @@ mouse event; answer 0x81), runs the use only for the left button (the desk
 word's bit 0, a guess), sets the player's action word to 4, clears the use
 state and restores cursor mode 4 (`player_controls::{use_begin, use_end,
 UseCursor}`). `use_cursor` runs it live: the item panels' double click and
-its class (`panel_use_class`) call the use hook, the next press of any
+its class (`panel_use_class`) call the use hook; a world object with usable
+class 1, double-clicked unmarked, lifts the cursor with its record id and
+kind and stays in the scene (`object_click`); the next press of any
 button ends the cursor and is taken, and the dispatcher's door unlock is
 applied (the other branches are reported in `UseReleased`). `gui_drop`
-runs the GUI drop: a pack drag held over the world is claimed, run on the
-next frame through `run_spawn`, put where the cursor's ray meets the level
-and lifted onto the item cursor once its body exists. The deferred drop
+runs the GUI drop: a pack drag held over the world in reach is claimed,
+run on the next frame through `run_spawn`, put where the cursor's ray meets
+the level (or the far placement limit's height) and lifted onto the item
+cursor once its body exists; the spawned node carries the record's template
+word, usable and container sections and mechanism records as a placed
+object does (`exa_world::dropped_object`). The deferred drop
 ends with the state word at 0x2000 and keeps the body's frame out of the
 controls when the word already had that bit. The wheel's set wraps its
 grip angle into ±π (the single π
-over the double one) before turning toward it. The controls unit also
+over the double one) before turning toward it; a NaN view/axle dot is not
+under 0.2 and takes its first grip. The controls unit also
 appends the Character and Spectate game modes in that order, each id the
-table's new length plus two (`register_game_modes`). The pad's
+table's new length plus two, its 16 name bytes and its hooks (Character the start and end of play, Spectate its own pair);
+`GameModes` is the live table and registers them at start-up
+(`register_game_modes`). The pad's
 camera look takes the frame from the mouse-look capture, as the original's
 gamepad branch returns before touching the pointer. The start and end of play set the AI's activation centre and
 radius (`PlaySession`, which the player tick and the AI read); `PlayerControl`
@@ -1148,15 +1160,16 @@ placed objects by their node box (a placeholder's 50 cm half box, else the
 model's root node bounds; sphere test, then at most 0.1 cm² off the box);
 the single click then only narrates a used device, and the double click
 uses the object found (an Exarust stand-in: the original's pick always
-returns the object's node). The double click's usable kind 0 object leaves
+returns the object's node). The double click's usable class 0 object leaves
 the scene (despawned, its static colliders removed through
 `ColliderNodes::take_under`) with its use sound (`exa_audio::PointSounded`,
 volume 0.25, pitch 1); a consumable's doors open 2100 ms later.
 A placed chest, barrel or bag opens in its container popup from the
 interaction's double click (with Ctrl held in combat mode, in reach): the
 object's own use runs first (`player_controls::double_click_object`, the
-usable section's consume, take or push; only the hand-held item ends the
-interaction there) and a record with a container section then sends a
+usable section's consume, take or push; the class-1 hand item stays in the
+scene and lifts the use cursor, which ends the interaction there) and a
+record with a container section then sends a
 `ContainerRequest`. `open_requested_containers` cancels the item card's
 pending request (a shown card fades out) and opens the popup as the
 original's opener does: a popup already open on the container comes
@@ -1179,7 +1192,7 @@ and 128 of exanima01's 307 container children, had no icon);
 possession list), and a right click, Escape or the screen close shuts it:
 the panel saves its entries back into the object's container section
 (`exa_world::ObjectSections`, the session's copy of the record) and its
-icons are released. A consumable (usable kind 0, subtype 1) the double
+icons are released. A consumable (usable class 0, kind 1) the double
 click uses joins the controls' deferred list (`player_controls::PendingUses`)
 with its section's target word, due 2100 ms on; `run_pending_uses` hands
 each due entry, in order, to `exa_world::mechanisms::OpenDoorsUnder`.

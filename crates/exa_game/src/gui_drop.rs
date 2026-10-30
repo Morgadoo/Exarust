@@ -19,9 +19,11 @@
 //! put where the cursor's ray meets the level (or the placement limit's
 //! height, [`item_cursor::place_point`]), takes the drag's condition word,
 //! leaves the pack (the panel's entry and the record's), and the word ends
-//! at [`player_controls::SPAWN_DONE`]. Once its body exists the hand begins
-//! the lift on it (`hand::lift_gui_drops`), so the item rides the cursor
-//! until the button that dragged it is let go.
+//! at [`player_controls::SPAWN_DONE`]. The spawned node carries the record's
+//! template word, usable and container sections and mechanism records, as a
+//! level-placed object does (`exa_world::dropped_object`); once its body
+//! exists the hand begins the lift on it (`hand::lift_gui_drops`), so the
+//! item rides the cursor until the button that dragged it is let go.
 //!
 //! The debug flag `--gui-drop ID@FRAME` gives the player's pack the item
 //! and queues its drop at that frame after the load, as a drag out of the
@@ -99,12 +101,14 @@ pub fn parse_id(text: &str) -> Option<u32> {
 
 /// Whether the controls take a pack drag over the world: the drag comes
 /// from the player's pack and is not a held entry, the button is down and
-/// no form is under the pointer, then the controls' own claim rule.
+/// no form is under the pointer, then the controls' own claim rule, which
+/// also refuses a point that is out of reach (the hand's flag).
 pub fn claims(
     source: Option<Panel>,
     flags: u32,
     button_down: bool,
     over_gui: bool,
+    out_of_reach: bool,
     pending: bool,
     holding: bool,
 ) -> bool {
@@ -112,7 +116,8 @@ pub fn claims(
         && flags & HELD == 0
         && button_down
         && !over_gui
-        && item_cursor::claim_drag(ITEM_PAYLOAD, false, false, pending, holding) == DragClaim::Take
+        && item_cursor::claim_drag(ITEM_PAYLOAD, false, out_of_reach, pending, holding)
+            == DragClaim::Take
 }
 
 /// Claims a pack drag held over the world view (see the module notes).
@@ -121,6 +126,7 @@ pub fn claim_gui_drag(
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     over: Res<PointerOverGui>,
+    hand: Res<crate::hand::Hand>,
     mut drag: ResMut<PanelDrag>,
     mut items: ResMut<ItemCursor>,
     mut drop: ResMut<GuiDrop>,
@@ -134,6 +140,7 @@ pub fn claim_gui_drag(
         drag.flags,
         buttons.pressed(MouseButton::Left),
         over.0,
+        hand.out_of_reach,
         pending,
         items.held.is_some(),
     ) {
@@ -252,12 +259,14 @@ pub struct DropAssets<'w> {
 }
 
 /// Runs the drops queued on the previous frame (see the module notes).
+#[allow(clippy::too_many_arguments)]
 pub fn run_gui_drops(
     mut commands: Commands,
     mut items: ResMut<ItemCursor>,
     mut drop: ResMut<GuiDrop>,
     mut screens: ResMut<GameScreens>,
     mut assets: DropAssets,
+    mut records: Option<ResMut<crate::doll_view::DollItems>>,
     place: DropPlace,
     mut players: Query<&mut Possessions, With<PlayerBody>>,
 ) {
@@ -352,24 +361,56 @@ pub fn run_gui_drops(
                     .as_deref()
                     .map(exa_character::held_item_sounds)
                     .unwrap_or_default();
-                commands.entity(root).insert((
-                    Transform::from_translation(at),
-                    exa_physics::prop::PendingProp(parts),
-                    sounds,
-                    exa_combat::impact::ImpactBook::default(),
-                    // The new node is the item's object, as a placed one
-                    // is: its id word and the condition's third byte.
+                // The spawned record carries what a placed object does:
+                // its template word, its usable and container sections and
+                // its mechanism records, from the object database record
+                // the drag named. Only a game record is looked up (the
+                // database is keyed by untagged ids, so a level-tagged id
+                // would find another record); without one the node keeps
+                // its id word and condition alone.
+                let object = exa_world::dropped_object(task.item, condition);
+                let record = records
+                    .as_deref_mut()
+                    .filter(|_| task.item & !exa_formats::characters::ID_MASK == 0)
+                    .and_then(|records| {
+                        records.ensure(assets.game.as_deref());
+                        records.get(task.item).cloned()
+                    });
+                // The new node is the item's object, as a placed one is:
+                // its id word and the condition's third byte.
+                let placed = record.as_ref().map_or(
                     exa_world::PlacedItem {
                         id: task.item,
                         tagged_id: task.item,
                         condition: ((condition >> 16) & 0xff) as u8,
                     },
+                    |record| exa_world::PlacedItem::of(record, &object),
+                );
+                commands.entity(root).insert((
+                    Transform::from_translation(at),
+                    exa_physics::prop::PendingProp(parts),
+                    sounds,
+                    exa_combat::impact::ImpactBook::default(),
+                    placed,
                     GuiDropLift {
                         item: task.item,
                         condition,
                         copy_frame,
                     },
                 ));
+                if let Some(record) = record.as_ref() {
+                    commands
+                        .entity(root)
+                        .insert(exa_world::markers::PlacedTemplate(record.parent));
+                    if let Some(sections) = exa_world::ObjectSections::of(record, &object) {
+                        commands.entity(root).insert(sections);
+                    }
+                    if let Some(mechanisms) =
+                        exa_world::mechanisms::MechanismRecords::of(task.item, record)
+                    {
+                        commands.entity(root).insert(mechanisms);
+                    }
+                }
                 drop.word = end_word;
                 // The item leaves the pack: the panel's entry and the
                 // record's carried entry.
@@ -409,26 +450,29 @@ mod tests {
     use super::*;
 
     /// Only a pack drag that is not a held entry, held down over the world
-    /// with nothing pending or lifted, is the controls'.
+    /// in reach with nothing pending or lifted, is the controls'.
     #[test]
     fn the_controls_claim_a_pack_drag_over_the_world() {
         let pack = Some(Panel::PlayerPack);
-        assert!(claims(pack, 0, true, false, false, false));
-        assert!(!claims(None, 0, true, false, false, false));
+        assert!(claims(pack, 0, true, false, false, false, false));
+        assert!(!claims(None, 0, true, false, false, false, false));
         assert!(!claims(
             Some(Panel::BodyPack(3)),
             0,
             true,
             false,
             false,
+            false,
             false
         ));
-        assert!(!claims(pack, HELD, true, false, false, false));
-        assert!(!claims(pack, 0, false, false, false, false));
-        assert!(!claims(pack, 0, true, true, false, false));
+        assert!(!claims(pack, HELD, true, false, false, false, false));
+        assert!(!claims(pack, 0, false, false, false, false, false));
+        assert!(!claims(pack, 0, true, true, false, false, false));
+        // The point under the cursor out of reach: the drag is not taken.
+        assert!(!claims(pack, 0, true, false, true, false, false));
         // A drop already pending, or an item on the cursor, keeps it.
-        assert!(!claims(pack, 0, true, false, true, false));
-        assert!(!claims(pack, 0, true, false, false, true));
+        assert!(!claims(pack, 0, true, false, false, true, false));
+        assert!(!claims(pack, 0, true, false, false, false, true));
     }
 
     #[test]
