@@ -200,10 +200,14 @@ impl ObjectDb {
 
 impl ObjectDb {
     /// Copies a weapon's stat bytes from its template, as the original's
-    /// helper does for a weapon section being built: `record`'s header
+    /// helper does for a weapon section being built and as the dormant
+    /// object editor uses it to start the item it edits: `record`'s header
     /// names the template (none for 0); when that resolves and has a weapon
-    /// section, its bytes `0x30`–`0x40` and `0x42` go into `body`. Returns
-    /// whether they were copied.
+    /// section, its bytes `0x30`–`0x40` and `0x42` go into `body` (the
+    /// hit-sound byte `0x41` and the variant word's high byte are not
+    /// copied). The original writes unconditionally; a `body` too short for
+    /// a block leaves those bytes as they were. Returns whether a template
+    /// weapon section was there to copy.
     pub fn take_template_weapon_stats(&self, record: &super::Record<'_>, body: &mut [u8]) -> bool {
         let template = record.template();
         if template == 0 {
@@ -532,6 +536,18 @@ mod tests {
         assert_eq!((body[0x41], body[0x42]), (0, 9));
         let t = db.find(10).unwrap();
         assert!(!db.take_template_weapon_stats(&t, &mut body));
+        // The object editor starts the item it edits the same way: its own
+        // buffer takes the stat block, and the hit-sound byte stays.
+        let mut edited = [0xAAu8; 0x60];
+        assert!(db.take_template_weapon_stats(&r, &mut edited));
+        assert_eq!(&edited[0x30..0x41], &[9; 0x11]);
+        assert_eq!((edited[0x41], edited[0x42], edited[0x43]), (0xAA, 9, 0xAA));
+        // A buffer too short for a block keeps what it has and does not
+        // panic; the original writes unconditionally, so a section was
+        // still there to copy.
+        let mut short = [0xAAu8; 0x20];
+        assert!(db.take_template_weapon_stats(&r, &mut short));
+        assert!(short.iter().all(|&b| b == 0xAA));
     }
 
     #[test]
