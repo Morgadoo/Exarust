@@ -1996,7 +1996,8 @@ fn hold_hand(
                     // The spheres are gathered only when a marker named
                     // for the item is met, once per frame.
                     type Spheres = Vec<(Vec3, f32)>;
-                    let mut gathered: Option<(Vec<(Affine3A, Spheres)>, Spheres)> = None;
+                    let mut gathered: Option<(Vec<(Affine3A, std::sync::Arc<Spheres>)>, Spheres)> =
+                        None;
                     let bodies_ref = &bodies;
                     let held_part = items.held.as_ref().map(|held| held.part);
                     let overlaps = |frame: Frame| {
