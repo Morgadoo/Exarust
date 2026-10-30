@@ -713,6 +713,40 @@ mod tests {
         let copied = copy_indices(&[span, plain], &[1, 0, 2], &[9, 8, 7]).unwrap();
         assert_eq!(copied, vec![8, 9, 7]);
     }
+
+    #[test]
+    fn the_copy_runs_part_by_part_in_triangle_order() {
+        // Three sections: the two skinned ones copy their triangles in
+        // part order, each triangle's three corners in order; the plain
+        // one between them is left out whole.
+        let skinned = [
+            ShellSpan {
+                flags: 2,
+                start: 0,
+                end: 1,
+            },
+            ShellSpan {
+                flags: 0,
+                start: 2,
+                end: 2,
+            },
+            ShellSpan {
+                flags: 2,
+                start: 3,
+                end: 3,
+            },
+        ];
+        let triangles = [0, 1, 2, 3, 4, 5, 9, 8, 7, 6, 5, 4];
+        let remap: Vec<u32> = (0..16).map(|i| 100 + i).collect();
+        let copied = copy_indices(&skinned, &triangles, &remap).unwrap();
+        assert_eq!(copied, vec![100, 101, 102, 103, 104, 105, 106, 105, 104]);
+        // The marks follow the sections too: skinned sections write their
+        // index, the others 255.
+        assert_eq!(
+            crate::thaum::shell_marks(4, &skinned).unwrap(),
+            vec![0, 0, 255, 2]
+        );
+    }
     #[test]
     fn dead_nodes_leave_the_shell_pass_in_order() {
         let mut nodes = vec![

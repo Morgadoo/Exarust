@@ -15,6 +15,9 @@
 //!   `TexOfs` and the noise picture as `EmiTex`; the mesh carries the second
 //!   coordinate set (`vTx2`).
 //! - **The shell aura** draws a copy of each skinned mesh of its caster's
+//!   body in the caster's own child order, so the copies take the parts'
+//!   order (the original copies part by part into one index buffer); each
+//!   copy's indices are its section's triangles in order and one copy is
 //!   body (its body and apparel), sharing the source's skin, with one
 //!   `ForceShellMaterial` an aura. Each frame its uniforms come from
 //!   [`super::super::thaum::shell_uniforms`] for a skinned copy: the node's
