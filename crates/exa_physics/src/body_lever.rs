@@ -43,8 +43,8 @@
 //! step but not played (the audio side has no mechanism hookup), and the
 //! kind 6 lever's light fade is reported as a [`LeverTick::light`] direction
 //! but nothing applies it to a spawned light. The light node under the lever
-//! is found at registration (the first light node of the placed model's
-//! subtree) and handed to [`Lever::configure`]. The original runs the
+//! is found at registration (a light node at or under the arm node's
+//! parent, the operative's node) and handed to [`Lever::configure`]. The original runs the
 //! lever's rules in the body's own step
 //! between its integration and the link passes; Exarust runs them after the
 //! solver's tick, as it does the doors'.
