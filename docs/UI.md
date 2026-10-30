@@ -3024,9 +3024,10 @@ The three inks are the skin constructor's 255, 250, 230 with the alphas the
 line skin's fade hand-off writes, 80, 104 and 128 times the fade
 (`line_skin::line_control_inks`). The Keyboard and Controller tabs
 (`FormAction::KeyboardView`, `ControllerView`) are modelled: they need Steam
-Input, so they never show in Exarust, and clicking one would turn the
-controller mode and view on or off and place the Controls page 21 units down
-instead of 14. Not reproduced: the controller view's own four-record page
+Input, so they never show in Exarust. With it they would sit in a second row
+40 pixels below the page tabs on the Controls page (the Keyboard one lit),
+and clicking one would turn the controller mode and view on or off, light
+its tab and place the Controls page 21 units down instead of 14. Not reproduced: the controller view's own four-record page
 (its records were not traced; the aim-speed reset and the page's placement
 are), dragging the scrollbar's thumb (the wheel scrolls), and a hovered
 button's caption routine (drawn as the off caption). `--open-settings settings|controls` opens the form for scripted
@@ -3135,6 +3136,10 @@ Exarust applies:
   levels above zero are not distinguished.
   A settings file that does not name `Supersample` keeps Exarust's level on
   (live level 4); `Supersample = 0` or `--no-supersample` turns it off.
+- **Shading quality**: the original's live setter stores the level and
+  sets its renderer's high-quality flag when it is above 5
+  (`exa_render::quality::shading_high`); Exarust's lighting has one path,
+  so only the rule is kept.
 - **Shadow quality**: the point lights' cube face size and the sun map
   size. Level 4 (the default) keeps the shipped 512 and 4096; 3 gives 256
   and 2048, 2 gives 128 and 1024, 1 gives 64 and 512, 5 gives 1024 and 4096.

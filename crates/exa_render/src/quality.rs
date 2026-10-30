@@ -35,6 +35,14 @@ impl Default for ShadowQuality {
 #[derive(Resource, Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct MultisampleSetting(pub i32);
 
+/// Whether the shading quality turns the renderer's high-quality path on:
+/// the original's live setter sets its renderer flag to `quality > 5`. No
+/// Exarust shader has the two paths (its lighting has one), so the rule is
+/// here, tested, for whatever grows the second one.
+pub fn shading_high(quality: i32) -> bool {
+    quality > 5
+}
+
 pub struct QualityPlugin;
 
 impl Plugin for QualityPlugin {
@@ -115,6 +123,16 @@ fn sync_multisample(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_shading_quality_flag_is_above_five() {
+        // The original's setter: the high path only above 5.
+        assert!(!shading_high(3));
+        assert!(!shading_high(4));
+        assert!(!shading_high(5));
+        assert!(shading_high(6));
+        assert!(shading_high(7));
+    }
 
     #[test]
     fn the_shadow_map_sizes_follow_the_quality() {

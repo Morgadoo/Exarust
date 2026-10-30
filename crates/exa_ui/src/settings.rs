@@ -1138,6 +1138,9 @@ pub struct FormState {
     pub scroll: f32,
     /// Whether the Keyboard and Controller tabs show (they need Steam Input).
     pub controller_tabs: bool,
+    /// Whether the Controls page shows its controller view (the Controller
+    /// tab lit) rather than the keyboard one.
+    pub controller_view: bool,
     held: Option<(Part, usize)>,
     hovered: Option<(Part, usize)>,
 }
@@ -1164,6 +1167,7 @@ impl FormState {
             page: 0,
             scroll: 0.0,
             controller_tabs: false,
+            controller_view: false,
             held: None,
             hovered: None,
         };
@@ -1199,15 +1203,17 @@ impl FormState {
 
     /// The page switch: page 0 shows the rules and hides the Keyboard and
     /// Controller tabs; page 1 hides the rules and places the Controls page
-    /// ([`switch_page`]) on its keyboard view, which lights the Keyboard
-    /// tab and darkens the Controller one (both stay hidden without Steam
-    /// Input, so the controller view is never shown).
+    /// ([`switch_page`]). With Steam Input the view tabs show on page 1 and
+    /// light the view in use (the keyboard one by default); without it they
+    /// stay hidden, so the controller view is never shown.
     pub fn switch(&mut self, page: u8) {
         let Some(switch) = switch_page(page, self.controller_tabs, self.unit()) else {
             return;
         };
         self.page = page;
         let main = &mut self.geometry.main;
+        main[0].state &= !HIDDEN;
+        main[1].state &= !HIDDEN;
         if page == 0 {
             main[4].state = 0;
             main[5].state = 0;
@@ -1216,10 +1222,37 @@ impl FormState {
         } else {
             main[4].state = HIDDEN;
             main[5].state = HIDDEN;
-            main[2].state |= state::ON | state::LIT;
-            main[3].state &= !(state::ON | state::LIT);
+            if self.controller_tabs {
+                main[2].state &= !HIDDEN;
+                main[3].state &= !HIDDEN;
+                self.select_controller_view(self.controller_view);
+            } else {
+                main[2].state = HIDDEN;
+                main[3].state = HIDDEN;
+            }
         }
         if let Some((y, h)) = switch.controls_y {
+            self.controls_page.y = y;
+            self.controls_page.h = h;
+        }
+    }
+
+    /// The Keyboard (`false`) or Controller (`true`) view tab: lights the one
+    /// and darkens the other, and re-places the Controls page (the controller
+    /// tabs push it 21 units down instead of 14).
+    pub fn select_controller_view(&mut self, controller: bool) {
+        self.controller_view = controller;
+        let main = &mut self.geometry.main;
+        for (record, on) in [(2, !controller), (3, controller)] {
+            main[record].state &= !(state::ON | state::LIT);
+            if on {
+                main[record].state |= state::ON | state::LIT;
+            }
+        }
+        let switch = switch_page(1, self.controller_tabs, self.unit());
+        if self.page == 1
+            && let Some((y, h)) = switch.and_then(|switch| switch.controls_y)
+        {
             self.controls_page.y = y;
             self.controls_page.h = h;
         }
@@ -1869,14 +1902,11 @@ mod form_tests {
         let mut form = FormState::open(SCREEN, 4);
         form.controller_tabs = true;
         form.switch(1);
-        // The pair replaces the page tabs on the Controls page, as the page
-        // switch's two state words do: the page pair hides, the view pair
-        // shows.
-        form.geometry.main[0].state |= HIDDEN;
-        form.geometry.main[1].state |= HIDDEN;
-        for record in [2, 3] {
-            form.geometry.main[record].state = 0;
-        }
+        // With Steam Input the view pair shows below the page pair, the
+        // keyboard view lit.
+        assert_eq!(form.geometry.main[2].state & HIDDEN, 0);
+        assert_ne!(form.geometry.main[2].state & state::ON, 0);
+        assert_eq!(form.geometry.main[3].state & state::ON, 0);
         // At unit 4 the view tabs sit 40 pixels below the page tabs: x 12
         // and 212 from the client, y 52, 192 wide and 24 high.
         let controller = (437 + 212 + 20, 94 + 52 + 10);
@@ -1894,10 +1924,20 @@ mod form_tests {
             click(&mut form, keyboard.0, keyboard.1),
             vec![FormEvent::Action(FormAction::KeyboardView)]
         );
-        // With the controller tabs showing, the Controls page starts 21
-        // units down instead of 14.
+        // The Keyboard tab lights again; the page stays 21 units down.
+        assert_ne!(form.geometry.main[2].state & state::ON, 0);
+        assert_eq!(form.geometry.main[3].state & state::ON, 0);
         assert_eq!(form.controls_page.y, 84);
         assert_eq!(form.controls_page.h, 388);
+        // Going back to the Settings page hides the view pair.
+        form.switch(0);
+        assert_eq!(form.geometry.main[2].state, HIDDEN);
+        assert_eq!(form.geometry.main[3].state, HIDDEN);
+        // Selecting the controller view by hand lights its tab.
+        form.switch(1);
+        form.select_controller_view(true);
+        assert_ne!(form.geometry.main[3].state & state::ON, 0);
+        assert_eq!(form.geometry.main[2].state & state::ON, 0);
     }
 
     #[test]

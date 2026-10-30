@@ -326,6 +326,7 @@ fn form_input(
                     // and view; the rows stay the key rows, since Exarust
                     // draws no controller page.
                     config.set_controller_view(controller);
+                    form.select_controller_view(controller);
                     if let Some(copy) = &config.bindings {
                         form.set_keys(&key_names(copy));
                     }
