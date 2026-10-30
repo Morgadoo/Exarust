@@ -249,6 +249,44 @@ pub fn is_body_model(entry: &str) -> bool {
 /// A mesh part: its mesh and material.
 pub type Part = (Handle<Mesh>, Handle<ExaMaterial>);
 
+/// The GI sample points a mesh node carries at load: the chunk's points
+/// when it has one, otherwise the original's runtime generation for a body
+/// model's part.
+///
+/// The original runs its surface generator at load for every class-`0x89`
+/// body-part node of a character's physics body, at 20 cm-parameter
+/// (a 4 cm sampling step) through the body builder whose collision level
+/// is 2. Exarust keeps one model per part and has no collision level, so
+/// every mesh node of a body model is taken as a body part (guess), the
+/// node's stored triangles answer the sphere query, and the greedy cover
+/// is the builder's default. A node with a stored chunk keeps its points.
+fn gi_points_for(
+    node: &Node,
+    mesh: Option<&RfcMesh>,
+    skin_bone: Option<u16>,
+    entry: &str,
+) -> Vec<Vec3> {
+    if let Some(mesh) = mesh
+        && skin_bone.is_none()
+    {
+        return mesh.gi_points.iter().map(|&p| Vec3::from(p)).collect();
+    }
+    if !is_body_model(entry) {
+        return Vec::new();
+    }
+    let Some(triangles) = mesh.and_then(mesh_triangles) else {
+        return Vec::new();
+    };
+    exa_physics::voxel::generated_surface_points(
+        exa_physics::voxel::Bounds {
+            centre: Vec3::from(node.bounds_centre),
+            half_extents: Vec3::from(node.bounds_half_extents),
+        },
+        &triangles,
+        exa_physics::voxel::SurfaceCover::Greedy,
+    )
+}
+
 /// The triangles of a stored mesh in its node's space (metres), for the
 /// pair stage's sphere-against-mesh query. `None` when the index list does
 /// not name whole triangles of the mesh's positions; a trailing index that
@@ -688,12 +726,7 @@ impl ModelLoader<'_> {
                 skin_bone,
                 bounds: (Vec3::from(node.bounds_centre), node.bounds_radius),
                 half_extents: Vec3::from(node.bounds_half_extents),
-                gi_points: Arc::new(match mesh {
-                    Some(mesh) if skin_bone.is_none() => {
-                        mesh.gi_points.iter().map(|&p| Vec3::from(p)).collect()
-                    }
-                    _ => Vec::new(),
-                }),
+                gi_points: Arc::new(gi_points_for(node, mesh, skin_bone, &entry)),
                 gi_centred: node.flags2 & 0x10 != 0,
                 gi_thin: mesh
                     .and_then(|mesh| mesh.groups.first())
