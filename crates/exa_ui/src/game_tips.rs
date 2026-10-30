@@ -9,9 +9,54 @@
 //! Evidence: the tip banner's constructor, draw and no-input slot, and the
 //! prelude's tip chooser (`docs/UI.md`, loading).
 
-/// The banner's default text, until the prelude sets one.
-pub const FIRST_TIP: &str =
-    "Augmenting strikes by swinging and moving your body can greatly increase damage.";
+/// The banner's default text, until the prelude sets one: the first
+/// rotating tip.
+pub const FIRST_TIP: &str = TIP_TEXTS[0];
+
+/// The eighteen rotating tips, in the popup's table order (the prelude's
+/// automatic tip picks one by its position here).
+pub const TIP_TEXTS: [&str; 18] = [
+    "Augmenting strikes by swinging and moving your body can greatly increase damage.",
+    "Your character is subject to physics, your inputs must work in harmony with them.",
+    "Even when a parry is not successful, attempting to defend will reduce damage taken.",
+    "Let go of LMB at any time to perform a feint or abandon your attack to defend instead.",
+    "To successfully block or parry you must turn and position yourself to face the blow.",
+    "NPCs play by the same exact rules, make human errors and have slow reaction times.",
+    "To attack from your left, move the cursor to your character's left before pressing LMB.",
+    "To deliver significant damage you must land clean hits with the correct part of your weapon.",
+    "Use dashes to attack your opponents from unexpected angles and bypass their defences.",
+    "Watch your opponent closely and land your attacks when they are most vulnerable.",
+    "Overhead attacks can deliver devastating head blows and hit prone opponents.",
+    "Slash damage is effective on weak and slicing blows but easily mitigated by armour.",
+    "Piercing damage is better at finding potential gaps and weak spots in armour.",
+    "Crushing damage is reliant on strong blows but typically most effective against armour.",
+    "Weapons with a higher balance are quicker and more responsive.",
+    "Impact mainly deals stamina damage but also affects all other damage types.",
+    "Armour can be worn in layers for even better protection.",
+    "Higher coverage armour has fewer exposed parts and weaknesses.",
+];
+
+/// The six control hints and messages the popup shows by number (hint
+/// `n` is the prelude's index `n + 1`): the controls line, the knock-out
+/// and death lines, and the three practice ladder wins.
+pub const HINT_TEXTS: [&str; 6] = [
+    "Press TAB to toggle combat mode or I to toggle the inventory. Double click bodies to loot them.",
+    "You have been defeated.",
+    "You have died.",
+    "Congratulations! You have defeated all ten opponents.",
+    "Congratulations! You have defeated all opponents in the novice arena!",
+    "Congratulations! You have defeated all opponents in the expert arena!",
+];
+
+/// A rotating tip's text by its table position.
+pub fn tip_text(position: usize) -> Option<&'static str> {
+    TIP_TEXTS.get(position).copied()
+}
+
+/// A hint's text by its table position.
+pub fn hint_text(position: usize) -> Option<&'static str> {
+    HINT_TEXTS.get(position).copied()
+}
 /// The banner's box alpha.
 pub const BOX_ALPHA: u8 = 160;
 /// The banner's height, in units.
@@ -63,6 +108,23 @@ impl GameTips {
     pub fn input(&self) -> u32 {
         0
     }
+
+    /// The banner's whole draw: the box as a [`SkinBatch`] of one quad at
+    /// the box's alpha in `ink`, and the text's origin.
+    pub fn box_batch(banner: &TipBanner, ink: [u8; 3]) -> crate::skin::SkinBatch {
+        let mut batch = crate::skin::SkinBatch::new();
+        batch.select(1, 0, false);
+        batch.set_ink([ink[0], ink[1], ink[2], banner.alpha]);
+        batch.begin();
+        let [x, y] = banner.box_at.map(|v| v as f32);
+        let [w, h] = banner.box_size.map(|v| v as f32);
+        batch.vertex(x, y);
+        batch.vertex(x, y + h);
+        batch.vertex(x + w, y + h);
+        batch.vertex(x + w, y);
+        batch.end_quads();
+        batch
+    }
 }
 
 /// The banner's quads and text origin.
@@ -77,6 +139,27 @@ pub struct TipBanner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tables_hold_the_original_s_lines() {
+        assert_eq!(TIP_TEXTS.len(), 18);
+        assert_eq!(HINT_TEXTS.len(), 6);
+        assert_eq!(
+            tip_text(17),
+            Some("Higher coverage armour has fewer exposed parts and weaknesses.")
+        );
+        // The prelude's hint 2 is the knock-out line, hint 3 the death line.
+        assert_eq!(hint_text(1), Some("You have been defeated."));
+        assert_eq!(hint_text(2), Some("You have died."));
+        assert_eq!(hint_text(6), None);
+    }
+
+    #[test]
+    fn the_box_is_one_quad_at_the_banner_alpha() {
+        let banner = GameTips::new().draw(640, 4, 100);
+        let batch = GameTips::box_batch(&banner, [0, 0, 0]);
+        assert!(!batch.vertices.is_empty());
+    }
 
     #[test]
     fn the_banner_starts_with_the_first_tip() {

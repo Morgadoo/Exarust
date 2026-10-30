@@ -30,6 +30,7 @@ pub struct TorchPlugin;
 impl Plugin for TorchPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<FloorTorch>()
+            .init_resource::<StoryTorch>()
             .add_systems(Update, (light_torches, lay_floor_torch));
     }
 }
@@ -40,13 +41,32 @@ impl Plugin for TorchPlugin {
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq)]
 pub struct FloorTorch(pub Option<Vec3>);
 
-/// Lays the [`FloorTorch`] once the player stands in the level: the
-/// torch's model on its side, its fire and light burning as a wall
+/// The story start's torch (`Step::StoryLight`): the game's torch laid in
+/// the world at the start's pose, in metres with its frame, burning as a
+/// floor torch does. It is laid where the start makes it; the original's
+/// item then falls and settles as a loose item, which Exarust's static
+/// model does not.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq)]
+pub struct StoryTorch(pub Option<Transform>);
+
+/// The story torch's pose: the start's centimetres in metres and the frame
+/// its three angles build (the frame's rows are the item's local axes in
+/// the world).
+pub fn story_torch_transform(light: &crate::flow::StoryLight) -> Transform {
+    let [x, y, z] = light.rows();
+    let frame = Mat3::from_cols(Vec3::from(x), Vec3::from(y), Vec3::from(z));
+    Transform::from_translation(light.position * 0.01)
+        .with_rotation(Quat::from_mat3(&frame).normalize())
+}
+
+/// Lays the [`FloorTorch`] and the [`StoryTorch`] once the player stands in
+/// the level: the torch's model, its fire and light burning as a wall
 /// torch's do.
 #[allow(clippy::too_many_arguments)]
 fn lay_floor_torch(
     mut commands: Commands,
     mut floor: ResMut<FloorTorch>,
+    mut story: ResMut<StoryTorch>,
     game: Option<Res<Game>>,
     players: Query<(), With<crate::player::PlayerBody>>,
     mut cache: ResMut<ModelCache>,
@@ -55,13 +75,24 @@ fn lay_floor_torch(
     mut images: ResMut<Assets<Image>>,
     support: Option<Res<CompressedImageFormatSupport>>,
 ) {
-    let (Some(at), Some(game)) = (floor.0, game) else {
+    let Some(game) = game else {
         return;
     };
-    if players.is_empty() {
+    if (floor.0.is_none() && story.0.is_none()) || players.is_empty() {
         return;
     }
-    floor.0 = None;
+    // On its side, the handle along the floor.
+    let mut laid = Vec::new();
+    if let Some(at) = floor.0.take() {
+        laid.push((
+            Transform::from_translation(at)
+                .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2 * 0.9)),
+            "FloorTorch",
+        ));
+    }
+    if let Some(pose) = story.0.take() {
+        laid.push((pose, "StoryTorch"));
+    }
     let mut loader = ModelLoader {
         game: &game.0,
         cache: &mut cache,
@@ -74,12 +105,14 @@ fn lay_floor_torch(
         warn!("{TORCH} not found: no torch on the floor");
         return;
     };
-    // On its side, the handle along the floor.
-    let placement = Transform::from_translation(at)
-        .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2 * 0.9));
-    let (root, _) = exa_world::spawn_model_nodes(&mut commands, &torch, Some(placement));
-    commands.entity(root).insert(Name::new("FloorTorch"));
-    info!("floor torch laid at {at}");
+    for (placement, name) in laid {
+        let (root, _) = exa_world::spawn_model_nodes(&mut commands, &torch, Some(placement));
+        commands.entity(root).insert(Name::new(name));
+        info!(
+            "{name} laid at {} (rotation {:?})",
+            placement.translation, placement.rotation
+        );
+    }
 }
 
 /// A body carrying a lit torch: in the right hand, or in the left beside a
@@ -283,6 +316,30 @@ fn light_torches(
 mod tests {
     use super::*;
     use exa_character::{LEFT_HAND, RIGHT_HAND};
+
+    /// The unknown background's torch: (8045, 4.7, 4075) cm in metres, its
+    /// frame the engine's from (−48°, 110°, 88°). A yaw alone is Bevy's
+    /// turn about +y.
+    #[test]
+    fn the_story_torch_lies_at_the_start_s_pose() {
+        let light = crate::flow::story_start(crate::flow::Background::Unknown, 1.0)
+            .light
+            .unwrap();
+        let pose = story_torch_transform(&light);
+        assert!((pose.translation - Vec3::new(80.45, 0.047, 40.75)).length() < 1e-5);
+        let rows = light.rows();
+        for (axis, row) in [Vec3::X, Vec3::Y, Vec3::Z].into_iter().zip(rows) {
+            assert!((pose.rotation * axis - Vec3::from(row)).length() < 1e-5);
+        }
+        // The handle's axis (+y) lies nearly flat: the 88° roll.
+        assert!((pose.rotation * Vec3::Y).y.abs() < 0.1);
+        let turned = crate::flow::StoryLight {
+            rotation_degrees: Vec3::new(0.0, 150.0, 0.0),
+            ..light
+        };
+        let yaw = story_torch_transform(&turned).rotation;
+        assert!(yaw.angle_between(Quat::from_rotation_y(150f32.to_radians())) < 1e-5);
+    }
 
     #[test]
     fn a_free_right_hand_takes_the_torch() {

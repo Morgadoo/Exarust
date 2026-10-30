@@ -195,12 +195,31 @@ pub struct OpenClassSelect {
 pub struct CreatedCharacter(pub Option<CharacterRecord>);
 
 /// `--open-creator <mode>`: open the creator (or the background picker for
-/// `story` without a background) once the load has ended.
+/// `story` without a background) once the load has ended. `begin:N` opens
+/// the story creator for background N and commits its opening record at
+/// once, as its BEGIN would (a debug tool for unattended story starts).
 #[derive(Resource, Debug, Clone, Default)]
 pub struct OpenCreatorOnLoad {
     pub word: Option<String>,
     pub done: bool,
 }
+
+/// The `begin:N` word's story entry, or `None` for another word.
+pub fn begin_entry(word: &str) -> Option<CreatorEntry> {
+    let rest = word.strip_prefix("begin")?;
+    let background = match rest.strip_prefix(':') {
+        Some(index) => index.parse::<i32>().ok()?,
+        None if rest.is_empty() => 0,
+        None => return None,
+    };
+    (0..4)
+        .contains(&background)
+        .then(|| CreatorEntry::story(background))
+}
+
+/// The opened creator commits its record at once (`--open-creator begin`).
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BeginOnOpen(pub bool);
 
 /// The background picker's state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1213,6 +1232,7 @@ impl Plugin for CreatorScreenPlugin {
         app.init_resource::<CreatorScreen>()
             .init_resource::<CreatedCharacter>()
             .init_resource::<OpenCreatorOnLoad>()
+            .init_resource::<BeginOnOpen>()
             .init_resource::<GuiFrames>()
             .add_message::<MenuChoice>()
             .add_message::<OpenCreator>()
@@ -1246,6 +1266,7 @@ fn open_from_menu(
     flow: Option<Res<Flow>>,
     mut creators: MessageWriter<OpenCreator>,
     mut pickers: MessageWriter<OpenClassSelect>,
+    mut begin: ResMut<BeginOnOpen>,
 ) {
     for MenuChoice(command) in choices.read() {
         match *command {
@@ -1284,6 +1305,9 @@ fn open_from_menu(
         pickers.write(OpenClassSelect {
             available: (word == "story-all").then_some(7),
         });
+    } else if let Some(entry) = begin_entry(&word) {
+        begin.0 = true;
+        creators.write(OpenCreator(entry));
     } else if let Some(entry) = CreatorEntry::parse(&word) {
         creators.write(OpenCreator(entry));
     } else {
@@ -1521,6 +1545,7 @@ fn input(
     ticks: Option<Res<exa_physics::body::BodyTicks>>,
     mut commands: Commands,
     players: Query<Entity, With<crate::player::Player>>,
+    mut begin: ResMut<BeginOnOpen>,
 ) {
     let typed: Vec<KeyboardInput> = typed.read().cloned().collect();
     let Ok(window) = windows.single() else {
@@ -1587,6 +1612,13 @@ fn input(
     creator.tick();
     creator.resize(size, unit);
     let mut actions = Vec::new();
+    if core::mem::take(&mut begin.0) {
+        info!("creator: --open-creator begin commits the opening record");
+        actions.push(CreatorAction::Commit {
+            kind: create::CommitKind::Begin,
+            record: Box::new(creator.committed_record()),
+        });
+    }
     for event in &typed {
         if !event.state.is_pressed() {
             continue;
@@ -2281,6 +2313,15 @@ mod tests {
         let (ox, oy) = c.origin(part);
         let r = &c.controls(part)[i];
         (ox + r.x + r.w / 2, oy + r.y + r.h / 2)
+    }
+
+    #[test]
+    fn the_begin_word_names_a_story_background() {
+        assert_eq!(begin_entry("begin"), Some(CreatorEntry::story(0)));
+        assert_eq!(begin_entry("begin:3"), Some(CreatorEntry::story(3)));
+        assert_eq!(begin_entry("begin:4"), None);
+        assert_eq!(begin_entry("beginx"), None);
+        assert_eq!(begin_entry("story:1"), None);
     }
 
     #[test]

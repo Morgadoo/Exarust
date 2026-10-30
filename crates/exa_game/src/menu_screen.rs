@@ -375,8 +375,13 @@ fn toggle(
     end: Option<Res<crate::end_menu_screen::EndMenuScreen>>,
     mut flow: Option<ResMut<Flow>>,
     creator: Option<Res<crate::creator_screen::CreatorScreen>>,
+    manual: Option<Res<crate::help_live::ManualScreen>>,
 ) {
     if !keys.just_pressed(KeyCode::F1) {
+        return;
+    }
+    // An open manual takes F1 to close itself, leaving the menu up.
+    if manual.is_some_and(|manual| manual.is_open()) {
         return;
     }
     // The end menu and the character creator's setup forms keep the menu
@@ -409,8 +414,12 @@ fn input(
     mut choices: MessageWriter<MenuChoice>,
     mut router: ResMut<MenuRouter>,
     settings: Option<Res<crate::settings_form::SettingsForm>>,
+    manual: Option<Res<crate::help_live::ManualScreen>>,
 ) {
-    if !menu.open || settings.is_some_and(|settings| settings.is_open()) {
+    if !menu.open
+        || settings.is_some_and(|settings| settings.is_open())
+        || manual.is_some_and(|manual| manual.is_open())
+    {
         return;
     }
     let now = time.elapsed().as_millis() as u32;

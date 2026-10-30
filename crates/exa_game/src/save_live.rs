@@ -175,6 +175,13 @@ pub enum SaveStep {
     Checkpoint,
 }
 
+/// The engine clock (game milliseconds) the level-6 exit's checkpoint
+/// stamped (`Step::LevelTime`): the original's level exit stores the clock
+/// after its checkpoint callback succeeds. Which save field reads it back
+/// is not traced; it is kept here for that reader.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LevelTime(pub u32);
+
 /// The player record a story load restored: the next player spawn takes
 /// its body, skin, hair and name (through
 /// [`crate::creator_screen::CreatedCharacter`]) and is dressed from its own

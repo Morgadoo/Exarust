@@ -499,15 +499,20 @@ pub struct StoryStart {
     /// is cleared, the two shared roles (7 and 1) are added, then the
     /// background's own.
     pub roles: &'static [u32],
-    /// The story flag word the record gets.
+    /// The word the start puts in the spawn request beside the record
+    /// (0x200, 0 or 0x600). [guess: the loaded body's condition word; the
+    /// start's later writes give the body the same condition: the unknown
+    /// background's lie-down 0x200, the villager's 0x600.]
     pub flags: u32,
     pub placement: Placement,
     /// The level-start point the save manager is given before the load.
     pub spawn_point: Vec3,
     /// The camera view written before the player is placed.
     pub view: StartView,
-    /// The twelve-byte start record the loader is handed for the duration
-    /// of the start: the start motion, then two zero words.
+    /// The twelve-byte start record the spawn request points at for the
+    /// duration of the start: the start motion, then two zero words. The
+    /// request (the record, the word above, the level-start point) goes to
+    /// the character spawner before the level loads.
     pub start_record: [u32; 3],
     /// The item put in the record's off hand: the knight's and proctor's
     /// item 0x1f.
@@ -531,20 +536,40 @@ pub struct StoryStart {
     /// background lies down to wake 3000 ms after the start
     /// ([`Step::KnockOut`]); the others start standing or getting up.
     pub knock_out_ms: Option<u32>,
-    /// The starting light: the unknown background's and the villager's; the
-    /// knight and proctor start without one.
+    /// The starting light: the torch item laid in the world, the unknown
+    /// background's beside the player and the villager's; the knight and
+    /// proctor hold theirs in the off hand.
     pub light: Option<StoryLight>,
     /// Derrin, on the unknown background only.
     pub companion: Option<Companion>,
 }
 
-/// The story's starting light: a placed light object, its rotation and its
-/// intensity.
+/// The story's starting light: the game's torch item (0x1f), made as a
+/// world object from the game database with item flags 0, given its
+/// position and its rotation from three angles ([`rotation`]), its scene
+/// node raised to resource level 256, and added to the world, where it
+/// falls and settles as any loose item does. (The unknown background's
+/// torch lies at (8045, 4.7, 4075) cm; a retail capture finds it settled
+/// at about (8045, 20, 4131).)
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StoryLight {
+    /// The game item made.
+    pub item: u32,
+    /// Where it is made, in centimetres.
     pub position: Vec3,
+    /// Its three angles, in degrees.
     pub rotation_degrees: Vec3,
-    pub intensity: f32,
+    /// The resource level its scene node is raised to.
+    pub level: u32,
+}
+
+impl StoryLight {
+    /// The item's frame as the engine builds it: [`rotation`] of the three
+    /// angles.
+    pub fn rows(&self) -> [[f32; 3]; 3] {
+        let a = self.rotation_degrees;
+        rotation(a.x, a.y, a.z)
+    }
 }
 
 /// A story companion placed with the player.
@@ -562,8 +587,10 @@ pub struct Companion {
 /// lets the player wake.
 pub const STORY_WAKE_DELAY_MS: u32 = 3000;
 
-/// The starting light's intensity (a byte-sized 256, stored as a float).
-pub const STORY_LIGHT_INTENSITY: f32 = 256.0;
+/// The starting torch: the game database's item 0x1f ("Torch A01").
+pub const STORY_TORCH_ITEM: u32 = 0x1f;
+/// The resource level the starting torch's scene node is raised to.
+pub const STORY_TORCH_LEVEL: u32 = 256;
 /// The companion's record flag.
 pub const COMPANION_FLAGS: u32 = 0x500;
 
@@ -616,9 +643,10 @@ pub fn story_start(background: Background, body_height: f32) -> StoryStart {
             turn: None,
             knock_out_ms: Some(STORY_WAKE_DELAY_MS),
             light: Some(StoryLight {
+                item: STORY_TORCH_ITEM,
                 position: Vec3::new(8045.0, 4.7, 4075.0),
                 rotation_degrees: Vec3::new(-48.0, 110.0, 88.0),
-                intensity: STORY_LIGHT_INTENSITY,
+                level: STORY_TORCH_LEVEL,
             }),
             companion: Some(Companion {
                 template: "xac_derrin",
@@ -676,9 +704,10 @@ pub fn story_start(background: Background, body_height: f32) -> StoryStart {
             turn: Some(0.45),
             knock_out_ms: None,
             light: Some(StoryLight {
+                item: STORY_TORCH_ITEM,
                 position: Vec3::new(8000.0, 500.0, 4000.0),
                 rotation_degrees: Vec3::new(8.0, -150.0, 50.0),
-                intensity: STORY_LIGHT_INTENSITY,
+                level: STORY_TORCH_LEVEL,
             }),
             companion: None,
         },
@@ -1196,8 +1225,10 @@ pub enum Step {
     PracticeFilter,
     /// Place the player.
     PlacePlayer(Placement),
-    /// Give the player its story roles (the list cleared first) and flags,
-    /// and the gear and powers only the background's start writes.
+    /// Give the player its story roles (the list cleared first) and the
+    /// gear and powers only the background's start writes, on the record
+    /// the level load spawns the player from; `flags` is the spawn
+    /// request's word ([`StoryStart::flags`]).
     StoryPlayer {
         roles: &'static [u32],
         flags: u32,
@@ -1205,10 +1236,11 @@ pub enum Step {
         carried: Option<Carried>,
         powers: Option<(u32, f32)>,
     },
-    /// The twelve-byte record a story start hands the loader: the start
-    /// motion and two zero words.
+    /// The twelve-byte record a story start hands the spawner: the start
+    /// motion and two zero words. The loaded player takes it with the
+    /// record's writes ([`Step::StoryPlayer`]).
     StartRecord([u32; 3]),
-    /// Create the story's starting light.
+    /// Lay the story's starting torch in the world ([`StoryLight`]).
     StoryLight(StoryLight),
     /// Write the story start's condition word, animator flags and turn
     /// factor (the fields each background sets; `None` leaves one).
@@ -3305,6 +3337,7 @@ impl Plugin for FlowPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Flow>()
             .init_resource::<FlowSteps>()
+            .init_resource::<AfterLoad>()
             .add_message::<ForfeitMatch>()
             .add_message::<SettingsEntry>()
             .add_message::<exa_script::ScriptEffect>()
@@ -3323,6 +3356,7 @@ impl Plugin for FlowPlugin {
                         travel,
                         run_game_events,
                         run_transition.in_set(FlowSystems::Transition),
+                        release_after_load,
                         apply_steps.in_set(FlowSystems::ApplySteps),
                         reset_level_state,
                     )
@@ -3432,11 +3466,16 @@ fn tick(
         With<crate::player::PlayerBody>,
     >,
     others: Query<&exa_combat::Condition, Without<crate::player::PlayerBody>>,
+    after: Option<Res<AfterLoad>>,
 ) {
     let now = ticks.as_ref().map_or(0, |ticks| ticks.millis() as u32);
+    // While a load's steps wait, the player is not in the level yet (the
+    // original's hook first runs after its load and start writes).
+    let held = after.is_some_and(|after| !after.steps.is_empty());
     let player = players
         .single()
         .ok()
+        .filter(|_| !held)
         .map(|(condition, fighter, flags)| PlayerReading {
             condition: condition.map_or(0, |condition| condition.0),
             animator: flags.map_or(0, |flags| flags.0),
@@ -3607,7 +3646,8 @@ fn run_transition(
 /// restart and leave work below turns into the same [`Step`]s the flow's
 /// methods return and is applied by [`apply_steps`]. The creator's rows
 /// belong to [`crate::creator_screen`] and the saves' character screen (the
-/// CONTINUE rows) to [`crate::save_screen`]; the manual is not wired yet.
+/// CONTINUE rows) to [`crate::save_screen`]; the manual to
+/// [`crate::help_live`].
 fn apply_menu_choices(
     mut choices: MessageReader<MenuChoice>,
     mut flow: ResMut<Flow>,
@@ -3651,10 +3691,9 @@ fn apply_menu_choices(
             // ([`crate::save_screen`]); its CONTINUE loads the slot.
             MenuCommand::CharacterScreen(_) => Vec::new(),
             MenuCommand::None | MenuCommand::ShowPage(_) | MenuCommand::Quit => Vec::new(),
-            MenuCommand::OpenManual | MenuCommand::OpenSettings => {
-                warn!("main menu command {command:?} is not wired");
-                Vec::new()
-            }
+            // The manual ([`crate::help_live`]) and the Settings form
+            // ([`crate::settings_form`]) open from the same choice.
+            MenuCommand::OpenManual | MenuCommand::OpenSettings => Vec::new(),
         };
         for step in &steps {
             debug!("game flow: menu {command:?}: {step:?}");
@@ -3685,11 +3724,33 @@ fn apply_steps(
     motions: Option<Res<exa_anim::Motions>>,
     mut cameras: Query<&mut crate::player::ChaseCamera>,
     mut out: FlowOutputs,
+    mut story: StoryParts,
 ) {
     if queued.steps.is_empty() {
         return;
     }
-    let steps = core::mem::take(&mut queued.steps);
+    let mut steps = core::mem::take(&mut queued.steps);
+    // What follows a level load acts on the loaded level and its player:
+    // the original runs it after its load returns. It waits in
+    // [`AfterLoad`] until the change is in and the player stands in it; a
+    // placement is carried across the load by its own resource.
+    if let Some(load) = steps
+        .iter()
+        .position(|step| matches!(step, Step::LoadLevel { .. }))
+    {
+        let tail = steps.split_off(load + 1);
+        let (now_steps, later): (Vec<Step>, Vec<Step>) = tail
+            .into_iter()
+            .partition(|step| matches!(step, Step::PlacePlayer(_)));
+        steps.extend(now_steps);
+        if !later.is_empty() {
+            if let Some(after) = story.after_load.as_mut() {
+                after.defer(later);
+            } else {
+                steps.extend(later);
+            }
+        }
+    }
     let now = ticks.as_ref().map_or(0, |ticks| ticks.millis() as u32);
     // A knock-out written on a body that did not carry one yet: its insert
     // is deferred, so a later wake write in the batch changes this copy.
@@ -3738,6 +3799,9 @@ fn apply_steps(
                 }
                 if let Some(end) = end.as_mut() {
                     end.close();
+                }
+                if let Some(tips) = story.tips.as_mut() {
+                    tips.hide();
                 }
                 crate::level_change::request(&mut out.changes, Some(locale), spawn, teardown);
             }
@@ -3994,6 +4058,100 @@ fn apply_steps(
             Step::Checkpoint => {
                 out.saves.write(crate::save_live::SaveStep::Checkpoint);
             }
+            Step::Tip(index) => {
+                if let Some(tips) = story.tips.as_mut() {
+                    let shown = tips.show(index as usize);
+                    debug!(
+                        "game flow: tip {index} shows {:?}",
+                        shown.and_then(crate::prelude::Shown::text)
+                    );
+                }
+            }
+            Step::ClosePrelude => {
+                if let Some(tips) = story.tips.as_mut() {
+                    tips.hide();
+                }
+            }
+            Step::StoryPlayer {
+                roles,
+                flags,
+                off_hand,
+                carried,
+                powers,
+            } => {
+                // The record the level load spawns the player from takes the
+                // start's writes before the load, as the original's does.
+                if let Some(record) = story.created.as_mut().and_then(|c| c.0.as_mut()) {
+                    story_record(record, off_hand, carried, powers);
+                }
+                commands.insert_resource(StoryStartPlayer {
+                    roles,
+                    flags,
+                    off_hand,
+                    carried,
+                });
+            }
+            Step::StartRecord(record) => {
+                // The spawned player takes the request: its word, the
+                // record's role list and gear, and the start motion.
+                let start = story.start.as_deref().copied();
+                for mut player in &mut players {
+                    if let Some(start) = start {
+                        match player.condition.as_mut() {
+                            Some(condition) => condition.0 = start.flags,
+                            None => {
+                                commands
+                                    .entity(player.entity)
+                                    .insert(exa_combat::Condition(start.flags));
+                            }
+                        }
+                        if let (Some(book), Some(roles)) =
+                            (story.roles.as_deref(), player.roles.as_mut())
+                        {
+                            **roles = story_roles(&book.book, start.roles);
+                        }
+                        if let Some(possessions) = player.possessions.as_mut() {
+                            story_possessions(possessions, start.off_hand, start.carried);
+                        }
+                    }
+                    if let (Some(motions), Some(animator)) =
+                        (motions.as_deref(), player.animator.as_mut())
+                        && motions.action_name(record[0]) != Some(animator.action.as_str())
+                    {
+                        let started = motions.start_requested(animator, record[0]);
+                        debug!(
+                            "game flow: start record motion {:#x} starts {started:?}",
+                            record[0]
+                        );
+                    }
+                }
+                commands.remove_resource::<StoryStartPlayer>();
+            }
+            Step::StoryLight(light) => {
+                // The start lays its torch in the world. A player that
+                // carries Exarust's torch keeps it: the torch is not laid
+                // twice, and where the story's torch starts stays the
+                // owner's call (`--no-torch` gives the original's start).
+                let carries = players.iter().any(|player| player.torch);
+                if carries {
+                    info!(
+                        "game flow: the story start's torch (item {:#x} at {} cm, angles {}) stays in the player's hand",
+                        light.item, light.position, light.rotation_degrees
+                    );
+                } else {
+                    info!(
+                        "game flow: the story start lays its torch (item {:#x}) at {} cm, angles {}",
+                        light.item, light.position, light.rotation_degrees
+                    );
+                    commands.insert_resource(crate::torch::StoryTorch(Some(
+                        crate::torch::story_torch_transform(&light),
+                    )));
+                }
+            }
+            Step::LevelTime => {
+                // The level-6 checkpoint keeps the engine clock.
+                commands.insert_resource(crate::save_live::LevelTime(now));
+            }
             other => {
                 debug!("game flow step not applied by the app: {other:?}");
             }
@@ -4012,6 +4170,146 @@ struct FlowOutputs<'w> {
     saves: MessageWriter<'w, crate::save_live::SaveStep>,
 }
 
+/// The resources the story start's and the tips' steps write.
+#[derive(bevy::ecs::system::SystemParam)]
+struct StoryParts<'w> {
+    tips: Option<ResMut<'w, crate::prelude::Tips>>,
+    created: Option<ResMut<'w, crate::creator_screen::CreatedCharacter>>,
+    roles: Option<Res<'w, exa_ai::brain::RoleDatabase>>,
+    start: Option<Res<'w, StoryStartPlayer>>,
+    after_load: Option<ResMut<'w, AfterLoad>>,
+}
+
+/// The story start's writes the spawned player takes with the start
+/// record ([`Step::StoryPlayer`], applied at [`Step::StartRecord`]).
+#[derive(Resource, Debug, Clone, Copy, PartialEq)]
+pub struct StoryStartPlayer {
+    pub roles: &'static [u32],
+    pub flags: u32,
+    pub off_hand: Option<ItemRef>,
+    pub carried: Option<Carried>,
+}
+
+/// The story start's record writes: the off hand's item, the carried
+/// entry appended, and the power word on a record that has a power block.
+/// (The float the start writes beside the power slots has no record field
+/// in Exarust's reading of the record: not written.)
+pub fn story_record(
+    record: &mut exa_formats::characters::CharacterRecord,
+    off_hand: Option<ItemRef>,
+    carried: Option<Carried>,
+    powers: Option<(u32, f32)>,
+) {
+    if let Some(item) = off_hand {
+        record.hands[1] = item;
+    }
+    if let Some(entry) = carried {
+        record.inventory.push(entry);
+    }
+    if let (Some((word, _)), Some(block)) = (powers, record.powers.as_mut()) {
+        block.word = word;
+    }
+}
+
+/// The start's role list on a cleared list: each id added in order, with
+/// the parents it inherits.
+pub fn story_roles(book: &exa_formats::roles::RoleDb, ids: &[u32]) -> exa_ai::roles::Roles {
+    let mut roles = exa_ai::roles::Roles::default();
+    for &id in ids {
+        roles.add(book, id);
+    }
+    roles
+}
+
+/// The start's gear on a spawned body's possessions: the off hand's item
+/// and the carried entry at its saved cell.
+pub fn story_possessions(
+    possessions: &mut exa_items::possession::Possessions,
+    off_hand: Option<ItemRef>,
+    carried: Option<Carried>,
+) {
+    if let Some(item) = off_hand {
+        possessions.out[1] = exa_items::possession::Hand {
+            id: item.id,
+            flags: item.flags,
+        };
+    }
+    if let Some(entry) = carried {
+        possessions.carried.push(exa_items::possession::Carried {
+            id: entry.item,
+            flags: entry.flags,
+            x: entry.extra as u16 as i16,
+            y: (entry.extra >> 16) as u16 as i16,
+        });
+    }
+}
+
+/// How many frames steps held for a load wait for its loading to show
+/// before they run anyway.
+pub const AFTER_LOAD_WAIT_FRAMES: u32 = 600;
+/// Quiet frames (no loading screen) after a load before its steps run.
+pub const AFTER_LOAD_QUIET_FRAMES: u32 = 2;
+
+/// The steps that follow a level load, held until the load is in and a
+/// player stands in the level.
+#[derive(Resource, Debug, Default)]
+pub struct AfterLoad {
+    pub steps: Vec<Step>,
+    /// The load's loading screen has been seen.
+    pub seen_loading: bool,
+    /// Frames since the steps were held.
+    pub frames: u32,
+    /// Frames without loading since the loading was seen.
+    pub quiet: u32,
+}
+
+impl AfterLoad {
+    /// Holds a load's steps.
+    pub fn defer(&mut self, steps: Vec<Step>) {
+        self.steps.extend(steps);
+        self.seen_loading = false;
+        self.frames = 0;
+        self.quiet = 0;
+    }
+
+    /// One frame: whether the held steps run now, from the loading state,
+    /// whether a player stands in the level and whether a placement is
+    /// still waiting for it.
+    pub fn ready(&mut self, loading: bool, player: bool, placing: bool) -> bool {
+        if self.steps.is_empty() {
+            return false;
+        }
+        self.frames = self.frames.saturating_add(1);
+        if loading {
+            self.seen_loading = true;
+            self.quiet = 0;
+            return false;
+        }
+        self.quiet = self.quiet.saturating_add(1);
+        if !self.seen_loading {
+            return self.frames >= AFTER_LOAD_WAIT_FRAMES;
+        }
+        self.quiet >= AFTER_LOAD_QUIET_FRAMES && player && !placing
+    }
+}
+
+/// Hands the steps held for a load back once the load is in.
+fn release_after_load(
+    mut after: ResMut<AfterLoad>,
+    mut queued: ResMut<FlowSteps>,
+    ready: Option<Res<exa_world::level_lifecycle::LevelChangeReady>>,
+    status: Option<Res<exa_ui::LoadingStatus>>,
+    placement: Option<Res<crate::level_change::PlayerPlacement>>,
+    players: Query<(), With<crate::player::PlayerBody>>,
+) {
+    let loading = ready.is_some() || status.is_some();
+    if after.ready(loading, !players.is_empty(), placement.is_some()) {
+        let steps = core::mem::take(&mut after.steps);
+        debug!("game flow: {} steps run after the load", steps.len());
+        queued.steps.extend(steps);
+    }
+}
+
 /// The player body's parts the flow's steps write.
 #[derive(bevy::ecs::query::QueryData)]
 #[query_data(mutable)]
@@ -4024,6 +4322,9 @@ struct PlayerParts {
     fighter: Option<&'static mut exa_combat::Fighter>,
     ragdoll: Option<&'static mut exa_physics::body::Ragdoll>,
     animator: Option<&'static mut exa_anim::Animator>,
+    possessions: Option<&'static mut exa_items::possession::Possessions>,
+    roles: Option<&'static mut exa_ai::roles::Roles>,
+    torch: Has<crate::torch::CarriesTorch>,
 }
 
 /// Writes a knock-out's condition, flags and wake timer on the player,
@@ -4172,7 +4473,8 @@ mod tests {
         let light = unknown.light.unwrap();
         assert_eq!(light.position, Vec3::new(8045.0, 4.7, 4075.0));
         assert_eq!(light.rotation_degrees, Vec3::new(-48.0, 110.0, 88.0));
-        assert_eq!(light.intensity, 256.0);
+        assert_eq!(light.item, 0x1f);
+        assert_eq!(light.level, 256);
         let derrin = unknown.companion.unwrap();
         assert_eq!(derrin.template, "xac_derrin");
         assert_eq!(derrin.position, Vec3::new(5808.0, 0.0, -4075.0));
@@ -6319,6 +6621,210 @@ mod tests {
             };
             assert_eq!(flow.transition_tick(input, 0).music.is_some(), fades);
         }
+    }
+
+    /// The unknown background's start: the record takes the letter (item
+    /// 0x10c at the cell (0x20, 0x80)) before the load; what follows the
+    /// load waits for it, then the spawned player takes the spawn word
+    /// 0x200, the roles 7, 1 and 0x0e, the letter in its pack and the
+    /// start's knock-out, and the torch is laid at the start's pose.
+    #[test]
+    fn the_story_start_reaches_the_record_and_the_spawned_player() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Flow>()
+            .init_resource::<FlowSteps>()
+            .init_resource::<GameView>()
+            .init_resource::<AfterLoad>()
+            .init_resource::<crate::prelude::Tips>()
+            .insert_resource(crate::creator_screen::CreatedCharacter(Some(
+                exa_formats::characters::CharacterRecord::reset(),
+            )))
+            .init_resource::<exa_ai::brain::RoleDatabase>()
+            .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
+            .add_message::<ForfeitMatch>()
+            .add_message::<SettingsEntry>()
+            .add_message::<AppExit>()
+            .add_message::<crate::save_live::SaveStep>()
+            .add_systems(Update, (release_after_load, apply_steps).chain());
+        let view = Viewport {
+            width: 1600,
+            height: 1080,
+        };
+        let steps =
+            app.world_mut()
+                .resource_mut::<Flow>()
+                .start_story(Background::Unknown, 1.0, view, 0);
+        app.world_mut()
+            .resource_mut::<FlowSteps>()
+            .steps
+            .extend(steps);
+        app.update();
+        let record = app
+            .world()
+            .resource::<crate::creator_screen::CreatedCharacter>()
+            .0
+            .clone()
+            .unwrap();
+        assert_eq!(
+            record.inventory.last(),
+            Some(&Carried {
+                item: 0x10c,
+                flags: 0,
+                extra: 0x0080_0020,
+            })
+        );
+        assert_eq!(record.hands[1], ItemRef::default());
+        let start = *app.world().resource::<StoryStartPlayer>();
+        assert_eq!(start.roles, &[7, 1, 0x0e]);
+        assert_eq!(start.flags, 0x200);
+        // The placement crosses the load; the rest waits for it.
+        assert!(
+            app.world()
+                .contains_resource::<crate::level_change::PlayerPlacement>()
+        );
+        let held = &app.world().resource::<AfterLoad>().steps;
+        assert!(held.contains(&Step::StartRecord([START_MOTION_ANIMATION, 0, 0])));
+        assert!(held.contains(&Step::KnockOut { delay_ms: 3000 }));
+        assert!(held.iter().any(|step| matches!(step, Step::StoryLight(_))));
+        assert!(!held.iter().any(|step| matches!(step, Step::PlacePlayer(_))));
+        // The level loads; the viewer then spawns the player and places it.
+        app.insert_resource(exa_ui::LoadingStatus::default());
+        app.update();
+        assert!(!app.world().resource::<AfterLoad>().steps.is_empty());
+        app.world_mut().remove_resource::<exa_ui::LoadingStatus>();
+        let player = app
+            .world_mut()
+            .spawn((
+                crate::player::PlayerBody::new(0.0),
+                exa_combat::Condition(0),
+                exa_items::possession::Possessions::default(),
+                exa_ai::roles::Roles::default(),
+            ))
+            .id();
+        app.update();
+        assert!(
+            !app.world().resource::<AfterLoad>().steps.is_empty(),
+            "the placement still waits"
+        );
+        app.world_mut()
+            .remove_resource::<crate::level_change::PlayerPlacement>();
+        for _ in 0..3 {
+            app.update();
+        }
+        assert!(app.world().resource::<AfterLoad>().steps.is_empty());
+        let world = app.world();
+        assert_eq!(world.get::<exa_combat::Condition>(player).unwrap().0, 0x200);
+        let roles: Vec<u32> = world
+            .get::<exa_ai::roles::Roles>(player)
+            .unwrap()
+            .ids()
+            .collect();
+        assert!(roles.contains(&7) && roles.contains(&1) && roles.contains(&0x0e));
+        let pack = world
+            .get::<exa_items::possession::Possessions>(player)
+            .unwrap();
+        assert_eq!(
+            pack.carried.last(),
+            Some(&exa_items::possession::Carried {
+                id: 0x10c,
+                flags: 0,
+                x: 0x20,
+                y: 0x80,
+            })
+        );
+        assert!(
+            world
+                .get::<exa_combat::condition::KnockOut>(player)
+                .is_some()
+        );
+        let torch = world.resource::<crate::torch::StoryTorch>().0.unwrap();
+        assert!((torch.translation - Vec3::new(80.45, 0.047, 40.75)).length() < 1e-5);
+        assert!(!world.contains_resource::<StoryStartPlayer>());
+    }
+
+    /// The knight's start: the torch in the off hand and one carried with
+    /// flags 0x100; no torch is laid.
+    #[test]
+    fn the_knight_s_record_holds_the_torch() {
+        let mut record = exa_formats::characters::CharacterRecord::reset();
+        let start = story_start(Background::Knight, 1.0);
+        story_record(&mut record, start.off_hand, start.carried, start.powers);
+        assert_eq!(record.hands[1], ItemRef { id: 0x1f, flags: 0 });
+        assert_eq!(
+            record.inventory.last().map(|c| (c.item, c.flags)),
+            Some((0x1f, 0x100))
+        );
+        assert!(start.light.is_none());
+        let mut pack = exa_items::possession::Possessions::default();
+        story_possessions(&mut pack, start.off_hand, start.carried);
+        assert_eq!(pack.out[1].id, 0x1f);
+        // The new entry's cell is the default (40, 4).
+        assert_eq!((pack.carried[0].x, pack.carried[0].y), (40, 4));
+        let roles = story_roles(&exa_formats::roles::RoleDb::default(), start.roles);
+        // The list keeps the newest role first.
+        assert_eq!(roles.ids().collect::<Vec<_>>(), vec![0x1b, 1, 7]);
+    }
+
+    /// The tips: the knock-out's hint 2, the prelude's close, and the
+    /// level-6 checkpoint's clock stamp.
+    #[test]
+    fn the_tip_and_level_time_steps_are_applied() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Flow>()
+            .init_resource::<FlowSteps>()
+            .init_resource::<GameView>()
+            .init_resource::<crate::prelude::Tips>()
+            .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
+            .add_message::<ForfeitMatch>()
+            .add_message::<SettingsEntry>()
+            .add_message::<AppExit>()
+            .add_message::<crate::save_live::SaveStep>()
+            .add_systems(Update, apply_steps);
+        let steps = app.world_mut().resource_mut::<Flow>().knock_out(0);
+        assert!(steps.contains(&Step::Tip(2)));
+        app.world_mut()
+            .resource_mut::<FlowSteps>()
+            .steps
+            .extend(steps);
+        app.update();
+        let tips = app.world().resource::<crate::prelude::Tips>();
+        assert_eq!(tips.current, Some(crate::prelude::Shown::Hint(1)));
+        assert_eq!(
+            tips.current.and_then(crate::prelude::Shown::text),
+            Some("You have been defeated.")
+        );
+        app.world_mut()
+            .resource_mut::<FlowSteps>()
+            .steps
+            .extend([Step::ClosePrelude, Step::LevelTime]);
+        app.update();
+        assert_eq!(app.world().resource::<crate::prelude::Tips>().current, None);
+        assert!(
+            app.world()
+                .contains_resource::<crate::save_live::LevelTime>()
+        );
+    }
+
+    /// Held steps wait for the loading screen, then two quiet frames, a
+    /// player and no pending placement; a load that never shows runs them
+    /// after the wait.
+    #[test]
+    fn steps_held_for_a_load_wait_for_it() {
+        let mut after = AfterLoad::default();
+        assert!(!after.ready(false, true, false), "nothing held");
+        after.defer(vec![Step::Controls(true)]);
+        assert!(!after.ready(true, false, false));
+        assert!(!after.ready(false, true, false), "one quiet frame");
+        assert!(!after.ready(false, true, true), "the placement waits");
+        assert!(after.ready(false, true, false));
+        let mut lost = AfterLoad::default();
+        lost.defer(vec![Step::Controls(true)]);
+        for _ in 1..AFTER_LOAD_WAIT_FRAMES {
+            assert!(!lost.ready(false, true, false));
+        }
+        assert!(lost.ready(false, true, false));
     }
 
     /// A load step becomes a level change request, a teardown step is
