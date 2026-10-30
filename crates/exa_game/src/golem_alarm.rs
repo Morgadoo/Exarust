@@ -407,6 +407,7 @@ fn wake_one(
             position: at / 100.0,
             volume: golem::WAKE_VOLUME,
             pitch,
+            flags: 0,
         });
         info!(
             "{entity:?} wakes: race word {race_word:#010x}, home ({:.0}, {:.0}, {:.0}) cm, golem_act at pitch {pitch:.3}, glow 'go' to {} (not faded live)",

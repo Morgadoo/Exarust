@@ -430,8 +430,9 @@ pub fn rotation(x: f32, y: f32, z: f32) -> [[f32; 3]; 3] {
 /// The story background a new story starts from: the unknown hero, a knight,
 /// a proctor, or the villager. [`crate::create::background_preset`] names the
 /// same four.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Background {
+    #[default]
     Unknown,
     Knight,
     Proctor,
@@ -976,6 +977,16 @@ pub struct StoryState {
     /// here beside [`Self::reconstruction`], and a death rebuilds only when it
     /// matches [`Self::record`].
     pub checkpoint: u32,
+    /// The background the story was started from (the original's session
+    /// word: a new story writes the creator's pick, a load the save's
+    /// start background; the unknown one otherwise). The story events act
+    /// only on the unknown background.
+    pub background: Background,
+    /// The memory fragments seen, the original's session word: a fragment
+    /// event or-s its low 16 bits in, an awakening makes it `0xffff`, a new
+    /// story clears it, a save keeps it (its memory-flags chunk) and a load
+    /// restores it.
+    pub memory: u32,
 }
 
 /// The practice session's state.
@@ -1967,8 +1978,10 @@ impl Flow {
         self.hook = Hook::Story;
         self.phase = Phase::Playing;
         self.viewport = viewport;
+        // A new story clears the fragments seen and keeps its background.
         self.story = StoryState {
             knockout_ms: u32::MAX - KNOCKOUT_MS,
+            background,
             ..Default::default()
         };
         // The three backgrounds start a different wake-up: the unknown one
@@ -2499,8 +2512,10 @@ impl Flow {
     /// the background-unlock event sets its bit in the background word and
     /// writes the whole word to the settings store at once (the store is
     /// flushed with it); an event whose bit is already set writes nothing.
-    /// The hook runs whatever the mode, as the original registers it once
-    /// at start-up. The other effects are returned for the session to apply.
+    /// A fragment's bits join the session's fragment word, and an awakening
+    /// sets the word whole. The hook runs whatever the mode, as the original
+    /// registers it once at start-up. The other effects are returned, in the
+    /// handler's order, for the session to apply to the player.
     pub fn game_event(
         &mut self,
         code: u32,
@@ -2521,6 +2536,8 @@ impl Flow {
                         bytes: self.unlocks.background_bytes(),
                     });
                 }
+                crate::game_event::Effect::Collected(bits) => self.story.memory |= bits,
+                crate::game_event::Effect::SetCollected(word) => self.story.memory = word,
                 other => rest.push(other),
             }
         }
@@ -3341,6 +3358,10 @@ impl Plugin for FlowPlugin {
             .add_message::<ForfeitMatch>()
             .add_message::<SettingsEntry>()
             .add_message::<exa_script::ScriptEffect>()
+            // What the story events' effects go through.
+            .add_message::<exa_script::Narrate>()
+            .add_message::<exa_combat::pain::PainSounded>()
+            .add_message::<exa_audio::PointSounded>()
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
             .init_resource::<GameView>()
@@ -3355,7 +3376,7 @@ impl Plugin for FlowPlugin {
                     (apply_menu_choices, tick, follow_player).chain(),
                     (
                         travel,
-                        run_game_events,
+                        crate::game_event_live::run_game_events,
                         run_transition.in_set(FlowSystems::Transition),
                         release_after_load,
                         apply_steps.in_set(FlowSystems::ApplySteps),
@@ -3365,44 +3386,6 @@ impl Plugin for FlowPlugin {
                 )
                     .chain(),
             );
-    }
-}
-
-/// The consumer of the story scripts' `GameEvent` calls: each code runs the
-/// flow's hook ([`Flow::game_event`]) and its settings write joins the
-/// flow's steps, which [`apply_steps`] hands to the host's store. The
-/// effects on the player (fragments, awakenings, lines, sounds) have no
-/// consumer yet, so the hook is given a player without the memory role on
-/// a background other than the unknown one, which leaves the unlock as the
-/// only branch that acts.
-fn run_game_events(
-    mut events: MessageReader<exa_script::ScriptEffect>,
-    mut flow: ResMut<Flow>,
-    mut queued: ResMut<FlowSteps>,
-) {
-    for event in events.read() {
-        let &exa_script::dialogue::Effect::GameEvent(code) = &event.0 else {
-            continue;
-        };
-        let story = crate::game_event::StoryContext {
-            unknown_background: false,
-        };
-        let player = crate::game_event::EventPlayer {
-            memory_role: false,
-            raise_dead: false,
-            class: 0,
-            female: false,
-            potential: 0.0,
-            collected: 0,
-            voice_volume: 1.0,
-            voice_pitch: 1.0,
-        };
-        let (steps, rest) = flow.game_event(code, story, &player, &mut || 0.0);
-        info!("game event {code:#x}: {} settings write(s)", steps.len());
-        if !rest.is_empty() {
-            debug!("game event {code:#x}: not applied: {rest:?}");
-        }
-        queued.steps.extend(steps);
     }
 }
 
@@ -7195,6 +7178,48 @@ mod tests {
         assert!(other.is_empty());
     }
 
+    /// The flow keeps the fragments seen: a fragment's bits are or-ed in,
+    /// an awakening sets the word whole, and a new story clears it and
+    /// keeps its background.
+    #[test]
+    fn the_flow_keeps_the_fragments_seen_and_the_background() {
+        let mut flow = Flow::default();
+        let story = crate::game_event::StoryContext {
+            unknown_background: true,
+        };
+        let player = crate::game_event::EventPlayer {
+            memory_role: true,
+            raise_dead: false,
+            class: 0,
+            female: false,
+            potential: 0.0,
+            collected: 0,
+            voice_volume: 1.0,
+            voice_pitch: 1.0,
+        };
+        let (_, rest) = flow.game_event(0xc0_0002, story, &player, &mut || 0.0);
+        assert_eq!(flow.story.memory, 2);
+        assert!(
+            !rest
+                .iter()
+                .any(|e| matches!(e, crate::game_event::Effect::Collected(_)))
+        );
+        flow.game_event(
+            crate::game_event::AWAKENING_MIND,
+            story,
+            &player,
+            &mut || 0.0,
+        );
+        assert_eq!(flow.story.memory, 0xffff);
+        let view = Viewport {
+            width: 1280,
+            height: 720,
+        };
+        flow.start_story(Background::Villager, 1.8, view, 0);
+        assert_eq!(flow.story.memory, 0);
+        assert_eq!(flow.story.background, Background::Villager);
+    }
+
     /// A script's `GameEvent(4)` reaches the flow's consumer, whose write
     /// becomes the settings entry the host's store saves.
     #[test]
@@ -7204,7 +7229,10 @@ mod tests {
             .init_resource::<Flow>()
             .init_resource::<FlowSteps>()
             .add_message::<exa_script::ScriptEffect>()
-            .add_systems(Update, run_game_events);
+            .add_message::<exa_script::Narrate>()
+            .add_message::<exa_combat::pain::PainSounded>()
+            .add_message::<exa_audio::PointSounded>()
+            .add_systems(Update, crate::game_event_live::run_game_events);
         app.world_mut().write_message(exa_script::ScriptEffect(
             exa_script::dialogue::Effect::GameEvent(crate::game_event::UNLOCK_EVENT),
         ));

@@ -12,10 +12,18 @@
 //! the technique word on the player's body, and writes the account
 //! experience back to the settings when play ends.
 //!
+//! The player's record lives on the player's body (the entity with
+//! [`crate::player::PlayerBody`]), as its other body state does. A rise that
+//! changes the technique word puts it on the body's caster (its technique
+//! bits) and adds the record's perks to the body's fighter
+//! ([`apply_technique_word`]); the level start puts the starting word there
+//! the same way.
+//!
 //! The explored-cell half of the tick needs the level's sector grid; the
 //! running game does not hand one to the experience system yet, so the live
 //! tick only converts. [`crate::experience::Experience::explore`] and its
-//! [`crate::experience::ExploreGrid`] stay the tested rule for it.
+//! [`crate::experience::ExploreGrid`] stay the tested rule for it. The
+//! item-kind and kill hooks have no caller yet (see the module README).
 
 use bevy::prelude::*;
 use exa_formats::characters::CharacterRecord;
@@ -25,7 +33,7 @@ use crate::experience::{
     global_xp_to_setting, technique_bits,
 };
 use crate::flow::SettingsEntry;
-use crate::player::Player;
+use crate::player::PlayerBody;
 use crate::player_controls::PlaySession;
 
 /// The account-wide experience read from the launch's settings store, when
@@ -160,27 +168,37 @@ fn load_account_experience(
     }
 }
 
-/// The level-start hook: the first frame of play takes the player's record.
+/// The level-start hook: the first frame of play takes the player's record,
+/// and the body takes the technique word its skills name.
 fn begin_story_experience(
     ticks: Option<Res<exa_physics::body::BodyTicks>>,
     play: Option<Res<PlaySession>>,
-    players: Query<&exa_character::record::CharacterData, With<Player>>,
+    players: Query<(Entity, &exa_character::record::CharacterData), With<PlayerBody>>,
+    mut commands: Commands,
     mut live: ResMut<StoryExperience>,
 ) {
     if live.started || !play.is_some_and(|play| play.playing) {
         return;
     }
-    let Some(data) = players.iter().next() else {
+    let Some((player, data)) = players.iter().next() else {
         return;
     };
-    live.begin(&data.record, now_ms(ticks.as_deref()));
+    let now = now_ms(ticks.as_deref());
+    live.begin(&data.record, now);
+    info!(
+        "experience: level start at {now} ms: pool {}, account {}, technique word {:#010x}",
+        live.state.pool, live.state.global, live.technique_word
+    );
+    commands
+        .entity(player)
+        .insert(TechniqueWord(live.technique_word));
 }
 
 /// The flow's discovery pass: convert, write the player's record back and
 /// put the technique word on the body when it changed.
 fn tick_story_experience(
     mut passes: MessageReader<DiscoveryTick>,
-    mut players: Query<(Entity, &mut exa_character::record::CharacterData), With<Player>>,
+    mut players: Query<(Entity, &mut exa_character::record::CharacterData), With<PlayerBody>>,
     mut commands: Commands,
     mut live: ResMut<StoryExperience>,
 ) {
@@ -192,9 +210,42 @@ fn tick_story_experience(
         if let Ok((player, mut data)) = players.single_mut() {
             live.write_player(&mut data.record);
             if changed {
+                info!(
+                    "experience: a skill rose at {} ms: technique word {:#010x}",
+                    pass.now, live.technique_word
+                );
                 commands
                     .entity(player)
                     .insert(TechniqueWord(live.technique_word));
+            }
+        }
+    }
+}
+
+/// The bodies whose technique word changed, with what reads it.
+type TechniqueReaders<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static TechniqueWord,
+        Option<&'static exa_character::record::CharacterData>,
+        Option<&'static mut crate::thaum::cast::PowerCaster>,
+        Option<&'static mut exa_combat::Fighter>,
+    ),
+    Changed<TechniqueWord>,
+>;
+
+/// The body reads its technique word again: the caster's technique bits
+/// become the word, and the fighter gains the perks the record's techniques
+/// now give (the perks a launch option gave stay).
+pub fn apply_technique_word(mut bodies: TechniqueReaders) {
+    for (word, data, caster, fighter) in &mut bodies {
+        if let Some(mut caster) = caster {
+            caster.body.techniques = word.0;
+        }
+        if let (Some(mut fighter), Some(data)) = (fighter, data) {
+            for perk in data.record.perks().iter() {
+                fighter.perks.insert(perk);
             }
         }
     }
@@ -239,6 +290,7 @@ impl Plugin for ExperienceLivePlugin {
                     load_account_experience,
                     begin_story_experience,
                     tick_story_experience,
+                    apply_technique_word,
                     store_account_experience,
                 )
                     .chain(),
@@ -338,6 +390,39 @@ mod tests {
         assert_eq!(live.unsaved_global(), None);
         live.state.global = 20;
         assert_eq!(live.unsaved_global(), Some(20));
+    }
+
+    /// The body's caster takes the new word, and its fighter the perks the
+    /// record's techniques give; perks it already had stay.
+    #[test]
+    fn a_changed_technique_word_reaches_the_caster_and_the_fighter() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_systems(Update, apply_technique_word);
+        let mut record = record(0);
+        // Close combat's first technique, funded.
+        record.skills[0].points = 5000;
+        let caster = crate::thaum::cast::PowerCaster::new(&[]);
+        let fighter = exa_combat::Fighter::default();
+        let body = app
+            .world_mut()
+            .spawn((
+                exa_character::record::CharacterData::of_record(record.clone()),
+                caster,
+                fighter,
+                TechniqueWord(technique_bits(&record.skills)),
+            ))
+            .id();
+        app.update();
+        let caster = app
+            .world()
+            .get::<crate::thaum::cast::PowerCaster>(body)
+            .unwrap();
+        assert_eq!(caster.body.techniques, technique_bits(&record.skills));
+        let fighter = app.world().get::<exa_combat::Fighter>(body).unwrap();
+        for perk in record.perks().iter() {
+            assert!(fighter.perks.has(perk));
+        }
     }
 
     #[test]

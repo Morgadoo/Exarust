@@ -343,8 +343,12 @@ pub struct CharacterRecord {
     /// A random seed the AI's search activity reads.
     pub search_seed: u32,
     pub experience: i32,
-    /// A word the game keeps at zero in every shipped record (its reader
-    /// does not use it).
+    /// The class word: zero in every shipped record. The story's start
+    /// writes `0x51_0000` for the unknown background (the save reader too,
+    /// for a zero word), Corlian's narration asks for `0x40_0000` under
+    /// `0xC0_0000`, and the domain awakenings write their bits under
+    /// `0xFF00_FFFF` (REA on the story event handler). The power tree reads
+    /// its specialist domains from it.
     pub extra_word: u32,
     pub skills: [Skill; SKILLS],
     pub inventory: Vec<Carried>,
@@ -956,7 +960,11 @@ pub struct SavedState {
 /// A thaumaturge's powers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Powers {
-    /// A leading word whose meaning is not traced.
+    /// The potential, an `f32` kept as its bits: the float the record keeps
+    /// beside its power slots (4.0 for a new thaumaturge). A memory
+    /// fragment adds 1 and an awakening sets it to its old value plus 10
+    /// less the fragments seen (REA on the story event handler and on the
+    /// record reader, which reads this word into that float).
     pub word: u32,
     pub slots: [u32; POWER_SLOTS],
     pub known: Vec<Power>,

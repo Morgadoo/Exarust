@@ -3,16 +3,32 @@
 //! unlock.
 //!
 //! The handler reads an event code from the script and turns it into what the
-//! original does: a motion request, a flash, a dialogue line, a sound, a
-//! potential change, a class word or a settings bit. It is a pure rule here;
-//! [`crate::flow`] owns the session the events belong to.
+//! original does: a requested action, a voice line, a flash, a narrator topic,
+//! a sound, a potential change, a class word or a settings bit. It is a pure
+//! rule here; [`crate::game_event_live`] applies the effects to the running
+//! player and [`crate::flow`] keeps the session words (the fragments seen and
+//! the background unlocks).
 //!
-//! Evidence: the story script handler of the game-main unit. The memory
-//! class is any `0xC0xxxx` code; the awakening codes are `0xC10EC1` to
-//! `0xC10EC3`; the raise-dead and Corlian codes and the sounds' volumes are
-//! the handler's constants. The random draws are passed in (the original
-//! uses its process random generator), so tests pin concrete values.
-
+//! Evidence: the story script handler of the game-main unit (REA, checked
+//! against the assembly). The memory class is any `0xC0xxxx` code; the
+//! awakening codes are `0xC10EC1` to `0xC10EC3`; the raise-dead and Corlian
+//! codes and the sounds' volumes are the handler's constants. The random
+//! draws are passed in (the original uses its process random generator), so
+//! tests pin concrete values.
+//!
+//! What the handler's calls are, from their bodies:
+//! - the fragment's "motion" is the body's voice request, line 2 (the heavy
+//!   groan), at the first factor times the voice volume and the second times
+//!   the voice pitch;
+//! - its flash is the post-process flash (3 s, the plain variant);
+//! - its dialogue line, and the raise-dead and Corlian lines, start a topic
+//!   of the narrator graph (`narrator.rcd`), after the given delay (0 at
+//!   once);
+//! - the raise-dead line asks the power grant for Raise Dead (`0x10F`, the
+//!   mind tree): the successful line when the grant wrote the power;
+//! - the potential is the float the record keeps beside its power slots
+//!   (the powers chunk's first word), and the class word the record word the
+//!   reader puts after the experience.
 /// The mask that names the memory-fragment class of event codes.
 pub const MEMORY_CLASS_MASK: u32 = 0x00ff_0000;
 /// The memory-fragment class.
@@ -25,16 +41,17 @@ pub const MEMORY_ROLE: u32 = 0x0e;
 pub const MEMORY_ACTION: u32 = 0x2d;
 /// The potential a fragment adds.
 pub const MEMORY_POTENTIAL: f32 = 1.0;
-/// The fragment's dialogue and how long it shows.
+/// The fragment's narrator topic and its delay (ms).
 pub const MEMORY_DIALOGUE: (&str, u32) = ("XU_Memory", 2500);
 /// The AI event a fragment raises.
 pub const MEMORY_AI_EVENT: (u32, u32, u32, &str) = (0x13, 7, 1, "XAU_Memory");
 
 /// The raise-dead narration's event code.
 pub const RAISE_DEAD_EVENT: u32 = 0xda_0115;
-/// The thaumaturgy tree flag that picks the successful line.
+/// The power the raise-dead narration asks the grant for (Raise Dead, in
+/// the mind tree); a grant that writes it picks the successful line.
 pub const RAISE_DEAD_POWER: u32 = 0x10f;
-/// The two raise-dead lines, each shown this long.
+/// The two raise-dead narrator topics, each after this delay (ms).
 pub const RAISE_DEAD_FAILED: (&str, u32) = ("RVL_RaiseDead_F", 1000);
 pub const RAISE_DEAD_SUCCEEDED: (&str, u32) = ("RVL_RaiseDead_S", 1000);
 
@@ -43,7 +60,7 @@ pub const CORLIAN_EVENT: u32 = 0xc1_0ec0;
 /// The class bits and value that let Corlian speak.
 pub const CORLIAN_MASK: u32 = 0x00c0_0000;
 pub const CORLIAN_VALUE: u32 = 0x0040_0000;
-/// Corlian's line (shown until it is dismissed).
+/// Corlian's narrator topic (started at once).
 pub const CORLIAN_DIALOGUE: (&str, u32) = ("Corlian", 0);
 
 /// The first and last domain-awakening codes.
@@ -88,9 +105,8 @@ pub const WAIL_PRIORITY: u32 = 0x4460;
 pub const UNLOCK_EVENT: u32 = 4;
 pub const UNLOCK_BIT: u32 = 4;
 
-/// The motion a memory fragment asks for: the animation, and the two random
-/// factors it is played at.
-pub const MEMORY_ANIMATION: u32 = 2;
+/// The voice line a memory fragment speaks: line 2, the heavy groan.
+pub const MEMORY_VOICE_LINE: i32 = 2;
 
 /// Where a sound plays.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -106,21 +122,17 @@ pub enum SoundAt {
 pub enum Effect {
     /// The motion the player is asked to play.
     RequestAction(u32),
-    /// A motion with its speed and weight factors.
-    Motion {
-        animation: u32,
-        speed: f32,
-        weight: f32,
-    },
-    /// The screen flash.
+    /// The body's voice request: the line, and the factors the voice volume
+    /// and the voice pitch are multiplied by.
+    Voice { line: i32, volume: f32, pitch: f32 },
+    /// The post-process flash (its plain variant).
     Flash,
-    /// A dialogue line and how long it stays.
-    Dialogue {
-        text: &'static str,
-        duration_ms: u32,
-    },
-    /// The fragment number marked as seen.
+    /// A narrator topic, started after `delay_ms` (0 at once).
+    Dialogue { text: &'static str, delay_ms: u32 },
+    /// The fragment bits marked as seen (or-ed into the session's word).
     Collected(u32),
+    /// The session's fragment word becomes this value.
+    SetCollected(u32),
     /// A potential change (added to the player).
     Potential(f32),
     /// The player's potential becomes this value.
@@ -155,7 +167,8 @@ pub enum Effect {
 pub struct EventPlayer {
     /// The player has the memory role.
     pub memory_role: bool,
-    /// The player's thaumaturgy tree has the raise-dead power.
+    /// The power grant wrote Raise Dead ([`RAISE_DEAD_POWER`]). The caller
+    /// asks the grant only when [`asks_grant`] says the handler would.
     pub raise_dead: bool,
     /// The player's class word.
     pub class: u32,
@@ -163,9 +176,9 @@ pub struct EventPlayer {
     pub female: bool,
     /// The player's potential.
     pub potential: f32,
-    /// The fragments already seen, a 16-bit mask.
+    /// The fragments already seen, the session's word.
     pub collected: u32,
-    /// The voice volume and pitch the groan is scaled by.
+    /// The body's voice volume and pitch the groan is scaled by.
     pub voice_volume: f32,
     pub voice_pitch: f32,
 }
@@ -175,6 +188,55 @@ pub struct EventPlayer {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StoryContext {
     pub unknown_background: bool,
+}
+
+/// The handler asks the power grant for Raise Dead: the raise-dead code on
+/// the unknown background. The grant writes the power when it succeeds, so
+/// it runs only here, as the original's does.
+pub fn asks_grant(code: u32, story: StoryContext) -> bool {
+    code == RAISE_DEAD_EVENT && story.unknown_background
+}
+
+/// The record's potential: the float beside its power slots (the powers
+/// chunk's first word, 0 without one).
+pub fn potential(record: &exa_formats::characters::CharacterRecord) -> f32 {
+    record
+        .powers
+        .as_ref()
+        .map_or(0.0, |p| f32::from_bits(p.word))
+}
+
+/// Writes the record's potential. A record without a powers chunk gets an
+/// empty one (the original's record always has the field; the writer still
+/// leaves a chunk without powers out).
+pub fn set_potential(record: &mut exa_formats::characters::CharacterRecord, value: f32) {
+    let powers = record
+        .powers
+        .get_or_insert_with(|| exa_formats::characters::Powers {
+            word: 0,
+            slots: [0; exa_formats::characters::POWER_SLOTS],
+            known: Vec::new(),
+        });
+    powers.word = value.to_bits();
+}
+
+/// Applies the effects that write the player's record: the potential (a
+/// single-precision add, or the new value) and the class word. Returns
+/// whether the effect was one of them.
+pub fn apply_to_record(
+    effect: &Effect,
+    record: &mut exa_formats::characters::CharacterRecord,
+) -> bool {
+    match *effect {
+        Effect::Potential(add) => {
+            let value = potential(record) + add;
+            set_potential(record, value);
+        }
+        Effect::SetPotential(value) => set_potential(record, value),
+        Effect::Class { mask, bits } => record.extra_word = (record.extra_word & mask) | bits,
+        _ => return false,
+    }
+    true
 }
 
 /// The number of set bits in a 16-bit mask (the original's population
@@ -199,17 +261,18 @@ pub fn handle(
             return effects;
         }
         effects.push(Effect::RequestAction(MEMORY_ACTION));
+        // The pitch factor is drawn first, then the volume's.
         let pitch_draw = draws();
         let volume_draw = draws();
-        effects.push(Effect::Motion {
-            animation: MEMORY_ANIMATION,
-            speed: (volume_draw * 0.2 + 0.4) as f32,
-            weight: (pitch_draw * 0.1 + 0.9) as f32,
+        effects.push(Effect::Voice {
+            line: MEMORY_VOICE_LINE,
+            volume: (volume_draw * 0.2 + 0.4) as f32,
+            pitch: (pitch_draw * 0.1 + 0.9) as f32,
         });
         effects.push(Effect::Flash);
         effects.push(Effect::Dialogue {
             text: MEMORY_DIALOGUE.0,
-            duration_ms: MEMORY_DIALOGUE.1,
+            delay_ms: MEMORY_DIALOGUE.1,
         });
         effects.push(Effect::Collected(fragment));
         effects.push(Effect::Potential(MEMORY_POTENTIAL));
@@ -228,14 +291,14 @@ pub fn handle(
             };
             effects.push(Effect::Dialogue {
                 text: line.0,
-                duration_ms: line.1,
+                delay_ms: line.1,
             });
         }
     } else if code == CORLIAN_EVENT {
         if story.unknown_background && player.class & CORLIAN_MASK == CORLIAN_VALUE {
             effects.push(Effect::Dialogue {
                 text: CORLIAN_DIALOGUE.0,
-                duration_ms: CORLIAN_DIALOGUE.1,
+                delay_ms: CORLIAN_DIALOGUE.1,
             });
         }
     } else if !(AWAKENING_FIRST..=AWAKENING_LAST).contains(&code) {
@@ -247,7 +310,7 @@ pub fn handle(
         let potential =
             (player.potential + AWAKENING_POTENTIAL) - fragments_seen(player.collected) as f32;
         effects.push(Effect::SetPotential(potential));
-        effects.push(Effect::Collected(COLLECTED_ALL));
+        effects.push(Effect::SetCollected(COLLECTED_ALL));
         let pitch_draw = draws();
         let volume_draw = draws();
         effects.push(Effect::Sound {
@@ -343,15 +406,15 @@ mod tests {
             effects,
             vec![
                 Effect::RequestAction(0x2d),
-                Effect::Motion {
-                    animation: 2,
-                    speed: 0.45,
-                    weight: 0.95
+                Effect::Voice {
+                    line: 2,
+                    volume: 0.45,
+                    pitch: 0.95
                 },
                 Effect::Flash,
                 Effect::Dialogue {
                     text: "XU_Memory",
-                    duration_ms: 2500
+                    delay_ms: 2500
                 },
                 Effect::Collected(5),
                 Effect::Potential(1.0),
@@ -427,7 +490,7 @@ mod tests {
             effects,
             vec![Effect::Dialogue {
                 text: "RVL_RaiseDead_F",
-                duration_ms: 1000
+                delay_ms: 1000
             }]
         );
         let mut able = player();
@@ -445,7 +508,7 @@ mod tests {
             ),
             vec![Effect::Dialogue {
                 text: "RVL_RaiseDead_S",
-                duration_ms: 1000
+                delay_ms: 1000
             }]
         );
         let mut draw = draws(&[]);
@@ -480,7 +543,7 @@ mod tests {
             ),
             vec![Effect::Dialogue {
                 text: "Corlian",
-                duration_ms: 0
+                delay_ms: 0
             }]
         );
         let mut other = player();
@@ -519,7 +582,7 @@ mod tests {
         assert_eq!(effects[0], Effect::RequestAction(0x2c));
         // 3.5 + 10 − 4 = 9.5.
         assert_eq!(effects[1], Effect::SetPotential(9.5));
-        assert_eq!(effects[2], Effect::Collected(0xffff));
+        assert_eq!(effects[2], Effect::SetCollected(0xffff));
         assert_eq!(
             effects[3],
             Effect::Sound {
@@ -673,5 +736,41 @@ mod tests {
             )
             .is_empty()
         );
+    }
+
+    #[test]
+    fn the_record_takes_the_potential_and_the_class_word() {
+        let mut record = exa_formats::characters::CharacterRecord::new();
+        assert_eq!(potential(&record), 0.0);
+        // A record without a powers chunk gets an empty one.
+        assert!(apply_to_record(&Effect::Potential(1.0), &mut record));
+        assert_eq!(potential(&record), 1.0);
+        assert!(record.powers.as_ref().unwrap().known.is_empty());
+        assert!(apply_to_record(&Effect::SetPotential(9.5), &mut record));
+        assert_eq!(record.powers.as_ref().unwrap().word, 9.5f32.to_bits());
+        // The class bits under the mask stay; the awakening's bits are or-ed.
+        record.extra_word = 0x0051_1234;
+        assert!(apply_to_record(
+            &Effect::Class {
+                mask: CLASS_MASK,
+                bits: CLASS_MIND
+            },
+            &mut record
+        ));
+        assert_eq!(record.extra_word, 0x00d1_1234);
+        assert!(!apply_to_record(&Effect::Flash, &mut record));
+    }
+
+    #[test]
+    fn only_the_raise_dead_code_on_the_unknown_background_asks_the_grant() {
+        let unknown = StoryContext {
+            unknown_background: true,
+        };
+        let other = StoryContext {
+            unknown_background: false,
+        };
+        assert!(asks_grant(RAISE_DEAD_EVENT, unknown));
+        assert!(!asks_grant(RAISE_DEAD_EVENT, other));
+        assert!(!asks_grant(CORLIAN_EVENT, unknown));
     }
 }

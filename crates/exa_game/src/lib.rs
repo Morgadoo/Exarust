@@ -51,6 +51,7 @@ pub mod footprints;
 pub mod footwork;
 pub mod frame;
 pub mod game_event;
+pub mod game_event_live;
 pub mod gamepad;
 pub mod golem_alarm;
 pub mod golem_body;
@@ -234,6 +235,7 @@ impl Plugin for GamePlugin {
             div_card_screen::DivinationPlugin,
             loadout_screen::LoadoutScreenPlugin,
             experience_live::ExperienceLivePlugin,
+            game_event_live::GameEventLivePlugin,
             transition_screen::TransitionScreenPlugin,
             settings_form::SettingsFormPlugin,
             creator_screen::CreatorScreenPlugin,

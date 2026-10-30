@@ -559,6 +559,17 @@ fn live_story_player(
     })
 }
 
+/// The story's session words a save carries from the flow: the start
+/// background (the header's low byte) and the memory fragments seen (the
+/// memory-flags chunk, left out when zero).
+pub fn stamp_story(session: &mut Session, flow: Option<&crate::flow::Flow>) {
+    let Some(flow) = flow else {
+        return;
+    };
+    session.start_background = flow.story.background.index();
+    session.memory_flags = (flow.story.memory != 0).then_some(flow.story.memory);
+}
+
 /// The live session with the story player's record and placement: the
 /// sections it writes besides the player data.
 fn story_save_world(
@@ -591,6 +602,7 @@ fn save_to_new_slot(
     players: PlayerSaveQuery,
     created: Option<Res<crate::creator_screen::CreatedCharacter>>,
     mut report: ResMut<SaveReport>,
+    flow: Option<Res<crate::flow::Flow>>,
 ) {
     if requests.read().count() == 0 {
         return;
@@ -624,6 +636,7 @@ fn save_to_new_slot(
             crate::slots::WorldExport::default(),
         ),
         Mode::Story => {
+            stamp_story(&mut session, flow.as_deref());
             let player = live_story_player(&players, created.as_deref());
             let export = story_save_world(&mut session, player.as_ref());
             (player.map(|p| p.record.name), export)
@@ -722,6 +735,7 @@ fn run_save_steps(
                     .copied()
                     .unwrap_or_default()
                     .stamp(&mut session);
+                stamp_story(&mut session, flow.as_deref());
                 let player = live_story_player(&players, created.as_deref());
                 let export = story_save_world(&mut session, player.as_ref());
                 match list.save_current(&session, &export.save_world(None, false)) {
@@ -757,6 +771,7 @@ fn run_save_steps(
                     .copied()
                     .unwrap_or_default()
                     .stamp(&mut session);
+                stamp_story(&mut session, flow.as_deref());
                 let player = live_story_player(&players, created.as_deref());
                 let export = story_save_world(&mut session, player.as_ref());
                 // The disable flag skips the save but not the copy: the
@@ -1127,6 +1142,13 @@ fn load_story_slot(
             } else {
                 commands.remove_resource::<SavedPlayer>();
             }
+            // The story's session words come back: the start background
+            // and the fragments seen.
+            if let Some(flow) = flow.as_mut() {
+                flow.story.background =
+                    crate::flow::Background::from_index(restored.session.start_background);
+                flow.story.memory = restored.session.memory_flags.unwrap_or(0);
+            }
             commands.insert_resource(LoadedStory(restored.session.clone()));
             (Some(restored.level), restored.placement)
         }
@@ -1191,6 +1213,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    /// A story save carries the flow's start background and a non-zero
+    /// fragment word; a zero word is left out.
+    #[test]
+    fn a_story_save_carries_the_background_and_the_fragments() {
+        let mut flow = crate::flow::Flow::default();
+        flow.story.background = crate::flow::Background::Proctor;
+        flow.story.memory = 0x0003;
+        let mut session = Session::story();
+        stamp_story(&mut session, Some(&flow));
+        assert_eq!(session.start_background, 2);
+        assert_eq!(session.memory_flags, Some(3));
+        flow.story.memory = 0;
+        stamp_story(&mut session, Some(&flow));
+        assert_eq!(session.memory_flags, None);
     }
 
     #[test]
