@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
 use bevy::window::{Monitor, PrimaryMonitor};
-use exa_formats::file_ref::{directory_prefixes, read_whole_file, write_whole_file};
+use exa_formats::file_ref::{directory_prefixes, read_whole_file};
 use exa_formats::settings_ini::{self, Assignment, REGISTRY, Settings, Value};
 use exa_formats::settings_store::{BINDINGS_PATH, INTEGRITY_MESSAGE, SettingsStore};
 
@@ -135,9 +135,7 @@ impl UserSettings {
     /// Writes the store back, as the original does on exit (an empty store
     /// is not written).
     pub fn save_store(&self) {
-        if let Some(bytes) = self.store.save()
-            && !write_whole_file(&self.store_path, bytes)
-        {
+        if !self.store.save_to(&self.store_path) {
             warn!("cannot write {}", self.store_path.display());
         }
     }

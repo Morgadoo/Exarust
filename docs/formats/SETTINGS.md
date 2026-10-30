@@ -157,6 +157,11 @@ byte left at the end is dropped. Every macro gets a command list; only the
 first six are bound to a key, whose handler runs the commands through the
 debug command registry (not reproduced).
 
+The count of macros is the length of the settings unit's macro list,
+which a re-read never clears: a second read of the file appends its macros
+after the first read's, so past the sixth they get no key handler.
+`Settings::reread` applies a file onto live settings and keeps the list.
+
 ### Writing one setting
 
 A setting is written as `Name = value` (`" = "` between). Integers are
@@ -186,6 +191,13 @@ search, 0-based):
   first run only: `FirstRun = 0`, and on some systems `CursorSize = 150`,
   `GUISize = 1`, `GILowPrecision = 1`. A fresh file therefore reads
   `\r\nFirstRun = 0`.
+
+The splice behind both rewriters moves the bytes after the line with a
+length that is `at` bytes too long (the original's count omits the start
+offset), so the original writes past the end of its block. The bytes it
+keeps are the ones a correct splice keeps, so Exarust copies exactly the
+tail and documents the overrun instead of reproducing it
+(`settings_ini::splice` via `text::splice`).
 
 Evidence: the settings registry, the reader, the boolean test, the two
 rewriters with their splice routine, the number formatters and the
@@ -219,6 +231,10 @@ number the game holds.
   their bytes are added to that chunk and every chunk enclosing it.
 - **Save**: on exit, through the program's exit hooks, when the store is
   not empty. The bindings dialog also saves it after storing the bindings.
+  Registering a hook puts it at the head of a chain and a hook calls the one
+  registered before it; the settings hook saves, then chains, so the store is
+  written before the earlier hooks run (`settings_store::ExitHooks`,
+  `SettingsStore::save_to`).
 
 Evidence: the store's path builder, loader, getter, setter with its
 ancestor walk and one-level descent, and the save and exit hook (component
@@ -270,10 +286,38 @@ and capacity) and a cursor (`exa_formats::data_stream::DataStream`).
 - **Search path**: a name is read from the newest folder still in use
   where it exists; the first folder where it exists ends the search even
   when the read fails.
+- **Whole-file reads** (`read_file`, `read_referenced_file`,
+  `read_from_search_path`): a failed open leaves the block alone and logs
+  `Failed to open file: <path>` at level 3 under the topic `File IO`, only
+  while the error log is switched on; a failed read always logs `Unable to
+  read contents of file: <path>`, and the read by reference then clears the
+  block (the search-path read leaves it at the file's size). The search
+  path logs the bare name, and when no folder holds the file it logs
+  nothing. Exarust returns the reason as `FileIssue` (`message` gives the
+  log line, none for `Missing`).
+- **Exists**: `file_exists` is `GetFileAttributesA` — true for a file or a
+  folder.
+- **Resources** (`read_resource`): a named payload of the executable under
+  the `RT_RCDATA` type (10), the name taken from a reference (an inline name
+  up to its first zero, a long name whole). On success the block holds the
+  bytes and is resource memory — only released, never reallocated — and a
+  missing resource leaves the block as it was. The resource directory walk
+  itself is the platform's and is passed in.
+- **Memory blocks** (`exa_formats::mem_block`): the block the reads fill
+  has a logical size, an allocation size and a kind. A general block grows
+  to exactly the size asked for and frees at zero; global memory is
+  allocated in `0x2000`-byte steps and only reallocated when the rounded
+  size changes; a resource's memory only accepts a resize to zero; a
+  borrowed view copies the smaller of its old and new sizes into a fresh
+  general block on its first resize. `copy_into` resizes a destination
+  block by its own kind's rules to the source's size and copies the
+  destination's new size of bytes (`duplicate` does it into a new general
+  block); `make_owned` gives a borrowed view its own
+  copy. The original's two resize routines differ only in the allocator they
+  call for a general block, so one `resize` serves both.
 - **Format registry**: `{key[16], handler, description, use count}`; a new
   format goes in below the run of used formats at the end (never below
   index 1); lookup matches the 16 key bytes ignoring ASCII case.
 
-Not reproduced: reading resources out of the executable, the memory
-blocks' other kinds (global and resource memory, borrowed views; a `Vec`
-stands in) and the error log's switches.
+Not reproduced: the platform's resource-directory walk (the resource rule
+around it is `file_ref::read_resource`) and the error log's switches.

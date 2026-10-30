@@ -226,6 +226,34 @@ fn key_defs_bind_a_modifier_a_key_and_commands() {
 }
 
 #[test]
+fn the_key_def_count_carries_over_a_reread() {
+    // Six macros in one file are all bound; a seventh is not.
+    let mut text = Vec::new();
+    for key in *b"abcdef" {
+        text.extend_from_slice(b"KeyDef = alt+");
+        text.push(key);
+        text.extend_from_slice(b": xx\r\n");
+    }
+    let (s, _) = Settings::read(&text, 1080);
+    assert_eq!(s.hotkeys.len(), 6);
+    assert!(s.hotkeys.iter().all(|h| h.bound));
+    text.extend_from_slice(b"KeyDef = alt+g: yy\r\n");
+    let (mut s, _) = Settings::read(&text, 1080);
+    assert_eq!(s.hotkeys.len(), 7);
+    assert!(s.hotkeys[5].bound && !s.hotkeys[6].bound);
+    // A second read into the same settings keeps the list (and so the
+    // count): the new file's macro lands past the six and stays unbound.
+    s.reread(b"KeyDef = ctrl+n: zz\r\n", 1080);
+    assert_eq!(s.hotkeys.len(), 8);
+    assert!(!s.hotkeys[7].bound);
+    assert_eq!(s.hotkeys[7].commands, [b"zz".to_vec()]);
+    // A re-read changes only what it names.
+    let mut s = Settings::read(b"ShadowQuality = 4\r\n", 1080).0;
+    s.reread(b"ShadingQuality = 5\r\n", 1080);
+    assert_eq!((s.shadow_quality, s.shading_quality), (4, 5));
+}
+
+#[test]
 fn the_user_folder_and_its_files() {
     let game = Path::new("/games/Exanima");
     let app = Path::new("/home/u/AppData");

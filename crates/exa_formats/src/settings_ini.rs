@@ -246,23 +246,11 @@ pub fn convert(kind: Kind, text: &[u8]) -> Option<Value> {
     })
 }
 
-/// A decimal integer: an optional leading `-`, then digits up to the first
-/// other byte (none gives 0), wrapping as the original's 64-bit sum cut to
-/// 32 bits.
+/// A decimal integer: the low 32 bits of the engine's own decimal scan
+/// ([`crate::text::int_from_text`]): an optional leading `-`, then digits up
+/// to the first other byte (none gives 0), summed wrapping in 64 bits.
 pub fn parse_int(text: &[u8]) -> i32 {
-    let negative = text.first() == Some(&b'-');
-    let start = usize::from(negative);
-    let mut v: i64 = 0;
-    for &c in text.iter().skip(start) {
-        if !c.is_ascii_digit() {
-            break;
-        }
-        v = v.wrapping_mul(10).wrapping_add(i64::from(c) - 0x30);
-    }
-    if negative {
-        v = v.wrapping_neg();
-    }
-    v as i32
+    crate::text::int_from_text(text) as i32
 }
 
 /// `true` when the text starts with `1` or is `true` or `yes` in any ASCII
@@ -273,67 +261,26 @@ pub fn parse_bool(text: &[u8]) -> bool {
         || text.eq_ignore_ascii_case(b"yes")
 }
 
-/// A decimal fraction: an optional `-`, digits summed in single precision
-/// (`(c + v·10) − 48`), then, when a `.` follows that is not the last byte,
-/// each digit d after it adds d / 10ᵏ in double precision, rounded back to
-/// single after each.
+/// A decimal fraction ([`crate::text::float_from_text`]): an optional `-`,
+/// digits summed in single precision as `(c + v·10) − 48`, then, when a `.`
+/// follows that is not the last byte, each digit d after it adding
+/// d / 10ᵏ in double precision, rounded back to single after each; the sign
+/// is flipped at the end.
 pub fn parse_float(text: &[u8]) -> f32 {
-    let len = text.len() as i32;
-    let byte = |i: i32| text[(i - 1) as usize];
-    let mut v = 0.0f32;
-    let mut i = if text.first() == Some(&b'-') { 2 } else { 1 };
-    while i <= len && byte(i).is_ascii_digit() {
-        v = (f32::from(byte(i)) + v * 10.0) - 48.0;
-        i += 1;
-    }
-    if i < len && byte(i) == b'.' {
-        let mut div: i32 = 10;
-        i += 1;
-        while i <= len && byte(i).is_ascii_digit() {
-            let d = f64::from(byte(i) - 0x30);
-            v = (d / f64::from(div) + f64::from(v)) as f32;
-            div = div.wrapping_mul(10);
-            i += 1;
-        }
-    }
-    if text.first() == Some(&b'-') {
-        v = -v;
-    }
-    v
+    crate::text::float_from_text(text)
 }
 
-/// Hexadecimal digits (either case) up to the first other byte.
+/// Hexadecimal digits (either case) up to the first other byte
+/// ([`crate::text::hex_from_text`]).
 pub fn parse_hex(text: &[u8]) -> i32 {
-    let mut v: i32 = 0;
-    for &c in text {
-        let d = match c {
-            b'0'..=b'9' => c - b'0',
-            b'a'..=b'f' => c - 0x57,
-            b'A'..=b'F' => c - 0x37,
-            _ => return v,
-        };
-        v = v.wrapping_mul(16).wrapping_add(i32::from(d));
-    }
-    v
+    crate::text::hex_from_text(text)
 }
 
-/// An integer as the original writes it: `0`, or its digits with a leading
-/// `-`. The smallest integer, whose negation overflows, writes as `-`.
+/// An integer as the original writes it ([`crate::text::format_int`]): `0`,
+/// or its digits with a leading `-`. The smallest integer, whose negation
+/// overflows, writes as `-`.
 pub fn format_int(v: i32) -> String {
-    if v == 0 {
-        return "0".into();
-    }
-    let negative = v < 0;
-    let mut n = if negative { v.wrapping_neg() } else { v };
-    let mut digits = String::new();
-    while n > 0 {
-        digits.insert(0, char::from(b'0' + (n % 10) as u8));
-        n /= 10;
-    }
-    if negative {
-        digits.insert(0, '-');
-    }
-    digits
+    crate::text::format_int(v)
 }
 
 /// A boolean as the original writes it.
@@ -341,97 +288,30 @@ pub fn format_bool(v: bool) -> &'static str {
     if v { "1" } else { "0" }
 }
 
-/// A fraction with `digits` decimals as the original writes it: with no
-/// decimals the value rounded to even; otherwise `digits − 1` truncated
-/// digits of the absolute fraction and a last one rounded to even, carrying
-/// into the earlier digits (and the whole part, by its sign, when they are
-/// all nines). Trailing zeros go unless `keep_zeros`, leaving one after the
-/// point. A zero whole part writes as `0`, or `-0` for a negative value.
+/// A fraction with `digits` decimals as the original writes it
+/// ([`crate::text::format_float`]): with no decimals the value rounded to
+/// even; otherwise `digits − 1` truncated digits of the absolute fraction
+/// and a last one rounded to even, carrying into the earlier digits (and the
+/// whole part, by its sign, when they are all nines). Trailing zeros go
+/// unless `keep_zeros`, leaving one after the point. A zero whole part
+/// writes as `0`, or `-0` for a negative value.
 pub fn format_float(v: f32, digits: i32, keep_zeros: bool) -> String {
-    if digits < 1 {
-        return format_int(round_even(v));
-    }
-    let mut text: Vec<u8> = vec![b'.'];
-    let mut f = frac(v.abs()) * 10.0;
-    for _ in 1..digits {
-        let d = f as i64 as i32;
-        text.push((d + 0x30) as u8);
-        f = (f - d as f32) * 10.0;
-    }
-    let last = round_even(f);
-    let whole;
-    if last < 10 {
-        text.push((last + 0x30) as u8);
-        whole = v as i64 as i32;
-    } else {
-        let mut k = digits as usize;
-        while text.get(k - 1) == Some(&b'9') {
-            text[k - 1] = b'0';
-            k -= 1;
-        }
-        if k < 2 {
-            let t = v as i64;
-            whole = if v.is_sign_negative() { t - 1 } else { t + 1 } as i32;
-        } else {
-            text[k - 1] += 1;
-            whole = v as i64 as i32;
-        }
-        text.push(b'0');
-    }
-    if !keep_zeros {
-        let mut end = text.len();
-        while end > 0 && text[end - 1] == b'0' {
-            end -= 1;
-        }
-        if end > 0 && text[end - 1] == b'.' {
-            end += 1;
-        }
-        text.truncate(end);
-    }
-    let mut out = if whole == 0 {
-        if v.is_sign_negative() { "-0" } else { "0" }.to_string()
-    } else {
-        format_int(whole)
-    };
-    out.push_str(&String::from_utf8_lossy(&text));
-    out
-}
-
-/// The fraction of `v` as the original takes it: `v − trunc(v)` with a
-/// 32-bit truncation.
-fn frac(v: f32) -> f32 {
-    v - (v as i32) as f32
-}
-
-/// Single-precision rounding to the nearest integer, ties to even (the
-/// processor's default mode).
-fn round_even(v: f32) -> i32 {
-    v.round_ties_even() as i32
+    crate::text::format_float(v, digits, keep_zeros)
 }
 
 /// The 0-based offset of the first occurrence of `needle` in `hay`,
-/// scanning from offset `start − 1` (so a start of 0 or 1 scans the whole
-/// text), or −1. Nothing matches when the needle is longer than the text
-/// from `start` allows, or either is empty.
+/// scanning from offset `start − 1` ([`crate::text::find_from`], the
+/// engine's substring search), or −1. A start of 0 or 1 scans the whole
+/// text; nothing matches when the needle is longer than the text from
+/// `start` allows, or either is empty.
 pub fn find_text(needle: &[u8], hay: &[u8], start: i32) -> i32 {
-    if needle.is_empty() || hay.is_empty() || start < 0 {
-        return -1;
-    }
-    let n = needle.len() as i64;
-    if i64::from(start) + n - 1 > hay.len() as i64 || hay.len() < needle.len() {
-        return -1;
-    }
-    let from = (start - 1).max(0) as usize;
-    (from..=hay.len() - needle.len())
-        .find(|&i| &hay[i..i + needle.len()] == needle)
-        .map_or(-1, |i| i as i32)
+    crate::text::find_from(needle, hay, start)
 }
 
-/// Replaces `old` bytes at `at` with `text`.
+/// Replaces `old` bytes at `at` with `text` ([`crate::text::splice`], the
+/// engine's buffer splice).
 fn splice(file: &mut Vec<u8>, at: usize, old: usize, text: &[u8]) {
-    let at = at.min(file.len());
-    let end = at.saturating_add(old).min(file.len());
-    file.splice(at..end, text.iter().copied());
+    *file = crate::text::splice(file, at, old, text);
 }
 
 /// The line a setting is written as.
@@ -557,12 +437,10 @@ pub struct Hotkey {
 }
 
 /// Parses a `KeyDef` value, `<shift|ctrl|alt>+<key>: cmd; cmd; …`, adding
-/// a hotkey to `hotkeys`. Nothing is added without a colon, with another
-/// modifier, without a colon after the key, or when at most one byte
-/// follows that colon and its spaces. The key byte is the first after the
-/// `+` and its spaces, with `[` and above moved down by 0x20 (lower case to
-/// upper). Commands are split at `;`, lose their leading and trailing
-/// spaces, and a trailing single byte is dropped.
+/// a hotkey to `hotkeys` as the next of the macros parsed into that list.
+/// The original's macro count is the length of its macro list, which a
+/// re-read of the file never clears, so only the list's first six macros
+/// are ever bound.
 pub fn parse_key_def(text: &[u8], hotkeys: &mut Vec<Hotkey>) {
     let len = text.len() as i64;
     let at = |i: i64| -> u8 {
@@ -846,6 +724,18 @@ impl Settings {
             settings.apply(a, display_height);
         }
         (settings, assignments)
+    }
+
+    /// Re-reads a settings file into these settings, as the original's
+    /// second read does: every line applies again, the settings it does not
+    /// name keep their values, and the `KeyDef` macros are added after the
+    /// ones already parsed, so past the sixth they come out unbound. Gives every assignment it made.
+    pub fn reread(&mut self, bytes: &[u8], display_height: u32) -> Vec<Assignment> {
+        let assignments = read_assignments(bytes, &REGISTRY);
+        for a in &assignments {
+            self.apply(a, display_height);
+        }
+        assignments
     }
 }
 

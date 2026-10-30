@@ -25,6 +25,7 @@ pub mod kind;
 pub mod level;
 pub mod locales;
 pub mod material;
+pub mod mem_block;
 pub mod morph;
 pub mod objdb;
 pub mod objstrings;
