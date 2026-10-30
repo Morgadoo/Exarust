@@ -3008,8 +3008,7 @@ figure's point 1 m above its feet, a 30° field of view taken as vertical)
 into an image twice the view's size each way, the view being the doll
 panel less its 2-pixel border (224 × 380 at unit 4), shown by a UI node
 under the GUI canvas. The figure is a copy of the player's body (model,
-physique, skin, hair, outfit, braies and main-hand weapon, not its torch)
-standing far below the level on a render layer of its own, its meshes
+physique, skin, hair, outfit and braies) standing far below the level on a render layer of its own, its meshes
 kept out of the shadow links; its one light shines from (0.5, 0.7, 0.5) in
 the camera's space, as the view's task writes the scene's first light
 each frame (the earlier reading of that write as the figure's facing was
@@ -3019,6 +3018,19 @@ clears to the colour the canvas had there (black at 227 with the line
 skin), so the figure stands on the window's own client: what the original's
 kept still holds behind the figure is not traced, so this is a guess. The
 camera, its image and the figure exist only while the inventory is open.
+The figure's hands are the view's hand-scene job, run whenever the record
+(or Exarust's carried torch, which is outside it) changes what they hold:
+`exa_items::doll::scene_plan` against the items the hand models show, its
+steps in the original's order (the changed hands' old models released by
+`release_model`, mode 7 for a hand left empty and 0 for a hand that takes
+another item; the new models attached; the figure's held items set, so its
+moveset follows them; the stance restarted with blend 20). A weapon hangs
+by its class's grip in the hand's held slot (the second slot's in the off
+hand), a light by its own grip, a shield in the left forearm's frame at the
+hand's rest offset turned −5° about z; the models are plain nodes (the
+figure has no physics). The carried torch shows in the hand the player
+holds it in when the record leaves that hand empty, else in the other free
+hand [Exarust's]. A lit item's fire is not drawn on the figure.
 
 The inventory's second record (class 0xac01) is the item GUI's rating-dots
 control, the first of the five special controls (registered 0 × 24): its

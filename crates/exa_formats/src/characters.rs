@@ -481,9 +481,11 @@ impl CharacterRecord {
     /// through 15) is cleared from the profession word, leaving sex and the
     /// kept bits. The original runs this on a save's load just before the
     /// level import (and from four other entry points outside the save
-    /// unit); when a player hook is installed it then stores the word
-    /// `0x1000` and the game pointer in the player data and calls the hook,
-    /// which is the caller's.
+    /// unit); it then stores the request word `0x1000` and the world scene
+    /// on the loaded character and posts it to the content stream's
+    /// character ring (the stream unit installs that hook at start-up), so
+    /// the character is built with no AI start. The request is the
+    /// caller's (`exa_game::save_live::loaded_player_request`).
     pub fn reset_loaded_identity(&mut self) {
         self.set_profession(self.profession() & 0xFFFF_00FF);
     }

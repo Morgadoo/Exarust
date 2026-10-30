@@ -908,7 +908,15 @@ the hub's permadeath slot set). The header's camera target and zoom are
 stamped from the host's optional `SaveCamera` (not set by the running
 game yet, so the defaults are written; both readers drop the pair),
 saving is refused while the last level change reports it disabled, and a
-checkpoint step saves before it copies. The level
+checkpoint step saves before it copies. A script's `CheckpointSave` call
+for the player with checkpoints on runs that step
+(`run_checkpoint_scripts`); both loads make the identity reset's
+content-stream request for the loaded player (`loaded_player_request`,
+request word `0x1000`), logged. `zone_scripts` runs the AI manager's zone
+check for the level's script zones live, for every character at its body
+frame's anchor (root x and z, pelvis height): a zone entered runs its
+routine with the character as its actor and `ZoneID` (`exanima01`'s
+`Checkpoint` zone runs `CheckpointSave(1);`, the others narrator topics). The level
 section and the world databases are not written yet.
 
 A left click that is not a drag sends `hand::WorldClick`. A static mesh
@@ -1208,7 +1216,11 @@ its own, drawn by an off-screen camera at the view's pose into an image
 twice the view's size, shown by a UI node under the GUI canvas (the
 inventory's painter clears the canvas over the view and the camera clears
 to the colour it had there); the figure turns toward the pointer
-(`char_view`). The inventory's second record is the rating-dots control,
+(`char_view`). Its hands are the view's hand-scene job over the player's
+record (`exa_items::doll::scene_plan` and its steps): the main-hand weapon,
+a shield, a second weapon and the torch (the carried one too) hang by their
+grips, an emptied hand releases its model, and the figure's held moveset
+follows them. `--doll-drop` drops a list of items, `+` for the near hand. The inventory's second record is the rating-dots control,
 showing ten times the player's encumbrance with the dot sheet's whole and
 half dots. The view draws no preview bars (only character creation and the
 arena switch them on). The

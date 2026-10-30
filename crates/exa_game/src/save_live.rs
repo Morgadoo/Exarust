@@ -199,6 +199,27 @@ pub struct SavedPlayer {
 /// its world database gave it].
 pub const PLAYER_RECORD_ID: u32 = 1;
 
+/// The load's request after the identity reset. Once the record's race
+/// byte is cleared, the original stores the request word `0x1000` and the
+/// world scene on the loaded character and posts it to the content
+/// stream's character ring, so the character is built anew with neither
+/// its AI started nor a saved AI pose restored
+/// ([`exa_assets::content_stream::NO_AI_START`]). Exarust builds the loaded
+/// player synchronously from its record at the next level load (the
+/// player that survived the last session is despawned, [`SavedPlayer`]),
+/// which starts no AI either; the request is kept for that spawn and
+/// logged. The owner key is [`PLAYER_RECORD_ID`] and the class word 0
+/// [Exarust's: the original posts its own character object, whose class
+/// word was not traced].
+pub fn loaded_player_request(scene: u64) -> exa_assets::content_stream::CharacterRequest {
+    exa_assets::content_stream::CharacterRequest {
+        owner: u64::from(PLAYER_RECORD_ID),
+        scene,
+        class: 0,
+        flags: exa_assets::content_stream::NO_AI_START,
+    }
+}
+
 /// What the last live save or load did, for the report and the tests.
 #[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
 pub struct SaveReport {
@@ -219,6 +240,7 @@ impl Plugin for SaveLivePlugin {
         app.add_message::<SaveToNewSlot>()
             .add_message::<StorySlotLoad>()
             .add_message::<SaveStep>()
+            .add_message::<exa_script::ScriptEffect>()
             .add_message::<crate::world_clock::RestoreWorldClock>()
             .init_resource::<ArenaStores>()
             .init_resource::<SaveReport>()
@@ -229,6 +251,7 @@ impl Plugin for SaveLivePlugin {
                     report_saves,
                     scripted_saves,
                     save_to_new_slot,
+                    run_checkpoint_scripts,
                     run_save_steps,
                     load_arena_slot,
                     load_story_slot,
@@ -236,6 +259,34 @@ impl Plugin for SaveLivePlugin {
                     .chain()
                     .run_if(resource_exists::<SaveFolder>),
             );
+    }
+}
+
+/// The consumer of the scripts' `CheckpointSave` calls (the story's
+/// checkpoint zone in `exanima01` runs one): a call made for the player
+/// while the settings' checkpoints are on becomes the checkpoint step
+/// ([`SaveStep::Checkpoint`]: the save, then its copy over the checkpoint
+/// when the slot has none); any other call does nothing
+/// ([`exa_formats::save_chunk::checkpoint_script_runs`]). Without the
+/// settings resource checkpoints count as on, the options' default.
+pub fn run_checkpoint_scripts(
+    mut effects: MessageReader<exa_script::ScriptEffect>,
+    config: Option<Res<crate::hw_config::HardwareConfig>>,
+    mut steps: MessageWriter<SaveStep>,
+) {
+    let enabled = config.as_ref().is_none_or(|c| c.live.checkpoints);
+    for effect in effects.read() {
+        let exa_script::dialogue::Effect::CheckpointSave { player } = effect.0 else {
+            continue;
+        };
+        if exa_formats::save_chunk::checkpoint_script_runs(player, enabled) {
+            info!("save: the CheckpointSave script runs the checkpoint step");
+            steps.write(SaveStep::Checkpoint);
+        } else {
+            info!(
+                "save: CheckpointSave ignored (for the player: {player}, checkpoints on: {enabled})"
+            );
+        }
     }
 }
 
@@ -801,6 +852,9 @@ pub struct ArenaRestore {
     /// The player's record with the load's reset applied (race byte
     /// cleared), ready for the import.
     pub player: Option<CharacterRecord>,
+    /// The content-stream request the reset posts for the loaded player
+    /// ([`loaded_player_request`]); `None` without a player record.
+    pub request: Option<exa_assets::content_stream::CharacterRequest>,
 }
 
 /// The classification of the save's items: the shipped object database's
@@ -887,14 +941,18 @@ pub fn restore_arena(
         stores.staff.employees = crate::arena_tables::employees_from_tables(&tables);
         stores.stash = crate::arena_tables::stash_from_tables(&tables);
     }
-    if let Some(record) = player.as_mut() {
+    // The identity reset, then its request to the content stream.
+    let request = player.as_mut().map(|record| {
         record.reset_loaded_identity();
-    }
+        // The hub's scene is not built from the save: no scene key yet.
+        loaded_player_request(0)
+    });
     ArenaRestore {
         applied,
         shelved,
         clock,
         player,
+        request,
     }
 }
 
@@ -1015,6 +1073,12 @@ fn load_arena_slot(
         restored.clock,
         restored.player.is_some()
     );
+    if let Some(stream) = restored.request {
+        info!(
+            "save: the loaded player is requested anew (request word {:#x}: no AI start, no saved AI pose)",
+            stream.flags
+        );
+    }
 }
 
 /// What a story load read from a slot, before the running game takes it.
@@ -1033,6 +1097,9 @@ pub struct StoryRestore {
     pub items: Vec<exa_formats::objdb::Item>,
     /// Which file was read.
     pub kind: save_package::SlotKind,
+    /// The content-stream request the identity reset posts for the loaded
+    /// player ([`loaded_player_request`]); `None` without a player record.
+    pub request: Option<exa_assets::content_stream::CharacterRequest>,
 }
 
 /// The story's full load of a slot, as the saves' character screen's
@@ -1064,9 +1131,11 @@ pub fn restore_story(
         .unwrap_or_else(|_| crate::session::session_from_player_data(&loaded.data));
     let level = story_at(&locale).level();
     let mut player = loaded.player_record();
-    if let Some(record) = player.as_mut() {
+    // The identity reset, then its request to the content stream.
+    let request = player.as_mut().map(|record| {
         record.reset_loaded_identity();
-    }
+        loaded_player_request(0)
+    });
     let placement = loaded
         .data
         .placement()
@@ -1088,6 +1157,7 @@ pub fn restore_story(
         placement,
         items,
         kind: loaded.kind,
+        request,
     })
 }
 
@@ -1128,6 +1198,12 @@ fn load_story_slot(
                 restored.items.len()
             );
             report.story_loaded = Some((request.number, restored.kind));
+            if let Some(stream) = restored.request {
+                info!(
+                    "save: the loaded player is requested anew (request word {:#x}: no AI start, no saved AI pose)",
+                    stream.flags
+                );
+            }
             clock.write(crate::world_clock::RestoreWorldClock {
                 saved_seconds: restored.session.clock,
             });
@@ -1377,6 +1453,15 @@ mod tests {
         assert_eq!(list.current(), number as i32);
         assert_eq!(found.loaded.unwrap().player_record().unwrap().name, "Ash");
         let restored = restore_story(&mut list, number, true).unwrap();
+        // The identity reset posts the loaded player's request: no AI
+        // start, no saved AI pose.
+        assert_eq!(
+            restored.request.map(|r| r.flags),
+            restored
+                .player
+                .as_ref()
+                .map(|_| exa_assets::content_stream::NO_AI_START)
+        );
         assert_eq!(restored.level, "exanima02");
         assert_eq!(restored.session.clock, 4321);
         let back = restored.player.unwrap();
@@ -1617,6 +1702,58 @@ mod tests {
         assert_eq!(
             std::fs::read(Slots::story(&dir).file(number, SlotKind::Checkpoint)).unwrap(),
             b"old"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A `CheckpointSave` call for the player runs the checkpoint step; a
+    /// call for another character, or with the settings' checkpoints off,
+    /// writes nothing.
+    #[test]
+    fn the_checkpoint_script_writes_the_checkpoint_only_for_the_player() {
+        use exa_script::dialogue::Effect;
+        let dir = folder("checkpoint-script");
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(SaveLivePlugin)
+            .insert_resource(SaveFolder(dir.clone()));
+        app.update();
+        app.world_mut().write_message(SaveToNewSlot);
+        app.update();
+        let number = app.world().resource::<SaveReport>().saved.unwrap();
+        let checkpoint = Slots::story(&dir).file(number, SlotKind::Checkpoint);
+        // Another character's call: nothing.
+        app.world_mut()
+            .write_message(exa_script::ScriptEffect(Effect::CheckpointSave {
+                player: false,
+            }));
+        app.update();
+        assert!(!checkpoint.exists());
+        // Checkpoints off in the settings: nothing.
+        let live = exa_formats::hw_config::Options {
+            checkpoints: false,
+            ..Default::default()
+        };
+        app.insert_resource(crate::hw_config::HardwareConfig::new(live));
+        app.world_mut()
+            .write_message(exa_script::ScriptEffect(Effect::CheckpointSave {
+                player: true,
+            }));
+        app.update();
+        assert!(!checkpoint.exists());
+        // On, for the player: the save, then its copy.
+        app.insert_resource(crate::hw_config::HardwareConfig::new(
+            exa_formats::hw_config::Options::default(),
+        ));
+        app.world_mut()
+            .write_message(exa_script::ScriptEffect(Effect::CheckpointSave {
+                player: true,
+            }));
+        app.update();
+        assert!(checkpoint.is_file());
+        assert_eq!(
+            std::fs::read(Slots::story(&dir).file(number, SlotKind::Save)).unwrap(),
+            std::fs::read(&checkpoint).unwrap()
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

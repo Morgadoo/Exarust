@@ -321,7 +321,12 @@ pub enum Narration {
 pub enum Effect {
     GameEvent(u32),
     ShowInventory(u32),
-    CheckpointSave,
+    /// `CheckpointSave(n)`: whether its first actor slot is the player (the
+    /// original saves only then, and only while checkpoints are enabled,
+    /// which the game checks).
+    CheckpointSave {
+        player: bool,
+    },
     StartDialogue(Name),
     WitnessRole(u32),
     Report(String, String),
@@ -688,8 +693,9 @@ impl Host for SceneHost<'_, '_> {
     fn game_event(&mut self, code: u32) {
         self.scene.effects.push(Effect::GameEvent(code));
     }
-    fn checkpoint_save(&mut self) {
-        self.scene.effects.push(Effect::CheckpointSave);
+    fn checkpoint_save(&mut self, actor: Option<u32>) {
+        let player = actor.is_some() && actor == self.scene.player;
+        self.scene.effects.push(Effect::CheckpointSave { player });
     }
     fn start_dialogue(&mut self, a: Option<u32>, b: Option<u32>, topic: Name) {
         self.scene.effects.push(Effect::StartDialogue(topic));
@@ -1216,6 +1222,33 @@ impl Engine {
         script: &[u8],
     ) -> i32 {
         self.run_script(scene, crate::objects::script_actors(player), role, script)
+    }
+
+    /// A script zone's routine, as the AI manager's zone check runs it for
+    /// a character entering the zone: the character is the one actor slot,
+    /// no role runs, and the local `ZoneID` holds the zone's id.
+    pub fn run_zone_script(
+        &mut self,
+        scene: &mut Scene<'_>,
+        actor: u32,
+        zone: u32,
+        text: &[u8],
+    ) -> i32 {
+        let mut ctx = Context::new(vec![Some(actor)]);
+        ctx.declare(Name::from_bytes(b"ZoneID"), zone as i32);
+        self.last_run = None;
+        let mut requests = Vec::new();
+        let mut host = SceneHost {
+            scene,
+            conv: None,
+            leaving: &mut self.leaving,
+            end_requested: &mut self.end_requested,
+            start_requests: &mut requests,
+        };
+        let r = interp::run(&mut host, &mut ctx, text);
+        self.run_start_requests(scene, requests);
+        self.settle(scene);
+        r
     }
 
     /// Run a script of conversation `id`; returns `result`.

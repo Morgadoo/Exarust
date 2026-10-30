@@ -134,6 +134,10 @@ pub struct Item {
     /// and, when the flags' low byte is [`Volume::MARKER`], the entrance and
     /// previous level id of a level transition.
     pub volume: Option<Volume>,
+    /// The routine a script zone's volume section carries after its fixed
+    /// words ([`Volume::script`]): the text the zone check runs for a
+    /// character that enters it. `None` when the section holds none.
+    pub volume_script: Option<Vec<u8>>,
     /// The item's rank word: the body's word at `0x1AB`, else a weapon's at
     /// `0x42`, else a shield's at `0x08` (see `docs/formats/OTHER.md`, Trade
     /// fields). The low five bits are the bulk in points and the low byte's
@@ -229,6 +233,34 @@ impl Volume {
     pub fn alarm_pass(&self) -> Option<u32> {
         (self.flags & Self::CLASS_MASK == Self::TRIGGER_CLASS && self.flags & 0xFF == Self::ALARM)
             .then_some(self.previous_level)
+    }
+
+    /// The low byte of a trigger volume that runs a routine for any
+    /// character entering it.
+    pub const SCRIPT: u32 = 0x10;
+
+    /// Whether this is a script zone: a trigger volume (class `0x100`)
+    /// whose low byte is [`Volume::SCRIPT`].
+    pub fn runs_script(&self) -> bool {
+        self.flags & Self::CLASS_MASK == Self::TRIGGER_CLASS && self.flags & 0xFF == Self::SCRIPT
+    }
+
+    /// A script zone's id: the word the transition marker keeps its
+    /// entrance in, which the zone check hands the routine as the local
+    /// `ZoneID`.
+    pub fn zone_id(&self) -> u32 {
+        self.entrance
+    }
+
+    /// The routine a volume section's body carries after its fixed words:
+    /// its length at `0x14` and the text from `0x18`. `None` when the body
+    /// ends before the length or the text, or the length is 0.
+    pub fn script(b: &[u8]) -> Option<&[u8]> {
+        let len = u32::from_le_bytes(b.get(0x14..0x18)?.try_into().ok()?) as usize;
+        if len == 0 {
+            return None;
+        }
+        b.get(0x18..0x18usize.checked_add(len)?)
     }
 }
 
@@ -800,6 +832,7 @@ impl Item {
             equip_lock: 0,
             torch: false,
             volume: None,
+            volume_script: None,
             rank_word: 0,
             body_rank: 0,
             loadout_rank: 0,
@@ -883,7 +916,10 @@ impl Item {
                 DOOR => item.door = Door::parse(body),
                 OPERATIVE => item.operative = Operative::parse(body),
                 TORCH => item.torch = true,
-                VOLUME => item.volume = Volume::parse(body),
+                VOLUME => {
+                    item.volume = Volume::parse(body);
+                    item.volume_script = Volume::script(body).map(<[u8]>::to_vec);
+                }
                 CONTAINER => item.container = crate::containers::Container::parse(body),
                 RANDOM_TABLE => item.random_table = crate::containers::RandomTable::parse(body),
                 _ => {}
@@ -1201,6 +1237,13 @@ mod tests {
             .volume
             .unwrap();
         assert_eq!(other.alarm_pass(), None);
+        // A volume with no routine after its words keeps none.
+        assert!(
+            Item::parse(1, &section(VOLUME, &body))
+                .unwrap()
+                .volume_script
+                .is_none()
+        );
         // A short body keeps no volume.
         let short = Item::parse(1, &section(VOLUME, &[0u8; 18])).unwrap();
         assert!(short.volume.is_none());
@@ -1211,6 +1254,42 @@ mod tests {
                 .volume
                 .is_none()
         );
+    }
+
+    /// A script zone (class `0x100`, low byte `0x10`) carries its routine
+    /// after the fixed words: the length at `0x14`, the text from `0x18`,
+    /// and its id in the entrance word, as the shipped `Checkpoint` zone of
+    /// `exanima01` lays it out (synthetic bytes).
+    #[test]
+    fn a_script_zone_keeps_its_routine_and_id() {
+        let mut body = Vec::new();
+        for e in [80u16, 123, 50] {
+            body.extend(e.to_le_bytes());
+        }
+        body.extend(0u16.to_le_bytes());
+        body.extend(0x1110u32.to_le_bytes());
+        body.extend(4u32.to_le_bytes());
+        body.extend(0u32.to_le_bytes());
+        let text = b"CheckpointSave(1);";
+        body.extend((text.len() as u32).to_le_bytes());
+        body.extend(text);
+        body.extend([0u8; 2]);
+        let item = Item::parse(1, &section(VOLUME, &body)).unwrap();
+        let volume = item.volume.unwrap();
+        assert!(volume.runs_script());
+        assert_eq!(volume.zone_id(), 4);
+        assert_eq!(item.volume_script.as_deref(), Some(&text[..]));
+        // A stated length past the body's end, or 0, gives no routine.
+        assert_eq!(Volume::script(&body[..0x18 + 4]), None);
+        let mut empty = body.clone();
+        empty[0x14..0x18].copy_from_slice(&0u32.to_le_bytes());
+        assert_eq!(Volume::script(&empty), None);
+        // A stay zone (class 0x200) and an alarm zone do not run here.
+        let mut stay = volume;
+        stay.flags = 0x1210;
+        assert!(!stay.runs_script());
+        stay.flags = 0x1102;
+        assert!(!stay.runs_script());
     }
 
     #[test]

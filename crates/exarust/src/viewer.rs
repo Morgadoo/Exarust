@@ -739,6 +739,19 @@ fn play_level(
         info.alarm_volumes.clone(),
     ));
     commands.insert_resource(exa_game::golem_alarm::GolemAlarm::default());
+    // The level's script zones (the story's checkpoint zone among them).
+    for zone in &info.script_volumes {
+        info!(
+            "level {name}: script zone {} at {:?} cm (half {:?}): {}",
+            zone.zone_id,
+            zone.bounds.centre,
+            zone.bounds.half_extents,
+            String::from_utf8_lossy(&zone.script)
+        );
+    }
+    commands.insert_resource(exa_game::zone_scripts::ScriptVolumes(
+        info.script_volumes.clone(),
+    ));
     // An arena match draws its track as the original's match start does:
     // the roll is the reversed counter, and the arena is the one named on
     // the command line, so the arena draw is not run. The hub's track is
