@@ -68,15 +68,12 @@ pub const SUN_INTENSITY_SKY: f32 = 4.5;
 /// direction it is given before its matrix is built is a short vector to the
 /// body, not the unit one the shading uses.
 pub const SUN_LIGHT_FLAGS: u32 = 0x2000_1000;
-/// The light node's second flag word (byte +0xc), a separate word from
+/// The light node's second flag word, a separate word from
 /// [`SUN_LIGHT_FLAGS`].
 pub const SUN_LIGHT_EXTRA_FLAGS: u32 = 0x11_0000;
 pub const SUN_LIGHT_KIND: u32 = 2;
 pub const SUN_LIGHT_RANGE: f32 = 3.0;
 pub const SUN_NODE_DIRECTION: [f32; 3] = [0.0, 260.0, -280.0];
-/// The sun light's intensity without a sky and under one.
-pub const SUN_INTENSITY_NODE: f32 = 3.0;
-pub const SUN_INTENSITY_NODE_SKY: f32 = 4.5;
 
 /// The constructor's defaults.
 pub const DEFAULT_TIME: f32 = 0.7516;
@@ -622,10 +619,10 @@ pub fn blend_records(a: EnvRecord, b: EnvRecord, t: f32) -> EnvRecord {
 /// Mixes a colour towards its luminance by `mix`, the way the sky dimming
 /// does before scaling.
 fn desaturate(c: &mut [f32; 3], mix: f32) {
-    // The original sums the channels z, y then x (`z·0.114 + y·0.587 +
-    // x·0.299`), not the other way round: the addition order changes the
-    // last bits.
-    let luma = (c[2] * 0.114 + c[1] * 0.587) + c[0] * 0.299;
+    // The luminance helper multiplies x, y, z by its weights and adds
+    // `(x·0.299 + y·0.587) + z·0.114`: the y term onto the x term, then the
+    // z term onto that sum.
+    let luma = (c[0] * 0.299 + c[1] * 0.587) + c[2] * 0.114;
     for v in c.iter_mut() {
         *v = (luma - *v) * mix + *v;
     }
@@ -1253,7 +1250,7 @@ impl SceneEnvironment {
             sun_colour,
             sun_colour_linear,
             sun_light_colour: sun_colour,
-            sun_light_intensity: SUN_INTENSITY_NODE,
+            sun_light_intensity: SUN_INTENSITY,
             sky_sun_colour: DEFAULT_SUN_COLOUR,
             global_light: {
                 let rgb = linearise([
@@ -1288,7 +1285,7 @@ impl SceneEnvironment {
                 wind: 0.0,
                 tint: [1.0; 3],
                 sun_colour: sun_colour_linear,
-                sun_intensity: SUN_INTENSITY_NODE,
+                sun_intensity: SUN_INTENSITY,
             },
             linear: true,
             dim_record_k: false,
@@ -1528,7 +1525,7 @@ impl SceneEnvironment {
             self.sun_towards = towards;
             self.daylight_scale = 0.0;
             self.sun_dim = 0.0;
-            self.sun_light_intensity = SUN_INTENSITY_NODE;
+            self.sun_light_intensity = SUN_INTENSITY;
             self.sun_light_colour = self.sun_colour;
             return self.finish_placement(SunPosition {
                 towards,
@@ -1614,7 +1611,7 @@ impl SceneEnvironment {
         self.sun_towards = towards;
         if self.sun_light {
             self.sun_light_colour = self.sky_sun_colour;
-            self.sun_light_intensity = SUN_INTENSITY_NODE_SKY;
+            self.sun_light_intensity = SUN_INTENSITY_SKY;
         }
         self.finish_placement(SunPosition {
             towards,
@@ -1661,7 +1658,7 @@ impl SceneEnvironment {
             self.fog.current_colour = [0.0; 3];
             self.fog.colour = OUTDOOR_FOG_COLOUR;
             self.sun_light_colour = self.sun_colour;
-            self.sun_light_intensity = SUN_INTENSITY_NODE;
+            self.sun_light_intensity = SUN_INTENSITY;
             self.sky = false;
         }
         self.set_sun_position(self.azimuth, self.time_of_day);
@@ -2976,17 +2973,28 @@ mod tests {
     }
 
     #[test]
-    fn the_desaturation_sums_z_then_y_then_x() {
+    fn the_desaturation_sums_x_then_y_then_z() {
+        // Channels where the two addition orders round apart.
+        let (x, y, z) = (
+            f32::from_bits(1_051_251_352),
+            f32::from_bits(1_061_803_639),
+            f32::from_bits(1_050_360_922),
+        );
         let mut r = record(0.0);
-        r.sun = [0.1, 0.2, 0.3];
+        r.sun = [x, y, z];
         dim_sky(&mut r, 1.0, 1.0);
-        // The luminance in the instruction order, (z·0.114 + y·0.587) +
-        // x·0.299; every channel becomes it at mix 1.
-        let want = (0.3f32 * 0.114 + 0.2 * 0.587) + 0.1 * 0.299;
+        // The luminance in the instruction order, (x·0.299 + y·0.587) +
+        // z·0.114; every channel becomes it at mix 1. Summed z first it
+        // would be one bit higher.
+        let want = (x * 0.299 + y * 0.587) + z * 0.114;
+        assert_eq!(want.to_bits(), 1_058_574_577);
+        assert_eq!(
+            ((z * 0.114 + y * 0.587) + x * 0.299).to_bits(),
+            1_058_574_578
+        );
         assert_eq!(r.sun[0].to_bits(), want.to_bits());
-        assert_eq!(r.sun[0].to_bits(), 1_043_979_043);
-        assert_eq!(r.sun[1].to_bits(), r.sun[0].to_bits());
-        assert_eq!(r.sun[2].to_bits(), r.sun[0].to_bits());
+        assert_eq!(r.sun[1].to_bits(), want.to_bits());
+        assert_eq!(r.sun[2].to_bits(), want.to_bits());
     }
 
     #[test]
@@ -3032,9 +3040,9 @@ mod tests {
         assert_eq!(placed.towards, env.sun_towards);
         // The light word takes the record's sun colour and 4.5.
         assert_eq!(placed.light_colour, env.current.sun);
-        assert_eq!(placed.light_intensity, SUN_INTENSITY_NODE_SKY);
+        assert_eq!(placed.light_intensity, SUN_INTENSITY_SKY);
         assert_eq!(env.sun_light_colour, env.current.sun);
-        assert_eq!(env.sun_light_intensity, SUN_INTENSITY_NODE_SKY);
+        assert_eq!(env.sun_light_intensity, SUN_INTENSITY_SKY);
         assert!(env.tint_uploaded && env.sun_event);
     }
 
@@ -3063,9 +3071,9 @@ mod tests {
         env.set_sun_colour([0.4, 0.5, 0.6]);
         assert_eq!(env.sun_colour_linear, linearise([0.4, 0.5, 0.6]));
         env.set_sky(true);
-        assert_eq!(env.sun_light_intensity, SUN_INTENSITY_NODE_SKY);
+        assert_eq!(env.sun_light_intensity, SUN_INTENSITY_SKY);
         env.set_sky(false);
-        assert_eq!(env.sun_light_intensity, SUN_INTENSITY_NODE);
+        assert_eq!(env.sun_light_intensity, SUN_INTENSITY);
         assert_eq!(env.sun_light_colour, [0.4, 0.5, 0.6]);
     }
 
@@ -3219,10 +3227,10 @@ mod tests {
     #[test]
     fn the_frame_publishes_the_light_the_clear_and_the_tint() {
         let mut env = SceneEnvironment::new(5);
-        env.sun_light_intensity = SUN_INTENSITY_NODE_SKY;
+        env.sun_light_intensity = SUN_INTENSITY_SKY;
         let frame = env.apply_frame([0.0, 0.0, 1.0]);
         assert_eq!(frame.sun_colour, env.sun_colour_linear);
-        assert_eq!(frame.sun_intensity, SUN_INTENSITY_NODE_SKY);
+        assert_eq!(frame.sun_intensity, SUN_INTENSITY_SKY);
         assert_eq!(frame.clear, frame.background);
     }
 }
