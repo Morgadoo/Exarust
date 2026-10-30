@@ -44,6 +44,33 @@ pub fn created(amount: f32) -> bool {
     0.0 < amount
 }
 
+/// The two textures the decomposition draw binds, in unit order: the skin
+/// or gloss in `Tex0` and the seam mask's red channel in `Tex1`. The decay
+/// maps of each pass bind from unit 2 (diffuse and specular) or unit 6
+/// (normal), as [`DIFFUSE_MAPS`], [`SPECULAR_MAPS`] and [`NORMAL_MAPS`]
+/// name them.
+pub const TEXTURES: [&str; 2] = ["Tex0", "Tex1"];
+/// The draw's amount uniform.
+pub const AMOUNT_UNIFORM: &str = "Decomp";
+/// The draw's skin-map offset uniform (`vec2`).
+pub const UV_OFFSET_UNIFORM: &str = "UVOfs";
+
+/// The decomposition material's draw state: the amount and the skin-map
+/// offset the pass shifts only `skindecomp` by. A material is created only
+/// when [`created`] holds, so a zero or NaN amount yields none.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Draw {
+    pub amount: f32,
+    pub uv_offset: [f32; 2],
+}
+
+impl Draw {
+    /// The draw for an amount, or `None` when the material is not created.
+    pub fn new(amount: f32, uv_offset: [f32; 2]) -> Option<Self> {
+        created(amount).then_some(Self { amount, uv_offset })
+    }
+}
+
 /// The GLSL `min`: the second operand when it is strictly below the first,
 /// so a NaN in the first passes through.
 fn glsl_min(x: f32, y: f32) -> f32 {
@@ -166,6 +193,20 @@ mod tests {
 
     fn tex(rgb: [f32; 3]) -> [f32; 3] {
         rgb
+    }
+
+    /// The draw exists for a positive amount only (a NaN compares false),
+    /// and names the two units and the two uniforms the pass binds.
+    #[test]
+    fn a_draw_exists_for_a_positive_amount() {
+        assert_eq!(TEXTURES, ["Tex0", "Tex1"]);
+        assert_eq!(AMOUNT_UNIFORM, "Decomp");
+        assert_eq!(UV_OFFSET_UNIFORM, "UVOfs");
+        assert_eq!(Draw::new(0.0, [0.25, -0.25]), None);
+        assert_eq!(Draw::new(f32::NAN, [0.0, 0.0]), None);
+        let draw = Draw::new(0.5, [0.25, -0.25]).unwrap();
+        assert_eq!(draw.amount, 0.5);
+        assert_eq!(draw.uv_offset, [0.25, -0.25]);
     }
 
     /// With no decomposition the diffuse pass keeps the skin's own look:
