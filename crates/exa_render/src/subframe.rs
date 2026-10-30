@@ -23,206 +23,13 @@
 /// A 4×4 matrix in the engine's row-major order: `m[row][col]`.
 pub type Matrix = [[f32; 4]; 4];
 
-/// One of the super-sampling settings: the samples a frame accumulates and
-/// the first entry of the shared jitter table its samples use.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SupersampleSetting {
-    /// Samples a frame takes (1, 2, 3, 4, 8, 15, 24 or 66).
-    pub samples: u32,
-    /// The first jitter-table entry.
-    pub jitter_first: u32,
-}
-
-/// The settings' sample counts and jitter-table offsets, in setting order.
-///
-/// Each setting's samples continue where the previous setting's ended, so the
-/// offsets are the running sums (0, 1, 3, 6, 10, 18, 33, 57) and the table
-/// holds 124 entries.
-pub const SETTINGS: [SupersampleSetting; 8] = [
-    SupersampleSetting {
-        samples: 1,
-        jitter_first: 0,
-    },
-    SupersampleSetting {
-        samples: 2,
-        jitter_first: 1,
-    },
-    SupersampleSetting {
-        samples: 3,
-        jitter_first: 3,
-    },
-    SupersampleSetting {
-        samples: 4,
-        jitter_first: 6,
-    },
-    SupersampleSetting {
-        samples: 8,
-        jitter_first: 10,
-    },
-    SupersampleSetting {
-        samples: 15,
-        jitter_first: 18,
-    },
-    SupersampleSetting {
-        samples: 24,
-        jitter_first: 33,
-    },
-    SupersampleSetting {
-        samples: 66,
-        jitter_first: 57,
-    },
-];
-
-/// The engine's jitter table, in window pixels: one `vec2` per sample of
-/// every setting, in setting order. The values lie within half a pixel; the
-/// first and last entries are zero and are the sequences' padding.
-///
-/// The entries are stored as bit patterns so the table is exact.
-pub const JITTER: [[f32; 2]; 124] = [
-    [f(0x00000000), f(0x00000000)],
-    [f(0x3E7C67E0), f(0x3E7FFFBD)],
-    [f(0xBE7C67E0), f(0xBE7FFFBD)],
-    [f(0x3DEFEB4A), f(0xBDF0C88A)],
-    [f(0x3E8334E7), f(0x3EBC7A18)],
-    [f(0xBEBF2FBA), f(0xBE804817)],
-    [f(0xBE95D313), f(0xBE198B2F)],
-    [f(0x3E98066C), f(0x3E199807)],
-    [f(0x3E50BDCB), f(0xBEB522A7)],
-    [f(0xBE55247D), f(0x3EB51C19)],
-    [f(0x3E28283D), f(0xBD5ED17C)],
-    [f(0xBE3C3372), f(0x3DA82518)],
-    [f(0x3DD16A8C), f(0x3E9927F6)],
-    [f(0xBDA254A4), f(0xBEA28006)],
-    [f(0x3E92A800), f(0xBEC9782D)],
-    [f(0xBEAB6D44), f(0x3EDEE3B4)],
-    [f(0x3EEB3E9A), f(0x3E10EFDD)],
-    [f(0xBED43915), f(0xBE4574F7)],
-    [f(0x3DD7C3D7), f(0xBC257647)],
-    [f(0xBE1DE15D), f(0x3CB28955)],
-    [f(0xBD650A46), f(0xBE5C5C9A)],
-    [f(0x3E92350D), f(0x3E40F5A1)],
-    [f(0xBEBD8256), f(0xBDEE703B)],
-    [f(0x3EB868FD), f(0xBD86876E)],
-    [f(0xBDE4DDB5), f(0x3E8CCF4A)],
-    [f(0x3E3792D1), f(0xBEA99286)],
-    [f(0xBEBDC098), f(0x3EC666ED)],
-    [f(0x3EE73CD5), f(0xBE999B4E)],
-    [f(0xBEE8F191), f(0x3E094E5D)],
-    [f(0xBE9D3587), f(0xBEBAD7B6)],
-    [f(0x3EC4AB60), f(0x3EEAC083)],
-    [f(0xBDA45027), f(0xBEF12253)],
-    [f(0x3E0E0CE1), f(0x3ED17E78)],
-    [f(0x3CF7C45D), f(0x3E0BA83F)],
-    [f(0x3C9A8AC6), f(0xBEB29EB2)],
-    [f(0xBEB34224), f(0xBEF1D27C)],
-    [f(0x3E63836B), f(0x3E191CD2)],
-    [f(0xBEC98F1D), f(0xBE88A394)],
-    [f(0x3ECF2389), f(0x3E6BF76A)],
-    [f(0x3DC97BFA), f(0x3EEE40A7)],
-    [f(0x3EECE337), f(0x3EE25D07)],
-    [f(0x3ECCFDB1), f(0xBE59D346)],
-    [f(0xBED1E9F2), f(0x3E86D528)],
-    [f(0xBDED5172), f(0xBB01D3AA)],
-    [f(0x3EB264C3), f(0xBC1756C9)],
-    [f(0xBEED9381), f(0x3D881FDA)],
-    [f(0xBE0E008F), f(0xBEEF9E7C)],
-    [f(0x3E14690E), f(0xBCBA9D1F)],
-    [f(0xBE80198F), f(0x3E19C3CE)],
-    [f(0xBE39C0EC), f(0xBE8747B6)],
-    [f(0x3E48CDA7), f(0xBE6FC222)],
-    [f(0xBE9F4624), f(0xBDA169C2)],
-    [f(0x3E8968F9), f(0x3EBBCA53)],
-    [f(0xBD264D3C), f(0x3EA77AD5)],
-    [f(0xBE700475), f(0x3EB595DD)],
-    [f(0xBB4B4AED), f(0xBE1E1B8F)],
-    [f(0x3E989310), f(0xBED5FF82)],
-    [f(0x3C15D91B), f(0x3C775D9A)],
-    [f(0x3DFE4580), f(0xBC8A1BE3)],
-    [f(0xBDDD3240), f(0xBB21F080)],
-    [f(0xBDABE942), f(0xBDF8B589)],
-    [f(0x3DAAF4F1), f(0x3DEFAC60)],
-    [f(0x3D28C79F), f(0xBDD98202)],
-    [f(0xBD267946), f(0x3DFCD4ED)],
-    [f(0x3E53779F), f(0xBDD65C2D)],
-    [f(0xBE4D2BF5), f(0x3D91209F)],
-    [f(0x3DFF811F), f(0xBE49D6F1)],
-    [f(0xBDF8E326), f(0x3E5744B3)],
-    [f(0x3C993709), f(0xBE86099A)],
-    [f(0x3C586EC1), f(0x3E7006D1)],
-    [f(0xBDDFE2A4), f(0xBE783276)],
-    [f(0x3E1491B0), f(0x3E630C24)],
-    [f(0xBE65FC7E), f(0xBE4218DF)],
-    [f(0x3E886291), f(0xBE5F6838)],
-    [f(0xBE565F96), f(0xBD85E786)],
-    [f(0x3E7DD4C7), f(0x3E1BA882)],
-    [f(0xBE784231), f(0x3E3F6BA0)],
-    [f(0xBD9593E6), f(0xBEB5CAF3)],
-    [f(0x3D9C27E9), f(0x3EF502EF)],
-    [f(0xBE2F0564), f(0xBEDBD61F)],
-    [f(0xBE41D6D0), f(0x3EE0BFC2)],
-    [f(0x3E70470B), f(0x3D0D8341)],
-    [f(0xBE9A6CA0), f(0x3C18AEB8)],
-    [f(0xBE62F512), f(0xBEA0A633)],
-    [f(0x3DA241C4), f(0x3EB0A698)],
-    [f(0x3D41F85D), f(0xBEC6368F)],
-    [f(0xBEB8F5A1), f(0xBDD61DC9)],
-    [f(0x3EA86F26), f(0xBDD0B84A)],
-    [f(0x3EAEC7EB), f(0x3DA6E43B)],
-    [f(0x3E3270B0), f(0xBE9FAB54)],
-    [f(0xBEC2F987), f(0x3E052828)],
-    [f(0x3E968F2A), f(0x3E86D7A5)],
-    [f(0xBDEB2F23), f(0x3EA80863)],
-    [f(0xBEAD9C6B), f(0xBEB61F3A)],
-    [f(0xBCB21E60), f(0x3ECECBB8)],
-    [f(0x3E978855), f(0xBEAB5DAB)],
-    [f(0xBE6E9BBF), f(0x3E9C4391)],
-    [f(0x3E4DBA4D), f(0x3EAAA561)],
-    [f(0xBE92CB86), f(0xBEF0BFE4)],
-    [f(0x3E9ECA25), f(0x3ED6E2EB)],
-    [f(0xBEB08F65), f(0xBE6C5A81)],
-    [f(0xBEB10929), f(0x3E81EF52)],
-    [f(0x3EC9C7BD), f(0xBE57F66F)],
-    [f(0xBEA0094E), f(0x3ECB9991)],
-    [f(0x3EE7EF5B), f(0x3CD00D5F)],
-    [f(0xBEEC3244), f(0xBE34E69F)],
-    [f(0x3E47164C), f(0x3EE83276)],
-    [f(0xBD637DE9), f(0xBEF4B620)],
-    [f(0x3EE5247D), f(0xBDC49DBF)],
-    [f(0xBEDA8438), f(0x3BA3161A)],
-    [f(0x3ECEDFC6), f(0x3E665F96)],
-    [f(0xBEE833E8), f(0xBE998B0D)],
-    [f(0x3E224745), f(0xBEDC8CD6)],
-    [f(0x3EF95465), f(0x3E0E80BF)],
-    [f(0x3E90826B), f(0xBEEAD6ED)],
-    [f(0xBEEEB314), f(0x3E7ECFA7)],
-    [f(0x3EF6CEBC), f(0x3EE3458D)],
-    [f(0xBEF488C6), f(0xBED9899C)],
-    [f(0x3ED13BE2), f(0x3EB1101B)],
-    [f(0xBEDC3138), f(0x3EBA1145)],
-    [f(0x3ED99A41), f(0xBEAA2FF1)],
-    [f(0xBECCCF8D), f(0x3EF6E243)],
-    [f(0x3ED101B0), f(0xBEEA5786)],
-    [f(0x00000000), f(0x00000000)],
-];
-
-/// `f32::from_bits` as a `const fn` for the table above.
-const fn f(bits: u32) -> f32 {
-    f32::from_bits(bits)
-}
-
-/// The whole-pixel offset of each of the four sub-frames in a quarter: the
-/// values the draw subtracts from the viewport's origin (0,0). A setting
-/// with fewer than four passes uses the first entries.
-pub const VIEWPORT_SHIFTS: [[i32; 2]; 4] = [[0, 0], [1, 0], [0, 1], [1, 1]];
-
-/// The setting's values, or `None` past the table.
-pub fn setting(index: u32) -> Option<SupersampleSetting> {
-    SETTINGS.get(index as usize).copied()
-}
-
-/// The samples a setting's frame takes; an unknown setting takes one.
+/// The setting's sample count, from the view's level table; an unknown
+/// setting takes one.
 pub fn sample_count(index: u32) -> u32 {
-    setting(index).map_or(1, |s| s.samples)
+    match index {
+        0..=7 => crate::view::SupersampleLevel(index as u8).subviews() as u32,
+        _ => 1,
+    }
 }
 
 /// The sub-frames a quarter draws: the sample count capped at four.
@@ -230,30 +37,20 @@ pub fn passes(index: u32) -> u32 {
     sample_count(index).min(4)
 }
 
-/// The quarters a frame draws: the sample count over four, rounded up.
-pub fn quarters(index: u32) -> u32 {
-    sample_count(index).div_ceil(4)
-}
-
-/// The jitter of one sample of a setting, in window pixels, or zero past the
-/// table.
+/// The jitter of one sample of a setting, in window pixels, from the view's
+/// table; zero past the setting's samples.
 pub fn jitter(index: u32, quarter: u32, subframe: u32) -> [f32; 2] {
-    let Some(setting) = setting(index) else {
+    if index > 7 {
         return [0.0; 2];
-    };
-    let slot = setting
-        .jitter_first
-        .wrapping_add(quarter.wrapping_mul(4))
-        .wrapping_add(subframe) as usize;
-    JITTER.get(slot).copied().unwrap_or([0.0; 2])
+    }
+    let (x, y) =
+        crate::view::SupersampleLevel(index as u8).jitter(quarter as usize, subframe as usize);
+    [x, y]
 }
 
 /// The whole-pixel viewport offset of a sub-frame.
 pub fn viewport_shift(subframe: u32) -> [i32; 2] {
-    VIEWPORT_SHIFTS
-        .get(subframe as usize)
-        .copied()
-        .unwrap_or([0; 2])
+    crate::view::viewport_shift(subframe as usize)
 }
 
 /// The quarter's sub-frame time offset, the value `Global.ViewPos.w` and
@@ -292,11 +89,18 @@ pub fn animation_clock(subframe: u32, quarter: u32, frame_time: f32, samples: u3
         + animation_base(quarter, frame_time, samples)
 }
 
-/// The sub-frame's share of a shutter: `((slot + 0.5)·duration/samples −
-/// duration·0.5)`, where `slot` is the sample's index in the frame
-/// (`4·quarter + subframe`). Single precision, in the engine's order.
+/// A sub-frame's depth lane for a geometry that asks for it: the lane's
+/// unmodified value `base` plus the sample's share of the shutter, in the
+/// engine's order `((slot + 0.5)·duration/samples + base) − duration·0.5`.
+/// `slot` is the sample's index in the frame (`4·quarter + subframe`).
+pub fn depth_lane(base: f32, slot: u32, duration: f32, samples: u32) -> f32 {
+    ((slot as f32 + 0.5) * duration / samples.max(1) as f32 + base) - duration * 0.5
+}
+
+/// The sub-frame's share of a shutter alone, relative to the unmodified
+/// lane: `((slot + 0.5)·duration/samples − duration·0.5)`.
 pub fn shutter_offset(slot: u32, duration: f32, samples: u32) -> f32 {
-    ((slot as f32 + 0.5) * duration / samples.max(1) as f32) - duration * 0.5
+    depth_lane(0.0, slot, duration, samples)
 }
 
 /// A perspective projection from the frustum's edges, in the engine's
@@ -345,8 +149,8 @@ pub fn subframe_projection(
     near: f32,
     far: f32,
 ) -> Matrix {
-    let dx = (half[0] * 2.0 * jitter[0]) / viewport[0].max(1) as f32;
-    let dy = (half[1] * 2.0 * jitter[1]) / viewport[1].max(1) as f32;
+    let dx = crate::view::jitter_offset(jitter[0], half[0], viewport[0]);
+    let dy = crate::view::jitter_offset(jitter[1], half[1], viewport[1]);
     let right = -half[0] + dx;
     let left = half[0] + dx;
     let bottom = half[1] + dy;
@@ -560,7 +364,7 @@ impl Subframes {
         for i in 0..self.projections.len() {
             let slot = first + i as u32;
             let projection = &mut self.projections[i];
-            projection[2][2] = shutter_offset(slot, duration, samples) + base;
+            projection[2][2] = depth_lane(base, slot, duration, samples);
             self.composites[i] = multiply(&self.views[i], projection);
         }
     }
@@ -597,58 +401,44 @@ mod tests {
         }
     }
 
+    fn j(index: usize) -> [f32; 2] {
+        let (x, y) = crate::view::JITTERS[index];
+        [x, y]
+    }
+
     #[test]
-    fn the_setting_table_is_the_engines_sample_and_offset_table() {
+    fn the_settings_come_from_the_views_level_table() {
         assert_eq!(
-            SETTINGS.map(|s| (s.samples, s.jitter_first)),
-            [
-                (1, 0),
-                (2, 1),
-                (3, 3),
-                (4, 6),
-                (8, 10),
-                (15, 18),
-                (24, 33),
-                (66, 57)
-            ]
+            (0..8).map(sample_count).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 8, 15, 24, 66]
         );
-        // The offsets are the running sums of the sample counts.
-        for pair in SETTINGS.windows(2) {
-            assert_eq!(pair[1].jitter_first, pair[0].jitter_first + pair[0].samples);
-        }
-        assert_eq!(passes(0), 1);
-        assert_eq!(passes(1), 2);
-        // A three-sample setting draws three passes, not four.
-        assert_eq!(passes(2), 3);
-        assert_eq!(passes(3), 4);
-        assert_eq!(passes(5), 4);
-        assert_eq!(quarters(0), 1);
-        assert_eq!(quarters(3), 1);
-        assert_eq!(quarters(4), 2);
-        assert_eq!(quarters(5), 4);
-        assert_eq!(quarters(7), 17);
-        assert_eq!(sample_count(9), 1);
-        assert_eq!(setting(8), None);
+        assert_eq!(
+            (0..8).map(passes).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 4, 4, 4, 4]
+        );
+        // A setting past the table takes one sample.
+        assert_eq!(sample_count(8), 1);
+        assert_eq!(passes(8), 1);
     }
 
     #[test]
     fn the_jitter_table_holds_the_engines_offsets() {
-        assert_eq!(JITTER.len(), 124);
+        assert_eq!(crate::view::JITTERS.len(), 124);
         // The first sample of the 4x setting is entry 6.
         assert_eq!(jitter(3, 0, 0)[0].to_bits(), 0xBE95D313);
         assert_eq!(jitter(3, 0, 0)[1].to_bits(), 0xBE198B2F);
         // The second sample of a quarter is the next entry.
         assert_eq!(jitter(3, 0, 1)[0].to_bits(), 0x3E98066C);
         // The 4x setting's four samples are entries 6 through 9.
-        assert_eq!(jitter(3, 0, 0), JITTER[6]);
-        assert_eq!(jitter(3, 0, 3), JITTER[9]);
+        assert_eq!(jitter(3, 0, 0), j(6));
+        assert_eq!(jitter(3, 0, 3), j(9));
         // A later quarter continues the setting's sequence: the 8-sample
         // setting's second quarter starts at entry 14.
-        assert_eq!(jitter(4, 1, 0), JITTER[14]);
+        assert_eq!(jitter(4, 1, 0), j(14));
         // The 66-sample setting's last sample is entry 122; entry 123 is
         // the table's zero padding.
-        assert_eq!(jitter(7, 16, 1), JITTER[122]);
-        assert_eq!(JITTER[123], [0.0, 0.0]);
+        assert_eq!(jitter(7, 16, 1), j(122));
+        assert_eq!(j(123), [0.0, 0.0]);
         // A sample with no jitter is zero.
         assert_eq!(jitter(0, 0, 0), [0.0, 0.0]);
         assert_eq!(jitter(8, 0, 0), [0.0, 0.0]);
@@ -830,7 +620,7 @@ mod tests {
             frames.projection(0),
             Some(&subframe_projection(
                 [-10.0, -5.0],
-                JITTER[6],
+                j(6),
                 [800, 600],
                 1.0,
                 100.0,
@@ -860,7 +650,7 @@ mod tests {
         let before = *frames.projection(1).unwrap();
         frames.apply_depth_offset(0.1);
         let after = *frames.projection(1).unwrap();
-        assert_eq!(after[2][2], before[2][2] + shutter_offset(1, 0.1, 4));
+        assert_eq!(after[2][2], depth_lane(before[2][2], 1, 0.1, 4));
         assert_eq!(after[0][0], before[0][0]);
         assert_eq!(
             frames.composite(1),
@@ -880,7 +670,7 @@ mod tests {
             frames.projection(2),
             Some(&subframe_projection(
                 [-10.0, -5.0],
-                JITTER[5],
+                j(5),
                 [800, 600],
                 1.0,
                 100.0

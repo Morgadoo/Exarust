@@ -473,7 +473,7 @@ pub fn key_words(material: &Material, quality: u32) -> Option<(u32, u32)> {
 /// engine's setting table holds (1, 2, 3, 4, 8, 15, 24 and 66). Other
 /// settings count as off.
 pub fn supersample_factor(setting: u32) -> u32 {
-    crate::subframe::setting(setting).map_or(1, |s| s.samples)
+    crate::subframe::sample_count(setting)
 }
 
 /// The sub-frames a super-sampling quarter draws: the sample count capped at
