@@ -3682,12 +3682,74 @@ pub fn push_preview(count: i32, hovered: Option<i32>) -> PreviewPush {
     PreviewPush { count, selected }
 }
 
-/// The text row a pick in the continue screen's list shows, from its
-/// one-based position: that row's text fills the details box. The
-/// original indexes without a check; a position below one shows nothing
-/// here.
-pub fn continue_name_row(selected: i32) -> Option<usize> {
-    usize::try_from(selected.checked_sub(1)?).ok()
+/// The row and name a pick in the continue screen's list shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContinueNameRow<'a> {
+    /// The row the page keeps: the one-based pick less one, unchecked.
+    pub row: i32,
+    /// The row's name, which fills the details box's name control.
+    pub text: Option<&'a str>,
+}
+
+/// The name a pick in the continue screen's list fills in.
+///
+/// The control reports a one-based row; the page stores it less one and the
+/// save list's entry at that row (a record of stride 0x18 whose name sits
+/// at `+0x10`) becomes the name control's text. The original computes the
+/// index without a check, so a pick with no row behind it keeps the stored
+/// word and writes nothing.
+pub fn continue_name_row<'a>(selected: i32, rows: &[&'a str]) -> ContinueNameRow<'a> {
+    let row = selected.wrapping_sub(1);
+    let text = usize::try_from(row)
+        .ok()
+        .and_then(|row| rows.get(row))
+        .copied();
+    ContinueNameRow { row, text }
+}
+
+/// The two texts the continue page opens with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContinueTexts<'a> {
+    /// The chosen save's row, kept on the page.
+    pub row: i32,
+    /// The label's scroll state: the page scrolls that one row and the
+    /// list's length; missing when nothing is chosen.
+    pub label: Option<[i32; 2]>,
+    /// The label's text, the page's own display string [guess: the string
+    /// is a global the caller sets, not one of this unit's].
+    pub label_text: Option<&'a str>,
+    /// The details box's name, from the chosen row.
+    pub name_text: Option<&'a str>,
+}
+
+/// Fills the continue page's label and name box when it opens.
+///
+/// With a chosen save (`page_label` is its display string) the label
+/// scrolls one row of the list's length and takes that string, and the name
+/// box takes the chosen row's name ([`continue_name_row`] with the row made
+/// one-based again). Without one both texts are emptied, as the original
+/// clears the label's text and the name control.
+pub fn continue_texts<'a>(
+    saves: &[&'a str],
+    index: i32,
+    page_label: Option<&'a str>,
+) -> ContinueTexts<'a> {
+    let row = index;
+    let name_text = continue_name_row(index.wrapping_add(1), saves).text;
+    match page_label {
+        Some(label) => ContinueTexts {
+            row,
+            label: Some([1, saves.len() as i32]),
+            label_text: Some(label),
+            name_text,
+        },
+        None => ContinueTexts {
+            row,
+            label: None,
+            label_text: None,
+            name_text: None,
+        },
+    }
 }
 
 /// The delete confirmation's text: the question and the character's name.
@@ -4606,27 +4668,49 @@ pub fn continue_view(input: ContinueViewInput<'_>) -> ContinueView {
 
 /// What opening the continue page does.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ContinuePageOpen {
+pub struct ContinuePageOpen<'a> {
     pub gui_hidden: bool,
     pub view: ContinueView,
     pub button: CreationContinue,
     pub reset_dialog: bool,
+    /// The label and name box the page fills in ([`continue_texts`]).
+    pub texts: ContinueTexts<'a>,
+    /// The view's left edge and the panels ([`continue_place`]).
+    pub place: ContinuePlace,
+}
+
+/// The save list a continue page opens on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContinueSaveList<'a> {
+    /// The saves' names, by index.
+    pub names: &'a [&'a str],
+    /// The chosen save.
+    pub index: i32,
+    /// The page's display string for the chosen save (see
+    /// [`ContinueTexts::label_text`]).
+    pub label: Option<&'a str>,
 }
 
 /// Opens the continue page: hides the in-game GUI, builds the character
-/// view, lays out the save or checkpoint button and, when the save manager
-/// reports a reset to the portal is needed, opens that dialog.
-pub fn open_continue_page(
+/// view, lays out the save or checkpoint button, fills the label and name
+/// box from the save list and, when the save manager reports a reset to the
+/// portal is needed, opens that dialog.
+pub fn open_continue_page<'a>(
     input: ContinueViewInput<'_>,
+    saves: ContinueSaveList<'a>,
     kind: SaveKind,
     availability: SaveAvailability,
     reset_to_portal: bool,
-) -> ContinuePageOpen {
+    unit: i32,
+    tall: bool,
+) -> ContinuePageOpen<'a> {
     ContinuePageOpen {
         gui_hidden: true,
         view: continue_view(input),
         button: creation_continue_button(kind.code(), availability.0 as i32),
         reset_dialog: reset_to_portal,
+        texts: continue_texts(saves.names, saves.index, saves.label),
+        place: continue_place(unit, tall),
     }
 }
 
@@ -7092,10 +7176,68 @@ mod tests {
 
     #[test]
     fn the_continue_row_and_delete_text_follow_the_selection() {
-        assert_eq!(continue_name_row(1), Some(0));
-        assert_eq!(continue_name_row(3), Some(2));
-        assert_eq!(continue_name_row(0), None);
-        assert_eq!(continue_name_row(-1), None);
+        let rows = ["Mira", "Ann", "Bob"];
+        assert_eq!(
+            continue_name_row(1, &rows),
+            ContinueNameRow {
+                row: 0,
+                text: Some("Mira")
+            }
+        );
+        assert_eq!(
+            continue_name_row(3, &rows),
+            ContinueNameRow {
+                row: 2,
+                text: Some("Bob")
+            }
+        );
+        // The pick is not checked: zero stores -1 and writes nothing, and a
+        // row past the list has no text either.
+        assert_eq!(
+            continue_name_row(0, &rows),
+            ContinueNameRow {
+                row: -1,
+                text: None
+            }
+        );
+        assert_eq!(
+            continue_name_row(-1, &rows),
+            ContinueNameRow {
+                row: -2,
+                text: None
+            }
+        );
+        assert_eq!(
+            continue_name_row(4, &rows),
+            ContinueNameRow { row: 3, text: None }
+        );
+
+        // The page opens on a chosen save: the label scrolls one row of the
+        // list's length with the page's display string, and the name box
+        // takes the chosen row's name.
+        assert_eq!(
+            continue_texts(&rows, 1, Some("Ann's game")),
+            ContinueTexts {
+                row: 1,
+                label: Some([1, 3]),
+                label_text: Some("Ann's game"),
+                name_text: Some("Ann"),
+            }
+        );
+        // No chosen save clears both texts, and a row past the list has no
+        // name while the label still stands.
+        assert_eq!(
+            continue_texts(&rows, 0, None),
+            ContinueTexts {
+                row: 0,
+                label: None,
+                label_text: None,
+                name_text: None,
+            }
+        );
+        let past = continue_texts(&rows, 7, Some("Mira's game"));
+        assert_eq!(past.label, Some([1, 3]));
+        assert_eq!(past.name_text, None);
 
         assert_eq!(delete_confirm_text("Delete ", "Mira"), "Delete Mira?");
         assert_eq!(copy_creation_name("Mira"), "Mira");
@@ -7585,10 +7727,18 @@ mod tests {
 
     #[test]
     fn the_continue_page_lays_out_the_chosen_kind() {
+        let saves = ContinueSaveList {
+            names: &["Mira", "Ann"],
+            index: 0,
+            label: Some("Mira's game"),
+        };
         let page = open_continue_page(
             continue_input("Mira"),
+            saves,
             SaveKind::Save,
             SaveAvailability(2),
+            true,
+            4,
             true,
         );
         assert!(page.gui_hidden);
@@ -7596,11 +7746,24 @@ mod tests {
         assert!(page.button.mirrored);
         assert!(!page.button.enabled);
         assert!(page.reset_dialog);
+        assert_eq!(page.texts.row, 0);
+        assert_eq!(page.texts.name_text, Some("Mira"));
+        assert_eq!(page.texts.label, Some([1, 2]));
+        assert_eq!(page.place.view_x, 4 * 0x3b);
+        assert_eq!(page.place.details.h, 0x140);
 
+        let saves = ContinueSaveList {
+            names: &["Mira", "Ann"],
+            index: 1,
+            label: Some("Ann's game"),
+        };
         let page = open_continue_page(
             continue_input("Mira"),
+            saves,
             SaveKind::Checkpoint,
             SaveAvailability(3),
+            false,
+            4,
             false,
         );
         assert_eq!(
@@ -7609,6 +7772,8 @@ mod tests {
         );
         assert!(page.button.enabled);
         assert!(!page.reset_dialog);
+        assert_eq!(page.texts.name_text, Some("Ann"));
+        assert_eq!(page.place.details.h, 0x104);
     }
 
     #[test]
