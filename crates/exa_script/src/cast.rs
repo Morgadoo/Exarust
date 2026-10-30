@@ -372,6 +372,17 @@ impl Cast {
             if let Some(out_of_action) = reading.out_of_action {
                 character.out_of_action = out_of_action;
             }
+            // The common frame: the same roles in the same order, nothing to
+            // rebuild (no allocation per character per frame).
+            if character.roles.len() == reading.roles.len()
+                && character
+                    .roles
+                    .iter()
+                    .zip(reading.roles)
+                    .all(|(a, b)| a.id == b.id)
+            {
+                continue;
+            }
             let mut merged = Vec::with_capacity(reading.roles.len());
             for held in reading.roles {
                 merged.push(
