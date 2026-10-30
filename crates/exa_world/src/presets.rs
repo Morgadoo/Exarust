@@ -106,54 +106,6 @@ pub fn fill_empty_colour(preset: &mut [f32; PRESET_WORDS]) {
     }
 }
 
-/// The environment unit's scene-node constructor hook. Initialising the
-/// unit saves the hook that was installed before it and installs the
-/// environment's attach as the constructor for later environment nodes.
-/// The ids are Exarust's markers, not machine addresses.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ConstructorHook {
-    /// The hook that was installed before the environment's own.
-    pub previous: Option<u8>,
-    /// The hook that runs now.
-    pub current: Option<u8>,
-}
-
-/// The environment unit's constructor marker.
-pub const ENVIRONMENT_CONSTRUCTOR: u8 = 1;
-
-impl ConstructorHook {
-    /// Installs the environment constructor over whatever was there, as the
-    /// unit's init does (`new = old; old = environment` in the original's
-    /// global pair, the new one chaining to the old).
-    pub fn install_environment(&mut self) {
-        self.previous = self.current;
-        self.current = Some(ENVIRONMENT_CONSTRUCTOR);
-    }
-}
-
-/// What one environment attach does, in the original's order: the previous
-/// constructor runs when one was installed, then a node of the environment
-/// class is made, linked to the scene and given the scene as its owner, and
-/// the scene's node callback (registered for this class) runs last.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct EnvironmentAttach {
-    /// The previous constructor ran first.
-    pub ran_previous: bool,
-    /// The scene's node callback ran last.
-    pub ran_callback: bool,
-}
-
-impl EnvironmentAttach {
-    /// Plans an attach: `previous` is whether a constructor was installed
-    /// and `callback` whether the scene has a callback for the class.
-    pub fn new(previous: bool, callback: bool) -> Self {
-        Self {
-            ran_previous: previous,
-            ran_callback: callback,
-        }
-    }
-}
-
 /// The six-preset table the environment unit keeps.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PresetTable {
@@ -265,21 +217,5 @@ mod tests {
         // colour is filled from it.
         assert_eq!(table.presets[5][EMPTY_FROM], preset()[EMPTY_FROM]);
         assert_ne!(table.presets[5][EMPTY_WORD], 0.0);
-    }
-
-    #[test]
-    fn the_environment_constructor_chains_over_the_previous_hook() {
-        let mut hook = ConstructorHook::default();
-        hook.install_environment();
-        assert_eq!(hook.previous, None);
-        assert_eq!(hook.current, Some(ENVIRONMENT_CONSTRUCTOR));
-        // A second install keeps the environment hook as the previous one.
-        hook.install_environment();
-        assert_eq!(hook.previous, Some(ENVIRONMENT_CONSTRUCTOR));
-        // An attach runs the previous hook first and the callback last.
-        let attach = EnvironmentAttach::new(true, false);
-        assert!(attach.ran_previous && !attach.ran_callback);
-        let attach = EnvironmentAttach::new(false, true);
-        assert!(!attach.ran_previous && attach.ran_callback);
     }
 }
