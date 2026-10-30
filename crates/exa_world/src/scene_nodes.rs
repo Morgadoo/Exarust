@@ -1526,6 +1526,11 @@ impl Scene {
         };
         for alias in aliases {
             if let Some(alias) = self.nodes.get_mut(alias) {
+                if let Some(sector) = alias.sector
+                    && let Some(s) = self.sectors.get_mut(sector)
+                {
+                    s.changes |= LINKS_CHANGED;
+                }
                 alias.sector = None;
             }
         }
@@ -5547,6 +5552,21 @@ mod tests {
         assert_eq!(scene.nodes[light].alias_values, Some(values));
         assert_eq!(scene.nodes[alias].alias_values, Some(values));
         assert!(scene.nodes[alias].moved);
+    }
+
+    #[test]
+    fn detaching_a_light_marks_its_alias_sectors() {
+        let mut scene = Scene::new((0, 0));
+        scene.sectors.push(Sector::new("room", None));
+        let light = scene.add_node(NodeKind::Light, None);
+        let alias = scene.add_node(NodeKind::Light, None);
+        scene.nodes[light].aliases.push(alias);
+        scene.nodes[light].sector = Some(1);
+        scene.nodes[alias].sector = Some(1);
+        scene.detach_subtree(light);
+        assert_eq!(scene.sectors[1].changes & LINKS_CHANGED, LINKS_CHANGED);
+        assert_eq!(scene.nodes[alias].sector, None);
+        assert!(scene.nodes[light].aliases.is_empty());
     }
 
     #[test]
