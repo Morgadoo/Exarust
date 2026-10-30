@@ -769,7 +769,7 @@ impl<'a> ValueBlock<'a> {
         self.flags() & 0x8000_0000 != 0
     }
 
-    /// The block's size in bytes ([`Self::HEADER`] when the word is absent).
+    /// The block's size word at `+0` (0 when the bytes are too short).
     pub fn size(&self) -> usize {
         self.u32_at(0) as usize
     }
@@ -828,10 +828,13 @@ impl<'a> ValueBlock<'a> {
         self.bytes.get(at..).unwrap_or_default()
     }
 
-    /// The position one value further: `at` plus the block's stride in
-    /// four-byte words.
-    pub fn advance(&self, at: usize) -> usize {
-        at + 4 * usize::from(self.u16_at(0xc))
+    /// The bytes one stride on from the block's own start: the block plus
+    /// its 16-bit stride at `+0xc` in four-byte words (the original's
+    /// accessor takes the block alone).
+    pub fn advance(&self) -> &'a [u8] {
+        self.bytes
+            .get(4 * usize::from(self.u16_at(0xc))..)
+            .unwrap_or_default()
     }
 
     /// The flagged word at `+0x14` when the flag is set, else 0.

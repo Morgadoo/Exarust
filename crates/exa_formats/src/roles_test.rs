@@ -601,7 +601,7 @@ fn a_value_block_reads_its_parts() {
     assert_eq!(block.values(), &bytes[0xc..]);
     assert_eq!(block.first_area(), &bytes[8..]);
     assert_eq!(block.second_area(), &bytes[0x10..]);
-    assert_eq!(block.advance(0x18), 0x18 + 4 * 2);
+    assert_eq!(block.advance(), &bytes[4 * 2..]);
     assert_eq!(block.flagged_word(), 0xABC);
     assert_eq!(block.entries(), &bytes[0x18..]);
     assert_eq!(block.next().unwrap().bytes().len(), bytes.len() - 0x10);
