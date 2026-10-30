@@ -247,6 +247,8 @@ pub struct LevelInfo {
     /// The level's transition markers, in placement order: the entrance and
     /// the id of the level each leads back from, with its position.
     pub player_markers: Vec<PlayerMarker>,
+    /// The level's alarm zones, in placement order ([`alarm_volumes`]).
+    pub alarm_volumes: Vec<AlarmVolume>,
     /// The level environment's reverb decay offset, seconds.
     pub reverb_decay: f32,
     pub bounds_min: Vec3,
@@ -294,6 +296,64 @@ pub fn player_markers(scene: &Scene, global: &[Item]) -> Vec<PlayerMarker> {
             entrance: words[0],
             previous_level: words[1],
             position: Vec3::new(t[0], t[1], t[2]),
+        });
+    }
+    out
+}
+
+/// A level's alarm zone: a placed trigger volume whose record names the
+/// pass item that lets its carrier cross ([`objdb::Volume::alarm_pass`]).
+/// The player stepping into one without the pass wakes the statue golems
+/// around it (`exa_ai::golem`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AlarmVolume {
+    /// The volume's box in centimetres, the original's world unit: centred
+    /// on the object's origin, its half extents the section's three, its
+    /// axes the placement's rotation rows [inferred: the container volume
+    /// the object manager builds keeps only the extents and a radius].
+    pub bounds: exa_physics::intersect::Obb,
+    /// The node's bounding radius (cm): the extents' length, the squares of
+    /// x and z summed first ([`db_objects::container_volume`]).
+    pub radius: f32,
+    /// The pass item's id.
+    pub pass: u32,
+}
+
+/// Every alarm zone a level places, in placement order, from its objects
+/// and their items' volume sections: a model-less object (slot 0) whose
+/// record's volume section is an alarm zone.
+pub fn alarm_volumes(scene: &Scene, global: &[Item]) -> Vec<AlarmVolume> {
+    let mut out = Vec::new();
+    for object in &scene.placed_objects {
+        if object.slot != 0 {
+            continue;
+        }
+        let items: &[Item] = if object.is_local() {
+            &scene.local_items
+        } else {
+            global
+        };
+        let id = object.id & exa_formats::rfc::PlacedObject::ID_MASK;
+        let Some(item) = items.iter().find(|item| item.id == id) else {
+            continue;
+        };
+        let Some(volume) = item.volume else {
+            continue;
+        };
+        let Some(pass) = volume.alarm_pass() else {
+            continue;
+        };
+        let extents = volume.extents.map(f32::from);
+        let row = |i: usize| Vec3::from_array(object.transform[i]);
+        let t = object.transform[3];
+        out.push(AlarmVolume {
+            bounds: exa_physics::intersect::Obb::new(
+                Vec3::new(t[0], t[1], t[2]) * 100.0,
+                Vec3::from_array(extents),
+                [row(0), row(1), row(2)],
+            ),
+            radius: db_objects::container_volume(extents).radius,
+            pass,
         });
     }
     out
@@ -1911,6 +1971,7 @@ impl LevelLoad {
                 bodies: self.bodies,
                 spawn: self.scene.grid.as_ref().and_then(grid::spawn_point),
                 player_markers: player_markers(&self.scene, &self.global_items),
+                alarm_volumes: alarm_volumes(&self.scene, &self.global_items),
                 reverb_decay,
                 bounds_min: min,
                 bounds_max: max,
@@ -2145,6 +2206,44 @@ mod tests {
         assert!((markers[0].position.x + 8.948565).abs() < 1e-3);
         assert!((markers[0].position.y - 0.49198326).abs() < 1e-3);
         assert!((markers[0].position.z + 94.14694).abs() < 1e-3);
+    }
+
+    /// `exanima06` places the game's 14 alarm zones, each a 340 × 200 ×
+    /// 300 cm box (350 wide for three) standing on the floor, passed by one
+    /// of the key tokens 474–479; the one at (10.5, 1, 69) m is turned a
+    /// quarter about y and passed by token 474 (skipped without the game).
+    #[test]
+    fn shipped_alarm_volumes_are_exanima06s() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(&dir).unwrap();
+        let resource = game.pack(exa_assets::PackKind::Resource).unwrap();
+        let db = exa_formats::rdb::Database::parse(resource.get("objdb.rdb").unwrap()).unwrap();
+        let global = exa_formats::objdb::items(&db);
+        let scene = Scene::parse(resource.get("exanima06.rfc").unwrap()).unwrap();
+        let zones = alarm_volumes(&scene, &global);
+        assert_eq!(zones.len(), 14);
+        assert!(zones.iter().all(|z| (474..=479).contains(&z.pass)));
+        assert!(
+            zones
+                .iter()
+                .all(|z| (z.bounds.centre.y - 100.0).abs() < 1e-3)
+        );
+        assert!(zones.iter().all(|z| z.bounds.half_extents.y == 100.0));
+        let gate = zones
+            .iter()
+            .find(|z| (z.bounds.centre - Vec3::new(1050.0, 100.0, 6900.0)).length() < 0.5)
+            .expect("the zone at (10.5, 1, 69) m");
+        assert_eq!(gate.pass, 474);
+        assert_eq!(gate.bounds.half_extents, Vec3::new(170.0, 100.0, 150.0));
+        assert!((gate.bounds.axes[0] - Vec3::Z).length() < 1e-5);
+        assert!(
+            (gate.radius - (170.0f32 * 170.0 + 150.0 * 150.0 + 100.0 * 100.0).sqrt()).abs() < 1e-3
+        );
+        // No other story level has one.
+        let first = Scene::parse(resource.get("exanima01.rfc").unwrap()).unwrap();
+        assert!(alarm_volumes(&first, &global).is_empty());
     }
 
     /// What spawning `name` produced: the level's info, the names spawned

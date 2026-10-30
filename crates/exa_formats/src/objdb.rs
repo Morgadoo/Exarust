@@ -212,6 +212,24 @@ impl Volume {
     pub fn marker(&self) -> Option<[u32; 2]> {
         (self.flags & 0xFF == Self::MARKER).then_some([self.entrance, self.previous_level])
     }
+
+    /// The flags' class bits (`0xF00`) of a trigger volume, which the
+    /// original's per-character zone check acts on.
+    pub const TRIGGER_CLASS: u32 = 0x100;
+    /// The class mask the zone check tests against [`Volume::TRIGGER_CLASS`].
+    pub const CLASS_MASK: u32 = 0xF00;
+    /// The low byte of a trigger volume that is an alarm zone.
+    pub const ALARM: u32 = 2;
+
+    /// The pass item of an alarm zone: a trigger volume (class `0x100`)
+    /// whose low byte is [`Volume::ALARM`] keeps, in the word a transition
+    /// marker uses for its previous level, the id of the item whose carrier
+    /// may cross it. `None` for any other volume. The 14 shipped alarm zones
+    /// are all in `exanima06` (flags `0x1102`, the key tokens 474–479).
+    pub fn alarm_pass(&self) -> Option<u32> {
+        (self.flags & Self::CLASS_MASK == Self::TRIGGER_CLASS && self.flags & 0xFF == Self::ALARM)
+            .then_some(self.previous_level)
+    }
 }
 
 /// An overlapping worn item whose [`Item::equip_lock`] is over this cannot
@@ -1159,6 +1177,30 @@ mod tests {
         body[8..12].copy_from_slice(&0x1000u32.to_le_bytes());
         let other = Item::parse(1, &section(VOLUME, &body)).unwrap();
         assert_eq!(other.volume.unwrap().marker(), None);
+        assert_eq!(volume.alarm_pass(), None, "a marker is no alarm zone");
+        // An alarm zone: class 0x100, low byte 2, its pass item in the
+        // marker's previous-level word.
+        body[8..12].copy_from_slice(&0x1102u32.to_le_bytes());
+        body[16..20].copy_from_slice(&476u32.to_le_bytes());
+        let alarm = Item::parse(1, &section(VOLUME, &body))
+            .unwrap()
+            .volume
+            .unwrap();
+        assert_eq!((alarm.alarm_pass(), alarm.marker()), (Some(476), None));
+        // A transition trigger (low byte 0x20) and a class-0x200 volume are
+        // not alarm zones.
+        body[8..12].copy_from_slice(&0x1120u32.to_le_bytes());
+        let exit = Item::parse(1, &section(VOLUME, &body))
+            .unwrap()
+            .volume
+            .unwrap();
+        assert_eq!(exit.alarm_pass(), None);
+        body[8..12].copy_from_slice(&0x1202u32.to_le_bytes());
+        let other = Item::parse(1, &section(VOLUME, &body))
+            .unwrap()
+            .volume
+            .unwrap();
+        assert_eq!(other.alarm_pass(), None);
         // A short body keeps no volume.
         let short = Item::parse(1, &section(VOLUME, &[0u8; 18])).unwrap();
         assert!(short.volume.is_none());

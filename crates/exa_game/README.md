@@ -475,7 +475,12 @@ is under its source), the hand-effect dispatch (electric, glow, flame), the
 power-curve glow with its level step, the worn item's light and the apparel
 effect with their 0.9/0.1 hysteresis, the skin material fade (the square of
 the value, first match) and the focus-item power slot. The golem guardians
-are in `exa_ai::golem`. A spawned body (the scene bodies, the arena's
+are in `exa_ai::golem`; `golem_alarm` runs their alarm zones live: the AI
+manager's zone check for the player (past 3 cm from its last checked
+point), the pass item search, and the ring that wakes the statue golems
+within 800 cm of the zone (statue bit and byte cleared, `golem_act`, home
+taken, the player their only contact at concern 10) with the level start's
+reset. A spawned body (the scene bodies, the arena's
 fighters and a level's placed characters) gets the list its worn items
 register (`item_effects::WornEffects`, from the armour pass's
 `exa_formats::encumbrance::WornSpecials`): a healing item on a body that

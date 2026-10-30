@@ -49,6 +49,7 @@ pub mod footwork;
 pub mod frame;
 pub mod game_event;
 pub mod gamepad;
+pub mod golem_alarm;
 pub mod gui_drop;
 pub mod gui_paint;
 pub mod gui_screens;
@@ -159,6 +160,7 @@ impl Plugin for GamePlugin {
             body_inventory::BodyInventoryPlugin,
             panel_live::PanelLivePlugin,
             gui_drop::GuiDropPlugin,
+            golem_alarm::GolemAlarmPlugin,
             use_cursor::UseCursorPlugin,
             npc_search::NpcSearchPlugin,
         ))

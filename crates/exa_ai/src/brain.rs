@@ -152,7 +152,12 @@ pub struct Npc {
     /// The contact sense its race uses ([`personality::Sense`]).
     pub sense: personality::Sense,
     /// The attach found a statue: its contact sense clears what it sees.
+    /// This is the behaviour's statue byte, which only a golem wake
+    /// clears ([`crate::golem::wake`]).
     pub statue: bool,
+    /// The home a golem wake takes from the body (cm) and its angle: where
+    /// the alarm return puts the guardian back.
+    pub guard_home: Option<(Vec3, f32)>,
     /// Its race word carries the AI bit `0x1000`: the ally sense's mark of
     /// a fellow AI character (the golem races).
     pub race_ai: bool,
@@ -248,6 +253,7 @@ impl Npc {
             fled: crate::flee::FledRooms::default(),
             sense: personality::Sense::Standard,
             statue: false,
+            guard_home: None,
             race_ai: false,
             level_room: -1,
             previous_room: -1,
