@@ -609,24 +609,29 @@ pub fn tone_weight(error: f32, flag: bool, state: i32, scale: f32) -> f32 {
     error * error
 }
 
-/// The step/breath cadence target: `trunc((1 − 0.25·exertion)·1660/83)`.
+/// The step/breath cadence target: `(i32)((1 − 0.25·exertion)·1660 / 83)`.
+///
+/// The original converts the 1660 with `CVTSI2SS`, forms `(1 − 0.25x)·1660`
+/// and divides by 83 with `DIVSS` (both single precision), then converts
+/// with a 64-bit `CVTSS2SI`, which rounds to nearest with ties to even, and
+/// keeps the low 32 bits: an exertion of 0.5 gives 1452.5 / 83 = 17.5 and a
+/// target of 18, not 17, and a NaN gives the 64-bit indefinite, whose low
+/// word is 0.
 pub fn cadence_target(exertion: f32) -> i32 {
     let v = (1.0 - exertion * 0.25) * 1660.0;
-    (v as f64 / 83.0) as i32
+    crate::engine_math::round_to_i64(v / 83.0) as i32
 }
 
-/// One tick of the pitch impulse (0xD18): a flagged impulse of
-/// `2·sign(v)·v²`, then a 0.95 decay.
+/// One tick of the pitch impulse: a flagged impulse of `sign(v)·(v·v)·2`,
+/// then a 0.95 decay.
+///
+/// The original squares `v` first, multiplies the sign in, then the 2.0
+/// (single precision throughout), and applies the decay as the double 0.95
+/// narrowed once. The sign is the engine's: zero for either zero, else the
+/// sign bit copied onto one, so a NaN keeps its sign.
 pub fn pitch_step(previous: f32, v: f32, flag: bool) -> f32 {
     let p = if flag {
-        let sign = if v > 0.0 {
-            1.0
-        } else if v < 0.0 {
-            -1.0
-        } else {
-            0.0
-        };
-        2.0 * sign * v * v
+        crate::engine_math::sign(v) * (v * v) * 2.0
     } else {
         previous
     };
@@ -713,9 +718,13 @@ mod stage_tests {
     #[test]
     fn the_cadence_steps() {
         assert_eq!(cadence_target(0.0), 20);
-        assert_eq!(cadence_target(0.5), 17);
+        // 17.5 ties to even: 18.
+        assert_eq!(cadence_target(0.5), 18);
         assert_eq!(cadence_target(0.75), 16);
         assert_eq!(cadence_target(1.0), 15);
+        // A NaN exertion gives the 64-bit integer indefinite, whose low
+        // word is 0.
+        assert_eq!(cadence_target(f32::NAN), 0);
     }
 
     #[test]
@@ -723,6 +732,9 @@ mod stage_tests {
         assert!(near(pitch_step(0.0, 0.5, true), 0.475));
         assert!(near(pitch_step(0.0, -0.25, true), -0.11875));
         assert!(near(pitch_step(1.0, 0.0, false), 0.95));
+        // The sign is the engine's: zero gives zero, a NaN keeps its sign.
+        assert_eq!(pitch_step(0.0, 0.0, true), 0.0);
+        assert!(pitch_step(0.0, f32::NAN, true).is_nan());
         assert!(near(wrap_angle(3.5), -2.7831855));
         assert!(near(wrap_angle(-3.5), 2.7831855));
         assert_eq!(wrap_angle(0.2), 0.2);

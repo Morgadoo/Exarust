@@ -100,6 +100,10 @@ const PROBE_DEPTH: f32 = 2000.0;
 const LOWEST_ABOVE: f32 = 100.0;
 /// The ground a query that meets nothing gives (cm).
 const NO_GROUND: f32 = -10000.0;
+/// The sentinel a nearest-foot search starts from: the float just under the
+/// maximum, which the original stores once and shares with its trailing-foot
+/// search, so a NaN distance never wins.
+const NO_DISTANCE: f32 = f32::from_bits(0x7f7f_c99e);
 /// Ground is within reach at least this share of the leg's length under
 /// the pelvis.
 const REACH_SHARE: f32 = 0.5;
@@ -1593,9 +1597,22 @@ impl Ragdoll {
     }
 }
 
-/// The episode ended: one support foot is put on its spot and the standing
-/// position moves so that spot is where the foot is. `spots` are the pose's
-/// ankles, not the step's shifted ones.
+/// The step's end: the free foot nearest the target becomes the new support
+/// foot and the standing position moves so that foot is where it is.
+///
+/// The target is the chest plus five ticks of its fast velocity. A foot is
+/// passed over when it is anchored and not reached (`state & 0xc == 4`),
+/// i.e. already planted for the step (a touched anchored foot too); an
+/// anchored foot that has reached is still a candidate. The foot nearest
+/// the target across the ground wins, ties
+/// keeping the earlier one; the search starts from the original's sentinel
+/// (the float just under the maximum, the value its trailing-foot search
+/// shares), so a NaN distance never wins. When no foot wins, the first leg
+/// is used, as the original's index starts there. That foot is set touching
+/// (its ramp bits kept) with its anchor taken from its posed point unless
+/// it had reached, and the standing position is placed so the foot's spot
+/// sits where the foot is. `spots` are the pose's ankles, not the step's
+/// shifted ones.
 fn end_step(
     steps: &mut steps::Steps,
     legs: &mut [Leg],
@@ -1609,9 +1626,9 @@ fn end_step(
     steps.out_of_balance = false;
     steps.near = 0;
     let q = steps::end_query(chest, fast);
-    let mut best: Option<(usize, f32)> = None;
+    let mut best: (usize, f32) = (0, NO_DISTANCE);
     for (i, leg) in legs.iter().enumerate() {
-        if leg.state.has(FootState::ANCHORED) {
+        if leg.state.has(FootState::ANCHORED) && !leg.state.has(FootState::REACHED) {
             continue;
         }
         let Some(spot) = spots.get(i).copied().flatten() else {
@@ -1619,20 +1636,24 @@ fn end_step(
         };
         let want = q + (spot - frame).with_y(0.0);
         let d = (ankles[i] - want).with_y(0.0).length_squared();
-        if best.as_ref().is_none_or(|(_, b)| d < *b) {
-            best = Some((i, d));
+        if d < best.1 {
+            best = (i, d);
         }
     }
-    if let Some((i, _)) = best {
-        let local = (spots[i].unwrap() - frame).with_y(0.0);
-        if !legs[i].state.has(FootState::REACHED) {
-            legs[i].anchor = ankles[i];
-        }
-        let keep = legs[i].state.0 & (FootState::RAMP_HELD | FootState::RAMP_SLOW);
-        legs[i].state = FootState(FootState::TOUCHING | keep);
-        steps.standing = ankles[i] - local;
-        steps.placed = true;
+    let Some(leg) = legs.get_mut(best.0) else {
+        return;
+    };
+    let Some(spot) = spots.get(best.0).copied().flatten() else {
+        return;
+    };
+    let local = (spot - frame).with_y(0.0);
+    if !leg.state.has(FootState::REACHED) {
+        leg.anchor = ankles[best.0];
     }
+    let keep = leg.state.0 & (FootState::RAMP_HELD | FootState::RAMP_SLOW);
+    leg.state = FootState(FootState::TOUCHING | keep);
+    steps.standing = ankles[best.0] - local;
+    steps.placed = true;
 }
 
 /// The yaw of a frame's horizontal forward. The model faces +Z, so a pure
