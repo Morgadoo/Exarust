@@ -624,10 +624,15 @@ from its middle; either end clears the active flag, turns the item's
 flipped state and marks its record for a rebuild (the middle and end tests
 are double compares, as the original's). A flip command is refused while
 the character switches and for a section with no flipped-side kind byte
-(`GripLinks::begin_flip`), as the original's command does. Death changes
-no grip link: its strength-1 write is to each lower leg's limit link
-(`Ragdoll::go_limp`), not to a held item's weld, so a corpse keeps its
-weapon by its unchanged grip links. Emptying the hands
+(`GripLinks::begin_flip`), as the original's command does. A collapse
+gives every held item's soft world weld a 10 cm slack
+(`GripLinks::slacken_soft_weld`, after the collapse has let the weapons
+go, so what is left is the shield or torch it keeps), and death then makes
+that weld as stiff as the origin weld (`GripLinks::stiffen_soft_weld`), so
+a corpse's item stays where it fell; `exa_character::grip_runtime`'s
+`adjust_welds` applies both once, from the holder's condition. Death's
+other strength-1 write is to each lower leg's limit link
+(`Ragdoll::go_limp`). Emptying the hands
 restores each hand's link-mobility and contact-mobility words
 (`empty_hand_words`: 0.175 × and 1 × its base); the equip refresh then
 leaves an armed character's hands at their base and gives an unarmed one's

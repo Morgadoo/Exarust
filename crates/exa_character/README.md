@@ -336,7 +336,8 @@ tested rules of their own.
   grip and carried fire), the others their own node entities. A
   `PendingProp` and an `exa_physics::grip::HeldGrip` carry its grip spec,
   holder body, hand and forearm entities, its held kind (weapon, shield or
-  torch) and the parry-weld gate (off in the heavy-claws state). The grip
+  torch) and the parry-weld gate (off in the heavy-claws state and for a
+  creature-body race, whose body rule flags carry the creature bit). The grip
   may be hung before the holder's body exists: `PendingGrip` then fills its
   holder key once the body's first part does. A model with no stored rigid
   node (an assembled
@@ -351,12 +352,11 @@ tested rules of their own.
   kind byte) and rebuilds its `Blade` record from the flipped weapon
   section, and a weapon whose own hand flag (`0x2000000`) says it starts
   flipped is placed half a turn about y and built from the flipped side
-  at once. A dead holder's
-  grip links are left as they are (the corpse keeps its weapon; death's
-  strength-1 write belongs to the lower legs' limit links); a collapsing
-  holder lets its weapons and torch go
+  at once. A collapsing holder lets its weapons and torch go
   (`GripRelease`: the grip stage frees them) while the shield stays on the
-  arm. When the switch clip passes 60% the runtime trades the two held
+  arm; what is still held then takes the collapse's 10 cm soft-weld slack,
+  and a dead holder's item takes death's stiff soft weld (`adjust_welds`,
+  once each). When the switch clip passes 60% the runtime trades the two held
   weapons' blade slots, the attacker's primary and the `Hands` main and
   second weapon once, so `choose_held_movesets` picks the moveset again
   from the new main weapon (a two-hander and a one-hander trade "Two

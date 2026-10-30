@@ -1295,8 +1295,12 @@ death, constants read from the executable; six live retail collapses):
   the blow's daze: 60 at full energy, 345 at the floor of 0.05; eased
   smoothly. A clip start does nothing when its clip already plays. The
   lower legs leave the living lower legs' layer (0; Contacts between
-  bodies, above). (Not yet: the held items dropped (L13), a grab released,
-  the death voice.)
+  bodies, above). It asks for a groan (voice line 2) from the two draws it
+  makes: volume 0.15 + 0.1·second, pitch 0.8 + 0.1·first, both sums in
+  double (`collapse_voice`). Every held item it still has then takes a
+  10 cm slack on its soft world weld
+  (`exa_physics::grip::GripLinks::slacken_soft_weld`), after the weapons
+  and torch have been dropped. (Not yet: a grab released.)
 - **Each tick**, in place of the posture block: the frame re-anchors on
   the pelvis with no reach; the arms' stiffness is 0.2; the dying tick
   moves the heading's x and z each by (random − 0.5) × 0.5 (the original's
@@ -1314,7 +1318,10 @@ death, constants read from the executable; six live retail collapses):
 - **Death** at a tone of 0.25 or less (0.5 × the image's 0.5): 250 ticks,
   3.0 s from full tone. Muscles off, tone 0.01, the word `0xA00`; a plain
   ragdoll from that tick, its motion kept (Exarust gave it a made-up
-  velocity before).
+  velocity before). Every held item's soft world weld becomes as stiff as
+  its origin weld (strength 1,
+  `exa_physics::grip::GripLinks::stiffen_soft_weld`), so a corpse's item
+  stays where it fell.
 - Exarust starts it in its hit reaction, with the energy the blow's
   queued daze leaves, takes the body off its controller (no carry) while
   its balance and feet are still measured standing,
