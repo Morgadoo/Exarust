@@ -32,15 +32,20 @@
 //!   ball ([`rebound`], or the bolt's sampled contact); the thrown ribbon
 //!   draws with the glow stand-in ([`draw_blasts`]).
 //!
-//! Not wired: the sounds, the light, the support-pin gain and the 5 s
-//! recoil a struck character takes (no body field takes them) and the
-//! simulated objects' points. Another motion replacing the cast motion
-//! calls the hook (`cast::call_motion_hooks`), which fizzles a charging
-//! blast.
+//! - **The struck body** ([`loosen_pins`]): after the knock, the body's
+//!   support-pin gain becomes the knock's `(1 − k)·0.08` and its balance's
+//!   landing momentum takes its full weight 5.
+//! - **The light** (`super::effect_light`): the blast registers its GI
+//!   multi-point shape when it starts and frees it when its frame builds
+//!   nothing or it leaves the scene.
+//!
+//! Not wired: the sounds and the simulated objects' points. Another motion
+//! replacing the cast motion calls the hook (`cast::call_motion_hooks`),
+//! which fizzles a charging blast.
 //!
 //! Evidence: the blast's cast, creator, start and hook, the cast-motion
-//! start, the body tick's release, the spend and the cast end, read from
-//! `Exanima.exe`.
+//! start, the body tick's release, the spend, the cast end and the
+//! character hit, read from `Exanima.exe`.
 
 // NaN-sensitive compares are kept as the original makes them.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
@@ -49,8 +54,8 @@ use bevy::prelude::*;
 use exa_ai::brain::Npc;
 use exa_ai::combatant::Combatant;
 use exa_physics::Physics;
-use exa_physics::body::Ragdoll;
 use exa_physics::body::locomotion::Locomotor;
+use exa_physics::body::{Drive, Ragdoll};
 
 use super::barricade::WAKE_TICKS;
 use super::cast::PowerCaster;
@@ -59,9 +64,9 @@ use super::force::{BLAST_MOTION, BlastSetup};
 use super::live::{EffectDraws, EffectMesh, mesh_of_ribbon};
 use crate::effects::Frame as ViewFrame;
 use crate::effects::blast::{
-    ALERT_GAIN, Blast, BlastChunk, BlastView, CHARGING, CONTACT_WEAR, HIT_HOSTILITY, STATIC_EXTRA,
-    THROWN, alert_amount, character_knock, contact_reach, contact_weight, limb_push, limb_terms,
-    rebound,
+    ALERT_GAIN, Blast, BlastChunk, BlastView, CHARGING, CONTACT_WEAR, CharacterKnock,
+    HIT_HOSTILITY, HIT_LANDING_WEIGHT, STATIC_EXTRA, THROWN, alert_amount, character_knock,
+    contact_reach, contact_weight, limb_push, limb_terms, rebound,
 };
 use crate::player::CursorGround;
 
@@ -138,6 +143,23 @@ pub fn blast_view(caster: &Ragdoll, facing: Vec3, target: Option<Vec3>) -> Optio
         hand,
         facing,
     })
+}
+
+/// What a character hit leaves on the struck body's drive, after its
+/// knock: the support pins' gain is set to the knock's
+/// ([`CharacterKnock::pin_gain`], recovering 0.001 a tick from there) and
+/// the balance's landing momentum takes its full weight
+/// ([`HIT_LANDING_WEIGHT`]). The blast's and the torrent's hits both end
+/// this way.
+pub(crate) fn loosen_pins(drive: &mut Drive, knock: &CharacterKnock) {
+    drive.pin_gain = knock.pin_gain;
+    drive.land();
+    debug_assert_eq!(drive.balance().landing_weight(), HIT_LANDING_WEIGHT);
+    debug!(
+        "force hit: pin gain {:.4}, landing weight {:.1}",
+        drive.pin_gain,
+        drive.balance().landing_weight()
+    );
 }
 
 /// A body's mass: its parts' masses summed.
@@ -562,6 +584,7 @@ pub(crate) fn tick_blasts(
                     drive.energy = knock.energy;
                     let counter = drive.balance().counter() + 1;
                     drive.balance_mut().set_counter(counter);
+                    loosen_pins(drive, &knock);
                     knock
                 }) else {
                     continue;
@@ -757,6 +780,50 @@ mod tests {
             (busy.casting, busy.cast_hook),
             (0x401, Some(CastHook { keeps: 0x20 }))
         );
+    }
+
+    /// A struck character's drive takes the knock's pin gain over its own
+    /// and its balance's landing momentum at 5: a 50 kg body (k = 0.04)
+    /// keeps `(1 − 0.04)·0.08` (single, then double) = 0.0768, and the body
+    /// tick's recovery brings it back to 0.08 by 0.001 a tick; a 1.5 kg
+    /// body (k > 1) is left at 0, a −10 kg one at the clamp 0.008. The
+    /// torrent's `k = 1/mass` takes the same path.
+    #[test]
+    fn a_hit_writes_the_pin_gain_and_the_landing_weight() {
+        use crate::effects::torrent::torrent_knock;
+        use exa_physics::body::{PIN_GAIN, recover_pins};
+        let mut drive = Drive::default();
+        assert_eq!(drive.pin_gain, PIN_GAIN);
+        assert_eq!(drive.balance().landing_weight(), 0.0);
+        let knock = character_knock(50.0, drive.energy, Vec3::new(40.0, 0.0, 0.0));
+        loosen_pins(&mut drive, &knock);
+        let want = (f64::from(1.0f32 - 2.0 / 50.0) * 0.08) as f32;
+        assert_eq!(drive.pin_gain, want);
+        assert!((want - 0.0768).abs() < 1e-7);
+        assert_eq!(drive.balance().landing_weight(), HIT_LANDING_WEIGHT);
+        // The recovery: 0.001 a tick (double) while under the double 0.08.
+        let mut gain = drive.pin_gain;
+        let mut ticks = 0;
+        while f64::from(gain) < 0.08 {
+            gain = recover_pins(gain, false);
+            ticks += 1;
+        }
+        assert_eq!(ticks, 4);
+        assert!((0.08..0.0811).contains(&gain));
+        // Light and broken bodies take the floor and the clamp.
+        let mut drive = Drive::default();
+        loosen_pins(&mut drive, &character_knock(1.5, 1.0, Vec3::ZERO));
+        assert_eq!(drive.pin_gain, 0.0);
+        loosen_pins(&mut drive, &character_knock(-10.0, 1.0, Vec3::ZERO));
+        assert_eq!(drive.pin_gain, crate::effects::blast::PIN_GAIN_CLAMP);
+        // The torrent: k = 1/50, (1 − 0.02)·0.08 = 0.0784.
+        let mut drive = Drive::default();
+        loosen_pins(&mut drive, &torrent_knock(50.0, 1.0, Vec3::ZERO));
+        assert_eq!(
+            drive.pin_gain,
+            (f64::from(1.0f32 - 1.0 / 50.0) * 0.08) as f32
+        );
+        assert_eq!(drive.balance().landing_weight(), 5.0);
     }
 
     fn live(body: &mut CastBody) -> LiveBlast {

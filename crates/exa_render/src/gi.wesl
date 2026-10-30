@@ -70,8 +70,8 @@ struct GiShape {
     line1: vec4<f32>,
     grad: vec4<f32>,
     point_light: vec4<f32>,
-    point_pos: array<vec4<f32>, 8>,
-    point_col: array<vec4<f32>, 8>,
+    point_pos: array<vec4<f32>, 16>,
+    point_col: array<vec4<f32>, 16>,
 }
 
 struct GiParams {
@@ -318,7 +318,7 @@ fn shape_gradline(s: GiShape, p: vec3<f32>) -> vec3<f32> {
 // The occlusion term the body computes is never applied.
 fn shape_multipoint(s: GiShape, p: vec3<f32>) -> vec3<f32> {
     var out = vec3(0.0);
-    for (var i = 0u; i < 8u; i++) {
+    for (var i = 0u; i < 16u; i++) {
         let dir = p - s.point_pos[i].xyz;
         let d = dot(dir, dir);
         let atn = gl_max(1.0 - d * s.params.x, 0.0);
@@ -331,6 +331,9 @@ fn shape_multipoint(s: GiShape, p: vec3<f32>) -> vec3<f32> {
 // voxel's centre in world centimetres and `occ` its occupancy.
 fn shape_light(id: vec3<u32>, world: vec3<f32>, occ: f32) -> vec3<f32> {
     var rgb = vec3(0.0);
+    // The line and point programs measure in the volume's units (the
+    // block's width is 1), as the original's texture space does.
+    let unit = 1.0 / (params.extent.x * 100.0);
     for (var i = 0u; i < params.shape_count.x; i++) {
         let s = params.shapes[i];
         if any(id.xy < s.clip.xy) || any(id.xy >= s.clip.zw) {
@@ -351,9 +354,9 @@ fn shape_light(id: vec3<u32>, world: vec3<f32>, occ: f32) -> vec3<f32> {
         } else if prog == 3u {
             rgb += shape_telebubble(s, p);
         } else if prog == 4u {
-            rgb += shape_gradline(s, world);
+            rgb += shape_gradline(s, world * unit);
         } else {
-            rgb += shape_multipoint(s, world);
+            rgb += shape_multipoint(s, world * unit);
         }
     }
     _ = occ;

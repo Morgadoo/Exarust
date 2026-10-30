@@ -91,7 +91,12 @@ impl Plugin for ThaumEffectsPlugin {
             )
             .add_systems(
                 Update,
-                spawn_debug_effects.run_if(resource_exists::<ThaumDebug>),
+                (
+                    spawn_debug_effects.run_if(resource_exists::<ThaumDebug>),
+                    super::effect_light::debug_force_casts.run_if(
+                        |debug: Option<Res<ThaumDebug>>| debug.is_some_and(|d| d.cast_every > 0),
+                    ),
+                ),
             )
             .add_systems(
                 PostUpdate,
@@ -109,6 +114,13 @@ impl Plugin for ThaumEffectsPlugin {
                             super::effect_draw::draw_rigid_auras,
                             super::effect_draw::drop_shell_copies,
                         ),
+                        (
+                            super::effect_light::blast_lights,
+                            super::effect_light::torrent_lights,
+                            super::effect_light::bubble_lights,
+                            super::effect_light::drop_orphan_lights,
+                        )
+                            .chain(),
                     )
                         .chain(),
                 )
@@ -138,6 +150,9 @@ pub struct ThaumDebug {
     pub arcs: bool,
     pub barricade: bool,
     pub wisps: bool,
+    /// Seconds between the player's debug casts of its first power (0:
+    /// none), [`super::effect_light::debug_force_casts`].
+    pub cast_every: u32,
 }
 
 /// A character an arc struck.

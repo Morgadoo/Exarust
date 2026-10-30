@@ -11,10 +11,19 @@
 //! shape's fragment reads only its own uniforms and the voxel's position, so
 //! evaluating it per voxel is what its quad-per-slice draw computes.
 //!
-//! Exarust has no gameplay effect that registers a shape yet (the powers do
-//! not draw), so these run as the tested reference the renderer will use
-//! when an effect registers one; `GiShapes` keeps the registry live so a
-//! shape entity is listed and removed exactly as the original lists it.
+//! The force blast, the force torrent and the teleporter bubble register
+//! their shapes (`exa_game::thaum::effect_light`): a shape entity is listed
+//! in `GiShapes` while it lives and leaves it by swap removal, as the
+//! original's manager lists them.
+//!
+//! Units: the shell programs read the voxel through `bMat`, which takes a
+//! world centimetre into the shape's own space. `gi_gradline` and
+//! `gi_multipoint` measure in the volume's units, where the block's width is
+//! 1 (the original maps each point into the volume before it uploads it):
+//! their positions are given in world centimetres, the pass scales them and
+//! the voxel by one over the width in centimetres, and `Atten` is the
+//! original's value. The CPU bodies below take every position already in
+//! the space the program measures in.
 //! Rules: `docs/RENDERING.md` (Voxel GI).
 
 use std::sync::Arc;
@@ -84,8 +93,9 @@ pub struct GiShape {
     pub program: GiShapeProgram,
     /// `Colour`: the injected colour, before attenuation.
     pub colour: Vec3,
-    /// `Atten`: the falloff scale of `gi_gradline` and `gi_multipoint` (the
-    /// shell programs declare it and do not read it).
+    /// `Atten`: the falloff scale of `gi_gradline` and `gi_multipoint`, per
+    /// squared volume unit (the shell programs declare it and do not read
+    /// it).
     pub atten: f32,
     /// `bMat`: the shape's frame, applied to the volume position.
     pub matrix: Mat4,
@@ -103,16 +113,16 @@ pub struct GiShape {
     pub pulse: f32,
     /// `Anim`: `gi_telebubble`'s animation phase.
     pub anim: f32,
-    /// `Line[2]`: the lit segment's ends (`gi_gradline`).
+    /// `Line[2]`: the lit segment's ends (`gi_gradline`), world centimetres.
     pub line: [Vec3; 2],
     /// `Grad`: the segment's split point and its two end weights
     /// (`gi_gradline`).
     pub grad: Vec3,
-    /// `PointLgt`: an extra point light (position, weight) for
-    /// `gi_gradline`.
+    /// `PointLgt`: an extra point light (position in world centimetres,
+    /// weight) for `gi_gradline`.
     pub point_light: Vec4,
-    /// `Light[2i]`, `Light[2i+1]`: each point's position and colour
-    /// (`gi_multipoint`).
+    /// `Light[2i]`, `Light[2i+1]`: each point's position (world
+    /// centimetres) and colour (`gi_multipoint`).
     pub points: Arc<[(Vec3, Vec3)]>,
 }
 

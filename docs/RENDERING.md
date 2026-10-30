@@ -1747,12 +1747,18 @@ its width, at the slice's middle ((slice + 0.5)/width), as the original's
   lights and before the voxel lights. The pass evaluates the six bodies
   (`gi_dome`, `gi_cuboid`, `gi_bubble`, `gi_telebubble`, `gi_gradline`,
   `gi_multipoint`) with the original's operation order and GL comparison
-  semantics, over the voxel's world centimetres through the shape's `bMat`;
-  the shape's own `Tex0` is not modelled — the pass binds one white texel
-  for every shape, since no effect registers one yet [guess]. The manager's
-  own shape chain (the list, the box, the quad and the shared uniforms) is
-  in `gi_shape`/`shape_draw`; the effect classes that register shapes are a
-  different component;
+  semantics: the shells over the voxel's world centimetres through the
+  shape's `bMat`, the line and multi-point bodies in the volume's units
+  (the block's width is 1: positions given in world centimetres are scaled
+  by one over the width, and `Atten` is the original's, so a blast's 5000
+  reaches about 72 cm in a 51.2 m block); a multi-point shape carries up to
+  16 points. The shape's own `Tex0` is not modelled — the pass binds one
+  white texel for every shape [guess]. The manager's own shape chain (the
+  list, the box, the quad and the shared uniforms) is in
+  `gi_shape`/`shape_draw`. The force blast, the force torrent and the
+  teleporter bubble register theirs while they live
+  (`exa_game::thaum::effect_light`, light scale 0.09); the other emissives
+  have no live effect yet;
 - the original's program carries two matrix-shadow light slots (`SdwMat`,
   `SdwMat2` for the first two lights whose shadow is one 2D map, i.e. the
   sky light and spots); before drawing a group it moves the first such light at

@@ -262,8 +262,12 @@ frame that would build no triangles: fizzled, or no stream with more than
 two samples. Its stream ribbons are built each frame with the eye as the
 normal reference and drawn with the glow material
 (`thaum::torrent_live::draw_torrents`). The turned aim (the blast aim
-here) and the sphere test are Exarust's; the sounds, the light, the
-pin gain's and the recoil's consumers are not wired. A cast motion is played through
+here) and the sphere test are Exarust's. A blast or torrent hit writes
+the knock's pin gain over the body's (`Drive::pin_gain`, recovering 0.001
+a tick) and gives its balance the full landing momentum weight 5 (the
+field earlier notes called a 5 s recoil); both effects register their GI
+multi-point light while they live (`thaum::effect_light`). The sounds are
+not wired. A cast motion is played through
 the animator by its action name (0x22 Force Blast … 0x28 Disp Form),
 looping when its clip's mode has bit 0 (Force Barrier, Force Torrent). A
 cast hook answers by the event's bits (`casting::CastHook`): the engine
@@ -482,7 +486,9 @@ What the Mind domain shows is in `exa_game::mind::sight`:
   to `(1 − k)·0.08` (0 below 0 and, the original's quirk, 0.008 above
   0.08; the living gain is 0.08 and recovers 0.001 a tick), its
   instability counter raised by one, hostility 1 at
-  0.01 toward the caster and a recoil of 5. A simulated object's point
+  0.01 toward the caster and a landing momentum weight of 5 (its
+  balance point led by the chest's slow velocity, fading 0.05 a tick). A
+  simulated object's point
   moves along the chunk's move by `(1 − d²/r²)·push·0.025` and stirs it by
   `(1 − d²/r²)·0.0001`.
 - **Torrent**: sixteen streams of sixteen points (up to 24 streams), born

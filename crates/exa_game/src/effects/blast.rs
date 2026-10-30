@@ -272,8 +272,9 @@ pub struct BlastChunk {
     pub wear: f32,
 }
 
-/// A chunk's life record: its light point (the frame writes it), its two
-/// random draws (its colour) and its ticks left.
+/// A chunk's life record: its light point (world cm; the frame writes it,
+/// [`Blast::frame_lights`]), its two random draws (its colour) and its
+/// ticks left.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ChunkLife {
     pub light_at: Vec3,
@@ -770,16 +771,21 @@ pub struct CharacterKnock {
     pub knock: Option<(Vec3, f32)>,
     /// The body's support-pin gain the hit leaves, `(1 − k)·0.08` (in
     /// double precision): 0 below 0, 0.008 above 0.08 (compared in double),
-    /// a NaN kept. The living gain is 0.08 and recovers 0.001 a tick, so a
-    /// hit loosens the pins holding the torso up. (Called the stun in
-    /// earlier notes.)
-    pub stun: f32,
+    /// a NaN kept. The hit writes it over the body's gain
+    /// (`exa_physics::body::Drive::pin_gain`); the living gain is 0.08 and
+    /// recovers 0.001 a tick, so a hit loosens the pins holding the torso
+    /// up for up to 80 ticks.
+    pub pin_gain: f32,
 }
 
 /// The character hit's hostility toward the caster and its rate.
 pub const HIT_HOSTILITY: (f32, f32) = (1.0, 0.01);
-/// The character's recoil timer a hit sets.
-pub const HIT_RECOIL: f32 = 5.0;
+/// The landing momentum weight a character hit gives the struck body's
+/// balance: 5, fading 0.05 a tick, so the chest's slow velocity leads its
+/// balance point for 100 ticks after the hit, as after a landing
+/// (`exa_physics::body::Drive::land`). Earlier notes read this field as a
+/// 5 s recoil timer.
+pub const HIT_LANDING_WEIGHT: f32 = 5.0;
 
 /// The knock and the pin gain a struck character takes from the gathered
 /// `impulse` with `k` its mass term (shared by the blast and the torrent).
@@ -794,13 +800,13 @@ pub(crate) fn knock_and_pins(k: f32, impulse: Vec3) -> (Option<(Vec3, f32)>, f32
     } else {
         None
     };
-    let mut stun = (f64::from(1.0f32 - k) * 0.08) as f32;
-    if 0.0 > stun {
-        stun = 0.0;
-    } else if f64::from(stun) > 0.08 {
-        stun = PIN_GAIN_CLAMP;
+    let mut pin_gain = (f64::from(1.0f32 - k) * 0.08) as f32;
+    if 0.0 > pin_gain {
+        pin_gain = 0.0;
+    } else if f64::from(pin_gain) > 0.08 {
+        pin_gain = PIN_GAIN_CLAMP;
     }
-    (knock, stun)
+    (knock, pin_gain)
 }
 
 /// A character struck by the chunks: `k = 2/mass`, its energy, the gathered
@@ -812,11 +818,11 @@ pub fn character_knock(body_mass: f32, energy: f32, impulse: Vec3) -> CharacterK
     } else {
         energy
     };
-    let (knock, stun) = knock_and_pins(k, impulse);
+    let (knock, pin_gain) = knock_and_pins(k, impulse);
     CharacterKnock {
         energy,
         knock,
-        stun,
+        pin_gain,
     }
 }
 
@@ -1067,6 +1073,40 @@ impl Blast {
     /// spent.
     pub fn builds_nothing(&self) -> bool {
         !self.lives.iter().any(|life| life.ticks >= 1)
+    }
+
+    /// The frame's light points: each live chunk's life record takes the
+    /// second sample of the chunk's ribbon spine, bent across the camera
+    /// plane, mapped back to the world (cm), as the original's frame writes
+    /// it after building the chunk's strip. A spent chunk keeps its last
+    /// point. [inf: a point the spine leaves undefined, a charging chunk
+    /// whose trail has no step yet, takes the chunk's place between its
+    /// last two ticks instead.]
+    pub fn frame_lights(&mut self, t: f32, camera: &super::Frame) {
+        for index in 0..self.chunks.len() {
+            if self.lives[index].ticks < 1 {
+                continue;
+            }
+            let (spine, widths, width_scale) = self.trail_spine(index, t);
+            let view = Self::face_camera(&spine, &widths, width_scale, camera);
+            let at = camera.point(view[1]);
+            let chunk = &self.chunks[index];
+            self.lives[index].light_at = if at.is_finite() {
+                at
+            } else {
+                lerp(chunk.previous, chunk.at, t)
+            };
+        }
+    }
+
+    /// The emissive's points: every life record's light point and ticks
+    /// left, spent ones included (their light is dark), as the emissive's
+    /// draw walks them.
+    pub fn light_points(&self) -> Vec<(Vec3, i32)> {
+        self.lives
+            .iter()
+            .map(|life| (life.light_at, life.ticks))
+            .collect()
     }
 
     /// Links the blast to its geometry node: the node gains the link flag
@@ -1576,11 +1616,11 @@ mod tests {
         let knock = character_knock(80.0, 1.0, Vec3::new(100.0, 0.0, 0.0));
         assert_eq!(knock.knock, Some((Vec3::X, 60.0)));
         assert!((knock.energy - (1.0 - 0.025 * 0.001) as f32).abs() < 1e-7);
-        assert!((knock.stun - 0.078).abs() < 1e-6);
+        assert!((knock.pin_gain - 0.078).abs() < 1e-6);
         let soft = character_knock(80.0, 0.2, Vec3::new(0.5, 0.0, 0.0));
         assert_eq!((soft.knock, soft.energy), (None, 0.2));
-        // A light body: k over 1, the stun floors at 0.
-        assert_eq!(character_knock(1.0, 1.0, Vec3::ZERO).stun, 0.0);
+        // A light body: k over 1, the pin gain floors at 0.
+        assert_eq!(character_knock(1.0, 1.0, Vec3::ZERO).pin_gain, 0.0);
     }
 
     #[test]
@@ -1592,7 +1632,7 @@ mod tests {
         assert_eq!(size, 1.769_999_9_f32.sqrt() * 2.0);
         assert_ne!(size, 1.769_999_7_f32.sqrt() * 2.0);
         // A NaN mass leaves a NaN pin gain, as the compares fall through.
-        assert!(character_knock(f32::NAN, 1.0, Vec3::ZERO).stun.is_nan());
+        assert!(character_knock(f32::NAN, 1.0, Vec3::ZERO).pin_gain.is_nan());
     }
 
     #[test]
@@ -1600,14 +1640,14 @@ mod tests {
         // A 4.92 kg body: k = 2/4.92. The single-precision `1 − k` gives
         // 0x3d427a0d; subtracting in double and narrowing would give
         // 0x3d427a0c.
-        let stun = character_knock(4.92, 1.0, Vec3::ZERO).stun;
-        assert_eq!(stun.to_bits(), 0x3d42_7a0d);
+        let gain = character_knock(4.92, 1.0, Vec3::ZERO).pin_gain;
+        assert_eq!(gain.to_bits(), 0x3d42_7a0d);
         let k = f64::from(2.0f32 / 4.92);
         assert_eq!((((1.0 - k) * 0.08) as f32).to_bits(), 0x3d42_7a0c);
         // The upper clamp stores 0.008 (single precision, 0x3c03126f), a
         // tenth of the 0.08 bound; only a negative mass (k below zero)
         // reaches it.
-        let over = character_knock(-10.0, 1.0, Vec3::ZERO).stun;
+        let over = character_knock(-10.0, 1.0, Vec3::ZERO).pin_gain;
         assert_eq!(over.to_bits(), 0x3c03_126f);
     }
 
