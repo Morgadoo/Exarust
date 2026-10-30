@@ -551,6 +551,10 @@ fn duellist(
             .chain(children.iter_descendants(ai.target))
             .find_map(|e| bodies.get(e).ok().map(|b| (e, b)));
         let target_fighter_entity = target_body.map(|(e, _)| e);
+        // The foe as its contact is kept: the fighter, as the brain's
+        // perception keys it, so the combat state reads the concern and
+        // hostility the brain integrates (the root without a fighter).
+        let foe_key = target_fighter_entity.unwrap_or(ai.target);
         let target_body = target_body.map(|(_, b)| b);
         let traits = brains
             .get(entity)
@@ -663,7 +667,7 @@ fn duellist(
             .and_then(|(a, m)| m.clip(a, &a.action).map(|c| a.clip_progress(c)))
             .unwrap_or(0.0);
         let observed = Observed {
-            entity: ai.target,
+            entity: foe_key,
             position_cm: target.translation() * 100.0,
             look: target_forward,
             forward: target_forward,
@@ -691,9 +695,9 @@ fn duellist(
             aggression: 0.0,
             mind_aggression: 0.0,
             resist_mind: false,
-            target: Some(ai.target),
+            target: Some(foe_key),
         };
-        let index = combatant.contact_index(ai.target);
+        let index = combatant.contact_index(foe_key);
         if brains.get(entity).is_err() {
             // A duellist without a brain (the practice opponent) perceives
             // its target itself. The player carries no contacts, so the
@@ -703,11 +707,11 @@ fn duellist(
             let raw = match (
                 role_db.as_deref(),
                 role_lists.get(entity),
-                role_lists.get(ai.target),
+                role_lists.get(foe_key),
             ) {
                 (Some(db), Ok(theirs), Ok(targets)) => {
                     let partner = crate::roles::Partner {
-                        id: ids.get(ai.target).map_or(0, |i| i.0),
+                        id: ids.get(foe_key).map_or(0, |i| i.0),
                         roles: targets,
                         former: None,
                     };
@@ -742,7 +746,7 @@ fn duellist(
         }
         // The brain's perception pass already saw the target this frame,
         // with its own contacts and the relations' trust.
-        combatant.target = Some(ai.target);
+        combatant.target = Some(foe_key);
         let contact = &mut combatant.contacts[index];
         if target_condition.is_dead() && contact.died_ms.is_none() {
             contact.died_ms = Some(now);
