@@ -934,9 +934,6 @@ pub struct Board {
     /// Matches the company has entered today; the day allows three. The
     /// arena counts them, not the board.
     pub matches_played: i32,
-    /// On a tournament day, the arena's own verdict for the day-end button
-    /// (`None` when its first check fails and the match count decides).
-    pub tournament_day_end: Option<bool>,
     /// The player's company name.
     pub company_name: String,
     /// The rival companies, in company id order from 2.
@@ -1019,7 +1016,6 @@ impl Board {
             tier: 0,
             selected: STANDARD_MATCHES[0].record(),
             matches_played: 0,
-            tournament_day_end: None,
             company_name: String::new(),
             rivals: Vec::new(),
             tournament_companies: Vec::new(),
@@ -1134,10 +1130,7 @@ impl Board {
             return status;
         }
         let entered = self.has_entrants();
-        let unsettled = self
-            .entries
-            .iter()
-            .any(|entry| !entry.participants.is_empty() && entry.winner == 0);
+        let unsettled = self.has_unsettled_entries();
         if entered && unsettled {
             status.enter = control::SHOWN;
             status.secondary = control::SHOWN;
@@ -1192,14 +1185,23 @@ impl Board {
         }
     }
 
-    /// The day-end control's enable rule.
+    /// The day-end control's enable rule. On the weekly tournament day with
+    /// any entered event, the control is enabled once every entered event
+    /// has a winner; the match count does not matter then. On every other
+    /// day (and a tournament day with no entrants) it is enabled once a
+    /// match has been played.
     pub fn day_end_enabled(&self) -> bool {
-        if is_tournament_day(self.day)
-            && let Some(enabled) = self.tournament_day_end
-        {
-            return enabled;
+        if is_tournament_day(self.day) && self.has_entrants() {
+            return !self.has_unsettled_entries();
         }
         self.matches_played > 0
+    }
+
+    /// Whether an entered event still has no winner.
+    pub fn has_unsettled_entries(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| !entry.participants.is_empty() && entry.winner == 0)
     }
 
     /// The message box text the standard and events refreshes write.
@@ -3657,13 +3659,39 @@ mod tests {
         board.matches_played = 1;
         assert!(board.switch_tab(BoardTab::Events).is_some());
         assert_eq!(board.controls[control::DAY_END], control::SHOWN);
+
+        // On the tournament day the entries decide once anyone is entered:
+        // with an entered event the played count no longer matters.
         board.day = 7;
-        board.tournament_day_end = Some(false);
+        assert!(board.switch_tab(BoardTab::Matches).is_some());
+        assert_eq!(board.controls[control::DAY_END], control::SHOWN);
+        board.entries[2].participants = vec![Participant {
+            slot: 1,
+            value: 0,
+            weapon: 0,
+        }];
         assert!(board.switch_tab(BoardTab::Matches).is_some());
         assert_eq!(board.controls[control::DAY_END], control::DISABLED);
-        board.tournament_day_end = None;
-        assert!(board.switch_tab(BoardTab::Events).is_some());
+        board.entries[2].winner = 1;
+        let tab = board.tab;
+        board.apply_tab(None, tab);
         assert_eq!(board.controls[control::DAY_END], control::SHOWN);
+        // A second entered event without a winner disables it again.
+        board.entries[4].participants = vec![Participant {
+            slot: 2,
+            value: 0,
+            weapon: 0,
+        }];
+        let tab = board.tab;
+        board.apply_tab(None, tab);
+        assert_eq!(board.controls[control::DAY_END], control::DISABLED);
+        // On the tournament day with no entrants the count decides.
+        board.entries[2].participants.clear();
+        board.entries[4].participants.clear();
+        board.matches_played = 0;
+        let tab = board.tab;
+        board.apply_tab(None, tab);
+        assert_eq!(board.controls[control::DAY_END], control::DISABLED);
     }
 
     #[test]
