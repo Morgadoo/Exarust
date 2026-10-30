@@ -1968,11 +1968,27 @@ pub struct SkillPage {
     pub editable: bool,
     /// The page selector's value (4 for the arena, else 6).
     pub page: i32,
+    /// The second preview panel was hidden first (it exists).
+    pub second_panel_hidden: bool,
+    /// The skills panel was made (none existed) rather than shown again.
+    pub created: bool,
+    pub shown: bool,
+    /// The panel's flag word gained `0x20000` when it was made.
+    pub panel_flags: u32,
+    /// The existing panel's record pointer was rebound to the edited record.
+    pub record_rebound: bool,
 }
 
 /// Picks the skills page for the game and screen modes. `account` is the
 /// account's global experience and `committed_worth` the worth of the last
 /// committed character.
+///
+/// The second preview panel is hidden first when it exists. The skills
+/// panel is made at [`skill_panel_place`] with its flag word gaining
+/// `0x20000` and shown; an existing one is shown again with its record
+/// pointer rebound to the edited record. The headed page then shows the
+/// account's experience (or, on the arena's page, the character's skills
+/// and their progress).
 pub fn skill_page(
     game_mode: i32,
     screen_mode: i32,
@@ -1993,6 +2009,11 @@ pub fn skill_page(
             apply_budget: false,
             editable: false,
             page: 4,
+            second_panel_hidden: true,
+            created: true,
+            shown: true,
+            panel_flags: 0x2_0000,
+            record_rebound: false,
         }
     } else if continuing {
         SkillPage {
@@ -2005,6 +2026,11 @@ pub fn skill_page(
             apply_budget: false,
             editable: false,
             page: 6,
+            second_panel_hidden: true,
+            created: true,
+            shown: true,
+            panel_flags: 0x2_0000,
+            record_rebound: false,
         }
     } else {
         SkillPage {
@@ -2017,6 +2043,11 @@ pub fn skill_page(
             apply_budget: true,
             editable: true,
             page: 6,
+            second_panel_hidden: true,
+            created: true,
+            shown: true,
+            panel_flags: 0x2_0000,
+            record_rebound: false,
         }
     }
 }
@@ -6471,6 +6502,20 @@ mod tests {
         assert_eq!(continued.worth_left, 11250);
         assert!(!continued.editable);
         assert!(!continued.apply_budget);
+
+        // Every page hides the second preview panel first and makes the
+        // skills panel with its 0x20000 flag; the panel is shown either way.
+        for page in [arena, arena_continue, global, continued] {
+            assert!(page.second_panel_hidden);
+            assert!(page.created && page.shown);
+            assert_eq!(page.panel_flags, 0x2_0000);
+            assert!(!page.record_rebound);
+        }
+        // Of the three pages, the arena's reads the character's skills, not
+        // the account's, so its experience word stays empty. 20000 experience
+        // is worth 27500.
+        assert_eq!(arena.value, None);
+        assert_eq!(arena.worth_left, 27500);
     }
 
     #[test]
