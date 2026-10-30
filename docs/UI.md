@@ -434,8 +434,9 @@ a reply ends after 30 s.
 
 ## Arena match board
 
-The arena's "Matches" form has four tabs: standard matches, the daily
-events, the weekly tournament and the season. Its code is
+The arena's "Matches" form (caption "Matches") has four tabs, from the form
+template: "Standard" (the standard matches), "Specials" (the daily events),
+"Tournament" (the weekly tournament) and "Season" (the season). Its code is
 `exa_ui::match_board`; `exa_game::arena_board` fills it from a career and a
 generated daily board. The rules are plain functions and values and need no
 Bevy app. Evidence: the original's board constructor, tab switch, list
@@ -474,8 +475,9 @@ assembly, and the standard-match and rank-label tables in `Exanima.exe`.
   event without it, and when all six have it the row moves to the last one
   while the selected record stays.
 - **Tournament.** Six winner rows (event, tier, winner). A winner of 1 is
-  the player's company, below 1 a dash, and from 2 an entry of the
-  tournament's company table, which holds a company id less one. The status
+  the player's company, below 1 a dash, and from 2 the tournament's company
+  table at the winner's own index, which holds a company id less one, so
+  the name comes from the companies from id 2. The status
   line says "Tournament begins tomorrow." or "Tournament begins in N days."
   off the tournament day; on it, "Tournament is in progress." with no
   entries, "The tournament has ended." when every entered event is settled
@@ -485,9 +487,10 @@ assembly, and the standard-match and rank-label tables in `Exanima.exe`.
   appears. A weapon event shows the reward panel with the weapon row's
   name, shortens the lineup to 120 pixels and marks the panel when the
   first fighter entered in the event's tier does not carry one of the row's
-  up to three weapons (the first zero ends the list). On a tournament day
-  with entries the tab is forced to the tournament (the show hides the tab
-  it leaves) and fighter assignment is locked. Leaving the tab restores the
+  up to three weapons (the first zero ends the list); nobody entered leaves
+  the mark set. On a tournament day with entries the tab is forced to the
+  tournament (the show clears its current tab first, so it does not hide
+  the tab it leaves) and fighter assignment is locked. Leaving the tab restores the
   primary button and its "Enter" label.
 - **Season.** Four weekly winner lines. A week already played with no
   winner says "No winner"; a zero winner or one above 20 is a dash. The
@@ -514,8 +517,13 @@ assembly, and the standard-match and rank-label tables in `Exanima.exe`.
   per count, adding 0x30, so the original shows a single digit (and
   punctuation past nine). After each rebuild or move the primary button is
   disabled once three matches were entered or while the lineup is short,
-  and hidden on the season tab. A day-end control is enabled once a match
-  was entered (on a tournament day the arena's own checks decide).
+  and hidden on the season tab. The day-end control is enabled once a match
+  was entered; on the tournament day with any entrant the entries decide
+  instead: it is enabled once every entered event has a winner, whatever
+  the match count.
+- **Reopening.** Closing saves the tab and the three list selections; the
+  next opening restores them (clamped to the six-row lists) and refreshes
+  the saved tab.
 - **Layout.** The form is 604 by 656 (604 by 636 in the compact form). The
   match list is 196 wide at x 0, the rank list 192 at x 200 and the tier
   list 192 at x 396, all from y 56 and 180 tall. The event table is 588 by
@@ -525,22 +533,41 @@ assembly, and the standard-match and rank-label tables in `Exanima.exe`.
   The message box is 520 by 96 at 40, 276. The tournament picture is 192 by
   180 at 396, 56 and the reward panel 292 by 120 (100 compact) at 296, 472.
   The season table is 280 by 132 at 32, 60, one 160-wide column.
+  The form template places the rest: the four tabs 128 by 28 with captions
+  Standard, Specials, Tournament and Season at x 20, 160, 300 and 440 (the
+  template's 162 quarters round down to 160) and y 14; the bottom row 46
+  pixels above the form's bottom edge, 129 by 28, End Day at 20, Close at
+  160, Enter (or Begin/Continue, or the status text in its place) at 300 and
+  Forfeit at 440; "Available" at 116, 322 and "Entered n/m" at 408, 322;
+  "Entry:" at 200, 62 and "Prize:" at 360, 62; the tournament's "Prize" at
+  412, 58; the season picture 160 by 600 at 372, 28 and its four item slots
+  at 12 and 172 from y 218 and 378. Template x, width and y are quarter
+  pixels rounded to a multiple of four (half to even), y times four and
+  lifted by half the control's height less eight.
 - **Drawing order.** The form, the four tabs, then the visible child views
   in the order the constructor made them: match, rank and tier lists,
   picture, reward panel, events, winners, message, company, lineup and
   season tables. A table draws its frame, its column headers, then its rows
-  left to right. The rows are 30 pixels tall (a guess from the six-row and
-  eight-row fits). A point maps to a tab, the primary button or a visible
-  cell (`Board::hit_test`), and a click selects the tab, match, rank, tier,
-  event or winner or confirms the board (`Board::click`).
+  left to right. A coin cell's callback follows its cell: a dash four
+  pixels in for zero, else the counts of gold, silver and copper. The rows
+  are 30 pixels tall (a guess from the six-row and eight-row fits). A point
+  maps to a tab, the primary button, the close button, the day-end button,
+  the tournament's forfeit button or a visible cell (`Board::hit_test`),
+  and a click selects the tab, match, rank, tier, event or winner,
+  confirms the board, or reports the close, day-end or forfeit action
+  (`Board::click`).
 
-Known guesses: the row height, the tab strip's and the template controls'
-rectangles and labels, the prize item's slot, where the template's controls
-draw relative to the child views, the class bytes for the three staff
-professions, the meaning of flag 1 on a daily event, and the day-end role
-of its control. The weapon check's item kind of a fighter's event value and
-the tournament day's day-end checks are the arena's and are supplied by the
-caller. The board does not count matches; the arena does.
+Known guesses: the row height; the three one-column list widths (the
+constructor sets only the table widths); the label and item-slot classes'
+own sizes, so the three captions are 160 by 16 and the season slots 60 by
+60; the prize item's slot place; where the template's controls draw
+relative to the child views; the class bytes for the three staff
+professions; the meaning of flag 1 on a daily event. The weapon check's
+item kind of a fighter's event value, the name and health column callbacks
+and the coin icons themselves are the arena's item GUI's, outside this
+component (the board carries the decisions: the callback's x and counts,
+the health word, the name column's own draw). The board does not count
+matches; the arena does.
 
 ## Arena company windows
 

@@ -342,10 +342,21 @@ the season index `((day + 6) / 28) mod 4`, the reward picture
 The form's rectangles, columns and drawing order are in `layout` and
 `Board::paint`, with a 30-pixel row height guessed from the six-row and
 eight-row fits; the same layout drives the hit test and a click's tab, row,
-cell and confirmation. The tournament status line, primary button,
-"Entered n/m" label and the show, close and control states follow the
-original's tab switch and label routine. `exa_game`'s `arena_board` fills a
-board from a career and the generated daily board.
+cell and confirmation. The form template supplies the board's own controls:
+the four tabs (Standard, Specials, Tournament, Season), the bottom row (End
+Day, Close, Enter/Begin/Continue, the status text in its place, Forfeit),
+the "Available", "Entered n/m", "Entry:", "Prize:" and tournament "Prize"
+captions, and the season's picture and item slots, placed from quarter
+pixels rounded to a multiple of four (half to even) and anchored to the
+form's edges. Each control starts at the state the template gives it. The
+coin columns carry their callback's decision in the paint list (a dash four
+pixels in, or the gold, silver and copper counts). The tournament status
+line, primary button, "Entered n/m" label and the show, close and control
+states follow the original's tab switch and label routine; the day-end
+button follows the day's matches or, on the tournament day with entrants,
+whether every entered event has a winner; closing saves the tab and the
+three list selections and reopening restores them. `exa_game`'s
+`arena_board` fills a board from a career and the generated daily board.
 
 The Settings page (`settings`) now also carries its rows' behaviour beside
 the form's records: the row ids and the states they open with (the live
