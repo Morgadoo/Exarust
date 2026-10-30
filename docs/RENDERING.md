@@ -499,15 +499,6 @@ share (`exa_formats::rfc::LightAnimation`); others keep the constructor's
 0.1, 0.5 and 0.5. `exa_world::light_source` runs what the original does
 with them:
 
-- the update's caster-sphere mode fits the smallest enclosing sphere
-  around the scene's merged caster points (points within 0.1 cm² collapse,
-  then centimetres scale to the solver's metres), multiplies the centre and
-  radius by 100, quantises the radius with the fitted mode's 200 cm steps
-  and hysteresis, snaps the centre to the texel grid and gives the box the
-  fixed ±8000 cm depth (`SunFit::sphere_scene`, `merge_caster_points`). The
-  caster list itself is `sun_casters::caster_draws`; the polygon offset and
-  caster depth nudge are `SunFit::caster_bias`, and the eight shadow taps
-  the shader filter reads are `SHADOW_TAPS`.
 - **activation** copies the base intensity into the current one and picks
   the shadow-quality offset from the low two flag bits: 00 → 0, 01 → +1,
   10 → −1, 11 → −2 (not applied: the shipped cube pool has one size);
@@ -566,9 +557,9 @@ beyond it by more than its flags word read as a float). `SpotShape::of`
 builds the light node's three spot constants from the record's `(q, p)`.
 The cell flood that answers the gate is the scene-node unit's; the alias's
 field copy and construction are not modelled beyond these values. The sun
-map's two matrix builders are `sun_fit::light_view_matrix` (columns
-`up_hint × dir`, `right × dir` and `dir`, with the negated dot products as
-the translation) and `sun_fit::orthographic_matrix` (the box's `2/span`
+map's two matrix builders are `sun_fit::light_view_matrix` (rows
+`dir × up_hint`, `right × dir` and `dir`, column-major, with the negated
+dot products as the translation) and `sun_fit::orthographic_matrix` (the box's `2/span`
 scales and `−(max + min)/span` translation). The cube map's size comes from
 the quality word through `shadow_map::cube_draw_settings` (the table
 halved, the softness and the high-detail flag), and its pooled face size is

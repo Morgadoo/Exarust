@@ -28,8 +28,7 @@
 //! - The corners are merged within 0.1 cm² and scaled by 0.01 (the
 //!   centimetre world into the metre units the sphere solver is tuned for),
 //!   and the fitted centre and radius are multiplied by 100 again
-//!   ([`merge_caster_points`]; the update's caster-sphere mode merges the
-//!   scene's caster points the same way, [`SunFit::sphere_scene`]).
+//!   ([`volume_corners`], [`fitted_sphere`]).
 //! - The radius becomes `200·round(r/200 + 0.4)`; the conversion is the
 //!   processor's (nearest, ties to even; a NaN or an out-of-range value gives
 //!   the lowest integer, [`convert_nearest`]). A step is taken only when the
@@ -282,24 +281,24 @@ fn normalised(v: Vec3) -> Vec3 {
     v * squared.sqrt().recip()
 }
 
-/// The light's view matrix (`0x08D870`): a column-major world-to-view matrix
-/// whose columns are `right = up_hint × dir` and `up = right × dir` (both
-/// normalised by the engine's reciprocal square root) and the unit `dir`,
-/// with the translation `(−right·origin, −up·origin, −dir·origin)`. The
-/// caller passes the light's travel direction and an up hint; `origin` is
-/// the point the map centres on.
+/// The light's view matrix, column-major as the original stores it: the
+/// rows are `right = dir × up_hint` and `up = right × dir` (each normalised
+/// by the engine's normalise) and `dir`, and the translation is
+/// `(−right·origin, −up·origin, −dir·origin)`, so a point maps to its three
+/// dot products. The caller passes the light's travel direction and an up
+/// hint; `origin` is the point the map centres on.
 pub fn light_view_matrix(dir: Vec3, up_hint: Vec3, origin: Vec3) -> Mat4 {
-    let right = normalised(up_hint.cross(dir));
+    let right = normalised(dir.cross(up_hint));
     let up = normalised(right.cross(dir));
     Mat4::from_cols(
-        right.extend(0.0),
-        up.extend(0.0),
-        dir.extend(0.0),
+        Vec4::new(right.x, up.x, dir.x, 0.0),
+        Vec4::new(right.y, up.y, dir.y, 0.0),
+        Vec4::new(right.z, up.z, dir.z, 0.0),
         Vec4::new(-right.dot(origin), -up.dot(origin), -dir.dot(origin), 1.0),
     )
 }
 
-/// The light's orthographic projection (`0x08D9D0`) for a box spanning
+/// The light's orthographic projection for a box spanning
 /// `min`..`max`: `2/(max − min)` on the three axes and the translation
 /// `−(max + min)/(max − min)`, the depth left in the engine's [−1, 1]
 /// convention, column-major.
@@ -419,42 +418,6 @@ impl SunFit {
         self.far_cm = DEPTH_CM;
         let centre_cm = basis.to_light(sphere.centre);
         self.centre_cm = snapped_centre(centre_cm, self.half_extent_cm, map_size);
-        true
-    }
-
-    /// Covers the scene from its casters' points (the update's
-    /// caster-sphere mode): the points are merged (any two within 0.1 cm²
-    /// collapse), scaled to metres, fitted with the smallest enclosing
-    /// sphere (`crate::bound_sphere`), brought back to centimetres, and the
-    /// radius quantised with the same 200 cm steps and hysteresis as the
-    /// fitted mode. The centre is snapped to the texel grid, both depth
-    /// reaches are the fixed 8000 cm, and the softness is the fitted mode's
-    /// `(c + 1)·(400 / half extent)` with its 0.15 floor (the update's
-    /// caster-sphere branch). Fewer than two points change nothing and
-    /// return `false`.
-    pub fn sphere_scene(
-        &mut self,
-        sets_cm: &[Vec<Vec3>],
-        basis: &LightBasis,
-        map_size: UVec2,
-        c: f32,
-    ) -> bool {
-        let merged = merge_caster_points(sets_cm);
-        if merged.len() < 2 {
-            return false;
-        }
-        let Some(sphere) = crate::bound_sphere::bounding_sphere(&merged) else {
-            return false;
-        };
-        let centre_cm = sphere.centre * CM_PER_METRE;
-        let radius_cm = sphere.radius * CM_PER_METRE;
-        self.half_extent_cm = next_half_extent(self.half_extent_cm, radius_cm);
-        self.near_cm = DEPTH_CM;
-        self.far_cm = DEPTH_CM;
-        self.centre_cm = snapped_centre(basis.to_light(centre_cm), self.half_extent_cm, map_size);
-        let softness = sun_softness(c, self.half_extent_cm);
-        self.softness = softness.value;
-        self.caster_softness = softness.caster;
         true
     }
 
@@ -707,37 +670,6 @@ pub fn caster_bias(half_extent_cm: f32, caster_softness: f32, depth_cm: f32) -> 
         // projection's z translation (here kept apart and stored single).
         depth_nudge: (f64::from(w) * 0.01) as f32,
     }
-}
-
-/// The merged caster points of the scene's caster sets, in metres
-/// (`0x10008E110`): each set is walked in order, and a point joins the
-/// result unless it lies within 0.1 squared (any axis order the engine's
-/// squared distance uses, `x² + y² + z²`) of one already kept. The kept
-/// points are then scaled by 0.01, the centimetre world into the metre
-/// units the sphere solver is tuned for. A NaN distance fails the compare,
-/// so the point is kept.
-pub fn merge_caster_points(sets_cm: &[Vec<Vec3>]) -> Vec<Vec3> {
-    let mut kept: Vec<Vec3> = Vec::new();
-    for set in sets_cm {
-        for &point in set {
-            let mut near = false;
-            for &other in &kept {
-                let d = point - other;
-                let squared = d.x * d.x + d.y * d.y + d.z * d.z;
-                if squared < CORNER_MERGE2 {
-                    near = true;
-                    break;
-                }
-            }
-            if !near {
-                kept.push(point);
-            }
-        }
-    }
-    for point in &mut kept {
-        *point *= POINT_SCALE;
-    }
-    kept
 }
 
 /// The smallest sphere around a clipped view volume's corners, in
@@ -1264,20 +1196,23 @@ mod tests {
     }
 
     #[test]
-    fn the_light_view_matrix_uses_the_cube_face_up_hint() {
-        // Straight down (the fixed-frame case is not used here): with dir
-        // -Y and the up hint +Z, right = Z × -Y = +X, up = X × -Y = -Z.
-        let m = light_view_matrix(-Vec3::Y, Vec3::Z, Vec3::new(10.0, 20.0, 30.0));
-        assert!((m.x_axis.truncate() - Vec3::X).length() < 1e-6);
-        assert!((m.y_axis.truncate() + Vec3::Z).length() < 1e-6);
-        assert!((m.z_axis.truncate() + Vec3::Y).length() < 1e-6);
-        assert_eq!(m.w_axis, Vec4::new(-10.0, 30.0, 20.0, 1.0));
-        // The original stores the columns right, up, dir, so a point maps
-        // by the three dot products.
-        let p = m * Vec4::new(11.0, 21.0, 31.0, 1.0);
-        assert!((p.x - 1.0).abs() < 1e-5);
-        assert!((p.y + 1.0).abs() < 1e-5);
-        assert!((p.z + 1.0).abs() < 1e-5);
+    fn the_light_view_matrix_holds_the_basis_as_rows() {
+        // dir -Z with the up hint +Y: right = -Z × Y = +X, up = X × -Z = +Y.
+        let origin = Vec3::new(10.0, 20.0, 30.0);
+        let m = light_view_matrix(Vec3::NEG_Z, Vec3::Y, origin);
+        assert_eq!(m.row(0), Vec4::new(1.0, 0.0, 0.0, -10.0));
+        assert_eq!(m.row(1), Vec4::new(0.0, 1.0, 0.0, -20.0));
+        assert_eq!(m.row(2), Vec4::new(0.0, 0.0, -1.0, 30.0));
+        // A tilted direction: the rows (not the columns) are the basis, so
+        // a point maps to its dot products with right, up and dir.
+        let dir = Vec3::new(0.0, -0.6, -0.8);
+        let m = light_view_matrix(dir, Vec3::Y, Vec3::ZERO);
+        let right = normalised(dir.cross(Vec3::Y));
+        let up = normalised(right.cross(dir));
+        let p = Vec3::new(3.0, 5.0, 7.0);
+        let v = m * p.extend(1.0);
+        assert_eq!(v.truncate(), Vec3::new(right.dot(p), up.dot(p), dir.dot(p)));
+        assert_eq!(m.x_axis, Vec4::new(right.x, up.x, dir.x, 0.0));
     }
 
     #[test]
@@ -1295,59 +1230,5 @@ mod tests {
         assert!((p.x - 1.0).abs() < 1e-6);
         assert!((p.y - 1.0).abs() < 1e-6);
         assert!((p.z - 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn caster_points_merge_within_a_tenth_of_a_square_centimetre_and_scale() {
-        let sets = vec![
-            vec![
-                Vec3::new(0.0, 0.0, 0.0),
-                // 0.3 cm away: squared 0.09 < 0.1, collapsed.
-                Vec3::new(0.3, 0.0, 0.0),
-                // 0.4 cm away: squared 0.16, kept.
-                Vec3::new(0.0, 0.4, 0.0),
-            ],
-            vec![
-                // Already within 0.1 of the first kept point.
-                Vec3::new(0.0, 0.0, 0.2),
-                Vec3::new(100.0, 0.0, 0.0),
-            ],
-        ];
-        let merged = merge_caster_points(&sets);
-        assert_eq!(
-            merged,
-            [
-                Vec3::new(0.0, 0.0, 0.0),
-                Vec3::new(0.0, 0.004, 0.0),
-                Vec3::new(1.0, 0.0, 0.0),
-            ]
-        );
-        // A NaN distance keeps the point.
-        let merged = merge_caster_points(&[vec![Vec3::ZERO, Vec3::new(f32::NAN, 0.0, 0.0)]]);
-        assert_eq!(merged.len(), 2);
-    }
-
-    #[test]
-    fn the_caster_sphere_mode_fits_quantises_and_snaps() {
-        let mut fit = SunFit::default();
-        // Two points 100 cm apart: sphere radius 50 cm, which quantises to
-        // 200 cm (200·round(0.25 + 0.4)) and shrinks the 3000 cm default.
-        let sets = vec![vec![Vec3::ZERO, Vec3::new(100.0, 0.0, 0.0)]];
-        let basis = LightBasis::from_towards_sun(Vec3::Y);
-        assert!(fit.sphere_scene(&sets, &basis, UVec2::splat(1024), 0.0));
-        assert_eq!(fit.half_extent_cm, 200.0);
-        assert_eq!((fit.near_cm, fit.far_cm), (DEPTH_CM, DEPTH_CM));
-        // The centre 50 cm along x snaps to the 200 cm box's texel grid:
-        // 400/1024 cm a texel, and 50 is a whole number of them.
-        let texel = 400.0 / 1024.0;
-        let expected = texel * (50.0f32 / texel).round();
-        assert!((fit.centre_cm.x - expected).abs() < 1e-4);
-        // Softness: (1)·(400/200) = 2, no floor.
-        assert_eq!(fit.softness, 2.0);
-        assert_eq!(fit.caster_softness, 0.0);
-        // One point fits nothing.
-        let before = fit;
-        assert!(!fit.sphere_scene(&[vec![Vec3::ZERO]], &basis, UVec2::splat(1024), 0.0));
-        assert_eq!(fit, before);
     }
 }
