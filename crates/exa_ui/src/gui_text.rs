@@ -590,7 +590,7 @@ pub const MENU_FONT_TEXTURE: &str = "titlefont.rfi";
 /// The menu font's design record (112-pixel cells, 70-pixel rows at scale
 /// one). Its letter advances are the sheet's recorded widths.
 pub const MENU_FONT: MenuFont = MenuFont {
-    uv: (0.0, 0.0),
+    uv: (0.25, 0.125),
     glyph: (112, 112),
     ascent: 98,
     slant: 4,
@@ -960,6 +960,7 @@ mod tests {
     #[test]
     fn the_menu_font_rescales_from_its_design_record() {
         let half = MenuFont::at_scale(0.5);
+        assert_eq!(half.uv, (0.25, 0.125));
         assert_eq!(half.glyph, (56, 56));
         assert_eq!(half.ascent, 49);
         assert_eq!(half.gap, 18);
