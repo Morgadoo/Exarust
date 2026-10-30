@@ -159,6 +159,55 @@ pub fn fade_values(clock: u32, control: FadeControl, base_desaturation: f32) -> 
     }
 }
 
+/// Which of the two cached post programs the pass runs (`0x202AF0`): the
+/// bright variant (the sharpen and desaturation uniforms active) when the
+/// sharpen amount compares above 0.01 (a NaN does, as the unordered compare
+/// falls through) and the shader-restore switch is clear, else the plain
+/// one. Each variant keeps its own program and uniform
+/// locations; a missing program is fetched once and remembered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostVariant {
+    Plain,
+    Bright,
+}
+
+/// The variant for a sharpen amount and the renderer's shader-restore
+/// switch.
+pub fn post_variant(sharpness: f32, restore_shaders: bool) -> PostVariant {
+    if sharpness <= 0.01 || restore_shaders {
+        PostVariant::Plain
+    } else {
+        PostVariant::Bright
+    }
+}
+
+/// The two variants' cached program ids and uniform locations; `None`
+/// until the variant is first fetched.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PostPrograms {
+    plain: Option<u32>,
+    bright: Option<u32>,
+}
+
+impl PostPrograms {
+    /// The program for a variant, fetched through `fetch` and remembered.
+    pub fn get(&mut self, variant: PostVariant, fetch: impl FnOnce() -> u32) -> u32 {
+        let slot = match variant {
+            PostVariant::Plain => &mut self.plain,
+            PostVariant::Bright => &mut self.bright,
+        };
+        *slot.get_or_insert_with(fetch)
+    }
+
+    /// The cached program of a variant.
+    pub fn cached(&self, variant: PostVariant) -> Option<u32> {
+        match variant {
+            PostVariant::Plain => self.plain,
+            PostVariant::Bright => self.bright,
+        }
+    }
+}
+
 /// The original's post-processing settings, on a 3D camera.
 #[derive(Component, ExtractComponent, ShaderType, Clone, Copy, Debug)]
 #[extract_app(RenderApp)]
@@ -587,5 +636,31 @@ mod fade_tests {
             (done.bloom, done.desaturation, done.weight),
             (0.0, 0.75, 1.0)
         );
+    }
+    #[test]
+    fn the_post_params_pick_the_bright_variant() {
+        assert_eq!(post_variant(0.9375, false), PostVariant::Bright);
+        assert_eq!(post_variant(0.01, false), PostVariant::Plain);
+        assert_eq!(post_variant(0.0, false), PostVariant::Plain);
+        assert_eq!(post_variant(0.9375, true), PostVariant::Plain);
+        assert_eq!(post_variant(f32::NAN, false), PostVariant::Bright);
+        let mut programs = PostPrograms::default();
+        let mut fetches = 0;
+        assert_eq!(
+            programs.get(PostVariant::Bright, || {
+                fetches += 1;
+                7
+            }),
+            7
+        );
+        assert_eq!(
+            programs.get(PostVariant::Bright, || {
+                fetches += 1;
+                9
+            }),
+            7
+        );
+        assert_eq!(fetches, 1);
+        assert_eq!(programs.cached(PostVariant::Plain), None);
     }
 }
