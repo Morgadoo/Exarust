@@ -287,14 +287,20 @@ fn by_element<T: Copy>(count: usize, ids: &[u32], values: &[T], fallback: T) -> 
     out
 }
 
-/// A mesh part's stored 16-byte material name; a name of zeros is no
-/// material, which the writer stores as `_Default`.
+/// A stored 16-byte name from the reader's string. The readers decode each
+/// stored byte as one character (Latin-1), so each character goes back to
+/// its byte; one above `0xFF` cannot come from a file and ends the name. A
+/// name of zeros is no name (for a mesh part, no material, which the writer
+/// stores as `_Default`).
 fn stored_name(name: &str) -> Option<[u8; 16]> {
     let mut out = [0u8; 16];
-    let bytes = name.as_bytes();
-    let n = bytes.len().min(16);
-    out[..n].copy_from_slice(&bytes[..n]);
-    (n > 0 && out[0] != 0).then_some(out)
+    for (slot, c) in out.iter_mut().zip(name.chars()) {
+        let Ok(byte) = u8::try_from(u32::from(c)) else {
+            break;
+        };
+        *slot = byte;
+    }
+    (out[0] != 0).then_some(out)
 }
 
 /// The friction, group mask and last header word a rigid body's stored
@@ -1808,13 +1814,14 @@ mod tests {
             return;
         }
         let prop_start = scene.nodes.len();
-        let object_start =
-            prop_start + prop_nodes(&scene, prop_start).len() + attachments_nodes_of(&scene);
+        // Each prop adds its own node and its part nodes.
+        let object_start = prop_start + attachments_nodes_of(&scene);
         let objects = export_objects(&scene, object_start).unwrap();
         let mut nodes: Vec<_> = (0..scene.nodes.len())
             .map(|i| export_node(&scene, i).unwrap())
             .collect();
         nodes.extend(export_props(&scene, prop_start).unwrap());
+        assert_eq!(nodes.len(), object_start);
         nodes.extend(objects);
         let again = crate::rfc::Scene::parse(&write(&crate::rfc_write::ExportScene {
             nodes,
@@ -2157,6 +2164,22 @@ mod tests {
         let rebuilt = level_scene(&parsed, &raw).unwrap();
         let db = rebuilt.character_db.unwrap();
         assert_eq!((db.count, db.data), (1, vec![7, 8]));
+    }
+
+    #[test]
+    fn a_stored_name_keeps_each_byte_the_reader_decoded() {
+        // The readers decode a byte as one character, so 0x80 is U+0080 and
+        // goes back to the single byte 0x80, not its two UTF-8 bytes.
+        let read: String = [0x80u8, b'P', b'l'].iter().map(|&b| b as char).collect();
+        let mut want = [0u8; 16];
+        want[..3].copy_from_slice(&[0x80, b'P', b'l']);
+        assert_eq!(stored_name(&read), Some(want));
+        // Cut at 16 bytes; an empty name is none.
+        assert_eq!(
+            stored_name("abcdefghijklmnopqrs").unwrap(),
+            *b"abcdefghijklmnop"
+        );
+        assert_eq!(stored_name(""), None);
     }
 
     #[test]

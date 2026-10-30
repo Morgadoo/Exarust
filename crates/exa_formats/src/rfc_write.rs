@@ -1089,7 +1089,15 @@ impl<'a> Walk<'a> {
             self.objects.push(i);
         } else {
             if f & flags::CLASS == class::MESH {
-                let NodeData::Mesh(mesh) = &self.scene.nodes[i].body else {
+                // A node sharing another's data has the master's mesh in
+                // the original (one mesh object behind both), so its parts
+                // are the master's.
+                let node = &self.scene.nodes[i];
+                let body = match (&node.body, node.shares) {
+                    (NodeData::None, Some(master)) => &self.node(master)?.body,
+                    (body, _) => body,
+                };
+                let NodeData::Mesh(mesh) = body else {
                     return Err(Error::Malformed(format!("mesh node {i} has no mesh")));
                 };
                 // The original keeps a second part list for this pass and

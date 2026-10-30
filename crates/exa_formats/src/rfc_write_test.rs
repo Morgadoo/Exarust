@@ -400,6 +400,29 @@ fn a_sharer_stores_only_the_lowest_numbered_source() {
 }
 
 #[test]
+fn a_mesh_sharer_without_its_own_mesh_uses_the_masters() {
+    // A loaded level's instance node is mesh-class with no body of its own:
+    // the walk collects its parts from the master it shares, and the node
+    // stores only the reference.
+    let mut q = quad();
+    q.parts[0].material = Some(name("Brick"));
+    let master = mesh_node("A", q);
+    let mut sharer = mesh_node("B", quad());
+    sharer.body = NodeData::None;
+    sharer.shares = Some(0);
+    let s = Scene::parse(&export(&scene_of(vec![master, sharer]))).unwrap();
+    assert!(matches!(s.nodes[1].body, NodeBody::Instance(1)));
+    // Without a master the node is still malformed.
+    let mut lone = mesh_node("C", quad());
+    lone.body = NodeData::None;
+    assert!(
+        Exporter::new()
+            .export(&scene_of(vec![lone]), &ExportOptions::default(), None)
+            .is_err()
+    );
+}
+
+#[test]
 fn materials_missing_from_the_shared_libraries_are_listed() {
     let mut a = quad();
     a.parts[1].material = Some(name("STONE"));
