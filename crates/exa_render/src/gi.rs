@@ -465,7 +465,30 @@ pub mod voxel_flags {
     pub const ACTIVE: u32 = 2;
 }
 
+/// The node class of a voxel light (`0x41`), as its constructor sets it.
+pub const VOXEL_LIGHT_CLASS: u32 = 0x41;
+/// The colour a voxel light is constructed with.
+pub const VOXEL_LIGHT_WHITE: [f32; 3] = [1.0, 1.0, 1.0];
+/// The intensity a voxel light is constructed with.
+pub const VOXEL_LIGHT_UNIT_INTENSITY: f32 = 1.0;
+
 impl VoxelLight {
+    /// A voxel light as its constructor leaves it, before any record: the
+    /// class word `0x41`, white, intensity 1 and no radius. The original's
+    /// record loader overwrites the colour and intensity, so this is the
+    /// fallback a node without a body gets.
+    pub fn constructed() -> Self {
+        Self {
+            color: VOXEL_LIGHT_WHITE,
+            intensity: VOXEL_LIGHT_UNIT_INTENSITY,
+            base_intensity: VOXEL_LIGHT_UNIT_INTENSITY,
+            radius: 0.0,
+            active_radius: 0.0,
+            colour: Vec3::ZERO,
+            flags: 0,
+        }
+    }
+
     /// The light of a node's sRGB colour and intensity: the intensity
     /// counts by its square root, ×3 in the original's linear workflow.
     pub fn new(srgb: [f32; 3], intensity: f32) -> Self {
@@ -3295,6 +3318,18 @@ mod tests {
         let spent = VoxelLight::new([0.2157, 0.6784, 1.0], 16.0 * 0.0044);
         assert!((spent.colour.z - 12.0 * 0.0044f32.sqrt()).abs() < 1e-3);
         assert_eq!(VoxelLight::new([1.0; 3], -1.0).colour, Vec3::ZERO);
+    }
+
+    #[test]
+    fn the_voxel_light_constructor_defaults_are_white_at_unit_intensity() {
+        let light = VoxelLight::constructed();
+        assert_eq!(light.color, [1.0; 3]);
+        assert_eq!(
+            (light.intensity, light.base_intensity, light.radius),
+            (1.0, 1.0, 0.0)
+        );
+        assert_eq!(light.colour, Vec3::ZERO);
+        assert_eq!(VOXEL_LIGHT_CLASS, 0x41);
     }
 
     #[test]

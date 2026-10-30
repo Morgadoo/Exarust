@@ -88,7 +88,7 @@ Rules and evidence: [`docs/formats/FLB.md`](../../docs/formats/FLB.md) and
 evaluated per voxel, with their uniforms, tracked from each shape entity's
 component; no effect registers one yet, so the pass also carries a white
 shape texel), draw box, program names, quad and shared uniforms, the three linked programs' sampler units and uniforms (`GiPass::layout`: `Shadow<i>` on 2 + i, `LVox` 0, `OVox` 1; the emission program sets only `OVox`), the neighbour margin copy's columns, UV offsets and quad, the dynamic update's dirty region, and the occupancy sub-upload
-(`GiOccupancyPatch`) a moving mesh's changed box goes out as. A voxel light carries the node's base colour, current and base intensity, base and active radius and flag word, with the 3× modern and double-precision 0.6 legacy colour paths, the activation copy and the clone copy.
+(`GiOccupancyPatch`) a moving mesh's changed box goes out as. A voxel light carries the node's base colour, current and base intensity, base and active radius and flag word, with the 3× modern and double-precision 0.6 legacy colour paths, the activation copy, the clone copy and the constructor's class 0x41 white unit-intensity default.
 - `post`: the original's grading chain (the fade and desaturation controls with their exact ramps, the two cached program variants the sharpen amount and shader-restore switch pick, the bloom filter's `(x²·24)` weight curve with its doubled-sum normalisation and 1.5 or `level·0.016 + 1` scale, and the pass's uniform values); the `post` files hold Exarust's Bevy implementation of the bloom/grade chain.
 - `image_noise`: the original's procedural noise: white noise from its
   linear congruential sequence (whole maps, float rows and byte levels'
