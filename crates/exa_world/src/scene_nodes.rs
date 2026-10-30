@@ -915,8 +915,9 @@ pub struct SceneNode {
     pub removed: bool,
     /// A light's aliases (copies of it registered in other sectors).
     pub aliases: Vec<usize>,
-    /// The values a light's last alias sync copied (colour, range, cone,
-    /// flags, intensity, scale); `None` until one runs.
+    /// The values a light's last alias sync copied (the derived colours,
+    /// luminance, falloff, softness, reach and flag byte); `None` until one
+    /// runs.
     pub alias_values: Option<crate::light_source::AliasValues>,
     /// The node's cell and spill mask.
     pub cell: CellSpill,
@@ -1313,9 +1314,10 @@ impl Scene {
         true
     }
 
-    /// Copies a light's current values to every alias, as the original's
-    /// alias sync does: the aliases are marked moved (so their shadow faces
-    /// reset) and keep the copied values. Returns how many were written.
+    /// Copies a light's derived values to every alias, as the original's
+    /// alias sync does: each alias keeps the values and takes the light's
+    /// node-word bits 16–23 into its own word. Returns how many aliases
+    /// were written.
     pub fn sync_light_aliases(
         &mut self,
         light: usize,
@@ -1326,8 +1328,6 @@ impl Scene {
         for &alias in &aliases {
             if let Some(a) = self.nodes.get_mut(alias) {
                 a.alias_values = Some(*values);
-                a.moved = true;
-                a.mask = 0;
             }
         }
         aliases.len()
@@ -1492,12 +1492,13 @@ impl Scene {
 
     /// Takes a subtree out of the scene while leaving its owner and parent
     /// links alone, as the content helper's detach does: every node loses
-    /// [`IN_SCENE`], a light leaves its sector's light list and drops its
-    /// aliases, an auxiliary node leaves the auxiliary list, a geometry node
-    /// leaves the scene's geometry list. Meshes stay in their sector's mesh
-    /// list until the membership pass or a release drops them, as the
-    /// original's detach only recurses through the sector lists it owns.
-    /// Returns how many nodes changed.
+    /// [`IN_SCENE`], a light leaves its sector's light list and its alias
+    /// count drops to zero (the alias nodes themselves are left), an
+    /// auxiliary node leaves the auxiliary list, a geometry node leaves the
+    /// scene's geometry list. Meshes stay in their sector's mesh list until
+    /// the membership pass or a release drops them, as the original's
+    /// detach only touches the lists named here. Returns how many nodes
+    /// were in the scene.
     pub fn detach_subtree(&mut self, node: usize) -> usize {
         let Some(n) = self.nodes.get(node) else {
             return 0;
@@ -1508,31 +1509,15 @@ impl Scene {
         let mut count = 0;
         if let Some(s) = sector.and_then(|s| self.sectors.get_mut(s)) {
             match kind {
-                NodeKind::Light => {
-                    s.lights.retain(|&l| l != node);
-                    s.changes |= LINKS_CHANGED;
-                }
+                NodeKind::Light => s.lights.retain(|&l| l != node),
                 NodeKind::Auxiliary => s.auxiliary.retain(|&a| a != node),
                 _ => {}
             }
         }
-        if kind == NodeKind::Geometry {
-            self.geometry.retain(|&g| g != node);
-        }
-        let aliases = if kind == NodeKind::Light {
-            std::mem::take(&mut self.nodes[node].aliases)
-        } else {
-            Vec::new()
-        };
-        for alias in aliases {
-            if let Some(alias) = self.nodes.get_mut(alias) {
-                if let Some(sector) = alias.sector
-                    && let Some(s) = self.sectors.get_mut(sector)
-                {
-                    s.changes |= LINKS_CHANGED;
-                }
-                alias.sector = None;
-            }
+        match kind {
+            NodeKind::Geometry => self.geometry.retain(|&g| g != node),
+            NodeKind::Light => self.nodes[node].aliases.clear(),
+            _ => {}
         }
         let was_in_scene = self.nodes[node].scene_flags & IN_SCENE != 0;
         self.nodes[node].scene_flags &= !IN_SCENE;
@@ -5532,30 +5517,30 @@ mod tests {
     }
 
     #[test]
-    fn an_alias_sync_copies_the_light_values_and_marks_the_alias_moved() {
+    fn an_alias_sync_copies_the_light_values() {
         let mut scene = Scene::new((0, 0));
         let light = scene.add_node(NodeKind::Light, None);
         let alias = scene.add_node(NodeKind::Light, None);
         scene.nodes[light].aliases.push(alias);
         let values = crate::light_source::AliasValues {
-            flags: 1,
+            node_flags: 0x0010_0000,
             colour: [0.5, 0.25, 0.125],
-            intensity: 3.0,
-            radius: 4.0,
+            second_colour: [0.5, 0.25, 0.125],
+            gi_colour: [0.25, 0.125, 0.0625],
+            luminance: 0.3,
+            attenuation: 0.2,
             softness: 0.25,
-            spot: Some([1.0, 2.0]),
-            ranged: true,
-            scale: 0.5,
-            shadow_offset: 1,
+            flag_bit: true,
+            reach: 4.0,
         };
         assert_eq!(scene.sync_light_aliases(light, &values), 1);
         assert_eq!(scene.nodes[light].alias_values, Some(values));
         assert_eq!(scene.nodes[alias].alias_values, Some(values));
-        assert!(scene.nodes[alias].moved);
+        assert!(!scene.nodes[alias].moved);
     }
 
     #[test]
-    fn detaching_a_light_marks_its_alias_sectors() {
+    fn detaching_a_light_drops_its_alias_count_only() {
         let mut scene = Scene::new((0, 0));
         scene.sectors.push(Sector::new("room", None));
         let light = scene.add_node(NodeKind::Light, None);
@@ -5563,10 +5548,13 @@ mod tests {
         scene.nodes[light].aliases.push(alias);
         scene.nodes[light].sector = Some(1);
         scene.nodes[alias].sector = Some(1);
+        scene.sectors[1].lights.push(light);
         scene.detach_subtree(light);
-        assert_eq!(scene.sectors[1].changes & LINKS_CHANGED, LINKS_CHANGED);
-        assert_eq!(scene.nodes[alias].sector, None);
+        assert!(scene.sectors[1].lights.is_empty());
         assert!(scene.nodes[light].aliases.is_empty());
+        // The alias node is left as it is.
+        assert_eq!(scene.nodes[alias].sector, Some(1));
+        assert_eq!(scene.sectors[1].changes & LINKS_CHANGED, 0);
     }
 
     #[test]
