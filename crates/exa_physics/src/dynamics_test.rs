@@ -673,6 +673,15 @@ fn the_environment_converts_to_a_tick() {
     let inert = Environment::INERT.configure_step(83);
     assert_eq!(inert.retention, [0.0; 3]);
     assert_eq!(inert.gravity, Vec3::ZERO);
+    // A retention that is not above zero (a NaN included, as the
+    // original's ordered compare fails on it) stores zero.
+    let nan = Environment {
+        fast: f32::NAN,
+        slow: -1.0,
+        ..Environment::DEFAULT
+    }
+    .configure_step(83);
+    assert_eq!(nan.retention, [0.0, 0.0, 0.964_550_44]);
 }
 
 /// The frame fraction is one plus the time past the last step, in steps,
@@ -712,8 +721,9 @@ fn the_constructor_constants() {
     assert_eq!(DEFAULT_ENVIRONMENTS, 5);
 }
 
-/// A scene of its own appends a sector per sector node; a shared scene
-/// reuses the first one.
+/// A scene of its own appends a sector per sector node, each taking the
+/// node's children as pending nodes; a shared scene reuses the first one
+/// without replacing its node and adds the children to it.
 #[test]
 fn a_simulation_adds_or_reuses_scene_sectors() {
     let mut sim = Simulation::new(
@@ -723,13 +733,21 @@ fn a_simulation_adds_or_reuses_scene_sectors() {
             height: 1,
         },
     );
-    assert_eq!(sim.add_sector_nodes(4, &[Some(10), Some(11)], false), 2);
+    assert_eq!(
+        sim.add_sector_nodes(4, &[(10, vec![7, 8]), (11, vec![9])], false),
+        2
+    );
     assert_eq!(sim.sectors.len(), 2);
     assert_eq!(sim.sectors[0].scene, 4);
     assert_eq!(sim.sectors[0].node, Some(10));
     assert!(sim.sectors[0].uses_grid);
-    assert_eq!(sim.add_sector_nodes(9, &[Some(20)], true), 1);
+    assert_eq!(sim.sectors[0].pending, [7, 8]);
+    assert_eq!(sim.sectors[1].pending, [9]);
+    assert_eq!(sim.add_sector_nodes(9, &[(20, vec![30])], true), 1);
     assert_eq!(sim.sectors.len(), 2);
     assert_eq!(sim.sectors[0].scene, 9);
-    assert_eq!(sim.sectors[0].node, Some(20));
+    // A shared scene keeps the first sector's node and appends the batch's
+    // children behind the ones already waiting.
+    assert_eq!(sim.sectors[0].node, Some(10));
+    assert_eq!(sim.sectors[0].pending, [7, 8, 30]);
 }

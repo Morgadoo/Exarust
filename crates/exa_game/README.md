@@ -1440,11 +1440,15 @@ repaint, message 2 follows while the pending count is under its limit and the
 primary word has none of `0xf0`), the maximised-viewport count, the
 run-scene set-up (viewport rectangle, flags and 15-character title, the
 renderer minimum that only rises, the camera record, the weather option bits
-and the audio listener with its global fallback) and the scene-node despawn
-over `Scene::release_node`. Not modelled: the tick's copy of the camera pose
-into the listener, the weather option calls, and five option bytes whose
-callees were not identified. The actual camera, level and listener stay in
-`exarust::viewer` and `crate::player`.
+and the audio listener with its global fallback, the task's copy of the
+seven-word camera record (the default record itself when the options name
+none), the option bytes for physics, the maximised viewport and the show
+flag, the listener pose step (the camera's two vectors copied into the
+listener, and the listener's point set to the half-way blend from the camera
+to the object it follows while its flag word carries `0x10`) and the
+scene-node despawn over `Scene::release_node`. Not modelled: the weather option calls and five
+option bytes whose callees were not identified. The actual camera, level and
+listener stay in `exarust::viewer` and `crate::player`.
 
 ## The remaining screens' game side
 

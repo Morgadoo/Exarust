@@ -1022,10 +1022,17 @@ impl TerrainKdTree {
 
     /// Caches the box of the mesh the tree is attached to, from the mesh's
     /// centre and half extent. Unlike [`KdTree`]'s root cell it has no
-    /// padding.
+    /// padding. The original stores the mesh's two bound vectors as they
+    /// are; [`Self::attach_bounds`] takes them directly, this helper
+    /// recomputes them from the box.
     pub fn attach(&mut self, centre: Vec3, half: Vec3) {
-        self.min = centre - half;
-        self.max = centre + half;
+        self.attach_bounds(centre - half, centre + half);
+    }
+
+    /// Caches the mesh's own bound vectors, as the original copies them.
+    pub fn attach_bounds(&mut self, min: Vec3, max: Vec3) {
+        self.min = min;
+        self.max = max;
     }
 
     /// The triangles of a cell: two per cell, index `(x + n·z)·2`.

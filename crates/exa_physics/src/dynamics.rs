@@ -248,15 +248,18 @@ impl Environment {
     /// writes it: each per-second retention raised to `1/ticks`, the
     /// gravity vector scaled by the reciprocal of `ticks²` (a float
     /// multiply, as the vector scale does it) and the two speed thresholds
-    /// squared after their per-tick conversion. A non-positive retention
-    /// gives 0.
+    /// squared after their per-tick conversion. A retention that is not
+    /// above zero — a negative one or a NaN, as the unordered compare
+    /// leaves it — gives 0.
     pub fn configure_step(&self, ticks: u32) -> StepEnvironment {
         let s = f64::from(ticks);
         let raise = |r: f32| {
-            if r <= 0.0 {
-                0.0
-            } else {
+            // The original branches on `r > 0.0`, an ordered compare whose
+            // failure on a NaN takes the zero branch.
+            if r > 0.0 {
                 (f64::from(r).ln() / s).exp() as f32
+            } else {
+                0.0
             }
         };
         let per_tick = ticks as f32;
@@ -278,9 +281,10 @@ impl Environment {
     /// else resting, each its per-second value raised to a tick (none for
     /// a retention at or under zero).
     pub fn retention(&self, moved: f32) -> f32 {
-        let per_second = if moved > self.fast_speed / 83.0 {
+        let ticks = TICK_HZ as f32;
+        let per_second = if moved > self.fast_speed / ticks {
             self.fast
-        } else if moved > self.slow_speed / 83.0 {
+        } else if moved > self.slow_speed / ticks {
             self.slow
         } else {
             self.resting
@@ -1336,34 +1340,57 @@ impl Simulation {
     }
 
     /// Creates the simulation's sector for a scene (the original's
-    /// sector-creation slot): a scene of its own appends a sector with the
-    /// scene's node; a shared scene reuses the first sector. Every new
-    /// sector uses the simulation's grids.
-    pub fn add_sector(&mut self, scene: u32, node: Option<usize>, shared: bool) -> usize {
+    /// sector-creation slot) and registers the scene node's children in it.
+    /// A scene of its own appends a sector with the scene's node and, while
+    /// the sector has no bodies, gives it the node's children as pending
+    /// static nodes; every new sector uses the simulation's grids. A shared
+    /// scene reuses the first sector: it only takes the scene word and the
+    /// children (the original does not replace the sector's node), and the
+    /// scene's node-add hook points at that sector.
+    pub fn add_sector(
+        &mut self,
+        scene: u32,
+        node: Option<usize>,
+        children: &[usize],
+        shared: bool,
+    ) -> usize {
         if shared && let Some(first) = self.sectors.first_mut() {
             first.scene = scene;
-            first.node = node;
+            first.add_nodes(children);
             return 0;
         }
         let mut sector = Sector::new(scene);
         sector.node = node;
         sector.uses_grid = true;
+        if sector.bodies.is_empty() && !children.is_empty() {
+            sector.add_nodes(children);
+        }
         self.sectors.push(sector);
         self.sectors.len() - 1
     }
 
     /// The scene's node-added hook: a batch of sector nodes becomes sectors
-    /// (one when the scene is shared); the batch's other nodes are left to
-    /// the caller's hook. Returns how many sectors now stand for the batch.
-    pub fn add_sector_nodes(&mut self, scene: u32, nodes: &[Option<usize>], shared: bool) -> usize {
+    /// (one when the scene is shared), each taking its own children; the
+    /// batch's other nodes are left to the caller's hook. Returns how many
+    /// sectors now stand for the batch.
+    pub fn add_sector_nodes(
+        &mut self,
+        scene: u32,
+        sectors: &[(usize, Vec<usize>)],
+        shared: bool,
+    ) -> usize {
         if shared {
-            self.add_sector(scene, nodes.first().copied().flatten(), true);
+            let (node, children) = sectors
+                .first()
+                .map(|(node, children)| (Some(*node), children.as_slice()))
+                .unwrap_or((None, &[]));
+            self.add_sector(scene, node, children, true);
             return 1;
         }
-        for &node in nodes {
-            self.add_sector(scene, node, false);
+        for (node, children) in sectors {
+            self.add_sector(scene, Some(*node), children, false);
         }
-        nodes.len()
+        sectors.len()
     }
 
     /// Adds a body to the watch list, last.

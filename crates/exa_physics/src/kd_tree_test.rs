@@ -448,6 +448,12 @@ fn terrain_translate_moves_only_the_split_planes() {
     attached.attach(Vec3::new(1.0, 2.0, 3.0), Vec3::splat(0.5));
     assert_eq!(attached.min, Vec3::new(0.5, 1.5, 2.5));
     assert_eq!(attached.max, Vec3::new(1.5, 2.5, 3.5));
+    // The original copies the mesh's own bounds; taking them directly keeps
+    // values a centre/half recomputation would round.
+    let mut exact = tree.clone();
+    exact.attach_bounds(Vec3::new(0.1, 0.2, 0.3), Vec3::new(9.7, 9.9, 9.9));
+    assert_eq!(exact.min, Vec3::new(0.1, 0.2, 0.3));
+    assert_eq!(exact.max, Vec3::new(9.7, 9.9, 9.9));
     let moved = attached.translated(Vec3::new(6.0, 0.0, 6.0));
     assert_eq!(moved.nodes[0].axis(), tree.nodes[0].axis());
     assert_eq!(moved.nodes[0].value, tree.nodes[0].value + 6.0);

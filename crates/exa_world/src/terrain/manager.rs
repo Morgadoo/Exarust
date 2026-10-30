@@ -487,8 +487,9 @@ impl BlockDescriptor {
     /// (`column`, `row`). With the tile's `bounds` the vertical extent is
     /// the min and max over the block's `(16 >> level)²` bounds cells
     /// (the max compare is a separate, NaN-safe test); without them the
-    /// centre is 0 and the half extent 10. One is added to the vertical half
-    /// extent either way.
+    /// centre is 0 and the half extent 10. The vertical half extent is the
+    /// raw half of the span, plus 1 cm: a flat block gets 1 cm, not a
+    /// clamped minimum.
     pub fn new(level: u32, column: u16, row: u16, bounds: Option<&HeightBounds>) -> Self {
         let (centre_y, mut half_y) = match bounds {
             Some(bounds) => {
@@ -508,10 +509,7 @@ impl BlockDescriptor {
                 }
                 let raw = (hi - lo) * 0.5;
                 let centre = lo + raw;
-                // The original keeps a flat block's half extent at 1 mm;
-                // the centre keeps the raw half.
-                let half = if raw < 0.001 { 0.001 } else { raw };
-                (centre, half)
+                (centre, raw)
             }
             None => (0.0, 10.0),
         };
@@ -833,12 +831,12 @@ mod tests {
         let block = BlockDescriptor::new(3, 2, 5, Some(&local));
         assert_eq!(block.centre[1], 2.0);
         assert_eq!(block.half[1], 7.0);
-        // A flat block keeps the original's 1 mm half extent (plus the one
-        // every block gets).
+        // A flat block keeps the raw half of 0 plus the one every block
+        // gets: 1 cm, with no clamp of its own.
         let flat = [[(5.0f32, 5.0f32); BOUND_CELLS]; BOUND_CELLS];
         let block = BlockDescriptor::new(3, 0, 0, Some(&flat));
         assert_eq!(block.centre[1], 5.0);
-        assert!((block.half[1] - 1.001).abs() < 1e-6);
+        assert_eq!(block.half[1], 1.0);
     }
 
     #[test]

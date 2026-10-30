@@ -49,7 +49,9 @@ pub const STEP_HZ: f64 = 83.0;
 /// Steps a slow frame may catch up on; the original drops the rest of its
 /// backlog (game time slows instead of spiralling).
 pub const MAX_STEPS_BEHIND: f64 = 4.0;
-const GRAVITY: f32 = -9.81;
+/// The simulation's gravity (m/s²): the original's default environment,
+/// −980.665 cm/s².
+const GRAVITY: f32 = -9.806_65;
 
 pub struct PhysicsPlugin;
 
