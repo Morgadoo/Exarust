@@ -129,7 +129,7 @@ impl Part {
             bone,
             entity: s.entity,
             parent: s.parent,
-            rest: crate::body::SharedRest::new(rest),
+            rest,
             positions,
             previous: positions,
             inverse_mass: s.mobility,
