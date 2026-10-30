@@ -111,8 +111,15 @@ fn apply_requests(
     levels: Query<Entity, With<LevelEntity>>,
     handles: Query<Entity, With<exa_physics::CharacterHandles>>,
 ) {
+    // Two requests in one frame (a session leave's teardown and the load
+    // behind it) see the same level roots: only the first tears them down,
+    // so nothing is despawned twice.
+    let mut torn_down = false;
     for request in requests.read() {
-        if request.teardown {
+        if request.teardown && torn_down {
+            state.changes = state.changes.wrapping_add(1);
+        } else if request.teardown {
+            torn_down = true;
             teardown(
                 &mut commands,
                 &mut physics,
@@ -183,6 +190,41 @@ mod tests {
     use bevy::ecs::world::CommandQueue;
     use exa_assets::{GameData, ModelCache, ModelLoader};
     use rapier3d::prelude::{ColliderBuilder, RigidBodyBuilder};
+
+    /// A teardown and a load asked for in the same frame tear the level down
+    /// once: the second request despawns nothing a second time, and the
+    /// host is left the load.
+    #[test]
+    fn two_requests_in_a_frame_tear_down_once() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(LevelChangePlugin)
+            .insert_resource(exa_physics::Physics::default())
+            .insert_resource(gi_volume::GiState::Off)
+            .insert_resource(nav::NavState::None)
+            .insert_resource(nav::InstalledPathfinder::default());
+        app.world_mut().spawn((LevelEntity, Transform::default()));
+        {
+            let mut messages = app
+                .world_mut()
+                .resource_mut::<Messages<LevelChangeRequest>>();
+            messages.write(LevelChangeRequest::teardown());
+            messages.write(LevelChangeRequest::change("exanima01", 0));
+        }
+        // A second despawn of the same root would be a failed command, which
+        // the default error handler turns into a panic.
+        app.update();
+        let ready = app.world().resource::<LevelChangeReady>();
+        assert_eq!(ready.level.as_deref(), Some("exanima01"));
+        assert_eq!(ready.changes, 2);
+        assert_eq!(
+            app.world_mut()
+                .query_filtered::<Entity, With<LevelEntity>>()
+                .iter(app.world())
+                .count(),
+            0
+        );
+    }
 
     /// A level change with no level despawns each level root and its subtree,
     /// empties the physics world and frees the level's resources, while a

@@ -890,6 +890,7 @@ fn load_story_slot(
     mut steps: Option<ResMut<crate::flow::FlowSteps>>,
     mut created: Option<ResMut<crate::creator_screen::CreatedCharacter>>,
     players: Query<Entity, With<crate::player::Player>>,
+    levels: Query<(), With<exa_world::level_lifecycle::LevelEntity>>,
     mut clock: MessageWriter<crate::world_clock::RestoreWorldClock>,
     mut report: ResMut<SaveReport>,
 ) {
@@ -903,7 +904,7 @@ fn load_story_slot(
     let (level, placement) = match restored {
         Ok(restored) => {
             info!(
-                "save: story slot {} loaded from {:?}: level {}, clock {} s, player {:?}, {} saved items",
+                "save: story slot {} loaded from {:?}: level {}, clock {} s, player {:?}, {} world object records",
                 request.number,
                 restored.kind,
                 restored.level,
@@ -951,6 +952,15 @@ fn load_story_slot(
         position: Vec3::ZERO,
     });
     let mut resumed = flow.continue_story(level, at, viewport);
+    if levels.is_empty() {
+        // The saves' screen already took the world down: the load does not
+        // tear it down a second time.
+        for step in &mut resumed {
+            if let crate::flow::Step::LoadLevel { teardown, .. } = step {
+                *teardown = false;
+            }
+        }
+    }
     if placement.is_none() {
         // A save without a placement (one Exarust wrote before it saved
         // the player) starts at the level's own start.
