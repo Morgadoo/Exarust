@@ -1082,6 +1082,8 @@ struct MergePiece {
     handle: Handle<exa_render::material::ExaMaterial>,
     frame: exa_formats::morph::Frame,
     bone: u32,
+    /// The group's per-triangle flags, as the file stores them.
+    flags: std::sync::Arc<[u32]>,
     cull: u32,
 }
 
@@ -1225,7 +1227,9 @@ fn spawn_merged_character(
         let painted_stem = (which > 0)
             .then(|| model::painted_model_stem(model))
             .flatten();
-        for ((mesh, handle), name) in node.parts.iter().zip(&node.part_materials) {
+        for (part, ((mesh, handle), name)) in
+            node.parts.iter().zip(&node.part_materials).enumerate()
+        {
             let handle = if which == 0 && exa_assets::human_skin::is_race_skin(body_entry, name) {
                 skin.clone().unwrap_or_else(|| handle.clone())
             } else {
@@ -1242,6 +1246,7 @@ fn spawn_merged_character(
                 handle,
                 frame,
                 bone,
+                flags: node.part_flags.get(part).cloned().unwrap_or_default(),
                 cull: step.cull,
             });
         }
@@ -1257,6 +1262,7 @@ fn spawn_merged_character(
                     bone: piece.bone,
                     material: &piece.material,
                     handle: piece.handle.clone(),
+                    triangle_flags: (!piece.flags.is_empty()).then_some(piece.flags.as_ref()),
                     cull: piece.cull,
                 })
             })
@@ -2220,6 +2226,7 @@ mod tests {
             transform: Transform::from_translation(at),
             parts: Vec::new(),
             part_materials: Vec::new(),
+            part_flags: Vec::new(),
             collision: Vec::new(),
             skin_bone: None,
             light: None,

@@ -783,6 +783,7 @@ mod tests {
                 transform: Transform::IDENTITY,
                 parts: vec![(mesh.clone(), unpainted.clone()), (mesh, wood.clone())],
                 part_materials: vec!["&shirt_aa01".into(), "wood01".into()],
+                part_flags: Vec::new(),
                 collision: Vec::new(),
                 skin_bone: None,
                 light: None,

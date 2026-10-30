@@ -62,6 +62,10 @@ pub struct ModelNode {
     pub parts: Vec<Part>,
     /// Material name of each part, as stored in the file.
     pub part_materials: Vec<String>,
+    /// Per-triangle flags of each part, in the file's order (empty when the
+    /// mesh stores none). The skinning merge tests them against a body
+    /// slot's cull bits.
+    pub part_flags: Vec<Arc<[u32]>>,
     /// Meshes of the node's `_null` groups: geometry the original never
     /// draws but its cursor pick still meets (the hub's shop counter box).
     /// Bare positions and indices, never uploaded; built as pick-only
@@ -746,42 +750,43 @@ impl ModelLoader<'_> {
                 .map(Arc::new);
             let cloth_mesh = match mesh {
                 Some(mesh) if node.cloth_marker => {
-                    let groups: Vec<usize> = built.meshes.iter().map(|(g, _)| *g).collect();
+                    let groups: Vec<usize> = built.meshes.iter().map(|(g, _, _)| *g).collect();
                     Some(Arc::new(ClothMesh::of(mesh, &groups)))
                 }
                 _ => None,
             };
-            let (parts, part_materials, collision) = match mesh {
+            let (parts, part_materials, part_flags, collision) = match mesh {
                 Some(mesh) => {
-                    let (parts, part_materials) = built
-                        .meshes
-                        .into_iter()
-                        .map(|(group, mut bevy_mesh)| {
-                            let name = &mesh.groups[group].material;
-                            let material = self.material(&entry, &scene, name);
-                            // The GPU build copies the texture coordinates
-                            // through the material's matrix when its record
-                            // asks for one (extra flags 0x40); the split
-                            // tangents still come from the stored channel.
-                            if let Some(matrix) = self.uv_transform_of(&entry, &scene, name)
-                                && let Some(bevy::mesh::VertexAttributeValues::Float32x2(uvs)) =
-                                    bevy_mesh.attribute_mut(Mesh::ATTRIBUTE_UV_0)
-                            {
-                                for uv in uvs.iter_mut() {
-                                    *uv = exa_formats::material::uv_transform_point(&matrix, *uv);
-                                }
+                    let mut parts = Vec::new();
+                    let mut part_materials = Vec::new();
+                    let mut part_flags = Vec::new();
+                    for (group, mut bevy_mesh, flags) in built.meshes {
+                        let name = &mesh.groups[group].material;
+                        let material = self.material(&entry, &scene, name);
+                        // The GPU build copies the texture coordinates
+                        // through the material's matrix when its record
+                        // asks for one (extra flags 0x40); the split
+                        // tangents still come from the stored channel.
+                        if let Some(matrix) = self.uv_transform_of(&entry, &scene, name)
+                            && let Some(bevy::mesh::VertexAttributeValues::Float32x2(uvs)) =
+                                bevy_mesh.attribute_mut(Mesh::ATTRIBUTE_UV_0)
+                        {
+                            for uv in uvs.iter_mut() {
+                                *uv = exa_formats::material::uv_transform_point(&matrix, *uv);
                             }
-                            ((self.meshes.add(bevy_mesh), material), name.clone())
-                        })
-                        .unzip();
+                        }
+                        parts.push((self.meshes.add(bevy_mesh), material));
+                        part_materials.push(name.clone());
+                        part_flags.push(Arc::from(flags));
+                    }
                     let collision = built
                         .collision
                         .into_iter()
                         .map(|mesh| self.meshes.add(mesh))
                         .collect();
-                    (parts, part_materials, collision)
+                    (parts, part_materials, part_flags, collision)
                 }
-                None => (Vec::new(), Vec::new(), Vec::new()),
+                None => (Vec::new(), Vec::new(), Vec::new(), Vec::new()),
             };
             let is_skin = match &node.body {
                 NodeBody::Mesh(mesh) => mesh
@@ -799,6 +804,7 @@ impl ModelLoader<'_> {
                 transform: transform_from_rows(&node.transform),
                 parts,
                 part_materials,
+                part_flags,
                 collision,
                 skin_bone,
                 bounds: (Vec3::from(node.bounds_centre), node.bounds_radius),
@@ -864,6 +870,7 @@ impl ModelLoader<'_> {
             let (
                 parts,
                 part_materials,
+                part_flags,
                 collision,
                 gi_points,
                 gi_centred,
@@ -879,6 +886,7 @@ impl ModelLoader<'_> {
                 (
                     src.parts.clone(),
                     src.part_materials.clone(),
+                    src.part_flags.clone(),
                     src.collision.clone(),
                     src.gi_points.clone(),
                     src.gi_centred,
@@ -894,6 +902,7 @@ impl ModelLoader<'_> {
             let dst = &mut nodes[i];
             dst.parts = parts;
             dst.part_materials = part_materials;
+            dst.part_flags = part_flags;
             dst.collision = collision;
             dst.gi_points = gi_points;
             dst.gi_centred = gi_centred;
@@ -1974,7 +1983,7 @@ pub struct BuiltModel {
 /// drawn mesh groups' meshes, by group index.
 struct BuiltNode {
     skin: Option<(u16, Vec<VertexSkin>)>,
-    meshes: Vec<(usize, Mesh)>,
+    meshes: Vec<BuiltGroup>,
     /// The node's `_null` groups' bare meshes, never drawn.
     collision: Vec<Mesh>,
 }
@@ -2220,22 +2229,32 @@ fn node_skin(
 
 /// The meshes of a mesh's drawn groups (`_null` marks geometry the
 /// original never draws), by group index, built on `pool` when given.
+/// A built material group: its index in the file's group list, its mesh
+/// and its per-triangle flags (empty when the file stores none).
+type BuiltGroup = (usize, Mesh, Vec<u32>);
+
 fn group_meshes(
     mesh: &RfcMesh,
     skin: Option<&[VertexSkin]>,
     pool: Option<&bevy::tasks::ComputeTaskPool>,
-) -> (Vec<(usize, Mesh)>, Vec<Mesh>) {
+) -> (Vec<BuiltGroup>, Vec<Mesh>) {
     let is_null = |g: usize| mesh.groups[g].material.eq_ignore_ascii_case("_null");
     let groups: Vec<usize> = (0..mesh.groups.len()).filter(|&g| !is_null(g)).collect();
     let build = |g: usize| {
         let group = &mesh.groups[g];
         let start = group.first_index as usize;
+        let flags: Vec<u32> = mesh
+            .triangle_flags
+            .as_ref()
+            .and_then(|flags| flags.get(start / 3..(start + group.index_count as usize) / 3))
+            .map(<[u32]>::to_vec)
+            .unwrap_or_default();
         mesh.indices
             .get(start..start + group.index_count as usize)
             .and_then(|indices| group_mesh(mesh, indices, skin))
-            .map(|m| (g, m))
+            .map(|m| (g, m, flags))
     };
-    let built: Vec<Option<(usize, Mesh)>> = match pool {
+    let built: Vec<Option<BuiltGroup>> = match pool {
         Some(pool) if groups.len() > 1 => pool.scope(|scope| {
             for &g in &groups {
                 scope.spawn(async move { build(g) });
@@ -2243,7 +2262,7 @@ fn group_meshes(
         }),
         _ => groups.iter().map(|&g| build(g)).collect(),
     };
-    let drawn = built.into_iter().flatten().collect();
+    let drawn: Vec<BuiltGroup> = built.into_iter().flatten().collect();
     // `_null` marks geometry the original never draws but its cursor pick
     // still meets, such as the hub's shop counter box: keep it as bare
     // pick meshes. A skinned mesh's `_null` seams are never static scenery.
@@ -3045,7 +3064,7 @@ pub fn scene_merged_mesh(
                 bone: u32::from(*bone),
                 material: &group.material,
                 visible: true,
-                vertex_masks: None,
+                triangle_flags: None,
                 cull: 0,
                 occlude: false,
                 index_range: Some((first, first + group.index_count as usize)),
@@ -3073,8 +3092,12 @@ pub struct DressedPart<'a> {
     pub material: &'a str,
     /// The material its built group draws with.
     pub handle: Handle<ExaMaterial>,
+    /// The part's per-triangle flags, as the file stores them (empty when
+    /// it stores none).
+    pub triangle_flags: Option<&'a [u32]>,
     /// The cull bits the slot's append takes
-    /// ([`exa_character::layers::cull_bits`]; 0 for body parts and overlays).
+    /// ([`exa_character::layers::cull_bits`]; 0 for garment parts and
+    /// overlays).
     pub cull: u32,
 }
 
@@ -3094,8 +3117,9 @@ pub struct DressedMerge {
 ///
 /// The position-stream ids are the parts' own vertex numbers (the built
 /// meshes keep no stream ids); they only feed the occlusion fade, which no
-/// shipped material marks. Triangles' file flags and edge bytes are not
-/// carried either, for the same reason.
+/// shipped material marks. Triangle flags do come with the part, so a body
+/// slot's cull bits drop the triangles it covers; the edge bytes are not
+/// carried (they only feed the seam builder, which has already run).
 pub fn merge_dressed(parts: &[DressedPart<'_>]) -> Option<DressedMerge> {
     let streams: Vec<Option<RfcMesh>> =
         parts.iter().map(|part| render_streams(part.mesh)).collect();
@@ -3110,7 +3134,7 @@ pub fn merge_dressed(parts: &[DressedPart<'_>]) -> Option<DressedMerge> {
             bone: part.bone,
             material: part.material,
             visible: true,
-            vertex_masks: None,
+            triangle_flags: part.triangle_flags,
             cull: part.cull,
             occlude: false,
             index_range: None,
@@ -3545,6 +3569,7 @@ mod tests {
             transform: Transform::IDENTITY,
             parts: Vec::new(),
             part_materials: materials.iter().map(|m| (*m).to_string()).collect(),
+            part_flags: Vec::new(),
             collision: Vec::new(),
             skin_bone: None,
             light: None,
@@ -4640,6 +4665,7 @@ mod tests {
                 bone: 3,
                 material: "cloth",
                 handle: first_handle.clone(),
+                triangle_flags: None,
                 cull: 0,
             },
             DressedPart {
@@ -4648,6 +4674,7 @@ mod tests {
                 bone: 7,
                 material: "leather",
                 handle: second_handle.clone(),
+                triangle_flags: None,
                 cull: 0,
             },
         ];
@@ -4715,5 +4742,76 @@ mod tests {
         for w in merged.mesh.skin.as_ref().unwrap() {
             assert!((w.weights.iter().sum::<f32>() - 1.0).abs() < 1e-4);
         }
+    }
+    /// A shipped body's cull bits sit on its `_null` seam groups only
+    /// (skipped without the game): the drawn body triangles carry none, so
+    /// the slot cull never removes a drawn triangle of the human body, and
+    /// the loader carries the flags beside the parts that do.
+    #[test]
+    fn a_shipped_body_keeps_its_cull_bits_beside_the_parts() {
+        let Some(dir) = crate::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(dir).unwrap();
+        let bytes = game
+            .pack(PackKind::Resource)
+            .unwrap()
+            .get("humanbase.rfc")
+            .unwrap();
+        let scene = exa_formats::rfc::Scene::parse(bytes).unwrap();
+        let mut null_groups = 0;
+        let mut drawn_groups = 0;
+        for node in &scene.nodes {
+            if let exa_formats::rfc::NodeBody::Mesh(mesh) = &node.body {
+                let Some(flags) = &mesh.triangle_flags else {
+                    continue;
+                };
+                for group in &mesh.groups {
+                    let start = group.first_index as usize / 3;
+                    let marked = flags
+                        .iter()
+                        .skip(start)
+                        .take(group.index_count as usize / 3)
+                        .any(|word| word & 0x60_0000 != 0);
+                    if !marked {
+                        continue;
+                    }
+                    if group.material.eq_ignore_ascii_case("_null") {
+                        null_groups += 1;
+                    } else {
+                        drawn_groups += 1;
+                    }
+                }
+            }
+        }
+        // Seven seam groups of the human body carry a cull mark; none of
+        // its drawn groups does.
+        assert_eq!(null_groups, 7);
+        assert_eq!(drawn_groups, 0);
+        // The loader keeps each drawn group's flags beside its part.
+        let mut cache = ModelCache::default();
+        let mut meshes = Assets::<Mesh>::default();
+        let mut materials = Assets::<ExaMaterial>::default();
+        let mut images = Assets::<Image>::default();
+        let mut loader = ModelLoader {
+            game: &game,
+            cache: &mut cache,
+            meshes: &mut meshes,
+            materials: &mut materials,
+            images: &mut images,
+            bc_supported: false,
+        };
+        let job = loader
+            .model_job(PackKind::Resource, "humanbase.rfc")
+            .expect("the human body parses");
+        let built = job.build(None);
+        let model = loader.finish_model(built).expect("the human body builds");
+        let parts: usize = model.nodes.iter().map(|n| n.parts.len()).sum();
+        let flags: usize = model
+            .nodes
+            .iter()
+            .map(|n| n.part_flags.iter().filter(|f| !f.is_empty()).count())
+            .sum();
+        assert_eq!(flags, parts);
     }
 }

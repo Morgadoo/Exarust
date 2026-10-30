@@ -2262,6 +2262,7 @@ mod tests {
             transform: Transform::IDENTITY,
             parts: Vec::new(),
             part_materials: Vec::new(),
+            part_flags: Vec::new(),
             collision: Vec::new(),
             skin_bone: None,
             light: None,

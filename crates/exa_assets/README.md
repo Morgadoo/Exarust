@@ -63,11 +63,14 @@ triangles grouped by material in first-seen order, and each mesh's own
 position-stream ids kept and moved past the meshes before it (groups of one
 mesh share its stream). The final renumber pass is the original's: each
 material's vertices in order, each run starting right after the previous
-one's last vertex. A part's `vertex_masks` and `cull` drop the vertices
-whose slot mask meets the cull bits and the triangles that needed them; the
-dressed-mesh pass passes a slot's cull bits (`0x200000`/`0x400000`,
-`exa_character::layers::cull_bits`) as that argument, and the append writes
-nothing on the triangles. A part whose material has the occlusion mark
+one's last vertex. A part's `triangle_flags` and `cull` drop the triangles
+whose per-triangle flags meet the cull bits (`flags & cull != 0`); a part
+without flags takes the unset word `1` once the mesh has a flag stream. The
+dressed-mesh pass gives each body slot's append its cull bits
+(`0x200000`/`0x400000`, `exa_character::layers::cull_bits`), and
+`ModelNode::part_flags` carries each built group's file flags to the merge.
+On the shipped bodies every cull mark sits on a `_null` seam group, so no
+drawn triangle is dropped today. A part whose material has the occlusion mark
 (`occlude`) fades the vertices on the border of the marked region
 (`occlusion_alpha`). `culled_indices` drops triangles by per-triangle flag
 bits (which triangle flags the original's draw tests is not traced).
