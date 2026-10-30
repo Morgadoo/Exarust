@@ -743,8 +743,9 @@ impl Experience {
             .find(|p| p.flags & POWER_IN_TRAINING != 0)
         {
             player.power_progress = paid.wrapping_add(player.power_progress);
-            // The original divides the 32-bit accumulator as a signed number.
-            let levels = (player.power_progress as i32) / SCALE;
+            // The 32-bit accumulator is zero-extended before the divide, so
+            // the quotient is the unsigned one.
+            let levels = (player.power_progress / SCALE as u32) as i32;
             if levels > 0 {
                 player.power_progress = player
                     .power_progress

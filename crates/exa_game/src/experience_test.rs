@@ -231,10 +231,11 @@ fn the_story_installs_six_hooks() {
     );
 }
 
-/// The power's progress is divided as a signed number: a word above 2^31 is
-/// negative, so a point does not turn it into half a million levels.
+/// The power's progress is divided as an unsigned word: a progress above
+/// 2^31 still converts, 0x8000_0008 / 4 = 0x2000_0002 levels, which fill
+/// the power (0x1fff) and leave no progress.
 #[test]
-fn a_negative_power_progress_converts_nothing() {
+fn a_large_power_progress_divides_unsigned() {
     let mut xp = Experience::default();
     let mut player = trainee(1000, 0);
     player.power_progress = 0x8000_0000;
@@ -245,8 +246,8 @@ fn a_negative_power_progress_converts_nothing() {
     }];
     let out = xp.convert_player(400, &mut player);
     assert_eq!(out.points, 2);
-    assert_eq!(player.power_progress, 0x8000_0008);
-    assert_eq!(player.powers[0].flags, POWER_IN_TRAINING | 5);
+    assert_eq!(player.power_progress, 0);
+    assert_eq!(player.powers[0].flags, POWER_FULL);
 }
 
 /// The player pays 4 a point. Two points of 8 add two levels to the power
