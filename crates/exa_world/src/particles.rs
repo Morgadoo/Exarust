@@ -717,6 +717,9 @@ pub struct Emitter {
     pub detail: f32,
     /// A body carrying the emitter, if any.
     pub body: Option<BodyMotion>,
+    /// The looping sound a template names (a single-letter name is no
+    /// sound, as the original checks the string's length).
+    pub sound_name: Option<&'static str>,
     slots: Vec<Slot>,
     first: usize,
     next: usize,
@@ -784,6 +787,7 @@ impl Emitter {
             size,
             detail: size,
             body: None,
+            sound_name: template.sound,
             slots,
             first: 0,
             next: 0,
@@ -1217,6 +1221,11 @@ impl Emitter {
         let n = self.hits as f32;
         self.hits = 0;
         n * dose
+    }
+
+    /// The looping sound the template names, if any.
+    pub fn sound_name(&self) -> Option<&'static str> {
+        self.sound_name
     }
 
     /// One frame of the light and sound walks, at the original's per-frame
@@ -1813,6 +1822,17 @@ mod tests {
         // The light reaches its template intensity at full density.
         light.density = 1.0;
         assert!(light.frame(0).at_base);
+    }
+
+    #[test]
+    fn a_template_names_its_looping_sound() {
+        assert_eq!(torch().sound_name(), Some("FireS02"));
+        let mut d = SMALL.scaled(0.2);
+        d.sound = None;
+        assert_eq!(
+            Emitter::new(d, 0.2, vec![Source::at_node()]).sound_name(),
+            None
+        );
     }
 
     #[test]

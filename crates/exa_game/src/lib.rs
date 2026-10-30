@@ -40,6 +40,7 @@ pub mod end_menu_screen;
 pub mod equip;
 pub mod experience;
 pub mod fall;
+pub mod fire_sound;
 pub mod flow;
 pub mod footprints;
 pub mod footwork;
@@ -191,6 +192,7 @@ impl Plugin for GamePlugin {
             ),
         ))
         .add_plugins(thaum::cast::CastPlugin)
+        .add_plugins(fire_sound::FireSoundPlugin)
         .add_plugins(world_clock::WorldClockPlugin)
         .add_plugins(save_live::SaveLivePlugin)
         .add_plugins((
