@@ -71,6 +71,34 @@ impl Default for BodyTimers {
     }
 }
 
+/// A dormant body's link-iteration count, set every body tick.
+pub const DORMANT_LINK_ITERATIONS: i32 = 5;
+
+/// One body tick of the root's link-iteration count
+/// ([`crate::body::Ragdoll::link_iterations`]): a dormant statue or golem
+/// holds [`DORMANT_LINK_ITERATIONS`]; any other living body climbs one a
+/// tick toward its target and drops to it at once, the target being
+/// `round((1 − 0.25·feral)·1660 / 83)` in single precision, rounded half
+/// to even (`motile::cadence_target`): 20 for a body that is not feral,
+/// 15 for a fully feral one.
+///
+/// The original's dormant branch also keeps a mark bit and raises a
+/// scene-graph flag on the owning object depending on a word of the owner;
+/// neither has a reader in Exarust and they are not modelled.
+pub fn link_iteration_step(count: i32, dormant: bool, feral: f32) -> i32 {
+    if dormant {
+        return DORMANT_LINK_ITERATIONS;
+    }
+    let target = crate::motile::cadence_target(feral);
+    if count < target {
+        count + 1
+    } else if count > target {
+        target
+    } else {
+        count
+    }
+}
+
 impl BodyTimers {
     /// One tick of the timers, as the body tick's first lines run them:
     /// each sum in double, narrowed once, then the processor's minimum
@@ -219,5 +247,22 @@ mod tests {
         t.weapon_switch = -3;
         t.tick(&input());
         assert_eq!(t.weapon_switch, -2);
+    }
+
+    /// The link-iteration ramp: dormant holds 5; otherwise one up a tick
+    /// to the target (20 not feral, round(0.875·20) = 17.5 → 18 half-even
+    /// at feral 0.5, 15 fully feral) and down to it at once.
+    #[test]
+    fn the_link_iterations_ramp_toward_the_feral_target() {
+        assert_eq!(link_iteration_step(20, true, 0.0), 5);
+        assert_eq!(link_iteration_step(5, false, 0.0), 6);
+        assert_eq!(link_iteration_step(19, false, 0.0), 20);
+        assert_eq!(link_iteration_step(20, false, 0.0), 20);
+        assert_eq!(link_iteration_step(20, false, 0.5), 18);
+        assert_eq!(link_iteration_step(17, false, 0.5), 18);
+        assert_eq!(link_iteration_step(20, false, 1.0), 15);
+        // A NaN feral level's target is 0 (the 64-bit indefinite's low
+        // word), so the count drops to 0.
+        assert_eq!(link_iteration_step(20, false, f32::NAN), 0);
     }
 }

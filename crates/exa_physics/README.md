@@ -833,7 +833,10 @@ on its previous particles and takes one tick off the countdown (floored at
 walkable-platform node, which no shipped body has, and for an item the
 cursor holds). Each root keeps the original's link-iteration count
 (`Ragdoll::link_iterations`: 2 for a plain body plus one per articulated
-child, 20 for a character, 10 once it dies in play); as in the original,
+child, 20 for a character, 10 once it dies in play; each living body tick
+sets it to 5 while dormant, else moves it one a tick up toward
+round((1 − 0.25·feral)·1660/83) or down to it at once,
+`timers::link_iteration_step`); as in the original,
 the solve runs 20 passes over every root regardless and the count only
 marks `count ≤ pass` (`iterations_reached`), which nothing reads.
 `iterate_links` is the original's whole-count iteration, with no caller.

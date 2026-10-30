@@ -3204,6 +3204,8 @@ impl Ragdoll {
             progress: d.bearing.progress,
         };
         d.timers.tick(&input);
+        let (dormant, feral) = (d.dormant, d.stats.feral);
+        self.link_iterations = timers::link_iteration_step(self.link_iterations, dormant, feral);
     }
 
     /// Tells a living body what its character does this tick (before it is
@@ -3252,8 +3254,8 @@ impl Ragdoll {
     /// sector solve runs its 20 iterations over every root whatever the
     /// count and only marks the root once the iteration index reaches it
     /// ([`Ragdoll::iterations_reached`]), a mark nothing reads; so does
-    /// Exarust. [inf] The dormant statue's 5 is not set: Exarust's dormant
-    /// bodies keep 20, which changes nothing that is read.
+    /// Exarust. Every living body tick moves it ([`timers::link_iteration_step`]):
+    /// 5 while dormant, else one a tick toward 20 (15 fully feral).
     pub fn link_iterations(&self) -> i32 {
         self.link_iterations
     }

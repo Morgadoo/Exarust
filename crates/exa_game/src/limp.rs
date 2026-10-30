@@ -215,11 +215,37 @@ fn build_bodies(
     }
 }
 
+/// The first clip sampled the way the pose-only sampler places a body:
+/// the clock's bracket without the living sampler's ease or clamp
+/// ([`placement_bracket`]), its root taken from the source key for the
+/// first three gait clips ([`placement_root_from_key`]). Also returns the
+/// bracket it sampled.
+fn placement_pose(
+    anim: &Animator,
+    clip: &Clip,
+    action: Option<usize>,
+) -> Option<(ClipPose, exa_anim::Bracket)> {
+    let still = in_place(action);
+    let capture_key = anim.capture.is_some().then_some(anim.capture_key);
+    let pick = placement_bracket(clip, anim.time, anim.blend, clip.loops(), capture_key)?;
+    let b = pick.bracket;
+    let mut pose = anim.blend_keys(clip, &b, still);
+    if b.from_capture && placement_root_from_key(true, action) {
+        let (a, z) = (&clip.keys[b.src], &clip.keys[b.dst]);
+        pose.root = Vec3::from(a.root).lerp(Vec3::from(z.root), b.f);
+        if still {
+            pose.root.z = 0.0;
+        }
+    }
+    Some((pose, b))
+}
+
 /// The placement's sampling: the body's clip at its current clock, posed on
 /// `frame`, is put on the parts before the feet are snapped to the ground.
 /// A root without an animator or clip keeps the posed model it was built
 /// from. The original's placement routine runs its living sampler once
-/// before it moves the particles to the placed pose.
+/// before it moves the particles to the placed pose; the first clip is
+/// sampled by the pose-only key pick ([`placement_pose`]).
 #[allow(clippy::too_many_arguments)]
 fn spawn_pose(
     root: Entity,
@@ -237,10 +263,11 @@ fn spawn_pose(
     let Some(clip) = motions.clip(anim, &anim.action) else {
         return;
     };
-    let still = in_place(motions.0.action_index(&anim.action));
-    let Some(pose) = ClipPose::at(clip, anim.time, stature.map_or(1.0, |s| s.0), still) else {
+    let action = motions.0.action_index(&anim.action);
+    let Some((pose, _)) = placement_pose(anim, clip, action) else {
         return;
     };
+    let pose = pose.scaled(stature.map_or(1.0, |s| s.0));
     let worlds: Vec<Affine3A> = found
         .iter()
         .map(|&(entity, _, _)| frame * clip_pose(entity, root, &pose, parents, nodes))
@@ -328,21 +355,9 @@ fn original_spawn_pose<L: Level + ?Sized>(
         return;
     };
     let action = motions.0.action_index(&anim.action);
-    let still = in_place(action);
-    let capture_key = anim.capture.is_some().then_some(anim.capture_key);
-    let Some(pick) = placement_bracket(clip, anim.time, anim.blend, clip.loops(), capture_key)
-    else {
+    let Some((pose, b)) = placement_pose(anim, clip, action) else {
         return;
     };
-    let b = pick.bracket;
-    let mut pose = anim.blend_keys(clip, &b, still);
-    if b.from_capture && placement_root_from_key(true, action) {
-        let (a, z) = (&clip.keys[b.src], &clip.keys[b.dst]);
-        pose.root = Vec3::from(a.root).lerp(Vec3::from(z.root), b.f);
-        if still {
-            pose.root.z = 0.0;
-        }
-    }
     let pose = pose.scaled(stature.map_or(1.0, |s| s.0));
     let posed: Vec<Affine3A> = found
         .iter()
@@ -1350,6 +1365,36 @@ pub(crate) mod tests {
     use exa_formats::rsq::{Action, Clip, Key, MotionSet, Moveset};
     use exa_physics::Physics;
     use exa_physics::body::{BodyPlugin, BodySystems, BodyTicks};
+
+    /// The placement samples its first clip by the pose-only key pick:
+    /// the bracket is taken after the blend (which the living sampler's
+    /// plain sample does not subtract), so a start with a blend samples
+    /// an earlier pair of keys.
+    #[test]
+    fn the_placement_samples_the_first_clip_by_the_key_pick() {
+        let key = |time: f32, y: f32| Key {
+            time,
+            root: [0.0, y, 0.0],
+            rotations: vec![[0.0, 0.0, 0.0, 1.0]],
+            flags: vec![0],
+        };
+        let clip = Clip {
+            mode: 3,
+            keys: vec![key(0.0, 1.0), key(15.0, 2.0), key(30.0, 1.0)],
+        };
+        let mut anim = Animator::new("Default", "Idle");
+        anim.time = 10.0;
+        anim.blend = 4.0;
+        let (pose, _) = placement_pose(&anim, &clip, None).unwrap();
+        let b = placement_bracket(&clip, 10.0, 4.0, clip.loops(), None)
+            .unwrap()
+            .bracket;
+        assert_eq!(pose, anim.blend_keys(&clip, &b, false));
+        // The plain sample ignores the blend: a different pair, a
+        // different pose.
+        let plain = ClipPose::at(&clip, 10.0, 1.0, false).unwrap();
+        assert_ne!(pose.root, plain.root);
+    }
 
     /// The original spawn's first placement (the pose lowered by the
     /// pelvis's posed height onto the frame raised by that height) puts every

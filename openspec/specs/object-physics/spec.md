@@ -622,6 +622,17 @@ Each body root SHALL keep a link-iteration count: 2 for a plain body plus one fo
 - **WHEN** a prop with a child and a grandchild registers
 - **THEN** its count is 4, reached at pass 4 and not at pass 3
 
+### Requirement: Link-iteration ramp
+Each living body tick SHALL set a dormant character's link-iteration count to 5, and otherwise raise the count by one toward round((1 − 0.25·feral level)·1660/83), computed in single precision and rounded half to even, or lower it to that target at once.
+
+#### Scenario: A half-feral character
+- **WHEN** a living character of feral level 0.5 with a count of 20 is ticked, and then ticked again from 17
+- **THEN** its count becomes 18 both times (17.5 rounds half to even)
+
+#### Scenario: A dormant statue
+- **WHEN** a dormant character with a count of 20 is ticked
+- **THEN** its count is 5
+
 ### Requirement: Door leaf body
 A placed door's hinged leaf SHALL register as a hung body with mobility 0.05, the placement's word as its stored word, the handle at (−150·sign cm, the node box's centre height, 0), and a sibling node's leaf as its partner, both taking pair layer bits `0x3000`. It SHALL start shut when its stop reads within 0.04 rad of the shut angle.
 
