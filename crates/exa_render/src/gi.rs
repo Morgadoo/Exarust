@@ -54,6 +54,7 @@ impl Plugin for GiPlugin {
                 ExtractResourcePlugin::<GiTextures>::default(),
                 ExtractResourcePlugin::<GiPendingTextures>::default(),
                 ExtractResourcePlugin::<GiOccupancyPatches>::default(),
+                ExtractResourcePlugin::<GiTextureCache>::default(),
                 ExtractResourcePlugin::<GiLights>::default(),
             ))
             .add_systems(
@@ -1425,7 +1426,8 @@ fn light_image(size: UVec3, data: Vec<u8>) -> Image {
 /// steps all nine every frame; Exarust steps one and keeps the others'
 /// light as it was). A block's occupancy is always uploaded fresh from the
 /// world's cells.
-#[derive(Resource, Default)]
+#[derive(Resource, Default, Clone, ExtractResource)]
+#[extract_app(RenderApp)]
 pub struct GiTextureCache {
     entries: Vec<CachedGiTextures>,
     /// The frame counter that ranks the entries for eviction.
@@ -1433,6 +1435,7 @@ pub struct GiTextureCache {
 }
 
 /// The light textures one block keeps while the camera is elsewhere.
+#[derive(Clone)]
 struct CachedGiTextures {
     sector: IVec2,
     dims: UVec3,
@@ -1492,6 +1495,14 @@ impl GiTextureCache {
                 None => break,
             }
         }
+    }
+
+    /// The resident block at `sector` with `dims`, if it is kept.
+    pub fn resident(&self, sector: IVec2, dims: UVec3) -> Option<Handle<Image>> {
+        self.entries
+            .iter()
+            .find(|e| e.sector == sector && e.dims == dims)
+            .map(|e| e.light.clone())
     }
 
     /// The resident blocks, oldest use first.
@@ -2144,9 +2155,22 @@ fn give_materials_gi(
     }
 }
 
+/// The margin copy's parameters: the block's dims, the destination strip and
+/// the UV offset into the neighbour.
+#[derive(Clone, Copy, Default, ShaderType)]
+struct GiBlitParams {
+    dims: UVec4,
+    strip: UVec4,
+    offset: Vec4,
+}
+
 #[derive(Resource)]
 struct GiPipeline {
     layout: BindGroupLayoutDescriptor,
+    /// The margin copy's own layout and pipeline (`gi_blit_f` in the
+    /// original; `margin_blit` in `gi.wesl`).
+    blit_layout: BindGroupLayoutDescriptor,
+    blit_pipeline: CachedComputePipelineId,
     sampler: Sampler,
     cube_sampler: Sampler,
     pipeline: CachedComputePipelineId,
@@ -2218,12 +2242,32 @@ fn init_pipeline(
             ),
         ),
     );
+    let shader =
+        assets.load(AssetPath::from_path_buf(embedded_path!("gi.wesl")).with_source("embedded"));
     let pipeline = cache.queue_compute_pipeline(ComputePipelineDescriptor {
         label: Some("exa_gi_propagate".into()),
         layout: vec![layout.clone()],
-        shader: assets
-            .load(AssetPath::from_path_buf(embedded_path!("gi.wesl")).with_source("embedded")),
+        shader: shader.clone(),
         entry_point: Some("propagate".into()),
+        ..default()
+    });
+    let blit_layout = BindGroupLayoutDescriptor::new(
+        "exa_gi_blit",
+        &BindGroupLayoutEntries::sequential(
+            ShaderStages::COMPUTE,
+            (
+                texture_3d(TextureSampleType::Float { filterable: true }),
+                sampler(SamplerBindingType::Filtering),
+                texture_storage_3d(TextureFormat::Rgba8Unorm, StorageTextureAccess::WriteOnly),
+                uniform_buffer::<GiBlitParams>(false),
+            ),
+        ),
+    );
+    let blit_pipeline = cache.queue_compute_pipeline(ComputePipelineDescriptor {
+        label: Some("exa_gi_margin_blit".into()),
+        layout: vec![blit_layout.clone()],
+        shader,
+        entry_point: Some("margin_blit".into()),
         ..default()
     });
     let (cube_texture, dummy_cube) = depth_texture(
@@ -2235,6 +2279,8 @@ fn init_pipeline(
     );
     commands.insert_resource(GiPipeline {
         layout,
+        blit_layout,
+        blit_pipeline,
         sampler: device.create_sampler(&SamplerDescriptor {
             mag_filter: FilterMode::Linear,
             min_filter: FilterMode::Linear,
@@ -2257,6 +2303,16 @@ fn init_pipeline(
 #[derive(Resource)]
 struct GiBindGroup {
     bind_group: bevy::render::render_resource::BindGroup,
+    /// One bind group per resident neighbour whose margin this block takes.
+    blits: Vec<GiMarginCopy>,
+}
+
+/// One neighbour's margin copy: its region and its bind group.
+struct GiMarginCopy {
+    blit: MarginBlit,
+    bind_group: bevy::render::render_resource::BindGroup,
+    /// Kept alive with the bind group that points into it.
+    _uniform: UniformBuffer<GiBlitParams>,
 }
 
 /// The warm-up of the volume being lit: its serial, its length and the
@@ -2340,6 +2396,7 @@ fn prepare_bind_group(
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
     mut owed: ResMut<GiOwed>,
+    texture_cache: Option<Res<GiTextureCache>>,
     mut buffer: Local<Option<UniformBuffer<GiParams>>>,
 ) {
     let textures = pending.as_ref().map(|p| &p.0).or(textures.as_deref());
@@ -2358,6 +2415,8 @@ fn prepare_bind_group(
     let Some(shape_texture) = images.get(&textures.shape_texture) else {
         return;
     };
+    let empty_cache = GiTextureCache::default();
+    let texture_cache = texture_cache.as_deref().unwrap_or(&empty_cache);
     let cube = images.get(&crate::cube_shadows::CUBE_POOL);
     let mut entries = [GiLight::default(); MAX_GROUP_LIGHTS];
     for (slot, l) in entries.iter_mut().zip(&lights.lights) {
@@ -2440,7 +2499,56 @@ fn prepare_bind_group(
             left: textures.warm_up,
         };
     }
-    commands.insert_resource(GiBindGroup { bind_group });
+    // The active block's margins take each resident neighbour's light: one
+    // copy per neighbouring block the manager keeps (the original's loop
+    // over its block array at the block grid's ±1). A block being warmed
+    // takes none until it is bound.
+    let mut blits = Vec::new();
+    if pending.is_none() {
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                if dx == 0 && dz == 0 {
+                    continue;
+                }
+                let sector = textures.sector + IVec2::new(dx * SECTORS as i32, dz * SECTORS as i32);
+                let Some(source) = texture_cache.resident(sector, textures.dims) else {
+                    continue;
+                };
+                let Some(source) = images.get(&source) else {
+                    continue;
+                };
+                let Some(blit) = margin_blit(textures.dims, dx, dz) else {
+                    continue;
+                };
+                let value = GiBlitParams {
+                    dims: textures.dims.extend(blit.slices),
+                    strip: UVec4::new(blit.lo.x, blit.lo.y, blit.hi.x, blit.hi.y),
+                    offset: blit.offset.extend(0.0).extend(0.0),
+                };
+                let mut uniform = UniformBuffer::from(value);
+                uniform.write_buffer(&device, &queue);
+                let Some(binding) = uniform.binding() else {
+                    continue;
+                };
+                let bind_group = device.create_bind_group(
+                    "exa_gi_blit",
+                    &cache.get_bind_group_layout(&pipeline.blit_layout),
+                    &BindGroupEntries::sequential((
+                        &source.texture_view,
+                        &pipeline.sampler,
+                        &scratch.texture_view,
+                        binding,
+                    )),
+                );
+                blits.push(GiMarginCopy {
+                    blit,
+                    bind_group,
+                    _uniform: uniform,
+                });
+            }
+        }
+    }
+    commands.insert_resource(GiBindGroup { bind_group, blits });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2507,6 +2615,29 @@ fn propagate(
                 size.height.div_ceil(4),
                 size.depth_or_array_layers.div_ceil(4),
             );
+        }
+        // The active block's margins take its resident neighbours' light,
+        // as the original copies a neighbour's margin into the block it is
+        // about to inject. The step cleared them; the copies fill them.
+        if let Some(blit_pipeline) = cache.get_compute_pipeline(pipeline.blit_pipeline) {
+            for copy in &bind_group.blits {
+                let width = copy.blit.hi.x.saturating_sub(copy.blit.lo.x);
+                let height = copy.blit.hi.y.saturating_sub(copy.blit.lo.y);
+                if width == 0 || height == 0 || copy.blit.slices == 0 {
+                    continue;
+                }
+                let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
+                    label: Some("exa_gi_margin_blit"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(blit_pipeline);
+                pass.set_bind_group(0, &copy.bind_group, &[]);
+                pass.dispatch_workgroups(
+                    width.div_ceil(4),
+                    height.div_ceil(4),
+                    copy.blit.slices.div_ceil(4),
+                );
+            }
         }
         // The new step becomes the light the surfaces and the next step read.
         encoder.copy_texture_to_texture(
@@ -2855,6 +2986,31 @@ mod tests {
         assert_eq!(quad[1], Vec3::new(8.0 / 256.0, 8.0 / 256.0, -0.5 / 64.0));
         assert_eq!(quad[2], Vec3::new(8.0 / 256.0, 248.0 / 256.0, -0.5 / 64.0));
         assert_eq!(quad[3], Vec3::new(0.0, 248.0 / 256.0, -0.5 / 64.0));
+    }
+
+    #[test]
+    fn a_margin_copy_reads_the_neighbours_same_world_texel() {
+        // The blit samples the neighbour at the destination's own texture
+        // coordinates plus the offset, which must be the same world texel.
+        let dims = UVec3::new(256, 256, 64);
+        for (dx, dz, inside) in [(-1, 0, 0u32), (1, 0, 255), (0, -1, 0), (0, 1, 255)] {
+            let blit = margin_blit(dims, dx, dz).unwrap();
+            let (dest, offset, step) = if dx != 0 {
+                (inside, blit.offset.x, -dx * 240)
+            } else {
+                (inside, blit.offset.y, -dz * 240)
+            };
+            let n = if dx != 0 { dims.x } else { dims.y } as f32;
+            let source = (dest as f32 + 0.5) / n + offset;
+            // The same texel in the neighbour, 240 voxels over.
+            let world = (dest as f32 + step as f32 + 0.5) / n;
+            assert!(
+                (source - world).abs() < 1e-6,
+                "{dx},{dz}: {source} != {world}"
+            );
+        }
+        // Slices: every one but the top is copied.
+        assert_eq!(margin_blit(dims, -1, 0).unwrap().slices, 63);
     }
 
     #[test]
@@ -3644,6 +3800,10 @@ mod tests {
         assert_eq!(
             size_of("GiParams"),
             <GiParams as ShaderType>::min_size().get()
+        );
+        assert_eq!(
+            size_of("GiBlit"),
+            <GiBlitParams as ShaderType>::min_size().get()
         );
     }
 }

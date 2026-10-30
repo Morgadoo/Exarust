@@ -369,6 +369,40 @@ fn sky_light(id: vec3<u32>, occ: f32) -> f32 {
     return select(0.0, occ, id.z >= floor);
 }
 
+// A neighbour block's margin copy (the original's `gi_blit`): the block
+// being injected takes one margin column or row from a resident neighbour's
+// light texture, at the same world position (the destination's own texture
+// coordinates plus `offset`), every slice but the top one.
+struct GiBlit {
+    // The block's texels along X, Z and Y, and the slices to copy.
+    dims: vec4<u32>,
+    // The destination strip: lo X, lo Z, hi X, hi Z.
+    strip: vec4<u32>,
+    // Added to the destination's texture coordinates to read the neighbour.
+    offset: vec4<f32>,
+}
+
+@group(0) @binding(0) var blit_source: texture_3d<f32>;
+@group(0) @binding(1) var blit_sampler: sampler;
+@group(0) @binding(2) var blit_target: texture_storage_3d<rgba8unorm, write>;
+@group(0) @binding(3) var<uniform> blit: GiBlit;
+
+@compute @workgroup_size(4, 4, 4)
+fn margin_blit(@builtin(global_invocation_id) id: vec3<u32>) {
+    let width = blit.strip.z - blit.strip.x;
+    let height = blit.strip.w - blit.strip.y;
+    if id.x >= width || id.y >= height || id.z >= blit.dims.w {
+        return;
+    }
+    let dest = vec3<u32>(blit.strip.x + id.x, blit.strip.y + id.y, id.z);
+    let uv = (vec2<f32>(dest.xy) + 0.5) / vec2<f32>(blit.dims.xy) + blit.offset.xy;
+    let r = (f32(id.z) + 0.5) / f32(blit.dims.z);
+    let src = textureSampleLevel(blit_source, blit_sampler, vec3(uv, r), 0.0);
+    // The neighbour is sampled through its sRGB view; the target stores
+    // sRGB-encoded bytes, as the propagation does.
+    textureStore(blit_target, vec3<i32>(dest), vec4(to_srgb(src.rgb), src.a));
+}
+
 @compute @workgroup_size(4, 4, 4)
 fn propagate(@builtin(global_invocation_id) id: vec3<u32>) {
     let dims = textureDimensions(light_next);
