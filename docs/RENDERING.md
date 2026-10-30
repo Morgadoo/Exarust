@@ -1510,6 +1510,20 @@ in world space there too):
   the hardware's approximate reciprocal square root (the plane is rescaled
   by its y, so only rounding differs).
   A flat floor at height 0 fills the slice from −20 to 0 cm.
+- A floor-set node gets runtime points at load where the original's
+  floor-set loader generates them: reached from the centre-floor variants
+  (`+FM…`), whose direct children named `#…`, `+…` or `[…]` are skipped
+  with their subtrees (deeper nodes are not name-tested), with bit
+  `0x10000` or bit `0x8` of its second flag word set. The general surface
+  generator runs on its own triangles in centimetres at parameter 20 (a
+  4 cm step) and greedy-covers them
+  (`exa_physics::voxel::generated_surface_points`), replacing any stored
+  chunk; the sphere query is a triangle tree over the same triangles,
+  standing in for the node's collision query. A flagged instance's master
+  is generated and its points shared. Wall and special-tile pieces take
+  none. The original also generates points for a character's body parts
+  when their physics bodies are made; Exarust's characters carry no GI
+  points, so that trigger is not run.
 - Each column remembers the lowest slice a point fell in. A sector's floor
   is the lowest over all its 30 × 30 columns.
 

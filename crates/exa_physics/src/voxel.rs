@@ -741,6 +741,61 @@ pub fn shared_surface_points(
     Arc::new(surface_points(bounds, p, inside, cover))
 }
 
+/// The parameter every runtime call of the surface generator passes: 20,
+/// in the centimetres the original's meshes and its generator work in, so
+/// the sampling step is 4 cm.
+pub const GENERATED_POINT_PARAMETER: f32 = 20.0;
+
+/// The centimetres per metre the original's generators work in.
+const CM_PER_M: f32 = 100.0;
+
+/// The second flag word bits that make a floor-set child node get runtime
+/// surface points: the original generates them when either bit `0x10000`
+/// or bit `0x8` is set on the node, and for neither bit otherwise.
+pub const GENERATED_POINT_FLAGS2: u32 = 0x0001_0008;
+
+/// Whether a floor-set child node gets its surface points generated at
+/// load: the original's floor-set walk runs the generator for a
+/// class-`0x89` node whose second flag word has bit `0x10000` or bit `0x8`
+/// set (the walk itself is `exa_assets`'s, from the centre-floor variants).
+pub fn floor_set_node_generates(flags2: u32) -> bool {
+    flags2 & GENERATED_POINT_FLAGS2 != 0
+}
+
+/// The surface generator run at load on a mesh that ships without a GI
+/// point chunk, in the mesh's own space (metres).
+///
+/// The original's generator works in centimetres at
+/// [`GENERATED_POINT_PARAMETER`]; Exarust's mesh positions and bounds are
+/// metres, so the bounds and triangles are scaled up, sampled, and the
+/// points scaled back. The scaling back is a guess: the RFC stores its
+/// coordinates in centimetres and the reader divides by 100, so recovering
+/// them is within a float ulp rather than bit for bit.
+///
+/// The point query is [`MeshQuery`] over the given triangles, the
+/// stand-in for the node's collision query; see [`mesh_touches`]'s note.
+pub fn generated_surface_points(
+    bounds: Bounds,
+    triangles: &[[Vec3; 3]],
+    cover: SurfaceCover,
+) -> Vec<Vec3> {
+    let bounds = Bounds {
+        centre: bounds.centre * CM_PER_M,
+        half_extents: bounds.half_extents * CM_PER_M,
+    };
+    let scaled: Vec<[Vec3; 3]> = triangles.iter().map(|t| t.map(|p| p * CM_PER_M)).collect();
+    let query = MeshQuery::new(&scaled);
+    surface_points(
+        bounds,
+        GENERATED_POINT_PARAMETER,
+        |point, radius| query.touches(point, radius),
+        cover,
+    )
+    .into_iter()
+    .map(|p| p / CM_PER_M)
+    .collect()
+}
+
 /// Whether a sphere touches a mesh given as triangles: the query the
 /// surface generator makes through a node's collision data.
 ///
@@ -754,6 +809,146 @@ pub fn mesh_touches(triangles: &[[Vec3; 3]], centre: Vec3, radius: f32) -> bool 
     triangles
         .iter()
         .any(|t| closest_distance_squared(*t, centre) <= limit)
+}
+
+/// [`mesh_touches`] over a triangle list with a bounding-volume tree, for
+/// the millions of queries one runtime generation makes.
+///
+/// The tree changes only the cost, never the answer: a node whose box is
+/// farther than the radius is skipped, and a leaf tests its triangles with
+/// the same closest-point predicate as [`mesh_touches`]. The original
+/// reaches the same triangles through its node's kd-tree.
+#[derive(Debug, Clone)]
+pub struct MeshQuery {
+    /// Leaves are `[start, end)` ranges into `order`.
+    nodes: Vec<QueryNode>,
+    order: Vec<u32>,
+    triangles: Vec<[Vec3; 3]>,
+}
+
+#[derive(Debug, Clone)]
+struct QueryNode {
+    min: Vec3,
+    max: Vec3,
+    start: u32,
+    end: u32,
+    /// The two children's node indices; `None` for a leaf.
+    children: Option<[u32; 2]>,
+}
+
+/// The most triangles a leaf keeps before the tree splits it.
+const QUERY_LEAF: usize = 4;
+
+impl MeshQuery {
+    /// Builds the tree over `triangles`.
+    pub fn new(triangles: &[[Vec3; 3]]) -> Self {
+        let mut order: Vec<u32> = (0..triangles.len() as u32).collect();
+        let mut nodes = Vec::new();
+        if !triangles.is_empty() {
+            let len = order.len();
+            build_query_node(&mut nodes, &mut order, triangles, 0, len);
+        }
+        Self {
+            nodes,
+            order,
+            triangles: triangles.to_vec(),
+        }
+    }
+
+    /// Whether any triangle's closest point is within `radius` of `centre`.
+    pub fn touches(&self, centre: Vec3, radius: f32) -> bool {
+        if self.nodes.is_empty() {
+            return false;
+        }
+        let limit = radius * radius;
+        let mut stack = vec![0u32];
+        while let Some(at) = stack.pop() {
+            let Some(node) = self.nodes.get(at as usize) else {
+                continue;
+            };
+            if box_distance_squared(node.min, node.max, centre) > limit {
+                continue;
+            }
+            match node.children {
+                Some(children) => stack.extend(children),
+                None => {
+                    for &i in &self.order[node.start as usize..node.end as usize] {
+                        if let Some(t) = self.triangles.get(i as usize)
+                            && closest_distance_squared(*t, centre) <= limit
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+}
+
+/// Appends a node covering `order[start..end]` and returns its index.
+fn build_query_node(
+    nodes: &mut Vec<QueryNode>,
+    order: &mut [u32],
+    triangles: &[[Vec3; 3]],
+    start: usize,
+    end: usize,
+) -> u32 {
+    let mut min = Vec3::splat(f32::INFINITY);
+    let mut max = Vec3::splat(f32::NEG_INFINITY);
+    for &i in &order[start..end] {
+        if let Some(t) = triangles.get(i as usize) {
+            for p in t {
+                min = min.min(*p);
+                max = max.max(*p);
+            }
+        }
+    }
+    let at = nodes.len() as u32;
+    nodes.push(QueryNode {
+        min,
+        max,
+        start: start as u32,
+        end: end as u32,
+        children: None,
+    });
+    if end - start <= QUERY_LEAF {
+        return at;
+    }
+    let axis = {
+        let d = max - min;
+        if d.x >= d.y && d.x >= d.z {
+            0
+        } else if d.y >= d.z {
+            1
+        } else {
+            2
+        }
+    };
+    let mid = (start + end) / 2;
+    order[start..end].select_nth_unstable_by(mid - start, |&a, &b| {
+        let ca = triangle_centre(triangles, a)[axis];
+        let cb = triangle_centre(triangles, b)[axis];
+        ca.total_cmp(&cb)
+    });
+    let left = build_query_node(nodes, order, triangles, start, mid);
+    let right = build_query_node(nodes, order, triangles, mid, end);
+    nodes[at as usize].children = Some([left, right]);
+    at
+}
+
+/// A triangle's centroid, for the tree's split.
+fn triangle_centre(triangles: &[[Vec3; 3]], i: u32) -> Vec3 {
+    match triangles.get(i as usize) {
+        Some([a, b, c]) => (*a + *b + *c) / 3.0,
+        None => Vec3::ZERO,
+    }
+}
+
+/// The squared distance from `p` to a box, zero inside it.
+fn box_distance_squared(min: Vec3, max: Vec3, p: Vec3) -> f32 {
+    let outside = (min - p).max(p - max).max(Vec3::ZERO);
+    outside.length_squared()
 }
 
 /// The squared distance from `p` to the closest point of a triangle.
@@ -854,15 +1049,21 @@ fn clean_and_list(grid: &mut [u8], dims: [usize; 3]) -> Vec<SurfaceCell> {
                     }
                 }
                 let cell = [x as u16, y as u16, z as u16];
-                list.insert(list_position(&list, count), SurfaceCell { cell, count });
+                list.push(SurfaceCell { cell, count });
             }
         }
     }
+    // The original inserts each cell after every equal count (a binary
+    // search, then a walk past equals): an ascending stable sort of the scan
+    // order gives the same list without the quadratic shifting.
+    list.sort_by_key(|c| c.count);
     list
 }
 
 /// Where a count goes in the ascending list: after every equal count, as
-/// the original's binary search and its walk past equals do.
+/// the original's binary search and its walk past equals do. The reference
+/// the stable sort in [`clean_and_list`] is checked against.
+#[cfg(test)]
 fn list_position(list: &[SurfaceCell], count: u16) -> usize {
     let mut low = 0i64;
     let mut high = list.len() as i64 - 1;

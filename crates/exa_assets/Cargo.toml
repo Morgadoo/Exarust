@@ -8,6 +8,7 @@ version.workspace = true
 [dependencies]
 bevy.workspace = true
 exa_formats.workspace = true
+exa_physics.workspace = true
 exa_rpk.workspace = true
 exa_render.workspace = true
 

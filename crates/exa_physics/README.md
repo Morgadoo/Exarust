@@ -669,7 +669,14 @@ rigid-body mesh (`VoxelMap`: the 0.02 resolution, unit scale and caller's
 tag; the box with a one-cell border, one word per cell, Z fastest; two fill
 bytes per cell; the extracted spheres; the array release that frees the
 cells and fill bytes but keeps the spheres) and the two routines that
-sample a mesh into a fine grid. `volume` is the dynamics volume: the
+sample a mesh into a fine grid. The load-time rules sit beside them: a
+floor-set child gets generated points when bit `0x10000` or bit `0x8` of
+its second flag word is set, and `generated_surface_points` runs the
+surface generator in the original's centimetres at its runtime parameter
+20 (a 4 cm step) and returns points in the mesh's space, answering its
+sphere queries through `MeshQuery`, a triangle tree that gives the plain
+closest-point query's answers. `volume` is the
+dynamics volume: the
 shape builders' fit over that map, in their order (`volume::fit`). The
 grid is the mesh's stored box: the longest half extent gets
 `round(half · resolution)` cells (ties to even), made even, at least 6 (8

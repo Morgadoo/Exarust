@@ -557,9 +557,9 @@ fn shipped_levels() {
             NavStats {
                 width: 640,
                 depth: 800,
-                columns_by_spans: [191_168, 318_470, 2362, 0],
-                floors: [220_850, 2279],
-                passable: [220_784, 2279],
+                columns_by_spans: [190_536, 319_102, 2362, 0],
+                floors: [221_482, 2279],
+                passable: [221_418, 2279],
                 sky: [99_982, 83],
             },
             // The height and mask planes now decode with the original's
@@ -572,7 +572,10 @@ fn shipped_levels() {
             // the level saved them, and their meshes raise floors rather
             // than mark voxels: the start's rooms are closed by their
             // doors, whose leaves raise the doorways' floors.
-            46_113,
+            // The floor sets' flagged pieces (gefs_uwa01's box, gefs_uwb02's
+            // chute) now carry their runtime-generated points, as the
+            // original's floor-set load gives them, adding 632 floor columns.
+            46_225,
             682,
         ),
     ];
@@ -653,7 +656,8 @@ fn shipped_levels() {
                 built.movers.clear();
                 let open = built.build();
                 let r_open = reach(&open, start);
-                assert_eq!(r_open.len(), 195_049);
+                // 195 049 before the floor sets' generated points.
+                assert_eq!(r_open.len(), 195_709);
                 let (sx, sz) = open.cell_at(Vec3::new(8.9, -1.0, 64.0)).unwrap();
                 assert!(r_open.iter().any(|&(x, z, _)| (x, z) == (sx, sz)));
                 // Over its 477 closed rooms only the walls' edges have floors
