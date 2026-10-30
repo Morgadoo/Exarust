@@ -1243,26 +1243,32 @@ pub struct MarginBlit {
 }
 
 /// The margin copy from block `(dx, dz)`'s neighbour (each −1, 0 or 1, not
-/// both 0): a one-sector margin column or row on that side, the interior on
-/// the other axis, and the original's UV offset of ∓240/256. A diagonal
-/// neighbour fills both margins.
+/// both 0), from the original's fixed table of texture fractions: on that
+/// side the strip `0..1/32` (or `31/32..1`) with the UV offset ±15/16, on
+/// the other axis the interior `1/32..31/32` with none. The fractions do not
+/// depend on the block's size: a 256-wide block copies 8 columns from 240
+/// over, a 128-wide one 4 columns from 120 over. A diagonal neighbour fills
+/// both margins.
 pub fn margin_blit(dims: UVec3, dx: i32, dz: i32) -> Option<MarginBlit> {
     if dx == 0 && dz == 0 {
         return None;
     }
-    let m = 8u32;
-    let columns = |d: i32, size: u32| match d.signum() {
-        -1 => 0..m,
-        1 => size - m..size,
-        _ => m..size - m,
-    };
-    let xs = columns(dx, dims.x);
-    let zs = columns(dz, dims.y);
-    let fraction = (dims.x as f32 - 16.0) / dims.x as f32;
+    // Per side (−1, 0, 1): the strip's low and high fraction and the offset.
+    const TABLE: [(f32, f32, f32); 3] = [
+        (0.0, 0.031_25, 0.9375),
+        (0.031_25, 0.968_75, 0.0),
+        (0.968_75, 1.0, -0.9375),
+    ];
+    let side = |d: i32| TABLE[(d.signum() + 1) as usize];
+    // A quad edge at fraction f covers the texels whose centres lie below
+    // f·size; the table's fractions are whole texels at power-of-two sizes.
+    let texel = |f: f32, size: u32| (f * size as f32).round() as u32;
+    let (x0, x1, ox) = side(dx);
+    let (z0, z1, oz) = side(dz);
     Some(MarginBlit {
-        lo: UVec2::new(xs.start, zs.start),
-        hi: UVec2::new(xs.end, zs.end),
-        offset: Vec2::new(-dx as f32 * fraction, -dz as f32 * fraction),
+        lo: UVec2::new(texel(x0, dims.x), texel(z0, dims.y)),
+        hi: UVec2::new(texel(x1, dims.x), texel(z1, dims.y)),
+        offset: Vec2::new(ox, oz),
         slices: dims.z.saturating_sub(1),
     })
 }
@@ -1860,7 +1866,7 @@ fn gather_lights(
             textures.origin,
             textures.extent,
             textures.voxel,
-            sun_active,
+            sky_active,
         );
         return;
     }
@@ -1909,19 +1915,19 @@ fn gather_lights(
         textures.origin,
         textures.extent,
         textures.voxel,
-        sun_active,
+        sky_active,
     );
 }
 
 /// Orders a group's lights as the injection does just before it draws the
-/// group: the first light whose shadow is a 2D matrix (`kind` 2: the sun, a
-/// spot) at or after index 2 moves to slot 1 when the sun is up (it owns
-/// slot 0), or the first at or after index 1 moves to slot 0 when it is
-/// down. The scan checks the last light too, as the original's do-while
+/// group: the first light whose shadow is a 2D matrix (`kind` 2: the sky
+/// light, a spot) at or after index 2 moves to slot 1 when the sky light is
+/// up (it owns slot 0), or the first at or after index 1 moves to slot 0
+/// when it is down. The scan checks the last light too, as the original's do-while
 /// does; a group shorter than the start needs no scan.
-pub fn plan_light_slots(lights: &mut [u32], matrix_shadow: impl Fn(u32) -> bool, sun_up: bool) {
+pub fn plan_light_slots(lights: &mut [u32], matrix_shadow: impl Fn(u32) -> bool, sky_up: bool) {
     let n = lights.len();
-    if sun_up {
+    if sky_up {
         if n < 3 {
             return;
         }
@@ -1955,7 +1961,7 @@ fn push_groups(
     origin: Vec3,
     extent: Vec3,
     voxel: f32,
-    sun_up: bool,
+    sky_up: bool,
 ) {
     // `extent` is in world axes (X, height, Z): the texture's second axis
     // is world Z, its third the height over the block's width.
@@ -1982,7 +1988,7 @@ fn push_groups(
             .copied()
             .filter(|id| sources.contains_key(id))
             .collect();
-        plan_light_slots(&mut ids, |id| id == SUN_LIGHT_ID, sun_up);
+        plan_light_slots(&mut ids, |id| id == SKY_LIGHT_ID, sky_up);
         for id in ids {
             let Some(source) = sources.get(&id) else {
                 continue;
@@ -3042,6 +3048,15 @@ mod tests {
         }
         // Slices: every one but the top is copied.
         assert_eq!(margin_blit(dims, -1, 0).unwrap().slices, 63);
+        // The table is in fractions: a 128-wide block copies 4 columns,
+        // still offset by 15/16.
+        let small = margin_blit(UVec3::new(128, 128, 16), 1, 0).unwrap();
+        assert_eq!(
+            (small.lo, small.hi),
+            (UVec2::new(124, 4), UVec2::new(128, 124))
+        );
+        assert_eq!(small.offset, Vec2::new(-0.9375, 0.0));
+        assert_eq!(small.slices, 15);
     }
 
     #[test]
@@ -3693,14 +3708,14 @@ mod tests {
     }
 
     #[test]
-    fn a_matrix_shadow_light_moves_to_the_sun_slots_place() {
+    fn a_matrix_shadow_light_moves_to_the_sky_slots_place() {
         let is_matrix = |id: u32| id == 99;
-        // Sun up: it owns slot 0, so the first matrix light from index 2
+        // Sky light up: it owns slot 0, so the first matrix light from index 2
         // moves to slot 1.
-        let mut ids = vec![SUN_LIGHT_ID, 7, 99, 11];
+        let mut ids = vec![SKY_LIGHT_ID, 7, 99, 11];
         plan_light_slots(&mut ids, is_matrix, true);
-        assert_eq!(ids, vec![SUN_LIGHT_ID, 99, 7, 11]);
-        // Index 1 is never scanned while the sun is up.
+        assert_eq!(ids, vec![SKY_LIGHT_ID, 99, 7, 11]);
+        // Index 1 is never scanned while the sky light is up.
         let mut ids = vec![5, 99, 9];
         plan_light_slots(&mut ids, is_matrix, true);
         assert_eq!(ids, vec![5, 99, 9]);
