@@ -860,19 +860,27 @@ pub fn translate_points(points: (Vec3, Vec3), by: Vec3) -> (Vec3, Vec3) {
     (points.0 + by, points.1 + by)
 }
 
-/// A camera controller's attachment to its viewport. The original detaches
-/// its controller while the editor's own drag handlers run: the camera node
-/// drops its back-pointer to the controller, the editor's press and move
-/// callbacks are installed, and the viewport's saved zoom handler is put
-/// back on attach. Exarust has no viewport callbacks, so the two observable
-/// flags are kept here and the handler swap is the caller's. A new
-/// controller is bound (the constructor points the node at it).
+/// A camera controller's attachment to its viewport. A preset installs its
+/// wheel, editor or free-camera handlers on the viewport and keeps the
+/// wheel handler it found there; detaching the controller clears the camera
+/// node's back-pointer, removes the editor's press and move handlers and
+/// puts the saved wheel handler back. Attaching only points the node at the
+/// controller again, so the preset's handlers are installed by the next
+/// preset application. Exarust has no viewport callbacks, so the slots and
+/// the two observable flags are kept here and the actual handler binding is
+/// the host's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Attachment {
     /// The editor's handlers are installed (`detached`).
     pub editing: bool,
     /// The camera node points back at this controller.
     pub bound: bool,
+    /// The viewport's installed handlers.
+    pub handlers: Handlers,
+    /// The wheel handler the controller found on the viewport before its own
+    /// preset replaced it, put back when it detaches. `None` until a preset
+    /// has been applied.
+    pub saved_wheel: Option<bool>,
 }
 
 impl Default for Attachment {
@@ -880,21 +888,41 @@ impl Default for Attachment {
         Self {
             editing: false,
             bound: true,
+            handlers: Handlers::default(),
+            saved_wheel: None,
         }
     }
 }
 
 impl Attachment {
+    /// Applies a preset's flags to the viewport: the wheel handler is set or
+    /// cleared, and the editor's or the free camera's press and move
+    /// handlers are installed as [`preset_handlers`] says. The viewport's
+    /// previous wheel handler is kept once, the first time a preset is
+    /// applied.
+    pub fn install(&mut self, flags: u32) {
+        if self.saved_wheel.is_none() {
+            self.saved_wheel = Some(self.handlers.wheel);
+        }
+        self.handlers = preset_handlers(flags);
+    }
+
     /// Sets the attachment to `detached` and returns whether it changed.
-    /// Detaching installs the editor's handlers and unbinds the node;
-    /// attaching binds it again. Setting the state it already has does
-    /// nothing, as the original's byte compare does.
+    /// Detaching removes the editor's press and move handlers, restores the
+    /// saved wheel handler and unbinds the camera node; attaching binds the
+    /// node again. Setting the state it already has does nothing, as the
+    /// original's byte compare does.
     pub fn set_detached(&mut self, detached: bool) -> bool {
         if self.editing == detached {
             return false;
         }
         self.editing = detached;
         self.bound = !detached;
+        if detached {
+            self.handlers.editor_press = false;
+            self.handlers.editor_move = false;
+            self.handlers.wheel = self.saved_wheel.unwrap_or(false);
+        }
         true
     }
 }
@@ -1542,6 +1570,47 @@ mod tests {
         assert!(attachment.set_detached(false));
         assert!(!attachment.editing && attachment.bound);
         assert!(!attachment.set_detached(false));
+    }
+
+    #[test]
+    fn a_detach_restores_the_wheels_first_handler() {
+        let mut attachment = Attachment::default();
+        // The first preset saves the empty wheel slot and installs its own.
+        attachment.install(0x200 | 0x10_0000);
+        assert_eq!(attachment.saved_wheel, Some(false));
+        assert!(attachment.handlers.wheel && attachment.handlers.editor_press);
+        // Detaching removes the editor handlers and puts the saved wheel
+        // back; the free camera's handlers are not touched.
+        assert!(attachment.set_detached(true));
+        assert!(!attachment.handlers.editor_press && !attachment.handlers.editor_move);
+        assert!(!attachment.handlers.wheel);
+        // A second preset does not overwrite the saved slot: the wheel and
+        // the free camera's press arrive, the saved wheel stays empty.
+        attachment.install(0x200);
+        assert_eq!(attachment.saved_wheel, Some(false));
+        assert!(attachment.handlers.wheel && attachment.handlers.free_press);
+        assert!(!attachment.handlers.editor_press);
+        // Attaching only binds the node again; a later detach restores the
+        // saved wheel over whatever the preset installed.
+        assert!(attachment.set_detached(false));
+        assert!(attachment.bound);
+        assert!(attachment.handlers.wheel);
+        assert!(attachment.set_detached(true));
+        assert!(!attachment.handlers.wheel);
+        // A controller that finds a wheel already on the viewport keeps it
+        // and puts it back when it detaches.
+        let mut other = Attachment {
+            handlers: Handlers {
+                wheel: true,
+                ..Handlers::default()
+            },
+            ..Attachment::default()
+        };
+        other.install(0x10_0000);
+        assert_eq!(other.saved_wheel, Some(true));
+        assert!(!other.handlers.wheel);
+        other.set_detached(true);
+        assert!(other.handlers.wheel);
     }
 
     #[test]
