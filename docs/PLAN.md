@@ -847,6 +847,8 @@ Round 40 tetra9: the body's clone slot and shared sphere arrays; review fixed a 
 
 Round 40 wireui: the use cursor, the GUI-to-world drop and the scripts' GameEvent background unlock run live; the light toggle reads the held part's lit mark, so a lit torch dropped on the doll goes out on the first press.
 
+Round 41 navigation4: the camera's integer tick clock, the orbit release snap and the exact grass scatter live; review fixed the cell side precision, the node-frame transform order, the callback slot and the redraw byte.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
@@ -1419,6 +1421,10 @@ Round 40 meshunits4: the mesh unit's swept-sphere test and the material texture 
 
 Round 40 vxgi7: GI shapes drawn on the GPU, resident blocks and neighbour margins; review fixed the margin fractions, the sky map matrix and the telebubble rounding.
 
+Round 41 particles4: particle quad frames, the fire host emissive driver and the arc rules; review fixed a transposed axes product, a key off-by-one, the first-frame light bit and invented arc loops.
+
+Round 41 shaders5: the super-sampling sub-frame fill as a tested model; review fixed the view matrix translation row, the clock order and the emissive word, and folded duplicate helpers.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
@@ -1545,6 +1551,8 @@ Round 39 motileai8: the NPC brain's hit reaction, grabbed-flag timeout and inves
 Round 39 thaumtree8: the power tree's bar and prompt hit tests follow the live interface scale, and the bar no longer fades with the wheel.
 
 Round 40 aiengage: brain-bearing characters now engage the player (the brain and duel tick name the foe by the player's fighter, not its root, so the target pass's pick matches); the player's arena roles follow the original (Unaligned in practice, the company's Faction 1 in the arena); combat-mode W moves a muscled body again (the capsule takes the footwork step's velocity). GPU: a brain duellist engages at tick 270 and lands 8 hits in 50 s.
+
+Round 41 combatant4: the duellist reads its foe's swing word, fighter blades and reach, and scores places by engagement level; review moved the foe lookups onto the fighter after round 40's foe fix.
 
 ### Phase 7 — Game modes and content
 
