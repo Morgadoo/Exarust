@@ -145,6 +145,15 @@ impl MemBlock {
         }
     }
 
+    /// Makes `bytes` the block's contents and marks it as resource memory:
+    /// the bytes belong to the resource, so it can only be released (a
+    /// resize to zero) and never reallocated.
+    pub fn adopt_resource(&mut self, bytes: Vec<u8>) {
+        self.size = bytes.len();
+        self.data = bytes;
+        self.kind = Kind::Resource;
+    }
+
     /// A copy of the block's contents in a fresh general block of its size.
     pub fn duplicate(&self) -> Self {
         let mut copy = Self::new();

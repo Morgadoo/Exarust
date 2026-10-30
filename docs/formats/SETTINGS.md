@@ -293,6 +293,12 @@ and capacity) and a cursor (`exa_formats::data_stream::DataStream`).
   its block on a bad tree.
 - **Exists**: `file_exists` is `GetFileAttributesA` — true for a file or a
   folder.
+- **Resources** (`read_resource`): a named payload of the executable under
+  the `RT_RCDATA` type (10), the name taken from a reference (an inline name
+  up to its first zero, a long name whole). On success the block holds the
+  bytes and is resource memory — only released, never reallocated — and a
+  missing resource leaves the block as it was. The resource directory walk
+  itself is the platform's and is passed in.
 - **Memory blocks** (`exa_formats::mem_block`): the block the reads fill
   has a logical size, an allocation size and a kind. A general block grows
   to exactly the size asked for and frees at zero; global memory is
@@ -307,5 +313,5 @@ and capacity) and a cursor (`exa_formats::data_stream::DataStream`).
   format goes in below the run of used formats at the end (never below
   index 1); lookup matches the 16 key bytes ignoring ASCII case.
 
-Not reproduced: reading resources out of the executable and the error
-log's switches.
+Not reproduced: the platform's resource-directory walk (the resource rule
+around it is `file_ref::read_resource`) and the error log's switches.

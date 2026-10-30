@@ -304,6 +304,32 @@ pub fn write_file(name: &[u8], block: &MemBlock) -> bool {
     write_whole_file(&path_of(name), block.bytes())
 }
 
+/// The resource type the executable's own payloads are stored as
+/// (`RT_RCDATA`).
+pub const RT_RCDATA: u16 = 10;
+
+/// Reads the named resource of `kind` into `block`, as the original reads
+/// its executable's `RT_RCDATA` payloads: the platform's resource directory
+/// finds the name (an inline name up to its first zero, a long name whole)
+/// under the type, and on success the block takes the locked bytes and its
+/// resource kind; a missing resource leaves the block as it was. The lookup
+/// is the platform part (the Win32 resource calls); the rule and the block
+/// are Exarust's.
+pub fn read_resource(
+    block: &mut MemBlock,
+    name: &FileName,
+    kind: u16,
+    lookup: impl FnOnce(&[u8], u16) -> Option<Vec<u8>>,
+) -> bool {
+    match lookup(name.text(), kind) {
+        Some(bytes) => {
+            block.adopt_resource(bytes);
+            true
+        }
+        None => false,
+    }
+}
+
 /// Reads the whole file a reference names: the folder's path and the name,
 /// or the name alone without a folder.
 pub fn read_referenced_file(table: &FolderTable, file: &FileRef) -> FileRead {
@@ -630,6 +656,42 @@ mod tests {
             0
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_resource_read_fills_a_resource_block_or_leaves_it() {
+        let mut block = MemBlock::from_bytes(vec![1, 2, 3]);
+        let name = FileName::new(b"humandiff.rfi");
+        let asked = std::cell::RefCell::new(None);
+        let ok = read_resource(&mut block, &name, RT_RCDATA, |text, kind| {
+            *asked.borrow_mut() = Some((text.to_vec(), kind));
+            Some(vec![9, 8, 7, 6])
+        });
+        assert!(ok);
+        assert_eq!(*asked.borrow(), Some((b"humandiff.rfi".to_vec(), 10)));
+        assert_eq!(block.bytes(), &[9, 8, 7, 6]);
+        assert_eq!(
+            (block.size(), block.kind()),
+            (4, crate::mem_block::Kind::Resource)
+        );
+        // Resource memory is only released, never reallocated.
+        assert!(!block.resize(8));
+        block.resize(0);
+        assert_eq!(block.bytes(), b"");
+        // A missing resource leaves the block untouched.
+        let mut block = MemBlock::from_bytes(vec![1, 2, 3]);
+        let missing = read_resource(&mut block, &name, RT_RCDATA, |_, _| None);
+        assert!(!missing);
+        assert_eq!(block.bytes(), &[1, 2, 3]);
+        assert_eq!(block.kind(), crate::mem_block::Kind::Owned);
+        // A long name is asked for whole; an inline name stops at its zero.
+        let long = FileName::new(b"Textures\\Apparel\\cloak01.rfi");
+        let mut seen = Vec::new();
+        read_resource(&mut block, &long, RT_RCDATA, |text, _| {
+            seen = text.to_vec();
+            None
+        });
+        assert_eq!(seen, b"Textures\\Apparel\\cloak01.rfi");
     }
 
     #[test]
