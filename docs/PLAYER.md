@@ -1779,23 +1779,27 @@ character body's possession routines; addresses are in the research notes.
   only level meshes with certain flag bits, and Exarust's level colliders
   hold every static mesh, ceilings included. The sweep itself is
   `nav_camera::probe_scene_hit`: the visible sectors, the mesh flag words
-  (`0x89` low bits, the render and feature words), the owner pointer and
-  blocking word, the segment-versus-bounding-sphere test (`z² + (y² + x²)`,
-  the before/past/line cases) and then the mesh's own face test. The
-  cut-away lift of the looked-at point out of the scene is
-  `nav_camera::lift_out_of_scene`: the same sector walk, a bounding-sphere
-  reject, a box-reach test, and each mesh's contacts pushing the point a
-  radius out in the order the mesh reports them.
+  (`0x89` class bits, the flags and state words), the owner pointer and
+  blocking word, the segment-versus-bounding-sphere test
+  (`exa_physics::intersect::segment_sphere`) and then the mesh's own face
+  test (the original has one face callback for flags kind `0x50000000`
+  and another for the rest). The cut-away lift of the looked-at point out
+  of the scene is `nav_camera::lift_out_of_scene`: every sector (the
+  visible bit is not read), a bounding-sphere reject, the oriented box
+  within reach, and each mesh's contacts pushing the point a radius out in
+  the order the mesh reports them (`lift_out_of_geometry`).
 - **The free camera's own rules** (the editor and free-flight camera, no
   chase caller): A/D strafe along the right axis and S/W along the forward
-  axis, the bias subtracted last and the vector normalised past 2⁻²³ when
-  the controller asks (`nav_camera::pan_input`); the looked-at point is
-  tethered to its anchor, either per axis to `|offset|·limit + anchor` or
-  radially onto the radius with the height kept (`focus_tether`); its
-  horizontal velocity carries 0.96 of its change and keeps 0.99, stopping
-  under 1e-7/1e-4 squared (`pan_velocity`); the zoom's shown value snaps
-  within 0.001 (`zoom_snap`) and its spring holds a change to its step,
-  carries it, damps it by the double 0.998 and floors it at half its range
+  axis, the controller's movement vector added last, and, when the
+  controller asks, the height zeroed and the vector normalised past 2⁻²³
+  (`nav_camera::pan_input`); the looked-at point is tethered to its
+  anchor, either per axis to `sign(offset)·limit + anchor` or radially onto
+  the radius with the height kept (`focus_tether`); its drift carries 0.96
+  of its change and keeps 0.99, stopping under 1e-7/1e-4 squared
+  (`pan_velocity`); the zoom's shown value snaps within 0.001
+  (`zoom_snap`) and its spring holds a change to its step, carries it,
+  damps it by the double 0.998 (a carried move of at most 0.0002, or a
+  NaN, snaps to the target) and floors it at half its range
   (`ZoomSpring`). These are tests only; the chase camera drives its own
   orbit, pitch and zoom springs.
 - **The idle turn.** Each frame the player's controls test whether the

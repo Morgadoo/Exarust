@@ -997,18 +997,20 @@ saves the viewport's wheel handler while its slot is empty, and restores
 it while removing the free camera's press and move handlers when the
 controller detaches; the scene editor's camera switch drives that state
 as its followed record comes and goes. The free camera's own rules are
-tested there too: its A/D/S/W movement vector (the right and forward axes
-added and subtracted in key order, the bias removed, normalised past
-2⁻²³), its follow tether (a horizontal offset past a limit pulled to
-`|offset|·limit + anchor` per axis, or the radial form that scales onto
-the radius and keeps the height), the pan velocity (change carried at
-0.96, total at 0.99, 1e-7/1e-4 squared gates), the zoom spring (the
-target within 0.001 snaps the shown zoom; otherwise `(target − motion)·
-rate − last` held to its step, carried and damped by the double 0.998,
-never under half the range) and the two cut-away scene walks: the lift out
-of the visible sectors' meshes (bounding-sphere reject, box reach, each
-mesh's contacts pushing the point a radius out) and the wall probe's
-segment walk (the shadow-side flag words, the bounding-sphere test, the
+tested there too (no caller yet): its A/D/S/W movement vector (the right
+and forward axes added and subtracted in key order, the controller's
+vector added, the height zeroed and the vector normalised past 2⁻²³ when
+asked), its follow tether (an axis past its limit held at
+`sign(offset)·limit + anchor`, or the radial form that scales onto the
+radius and keeps the height), the drift (change carried at 0.96, total at
+0.99, 1e-7/1e-4 squared gates in double), the zoom spring (the target
+within 0.001 snaps the shown zoom; otherwise `(target − motion)·rate −
+last` held to its step, carried, damped by the double 0.998 or snapped
+at 0.0002, never under half the range) and the two cut-away scene walks:
+the lift out of every sector's meshes (sphere reject and oriented-box
+reach through `exa_physics::intersect`, then each mesh's contacts through
+`lift_out_of_geometry`) and the wall probe's segment walk (the visible
+sectors, the flag words, `exa_physics::intersect::segment_sphere`, the
 blocking word, then each face).
 
 The arena's per-rank kits are in (`loadout`): `Member::loadouts` holds
