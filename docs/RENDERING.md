@@ -2625,7 +2625,8 @@ undrawn whatever the player should not see (`exa_world::rooms`,
   otherwise the first link of the first point's room into the second
   point's cell decides through its door's own flag (another flag than the
   light query's), with no distance test. A placed door binds to its link by
-  its cell and the direction of its third matrix row (the angle's quadrant
+  its cell and the direction of its third matrix row (the quadrant of the
+  engine's quick-arccosine yaw
   picks the cell behind it, with the original's widened quarter edges), and
   the body lands in both rooms' entries (`DoorBodies`); no mechanism reads
   it yet. The room manager's active-room

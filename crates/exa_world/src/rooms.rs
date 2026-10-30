@@ -552,16 +552,17 @@ pub fn rotate_edge_word(word: u32, quarter: u8) -> u32 {
     }
 }
 
-/// The cell step the original takes from a direction vector: `atan2(x, z)`
-/// in `[−π, π]`, then one of the four quadrants. The step is opposite to
-/// the vector. The original computes `π/2` as the `f32` and widens it to
+/// The cell step the original takes from a direction vector: the engine's
+/// yaw of `(x, z)` ([`exa_anim::quick_yaw`], an arccosine polynomial, not
+/// an exact `atan2`) in `[−π, π]`, then one of the four quadrants. The step
+/// is opposite to the vector. The original computes `π/2` as the `f32` and widens it to
 /// double before adding or subtracting the double `π/4`, so its quarter-turn
 /// edges are slightly wider than `±π/4` and its positive third edge slightly
 /// above `3π/4`; the tests run in this order and leave the step at zero in
 /// the narrow gaps (a NaN likewise). Used to bind a door to the cell behind
 /// it.
 pub fn cell_step_from_dir(dir: Vec2) -> (i32, i32) {
-    let a = dir.x.atan2(dir.y) as f64;
+    let a = f64::from(exa_anim::quick_yaw(dir.x, dir.y));
     let quarter = std::f64::consts::FRAC_PI_4;
     let half_pi = std::f32::consts::FRAC_PI_2 as f64;
     if a.abs() < quarter {
@@ -1699,7 +1700,9 @@ mod tests {
             None
         );
         assert_eq!(doors.body(link), Some(7));
-        // A diagonal facing takes no cell step and so finds no link.
+        // A diagonal facing: the quick yaw leaves (1, 1) just inside the
+        // first quadrant, so it steps −Z (no link there either).
+        assert_eq!(cell_step_from_dir(Vec2::new(1.0, 1.0)), (0, -1));
         assert_eq!(
             doors.bind(&rooms, Vec2::new(-1.0, 3.0), Vec2::new(1.0, 1.0), 9),
             None
@@ -1726,6 +1729,8 @@ mod tests {
             let (sin, cos) = angle.sin_cos();
             assert_eq!(cell_step_from_dir(Vec2::new(sin, cos)), step, "{angle}");
         }
+        // The quick yaw puts (1, −1) at 2.3564136, past the double 3π/4.
+        assert_eq!(cell_step_from_dir(Vec2::new(1.0, -1.0)), (0, 1));
         // A NaN angle matches none of the ordered tests: no step.
         assert_eq!(cell_step_from_dir(Vec2::new(f32::NAN, 0.0)), (0, 0));
     }
