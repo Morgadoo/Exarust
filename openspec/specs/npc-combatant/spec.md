@@ -27,11 +27,11 @@ The footprint cell SHALL be `size/2 + (pos/30 − 0.5)` per horizontal axis, rou
 - **THEN** the cells are (50, 50), (50, 52), (8, 50) off the grid, (50, 8) off the grid, off the grid and on it, and only the first off-grid stamp flags the body
 
 ### Requirement: A blow on a combatant
-A blow SHALL do nothing to a character that is down, dead or being removed. A clean hit SHALL lower its courage to `((t1 + 1)·0.025 + 0.95)·courage`. An attacker without the mark SHALL take the struck character's combat rating as its struck rating when higher, and SHALL be marked.
+A blow SHALL do nothing to a character that is down, dead or being removed. A wound SHALL lower its courage to `((confidence + 1)·0.025 + 0.95)·courage`, the sum in single precision and the rest in double. An attacker whose swing is not marked SHALL be marked, and its practice SHALL take the struck character's combat rating as its lesson when higher.
 
 #### Scenario: Two hits
-- **WHEN** a character with combat rating 30 takes a clean hit from an attacker whose struck rating is 10, then a glancing hit at rating 50, then a clean hit while down
-- **THEN** its courage is lowered once, and the attacker's struck rating is 30 and it is marked
+- **WHEN** a character with combat rating 30 is wounded by an attacker whose lesson is 10, then clashed by the same swing at rating 50, then wounded while down
+- **THEN** its courage is lowered once, and the attacker's lesson is 30 and its swing is marked
 
 ### Requirement: The fighting estimate's precision
 The fighting estimate SHALL build `levels·0.4 + 2` in double precision and cut it to a float, add `combat_skill·0.02` in double precision, add each weapon byte times the double 0.01 to the float sum in double precision, add `0.02·sum·reach` in double precision, then add 2 when the body scale exceeds the double 1.3 and otherwise quarter it.
@@ -55,15 +55,19 @@ The arc publisher SHALL build its edges from the head look's yaw and publish the
 - **THEN** it becomes π minus the float full turn, while the float just below π is kept
 
 ### Requirement: The hit reaction's concern rise
-A blow from an attacker the combatant has a contact for SHALL raise that contact's concern, when it is under 15, by the threat estimate plus 0.5, plus 0.5 more for a kind-1 hit or 0.25 for a kind 2, floored at zero and scaled by one less the contact's attitude times 0.01 in double precision, capped at 15.
+A blow from an attacker the combatant has a contact for SHALL set that contact's flags word to 3 and SHALL raise its concern, when it is under 15, by the threat estimate plus 0.5, plus 0.5 more for a kind-1 hit or 0.25 for a kind 2, floored at zero and scaled by one less the contact's attitude times 0.01 in double precision, capped at 15. It SHALL run while the struck character is down or dead.
 
 #### Scenario: A kind-1 hit from a half-friendly attacker
 - **WHEN** a contact with attitude 50 and concern 1 is hit with kind 1 and threat 0
-- **THEN** its concern becomes 1.5 and its concerned event is raised
+- **THEN** its concern becomes 1.5, its concerned event is raised and its flags word is 3
 
 #### Scenario: A NaN concern
 - **WHEN** the contact's concern is NaN
 - **THEN** the hit adds nothing
+
+#### Scenario: At the cap
+- **WHEN** the contact's concern is 15
+- **THEN** its flags word becomes 3, its concern stays and no threat estimate is taken
 
 ### Requirement: The hit reaction's threat estimate
 The threat estimate SHALL be one less the largest share `dot / d²` among the observer's nearby living bodies other than the attacker, where `d` is the body's aim point less the attacker's position, `d²` lies between 1 cm² and the square of the attacker's radius plus 100 cm, and the dot with the attacker's look is not negative.
@@ -71,3 +75,17 @@ The threat estimate SHALL be one less the largest share `dot / d²` among the ob
 #### Scenario: One body ahead of the attacker
 - **WHEN** the only nearby body's aim point lies 100 cm along the attacker's look and the attacker's radius is 40 cm
 - **THEN** the threat estimate is 0.99
+
+### Requirement: Blows reach the struck behaviour
+Every weapon contact dealt to a fighter SHALL tell the struck body's behaviour of the blow once: a clash on a held weapon as kind 1 and a block on a held shield as kind 2, first in their branch, and a wound on flesh as kind 0 after the damage, its sounds and the damage-taken notice. A blow the body turns SHALL tell it nothing. The struck body SHALL count as down when its condition is down, collapsing or dead at that point, a killing wound included.
+
+#### Scenario: A wound, a clash, a block and a kill
+- **WHEN** a sword wounds a standing fighter, then clashes on its weapon, then strikes its shield, then deals it a killing wound
+- **THEN** its behaviour is told kind 0, 1 and 2 not down, then kind 0 down, and the striker's score rises by 3 for each wound
+
+### Requirement: The AI's reaction to a blow
+A character with a brain SHALL react to each blow it is told of in this order: the blow on a combatant, then the hit reaction's concern rise for the attacker, with the threat estimate over its nearby characters taken only when the attacker's contact is under the cap.
+
+#### Scenario: A wound from the player beside a bystander
+- **WHEN** a brain with courage 0.7 and confidence 0.4 and a neutral contact for the player is wounded by the player, a bystander standing 100 cm along the player's look within its reach plus 100 cm
+- **THEN** its courage becomes `((1.4)·0.025 + 0.95)·0.7`, the player's swing is marked and offered its combat rating, and the player's contact's concern becomes 1.49 with its flags word 3
