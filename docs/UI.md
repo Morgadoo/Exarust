@@ -2182,8 +2182,8 @@ texture's size over 12, in units, centred.
   registry order is button, check box, image button, label, trackbar, icon
   button, picture.
 - **Label draw.** A label draws a panel inset by a pixel with style
-  0x10000000, a four-stop gradient from the hot form group's third shade
-  at the bottom to its second at the top, and the skin frame with any of
+  0x10000000, a four-stop gradient from the hot form group's fourth shade
+  at the bottom to its third at the top, and the skin frame with any of
   0xf0; its front is the held variant while a button bit of its state is
   set, else the alternate with style 0x20000000 (a block truncated to the
   width less twice the margin over the font's step, right-aligned with
@@ -2192,23 +2192,26 @@ texture's size over 12, in units, centred.
   held label fades over a third of a second: its start clock is stored on
   the first draw, the elapsed clock over 300 is taken in double precision
   and compared as a float, and the sixth shade's alpha scales by it (a
-  clock that runs backwards wraps) while a frame is asked for again; past
-  the fade the state's held bit clears. A check box's label sits five
+  clock that runs backwards wraps; the fourth shade whole while the focus
+  bit is set) while a frame is asked for again; past the fade the state's
+  held bit clears and the label draws plainly. A check box's label sits five
   units in, in the disabled ink while disabled, and its tick is centred
   at four units (an unsigned half of the sign-extended difference, so a
   smaller box wraps) in the sixth shade, the shared atlas's eighth cell.
 - **Class draw.** `draw_back` orders each class's skin calls: a button is
   a shell (frames, the face inset by the margin, a shadow with style
   0x20000000 while not pressed, the sunken ring on style 0x40000000 pressed
-  or state 0x80), a check box a box, an image button its frames then the
-  box, a trackbar its frames then the slider, a label its panel then its
+  or state 0x80), a check box its sunken face (the frames and, while lit,
+  the sunken box two pixels inside the margin), an image button its frames
+  then the box, a trackbar its frames then the slider, a label its panel then its
   frames, an icon button and a picture their frames. `draw_front` orders
   the fronts: a button's text through the slot matrix (small font with
-  style 0x100000), a check box's label and tick, an image button's icon in
-  the sixth or tenth shade (the fourth while focused and bit 0x1000000
-  clear; full alpha through 0x1000000), a trackbar's plain text, a label's
-  variant, an icon button's shared-atlas icon (index from its step field)
-  or its own atlas's icon, and a picture's quad. Text places by the
+  style 0x100000), a check box's label and tick, an image button's image
+  through the skin's image draw (its own atlas or the shared one), a
+  trackbar's plain text, a label's variant, an icon button's shared-atlas
+  icon (index from its step field) or its own atlas's icon (in the fourth,
+  eleventh or ninth shade, or as it is while pressed), and a picture's
+  quad. A marker trackbar's stripes are the record's own ink list. Text places by the
   style's 0x7000 and 0x700 fields: left of the box, centred, ending before
   the right edge or past it; half a unit up, centred by the line height,
   at the base or below; else the margin and half a unit plus one.

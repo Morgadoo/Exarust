@@ -7,9 +7,10 @@
 //! pointer or steps by keys and the stick. Rules: `docs/UI.md` (Controls).
 
 use crate::skin::{
-    ControlLabelPlace, ControlSliderPlace, GuiRect, LabelVariant, SkinBatch, SkinInk, SkinPalette,
-    draw_control_box, draw_control_shell, draw_control_slider, draw_style_frames, fade_rect,
-    place_control_text,
+    ControlLabelPlace, ControlSliderPlace, GuiRect, LabelVariant, SkinBatch, SkinImageDraw,
+    SkinImageInks, SkinImagePlace, SkinInk, SkinPalette, draw_control_box, draw_control_shell,
+    draw_control_slider, draw_panel, draw_skin_image, draw_style_frames, fade_rect,
+    place_control_text, with_alpha,
 };
 
 /// A control class as the form's control registry holds it.
@@ -1025,7 +1026,7 @@ pub fn text_origin(c: &Control, text: &ControlText, unit: i32) -> (i32, i32) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackOp {
     /// A label's panel: the control one pixel in, a gradient from the hot
-    /// form group's third shade at the bottom to its second at the top.
+    /// form group's fourth shade at the bottom to its third at the top.
     Panel,
     /// The style frames on the control's own rectangle.
     Frames,
@@ -1034,6 +1035,9 @@ pub enum BackOp {
     Shell,
     /// A box face inset by the margin, with the fixed pressed bevel.
     Box,
+    /// A check box's face: the style frames and, while lit, the sunken box
+    /// two pixels inside the margin.
+    Sunken,
     /// A trackbar's slider: a faded track and a framed thumb, or a striped
     /// fill and the unit-wide marker.
     Slider { marker: bool },
@@ -1041,8 +1045,8 @@ pub enum BackOp {
 
 /// The skin calls a control's back makes, in the original's order.
 ///
-/// A button is a shell, a check box a box. An image button frames and then
-/// boxes; a trackbar frames and then draws its slider. A label draws its
+/// A button is a shell, a check box its sunken face. An image button frames
+/// and then boxes; a trackbar frames and then draws its slider. A label draws its
 /// panel (style 0x1000_0000) and then any of the 0xf0 frames. An icon
 /// button and a picture only draw their frames.
 pub fn draw_back(c: &Control) -> Vec<BackOp> {
@@ -1050,7 +1054,7 @@ pub fn draw_back(c: &Control) -> Vec<BackOp> {
     let mut ops = Vec::new();
     match c.class {
         1 => ops.push(BackOp::Shell),
-        2 => ops.push(BackOp::Box),
+        2 => ops.push(BackOp::Sunken),
         3 => {
             if frames {
                 ops.push(BackOp::Frames);
@@ -1081,8 +1085,8 @@ pub fn draw_back(c: &Control) -> Vec<BackOp> {
 }
 
 /// Draws a control's back through the skin, in the order its class makes
-/// its calls. A marker trackbar's stripes are the caller's inks (the
-/// original's per-class colour list).
+/// its calls. A marker trackbar's stripes are the record's own ink list
+/// (the colour list the original reads from the record, unguarded).
 pub fn paint_back(
     batch: &mut SkinBatch,
     c: &Control,
@@ -1114,6 +1118,15 @@ pub fn paint_back(
             BackOp::Box => {
                 draw_control_box(batch, control_area(c), c.margin as f32, c.state, palette)
             }
+            BackOp::Sunken => draw_panel(
+                batch,
+                control_area(c),
+                c.margin,
+                c.style,
+                c.state,
+                unit,
+                palette,
+            ),
             BackOp::Slider { .. } => {
                 draw_control_slider(
                     batch,
@@ -1174,27 +1187,20 @@ pub fn picture_quad(c: &Control, unit: i32) -> Option<PictureQuad> {
 
 /// A held label's fade: `(alpha byte, asks for another frame)`. The elapsed
 /// clock over 300 in double precision, compared as a float; inside the
-/// third of a second the sixth text shade's alpha scales by the fade and
-/// the draw asks for another frame, else the state's held bit is cleared by
-/// the caller and the label draws plainly.
+/// third of a second the sixth text shade's alpha scales by the fade
+/// (rounded half to even, its low byte kept) and the draw asks for another
+/// frame, else the state's held bit is cleared by the caller and the label
+/// draws plainly.
 pub fn held_fade(now: u32, start: u32, alpha: u8) -> (u8, bool) {
     let elapsed = (i64::from(now) - i64::from(start)) as f64;
     let fade = (elapsed * (1.0 / 300.0)) as f32;
-    // Not a number fails the test, as in the original.
-    if fade <= 1.0 {
+    // The original leaves the fade only when the compare is ordered and
+    // above 1, so a not-a-number fade would keep fading.
+    if !(fade > 1.0) {
         let scaled = (f32::from(alpha) * fade).round_ties_even() as i64 as i32 as u8;
         (scaled, true)
     } else {
         (0, false)
-    }
-}
-
-/// A marker trackbar's stripes: the label colour when it has one, else the
-/// hot form group's fourth and first shades.
-pub fn marker_stripes(c: &Control, palette: &SkinPalette) -> Vec<SkinInk> {
-    match c.colour {
-        Some(colour) => vec![colour],
-        None => vec![palette.form_hot[3], palette.form_hot[0]],
     }
 }
 
@@ -1206,11 +1212,10 @@ pub enum FrontOp {
         variant: LabelVariant,
         small_font: bool,
     },
-    /// A label carrying its own colour, its alpha scaled by the global GUI
-    /// alpha.
+    /// A label in one colour: its own colour (alpha scaled by the global
+    /// GUI alpha), a held label's faded sixth text shade, or the fourth
+    /// text shade while the focus bit is set.
     Coloured(SkinInk),
-    /// A held label fading in, in the sixth text shade at this alpha.
-    Fading(u8),
     /// Plain text at the given place, in its own ink.
     Text {
         x: i32,
@@ -1225,15 +1230,17 @@ pub enum FrontOp {
         index: i32,
         ink: SkinInk,
     },
-    /// A centred icon.
+    /// A centred icon in an ink, or drawn as it is (its own colours at
+    /// alpha 1) without one.
     Icon {
         x: i32,
         y: i32,
         cell: i32,
         index: i32,
-        ink: SkinInk,
-        alpha: f32,
+        ink: Option<SkinInk>,
     },
+    /// An image button's image through the skin's image draw.
+    Image(SkinImageDraw),
     Picture(PictureQuad),
 }
 
@@ -1245,9 +1252,18 @@ pub struct FrontDraw {
     pub again: bool,
 }
 
-fn with_alpha(ink: SkinInk, alpha: u8) -> SkinInk {
-    [ink[0], ink[1], ink[2], alpha]
+/// The cell of the atlas a record draws its icons from: its own atlas's
+/// cell, or the shared GUI atlas's.
+fn icon_cell(c: &Control) -> i32 {
+    if c.icon_atlas && c.icon_cell > 0 {
+        c.icon_cell
+    } else {
+        SHARED_ICON_CELL
+    }
 }
+
+/// The GUI's white ink alpha, which an image button's full-alpha inks take.
+const WHITE_ALPHA: u8 = 0xff;
 
 /// The skin calls a control's front makes, in the original's order and with
 /// its inks.
@@ -1255,14 +1271,15 @@ fn with_alpha(ink: SkinInk, alpha: u8) -> SkinInk {
 /// A button draws its text through the slot matrix, in the small font with
 /// style 0x100000. A check box draws its label five units in, in the
 /// focused shade while its focus bit is set, and then the tick of a plain
-/// box while it is on or lit or of a three-state box while it is partly on.
-/// An image button shows its icon in the ninth and fifth shades (its
-/// disabled shade while focused), brightened to full alpha with style
-/// 0x1000000. A trackbar draws plain text. A label's front follows its
+/// box while it is on or lit or of a three-state box while it is partly on
+/// (the original skips the tick when the skin's first flag bit is set; the
+/// caller's skin never sets it). An image button draws its image through
+/// the skin's image draw ([`draw_skin_image`]) from its own atlas or the
+/// shared one. A trackbar draws plain text. A label's front follows its
 /// style: held fades, 0x20000000 truncates a right-aligned block, its own
 /// colour draws coloured or focused, else the slot matrix. An icon button
 /// shows the shared atlas's icon while its step field is positive, else its
-/// own atlas's icon. A picture draws its quad.
+/// own atlas's icon (as it is while pressed). A picture draws its quad.
 pub fn draw_front(
     c: &mut Control,
     text: &ControlText,
@@ -1304,49 +1321,24 @@ pub fn draw_front(
             }
         }
         3 => {
-            let cell = if c.icon_cell > 0 {
-                c.icon_cell
-            } else {
-                SHARED_ICON_CELL
+            let place = SkinImagePlace {
+                x: c.x as i16,
+                y: c.y as i16,
+                w: c.w as i16,
+                h: c.h as i16,
+                image: c.icon,
+                size: icon_cell(c),
+                style: c.style,
+                flags: c.state,
+                default_image: !c.icon_atlas,
             };
-            let (x, y) = icon_at(c, cell);
-            if pressed {
-                let y = if c.state & 0x60 == 0x40 { y + 1 } else { y };
-                draw.ops.push(FrontOp::Icon {
-                    x,
-                    y,
-                    cell,
-                    index: c.icon,
-                    ink: palette.text[6],
-                    alpha: 1.0,
-                });
-            } else {
-                let ink = if c.style & 0x100_0000 == 0 {
-                    if c.state & 0x11 == 0 {
-                        if c.state & 0x40 == 0x40 {
-                            palette.text[10]
-                        } else {
-                            palette.text[6]
-                        }
-                    } else {
-                        palette.text[3]
-                    }
-                } else if focused {
-                    palette.text[3]
-                } else if c.state & 0x40 == 0x40 {
-                    with_alpha(palette.text[10], 0xff)
-                } else {
-                    with_alpha(palette.text[6], 0xff)
-                };
-                draw.ops.push(FrontOp::Icon {
-                    x,
-                    y,
-                    cell,
-                    index: c.icon,
-                    ink,
-                    alpha: 1.0,
-                });
-            }
+            let rgb = |ink: SkinInk| [ink[0], ink[1], ink[2]];
+            let inks = SkinImageInks {
+                plain: rgb(palette.text[6]),
+                raised: rgb(palette.text[10]),
+                alpha: WHITE_ALPHA,
+            };
+            draw.ops.push(FrontOp::Image(draw_skin_image(place, inks)));
         }
         4 => draw.ops.push(FrontOp::Label {
             variant: LabelVariant::Plain,
@@ -1360,11 +1352,23 @@ pub fn draw_front(
                         c.held_start = now;
                     }
                     let (alpha, again) = held_fade(now, c.held_start, palette.text[6][3]);
-                    if !again {
-                        c.state &= !1;
-                    }
                     draw.again = again;
-                    draw.ops.push(FrontOp::Fading(alpha));
+                    if again {
+                        let ink = if focused {
+                            palette.text[3]
+                        } else {
+                            with_alpha(palette.text[6], alpha)
+                        };
+                        draw.ops.push(FrontOp::Coloured(ink));
+                    } else {
+                        // Past the fade the held bit clears and the label
+                        // draws plainly.
+                        c.state &= !1;
+                        draw.ops.push(FrontOp::Label {
+                            variant: LabelVariant::Slot,
+                            small_font: false,
+                        });
+                    }
                 }
                 LabelFront::Alternate => draw.ops.push(FrontOp::Label {
                     variant: LabelVariant::Block,
@@ -1391,11 +1395,6 @@ pub fn draw_front(
             }
         }
         6 => {
-            let cell = if c.icon_cell > 0 {
-                c.icon_cell
-            } else {
-                SHARED_ICON_CELL
-            };
             if c.steps > 0 {
                 let (x, y) = icon_at(c, SHARED_ICON_CELL);
                 draw.ops.push(FrontOp::Icon {
@@ -1403,19 +1402,19 @@ pub fn draw_front(
                     y,
                     cell: SHARED_ICON_CELL,
                     index: c.steps,
-                    ink: palette.text[6],
-                    alpha: 1.0,
+                    ink: Some(palette.text[6]),
                 });
             } else if c.icon_atlas {
+                let cell = icon_cell(c);
                 let (x, y) = icon_at(c, cell);
                 let ink = if pressed {
-                    palette.text[6]
+                    None
                 } else if focused {
-                    palette.text[3]
+                    Some(palette.text[3])
                 } else if c.state & 0x40 == 0x40 {
-                    palette.text[10]
+                    Some(palette.text[10])
                 } else {
-                    palette.text[8]
+                    Some(palette.text[8])
                 };
                 draw.ops.push(FrontOp::Icon {
                     x,
@@ -1423,7 +1422,6 @@ pub fn draw_front(
                     cell,
                     index: c.icon,
                     ink,
-                    alpha: 1.0,
                 });
             }
         }
@@ -2044,7 +2042,7 @@ mod tests {
             draw_back(&c)
         };
         assert_eq!(back(1, 0), [BackOp::Shell]);
-        assert_eq!(back(2, 0), [BackOp::Box]);
+        assert_eq!(back(2, 0), [BackOp::Sunken]);
         assert_eq!(back(3, 0), [BackOp::Box]);
         assert_eq!(back(3, 0x10), [BackOp::Frames, BackOp::Box]);
         assert_eq!(back(4, 0), [BackOp::Slider { marker: false }]);
@@ -2147,15 +2145,28 @@ mod tests {
         assert_eq!(draw.ops, [FrontOp::Coloured([3, 0, 0, 70])]);
 
         // The held label starts at the first draw and asks for another
-        // frame; once the fade ends the state bit is cleared.
+        // frame in the sixth shade at the faded alpha; once the fade ends
+        // the state bit is cleared and the label draws plainly.
         let mut held = Control::new(5, 0, 0, 100, 20);
         held.state = 1;
         let draw = draw_front(&mut held, &text(10, 2), 4, &palette, 1000);
         assert_eq!(held.held_start, 1000);
-        assert_eq!(draw.ops, [FrontOp::Fading(0)]);
+        assert_eq!(draw.ops, [FrontOp::Coloured([6, 0, 0, 0])]);
         assert!(draw.again);
+        let draw = draw_front(&mut held, &text(10, 2), 4, &palette, 1150);
+        assert_eq!(draw.ops, [FrontOp::Coloured([6, 0, 0, 35])]);
+        // A focused held label takes the fourth shade whole.
+        held.state |= state::DISABLED;
+        let draw = draw_front(&mut held, &text(10, 2), 4, &palette, 1150);
+        assert_eq!(draw.ops, [FrontOp::Coloured([3, 0, 0, 70])]);
         let draw = draw_front(&mut held, &text(10, 2), 4, &palette, 1400);
-        assert_eq!(draw.ops, [FrontOp::Fading(0)]);
+        assert_eq!(
+            draw.ops,
+            [FrontOp::Label {
+                variant: LabelVariant::Slot,
+                small_font: false
+            }]
+        );
         assert!(!draw.again);
         assert_eq!(held.state & 1, 0);
 
@@ -2182,8 +2193,7 @@ mod tests {
                 y: 3,
                 cell: SHARED_ICON_CELL,
                 index: 3,
-                ink: [6, 0, 0, 70],
-                alpha: 1.0
+                ink: Some([6, 0, 0, 70]),
             }]
         );
         assert!(
@@ -2209,34 +2219,33 @@ mod tests {
                 y: 3,
                 cell: SHARED_ICON_CELL,
                 index: 5,
-                ink: [10, 0, 0, 70],
-                alpha: 1.0
+                ink: Some([10, 0, 0, 70]),
             }]
         );
+        // Pressed, its own atlas's icon draws as it is.
+        icon.state = 0x1_0000;
+        let draw = draw_front(&mut icon, &text(0, 0), 4, &palette, 0);
+        assert!(matches!(draw.ops[0], FrontOp::Icon { ink: None, .. }));
 
-        // An image button brightens its text shades to full alpha with the
-        // style bit, and its pressed icon drops a pixel when on and lit.
+        // An image button goes through the skin's image draw: with style
+        // 0x1000000 the sixth shade's colour at the white alpha, and pressed
+        // its image as it is, a pixel down when on and lit.
         let mut image = Control::new(3, 0, 0, 28, 28);
         image.icon = 2;
         image.style = 0x1000000;
         let draw = draw_front(&mut image, &text(0, 0), 4, &palette, 0);
-        assert!(matches!(
-            draw.ops[0],
-            FrontOp::Icon {
-                ink: [6, 0, 0, 255],
-                ..
-            }
-        ));
+        let FrontOp::Image(drawn) = draw.ops[0] else {
+            panic!("an image draw")
+        };
+        assert_eq!((drawn.x, drawn.y, drawn.image), (3, 3, 2));
+        assert_eq!(drawn.colour, Some([6, 0, 0, 255]));
+        assert!(drawn.default_image);
         image.state = 0x1_0000 | 0x40;
         let draw = draw_front(&mut image, &text(0, 0), 4, &palette, 0);
-        assert!(matches!(
-            draw.ops[0],
-            FrontOp::Icon {
-                y: 4,
-                alpha: 1.0,
-                ..
-            }
-        ));
+        let FrontOp::Image(drawn) = draw.ops[0] else {
+            panic!("an image draw")
+        };
+        assert_eq!((drawn.y, drawn.ink, drawn.scale), (4, None, Some(1.0)));
     }
 
     #[test]
@@ -2264,18 +2273,6 @@ mod tests {
         let mut batch = SkinBatch::new();
         paint_back(&mut batch, &Control::new(9, 0, 0, 10, 10), 4, &palette, &[]);
         assert!(batch.primitives.is_empty());
-    }
-
-    #[test]
-    fn the_marker_stripes_prefer_the_records_colour() {
-        let palette = shades();
-        let mut c = Control::new(4, 0, 0, 100, 16);
-        assert_eq!(
-            marker_stripes(&c, &palette),
-            [[0x43, 0, 0, 70], [0x40, 0, 0, 70]]
-        );
-        c.colour = Some([9, 8, 7, 6]);
-        assert_eq!(marker_stripes(&c, &palette), [[9, 8, 7, 6]]);
     }
 
     #[test]

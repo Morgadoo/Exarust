@@ -153,8 +153,8 @@ pub use gui_controls::{
     BackOp, CheckLabelInk, ClassRegistry, ControlText, FrontDraw, FrontOp, LabelDraw, LabelFront,
     LayoutClient, PICTURE_BLEND, PictureQuad, SHARED_ICON_CELL, SKIN_BLEND, TICK_ICON,
     append_records, check_label_ink, clear_classes, control_area, draw_back, draw_front, held_fade,
-    label_draw, label_place, layout_records, marker_stripes, paint_back, picture_quad,
-    register_class, register_default_classes, text_origin,
+    label_draw, label_place, layout_records, paint_back, picture_quad, register_class,
+    register_default_classes, text_origin,
 };
 pub use gui_core::{
     DropState, EdgeForm, FormHost, FormId, GuiMetrics, GuiTask, HitResult, MessageBoxPlan,
