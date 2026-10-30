@@ -60,11 +60,14 @@ fn short_string(mut name: String) -> String {
     name
 }
 
-/// The ambience a level starts with. Only the outdoor arenas' daylight case
-/// is known: the nature bed `NtrA` when it is neither raining nor windy (the
-/// weather and time-of-day callers are not in Exarust yet, so this assumes a
-/// still, dry day). Guess: the bed at full volume; the night bed is the only
-/// one with a stated volume, 0.3.
+/// The ambience a level starts with. An outdoor arena gets the nature bed
+/// `NtrA` at full volume when it is neither raining nor windy (the weather
+/// and time-of-day callers are not in Exarust yet, so this assumes a still,
+/// dry day; the night bed is the only one with a stated volume, 0.3). A
+/// story level takes the area its name's bytes pick, at full volume: the
+/// fourth level names `AmbUWBA`, whose bed and set a prefix then turns into
+/// `EnvAmbUWBA01` and `AmbAmbUWBA`, files that do not ship — the original's
+/// own naming bug, reproduced. Every other story level stops the ambience.
 pub fn ambience_for_level(level: &str) -> Option<AmbienceArea> {
     let stem = level
         .strip_suffix(".rfc")
@@ -75,6 +78,13 @@ pub fn ambience_for_level(level: &str) -> Option<AmbienceArea> {
             name: "NtrA".into(),
             volume: 1.0,
         })
+    } else if stem.starts_with("exanima0") || stem.starts_with("exanimac") {
+        crate::music::story_music(level.as_bytes())
+            .ambience
+            .map(|name| AmbienceArea {
+                name: name.into(),
+                volume: 1.0,
+            })
     } else {
         None
     }
@@ -313,6 +323,29 @@ mod tests {
         assert_eq!(ambience_for_level("arena"), None);
         assert_eq!(ambience_for_level("exanima01"), None);
         assert_eq!(ambience_for_level("charview"), None);
+    }
+
+    /// A story level takes the area its name's bytes pick at full volume: the
+    /// fourth level names `AmbUWBA`, whose bed and set names the prefixes then
+    /// build into files that do not ship; every other story level has none.
+    #[test]
+    fn the_fourth_story_level_names_its_ambience() {
+        let four = ambience_for_level("exanima04").expect("the fourth level");
+        assert_eq!(four.name, "AmbUWBA");
+        assert_eq!(four.volume, 1.0);
+        assert_eq!(bed_name(&four.name), "EnvAmbUWBA01");
+        assert_eq!(set_prefix(&four.name), "AmbAmbUWBA");
+        for level in [
+            "exanima01",
+            "exanima02",
+            "exanima05",
+            "exanima06",
+            "exanima07",
+            "exanima08",
+            "exanimac1",
+        ] {
+            assert_eq!(ambience_for_level(level), None, "{level}");
+        }
     }
 
     /// The bed plays at 0.15 × the area volume, pitch 1, on the interface
