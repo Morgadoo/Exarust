@@ -111,6 +111,12 @@ pub struct ArenaCareer {
     pub tournament: Option<crate::arena::TournamentBoard>,
     /// The last eight weekly prizes, so a new draw avoids them.
     pub prize_history: [u32; 8],
+    /// The run-time library's unit generator (a Mersenne twister apart from
+    /// the engine's LCG). A candidate's level and the boards' rank rolls
+    /// read it in turn, as the original's one shared library sequence. The
+    /// original seeds it once from the clock at start-up; a default career
+    /// seeds it from a fixed word [guess].
+    pub random: crate::arena::Mt19937,
     /// The roll the window actions draw from.
     pub roll: u32,
     /// The manager-entry warning is still armed: the first Begin that
@@ -151,6 +157,7 @@ impl Default for ArenaCareer {
             restock_pending: false,
             tournament: None,
             prize_history: [0; 8],
+            random: crate::arena::Mt19937::new(DEFAULT_RANDOM_SEED),
             roll: 0,
             warn_manager: true,
             rivals: [0; crate::career::RIVAL_FIELD],
@@ -188,47 +195,44 @@ impl ArenaCareer {
         self.company.day = 0;
         self.matches_today = 0;
         self.log.records.clear();
-        self.hire_pool.clear();
-        self.tournament = None;
-        self.daily_rows = crate::arena::generate_daily_board(0, || 0.5);
         self.restock_pending = false;
         self.company.roster.clear();
         self.company.copper = 0;
         self.company.weeks = [false; 4];
+        // The reset leaves the hire list and the week's event rows alone and
+        // ends by rolling the day's six matches.
+        self.regenerate_daily_board_at(crate::arena_match::counter_now() as u32);
     }
 
-    /// A new career's records: the reset, then the starting purse of 343
-    /// copper, then the ten hire-list candidates the original draws when the
-    /// career opens.
+    /// A new career's records, in the original's order: the reset (which
+    /// rolls the day's matches), the starting purse of 343 copper, the
+    /// week's tournament and then the ten hire-list candidates.
     pub fn start_new_career(&mut self) {
         self.reset();
         self.company.copper = crate::career::STARTING_COPPER;
-        self.hire_catalog = crate::arena_outfit::ProfessionCatalog::default();
-        self.hire_previous = 0;
-        self.fill_hire_pool_at(crate::arena_match::counter_now());
-        self.regenerate_daily_board_at(crate::arena_match::counter_now() as u32);
         self.regenerate_tournament_at(crate::arena_match::counter_now() as u32);
+        self.fill_hire_pool_at(crate::arena_match::counter_now());
     }
 
-    /// Roll the week's tournament from `seed`: its prize (avoiding the last
-    /// eight), six event rows at tier 5 down and the sixteen-company field.
+    /// Roll the week's tournament from `seed`: the event entries are
+    /// cleared, then its prize (avoiding the last eight), six event rows at
+    /// tier 5 down and the sixteen-company field, which becomes the career's
+    /// rival field. The rank rolls read the library generator.
     pub fn regenerate_tournament_at(&mut self, seed: u32) {
-        let mut ranks = crate::arena_outfit::Lcg::new(seed ^ 0x51ED_2701);
-        self.tournament = Some(crate::arena::generate_tournament_board(
-            seed,
-            &mut self.prize_history,
-            || f64::from(ranks.unit()),
-        ));
+        self.entries = Roster::default();
+        let random = &mut self.random;
+        let board = crate::arena::generate_tournament_board(seed, &mut self.prize_history, || {
+            random.unit()
+        });
+        self.rivals = board.companies.map(i32::from);
+        self.tournament = Some(board);
     }
 
-    /// Roll the day's six standard matches from `seed`. The rank draw comes
-    /// from a sequence seeded with `seed`; the original draws it from the
-    /// board's own sequence and [`crate::arena::generate_daily_board`] takes
-    /// it separately, so the interleaving is a limitation of the live
-    /// wiring, not of the rule.
+    /// Roll the day's six standard matches from `seed`, the board's LCG
+    /// seed; the rank rolls read the library generator.
     pub fn regenerate_daily_board_at(&mut self, seed: u32) {
-        let mut ranks = crate::arena_outfit::Lcg::new(seed ^ 0x9E37_79B9);
-        self.daily_rows = crate::arena::generate_daily_board(seed, || f64::from(ranks.unit()));
+        let random = &mut self.random;
+        self.daily_rows = crate::arena::generate_daily_board(seed, || random.unit());
     }
 
     /// Fill the hire list with ten candidates, each generated from its own
@@ -241,6 +245,7 @@ impl ArenaCareer {
                 seed,
                 &mut self.hire_catalog,
                 &mut self.hire_previous,
+                &mut self.random,
             ));
         }
         self.hire_pool = pool;
@@ -261,9 +266,10 @@ impl ArenaCareer {
         let mut pool = std::mem::take(&mut self.hire_pool);
         let mut catalog = std::mem::take(&mut self.hire_catalog);
         let mut previous = self.hire_previous;
+        let random = &mut self.random;
         let mut counter = crate::arena_match::counter_now();
         crate::hirelings::renew_pool(&mut pool, &mut self.roll, || {
-            let member = draw_hire_member(counter, &mut catalog, &mut previous);
+            let member = draw_hire_member(counter, &mut catalog, &mut previous, random);
             counter = counter.wrapping_add(0x9E37_79B9_7F4A_7C15);
             member
         });
@@ -277,15 +283,9 @@ impl ArenaCareer {
     /// gear value is not added (a gap against the original, whose candidate
     /// is dressed from the object database).
     pub fn hire_price(&self, index: usize) -> u32 {
-        let Some(member) = self.hire_pool.get(index) else {
-            return 0;
-        };
-        let levels: Vec<u32> = member
-            .skill_xp
-            .iter()
-            .map(|&xp| u32::from(xp) / crate::career::SKILL_STEP as u32)
-            .collect();
-        crate::career::Company::listed_price(&levels, &[])
+        self.hire_pool.get(index).map_or(0, |member| {
+            crate::career::Company::listed_price(&member.skills, &[])
+        })
     }
 
     /// Hire the candidate at `index`: the company's own funds, room and
@@ -299,13 +299,8 @@ impl ArenaCareer {
         let Some(member) = self.hire_pool.get(index).cloned() else {
             return Err(crate::career::HireError::Funds);
         };
-        let levels: Vec<u32> = member
-            .skill_xp
-            .iter()
-            .map(|&xp| u32::from(xp) / crate::career::SKILL_STEP as u32)
-            .collect();
         self.company
-            .hire_listed(member.name.clone(), member.profession, &levels, &[])?;
+            .hire_listed(member.name.clone(), member.profession, &member.skills, &[])?;
         if let Some(joined) = self.company.roster.last_mut() {
             joined.skill_xp = member.skill_xp;
             joined.techniques = member.techniques;
@@ -418,10 +413,12 @@ fn draw_hire_member(
     counter: u64,
     catalog: &mut crate::arena_outfit::ProfessionCatalog,
     previous: &mut u32,
+    random: &mut crate::arena::Mt19937,
 ) -> Member {
-    let mut level_draw = crate::arena_outfit::Lcg::new(counter.swap_bytes() as u32);
-    let (candidate, roll) =
-        crate::hirelings::draw_candidate(counter, || f64::from(level_draw.unit()));
+    // The role draws step the engine's LCG; a trainer's or combatant's level
+    // reads the library generator, and the record's pass then continues the
+    // LCG from where the role draws left it.
+    let (candidate, roll) = crate::hirelings::draw_candidate(counter, || random.unit());
     let male: Vec<(&str, &str)> = crate::arena_names::MALE_NAMES
         .iter()
         .map(|name| (*name, ""))
@@ -473,8 +470,15 @@ fn draw_hire_member(
     if candidate.profession == Profession::Trainer {
         crate::hirelings::snap_trainer(&mut member.skill_xp, &mut member.techniques);
     }
+    // The six levels the fee and the upkeep read.
+    member.skills = member
+        .skill_xp
+        .map(|xp| u32::from(xp) / u32::from(crate::career::SKILL_STEP));
     member
 }
+
+/// The default career's library-generator seed.
+const DEFAULT_RANDOM_SEED: u32 = 0x1234_5678;
 
 fn record_of(member: &Member, id: u8, controlled: bool) -> ManageRecord {
     ManageRecord {
@@ -1913,6 +1917,7 @@ mod tests {
             hire_pool: Vec::new(),
             hire_previous: 0,
             hire_catalog: crate::arena_outfit::ProfessionCatalog::default(),
+            random: crate::arena::Mt19937::new(DEFAULT_RANDOM_SEED),
             ..ArenaCareer::default()
         };
         again.fill_hire_pool_at(0x1234_5678);
@@ -1923,6 +1928,31 @@ mod tests {
                 .hire_pool
                 .iter()
                 .any(|m| m.profession != Profession::Combatant)
+        );
+        // Each candidate's levels are its skill words over 5000, which the
+        // fee and the upkeep read.
+        for member in &career.hire_pool {
+            assert_eq!(
+                member.skills,
+                member.skill_xp.map(|xp| u32::from(xp) / 5000)
+            );
+        }
+    }
+
+    #[test]
+    fn a_new_week_clears_the_entries_and_draws_the_rival_field() {
+        let mut career = ArenaCareer::default();
+        career.entries[2].count = 1;
+        career.entries[2].team_id = 1;
+        career.regenerate_tournament_at(0x2468_ACE0);
+        assert_eq!(career.entries, Roster::default());
+        let board = career.tournament.as_ref().expect("the week's board");
+        assert_eq!(career.rivals, board.companies.map(i32::from));
+        assert!(
+            career
+                .rivals
+                .iter()
+                .all(|&company| (1..=19).contains(&company))
         );
     }
 

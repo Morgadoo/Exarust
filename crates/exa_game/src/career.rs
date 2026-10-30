@@ -619,27 +619,20 @@ impl Company {
         self.copper -= price;
         self.spent += price;
         self.hires = self.hires.wrapping_add(1);
-        let mut skill_xp = [0u16; 6];
-        for (xp, &level) in skill_xp.iter_mut().zip(skills.iter().take(6)) {
-            *xp = u16::try_from(level.saturating_mul(crate::career::SKILL_STEP as u32))
-                .unwrap_or(u16::MAX);
-        }
+        let levels: [u32; 6] = std::array::from_fn(|index| skills.get(index).copied().unwrap_or(0));
         self.roster.push(Member {
             name: name.into(),
             profession,
             xp: 0,
-            skills: [0; 6],
-            skill_xp,
+            skills: levels,
+            skill_xp: levels.map(|level| {
+                u16::try_from(level.saturating_mul(u32::from(SKILL_STEP))).unwrap_or(u16::MAX)
+            }),
             techniques: [[0; 6]; 6],
             loadouts: Default::default(),
             health: u16::MAX,
             in_entry: false,
         });
-        if let Some(member) = self.roster.last_mut() {
-            for (skill, &level) in member.skills.iter_mut().zip(skills.iter().take(6)) {
-                *skill = level;
-            }
-        }
         Ok(())
     }
 
@@ -875,8 +868,7 @@ pub struct Night {
     pub season: bool,
 }
 
-/// Health after one night. The step is 6553, or 9830 with a physician,
-/// and the pool stops at 65535.
+/// A skill word's level: the word over 5000.
 fn skill_level(word: u16) -> u32 {
     u32::from(word) / u32::from(SKILL_STEP)
 }
@@ -884,10 +876,8 @@ fn skill_level(word: u16) -> u32 {
 /// One lesson. The first skill under level 5 whose technique at that level
 /// the trainer knows gains 1000 divided by one plus the six levels, the
 /// story's skill lump (`experience::add_skill_lump`). A sum that reaches a
-/// new multiple of 5000 snaps to it.
-/// A trainer's lesson: when the student's current skill is one the trainer
-/// knows at its level, the student gains [`LESSON`] experience in it. Used
-/// for the manager and then each combatant in staff order.
+/// new multiple of 5000 snaps to it. The day's end gives it to the manager
+/// first, then to each combatant in staff order.
 pub fn teach(student: &mut Member, trainer: &Member) {
     let skills: [Skill; 6] = std::array::from_fn(|index| Skill {
         points: student.skill_xp[index],
@@ -941,8 +931,8 @@ pub fn copy_rank_loadout(member: &mut Member) -> bool {
     false
 }
 
-/// The night's recovery: [`REST`], or [`REST_WITH_PHYSICIAN`] with one
-/// employed, stopped at full health.
+/// The night's recovery: [`REST`] (6553), or [`REST_WITH_PHYSICIAN`] (9830)
+/// with one employed, stopped at full health (65535).
 #[must_use]
 pub fn rested(health: u16, physician: bool) -> u16 {
     let step = if physician { REST_WITH_PHYSICIAN } else { REST };
