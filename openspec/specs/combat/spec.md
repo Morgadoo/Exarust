@@ -18,11 +18,22 @@ The system SHALL hold a weapon model in the hand its grip names (the right hand,
 - **THEN** the halberd is held in the left hand at the chest, its haft running down past the right hand
 
 ### Requirement: Weapon contacts
-The system SHALL register at most one contact per attack and target, when the segment of a striker whose strike window is open (a held weapon's blade, or a fist when the fists are what is held) passes within a body part's volume; the blow reads the swing's clock, the clip's clock less its blend over its last key.
+The system SHALL register at most one contact per attack and target. A held weapon that is its own body SHALL register one where its body touches a muscled limb of another character while its strike window is open, at the contact point and on the blade side of the grip. A striker without a body of its own (a fist) SHALL register one when its segment passes within a body part's volume. The blow reads the swing's clock, the clip's clock less its blend over its last key.
 
 #### Scenario: Strike lands
-- **WHEN** an opponent's attack sweeps its blade through the player's body
-- **THEN** one hit on the nearest body part is reported
+- **WHEN** an opponent's sword strikes the player's body while its window is open
+- **THEN** one hit on the touched body part is reported at the contact point
+
+#### Scenario: The weapon is stopped by what it strikes
+- **WHEN** a woken golem's halberd meets the player's body
+- **THEN** the halberd does not pass through the body, and the hit is where the two touch
+
+### Requirement: Weapon contact precedence
+A weapon body's wound SHALL be refused while a clash or block waits for the damage routine and on the hand holding the struck character's shield. Within one tick a clash or block SHALL replace a pending wound, and a wound SHALL replace nothing.
+
+#### Scenario: A clash takes precedence
+- **WHEN** in one tick a striking weapon touches the defender's arm and then the defender's held weapon
+- **THEN** the clash is the contact the damage routine deals
 
 ### Requirement: Blow damage
 The system SHALL resolve each weapon contact by the original's damage routine, in its order and precision: the struck point's speed, the swing's or the stab's impact, the zone along the weapon (a haft hit adds its material's crush bonus at any on-target share), one coverage roll over the part's two armour layers, outer first, and impact, crush, slash and pierce through padding and resistances, crush and pierce raised by the engine's fast power. Part multipliers apply.

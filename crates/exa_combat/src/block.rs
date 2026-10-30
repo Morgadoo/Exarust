@@ -12,9 +12,12 @@
 //! - **The kind.** A held shield or torch (held bit 2) is a block, refused
 //!   once the swing's shield bit (0x200) is set. A held weapon (bit 1) is a clash,
 //!   once a swing (0x100) unless its holder parries, or counters this very
-//!   motion with a weapon other than its primary. A limb is the blade
-//!   sweep's wound ([`crate::Hit`] with [`crate::Struck::Limb`]), not
-//!   resolved here.
+//!   motion with a weapon other than its primary. A muscled limb of
+//!   another character is a wound ([`crate::Hit`] with
+//!   [`crate::Struck::Limb`]), once a target a swing, unless a clash or
+//!   block is pending or it is the hand holding the victim's shield: a held
+//!   weapon's body wounds only where it touches. Fists, and a held model
+//!   with no body, keep the blade sweep.
 //! - **One pending contact.** The striking part keeps one contact a tick
 //!   for the damage routine; a clash or a block replaces one recorded
 //!   earlier in the tick, so the last accepted wins. It waits as
@@ -137,6 +140,10 @@ struct Accepted {
     point: Vec3,
     struck: Struck,
     bone: usize,
+    /// The contact in the striking part's frame (m): where along the
+    /// weapon it lies is read from it, not from the item's scene transform,
+    /// which may lag the body by a frame.
+    local: Vec3,
 }
 
 /// The original's striking part on the pair stage's hit events: each side
@@ -157,7 +164,14 @@ pub fn strike_held(
         Option<&exa_anim::Animator>,
         Option<&PowerFactors>,
     )>,
-    fighters: Query<(Entity, &Ragdoll, &Fighter, Option<&Attacker>)>,
+    fighters: Query<(
+        Entity,
+        &Ragdoll,
+        &Fighter,
+        Option<&Attacker>,
+        Option<&crate::Condition>,
+        Has<ShieldHold>,
+    )>,
     mut hits: MessageWriter<Hit>,
 ) {
     let Some(pairs) = stages.as_deref().and_then(|s| s.get::<Pairs>()) else {
@@ -214,11 +228,32 @@ pub fn strike_held(
             );
         }
         for (own, other) in [(event.a, event.b), (event.b, event.a)] {
-            // Only a held weapon strikes here; a fist's and a limb's wounds
-            // are the blade sweep's.
+            // Only a held weapon's body strikes here; a fist's wounds (and
+            // those of a held model with no body) are the blade sweep's.
             let Some(striker) = items.get(&own.0).copied() else {
                 continue;
             };
+            // A limb of another fighter: the classifier's wound.
+            if !items.contains_key(&other.0)
+                && let Some(&victim) = owners.get(&other.0)
+            {
+                if let Some(found) = limb_contact(
+                    striker,
+                    own.1,
+                    victim,
+                    other.1,
+                    event.point,
+                    &owners,
+                    &held,
+                    &attackers,
+                    &fighters,
+                ) {
+                    // A wound never replaces a contact already pending this
+                    // tick; a clash or a block replaces a pending wound.
+                    accepted.entry(found.0).or_insert(found.1);
+                }
+                continue;
+            }
             let Some(struck) = items.get(&other.0).copied() else {
                 continue;
             };
@@ -240,14 +275,11 @@ pub fn strike_held(
             let Ok((attack, swing, ..)) = attackers.get(attacker) else {
                 continue;
             };
-            let Ok((_, _, defender, defender_attacker)) = fighters.get(victim) else {
+            let Ok((_, _, defender, defender_attacker, ..)) = fighters.get(victim) else {
                 continue;
             };
-            let local_y = own_part
-                .transform()
-                .inverse()
-                .transform_point3(event.point)
-                .y;
+            let local = own_part.transform().inverse().transform_point3(event.point);
+            let local_y = local.y;
             let parent_strikes = own_part
                 .parent
                 .and_then(|p| own_body.parts.get(p))
@@ -307,6 +339,7 @@ pub fn strike_held(
                     point: event.point,
                     struck: kind,
                     bone: struck_bone(kind, struck.slot),
+                    local,
                 },
             );
         }
@@ -321,7 +354,15 @@ pub fn strike_held(
         if attack.held_pending {
             continue;
         }
-        attack.held_pending = true;
+        if contact.struck == Struck::Limb {
+            // A wound: once a target a swing, as the blade sweep keeps it
+            // (the wound shuts the striker's window in the damage routine).
+            if !attack.struck.insert(contact.target) {
+                continue;
+            }
+        } else {
+            attack.held_pending = true;
+        }
         let wielder = fighters.get(attacker).ok().map(|f| f.2);
         // A block on a striker under the large size shuts its window in
         // the damage routine: the sweep leaves the holder alone meanwhile.
@@ -336,18 +377,32 @@ pub fn strike_held(
                 .map_or(0.0, |c| anim.clip_progress(c)),
             _ => 0.0,
         };
-        let strike =
-            crate::blade_strike(blade, gt, contact.point, &attack, progress, wielder, powers);
-        info!(
-            "{attacker:?}'s weapon struck {:?}'s {} at {:.0} cm, {:.1} cm/tick",
-            contact.target,
-            match contact.struck {
-                Struck::Shield { .. } => "shield: a block",
-                _ => "weapon: a clash",
-            },
-            strike.along,
-            strike.speed
-        );
+        // Where on the weapon: the contact as the striking part holds it,
+        // placed on the blade's frame.
+        let on_blade = gt.transform_point(contact.local);
+        let strike = crate::blade_strike(blade, gt, on_blade, &attack, progress, wielder, powers);
+        if contact.struck == Struck::Limb {
+            debug!(
+                "{attacker:?}'s weapon body met {:?}'s bone {} at {:.0} cm, {:.1} cm/tick: a wound \
+                 (y {:.1} cm in the striking part)",
+                contact.target,
+                contact.bone,
+                strike.along,
+                strike.speed,
+                contact.local.y * 100.0
+            );
+        } else {
+            info!(
+                "{attacker:?}'s weapon struck {:?}'s {} at {:.0} cm, {:.1} cm/tick",
+                contact.target,
+                match contact.struck {
+                    Struck::Shield { .. } => "shield: a block",
+                    _ => "weapon: a clash",
+                },
+                strike.along,
+                strike.speed
+            );
+        }
         hits.write(Hit {
             attacker,
             striker: contact.striker,
@@ -360,6 +415,81 @@ pub fn strike_held(
             struck: contact.struck,
         });
     }
+}
+
+/// A held weapon body's contact (its part `striking`) with a limb of
+/// `victim` (its body part `part`), as the striking part classifies it: a
+/// wound on a muscled limb of another tree, on the striking side (the
+/// point not behind the grip in the striking part's frame), with no clash
+/// or block waiting for the damage routine, and not the hand that holds
+/// the victim's shield (the classifier's guard). There is no speed gate:
+/// the damage routine weighs the contact's speed. A dead
+/// victim takes none, as the sweep skips it [Exarust's: the original's dead
+/// body leaves the living-limb family, which was not traced].
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn limb_contact(
+    striker: HeldBody,
+    striking: usize,
+    victim: Entity,
+    part: usize,
+    point: Vec3,
+    owners: &HashMap<Entity, Entity>,
+    held: &Query<(Entity, &Ragdoll, Option<&HeldGrip>, Option<&Blade>)>,
+    attackers: &Query<(
+        &mut Attacking,
+        &mut SwingState,
+        Option<&exa_anim::Animator>,
+        Option<&PowerFactors>,
+    )>,
+    fighters: &Query<(
+        Entity,
+        &Ragdoll,
+        &Fighter,
+        Option<&Attacker>,
+        Option<&crate::Condition>,
+        Has<ShieldHold>,
+    )>,
+) -> Option<(Entity, Accepted)> {
+    let attacker = *owners.get(&striker.holder)?;
+    let (_, own_body, ..) = held.get(striker.root).ok()?;
+    let (_, victim_body, defender, _, condition, shielded) = fighters.get(victim).ok()?;
+    if condition.is_some_and(|c| c.is_dead()) {
+        return None;
+    }
+    let own_part = own_body.parts.get(striking)?;
+    let other_part = victim_body.parts.get(part)?;
+    let (attack, swing, ..) = attackers.get(attacker).ok()?;
+    let local = own_part.transform().inverse().transform_point3(point);
+    let local_y = local.y;
+    let parent_strikes = own_part
+        .parent
+        .and_then(|p| own_body.parts.get(p))
+        .is_some_and(|p| p.state.has(PartState::STRIKING));
+    let contact = Contact {
+        own: own_part.state,
+        other: other_part.state,
+        same_tree: attacker == victim,
+        faces: faces(local_y, attack.weapon_class & 0x30 == 0, parent_strikes),
+        own_motion: attack.motion.index() as i32,
+        own_flags: swing.flags,
+        own_pending: i32::from(attack.held_pending),
+        other_parrying: defender.parry.active,
+        other_motion: -1,
+        other_is_primary: false,
+        other_guarded: shielded && other_part.bone == SHIELD_HAND_BONE,
+    };
+    let classified = classify(&contact)?;
+    (classified.kind == ContactKind::Wound).then_some((
+        attacker,
+        Accepted {
+            striker: striker.root,
+            target: victim,
+            point,
+            struck: Struck::Limb,
+            bone: other_part.bone,
+            local,
+        },
+    ))
 }
 
 /// One tick of a held shield's arm on its holder's [`ShieldHold`]

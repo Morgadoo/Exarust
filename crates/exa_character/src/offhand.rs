@@ -28,7 +28,7 @@ use exa_physics::grip::{HeldGrip, HeldKind};
 use exa_physics::grip_solve::GripSolveSet;
 
 use crate::grip_runtime::{HeldRecord, PendingGrip};
-use crate::{LEFT_HAND, RIGHT_HAND, RaceWeaponry, grip_bone, held_item_bodies};
+use crate::{LEFT_HAND, RIGHT_HAND, RaceWeaponry, grip_bone};
 
 /// What the off hand holds: a shield on the off arm, or a weapon in the
 /// second held slot.
@@ -141,7 +141,14 @@ fn attach_off_hands(
             off.kind,
             if off.flip { ", flipped" } else { "" }
         );
-        let item_bodies = held_item_bodies(&weapon, root, &nodes);
+        // A factory weapon's merged node is its body, as for the main hand.
+        let factory_sound = off.model.starts_with('@').then(|| {
+            off.weapon
+                .as_ref()
+                .map_or(0, |w| w.stats.get(exa_formats::weapon_stats::at::SOUND))
+        });
+        let (item_bodies, sounds) =
+            crate::item_bodies(&weapon, root, &nodes, loader.meshes, factory_sound);
         if item_bodies.is_empty() {
             continue;
         }
@@ -206,11 +213,9 @@ fn attach_off_hands(
             links: None,
             released: false,
         };
-        commands.entity(root).insert((
-            exa_physics::prop::PendingProp(item_bodies),
-            crate::held_item_sounds(&weapon),
-            grip,
-        ));
+        commands
+            .entity(root)
+            .insert((exa_physics::prop::PendingProp(item_bodies), sounds, grip));
         if ragdoll.is_none() {
             commands.entity(root).insert(PendingGrip { holder: body });
         }

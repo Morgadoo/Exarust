@@ -502,7 +502,7 @@ fn track_blades(time: Res<Time>, mut blades: Query<(&mut Blade, &GlobalTransform
 #[allow(clippy::type_complexity)]
 fn detect_hits(
     motions: Option<Res<Motions>>,
-    blades: Query<(Entity, &Blade, &GlobalTransform)>,
+    blades: Query<(Entity, &Blade, &GlobalTransform, Option<&Ragdoll>)>,
     mut attackers: Query<(
         &Animator,
         &mut Attacking,
@@ -516,7 +516,13 @@ fn detect_hits(
     mut hits: MessageWriter<Hit>,
 ) {
     let Some(motions) = motions else { return };
-    for (striker, blade, gt) in &blades {
+    for (striker, blade, gt, item_body) in &blades {
+        // A held weapon that is its own body wounds where that body touches
+        // a limb, in the pair stage ([`block::strike_held`]), as the
+        // original's striking part does.
+        if item_body.is_some_and(|b| b.held_by.is_some()) {
+            continue;
+        }
         let Ok((anim, mut attack, swing, wielder, powers)) = attackers.get_mut(blade.wielder)
         else {
             continue;

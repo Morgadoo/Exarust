@@ -122,9 +122,16 @@ blocks with the holder's `ShieldHold` (parrying with it while the holder
 parries; `Holding::countering` when it counters this motion), writes the
 spent arm back, recoils the striker and stamps the shield body's sound
 clock with the first shield ring's draw (now + 300 − draw); a clash takes
-`parry::clash_branch` with the struck weapon's primary flag. Limbs stay
-the blade sweep's (`Struck::Limb`), which never wounds the hand holding a
-shield (the classifier's guard). Blocks and clashes are logged at info
+`parry::clash_branch` with the struck weapon's primary flag. A held
+weapon that is its own body (every stored model with a rigid node, and
+every factory weapon) also wounds through the pair stage: its hit event on
+a muscled limb of another fighter is the classifier's wound
+(`Struck::Limb`) at the contact point, measured along the weapon in the
+striking part's frame, once a target a swing, refused while a clash or
+block waits and on the hand holding the struck fighter's shield; a clash
+or block in the same tick replaces it, and it replaces nothing. There is no
+speed gate. The blade sweep is left to the fists and to a held model with
+no body, and never wounds the hand holding a shield. Blocks and clashes are logged at info
 ("a block", "blow on …'s shield"), each classified contact at debug. Rules and
 numbers: [`docs/formats/OTHER.md`](../../docs/formats/OTHER.md), Damage.
 

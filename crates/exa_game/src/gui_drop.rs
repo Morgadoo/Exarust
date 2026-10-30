@@ -314,12 +314,24 @@ pub fn run_gui_drops(
         };
         // The node is made and its bodies built before the run asks whether
         // it has physics, as the original's task finds the body on the node.
+        // An assembled factory weapon's merged node is its body (its
+        // section's sound byte picks the hit set).
+        let factory_sound = model.as_ref().and_then(|item| {
+            item.model.starts_with('@').then(|| {
+                item.weapon
+                    .as_ref()
+                    .map_or(0, |w| w.stats.get(exa_formats::weapon_stats::at::SOUND))
+            })
+        });
         let spawned = built.as_ref().map(|m| {
             let (root, nodes) = exa_world::spawn_model_nodes(&mut commands, m, None);
-            let parts = exa_character::held_item_bodies(m, root, &nodes);
-            (root, parts)
+            let (parts, sounds) =
+                exa_character::item_bodies(m, root, &nodes, &assets.meshes, factory_sound);
+            (root, (parts, sounds))
         });
-        let has_body = spawned.as_ref().is_some_and(|(_, parts)| !parts.is_empty());
+        let has_body = spawned
+            .as_ref()
+            .is_some_and(|(_, (parts, _))| !parts.is_empty());
         match player_controls::run_spawn(true, drop.word, has_body, condition) {
             SpawnRun::Nothing => {}
             SpawnRun::Dropped => {
@@ -342,7 +354,7 @@ pub fn run_gui_drops(
                 end_word,
                 copy_frame,
             } => {
-                let Some((root, parts)) = spawned else {
+                let Some((root, (parts, sounds))) = spawned else {
                     continue;
                 };
                 let at = place.point().unwrap_or_else(|| {
@@ -357,10 +369,6 @@ pub fn run_gui_drops(
                     "gui drop: {:#x} ({name}) placed at ({:.2}, {:.2}, {:.2}), condition {condition:#x}, limit {place_limit_cm} cm",
                     task.item, at.x, at.y, at.z
                 );
-                let sounds = built
-                    .as_deref()
-                    .map(exa_character::held_item_sounds)
-                    .unwrap_or_default();
                 // The spawned record carries what a placed object does:
                 // its template word, its usable and container sections and
                 // its mechanism records, from the object database record

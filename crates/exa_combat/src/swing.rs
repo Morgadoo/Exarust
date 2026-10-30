@@ -1025,8 +1025,8 @@ struct StabHeld<'a> {
 
 /// One tick of the stab drive on `body` ([`crate::stab::stab_drive`]):
 /// the weapon point's push goes to the item's own body, and the left
-/// hand's to that hand. A weapon with no body of its own (a factory
-/// weapon, attached to its hand's bone) takes its push through the hand
+/// hand's to that hand (a factory weapon's assembled body included). A
+/// held model with no body of its own takes its push through the hand
 /// that grips it, at that hand's centre. [Exarust's: the original pushes
 /// its item body, which its grip links tie to the hand. Turning the hand
 /// about the grip instead made a spear flail in the GPU runs.]
