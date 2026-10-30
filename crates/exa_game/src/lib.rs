@@ -107,6 +107,7 @@ pub mod save_scene;
 pub mod save_screen;
 pub mod scene_bodies;
 pub mod scene_editor;
+pub mod script_cast;
 pub mod session;
 pub mod settings_form;
 pub mod shell_draw;
@@ -175,7 +176,7 @@ impl Plugin for GamePlugin {
                 player_light::PlayerLightPlugin,
                 commands::CommandPlugin,
             ),
-            hud::HudPlugin,
+            (script_cast::ScriptCastPlugin, hud::HudPlugin),
             torch::TorchPlugin,
             trace::TracePlugin,
             effects::EffectsPlugin,

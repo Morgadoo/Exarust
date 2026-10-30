@@ -316,15 +316,18 @@ pub struct Cast {
 #[derive(Debug, Clone, Copy)]
 pub struct Reading<'a> {
     pub id: u32,
-    pub name: &'a str,
+    /// A name, when the world has one (the stored one stays otherwise).
+    pub name: Option<&'a str>,
     /// The role list the AI holds; a role already known keeps its values.
     pub roles: &'a [HeldRole],
-    /// Health pool and maximum.
-    pub health: (f32, f32),
-    pub awake: bool,
+    /// Health pool and maximum, when the body has health.
+    pub health: Option<(f32, f32)>,
+    /// Awake state, when the world knows it.
+    pub awake: Option<bool>,
     /// AI arousal (dialogues need it low).
-    pub arousal: f32,
-    pub out_of_action: bool,
+    pub arousal: Option<f32>,
+    /// Out of action (the collapsed or dead state bit).
+    pub out_of_action: Option<bool>,
 }
 
 impl Cast {
@@ -348,17 +351,27 @@ impl Cast {
                 Some(i) => i,
                 None => {
                     self.characters
-                        .push(Character::new(reading.id, reading.name));
+                        .push(Character::new(reading.id, reading.name.unwrap_or("")));
                     self.characters.len() - 1
                 }
             };
             let character = &mut self.characters[i];
-            character.name.clear();
-            character.name.push_str(reading.name);
-            character.health = reading.health;
-            character.awake = reading.awake;
-            character.arousal = reading.arousal;
-            character.out_of_action = reading.out_of_action;
+            if let Some(name) = reading.name {
+                character.name.clear();
+                character.name.push_str(name);
+            }
+            if let Some(health) = reading.health {
+                character.health = health;
+            }
+            if let Some(awake) = reading.awake {
+                character.awake = awake;
+            }
+            if let Some(arousal) = reading.arousal {
+                character.arousal = arousal;
+            }
+            if let Some(out_of_action) = reading.out_of_action {
+                character.out_of_action = out_of_action;
+            }
             let mut merged = Vec::with_capacity(reading.roles.len());
             for held in reading.roles {
                 merged.push(
@@ -404,12 +417,12 @@ mod tests {
     fn reading<'a>(id: u32, name: &'a str, roles: &'a [HeldRole]) -> Reading<'a> {
         Reading {
             id,
-            name,
+            name: Some(name),
             roles,
-            health: (1.0, 1.0),
-            awake: true,
-            arousal: 0.0,
-            out_of_action: false,
+            health: Some((1.0, 1.0)),
+            awake: Some(true),
+            arousal: Some(0.0),
+            out_of_action: Some(false),
         }
     }
 
@@ -425,7 +438,7 @@ mod tests {
         // A relation the script made survives a later mirror.
         cast.get_mut(9).unwrap().add_relation(3, 7, 0);
         let mut r = reading(9, "Derrin", &roles[..1]);
-        r.arousal = 0.5;
+        r.arousal = Some(0.5);
         cast.mirror(&[r]);
         let c = cast.get(9).unwrap();
         assert!(c.holds_toward(3, 7));
