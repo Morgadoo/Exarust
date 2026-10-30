@@ -1707,6 +1707,7 @@ fn gather_lights(
             of_sector,
             textures.origin,
             textures.extent,
+            textures.voxel,
         );
         return;
     }
@@ -1754,6 +1755,7 @@ fn gather_lights(
         of_sector,
         textures.origin,
         textures.extent,
+        textures.voxel,
     );
 }
 
@@ -1766,11 +1768,22 @@ fn push_groups(
     of_sector: [u8; SECTORS * SECTORS],
     origin: Vec3,
     extent: Vec3,
+    voxel: f32,
 ) {
     // `extent` is in world axes (X, height, Z): the texture's second axis
     // is world Z, its third the height over the block's width.
     let width = extent.x.max(1e-6);
-    let depth = extent.z.max(1e-6);
+    // The original's light uniforms are centimetres: its scale is
+    // `1/(W·fc)` (W voxels, fc cm each), positions measure from the block's
+    // **centre** and carry the +0.5 texture half-texel, and the height is
+    // `below/W + y·scale` (below in voxels). Same values, its own order.
+    let inv = 1.0 / (width * CM_PER_M);
+    let centre_cm = Vec2::new(
+        origin.x * CM_PER_M + width * CM_PER_M * 0.5,
+        origin.z * CM_PER_M + extent.z.max(1e-6) * CM_PER_M * 0.5,
+    );
+    let width_voxels = (width / voxel.max(1e-6)).max(1.0);
+    let below = (-origin.y / voxel.max(1e-6)).round();
     for group in groups {
         let first = gi.lights.len();
         for id in group.lights.ids() {
@@ -1785,14 +1798,15 @@ fn push_groups(
                     ..default()
                 }
             } else {
-                let p = source.position - origin;
+                let p = source.position * CM_PER_M;
                 let shaping = source.shaping;
+                let radius_cm = (source.radius * CM_PER_M).max(1e-6);
                 GiLight {
                     position_radius: Vec4::new(
-                        p.x / width,
-                        p.z / depth,
-                        p.y / width,
-                        width / source.radius.max(1e-6),
+                        (p.x - centre_cm.x) * inv + 0.5,
+                        (p.z - centre_cm.y) * inv + 0.5,
+                        below / width_voxels + p.y * inv,
+                        1.0 / (radius_cm * inv),
                     ),
                     colour_shadow: colour.extend(source.cube_shadow_scale()),
                     shaping: Vec4::new(shaping.x, shaping.y, 1.0 / (shaping.y.exp2() - 1.0), 0.0),
@@ -2729,10 +2743,25 @@ mod tests {
             Vec3::new(0.0, -6.8, 0.0),
             // World axes: 51.2 m across, 12.8 m tall.
             Vec3::new(51.2, 12.8, 51.2),
+            0.2,
         );
         let light = gi.lights[0];
-        let expected = Vec4::new(10.0 / 51.2, 6.0 / 51.2, 8.8 / 51.2, 25.6);
-        assert!((light.position_radius - expected).abs().max_element() < 1e-6);
+        // The original's order: (cm − the block's centre cm)·(1/5120) + 0.5,
+        // the height as below/W + y·(1/5120), and 1/(R·(1/5120)).
+        let inv = 1.0f32 / 5120.0;
+        let expected = Vec4::new(
+            (1000.0 - 2560.0) * inv + 0.5,
+            (600.0 - 2560.0) * inv + 0.5,
+            34.0 / 256.0 + 200.0 * inv,
+            1.0 / (200.0 * inv),
+        );
+        assert_eq!(light.position_radius, expected);
+        assert!(
+            (light.position_radius - Vec4::new(10.0 / 51.2, 6.0 / 51.2, 8.8 / 51.2, 25.6))
+                .abs()
+                .max_element()
+                < 1e-6
+        );
         assert!((light.colour_shadow.x - 0.15).abs() < 1e-6);
         // ((0.025 bias + 0.94) / 200 cm) × 5120, in double.
         let scale = ((0.025f64 + 0.94) / 200.0 * 5120.0) as f32;
@@ -2750,7 +2779,15 @@ mod tests {
         );
         let mut gi = GiLights::default();
         groups[0].lights = GiSector::new([SKY_LIGHT_ID]);
-        push_groups(&mut gi, &groups, &sources, [0; 64], Vec3::ZERO, Vec3::ONE);
+        push_groups(
+            &mut gi,
+            &groups,
+            &sources,
+            [0; 64],
+            Vec3::ZERO,
+            Vec3::ONE,
+            0.2,
+        );
         assert!((gi.lights[0].colour_shadow.x - 0.9).abs() < 1e-6);
         assert_eq!(gi.lights[0].shaping.w, 1.0);
         assert_eq!(gi.cube_slots, vec![u32::MAX]);
