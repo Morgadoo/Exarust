@@ -244,18 +244,36 @@ impl ArcSpec {
     /// hum and a point light (0.6, 0.65, 1) of half the size at 80 sizes,
     /// multiplier 2, softness 5; no voxel light.
     pub fn device(duration: u16, length: u16, branches: i16, direction: Vec3) -> Self {
-        let size = f32::from(duration) * 0.001;
-        let length = f32::from(length);
+        Self::device_fields(
+            DeviceFields {
+                active: true,
+                duration,
+                length,
+                branches,
+                flags: 0,
+            },
+            direction,
+        )
+    }
+
+    /// The level-device import's fields: the same preset from the record's
+    /// duration, length and branches. `direction` is the device node's
+    /// third axis (its first tendril's first segment runs along it); the
+    /// record's flag bit 0x02 adds a fixed end point
+    /// ([`DeviceFields::end_point`]).
+    pub fn device_fields(fields: DeviceFields, direction: Vec3) -> Self {
+        let size = f32::from(fields.duration) * 0.001;
+        let length = f32::from(fields.length);
         let segments = (length / (size * 4.0)).round_ties_even();
         let segments = if segments.is_finite() && segments >= 2.0 {
             (segments as u32).min(4096)
         } else {
             10
         };
-        let branches = if branches == 0 {
+        let branches = if fields.branches == 0 {
             10
         } else {
-            branches.max(1) as u32
+            fields.branches.max(1) as u32
         };
         Self {
             preset: Preset::Device,
@@ -339,6 +357,90 @@ impl ArcSpec {
     pub fn width(&self) -> f32 {
         self.size * 2.0
     }
+
+    /// The tendril records the original allocates: the preset's tendril
+    /// count, except a spark burst, whose six extra tendrils take free
+    /// records among its twenty rather than adding records.
+    pub fn records(&self) -> u32 {
+        match self.preset {
+            Preset::SparkBurst => 20,
+            _ => self.tendrils,
+        }
+    }
+
+    /// The geometry the original allocates for the arc, per tendril record
+    /// ([`ArcSpec::records`]): the index buffer holds
+    /// `(4·segments + 2) · records · 3` indices and the vertex buffer
+    /// `(4·segments + 4) · records` vertices, every vertex coloured with the
+    /// word `0xff0019` (red 0x19, green 0, blue 0xff).
+    pub fn ribbon_capacity(&self) -> RibbonCapacity {
+        let segments = self.segments.max(1);
+        let tendrils = self.records().max(1);
+        RibbonCapacity {
+            vertices: (segments * 4 + 4) * tendrils,
+            indices: (segments * 4 + 2) * tendrils * 3,
+        }
+    }
+}
+
+/// The arc geometry's buffer sizes, as the original allocates them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RibbonCapacity {
+    pub vertices: u32,
+    pub indices: u32,
+}
+
+/// The level-device object record's fields the arc reads: the active bit
+/// (bit 0 of the word at 0x0c; the import builds no arc without it), the
+/// duration (thousandths), the length in cm, the branch count and the flag
+/// byte (the high byte of the word at 0x0a) whose bit 0x02 gives the arc a
+/// fixed end point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeviceFields {
+    pub active: bool,
+    pub duration: u16,
+    pub length: u16,
+    pub branches: i16,
+    pub flags: u8,
+}
+
+impl DeviceFields {
+    /// Parses the fields from an object record; short data is an error,
+    /// never a panic.
+    pub fn parse(data: &[u8]) -> Result<Self, ArcError> {
+        if data.len() < 0x16 {
+            return Err(ArcError::ShortDevice);
+        }
+        let u = |at: usize| u16::from_le_bytes([data[at], data[at + 1]]);
+        Ok(Self {
+            active: data[0x0c] & 1 != 0,
+            duration: u(0x10),
+            length: u(0x12),
+            branches: u(0x14) as i16,
+            flags: data[0x0b],
+        })
+    }
+
+    /// Whether the arc has a fixed end point (the record's flag bit 0x02).
+    pub fn has_end_point(self) -> bool {
+        self.flags & 0x02 != 0
+    }
+
+    /// The arc's fixed end point when the record asks for one: the node's
+    /// position plus its third axis times the record's length, each
+    /// component `position + axis·length` in single precision. Without the
+    /// flag the arc keeps the emitter's default end and only its first
+    /// segment's direction comes from the node.
+    pub fn end_point(self, position: Vec3, third_axis: Vec3) -> Option<Vec3> {
+        let length = f32::from(self.length);
+        self.has_end_point().then(|| {
+            Vec3::new(
+                position.x + third_axis.x * length,
+                position.y + third_axis.y * length,
+                position.z + third_axis.z * length,
+            )
+        })
+    }
 }
 
 /// Errors from an arc's data.
@@ -346,12 +448,15 @@ impl ArcSpec {
 pub enum ArcError {
     /// The record is shorter than its 84 bytes.
     Short,
+    /// A level device's object record is shorter than its fields.
+    ShortDevice,
 }
 
 impl fmt::Display for ArcError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Short => write!(f, "the arc record is shorter than 84 bytes"),
+            Self::ShortDevice => write!(f, "the device record is shorter than 22 bytes"),
         }
     }
 }
@@ -489,6 +594,78 @@ pub fn electrified_action(has_item: bool, part_live: bool, arc: Option<ArcNode>)
     }
 }
 
+/// One of a body's two hand slots, as the equipment check scans them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct HandSlot {
+    /// The item held there.
+    pub item: Option<u32>,
+}
+
+/// The equipment check's item lookup: the item id is looked for in the two
+/// hand slots, and the check answers whether the item and its object record
+/// exist, and what to do with its arc. The original returns 1 only when the
+/// record exists, and runs the arc's release or creation from there.
+pub fn electrified_check(
+    slots: &[HandSlot],
+    item: u32,
+    record_found: bool,
+    part_live: bool,
+    arc: Option<ArcNode>,
+) -> (bool, ArcAction) {
+    let held = slots.iter().take(2).any(|slot| slot.item == Some(item));
+    if !held || !record_found {
+        return (false, ArcAction::None);
+    }
+    (true, electrified_action(true, part_live, arc))
+}
+
+/// A discharge an electrified item's hit queues: the point the spark burst
+/// appears at, in the item's frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Discharge {
+    pub point: Vec3,
+}
+
+/// What a discharge did: the charge step (when the item and its record
+/// exist), whether the item's arc effect is cleared, and the spark burst it
+/// spawns at the point. The original always spawns the burst, charged or
+/// not.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DischargeResult {
+    /// The charge's outcome, when there was an item record.
+    pub outcome: Option<ChargeOutcome>,
+    /// The item's arc effect is cleared: its record is gone, or the charge
+    /// was spent.
+    pub clear_effect: bool,
+    /// The burst's preset and the point it is placed at.
+    pub burst: (ArcSpec, Vec3),
+}
+
+/// A hit's discharge. With an item: when its record is gone the item's arc
+/// effect is cleared; otherwise the record's heavy bit (its kind word's
+/// 0x10) picks the 0x80 charge step, else ten, and the step that would
+/// reach 255 fills the charge, spends it and clears the effect. The spark
+/// burst then appears at the queued point, whether or not an item was
+/// there.
+pub fn discharge(
+    has_item: bool,
+    record_kind: Option<u16>,
+    charge: &mut Charge,
+    request: Discharge,
+) -> DischargeResult {
+    let outcome = if has_item {
+        record_kind.map(|kind| charge.hit(kind & 0x10 != 0))
+    } else {
+        None
+    };
+    let clear_effect = has_item && outcome.is_none_or(|o| o == ChargeOutcome::Spent);
+    DischargeResult {
+        outcome,
+        clear_effect,
+        burst: (ArcSpec::spark_burst(), request.point),
+    }
+}
+
 /// A child node of an electrified item, as the arc checks see it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ElectrifiedEffect {
@@ -594,14 +771,30 @@ impl Arc {
         self.tendrils.clear();
         for t in 0..n {
             let mut points = Vec::with_capacity(s);
-            let spread = if t < 20 { 0.0 } else { spec.reach };
-            let mut from = start;
-            if spread > 0.0 {
-                from += right * ((rng.unit() - 0.5) * spread) + up * ((rng.unit() - 0.5) * spread);
+            // A spark burst starts its six extra tendrils at the source in a
+            // random direction (x, sway·y, z, each a unit draw less a half).
+            // The original makes each one segment long and lets the tendril
+            // emitter grow it (`exa_game::thaum::arcs::spark_burst` is that
+            // exact rule); this ribbon model lays them out full length.
+            let extra = spec.preset == Preset::SparkBurst && t >= 20;
+            let from = start;
+            let mut to = end;
+            if extra {
+                let sway = spec.sway.unwrap_or(0.0);
+                let mut d = Vec3::new(
+                    rng.unit() - 0.5,
+                    (rng.unit() - 0.5) * sway,
+                    rng.unit() - 0.5,
+                );
+                if d.length_squared() == 0.0 {
+                    d = Vec3::X;
+                }
+                d = d.normalize();
+                to = start + d * spec.segment_length * (s - 1) as f32;
             }
             for k in 0..s {
                 let f = k as f32 / (s - 1) as f32;
-                let base = from.lerp(end, f);
+                let base = from.lerp(to, f);
                 let bulge = (std::f32::consts::PI * f).sin();
                 // [guess] The jitter is a per-tick step in the original's
                 // tendril; over a tendril's life it grows to a few segment
@@ -630,6 +823,20 @@ impl Arc {
         if self.lifetime == 0 {
             self.lifetime = self.age.max(1);
         }
+    }
+
+    /// The clock a supersample pass draws the arc at: the draw rewrites each
+    /// pass's clock to `((pass + frame + 0.5)·0.001)/divisor + start −
+    /// 0.0005` (pass from 0, the pass and frame counters added as integers
+    /// and the 0.5 in single precision, the rest in double, then narrowed),
+    /// where `start` is pass 0's clock before the draw and `divisor` the
+    /// engine's pass divisor (1 in the shipped build); it draws once per
+    /// pass with that pass's viewport and restores the clocks after. The
+    /// pass count is the renderer's supersample count, not the tendrils:
+    /// Exarust's supersampled camera draws the arc once.
+    pub fn pass_clock(pass: i32, frame: i32, start: f32, divisor: i32) -> f32 {
+        let counter = (i64::from(pass) + i64::from(frame)) as f32 + 0.5;
+        (f64::from(counter) * 0.001 / f64::from(divisor) + f64::from(start) - 0.0005) as f32
     }
 
     /// One tick: ages the arc and scrolls its texture; a sustained arc
@@ -898,6 +1105,142 @@ mod tests {
         assert_eq!(s.reach, 8.0);
         assert_eq!(s.glow, Some(Glow::SPARK));
         assert!(!s.sustained);
+    }
+
+    #[test]
+    fn the_device_record_parses_its_fields() {
+        let mut data = [0u8; 0x16];
+        data[0x0b] = 0x02;
+        data[0x0c] = 0x01;
+        data[0x10..0x12].copy_from_slice(&1500u16.to_le_bytes());
+        data[0x12..0x14].copy_from_slice(&240u16.to_le_bytes());
+        data[0x14..0x16].copy_from_slice(&7i16.to_le_bytes());
+        assert_eq!(DeviceFields::parse(&[0; 0x15]), Err(ArcError::ShortDevice));
+        let f = DeviceFields::parse(&data).expect("the fields");
+        assert_eq!(
+            f,
+            DeviceFields {
+                active: true,
+                duration: 1500,
+                length: 240,
+                branches: 7,
+                flags: 0x02
+            }
+        );
+        assert!(f.has_end_point());
+        // The end point lies the record's length along the node's third
+        // axis, only with the flag.
+        assert_eq!(
+            f.end_point(Vec3::new(1.0, 2.0, 3.0), Vec3::NEG_Z),
+            Some(Vec3::new(1.0, 2.0, -237.0))
+        );
+        assert_eq!(
+            DeviceFields { flags: 0, ..f }.end_point(Vec3::ZERO, Vec3::NEG_Z),
+            None
+        );
+        data[0x0c] = 0;
+        assert!(!DeviceFields::parse(&data).expect("the fields").active);
+        let s = ArcSpec::device_fields(f, Vec3::NEG_Z);
+        // 1.5 cm size, four sizes a segment: 240 / 6 = 40 segments.
+        assert!((s.size - 1.5).abs() < 1e-6);
+        assert_eq!(s.segments, 40);
+        assert_eq!(s.tendrils, 7);
+        assert!((s.segment_length - 6.0).abs() < 1e-6);
+        // The record's flags do not change the preset's own.
+        assert_eq!(s.flags, 0);
+    }
+
+    #[test]
+    fn a_supersample_pass_draws_the_arc_at_its_own_clock() {
+        // Pass 0, frame 0, from 0.5: (0.5·0.001)/1 + 0.5 − 0.0005 = 0.5.
+        assert_eq!(Arc::pass_clock(0, 0, 0.5, 1), 0.5);
+        // Pass 1 of frame 2: (3.5·0.001)/1 + 0.5 − 0.0005 = 0.503, worked
+        // in double and narrowed.
+        assert_eq!(
+            Arc::pass_clock(1, 2, 0.5, 1),
+            (3.5f64 * 0.001 / 1.0 + 0.5 - 0.0005) as f32
+        );
+        // Each pass steps a millisecond over the divisor.
+        let step = Arc::pass_clock(3, 0, 0.0, 2) - Arc::pass_clock(2, 0, 0.0, 2);
+        assert!((step - 0.0005).abs() < 1e-7);
+    }
+
+    #[test]
+    fn the_arc_geometry_has_the_originals_buffers() {
+        let weapon = ArcSpec::weapon();
+        // (4·5 + 4)·20 vertices, (4·5 + 2)·20·3 indices.
+        assert_eq!(
+            weapon.ribbon_capacity(),
+            RibbonCapacity {
+                vertices: 480,
+                indices: 1320
+            }
+        );
+        // The burst allocates twenty records; its six extra tendrils reuse
+        // free ones.
+        let burst = ArcSpec::spark_burst();
+        assert_eq!(burst.ribbon_capacity().vertices, (4 * 5 + 4) * 20);
+        assert_eq!(burst.ribbon_capacity().indices, (4 * 5 + 2) * 20 * 3);
+    }
+
+    #[test]
+    fn the_hand_slots_and_the_equipment_check() {
+        let slots = [HandSlot { item: None }, HandSlot { item: Some(7) }];
+        // Held and with a record: the arc action runs from the part and the
+        // arc's state.
+        assert_eq!(
+            electrified_check(&slots, 7, true, true, None),
+            (true, ArcAction::Create)
+        );
+        assert_eq!(
+            electrified_check(&slots, 7, true, false, Some(ArcNode { finished: false })),
+            (true, ArcAction::Release)
+        );
+        // Not held, or no record: nothing, and no item.
+        assert_eq!(
+            electrified_check(&slots, 8, true, true, None),
+            (false, ArcAction::None)
+        );
+        assert_eq!(
+            electrified_check(&slots, 7, false, true, None),
+            (false, ArcAction::None)
+        );
+        // Only the two hand slots are scanned.
+        let long = [HandSlot { item: Some(9) }, HandSlot { item: None }];
+        assert!(electrified_check(&long, 9, true, false, None).0);
+    }
+
+    #[test]
+    fn a_discharge_steps_the_charge_and_spawns_the_burst() {
+        let mut charge = Charge { value: 0xf0 };
+        let hit = Discharge {
+            point: Vec3::new(3.0, 4.0, 5.0),
+        };
+        let out = discharge(true, Some(0x4010), &mut charge, hit);
+        // The record's 0x10 bit takes the heavy 0x80 step, which reaches the
+        // limit (0xf0 is not below 0xff − 0x80): the charge fills, spends
+        // and clears the effect.
+        assert_eq!(out.outcome, Some(ChargeOutcome::Spent));
+        assert!(out.clear_effect);
+        assert_eq!(charge.value, 0xff);
+        assert_eq!(out.burst.0.preset, Preset::SparkBurst);
+        assert_eq!(out.burst.1, Vec3::new(3.0, 4.0, 5.0));
+        // A light step below the limit only charges: 0x10 + 10.
+        let mut charge = Charge { value: 0x10 };
+        let out = discharge(true, Some(0x4000), &mut charge, hit);
+        assert_eq!(out.outcome, Some(ChargeOutcome::Charged));
+        assert!(!out.clear_effect);
+        assert_eq!(charge.value, 0x1a);
+        // An item whose record is gone: no charge step, the effect clears.
+        let mut charge = Charge { value: 0 };
+        let out = discharge(true, None, &mut charge, hit);
+        assert_eq!(out.outcome, None);
+        assert!(out.clear_effect);
+        assert_eq!(charge.value, 0);
+        // No item: nothing but the burst.
+        let out = discharge(false, Some(0x10), &mut charge, hit);
+        assert_eq!((out.outcome, out.clear_effect), (None, false));
+        assert_eq!(out.burst.0.preset, Preset::SparkBurst);
     }
 
     #[test]

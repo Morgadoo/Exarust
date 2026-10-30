@@ -1172,6 +1172,19 @@ pub fn spawn_model_nodes(
         let parent = node.parent.map_or(root, |p| entities[p]);
         commands.entity(entities[i]).insert(ChildOf(parent));
     }
+    // A fire marker suppresses its host mesh's own emissive: remember the
+    // host's first part so the fire can drive it.
+    for (i, node) in model.nodes.iter().enumerate() {
+        if node.fire.is_none() {
+            continue;
+        }
+        let Some(parent) = node.parent else { continue };
+        if let Some(&part) = parts_of[parent].first() {
+            commands
+                .entity(entities[i])
+                .insert(fire::FireHost { part, base: None });
+        }
+    }
     let mut excluded: Vec<Vec<Entity>> = vec![Vec::new(); model.nodes.len()];
     for (node, anchor) in self_shadowless(model) {
         excluded[node].push(entities[anchor]);

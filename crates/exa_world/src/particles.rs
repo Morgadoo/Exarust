@@ -18,6 +18,7 @@
 //! ticks for the simulation. Rules: `docs/RENDERING.md` (Fires).
 
 use bevy::prelude::{Mat3, Vec2, Vec3};
+use exa_physics::engine_math::normalize_approx;
 
 /// The simulation's tick rate.
 pub const TICK_HZ: f32 = 83.0;
@@ -40,8 +41,17 @@ pub mod flags {
     pub const FINITE: u32 = 0x20;
     /// Keep the bounding box instead of updating it.
     pub const FIXED_BOUNDS: u32 = 0x40;
-    /// Spawn velocity and quad orientation from the camera's forward axis.
+    /// Spawn velocity and smoothed motion from the camera's forward axis.
     pub const CAMERA_FORWARD: u32 = 0x80;
+    /// The same bit as [`FIXED_BOUNDS`], read by the draw: the screen and
+    /// stretched quads express the camera's axes in the node's frame (each
+    /// axis dotted with the node's three axes). No fire template sets it.
+    pub const NODE_AXES: u32 = 0x40;
+    /// The screen and stretched quads keep a tenth of each axis' component
+    /// along the node's up axis and renormalise, flattening them onto the
+    /// node's horizontal plane. No fire template sets it (their `0x1000_0000`
+    /// is the stretched quad mode, not this bit).
+    pub const VIEW_PLANE: u32 = 0x1000;
     /// Flat colour from the particle's age.
     pub const FLAT_COLOUR: u32 = 0x100;
     /// Colour from the key list without the ring slot's parity offset.
@@ -605,21 +615,87 @@ impl LightState {
             as f32;
         let brighter = intensity > self.peak;
         let full_update = self.full || template_flags & flags::ONE_SHOT != 0 || brighter;
-        if full_update {
-            if brighter {
-                self.peak = (f64::from(intensity) * 1.1) as f32;
-            }
-            self.full = false;
+        if full_update && brighter {
+            self.peak = (f64::from(intensity) * 1.1) as f32;
         }
+        // The emitter's first-frame bit clears after every frame, whatever
+        // the light did; the separate "not yet at rest" bit clears once the
+        // intensity reaches the template's ([`LightFrame::at_base`]).
+        self.full = false;
+        let at_base = self.base <= intensity;
         let emissive = (f64::from(self.density) * (f64::from(self.walk) * 0.2 + 0.9) * 0.8) as f32;
         LightFrame {
             intensity,
             softness: self.softness(),
             emissive,
             full_update,
-            at_base: self.base <= intensity,
+            at_base,
         }
     }
+}
+
+/// One node of the scene a fire's emissive scale reaches: the node's own
+/// scale and its first sub-object's material scale.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct EmissiveNode {
+    /// The node's emissive scale.
+    pub node: f32,
+    /// The first sub-object's material emissive scale.
+    pub material: f32,
+    /// A geometry node (its kind's low bits, masked by 0x5f, are 9).
+    pub geometry: bool,
+}
+
+/// The emitter's emissive scale reaches its node's parent (the host
+/// geometry the emitter was attached under) and every geometry child of
+/// that parent, as the original's per-frame pass sets them: the parent
+/// node's own scale and its first sub-object's material scale, then the same
+/// pair on each geometry child. Returns the value set.
+pub fn apply_emissive(value: f32, parent: &mut EmissiveNode, children: &mut [EmissiveNode]) -> f32 {
+    parent.node = value;
+    parent.material = value;
+    for child in children {
+        if child.geometry {
+            child.node = value;
+            child.material = value;
+        }
+    }
+    value
+}
+
+/// An emitter's own scene node: the flags the attach sets on it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AttachedNode {
+    /// The node's flag word (the per-frame pass runs only with its emitter
+    /// bit set).
+    pub flags: u32,
+    /// The node's render word.
+    pub render: u32,
+    /// The first sub-object's material flag word.
+    pub material_flags: u32,
+    /// Whether the emitter's first source rides the node's frame and its
+    /// centre starts at the node's position.
+    pub framed: bool,
+}
+
+/// The emitter bit an emitter's node gains (the per-frame pass checks it).
+pub const NODE_HAS_EMITTER: u32 = 0x1_0000;
+/// The render bit a node with an emitter child gains.
+pub const NODE_DRAWS_EMITTER: u32 = 0x20;
+/// The material flag a sub-object drawn by an emitter gains.
+pub const MATERIAL_EMITTER: u32 = 0x20;
+
+/// Attaches an emitter to its node: the node gains the emitter bit and
+/// points at the emitter, the node and its first sub-object's material draw
+/// through the emitter, the first source takes the node's frame and the
+/// emitter's centre the node's position. The original's scene insertion
+/// (the parent link and the scene's emitter bit) is the Bevy hierarchy in
+/// Exarust.
+pub fn attach_node(node: &mut AttachedNode) {
+    node.flags |= NODE_HAS_EMITTER;
+    node.render |= NODE_DRAWS_EMITTER;
+    node.material_flags |= MATERIAL_EMITTER;
+    node.framed = true;
 }
 
 /// The emitter's sound walk.
@@ -719,6 +795,9 @@ pub struct Emitter {
     pub detail: f32,
     /// A body carrying the emitter, if any.
     pub body: Option<BodyMotion>,
+    /// The frame of the body carrying the emitter: its sources and particles
+    /// ride this instead of the node (the original's body-attached emitters).
+    pub body_frame: Option<NodeFrame>,
     /// The looping sound a template names (a single-letter name is no
     /// sound, as the original checks the string's length).
     pub sound_name: Option<&'static str>,
@@ -789,6 +868,7 @@ impl Emitter {
             size,
             detail: size,
             body: None,
+            body_frame: None,
             sound_name: template.sound,
             slots,
             first: 0,
@@ -838,6 +918,20 @@ impl Emitter {
         self.entered = true;
     }
 
+    /// Hangs the emitter on a body: its sources and particles ride the
+    /// body's frame from now on, and the fire's ageing (the distance cap)
+    /// turns on. The original takes the frame from the body's matrix each
+    /// tick; call this again when the body moves.
+    pub fn attach_body(&mut self, frame: NodeFrame) {
+        self.body_frame = Some(frame);
+        self.params.flags |= flags::FIRE_AGEING;
+        // The sources' last world positions start on the body, so the first
+        // spawn does not inherit the jump from the node to the body.
+        for source in &mut self.sources {
+            source.last = frame.position + frame.rotation * source.offset;
+        }
+    }
+
     /// The live slots' index ranges, oldest first, each inclusive.
     pub fn ranges(&self) -> [Option<(usize, usize)>; 2] {
         let cap = self.params.capacity;
@@ -879,6 +973,8 @@ impl Emitter {
         if !self.entered {
             self.enter(node);
         }
+        // A body-attached emitter rides its body's frame, not the node's.
+        let node = self.body_frame.unwrap_or(node);
         self.node = node;
         self.ticks = self.ticks.saturating_add(1);
         let p = self.params;
@@ -1116,7 +1212,13 @@ impl Emitter {
             let x = (spread * (f64::from(rng.int(2001)) - 1000.0)) as f32;
             let y = (f64::from(rng.int(1001)) * 0.001) as f32;
             let z = (spread * (f64::from(rng.int(2001)) - 1000.0)) as f32;
-            rotation * (src.axes[0] * x + src.axes[1] * y + src.axes[2] * z)
+            // The source's axes go through the node's frame first (each one
+            // a matrix row product), then the three weighted axes add in
+            // x, y, z order.
+            let a0 = rotation * src.axes[0];
+            let a1 = rotation * src.axes[1];
+            let a2 = rotation * src.axes[2];
+            a0 * x + a1 * y + a2 * z
         } else {
             Vec3::Y
         };
@@ -1343,6 +1445,34 @@ impl Emitter {
         out
     }
 
+    /// One camera axis as the quad builders use it: with the node-axes bit
+    /// it is expressed in the node's frame (dotted with each of the node's
+    /// axes, `(x·a + y·b) + z·c`, as the original's matrix-times-vector
+    /// helper sums); with the view-plane bit it keeps a tenth of its
+    /// component along the node's up axis (the dot times −0.9 in double
+    /// precision, added back) and is renormalised by the approximate
+    /// reciprocal square root. The stretched quad reads the result's `y`.
+    fn quad_axis(&self, flags: u32, camera: Vec3) -> Vec3 {
+        let rotation = self.node.rotation;
+        let mut axis = if flags & flags::NODE_AXES != 0 {
+            rotation.transpose() * camera
+        } else {
+            camera
+        };
+        if flags & flags::VIEW_PLANE != 0 {
+            let up = rotation * Vec3::Y;
+            let along = (axis.x * up.x + axis.y * up.y) + axis.z * up.z;
+            let scale = (f64::from(along) * -0.9) as f32;
+            axis = Vec3::new(
+                axis.x + up.x * scale,
+                axis.y + up.y * scale,
+                axis.z + up.z * scale,
+            );
+            axis = normalize_approx(axis);
+        }
+        axis
+    }
+
     /// [`Emitter::quads`] into a buffer the caller keeps.
     pub fn quads_into(&self, alpha: f32, view: View, out: &mut Vec<Quad>) {
         out.clear();
@@ -1355,57 +1485,103 @@ impl Emitter {
             if p.flags & flags::CAMERA_FORWARD != 0 {
                 view.forward
             } else {
-                to_centre.normalize_or(view.forward)
+                normalize_approx(to_centre)
             }
         } else {
             to_centre
         };
+        // The screen and stretched quads' two axes, worked out once a frame
+        // as the original does before its quad loop: the camera's own (the
+        // screen quad) or the cross products with the line to the centre
+        // (the stretched quad), then the node-axes and view-plane rules.
+        // Any other quad mode draws nothing.
+        let axes = if mode == 0 {
+            Some((view.right, view.up))
+        } else if mode == flags::QUAD_STRETCHED {
+            let x = normalize_approx(to_centre.cross(view.up));
+            let y = normalize_approx(x.cross(to_centre));
+            Some((x, y))
+        } else {
+            None
+        };
+        let axes = axes.map(|(x, y)| (self.quad_axis(p.flags, x), self.quad_axis(p.flags, y)));
+        if mode != flags::QUAD_DIAMOND && axes.is_none() {
+            return;
+        }
         for (index, position, previous, life) in self.particles() {
             let delta = position - previous;
             let at = previous + delta * alpha;
             let age = 1.0 - (life as f32 - alpha) * p.inverse_life;
-            let corners = if mode == flags::QUAD_DIAMOND {
-                let size = if p.flags & flags::RANDOM_SIZE != 0 {
-                    self.slots[index].size
-                } else {
-                    p.half_size
-                };
-                diamond_quad(at, delta, size, age, p, facing)
-            } else if mode == flags::QUAD_STRETCHED {
-                stretched_quad(at, age, p, facing, view)
-            } else {
-                screen_quad(at, p.half_size, view)
+            let corners = match axes {
+                None => {
+                    let size = if p.flags & flags::RANDOM_SIZE != 0 {
+                        self.slots[index].size
+                    } else {
+                        p.half_size
+                    };
+                    diamond_quad(at, delta, size, age, p, facing)
+                }
+                Some((x, y)) if mode == flags::QUAD_STRETCHED => stretched_quad(at, age, p, x, y),
+                Some((x, y)) => screen_quad(at, p.half_size, x, y),
             };
-            let variant = self.slots[index].variant;
-            let uv: [Vec2; 4] = if p.flags & flags::UV_8 != 0 {
-                std::array::from_fn(|i| Vec2::from(SYMMETRIES[usize::from(variant & 7)][i]))
-            } else if p.flags & flags::UV_32 != 0 {
-                let v = variant & 31;
-                let cell = v >> 3;
-                let sym = SYMMETRIES[usize::from(v & 7)];
-                let origin = [f32::from(cell & 1) * 0.5, f32::from((cell >> 1) & 1) * 0.5];
-                std::array::from_fn(|i| {
-                    Vec2::new(origin[0] + sym[i][0] * 0.5, origin[1] + sym[i][1] * 0.5)
-                })
-            } else {
-                std::array::from_fn(|i| Vec2::from(SYMMETRIES[0][i]))
-            };
-            let colour = if p.flags & flags::KEYS_PARITY == flags::KEYS_PARITY {
-                p.keys.sample(p.keys.count as f32 * age, index & 1 == 1)
-            } else if p.flags & flags::KEYS != 0 {
-                p.keys.sample(p.keys.count as f32 * age, false)
-            } else {
-                let f = 1.0 - (life as f32 - alpha) / p.start_life as f32;
-                let a = ((1.0 - f * f) * 255.0).round_ties_even() as i32 as u8;
-                let o = (self.flat_opacity * 255.0).round_ties_even() as i32 as u8;
-                [a, a, a, o]
-            };
+            let (uv, colour) = self.look(index, alpha, life);
             out.push(Quad {
                 corners,
                 uv,
                 colour,
             });
         }
+    }
+
+    /// A particle's atlas UVs and colour at `alpha`, as the original's
+    /// texture-variant and colour builders produce them.
+    fn look(&self, index: usize, alpha: f32, life: i32) -> ([Vec2; 4], Key) {
+        let p = self.params;
+        let age = 1.0 - (life as f32 - alpha) * p.inverse_life;
+        let variant = self.slots[index].variant;
+        let uv: [Vec2; 4] = if p.flags & flags::UV_8 != 0 {
+            std::array::from_fn(|i| Vec2::from(SYMMETRIES[usize::from(variant & 7)][i]))
+        } else if p.flags & flags::UV_32 != 0 {
+            let v = variant & 31;
+            let cell = v >> 3;
+            let sym = SYMMETRIES[usize::from(v & 7)];
+            let origin = [f32::from(cell & 1) * 0.5, f32::from((cell >> 1) & 1) * 0.5];
+            std::array::from_fn(|i| {
+                Vec2::new(origin[0] + sym[i][0] * 0.5, origin[1] + sym[i][1] * 0.5)
+            })
+        } else {
+            std::array::from_fn(|i| Vec2::from(SYMMETRIES[0][i]))
+        };
+        let colour = if p.flags & flags::KEYS_PARITY == flags::KEYS_PARITY {
+            p.keys.sample(p.keys.count as f32 * age, index & 1 == 1)
+        } else if p.flags & flags::KEYS != 0 {
+            p.keys.sample(p.keys.count as f32 * age, false)
+        } else {
+            let f = 1.0 - (life as f32 - alpha) / p.start_life as f32;
+            let a = ((1.0 - f * f) * 255.0).round_ties_even() as i32 as u8;
+            let o = (self.flat_opacity * 255.0).round_ties_even() as i32 as u8;
+            [a, a, a, o]
+        };
+        (uv, colour)
+    }
+
+    /// The fixed quads a material that draws them asks for: each live
+    /// particle copies the same four corner offsets
+    /// ([`Emitter::camera_quad`], the original's fixed template vertices)
+    /// with its own atlas variant and colour. No Exarust material sets the
+    /// flag, so nothing calls this yet.
+    pub fn quads_fixed(&self, alpha: f32, view: View) -> Vec<Quad> {
+        let corners = Emitter::camera_quad(view);
+        self.particles()
+            .map(|(index, _, _, life)| {
+                let (uv, colour) = self.look(index, alpha, life);
+                Quad {
+                    corners,
+                    uv,
+                    colour,
+                }
+            })
+            .collect()
     }
 }
 
@@ -1455,20 +1631,18 @@ fn diamond_quad(at: Vec3, delta: Vec3, size: f32, age: f32, p: Params, facing: V
 }
 
 /// The screen-aligned, age-stretched quad of an ember bed. Its long axis
-/// grows with how upright the camera's up axis is around the view line.
-fn stretched_quad(at: Vec3, age: f32, p: Params, to_centre: Vec3, view: View) -> [Vec3; 4] {
-    let x_axis = to_centre.cross(view.up).normalize_or(view.right);
-    let y_axis = x_axis.cross(to_centre).normalize_or(view.up);
+/// grows with how upright it is: the vertical scale is `y_axis.y + 1`.
+fn stretched_quad(at: Vec3, age: f32, p: Params, x_axis: Vec3, y_axis: Vec3) -> [Vec3; 4] {
     let width = age * age * p.growth + p.half_size;
     let x = x_axis * width;
     let y = y_axis * ((y_axis.y + 1.0) * width);
     [at - y, at + x, at - x, at + y]
 }
 
-/// A flat billboard of half-size `size`.
-fn screen_quad(at: Vec3, size: f32, view: View) -> [Vec3; 4] {
-    let x = view.right * size;
-    let y = view.up * size;
+/// A flat billboard of half-size `size` along the two axes.
+fn screen_quad(at: Vec3, size: f32, right: Vec3, up: Vec3) -> [Vec3; 4] {
+    let x = right * size;
+    let y = up * size;
     [at - y, at + x, at - x, at + y]
 }
 
@@ -1803,6 +1977,20 @@ mod tests {
     }
 
     #[test]
+    fn the_first_frame_bit_clears_after_one_frame_even_below_the_base() {
+        let mut light = LightState::new(SMALL.light);
+        // No particles yet: the light is dark, below its template's base.
+        let frame = light.frame(0);
+        assert!(frame.full_update);
+        assert!(!frame.at_base);
+        // The next dark frame is neither the first nor brighter: no full
+        // update, though the light has still not reached its base.
+        let frame = light.frame(0);
+        assert!(!frame.full_update);
+        assert!(!frame.at_base);
+    }
+
+    #[test]
     fn the_light_peak_needs_a_strictly_brighter_frame() {
         let mut light = LightState::new(SMALL.light);
         // The emitter starts with a full update due.
@@ -1817,6 +2005,183 @@ mod tests {
         assert!(!frame.full_update);
         // A one-shot emitter asks for one every frame.
         assert!(light.frame(crate::particles::flags::ONE_SHOT).full_update);
+    }
+
+    #[test]
+    fn the_emissive_scale_reaches_the_parent_and_its_geometry() {
+        let parent = EmissiveNode {
+            node: 1.0,
+            material: 1.0,
+            geometry: false,
+        };
+        let mut parent = parent;
+        let mut children = [
+            EmissiveNode {
+                node: 1.0,
+                material: 1.0,
+                geometry: true,
+            },
+            EmissiveNode {
+                node: 1.0,
+                material: 1.0,
+                geometry: false,
+            },
+        ];
+        assert_eq!(apply_emissive(0.4, &mut parent, &mut children), 0.4);
+        assert_eq!((parent.node, parent.material), (0.4, 0.4));
+        // The geometry child takes it; the other child keeps its own.
+        assert_eq!((children[0].node, children[0].material), (0.4, 0.4));
+        assert_eq!((children[1].node, children[1].material), (1.0, 1.0));
+    }
+
+    #[test]
+    fn attaching_an_emitter_flags_its_node_and_material() {
+        let mut node = AttachedNode::default();
+        attach_node(&mut node);
+        assert_eq!(node.flags & NODE_HAS_EMITTER, NODE_HAS_EMITTER);
+        assert_eq!(node.render & NODE_DRAWS_EMITTER, NODE_DRAWS_EMITTER);
+        assert_eq!(node.material_flags & MATERIAL_EMITTER, MATERIAL_EMITTER);
+        assert!(node.framed);
+    }
+
+    #[test]
+    fn the_quad_axes_take_the_nodes_frame_unless_it_asks_for_the_cameras() {
+        let mut e = torch();
+        e.first = 0;
+        e.next = 1;
+        e.slots[0] = Slot {
+            p: Vec3::ZERO,
+            q: Vec3::ZERO,
+            life: 50,
+            ..Slot::default()
+        };
+        // The node is turned a quarter turn about Z: its x is the world y.
+        e.node.rotation = Mat3::from_rotation_z(std::f32::consts::FRAC_PI_2);
+        let view = View {
+            eye: Vec3::new(0.0, 0.0, 100.0),
+            right: Vec3::X,
+            up: Vec3::Y,
+            forward: Vec3::NEG_Z,
+        };
+        // The torch's diamond ignores the camera axes; use the screen quad.
+        let mut flat = SMALL.scaled(0.2);
+        flat.flags = (flat.flags & !flags::QUAD_MASK) | flags::QUAD_STRETCHED;
+        let mut e2 = Emitter::new(flat, 0.2, vec![Source::at_node()]);
+        e2.first = 0;
+        e2.next = 1;
+        e2.slots[0] = Slot {
+            p: Vec3::ZERO,
+            q: Vec3::ZERO,
+            life: 50,
+            ..Slot::default()
+        };
+        e2.node.rotation = e.node.rotation;
+        e2.bounds.centre = Vec3::ZERO;
+        let c = e2.quads(0.0, view)[0].corners;
+        // Without the node-axes bit the quad keeps the camera's up.
+        assert!((c[3] - c[0]).y.abs() > (c[3] - c[0]).x.abs());
+        // With it each camera axis is dotted with the node's axes (the
+        // node's frame expressed against the camera, not the camera turned
+        // by the node): the camera's up (0, 1, 0) has components (1, 0, 0)
+        // on the node's x = world y, y = world −x, z = world z.
+        e2.params.flags |= flags::NODE_AXES;
+        e2.params.flags &= !flags::VIEW_PLANE;
+        let up = e2.quad_axis(e2.params.flags, Vec3::Y);
+        assert!((up - Vec3::X).length() < 1e-6, "{up:?}");
+        let right = e2.quad_axis(e2.params.flags, Vec3::X);
+        assert!((right - Vec3::NEG_Y).length() < 1e-6, "{right:?}");
+        let c = e2.quads(0.0, view)[0].corners;
+        assert!(
+            (c[3] - c[0]).x > 0.0 && (c[3] - c[0]).y.abs() < 1e-4,
+            "{c:?}"
+        );
+    }
+
+    #[test]
+    fn the_view_plane_bit_flattens_a_quad_onto_the_nodes_up_plane() {
+        // A camera axis (0.6, 0.8, 0). Keeping a tenth of its component
+        // along the node's y gives (0.6, 0.08), renormalised.
+        let mut flat = SMALL.scaled(0.2);
+        flat.flags = (flat.flags & !flags::QUAD_MASK) | flags::QUAD_STRETCHED;
+        flat.flags |= flags::NODE_AXES | flags::VIEW_PLANE;
+        let mut e = Emitter::new(flat, 0.2, vec![Source::at_node()]);
+        e.first = 0;
+        e.next = 1;
+        e.slots[0] = Slot {
+            p: Vec3::ZERO,
+            q: Vec3::ZERO,
+            life: 50,
+            ..Slot::default()
+        };
+        e.bounds.centre = Vec3::new(0.0, 0.0, 100.0);
+        let view = View {
+            eye: Vec3::ZERO,
+            right: Vec3::new(0.6, 0.8, 0.0),
+            up: Vec3::new(0.6, 0.8, 0.0),
+            forward: Vec3::NEG_Z,
+        };
+        let axis = e.quad_axis(e.params.flags, Vec3::new(0.6, 0.8, 0.0));
+        // The dot 0.8 times −0.9 in double is −0.72 (as f32), which leaves
+        // 0.8 − 0.72 = 0.08 (single precision) of the up component; the
+        // length is the approximate reciprocal square root of 0.36 + 0.0064.
+        let flat = Vec3::new(0.6, 0.8 + (f64::from(0.8f32) * -0.9) as f32, 0.0);
+        let want =
+            flat * exa_physics::engine_math::reciprocal_sqrt(flat.x * flat.x + flat.y * flat.y);
+        assert_eq!(axis, want);
+        // RSQRTSS is within 1.5 · 2⁻¹² of the true unit vector.
+        assert!((axis - Vec3::new(0.6, 0.08, 0.0).normalize()).length() < 1e-3);
+        // A vertical axis keeps only its tenth of the up component.
+        let axis = e.quad_axis(e.params.flags, Vec3::Y);
+        assert!((axis - Vec3::Y).length() < 1e-3);
+        // The quad built from it is finite.
+        assert!(e.quads(0.0, view)[0].corners.iter().all(|c| c.is_finite()));
+    }
+
+    #[test]
+    fn a_body_frame_carries_the_emitter() {
+        let mut e = torch();
+        e.params.spawn_radius = 0.0;
+        let frame = NodeFrame {
+            position: Vec3::new(100.0, 0.0, 0.0),
+            rotation: Mat3::from_rotation_z(std::f32::consts::FRAC_PI_2),
+        };
+        e.attach_body(frame);
+        assert_eq!(e.params.flags & flags::FIRE_AGEING, flags::FIRE_AGEING);
+        e.tick(NodeFrame::default(), &mut Scripted::new(&[1], &[0.5]));
+        let (_, p, q, _) = e.particles().next().expect("a particle");
+        // The spawn sits on the body, not on the node at the origin.
+        assert!((p.x - 100.0).abs() < 1e-4, "{p:?}");
+        assert!((q.x - 100.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn the_fixed_quad_is_the_same_for_every_particle() {
+        let mut e = torch();
+        e.first = 0;
+        e.next = 2;
+        e.slots[0] = Slot {
+            p: Vec3::new(1.0, 2.0, 3.0),
+            q: Vec3::ZERO,
+            life: 50,
+            variant: 3,
+            ..Slot::default()
+        };
+        e.slots[1] = Slot {
+            p: Vec3::new(-4.0, 5.0, 6.0),
+            q: Vec3::ZERO,
+            life: 40,
+            ..Slot::default()
+        };
+        let view = View {
+            eye: Vec3::new(0.0, 0.0, 100.0),
+            right: Vec3::X,
+            up: Vec3::Y,
+            forward: Vec3::NEG_Z,
+        };
+        let quads = e.quads_fixed(0.0, view);
+        assert_eq!(quads.len(), 2);
+        assert_eq!(quads[0].corners, quads[1].corners);
+        assert_eq!(quads[0].corners, Emitter::camera_quad(view));
     }
 
     #[test]
@@ -2043,8 +2408,12 @@ mod tests {
         let t = 1.0 - 50.0 / 103.0;
         let width = 6.0 + t * t * 12.0;
         let stretch = (2.0 - 2.0 / (w + 1.0)) * 0.6 * fast_acos(0.0);
-        assert!(((c[1] - c[2]).length() - 2.0 * width).abs() < 1e-3);
-        assert!(((c[3] - c[0]).length() - 2.0 * (1.0 + stretch) * width).abs() < 1e-3);
+        // The facing line is normalised by the approximate reciprocal
+        // square root (`RSQRTSS`, within 1.5 · 2⁻¹²), so the lengths agree to
+        // a part in a thousand.
+        let near = |got: f32, want: f32| (got - want).abs() < want * 1e-3;
+        assert!(near((c[1] - c[2]).length(), 2.0 * width));
+        assert!(near((c[3] - c[0]).length(), 2.0 * (1.0 + stretch) * width));
         // The head is up, along the motion and the buoyancy lean.
         assert!(c[3].y > c[0].y);
     }

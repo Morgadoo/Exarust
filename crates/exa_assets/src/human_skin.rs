@@ -126,13 +126,15 @@ pub fn srgb_decode(c: f32) -> f32 {
     }
 }
 
-/// The engine's linear-to-sRGB encode of one channel.
-pub(crate) fn srgb_encode(c: f32) -> f32 {
-    if f64::from(c) > 0.003_130_8 {
+/// The engine's linear-to-sRGB encode of one channel: the linear segment
+/// only for a value not above 0.0031308 (a double compare whose unordered
+/// result, a NaN, takes the power branch).
+pub fn srgb_encode(c: f32) -> f32 {
+    if f64::from(c) <= 0.003_130_8 {
+        (f64::from(c) * 12.92) as f32
+    } else {
         let p = engine_exp(engine_ln(c) * 0.416_666_66);
         (f64::from(p) * 1.055 - 0.055) as f32
-    } else {
-        (f64::from(c) * 12.92) as f32
     }
 }
 

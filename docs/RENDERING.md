@@ -2517,8 +2517,13 @@ cm), buoyancy (−1.25/−0.5/−0.05/−1.5/−0.33/−1.5/−0.33 × gravity),
 scales half-size by 0.5 + 0.5s, speed by s², volume by s, rate by s
 (rounded to even), ring by 0.5s + s², buoyancy by s, the light by √s, and
 the density normaliser by 0.9s² + 0.1s. The keys' RGB are scaled by 0.7 at
-load (K1…Kn: byte·(1/255)·0.7·255, rounded half to even, so 160 becomes
-112; alpha untouched; the 0.35–0.5 bed's table is not scaled). The beds'
+load (K1…Kn, the original's table starting with its count word:
+byte·(1/255)·0.7·255, rounded half to even, so 160 becomes 112; alpha
+untouched; the 0.35–0.5 bed's table is not scaled). The legacy non-linear
+path (which the shipped pipeline flag never selects) encodes each channel
+to sRGB (linear up to 0.0031308, the engine's fast power above), pulls it
+0.35 of the way toward its Rec. 601 luma (0.299/0.587/0.114), scales 0.75
+and stores three saturated bytes (`load_scale_legacy`). The beds'
 keys carry no alpha, so they add their colour without dimming; they peak
 two thirds (0.35–0.5) and half way (the others) through a particle's life.
 
@@ -2564,7 +2569,15 @@ two thirds (0.35–0.5) and half way (the others) through a particle's life.
 - A carried torch's fire rides the item's body [inf]: each tick its live
   particles move by half the body's velocity at the emitter (here the
   node's displacement over the tick) and new ones inherit 0.3 of it, so
-  the flame trails a little behind the hand.
+  the flame trails a little behind the hand. An emitter attached to a body
+  (`Emitter::attach_body`) takes the body's whole frame for its sources and
+  particles and turns its fire ageing on, as the original's body-attached
+  emitters do.
+- A fire marker on a model's geometry suppresses the host mesh's own
+  emissive at import (its first part's material gains the off flag and both
+  emissive scales go to zero) and becomes a fire only when the scene lets
+  fires run; a re-created fire keeps the host node's draw bits
+  (`0xc01f000`).
 - The light (all in double): x walks softly in ±1 with v ±= u past the
   bounds and else v += 2(u − ½), x += 0.3·v·u (three draws); jitter +=
   (u − ½)·0.125 in [0.87, 1.15]; density = 0.8·density +
@@ -2587,8 +2600,18 @@ two thirds (0.35–0.5) and half way (the others) through a particle's life.
   x² + z² first, then y².
 - Mode 1 (beds): a quad facing the line to the emitter's centre about the
   camera's up axis, half-width S + age²·growth and half-length
-  (1 + Y.y)·that, Y the quad's unit up axis. Mode 0 is a flat billboard of
-  half-size S.
+  (1 + Y.y)·that, Y the quad's unit up axis (both axes the normalised
+  cross products with the line to the centre, by `RSQRTSS`). Mode 0 is a
+  flat billboard of half-size S; any other quad mode draws nothing.
+- The screen and stretched quads keep the camera's own axes, or express
+  them in the node's frame (each axis dotted with the node's three axes)
+  when the template sets flag 0x40; a template with flag 0x1000 keeps a
+  tenth of each axis' component along the node's up axis (the dot times
+  −0.9 in double) and renormalises, flattening the quad onto the node's
+  horizontal plane. No fire template sets either flag. The fixed-quad path a material can ask
+  for (its flag bit 2) is the four camera corners
+  (0.3 forward ± 0.5 of the right/up axes, normalised), the same for every
+  particle; no Exarust material asks for it.
 - UVs: one of the four atlas cells × one of the eight square symmetries
   (variant 0..31), or a direct 8-symmetry variant.
 - Colour: the keys at f = n·age, K[k+1]→K[k+2], each channel rounded half
@@ -2610,7 +2633,13 @@ intensity and the emissive scale are worked out in double precision
 (intensity = density·(1 + 0.05x)·base, emissive = 0.8·density·(0.9 + 0.2x));
 the first frame, a one-shot template's every frame and any frame brighter
 than the peak ask for a full light update, and a new peak is 1.1× the
-intensity. The emissive scale reaches `Fire::emissive`. Each emitter also
+intensity; the emitter's first-frame bit clears after every frame and a
+separate at-rest bit once the intensity reaches the template's base. The emissive scale reaches `Fire::emissive` and, through
+`exa_world::fire`'s host system, the parent mesh's first part (the
+original writes it into the parent node's own scale and its first
+sub-object's material, and into the same pair of each of its geometry
+children, which Exarust does not reach yet; the part gets a material copy, and its loaded emissive colour is
+the base the scale multiplies). Each emitter also
 keeps a *detail* value apart from its size: the material's level of
 detail is `detail·1000/d²`, d² the squared distance from the camera to the
 node held at one or more (the original's distance helper returns the
@@ -2629,11 +2658,13 @@ game data or no audio device plays nothing, and a sound that fails to load
 is not asked for again.
 
 Still missing for fires: fires on other physics bodies (only the carried
-torch rides its item), the source frame following the body, body contacts
-being driven from the physics step, and applying the emissive scale to the
-parent mesh's material. The quality-scaled pool override is dead in the
-original: its branch needs the quality constant to be below 4 and the
-shipped constant is 5, so the template's pool is always used.
+torch rides its item), body contacts being driven from the physics step,
+the particle material's parameter block (its 0.004 tint) and
+the node bookkeeping the scene hierarchy replaces (the emitter's per-frame
+node transform copies and its child lights' transform copy). The
+quality-scaled pool override is dead in the original: its branch needs the
+quality constant to be below 4 and the shipped constant is 5, so the
+template's pool is always used.
 
 ## Electricity
 
@@ -2651,7 +2682,15 @@ rules in `exa_render::electricity` and a Bevy layer in `exa_world::arc`.
   segments = round(length/(4·size)) (10 when below 2), tendrils = branches
   (10 when 0), jitter 0.1, a second tendril value of 0.5, reach size/2,
   the `electricity01` hum, and a point light (0.6, 0.65, 1) of size/2,
-  multiplier 2, softness 5, radius 80·size cm; no voxel light.
+  multiplier 2, softness 5, radius 80·size cm; no voxel light. The record's
+  fields (`DeviceFields`) are its active bit (bit 0 at 0x0C, no arc
+  without it), duration (0x10), length (0x12), branches (0x14) and flag
+  byte (0x0B), parsed totally. The first segment runs along the node's
+  third axis; flag bit 0x02 adds a fixed end point the record's length
+  along it (`DeviceFields::end_point`). The geometry is sized as the
+  original allocates it: (4·segments + 4) vertices and (4·segments + 2)·3
+  indices a tendril record (twenty for a spark burst, whose six extra
+  tendrils take free records), every vertex coloured `0xff0019`.
 - **Record.** The 84-byte arc record holds flags, tendril count, segments,
   the tendrils' lifetime in ticks, size, the segment length's scale, a
   reserved word, a second tendril value (0x1C), the reach (0x20), a
@@ -2665,14 +2704,25 @@ rules in `exa_render::electricity` and a Bevy layer in `exa_world::arc`.
   has bit 0x10); the step that would reach 255 fills the charge and
   releases the effect. With a live part the arc is created unless a live
   one exists; a dead part releases it. Releasing stops the first arc child
-  renewing, sets its state to 1, and clears the owner's callbacks.
+  renewing, sets its state to 1, and clears the owner's callbacks. The
+  equipment check scans the body's two hand slots for the item, needs its
+  object record, and then runs that release or creation
+  (`electrified_check`). A hit queues a discharge at a point: it steps the
+  charge (heavy when the record's kind word has 0x10; a spent charge or a
+  missing record clears the item's arc effect) and always spawns the spark
+  burst there, charged or not (`discharge`).
 - **Geometry.** Each tendril is a polyline of `segments` points between the
   arc's ends (along +X, the segments end to end, unless a record or a
   device sets the direction and length), jittered inside them; each
   segment becomes a camera-facing quad of width 2·size, U along it and V
   across it. The original builds a strip of 4·segments + 2 vertices per
-  tendril; Exarust builds four vertices a segment, a model. The segment
-  count, width and timing are the original's; the tendril's own per-tick
+  tendril; Exarust builds four vertices a segment, a model, and pins the
+  original's buffer sizes in `ribbon_capacity`. A spark burst's six extra
+  tendrils start at the source in a random direction (sway 0), not at
+  spread points; the original makes them one segment long and grows them
+  (`exa_game::thaum::arcs::spark_burst`), this ribbon lays them out full
+  length. The segment count, width and timing are
+  the original's; the tendril's own per-tick
   motion is a model (the original's tendril emitter is a separate
   component), so the zig-zag's exact shape is [guess].
 - **Shader.** `_ElecMat01`: `tc = (uv + TexOfs)·0.25` with TexOfs =
@@ -2689,8 +2739,10 @@ rules in `exa_render::electricity` and a Bevy layer in `exa_world::arc`.
 Still missing: the exact per-tick tendril integration (jitter and segment
 lifetimes; the live tendril emitter is modelled in `exa_game::thaum::arcs`,
 which the Shock power and shock weapons use), the `_ElecMat01` emissive
-map, the per-branch scissor loop, the GI flow, the device's hum, and the
-callers of this crate's arc layer (nothing spawns one yet).
+map, the draw's supersample-pass loop (one draw per pass with that pass's
+viewport and its clock, `Arc::pass_clock`; Exarust's supersampled camera
+draws the arc once), the GI flow, the device's hum, and the callers of this crate's
+arc layer (nothing spawns one yet).
 
 ## Force effects
 
@@ -3162,7 +3214,7 @@ colour word is -1. `exa_assets::polyhedra::uv_sphere` builds it.
 
 ## Not done yet
 
-The emissive scale of a fire's parent mesh by the fire, the per-tick
+The per-tick
 tendril motion of an electric arc and its emissive texture, the looping
 fire and electricity sounds, body contacts being driven from the physics
 step, the jittered supersampling pattern, the sun and terrain in the GI volume,

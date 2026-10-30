@@ -21,6 +21,7 @@ pub struct FirePlugin;
 impl Plugin for FirePlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, flicker);
+        app.add_systems(PostUpdate, drive_hosts);
     }
 }
 
@@ -601,9 +602,74 @@ pub fn marker_size(bytes: [u8; 4]) -> f32 {
     f32::from_le_bytes(bytes)
 }
 
-/// The keys as the linear pipeline loads them: the RGB of each of the
-/// table's first `count` keys goes to a float (×1/255), is scaled by 0.7,
-/// back to a byte (×255, rounded half to even, saturated); the alpha is
+/// The scene flag that lets a model's fire markers become fires.
+pub const WORLD_FIRES: u32 = 0x1_0000;
+/// The material flag the marker import sets on the host mesh so its own
+/// emissive stops (the fire drives the mesh's emissive from then on).
+pub const HOST_EMISSIVE_OFF: u32 = 0x10;
+/// The mask over a node's kind word that leaves 9 for a geometry node.
+pub const GEOMETRY_KIND: u32 = 0x5f;
+
+/// The host node a fire marker sits under: its kind, its first
+/// sub-object's material flags and the two emissive scales the import
+/// clears.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct HostMesh {
+    /// The node's kind word; a geometry's, masked by [`GEOMETRY_KIND`], is 9.
+    pub kind: u32,
+    /// The material's flag word.
+    pub material_flags: u32,
+    /// The material's emissive scale.
+    pub material_emissive: f32,
+    /// The host node's emissive scale.
+    pub node_emissive: f32,
+}
+
+/// A fire marker the import turns into a fire.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ImportedFire {
+    /// The marker's size (the four bytes after its record).
+    pub size: f32,
+    /// The marker node's field the import copies to the fire node (its
+    /// meaning is not traced; nothing reads it in Exarust).
+    pub brightness: f32,
+}
+
+/// The fire-marker import: a marker on a geometry suppresses the host
+/// mesh's own emissive (its material gains the off flag, both emissive
+/// scales go to zero), and when the scene lets fires run it becomes a fire
+/// of the marker's size and brightness. The marker node itself stops
+/// drawing; the fire takes its place. `None` when the scene has fires off.
+pub fn import_marker(
+    host: &mut HostMesh,
+    world_fires: bool,
+    marker: ImportedFire,
+) -> Option<ImportedFire> {
+    if host.kind & GEOMETRY_KIND == 9 {
+        host.material_flags |= HOST_EMISSIVE_OFF;
+        host.material_emissive = 0.0;
+        host.node_emissive = 0.0;
+    }
+    world_fires.then_some(marker)
+}
+
+/// The node flags a fire re-created from its host node keeps: the host's
+/// visibility and draw bits (`0xc01f000`), ORed into the new emitter's.
+pub const RECREATE_FLAG_MASK: u32 = 0x0c01_f000;
+
+/// A fire re-created when its host node is re-created: the same size and
+/// the emitter's own flags ORed with the host node's draw bits.
+pub fn recreate(size: f32, host_flags: u32, emitter_flags: u32) -> (Preset, u32) {
+    (
+        preset(size),
+        (host_flags & RECREATE_FLAG_MASK) | emitter_flags,
+    )
+}
+
+/// The keys as the linear pipeline loads them: the RGB of keys 1 to `count`
+/// (the original's table starts with its count word, so key `k` is
+/// `entries[k − 1]` here) goes to a float (×1/255), is scaled by 0.7, back
+/// to a byte (×255, rounded half to even, saturated); the alpha is
 /// untouched.
 pub fn load_scale(entries: &[Key], count: usize) -> Vec<Key> {
     const SCALE: f32 = 0.7;
@@ -624,6 +690,37 @@ pub fn load_scale(entries: &[Key], count: usize) -> Vec<Key> {
         .collect()
 }
 
+/// The keys as the legacy (non-linear) pipeline loads them, which the
+/// shipped game does not run (its pipeline flag selects the linear path):
+/// each of keys 1 to `count` (`entries[0..count]`) is read as bytes (×1/255),
+/// encoded to sRGB (the engine's curve: `c·12.92` up to 0.0031308, else
+/// `1.055·c^(1/2.4) − 0.055` through its fast logarithm and exponential),
+/// pulled 0.35 of the way toward its Rec. 601 luma (0.299, 0.587, 0.114),
+/// scaled by 0.75 and stored back as three bytes (×255, rounded half to
+/// even, saturated); the alpha is untouched.
+pub fn load_scale_legacy(entries: &[Key], count: usize) -> Vec<Key> {
+    use exa_formats::colour::{channel_byte, desaturate};
+    let read = |b: u8| f32::from(b) * exa_formats::pixel::BYTE_UNIT;
+    entries
+        .iter()
+        .enumerate()
+        .map(|(i, key)| {
+            if i >= count {
+                return *key;
+            }
+            let encoded =
+                [read(key[0]), read(key[1]), read(key[2])].map(exa_assets::human_skin::srgb_encode);
+            let c = desaturate(encoded, 0.35).map(|v| v * 0.75);
+            [
+                channel_byte(c[0]),
+                channel_byte(c[1]),
+                channel_byte(c[2]),
+                key[3],
+            ]
+        })
+        .collect()
+}
+
 /// A fire's light and its emitter's light values.
 #[derive(Component, Debug, Clone)]
 pub struct Fire {
@@ -637,6 +734,16 @@ pub struct Fire {
     pub(crate) emissive: f32,
     /// Ticks the fire has run.
     pub(crate) ticks: u32,
+}
+
+/// The host mesh of a fire marker: its first part, whose material's
+/// emissive the marker import turns off and the fire then drives. `base` is
+/// the part's loaded emissive colour, taken at the first frame the material
+/// is readable; the fire scales it.
+#[derive(Component, Debug, Clone)]
+pub struct FireHost {
+    pub part: Entity,
+    pub base: Option<[f32; 4]>,
 }
 
 impl Fire {
@@ -726,6 +833,49 @@ fn flicker(mut fires: Query<(&Fire, &mut PointLight)>) {
     for (fire, mut light) in &mut fires {
         light.intensity = crate::LUMENS_PER_INTENSITY * fire.intensity.max(0.0);
         light.radius = crate::shadow_radius(fire.softness);
+    }
+}
+
+/// Takes each fire host's loaded emissive, turns it off as the marker import
+/// does, and then gives it the emitter's emissive scale every frame (the
+/// original writes that scale into the host mesh's first part). The part
+/// gets its own material copy, so other meshes keep theirs.
+fn drive_hosts(
+    mut hosts: Query<(Entity, &mut FireHost)>,
+    mut handles: Query<&mut MeshMaterial3d<exa_render::material::ExaMaterial>>,
+    mut materials: ResMut<Assets<exa_render::material::ExaMaterial>>,
+    children: Query<&Children>,
+    fires: Query<&Fire>,
+) {
+    for (node, mut host) in &mut hosts {
+        if host.base.is_none() {
+            let Ok(mut handle) = handles.get_mut(host.part) else {
+                continue;
+            };
+            let Some(own) = materials.get(&handle.0).cloned() else {
+                continue;
+            };
+            let base = own.params.emissive;
+            handle.0 = materials.add(own);
+            host.base = Some(base.to_array());
+            if let Some(mut material) = materials.get_mut(&handle.0) {
+                material.params.emissive = Vec4::ZERO;
+            }
+        }
+        // The fire riding this node, if any, scales the part's emissive.
+        let scale = children
+            .get(node)
+            .ok()
+            .and_then(|kids| kids.iter().find_map(|kid| fires.get(kid).ok()))
+            .map(|fire| fire.emissive);
+        let Some(scale) = scale else { continue };
+        let Some(base) = host.base else { continue };
+        let Ok(handle) = handles.get(host.part) else {
+            continue;
+        };
+        if let Some(mut material) = materials.get_mut(&handle.0) {
+            material.params.emissive = (Vec4::from(base).truncate() * scale).extend(base[3]);
+        }
     }
 }
 
@@ -855,6 +1005,122 @@ mod tests {
             let p = preset(size);
             assert!(p.flame.template.half_size > 0.0);
         }
+    }
+
+    #[test]
+    fn a_fire_marker_suppresses_its_host_and_needs_the_world_fires() {
+        let mut host = HostMesh {
+            kind: 0x2000_0009,
+            material_flags: 1,
+            material_emissive: 1.0,
+            node_emissive: 1.0,
+        };
+        let marker = ImportedFire {
+            size: 0.4,
+            brightness: 0.75,
+        };
+        assert_eq!(import_marker(&mut host, false, marker), None);
+        // The host's emissive is cleared whether or not the world lets
+        // fires run.
+        assert_eq!(host.material_flags & HOST_EMISSIVE_OFF, HOST_EMISSIVE_OFF);
+        assert_eq!((host.material_emissive, host.node_emissive), (0.0, 0.0));
+        assert_eq!(import_marker(&mut host, true, marker), Some(marker));
+        // A host that is not a geometry is left alone.
+        let mut other = HostMesh {
+            kind: 0x2200_0001,
+            material_flags: 0,
+            material_emissive: 0.5,
+            node_emissive: 0.5,
+        };
+        assert_eq!(import_marker(&mut other, true, marker), Some(marker));
+        assert_eq!(other.material_flags, 0);
+        assert_eq!(other.material_emissive, 0.5);
+    }
+
+    #[test]
+    fn a_re_created_fire_keeps_the_hosts_draw_bits() {
+        let (p, flags) = recreate(0.5, 0x0c3f_f000, 0x0000_0b01);
+        assert_eq!(p.size, 0.5);
+        // Only 0xc01f000 of the host's bits survive, ORed with the
+        // emitter's own.
+        assert_eq!(flags, 0x0c01_f000 | 0x0b01);
+        let (_, flags) = recreate(0.2, 0xffff_ffff, 0);
+        assert_eq!(flags, RECREATE_FLAG_MASK);
+    }
+
+    #[test]
+    fn the_legacy_key_path_runs_through_srgb_and_desaturates() {
+        // Key 1 is (128, 64, 0), alpha 32; key 2 lies past the count.
+        let raw = &[[128u8, 64, 0, 32], [10, 20, 30, 40]];
+        let out = load_scale_legacy(raw, 1);
+        assert_eq!(out[1], [10, 20, 30, 40]);
+        // 128/255 = 0.50196 encodes to 0.7366, 64/255 = 0.25098 to 0.5381,
+        // 0 stays 0 (the linear segment). Luma: 0.299·0.7366 + 0.587·0.5381
+        // = 0.5361. Red: (0.7366 + (0.5361 − 0.7366)·0.35)·0.75 = 0.4998 →
+        // ×255 = 127.46 → 127; green: (0.5381 − 0.0007)·0.75·255 = 102.77 →
+        // 103; blue: 0.5361·0.35·0.75·255 = 35.89 → 36.
+        assert_eq!(out[0], [127, 103, 36, 32]);
+        // The linear path's 0.7 on the same key.
+        assert_eq!(load_scale(raw, 1)[0], [90, 45, 0, 32]);
+        // Black stays black.
+        let dark = load_scale_legacy(&[[0, 0, 0, 0]], 1);
+        assert_eq!(dark[0], [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn a_fire_drives_its_hosts_emissive() {
+        use bevy::asset::AssetPlugin;
+
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<exa_render::material::ExaMaterial>()
+            .add_systems(Update, drive_hosts);
+        let base = Vec4::new(0.4, 0.2, 0.1, 1.0);
+        let handle = app
+            .world_mut()
+            .resource_mut::<Assets<exa_render::material::ExaMaterial>>()
+            .add(exa_render::material::ExaMaterial {
+                params: exa_render::material::ExaParams {
+                    emissive: base,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        let part = app
+            .world_mut()
+            .spawn((Mesh3d(Handle::default()), MeshMaterial3d(handle)))
+            .id();
+        let node = app.world_mut().spawn(FireHost { part, base: None }).id();
+        app.world_mut().spawn((
+            Fire {
+                intensity: 1.0,
+                softness: 2.0,
+                density: 0.5,
+                emissive: 0.5,
+                ticks: 1,
+            },
+            ChildOf(node),
+        ));
+        app.update();
+        let handle = app
+            .world()
+            .get::<MeshMaterial3d<exa_render::material::ExaMaterial>>(part)
+            .expect("the part's material")
+            .0
+            .clone();
+        let material = app
+            .world()
+            .resource::<Assets<exa_render::material::ExaMaterial>>()
+            .get(&handle)
+            .expect("the copied material");
+        // The host starts dark at import and takes half the loaded colour.
+        assert_eq!(
+            material.params.emissive.truncate(),
+            base.truncate() * 0.5,
+            "{:?}",
+            material.params.emissive
+        );
+        assert_eq!(material.params.emissive.w, base.w);
     }
 
     #[test]

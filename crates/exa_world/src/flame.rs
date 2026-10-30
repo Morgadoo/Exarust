@@ -196,6 +196,9 @@ fn simulate(
                 } else {
                     Vec3::ZERO
                 };
+                // The emitter rides the item's body: its sources and
+                // particles take the body's frame, and its fire ageing is on.
+                emitter.attach_body(NodeFrame { position, rotation });
                 emitter.body = Some(BodyMotion {
                     velocity,
                     full_displacement: false,
