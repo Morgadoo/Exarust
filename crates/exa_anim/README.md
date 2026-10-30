@@ -72,8 +72,18 @@ owed to the next frame), 0.6 × the race's base a tick, added in double
   inverse, each inverse relative to the mesh's part in rest), the joints
   captured in the original's walk (`capture_joints`: depth first in child
   order, the first node of a bone number setting its frame and a repeated
-  bone ending its branch), and a mesh's vertex translation. Bevy's GPU
-  skinning performs the per-frame deform; the bind uses these numbers.
+  bone ending its branch), and a mesh's vertex translation. The runtime
+  skin controller's per-frame passes are here too, as tested rules: a
+  frame's per-bone matrices (`frame_matrices`, `joint_in_node_frame`), the
+  matrix blend (`blend_skin_matrix`), the second skin order that blends
+  transformed positions (`skin_vertex_by_positions`, `bake_skin_positions`),
+  the per-part deform that writes one entry per index with the normal
+  rotated and normalised, the tangent rotated with its w kept and the
+  previous-position delta (`deform_part`), the element upload size
+  (`element_bytes`), the mesh's grown bounds (`bounds_from_parts`), the
+  near-light vertex tint (`tint_alpha`) and the 600-tick fade-in
+  (`fade_alpha`). Bevy's GPU skinning performs the per-frame deform in the
+  running game; the bind uses these numbers.
   Meshes bind under an `Animator` body root or a `SkinnedRoot` one (a
   level's placed dead have no clips, but their skin still binds).
 - Node keyframe tracks (`tracks`): `NodeTracks` on a scene node,
