@@ -2553,11 +2553,9 @@ popup and the character view still wait for their hosts.
   Nothing in the running game opens it yet and no arena store fills its
   columns.
 - **Popups** (`exa_ui::popups`): the item card fades in and out on a 256-unit
-  squared curve, brings its task child to the front once its shown clock is
-  reached (or a fade-in already past it ends) and gates its hit test on that
-  placement; a close request of −1 stores −3 in the result slot, and a
-  request of 0 on a visible card without the keep-open bit starts a plain
-  256-unit fade-out from now rather than closing.
+  squared curve; once its shown clock is reached (or the fade-in ends
+  first) the GUI's pointer test is re-run with the force flag, once, and
+  the card's hit test answers only from then on.
 - **Icons** (`exa_items::icon_cache`, `exa_items::item_gui`): one icon per
   item and variant (lit models by their condition byte), counted by
   reference; 40 units square; framed at 70 (30 for apparel, 20 close),
