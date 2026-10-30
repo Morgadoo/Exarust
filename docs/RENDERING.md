@@ -742,14 +742,14 @@ rule. `exa_render::terrain_composite` hosts the set targets themselves
 the 8 bits gamma-encoded like the original's — normal RG8, gloss R8 and
 half-size displacement R8, at 1024²/512² from the default texture detail)
 and creates a set the first time the live selector holds it, one a frame,
-dropping it when the set returns to its pool. `TexPos` takes the block's
-level (3) and its set's level: the block coordinate is half the split
-`2^(L−1)` less `bx` (and `by`) shifted down by the level difference, where
-the difference is a wrapping byte and the shift count is masked to five bits,
-so a set below the block level (the shipped level-4 low and level-5 high
-pools) has no block bits left and the coordinate is half the split alone;
-the third component is `2^L/4800`. The lit program adds the tile-centred
-position in centimetres times it, so the set is read at 0…1 across the block
+dropping it when the set returns to its pool. `TexPos` takes the terrain's
+block level (3) and the block node's own level (also 3): the block
+coordinate is half the split `2^(L−1)` less `bx` (and `by`) shifted down by
+the level difference, a wrapping 32-bit difference whose shift count is
+masked to five bits (so a node deeper than the block level would keep no
+block bits); the third component is `2^L/4800`. The lit program adds the
+tile-centred position in centimetres times it, so the set is read at 0…1
+across the block
 with v along +Z.
 
 With `EXA_TERRAIN_SETS=1` the sets are also baked and drawn, as the
