@@ -1456,7 +1456,10 @@ impl Emitter {
             world
         };
         if flags & flags::VIEW_PLANE != 0 {
-            local += Vec3::Y * (local.y * -0.9);
+            // The original projects onto the node's up axis as it stands in
+            // the world, then normalises in the node's frame.
+            let up = rotation * Vec3::Y;
+            local += up * (local.dot(up) * -0.9);
             local = local.normalize_or(Vec3::Y);
         }
         (rotation * local, local.y)
