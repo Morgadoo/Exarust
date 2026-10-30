@@ -25,6 +25,10 @@
 use exa_assets::{Archive, Game, PackKind};
 use exa_formats::characters::CharacterRecord;
 
+use bevy::prelude::{Res, ResMut};
+
+use crate::hw_config::HardwareConfig;
+
 /// How many tips the popup rotates through.
 pub const TIPS: usize = 18;
 /// How many control hints the popup shows by index.
@@ -133,6 +137,16 @@ impl Tips {
     pub fn hide(&mut self) {
         self.current = None;
     }
+}
+
+/// Keeps the popup's `ShowGameTips` setting in step with the options, as
+/// the original reads the setting each time it shows a tip. A missing
+/// options resource leaves the popup as it is.
+pub fn sync_tips_setting(config: Option<Res<HardwareConfig>>, mut tips: ResMut<Tips>) {
+    let Some(config) = config else {
+        return;
+    };
+    tips.show_game_tips = config.live.show_tips;
 }
 
 /// Every named actor template in an archive.
@@ -351,6 +365,24 @@ mod tests {
         assert_eq!(tips.show_automatic(), None);
         assert!(!tips.created, "a refused automatic tip creates nothing");
         assert_eq!(tips.show(1), Some(Shown::Hint(0)), "a hint still shows");
+    }
+
+    #[test]
+    fn the_options_show_tips_setting_reaches_the_popup() {
+        use bevy::prelude::App;
+        let mut app = App::new();
+        let mut config = HardwareConfig::default();
+        config.live.show_tips = false;
+        app.insert_resource(config).init_resource::<Tips>();
+        app.add_systems(bevy::prelude::Update, sync_tips_setting);
+        app.update();
+        assert!(!app.world().resource::<Tips>().show_game_tips);
+        app.world_mut()
+            .resource_mut::<HardwareConfig>()
+            .live
+            .show_tips = true;
+        app.update();
+        assert!(app.world().resource::<Tips>().show_game_tips);
     }
 
     #[test]

@@ -259,23 +259,6 @@ fn approximate_reciprocal(value: f32) -> f32 {
     }
 }
 
-/// The processor's approximate reciprocal square root (RSQRTSS), as the
-/// original's triangle set-up takes it; exact off x86-64.
-fn approximate_reciprocal_sqrt(value: f32) -> f32 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        // The same approximate reciprocal square root the triangle set-up uses.
-        unsafe {
-            use std::arch::x86_64::{_mm_cvtss_f32, _mm_rsqrt_ss, _mm_set_ss};
-            _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(value)))
-        }
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        1.0 / value.sqrt()
-    }
-}
-
 /// The squared distance a sphere query must beat (one ulp-sized margin
 /// under the squared radius, the original's epsilon).
 const TOUCH_EPSILON: f32 = 1.1920899822825959e-07;
@@ -310,7 +293,7 @@ impl Face {
         let scale = if length_squared == 0.0 {
             0.0
         } else {
-            approximate_reciprocal_sqrt(length_squared)
+            crate::engine_math::reciprocal_sqrt(length_squared)
         };
         let normal = cross * scale;
         let edge_squared = dot(u, u);

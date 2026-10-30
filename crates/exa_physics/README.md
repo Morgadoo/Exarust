@@ -28,7 +28,12 @@ against the diagonal) and the OpenGL frustum, perspective (with the
 sub-pixel jitter) and pixel-rectangle matrices. The runtime library's own
 transcendentals are stood in for by the platform's double functions. The
 UI's `engine_math` forwards here, and the body's twist helpers are
-re-exported from it.
+re-exported from it. Every crate that may depend on this one uses these
+functions rather than its own copy: the fast logarithm and exponential
+(the mesh vertex cache, the damage model, the item randomiser) and the
+approximate reciprocal square root (the renderer's mipmaps, the AI's
+units, the world's scene environment, the combat's collapse step). Only
+`exa_formats`, which this crate depends on, keeps local mirrors.
 
 `kdtree` holds the two pieces of the original's background kd-tree unit
 that stand alone: its builder queues' FIFO ring (256 slots, one entry

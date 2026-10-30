@@ -38,6 +38,7 @@
 //! levels).
 
 use exa_formats::pixel::{self, MipConversion};
+use exa_physics::engine_math::reciprocal_sqrt;
 
 /// The Kaiser window's beta.
 pub const KAISER_BETA: f64 = 4.0;
@@ -379,23 +380,6 @@ pub fn place_on_canvas(
         canvas[to..to + stride].copy_from_slice(&src[from..from + stride]);
     }
     Some(canvas)
-}
-
-/// The engine's approximate reciprocal square root (the processor's
-/// estimate, about 12 bits).
-fn reciprocal_sqrt(value: f32) -> f32 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        // SAFETY: SSE is part of the x86_64 baseline.
-        unsafe {
-            use std::arch::x86_64::{_mm_cvtss_f32, _mm_rsqrt_ss, _mm_set_ss};
-            _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(value)))
-        }
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        1.0 / value.sqrt()
-    }
 }
 
 /// The engine's in-place vector normalisation: the squares summed x, z then

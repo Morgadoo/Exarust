@@ -25,6 +25,7 @@ use exa_physics::body::{
 use crate::condition::{Condition, DeathClock, StateFlags, settle_death, track_condition};
 use crate::fall::FallDeath;
 use crate::{Fighter, Roll};
+use exa_physics::engine_math::reciprocal_sqrt;
 
 /// The clip a lethal wound starts.
 pub const FALL_BACKWARD: &str = "Fall Backward";
@@ -160,21 +161,6 @@ fn unit_velocity(velocity: Vec3) -> Vec3 {
     }
     let scale = reciprocal_sqrt(sum);
     Vec3::new(velocity.x * scale, velocity.y * scale, velocity.z * scale)
-}
-
-fn reciprocal_sqrt(value: f32) -> f32 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        // The same approximate reciprocal square root the step uses to unit a velocity.
-        unsafe {
-            use std::arch::x86_64::{_mm_cvtss_f32, _mm_rsqrt_ss, _mm_set_ss};
-            _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(value)))
-        }
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        1.0 / value.sqrt()
-    }
 }
 
 /// Whether a collapsing body of `size` with `balance` throws its arms wide

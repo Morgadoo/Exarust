@@ -25,7 +25,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use bevy::prelude::Component;
-use exa_formats::containers;
 use exa_formats::objdb::{self, Item};
 
 /// The node flag every tree the manager makes carries (the model's root,
@@ -93,23 +92,19 @@ pub enum SceneTree<'a> {
     None,
 }
 
-/// The tree `item` gets, `payload` being its section chain: with a model
-/// name, the factory weapon or the model; without one (or an empty one),
-/// the container volume when the volume section is there, else the
-/// placeholder for an operative record, else none.
-pub fn scene_tree<'a>(item: &'a Item, payload: &[u8]) -> SceneTree<'a> {
+/// The tree `item` gets: with a model name, the factory weapon or the
+/// model; without one (or an empty one), the container volume when the
+/// record has a volume section, else the placeholder for an operative
+/// record, else none.
+pub fn scene_tree(item: &Item) -> SceneTree<'_> {
     if !item.model.is_empty() {
         return match item.model.strip_prefix('@') {
             Some(factory) => SceneTree::FactoryWeapon(factory),
             None => SceneTree::Model(&item.model),
         };
     }
-    if let Some(body) = containers::section(payload, objdb::VOLUME) {
-        let extent = |at: usize| {
-            body.get(at..at + 2)
-                .map_or(0.0, |b| f32::from(u16::from_le_bytes([b[0], b[1]])))
-        };
-        return SceneTree::ContainerVolume(container_volume([extent(0), extent(2), extent(4)]));
+    if let Some(volume) = item.volume {
+        return SceneTree::ContainerVolume(container_volume(volume.extents.map(f32::from)));
     }
     if item.operative.is_some() {
         return SceneTree::Placeholder;
@@ -351,21 +346,27 @@ mod tests {
 
     #[test]
     fn a_tree_is_a_model_a_factory_weapon_a_volume_or_a_placeholder() {
-        assert_eq!(scene_tree(&item("chair"), &[]), SceneTree::Model("chair"));
+        assert_eq!(scene_tree(&item("chair")), SceneTree::Model("chair"));
         assert_eq!(
-            scene_tree(&item("@ub05ssworda"), &[]),
+            scene_tree(&item("@ub05ssworda")),
             SceneTree::FactoryWeapon("ub05ssworda")
         );
-        assert_eq!(scene_tree(&item(""), &[]), SceneTree::None);
-        assert_eq!(scene_tree(&operative_item(""), &[]), SceneTree::Placeholder);
+        assert_eq!(scene_tree(&item("")), SceneTree::None);
+        assert_eq!(scene_tree(&operative_item("")), SceneTree::Placeholder);
         // A named model wins over the operative section.
         assert_eq!(
-            scene_tree(&operative_item("lever"), &[]),
+            scene_tree(&operative_item("lever")),
             SceneTree::Model("lever")
         );
         // The volume section wins over the operative section.
-        let volume = section_bytes(objdb::VOLUME, &[30, 0, 40, 0, 120, 0]);
-        let SceneTree::ContainerVolume(v) = scene_tree(&operative_item(""), &volume) else {
+        let mut body = vec![30, 0, 40, 0, 120, 0];
+        body.resize(20, 0);
+        let mut with_volume = operative_item("");
+        with_volume.volume = Item::parse(1, &section_bytes(objdb::VOLUME, &body))
+            .unwrap()
+            .volume;
+        assert!(with_volume.volume.is_some());
+        let SceneTree::ContainerVolume(v) = scene_tree(&with_volume) else {
             panic!("a volume");
         };
         assert_eq!(v.extents, [30.0, 40.0, 120.0]);

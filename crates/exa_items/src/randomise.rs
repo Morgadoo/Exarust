@@ -16,11 +16,17 @@
 //! times the row's weight in hundredths, and a pick inside it continues
 //! into that table. A slot takes no row bigger than it allows. Evidence:
 //! the item-variant notes (`context/re/item-gui-lane.md`).
+//!
+//! The world-load walk goes through the database in record order: an item
+//! body whose armour type byte is not zero runs the apparel palette
+//! generator on its palette byte's wealth plus signed variance and is
+//! refreshed; else a weapon record is refreshed; else each child of a
+//! container whose item has a random table becomes a slot of the fill.
 
 use crate::instance::{MadeCondition, Spreads};
 use crate::refresh::{made_condition, write_condition};
 use exa_formats::containers::{self, RandomTable, RowCondition, TableEntry, entry};
-use exa_formats::objdb::Item;
+use exa_formats::objdb::{Item, Quantised};
 
 /// Section tags the grade, the row application and the walk read.
 const NAME: u32 = 0x1000_0000;
@@ -30,8 +36,6 @@ const WEAPON: u32 = 0x4000;
 const APPEARANCE: usize = 0x1B0;
 /// The item body's palette byte, which a row's wealth rewrites.
 const PALETTE: usize = 0x1A9;
-/// The item body's byte the world-load walk tests before refreshing.
-const WALK_BYTE: usize = 0x1A8;
 
 /// The dirt every graded weapon starts with.
 pub const GRADE_DIRT: u8 = 0x35;
@@ -49,40 +53,10 @@ fn below(state: &mut u32, n: u32) -> u32 {
     ((u64::from(step(state)) * u64::from(n)) >> 32) as u32
 }
 
-/// The engine's fast natural logarithm.
-pub fn fast_ln(x: f32) -> f32 {
-    let bits = x.to_bits();
-    let exponent = (bits >> 23) as i32 as f32;
-    let floor = if x > 0.0 || x.is_nan() {
-        f32::from_bits(0xC2B3_DE55)
-    } else {
-        f32::NEG_INFINITY
-    };
-    let m = f32::from_bits(bits & 0x007F_FFFF | 0x3F80_0000);
-    let m2 = m * m;
-    let mut t = m * f32::from_bits(0x3CCC_A7FC) - f32::from_bits(0x3E79_8F62);
-    t = t * m2 + (m - f32::from_bits(0x4011_9122));
-    t = t * m2 + exponent * f32::from_bits(0x3F31_7218);
-    (m * f32::from_bits(0x4059_7523) + floor) + t
-}
-
-/// The engine's fast exponential.
-pub fn fast_exp(x: f32) -> f32 {
-    let top = f32::from_bits(0x4EFF_0000);
-    let v = x * f32::from_bits(0x4B38_AA3B) + f32::from_bits(0x4E7E_0000);
-    let v = if v < top { v } else { top };
-    let mut i = v.round_ties_even() as i32;
-    if i <= 0 {
-        i = 0;
-    }
-    let bits = i as u32;
-    let m = f32::from_bits(bits & 0x007F_FFFF | 0x3F80_0000);
-    let mut p = m * f32::from_bits(0x3C5D_BE77) + f32::from_bits(0xBB0B_4858);
-    p = p * m + f32::from_bits(0x3E2A_9CBE);
-    p = p * m + f32::from_bits(0x3E9F_C08B);
-    p = p * m + f32::from_bits(0x3F02_8D05);
-    f32::from_bits(bits & 0x7F80_0000) * p
-}
+/// The engine's fast logarithm and exponential, from the one shared
+/// implementation in [`exa_physics::engine_math`], under the names the
+/// randomiser's row weights use.
+pub use exa_physics::engine_math::{exp as fast_exp, ln as fast_ln};
 
 /// Sets a made weapon's condition for `grade` and marks it for its roll.
 /// Grades other than −1, 0, 1 and 2 keep the stored damage.
@@ -511,6 +485,11 @@ pub fn adjust_paint_seed(byte: u8, wealth: f32) -> u8 {
 /// block. Returns whether a section was written. (The original runs the
 /// weapon branch only for a copy in the world or local tier, which every
 /// pick is.)
+///
+/// The body branch also runs the shared apparel palette generator on the
+/// row's wealth before the write; Exarust's apparel painter keeps its own
+/// palette, so the call is modelled by [`WorldSource::randomise_palette`]
+/// in the world-load walk and not here.
 pub fn apply_row(payload: &mut [u8], word: u32) -> bool {
     let row = RowCondition::of(word);
     let byte = |share: f32| (share * 255.0).round_ties_even() as i64 as u8;
@@ -641,8 +620,13 @@ pub fn grade_object(source: &mut dyn GradeSource, id: u32, level: i32) -> u32 {
     copy
 }
 
+/// The armour type byte at `0x1A8`; the world-load walk reads a body's
+/// palette byte only when it is not zero.
+pub const ARMOUR_TYPE: usize = 0x1A8;
+
 /// What the world-load pass reads of the object database: each record's
-/// section tags, an item body's byte, and the refresh it runs.
+/// section tags, an item body's byte, a container section, and the refresh
+/// it runs.
 pub trait WorldSource {
     /// Every record id, in the database's order.
     fn ids(&self) -> Vec<u32>;
@@ -650,27 +634,64 @@ pub trait WorldSource {
     fn sections(&self, id: u32) -> Vec<u32>;
     /// The byte at `offset` of a record's item body.
     fn body_byte(&self, id: u32, offset: usize) -> Option<u8>;
+    /// A record's container section.
+    fn container(&self, id: u32) -> Option<containers::Container>;
     /// Refreshes a record's description and stats.
     fn refresh(&mut self, id: u32);
+    /// Starts the apparel palette generator on a wealth value with mode 1
+    /// (the original's shared palette, consumed by the texture painter).
+    /// Exarust's painter keeps its own palette, so nothing is generated;
+    /// the call is kept so the walk's reads and order are pinned.
+    fn randomise_palette(&mut self, _wealth: f32) {}
 }
 
-/// The world-load pass's walk over the database: a record with an item
-/// body is refreshed when its body's byte at `0x1A8` is not zero; else a
-/// weapon record is refreshed; the others (container records) feed the
-/// fill, [`Fill::run`], which the original runs after the walk. Returns how
-/// many records were refreshed.
-pub fn world_load(source: &mut dyn WorldSource) -> usize {
+/// The slot key the world-load walk gives a container child: the
+/// container's record id in the high bits, the child's index in the low
+/// sixteen.
+pub fn world_slot_key(record: u32, child: usize) -> usize {
+    ((record as usize) << 16) | (child & 0xFFFF)
+}
+
+/// The world-load pass's walk over the database, in record order:
+///
+/// * a record with an item body whose armour type (`0x1A8`) is not zero
+///   reads its palette byte's (`0x1A9`) signed variance and wealth
+///   ([`Quantised::signed`], [`Quantised::count`]), runs the palette
+///   generator on their sum and refreshes the record;
+/// * else a weapon record is refreshed;
+/// * else each child of a container section whose item has a random table
+///   becomes a slot of `fill` drawing from that table, with the
+///   container's item limit and the key [`world_slot_key`].
+///
+/// Returns how many records were refreshed. The original runs the fill
+/// right after this walk, which [`Fill::run`] does.
+pub fn world_load(
+    source: &mut dyn WorldSource,
+    tables: &dyn TableSource,
+    fill: &mut Fill,
+) -> usize {
     let mut refreshed = 0;
     for id in source.ids() {
         let tags = source.sections(id);
         if tags.contains(&BODY) {
-            if source.body_byte(id, WALK_BYTE).is_some_and(|b| b != 0) {
+            if source.body_byte(id, ARMOUR_TYPE).is_some_and(|b| b != 0) {
+                let palette = Quantised([source.body_byte(id, PALETTE).unwrap_or(0), 0, 0, 0]);
+                source.randomise_palette(palette.signed() + f32::from(palette.count()));
                 source.refresh(id);
                 refreshed += 1;
             }
         } else if tags.contains(&WEAPON) {
             source.refresh(id);
             refreshed += 1;
+        } else if let Some(container) = source.container(id) {
+            for (k, child) in container.children.iter().enumerate() {
+                fill.add_slot(
+                    child.id,
+                    world_slot_key(id, k),
+                    i32::from(container.max_item),
+                    tables,
+                );
+            }
         }
     }
     refreshed
@@ -1003,45 +1024,124 @@ mod tests {
         assert_eq!(grade_object(&mut plain, 9, 1), 0);
     }
 
+    struct Record {
+        id: u32,
+        tags: Vec<u32>,
+        body: Vec<u8>,
+        container: Option<containers::Container>,
+    }
+
     struct World {
-        records: Vec<(u32, Vec<u32>, Option<u8>)>,
+        records: Vec<Record>,
         refreshed: Vec<u32>,
+        palettes: Vec<f32>,
     }
 
     impl WorldSource for World {
         fn ids(&self) -> Vec<u32> {
-            self.records.iter().map(|r| r.0).collect()
+            self.records.iter().map(|r| r.id).collect()
         }
         fn sections(&self, id: u32) -> Vec<u32> {
             self.records
                 .iter()
-                .find(|r| r.0 == id)
-                .map(|r| r.1.clone())
+                .find(|r| r.id == id)
+                .map(|r| r.tags.clone())
                 .unwrap_or_default()
         }
         fn body_byte(&self, id: u32, offset: usize) -> Option<u8> {
-            assert_eq!(offset, 0x1A8);
-            self.records.iter().find(|r| r.0 == id).and_then(|r| r.2)
+            self.records
+                .iter()
+                .find(|r| r.id == id)
+                .and_then(|r| r.body.get(offset))
+                .copied()
+        }
+        fn container(&self, id: u32) -> Option<containers::Container> {
+            self.records
+                .iter()
+                .find(|r| r.id == id)
+                .and_then(|r| r.container.clone())
         }
         fn refresh(&mut self, id: u32) {
             self.refreshed.push(id);
         }
+        fn randomise_palette(&mut self, wealth: f32) {
+            self.palettes.push(wealth);
+        }
+    }
+
+    fn record(id: u32, tags: Vec<u32>, body: Vec<u8>) -> Record {
+        Record {
+            id,
+            tags,
+            body,
+            container: None,
+        }
     }
 
     #[test]
-    fn the_world_load_walks_apparel_and_weapon_records() {
+    fn the_world_load_walks_apparel_weapons_and_containers() {
+        // A body of armour type 1 with palette byte 0x96: wealth 2 and
+        // variance −5/31 (bits 2–6 hold 5, bit 7 the sign), taken in double
+        // as the shared reader does.
+        let mut armour = vec![0u8; 0x1AC];
+        armour[0x1A8] = 1;
+        armour[0x1A9] = 0x80 | (5 << 2) | 2;
+        let mut plain = vec![0u8; 0x1AC];
+        plain[0x1A9] = 0xFF;
+        // A container of three children: two name table 100, one an item
+        // without a table, which gets no slot.
+        let child = |id: u32| containers::Child {
+            id,
+            flags: 0,
+            x: 0,
+            y: 0,
+        };
+        let mut chest = record(6, vec![containers::CONTAINER], Vec::new());
+        chest.container = Some(containers::Container {
+            width: 4,
+            height: 4,
+            capacity: 100,
+            max_item: 40,
+            children: vec![child(100), child(55), child(100)],
+        });
         let mut world = World {
             records: vec![
-                (1, vec![0x1000], Some(1)),
-                (2, vec![0x1000], Some(0)),
-                (3, vec![0x4000], None),
-                (4, vec![0x200], None),
-                (5, vec![0x1000], None),
+                record(1, vec![0x1000], armour),
+                record(2, vec![0x1000], plain),
+                record(3, vec![0x4000], Vec::new()),
+                record(4, vec![0x200], Vec::new()),
+                record(5, vec![0x1000], Vec::new()),
+                chest,
             ],
             refreshed: Vec::new(),
+            palettes: Vec::new(),
         };
-        assert_eq!(world_load(&mut world), 2);
+        let db = Db(
+            HashMap::from([(
+                100,
+                RandomTable {
+                    min: 0,
+                    max: 0,
+                    entries: vec![row(0, 0, 0), row(22, 10, 0)],
+                },
+            )]),
+            HashMap::new(),
+        );
+        let mut fill = Fill::default();
+        assert_eq!(world_load(&mut world, &db, &mut fill), 2);
         assert_eq!(world.refreshed, [1, 3]);
+        assert_eq!(world.palettes, [(-5.0f64 * (1.0 / 31.0)) as f32 + 2.0]);
+        assert_eq!(fill.draws.len(), 1);
+        let slots: Vec<(usize, i32)> = fill.draws[0]
+            .slots
+            .iter()
+            .map(|s| (s.child, s.max_item))
+            .collect();
+        assert_eq!(
+            slots,
+            [(world_slot_key(6, 0), 40), (world_slot_key(6, 2), 40)]
+        );
+        assert_eq!(world_slot_key(6, 2), 0x6_0002);
     }
 
     #[test]

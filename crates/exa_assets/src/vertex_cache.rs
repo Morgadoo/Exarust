@@ -27,59 +27,13 @@ pub const SORT_BY_FLAGS: u32 = 0x0100_0000;
 const FLAG_SORT_MASK: u32 = 0x0FFF_FFFF;
 
 // The fast logarithm: exponent × ln 2 plus a polynomial of the mantissa.
-const LN2: u32 = 0x3F31_7218;
-const LN_OFFSET: u32 = 0xC2B3_DE55;
-const LN_C1: u32 = 0x4059_7523;
-const LN_C2: u32 = 0x4011_9122;
-const LN_C3: u32 = 0x3CCC_A7FC;
-const LN_C4: u32 = 0x3E79_8F62;
-// The fast exponential: the scaled argument read as float bits, times a
-// polynomial of its mantissa.
-const EXP_SCALE: u32 = 0x4B38_AA3B;
-const EXP_BIAS: u32 = 0x4E7E_0000;
-const EXP_MAX: u32 = 0x4EFF_0000;
-const EXP_C0: u32 = 0x3F02_8D05;
-const EXP_C1: u32 = 0x3E9F_C08B;
-const EXP_C2: u32 = 0x3E2A_9CBE;
-const EXP_C3: u32 = 0xBB0B_4858;
-const EXP_C4: u32 = 0x3C5D_BE77;
+/// The engine's fast logarithm, from the one shared implementation in
+/// [`exa_physics::engine_math`]; the mesh cache's table uses it to weight
+/// the vertex valence and cache-place scores.
+pub use exa_physics::engine_math::ln as fast_ln;
 
-const MANTISSA: u32 = 0x007F_FFFF;
-const EXPONENT: u32 = 0x7F80_0000;
-const ONE: u32 = 0x3F80_0000;
-
-fn f(bits: u32) -> f32 {
-    f32::from_bits(bits)
-}
-
-/// The original's fast natural logarithm.
-pub fn fast_ln(x: f32) -> f32 {
-    let bits = x.to_bits();
-    let exponent = (bits >> 23) as i32 as f32 * f(LN2);
-    let offset = if x <= 0.0 {
-        f32::NEG_INFINITY
-    } else {
-        f(LN_OFFSET)
-    };
-    let m = f((bits & MANTISSA) | ONE);
-    let m2 = m * m;
-    let mut p = m * f(LN_C3) - f(LN_C4);
-    p *= m2;
-    p += m - f(LN_C2);
-    p *= m2;
-    p += exponent;
-    (m * f(LN_C1) + offset) + p
-}
-
-/// The original's fast exponential.
-pub fn fast_exp(x: f32) -> f32 {
-    let t = x * f(EXP_SCALE) + f(EXP_BIAS);
-    let t = if t < f(EXP_MAX) { t } else { f(EXP_MAX) };
-    let i = (t.round_ties_even() as i32).max(0) as u32;
-    let m = f((i & MANTISSA) | ONE);
-    let p = (((m * f(EXP_C4) + f(EXP_C3)) * m + f(EXP_C2)) * m + f(EXP_C1)) * m + f(EXP_C0);
-    f(i & EXPONENT) * p
-}
+/// The engine's fast exponential, from the same shared implementation.
+pub use exa_physics::engine_math::exp as fast_exp;
 
 struct Tables {
     /// Score of a vertex with n remaining triangles, n ≤ 32.

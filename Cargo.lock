@@ -2521,6 +2521,7 @@ dependencies = [
  "bevy",
  "exa_assets",
  "exa_formats",
+ "exa_physics",
  "exa_render",
 ]
 

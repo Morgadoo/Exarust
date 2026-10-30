@@ -8,6 +8,7 @@
 //! `docs/formats/TERRAIN.md`.
 
 use exa_formats::terrain::{BlendRule, Palette};
+use exa_physics::engine_math::round_to_i64;
 use exa_render::image_noise::{ridge_bytes, value_noise_bytes};
 
 /// Side of the repeating noise maps, in terrain vertices (96 m).
@@ -15,8 +16,15 @@ pub const NOISE_SIDE: usize = 480;
 /// Noise maps are generated from these seeds (inputs 3, 4 and 7).
 const NOISE_SEEDS: [u32; 3] = [137, 476, 7359];
 const NOISE_OCTAVES: u32 = 4;
-/// Leftover weight below this is ignored.
-const LEFTOVER_EPSILON: f32 = 0.001;
+/// The weight below which the original walks no layer or leftover: its
+/// compare widens the single weight to double and tests it against the
+/// exact double 0.001, so an f32 weight that rounds up to exactly the
+/// nearest 0.001 still passes.
+const LEFTOVER_EPSILON: f64 = 0.001;
+/// The single-precision 1/255 the original multiplies a byte by to read a
+/// painted layer's weight or a noise texel as a share (a product, which
+/// can differ from a division by 255 in the last bit).
+pub const BYTE_SHARE: f32 = f32::from_bits(0x3B80_8081);
 /// Deeper rule chains are treated as cycles.
 const MAX_DEPTH: usize = 32;
 /// The most painted brushes a tile evaluates: the original keeps eleven
@@ -92,46 +100,124 @@ impl RuleTree {
 
     /// Material weights of one vertex. `layers` pairs each painted layer's
     /// node with its weight (0..=1); `out` has one slot per material.
+    ///
+    /// The original walks the layers in order with a running remainder
+    /// that starts at 1 and loses each layer's weight in turn (a skipped
+    /// layer's too), then walks node 0 with what remains. A walk (a
+    /// layer's, or the remainder's) starts only when its weight widened to
+    /// double is above the double 0.001; inside a walk no weight is gated.
     pub fn weigh(&self, layers: &[(usize, f32)], inputs: &[f32; INPUTS], out: &mut [f32]) {
-        let mut painted = 0.0;
+        self.walk(layers, inputs, &mut |m, w| {
+            if let Some(slot) = out.get_mut(m) {
+                *slot += w;
+            }
+        });
+    }
+
+    /// One vertex's material channels as bytes, accumulated the original's
+    /// way: each leaf's weight is added to its material's byte as
+    /// [`accumulate`] does (times 255, rounded to even, capped), so a
+    /// material reached by two leaves rounds twice. `totals` receives the
+    /// leaf weights in single precision, which the used-material list
+    /// reads. `bytes` has one slot per material and should start zeroed for
+    /// the vertex.
+    pub fn weigh_bytes(
+        &self,
+        layers: &[(usize, f32)],
+        inputs: &[f32; INPUTS],
+        bytes: &mut [u8],
+        totals: &mut [f32],
+    ) {
+        self.walk(layers, inputs, &mut |m, w| {
+            if let Some(byte) = bytes.get_mut(m) {
+                *byte = accumulate(*byte, w);
+            }
+            if let Some(total) = totals.get_mut(m) {
+                *total += w;
+            }
+        });
+    }
+
+    /// The layer loop both [`RuleTree::weigh`] and
+    /// [`RuleTree::weigh_bytes`] run, handing each leaf's material and
+    /// weight to `add`.
+    fn walk(
+        &self,
+        layers: &[(usize, f32)],
+        inputs: &[f32; INPUTS],
+        add: &mut dyn FnMut(usize, f32),
+    ) {
+        let mut remainder = 1.0f32;
         for &(node, w) in layers {
-            if w > 0.0 {
-                painted += w;
-                self.descend(node, w, inputs, out, 0);
+            remainder -= w;
+            if f64::from(w) > LEFTOVER_EPSILON {
+                self.descend(node, w, inputs, 0, add);
             }
         }
-        let leftover = 1.0 - painted;
-        if leftover > LEFTOVER_EPSILON && !self.nodes.is_empty() {
-            self.descend(0, leftover, inputs, out, 0);
+        if f64::from(remainder) > LEFTOVER_EPSILON && !self.nodes.is_empty() {
+            self.descend(0, remainder, inputs, 0, add);
         }
     }
 
-    fn descend(&self, node: usize, w: f32, inputs: &[f32; INPUTS], out: &mut [f32], depth: usize) {
+    fn descend(
+        &self,
+        node: usize,
+        w: f32,
+        inputs: &[f32; INPUTS],
+        depth: usize,
+        add: &mut dyn FnMut(usize, f32),
+    ) {
         match self.nodes.get(node) {
-            Some(&Node::Material(m)) => out[m] += w,
+            Some(&Node::Material(m)) => add(m, w),
             Some(&Node::Rule { kind, lo, hi, a, b }) if depth < MAX_DEPTH => {
                 let v = inputs.get(kind).copied().unwrap_or(0.0);
-                let t = if v <= lo {
-                    0.0
+                // An ordered input at or below the low bound follows the
+                // below child with the whole weight, one at or above the
+                // high bound the above child; anything else (in range, or
+                // a NaN that orders with neither bound) splits: the above
+                // child takes `w·t` and is walked first, the below child
+                // `(1 − t)·w` after it, even when `t` rounds to 0 or 1.
+                if v <= lo {
+                    if let Some(a) = a {
+                        self.descend(a, w, inputs, depth + 1, add);
+                    }
                 } else if v >= hi {
-                    1.0
+                    if let Some(b) = b {
+                        self.descend(b, w, inputs, depth + 1, add);
+                    }
                 } else {
-                    (v - lo) / (hi - lo)
-                };
-                if t < 1.0
-                    && let Some(a) = a
-                {
-                    self.descend(a, w * (1.0 - t), inputs, out, depth + 1);
-                }
-                if t > 0.0
-                    && let Some(b) = b
-                {
-                    self.descend(b, w * t, inputs, out, depth + 1);
+                    let t = (v - lo) / (hi - lo);
+                    if let Some(b) = b {
+                        self.descend(b, w * t, inputs, depth + 1, add);
+                    }
+                    if let Some(a) = a {
+                        self.descend(a, (1.0 - t) * w, inputs, depth + 1, add);
+                    }
                 }
             }
             _ => {}
         }
     }
+}
+
+/// The total weight a material needs to be kept: half a channel byte
+/// (`0.5 / 255`, the original's constant, compared against the whole tile's
+/// summed leaf weights, not an average). A material that accumulates any
+/// weight anywhere in the tile passes.
+pub const MIN_TILE_SHARE: f32 = 1.0 / 510.0;
+
+/// The materials the original keeps for a tile, in palette order: every
+/// material whose summed leaf weight is above [`MIN_TILE_SHARE`], and (with
+/// `merge`, the original's tile-flag test) material 0 always, whose total
+/// the original sets to 1 first. Over a renderer's maximum the caller
+/// decides what to drop.
+pub fn used_materials(totals: &[f32], merge: bool) -> Vec<usize> {
+    totals
+        .iter()
+        .enumerate()
+        .filter(|&(at, &total)| (merge && at == 0) || total > MIN_TILE_SHARE)
+        .map(|(at, _)| at)
+        .collect()
 }
 
 /// The three repeating noise maps rules can read.
@@ -170,9 +256,9 @@ impl NoiseMaps {
         i: usize,
         j: usize,
     ) -> [f32; INPUTS] {
-        let a = self.sample(0, tile_x, tile_y, i, j) as f32 / 255.0;
-        let b = self.sample(1, tile_x, tile_y, i, j) as f32 / 255.0;
-        let c = self.sample(2, tile_x, tile_y, i, j) as f32 / 255.0;
+        let a = f32::from(self.sample(0, tile_x, tile_y, i, j)) * BYTE_SHARE;
+        let b = f32::from(self.sample(1, tile_x, tile_y, i, j)) * BYTE_SHARE;
+        let c = f32::from(self.sample(2, tile_x, tile_y, i, j)) * BYTE_SHARE;
         [
             height,
             up * up,
@@ -356,18 +442,17 @@ pub fn scale_rule_heights(rules: &mut [BlendRule], scale: f32, offset: f32) {
     }
 }
 
-/// Adds one vertex's weight to a material channel's byte, rounding the
-/// weight to 0..=255 and saturating: the original's accumulator.
+/// Adds one vertex's weight to a material channel's byte, as the original's
+/// accumulator does: `ROUND(weight·255)` to a 64-bit integer (ties to even;
+/// NaN or out of range is the integer indefinite, low word zero), the byte
+/// added in 64 bits, the low 32 bits compared as a signed integer, and the
+/// byte set to that sum when it is at most 255 or to 255 otherwise. So a
+/// positive weight saturates, a NaN weight leaves the byte alone, and a
+/// negative weight subtracts modulo 256.
 pub fn accumulate(current: u8, weight: f32) -> u8 {
-    let add = (weight * 255.0).round_ties_even();
-    let add = if add < 0.0 {
-        0
-    } else if add > 255.0 {
-        255
-    } else {
-        add as u8
-    };
-    current.saturating_add(add)
+    let add = round_to_i64(weight * 255.0);
+    let sum = add.wrapping_add(i64::from(current)) as i32;
+    if sum <= 0xff { sum as u8 } else { 0xff }
 }
 
 /// Packs used materials into interleaved mask planes, four per plane: the
@@ -461,10 +546,14 @@ pub fn expand_kernel(kernel: &[f32]) -> Vec<[f32; 4]> {
 pub fn merge_into(weights: &mut [f32], mask: &mut [u8]) {
     for (weight, byte) in weights.iter_mut().zip(mask.iter_mut()) {
         *weight += f32::from(*byte);
-        if *weight != 0.0 {
-            let scaled = (f32::from(*byte) * 255.0 / *weight).round_ties_even();
-            *byte = scaled.min(255.0) as u8;
-        }
+        // The original converts `byte·255` as an unsigned word to single,
+        // divides by the running weight and rounds the quotient to a
+        // 64-bit integer (ties to even; NaN or out of range is the
+        // processor's integer indefinite, whose low byte is zero), then
+        // caps at 255.
+        let scaled = (u64::from(*byte) * 0xff) as f32 / *weight;
+        let rounded = round_to_i64(scaled);
+        *byte = if rounded < 0xff { rounded as u8 } else { 0xff };
     }
 }
 
@@ -580,6 +669,147 @@ mod tests {
     }
 
     #[test]
+    fn the_walk_gate_is_the_double_comparison_against_a_thousandth() {
+        // The original widens the single weight to double and walks the
+        // layer only when that is above the double 0.001. f32 0.001 is a
+        // little above it, so it walks; the f32 just below does not, and
+        // its weight still counts against the leftover sent to node 0.
+        let p = palette(vec![rule("Fixed", 8, "Rock", "Rock", 1.5, 2.0)]);
+        let tree = RuleTree::new(&p);
+        let sand = RuleTree::node(&p, "Sand").unwrap();
+        let below = f32::from_bits(0x3A83_126E);
+        assert!(below < 0.001f32);
+        let mut out = [0.0; 3];
+        tree.weigh(&[(sand, below)], &inputs(0.0, 1.0), &mut out);
+        assert_eq!(out[0], 0.0, "the layer is skipped, the leftover is 0.999");
+        assert!((out[1] - (1.0 - below)).abs() < 1e-7, "{out:?}");
+        let mut out = [0.0; 3];
+        tree.weigh(&[(sand, 0.001f32)], &inputs(0.0, 1.0), &mut out);
+        assert!((out[0] - 0.001f32).abs() < 1e-9, "{out:?}");
+        assert!((out[1] - (1.0 - 0.001f32)).abs() < 1e-7, "{out:?}");
+        let mut out = [0.0; 3];
+        tree.weigh(&[(sand, 0.0011)], &inputs(0.0, 1.0), &mut out);
+        assert!((out[0] - 0.0011).abs() < 1e-7, "{out:?}");
+        assert!((out[1] - 0.9989).abs() < 1e-7, "{out:?}");
+    }
+
+    #[test]
+    fn a_nan_rule_input_splits_into_two_nan_weights() {
+        // Both compares are unordered, so the original falls into the
+        // split path with t = NaN and walks both children: the totals turn
+        // NaN while each channel's byte add rounds NaN to zero and leaves
+        // the byte alone.
+        let p = palette(vec![rule("Height", 0, "Sand", "Rock", 0.0, 1.0)]);
+        let tree = RuleTree::new(&p);
+        let height = RuleTree::node(&p, "Height").unwrap();
+        let mut nan = inputs(0.0, 1.0);
+        nan[0] = f32::NAN;
+        let mut bytes = [0u8; 3];
+        let mut totals = [0.0f32; 3];
+        tree.weigh_bytes(&[(height, 1.0)], &nan, &mut bytes, &mut totals);
+        assert_eq!(bytes, [0, 0, 0]);
+        assert!(totals[0].is_nan() && totals[1].is_nan());
+        assert_eq!(totals[2], 0.0);
+        let mut out = [0.0f32; 3];
+        tree.weigh(&[(height, 1.0)], &nan, &mut out);
+        assert!(out[0].is_nan() && out[1].is_nan());
+    }
+
+    #[test]
+    fn an_input_outside_the_bounds_follows_one_child_only() {
+        // Input 8 (0.5) is at or below "Outer"'s low bound, so the whole
+        // weight goes to Sand and "Inner" is never entered: its NaN input
+        // would otherwise turn a zero weight into NaN totals.
+        let p = palette(vec![
+            rule("Outer", 8, "Sand", "Inner", 1.5, 2.0),
+            rule("Inner", 0, "Rock", "Grass", 0.0, 1.0),
+        ]);
+        let tree = RuleTree::new(&p);
+        let outer = RuleTree::node(&p, "Outer").unwrap();
+        let mut nan = inputs(0.0, 1.0);
+        nan[0] = f32::NAN;
+        let mut bytes = [0u8; 3];
+        let mut totals = [0.0f32; 3];
+        tree.weigh_bytes(&[(outer, 1.0)], &nan, &mut bytes, &mut totals);
+        assert_eq!(totals, [1.0, 0.0, 0.0]);
+        assert_eq!(bytes, [255, 0, 0]);
+        // At or above the high bound only the above child is walked.
+        let p = palette(vec![
+            rule("Outer", 8, "Inner", "Sand", -1.0, 0.5),
+            rule("Inner", 0, "Rock", "Grass", 0.0, 1.0),
+        ]);
+        let tree = RuleTree::new(&p);
+        let outer = RuleTree::node(&p, "Outer").unwrap();
+        let mut totals = [0.0f32; 3];
+        tree.weigh_bytes(&[(outer, 1.0)], &nan, &mut [0u8; 3], &mut totals);
+        assert_eq!(totals, [1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn the_remainder_loses_each_layer_in_turn() {
+        // The original subtracts each layer from a running 1 rather than
+        // subtracting their sum, which differs in
+        // single precision (painted bytes 12 and 25: 0.85490197 against
+        // 0.8549019).
+        let (w0, w1) = (12.0 * BYTE_SHARE, 25.0 * BYTE_SHARE);
+        assert_ne!((1.0 - w0) - w1, 1.0 - (w0 + w1));
+        let p = palette(vec![]);
+        let tree = RuleTree::new(&p);
+        let rock = RuleTree::node(&p, "Rock").unwrap();
+        let grass = RuleTree::node(&p, "Grass").unwrap();
+        let mut out = [0.0f32; 3];
+        tree.weigh(&[(rock, w0), (grass, w1)], &inputs(0.0, 1.0), &mut out);
+        assert_eq!(out[0].to_bits(), ((1.0 - w0) - w1).to_bits());
+    }
+
+    #[test]
+    fn channel_bytes_round_each_leaf_not_the_sum() {
+        // A rule splitting a weight equally between the same material:
+        // each leaf adds round(w/2 · 255), so a small weight rounds twice
+        // where a single total would round once. A second painted layer
+        // takes the rest of the coverage, so no leftover is walked.
+        let p = palette(vec![rule("Split", 8, "Sand", "Sand", 0.0, 1.0)]);
+        let tree = RuleTree::new(&p);
+        let split = RuleTree::node(&p, "Split").unwrap();
+        let rock = RuleTree::node(&p, "Rock").unwrap();
+        let mut bytes = [0u8; 3];
+        let mut totals = [0.0f32; 3];
+        tree.weigh_bytes(
+            &[(split, 0.005), (rock, 0.995)],
+            &inputs(0.0, 1.0),
+            &mut bytes,
+            &mut totals,
+        );
+        assert_eq!(bytes[0], 2, "two leaves of 0.0025 round to 1 each");
+        assert_eq!(bytes[1], 254);
+        assert!((totals[0] - 0.005).abs() < 1e-7);
+        let mut out = [0.0f32; 3];
+        tree.weigh(
+            &[(split, 0.005), (rock, 0.995)],
+            &inputs(0.0, 1.0),
+            &mut out,
+        );
+        assert_eq!(accumulate(0, out[0]), 1, "the weight path rounds once");
+        // A material above 255 saturates.
+        let mut bytes = [0u8; 3];
+        let mut totals = [0.0f32; 3];
+        tree.weigh_bytes(&[(split, 1.0)], &inputs(0.0, 1.0), &mut bytes, &mut totals);
+        assert_eq!(bytes[0], 255);
+        assert!((totals[0] - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_used_list_keeps_the_share_threshold_and_forces_material_zero() {
+        // Half a channel byte, the constant the original compares the
+        // tile's summed leaf weight against.
+        assert_eq!(MIN_TILE_SHARE.to_bits(), 0x3B00_8081);
+        let totals = [0.0, 0.001, MIN_TILE_SHARE, 2.0];
+        assert_eq!(used_materials(&totals, false), vec![3]);
+        assert_eq!(used_materials(&totals, true), vec![0, 3]);
+        assert_eq!(used_materials(&[], true), Vec::<usize>::new());
+    }
+
+    #[test]
     fn noise_is_deterministic_and_spread() {
         let maps = NoiseMaps::default();
         let again = NoiseMaps::default();
@@ -603,9 +833,9 @@ mod tests {
         assert_eq!(sum, 40_696_892);
         assert_eq!(maps.maps[1][..4], [156, 161, 159, 167]);
         let inputs = maps.inputs(0.0, 1.0, 0, 0, 0, 0);
-        assert_eq!(inputs[3], 137.0 / 255.0);
+        assert_eq!(inputs[3], 137.0 * BYTE_SHARE);
         assert_eq!(inputs[6], inputs[3]);
-        assert_eq!(inputs[4], 156.0 / 255.0);
+        assert_eq!(inputs[4], 156.0 * BYTE_SHARE);
     }
 
     #[test]
@@ -690,6 +920,20 @@ mod tests {
     }
 
     #[test]
+    fn the_channel_accumulator_rounds_to_64_bits_and_compares_the_low_word() {
+        // Positive weights saturate at 255.
+        assert_eq!(accumulate(0, 0.5), 128);
+        assert_eq!(accumulate(10, 0.5), 138);
+        assert_eq!(accumulate(255, 1.0), 255);
+        // A NaN weight converts to the integer indefinite, whose low word
+        // is zero, so the byte stays.
+        assert_eq!(accumulate(100, f32::NAN), 100);
+        // A negative weight subtracts modulo 256 rather than clamping:
+        // ROUND(-0.5·255) is -128 (ties to even), 100 - 128 = -28.
+        assert_eq!(accumulate(100, -0.5), (-28i32) as u8);
+    }
+
+    #[test]
     fn weights_accumulate_into_channels_and_pack_four_a_plane() {
         assert_eq!(accumulate(0, 0.5), 128);
         assert_eq!(accumulate(200, 0.5), 255);
@@ -740,6 +984,24 @@ mod tests {
         assert!((k.iter().sum::<f32>() - 1.0).abs() < 1e-5);
         assert!(k[120] > k[0]);
         assert_eq!(expand_kernel(&k)[120], [k[120]; 4]);
+    }
+
+    #[test]
+    fn a_mask_merge_rounds_ties_to_even_and_a_nan_weight_zeroes_the_byte() {
+        // 127.5 rounds to 128, 255 stays 255; a weight that turns NaN
+        // (a zero byte over a zero weight, or a NaN running weight) makes
+        // the original's rounded quotient the integer indefinite, whose
+        // low byte is zero.
+        let mut weights = vec![100.0, 0.0];
+        let mut mask = vec![100u8, 255];
+        merge_into(&mut weights, &mut mask);
+        assert_eq!(weights, [200.0, 255.0]);
+        assert_eq!(mask, [128, 255]);
+        let mut weights = vec![0.0, f32::NAN];
+        let mut mask = vec![0u8, 9];
+        merge_into(&mut weights, &mut mask);
+        assert!(weights[1].is_nan());
+        assert_eq!(mask, [0, 0]);
     }
 
     #[test]

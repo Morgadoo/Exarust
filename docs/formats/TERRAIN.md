@@ -219,7 +219,14 @@ established by reverse engineering of the terrain texture renderer and the
 noise unit (REA), and are pinned by tests on a separate model of the rules.
 
 Painted layer weights descend through the rules. Weight the layers leave over
-(1 − Σ) goes to node 0, the first rule.
+goes to node 0, the first rule: a running remainder starts at 1 and loses
+each layer's weight in turn (`(1 − w₀) − w₁ …` in single precision), and a
+layer's or the remainder's walk starts only when its weight, widened to
+double, is above the double 0.001. A layer's weight byte is read as
+`byte × f32(1/255)`, a product. At a rule an input at or below the low bound
+sends the whole weight to the below child, one at or above the high bound
+to the above child; otherwise (in range, or a NaN input) the weight splits,
+`w·t` to the above child (walked first) and `(1 − t)·w` to the below child.
 
 The palette's rules and materials also build a **brush table**: one entry per
 name, sorted by its sixteen bytes with `A`–`Z` lowered (compared as raw
@@ -231,13 +238,22 @@ return the equal name the search meets first). A tile takes at most
 follows them. Material weights accumulate into one 256 × 256 byte channel
 each (vertex row·256 + column of the 241 × 241 tile), each weight times 255
 rounded to nearest even and capped at 255. A tile whose flags have all of
-bits 0–2 merges the used materials (weight above 1/510, material 0 always),
+bits 0–2 merges the used materials (the tile's summed leaf weight above
+1/510, i.e. half a channel byte, material 0 always),
 all but the first and the last, over the 241 × 241 corner, and packs them
 four per interleaved mask plane. Height rules (kind 0) can be rescaled:
 bound × scale + offset in single precision. The texture pass's Gaussian
 blur kernel has its negative half and zero computed (sigma a third of the
 radius, taken in double), mirrored, normalised by its sequential single sum
 and widened to four equal floats an entry.
+
+The merge is byte-exact: the first used material keeps its accumulated
+byte, each later one but the last becomes `round(byte·255 / Σ)` over the
+running sum of the bytes, and the last keeps its byte (the shader draws
+the first opaque regardless). The channels are 256 × 256 with a row stride
+of 256, and the planes cover the whole 65536 texels, not only the 241²
+corner. Exarust's renderer stacks at most sixteen layers; a tile that uses
+more keeps the heaviest fifteen and material 0.
 
 ### Composition
 

@@ -77,6 +77,7 @@
 use bevy::math::Vec3;
 use exa_combat::attack::AttackMotion;
 use exa_combat::stance::{Stance, stance_by_energy};
+use exa_physics::engine_math::reciprocal_sqrt;
 
 use crate::cast;
 use crate::fight;
@@ -152,21 +153,6 @@ pub fn yaw(v: Vec3) -> f32 {
 /// The unit direction of a yaw.
 pub fn of_yaw(a: f32) -> Vec3 {
     Vec3::new(a.sin(), 0.0, a.cos())
-}
-
-fn reciprocal_sqrt(value: f32) -> f32 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        // The approximate reciprocal square root the engine units with.
-        unsafe {
-            use std::arch::x86_64::{_mm_cvtss_f32, _mm_rsqrt_ss, _mm_set_ss};
-            _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(value)))
-        }
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        1.0 / value.sqrt()
-    }
 }
 
 /// The engine's unit: zero stays zero.
