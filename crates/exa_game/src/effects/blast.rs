@@ -1566,6 +1566,8 @@ mod tests {
             (0.02, 2.0, 0.8 * 0.025)
         );
         assert_eq!(limb_terms(&BLAST_SETUP, false, 4.0, 0.0), (0.2, 3.0, 0.5));
+        // MINSS answers its second operand, 3, for a NaN reach.
+        assert_eq!(limb_terms(&BLAST_SETUP, false, f32::NAN, 0.0).1, 3.0);
         assert_eq!(contact_weight(1.0, true, false), (0.5, CONTACT_WEAR));
     }
 

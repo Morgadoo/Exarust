@@ -361,8 +361,9 @@ multi-point lights (`effects::emissive`, their box moved by the node's
 place) are in. `effects::ribbon` builds both draws: the blast's eight
 trail samples a chunk, its smoothed 0–1 coordinates, the camera-facing
 bend in the camera's space and the eight quads chained across chunks; the
-torrent's doubled samples with their eye-facing normals and per-sample
-widths. The contact walks are in too: the level's static rebound, the
+torrent's doubled samples (the last sample repeated, cubic Hermite
+midpoints at the half, each stream its own strip) with their eye-facing
+normals, per-sample widths and the double-precision texture walk. The contact walks are in too: the level's static rebound, the
 bolt's sampled walk on static bodies that zeroes a chunk's weight, the simulated object's
 stir and the torrent's surface push. The engine's GL passes are what
 remains out. A blast or bolt cast runs its

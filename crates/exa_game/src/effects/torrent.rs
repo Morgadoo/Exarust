@@ -1292,6 +1292,7 @@ mod tests {
         // (1/80)·0.8 in double rounds to 0.01; in single it is 0.010000001.
         assert_eq!(limb_terms(true, 1.0, 80.0), (0.5, 0.01, 0.25));
         assert_eq!(limb_terms(false, 12.0, 0.0), (3.0, 0.5, 0.5 / 13.0));
+        assert_eq!(limb_terms(false, f32::NAN, 0.0).0, 3.0);
         let p = StreamPoint {
             at: Vec3::new(0.0, 0.0, 10.0),
             previous: Vec3::ZERO,
