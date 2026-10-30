@@ -415,7 +415,13 @@ Exarust's levels do not carry. The
 post-step advances the walk's travel phase: the pelvis's travel in cm
 times 0.0002, wrapped at 1, with the phase before the tick kept
 (`body::travel_phase`); its consumer, the scene node's draw offset, is not
-reproduced. A queued footwork step is taken by the original's rule at the
+reproduced. When a recovery step ends, the free foot nearest the chest
+plus five ticks of its fast velocity becomes the new support foot
+(`body_balance::end_step`): a foot already anchored for the step is passed
+over unless it has reached, the search starts from the original's
+just-under-maximum sentinel so a NaN distance never wins, the first leg
+stands in when none is free, and the standing position moves so that
+foot's spot is where the foot is. A queued footwork step is taken by the original's rule at the
 next landing (`steps::take_queued`, `Ragdoll::queue_step`); nothing queues
 one yet, since Exarust's interim combat footwork is a capsule velocity,
 not the original's step vector. A clip that replaces Walk or Run asks for
