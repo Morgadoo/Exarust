@@ -1908,25 +1908,35 @@ impl TreeScreen {
     /// The hover id at `x`,`y`: a bar slot (`0x40_0000 | slot`), the
     /// creation prompt's BACK and BEGIN buttons, a node, or a link of a
     /// node (`0x200_0000` for an incoming link). A hidden screen hovers
-    /// nothing.
-    pub fn hover(&mut self, x: f32, y: f32, width: f32, height: f32, hidden: bool) -> i32 {
+    /// nothing. `scale` is the interface unit the bar's slots and the
+    /// prompt's buttons are laid out at.
+    pub fn hover(
+        &mut self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        hidden: bool,
+        scale: f32,
+    ) -> i32 {
         if hidden {
             return 0;
         }
         // The pointer and the form's size are whole pixels.
         let (x, y) = (x as i32, y as i32);
         let (width, height) = (width as i32, height as i32);
+        let unit = scale as i32;
         if self.mode == TreeMode::Create {
-            if height - 9 * 4 < y && y < height - 2 * 4 {
-                if x < 37 * 4 {
-                    if 5 * 4 < x {
+            if height - 9 * unit < y && y < height - 2 * unit {
+                if x < 37 * unit {
+                    if 5 * unit < x {
                         return focus::BACK;
                     }
-                } else if width - 37 * 4 < x && x < width - 5 * 4 {
+                } else if width - 37 * unit < x && x < width - 5 * unit {
                     return focus::BEGIN;
                 }
             }
-        } else if let Some(slot) = bar_slot_at(x as f32, y as f32, width as f32, false, 4.0) {
+        } else if let Some(slot) = bar_slot_at(x as f32, y as f32, width as f32, false, scale) {
             return focus::SLOT | (slot as i32 + 1);
         }
         let (x, y) = (x as f32, y as f32);
@@ -3136,17 +3146,24 @@ impl PowerBar {
     /// its bits 20 to 22) with the power word and its flags, and the slot's
     /// old entry goes to the slot the power came from. A miss empties the
     /// slot the power came from. Returns whether a slot was hit.
+    /// Drops a dragged power at `x`,`y` on the bar laid out at `scale` (the
+    /// interface unit). A drop inside the enlarged row takes the slot: the
+    /// slot's old entry moves to the slot the power came from, then the slot
+    /// takes the power, keeping its bits 20 to 22, and the slot sound plays.
+    /// A drop outside puts the power's old slot back to empty. Returns
+    /// whether a slot took the power and the sound it plays.
     pub fn drop(
         &mut self,
         x: f32,
         y: f32,
         width: f32,
+        scale: f32,
         drag: &PowerDrag,
     ) -> (bool, Option<TreeSound>) {
         if drag.kind != press::POWER_DRAG {
             return (false, None);
         }
-        let hit = bar_slot_at(x, y, width, true, 4.0);
+        let hit = bar_slot_at(x, y, width, true, scale);
         let Some(slot) = hit else {
             if drag.origin > 0
                 && let Some(source) = self.slots.get_mut(drag.origin - 1)
@@ -4289,7 +4306,7 @@ mod tests {
             kind: press::POWER_DRAG,
             origin: 1,
         };
-        let (hit, sound) = bar.drop(194.0 + 68.0 * 9.0, 32.0, 1000.0, &drag);
+        let (hit, sound) = bar.drop(194.0 + 68.0 * 9.0, 32.0, 1000.0, 4.0, &drag);
         assert!(hit);
         assert_eq!(sound, Some(SLOT_SOUND));
         // The slot keeps its bits 20 to 22 and takes the power; its old
@@ -4297,7 +4314,7 @@ mod tests {
         assert_eq!(bar.slots[9].word, 0x102 | 0x20_0000);
         assert_eq!(bar.slots[9].state, 0x4000);
         assert_eq!(bar.slots[0].word, 0x103 | 0x20_0000);
-        let (hit, _) = bar.drop(0.0, 0.0, 1000.0, &drag);
+        let (hit, _) = bar.drop(0.0, 0.0, 1000.0, 4.0, &drag);
         assert!(!hit);
         assert_eq!(bar.slots[0].word, 0);
     }
@@ -4870,9 +4887,22 @@ mod tests {
         screen.shown_zoom = 1.0;
         screen.refresh_placement();
         screen.zoom_fixed = 4.0;
-        assert_eq!(screen.hover(194.0, 32.0, 1000.0, 700.0, false), 0x40_0001);
-        assert_eq!(screen.hover(0.0, 0.0, 1000.0, 700.0, false), 1);
-        assert_eq!(screen.hover(0.0, 0.0, 1000.0, 700.0, true), 0);
+        assert_eq!(
+            screen.hover(194.0, 32.0, 1000.0, 700.0, false, 4.0),
+            0x40_0001
+        );
+        // The bar and the prompt follow the interface unit: at unit 8 the
+        // pitch is 8·17 = 136, the row starts at (1000 − 8·17·9)/2 = −112
+        // and the top is 64, so slot 7's centre is at −112 + 6·136 = 704.
+        // The same point misses every slot at unit 4, whose row starts at
+        // 194 with a 68 pitch.
+        assert_eq!(
+            screen.hover(704.0, 64.0, 1000.0, 700.0, false, 8.0),
+            0x40_0007
+        );
+        assert_eq!(screen.hover(704.0, 64.0, 1000.0, 700.0, false, 4.0), 0);
+        assert_eq!(screen.hover(0.0, 0.0, 1000.0, 700.0, false, 4.0), 1);
+        assert_eq!(screen.hover(0.0, 0.0, 1000.0, 700.0, true, 4.0), 0);
         // A node's link: at 10 px straight above the second node with an
         // incoming turn of zero.
         let mut link = [0u8; 16];
@@ -4886,15 +4916,18 @@ mod tests {
         }];
         // 0.01 of a circle above the first node's centre is straight up:
         // the first node's link leaves at turn zero.
-        let id = screen.hover(0.0, 10.0, 1000.0, 700.0, false);
+        let id = screen.hover(0.0, 10.0, 1000.0, 700.0, false, 4.0);
         assert_eq!(id, 1 << 16 | 1);
         // The creation prompt's buttons.
         let mut create = TreeScreen::empty(DOMAIN_MIND, TreeMode::Create);
         assert_eq!(
-            create.hover(900.0, 675.0, 1000.0, 700.0, false),
+            create.hover(900.0, 675.0, 1000.0, 700.0, false, 4.0),
             focus::BEGIN
         );
-        assert_eq!(create.hover(60.0, 675.0, 1000.0, 700.0, false), focus::BACK);
+        assert_eq!(
+            create.hover(60.0, 675.0, 1000.0, 700.0, false, 4.0),
+            focus::BACK
+        );
     }
 
     #[test]
@@ -4916,12 +4949,12 @@ mod tests {
         screen.zoom_fixed = 100.0;
         // Inside 0.45 of the circle's size: the node; outside it, and with no
         // link there, nothing.
-        assert_eq!(screen.hover(500.0, 544.0, 1000.0, 700.0, false), 1);
-        assert_eq!(screen.hover(500.0, 546.0, 1000.0, 700.0, false), 0);
+        assert_eq!(screen.hover(500.0, 544.0, 1000.0, 700.0, false, 4.0), 1);
+        assert_eq!(screen.hover(500.0, 546.0, 1000.0, 700.0, false, 4.0), 0);
         // A framed node's circle is half the size.
         screen.nodes[0].power |= 0x100_0000;
-        assert_eq!(screen.hover(500.0, 522.0, 1000.0, 700.0, false), 1);
-        assert_eq!(screen.hover(500.0, 524.0, 1000.0, 700.0, false), 0);
+        assert_eq!(screen.hover(500.0, 522.0, 1000.0, 700.0, false, 4.0), 1);
+        assert_eq!(screen.hover(500.0, 524.0, 1000.0, 700.0, false, 4.0), 0);
         // A link that leaves the second node and ends at the first is named
         // by the second node when the first is hovered where it arrives.
         screen.nodes[0].power = 0x101;
@@ -4932,12 +4965,12 @@ mod tests {
             end: 1,
         }];
         assert_eq!(
-            screen.hover(500.0, 540.0, 1000.0, 700.0, false),
+            screen.hover(500.0, 540.0, 1000.0, 700.0, false, 4.0),
             (1 << 16) | 2 | focus::INCOMING
         );
         // The creation prompt does not read the quick bar.
         let mut create = TreeScreen::empty(DOMAIN_MIND, TreeMode::Create);
-        assert_eq!(create.hover(194.0, 32.0, 1000.0, 700.0, false), 0);
+        assert_eq!(create.hover(194.0, 32.0, 1000.0, 700.0, false, 4.0), 0);
     }
 
     #[test]
