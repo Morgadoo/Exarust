@@ -568,7 +568,7 @@ impl Plants {
         let place = |p: bevy::math::Vec2| {
             Vec3::new(
                 p.x * s - half,
-                vegetation::ground(&built.heights, n, p),
+                vegetation::ground_on_grid(&built.heights, n, p, s * 100.0),
                 p.y * s - half,
             )
         };

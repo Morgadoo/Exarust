@@ -94,9 +94,10 @@ and the grid's rooms; portal clipping is next (see
   240 × 240 texels, the two random draws of a plant's size and rotation use
   the engine's double-precision unit, and each chunk's plants are ordered
   small plants, grass, large plants by mean height as the original sorts
-  them; the original's plant ground query with its diagonal normal
-  correction is `vegetation::ground_with_normal` (in the block vertices'
-  centimetres; the original discards its result after computing it), and
+  them; the original's plant ground query with its diagonal test and plane
+  solve is `vegetation::ground_on_grid` (through `ground_with_normal`, in
+  the block vertices' centimetres; the solve makes the base it starts from
+  irrelevant), and
   the grass hooks' per-chunk tests are `chunk_drawn`, `chunk_sun_shadow` and
   `chunk_omni_shadow` (the block node and shadow words, the renderer and
   node masks, the node mask's sun-shadow bit, the node's skip bit and a

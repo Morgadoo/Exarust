@@ -440,6 +440,31 @@ pub fn ground_with_normal(vertices: &[[f32; 3]], n: usize, at: Vec2, position: V
     }
 }
 
+/// The ground height under a plant point from a tile's `n` × `n` height grid
+/// (metres per vertex, `spacing_cm` apart), as the live plant baker queries
+/// it: the point's cell corners in centimetres through
+/// [`ground_with_normal`], whose plane solve returns the triangle's height
+/// whatever estimate it starts from. `at` is in vertex steps.
+pub fn ground_on_grid(heights: &[f32], n: usize, at: Vec2, spacing_cm: f32) -> f32 {
+    if n < 2 || heights.len() < n * n {
+        return 0.0;
+    }
+    let i = (at.x as i64).clamp(0, n as i64 - 2) as usize;
+    let j = (at.y as i64).clamp(0, n as i64 - 2) as usize;
+    let h = |di: usize, dj: usize| heights[(j + dj) * n + i + di] * 100.0;
+    let (x0, z0) = (i as f32 * spacing_cm, j as f32 * spacing_cm);
+    let x1 = x0 + spacing_cm;
+    let z1 = z0 + spacing_cm;
+    let corners = [
+        [x0, h(0, 0), z0],
+        [x1, h(1, 0), z0],
+        [x0, h(0, 1), z1],
+        [x1, h(1, 1), z1],
+    ];
+    let position = Vec3::new(at.x * spacing_cm, 0.0, at.y * spacing_cm);
+    ground_with_normal(&corners, 2, Vec2::ZERO, position) * 0.01
+}
+
 /// A plant shape, in metres, standing on its origin.
 #[derive(Debug, Clone, Default)]
 pub struct Variant {
@@ -704,6 +729,28 @@ mod tests {
         };
         let baked = bake(&[grass], &[growth], |_| at);
         assert!((baked.normals[0] - Vec3::Y).length() < 1e-6);
+    }
+
+    #[test]
+    fn the_live_ground_query_solves_the_cell_triangle() {
+        // A flat 3 × 3 tile: every query is the floor.
+        assert_eq!(ground_on_grid(&[0.0; 9], 3, Vec2::new(0.5, 0.5), 20.0), 0.0);
+        // A plane y = 0.2·x on two vertices per side: the solve returns the
+        // plane's height at the point whichever estimate it starts from.
+        let heights = [0.0, 0.2, 0.0, 0.2];
+        let got = ground_on_grid(&heights, 2, Vec2::new(0.5, 0.5), 20.0);
+        assert!((got - 0.1).abs() < 1e-6, "{got}");
+        let got = ground_on_grid(&heights, 2, Vec2::new(0.25, 0.75), 20.0);
+        assert!((got - 0.05).abs() < 1e-6, "{got}");
+        // The same plane on a 3 × 3 tile, in the middle cell.
+        let heights: Vec<f32> = (0..9).map(|k| (k % 3) as f32 * 0.2).collect();
+        let got = ground_on_grid(&heights, 3, Vec2::new(1.5, 0.5), 20.0);
+        assert!((got - 0.3).abs() < 1e-6, "{got}");
+        // Past the grid the edge cell is used.
+        assert_eq!(
+            ground_on_grid(&[0.0; 9], 3, Vec2::new(-5.0, 99.0), 20.0),
+            0.0
+        );
     }
 
     #[test]

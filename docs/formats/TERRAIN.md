@@ -402,8 +402,13 @@ One system grows grass and plants (`exa_world::terrain::vegetation`):
   (2d + 0.1)(0.4 + 0.33·rand), each two-product sum in double precision.
   Each chunk's growing points are then sorted by the original's key: small
   plants −1, grass 0, large plants 1 + their mean vertex height × scale.
-- **Placement**: on the displaced ground of the cell, on the triangle the
-  rendered patch splits it into (the low-to-high diagonal), rotated about Y
+- **Placement**: on the displaced ground of the cell, solved from the cell's
+  four vertices by the plant ground query (`vegetation::ground_on_grid` →
+  `ground_with_normal`): the diagonal test is
+  `(z−x)·0.05 − cross.y·0.0025 > 1`, a NaN or a value above 1 taking the far
+  diagonal, and the plane solve returns the triangle's height whichever
+  base the caller passes (the original passes a stack word it never sets;
+  the solve makes that irrelevant). Rotated about Y
   only, never tilted to the slope. The instance matrix applies to row
   vectors: rows `(cos·s, 0, −sin·s)`, `(0, s, 0)`, `(sin·s, 0, cos·s)` and
   the ground point, each coordinate summed `(x·r0 + y·r1) + (z·r2 + t)`.
