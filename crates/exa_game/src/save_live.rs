@@ -488,11 +488,19 @@ fn save_to_new_slot(
     career: Option<Res<crate::hub_windows::ArenaCareer>>,
     stores: Res<ArenaStores>,
     camera: Option<Res<SaveCamera>>,
+    transition: Option<Res<crate::level_transition::LiveTransition>>,
     players: PlayerSaveQuery,
     created: Option<Res<crate::creator_screen::CreatedCharacter>>,
     mut report: ResMut<SaveReport>,
 ) {
     if requests.read().count() == 0 {
+        return;
+    }
+    // The save writer's first check: a level change whose archive copy did
+    // not import leaves saving disabled until a level loads properly, and
+    // nothing is written.
+    if transition.as_ref().is_some_and(|t| t.saves_disabled()) {
+        warn!("save: saving is disabled after the last level change; nothing written");
         return;
     }
     let Some(mut lists) = lists else {
@@ -556,6 +564,7 @@ fn run_save_steps(
     clock: Option<Res<exa_combat::remedy::WorldClock>>,
     ticks: Option<Res<exa_physics::body::BodyTicks>>,
     camera: Option<Res<SaveCamera>>,
+    transition: Option<Res<crate::level_transition::LiveTransition>>,
     players: PlayerSaveQuery,
     fighters: Query<&exa_combat::Fighter, With<crate::player::PlayerBody>>,
     created: Option<Res<crate::creator_screen::CreatedCharacter>>,
@@ -587,6 +596,10 @@ fn run_save_steps(
     for step in steps {
         match step {
             SaveStep::Save { drop_on_low_health } => {
+                if transition.as_ref().is_some_and(|t| t.saves_disabled()) {
+                    warn!("save: saving is disabled after the last level change; nothing written");
+                    continue;
+                }
                 if drop_on_low_health && !exa_formats::save_chunk::save_allowed(health, false) {
                     match list.drop_after_death(health) {
                         Ok(dropped) => info!(
@@ -1263,6 +1276,40 @@ mod tests {
         };
         assert_eq!(header.camera, [7034.0, 1532.5, 4748.5]);
         assert_eq!(header.zoom, 1.25);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_level_change_that_disabled_saving_refuses_a_new_slot() {
+        let dir = folder("disabled");
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(SaveLivePlugin)
+            .insert_resource(SaveFolder(dir.clone()));
+        // An archive destination whose import failed leaves saving disabled.
+        let flow =
+            crate::level_transition::transition_flow(false, true, false, false, false, false, 0);
+        assert!(flow.saves_disabled);
+        app.insert_resource(crate::level_transition::LiveTransition {
+            level: "nowhere".to_string(),
+            spawn: 0,
+            flow,
+        });
+        app.update();
+        app.world_mut().write_message(SaveToNewSlot);
+        app.update();
+        app.update();
+        assert_eq!(app.world().resource::<SaveReport>().saved, None);
+        assert!(!Slots::story(&dir).file(1, SlotKind::Save).exists());
+        // A level change that did not disable saving saves as usual.
+        app.insert_resource(crate::level_transition::live_transition(
+            "exanima01",
+            0,
+            true,
+        ));
+        app.world_mut().write_message(SaveToNewSlot);
+        app.update();
+        assert_eq!(app.world().resource::<SaveReport>().saved, Some(1));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
