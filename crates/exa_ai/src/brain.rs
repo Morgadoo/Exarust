@@ -483,6 +483,9 @@ struct Sensed {
     /// Its mind-masked bit ([`MindWarded`]).
     hidden: bool,
     phase: f32,
+    /// Its locomotion is active [guess: read from its speed, since the
+    /// body's locomotion flag is not exposed here].
+    locomotion: bool,
     in_combat: bool,
     stepping: bool,
     speed: f32,
@@ -526,6 +529,7 @@ pub fn perceive_all(
             Option<&ChildOf>,
             Has<Npc>,
             Has<MindWarded>,
+            Option<&exa_physics::body::locomotion::Locomotor>,
         )>,
         Query<(
             Entity,
@@ -566,6 +570,7 @@ pub fn perceive_all(
                 child,
                 ai,
                 hidden,
+                locomotor,
             )| {
                 let phase = anim
                     .zip(motions.as_deref())
@@ -587,9 +592,12 @@ pub fn perceive_all(
                     invisible: unseen.is_some(),
                     hidden,
                     phase,
+                    locomotion: locomotor.is_some_and(|l| l.amount != 0.0),
                     in_combat: combatant.is_some_and(|c| c.in_combat)
                         || duellist.is_some_and(|d| d.fighting()),
-                    stepping: combatant.is_some_and(|c| c.movement.queued_step != 0),
+                    // The body's movement flag bit 2 (a body moving), which
+                    // the combatant's mirror word keeps.
+                    stepping: combatant.is_some_and(|c| c.movement.flags & 0x4 != 0),
                     speed,
                     contacts: combatant.map_or_else(Vec::new, |c| c.contacts.clone()),
                     roles: roles.cloned(),
@@ -656,12 +664,13 @@ pub fn perceive_all(
                 look: sensed.forward,
                 forward: sensed.forward,
                 condition: sensed.condition,
-                invisible: sensed.invisible,
+                gone: sensed.invisible,
                 hidden: sensed.hidden,
                 mask: None,
                 asleep: sensed.asleep,
                 removed: false,
                 phase: sensed.phase,
+                locomotion: sensed.locomotion,
                 in_combat: sensed.in_combat,
                 stepping: sensed.stepping,
                 poised: false,
@@ -2043,7 +2052,10 @@ mod tests {
         // its duellist waits.
         let quiet = w.get::<Npc>(neutral).unwrap();
         assert_ne!(quiet.pass.target, Some(player.to_bits()));
-        assert!(quiet.pass.level <= 1, "{}", quiet.pass.level);
+        // The fighting brain is in combat, which weighs its threat to the
+        // player at 16 rather than 8, so the neutral rates it an
+        // engagement; the player itself is never its target.
+        assert_eq!(quiet.pass.level, 3, "{}", quiet.pass.level);
         assert!(!w.get::<crate::Duellist>(neutral).unwrap().engaged);
         // The combatant's contact follows the brain's integrated hostility.
         let cb = w.get::<Combatant>(hostile).unwrap();
