@@ -5670,7 +5670,8 @@ pub fn draw_mark_pressed(batch: &mut SkinBatch, rect: GuiRect, palette: &SkinPal
 }
 
 /// The mark box under the mouse: the same outer bevel, a second one a pixel
-/// inside in the eighth and seventh shades, then the outline.
+/// inside one shade brighter (the eighth below, the seventh above), then the
+/// outline.
 pub fn draw_mark_hot(batch: &mut SkinBatch, rect: GuiRect, palette: &SkinPalette) {
     bevel_rect(
         batch,
@@ -5691,8 +5692,8 @@ pub fn draw_mark_hot(batch: &mut SkinBatch, rect: GuiRect, palette: &SkinPalette
             x1: rect.x1 - 1.0,
             y1: rect.y1 - 1.0,
         },
-        palette.form_hot[8],
         palette.form_hot[7],
+        palette.form_hot[6],
     );
     batch.set_ink(palette.control[0]);
     outline_rect(batch, rect);
@@ -5876,10 +5877,10 @@ pub fn draw_bar_with_boxes(
             palette.control[4],
             palette.control[0],
         );
-        bevel_rect(batch, inner, palette.control[7], palette.control[4]);
+        bevel_rect(batch, inner, palette.control[6], palette.control[4]);
     } else {
         vertical_gradient(batch, inner, unit, palette.control[5], palette.control[1]);
-        vertical_gradient_frame(batch, inner, unit, palette.control[7], palette.control[4]);
+        vertical_gradient_frame(batch, inner, unit, palette.control[6], palette.control[4]);
     }
     batch.set_ink(palette.control[0]);
     outline_rect(batch, rect);
@@ -6594,9 +6595,9 @@ pub fn draw_form_background(
     let start = batch.primitives.len();
     let width = place.rect.x1 as i32;
     let height = place.rect.y1 as i32;
-    // A mark is pressed while the button is down on the code under the
-    // mouse; the stored pressed code only makes it active.
-    let pressed = |code: i32| code == place.hover_code && place.button_down;
+    // A mark or trough draws pressed while the button is still down on the
+    // code it went down on; the code under the mouse only makes it hot.
+    let pressed = |code: i32| code == place.pressed_code && place.button_down;
     if (place.flags & 0x40) == 0x40 {
         rounded_textured_frame(
             batch,
@@ -12094,9 +12095,9 @@ mod tests {
             false,
             &palette,
         );
-        // Idle: the filled gradient from the form group's sixth shade above
-        // to its second below, the line gradient from the eighth to the
-        // fifth, then the outline in the first.
+        // Idle: the filled gradient from the control group's sixth shade
+        // above to its second below, the line gradient from the seventh
+        // above to the fifth below, then the outline in the first.
         assert_eq!(batch.primitives.len(), 3);
         let fill = batch.vertices_of(&batch.primitives[0]);
         assert_eq!((fill[0].x, fill[0].y), (29.0, 21.0));
@@ -12105,13 +12106,13 @@ mod tests {
         assert!(fill.iter().any(|v| v.ink == [30, 1, 0, 60]));
         let frame = batch.vertices_of(&batch.primitives[1]);
         assert_eq!((frame[0].x, frame[0].y), (28.5, 21.5));
-        assert_eq!(frame[0].ink, [30, 7, 0, 60]);
+        assert_eq!(frame[0].ink, [30, 6, 0, 60]);
         assert!(frame.iter().any(|v| v.ink == [30, 4, 0, 60]));
         let outline = batch.vertices_of(&batch.primitives[2]);
         assert_eq!(outline[0].ink, [30, 0, 0, 60]);
 
         // Pressed: the gradient boxes from the fifth shade up to the first,
-        // the bevel from the eighth to the fifth.
+        // the bevel from the fifth above to the seventh below.
         let mut pressed = SkinBatch::new();
         draw_bar_with_boxes(
             &mut pressed,
@@ -12126,7 +12127,7 @@ mod tests {
         assert_eq!(face[0].ink, [30, 0, 0, 60]);
         let bevel = pressed.vertices_of(&pressed.primitives[1]);
         assert_eq!(bevel[0].ink, [30, 4, 0, 60]);
-        assert!(bevel.iter().any(|v| v.ink == [30, 7, 0, 60]));
+        assert!(bevel.iter().any(|v| v.ink == [30, 6, 0, 60]));
     }
 
     #[test]
@@ -12373,8 +12374,8 @@ mod tests {
         assert_eq!(hovered.primitives.len(), 3);
         let inner = hovered.vertices_of(&hovered.primitives[1]);
         assert_eq!((inner[1].x, inner[1].y), (11.5, 21.5));
-        assert_eq!(inner[0].ink, [20, 7, 0, 50]);
-        assert_eq!(inner[5].ink, [20, 8, 0, 50]);
+        assert_eq!(inner[0].ink, [20, 6, 0, 50]);
+        assert_eq!(inner[5].ink, [20, 7, 0, 50]);
         assert_eq!(hovered.primitives[2].draw, GuiDraw::Lines);
 
         let mut idle = SkinBatch::new();
@@ -12817,14 +12818,15 @@ mod tests {
             vec![[180, 24, 195, 39], [180, 80, 195, 95]]
         );
         assert_eq!(drawn.scroll_bars, vec![[180, 30, 195, 50]]);
-        // Frame, shadow, the raised box under the mouse with the button
-        // down (its gradient runs from the control group's fifth shade up to
-        // its second), then the second trough's idle box, then the bar's
-        // gradient boxes.
-        let pressed = batch.vertices_of(&batch.primitives[2]);
-        assert_eq!(pressed[0].ink, [30, 1, 0, 60]);
-        let idle = batch.vertices_of(&batch.primitives[5]);
+        // Frame, shadow, the first trough's idle raised box (the mouse is
+        // over it, which only makes it hot for the arrow icon), then the
+        // second trough's box, pressed because the button went down on its
+        // code and is still down (its gradient runs from the control
+        // group's fifth shade up to its second), then the bar's boxes.
+        let idle = batch.vertices_of(&batch.primitives[2]);
         assert_eq!(idle[0].ink, [30, 6, 0, 60]);
+        let pressed = batch.vertices_of(&batch.primitives[5]);
+        assert_eq!(pressed[0].ink, [30, 1, 0, 60]);
         assert_eq!(batch.texture_shift, [0.0, 0.0]);
     }
 
