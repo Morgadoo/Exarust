@@ -35,6 +35,12 @@
 //!   life loses a tick and with none left the effect is spent.
 //! - **Bounds**: the chunks' box, its middle, and its half extents plus
 //!   40 cm, whose length is the bounding radius.
+//! - **Draw and sound**: the chunk ribbons' mesh allocates eight trail slots
+//!   a chunk, a quad between each neighbouring pair: 896 vertices and 1344
+//!   indices ([`mesh_plan`]). The charge loop starts at the node's place at
+//!   volume 1 and pitch 1, then takes `base·0.8·roll` as its volume
+//!   ([`wave_loop`]); the release plays its own sound at the pitch the
+//!   tick answers.
 //!
 //! The release itself, the chunk drawing and the blast's own setup belong
 //! to the blast effect, outside this group.
@@ -79,6 +85,37 @@ pub const THROWN_FLAG: u32 = 0x4_0000;
 pub const LIFE_TICKS: i32 = 58;
 /// The bounds' margin, cm.
 pub const BOUNDS_MARGIN_CM: f32 = 40.0;
+/// The trail slots the drawn ribbon uses, and the quads, vertices and
+/// indices its mesh allocates: eight slots a chunk, 32 chunks, a quad
+/// between each neighbouring pair.
+pub const DRAW_SLOTS: usize = 8;
+pub const DRAW_VERTICES: usize = (DRAW_SLOTS - 1) * CHUNKS * 4;
+pub const DRAW_INDICES: usize = (DRAW_SLOTS - 1) * CHUNKS * 6;
+/// The charge loop's volume: the sound record's base times 0.8 and a draw.
+pub const LOOP_VOLUME_SCALE: f64 = 0.8;
+
+/// The drawn mesh's sizes, as the original allocates them.
+pub fn mesh_plan() -> (usize, usize) {
+    (DRAW_VERTICES, DRAW_INDICES)
+}
+
+/// The wave's charge loop: it starts at the node's place at volume 1 and
+/// pitch 1, then takes `base · 0.8 · roll` as its volume.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WaveLoop {
+    pub at: Vec3,
+    pub volume: f32,
+    pub pitch: f32,
+}
+
+/// The charge loop's volume from the sound record's base and a roll.
+pub fn wave_loop(base: f32, roll: f64, at: Vec3) -> WaveLoop {
+    WaveLoop {
+        at,
+        volume: (f64::from(base) * LOOP_VOLUME_SCALE * roll) as f32,
+        pitch: 1.0,
+    }
+}
 
 /// The smallest squared length the wave takes a root of.
 const EPSILON: f32 = f32::from_bits(0x33ff_ffd7);
@@ -468,5 +505,21 @@ mod tests {
         assert!((wave.half.z - 120.0).abs() < 1e-3);
         assert_eq!(wave.half.y, 40.0);
         assert_eq!(wave.centre.y, 30.0);
+    }
+
+    #[test]
+    fn the_draw_uses_eight_trail_slots_a_chunk() {
+        assert_eq!(DRAW_SLOTS, 8);
+        assert_eq!(mesh_plan(), (896, 1344));
+        assert_eq!(DRAW_VERTICES, 7 * 32 * 4);
+        assert_eq!(DRAW_INDICES, 7 * 32 * 6);
+    }
+
+    #[test]
+    fn the_charge_loop_takes_eight_tenths_of_its_base() {
+        let loop_sound = wave_loop(0.5, 0.5, Vec3::X);
+        assert_eq!(loop_sound.at, Vec3::X);
+        assert_eq!(loop_sound.volume, (0.5f64 * 0.8 * 0.5) as f32);
+        assert_eq!(loop_sound.pitch, 1.0);
     }
 }
