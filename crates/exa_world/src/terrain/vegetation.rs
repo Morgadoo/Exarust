@@ -395,11 +395,17 @@ pub fn ground(heights: &[f32], n: usize, at: Vec2) -> f32 {
 /// against 1: a value above 1, or a NaN, picks the cell's other diagonal
 /// (a NaN takes the branch, as the original's unordered compare does). The
 /// correction is `±0.0025·(edge·(relative × diagonal))`, added on the far
-/// branch and taken off on the near one. In the original its result is
-/// discarded by the caller, which places the instance at the uncorrected
-/// height (and passes a position whose height it never set, so `position.y`
-/// is whatever the previous call left); it is kept here as a tested rule
-/// that the Exarust baker does not call. A point outside the
+/// branch and taken off on the near one. The near branch solves the plane
+/// of the corner, its right neighbour and the vertex below it; the far one
+/// the plane of the right neighbour, the vertex below and the opposite
+/// corner. With the original's 20 cm vertex spacing the correction cancels
+/// `position.y` (whatever the caller starts from) and the result is that
+/// plane's height. The baker writes the result into the instance's
+/// translation (the position it passes has a height it never set: the
+/// previous plant's, which the solve cancels; see [`ground_on_grid`]).
+/// Note the test is not the split between those two triangles (on a
+/// 20 cm cell it reads `1 − fx + 2·fz > 1`), so a point can take the
+/// other triangle's plane, as the original does. A point outside the
 /// grid returns the position's own height `[guess: the original reads on]`.
 pub fn ground_with_normal(vertices: &[[f32; 3]], n: usize, at: Vec2, position: Vec3) -> f32 {
     /// The original's determinant test against 1.
@@ -444,7 +450,12 @@ pub fn ground_with_normal(vertices: &[[f32; 3]], n: usize, at: Vec2, position: V
 /// (metres per vertex, `spacing_cm` apart), as the live plant baker queries
 /// it: the point's cell corners in centimetres through
 /// [`ground_with_normal`], whose plane solve returns the triangle's height
-/// whatever estimate it starts from. `at` is in vertex steps.
+/// whatever estimate it starts from (exactly so only at the 20 cm spacing
+/// the original's 0.05 and 0.0025 assume). `at` is in vertex steps; its
+/// cell is the truncated step, clamped to the grid `[guess: the original
+/// does not clamp; its points never leave the tile]`. The original works in
+/// a frame centred on the tile and Exarust in one starting at its corner,
+/// which changes only the rounding.
 pub fn ground_on_grid(heights: &[f32], n: usize, at: Vec2, spacing_cm: f32) -> f32 {
     if n < 2 || heights.len() < n * n {
         return 0.0;
@@ -746,6 +757,22 @@ mod tests {
         let heights: Vec<f32> = (0..9).map(|k| (k % 3) as f32 * 0.2).collect();
         let got = ground_on_grid(&heights, 3, Vec2::new(1.5, 0.5), 20.0);
         assert!((got - 0.3).abs() < 1e-6, "{got}");
+        // A cell that is not flat: the test `1 − fx + 2·fz > 1` is not the
+        // split between the two planes, as in the original. Corner (0, 0)
+        // raised 1 m: at (0.6, 0.2) the test is 0.8, the near plane through
+        // the raised corner gives 1 − (0.6 + 0.2) = 0.2 m; at (0.3, 0.3) the
+        // test is 1.3, so the far plane (all at 0) answers 0 although the
+        // point lies over the raised corner's triangle.
+        let raised = [1.0, 0.0, 0.0, 0.0];
+        let got = ground_on_grid(&raised, 2, Vec2::new(0.6, 0.2), 20.0);
+        assert!((got - 0.2).abs() < 1e-5, "{got}");
+        let got = ground_on_grid(&raised, 2, Vec2::new(0.3, 0.3), 20.0);
+        assert!(got.abs() < 1e-5, "{got}");
+        // Corner (1, 1) raised 1 m: at (0.75, 0.75) the far plane gives
+        // (0.75 + 0.75 − 1) = 0.5 m.
+        let raised = [0.0, 0.0, 0.0, 1.0];
+        let got = ground_on_grid(&raised, 2, Vec2::new(0.75, 0.75), 20.0);
+        assert!((got - 0.5).abs() < 1e-5, "{got}");
         // Past the grid the edge cell is used.
         assert_eq!(
             ground_on_grid(&[0.0; 9], 3, Vec2::new(-5.0, 99.0), 20.0),
