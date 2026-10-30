@@ -683,6 +683,27 @@ pub fn xp_share(pool: i32, total_damage: i32, damage: i32) -> i32 {
     crate::arena_match::cvtss2si_low32(pool as f32 * ratio)
 }
 
+/// The Fray's template id: its experience award counts every body.
+pub const FRAY: i32 = 4;
+
+/// Every company body's share of a round's experience, in scene order: the
+/// award's second walk. A body counts when it is on the company's side
+/// and `credited` finds its record (the manager or a fighter still on the
+/// books); its share is [`xp_share`] of the pool by its damage over the
+/// award's total. Each entry is the body's scene index and its share.
+pub fn xp_shares(
+    award: XpAward,
+    fighters: &[XpFighter],
+    mut credited: impl FnMut(usize) -> bool,
+) -> Vec<(usize, i32)> {
+    fighters
+        .iter()
+        .enumerate()
+        .filter(|&(index, fighter)| fighter.company && credited(index))
+        .map(|(index, fighter)| (index, xp_share(award.pool, award.damage, fighter.damage)))
+        .collect()
+}
+
 /// The XP one award gives: `min(total/rank_points, 5000)`.
 pub fn xp_gain(total: u32, rank_points: u32) -> u32 {
     if rank_points == 0 {
@@ -828,6 +849,11 @@ mod tests {
         // The Fray counts every body's damage and missing health: 160 of
         // 400 maximum, so 3 500.
         assert_eq!(xp_pool(3, 5_000, true, &fighters, false).pool, 3_500);
+        // Only company bodies with a record are credited, in scene order.
+        let shares = xp_shares(award, &fighters, |index| index != 0);
+        assert_eq!(shares, vec![(1, 3_413)]);
+        // No damage dealt: the ratio 0/0 is NaN and the share converts to 0.
+        assert_eq!(xp_share(5_688, 0, 0), 0);
     }
 
     #[test]

@@ -58,6 +58,9 @@
 //!          --arena-level <n>          the arena match's rank, the generated opponents' level (default 0)
 //!          --arena-tier <n>           the arena match's gear tier (default 0)
 //!          --arena-weapons <ids>      the drawn weapon variant per opponent, comma separated
+//!          --arena-auto               the original's dormant auto-match switch: a round's end continues by itself and,
+//!                                     4 s after the return to the hub, the last board match starts again with the
+//!                                     company's combatants (a debug tool for unattended arena runs)
 //!          --trace <file.csv>         the player's body (else every simulated body) after every 83 Hz tick, in cm
 //!          --trace-all                with --trace: every simulated character body, the player's among them
 //!          --debug-bodies             start with the body overlay and joint readout shown (F3 toggles it)
@@ -356,6 +359,8 @@ pub struct Options {
     /// Play mode: every arena opponent drops dead at this frame after the
     /// load, so the round ends and its end screen opens (a debug tool).
     pub arena_fell: Option<u32>,
+    /// `--arena-auto`: the auto-match switch (continue and rematch alone).
+    pub arena_auto: bool,
     /// Play mode: the player's record's feral level (0..=1).
     pub feral: Option<f32>,
     /// Play mode: powers the player knows (`--powers`, hex or decimal).
@@ -760,6 +765,7 @@ fn main() -> AppExit {
             "--heartbeat" => options.heartbeat = true,
             "--undying" => options.undying = true,
             "--arena-fell" => options.arena_fell = args.next().and_then(|v| v.parse().ok()),
+            "--arena-auto" => options.arena_auto = true,
             "--debug-arcs" => options.thaum_debug.arcs = true,
             "--debug-barricade" => options.thaum_debug.barricade = true,
             "--debug-wisps" => options.thaum_debug.wisps = true,

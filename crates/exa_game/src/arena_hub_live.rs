@@ -151,6 +151,8 @@ impl Plugin for ArenaHubPlugin {
             .init_resource::<crate::hub_windows::HubItemNames>()
             .init_resource::<crate::shop_stock::LiveShopStock>()
             .init_resource::<LastHubClick>()
+            .init_resource::<ArenaRematch>()
+            .init_resource::<crate::arena_live::ArenaAutoContinue>()
             .init_resource::<exa_ui::gui_draw::GuiFrames>()
             .init_resource::<ButtonInput<KeyCode>>()
             .init_resource::<ButtonInput<MouseButton>>()
@@ -159,6 +161,7 @@ impl Plugin for ArenaHubPlugin {
                 (
                     crate::hub_windows::sync_hub_screen,
                     enter_loaded_hub,
+                    auto_rematch,
                     hub_clicks,
                     hub_session_fall,
                     close_hub_windows,
@@ -414,6 +417,18 @@ pub fn plan_launch_at(
     let fee = board.selected.fee;
     career.company.copper = career.company.copper.saturating_sub(fee);
     career.company.spent = career.company.spent.saturating_add(fee);
+    plan_match(career, board, alternative, counter)
+}
+
+/// The match start after the board's checks and fee: the arena and track
+/// draw, the layout and each fighter's spawn plan. The auto rematch starts
+/// here, with no fee and no day limit.
+fn plan_match(
+    career: &mut crate::hub_windows::ArenaCareer,
+    board: &exa_ui::match_board::Board,
+    alternative: bool,
+    counter: u64,
+) -> Option<ArenaMatchLaunch> {
     let template = board.match_id() as i32;
     let start = crate::arena_match::start_match(&mut career.picks, template, counter, alternative);
     let spawn_at = crate::arena_match::ARENA_MAPS
@@ -505,6 +520,121 @@ pub fn plan_launch_at(
         rivals,
         fighters,
     })
+}
+
+/// Timer ticks the auto rematch waits after the return to the hub.
+pub const REMATCH_TICKS: u64 = 40;
+/// Real-time milliseconds per timer tick.
+pub const TIMER_TICK_MS: u64 = 100;
+
+/// The original's dormant auto-match switch ([`crate::arena_live::ArenaAutoContinue`],
+/// `--arena-auto`): a round's end continues by itself and, 40 timer ticks
+/// (4 s of real time) after the return to the hub, the last match starts
+/// again with the company's combatants. The retail switch is never set by
+/// the game's own code; Exarust exposes it for unattended runs.
+#[derive(Resource, Clone, Debug, Default)]
+pub struct ArenaRematch {
+    /// The board the last launch came from: its selected match is replayed.
+    pub board: Option<exa_ui::match_board::Board>,
+    /// The real-time millisecond the rematch is due.
+    pub due_ms: Option<u64>,
+    /// This hub entry already scheduled (or skipped) its rematch.
+    pub scheduled: bool,
+}
+
+/// The rematch's lineup: `per_side` participants taken in staff order after
+/// the manager, every recruit or combatant (class below 4,
+/// [`crate::arena_session::meet_participants`]), as board pool slots (the
+/// manager is slot 0, roster member `i` slot `i + 1`). A short staff leaves
+/// the rest of the original's list empty, so no slot stands for it.
+pub fn rematch_team(
+    per_side: usize,
+    manager: crate::career::Profession,
+    roster: &[crate::career::Profession],
+) -> Vec<usize> {
+    let staff: Vec<(i32, u8)> = std::iter::once(manager)
+        .chain(roster.iter().copied())
+        .enumerate()
+        .map(|(slot, profession)| {
+            let class = match profession {
+                crate::career::Profession::Combatant => crate::staff::COMBATANT,
+                crate::career::Profession::Merchant => crate::staff::MERCHANT,
+                crate::career::Profession::Physician => crate::staff::PHYSICIAN,
+                crate::career::Profession::Trainer => crate::staff::TRAINER,
+            };
+            (slot as i32, class)
+        })
+        .collect();
+    crate::arena_session::meet_participants(per_side, &staff)
+        .into_iter()
+        .filter(|&slot| slot > 0)
+        .map(|slot| slot as usize)
+        .collect()
+}
+
+/// The auto switch's rematch: once per hub entry it is scheduled
+/// [`REMATCH_TICKS`] timer ticks of real time ahead when a match was
+/// launched before; when due, the last board's match starts again with
+/// [`rematch_team`]'s lineup.
+#[allow(clippy::too_many_arguments)]
+fn auto_rematch(
+    auto: Option<Res<crate::arena_live::ArenaAutoContinue>>,
+    mut hub: ResMut<ArenaHub>,
+    time: Option<Res<Time<Real>>>,
+    mut rematch: ResMut<ArenaRematch>,
+    mut career: ResMut<crate::hub_windows::ArenaCareer>,
+    flow: Option<Res<Flow>>,
+    mut launches: MessageWriter<ArenaMatchLaunch>,
+) {
+    if !auto.is_some_and(|auto| auto.0) {
+        return;
+    }
+    if !hub.entered {
+        rematch.due_ms = None;
+        rematch.scheduled = false;
+        return;
+    }
+    let now = time.map_or(0, |time| time.elapsed().as_millis() as u64);
+    if !rematch.scheduled {
+        rematch.scheduled = true;
+        if rematch.board.is_some() {
+            rematch.due_ms = Some(now + REMATCH_TICKS * TIMER_TICK_MS);
+            info!(
+                "arena auto: rematch in {} ms",
+                REMATCH_TICKS * TIMER_TICK_MS
+            );
+        }
+        return;
+    }
+    if rematch.due_ms.is_none_or(|due| now < due) {
+        return;
+    }
+    rematch.due_ms = None;
+    let Some(mut board) = rematch.board.clone() else {
+        return;
+    };
+    let roster: Vec<crate::career::Profession> = career
+        .company
+        .roster
+        .iter()
+        .map(|member| member.profession)
+        .collect();
+    let per_side = usize::try_from(board.selected.team_size).unwrap_or(0);
+    board.team = rematch_team(per_side, career.player.profession, &roster);
+    let alternative = flow.is_some_and(|flow| flow.alternative_music);
+    if let Some(launch) = plan_match(
+        &mut career,
+        &board,
+        alternative,
+        crate::arena_match::counter_now(),
+    ) {
+        info!(
+            "arena auto: rematch of template {} with slots {:?}",
+            launch.template, board.team
+        );
+        launches.write(launch);
+        hub.busy = true;
+    }
 }
 
 /// Removes the first weapon object within ten centimetres of the physician's
@@ -615,7 +745,7 @@ fn hub_clicks(
     mut career: ResMut<crate::hub_windows::ArenaCareer>,
     mut shop: HubShop,
     mut launches: MessageWriter<ArenaMatchLaunch>,
-    mut last: ResMut<LastHubClick>,
+    (mut last, mut rematch): (ResMut<LastHubClick>, ResMut<ArenaRematch>),
 ) {
     let hub_loaded = levels.iter().any(|root| is_hub_level(&root.name));
     if !hub.entered && !hub_loaded {
@@ -670,6 +800,8 @@ fn hub_clicks(
                                         info!("arena begin: specialist left ({departure:?})");
                                     }
                                     launches.write(launch);
+                                    // The match the auto switch replays.
+                                    rematch.board = Some(board);
                                     windows.close_window();
                                     hub.busy = true;
                                 }
@@ -848,6 +980,19 @@ mod tests {
     use crate::arena_hub::same_name;
     use crate::hand::Hit;
     use crate::hub_windows::HubWindowKind;
+
+    #[test]
+    fn the_rematch_takes_the_combatants_after_the_manager() {
+        use crate::career::Profession::{Combatant, Merchant, Physician};
+        // Slots 1 and 3 are combatants; the merchant is skipped.
+        assert_eq!(
+            rematch_team(2, Combatant, &[Combatant, Merchant, Combatant]),
+            vec![1, 3]
+        );
+        // A short staff fills what it can; the manager never stands.
+        assert_eq!(rematch_team(3, Combatant, &[Physician, Combatant]), vec![2]);
+        assert_eq!(REMATCH_TICKS * TIMER_TICK_MS, 4_000);
+    }
 
     fn hub_app() -> App {
         let mut app = App::new();

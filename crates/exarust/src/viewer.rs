@@ -108,6 +108,9 @@ fn setup(
     mut images: ResMut<Assets<Image>>,
     support: Option<Res<CompressedImageFormatSupport>>,
 ) {
+    if options.arena_auto {
+        commands.insert_resource(exa_game::arena_live::ArenaAutoContinue(true));
+    }
     let bc = model::bc_supported(support.as_deref());
     info!("BC texture upload: {bc}");
     let mut loader = ModelLoader {

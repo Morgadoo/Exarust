@@ -184,8 +184,10 @@ pub enum ArenaExit {
     MainMenu,
 }
 
-/// Whether the end screen's Continue runs without a key (unattended runs
-/// and tests). In play it is always false.
+/// The original's dormant auto-match switch: the end screen's Continue
+/// runs without a key, and the hub replays the last match
+/// ([`crate::arena_hub_live::ArenaRematch`]). The game's own code never sets
+/// it; `--arena-auto` does, for unattended runs and tests.
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ArenaAutoContinue(pub bool);
 
@@ -404,6 +406,37 @@ type MatchBody<'a> = (
     &'a SceneFighter,
     Has<crate::player::PlayerBody>,
 );
+
+/// A body the scene draw counts: every fighter the match stood, and the
+/// player's own body, which carries no scene marker.
+type DrawBody<'a> = (
+    &'a Fighter,
+    &'a Condition,
+    Option<&'a SceneFighter>,
+    Has<crate::player::PlayerBody>,
+);
+
+/// The scene draw's view of the match's bodies
+/// ([`crate::career::draw_unwatched`]): each body's team word (the player's
+/// and the company's are the player's team), its red health as its
+/// strength, and a collapsing or dead body (the condition's dying bits) set
+/// aside.
+fn scene_sides(bodies: &Query<DrawBody<'_>>) -> Vec<crate::career::SideFighter> {
+    bodies
+        .iter()
+        .filter(|(_, _, marker, player)| marker.is_some() || *player)
+        .map(
+            |(fighter, condition, marker, player)| crate::career::SideFighter {
+                team: match marker {
+                    Some(marker) if !player && !marker.company => marker.team as i32,
+                    _ => crate::arena_match::PLAYER_TEAM,
+                },
+                strength: fighter.health.red,
+                aside: condition.has(Condition::DYING_MASK),
+            },
+        )
+        .collect()
+}
 
 /// The running match is an arena session: the arena's pause page and the
 /// end-of-session dispatch read the arena mode, not the play view's practice
@@ -643,7 +676,7 @@ fn continue_round(
     mut screen: Option<ResMut<ArenaEndScreen>>,
     auto: Res<ArenaAutoContinue>,
     clock: Option<Res<crate::effects::EffectClock>>,
-    fighters: Query<MatchBody<'_>>,
+    (fighters, drawn): (Query<MatchBody<'_>>, Query<DrawBody<'_>>),
     mut commands: MessageWriter<SceneCommand>,
     mut exits: MessageWriter<ArenaExit>,
 ) {
@@ -679,7 +712,16 @@ fn continue_round(
                 // A tournament's next round raises the bracket's fight: the
                 // won group keeps team one, the other groups draw their
                 // winner, and the survivors are stood on the ring.
-                if stand_bracket_round(scene, career.as_deref(), &fighters, now, &mut commands) {
+                let sides = scene_sides(&drawn);
+                let mode = arena.state.word() as i32;
+                if stand_bracket_round(
+                    scene,
+                    career.as_deref(),
+                    &fighters,
+                    (&sides, mode),
+                    now,
+                    &mut commands,
+                ) {
                     info!("arena match: tournament round {round} raised the bracket fight");
                 } else {
                     warn!("arena match: tournament round {round} has no bracket");
@@ -720,13 +762,15 @@ fn continue_round(
             } else {
                 Finish::Lost
             };
+            let sides = scene_sides(&drawn);
+            let mode = arena.state.word() as i32;
             finish_and_exit(
                 arena,
                 scene,
                 career.as_deref_mut(),
                 finish,
                 tournament,
-                &fighters,
+                (&fighters, &sides, mode),
                 &mut commands,
                 &mut exits,
             );
@@ -796,16 +840,22 @@ fn stand_bracket_round(
     scene: &mut ArenaScene,
     career: Option<&crate::hub_windows::ArenaCareer>,
     fighters: &Query<MatchBody<'_>>,
+    (sides, mode): (&[crate::career::SideFighter], i32),
     now_ms: u32,
     commands: &mut MessageWriter<SceneCommand>,
 ) -> bool {
     let Some(bracket) = scene.bracket.as_mut() else {
         return false;
     };
-    // The player's side won the watched fight, so team one keeps its place;
-    // every other group's winner is drawn from the roll.
+    // The watched fight's winner is the scene draw's: the standing bodies'
+    // teams weighted by their health (a won fight leaves the player's team
+    // and any downed rival). Its group keeps it; every other group's winner
+    // is drawn from the same roll.
     let mut roll = scene.roll;
-    let survivors = bracket_next_fight(bracket, 1, &mut roll);
+    let winner =
+        crate::career::draw_unwatched(sides, crate::arena_match::PLAYER_TEAM, mode, &mut roll);
+    info!("arena match: the scene draw names team {winner:?} the fight's winner");
+    let survivors = bracket_next_fight(bracket, winner.unwrap_or(0), &mut roll);
     scene.roll = roll;
     // The forced outfit table is indexed by team id: the company the
     // week's field drew for each rival team.
@@ -907,10 +957,24 @@ fn finish_and_exit(
     mut career: Option<&mut crate::hub_windows::ArenaCareer>,
     finish: Finish,
     tournament: bool,
-    fighters: &Query<MatchBody<'_>>,
+    (fighters, sides, mode): (&Query<MatchBody<'_>>, &[crate::career::SideFighter], i32),
     commands: &mut MessageWriter<SceneCommand>,
     exits: &mut MessageWriter<ArenaExit>,
 ) {
+    // A tournament's end (or forfeit) first draws the scene's winner, clears
+    // every bracket and names the first open event's winner, before the
+    // return to the hub settles.
+    if let (Some(bracket), Some(career)) = (scene.bracket.as_mut(), career.as_deref_mut()) {
+        let mut roll = scene.roll;
+        let winner =
+            crate::career::draw_unwatched(sides, crate::arena_match::PLAYER_TEAM, mode, &mut roll);
+        crate::arena_session::finish_bracket(bracket, winner, &mut career.entries, &mut roll);
+        scene.roll = roll;
+        info!(
+            "arena match: the bracket ends with team {winner:?} drawn; events {:?}",
+            career.entries.map(|row| row.team_id)
+        );
+    }
     settle_match(arena, scene, &mut career, finish, tournament, fighters);
     for (entity, ..) in fighters {
         commands.write(SceneCommand::Despawn(entity));
@@ -930,7 +994,7 @@ fn forfeit_match(
     mut arena: Option<ResMut<ArenaMatch>>,
     mut scene: Option<ResMut<ArenaScene>>,
     mut career: Option<ResMut<crate::hub_windows::ArenaCareer>>,
-    fighters: Query<MatchBody<'_>>,
+    (fighters, drawn): (Query<MatchBody<'_>>, Query<DrawBody<'_>>),
     mut commands: MessageWriter<SceneCommand>,
     mut exits: MessageWriter<ArenaExit>,
 ) {
@@ -952,13 +1016,16 @@ fn forfeit_match(
         }
         crate::arena_session::ForfeitResult::Return { tournament } => {
             info!("arena forfeit: returning to the hub");
+            // The forfeit's session word is 0x10: the scene draw leaves the
+            // player's team out.
+            let sides = scene_sides(&drawn);
             finish_and_exit(
                 arena,
                 scene,
                 career.as_deref_mut(),
                 Finish::Forfeited,
                 tournament,
-                &fighters,
+                (&fighters, &sides, crate::career::FORFEIT_DRAW),
                 &mut commands,
                 &mut exits,
             );
@@ -1550,10 +1617,9 @@ mod tests {
                 crate::player::PlayerBody::new(0.0),
             ))
             .id();
-        let opponent = app
-            .world_mut()
-            .spawn(body(2, false, Condition::NORMAL))
-            .id();
+        // The won round's opponent is dead: the scene draw sets it aside and
+        // names the player's team the fight's winner.
+        let opponent = app.world_mut().spawn(body(2, false, Condition::DEAD)).id();
         press_continue(&mut app);
         app.update();
         let arena = app.world().resource::<ArenaMatch>();
@@ -1587,6 +1653,33 @@ mod tests {
         // Two teams fight, so the opponent is hostile (the original's role
         // flag is a free-for-all only from three teams up).
         assert!(spawned.iter().all(|plan| plan.roles == vec![HOSTILE]));
+    }
+
+    #[test]
+    fn the_scene_draw_reads_each_bodys_team_and_sets_the_dying_aside() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut world = World::new();
+        world.spawn((
+            Fighter::default(),
+            Condition::NORMAL,
+            crate::player::PlayerBody::new(0.0),
+        ));
+        world.spawn(body(1, true, Condition::NORMAL));
+        world.spawn(body(3, false, Condition::COLLAPSING));
+        world.spawn(body(4, false, Condition::DOWN));
+        // A fighter the match did not stand is not counted.
+        world.spawn((Fighter::default(), Condition::NORMAL));
+        let mut sides: Vec<(i32, bool)> = world
+            .run_system_once(|bodies: Query<DrawBody>| {
+                scene_sides(&bodies)
+                    .iter()
+                    .map(|side| (side.team, side.aside))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
+        sides.sort();
+        // A downed rival still counts; a collapsing one is set aside.
+        assert_eq!(sides, vec![(1, false), (1, false), (3, true), (4, false)]);
     }
 
     #[test]

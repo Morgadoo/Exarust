@@ -29,7 +29,8 @@ use crate::wounds::WoundQueue;
     PostureBranch,
     FallDeath,
     crate::impact::ImpactBook,
-    crate::strike_body::TangleCount
+    crate::strike_body::TangleCount,
+    CombatScore
 )]
 pub struct Fighter {
     pub health: Health,
@@ -223,6 +224,56 @@ pub enum Taken {
     /// Vital damage left yellow under [`DEATH`]: yellow is 0 and the
     /// character's collapse starts.
     Killed,
+}
+
+/// What the damage routine tells the struck body's behaviour about a blow:
+/// the original's three notices, by the contact kind the striking part
+/// recorded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScoreEvent {
+    /// A wound landed on a living limb: the striker is credited.
+    Wounded,
+    /// A held weapon met the striker (a clash).
+    Clashed,
+    /// A held shield or torch took the blow (a block).
+    Blocked,
+}
+
+/// The body's combat score: the counter its behaviour keeps, which the
+/// arena reads as a company fighter's share of a round's experience
+/// ([`ScoreEvent`]). A fresh body starts at 0.
+///
+/// The damage routine notifies the struck body's behaviour on every clash,
+/// block and wound. A wound adds 3 to the *striker's* score; a clash or a
+/// block adds 1 to the struck body's own score, but only while it is
+/// parrying. The arena's experience award reads and clears it.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CombatScore(pub i32);
+
+/// What a wound adds to its striker's score.
+pub const WOUND_SCORE: i32 = 3;
+/// What a clash or block taken while parrying adds to the parrier's score.
+pub const PARRY_SCORE: i32 = 1;
+
+impl CombatScore {
+    /// The struck body's notice of a clash or block: 1 more while it is
+    /// parrying, else nothing. (A wound credits the striker instead, see
+    /// [`CombatScore::credit_wound`].)
+    pub fn note_guard(&mut self, event: ScoreEvent, parrying: bool) {
+        if matches!(event, ScoreEvent::Clashed | ScoreEvent::Blocked) && parrying {
+            self.0 = self.0.wrapping_add(PARRY_SCORE);
+        }
+    }
+
+    /// A wound the body landed on another: 3 more.
+    pub fn credit_wound(&mut self) {
+        self.0 = self.0.wrapping_add(WOUND_SCORE);
+    }
+
+    /// Reads the score and clears it, as the arena's award does.
+    pub fn take(&mut self) -> i32 {
+        std::mem::take(&mut self.0)
+    }
 }
 
 /// The armour that grants a second wind, and the clock before which it

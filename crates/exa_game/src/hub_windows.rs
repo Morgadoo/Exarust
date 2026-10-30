@@ -128,6 +128,44 @@ impl Default for ArenaCareer {
 }
 
 impl ArenaCareer {
+    /// The arena's single reset, as a new career and an arena slot load
+    /// run it before anything else: the shop's shelf, the merchant's stock
+    /// (kinds 0, rank −1, any), the company's record words and the day's
+    /// tallies, the day, today's matches, the log, the roster, the purse
+    /// and the season's week verdicts are cleared. The company's name and
+    /// emblem, the manager's record, the tournament entries, the season
+    /// rewards, the draw state and the rival field are kept: the original's
+    /// reset does not touch them (the load and the new career write them).
+    /// The day's specials it generates last are drawn when the board opens
+    /// ([`ArenaCareer::board`]). The stores beside the career are
+    /// [`crate::save_live::ArenaStores::reset`]'s.
+    pub fn reset(&mut self) {
+        self.company.stock.clear();
+        self.merchant_stock.clear();
+        self.merchant_kinds = 0;
+        self.merchant_rank = -1;
+        self.company.won = 0;
+        self.company.lost = 0;
+        self.company.tournaments_won = 0;
+        self.company.seasons_won = 0;
+        self.company.deaths = 0;
+        self.company.earned = 0;
+        self.company.spent = 0;
+        self.company.day = 0;
+        self.matches_today = 0;
+        self.log.records.clear();
+        self.company.roster.clear();
+        self.company.copper = 0;
+        self.company.weeks = [false; 4];
+    }
+
+    /// A new career's records: the reset, then the starting purse of 343
+    /// copper.
+    pub fn start_new_career(&mut self) {
+        self.reset();
+        self.company.copper = crate::career::STARTING_COPPER;
+    }
+
     /// The week's tournament field. A field whose first company is 0 asks
     /// for a new one, drawn from the career's roll (16 of the 19 rivals), as
     /// the tournament chunk's load does.
@@ -677,7 +715,21 @@ fn paint_board(board: &Board, bounds: GuiRect, look: &Look) -> gui_paint::Painte
                     CellValue::Text(text) => text,
                     CellValue::Coin(coins) => coin_text(coins),
                     CellValue::Health(word) => {
-                        format!("{:.0}%", f64::from(word) / 655.35)
+                        // The roster's health column is owner-drawn: the
+                        // table hands the gauge draw the cell's left one
+                        // unit in, its pen line five units under the row's
+                        // top and the column's width.
+                        let cell = at(bounds, rect);
+                        let unit = look.unit;
+                        let marker = crate::manage::health_marker(
+                            cell.left + unit,
+                            cell.top + 5 * unit,
+                            cell.width(),
+                            unit,
+                            word,
+                        );
+                        paint_gauge(&mut painted, &marker, look);
+                        String::new()
                     }
                     CellValue::Empty => String::new(),
                 };
@@ -717,18 +769,36 @@ fn paint_manage(refresh: &ManageRefresh, bounds: GuiRect, look: &Look) -> gui_pa
     let report_table = at4(bounds, MANAGE_REPORT);
     paint_panel(&mut painted, roster, look);
     paint_panel(&mut painted, report_table, look);
-    let columns = [("Name", 0), ("Rank", 0x84), ("Health", 0x84 + 0x50)];
-    for (title, x) in columns {
-        paint_text(
-            &mut painted,
-            GuiRect::new(roster.left + x, roster.top, 84, ROW_HEIGHT),
-            title,
-            look,
-        );
+    let mut x = 0;
+    for (title, width) in crate::manage::ROSTER_COLUMNS {
+        if !title.is_empty() {
+            paint_text(
+                &mut painted,
+                GuiRect::new(roster.left + x, roster.top, width, 6 * look.unit),
+                title,
+                look,
+            );
+        }
+        x += width;
     }
+    // The roster is a table of 6-unit rows under a 6-unit header; its
+    // health column is owner-drawn: the table hands the cell's left (one
+    // unit in, past the three columns), its pen line `11u + 6u·row` and the
+    // rest of the client's width to the gauge draw ([`health_marker`]).
+    let u = look.unit;
+    let health_x = u + crate::manage::HEALTH_COLUMN_X;
     for (row, text) in refresh.roster.iter().enumerate() {
-        let y = roster.top + ROW_HEIGHT * (row as i32 + 1);
-        paint_row(&mut painted, roster.left, y, text, look);
+        let row = row as i32;
+        let y = roster.top + 6 * u * (row + 1);
+        paint_row(&mut painted, roster.left, y, 6 * u, text, look);
+        let marker = crate::manage::health_marker(
+            roster.left + health_x,
+            roster.top + 11 * u + 6 * u * row,
+            roster.width() - health_x,
+            u,
+            text.health_word,
+        );
+        paint_gauge(&mut painted, &marker, look);
     }
     // The report's roster-id lines are not drawn: the report table's own
     // rows carry no column labels in the constructor.
@@ -739,25 +809,36 @@ fn paint_row(
     painted: &mut gui_paint::Painted,
     left: i32,
     y: i32,
+    height: i32,
     text: &RosterRowText,
     look: &Look,
 ) {
     paint_text_ink(
         painted,
-        GuiRect::new(left, y, 0x84, ROW_HEIGHT),
+        GuiRect::new(left, y, 0x84, height),
         &text.name.text,
         text.name.ink,
         look,
     );
     paint_text(
         painted,
-        GuiRect::new(left + 0x84, y, 0x50, ROW_HEIGHT),
+        GuiRect::new(left + 0x84, y, 0x50, height),
         &text.rank.text,
         look,
     );
-    let bar = GuiRect::new(left + 0x84 + 0x50, y + 8, 0x84, ROW_HEIGHT - 16);
+}
+
+/// The roster's health gauge where [`crate::manage::health_marker`] puts
+/// it: its frame, and the client fill up to the record's share. The GUI's
+/// gauge shading itself is drawn with the panel and client-fill layers.
+fn paint_gauge(
+    painted: &mut gui_paint::Painted,
+    marker: &crate::manage::HealthMarker,
+    look: &Look,
+) {
+    let bar = GuiRect::new(marker.left, marker.top, marker.length, marker.thickness);
     paint_panel(painted, bar, look);
-    let filled = (f64::from(text.health) * f64::from(bar.width())) as i32;
+    let filled = (f64::from(marker.fill) * f64::from(marker.length)) as i32;
     if filled > 0 {
         let fill = GuiRect::new(bar.left, bar.top, filled.min(bar.width()), bar.height());
         for layer in gui_paint::paint_client_fill(fill, &look.palette).layers {
@@ -954,6 +1035,50 @@ mod tests {
         assert_eq!(board.fighters[0].name, "Manager");
         assert!(!board.events[0].name.is_empty());
         assert_eq!(board.matches_played, 0);
+    }
+
+    #[test]
+    fn the_reset_clears_the_stores_but_keeps_the_name_and_entries() {
+        let mut career = ArenaCareer::default();
+        career.company.name = "Ash".to_string();
+        career
+            .company
+            .hire("a", crate::career::Profession::Combatant)
+            .unwrap();
+        career.company.stock = vec![7, 8];
+        career.company.day = 9;
+        career.company.won = 3;
+        career.company.weeks = [true; 4];
+        career.matches_today = 2;
+        career.merchant_rank = 2;
+        career.merchant_kinds = 5;
+        career.merchant_stock = vec![4];
+        career.entries[0].team_id = 4;
+        career.log.append_value(crate::arena_match::LOG_WON, 1);
+        career.reset();
+        assert!(career.company.roster.is_empty() && career.company.stock.is_empty());
+        assert_eq!(
+            (
+                career.company.day,
+                career.company.won,
+                career.company.copper
+            ),
+            (0, 0, 0)
+        );
+        assert_eq!(career.company.weeks, [false; 4]);
+        assert_eq!(
+            (
+                career.matches_today,
+                career.merchant_kinds,
+                career.merchant_rank
+            ),
+            (0, 0, -1)
+        );
+        assert!(career.merchant_stock.is_empty() && career.log.records.is_empty());
+        assert_eq!(career.company.name, "Ash");
+        assert_eq!(career.entries[0].team_id, 4);
+        career.start_new_career();
+        assert_eq!(career.company.copper, 343);
     }
 
     #[test]

@@ -68,8 +68,8 @@ use exa_physics::body::{
 use exa_physics::part::{PART_SOUND_SPREAD_MS, part_sound_ready};
 use exa_world::PartBounds;
 pub use fighter::{
-    Damage, DamageTaken, Fighter, Health, LowAnswer, SecondWind, SecondWindFired, StoryMode, Taken,
-    Weakened, answer_low_health, heal_second_wind,
+    CombatScore, Damage, DamageTaken, Fighter, Health, LowAnswer, ScoreEvent, SecondWind,
+    SecondWindFired, StoryMode, Taken, Weakened, answer_low_health, heal_second_wind,
 };
 use swing::{Swing, SwingAt, SwingState};
 pub use weapon_blood::{WeaponBlood, WeaponBloodSpot};
@@ -664,7 +664,7 @@ fn react_to_hits(
     )>,
     mut attacks: Query<&mut Attacking>,
     (slots, strikers): (Query<&Blade>, Query<&GlobalTransform>),
-    mut blades: Query<&mut BladeBlood>,
+    (mut blades, mut scores): (Query<&mut BladeBlood>, Query<&mut CombatScore>),
     (mut holds, mut items): (
         Query<&mut block::ShieldHold>,
         Query<&mut Ragdoll, Without<Fighter>>,
@@ -713,6 +713,17 @@ fn react_to_hits(
             // Every weapon contact on a fighter starts its regeneration's ramp
             // again, whatever it deals.
             f.health.rate = 0.0;
+            // A clash or a block notifies the struck body's behaviour first
+            // in its branch, before any other rule: a parrying body scores
+            // one ([`CombatScore::note_guard`]).
+            let event = match hit.struck {
+                Struck::Weapon { .. } => Some(ScoreEvent::Clashed),
+                Struck::Shield { .. } => Some(ScoreEvent::Blocked),
+                Struck::Limb => None,
+            };
+            if let (Some(event), Ok(mut score)) = (event, scores.get_mut(hit.target)) {
+                score.note_guard(event, f.parry.active);
+            }
             let Some(armour) = hit.bone.checked_sub(1).and_then(|i| f.armour.get(i)) else {
                 break 'struck None;
             };
@@ -959,6 +970,11 @@ fn react_to_hits(
                 },
                 direction: hit.velocity * (CM_PER_M / BODY_HZ),
             });
+            // The wound's notice to the struck body's behaviour, after the
+            // damage call and its sounds: the striker scores three.
+            if let Ok(mut score) = scores.get_mut(hit.attacker) {
+                score.credit_wound();
+            }
             if taken == Taken::Weakened {
                 answer_low(
                     hit.target,

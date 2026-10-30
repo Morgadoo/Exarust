@@ -81,6 +81,18 @@ pub struct ArenaStores {
     pub stash: Vec<u32>,
 }
 
+impl ArenaStores {
+    /// The single reset's share of the stores: the hub stash, every
+    /// arsenal shelf and box, and the staff list with its manage order
+    /// ([`crate::hub_windows::ArenaCareer::reset`]).
+    pub fn reset(&mut self) {
+        self.stash.clear();
+        self.arsenal.clear();
+        self.staff.employees.clear();
+        self.staff.order.clear();
+    }
+}
+
 /// Asks for a save of the running session into a new slot.
 #[derive(Message, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SaveToNewSlot;
@@ -303,6 +315,9 @@ pub fn restore_arena(
     career: &mut crate::hub_windows::ArenaCareer,
     stores: &mut ArenaStores,
 ) -> ArenaRestore {
+    // The load resets every arena store before it reads the header.
+    career.reset();
+    stores.reset();
     let mut clock = 0;
     if let PlayerHeader::Arena(header) = &loaded.data.header {
         career.company.copper = header.money;
