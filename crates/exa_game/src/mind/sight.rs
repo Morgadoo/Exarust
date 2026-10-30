@@ -76,28 +76,51 @@ pub const SPHERE_RADIUS: f32 = 15.0;
 /// The sphere's squash direction.
 pub const SQUASH: Vec3 = Vec3::new(0.0, -0.8, 0.2);
 
-/// A screen's noise texture: its side, octave count, the two halves the
-/// noise generator is given and its second-stage scale.
+/// A screen's noise texture: its side and octave count (the generator is
+/// made at amplitude 1), the field's two plane-building weights (the old
+/// value's and the ridged sample's) and its phase period in seconds.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ScreenNoise {
     pub side: u32,
     pub octaves: u32,
-    pub halves: [f32; 2],
+    pub weights: [f32; 2],
     pub scale: f32,
+}
+
+impl ScreenNoise {
+    /// The engine's noise object as the screen's setup makes it: a
+    /// `side`² field at `octaves` octaves and amplitude 1 started at `now`
+    /// (ms), its two weights set, then given the same octaves, the
+    /// `scale` s phase period and a target amplitude of 1. `seeds`
+    /// supplies the engine's random words.
+    pub fn field(
+        &self,
+        now: u32,
+        seeds: impl FnMut() -> u32,
+    ) -> exa_render::image_noise::NoiseField {
+        let side = self.side as usize;
+        let octaves = self.octaves as i32;
+        let mut field =
+            exa_render::image_noise::NoiseField::new(side, side, octaves, 1.0, now, false, seeds);
+        field.keep = self.weights[0];
+        field.add = self.weights[1];
+        field.configure(octaves, self.scale, 1.0);
+        field
+    }
 }
 
 /// The overlay's and the glow's 256² noise.
 pub const SIGHT_NOISE: ScreenNoise = ScreenNoise {
     side: 256,
     octaves: 4,
-    halves: [0.5, 0.5],
+    weights: [0.5, 0.5],
     scale: 0.25,
 };
 /// The spirit screen's 512² noise.
 pub const SPIRIT_NOISE: ScreenNoise = ScreenNoise {
     side: 512,
     octaves: 4,
-    halves: [0.5, 0.5],
+    weights: [0.5, 0.5],
     scale: 0.8,
 };
 /// The uniforms the sight program binds, in order (the texture last, on
@@ -671,37 +694,27 @@ impl MindGlows {
 pub const SPIRIT_SCREEN_SOUND: &str = "ThmMnd_B02";
 pub const SPIRIT_SCREEN_VOLUME: f32 = 0.2;
 
-/// The spirit screen's picture: 512 by 512 one-byte texels, four octaves at
-/// an amplitude of one, a half-texel pivot and a 0.8 s noise period.
+/// The spirit screen's picture: 512 by 512 one-byte (luminance) texels;
+/// its noise is [`SPIRIT_NOISE`] (four octaves at amplitude 1, both weights
+/// 0.5, a 0.8 s period).
 pub const SPIRIT_SCREEN_SIDE: u32 = 512;
 /// The screen's upload buffer, one byte a texel.
 pub const SPIRIT_SCREEN_BYTES: usize = (SPIRIT_SCREEN_SIDE * SPIRIT_SCREEN_SIDE) as usize;
-/// The noise's amplitude and pivot.
-pub const SPIRIT_SCREEN_AMPLITUDE: f32 = 1.0;
-pub const SPIRIT_SCREEN_PIVOT: [f32; 2] = [0.5, 0.5];
-/// The noise period, seconds.
-pub const SPIRIT_SCREEN_PERIOD_S: f32 = 0.8;
 
-/// The values the spirit screen's setup builds: its picture size, octaves,
-/// amplitude, pivot, upload size and noise.
+/// The values the spirit screen's setup builds: its picture side, its
+/// upload size and its noise.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SpiritScreenInit {
     pub side: u32,
-    pub octaves: u32,
-    pub amplitude: f32,
-    pub pivot: [f32; 2],
     pub bytes: usize,
     pub noise: ScreenNoise,
 }
 
 /// The spirit screen's setup values, as its constructor builds the 512²
-/// one-byte picture and its noise object.
+/// one-byte picture and its noise object (whose clock it also stamps).
 pub fn spirit_screen_init() -> SpiritScreenInit {
     SpiritScreenInit {
         side: SPIRIT_SCREEN_SIDE,
-        octaves: SPIRIT_NOISE.octaves,
-        amplitude: SPIRIT_SCREEN_AMPLITUDE,
-        pivot: SPIRIT_SCREEN_PIVOT,
         bytes: SPIRIT_SCREEN_BYTES,
         noise: SPIRIT_NOISE,
     }
@@ -961,10 +974,10 @@ mod tests {
         let init = spirit_screen_init();
         assert_eq!(init.side, 512);
         assert_eq!(init.bytes, 512 * 512);
-        assert_eq!(init.octaves, 4);
-        assert_eq!(init.amplitude, 1.0);
-        assert_eq!(init.pivot, [0.5, 0.5]);
-        assert_eq!(init.noise.scale, SPIRIT_SCREEN_PERIOD_S);
+        assert_eq!(init.noise.side, 512);
+        assert_eq!(init.noise.octaves, 4);
+        assert_eq!(init.noise.weights, [0.5, 0.5]);
+        assert_eq!(init.noise.scale, 0.8);
     }
 
     #[test]
