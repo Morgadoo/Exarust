@@ -755,9 +755,9 @@ const CM_PER_M: f32 = 100.0;
 pub const GENERATED_POINT_FLAGS2: u32 = 0x0001_0008;
 
 /// Whether a floor-set child node gets its surface points generated at
-/// load. The original runs the generator on every `+`-named-free child of
-/// a centre-floor variant whose second flag word has bit `0x10000` or bit
-/// `0x8` set; the walk skips children named `#…`, `+…` and `[…]`.
+/// load: the original's floor-set walk runs the generator for a
+/// class-`0x89` node whose second flag word has bit `0x10000` or bit `0x8`
+/// set (the walk itself is `exa_assets`'s, from the centre-floor variants).
 pub fn floor_set_node_generates(flags2: u32) -> bool {
     flags2 & GENERATED_POINT_FLAGS2 != 0
 }
