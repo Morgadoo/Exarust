@@ -2486,6 +2486,9 @@ pub struct Submit {
     pub tab_flags: bool,
     /// The equipment page was shown.
     pub form_shown: bool,
+    /// The page state word takes 2: the advanced editor is scheduled and
+    /// commits in place of the mode's own.
+    pub advanced_editor: bool,
     pub commit: Option<CommitKind>,
 }
 
@@ -2554,6 +2557,7 @@ pub fn submit_creation(input: SubmitInput) -> Submit {
                 ready_flags: false,
                 tab_flags: false,
                 form_shown: false,
+                advanced_editor: false,
                 commit: None,
             };
         }
@@ -2575,6 +2579,7 @@ pub fn submit_creation(input: SubmitInput) -> Submit {
             ready_flags: input.known_powers == 0 && input.game_mode == 0x1010,
             tab_flags: true,
             form_shown: true,
+            advanced_editor: false,
             commit: None,
         };
     }
@@ -2589,6 +2594,7 @@ pub fn submit_creation(input: SubmitInput) -> Submit {
             ready_flags: false,
             tab_flags: false,
             form_shown: false,
+            advanced_editor: true,
             commit: Some(CommitKind::PowerTree),
         };
     }
@@ -2611,6 +2617,7 @@ pub fn submit_creation(input: SubmitInput) -> Submit {
         ready_flags: false,
         tab_flags: false,
         form_shown: false,
+        advanced_editor: false,
         commit: Some(commit),
     }
 }
@@ -6676,6 +6683,12 @@ mod tests {
             equipment_hook: false,
         });
         assert_eq!(advanced.commit, Some(CommitKind::PowerTree));
+        // The equipment page with powers moves its page state to 2 (the
+        // advanced editor) instead of committing, while a record without
+        // powers commits on the same page.
+        assert!(advanced.advanced_editor);
+        assert!(!advanced.build_equipment && !advanced.form_shown);
+        assert!(!recruit.advanced_editor);
 
         let free = submit_creation(SubmitInput {
             page: CreationScreenPage::Equipment,
