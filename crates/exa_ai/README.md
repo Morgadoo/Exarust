@@ -307,8 +307,10 @@ and thrust scales of the approach, the observer's heading and attack state,
 the press flag on the opponent's facing, and the observer's feral and
 skill scales, with the original's double-precision steps.
 `publish_arc` is the opponent's published sector and its recovering kind,
-its look taken from the body's look direction (turned 20° while a weapon
-is held) and replaced by the arc midpoint on a side swing; `blow_is_live`
+its edges built from the head look's yaw (the body heading while
+characters do not run the head tracker) and its look from the body's
+facing (turned 20° while a weapon is held), replaced by the arc midpoint
+on a side swing; `blow_is_live`
 its is-attacking test; `between` the original's arc test; `arrival_ms` its
 time to impact. `Origin` and `measured_origin` are the point the score
 measures a place from: 10 cm ahead standing, the chest leaned 70 ticks of
