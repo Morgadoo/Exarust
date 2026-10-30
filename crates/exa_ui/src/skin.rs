@@ -7064,7 +7064,10 @@ impl ControlLabelDraw {
     }
 }
 
-fn place_control_text(place: &ControlLabelPlace, unit: i32) -> (i32, i32) {
+/// The origin a control label draws at: the horizontal alignment by the
+/// style's 0x7000 field and the vertical by its 0x700 field, measured from
+/// the text width and the font's line height and base.
+pub fn place_control_text(place: &ControlLabelPlace, unit: i32) -> (i32, i32) {
     let px = place.rect.x0 as i32;
     let py = place.rect.y0 as i32;
     let pw = (place.rect.x1 - place.rect.x0) as i32;

@@ -150,8 +150,11 @@ pub use emblem_form::{
 pub use fade::DeathFade;
 pub use fps::ShowFps;
 pub use gui_controls::{
-    CheckLabelInk, ClassRegistry, LabelDraw, LabelFront, LayoutClient, append_records,
-    check_label_ink, label_draw, layout_records, register_class, register_default_classes,
+    BackOp, CheckLabelInk, ClassRegistry, ControlText, FrontDraw, FrontOp, LabelDraw, LabelFront,
+    LayoutClient, PICTURE_BLEND, PictureQuad, SHARED_ICON_CELL, SKIN_BLEND, TICK_ICON,
+    append_records, check_label_ink, clear_classes, control_area, draw_back, draw_front, held_fade,
+    label_draw, label_place, layout_records, marker_stripes, paint_back, picture_quad,
+    register_class, register_default_classes, text_origin,
 };
 pub use gui_core::{
     DropState, EdgeForm, FormHost, FormId, GuiMetrics, GuiTask, HitResult, MessageBoxPlan,
@@ -309,12 +312,13 @@ pub use skin::{
     draw_skin_strip, draw_span_bar, draw_span_square, draw_style_frames, edge_frame, expand_group,
     fade_label, fade_rect, faded_rect, form_rect, four_ink_frame, four_stop_rect, glow_text,
     gradient_box, gradient_frame, guiskin_size, hit_line, hit_skin, load_scheme, mark_active,
-    open_line, open_skin, outline_rect, pair_rect, place_line_label, place_skin_label,
-    prepare_skin_programs, prepare_skin_renderer, rounded_fill, rounded_fill_fixed, rounded_grow,
-    rounded_scale, rounded_textured_frame, scale_line, scale_palette_alpha, scale_skin_alpha,
-    scroll_arrow_horizontal, scroll_arrow_vertical, selection_band, set_skin_metrics, shadow_ring,
-    skin_constructor, skin_measures, solid_rect, stripe_bar, sunken_ring, textured_skin_draw,
-    two_ink_band, two_ink_outline, vertical_gradient, vertical_gradient_frame, with_alpha,
+    open_line, open_skin, outline_rect, pair_rect, place_control_text, place_line_label,
+    place_skin_label, prepare_skin_programs, prepare_skin_renderer, rounded_fill,
+    rounded_fill_fixed, rounded_grow, rounded_scale, rounded_textured_frame, scale_line,
+    scale_palette_alpha, scale_skin_alpha, scroll_arrow_horizontal, scroll_arrow_vertical,
+    selection_band, set_skin_metrics, shadow_ring, skin_constructor, skin_measures, solid_rect,
+    stripe_bar, sunken_ring, textured_skin_draw, two_ink_band, two_ink_outline, vertical_gradient,
+    vertical_gradient_frame, with_alpha,
 };
 pub use technique_selector::{
     CONFIRM_TEXT, FORGET_WORDS, LEVEL_XP, NodeState, SelectorDraw, SelectorKey, SkillColumn,
