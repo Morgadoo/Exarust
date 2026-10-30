@@ -3290,6 +3290,7 @@ impl Plugin for FlowPlugin {
             .add_message::<SettingsEntry>()
             .add_message::<exa_script::ScriptEffect>()
             .add_message::<crate::save_live::SaveStep>()
+            .add_message::<crate::experience_live::DiscoveryTick>()
             .init_resource::<GameView>()
             .init_resource::<BootToMenu>()
             .init_resource::<crate::transition_screen::TransitionOverlay>()
@@ -3987,6 +3988,10 @@ fn apply_steps(
             Step::Checkpoint => {
                 out.saves.write(crate::save_live::SaveStep::Checkpoint);
             }
+            Step::Discovery => {
+                out.discovery
+                    .write(crate::experience_live::DiscoveryTick { now });
+            }
             other => {
                 debug!("game flow step not applied by the app: {other:?}");
             }
@@ -3995,7 +4000,8 @@ fn apply_steps(
 }
 
 /// The messages the flow's applied steps send: a level change, a forfeit, a
-/// settings entry, the application's exit and the save unit's work.
+/// settings entry, the application's exit, the save unit's work and the
+/// discovery pass.
 #[derive(bevy::ecs::system::SystemParam)]
 struct FlowOutputs<'w> {
     changes: MessageWriter<'w, exa_world::level_lifecycle::LevelChangeRequest>,
@@ -4003,6 +4009,7 @@ struct FlowOutputs<'w> {
     settings: MessageWriter<'w, SettingsEntry>,
     exit: MessageWriter<'w, AppExit>,
     saves: MessageWriter<'w, crate::save_live::SaveStep>,
+    discovery: MessageWriter<'w, crate::experience_live::DiscoveryTick>,
 }
 
 /// The player body's parts the flow's steps write.
@@ -6335,6 +6342,7 @@ mod tests {
             .add_message::<SettingsEntry>()
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
+            .add_message::<crate::experience_live::DiscoveryTick>()
             .add_systems(Update, apply_steps);
         let placement = Placement {
             rotation: yaw(90.0),
@@ -6473,6 +6481,7 @@ mod tests {
             .add_message::<SettingsEntry>()
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
+            .add_message::<crate::experience_live::DiscoveryTick>()
             .add_systems(Update, apply_steps);
         let mut fighter = exa_combat::Fighter::default();
         fighter.health.max = 100.0;
@@ -6527,6 +6536,7 @@ mod tests {
             .add_message::<SettingsEntry>()
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
+            .add_message::<crate::experience_live::DiscoveryTick>()
             .add_systems(Update, apply_steps);
         let mut fighter = exa_combat::Fighter::default();
         fighter.health.red = 0.5;

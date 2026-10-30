@@ -5,9 +5,12 @@
 //! levels and the technique word. This module runs them: it reads the
 //! account-wide experience from the launch's settings store, seeds the pool
 //! from the player's carried experience when play starts (the original's
-//! level-start hook), converts once for every whole second of play, puts the
-//! technique word on the player's body, and writes the account experience
-//! back to the settings when play ends.
+//! level-start hook), converts at each of the flow's once-a-second
+//! [`crate::flow::Step::Discovery`] passes ([`DiscoveryTick`], on the game
+//! clock), writes the player's converted experience, skills and powers back
+//! to the body's record (the original converts the body's own record), puts
+//! the technique word on the player's body, and writes the account
+//! experience back to the settings when play ends.
 //!
 //! The explored-cell half of the tick needs the level's sector grid; the
 //! running game does not hand one to the experience system yet, so the live
@@ -49,8 +52,15 @@ impl AccountExperience {
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TechniqueWord(pub u32);
 
-/// The story's live experience: the account state, the player's learner, the
-/// companions in list order and the last whole second converted.
+/// The flow's once-a-second discovery pass ran at `now`, on the game clock
+/// (ms). [`crate::flow`]'s step application sends it.
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DiscoveryTick {
+    pub now: u32,
+}
+
+/// The story's live experience: the account state, the player's learner and
+/// the companions in list order.
 #[derive(Resource, Debug)]
 pub struct StoryExperience {
     pub state: Experience,
@@ -60,8 +70,6 @@ pub struct StoryExperience {
     pub technique_word: u32,
     /// Play started and the level-start hook ran.
     pub started: bool,
-    /// The last whole second the tick converted at.
-    pub last_second: u32,
     /// The account experience last written to the settings, so an unchanged
     /// value is not written twice.
     pub written_global: Option<u32>,
@@ -75,7 +83,6 @@ impl Default for StoryExperience {
             party: Vec::new(),
             technique_word: 0,
             started: false,
-            last_second: 0,
             written_global: Some(0),
         }
     }
@@ -91,22 +98,16 @@ impl StoryExperience {
         self.state.start_level(now, &mut self.player);
         self.technique_word = technique_bits(&self.player.skills);
         self.started = true;
-        self.last_second = now / 1000;
     }
 
-    /// One whole second of play, if the second has changed: the account
-    /// pool then the player, then each companion in list order. Returns the
-    /// second's conversions (the account's has no [`Conversion`] of its own)
-    /// and whether the body's technique word changed.
+    /// One discovery pass (the flow gates it to once a second): the account
+    /// pool, then the player, then each companion in list order. Returns
+    /// whether the body's technique word changed. The explored cells are
+    /// not walked: no level grid is handed to the system yet.
     pub fn advance(&mut self, now: u32) -> bool {
         if !self.started {
             return false;
         }
-        let second = now / 1000;
-        if second <= self.last_second {
-            return false;
-        }
-        self.last_second = second;
         self.state.convert_global(now);
         let Conversion { techniques, .. } = self.state.convert_player(now, &mut self.player);
         for companion in &mut self.party {
@@ -123,6 +124,16 @@ impl StoryExperience {
     /// The account experience changed since it was last written.
     pub fn unsaved_global(&self) -> Option<u32> {
         (self.written_global != Some(self.state.global)).then_some(self.state.global)
+    }
+
+    /// Writes the player's converted state back to its record: the
+    /// experience still to convert, the skills and the powers' words.
+    pub fn write_player(&self, record: &mut CharacterRecord) {
+        record.experience = self.player.experience as i32;
+        record.skills = self.player.skills;
+        if let Some(powers) = record.powers.as_mut() {
+            powers.known.clone_from(&self.player.powers);
+        }
     }
 
     /// The story's discovery chunk, the format a save carries.
@@ -151,7 +162,7 @@ fn load_account_experience(
 
 /// The level-start hook: the first frame of play takes the player's record.
 fn begin_story_experience(
-    time: Res<Time>,
+    ticks: Option<Res<exa_physics::body::BodyTicks>>,
     play: Option<Res<PlaySession>>,
     players: Query<&exa_character::record::CharacterData, With<Player>>,
     mut live: ResMut<StoryExperience>,
@@ -162,25 +173,30 @@ fn begin_story_experience(
     let Some(data) = players.iter().next() else {
         return;
     };
-    live.begin(&data.record, now_ms(&time));
+    live.begin(&data.record, now_ms(ticks.as_deref()));
 }
 
-/// The once-a-second tick, with the technique word put on the player's body.
+/// The flow's discovery pass: convert, write the player's record back and
+/// put the technique word on the body when it changed.
 fn tick_story_experience(
-    time: Res<Time>,
-    play: Option<Res<PlaySession>>,
-    players: Query<Entity, With<Player>>,
+    mut passes: MessageReader<DiscoveryTick>,
+    mut players: Query<(Entity, &mut exa_character::record::CharacterData), With<Player>>,
     mut commands: Commands,
     mut live: ResMut<StoryExperience>,
 ) {
-    if !play.is_some_and(|play| play.playing) {
-        return;
-    }
-    let changed = live.advance(now_ms(&time));
-    if changed && let Ok(player) = players.single() {
-        commands
-            .entity(player)
-            .insert(TechniqueWord(live.technique_word));
+    for pass in passes.read() {
+        if !live.started {
+            continue;
+        }
+        let changed = live.advance(pass.now);
+        if let Ok((player, mut data)) = players.single_mut() {
+            live.write_player(&mut data.record);
+            if changed {
+                commands
+                    .entity(player)
+                    .insert(TechniqueWord(live.technique_word));
+            }
+        }
     }
 }
 
@@ -205,9 +221,9 @@ fn store_account_experience(
     }
 }
 
-/// The game clock in milliseconds, as the experience system's clock.
-fn now_ms(time: &Time) -> u32 {
-    time.elapsed().as_millis().min(u128::from(u32::MAX)) as u32
+/// The game clock in milliseconds (the body ticks' clock the flow runs on).
+fn now_ms(ticks: Option<&exa_physics::body::BodyTicks>) -> u32 {
+    ticks.map_or(0, |ticks| ticks.millis() as u32)
 }
 
 pub struct ExperienceLivePlugin;
@@ -216,6 +232,7 @@ impl Plugin for ExperienceLivePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<AccountExperience>()
             .init_resource::<StoryExperience>()
+            .add_message::<DiscoveryTick>()
             .add_systems(
                 Update,
                 (
@@ -254,26 +271,35 @@ mod tests {
             (live.state.player_clock, live.state.global_clock),
             (12_345, 12_345)
         );
-        assert_eq!(live.last_second, 12);
         assert!(live.started);
         // The technique word is the skills' at the start.
         assert_eq!(live.technique_word, technique_bits(&live.player.skills));
     }
 
     #[test]
-    fn the_tick_runs_once_per_whole_second() {
+    fn a_pass_converts_and_writes_the_record_back() {
         let mut live = StoryExperience::default();
-        live.begin(&record(600), 0);
-        // Under a second, the clock does not move and nothing converts.
-        assert!(!live.advance(999));
-        assert_eq!(live.player.experience, 600);
+        // Nothing converts before the level-start hook.
+        assert!(!live.advance(1000));
+        let mut player = record(600);
+        // The first skill trains toward its second level.
+        player.skills[0].techniques[1] = 2;
+        live.begin(&player, 0);
         // At one second the player's cost (4 + 1 level) is 5, and the pool
         // owes 1000 / (50 · 5) = 4 points.
         live.advance(1000);
         assert_eq!(live.player.experience, 600 - 4 * 5);
         assert_eq!(live.state.player_clock, 1000);
-        // The same second does not run again.
-        assert!(!live.advance(1500));
+        live.write_player(&mut player);
+        assert_eq!(player.experience, 580);
+        // The record takes the learner's skills: the trained one gained
+        // two skill points per converted point.
+        assert_eq!(player.skills, live.player.skills);
+        let total = |skills: &[exa_formats::characters::Skill]| {
+            skills.iter().map(|s| u32::from(s.points)).sum::<u32>()
+        };
+        assert_eq!(player.skills[0].points, 5000 + 2 * 4);
+        assert_eq!(total(&player.skills), total(&record(600).skills) + 2 * 4);
     }
 
     #[test]
