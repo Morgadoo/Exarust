@@ -332,7 +332,24 @@ pub struct SkinComposeInputs {
     normal: Arc<Texels>,
     layers: Vec<(f32, Arc<Texels>)>,
     beard: Option<(Arc<Texels>, Arc<Texels>, [f32; 3])>,
+    /// The decomposition pass's amount and offsets with its eight maps, in
+    /// [`DECOMP_MAPS`] order.
+    decomp: Option<(crate::SkinDecomp, [Arc<Texels>; 8])>,
 }
+
+/// The decomposition material's maps in the order [`skin_composite::Decomp`]
+/// takes them: the mask pass's two, `ancientdifm`, `skindecomp`,
+/// `humandcmpf`, `humandcmpg`, `ancientnrmm0` and `humandcmpn`.
+pub const DECOMP_MAPS: [&str; 8] = [
+    crate::decomp::MASK_MAPS[0],
+    crate::decomp::MASK_MAPS[1],
+    crate::decomp::DIFFUSE_MAPS[1],
+    crate::decomp::DIFFUSE_MAPS[2],
+    crate::decomp::DIFFUSE_MAPS[3],
+    crate::decomp::SPECULAR_MAPS[2],
+    crate::decomp::NORMAL_MAPS[0],
+    crate::decomp::NORMAL_MAPS[1],
+];
 
 /// A composite's three generated maps as images: the colour target as sRGB
 /// (the original renders into an sRGB target with sRGB encoding off, so
@@ -357,7 +374,22 @@ impl SkinComposeInputs {
             normal: normal.as_ref(),
             tint: *tint,
         });
-        let generated = skin_composite::compose(
+        let decomp = self
+            .decomp
+            .as_ref()
+            .map(|(d, maps)| skin_composite::Decomp {
+                amount: d.amount,
+                uv_offset: d.uv_offset,
+                seams: &maps[0],
+                weight: &maps[1],
+                ancient_colour: &maps[2],
+                decay: &maps[3],
+                colour_finish: &maps[4],
+                gloss_decay: &maps[5],
+                ancient_normal: &maps[6],
+                normal_decay: &maps[7],
+            });
+        let generated = skin_composite::compose_with_decomp(
             self.side,
             self.side,
             self.tone,
@@ -366,6 +398,7 @@ impl SkinComposeInputs {
             &self.normal,
             &layers,
             beard.as_ref(),
+            decomp.as_ref(),
         );
         let (w, h) = (generated.width as u32, generated.height as u32);
         SkinImages {
@@ -427,6 +460,19 @@ impl ModelLoader<'_> {
             let normal = self.texels(&beard.normal)?;
             Some((colour, normal, beard.tint))
         });
+        // The decomposition material's maps, loaded only for a job that
+        // draws it. A map that does not decode leaves the pass out (a guess:
+        // the original would bind an empty unit).
+        let decomp = job
+            .decomp
+            .filter(|d| crate::decomp::created(d.amount))
+            .and_then(|d| {
+                let mut maps = Vec::with_capacity(DECOMP_MAPS.len());
+                for name in DECOMP_MAPS {
+                    maps.push(self.texels(name)?);
+                }
+                Some((d, <[Arc<Texels>; 8]>::try_from(maps).ok()?))
+            });
         Some(SkinComposeInputs {
             side: job.side as usize,
             tone: tone_colour(job.tone),
@@ -435,6 +481,7 @@ impl ModelLoader<'_> {
             normal,
             layers,
             beard,
+            decomp,
         })
     }
 

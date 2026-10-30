@@ -2223,13 +2223,18 @@ the merge and `exa_assets::model::merge_dressed` runs
 sub-mesh per run; the builder reproduces the append, frame, weight and
 material-group order and the final renumber pass (each material's vertices
 in order, back to back: the pass keeps each run's last vertex inclusive and
-starts the next run after it). Its `MergePart::vertex_masks`/`cull` drop the
-vertices a hidden slot masks and the triangles that needed them,
-`MergePart::index_range` names one material group of a shared mesh,
+starts the next run after it). Its `MergePart::triangle_flags`/`cull` drop the triangles whose
+per-triangle flags meet the append's cull bits (a part without flags takes
+the unset word `1` once the mesh has a flag stream), `MergePart::index_range`
+names one material group of a shared mesh,
 `scene_merged_mesh` walks a scene's skinned nodes and merges their drawn
 groups by their body-space frames, `culled_indices` applies a slot's
 per-triangle cull bits and `occlusion_alpha` the per-vertex mask. The built
-meshes keep no vertex slot masks and no triangle flags, and no shipped
-material carries the occlusion mark, so those two passes do nothing on
+meshes keep their file flags, so a garment slot's cull bits
+(`exa_character::layers::cull_bits` over the garment's visible mask) reach
+the culling append; the body's own slots go through the plain append and
+are never culled (on the shipped bodies every cull mark sits on a `_null`
+seam group anyway: the human body has seven). No
+shipped material carries the occlusion mark, so that pass does nothing on
 shipped data. Hidden body slots are left out of the merge (the body's
 visible mask). The per-scene skin controller and manager are Bevy's.

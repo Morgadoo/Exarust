@@ -1253,6 +1253,7 @@ mod tests {
                 .map(|m| (m.clone(), Handle::default()))
                 .collect(),
             part_materials: vec![String::new(); parts.len()],
+            part_flags: Vec::new(),
             collision: Vec::new(),
             skin_bone: None,
             light: None,

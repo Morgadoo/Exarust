@@ -219,8 +219,9 @@ impl SkinJob {
     }
 
     /// The job as the loader's CPU composite takes it: the race's colour,
-    /// gloss and base normal maps, the tone, the
-    /// beard and its tint, and the normal layers. `None` without a race
+    /// gloss and base normal maps, the tone, the beard and its tint, the
+    /// normal layers, and the decomposition pass when the job's feral level
+    /// draws it. `None` without a race
     /// skin set (the body then keeps its own skin material).
     pub fn composite_job(&self) -> Option<exa_assets::SkinCompositeJob> {
         let colour = self.colour.clone()?;
@@ -245,6 +246,16 @@ impl SkinJob {
                 })
             }),
             side: self.format.side,
+            // The callback's decomposition branch: the job's `Decomp` (the
+            // feral level of a race whose look darkens) above zero, with
+            // the record's two skin-map offsets.
+            decomp: self
+                .darkening
+                .filter(|&amount| exa_assets::decomp::created(amount))
+                .map(|amount| exa_assets::SkinDecomp {
+                    amount,
+                    uv_offset: self.uv_offset,
+                }),
         })
     }
 }
@@ -457,10 +468,58 @@ mod tests {
             .images
             .get(&material.diffuse_map.clone().unwrap())
             .unwrap();
-        let data = &image.data.as_ref().unwrap()[..64 * 64 * 4];
+        let image_bytes = image.data.as_ref().unwrap()[..64 * 64 * 4].to_vec();
+        let data = &image_bytes[..];
         let pixels = data.as_chunks::<4>().0;
         assert!(pixels.iter().any(|p| p[..3] != data[..3]));
         assert!(pixels.iter().any(|p| p[3] == 255));
+        // Kade's record is fully feral (1.0) on a race whose look darkens:
+        // the job draws the decomposition pass from the eight shipped decay
+        // maps. The same look without it is a different, living map.
+        assert_eq!(character.record.feral, 1.0);
+        assert_eq!(
+            composite.decomp,
+            Some(exa_assets::SkinDecomp {
+                amount: 1.0,
+                uv_offset: job.uv_offset,
+            })
+        );
+        for name in exa_assets::human_skin::DECOMP_MAPS {
+            assert!(loader.texels(name).is_some(), "{name} decodes");
+        }
+        let mut living = composite.clone();
+        living.decomp = None;
+        let living = loader.composited_skin(&living).unwrap();
+        assert_ne!(living, handle);
+        let living = loader.materials.get(&living).unwrap();
+        let living = loader
+            .images
+            .get(&living.diffuse_map.clone().unwrap())
+            .unwrap();
+        assert_ne!(
+            living.data.as_ref().unwrap()[..64 * 64 * 4],
+            image_bytes[..]
+        );
+    }
+
+    /// The composite job carries the decomposition pass when the job's
+    /// feral level is above zero, with the record's two skin-map offsets;
+    /// a zero, absent or NaN level draws none.
+    #[test]
+    fn a_feral_job_draws_the_decomposition_pass() {
+        let mut job = SkinJob::new(2);
+        job.colour = Some("humandifm".into());
+        job.gloss = Some("humanspcm".into());
+        job.normals[0] = Some("humannrmm0".into());
+        job.uv_offset = [0.125, -0.25];
+        job.darkening = Some(0.75);
+        let decomp = job.composite_job().unwrap().decomp.unwrap();
+        assert_eq!(decomp.amount, 0.75);
+        assert_eq!(decomp.uv_offset, [0.125, -0.25]);
+        for darkening in [None, Some(0.0), Some(f32::NAN)] {
+            job.darkening = darkening;
+            assert!(job.composite_job().unwrap().decomp.is_none());
+        }
     }
 
     /// A bearded man takes one of the six beard maps; a race without the

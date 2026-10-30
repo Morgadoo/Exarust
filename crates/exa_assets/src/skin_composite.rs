@@ -139,6 +139,37 @@ pub struct Beard<'a> {
     pub tint: [f32; 3],
 }
 
+/// The decomposition pass's maps and amount, when a character's skin draws
+/// them (the callback's decomposition branch). The amount is the job's
+/// `Decomp` value, the feral level of a race whose look darkens with it;
+/// the living draw none. The maps are the ones [`crate::decomp`] names.
+#[derive(Clone, Copy)]
+pub struct Decomp<'a> {
+    /// The `Decomp` amount: the branch runs when it is above zero (a NaN
+    /// draws none, as the ordered compare does).
+    pub amount: f32,
+    /// The record's two skin-map offsets (`UVOfs`): the mask pass's
+    /// `humandcmpw` fetch and the diffuse pass's `skindecomp` fetch move
+    /// by them.
+    pub uv_offset: [f32; 2],
+    /// `humanseams`, the mask pass's `Tex0`.
+    pub seams: &'a Texels,
+    /// `humandcmpw`, the mask pass's `Tex1` (fetched at the offset).
+    pub weight: &'a Texels,
+    /// `ancientdifm`, `Tex3` of the diffuse and specular passes.
+    pub ancient_colour: &'a Texels,
+    /// `skindecomp`, the diffuse pass's `Tex4` (fetched at the offset).
+    pub decay: &'a Texels,
+    /// `humandcmpf`, the diffuse pass's `Tex5`.
+    pub colour_finish: &'a Texels,
+    /// `humandcmpg`, the specular pass's `Tex4`.
+    pub gloss_decay: &'a Texels,
+    /// `ancientnrmm0`, the normal pass's `Tex6`.
+    pub ancient_normal: &'a Texels,
+    /// `humandcmpn`, the normal pass's `Tex7`.
+    pub normal_decay: &'a Texels,
+}
+
 /// One character's skin composite job: the texture names and values the
 /// render callback binds. The character generator fills it from the record
 /// and race (`exa_character::texture_job`); [`crate::human_skin::composited_skin`]
@@ -162,6 +193,17 @@ pub struct SkinCompositeJob {
     pub beard: Option<SkinBeard>,
     /// The generated maps' side (512, or 1024 at the high-detail setting).
     pub side: u32,
+    /// The decomposition pass's amount and offsets, when the job draws it
+    /// (an amount above zero).
+    pub decomp: Option<SkinDecomp>,
+}
+
+/// The decomposition pass of a composite job: the `Decomp` amount (the
+/// feral level) and the record's two skin-map offsets (`UVOfs`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SkinDecomp {
+    pub amount: f32,
+    pub uv_offset: [f32; 2],
 }
 
 /// A beard's two maps and the hair colour it is tinted with.
@@ -177,10 +219,10 @@ pub struct SkinBeard {
 
 impl SkinCompositeJob {
     /// The cache key of the generated maps: every value the composite reads
-    /// (stem, tone, side, the race maps, layers and beard). The look seed is
-    /// not one of them: its two offsets move only the decomposition pass's
-    /// `skindecomp` fetch (`crate::decomp`), which the living skin does not
-    /// draw, so two records that differ only in seed share their maps.
+    /// (stem, tone, side, the race maps, layers, beard and decomposition).
+    /// The look seed's two offsets enter only with the decomposition pass,
+    /// whose mask and `skindecomp` fetches they move: two living records
+    /// that differ only in seed share their maps.
     pub fn key(&self) -> String {
         let mut key = format!(
             "{}:{:04x}{:04x}:{}:{}",
@@ -203,6 +245,14 @@ impl SkinCompositeJob {
                 beard.tint[0].to_bits(),
                 beard.tint[1].to_bits(),
                 beard.tint[2].to_bits()
+            ));
+        }
+        if let Some(d) = &self.decomp {
+            key.push_str(&format!(
+                ":d{:08x}{:08x}{:08x}",
+                d.amount.to_bits(),
+                d.uv_offset[0].to_bits(),
+                d.uv_offset[1].to_bits()
             ));
         }
         key
@@ -284,7 +334,31 @@ pub fn compose(
     layers: &[(f32, &Texels)],
     beard: Option<&Beard<'_>>,
 ) -> CompositedSkin {
+    compose_with_decomp(
+        width, height, tone, colour, gloss, normal, layers, beard, None,
+    )
+}
+
+/// [`compose`] with the decomposition pass's inputs: when the amount is
+/// above zero the callback first draws the material's mask pass into a
+/// one-channel target of the job's size ([`decomposition_mask`]), then the
+/// decomposition material in place of the `chargen_d`/`_s`/`_n` programs on
+/// each target, then the beard overlays on top.
+#[allow(clippy::too_many_arguments)]
+pub fn compose_with_decomp(
+    width: usize,
+    height: usize,
+    tone: [f32; 3],
+    colour: &Texels,
+    gloss: &Texels,
+    normal: &Texels,
+    layers: &[(f32, &Texels)],
+    beard: Option<&Beard<'_>>,
+    decomp: Option<&Decomp<'_>>,
+) -> CompositedSkin {
     let (w, h) = (width.max(1), height.max(1));
+    let decomp = decomp.filter(|d| crate::decomp::created(d.amount));
+    let mask = decomp.map(|d| decomposition_mask(w, h, d));
     let mut colour_out = vec![0u8; w * h * 4];
     let mut surface_out = vec![0u8; w * h * 4];
     let mut normal_out = vec![0u8; w * h * 4];
@@ -297,6 +371,7 @@ pub fn compose(
         normal,
         layers: bound_normal_layers(layers),
         beard,
+        decomp: decomp.zip(mask.as_ref()),
     };
     // The whole map is generated before the character is drawn; its rows are
     // independent, so they are split over the machine's threads. The band
@@ -358,6 +433,33 @@ struct SkinInputs<'a> {
     /// The normal layers the callback binds (amounts above zero).
     layers: Vec<(f32, &'a Texels)>,
     beard: Option<&'a Beard<'a>>,
+    /// The decomposition pass and its mask target, when its amount draws.
+    decomp: Option<(&'a Decomp<'a>, &'a Texels)>,
+}
+
+/// The decomposition material's mask pass over a `width` × `height` target:
+/// at each texel centre, [`crate::decomp::mask`] of `humanseams`' red and
+/// `humandcmpw`'s red at the offset coordinate, stored in an 8-bit red
+/// channel (the target's one channel; green and blue read zero, alpha one,
+/// as the sampler fills them).
+pub fn decomposition_mask(width: usize, height: usize, d: &Decomp<'_>) -> Texels {
+    let mut rgba = vec![0u8; width * height * 4];
+    for y in 0..height {
+        for x in 0..width {
+            let u = (x as f32 + 0.5) / width as f32;
+            let v = (y as f32 + 0.5) / height as f32;
+            let seams = sample(d.seams, u, v)[0];
+            let weight = sample(d.weight, u + d.uv_offset[0], v + d.uv_offset[1])[0];
+            let texel = &mut rgba[(y * width + x) * 4..][..4];
+            texel[0] = crate::paint::byte(crate::decomp::mask(seams, weight, d.amount));
+            texel[3] = 255;
+        }
+    }
+    Texels {
+        width,
+        height,
+        rgba,
+    }
 }
 
 /// Generates rows `first..last` of the three maps into the row slices,
@@ -391,6 +493,70 @@ fn render_rows(
                 })
                 .collect();
             let mut nrm = normal_texel([base[0], base[1]], &layer_samples);
+            // The decomposition material replaces the three base programs
+            // when its amount draws (the callback's branch): the race's
+            // colour and gloss maps in `Tex0`, the mask in `Tex1` (and at
+            // `Tex5` for the normal pass), the decay maps from unit 2 or 6.
+            if let Some((d, mask)) = inputs.decomp {
+                let rgb3 = |t: [f32; 4]| [t[0], t[1], t[2]];
+                // The mask target is the job's size: the texel centre reads
+                // its own texel.
+                let m = rgb3(mask.at4(x as i64, y as i64));
+                let offset = [u + d.uv_offset[0], v + d.uv_offset[1]];
+                let weight = rgb3(sample(d.weight, offset[0], offset[1]));
+                let ancient = rgb3(sample(d.ancient_colour, u, v));
+                let tex = [
+                    rgb3(source),
+                    m,
+                    weight,
+                    ancient,
+                    rgb3(sample(d.decay, offset[0], offset[1])),
+                    rgb3(sample(d.colour_finish, u, v)),
+                ];
+                // `SknCol` is the job's tone, the uniform `chargen_d` takes.
+                rgb = crate::decomp::diffuse(&tex, inputs.tone, d.amount);
+
+                let tex = [
+                    rgb3(gloss),
+                    m,
+                    weight,
+                    ancient,
+                    rgb3(sample(d.gloss_decay, u, v)),
+                ];
+                surf = crate::decomp::specular(&tex, d.amount);
+
+                // `textureOffset` reads the mask's neighbouring texels
+                // (wrapping, as the target's sampler repeats).
+                let mut neighbours = [0.0f32; 8];
+                for (k, (dx, dy)) in [
+                    (-1, -1),
+                    (0, -1),
+                    (1, -1),
+                    (-1, 0),
+                    (1, 0),
+                    (-1, 1),
+                    (0, 1),
+                    (1, 1),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    neighbours[k] = mask.at4(x as i64 + dx, y as i64 + dy)[0];
+                }
+                let mut tex = [[0.0f32; 3]; 8];
+                tex[0] = rgb3(base);
+                for (i, (_, layer)) in inputs.layers.iter().enumerate().take(4) {
+                    tex[i + 1] = rgb3(sample(layer, u, v));
+                }
+                // The mask is rebound at unit 5 after the layers: a fifth
+                // layer reads it.
+                tex[5] = m;
+                tex[6] = rgb3(sample(d.ancient_normal, u, v));
+                tex[7] = rgb3(sample(d.normal_decay, u, v));
+                let weights: Vec<f32> = inputs.layers.iter().map(|&(a, _)| a).collect();
+                let n = crate::decomp::normal(&tex, &neighbours, &weights, d.amount);
+                nrm = [n[0], n[1]];
+            }
             if let Some(beard) = inputs
                 .beard
                 .filter(|_| u < BEARD_EXTENT && v < BEARD_EXTENT)
@@ -533,6 +699,7 @@ mod tests {
             layers: vec![(0.5, "humannrmm1".into())],
             beard: None,
             side: 512,
+            decomp: None,
         };
         assert_eq!(job.key(), job.clone().key());
         let mut other = job.clone();
@@ -551,6 +718,19 @@ mod tests {
             tint: [0.3; 3],
         });
         assert_ne!(job.key(), other.key());
+        // The decomposition pass, and its offsets with it.
+        other = job.clone();
+        other.decomp = Some(SkinDecomp {
+            amount: 0.5,
+            uv_offset: [0.1, 0.2],
+        });
+        assert_ne!(job.key(), other.key());
+        let mut moved = other.clone();
+        moved.decomp = Some(SkinDecomp {
+            amount: 0.5,
+            uv_offset: [0.1, 0.3],
+        });
+        assert_ne!(moved.key(), other.key());
     }
 
     /// A 1×1 composite: the tone multiplies the stored texel, the gloss
@@ -630,5 +810,117 @@ mod tests {
         // stays near the middle, so the alpha blend is 0.626 → 160.
         assert_eq!(out.normal[0], 160);
         assert_ne!(out.normal[2], 255);
+    }
+    /// The decomposition branch: with an amount above zero the three
+    /// generated maps follow the decomposition passes, each fed the units
+    /// the callback binds (the race's colour or gloss in `Tex0`, the mask in
+    /// `Tex1`, the decay maps from unit 2, the job's tone as `SknCol`), and
+    /// a zero or NaN amount leaves the chargen result untouched.
+    #[test]
+    fn the_decomposition_branch_replaces_the_chargen_programs() {
+        let colour = tex(1, 1, [200, 200, 200, 255]);
+        let gloss = tex(1, 1, [128, 0, 0, 255]);
+        let normal = tex(1, 1, [128, 128, 128, 255]);
+        let white = tex(1, 1, [255, 255, 255, 255]);
+        let ancient = tex(1, 1, [64, 64, 64, 255]);
+        let decay = tex(1, 1, [192, 192, 192, 255]);
+        let finish = tex(1, 1, [32, 64, 96, 255]);
+        let gloss_decay = tex(1, 1, [0, 160, 0, 255]);
+        let flat = tex(1, 1, [128, 128, 255, 255]);
+        let tone = [0.9, 0.8, 0.7];
+        let plain = compose(1, 1, tone, &colour, &gloss, &normal, &[], None);
+        let decomp = Decomp {
+            amount: 0.5,
+            uv_offset: [0.25, -0.25],
+            seams: &white,
+            weight: &white,
+            ancient_colour: &ancient,
+            decay: &decay,
+            colour_finish: &finish,
+            gloss_decay: &gloss_decay,
+            ancient_normal: &flat,
+            normal_decay: &flat,
+        };
+        let made = compose_with_decomp(
+            1,
+            1,
+            tone,
+            &colour,
+            &gloss,
+            &normal,
+            &[],
+            None,
+            Some(&decomp),
+        );
+        // The mask: 1 × 1 × ½ is the smoothstep's fixed point ½, stored as
+        // byte 128 (127.5 rounds to even).
+        let mask = decomposition_mask(1, 1, &decomp);
+        assert_eq!(mask.rgba, [128, 0, 0, 255]);
+        let m = [128.0 / 255.0, 0.0, 0.0];
+        let unit = |b: u8| f32::from(b) / 255.0;
+        let want = crate::decomp::diffuse(
+            &[
+                [unit(200); 3],
+                m,
+                [1.0; 3],
+                [unit(64); 3],
+                [unit(192); 3],
+                [unit(32), unit(64), unit(96)],
+            ],
+            tone,
+            0.5,
+        );
+        assert_eq!(
+            [made.colour[0], made.colour[1], made.colour[2]],
+            want.map(crate::paint::byte)
+        );
+        assert_ne!(made.colour[..3], plain.colour[..3]);
+        // The specular pass: g = (128/255 · 64/255 · 2.5) · (0.4 + 0.7²)
+        // = 0.28032, then mixed toward humandcmpg's red (0) by
+        // w·(2 − w²) = 0.87745 with w = 128/255: 0.03435, byte 9.
+        assert_eq!(made.surface[..3], [255, 9, 0]);
+        // A zero or NaN amount keeps the chargen maps.
+        for amount in [0.0, f32::NAN] {
+            let off = Decomp { amount, ..decomp };
+            let made =
+                compose_with_decomp(1, 1, tone, &colour, &gloss, &normal, &[], None, Some(&off));
+            assert_eq!(made.colour, plain.colour);
+            assert_eq!(made.surface, plain.surface);
+            assert_eq!(made.normal, plain.normal);
+        }
+    }
+
+    /// The mask pass fetches `humandcmpw` at the skin-map offset and
+    /// `humanseams` at the texel itself: with a weight map dark on its left
+    /// texel and bright on its right, an offset of half the map swaps them.
+    #[test]
+    fn the_mask_pass_shifts_only_the_weight_fetch() {
+        let seams = tex(2, 1, [255, 255, 255, 255]);
+        let weight = Texels {
+            width: 2,
+            height: 1,
+            rgba: vec![0, 0, 0, 255, 255, 255, 255, 255],
+        };
+        let flat = tex(1, 1, [128, 128, 255, 255]);
+        let d = Decomp {
+            amount: 1.0,
+            uv_offset: [0.5, 0.0],
+            seams: &seams,
+            weight: &weight,
+            ancient_colour: &flat,
+            decay: &flat,
+            colour_finish: &flat,
+            gloss_decay: &flat,
+            ancient_normal: &flat,
+            normal_decay: &flat,
+        };
+        let mask = decomposition_mask(2, 1, &d);
+        assert_eq!((mask.rgba[0], mask.rgba[4]), (255, 0));
+        let d = Decomp {
+            uv_offset: [0.0, 0.0],
+            ..d
+        };
+        let mask = decomposition_mask(2, 1, &d);
+        assert_eq!((mask.rgba[0], mask.rgba[4]), (0, 255));
     }
 }

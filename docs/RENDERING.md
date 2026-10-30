@@ -1064,6 +1064,18 @@ texel and stores the original's sRGB colour target and linear surface and
 normal targets, its rows split over up to eight threads (same texels, same
 result). The `chargen_*` programs bind no `UVOfs`: the record's two seed
 offsets shift only the decomposition pass's `skindecomp` fetch.
+`compose_with_decomp` runs the callback's decomposition branch
+(`exa_assets::decomp`, the `chardecomp_d/_s/_n` passes): when the `Decomp`
+amount is above zero the material first draws its mask pass into a
+one-channel 8-bit target of the job's size (`humanseams` times `humandcmpw`
+fetched at `UVOfs`, times the amount, smoothed twice), then replaces the
+three base programs: the race's colour or gloss in `Tex0`, the mask in
+`Tex1`, the job's tone as `SknCol`, and for the normal pass the base normal
+and layers in `Tex0`..`Tex4` with the mask rebound at `Tex5` (so a fifth
+layer reads the mask). The beard overlays draw on top and the apparel
+layers last. The amount is the job's feral level (a race whose look
+darkens, `look::skin_darkening`); the loader draws the pass whenever it is
+above zero (Kade of `exanima01` is fully feral).
 
 The running skin is the composite, not the race maps plus tint.
 `SkinJob::composite_job` describes the job
@@ -1141,8 +1153,9 @@ and occlusion passes do nothing on shipped data.
   cull mask misses the visible mask, else `0x200000` when its first does,
   else none; the second test overwrites the first. Body slots take none.
   The bits are the slot append's cull argument (`MergePart::cull`): the
-  append drops the vertices whose slot mask holds them, and the triangles
-  that needed them, and writes nothing on the triangles.
+  append drops the garment triangles whose per-triangle flags meet them
+  (`flags & cull != 0`) and appends only the vertices a kept triangle
+  uses.
 - **Occlusion alpha.** A garment part whose material has the occlusion
   mark makes its merged vertices opaque and every vertex on the border of
   the marked region transparent: a vertex fades when one of its marked
@@ -3001,15 +3014,19 @@ textures.flb --dump <dir>`).
   `Tex0`) are added as differences from the base by their weights (`lamt`,
   one per layer, the layer count the caller names). `ancientnrmm0`
   (`Tex6`)'s xy is added by `amount/(1 + amount)`, then `humandcmpn`
-  (`Tex7`)'s xy is mixed in by `√w`, w the height texel (`Tex5`). A cavity
-  normal from the eight neighbouring height texels (squared,
+  (`Tex7`)'s xy is mixed in by `√w`, w the mask texel (`Tex5`). A cavity
+  normal from the eight neighbouring mask texels (squared,
   sobel-weighted, normalised, z = 0.5) is added by `3·(1 − w)²`; z is
   rebuilt from the xy length. The result is stored as `0.5·n + 0.5`.
 
 The diffuse and specular passes bind their maps from unit 2 (`humanseams`,
 the head of both lists, is skipped by the binding loops) and the normal pass
-binds its two maps at units 6 and 7. `decomp::created` is the amount's
-ordered test. No corpse path calls the passes yet.
+binds its two maps at units 6 and 7. The seam mask `w` all three passes
+read is the material's own first pass (`decomp::mask`): `humanseams`'
+red times `humandcmpw`'s red at the shifted coordinate, times the amount,
+smoothed twice (`a·a·(3 − 2a)`), stored in an 8-bit red target.
+`decomp::created` is the amount's ordered test. The composite draws the
+passes for every job whose feral level is above zero.
 
 ## Item icons
 

@@ -43,7 +43,7 @@ pub use model::{
     mesh_triangles, transform_from_rows,
 };
 pub use morph::BodyMorph;
-pub use skin_composite::{SkinBeard, SkinCompositeJob};
+pub use skin_composite::{SkinBeard, SkinCompositeJob, SkinDecomp};
 pub use texture::ColorSpace;
 pub use texture_cache::{TextureCache, TextureKey, TextureName, TextureRecord};
 pub use texture_stream::{TextureLoader, TextureStreamPlugin};

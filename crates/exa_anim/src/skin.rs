@@ -81,6 +81,35 @@ pub fn skin_vertex(
     }))
 }
 
+/// The nodes the original's joint capture takes, with their bone numbers,
+/// in its order: a depth-first walk in child order from `roots`. A node
+/// sets its bone's frame only when no node before it did, and only then
+/// are its children visited: a node of a bone number already captured ends
+/// its branch. A node of bone 0, or one `bone` gives `None` for (an Exarust
+/// entity that is not a body part), is passed through to its children.
+/// The original ends the branch at a bone-0 node too; Exarust reads bone
+/// numbers from node names, which may not match the original's field for a
+/// `00` node, so it keeps walking there (a guess, kept so a body whose top
+/// node is numbered `00` still binds).
+pub fn capture_joints<N: Copy>(
+    roots: &[N],
+    children: impl Fn(N) -> Vec<N>,
+    bone: impl Fn(N) -> Option<usize>,
+) -> Vec<(usize, N)> {
+    let mut captured = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut stack: Vec<N> = roots.iter().rev().copied().collect();
+    while let Some(node) = stack.pop() {
+        match bone(node) {
+            Some(b) if b >= 1 && seen.insert(b) => captured.push((b, node)),
+            Some(b) if b >= 1 => continue,
+            _ => {}
+        }
+        stack.extend(children(node).into_iter().rev());
+    }
+    captured
+}
+
 /// The joint numbering and inverse binds of a mesh on bone `own_bone`
 /// whose bones' rest transforms under the mesh's own part are `rest`:
 /// joint `n` is bone `n` (0 to the highest bone), an absent bone taking
@@ -119,6 +148,42 @@ pub fn translate_mesh(mesh: &mut Mesh, by: Vec3) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The joint capture walks depth first in child order: the first node
+    /// met for a bone sets its frame, and a repeated bone ends its branch,
+    /// so the children under it are never reached; bone 0 passes through.
+    #[test]
+    fn the_joint_capture_walks_depth_first_and_prunes_repeats() {
+        // Node: (bone, children). 0 → [1, 4]; 1 → [2, 3]; 4 → [5];
+        // 5 → [6]; 7 is under the bone-0 node 8, reached from 4 last.
+        let tree: [(Option<usize>, &[usize]); 9] = [
+            (Some(1), &[1, 4]),
+            (Some(2), &[2, 3]),
+            (Some(3), &[]),
+            (Some(0), &[7]),
+            (Some(3), &[5, 8]),
+            (Some(6), &[]),
+            (Some(9), &[]),
+            (Some(4), &[]),
+            (Some(0), &[6]),
+        ];
+        let order = capture_joints(&[0], |n| tree[n].1.to_vec(), |n| tree[n].0);
+        // Depth first: 0, 1, 2, then 3 (bone 0, passed through) to 7. Node
+        // 4 repeats bone 3, so its subtree (5, 8 and 8's child 6) is never
+        // walked: bones 6 and 9 stay uncaptured.
+        assert_eq!(order, [(1, 0), (2, 1), (3, 2), (4, 7)]);
+        // A breadth-first walk would have met node 4 (bone 3) before node 2.
+        let a = Mat4::from_translation(Vec3::new(1.0, 0.0, 0.0));
+        let b = Mat4::from_translation(Vec3::new(2.0, 0.0, 0.0));
+        let frames: HashMap<usize, Mat4> = [(3, a), (5, b)].into_iter().collect();
+        let own = Mat4::from_translation(Vec3::new(0.5, 0.0, 0.0));
+        let (bones, inverse) = bindings(&frames, 3, own);
+        // Joints 0 to 5: the gaps take the own bone with an identity bind.
+        assert_eq!(bones, [3, 3, 3, 3, 3, 5]);
+        assert_eq!(inverse[3], a.inverse() * own);
+        assert_eq!(inverse[0], Mat4::IDENTITY);
+        assert_eq!(inverse[5], b.inverse() * own);
+    }
 
     /// A translation joint with no inverse bind skins a point to the
     /// translated place; an inverse bind of the joint's rest brings it back
