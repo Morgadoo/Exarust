@@ -3348,11 +3348,11 @@ it is wired into the running game yet.
   refresh from HSV sets the HSV sliders and fields, converts to RGB unless
   syncing, builds the field's corners `(h,0,v)`, `(h,1,v)`, `(h,s,0)` and
   `(h,s,1)` and refreshes the RGB side under the guard. The field point
-  sets hue and saturation; the finish button leaves 0x1000. The preview
-  swatch's own controls write one of its components (over 255 or raw) and
-  rebuild its bytes at alpha 255 without touching the picker's colour; the
-  two field controls write the first two colour components raw. The
-  conversions are the engine's colour helpers.
+  sets hue and saturation; the finish button leaves 0x1000. Each control
+  callback dispatches to one of these rules (`ColourPicker::dispatch`):
+  the RGB and HSV sliders over 255 or raw, the field's point, a colour
+  control's bytes, the finish and the revert. The conversions are the
+  engine's colour helpers.
 - **Drop-down list** (`exa_ui::drop_down`). Style 0x98, attributes
   0x4a1470, border 3. Rows are six units; up to sixteen make the list that
   tall plus twice the border; more cut it at sixteen, set the scrollbar

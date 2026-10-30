@@ -143,9 +143,6 @@ pub struct ColourPicker {
     pub corners: [[u8; 4]; 4],
     /// The preview swatch's bytes (alpha 255).
     pub preview: [u8; 4],
-    /// The preview swatch's own source colour, 0–1 per channel: its controls
-    /// write a component without touching the picker's colour.
-    pub preview_colour: [f32; 4],
     /// The RGB sliders' values and their number fields' values (× 255).
     pub rgb_sliders: [f32; 3],
     pub rgb_fields: [f32; 3],
@@ -171,7 +168,6 @@ impl ColourPicker {
             ramps: [[[0; 4]; 2]; 3],
             corners: [[0; 4]; 4],
             preview: [0; 4],
-            preview_colour: [0.0; 4],
             rgb_sliders: [0.0; 3],
             rgb_fields: [0.0; 3],
             hsv_sliders: [0.0; 3],
@@ -181,40 +177,10 @@ impl ColourPicker {
         if swatch.class == COLOUR_SWATCH_CLASS {
             picker.name = swatch.name.clone();
             picker.preview = swatch.colour;
-            picker.preview_colour = unpacked(swatch.colour);
             picker.original = unpacked(swatch.colour);
             picker.refresh_rgb(picker.original, Some(swatch));
         }
         picker
-    }
-
-    /// Writes one component of the preview swatch (the preview control's
-    /// own slider) and rebuilds its bytes, alpha 255. `over_255` divides
-    /// the value by 255 first; either way the byte is the value times 255
-    /// rounded, which is the value itself for a 0–255 slider.
-    pub fn set_preview_component(&mut self, channel: usize, value: f32, over_255: bool) {
-        let channel = channel.min(2);
-        self.preview_colour[channel] = if over_255 { value / 255.0 } else { value };
-        self.preview = [
-            to_byte(self.preview_colour[0]),
-            to_byte(self.preview_colour[1]),
-            to_byte(self.preview_colour[2]),
-            0xff,
-        ];
-    }
-
-    /// Writes the first two colour components from two field values (the
-    /// field's hue and saturation) and rebuilds the preview swatch.
-    pub fn set_two_colour_fields(&mut self, first: f32, second: f32) {
-        self.colour[0] = first;
-        self.colour[1] = second;
-        self.preview_colour = self.colour;
-        self.preview = [
-            to_byte(self.colour[0]),
-            to_byte(self.colour[1]),
-            to_byte(self.colour[2]),
-            0xff,
-        ];
     }
 
     /// An RGB slider (0–255): the channel takes the value over 255 and the
@@ -359,38 +325,34 @@ pub enum Opened {
     Created(usize),
 }
 
-/// A control event the picker's controls dispatch to it: the sliders,
-/// fields, the swatch's bytes, the finish word and the picker's own
-/// refresh. `Preview…` events touch only the preview swatch, as its own
-/// controls do.
+/// A control event the picker's controls dispatch to it, one per control
+/// callback: the RGB and HSV sliders (a 0–255 slider divided by 255, or a
+/// value already 0–1), the colour field's point (hue and saturation), a
+/// colour control's bytes, the finish button and the revert button.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PickerEvent {
     /// An RGB slider on `channel`, its value 0–255.
     RgbSlider { channel: usize, value: f32 },
-    /// An RGB slider whose value is already 0–1.
+    /// An RGB control whose value is already 0–1.
     RgbRaw { channel: usize, value: f32 },
     /// An HSV slider on `channel`, its value 0–255.
     HsvSlider { channel: usize, value: f32 },
-    /// An HSV slider whose value is already 0–1.
+    /// An HSV control whose value is already 0–1.
     HsvRaw { channel: usize, value: f32 },
-    /// The preview swatch's slider on `channel`, 0–255.
-    PreviewSlider { channel: usize, value: f32 },
-    /// The preview swatch's slider whose value is already 0–1.
-    PreviewRaw { channel: usize, value: f32 },
-    /// Two field values into the first two colour components.
-    TwoFields { first: f32, second: f32 },
-    /// The swatch's packed bytes.
+    /// The colour field's point: its two coordinates as hue and saturation.
+    Field { hue: f32, saturation: f32 },
+    /// A colour control's packed bytes.
     Bytes([u8; 4]),
-    /// The picker's finish word.
+    /// The finish button.
     Finish,
-    /// The picker's own colour again.
-    Refresh,
+    /// The revert button: the colour the swatch had when the picker opened.
+    Revert,
 }
 
 impl ColourPicker {
-    /// Dispatches one control event: the slider and byte events refresh and
-    /// answer their [`Refresh`]; the preview and two-field events answer
-    /// nothing; the finish runs and answers nothing.
+    /// Dispatches one control event to the picker's own rule: every event
+    /// but the finish refreshes and answers its [`Refresh`]; the finish
+    /// sets its word and answers nothing.
     pub fn dispatch(
         &mut self,
         event: PickerEvent,
@@ -409,32 +371,20 @@ impl ColourPicker {
             PickerEvent::HsvRaw { channel, value } => {
                 Some(self.set_hsv_slider_raw(channel, value, swatch))
             }
-            PickerEvent::PreviewSlider { channel, value } => {
-                self.set_preview_component(channel, value, true);
-                None
-            }
-            PickerEvent::PreviewRaw { channel, value } => {
-                self.set_preview_component(channel, value, false);
-                None
-            }
-            PickerEvent::TwoFields { first, second } => {
-                self.set_two_colour_fields(first, second);
-                None
+            PickerEvent::Field { hue, saturation } => {
+                Some(self.set_hue_saturation(hue, saturation, swatch))
             }
             PickerEvent::Bytes(bytes) => Some(self.set_bytes(bytes, swatch)),
             PickerEvent::Finish => {
                 self.finish();
                 None
             }
-            PickerEvent::Refresh => {
-                let colour = self.colour;
-                Some(self.refresh_rgb(colour, None))
-            }
+            PickerEvent::Revert => Some(self.revert(swatch)),
         }
     }
 }
 
-/// The unit's list of pickers, one per swatch control./// The unit's list of pickers, one per swatch control.
+/// The unit's list of pickers, one per swatch control.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PickerSet {
     pub pickers: Vec<ColourPicker>,
@@ -476,48 +426,14 @@ mod tests {
     }
 
     #[test]
-    fn the_preview_and_two_field_events_touch_only_their_own_data() {
+    fn the_events_reach_the_pickers_own_rules() {
         let mut swatch = swatch();
         let mut picker = ColourPicker::new(0, &mut swatch);
-        assert_eq!(
-            picker.dispatch(
-                PickerEvent::PreviewSlider {
-                    channel: 0,
-                    value: 255.0
-                },
-                Some(&mut swatch)
-            ),
-            None
-        );
-        assert_eq!(picker.preview[0], 255);
-        assert_eq!(picker.preview[3], 255);
-        picker.dispatch(
-            PickerEvent::PreviewRaw {
-                channel: 1,
-                value: 0.5,
-            },
-            None,
-        );
-        assert_eq!(picker.preview[1], 128);
-        // The two fields write the first two colour components raw.
-        picker.dispatch(
-            PickerEvent::TwoFields {
-                first: 0.25,
-                second: 0.75,
-            },
-            None,
-        );
-        assert_eq!(picker.colour[0], 0.25);
-        assert_eq!(picker.colour[1], 0.75);
-        assert_eq!((picker.preview[0], picker.preview[1]), (64, 191));
-        // The dispatcher's finish sets the word and answers nothing.
-        assert_eq!(picker.dispatch(PickerEvent::Finish, None), None);
-        assert_eq!(picker.word, FINISH_WORD);
-        // A slider event refreshes.
+        // An HSV slider writes the HSV side over 255 and refreshes from it.
         assert!(
             picker
                 .dispatch(
-                    PickerEvent::RgbSlider {
+                    PickerEvent::HsvSlider {
                         channel: 2,
                         value: 255.0
                     },
@@ -525,7 +441,29 @@ mod tests {
                 )
                 .is_some()
         );
-        assert_eq!(picker.colour[2], 1.0);
+        assert_eq!(picker.hsv[2], 1.0);
+        // The field's point is the hue and the saturation, not RGB.
+        picker.dispatch(
+            PickerEvent::Field {
+                hue: 0.25,
+                saturation: 0.75,
+            },
+            None,
+        );
+        assert_eq!((picker.hsv[0], picker.hsv[1]), (0.25, 0.75));
+        // The revert takes the opening colour back.
+        picker.dispatch(
+            PickerEvent::RgbSlider {
+                channel: 0,
+                value: 0.0,
+            },
+            None,
+        );
+        assert!(picker.dispatch(PickerEvent::Revert, None).is_some());
+        assert_eq!(picker.colour, picker.original);
+        // The finish sets the word and answers nothing.
+        assert_eq!(picker.dispatch(PickerEvent::Finish, None), None);
+        assert_eq!(picker.word, FINISH_WORD);
     }
 
     #[test]
