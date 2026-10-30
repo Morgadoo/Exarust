@@ -87,6 +87,7 @@ impl Plugin for CombatPlugin {
             .add_message::<pain::PainSounded>()
             .add_message::<pain::BlowFelt>()
             .add_message::<pain::ClashFelt>()
+            .add_message::<BlowNoticed>()
             .add_message::<impact::WeaponSounded>()
             .add_message::<SecondWindFired>()
             .add_message::<block::ShieldRung>()
@@ -276,6 +277,10 @@ impl Default for Attacking {
     }
 }
 
+/// The condition bits of a body down, collapsing or dead, which stop the
+/// behaviour base's hit rules.
+const DOWN_OR_DEAD: u32 = 0xA00;
+
 /// A weapon contact.
 #[derive(Message, Debug, Clone)]
 pub struct Hit {
@@ -307,6 +312,45 @@ pub enum Struck {
     Weapon { primary: bool },
     /// A held shield or torch (kind 3, a block): the item's body.
     Shield { item: Entity },
+}
+
+/// What a struck body's behaviour is told a blow was: the kind the
+/// original's damage routine passes its behaviour call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlowKind {
+    /// A wound on flesh (0).
+    Wound,
+    /// A clash on a held weapon (1).
+    Clash,
+    /// A block on a held shield or torch (2).
+    Block,
+}
+
+impl BlowKind {
+    /// The kind's number in the behaviour call.
+    pub fn code(self) -> u8 {
+        match self {
+            Self::Wound => 0,
+            Self::Clash => 1,
+            Self::Block => 2,
+        }
+    }
+}
+
+/// A blow's notice to the struck body's behaviour, written where the
+/// original's damage routine calls it: first in a clash's or a block's
+/// branch, and on flesh after the damage call, its sounds and the
+/// damage-taken notice. The behaviour's count (the striker's
+/// [`CombatScore`] or the parrier's) is dealt in place; the AI reads this
+/// for the rest of its reaction.
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct BlowNoticed {
+    pub target: Entity,
+    pub attacker: Entity,
+    pub kind: BlowKind,
+    /// The struck body was down, collapsing or dead (its condition has a
+    /// 0xA00 bit) at the call: a killing wound's collapse counts.
+    pub down: bool,
 }
 
 impl Struck {
@@ -643,11 +687,12 @@ fn react_to_hits(
         MessageWriter<pain::PainSounded>,
         MessageWriter<pain::BlowFelt>,
     ),
-    (mut winds, mut rungs, mut weapon_rings, mut clashes): (
+    (mut winds, mut rungs, mut weapon_rings, mut clashes, mut notices): (
         MessageWriter<SecondWindFired>,
         MessageWriter<block::ShieldRung>,
         MessageWriter<impact::WeaponSounded>,
         MessageWriter<pain::ClashFelt>,
+        MessageWriter<BlowNoticed>,
     ),
     mut fighters: Query<(
         Entity,
@@ -717,12 +762,20 @@ fn react_to_hits(
             // in its branch, before any other rule: a parrying body scores
             // one ([`CombatScore::note_guard`]).
             let event = match hit.struck {
-                Struck::Weapon { .. } => Some(ScoreEvent::Clashed),
-                Struck::Shield { .. } => Some(ScoreEvent::Blocked),
+                Struck::Weapon { .. } => Some((ScoreEvent::Clashed, BlowKind::Clash)),
+                Struck::Shield { .. } => Some((ScoreEvent::Blocked, BlowKind::Block)),
                 Struck::Limb => None,
             };
-            if let (Some(event), Ok(mut score)) = (event, scores.get_mut(hit.target)) {
-                score.note_guard(event, f.parry.active);
+            if let Some((event, kind)) = event {
+                if let Ok(mut score) = scores.get_mut(hit.target) {
+                    score.note_guard(event, f.parry.active);
+                }
+                notices.write(BlowNoticed {
+                    target: hit.target,
+                    attacker: hit.attacker,
+                    kind,
+                    down: condition.0 & DOWN_OR_DEAD != 0,
+                });
             }
             let Some(armour) = hit.bone.checked_sub(1).and_then(|i| f.armour.get(i)) else {
                 break 'struck None;
@@ -955,6 +1008,18 @@ fn react_to_hits(
                     fighter: hit.target,
                 });
             }
+            // The wound's notice to the struck body's behaviour, after the
+            // damage call, its sounds and the damage-taken notice: the
+            // striker scores three, and the AI reacts.
+            if let Ok(mut score) = scores.get_mut(hit.attacker) {
+                score.credit_wound();
+            }
+            notices.write(BlowNoticed {
+                target: hit.target,
+                attacker: hit.attacker,
+                kind: BlowKind::Wound,
+                down: condition.0 & DOWN_OR_DEAD != 0 || taken == Taken::Killed,
+            });
             // The player's feedback, last in the routine's tail: the
             // striker's scale and swing are read where it is a fighter.
             let (scale, overhead) = (striker_scale, motion == OVERHEAD_MOTION);
@@ -970,11 +1035,6 @@ fn react_to_hits(
                 },
                 direction: hit.velocity * (CM_PER_M / BODY_HZ),
             });
-            // The wound's notice to the struck body's behaviour, after the
-            // damage call and its sounds: the striker scores three.
-            if let Ok(mut score) = scores.get_mut(hit.attacker) {
-                score.credit_wound();
-            }
             if taken == Taken::Weakened {
                 answer_low(
                     hit.target,
@@ -1345,6 +1405,7 @@ mod tests {
             .add_message::<pain::PainSounded>()
             .add_message::<pain::BlowFelt>()
             .add_message::<pain::ClashFelt>()
+            .add_message::<BlowNoticed>()
             .add_message::<impact::WeaponSounded>()
             .add_message::<SecondWindFired>()
             .add_message::<crate::block::ShieldRung>()
@@ -1683,6 +1744,93 @@ mod tests {
             let clashes = app.world().resource::<Messages<pain::ClashFelt>>();
             assert_eq!(clashes.iter_current_update_messages().count(), 1);
         }
+    }
+
+    fn blow_notices(app: &App) -> Vec<BlowNoticed> {
+        let messages = app.world().resource::<Messages<BlowNoticed>>();
+        messages.iter_current_update_messages().copied().collect()
+    }
+
+    /// The struck body's behaviour is told of every blow it is dealt: a
+    /// wound on flesh (kind 0) with the striker credited three, a clash on
+    /// a held weapon (kind 1) and a block on a held shield (kind 2); a
+    /// killing wound counts the struck body down, and a turned blow tells
+    /// nothing.
+    #[test]
+    fn the_struck_behaviour_is_told_of_each_blow() {
+        let mut app = reactions();
+        let (attacker, blade) = swordsman(&mut app);
+        app.world_mut().entity_mut(attacker).insert(CombatScore(0));
+        let victim = app
+            .world_mut()
+            .spawn((Fighter::default(), Animator::new("Default", "Idle")))
+            .id();
+        swung(&mut app, attacker, blade, victim, cut());
+        assert_eq!(
+            blow_notices(&app),
+            vec![BlowNoticed {
+                target: victim,
+                attacker,
+                kind: BlowKind::Wound,
+                down: false,
+            }]
+        );
+        assert_eq!(app.world().get::<CombatScore>(attacker).unwrap().0, 3);
+        for (struck, kind) in [
+            (Struck::Weapon { primary: true }, BlowKind::Clash),
+            (
+                Struck::Shield {
+                    item: Entity::PLACEHOLDER,
+                },
+                BlowKind::Block,
+            ),
+        ] {
+            app.world_mut().write_message(Hit {
+                attacker,
+                striker: blade,
+                struck,
+                target: victim,
+                bone: block::MAIN_HAND_BONE,
+                point: Vec3::ZERO,
+                velocity: Vec3::new(3.0, 0.0, 0.0),
+                weapon: damage::sword_a(),
+                strike: cut(),
+            });
+            app.update();
+            assert_eq!(
+                blow_notices(&app),
+                vec![BlowNoticed {
+                    target: victim,
+                    attacker,
+                    kind,
+                    down: false,
+                }]
+            );
+        }
+        // A wound that kills: the struck body is down at the call.
+        app.world_mut()
+            .get_mut::<Fighter>(victim)
+            .unwrap()
+            .health
+            .yellow = 0.011;
+        swung(&mut app, attacker, blade, victim, cut());
+        assert!(
+            blow_notices(&app).iter().all(|n| n.down),
+            "{:?}",
+            blow_notices(&app)
+        );
+        assert_eq!(blow_notices(&app).len(), 1);
+        // A blow the body turns tells its behaviour nothing.
+        let turning = app
+            .world_mut()
+            .spawn((
+                Fighter::default(),
+                Animator::new("Default", "Idle"),
+                StateFlags(StateFlags::TURNS_BLOWS),
+            ))
+            .id();
+        swung(&mut app, attacker, blade, turning, cut());
+        assert!(blow_notices(&app).is_empty());
     }
 
     /// A cut by the sword's body (40 of its 90 cm, so its body zone) bogs
@@ -2711,6 +2859,7 @@ mod tests {
             .add_message::<pain::PainSounded>()
             .add_message::<pain::BlowFelt>()
             .add_message::<pain::ClashFelt>()
+            .add_message::<BlowNoticed>()
             .add_message::<impact::WeaponSounded>()
             .add_message::<SecondWindFired>()
             .add_message::<crate::block::ShieldRung>()

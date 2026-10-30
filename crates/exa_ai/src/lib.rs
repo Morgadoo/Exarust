@@ -56,6 +56,7 @@ pub mod rooms;
 pub mod route;
 pub mod search;
 pub mod sense;
+pub mod struck;
 pub mod walker;
 
 pub use order::{Order, follow};
@@ -75,6 +76,14 @@ impl Plugin for AiPlugin {
             .init_resource::<brain::BrainClock>()
             .add_message::<presence::Entered>()
             .add_message::<exa_combat::AttackAskedHook>()
+            .add_message::<exa_combat::BlowNoticed>()
+            .add_message::<struck::Taught>()
+            .add_systems(
+                PostUpdate,
+                struck::react_to_blows
+                    .in_set(struck::HitReactions)
+                    .after(exa_combat::CombatSystems),
+            )
             .add_systems(
                 FixedUpdate,
                 presence::check_presence.before(exa_physics::body::CharacterTicks),

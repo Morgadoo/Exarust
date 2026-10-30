@@ -51,6 +51,10 @@
 //!                                     model loads); a blade that meets it is blocked (logged "a block" at info)
 //!          --shield <m|any>           play mode: the player carries this shield on its off arm (no torch then)
 //!          --still-opponent           the duellist stands its ground: it faces the player in its stance but neither walks nor strikes
+//!          --opponent-brain           the debug duellist also takes a level character's brain (its record's Npc, relations and
+//!                                     id), so its perception, morale and hit reactions run as a level duellist's do; its
+//!                                     arena role leaves it calm toward the player, so it neither starts the fight nor
+//!                                     stays in it, and its idle activity may walk it away
 //!          --undead-opponent <frame>  the debug duellist takes the story's body rules (it may rise again) and collapses
 //!                                     at that frame after the load; it dies, and 10 s later the AI manager's rule
 //!                                     raises it knocked out and it gets up (logged at info: "dies", "rises", "revived")
@@ -249,6 +253,8 @@ pub struct Options {
     pub opponent: bool,
     /// The opponent stands its ground (no steps, no strikes).
     pub still_opponent: bool,
+    /// The debug duellist takes a level character's brain too.
+    pub opponent_brain: bool,
     /// A shield on the duellist's off arm (an object model, or `any`).
     pub opponent_shield: Option<String>,
     /// A shield on the player's off arm (an object model, or `any`).
@@ -692,6 +698,10 @@ fn main() -> AppExit {
             "--still-opponent" => {
                 options.opponent = true;
                 options.still_opponent = true;
+            }
+            "--opponent-brain" => {
+                options.opponent = true;
+                options.opponent_brain = true;
             }
             "--trace" => options.trace = args.next().map(PathBuf::from),
             "--trace-all" => options.trace_all = true,

@@ -114,6 +114,7 @@ look's wide pan waits 3 s and the sway and narrow pan 0.5 s.
 | `rooms` | the 600 cm room cell grid (the floored, half-offset flat index, the per-cell occupant lists, the old-cell memory and the cell's nearby characters) and the level's side of it: the cell-to-room table, a room's exits at the cell centres behind its door links with shut doors from the room tracker, a room's reference point, and the sight test (the room reach test) |
 | `lifecycle` | the script-object factory, the scripted action hook, the removal/destroy/disable hooks, the idle return, the investigation of a disturbance and its goal callback (the pathfinder's nearest walkable point, mode 20, radius 100 cm), the idle driver's state machine (turn, plan a room, walk, test the exit, use the object, plan home, search the room) with its exit/use/object checks and room walk (every unvisited exit weighed, the previous cell included; going back clears the avoided exits; the first avoided exit sets its marker), the go-to-object state, and the object goal |
 | `estimate` | the fighting estimate from a record's skills and combat skill, the held weapon's stat bytes and reach, and the body scale |
+| `struck` | the hit reaction in the running game: each blow `exa_combat` notices (a wound, a clash or a block, in the damage routine's order) runs the combatant base's courage and attacker mark, then the AI's concern rise with the threat estimate over the brain's nearby list (only under the cap); a non-duellist attacker's lesson goes out as `Taught` |
 | `combatant` | the behaviour base: contacts, perception, the ally-class races' sense (the 3 concern floor, attitude 100 for a fellow AI, the 1200/1800 cm range, the threat to an ally weighed by the observed state, 0.3 of it as the concern target, the observed body's in-combat mark weighing 0.25 over 0.1; run by the perception pass for every AI race outside class `0x12xx`), the attitude and trust overrides, concern, references, the queued step, the nav footprint |
 | `combat` | the combat state: the follow check, practice, the foe estimate, setting a target (fresh, committed, stuck cleared, the estimate on the foe, the flat bearing and its aim), the weapon draw and the lunge, the chase count and eagerness, the footwork drives, the seventeen-place search, the attack decision with the friend test and the keep-off, the step, the guard, the fierce stance and the body turn |
 | `contacts` | the contact classifier (the stress flight, the engagement threshold, the concern flight, the watch and the notice score), the twelve-contact list, the per-tick contact integration (the hostility drift from the perceived attitude, the concern rising toward its target, the noticed level following the sighting, the attention, the bad-route marks, the aggregates and the readiness), the target pass (the scripted focus, the visible and nearby lists, the sleeper's waking, the clean-up, the alarm mean, the encounter and the greeting, the round-robin dialogue refresh), the nearby list (sixteen nearest seen within 30 m, by squared distance) |
@@ -266,8 +267,7 @@ the noticed level and the noticeability, concern and concern target, the
 effective attitude and tolerance, the threat, the crowd penalty carried
 across passes, closeness, view weight, the selected third party and the
 event bits), the references to its target, attention target, other target
-and holder, its published combat rating and reach, its courage, the
-struck rating and mark a blow leaves on the attacker, its alert level, its
+and holder, its published combat rating and reach, its alert level, its
 queued combat step and its nav footprint.
 
 `perceive` is one character looking at another; it writes the observer's
@@ -312,9 +312,12 @@ point is put 8·speed + 20 cm straight ahead) are the carry and move
 clamps; `Movement`'s two clear routines drop the queued step and set the
 body's movement bits; `foot_cell` and `stamp_footprint` are the 30 cm nav
 footprint (rounded to even, the fallback cell on the offending axis, the
-once-per-run overflow log). `take_hit` lowers courage on a clean hit (the
-factor is built in single precision and applied in double) and marks the
-attacker once; `react_to_hit` then raises the attacker contact's concern by
+once-per-run overflow log). `take_hit` lowers the brain's courage on a
+wound (the factor `(confidence + 1)·0.025 + 0.95` is built in single
+precision and applied in double) and marks the attacker's swing once, whose
+practice then takes the struck character's rating as its lesson when
+higher (`raise_lesson`); `react_to_hit` then sets the attacker contact's
+flags word to 3 and, under the cap, raises its concern by
 the threat estimate plus a base (half more for a kind-1 hit, a quarter for
 a kind 2), floored at zero, scaled by `1 − attitude/100` in double and
 capped at 15, and `threat_from_nearby` estimates that threat as 1 less the
