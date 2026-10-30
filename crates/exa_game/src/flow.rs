@@ -3369,6 +3369,7 @@ impl Plugin for FlowPlugin {
             .init_resource::<crate::transition_screen::TransitionOverlay>()
             .add_message::<MenuChoice>()
             .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
+            .add_message::<exa_world::level_lifecycle::WorldReset>()
             .add_systems(Startup, boot)
             .add_systems(
                 Update,
@@ -3819,6 +3820,9 @@ fn apply_steps(
                 crate::level_change::request(&mut out.changes, Some(locale), spawn, teardown);
             }
             Step::TeardownWorld => {
+                // The world reset clears what it owns (the weapons' blood
+                // list) whether or not a load follows.
+                out.resets.write(exa_world::level_lifecycle::WorldReset);
                 // A load in this batch tears down by itself.
                 if !loads {
                     crate::level_change::request(&mut out.changes, None, 0, true);
@@ -4162,12 +4166,14 @@ fn apply_steps(
     }
 }
 
-/// The messages the flow's applied steps send: a level change, a forfeit, a
+/// The messages the flow's applied steps send: a level change, a world
+/// reset, a forfeit, a
 /// settings entry, the application's exit, the save unit's work and the
 /// discovery pass.
 #[derive(bevy::ecs::system::SystemParam)]
 struct FlowOutputs<'w> {
     changes: MessageWriter<'w, exa_world::level_lifecycle::LevelChangeRequest>,
+    resets: MessageWriter<'w, exa_world::level_lifecycle::WorldReset>,
     forfeit: MessageWriter<'w, ForfeitMatch>,
     settings: MessageWriter<'w, SettingsEntry>,
     exit: MessageWriter<'w, AppExit>,
@@ -6860,6 +6866,7 @@ mod tests {
             .init_resource::<FlowSteps>()
             .init_resource::<GameView>()
             .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
+            .add_message::<exa_world::level_lifecycle::WorldReset>()
             .add_message::<ForfeitMatch>()
             .add_message::<SettingsEntry>()
             .add_message::<AppExit>()
@@ -6999,6 +7006,7 @@ mod tests {
             .init_resource::<FlowSteps>()
             .init_resource::<GameView>()
             .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
+            .add_message::<exa_world::level_lifecycle::WorldReset>()
             .add_message::<ForfeitMatch>()
             .add_message::<SettingsEntry>()
             .add_message::<AppExit>()
@@ -7054,6 +7062,7 @@ mod tests {
             .init_resource::<crate::player_controls::PlaySession>()
             .insert_resource(exa_physics::body::BodyTicks(100))
             .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
+            .add_message::<exa_world::level_lifecycle::WorldReset>()
             .add_message::<ForfeitMatch>()
             .add_message::<SettingsEntry>()
             .add_message::<AppExit>()

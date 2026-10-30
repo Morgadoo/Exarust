@@ -1,5 +1,5 @@
-//! Sounds of hits: a weapon impact at the contact point, a wound's pain
-//! sounds (the wound set and the pain voice),
+//! Sounds of hits: a wound's armour layers and a held weapon's ring at the
+//! contact point, a wound's pain sounds (the wound set and the pain voice),
 //! and a body's impact on a limb: the struck bone's hit sound, or the
 //! character's foley when its root is crowded
 //! ([`exa_combat::impact::ImpactSounded`]).
@@ -13,10 +13,9 @@
 use bevy::prelude::*;
 use exa_assets::Game;
 use exa_combat::Fighter;
-use exa_combat::Hit;
 use exa_combat::impact::ImpactSounded;
 use exa_combat::pain::PainSounded;
-use exa_combat::sounds::{foley, part_hit_sound};
+use exa_combat::sounds::{LayerSounded, foley, part_hit_sound};
 use exa_combat::voice::{Answer, CharacterVoice};
 use exa_physics::body::BodyTicks;
 
@@ -32,49 +31,24 @@ pub(crate) const VOICES: SoundSet<'static> = SoundSet::new("vhm", 9);
 #[cfg(test)]
 pub(crate) const GRUNTS: usize = 6;
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn hit_sounds(
+/// Plays a wound's armour layers ([`exa_combat::sounds::LayerSounded`]):
+/// each layer's class set at the blow, at the ring's volume and pitch, on
+/// the plain one-shot flags. The striking weapon's ring on the same wound
+/// comes as a [`exa_combat::impact::WeaponSounded`] ([`weapon_sounds`]).
+pub(crate) fn layer_sounds(
     game: Option<Res<Game>>,
-    mut hits: MessageReader<Hit>,
-    fighters: Query<&Fighter>,
+    mut rings: MessageReader<LayerSounded>,
     mut bank: ResMut<SoundBank>,
     mut sources: ResMut<Assets<AudioSource>>,
     mut env: ResMut<AudioEnvironment>,
-    mut impacts: Local<Option<u32>>,
-    mut weapon_sets: Local<[Option<u32>; 9]>,
-    mut part_sets: Local<[Option<u32>; 7]>,
+    mut sets: Local<bevy::platform::collections::HashMap<&'static str, u32>>,
 ) {
     let Some(game) = game else { return };
-    for hit in hits.read() {
-        // A clash or a block rings the weapon only on its swing's first
-        // contact, as `exa_combat` writes it ([`weapon_sounds`]).
-        if hit.struck != exa_combat::Struck::Limb {
-            continue;
-        }
-        // The weapon's own hit set, by its record's class.
-        let class = usize::from(hit.weapon.hit_sound);
-        let weapon = if let Some(name) = hit.weapon.hit_sound_name() {
-            *weapon_sets
-                .get_mut(class)
-                .unwrap_or(&mut None)
-                .get_or_insert_with(|| bank.load_set(&game, &mut sources, name))
-        } else {
-            *impacts.get_or_insert_with(|| bank.load_set(&game, &mut sources, SWORD_IMPACTS.prefix))
-        };
-        env.play_set(&mut bank, weapon, hit.point, 1.0, 1.0, 0);
-        // The struck part's material: its outer covering layer's class, or
-        // the flesh default. A blow on a held shield or torch rings the
-        // item's own material separately ([`shield_sounds`]).
-        if let Ok(fighter) = fighters.get(hit.target)
-            && let Some(armour) = hit.bone.checked_sub(1).and_then(|i| fighter.armour.get(i))
-            && let Some(sound) = part_hit_sound(armour, false, false)
-            && let Some(set) = hit_set(sound)
-        {
-            let class = usize::from(sound_class(sound));
-            let id = *part_sets[class]
-                .get_or_insert_with(|| bank.load_set(&game, &mut sources, set.prefix));
-            env.play_set(&mut bank, id, hit.point, 1.0, 1.0, 0);
-        }
+    for ring in rings.read() {
+        let id = *sets
+            .entry(ring.set)
+            .or_insert_with(|| bank.load_set(&game, &mut sources, ring.set));
+        env.play_set(&mut bank, id, ring.point, ring.volume, ring.pitch, 0);
     }
 }
 
@@ -236,16 +210,6 @@ pub(crate) fn shield_sounds(
             .entry(name.to_owned())
             .or_insert_with(|| bank.load_set(&game, &mut sources, name));
         env.play_set(&mut bank, id, rung.point, rung.volume, rung.pitch, 0);
-    }
-}
-
-/// The table index a part's material takes.
-fn sound_class(sound: exa_combat::sounds::HitSound) -> u8 {
-    use exa_combat::sounds::HitSound;
-    match sound {
-        HitSound::Flesh | HitSound::Skeleton => 0,
-        HitSound::Golem => 6,
-        HitSound::Class(c) => c.min(6),
     }
 }
 

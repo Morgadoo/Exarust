@@ -1,12 +1,21 @@
-//! The weapon's blood list, as the original keeps it (`TWeaponBlood`):
-//! one spot for each source that has drawn blood on the weapon. A spot
-//! stores the source, how much blood it has left (0 through 1), and the
+//! The weapons' blood list, as the original keeps it (`TWeaponBlood`, one
+//! for the world): one spot for each weapon that has drawn blood. A spot
+//! stores the weapon, how much blood it has left (0 through 1), and the
 //! two terms the stain needs from the weapon's length: the length over 80
 //! and the inverse square root of 80 over the length. The draw
-//! (`exa_render::stain`) uses the amount; this is the original's own list.
-//! The running game keeps each held weapon's spot amount as
-//! [`crate::wounds::BladeBlood`] on the weapon, raised by the same rule
-//! ([`add_blood`]).
+//! (`exa_render::stain`) uses the amount. The running game keeps the list
+//! as a resource: a weapon's first bleeding wound registers it, each wound
+//! raises its spot, and the weapon mirrors its spot's amount and index in
+//! [`crate::wounds::BladeBlood`] ([`crate::wounds::BladeBlood::draw_listed`]).
+//!
+//! - **World reset** ([`clear_at_world_reset`]): the original's world reset
+//!   (a new session, a save load, an arena round's start or end, a scripted
+//!   jump, a quit) drops every spot, and the bodies it then rebuilds hold
+//!   no spot and no blood. Exarust keeps the player's body and possessions
+//!   across it, so it also clears each surviving weapon's blood and spot.
+//!   A door's level change keeps the list, the weapon and its stain.
+//! - **A weapon that leaves the world** ([`release_gone_blades`]) releases
+//!   its spot, as the original's item body does when its node is destroyed.
 //!
 //! - **Adding a source** ([`WeaponBlood::add`]): a source carrying
 //!   `0x400000` adds nothing and returns 0. Otherwise the source takes the
@@ -25,6 +34,11 @@
 //!   by the delta and keeps it within 0 through 1 ([`add_blood`]).
 //!
 //! Rules: `docs/RENDERING.md` (Blood on weapons).
+
+use bevy::prelude::*;
+use exa_world::level_lifecycle::WorldReset;
+
+use crate::wounds::BladeBlood;
 
 /// The stain's span in centimetres (the original's float 80.0).
 pub const SPOT_SPAN: f32 = 80.0;
@@ -55,13 +69,22 @@ pub struct WeaponBloodSpot {
     pub tag: i32,
 }
 
-/// The weapon's blood list.
-#[derive(Debug, Clone, Default, PartialEq)]
+/// The weapons' blood list.
+#[derive(Resource, Debug, Clone, Default, PartialEq)]
 pub struct WeaponBlood {
     pub spots: Vec<WeaponBloodSpot>,
 }
 
 impl WeaponBlood {
+    /// The amount of the spot at the original's 1-based `index`, none for
+    /// an index the list does not hold.
+    pub fn amount(&self, index: usize) -> Option<f32> {
+        index
+            .checked_sub(1)
+            .and_then(|i| self.spots.get(i))
+            .map(|spot| spot.amount)
+    }
+
     /// Drops every spot (the original's count at `0x8` set to 0).
     pub fn clear_count(&mut self) {
         self.spots.clear();
@@ -124,9 +147,99 @@ impl WeaponBlood {
     }
 }
 
+/// The world reset drops every spot and, since Exarust keeps the bodies
+/// the original rebuilds clean, every weapon's blood and spot.
+pub fn clear_at_world_reset(
+    mut resets: MessageReader<WorldReset>,
+    mut list: ResMut<WeaponBlood>,
+    mut blades: Query<(Entity, &mut BladeBlood)>,
+) {
+    if resets.read().count() == 0 {
+        return;
+    }
+    let spots = list.spots.len();
+    list.clear_count();
+    let mut cleared = 0;
+    for (blade, mut blood) in &mut blades {
+        if *blood != BladeBlood::default() {
+            info!(
+                "world reset: weapon {blade:?} drops its blood {:.3} (spot {})",
+                blood.0, blood.1
+            );
+            *blood = BladeBlood::default();
+            cleared += 1;
+        }
+    }
+    info!("world reset: the weapons' blood list drops {spots} spots, {cleared} weapons cleaned");
+}
+
+/// A weapon that leaves the world releases its spot: the list's spot whose
+/// source it is goes free (a body that is not a limb).
+pub fn release_gone_blades(mut gone: RemovedComponents<BladeBlood>, mut list: ResMut<WeaponBlood>) {
+    for blade in gone.read() {
+        let source = blade.to_bits() as usize;
+        if let Some(index) = list.spots.iter().position(|s| s.source == Some(source)) {
+            list.release_part(false, index + 1);
+            debug!(
+                "weapon {blade:?} left the world: blood spot {} released",
+                index + 1
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A weapon's first blood registers it; a second wound raises the same
+    /// spot; another weapon takes the next spot. A world reset drops the
+    /// list and cleans both weapons, and the next blood registers afresh.
+    /// A despawned weapon frees its spot for the next.
+    #[test]
+    fn struck_blades_are_listed_and_cleared_at_a_world_reset() {
+        let mut app = App::new();
+        app.init_resource::<WeaponBlood>()
+            .add_message::<WorldReset>()
+            .add_systems(Update, (clear_at_world_reset, release_gone_blades));
+        let a = app.world_mut().spawn(BladeBlood::default()).id();
+        let b = app.world_mut().spawn(BladeBlood::default()).id();
+        let draw = |app: &mut App, blade: Entity, size: f32| {
+            app.world_mut()
+                .resource_scope(|world, mut list: Mut<WeaponBlood>| {
+                    let mut blood = world.get_mut::<BladeBlood>(blade).unwrap();
+                    blood.draw_listed(&mut list, blade, 80.0, size);
+                });
+        };
+        draw(&mut app, a, 0.4);
+        draw(&mut app, a, 0.4);
+        draw(&mut app, b, 0.2);
+        let blood = |app: &App, e: Entity| *app.world().get::<BladeBlood>(e).unwrap();
+        assert_eq!(blood(&app, a), BladeBlood(0.4, 1));
+        assert_eq!(blood(&app, b), BladeBlood(0.1, 2));
+        let list = app.world().resource::<WeaponBlood>();
+        assert_eq!(list.spots[0].source, Some(a.to_bits() as usize));
+        assert_eq!(list.spots[0].scale, 1.0);
+        assert_eq!(list.amount(2), Some(0.1));
+
+        app.world_mut().write_message(WorldReset);
+        app.update();
+        assert!(app.world().resource::<WeaponBlood>().spots.is_empty());
+        assert_eq!(blood(&app, a), BladeBlood::default());
+        assert_eq!(blood(&app, b), BladeBlood::default());
+        draw(&mut app, b, 0.2);
+        assert_eq!(blood(&app, b), BladeBlood(0.1, 1));
+
+        draw(&mut app, a, 0.2);
+        app.world_mut().despawn(b);
+        app.update();
+        let list = app.world().resource::<WeaponBlood>();
+        assert_eq!(list.spots[0].source, None);
+        assert_eq!(list.spots[1].source, Some(a.to_bits() as usize));
+        let c = app.world_mut().spawn(BladeBlood::default()).id();
+        draw(&mut app, c, 0.2);
+        assert_eq!(blood(&app, c).1, 1);
+    }
 
     #[test]
     fn a_source_takes_a_spot_with_its_stain_terms() {

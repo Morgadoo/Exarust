@@ -87,13 +87,40 @@ pub struct Spray {
 }
 
 /// The blood a held weapon has drawn, from 0 (clean) to 1, on the entity
-/// holding its model (the striker of its hits). Each bleeding wound it
-/// deals adds half the wound's size R at the blow ([`BladeBlood::draw`]);
-/// nothing washes it off. Fists have none, so a punch never bloodies them.
+/// holding its model (the striker of its hits), and its spot in the
+/// weapons' blood list (the second field: 0 until its first blood, then the
+/// list's 1-based index). Each bleeding wound it deals registers it on its
+/// first blood and adds half the wound's size R at the blow to its spot
+/// ([`BladeBlood::draw_listed`]); the first field mirrors the spot's amount
+/// for the stain. Nothing washes it off; a world reset clears the list and
+/// every weapon's blood ([`crate::weapon_blood::clear_at_world_reset`]).
+/// Fists have none, so a punch never bloodies them.
 #[derive(Component, Debug, Clone, Copy, Default, PartialEq)]
-pub struct BladeBlood(pub f32);
+pub struct BladeBlood(pub f32, pub usize);
 
 impl BladeBlood {
+    /// Draws the blood of a bleeding wound of size `size` through the
+    /// weapons' blood list: a weapon without a spot registers `source` with
+    /// its tip `length_cm` first (the spot starts clean), then its spot
+    /// takes R·0.5 more ([`crate::weapon_blood::WeaponBlood::add_amount`]),
+    /// and the weapon mirrors the spot's amount.
+    pub fn draw_listed(
+        &mut self,
+        list: &mut crate::weapon_blood::WeaponBlood,
+        source: Entity,
+        length_cm: f32,
+        size: f32,
+    ) {
+        if self.1 == 0 {
+            // [inf] Exarust has no instanced weapon, so no source is hidden.
+            self.1 = list.add(source.to_bits() as usize, length_cm, 0.0, false);
+        }
+        list.add_amount(self.1, size * BLADE_BLOOD_PER_WOUND);
+        if let Some(amount) = list.amount(self.1) {
+            self.0 = amount;
+        }
+    }
+
     /// Draws the blood of a bleeding wound of size `size`: R·0.5 more, kept
     /// within 0..=1 by the weapon-blood list's own rule
     /// ([`crate::weapon_blood::add_blood`]).

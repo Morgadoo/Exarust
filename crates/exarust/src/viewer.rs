@@ -1799,7 +1799,9 @@ impl LevelCensus<'_, '_> {
 /// at frames after the first load (frames behind the loading screen do not
 /// count). Each level is counted when it is in and again
 /// [`CENSUS_SETTLE_FRAMES`] later, and once more just before it is left, so
-/// a run that comes back to a level shows whether the change leaks.
+/// a run that comes back to a level shows whether the change leaks. A level
+/// written `reset:level` changes behind a world reset.
+#[allow(clippy::too_many_arguments)]
 fn scripted_level_changes(
     options: Res<Options>,
     view: Res<View>,
@@ -1808,6 +1810,7 @@ fn scripted_level_changes(
     mut frames: Local<u32>,
     mut since_load: Local<Option<u32>>,
     mut changes: MessageWriter<exa_world::level_lifecycle::LevelChangeRequest>,
+    mut resets: MessageWriter<exa_world::level_lifecycle::WorldReset>,
 ) {
     let level = match &*view {
         View::Play(name) | View::Level(name) => name.as_str(),
@@ -1829,9 +1832,18 @@ fn scripted_level_changes(
     for (next, at) in &options.level_changes {
         if *frames == *at {
             census.log(level, "left");
-            info!("level change: {level} -> {next} at frame {at}");
+            // `reset:` makes it a world reset's change (a session start, a
+            // save load, an arena round), not a door's.
+            let (reset, next) = match next.strip_prefix("reset:") {
+                Some(next) => (true, next),
+                None => (false, next.as_str()),
+            };
+            info!("level change: {level} -> {next} at frame {at} (world reset {reset})");
+            if reset {
+                resets.write(exa_world::level_lifecycle::WorldReset);
+            }
             changes.write(exa_world::level_lifecycle::LevelChangeRequest::change(
-                next.clone(),
+                next.to_string(),
                 0,
             ));
         }

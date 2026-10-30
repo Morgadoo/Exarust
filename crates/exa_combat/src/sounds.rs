@@ -9,9 +9,14 @@
 //! class factors and volumes, the `FoleyPlH` and `Golem_Foley` loops).
 //! A struck item's blow sound ([`struck_item_sound`]) follows the damage
 //! routine's struck-item voice: its record's class set below the split
-//! along the item, its own sound above, and its sound clock.
+//! along the item, its own sound above, and its sound clock. A clash plays
+//! it on the struck weapon once a swing, with the striking weapon's ring.
+//! A wound rings each armour layer it met from the damage routine's own
+//! layer table ([`LAYER_SETS`], [`LayerSounded`]).
 
+use bevy::ecs::message::Message;
 use bevy::math::Vec3;
+use bevy::prelude::Entity;
 
 use crate::damage::PartArmour;
 
@@ -195,6 +200,41 @@ pub enum StruckSound {
     Set(u8),
     /// The item's own impact sound.
     Own,
+}
+
+impl StruckSound {
+    /// The set this sound names: the class's shared set ([`HAFT_SETS`]),
+    /// or the item's own sound `own`.
+    pub fn set(self, own: Option<&'static str>) -> Option<&'static str> {
+        match self {
+            Self::Set(class) => usize::from(class)
+                .checked_sub(1)
+                .and_then(|i| HAFT_SETS.get(i))
+                .copied(),
+            Self::Own => own,
+        }
+    }
+}
+
+/// The seven sets a wound's armour layers ring, by the layer's hit-sound
+/// class (0 flesh, 1 cloth, 2 leather, 3 mail, 4 plate, 5 the sixth
+/// class, 6 golem), loaded once by the original's character class. The
+/// flesh entry is `FlsCol`, not the part impact's `BdyCol`.
+pub const LAYER_SETS: [&str; 7] = [
+    "FlsCol", "HitClt", "HitLtr", "HitChn", "HitPlt", "HitHbr", "HitGlm",
+];
+
+/// A wound's armour layer rings: its class's set ([`LAYER_SETS`]) at the
+/// blow, at 1.5 · the blow's volume · the layer's loudness and 0.4 · its
+/// pitch + 0.7 ([`crate::damage::hit_sounds`]).
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct LayerSounded {
+    /// The struck body.
+    pub body: Entity,
+    pub point: Vec3,
+    pub set: &'static str,
+    pub volume: f32,
+    pub pitch: f32,
 }
 
 /// When a ringing item's sound may play again: the 32-bit game clock

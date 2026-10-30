@@ -448,10 +448,11 @@ words). Nothing builds that node yet.
   height and the meshes the original stains: the first mesh of the model's
   root node, or every part of an assembled weapon). Once the blood passes
   0.01, `stain_weapons` adds a stain pass (`exa_render::stain`) over each
-  of those meshes and keeps its offset with the blood; the gradient
+  of those meshes and keeps its offset with the blood; once the blood no
+  longer shows (a world reset cleans the weapon) the passes go. The gradient
   `BldGr02D` loads the first time a weapon that can be stained exists.
-  `blood::DebugWeaponBlood` (`--weapon-blood`) gives the player's weapon
-  blood from the start.
+  `blood::DebugWeaponBlood` (`--weapon-blood`) registers the player's weapon
+  in the weapons' blood list and gives its spot blood from the start.
 - Blood sprays (`spray`): each `exa_combat::wounds::Spray` starts a `Jet`
   in the scene's one `BloodSprays` (a resource): fixed to the struck part's
   frame (where the body's last tick left it, else where the frame draws

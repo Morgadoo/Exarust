@@ -90,8 +90,18 @@ impl Plugin for CombatPlugin {
             .add_message::<pain::ClashFelt>()
             .add_message::<BlowNoticed>()
             .add_message::<impact::WeaponSounded>()
+            .add_message::<sounds::LayerSounded>()
             .add_message::<SecondWindFired>()
             .add_message::<block::ShieldRung>()
+            .add_message::<exa_world::level_lifecycle::WorldReset>()
+            .init_resource::<WeaponBlood>()
+            .add_systems(
+                Update,
+                (
+                    weapon_blood::clear_at_world_reset,
+                    weapon_blood::release_gone_blades,
+                ),
+            )
             .add_plugins((
                 stance::StancePlugin,
                 condition::ConditionPlugin,
@@ -310,9 +320,9 @@ pub struct Hit {
 pub enum Struck {
     /// A living limb (kind 1): the blade sweep's contact.
     Limb,
-    /// A held weapon (kind 2); `primary` when it is its holder's primary
-    /// striker (no counter clash then).
-    Weapon { primary: bool },
+    /// A held weapon (kind 2): the item's body; `primary` when it is its
+    /// holder's primary striker (no counter clash then).
+    Weapon { primary: bool, item: Entity },
     /// A held shield or torch (kind 3, a block): the item's body.
     Shield { item: Entity },
 }
@@ -691,10 +701,11 @@ fn react_to_hits(
         MessageWriter<pain::PainSounded>,
         MessageWriter<pain::BlowFelt>,
     ),
-    (mut winds, mut rungs, mut weapon_rings, mut clashes, mut notices, mut bites): (
+    (mut winds, mut rungs, mut weapon_rings, mut layer_rings, mut clashes, mut notices, mut bites): (
         MessageWriter<SecondWindFired>,
         MessageWriter<block::ShieldRung>,
         MessageWriter<impact::WeaponSounded>,
+        MessageWriter<sounds::LayerSounded>,
         MessageWriter<pain::ClashFelt>,
         MessageWriter<BlowNoticed>,
         MessageWriter<bite::BiteTaken>,
@@ -714,7 +725,11 @@ fn react_to_hits(
     )>,
     mut attacks: Query<&mut Attacking>,
     (slots, strikers): (Query<&Blade>, Query<&GlobalTransform>),
-    (mut blades, mut scores): (Query<&mut BladeBlood>, Query<&mut CombatScore>),
+    (mut blades, mut scores, mut blood_list): (
+        Query<&mut BladeBlood>,
+        Query<&mut CombatScore>,
+        Option<ResMut<WeaponBlood>>,
+    ),
     (mut holds, mut items): (
         Query<&mut block::ShieldHold>,
         Query<&mut Ragdoll, Without<Fighter>>,
@@ -845,7 +860,7 @@ fn react_to_hits(
                     // lock or sag; a spent parry changes nothing. A counter
                     // is refused when the struck weapon is the victim's
                     // primary (a parrying victim's limb is no weapon).
-                    let primary = matches!(hit.struck, Struck::Weapon { primary: true });
+                    let primary = matches!(hit.struck, Struck::Weapon { primary: true, .. });
                     let branch = parry::clash_branch(f.parry, motion, primary);
                     match branch {
                         parry::Clash::Parrying => {
@@ -948,6 +963,56 @@ fn react_to_hits(
                     );
                     break 'struck Some(StrikerReaction::Blocked(outcome));
                 }
+            }
+            // A blow on flesh (a turned one too) rings the striking weapon
+            // on every contact: its haft's class set when the haft took
+            // it, else its own sound, at the blow's share, the striker's
+            // scale and the armour's muffling; it stamps the weapon's
+            // sound clock, and each armour layer loud enough rings its
+            // class's set.
+            let wound_sounds = damage::hit_sounds(&outcome, &hit.weapon, striker_scale);
+            let ring = match wound_sounds.haft {
+                Some(class) => (class as usize)
+                    .checked_sub(1)
+                    .and_then(|i| sounds::HAFT_SETS.get(i))
+                    .copied(),
+                None => hit.weapon.hit_sound_name(),
+            };
+            if let Some(set) = ring {
+                let (volume, pitch) = wound_sounds.weapon;
+                debug!(
+                    "{:?}'s weapon rings on the wound: {set} at {volume:.3}, pitch {pitch:.3}",
+                    hit.attacker
+                );
+                weapon_rings.write(impact::WeaponSounded {
+                    target: hit.striker,
+                    point: hit.point,
+                    volume,
+                    pitch,
+                    set: Some(set.to_owned()),
+                    kind: None,
+                });
+            }
+            if let Ok(mut weapon) = items.get_mut(hit.striker)
+                && let Some(part) = weapon.parts.first_mut()
+            {
+                part.sound_ready_ms = sounds::ring_clock(now as u32, outcome.volume);
+            }
+            for (class, volume, pitch) in wound_sounds.layers.into_iter().flatten() {
+                let Some(&set) = sounds::LAYER_SETS.get(usize::from(class)) else {
+                    continue;
+                };
+                debug!(
+                    "{:?}'s layer of class {class} rings: {set} at {volume:.3}, pitch {pitch:.3}",
+                    hit.target
+                );
+                layer_rings.write(sounds::LayerSounded {
+                    body: hit.target,
+                    point: hit.point,
+                    set,
+                    volume,
+                    pitch,
+                });
             }
             // A blow on flesh stamps the struck part: the game clock plus
             // 300 ms, less a draw below 150. A turned blow still stamps.
@@ -1078,10 +1143,20 @@ fn react_to_hits(
                     }
                 }
                 if let Ok(mut blood) = blades.get_mut(hit.striker) {
-                    blood.draw(outcome.wound);
+                    // The weapon registers in the weapons' blood list on its
+                    // first blood, by its tip's length, then its spot draws.
+                    match blood_list.as_deref_mut() {
+                        Some(list) => {
+                            let length_cm = slots
+                                .get(hit.striker)
+                                .map_or(hit.weapon.length, |b| b.length * CM_PER_M);
+                            blood.draw_listed(list, hit.striker, length_cm, outcome.wound);
+                        }
+                        None => blood.draw(outcome.wound),
+                    }
                     info!(
-                        "blade {:?} draws blood from wound R {:.3}: {:.3}",
-                        hit.striker, outcome.wound, blood.0
+                        "blade {:?} draws blood from wound R {:.3}: {:.3} (spot {})",
+                        hit.striker, outcome.wound, blood.0, blood.1
                     );
                 }
             }
@@ -1279,6 +1354,57 @@ fn react_to_hits(
                 {
                     part.sound_ready_ms = sounds::ring_clock(now as u32, blow.volume);
                 }
+                // A clash then rings the struck weapon's own material: its
+                // record's class set when the blow lands below its split
+                // along it, else its own sound, at the blow's volume (no
+                // share) and 1.2 of its pitch, and stamps its sound clock
+                // whether or not it rang.
+                // [inf] The item's frame is its blade entity's, the grip at
+                // its origin and the item along its +Y, in centimetres as
+                // the record's length.
+                if clash
+                    && let Struck::Weapon { item, .. } = hit.struck
+                    && let (Ok(blade), Ok(at)) = (slots.get(item), strikers.get(item))
+                {
+                    let own = blade.record.hit_sound_name();
+                    let struck = sounds::StruckItem {
+                        record_word: blade.record.flags,
+                        split: blade.record.start,
+                        length: blade.record.length,
+                        origin: at.translation() * CM_PER_M,
+                        axis: Vec3::from(at.affine().matrix3.y_axis).normalize_or_zero(),
+                        own_sound: own.is_some(),
+                    };
+                    let (ready, sound) = sounds::struck_item_sound(
+                        &struck,
+                        hit.point * CM_PER_M,
+                        blow.volume,
+                        blow.pitch,
+                        now as u32,
+                    );
+                    if let Ok(mut body) = items.get_mut(item)
+                        && let Some(part) = body.parts.first_mut()
+                    {
+                        part.sound_ready_ms = ready;
+                    }
+                    if let Some((which, volume, pitch)) = sound
+                        && let Some(set) = which.set(own)
+                    {
+                        info!(
+                            "{:?}'s struck weapon {item:?} rings on the clash: {set} \
+                             ({which:?}) at {volume:.3}, pitch {pitch:.3}",
+                            hit.target
+                        );
+                        weapon_rings.write(impact::WeaponSounded {
+                            target: item,
+                            point: hit.point,
+                            volume,
+                            pitch,
+                            set: Some(set.to_owned()),
+                            kind: None,
+                        });
+                    }
+                }
                 if clash {
                     clashes.write(pain::ClashFelt {
                         target: hit.target,
@@ -1437,6 +1563,7 @@ mod tests {
             .add_message::<pain::ClashFelt>()
             .add_message::<BlowNoticed>()
             .add_message::<impact::WeaponSounded>()
+            .add_message::<sounds::LayerSounded>()
             .add_message::<SecondWindFired>()
             .add_message::<crate::block::ShieldRung>()
             .add_message::<bite::BiteTaken>()
@@ -1795,7 +1922,10 @@ mod tests {
             app.world_mut().write_message(Hit {
                 attacker,
                 striker: blade,
-                struck: Struck::Weapon { primary },
+                struck: Struck::Weapon {
+                    primary,
+                    item: Entity::PLACEHOLDER,
+                },
                 target: id,
                 bone: block::MAIN_HAND_BONE,
                 point: Vec3::ZERO,
@@ -1820,6 +1950,101 @@ mod tests {
             let clashes = app.world().resource::<Messages<pain::ClashFelt>>();
             assert_eq!(clashes.iter_current_update_messages().count(), 1);
         }
+    }
+
+    /// A clash also rings the struck weapon: below its record's split
+    /// along it, its class's shared set (a metal haft's `WH_HaftMA`); above
+    /// it, its own sound; both at the blow's volume and 1.2 of its pitch,
+    /// the same as the striking sword's own ring at a full share. Only the
+    /// swing's first clash rings either.
+    #[test]
+    fn a_clash_rings_the_struck_weapon_by_its_split() {
+        let mut record = damage::sword_a();
+        record.flags |= 0x2_0000;
+        let split_cm = record.start * record.length;
+        for (along_cm, set) in [
+            (0.5 * split_cm, "WH_HaftMA"),
+            (0.5 * (split_cm + record.length), "WH_SwordA"),
+        ] {
+            let mut app = reactions();
+            let (attacker, blade) = swordsman(&mut app);
+            let id = app
+                .world_mut()
+                .spawn((Fighter::default(), Animator::new("Default", "Idle")))
+                .id();
+            // The struck sword lies along +X from its grip at (1, 0, 0):
+            // a quarter turn about -Z takes its +Y to +X.
+            let item = app
+                .world_mut()
+                .spawn((
+                    Blade::new(id, 0.9, record),
+                    GlobalTransform::from(
+                        Transform::from_xyz(1.0, 0.0, 0.0)
+                            .with_rotation(Quat::from_rotation_z(-std::f32::consts::FRAC_PI_2)),
+                    ),
+                ))
+                .id();
+            for _ in 0..2 {
+                app.world_mut().write_message(Hit {
+                    attacker,
+                    striker: blade,
+                    struck: Struck::Weapon {
+                        primary: true,
+                        item,
+                    },
+                    target: id,
+                    bone: block::MAIN_HAND_BONE,
+                    point: Vec3::new(1.0 + along_cm / 100.0, 0.0, 0.0),
+                    velocity: Vec3::new(3.0, 0.0, 0.0),
+                    weapon: damage::sword_a(),
+                    strike: cut(),
+                });
+            }
+            app.update();
+            let rings = app.world().resource::<Messages<impact::WeaponSounded>>();
+            let rung: Vec<_> = rings.iter_current_update_messages().collect();
+            assert_eq!(rung.len(), 2, "{set}");
+            assert_eq!(rung[0].target, blade);
+            assert_eq!(rung[1].target, item);
+            assert_eq!(rung[1].set.as_deref(), Some(set));
+            assert_eq!(rung[1].volume, rung[0].volume);
+            assert_eq!(rung[1].pitch, rung[0].pitch);
+        }
+    }
+
+    /// A wound rings the striking weapon on every contact, at the blow's
+    /// volume, share, the striker's scale and the armour's muffling, and the
+    /// bare flesh layer's `FlsCol` at 1.5 · the volume · its half loudness.
+    #[test]
+    fn a_wound_rings_the_weapon_and_the_flesh() {
+        let mut app = reactions();
+        let (attacker, blade) = swordsman(&mut app);
+        let victim = app
+            .world_mut()
+            .spawn((Fighter::default(), Animator::new("Default", "Idle")))
+            .id();
+        swung(&mut app, attacker, blade, victim, cut());
+        let expected = damage::hit_sounds(&outcome(9), &damage::sword_a(), 1.0);
+        let rings = app.world().resource::<Messages<impact::WeaponSounded>>();
+        let rung: Vec<_> = rings.iter_current_update_messages().collect();
+        assert_eq!(rung.len(), 1);
+        assert_eq!(rung[0].set.as_deref(), Some("WH_SwordA"));
+        assert_eq!((rung[0].volume, rung[0].pitch), expected.weapon);
+        let layers = app.world().resource::<Messages<sounds::LayerSounded>>();
+        let layers: Vec<_> = layers.iter_current_update_messages().copied().collect();
+        let (class, volume, pitch) = expected.layers[1].unwrap();
+        assert_eq!(class, 0);
+        assert_eq!(expected.layers[0], None);
+        assert_eq!(
+            layers,
+            vec![sounds::LayerSounded {
+                body: victim,
+                point: Vec3::ZERO,
+                set: "FlsCol",
+                volume,
+                pitch,
+            }]
+        );
     }
 
     fn blow_notices(app: &App) -> Vec<BlowNoticed> {
@@ -1853,7 +2078,13 @@ mod tests {
         );
         assert_eq!(app.world().get::<CombatScore>(attacker).unwrap().0, 3);
         for (struck, kind) in [
-            (Struck::Weapon { primary: true }, BlowKind::Clash),
+            (
+                Struck::Weapon {
+                    primary: true,
+                    item: Entity::PLACEHOLDER,
+                },
+                BlowKind::Clash,
+            ),
             (
                 Struck::Shield {
                     item: Entity::PLACEHOLDER,
@@ -2937,6 +3168,7 @@ mod tests {
             .add_message::<pain::ClashFelt>()
             .add_message::<BlowNoticed>()
             .add_message::<impact::WeaponSounded>()
+            .add_message::<sounds::LayerSounded>()
             .add_message::<SecondWindFired>()
             .add_message::<crate::block::ShieldRung>()
             .add_message::<bite::BiteTaken>()
