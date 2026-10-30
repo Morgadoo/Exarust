@@ -21,9 +21,17 @@
 //! only reads and names. The unit's second reader, which builds a template
 //! together with its object chunks, is not reproduced. Evidence: the
 //! prelude unit's routines (SG_Prelude_Main) in the assembly.
+//!
+//! A template's item references with the local bit name the items of the
+//! database that follows its record in the entry (its own items), the
+//! others the game's: [`template_item`]. The character builder routes them
+//! so (the local bit to the character's own database, the world bit to the
+//! world's, the rest to the game's), so the practice opponent wears its own
+//! trousers, shirt and sandals rather than the game items of those numbers.
 
 use exa_assets::{Archive, Game, PackKind};
-use exa_formats::characters::CharacterRecord;
+use exa_formats::characters::{CharacterRecord, ID_MASK, LOCAL_ITEM};
+use exa_formats::objdb::Item;
 
 use bevy::prelude::{Res, ResMut};
 
@@ -149,10 +157,19 @@ pub fn sync_tips_setting(config: Option<Res<HardwareConfig>>, mut tips: ResMut<T
     tips.show_game_tips = config.live.show_tips;
 }
 
-/// Every named actor template in an archive.
+/// Every named actor template in an archive, with the items its own
+/// database holds.
 #[derive(Debug, Clone, Default)]
 pub struct ActorTemplates {
-    entries: Vec<(String, CharacterRecord)>,
+    entries: Vec<(String, CharacterRecord, Vec<Item>)>,
+}
+
+/// The item a template's reference names: one with [`LOCAL_ITEM`] among
+/// the template's own items (`own`), any other among the game's
+/// (`global`), each by the id without its database bits.
+pub fn template_item<'a>(own: &'a [Item], global: &'a [Item], id: u32) -> Option<&'a Item> {
+    let items = if id & LOCAL_ITEM != 0 { own } else { global };
+    items.iter().find(|item| item.id == id & ID_MASK)
 }
 
 impl ActorTemplates {
@@ -172,8 +189,11 @@ impl ActorTemplates {
             .entries()
             .iter()
             .filter_map(|entry| {
-                let record = CharacterRecord::parse(0, archive.bytes(entry)).ok()?;
-                Some((entry.name.clone(), record))
+                let bytes = archive.bytes(entry);
+                let record = CharacterRecord::parse(0, bytes).ok()?;
+                // The database after the record: what its local ids name.
+                let items = exa_formats::characters::actor_items(bytes).unwrap_or_default();
+                Some((entry.name.clone(), record, items))
             })
             .collect();
         Self { entries }
@@ -187,6 +207,18 @@ impl ActorTemplates {
     /// Builds a library from records, for callers that already hold them.
     pub fn from_records(entries: impl IntoIterator<Item = (String, CharacterRecord)>) -> Self {
         Self {
+            entries: entries
+                .into_iter()
+                .map(|(name, record)| (name, record, Vec::new()))
+                .collect(),
+        }
+    }
+
+    /// Builds a library from records with their own items.
+    pub fn from_records_with_items(
+        entries: impl IntoIterator<Item = (String, CharacterRecord, Vec<Item>)>,
+    ) -> Self {
+        Self {
             entries: entries.into_iter().collect(),
         }
     }
@@ -195,8 +227,17 @@ impl ActorTemplates {
     pub fn get(&self, name: &str) -> Option<&CharacterRecord> {
         self.entries
             .iter()
-            .find(|(entry, _)| entry == name)
-            .map(|(_, record)| record)
+            .find(|(entry, _, _)| entry == name)
+            .map(|(_, record, _)| record)
+    }
+
+    /// The items of the template named `name`'s own database (empty when
+    /// it has none or there is no such template).
+    pub fn own_items(&self, name: &str) -> &[Item] {
+        self.entries
+            .iter()
+            .find(|(entry, _, _)| entry == name)
+            .map_or(&[], |(_, _, items)| items.as_slice())
     }
 
     /// How many templates were read.
@@ -245,6 +286,15 @@ impl ActorCache {
     /// library is read once.
     pub fn template(&mut self, game: &Game, name: &str, cached: bool) -> Option<CharacterRecord> {
         self.template_with(name, cached, || ActorTemplates::load(game))
+    }
+
+    /// The own items of the template entry `name` ([`ActorTemplates::own_items`]),
+    /// reading the library once.
+    pub fn own_items(&mut self, game: &Game, name: &str) -> Vec<Item> {
+        self.library
+            .get_or_insert_with(|| ActorTemplates::load(game))
+            .own_items(name)
+            .to_vec()
     }
 
     /// [`ActorCache::template`] with the library read by `load` when the
@@ -473,5 +523,96 @@ mod tests {
         let again = cache.template(&game, "opponent01", true).unwrap();
         assert_eq!(first, again);
         assert!(cache.template(&game, "missing", true).is_none());
+    }
+
+    fn named_item(id: u32, worn: &str) -> Item {
+        use exa_formats::objdb;
+        Item {
+            id,
+            name: worn.into(),
+            parent: 0,
+            model: String::new(),
+            model_flags: 0,
+            worn_model: worn.into(),
+            appearance: None,
+            slot_layers: [0; objdb::SLOTS],
+            slot_words: [0; objdb::SLOTS],
+            occupancy: [0; objdb::OCCUPANCY_BONES],
+            weapon: None,
+            armour: None,
+            shield: None,
+            door: None,
+            operative: None,
+            burden: None,
+            equip_lock: 0,
+            torch: false,
+            volume: None,
+            rank_word: 0,
+            body_rank: 0,
+            loadout_rank: 0,
+            armour_weight: 0.0,
+            armour_type: 0,
+            container: None,
+            random_table: None,
+            has_body: false,
+            has_weapon: false,
+            has_shield: false,
+        }
+    }
+
+    #[test]
+    fn a_local_reference_names_the_template_s_own_item() {
+        let own = [named_item(2, "Trouser_A"), named_item(3, "Shirty_A")];
+        let global = [named_item(2, "Gloves"), named_item(3, "Helm")];
+        let worn = |id| template_item(&own, &global, id).map(|i| i.worn_model.as_str());
+        assert_eq!(worn(LOCAL_ITEM | 2), Some("Trouser_A"));
+        assert_eq!(worn(LOCAL_ITEM | 3), Some("Shirty_A"));
+        assert_eq!(worn(2), Some("Gloves"), "a plain id is the game's item");
+        assert_eq!(worn(LOCAL_ITEM | 4), None, "no fallback to the game's");
+        let library = ActorTemplates::from_records_with_items([(
+            "opponent01".to_string(),
+            CharacterRecord::reset(),
+            own.to_vec(),
+        )]);
+        assert_eq!(library.own_items("opponent01").len(), 2);
+        assert!(library.own_items("missing").is_empty());
+    }
+
+    /// The first practice opponent wears its own trousers (which cover the
+    /// groin, so it takes no underwear), long-sleeved shirt and sandals:
+    /// local items 2, 3 and 4 of its entry, not the game's items 2 to 4
+    /// (gloves, a helm and boots).
+    #[test]
+    fn the_first_practice_opponent_wears_its_own_trousers() {
+        let Some(dir) = exa_rpk::locate_install(None) else {
+            return;
+        };
+        let Ok(data) = exa_rpk::GameData::open(&dir) else {
+            return;
+        };
+        let game = Game(std::sync::Arc::new(data));
+        let global = game
+            .0
+            .pack(PackKind::Resource)
+            .and_then(|p| p.get("objdb.rdb"))
+            .and_then(|b| exa_formats::rdb::Database::parse(b).ok())
+            .map(|db| exa_formats::objdb::items(&db))
+            .unwrap_or_default();
+        let mut cache = ActorCache::new();
+        let record = cache.template(&game, "opponent01", false).unwrap();
+        let own = cache.own_items(&game, "opponent01");
+        let ids: Vec<u32> = record.worn.iter().map(|w| w.id).collect();
+        assert_eq!(ids, [LOCAL_ITEM | 2, LOCAL_ITEM | 3, LOCAL_ITEM | 4]);
+        let worn: Vec<&str> = ids
+            .iter()
+            .filter_map(|&id| template_item(&own, &global, id))
+            .map(|item| item.worn_model.as_str())
+            .collect();
+        assert_eq!(worn, ["Trouser_A", "Shirty_A", "Sandals_B"]);
+        assert!(
+            ids.iter()
+                .filter_map(|&id| template_item(&own, &global, id))
+                .any(|item| item.covers_groin())
+        );
     }
 }

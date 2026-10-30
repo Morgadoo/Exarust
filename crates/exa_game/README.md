@@ -16,11 +16,14 @@ rotating tip under the `ShowGameTips` setting and, as the original does,
 shows the draw-th tip rather than the draw-th least-shown one; index `n`
 shows hint `n − 1`), the `actors.rpk` template reader with and without its
 cache (records matched by their own sixteen-byte name, letter case
-ignored; a nameless template takes the asked-for name), and the practice
+ignored; a nameless template takes the asked-for name; each template keeps
+its own item database, which its local-bit references name:
+`template_item`), and the practice
 opponent's plan (traits t0..t2 set to −100, 100 and 100, team `0x10`, a
 3000 ms reaction delay; the original's fixed spot is recorded but not
 used). The binary's `--opponent` builds its fighter from `opponent01`
-when the actors are installed and gives it that team and delay.
+when the actors are installed, dressed and armed with its own items, and
+gives it that team and delay.
 
 The power tree (`thaum::tree`) is the whole screen's rules: the domain's
 tree file and its marks, the technique a new power asks for, the click that

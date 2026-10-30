@@ -2370,6 +2370,14 @@ Deflection, Security). The sixteen opponents and the proctor store empty
 pools (0, either version); ArenaShpKp, the demon, the villager and Derrin
 store full yellow and red.
 
+A record's item references with the local bit (`0x80000000`) name items of
+the actor's own database, the others the game's: the character builder
+looks a local id up in the character's own database, a world id
+(`0x40000000`) in the world's and any other in the game's (REA on the
+builder's item lookup). opponent01 wears its own items 2, 3 and 4
+(`Trouser_A`, `Shirty_A`, `Sandals_B`); read against the game's database,
+the same numbers are gloves, a plate helm and boots.
+
 ## Roles (`charroles.rdb`)
 
 Status: **verified** (`exa_formats::roles`). All 49 records of the shipped
