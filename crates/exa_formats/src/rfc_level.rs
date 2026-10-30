@@ -12,12 +12,12 @@
 //! scene builder over a [`crate::rfc::Scene`] follows it.
 
 use crate::chunk::{Chunks, list_children, rfc_chunks};
-use crate::level::LevelGrid;
+use crate::level::{LevelGrid, PropAttachment};
 use crate::rfc::{Mesh as ReadMesh, Node as ReadNode, NodeBody, Scene as ReadScene};
 use crate::rfc_write::{
-    ATTACH_CLOTH, ATTACH_EMITTER, Attachment, AttachmentData, ExportBody, ExportGrid, ExportLight,
-    ExportLink, ExportMesh, ExportSound, ExportTrack, ExportVoxelLight, GiPoints, IndexMap,
-    LightAnimation, MeshPart, NodeData, SceneNode, VertexStream,
+    ATTACH_BODY, ATTACH_CLOTH, ATTACH_EMITTER, Attachment, AttachmentData, ExportBody, ExportGrid,
+    ExportLight, ExportLink, ExportMesh, ExportSound, ExportTrack, ExportVoxelLight, GiPoints,
+    IDENTITY, IndexMap, LightAnimation, MeshPart, NodeData, SceneNode, VertexStream,
 };
 use crate::rigid_body::RigidBody;
 use crate::{Error, Result};
@@ -531,6 +531,126 @@ pub fn export_grid(grid: &LevelGrid) -> ExportGrid {
     }
 }
 
+/// The scene nodes of a level's props: each prop becomes a prop node, and its
+/// placement's part records become owned child nodes, a body record a body
+/// part and a particle record a cloth part, nested as the records nest.
+///
+/// `first` is the scene index the first prop node takes; props are written in
+/// list order after the scene nodes, as the exporter numbers and writes them,
+/// so a prop's parent record (a 1-based prop index) becomes `first + p - 1`.
+pub fn export_props(level: &ReadScene, first: usize) -> Result<Vec<SceneNode>> {
+    let mut out: Vec<SceneNode> = Vec::new();
+    for (i, prop) in level.props.iter().enumerate() {
+        let parent = match prop.parent {
+            Some(0) | None => None,
+            Some(p) if p <= level.props.len() => Some(first + p - 1),
+            Some(p) => {
+                return Err(Error::Malformed(format!(
+                    "prop {i} parent {p} out of the level"
+                )));
+            }
+        };
+        let index = first + i;
+        let transform = matrix_cm(&prop.transform);
+        out.push(SceneNode {
+            name: stored_name(&prop.object).unwrap_or([0; 16]),
+            flags: crate::rfc_write::flags::PROP
+                | crate::rfc_write::flags::SAVED
+                | (prop.flags & crate::rfc_write::flags::PLACEMENT_MASK),
+            parent,
+            local: transform,
+            world: transform,
+            tail: prop.extra,
+            ..Default::default()
+        });
+        for attachment in &prop.attachments {
+            match attachment {
+                // The exporter writes no placement-tree record; its entries
+                // become the part records they describe (a guess: the tree's
+                // entries and a part record carry the same name, word and
+                // transform).
+                PropAttachment::Tree { entries } => {
+                    for entry in entries {
+                        push_part(&mut out, first, entry, index)?;
+                    }
+                }
+                other => push_part(&mut out, first, other, index)?,
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Appends one placement record as an owned child node. A transform record is
+/// a body part (the part record carries only its word and matrix, so its data
+/// is empty); a particle record is a cloth part. `parent` is the scene index
+/// of the node the record belongs to.
+fn push_part(
+    out: &mut Vec<SceneNode>,
+    first: usize,
+    record: &PropAttachment,
+    parent: usize,
+) -> Result<()> {
+    let index = first + out.len();
+    let (name, word, class, data, transform, children) = match record {
+        PropAttachment::Transform {
+            name,
+            word,
+            transform,
+            children,
+        } => (
+            stored_name(name).unwrap_or([0; 16]),
+            *word,
+            ATTACH_BODY,
+            AttachmentData::None,
+            matrix_cm(transform),
+            Some(children),
+        ),
+        PropAttachment::MeshPositions {
+            name,
+            word,
+            positions,
+        } => (
+            stored_name(name).unwrap_or([0; 16]),
+            *word,
+            ATTACH_CLOTH,
+            AttachmentData::Cloth {
+                marker: 0,
+                particles: positions
+                    .iter()
+                    .map(|p| [p[0] * 100.0, p[1] * 100.0, p[2] * 100.0, 0.0])
+                    .collect(),
+            },
+            IDENTITY,
+            None,
+        ),
+        PropAttachment::Tree { .. } => {
+            return Err(Error::Malformed(
+                "a placement tree cannot stand as a part record".into(),
+            ));
+        }
+    };
+    out.push(SceneNode {
+        name,
+        flags: crate::rfc_write::flags::OWNED | crate::rfc_write::flags::SAVED,
+        parent: Some(parent),
+        local: transform,
+        world: transform,
+        attachment: Some(Attachment {
+            class,
+            id: word,
+            data,
+        }),
+        ..Default::default()
+    });
+    if let Some(children) = children {
+        for child in children {
+            push_part(out, first, child, index)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1019,6 +1139,157 @@ mod tests {
         assert_eq!(g.plane_c, (32..48).collect::<Vec<_>>());
     }
 
+    #[test]
+    fn props_convert_with_their_part_records() {
+        // A prop whose placement carries a body part with a nested body part
+        // and a cloth part, and a child prop.
+        let parent = SceneNode {
+            name: name16("Table"),
+            flags: crate::rfc_write::flags::PROP | crate::rfc_write::flags::SAVED,
+            local: at([500.0, 0.0, 250.0]),
+            world: at([500.0, 0.0, 250.0]),
+            tail: 0x22,
+            ..Default::default()
+        };
+        let mut part = SceneNode {
+            name: name16("Top"),
+            flags: crate::rfc_write::flags::OWNED | crate::rfc_write::flags::SAVED,
+            parent: Some(1),
+            local: at([0.0, 70.0, 0.0]),
+            world: at([0.0, 70.0, 0.0]),
+            attachment: Some(Attachment {
+                class: ATTACH_BODY,
+                id: 9,
+                data: AttachmentData::None,
+            }),
+            ..Default::default()
+        };
+        part.tail = 0;
+        let nested = SceneNode {
+            name: name16("Leg"),
+            flags: crate::rfc_write::flags::OWNED | crate::rfc_write::flags::SAVED,
+            parent: Some(2),
+            local: at([10.0, 0.0, 0.0]),
+            world: at([10.0, 0.0, 0.0]),
+            attachment: Some(Attachment {
+                class: ATTACH_BODY,
+                id: 11,
+                data: AttachmentData::None,
+            }),
+            ..Default::default()
+        };
+        let cloth = SceneNode {
+            name: name16("Cloth"),
+            flags: crate::rfc_write::flags::OWNED | crate::rfc_write::flags::SAVED,
+            parent: Some(1),
+            attachment: Some(Attachment {
+                class: ATTACH_CLOTH,
+                id: 12,
+                data: AttachmentData::Cloth {
+                    marker: 0,
+                    particles: vec![[1.0, 2.0, 3.0, 0.0], [4.0, 5.0, 6.0, 0.0]],
+                },
+            }),
+            ..Default::default()
+        };
+        let child_prop = SceneNode {
+            name: name16("Chair"),
+            flags: crate::rfc_write::flags::PROP | crate::rfc_write::flags::SAVED,
+            // The table is scene index 1 (the room is 0), so the child prop
+            // hangs under it.
+            parent: Some(1),
+            local: at([100.0, 0.0, 0.0]),
+            world: at([100.0, 0.0, 0.0]),
+            ..Default::default()
+        };
+        let scene = crate::rfc_write::ExportScene {
+            nodes: vec![plain_level(), parent, part, nested, cloth, child_prop],
+            ..Default::default()
+        };
+        let parsed = crate::rfc::Scene::parse(&write(&scene)).unwrap();
+        assert!(parsed.level_errors.is_empty(), "{:?}", parsed.level_errors);
+        assert_eq!(parsed.props.len(), 2);
+
+        // One scene node precedes the props, so the first prop is node 1.
+        let nodes = export_props(&parsed, 1).unwrap();
+        assert_eq!(nodes.len(), 5);
+        assert_eq!(nodes[0].name, name16("Table"));
+        assert_eq!(nodes[0].parent, None);
+        assert_eq!(nodes[0].local[3], [500.0, 0.0, 250.0]);
+        assert_eq!(nodes[0].tail, 0x22);
+        assert_eq!(
+            nodes[0].flags & crate::rfc_write::flags::PROP,
+            crate::rfc_write::flags::PROP
+        );
+        // The body part, its nested body part, then the cloth part.
+        let Some(Attachment {
+            class: ATTACH_BODY,
+            id: 9,
+            ..
+        }) = &nodes[1].attachment
+        else {
+            panic!("no body part")
+        };
+        assert_eq!(nodes[1].parent, Some(1));
+        assert_eq!(nodes[1].name, name16("Top"));
+        assert_eq!(nodes[1].local[3], [0.0, 70.0, 0.0]);
+        let Some(Attachment {
+            class: ATTACH_BODY,
+            id: 11,
+            ..
+        }) = &nodes[2].attachment
+        else {
+            panic!("no nested body part")
+        };
+        assert_eq!(nodes[2].parent, Some(2));
+        let Some(Attachment {
+            class: ATTACH_CLOTH,
+            data: AttachmentData::Cloth { particles, .. },
+            ..
+        }) = &nodes[3].attachment
+        else {
+            panic!("no cloth part")
+        };
+        assert_eq!(nodes[3].parent, Some(1));
+        assert_eq!(particles.len(), 2);
+        for (a, b) in particles[1].iter().zip([4.0, 5.0, 6.0, 0.0]) {
+            assert!((a - b).abs() < 1e-3);
+        }
+        // The second prop parents to the first.
+        assert_eq!(nodes[4].parent, Some(1));
+        assert_eq!(nodes[4].name, name16("Chair"));
+
+        // Writing those nodes again keeps the prop and part records.
+        // The converted props were laid out after the level's one node, so
+        // the second write keeps that room first.
+        let mut replanted = vec![plain_level()];
+        replanted.extend(nodes.clone());
+        let again = crate::rfc::Scene::parse(&write(&crate::rfc_write::ExportScene {
+            nodes: replanted,
+            ..Default::default()
+        }))
+        .unwrap();
+        assert_eq!(again.props.len(), 2);
+        assert_eq!(again.props[0].object, "Table");
+        assert_eq!(again.props[0].extra, 0x22);
+        assert_eq!(again.props[0].attachments.len(), 2);
+        assert_eq!(again.props[0].attachments[1].name(), "Cloth");
+
+        // A prop parent past the list is an error.
+        let mut bad = crate::rfc::Scene::parse(&write(&scene)).unwrap();
+        bad.props[1].parent = Some(9);
+        assert!(export_props(&bad, 1).is_err());
+    }
+
+    /// A plain node so the props are numbered after a scene node.
+    fn plain_level() -> SceneNode {
+        SceneNode {
+            name: name16("Room"),
+            flags: class::PLAIN | flags::SAVED,
+            ..Default::default()
+        }
+    }
+
     /// Every node of the installed level converts and writes back: the same
     /// count, names, parents and placements (to a millimetre).
     #[test]
@@ -1046,6 +1317,40 @@ mod tests {
                 assert!((a.transform[3][k] - b.transform[3][k]).abs() < 1e-3);
             }
             assert!((a.bounds_radius - b.bounds_radius).abs() < 1e-3);
+        }
+    }
+
+    /// Every prop of the installed level converts and writes back: the same
+    /// count and objects, and each prop's part records survive the second
+    /// write.
+    #[test]
+    fn a_shipped_level_converts_its_props() {
+        let Some(dir) = exa_rpk::locate_install(None) else {
+            return;
+        };
+        let game = exa_rpk::GameData::open(&dir).unwrap();
+        let resource = game.pack(exa_rpk::PackKind::Resource).unwrap();
+        let scene = crate::rfc::Scene::parse(resource.get("exanima01.rfc").unwrap()).unwrap();
+        let props = export_props(&scene, scene.nodes.len()).unwrap();
+        let mut nodes: Vec<_> = (0..scene.nodes.len())
+            .map(|i| export_node(&scene, i).unwrap())
+            .collect();
+        nodes.extend(props);
+        let again = crate::rfc::Scene::parse(&write(&crate::rfc_write::ExportScene {
+            nodes,
+            ..Default::default()
+        }))
+        .unwrap();
+        assert!(again.level_errors.is_empty(), "{:?}", again.level_errors);
+        assert_eq!(again.props.len(), scene.props.len());
+        for (a, b) in scene.props.iter().zip(&again.props) {
+            assert_eq!(a.object, b.object);
+            assert_eq!(a.flags & 0xB8_0000, b.flags & 0xB8_0000);
+            assert_eq!(a.extra, b.extra);
+            for k in 0..3 {
+                assert!((a.transform[3][k] - b.transform[3][k]).abs() < 1e-3);
+            }
+            assert_eq!(a.attachments.len(), b.attachments.len());
         }
     }
 
