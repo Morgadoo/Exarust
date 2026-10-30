@@ -166,6 +166,67 @@ pub fn layout(format: u32, vertices: usize) -> VertexLayout {
     }
 }
 
+/// An interleaved vertex stream: one vertex's attributes back to back in
+/// the order the original's GPU buffer packs them, and the buffer's stride.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterleavedLayout {
+    pub stride: u32,
+    pub attributes: Vec<VertexAttribute>,
+}
+
+impl InterleavedLayout {
+    /// The attribute at `location`.
+    pub fn attribute(&self, location: u32) -> Option<&VertexAttribute> {
+        self.attributes
+            .iter()
+            .find(|attribute| attribute.location == location)
+    }
+}
+
+/// The interleaved layout a format word asks for (`0x06AE60`): position
+/// (12 bytes) first, then the texture (12 when both `0x80` and `0x20` are
+/// set, 8 when `0x10` is set otherwise), the colour (4), the normal (12),
+/// the tangent (16), the morph (12), and the second texture (8), each the
+/// previous stream's start plus its per-vertex size. The attribute locations
+/// are [`layout`]'s.
+pub fn interleaved_layout(format: u32) -> InterleavedLayout {
+    let mut offset = 0u32;
+    let mut attributes = Vec::new();
+    let mut push = |location, components, kind, bytes: u32| {
+        attributes.push(VertexAttribute {
+            location,
+            offset: offset as usize,
+            components,
+            kind,
+        });
+        offset += bytes;
+    };
+    push(0, 3, AttributeType::Float, 12);
+    let texture = texture_stream_size(format);
+    if texture != 0 {
+        push(1, texture / 4, AttributeType::Float, texture);
+    }
+    if format & flags::COLOUR != 0 {
+        push(3, 4, AttributeType::UnsignedByte, 4);
+    }
+    if format & flags::NORMAL != 0 {
+        push(2, 3, AttributeType::Float, 12);
+    }
+    if format & flags::TANGENT != 0 {
+        push(6, 4, AttributeType::Float, 16);
+    }
+    if format & flags::MORPH != 0 {
+        push(7, 3, AttributeType::Float, 12);
+    }
+    if format & flags::TEXCOORD2 != 0 {
+        push(4, 2, AttributeType::Float, 8);
+    }
+    InterleavedLayout {
+        stride: offset,
+        attributes,
+    }
+}
+
 /// An index batch's element size from the original's encoded size: 1 is an
 /// unsigned byte, 2 an unsigned short, anything else (0 included) an
 /// unsigned int.
@@ -309,6 +370,48 @@ mod tests {
         assert_eq!((index_size(1), index_type(1)), (1, 0x1401));
         assert_eq!((index_size(2), index_type(2)), (2, 0x1403));
         assert_eq!((index_size(99), index_type(99)), (4, 0x1405));
+    }
+
+    #[test]
+    fn the_interleaved_layout_packs_the_streams_in_the_original_order() {
+        // Everything: 12 position + 12 wide texture + 4 colour + 12 normal
+        // + 16 tangent + 12 morph + 8 second texture = 76.
+        let format = flags::TEXCOORD
+            | flags::WIDE
+            | flags::TEXCOORD2
+            | flags::COLOUR
+            | flags::NORMAL
+            | flags::TANGENT
+            | flags::MORPH;
+        let l = interleaved_layout(format);
+        assert_eq!(l.stride, 76);
+        let at = |location| {
+            let a = l.attribute(location).copied().unwrap();
+            (a.offset, a.components)
+        };
+        assert_eq!(at(0), (0, 3));
+        assert_eq!(at(1), (12, 3));
+        assert_eq!(at(3), (24, 4));
+        assert_eq!(at(2), (28, 3));
+        assert_eq!(at(6), (40, 4));
+        assert_eq!(at(7), (56, 3));
+        assert_eq!(at(4), (68, 2));
+        // The plain format is position only; a texture without the wide bit
+        // is two floats.
+        let l = interleaved_layout(0);
+        assert_eq!(l.stride, 12);
+        assert_eq!(l.attributes.len(), 1);
+        let l = interleaved_layout(flags::TEXCOORD | flags::COLOUR);
+        assert_eq!(l.stride, 24);
+        assert_eq!(at_of(&l, 1), (12, 2));
+        assert_eq!(at_of(&l, 3), (20, 4));
+        // No stream, no attribute.
+        assert!(interleaved_layout(flags::NORMAL).attribute(1).is_none());
+    }
+
+    fn at_of(l: &InterleavedLayout, location: u32) -> (usize, u32) {
+        let a = l.attribute(location).copied().unwrap();
+        (a.offset, a.components)
     }
 
     #[test]
