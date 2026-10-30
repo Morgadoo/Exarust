@@ -38,7 +38,9 @@ pub fn passes(index: u32) -> u32 {
 }
 
 /// The jitter of one sample of a setting, in window pixels, from the view's
-/// table; zero past the setting's samples.
+/// table (read as the engine does, past the setting's own run; see
+/// [`crate::view::SupersampleLevel::jitter`]). A setting past the table
+/// takes none.
 pub fn jitter(index: u32, quarter: u32, subframe: u32) -> [f32; 2] {
     if index > 7 {
         return [0.0; 2];
@@ -53,38 +55,20 @@ pub fn viewport_shift(subframe: u32) -> [i32; 2] {
     crate::view::viewport_shift(subframe as usize)
 }
 
-/// The quarter's sub-frame time offset, the value `Global.ViewPos.w` and
-/// `Global.TimeDlt.x` carry: `0.5 − (4·quarter + 0.5)/samples`, in single
-/// precision.
-pub fn frame_offset(quarter: u32, samples: u32) -> f32 {
-    let samples = samples.max(1) as f32;
-    let index = quarter.wrapping_mul(4) as f32;
-    0.5 - (index + 0.5) / samples
-}
-
-/// The view's sun-shadow mode for a quarter: the first quarter of a setting
-/// with one or more samples takes 3 (2 or more samples) or 1 (5 or more),
-/// a setting with one sample takes 0, and later quarters always 2. The mode
-/// selects the half-pass objects' sub-frame count (`shader_program::draw_passes`).
+/// The view's sun-shadow mode for a quarter
+/// ([`crate::view::SupersampleLevel::pass_state`]'s word): 1 for the first
+/// quarter of a setting with five or more samples, 3 for two to four, 0 for
+/// one, and 2 for every later quarter. The mode selects the half-pass
+/// objects' sub-frame count (`shader_program::draw_passes`). The quarter's
+/// `Global` offset, tap fraction and resolve weight are in
+/// [`crate::view::SupersampleLevel::schedule`].
 pub fn shadow_mode(setting: u32, quarter: u32) -> u32 {
-    if quarter > 0 {
-        return 2;
+    if setting > 7 {
+        return if quarter > 0 { 2 } else { 0 };
     }
-    let samples = sample_count(setting);
-    if samples >= 5 {
-        1
-    } else if samples >= 2 {
-        3
-    } else {
-        0
-    }
-}
-
-/// The quarter's sample fraction, `(4·quarter + 1)/samples`. The engine keeps
-/// it as the capture's weight (`1/(4·quarter + 1)` is its reciprocal).
-pub fn sample_fraction(quarter: u32, samples: u32) -> f32 {
-    let samples = samples.max(1) as f32;
-    (quarter.wrapping_mul(4) as f32 + 1.0) / samples
+    crate::view::SupersampleLevel(setting as u8)
+        .pass_state(quarter as usize)
+        .word()
 }
 
 /// The step between a frame's sub-frame animation clocks: the frame's time
@@ -93,12 +77,15 @@ pub fn animation_step(frame_time: f32, samples: u32) -> f32 {
     frame_time / samples.max(1) as f32
 }
 
-/// The first sub-frame's animation clock in a quarter:
-/// `step·0.5 + frame_time·(−0.5)`, plus the whole samples of the earlier
-/// quarters (`quarter·step·4`). Single precision in the engine's order.
+/// The first sub-frame's animation clock in a quarter: the whole samples of
+/// the earlier quarters (`quarter·step·4`) plus the frame's first sample
+/// centre (`step·0.5 + frame_time·(−0.5)`, which the view computes once
+/// before its quarter loop). Single precision in the engine's order,
+/// `(quarter·step)·4 + (step·0.5 + frame_time·(−0.5))`.
 pub fn animation_base(quarter: u32, frame_time: f32, samples: u32) -> f32 {
     let step = animation_step(frame_time, samples);
-    (quarter as f32 * step) * 4.0 + step * 0.5 + frame_time * -0.5
+    let first = step * 0.5 + frame_time * -0.5;
+    (quarter as f32 * step) * 4.0 + first
 }
 
 /// One sub-frame's animation clock: `subframe·step + base`.
@@ -129,28 +116,9 @@ pub fn shutter_offset(slot: u32, duration: f32, samples: u32) -> f32 {
 /// finite branch), with `m22 = −1` and `m32 = −2·near`. Other entries are the
 /// identity's zeroes; `m23` is −1 and `m33` 0.
 pub fn projection(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32) -> Matrix {
-    let mut m = [[0.0f32; 4]; 4];
-    m[1][1] = 1.0;
-    m[2][2] = 1.0;
-    m[3][3] = 1.0;
-    let width = right - left;
-    let height = top - bottom;
-    m[0][0] = (2.0 * near) / width;
-    m[1][1] = (2.0 * near) / height;
-    m[2][0] = (right + left) / width;
-    m[2][1] = (top + bottom) / height;
-    // `comiss` with an unordered result takes the finite branch; zero (either
-    // sign) takes the infinite one.
-    if far.is_nan() || far != 0.0 {
-        m[2][2] = -(far + near) / (far - near);
-        m[3][2] = -(2.0 * far * near) / (far - near);
-    } else {
-        m[2][2] = -1.0;
-        m[3][2] = near * -2.0;
-    }
-    m[2][3] = -1.0;
-    m[3][3] = 0.0;
-    m
+    // The physics crate's frustum is the same engine routine; its
+    // column-major array is the engine's row-major order.
+    exa_physics::engine_math::frustum(left, right, bottom, top, near, far).to_cols_array_2d()
 }
 
 /// One sub-frame's projection: the camera's stored near-plane half extents
@@ -179,20 +147,21 @@ pub fn subframe_projection(
 /// The view matrix of a camera whose transform is four rows of three numbers:
 /// three world axes and a translation row.
 ///
-/// The rotation is transposed and the translation becomes `−Rᵀ·t`; the
-/// fourth column is `(0, 0, 0, 1)`. Each translation component is summed in
-/// the engine's order, `(−t.z·r.z + −t.x·r.x) + −t.y·r.y`.
+/// The rotation is transposed and the translation row becomes `(0 − t)·Rᵀ`:
+/// its component `j` is the negated translation dotted with the camera's
+/// axis row `j`, summed as `(−t.x·a[j].x + −t.y·a[j].y) + −t.z·a[j].z`
+/// (the engine subtracts `t` from zero first). The fourth column is
+/// `(0, 0, 0, 1)`.
 pub fn view_from_camera(camera: &[[f32; 3]; 4]) -> Matrix {
-    let r0 = [camera[0][0], camera[1][0], camera[2][0]];
-    let r1 = [camera[0][1], camera[1][1], camera[2][1]];
-    let r2 = [camera[0][2], camera[1][2], camera[2][2]];
+    let a = camera;
     let t = camera[3];
-    let row3 = |r: [f32; 3]| ((-t[2] * r[2]) + (-t[0] * r[0])) + (-t[1] * r[1]);
+    let n = [0.0 - t[0], 0.0 - t[1], 0.0 - t[2]];
+    let row3 = |j: usize| (n[0] * a[j][0] + n[1] * a[j][1]) + n[2] * a[j][2];
     [
-        [r0[0], r0[1], r0[2], 0.0],
-        [r1[0], r1[1], r1[2], 0.0],
-        [r2[0], r2[1], r2[2], 0.0],
-        [row3(r0), row3(r1), row3(r2), 1.0],
+        [a[0][0], a[1][0], a[2][0], 0.0],
+        [a[0][1], a[1][1], a[2][1], 0.0],
+        [a[0][2], a[1][2], a[2][2], 0.0],
+        [row3(0), row3(1), row3(2), 1.0],
     ]
 }
 
@@ -223,10 +192,10 @@ pub fn transform_point(m: &Matrix, point: [f32; 3]) -> [f32; 3] {
 #[derive(Clone, Copy, Debug)]
 pub struct ViewFrame {
     /// The camera's near-plane half extents as the view stores them: the
-    /// vertical one and the horizontal one (aspect times it). They are
-    /// negative in the engine (the projection's frustum edges are their
-    /// negations). `[guess on the sign: the view's own builder negates the
-    /// near plane before dividing]`.
+    /// horizontal one (aspect times the vertical) and the vertical one,
+    /// paired with the viewport's width and height. They are negative in
+    /// the engine (the view's builder divides the negated near distance),
+    /// so the projection's frustum edges are their negations.
     pub half_extents: [f32; 2],
     /// The window's width and height, texels.
     pub viewport: [u32; 2],
@@ -349,11 +318,6 @@ impl Subframes {
         self.composites.get(subframe)
     }
 
-    /// The `Global` frame offset of the quarter.
-    pub fn frame_offset(&self) -> f32 {
-        frame_offset(self.quarter, sample_count(self.setting))
-    }
-
     /// A sub-frame's animation clock, for the draw to set on an animated
     /// node.
     pub fn clock(&self, subframe: u32) -> f32 {
@@ -464,6 +428,15 @@ mod tests {
         // the table's zero padding.
         assert_eq!(jitter(7, 16, 1), j(122));
         assert_eq!(j(123), [0.0, 0.0]);
+        // The engine indexes the table without stopping at the setting's
+        // run: the 15-sample setting's sixteenth sub-frame reads entry 33
+        // (the 24-sample run's first), and the 66-sample setting's last
+        // quarter reads the zero padding and then the first two numbers
+        // of the shadow-tap table stored after it.
+        assert_eq!(jitter(5, 3, 3), j(33));
+        assert_eq!(jitter(7, 16, 2), [0.0, 0.0]);
+        let tap = crate::shader_bindings::SHADOW_TAPS[0];
+        assert_eq!(jitter(7, 16, 3), [tap[0], tap[1]]);
         // A sample with no jitter is zero.
         assert_eq!(jitter(0, 0, 0), [0.0, 0.0]);
         assert_eq!(jitter(8, 0, 0), [0.0, 0.0]);
@@ -483,16 +456,8 @@ mod tests {
         assert_eq!(shadow_mode(7, 0), 1);
         assert_eq!(shadow_mode(3, 1), 2);
         assert_eq!(shadow_mode(7, 3), 2);
-    }
-
-    #[test]
-    fn the_quarters_offset_and_weight_follow_the_sample_count() {
-        // 0.5 − 0.5/4 and 0.5 − 4.5/4.
-        assert_eq!(frame_offset(0, 4).to_bits(), 0.375f32.to_bits());
-        assert_eq!(frame_offset(1, 4), 0.5 - 4.5 / 4.0);
-        assert_eq!(frame_offset(0, 15), 0.5 - 0.5 / 15.0);
-        assert_eq!(sample_fraction(0, 4), 0.25);
-        assert_eq!(sample_fraction(1, 4), 1.25);
+        assert_eq!(shadow_mode(8, 0), 0);
+        assert_eq!(shadow_mode(8, 1), 2);
     }
 
     #[test]
@@ -509,9 +474,13 @@ mod tests {
         // The next quarter continues after four steps.
         assert_eq!(
             animation_base(1, 0.1, 4),
-            1.0 * step * 4.0 + step * 0.5 - 0.05
+            (1.0 * step) * 4.0 + (step * 0.5 + 0.1 * -0.5)
         );
         assert_eq!(animation_clock(0, 1, 0.1, 4), animation_base(1, 0.1, 4));
+        // The frame's first sample centre is added as one term: at 24
+        // samples over 0.1 s the second quarter starts at 0xBCFFFFFF, where
+        // a left-to-right sum would give 0xBD000000.
+        assert_eq!(animation_base(1, 0.1, 24).to_bits(), 0xBCFF_FFFF);
         // The offsets across the frame are the shutter's sample centres.
         for i in 0..4 {
             let expected = ((i as f32 + 0.5) / 4.0 - 0.5) * 0.1;
@@ -594,6 +563,20 @@ mod tests {
         let m = view_from_camera(&camera);
         assert_eq!(m[0], [0.0, -1.0, 0.0, 0.0]);
         assert_eq!(m[1], [1.0, 0.0, 0.0, 0.0]);
+        // With a translation, component j is −t dotted with the camera's
+        // axis row j: −(0·1 + 1·2 + 0·3), −(−1·1 + 0·2 + 0·3), −(0 + 0 + 1·3).
+        let camera = [
+            [0.0, 1.0, 0.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 2.0, 3.0],
+        ];
+        let m = view_from_camera(&camera);
+        assert_eq!(m[3], [-2.0, 1.0, -3.0, 1.0]);
+        // The view undoes the camera: the camera's own position maps to the
+        // origin.
+        let eye = transform_point(&m, [1.0, 2.0, 3.0]);
+        assert_eq!(eye, [0.0, 0.0, 0.0]);
     }
 
     #[test]
@@ -648,7 +631,6 @@ mod tests {
         assert_eq!(frames.len(), 4);
         assert_eq!(frames.setting(), 3);
         assert_eq!(frames.quarter(), 0);
-        assert_eq!(frames.frame_offset(), 0.375);
         assert_eq!(frames.clock(0), animation_clock(0, 0, 0.1, 4));
         assert_eq!(frames.viewport_shift(2), [0, 1]);
         // The first pass has the 4× setting's first jitter.

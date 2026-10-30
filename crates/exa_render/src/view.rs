@@ -203,8 +203,8 @@ impl SupersampleLevel {
         SUBVIEW_COUNTS[self.clamped().0 as usize] as usize
     }
 
-    /// How many quarters (passes of up to four sub-views) the level takes.
-    pub fn quarters(self) -> usize {
+    /// How many passes of up to four sub-views the level takes.
+    pub fn passes(self) -> usize {
         self.subviews().div_ceil(SUBVIEWS_PER_PASS)
     }
 
@@ -216,10 +216,25 @@ impl SupersampleLevel {
         &JITTERS[first..first + SUBVIEW_COUNTS[level] as usize]
     }
 
-    /// One sub-view's jitter, or zero past the level's samples.
+    /// One sub-view's jitter, read as the engine reads it: entry
+    /// `first + 4·pass + subview` of the shared sequence, with no stop at
+    /// the level's own run. A level whose sample count is not a multiple of
+    /// four therefore reads the next level's first entries in its last
+    /// pass (the 15-sample level's sixteenth sub-view takes entry 33), and
+    /// the 66-sample level's last pass runs past the table's zero padding
+    /// into the first two numbers of the shadow-tap table the original
+    /// stores after it. Anything further is zero.
     pub fn jitter(self, pass: usize, subview: usize) -> (f32, f32) {
-        let index = pass * SUBVIEWS_PER_PASS + subview;
-        self.jitters().get(index).copied().unwrap_or((0.0, 0.0))
+        let index = JITTER_OFFSETS[self.clamped().0 as usize] + pass * SUBVIEWS_PER_PASS + subview;
+        if let Some(&jitter) = JITTERS.get(index) {
+            return jitter;
+        }
+        let taps = crate::shader_bindings::SHADOW_TAPS.as_flattened();
+        let past = (index - JITTERS.len()) * 2;
+        match (taps.get(past), taps.get(past + 1)) {
+            (Some(&x), Some(&y)) => (x, y),
+            _ => (0.0, 0.0),
+        }
     }
 
     /// The sharpen strength the final pass gets: zero at level 0, then
@@ -817,7 +832,7 @@ mod tests {
         ] {
             let level = SupersampleLevel(level);
             assert_eq!(level.subviews(), subviews);
-            assert_eq!(level.quarters(), passes);
+            assert_eq!(level.passes(), passes);
             assert_eq!(level.jitters().len(), subviews);
         }
         // The 4× setting's jitters are the documented four.
@@ -835,11 +850,16 @@ mod tests {
         }
         assert_eq!(SupersampleLevel(0).jitters(), &[(0.0, 0.0)]);
         assert_eq!(SupersampleLevel(9).subviews(), 66);
-        assert_eq!(SupersampleLevel(9).quarters(), 17);
+        assert_eq!(SupersampleLevel(9).passes(), 17);
         // The 8-sample level's second pass continues its sequence.
         let second = SupersampleLevel(4).jitter(1, 0);
         assert_eq!(second, JITTERS[14]);
-        assert_eq!(SupersampleLevel(4).jitter(2, 0), (0.0, 0.0));
+        // Past its own run a level keeps reading the shared sequence.
+        assert_eq!(SupersampleLevel(4).jitter(2, 0), JITTERS[18]);
+        assert_eq!(SupersampleLevel(5).jitter(3, 3), JITTERS[33]);
+        let tap = crate::shader_bindings::SHADOW_TAPS[0];
+        assert_eq!(SupersampleLevel(7).jitter(16, 3), (tap[0], tap[1]));
+        assert_eq!(SupersampleLevel(7).jitter(100, 0), (0.0, 0.0));
         assert_eq!(viewport_shift(0), [0, 0]);
         assert_eq!(viewport_shift(3), [1, 1]);
     }
