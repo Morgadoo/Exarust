@@ -53,10 +53,11 @@ pub const MOTION_BLUR: u32 = 0x20;
 /// the frame's fade, `1 − fade`.
 pub const FRAME_FADE: u32 = 0x2000_0000;
 
-/// A material word bit (`TexDif`, the diffuse map): a draw's per-draw
-/// emissive scale is the scene's when the material has this bit, else the
-/// geometry record's own.
-pub const MATERIAL_DIFFUSE_MAP: u32 = 0x2_0000;
+/// A render object's own word bit `0x2_0000`: a per-draw emissive rescale
+/// takes the object's own emissive scale instead of the geometry record's.
+/// The word is the render object's, not the material key the drawing state
+/// keys programs on (that one comes from the material).
+pub const OBJECT_OWN_EMISSIVE: u32 = 0x2_0000;
 
 /// Which of the two per-draw variants a draw takes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,9 +87,9 @@ pub fn draw_path(passes: u32) -> DrawPath {
 pub struct GeometryRecord {
     /// The record's flag word: [`EMISSIVE_PER_DRAW`] and [`MOTION_BLUR`].
     pub flags: u32,
-    /// The per-draw emissive scale (the record's `0xf4` field).
+    /// The record's per-draw emissive scale.
     pub emissive: f32,
-    /// The geometry's shutter length (the record's `0xf8` field), the range
+    /// The geometry's shutter length, the range
     /// of the sub-frame depth offsets.
     pub shutter: f32,
 }
@@ -112,13 +113,19 @@ pub struct DrawObject<'a> {
     pub diffuse_alpha: f32,
     /// The geometry record's values.
     pub geometry: GeometryRecord,
-    /// The render object's flag word (its `0xc` field):
+    /// The render object's own word: [`OBJECT_OWN_EMISSIVE`].
+    pub object_word: u32,
+    /// The render object's own emissive scale, used by a rescale when its
+    /// own word has [`OBJECT_OWN_EMISSIVE`].
+    pub emissive_scale: f32,
+    /// The render object's flag word:
     /// [`OBJECT_SUBFRAME_CLOCK`], [`OBJECT_VERTEX_DELTA`] and
     /// [`OBJECT_GI_SPECULAR`].
     pub object_flags: u32,
-    /// The object's world matrix (its `0x40` field), row-major.
+    /// The object's world placement, row-major: three axis rows and a
+    /// translation row (the fourth column is not read).
     pub world: [[f32; 4]; 4],
-    /// The liquid-level point in the object's space (its `0x390` field).
+    /// The liquid-level point in the object's space.
     pub liquid_point: [f32; 3],
     /// The mesh has a vertex-colour stream.
     pub vertex_colors: bool,
@@ -140,6 +147,8 @@ impl Default for DrawObject<'_> {
                 emissive: 1.0,
                 shutter: 0.0,
             },
+            object_word: 0,
+            emissive_scale: 1.0,
             object_flags: 0,
             world: [
                 [1.0, 0.0, 0.0, 0.0],
@@ -167,9 +176,6 @@ pub struct DrawScene {
     /// The sun-shadow mode: 3 halves the passes of a
     /// [`HALF_PASSES`](crate::shader_program::HALF_PASSES) object.
     pub sun_shadow_mode: u32,
-    /// The scene's emissive scale, used by an object whose render-flag word
-    /// has [`EMISSIVE_SCENE_SCALE`].
-    pub emissive_scale: f32,
     /// The view's sub-frame clock: the frame's time, the sample count and the
     /// accumulation quarter.
     pub clock: SubframeClock,
@@ -183,7 +189,7 @@ pub struct DrawScene {
 /// The inputs of the view's per-sub-frame animation clocks.
 #[derive(Clone, Copy, Debug)]
 pub struct SubframeClock {
-    /// The frame's time (the view's `0x1dd4` field), the shutter length.
+    /// The frame's time (the view's shutter length).
     pub frame_time: f32,
     /// The super-sampling setting's sample count.
     pub samples: u32,
@@ -238,7 +244,6 @@ impl Default for DrawScene {
             passes: 4,
             frame_pass: 0,
             sun_shadow_mode: 0,
-            emissive_scale: 1.0,
             clock: SubframeClock::default(),
             force_vertex_colors: false,
         }
@@ -402,8 +407,8 @@ impl DrawState {
         };
         let emissive_scale =
             if object.material & 8 != 0 && object.geometry.flags & EMISSIVE_PER_DRAW != 0 {
-                Some(if object.material & MATERIAL_DIFFUSE_MAP != 0 {
-                    scene.emissive_scale
+                Some(if object.object_word & OBJECT_OWN_EMISSIVE != 0 {
+                    object.emissive_scale
                 } else {
                     object.geometry.emissive
                 })
@@ -750,21 +755,30 @@ mod tests {
     }
 
     #[test]
-    fn the_emissive_scale_comes_from_the_object_or_the_scene() {
+    fn the_emissive_scale_comes_from_the_object_or_the_geometry() {
         let mut state = DrawState::new(scene().slot);
         let mut object = object();
         object.material = 0x8;
         object.geometry.flags = EMISSIVE_PER_DRAW;
         object.geometry.emissive = 0.25;
-        let mut scene = scene();
-        scene.emissive_scale = 2.0;
+        object.emissive_scale = 2.0;
+        let scene = scene();
         let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
         assert_eq!(plan.emissive_scale, Some(0.25));
-        object.material = 0x8 | MATERIAL_DIFFUSE_MAP;
+        // The object's own word picks its own scale; the material key's
+        // 0x20000 bit does not.
+        object.material = 0x8 | 0x2_0000;
+        let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
+        assert_eq!(plan.emissive_scale, Some(0.25));
+        object.material = 0x8;
+        object.object_word = OBJECT_OWN_EMISSIVE;
         let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
         assert_eq!(plan.emissive_scale, Some(2.0));
+        // The single-pass variant makes the same choice.
+        let plan = state.prepare(&object, &scene, DrawPath::Plain, false);
+        assert_eq!(plan.emissive_scale, Some(2.0));
         // Only a record with the emissive bit is rescaled.
-        object.material = 0x7 | MATERIAL_DIFFUSE_MAP;
+        object.material = 0x7;
         let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
         assert_eq!(plan.emissive_scale, None);
         // And only a geometry whose flags ask for it.
