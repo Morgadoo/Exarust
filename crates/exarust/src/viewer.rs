@@ -725,6 +725,14 @@ fn play_level(
     launch: Option<&exa_game::arena_hub_live::ArenaMatchLaunch>,
 ) {
     commands.entity(root).insert(exa_physics::StaticGeometry);
+    // The level's alarm zones; a level start disarms the alarm.
+    if !info.alarm_volumes.is_empty() {
+        info!("level {name}: {} alarm zones", info.alarm_volumes.len());
+    }
+    commands.insert_resource(exa_game::golem_alarm::AlarmVolumes(
+        info.alarm_volumes.clone(),
+    ));
+    commands.insert_resource(exa_game::golem_alarm::GolemAlarm::default());
     // An arena match draws its track as the original's match start does:
     // the roll is the reversed counter, and the arena is the one named on
     // the command line, so the arena draw is not run. The hub's track is
