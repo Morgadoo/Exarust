@@ -525,6 +525,32 @@ traced, so Exarust scales the part's emissive colour, on a material copy
 of the part's own). A light at rest leaves its mesh as loaded. Per-sector
 light aliases are not reproduced.
 
+The light's derived values (`LightSource::draw_colour`, `derive`,
+`injection_colour`, `update`) are a tested model, not yet consumed by the
+shader path. An update clamps an intensity under 2⁻²³ to zero and then:
+
+- the draw colour is the light's colour times `√intensity · 0.75` in the
+  legacy workflow, or the linearised colour times the intensity in the
+  linear one;
+- the fade colour is the draw colour, or black while the fade bit is set;
+  a non-fading light adds it to the running offset colour (`0x1FC`) first,
+  and the update then replaces that offset with the draw colour and takes
+  its Rec. 601 luma, summed `z·0.114 + y·0.587 + x·0.299`;
+- the colour-scale slot is black while the light flickers, else the draw
+  colour times the light's static intensity scale (`0x21C`, 1);
+- the GI injection colour is the linearised colour times
+  `√intensity · scale · 3` (linear) or `√(intensity · scale) · 0.6`
+  (legacy, the 0.6 in double);
+- the reach is the radius while the static scale is at least 2⁻²³ (a NaN
+  scale keeps it too, as the unordered compare does), else zero; a reach
+  that moved by more than one sets pending bit 2 and every update sets bit
+  4, the shadow links' rebuild flags.
+
+The shape words the constructor also sets — a 0.25 exponent, a 1 factor,
+a 2 quality word and the spot's cone factor `1/(acos(cos 2 · (p + 1)) − 1)`
+— are read by the shading uniforms elsewhere (`vertical_shaping` covers
+the spot's two vertical values); they are not part of the tested model.
+
 ## Surfaces
 
 `exa_render::material::ExaMaterial` with `exa.wesl` reproduces the main lit
