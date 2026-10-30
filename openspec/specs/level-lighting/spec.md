@@ -100,11 +100,15 @@ The legacy grid build SHALL, unless the level has terrain, set the ambient to th
 - **THEN** its ambient is 0.6275 grey linearised (0.3516) and its sun colour stays 0.75
 
 ### Requirement: Rain objects
-A rain request above zero SHALL create the rain sound and the rain effect when they do not exist, and the weather tick SHALL drive only a created sound: its volume and pitch from the effect while it rains, a start when its volume passes 0.01 and a stop request when a started sound falls below 0.01.
+A rain request above zero SHALL create the rain sound and the rain effect when they do not exist, and the weather tick SHALL drive only a created sound: its volume and pitch from the effect while it rains, a start when its volume passes 0.01 and a stop request when a started sound falls below 0.01. On every tick where the rain amount differs from its target, a live rain effect SHALL take the new amount as its intensity.
 
 #### Scenario: No request
 - **WHEN** the scene ticks with rain but no request was made
 - **THEN** no sound starts
+
+#### Scenario: The rain rises to its target
+- **WHEN** a request of 0.9 is made at a rain of 0.89 and the scene ticks 200 ms later
+- **THEN** the rain is 0.9 and the effect's intensity is 0.9, and it keeps that intensity while the rain stays at its target
 
 ### Requirement: Lightning brightens the fog only
 A lightning strike SHALL NOT turn on the scene's flash-clear switch. While a strike runs, the frame SHALL keep the clear colour, the world's fog, the sun and the ambient it had without the strike, and the record's fog colour SHALL be the record's colour plus the lightning blue (0.2, 0.3, 1.0) times I/(I + 2)·3 for the strike's intensity I, whether or not the level fogs; that colour SHALL light the GI's sky light, and when the strike ends the record's colour SHALL return.
@@ -135,3 +139,10 @@ The system SHALL fog every lit world surface (hair included) as the original's w
 #### Scenario: Indoor level
 - **WHEN** an indoor level is drawn
 - **THEN** it has no fog and looks as before
+
+### Requirement: Weather events reach the game
+Each frame the live scene environment SHALL keep the weather tick's requests (stop the rain effect, start or stop the rain sound, a thunderclap) and the tick's game clock for the systems that run after it. A thunderclap SHALL carry the strike's position at the moment it plays.
+
+#### Scenario: A clap after a strike
+- **WHEN** a strike 316 cm out is started next to a view and the scene ticks after its thunder time
+- **THEN** the tick asks for one clap at gain 4·0.8775 + 0.1 at the strike's position, view offset included

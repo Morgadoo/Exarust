@@ -1016,13 +1016,14 @@ aura draw with their own ported programs (`effectforce_f`,
 `effecttorrent_f`, `effectshell`; The shaped-force aura). The arcs
 upload their ribbon's UVs. The barricade's navigation stamp is applied to
 the grid (`exa_world::nav::stamp`); a standing barricade carries an
-`effects::danger::Hazard` for its wall, which no AI reads yet. The domes, the wave and
-the rain are not drawn yet (the materials' pass plans are computed but no
-renderer binds them); the rain's frame passes (its tilt scaled by
-`sqrt(field/70)`, placed at the drop box's centre and multiplied by each
-sub-frame's composite, its `EyeVec`) and its shader uniforms are modelled in
-`effects::rain`, and the scene weather now starts the set and frames it at
-the camera. The GI emissive objects behind
+`effects::danger::Hazard` for its wall, which no AI reads yet. The domes
+and the wave are not drawn yet (the materials' pass plans are computed but
+no renderer binds them). The rain is run by the scene's weather
+(`exa_game::weather`) and drawn once over the frame through
+`exa_render::rain`; the original's per-sub-frame and reflected passes (its
+tilt scaled by `sqrt(field/70)`, placed at the drop box's centre and
+multiplied by each sub-frame's composite, its `EyeVec`) and its shader
+uniforms are modelled in `effects::rain` but not drawn. The GI emissive objects behind
 the domes, the bubble, the barricade, the strikes, the tendril and the
 teleporter bubble are modelled in `effects::emissive` (their programs,
 extents, colours and boxes). The force Barrier's and force Bubble's are

@@ -215,6 +215,13 @@ the tip as far as the weapon's blood takes it (`stain.wesl`; depth writes
 off, the depth nudged toward the camera, no shadows). Rules:
 [`docs/RENDERING.md`](../../docs/RENDERING.md) (Blood on weapons).
 
+`rain::RainMaterial` is the original's rain program: the drops' line list
+with their colour bytes read unnormalised, faded by the eye distance, over
+the frame behind each streak (`0.75·t + 3·max(t − 0.1, 0)²` plus the rain
+colour, alpha-blended; `rain.wesl`). It draws in the transmissive pass and
+needs `ScreenSpaceTransmission` on the camera ([`docs/RENDERING.md`](../../docs/RENDERING.md),
+Rain).
+
 `spray::SprayMaterial` is the original's blood droplet material
 (`_BloodPrt02`): the droplet texture `BldPrt02` (sRGB, clamped) mixed
 toward white by each droplet's vertex alpha and

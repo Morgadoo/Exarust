@@ -252,15 +252,35 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
   playing (on 15 characters); Exarust applies it on every level load, which
   differs only when a story level is re-entered with its own track playing
   (the bed restarts at a new offset).
-- Only the outdoor arenas' calm daylight case is wired: `NtrA` at volume 1
-  (a still, dry day; the weather and time-of-day callers are not in Exarust).
-  `arena_ambience` holds the recovered full rule — rain > 0.01 stops the
-  ambience, daylight < 0.5 gives `NtrAN` at 0.3, a calm arena gives `NtrA` at
-  1, wind > 0.1 gives `NtrW` at 1 with bed gain `wind² × 0.2` and pitch
-  `0.6 + 0.5 × wind`, otherwise none — but the per-arena calm flag comes from
-  the arena progression's tables, which are not ported, so nothing calls it
-  yet. The rule covers arena indices of 7 and up; the setup clears the
-  ambience below 7, which `arena_ambience` leaves to its caller.
+- An outdoor arena's ambience follows its weather once its scene preset has
+  drawn the day (`exa_game::weather`): `arena_ambience` stops the ambience
+  when the rain target is above 0.01 (the weather's `rainfall` loop takes
+  over), gives `NtrAN` at 0.3 below a daylight of 0.5, `NtrA` at 1 in a calm
+  arena (arenao1, arenao3, arenao5), `NtrW` at 1 when the wind is above 0.1,
+  its bed at gain `wind² × 0.2` and pitch `0.6 + 0.5 × wind`
+  (`LevelAmbienceBed`, written over the bed after the area is set), and
+  otherwise none. The indoor arenas clear it. Until the scene is in, a
+  level load sets the arena's `NtrA` (`ambience_for_level`).
+
+### Weather sounds (`exa_game::weather`)
+
+- **Rain loop.** The weather's first rain request takes a voice (or the
+  shared dummy) and sets its flag word to listener-relative alone. Each
+  tick writes the rain effect's drift into its gain and its fall into its
+  pitch (gain 0 when it does not rain). A voice that is not playing starts
+  `rainfall` at the listener (allocated and restart bits, then looping)
+  once the gain is above 0.01; a playing one is asked to stop below 0.01.
+  It is a world-bus voice at distance zero, so it plays at its gain.
+- **Thunder.** A clap plays a variant of `Thunder` (`thunder01`–`04`) at
+  gain `4·attenuation + 0.1` (attenuation `(1 − 0.0002·r)²`, r the strike's
+  distance in cm) and pitch `0.9 + 0.3·u` (the run-time library's draw),
+  1.75 ms per cm + 30 ms after the strike, as a listener-relative one-shot
+  at the strike's position. That position holds the view's world position
+  (the strike is moved 200 cm ahead of the camera), so the clap sits at
+  the listener plus the view's offset from the world origin plus the
+  strike's own offset of up to 40 m, and the 30 m distance limit silences
+  most claps. The original draws the variant from the engine's shared
+  generator; the bank uses its own.
 
 ### Reverb (`reverb`)
 

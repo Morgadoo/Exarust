@@ -81,7 +81,7 @@ A rain update SHALL move each drawn head by (0, −1.5·f, 0) with f = (0.4·int
 - **THEN** each drawn head falls 11.7 cm and its tail lies 4.8 cm below it
 
 ### Requirement: Rain colour
-The rain colour SHALL be the environment's colour times 2.2, times 0.075·intensity + 0.075 (0.03·intensity + 0.03 with the bright setting), over 255, and its alpha (0.5·intensity + 0.5)·(|y| + 0.5).
+The rain colour SHALL be the environment's colour times 2.2, times 0.075·intensity + 0.075 (0.03·intensity + 0.03 while the game is paused), over 255, and its alpha (0.5·intensity + 0.5)·(|y| + 0.5).
 
 #### Scenario: Full rain looking down
 - **WHEN** the intensity is 1, the environment white and the backward axis's height −0.5
@@ -330,18 +330,18 @@ The strikes' light shape SHALL be a `gi_gradline` with the strikes light's segme
 - **THEN** the shape's point light weight is 5
 
 ### Requirement: Rain pass matrices
-Each rain pass SHALL upload as `ObjMat` the drop set's turn with every entry multiplied by the single-precision square root of the camera field times the single 1/70, placed at the drop box's centre and multiplied by the pass's sub-frame composite, and as `EyeVec` the camera less the box centre dotted with each scaled row.
+Each pass of the original's rain draw, as modelled, SHALL carry as `ObjMat` the drop set's turn with every entry multiplied by the single-precision square root of the camera field times the single 1/70, placed at the drop box's centre and multiplied by the pass's sub-frame composite, and as `EyeVec` the camera less the box centre dotted with each scaled row.
 
 #### Scenario: A field of 280
 - **WHEN** the camera field is 280
 - **THEN** the turn's entries are doubled and the object matrix's last row is the box centre with w = 1
 
 ### Requirement: Rain passes
-The rain SHALL draw one pass per sub-frame with its turn two degrees about the first axis, followed, when the reflection level is above three, by a reflected pass at −2° about the first axis and 170° about the second.
+The model of the original's rain draw SHALL give one pass per sub-frame with its turn two degrees about the first axis, followed, when the reflection level is above three, by a reflected pass at −2° about the first axis and 170° about the second.
 
 #### Scenario: Reflection level three
 - **WHEN** the reflection level is three
-- **THEN** each sub-frame draws one pass
+- **THEN** each sub-frame has one pass
 
 ### Requirement: Vanish phase table
 The displacement unit's phase table SHALL hold eight entries: (0, 0, −16, none), (0x1100, 0, 350, stage), (0x600, 350, 450, reveal), (0x300, 450, −16, show), (0, 500, −16, none), (0x200, 0, 200, stage), (0xe00, 200, 400, hide) and (0x1100, 400, −1, none).
@@ -367,3 +367,24 @@ A force geometry with more than one pass SHALL upload pass 0's object matrix, se
 #### Scenario: One pass
 - **WHEN** the view has a single pass
 - **THEN** no object matrix is uploaded by the force geometry's frame
+
+### Requirement: Live rain
+While the scene's rain effect exists and the rain amount is above 0.01, the game SHALL step the rain on the game clock with the eye and the camera's backward axis, give it the scene's scratch colour, write its drift figure back as the rain sound's volume and its fall figure as the sound's pitch, and draw its streaks; the effect SHALL be freed with the scene's rain effect.
+
+#### Scenario: Still gust at 0.9
+- **WHEN** the rain at intensity 0.9 is updated with a gust of 0
+- **THEN** the rain sound's volume becomes 0.1215 and its pitch 1.21
+
+### Requirement: Rain streak vertices
+The streaks SHALL be drawn as lines one window pixel wide (twice, one target pixel apart, on the 2× supersampled target) from the box turned 2° about its x axis and scaled by √(fov/70), with the drops' colour bytes read unnormalised (grey 160, alpha 0 at the head and 255 at the tail) times the rain colour, the alpha faded by (0.6 − 0.000667·d)⁴ with d the eye distance in cm.
+
+#### Scenario: At the eye
+- **WHEN** a tail vertex lies at the eye with a rain alpha of 1
+- **THEN** its alpha is 255·0.1296
+
+### Requirement: Rain streak fragment
+Each streak fragment SHALL be the frame behind it t, clamped to 1, as 0.75·t + 3·max(t − 0.1, 0)² plus the vertex colour, clamped to 1 and blended with source alpha over one minus source alpha. A view without a copy of its frame SHALL draw no rain.
+
+#### Scenario: Bright sky behind a streak
+- **WHEN** a streak with colour 0.1 and alpha 0.5 lies over a frame value of 0.5
+- **THEN** the fragment is 0.955 and the blend leaves 0.7275

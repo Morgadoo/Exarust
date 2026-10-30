@@ -20,8 +20,9 @@
 //!   `f·(0.003·r − 0.0015)`; below 0 it rises by `f·0.0015·r` (double
 //!   precision). From it come the fall figure
 //!   `(0.5·gust + 0.9)·intensity + 0.4` and the drift
-//!   `(0.3·gust + 0.15)·intensity²`, which the update stores but nothing in
-//!   this group reads. Each drawn drop's head moves by the drops' move; a
+//!   `(0.3·gust + 0.15)·intensity²`: the scene's weather gives the rain loop
+//!   the fall figure as its pitch and the drift as its volume
+//!   (`crate::weather`). Each drawn drop's head moves by the drops' move; a
 //!   head whose height has its sign bit set goes up by the box's height
 //!   (600 cm) and takes a new x from the effect's own generator word, then
 //!   a new z from the next word (`(w/2³² − 0.5)·300·2`). The tail is the
@@ -29,32 +30,37 @@
 //!   `y` the camera's backward axis's height (so a streak lengthens as the
 //!   view tilts up or down); while `f ≤ 30` the streak is
 //!   `1.5·(8·intensity + 8)·(y⁴ + 0.2)` cm long.
-//! - **Colour** ([`Rain::colour`]): the environment's colour times 2.2, times
-//!   `0.075·intensity + 0.075` (or `0.03·intensity + 0.03` with the bright
-//!   setting), over 255; its alpha `(0.5·intensity + 0.5)·(|y| + 0.5)`. The
-//!   vertex shader multiplies the drop's colour bytes by it and fades a
-//!   drop by `(0.6 − 0.000667·|p − eye|)⁴`; the fragment shader adds it to
-//!   the frame buffer behind the streak and that colour's bright pass.
+//! - **Colour** ([`Rain::colour`]): the environment's colour (the scene's
+//!   scratch colour) times 2.2, times `0.075·intensity + 0.075` (or
+//!   `0.03·intensity + 0.03` while the game is paused: the test reads the
+//!   global pause counter), over 255; its alpha
+//!   `(0.5·intensity + 0.5)·(|y| + 0.5)`. The vertex shader multiplies the
+//!   drop's colour bytes by it, read as plain numbers (the vertex format
+//!   does not normalise them: 160 for the grey, alpha 0 at the head and 255
+//!   at the tail), and fades a drop by `(0.6 − 0.000667·|p − eye|)⁴`; the
+//!   fragment shader adds it to the frame buffer behind the streak and that
+//!   colour's bright pass, alpha-blended over the frame.
 //! - **The draw**: the vertices are drawn as lines, the first
-//!   `round(4096·intensity)` vertices, so half that many drops show. The
-//!   frame runs one pass per sub-frame ([`frame_passes`]): the sub-frame's
-//!   whole-pixel viewport shift, its `FrmCrd` (one over the screen sides
-//!   and the corner's 0/−1 offsets), and `ObjMat`, the drop set's own turn
-//!   ([`tilt`], two degrees about the first axis) with every entry scaled
-//!   by `sqrt(field · (1/70))` (single precision, `field` the camera's
-//!   field value), placed at the drop box's centre and multiplied by the
-//!   sub-frame's composite. With the view's reflection level above three —
-//!   the shipped level is four — each sub-frame also draws the reflected
-//!   set ([`reflected_tilt`]: −2° about the first axis and 170° about the
-//!   second). `EyeVec` is the camera seen from that scaled, placed turn
-//!   ([`eye_vector`]: the camera less the box centre, dotted with each
-//!   row); the fragment pass reads the frame buffer behind the streak, its
-//!   bright pass and adds the rain's colour, and the draw is `GL_LINES`
-//!   over the drawn vertices. No renderer node draws the passes yet.
+//!   `round(4096·intensity)` vertices, so half that many drops show, with
+//!   the box turned 2° about its x axis and scaled by `√(fov / 70)`
+//!   ([`box_rotation`], [`box_scale`]).
 //!
-//! The set is started by the scene's weather ([`drive_rain`]): the weather's
-//! effect existing creates it, a changed rain amount sets its intensity and
-//! a live rain (above 0.01) is framed at the chase camera.
+//! The draw runs once over the frame, through `exa_render::rain`, and the
+//! scene's weather starts and frees the set (`crate::weather`). The
+//! original's own passes are modelled but not drawn: it runs one pass per
+//! sub-frame ([`frame_passes`]): the sub-frame's whole-pixel viewport
+//! shift, its `FrmCrd` (one over the screen sides and the corner's 0/−1
+//! offsets), and `ObjMat`, the drop set's own turn ([`tilt`], the same 2°
+//! about the first axis in the engine's basis) with every entry scaled by
+//! [`box_scale`] of the camera's field value, placed at the drop box's
+//! centre and multiplied by the sub-frame's composite. With the view's
+//! reflection level above three — the shipped level is four — each
+//! sub-frame also draws the reflected set ([`reflected_tilt`]: −2° about
+//! the first axis and 170° about the second). `EyeVec` is the camera seen
+//! from that scaled, placed turn ([`eye_vector`]: the camera less the box
+//! centre, dotted with each row); the fragment pass reads the frame buffer
+//! behind the streak, its bright pass and adds the rain's colour, and the
+//! draw is `GL_LINES` over the drawn vertices.
 //!
 //! Evidence: the drop set's constructor, the intensity setter, the update,
 //! the frame routine with its shader sources, the program constructor (its
@@ -85,6 +91,10 @@ pub const COLOUR_SCALE: f64 = 0.075;
 pub const BRIGHT_COLOUR_SCALE: f64 = 0.03;
 /// One over 255, as the original's single-precision literal.
 pub const BYTE_SCALE: f32 = f32::from_bits(0x3b80_8081);
+/// The box's turn about its x axis, degrees.
+pub const BOX_TILT_DEGREES: f32 = 2.0;
+/// The field of view the box's scale is relative to, degrees.
+pub const BOX_FOV_DEGREES: f32 = 70.0;
 /// The programs' uniform names, in the order the constructor looks them up.
 pub const UNIFORMS: [&str; 4] = ["ObjMat", "EyeVec", "RainCol0", "FrmCrd"];
 /// The frame-buffer sampler's texture unit (the constructor sets `FrmBuf`
@@ -92,11 +102,6 @@ pub const UNIFORMS: [&str; 4] = ["ObjMat", "EyeVec", "RainCol0", "FrmCrd"];
 pub const FRAME_BUFFER_UNIT: u32 = 7;
 /// The reflection level a second, reflected pass needs: above this.
 pub const REFLECT_LEVEL: u32 = 3;
-/// The drop set's tilt, degrees about the first axis.
-pub const TILT_DEGREES: f32 = 2.0;
-/// The factor the camera's field value takes before the square root that
-/// scales the turn: the original's single-precision 1/70.
-pub const FIELD_SCALE: f32 = f32::from_bits(0x3c6a_0ea1);
 /// The reflected pass's tilt and turn, degrees.
 pub const REFLECT_TILT_DEGREES: f32 = -2.0;
 pub const REFLECT_TURN_DEGREES: f32 = 170.0;
@@ -108,6 +113,20 @@ pub const CORNER_COORD: f32 = -1.0;
 /// The frame coordinate's scale: `1 / (view · 3 + 0.15)`.
 pub const FRAME_SCALE: f64 = 3.0;
 pub const FRAME_OFFSET: f64 = 0.15;
+
+/// The box's turn: 2° about its x axis, the matrix the original builds from
+/// the angle's sine and cosine (`y′ = c·y + s·z`, `z′ = c·z − s·y`). The
+/// sense of the turn follows the stored matrix read as acting on column
+/// vectors; a guess, as the turn's sign is not visible at 2°.
+pub fn box_rotation() -> Quat {
+    Quat::from_rotation_x(-BOX_TILT_DEGREES.to_radians())
+}
+
+/// The box's scale for a view of `fov_degrees`: `√(fov / 70)`, the
+/// original's `√(fov · 0.014285714)` in single precision.
+pub fn box_scale(fov_degrees: f32) -> f32 {
+    (fov_degrees * 0.014_285_714).sqrt()
+}
 
 /// The vertex shader, as the original compiles it.
 pub const VERTEX_SHADER: &str = "in vec3 vPos;\r\nin vec4 vCol;\r\nout vec4 vrCol;\r\n\
@@ -138,7 +157,7 @@ pub fn eye_fade(point: Vec3, eye: Vec3) -> f32 {
 /// the engine's turn ([`exa_physics::engine_math::basis_from_pitch_yaw`],
 /// its columns the original's rows).
 pub fn tilt() -> Mat3A {
-    exa_physics::engine_math::basis_from_pitch_yaw(TILT_DEGREES * DEGREES, 0.0)
+    exa_physics::engine_math::basis_from_pitch_yaw(BOX_TILT_DEGREES * DEGREES, 0.0)
 }
 
 /// The reflected draw's rotation: the opposite tilt and a 170° turn.
@@ -147,12 +166,6 @@ pub fn reflected_tilt() -> Mat3A {
         REFLECT_TILT_DEGREES * DEGREES,
         REFLECT_TURN_DEGREES * DEGREES,
     )
-}
-
-/// The scale every entry of the drop set's turn takes:
-/// `sqrt(field · (1/70))` in single precision.
-pub fn field_scale(field: f32) -> f32 {
-    (field * FIELD_SCALE).sqrt()
 }
 
 /// The camera as the shader's `EyeVec` takes it: the camera less the drop
@@ -236,7 +249,7 @@ pub fn frame_passes(
     camera: Vec3,
     field: f32,
 ) -> Vec<RainPass> {
-    let scale = field_scale(field);
+    let scale = box_scale(field);
     let scaled = |mut turn: Mat3A| {
         exa_physics::engine_math::scale(&mut turn, scale);
         turn
@@ -267,71 +280,6 @@ pub fn frame_passes(
         }
     }
     passes
-}
-
-/// The rain set the scene keeps while its weather rains: created on the
-/// first frame the weather's effect exists, dropped when it goes, and given
-/// a new intensity only when the weather's amount changes.
-#[derive(Resource, Debug, Default)]
-pub struct LiveRain {
-    pub rain: Option<Rain>,
-    /// The amount last given to the set.
-    pub intensity: f32,
-}
-
-/// The generator the drop set's creation and wraps draw from.
-#[derive(Resource, Debug)]
-pub struct RainRng(pub Mt19937);
-
-impl Default for RainRng {
-    fn default() -> Self {
-        Self(Mt19937::new(5489))
-    }
-}
-
-/// Starts, feeds and frames the rain from the scene environment's weather:
-/// the weather's effect existing creates the set, a changed rain amount sets
-/// its intensity, and while the amount is above 0.01 it is framed at the
-/// chase camera's eye and backward axis.
-pub fn drive_rain(
-    mut live: ResMut<LiveRain>,
-    mut rng: ResMut<RainRng>,
-    clock: Res<crate::effects::EffectClock>,
-    env: Option<Res<exa_world::environment::SceneEnvRuntime>>,
-    cameras: Query<&GlobalTransform, With<crate::player::ChaseCamera>>,
-) {
-    let Some(env) = env else {
-        return;
-    };
-    if !env.env.weather.effect.exists {
-        live.rain = None;
-        live.intensity = 0.0;
-        return;
-    }
-    let amount = env.env.weather.rain;
-    if live.rain.is_none() {
-        let mut rain = Rain::new(&mut rng.0);
-        rain.set_intensity(amount);
-        live.intensity = amount;
-        live.rain = Some(rain);
-    }
-    let changed = live.intensity != amount;
-    live.intensity = amount;
-    let Some(rain) = live.rain.as_mut() else {
-        return;
-    };
-    if changed {
-        rain.set_intensity(amount);
-    }
-    if !env.env.rain_effect_live() {
-        return;
-    }
-    let Some(camera) = cameras.iter().next() else {
-        return;
-    };
-    let eye = camera.translation() * 100.0;
-    let backward = *camera.back();
-    rain.frame(eye, backward, clock.now_ms, &mut rng.0);
 }
 
 /// One falling drop: its head and the tail of its streak.
@@ -456,10 +404,10 @@ impl Rain {
     }
 
     /// The `RainCol0` colour: red, green, blue and alpha. `environment` is
-    /// the scene environment's colour for the rain, `bright` its bright
-    /// setting, `view_height` the camera's backward-axis height.
-    pub fn colour(&self, environment: Vec3, bright: bool, view_height: f32) -> [f32; 4] {
-        let scale = if bright {
+    /// the scene environment's colour for the rain, `paused` whether the
+    /// game is paused, `view_height` the camera's backward-axis height.
+    pub fn colour(&self, environment: Vec3, paused: bool, view_height: f32) -> [f32; 4] {
+        let scale = if paused {
             BRIGHT_COLOUR_SCALE
         } else {
             COLOUR_SCALE
@@ -609,8 +557,8 @@ mod tests {
         let amount = (1.0f64 * 0.075 + 0.075) as f32;
         assert_eq!(c[0], 2.2 * amount * BYTE_SCALE);
         assert_eq!(c[3], 1.0 * (0.5 + 0.5));
-        let bright = rain.colour(Vec3::ONE, true, 0.0);
-        assert_eq!(bright[0], 2.2 * (0.06f64 as f32) * BYTE_SCALE);
+        let paused = rain.colour(Vec3::ONE, true, 0.0);
+        assert_eq!(paused[0], 2.2 * (0.06f64 as f32) * BYTE_SCALE);
         let d = 0.6f32 * 0.6;
         assert_eq!(eye_fade(Vec3::ZERO, Vec3::ZERO), d * d);
     }
@@ -620,7 +568,7 @@ mod tests {
         // Two degrees about the first axis: the engine's turn, its columns
         // the original's rows.
         let t = tilt();
-        let (sin, cos) = exa_ui::engine_math::sin_cos(TILT_DEGREES * DEGREES);
+        let (sin, cos) = exa_ui::engine_math::sin_cos(BOX_TILT_DEGREES * DEGREES);
         assert_eq!(t.x_axis, Vec3A::new(1.0, 0.0, 0.0));
         assert_eq!(t.y_axis, Vec3A::new(0.0, cos, sin));
         assert_eq!(t.z_axis, Vec3A::new(0.0, -sin, cos));
@@ -633,12 +581,15 @@ mod tests {
         assert_eq!(r.x_axis, Vec3A::new(cos_b, 0.0, -sin_b));
         assert_eq!(r.y_axis, Vec3A::new(sin_a * sin_b, cos_a, sin_a * cos_b));
         assert_eq!(r.z_axis, Vec3A::new(cos_a * sin_b, -sin_a, cos_a * cos_b));
-        // The scale: sqrt(field · 1/70) in single precision; a field of 70
-        // is one.
-        assert!((FIELD_SCALE - 1.0 / 70.0).abs() < 1e-9);
-        assert_eq!(field_scale(70.0), (70.0f32 * FIELD_SCALE).sqrt());
-        assert!((field_scale(70.0) - 1.0).abs() < 1e-6);
-        assert_eq!(field_scale(280.0), (280.0f32 * FIELD_SCALE).sqrt());
+        // The live box turns the same way: its matrix's columns are the
+        // engine basis's columns.
+        let q = Mat3A::from_quat(box_rotation());
+        assert!((q.y_axis - t.y_axis).length() < 1e-6);
+        assert!((q.z_axis - t.z_axis).length() < 1e-6);
+        // The scale: sqrt(field · 1/70) with the single-precision 1/70
+        // (0x3c6a0ea1); a field of 70 is one.
+        assert_eq!(0.014_285_714f32.to_bits(), 0x3c6a_0ea1);
+        assert_eq!(box_scale(280.0), (280.0f32 * f32::from_bits(0x3c6a_0ea1)).sqrt());
         // EyeVec: the camera less the box centre, dotted with each row.
         let centre = Vec3::new(10.0, 20.0, 30.0);
         let camera = Vec3::new(11.0, 22.0, 33.0);
@@ -692,7 +643,7 @@ mod tests {
         // ObjMat: the doubled tilt (sqrt(280/70) = 2) at the box centre,
         // times the sub-frame's composite; EyeVec from the same rows.
         let mut rows = tilt();
-        exa_physics::engine_math::scale(&mut rows, field_scale(280.0));
+        exa_physics::engine_math::scale(&mut rows, box_scale(280.0));
         let object = object_matrix(&rows, centre);
         assert_eq!(object[3], [100.0, 50.0, -20.0, 1.0]);
         assert_eq!(
@@ -705,7 +656,7 @@ mod tests {
         );
         assert_eq!(passes[0].eye, eye_vector(camera, centre, &rows));
         let mut flipped = reflected_tilt();
-        exa_physics::engine_math::scale(&mut flipped, field_scale(280.0));
+        exa_physics::engine_math::scale(&mut flipped, box_scale(280.0));
         assert_eq!(passes[1].eye, eye_vector(camera, centre, &flipped));
         // At or below reflection level three the reflected pass is left out.
         assert_eq!(
@@ -718,5 +669,18 @@ mod tests {
             (UNIFORMS, FRAME_BUFFER_UNIT),
             (["ObjMat", "EyeVec", "RainCol0", "FrmCrd"], 7)
         );
+    }
+
+    /// The box turns 2° about x, so a drop straight above the box's
+    /// origin leans a little along z; at the default 70° view the scale is
+    /// one.
+    #[test]
+    fn the_box_turns_two_degrees_and_scales_with_the_view() {
+        let up = box_rotation() * Vec3::new(0.0, 600.0, 0.0);
+        let (s, c) = 2f32.to_radians().sin_cos();
+        assert!((up.y - 600.0 * c).abs() < 1e-3);
+        assert!((up.z + 600.0 * s).abs() < 1e-3);
+        assert!((box_scale(70.0) - 1.0).abs() < 1e-6);
+        assert!((box_scale(35.0) - 0.5f32.sqrt()).abs() < 1e-6);
     }
 }

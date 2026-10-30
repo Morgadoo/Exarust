@@ -30,6 +30,7 @@ pub mod post;
 pub mod quads;
 pub mod quality;
 pub mod queue;
+pub mod rain;
 pub mod shader_bindings;
 pub mod shader_cache;
 pub mod shader_program;
@@ -81,7 +82,7 @@ impl Plugin for RenderPlugin {
             gi::GiPlugin,
             (flame::FlamePlugin, flame_row::FlameRowPlugin),
             (electricity::ElectricityPlugin, force_effects::ForceEffectsPlugin),
-            spray::SprayPlugin,
+            (spray::SprayPlugin, rain::RainPlugin),
             stain::StainPlugin,
             (benchmark::BenchmarkPlugin, supersample::SupersamplePlugin),
             lights::LightsPlugin,

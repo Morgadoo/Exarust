@@ -420,6 +420,7 @@ fn apply_level_change(
     // level sets its own when it is in.
     commands.insert_resource(exa_audio::LevelMusic(String::new()));
     commands.insert_resource(exa_audio::LevelAmbience(None));
+    commands.insert_resource(exa_audio::LevelAmbienceBed::default());
     commands.remove_resource::<exa_audio::LevelMusicStart>();
     commands.remove_resource::<exa_audio::LevelReverb>();
     let Some(level) = level else {
@@ -831,6 +832,7 @@ fn play_level(
     commands.insert_resource(exa_audio::LevelAmbience(exa_audio::ambience_for_level(
         name,
     )));
+    commands.insert_resource(exa_audio::LevelAmbienceBed::default());
     commands.insert_resource(exa_audio::LevelReverb {
         decay_offset: info.reverb_decay,
     });

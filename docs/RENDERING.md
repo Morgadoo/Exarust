@@ -3340,9 +3340,8 @@ the effect's own generator words; tails a streak behind them that
 lengthens as the view tilts (`(y⁴ + 0.2)`, `y` the camera's backward-axis
 height); the colour the environment's times 2.2 and
 `0.075·intensity + 0.075`, its alpha `(0.5·intensity + 0.5)(|y| + 0.5)`;
-and the eye's `(0.6 − 0.000667·d)⁴` fade. Its shader sources are kept as
-data; the frame-buffer passes are not reproduced and nothing starts a
-rain set. `effects::portal_effect` spawns a portal's particles one at a
+and the eye's `(0.6 − 0.000667·d)⁴` fade. `exa_game::weather` runs it
+live (see [Rain](#rain) below). `effects::portal_effect` spawns a portal's particles one at a
 time on an 80 × 115 cm ellipse at the node's place, each starting with an
 outward step of 0.0015 of its offset, with the original's 3- or 5-bit look
 index draws. `effects::fire_node` builds the `_FlameMat01` node's warm
@@ -3360,6 +3359,46 @@ falloff, the `Anim` roll and fade, and a 1 × 5 `GrdTex` palette from
 transparent to warm white. The draw is additive [guess: the record's blend
 state is not in this path] and the original's per-supersample scissor pass
 is collapsed to one draw.
+
+### Rain
+
+The scene weather's rain request creates the effect; every tick the rain
+amount moves, the effect takes it as its intensity, and it is freed when
+the rain falls to 0.01 (`exa_world::scene_env`). While the amount is above
+0.01 the effect is stepped on the game clock and drawn once a frame
+(`exa_game::weather`, `exa_render::rain`):
+- **Placement.** The box stands 450 cm ahead of the eye, turned 2° about
+  its x axis and scaled by `√(fov / 70)` (the sense of the turn is a guess).
+- **Vertices.** A line list of the first `round(4096·intensity)` heads and
+  tails. The colour bytes are read unnormalised: grey 160, alpha 0 at the
+  head and 255 at the tail. The colour is `RainCol0.rgb × 160`; the alpha
+  `RainCol0.a × (0 or 255) × (0.6 − 0.000667·d)⁴`, so along a streak it
+  rises from 0 at the head to well above 1, where the target clamps it.
+- **`RainCol0`.** The scene's scratch colour (the horizon under a sky, the
+  fog colour in fog) × 2.2 × (0.075·I + 0.075) / 255 (0.03·I + 0.03 while
+  the game is paused); alpha `(0.5·I + 0.5)(|y| + 0.5)`, y the camera's
+  backward axis's height.
+- **Fragment.** The frame behind the streak `t`, clamped to 1 (the
+  original's 8-bit frame buffer), becomes `0.75·t + 3·max(t − 0.1, 0)²`
+  plus the vertex colour: the streak darkens dim parts of the frame and
+  brightens bright ones. Blended with source alpha and one minus source
+  alpha, depth-tested, one window pixel wide: the original draws a
+  one-pixel line in each supersample corner at window resolution, so on
+  Exarust's 2× target each line is drawn twice, one target pixel apart.
+- **The frame copy.** The streaks draw in Bevy's transmissive pass, which
+  copies the opaque frame first; the scene cameras get
+  `ScreenSpaceTransmission` while the effect exists. Cameras without it
+  draw no rain. The original draws the effect once per supersample corner
+  over that corner's frame; Exarust draws it once, at the supersampled
+  resolution. The reflected pass (reflection level above 3) is not drawn.
+- **Look.** Over a dark night ground the streaks are faint dark lines (a
+  quarter darker than what lies behind them); over bright ground or sky
+  they are bright lines. `EXA_RAIN_DEBUG` and `EXA_RAIN_DRAW` (see
+  `docs/DEBUGGING.md`) show where they are.
+- **Sound levels.** The effect's update gives the rain loop its volume,
+  the drift `(0.3·gust + 0.15)·I²` (0.12 at I = 0.9 in a still gust), and
+  its pitch, the fall `(0.5·gust + 0.9)·I + 0.4`; the next weather tick
+  reads both (see the audio crate's README).
 
 The mind effects build a **UV sphere** instead: `segments` columns and
 `segments / 2` rows from pole to pole at an angle step 2π/segments on both

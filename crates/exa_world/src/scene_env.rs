@@ -7,9 +7,10 @@
 //! Evidence: the plug-in's constructor, its setters, the sun placement, the
 //! built-in six-record daylight track and its start-up pass, the record
 //! pick-and-blend, the sky dimming and the per-frame apply (reverse
-//! engineered). The sky shader, the environment cube's masked tint upload and
-//! the sound effects are not decoded; the parts that would need them are
-//! marked.
+//! engineered). The sky shader and the environment cube's masked tint upload
+//! are not decoded; the parts that would need them are marked. The rain
+//! effect's drops and draw, the rain loop and the thunder this model asks
+//! for are played by `exa_game::weather`.
 
 use exa_assets::polyhedra::{fast_sin, fast_sin_cos};
 use exa_formats::environment::{Environment, SunMode};
@@ -922,25 +923,35 @@ pub struct WeatherEvents {
     pub rain_effect: Option<[f32; 4]>,
 }
 
-/// A thunderclap's sound: its volume from the strike's distance and a
-/// random pitch.
+/// A thunderclap's sound: its volume from the strike's distance, a random
+/// pitch, and where it plays. The original plays one variant of the
+/// `Thunder` set as a listener-relative source placed at the strike's
+/// position, the view's position included (see [`Weather::lightning`]), so
+/// a clap is heard from the listener plus the view's own world offset.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Thunder {
     pub volume: f32,
     pub pitch: f32,
+    /// The strike's position when the clap plays, centimetres.
+    pub position: [f32; 3],
 }
 
 /// The rain effect object's state, as the unit reads it: it exists while it
 /// rains, takes the last clear colour as its own each frame, and its volume
-/// and pitch go to the rain sound. The effect's own volume and pitch are
-/// computed outside this unit (its per-frame rule is not in the model), so
-/// they are fields the caller sets; both start at zero.
+/// and pitch go to the rain sound. The effect's own update sets them (the
+/// drops' drift figure is the volume, their fall figure the pitch); that
+/// update runs with the effect's draw, outside this unit, so the caller
+/// writes both back; both start at zero.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct RainEffect {
     /// Whether the effect object exists.
     pub exists: bool,
     /// The colour it was given this frame, RGBA.
     pub colour: [f32; 4],
+    /// The intensity the tick gave it: the rain amount, set on every tick
+    /// the rain moves towards its target (the effect's drawn count follows
+    /// it). Zero until the first such tick.
+    pub intensity: f32,
     /// The volume the sound takes from it.
     pub volume: f32,
     /// The pitch the sound takes from it.
@@ -1873,6 +1884,10 @@ impl SceneEnvironment {
                 }
                 w.rain = rain;
             }
+            // A live effect takes the new amount as its intensity.
+            if w.effect.exists {
+                w.effect.intensity = w.rain;
+            }
         }
         // The rain sound takes its volume and pitch from the effect; its
         // start bit decides whether it plays, its stop bit whether it stops.
@@ -1899,7 +1914,11 @@ impl SceneEnvironment {
             if self.weather.thunder_pending && self.weather.thunder_at < now {
                 let pitch = (system_random() * 0.3 + 0.9) as f32;
                 let volume = ((self.weather.lightning.attenuation * 4.0) as f64 + 0.1) as f32;
-                events.thunder = Some(Thunder { volume, pitch });
+                events.thunder = Some(Thunder {
+                    volume,
+                    pitch,
+                    position: self.weather.lightning.position,
+                });
                 self.weather.thunder_pending = false;
             }
             if !self.weather.lightning.active {
@@ -2733,6 +2752,8 @@ mod tests {
         let thunder = events.thunder.unwrap();
         assert!((thunder.volume - 2.1).abs() < 1e-6);
         assert!((thunder.pitch - 1.05).abs() < 1e-6);
+        // The clap plays where the strike is.
+        assert_eq!(thunder.position, env.weather.lightning.position);
         let l = env.weather.lightning;
         // A rising step turns down: −0.1 − r · 0.2 with r = 1 / 2³² · state 1.
         assert!((l.step + 0.1).abs() < 1e-6, "{}", l.step);
@@ -3309,6 +3330,34 @@ mod tests {
         env.weather.effect.volume = 0.0;
         let events = env.tick(20, &mut rng, &mut system);
         assert!(events.stop_sound);
+    }
+
+    /// The tick hands the effect the rain amount on every tick the rain
+    /// moves, and frees it (intensity and all) once the rain falls to 0.01.
+    #[test]
+    fn the_rain_effect_takes_the_moving_amount() {
+        let mut env = SceneEnvironment::new(5);
+        let mut rng = WeatherRng::new(0);
+        let mut system = || 0.5;
+        env.set_rain(0.9, 0, &mut rng);
+        assert_eq!(env.weather.effect.intensity, 0.0);
+        env.weather.rain = 0.89;
+        env.tick(0, &mut rng, &mut system);
+        // No time has passed, but the amount differs from the target.
+        assert_eq!(env.weather.effect.intensity, 0.89);
+        env.tick(200, &mut rng, &mut system);
+        // 0.89 + 200 · 0.0001, capped at the target.
+        assert_eq!(env.weather.rain, 0.9);
+        assert_eq!(env.weather.effect.intensity, 0.9);
+        // At the target the amount stops moving and the intensity stays.
+        env.weather.effect.intensity = 0.5;
+        env.tick(260, &mut rng, &mut system);
+        assert_eq!(env.weather.effect.intensity, 0.5);
+        // A clear request fades it out: 0.9 − 9 000 · 0.0001 is 0.
+        env.set_rain(0.0, 260, &mut rng);
+        let events = env.tick(9_260, &mut rng, &mut system);
+        assert!(events.stop_rain);
+        assert_eq!(env.weather.effect, RainEffect::default());
     }
 
     #[test]

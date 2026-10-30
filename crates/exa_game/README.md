@@ -494,13 +494,12 @@ is not in.
 The force and environment effects of the same powers are in as plain
 rules: `effects::rain` (4096 drops in a 600 cm box ahead of the camera,
 the gust walk, the fall, the tilt-dependent streak, the ground wrap on the
-effect's own generator, the colour and the two shaders kept as data, the
-per-sub-frame and reflected draw passes (the set's 2° tilt scaled by
-`sqrt(field/70)`, placed at the box centre and multiplied by each
-sub-frame's composite, with its `EyeVec`; no renderer node draws them),
-the program's uniforms and frame-buffer unit, and the weather's start: the
-scene environment's effect creates the set, its rain amount sets the
-intensity and a live rain is framed at the chase camera),
+effect's own generator, the colour and the two shaders kept as data; run
+live with the rain loop, thunder and the outdoor arenas' wind bed by
+`weather`; the original's per-sub-frame and reflected draw passes (the
+set's 2° tilt scaled by `sqrt(field/70)`, placed at the box centre and
+multiplied by each sub-frame's composite, with its `EyeVec`), the
+program's uniforms and frame-buffer unit are modelled but not drawn),
 `effects::portal_effect` (one ellipse particle per call, its previous and
 current positions, the 3- and 5-bit look draws), `effects::fire_node`
 (the `_FlameMat01` node's 800 cm 1/0.68/0.43 light and the colour ramp
@@ -526,8 +525,8 @@ flags, programs, uniforms, pass rows and fades) and `effects::vanish`
 (hide, show, lend, phase hook and finish, and the displacement unit's
 phase table with its stage, reveal, show and hide entries, not run live).
 A cast starts its dome or wave,
-but none of these is drawn: the rain's caller is the scene's weather, the
-vanish's is its power effect node, and the AI's sight is not registered.
+but of these only the rain is drawn (the scene's weather runs it); the
+vanish's caller is its power effect node, and no AI reads the hazards.
 
 The per-character item effects (`item_effects`) are the body's effect
 list and its two impact counters, the held charge (the HUD shown while it
