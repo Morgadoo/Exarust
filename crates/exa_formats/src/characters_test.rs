@@ -1237,3 +1237,75 @@ fn a_placement_reads_its_motion_state_and_ai_home() {
     let p = read_placement(&plain).unwrap();
     assert_eq!((p.motion, p.ai_home), (None, None));
 }
+
+/// A section entry read whole: the record and the object database and
+/// string library the sub-chunks after it carry.
+#[test]
+fn an_entry_reads_its_record_and_its_own_database() {
+    let record = CharacterRecord::new();
+    let mut bytes = record.to_bytes().unwrap();
+    let mut db = crate::objdb::Store::from_records([(1, 0, &[0u8; 4][..])]);
+    db.set_flags(0, crate::objdb::MAGIC);
+    let mut library = crate::objstrings::Library::default();
+    library.add(b"Blade");
+    for (tag, body) in [
+        (RECORD_STRINGS, library.write()),
+        (0x1234, vec![9, 9, 9]),
+        (ACTOR_ITEMS, db.write()),
+    ] {
+        bytes.extend(tag.to_le_bytes());
+        bytes.extend((body.len() as u32).to_le_bytes());
+        bytes.extend(body);
+    }
+    let (read, own) = read_entry(0, &bytes).unwrap();
+    assert_eq!(read, record.duplicate().unwrap());
+    assert_eq!(own.strings.get(1).as_deref(), Some("Blade"));
+    assert_eq!(own.base.len(), 1);
+    assert!(own.base.find(1).is_some());
+    // An entry that ends with the record has an empty database.
+    let (read, own) = read_entry(0, &record.to_bytes().unwrap()).unwrap();
+    assert_eq!(read, record.duplicate().unwrap());
+    assert!(own.base.is_empty() && own.strings.is_empty());
+    // A sub-chunk that runs past the entry is an error, not a panic.
+    let mut short = record.to_bytes().unwrap();
+    short.extend(ACTOR_ITEMS.to_le_bytes());
+    short.extend(100u32.to_le_bytes());
+    assert!(read_entry(0, &short).is_err());
+    assert!(read_entry(0, &[0; 3]).is_err());
+}
+
+/// The shipped entries read whole: every actor's record and its own item
+/// database (skipped without the game).
+#[test]
+fn shipped_entries_read_their_own_databases() {
+    let Some(dir) = exa_rpk::locate_install(None) else {
+        return;
+    };
+    let game = exa_rpk::GameData::open(&dir).unwrap();
+    let resource = game.pack(exa_rpk::PackKind::Resource).unwrap();
+    let actors = exa_rpk::Archive::parse(resource.get("actors.rpk").unwrap()).unwrap();
+    let mut with_items = 0;
+    let mut items = 0;
+    for e in actors.entries() {
+        let b = actors.bytes(e);
+        let (_, own) = read_entry(0, b).unwrap_or_else(|err| panic!("{}: {err}", e.name));
+        assert!(
+            own.strings.is_empty(),
+            "{}: a shipped entry has no library",
+            e.name
+        );
+        if !own.base.is_empty() {
+            with_items += 1;
+            items += own.base.len();
+        }
+    }
+    assert_eq!(actors.entries().len(), 21);
+    assert!(with_items >= 19, "{with_items}");
+    // The databases hold the items actor_items reads.
+    let listed: usize = actors
+        .entries()
+        .iter()
+        .map(|e| actor_items(actors.bytes(e)).map_or(0, |i| i.len()))
+        .sum();
+    assert_eq!(items, listed);
+}

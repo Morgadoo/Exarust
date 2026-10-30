@@ -1048,6 +1048,42 @@ fn sections(b: &[u8]) -> Result<(usize, Vec<Section<'_>>)> {
 
 /// Tag of the item database an actor's record is followed by.
 const ACTOR_ITEMS: u32 = 0xDBDB;
+/// Tag of the string library a record's entry may carry (the prelude's
+/// reader loads it into the record's own database; no shipped entry has
+/// one).
+const RECORD_STRINGS: u32 = 0xDBCD;
+
+/// A character section entry read whole: the record and the object database
+/// its entry carries, as the prelude's loader builds them. The sub-chunks
+/// after the record are walked in order: [`RECORD_STRINGS`] replaces the
+/// database's string library and [`ACTOR_ITEMS`] its records, and any other
+/// tag is skipped. The original's walk compares the bytes consumed (plus
+/// six or eight) with the entry's length and can therefore stop before a
+/// trailing header; Exarust needs a whole 8-byte header, which every
+/// shipped entry has.
+pub fn read_entry(id: u32, b: &[u8]) -> Result<(CharacterRecord, crate::objdb::ObjectDb)> {
+    let mut outer = Reader { b, pos: 0 };
+    let size = {
+        outer.u32()?;
+        outer.u32()? as usize
+    };
+    let record = CharacterRecord::parse(id, b)?;
+    let mut pos = 8 + size;
+    let mut database = crate::objdb::ObjectDb::default();
+    while pos + 8 <= b.len() {
+        let mut r = Reader { b, pos };
+        let tag = r.u32()?;
+        let len = r.u32()? as usize;
+        let body = r.bytes(len)?;
+        match tag {
+            RECORD_STRINGS => database.strings = crate::objstrings::Library::parse(body)?,
+            ACTOR_ITEMS => database.base = crate::objdb::Store::parse(body)?,
+            _ => {}
+        }
+        pos = r.pos;
+    }
+    Ok((record, database))
+}
 
 /// The items of the database that follows an actor's record (tag, size,
 /// then an RDB of item records like `objdb.rdb`'s): what its
