@@ -352,6 +352,14 @@ pub fn object_goal(
     (point, 50, 100.0)
 }
 
+/// The investigation's goal callback: the point the pathfinder's nearest
+/// walkable query answered for the body's position, motion mode 20 and a
+/// 100 cm radius. The query itself is the level's (the abstract pathfinder
+/// answers the point unchanged).
+pub fn investigation_goal(walkable_cm: bevy::math::Vec3) -> (bevy::math::Vec3, i32, f32) {
+    (walkable_cm, 20, 100.0)
+}
+
 /// A room object the idle driver can walk to and use.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RoomObject {
@@ -750,6 +758,16 @@ mod tests {
         assert_eq!(
             investigate(&mut state, (4, 4), f32::NAN),
             Investigated::Nothing
+        );
+    }
+
+    #[test]
+    fn the_investigation_goal_walks_to_the_pathfinders_point() {
+        // The callback stores the pathfinder's nearest walkable point as
+        // the goal, with motion mode 20 and a 100 cm radius.
+        assert_eq!(
+            investigation_goal(Vec3::new(10.0, -5.0, 2.0)),
+            (Vec3::new(10.0, -5.0, 2.0), 20, 100.0)
         );
     }
 
