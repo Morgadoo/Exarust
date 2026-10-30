@@ -17,6 +17,9 @@ pub const STYLE: u32 = 0x88;
 pub const STATE_BITS: u32 = 0x4c010;
 /// The form's border.
 pub const BORDER: i32 = 8;
+/// The selected control meaning "no control", at which the view's cursor
+/// actions take the press.
+pub const NO_CONTROL_SELECTED: i32 = -1;
 /// The frame-rate readout's line, in units from the top.
 pub const FPS_LINE: i32 = 1;
 /// The version overlay's text.
@@ -571,10 +574,92 @@ impl ViewSize {
     }
 }
 
+/// The counters the viewport's constructor moves: its instance number and
+/// its place in the global viewport list, both counting from one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ViewportRegistry {
+    pub created: i32,
+    pub listed: i32,
+}
+
+impl ViewportRegistry {
+    /// Makes a viewport: returns its instance number and list place.
+    pub fn add(&mut self) -> (i32, i32) {
+        self.created += 1;
+        self.listed += 1;
+        (self.created, self.listed)
+    }
+}
+
 /// The viewport's hit test: where the form's own test finds no control
 /// (-1), the point belongs to the view, whose cursor shape is returned.
 pub fn view_cursor(base: i32, view_cursor: i32) -> Option<i32> {
     (base == -1).then_some(view_cursor)
+}
+
+/// The view-port's delegate rules for messages the hosted view can take
+/// over from the form. Each delegate is a callback the view installs; when
+/// it is absent the form's own handler answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ViewDelegates {
+    /// The view takes the press (its callback at the form's press slot).
+    pub press: bool,
+    /// The view takes the release.
+    pub release: bool,
+    /// The view takes keys.
+    pub key: bool,
+    /// The view has a begin-frame callback.
+    pub begin: bool,
+    /// The view has a redraw-request callback.
+    pub redraw: bool,
+    /// The view has an extra hit callback.
+    pub hit: bool,
+    /// The view has a cursor-shape callback.
+    pub shape: bool,
+    /// The view has an extra key-up callback.
+    pub extra_key: bool,
+}
+
+/// The press's route: the view's callback answers when it has one, else the
+/// form's own press. `base` and `view` are the two answers, each run only
+/// when its route is taken.
+pub fn press_route(
+    delegates: ViewDelegates,
+    base: impl FnOnce() -> u32,
+    view: impl FnOnce() -> u32,
+) -> u32 {
+    if delegates.press { view() } else { base() }
+}
+
+/// The release's route, as the press's.
+pub fn release_route(
+    delegates: ViewDelegates,
+    base: impl FnOnce() -> u32,
+    view: impl FnOnce() -> u32,
+) -> u32 {
+    if delegates.release { view() } else { base() }
+}
+
+/// The key's route and its forward: a key-goes-to-the-view answer is the
+/// view's when it has a key callback, else the form's. With the view
+/// answering and the key's low bits clear, the key is also handed to the
+/// focused control (`forward`).
+pub fn key_route(
+    delegates: ViewDelegates,
+    mask: u32,
+    base: impl FnOnce() -> u32,
+    view: impl FnOnce() -> u32,
+) -> (u32, bool) {
+    if delegates.key {
+        (view(), mask & 3 == 0)
+    } else {
+        (base(), false)
+    }
+}
+
+/// The begin-frame callback's answer, 0 without one.
+pub fn begin_route(delegates: ViewDelegates, begin: impl FnOnce() -> u32) -> u32 {
+    if delegates.begin { begin() } else { 0 }
 }
 
 /// The fields the viewport's draw slot reads for one frame.
@@ -951,6 +1036,39 @@ mod tests {
         // Stereo 2 shifts the other way, and no stereo does not shift.
         assert_eq!(plan_draw(DrawInput { stereo: 2, ..whole }).eye, [-0.5, 0.0]);
         assert_eq!(plan_draw(DrawInput { stereo: 0, ..whole }).eye, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn the_constructor_numbers_each_viewport() {
+        let mut registry = ViewportRegistry::default();
+        assert_eq!(registry.add(), (1, 1));
+        assert_eq!(registry.add(), (2, 2));
+        assert_eq!(TITLE, "Viewport");
+        assert_eq!((STYLE, STATE_BITS, BORDER), (0x88, 0x4c010, 8));
+        assert_eq!(NO_CONTROL_SELECTED, -1);
+    }
+
+    #[test]
+    fn the_view_delegates_take_their_messages_from_the_form() {
+        let none = ViewDelegates::default();
+        let view = ViewDelegates {
+            press: true,
+            release: true,
+            key: true,
+            begin: true,
+            ..none
+        };
+        // A view callback answers in place of the form's handler.
+        assert_eq!(press_route(view, || 1, || 2), 2);
+        assert_eq!(press_route(none, || 1, || 2), 1);
+        assert_eq!(release_route(view, || 1, || 2), 2);
+        assert_eq!(release_route(none, || 1, || 2), 1);
+        // A key's low bits clear with a view callback forwards too.
+        assert_eq!(key_route(view, 0x1000, || 1, || 2), (2, true));
+        assert_eq!(key_route(view, 0x1002, || 1, || 2), (2, false));
+        assert_eq!(key_route(none, 0x1000, || 1, || 2), (1, false));
+        assert_eq!(begin_route(view, || 9), 9);
+        assert_eq!(begin_route(none, || 9), 0);
     }
 
     #[test]

@@ -1396,8 +1396,12 @@ PRACTICE, VERSUS and MANUAL is named, not performed; SETTINGS opens the
 Settings form over the menu, which then takes the input until it closes. Escape goes
 back from the arena and practice pages and closes the screen elsewhere. The
 rows are measured and drawn with the menu font's record (`titlefont.rfi`),
-the selected one through the menu text program; a missing sheet falls back
-to the base font through the same draw path.
+the selected one through the menu text program, and the title page with
+`maintitle01.rfi`'s art at the row scale and its (230, 230, 230, 153)
+tint; a missing sheet falls back to the base font through the same draw
+path. A newly hovered row plays `MenuSel` (at most once per 200 ms) and a
+press plays `MenuClick`, both through the sound bank at a rolled
+0.8–1.2 pitch.
 
 ## The trade window and the camera's wall probe
 
