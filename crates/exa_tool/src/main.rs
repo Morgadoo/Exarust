@@ -672,7 +672,7 @@ fn paint_item(game: &GameData, model: &str, stem: &str, out: &Path) -> Result<()
     let mut owned = Vec::new();
     for layer in appearance.used_layers() {
         let material = layer_material(layer);
-        let Some(mask) = texels(&format!("{stem}m{}", layer.mask)) else {
+        let Some(mask) = texels(&exa_assets::paint::mask_texture(stem, layer.mask)) else {
             println!("  mask {} missing", layer.mask);
             continue;
         };

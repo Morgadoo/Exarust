@@ -1428,11 +1428,21 @@ mod tests {
         let game = exa_rpk::GameData::open(&dir).unwrap();
         let resource = game.pack(exa_rpk::PackKind::Resource).unwrap();
         let db = Database::parse(resource.get("objdb.rdb").unwrap()).unwrap();
-        let eight = items(&db)
+        let listed = items(&db);
+        let eight = listed
             .iter()
             .filter(|i| i.appearance.is_some_and(|a| a.layers[LAYERS - 1].mask != 0))
             .count();
         assert_eq!(eight, 0);
+        // A mask names one character (`<stem>m<mask + '0'>`), so every
+        // shipped layer must stay at a single digit.
+        for item in &listed {
+            if let Some(a) = item.appearance {
+                for layer in a.used_layers() {
+                    assert!(layer.mask <= 9, "{}: mask {}", item.name, layer.mask);
+                }
+            }
+        }
     }
 
     /// The first level's chests, barrels and bags: the placed objects whose

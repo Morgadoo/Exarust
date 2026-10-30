@@ -1171,7 +1171,7 @@ impl ModelLoader<'_> {
         };
         let mut layers: Vec<OwnedLayer> = Vec::new();
         for layer in &paint.layers {
-            let mask_name = format!("{stem}m{}", layer.mask);
+            let mask_name = crate::paint::mask_texture(&stem, layer.mask);
             if self.game.texture(&mask_name).is_none() {
                 // The original stops at the first missing mask.
                 break;
@@ -1266,7 +1266,7 @@ impl ModelLoader<'_> {
         }
         let mut names = vec![format!("{stem}d")];
         for layer in appearance.used_layers() {
-            let mask = format!("{stem}m{}", layer.mask);
+            let mask = crate::paint::mask_texture(stem, layer.mask);
             // A layer whose mask the set lacks ends the list: the original
             // stops reading there.
             if self.game.texture(&mask).is_none() {
@@ -1327,7 +1327,7 @@ impl ModelLoader<'_> {
         for layer in appearance.used_layers() {
             // A layer whose mask the set lacks ends the list, as the
             // original's job stops reading there.
-            let mask_name = format!("{stem}m{}", layer.mask);
+            let mask_name = crate::paint::mask_texture(stem, layer.mask);
             if self.game.texture(&mask_name).is_none() {
                 break;
             }

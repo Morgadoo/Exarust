@@ -92,16 +92,24 @@ impl Tiling {
     /// the painted size, and the job's four offsets drawn from seed B, each
     /// `round(r·512)/512 − ½` in double (`MatTile.zw`, then `DmgTile.zw`).
     pub fn factory(region_texels: Vec2, painted: Vec2, seed_b: u32) -> Self {
-        let mut state = seed_b;
-        let mut offset = || {
-            state = state.wrapping_mul(0x0808_8405).wrapping_add(1);
-            let r = (f64::from(state) * 2f64.powi(-32)) as f32;
-            let k = exa_formats::pixel::round_f32(r * 512.0);
-            (k as f64 * (1.0 / 512.0) - 0.5) as f32
-        };
-        let (a, b, c, d) = (offset(), offset(), offset(), offset());
+        let [a, b, c, d] = jitters(seed_b);
         Self {
             density: region_texels / painted.max(Vec2::ONE),
+            material_offset: Vec2::new(a, b),
+            damage_offset: Vec2::new(c, d),
+            uv_scale: 1.0,
+        }
+    }
+
+    /// An apparel block's tiling: one target texel per painted texel and the
+    /// four offsets the job draws from the record's seed (`MatTile.zw`, then
+    /// `DmgTile.zw`). A guess labelled as such: the pack shows the four
+    /// draws in the block's fields, but only the procedural programs read
+    /// them.
+    pub fn apparel(seed: u32) -> Self {
+        let [a, b, c, d] = jitters(seed);
+        Self {
+            density: Vec2::ONE,
             material_offset: Vec2::new(a, b),
             damage_offset: Vec2::new(c, d),
             uv_scale: 1.0,
@@ -122,6 +130,27 @@ impl Tiling {
             1.0
         }
     }
+}
+
+/// The four offsets a texture job draws from its seed: the engine's linear
+/// sequence, each draw quantised to 1/512 in double and shifted by ½, so the
+/// values lie in [−½, ½). Used for `MatTile.zw` then `DmgTile.zw`.
+pub fn jitters(seed: u32) -> [f32; 4] {
+    let mut state = seed;
+    std::array::from_fn(|_| {
+        state = state.wrapping_mul(0x0808_8405).wrapping_add(1);
+        let r = (f64::from(state) * 2f64.powi(-32)) as f32;
+        let k = exa_formats::pixel::round_f32(r * 512.0);
+        (k as f64 * (1.0 / 512.0) - 0.5) as f32
+    })
+}
+
+/// A paint layer's mask texture: the stem, an `m` and the mask byte plus
+/// `b'0'` written as a single character. The original patches one byte into
+/// the two-character suffix, so a mask of 10 names `m:` rather than `m10`
+/// (no shipped appearance uses a mask above 9).
+pub fn mask_texture(stem: &str, mask: u8) -> String {
+    format!("{stem}m{}", char::from(b'0'.wrapping_add(mask)))
 }
 
 /// How a material number paints.
@@ -2044,6 +2073,39 @@ mod tests {
             height: w,
             rgba: [v, v, v, 255].repeat(w * w),
         }
+    }
+
+    /// A job's four offsets: the engine's sequence quantised to 1/512 and
+    /// shifted by ½, in double after the single-precision draw.
+    #[test]
+    fn a_job_draws_four_quantised_offsets() {
+        assert_eq!(
+            jitters(0).map(f32::to_bits),
+            [0xbf00_0000, 0xbef0_0000, 0x3eb9_0000, 0xbe98_0000]
+        );
+        assert_eq!(
+            jitters(12345).map(f32::to_bits),
+            [0xbdec_0000, 0xbe58_0000, 0xbed7_0000, 0x3d58_0000]
+        );
+        let tiling = Tiling::apparel(12345);
+        assert_eq!(
+            tiling.material_offset,
+            Vec2::new(-0.115_234_375, -0.210_937_5)
+        );
+        assert_eq!(
+            tiling.damage_offset,
+            Vec2::new(-0.419_921_875, 0.052_734_375)
+        );
+        assert_eq!(tiling.density, Vec2::ONE);
+    }
+
+    /// The mask suffix is one patched character: mask 10 names `m:`, not
+    /// `m10`.
+    #[test]
+    fn a_mask_names_one_character() {
+        assert_eq!(mask_texture("shirty_a", 1), "shirty_am1");
+        assert_eq!(mask_texture("shirty_a", 9), "shirty_am9");
+        assert_eq!(mask_texture("shirty_a", 10), "shirty_am:");
     }
 
     #[test]
