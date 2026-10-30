@@ -3469,6 +3469,63 @@ pub fn apparel_panel_place(tall: bool) -> PanelPlace {
     }
 }
 
+/// What showing the equipment page's apparel panel did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApparelPanel {
+    /// The versus equipment form was hidden first (it exists).
+    pub versus_equipment_hidden: bool,
+    /// The panel was made (none existed) rather than shown again.
+    pub created: bool,
+    pub shown: bool,
+    /// The panel's item loop finished (the made panel only).
+    pub finished: bool,
+    /// The screen's current equipment form took the panel.
+    pub current_form: bool,
+    /// The kit entries the loop added.
+    pub items: usize,
+}
+
+/// Shows the equipment page's apparel panel and fills it with the mode's
+/// kit.
+///
+/// The versus equipment form is hidden first when it exists, and the form's
+/// first tab is captioned APPAREL. A missing panel is made at
+/// [`apparel_panel_place`], shown and bound as the current equipment form,
+/// then filled from [`apparel_kit_table`]'s entries: every entry the worn
+/// list does not already cover is resolved and added ([`missing_apparel`],
+/// [`resolve_kit_item`]) and the panel finishes. A panel that already exists
+/// is shown again and keeps its items. A named story background returns
+/// before the final binding, so the screen's current equipment form is left
+/// as it was.
+pub fn show_apparel_panel(
+    has_versus_equipment: bool,
+    existing: bool,
+    kit_entries: Option<usize>,
+    added: usize,
+) -> ApparelPanel {
+    let created = !existing;
+    if kit_entries.is_none() {
+        // The panel stands, but a named story background stops before the
+        // current form is bound and before the made panel finishes.
+        return ApparelPanel {
+            versus_equipment_hidden: has_versus_equipment,
+            created,
+            shown: true,
+            finished: false,
+            current_form: false,
+            items: 0,
+        };
+    }
+    ApparelPanel {
+        versus_equipment_hidden: has_versus_equipment,
+        created,
+        shown: true,
+        finished: created,
+        current_form: true,
+        items: if created { added } else { 0 },
+    }
+}
+
 /// The weapons panel beside the apparel one.
 pub fn weapon_panel_place(parent_width: i32, tall: bool) -> PanelPlace {
     PanelPlace {
@@ -7135,6 +7192,49 @@ mod tests {
         assert_eq!(CREATION_ICON_OFFSETS, [288, 192, 96, 0]);
         assert_eq!(creation_icon_size(4), 32);
         assert_eq!(creation_icon_size(5), 40);
+    }
+
+    #[test]
+    fn the_apparel_panel_is_made_once_and_bound() {
+        // The first visit hides the versus equipment form, makes the panel,
+        // fills it from the kit and binds it as the current equipment form.
+        assert_eq!(
+            show_apparel_panel(true, false, Some(5), 3),
+            ApparelPanel {
+                versus_equipment_hidden: true,
+                created: true,
+                shown: true,
+                finished: true,
+                current_form: true,
+                items: 3,
+            }
+        );
+        // A second visit only shows it again: no items, nothing finished,
+        // and it is still bound.
+        assert_eq!(
+            show_apparel_panel(false, true, Some(5), 3),
+            ApparelPanel {
+                versus_equipment_hidden: false,
+                created: false,
+                shown: true,
+                finished: false,
+                current_form: true,
+                items: 0,
+            }
+        );
+        // A named story background shows the panel but leaves the current
+        // equipment form alone and never finishes the made panel.
+        assert_eq!(
+            show_apparel_panel(false, false, None, 0),
+            ApparelPanel {
+                versus_equipment_hidden: false,
+                created: true,
+                shown: true,
+                finished: false,
+                current_form: false,
+                items: 0,
+            }
+        );
     }
 
     #[test]
