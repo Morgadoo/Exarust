@@ -171,13 +171,29 @@ where
         write_condition(copy, &c);
     }
     stats(copy);
+    weapon_condition_pass(copy, Some(price))
+}
+
+/// The weapon condition pass over a copy's own body: its stat bytes are
+/// scaled by its own quality and damage (`weapon_condition`, the impact
+/// only capped) and the price word, when given, takes the copy's own
+/// quality as its base. False when the body is too short.
+pub fn weapon_condition_pass(copy: &mut [u8], price: Option<&mut u16>) -> bool {
+    let Some(c) = made_condition(copy) else {
+        return false;
+    };
+    if copy.len() < 0x40 {
+        return false;
+    }
     let s = weapon_condition(&weapon_stats(copy), copy[0x32], c.quality, c.damage);
     copy[0x32] = s.impact;
     copy[0x33] = s.thrust;
     for (side, at) in [(0, 0x37), (1, 0x3D)] {
         copy[at..at + 3].copy_from_slice(&s.sides[side]);
     }
-    *price = condition_price(*price, c.quality, c.quality, c.damage);
+    if let Some(price) = price {
+        *price = condition_price(*price, c.quality, c.quality, c.damage);
+    }
     true
 }
 
@@ -210,22 +226,183 @@ pub fn refresh_apparel(
     copy[0x1A0..0x1A6].copy_from_slice(&template[0x1A0..0x1A6]);
     block.roll(palette, entropy);
     block.write_to(copy);
+    apparel_condition_pass(copy, template, Some(price))
+}
+
+/// Where an apparel body keeps its quality, damage and variant bytes.
+const APPAREL_QUALITY: usize = 0x1B0;
+const APPAREL_DAMAGE: usize = 0x1B1;
+const APPAREL_VARIANT: usize = 0x1AA;
+
+/// The apparel condition pass: the copy's protection bytes from the
+/// template's at the copy's quality, damage and variant
+/// (`apparel_condition`), and the price word, when given, based on the
+/// template's quality. False when a body is too short.
+pub fn apparel_condition_pass(copy: &mut [u8], template: &[u8], price: Option<&mut u16>) -> bool {
+    if copy.len() <= APPAREL_DAMAGE || template.len() <= APPAREL_DAMAGE {
+        return false;
+    }
+    let (quality, damage) = (copy[APPAREL_QUALITY], copy[APPAREL_DAMAGE]);
     let p = apparel_condition(
         &protection(template),
-        block.quality,
-        block.damage,
-        block.variant,
+        quality,
+        damage,
+        copy[APPAREL_VARIANT],
     );
     copy[0x1A0..0x1A4].copy_from_slice(&p.resist);
     copy[0x1A4] = p.coverage;
     copy[0x1A5] = p.encumbrance;
-    *price = condition_price(*price, tb.quality, block.quality, block.damage);
+    if let Some(price) = price {
+        *price = condition_price(*price, template[APPAREL_QUALITY], quality, damage);
+    }
     true
+}
+
+/// The template's model price word put into the copy's, as the repair's
+/// copies do first: `price` is the copy's model word (none when the copy
+/// has no model section) and `template_price` the template's. A copy with a
+/// model section whose template has none ends the copy (`None`); otherwise
+/// the price word to scale is returned.
+fn take_price(price: Option<&mut u16>, template_price: Option<u16>) -> Option<Option<&mut u16>> {
+    match (price, template_price) {
+        (Some(price), Some(template)) => {
+            *price = template;
+            Some(Some(price))
+        }
+        (Some(_), None) => None,
+        (None, _) => Some(None),
+    }
+}
+
+/// Refreshes a made apparel copy after a repair's timed write, as the
+/// timer list does: the template's model price word is taken, then the
+/// apparel condition pass ([`apparel_condition_pass`]) writes the copy's
+/// protection bytes and scales that price. The copy's own protection bytes
+/// are not taken from the template first (the pass reads the template's).
+/// False when the template has no model word while the copy has one, or a
+/// body is too short.
+pub fn copy_apparel(
+    copy: &mut [u8],
+    template: &[u8],
+    price: Option<&mut u16>,
+    template_price: Option<u16>,
+) -> bool {
+    let Some(price) = take_price(price, template_price) else {
+        return false;
+    };
+    apparel_condition_pass(copy, template, price)
+}
+
+/// The weapon-section bytes the repair's copy takes from its template:
+/// weight, balance, impact, thrust, the striking sides and the four bytes
+/// after them (not the adjust or skill bytes the full refresh takes).
+pub const WEAPON_COPY_TAKES: (usize, usize) = (0x30, 0x40);
+
+/// Refreshes a made weapon copy after a repair's timed write, as the timer
+/// list does: the template's model price word is taken, the template's
+/// weapon bytes [`WEAPON_COPY_TAKES`] are copied, then the weapon condition
+/// pass ([`weapon_condition_pass`]) scales the copy's stats and price by its
+/// own condition. [The original runs the factory's stat pass between the
+/// copy and the condition; Exarust leaves it to the caller with a factory.]
+/// False when the template has no model word while the copy has one, or a
+/// body is too short.
+pub fn copy_weapon(
+    copy: &mut [u8],
+    template: &[u8],
+    price: Option<&mut u16>,
+    template_price: Option<u16>,
+) -> bool {
+    let Some(price) = take_price(price, template_price) else {
+        return false;
+    };
+    let (from, to) = WEAPON_COPY_TAKES;
+    if copy.len() < to || template.len() < to {
+        return false;
+    }
+    copy[from..to].copy_from_slice(&template[from..to]);
+    weapon_condition_pass(copy, price)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The repair's apparel copy takes the template's price word, then
+    /// writes the template's protection at the copy's own quality, damage
+    /// and variant and scales the price from the template's quality.
+    #[test]
+    fn a_repaired_apparel_copy_takes_its_template_conditions() {
+        let mut copy = vec![0u8; 0x1C0];
+        copy[APPAREL_QUALITY] = 128;
+        copy[APPAREL_DAMAGE] = 64;
+        copy[APPAREL_VARIANT] = 2;
+        copy[0x1A0..0x1A6].fill(9);
+        let mut template = vec![0u8; 0x1C0];
+        template[APPAREL_QUALITY] = 255;
+        template[0x1A0..0x1A6].copy_from_slice(&[100, 80, 60, 40, 200, 50]);
+        let mut price = 0u16;
+        assert!(copy_apparel(
+            &mut copy,
+            &template,
+            Some(&mut price),
+            Some(0xC001)
+        ));
+        let p = apparel_condition(&protection(&template), 128, 64, 2);
+        assert_eq!(&copy[0x1A0..0x1A4], &p.resist);
+        assert_eq!((copy[0x1A4], copy[0x1A5]), (p.coverage, p.encumbrance));
+        assert_eq!(price, condition_price(0xC001, 255, 128, 64));
+        // No model word on the copy: the conditions still change.
+        copy[0x1A0..0x1A6].fill(9);
+        assert!(copy_apparel(&mut copy, &template, None, None));
+        assert_eq!(&copy[0x1A0..0x1A4], &p.resist);
+        // A copy with a model word whose template has none is left alone.
+        copy[0x1A0..0x1A6].fill(9);
+        let mut price = 7u16;
+        assert!(!copy_apparel(&mut copy, &template, Some(&mut price), None));
+        assert_eq!((copy[0x1A0], price), (9, 7));
+        // A body too short for the condition bytes is refused.
+        assert!(!copy_apparel(&mut [0u8; 0x1A0], &template, None, None));
+    }
+
+    /// The repair's weapon copy takes the template's bytes 0x30..0x40 and
+    /// price word, then scales by the copy's own condition: quality 255 and
+    /// damage 0 give 1.3, so 100 becomes 130 and the crush
+    /// round((1.3·0.7 + 0.3)·100) = 121; the impact is only capped; the
+    /// price base is the copy's own quality.
+    #[test]
+    fn a_repaired_weapon_copy_takes_its_template_conditions() {
+        let mut copy = weapon_body();
+        copy[0x40] = 0x11;
+        copy[0x42] = 0x22;
+        let mut template = weapon_body();
+        template[0xC] = 10;
+        template[0x30..0x40].fill(100);
+        template[0x32] = 200;
+        template[0x40] = 0x33;
+        template[0x42] = 0x44;
+        let mut price = 0u16;
+        assert!(copy_weapon(
+            &mut copy,
+            &template,
+            Some(&mut price),
+            Some(0x4064)
+        ));
+        assert_eq!((copy[0x30], copy[0x31]), (100, 100));
+        assert_eq!(copy[0x32], crate::instance::STAT_CAP);
+        assert_eq!(copy[0x33], 130);
+        for at in [0x37, 0x3D] {
+            assert_eq!(&copy[at..at + 3], &[130, 121, 130]);
+        }
+        // The bytes between the sides' stats are copied, not scaled.
+        assert_eq!((copy[0x34], copy[0x3A]), (100, 100));
+        // The adjust and skill bytes stay the copy's.
+        assert_eq!((copy[0x40], copy[0x42]), (0x11, 0x22));
+        assert_eq!(price, condition_price(0x4064, 255, 255, 0));
+        let mut price = 7u16;
+        assert!(!copy_weapon(&mut copy, &template, Some(&mut price), None));
+        assert_eq!(price, 7);
+        assert!(!copy_weapon(&mut [0u8; 0x20], &template, None, None));
+    }
 
     fn weapon_body() -> Vec<u8> {
         let mut b = vec![0u8; 0x5A];

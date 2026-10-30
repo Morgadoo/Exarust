@@ -615,10 +615,13 @@ or arrives. The apparel section (0x1000) is tried first; when the item has
 one and its byte is not written, the weapon section (0x4000) is not looked
 at that frame; when it is written (or the item has no apparel section), the
 weapon section's byte is tested next. After a repair write the copy is
-refreshed from its template: an apparel copy's resist, coverage and
-encumbrance and a weapon copy's slash, crush, pierce and thrust take the
-condition factor, and the model section's compact price is recomputed
-(`exa_items::instance::{copy_apparel, copy_weapon}`).
+refreshed from its template: the copy takes the template's model price
+word; an apparel copy's protection, coverage and encumbrance come from the
+template's at the copy's quality, damage and variant, its price based on the
+template's quality; a weapon copy takes the template's bytes 0x30..0x40 and
+is scaled by its own condition, its price based on its own quality
+(`exa_items::refresh::{copy_apparel, copy_weapon}`, sharing the refresh's
+condition passes; the weapon's factory stat pass is not run there).
 The sounds are `player_controls::use_sound`: the pour at 0.25, the cleaning
 kit at 0.3 and the repair kit at 0.15, each pitch 0.9 + 0.2 times one draw.
 Tested rules with no running caller: the right press's use-start answer
