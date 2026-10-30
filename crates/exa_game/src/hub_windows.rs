@@ -128,6 +128,44 @@ impl Default for ArenaCareer {
 }
 
 impl ArenaCareer {
+    /// The arena's single reset, as a new career and an arena slot load
+    /// run it before anything else: the shop's shelf, the merchant's stock
+    /// (kinds 0, rank −1, any), the company's record words and the day's
+    /// tallies, the day, today's matches, the log, the roster, the purse
+    /// and the season's week verdicts are cleared. The company's name and
+    /// emblem, the manager's record, the tournament entries, the season
+    /// rewards, the draw state and the rival field are kept: the original's
+    /// reset does not touch them (the load and the new career write them).
+    /// The day's specials it generates last are drawn when the board opens
+    /// ([`ArenaCareer::board`]). The stores beside the career are
+    /// [`crate::save_live::ArenaStores::reset`]'s.
+    pub fn reset(&mut self) {
+        self.company.stock.clear();
+        self.merchant_stock.clear();
+        self.merchant_kinds = 0;
+        self.merchant_rank = -1;
+        self.company.won = 0;
+        self.company.lost = 0;
+        self.company.tournaments_won = 0;
+        self.company.seasons_won = 0;
+        self.company.deaths = 0;
+        self.company.earned = 0;
+        self.company.spent = 0;
+        self.company.day = 0;
+        self.matches_today = 0;
+        self.log.records.clear();
+        self.company.roster.clear();
+        self.company.copper = 0;
+        self.company.weeks = [false; 4];
+    }
+
+    /// A new career's records: the reset, then the starting purse of 343
+    /// copper.
+    pub fn start_new_career(&mut self) {
+        self.reset();
+        self.company.copper = crate::career::STARTING_COPPER;
+    }
+
     /// The week's tournament field. A field whose first company is 0 asks
     /// for a new one, drawn from the career's roll (16 of the 19 rivals), as
     /// the tournament chunk's load does.
@@ -994,6 +1032,50 @@ mod tests {
         assert_eq!(board.fighters[0].name, "Manager");
         assert!(!board.events[0].name.is_empty());
         assert_eq!(board.matches_played, 0);
+    }
+
+    #[test]
+    fn the_reset_clears_the_stores_but_keeps_the_name_and_entries() {
+        let mut career = ArenaCareer::default();
+        career.company.name = "Ash".to_string();
+        career
+            .company
+            .hire("a", crate::career::Profession::Combatant)
+            .unwrap();
+        career.company.stock = vec![7, 8];
+        career.company.day = 9;
+        career.company.won = 3;
+        career.company.weeks = [true; 4];
+        career.matches_today = 2;
+        career.merchant_rank = 2;
+        career.merchant_kinds = 5;
+        career.merchant_stock = vec![4];
+        career.entries[0].team_id = 4;
+        career.log.append_value(crate::arena_match::LOG_WON, 1);
+        career.reset();
+        assert!(career.company.roster.is_empty() && career.company.stock.is_empty());
+        assert_eq!(
+            (
+                career.company.day,
+                career.company.won,
+                career.company.copper
+            ),
+            (0, 0, 0)
+        );
+        assert_eq!(career.company.weeks, [false; 4]);
+        assert_eq!(
+            (
+                career.matches_today,
+                career.merchant_kinds,
+                career.merchant_rank
+            ),
+            (0, 0, -1)
+        );
+        assert!(career.merchant_stock.is_empty() && career.log.records.is_empty());
+        assert_eq!(career.company.name, "Ash");
+        assert_eq!(career.entries[0].team_id, 4);
+        career.start_new_career();
+        assert_eq!(career.company.copper, 343);
     }
 
     #[test]
