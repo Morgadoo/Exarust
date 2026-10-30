@@ -39,6 +39,7 @@ pub mod creation_forms;
 pub mod cursor;
 pub mod dialogs;
 pub mod dialogue_choices;
+pub mod dialogue_window;
 pub mod div_card;
 pub mod drop_down;
 pub mod emblem_form;
