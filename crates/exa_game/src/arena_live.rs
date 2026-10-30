@@ -1065,11 +1065,16 @@ fn settle_match(
     career.matches_today = out.matches_today;
     career.company.copper = career.company.copper.saturating_add(out.paid);
     career.company.earned = career.company.earned.saturating_add(out.paid);
-    career.company.won = scene.records.matches_won;
-    career.company.lost = scene.records.matches_lost;
-    career.company.tournaments_won = scene.records.tournaments_won;
-    career.company.seasons_won = scene.records.seasons_won;
-    career.company.deaths = scene.records.deaths;
+    // The return books the counts it changes onto the career's current
+    // records: wins, losses, forfeits and Beast wins. The other counts
+    // (tournaments, seasons, hires, deaths, dismissals and the lifetime
+    // coin totals) are left as the career holds them.
+    let mut records = career.company.records();
+    records.matches_won = scene.records.matches_won;
+    records.matches_lost = scene.records.matches_lost;
+    records.matches_forfeited = scene.records.matches_forfeited;
+    records.beasts_defeated = scene.records.beasts_defeated;
+    career.company.book_records(&records);
     if out.day.drop_unfit {
         let healths: Vec<u16> = career
             .company
@@ -1457,6 +1462,38 @@ mod tests {
         // The body's half-health went back into its record as the rounded
         // word (0.125 / 0.25 · 65535).
         assert_eq!(career.company.roster[0].health, 32_768);
+    }
+
+    #[test]
+    fn the_return_books_all_thirteen_records() {
+        let mut app = arena_app();
+        let mut arena = ArenaMatch::begin(11);
+        arena.state = MatchState::Won;
+        arena.screen = Some(Screen::End);
+        app.insert_resource(arena);
+        let mut scene = scene();
+        scene.template = 11;
+        scene.prize = 432;
+        app.insert_resource(scene);
+        let mut career = crate::hub_windows::ArenaCareer::default();
+        career.company.hires = 4;
+        career.company.fired = 2;
+        career.company.total_earned = 700;
+        career.company.total_spent = 300;
+        app.insert_resource(career);
+        press_continue(&mut app);
+        app.update();
+        let career = app.world().resource::<crate::hub_windows::ArenaCareer>();
+        // The Beast win counts one more beast defeated and the win; the
+        // counts the match does not touch survive the settle.
+        assert_eq!(career.company.won, 1);
+        assert_eq!(career.company.beasts_defeated, 1);
+        assert_eq!(career.company.hires, 4);
+        assert_eq!(career.company.fired, 2);
+        assert_eq!(career.company.total_earned, 700);
+        assert_eq!(career.company.total_spent, 300);
+        assert_eq!(career.company.earned, 432);
+        assert_eq!(career.company.copper, crate::career::STARTING_COPPER + 432);
     }
 
     #[test]

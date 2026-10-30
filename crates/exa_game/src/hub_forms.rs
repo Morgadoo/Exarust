@@ -232,8 +232,8 @@ pub fn dialog_form(
     form
 }
 
-/// The row names the loadout form lists: the hire list on the hire page
-/// (the hub's career keeps none yet), else the manager and the employees.
+/// The row names the loadout form lists: the hire list on the hire page,
+/// else the manager and the employees.
 fn loadout_rows(arsenal: &mut ArsenalForm, career: &ArenaCareer) -> Vec<String> {
     let employees: Vec<String> = career
         .company
@@ -241,7 +241,8 @@ fn loadout_rows(arsenal: &mut ArsenalForm, career: &ArenaCareer) -> Vec<String> 
         .iter()
         .map(|m| m.name.clone())
         .collect();
-    arsenal.rows(&[], Some(&career.player.name), &employees)
+    let listed: Vec<String> = career.hire_pool.iter().map(|m| m.name.clone()).collect();
+    arsenal.rows(&listed, Some(&career.player.name), &employees)
 }
 
 /// The profession of a row's record.
@@ -249,7 +250,7 @@ fn row_role(career: &ArenaCareer, record: RowRecord) -> Option<Profession> {
     match record {
         RowRecord::Manager => Some(career.player.profession),
         RowRecord::Employee(i) => career.company.roster.get(i).map(|m| m.profession),
-        RowRecord::Candidate(_) => None,
+        RowRecord::Candidate(i) => career.hire_pool.get(i).map(|m| m.profession),
     }
 }
 
@@ -314,6 +315,15 @@ pub fn refresh_loadout(form: &mut RecordForm, arsenal: &mut ArsenalForm, career:
     }
     if hire {
         form.set_text(loadout::PROFESSION, crate::manage::profession_line(role));
+        if let RowRecord::Candidate(index) = arsenal.record_of(row) {
+            let price = career.hire_price(index);
+            let upkeep = career.hire_pool.get(index).map_or(0, |member| {
+                crate::career::Company::wage(member.profession, &member.skills)
+            });
+            let pack = exa_ui::match_board::pack_coins;
+            form.set_amount(loadout::FEE, pack(price));
+            form.set_amount(loadout::UPKEEP, pack(upkeep));
+        }
     }
 }
 
@@ -415,8 +425,17 @@ impl HubWindows {
                 }
                 manage::END_DAY => {
                     let events = career.entries.map(|row| row.team_id);
+                    let entered = crate::arena_match::any_entry(&career.entries);
                     let night = career.company.end_day(events);
                     career.matches_today = 0;
+                    // A resolved week the company entered but did not take
+                    // counts one more tournament lost.
+                    if entered && night.week_won == Some(false) {
+                        career.company.tournaments_lost =
+                            career.company.tournaments_lost.wrapping_add(1);
+                    }
+                    career.renew_hire_pool();
+                    career.regenerate_daily_board_at(crate::arena_match::counter_now() as u32);
                     info!(
                         "hub manage: the day ends (day {}, wages {})",
                         career.company.day, night.wages
@@ -535,10 +554,31 @@ impl HubWindows {
                 self.forms.remove(FormWindow::Loadout);
                 return;
             }
-            loadout::HIRE => {
-                info!(
-                    "hub loadout: HIRE needs the hire list, which the hub's career does not keep"
-                );
+            loadout::HIRE if arsenal.page == PAGE_HIRE => {
+                let index = usize::try_from(arsenal.selection.max(0)).unwrap_or(0);
+                let role = career.hire_pool.get(index).map(|member| member.profession);
+                match career.hire_candidate(index) {
+                    Ok(role) => {
+                        info!("hub hire: a {role:?} joined the company");
+                        arsenal.select(arsenal.selection);
+                    }
+                    Err(error) => {
+                        let refusal = match (error, role) {
+                            (crate::career::HireError::Funds, _) => crate::staff::Refusal::Funds,
+                            (crate::career::HireError::Full, _) => crate::staff::Refusal::NoRoom,
+                            (crate::career::HireError::Duplicate, Some(Profession::Merchant)) => {
+                                crate::staff::Refusal::HaveMerchant
+                            }
+                            (crate::career::HireError::Duplicate, Some(Profession::Physician)) => {
+                                crate::staff::Refusal::HavePhysician
+                            }
+                            (crate::career::HireError::Duplicate, _) => {
+                                crate::staff::Refusal::HaveTrainer
+                            }
+                        };
+                        info!("hub hire: {}", refusal.message());
+                    }
+                }
             }
             _ => {}
         }
@@ -559,7 +599,15 @@ impl HubWindows {
         if let Some(index) = leaving
             && index < career.company.roster.len()
         {
+            let id = u32::try_from(index).unwrap_or(0).wrapping_add(1);
             let member = career.company.roster.remove(index);
+            career.company.fired = career.company.fired.wrapping_add(1);
+            career.log.append_words(
+                crate::staff::LOG_DISMISSED,
+                crate::staff::name_words(&crate::hub_windows::name16(&member.name)),
+            );
+            crate::staff::unlink_entries(&mut career.entries, id);
+            crate::staff::renumber_saved(&mut career.log, id);
             info!("hub loadout: {} is dismissed", member.name);
         }
         let commit = arsenal.commit(|form| {
@@ -918,5 +966,56 @@ mod tests {
         let answer = windows.answer(&mut career, FormWindow::Manage, manage::CLOSE, true);
         assert_eq!(answer, FormAnswer::ManageClosed);
         assert!(!windows.is_open());
+    }
+
+    #[test]
+    fn a_dismissal_logs_the_name_and_counts_one_more_fired() {
+        let (mut windows, mut career) = opened();
+        windows.open_loadout(crate::manage::PAGE_ROSTER, &career);
+        let mut arsenal = windows.forms.arsenal.expect("the loadout form");
+        arsenal.select(1);
+        windows.forms.arsenal = Some(arsenal);
+        windows.dismiss_confirmed(&mut career);
+        assert_eq!(career.company.fired, 1);
+        assert!(career.company.roster.is_empty());
+        let record = career.log.records.last().expect("the dismissal");
+        assert_eq!(record.id, crate::staff::LOG_DISMISSED);
+        assert_eq!(
+            record.words,
+            crate::staff::name_words(&crate::hub_windows::name16("Brom"))
+        );
+    }
+
+    #[test]
+    fn hiring_a_candidate_from_the_hire_page_books_it() {
+        let (mut windows, mut career) = opened();
+        career.company.copper = 1000;
+        career.company.spent = 0;
+        career.company.hires = 0;
+        career.log.records.clear();
+        let candidate = career.hire_pool[0].clone();
+        let price = career.hire_price(0);
+        windows.open_loadout(crate::manage::PAGE_HIRE, &career);
+        let mut arsenal = windows.forms.arsenal.expect("the loadout form");
+        arsenal.select(0);
+        windows.forms.arsenal = Some(arsenal);
+        click(
+            &mut windows,
+            &mut career,
+            FormWindow::Loadout,
+            loadout::HIRE,
+        );
+        assert_eq!(
+            career.company.roster.last().map(|m| m.name.clone()),
+            Some(candidate.name)
+        );
+        assert_eq!(career.company.copper, 1000 - price);
+        assert_eq!(career.company.spent, price);
+        assert_eq!(career.company.hires, 1);
+        assert_eq!(
+            career.log.records.last().map(|r| r.id),
+            Some(crate::staff::LOG_JOINED)
+        );
+        assert_eq!(career.hire_pool.len(), crate::hirelings::POOL_SIZE - 1);
     }
 }

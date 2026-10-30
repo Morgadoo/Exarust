@@ -428,7 +428,6 @@ pub fn plan_launch_at(
     career.company.spent = career.company.spent.saturating_add(fee);
     plan_match(career, board, alternative, counter)
 }
-
 /// The match start after the board's checks and fee: the arena and track
 /// draw, the layout and each fighter's spawn plan. The auto rematch starts
 /// here, with no fee and no day limit.
@@ -439,6 +438,8 @@ fn plan_match(
     counter: u64,
 ) -> Option<ArenaMatchLaunch> {
     let template = board.match_id() as i32;
+    // The match's start counts a Beast match entered.
+    career.company.record_match_started(template);
     let start = crate::arena_match::start_match(&mut career.picks, template, counter, alternative);
     let spawn_at = crate::arena_match::ARENA_MAPS
         .get(start.arena)

@@ -1517,3 +1517,21 @@ forfeited. The hub (in arena mode or under the play view's practice
 stand-in) then puts the manager at the saved 300 cm, half turn placement
 and asks for the shopkeeper and one body per employed merchant or physician
 at their `arena_spawn` spots.
+
+The hub's career now keeps all thirteen company records
+(`career::Company::records`/`book_records`): the match return books the
+counts it changes (wins, losses, forfeits, Beast wins) onto the career's
+current records, the match start counts a Beast match entered, and the
+records window reads the lifetime coin totals, which the night rolls from
+the day's earned and spent. The dismiss dialog's Dismiss books one more
+fired, logs the leaving name and drops the id from the tournament entries
+and the log's saved records. The hire list is live: a new career fills ten
+candidates (`ArenaCareer::fill_hire_pool_at`, one counter-seeded
+`hirelings::draw_candidate` plus random-NPC pass each, the trainer's snap),
+the loadout form's hire page lists them with their fee and upkeep, HIRE runs
+the company's funds, room and duplicate checks (`Company::hire_listed`),
+books the joining and removes the candidate, and End Day renews the list.
+The candidate's item outfit is not generated (the hub holds no item-fact
+table), so its price has no gear share [guess/limitation]. The Arsenal
+window and the kit release a dismissal makes in the original are still not
+built.
