@@ -29,25 +29,33 @@ use crate::shader_program::draw_passes;
 /// block: `0x33FFFFD7`, the engine's 2⁻²³-like epsilon.
 pub const FADE_EPSILON: f32 = f32::from_bits(0x33FF_FFD7);
 
-/// A geometry record's word bit `0x8000`: the node is animated, so the
-/// draw uploads a vertex-delta stream and the engine changes its cull state.
-pub const GEOMETRY_VERTEX_DELTA: u32 = 0x8000;
+/// A draw object's flag word bit `0x8000`: the node is animated, so the draw
+/// uploads a vertex-delta stream and the engine changes its cull state.
+pub const OBJECT_VERTEX_DELTA: u32 = 0x8000;
 
-/// A geometry record's word bit `0x10`: the object's clock advances with
-/// each super-sampling sub-frame.
-pub const GEOMETRY_SUBFRAME_CLOCK: u32 = 0x10;
+/// A draw object's flag word bit `0x10`: the node's animation clock advances
+/// with each super-sampling sub-frame.
+pub const OBJECT_SUBFRAME_CLOCK: u32 = 0x10;
+
+/// A draw object's flag word bit `0x800000`: the node takes the specular
+/// voxel-GI lookup.
+pub const OBJECT_GI_SPECULAR: u32 = 0x800000;
 
 /// A geometry record's flag word bit `0x10`: the material's emissive is
 /// rescaled for this draw.
 pub const EMISSIVE_PER_DRAW: u32 = 0x10;
 
+/// A geometry record's flag word bit `0x20`: the draw rewrites each
+/// sub-frame projection's depth lane with the geometry's shutter offset.
+pub const MOTION_BLUR: u32 = 0x20;
+
 /// An object's frame word bit `0x2000_0000`: the diffuse alpha is
 /// the frame's fade, `1 − fade`.
 pub const FRAME_FADE: u32 = 0x2000_0000;
 
-/// An object's frame word bit `0x2_0000`: the scene's emissive scale is
+/// An object's render-flag word bit `0x2_0000`: the scene's emissive scale is
 /// used instead of the geometry record's.
-pub const FRAME_EMISSIVE_SCALE: u32 = 0x2_0000;
+pub const EMISSIVE_SCENE_SCALE: u32 = 0x2_0000;
 
 /// Which of the two per-draw variants a draw takes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,11 +83,13 @@ pub fn draw_path(passes: u32) -> DrawPath {
 /// The geometry record's own values a draw reads.
 #[derive(Clone, Copy, Debug)]
 pub struct GeometryRecord {
-    /// The record's word: [`GEOMETRY_VERTEX_DELTA`] and
-    /// [`GEOMETRY_SUBFRAME_CLOCK`].
-    pub word: u32,
-    /// The record's flag word: [`EMISSIVE_PER_DRAW`].
+    /// The record's flag word: [`EMISSIVE_PER_DRAW`] and [`MOTION_BLUR`].
     pub flags: u32,
+    /// The per-draw emissive scale (the record's `0xf4` field).
+    pub emissive: f32,
+    /// The geometry's shutter length (the record's `0xf8` field), the range
+    /// of the sub-frame depth offsets.
+    pub shutter: f32,
 }
 
 /// One object of a draw.
@@ -101,8 +111,17 @@ pub struct DrawObject<'a> {
     pub diffuse_alpha: f32,
     /// The geometry record's values.
     pub geometry: GeometryRecord,
-    /// The object's own per-draw emissive scale.
-    pub emissive: f32,
+    /// The render object's flag word (its `0xc` field):
+    /// [`OBJECT_SUBFRAME_CLOCK`], [`OBJECT_VERTEX_DELTA`] and
+    /// [`OBJECT_GI_SPECULAR`].
+    pub object_flags: u32,
+    /// The render object's render-flag word (its `0x8` field):
+    /// [`EMISSIVE_SCENE_SCALE`].
+    pub render_flags: u32,
+    /// The object's world matrix (its `0x40` field), row-major.
+    pub world: [[f32; 4]; 4],
+    /// The liquid-level point in the object's space (its `0x390` field).
+    pub liquid_point: [f32; 3],
     /// The mesh has a vertex-colour stream.
     pub vertex_colors: bool,
     /// The object's light links, in list order; `None` for no list.
@@ -118,8 +137,20 @@ impl Default for DrawObject<'_> {
             frame: 0,
             fade: 0.0,
             diffuse_alpha: 1.0,
-            geometry: GeometryRecord { word: 0, flags: 0 },
-            emissive: 1.0,
+            geometry: GeometryRecord {
+                flags: 0,
+                emissive: 1.0,
+                shutter: 0.0,
+            },
+            object_flags: 0,
+            render_flags: 0,
+            world: [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            liquid_point: [0.0; 3],
             vertex_colors: false,
             lights: None,
         }
@@ -139,12 +170,50 @@ pub struct DrawScene {
     /// The sun-shadow mode: 3 halves the passes of a
     /// [`HALF_PASSES`](crate::shader_program::HALF_PASSES) object.
     pub sun_shadow_mode: u32,
-    /// The scene's emissive scale, used by an object whose frame word has
-    /// [`FRAME_EMISSIVE_SCALE`].
+    /// The scene's emissive scale, used by an object whose render-flag word
+    /// has [`EMISSIVE_SCENE_SCALE`].
     pub emissive_scale: f32,
-    /// The first sub-frame's clock and the step between sub-frames.
-    pub subframe_base: f32,
-    pub subframe_step: f32,
+    /// The view's sub-frame clock: the frame's time, the sample count and the
+    /// accumulation quarter.
+    pub clock: SubframeClock,
+}
+
+/// The inputs of the view's per-sub-frame animation clocks.
+#[derive(Clone, Copy, Debug)]
+pub struct SubframeClock {
+    /// The frame's time (the view's `0x1dd4` field), the shutter length.
+    pub frame_time: f32,
+    /// The super-sampling setting's sample count.
+    pub samples: u32,
+    /// The accumulation quarter being drawn.
+    pub quarter: u32,
+}
+
+impl Default for SubframeClock {
+    fn default() -> Self {
+        Self {
+            frame_time: 0.0,
+            samples: 1,
+            quarter: 0,
+        }
+    }
+}
+
+impl SubframeClock {
+    /// The step between two samples' clocks.
+    pub fn step(&self) -> f32 {
+        crate::subframe::animation_step(self.frame_time, self.samples)
+    }
+
+    /// The first sample's clock in this quarter.
+    pub fn base(&self) -> f32 {
+        crate::subframe::animation_base(self.quarter, self.frame_time, self.samples)
+    }
+
+    /// The sub-frame's animation clock.
+    pub fn time(&self, subframe: u32) -> f32 {
+        crate::subframe::animation_clock(subframe, self.quarter, self.frame_time, self.samples)
+    }
 }
 
 impl Default for DrawScene {
@@ -155,8 +224,7 @@ impl Default for DrawScene {
             frame_pass: 0,
             sun_shadow_mode: 0,
             emissive_scale: 1.0,
-            subframe_base: 0.0,
-            subframe_step: 0.0,
+            clock: SubframeClock::default(),
         }
     }
 }
@@ -168,9 +236,14 @@ pub struct Subframe {
     pub index: u32,
     /// The `SdwSmp` window this sub-frame uploads.
     pub taps: ShadowSampleUpload,
-    /// The object's clock for this sub-frame, for an animated object whose
-    /// geometry word has [`GEOMETRY_SUBFRAME_CLOCK`]; `None` otherwise.
+    /// The object's animation clock for this sub-frame, for an object whose
+    /// flag word has [`OBJECT_SUBFRAME_CLOCK`]; `None` otherwise.
     pub time: Option<f32>,
+    /// The whole-pixel viewport shift of the sub-frame.
+    pub viewport_shift: [i32; 2],
+    /// The depth offset added to the sub-frame projection's depth lane for a
+    /// geometry with [`MOTION_BLUR`]; the composite is rebuilt after it.
+    pub depth_offset: Option<f32>,
 }
 
 /// What a draw does, in the order it does it.
@@ -190,8 +263,9 @@ pub struct DrawPlan {
     pub fade_alpha: Option<f32>,
     /// The material block's emissive is rewritten with this scale.
     pub emissive_scale: Option<f32>,
-    /// The `LqdLvl` uniform is uploaded (the material word's refracting bit).
-    pub liquid_level: bool,
+    /// The `LqdLvl` value (the liquid point's world height), for a material
+    /// word with the refracting bit on the super-sampled path.
+    pub liquid_level: Option<f32>,
     /// The `VXGIPos` uniform is uploaded (the environment has the GI
     /// volume).
     pub gi_position: bool,
@@ -266,6 +340,10 @@ impl DrawState {
         program_changed: bool,
     ) -> DrawPlan {
         self.slots.set_scene(scene.slot);
+        // The drawing state keeps one "uniforms are stale" flag: binding
+        // another program raises it and leaves it raised even when this draw
+        // has no lights to upload, so the next lit draw does.
+        self.slots.stale |= program_changed;
         let lit = object.material & 6 != 0;
         let gathered = match object.lights {
             Some(lights) if lit => self.slots.fill(lights),
@@ -278,19 +356,17 @@ impl DrawState {
         if object.vertex_colors {
             object_word |= crate::shader_program::object::VERTEX_COLOR;
         }
-        if object.geometry.word & GEOMETRY_VERTEX_DELTA != 0 {
+        if object.object_flags & OBJECT_VERTEX_DELTA != 0 {
             object_word |= crate::shader_program::object::VERTEX_DELTA;
         }
         let environment = self.slots.environment;
         // The plain path uploads the lights only for a lit material; the
-        // surface path whenever any light is gathered.
-        // The light records are re-uploaded when a slot changed or the
-        // draw bound another program than the last one (the drawing
-        // state's single stale flag).
+        // surface path whenever any light is gathered. Both upload when the
+        // state's stale flag is raised.
         let upload_lights = match path {
             DrawPath::Supersampled => gathered > 0,
             DrawPath::Plain => lit && gathered > 0,
-        } && (self.slots.stale || program_changed);
+        } && self.slots.stale;
         if upload_lights {
             self.slots.stale = false;
         }
@@ -308,14 +384,18 @@ impl DrawState {
         };
         let emissive_scale =
             if object.material & 8 != 0 && object.geometry.flags & EMISSIVE_PER_DRAW != 0 {
-                Some(if object.frame & FRAME_EMISSIVE_SCALE != 0 {
+                Some(if object.render_flags & EMISSIVE_SCENE_SCALE != 0 {
                     scene.emissive_scale
                 } else {
-                    object.emissive
+                    object.geometry.emissive
                 })
             } else {
                 None
             };
+        // The liquid point's world height, uploaded only by the
+        // super-sampled path.
+        let liquid_level = (path == DrawPath::Supersampled && object.material & 0x200 != 0)
+            .then(|| crate::subframe::transform_point(&object.world, object.liquid_point)[1]);
         let quad = object_word & crate::shader_program::object::QUAD_RENDER != 0;
         let samples = scene.slot.shadow_samples;
         let passes = match path {
@@ -324,6 +404,9 @@ impl DrawState {
             }
             DrawPath::Plain => 1,
         };
+        let depth_shutter = (path == DrawPath::Supersampled
+            && object.geometry.flags & MOTION_BLUR != 0)
+            .then_some(object.geometry.shutter);
         let mut subframes = Vec::with_capacity(passes as usize);
         let mut plain_taps = None;
         for index in 0..passes {
@@ -336,9 +419,19 @@ impl DrawState {
                 plain_taps = Some(taps);
             }
             let time = (path == DrawPath::Supersampled
-                && object.geometry.word & GEOMETRY_SUBFRAME_CLOCK != 0)
-                .then_some(scene.subframe_base + index as f32 * scene.subframe_step);
-            subframes.push(Subframe { index, taps, time });
+                && object.object_flags & OBJECT_SUBFRAME_CLOCK != 0)
+                .then(|| scene.clock.time(index));
+            let depth_offset = depth_shutter.map(|duration| {
+                let slot = scene.clock.quarter.wrapping_mul(4).wrapping_add(index);
+                crate::subframe::shutter_offset(slot, duration, scene.clock.samples)
+            });
+            subframes.push(Subframe {
+                index,
+                taps,
+                time,
+                viewport_shift: crate::subframe::viewport_shift(index),
+                depth_offset,
+            });
         }
         DrawPlan {
             object_word,
@@ -347,25 +440,12 @@ impl DrawState {
             upload_lights,
             fade_alpha,
             emissive_scale,
-            liquid_level: object.material & 0x200 != 0,
+            liquid_level,
             gi_position: environment & 0x10 != 0,
             subframes,
             plain_taps,
         }
     }
-}
-
-/// The shutter time of one super-sampling sub-frame for a node that blurs
-/// its motion (the node's motion-blur flag `0x20`): the sub-frame's slot
-/// `index + first` (the frame's first sub-frame index) is centred with
-/// `+ 0.5`, scaled by the node's shutter `duration` over the sample factor,
-/// moved to the frame clock and back by half the shutter. Single precision
-/// in the engine's order: `((i + 0.5)·d / factor + clock) − d·0.5`.
-/// [The node field read as a shutter length and the added frame index are
-/// named from how the formula uses them; the arithmetic is exact.]
-pub fn motion_blur_time(index: u32, first: i32, duration: f32, factor: u32, clock: f32) -> f32 {
-    let slot = (i64::from(index) + i64::from(first)) as f32;
-    ((slot + 0.5) * duration / factor as f32 + clock) - duration * 0.5
 }
 
 /// The world matrix an effect draw uses, from the original's parent-transform
@@ -475,7 +555,7 @@ mod tests {
         assert!(plan.gi_position == (plan.environment & 0x10 != 0));
         assert!(plan.fade_alpha.is_none());
         assert!(plan.emissive_scale.is_none());
-        assert!(!plan.liquid_level);
+        assert_eq!(plan.liquid_level, None);
         assert!(plan.plain_taps.is_none());
         // The program key uses the gathered environment word.
         let words = plan.words(&object);
@@ -577,20 +657,32 @@ mod tests {
     fn an_animated_object_gets_a_clock_per_subframe() {
         let mut state = DrawState::new(scene().slot);
         let mut object = object();
-        object.geometry.word = GEOMETRY_SUBFRAME_CLOCK;
+        object.object_flags = OBJECT_SUBFRAME_CLOCK;
         let mut scene = scene();
-        scene.subframe_base = 0.25;
-        scene.subframe_step = 0.125;
+        scene.clock = SubframeClock {
+            frame_time: 0.1,
+            samples: 4,
+            quarter: 0,
+        };
         let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
-        assert_eq!(plan.subframes[0].time, Some(0.25));
-        assert_eq!(plan.subframes[2].time, Some(0.25 + 2.0 * 0.125));
+        assert_eq!(plan.subframes[0].time, Some(scene.clock.time(0)));
+        assert_eq!(plan.subframes[2].time, Some(scene.clock.time(2)));
+        // Four samples over the 0.1 s frame put the clocks at -0.0375,
+        // -0.0125, 0.0125 and 0.0375.
+        assert!((plan.subframes[0].time.unwrap() + 0.0375).abs() < 1e-7);
+        assert!((plan.subframes[3].time.unwrap() - 0.0375).abs() < 1e-7);
         // The plain path draws once and sets no sub-frame clock.
         let plan = state.prepare(&object, &scene, DrawPath::Plain, false);
         assert_eq!(plan.subframes[0].time, None);
         // A static object has none.
-        object.geometry.word = 0;
+        object.object_flags = 0;
         let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
         assert!(plan.subframes.iter().all(|s| s.time.is_none()));
+        // The next quarter continues the clock sequence.
+        scene.clock.quarter = 1;
+        object.object_flags = OBJECT_SUBFRAME_CLOCK;
+        let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
+        assert!((plan.subframes[0].time.unwrap() - 0.0625).abs() < 1e-7);
     }
 
     #[test]
@@ -598,7 +690,7 @@ mod tests {
         let mut state = DrawState::new(scene().slot);
         let mut object = object();
         object.vertex_colors = true;
-        object.geometry.word = GEOMETRY_VERTEX_DELTA;
+        object.object_flags = OBJECT_VERTEX_DELTA;
         let plan = state.prepare(&object, &scene(), DrawPath::Supersampled, false);
         assert_ne!(
             plan.object_word & crate::shader_program::object::VERTEX_COLOR,
@@ -649,12 +741,12 @@ mod tests {
         let mut object = object();
         object.material = 0x8;
         object.geometry.flags = EMISSIVE_PER_DRAW;
-        object.emissive = 0.25;
+        object.geometry.emissive = 0.25;
         let mut scene = scene();
         scene.emissive_scale = 2.0;
         let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
         assert_eq!(plan.emissive_scale, Some(0.25));
-        object.frame = FRAME_EMISSIVE_SCALE;
+        object.render_flags = EMISSIVE_SCENE_SCALE;
         let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
         assert_eq!(plan.emissive_scale, Some(2.0));
         // Only a record with the emissive bit is rescaled.
@@ -673,15 +765,26 @@ mod tests {
         let mut state = DrawState::new(SlotScene::default());
         let mut object = object();
         object.material = 0x7 | 0x200;
+        object.world = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [10.0, 20.0, 30.0, 1.0],
+        ];
+        object.liquid_point = [1.0, 2.0, 3.0];
         let mut scene = scene();
         scene.slot.base_environment = 0x10;
         let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
-        assert!(plan.liquid_level);
+        // The liquid point's world height.
+        assert_eq!(plan.liquid_level, Some(22.0));
         assert!(plan.gi_position);
+        // The plain path never uploads the liquid level.
+        let plan = state.prepare(&object, &scene, DrawPath::Plain, false);
+        assert_eq!(plan.liquid_level, None);
         object.material = 0x7;
         scene.slot.base_environment = 0;
         let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
-        assert!(!plan.liquid_level);
+        assert_eq!(plan.liquid_level, None);
         assert!(!plan.gi_position);
     }
 
@@ -706,22 +809,63 @@ mod tests {
     }
 
     #[test]
-    fn motion_blur_spreads_the_subframes_over_the_shutter() {
-        // Four samples over a 0.1 s shutter at clock 2: the slots sit at
-        // 1.9625, 1.9875, 2.0125 and 2.0375 (each step one quarter shutter).
-        let times: Vec<f32> = (0..4)
-            .map(|i| motion_blur_time(i, 0, 0.1, 4, 2.0))
-            .collect();
-        assert_eq!(times[0], ((0.5f32 * 0.1) / 4.0 + 2.0) - 0.05);
-        assert!((times[0] - 1.9625).abs() < 1e-6);
-        assert!((times[3] - 2.0375).abs() < 1e-6);
-        // The frame's first sub-frame index shifts the slot.
+    fn a_motion_blurred_geometry_offsets_each_subframes_depth_lane() {
+        let mut state = DrawState::new(scene().slot);
+        let mut object = object();
+        object.geometry.flags = MOTION_BLUR;
+        object.geometry.shutter = 0.1;
+        let mut scene = scene();
+        scene.clock = SubframeClock {
+            frame_time: 0.1,
+            samples: 4,
+            quarter: 0,
+        };
+        let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
+        // (((i + 0.5)·0.1)/4) − 0.05: −0.0375, −0.0125, 0.0125, 0.0375.
+        assert_eq!(plan.subframes[0].depth_offset, Some(0.0125 - 0.05));
+        assert_eq!(plan.subframes[3].depth_offset, Some(0.0875 - 0.05));
+        // The second quarter shifts the slot by four.
+        scene.clock.quarter = 1;
+        let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
         assert_eq!(
-            motion_blur_time(0, 2, 0.1, 4, 2.0),
-            motion_blur_time(2, 0, 0.1, 4, 2.0)
+            plan.subframes[0].depth_offset,
+            Some(crate::subframe::shutter_offset(4, 0.1, 4))
         );
-        // No shutter: every sub-frame is the clock.
-        assert_eq!(motion_blur_time(3, 0, 0.0, 4, 2.0), 2.0);
+        // A geometry without the flag, and the plain path, take no offset.
+        object.geometry.flags = 0;
+        let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
+        assert!(plan.subframes.iter().all(|s| s.depth_offset.is_none()));
+        object.geometry.flags = MOTION_BLUR;
+        let plan = state.prepare(&object, &scene, DrawPath::Plain, false);
+        assert!(plan.subframes.iter().all(|s| s.depth_offset.is_none()));
+    }
+
+    #[test]
+    fn the_subframes_carry_their_viewport_shifts() {
+        let mut state = DrawState::new(scene().slot);
+        let plan = state.prepare(&object(), &scene(), DrawPath::Supersampled, false);
+        let shifts: Vec<[i32; 2]> = plan.subframes.iter().map(|s| s.viewport_shift).collect();
+        assert_eq!(shifts, vec![[0, 0], [1, 0], [0, 1], [1, 1]]);
+        let plan = state.prepare(&object(), &scene(), DrawPath::Plain, false);
+        assert_eq!(plan.subframes[0].viewport_shift, [0, 0]);
+    }
+
+    #[test]
+    fn a_program_change_with_no_lights_keeps_the_uniforms_stale() {
+        let mut state = DrawState::new(scene().slot);
+        let lights = [light(1)];
+        let mut object = object();
+        // A program change with no light list gathers nothing, so nothing is
+        // uploaded and the stale flag stays raised.
+        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled, true);
+        assert_eq!(plan.lights, 0);
+        assert!(!plan.upload_lights);
+        assert!(state.lights_stale());
+        // The next lit draw uploads.
+        object.lights = Some(&lights);
+        let plan = state.prepare(&object, &scene(), DrawPath::Supersampled, false);
+        assert!(plan.upload_lights);
+        assert!(!state.lights_stale());
     }
 
     #[test]
