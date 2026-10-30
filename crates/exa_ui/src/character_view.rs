@@ -867,84 +867,81 @@ pub fn drag_over(frozen: bool, worn: Option<usize>, icon: usize) -> DragAnswer {
     }
 }
 
-/// The item a drag onto the figure carries while it is over it.
+/// The payload a drag started on the figure carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DragPayload {
-    /// The dragged item and its flags.
-    pub item: u32,
-    pub flags: u32,
+    /// The drag's kind: `0xFB01` (an item payload) or `u32::MAX` (a locked
+    /// view's item flagged `0x8000_0000`, which no panel takes); see
+    /// [`drag_start`].
+    pub kind: u32,
     /// The icon the item resolves to.
     pub icon: usize,
-    /// The payload's half extent, 80: half the icon size (160).
+    /// The item's own flags from the hover pick.
+    pub flags: u32,
+    /// The payload's half extent: half the current icon size (80 at the
+    /// default 160).
     pub half: u32,
 }
 
-/// What a drag over the figure does.
+/// What a drag started on the figure does.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum DragOver {
-    /// The view is frozen and not over a held entry, or the item's icon does
-    /// not resolve: the answer stays 1 and nothing is refunded.
-    Nothing,
-    /// The view refunds `refund` (when the mind cost is charged) and answers
-    /// `0x105` with the payload.
-    Accept {
-        payload: DragPayload,
-        /// The mind cost the view stored for the drop to charge again; the
-        /// charge itself is `-refund`.
-        cost: f32,
-        refund: Option<f32>,
-    },
+pub struct DragStartPlan {
+    /// The mind cost the view stores (for a drop back or a cancelled release
+    /// to charge again) and charges as `-cost` now: only with the mind-cost
+    /// flag on and a character shown. `Some(0.0)` for an item with neither a
+    /// weapon nor an apparel section.
+    pub cost: Option<f32>,
+    /// The character could not take the charge: the drag is cancelled and
+    /// nothing else happens.
+    pub cancel: bool,
+    /// The payload, answered with `0x105`; `None` leaves the answer at 1.
+    pub payload: Option<DragPayload>,
 }
 
-/// What a drag over the figure does. A frozen view only answers over one of
-/// the doll's held entries. With the mind-cost flag on and a character
-/// shown, the item's cost is computed (twice a weapon's desirability, else
-/// an apparel's protection value; the weapon section read first), stored
-/// for the drop to charge, and refunded; a character who cannot pay refuses
-/// the drag. An item whose icon does not resolve answers nothing. Otherwise
-/// the answer is `0x105` and the payload carries the item, the icon and the
-/// half extent; a locked view's item flagged `0x80000000` is carried with
-/// the flags all ones (the payload no panel takes).
+/// The drag start on the figure, with its mind cost and payload. A frozen
+/// view starts drags only from a held item. With the mind-cost flag on and a
+/// character shown, the item's cost ([`drag_over_cost`], 0 without a
+/// section) is stored and refunded first; a character who cannot take the
+/// charge (`refuses`) cancels the drag. The charge stands even when the
+/// item's icon then does not resolve and no drag starts. Otherwise the
+/// payload carries the [`drag_start`] kind, the icon, the item's flags and
+/// half the icon size.
+///
+/// `cost` is `Some` only when the mind cost is charged (the flag on and a
+/// character shown): the item's [`drag_over_cost`], or 0 without a section.
 #[allow(clippy::too_many_arguments)]
-pub fn drag_over_plan(
+pub fn drag_start_plan(
     frozen: bool,
-    worn: Option<usize>,
+    hand: usize,
     icon: usize,
-    item: u32,
-    flags: u32,
-    mind_cost: bool,
-    shown: bool,
-    cost: f32,
     locked: bool,
+    flags: u32,
+    cost: Option<f32>,
     refuses: bool,
-) -> DragOver {
-    if frozen && worn.is_none() {
-        return DragOver::Nothing;
+    icon_size: u32,
+) -> DragStartPlan {
+    let mut plan = DragStartPlan {
+        cost: None,
+        cancel: false,
+        payload: None,
+    };
+    if frozen && hand == 0 {
+        return plan;
     }
-    let mut refund = None;
-    if mind_cost && shown {
+    if let Some(cost) = cost {
+        plan.cost = Some(cost);
         if refuses {
-            return DragOver::Nothing;
+            plan.cancel = true;
+            return plan;
         }
-        refund = Some(cost);
     }
-    if icon < 1 {
-        return DragOver::Nothing;
-    }
-    DragOver::Accept {
-        payload: DragPayload {
-            item,
-            flags: if locked && flags & 0x8000_0000 != 0 {
-                u32::MAX
-            } else {
-                0xFB01
-            },
-            icon,
-            half: 0x50,
-        },
-        cost: if mind_cost && shown { cost } else { 0.0 },
-        refund,
-    }
+    plan.payload = drag_start(false, 1, icon, locked, flags).map(|kind| DragPayload {
+        kind,
+        icon,
+        flags,
+        half: icon_size >> 1,
+    });
+    plan
 }
 
 #[cfg(test)]
@@ -1443,60 +1440,41 @@ mod tests {
         assert_eq!(drag_over(true, None, 4), DragAnswer::Refuse);
         assert_eq!(drag_over(true, Some(1), 4), DragAnswer::Accept);
         assert_eq!(drag_over(false, Some(1), 0), DragAnswer::Refuse);
-        // The full drag-over plan: a frozen view with no worn entry does
-        // nothing; otherwise the cost is refunded and stored, and the
-        // payload answers 0x105 with the item and its icon.
+        // The drag start with its cost and payload: a frozen view off a
+        // held item starts nothing and charges nothing.
+        let none = drag_start_plan(true, 0, 4, false, 0, Some(2.5), false, 160);
+        assert_eq!((none.cost, none.cancel, none.payload), (None, false, None));
+        // A weapon of desirability 1.25 costs 2.5, stored and refunded; the
+        // payload carries the kind, the icon, the item's own flags and half
+        // the icon size.
+        let cost = drag_over_cost(false, true, 0.0, 1.25);
+        let plan = drag_start_plan(false, 0, 4, false, 0x10, cost, false, 160);
+        assert_eq!((plan.cost, plan.cancel), (Some(2.5), false));
         assert_eq!(
-            drag_over_plan(true, None, 4, 7, 0, true, true, 2.5, false, false),
-            DragOver::Nothing
+            plan.payload,
+            Some(DragPayload {
+                kind: 0xFB01,
+                icon: 4,
+                flags: 0x10,
+                half: 80
+            })
         );
-        let DragOver::Accept {
-            payload,
-            cost,
-            refund,
-        } = drag_over_plan(false, None, 4, 7, 0x10, true, true, 2.5, false, false)
-        else {
-            panic!("accepted");
-        };
-        assert_eq!((payload.item, payload.flags), (7, 0xFB01));
-        assert_eq!((payload.icon, payload.half), (4, 0x50));
-        assert_eq!((cost, refund), (2.5, Some(2.5)));
-        // Without a shown character, or without the mind-cost flag, no
-        // cost is stored or refunded.
-        let accept = drag_over_plan(false, None, 4, 7, 0, false, true, 2.5, false, false);
-        assert!(matches!(
-            accept,
-            DragOver::Accept {
-                cost: 0.0,
-                refund: None,
-                ..
-            }
-        ));
-        // A character who cannot pay refuses.
+        // A character who cannot pay cancels; the cost is still stored.
+        let plan = drag_start_plan(false, 0, 4, false, 0, Some(2.5), true, 160);
         assert_eq!(
-            drag_over_plan(false, None, 4, 7, 0, true, true, 2.5, false, true),
-            DragOver::Nothing
+            (plan.cost, plan.cancel, plan.payload),
+            (Some(2.5), true, None)
         );
-        // An item whose icon does not resolve answers nothing.
+        // The charge stands when the icon then does not resolve.
+        let plan = drag_start_plan(false, 0, 0, false, 0, Some(2.5), false, 160);
+        assert_eq!((plan.cost, plan.payload), (Some(2.5), None));
+        // A locked view's item flagged 0x80000000 travels as kind all ones
+        // and keeps its flags; the half follows the icon size.
+        let plan = drag_start_plan(true, 2, 4, true, 0x8000_0000, None, false, 120);
+        let payload = plan.payload.expect("started");
         assert_eq!(
-            drag_over_plan(false, None, 0, 7, 0, false, false, 0.0, false, false),
-            DragOver::Nothing
+            (payload.kind, payload.flags, payload.half),
+            (u32::MAX, 0x8000_0000, 60)
         );
-        // A locked view's item flagged 0x80000000 travels as all ones.
-        let DragOver::Accept { payload, .. } = drag_over_plan(
-            false,
-            None,
-            4,
-            7,
-            0x8000_0000,
-            false,
-            false,
-            0.0,
-            true,
-            false,
-        ) else {
-            panic!("accepted");
-        };
-        assert_eq!(payload.flags, u32::MAX);
     }
 }
