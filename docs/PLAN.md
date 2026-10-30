@@ -249,6 +249,10 @@ Round 38 voxels3: floor sets that ship without GI points now get them at load; r
 
 Done (change `wire-gi-shapes-and-dynamic-occupancy`; vxgi6 lane, DeepSeek with REA, reviewed): the voxel GI's shape bodies are ported, moving GI meshes update the built blocks' occupancy with a sub-upload gated on builds as the original does, and the options' shading quality reaches the GI; the review fixed an undrained patch list, ghost occupancy, the cuboid frame and two float orders. TVXGIManager 80% → 84%.
 
+Round 39 gridenv5: the grid manager's room and active queries, door binding with the engine's quick yaw, and plants placed at the original's ground height with their own normals.
+
+Round 39 terrain7: the static terrain audit found one deviation, TexPos for a node deeper than the block level (32-bit level difference masked to five bits, signed whole-tile test); the live draw is unchanged, and a sweep test pins that composite sets are never handed out twice.
+
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
 Done (change `add-apparel-painting`): object database items and the
@@ -831,6 +835,12 @@ Done (change `give-prop-parts-their-mesh-triangles`; simsector7 lane, DeepSeek, 
 
 Done (objdb3 lane, DeepSeek with REA, reviewed): the object database's editor look roll, container accessors, old-layout paint seed and the migration's factory step follow the original. SG_ObjectDB2 90% → 92%.
 
+Round 39 motiledyn9: the recovery step's end picks its foot as the original does (skips anchored feet not yet reached, the just-under-maximum sentinel so a NaN never wins, first leg when none wins), live from the balance routine; the cadence target rounds through a 64-bit conversion (NaN gives 0) and the pitch impulse uses the engine's sign, both still tested functions.
+
+Round 39 playerctl10: the lift refuses an overlapping placement marker; review fixed the action word width and made the overlap spheres lazy.
+
+Round 39 simsector8: cloth level contacts gathered after the step and the placement overlap query; review made its boxes oriented and let a NaN distance pass.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
@@ -1185,6 +1195,12 @@ Round 38 tetra8: body run-time links, tick take, disabled state and the two-step
 
 Round 38 undead: dead bodies rise live through the AI manager's rise rule; the revive keeps race and stats and undoes go-limp (clips and controller back). Flag --undead-opponent shows it.
 
+Round 39 chargen7: the armour pass's head extra height as a tested function; review removed an invented coverage gate.
+
+Round 39 motilepart10: held item weld changes at collapse and death, and the collapse groan, live; review limited the collapse to the slack word and applied the changes on every condition change.
+
+Round 39 risehands: a collapse now empties every hand except a shield's in the character's hands and the record's out set, as the original's came-loose hook does, and the rise reads the record's out set, so the unarmed set-up runs (confirmed on the GPU).
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
@@ -1383,6 +1399,10 @@ Done (change `hold-bodies-and-arm-strikes`; thaumforce lane, Claude): kinesis an
 
 Round 38 audioenv3: the full voice pool's stand-in voice, story-level ambience and the outdoor arena weather ambience rule.
 
+Round 39 lightning: a strike no longer clears the frame to black. The flash-clear branch is dead in the original (one read, no writer); a strike only tints the record fog colour with lightning blue along the original's flicker, the clear, sun, ambient and fog reach unchanged (EXA_LIGHTNING_FRAME forces strikes). The tint is not visible yet because the world material draws no fog.
+
+Round 39 worldfog: the world material applies the original's fog (scratch colour over the stored fog span, mixed by the GI or ambient term, alpha fade on unlit opacity surfaces); the lightning-tinted record fog colour now lights the voxel GI from the sky, as in the original.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
@@ -1501,6 +1521,12 @@ Done (change `measure-the-combatant-origin`; combatant3 lane, DeepSeek with REA,
 Done (change `raise-the-skin-boxes-and-style-frames`; guiskin3 lane, DeepSeek with REA, reviewed): the GUI draw skin's boxes, troughs, thumbs and style frames follow the original's virtual table; the review reverted three lane errors against the assembly. TGUIDrawSkin 90% → 91%.
 
 Done (motileai8 lane, Claude): NPC footprints follow the original's gate in play, the duellist leads a moving foe when it sets its target, leaving a fight runs the original's leave routine with its 3 s look timer, contacts are admitted by weight as the original does, and the duellist holds its stance while parrying. TMotileAI 81% → 83%.
+
+Round 39 aihit: blows now reach the struck character's behaviour in the original's order (clash and block told first in their branch, a wound after the damage, pain voices and DamageTaken); exa_ai::struck runs the combatant base's courage drop, swing mark and practice lesson (live on the GPU) and the motile AI's concern rise with contact word 3 (tested; duellists without a brain have no contacts).
+
+Round 39 motileai8: the NPC brain's hit reaction, grabbed-flag timeout and investigation goal as tested functions; review reverted a wrong move of the alert look's 45 degree gate and made a NaN concern skip the reaction.
+
+Round 39 thaumtree8: the power tree's bar and prompt hit tests follow the live interface scale, and the bar no longer fades with the wheel.
 
 ### Phase 7 — Game modes and content
 
@@ -2004,6 +2030,12 @@ Round 38 mbfix: the match board and Manage Company draw tables at the table view
 Round 38 teleporters3: the reconstruction device's scan aura and reconstruction word; review added the missing identity write.
 
 Done (change `read-technique-bits-and-the-trade-basket`; xptrade3 lane, DeepSeek with REA, reviewed): the experience unit's account write, level-start hook and hook order, the technique word on a level rise and the shop's basket transaction, quality share and stock binding follow the original; the review fixed a one-skill shift in the technique bits and reverted a signed reading of the power progress.
+
+Round 39 arena7: the arena's weapon variant draw indexes the row's three slots as they stand, counting non-zero slots with the original's unsigned compare, a drawn empty slot meaning no weapon (live through the hire spawn); review corrected the lane's signed count.
+
+Round 39 gamemain6: the expert ladder unlock write and the flow's motions through the unforced action switch; review reverted a wrong practice spawn move.
+
+Round 39 savegames9: the save-disable flag, checkpoint save-then-copy and retail save restore live; review made the readers drop the header camera pair and kept the checkpoint copy under the disable flag.
 
 ### Phase 8 — Polish and release
 
