@@ -205,6 +205,11 @@ alpha, grey-alpha and RGB images and copies RGBA images, which matches
 what the original's RGBA8 targets give. Established by reverse engineering
 of the two registration routines and every converter (REA).
 
+The loader copies an image before it uploads it, as the original's does:
+the whole stored chain, or the base level alone with the chain flag cleared
+(`ImageData::copy_of`, `copy_base`; `exa_assets::texture::rfi_to_texture`
+reads the copy).
+
 The conversion of a whole image to another word walks the same
 registrations in order (`exa_formats::rfi::ImageData::convert`). The same
 word is a no-op. A requested word with bit 20 set and bit 31 clear whose
