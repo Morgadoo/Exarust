@@ -8,6 +8,7 @@
 //! `docs/formats/TERRAIN.md`.
 
 use exa_formats::terrain::{BlendRule, Palette};
+use exa_physics::engine_math::round_to_i64;
 use exa_render::image_noise::{ridge_bytes, value_noise_bytes};
 
 /// Side of the repeating noise maps, in terrain vertices (96 m).
@@ -533,10 +534,14 @@ pub fn expand_kernel(kernel: &[f32]) -> Vec<[f32; 4]> {
 pub fn merge_into(weights: &mut [f32], mask: &mut [u8]) {
     for (weight, byte) in weights.iter_mut().zip(mask.iter_mut()) {
         *weight += f32::from(*byte);
-        if *weight != 0.0 {
-            let scaled = (f32::from(*byte) * 255.0 / *weight).round_ties_even();
-            *byte = scaled.min(255.0) as u8;
-        }
+        // The original converts `byte·255` as an unsigned word to single,
+        // divides by the running weight and rounds the quotient to a
+        // 64-bit integer (ties to even; NaN or out of range is the
+        // processor's integer indefinite, whose low byte is zero), then
+        // caps at 255.
+        let scaled = (u64::from(*byte) * 0xff) as f32 / *weight;
+        let rounded = round_to_i64(scaled);
+        *byte = if rounded < 0xff { rounded as u8 } else { 0xff };
     }
 }
 
@@ -906,6 +911,24 @@ mod tests {
         assert!((k.iter().sum::<f32>() - 1.0).abs() < 1e-5);
         assert!(k[120] > k[0]);
         assert_eq!(expand_kernel(&k)[120], [k[120]; 4]);
+    }
+
+    #[test]
+    fn a_mask_merge_rounds_ties_to_even_and_a_nan_weight_zeroes_the_byte() {
+        // 127.5 rounds to 128, 255 stays 255; a weight that turns NaN
+        // (a zero byte over a zero weight, or a NaN running weight) makes
+        // the original's rounded quotient the integer indefinite, whose
+        // low byte is zero.
+        let mut weights = vec![100.0, 0.0];
+        let mut mask = vec![100u8, 255];
+        merge_into(&mut weights, &mut mask);
+        assert_eq!(weights, [200.0, 255.0]);
+        assert_eq!(mask, [128, 255]);
+        let mut weights = vec![0.0, f32::NAN];
+        let mut mask = vec![0u8, 9];
+        merge_into(&mut weights, &mut mask);
+        assert!(weights[1].is_nan());
+        assert_eq!(mask, [0, 0]);
     }
 
     #[test]
