@@ -620,12 +620,12 @@ mod tests {
         let view_scale = 1.0 / (20.0f32.to_radians()).tan();
         assert!((view_scale - 2.747_477).abs() < 1.0e-5);
         // A 10 cm box at the 30 cm apparel framing: r = 1/6, the half bends
-        // to 0.3 · ((r · 0.11 + 1) − 1/(8r + 1)) = 0.176 93, over tan(20°)
+        // to 0.3 · ((r · 0.11 + 1) − 1/(8r + 1)) = 0.176 93, over sin(20°)
         // plus the depth half 0.05.
         let camera = IconCamera::from_plan(&plan, bounds(Vec3::new(0.05, 0.05, 0.05)));
         assert_eq!(camera.fov_degrees, 40.0);
         assert!(
-            (camera.distance - 0.536_107).abs() < 1.0e-5,
+            (camera.distance - 0.567_304_5).abs() < 1.0e-5,
             "{}",
             camera.distance
         );
@@ -634,24 +634,24 @@ mod tests {
         assert!((camera.near - 0.1).abs() < 1.0e-6);
         // A small item draws small: 41 of 160 pixels.
         let (w, _) = camera.pixel_extents(bounds(Vec3::new(0.05, 0.05, 0.05)), 160);
-        assert!((w - 40.999).abs() < 0.01, "{w}");
+        assert!((w - 38.744_36).abs() < 0.01, "{w}");
         // A 1 m box is above the framing, so its half is used as it is:
-        // 0.5 / tan(20°) + 0.5.
+        // 0.5 / sin(20°) + 0.5.
         let big = bounds(Vec3::new(0.5, 0.5, 0.5));
         let camera = IconCamera::from_plan(&plan, big);
-        assert!((camera.distance - 1.873_739).abs() < 1.0e-5);
+        assert!((camera.distance - 1.961_902_2).abs() < 1.0e-5);
         let (w, h) = camera.pixel_extents(big, 160);
         assert!(
-            (w - 117.305).abs() < 0.01 && (h - 117.305).abs() < 0.01,
+            (w - 112.033_59).abs() < 0.01 && (h - 112.033_59).abs() < 0.01,
             "{w} {h}"
         );
         // The close (20 cm) and default (70 cm) framings.
         let close = crate::item_renderer::render_plan(0, true, (1.0, 1.0), 0, 160, 1.0, 1.0, true);
         let d = IconCamera::from_plan(&close, bounds(Vec3::splat(0.02))).distance;
-        assert!((d - 0.270_265).abs() < 1.0e-5, "{d}");
+        assert!((d - 0.286_326_1).abs() < 1.0e-5, "{d}");
         let far = crate::item_renderer::render_plan(0, false, (1.0, 1.0), 0, 160, 1.0, 1.0, true);
         let d = IconCamera::from_plan(&far, bounds(Vec3::splat(0.02))).distance;
-        assert!((d - 0.383_855).abs() < 1.0e-5, "{d}");
+        assert!((d - 0.407_206_9).abs() < 1.0e-5, "{d}");
     }
 
     #[test]
@@ -659,12 +659,12 @@ mod tests {
         let bounds = bounds(Vec3::new(0.5, 0.5, 0.5));
         let (_, plan) = scene_plan(v::APPAREL, false, 0, bounds, 160, true);
         assert_eq!(plan.framing.distance, 30.0);
-        assert!((plan.screen_extents.0 - 117.305).abs() < 0.01);
-        assert!((plan.screen_extents.1 - 117.305).abs() < 0.01);
+        assert!((plan.screen_extents.0 - 112.033_59).abs() < 0.01);
+        assert!((plan.screen_extents.1 - 112.033_59).abs() < 0.01);
         assert!(plan.screen_pass && !plan.downsample && !plan.halo);
         // The same at the icon's own size.
         let (_, small) = scene_plan(v::APPAREL, false, 0, bounds, 80, false);
-        assert!((small.screen_extents.0 - 58.652).abs() < 0.01);
+        assert!((small.screen_extents.0 - 56.016_32).abs() < 0.01);
         assert!(!small.screen_pass && small.downsample && small.halo);
     }
 

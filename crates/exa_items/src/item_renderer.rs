@@ -17,6 +17,8 @@
 //! Evidence: the renderer's constructor, its image allocator and its
 //! destroy (`docs/RENDERING.md`, item icons).
 
+use bevy::math::Vec3;
+
 /// The icon size global's start value, in pixels.
 pub const ICON_SIZE: i32 = 160;
 /// The alpha global's start value: set, so the screen-quad pass draws the
@@ -201,9 +203,27 @@ pub fn frame_distance(half: [f32; 3], framing: f32, fov_degrees: f32) -> f32 {
         let bent = (f64::from(r) * 0.11 + 1.0) - f64::from(lift);
         h = (f64::from(framing) * bent) as f32;
     }
-    let tan = (f64::from(fov_degrees) * std::f64::consts::PI / 360.0).tan();
-    let distance = (f64::from(h) / tan) as f32;
+    let sin = (f64::from(fov_degrees) * std::f64::consts::PI / 360.0).sin();
+    let distance = (f64::from(h) / sin) as f32;
     half[2] * weight + distance
+}
+
+/// The camera the scene fit moves to frame a box (`0x06BFA0`): the
+/// direction from the camera to the target (the engine's normalise, a zero
+/// vector staying zero), and the camera moved along it by
+/// [`frame_distance`]. The original moves its camera node, not the target,
+/// so the view keeps its angle. The direction uses an exact normalise; the
+/// engine's approximate reciprocal square root differs in the last bits.
+pub fn frame_camera(
+    camera: Vec3,
+    target: Vec3,
+    half: [f32; 3],
+    framing: f32,
+    fov_degrees: f32,
+) -> Vec3 {
+    let distance = frame_distance(half, framing, fov_degrees);
+    let direction = (target - camera).normalize_or_zero();
+    camera + direction * distance
 }
 
 /// A 3 × 4 row-major transform: three rows of `[x, y, z, w]`.
@@ -519,13 +539,13 @@ mod tests {
         // 5 cm across at the 70 cm framing: r = 1/14, the half becomes
         // 70 · ((r · 0.11 + 1) − 1/(8r + 1)) = 26.0045, over tan(20°), plus
         // the depth half at weight 1.
-        assert!((frame_distance([5.0, 2.0, 1.0], 70.0, 40.0) - 72.446_91).abs() < 1.0e-3);
+        assert!((frame_distance([5.0, 2.0, 1.0], 70.0, 40.0) - 77.032_20).abs() < 1.0e-3);
         // The second cross half wins only when the first is below it, and
         // halves the depth weight; a half above the framing is not bent.
-        assert!((frame_distance([2.0, 50.0, 10.0], 30.0, 40.0) - 142.373_87).abs() < 1.0e-3);
+        assert!((frame_distance([2.0, 50.0, 10.0], 30.0, 40.0) - 151.190_22).abs() < 1.0e-3);
         // Equal halves keep the first and its full depth weight.
         let equal = frame_distance([0.5, 0.5, 0.5], 0.3, 40.0);
-        assert!((equal - (0.5 / 20.0f64.to_radians().tan() + 0.5) as f32).abs() < 1.0e-5);
+        assert!((equal - (0.5 / 20.0f64.to_radians().sin() + 0.5) as f32).abs() < 1.0e-5);
         // An unordered half takes neither branch: the framing is not above
         // it, so the distance is unordered too, never a panic.
         assert!(frame_distance([f32::NAN, 1.0, 1.0], 70.0, 40.0).is_nan());
