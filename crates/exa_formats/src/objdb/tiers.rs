@@ -508,6 +508,71 @@ impl ObjectDb {
         new | target.tag()
     }
 
+    /// Copies an instance record into a tier, as the character-data unit
+    /// copies an item into a save or a prelude database: only a record whose
+    /// header word has the instance flag is copied. The instance is made
+    /// first (a clone, or a duplicate of a local object), then its model's
+    /// two string ids are re-made in the target library: an empty id
+    /// becomes an inherit, an own id is read from the source tier's
+    /// library, any other from the shared library, and the text is always
+    /// allocated in the target library even when it reads as nothing (the
+    /// original stores the id of the slot it then releases). The payload
+    /// goes under the target's first free id with the source's flags and
+    /// the returned id is tagged local, whatever the target tier.
+    /// A missing record gives 0; a record without the flag comes back as it
+    /// went in; an id the instance step leaves untagged gives 0.
+    pub fn copy_instance(&mut self, id: u32, target: Tier) -> u32 {
+        let Some(header) = self.section(id, NAME) else {
+            return 0;
+        };
+        if u32_at(header, 0x10) & super::INSTANCE_ON_USE == 0 {
+            return id;
+        }
+        let made = self.instantiate_or_duplicate(id);
+        if made & TAG_MASK == 0 || made & ID_MASK == 0 {
+            return 0;
+        }
+        let source = match made & TAG_MASK {
+            WORLD => Tier::World,
+            LOCAL => Tier::Local,
+            _ => Tier::Base,
+        };
+        let Some(at) = self.store(source).find_index(made & ID_MASK) else {
+            return 0;
+        };
+        let Some(view) = self.store(source).view(at) else {
+            return 0;
+        };
+        let flags = self.store(source).entries()[at].flags;
+        let mut payload = view.payload().to_vec();
+        if let Some(model) = section_range(&payload, MODEL) {
+            for field in [0x14, 0x18] {
+                let raw = u32_at(&payload[model.clone()], field);
+                let new = if raw & ID_MASK == 0 {
+                    INHERIT
+                } else {
+                    let text = if raw & 0x8000_0000 != 0 {
+                        self.library(source)
+                            .bytes(raw & ID_MASK)
+                            .map(<[u8]>::to_vec)
+                    } else {
+                        self.strings.bytes(raw & ID_MASK).map(<[u8]>::to_vec)
+                    };
+                    let slot = self.library_mut(target).alloc();
+                    self.library_mut(target)
+                        .set(slot, text.as_deref().unwrap_or_default());
+                    slot | 0x8000_0000
+                };
+                set_u32(&mut payload[model.clone()], field, new);
+            }
+        }
+        let new = self.store(target).first_free_id();
+        let (_, to) = self.store_mut(target).insert(new);
+        self.store_mut(target).set_flags(to, flags);
+        self.store_mut(target).store(to, &payload);
+        new | LOCAL
+    }
+
     /// Promotes an object to the world tier, as the original does. A local
     /// object (tag exactly bit 31) comes back as its recorded world id when
     /// the id remap table holds it; otherwise its container children are
@@ -1208,6 +1273,79 @@ mod tests {
         let again = db.copy_record(WORLD | 2, Tier::World, Tier::World);
         assert_eq!(again, WORLD | 4);
         assert!(db.find(WORLD | 2).is_some());
+    }
+
+    #[test]
+    fn an_instance_copies_its_strings_into_the_target() {
+        let mut db = db();
+        let own = db.local_strings.add(b"Own name");
+        put(
+            &mut db.local,
+            1,
+            NAME | MODEL,
+            &item("Own", INSTANCE_ON_USE, 0, own | 0x8000_0000, INHERIT),
+        );
+        // An own name comes from the local library, a shared id from the
+        // shared one; the new ids name slots in the world library.
+        let copied = db.copy_instance(LOCAL | 1, Tier::World);
+        assert_eq!(copied, LOCAL | 1, "the returned id is tagged local");
+        assert!(db.find(WORLD | 1).is_some());
+        let model = db.find(WORLD | 1).unwrap().model().unwrap();
+        assert_eq!(
+            db.world_strings
+                .bytes(model.name_id & ID_MASK)
+                .map(<[u8]>::to_vec)
+                .as_deref(),
+            Some(&b"Own name"[..])
+        );
+        assert_eq!(model.description_id, INHERIT);
+        assert_eq!(db.find(WORLD | 1).unwrap().flags, NAME | MODEL);
+        // The instance step duplicated the local record, which shares its
+        // own string (one more reference); the copy itself left it alone.
+        assert_eq!(db.local_strings.refs(own), 2);
+        // A marked base record is instantiated first (its model inherits
+        // both template strings, so the copy names the shared text).
+        let marked = db.copy_instance(10, Tier::World);
+        assert_eq!(marked, LOCAL | 2);
+        let model = db.find(WORLD | 2).unwrap().model().unwrap();
+        // The instance names its template and inherits both of its strings.
+        assert_eq!((model.name_id, model.description_id), (INHERIT, INHERIT));
+        assert_eq!(db.name(WORLD | 2).as_deref(), Some("Sword"));
+        assert_eq!(db.description(WORLD | 2).as_deref(), Some("A sword."));
+        // A missing record gives 0; an unmarked record comes back as it is.
+        assert_eq!(db.copy_instance(LOCAL | 99, Tier::World), 0);
+        // An instance is made first even when it copies into its own tier:
+        // the duplicate takes the first free id and the copy the one after
+        // it, which is the id the routine returns.
+        let first = db.local.first_free_id();
+        assert_eq!(
+            db.copy_instance(LOCAL | 1, Tier::Local),
+            LOCAL | (first + 1)
+        );
+        assert!(db.find(LOCAL | first).is_some());
+        assert!(db.find(LOCAL | (first + 1)).is_some());
+        put(
+            &mut db.local,
+            2,
+            NAME,
+            &payload(&[(NAME, header("Plain", 0, 0))]),
+        );
+        assert_eq!(db.copy_instance(LOCAL | 2, Tier::World), LOCAL | 2);
+        // A record without the instance flag comes back as it is, tagged or
+        // not.
+        assert_eq!(db.copy_instance(12, Tier::World), 12);
+        // An own string the source tier lost still takes a slot, which is
+        // released at once: the id points at an empty slot.
+        put(
+            &mut db.local,
+            3,
+            NAME | MODEL,
+            &item("Lost", INSTANCE_ON_USE, 0, 0x8000_0009, INHERIT),
+        );
+        let lost = db.copy_instance(LOCAL | 3, Tier::World);
+        let model = db.find(WORLD | lost & ID_MASK).unwrap().model().unwrap();
+        assert_eq!(model.name_id & 0x8000_0000, 0x8000_0000);
+        assert_eq!(db.world_strings.refs(model.name_id & ID_MASK), 0);
     }
 
     #[test]
