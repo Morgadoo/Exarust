@@ -340,7 +340,14 @@ six hook slots in registration order, the companions' list and the
 discovery chunk of a save are in; the fighting estimate is the one shared
 implementation in `exa_ai::estimate` (exa_game's wrappers call it for the
 practice lesson), and the arena's lesson goes through the same skill lump.
-Nothing calls the tick in a running story level yet. The shop (`trade`): a
+The running story (`experience_live`) now drives them: the launch's
+settings store fills `AccountExperience`, the first frame of play seeds the
+pool and both clocks from the player's record (`StoryExperience::begin`),
+each whole second converts the account then the player (`advance`), the
+body takes the `TechniqueWord` component on a rise, and play's end writes a
+changed account experience back through a `SettingsEntry`. The explored
+cells still need the level's sector grid, which the running game does not
+hand the system yet. The shop (`trade`): a
 first stock of 18 to 20, the
 rotation by size, candidates by kind, listing, model and rank weighed by
 rarity through the original's quick logarithm and exponential (duplicates

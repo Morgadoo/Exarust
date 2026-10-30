@@ -42,6 +42,7 @@ pub mod emblem;
 pub mod end_menu_screen;
 pub mod equip;
 pub mod experience;
+pub mod experience_live;
 pub mod fall;
 pub mod fire_sound;
 pub mod flow;
@@ -219,6 +220,7 @@ impl Plugin for GamePlugin {
             splash::SplashPlugin,
             div_card_screen::DivinationPlugin,
             loadout_screen::LoadoutScreenPlugin,
+            experience_live::ExperienceLivePlugin,
             transition_screen::TransitionScreenPlugin,
             settings_form::SettingsFormPlugin,
             creator_screen::CreatorScreenPlugin,

@@ -1356,6 +1356,9 @@ fn main() -> AppExit {
             &user.settings.hotkeys,
         ));
         app.insert_resource(exa_game::flow::UnlockSettings::from_store(&user.store))
+            .insert_resource(exa_game::experience_live::AccountExperience::from_store(
+                &user.store,
+            ))
             .insert_resource(user.clone())
             .add_systems(
                 Update,
