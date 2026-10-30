@@ -418,7 +418,11 @@ not simulated), and a body stepping through one gets the seeded
 `_PrtlDisp` dissolve burst (cells 6 cm apart, two fifths taken, each
 particle's position moved halfway between the node's two frames,
 jittered ±1.5 cm and pushed 1.5 % out from the body's centre, lifetime
-41 ticks less up to a quarter) with `portaluse01` at 0.6. A lit held item
+41 ticks less up to a quarter) with `portaluse01` at 0.6. A loaded node
+whose flags carry 0x10000 is replaced by a marker at its place (the
+4-byte payload read and unused), and a dissolve fills its system's
+6 cm-cell ring slot by slot (life, look, position, previous position) up
+to the capacity and clears the burst flag. A lit held item
 carries a flame row from 30 to 115 cm with the `_FlameMat01` shader,
 fading in by 0.02 a tick and out by 0.015 in double precision, its
 ribbon's points closing a fifth of the gap to 20 cm above its ends, lit

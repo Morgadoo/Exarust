@@ -343,6 +343,125 @@ pub fn replaces_marker(world_flags: u32) -> bool {
     world_flags & IMPORT_FLAG != 0
 }
 
+/// A marker a loaded node is replaced with: its place and the render value
+/// copied from the node it replaces.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ImportedMarker {
+    pub at_cm: Vec3,
+    pub render: f32,
+    /// The node's 4-byte payload read as a float (the original reads it and
+    /// never uses it).
+    pub size: f32,
+}
+
+/// The import handler: a node whose flags carry [`IMPORT_FLAG`] is replaced
+/// by a portal marker at its place. The payload is four bytes; a shorter
+/// slice is refused rather than read past its end.
+pub fn imported_marker(
+    node_flags: u32,
+    payload: &[u8],
+    at_cm: Vec3,
+    render: f32,
+) -> Option<ImportedMarker> {
+    if !replaces_marker(node_flags) {
+        return None;
+    }
+    let bytes: [u8; 4] = payload.get(..4)?.try_into().ok()?;
+    Some(ImportedMarker {
+        at_cm,
+        render,
+        size: f32::from_le_bytes(bytes),
+    })
+}
+
+/// A particle system's ring: its per-slot life, look, position and previous
+/// position, its live count and capacity, the template's lifetime and the
+/// burst's pull. The original writes a slot's life at one array, its look
+/// at another and its two points at a third, and stops the seeding pass the
+/// moment the ring is full.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ParticleRing {
+    pub life: Vec<i32>,
+    pub look: Vec<u8>,
+    pub at: Vec<Vec3>,
+    pub before: Vec<Vec3>,
+    /// Live particles: the system's count word.
+    pub count: usize,
+    pub pull: f32,
+    pub lifetime_ticks: i32,
+}
+
+impl ParticleRing {
+    /// A ring of `capacity` empty slots.
+    pub fn new(capacity: usize, lifetime_ticks: i32, pull: f32) -> Self {
+        Self {
+            life: vec![0; capacity],
+            look: vec![0; capacity],
+            at: vec![Vec3::ZERO; capacity],
+            before: vec![Vec3::ZERO; capacity],
+            count: 0,
+            pull,
+            lifetime_ticks,
+        }
+    }
+
+    /// How many particles the ring can hold.
+    pub fn capacity(&self) -> usize {
+        self.life.len()
+    }
+
+    pub fn is_full(&self) -> bool {
+        self.count == self.capacity()
+    }
+
+    /// Writes the seeded particles into the ring's slots, in order, and
+    /// sets the live count. The seeding pass stops at the ring's capacity.
+    pub fn write(&mut self, seeded: &[Seeded]) {
+        self.count = seeded.len().min(self.capacity());
+        for (slot, particle) in seeded.iter().take(self.count).enumerate() {
+            self.life[slot] = particle.life;
+            self.look[slot] = particle.look;
+            self.at[slot] = particle.at;
+            self.before[slot] = particle.before;
+        }
+    }
+}
+
+/// A burst that has just started: the seeded particles and the system flag
+/// word left after the pass.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BurstStart {
+    pub seeded: Vec<Seeded>,
+    pub flags_cleared: u32,
+}
+
+/// Start a dissolve burst on a body: stop the ring, seed the body's nodes
+/// around its root node's place, and clear the burst flag. The original's
+/// flush of the finished particle system is the caller's rebuild.
+#[allow(clippy::too_many_arguments)]
+pub fn start_dissolve(
+    nodes: &[SeedNode],
+    centre_cm: Vec3,
+    ring: &mut ParticleRing,
+    rng: &mut Rng,
+    mt: &mut Mt19937,
+    flags: u32,
+) -> BurstStart {
+    let seeded = seed_burst(
+        nodes,
+        centre_cm,
+        ring.life.len(),
+        ring.lifetime_ticks,
+        rng,
+        mt,
+    );
+    ring.write(&seeded);
+    BurstStart {
+        seeded,
+        flags_cleared: flags & !BURST_CLEAR_FLAG,
+    }
+}
+
 /// The box after a seeding pass: half way from the min to the max particle,
 /// half extents five centimetres past the max, and the sphere through the
 /// box's corner. No particles gives none.
@@ -482,6 +601,61 @@ mod tests {
         // Run again: an old marker gets no second light.
         app.update();
         assert_eq!(lights.iter(app.world()).count(), 1);
+    }
+
+    /// A loaded node with the import flag is replaced by a marker at its
+    /// place; the payload is read, and a short one is refused.
+    #[test]
+    fn an_imported_node_becomes_a_marker_at_its_place() {
+        let payload = 100.0f32.to_le_bytes();
+        assert_eq!(imported_marker(0, &payload, Vec3::X, 1.0), None);
+        let marker = imported_marker(IMPORT_FLAG, &payload, Vec3::X, 0.25).unwrap();
+        assert_eq!(marker.at_cm, Vec3::X);
+        assert_eq!(marker.render, 0.25);
+        assert_eq!(marker.size, 100.0);
+        assert_eq!(
+            imported_marker(IMPORT_FLAG, &payload[..3], Vec3::X, 1.0),
+            None
+        );
+    }
+
+    #[test]
+    fn a_dissolve_fills_its_ring_and_clears_the_burst_flag() {
+        let mut ring = ParticleRing::new(4, 41, SEED_VELOCITY_PULL);
+        assert_eq!((ring.count, ring.capacity()), (0, 4));
+        assert!(!ring.is_full());
+        let start = start_dissolve(
+            &[node(Vec3::new(6.0, 6.0, 6.0))],
+            Vec3::ZERO,
+            &mut ring,
+            &mut Rng(1),
+            &mut Mt19937::new(1),
+            0xffff_ffff,
+        );
+        assert_eq!(start.seeded.len(), 4);
+        assert_eq!(ring.count, 4);
+        assert!(ring.is_full());
+        assert_eq!(start.flags_cleared, 0xffff_fffd);
+        // The ring holds the seeded particles in order.
+        for (slot, particle) in start.seeded.iter().enumerate() {
+            assert_eq!(ring.life[slot], particle.life);
+            assert_eq!(ring.look[slot], particle.look);
+            assert_eq!(ring.at[slot], particle.at);
+            assert_eq!(ring.before[slot], particle.before);
+        }
+        // A smaller ring takes only its capacity.
+        let mut small = ParticleRing::new(1, 41, SEED_VELOCITY_PULL);
+        let start = start_dissolve(
+            &[node(Vec3::splat(6.0))],
+            Vec3::ZERO,
+            &mut small,
+            &mut Rng(1),
+            &mut Mt19937::new(1),
+            0x2,
+        );
+        assert_eq!(small.count, 1);
+        assert_eq!(start.seeded.len(), 1);
+        assert_eq!(start.flags_cleared, 0);
     }
 
     #[test]
