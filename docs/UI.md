@@ -830,9 +830,10 @@ The original's own forms and controls that Exarust rebuilds, with the
   column`; a hit strictly within five units (a later row wins); the wheel
   takes the nearest row (horizontal) or the row above or below (vertical).
   A skill's experience draws a pip per 5 000 and the remainder as a
-  narrower last pip, whose u and v ranges both shrink with its width
-  (`share · 0.8 + 0.1`); the technique node in training halves only its
-  colour's alpha byte.
+  narrower last pip, whose u range (only; the v range is kept) shrinks
+  with its width (`share · 0.8 + 0.1`); the technique node in training
+  halves its line colour's alpha byte after the screen's fade has scaled
+  it.
 - **Arena loadout** (`exa_ui::loadout`, `exa_game::loadout`): the 1024 ×
   768 editor of one fighter's kit at one rank. The arsenal is 228 wide at
   (4, 180) and `492 · opacity` tall (the opacity 0.83739835 on a wide
