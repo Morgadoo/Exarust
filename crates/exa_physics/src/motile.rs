@@ -790,6 +790,61 @@ pub fn attack_arms(
     AttackArms { length, other }
 }
 
+/// The body tick's attack grip block: each arm's drive (`0x47E`/`0x47F`)
+/// and the two stiffnesses it passes the muscle tune, by the grip pose the
+/// held items ask for. `strength` is the tick's attack strength and
+/// `reach` the race's arm reach.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GripArms {
+    /// The first arm's drive and stiffness.
+    pub first: (f32, f32),
+    /// The second arm's drive and stiffness.
+    pub second: (f32, f32),
+}
+
+/// The attack grip block's six poses (the original's `0x466`): 1 fists
+/// forward (the second arm relaxed), 2 both at the reach, 3 both at the
+/// reach with the second 0.7 (0.4 while `defensive`), 4 the first forward
+/// and the second at 0.2·strength + 0.3, 5 both at the reach, 6 the stub
+/// (attacks 8 through 10 putting the reach on the second arm, the rest on
+/// the first, the other at 0.3). The first arm's reach is
+/// `reach · strength`; pose 2's and 5's second arm is the same. Pose 0
+/// leaves both at zero. All products are single precision in the
+/// original's order.
+pub fn grip_arms(mode: u32, motion: i32, strength: f32, reach: f32, defensive: bool) -> GripArms {
+    let at_reach = reach * strength;
+    match mode {
+        1 => GripArms {
+            first: (strength, at_reach),
+            second: (0.0, strength * 0.3 + 0.25),
+        },
+        2 | 5 => GripArms {
+            first: (strength, at_reach),
+            second: (strength, at_reach),
+        },
+        3 => GripArms {
+            first: (strength, at_reach),
+            second: (strength, if defensive { 0.7 } else { 0.4 }),
+        },
+        4 => GripArms {
+            first: (strength, at_reach),
+            second: (0.0, strength * 0.2 + 0.3),
+        },
+        6 if !(8..=10).contains(&motion) => GripArms {
+            first: (strength, at_reach),
+            second: (0.0, 0.3),
+        },
+        6 => GripArms {
+            first: (0.0, 0.3),
+            second: (strength, at_reach),
+        },
+        _ => GripArms {
+            first: (0.0, 0.0),
+            second: (0.0, 0.0),
+        },
+    }
+}
+
 /// The arm floor: `min(0.4·|turn|, 0.4)`.
 pub fn arm_floor(turn: f32) -> f32 {
     let lo = (turn.abs() as f64 * 0.4) as f32;
@@ -911,6 +966,40 @@ mod dispatch_tests {
         assert!(near(a.length, 1.5139299631));
         let a = attack_arms(0.8, 0.6, 1.0, 0, 0x0B, true);
         assert!(near(a.other, 0.0) && near(a.length, 0.2634288));
+    }
+
+    /// The grip block's six poses: drives and stiffnesses by the attack
+    /// strength and the race's reach, pose 6 swapping arms for 8–10.
+    #[test]
+    fn the_grip_arms() {
+        let g = grip_arms(0, 5, 0.5, 10.0, false);
+        assert_eq!(g.first, (0.0, 0.0));
+        assert_eq!(g.second, (0.0, 0.0));
+        let g = grip_arms(1, 5, 0.5, 10.0, false);
+        assert_eq!(g.first, (0.5, 5.0));
+        assert_eq!(g.second, (0.0, 0.4));
+        let g = grip_arms(2, 5, 0.5, 10.0, false);
+        assert_eq!(g.first, (0.5, 5.0));
+        assert_eq!(g.second, (0.5, 5.0));
+        assert_eq!(grip_arms(3, 5, 0.5, 10.0, false).second, (0.5, 0.4));
+        assert_eq!(grip_arms(3, 5, 0.5, 10.0, true).second, (0.5, 0.7));
+        let g = grip_arms(4, 5, 0.5, 10.0, false);
+        assert_eq!(g.first, (0.5, 5.0));
+        assert_eq!(g.second, (0.0, 0.4));
+        let g = grip_arms(5, 5, 0.5, 10.0, false);
+        assert_eq!(g.first, (0.5, 5.0));
+        assert_eq!(g.second, (0.5, 5.0));
+        let g = grip_arms(6, 7, 0.5, 10.0, false);
+        assert_eq!(g.first, (0.5, 5.0));
+        assert_eq!(g.second, (0.0, 0.3));
+        let g = grip_arms(6, 8, 0.5, 10.0, false);
+        assert_eq!(g.first, (0.0, 0.3));
+        assert_eq!(g.second, (0.5, 5.0));
+        // The bounds are not inclusive: 7 and 11 take the other arm.
+        assert_eq!(grip_arms(6, 11, 0.5, 10.0, false).first, (0.5, 5.0));
+        // The sums are single precision in the written order.
+        let g = grip_arms(1, 5, 0.7, 10.0, false);
+        assert_eq!(g.second.1.to_bits(), (0.7f32 * 0.3 + 0.25).to_bits());
     }
 
     #[test]

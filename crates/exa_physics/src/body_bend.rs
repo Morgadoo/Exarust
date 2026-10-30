@@ -104,6 +104,36 @@ const LIFT_FREE: f32 = 0.8;
 const LIFT_HELD: f32 = 0.9;
 const STANCE_BASE: f32 = 1.5;
 
+/// Degrees in a radian, single precision, as the foot rest turn's table
+/// stores it.
+const DEGREE: f32 = 0.017_453_292;
+/// The foot rest turn's angle in combat: (1 − the record's height) × this
+/// many degrees.
+const COMBAT_PITCH: f32 = -1.5;
+/// The foot rest turn's angle when splayed: this many degrees.
+const SPLAY_PITCH: f32 = 5.0;
+/// The foot rest turn's axis: the lerp of the original's two vectors at
+/// 0.4, normalised, is (−1, 0, 0).
+const FOOT_AXIS: Vec3 = Vec3::new(-1.0, 0.0, 0.0);
+
+/// The rest turn the body tick gives a foot, from the original's foot
+/// rest routine: an `-1.5° × (1 − the record's height)` turn about (−1,
+/// 0, 0) while its behaviour is in combat and it is not down or walking,
+/// else a 5° turn while its state word has the flat-floor (splay) bit,
+/// else the identity. The mode is the thigh posture's, so the same
+/// decision picks both. Each leg takes the turn the opposite way (the
+/// first positive, the second negative). The sampler applies it to the
+/// foot's sampled turn.
+pub fn foot_rest_turn(posture: FemurPosture, leg: usize) -> Quat {
+    let angle = match posture {
+        FemurPosture::Level => return Quat::IDENTITY,
+        FemurPosture::Splayed => SPLAY_PITCH * DEGREE,
+        FemurPosture::Combat { height } => (1.0 - height) * COMBAT_PITCH * DEGREE,
+    };
+    let angle = if leg.is_multiple_of(2) { angle } else { -angle };
+    Quat::from_axis_angle(FOOT_AXIS, angle)
+}
+
 /// The knee angle (rad) for bones of length `thigh` and `shin` (m) and a
 /// hip-to-target reach `reach` (m). A cosine at or below −1 is 180°, and
 /// one above the double 0.8660254 is 30°; otherwise the engine's arc
@@ -879,5 +909,21 @@ mod posture_tests {
         let expected = Quat::from_axis_angle(axis, -0.75 * 0.017_453_292);
         assert!(c.abs_diff_eq(expected, 1e-6));
         assert_eq!(femur_posture_turn(FemurPosture::Level, 0), Quat::IDENTITY);
+    }
+
+    /// The foot rest turn is (−1, 0, 0) by (1 − height)·−1.5° in combat,
+    /// 5° splayed, none otherwise, and the second leg takes it back.
+    #[test]
+    fn the_foot_rest_turn_is_the_originals() {
+        let axis = Vec3::NEG_X;
+        assert_eq!(foot_rest_turn(FemurPosture::Level, 0), Quat::IDENTITY);
+        let splay = foot_rest_turn(FemurPosture::Splayed, 0);
+        assert!(splay.abs_diff_eq(Quat::from_axis_angle(axis, 5.0 * 0.017_453_292), 1e-6));
+        assert!(foot_rest_turn(FemurPosture::Splayed, 1).abs_diff_eq(splay.conjugate(), 1e-6));
+        let combat = foot_rest_turn(FemurPosture::Combat { height: 0.5 }, 0);
+        assert!(combat.abs_diff_eq(Quat::from_axis_angle(axis, -0.75 * 0.017_453_292), 1e-6));
+        // A NaN height keeps a non-finite turn, as the original's
+        // arithmetic does.
+        assert!(!foot_rest_turn(FemurPosture::Combat { height: f32::NAN }, 0).is_finite());
     }
 }

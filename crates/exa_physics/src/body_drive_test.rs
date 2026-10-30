@@ -482,3 +482,40 @@ fn a_feral_body_is_dazed_under_its_own_most() {
     assert!(close(d.energy_share(), 0.5, 1e-6));
     assert!(close(d.hold_weight(), 0.9375, 1e-6));
 }
+
+/// The pose factor the posture block writes each tick: s² out of combat,
+/// 0.5·s + 0.5 down or walking, s in combat, and s²·0.97 for a large body
+/// in combat that is not attacking. The scale test is the double 1.3.
+#[test]
+fn the_pose_factor_follows_the_posture_block() {
+    let s = 0.8f32;
+    let close = |a: f32, b: f32| (a - b).abs() < 1e-6;
+    assert!(close(pose_factor(s, false, false, false, 1.0), 0.64));
+    assert!(close(pose_factor(s, false, true, false, 1.0), 0.9));
+    assert!(close(pose_factor(s, true, false, false, 1.0), 0.8));
+    assert!(close(pose_factor(s, true, true, false, 1.0), 0.9));
+    // Large and not attacking: (s·s) narrowed, widened for the 0.97.
+    assert!(close(
+        pose_factor(s, true, false, false, 1.4),
+        (f64::from(s * s) * 0.97) as f32
+    ));
+    // Attacking keeps s whatever the size, and 1.3 is not over the double.
+    assert!(close(pose_factor(s, true, false, true, 1.4), 0.8));
+    assert!(close(pose_factor(s, true, false, false, 1.3), 0.8));
+    // A NaN scale is not over 1.3; a NaN s stays NaN.
+    assert!(close(pose_factor(s, true, false, false, f32::NAN), 0.8));
+    assert!(pose_factor(f32::NAN, false, false, false, 1.0).is_nan());
+    // The share the tick computes: energy 0.5, sag 0.5 gives 0.75.
+    let mut d = Drive {
+        energy: 0.5,
+        sag: 0.5,
+        ..Drive::default()
+    };
+    let s = (1.0 - d.sag) * (1.0 - d.energy) + d.energy;
+    assert!(close(s, 0.75));
+    d.timers = BodyTimers::default();
+    let mut body = Ragdoll::new(&[]);
+    body.drive = Some(d);
+    body.tick_timers();
+    assert!(close(body.drive.as_ref().unwrap().pose_factor, 0.5625));
+}
