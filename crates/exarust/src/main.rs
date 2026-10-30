@@ -19,6 +19,7 @@
 //!          --splash                   the original's start-up splash (the BME logos, about five seconds), then the main menu
 //!          --gi-warm-up <steps>       GI steps run when a level loads (default 600)
 //!          --size WxH                 window size (default 1600x1080)
+//!          --window-at X,Y            window position (or EXA_WINDOW_AT; X11 only)
 //!          --max-fps <n|auto>         hold the frame to n a second, or to the display's rate (off unless FPSLimit is set)
 //!          --no-settings              ignore the user's settings files (see below)
 //!          --benchmark                run the GPU benchmark and take its quality levels
@@ -227,6 +228,10 @@ pub struct Options {
     pub max_fps: Option<i32>,
     /// Window size in logical pixels.
     pub size: Option<(u32, u32)>,
+    /// Window position on the desktop, for tiling parallel test runs
+    /// (`--window-at X,Y`, or `EXA_WINDOW_AT`). Wayland ignores client
+    /// positions; run under X11 (`WAYLAND_DISPLAY` unset) to place it.
+    pub window_at: Option<(i32, i32)>,
     /// Full screen over the primary display (borderless; the settings'
     /// `ScreenWidth`/`ScreenHeight` can ask for another display mode).
     pub fullscreen: bool,
@@ -674,6 +679,9 @@ fn main() -> AppExit {
                 if let Some(n) = args.next().and_then(|v| v.parse().ok()) {
                     options.gi.warm_up = n;
                 }
+            }
+            "--window-at" => {
+                options.window_at = args.next().as_deref().and_then(parse_window_at)
             }
             "--size" => {
                 options.size = args.next().and_then(|v| {
@@ -1259,6 +1267,12 @@ fn main() -> AppExit {
                         min_height: exa_game::window::MIN_WINDOW_SIZE.y as f32,
                         ..default()
                     },
+                    position: window_at(&options)
+                        .map(|(x, y)| bevy::window::WindowPosition::At(IVec2::new(x, y)))
+                        .unwrap_or_default(),
+                    // A tiled test run (a quadrant position) draws without a frame,
+                    // so four windows read as one split screen.
+                    decorations: window_at(&options).is_none(),
                     mode: frame_loop::launch_window_mode(options.fullscreen),
                     // Swap interval 1 (adaptive while Exarust's frames are
                     // slower than the display) or 0.
@@ -1412,6 +1426,22 @@ fn main() -> AppExit {
         user.save_store_at_exit();
     }
     exit
+}
+
+/// The window position from `--window-at`, else `EXA_WINDOW_AT`.
+fn window_at(options: &Options) -> Option<(i32, i32)> {
+    options.window_at.or_else(|| {
+        std::env::var("EXA_WINDOW_AT")
+            .ok()
+            .as_deref()
+            .and_then(parse_window_at)
+    })
+}
+
+/// Reads `X,Y` for `--window-at` / `EXA_WINDOW_AT`.
+fn parse_window_at(text: &str) -> Option<(i32, i32)> {
+    let (x, y) = text.split_once(',')?;
+    Some((x.trim().parse().ok()?, y.trim().parse().ok()?))
 }
 
 #[cfg(test)]
