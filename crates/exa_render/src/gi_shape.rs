@@ -2,10 +2,10 @@
 //! subclasses inject light into the GI volume through their own fragment
 //! programs, drawn over the column box [`crate::gi::shape_draw`] clips.
 //!
-//! The manager's side is the registry (`0x1001f1b10`/`0x1001f1bb0`), the
-//! shape's box and quad, the per-program uniforms `SliceSz` and `ZTrn`, and
-//! the two `vec4` light uniforms each shape program reads: the shape's
-//! position and its per-voxel colour. The bodies below are the original's
+//! The manager's side is the registry, the shape's box and quad and the
+//! per-program uniforms `SliceSz` and `ZTrn`; everything else a body reads
+//! (`Colour`, `bMat`, `bExt`, `Radius`, the line and point lists) is the
+//! shape's own class's. The bodies below are the original's
 //! own `shading.flb` fragment programs (`gi_dome`, `gi_cuboid`, `gi_bubble`,
 //! `gi_telebubble`, `gi_gradline`, `gi_multipoint`), evaluated per voxel: a
 //! shape's fragment reads only its own uniforms and the voxel's position, so
@@ -20,7 +20,6 @@
 use std::sync::Arc;
 
 use bevy::prelude::*;
-use bevy::render::render_resource::ShaderType;
 
 /// The shader-library program a registered GI shape injects with. The
 /// manager links each with `gi_inject_v` and `gi_inject_g`.
@@ -84,7 +83,9 @@ pub struct GiShape {
     pub atten: f32,
     /// `bMat`: the shape's frame, applied to the volume position.
     pub matrix: Mat4,
-    /// `bExt`: the box's half extents in the shape's space (metres).
+    /// `bExt`: the box's half extents in the shape's space: whatever `bMat`
+    /// maps the voxel position into (the bodies' constants, a 100-unit dome
+    /// and `d²·0.001` falloffs, are the original's centimetres).
     pub half: Vec3,
     /// `TexPos`: the texture window's origin.
     pub tex_pos: Vec2,
@@ -131,14 +132,16 @@ impl Default for GiShape {
 }
 
 impl GiShape {
-    /// A cuboid shape of `half` extents (metres) centred at `at` (metres),
-    /// injecting `colour` with the program's soft falloff.
+    /// A cuboid shape of `half` extents centred at `at`, both in the space
+    /// the voxel position is given in, injecting `colour` with the program's
+    /// soft falloff. `bMat` takes a voxel position into the shape's space,
+    /// so the frame is the translation by `−at`.
     pub fn cuboid(at: Vec3, half: Vec3, colour: Vec3) -> Self {
         Self {
             program: GiShapeProgram::Cuboid,
             colour,
             half,
-            matrix: Mat4::from_translation(at),
+            matrix: Mat4::from_translation(-at),
             ..default()
         }
     }
@@ -166,13 +169,14 @@ impl GiShape {
     }
 
     /// `gi_dome`: a shell at radius 100 in the shape's space, with the dome
-    /// texture's ridge (`1 − |t − 0.4|·2`) cubed, a 70 m inner cap and a
+    /// texture's ridge (`1 − |t − 0.4|·2`) cubed, a 70-unit inner cap and a
     /// `1 − d²/1000` shell falloff, times 6.
     fn dome(&self, at: Vec3, occupancy: f32, texel: &impl Fn(Vec2) -> f32) -> GiShapeSample {
         let p = self.framed(at);
         // The body reads the occupancy and never uses it.
         let _ = gl_min(occupancy * 20.0, 1.0);
-        let tc = p.xy() * (0.75 * 0.00375) + self.tex_pos;
+        // `vxPos.xy * (0.75) * 0.00375`, multiplied left to right.
+        let tc = p.xy() * 0.75 * 0.00375 + self.tex_pos;
         let a = texel(tc);
         let a = 1.0 - (a - 0.4).abs() * 2.0;
         let mut l_dst = p.length();
@@ -209,7 +213,7 @@ impl GiShape {
     fn bubble(&self, at: Vec3, occupancy: f32, texel: &impl Fn(Vec2) -> f32) -> GiShapeSample {
         let p = self.framed(at);
         let _ = gl_min(occupancy * 20.0, 1.0);
-        let tc = Vec2::new(p.x, p.z) * (0.75 * 0.00375) + self.tex_pos;
+        let tc = Vec2::new(p.x, p.z) * 0.75 * 0.00375 + self.tex_pos;
         let a = texel(tc);
         let a = 1.0 - (a - 0.4).abs() * 2.0;
         let a = a * a * a;
@@ -376,7 +380,7 @@ fn gl_round(x: f32) -> f32 {
 }
 
 /// The registered shapes, in registration order. The original appends a
-/// shape's pointer (storing the manager in the shape at `+0x20`), and
+/// shape's pointer (storing the manager in the shape), and
 /// unregisters by walking the list and swapping its shortened end over every
 /// match, so a shape listed twice has both entries removed.
 #[derive(Resource, Default, Clone, Debug)]
@@ -435,18 +439,6 @@ impl Plugin for GiShapePlugin {
         app.init_resource::<GiShapes>()
             .add_systems(PostUpdate, track_shapes);
     }
-}
-
-/// The two `vec4` light uniforms a shape program reads: its position and
-/// its per-voxel colour, as the manager builds them for the draw
-/// (`Light[0]` and `Light[1]`).
-#[derive(Clone, Copy, Debug, Default, ShaderType)]
-pub struct GiShapeLight {
-    /// The shape's position in volume texture units, and (for the shells)
-    /// unused in `w`.
-    pub position: Vec4,
-    /// The light's colour and (for the shells) unused in `w`.
-    pub colour: Vec4,
 }
 
 #[cfg(test)]
@@ -547,10 +539,27 @@ mod tests {
             moved.radiance(Vec3::ZERO, 0.0, |_| 0.0).colour,
             Vec3::new(1.0, 2.0, 3.0) * (1.0 - 16.0 * 0.0002)
         );
+        // The constructor centres the box on its point: the frame is the
+        // translation by minus it.
+        let placed = GiShape::cuboid(Vec3::new(5.0, 0.0, 0.0), Vec3::ONE, Vec3::ONE);
+        assert_eq!(
+            placed
+                .radiance(Vec3::new(5.0, 0.0, 0.0), 0.0, |_| 0.0)
+                .colour,
+            Vec3::ONE
+        );
+        assert_eq!(
+            placed
+                .radiance(Vec3::new(5.0, 0.0, 0.0), 0.0, |_| 0.0)
+                .colour,
+            placed
+                .radiance(Vec3::new(6.0, 1.0, 1.0), 0.0, |_| 0.0)
+                .colour
+        );
     }
 
     /// `gi_dome`: at the dome's centre the ridge texture is cubed and the
-    /// shell weight 6 applies; the 70 m cap cuts the near edge.
+    /// shell weight 6 applies; the 70-unit cap cuts the near edge.
     #[test]
     fn the_dome_shell_weights_its_texture_and_cap() {
         let shape = GiShape {
@@ -558,7 +567,7 @@ mod tests {
             ..ident(GiShapeProgram::Dome)
         };
         // The shell is the sphere of radius 100 about the origin: its top
-        // point (0, 0, 100) is on it and inside the 70 m cap, the texture's
+        // point (0, 0, 100) is on it and inside the 70-unit cap, the texture's
         // ridge at 0.4 gives a = 1, so the colour is 0.5·6 = 3.
         let on = Vec3::new(0.0, 0.0, 100.0);
         assert_eq!(shape.radiance(on, 0.0, |_| 0.4).colour, Vec3::splat(3.0));
@@ -566,16 +575,16 @@ mod tests {
         // single precision) and 0.8³ = 0.512.
         let ridge = shape.radiance(on, 0.0, |_| 0.5).colour;
         assert!((ridge - Vec3::splat(3.0 * 0.512)).abs().max_element() < 1e-6);
-        // 1 m under it the shell term is 1 − 0.001 and the cap still 1.
+        // 1 unit under it the shell term is 1 − 0.001 and the cap still 1.
         let inside = Vec3::new(0.0, 0.0, 99.0);
         assert_eq!(
             shape.radiance(inside, 0.0, |_| 0.4).colour,
             Vec3::splat(3.0 * 0.999)
         );
-        // At the origin the shell is 100 m away: 1 − 10 000·0.001 < 0.
+        // At the origin the shell is 100 units away: 1 − 10 000·0.001 < 0.
         assert_eq!(shape.radiance(Vec3::ZERO, 0.0, |_| 0.4).colour, Vec3::ZERO);
-        // A point on the shell 150 m from the cap's centre is outside the
-        // 70 m cap: v = p − (0, 0, 100) = (100, 0, −100), 141 m.
+        // A point on the shell 141 units from the cap's centre is outside
+        // the 70-unit cap: v = p − (0, 0, 100) = (100, 0, −100).
         let side = Vec3::new(100.0, 0.0, 0.0);
         assert_eq!(shape.radiance(side, 0.0, |_| 0.4).colour, Vec3::ZERO);
     }
@@ -595,7 +604,7 @@ mod tests {
             shape.radiance(on, 0.0, |_| 0.4).colour,
             Vec3::splat(0.25 * 4.0)
         );
-        // 1 m inside: 1 − 1·0.001.
+        // 1 unit inside: 1 − 1·0.001.
         let inside = Vec3::new(7.0, 0.0, 0.0);
         assert_eq!(
             shape.radiance(inside, 0.0, |_| 0.4).colour,
@@ -718,12 +727,5 @@ mod tests {
                 .max_element()
                 < 1e-7
         );
-    }
-
-    /// The shape light uniforms are two `vec4`s, 32 bytes, as the programs
-    /// read them.
-    #[test]
-    fn a_shape_light_is_two_vec4s() {
-        assert_eq!(<GiShapeLight as ShaderType>::min_size().get(), 32);
     }
 }
