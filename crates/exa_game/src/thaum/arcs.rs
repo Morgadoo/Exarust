@@ -1436,12 +1436,14 @@ pub fn spark_burst(draws: &mut impl Draws) -> ArcEmitter {
     arc
 }
 
-/// The shock's own burst when its charge passes one: ten tendrils of
-/// fourteen points, forty ticks of life, size 10, scale 0.25, growth 0.5,
-/// a level lift, volume 0.05, its first tendril aimed along the caster's
-/// aim and a point light; the node sits at the hand's −15, −5 cm. The
-/// flags carry the emitter's 0x10 and 0x30000 bits as the original sets
-/// them.
+/// The shock's own burst when its charge passes one, as its creator fills
+/// the arc record: ten tendrils of fourteen points, forty ticks of life,
+/// size 10, growth 0.25 a tick, lift 0.5, light 1, no hum, a zero offset
+/// and a shock strength of 0.05; the node sits at the hand's −15, −5 cm.
+/// The flags carry the emitter's 0x10 and 0x30000 bits as the original
+/// sets them. The record's direction is the caster's aim from the hand's
+/// node (the controller's aim point, held within 45° of the body's
+/// heading); the caller fills it ([`ArcParams::direction`]).
 pub fn shock_burst() -> ArcParams {
     ArcParams {
         flags: 0x0003_0310,
@@ -1449,10 +1451,10 @@ pub fn shock_burst() -> ArcParams {
         segments: 14,
         life: 40,
         size: 10.0,
-        scale: 0.25,
-        growth: 0.5,
-        lift: 1.0,
-        volume: 0.05,
+        growth: 0.25,
+        lift: 0.5,
+        light: 1.0,
+        strength: 0.05,
         ..ArcParams::default()
     }
 }
@@ -1813,23 +1815,33 @@ mod tests {
 
     #[test]
     fn the_shock_burst_is_ten_long_tendrils() {
-        // The params the burst's creator sets.
+        // The record the burst's creator fills: count, segments and life
+        // at its words 1-3, size 10, growth 0.25 and lift 0.5 after the
+        // unset scale, light 1, and the shock strength 0.05 after the
+        // offset and direction vectors.
         let params = shock_burst();
         assert_eq!(params.flags, 0x0003_0310);
         assert_eq!((params.count, params.segments, params.life), (10, 14, 40));
-        assert_eq!(
-            (params.size, params.scale, params.growth),
-            (10.0, 0.25, 0.5)
-        );
-        assert_eq!((params.lift, params.volume), (1.0, 0.05));
-        // A live emitter of them: ten records of fourteen points.
+        assert_eq!((params.size, params.scale), (10.0, 0.0));
+        assert_eq!((params.growth, params.lift), (0.25, 0.5));
+        assert_eq!((params.light, params.strength), (1.0, 0.05));
+        assert_eq!((params.sound, params.volume), (None, 0.0));
+        assert_eq!(params.offset, Vec3::ZERO);
+        // A live emitter of them: ten records of fourteen points, ending,
+        // its first tendril aimed along the direction.
         let mut draws = Fixed::new(&[0.5], &[1]);
-        let emitter = ArcEmitter::new(&params, &mut draws);
+        let aimed = ArcParams {
+            direction: Vec3::Z,
+            ..params
+        };
+        let emitter = ArcEmitter::new(&aimed, &mut draws);
         assert_eq!(emitter.tendrils.len(), 10);
         assert_eq!(emitter.segments, 14);
-        assert_eq!(emitter.light, 0.0);
+        assert!(emitter.ending);
+        assert_eq!((emitter.light, emitter.strength), (1.0, 0.05));
+        assert_eq!((emitter.growth, emitter.lift), (0.25, 0.5));
+        assert_eq!(emitter.tendrils[0].points[1], Vec3::Z * emitter.length);
         assert_eq!(emitter.sound, None);
-        assert_eq!(emitter.volume, 0.05);
     }
 
     #[test]

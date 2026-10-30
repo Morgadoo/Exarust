@@ -2050,8 +2050,12 @@ fn tick_casters(
                     let step = power.control(event, body);
                     result = step.result;
                     // The release makes the burst at the hand: a fresh
-                    // emitter of the shock's own shape, aimed along the
-                    // caster's aim, before the hand's arcs leave.
+                    // emitter of the shock's own shape (strength 0.05, so
+                    // its tendrils shock what they reach), before the
+                    // hand's arcs leave. [inf: the original aims its first
+                    // tendril at the controller's aim point within 45° of
+                    // the heading (`effects::blast::blast_aim`); the tick
+                    // has no aim point here, so the burst starts undirected.]
                     if step.fired
                         && let Some(body) = ragdoll
                     {
