@@ -396,9 +396,9 @@ pub fn blast_light(
                     BLAST_SPENT_ATTENUATION
                 };
                 if f64::from(f) > 0.666 {
-                    // The engine's max keeps its first operand, so a NaN
-                    // strength stays NaN.
-                    let s = crate::thaum::engine::greatest(4.0 - f * 4.5, 0.0);
+                    // The engine's max is MAXSS: its second operand, 0, on
+                    // a NaN.
+                    let s = exa_physics::engine_math::max(4.0 - f * 4.5, 0.0);
                     s * s
                 } else {
                     1.0

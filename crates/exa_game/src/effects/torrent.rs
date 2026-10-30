@@ -957,7 +957,7 @@ pub fn limb_terms(character: bool, inverse_mass: f32, body_mass: f32) -> (f32, f
         (0.5, (f64::from(1.0 / body_mass) * 0.8) as f32, ease)
     } else {
         (
-            crate::thaum::engine::least(inverse_mass * 0.25 + 0.5, 3.0),
+            exa_physics::engine_math::min(inverse_mass * 0.25 + 0.5, 3.0),
             0.5,
             ease,
         )

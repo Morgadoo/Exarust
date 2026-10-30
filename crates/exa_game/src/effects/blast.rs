@@ -103,12 +103,11 @@ pub const VELOCITY_EASE: f32 = 0.2;
 pub const PUSH: f64 = 2.4;
 /// The reach a worn chunk gains a tick.
 pub const WEAR_REACH: f32 = 0.25;
-/// The wear a pierced or piercing contact sets: the original's
-/// `0x3c75c28f`, a hair above 0.015.
-pub const CONTACT_WEAR: f32 = f32::from_bits(0x3c75_c28f);
-/// The pin gain's upper clamp when `1 − k` overshoots, the original's
-/// `0x3c03126f`.
-pub const PIN_GAIN_CLAMP: f32 = f32::from_bits(0x3c03_126f);
+/// The wear a pierced or piercing contact sets.
+pub const CONTACT_WEAR: f32 = 0.015;
+/// The pin gain's value when `(1 − k)·0.08` overshoots 0.08 (compared in
+/// double): the original stores 0.008, a tenth of the bound.
+pub const PIN_GAIN_CLAMP: f32 = 0.008;
 /// The bounds' margin, cm.
 pub const BOUNDS_MARGIN: f32 = 40.0;
 /// The alert's reach and the band its height difference is ignored in, cm.
@@ -741,7 +740,7 @@ pub fn limb_terms(
     } else {
         (
             0.2,
-            crate::thaum::engine::least(inverse_mass * 0.5 + 2.0, 3.0),
+            exa_physics::engine_math::min(inverse_mass * 0.5 + 2.0, 3.0),
             setup.body_push,
         )
     }
@@ -1603,8 +1602,9 @@ mod tests {
         assert_eq!(stun.to_bits(), 0x3d42_7a0d);
         let k = f64::from(2.0f32 / 4.92);
         assert_eq!((((1.0 - k) * 0.08) as f32).to_bits(), 0x3d42_7a0c);
-        // The upper clamp is the original's 0.0080000004, not 0.008; only a
-        // negative mass (k below zero) reaches it.
+        // The upper clamp stores 0.008 (single precision, 0x3c03126f), a
+        // tenth of the 0.08 bound; only a negative mass (k below zero)
+        // reaches it.
         let over = character_knock(-10.0, 1.0, Vec3::ZERO).stun;
         assert_eq!(over.to_bits(), 0x3c03_126f);
     }

@@ -33,20 +33,6 @@ pub fn normalize(v: Vec3) -> Vec3 {
     v * crate::thaum::reciprocal_sqrt(sum)
 }
 
-/// The original's `min(a, b)`: `b` when `b <= a`, else `a`. A NaN in
-/// either place leaves `a`, where the library's `min` would answer the
-/// other operand.
-pub fn least(a: f32, b: f32) -> f32 {
-    if b <= a { b } else { a }
-}
-
-/// The original's `max(a, b)`: `b` when `a <= b`, else `a`. A NaN in
-/// either place leaves `a`, where the library's `max` would answer the
-/// other operand.
-pub fn greatest(a: f32, b: f32) -> f32 {
-    if a <= b { b } else { a }
-}
-
 /// 0 for 0, else ±1 by the sign bit.
 pub fn sign(x: f32) -> f32 {
     if x == 0.0 { 0.0 } else { 1.0f32.copysign(x) }
@@ -200,15 +186,6 @@ mod tests {
             lerp(Vec3::ZERO, Vec3::new(2.0, 4.0, 6.0), 0.5),
             Vec3::new(1.0, 2.0, 3.0)
         );
-        // The engine's min and max keep their first operand on a NaN.
-        assert_eq!(least(2.0, 3.0), 2.0);
-        assert_eq!(least(4.0, 3.0), 3.0);
-        assert_eq!(greatest(2.0, 3.0), 3.0);
-        assert_eq!(greatest(4.0, 3.0), 4.0);
-        assert!(least(f32::NAN, 3.0).is_nan());
-        assert_eq!(least(3.0, f32::NAN), 3.0);
-        assert!(greatest(f32::NAN, 3.0).is_nan());
-        assert_eq!(greatest(3.0, f32::NAN), 3.0);
     }
 
     #[test]
