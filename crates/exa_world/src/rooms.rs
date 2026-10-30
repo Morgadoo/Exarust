@@ -249,10 +249,13 @@ impl Rooms {
         )
     }
 
-    /// The room of the cell holding a point (metres, on X/Z).
+    /// The room at a point (metres, on X/Z), as the original's world-point
+    /// query finds it: the point's cell index (row × width + column) is
+    /// checked only against the cell count, so a column off the grid's side
+    /// lands in the row before or after (the same reading the light callbacks
+    /// use), and a row off the grid finds nothing.
     pub fn room_at(&self, p: Vec2) -> Option<u16> {
-        let (x, y) = self.cell_of(p);
-        self.room_of_cell(x, y)
+        self.linear_cell(p).and_then(|c| self.room_of_index(c))
     }
 
     /// The cell coordinates a character's room lookup writes onto it (the
@@ -738,6 +741,17 @@ impl RoomTracker {
 
     pub fn fade(&self, room: u16) -> Fade {
         self.fade.get(room as usize).copied().unwrap_or_default()
+    }
+
+    /// The active flag for a grid cell, as the original's cell query answers
+    /// it: the room holding the cell, and that room's working state low bit
+    /// (true once it has faded in and while it is wanted again mid fade-out;
+    /// see [`Self::is_active`]). A cell in no room, or outside the grid, is
+    /// not active.
+    pub fn cell_active(&self, rooms: &Rooms, cell: u32) -> bool {
+        rooms
+            .room_of_index(cell)
+            .is_some_and(|room| self.is_active(room))
     }
 
     /// The original's active-room flag (the low bit of the room's working
@@ -1559,6 +1573,43 @@ mod tests {
         assert_eq!(t.state(0), RoomState::Hidden);
         assert_eq!(t.state(1), RoomState::Hidden);
         assert!(t.active().is_empty());
+    }
+
+    #[test]
+    fn the_point_room_query_wraps_a_column_off_the_side() {
+        // Four by four cells, all open: one room covers them. The point's
+        // column 4 is off the right side, but its cell index 1×4 + 4 = 8 is
+        // cell (0, 2), so the query finds that cell's room (the original
+        // checks only the cell count).
+        let mut g = Grid::new(4, 4);
+        for y in 0..4 {
+            for x in 0..4 {
+                g.open(x, y, [0, 0, 0, 0]);
+            }
+        }
+        let rooms = Rooms::flood(&g.0);
+        assert_eq!(rooms.room_of_cell(0, 2), Some(0));
+        assert_eq!(rooms.room_at(Vec2::new(12.0, -3.0)), Some(0));
+        // A row below the grid is out of the cell count: no room.
+        assert_eq!(rooms.room_at(Vec2::new(0.0, -100.0)), None);
+    }
+
+    #[test]
+    fn a_cell_is_active_only_while_its_rooms_low_bit_is_set() {
+        let rooms = Rooms::flood(&two_rooms().0);
+        let mut t = RoomTracker::new(rooms.len());
+        let inside = Vec2::new(-8.0, 3.0);
+        let door_cell = 8; // (2, 1) of room 0
+        let behind = 9; // (3, 1) of room 1
+        t.update(&rooms, inside, 0);
+        // Entering: the low bit is clear even though the room is drawn.
+        assert!(!t.cell_active(&rooms, door_cell));
+        t.update(&rooms, inside, 1_000);
+        assert!(t.cell_active(&rooms, door_cell));
+        // The adjacent room behind the door is not active.
+        assert!(!t.cell_active(&rooms, behind));
+        // A cell in no room is not active.
+        assert!(!t.cell_active(&rooms, 0));
     }
 
     #[test]
