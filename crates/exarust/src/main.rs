@@ -116,6 +116,8 @@
 //!          --click frame,...          click the left mouse button at frames after loading
 //!          --object-click F[d][l],...  debug: click the placed container nearest the player at frames after
 //!                                     loading (d: the double click, l: as a hit on level geometry)
+//!          --game-event CODE@FRAME,... debug: raise the story scripts' GameEvent CODE at frames after loading
+//!                                     (memory fragment 0xc00001, raise dead 0xda0115, awakenings 0xc10ec1-3)
 //!          --use-item ID@FRAME        debug: put the item into the pack and call its use hook at that frame
 //!                                     after loading, as its double click in the pack would (the use cursor)
 //!          --gui-drop ID@FRAME        debug: put the item into the pack and drop it into the world at that frame
@@ -379,6 +381,9 @@ pub struct Options {
     pub object_clicks: Vec<exa_game::object_click::ScriptedObjectClick>,
     /// `--use-item ID@FRAME`: the item's use hook, as its double click.
     pub use_item: exa_game::use_cursor::UseScript,
+    /// `--game-event CODE@FRAME,...`: script `GameEvent` codes raised at
+    /// frames after the load.
+    pub game_events: Option<exa_game::game_event_live::GameEventScript>,
     /// `--gui-drop ID@FRAME`: the item dropped out of the pack.
     pub gui_drop: exa_game::gui_drop::GuiDropScript,
     /// `--doll-drop ID:FLAGS@FRAME`: the item dropped onto the doll.
@@ -935,6 +940,16 @@ fn main() -> AppExit {
                     }
                 }
             }
+            "--game-event" => {
+                let list = args.next().unwrap_or_default();
+                match exa_game::game_event_live::GameEventScript::parse(&list) {
+                    Some(script) => options.game_events = Some(script),
+                    None => {
+                        eprintln!("--game-event: cannot read {list:?} (CODE@FRAME,...)");
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
             "--use-item" | "--gui-drop" | "--doll-drop" => {
                 let text = args.next().unwrap_or_default();
                 let ok = match a.as_str() {
@@ -1360,6 +1375,9 @@ fn main() -> AppExit {
     .insert_resource(exa_game::save_live::ScriptedSaves(options.save_at.clone()));
     if options.story_session {
         app.insert_resource(exa_game::flow::StorySession);
+    }
+    if let Some(script) = &options.game_events {
+        app.insert_resource(script.clone());
     }
     if let Some(dir) = &options.save_dir {
         app.insert_resource(exa_game::save_live::SaveFolder(dir.clone()));

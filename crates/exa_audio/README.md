@@ -142,7 +142,9 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
   open the doors under a node plays, a numbered set) draws its pitch first,
   `0.9 + 0.15·draw`, then its volume, `0.15 + 0.1·draw`, from the engine's
   generator, in double precision (`lock_sound_levels`); a `PointSounded`
-  plays at its own volume and pitch (a taken object's use sound, 0.25 and 1).
+  plays at its own volume, pitch and voice flags (a taken object's use sound,
+  0.25 and 1; the story events' voices and swing with `0x400`, their wail at
+  the origin with `0x4460`).
 - Mechanisms (`mechanisms`): a door's, lever's or plate's creak keeps one
   voice per body; a creaking tick restarts it on a fresh variant (not
   looping) at the body's centre when it is not playing and only re-levels

@@ -1089,13 +1089,13 @@ The rest of the record, in order (versions 5–7 alike up to the inventory):
 | traits | u8 ×4 | value + 100 (−100…100); the AI reads the second and third |
 | search seed | u32 | read by the AI's search activity |
 | experience | i32 | multiples of 5000 in the levels |
-| (word) | u32 | always 0 |
+| class word | u32 | 0 in the shipped data; the story's unknown background writes `0x510000`, the domain awakenings their bits under `0xFF00FFFF`; Corlian's narration asks for `0x400000` under `0xC00000` (REA: the record reader keeps it beside the experience; the story event handler reads and writes it) |
 | skills | `i32 n`, n × {u16 slot, u16 points, u8 k, k bytes} | six slots: Close Combat, Ranged Combat, Armour, Shields, Insight, Concentration; byte i = the technique chosen at level i (1-based id, at most six); one level per 5000 points |
 | inventory | `i32 n`, n × {u32 item, u32 flags, s16 x, s16 y} | carried items; the saved cell in sixteenths of a GUI unit, x low and y high (`0x00040028` is the default (40, 4)) |
 | roles | v7: `u32 count`, `u32 len`, len bytes | count × {u32 role, f32 weight, u8 flags (bit 0 explicit), u8 inherited count, u8 n, u8 pad, n × u32 variables}, newest first |
 | relations | v7: table, then `i32 m` × {8 bytes, table} | table = `i32 n`; if n ≥ 1: n × {character, offset}, `i32 len`, blob; none in the shipped data |
 | saved state | `i32 n`, n × {u32 tag, u32 value} | `CECC0001` heal pool (f32 red still to heal), `CECC0002` potion expiry (world clock, s) |
-| sub-chunks | {u32 tag, i32 size, payload} to the record's end | `CDEC01`/`CDEC02` powers: u32, ten u32 slots, `i32 n`, n × {u32 id, u32 flags; with flag `0x10000000` an `i32 size` and size − 4 bytes}; `CDEC12`: two words; `CDEC00` loadouts: `i32 n`, n × {u32 word, four {id, flags}, `i32 count`, count × {id, flags}}; `CDEC00` and `CDEC12` never occur in the shipped data |
+| sub-chunks | {u32 tag, i32 size, payload} to the record's end | `CDEC01`/`CDEC02` powers: f32 potential (4.0 for a new thaumaturge; the story's memory fragments and awakenings change it), ten u32 slots, `i32 n`, n × {u32 id, u32 flags; with flag `0x10000000` an `i32 size` and size − 4 bytes}; `CDEC12`: two words; `CDEC00` loadouts: `i32 n`, n × {u32 word, four {id, flags}, `i32 count`, count × {id, flags}}; `CDEC00` and `CDEC12` never occur in the shipped data |
 
 Versions 5 and 6 (the legacy reader) differ after the inventory: roles are
 `i32 n`, n × {u32 role, u32 ignored}, each added in turn (with its parents

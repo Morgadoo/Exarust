@@ -93,13 +93,16 @@ pub(crate) fn heal_sounds(
 
 /// A named one-shot at a point (m) at a set volume and pitch: the original's
 /// point sound, which a picked-up object's use sound goes through (volume
-/// 0.25, pitch 1).
+/// 0.25, pitch 1). `flags` are the voice flags the caller adds (the story
+/// events' `0x400`, and `0x4460` for the wail played at the origin; 0 for
+/// the others).
 #[derive(Message, Debug, Clone, PartialEq)]
 pub struct PointSounded {
     pub name: String,
     pub position: Vec3,
     pub volume: f32,
     pub pitch: f32,
+    pub flags: u32,
 }
 
 /// A door's lock sound levels from the two draws, in the order the original
@@ -151,7 +154,13 @@ pub(crate) fn named_sounds(
             .entry(point.name.clone())
             .or_insert_with(|| bank.load_buffer(&game, &mut sources, &point.name));
         if let Some(buffer) = buffer {
-            env.play_buffer(buffer, point.position, point.volume, point.pitch, 0);
+            env.play_buffer(
+                buffer,
+                point.position,
+                point.volume,
+                point.pitch,
+                point.flags,
+            );
         }
     }
 }

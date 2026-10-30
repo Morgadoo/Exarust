@@ -1264,6 +1264,15 @@ fn spawn_players(
                     weapon,
                 });
             }
+        } else if story {
+            // The story's player always has a record, as the original's
+            // does: the creator's, or the new character's. The story's
+            // experience and its script events read and write it.
+            commands
+                .entity(model)
+                .insert(exa_character::record::CharacterData::of_record(
+                    player_record.clone(),
+                ));
         }
         log_encumbrance("player", &stats);
         if feral != 0.0 {

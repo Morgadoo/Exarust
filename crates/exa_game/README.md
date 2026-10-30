@@ -355,9 +355,11 @@ pool and both clocks from the player's record (`StoryExperience::begin`),
 each of the flow's once-a-second `Step::Discovery` passes (`DiscoveryTick`,
 game clock) converts the account, the player and the companions
 (`advance`) and writes the player's experience, skills and powers back to
-its record, the body takes the `TechniqueWord` component on a rise (no body
-system reads it yet), and play's end writes a changed account experience
-back through a `SettingsEntry`. The explored cells still need the level's
+its record (the record on the player's body; a story player always has
+one), the body takes the `TechniqueWord` component at the level start and on
+a rise, `apply_technique_word` puts it on the body's caster and adds the
+record's perks to its fighter, and play's end writes a changed account
+experience back through a `SettingsEntry`. The explored cells still need the level's
 sector grid, which the running game does not hand the system yet, and no
 pickup or kill calls `discover_item`/`discover_kill`, so the pool only
 holds the carried experience. The shop (`trade`): a
@@ -1464,16 +1466,29 @@ and the one-second fade of the backdrop, with the logos centred at
 when `SplashAtStart` is set (`exarust --splash`) and opens the main menu at
 the hand-over.
 
-`game_event` is the story scripts' `GameEvent`: memory fragments (head pain,
-a flash, `XU_Memory`, a fragment bit and a potential point for a player with
-the memory role), the raise-dead lines, Corlian's line, the three domain
-awakenings (the potential plus ten less the fragments seen, the voice, wail
-and swing, the mind domain for the second and third codes, the force domain
-for the first and third, and the class word) and the background-unlock bit.
-`flow` consumes the scripts' `GameEvent` calls (`Flow::game_event`): the
-unlock sets bit 4 in the background word and writes the whole word to the
-settings store once, as the original does; the player's effects have no
-consumer yet.
+`game_event` is the story scripts' `GameEvent`: memory fragments (the head
+pain action, the body's voice request on line 2, the post-process flash,
+the `XU_Memory` narrator topic after 2.5 s, a fragment bit and a potential
+point for a player with the memory role), the raise-dead lines (the power
+grant for Raise Dead picks the successful one), Corlian's topic, the three
+domain awakenings (the potential plus ten less the fragments seen, every
+fragment marked seen, the voice, wail and swing, the mind domain for the
+second and third codes, the force domain for the first and third, and the
+class word) and the background-unlock bit. The potential is the record's
+powers-chunk float and the class word the record word after the experience.
+`flow` consumes the calls (`Flow::game_event`): the unlock sets bit 4 in the
+background word and writes the whole word to the settings store once, and
+the story state keeps the fragments seen and the background (a new story
+clears the fragments and keeps its background; a story save writes both and
+a load restores them). `game_event_live` reads the live player (its roles,
+record and voice) and applies the rest in the handler's order: the requested
+action through the unforced action switch, the voice line through the pain
+voice's path, the narrator topics through `exa_script::Narrate`, the
+potential and class word on the record, the Raise Dead grant on the
+record's known powers (and the body's caster), and the sounds as
+`PointSounded` with the handler's flags. The flash, the witness event and
+the awakenings' body effects are logged, not applied. `--game-event
+CODE@FRAME,...` raises codes after the load (a debug aid).
 
 The main menu screen's F1 takes the flow's mode, phase and page state, and
 its in-game page in a session; while the page is open the flow's dialogue

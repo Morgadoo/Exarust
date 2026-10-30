@@ -395,6 +395,7 @@ pub fn run_object_clicks(
                     position: sound.at,
                     volume: sound.volume,
                     pitch: sound.pitch,
+                    flags: 0,
                 });
             }
             match use_of {
@@ -714,6 +715,7 @@ mod tests {
                 position: at,
                 volume: 0.25,
                 pitch: 1.0,
+                flags: 0,
             }]
         );
         let uses = &app.world().resource::<PendingUses>().0.entries;
