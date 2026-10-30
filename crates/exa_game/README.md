@@ -441,7 +441,12 @@ grows over 1800 ms, rests 500 ms or holds and charges over 7000 ms
 (flashing at 5600), then shrinks in 400 ms around a 120 cm sphere; the
 domain wheel is a 280 px form of six domains (Mind, Force, Body, Energy,
 Light, Displacement) clockwise from the top of a 76 px ring, with a
-20.8 px hit, its hover, label, open ease, choice flash and confirm rules.
+20.8 px hit, its hover, label, open ease, choice flash and confirm rules,
+and its constructor's form (`effects::wheel::wheel_form`, 280 square, the
+child form word 0x10), its three program objects (`WHEEL_PROGRAMS`, the
+backdrop, sector and glow sources with their uniforms and the `Tex`
+sampler on unit 0) and the flamelets sheet's mip chain its programs sample
+trilinearly.
 Rules of the Mind casts and sight and the two force effects:
 [`docs/THAUMATURGY.md`](../../docs/THAUMATURGY.md) (Mind casts, Force blast
 and torrent).

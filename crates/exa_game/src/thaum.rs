@@ -640,7 +640,10 @@ pub struct ShellLight {
     pub gain: f32,
 }
 
-/// The shell light. Opening bends toward 0.75 until the shown value passes 0.666, then holds at one half. The result is one tenth of that.
+/// The shell light. Opening bends toward 0.75 until the shown value (widened
+/// to double for the compare, as the original does) passes 0.666, then holds
+/// at one half; the bend itself is single precision. The result is one tenth
+/// of that, the tenth taken in double.
 pub fn shell_light(state: i32, shown: f32, gain: f32) -> ShellLight {
     let level = if state == 1 {
         if f64::from(shown) > 0.666 {

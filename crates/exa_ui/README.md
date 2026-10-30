@@ -510,7 +510,9 @@ third ink), the ring frame turned by `iπ/3` in its second ink, and the
 label's rounded box and name. Its three programs' sources are kept and
 their fragments are functions (`back_fragment`, `glow_fragment`,
 `sector_fragment`, `rounded_fragment`); they draw with blend `0x103` over
-the repeating flamelets sheet. Places round to whole pixels once the show is
+the repeating flamelets sheet, which the original makes with the mip bit,
+so the software rasteriser picks a level from each triangle's texture step
+and mixes the neighbouring levels. Places round to whole pixels once the show is
 above 0.99999, compared in double.
 
 ## Form base and the in-game unit

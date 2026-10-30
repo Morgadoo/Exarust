@@ -944,7 +944,17 @@ line skin's third ink; the ring frame, six segments from (64, 111) to
 box at `0.6` of its fade and its name. The three wheel programs draw with
 blend `0x103` over the flamelets sheet, which repeats; the glow program
 writes no alpha and is taken as additive (a guess). The wheel's texture is
-`domainwheel` resampled to 32 units a side. The shader
+`domainwheel` resampled to 32 units a side, and the flamelets sheet is made
+with the mip bit (`0x40`), so the three programs sample its whole chain:
+the software rasteriser takes the level from the triangle's texture step
+(the GL rule, `log2` of the larger step per pixel scaled by the sheet's
+sides, at least zero) and mixes the two neighbouring levels. The wheel's
+form is built by its constructor (`effects::wheel::wheel_form`): a 280 by
+280 client at the origin, the child form word `0x10` and the `0x80000` form
+flags, with the eased zoom at 0.5, the wheel shown and the choice on Force.
+Its three program objects (`WHEEL_PROGRAMS`) are the backdrop, sector and
+glow sources, built once and kept, each looking up `par0` and, but for the
+glow, `par1`, and the `Tex` sampler on unit 0. The shader
 bindings of the Force and Displacement effects are data in
 `thaum::effect_material` and `thaum::visuals` (the five materials, their
 blocks, node flags, sub-objects, signatures, `gi_multipoint`, the noise

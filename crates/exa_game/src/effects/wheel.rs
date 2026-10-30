@@ -27,9 +27,15 @@ use bevy::prelude::*;
 pub const SIZE_PX: i32 = 280;
 pub const MARGIN_PX: i32 = 16;
 pub const FORM_FLAGS: u32 = 0x0008_0000;
+/// The form word the constructor stores: 0x10 for the wheel child (the
+/// tree screen's own root form stores 0x1010).
+pub const FORM_WORD: u32 = 0x10;
 /// The constructor's default choice and zoom value.
 pub const DEFAULT_CHOICE: i32 = 2;
 pub const DEFAULT_FADE: f32 = 0.5;
+/// The client rectangle the constructor gives: 280 by 280 at the origin,
+/// to be placed by the parent form.
+pub const FORM_CLIENT: [i32; 4] = [0, 0, SIZE_PX, SIZE_PX];
 
 /// The GUI scale the ring's radii are multiplied by. The original reads a
 /// global whose shipped value is one.
@@ -369,6 +375,65 @@ impl Wheel {
     }
 }
 
+/// The wheel constructor's form: the client rectangle, the form word and
+/// flags, and the wheel state the constructor seeds (the eased zoom 0.5,
+/// shown 1 and the choice on Mind's neighbour, Force).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WheelForm {
+    pub client: [i32; 4],
+    pub word: u32,
+    pub flags: u32,
+    pub wheel: Wheel,
+}
+
+/// The form the wheel's constructor builds: 280 by 280 at the origin, the
+/// child form word 0x10 and the 0x80000 form flags, with the default state.
+pub fn wheel_form() -> WheelForm {
+    WheelForm {
+        client: FORM_CLIENT,
+        word: FORM_WORD,
+        flags: FORM_FLAGS,
+        wheel: Wheel::default(),
+    }
+}
+
+/// A wheel program object: the fragment source the constructor compiles
+/// once and keeps, the uniforms it looks up on it and the `Tex` sampler
+/// bound to unit 0. The backdrop looks up `par0` and `par1`, the sector
+/// program both too (its `par1` is a vec3), the glow `par0` only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WheelProgram {
+    pub source: &'static str,
+    pub uniforms: &'static [&'static str],
+    /// The sampler uniform's name.
+    pub sampler: &'static str,
+    pub sampler_unit: i32,
+}
+
+/// The three programs in the order the paint makes them: the backdrop, the
+/// six sector bands and the chosen-domain glow. Each is built once and
+/// reused (the original's lazy singletons).
+pub const WHEEL_PROGRAMS: [WheelProgram; 3] = [
+    WheelProgram {
+        source: exa_ui::wheel_draw::WHEEL_BACK_SHADER,
+        uniforms: &["par0", "par1"],
+        sampler: "Tex",
+        sampler_unit: 0,
+    },
+    WheelProgram {
+        source: exa_ui::wheel_draw::WHEEL_SECTOR_SHADER,
+        uniforms: &["par0", "par1"],
+        sampler: "Tex",
+        sampler_unit: 0,
+    },
+    WheelProgram {
+        source: exa_ui::wheel_draw::WHEEL_GLOW_SHADER,
+        uniforms: &["par0"],
+        sampler: "Tex",
+        sampler_unit: 0,
+    },
+];
+
 /// The wheel component a form would carry.
 #[derive(Component, Debug, Clone, Copy, PartialEq, Default)]
 pub struct DomainWheel(pub Wheel);
@@ -564,5 +629,44 @@ mod tests {
         assert_eq!((SIZE_PX, MARGIN_PX, FORM_FLAGS), (280, 16, 0x0008_0000));
         let wheel = Wheel::default();
         assert_eq!((wheel.chosen, wheel.fade, wheel.shown), (2, 0.5, 1.0));
+    }
+
+    #[test]
+    fn the_constructor_builds_the_280_square_child_form() {
+        let form = wheel_form();
+        assert_eq!(form.client, [0, 0, 280, 280]);
+        assert_eq!((form.word, form.flags), (0x10, 0x80000));
+        let wheel = form.wheel;
+        assert_eq!(
+            (wheel.chosen, wheel.hot, wheel.highlighted, wheel.previous),
+            (2, 0, 0, 0)
+        );
+        assert_eq!((wheel.fade, wheel.fade_start, wheel.shown), (0.5, 0.0, 1.0));
+        assert_eq!((wheel.hover_stamp, wheel.chosen_at), (0, 0));
+        assert_eq!((wheel.confirm_deadline, wheel.confirm_choice), (0, 0));
+        assert!((wheel.swell() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_three_programs_are_built_once_with_their_uniforms() {
+        let [back, sector, glow] = WHEEL_PROGRAMS;
+        assert!(back.source.contains("par1") && back.source.contains("par0"));
+        assert_eq!(back.uniforms, ["par0", "par1"]);
+        assert_eq!(sector.uniforms, ["par0", "par1"]);
+        // The sector's par1 is a vec3.
+        assert!(sector.source.contains("uniform vec3 par1;"));
+        // The glow writes no par1 and no alpha.
+        assert_eq!(glow.uniforms, ["par0"]);
+        assert!(!glow.source.contains("par1"));
+        assert!(!glow.source.contains("FragColor.a"));
+        for program in WHEEL_PROGRAMS {
+            assert_eq!((program.sampler, program.sampler_unit), ("Tex", 0));
+            assert!(program.source.contains("uniform sampler2D Tex;"));
+            assert!(program.source.contains("in vec2 vrTex;"));
+            assert!(program.source.contains("in vec4 vrCol;"));
+            assert!(program.source.contains("out vec4 FragColor;"));
+        }
+        // The sources are the three the painter uses, not copies.
+        assert_eq!(back.source, exa_ui::wheel_draw::WHEEL_BACK_SHADER);
     }
 }

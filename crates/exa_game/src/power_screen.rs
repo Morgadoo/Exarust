@@ -1108,7 +1108,12 @@ fn draw_rows(
         } else {
             None
         };
-        raster_batch(rows, batch, texture, level, region);
+        let mips = if batch.texture == Texture::Flamelets {
+            sheets.flamelets_mips.as_slice()
+        } else {
+            &[][..]
+        };
+        raster_batch(rows, batch, texture, level, mips, region);
     }
     // The runs are the layout's metrics; their glyph quads are in the
     // batches of the skin's text program when the atlas is loaded. The
@@ -1339,10 +1344,60 @@ fn sample(image: Option<&RgbaImage>, u: f32, v: f32) -> [f32; 4] {
     sample_with(image, u, v, false)
 }
 
-/// [`sample`] repeating the picture on both axes, as the flamelets sheet's
-/// wrap flags ask; the wheel's programs scroll across it.
-fn sample_repeat(image: Option<&RgbaImage>, u: f32, v: f32) -> [f32; 4] {
-    sample_with(image, u, v, true)
+/// The flamelets sheet sampled across its mip chain: level `lod` and the
+/// next one, bilinear within each, mixed by the fraction. The level is
+/// clamped to the chain and the chain is empty for a sheet that failed to
+/// load, in which case the white fallback stands. The sheet repeats on both
+/// axes.
+fn sample_lod(mips: &[RgbaImage], u: f32, v: f32, lod: f32) -> [f32; 4] {
+    let last = mips.len();
+    if last == 0 {
+        return sample_with(None, u, v, true);
+    }
+    if last == 1 {
+        return sample_with(Some(&mips[0]), u, v, true);
+    }
+    let lod = if lod.is_nan() {
+        0.0
+    } else {
+        lod.max(0.0).min((last - 1) as f32)
+    };
+    let base = lod.floor() as usize;
+    let next = (base + 1).min(last - 1);
+    let a = sample_with(Some(&mips[base]), u, v, true);
+    let b = sample_with(Some(&mips[next]), u, v, true);
+    let t = lod - base as f32;
+    [
+        a[0] + (b[0] - a[0]) * t,
+        a[1] + (b[1] - a[1]) * t,
+        a[2] + (b[2] - a[2]) * t,
+        a[3] + (b[3] - a[3]) * t,
+    ]
+}
+
+/// The mip level a triangle samples at: the GL rule, the base-2 logarithm
+/// of the larger texture step per pixel scaled by the picture's sides,
+/// held at or above zero. A triangle with no area reads level 0.
+fn triangle_lod([a, b, c]: [TreeVertex; 3], area: f32, image: &RgbaImage) -> f32 {
+    if area.abs() <= 0.0 || area.is_nan() {
+        return 0.0;
+    }
+    let (e1x, e1y) = (b.x - a.x, b.y - a.y);
+    let (e2x, e2y) = (c.x - a.x, c.y - a.y);
+    let (du1, du2) = (b.u - a.u, c.u - a.u);
+    let (dv1, dv2) = (b.v - a.v, c.v - a.v);
+    let du_dx = (du1 * e2y - du2 * e1y) / area;
+    let du_dy = (du2 * e1x - du1 * e2x) / area;
+    let dv_dx = (dv1 * e2y - dv2 * e1y) / area;
+    let dv_dy = (dv2 * e1x - dv1 * e2x) / area;
+    let (w, h) = (image.width as f32, image.height as f32);
+    let along = ((du_dx * w).powi(2) + (dv_dx * h).powi(2)).sqrt();
+    let down = ((du_dy * w).powi(2) + (dv_dy * h).powi(2)).sqrt();
+    let rho = along.max(down);
+    if rho <= 1e-6 || rho.is_nan() {
+        return 0.0;
+    }
+    rho.log2().max(0.0)
 }
 
 fn sample_with(image: Option<&RgbaImage>, u: f32, v: f32, repeat: bool) -> [f32; 4] {
@@ -1414,14 +1469,25 @@ fn raster_batch(
     batch: &Batch,
     texture: Option<&RgbaImage>,
     coarse: Option<&RgbaImage>,
+    mips: &[RgbaImage],
     clip: Region,
 ) {
+    let wheel = matches!(
+        batch.program,
+        Program::WheelBack | Program::WheelSector | Program::WheelGlow
+    );
     for triangle in batch.vertices.as_chunks::<3>().0 {
         let [a, b, c] = *triangle;
         let area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
         if area.abs() < 1e-6 {
             continue;
         }
+        // The wheel's programs sample the flamelets sheet across its mip
+        // chain; the level follows the triangle's texture-space step.
+        let lod = match (wheel, texture) {
+            (true, Some(image)) => triangle_lod([a, b, c], area, image),
+            _ => 0.0,
+        };
         let (width, height) = (rows.width, rows.height);
         let min_x = (a.x.min(b.x).min(c.x).floor().max(0.0) as i32).max(clip.left);
         let max_x = (a.x.max(b.x).max(c.x).ceil().min(width as f32 - 1.0) as i32).min(clip.right);
@@ -1444,7 +1510,7 @@ fn raster_batch(
                     continue;
                 }
                 let vertex = mix_vertex(a, b, c, w0, w1, w2);
-                let colour = shade(batch, vertex, texture, coarse);
+                let colour = shade(batch, vertex, texture, coarse, mips, lod);
                 if batch.blend == exa_ui::wheel_draw::WHEEL_PROGRAM_BLEND {
                     blend_premultiplied(rows, x, y, colour);
                 } else {
@@ -1553,12 +1619,15 @@ fn clamp01(x: f32) -> f32 {
     x.max(0.0).min(1.0)
 }
 
-/// The six fragment programs' arithmetic.
+/// The six fragment programs' arithmetic. `mips` is the flamelets sheet's
+/// chain, which the wheel's three programs sample trilinearly at `lod`.
 fn shade(
     batch: &Batch,
     vertex: TreeVertex,
     texture: Option<&RgbaImage>,
     coarse: Option<&RgbaImage>,
+    mips: &[RgbaImage],
+    lod: f32,
 ) -> [f32; 4] {
     let uniforms = &batch.uniforms;
     let col = vertex.colour;
@@ -1703,20 +1772,20 @@ fn shade(
             col,
             uniforms.par0[0],
             uniforms.par1[0],
-            |u, v| sample_repeat(texture, u, v)[0],
+            |u, v| sample_lod(mips, u, v, lod)[0],
         ),
         Program::WheelGlow => exa_ui::wheel_draw::glow_fragment(
             [vertex.u, vertex.v],
             col,
             uniforms.par0[0],
-            |u, v| sample_repeat(texture, u, v)[0],
+            |u, v| sample_lod(mips, u, v, lod)[0],
         ),
         Program::WheelSector => exa_ui::wheel_draw::sector_fragment(
             [vertex.u, vertex.v],
             col,
             uniforms.par0[0],
             [uniforms.par1[0], uniforms.par1[1], uniforms.par1[2]],
-            |u, v| sample_repeat(texture, u, v)[0],
+            |u, v| sample_lod(mips, u, v, lod)[0],
         ),
         Program::Rounded => {
             exa_ui::wheel_draw::rounded_fragment([vertex.u, vertex.v], col, uniforms.par0)
@@ -1869,13 +1938,42 @@ mod tests {
     }
 
     #[test]
+    fn the_wheel_sheet_is_sampled_across_its_mip_chain() {
+        let flat = |width, height, value: u8| RgbaImage {
+            width,
+            height,
+            pixels: [value, value, value, 255].repeat(width as usize * height as usize),
+        };
+        let mips = [flat(4, 4, 64), flat(2, 2, 192)];
+        // Level 0 alone.
+        assert!((sample_lod(&mips, 0.5, 0.5, 0.0)[0] - 64.0 / 255.0).abs() < 1e-6);
+        // Half way between the two levels.
+        assert!((sample_lod(&mips, 0.5, 0.5, 0.5)[0] - 128.0 / 255.0).abs() < 1e-6);
+        // Past the end clamps to the last level.
+        assert!((sample_lod(&mips, 0.5, 0.5, 7.0)[0] - 192.0 / 255.0).abs() < 1e-6);
+        let one = [flat(4, 4, 64)];
+        assert!((sample_lod(&one, 0.5, 0.5, 3.0)[0] - 64.0 / 255.0).abs() < 1e-6);
+        assert_eq!(sample_lod(&[], 0.5, 0.5, 0.0), [1.0, 1.0, 1.0, 1.0]);
+        // A triangle whose texture runs four times over a hundred pixels
+        // samples two levels up.
+        let image = flat(100, 100, 128);
+        let a = TreeVertex::new(0.0, 0.0, 0.0, 0.0);
+        let b = TreeVertex::new(100.0, 0.0, 4.0, 0.0);
+        let c = TreeVertex::new(0.0, 100.0, 0.0, 0.0);
+        let area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+        assert_eq!(triangle_lod([a, b, c], area, &image), 2.0);
+        // A flat triangle reads level 0.
+        assert_eq!(triangle_lod([a, a, a], 0.0, &image), 0.0);
+    }
+
+    #[test]
     fn the_ring_shader_draws_a_dot() {
         let mut batch = Batch::new(Program::Ring, Texture::None);
         batch.vertices = vec![TreeVertex::new(0.0, 0.0, 0.5, 0.5)];
-        let centre = shade(&batch, batch.vertices[0], None, None);
+        let centre = shade(&batch, batch.vertices[0], None, None, &[], 0.0);
         assert!(centre[3] > 0.0);
         let edge = TreeVertex::new(0.0, 0.0, 0.0, 0.0);
-        assert_eq!(shade(&batch, edge, None, None)[3], 0.0);
+        assert_eq!(shade(&batch, edge, None, None, &[], 0.0)[3], 0.0);
     }
 
     #[test]
@@ -1887,10 +1985,10 @@ mod tests {
             ..Uniforms::default()
         };
         let centre = TreeVertex::new(0.0, 0.0, 0.5, 0.5).with_colour([1.0, 1.0, 1.0, 1.0]);
-        let middle = shade(&batch, centre, None, None);
+        let middle = shade(&batch, centre, None, None, &[], 0.0);
         assert!(middle[3] > 0.9);
         let edge = TreeVertex::new(0.0, 0.0, 0.0, 0.0).with_colour([1.0, 1.0, 1.0, 1.0]);
-        assert!(shade(&batch, edge, None, None)[3] < middle[3]);
+        assert!(shade(&batch, edge, None, None, &[], 0.0)[3] < middle[3]);
     }
 
     #[test]
@@ -2155,7 +2253,7 @@ mod tests {
                         continue;
                     }
                     let vertex = mix_vertex(a, b, c, w0, w1, w2);
-                    let colour = shade(batch, vertex, None, None);
+                    let colour = shade(batch, vertex, None, None, &[], 0.0);
                     blend(rows, x, y, colour);
                 }
             }
@@ -2226,7 +2324,7 @@ mod tests {
         };
         let mut spans = vec![0u8; (width * height * 4) as usize];
         let clip = Region::whole(width, height);
-        raster_batch(&mut rows(&mut spans), &batch, None, None, clip);
+        raster_batch(&mut rows(&mut spans), &batch, None, None, &[], clip);
         let mut whole = vec![0u8; (width * height * 4) as usize];
         raster_batch_whole_box(&mut rows(&mut whole), &batch);
         assert!(spans.iter().any(|&byte| byte != 0));

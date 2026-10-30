@@ -164,6 +164,11 @@ pub struct TreeSheets {
     /// The domain wheel's texture as drawn: `domainwheel` resampled to the
     /// GUI unit ([`TreeSheets::resample_wheel`]).
     pub wheel: Option<RgbaImage>,
+    /// The flamelets sheet's mip chain, level 0 the picture above. The
+    /// sheet is created with the mip bit (`0x40`) and the wheel's three
+    /// programs sample it with a trilinear filter, so they pick a level by
+    /// the drawn size; the other programs read level 0.
+    pub flamelets_mips: Vec<RgbaImage>,
     /// The wheel's picture as it ships, with its format word and flags.
     pub wheel_source: Option<(RgbaImage, u32, u32)>,
     /// The GUI unit `wheel` was resampled for (0 before the first).
@@ -209,9 +214,80 @@ impl Game {
         sheets.frames = self.load_rgba("pwrsframes").ok();
         sheets.mods = self.load_rgba("pwrsmods").ok();
         sheets.flamelets = self.load_rgba("flameletsa1").ok();
+        sheets.flamelets_mips = self.load_rgba_chain("flameletsa1").unwrap_or_default();
         sheets.wheel_source = self.load_rgba_with_format("domainwheel").ok();
         sheets.resample_wheel(4);
         sheets
+    }
+
+    /// An `.rfi`'s mip chain as RGBA8 pictures, level 0 first. A file that
+    /// stores its chain is decoded level by level; a single-level
+    /// uncompressed image gets the engine's generated chain
+    /// ([`exa_render::mipmap`]) with the image's own wrap flags and format
+    /// word. The wheel's flamelets sheet is made with the mip bit and its
+    /// programs sample across the chain.
+    pub fn load_rgba_chain(&self, name: &str) -> Result<Vec<RgbaImage>, String> {
+        let bytes = self
+            .0
+            .texture(name)
+            .ok_or_else(|| format!("texture {name:?} not found"))?;
+        let rfi = Rfi::parse(bytes).map_err(|e| e.to_string())?;
+        let (width, height) = (rfi.header.width, rfi.header.height);
+        if width == 0 || height == 0 {
+            return Err(format!("texture {name:?} has no pixels"));
+        }
+        let mut levels = Vec::new();
+        if rfi.mip_count > 1 && !rfi.is_packed() {
+            let pixels = rfi.pixels().map_err(|e| e.to_string())?;
+            for level in 0..rfi.mip_count {
+                let (w, h) = exa_formats::rfi::level_dims(width, height, level);
+                let data = rfi
+                    .decode_level_rgba8(&pixels, level)
+                    .map_err(|e| e.to_string())?;
+                if data.len() != w as usize * h as usize * 4 {
+                    break;
+                }
+                levels.push(RgbaImage {
+                    width: w,
+                    height: h,
+                    pixels: data,
+                });
+            }
+            if !levels.is_empty() {
+                return Ok(levels);
+            }
+        }
+        let base = rfi.decode_rgba8().map_err(|e| e.to_string())?;
+        let options = exa_render::mipmap::ChainOptions::for_image(
+            rfi.header.format_word,
+            rfi.header.flags,
+            0,
+            u32::MAX,
+        );
+        let (chain, count) = exa_render::mipmap::build_mip_chain_rgba8_with(
+            &base,
+            width as usize,
+            height as usize,
+            &options,
+        );
+        let mut offset = 0usize;
+        for level in 0..count {
+            let (w, h) = exa_formats::rfi::level_dims(width, height, level);
+            let size = w as usize * h as usize * 4;
+            let Some(pixels) = chain.get(offset..offset + size) else {
+                break;
+            };
+            levels.push(RgbaImage {
+                width: w,
+                height: h,
+                pixels: pixels.to_vec(),
+            });
+            offset += size;
+        }
+        if levels.is_empty() {
+            return Err(format!("texture {name:?} has no chain"));
+        }
+        Ok(levels)
     }
 
     /// An `.rfi` as raw RGBA (rows bottom-up) with its format word and its
@@ -345,6 +421,27 @@ mod tests {
         assert_eq!((mods.width, mods.height), (1024, 512));
         let flamelets = sheets.flamelets.as_ref().expect("the flamelets");
         assert_eq!((flamelets.width, flamelets.height), (1024, 1024));
+        // The sheet ships a stored 11-level chain; the wheel's programs
+        // sample across it.
+        assert_eq!(sheets.flamelets_mips.len(), 11);
+        assert_eq!(
+            (
+                sheets.flamelets_mips[1].width,
+                sheets.flamelets_mips[1].height
+            ),
+            (512, 512)
+        );
+        assert_eq!(
+            (
+                sheets.flamelets_mips[10].width,
+                sheets.flamelets_mips[10].height
+            ),
+            (1, 1)
+        );
+        assert_eq!(
+            sheets.flamelets_mips[0].pixels, flamelets.pixels,
+            "level 0 is the picture itself"
+        );
         // The wheel ships at 384 pixels in the raw packed word 0x1002008
         // without wrap flags and is drawn resampled to 32 units: 128 pixels
         // at the four-pixel unit, 160 at five.
