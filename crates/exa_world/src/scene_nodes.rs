@@ -976,7 +976,8 @@ pub struct SceneNode {
     /// whether the alias is current.
     pub link_stamp: u32,
     /// The watch word: [`WATCH_ON`] or [`WATCH_OFF`] once a watch pair
-    /// names the node, 0 otherwise.
+    /// names the node, 0 otherwise. The original keeps this as an unnamed
+    /// word at the node's offset 0x1c; the name is Exarust's guess.
     pub watch_word: u32,
 }
 

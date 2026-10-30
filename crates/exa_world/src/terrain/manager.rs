@@ -548,6 +548,12 @@ pub struct BlockNode {
 /// covers the tile, each level quarters the previous one and the leaves are
 /// the 64 6 m blocks. The descriptors come from the tile's 16 × 16 height
 /// bounds exactly as [`BlockDescriptor::new`] reads them.
+///
+/// Guess: the original's recursive update visits a node's children 0x5a
+/// bytes apart but does not name their ordering; the model takes them
+/// column-major (low bit column, high bit row) and quarters the bounds-cell
+/// span at each level, which reproduces the 8 × 8 leaves and their two-cell
+/// span.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BlockTree {
     pub nodes: Vec<BlockNode>,
