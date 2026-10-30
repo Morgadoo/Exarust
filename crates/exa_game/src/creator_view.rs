@@ -214,7 +214,7 @@ fn sync_view(
     windows: Query<&Window, With<PrimaryWindow>>,
     mut nodes: Query<&mut Node>,
 ) {
-    let Some(rect) = screen.creator.as_ref().map(|c| c.preview_px()) else {
+    let Some(rect) = screen.preview_px() else {
         if let Some(scene) = view.scene.take() {
             despawn_scene(&mut commands, scene);
             pointer.0 = None;
@@ -274,10 +274,10 @@ fn build_figure(
     let Some(scene) = view.scene.as_mut() else {
         return;
     };
-    let Some(creator) = screen.creator.as_mut() else {
+    let Some((regenerate, record)) = screen.preview_record() else {
         return;
     };
-    let rebuild = scene.figure.is_none() || creator.take_regeneration();
+    let rebuild = scene.figure.is_none() || regenerate;
     if !rebuild && scene.floor_tried {
         return;
     }
@@ -317,7 +317,7 @@ fn build_figure(
     {
         e.despawn();
     }
-    scene.figure = spawn_figure(&mut commands, &mut loader, &game, &creator.record);
+    scene.figure = spawn_figure(&mut commands, &mut loader, &game, record);
 }
 
 /// The figure of `record`: its race's body morphed by its physique, its

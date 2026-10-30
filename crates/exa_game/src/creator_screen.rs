@@ -279,7 +279,7 @@ pub fn design(screen: (i32, i32), unit: i32) -> (i32, i32) {
     (screen.0 * 4 / unit, screen.1 * 4 / unit)
 }
 
-fn scaled(controls: &[Control], unit: i32) -> Vec<Control> {
+pub(crate) fn scaled(controls: &[Control], unit: i32) -> Vec<Control> {
     controls
         .iter()
         .map(|c| {
@@ -297,11 +297,11 @@ fn scaled(controls: &[Control], unit: i32) -> Vec<Control> {
         .collect()
 }
 
-fn hidden(c: &Control) -> bool {
+pub(crate) fn hidden(c: &Control) -> bool {
     c.state & 0x110 == 0x110
 }
 
-fn takes_hits(c: &Control) -> bool {
+pub(crate) fn takes_hits(c: &Control) -> bool {
     !hidden(c)
         && c.state & state::DISABLED == 0
         && !(c.class == 5 && !c.reports)
@@ -1162,11 +1162,33 @@ pub enum CreatorAction {
 pub struct CreatorScreen {
     pub class_select: Option<ClassSelect>,
     pub creator: Option<Creator>,
+    /// The saves' character screen (the creation form's continue mode,
+    /// [`crate::save_screen`]).
+    pub saves: Option<crate::save_screen::SaveScreen>,
 }
 
 impl CreatorScreen {
     pub fn is_open(&self) -> bool {
-        self.class_select.is_some() || self.creator.is_some()
+        self.class_select.is_some() || self.creator.is_some() || self.saves.is_some()
+    }
+
+    /// The preview viewport of the open form, in window pixels.
+    pub fn preview_px(&self) -> Option<GuiRect> {
+        self.creator
+            .as_ref()
+            .map(Creator::preview_px)
+            .or_else(|| self.saves.as_ref().map(|s| s.preview_px()))
+    }
+
+    /// The record the preview shows and whether its figure is rebuilt now.
+    pub fn preview_record(&mut self) -> Option<(bool, &CharacterRecord)> {
+        if let Some(creator) = self.creator.as_mut() {
+            let rebuild = creator.take_regeneration();
+            return Some((rebuild, &creator.record));
+        }
+        let saves = self.saves.as_mut()?;
+        let rebuild = saves.take_regeneration();
+        Some((rebuild, &saves.record))
     }
 }
 
@@ -1196,7 +1218,7 @@ impl Plugin for CreatorScreenPlugin {
     }
 }
 
-fn screen_and_unit(window: &Window) -> ((i32, i32), i32) {
+pub(crate) fn screen_and_unit(window: &Window) -> ((i32, i32), i32) {
     let screen = (
         window.physical_width() as i32,
         window.physical_height() as i32,
@@ -1324,7 +1346,11 @@ pub fn entry_record(entry: CreatorEntry, template: Option<CharacterRecord>) -> C
 }
 
 /// Loads a GUI texture the screens need once.
-fn ensure_texture(textures: &mut GuiTextures, game: Option<&exa_assets::Game>, name: &str) {
+pub(crate) fn ensure_texture(
+    textures: &mut GuiTextures,
+    game: Option<&exa_assets::Game>,
+    name: &str,
+) {
     if textures.textures.contains_key(name) || textures.missing.iter().any(|n| n == name) {
         return;
     }
@@ -1709,7 +1735,7 @@ fn marker_layer(field: GuiRect, point: [f32; 2], ink: [u8; 4]) -> GuiLayer {
     )
 }
 
-fn text_layer(
+pub(crate) fn text_layer(
     font: &GuiFont,
     size: Option<(u16, u16)>,
     text: &[u8],
@@ -1727,7 +1753,7 @@ fn text_layer(
 /// Paints one record at `origin`; the text field and the image buttons are
 /// drawn here, the other classes by the Settings form's painter.
 #[allow(clippy::too_many_arguments)]
-fn paint_record(
+pub(crate) fn paint_record(
     c: &Control,
     origin: (i32, i32),
     unit: i32,

@@ -3212,6 +3212,7 @@ impl Plugin for FlowPlugin {
         app.init_resource::<Flow>()
             .init_resource::<FlowSteps>()
             .add_message::<ForfeitMatch>()
+            .add_message::<crate::save_live::SaveStep>()
             .init_resource::<GameView>()
             .init_resource::<BootToMenu>()
             .init_resource::<crate::transition_screen::TransitionOverlay>()
@@ -3450,8 +3451,8 @@ fn run_transition(
 /// and the resume already happened in [`crate::menu_screen`]; the session,
 /// restart and leave work below turns into the same [`Step`]s the flow's
 /// methods return and is applied by [`apply_steps`]. The creator's rows
-/// belong to [`crate::creator_screen`]; the saves' character screen (the
-/// CONTINUE rows) and the manual are not wired yet.
+/// belong to [`crate::creator_screen`] and the saves' character screen (the
+/// CONTINUE rows) to [`crate::save_screen`]; the manual is not wired yet.
 fn apply_menu_choices(
     mut choices: MessageReader<MenuChoice>,
     mut flow: ResMut<Flow>,
@@ -3491,12 +3492,9 @@ fn apply_menu_choices(
                     flow.quit_to_menu()
                 }
             }
-            MenuCommand::CharacterScreen(mode) => {
-                // The saves' character screen needs a loaded save, which the
-                // running game does not have yet.
-                warn!("main menu: the character screen for mode {mode} is not wired");
-                Vec::new()
-            }
+            // The saves' character screen opens for these
+            // ([`crate::save_screen`]); its CONTINUE loads the slot.
+            MenuCommand::CharacterScreen(_) => Vec::new(),
             MenuCommand::None | MenuCommand::ShowPage(_) | MenuCommand::Quit => Vec::new(),
             MenuCommand::OpenManual | MenuCommand::OpenSettings => {
                 warn!("main menu command {command:?} is not wired");
@@ -3533,6 +3531,7 @@ fn apply_steps(
     mut changes: MessageWriter<exa_world::level_lifecycle::LevelChangeRequest>,
     mut forfeit: MessageWriter<ForfeitMatch>,
     mut exit: MessageWriter<AppExit>,
+    mut saves: MessageWriter<crate::save_live::SaveStep>,
 ) {
     if queued.steps.is_empty() {
         return;
@@ -3789,6 +3788,17 @@ fn apply_steps(
             }
             Step::Quit => {
                 exit.write(AppExit::Success);
+            }
+            // The save unit's work on the current slot
+            // ([`crate::save_live`], idle without a save folder).
+            Step::Save { drop_on_low_health } => {
+                saves.write(crate::save_live::SaveStep::Save { drop_on_low_health });
+            }
+            Step::DropSave => {
+                saves.write(crate::save_live::SaveStep::Drop);
+            }
+            Step::Checkpoint => {
+                saves.write(crate::save_live::SaveStep::Checkpoint);
             }
             other => {
                 debug!("game flow step not applied by the app: {other:?}");
@@ -6018,6 +6028,7 @@ mod tests {
             .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
             .add_message::<ForfeitMatch>()
             .add_message::<AppExit>()
+            .add_message::<crate::save_live::SaveStep>()
             .add_systems(Update, apply_steps);
         let placement = Placement {
             rotation: yaw(90.0),
@@ -6158,6 +6169,7 @@ mod tests {
             .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
             .add_message::<ForfeitMatch>()
             .add_message::<AppExit>()
+            .add_message::<crate::save_live::SaveStep>()
             .add_systems(Update, apply_steps);
         let mut fighter = exa_combat::Fighter::default();
         fighter.health.red = 0.5;

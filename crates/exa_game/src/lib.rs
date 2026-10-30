@@ -102,6 +102,7 @@ pub mod save_kit;
 pub mod save_level;
 pub mod save_live;
 pub mod save_scene;
+pub mod save_screen;
 pub mod scene_bodies;
 pub mod scene_editor;
 pub mod session;
@@ -205,6 +206,7 @@ impl Plugin for GamePlugin {
             settings_form::SettingsFormPlugin,
             creator_screen::CreatorScreenPlugin,
             creator_view::CreatorViewPlugin,
+            save_screen::SaveScreenPlugin,
         ))
         // Debug tools: idle unless their flags or keys turn them on.
         .add_plugins((

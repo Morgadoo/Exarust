@@ -206,6 +206,154 @@ pub const HAIR_RECORDS: [FormRecord; 7] = [
     image(0x88, 0x8000, 0x4040_0080, 1),
 ];
 
+/// The creation form's records in the continue mode (screen mode 12, the
+/// saves' character screen): the centred `CONTINUE` title, the slot combo
+/// box (228 wide, its arrow hidden by style 0x8000000; its selection
+/// word starts at 1 and its report carries the chosen 1-based item), `Previous` and `Next` under it, `Delete`
+/// beside them, the `Inventory` and `Journal` labels, the right-aligned
+/// caption above the skills panel (no text), `BACK` at the bottom left,
+/// the `Continue from checkpoint` image button (icon 4, 24 wide, 192 in
+/// from the right; hidden by state 0x110 outside the story) and
+/// `CONTINUE` at the bottom right. The constructor passes the table's
+/// last index, 10, so all eleven records are built.
+pub const CONTINUE_RECORDS: [FormRecord; 11] = [
+    label(0xc8, 1, 160, "CONTINUE", 0x3b00),
+    FormRecord {
+        style: 0x840_3320,
+        reports: true,
+        ..record(0x12, 0, 4, 0x8009, 228, 0)
+    },
+    FormRecord {
+        text: Some("Previous"),
+        style: 0x40_3320,
+        reports: true,
+        ..record(1, 0, 4, 0x8007, 76, 24)
+    },
+    FormRecord {
+        text: Some("Next"),
+        style: 0x40_3320,
+        reports: true,
+        ..record(1, 0, 0x8009, 0x8000, 76, 24)
+    },
+    FormRecord {
+        text: Some("Delete"),
+        style: 0x40_3320,
+        reports: true,
+        ..record(1, 0, 0x8008, 0x8000, 64, 24)
+    },
+    label(4, 0x8006, 228, "Inventory", 0x3300),
+    label(4, 0x4e, 228, "Journal", 0x3300),
+    FormRecord {
+        text: None,
+        ..label(8, 1, 200, "", 0x2_3300)
+    },
+    FormRecord {
+        text: Some("BACK"),
+        style: 0x48_3300,
+        reports: true,
+        ..record(1, 0, 0x24, 0, 160, 28)
+    },
+    FormRecord {
+        text: Some("Continue from checkpoint"),
+        style: 0x4a_0080,
+        icon: 4,
+        reports: true,
+        ..record(3, 0xcc, 0xc0, 0, 24, 0)
+    },
+    FormRecord {
+        text: Some("CONTINUE"),
+        style: 0x4a_3300,
+        reports: true,
+        ..record(1, 0, 0x10, 0, 160, 28)
+    },
+];
+
+/// The continue mode's records by role.
+pub mod saves {
+    pub const TITLE: usize = 0;
+    pub const SLOTS: usize = 1;
+    pub const PREVIOUS: usize = 2;
+    pub const NEXT: usize = 3;
+    pub const DELETE: usize = 4;
+    pub const INVENTORY: usize = 5;
+    pub const JOURNAL: usize = 6;
+    pub const SKILLS_CAPTION: usize = 7;
+    pub const BACK: usize = 8;
+    pub const CHECKPOINT: usize = 9;
+    pub const CONTINUE: usize = 10;
+}
+
+/// The words the creation form's constructor writes into the continue
+/// table before building it: the checkpoint button's state and the
+/// CONTINUE button's x. In the story (game mode 4) the checkpoint button
+/// shows (state 0) and CONTINUE sits 16 in from the right; in any other
+/// game mode the button is hidden (0x110) and CONTINUE sits 32 in.
+pub fn continue_records(game_mode: i32) -> [FormRecord; 11] {
+    let mut records = CONTINUE_RECORDS;
+    if game_mode == 4 {
+        records[saves::CHECKPOINT].state = 0;
+        records[saves::CONTINUE].x = 0x10;
+    } else {
+        records[saves::CHECKPOINT].state = 0x110;
+        records[saves::CONTINUE].x = 0x20;
+    }
+    records
+}
+
+/// The continue mode's item container (the inventory of the slot's
+/// character): at 4, 116, 228 × 180, with 2 of spacing.
+pub const INVENTORY_PLACE: (i32, i32, i32, i32) = (4, 0x74, 0xe4, 0xb4);
+/// The continue mode's journal form: at 0, 328, 236 wide, 320 tall (260 in
+/// the compact layout).
+pub const JOURNAL_PLACE: (i32, i32, i32) = (0, 0x148, 0xec);
+pub const JOURNAL_HEIGHT: i32 = 0x140;
+pub const JOURNAL_COMPACT_HEIGHT: i32 = 0x104;
+/// The journal form's text box: at 4, 40, 228 wide, down to the form's
+/// bottom less 40.
+pub const JOURNAL_TEXT_AT: (i32, i32, i32) = (4, 0x28, 0xe4);
+
+/// The journal form's one record: the entry combo box (no arrow), whose
+/// report shows the chosen entry's text in the text box.
+pub const JOURNAL_RECORDS: [FormRecord; 1] = [FormRecord {
+    text: Some("New Entry"),
+    style: 0x800_3320,
+    reports: true,
+    ..record(0x12, 0, 8, 2, 220, 0)
+}];
+
+/// The delete confirmation (`Delete Character`, 392 × 112): the question,
+/// its `Delete` button (which deletes the slot) and `Cancel` (which closes
+/// the box). The slot's name, cut to fifteen bytes, and
+/// [`DELETE_QUESTION_END`] follow the question's text.
+pub const DELETE_RECORDS: [FormRecord; 3] = [
+    label(4, 4, 352, "Are you sure you want to delete ", 0x3b00),
+    FormRecord {
+        text: Some("Delete"),
+        reports: true,
+        ..record(1, 0, 0x6c, 0x8005, 76, 0)
+    },
+    FormRecord {
+        text: Some("Cancel"),
+        reports: true,
+        ..record(1, 0, 0x8008, 0x8000, 76, 0)
+    },
+];
+
+/// The delete confirmation's records by role.
+pub mod delete_box {
+    pub const QUESTION: usize = 0;
+    pub const DELETE: usize = 1;
+    pub const CANCEL: usize = 2;
+}
+
+/// The delete confirmation's title, size and attribute bits (0x800, 0x8000
+/// and 0x3000 over the base form's).
+pub const DELETE_TITLE: &str = "Delete Character";
+pub const DELETE_SIZE: (i32, i32) = (0x188, 0x70);
+pub const DELETE_ATTRIBUTES: u32 = 0x800 | 0x8000 | 0x3000;
+/// What the question ends with after the name.
+pub const DELETE_QUESTION_END: &str = "?";
+
 /// The creation form's records by role.
 pub mod creation {
     pub const TITLE: usize = 0;
@@ -387,6 +535,43 @@ mod tests {
         assert_eq!(controls[hair::STRAIGHT].x, 8);
         assert_eq!(controls[hair::WAVY].x, 100);
         assert_eq!(controls[hair::GLOSS].w, 160);
+    }
+
+    #[test]
+    fn the_continue_table_keeps_its_eleven_records() {
+        let story = continue_records(4);
+        assert_eq!(story[saves::SLOTS].class, 0x12);
+        assert_eq!(story[saves::SLOTS].w, 228);
+        assert_eq!(story[saves::CHECKPOINT].id, 0xcc);
+        assert_eq!(story[saves::CHECKPOINT].icon, 4);
+        assert_eq!(story[saves::CHECKPOINT].state, 0);
+        assert_eq!(story[saves::CONTINUE].x, 0x10);
+        let arena = continue_records(8);
+        assert_eq!(arena[saves::CHECKPOINT].state, 0x110);
+        assert_eq!(arena[saves::CONTINUE].x, 0x20);
+        let controls = lay_out(&story, CREATION_DESIGN);
+        // BACK and CONTINUE at the bottom corners, the title centred.
+        assert_eq!(controls[saves::BACK].x, 0x24);
+        assert_eq!(controls[saves::CONTINUE].x, 1024 - 0x10 - 160);
+        assert_eq!(controls[saves::BACK].y, controls[saves::CONTINUE].y);
+        assert_eq!(controls[saves::TITLE].x, (1024 - 160) / 2);
+        // Previous under the combo box, Next and Delete beside it.
+        let prev = &controls[saves::PREVIOUS];
+        let next = &controls[saves::NEXT];
+        assert_eq!(next.y, prev.y);
+        assert!(next.x > prev.x + prev.w);
+        assert!(controls[saves::DELETE].x > next.x + next.w);
+        assert!(prev.y > controls[saves::SLOTS].y);
+    }
+
+    #[test]
+    fn the_delete_box_asks_with_two_buttons() {
+        let controls = lay_out(&DELETE_RECORDS, DELETE_SIZE);
+        let delete = &controls[delete_box::DELETE];
+        let cancel = &controls[delete_box::CANCEL];
+        assert_eq!(delete.y, cancel.y);
+        assert!(cancel.x > delete.x + delete.w);
+        assert_eq!(DELETE_RECORDS[delete_box::QUESTION].w, 352);
     }
 
     #[test]

@@ -1014,6 +1014,17 @@ impl Slots {
 /// A scan whose folder cannot be listed leaves the count at −1, so the next
 /// question scans again, as the original's directory walk that fails
 /// leaves its count unset.
+/// What the character screen's select of a slot found.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScreenSelect {
+    /// 2 when the save file opens, 1 more when the checkpoint does; 0 when
+    /// the slot is not listed, has neither file, or its player data does
+    /// not read.
+    pub availability: u32,
+    /// The file read with the character screen's mask.
+    pub loaded: Option<LoadedSave>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlotList {
     slots: Slots,
@@ -1126,6 +1137,55 @@ impl SlotList {
         let number = *self.numbers.get(index)?;
         self.current = number as i32;
         Some(number)
+    }
+
+    /// The character screen's select of the listed slot at `index` with the
+    /// asked `kind` (1 the checkpoint, 2 the save), as the continue screen
+    /// calls it for every slot it shows: an index outside the list answers
+    /// 0 and changes nothing; otherwise the slot becomes current (it is not
+    /// moved in the order), the availability is 2 when its save file opens
+    /// and 1 more when its checkpoint does, and the file read is the save
+    /// when it is available and either asked for or alone, else the
+    /// checkpoint when that is available. That file's player data is read
+    /// with the character screen's mask ([`Slots::load_character_screen`]);
+    /// a read that fails answers 0. On success the availability is the
+    /// answer and the loaded save is returned with it.
+    pub fn character_screen_select(&mut self, index: i32, kind: i32) -> ScreenSelect {
+        let none = ScreenSelect {
+            availability: 0,
+            loaded: None,
+        };
+        let Some(&number) = usize::try_from(index)
+            .ok()
+            .and_then(|at| self.numbers.get(at))
+        else {
+            return none;
+        };
+        self.current = number as i32;
+        let mut availability = 0;
+        if self.slots.opens(number, SlotKind::Save) {
+            availability = 2;
+        }
+        if self.slots.opens(number, SlotKind::Checkpoint) {
+            availability |= 1;
+        }
+        let file = if availability & 2 != 0 && (kind == 2 || availability & 1 == 0) {
+            SlotKind::Save
+        } else if availability & 1 != 0 {
+            SlotKind::Checkpoint
+        } else {
+            return none;
+        };
+        match self
+            .slots
+            .load_file(number, file, PlayerData::CHARACTER_SCREEN_MASK)
+        {
+            Ok(loaded) => ScreenSelect {
+                availability,
+                loaded: Some(loaded),
+            },
+            Err(_) => none,
+        }
     }
 
     /// Moves a listed number to the front with its name and stores the

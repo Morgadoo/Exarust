@@ -20,9 +20,23 @@
 //! clock takes the saved seconds, and the player record's race byte is
 //! cleared before the import.
 //!
+//! A story save writes the player's record into the save's world character
+//! database (under [`PLAYER_RECORD_ID`]) with the player's placement in the
+//! player data, so the slot list names the player and a load restores the
+//! character. A [`StorySlotLoad`] (the saves' character screen's CONTINUE,
+//! [`crate::save_screen`]) runs the story's full load: the slot becomes
+//! current and moves to the front, the player's record (with the load's
+//! reset) becomes the character the next player spawn is made from, dressed
+//! from its own worn and held items ([`SavedPlayer`]), the world clock takes
+//! the saved seconds, and the story continues at the save's level at the
+//! saved placement. The flow's save steps ([`SaveStep`]) write, drop and
+//! checkpoint the current story slot.
+//!
 //! Not written yet: the save's level section (Exarust's loaded world has no
-//! converter back into the exporter's scene) and the world databases (the
-//! running game keeps no live object or character database).
+//! converter back into the exporter's scene, and a load takes the level
+//! from the archive), the world object database and every character but
+//! the player (the running game keeps no live object or character
+//! database).
 //!
 //! Evidence: the save unit's new-slot, save, full load, arena reader and
 //! list regeneration routines (`docs/formats/SAVES.md`).
@@ -34,6 +48,8 @@ use bevy::prelude::*;
 use exa_formats::arena_save::{self, ArenaTables, ItemEntry};
 use exa_formats::characters::CharacterRecord;
 use exa_formats::save_package::{self, PlayerHeader};
+
+use exa_formats::characters::{Carried, ItemRef};
 
 use crate::arena_ids::{StaffLists, kinds_from_items, regenerate_lists};
 use crate::arsenal::{Arsenal, ItemKind};
@@ -108,6 +124,42 @@ pub struct ArenaSlotLoad {
     pub number: u32,
 }
 
+/// A story slot to load into the running game, as the saves' character
+/// screen's CONTINUE asks for it: its number and whether the checkpoint is
+/// read first (the screen's kind 1) or the save (kind 2).
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StorySlotLoad {
+    pub number: u32,
+    pub prefer_checkpoint: bool,
+}
+
+/// The flow's save work on the current story slot: a save (with the death
+/// rule or without), the death's drop of the save file, and the copy of the
+/// save over the checkpoint.
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SaveStep {
+    Save { drop_on_low_health: bool },
+    Drop,
+    Checkpoint,
+}
+
+/// The player record a story load restored: the next player spawn takes
+/// its body, skin, hair and name (through
+/// [`crate::creator_screen::CreatedCharacter`]) and is dressed from its own
+/// worn and held items, with its stats derived from it.
+#[derive(Resource, Clone, Debug, PartialEq)]
+pub struct SavedPlayer {
+    pub record: CharacterRecord,
+    /// The save's world object records, for items the shipped database
+    /// does not hold.
+    pub items: Vec<exa_formats::objdb::Item>,
+}
+
+/// The id the player's record takes in a story save's world character
+/// database [Exarust's choice: the original saves the record under the id
+/// its world database gave it].
+pub const PLAYER_RECORD_ID: u32 = 1;
+
 /// What the last live save or load did, for the report and the tests.
 #[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
 pub struct SaveReport {
@@ -116,6 +168,8 @@ pub struct SaveReport {
     /// The arena slot the hub loaded and how many items the regeneration
     /// shelved.
     pub loaded: Option<(u32, usize)>,
+    /// The story slot the last story load read, and from which file.
+    pub story_loaded: Option<(u32, save_package::SlotKind)>,
 }
 
 /// The running game's save and load.
@@ -124,6 +178,8 @@ pub struct SaveLivePlugin;
 impl Plugin for SaveLivePlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<SaveToNewSlot>()
+            .add_message::<StorySlotLoad>()
+            .add_message::<SaveStep>()
             .add_message::<crate::world_clock::RestoreWorldClock>()
             .init_resource::<ArenaStores>()
             .init_resource::<SaveReport>()
@@ -131,9 +187,12 @@ impl Plugin for SaveLivePlugin {
                 Update,
                 (
                     make_slot_lists,
+                    report_saves,
                     scripted_saves,
                     save_to_new_slot,
+                    run_save_steps,
                     load_arena_slot,
+                    load_story_slot,
                 )
                     .chain()
                     .run_if(resource_exists::<SaveFolder>),
@@ -145,6 +204,26 @@ impl Plugin for SaveLivePlugin {
 fn make_slot_lists(mut commands: Commands, folder: Res<SaveFolder>, lists: Option<Res<SlotLists>>) {
     if lists.is_none() {
         commands.insert_resource(SlotLists::new(&folder.0));
+    }
+}
+
+/// The menu's CONTINUE rows read whether each manager holds a slot: the
+/// flow's two save words follow the managers' cached lists (the first
+/// question scans the folder), and an open menu's page state with them.
+fn report_saves(
+    lists: Option<ResMut<SlotLists>>,
+    flow: Option<ResMut<crate::flow::Flow>>,
+    menu: Option<ResMut<crate::menu_screen::MenuScreen>>,
+) {
+    let (Some(mut lists), Some(mut flow)) = (lists, flow) else {
+        return;
+    };
+    let has = [lists.story.any(), lists.arena.any()];
+    if flow.has_save != has {
+        flow.has_save = has;
+        if let Some(mut menu) = menu {
+            menu.state = flow.page_state();
+        }
     }
 }
 
@@ -217,6 +296,7 @@ pub fn save_new_slot(
     list: &mut SlotList,
     session: &Session,
     player_name: Option<&str>,
+    world: &SaveWorld<'_>,
 ) -> std::io::Result<Option<u32>> {
     let next = list.next_free_number()?;
     let file = list.slots().file(next, save_package::SlotKind::Save);
@@ -224,8 +304,138 @@ pub fn save_new_slot(
         return Ok(None);
     }
     let number = list.create(player_name)?;
-    list.save_current(session, &SaveWorld::default())?;
+    list.save_current(session, world)?;
     Ok(Some(number))
+}
+
+/// The story player as a save writes it: its record and where it stands.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StoryPlayer {
+    pub record: CharacterRecord,
+    /// The body's position, centimetres.
+    pub position_cm: [f32; 3],
+    /// The body's heading, radians (Exarust's yaw).
+    pub heading: f32,
+}
+
+/// A record with a body's live possessions written back: the four hands
+/// (the out set first), the worn list and the carried list with each
+/// entry's pack cell.
+pub fn record_with_possessions(
+    mut record: CharacterRecord,
+    possessions: &exa_items::possession::Possessions,
+) -> CharacterRecord {
+    let p = possessions;
+    record.hands = [p.out[0], p.out[1], p.stowed[0], p.stowed[1]]
+        .map(|hand| ItemRef::new(hand.id, hand.flags));
+    record.worn = p.worn.clone();
+    record.inventory = p
+        .carried
+        .iter()
+        .map(|c| Carried {
+            item: c.id,
+            flags: c.flags,
+            extra: u32::from(c.x as u16) | (u32::from(c.y as u16) << 16),
+        })
+        .collect();
+    record
+}
+
+/// The story player's share of a save: its record goes into a world
+/// character database under [`PLAYER_RECORD_ID`], which is exported as the
+/// save's `#worldchrdb`, and the session's placement becomes the player's
+/// (the record reference with the world bit, the position with its height
+/// as the floor, the heading, a living condition and an AI that saves no
+/// home or pose [guess: the player's controller writes neither]).
+pub fn story_player_world(
+    player: &StoryPlayer,
+    session: &mut Session,
+) -> exa_formats::Result<crate::slots::WorldExport> {
+    let mut db = exa_formats::character_db::CharacterDb::new(exa_formats::character_db::WORLD_TAG);
+    let mut record = player.record.clone();
+    // The save's reader finds the player by the low id the placement names.
+    record.id = PLAYER_RECORD_ID;
+    let _ = db.add(PLAYER_RECORD_ID, record);
+    let export =
+        crate::slots::export_world_databases(&mut db, &exa_formats::objdb::ObjectDb::default())?;
+    let body = exa_formats::rfc_write::ExportCharacter {
+        record: exa_formats::characters::WORLD_DB | PLAYER_RECORD_ID,
+        body_position: player.position_cm,
+        floor_height: player.position_cm[1],
+        heading: player.heading,
+        condition: 0,
+        ai: Some(exa_formats::rfc_write::ExportAi::default()),
+        ..Default::default()
+    };
+    let mut saved = None;
+    let placement =
+        crate::session::export_player_placement(&body, &mut saved, session.transition_word())?;
+    session.placement = Some(placement.payload);
+    Ok(export)
+}
+
+/// The placement a story load puts the player at: the saved position (cm)
+/// and heading turned into the flow's spawn frame.
+pub fn placement_of(placement: &save_package::CharacterPlacement) -> crate::flow::Placement {
+    let (sin, cos) = placement.heading.sin_cos();
+    crate::flow::Placement {
+        rotation: [[cos, 0.0, -sin], [0.0, 1.0, 0.0], [sin, 0.0, cos]],
+        position: Vec3::from(placement.position),
+    }
+}
+
+/// The live story player for a save: the player body's own record when it
+/// has one (a loaded save's player), else the created character's, else
+/// the creator's defaults; its possessions written back; its place and
+/// heading.
+type PlayerSaveQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static GlobalTransform,
+        Option<&'static exa_character::record::CharacterData>,
+        Option<&'static exa_items::possession::Possessions>,
+    ),
+    With<crate::player::PlayerBody>,
+>;
+
+fn live_story_player(
+    players: &PlayerSaveQuery,
+    created: Option<&crate::creator_screen::CreatedCharacter>,
+) -> Option<StoryPlayer> {
+    let (transform, data, possessions) = players.iter().next()?;
+    let mut record = data
+        .map(|data| data.record.clone())
+        .or_else(|| created.and_then(|c| c.0.clone()))
+        .unwrap_or_else(CharacterRecord::reset);
+    if let Some(possessions) = possessions {
+        record = record_with_possessions(record, possessions);
+    }
+    let (yaw, _, _) = transform.rotation().to_euler(EulerRot::YXZ);
+    let at = transform.translation() * 100.0;
+    Some(StoryPlayer {
+        record,
+        position_cm: at.to_array(),
+        heading: yaw,
+    })
+}
+
+/// The live session with the story player's record and placement: the
+/// sections it writes besides the player data.
+fn story_save_world(
+    session: &mut Session,
+    player: Option<&StoryPlayer>,
+) -> crate::slots::WorldExport {
+    let Some(player) = player else {
+        return crate::slots::WorldExport::default();
+    };
+    match story_player_world(player, session) {
+        Ok(export) => export,
+        Err(error) => {
+            warn!("save: the player's record does not export: {error}");
+            crate::slots::WorldExport::default()
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -237,6 +447,8 @@ fn save_to_new_slot(
     ticks: Option<Res<exa_physics::body::BodyTicks>>,
     career: Option<Res<crate::hub_windows::ArenaCareer>>,
     stores: Res<ArenaStores>,
+    players: PlayerSaveQuery,
+    created: Option<Res<crate::creator_screen::CreatedCharacter>>,
     mut report: ResMut<SaveReport>,
 ) {
     if requests.read().count() == 0 {
@@ -252,21 +464,122 @@ fn save_to_new_slot(
         .map_or(0, |clock| crate::world_clock::stamped(clock, now));
     let fallback = crate::hub_windows::ArenaCareer::default();
     let career = career.as_deref().unwrap_or(&fallback);
-    let session = live_session(level, seconds, career, &stores);
-    let name = match session.mode {
-        Mode::Arena => Some(career.player.name.as_str()),
-        Mode::Story => None,
+    let mut session = live_session(level, seconds, career, &stores);
+    let (name, export) = match session.mode {
+        Mode::Arena => (
+            Some(career.player.name.clone()),
+            crate::slots::WorldExport::default(),
+        ),
+        Mode::Story => {
+            let player = live_story_player(&players, created.as_deref());
+            let export = story_save_world(&mut session, player.as_ref());
+            (player.map(|p| p.record.name), export)
+        }
     };
-    match save_new_slot(lists.of_mode(session.mode), &session, name) {
+    let world = export.save_world(None, false);
+    match save_new_slot(
+        lists.of_mode(session.mode),
+        &session,
+        name.as_deref(),
+        &world,
+    ) {
         Ok(Some(number)) => {
             info!(
-                "save: {:?} session saved to new slot {number} (level {level:?}, clock {seconds} s)",
+                "save: {:?} session saved to new slot {number} (level {level:?}, clock {seconds} s, player {name:?})",
                 session.mode
             );
             report.saved = Some(number);
         }
         Ok(None) => warn!("save: the next slot's file already holds a save; nothing written"),
         Err(error) => warn!("save: cannot write a new slot: {error}"),
+    }
+}
+
+/// The flow's save steps on the current story slot. A save writes the
+/// live story session with the player's record and placement (the death
+/// rule first, when asked: a dead player's save is dropped instead); a drop
+/// deletes the save file, and without a checkpoint the slot leaves the
+/// list; a checkpoint copies the save over it. Nothing runs without a
+/// current story slot, or outside the story.
+#[allow(clippy::too_many_arguments)]
+fn run_save_steps(
+    mut steps: MessageReader<SaveStep>,
+    lists: Option<ResMut<SlotLists>>,
+    flow: Option<Res<crate::flow::Flow>>,
+    levels: Query<&exa_world::LevelRoot>,
+    clock: Option<Res<exa_combat::remedy::WorldClock>>,
+    ticks: Option<Res<exa_physics::body::BodyTicks>>,
+    players: PlayerSaveQuery,
+    fighters: Query<&exa_combat::Fighter, With<crate::player::PlayerBody>>,
+    created: Option<Res<crate::creator_screen::CreatedCharacter>>,
+    mut report: ResMut<SaveReport>,
+) {
+    let steps: Vec<SaveStep> = steps.read().copied().collect();
+    if steps.is_empty() {
+        return;
+    }
+    let Some(mut lists) = lists else {
+        return;
+    };
+    if flow
+        .as_ref()
+        .is_some_and(|flow| flow.mode != crate::flow::Mode::Story)
+    {
+        return;
+    }
+    let list = &mut lists.story;
+    if list.current() <= 0 {
+        debug!("save: no current story slot for {steps:?}");
+        return;
+    }
+    let number = list.current() as u32;
+    let health = fighters
+        .iter()
+        .next()
+        .map_or(1.0, |fighter| fighter.health.red);
+    for step in steps {
+        match step {
+            SaveStep::Save { drop_on_low_health } => {
+                if drop_on_low_health && !exa_formats::save_chunk::save_allowed(health, false) {
+                    match list.drop_after_death(health) {
+                        Ok(dropped) => info!(
+                            "save: the dead player's save {number} is dropped (slot left the list: {dropped})"
+                        ),
+                        Err(error) => warn!("save: cannot drop slot {number}: {error}"),
+                    }
+                    continue;
+                }
+                let level = levels.iter().next().map(|root| root.name.as_str());
+                let now = ticks.as_ref().map_or(0, |ticks| ticks.millis() as u32);
+                let seconds = clock
+                    .as_ref()
+                    .map_or(0, |clock| crate::world_clock::stamped(clock, now));
+                let mut session = Session::story();
+                session.story = story_at(level.unwrap_or(""));
+                session.clock = seconds;
+                let player = live_story_player(&players, created.as_deref());
+                let export = story_save_world(&mut session, player.as_ref());
+                match list.save_current(&session, &export.save_world(None, false)) {
+                    Ok(_) => {
+                        info!(
+                            "save: story slot {number} saved (level {level:?}, clock {seconds} s)"
+                        );
+                        report.saved = Some(number);
+                    }
+                    Err(error) => warn!("save: cannot write story slot {number}: {error}"),
+                }
+            }
+            SaveStep::Drop => match list.drop_after_death(0.0) {
+                Ok(dropped) => info!(
+                    "save: story slot {number}'s save is dropped (slot left the list: {dropped})"
+                ),
+                Err(error) => warn!("save: cannot drop slot {number}: {error}"),
+            },
+            SaveStep::Checkpoint => match list.slots().copy_save_over_checkpoint(number) {
+                Ok(()) => info!("save: story slot {number}'s save kept as its checkpoint"),
+                Err(error) => warn!("save: cannot copy slot {number}'s checkpoint: {error}"),
+            },
+        }
     }
 }
 
@@ -489,6 +802,173 @@ fn load_arena_slot(
     );
 }
 
+/// What a story load read from a slot, before the running game takes it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StoryRestore {
+    /// The session the player data restores (the Exarust chunk's, else the
+    /// story at the saved level with the header's clock and seed).
+    pub session: Session,
+    /// The campaign level the load continues at.
+    pub level: &'static str,
+    /// The player's record with the load's reset applied.
+    pub player: Option<CharacterRecord>,
+    /// Where the save placed the player.
+    pub placement: Option<crate::flow::Placement>,
+    /// The save's world object records.
+    pub items: Vec<exa_formats::objdb::Item>,
+    /// Which file was read.
+    pub kind: save_package::SlotKind,
+}
+
+/// The story's full load of a slot, as the saves' character screen's
+/// CONTINUE runs it: the slot becomes current, then its files are tried
+/// (the checkpoint first when asked; the slot moves to the front and a
+/// checkpoint read is copied over the save, [`SlotList::load_current`]).
+/// The level is the save's locale (the transition's forced one included)
+/// when the campaign names it, else the first level; the player's record
+/// is the one the placement names, reset as the load resets it.
+pub fn restore_story(
+    list: &mut SlotList,
+    number: u32,
+    prefer_checkpoint: bool,
+) -> Result<StoryRestore, crate::session::SaveError> {
+    let _ = list.any();
+    let index = list
+        .numbers()
+        .iter()
+        .position(|&n| n == number)
+        .ok_or(crate::session::SaveError::Malformed)?;
+    list.select(index);
+    let loaded = list.load_current(prefer_checkpoint)?;
+    let locale = loaded.level_locale_name();
+    let session = crate::session::read_package(&loaded.package).unwrap_or_else(|_| {
+        let mut session = Session::story();
+        session.story = story_at(&locale);
+        session.clock = loaded.data.header.clock();
+        session
+    });
+    let level = story_at(&locale).level();
+    let mut player = loaded.player_record();
+    if let Some(record) = player.as_mut() {
+        record.reset_loaded_identity();
+    }
+    let placement = loaded
+        .data
+        .placement()
+        .and_then(Result::ok)
+        .map(|placement| placement_of(&placement));
+    let items = loaded
+        .world_objects()
+        .map(|db| {
+            db.world
+                .records()
+                .filter_map(|record| record.item().ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(StoryRestore {
+        session,
+        level,
+        player,
+        placement,
+        items,
+        kind: loaded.kind,
+    })
+}
+
+/// Runs a story load into the running game: the record becomes the next
+/// player's ([`SavedPlayer`], [`crate::creator_screen::CreatedCharacter`]),
+/// the old player goes, the world clock takes the saved seconds and the
+/// flow continues the story at the saved level and placement. A load that
+/// fails starts the first level, as the original's continue does.
+#[allow(clippy::too_many_arguments)]
+fn load_story_slot(
+    mut commands: Commands,
+    mut requests: MessageReader<StorySlotLoad>,
+    lists: Option<ResMut<SlotLists>>,
+    mut flow: Option<ResMut<crate::flow::Flow>>,
+    mut steps: Option<ResMut<crate::flow::FlowSteps>>,
+    mut created: Option<ResMut<crate::creator_screen::CreatedCharacter>>,
+    players: Query<Entity, With<crate::player::Player>>,
+    mut clock: MessageWriter<crate::world_clock::RestoreWorldClock>,
+    mut report: ResMut<SaveReport>,
+) {
+    let Some(request) = requests.read().last().copied() else {
+        return;
+    };
+    let Some(mut lists) = lists else {
+        return;
+    };
+    let restored = restore_story(&mut lists.story, request.number, request.prefer_checkpoint);
+    let (level, placement) = match restored {
+        Ok(restored) => {
+            info!(
+                "save: story slot {} loaded from {:?}: level {}, clock {} s, player {:?}, {} saved items",
+                request.number,
+                restored.kind,
+                restored.level,
+                restored.session.clock,
+                restored.player.as_ref().map(|r| r.name.clone()),
+                restored.items.len()
+            );
+            report.story_loaded = Some((request.number, restored.kind));
+            clock.write(crate::world_clock::RestoreWorldClock {
+                saved_seconds: restored.session.clock,
+            });
+            if let Some(record) = restored.player.clone() {
+                if let Some(created) = created.as_mut() {
+                    created.0 = Some(record.clone());
+                }
+                commands.insert_resource(SavedPlayer {
+                    record,
+                    items: restored.items.clone(),
+                });
+            } else {
+                commands.remove_resource::<SavedPlayer>();
+            }
+            commands.insert_resource(LoadedStory(restored.session.clone()));
+            (Some(restored.level), restored.placement)
+        }
+        Err(error) => {
+            warn!(
+                "save: story slot {} does not load ({error:?}); the first level starts",
+                request.number
+            );
+            (None, None)
+        }
+    };
+    // The loaded character replaces the player that survived the last
+    // session: the level load spawns it from the record.
+    for player in &players {
+        commands.entity(player).despawn();
+    }
+    let (Some(flow), Some(steps)) = (flow.as_mut(), steps.as_mut()) else {
+        return;
+    };
+    let viewport = flow.viewport;
+    let at = placement.unwrap_or(crate::flow::Placement {
+        rotation: crate::flow::NO_ROTATION,
+        position: Vec3::ZERO,
+    });
+    let mut resumed = flow.continue_story(level, at, viewport);
+    if placement.is_none() {
+        // A save without a placement (one Exarust wrote before it saved
+        // the player) starts at the level's own start.
+        resumed.retain(|step| {
+            !matches!(
+                step,
+                crate::flow::Step::PlacePlayer(_) | crate::flow::Step::Camera(_)
+            )
+        });
+    }
+    steps.steps.extend(flow.continue_session(resumed));
+}
+
+/// The session the last story load restored (its story position, journal,
+/// clock and experience state), for the units that take it over.
+#[derive(Resource, Clone, Debug, PartialEq)]
+pub struct LoadedStory(pub Session);
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -519,7 +999,7 @@ mod tests {
         let session = live_session(Some("exanima01"), 8684, &career, &ArenaStores::default());
         assert_eq!(session.mode, Mode::Story);
         assert_eq!(
-            save_new_slot(&mut lists.story, &session, None).unwrap(),
+            save_new_slot(&mut lists.story, &session, None, &SaveWorld::default()).unwrap(),
             Some(1)
         );
         let (back, kind) = Slots::story(&dir).load(1, false).unwrap();
@@ -528,7 +1008,7 @@ mod tests {
         // read) is not written over.
         std::fs::write(Slots::story(&dir).file(2, SlotKind::Save), b"not a save").unwrap();
         assert_eq!(
-            save_new_slot(&mut lists.story, &session, None).unwrap(),
+            save_new_slot(&mut lists.story, &session, None, &SaveWorld::default()).unwrap(),
             None
         );
         assert_eq!(
@@ -557,9 +1037,14 @@ mod tests {
         });
         let session = live_session(Some("arenahub.rfc"), 99, &career, &stores);
         assert_eq!(session.mode, Mode::Arena);
-        let number = save_new_slot(&mut lists.arena, &session, Some("Manager"))
-            .unwrap()
-            .unwrap();
+        let number = save_new_slot(
+            &mut lists.arena,
+            &session,
+            Some("Manager"),
+            &SaveWorld::default(),
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(number, 1);
         assert_eq!(lists.arena.names()[0].as_deref(), Some("Manager"));
 
@@ -606,6 +1091,57 @@ mod tests {
         assert_eq!(live.arsenal.shelves[SHIELDS][0][0].item, 7);
         assert_eq!(live.stash, vec![5]);
         assert_eq!(live.staff.employees[0].kit, vec![7]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_story_save_keeps_the_player_and_its_load_restores_it() {
+        let dir = folder("story-player");
+        let mut lists = SlotLists::new(&dir);
+        let mut record = CharacterRecord::reset();
+        record.name = "Ash".to_string();
+        record.worn.push(ItemRef::new(0x77, 0));
+        let mut possessions = exa_items::possession::Possessions::of_record(&record);
+        possessions.give(0x55, 0);
+        let player = StoryPlayer {
+            record: record_with_possessions(record, &possessions),
+            position_cm: [120.0, 30.0, -450.0],
+            heading: 1.25,
+        };
+        let career = crate::hub_windows::ArenaCareer::default();
+        let mut session = live_session(Some("exanima02"), 4321, &career, &ArenaStores::default());
+        let export = story_player_world(&player, &mut session).unwrap();
+        let number = save_new_slot(
+            &mut lists.story,
+            &session,
+            Some("Ash"),
+            &export.save_world(None, false),
+        )
+        .unwrap()
+        .unwrap();
+        // A fresh manager lists the slot under the player's name.
+        let mut list = SlotList::new(Slots::story(&dir));
+        assert!(list.any());
+        assert_eq!(list.names()[0].as_deref(), Some("Ash"));
+        // The character screen's select reads it with its mask.
+        let found = list.character_screen_select(0, 1);
+        assert_eq!(found.availability, 2);
+        assert_eq!(list.current(), number as i32);
+        assert_eq!(found.loaded.unwrap().player_record().unwrap().name, "Ash");
+        let restored = restore_story(&mut list, number, true).unwrap();
+        assert_eq!(restored.level, "exanima02");
+        assert_eq!(restored.session.clock, 4321);
+        let back = restored.player.unwrap();
+        assert_eq!(back.name, "Ash");
+        assert!(back.worn.iter().any(|w| w.id == 0x77));
+        assert!(back.inventory.iter().any(|c| c.item == 0x55));
+        let at = restored.placement.unwrap();
+        assert_eq!(at.position, Vec3::new(120.0, 30.0, -450.0));
+        let placed = crate::level_change::PlayerPlacement::of_flow(&at);
+        assert!((placed.yaw - 1.25).abs() < 1e-5);
+        assert_eq!(restored.kind, save_package::SlotKind::Save);
+        // An index outside the list answers nothing.
+        assert_eq!(list.character_screen_select(5, 1).availability, 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
