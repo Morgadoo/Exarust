@@ -5579,7 +5579,7 @@ pub fn draw_panel(
             0xa0,
         );
     } else {
-        draw_frame_control(batch, inner, false, (state & 0x10) == 0x10, palette);
+        draw_button_box(batch, inner, false, (state & 0x10) == 0x10, palette);
     }
 }
 
@@ -5617,7 +5617,7 @@ pub fn draw_control_box(
         x1: rect.x1 - inset,
         y1: rect.y1 - inset,
     };
-    draw_frame_control(
+    draw_button_box(
         batch,
         inner,
         (state & 0x40) == 0x40,
@@ -5951,7 +5951,7 @@ pub fn draw_control_slider(
             x1: rect.x0 + inset + shift as f32 + thumb as f32,
             y1: rect.y1 - inset,
         };
-        draw_frame_control(batch, frame, false, (state & 0x10) == 0x10, palette);
+        draw_button_box(batch, frame, false, (state & 0x10) == 0x10, palette);
         batch.add_texture_shift(shift as f32, 0.0);
         SkinControlSlider {
             shift,
@@ -6148,7 +6148,9 @@ pub fn draw_control_shell(
         x1: rect.x1 - inset,
         y1: rect.y1 - inset,
     };
-    draw_frame_control(
+    // The shell draws its style frames first, on the control's own rect.
+    draw_style_frames(batch, rect, style, palette);
+    draw_button_box(
         batch,
         inner,
         (state & 0x40) == 0x40,
@@ -12080,7 +12082,7 @@ mod tests {
     }
 
     #[test]
-    fn a_plain_panel_draws_the_frame_slot() {
+    fn a_plain_panel_draws_the_raised_box() {
         let mut batch = SkinBatch::new();
         let palette = palette_for_faces();
         draw_panel(
@@ -12091,9 +12093,47 @@ mod tests {
             4,
             &palette,
         );
+        // The idle raised box: its gradient runs from the control group's
+        // third shade up to its seventh, its bevel from the sixth to the
+        // fifth, then the outline in the first.
         assert_eq!(batch.primitives.len(), 3);
-        assert_eq!(batch.vertices_of(&batch.primitives[0])[0].x, 94.0);
-        assert_eq!(batch.vertices_of(&batch.primitives[0])[0].y, 6.0);
+        let face = batch.vertices_of(&batch.primitives[0]);
+        assert_eq!((face[0].x, face[0].y), (94.0, 6.0));
+        assert_eq!(face[0].ink, [30, 6, 0, 60]);
+        let bevel = batch.vertices_of(&batch.primitives[1]);
+        assert_eq!(bevel[0].ink, [30, 7, 0, 60]);
+        let outline = batch.vertices_of(&batch.primitives[2]);
+        assert_eq!(outline[0].ink, [30, 0, 0, 60]);
+    }
+
+    #[test]
+    fn a_control_shell_frames_itself_and_shades_its_inner_rect() {
+        let mut batch = SkinBatch::new();
+        let palette = palette_for_faces();
+        draw_control_shell(
+            &mut batch,
+            GuiRect::corners(10.0, 20.0, 110.0, 100.0),
+            4,
+            0x6000_0010,
+            0,
+            4,
+            &palette,
+        );
+        // The control's style frames run first on its own rect, then the
+        // raised box sits inset by four, and the shadow when the pressed
+        // bit is clear.
+        assert_eq!(batch.primitives.len(), 5);
+        let frames = batch.vertices_of(&batch.primitives[0]);
+        assert_eq!((frames[0].x, frames[0].y), (109.0, 20.5));
+        assert_eq!(frames[0].ink, [20, 0, 0, 50]);
+        let face = batch.vertices_of(&batch.primitives[1]);
+        assert_eq!((face[0].x, face[0].y), (104.0, 26.0));
+        assert_eq!(face[0].ink, [30, 6, 0, 60]);
+        let outline = batch.vertices_of(&batch.primitives[3]);
+        assert_eq!(outline[0].ink, [30, 0, 0, 60]);
+        let shadow = batch.vertices_of(&batch.primitives[4]);
+        assert_eq!((shadow[0].x, shadow[0].y), (10.0, 20.0));
+        assert_eq!(shadow[0].ink, [0, 0, 0, 0x50]);
     }
 
     #[test]
@@ -12125,7 +12165,11 @@ mod tests {
             (frame.x0, frame.y0, frame.x1, frame.y1),
             (42.0, 4.0, 58.0, 20.0)
         );
+        // The thumb is the idle raised box: its gradient from the control
+        // group's third shade up to its seventh.
         assert_eq!(batch.primitives.len(), 4);
+        let thumb = batch.vertices_of(&batch.primitives[1]);
+        assert_eq!(thumb[0].ink, [30, 6, 0, 60]);
         assert_eq!(batch.texture_shift, [0.0, 0.0]);
     }
 
