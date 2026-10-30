@@ -311,7 +311,7 @@ light in the environment word (unlit rows have an empty one).
 | 32 | `CamMat` | the camera's view matrix; the templates read its 3×3 rotation (`mat3(CamMat)`) |
 | 96 | `SdwMat` | the sun's world-to-shadow matrix |
 | 160 | `VXGIScl` | `1/(W·20)`, `1/(H·20)`, `1/(D·20)`, `1/SdwSmps` (texels across X, Z, up) |
-| 176 | `Ambient` | linear level ambient × exposure × 15, `w` = 8 indoors or 3 outdoors |
+| 176 | `Ambient` | linear level ambient × exposure, then ×15 when the scene has voxel GI; `w` = 8 indoors or 3 outdoors |
 | 192 | `TimeDlt` | `(offset·scale, −scale/factor)`: `offset` the quarter's time offset (0 outside super-sampling, `0.5 − (4q + 0.5)/N` for quarter `q` of `N` samples), `scale` the frame scale (1 up to a 1/60 s frame, else 16.666… ms over the frame's time), the factor the setting's sample count (1–66) |
 | 200 | `ViewRcp` | `1/width`, `1/height` |
 | 208 | `FogColr` | linear fog colour, `w` = `1/fog distance` |

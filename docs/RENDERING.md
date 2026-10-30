@@ -162,15 +162,15 @@ shadow map reads a tap's first two lanes.
 
 **Uniforms.** `Global` is 252 bytes, `Material` 112 bytes and each light
 three `vec4`s; the fields and their values are in `docs/formats/FLB.md`.
-`ViewPos.w` and `TimeDlt.x` are the same value: the sub-frame's time offset
-(0 outside super-sampling, `0.5 − (i + 0.5)/N` for sub-frame `i` of `N`)
-times the frame scale (1 when the last frame took at most 1/60 s, else
-16.666… ms over the frame's time); `TimeDlt.y` is minus the frame scale over
-the super-sampling factor. The exposure enters neither. `FogPos`
+`ViewPos.w` and `TimeDlt.x` are the same value: the quarter's time offset
+(0 outside super-sampling, `0.5 − (4q + 0.5)/N` for quarter `q` of `N`
+samples) times the frame scale (1 when the last frame took at most 1/60 s,
+else 16.666… ms over the frame's time); `TimeDlt.y` is minus the frame scale
+over the setting's sample count. The exposure enters neither. `FogPos`
 is the midpoint of the camera's eye and the sun camera's eye, built as
 `a + (b − a)·0.5`; its `w` is the scene's integer height limit (340 cm
-when the scene is created) and a `y` above that limit is lowered to it. The material writer's dirt block is written only by a
-dirt mode: modes 1–3 store `2 − strength` in `MatDrt.w` and the diffuse
+when the scene is created) and a `y` above that limit is lowered to it.
+The material writer's dirt block is written only by a dirt mode: modes 1–3 store `2 − strength` in `MatDrt.w` and the diffuse
 texture's aspect in `DrtUVs`, blood (4) copies the material record's dirt
 tint and skips `DrtUVs`, and a material with no dirt mode writes neither.
 A spawned weapon's record tint is `(1.0, 0.06, 0.04, 0.3)`, the hair

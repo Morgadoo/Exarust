@@ -45,7 +45,9 @@ mod sampler {
     pub const DIRT: u32 = 0x800_0000;
     pub const COLOUR_SLOTS: u32 = 0x48_0000;
     pub const LIT: u32 = 0x7;
-    pub const LIT_OR_SPECULAR: u32 = 0x3;
+    /// The shader's two light-receiving bits (`Diffuse`/`Optimized`), the
+    /// condition the tap location and GI volume use.
+    pub const LIT_BITS: u32 = 0x3;
     pub const BLEND: u32 = 0x200;
 }
 
@@ -154,7 +156,7 @@ pub fn program_bindings(flags: &Flags, lights: usize) -> ProgramBindings {
     if material & sampler::LIT != 0 {
         units.environment = Some(ENVIRONMENT_UNIT);
     }
-    let volume = material & sampler::LIT_OR_SPECULAR != 0 || flags.environment & 0x10 != 0;
+    let volume = material & sampler::LIT_BITS != 0 || flags.environment & 0x10 != 0;
     if volume {
         units.voxel_gi = Some(VOXEL_GI_UNIT);
     }
