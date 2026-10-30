@@ -114,6 +114,8 @@
 //!                                     loading (d: the double click, l: as a hit on level geometry)
 //!          --use-item ID@FRAME        debug: put the item into the pack and call its use hook at that frame
 //!                                     after loading, as its double click in the pack would (the use cursor)
+//!          --item-card ID@FRAME       debug: open the item's description card at the pointer (`--cursor`) at that frame
+//!                                     after loading, as a world object's click would
 //!          --gui-drop ID@FRAME        debug: put the item into the pack and drop it into the world at that frame
 //!                                     after loading, as a drag out of the window would (hold LMB to lift it)
 //!          --doll-drop ID:FLAGS@FRAME debug: put the item with its flags into the pack and drop it onto the
@@ -154,6 +156,7 @@
 //!                                     scripted fights run on (a single blow from full health can still kill)
 //!          --feral <f>                play mode: the player's record has feral level f (0–1): its blows' red damage
 //!                                     goes to yellow, and it spawns with a feral character's stats
+//!          --opponent-feral <f>       the debug duellist (`--opponent`) spawns with a feral character's stats of level f
 //! ```
 //!
 //! The user's settings files (`docs/formats/SETTINGS.md`) are read from
@@ -371,6 +374,8 @@ pub struct Options {
     pub use_item: exa_game::use_cursor::UseScript,
     /// `--gui-drop ID@FRAME`: the item dropped out of the pack.
     pub gui_drop: exa_game::gui_drop::GuiDropScript,
+    /// `--item-card ID@FRAME`: the item's card opened at the pointer.
+    pub item_card: exa_game::item_card::CardScript,
     /// `--doll-drop ID:FLAGS@FRAME`: the item dropped onto the doll.
     pub doll_drop: exa_game::doll_view::DollDropScript,
     /// Play mode: in-process level changes at frames after the first load
@@ -427,6 +432,8 @@ pub struct Options {
     pub open_hub_window: Option<String>,
     /// Play mode: the player's record's feral level (0..=1).
     pub feral: Option<f32>,
+    /// `--opponent-feral <f>`: the debug duellist's feral level.
+    pub opponent_feral: Option<f32>,
     /// Play mode: powers the player knows (`--powers`, hex or decimal).
     pub powers: Vec<u32>,
 }
@@ -888,6 +895,13 @@ fn main() -> AppExit {
                     }
                 }
             }
+            "--opponent-feral" => {
+                options.opponent = true;
+                options.opponent_feral = args
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .filter(|f: &f32| f.is_finite())
+            }
             "--feral" => {
                 options.feral = args
                     .next()
@@ -923,17 +937,19 @@ fn main() -> AppExit {
                     }
                 }
             }
-            "--use-item" | "--gui-drop" | "--doll-drop" => {
+            "--use-item" | "--gui-drop" | "--doll-drop" | "--item-card" => {
                 let text = args.next().unwrap_or_default();
-                let ok = match a.as_str() {
-                    "--use-item" => {
-                        exa_game::use_cursor::UseScript::parse(&text).map(|s| options.use_item = s)
-                    }
-                    "--gui-drop" => exa_game::gui_drop::GuiDropScript::parse(&text)
-                        .map(|s| options.gui_drop = s),
-                    _ => exa_game::doll_view::DollDropScript::parse(&text)
-                        .map(|s| options.doll_drop = s),
-                };
+                let ok =
+                    match a.as_str() {
+                        "--item-card" => exa_game::item_card::CardScript::parse(&text)
+                            .map(|s| options.item_card = s),
+                        "--use-item" => exa_game::use_cursor::UseScript::parse(&text)
+                            .map(|s| options.use_item = s),
+                        "--gui-drop" => exa_game::gui_drop::GuiDropScript::parse(&text)
+                            .map(|s| options.gui_drop = s),
+                        _ => exa_game::doll_view::DollDropScript::parse(&text)
+                            .map(|s| options.doll_drop = s),
+                    };
                 if ok.is_none() {
                     eprintln!("{a}: cannot read {text:?} (ID@FRAME)");
                     return AppExit::from_code(2);
@@ -1338,6 +1354,7 @@ fn main() -> AppExit {
     ))
     .insert_resource(options.use_item)
     .insert_resource(options.gui_drop)
+    .insert_resource(options.item_card)
     .insert_resource(options.doll_drop)
     .insert_resource(exa_game::save_live::ScriptedSaves(options.save_at.clone()));
     if options.story_session {
