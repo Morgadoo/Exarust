@@ -158,6 +158,14 @@ pub mod flags {
     /// The record's material word lacks `MatSpc` (`0x4`): every program
     /// leaves its whole specular sum (lights and reflection) out.
     pub const NO_SPECULAR: u32 = 536870912;
+    /// The surface casts its shadow the original's alpha-tested way: the
+    /// depth prepass samples the opacity map (else the diffuse map) and
+    /// discards below 0.5, with no opacity factor and no squaring. Set from
+    /// [`super::ExaMaterial::cut_shadow`], the caster setup's own condition
+    /// (an alpha-tested blend word, or an opacity above 0.75 with the
+    /// opacity flag); a merely masked surface without it casts a whole
+    /// shadow, as the original's caster does.
+    pub const SHADOW_CUT: u32 = 1_073_741_824;
 }
 
 /// How a surface shows the blood that wounds paint into its mesh's vertex
