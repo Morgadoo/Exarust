@@ -2143,10 +2143,19 @@ means no map), DEPTH_COMPONENT16, clamp-to-edge, linear, compare to texture,
 less. The sun's own flags give 0, so the top detail is 4096²
 (`exa_render::SUN_SHADOW_SIZE`).
 
-The original fits the map only when the scene has a terrain; other levels
-get a whole-scene map (centre and radius from the scene's bounding sphere,
-with a minimum extent, cached until something changes), which Exarust does
-not reproduce. Every frame of the fitted mode the update copies the camera's
+The original fits the map only when the scene has a terrain. Every other level
+covers the whole scene instead: the scene box's centre rotated into the light's
+frame, the box's radius (the length of its half-extent vector) as the half
+extent and as the up-sun reach, the scene's radius down-sun, each raised to
+the scene's minimum extent of 1 000 cm, and no texel snap and no hysteresis.
+The half extent's raise is `min > h` (a NaN never raises); the down-sun
+reach goes through the engine's `maxss` helper, so a NaN radius gives the
+minimum.
+Its softness is `(c + 1)·(200 / h)`, without the fitted mode's 0.15 floor.
+Exarust takes the radius as the box's half-diagonal and the down-sun reach as
+the same value (the original's own radius comes from the scene-node unit, out
+of the component's reach). Every frame of the fitted mode the update copies the
+camera's
 view volume (the camera view's frustum: six quads; the constructor's camera
 has a 100 cm near and a 125 m far plane, what the game sets later was not
 traced), clips it by up to three planes, fits the smallest sphere around the
@@ -2176,7 +2185,10 @@ surviving corners, and works in centimetres (×100):
   out-of-range value gives the lowest 64-bit integer). The half extent is
   kept across frames: the quantised value is taken only when it differs
   *and* `r > h + 200·0.3` (grow) or `r < h − 200·0.1` (shrink), both
-  compared in double precision. The constructor starts it at 3000 cm.
+  compared in double precision. The constructor starts it at 3000 cm. This
+  mode has no minimum extent: the scene's minimum (1 000 cm in a level: the
+  scene's constructor multiplies that by a global factor of 1; other scene
+  kinds store 100 cm) is read only by the whole-scene mode.
 - **Centre and depth.** The centre is rotated into the light's frame (its
   travel direction is the negated, normalised vector towards the sun, the
   length summed `(x² + z²) + y²`; `right = dir × +Y`, `up = right × dir`;
@@ -2189,8 +2201,38 @@ surviving corners, and works in centimetres (×100):
   `(c + 1)·(400 / h)` (c the light's own value, 0 by default); below 0.15
   (a double compare) it writes 0.15 and `c' = 0.15 / (the unfloored value)`
   in double precision. The render routine's polygon offset is
-  `1 + 1000/h + 2000c'/h` and it nudges casters by 1.25·(c' + 1) cm in
-  window depth.
+  `1 + 1000/h + 2000c'/h` with one offset unit, and it nudges the casters
+  (not the receivers) by `0.01·w`, `w = ½·min((c' + 1)·500/D, 0.3)` with `D`
+  the box's near + far reach and the 0.3 compared in double precision: in
+  the engine's `[−1, 1]` depth that is 1.5625e-4 at the constructor's
+  16 000 cm and `c' = 0`. Exarust writes the nudge into Bevy's drawing
+  matrix only, halved into its `[0, 1]` reverse-Z range, so receivers keep
+  the unbiased lookup; the polygon offset has no Bevy counterpart on the
+  caster side and stays a returned value.
+
+The render routine's caster pass walks the scene's caster list: a node
+without the caster flag is skipped, a flagged node clears its map-visible
+bit, the list's head is kept without the volume test (and without moving the
+volume), every later node is skipped when its box lies wholly beyond a face
+of the caster volume (its centre farther than the box's radius, or a positive
+distance beyond its support along the face normal, a NaN never culling), a
+kept later node's stored vector pushes the volume's faces in place by its
+projection (for its own parts and every node after it), a kept node sets its
+bit, and the node's parts are tested the same way: an unflagged part keeps
+its map-visible bit, an outside part clears it and draws nothing, an inside
+part sets it, switches to the cull face its flag picks (front or back,
+through the cached switch) and draws each of its meshes whose draw flag is
+set, plainly or, for a mesh marked alpha-cut, through the alpha-tested
+program with the mesh's texture bound and another geometry state (taken to
+be culling off; the state word is not decoded). Exarust models the walk
+in `exa_render::sun_casters` and pins it with tests; nothing drives it yet
+(Bevy's shadow pass draws the cascade's casters with its own frustum culling,
+and Exarust has no scene-node caster flag or per-part box at the original's
+fields). The caster volume itself is built out of the component by the
+intersection unit (the light-facing faces of the view volume plus side
+planes extruded along the sun through the silhouette edges, vertices merged
+within 5 cm² and edges shorter than 1 cm² skipped); that builder is not
+ported.
 
 The solver is `exa_render::bound_sphere`, reproduced to the bit (reverse
 engineered from Exanima.exe):
@@ -2233,8 +2275,10 @@ camera with one cascade holding the fitted matrices, each frame after Bevy's
 cascade builder and before it derives the shadow frusta (so the CPU caster
 culling follows the map too). The sun's `CascadeShadowConfig` then has one
 bound at 125 m. A frame that fits nothing keeps the previous matrices.
-Levels without a terrain, and every level with `--bevy-sun-cascades`, keep
-Bevy's two cascades over 60 m, which stand in for the whole-scene map. Both
+Levels without a terrain get the whole-scene map the same way (one cascade per
+active camera, independent of the camera's view, with the bound set to the
+scene's diameter so that a camera anywhere in the scene keeps sampling it). Every level with `--bevy-sun-cascades` keeps Bevy's two
+cascades over 60 m. Both
 use the 4096² map.
 
 What the fitted map looks like: one texel is `2h/4096`, a few centimetres
@@ -2249,10 +2293,13 @@ still drawn (Bevy culls directional casters without the near plane and
 clamps their depth). Receivers outside the fitted box are lit, where the
 original's clamp-to-edge map repeats its border texel.
 
-Not reproduced: the whole-scene mode; the softness, which needs a
-filter-radius uniform Bevy's directional shadows only have with its PCSS
-feature; the polygon offset and caster-side depth nudge (Bevy's own depth
-and normal biases apply instead); the other camera mode. The scene box is a
+Not reproduced: the softness upload, which needs a filter-radius uniform
+Bevy's directional shadows only have with its PCSS feature (the value is
+computed); the polygon offset (Bevy's own depth and normal biases apply);
+the other camera mode; the caster-volume builder; the map's own GL lifecycle
+(Bevy allocates a 32-bit float depth map where the original asks for 16-bit,
+and the original's optional RGB8 colour twin behind a debug switch that
+ships off). The scene box is a
 stand-in: the original's comes from the scene's own bounds, Exarust's from
 prop origins and terrain tiles. Exarust's record ceiling falls back to the
 grid top when the record's highest point is 0, where the original would clip

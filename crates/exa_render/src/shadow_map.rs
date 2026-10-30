@@ -204,13 +204,21 @@ impl ShadowMapSize {
 }
 
 /// The directional map's fixed settings: near plane 10, far plane 2 750,
-/// and its initial needed/dirty mask `0x3F` (all six faces).
+/// its initial needed/dirty mask `0x3F` (all six faces), its own texture, and
+/// the polygon offset its first render starts from (factor 1, units 100) —
+/// the render recomputes both before it draws, so these only matter to a map
+/// that has not rendered yet.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DirectShadowSettings {
     pub size: ShadowMapSize,
     pub near: f32,
     pub far: f32,
     pub faces: u32,
+    /// The map holds its own texture rather than one from the shared pool.
+    pub own_texture: bool,
+    /// The polygon offset the render's first pass would start from.
+    pub polygon_factor: f32,
+    pub polygon_units: f32,
 }
 
 impl DirectShadowSettings {
@@ -221,8 +229,99 @@ impl DirectShadowSettings {
             near: 10.0,
             far: 2_750.0,
             faces: ALL_FACES,
+            own_texture: true,
+            polygon_factor: 1.0,
+            polygon_units: 100.0,
         }
     }
+}
+
+/// How a shadow map's texels are filtered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShadowFilter {
+    Nearest,
+    Linear,
+}
+
+/// How a shadow map's texels wrap past the edge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShadowWrap {
+    ClampToEdge,
+    Repeat,
+    MirroredRepeat,
+}
+
+/// How the map is sampled: its magnification and minification filters, its
+/// wrap on both axes and whether the depth is compared as it is read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShadowSampler {
+    pub min: ShadowFilter,
+    pub mag: ShadowFilter,
+    pub wrap_s: ShadowWrap,
+    pub wrap_t: ShadowWrap,
+    /// The texture is compared against the reference depth when sampled
+    /// (a compare sampler) rather than read as a plain depth value.
+    pub compare: bool,
+}
+
+/// The sun map's sampler as its creation sets it: the creation's filter mode
+/// word, `clamp-to-edge` on both axes and comparison on.
+pub const SUN_SHADOW_SAMPLER: ShadowSampler = ShadowSampler {
+    min: ShadowFilter::Linear,
+    mag: ShadowFilter::Linear,
+    wrap_s: ShadowWrap::ClampToEdge,
+    wrap_t: ShadowWrap::ClampToEdge,
+    compare: true,
+};
+
+/// The filters a texture creation's mode word picks, as the original's
+/// sampler helper does: bit 5 takes the linear minification filter, and bit 4
+/// the linear magnification filter. Bits 6 and 7 select mipmapped variants of
+/// the same filter (nearest or linear), which a shadow map never uses.
+pub fn sampler_filters(mode: u32) -> (ShadowFilter, ShadowFilter) {
+    let min = if mode & 0x20 != 0 {
+        ShadowFilter::Linear
+    } else {
+        ShadowFilter::Nearest
+    };
+    let mag = if mode & 0x10 != 0 {
+        ShadowFilter::Linear
+    } else {
+        ShadowFilter::Nearest
+    };
+    (min, mag)
+}
+
+/// The size of a shadow map's depth texels, in bits: the sun map's creation
+/// asks for a 16-bit depth texture.
+pub const SUN_SHADOW_DEPTH_BITS: u32 = 16;
+
+/// The debug switch that would give the sun map a second, colour texture
+/// beside its depth one. It is off in the shipped build.
+pub const SUN_COLOUR_TWIN_SWITCH: bool = false;
+
+/// A shadow map's optional colour texture: the map's size, its format and
+/// the filters its creation sets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShadowColourTwin {
+    pub size: ShadowMapSize,
+    /// Three 8-bit unsigned normalised channels (the creation asks for
+    /// `RGB8`).
+    pub rgb8: bool,
+    pub min: ShadowFilter,
+    pub mag: ShadowFilter,
+}
+
+/// The colour twin the map creates when the switch is on: an uninitialised
+/// RGB8 image of the map's size, linearly filtered. The shipped build
+/// keeps the switch off, so the map has only its depth texture.
+pub fn sun_colour_twin(enabled: bool, size: ShadowMapSize) -> Option<ShadowColourTwin> {
+    enabled.then_some(ShadowColourTwin {
+        size,
+        rgb8: true,
+        min: ShadowFilter::Linear,
+        mag: ShadowFilter::Linear,
+    })
 }
 
 /// Which face the caster pass culls.
@@ -734,6 +833,69 @@ mod tests {
         assert_eq!(direct.near, 10.0);
         assert_eq!(direct.far, 2_750.0);
         assert_eq!(direct.faces, ALL_FACES);
+        // The map owns its texture, and its first render starts from the
+        // constructor's offset seeds before recomputing both.
+        assert!(direct.own_texture);
+        assert_eq!(direct.polygon_factor, 1.0);
+        assert_eq!(direct.polygon_units, 100.0);
+    }
+
+    #[test]
+    fn the_sun_map_is_a_linear_clamped_compare_texture() {
+        // The creation's mode word 0x33: linear minification (bit 5) and
+        // linear magnification (bit 4).
+        assert_eq!(
+            sampler_filters(0x33),
+            (ShadowFilter::Linear, ShadowFilter::Linear)
+        );
+        // Neither bit: nearest both ways.
+        assert_eq!(
+            sampler_filters(0x00),
+            (ShadowFilter::Nearest, ShadowFilter::Nearest)
+        );
+        // The mipmapped variants (bits 6 and 7) keep the filter's family: a
+        // nearest minification stays nearest, a linear one linear.
+        assert_eq!(
+            sampler_filters(0x20),
+            (ShadowFilter::Linear, ShadowFilter::Nearest)
+        );
+        assert_eq!(
+            sampler_filters(0xD0),
+            (ShadowFilter::Nearest, ShadowFilter::Linear)
+        );
+        // The sun's map: linear, clamped both ways, compared as it is read,
+        // and 16 bits of depth.
+        assert_eq!(
+            SUN_SHADOW_SAMPLER,
+            ShadowSampler {
+                min: ShadowFilter::Linear,
+                mag: ShadowFilter::Linear,
+                wrap_s: ShadowWrap::ClampToEdge,
+                wrap_t: ShadowWrap::ClampToEdge,
+                compare: true,
+            }
+        );
+        assert_eq!(SUN_SHADOW_DEPTH_BITS, 16);
+    }
+
+    #[test]
+    fn the_colour_twin_is_off_but_linear_rgb8_when_switched_on() {
+        let size = ShadowMapSize {
+            width: 4096,
+            height: 4096,
+        };
+        assert_eq!(sun_colour_twin(SUN_COLOUR_TWIN_SWITCH, size), None);
+        // Switched on: the map's own size, three 8-bit channels and
+        // the same linear filters the depth texture takes.
+        assert_eq!(
+            sun_colour_twin(true, size),
+            Some(ShadowColourTwin {
+                size,
+                rgb8: true,
+                min: ShadowFilter::Linear,
+                mag: ShadowFilter::Linear,
+            })
+        );
     }
 
     #[test]

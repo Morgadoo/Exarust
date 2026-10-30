@@ -407,10 +407,10 @@ pub fn apply_lighting(commands: &mut Commands, lighting: &Lighting, parent: Enti
                 shadow_maps_enabled: true,
                 ..default()
             },
-            // Bevy's cascades. In a terrain level `sun_shadow` replaces them
-            // each frame with the original's one fitted map (and this
-            // configuration with its single bound); elsewhere they stand in
-            // for the original's whole-scene map.
+            // Bevy's cascades. `sun_shadow` replaces them each frame with the
+            // original's one map (fitted in a terrain level, whole-scene
+            // elsewhere) and this configuration with its single bound; they
+            // stay only under `--bevy-sun-cascades`.
             CascadeShadowConfigBuilder {
                 num_cascades: 2,
                 maximum_distance: SUN_SHADOW_RANGE,

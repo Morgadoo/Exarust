@@ -1,15 +1,17 @@
-//! The fitted orthographic region of the original's single sun shadow map.
+//! The orthographic region of the original's single sun shadow map.
 //!
 //! The original keeps one orthographic depth map for the sun, not a cascade
-//! chain. In a level with a terrain its update fits that map every frame:
-//! it copies the camera's view volume, cuts it by up to three planes at the
-//! scene's bounds on the sides the camera looks towards, fits the smallest
-//! sphere around the surviving corners ([`crate::bound_sphere`]), converts
-//! that sphere to centimetres, quantises its radius to 200 cm steps with a
-//! hysteresis, snaps the centre to the shadow map's texel grid and gives the
-//! box a fixed ±8000 cm depth. The quantised radius carries over to the next
-//! frame, which is what the hysteresis compares against. Other levels use a
-//! whole-scene map instead, which is not reproduced here.
+//! chain. Its update has two modes. In a level with a terrain it fits the map
+//! every frame: it copies the camera's view volume, cuts it by up to three
+//! planes at the scene's bounds on the sides the camera looks towards, fits
+//! the smallest sphere around the surviving corners ([`crate::bound_sphere`]),
+//! converts that sphere to centimetres, quantises its radius to 200 cm steps
+//! with a hysteresis, snaps the centre to the shadow map's texel grid and
+//! gives the box a fixed ±8000 cm depth. The quantised radius carries over to the next frame, which is what
+//! the hysteresis compares against. Every other level covers the whole scene
+//! instead ([`SunFit::whole_scene`]): the scene box's centre, its radius as
+//! half extent, the same radius as the up-sun reach and the scene's radius
+//! down-sun, all raised to the minimum extent, and no texel snap.
 //!
 //! The maths here is the original's, in the original's order:
 //!
@@ -30,19 +32,23 @@
 //!   processor's (nearest, ties to even; a NaN or an out-of-range value gives
 //!   the lowest integer, [`convert_nearest`]). A step is taken only when the
 //!   new value differs *and* the radius is more than 0.3 steps above (grow)
-//!   or 0.1 steps below (shrink) the current half extent.
+//!   or 0.1 steps below (shrink) the current half extent. The fitted mode
+//!   has no minimum extent: the scene's minimum (1 000 cm in a level) is
+//!   read only by the whole-scene mode.
 //! - The centre is rotated into the light's basis and its x and y are
 //!   snapped to the texel grid (`2·half_extent / map size`), again rounding
 //!   to nearest. The grid is anchored at the light-space origin, as the
-//!   original's is.
+//!   original's is. The whole-scene mode does not snap.
 //! - Fewer than two corners fit nothing: the original then leaves its map
 //!   and matrices as they were, which [`SunFit::fit`] reports.
 //!
-//! Not reproduced here: the softness the update writes into the sun's light
-//! (see [`sun_softness`]; Bevy's directional shadows have no such uniform
-//! without the PCSS feature), the caster-side polygon offset and NDC depth
-//! nudge of the render routine, and the whole-scene mode. Rules:
-//! `docs/RENDERING.md` (Sun shadow fit).
+//! Not reproduced here: the caster-side polygon offset and depth nudge of
+//! the render routine are computed and returned ([`SunFit::caster_bias`])
+//! but Bevy's shadow pass has no caster-side bias state of its own; the
+//! softness the update writes into the sun's light is computed
+//! ([`sun_softness`]) and can be read by a shader filter, but Bevy's
+//! directional shadows have no filter-radius uniform without its PCSS
+//! feature. Rules: `docs/RENDERING.md` (Sun shadow fit).
 //!
 //! Evidence: the procedure listings and decompiler dump of the component, the
 //! vector helpers they call (squared distance, normalise, negate, scale,
@@ -63,6 +69,10 @@ pub const STEP_CM: f32 = 200.0;
 pub const INITIAL_HALF_EXTENT_CM: f32 = 3000.0;
 /// How far the box reaches on each side of its centre along the light, cm.
 pub const DEPTH_CM: f32 = 8000.0;
+/// The scene's minimum shadow half extent, cm: the scene's constructor
+/// multiplies 1 000 by a global factor (1.0 in the shipped build). Only the
+/// whole-scene mode reads it; the fitted mode has no minimum.
+pub const MIN_HALF_EXTENT_CM: f32 = 1000.0;
 /// A step up is taken only above this many steps (the original's `0.3`).
 pub const GROW_STEPS: f64 = 0.3;
 /// A step down is taken only below this many steps (the original's `0.1`).
@@ -322,8 +332,9 @@ pub fn volume_corners(volume: &ConvexVolume) -> Vec<Vec3> {
 }
 
 /// The fitted region's state across frames: the half extent (what the
-/// hysteresis compares against), the snapped centre in the light's frame and
-/// the softness the update writes.
+/// hysteresis compares against), the snapped centre in the light's frame, the
+/// depth the box reaches either way along the light and the softness the
+/// update writes.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SunFit {
     /// Half the fitted box's width, cm (the original's quantised extent).
@@ -332,6 +343,16 @@ pub struct SunFit {
     pub centre_cm: Vec3,
     /// The softness the update writes, after its 0.15 floor.
     pub softness: f32,
+    /// How far the box reaches towards the sun from its centre, cm. The
+    /// fitted mode's ±8000 cm; the whole-scene mode's half extent.
+    pub near_cm: f32,
+    /// How far it reaches away from the sun, cm: ±8000 cm fitted, the
+    /// scene's radius whole-scene.
+    pub far_cm: f32,
+    /// The `c'` the caster bias's depth nudge uses: the light's own softness
+    /// source, or the floor's overshoot when the computed softness is below
+    /// 0.15.
+    pub caster_softness: f32,
 }
 
 impl Default for SunFit {
@@ -340,6 +361,9 @@ impl Default for SunFit {
             half_extent_cm: INITIAL_HALF_EXTENT_CM,
             centre_cm: Vec3::ZERO,
             softness: 0.0,
+            near_cm: DEPTH_CM,
+            far_cm: DEPTH_CM,
+            caster_softness: 0.0,
         }
     }
 }
@@ -349,30 +373,68 @@ impl SunFit {
     /// [`CORNER_MERGE2`] apart) are scaled to metres, the smallest sphere is
     /// fitted in double precision, and the result returns in centimetres,
     /// quantised and snapped. Fewer than two corners change nothing and
-    /// return `false`.
+    /// return `false`. There is no minimum extent in this mode.
     pub fn fit(&mut self, volume: &ConvexVolume, basis: &LightBasis, map_size: UVec2) -> bool {
         let Some(sphere) = fitted_sphere(volume) else {
             return false;
         };
         self.half_extent_cm = next_half_extent(self.half_extent_cm, sphere.radius);
+        self.near_cm = DEPTH_CM;
+        self.far_cm = DEPTH_CM;
         let centre_cm = basis.to_light(sphere.centre);
         self.centre_cm = snapped_centre(centre_cm, self.half_extent_cm, map_size);
         true
+    }
+
+    /// Covers the whole scene, the update's mode for a level without a
+    /// terrain: the scene box's centre rotated into the light's frame, the
+    /// box's radius (the length of its half-extent vector) raised to
+    /// `min_half_extent_cm` as half extent, the same for the up-sun reach,
+    /// `far_cm` raised to the minimum for the down-sun one, and no texel
+    /// snap. The softness is `(c + 1)·(200 / half extent)`, with the fitted
+    /// mode's 0.15 floor *not* applied.
+    pub fn whole_scene(
+        &mut self,
+        scene: &SceneBox,
+        far_cm: f32,
+        basis: &LightBasis,
+        min_half_extent_cm: f32,
+        c: f32,
+    ) {
+        let radius = scene.extent.length();
+        let mut half_extent = radius;
+        if min_half_extent_cm > half_extent {
+            half_extent = min_half_extent_cm;
+        }
+        self.half_extent_cm = half_extent;
+        self.centre_cm = basis.to_light(scene.centre);
+        self.near_cm = half_extent;
+        // The engine's max helper is a single `maxss`: the first operand when
+        // it is greater, else the second, so a NaN far field gives the
+        // minimum (the pseudo-code's `a <= b ? b : a` would keep the NaN).
+        self.far_cm = if far_cm > min_half_extent_cm {
+            far_cm
+        } else {
+            min_half_extent_cm
+        };
+        self.softness = whole_scene_softness(c, half_extent);
+        self.caster_softness = c;
     }
 
     /// The shadow map's matrices and texel size for this fit, in Bevy's
     /// conventions (right-handed view space looking down −Z, reverse-Z
     /// depth): the cascade's world transform, its orthographic projection and
     /// their product. The box spans the centre ± the half extent across the
-    /// light and ±[`DEPTH_CM`] along it.
+    /// light and `near_cm` up-sun to `far_cm` down-sun from it.
     pub fn matrices(&self, basis: &LightBasis, map_size: UVec2) -> SunMatrices {
         let centre = basis.from_light(self.centre_cm) / CM_PER_METRE;
-        let depth = DEPTH_CM / CM_PER_METRE;
+        let near = self.near_cm / CM_PER_METRE;
+        let far = self.far_cm / CM_PER_METRE;
         let half = self.half_extent_cm / CM_PER_METRE;
         let back = -basis.dir;
-        // The view origin sits one depth behind the centre (up-sun), so the
-        // whole ±depth box is in front of it.
-        let eye = centre - depth * basis.dir;
+        // The view origin sits `near` up-sun of the centre, so the box fills
+        // the whole depth range in front of it.
+        let eye = centre - near * basis.dir;
         let world_from_cascade = Mat4::from_cols(
             basis.right.extend(0.0),
             basis.up.extend(0.0),
@@ -393,7 +455,7 @@ impl SunFit {
         // Bevy's cascade projection: 2 / width across, and 1 / depth with a
         // translation of 1 for reverse-Z (the near plane at the view origin).
         let half_inv = 1.0 / half;
-        let depth_inv = 1.0 / (2.0 * depth);
+        let depth_inv = 1.0 / (near + far);
         let clip_from_cascade = Mat4::from_cols(
             Vec4::new(half_inv, 0.0, 0.0, 0.0),
             Vec4::new(0.0, half_inv, 0.0, 0.0),
@@ -406,6 +468,27 @@ impl SunFit {
             clip_from_world: clip_from_cascade * cascade_from_world,
             texel_size: 2.0 * half / map_size.x.max(1) as f32,
         }
+    }
+
+    /// The update's softness step: the sun light's value `c` gives the
+    /// filter softness written into the light and the `c'` the caster bias
+    /// reads. The fitted mode only; the whole-scene mode sets both in
+    /// [`SunFit::whole_scene`].
+    pub fn apply_softness(&mut self, c: f32) {
+        let softness = sun_softness(c, self.half_extent_cm);
+        self.softness = softness.value;
+        self.caster_softness = softness.caster;
+    }
+
+    /// The render routine's caster bias: the polygon offset it feeds
+    /// `glPolygonOffset` and the NDC depth shift it adds to the casters'
+    /// projection while drawing the map (see [`CasterBias`]).
+    pub fn caster_bias(&self) -> CasterBias {
+        caster_bias(
+            self.half_extent_cm,
+            self.caster_softness,
+            self.near_cm + self.far_cm,
+        )
     }
 }
 
@@ -492,6 +575,13 @@ pub fn sun_softness(c: f32, half_extent_cm: f32) -> SunSoftness {
     }
 }
 
+/// The softness the whole-scene mode writes: `(c + 1)·(200 / half extent)`,
+/// with the fitted mode's 0.15 floor *not* applied and no `c'` derived (the
+/// light's own `c` feeds the caster bias as it stands).
+pub fn whole_scene_softness(c: f32, half_extent_cm: f32) -> f32 {
+    (c + 1.0) * (SOFTNESS_CM / 2.0 / half_extent_cm)
+}
+
 /// The sun light's filter softness and the offset scale derived from it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SunSoftness {
@@ -499,6 +589,52 @@ pub struct SunSoftness {
     pub caster: f32,
     /// The filter softness written into the light (`s`).
     pub value: f32,
+}
+
+/// The caster pass's bias, as the render routine computes it before it draws
+/// the map.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CasterBias {
+    /// The first argument of the polygon offset: `1 + 1000/h + 2000c'/h`,
+    /// each quotient in double precision and the sum stored single, as the
+    /// original stores it back before adding the second term.
+    pub polygon_factor: f32,
+    /// The second argument: 1.0, the smallest offset unit.
+    pub polygon_units: f32,
+    /// The constant added to the drawn casters' NDC depth while the map is
+    /// drawn: `0.01·w`, `w = ½·min((c' + 1)·500 / D, 0.3)` with `D` the
+    /// box's near + far reach and the 0.3 compared in double precision. The
+    /// original adds it to the projection's z translation and multiplies the
+    /// view in, so it shifts the casters (not the receivers) by that much
+    /// of the depth range; in a [0, 1] depth range that is half as much
+    /// again as in the engine's [−1, 1] one.
+    pub depth_nudge: f32,
+}
+
+/// The caster pass's polygon offset and depth shift for half extent `h` (cm),
+/// the light's softness scale `c'` and the box's near + far reach `depth_cm`.
+pub fn caster_bias(half_extent_cm: f32, caster_softness: f32, depth_cm: f32) -> CasterBias {
+    // `1/(h·0.001) + 1`, in double precision, stored single; the second term
+    // then reads that stored value back widened.
+    let first = (1.0 / (f64::from(half_extent_cm) * 0.001) + 1.0) as f32;
+    // `(c'·20) / (h·0.01)`: the numerator is a single-precision product, the
+    // division in double precision.
+    let second = f64::from(caster_softness * 20.0) / (f64::from(half_extent_cm) * 0.01);
+    let factor = (f64::from(first) + second) as f32;
+    // `w = ((c' + 1)·500) / D`, single precision; above 0.3 (double compare)
+    // it is 0.3, then halved.
+    let mut w = (1.0 + caster_softness) * 500.0 / depth_cm;
+    if f64::from(w) > 0.3 {
+        w = 0.3;
+    }
+    w *= 0.5;
+    CasterBias {
+        polygon_factor: factor,
+        polygon_units: 1.0,
+        // `w·0.01` in double precision, as the routine adds it to the
+        // projection's z translation (here kept apart and stored single).
+        depth_nudge: (f64::from(w) * 0.01) as f32,
+    }
 }
 
 /// The smallest sphere around a clipped view volume's corners, in
@@ -846,7 +982,7 @@ mod tests {
         let fit = SunFit {
             half_extent_cm: 1000.0,
             centre_cm: Vec3::ZERO,
-            softness: 0.0,
+            ..Default::default()
         };
         let basis = LightBasis::from_towards_sun(Vec3::Y);
         let matrices = fit.matrices(&basis, UVec2::splat(4096));
@@ -890,5 +1026,137 @@ mod tests {
         let soft = sun_softness(0.0, 16000.0);
         assert_eq!(soft.value, 0.15);
         assert!((soft.caster - 6.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_fit_has_no_minimum_extent() {
+        // A 200 cm cube: r = 173.2, 173.2/200 + 0.4 = 1.27 → 1 step. From
+        // 3000 the shrink is taken (173.2 < 2980): 200 cm, well below the
+        // whole-scene mode's 1 000 cm minimum, which this mode never reads.
+        let basis = LightBasis::from_towards_sun(Vec3::Y);
+        let mut fit = SunFit::default();
+        assert!(fit.fit(&cube(Vec3::ZERO, 100.0), &basis, UVec2::splat(4096)));
+        assert_eq!(fit.half_extent_cm, 200.0);
+        assert_eq!((fit.near_cm, fit.far_cm), (DEPTH_CM, DEPTH_CM));
+    }
+
+    #[test]
+    fn the_whole_scene_mode_uses_the_scene_radius_and_no_snap() {
+        // A 4 000 × 1 000 × 3 000 cm box around (100, 200, 300): its radius
+        // is √(2000² + 500² + 1500²) = 2554.4 cm.
+        let scene = SceneBox {
+            centre: v(100.0, 200.0, 300.0),
+            extent: v(2000.0, 500.0, 1500.0),
+        };
+        let basis = LightBasis::from_towards_sun(Vec3::Y);
+        let mut fit = SunFit::default();
+        // The far field is the scene's own radius from the node unit, here
+        // modelled as the same half-diagonal.
+        fit.whole_scene(
+            &scene,
+            scene.extent.length(),
+            &basis,
+            MIN_HALF_EXTENT_CM,
+            0.0,
+        );
+        let radius = (2000f32 * 2000.0 + 500.0 * 500.0 + 1500.0 * 1500.0).sqrt();
+        assert_eq!(fit.half_extent_cm, radius);
+        assert_eq!(fit.near_cm, radius);
+        assert_eq!(fit.far_cm, radius);
+        // The centre is rotated into the light's frame: the sun overhead has
+        // right +X, up −Z, dir −Y, so (100, 200, 300) → (100, −300, −200).
+        assert!((fit.centre_cm - v(100.0, -300.0, -200.0)).length() < 1e-3);
+        // No texel snap: an off-grid centre stays.
+        assert!((fit.centre_cm.x - 100.0).abs() < 1e-3);
+        // Softness: (c + 1)·(200 / h), no 0.15 floor.
+        let expected = 200.0 / radius;
+        assert!((fit.softness - expected).abs() < 1e-6);
+        assert_eq!(fit.caster_softness, 0.0);
+        // A tiny scene takes the minimum extent for its half extent, its
+        // near reach and its far field.
+        let tiny = SceneBox {
+            centre: Vec3::ZERO,
+            extent: v(100.0, 100.0, 100.0),
+        };
+        let mut fit = SunFit::default();
+        fit.whole_scene(&tiny, 10.0, &basis, MIN_HALF_EXTENT_CM, 0.0);
+        assert_eq!(fit.half_extent_cm, 1000.0);
+        assert_eq!(fit.near_cm, 1000.0);
+        assert_eq!(fit.far_cm, 1000.0);
+        assert_eq!(fit.softness, 0.2);
+        // A NaN far field gives the minimum (`maxss` returns its second
+        // operand on NaN), and a NaN minimum is that second operand too.
+        fit.whole_scene(&tiny, f32::NAN, &basis, MIN_HALF_EXTENT_CM, 0.0);
+        assert_eq!(fit.far_cm, 1000.0);
+        fit.whole_scene(&tiny, 2500.0, &basis, f32::NAN, 0.0);
+        assert!(fit.far_cm.is_nan());
+        // The half extent's raise is `min > h`: a NaN minimum never raises.
+        assert_eq!(fit.half_extent_cm, v(100.0, 100.0, 100.0).length());
+    }
+
+    #[test]
+    fn the_whole_scene_box_is_the_radius_across_and_near_to_far_along() {
+        let basis = LightBasis::from_towards_sun(Vec3::Y);
+        let scene = SceneBox {
+            centre: v(0.0, 100.0, 0.0),
+            extent: v(2000.0, 500.0, 2000.0),
+        };
+        let mut fit = SunFit::default();
+        fit.whole_scene(&scene, 2000.0, &basis, MIN_HALF_EXTENT_CM, 0.0);
+        let matrices = fit.matrices(&basis, UVec2::splat(4096));
+        let clip = |light: Vec3| {
+            let world = basis.from_light(light) / CM_PER_METRE;
+            matrices.clip_from_world * world.extend(1.0)
+        };
+        // The depth range is near + far = the radius + the far field.
+        let h = fit.half_extent_cm;
+        let centre = clip(fit.centre_cm);
+        assert!((centre.z - fit.far_cm / (fit.near_cm + fit.far_cm)).abs() < 1e-5);
+        // Up-sun by the half extent is the near plane, down-sun by the far
+        // field the far plane.
+        let near = clip(fit.centre_cm - v(0.0, 0.0, h));
+        assert!((near.z - 1.0).abs() < 1e-5);
+        let far = clip(fit.centre_cm + v(0.0, 0.0, fit.far_cm));
+        assert!(far.z.abs() < 1e-5);
+        // Across the light the box is the radius each way.
+        let right = clip(fit.centre_cm + v(h, 0.0, 0.0));
+        assert!((right.x - 1.0).abs() < 1e-5);
+        assert!((matrices.texel_size - 2.0 * h / 100.0 / 4096.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_caster_bias_is_the_originals() {
+        // h = 1000, c' = 0: factor = 1 + 1 = 2; w = 500/16000 = 0.03125,
+        // halved to 0.015625, nudged by 0.01 → 1.5625e-4.
+        let bias = caster_bias(1000.0, 0.0, 16000.0);
+        assert_eq!(bias.polygon_factor, 2.0);
+        assert_eq!(bias.polygon_units, 1.0);
+        assert!((bias.depth_nudge - 1.5625e-4).abs() < 1e-9);
+        // A floored softness c' = 1.125 at h = 3000: factor = 1 + 1/3 +
+        // 2000·1.125/3000 = 1.3333 + 0.75 = 2.0833; w = 2.125·500/16000 =
+        // 0.06640625, halved → 0.033203125 → 3.3203e-4.
+        let bias = caster_bias(3000.0, 1.125, 16000.0);
+        assert!((bias.polygon_factor - (1.0 + 1.0 / 3.0 + 0.75)).abs() < 1e-6);
+        assert!((bias.depth_nudge - 3.3203125e-4).abs() < 1e-9);
+        // w above 0.3 is clamped (a 200 cm box: 500/1600 = 0.3125 → 0.3),
+        // so the nudge is 0.0015.
+        let bias = caster_bias(200.0, 0.0, 400.0);
+        assert!((bias.depth_nudge - 0.0015).abs() < 1e-9);
+        assert_eq!(bias.polygon_factor, 1.0 + 1000.0 / 200.0);
+        // The fit carries the values: at h = 1000 cm (c' = 0, no floor) the
+        // bias is the 2.0 above; at 3000 cm the softness floors and gives
+        // c' = 1.125.
+        let mut fit = SunFit {
+            half_extent_cm: 1000.0,
+            ..Default::default()
+        };
+        fit.apply_softness(0.0);
+        assert_eq!(fit.caster_softness, 0.0);
+        assert_eq!(fit.caster_bias().polygon_factor, 2.0);
+        assert!((fit.caster_bias().depth_nudge - 1.5625e-4).abs() < 1e-9);
+        fit.half_extent_cm = 3000.0;
+        fit.apply_softness(0.0);
+        assert_eq!(fit.caster_softness, 1.125);
+        assert!((fit.caster_bias().polygon_factor - (1.0 + 1.0 / 3.0 + 0.75)).abs() < 1e-5);
     }
 }
