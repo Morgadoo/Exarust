@@ -389,6 +389,18 @@ pub struct EmitterSpec {
     pub ring: Option<(usize, f32)>,
     /// The particle texture (`_FirePrt01` or `_FirePrt02`).
     pub texture: &'static str,
+    /// The emitter's own flags word bits the builder ORs in: `0x9000` or
+    /// `0x8000` on a bed.
+    pub object_flags: u32,
+    /// The scene node's flags word bits the builder ORs in: `0x20000` on a
+    /// flame.
+    pub node_flags: u32,
+    /// The scene node's flags word bits the builder clears: `0x20000` on a
+    /// bed.
+    pub node_flags_off: u32,
+    /// The fire word the node stores for its re-creation (`0x3dd0e002` on a
+    /// flame, 0 on a bed).
+    pub recreate_id: u32,
 }
 
 /// A fire's light.
@@ -464,6 +476,10 @@ fn small(size: f32) -> Preset {
             lift: 0.0,
             ring: None,
             texture: "_FirePrt02",
+            object_flags: 0,
+            node_flags: FLAME_NODE_FLAGS,
+            node_flags_off: 0,
+            recreate_id: RECREATE_ID,
         },
         base: None,
         light: small_light(template.light, size),
@@ -484,6 +500,10 @@ fn medium_small(size: f32) -> Preset {
             lift: 0.0,
             ring: Some((count(size, 5), size * 40.0)),
             texture: "_FirePrt01",
+            object_flags: 0,
+            node_flags: FLAME_NODE_FLAGS,
+            node_flags_off: 0,
+            recreate_id: RECREATE_ID,
         },
         base: Some(EmitterSpec {
             name: "_FireBas",
@@ -494,6 +514,10 @@ fn medium_small(size: f32) -> Preset {
             lift: -size * 15.0,
             ring: None,
             texture: "_FirePrt01",
+            object_flags: BED_OBJECT_FLAGS,
+            node_flags: 0,
+            node_flags_off: FLAME_NODE_FLAGS,
+            recreate_id: 0,
         }),
         light: LightSpec {
             desc: template.light,
@@ -518,6 +542,10 @@ fn medium(size: f32) -> Preset {
             lift: 0.0,
             ring: Some((count(size, 4), size * 40.0)),
             texture: "_FirePrt01",
+            object_flags: 0,
+            node_flags: FLAME_NODE_FLAGS,
+            node_flags_off: 0,
+            recreate_id: RECREATE_ID,
         },
         base: Some(EmitterSpec {
             name: "_FireBas",
@@ -528,6 +556,10 @@ fn medium(size: f32) -> Preset {
             lift: -size * 20.0,
             ring: None,
             texture: "_FirePrt01",
+            object_flags: BED_OBJECT_FLAGS,
+            node_flags: 0,
+            node_flags_off: FLAME_NODE_FLAGS,
+            recreate_id: 0,
         }),
         light: LightSpec {
             desc: template.light,
@@ -555,6 +587,10 @@ fn large(size: f32) -> Preset {
             lift: 0.0,
             ring: Some((count(size, 4), size * 40.0)),
             texture: "_FirePrt01",
+            object_flags: 0,
+            node_flags: FLAME_NODE_FLAGS,
+            node_flags_off: 0,
+            recreate_id: RECREATE_ID,
         },
         base: Some(EmitterSpec {
             name: "_FireBas",
@@ -565,6 +601,10 @@ fn large(size: f32) -> Preset {
             lift: -size * 40.0,
             ring: None,
             texture: "_FirePrt01",
+            object_flags: LARGE_BED_OBJECT_FLAGS,
+            node_flags: 0,
+            node_flags_off: FLAME_NODE_FLAGS,
+            recreate_id: 0,
         }),
         light: LightSpec {
             desc: template.light,
@@ -656,14 +696,37 @@ pub fn import_marker(
 /// The node flags a fire re-created from its host node keeps: the host's
 /// visibility and draw bits (`0xc01f000`), ORed into the new emitter's.
 pub const RECREATE_FLAG_MASK: u32 = 0x0c01_f000;
+/// The scene node flag a flame's node takes (and a bed's clears).
+pub const FLAME_NODE_FLAGS: u32 = 0x0002_0000;
+/// The emitter object's own flags on the medium tiers' beds.
+pub const BED_OBJECT_FLAGS: u32 = 0x0000_9000;
+/// The emitter object's own flags on the large bed.
+pub const LARGE_BED_OBJECT_FLAGS: u32 = 0x0000_8000;
+/// The fire word a flame's node stores; the re-creation callback is
+/// registered under it.
+pub const RECREATE_ID: u32 = 0x3dd0_e002;
 
-/// A fire re-created when its host node is re-created: the same size and
-/// the emitter's own flags ORed with the host node's draw bits.
-pub fn recreate(size: f32, host_flags: u32, emitter_flags: u32) -> (Preset, u32) {
-    (
-        preset(size),
-        (host_flags & RECREATE_FLAG_MASK) | emitter_flags,
-    )
+/// A fire re-created from its host node.
+#[derive(Debug, Clone)]
+pub struct Recreated {
+    pub preset: Preset,
+    /// The new node's flags: the host's masked bits OR the emitter's.
+    pub node_flags: u32,
+    /// The marker node field the original copies from the old fire to the
+    /// new one (its meaning is not traced).
+    pub field: f32,
+}
+
+/// A fire re-created when its host node is re-created: the same size, the
+/// emitter's own flags ORed with the host node's draw bits, and the marker
+/// node's field copied across (the original copies the old fire's word
+/// verbatim; nothing derives it again).
+pub fn recreate(size: f32, host_flags: u32, emitter_flags: u32, field: f32) -> Recreated {
+    Recreated {
+        preset: preset(size),
+        node_flags: (host_flags & RECREATE_FLAG_MASK) | emitter_flags,
+        field,
+    }
 }
 
 /// The keys as the linear pipeline loads them: the RGB of keys 1 to `count`
@@ -734,6 +797,10 @@ pub struct Fire {
     pub(crate) emissive: f32,
     /// Ticks the fire has run.
     pub(crate) ticks: u32,
+    /// The node's flags word the builder computed (the host's masked bits).
+    pub(crate) node_flags: u32,
+    /// The marker node field the fire carries for a re-creation.
+    pub(crate) field: f32,
 }
 
 /// The host mesh of a fire marker: its first part, whose material's
@@ -758,6 +825,22 @@ impl Fire {
     pub fn emissive(&self) -> f32 {
         self.emissive
     }
+
+    /// The node's flags word the builder gave the fire.
+    pub fn node_flags(&self) -> u32 {
+        self.node_flags
+    }
+
+    /// The marker node field the fire carries for a re-creation.
+    pub fn field(&self) -> f32 {
+        self.field
+    }
+
+    /// The fire as a re-creation from its host node builds it: the same
+    /// marker field, the given host flags and the emitter's own bits.
+    pub fn recreate(&self, size: f32, host_flags: u32) -> Recreated {
+        recreate(size, host_flags, 0, self.field)
+    }
 }
 
 /// A fire emitter waiting for its particle texture once the assets load.
@@ -770,7 +853,10 @@ pub struct FireFlame {
 /// emitter (the flame, and above the small tier its bed). The texture is
 /// attached when the assets load ([`crate::flame::FlamePlugin`]).
 pub fn spawn_fire(commands: &mut Commands, node: Entity, size: f32) {
-    let p = preset(size);
+    // The level's fire markers go through the same builder a re-created
+    // host node uses; a first spawn has no host flags and no marker field.
+    let built = recreate(size, 0, 0, 0.0);
+    let p = built.preset;
     let specs: Vec<&EmitterSpec> = std::iter::once(&p.flame).chain(p.base.iter()).collect();
     for (index, spec) in specs.into_iter().enumerate() {
         let sources = match spec.ring {
@@ -805,6 +891,8 @@ pub fn spawn_fire(commands: &mut Commands, node: Entity, size: f32) {
                     density: 0.0,
                     emissive: 0.0,
                     ticks: 0,
+                    node_flags: built.node_flags,
+                    field: built.field,
                 },
                 crate::flame::Flame::new(emitter, light.lift, spec.texture, seed(node, index)),
                 ChildOf(node),
@@ -927,6 +1015,35 @@ mod tests {
     }
 
     #[test]
+    fn each_emitter_carries_its_node_flag_words() {
+        // Every flame ORs 0x20000 into its node's flags and stores the
+        // 0x3dd0e002 re-creation word.
+        for size in [0.2, 0.4, 0.8, 2.0] {
+            let p = preset(size);
+            assert_eq!(p.flame.node_flags, FLAME_NODE_FLAGS, "size {size}");
+            assert_eq!(p.flame.node_flags_off, 0, "size {size}");
+            assert_eq!(p.flame.recreate_id, RECREATE_ID, "size {size}");
+            assert_eq!(p.flame.object_flags, 0, "size {size}");
+        }
+        // The beds clear 0x20000 and take their own object bits: 0x9000 on
+        // the medium tiers, 0x8000 on the large one. Their nodes store no
+        // re-creation word.
+        let bed = preset(0.4).base.expect("a bed");
+        assert_eq!((bed.node_flags, bed.node_flags_off), (0, FLAME_NODE_FLAGS));
+        assert_eq!((bed.object_flags, bed.recreate_id), (BED_OBJECT_FLAGS, 0));
+        let bed = preset(0.8).base.expect("a bed");
+        assert_eq!((bed.node_flags, bed.node_flags_off), (0, FLAME_NODE_FLAGS));
+        assert_eq!((bed.object_flags, bed.recreate_id), (BED_OBJECT_FLAGS, 0));
+        let bed = preset(2.0).base.expect("a bed");
+        assert_eq!((bed.node_flags, bed.node_flags_off), (0, FLAME_NODE_FLAGS));
+        assert_eq!(
+            (bed.object_flags, bed.recreate_id),
+            (LARGE_BED_OBJECT_FLAGS, 0)
+        );
+        assert_eq!((FLAME_NODE_FLAGS, RECREATE_ID), (0x20000, 0x3dd0_e002));
+    }
+
+    #[test]
     fn the_detail_values_are_twice_a_bed_and_some_flames() {
         // The small flame's detail is its size.
         assert_eq!(preset(0.2).flame.detail, 0.2);
@@ -1038,14 +1155,17 @@ mod tests {
     }
 
     #[test]
-    fn a_re_created_fire_keeps_the_hosts_draw_bits() {
-        let (p, flags) = recreate(0.5, 0x0c3f_f000, 0x0000_0b01);
-        assert_eq!(p.size, 0.5);
+    fn a_re_created_fire_keeps_the_hosts_draw_bits_and_its_field() {
+        let built = recreate(0.5, 0x0c3f_f000, 0x0000_0b01, 0.75);
+        assert_eq!(built.preset.size, 0.5);
         // Only 0xc01f000 of the host's bits survive, ORed with the
         // emitter's own.
-        assert_eq!(flags, 0x0c01_f000 | 0x0b01);
-        let (_, flags) = recreate(0.2, 0xffff_ffff, 0);
-        assert_eq!(flags, RECREATE_FLAG_MASK);
+        assert_eq!(built.node_flags, 0x0c01_f000 | 0x0b01);
+        // The marker field is copied, not derived.
+        assert_eq!(built.field, 0.75);
+        let built = recreate(0.2, 0xffff_ffff, 0, -2.5);
+        assert_eq!(built.node_flags, RECREATE_FLAG_MASK);
+        assert_eq!(built.field, -2.5);
     }
 
     #[test]
@@ -1098,6 +1218,8 @@ mod tests {
                 density: 0.5,
                 emissive: 0.5,
                 ticks: 1,
+                node_flags: 0,
+                field: 0.0,
             },
             ChildOf(node),
         ));
