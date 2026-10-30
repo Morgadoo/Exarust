@@ -1108,17 +1108,22 @@ impl Blast {
     /// step, then the 0–1 coordinates the draw derives and smooths (ten
     /// passes, each point half way to its neighbours' middle and its
     /// coordinate `0.5·w + 0.25·(w₊ + w₋)`). The last coordinate is the
-    /// divisor the draw normalises by.
+    /// divisor the draw normalises by; every coordinate from the second
+    /// through the last becomes `1 − w/divisor`, so the last is about zero.
+    /// The third answer is that divisor as it was before the normalisation,
+    /// which the draw also uses to scale the camera-facing pass and the
+    /// second texture coordinate.
     #[allow(clippy::needless_range_loop)]
     pub fn trail_spine(
         &self,
         index: usize,
         t: f32,
-    ) -> ([Vec3; RIBBON_SAMPLES], [f32; RIBBON_SAMPLES]) {
+    ) -> ([Vec3; RIBBON_SAMPLES], [f32; RIBBON_SAMPLES], f32) {
         let (mut points, mut widths) = self.trail_curve(index, t);
-        let inverse = 1.0 / widths[RIBBON_SAMPLES - 1];
+        let divisor = widths[RIBBON_SAMPLES - 1];
+        let inverse = 1.0 / divisor;
         widths[0] = 1.0;
-        for i in 1..RIBBON_SAMPLES - 1 {
+        for i in 1..RIBBON_SAMPLES {
             widths[i] = 1.0 - widths[i] * inverse;
         }
         for _ in 0..SMOOTH_PASSES {
@@ -1128,7 +1133,7 @@ impl Blast {
                 widths[i] = widths[i] * 0.5 + (widths[i + 1] * 0.25 + widths[i - 1] * 0.25);
             }
         }
-        (points, widths)
+        (points, widths, divisor)
     }
 
     /// The raw spine samples and widths before the draw normalises and
@@ -1253,9 +1258,9 @@ impl Blast {
             let chunk = &self.chunks[index];
             let half = chunk.reach * RIBBON_HALF_OVER_REACH;
             let colour = self.chunk_colour(index);
-            let (spine, widths) = self.trail_spine(index, t);
-            let view = Self::face_camera(&spine, &widths, widths[RIBBON_SAMPLES - 1], camera);
-            let uv2 = [(RIBBON_WIDTH / half) * widths[RIBBON_SAMPLES - 1], row];
+            let (spine, widths, width_scale) = self.trail_spine(index, t);
+            let view = Self::face_camera(&spine, &widths, width_scale, camera);
+            let uv2 = [(RIBBON_WIDTH / half) * width_scale, row];
             let mut strip = RibbonMesh::default();
             let mut previous = view[0] - (view[1] - view[0]);
             strip.push_blast_quad(
@@ -1734,12 +1739,15 @@ mod tests {
     #[test]
     fn the_spine_normalises_and_smooths_its_widths() {
         let b = trailing_blast();
-        let (_, widths) = b.trail_spine(0, 0.0);
+        let (_, widths, divisor) = b.trail_spine(0, 0.0);
         // The draw sets the head's coordinate to 1 and spreads the rest
-        // over the last one (8.75), then smooths ten times. The head stays
-        // 1, the last stays 8.75, the middle fall between them.
+        // over the last one (6.75): every coordinate from the second on is
+        // `1 − w/6.75`, so the last becomes about zero. Ten smoothing
+        // passes then blend the middle ones. The divisor the camera pass
+        // and the texture coordinate scale by is the raw 6.75.
+        assert_eq!(divisor, 6.75);
         assert_eq!(widths[0], 1.0);
-        assert_eq!(widths[RIBBON_SAMPLES - 1], 6.75);
+        assert_eq!(widths[RIBBON_SAMPLES - 1], 0.0);
         assert!(widths[1] > 0.0 && widths[1] < 1.0);
         assert!(widths[6].is_finite() && widths[6] > 0.0);
     }
