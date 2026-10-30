@@ -1494,7 +1494,7 @@ fn create_energy(
                 entity,
             );
             debug!(
-                "energy shock: charge {:.3} a tick over {:.3}, burst entity not ported",
+                "energy shock: charge {:.3} a tick over {:.3}",
                 charge.length, charge.cost
             );
             entity
@@ -1883,6 +1883,7 @@ fn tick_casters(
     mut faded: MessageWriter<super::throw_live::ThrowFade>,
     mut moves: MessageWriter<Otherwhere>,
     mut holds: MessageWriter<super::hold_live::HoldEnd>,
+    mut draws: ResMut<EffectDraws>,
 ) {
     let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
     for (
@@ -2048,6 +2049,27 @@ fn tick_casters(
                 ActiveClass::Shock(power) => {
                     let step = power.control(event, body);
                     result = step.result;
+                    // The release makes the burst at the hand: a fresh
+                    // emitter of the shock's own shape, aimed along the
+                    // caster's aim, before the hand's arcs leave.
+                    if step.fired
+                        && let Some(body) = ragdoll
+                    {
+                        let mut arcs =
+                            ArcEmitter::new(&crate::thaum::arcs::shock_burst(), &mut draws.0);
+                        arcs.anchor = bone_part(body, RIGHT_HAND)
+                            .and_then(|k| part_point(body, k, HAND_ARCS_OFFSET));
+                        commands.spawn((
+                            Name::new("_ShockBurst"),
+                            LiveArcs {
+                                arcs,
+                                hand: Some((caster_entity, RIGHT_HAND)),
+                                caster: Some(caster_entity),
+                                keep: false,
+                            },
+                        ));
+                        debug!("energy shock: the burst fires at the hand");
+                    }
                     if (step.fired || step.cleared)
                         && let Some(entity) = entry.entity.take()
                     {

@@ -1436,6 +1436,27 @@ pub fn spark_burst(draws: &mut impl Draws) -> ArcEmitter {
     arc
 }
 
+/// The shock's own burst when its charge passes one: ten tendrils of
+/// fourteen points, forty ticks of life, size 10, scale 0.25, growth 0.5,
+/// a level lift, volume 0.05, its first tendril aimed along the caster's
+/// aim and a point light; the node sits at the hand's −15, −5 cm. The
+/// flags carry the emitter's 0x10 and 0x30000 bits as the original sets
+/// them.
+pub fn shock_burst() -> ArcParams {
+    ArcParams {
+        flags: 0x0003_0310,
+        count: 10,
+        segments: 14,
+        life: 40,
+        size: 10.0,
+        scale: 0.25,
+        growth: 0.5,
+        lift: 1.0,
+        volume: 0.05,
+        ..ArcParams::default()
+    }
+}
+
 /// The shock a shock weapon's blade deals.
 pub const WEAPON_SHOCK: f32 = 0.01;
 
@@ -1788,6 +1809,27 @@ mod tests {
         assert_eq!(arc.lights[0].weight, 2.0);
         arc.light_point(Vec3::new(100.0, 0.0, 0.0), 1.0);
         assert_eq!(arc.lights.len(), 2);
+    }
+
+    #[test]
+    fn the_shock_burst_is_ten_long_tendrils() {
+        // The params the burst's creator sets.
+        let params = shock_burst();
+        assert_eq!(params.flags, 0x0003_0310);
+        assert_eq!((params.count, params.segments, params.life), (10, 14, 40));
+        assert_eq!(
+            (params.size, params.scale, params.growth),
+            (10.0, 0.25, 0.5)
+        );
+        assert_eq!((params.lift, params.volume), (1.0, 0.05));
+        // A live emitter of them: ten records of fourteen points.
+        let mut draws = Fixed::new(&[0.5], &[1]);
+        let emitter = ArcEmitter::new(&params, &mut draws);
+        assert_eq!(emitter.tendrils.len(), 10);
+        assert_eq!(emitter.segments, 14);
+        assert_eq!(emitter.light, 0.0);
+        assert_eq!(emitter.sound, None);
+        assert_eq!(emitter.volume, 0.05);
     }
 
     #[test]
