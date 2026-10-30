@@ -473,7 +473,8 @@ current positions, the 3- and 5-bit look draws), `effects::fire_node`
 contact and balance drain, the double-sided meshes), `effects::force_wave`
 (32 chunks 80 cm out, the charge, release, thrown step, trails and
 lives), `effects::danger` (what the AI sees of a blast, a wave and a
-barricade, and the steps away), `effects::emissive` (the seven GI lights'
+barricade, and the steps away; the live blasts and waves carry a hazard a
+sight pass can walk), `effects::emissive` (the seven GI lights'
 extents, colours and boxes, registered as GI shapes while the blast,
 torrent, teleporter bubble, Barrier, force Bubble or barricade lives), `effects::effect_geometry` (the geometry
 flags, programs, uniforms, pass rows and fades) and `effects::vanish`

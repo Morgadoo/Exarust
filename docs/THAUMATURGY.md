@@ -772,7 +772,10 @@ effect_geometry}`.
   raised; the fear is `s²·k·0.5` (blast, `s²·k` above 12), `s²·k` (wave)
   or `u²·k·0.1` (barricade), `k = 1 − relation/100`, tripled when
   released; the face word mixes the viewer's look and facing. A released
-  blast within 5 m of its line pushes the viewer `(1 − 0.002·d)·6`.
+  blast within 5 m of its line pushes the viewer `(1 − 0.002·d)·6`. The
+  live blast and wave entities carry a `danger::Hazard` kept in step by
+  `sync_hazards`, so a sight pass can walk them; no AI system reads the
+  hazards yet.
 
 ## The shaped-force aura
 

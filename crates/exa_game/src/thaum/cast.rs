@@ -92,6 +92,7 @@ use super::visuals::{CreatorInput, EffectKind, active_object, creator, spawn_vis
 use super::wave_live::new_wave;
 use super::wisps::{Strand, Wisps};
 use crate::effects::blast::Blast;
+use crate::effects::danger::Hazard;
 use crate::hand::{Hand, Holding};
 use crate::player::{CursorGround, PlayerBody};
 use crate::power_screen::PowerScreen;
@@ -454,6 +455,7 @@ impl Plugin for CastPlugin {
                     super::barrier_live::tick_barriers,
                     super::bubble_live::tick_bubbles,
                     super::wave_live::tick_waves,
+                    crate::effects::danger::sync_hazards,
                     super::torrent_live::tick_torrents,
                     play_cast_motions,
                     call_motion_hooks,
@@ -1204,6 +1206,10 @@ fn create_force(
             let generation = caster.body.cast_generation;
             let mut blast = Blast::new(setup, cost, TICK_MS, &view, &mut draws.0);
             blast.link();
+            let hazard = Hazard::Blast {
+                at: blast.centre,
+                released: blast.state >= crate::effects::blast::THROWN,
+            };
             let entity = commands
                 .spawn((
                     Name::new("_ForceBlast"),
@@ -1214,6 +1220,7 @@ fn create_force(
                         hooked,
                         generation,
                     },
+                    hazard,
                 ))
                 .id();
             let kind = if setup.power == 0x202 {
@@ -1240,7 +1247,11 @@ fn create_force(
                 draws,
             );
             let hooked = live.hooked;
-            let entity = commands.spawn((Name::new("_ForceWave"), live)).id();
+            let hazard = Hazard::Wave {
+                at: live.wave.centre,
+                released: false,
+            };
+            let entity = commands.spawn((Name::new("_ForceWave"), live, hazard)).id();
             attach_visual(commands, entity, EffectKind::Wave, context, ragdoll);
             debug!("force wave: motion {hooked}, entity {entity:?}");
             Some(entity)
