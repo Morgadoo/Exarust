@@ -362,7 +362,10 @@ render-state lists (`exa_render::passes` holds the model and the two list
 orderings, pinned by tests):
 
 1. the environment's per-frame setup (fog, background colour) and the
-   clear; the environment's sky hooks around the lists are empty;
+   clear; `exa_world::environment::live_environment` runs that setup once a
+   frame for the loaded level (the weather tick, then the frame's fog,
+   clear, ambient and sun light, published only when a value changes); the
+   environment's sky hooks around the lists are empty;
 2. the alpha-tested class (`0x8000`), then the opaque class, both with
    depth writes on;
 3. the after-opaque hook list;

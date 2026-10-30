@@ -172,6 +172,7 @@ pub fn teardown(
     commands.remove_resource::<sun_shadow::SunShadowRegion>();
     commands.remove_resource::<crate::environment::LevelSky>();
     commands.remove_resource::<crate::environment::LevelFog>();
+    commands.remove_resource::<crate::environment::SceneEnvRuntime>();
     gi_volume::unload_level(commands, gi);
     nav::unload_nav(commands, nav_state, installed);
 }

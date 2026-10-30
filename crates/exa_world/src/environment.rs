@@ -22,7 +22,10 @@ use bevy::pbr::{AtmosphereSettings, DistanceFog, FogFalloff};
 use bevy::prelude::*;
 use exa_formats::environment::{Environment, SunMode};
 
-use crate::scene_env::{OUTDOOR_FOG_COLOUR, SUN_LIGHT_RANGE, SceneEnvironment};
+use crate::particles::{Draws, Rng};
+use crate::scene_env::{
+    Frame, OUTDOOR_FOG_COLOUR, SUN_LIGHT_RANGE, SceneEnvironment, View, WeatherRng,
+};
 
 /// The render quality the original reads when it builds the environment's
 /// sky map (the top setting, 96 texels).
@@ -55,7 +58,10 @@ impl Plugin for EnvironmentPlugin {
     fn build(&self, app: &mut App) {
         // The sun's map size comes from `exa_render` (the original's top
         // shadow detail); do not override it here.
-        app.add_systems(PostUpdate, (fog_cameras, sky_cameras));
+        app.add_systems(
+            PostUpdate,
+            (live_environment, fog_cameras, sky_cameras).chain(),
+        );
     }
 }
 
@@ -75,6 +81,38 @@ pub struct Lighting {
 /// Present while the level has an open sky.
 #[derive(Resource, Debug, Clone, Copy)]
 pub struct LevelSky;
+
+/// The sun light entity, so a frame can put its colour and intensity back.
+#[derive(Component, Debug, Clone, Copy)]
+pub struct SunLight;
+
+/// The live scene environment of the loaded level: the model the weather
+/// and the per-frame apply run on, with the two random streams the
+/// original draws from (the engine's shared weather generator and the
+/// run-time library's own) and the frame last published, so the renderer's
+/// resources are only rewritten when a value changes.
+#[derive(Resource, Debug, Clone)]
+pub struct SceneEnvRuntime {
+    pub env: SceneEnvironment,
+    /// The engine's weather stream (the rain rolls and the thunder delay).
+    pub weather: WeatherRng,
+    /// The run-time library's stream (the flicker's steps and pitch).
+    pub library: Rng,
+    /// The frame values last written to the renderer's resources.
+    pub published: Option<Frame>,
+}
+
+impl SceneEnvRuntime {
+    /// A runtime over `env`, with both streams seeded from `seed`.
+    pub fn new(env: SceneEnvironment, seed: u32) -> Self {
+        Self {
+            env,
+            weather: WeatherRng::new(seed),
+            library: Rng::new(seed),
+            published: None,
+        }
+    }
+}
 
 /// The atmosphere entity of the current sky.
 #[derive(Component)]
@@ -174,9 +212,10 @@ pub fn clock_seed() -> u32 {
     (clock as u32) ^ ((clock >> 32) as u32)
 }
 
+/// The engine's sRGB curve, the same helper the scene environment and the
+/// presets use (its fast logarithm and exponential, not Bevy's exact curve).
 fn linear(srgb: [f32; 3]) -> Vec3 {
-    let c = Color::srgb(srgb[0], srgb[1], srgb[2]).to_linear();
-    Vec3::new(c.red, c.green, c.blue)
+    Vec3::from_array(srgb.map(crate::presets::srgb_to_linear))
 }
 
 /// The lighting of `level`, given its environment record and the number of
@@ -218,6 +257,19 @@ pub fn level_lighting_preset(
     legacy_grid: Option<bool>,
     input: Option<PresetInput>,
 ) -> Lighting {
+    level_lighting_scene(level, record, lights, legacy_grid, input).lighting
+}
+
+/// The lighting a level load settles on **and** the scene environment that
+/// produced it, for the load to keep as its live [`SceneEnvRuntime`]. The
+/// two are the same computation as [`level_lighting_preset`].
+pub fn level_lighting_scene(
+    level: &str,
+    record: Option<&Environment>,
+    lights: usize,
+    legacy_grid: Option<bool>,
+    input: Option<PresetInput>,
+) -> LevelScene {
     let mut env = SceneEnvironment::new(SKY_QUALITY);
     if let Some(record) = record {
         env.apply_record(record);
@@ -294,7 +346,7 @@ pub fn level_lighting_preset(
         }) * LUX_PER_INTENSITY,
         range: SUN_LIGHT_RANGE,
     });
-    Lighting {
+    let lighting = Lighting {
         ambient: Vec3::from_array(frame.ambient),
         sun,
         fog: frame.fog.map(|fog| LevelFog {
@@ -303,8 +355,20 @@ pub fn level_lighting_preset(
             far: fog.far,
         }),
         sky,
-        background: Vec3::from_array(frame.background),
-    }
+        background: Vec3::new(
+            frame.background[0],
+            frame.background[1],
+            frame.background[2],
+        ),
+    };
+    LevelScene { lighting, env }
+}
+
+/// A level load's lighting and the live environment behind it.
+#[derive(Debug, Clone)]
+pub struct LevelScene {
+    pub lighting: Lighting,
+    pub env: SceneEnvironment,
 }
 
 /// The scene's ambient light for a level ambient colour (linear), in the
@@ -336,6 +400,7 @@ pub fn apply_lighting(commands: &mut Commands, lighting: &Lighting, parent: Enti
     if let Some(sun) = lighting.sun {
         commands.spawn((
             Name::new("_Sunlight"),
+            SunLight,
             DirectionalLight {
                 color: Color::linear_rgb(sun.colour.x, sun.colour.y, sun.colour.z),
                 illuminance: sun.illuminance,
@@ -407,6 +472,69 @@ fn sky_cameras(
                 }
             }
         }
+    }
+}
+
+/// One frame of the loaded level's weather and environment, as the
+/// original's renderer runs it: the view is handed to the environment, the
+/// weather ticks (the rain fades, the lightning flickers, the time of day
+/// advances), and the frame's values go to the renderer's resources when
+/// they changed. The tick runs once a frame, never inside the fixed step.
+fn live_environment(
+    time: Res<Time>,
+    cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
+    runtime: Option<ResMut<SceneEnvRuntime>>,
+    mut fog: Option<ResMut<LevelFog>>,
+    mut clear: ResMut<ClearColor>,
+    mut ambient: ResMut<GlobalAmbientLight>,
+    mut lights: Query<(&mut DirectionalLight, &mut Transform), With<SunLight>>,
+) {
+    let Some(mut runtime) = runtime else {
+        return;
+    };
+    let view = cameras.iter().next().map(|t| View {
+        forward: t.forward().as_vec3().to_array(),
+        // The engine keeps its view in centimetres.
+        position: (t.translation() * 100.0).to_array(),
+    });
+    let forward = view.map_or([0.0, 0.0, 1.0], |v| v.forward);
+    let now = (time.elapsed().as_secs_f64() * 1000.0) as u32;
+    let SceneEnvRuntime {
+        env,
+        weather,
+        library,
+        published,
+    } = &mut *runtime;
+    env.view = view;
+    let mut draws = || library.unit();
+    env.tick(now, weather, &mut draws);
+    let frame = env.apply_frame(forward);
+    if published.as_ref() == Some(&frame) {
+        return;
+    }
+    *published = Some(frame);
+    if let (Some(fog), Some(f)) = (fog.as_deref_mut(), frame.fog) {
+        fog.colour = Vec3::from_array(f.colour);
+        fog.near = f.near;
+        fog.far = f.far;
+    }
+    clear.0 = Color::linear_rgb(
+        frame.background[0],
+        frame.background[1],
+        frame.background[2],
+    );
+    *ambient = ambient_light(Vec3::from_array(frame.ambient));
+    // The light's colour and intensity take the frame's; under a sky the
+    // day record's colour is used as stored, as at the load.
+    let colour = if env.sky && env.track.is_some() {
+        Vec3::from_array(env.sky_sun_colour)
+    } else {
+        linear(env.sun_colour)
+    };
+    for (mut light, mut transform) in &mut lights {
+        light.color = Color::linear_rgb(colour.x, colour.y, colour.z);
+        light.illuminance = frame.sun_intensity * LUX_PER_INTENSITY;
+        *transform = Transform::default().looking_to(-Vec3::from_array(env.sun_towards), Vec3::Y);
     }
 }
 
@@ -556,6 +684,36 @@ mod tests {
     }
 
     #[test]
+    fn the_scene_and_the_lighting_are_one_computation() {
+        let input = PresetInput {
+            seed: 1,
+            engine_seed: 7,
+            now: 0,
+        };
+        let scene = level_lighting_scene("arenao3", None, 0, None, Some(input));
+        assert_eq!(
+            scene.lighting,
+            level_lighting_preset("arenao3", None, 0, None, Some(input))
+        );
+        // The environment behind them is the preset's: a sky and a sun.
+        assert!(scene.env.sky && scene.env.sun_light);
+        assert!(scene.env.fog.enabled);
+    }
+
+    #[test]
+    fn the_runtime_starts_both_streams_from_the_seed() {
+        let env = SceneEnvironment::new(SKY_QUALITY);
+        let runtime = SceneEnvRuntime::new(env.clone(), 42);
+        assert_eq!(runtime.env, env);
+        assert_eq!(runtime.weather, WeatherRng::new(42));
+        assert!(runtime.published.is_none());
+        // The library stream repeats from the same seed.
+        let mut a = runtime.clone();
+        let mut b = runtime;
+        assert_eq!(a.library.unit(), b.library.unit());
+    }
+
+    #[test]
     fn a_level_without_the_preset_input_keeps_the_record_look() {
         let lit = level_lighting("arenao3", None, 0);
         let preset = level_lighting_preset(
@@ -619,10 +777,14 @@ mod tests {
             ..Default::default()
         };
         let lit = level_lighting_with("menuscene", Some(&env), 0, Some(false));
-        // 0.6275 grey, laid over the record.
+        // 0.6275 grey through the ambient setter, laid over the record.
         assert!((lit.ambient.x - 0.3516).abs() < 1e-3);
         assert!((lit.ambient.y - 0.3516).abs() < 1e-3);
         assert_eq!(lit.ambient.z, lit.ambient.y);
+        // A black background and a grey fog colour in every case.
+        assert_eq!(lit.background, Vec3::ZERO);
+        let scene = level_lighting_scene("menuscene", Some(&env), 0, Some(false), None);
+        assert_eq!(scene.env.fog.colour, [0.5, 0.5, 0.5, 1.0]);
         // With terrain, or without the legacy build, the record's own
         // ambient stands.
         let lit = level_lighting_with("menuscene", Some(&env), 0, Some(true));
@@ -645,7 +807,10 @@ mod tests {
         };
         for level in ["exanima01", "exanima02"] {
             let lit = level_lighting(level, Some(&record), 7);
-            let want = linear(record.ambient);
+            // The engine's own sRGB curve (its fast logarithm and
+            // exponential), not Bevy's exact one: the two differ in the
+            // last digits.
+            let want = Vec3::from_array(record.ambient.map(crate::presets::srgb_to_linear));
             assert!((lit.ambient - want).abs().max_element() < 1e-6, "{level}");
             assert!(lit.sun.is_none() && lit.fog.is_none() && !lit.sky);
             assert_eq!(lit.background, Vec3::ZERO);
@@ -655,7 +820,8 @@ mod tests {
         let sun = lit.sun.unwrap();
         let want = Vec3::from_array(record.sun_direction()).normalize();
         assert!((sun.towards - want).abs().max_element() < 1e-6);
-        assert!((sun.colour - linear(record.sun_colour)).abs().max_element() < 1e-6);
+        let want = Vec3::from_array(record.sun_colour.map(crate::presets::srgb_to_linear));
+        assert!((sun.colour - want).abs().max_element() < 1e-6);
         assert_eq!(sun.illuminance, SUN_LUX);
     }
 

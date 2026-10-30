@@ -1798,18 +1798,26 @@ impl LevelLoad {
         // A level load applies the scene preset its name selects (the save
         // unit's indoor and outdoor presets), drawing the outdoor day and
         // weather from the clock seed the original takes at scene creation.
-        let lighting = environment::level_lighting_preset(
+        let engine_seed = environment::clock_seed();
+        let scene_lighting = environment::level_lighting_scene(
             &self.entry,
             self.scene.environment.as_ref(),
             self.lights,
             None,
             Some(environment::PresetInput {
                 seed: 0,
-                engine_seed: environment::clock_seed(),
+                engine_seed,
                 now: 0,
             }),
         );
-        environment::apply_lighting(commands, &lighting, self.root);
+        environment::apply_lighting(commands, &scene_lighting.lighting, self.root);
+        // The live scene environment keeps ticking the preset's weather and
+        // republishes its frame; both of its streams start from the same
+        // clock seed the load drew with.
+        commands.insert_resource(environment::SceneEnvRuntime::new(
+            scene_lighting.env,
+            engine_seed,
+        ));
         let (min, max) = if self.scene.props.is_empty() {
             (Vec3::splat(-10.0), Vec3::splat(10.0))
         } else {
@@ -1854,7 +1862,7 @@ impl LevelLoad {
                 lights: self.lights,
                 grid: self.grid_stats,
                 terrain: self.terrain_stats.clone(),
-                lighting,
+                lighting: scene_lighting.lighting.clone(),
                 characters: placed_characters(&self.scene, &self.global_items, self.locale),
                 placed_objects: self.placed_objects,
                 missing_objects: self.missing_objects,

@@ -11,7 +11,10 @@
 //! the sound effects are not decoded; the parts that would need them are
 //! marked.
 
+use exa_assets::polyhedra::{fast_sin, fast_sin_cos};
 use exa_formats::environment::{Environment, SunMode};
+
+use crate::presets::srgb_to_linear;
 
 /// The observer's latitude the sun's path is built around, radians (45°).
 const LATITUDE: f32 = std::f32::consts::FRAC_PI_4;
@@ -60,10 +63,14 @@ pub const SUN_INTENSITY: f32 = 3.0;
 pub const SUN_INTENSITY_SKY: f32 = 4.5;
 
 /// The sun light's node flags, its kind word and its range, as the original
-/// creates the `_Sunlight` node: type and shadow flags, light kind 2 and a
-/// 3 m reach. The direction it is given before its matrix is built is a
-/// short vector to the body, not the unit one the shading uses.
+/// creates the `_Sunlight` node: the type and shadow bits of its first flag
+/// word, the light word's own flags, light kind 2 and a 3 m reach. The
+/// direction it is given before its matrix is built is a short vector to the
+/// body, not the unit one the shading uses.
 pub const SUN_LIGHT_FLAGS: u32 = 0x2000_1000;
+/// The light node's second flag word, a separate word from
+/// [`SUN_LIGHT_FLAGS`].
+pub const SUN_LIGHT_EXTRA_FLAGS: u32 = 0x11_0000;
 pub const SUN_LIGHT_KIND: u32 = 2;
 pub const SUN_LIGHT_RANGE: f32 = 3.0;
 pub const SUN_NODE_DIRECTION: [f32; 3] = [0.0, 260.0, -280.0];
@@ -86,7 +93,8 @@ pub const DEFAULT_BACKGROUND: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
 /// The outdoor haze a level without a sky gets.
 pub const OUTDOOR_FOG_COLOUR: [f32; 4] = [0.47, 0.53, 0.70, 1.0];
 /// The ambient and global light a tile-grid level built the older way is
-/// forced to unless it has terrain.
+/// forced to unless it has terrain (the build calls the ambient setter, the
+/// one the constructor's 0.314 grey goes through, with this grey).
 pub const GRID_AMBIENT: [f32; 3] = [0.6275; 3];
 pub const GRID_GLOBAL_LIGHT: [f32; 4] = [0.75; 4];
 /// The background and fog colour that build always forces.
@@ -115,16 +123,12 @@ pub const OUTDOOR_FOG_CLOUD: f64 = 0.03;
 
 /// The sRGB transfer function, as the original's colour helper computes it:
 /// the knee test and the linear segment in double precision, the ratio
-/// truncated to a float before the power (a NaN takes the curve). The
-/// original raises to the power through its fast logarithm and exponent;
-/// `powf` stands in for them.
+/// truncated to a float before the power (a NaN takes the curve), and the
+/// power itself through the engine's fast logarithm and exponential. It is
+/// the same helper the six-preset table uses ([`srgb_to_linear`]), not a
+/// second approximation of the curve.
 pub fn linearise_channel(v: f32) -> f32 {
-    let x = v as f64;
-    if x > 0.04045 || x.is_nan() {
-        (((x + 0.055) / 1.055) as f32).powf(2.4)
-    } else {
-        (x / 12.92) as f32
-    }
+    srgb_to_linear(v)
 }
 
 /// Linearises an RGB colour.
@@ -615,9 +619,10 @@ pub fn blend_records(a: EnvRecord, b: EnvRecord, t: f32) -> EnvRecord {
 /// Mixes a colour towards its luminance by `mix`, the way the sky dimming
 /// does before scaling.
 fn desaturate(c: &mut [f32; 3], mix: f32) {
-    // Natural operand order x, y, z: the decompiler printed the sum the
-    // other way round.
-    let luma = c[0] * 0.299 + c[1] * 0.587 + c[2] * 0.114;
+    // The luminance helper multiplies x, y, z by its weights and adds
+    // `(x·0.299 + y·0.587) + z·0.114`: the y term onto the x term, then the
+    // z term onto that sum.
+    let luma = (c[0] * 0.299 + c[1] * 0.587) + c[2] * 0.114;
     for v in c.iter_mut() {
         *v = (luma - *v) * mix + *v;
     }
@@ -646,14 +651,19 @@ fn scale4(c: &mut [f32; 4], s: f32) {
 /// `dim * dim * 0.8 + 0.2`.
 pub fn dim_sky(record: &mut EnvRecord, mix: f32, dim: f32) {
     let root = dim.sqrt();
-    let f = dim * dim * 0.8 + 0.2;
+    // `dim²` is single precision, then `× 0.8 + 0.2` in double: the two
+    // constants are doubles in the image.
+    let f = ((dim * dim) as f64 * 0.8 + 0.2) as f32;
+    // The sun takes `f⁴`, which the original squares twice: `(f·f)·(f·f)`,
+    // not `f·f·f·f`.
+    let f4 = (f * f) * (f * f);
     desaturate4(&mut record.b, mix);
     desaturate(&mut record.sun, mix);
     desaturate(&mut record.fill, mix);
     desaturate(&mut record.fog, mix);
     desaturate(&mut record.sky_tint, mix);
     scale(&mut record.sky_tint, f);
-    scale(&mut record.sun, f * f * f * f);
+    scale(&mut record.sun, f4);
     scale(&mut record.fill, f);
     desaturate(&mut record.sky_away, mix);
     desaturate(&mut record.sky_towards, mix);
@@ -677,13 +687,13 @@ pub fn dim_sky(record: &mut EnvRecord, mix: f32, dim: f32) {
 /// points down, 0.5 at the horizon and 1 at the zenith; 0 azimuth towards
 /// +Z, growing towards −X.
 pub fn sun_direction(altitude: f32, azimuth: f32) -> [f32; 3] {
-    // The angles are scaled by π in double precision; the cosines are the
-    // double-precision library's, the sines the engine's single ones.
+    // The angles are scaled by π in double precision; the sines are the
+    // engine's fast ones, the cosines the double-precision library's.
     let phi = (-azimuth as f64 * std::f64::consts::PI) as f32;
     let theta = ((1.0 - altitude) as f64 * std::f64::consts::PI) as f32;
-    let st = theta.sin();
+    let st = fast_sin(theta);
     [
-        st * phi.sin(),
+        st * fast_sin(phi),
         (theta as f64).cos() as f32,
         (st as f64 * (phi as f64).cos()) as f32,
     ]
@@ -694,9 +704,9 @@ pub fn sun_direction(altitude: f32, azimuth: f32) -> [f32; 3] {
 fn orbit_direction(azimuth_degrees: f32, elevation_degrees: f32) -> [f32; 3] {
     let u = azimuth_degrees * DEGREES;
     let v = -(90.0 - elevation_degrees) * DEGREES;
-    let sv = v.sin();
+    let sv = fast_sin(v);
     [
-        sv * -u.sin(),
+        sv * -fast_sin(u),
         (v as f64).cos() as f32,
         (sv as f64 * -(u as f64).cos()) as f32,
     ]
@@ -708,10 +718,13 @@ fn orbit_direction(azimuth_degrees: f32, elevation_degrees: f32) -> [f32; 3] {
 pub struct Rotation(pub [[f32; 3]; 3]);
 
 impl Rotation {
+    /// A rotation from three angles, built from the engine's fast sine and
+    /// cosine pair (the same polynomial the presets' geometry uses), with
+    /// the products in the instruction order.
     pub fn from_angles(a: f32, b: f32, c: f32) -> Self {
-        let (s1, c1) = a.sin_cos();
-        let (s2, c2) = b.sin_cos();
-        let (s3, c3) = c.sin_cos();
+        let (s1, c1) = fast_sin_cos(a);
+        let (s2, c2) = fast_sin_cos(b);
+        let (s3, c3) = fast_sin_cos(c);
         Self([
             [c1 * s2 * s3 + c2 * c3, s1 * s2, c1 * s2 * c3 - s3 * c2],
             [-s1 * s3, c1, -s1 * c3],
@@ -830,14 +843,27 @@ impl Default for Fog {
 /// Where the sun or the moon stands after a placement.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SunPosition {
-    /// Unit vector towards the body.
+    /// Unit vector towards the body the light takes: the sun above the
+    /// daylight threshold, otherwise the moon.
     pub towards: [f32; 3],
+    /// The sun's own unit direction, which the sky object keeps beside the
+    /// moon (the object is given the chosen body, then both again). Without
+    /// a sky there is no sky object, and this and [`Self::moon`] are both
+    /// the sky-less [`Self::towards`].
+    pub sun: [f32; 3],
+    /// The moon's unit direction.
+    pub moon: [f32; 3],
     /// Whether the sun (not the moon) was chosen.
-    pub sun: bool,
+    pub sun_chosen: bool,
     /// The sun light's dimmer: 0 with clear weather.
     pub dim: f32,
     /// The scene's daylight scale.
     pub daylight_scale: f32,
+    /// The sun light's colour under the sky (the day record's) or, without
+    /// one, the level's own colour; the node keeps this in its light word.
+    pub light_colour: [f32; 3],
+    /// The sun light's intensity: 3 without a sky, 4.5 under one.
+    pub light_intensity: f32,
 }
 
 /// One lightning strike's state.
@@ -865,8 +891,9 @@ pub struct Weather {
     pub rain: f32,
     /// The amount the rain fades towards.
     pub target: f32,
-    /// Whether it rains hard enough for thunder.
-    pub raining: bool,
+    /// Whether it rains hard enough for thunder (the original's thunder
+    /// flag: a request above 0.75 sets it, a request of zero clears it).
+    pub thunder_allowed: bool,
     /// Whether thunder waits to be played.
     pub thunder_pending: bool,
     /// When thunder plays, ms.
@@ -885,6 +912,10 @@ pub struct Weather {
     pub last_rain_ms: u32,
     /// The last tick the time advanced at, ms.
     pub last_time_ms: u32,
+    /// The rain effect object.
+    pub effect: RainEffect,
+    /// The rain sound object.
+    pub sound: RainSound,
 }
 
 /// What a weather tick asks the caller to do.
@@ -896,6 +927,12 @@ pub struct WeatherEvents {
     pub thunder: Option<Thunder>,
     /// The scene changed and has to be applied again.
     pub changed: bool,
+    /// Start the rain sound (its volume passed 0.01 while it was not on).
+    pub start_sound: bool,
+    /// The rain sound was asked to stop (its volume fell below 0.01).
+    pub stop_sound: bool,
+    /// The rain effect should be refreshed this frame, with this colour.
+    pub rain_effect: Option<[f32; 4]>,
 }
 
 /// A thunderclap's sound: its volume from the strike's distance and a
@@ -904,6 +941,38 @@ pub struct WeatherEvents {
 pub struct Thunder {
     pub volume: f32,
     pub pitch: f32,
+}
+
+/// The rain effect object's state, as the unit reads it: it exists while it
+/// rains, takes the last clear colour as its own each frame, and its volume
+/// and pitch go to the rain sound. The effect's own volume and pitch are
+/// computed outside this unit (its per-frame rule is not in the model), so
+/// they are fields the caller sets; both start at zero.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct RainEffect {
+    /// Whether the effect object exists.
+    pub exists: bool,
+    /// The colour it was given this frame, RGBA.
+    pub colour: [f32; 4],
+    /// The volume the sound takes from it.
+    pub volume: f32,
+    /// The pitch the sound takes from it.
+    pub pitch: f32,
+}
+
+/// The looping rain sound: its flag word decides when it starts and stops.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct RainSound {
+    /// Whether the sound object exists.
+    pub exists: bool,
+    /// The volume the last tick gave it.
+    pub volume: f32,
+    /// The pitch the last tick gave it.
+    pub pitch: f32,
+    /// The original's start flag (bit 0, set by the caller once it plays).
+    pub started: bool,
+    /// The original's stop request (bit 3).
+    pub stop_requested: bool,
 }
 
 /// What setting the rain asks the caller to do.
@@ -943,19 +1012,54 @@ impl WeatherRng {
     }
 }
 
+/// The view an environment reads: its forward axis and its position, in the
+/// engine's centimetres.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct View {
+    pub forward: [f32; 3],
+    pub position: [f32; 3],
+}
+
+impl Default for View {
+    fn default() -> Self {
+        Self {
+            forward: [0.0, 0.0, -1.0],
+            position: [0.0; 3],
+        }
+    }
+}
+
+/// The view of a scene that makes the time of day follow it: the azimuth it
+/// gives the sun and the integer word that ends the follow once it drops
+/// below one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ViewTime {
+    pub azimuth: f32,
+    pub time_word: i32,
+}
+
 /// The values one frame's environment apply produces.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Frame {
-    /// The clear colour, linear RGB.
-    pub background: [f32; 3],
+    /// The clear colour the renderer is given, linear RGBA: the level's
+    /// background (also under a sky), the fog's colour when it clears, or
+    /// the halved flash colour.
+    pub background: [f32; 4],
+    /// The frame's scratch colour, RGBA: the horizon under a sky, the fog
+    /// colour with fog, the flash colour during a flash, else the last
+    /// frame's. The rain effect takes it as its own. It starts at opaque
+    /// black (the constructor's alpha of 1).
+    pub clear: [f32; 4],
     /// The fog the cameras draw, if the level has any.
     pub fog: Option<FrameFog>,
     /// The ambient colour, linear RGB.
     pub ambient: [f32; 3],
     /// The ambient cube's intensity.
     pub ambient_scale: f32,
-    /// The sky gradient's colour towards the sun, sRGB.
-    pub sky_colour: [f32; 3],
+    /// The scratch colour again (under a sky, the horizon gradient's
+    /// colour towards the view, linearised when the track is not
+    /// linearised at start-up).
+    pub sky_colour: [f32; 4],
     /// Whether a lightning flash is on.
     pub flash: bool,
     /// The scene value the frame sets from the sun's height: −100000 while
@@ -970,6 +1074,8 @@ pub struct Frame {
     /// The tint the renderer is given: the tint colour times the tint
     /// strength (the tint's fourth slot).
     pub tint: [f32; 3],
+    /// The sun light's intensity word (3 without a sky, 4.5 under one).
+    pub sun_intensity: f32,
 }
 
 /// One frame's fog.
@@ -1029,6 +1135,12 @@ pub struct SceneEnvironment {
     pub ambient_linear: [f32; 3],
     /// The sun's colour without a sky, sRGB.
     pub sun_colour: [f32; 3],
+    /// The sun light's current colour (the `_Sunlight` node's light word):
+    /// the day record's under a sky, the level's own without one. The sky
+    /// switch writes the level's colour back.
+    pub sun_light_colour: [f32; 3],
+    /// The sun light's current intensity word (3 or 4.5).
+    pub sun_light_intensity: f32,
     /// The sun's colour under a sky, sRGB.
     pub sky_sun_colour: [f32; 3],
     /// The global light colour and its strength (the renderer receives the
@@ -1067,6 +1179,34 @@ pub struct SceneEnvironment {
     pub frame: Frame,
     /// Whether colours are worked in linear light (the original's setting).
     pub linear: bool,
+    /// The scene's flag that makes a sun placement scale the record's `k`
+    /// colour by 0.75 (the scene's own switch; the environment only reads
+    /// it).
+    pub dim_record_k: bool,
+    /// The three-float tint the lightning flash multiplies the clear colour
+    /// by. The constructor leaves it zero and its writer is outside this
+    /// unit; the caller may set it.
+    pub flash_tint: [f32; 3],
+    /// Whether the sky cube's masked tint ran and was uploaded on the last
+    /// sun placement.
+    pub tint_uploaded: bool,
+    /// Whether the last sun placement called the scene's follow-up (the
+    /// callback and the task post).
+    pub sun_event: bool,
+    /// Whether the weather tick is held (the original's global pause
+    /// counter above zero): a held tick does nothing and reports no change.
+    pub paused: bool,
+    /// Whether the time of day follows the view (the original's follow
+    /// flag): a tick then takes the azimuth from the view and places the
+    /// body at its own altitude.
+    pub time_follows_view: bool,
+    /// The view the weather reads this frame (a lightning strike is placed
+    /// beside it). The original reads a renderer global; the game sets this
+    /// each frame.
+    pub view: Option<View>,
+    /// The scene's time word (the original clears it when the time of day
+    /// advances; its reader is outside this unit).
+    pub scene_time_flag: bool,
 }
 
 impl Default for SceneEnvironment {
@@ -1089,6 +1229,7 @@ impl SceneEnvironment {
             96
         };
         let fog = Fog::default();
+        let sun_colour = DEFAULT_SUN_COLOUR;
         Self {
             sun_mode: SunMode::Auto,
             sky: false,
@@ -1102,7 +1243,9 @@ impl SceneEnvironment {
             weather: Weather::default(),
             ambient: DEFAULT_AMBIENT,
             ambient_linear: linearise([DEFAULT_AMBIENT[0], DEFAULT_AMBIENT[1], DEFAULT_AMBIENT[2]]),
-            sun_colour: DEFAULT_SUN_COLOUR,
+            sun_colour,
+            sun_light_colour: sun_colour,
+            sun_light_intensity: SUN_INTENSITY,
             sky_sun_colour: DEFAULT_SUN_COLOUR,
             global_light: {
                 let rgb = linearise([
@@ -1126,17 +1269,27 @@ impl SceneEnvironment {
             wind: 0.0,
             sun_height: 0.0,
             frame: Frame {
-                background: [0.0; 3],
+                background: DEFAULT_BACKGROUND,
+                clear: [0.0, 0.0, 0.0, 1.0],
                 fog: None,
                 ambient: linearise([DEFAULT_AMBIENT[0], DEFAULT_AMBIENT[1], DEFAULT_AMBIENT[2]]),
                 ambient_scale: AMBIENT_SCALE_INDOOR,
-                sky_colour: [0.0; 3],
+                sky_colour: [0.0; 4],
                 flash: false,
                 shadow_far: -100_000.0,
                 wind: 0.0,
                 tint: [1.0; 3],
+                sun_intensity: SUN_INTENSITY,
             },
             linear: true,
+            dim_record_k: false,
+            flash_tint: [0.0; 3],
+            tint_uploaded: false,
+            sun_event: false,
+            paused: false,
+            time_follows_view: false,
+            view: None,
+            scene_time_flag: true,
         }
     }
 
@@ -1162,7 +1315,9 @@ impl SceneEnvironment {
         };
     }
 
-    /// Sets the sun light's sky-less colour (sRGB).
+    /// Sets the sun light's sky-less colour (sRGB). The original keeps it
+    /// as given: the sky switch and the light's creation copy it onto the
+    /// light unconverted.
     pub fn set_sun_colour(&mut self, rgb: [f32; 3]) {
         self.sun_colour = rgb;
     }
@@ -1184,8 +1339,10 @@ impl SceneEnvironment {
     }
 
     /// Forces the values a tile-grid level built the older way is lit by:
-    /// without terrain a grey ambient and global light; in every case a
-    /// black background and grey fog.
+    /// unless the level has terrain, the ambient becomes the grey 0.6275
+    /// and the global light 0.75 with its strength 0.75; in every case the
+    /// background is opaque black and the fog mid grey. The sun light's
+    /// colour is not touched.
     pub fn force_indoor(&mut self, terrain: bool) {
         if !terrain {
             self.set_ambient([GRID_AMBIENT[0], GRID_AMBIENT[1], GRID_AMBIENT[2], 1.0]);
@@ -1229,7 +1386,7 @@ impl SceneEnvironment {
     fn clear_rain(&mut self) {
         self.weather.target = 0.0;
         self.weather.rain = 0.0;
-        self.weather.raining = false;
+        self.weather.thunder_allowed = false;
         self.weather.flash = false;
     }
 
@@ -1340,22 +1497,40 @@ impl SceneEnvironment {
     /// Places the sun or moon for an azimuth and time of day, and updates
     /// everything that follows from it: the record, the clouds, the sun
     /// light and the sky.
+    ///
+    /// The work is in an order the original keeps: the rotation and the two
+    /// orbits, the daylight factor (the sun above 0.44 or a NaN daylight,
+    /// the moon below it), the scene's daylight scale, the two lifts off the
+    /// horizon with the engine's reciprocal square root, the record pick and
+    /// blend, the cloud dimming, the low-sun brightening, the record's `k`
+    /// scale when the scene asks for it, the sky cube's masked tint, the
+    /// record's fog and fill hand-overs, the sun light's colour and
+    /// intensity, the sky object's two bodies, the light node and the
+    /// scene's follow-up.
     pub fn set_sun_position(&mut self, azimuth: f32, time_of_day: f32) -> SunPosition {
         self.azimuth = azimuth;
         self.time_of_day = time_of_day;
+        self.tint_uploaded = false;
+        self.sun_event = false;
         if !self.sky {
             // Without a sky the daylight factor keeps its last value; only
-            // the scene's scale is reset.
+            // the scene's scale is reset, and the light's dimmer with it.
             let towards = sun_direction(time_of_day, azimuth);
             self.sun_towards = towards;
             self.daylight_scale = 0.0;
             self.sun_dim = 0.0;
-            return SunPosition {
+            self.sun_light_intensity = SUN_INTENSITY;
+            self.sun_light_colour = self.sun_colour;
+            return self.finish_placement(SunPosition {
                 towards,
-                sun: true,
+                sun: towards,
+                moon: towards,
+                sun_chosen: true,
                 dim: 0.0,
                 daylight_scale: 0.0,
-            };
+                light_colour: self.sun_light_colour,
+                light_intensity: self.sun_light_intensity,
+            });
         }
         let rotation = Rotation::from_angles(
             LATITUDE,
@@ -1369,9 +1544,10 @@ impl SceneEnvironment {
         let moon = rotation.apply(orbit_direction(0.0, (MOON_TILT as f64 * MOON_ORBIT) as f32));
         let daylight = daylight_factor(sun[1]);
         let day = daylight as f64;
-        // Below the threshold the moon; at it, above it or NaN the sun.
-        let is_sun = day >= DAY_THRESHOLD || day.is_nan();
-        let mut towards = if is_sun { sun } else { moon };
+        // Below the threshold the moon; at it, above it or NaN the sun (the
+        // compare's unordered result takes the sun branch).
+        let sun_chosen = day >= DAY_THRESHOLD || day.is_nan();
+        let mut towards = if sun_chosen { sun } else { moon };
         self.daylight = daylight;
         self.daylight_scale = ((day - DAY_SCALE_CENTRE) * DAY_SCALE_SLOPE) as f32;
         if (towards[1] as f64) < 0.4 {
@@ -1383,9 +1559,12 @@ impl SceneEnvironment {
             towards = normalize(towards);
         }
         self.update_record();
-        // Clouds: their amount above a clear sky desaturates and dims the
-        // record, and dims the sun light. A NaN amount counts as clear.
+        // Clouds: an amount at or below the clear sky (or a NaN one) is
+        // clear; above it the excess is capped at 0.9 and desaturates and
+        // dims the record. The dimmer on the light follows.
         let cloud = ((self.cloudiness - DEFAULT_CLOUDINESS) as f64 * 0.4) as f32;
+        // The clear branch is the compare's "not above": at or below the
+        // epsilon, and unordered (a NaN amount is a clear sky).
         if cloud > CLOUD_EPSILON {
             let cloud = if cloud as f64 > CLOUD_MAX {
                 CLOUD_MAX as f32
@@ -1402,8 +1581,17 @@ impl SceneEnvironment {
         if (offset as f64) < 0.1 {
             self.sun_dim += 1.0 - offset * 10.0;
         }
-        // Without a track there is no day record to take these from; the
-        // caller's colours stand.
+        // The scene's own switch scales the record's `k` colour by 0.75.
+        if self.dim_record_k {
+            scale4(&mut self.current.k, 0.75);
+        }
+        // The sky cube's masked tint, then its upload, when the cube exists.
+        // The GPU side is `exa_render`'s; the rule and the state are here.
+        if self.track.is_some() {
+            self.tint_uploaded = true;
+        }
+        // The record's fog (scaled by 0.375) becomes both fog colours, its
+        // fill the fill light, its sun colour the light's.
         if self.track.is_some() {
             self.record_fog = [
                 self.current.fog[0] * 0.375,
@@ -1415,12 +1603,28 @@ impl SceneEnvironment {
             self.sky_sun_colour = self.current.sun;
         }
         self.sun_towards = towards;
-        SunPosition {
+        if self.sun_light {
+            self.sun_light_colour = self.sky_sun_colour;
+            self.sun_light_intensity = SUN_INTENSITY_SKY;
+        }
+        self.finish_placement(SunPosition {
             towards,
-            sun: is_sun,
+            sun,
+            moon,
+            sun_chosen,
             dim: self.sun_dim,
             daylight_scale: self.daylight_scale,
-        }
+            light_colour: self.sun_light_colour,
+            light_intensity: self.sun_light_intensity,
+        })
+    }
+
+    /// The tail of a sun placement: the sun light node's direction vector
+    /// and the scene's follow-up (a callback and a task post, modelled as
+    /// the [`Self::sun_event`] flag).
+    fn finish_placement(&mut self, placed: SunPosition) -> SunPosition {
+        self.sun_event = true;
+        placed
     }
 
     /// Picks the record the daylight falls on, blends it and writes it into
@@ -1432,9 +1636,11 @@ impl SceneEnvironment {
     }
 
     /// Turns the sky on or off. Turning it off puts the fog back to the
-    /// outdoor haze, clears the record's fog colour and puts the sun light
-    /// back to its sky-less colour; the original also takes the fill colour
-    /// back from the level record, which the caller owns.
+    /// outdoor haze at (0.47, 0.53, 0.7, 1), zeroes the record's two fog
+    /// colours, puts the sun light back to the level's own colour at
+    /// intensity 3, takes the fill colour back from the level record and
+    /// frees the sky object. The original also takes that fill colour from
+    /// the scene's own level node, which the caller owns here.
     pub fn set_sky(&mut self, on: bool) {
         if on == self.sky {
             return;
@@ -1445,6 +1651,8 @@ impl SceneEnvironment {
             self.record_fog = [0.0; 3];
             self.fog.current_colour = [0.0; 3];
             self.fog.colour = OUTDOOR_FOG_COLOUR;
+            self.sun_light_colour = self.sun_colour;
+            self.sun_light_intensity = SUN_INTENSITY;
             self.sky = false;
         }
         self.set_sun_position(self.azimuth, self.time_of_day);
@@ -1490,13 +1698,27 @@ impl SceneEnvironment {
         let mut change = RainChange::default();
         if requested > 0.0 {
             change.start_rain = true;
-            self.weather.raining = RAIN_THUNDER < requested;
-            if self.weather.raining {
+            // A request creates the looping sound (when there is none; its
+            // flags start clear) and the rain effect (when there is none).
+            if !self.weather.sound.exists {
+                self.weather.sound = RainSound {
+                    exists: true,
+                    ..RainSound::default()
+                };
+            }
+            if !self.weather.effect.exists {
+                self.weather.effect = RainEffect {
+                    exists: true,
+                    ..RainEffect::default()
+                };
+            }
+            self.weather.thunder_allowed = RAIN_THUNDER < requested;
+            if self.weather.thunder_allowed {
                 change.thunder = true;
                 self.weather.next_strike = rng.below(30_000) + now + 4_000;
             }
         } else {
-            self.weather.raining = false;
+            self.weather.thunder_allowed = false;
         }
         if requested as f64 > RAIN_MIN {
             self.weather.target = if (requested as f64) < RAIN_FLOOR {
@@ -1513,25 +1735,50 @@ impl SceneEnvironment {
     /// Whether the frame updates the rain effect: the original moves and
     /// refreshes its rain effect only while the rain amount is above 0.01.
     pub fn rain_effect_live(&self) -> bool {
-        self.weather.rain > 0.01
+        (self.weather.rain as f64) > RAIN_MIN
     }
 
-    /// Stops the rain and any lightning at once.
-    pub fn clear_weather(&mut self) {
+    /// The colour the rain effect takes this frame: the last clear colour,
+    /// given to the effect only while the rain is above 0.01 (the compare
+    /// is in double precision, a NaN taking the "not live" branch).
+    pub fn rain_effect_colour(&self) -> Option<[f32; 4]> {
+        self.rain_effect_live().then_some(self.frame.clear)
+    }
+
+    /// Stops the rain and any lightning at once: the rain target and amount
+    /// go to zero, the rain effect is freed, the rain sound is asked to stop
+    /// (its stop bit set, its start bit cleared), the thunder flag and the
+    /// running strike are cleared. Returns the events the caller's effect
+    /// and sound objects act on.
+    pub fn clear_weather(&mut self) -> WeatherEvents {
         self.weather.target = 0.0;
         self.weather.rain = 0.0;
-        self.weather.raining = false;
+        self.weather.thunder_allowed = false;
         self.weather.lightning.active = false;
         self.weather.flash = false;
+        self.weather.effect = RainEffect::default();
+        self.weather.sound.started = false;
+        self.weather.sound.stop_requested = true;
+        WeatherEvents {
+            stop_rain: true,
+            stop_sound: true,
+            ..WeatherEvents::default()
+        }
     }
 
-    /// Starts a lightning strike at `position`, scheduling its flicker,
-    /// thunder and end. `system_random` is the run-time library's own
-    /// generator (uniform in `[0, 1)`), which the strike's first step draws
-    /// from instead of the engine's.
+    /// Starts a lightning strike at `position` (centimetres from the view),
+    /// scheduling its flicker, thunder and end. The original then moves the
+    /// strike next to the camera: it adds the view's position and 200 cm of
+    /// its forward direction. `view` is that pair (`None` leaves the strike
+    /// where the random draw put it, the caller having no view).
+    ///
+    /// `system_random` is the run-time library's own generator (uniform in
+    /// `[0, 1)`), which the strike's first step draws from instead of the
+    /// engine's.
     pub fn strike_lightning(
         &mut self,
         position: [f32; 3],
+        view: Option<View>,
         now: u32,
         rng: &mut WeatherRng,
         system_random: &mut dyn FnMut() -> f64,
@@ -1552,43 +1799,102 @@ impl SceneEnvironment {
         l.next_step = rng.below(30) + now + 30;
         l.step = (system_random() * 0.1 + 0.2) as f32;
         self.weather.thunder_pending = true;
+        if let Some(view) = view {
+            // The view's position plus 200 cm along its forward.
+            for (i, v) in l.position.iter_mut().enumerate() {
+                *v = (*v + view.position[i]) + view.forward[i] * 200.0;
+            }
+        }
     }
 
     /// One frame of the weather: the rain fades towards its target, the
-    /// lightning flickers, and the time of day advances. `system_random`
-    /// is the run-time library's generator (see [`Self::strike_lightning`]),
-    /// which the thunder's pitch also draws from.
+    /// rain effect and sound follow it, the lightning flickers, and the time
+    /// of day advances. `system_random` is the run-time library's generator
+    /// (see [`Self::strike_lightning`]), which the thunder's pitch also
+    /// draws from.
+    ///
+    /// A paused environment (the original's global pause counter above
+    /// zero) reports no change and does nothing. With the time following a
+    /// view, a tick takes the view's azimuth and places the body at the
+    /// environment's own altitude, and reports a change every time.
     pub fn tick(
         &mut self,
         now: u32,
         rng: &mut WeatherRng,
         system_random: &mut dyn FnMut() -> f64,
     ) -> WeatherEvents {
+        self.tick_with_view(now, rng, system_random, None)
+    }
+
+    /// [`Self::tick`] with the view a time-following scene reads.
+    pub fn tick_with_view(
+        &mut self,
+        now: u32,
+        rng: &mut WeatherRng,
+        system_random: &mut dyn FnMut() -> f64,
+        view: Option<ViewTime>,
+    ) -> WeatherEvents {
         let mut events = WeatherEvents::default();
+        if self.paused {
+            return events;
+        }
         let elapsed = now as i64 - self.weather.last_rain_ms as i64;
         events.changed = 0.0 < self.weather.rain;
+        if self.time_follows_view {
+            let azimuth = view.map_or(self.azimuth, |v| v.azimuth);
+            self.azimuth = azimuth;
+            if view.is_some_and(|v| v.time_word < 1) {
+                self.time_follows_view = false;
+            }
+            self.set_sun_position(azimuth, self.time_of_day);
+            events.changed = true;
+            return events;
+        }
         let w = &mut self.weather;
         if w.rain != w.target {
-            // Rising only when the target is above; a NaN falls.
-            if w.target > w.rain {
-                let mut rain = (elapsed as f64 * RAIN_RATE + w.rain as f64) as f32;
-                if w.target <= rain {
-                    rain = w.target;
-                }
-                w.rain = rain;
-            } else {
+            // The fall runs while the target is at or below the rain, and
+            // for an unordered pair; otherwise the rain rises.
+            if w.target <= w.rain || w.rain.is_nan() || w.target.is_nan() {
                 let mut rain = (w.rain as f64 - elapsed as f64 * RAIN_RATE) as f32;
                 if rain <= w.target {
                     rain = w.target;
                 }
                 w.rain = rain;
-                if rain as f64 <= RAIN_MIN {
+                if (rain as f64) <= RAIN_MIN {
                     w.rain = 0.0;
+                    w.effect = RainEffect::default();
                     events.stop_rain = true;
                 }
+            } else {
+                let mut rain = (elapsed as f64 * RAIN_RATE + w.rain as f64) as f32;
+                if w.target <= rain {
+                    rain = w.target;
+                }
+                w.rain = rain;
             }
         }
-        if self.weather.raining || self.weather.lightning.active {
+        // The rain sound takes its volume and pitch from the effect; its
+        // start bit decides whether it plays, its stop bit whether it stops.
+        // Only a created sound is driven.
+        let sound = &mut self.weather.sound;
+        if sound.exists {
+            if 0.0 < self.weather.rain {
+                sound.volume = self.weather.effect.volume;
+                sound.pitch = self.weather.effect.pitch;
+            } else {
+                sound.volume = 0.0;
+            }
+            if sound.started {
+                if (sound.volume as f64) < RAIN_MIN {
+                    sound.stop_requested = true;
+                    events.stop_sound = true;
+                }
+            } else if (sound.volume as f64) > RAIN_MIN {
+                sound.started = true;
+                events.start_sound = true;
+            }
+        }
+        if self.weather.thunder_allowed || self.weather.lightning.active {
             if self.weather.thunder_pending && self.weather.thunder_at < now {
                 let pitch = (system_random() * 0.3 + 0.9) as f32;
                 let volume = ((self.weather.lightning.attenuation * 4.0) as f64 + 0.1) as f32;
@@ -1600,9 +1906,9 @@ impl SceneEnvironment {
                     let x = rng.unit() - 0.5;
                     let x = x * x * 16_000.0;
                     let angle = rng.unit() * std::f32::consts::TAU;
-                    let (s, c) = angle.sin_cos();
+                    let (s, c) = fast_sin_cos(angle);
                     let position = [x * c, -100.0, -(x * s)];
-                    self.strike_lightning(position, now, rng, system_random);
+                    self.strike_lightning(position, self.view, now, rng, system_random);
                 }
             } else {
                 events.changed = true;
@@ -1617,10 +1923,9 @@ impl SceneEnvironment {
                 } else {
                     if l.next_step < now {
                         let r = rng.unit() as f64;
-                        // A rising step turns down; a falling, zero or NaN
-                        // one turns up (the compare's unordered result
-                        // takes the rising branch's jump past it).
-                        l.step = if l.step > 0.0 {
+                        // A step at or below zero (or unordered) turns up;
+                        // a rising one turns down.
+                        l.step = if 0.0 < l.step {
                             (-0.1 - r * 0.2) as f32
                         } else {
                             (r * 0.2 + 0.1) as f32
@@ -1637,8 +1942,9 @@ impl SceneEnvironment {
         }
         if 0.0 < self.time_speed {
             events.changed = true;
+            self.scene_time_flag = false;
             let dt = ((now as i64 - self.weather.last_time_ms as i64) as f64 * 0.001) as f32;
-            if dt as f64 >= TIME_STEP {
+            if (dt as f64) >= TIME_STEP {
                 self.time_of_day += dt * self.time_speed;
                 if 1.0 < self.time_of_day {
                     self.time_of_day -= 1.0;
@@ -1693,61 +1999,77 @@ impl SceneEnvironment {
     }
 
     /// The per-frame environment apply: background, sky gradient, fog, the
-    /// fog's weather adjustments and the ambient. `view_forward` is the
-    /// camera's forward axis, which picks the sky gradient's position.
+    /// fog's weather adjustments, the lightning's colour and the ambient.
+    /// `view_forward` is the camera's forward axis, which picks the sky
+    /// gradient's position.
+    ///
+    /// The frame works on a scratch colour (RGBA) beside the clear. Under a
+    /// sky the scratch takes the horizon colour (the record's two sky
+    /// colours blended by the view weight, times the fog's sky colour, then
+    /// times 2, linearised when the track was not linearised at start-up;
+    /// three floats, so its alpha is kept) and the clear is the level's
+    /// background (linearised when colours are managed in linear light).
+    /// Without a sky and with fog the scratch takes the fog colour, and the
+    /// clear is that colour when the fog clears, else the background;
+    /// without fog the scratch is left as it was and the clear is the
+    /// background. A flash (fog only) clears with the scratch times the
+    /// three-float flash tint, halved, with an alpha of 1, which becomes
+    /// the scratch, and pulls the fog in.
     pub fn apply_frame(&mut self, view_forward: [f32; 3]) -> Frame {
-        let fog_colour = if self.linear {
+        let linear = self.linear;
+        let fog_colour = if linear {
             linearise([self.fog.colour[0], self.fog.colour[1], self.fog.colour[2]])
         } else {
             [self.fog.colour[0], self.fog.colour[1], self.fog.colour[2]]
         };
-        let mut background = if !self.sky && self.fog.enabled && self.fog.colour_clears {
-            fog_colour
-        } else if self.linear {
-            linearise([self.background[0], self.background[1], self.background[2]])
-        } else {
-            [self.background[0], self.background[1], self.background[2]]
-        };
-        // The horizon colour the frame works with: the sky's gradient under
-        // a sky, the fog's colour without one. The original then multiplies
-        // it by a renderer factor outside the model (taken as 1).
-        let mut horizon = [0.0; 3];
+        let mut scratch = self.frame.clear;
+        let mut clear = self.clear_background();
         if self.sky {
-            // Without a sun light the gradient sits halfway.
             let weight = if self.sun_light {
-                // The light travels away from the body.
-                sky_gradient_weight(
-                    [
-                        -self.sun_towards[0],
-                        -self.sun_towards[1],
-                        -self.sun_towards[2],
-                    ],
-                    view_forward,
-                )
+                // The light node's third row is the body's direction (the
+                // camera's forward is the view's own).
+                sky_gradient_weight(self.sun_towards, view_forward)
             } else {
                 0.5
             };
             let c = lerp3(self.current.sky_away, self.current.sky_towards, weight);
             let f = self.fog.sky_colour;
-            horizon = [c[0] * f[0] * 2.0, c[1] * f[1] * 2.0, c[2] * f[2] * 2.0];
-            // The original linearises the horizon when the track was not
-            // linearised at start-up (its own flag, not the linear-light
-            // setting).
+            let mut horizon = [c[0] * f[0], c[1] * f[1], c[2] * f[2]];
+            // The original scales the product by 2 as a separate step.
+            horizon = [horizon[0] * 2.0, horizon[1] * 2.0, horizon[2] * 2.0];
             if !TRACK_LINEARISED_AT_STARTUP {
                 horizon = linearise(horizon);
             }
+            scratch = [horizon[0], horizon[1], horizon[2], scratch[3]];
         } else if self.fog.enabled {
-            horizon = fog_colour;
+            scratch = if linear {
+                linearise4(self.fog.colour)
+            } else {
+                self.fog.colour
+            };
+            if self.fog.colour_clears {
+                clear = scratch;
+            }
         }
         if self.fog.enabled {
             self.weather_fog();
             if self.weather.flash {
-                background = [horizon[0] * 0.5, horizon[1] * 0.5, horizon[2] * 0.5];
+                // The scratch times the scene's three-float tint (zero
+                // unless the scene sets it), halved; the product's alpha
+                // slot holds the constructor's 1.
+                let t = self.flash_tint;
+                scratch = [
+                    scratch[0] * t[0] * 0.5,
+                    scratch[1] * t[1] * 0.5,
+                    scratch[2] * t[2] * 0.5,
+                    1.0,
+                ];
+                clear = scratch;
                 self.fog.current_near = (-self.fog.span as f64 * 0.8) as f32;
                 self.fog.current_far = (self.fog.span as f64 * 0.1) as f32;
             }
         }
-        // Which of the two colours the shader's fog takes is outside the
+        // Which of the two fog colours the shader takes is outside the
         // model: under a sky the record's, without one the level's own.
         let fog = self.fog.enabled.then_some(FrameFog {
             colour: if self.sky {
@@ -1759,7 +2081,8 @@ impl SceneEnvironment {
             far: self.fog.current_far * 0.01,
         });
         self.frame = Frame {
-            background,
+            background: clear,
+            clear: scratch,
             fog,
             ambient: self.ambient_linear,
             ambient_scale: if self.sky {
@@ -1767,7 +2090,7 @@ impl SceneEnvironment {
             } else {
                 AMBIENT_SCALE_INDOOR
             },
-            sky_colour: horizon,
+            sky_colour: scratch,
             flash: self.weather.flash,
             shadow_far: if (self.sun_height as f64) > 0.4 {
                 -25.0
@@ -1780,13 +2103,28 @@ impl SceneEnvironment {
                 self.tint[1] * self.tint[3],
                 self.tint[2] * self.tint[3],
             ],
+            sun_intensity: self.sun_light_intensity,
         };
         self.frame
     }
+
+    /// The level's background colour as the clear takes it, RGBA, linearised
+    /// when colours are managed in linear light.
+    fn clear_background(&self) -> [f32; 4] {
+        if self.linear {
+            let rgb = linearise([self.background[0], self.background[1], self.background[2]]);
+            [rgb[0], rgb[1], rgb[2], self.background[3]]
+        } else {
+            self.background
+        }
+    }
 }
 
-/// The sky gradient's position: 0 away from the sun, 1 towards it. The
-/// gradient is drawn from the direction the light travels.
+/// The sky gradient's position: 0 towards the view's forward, 1 away from
+/// it. The original dots the light node's third matrix row (the unit vector
+/// towards the body it was built from) with the view's forward axis and
+/// maps it `· −0.5 + 0.5`, so a view looking straight at the sun takes the
+/// record's first sky colour. The sums are x, y then z.
 pub fn sky_gradient_weight(light_direction: [f32; 3], view_forward: [f32; 3]) -> f32 {
     let dot = light_direction[0] * view_forward[0]
         + light_direction[1] * view_forward[1]
@@ -1882,13 +2220,15 @@ mod tests {
     fn the_ambient_setter_linearises() {
         let mut env = SceneEnvironment::new(5);
         env.set_ambient([0.5, 0.75, 0.2, 1.0]);
-        assert!((env.ambient_linear[0] - 0.21404114).abs() < 1e-6);
-        assert!((env.ambient_linear[1] - 0.5225216).abs() < 1e-6);
-        assert!((env.ambient_linear[2] - 0.03310476).abs() < 1e-6);
+        assert!((env.ambient_linear[0] - 0.214_033_66).abs() < 1e-6);
+        assert!((env.ambient_linear[1] - 0.522_500_3).abs() < 1e-6);
+        assert!((env.ambient_linear[2] - 0.033_105_04).abs() < 1e-6);
         // Below the sRGB knee the curve is linear, divided in double
         // precision.
         assert_eq!(linearise_channel(0.04), (0.04f32 as f64 / 12.92) as f32);
-        assert!(linearise_channel(f32::NAN).is_nan());
+        // A NaN takes the curve's power branch, where the engine's clamped
+        // exponential turns it into a number (the preset helper's rule).
+        assert!(!linearise_channel(f32::NAN).is_nan());
         let mut raw = SceneEnvironment::new(5);
         raw.linear = false;
         raw.set_ambient([0.5, 0.75, 0.2, 1.0]);
@@ -1928,7 +2268,7 @@ mod tests {
         assert_eq!(env.tint, [1.0; 4]);
         assert_eq!(env.wind, 0.0);
         // 0.75 through the linear-light curve.
-        assert!((env.global_light[0] - 0.522_521_6).abs() < 1e-6);
+        assert!((env.global_light[0] - 0.522_500_3).abs() < 1e-6);
         assert_eq!(env.global_light[3], 0.75);
         assert_eq!(env.weather.rain, 0.0);
         assert_eq!(env.weather.target, 0.0);
@@ -2014,7 +2354,7 @@ mod tests {
         let mut engine = WeatherRng::new(99);
         let drawn = env.apply_outdoor_preset(true, false, 6, || unreachable!(), 1_000, &mut engine);
         assert_eq!(drawn.rain, 0.919_219_14);
-        assert!(env.weather.raining);
+        assert!(env.weather.thunder_allowed);
         let mut expected = WeatherRng::new(99);
         assert_eq!(
             env.weather.next_strike,
@@ -2069,9 +2409,9 @@ mod tests {
         // The rotation is a rotation: orthonormal columns.
         let r = Rotation::from_angles(0.7, 2.1, -0.3);
         let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-        assert!(dot(r.0[0], r.0[1]).abs() < 1e-6);
-        assert!(dot(r.0[1], r.0[2]).abs() < 1e-6);
-        assert!((dot(r.0[0], r.0[0]) - 1.0).abs() < 1e-6);
+        assert!(dot(r.0[0], r.0[1]).abs() < 1e-5);
+        assert!(dot(r.0[1], r.0[2]).abs() < 1e-5);
+        assert!((dot(r.0[0], r.0[0]) - 1.0).abs() < 1e-5);
     }
 
     #[test]
@@ -2149,9 +2489,9 @@ mod tests {
         a.sun = [0.5; 3];
         let t = EnvironmentTrack { records: [a; 6] };
         let r = t.at(0.0, true);
-        assert!((r.fog[0] - 0.21404114).abs() < 1e-6);
-        assert!((r.fill[0] - 0.21404114).abs() < 1e-6);
-        assert!((r.p[0] - 0.21404114).abs() < 1e-6);
+        assert!((r.fog[0] - 0.214_033_66).abs() < 1e-6);
+        assert!((r.fill[0] - 0.214_033_66).abs() < 1e-6);
+        assert!((r.p[0] - 0.214_033_66).abs() < 1e-6);
         // Untouched by the linearisation.
         assert_eq!(r.sun, [0.5; 3]);
         let raw = t.at(0.0, false);
@@ -2192,7 +2532,7 @@ mod tests {
         env.track = Some(track());
         env.sky = true;
         let placed = env.set_sun_position(DEFAULT_AZIMUTH, DEFAULT_TIME);
-        assert!(placed.sun);
+        assert!(placed.sun_chosen);
         // The sun's height is −0.0071: the engine's arc sine / π + 0.5.
         assert!((env.daylight - 0.497_752_73).abs() < 1e-5);
         // (daylight − 0.47) · 3 in double precision.
@@ -2226,7 +2566,7 @@ mod tests {
         env.sky = true;
         // Midnight: the sun is on the far side.
         let placed = env.set_sun_position(0.0, 0.0);
-        assert!(!placed.sun);
+        assert!(!placed.sun_chosen);
         assert!(env.daylight < 0.44);
         assert!(placed.towards[1] > 0.0);
     }
@@ -2302,15 +2642,15 @@ mod tests {
         assert_eq!(env.weather.target, 0.3);
         let change = env.set_rain(0.9, 1_000, &mut rng);
         assert!(change.thunder);
-        assert!(env.weather.raining);
+        assert!(env.weather.thunder_allowed);
         // 30 000·(state/2³²) + 1 000 + 4 000: the first state is 1.
         assert_eq!(env.weather.next_strike, 5_000);
         let change = env.set_rain(0.0, 1_000, &mut rng);
-        assert!(!env.weather.raining && !change.start_rain);
+        assert!(!env.weather.thunder_allowed && !change.start_rain);
         assert_eq!(env.weather.target, 0.0);
         // A NaN request is no request.
         let change = env.set_rain(f32::NAN, 1_000, &mut rng);
-        assert!(!env.weather.raining && !change.start_rain);
+        assert!(!env.weather.thunder_allowed && !change.start_rain);
         assert_eq!(env.weather.target, 0.0);
         // Exactly 0.75 is not enough for thunder.
         assert!(!env.set_rain(0.75, 1_000, &mut rng).thunder);
@@ -2321,7 +2661,7 @@ mod tests {
         let mut env = SceneEnvironment::new(5);
         let mut rng = WeatherRng::new(0);
         let mut system = || 0.25;
-        env.strike_lightning([300.0, -100.0, 0.0], 10_000, &mut rng, &mut system);
+        env.strike_lightning([300.0, -100.0, 0.0], None, 10_000, &mut rng, &mut system);
         let l = env.weather.lightning;
         assert!(l.active && env.weather.flash && env.weather.thunder_pending);
         // below(500) with the first state (1) is 0: the strike ends 100 ms on.
@@ -2336,7 +2676,7 @@ mod tests {
         assert!((l.step - 0.225).abs() < 1e-7, "{}", l.step);
         // The conversion rounds half to even: a reach of 6 gives 40.5, so 40.
         let mut env = SceneEnvironment::new(5);
-        env.strike_lightning([0.0, 0.0, 6.0], 0, &mut rng, &mut system);
+        env.strike_lightning([0.0, 0.0, 6.0], None, 0, &mut rng, &mut system);
         assert_eq!(env.weather.thunder_at, 40);
     }
 
@@ -2355,7 +2695,7 @@ mod tests {
         let mut env = SceneEnvironment::new(5);
         let mut rng = WeatherRng::new(0);
         let mut system = || 0.5;
-        env.weather.raining = true;
+        env.weather.thunder_allowed = true;
         env.weather.lightning.active = true;
         env.weather.next_strike = 5_000;
         env.weather.lightning.intensity = 4.0;
@@ -2372,7 +2712,7 @@ mod tests {
         let mut env = SceneEnvironment::new(5);
         let mut rng = WeatherRng::new(0);
         let mut system = || 0.5;
-        env.weather.raining = true;
+        env.weather.thunder_allowed = true;
         env.weather.thunder_pending = true;
         env.weather.thunder_at = 900;
         let l = &mut env.weather.lightning;
@@ -2404,7 +2744,7 @@ mod tests {
         let mut env = SceneEnvironment::new(5);
         let mut rng = WeatherRng::new(0);
         let mut system = || 0.5;
-        env.weather.raining = true;
+        env.weather.thunder_allowed = true;
         let l = &mut env.weather.lightning;
         l.active = true;
         l.attenuation = 0.5;
@@ -2439,7 +2779,7 @@ mod tests {
         let mut env = SceneEnvironment::new(5);
         env.background = [0.0, 0.0, 0.0, 1.0];
         let frame = env.apply_frame([0.0, 0.0, 1.0]);
-        assert_eq!(frame.background, [0.0, 0.0, 0.0]);
+        assert_eq!(frame.background, [0.0, 0.0, 0.0, 1.0]);
         assert_eq!(frame.fog, None);
         assert_eq!(frame.ambient_scale, AMBIENT_SCALE_INDOOR);
         env.fog.enabled = true;
@@ -2448,7 +2788,7 @@ mod tests {
         assert_eq!(fog.near, 0.0);
         assert!((fog.far - 501.0).abs() < 1e-4);
         // The no-sky fog colour is linearised.
-        assert!((fog.colour[0] - 0.21404114).abs() < 1e-6);
+        assert!((fog.colour[0] - 0.214_033_66).abs() < 1e-6);
         // With the sky on, the ambient cube is the sky's.
         env.set_sky(true);
         let frame = env.apply_frame([0.0, 0.0, 1.0]);
@@ -2532,12 +2872,14 @@ mod tests {
         assert_eq!(env.background, [0.0, 0.0, 0.0, 1.0]);
         assert_eq!(env.fog.colour, [0.5, 0.5, 0.5, 1.0]);
         env.force_indoor(false);
+        // The forced grey goes through the ambient setter.
         assert_eq!(env.ambient, [0.6275, 0.6275, 0.6275, 1.0]);
-        // 0.75 through the sRGB curve; the strength stays 0.75.
-        assert!((env.global_light[0] - 0.522_521_6).abs() < 1e-6);
-        assert_eq!(env.global_light[3], 0.75);
+        assert_eq!(env.ambient_linear, linearise(GRID_AMBIENT));
         // The sun light's own colour is not touched.
         assert_eq!(env.sun_colour, [0.75; 3]);
+        // 0.75 through the sRGB curve; the strength stays 0.75.
+        assert!((env.global_light[0] - 0.522_500_3).abs() < 1e-6);
+        assert_eq!(env.global_light[3], 0.75);
     }
 
     #[test]
@@ -2624,5 +2966,330 @@ mod tests {
         assert_eq!(SUN_LIGHT_KIND, 2);
         assert_eq!(SUN_LIGHT_RANGE, 3.0);
         assert_eq!(SUN_NODE_DIRECTION, [0.0, 260.0, -280.0]);
+    }
+
+    #[test]
+    fn the_srgb_helper_is_the_engines_curve() {
+        // The engine's fast logarithm and exponential, not `powf`: these
+        // bits are the original's and differ from the exact curve's.
+        assert_eq!(linearise_channel(0.5).to_bits(), 0x3e5b_2ba4);
+        assert_eq!(linearise_channel(0.75).to_bits(), 0x3f05_c294);
+        assert_eq!(linearise_channel(1.0).to_bits(), 0x3f80_014c);
+        // Below the knee a double division.
+        assert_eq!(linearise_channel(0.04), (0.04f32 as f64 / 12.92) as f32);
+        // A NaN takes the power branch, where the engine's clamped
+        // exponential turns it into a number.
+        assert!(!linearise_channel(f32::NAN).is_nan());
+    }
+
+    #[test]
+    fn the_desaturation_sums_x_then_y_then_z() {
+        // Channels where the two addition orders round apart.
+        let (x, y, z) = (
+            f32::from_bits(1_051_251_352),
+            f32::from_bits(1_061_803_639),
+            f32::from_bits(1_050_360_922),
+        );
+        let mut r = record(0.0);
+        r.sun = [x, y, z];
+        dim_sky(&mut r, 1.0, 1.0);
+        // The luminance in the instruction order, (x·0.299 + y·0.587) +
+        // z·0.114; every channel becomes it at mix 1. Summed z first it
+        // would be one bit higher.
+        let want = (x * 0.299 + y * 0.587) + z * 0.114;
+        assert_eq!(want.to_bits(), 1_058_574_577);
+        assert_eq!(
+            ((z * 0.114 + y * 0.587) + x * 0.299).to_bits(),
+            1_058_574_578
+        );
+        assert_eq!(r.sun[0].to_bits(), want.to_bits());
+        assert_eq!(r.sun[1].to_bits(), want.to_bits());
+        assert_eq!(r.sun[2].to_bits(), want.to_bits());
+    }
+
+    #[test]
+    fn the_cloud_factor_squares_twice_and_scales_in_double() {
+        let mut r = record(1.0);
+        dim_sky(&mut r, 0.0, 0.75);
+        // f = (f32)((double)(0.75·0.75)·0.8 + 0.2) = 0.65, and the sun
+        // takes f⁴ built as (f·f)·(f·f).
+        let f = ((0.75f32 * 0.75) as f64 * 0.8 + 0.2) as f32;
+        let f4 = (f * f) * (f * f);
+        assert_eq!(r.sun[0].to_bits(), f4.to_bits());
+        assert_eq!(r.sun[0].to_bits(), 1_043_778_133);
+        assert_eq!(r.fill[0].to_bits(), f.to_bits());
+        assert_eq!(r.sky_away[0].to_bits(), (f * f).to_bits());
+        assert_eq!(r.l[0].to_bits(), 0.75f32.to_bits());
+    }
+
+    #[test]
+    fn the_fast_trig_is_the_engines_polynomial() {
+        // sun_direction's sines are the engine's fast ones, its cosines the
+        // library's doubles.
+        assert_eq!(
+            sun_direction(0.7516, -0.21),
+            [0.43120676, 0.7106522, 0.55590844]
+        );
+        // from_angles uses the fast sine/cosine pair.
+        let r = Rotation::from_angles(0.7, 2.1, -0.3);
+        assert_eq!(r.0[0][0].to_bits(), 3_207_424_630);
+        assert_eq!(r.0[1][1].to_bits(), 1_061_407_922);
+        assert_eq!(r.0[2][2].to_bits(), 3_206_528_250);
+    }
+
+    #[test]
+    fn a_sun_placement_takes_the_light_and_the_two_bodies() {
+        let mut env = SceneEnvironment::new(5);
+        env.sky = true;
+        env.sun_light = true;
+        let placed = env.set_sun_position(DEFAULT_AZIMUTH, DEFAULT_TIME);
+        // Both orbits are kept for the sky object, and the sun is chosen at
+        // the default time.
+        assert!(placed.sun_chosen);
+        assert_ne!(placed.sun, placed.moon);
+        assert_eq!(placed.towards, env.sun_towards);
+        // The light word takes the record's sun colour and 4.5.
+        assert_eq!(placed.light_colour, env.current.sun);
+        assert_eq!(placed.light_intensity, SUN_INTENSITY_SKY);
+        assert_eq!(env.sun_light_colour, env.current.sun);
+        assert_eq!(env.sun_light_intensity, SUN_INTENSITY_SKY);
+        assert!(env.tint_uploaded && env.sun_event);
+    }
+
+    #[test]
+    fn the_scene_switch_scales_the_records_k_colour() {
+        let mut plain = SceneEnvironment::new(5);
+        plain.sky = true;
+        plain.set_sun_position(DEFAULT_AZIMUTH, DEFAULT_TIME);
+        let before = plain.current.k;
+        let mut scaled = SceneEnvironment::new(5);
+        scaled.sky = true;
+        scaled.dim_record_k = true;
+        scaled.set_sun_position(DEFAULT_AZIMUTH, DEFAULT_TIME);
+        assert_eq!(scaled.current.k[0], before[0] * 0.75);
+        assert_eq!(scaled.current.k[1], before[1] * 0.75);
+        assert_eq!(scaled.current.k[2], before[2] * 0.75);
+        // Its fourth slot is a scalar, not a colour.
+        assert_eq!(scaled.current.k[3], before[3]);
+        assert_eq!(plain.current.k, before);
+    }
+
+    #[test]
+    fn turning_the_sky_off_restores_the_levels_light() {
+        let mut env = SceneEnvironment::new(5);
+        env.sun_light = true;
+        env.set_sun_colour([0.4, 0.5, 0.6]);
+        env.set_sky(true);
+        assert_eq!(env.sun_light_intensity, SUN_INTENSITY_SKY);
+        env.set_sky(false);
+        assert_eq!(env.sun_light_intensity, SUN_INTENSITY);
+        assert_eq!(env.sun_light_colour, [0.4, 0.5, 0.6]);
+    }
+
+    #[test]
+    fn a_flash_uses_the_scenes_tint_and_pulls_the_fog_in() {
+        let mut env = SceneEnvironment::new(5);
+        env.fog.enabled = true;
+        env.flash_tint = [1.0, 1.0, 1.0];
+        let plain = env.apply_frame([0.0, 0.0, 1.0]);
+        env.weather.flash = true;
+        let flash = env.apply_frame([0.0, 0.0, 1.0]);
+        // Without a sky the scratch is the fog colour; the fog does not
+        // clear, so the plain frame clears with the background.
+        assert_eq!(plain.background, env.clear_background());
+        assert_eq!(plain.clear, linearise4(env.fog.colour));
+        // The flash clears with half the scratch and an alpha of 1, and the
+        // scratch keeps it.
+        assert_eq!(flash.clear[3], 1.0);
+        for i in 0..3 {
+            assert_eq!(flash.clear[i], plain.clear[i] * 0.5);
+        }
+        assert_eq!(flash.background, flash.clear);
+        // The fog reaches from −0.8 span to 0.1 span, in double then f32.
+        assert_eq!(env.fog.current_near, (-env.fog.span as f64 * 0.8) as f32);
+        assert_eq!(env.fog.current_far, (env.fog.span as f64 * 0.1) as f32);
+        // The constructor leaves the tint black, so a flash clears black.
+        let mut black = SceneEnvironment::new(5);
+        black.fog.enabled = true;
+        black.weather.flash = true;
+        assert_eq!(
+            black.apply_frame([0.0, 0.0, 1.0]).background,
+            [0.0, 0.0, 0.0, 1.0]
+        );
+    }
+
+    #[test]
+    fn clear_weather_stops_the_effect_and_the_sound() {
+        let mut env = SceneEnvironment::new(5);
+        env.weather.rain = 0.5;
+        env.weather.target = 0.5;
+        env.weather.thunder_allowed = true;
+        env.weather.effect.exists = true;
+        env.weather.sound.exists = true;
+        env.weather.sound.started = true;
+        let events = env.clear_weather();
+        assert!(events.stop_rain && events.stop_sound);
+        assert_eq!(env.weather.rain, 0.0);
+        assert_eq!(env.weather.target, 0.0);
+        assert!(!env.weather.effect.exists);
+        assert!(env.weather.sound.stop_requested && !env.weather.sound.started);
+    }
+
+    #[test]
+    fn a_strike_is_placed_beside_the_view() {
+        let mut env = SceneEnvironment::new(5);
+        let mut rng = WeatherRng::new(0);
+        let mut system = || 0.5;
+        let view = View {
+            forward: [0.0, 0.0, -1.0],
+            position: [100.0, 200.0, 300.0],
+        };
+        env.strike_lightning([1.0, 2.0, 3.0], Some(view), 1_000, &mut rng, &mut system);
+        // The random position, then the view's, then 200 cm along its
+        // forward.
+        assert_eq!(env.weather.lightning.position, [101.0, 202.0, 103.0]);
+        // The reach is the random position's, measured before the move.
+        let reach = (1.0f32 + 9.0 + 4.0).sqrt();
+        assert!((env.weather.lightning.attenuation - (1.0 - reach * 0.0002).powi(2)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_paused_scene_does_not_tick() {
+        let mut env = SceneEnvironment::new(5);
+        env.paused = true;
+        env.weather.rain = 1.0;
+        env.weather.target = 0.0;
+        env.time_speed = 1.0;
+        let mut rng = WeatherRng::new(0);
+        let mut system = || 0.5;
+        let events = env.tick(2_000, &mut rng, &mut system);
+        assert_eq!(events, WeatherEvents::default());
+        assert_eq!(env.weather.rain, 1.0);
+        assert_eq!(env.weather.last_rain_ms, 0);
+    }
+
+    #[test]
+    fn the_time_can_follow_the_view() {
+        let mut env = SceneEnvironment::new(5);
+        env.time_follows_view = true;
+        env.time_of_day = 0.6;
+        let mut rng = WeatherRng::new(0);
+        let mut system = || 0.5;
+        let events = env.tick_with_view(
+            10,
+            &mut rng,
+            &mut system,
+            Some(ViewTime {
+                azimuth: -0.5,
+                time_word: 7,
+            }),
+        );
+        assert!(events.changed);
+        assert_eq!(env.azimuth, -0.5);
+        // The body is placed at the environment's own altitude.
+        assert_eq!(env.time_of_day, 0.6);
+        assert!(env.time_follows_view);
+        // A word below one ends the follow.
+        env.tick_with_view(
+            20,
+            &mut rng,
+            &mut system,
+            Some(ViewTime {
+                azimuth: 0.0,
+                time_word: 0,
+            }),
+        );
+        assert!(!env.time_follows_view);
+    }
+
+    #[test]
+    fn the_rain_sound_follows_the_effect() {
+        let mut env = SceneEnvironment::new(5);
+        let mut rng = WeatherRng::new(0);
+        let mut system = || 0.5;
+        env.weather.rain = 0.5;
+        env.weather.target = 0.5;
+        // Without a rain request there is no sound object to drive.
+        assert!(!env.tick(5, &mut rng, &mut system).start_sound);
+        assert_eq!(env.weather.sound, RainSound::default());
+        // A request creates the sound and the effect.
+        env.set_rain(0.5, 5, &mut rng);
+        assert!(env.weather.sound.exists && env.weather.effect.exists);
+        env.weather.effect.volume = 0.5;
+        env.weather.effect.pitch = 1.2;
+        let events = env.tick(10, &mut rng, &mut system);
+        assert!(events.start_sound);
+        assert_eq!(
+            (env.weather.sound.volume, env.weather.sound.pitch),
+            (0.5, 1.2)
+        );
+        // A silent effect stops a started sound.
+        env.weather.effect.volume = 0.0;
+        let events = env.tick(20, &mut rng, &mut system);
+        assert!(events.stop_sound);
+    }
+
+    #[test]
+    fn a_nan_cloud_amount_is_a_clear_sky() {
+        let mut clear = SceneEnvironment::new(5);
+        clear.sky = true;
+        clear.set_sun_position(DEFAULT_AZIMUTH, DEFAULT_TIME);
+        let mut nan = SceneEnvironment::new(5);
+        nan.sky = true;
+        nan.cloudiness = f32::NAN;
+        nan.set_sun_position(DEFAULT_AZIMUTH, DEFAULT_TIME);
+        // The dimming branch is the compare's "above": a NaN amount takes
+        // the clear branch and leaves the record alone (the low-sun
+        // brightening still applies to the light).
+        assert_eq!(nan.current.sun, clear.current.sun);
+        assert!((nan.sun_dim - clear.sun_dim).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_frame_publishes_the_light_the_clear_and_the_tint() {
+        let mut env = SceneEnvironment::new(5);
+        env.sun_light_intensity = SUN_INTENSITY_SKY;
+        let frame = env.apply_frame([0.0, 0.0, 1.0]);
+        assert_eq!(frame.sun_intensity, SUN_INTENSITY_SKY);
+        // Without fog the scratch keeps the constructor's opaque black and
+        // the clear is the background.
+        assert_eq!(frame.clear, [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(frame.background, DEFAULT_BACKGROUND);
+    }
+
+    #[test]
+    fn under_a_sky_the_clear_is_the_background_and_the_scratch_the_horizon() {
+        let mut env = SceneEnvironment::new(5);
+        env.background = [0.5, 0.25, 0.0, 1.0];
+        env.set_sky(true);
+        let frame = env.apply_frame([0.0, 0.0, 1.0]);
+        // The clear is the level's background, linearised.
+        assert_eq!(frame.background, env.clear_background());
+        // The scratch is the horizon: the record's sky colours at the
+        // halfway weight (no sun light), times the fog's sky colour, then 2,
+        // linearised; the alpha is the scratch's own.
+        let c = lerp3(env.current.sky_away, env.current.sky_towards, 0.5);
+        let f = env.fog.sky_colour;
+        let h = [c[0] * f[0] * 2.0, c[1] * f[1] * 2.0, c[2] * f[2] * 2.0];
+        let h = if TRACK_LINEARISED_AT_STARTUP {
+            h
+        } else {
+            linearise(h)
+        };
+        assert_eq!(frame.clear, [h[0], h[1], h[2], 1.0]);
+        assert_eq!(frame.sky_colour, frame.clear);
+        // The rain effect takes the scratch, not the clear.
+        env.weather.rain = 0.5;
+        assert_eq!(env.rain_effect_colour(), Some(frame.clear));
+    }
+
+    #[test]
+    fn fog_that_clears_clears_with_its_colour() {
+        let mut env = SceneEnvironment::new(5);
+        env.fog.enabled = true;
+        env.fog.colour_clears = true;
+        let frame = env.apply_frame([0.0, 0.0, 1.0]);
+        assert_eq!(frame.background, linearise4(env.fog.colour));
+        assert_eq!(frame.clear, frame.background);
     }
 }
