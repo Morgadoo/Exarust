@@ -151,8 +151,8 @@ pub fn surface_entry(set: &str) -> Option<String> {
     (set.len() < 15).then(|| format!("{set}_f"))
 }
 
-/// The shader word the renderer's factory keeps for a shading level
-/// (`0x04D800`): from the record's object word, bit `0x200000` is cleared
+/// The shader word the renderer's factory keeps for a shading level: from
+/// the record's object word, bit `0x200000` is cleared
 /// below level 3 and bit `0x800000` below level 4. When the renderer's
 /// simplified-shader flag is set the *original* word masked with `0x600011`
 /// is returned instead; when its flat-colour flag is set the level-masked
