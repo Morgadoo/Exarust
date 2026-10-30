@@ -169,7 +169,8 @@ pub fn hermite_weights(s: f32) -> (f32, f32, f32, f32) {
 /// [`MIDPOINT`]. Its incoming tangent is the half of the difference to
 /// `previous` (none at the first segment), its outgoing tangent the half
 /// of the difference to `next`, or the whole one-sided difference to `b`
-/// at the last segment.
+/// when there is no `next` (only the draw's closing segment, from the last
+/// sample to its repeat, where that difference is zero).
 pub fn hermite_midpoint(previous: Option<Vec3>, a: Vec3, b: Vec3, next: Option<Vec3>) -> Vec3 {
     let (h00, h01, h10, h11) = hermite_weights(MIDPOINT);
     let mut middle = a * h00;
@@ -787,7 +788,8 @@ impl Torrent {
                 let mut k = stream.head;
                 loop {
                     let p = &stream.points[k];
-                    let s = p.life as f32 / self.point_life as f32;
+                    // The life share is a double division, then narrowed.
+                    let s = (f64::from(p.life) / f64::from(self.point_life)) as f32;
                     samples.push(StreamSample {
                         at: lerp(p.previous, p.at, t),
                         width: p.width,
@@ -827,17 +829,19 @@ impl Torrent {
         }
     }
 
-    /// The torrent's ribbon: one strip a stream, its samples doubled by
-    /// the midpoints between them — each midpoint the two neighbours'
-    /// middle, pulled a quarter of the way by the samples around it and a
-    /// sixteenth back along its own segment — and every pair widened by a
-    /// normal across the eye and the sample's age. The normals come from
-    /// the neighbour differences crossed with the eye: the first and last
-    /// averaged, the middles interpolated between the two ends' normals,
-    /// each kept between draws by [`NORMAL_LERP`]. The second texture
-    /// coordinate walks along the strip by the squared sample distance
-    /// times [`RIBBON_STEP_CHARGING`] while the torrent charges and
-    /// [`RIBBON_STEP_RUNNING`] while it runs.
+    /// The torrent's ribbon: one strip a stream. The stream's samples,
+    /// the last repeated once, are doubled by the cubic Hermite midpoints
+    /// between them ([`hermite_midpoint`]); every vertex but the last is
+    /// widened by a normal across the eye and the sample's age. The frame's
+    /// normals come from the neighbour differences crossed with the eye and
+    /// feed the stream's moving mean; the drawn normals run from the
+    /// stream's head normal to its tail normal, each blended toward the
+    /// samples' end differences ([`NORMAL_AVERAGE`] at the head,
+    /// [`NORMAL_LERP`] at the tail). The second texture coordinate walks
+    /// along the strip by the squared vertex distance times
+    /// [`RIBBON_STEP_CHARGING`] while the torrent charges and
+    /// [`RIBBON_STEP_RUNNING`] while it runs ([`walk_texture`]). Streams are
+    /// separate strips.
     ///
     /// The original crosses the differences with the eye position carried
     /// into the effect node's frame; Exarust uses the world eye, the same
@@ -855,26 +859,37 @@ impl Torrent {
             if samples.len() < 3 {
                 continue;
             }
-            let mut points = Vec::with_capacity((samples.len() - 1) * 2);
-            let mut widths = Vec::with_capacity((samples.len() - 1) * 2);
-            for i in 0..samples.len() - 1 {
-                points.push(samples[i].at);
+            // The draw repeats the last sample once, so the last real
+            // segment's outgoing tangent reaches the repeat and a final,
+            // degenerate segment closes the doubled spine.
+            let n = samples.len();
+            let mut extended = samples.clone();
+            extended.push(samples[n - 1]);
+            let mut points = Vec::with_capacity(n * 2);
+            let mut widths = Vec::with_capacity(n * 2);
+            for i in 0..n {
+                points.push(extended[i].at);
                 let middle = hermite_midpoint(
-                    if i > 0 { Some(samples[i - 1].at) } else { None },
-                    samples[i].at,
-                    samples[i + 1].at,
-                    samples.get(i + 2).map(|sample| sample.at),
+                    if i > 0 {
+                        Some(extended[i - 1].at)
+                    } else {
+                        None
+                    },
+                    extended[i].at,
+                    extended[i + 1].at,
+                    extended.get(i + 2).map(|sample| sample.at),
                 );
                 points.push(middle);
                 let midpoint = |a: f32, b: f32| a + (b - a) * 0.5;
-                widths.push(samples[i]);
+                widths.push(extended[i]);
                 widths.push(StreamSample {
                     at: middle,
-                    width: midpoint(samples[i].width, samples[i + 1].width),
-                    weight: midpoint(samples[i].weight, samples[i + 1].weight),
-                    age: midpoint(samples[i].age, samples[i + 1].age),
+                    width: midpoint(extended[i].width, extended[i + 1].width),
+                    weight: midpoint(extended[i].weight, extended[i + 1].weight),
+                    age: midpoint(extended[i].age, extended[i + 1].age),
                 });
             }
+            // `count` vertices; the last is only a direction.
             let count = points.len();
             let mut normals = vec![Vec3::ZERO; count];
             let first = normalize(cross(points[1] - points[0], eye));
@@ -886,28 +901,31 @@ impl Torrent {
                 sum += normal;
             }
             // The closing vertex takes the head's normal, then the stream's
-            // moving mean of the frame's normals is blended in and the head
-            // becomes that mean.
+            // moving mean of the frame's normals is blended in.
             normals[count - 1] = first;
             let mean = normalize(sum);
             let stream = &mut self.records[index];
             stream.normals[0] = normalize(lerp(stream.normals[0], mean, NORMAL_AVERAGE));
-            normals[0] = stream.normals[0];
-            // The two ends blend toward their frame normals; the blends are
-            // not normalised again.
-            let last_side = normalize(cross(points[count - 1] - points[count - 3], eye));
-            stream.normals[1] = lerp(stream.normals[1], first, NORMAL_AVERAGE);
-            stream.normals[2] = lerp(stream.normals[2], last_side, NORMAL_LERP);
+            // The two ends blend toward the normals of the samples' (not
+            // the doubled vertices') end differences; the blends are not
+            // normalised again.
+            let head_side = normalize(cross(samples[1].at - samples[0].at, eye));
+            let tail_side = normalize(cross(samples[n - 1].at - samples[n - 3].at, eye));
+            stream.normals[1] = lerp(stream.normals[1], head_side, NORMAL_AVERAGE);
+            stream.normals[2] = lerp(stream.normals[2], tail_side, NORMAL_LERP);
             normals[0] = stream.normals[1];
             for i in 1..count - 1 {
                 // The share is a double division, then narrowed.
                 let t = (f64::from(i as i32) / f64::from((count - 2) as i32)) as f32;
                 normals[i] = normalize(lerp(stream.normals[1], stream.normals[2], t));
             }
-            stream.normals[3] = normals[count - 2];
+            stream.normals[3] = normals[count - 4];
+            // One emitter call a vertex but the last; each call's two
+            // triangles join its pair to the next, so the last call's pair
+            // is dropped and no stream joins the one before it.
             let mut strip = RibbonMesh::default();
             let mut along = 0.0f32;
-            for i in 0..count - 2 {
+            for i in 0..count - 1 {
                 strip.push_torrent_quad(
                     points[i],
                     normals[i],
@@ -921,17 +939,10 @@ impl Torrent {
                 let squared = (delta.x * delta.x + delta.y * delta.y) + delta.z * delta.z;
                 along = walk_texture(along, squared, step);
             }
-            let base = if mesh.positions.is_empty() {
-                0
-            } else {
-                mesh.vertex_count() as i32 - 2
-            };
-            if !mesh.positions.is_empty() {
-                mesh.drop_triangles(2);
-            }
+            strip.drop_triangles(2);
+            let base = mesh.vertex_count() as i32;
             mesh.append(&strip, base, |point| point);
         }
-        mesh.drop_triangles(2);
         mesh
     }
 }
@@ -1268,6 +1279,12 @@ mod tests {
             hermite_midpoint(Some(previous), a, b, None),
             Vec3::new(0.0, 0.0, 5.0)
         );
+        // The last real segment's outgoing tangent reaches the repeated
+        // last sample: (10 − 0)·−0.0625 = −0.625, so 5 + 1.25 − 0.625.
+        assert_eq!(
+            hermite_midpoint(Some(previous), a, b, Some(b)),
+            Vec3::new(0.0, 0.0, 5.625)
+        );
     }
 
     #[test]
@@ -1309,11 +1326,15 @@ mod tests {
         }
         let frame = t.frame(1.0);
         let mesh = t.ribbon(&frame, Vec3::new(1000.0, 1000.0, 0.0));
-        // Three samples make a four-point spine and two emitter calls a
-        // stream; the streams chain onto the previous stream's last pair
-        // and the final closing pair is dropped.
-        assert_eq!(mesh.positions.len(), 16 * 4);
-        assert_eq!(mesh.indices.len(), 96);
+        // Three samples and the repeated last make six doubled vertices,
+        // five emitter calls and four quads a stream; the last call's
+        // forward pair is dropped and no stream joins another.
+        assert!(frame.streams.iter().all(|(_, samples)| samples.len() == 3));
+        assert_eq!(mesh.positions.len(), 16 * 10);
+        assert_eq!(mesh.indices.len(), 16 * 4 * 6);
+        // The second stream's first triangle starts at its own first pair.
+        assert_eq!(mesh.indices[4 * 6], 10);
+        assert!(mesh.indices.iter().all(|&i| usize::from(i) < 160));
         let (colour, _) = &frame.streams[0];
         assert_eq!(mesh.colours[0], *colour);
         assert_eq!(mesh.uvs[0][0], 0.0);
