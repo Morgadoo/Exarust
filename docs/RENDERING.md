@@ -1449,10 +1449,15 @@ in world space there too):
   block's black patches or propagation halo; the warm block replaces it in
   one step. A level change drops both blocks. When a load ends, the block
   is rebuilt around the camera's starting view if it is not already there.
-  Nine resident light textures, their per-object `VXGIPos` selection and
-  the neighbour margin blits are not wired (`GiBlockLayout::sample_transform`
-  and `sample_at` keep the per-object offset and scale, `margin_blit` the
-  columns and UV offsets).
+  The renderer keeps up to nine blocks' light and scratch textures
+  (`GiTextureCache`), as the original owns nine: a block the camera comes
+  back to reuses the light it accumulated and skips the warm-up, and its
+  occupancy is uploaded whole again from the world's cells. Only the
+  camera's block runs a light step each frame, so a resident neighbour's
+  light is as the last step left it; the original steps all nine. Per-object
+  `VXGIPos` selection across blocks is not wired either (a surface samples
+  the camera's block, clamped at its edge; `GiBlockLayout::sample_transform`
+  and `sample_at` keep the original's per-object offset and scale).
 - Surfaces **sample** the volume with the original's per-object transform:
   `texture(p·scale + offset)` with `p` in world centimetres, the offset's X
   and Z half a texture minus the block's centre over its width and its Y
@@ -1739,8 +1744,14 @@ its width, at the slice's middle ((slice + 0.5)/width), as the original's
 - a neighbour block's margin copy: one margin column or row, the interior
   on the other axis, UV offset ∓240/256, every slice but the top, and the
   destination quad's four corners with the original's base z of
-  −0.5/depth (`margin_blit`, `margin_quad`). With one resident block no
-  neighbour light texture exists to copy from, so the pass is not run.
+  −0.5/depth (`margin_blit`, `margin_quad`). The pass runs every step for
+  each resident neighbour the manager holds (`GiTextureCache`): the step
+  clears the margins and each copy fills one, reading the neighbour's sRGB
+  light at the same world texel (its own coordinates plus the offset) and
+  re-encoding it into the block's target. During a warm-up the block being
+  warmed takes no copies; once it is bound it takes them. A neighbour the
+  manager does not keep (beyond nine, or not yet built) leaves its margin
+  dark, as the original's untextured block does.
 
 **Voxel lights** (`0x3D0C` nodes: glowing items and a few level nodes)
 add straight into the volume, after the propagation, every step and in
