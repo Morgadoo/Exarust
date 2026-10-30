@@ -502,12 +502,13 @@ pub struct ControlVisibility {
 }
 
 /// Shows or hides a control (the original's visibility helper). Hiding
-/// clears only its shown bit. Showing first clears the shown and lit bits
-/// of every control of its group that is shown (the control itself
-/// included; a group of 0 has none), reporting each unless `quiet`, then
-/// sets its own shown bit; the lit bit then follows the shown bit. Unless
-/// `quiet`, the control itself reports too. Returns the other controls
-/// hidden and the previous state byte.
+/// clears its shown bit (the lit bit then follows it down). Showing first
+/// clears the shown and lit bits of every control of its group that is
+/// shown (the control itself included; a group of 0 has none), reporting
+/// each unless `quiet`, then sets its own shown bit; the lit bit then
+/// follows the shown bit. Unless `quiet`, the control itself reports too.
+/// Returns the other controls hidden and the state's low byte (lit masked
+/// off).
 pub fn set_control_visible(
     controls: &mut [Control],
     index: usize,

@@ -967,6 +967,15 @@ mod tests {
         // Four columns of 112-pixel cells and eight rows.
         assert!(image.width >= 448, "title sheet width {}", image.width);
         assert!(image.height >= 896, "title sheet height {}", image.height);
+        // The title art is the menu's load too.
+        let art = game
+            .load_rgba("maintitle01")
+            .expect("maintitle01.rfi is installed");
+        assert!(art.width > 0 && art.height > 0);
+        assert_eq!(
+            exa_ui::menu::title_place(1600, 1.0, (art.width, art.height))[2],
+            art.width as i32
+        );
         // The draw reads a whole row of cells out of the sheet.
         let cell =
             exa_ui::gui_draw::GuiTexture::from_bottom_up(image.width, image.height, &image.pixels)
