@@ -382,8 +382,15 @@ pub const NO_ROTATION: [[f32; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 
 /// The practice spawn table's rotation: a half turn about the vertical axis.
 pub const PRACTICE_ROTATION: [[f32; 3]; 3] = [[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]];
 
-/// The practice arena's spawn point: the middle of the ring.
+/// The point the practice shots look at: 5 m past the ring's middle, where
+/// the partner stands (the start view's target keeps its 20 cm height).
 pub const PRACTICE_POINT: Vec3 = Vec3::new(0.0, 0.0, 500.0);
+
+/// Where the practice ladder's player stands: the ring's middle, with the
+/// body's own height for the vertical. The spawn table's own vertical (500)
+/// is the placeholder the start and each next fight overwrite, so the
+/// horizontal position is the origin and only the height varies.
+pub const PRACTICE_SPAWN: Vec3 = Vec3::new(0.0, 0.0, 0.0);
 
 /// The story spawn table's position: the starting room's corner.
 pub const STORY_POINT: Vec3 = Vec3::new(8200.0, 0.0, 3920.0);
@@ -2023,9 +2030,9 @@ impl Flow {
         let placement = Placement {
             rotation: PRACTICE_ROTATION,
             position: Vec3::new(
-                PRACTICE_POINT.x,
+                PRACTICE_SPAWN.x,
                 practice_height(standing),
-                PRACTICE_POINT.z,
+                PRACTICE_SPAWN.z,
             ),
         };
         self.viewport = viewport;
@@ -2430,7 +2437,7 @@ impl Flow {
         self.hook = Hook::Practice;
         let placement = Placement {
             rotation: PRACTICE_ROTATION,
-            position: Vec3::new(PRACTICE_POINT.x, self.stand_height, PRACTICE_POINT.z),
+            position: Vec3::new(PRACTICE_SPAWN.x, self.stand_height, PRACTICE_SPAWN.z),
         };
         let mut steps = self.close_end_menu();
         steps.extend([
@@ -4076,7 +4083,7 @@ mod tests {
         assert_eq!(start.view.target, Vec3::new(0.0, 20.0, 500.0));
         assert!(steps.contains(&Step::PlacePlayer(Placement {
             rotation: PRACTICE_ROTATION,
-            position: Vec3::new(0.0, 95.0, 500.0),
+            position: Vec3::new(0.0, 95.0, 0.0),
         })));
         assert!(steps.contains(&Step::Camera(camera::frame_point(
             PRACTICE_POINT,
@@ -4200,10 +4207,11 @@ mod tests {
         flow.set_practice_health(0.2, 0.25);
         flow.stand_height = 88.5;
         let steps = flow.practice_next(9000);
-        // The body stands at its measured stand height.
+        // The body stands at its measured stand height, over the ring's
+        // middle; the shot still looks 5 m ahead at the partner's place.
         assert!(steps.contains(&Step::PlacePlayer(Placement {
             rotation: PRACTICE_ROTATION,
-            position: Vec3::new(0.0, 88.5, 500.0),
+            position: Vec3::new(0.0, 88.5, 0.0),
         })));
         assert_eq!(flow.practice.fight, 8);
         assert_eq!(flow.phase, Phase::Playing);
@@ -4859,10 +4867,11 @@ mod tests {
         };
         let steps = flow.start_practice(Ladder::Expert, 92.0, view, 500);
         assert_eq!(flow.mode, Mode::Practice);
-        // The standing height plus 5 cm, in the ring's middle, half turned.
+        // The standing height plus 5 cm, over the ring's middle, half turned;
+        // the shot looks 5 m ahead at the partner's place.
         assert!(steps.contains(&Step::PlacePlayer(Placement {
             rotation: PRACTICE_ROTATION,
-            position: Vec3::new(0.0, 97.0, 500.0),
+            position: Vec3::new(0.0, 97.0, 0.0),
         })));
         assert_eq!(flow.practice.fight, 1);
         assert!(steps.contains(&Step::PracticeFilter));
