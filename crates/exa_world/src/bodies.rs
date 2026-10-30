@@ -508,7 +508,9 @@ pub fn register_bodies(
                     record: crate::mechanisms::lever_record(&lever.record),
                     saved: lever.saved,
                     id: lever.id,
-                    light: light_under(model, top),
+                    // The original's finder starts at the parent of the
+                    // arm's node (the operative's node), not at the arm.
+                    light: light_under(model, model.nodes[top].parent.unwrap_or(top)),
                 });
             }
             (Placement::Plate(plate), Some(Rules::Plate)) => {
@@ -525,10 +527,11 @@ pub fn register_bodies(
 }
 
 /// Whether a light node stands at or under `root` in the model's tree.
-/// The original's lever set-up looks for the first node whose class low
-/// bits are 5 ([`exa_physics::lever::LIGHT_KIND`]'s finder) and keeps it so
-/// a kind 6 lever can fade it; the loaded model records a light node as
-/// `light`, so this searches those nodes and walks up their parents.
+/// The original's kind 6 lever set-up walks from the parent of the arm's
+/// node, the node first and then each child in order, for the first node
+/// whose class bits (mask 0x5f) are 5, and keeps it so the lever can fade
+/// it; the loaded model records a light node as `light` (a guess for that
+/// class test), so this searches those nodes and walks up their parents.
 fn light_under(model: &Model, root: usize) -> bool {
     model.nodes.iter().enumerate().any(|(at, node)| {
         if node.light.is_none() {
