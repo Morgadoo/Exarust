@@ -450,6 +450,58 @@ pub fn edit_page(src: &PageSource) -> EditPageState {
     }
 }
 
+/// What the edit page pushes into its preview panel when it refreshes: the
+/// character record link, the skin point (the two 16-bit words over 65535
+/// in single precision), the hair colour (bytes over 255), the panel's
+/// texture and a rebuilt preview body.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PreviewUpdate {
+    pub character: bool,
+    pub skin: [f32; 2],
+    pub hair: [f32; 3],
+    /// The panel takes the hair texture from the character's figure.
+    pub texture: bool,
+    pub rebuilt: bool,
+}
+
+/// The preview write at the end of the edit page's refresh: run only when
+/// the page holds a preview panel, and only with a hair picker does the
+/// hair colour and texture write.
+pub fn preview_update(src: &PageSource, has_preview: bool) -> Option<PreviewUpdate> {
+    if !has_preview {
+        return None;
+    }
+    Some(PreviewUpdate {
+        character: true,
+        skin: src
+            .skin
+            .map(|word| (f64::from(word) * 1.5259021896696422e-05) as f32),
+        hair: if src.hair_picker {
+            src.hair_colour
+                .map(|byte| (f64::from(byte) * 0.00392156862745098) as f32)
+        } else {
+            [0.0; 3]
+        },
+        texture: src.hair_picker,
+        rebuilt: true,
+    })
+}
+
+/// What destroying the edit page does: with a preview panel it removes the
+/// update hook it added to the panel before the base form's destroy runs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EditPageDestroy {
+    pub hook_removed: bool,
+    pub base: bool,
+}
+
+pub fn destroy_edit_page(has_preview: bool) -> EditPageDestroy {
+    EditPageDestroy {
+        hook_removed: has_preview,
+        base: true,
+    }
+}
+
 /// The skin picker's change: its two coordinates scale to the record's two
 /// 16-bit colour words (rounded half to even); the body is regenerated and
 /// the preview redrawn.
@@ -5599,6 +5651,48 @@ mod tests {
             ..src
         });
         assert_eq!(tall.height_slider, 1.0);
+    }
+
+    #[test]
+    fn the_edit_page_pushes_its_points_into_the_preview_panel() {
+        let src = PageSource {
+            physique: [0.5; 2],
+            height: 0.0,
+            age: 0.0,
+            skin: [0x8000, 0xffff],
+            hair_colour: [255, 51, 0],
+            slider: 0.0,
+            number: 0,
+            voice: 0,
+            pitch: 1.0,
+            word: 0,
+            hair_picker: true,
+        };
+        let update = preview_update(&src, true).expect("a preview panel");
+        assert!(update.character && update.texture && update.rebuilt);
+        assert_eq!(update.skin[1], 1.0);
+        assert!((update.skin[0] - 0.5000076).abs() < 1e-6);
+        assert_eq!(update.hair, [1.0, 0.2, 0.0]);
+        // Without a hair picker the hair write keeps the record's own.
+        let body = preview_update(
+            &PageSource {
+                hair_picker: false,
+                ..src
+            },
+            true,
+        )
+        .unwrap();
+        assert_eq!(body.hair, [0.0; 3]);
+        assert!(!body.texture);
+        assert_eq!(preview_update(&src, false), None);
+        assert_eq!(
+            destroy_edit_page(true),
+            EditPageDestroy {
+                hook_removed: true,
+                base: true
+            }
+        );
+        assert!(!destroy_edit_page(false).hook_removed);
     }
 
     #[test]
