@@ -197,8 +197,9 @@ and the grid's rooms; portal clipping is next (see
   set-up: the scene is marked only when the manager is created, one shadow
   receiver per tile and block outside room mode, a pool sized in room mode.
 - `grid` keeps the set-piece loader's rules: a fully transparent part (alpha
-  below 0.01) marks its triangles' vertices in an added channel (`VertexChannel`,
-  the 0x2b40100 record over the model's vertex table, every slot unmarked
-  until a part writes), the load's
+  below 0.01) marks its triangles' vertices in an added channel (`added_channel`:
+  the model's channel of kind 0x100, or a new one copying the first
+  channel's word with bit 0x4000000, its third word and slot count, every
+  slot unmarked until a part writes), the load's
   node flag words, and the child skip for the 20 cm subdivision (`#`, `+` and
   `[` children are not subdivided, but are still built).

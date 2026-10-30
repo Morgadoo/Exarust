@@ -70,53 +70,57 @@ pub fn marks_transparent(alpha: f32) -> bool {
     alpha < TRANSPARENT_ALPHA
 }
 
-/// A model's added vertex channel: the original's 24-byte record plus the
-/// per-vertex marks. The first word is the record tag combined with the
-/// first channel's own word; the second is the shared flag.
+/// One vertex channel record of a model: its first word (format bits), its
+/// second (the channel's kind in the low 16 bits), the third word the added
+/// channel copies, and one 32-bit value per slot.
 #[derive(Clone, Debug, PartialEq)]
 pub struct VertexChannel {
-    /// The record tag ([`CHANNEL_RECORD_WORD`]).
     pub word: u32,
-    /// The first channel's word as the tag's low bits ([`CHANNEL_SHARED`]).
-    pub shared: bool,
-    /// The model's vertex table, one channel slot per vertex.
-    pub remap: Vec<u32>,
-    /// One mark per channel slot ([`CHANNEL_UNMARKED`] before any part).
-    pub marks: Vec<f32>,
+    pub kind: u32,
+    pub stride: u32,
+    pub data: Vec<f32>,
 }
 
-/// The tag a merged mesh's added vertex channel carries (the original's
-/// 0x2b40100 record word).
-pub const CHANNEL_RECORD_WORD: u32 = 0x02b4_0100;
-/// The first channel's word bit the added channel copies.
-pub const CHANNEL_SHARED: u32 = 0x0400_0000;
-/// A collision part below this linear extent (metres) marks its vertices as
-/// fully transparent.
-pub const TRANSPARENT_EXTENT: f32 = 0.01;
+/// The kind (low 16 bits) of the channel the set-piece loader marks.
+pub const ADDED_CHANNEL_KIND: u32 = 0x100;
+/// The second word a newly added marking channel takes.
+pub const ADDED_CHANNEL_WORD: u32 = 0x02b4_0100;
+/// The bit the added channel sets in the first word it copies from the
+/// model's first channel.
+pub const ADDED_CHANNEL_FLAG: u32 = 0x0400_0000;
 
-impl VertexChannel {
-    /// Creates a channel over `vertices` slots, every slot unmarked.
-    pub fn new(vertices: usize) -> Self {
-        Self {
-            word: CHANNEL_RECORD_WORD,
-            shared: false,
-            remap: (0..vertices as u32).collect(),
-            marks: unmarked_channel(vertices),
-        }
-    }
-
-    /// Marks the vertices of a fully transparent part, through the model's
-    /// vertex table, as the wall-set loader does. False, with the channel
-    /// untouched, when the part is not fully transparent.
-    pub fn mark_part(&mut self, alpha: f32, triangles: &[[u32; 3]]) -> bool {
-        mark_transparent_triangles(alpha, triangles, &self.remap, &mut self.marks)
-    }
+/// The first channel whose kind (the second word's low 16 bits) is `kind`.
+pub fn find_channel(channels: &[VertexChannel], kind: u32) -> Option<usize> {
+    channels.iter().position(|c| c.kind & 0xffff == kind)
 }
 
-/// Whether a part is marked as fully transparent: its alpha is below
-/// [`TRANSPARENT_ALPHA`] and it has a triangle range to mark.
+/// The set-piece loader's marking channel: an existing channel of kind
+/// [`ADDED_CHANNEL_KIND`], or a new one appended after the others. A new
+/// channel copies the first channel's first word with
+/// [`ADDED_CHANNEL_FLAG`] set, its third word and its slot count, takes
+/// [`ADDED_CHANNEL_WORD`] and starts with every byte set (unmarked). With
+/// no channel to copy, the new record copies its own zeroed fields, as the
+/// original reads the first record after appending.
+pub fn added_channel(channels: &mut Vec<VertexChannel>) -> usize {
+    if let Some(at) = find_channel(channels, ADDED_CHANNEL_KIND) {
+        return at;
+    }
+    let (word, stride, count) = channels
+        .first()
+        .map_or((0, 0, 0), |c| (c.word, c.stride, c.data.len()));
+    channels.push(VertexChannel {
+        word: word | ADDED_CHANNEL_FLAG,
+        kind: ADDED_CHANNEL_WORD,
+        stride,
+        data: unmarked_channel(count),
+    });
+    channels.len() - 1
+}
+
+/// Whether the loader marks a part: its alpha is fully transparent and its
+/// last triangle is not before its first (no other bound is checked).
 pub fn marks_part(alpha: f32, first_triangle: i32, last_triangle: i32) -> bool {
-    marks_transparent(alpha) && first_triangle >= 0 && last_triangle >= first_triangle
+    marks_transparent(alpha) && last_triangle >= first_triangle
 }
 
 /// The added vertex channel for a model of `vertices` vertices, unmarked.
@@ -1983,38 +1987,34 @@ mod tests {
     }
 
     #[test]
-    fn the_vertex_channel_record_starts_unmarked_and_marks_parts() {
-        let mut channel = VertexChannel::new(4);
-        assert_eq!(channel.word, CHANNEL_RECORD_WORD);
-        assert!(!channel.shared);
-        assert_eq!(channel.remap, vec![0, 1, 2, 3]);
-        assert!(channel.marks.iter().all(|m| m.is_nan()));
-        // A transparent part marks its triangle vertices through the table.
-        channel.remap = vec![3, 1, 0, 2];
-        assert!(channel.mark_part(0.0, &[[1, 2, 3]]));
-        assert_eq!(channel.marks[1], 0.0);
-        assert_eq!(channel.marks[0], 0.0);
-        assert_eq!(channel.marks[2], 0.0);
-        assert_eq!(channel.marks[3].to_bits(), CHANNEL_UNMARKED);
-        // An opaque part leaves the channel alone.
-        let before = channel
-            .marks
-            .iter()
-            .map(|m| m.to_bits())
-            .collect::<Vec<_>>();
-        assert!(!channel.mark_part(0.5, &[[0, 0, 0]]));
-        assert_eq!(
-            channel
-                .marks
-                .iter()
-                .map(|m| m.to_bits())
-                .collect::<Vec<_>>(),
-            before
-        );
-        // The part gate also needs a non-empty triangle range.
+    fn the_marking_channel_is_found_or_copied_from_the_first() {
+        let first = VertexChannel {
+            word: 0x11,
+            kind: 0x0203_0001,
+            stride: 12,
+            data: vec![1.0; 4],
+        };
+        let mut channels = vec![first.clone()];
+        assert_eq!(added_channel(&mut channels), 1);
+        let added = &channels[1];
+        assert_eq!(added.word, 0x0400_0011);
+        assert_eq!(added.kind, ADDED_CHANNEL_WORD);
+        assert_eq!(added.stride, 12);
+        assert_eq!(added.data.len(), 4);
+        assert!(added.data.iter().all(|m| m.to_bits() == CHANNEL_UNMARKED));
+        // The next load finds it by its kind instead of adding another.
+        assert_eq!(added_channel(&mut channels), 1);
+        assert_eq!(channels.len(), 2);
+        // A model with no channel gets one copied from its own zero fields.
+        let mut none = Vec::new();
+        assert_eq!(added_channel(&mut none), 0);
+        assert_eq!(none[0].word, ADDED_CHANNEL_FLAG);
+        assert!(none[0].data.is_empty());
+        // The part gate needs only an ordered triangle range.
         assert!(!marks_part(0.0, 2, 1));
-        assert!(!marks_part(0.0, -1, 3));
+        assert!(marks_part(0.0, -1, 3));
         assert!(marks_part(0.0, 0, 0));
+        assert!(!marks_part(0.5, 0, 0));
     }
 
     #[test]
