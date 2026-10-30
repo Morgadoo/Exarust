@@ -882,7 +882,7 @@ fn owned(n: &str, parent: usize, class: u32) -> SceneNode {
             data: if class == ATTACH_CLOTH {
                 AttachmentData::Cloth {
                     marker: 0,
-                    particles: vec![[1.0, 2.0, 3.0]],
+                    particles: vec![[1.0, 2.0, 3.0, 9.0]],
                 }
             } else {
                 AttachmentData::None
@@ -935,6 +935,7 @@ fn a_cloth_part_stores_its_particles() {
     let rec = &chunks(&roots(&b)[0].1[4..])[0].1;
     let parts = chunks(&rec[4 + 16 + 48 + 8..]);
     assert_eq!(parts[0].0, tag::PART_CLOTH);
+    // The fourth word of each 16-byte particle is not stored.
     let mut want = name("Cloth").to_vec();
     want.extend(le(&[0x77, 1]));
     want.extend(f32s(&[1.0, 2.0, 3.0]));

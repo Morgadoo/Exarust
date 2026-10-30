@@ -437,8 +437,11 @@ pub enum AttachmentData {
     Cloth {
         /// The cloth marker's word.
         marker: u32,
-        /// Particle positions (cm).
-        particles: Vec<[f32; 3]>,
+        /// Particle records in the original's 16-byte stride (cm); only the
+        /// first three words of each are stored, by the compacting copy
+        /// that turns the stride into 12 bytes. The fourth word is not
+        /// written.
+        particles: Vec<[f32; 4]>,
     },
     Emitter {
         /// `0x3DD0E002` (fire) or `0x3DD0E004`.
@@ -1330,7 +1333,9 @@ impl<'a> Walk<'a> {
                 w.u32(a.id);
                 w.u32(particles.len() as u32);
                 for p in particles {
-                    w.vec3(*p);
+                    // The original's compacting copy: the first three words
+                    // of each 16-byte particle.
+                    w.vec3([p[0], p[1], p[2]]);
                 }
             } else {
                 return Ok(());
