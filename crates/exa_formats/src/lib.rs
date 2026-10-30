@@ -35,6 +35,7 @@ pub mod procedural;
 pub mod races;
 pub mod rdb;
 pub mod rfc;
+pub mod rfc_level;
 pub mod rfc_write;
 pub mod rfi;
 pub mod rigid_body;
