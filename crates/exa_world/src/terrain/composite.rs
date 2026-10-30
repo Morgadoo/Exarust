@@ -2214,7 +2214,10 @@ mod tests {
         assert_eq!(tex_pos(3, 5, 7, 5), Vec3::new(16.0, 16.0, 32.0 / 4800.0));
         assert_eq!(tex_pos(3, 9, 3, 3).x, 256.0);
         // The level test is signed: a level with the top bit set is whole-tile.
-        assert_eq!(tex_pos(3, 0x8000_0000, 7, 5), Vec3::new(0.5, 0.5, 1.0 / 4800.0));
+        assert_eq!(
+            tex_pos(3, 0x8000_0000, 7, 5),
+            Vec3::new(0.5, 0.5, 1.0 / 4800.0)
+        );
     }
 
     #[test]
