@@ -3270,7 +3270,8 @@ rain set. `effects::portal_effect` spawns a portal's particles one at a
 time on an 80 × 115 cm ellipse at the node's place, each starting with an
 outward step of 0.0015 of its offset, with the original's 3- or 5-bit look
 index draws. `effects::fire_node` builds the `_FlameMat01` node's warm
-800 cm light; the row itself is `effects::fire_row`. The row's ribbon is
+800 cm light, and the node a placed object's fire effect creates
+(`placed_flame`, its colour ramp `flame_ramp`); the row itself is `effects::fire_row`. The row's ribbon is
 built each frame from the two shifted ends of the line and the two lagging
 points: 16 sections of 8 vertices, the cross-section turned toward the
 interpolated lag, its width 1.5 times the line over the section count and

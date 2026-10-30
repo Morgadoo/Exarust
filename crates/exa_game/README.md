@@ -466,7 +466,8 @@ the gust walk, the fall, the tilt-dependent streak, the ground wrap on the
 effect's own generator, the colour and the two shaders kept as data),
 `effects::portal_effect` (one ellipse particle per call, its previous and
 current positions, the 3- and 5-bit look draws), `effects::fire_node`
-(the `_FlameMat01` node's 800 cm 1/0.68/0.43 light), `effects::force_dome`
+(the `_FlameMat01` node's 800 cm 1/0.68/0.43 light, and the same node a
+placed object's fire effect creates with its colour ramp), `effects::force_dome`
 (the eight-ripple list, the cast sound, the Barrier's damped height,
 800 ms grow window, drain, drawn radius, frame and keep-out, the Bubble's
 1200 ms grow, break and 700 ms fall and its two keep-outs, the character
