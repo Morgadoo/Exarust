@@ -1520,6 +1520,29 @@ fn spawn_players(
         story,
     };
     spawn_placed_characters(commands, loader, &placing, &corpses);
+    // A new story's companion: the unknown background (a new character's
+    // here) starts with Derrin in the first level, where the story start's
+    // companion step places him.
+    if story && existing.is_none() && saved.is_none() && name.eq_ignore_ascii_case(STORY_LEVEL) {
+        // The template's record has no id of its own; the companion takes
+        // the one after the level's records [guess: the original mints a
+        // new id for a character made from a template].
+        let next_id = start
+            .characters
+            .iter()
+            .map(|c| c.record.id & exa_formats::characters::ID_MASK)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        let companion: Vec<_> = story_companion(game, &items, next_id).into_iter().collect();
+        for c in &companion {
+            info!(
+                "story companion {} (record {:#x}) at {:?}",
+                c.name, c.record.id, c.position
+            );
+        }
+        spawn_placed_characters(commands, loader, &placing, &companion);
+    }
     let (spawned, missing) = spawn_placed_characters(commands, loader, &placing, &start.characters);
     commands.insert_resource(exa_ai::brain::RoleDatabase {
         book,
@@ -1537,6 +1560,47 @@ fn spawn_players(
         stage: "dressing characters".into(),
         fraction: COLLIDED_AT,
     });
+}
+
+/// The level a new story starts in.
+const STORY_LEVEL: &str = "exanima01";
+
+/// The unknown background's story companion as a placed character: its
+/// actor template's record under character id `id`, dressed from the game's items, at the story
+/// start's companion position (cm) and facing (degrees; taken as the
+/// placement's yaw [guess: the facing's sign matches the records' yaw]).
+fn story_companion(
+    game: &Game,
+    items: &[exa_formats::objdb::Item],
+    id: u32,
+) -> Option<exa_world::PlacedCharacter> {
+    let companion =
+        exa_game::flow::story_start(exa_game::flow::Background::Unknown, 1.0).companion?;
+    let mut actors = exa_game::prelude::ActorCache::new();
+    let mut record = actors.template(game, companion.template, false)?;
+    record.id = id;
+    let find = |id: u32| {
+        items
+            .iter()
+            .find(|item| item.id == id & exa_formats::characters::ID_MASK)
+    };
+    let look = exa_world::record_look(&record, find);
+    Some(exa_world::PlacedCharacter {
+        name: record.name.clone(),
+        position: companion.position * 0.01,
+        yaw: companion.facing.to_radians(),
+        dead: false,
+        race: record.race,
+        female: record.female,
+        worn: look.worn,
+        held: look.held,
+        hands: look.hands,
+        encumbrance: exa_formats::encumbrance::of_record(&record, find),
+        specials: exa_formats::encumbrance::WornSpecials::of_record(&record, find),
+        record,
+        pose: exa_formats::characters::SavedPose::None,
+        fall: false,
+    })
 }
 
 /// Gives a duellist its record's powers: a caster the combat state may
