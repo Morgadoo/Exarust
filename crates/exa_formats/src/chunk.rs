@@ -92,9 +92,11 @@ pub fn rfc_chunks(b: &[u8]) -> Result<Chunks<'_>> {
 /// cursor past its trailing sub-chunks.
 ///
 /// Opening an innermost chunk remembers the enclosing chunk's end, so chunks
-/// nest to any depth. `peek` is the original's "open, look at the tag, rewind
-/// the cursor over the header" idiom: the end stays known, so closing it later
-/// still skips the whole chunk.
+/// nest to any depth. [`ChunkCursor::rewind_header`] after
+/// [`ChunkCursor::open`] is the original's "open, look at the tag, rewind the
+/// cursor over the header" idiom: the end stays known, so closing it later
+/// still skips the whole chunk. Unlike the original, which trusts the size,
+/// a chunk running past the bytes is an error.
 #[derive(Debug, Clone)]
 pub struct ChunkCursor<'a> {
     bytes: &'a [u8],
@@ -289,7 +291,7 @@ mod tests {
         assert_eq!(cursor.position(), bytes.len());
     }
 
-    /// `peek` is open + rewind: the header can be read again, and closing
+    /// Open + rewind peeks: the header can be read again, and closing
     /// still skips the whole chunk.
     #[test]
     fn peek_rewinds_the_header_and_still_skips() {

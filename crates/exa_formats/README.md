@@ -8,7 +8,7 @@ bytes and returns plain data or an error. No Bevy dependency.
 | module | status |
 |---|---|
 | `kind` | format detection by magic for every shipped entry |
-| `chunk` | `.rfc` chunk framing and list chunks |
+| `chunk` | `.rfc` chunk framing and list chunks; `ChunkCursor`, the reader's chunk-end stack (open, close to the end, rewind over a header) |
 | `rfi` | images: header, mip chain, the registered block formats (BC1, DXT1a, BC3, DXT5n/na, BC4 luminance/alpha plane, the RGB-only LATC, BC5) decoded with the original's bit replication and truncating blends, the blue-first and ZYX uncompressed orders (through the `pixel` converters), RLE unpacking, the header flag word (stored chain, repeat per axis, the two-bit texture detail class, the cube bit) and the first uploaded mip level the detail setting picks; a level's and a face's size from the format word's block/packed/channel fields, cube faces with a chain each, the converters' pixel count, and owned image data with the original's copy, base-only copy, create, render-target, resize, release and whole-image conversion |
 | `palette` | the dye palette: 32 families (hue, saturation, base value, step), the linear and lifted HSV ramps in the original's precision, and the lifted colour as the factory stores it in bytes |
 | `procedural` | the 25 procedural materials: family, passes, colour/specular/normal texture lists and wear weight; the compiled program variants (`programs`: names, defines, samplers, uniforms), the random material sets, finish levels, colour classes, default finishes and emblem ids (the item roll shares the sets and classes); emblem picture names |
