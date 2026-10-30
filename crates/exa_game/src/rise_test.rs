@@ -78,6 +78,7 @@ fn spawn_dead(app: &mut App, red: f32, rules: u32, race: RaceMuscles) -> (Entity
             },
             CharacterVoice::default(),
             Hands::default(),
+            exa_combat::collapse::Collapse::default(),
             LimpKept {
                 animator: Some(Animator::new("Default", "Fall Backward")),
                 character: Some((root, CharacterBody::default())),
@@ -123,6 +124,7 @@ fn a_dead_body_rises_past_its_clock_with_its_race() {
     assert_eq!(d.stats.scale, 0.9);
     assert_eq!((d.tone, d.stance()), (0.0, 0.0));
     assert!(world.get::<DeathClock>(body).is_none());
+    assert!(world.get::<exa_combat::collapse::Collapse>(body).is_none());
     assert!(world.get::<LimpKept>(body).is_none());
     assert_eq!(world.get::<Animator>(body).unwrap().action, "Fall Backward");
     assert!(world.get::<TickedClips>(body).is_some());
@@ -174,4 +176,44 @@ fn the_rise_state_reads_the_rule_and_clock() {
     assert!(!rise_state(may, Condition::DEAD, None, u32::MAX, 1.0, false, false).due);
     assert_eq!(heading_yaw(Vec2::ZERO), None);
     assert_eq!(heading_yaw(Vec2::Y), Some(0.0));
+}
+
+/// The unarmed set-up's test reads the record's out set: a dropped weapon
+/// left it empty, a kept shield does not; without a record the hands are
+/// read, a shield or an off-hand light filling the off hand.
+#[test]
+fn the_unarmed_set_up_reads_the_record_out_set() {
+    use exa_character::held::{HeldItem, ShieldStyle};
+    use exa_items::possession::{Hand, Possessions};
+    let sword = Hand { id: 5, flags: 0 };
+    let shield = Hand { id: 6, flags: 0 };
+    let mut record = Possessions {
+        out: [sword, shield],
+        ..Possessions::default()
+    };
+    assert!(!weapon_slots_empty(Some(&record), None));
+    record.forget_loose(|id| id == 6);
+    assert!(!weapon_slots_empty(Some(&record), None));
+    record.forget_loose(|_| false);
+    assert!(weapon_slots_empty(Some(&record), None));
+    // The record wins over the hands.
+    let armed = Hands {
+        main: Some(HeldItem::weapon(0x11)),
+        ..Hands::default()
+    };
+    assert!(weapon_slots_empty(Some(&record), Some(&armed)));
+    assert!(!weapon_slots_empty(None, Some(&armed)));
+    assert!(weapon_slots_empty(None, Some(&armed.let_go())));
+    assert!(weapon_slots_empty(None, None));
+    let shielded = Hands {
+        shield: Some(ShieldStyle::Plain),
+        ..Hands::default()
+    };
+    assert!(!weapon_slots_empty(None, Some(&shielded.let_go())));
+    let lit = Hands {
+        off_light: true,
+        ..Hands::default()
+    };
+    assert!(!weapon_slots_empty(None, Some(&lit)));
+    assert!(weapon_slots_empty(None, Some(&lit.let_go())));
 }

@@ -155,6 +155,39 @@ pub fn apply_pending_hands(
     }
 }
 
+/// The record's side of a collapse's drop: on the tick a collapse starts,
+/// the holder's came-loose hook runs on its possessions
+/// ([`Possessions::forget_loose`]): every out hand that does not hold a
+/// shield loses its item and that item's held entry leaves the carried
+/// list, and a stowed hand whose item is gone is cleared. Only a body that
+/// held something in a non-shield hand drops anything (the hook runs once
+/// per dropped item). An item the catalogue does not know is not a shield.
+pub fn forget_collapsed_hands(
+    catalogue: Option<Res<ItemCatalogue>>,
+    mut bodies: Query<&mut Possessions, Added<exa_combat::collapse::Collapse>>,
+) {
+    let is_shield = |id: u32| {
+        catalogue
+            .as_ref()
+            .and_then(|c| c.kind(id & ID_MASK))
+            .is_some_and(|k| k.shield && k.weapon.is_none())
+    };
+    for mut possessions in &mut bodies {
+        if !possessions
+            .out
+            .iter()
+            .any(|hand| hand.id != 0 && !is_shield(hand.id))
+        {
+            continue;
+        }
+        possessions.forget_loose(is_shield);
+        info!(
+            "a collapse drops the held items from the record: out set {:?}",
+            possessions.out.map(|h| h.id)
+        );
+    }
+}
+
 /// Applies the hand plans of swapped weapon sets, and runs the bodies' worn
 /// item effects once a fixed tick.
 pub struct EquipPlugin;
@@ -168,6 +201,7 @@ impl Plugin for EquipPlugin {
                 .before(refresh_encumbrance),
         )
         .add_systems(Update, refresh_encumbrance)
+        .add_systems(Update, forget_collapsed_hands.before(refresh_encumbrance))
         .add_systems(
             FixedUpdate,
             crate::item_effects::run_worn_effects
@@ -401,5 +435,42 @@ mod tests {
         let hands = app.world().get::<Hands>(body).unwrap();
         assert!(hands.main.is_none());
         assert!(app.world().get::<PendingHands>(body).is_none());
+    }
+
+    /// A collapse drops the out set's items from the record and their held
+    /// entries from the carried list; empty hands write nothing.
+    #[test]
+    fn a_collapse_forgets_the_dropped_items() {
+        use exa_items::possession::Carried;
+        let mut app = App::new();
+        app.add_systems(Update, forget_collapsed_hands);
+        let held = Carried {
+            id: 5,
+            flags: 0x100,
+            ..Carried::default()
+        };
+        let armed = app
+            .world_mut()
+            .spawn(Possessions {
+                out: [Hand { id: 5, flags: 0 }, Hand::default()],
+                carried: vec![held],
+                ..Possessions::default()
+            })
+            .id();
+        let empty = app.world_mut().spawn(Possessions::default()).id();
+        app.update();
+        for e in [armed, empty] {
+            app.world_mut()
+                .entity_mut(e)
+                .insert(exa_combat::collapse::Collapse::default());
+        }
+        app.update();
+        let p = app.world().get::<Possessions>(armed).unwrap();
+        assert_eq!(p.out[0].id, 0);
+        assert!(p.carried.is_empty());
+        assert_eq!(
+            app.world().get::<Possessions>(empty).unwrap(),
+            &Possessions::default()
+        );
     }
 }
