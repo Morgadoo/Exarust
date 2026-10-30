@@ -147,17 +147,23 @@ fn open_settings(
     let fallback = Bindings::default();
     config.open(Some(bindings.as_deref().unwrap_or(&fallback)));
     let mut form = FormState::open(screen, unit);
-    form.set_device(adapter.as_deref().map(|info| info.name.as_str()));
+    form.controller_tabs = config.steam_input;
+    form.set_device(
+        adapter.as_deref().map(|info| info.name.as_str()),
+        config.steam_deck,
+        crate::hw_config::video_memory_mb(),
+    );
     if let Some(rows) = config.rows() {
         let events = form.fill(&rows);
         apply_rows(&mut form, &mut config, &events);
     }
-    if let Some(copy) = &config.bindings {
-        form.set_keys(&key_names(copy));
-    }
     if page == 1 {
         form.switch(1);
+        // The tab switch activates the page, which refills its key copy.
         config.switch_page(true);
+    }
+    if let Some(copy) = &config.bindings {
+        form.set_keys(&key_names(copy));
     }
     info!("settings: the form opens at {screen:?}, unit {unit}");
     settings.form = Some(form);
@@ -256,7 +262,20 @@ fn form_input(
     let now = time.elapsed().as_millis() as u32;
     for event in events {
         match event {
-            FormEvent::Page(page) => config.switch_page(page == 1),
+            FormEvent::Page(page) => {
+                config.switch_page(page == 1);
+                // Showing the Settings page ran the auto-detection: the
+                // rows refill when its benchmark ends.
+                if config.benchmark.is_some() {
+                    settings.benchmarking = true;
+                }
+                // The Controls page's activation refills its key copy.
+                if config.controls_page
+                    && let Some(copy) = &config.bindings
+                {
+                    form.set_keys(&key_names(copy));
+                }
+            }
             FormEvent::Slider(setting, fraction) => {
                 config.set_slider(setting, fraction);
                 if let Some(screen) = config.screen {
@@ -301,7 +320,17 @@ fn form_input(
                 keep = false;
                 break;
             }
-            FormEvent::Action(_) => {}
+            FormEvent::Action(action) => {
+                if let Some(controller) = settings::controller_view_tab(action) {
+                    // The Keyboard or Controller tab: the controller mode
+                    // and view; the rows stay the key rows, since Exarust
+                    // draws no controller page.
+                    config.set_controller_view(controller);
+                    if let Some(copy) = &config.bindings {
+                        form.set_keys(&key_names(copy));
+                    }
+                }
+            }
         }
     }
     if keep {

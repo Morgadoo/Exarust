@@ -847,8 +847,14 @@ closes, the middle and extra mouse buttons as `0x8004`–`0x8006`, the code
 read back through the saved table's conversion); opens the shader warm-up
 screen after an Apply that changes a shader option and steps it each frame
 (`ShaderWarmScreen`); and drives the GPU
-benchmark (a 1024² target, a 512² texture and sixteen full-screen quads, the
-original's half-second warm-up and three runs). It pushes the live options into `exa_render::quality`
+benchmark (a 1024² RGBA8 target, the original's 512² texture of one byte
+value and sixteen full-screen quads through its own fragment program,
+`exa_render::benchmark`, with the original's half-second warm-up and three
+runs); the tab switch's page activation runs the detection again (the
+Settings page's benchmark, or the Deck preset), the Controls page's
+activation refills its key copy or puts the saved aim speed back in the
+controller view, and `steam_deck`/`video_memory_mb` are the Deck and video
+memory probes. It pushes the live options into `exa_render::quality`
 (super-sampling on or off, shadow-map sizes, MSAA), the audio buses, the
 frame-rate readout and the window's mode, size and present mode
 ([`docs/UI.md`](../../docs/UI.md#settings-options)).

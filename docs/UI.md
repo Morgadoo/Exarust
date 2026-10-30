@@ -3017,10 +3017,15 @@ ink the colour), each corner with its sample record's u and v
 
 The three inks are the skin constructor's 255, 250, 230 with the alphas the
 line skin's fade hand-off writes, 80, 104 and 128 times the fade
-(`line_skin::line_control_inks`). Not reproduced: the controller view
-(Steam Input), the power-tree help text box it shows, dragging the
-scrollbar's thumb (the wheel scrolls), and a hovered button's caption
-routine (drawn as the off caption). `--open-settings settings|controls` opens the form for scripted
+(`line_skin::line_control_inks`). The Keyboard and Controller tabs
+(`FormAction::KeyboardView`, `ControllerView`) are modelled: they need Steam
+Input, so they never show in Exarust, and clicking one would turn the
+controller mode and view on or off and place the Controls page 21 units down
+instead of 14. Not reproduced: the controller view's own four-record page
+(its records were not traced; the aim-speed reset and the page's placement
+are), the power-tree help text box it shows, dragging the scrollbar's thumb
+(the wheel scrolls), and a hovered button's caption routine (drawn as the
+off caption). `--open-settings settings|controls` opens the form for scripted
 runs ([DEBUGGING.md](DEBUGGING.md)).
 
 ### Apply, Cancel and Defaults
@@ -3066,11 +3071,23 @@ refills the rows; nothing is saved. On Controls it puts the shipped keys
 into the page's copy, or, in controller mode, the saved aim speed back into
 the live one.
 
-The original runs the same auto-detection at start only on a first run
-(when `FirstRun` is set), and saves its result then. Exarust does not run it
-at launch (its workload and GPU differ, and it would replace the saved
-quality); `--benchmark` runs it once, without saving, and Steam Deck
-detection is not wired.
+The page activation runs the same auto-detection again: showing the Settings
+tab (the tab sheet's page activation, not the form's creation) starts the
+benchmark, and its result refills the rows when it ends; the Deck takes its
+preset at once. Exarust runs it the same way from the tab switch. Showing the
+Controls tab in the controller view puts the saved aim speed back into the
+live one, and on the keyboard view copies the shipped key table over the
+page's copy (dropping edits in progress, as the original does). The original
+also runs the detection at start only on a first run (when `FirstRun` is
+set), and saves its result then; Exarust does not run it at launch, since it
+would replace the saved quality. `--benchmark` runs it once, without saving.
+
+Steam Deck detection (`exa_game::hw_config::steam_deck`) reads the Steam
+runtime's `SteamDeck=1` marker or the DMI product name (`Jupiter`,
+`Galileo`); a Deck takes the preset instead of the benchmark and its name in
+the device readout. The video-memory readout asks the DRM cards'
+`mem_info_vram_total` (best effort; wgpu has no portable query) and shows
+"Unknown" when none is readable, as the original does without a figure.
 
 ### GPU benchmark
 
@@ -3084,10 +3101,14 @@ vertical sync off.
 
 Exarust measures the same protocol (`exa_formats::hw_config::Benchmark`)
 over the same half-second boundaries and score; its clock starts at the
-first drawn frame rather than just before it. Its workload is sixteen
-full-screen sprites through Bevy's sprite pipeline into the same 1024²
-target, not the original's shader: the score is comparable in spirit, not in
-number. The auto-detected quality is:
+first drawn frame rather than just before it. Its workload is the original's
+own: sixteen full-screen quads through a reimplementation of its fragment
+program (`exa_render::benchmark`, the GLSL translated one for one) into the
+same 1024² RGBA8 target, reading the same 512² texture whose every byte is
+0x3f, with repeat addressing and linear filtering. The original's unused
+projection uniform (2.0) rides along. The GPU and driver still differ, so
+the score is comparable in spirit, not in number. The auto-detected quality
+is:
 
 | performance index | super sampling | shading | texture detail | texture quality | shadow detail | shadow quality |
 |---|---|---|---|---|---|---|

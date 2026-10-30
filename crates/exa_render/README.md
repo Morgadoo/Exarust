@@ -102,6 +102,12 @@ Rules and evidence: [`docs/formats/FLB.md`](../../docs/formats/FLB.md) and
   the scene camera's MSAA while super-sampling is off, and
   `supersample::SuperSampling` turns the supersampled scene's target off and
   on ([`docs/UI.md`](../../docs/UI.md#what-actually-takes-effect)).
+- `benchmark`: the GPU benchmark's workload, the original's own fragment
+  program as a two-dimensional material (a texture read at the uv, the
+  square roots, the reads offset by 0.2341, 0.1476, 0.3768 and 0.4276, the
+  dot products, lengths, powers, sines and cosines), the 512² texture of one
+  byte value and its repeat/linear sampler, and the sixteen full-screen
+  quads the measured scene draws ([`docs/UI.md`](../../docs/UI.md#gpu-benchmark)).
 - `passes`: the original's fixed frame walk (clear, alpha-tested and opaque
   classes with depth writes, hook lists, the depth-biased decal class and
   blended per-sector lists with depth writes off, the particles' depth

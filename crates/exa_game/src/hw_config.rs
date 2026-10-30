@@ -12,6 +12,7 @@
 use std::path::PathBuf;
 
 use bevy::asset::RenderAssetUsages;
+use bevy::image::{ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
 use bevy::window::{Monitor, PresentMode, PrimaryMonitor, PrimaryWindow, WindowMode};
@@ -30,9 +31,6 @@ use crate::bindings::{self, Action, Bindings, DEFAULT_KEYS};
 
 /// The performance counter's ticks per second the benchmark's clock uses.
 pub const BENCHMARK_FREQUENCY: u64 = 1_000_000;
-/// The benchmark's target image and source texture sizes.
-const BENCHMARK_TARGET: u32 = 1024;
-const BENCHMARK_SOURCE: u32 = 512;
 /// The render layer of the benchmark's off-screen camera.
 const BENCHMARK_LAYER: usize = 30;
 
@@ -68,6 +66,10 @@ pub struct HardwareConfig {
     /// The window size the launcher asked for, kept for a return to windowed
     /// mode.
     pub window_size: Option<(u32, u32)>,
+    /// Whether Steam Input drives the Controller page's tabs. Exarust has no
+    /// Steam, so the Keyboard/Controller tabs stay hidden and the controller
+    /// view is never shown (its rules are modelled all the same).
+    pub steam_input: bool,
     /// The `ScreenWidth` and `ScreenHeight` settings: the full-screen display
     /// mode's size, 0 when unset ([`crate::window::fullscreen_mode`]).
     pub screen_size: (i32, i32),
@@ -117,6 +119,7 @@ impl HardwareConfig {
             steam_deck: false,
             session_music: live.music,
             window_size: None,
+            steam_input: false,
             screen_size: (0, 0),
             rumble: true,
             warm_pending: false,
@@ -171,11 +174,61 @@ impl HardwareConfig {
         self.bindings = None;
     }
 
-    /// Shows the Settings (`false`) or Controls (`true`) page.
+    /// Shows the Settings (`false`) or Controls (`true`) page. A tab click
+    /// that changes the page activates it, as the tab sheet does: showing
+    /// the Settings page runs the auto-detection again (the benchmark, or
+    /// the Deck's preset), and showing the Controls page in the controller
+    /// view puts the saved aim speed back into the live one, or on the
+    /// keyboard view puts the shipped keys into the page's copy.
     pub fn switch_page(&mut self, controls: bool) {
-        if self.screen.is_some() {
-            self.controls_page = controls;
+        if self.screen.is_none() || self.controls_page == controls {
+            return;
         }
+        self.controls_page = controls;
+        self.activate_page();
+    }
+
+    /// Whether the Controls page shows its controller view: its Keyboard and
+    /// Controller tabs need Steam Input, and the Controller tab also turns
+    /// the controller mode on ([`HardwareConfig::set_controller_view`]).
+    pub fn controller_view(&self) -> bool {
+        self.steam_input && self.live.controller
+    }
+
+    /// The page activation: the tab sheet calls it when a page becomes
+    /// visible. The Settings page runs the auto-detection again (the
+    /// benchmark, whose result then refills the rows; the Deck takes its
+    /// preset at once). The Controls page in the controller view puts the
+    /// saved aim speed back into the live one and shows its number; on the
+    /// keyboard view it refills the page's copy of the bindings from the
+    /// shipped table, dropping any edits in progress (the original copies
+    /// its shipped key table over the page's copy here).
+    pub fn activate_page(&mut self) {
+        if self.screen.is_none() {
+            return;
+        }
+        if !self.controls_page {
+            self.run_detection();
+        } else if self.controller_view() {
+            self.live.aim_speed = self.saved().aim_speed;
+        } else if let Some(bindings) = &mut self.bindings {
+            // The shipped table's codes, in the page's copy (the copy's
+            // controller flag stays).
+            let shipped = Bindings::default();
+            for action in Action::ALL {
+                bindings.set_key(action, shipped.key(action));
+            }
+        }
+    }
+
+    /// The Keyboard or Controller tab: it turns the controller mode and the
+    /// controller view on (the Controller tab) or off (the Keyboard tab).
+    pub fn set_controller_view(&mut self, controller: bool) -> bool {
+        if self.screen.is_none() {
+            return false;
+        }
+        self.live.controller = controller;
+        true
     }
 
     /// Cancel: pushes the saved set back into the live options and closes
@@ -256,17 +309,25 @@ impl HardwareConfig {
             return;
         }
         if !self.controls_page {
-            if self.steam_deck {
-                self.deck_preset();
-            } else {
-                self.start_benchmark();
-            }
+            self.run_detection();
         } else if self.live.controller {
             self.live.aim_speed = self.saved().aim_speed;
         } else if let Some(bindings) = &mut self.bindings {
             for action in Action::ALL {
                 bindings.set_key(action, DEFAULT_KEYS[action.slot()]);
             }
+        }
+    }
+
+    /// The auto-detection: the GPU benchmark, or the Deck's fixed preset
+    /// instead. Both become the saved set and are pushed into the live
+    /// options and the page's draft ([`HardwareConfig::finish_benchmark`],
+    /// [`HardwareConfig::deck_preset`]).
+    pub fn run_detection(&mut self) {
+        if self.steam_deck {
+            self.deck_preset();
+        } else {
+            self.start_benchmark();
         }
     }
 
@@ -349,13 +410,10 @@ impl HardwareConfig {
     }
 
     /// The Controls page's Keyboard / Controller switch: it sets the live
-    /// input mode Apply writes (Exarust has no gamepad to drive).
+    /// input mode Apply writes (Exarust has no gamepad to drive). It is also
+    /// the Controller tab's action, which turns the controller view on.
     pub fn set_controller(&mut self, enabled: bool) -> bool {
-        if self.screen.is_none() {
-            return false;
-        }
-        self.live.controller = enabled;
-        true
+        self.set_controller_view(enabled)
     }
 
     /// The Controls page's rumble switch (session only).
@@ -689,10 +747,67 @@ fn apply_options(
     }
 }
 
+/// The `SteamDeck=1` marker the Steam runtime exports, or the Deck's DMI
+/// product names.
+pub fn steam_deck_from(marker: Option<&str>, product: Option<&str>) -> bool {
+    if marker == Some("1") {
+        return true;
+    }
+    matches!(product, Some("Jupiter") | Some("Galileo"))
+}
+
+/// Whether the game runs on a Steam Deck: the Steam runtime's `SteamDeck`
+/// marker, or the DMI product name (`Jupiter` or `Galileo`). The original
+/// asks Steam; Exarust reads what the machine exposes.
+pub fn steam_deck() -> bool {
+    let marker = std::env::var("SteamDeck").ok();
+    let product = std::fs::read_to_string("/sys/devices/virtual/dmi/id/product_name")
+        .ok()
+        .map(|name| name.trim().to_string());
+    steam_deck_from(marker.as_deref(), product.as_deref())
+}
+
+/// The video memory the driver reports, in MiB: the largest
+/// `mem_info_vram_total` among the DRM cards (the amdgpu driver's figure),
+/// or 0 when the machine exposes none. The original asks its GL driver for
+/// the figure; wgpu has no portable query.
+pub fn video_memory_mb() -> u32 {
+    vram_from(std::path::Path::new("/sys/class/drm"))
+}
+
+/// [`video_memory_mb`] over a sysfs root: each `card*` entry's
+/// `device/mem_info_vram_total` in bytes, divided by 2²⁰, the largest taken.
+fn vram_from(root: &std::path::Path) -> u32 {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return 0;
+    };
+    let mut best = 0u64;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("card") || name.contains('-') {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(entry.path().join("device/mem_info_vram_total"))
+        else {
+            continue;
+        };
+        if let Ok(bytes) = text.trim().parse::<u64>() {
+            best = best.max(u64::from(vram_mb_from_bytes(bytes)));
+        }
+    }
+    best.min(u64::from(u32::MAX)) as u32
+}
+
+/// The video-memory readout's number: the bytes of a `mem_info_vram_total`
+/// file in MiB, or 0.
+pub fn vram_mb_from_bytes(bytes: u64) -> u32 {
+    (bytes / (1024 * 1024)).min(u64::from(u32::MAX)) as u32
+}
+
 /// The window state a frame last applied: windowed, size, vertical sync and
 /// whether the primary monitor was known.
 type AppliedWindow = (bool, Option<(u32, u32)>, bool, bool);
-
 /// Applies the live window mode, size and vertical sync.
 fn apply_window(
     config: Option<Res<HardwareConfig>>,
@@ -758,25 +873,44 @@ struct BenchmarkScene {
     quads: Vec<Entity>,
     target: Handle<Image>,
     source: Handle<Image>,
+    mesh: Handle<Mesh>,
+    material: Handle<exa_render::benchmark::BenchmarkMaterial>,
     present_mode: PresentMode,
 }
 
 const BENCHMARK_CAMERA: &str = "_BenchmarkCamera";
 const BENCHMARK_QUAD: &str = "_BenchmarkQuad";
 
+/// The source texture's sampler: the original sets its texture's wrap to
+/// repeat and its filters to linear.
+fn benchmark_sampler() -> ImageSampler {
+    ImageSampler::Descriptor(ImageSamplerDescriptor {
+        address_mode_u: ImageAddressMode::Repeat,
+        address_mode_v: ImageAddressMode::Repeat,
+        address_mode_w: ImageAddressMode::Repeat,
+        mag_filter: ImageFilterMode::Linear,
+        min_filter: ImageFilterMode::Linear,
+        mipmap_filter: ImageFilterMode::Linear,
+        ..default()
+    })
+}
+
 /// Starts the benchmark's scene when a benchmark begins: a 1024² RGBA8
-/// target, a 512² texture and sixteen full-screen quads, with vertical sync
-/// off so the frames are not capped. The original draws sixteen full-screen
-/// quads with a textured shader per frame; this is the same fill-rate
-/// workload through Bevy's sprite pipeline. The measured protocol and score
-/// are exact (the GPU and its driver differ anyway).
+/// target, the original's 512² source texture (every byte 0x3f) and sixteen
+/// full-screen quads carrying its own fragment program, with vertical sync
+/// off so the frames are not capped. The measured protocol and score are
+/// exact; the GPU and its driver differ anyway.
 fn start_benchmark_scene(
     mut commands: Commands,
     config: Option<Res<HardwareConfig>>,
     scene: Option<Res<BenchmarkScene>>,
     mut images: ResMut<Assets<Image>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<exa_render::benchmark::BenchmarkMaterial>>,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
 ) {
+    use exa_render::benchmark::{BenchmarkMaterial, QUADS, SOURCE_SIZE, TARGET_SIZE};
+
     let Some(config) = config else {
         return;
     };
@@ -788,39 +922,36 @@ fn start_benchmark_scene(
     }
     let mut target = Image::new_fill(
         Extent3d {
-            width: BENCHMARK_TARGET,
-            height: BENCHMARK_TARGET,
+            width: TARGET_SIZE,
+            height: TARGET_SIZE,
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
         &[0, 0, 0, 255],
-        TextureFormat::Rgba8UnormSrgb,
+        // The original's GL_RGBA8, which is a plain (not sRGB) format.
+        TextureFormat::Rgba8Unorm,
         RenderAssetUsages::RENDER_WORLD,
     );
     target.texture_descriptor.usage =
         TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST;
     let target = images.add(target);
 
-    // A deterministic grey noise, the pattern the original loads from its
-    // 512² texture.
-    let mut pixels = vec![0u8; (BENCHMARK_SOURCE * BENCHMARK_SOURCE * 4) as usize];
-    let mut state = 0x1234_5678u32;
-    for pixel in pixels.as_chunks_mut::<4>().0 {
-        state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        let value = (state >> 24) as u8;
-        *pixel = [value, value, value, 255];
-    }
-    let source = images.add(Image::new(
+    let mut source = Image::new(
         Extent3d {
-            width: BENCHMARK_SOURCE,
-            height: BENCHMARK_SOURCE,
+            width: SOURCE_SIZE,
+            height: SOURCE_SIZE,
             depth_or_array_layers: 1,
         },
         TextureDimension::D2,
-        pixels,
-        TextureFormat::Rgba8UnormSrgb,
+        exa_render::benchmark::source_pixels(),
+        TextureFormat::Rgba8Unorm,
         RenderAssetUsages::RENDER_WORLD,
-    ));
+    );
+    source.sampler = benchmark_sampler();
+    let source = images.add(source);
+
+    let mesh = meshes.add(Rectangle::new(TARGET_SIZE as f32, TARGET_SIZE as f32));
+    let material = materials.add(BenchmarkMaterial::new(source.clone()));
 
     let layer = bevy::camera::visibility::RenderLayers::layer(BENCHMARK_LAYER);
     let camera = commands
@@ -835,16 +966,13 @@ fn start_benchmark_scene(
             layer.clone(),
         ))
         .id();
-    let mut quads = Vec::with_capacity(16);
-    for index in 0..16 {
+    let mut quads = Vec::with_capacity(QUADS);
+    for index in 0..QUADS {
         let quad = commands
             .spawn((
                 Name::new(BENCHMARK_QUAD),
-                Sprite {
-                    image: source.clone(),
-                    custom_size: Some(Vec2::splat(BENCHMARK_TARGET as f32)),
-                    ..default()
-                },
+                Mesh2d(mesh.clone()),
+                MeshMaterial2d(material.clone()),
                 Transform::from_xyz(0.0, 0.0, index as f32 * 0.001),
                 layer.clone(),
             ))
@@ -866,6 +994,8 @@ fn start_benchmark_scene(
         quads,
         target,
         source,
+        mesh,
+        material,
         present_mode,
     });
 }
@@ -907,6 +1037,8 @@ fn cleanup_benchmark(
     config: Option<Res<HardwareConfig>>,
     scene: Option<Res<BenchmarkScene>>,
     mut images: ResMut<Assets<Image>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<exa_render::benchmark::BenchmarkMaterial>>,
     mut windows: Query<&mut Window, With<PrimaryWindow>>,
 ) {
     if config.is_none_or(|config| config.benchmark.is_some()) {
@@ -921,6 +1053,8 @@ fn cleanup_benchmark(
     }
     images.remove(&scene.target);
     images.remove(&scene.source);
+    meshes.remove(&scene.mesh);
+    materials.remove(&scene.material);
     let present_mode = scene.present_mode;
     if let Ok(mut window) = windows.single_mut()
         && window.present_mode != present_mode
@@ -1158,6 +1292,103 @@ mod tests {
         assert_eq!(config.live.supersample, 3);
         assert_eq!(config.live.shading_quality, 5);
         assert_eq!(config.live.shadow_quality, 3);
+    }
+
+    #[test]
+    fn showing_the_settings_page_runs_the_detection_again() {
+        let mut config = HardwareConfig::default();
+        config.open(None);
+        // The Controls page first, then back to Settings: the tab switch
+        // activates the page and starts the benchmark.
+        config.switch_page(true);
+        assert!(config.benchmark.is_none());
+        config.switch_page(false);
+        assert!(config.benchmark.is_some());
+        // A click on the page already shown does nothing.
+        let mut config = HardwareConfig::default();
+        config.open(None);
+        config.switch_page(false);
+        assert!(config.benchmark.is_none());
+        // The Deck takes its preset instead, at once.
+        let mut deck = HardwareConfig {
+            steam_deck: true,
+            ..HardwareConfig::default()
+        };
+        deck.open(None);
+        deck.switch_page(true);
+        deck.switch_page(false);
+        assert!(deck.benchmark.is_none());
+        assert_eq!(deck.live.shading_quality, 5);
+        assert_eq!(deck.live.supersample, 3);
+    }
+
+    #[test]
+    fn showing_the_controls_page_refills_its_key_copy() {
+        let mut config = HardwareConfig::default();
+        let mut bindings = Bindings::default();
+        bindings.set_key(Action::Forward, 0x4C);
+        config.open(Some(&bindings));
+        assert_eq!(config.bindings.as_ref().unwrap().key(Action::Forward), 0x4C);
+        config.switch_page(true);
+        // The page's copy goes back to the shipped table (the original
+        // copies its shipped rows over the page here).
+        assert_eq!(config.bindings.as_ref().unwrap().key(Action::Forward), 0x57);
+        // In the controller view it is the saved aim speed instead, and
+        // the keys are left alone.
+        let mut config = HardwareConfig {
+            steam_input: true,
+            ..HardwareConfig::default()
+        };
+        config.open(Some(&bindings));
+        config.set_controller_view(true);
+        assert!(config.controller_view());
+        config.live.aim_speed = 0.9;
+        config.switch_page(true);
+        assert_eq!(config.live.aim_speed, 0.29);
+        assert_eq!(config.bindings.as_ref().unwrap().key(Action::Forward), 0x4C);
+        // Without Steam Input there is no controller view.
+        let mut plain = HardwareConfig::default();
+        plain.open(None);
+        plain.set_controller_view(true);
+        assert!(!plain.controller_view());
+    }
+
+    #[test]
+    fn the_steam_deck_and_video_memory_probes() {
+        assert!(steam_deck_from(Some("1"), None));
+        assert!(steam_deck_from(None, Some("Jupiter")));
+        assert!(steam_deck_from(None, Some("Galileo")));
+        assert!(!steam_deck_from(Some("0"), Some("B650")));
+        assert!(!steam_deck_from(None, None));
+        assert_eq!(vram_mb_from_bytes(8 * 1024 * 1024 * 1024), 8192);
+        assert_eq!(vram_mb_from_bytes(0), 0);
+        assert_eq!(vram_mb_from_bytes(1023), 0);
+        // The sysfs walk takes each card's figure, the largest winning, and
+        // reads nothing from the connectors' names.
+        let root = std::env::temp_dir().join(format!("exarust-vram-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for (card, bytes) in [("card0", 4_294_967_296u64), ("card1", 8_589_934_592)] {
+            let device = root.join(card).join("device");
+            std::fs::create_dir_all(&device).unwrap();
+            std::fs::write(device.join("mem_info_vram_total"), bytes.to_string()).unwrap();
+        }
+        let connector = root.join("card0-DP-1").join("device");
+        std::fs::create_dir_all(&connector).unwrap();
+        std::fs::write(connector.join("mem_info_vram_total"), "999").unwrap();
+        assert_eq!(vram_from(&root), 8192);
+        assert_eq!(vram_from(&root.join("missing")), 0);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_benchmark_samples_its_texture_with_repeat_addressing() {
+        let ImageSampler::Descriptor(sampler) = benchmark_sampler() else {
+            panic!("a descriptor sampler");
+        };
+        assert_eq!(sampler.address_mode_u, ImageAddressMode::Repeat);
+        assert_eq!(sampler.address_mode_v, ImageAddressMode::Repeat);
+        assert_eq!(sampler.mag_filter, ImageFilterMode::Linear);
+        assert_eq!(sampler.min_filter, ImageFilterMode::Linear);
     }
 
     #[test]

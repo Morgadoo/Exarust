@@ -2,6 +2,7 @@
 //! chain replaces Bevy's tonemapping (grading curve, bloom); materials and
 //! lighting follow. Rules: `docs/RENDERING.md`.
 
+pub mod benchmark;
 pub mod bound_sphere;
 pub mod camera;
 pub mod capture;
@@ -76,7 +77,7 @@ impl Plugin for RenderPlugin {
             (electricity::ElectricityPlugin, force_effects::ForceEffectsPlugin),
             spray::SprayPlugin,
             stain::StainPlugin,
-            supersample::SupersamplePlugin,
+            (benchmark::BenchmarkPlugin, supersample::SupersamplePlugin),
             lights::LightsPlugin,
             cube_shadows::CubeShadowsPlugin,
             shell::ShellPlugin,
