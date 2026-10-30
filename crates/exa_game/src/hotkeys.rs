@@ -35,7 +35,7 @@ use bevy::prelude::*;
 use exa_character::grip_runtime::FlipWeaponRequest;
 use exa_character::held::Hands;
 use exa_combat::Condition;
-use exa_items::possession::{LIT, Possessions, SwapRequest};
+use exa_items::possession::{HeldMark, Possessions, SwapRequest};
 use exa_physics::body::Ragdoll;
 use exa_physics::body::locomotion::{Locomotion, flags};
 
@@ -234,6 +234,7 @@ fn press_hotkeys(
         Option<&Condition>,
         Option<&Hands>,
         Option<&mut Possessions>,
+        Option<&HeldMark>,
     )>,
     casters: Query<&PowerCaster>,
     mut bodies: Query<&mut Ragdoll, Without<PlayerBody>>,
@@ -271,7 +272,7 @@ fn press_hotkeys(
         return;
     }
     let mut hand = hand;
-    for (entity, mut pb, mut req, condition, hands, mut possessions) in &mut players {
+    for (entity, mut pb, mut req, condition, hands, mut possessions, mark) in &mut players {
         let word = condition.copied().unwrap_or_default();
         let caster = casters.get(entity).ok();
         let context = Context {
@@ -310,15 +311,28 @@ fn press_hotkeys(
                     let first =
                         hands.and_then(|h| h.main.map(|m| m.light).or(h.off_light.then_some(true)));
                     if let Some(p) = possessions.as_deref_mut() {
-                        let burning = p.out[0].flags & LIT != 0;
+                        // The original reads the held part's own mark, not
+                        // the record's bit (a doll drop keeps only the top
+                        // bit of a lit item's flags in the record).
+                        let burning = p.burning(mark);
                         // The original's branch ends by starting the held
-                        // item's flip.
+                        // item's flip, whose end turns the part's mark over.
                         if p.toggle_light(
                             first.is_some(),
                             word.0 & Condition::SWITCHING.0 != 0,
                             first.unwrap_or(false),
                             burning,
                         ) {
+                            commands.entity(entity).insert(HeldMark {
+                                item: p.first_held(),
+                                lit: !burning,
+                            });
+                            info!(
+                                "light toggle: {:#x} was {}, record hand flags now {:#x}",
+                                p.first_held(),
+                                if burning { "burning" } else { "out" },
+                                p.out[0].flags
+                            );
                             flips.write(FlipWeaponRequest { body: entity });
                         }
                     }

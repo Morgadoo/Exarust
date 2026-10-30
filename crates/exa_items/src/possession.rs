@@ -24,6 +24,19 @@ pub const HELD: u32 = 0x100;
 pub const SECOND_SET: u32 = 0x0100_0000;
 /// Hand flags: the held light burns.
 pub const LIT: u32 = 0x0200_0000;
+/// The held part's own lit mark (the part's flip mark, which the light
+/// toggle reads): the item it belongs to and whether it burns. The hand's
+/// attach sets it from the item's full flags while the record keeps only
+/// the attach job's top bit, so after a lit item is dropped onto the doll
+/// the part burns while the record's [`LIT`] bit is clear; the toggle
+/// reads the part, not the record. The original's flip turns the mark over
+/// when it ends; Exarust turns it at the toggle.
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HeldMark {
+    pub item: u32,
+    pub lit: bool,
+}
+
 /// Hand flags: the weapon is held flipped (the body keeps the bit while
 /// the item is in its hand). [inferred from the body field it sets]
 pub const FLIPPED: u32 = 0x0100_0000;
@@ -297,6 +310,31 @@ impl Possessions {
                 self.stowed[1].id = 0;
             } else if listed == 0 {
                 self.stowed[u].id = 0;
+            }
+        }
+    }
+
+    /// The first held item: the main hand's, else the off hand's (0 for
+    /// empty hands), as the body's held list starts with the main hand.
+    pub fn first_held(&self) -> u32 {
+        if self.out[0].id != 0 {
+            self.out[0].id
+        } else {
+            self.out[1].id
+        }
+    }
+
+    /// Whether the first held item's part burns, as the light toggle reads
+    /// it: the held part's own mark when it is the first held item's, else
+    /// the [`LIT`] bit of the hand that holds it (the bit the hand's attach
+    /// copies into the part's mark).
+    pub fn burning(&self, mark: Option<&HeldMark>) -> bool {
+        let first = self.first_held();
+        match mark {
+            Some(mark) if first != 0 && mark.item == first => mark.lit,
+            _ => {
+                let hand = if self.out[0].id != 0 { 0 } else { 1 };
+                self.out[hand].flags & LIT != 0
             }
         }
     }
@@ -1014,5 +1052,44 @@ mod tests {
         assert_eq!(p.redress_plan([5, 0], |_| weapon(0x10)), None);
         let plan = p.redress_plan([7, 7], |_| weapon(0x10)).unwrap();
         assert_eq!(plan.changed, [true, false]);
+    }
+
+    /// The toggle reads the held part's mark when it is the first held
+    /// item's, and the hand's record bit otherwise: a lit torch dropped onto
+    /// the doll (record bit clear, part lit) burns, so the first toggle puts
+    /// it out.
+    #[test]
+    fn the_light_toggle_reads_the_held_part() {
+        let mut p = Possessions::default();
+        p.out[0] = Hand {
+            id: 0x1f,
+            flags: crate::doll::KEPT_HAND_FLAGS,
+        };
+        let mark = HeldMark {
+            item: 0x1f,
+            lit: true,
+        };
+        assert!(p.burning(Some(&mark)));
+        assert!(!p.burning(None));
+        // A stale mark of another item falls back to the record.
+        assert!(!p.burning(Some(&HeldMark { item: 9, lit: true })));
+        p.out[0].flags = LIT;
+        assert!(p.burning(Some(&HeldMark {
+            item: 9,
+            lit: false
+        })));
+        // The off hand's item is first when the main hand is empty.
+        let mut off = Possessions::default();
+        off.out[1] = Hand {
+            id: 0x1f,
+            flags: LIT,
+        };
+        assert_eq!(off.first_held(), 0x1f);
+        assert!(off.burning(None));
+        // The toggle after the doll drop: burning, so the bit is cleared.
+        let burning = p.burning(Some(&mark));
+        p.out[0].flags = 0;
+        assert!(p.toggle_light(true, false, true, burning));
+        assert_eq!(p.out[0].flags & LIT, 0);
     }
 }

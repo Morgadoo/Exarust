@@ -281,7 +281,7 @@ pub struct DollItems {
 }
 
 impl DollItems {
-    fn ensure(&mut self, game: Option<&Game>) {
+    pub(crate) fn ensure(&mut self, game: Option<&Game>) {
         if self.tried {
             return;
         }
@@ -684,6 +684,16 @@ pub fn hold_item(
     record_into(p, &into.plan, id, into.flags);
 }
 
+/// The held part's mark a weapon or light take-in leaves: lit when the
+/// dragged item's own flags have [`possession::LIT`], whatever the record
+/// keeps.
+pub fn held_mark(id: u32, flags: u32) -> possession::HeldMark {
+    possession::HeldMark {
+        item: id,
+        lit: flags & possession::LIT != 0,
+    }
+}
+
 /// Takes a shield into the off hand, freeing it first.
 pub fn hold_shield(p: &mut Possessions, id: u32, flags: u32) {
     let old = p.out[1];
@@ -854,6 +864,18 @@ fn equip_dropped(
                     hold_item(&mut p, drop.id, flags, kind, plan.off_wanted, |id| {
                         catalogue.and_then(|c| c.kind(id))
                     });
+                    // The weapon or light attach lights the held part from
+                    // the item's full flags, while the record keeps only
+                    // the job's top bit: the part's mark is what the light
+                    // toggle reads.
+                    if p.first_held() == drop.id {
+                        let mark = held_mark(drop.id, flags);
+                        info!(
+                            "doll drop: {:#x} held, record flags {:#x}, part lit {}",
+                            drop.id, p.out[0].flags, mark.lit
+                        );
+                        commands.entity(player).insert(mark);
+                    }
                 } else {
                     hold_shield(&mut p, drop.id, flags);
                 }
@@ -898,6 +920,62 @@ fn equip_dropped(
     }
 }
 
+/// `--doll-drop ID:FLAGS@FRAME`: the item, with its flags, put into the
+/// player's pack and dropped onto the character view at that frame after
+/// the load, as a drag from the pack onto the doll would (a debug tool).
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DollDropScript(pub Option<(u32, u32, u32)>);
+
+impl DollDropScript {
+    pub fn parse(text: &str) -> Option<Self> {
+        let (item, frame) = text.split_once('@')?;
+        let (id, flags) = item.split_once(':').unwrap_or((item, "0"));
+        Some(Self(Some((
+            crate::gui_drop::parse_id(id)?,
+            crate::gui_drop::parse_id(flags)?,
+            frame.trim().parse().ok()?,
+        ))))
+    }
+}
+
+/// The debug doll drop ([`DollDropScript`]).
+fn scripted_doll_drop(
+    script: Res<DollDropScript>,
+    loading: Option<Res<exa_ui::LoadingStatus>>,
+    mut frames: Local<u32>,
+    mut players: Query<&mut Possessions, With<crate::player::PlayerBody>>,
+    mut drops: MessageWriter<DollDrop>,
+) {
+    let Some((id, flags, frame)) = script.0 else {
+        return;
+    };
+    if loading.is_some() || *frames > frame {
+        return;
+    }
+    *frames += 1;
+    if *frames != frame {
+        return;
+    }
+    let Some(mut p) = players.iter_mut().next() else {
+        return;
+    };
+    p.carried.push(possession::Carried {
+        id,
+        flags,
+        x: 0,
+        y: 0,
+    });
+    info!("doll drop script: {id:#x} (flags {flags:#x}) onto the doll at frame {frame}");
+    drops.write(DollDrop {
+        source: Panel::PlayerPack,
+        id,
+        flags,
+        icon: 0,
+        bulk: 0,
+        right_half: false,
+    });
+}
+
 /// A refused drop: the source's drag is cancelled and its entry stays.
 fn cancel(screens: &mut GameScreens, drop: DollDrop) {
     if let Some(container) = crate::panel_live::container_mut(screens, drop.source) {
@@ -912,10 +990,11 @@ impl Plugin for DollViewPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<InventoryDoll>()
             .init_resource::<DollItems>()
+            .init_resource::<DollDropScript>()
             .add_message::<DollDrop>()
             .add_systems(
                 Update,
-                (sync_doll, dress_doll, equip_dropped)
+                (sync_doll, dress_doll, scripted_doll_drop, equip_dropped)
                     .chain()
                     .after(gui_screens::draw_screens),
             )
@@ -1017,6 +1096,61 @@ mod tests {
         assert_eq!(class_word(Some(0x10)), 0x10);
         assert_eq!(class_word(Some(0x30)), 0x20);
         assert_eq!(class_word(None), 0x80);
+    }
+
+    /// A lit torch dropped onto the doll: the record keeps only the top
+    /// bit, the held part's mark keeps the light, and the first toggle puts
+    /// it out (the bit stays clear and the mark turns over).
+    #[test]
+    fn a_lit_torch_dropped_on_the_doll_goes_out_on_the_first_toggle() {
+        let torch = possession::ItemKind {
+            weapon: Some(0x13),
+            light: true,
+            ..Default::default()
+        };
+        let mut p = Possessions::default();
+        hold_item(
+            &mut p,
+            0x1f,
+            possession::LIT | 0x8000_0000,
+            torch,
+            false,
+            |_| Some(torch),
+        );
+        assert_eq!(
+            p.out[0],
+            Hand {
+                id: 0x1f,
+                flags: 0x8000_0000
+            }
+        );
+        let mark = held_mark(0x1f, possession::LIT | 0x8000_0000);
+        assert!(mark.lit);
+        let burning = p.burning(Some(&mark));
+        assert!(burning);
+        assert!(p.toggle_light(true, false, true, burning));
+        assert_eq!(p.out[0].flags & possession::LIT, 0);
+        // The next toggle reads the turned mark and lights it again.
+        let mark = possession::HeldMark {
+            item: p.first_held(),
+            lit: !burning,
+        };
+        assert!(!p.burning(Some(&mark)));
+        assert!(p.toggle_light(true, false, true, p.burning(Some(&mark))));
+        assert_ne!(p.out[0].flags & possession::LIT, 0);
+    }
+
+    #[test]
+    fn the_doll_drop_script_reads_item_flags_and_frame() {
+        assert_eq!(
+            DollDropScript::parse("0x1f:0x2000000@120"),
+            Some(DollDropScript(Some((0x1f, 0x0200_0000, 120))))
+        );
+        assert_eq!(
+            DollDropScript::parse("0x1f@3"),
+            Some(DollDropScript(Some((0x1f, 0, 3))))
+        );
+        assert_eq!(DollDropScript::parse("0x1f"), None);
     }
 
     /// The dots draw five whole dots and a half at 5.5, 12 pixels apart at
