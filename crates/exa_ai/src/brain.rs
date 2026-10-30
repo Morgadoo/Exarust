@@ -633,7 +633,7 @@ pub fn perceive_all(
         )
         .collect();
     let player = players.iter().next();
-    let effects: &[combatant::Effect] = &[];
+    let effects: &mut [combatant::Effect] = &mut [];
     for (entity, mut npc, mut combatant, duellist, mind, gt, fighter, roles, mut relations) in
         &mut chars.p1()
     {
@@ -743,7 +743,8 @@ pub fn perceive_all(
             };
             // The observer's trust in each third party the observed knows,
             // as the relations keep it (the raw Trust the mind powers then
-            // override).
+            // override); the perception may break one of those powers, so
+            // they are applied before it runs.
             let trusts: Vec<(Entity, f32)> = match (db.as_deref(), relations.as_deref_mut()) {
                 (Some(db), Some(relations)) => sensed
                     .contacts
@@ -765,12 +766,15 @@ pub fn perceive_all(
                     .collect(),
                 _ => Vec::new(),
             };
+            let trusted: Vec<(Entity, f32)> = trusts
+                .iter()
+                .map(|(third, raw)| (*third, combatant::trust(*third, *raw, false, effects)))
+                .collect();
             let trust_of = |third: Entity| {
-                let raw = trusts
+                trusted
                     .iter()
                     .find(|(e, _)| *e == third)
-                    .map_or(0.0, |(_, v)| *v);
-                combatant::trust(third, raw, false, effects)
+                    .map_or(0.0, |(_, v)| *v)
             };
             let sight = match npc.sense {
                 personality::Sense::Standard => combatant::perceive(

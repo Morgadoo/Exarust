@@ -303,7 +303,12 @@ under their mask) to a raw role attitude: frenzy makes the attitude half
 the negated aggression and trust 0; binding or command sourced on the other
 makes it 100, or averages it with 100 under the resistance technique; a
 charm aimed at the other makes it 100; suspicion takes 50, not below
-−100. `add_concern` is the script's `AddConcern` (the flags word becomes 3,
+−100. When the observer's concern for a character it looks at is over 1.5
+and the raw role attitude lies more than 0.1 below the effective one, the
+pass breaks the first power that holds it — a binding or command sourced
+on that character or a charm aimed at it (`break_mind_power`: the
+effect's state becomes 2).
+`add_concern` is the script's `AddConcern` (the flags word becomes 3,
 the attitude-weighted rise, capped at 15, the event at 1.2 or else at 4).
 `look_direction` is the direction the original builds from a point back to
 the eye, held within 45° of the body; `candidate_cost` is the footwork
@@ -373,10 +378,9 @@ is applied, and the held weapon's raw stat bytes, reach and the body scale
 are added at the entry. The weapon record keeps its section's raw stat
 bytes for rules that read bytes.
 
-Not yet: the encounter scripts, the mind
-power calls the pass and a hit make, the full candidate footwork
-search, and the AI's own parry choice (the body's auto-parry runs in
-`exa_combat::parry`).
+Not yet: the encounter scripts, the hit's mind
+power call (`0x1000af4a0`'s last branch), and the AI's own parry choice
+(the body's auto-parry runs in `exa_combat::parry`).
 
 ## Scope
 

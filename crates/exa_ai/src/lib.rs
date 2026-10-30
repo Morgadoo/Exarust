@@ -732,7 +732,7 @@ fn duellist(
                 index,
                 raw,
                 &|_| 0.0,
-                &[],
+                &mut [],
                 now,
             );
             if let Some(floor) = sight.alert_floor
