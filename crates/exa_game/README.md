@@ -420,7 +420,10 @@ Light, Displacement) clockwise from the top of a 76 px ring, with a
 Rules of the Mind casts and sight and the two force effects:
 [`docs/THAUMATURGY.md`](../../docs/THAUMATURGY.md) (Mind casts, Force blast
 and torrent).
-The reconstruction device starts the scan (`teleporters`); nothing
+The reconstruction device starts the scan (`teleporters`), which builds
+its node's `_ScanAura01` aura (184-byte grey block, state 0x9000, one
+sub-object of usage 35044, the 0x20 material flag and the shared
+`_ForceNoise` picture) and rolls its two creation draws; nothing
 starts the shell's aura entity yet (its caller, the shell power's visual,
 is not in); the power tree carries the wheel as its domain wheel child and
 uses its hit test, confirm and open ease; the wheel's paint is
@@ -558,14 +561,22 @@ request finds the device's crystal slot and the placed object on it; a
 teleporter asks for the destination screen with its rows and level ids, a
 reconstruction device puts the effects' scan on the player, waiting
 1600 ms of game time and closing with the flash (a scan already on the
-player makes the use start nothing), plays `devicescna01` at 0.3, scales
+player makes the use start nothing), gives the scan's node the device's
+aura (the `_ScanAura01` material, its 184-byte grey block, the state bits
+0x9000, one sub-object of buffer usage 35044 and the shared `_ForceNoise`
+picture), rolls the node's two creation draws in order, plays
+`devicescna01` at 0.3, scales
 the device's voxel lights by the glow pulse and raises the reconstruction
-latch; `SlotReleased` powers it down with `devicepwra01` at 0.1;
-`EndSession` reconstructs a scanned player who dies in the story,
+latch, writing the same word the story session's death handler reads;
+`SlotReleased` powers it down with `devicepwra01` at 0.1 and clears that
+word; `EndSession` reconstructs a scanned player who dies in the story,
 stripping them the first time (hand and worn data cleared, health just
-under half). The destination screen and its journey bubble, the grab and
+under half). A teleporter use reads whether the destination screen is
+already open and opens nothing more then. The destination screen and its
+journey bubble, the grab and
 use input that would send the requests, the level change, the corpse
-record a strip leaves, the emissive half of the glow and the sound
+record a strip leaves, the emissive half of the glow, the aura's shader
+signature and the sound
 playback are not in),
 the per-tick body trace
 (`trace`, with the foot contacts' states and anchors and the ankles,
