@@ -1267,11 +1267,12 @@ fn main() -> AppExit {
                         min_height: exa_game::window::MIN_WINDOW_SIZE.y as f32,
                         ..default()
                     },
-                    position: options
-                        .window_at
-                        .or_else(|| std::env::var("EXA_WINDOW_AT").ok().as_deref().and_then(parse_window_at))
+                    position: window_at(&options)
                         .map(|(x, y)| bevy::window::WindowPosition::At(IVec2::new(x, y)))
                         .unwrap_or_default(),
+                    // A tiled test run (a quadrant position) draws without a frame,
+                    // so four windows read as one split screen.
+                    decorations: window_at(&options).is_none(),
                     mode: frame_loop::launch_window_mode(options.fullscreen),
                     // Swap interval 1 (adaptive while Exarust's frames are
                     // slower than the display) or 0.
@@ -1422,6 +1423,16 @@ fn main() -> AppExit {
         user.save_store_at_exit();
     }
     exit
+}
+
+/// The window position from `--window-at`, else `EXA_WINDOW_AT`.
+fn window_at(options: &Options) -> Option<(i32, i32)> {
+    options.window_at.or_else(|| {
+        std::env::var("EXA_WINDOW_AT")
+            .ok()
+            .as_deref()
+            .and_then(parse_window_at)
+    })
 }
 
 /// Reads `X,Y` for `--window-at` / `EXA_WINDOW_AT`.
