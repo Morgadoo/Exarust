@@ -900,6 +900,37 @@ pub const GI_SKY_SHADOW_REACH: f32 = 1600.0;
 /// half. The original's map is drawn from the scene's meshes; Exarust reads
 /// the volume the meshes were rasterised into.
 pub const SKY_OCCLUDER: u8 = 10;
+
+/// The manager's own map for the sky light, as its set-up leaves it (Exarust
+/// stands the volume's columns in for the map, so this keeps the original's
+/// numbers for reference). The map is 1024², two of its depth fields are both
+/// set to 1600 cm [guess: its near and far reach], its direct-light softness
+/// is `(width·10)·0.5` (5120, the integer product converted, then halved),
+/// and its view matrix turns the scene to look straight down: X kept, the
+/// map's Y the scene's −Z and its Z the scene's −Y.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SkyShadowSetup {
+    pub size: u32,
+    pub depth_range: (f32, f32),
+    pub softness: f32,
+    /// The scene-to-map view matrix.
+    pub view: Mat4,
+}
+
+/// [`SkyShadowSetup`] for the manager's map.
+pub fn sky_shadow_setup() -> SkyShadowSetup {
+    SkyShadowSetup {
+        size: GI_SKY_SHADOW_SIZE,
+        depth_range: (GI_SKY_SHADOW_REACH, GI_SKY_SHADOW_REACH),
+        softness: ((GI_SKY_SHADOW_SIZE as i64 * 10) as f32) * 0.5,
+        view: Mat4::from_cols_array(&[
+            1.0, 0.0, 0.0, 0.0, //
+            0.0, 0.0, -1.0, 0.0, //
+            0.0, -1.0, 0.0, 0.0, //
+            0.0, 0.0, 0.0, 1.0,
+        ]),
+    }
+}
 /// Light ranges are 1.25 radii; the volume falls off over one radius.
 const REACH: f32 = 1.25;
 /// The shadow far plane an unranged light's record holds, 3.4e38, as the
@@ -3118,8 +3149,14 @@ mod tests {
         assert_eq!(gi.lights[0].shaping.w, 1.0);
         assert_eq!(gi.cube_slots, vec![u32::MAX]);
         // The original's separate sky-light map's numbers.
-        assert_eq!(GI_SKY_SHADOW_SIZE, 1024);
-        assert_eq!(GI_SKY_SHADOW_REACH, 1600.0);
+        let sky = sky_shadow_setup();
+        assert_eq!(sky.size, 1024);
+        assert_eq!(sky.depth_range, (1600.0, 1600.0));
+        assert_eq!(sky.softness, 5120.0);
+        // Looking straight down: the scene's up (+Y) is the map's −Z.
+        assert_eq!(sky.view.transform_vector3(Vec3::Y), Vec3::NEG_Z);
+        assert_eq!(sky.view.transform_vector3(Vec3::Z), Vec3::NEG_Y);
+        assert_eq!(sky.view.transform_vector3(Vec3::X), Vec3::X);
     }
 
     #[test]
