@@ -95,19 +95,17 @@ impl LoadoutScreen {
 
     /// Routes a press: an arsenal item is dropped onto the kit, an item of
     /// the kit is released. Returns what the drop did, if the form is open.
+    /// The arsenal's equipped marks follow the kits after every press (the
+    /// form's refresh).
     pub fn press(&mut self, press: LoadoutPress) -> Option<DropResult> {
         let open = self.open.as_mut()?;
-        if press.from_arsenal {
+        let result = if press.from_arsenal {
             let item = *open
                 .editor
                 .arsenal
                 .iter()
                 .find(|item| item.id == press.id)?;
-            Some(loadout::apply_drop(
-                &mut open.editor,
-                &item,
-                DropSource::Arsenal,
-            ))
+            loadout::apply_drop(&mut open.editor, &item, DropSource::Arsenal)
         } else {
             let item = open
                 .editor
@@ -123,15 +121,17 @@ impl LoadoutScreen {
             };
             // A press on the kit takes the item off it (the release).
             loadout::unequip(&mut open.editor, item.id);
-            Some(DropResult {
+            DropResult {
                 accepted: false,
                 swapped: false,
                 source,
                 off_hand: item.flags & loadout::OFFHAND_FLAG != 0,
                 refresh: true,
                 clear_pointer: true,
-            })
-        }
+            }
+        };
+        crate::loadout::mark_stock(&mut open.editor);
+        Some(result)
     }
 
     /// Closes the form, with what the close saves.

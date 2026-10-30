@@ -262,7 +262,20 @@ pub fn editor_for_company(
     let roster_member = company.roster.get(member)?;
     let mut editor = editor_for(roster_member, rank, mode, facts);
     editor.arsenal = company.stock.iter().filter_map(|&id| facts(id)).collect();
+    mark_stock(&mut editor);
     Some(editor)
+}
+
+/// Marks the arsenal entries the shown rank's kit has equipped: the two
+/// hand slots' items and the worn items. The form does this on every
+/// refresh so a shelf shows which of its items the fighter wears.
+pub fn mark_stock(editor: &mut LoadoutEditor) {
+    let hands = [
+        editor.weapons.first().map_or(0, |item| item.id),
+        editor.weapons.get(1).map_or(0, |item| item.id),
+    ];
+    let worn: Vec<u32> = editor.armour.iter().map(|item| item.id).collect();
+    exa_ui::loadout::mark_equipped(&mut editor.arsenal, hands, &worn);
 }
 
 /// Writes the editor's lists back into the member's rank when the close
@@ -384,6 +397,31 @@ pub fn item_from_facts(
     Some(item)
 }
 
+/// A drop returned to the company arsenal: the arsenal answers whether it
+/// had lent the item under the form's mask (clearing the mask's bit), then
+/// the form's own return rule sorts the item into the kit container it left
+/// ([`exa_ui::loadout::return_to_stock`]). An item the arsenal neither lent
+/// nor had is written back as a new entry with no flags, on the shelf its
+/// catalogue kind names.
+pub fn return_to_arsenal(
+    arsenal: &mut crate::arsenal::Arsenal,
+    editor: &mut LoadoutEditor,
+    item: &LoadoutItem,
+    source: exa_ui::loadout::DropSource,
+    kind: crate::arsenal::ItemKind,
+) -> exa_ui::loadout::StockReturn {
+    if editor.mode == LoadoutMode::Champion {
+        // A champion's form takes nothing and never asks the arsenal.
+        return exa_ui::loadout::return_to_stock(editor, item, source, false);
+    }
+    let lent = arsenal.release(item.id, kind, editor.mask);
+    let returned = exa_ui::loadout::return_to_stock(editor, item, source, lent);
+    if returned.keep_item || returned.zero_stock {
+        arsenal.stow(item.id, kind, 0);
+    }
+    returned
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -455,9 +493,15 @@ mod tests {
         let mut company = Company::new("Ash");
         company.hire("Bran", Profession::Combatant).unwrap();
         company.stock = vec![1, 2, 99];
+        company.roster[0].loadouts[0].hands[0] = ItemRef::new(1, 0);
+        company.roster[0].loadouts[0].worn = vec![ItemRef::new(2, 0)];
         let editor = editor_for_company(&company, 0, 0, LoadoutMode::Arena, &facts).unwrap();
         assert_eq!(editor.arsenal.len(), 2);
         assert_eq!(editor.arsenal[0].id, 1);
+        // The shelf marks the items the rank's kit has equipped.
+        let mark = exa_ui::loadout::EQUIPPED_MARK;
+        assert_eq!(editor.arsenal[0].flags & mark, mark);
+        assert_eq!(editor.arsenal[1].flags & mark, mark);
         assert!(editor_for_company(&company, 3, 0, LoadoutMode::Arena, &facts).is_none());
     }
 
@@ -587,5 +631,95 @@ mod tests {
         assert_eq!(hire.health.1, 1.0);
         // The fee is the shared hire rule.
         assert_eq!(hire.price, crate::career::hire_fee(2, 100));
+    }
+
+    fn weapon_kind() -> crate::arsenal::ItemKind {
+        crate::arsenal::ItemKind {
+            known: true,
+            weapon: true,
+            ..crate::arsenal::ItemKind::default()
+        }
+    }
+
+    fn clothing_kind() -> crate::arsenal::ItemKind {
+        crate::arsenal::ItemKind {
+            known: true,
+            apparel_layer: Some(1),
+            ..crate::arsenal::ItemKind::default()
+        }
+    }
+
+    #[test]
+    fn a_lent_item_is_taken_back_without_a_new_stock_entry() {
+        let mut arsenal = crate::arsenal::Arsenal::default();
+        assert!(arsenal.stow(7, weapon_kind(), 0x400));
+        let mut editor = editor_for(&member(), 0, LoadoutMode::Arena, &facts);
+        editor.category = 0x10;
+        let item = LoadoutItem::weapon(7, 0x10, 2, 0);
+        let done = return_to_arsenal(
+            &mut arsenal,
+            &mut editor,
+            &item,
+            exa_ui::loadout::DropSource::Arsenal,
+            weapon_kind(),
+        );
+        // The arsenal released the lend (its mask bit is gone) and added
+        // nothing: it already held the item.
+        assert_eq!(arsenal.shelves[crate::arsenal::WEAPONS][0][0].flags, 0);
+        assert_eq!(arsenal.shelves[crate::arsenal::WEAPONS][0].len(), 1);
+        assert!(!done.keep_item && !done.zero_stock);
+    }
+
+    #[test]
+    fn an_unlent_item_is_written_back_on_its_shelf() {
+        let mut arsenal = crate::arsenal::Arsenal::default();
+        let mut editor = editor_for(&member(), 0, LoadoutMode::Arena, &facts);
+        editor.category = 0x10;
+        // An item of another shelf the arsenal never lent: the form zeroes
+        // its stock, that is, adds it with no flags.
+        let clothing = LoadoutItem::armour(9, 0x40, 2, 0);
+        let done = return_to_arsenal(
+            &mut arsenal,
+            &mut editor,
+            &clothing,
+            exa_ui::loadout::DropSource::Preview,
+            clothing_kind(),
+        );
+        assert!(done.zero_stock);
+        assert_eq!(arsenal.shelves[crate::arsenal::CLOTHING][0].len(), 1);
+        assert_eq!(arsenal.shelves[crate::arsenal::CLOTHING][0][0].item, 9);
+        assert_eq!(arsenal.shelves[crate::arsenal::CLOTHING][0][0].flags, 0);
+        // An item of the form's own shelf the arsenal did not lend keeps
+        // the drag's item and is added back too.
+        let weapon = LoadoutItem::weapon(11, 0x10, 2, 0);
+        let done = return_to_arsenal(
+            &mut arsenal,
+            &mut editor,
+            &weapon,
+            exa_ui::loadout::DropSource::Weapons,
+            weapon_kind(),
+        );
+        assert!(done.keep_item);
+        assert_eq!(arsenal.shelves[crate::arsenal::WEAPONS][0].len(), 1);
+        assert_eq!(arsenal.shelves[crate::arsenal::WEAPONS][0][0].item, 11);
+    }
+
+    #[test]
+    fn a_champions_form_never_touches_the_arsenal() {
+        let mut arsenal = crate::arsenal::Arsenal::default();
+        assert!(arsenal.stow(7, weapon_kind(), 0x400));
+        let mut editor = editor_for(&member(), 0, LoadoutMode::Champion, &facts);
+        editor.category = 0x10;
+        let item = LoadoutItem::weapon(7, 0x10, 2, 0);
+        let done = return_to_arsenal(
+            &mut arsenal,
+            &mut editor,
+            &item,
+            exa_ui::loadout::DropSource::Arsenal,
+            weapon_kind(),
+        );
+        assert_eq!(arsenal.shelves[crate::arsenal::WEAPONS][0][0].flags, 0x400);
+        assert!(!done.keep_item && !done.zero_stock);
+        assert_eq!(done.count, 0);
     }
 }

@@ -52,6 +52,15 @@ pub const SWAP_MASK: u32 = 0x400;
 pub const OFFHAND_FLAG: u32 = 0x8000_0000;
 /// The flag of an item that may stay in the armour list.
 pub const ARMOUR_KEEP: u32 = 0x100;
+/// The flag the form puts on an arsenal entry the shown record has
+/// equipped (a hand or a worn item).
+pub const EQUIPPED_MARK: u32 = 0x200;
+/// The equipment container's slots and their state words.
+pub const EQUIPMENT_SLOTS: usize = 24;
+/// A slot shown; the state word's visibility bits.
+pub const SLOT_SHOWN: u32 = 0x110;
+/// A slot hidden.
+pub const SLOT_HIDDEN: u32 = 0;
 /// The rank an unset form rank stands for.
 pub const MAX_RANK_UNSET: i32 = 5;
 
@@ -361,6 +370,32 @@ pub fn clear_pointed(editor: &mut LoadoutEditor, item: u32) -> bool {
         true
     } else {
         false
+    }
+}
+
+/// The equipment container's slot states in creation mode: the first
+/// eighteen slots are shown ([`SLOT_SHOWN`]) and the last six hidden
+/// ([`SLOT_HIDDEN`]).
+#[must_use]
+pub fn creation_equipment_slots() -> [u32; EQUIPMENT_SLOTS] {
+    let mut slots = [SLOT_HIDDEN; EQUIPMENT_SLOTS];
+    for slot in slots.iter_mut().take(18) {
+        *slot = SLOT_SHOWN;
+    }
+    slots
+}
+
+/// Marks the arsenal entries the shown record has equipped: first the mark
+/// comes off every entry, then it goes on each entry whose item is in one
+/// of the two hands or the worn list. The entries are the selected box's
+/// (the original walks the record, not the rank loadouts).
+pub fn mark_equipped(entries: &mut [LoadoutItem], hands: [u32; 2], worn: &[u32]) {
+    for entry in entries.iter_mut() {
+        entry.flags &= !EQUIPPED_MARK;
+        let held = hands.contains(&entry.id);
+        if held || worn.contains(&entry.id) {
+            entry.flags |= EQUIPPED_MARK;
+        }
     }
 }
 
@@ -1245,6 +1280,33 @@ mod tests {
         editor.pointed = Some(5);
         editor.mode = LoadoutMode::Match;
         assert!(!clear_pointed(&mut editor, 5));
+    }
+
+    #[test]
+    fn creation_shows_eighteen_slots_and_hides_six() {
+        let slots = creation_equipment_slots();
+        assert_eq!(slots.len(), 24);
+        assert!(slots[..18].iter().all(|&state| state == SLOT_SHOWN));
+        assert!(slots[18..].iter().all(|&state| state == SLOT_HIDDEN));
+        // The two words are the original's visibility bits.
+        assert_eq!(SLOT_SHOWN, 0x110);
+        assert_eq!(SLOT_HIDDEN, 0);
+    }
+
+    #[test]
+    fn the_arsenal_marks_the_records_hands_and_worn_items() {
+        let mut entries = vec![item(1, 2, 0), item(2, 3, 0), item(3, 4, 0)];
+        // The first entry keeps a mark that is not the equipped one.
+        entries[0].flags = 0x400;
+        mark_equipped(&mut entries, [2, 0], &[3]);
+        assert_eq!(entries[0].flags & EQUIPPED_MARK, 0);
+        assert_eq!(entries[0].flags, 0x400);
+        assert_eq!(entries[1].flags & EQUIPPED_MARK, EQUIPPED_MARK);
+        assert_eq!(entries[2].flags & EQUIPPED_MARK, EQUIPPED_MARK);
+        // The next refresh takes the mark off the entries no longer held.
+        mark_equipped(&mut entries, [0, 0], &[]);
+        assert!(entries.iter().all(|entry| entry.flags & EQUIPPED_MARK == 0));
+        assert_eq!(entries[0].flags, 0x400);
     }
 
     #[test]
