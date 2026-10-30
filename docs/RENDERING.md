@@ -2313,18 +2313,22 @@ intensity and the emissive scale are worked out in double precision
 the first frame, a one-shot template's every frame and any frame brighter
 than the peak ask for a full light update, and a new peak is 1.1× the
 intensity. The emissive scale reaches `Fire::emissive`. Each emitter also
-keeps a *detail* value apart from its size: the renderer's level of detail
-is `detail·1000/distance` to the node, never sharper than one. The small
+keeps a *detail* value apart from its size: the material's level of
+detail is `detail·1000/d²`, d² the squared distance from the camera to the
+node held at one or more (the original's distance helper returns the
+squared length; `Emitter::lod_scale`, not yet bound to a material). The small
 and medium flames' detail is the fire's, the medium-small and large
 flames' twice it, and every bed's twice its own size. A one-shot template
 records its ring deadline (start life + the ring's span + ½, rounded half
 to even), which the original stores for the game to read.
 
 The template's looping sound (`FireS02`, `FireS01`, `FireL01`) plays from
-`exa_game::fire_sound`: one looping voice a flame, loaded once through the
-sound bank by name, moved to the flame's node and given the emitter's
-walked volume and pitch every frame. A template with no sound, no game
-data or no audio device plays nothing.
+`exa_game::fire_sound`: one looping voice a flame on a handle of its own,
+loaded once through the sound bank by name, moved to the flame's node and
+given the emitter's walked volume and pitch every frame, and freed with its
+buffer reference when the flame is despawned. A template with no sound, no
+game data or no audio device plays nothing, and a sound that fails to load
+is not asked for again.
 
 Still missing for fires: fires on other physics bodies (only the carried
 torch rides its item), the source frame following the body, body contacts
@@ -2375,7 +2379,8 @@ rules in `exa_render::electricity` and a Bevy layer in `exa_world::arc`.
   component), so the zig-zag's exact shape is [guess].
 - **Shader.** `_ElecMat01`: `tc = (uv + TexOfs)·0.25` with TexOfs =
   (0, the tendril emitter's scroll, which each arc advances by 0.015 a
-  tick and wraps past 2; its own material carries the offset); a = the
+  tick, dropping back by one once past 2; its own material carries the
+  offset); a = the
   texture's red mixed a third
   into the ribbon's V (across it); a = 1 − |2a − 1|; b = a²⁴; a = a⁶;
   colour = mix(vertex, EleCol (0.65, 0.4, 1), b)·b +
