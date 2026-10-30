@@ -31,6 +31,9 @@
 //! charge step, and the dome ripple step.
 
 use bevy::math::Vec3;
+/// The engine's approximate reciprocal square root, shared with the
+/// thaumaturgy effects.
+pub(crate) use exa_physics::engine_math::reciprocal_sqrt;
 
 pub mod arcs;
 pub mod barricade;
@@ -719,21 +722,6 @@ pub fn step_shell(shown: f32, strength: f32, scale: f32) -> Option<ShellRipple> 
 pub struct ShellVertex {
     pub at: [f32; 3],
     pub normal: [f32; 3],
-}
-
-pub(crate) fn reciprocal_sqrt(value: f32) -> f32 {
-    #[cfg(target_arch = "x86_64")]
-    {
-        // The same approximate reciprocal square root the shell uses to unit a sum.
-        unsafe {
-            use std::arch::x86_64::{_mm_cvtss_f32, _mm_rsqrt_ss, _mm_set_ss};
-            _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(value)))
-        }
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        1.0 / value.sqrt()
-    }
 }
 
 /// Place a shell vertex: the position plus 2 times the normalized sum. A zero sum adds nothing.
