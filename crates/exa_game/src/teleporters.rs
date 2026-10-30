@@ -8,17 +8,23 @@
 //! - a teleporter asks for the destination screen ([`OpenPortalScreen`]);
 //! - a reconstruction device puts a waiting scan effect on the player
 //!   ([`crate::effects::scan::ScanEffect`], 1600 ms ahead, closing with the
-//!   flash), plays `devicescna01` at the player, glows (the device's voxel
-//!   lights follow the 1500/3800/1500 ms pulse, [`DeviceGlow`]) and raises
-//!   the reconstruction latch with the player's [`RecordIdentity`]. A scan
-//!   effect already on the player makes the use start nothing.
+//!   flash), gives it the device unit's aura (the `_ScanAura01` material,
+//!   its 184-byte grey block, the state bits 0x9000, one sub-object and the
+//!   shared noise picture), plays `devicescna01` at the player, glows (the
+//!   device's voxel lights follow the 1500/3800/1500 ms pulse,
+//!   [`DeviceGlow`]) and raises the reconstruction latch with the player's
+//!   [`RecordIdentity`]. A scan effect already on the player makes the use
+//!   start nothing.
 //!
 //! [`SlotReleased`] (an object let go off a device's slot point) powers a
 //! reconstruction device down: `devicepwra01` at the device and the latch
 //! cleared. [`EndSession`] decides how the player's session ends
 //! ([`teleporters::session_end`]); a reconstruction strips the player the
 //! first time (hand and worn data cleared, health just under half) and is
-//! reported as [`SessionEnded`].
+//! reported as [`SessionEnded`]. The latch is the story session's
+//! reconstruction word as well: a scan sets it to rebuildable and a power
+//! down clears it, so the play flow's death handler sees the device's
+//! write.
 //!
 //! All times are the effects' game clock ([`EffectClock`]). The scan and
 //! the glow are the device unit's own effects; the destination screen and
@@ -36,7 +42,7 @@ use exa_world::teleporters::{
 use exa_world::{PlacedItem, TeleportDevice};
 
 use crate::effects::EffectClock;
-use crate::effects::scan::{Scan, ScanEffect};
+use crate::effects::scan::{self, Scan, ScanEffect};
 
 /// The original's possession: while the player controls another body, the
 /// devices refuse every use.
@@ -156,6 +162,7 @@ impl Plugin for TeleportPlugin {
         app.init_resource::<EffectClock>()
             .init_resource::<Possession>()
             .init_resource::<Latch>()
+            .init_resource::<scan::ScanBuild>()
             .add_message::<UseDevice>()
             .add_message::<OpenPortalScreen>()
             .add_message::<DeviceSound>()
@@ -200,6 +207,27 @@ fn find_slot_entity(
     })
 }
 
+/// The two ends of the destination screen: the message the use writes and
+/// the screen the destination module keeps. A screen already open makes the
+/// original answer "already open" and open nothing.
+#[derive(bevy::ecs::system::SystemParam)]
+struct PortalBridge<'w> {
+    screens: MessageWriter<'w, OpenPortalScreen>,
+    open: Option<Res<'w, crate::destination::PortalScreenState>>,
+}
+
+impl PortalBridge<'_> {
+    /// Whether a destination screen is showing.
+    fn is_open(&self) -> bool {
+        self.open.as_ref().is_some_and(|state| state.open.is_some())
+    }
+
+    /// Ask the destination module for a screen.
+    fn write(&mut self, message: OpenPortalScreen) {
+        self.screens.write(message);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn use_devices(
     mut commands: Commands,
@@ -214,7 +242,9 @@ fn use_devices(
     possession: Res<Possession>,
     clock: Res<EffectClock>,
     mut latch: ResMut<Latch>,
-    mut screens: MessageWriter<OpenPortalScreen>,
+    mut build: ResMut<scan::ScanBuild>,
+    mut flow: Option<ResMut<crate::flow::Flow>>,
+    mut screens: PortalBridge<'_>,
     mut sounds: MessageWriter<DeviceSound>,
 ) {
     for use_it in uses.read() {
@@ -251,6 +281,10 @@ fn use_devices(
         }
         match device.kind {
             operative::TELEPORTER => {
+                // The original finds a visible destination form with its own
+                // id on the interface and answers "already open" then; the
+                // destination screen is that form, one at a time.
+                let screen_open = screens.is_open();
                 let PortalUse::Open {
                     item,
                     adapter,
@@ -262,7 +296,7 @@ fn use_devices(
                     &children_cm,
                     &objects,
                     Some(&device.operative),
-                    false,
+                    screen_open,
                 )
                 else {
                     continue;
@@ -293,6 +327,15 @@ fn use_devices(
                 ) else {
                     continue;
                 };
+                // The effect node is created first and rolls its two draws,
+                // then the device builds its aura.
+                let tex_pos = build.draws();
+                let mut aura = scan::ScanAura::default();
+                let scan::ScanBuild {
+                    aura: shader, lock, ..
+                } = &mut *build;
+                scan::build_aura(&mut aura, shader, lock, true);
+                scan::start_aura(&mut aura);
                 let ScanTiming {
                     effect_at_ms,
                     pulse_ramp_ms,
@@ -301,13 +344,18 @@ fn use_devices(
                 } = teleporters::scan_timing(clock.now_ms);
                 commands.spawn((
                     Name::new(crate::effects::scan::MATERIAL),
-                    ScanEffect(scan_for_device(effect_at_ms)),
+                    ScanEffect(scan_for_device(effect_at_ms, tex_pos)),
+                    aura,
                     Transform::default(),
                     ChildOf(use_it.user),
                 ));
                 sounds.write(DeviceSound::scan(user_transform.translation()));
                 let identity = identities.get(use_it.user).map(|i| i.0).unwrap_or(0);
                 latch.begin(identity);
+                // The same word the story session reads when the player dies.
+                if let Some(flow) = flow.as_mut() {
+                    flow.story.reconstruction = crate::flow::REBUILDABLE;
+                }
                 commands.entity(use_it.device).insert(DeviceGlow {
                     start_ms: clock.now_ms,
                     ramp_ms: pulse_ramp_ms,
@@ -320,10 +368,11 @@ fn use_devices(
 }
 
 /// The scan a reconstruction device starts: waiting for `at_ms`, its close
-/// looping with the flash. Its two stored random values are never read (the
-/// scan's shader has no texture position), so they are 0 here.
-pub fn scan_for_device(at_ms: u32) -> Scan {
-    let mut scan = Scan::delayed(at_ms, [0.0, 0.0]);
+/// looping with the flash, carrying the node's two creation draws (which
+/// nothing reads). Its two stored random values are stored as the device's
+/// effect node draws them.
+pub fn scan_for_device(at_ms: u32, tex_pos: [f32; 2]) -> Scan {
+    let mut scan = Scan::delayed(at_ms, tex_pos);
     scan.looping = true;
     scan
 }
@@ -375,6 +424,7 @@ fn power_down_devices(
     mut released: MessageReader<SlotReleased>,
     devices: Query<(&TeleportDevice, &GlobalTransform)>,
     mut latch: ResMut<Latch>,
+    mut flow: Option<ResMut<crate::flow::Flow>>,
     mut sounds: MessageWriter<DeviceSound>,
 ) {
     for release in released.read() {
@@ -386,6 +436,10 @@ fn power_down_devices(
         }
         sounds.write(DeviceSound::power(transform.translation()));
         latch.power_down();
+        // The one reconstruction word: the story session no longer rebuilds.
+        if let Some(flow) = flow.as_mut() {
+            flow.story.reconstruction = 0;
+        }
     }
 }
 
@@ -458,9 +512,10 @@ mod tests {
             Scan::delayed(0, [0.0; 2]).state.word()
         );
         assert_eq!(teleporters::SCAN_SCALE, crate::effects::scan::FLASH_SCALE);
-        let mut scan = scan_for_device(teleporters::scan_timing(1_000).effect_at_ms);
+        let mut scan = scan_for_device(teleporters::scan_timing(1_000).effect_at_ms, [0.5, 0.25]);
         assert!(scan.looping);
         assert_eq!(scan.stamp, 2_600);
+        assert_eq!(scan.tex_pos, [0.5, 0.25]);
         assert!(!scan.step(2_600).remove);
         // Strictly after the stamp it opens.
         scan.step(2_601);
@@ -509,6 +564,8 @@ mod tests {
         app.init_resource::<EffectClock>()
             .init_resource::<Possession>()
             .init_resource::<Latch>()
+            .init_resource::<crate::effects::scan::ScanBuild>()
+            .init_resource::<crate::flow::Flow>()
             .add_message::<UseDevice>()
             .add_message::<OpenPortalScreen>()
             .add_message::<DeviceSound>()
@@ -609,6 +666,17 @@ mod tests {
         query.single(world).unwrap().colour
     }
 
+    /// The aura and the two draws the scan entity carries.
+    fn scan_aura(app: &mut App, user: Entity) -> (scan::ScanAura, [f32; 2]) {
+        let world = app.world_mut();
+        let mut query = world.query::<(&ScanEffect, &scan::ScanAura, &ChildOf)>();
+        let (scan, aura, _) = query
+            .iter(world)
+            .find(|(_, _, parent)| parent.parent() == user)
+            .expect("a scan on the player");
+        (aura.clone(), scan.0.tex_pos)
+    }
+
     #[test]
     fn a_reconstruction_device_scans_glows_and_latches() {
         let mut app = app();
@@ -616,8 +684,28 @@ mod tests {
         app.world_mut().write_message(UseDevice { device, user });
         at(&mut app, 1_000);
         assert_eq!(scans_on(&mut app, user), 1);
+        // The scan's node wears the device's aura: the library's material,
+        // its 184-byte grey block, the 0x9000 state bits, one sub-object and
+        // the 0x20 material flag with the shared noise picture.
+        let (aura, tex_pos) = scan_aura(&mut app, user);
+        assert_eq!(aura.0.material, Some(scan::AURA_MATERIAL));
+        assert_eq!(aura.0.block, scan::AURA_BLOCK);
+        assert_eq!(aura.0.state, scan::AURA_STATE);
+        assert_eq!(aura.0.flags, 0x20);
+        assert_eq!(aura.0.subobjects, 1);
+        assert_eq!(aura.0.noise, Some("_ForceNoise"));
+        // The node's two creation draws are the stream's first two.
+        assert_eq!(tex_pos, scan::ScanBuild::default().draws());
         let latch = *app.world().resource::<Latch>();
         assert_eq!((latch.phase, latch.remembered), (LatchPhase::Charging, 7));
+        // The same word the story session reads: a death can now rebuild.
+        assert_eq!(
+            app.world()
+                .resource::<crate::flow::Flow>()
+                .story
+                .reconstruction,
+            crate::flow::REBUILDABLE
+        );
         assert!(app.world().get::<DeviceGlow>(device).is_some());
         // A second use while the scan is on the player starts nothing more.
         app.world_mut().write_message(UseDevice { device, user });
@@ -632,10 +720,18 @@ mod tests {
         at(&mut app, 7_801);
         assert_eq!(light(&mut app), Vec3::ZERO);
         assert!(app.world().get::<DeviceGlow>(device).is_none());
-        // The crystal taken off powers the device down.
+        // The crystal taken off powers the device down: the latch and the
+        // story session's reconstruction word clear.
         app.world_mut().write_message(SlotReleased { device });
         at(&mut app, 7_813);
         assert_eq!(app.world().resource::<Latch>().phase, LatchPhase::Idle);
+        assert_eq!(
+            app.world()
+                .resource::<crate::flow::Flow>()
+                .story
+                .reconstruction,
+            0
+        );
     }
 
     #[test]

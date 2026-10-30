@@ -43,10 +43,39 @@ pub mod torrent;
 pub mod vanish;
 pub mod wheel;
 
+use std::sync::atomic::{AtomicI32, Ordering};
+
 use bevy::prelude::*;
 
 /// The original's simulation rate, ticks per second.
 pub const TICK_HZ: u32 = 83;
+
+/// The effect render's scene lock: the word an effect builder holds while
+/// it reads the scene's data library. Taking it sets the word to one,
+/// spinning while it was set; releasing it sets the word to zero and
+/// answers the word it held. Exarust's builders run on one thread, so the
+/// lock is never contended; it keeps the original's order and value.
+#[derive(Resource, Debug, Default)]
+pub struct SceneLock(AtomicI32);
+
+impl SceneLock {
+    /// Take the lock, waiting while another holder has it.
+    pub fn acquire(&self) {
+        while self.0.swap(1, Ordering::SeqCst) != 0 {
+            std::hint::spin_loop();
+        }
+    }
+
+    /// Release the lock, answering the word it held.
+    pub fn release(&self) -> i32 {
+        self.0.swap(0, Ordering::SeqCst)
+    }
+
+    /// The word without taking the lock.
+    pub fn held(&self) -> i32 {
+        self.0.load(Ordering::SeqCst)
+    }
+}
 
 /// The effects' clock: the original's game clock, whole milliseconds of
 /// game time that stop while the game is paused, as an unsigned word that
@@ -247,6 +276,22 @@ mod tests {
         assert_eq!(round_i32(3.5), 4);
         assert_eq!(round_i32(-2.5), -2);
         assert_eq!(round_i32(432.64), 433);
+    }
+
+    #[test]
+    fn the_scene_lock_answers_the_word_it_held() {
+        let lock = SceneLock::default();
+        assert_eq!(lock.held(), 0);
+        lock.acquire();
+        assert_eq!(lock.held(), 1);
+        // Releasing answers the held word and leaves the lock free.
+        assert_eq!(lock.release(), 1);
+        assert_eq!(lock.held(), 0);
+        // Releasing a free lock answers zero.
+        assert_eq!(lock.release(), 0);
+        // Taken again after a release it is free at once.
+        lock.acquire();
+        assert_eq!(lock.release(), 1);
     }
 
     #[test]
