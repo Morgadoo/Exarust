@@ -709,6 +709,157 @@ pub fn locale_id(locales: &[u8], level: &str) -> Option<u32> {
     (id != 0).then_some(id)
 }
 
+/// The stored block the original's role-value accessors walk: a runtime
+/// structure (not a file layout), sized by its first word.
+///
+/// The accessors' arithmetic is what is reproduced here (REA on the
+/// original's character-data unit): `+0` the block's size in bytes, `+4`
+/// flags (bit `0x10000` a counted word list that starts at `+8`, bit
+/// `0x80000000` a word at `+0x14`), `+8` the word the id accessor returns
+/// (whose third byte is the count the walk steps over), `+0xc` a 16-bit
+/// stride in four-byte words, `+0xe` a 16-bit count, `+0x10` the second
+/// area (its first 16-bit word the length of what follows, when the list
+/// flag is set), `+0x14` the flagged word and `+0x18` the entries. What the
+/// two areas and the counts hold is not established (guess).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ValueBlock<'a> {
+    bytes: &'a [u8],
+}
+
+impl<'a> ValueBlock<'a> {
+    /// The fixed part before the entries.
+    pub const HEADER: usize = 0x18;
+
+    pub fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes }
+    }
+
+    pub fn bytes(&self) -> &'a [u8] {
+        self.bytes
+    }
+
+    fn u16_at(&self, at: usize) -> u16 {
+        self.bytes
+            .get(at..at + 2)
+            .map_or(0, |b| u16::from_le_bytes(b.try_into().expect("2 bytes")))
+    }
+
+    fn u32_at(&self, at: usize) -> u32 {
+        self.bytes
+            .get(at..at + 4)
+            .map_or(0, |b| u32::from_le_bytes(b.try_into().expect("4 bytes")))
+    }
+
+    fn byte_at(&self, at: usize) -> u8 {
+        self.bytes.get(at).copied().unwrap_or(0)
+    }
+
+    /// The flags word at `+4`.
+    pub fn flags(&self) -> u32 {
+        self.u32_at(4)
+    }
+
+    /// Whether a counted word list follows the id word.
+    pub fn has_word_list(&self) -> bool {
+        self.flags() & 0x1_0000 != 0
+    }
+
+    /// Whether the flagged word at `+0x14` is set.
+    pub fn has_flagged_word(&self) -> bool {
+        self.flags() & 0x8000_0000 != 0
+    }
+
+    /// The block's size word at `+0` (0 when the bytes are too short).
+    pub fn size(&self) -> usize {
+        self.u32_at(0) as usize
+    }
+
+    /// The count byte at `+0xa` (inside the id word).
+    pub fn count_byte(&self) -> u8 {
+        self.byte_at(0xa)
+    }
+
+    /// The walk's step: its header and one stride per counted value.
+    pub fn entry_len(&self) -> usize {
+        0xc + 4 * usize::from(self.count_byte())
+    }
+
+    /// The next entry of the block, if the bytes hold a whole one.
+    pub fn next(&self) -> Option<Self> {
+        let len = self.entry_len();
+        (len >= 0xc && len < self.bytes.len()).then(|| Self::new(&self.bytes[len..]))
+    }
+
+    /// The value area at `+0xc`.
+    pub fn values(&self) -> &'a [u8] {
+        self.bytes.get(0xc..).unwrap_or_default()
+    }
+
+    /// The target's id at `+8`.
+    pub fn id(&self) -> u32 {
+        self.u32_at(8)
+    }
+
+    /// The address of the id word, `+8`.
+    pub fn id_address(&self) -> &'a [u8] {
+        self.bytes.get(8..).unwrap_or_default()
+    }
+
+    /// Where the values reachable past the id start: `+8`, or past the
+    /// counted word list (its count and that many words) when the block has
+    /// one.
+    pub fn first_area(&self) -> &'a [u8] {
+        let at = if self.has_word_list() {
+            8 + 4 * (self.u32_at(8) as usize + 1)
+        } else {
+            8
+        };
+        self.bytes.get(at..).unwrap_or_default()
+    }
+
+    /// The second area: `+0x10`, or past its length word when the block has
+    /// a counted word list.
+    pub fn second_area(&self) -> &'a [u8] {
+        let at = if self.has_word_list() {
+            0x10 + usize::from(self.u16_at(0x10))
+        } else {
+            0x10
+        };
+        self.bytes.get(at..).unwrap_or_default()
+    }
+
+    /// The bytes one stride on from the block's own start: the block plus
+    /// its 16-bit stride at `+0xc` in four-byte words (the original's
+    /// accessor takes the block alone).
+    pub fn advance(&self) -> &'a [u8] {
+        self.bytes
+            .get(4 * usize::from(self.u16_at(0xc))..)
+            .unwrap_or_default()
+    }
+
+    /// The flagged word at `+0x14` when the flag is set, else 0.
+    pub fn flagged_word(&self) -> u32 {
+        if self.has_flagged_word() {
+            self.u32_at(0x14)
+        } else {
+            0
+        }
+    }
+
+    /// The entries, from `+0x18`.
+    pub fn entries(&self) -> &'a [u8] {
+        self.bytes.get(Self::HEADER..).unwrap_or_default()
+    }
+}
+
+/// Writes the word at `+0x14` of a value block, whatever its flag says, as
+/// the original's setter does.
+pub fn set_value_word(bytes: &mut [u8], value: u32) {
+    if let Some(word) = bytes.get_mut(0x14..0x18) {
+        word.copy_from_slice(&value.to_le_bytes());
+    }
+}
+
 struct Reader<'a> {
     b: &'a [u8],
     pos: usize,

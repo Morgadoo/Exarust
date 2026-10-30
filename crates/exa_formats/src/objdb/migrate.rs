@@ -110,20 +110,49 @@ impl ObjectDb {
     /// the instance are compared; then each section of the instance with a
     /// tag of `0x1000` or more that the template also has is refreshed by
     /// its kind.
-    fn migrate_at(&mut self, tier: Tier, at: usize, mut factory: Option<FactoryPass<'_>>) -> bool {
+    fn migrate_at(&mut self, tier: Tier, at: usize, factory: Option<FactoryPass<'_>>) -> bool {
         let Some(src) = self.store(tier).view(at) else {
             return false;
         };
         let mut payload = src.payload().to_vec();
-        let Some(header) = section_range(&payload, NAME) else {
-            return true;
+        if self.migrate_payload(&mut payload, factory) {
+            self.store_mut(tier).store(at, &payload);
+        }
+        true
+    }
+
+    /// Migrates every record of a store held outside this database (a
+    /// character entry's own items, which the original loads into a scratch
+    /// tier) from this database's templates, as the original's whole-tier
+    /// pass does. Returns how many records were visited.
+    pub fn migrate_store(&self, store: &mut super::Store) -> usize {
+        let mut visited = 0;
+        for at in 0..store.len() {
+            let Some(src) = store.view(at) else {
+                continue;
+            };
+            let mut payload = src.payload().to_vec();
+            if self.migrate_payload(&mut payload, None) {
+                store.store(at, &payload);
+            }
+            visited += 1;
+        }
+        visited
+    }
+
+    /// The migration of one record's payload from its template, resolved
+    /// in this database; whether the payload was rewritten (false when the
+    /// header names no template that resolves).
+    fn migrate_payload(&self, payload: &mut [u8], mut factory: Option<FactoryPass<'_>>) -> bool {
+        let Some(header) = section_range(payload, NAME) else {
+            return false;
         };
         let template_id = u32_at(&payload[header.clone()], 0x14);
         if template_id == 0 {
-            return true;
+            return false;
         }
         let Some(template) = self.find(template_id) else {
-            return true;
+            return false;
         };
         let template = template.payload().to_vec();
         let class_changed =
@@ -178,7 +207,7 @@ impl ObjectDb {
                     ] {
                         copy_bytes(t, b, at, len);
                     }
-                    refresh_condition(&mut payload, body, t, model.clone());
+                    refresh_condition(payload, body, t, model.clone());
                 }
                 super::WEAPON => {
                     // The name the record shows, read off the model section
@@ -248,7 +277,6 @@ impl ObjectDb {
                 _ => {}
             }
         }
-        self.store_mut(tier).store(at, &payload);
         true
     }
 }
@@ -602,6 +630,33 @@ mod tests {
         let m = db.find(LOCAL | 1).unwrap().model().unwrap();
         assert_eq!((m.name_id, m.description_id), (INHERIT, INHERIT));
         assert_eq!(m.name, "Worn");
+    }
+
+    /// A store held outside the database (a character entry's own items)
+    /// migrates from the database's templates, the database untouched.
+    #[test]
+    fn a_foreign_store_migrates_from_the_databases_templates() {
+        let mut db = template_and_instance(0x12_0000, 0x11_0000);
+        let mut items = std::mem::take(&mut db.local);
+        let before = db.clone();
+        assert_eq!(db.migrate_store(&mut items), 1);
+        let m = items.find(1).unwrap().model().unwrap();
+        assert_eq!((m.name_id, m.description_id), (INHERIT, INHERIT));
+        assert_eq!(m.name, "Worn");
+        assert_eq!(db.base.write(), before.base.write());
+        assert!(db.local.is_empty());
+        // A record whose template does not resolve is visited but kept.
+        let mut lone = store(&[(
+            2,
+            NAME | MODEL,
+            payload(&[
+                (NAME, header("Lone", 0, 77)),
+                (MODEL, model("Lone", 0, 9, 9)),
+            ]),
+        )]);
+        let kept = lone.write();
+        assert_eq!(db.migrate_store(&mut lone), 1);
+        assert_eq!(lone.write(), kept);
     }
 
     #[test]

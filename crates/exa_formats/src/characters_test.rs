@@ -1237,3 +1237,216 @@ fn a_placement_reads_its_motion_state_and_ai_home() {
     let p = read_placement(&plain).unwrap();
     assert_eq!((p.motion, p.ai_home), (None, None));
 }
+
+/// Appends a sub-chunk and pads it with zeroes to a multiple of eight bytes,
+/// so the next header lies on the reader's eight-byte step.
+fn push_chunk(bytes: &mut Vec<u8>, tag: u32, body: &[u8]) {
+    bytes.extend(tag.to_le_bytes());
+    bytes.extend((body.len() as u32).to_le_bytes());
+    bytes.extend(body);
+    bytes.resize(bytes.len() + (8 - body.len() % 8) % 8, 0);
+}
+
+/// A section entry read whole: the record and the object database and
+/// string library the word pairs after it name, found on an eight-byte step
+/// that never skips a body.
+#[test]
+fn an_entry_reads_its_record_and_its_own_database() {
+    let record = CharacterRecord::new();
+    let mut db = crate::objdb::Store::from_records([(1, 0, &[0u8; 4][..])]);
+    db.set_flags(0, crate::objdb::MAGIC);
+    let mut library = crate::objstrings::Library::default();
+    library.add(b"Blade");
+    // A database, a chunk the reader steps through, then a library: the
+    // library lands on the database the earlier header made.
+    let mut bytes = record.to_bytes().unwrap();
+    push_chunk(&mut bytes, ACTOR_ITEMS, &db.write());
+    push_chunk(&mut bytes, 0x1234, &[9; 8]);
+    push_chunk(&mut bytes, RECORD_STRINGS, &library.write());
+    let (read, own) = read_entry(0, &bytes).unwrap();
+    assert_eq!(read, record.duplicate().unwrap());
+    assert_eq!(own.strings.get(1).as_deref(), Some("Blade"));
+    assert_eq!(own.base.len(), 1);
+    assert!(own.base.find(1).is_some());
+    // A library before the database goes with the database the later
+    // header replaces.
+    let mut bytes = record.to_bytes().unwrap();
+    push_chunk(&mut bytes, RECORD_STRINGS, &library.write());
+    push_chunk(&mut bytes, ACTOR_ITEMS, &db.write());
+    let (_, own) = read_entry(0, &bytes).unwrap();
+    assert!(own.strings.is_empty());
+    assert_eq!(own.base.len(), 1);
+    // The step does not skip a body: a header nested in another chunk's
+    // body is read too.
+    let mut inner = Vec::new();
+    push_chunk(&mut inner, ACTOR_ITEMS, &db.write());
+    let mut bytes = record.to_bytes().unwrap();
+    push_chunk(&mut bytes, 0x1234, &inner);
+    let (_, own) = read_entry(0, &bytes).unwrap();
+    assert_eq!(own.base.len(), 1);
+    // A header off the eight-byte step is not seen: three bytes of
+    // another chunk's body push the database's header off it.
+    let mut bytes = record.to_bytes().unwrap();
+    bytes.extend(0x1234u32.to_le_bytes());
+    bytes.extend(3u32.to_le_bytes());
+    bytes.extend([9, 9, 9]);
+    push_chunk(&mut bytes, ACTOR_ITEMS, &db.write());
+    let (_, own) = read_entry(0, &bytes).unwrap();
+    assert!(own.base.is_empty());
+    // An entry that ends with the record has an empty database.
+    let (read, own) = read_entry(0, &record.to_bytes().unwrap()).unwrap();
+    assert_eq!(read, record.duplicate().unwrap());
+    assert!(own.base.is_empty() && own.strings.is_empty());
+    // A sub-chunk that runs past the entry is an error, not a panic.
+    let mut short = record.to_bytes().unwrap();
+    short.extend(ACTOR_ITEMS.to_le_bytes());
+    short.extend(100u32.to_le_bytes());
+    assert!(read_entry(0, &short).is_err());
+    assert!(read_entry(0, &[0; 3]).is_err());
+}
+
+/// The import's walk: chunk bodies are skipped, so an unaligned chunk does
+/// not hide the next header, and the library and the items land in one
+/// scratch database whatever their order.
+#[test]
+fn an_import_read_skips_chunk_bodies() {
+    let record = CharacterRecord::new();
+    let mut db = crate::objdb::Store::from_records([(1, 0, &[0u8; 4][..])]);
+    db.set_flags(0, crate::objdb::MAGIC);
+    let mut library = crate::objstrings::Library::default();
+    library.add(b"Blade");
+    let mut bytes = record.to_bytes().unwrap();
+    for (tag, body) in [
+        (RECORD_STRINGS, library.write()),
+        (0x1234, vec![9, 9, 9]),
+        (ACTOR_ITEMS, db.write()),
+    ] {
+        bytes.extend(tag.to_le_bytes());
+        bytes.extend((body.len() as u32).to_le_bytes());
+        bytes.extend(body);
+    }
+    let (read, own) = read_entry_items(0, &bytes).unwrap();
+    assert_eq!(read, record.duplicate().unwrap());
+    assert_eq!(own.strings.get(1).as_deref(), Some("Blade"));
+    assert_eq!(own.base.len(), 1);
+    // A last header with nothing after it is not read: the walk needs the
+    // bytes consumed plus eight to be fewer than the length.
+    let mut bytes = record.to_bytes().unwrap();
+    bytes.extend(ACTOR_ITEMS.to_le_bytes());
+    bytes.extend(0u32.to_le_bytes());
+    let (_, own) = read_entry_items(0, &bytes).unwrap();
+    assert!(own.base.is_empty());
+    assert!(read_entry_items(0, &[0; 3]).is_err());
+}
+
+/// The shipped entries read whole: every actor's record and its own item
+/// database (skipped without the game).
+#[test]
+fn shipped_entries_read_their_own_databases() {
+    let Some(dir) = exa_rpk::locate_install(None) else {
+        return;
+    };
+    let game = exa_rpk::GameData::open(&dir).unwrap();
+    let resource = game.pack(exa_rpk::PackKind::Resource).unwrap();
+    let actors = exa_rpk::Archive::parse(resource.get("actors.rpk").unwrap()).unwrap();
+    let mut with_items = 0;
+    let mut items = 0;
+    for e in actors.entries() {
+        let b = actors.bytes(e);
+        let (_, own) = read_entry(0, b).unwrap_or_else(|err| panic!("{}: {err}", e.name));
+        assert!(
+            own.strings.is_empty(),
+            "{}: a shipped entry has no library",
+            e.name
+        );
+        if !own.base.is_empty() {
+            with_items += 1;
+            items += own.base.len();
+        }
+    }
+    assert_eq!(actors.entries().len(), 21);
+    assert!(with_items >= 19, "{with_items}");
+    // The databases hold the items actor_items reads.
+    let listed: usize = actors
+        .entries()
+        .iter()
+        .map(|e| actor_items(actors.bytes(e)).map_or(0, |i| i.len()))
+        .sum();
+    assert_eq!(items, listed);
+}
+
+/// A section's database read entry by entry: each record with the object
+/// database its entry carries, and the errors of the entries that are not
+/// records.
+#[test]
+fn a_sections_entries_carry_their_own_databases() {
+    let mut body = front("vi01", 0, &[0x8000_0010]);
+    body.extend(middle(&[], &[]));
+    body.extend(v7_rest(&[]));
+    let mut rec = frame(7, &body);
+    let mut db = crate::objdb::Store::from_records([(1, 0, &[0u8; 4][..])]);
+    db.set_flags(0, crate::objdb::MAGIC);
+    let items = db.write();
+    rec.extend(ACTOR_ITEMS.to_le_bytes());
+    rec.extend((items.len() as u32).to_le_bytes());
+    rec.extend(&items);
+    // Two table entries: the record at the table's end, and an empty slot
+    // whose entry is not a record.
+    let mut rdb = u32s(&[0xDBAC_CD00, 32, 3, 0, 0, rec.len() as u32, 0, 0, 0, 0]);
+    rdb.extend(&rec);
+    let mut b = 0i32.to_le_bytes().to_vec();
+    b.extend(u32s(&[CHARACTER_DB, rdb.len() as u32]));
+    b.extend(&rdb);
+    let entries = LevelCharacters::read_entries(&b).unwrap();
+    assert_eq!(entries.len(), 2);
+    let (id, entry) = &entries[0];
+    assert_eq!(*id, 3);
+    let (record, own) = entry.as_ref().unwrap();
+    assert_eq!(record.worn_ids().collect::<Vec<_>>(), [0x8000_0010]);
+    assert!(own.base.find(1).is_some());
+    assert!(entries[1].1.is_err());
+    // The free function reads the database alone, without a section.
+    let entries = read_character_entries(&rdb).unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].1.as_ref().unwrap().1.base.len(), 1);
+}
+
+/// Every shipped level section reads entry by entry, and the entry-owned
+/// databases hold items for the records that name local ones (skipped
+/// without the game).
+#[test]
+fn shipped_sections_read_their_entry_databases() {
+    let Some(dir) = exa_rpk::locate_install(None) else {
+        return;
+    };
+    let game = exa_rpk::GameData::open(&dir).unwrap();
+    let resource = game.pack(exa_rpk::PackKind::Resource).unwrap();
+    let mut sections = 0;
+    let mut entries = 0;
+    for e in resource.entries() {
+        if !(e.name.starts_with("exanima") && e.name.ends_with(".rfc")) {
+            continue;
+        }
+        let Some(bytes) = resource.get(&e.name) else {
+            continue;
+        };
+        for c in crate::chunk::rfc_chunks(bytes).unwrap().flatten() {
+            if c.tag != CHARACTERS {
+                continue;
+            }
+            sections += 1;
+            for (id, entry) in LevelCharacters::read_entries(c.data).unwrap() {
+                if let Ok((record, own)) = entry {
+                    entries += 1;
+                    assert_eq!(record.id, id);
+                    // No shipped level entry carries its own item
+                    // database: the items live in the level's own.
+                    assert!(own.base.is_empty(), "{}", record.name);
+                    assert!(own.strings.is_empty(), "{}", record.name);
+                }
+            }
+        }
+    }
+    assert_eq!(sections, 13);
+    assert!(entries > 480, "{entries}");
+}

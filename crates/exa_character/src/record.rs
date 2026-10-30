@@ -18,7 +18,7 @@ use exa_formats::characters::{
 /// database and `0x80000000` the level's own.
 const RECORD_WORLD: u32 = 0x4000_0000;
 const RECORD_LOCAL: u32 = 0x8000_0000;
-use exa_formats::objdb::{EQUIP_LOCK_LIMIT, Item};
+use exa_formats::objdb::{EQUIP_LOCK_LIMIT, Item, ObjectDb, Tier};
 
 /// The techniques a technique depends on, by skill slot and technique id
 /// (1-based): unlearning either one also unlearns it. Close Combat's Dual
@@ -560,6 +560,54 @@ impl CharacterData {
         }
     }
 
+    /// Copies the record's item references out of a character entry's own
+    /// database into `target`, as the prelude loader does after reading the
+    /// entry ([`exa_formats::characters::read_entry_items`]). Every record of the entry's database is first migrated from
+    /// its template in `db` (the original runs its whole-tier migration on
+    /// the scratch tier it loaded them into), so a template whose material
+    /// class changed drops the item's own strings before the copy. Then
+    /// come the first hand pair, the worn list and the inventory.
+    /// A hand keeps its old id so an inventory entry that repeats it takes
+    /// the hand's new id instead of another copy; every other inventory
+    /// entry is copied like the worn items. The second hand pair, the
+    /// staged list and the loadouts are left alone. Returns how many
+    /// references were copied (an id without database bits or one the
+    /// entry's database lacks stays as it is and is not counted).
+    pub fn import_items(&mut self, own: &mut ObjectDb, db: &mut ObjectDb, target: Tier) -> usize {
+        db.migrate_store(&mut own.base);
+        let own = &*own;
+        let mut copied = 0;
+        let mut old = [0u32; 2];
+        let holds = |id: u32| own.base.find(id).is_some();
+        for (at, hand) in self.record.hands[..2].iter_mut().enumerate() {
+            if !hand.is_shared() {
+                continue;
+            }
+            old[at] = hand.id;
+            copied += usize::from(holds(hand.id & ID_MASK));
+            hand.id = db.copy_record_from(hand.id, own, Tier::Base, target);
+        }
+        for worn in &mut self.record.worn {
+            if !worn.is_shared() {
+                continue;
+            }
+            copied += usize::from(holds(worn.id & ID_MASK));
+            worn.id = db.copy_record_from(worn.id, own, Tier::Base, target);
+        }
+        for entry in &mut self.record.inventory {
+            if entry.item & (WORLD_DB | 0x8000_0000) == 0 {
+                continue;
+            }
+            if let Some(at) = old.iter().position(|old| *old != 0 && *old == entry.item) {
+                entry.item = self.record.hands[at].id;
+            } else {
+                copied += usize::from(holds(entry.item & ID_MASK));
+                entry.item = db.copy_record_from(entry.item, own, Tier::Base, target);
+            }
+        }
+        copied
+    }
+
     /// [`CharacterData::remap_items`] as a record moves between two
     /// databases: only the first two hands and the worn list are remapped
     /// first, and an inventory entry that names one of those hands takes the
@@ -587,6 +635,68 @@ impl CharacterData {
                 entry.item = remap(entry.item);
             }
         }
+    }
+
+    /// What a new item weighs on the character, as the equip pass reads it:
+    /// its [`Item::armour_weight`] less that of every worn item whose
+    /// occupancy overlaps it on any bone, and 0 when one of those refuses to
+    /// come off (its [`Item::equip_lock`] is over the limit). Worn items
+    /// whose record cannot be read, or that have no body section, are left
+    /// out of the sum.
+    pub fn equip_weight<'a>(&self, new: &Item, find: impl Fn(u32) -> Option<&'a Item>) -> f32 {
+        let mut weight = new.armour_weight;
+        for worn in &self.record.worn {
+            let Some(item) = find(worn.id) else {
+                continue;
+            };
+            if !item.has_body
+                || !item
+                    .occupancy
+                    .iter()
+                    .zip(new.occupancy.iter())
+                    .any(|(worn, new)| worn & new != 0)
+            {
+                continue;
+            }
+            if item.equip_lock > EQUIP_LOCK_LIMIT {
+                return 0.0;
+            }
+            weight -= item.armour_weight;
+        }
+        weight
+    }
+
+    /// The weight of what the character wears, as the pack's total reads
+    /// it: each worn item's template bulk (the item's own record's model
+    /// bulk byte), summed as an integer. `template_bulk` resolves the bulk
+    /// of an item id, as [`exa_formats::objdb::ObjectDb::template_bulk`]
+    /// does.
+    pub fn worn_weight(&self, template_bulk: impl Fn(u32) -> u8) -> i32 {
+        self.record
+            .worn
+            .iter()
+            .map(|worn| i32::from(template_bulk(worn.id)))
+            .sum()
+    }
+
+    /// The rank of a set of hands and worn items, as the arena compares
+    /// loadouts: each held item's [`Item::loadout_rank`] (a shield and a
+    /// second weapon count too) plus each worn item's
+    /// [`Item::worn_rank`]. Items whose record cannot be read count 0.
+    pub fn loadout_rank<'a>(set: &Loadout, find: impl Fn(u32) -> Option<&'a Item>) -> i32 {
+        let mut rank = 0;
+        for hand in &set.hands {
+            if hand.id == 0 {
+                continue;
+            }
+            rank += find(hand.id).map_or(0, |item| item.loadout_rank);
+        }
+        for worn in &set.worn {
+            if let Some(item) = find(worn.id) {
+                rank += item.worn_rank();
+            }
+        }
+        rank
     }
 
     /// Appends an item to the worn list (the underwear rule's append and

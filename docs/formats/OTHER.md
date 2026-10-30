@@ -434,6 +434,31 @@ resolve in their level's library.
   source's index after the insertion, so a copy inserted at or before that
   index takes another entry's flags (its own zero flags when it took the
   source's index).
+- **The character-data copies**: a record copied from one tier into another
+  (the character-data unit's item copy) takes its payload and table flags and
+  is inserted under the target tier's first free id; the model's name and
+  description ids whose own text the *source* tier's library holds are
+  allocated again in the target tier's library (an inherit and a shared id
+  stay as they are, and an own id with no text becomes an inherit). The
+  instance copy is the same, but it first makes an instance (a template
+  clone, or a duplicate of a local object), so a record without the header
+  flag bit 0 comes back unchanged and an id the instance step leaves untagged
+  gives 0; it reads an own string from the instance's tier's library, any
+  other from the shared library, and *always* takes a target slot (one whose
+  text is empty is released at once, leaving the id pointing at an empty
+  slot); the returned id is tagged local whatever the target tier. The
+  prelude loader copies each character entry's items (its own database's
+  records) into the live local tier this way, with the first hand pair's old
+  ids making the inventory's repeats of them take the hand's new id. Before
+  copying it migrates every record of the entry's database from its template
+  in the live database, so a template whose material class changed drops an
+  item's own strings first. The two readers of a character entry walk the
+  bytes after the record differently: the item import skips each chunk body
+  (and goes on while the bytes consumed plus eight are fewer than the
+  length), while the prelude's whole-entry builder steps eight bytes at a
+  time without skipping bodies, so it sees any `0xDBDB`/`0xDBCD` word pair on
+  that step, nested ones included, and each `0xDBDB` makes a new database
+  (dropping a library read before it).
 - **Promotion**: a local object (tag exactly bit 31) comes back as its
   recorded world id when the id remap table holds it. Otherwise its container
   children are promoted first and their ids rewritten; each own string whose
@@ -608,7 +633,8 @@ release, the section finder, mask test and editing routines, the record view,
 the id resolver, binary search, first-free scan, sorted insertion, payload
 store and deletion, the string resolver, the template clone, instancer,
 instance-template and template helpers, bulk helper, dispatcher,
-duplicator, promoter (container recursion, string moves, remap tables), the
+duplicator, both character-data copies (whole record and instance, by their
+assembly), promoter (container recursion, string moves, remap tables), the
 remap switches, the link and entity rewrites, both removal routines, the
 item-use test, the migrator (by its assembly), the appearance refresh and
 its material-set table, the condition refresh (by its assembly and
@@ -1768,6 +1794,21 @@ folds the old outer layer into the inner one:
 An item's coverage of a part is its percent × 0.01 (in double, stored as a
 float); with the Deflection technique learnt it is c + 0.1 up to ½, else c
 + 0.1·(1 − c) + 0.05, at most 1 (30 % covers 0.4, 75 % 0.825, 95 % all).
+
+What an item's armour weighs (the equip pass's figure, `Item::armour_weight`)
+sums, over the twenty coverage words, the bone's weight times
+`sqrt(coverage/100) × 0.005` (both constants double, the product rounded once
+to single) times the sum of the four protection bytes at `0x1A0`–`0x1A3`,
+accumulated in single precision. The bone weights, in bone order 1–20, are
+1, 1, 1, ½, 1, 1, ½, 2, 2½, 4, 1, 1, 1, 1, 1, 1, ½, ½, 1, 1. The equip pass
+(`CharacterData::equip_weight`) takes the new item's figure less that of every
+worn item whose occupancy overlaps it on any bone, and answers 0 when one of
+those has an equip lock over 50. Two ranks come from the same words: a hand
+item's is the weapon section's word at `0x42` low five bits, else the shield
+section's at `0x08` (the body is not read); a worn item's is the body's word
+at `0x1AB` low five bits. The arena sums the four hands' and every worn
+item's (`CharacterData::loadout_rank`), and the pack's total sums each worn
+item's *template* bulk (`ObjectDb::template_bulk`).
 
 The 19×8 slot table at `0xA8` is not read for armour.
 

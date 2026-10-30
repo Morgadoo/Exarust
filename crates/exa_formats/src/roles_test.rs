@@ -577,3 +577,63 @@ fn held_roles_add_inherit_remove_and_pack() {
     assert_eq!(held_role_word(&list, 3), 0);
     assert_eq!(held_role_bytes(&list).len(), 20 + 12);
 }
+
+/// A role value block's accessors: the id, the two areas, the stride, the
+/// flagged word, the entries and the walk's step.
+#[test]
+fn a_value_block_reads_its_parts() {
+    let mut bytes = vec![0u8; 0x40];
+    let put = |b: &mut Vec<u8>, at: usize, v: u32| b[at..at + 4].copy_from_slice(&v.to_le_bytes());
+    put(&mut bytes, 0, 0x40);
+    put(&mut bytes, 4, 0x8000_0000);
+    put(&mut bytes, 8, 0x0001_0007); // its third byte, at +0xa, is 1
+    bytes[0xc..0xe].copy_from_slice(&2u16.to_le_bytes());
+    bytes[0xe..0x10].copy_from_slice(&3u16.to_le_bytes());
+    put(&mut bytes, 0x10, 0x2A);
+    put(&mut bytes, 0x14, 0xABC);
+    put(&mut bytes, 0x18, 0x555);
+    let block = ValueBlock::new(&bytes);
+    assert_eq!(block.size(), 0x40);
+    assert!(block.has_flagged_word() && !block.has_word_list());
+    assert_eq!((block.id(), block.count_byte()), (0x0001_0007, 1));
+    assert_eq!(block.id_address(), &bytes[8..]);
+    assert_eq!(block.entry_len(), 0xc + 4);
+    assert_eq!(block.values(), &bytes[0xc..]);
+    assert_eq!(block.first_area(), &bytes[8..]);
+    assert_eq!(block.second_area(), &bytes[0x10..]);
+    assert_eq!(block.advance(), &bytes[4 * 2..]);
+    assert_eq!(block.flagged_word(), 0xABC);
+    assert_eq!(block.entries(), &bytes[0x18..]);
+    assert_eq!(block.next().unwrap().bytes().len(), bytes.len() - 0x10);
+    // A block without the flag reads no word; the setter writes it all the
+    // same. Short blocks read zeroes and have no next.
+    bytes[4..8].copy_from_slice(&0u32.to_le_bytes());
+    let block = ValueBlock::new(&bytes);
+    assert_eq!(block.flagged_word(), 0);
+    set_value_word(&mut bytes, 0x1234);
+    assert_eq!(&bytes[0x14..0x18], &0x1234u32.to_le_bytes());
+    let empty = ValueBlock::new(&[]);
+    assert_eq!(
+        (empty.id(), empty.entry_len(), empty.flagged_word()),
+        (0, 0xc, 0)
+    );
+    assert!(empty.next().is_none());
+}
+
+/// A block with the counted word list flag starts its first area past the
+/// list and its second area past that area's length word.
+#[test]
+fn a_value_block_with_a_word_list_skips_it() {
+    let mut bytes = vec![0u8; 0x40];
+    let put = |b: &mut Vec<u8>, at: usize, v: u32| b[at..at + 4].copy_from_slice(&v.to_le_bytes());
+    put(&mut bytes, 0, 0x40);
+    put(&mut bytes, 4, 0x1_0000);
+    put(&mut bytes, 8, 3); // the list's count
+    put(&mut bytes, 0xc, 11);
+    put(&mut bytes, 0x10, 0x20); // the second area's length word
+    let block = ValueBlock::new(&bytes);
+    assert!(block.has_word_list() && !block.has_flagged_word());
+    assert_eq!(block.first_area(), &bytes[8 + 4 * 4..]);
+    assert_eq!(block.second_area(), &bytes[0x10 + 0x20..]);
+    assert_eq!(block.flagged_word(), 0);
+}

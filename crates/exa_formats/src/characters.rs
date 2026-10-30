@@ -1021,6 +1021,40 @@ impl LevelCharacters {
         }
         Ok(out)
     }
+
+    /// Every entry of a level section's character database read whole, by
+    /// id: the record and the object database it carries, as the prelude's
+    /// loader builds them ([`read_entry`]). A deleted entry (empty) or a
+    /// stub that is not a record comes back as an error.
+    pub fn read_entries(b: &[u8]) -> Result<Vec<EntryRecord>> {
+        let mut out = Vec::new();
+        for (tag, body) in sections(b)?.1 {
+            if tag == CHARACTER_DB {
+                out = read_entries_database(body)?;
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// A character database entry: its id and, when the entry is a record, the
+/// record with the object database its sub-chunks carry.
+pub type EntryRecord = (u32, Result<(CharacterRecord, crate::objdb::ObjectDb)>);
+
+/// Reads a character database's entries by id (an RDB such as the payload
+/// of a save's `#worldchrdb` chunk), each with the object database its
+/// sub-chunks carry.
+pub fn read_character_entries(b: &[u8]) -> Result<Vec<EntryRecord>> {
+    read_entries_database(b)
+}
+
+fn read_entries_database(b: &[u8]) -> Result<Vec<EntryRecord>> {
+    let db = Database::parse(b)?;
+    Ok(db
+        .records
+        .iter()
+        .map(|rec| (rec.id, read_entry(rec.id, db.payload(rec))))
+        .collect())
 }
 
 /// Reads a character database's records by id (an RDB such as the payload
@@ -1048,6 +1082,86 @@ fn sections(b: &[u8]) -> Result<(usize, Vec<Section<'_>>)> {
 
 /// Tag of the item database an actor's record is followed by.
 const ACTOR_ITEMS: u32 = 0xDBDB;
+/// Tag of the string library a record's entry may carry (the prelude's
+/// reader loads it into the record's own database; no shipped entry has
+/// one).
+const RECORD_STRINGS: u32 = 0xDBCD;
+
+/// A character section entry read whole: the record and the object database
+/// its entry carries, as the prelude's loader builds them.
+///
+/// After the record the original steps through the entry eight bytes at a
+/// time, reading a tag word and a length word at each step and never
+/// skipping a chunk's body: the loaders read the body through a copy of the
+/// position. So every aligned word pair after the record is a candidate
+/// header, including those inside a body. At [`ACTOR_ITEMS`] a new database
+/// is made and its records are read from the bytes after the header (the
+/// string library of any earlier [`RECORD_STRINGS`] goes with the old
+/// database); at [`RECORD_STRINGS`] the current database's string library
+/// is replaced. Any other pair is stepped over. The walk goes on while the
+/// bytes consumed plus six are fewer than the entry's length; a last step
+/// with only seven bytes left reads one byte past the entry in the
+/// original, and Exarust stops there instead. A string library before any
+/// database dereferences a missing database in the original; Exarust puts
+/// it on the empty one (guess: no shipped entry carries a library).
+pub fn read_entry(id: u32, b: &[u8]) -> Result<(CharacterRecord, crate::objdb::ObjectDb)> {
+    let record = CharacterRecord::parse(id, b)?;
+    let mut pos = record_end(b)?;
+    let mut database = crate::objdb::ObjectDb::default();
+    while pos + 6 < b.len() && pos + 8 <= b.len() {
+        let mut r = Reader { b, pos };
+        let tag = r.u32()?;
+        let len = r.u32()? as usize;
+        pos = r.pos;
+        match tag {
+            RECORD_STRINGS => {
+                database.strings = crate::objstrings::Library::parse(r.bytes(len)?)?;
+            }
+            ACTOR_ITEMS => {
+                database = crate::objdb::ObjectDb::default();
+                database.base = crate::objdb::Store::parse(r.bytes(len)?)?;
+            }
+            _ => {}
+        }
+    }
+    Ok((record, database))
+}
+
+/// A character entry read as the item import reads it before copying the
+/// record's items out (see `CharacterData::import_items` in
+/// `exa_character`): unlike [`read_entry`] this walk skips each chunk's
+/// body, goes on while the bytes consumed plus eight are fewer than the
+/// entry's length, and loads [`RECORD_STRINGS`] and [`ACTOR_ITEMS`] into
+/// one scratch database independently (a later items chunk keeps the
+/// library). The original's scratch tier is a global that keeps the items
+/// of the previous import when an entry has no items chunk; here each read
+/// starts empty.
+pub fn read_entry_items(id: u32, b: &[u8]) -> Result<(CharacterRecord, crate::objdb::ObjectDb)> {
+    let record = CharacterRecord::parse(id, b)?;
+    let mut pos = record_end(b)?;
+    let mut database = crate::objdb::ObjectDb::default();
+    while pos + 8 < b.len() {
+        let mut r = Reader { b, pos };
+        let tag = r.u32()?;
+        let len = r.u32()? as usize;
+        let body = r.bytes(len)?;
+        match tag {
+            RECORD_STRINGS => database.strings = crate::objstrings::Library::parse(body)?,
+            ACTOR_ITEMS => database.base = crate::objdb::Store::parse(body)?,
+            _ => {}
+        }
+        pos = r.pos;
+    }
+    Ok((record, database))
+}
+
+/// Where an entry's record chunk ends: its 8-byte header plus its size.
+fn record_end(b: &[u8]) -> Result<usize> {
+    let mut r = Reader { b, pos: 0 };
+    r.u32()?;
+    let size = r.u32()? as usize;
+    Ok(8usize.saturating_add(size))
+}
 
 /// The items of the database that follows an actor's record (tag, size,
 /// then an RDB of item records like `objdb.rdb`'s): what its

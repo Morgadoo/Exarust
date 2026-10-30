@@ -41,6 +41,14 @@ Characters: races, body morphs, appearance, apparel fitting, stats/attributes/sk
   breaks that rule, and unlearning a level, which also unlearns the skill's
   techniques that depend on it (the game's prerequisite table) and
   re-bases the points in 16 bits.
+- Weights and ranks: the equip pass's figure (the new item's per-bone
+  armour weight less every worn item overlapping it on any bone, 0 when one
+  of those has an equip lock over 50), the pack's worn weight (each worn
+  item's template bulk byte), the arena's loadout rank (the four hands'
+  weapon-or-shield rank and every worn item's body rank), and the prelude
+  loader's import of an entry's item references into a live tier (the entry's
+  items migrated from the live templates first, then the first hand pair, the worn list and the inventory, with an inventory repeat of a
+  hand taking the hand's new id).
 - Health: `save_health` writes yellow and red as shares of the maximum
   (red 0 unless positive), focus as its share, all in single precision and
   converted like the game's SSE instruction, the seed `0xFFFF` and the
