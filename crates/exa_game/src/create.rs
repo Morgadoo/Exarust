@@ -3398,6 +3398,10 @@ pub struct ResolvedKitItem {
     /// A made item's four colour layers each end with this byte (five); an
     /// alias writes its three bytes directly and has no marker.
     pub layer_marker: Option<u8>,
+    /// The two dye bytes a made instance writes: only a non-zero byte is
+    /// written, so a zero keeps whatever the item already had. An alias
+    /// writes none.
+    pub dyes: [Option<u8>; 2],
 }
 
 /// The appearance a kit entry gives an item instance.
@@ -3440,30 +3444,37 @@ pub fn resolve_kit_item(
             item: spec.item,
             appearance: None,
             layer_marker: None,
+            dyes: [None; 2],
         };
     }
     match (created, has_colour_block) {
-        // A created alias's bytes go straight into its three layers.
+        // A created alias's bytes go straight into its three layers, and it
+        // takes no dye bytes.
         (Some(item), true) => ResolvedKitItem {
             item,
             appearance: Some(KitAppearance::from(spec)),
             layer_marker: None,
+            dyes: [None; 2],
         },
-        // A made instance marks each colour layer with five.
+        // A made instance marks each colour layer with five and writes each
+        // dye byte that is set.
         (Some(item), false) => ResolvedKitItem {
             item,
             appearance: Some(KitAppearance::from(spec)),
             layer_marker: Some(5),
+            dyes: spec.dyes.map(|dye| (dye != 0).then_some(dye)),
         },
         (None, true) => ResolvedKitItem {
             item: spec.item,
             appearance: None,
             layer_marker: None,
+            dyes: [None; 2],
         },
         (None, false) => ResolvedKitItem {
             item: 0,
             appearance: None,
             layer_marker: None,
+            dyes: [None; 2],
         },
     }
 }
@@ -7252,7 +7263,8 @@ mod tests {
             ResolvedKitItem {
                 item: 12,
                 appearance: None,
-                layer_marker: None
+                layer_marker: None,
+                dyes: [None; 2]
             }
         );
 
@@ -7261,6 +7273,7 @@ mod tests {
         let instance = resolve_kit_item(&spec, true, false, Some(30));
         assert_eq!(instance.item, 30);
         assert_eq!(instance.layer_marker, Some(5));
+        assert_eq!(instance.dyes, [Some(3), Some(4)]);
         assert_eq!(
             instance.appearance,
             Some(KitAppearance {
@@ -7269,11 +7282,23 @@ mod tests {
                 colours: [5, 6, 7]
             })
         );
+        // A zero dye byte is left alone, keeping the item's own byte.
+        let no_dyes = KitItem {
+            item: 12,
+            variant: 9,
+            dyes: [0, 4],
+            colours: [5, 6, 7],
+        };
+        assert_eq!(
+            resolve_kit_item(&no_dyes, true, false, Some(30)).dyes,
+            [None, Some(4)]
+        );
 
         let alias = resolve_kit_item(&spec, true, true, Some(21));
         assert_eq!(alias.item, 21);
         assert!(alias.appearance.is_some());
         assert_eq!(alias.layer_marker, None);
+        assert_eq!(alias.dyes, [None; 2]);
 
         let no_alias = resolve_kit_item(&spec, true, true, None);
         assert_eq!(no_alias.item, 12);
