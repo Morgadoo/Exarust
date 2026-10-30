@@ -255,6 +255,10 @@ Round 39 terrain7: the static terrain audit found one deviation, TexPos for a no
 
 Round 40 streaming6: the chunk-end stack and the placed object's node kind in the player test; review removed a duplicate, wrong character-section reader and fixed the kind order.
 
+Round 43 coretail2: terrain material byte channels and rule walk live, model-less placed records spawn their volumes, one shared fast ln/exp/rsqrt; review fixed the rule walk, remainder and byte share and removed duplicated container, palette and collision code.
+
+Round 43 worldtail2: second world-tail pass; the capsule world now uses the body solver's gravity constant, the rest stays tested models; review fixed sector creation and removed an invented kd-tree attach and a guessed snapshot call.
+
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
 Done (change `add-apparel-painting`): object database items and the
@@ -1437,6 +1441,10 @@ Round 42 lightpool: the exanima01 start room's white pool is the level's own sha
 
 Round 42 skinning4 (re-landed with the bone-0 bind fix after a GPU regression): garment cull, depth-first joint capture and skin decomposition live; review gave the cull bits back to the garment slots, fixed the joint walk and rewired the decomposition inputs.
 
+Round 43 braies: the practice opponent was bare because its template's local-bit item ids were looked up in the game's object database (its trousers, shirt and sandals became gloves, a helm and boots); actors now keep their own items and local ids route to them as the original's character builder does, so the duellist wears its own trousers, shirt and sandals and holds its club. The garment cull and visible masks were checked against the original and match.
+
+Round 43 rendertail2: the scene-node render tail (light activation and alias copy, geometry node activation and hand-off, append-only attach, terrain block activation, kd builder flags, smoke per sub-view) as tested models, and a material's own environment cube live; review removed invented rules and duplicated luma, registries and scene-content wrappers.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
@@ -1569,6 +1577,12 @@ Round 41 combatant4: the duellist reads its foe's swing word, fighter blades and
 Round 42 golemwake: the golem alarm zones run live: the AI manager's zone check for the player (3 cm step, radius and box tests, the key-token pass search) wakes every statue golem within 800 cm of an entered exanima06 alarm zone, which then targets the player at concern 10 (GPU-checked); golems cannot fight yet because their bodies are not physical in Exarust.
 
 Round 42 motileai9: the standard AI sense ported and the race word picking each brain's sense live; review added the kind gate and fixed the selected character read.
+
+Round 43 ai3: encounter scripts run in the game and the script scene setup is shared; review reversed four lane inventions (line helpers stopping short, an off-floor key, a corpse-section override, a not-busy approach).
+
+Round 43 alarmreturn: the golem alarm return runs live from the story revive (dead player with red at least 0.01, five seconds later): every awake, non-dying guardian within 3000 cm goes home and sleeps as a statue, and the player is reset 200 cm past the Alarm_ box facing back with motion 0x1d; carrying the zone's key token lets the player cross without waking anything (GPU-checked). New debug flags --story-session, --give and --fell-player.
+
+Round 43 golembody: golems get physical bodies built as the original builds every race's (ragdoll, the character init's muscles with 0.995 link smoothing, a mind and a duellist, Stand 2 start); statue golems rest under the sentry tick (dormant body, blows turned, sleep scales on contact mobility) until the alarm wake ends it. On exanima06 two woken golems close on the player and strike while 45 statues stay at rest; their blows land with the halberd haft for no damage yet.
 
 ### Phase 7 — Game modes and content
 
@@ -2088,6 +2102,12 @@ Round 42 arena8: the arena's day end, company records and live hire list; review
 Round 42 dialogue: Talk starts a conversation, the reply panel and speech bubbles are painted and replies pick by click or digit; Derrin, the unknown background's companion, now stands in the first level so there is someone to talk to.
 
 Round 42 fxwire: the force blast, torrent and teleporter bubble register their GI lights live (the blast lights the struck opponent blue on the GPU), and a blast or torrent hit writes the pin gain and sets the balance's landing momentum to 5; the effect frame's inverse transform was fixed (it applied the frame twice).
+
+Round 43 guimain2: the GUI core's message boxes, double click and viewport rules, and the main menu's title art and cues live; review removed a duplicated helper, fixed the double click, the viewport precision and routes, and played the cues at the original's gain.
+
+Round 43 savehealth: a story save now keeps the player's wounds (yellow, red, focus, heal pool, potion) and a load restores them, as the original's story writer does; new story characters start with focus 0.
+
+Round 43 thaummind2: the Mind sight draw ported (no anchor creator yet); review dropped a duplicate force-light registration, fixed a transposed matrix and a reinvented sphere, and stopped an idle per-frame noise upload.
 
 ### Phase 8 — Polish and release
 
