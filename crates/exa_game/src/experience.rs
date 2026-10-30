@@ -86,6 +86,51 @@ pub const AUTO_TECHNIQUES: [(usize, u8); 15] = [
 /// The skill whose rise also redoes the wearer's armour.
 pub const ARMOUR_SKILL: usize = 2;
 
+/// The body word's bit for each chosen technique, by skill: the skill's
+/// techniques up to its level, each mapping to the bit the body keeps.
+/// Skill 1 sets no bit; the armour skill holds the one 0x1000 technique.
+pub const TECHNIQUE_BITS: [&[(u8, u32)]; SKILLS] = [
+    &[(1, 0x1), (2, 0x2), (3, 0x4), (4, 0x8)],
+    &[],
+    &[(5, 0x1000)],
+    &[
+        (1, 0x0100_0000),
+        (2, 0x0200_0000),
+        (3, 0x0400_0000),
+        (4, 0x0800_0000),
+        (5, 0x1000_0000),
+        (6, 0x2000_0000),
+    ],
+    &[(6, 0x0080_0000)],
+    &[
+        (1, 0x0010_0000),
+        (5, 0x0040_0000),
+        (6, 0x0020_0000),
+        (8, 0x0001_0000),
+    ],
+];
+
+/// The techniques a body holds, read again when a skill reaches a new
+/// level: the word starts at 0 and each skill's chosen techniques up to its
+/// level (points / 5000 slots) map to the body's bits ([`TECHNIQUE_BITS`]).
+/// The original reads one slot per level with no bound; a level above the
+/// six slots (more points than training reaches) is clamped here. The
+/// armour refresh that follows a rise in [`ARMOUR_SKILL`] is the body's own.
+pub fn technique_bits(skills: &[Skill; SKILLS]) -> u32 {
+    let mut bits = 0u32;
+    for (index, skill) in skills.iter().enumerate() {
+        let chosen = (level(skill.points) as usize).min(TECHNIQUE_SLOTS);
+        for &technique in &skill.techniques[..chosen] {
+            for &(value, bit) in TECHNIQUE_BITS[index] {
+                if technique == value {
+                    bits |= bit;
+                }
+            }
+        }
+    }
+    bits
+}
+
 /// A skill word's level.
 pub fn level(points: u16) -> u32 {
     exa_ai::estimate::skill_level(points)
@@ -206,6 +251,44 @@ pub fn global_xp_from_setting(value: &[u8]) -> Option<u32> {
     Some(u32::from_le_bytes(word))
 }
 
+/// The setting value the account-wide experience is stored as: its four
+/// bytes, little-endian.
+pub fn global_xp_to_setting(xp: u32) -> [u8; 4] {
+    xp.to_le_bytes()
+}
+
+/// The six story hooks the experience unit installs at start-up, in the
+/// order its registration fills them: the event each fires on. A hook runs
+/// only while the game fills its slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Hook {
+    /// A new story clears the item kinds and the levels
+    /// ([`Experience::begin`]).
+    NewGame,
+    /// A level loads: its music and ambience and its explored cells
+    /// ([`Experience::enter_level`]).
+    LevelEnter,
+    /// The level is built and the session begins: the player's carried
+    /// experience becomes the pool ([`Experience::start_level`]).
+    LevelStart,
+    /// The once-a-second tick ([`Experience::tick`]).
+    Tick,
+    /// A character dies ([`Experience::discover_kill`]).
+    Kill,
+    /// An item is picked up ([`Experience::discover_item`]).
+    Pickup,
+}
+
+/// The hooks a story installs, in registration order.
+pub const STORY_HOOKS: [Hook; 6] = [
+    Hook::NewGame,
+    Hook::LevelEnter,
+    Hook::LevelStart,
+    Hook::Tick,
+    Hook::Kill,
+    Hook::Pickup,
+];
+
 /// A combatant's fighting estimate. Two plus 0.4 a skill level, plus 0.02
 /// a point of combat skill, plus with a weapon 0.02 of its impact, slash,
 /// crush, pierce and thrust hundredths times its reach. A body scale above
@@ -286,8 +369,12 @@ pub struct Conversion {
     /// Points converted.
     pub points: i32,
     /// The skill that reached a new level. The body's technique bits are
-    /// read again then, and a rise in [`ARMOUR_SKILL`] redoes the armour.
+    /// read again then ([`technique_bits`]), and a rise in [`ARMOUR_SKILL`]
+    /// redoes the armour.
     pub raised: Option<usize>,
+    /// The body's technique word after a rise ([`technique_bits`]); `None`
+    /// when no skill rose.
+    pub techniques: Option<u32>,
     /// A companion's new AI skill and courage factors, its two attributes
     /// times 0.01, after a level.
     pub ai_factors: Option<[f32; 2]>,
@@ -501,6 +588,35 @@ impl Experience {
         self.current = Some(index);
     }
 
+    /// The level-start hook: the player's carried experience becomes the
+    /// account pool and both the account's and the player's clocks restart
+    /// at `now`. The original runs it once the level is built, before the
+    /// story's first tick.
+    pub fn start_level(&mut self, now: u32, player: &mut Learner) {
+        self.player_clock = now;
+        self.global_clock = now;
+        self.pool = player.experience;
+    }
+
+    /// Store the account-wide experience under [`GLOBAL_XP_KEY`] in the
+    /// binary settings store, as the game does before it saves the store.
+    pub fn save_global(
+        &self,
+        store: &mut exa_formats::settings_store::SettingsStore,
+    ) -> exa_formats::Result<()> {
+        store.set(&GLOBAL_XP_KEY, &global_xp_to_setting(self.global))
+    }
+
+    /// Read the account-wide experience back, if the store holds it; an
+    /// absent or empty value keeps the current number.
+    pub fn load_global(&mut self, store: &exa_formats::settings_store::SettingsStore) {
+        if let Some(value) = store.get(&GLOBAL_XP_KEY)
+            && let Some(xp) = global_xp_from_setting(value)
+        {
+            self.global = xp;
+        }
+    }
+
     /// Explore around a position, in the original's units. Returns the
     /// cells newly found.
     pub fn explore(
@@ -630,6 +746,8 @@ impl Experience {
             .find(|p| p.flags & POWER_IN_TRAINING != 0)
         {
             player.power_progress = paid.wrapping_add(player.power_progress);
+            // The 32-bit accumulator is zero-extended before the divide, so
+            // the quotient is the unsigned one.
             let levels = (player.power_progress / SCALE as u32) as i32;
             if levels > 0 {
                 player.power_progress = player
@@ -648,6 +766,7 @@ impl Experience {
             .wrapping_mul(points as u32)
             .wrapping_add(self.player_clock);
         let mut raised = None;
+        let mut techniques = None;
         if let Some((skill, _)) = training_skill(&player.skills)
             && raise(
                 &mut player.skills[skill],
@@ -655,10 +774,13 @@ impl Experience {
             )
         {
             raised = Some(skill);
+            // The body's techniques are read again on a rise.
+            techniques = Some(technique_bits(&player.skills));
         }
         Conversion {
             points,
             raised,
+            techniques,
             ai_factors: None,
         }
     }
@@ -756,6 +878,7 @@ pub fn convert_companion(now: u32, companion: &mut Learner) -> Conversion {
         (points as u32).wrapping_shl(1) as u16,
     ) {
         out.raised = Some(skill);
+        out.techniques = Some(technique_bits(&companion.skills));
         companion.combat_skill += COMPANION_RAISE;
         if companion.combat_skill > ATTRIBUTE_CAP {
             companion.combat_skill = ATTRIBUTE_CAP;

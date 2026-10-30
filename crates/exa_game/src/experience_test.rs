@@ -128,6 +128,131 @@ fn a_companion_level_raises_skill_and_courage() {
     assert_eq!(idle.skills[2].techniques[0], 1);
 }
 
+/// A level's rise reads the body's techniques again: each skill's chosen
+/// techniques up to its level map to the body's bits, one map per skill,
+/// and a value outside a skill's map adds nothing.
+#[test]
+fn a_level_reads_the_bodys_techniques() {
+    let mut skills = skills_with([10_000, 5_000, 5_000, 15_000, 5_000, 5_000]);
+    skills[0].techniques[..2].copy_from_slice(&[1, 2]);
+    // Skill 1 sets no bit whatever it holds.
+    skills[1].techniques[0] = 1;
+    skills[2].techniques[0] = 5;
+    skills[3].techniques[..3].copy_from_slice(&[1, 2, 3]);
+    skills[4].techniques[0] = 6;
+    skills[5].techniques[0] = 8;
+    // 0x3 | 0x1000 | 0x0700_0000 | 0x0080_0000 | 0x0001_0000.
+    assert_eq!(technique_bits(&skills), 0x0781_1003);
+    // A value a skill does not use, and the slot past the level, add
+    // nothing.
+    let mut odd = skills_with([5_000, 5_000, 5_000, 5_000, 5_000, 5_000]);
+    odd[2].techniques[0] = 7;
+    odd[0].techniques[1] = 1;
+    assert_eq!(technique_bits(&odd), 0);
+    let none = skills_with([0; SKILLS]);
+    assert_eq!(technique_bits(&none), 0);
+    // A conversion that raises reports the word the body reads again.
+    let mut xp = Experience::default();
+    let mut player = trainee(1000, 4998);
+    player.skills[0].techniques[0] = 4;
+    let out = xp.convert_player(400, &mut player);
+    assert_eq!((out.points, out.raised), (2, Some(0)));
+    assert_eq!(out.techniques, Some(0x8));
+    assert_eq!(player.skills[0].points, 5000);
+}
+
+/// The account-wide experience round-trips through the binary settings
+/// store under its key; an empty store leaves the number alone.
+#[test]
+fn the_account_experience_round_trips_through_the_store() {
+    use exa_formats::settings_store::SettingsStore;
+    let mut store = SettingsStore::new();
+    let xp = Experience {
+        global: 12_345,
+        ..Experience::default()
+    };
+    assert!(xp.save_global(&mut store).is_ok());
+    assert_eq!(
+        store.get(&GLOBAL_XP_KEY),
+        Some(&global_xp_to_setting(12_345)[..])
+    );
+    assert_eq!(global_xp_to_setting(0x1234_5678), [0x78, 0x56, 0x34, 0x12]);
+    let mut back = Experience::default();
+    back.load_global(&store);
+    assert_eq!(back.global, 12_345);
+    // An empty store and an empty value keep the number.
+    let mut kept = Experience {
+        global: 7,
+        ..Experience::default()
+    };
+    kept.load_global(&SettingsStore::new());
+    assert_eq!(kept.global, 7);
+    let mut empty = SettingsStore::new();
+    empty.set(&GLOBAL_XP_KEY, &[]).unwrap();
+    kept.load_global(&empty);
+    assert_eq!(kept.global, 7);
+}
+
+/// The level-start hook makes the player's carried experience the account
+/// pool and restarts both clocks at now.
+#[test]
+fn a_level_start_seeds_the_pool() {
+    let mut xp = Experience {
+        global: 900,
+        global_clock: 1_000,
+        player_clock: 2_000,
+        pool: 0,
+        ..Experience::default()
+    };
+    let mut player = Learner {
+        experience: 640,
+        ..Learner::default()
+    };
+    xp.start_level(5_000, &mut player);
+    assert_eq!(
+        (xp.pool, xp.global_clock, xp.player_clock),
+        (640, 5_000, 5_000)
+    );
+    assert_eq!(xp.global, 900);
+    assert_eq!(player.experience, 640);
+}
+
+/// The story installs six hooks, in the order its registration fills them.
+#[test]
+fn the_story_installs_six_hooks() {
+    assert_eq!(STORY_HOOKS.len(), 6);
+    assert_eq!(
+        STORY_HOOKS,
+        [
+            Hook::NewGame,
+            Hook::LevelEnter,
+            Hook::LevelStart,
+            Hook::Tick,
+            Hook::Kill,
+            Hook::Pickup
+        ]
+    );
+}
+
+/// The power's progress is divided as an unsigned word: a progress above
+/// 2^31 still converts, 0x8000_0008 / 4 = 0x2000_0002 levels, which fill
+/// the power (0x1fff) and leave no progress.
+#[test]
+fn a_large_power_progress_divides_unsigned() {
+    let mut xp = Experience::default();
+    let mut player = trainee(1000, 0);
+    player.power_progress = 0x8000_0000;
+    player.powers = vec![Power {
+        id: 4,
+        flags: POWER_IN_TRAINING | 5,
+        blob: None,
+    }];
+    let out = xp.convert_player(400, &mut player);
+    assert_eq!(out.points, 2);
+    assert_eq!(player.power_progress, 0);
+    assert_eq!(player.powers[0].flags, POWER_FULL);
+}
+
 /// The player pays 4 a point. Two points of 8 add two levels to the power
 /// in training: level 5 becomes 7, and a level at 4095 becomes 0x1fff.
 #[test]

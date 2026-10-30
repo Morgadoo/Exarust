@@ -480,8 +480,13 @@ impl HubWindows {
         } else {
             &career.company.stock
         };
+        let mut window = ShopWindow::new(career.company.copper, merchant);
+        // The layout binds the stock list to its panel. The hub has no list
+        // registry, so the list number is left unset [guess: the original's
+        // number comes from the arena's own list table].
+        window.bind_stock(stock, None);
         let shop = ShopModel {
-            window: ShopWindow::new(career.company.copper, merchant),
+            window,
             merchant,
             stock: stock.iter().map(|&id| (id, names.name_of(id))).collect(),
         };

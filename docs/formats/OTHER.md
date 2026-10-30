@@ -973,6 +973,8 @@ section, else 0. A shop's new apparel copy rewrites its body's condition
 byte at `0x1A9` (low two bits kept, `round(|31q|)` in bits 2..6, bit 7
 for a negative quality `q`), and the appearance bytes at `0x1B1` (damage,
 0x40), `0x1B2` (dirt, 0x35) and `0x1B3` (5 in bits 3..5, 3 in bits 6..7).
+The item's condition phrase then reads that byte back as the low two bits
+plus the signed field in bits 2..6, each of 31 a step.
 
 ## Door and operative sections
 

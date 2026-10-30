@@ -165,6 +165,29 @@ fn duplicates_and_the_halving_search() {
     assert_eq!(find_entry(&[], 1), None);
 }
 
+/// The quality the condition phrase reads back after a copy: the low two
+/// bits plus the signed field of 31 parts, and a body too short reads 0.
+#[test]
+fn a_new_apparel_copy_reads_its_quality() {
+    let mut body = vec![0u8; 0x1b4];
+    // Condition 1, quality 2 of 31, negative.
+    body[0x1a9] = 0x80 | 2 << 2 | 1;
+    assert_eq!(apparel_quality(&body), 0.935_483_87);
+    body[0x1a9] = 2 << 2 | 3;
+    assert_eq!(apparel_quality(&body), 3.064_516);
+    // 31 of 31 is 1 above the condition, and bit 7 negates it away.
+    body[0x1a9] = 0x80 | 31 << 2 | 1;
+    assert_eq!(apparel_quality(&body), 0.0);
+    assert_eq!(apparel_quality(&[]), 0.0);
+    // A copy's condition feeds it: seed 0 gives 31 of 31, negative, over
+    // the low bits it kept.
+    let mut body = vec![0u8; 0x1b4];
+    body[0x1a9] = 3;
+    let mut seed = 0;
+    apparel_condition(&mut body, &mut seed);
+    assert_eq!(apparel_quality(&body), 2.0);
+}
+
 /// Seed 0 steps to 1, a unit of 2^−32: q rounds to −1, giving 31 in bits
 /// 2 to 6 and the sign bit, over the low two bits kept.
 #[test]
@@ -226,6 +249,25 @@ fn the_merchant_specialises() {
     assert_eq!(options_for(APPAREL, 3, 1), (2, 5));
     assert_eq!(options_for(WEAPON, -1, 3), (3, 1));
     assert_eq!(RANKS[(rank_for_option(4) + 1) as usize], "Novice");
+}
+
+/// The player's own list: what the player takes joins it, what the player
+/// gives leaves at its first place, and a taken instance already held is
+/// reported as a duplicate.
+#[test]
+fn a_transaction_moves_the_players_basket() {
+    let mut basket = vec![7, 0x8000_0002];
+    let pairs = apply_to_basket(&mut basket, &[9, 0x8000_0002], &[7, 5]);
+    assert_eq!(basket, [0x8000_0002, 9, 0x8000_0002]);
+    assert_eq!(pairs, [(0, 2)]);
+    // Given first, taken second: the take lands after the give.
+    let mut basket = vec![4, 6];
+    apply_to_basket(&mut basket, &[], &[6]);
+    assert_eq!(basket, [4]);
+    // Nothing given and nothing taken leaves the list alone.
+    let mut basket = vec![1, 2];
+    assert!(apply_to_basket(&mut basket, &[], &[]).is_empty());
+    assert_eq!(basket, [1, 2]);
 }
 
 /// 1 gold 3 silver 5 copper is 185 copper. Paying 100 leaves 85, 7 silver

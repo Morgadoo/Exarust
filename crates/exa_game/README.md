@@ -322,18 +322,26 @@ the player and each companion. Once a second a character converts a point
 per 50 ms of its cost, `4 + skill levels`, into 2 points of its trained
 skill; the player's paid cost levels the power in training, a companion's
 level adds 10 combat skill and courage and picks its next technique; the
-account pool converts at `(global / 5000 + 1) × 4` up to 25000. The
-account experience's worth and its inverse, the companions' list and the
+account pool converts at `(global / 5000 + 1) × 4` up to 25000, the paid
+cost divided as a signed word when it levels the power in training. The
+account experience's worth and its inverse, its four-byte setting value and
+its set and get in the binary settings store, the level-start hook (the
+player's carried experience becomes the pool and both clocks restart), the
+six hook slots in registration order, the companions' list and the
 discovery chunk of a save are in; the fighting estimate is the one shared
 implementation in `exa_ai::estimate` (exa_game's wrappers call it for the
-practice lesson), and the arena's lesson goes through the same skill lump. Nothing calls the tick in a
-running story level yet. The shop (`trade`): a first stock of 18 to 20, the
+practice lesson), and the arena's lesson goes through the same skill lump.
+Nothing calls the tick in a running story level yet. The shop (`trade`): a
+first stock of 18 to 20, the
 rotation by size, candidates by kind, listing, model and rank weighed by
 rarity through the original's quick logarithm and exponential (duplicates
-divided by 3, arms halved), the draw, new apparel and weapon copies, the
-merchant's category and rank options, and the transaction against the
-company's coins (`Company::restock`, `Company::settle`). The shop window,
-an apparel copy's description phrase and the weapon variant roll are not
+divided by 3, arms halved), the draw, new apparel and weapon copies whose
+condition byte also feeds the description phrase's share (the low two bits
+plus the signed 31-part quality field), the merchant's category and rank
+options, and the transaction against the company's coins, both on the
+shelf (`Company::restock`, `Company::settle`) and on the player's own
+basket (`trade::apply_to_basket`). The shop window's own dialogue and the
+weapon variant roll are not
 in.
 
 The force blast and torrent (`effects::{blast, torrent}`) are ported
@@ -1283,7 +1291,11 @@ reads "Pay:" or "Receive:", warns "You cannot afford this transaction." and
 disables the Trade button on a short purse, or when paying with both
 baskets empty; the merchant flag picks the label rows. A take-off from the
 character view lands in the pack, a right release hides the window and the
-close releases the preview and the trade-mode bytes.
+close releases the preview and the trade-mode bytes. The opener's layout
+binds the stock list (the shop's or the merchant's) to the stock panel and
+takes the list's own number when one is supplied, writes the preview
+camera's turn factor 0.05 and view word 0x1000, and re-runs when an item is
+picked in the preview.
 
 `nav_camera` has the stepped camera's per-tick wall probe: from 50 cm under
 the followed point along the camera's yaw, alternately a 30 cm probe at the
