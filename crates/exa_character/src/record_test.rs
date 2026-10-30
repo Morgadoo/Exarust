@@ -713,7 +713,7 @@ fn the_save_writes_health_as_shares_and_the_load_reads_the_last_entry() {
         focus: 0.75,
         heal_pool: 0.125,
         potion: Some(1800),
-        body_value: 2.5,
+        condition: 8,
     });
     assert_eq!(data.record.pools.yellow, 32768);
     assert_eq!(data.record.pools.red, 16384);
@@ -738,7 +738,7 @@ fn the_save_writes_health_as_shares_and_the_load_reads_the_last_entry() {
     // / 65535 = 0.50000763; 49151 / 65535 = 0.74999619.
     let mut health = Health {
         max: 2.0,
-        body_value: 7.0,
+        condition: 0x200,
         ..Health::default()
     };
     data.restore_health(&mut health);
@@ -747,8 +747,10 @@ fn the_save_writes_health_as_shares_and_the_load_reads_the_last_entry() {
     assert_eq!(health.focus, 0.749_996_2);
     assert_eq!(health.potion, Some(1800));
     assert_eq!(health.heal_pool, f32::from_bits(1800));
-    // The body's own value is not the record's to load.
-    assert_eq!(health.body_value, 7.0);
+    // The save keeps the condition word in the live record only; the load
+    // leaves the body's own.
+    assert_eq!(data.condition, 8);
+    assert_eq!(health.condition, 0x200);
 
     // Red that is not positive saves as 0; an empty heal pool writes no
     // entry.

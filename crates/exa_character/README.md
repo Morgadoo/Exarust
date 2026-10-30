@@ -54,7 +54,10 @@ Characters: races, body morphs, appearance, apparel fitting, stats/attributes/sk
   converted like the game's SSE instruction, the seed `0xFFFF` and the
   heal-pool and potion entries; `restore_health` loads them onto a body in
   double precision, including the original's quirk of taking the last
-  saved entry's value for every tag, and leaves what no entry names.
+  saved entry's value for every tag, and leaves what no entry names
+  (`restore_record_health` does it over a bare record). The save also
+  copies the body's condition word into the live record. The story saves
+  and the player spawn call them (`exa_game::save_live`).
 - The player's, the duellist's and the corpses' records are the creator's
   defaults; a placed character carries its own record and gets its moveset
   from the first hand.

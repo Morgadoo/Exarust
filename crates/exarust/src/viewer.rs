@@ -1164,7 +1164,6 @@ fn spawn_players(
             Transform::from_rotation(Quat::from_rotation_y(yaw)),
             exa_anim::Animator::new("Default", "Idle"),
             exa_game::player::PlayerBody::new(yaw),
-            exa_game::thaum::cast::PowerCaster::new(&options.powers),
             exa_physics::body::locomotion::Locomotion::facing(yaw),
             exa_character::Outfit::of_models(&options.outfit),
             exa_assets::BodyModel(model::BODY_MODEL.into()),
@@ -1273,6 +1272,36 @@ fn spawn_players(
             let names: Vec<&str> = options.perks.iter().map(|p| p.name()).collect();
             info!("player perks: {}", names.join(", "));
         }
+        let mut caster = exa_game::thaum::cast::PowerCaster::new(&options.powers);
+        // The original's lying spawn (the player spawn's mode 2, which its
+        // character viewers take) assigns the whole state word.
+        let mut flags = exa_combat::StateFlags(if options.flat_floor {
+            exa_character::spawn::LYING_FLAGS
+        } else {
+            0
+        });
+        if created.is_some() {
+            // The player spawn's last write loads the record's health onto
+            // the body: the pools, the focus, a heal pool still owed and a
+            // potion's expiry (a loaded save's wounds come back here).
+            exa_game::save_live::restore_body_health(
+                &player_record,
+                &mut fighter,
+                &mut flags,
+                &mut caster.body.focus,
+            );
+            info!(
+                "player: the record's health restored: yellow {:.5} red {:.5} of {:.5}, focus {:.5}, heal pool {:.5}, potion {:?}",
+                fighter.health.yellow,
+                fighter.health.red,
+                fighter.health.max,
+                caster.body.focus,
+                fighter.health.heal_pool,
+                flags
+                    .has(exa_combat::StateFlags::POTION)
+                    .then_some(fighter.potion_until)
+            );
+        }
         if let Some([yellow, red]) = options.health {
             fighter.health.yellow = yellow;
             fighter.health.red = red;
@@ -1283,17 +1312,14 @@ fn spawn_players(
                 .insert(exa_game::sim_control::Undying);
         }
         if options.flat_floor {
-            // The original's lying spawn (the player spawn's mode 2, which
-            // its character viewers take) assigns the whole state word.
-            commands
-                .entity(model)
-                .insert(exa_combat::StateFlags(exa_character::spawn::LYING_FLAGS));
             info!(
                 "player: flat floor (state word {:#x})",
                 exa_character::spawn::LYING_FLAGS
             );
         }
         commands.entity(model).insert((
+            caster,
+            flags,
             fighter,
             exa_physics::body::Physical {
                 stats: body_stats(&stats),

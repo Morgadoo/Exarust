@@ -373,6 +373,65 @@ pub fn record_with_possessions(
     record
 }
 
+/// A body's health as the story save reads it: the fighter's yellow, red,
+/// maximum and heal pool, the caster's focus, the potion's expiry while the
+/// potion flag is set, and the condition word.
+pub fn body_health(
+    fighter: &exa_combat::Fighter,
+    flags: exa_combat::StateFlags,
+    condition: exa_combat::Condition,
+    focus: f32,
+) -> exa_character::record::Health {
+    exa_character::record::Health {
+        yellow: fighter.health.yellow,
+        red: fighter.health.red,
+        max: fighter.health.max,
+        focus,
+        heal_pool: fighter.health.heal_pool,
+        potion: flags
+            .has(exa_combat::StateFlags::POTION)
+            .then_some(fighter.potion_until),
+        condition: condition.0,
+    }
+}
+
+/// A record with a body's health stored into it, as the story save stores
+/// every scene character's before it writes ([`CharacterData::save_health`]:
+/// the three pools as shares, the seed, the heal-pool and potion entries).
+///
+/// [`CharacterData::save_health`]: exa_character::record::CharacterData::save_health
+pub fn record_with_health(
+    record: CharacterRecord,
+    health: exa_character::record::Health,
+) -> CharacterRecord {
+    let mut data = exa_character::record::CharacterData::of_record(record);
+    data.save_health(health);
+    data.into_record()
+}
+
+/// A spawned body's health loaded from its record, as the player spawn's
+/// last write does ([`exa_character::record::restore_record_health`]): red
+/// and yellow as the record's shares of the fighter's maximum, the focus,
+/// and the saved heal pool and potion (the potion sets the potion flag and
+/// its expiry). What the record does not name keeps the body's value.
+pub fn restore_body_health(
+    record: &CharacterRecord,
+    fighter: &mut exa_combat::Fighter,
+    flags: &mut exa_combat::StateFlags,
+    focus: &mut f32,
+) {
+    let mut health = body_health(fighter, *flags, exa_combat::Condition::NORMAL, *focus);
+    exa_character::record::restore_record_health(record, &mut health);
+    fighter.health.yellow = health.yellow;
+    fighter.health.red = health.red;
+    fighter.health.heal_pool = health.heal_pool;
+    if let Some(expiry) = health.potion {
+        flags.0 |= exa_combat::StateFlags::POTION;
+        fighter.potion_until = expiry;
+    }
+    *focus = health.focus;
+}
+
 /// The story player's share of a save: its record goes into a world
 /// character database under [`PLAYER_RECORD_ID`], which is exported as the
 /// save's `#worldchrdb`, and the session's placement becomes the player's
@@ -427,21 +486,62 @@ type PlayerSaveQuery<'w, 's> = Query<
         &'static GlobalTransform,
         Option<&'static exa_character::record::CharacterData>,
         Option<&'static exa_items::possession::Possessions>,
+        PlayerHealthParts,
     ),
     With<crate::player::PlayerBody>,
 >;
+
+/// What the save reads a player body's health from.
+type PlayerHealthParts = (
+    Option<&'static exa_combat::Fighter>,
+    Option<&'static exa_combat::StateFlags>,
+    Option<&'static exa_combat::Condition>,
+    Option<&'static crate::thaum::cast::PowerCaster>,
+);
+
+/// The focus a record holds, for a body without a caster.
+fn record_focus(record: &CharacterRecord) -> f32 {
+    exa_formats::characters::Pools::restore_focus(record.pools.focus)
+}
 
 fn live_story_player(
     players: &PlayerSaveQuery,
     created: Option<&crate::creator_screen::CreatedCharacter>,
 ) -> Option<StoryPlayer> {
-    let (transform, data, possessions) = players.iter().next()?;
+    let (transform, data, possessions, (fighter, flags, condition, caster)) =
+        players.iter().next()?;
     let mut record = data
         .map(|data| data.record.clone())
         .or_else(|| created.and_then(|c| c.0.clone()))
         .unwrap_or_else(CharacterRecord::reset);
     if let Some(possessions) = possessions {
         record = record_with_possessions(record, possessions);
+    }
+    // The save stores the body's health into its record first (the
+    // original does it for every scene character; only the player's record
+    // is saved here).
+    if let Some(fighter) = fighter {
+        let focus = caster.map_or(record_focus(&record), |caster| caster.body.focus);
+        let health = body_health(
+            fighter,
+            flags.copied().unwrap_or_default(),
+            condition.copied().unwrap_or_default(),
+            focus,
+        );
+        record = record_with_health(record, health);
+        info!(
+            "save: the player's health stored: yellow {:.5} red {:.5} of {:.5}, focus {:.5}, heal pool {:.5}, potion {:?} (pools {}/{}/{}, {} saved entries)",
+            health.yellow,
+            health.red,
+            health.max,
+            health.focus,
+            health.heal_pool,
+            health.potion,
+            record.pools.yellow,
+            record.pools.red,
+            record.pools.focus,
+            record.saved.len()
+        );
     }
     let (yaw, _, _) = transform.rotation().to_euler(EulerRot::YXZ);
     let at = transform.translation() * 100.0;
@@ -1246,6 +1346,141 @@ mod tests {
         // An index outside the list answers nothing.
         assert_eq!(list.character_screen_select(5, 1).availability, 0);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A human body (maximum health 0.25) as the spawn makes it from a
+    /// record, with the record's health loaded.
+    fn spawned_from(
+        record: &CharacterRecord,
+    ) -> (exa_combat::Fighter, exa_combat::StateFlags, f32) {
+        let stats = exa_formats::character_stats::CharacterStats::derive(
+            record,
+            None,
+            exa_formats::character_stats::Spawn {
+                story: true,
+                dead: false,
+            },
+        );
+        let mut fighter = exa_combat::Fighter::of_stats(None, stats);
+        let mut flags = exa_combat::StateFlags::default();
+        let mut focus = 1.0;
+        restore_body_health(record, &mut fighter, &mut flags, &mut focus);
+        (fighter, flags, focus)
+    }
+
+    #[test]
+    fn a_story_save_keeps_the_players_wounds_and_its_load_restores_them() {
+        let dir = folder("story-health");
+        let mut lists = SlotLists::new(&dir);
+        // A wounded human: yellow 0.1 and red 0.18 of 0.25, focus 0.4, a
+        // bandage's 0.03 still to heal, in combat idle.
+        let mut fighter = exa_combat::Fighter::default();
+        assert_eq!(fighter.health.max, 0.25);
+        fighter.health.yellow = 0.1;
+        fighter.health.red = 0.18;
+        fighter.health.heal_pool = 0.03;
+        let health = body_health(
+            &fighter,
+            exa_combat::StateFlags::default(),
+            exa_combat::Condition::COMBAT_IDLE,
+            0.4,
+        );
+        assert_eq!(health.condition, exa_combat::Condition::COMBAT_IDLE.0);
+        let mut record = record_with_health(CharacterRecord::reset(), health);
+        record.name = "Ash".to_string();
+        // 0.1 / 0.25 × 65535 = 26214; 0.18 / 0.25 × 65535 = 47185.2 → 47185;
+        // 0.4 × 65535 = 26214; the seed 0xFFFF; one heal-pool entry.
+        assert_eq!(
+            record.pools,
+            exa_formats::characters::Pools {
+                yellow: 26214,
+                red: 47185,
+                focus: 26214
+            }
+        );
+        assert_eq!(record.seed, 0xFFFF);
+        assert_eq!(record.heal_pool(), Some(0.03));
+        assert_eq!(record.potion_expiry(), None);
+        let player = StoryPlayer {
+            record,
+            position_cm: [0.0, 0.0, 0.0],
+            heading: 0.0,
+        };
+        let career = crate::hub_windows::ArenaCareer::default();
+        let mut session = live_session(Some("exanima01"), 60, &career, &ArenaStores::default());
+        let export = story_player_world(&player, &mut session).unwrap();
+        let number = save_new_slot(
+            &mut lists.story,
+            &session,
+            Some("Ash"),
+            &export.save_world(None, false),
+        )
+        .unwrap()
+        .unwrap();
+        let mut list = SlotList::new(Slots::story(&dir));
+        let back = restore_story(&mut list, number, false)
+            .unwrap()
+            .player
+            .unwrap();
+        assert_eq!(back.pools, player.record.pools);
+        assert_eq!(back.saved, player.record.saved);
+        // The spawn loads them back in double precision: 0.25 × 47185 /
+        // 65535 = 0.17999923, 0.25 × 26214 / 65535 = 0.1, 26214 / 65535 =
+        // 0.4; the heal pool as saved; no potion.
+        let (body, flags, focus) = spawned_from(&back);
+        assert_eq!(body.health.red, 0.179_999_23);
+        assert_eq!(body.health.yellow, 0.1);
+        assert_eq!(focus, 0.4);
+        assert_eq!(body.health.heal_pool, 0.03);
+        assert!(!flags.has(exa_combat::StateFlags::POTION));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_saved_potion_comes_back_with_its_flag_and_the_last_entry_quirk() {
+        // A potion drunk until 5400 s, no heal pool: the flag and the
+        // expiry come back; yellow 0.0625 → 16384 → 0.06250095, red 0.15 →
+        // 39321 → 0.15, focus 0 stays 0.
+        let mut fighter = exa_combat::Fighter::default();
+        fighter.health.yellow = 0.0625;
+        fighter.health.red = 0.15;
+        fighter.potion_until = 5400;
+        let flags = exa_combat::StateFlags(exa_combat::StateFlags::POTION);
+        let health = body_health(&fighter, flags, exa_combat::Condition::NORMAL, 0.0);
+        let record = record_with_health(CharacterRecord::reset(), health);
+        assert_eq!(
+            (record.pools.yellow, record.pools.red, record.pools.focus),
+            (16384, 39321, 0)
+        );
+        let (body, flags, focus) = spawned_from(&record);
+        assert_eq!(body.health.yellow, 0.062_500_95);
+        assert_eq!(body.health.red, 0.15);
+        assert_eq!(focus, 0.0);
+        assert!(flags.has(exa_combat::StateFlags::POTION));
+        assert_eq!(body.potion_until, 5400);
+        assert_eq!(body.health.heal_pool, 0.0);
+        // With a heal pool too, the original's loop gives the heal pool the
+        // last entry's value: the potion's expiry read as a float.
+        fighter.health.heal_pool = 0.03;
+        let both = record_with_health(
+            CharacterRecord::reset(),
+            body_health(&fighter, flags, exa_combat::Condition::NORMAL, 0.0),
+        );
+        let (body, _, _) = spawned_from(&both);
+        assert_eq!(body.health.heal_pool, f32::from_bits(5400));
+        assert_eq!(body.potion_until, 5400);
+        // A body that drank nothing keeps no potion flag.
+        let plain = exa_combat::Fighter {
+            potion_until: 99,
+            ..Default::default()
+        };
+        let none = body_health(
+            &plain,
+            exa_combat::StateFlags::default(),
+            exa_combat::Condition::NORMAL,
+            1.0,
+        );
+        assert_eq!(none.potion, None);
     }
 
     #[test]
