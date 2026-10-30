@@ -663,6 +663,21 @@ fn spawn_placed_object(
         if let Some(sections) = ObjectSections::of(item, object) {
             commands.entity(entity).insert(sections);
         }
+        // A model-less operative still signals and can be a teleporter, as
+        // the create routine's placeholder node is dispatched on.
+        if let Some(records) = mechanisms::MechanismRecords::of(object.id, item) {
+            commands.entity(entity).insert(records);
+        }
+        if let Some(operative) = item.operative.filter(|o| {
+            o.class == exa_formats::objdb::operative::DEVICE
+                && (o.kind == exa_formats::objdb::operative::TELEPORTER
+                    || o.kind == exa_formats::objdb::operative::RES_DEVICE)
+        }) {
+            commands.entity(entity).insert(TeleportDevice {
+                kind: operative.kind,
+                operative,
+            });
+        }
         return Some(PlacedSpawn::Placed {
             entity,
             lights: 0,
