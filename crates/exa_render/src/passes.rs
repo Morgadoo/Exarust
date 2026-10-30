@@ -36,6 +36,39 @@ pub fn material_list(class_word: u32) -> Option<MaterialList> {
     }
 }
 
+/// The material factory's list a record joins (`0x04D860`'s sibling
+/// `0x04D950`): the renderer's shader version (1 or 2, from whether its
+/// second program list is empty) and the record's object word pick one of
+/// six lists. The alpha bit `0x10000` takes list 3; the shadow bit `0x8000`
+/// list 1 on version 1, else list 2; the low nibble 0 takes list 1 on
+/// version 1, list 3 on version 2 (list 4 on a version 3 the factory never
+/// builds) and 1–4 take list 5 on version 1, list 6 on versions 2 and 3.
+/// Returns the list's index (1–6), or `None` for no record.
+pub fn factory_list(version: u32, object: u32) -> Option<u8> {
+    let version = version.clamp(1, 3);
+    if object & 0x1_0000 != 0 {
+        return Some(match version {
+            1 | 2 => 3,
+            _ => 4,
+        });
+    }
+    if object & 0x8000 == 0 {
+        return Some(match (object & 0xF, version) {
+            (0, 1) => 1,
+            (0, 2) => 3,
+            (0, _) => 4,
+            (1..=4, 1) => 5,
+            (1..=4, _) => 6,
+            _ => return None,
+        });
+    }
+    Some(match version {
+        1 => 2,
+        2 => 3,
+        _ => 4,
+    })
+}
+
 /// The entry of one class list holding material `id`, searched from the
 /// first in order; `None` when the list does not hold it.
 pub fn find_class_entry(entries: &[u32], id: u32) -> Option<usize> {
@@ -912,5 +945,19 @@ mod tests {
         assert_eq!(find_class_entry(&[4, 7, 9], 7), Some(1));
         assert_eq!(find_class_entry(&[4, 7, 9], 5), None);
         assert_eq!(find_class_entry(&[], 0), None);
+    }
+    #[test]
+    fn the_shader_factory_picks_its_list_from_the_object_word_and_version() {
+        assert_eq!(factory_list(1, 0), Some(1));
+        assert_eq!(factory_list(2, 0), Some(3));
+        assert_eq!(factory_list(3, 0), Some(4));
+        assert_eq!(factory_list(1, 1), Some(5));
+        assert_eq!(factory_list(2, 1), Some(6));
+        assert_eq!(factory_list(2, 4), Some(6));
+        assert_eq!(factory_list(1, 5), None);
+        assert_eq!(factory_list(1, 0x8000), Some(2));
+        assert_eq!(factory_list(2, 0x8000), Some(3));
+        assert_eq!(factory_list(1, 0x1_0000), Some(3));
+        assert_eq!(factory_list(2, 0x1_0000 | 0x8000), Some(3));
     }
 }

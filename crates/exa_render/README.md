@@ -16,7 +16,7 @@ for map binding and the emissive's doubling), the program choice
 (`shading/shadeopt/shadehar/shadesss/shadetrl`), the shadow and displacement
 sample splits, the warm-up variants, the surface entry's `<set>_f` name
 rule, the height layer's one-texel switch-off and the sub-frame count;
-`shader_uniforms` the 252-byte `Global` block (the sub-frame offset times
+`shader_uniforms` the 252-byte `Global` block; the factory's shader-word level mask (`0x200000` below level 3, `0x800000` below level 4, the simplified word `& 0x600011`, the flat-colour bits 1–2); (the sub-frame offset times
 the frame scale in `ViewPos.w` and `TimeDlt.x`, `−scale/factor` in
 `TimeDlt.y`, the eye/sun-eye midpoint
 in `FogPos`, whose `w` is the scene height limit capping `y`), the 112-byte `Material` block, the per-light `vec4`s and the
@@ -124,7 +124,7 @@ shape texel), draw box, program names, quad and shared uniforms, the three linke
   dot products, lengths, powers, sines and cosines), the 512² texture of one
   byte value and its repeat/linear sampler, and the sixteen full-screen
   quads the measured scene draws ([`docs/UI.md`](../../docs/UI.md#gpu-benchmark)).
-- `passes`: the material class's list selection (the `0x8000` alpha-tested bit picks the shadow list, the low nibble 0 the opaque list and 1–3 the blended one) with the id search the renderer's lookup runs, the original's fixed frame walk (clear, alpha-tested and opaque
+- `passes`: the shader factory's list choice (the object word's alpha and shadow bits and the renderer's version pick one of six lists) and the material class's list selection (the `0x8000` alpha-tested bit picks the shadow list, the low nibble 0 the opaque list and 1–3 the blended one) with the id search the renderer's lookup runs, the original's fixed frame walk (clear, alpha-tested and opaque
   classes with depth writes, hook lists, the depth-biased decal class and
   blended per-sector lists with depth writes off, the particles' depth
   pre-pass and colour, the environment's weather), the blended list's
