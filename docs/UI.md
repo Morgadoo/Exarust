@@ -1095,9 +1095,15 @@ original opens it from its session flow, which belongs to the game modes.
 F1 shows the flow's page: the in-game page while a session runs, the title
 otherwise, with the flow's mode, phase and page state. The page is painted
 through the GUI draw path (`exa_ui::gui_draw`): a near-black backdrop, the
-title logo (Exarust's wordmark in the base font until the logo art is
-wired), and the rows from the menu font's sheet with the unit's own text
-program on the selected row. The screen follows `TMainMenu`'s rules
+title art (`maintitle01.rfi`, scaled by the row scale, centred, its top
+`round(scale · 10)` down, in (230, 230, 230, 153)) and the rows from the
+menu font's sheet with the unit's own text program on the selected row; a
+missing sheet falls back to the base font. Hovering a new row plays
+`MenuSel` at most once per 200 units and a press or Enter plays
+`MenuClick`, each a one-shot of the audio environment at gain 0.06, flags
+0x4060 (interface, listener-relative, unattenuated) and the pitch
+0.4 · draw + 0.8 in double precision, the draw from the run-time library's
+Mersenne twister. The screen follows `TMainMenu`'s rules
 (`exa_game::menu_pages`):
 
 - **Pages.** Title: BEGIN, CONTINUE (greyed without a story save), ARENA,
@@ -1153,8 +1159,8 @@ program on the selected row. The screen follows `TMainMenu`'s rules
   rescaled by half the row scale (every metric and the advances of `A`
   through `a` rounded half to even, when the scale moved by 0.001 or more).
   A row's width is its advances (a space as the gap) less the trim. The
-  screen measures and places the rows with that record but draws them in
-  the base font until the sheet's quads are wired.
+  screen measures, places and draws the rows with that record; the base
+  font is used only when the sheet is not installed.
 
 The session and form work behind the commands (starting a game, the
 character screen, the manual, the settings form) belongs to the game modes;
@@ -1268,7 +1274,14 @@ the task's state. A control value of `i32::MIN` means none.
   80 wide and 96 apart at grid row 13, centred (a quarter down with 0x10),
   style 0x808 (0x3000 more with 0x40), the close bit cleared with 0x20, the
   modal form with 0x80; Ok stores 1 and Cancel 0. The layout and the button
-  places are `gui_rescale::message_box_layout`.
+  places are `gui_rescale::message_box_layout`. The buttons' callbacks
+  (`MESSAGE_OK`, `MESSAGE_CANCEL`) store the parent's result and close it;
+  the close mark (`MESSAGE_CLOSE`) stores 0 and destroys through the parent.
+- **Factories.** The form factory table counts its registrations from one
+  and clears on shutdown.
+- **Double click.** The clock and the press stamp widen to 64 bits before
+  the subtraction and the compare with 450 is signed, so a clock behind the
+  stamp is inside the window and a 32-bit wrap is not undone.
 - **Lengths and grips.** The level switch derives the title (six units less
   two), a title-bar control (four units and one), the step between controls
   (half a unit, shifted, and a control) and a grip (four units less one)
@@ -1282,7 +1295,55 @@ the task's state. A control value of `i32::MIN` means none.
   form's x on the screen (flush right when it overflows) and its y at least
   a unit, leaving its size. `set_control_on` switches a toggle: on clears
   its group's on controls (itself included, each reporting unless quiet),
-  the lit bit follows the on bit.
+  the lit bit follows the on bit, and the answer is the state's low byte
+  without the lit bit. A hit-and-focus that finds no form focuses no form
+  with control 1 and sets the cursor to 0.
+
+### The 3D viewport
+
+`exa_ui::viewport` holds the `T3DViewport` control's rules (the running
+game draws its world through `exa_render`). The constructor's title is
+"Viewport", its style 0x88, its state 0x4c010 with bit 0x20 cleared and its
+border 8; the global registry numbers each instance and its list place
+from one. The view's supersampling setting picks one of eight levels
+(1, 2, 3, 4, 8, 15, 24 and 66 samples from the 123-point jitter table);
+leaving level 0 raises the view's sample-viewport counter, returning to it
+lowers the counter, and level 1 stores no count. A whole frame takes every
+sample of its level in order: sample `i` uses the level's point, the share
+`(i + 1) / count`, the half `0.5 − (i + 0.5) / count` and, after the first,
+the blend `1 − 1 / (i + 1)`, the jitter `2 · scale · point / size` per
+axis. A progressive frame's sample `k` uses point `k − 1`, the share
+`k / count` and the blend `1 − 1 / k`; both shares divide in double
+precision and narrow to single. The draw slot runs only for a client at
+least a pixel each way. A client whose left edge is left of the view's or
+whose right or bottom edge passes it (the top is not compared) sets the
+refresh flag, and the 0.9.5 slot then sets it unconditionally, so the
+still accumulation never runs. A refresh restarts the counter and renders
+a whole frame. Otherwise a counter below the level's count renders: it
+holds while the task's pointer is busy (its 0xf0 bits) and the port does
+not draw through it, else it advances and sends the task 0x22 at the first
+sample and 0x23 after, the frame taking that sample; a counter at the count
+renders again only until the view has accumulated its still. Only a whole
+frame takes the stereo shift: stereo 1 moves the camera right by the
+camera scale and stereo 2 left. The frame-rate readout
+sits at the inner right less the border, a unit, and the small font's gap
+per byte, its baseline a line index units and a line height down; the
+version "V 0.9.5.2g" sits a unit in from the left and a unit up from the
+bottom, each over a one-pixel black shadow at half alpha. The camera scale
+is `2 · field of view · 0.5` over the distance from the camera to its
+target, the distance held to 100 through 3000 (both compares unordered, so
+a not-a-number distance stays one). The view's delegates take the press
+and keys when installed, else the form's handlers answer; a key with its
+low bits clear is also handed to the focused control. The release only
+reaches the view's delegate (the answer is 0 either way), and where the
+form's hit test finds no control the port's cursor code is stored whether
+or not the view has a hit delegate. A press on
+no control picks the cursor action whose mask the word holds with the most
+low bits (the table scanned last to first, high mask bits not counted),
+begins it, and a result with bits 1 and 4 makes the press a view drag; a
+running action ends on 0x80, and a release answered 0x40 keeps it. A point
+converts to view space as `(x − w/2) · z / (scale · w · 0.5)` and back, a
+point at or behind the eye going to the edge its signs point to.
 
 ### The form base class
 

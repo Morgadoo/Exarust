@@ -320,10 +320,11 @@ impl GuiMetrics {
     }
 }
 
-/// The pointer's drag distance at a screen height: one pixel per 540 of
-/// height, rounded half to even in double precision, at least 2.
+/// The pointer's drag distance at a screen height: the height times the
+/// original's double literal `0.001851851851851852` (one five-hundred-and-
+/// fortieth), rounded half to even in double precision, at least 2.
 pub fn drag_limit(screen_height: i32) -> i32 {
-    let limit = (f64::from(screen_height) * (1.0 / 540.0)).round_ties_even() as i32;
+    let limit = (f64::from(screen_height) * 0.001851851851851_852).round_ties_even() as i32;
     limit.max(2)
 }
 
@@ -451,20 +452,23 @@ pub fn clamp_form(x: i32, y: i32, width: i32, unit: i32, screen_width: i32) -> (
     (x, y.max(unit))
 }
 
-/// Switches a toggle control on or off. Off clears its on bit. On first
-/// clears the on and lit bits of every control of its group that is on
-/// (itself included), reporting each unless `quiet`, then sets its on bit.
-/// The lit bit then follows the on bit, and the control reports itself
-/// unless `quiet`. A control of group 0 has no group.
+/// Switches a toggle control on or off (the GUI task's show/hide helper).
+/// Off clears its on bit. On first clears the on and lit bits of every
+/// control of its group that is on (itself included; the original walks
+/// the parent's records up to and including its last index), reporting
+/// each unless `quiet`, then sets its on bit. The lit bit then follows the
+/// on bit, and the control reports itself unless `quiet`. A control of
+/// group 0 has no group. Returns the state's low byte with the lit bit
+/// masked off, as the original does (0 for a missing control).
 pub fn set_control_on(
     controls: &mut [Control],
     index: usize,
     on: bool,
     quiet: bool,
     events: &mut Vec<ControlEvent>,
-) {
+) -> u8 {
     let Some(control) = controls.get(index) else {
-        return;
+        return 0;
     };
     let group = control.group;
     if on {
@@ -483,10 +487,60 @@ pub fn set_control_on(
         controls[index].state &= !control_state::ON;
     }
     let control = &mut controls[index];
+    let state_byte = (control.state & !control_state::LIT) as u8;
     control.state =
         (control.state & !control_state::LIT) | ((control.state & control_state::ON) << 1);
     if !quiet && control.reports {
         events.push(ControlEvent::Changed(index));
+    }
+    state_byte
+}
+
+/// What a message box's button callback does: it stores a result in the
+/// form that owns the button (the box) and sends the box one of two of its
+/// own messages. Which form behaviour those two messages are ("close" for
+/// the buttons, "destroy" for the close mark) is a guess; the stored
+/// values and which callback sends which are the original's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessageBoxButton {
+    /// The value stored: 1 for Ok, 0 for Cancel or the close mark.
+    pub result: i32,
+    /// The parent form hears the close message.
+    pub closes: bool,
+    /// The box is destroyed (the close mark's own message).
+    pub destroys: bool,
+}
+
+/// The Ok button's answer (message box callback): store 1, close the
+/// parent.
+pub const MESSAGE_OK: MessageBoxButton = MessageBoxButton {
+    result: 1,
+    closes: true,
+    destroys: false,
+};
+
+/// The Cancel button's answer: store 0, close the parent.
+pub const MESSAGE_CANCEL: MessageBoxButton = MessageBoxButton {
+    result: 0,
+    closes: true,
+    destroys: false,
+};
+
+/// The close mark's answer: store 0, destroy the box through the parent.
+pub const MESSAGE_CLOSE: MessageBoxButton = MessageBoxButton {
+    result: 0,
+    closes: false,
+    destroys: true,
+};
+
+/// The three callbacks a message box's buttons and close mark run.
+pub fn message_box_button(ok: bool, close_mark: bool) -> MessageBoxButton {
+    if close_mark {
+        MESSAGE_CLOSE
+    } else if ok {
+        MESSAGE_OK
+    } else {
+        MESSAGE_CANCEL
     }
 }
 
@@ -900,8 +954,9 @@ impl GuiTask {
     }
 
     /// Hit tests a point and focuses what it finds, setting the cursor; on
-    /// nothing, the focus goes to no form with control 1 and the cursor
-    /// to 0.
+    /// nothing (off the screen or no form there), the focus goes to no form
+    /// with control 1 and the cursor to the constant 0, not the hit test's
+    /// -1.
     pub fn hit_and_focus(&mut self, x: i32, y: i32) -> HitResult {
         let (form, code, cursor) = self.hit(x, y);
         let (control, cursor) = if form.is_none() {
@@ -1176,7 +1231,10 @@ impl GuiTask {
             return;
         }
         let near = |a: i32, b: i32| (i64::from(a) - i64::from(b)).abs() < 2;
-        let result = if i64::from(self.clock.wrapping_sub(self.pointer.press_stamp))
+        // The two clock words widen to 64 bits before the subtraction and
+        // the compare is signed: a clock behind the stamp is a negative
+        // difference, inside the window.
+        let result = if i64::from(self.clock) - i64::from(self.pointer.press_stamp)
             < i64::from(DOUBLE_CLICK)
             && word == self.pointer.last_word
             && near(self.pointer.x, self.pointer.press_x)
@@ -1430,23 +1488,30 @@ pub fn set_modal(task: &mut GuiTask, form: Option<FormId>) {
     task.modal = form;
 }
 
-/// The registered tooltip classes: each registration returns a 1-based
-/// index, which a record's 0x8000 message answers to pick its tooltip.
+/// The registered tooltip factories (the task's form factory table): each
+/// registration returns a 1-based index, which a record's hint message
+/// answers to build its tooltip; 0 or less is the default tooltip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TooltipClasses {
     pub count: i32,
 }
 
 impl TooltipClasses {
+    /// Appends a factory, returning its 1-based index.
     pub fn register(&mut self) -> i32 {
         self.count += 1;
         self.count
     }
 
-    /// Whether an index names a registered class (0 or less is the default
-    /// tooltip).
+    /// Whether an index names a registered factory (0 or less is the
+    /// default tooltip).
     pub fn get(&self, index: i32) -> Option<i32> {
         (index >= 1 && index <= self.count).then_some(index)
+    }
+
+    /// Clears every registration (the task's shutdown frees the array).
+    pub fn clear(&mut self) {
+        self.count = 0;
     }
 }
 
@@ -1683,7 +1748,12 @@ mod tests {
         controls[2].state = control_state::ON;
         controls[0].state = control_state::ON | control_state::LIT;
         let mut events = Vec::new();
-        set_control_on(&mut controls, 1, true, false, &mut events);
+        // The answer is the state's low byte with the lit bit masked off:
+        // 0x20, not 0x60.
+        assert_eq!(
+            set_control_on(&mut controls, 1, true, false, &mut events),
+            0x20
+        );
         assert_eq!(
             controls[0].state & (control_state::ON | control_state::LIT),
             0
@@ -1707,7 +1777,10 @@ mod tests {
         );
         // Quietly off: the lit bit follows, nothing is reported.
         events.clear();
-        set_control_on(&mut controls, 1, false, true, &mut events);
+        assert_eq!(
+            set_control_on(&mut controls, 1, false, true, &mut events),
+            0
+        );
         assert_eq!(
             controls[1].state & (control_state::ON | control_state::LIT),
             0
@@ -1900,9 +1973,13 @@ mod tests {
         let (mut task, _id, _log) = task_with(|_| {});
         assert_eq!(task.hit_root(-1, 10), (None, 0, -1));
         assert_eq!(task.hit_root(800, 10), (None, 0, -1));
+        // The hit test's cursor is -1 there, but the step stores 0.
         let hit = task.hit_and_focus(10, 600);
         assert_eq!((hit.form, hit.control, hit.cursor), (None, 1, 0));
         assert_eq!(task.cursor, 0);
+        // The pointer update's own hit test stores the no-target cursor 0.
+        task.update(false, (10, 600));
+        assert_eq!((task.pointer.target, task.cursor), (None, 0));
     }
 
     #[test]
@@ -2083,6 +2160,64 @@ mod tests {
         assert_eq!(classes.get(2), Some(2));
         assert_eq!(classes.get(0), None);
         assert_eq!(classes.get(3), None);
+    }
+
+    #[test]
+    fn a_message_box_button_stores_its_result_and_closes_the_parent() {
+        assert_eq!(message_box_button(true, false), MESSAGE_OK);
+        assert_eq!(message_box_button(false, false), MESSAGE_CANCEL);
+        assert_eq!(message_box_button(true, true), MESSAGE_CLOSE);
+        assert_eq!(MESSAGE_OK.result, 1);
+        assert_eq!(MESSAGE_CANCEL.result, 0);
+        let cols = [MESSAGE_OK, MESSAGE_CANCEL];
+        assert_eq!(cols.map(|m| m.closes), [true, true]);
+        let close = MESSAGE_CLOSE;
+        assert_eq!((close.closes, close.destroys), (false, true));
+    }
+
+    #[test]
+    fn form_factories_count_from_one_until_cleared() {
+        let mut factories = TooltipClasses::default();
+        assert_eq!(factories.register(), 1);
+        assert_eq!(factories.register(), 2);
+        assert_eq!(factories.get(2), Some(2));
+        assert_eq!(factories.get(0), None);
+        assert_eq!(factories.get(3), None);
+        factories.clear();
+        assert_eq!(factories.get(1), None);
+        assert_eq!(factories.register(), 1);
+    }
+
+    #[test]
+    fn a_double_click_uses_a_signed_wide_clock_difference() {
+        let (mut task, _id, log) = task_with(|f| f.press_result = 0);
+        task.update(false, (50, 50));
+        task.clock = 1000;
+        task.press(1);
+        task.release(1);
+        // A clock behind the stamp is a negative difference, inside the
+        // window: a double click (0x8001, then the press it falls back to).
+        task.clock = 100;
+        task.press(1);
+        assert_eq!(
+            log.lock().unwrap().presses,
+            vec![0x1001, 0x2001, 0x8001, 0x1001]
+        );
+        // 450 or more after the stamp is a single press again.
+        task.release(1);
+        task.clock = 1450;
+        task.press(1);
+        assert_eq!(
+            log.lock().unwrap().presses,
+            vec![0x1001, 0x2001, 0x8001, 0x1001, 0x2001, 0x1001]
+        );
+        // A 32-bit wrap does not wrap the difference: from the stamp 1450
+        // a clock of u32::MAX is far outside the window.
+        task.release(1);
+        task.clock = u32::MAX;
+        task.press(1);
+        let presses = log.lock().unwrap().presses.clone();
+        assert_eq!(&presses[6..], &[0x2001, 0x1001]);
     }
 
     #[test]

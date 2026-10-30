@@ -3137,11 +3137,12 @@ pub fn gui_scale(height: i32) -> f32 {
 /// times 0.4 plus 0.8 in double precision, kept in single (0.8 to 1.2). The
 /// sound is the one stored on the menu form.
 pub fn hover_sound(has_sound: bool, draw: f64) -> Option<f32> {
-    has_sound.then_some((draw * 0.4 + 0.8) as f32)
+    has_sound.then(|| exa_ui::menu::menu_sound_pitch(draw))
 }
 
-/// The volume the end menu's click sound plays at.
-pub const HOVER_VOLUME: f32 = 0.06;
+/// The volume the end menu's click sound plays at (the main menu's cue
+/// gain).
+pub const HOVER_VOLUME: f32 = exa_ui::menu::MENU_SOUND_GAIN;
 
 /// Whether an object id is the player's own: its record's id, its second id
 /// or one of the ids in its record's item list. The practice scene filter

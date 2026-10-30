@@ -17,6 +17,9 @@ pub const STYLE: u32 = 0x88;
 pub const STATE_BITS: u32 = 0x4c010;
 /// The form's border.
 pub const BORDER: i32 = 8;
+/// The selected control meaning "no control", at which the view's cursor
+/// actions take the press.
+pub const NO_CONTROL_SELECTED: i32 = -1;
 /// The frame-rate readout's line, in units from the top.
 pub const FPS_LINE: i32 = 1;
 /// The version overlay's text.
@@ -571,10 +574,299 @@ impl ViewSize {
     }
 }
 
+/// The counters the viewport's constructor moves: its instance number and
+/// its place in the global viewport list, both counting from one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ViewportRegistry {
+    pub created: i32,
+    pub listed: i32,
+}
+
+impl ViewportRegistry {
+    /// Makes a viewport: returns its instance number and list place.
+    pub fn add(&mut self) -> (i32, i32) {
+        self.created += 1;
+        self.listed += 1;
+        (self.created, self.listed)
+    }
+}
+
 /// The viewport's hit test: where the form's own test finds no control
 /// (-1), the point belongs to the view, whose cursor shape is returned.
 pub fn view_cursor(base: i32, view_cursor: i32) -> Option<i32> {
     (base == -1).then_some(view_cursor)
+}
+
+/// The view-port's delegate rules for messages the hosted view can take
+/// over from the form. Each delegate is a callback the view installs; when
+/// it is absent the form's own handler answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ViewDelegates {
+    /// The view takes the press (its callback at the form's press slot).
+    pub press: bool,
+    /// The view takes the release.
+    pub release: bool,
+    /// The view takes keys.
+    pub key: bool,
+    /// The view has a begin-frame callback.
+    pub begin: bool,
+    /// The view has a redraw-request callback.
+    pub redraw: bool,
+    /// The view has an extra hit callback.
+    pub hit: bool,
+    /// The view has a cursor-shape callback.
+    pub shape: bool,
+    /// The view has an extra key-up callback.
+    pub extra_key: bool,
+}
+
+/// The press's route: the view's callback answers when it has one, else the
+/// form's own press. `base` and `view` are the two answers, each run only
+/// when its route is taken.
+pub fn press_route(
+    delegates: ViewDelegates,
+    base: impl FnOnce() -> u32,
+    view: impl FnOnce() -> u32,
+) -> u32 {
+    if delegates.press { view() } else { base() }
+}
+
+/// The release's route: the view's callback hears the release when it has
+/// one; the answer is 0 either way and the form's own release is not run.
+pub fn release_route(delegates: ViewDelegates, view: impl FnOnce() -> u32) -> u32 {
+    if delegates.release {
+        view();
+    }
+    0
+}
+
+/// The key's route and its forward: a key-goes-to-the-view answer is the
+/// view's when it has a key callback, else the form's. With the view
+/// answering and the key's low bits clear, the key is also handed to the
+/// focused control (`forward`).
+pub fn key_route(
+    delegates: ViewDelegates,
+    mask: u32,
+    base: impl FnOnce() -> u32,
+    view: impl FnOnce() -> u32,
+) -> (u32, bool) {
+    if delegates.key {
+        (view(), mask & 3 == 0)
+    } else {
+        (base(), false)
+    }
+}
+
+/// The begin-frame callback's answer, 0 without one.
+pub fn begin_route(delegates: ViewDelegates, begin: impl FnOnce() -> u32) -> u32 {
+    if delegates.begin { begin() } else { 0 }
+}
+
+/// The redraw-request the draw slot sends the task: 7 when the view's
+/// callback answered with either redraw bit, none without a callback.
+pub fn redraw_message(delegates: ViewDelegates, answer: u32) -> Option<u32> {
+    (delegates.redraw && requests_redraw(answer)).then_some(7)
+}
+
+/// The viewport's hit test when the form finds no control (-1): the view's
+/// hit callback, when it has one, hears the point in the form's
+/// coordinates, and the port's cursor code is stored with or without it
+/// ([`view_cursor`]). Elsewhere no code is stored.
+pub fn hit_route(
+    delegates: ViewDelegates,
+    hit: i32,
+    port_code: i32,
+    view: impl FnOnce() -> i32,
+) -> Option<i32> {
+    if hit == -1 && delegates.hit {
+        view();
+    }
+    view_cursor(hit, port_code)
+}
+
+/// The cursor-shape route: the form's own shape answer, and the view's
+/// callback hears the shape when it has one.
+pub fn shape_route(
+    delegates: ViewDelegates,
+    base: impl FnOnce() -> i32,
+    view: impl FnOnce() -> i32,
+) -> i32 {
+    let shape = base();
+    if delegates.shape {
+        view();
+    }
+    shape
+}
+
+/// The extra key-up callback's answer, 0 without one.
+pub fn extra_key_route(delegates: ViewDelegates, key: impl FnOnce() -> u32) -> u32 {
+    if delegates.extra_key { key() } else { 0 }
+}
+
+/// The view the port hosts: attaching one stores it and answers it back
+/// (the original sets the view's target and keeps its pointer).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ViewSlot {
+    pub view: Option<u32>,
+}
+
+impl ViewSlot {
+    /// Attaches `view` to the port, returning it.
+    pub fn attach(&mut self, view: u32) -> u32 {
+        self.view = Some(view);
+        view
+    }
+}
+
+/// The fields the viewport's draw slot reads for one frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrawInput {
+    /// The form's client rectangle in the view's coordinates (left, top,
+    /// right, bottom).
+    pub client: [i32; 4],
+    /// The view's own bounds (left, top, right, bottom).
+    pub view: [i32; 4],
+    /// The view's pixel size, for the jitter.
+    pub view_size: (i32, i32),
+    /// The supersampling setting and its sample count ([`Still::count`],
+    /// 0 for a single-sample level).
+    pub setting: i32,
+    pub count: i32,
+    /// The view's sample counter: 0 means the frame renders whole.
+    pub index: i32,
+    /// The refresh flag the counter sees. The 0.9.5 slot sets it on every
+    /// frame after its bounds test, so the running game always passes
+    /// `true`; `false` models the progressive branch the flag hides.
+    pub refresh: bool,
+    /// The task's pointer is busy (any of its 0xf0 state bits) and the port
+    /// does not draw through it: the counter holds instead of advancing.
+    pub held: bool,
+    /// The view has already accumulated its whole still.
+    pub accumulated: bool,
+    /// The stereo mode: 0 none, 1 the right eye, 2 the left.
+    pub stereo: i32,
+    /// The camera's scale (its projection's reach).
+    pub camera_scale: f32,
+    /// The view's projection scales.
+    pub scale: (f32, f32),
+    pub unit: i32,
+    /// The form's inner right, its border, its bottom and its line index.
+    pub inner_right: i32,
+    pub border: i32,
+    pub bottom: i32,
+    pub line: i32,
+    /// The small font's gap and line height, for the frame-rate readout.
+    pub gap: i32,
+    pub line_height: i32,
+    /// The readouts the form shows.
+    pub fps: bool,
+    pub fps_len: usize,
+    pub version: bool,
+}
+
+/// What the viewport's draw slot does this frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DrawPlan {
+    /// The client has a size, so the slot runs at all.
+    pub visible: bool,
+    /// The client's left, right or bottom edge passes the view's (its top
+    /// is not compared); the refresh flag is then set.
+    pub exceeds: bool,
+    /// The view renders a new frame this time (otherwise its last image is
+    /// shown).
+    pub render: bool,
+    /// The sample counter after the frame.
+    pub index: i32,
+    /// The task message the counter's step sends: 0x22 for its first
+    /// sample, 0x23 for the later ones.
+    pub message: Option<u32>,
+    /// The jittered sample a progressive frame accumulates (none on a
+    /// whole frame).
+    pub sample: Option<StillSample>,
+    /// The stereo eye's shift, applied only to a whole frame.
+    pub eye: [f32; 2],
+    /// The frame-rate readout's place.
+    pub fps: Option<(i32, i32)>,
+    /// The version overlay's place.
+    pub version: Option<(i32, i32)>,
+}
+
+/// The viewport's draw-slot rules. A client at least a pixel each way runs
+/// the slot. A client whose left edge is left of the view's, or whose right
+/// or bottom edge passes the view's, sets the refresh flag (the 0.9.5 slot
+/// then sets it again unconditionally, so `input.refresh` is `true` in the
+/// running game). On a refresh the counter restarts and the frame renders
+/// whole, shifted by the stereo eye. Without one, a counter below the
+/// sample count renders: it holds while the task's pointer is busy and the
+/// port does not draw through it, else it advances, sending 0x22 at its
+/// first sample and 0x23 after, and the frame takes that progressive
+/// sample. A counter at the count renders again only while the view has
+/// not accumulated its still. The frame-rate readout and the version take
+/// their places whenever the slot runs.
+pub fn plan_draw(input: DrawInput) -> DrawPlan {
+    let [left, top, right, bottom] = input.client;
+    let visible =
+        i64::from(right) - i64::from(left) >= 1 && i64::from(bottom) - i64::from(top) >= 1;
+    let [view_left, _, view_right, view_bottom] = input.view;
+    let exceeds = left < view_left || right > view_right || bottom > view_bottom;
+    if !visible {
+        return DrawPlan {
+            visible: false,
+            exceeds: false,
+            render: false,
+            index: input.index,
+            message: None,
+            sample: None,
+            eye: [0.0, 0.0],
+            fps: None,
+            version: None,
+        };
+    }
+    let mut index = input.index;
+    let mut message = None;
+    let render = if input.refresh || exceeds {
+        index = 0;
+        true
+    } else if index < input.count {
+        if !input.held {
+            index += 1;
+            message = Some(if index == 1 { 0x22 } else { 0x23 });
+        }
+        true
+    } else {
+        !input.accumulated
+    };
+    let (sample, eye) = match (render, index > 0) {
+        (true, true) => (
+            progressive_sample(input.setting, index, input.scale, input.view_size),
+            [0.0, 0.0],
+        ),
+        (true, false) => (None, eye_offset(input.stereo, input.camera_scale)),
+        (false, _) => (None, [0.0, 0.0]),
+    };
+    DrawPlan {
+        visible: true,
+        exceeds,
+        render,
+        index,
+        message,
+        sample,
+        eye,
+        fps: input.fps.then(|| {
+            let (x, _) = fps_place(
+                input.inner_right,
+                input.border,
+                input.unit,
+                input.gap,
+                input.line_height,
+                input.fps_len,
+            );
+            (x, input.unit * input.line + input.line_height)
+        }),
+        version: input
+            .version
+            .then(|| version_place(input.bottom, input.unit)),
+    }
 }
 
 #[cfg(test)]
@@ -776,6 +1068,181 @@ mod tests {
         assert!(route.running);
         assert_eq!(route.release(|| 0, || 5), 5);
         assert!(!route.running);
+    }
+
+    #[test]
+    fn the_draw_slot_plans_a_whole_or_a_sampled_frame() {
+        let whole = DrawInput {
+            client: [0, 0, 100, 80],
+            view: [0, 0, 100, 80],
+            view_size: (100, 80),
+            setting: 2,
+            count: 3,
+            index: 0,
+            refresh: true,
+            held: false,
+            accumulated: false,
+            stereo: 1,
+            camera_scale: 0.5,
+            scale: (1.0, 0.5),
+            unit: 5,
+            inner_right: 800,
+            border: 8,
+            bottom: 600,
+            line: 1,
+            gap: 6,
+            line_height: 16,
+            fps: true,
+            fps_len: 9,
+            version: true,
+        };
+        // The running game's refresh: a whole frame, the eye shifted.
+        let plan = plan_draw(whole);
+        assert!(plan.visible && plan.render && !plan.exceeds);
+        assert_eq!((plan.index, plan.message, plan.sample), (0, None, None));
+        assert_eq!(plan.eye, [0.5, 0.0]);
+        // 800 − 8 − 5 − 6·9 = 733; 5·1 + 16 = 21.
+        assert_eq!(plan.fps, Some((733, 21)));
+        assert_eq!(plan.version, Some((5, 595)));
+        // The readout's line is the form's: line 2 is 5·2 + 16 = 26 down.
+        assert_eq!(
+            plan_draw(DrawInput { line: 2, ..whole }).fps,
+            Some((733, 26))
+        );
+        let still = DrawInput {
+            refresh: false,
+            ..whole
+        };
+        // The first progressive frame: sample 1, message 0x22, no eye.
+        let first = plan_draw(still);
+        assert_eq!((first.index, first.message), (1, Some(0x22)));
+        let sample = first.sample.expect("a progressive frame samples");
+        assert_eq!(sample.table, 3);
+        assert_eq!(sample.fraction, (1.0f64 / 3.0) as f32);
+        assert_eq!(first.eye, [0.0, 0.0]);
+        // The second continues with 0x23 and blends at a half.
+        let second = plan_draw(DrawInput { index: 1, ..still });
+        let sample = second.sample.expect("the second sample");
+        assert_eq!(
+            (second.index, second.message, sample.table),
+            (2, Some(0x23), 4)
+        );
+        assert_eq!(sample.blend, Some(0.5));
+        // A busy pointer holds the counter but still renders its sample.
+        let held = plan_draw(DrawInput {
+            index: 1,
+            held: true,
+            ..still
+        });
+        assert!(held.render);
+        assert_eq!((held.index, held.message), (1, None));
+        assert_eq!(held.sample.map(|s| s.table), Some(3));
+        // At the count the still renders only until it has accumulated.
+        let done = DrawInput { index: 3, ..still };
+        assert!(plan_draw(done).render);
+        let kept = plan_draw(DrawInput {
+            accumulated: true,
+            ..done
+        });
+        assert!(!kept.render);
+        assert_eq!((kept.index, kept.sample, kept.eye), (3, None, [0.0, 0.0]));
+        // A right or bottom edge past the view's, or a left edge before
+        // it, refreshes; a top edge above it does not.
+        for client in [[-1, 0, 100, 80], [0, 0, 101, 80], [0, 0, 100, 81]] {
+            let moved = plan_draw(DrawInput {
+                client,
+                index: 2,
+                ..still
+            });
+            assert!(moved.exceeds && moved.render);
+            assert_eq!((moved.index, moved.sample), (0, None));
+        }
+        let above = plan_draw(DrawInput {
+            client: [0, -5, 100, 80],
+            index: 1,
+            ..still
+        });
+        assert!(!above.exceeds);
+        assert_eq!(above.index, 2);
+        // A client with no height runs nothing and shows no readout.
+        let empty = plan_draw(DrawInput {
+            client: [0, 0, 100, 0],
+            ..whole
+        });
+        assert!(!empty.visible && !empty.render);
+        assert_eq!((empty.fps, empty.version, empty.sample), (None, None, None));
+        // Stereo 2 shifts the other way, and no stereo does not shift.
+        assert_eq!(plan_draw(DrawInput { stereo: 2, ..whole }).eye, [-0.5, 0.0]);
+        assert_eq!(plan_draw(DrawInput { stereo: 0, ..whole }).eye, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn the_constructor_numbers_each_viewport() {
+        let mut registry = ViewportRegistry::default();
+        assert_eq!(registry.add(), (1, 1));
+        assert_eq!(registry.add(), (2, 2));
+        assert_eq!(TITLE, "Viewport");
+        assert_eq!((STYLE, STATE_BITS, BORDER), (0x88, 0x4c010, 8));
+        assert_eq!(NO_CONTROL_SELECTED, -1);
+    }
+
+    #[test]
+    fn the_view_delegates_take_their_messages_from_the_form() {
+        let none = ViewDelegates::default();
+        let view = ViewDelegates {
+            press: true,
+            release: true,
+            key: true,
+            begin: true,
+            ..none
+        };
+        // A view callback answers in place of the form's handler.
+        assert_eq!(press_route(view, || 1, || 2), 2);
+        assert_eq!(press_route(none, || 1, || 2), 1);
+        // The release answers 0 either way; only the view's callback runs.
+        let mut heard = false;
+        assert_eq!(
+            release_route(view, || {
+                heard = true;
+                2
+            }),
+            0
+        );
+        assert!(heard);
+        assert_eq!(release_route(none, || unreachable!()), 0);
+        // A key's low bits clear with a view callback forwards too.
+        assert_eq!(key_route(view, 0x1000, || 1, || 2), (2, true));
+        assert_eq!(key_route(view, 0x1002, || 1, || 2), (2, false));
+        assert_eq!(key_route(none, 0x1000, || 1, || 2), (1, false));
+        assert_eq!(begin_route(view, || 9), 9);
+        assert_eq!(begin_route(none, || 9), 0);
+        // The draw's redraw request is the task's message 7.
+        assert_eq!(redraw_message(view, 3), None);
+        let redraw = ViewDelegates {
+            redraw: true,
+            ..none
+        };
+        assert_eq!(redraw_message(redraw, 3), Some(7));
+        assert_eq!(redraw_message(redraw, 0), None);
+        // A view hit callback gives its own code where the form misses.
+        let hit = ViewDelegates {
+            hit: true,
+            shape: true,
+            extra_key: true,
+            ..none
+        };
+        assert_eq!(hit_route(hit, -1, 4, || 0), Some(4));
+        assert_eq!(hit_route(hit, 3, 4, || 0), None);
+        // Without a callback the port's cursor code is still stored.
+        assert_eq!(hit_route(none, -1, 4, || unreachable!()), Some(4));
+        assert_eq!(shape_route(hit, || 5, || 0), 5);
+        assert_eq!(shape_route(none, || 5, || 0), 5);
+        assert_eq!(extra_key_route(hit, || 9), 9);
+        assert_eq!(extra_key_route(none, || 9), 0);
+        // Attaching a view keeps it.
+        let mut slot = ViewSlot::default();
+        assert_eq!(slot.attach(7), 7);
+        assert_eq!(slot.view, Some(7));
     }
 
     #[test]

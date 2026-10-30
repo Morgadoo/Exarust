@@ -598,9 +598,14 @@ the focused form and control with its tooltip request and the tick that
 shows it, the modal form, the pointer's target, press point, held word,
 double click, drag threshold and capture, the drop hand-over and the cursor
 shape. `PlainForm` is a basic record over `gui_controls::dispatch`;
-`message_box_plan` builds the original's Ok/Cancel box, `place_form`,
-`clamp_form` and `edge_rect` its placement, clamp and grips, `GuiMetrics`
-the level switch's lengths, and `set_control_on` a toggle group's switch.
+`message_box_plan` builds the original's Ok/Cancel box and
+`message_box_button` its buttons' stored result and close (the close mark
+destroys through the parent), `place_form`, `clamp_form` and `edge_rect`
+its placement, clamp and grips, `GuiMetrics` the level switch's lengths,
+`set_control_on` a toggle group's show/hide switch (clearing the other
+members' on and lit bits and reporting each, answering the state's low
+byte), and `TooltipClasses` the factory table the tooltip records name
+(registered from one, cleared on shutdown).
 
 `gui_text` holds the text support routines: measuring with a font's advance
 table, selecting a font and its texture, one line's glyph quads (plain,
@@ -611,9 +616,10 @@ the single-line editor: the four-byte view (anchor, caret, the window's end
 and its first byte), caret from x, the horizontal scroll, the key and
 navigation handlers, clipboard copy/cut/paste, the caret and the draw's
 three paths, and the markup tags. `viewport` keeps the 3D viewport
-control's supersampling levels, jitter table and samples, camera scale,
-stereo eye, overlays, frame-rate counter, pixel/space conversions and its
-cursor actions.
+control's supersampling levels, jitter table and samples (both shares
+divided in double precision), camera scale, stereo eye, overlays, frame-rate counter,
+pixel/space conversions, cursor actions, view delegates and the draw
+slot's whole-or-progressive plan; the running world is `exa_render`'s.
 
 ## Layers, pickers, swatches and help
 

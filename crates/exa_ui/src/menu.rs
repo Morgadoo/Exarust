@@ -2,7 +2,7 @@
 
 /// Quantises a 32-bit clock to 1/135 and scales it by 1/8.
 pub fn menu_clock_scale(value: i32) -> f32 {
-    let step = (f64::from(value) * 0.007407407407407408).round_ties_even();
+    let step = (f64::from(value) * 0.007407407407407_408).round_ties_even();
     ((step as i64) as f64 * 0.125) as f32
 }
 
@@ -1297,6 +1297,35 @@ pub fn select_main_menu(index: i32, stamp: i32, now: i32, sound_ready: bool) -> 
 /// The sound cues the main menu asks for.
 pub const SELECT_SOUND: &str = "MenuSel";
 pub const CLICK_SOUND: &str = "MenuClick";
+/// The gain the two cues play at: the single-precision 0.06 the select,
+/// confirm and key handlers pass the audio environment's one-shot call.
+pub const MENU_SOUND_GAIN: f32 = 0.06;
+/// The voice flags of the two cues: the interface bus, listener-relative
+/// and unattenuated (0x4060), at the origin.
+pub const MENU_SOUND_FLAGS: u32 = 0x4060;
+/// The cue pitch: the run-time library's unit draw (a double in [0, 1))
+/// times 0.4 plus 0.8, in double precision, narrowed to the single the
+/// audio call takes: 0.8 through 1.2.
+pub fn menu_sound_pitch(draw: f64) -> f32 {
+    (draw * 0.4 + 0.8) as f32
+}
+
+/// The title art's texture (`maintitle01.rfi`).
+pub const MENU_TITLE_TEXTURE: &str = "maintitle01";
+/// The title art's tint.
+pub const MENU_TITLE_INK: [u8; 4] = [0xe6, 0xe6, 0xe6, 0x99];
+
+/// The title art's rectangle: the texture scaled by the row scale, centred
+/// across, its top `round(row_scale · 10)` down. The original rounds each
+/// float conversion to even.
+pub fn title_place(screen_width: i32, row_scale: f32, texture: (u32, u32)) -> [i32; 4] {
+    let round = |value: f32| crate::gui_font::round_i32(f64::from(value));
+    let width = round(texture.0 as f32 * row_scale);
+    let height = round(texture.1 as f32 * row_scale);
+    let x = round((screen_width as f32 - width as f32) * 0.5);
+    let y = round(row_scale * 10.0);
+    [x, y, width, height]
+}
 
 /// The menu music's two themes and their gains.
 pub const MENU_THEME: (&str, f32) = ("MenuTheme", 0.1);
@@ -1332,7 +1361,7 @@ pub fn toggle_menu_music(flag: bool) -> MusicToggle {
 
 /// The row scale a main menu takes: `round(H/135) × 0.125`.
 pub fn menu_row_scale(height: i32) -> f32 {
-    (round_even(f64::from(height) / 135.0) as f32) * 0.125
+    (round_even(f64::from(height) * 0.007407407407407_408) as f32) * 0.125
 }
 
 /// Round to even through a 64-bit integer, as the original's conversion
@@ -1373,6 +1402,54 @@ impl MenuShow {
     /// Whether the show copies the game mode into the creator's mode.
     pub fn copies_game_mode(self) -> bool {
         !matches!(self, MenuShow::CharacterScreen)
+    }
+
+    /// The form the show opens.
+    pub fn opens(self) -> MenuOpen {
+        match self {
+            MenuShow::Creator | MenuShow::CharacterScreen => MenuOpen::Creator,
+            MenuShow::ClassSelect => MenuOpen::ClassSelect,
+            MenuShow::Emblem => MenuOpen::Emblem,
+        }
+    }
+}
+
+/// The form a [`MenuShow`] opens after the menu closes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuOpen {
+    /// The character creator.
+    Creator,
+    /// The story's class select.
+    ClassSelect,
+    /// The arena's emblem generator.
+    Emblem,
+}
+
+/// What a show does to the running menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MenuShowPlan {
+    /// The menu's row marks clear and it shows the title page again.
+    pub closes_to_title: bool,
+    /// The session's world is torn down.
+    pub tears_down_world: bool,
+    /// The show copies the game mode into the creator's mode.
+    pub copies_game_mode: bool,
+    /// The session state the show leaves behind.
+    pub state: u32,
+    pub opens: MenuOpen,
+}
+
+/// The show's work: every one closes the menu to its title page and tears
+/// the world down; then the character screen, the class select or the
+/// emblem form opens, and the session state becomes the creator's 2 or the
+/// setup forms' 0x40.
+pub fn menu_show(show: MenuShow) -> MenuShowPlan {
+    MenuShowPlan {
+        closes_to_title: true,
+        tears_down_world: true,
+        copies_game_mode: show.copies_game_mode(),
+        state: show.state(),
+        opens: show.opens(),
     }
 }
 
@@ -2365,5 +2442,48 @@ mod tests {
         assert_eq!(MenuShow::Emblem.state(), 0x40);
         assert!(MenuShow::Emblem.copies_game_mode());
         assert!(!MenuShow::CharacterScreen.copies_game_mode());
+    }
+
+    #[test]
+    fn the_shows_close_to_the_title_and_open_their_form() {
+        let story = menu_show(MenuShow::Creator);
+        assert!(story.closes_to_title && story.tears_down_world);
+        assert!(story.copies_game_mode);
+        assert_eq!((story.state, story.opens), (2, MenuOpen::Creator));
+        let class = menu_show(MenuShow::ClassSelect);
+        assert_eq!((class.state, class.opens), (0x40, MenuOpen::ClassSelect));
+        assert!(class.copies_game_mode);
+        let emblem = menu_show(MenuShow::Emblem);
+        assert_eq!((emblem.state, emblem.opens), (0x40, MenuOpen::Emblem));
+        let screen = menu_show(MenuShow::CharacterScreen);
+        assert_eq!((screen.state, screen.opens), (2, MenuOpen::Creator));
+        assert!(!screen.copies_game_mode);
+    }
+
+    #[test]
+    fn the_title_art_is_scaled_and_centred() {
+        // 1024 by 256 at row scale 1: centred at (288, 10).
+        let place = title_place(1600, 1.0, (1024, 256));
+        assert_eq!(place, [288, 10, 1024, 256]);
+        // Half scale: 512 by 128, x 544, y 5.
+        assert_eq!(title_place(1600, 0.5, (1024, 256)), [544, 5, 512, 128]);
+        // A texture odd at the scale rounds to even: 101 × 0.25 = 25.25
+        // (25), 102 × 0.25 = 25.5 (26); the x 487.5 rounds to the even 488
+        // and the y 2.5 to the even 2.
+        assert_eq!(title_place(1000, 0.25, (101, 102)), [488, 2, 25, 26]);
+        assert_eq!(MENU_TITLE_INK, [0xe6, 0xe6, 0xe6, 0x99]);
+        assert_eq!(MENU_TITLE_TEXTURE, "maintitle01");
+    }
+
+    #[test]
+    fn the_menu_cues_pitch_from_four_fifths_to_six_fifths() {
+        assert_eq!(menu_sound_pitch(0.0), 0.8);
+        assert_eq!(menu_sound_pitch(0.5), 1.0);
+        // The mix is a double narrowed once: 0.999…·0.4 + 0.8 is 1.2 in
+        // single precision.
+        assert_eq!(menu_sound_pitch(1.0 - f64::EPSILON), 1.2);
+        assert_eq!(MENU_SOUND_GAIN.to_bits(), 0x3d75_c28f);
+        assert_eq!(MENU_SOUND_FLAGS, 0x4060);
+        assert_eq!((SELECT_SOUND, CLICK_SOUND), ("MenuSel", "MenuClick"));
     }
 }
