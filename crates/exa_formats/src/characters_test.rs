@@ -1238,30 +1238,61 @@ fn a_placement_reads_its_motion_state_and_ai_home() {
     assert_eq!((p.motion, p.ai_home), (None, None));
 }
 
+/// Appends a sub-chunk and pads it with zeroes to a multiple of eight bytes,
+/// so the next header lies on the reader's eight-byte step.
+fn push_chunk(bytes: &mut Vec<u8>, tag: u32, body: &[u8]) {
+    bytes.extend(tag.to_le_bytes());
+    bytes.extend((body.len() as u32).to_le_bytes());
+    bytes.extend(body);
+    bytes.resize(bytes.len() + (8 - body.len() % 8) % 8, 0);
+}
+
 /// A section entry read whole: the record and the object database and
-/// string library the sub-chunks after it carry.
+/// string library the word pairs after it name, found on an eight-byte step
+/// that never skips a body.
 #[test]
 fn an_entry_reads_its_record_and_its_own_database() {
     let record = CharacterRecord::new();
-    let mut bytes = record.to_bytes().unwrap();
     let mut db = crate::objdb::Store::from_records([(1, 0, &[0u8; 4][..])]);
     db.set_flags(0, crate::objdb::MAGIC);
     let mut library = crate::objstrings::Library::default();
     library.add(b"Blade");
-    for (tag, body) in [
-        (RECORD_STRINGS, library.write()),
-        (0x1234, vec![9, 9, 9]),
-        (ACTOR_ITEMS, db.write()),
-    ] {
-        bytes.extend(tag.to_le_bytes());
-        bytes.extend((body.len() as u32).to_le_bytes());
-        bytes.extend(body);
-    }
+    // A database, a chunk the reader steps through, then a library: the
+    // library lands on the database the earlier header made.
+    let mut bytes = record.to_bytes().unwrap();
+    push_chunk(&mut bytes, ACTOR_ITEMS, &db.write());
+    push_chunk(&mut bytes, 0x1234, &[9; 8]);
+    push_chunk(&mut bytes, RECORD_STRINGS, &library.write());
     let (read, own) = read_entry(0, &bytes).unwrap();
     assert_eq!(read, record.duplicate().unwrap());
     assert_eq!(own.strings.get(1).as_deref(), Some("Blade"));
     assert_eq!(own.base.len(), 1);
     assert!(own.base.find(1).is_some());
+    // A library before the database goes with the database the later
+    // header replaces.
+    let mut bytes = record.to_bytes().unwrap();
+    push_chunk(&mut bytes, RECORD_STRINGS, &library.write());
+    push_chunk(&mut bytes, ACTOR_ITEMS, &db.write());
+    let (_, own) = read_entry(0, &bytes).unwrap();
+    assert!(own.strings.is_empty());
+    assert_eq!(own.base.len(), 1);
+    // The step does not skip a body: a header nested in another chunk's
+    // body is read too.
+    let mut inner = Vec::new();
+    push_chunk(&mut inner, ACTOR_ITEMS, &db.write());
+    let mut bytes = record.to_bytes().unwrap();
+    push_chunk(&mut bytes, 0x1234, &inner);
+    let (_, own) = read_entry(0, &bytes).unwrap();
+    assert_eq!(own.base.len(), 1);
+    // A header off the eight-byte step is not seen: three bytes of
+    // another chunk's body push the database's header off it.
+    let mut bytes = record.to_bytes().unwrap();
+    bytes.extend(0x1234u32.to_le_bytes());
+    bytes.extend(3u32.to_le_bytes());
+    bytes.extend([9, 9, 9]);
+    push_chunk(&mut bytes, ACTOR_ITEMS, &db.write());
+    let (_, own) = read_entry(0, &bytes).unwrap();
+    assert!(own.base.is_empty());
     // An entry that ends with the record has an empty database.
     let (read, own) = read_entry(0, &record.to_bytes().unwrap()).unwrap();
     assert_eq!(read, record.duplicate().unwrap());
@@ -1272,6 +1303,40 @@ fn an_entry_reads_its_record_and_its_own_database() {
     short.extend(100u32.to_le_bytes());
     assert!(read_entry(0, &short).is_err());
     assert!(read_entry(0, &[0; 3]).is_err());
+}
+
+/// The import's walk: chunk bodies are skipped, so an unaligned chunk does
+/// not hide the next header, and the library and the items land in one
+/// scratch database whatever their order.
+#[test]
+fn an_import_read_skips_chunk_bodies() {
+    let record = CharacterRecord::new();
+    let mut db = crate::objdb::Store::from_records([(1, 0, &[0u8; 4][..])]);
+    db.set_flags(0, crate::objdb::MAGIC);
+    let mut library = crate::objstrings::Library::default();
+    library.add(b"Blade");
+    let mut bytes = record.to_bytes().unwrap();
+    for (tag, body) in [
+        (RECORD_STRINGS, library.write()),
+        (0x1234, vec![9, 9, 9]),
+        (ACTOR_ITEMS, db.write()),
+    ] {
+        bytes.extend(tag.to_le_bytes());
+        bytes.extend((body.len() as u32).to_le_bytes());
+        bytes.extend(body);
+    }
+    let (read, own) = read_entry_items(0, &bytes).unwrap();
+    assert_eq!(read, record.duplicate().unwrap());
+    assert_eq!(own.strings.get(1).as_deref(), Some("Blade"));
+    assert_eq!(own.base.len(), 1);
+    // A last header with nothing after it is not read: the walk needs the
+    // bytes consumed plus eight to be fewer than the length.
+    let mut bytes = record.to_bytes().unwrap();
+    bytes.extend(ACTOR_ITEMS.to_le_bytes());
+    bytes.extend(0u32.to_le_bytes());
+    let (_, own) = read_entry_items(0, &bytes).unwrap();
+    assert!(own.base.is_empty());
+    assert!(read_entry_items(0, &[0; 3]).is_err());
 }
 
 /// The shipped entries read whole: every actor's record and its own item

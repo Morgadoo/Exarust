@@ -449,7 +449,16 @@ resolve in their level's library.
   slot); the returned id is tagged local whatever the target tier. The
   prelude loader copies each character entry's items (its own database's
   records) into the live local tier this way, with the first hand pair's old
-  ids making the inventory's repeats of them take the hand's new id.
+  ids making the inventory's repeats of them take the hand's new id. Before
+  copying it migrates every record of the entry's database from its template
+  in the live database, so a template whose material class changed drops an
+  item's own strings first. The two readers of a character entry walk the
+  bytes after the record differently: the item import skips each chunk body
+  (and goes on while the bytes consumed plus eight are fewer than the
+  length), while the prelude's whole-entry builder steps eight bytes at a
+  time without skipping bodies, so it sees any `0xDBDB`/`0xDBCD` word pair on
+  that step, nested ones included, and each `0xDBDB` makes a new database
+  (dropping a library read before it).
 - **Promotion**: a local object (tag exactly bit 31) comes back as its
   recorded world id when the id remap table holds it. Otherwise its container
   children are promoted first and their ids rewritten; each own string whose

@@ -1088,23 +1088,59 @@ const ACTOR_ITEMS: u32 = 0xDBDB;
 const RECORD_STRINGS: u32 = 0xDBCD;
 
 /// A character section entry read whole: the record and the object database
-/// its entry carries, as the prelude's loader builds them. The sub-chunks
-/// after the record are walked in order: [`RECORD_STRINGS`] replaces the
-/// database's string library and [`ACTOR_ITEMS`] its records, and any other
-/// tag is skipped. The original's walk compares the bytes consumed (plus
-/// six or eight) with the entry's length and can therefore stop before a
-/// trailing header; Exarust needs a whole 8-byte header, which every
-/// shipped entry has.
+/// its entry carries, as the prelude's loader builds them.
+///
+/// After the record the original steps through the entry eight bytes at a
+/// time, reading a tag word and a length word at each step and never
+/// skipping a chunk's body: the loaders read the body through a copy of the
+/// position. So every aligned word pair after the record is a candidate
+/// header, including those inside a body. At [`ACTOR_ITEMS`] a new database
+/// is made and its records are read from the bytes after the header (the
+/// string library of any earlier [`RECORD_STRINGS`] goes with the old
+/// database); at [`RECORD_STRINGS`] the current database's string library
+/// is replaced. Any other pair is stepped over. The walk goes on while the
+/// bytes consumed plus six are fewer than the entry's length; a last step
+/// with only seven bytes left reads one byte past the entry in the
+/// original, and Exarust stops there instead. A string library before any
+/// database dereferences a missing database in the original; Exarust puts
+/// it on the empty one (guess: no shipped entry carries a library).
 pub fn read_entry(id: u32, b: &[u8]) -> Result<(CharacterRecord, crate::objdb::ObjectDb)> {
-    let mut outer = Reader { b, pos: 0 };
-    let size = {
-        outer.u32()?;
-        outer.u32()? as usize
-    };
     let record = CharacterRecord::parse(id, b)?;
-    let mut pos = 8 + size;
+    let mut pos = record_end(b)?;
     let mut database = crate::objdb::ObjectDb::default();
-    while pos + 8 <= b.len() {
+    while pos + 6 < b.len() && pos + 8 <= b.len() {
+        let mut r = Reader { b, pos };
+        let tag = r.u32()?;
+        let len = r.u32()? as usize;
+        pos = r.pos;
+        match tag {
+            RECORD_STRINGS => {
+                database.strings = crate::objstrings::Library::parse(r.bytes(len)?)?;
+            }
+            ACTOR_ITEMS => {
+                database = crate::objdb::ObjectDb::default();
+                database.base = crate::objdb::Store::parse(r.bytes(len)?)?;
+            }
+            _ => {}
+        }
+    }
+    Ok((record, database))
+}
+
+/// A character entry read as the item import reads it before copying the
+/// record's items out (see `CharacterData::import_items` in
+/// `exa_character`): unlike [`read_entry`] this walk skips each chunk's
+/// body, goes on while the bytes consumed plus eight are fewer than the
+/// entry's length, and loads [`RECORD_STRINGS`] and [`ACTOR_ITEMS`] into
+/// one scratch database independently (a later items chunk keeps the
+/// library). The original's scratch tier is a global that keeps the items
+/// of the previous import when an entry has no items chunk; here each read
+/// starts empty.
+pub fn read_entry_items(id: u32, b: &[u8]) -> Result<(CharacterRecord, crate::objdb::ObjectDb)> {
+    let record = CharacterRecord::parse(id, b)?;
+    let mut pos = record_end(b)?;
+    let mut database = crate::objdb::ObjectDb::default();
+    while pos + 8 < b.len() {
         let mut r = Reader { b, pos };
         let tag = r.u32()?;
         let len = r.u32()? as usize;
@@ -1117,6 +1153,14 @@ pub fn read_entry(id: u32, b: &[u8]) -> Result<(CharacterRecord, crate::objdb::O
         pos = r.pos;
     }
     Ok((record, database))
+}
+
+/// Where an entry's record chunk ends: its 8-byte header plus its size.
+fn record_end(b: &[u8]) -> Result<usize> {
+    let mut r = Reader { b, pos: 0 };
+    r.u32()?;
+    let size = r.u32()? as usize;
+    Ok(8usize.saturating_add(size))
 }
 
 /// The items of the database that follows an actor's record (tag, size,
