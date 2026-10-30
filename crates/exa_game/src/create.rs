@@ -196,6 +196,8 @@ pub fn creation_label(word: i32) -> CreationLabel {
 /// or 0x71 compact (its role is not traced); the physique picker reports
 /// to [`sync_physique`], the tone picker (style bit 0x80) to
 /// [`skin_changed`], and the page's own change goes to the creation form.
+/// The preview's texture handle is written into control records 7, 9 and
+/// 10.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BaseFormData {
     pub width: i32,
@@ -212,6 +214,10 @@ pub struct BaseFormData {
     pub table_word: u16,
     /// The bit the constructor sets in the tone picker's style word.
     pub tone_style: u32,
+    /// The three control records that take the preview's texture handle
+    /// (the constructor writes the same handle into record 7's, 9's and
+    /// 10's picture field).
+    pub portrait_controls: [usize; 3],
 }
 
 pub fn base_form(compact: bool) -> BaseFormData {
@@ -226,6 +232,7 @@ pub fn base_form(compact: bool) -> BaseFormData {
         tone: [8, 0x148, 0xa0, if compact { 0x70 } else { 0xa0 }],
         table_word: if compact { 0x71 } else { 0x7f },
         tone_style: 0x80,
+        portrait_controls: [7, 9, 10],
     }
 }
 
@@ -5743,6 +5750,7 @@ mod tests {
         assert_eq!(base_form(true).tone[3], 112);
         assert_eq!(base.caption, "VHM");
         assert_eq!((base.table_word, base.tone_style), (0x7f, 0x80));
+        assert_eq!(base.portrait_controls, [7, 9, 10]);
         assert_eq!(base_form(true).table_word, 0x71);
         // The style list under a 160-wide picker at 4, 24 in a 612 form.
         let list = hair_list([4, 24, 160, 112], 612, 4);
