@@ -451,39 +451,38 @@ pub fn close_plan(
     }
 }
 
-/// The doll's view alpha's factor: the bind sets the doll form's alpha to
-/// the character view's scale times ten (the view's own scale field, a
-/// tenth of the alpha).
+/// The factor the bind's last step applies: it copies a float of the doll
+/// view's body times ten into a float of the doll form [guess: the body's
+/// value is the view's scale and the form's the doll's fade; neither field
+/// is named]. The step does nothing while the doll view has no body.
 pub const VIEW_FADE_FACTOR: f32 = 10.0;
 
-/// The doll's view fade: the view's scale times [`VIEW_FADE_FACTOR`].
+/// The doll's view fade: the doll body's value times [`VIEW_FADE_FACTOR`]
+/// (a single-precision product).
 pub fn doll_fade(view_scale: f32) -> f32 {
     view_scale * VIEW_FADE_FACTOR
 }
 
 /// What binding a body to the open inventory does: the doll's model is
-/// loaded (`model`), the two draw-order words take 0x60 and 0 (the body's
-/// flag word `0x1000000` puts them the other way), and the doll's alpha
-/// follows the view's scale.
+/// loaded (`model`), two words of the doll form take 0x60 and 0, the other
+/// way round when the character record's flag `0x1000000` is set [guess:
+/// they order the doll's two layers], and the doll's fade follows the view
+/// ([`doll_fade`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BindView {
     /// A body was bound and its model is looked up.
     pub model: bool,
-    /// The two draw-order words: (front, back).
+    /// The two layout words, in the order the bind writes them.
     pub layers: (i32, i32),
     /// The doll form's alpha.
     pub fade: f32,
 }
 
-/// The bind for a body whose flag word has (or lacks) bit 24.
-pub fn bind_view(has_body: bool, body_flag_0x1000000: bool, view_scale: f32) -> BindView {
+/// The bind for a body whose record has (or lacks) the flag `0x1000000`.
+pub fn bind_view(has_body: bool, record_flag: bool, view_scale: f32) -> BindView {
     BindView {
         model: has_body,
-        layers: if body_flag_0x1000000 {
-            (0, 0x60)
-        } else {
-            (0x60, 0)
-        },
+        layers: if record_flag { (0, 0x60) } else { (0x60, 0) },
         fade: doll_fade(view_scale),
     }
 }
