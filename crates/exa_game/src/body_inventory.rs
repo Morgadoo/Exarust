@@ -271,6 +271,60 @@ impl Plugin for BodyInventoryPlugin {
     }
 }
 
+/// A core crystal a body just took: the activation the drop runs on the
+/// body's record (its mark and field word cleared, its "Activate" dialogue
+/// and its activation byte set). The entity carries it in place of the
+/// original's record write, which Exarust's read-only catalogue cannot make.
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CoreActivated {
+    /// The item the activation was run with.
+    pub id: u32,
+    /// The mark flag is clear.
+    pub mark_clear: bool,
+    /// The field word after the mark is cleared.
+    pub field_clear: bool,
+    /// The dialogue to run on the body.
+    pub dialogue: &'static str,
+    /// The record's activation byte is set.
+    pub activated: bool,
+}
+
+impl CoreActivated {
+    /// The activation a dropped item runs, `None` for anything but a core
+    /// crystal (the equipment panel takes only the crystal its body wants).
+    pub fn of(id: u32) -> Option<Self> {
+        let d = exa_items::char_loot::equip_drop(id);
+        d.activated.then(|| Self {
+            id,
+            mark_clear: d.clear_mark,
+            field_clear: d.clear_field,
+            dialogue: d.dialogue.unwrap_or(""),
+            activated: d.activated,
+        })
+    }
+}
+
+/// Wears a core crystal on a body, false when it already wears any of the
+/// five crystals. The caller has already run the body's accept test
+/// (`exa_items::possession::takes_core`).
+pub fn wear_core(possessions: &mut Possessions, id: u32, flags: u32) -> bool {
+    use exa_items::possession::crystal;
+    const CORES: [u32; 5] = [crystal::A, crystal::AL, crystal::B, crystal::C, crystal::AR];
+    if worn_ids(possessions)
+        .iter()
+        .any(|worn| CORES.contains(worn))
+    {
+        return false;
+    }
+    possessions.worn.push(ItemRef::new(id, flags));
+    true
+}
+
+/// The ids a record wears.
+pub fn worn_ids(possessions: &Possessions) -> Vec<u32> {
+    possessions.worn.iter().map(|worn| worn.id).collect()
+}
+
 /// The item a record's worn list holds, for a test or a caller that wants
 /// the pair rather than the id.
 pub fn worn_item(possessions: &Possessions, id: u32) -> Option<ItemRef> {
@@ -319,6 +373,28 @@ mod tests {
             |id, _| Some((id as usize, 0)),
             |_| Some((20, 20)),
         );
+    }
+
+    #[test]
+    fn a_core_crystal_wears_once_and_carries_its_activation() {
+        let mut p = Possessions::of_record(&record());
+        use exa_items::possession::crystal;
+        assert!(wear_core(&mut p, crystal::AL, 0x20));
+        assert_eq!(worn_item(&p, crystal::AL).map(|w| w.flags), Some(0x20));
+        // A second core is refused while one is worn.
+        assert!(!wear_core(&mut p, crystal::A, 0));
+        let activation = CoreActivated::of(crystal::AL).expect("the AL crystal activates");
+        assert_eq!(
+            activation,
+            CoreActivated {
+                id: crystal::AL,
+                mark_clear: true,
+                field_clear: true,
+                dialogue: "Activate",
+                activated: true
+            }
+        );
+        assert_eq!(CoreActivated::of(7), None);
     }
 
     #[test]

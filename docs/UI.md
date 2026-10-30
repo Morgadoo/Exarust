@@ -2754,8 +2754,12 @@ plain draw and input records.
   dropped; any other item is taken off the record and the character view
   asked to remove it, which marks the character, plays a sound and may
   rebalance it, and apparel is rebuilt either way. Power Crystal AL (500)
-  dropped on the body clears the mark and runs its "Activate" dialogue
-  before the item is added. Not wired into the running game.
+  dropped on the body clears the mark and the field word after it, runs
+  its "Activate" dialogue, sets the record's activation byte and then adds
+  the item; the live drop is `exa_game::panel_live`, which accepts a
+  crystal only through the body's race's own filter
+  (`char_loot::accepts`), wears it (`body_inventory::wear_core`) and puts
+  the activation on the body (`body_inventory::CoreActivated`).
 
 ## Character view
 

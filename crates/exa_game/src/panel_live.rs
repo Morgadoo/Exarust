@@ -328,6 +328,7 @@ pub fn drop_on_panel(
     drag: PanelDrag,
     destination: Panel,
     local: Cell,
+    core_ok: bool,
 ) -> Option<(Panel, u32, u32, Cell)> {
     let source = drag.source?;
     let PanelDrag {
@@ -357,9 +358,16 @@ pub fn drop_on_panel(
         }
         return None;
     }
-    // The body's equipment panel has no running character view to take a
-    // dropped item; only the packs accept a drop.
+    // The body's equipment panel takes only the core crystal its body
+    // wants (`core_ok`, the body's `takes_core` test); anything else is
+    // refused and the source's drag ends.
     if matches!(destination, Panel::BodyEquipment(_)) {
+        if core_ok && id == exa_items::char_loot::POWER_CRYSTAL_AL {
+            if let Some(container) = container_mut(screens, source) {
+                container.finish_drag(destination.number(), false, true, id, bulk);
+            }
+            return Some((destination, id, flags, local));
+        }
         if let Some(container) = container_mut(screens, source) {
             container.finish_drag(destination.number(), true, true, 0, bulk);
         }
@@ -444,7 +452,10 @@ fn release(
     mut drag: ResMut<PanelDrag>,
     icons: Res<PanelIcons>,
     catalogue: Option<Res<ItemCatalogue>>,
+    mut commands: Commands,
     mut bodies: Query<(Entity, &mut Possessions)>,
+    records: Query<&exa_character::record::CharacterData>,
+    game: Option<Res<exa_assets::Game>>,
     player_bodies: Query<Entity, With<crate::player::PlayerBody>>,
     mut dropped: MessageWriter<crate::doll_view::DollDrop>,
 ) {
@@ -497,6 +508,31 @@ fn release(
     }
     let unit = container(&screens, destination).map_or(4, |container| container.unit);
     let vscale = container(&screens, destination).map_or(1.0, |container| container.vscale);
+    // The body's equipment panel's accept filter: the crystal its race takes
+    // while it wears none (`exa_items::char_loot::accepts`). The race flags
+    // are the race record's first flag word at offset 0x18.
+    let core_ok = match destination {
+        Panel::BodyEquipment(body) => body_entity(&mut bodies, body).is_some_and(|entity| {
+            let worn = bodies
+                .get(entity)
+                .map(|(_, p)| body_inventory::worn_ids(p))
+                .unwrap_or_default();
+            let flags = records
+                .get(entity)
+                .ok()
+                .and_then(|data| {
+                    game.as_deref().and_then(|game| {
+                        crate::scene_bodies::game_races(game)
+                            .iter()
+                            .find(|race| race.id == u32::from(data.record.race))
+                            .map(|race| race.flags)
+                    })
+                })
+                .unwrap_or(0);
+            exa_items::char_loot::accepts(flags, drag.id, &worn)
+        }),
+        _ => false,
+    };
     if let Some((destination, id, flags, cell)) = drop_on_panel(
         &mut screens,
         &icons,
@@ -504,8 +540,10 @@ fn release(
         *drag,
         destination,
         local,
+        core_ok,
     ) {
         move_item(
+            &mut commands,
             &mut bodies,
             player,
             source,
@@ -528,6 +566,7 @@ fn release(
 /// `flags` and giving to it leaves the possessions alone.
 #[allow(clippy::too_many_arguments)]
 fn move_item(
+    commands: &mut Commands,
     bodies: &mut Query<(Entity, &mut Possessions)>,
     player: Option<Entity>,
     source: Panel,
@@ -575,7 +614,16 @@ fn move_item(
                 body_inventory::give(&mut p, id, flags, cell, unit, vscale);
             }
         }
-        Panel::BodyEquipment(_) | Panel::Container(_) => {}
+        Panel::BodyEquipment(body) => {
+            if let Some(entity) = body_entity(bodies, body)
+                && let Ok((_, mut p)) = bodies.get_mut(entity)
+                && body_inventory::wear_core(&mut p, id, flags)
+                && let Some(activation) = body_inventory::CoreActivated::of(id)
+            {
+                commands.entity(entity).insert(activation);
+            }
+        }
+        Panel::Container(_) => {}
     }
 }
 
@@ -700,6 +748,7 @@ mod tests {
             drag,
             Panel::BodyPack(7),
             Cell::new(50, 50),
+            false,
         );
         assert_eq!(
             moved.map(|(panel, id, _, _)| (panel, id)),
@@ -733,10 +782,89 @@ mod tests {
             drag,
             Panel::BodyEquipment(7),
             Cell::new(50, 50),
+            false,
         );
         assert!(refused.is_none());
         assert_eq!(screens.pack.entries.len(), 1);
         assert_eq!(screens.pack.entries[0].drag & 1, 0);
+        // The body's own crystal is accepted when its accept filter says so,
+        // and nothing else is even with the filter.
+        let crystal = exa_items::char_loot::POWER_CRYSTAL_AL;
+        screens.pack.entries = vec![Entry {
+            cell: Cell::new(10, 10),
+            id: crystal,
+            icon: 3,
+            flags: 0,
+            drag: 1,
+        }];
+        let drag = PanelDrag {
+            source: Some(Panel::PlayerPack),
+            icon: 3,
+            grab: Cell::new(0, 0),
+            id: crystal,
+            flags: 0,
+            bulk: 0,
+        };
+        let accepted = drop_on_panel(
+            &mut screens,
+            &icons,
+            None,
+            drag,
+            Panel::BodyEquipment(7),
+            Cell::new(50, 50),
+            true,
+        );
+        assert_eq!(
+            accepted.map(|(panel, id, _, _)| (panel, id)),
+            Some((Panel::BodyEquipment(7), crystal))
+        );
+        screens.pack.entries = vec![Entry {
+            cell: Cell::new(10, 10),
+            id: crystal,
+            icon: 4,
+            flags: 0,
+            drag: 1,
+        }];
+        let drag = PanelDrag {
+            source: Some(Panel::PlayerPack),
+            icon: 4,
+            grab: Cell::new(0, 0),
+            id: crystal,
+            flags: 0,
+            bulk: 0,
+        };
+        assert!(
+            drop_on_panel(
+                &mut screens,
+                &icons,
+                None,
+                drag,
+                Panel::BodyEquipment(7),
+                Cell::new(50, 50),
+                false,
+            )
+            .is_none()
+        );
+        let drag = PanelDrag {
+            source: Some(Panel::PlayerPack),
+            icon: 4,
+            grab: Cell::new(0, 0),
+            id: 11,
+            flags: 0,
+            bulk: 0,
+        };
+        assert!(
+            drop_on_panel(
+                &mut screens,
+                &icons,
+                None,
+                drag,
+                Panel::BodyEquipment(7),
+                Cell::new(50, 50),
+                true,
+            )
+            .is_none()
+        );
     }
 
     #[test]
