@@ -626,11 +626,12 @@ struct ClothOutcome {
 type OfferedPart<'a> = (Entity, bool, bool, ObjectBodyPart<'a>);
 
 /// Whether a body takes the cloths' body contacts this tick, as the
-/// original's object-body stage masks it: a disabled body (state bit 4) is
-/// skipped, and its sleep decides between the two masks. The original also
-/// skips a body whose state carries the held-static-only bit (0x800);
-/// Exarust keeps that word on a held item's parts rather than its body, so
-/// only the disabled bit is read here [guess].
+/// original's object-body stage masks it: a body whose state carries the
+/// disabled bit (0x800, an item on the cursor) or the 4 bit is skipped,
+/// and its sleep decides between the stage's two masks
+/// ([`sector::object_takes_body`]). The original sets both bits together
+/// when an item goes onto the cursor (with the asleep bit), which is what
+/// [`Ragdoll::disabled`] stands for; Exarust keeps no separate 4 bit.
 pub fn body_meets_objects(body: &Ragdoll) -> bool {
     !body.disabled()
 }
@@ -1485,7 +1486,8 @@ mod tests {
     }
 
     /// The original's object-body stage masks a body by its state: a
-    /// disabled body (bit 4) takes no cloth body contacts, while its sleep
+    /// disabled body (0x800, an item on the cursor) takes no cloth body
+    /// contacts, while its sleep
     /// decides between the stage's two masks.
     #[test]
     fn a_disabled_body_is_never_offered_to_a_cloth() {

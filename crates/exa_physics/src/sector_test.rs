@@ -963,43 +963,66 @@ fn the_object_stage_walks_the_nine_cells_around_its_own() {
     assert_eq!(near.around(object).collect::<Vec<_>>(), [7]);
 }
 
-/// The placement overlap query's gates: the probe's bound sphere and the
-/// body's mesh sphere must touch; the probe's sphere centre must lie
-/// within its own radius of the body's mesh box, and the body's sphere
-/// centre within its own radius of the probe's mesh box, each strict.
-#[test]
-fn the_placement_query_gates_with_the_two_bound_tests() {
-    let probe = PlacementBody {
-        sphere: (Vec3::ZERO, 10.0),
-        mesh: (Vec3::ZERO, Vec3::splat(5.0)),
-        mesh_radius: Vec3::splat(5.0).length(),
-        root: 0,
-        words: (0, 0),
-        key: 10,
-        static_only: false,
-    };
-    let body_at = |x: f32| PlacementBody {
-        sphere: (Vec3::ZERO, 10.0),
-        mesh: (Vec3::new(x, 0.0, 0.0), Vec3::splat(5.0)),
-        mesh_radius: Vec3::splat(5.0).length(),
+/// A placement body in world centimetres: a sphere, and a cube mesh bound
+/// of half extent `half` about the frame's origin.
+fn placement_body(sphere: (Vec3, f32), frame: Affine3A, half: f32) -> PlacementBody {
+    PlacementBody {
+        sphere,
+        mesh: Bounds::of_box(Vec3::ZERO, Vec3::splat(half)),
+        frame,
         root: 1,
         words: (0, 0),
         key: 20,
-        static_only: false,
+        disabled: false,
+    }
+}
+
+/// The placement overlap query's gates: the probe's bound sphere and the
+/// body's mesh sphere must touch; the probe's sphere centre must lie
+/// within its own radius of the body's oriented mesh box, and the body's
+/// sphere centre within its own radius of the probe's, each strict, with
+/// a NaN distance passing.
+#[test]
+fn the_placement_query_gates_with_the_two_bound_tests() {
+    let mut probe = placement_body((Vec3::ZERO, 10.0), Affine3A::IDENTITY, 5.0);
+    probe.root = 0;
+    probe.key = 10;
+    let body_at = |x: f32| {
+        placement_body(
+            (Vec3::ZERO, 10.0),
+            Affine3A::from_translation(Vec3::new(x, 0.0, 0.0)),
+            5.0,
+        )
     };
-    // 20 cm apart, the two mesh spheres (10 + 8.66) do not touch.
+    // 20 cm apart, the two spheres (10 + 8.66) do not touch.
     assert!(!placement_offered(&probe, &body_at(20.0)));
     // 15 cm: the spheres touch, but the probe's centre is 10 cm outside
-    // the body's box, equal to its radius, and the compare is strict.
+    // the body's box (10² = 100, equal to its radius²): skipped.
     assert!(!placement_offered(&probe, &body_at(15.0)));
-    // 14 cm: 9 cm outside, under the 10 cm radius.
+    // 14 cm: 9 cm outside (81 < 100).
     assert!(placement_offered(&probe, &body_at(14.0)));
-    // The body's own sphere at the origin is within its 10 cm radius of
-    // the probe's box until it is 15 cm out; it is here 0 cm out, and a
-    // small body sphere fails the second gate instead.
+    // A small body sphere 15 cm above the probe's box (20 − 5) fails the
+    // second gate.
     let mut far_sphere = body_at(14.0);
     far_sphere.sphere = (Vec3::new(0.0, 0.0, 20.0), 1.0);
     assert!(!placement_offered(&probe, &far_sphere));
+    // The box is the body's own, turned with its frame: a body at 15 cm
+    // turned 45° about y reaches 5·√2 ≈ 7.07 cm towards the probe, so the
+    // probe's centre lies 7.93 cm out (62.9 < 100) and it is offered.
+    let turned = placement_body(
+        (Vec3::ZERO, 10.0),
+        Affine3A::from_rotation_translation(
+            bevy::math::Quat::from_rotation_y(std::f32::consts::FRAC_PI_4),
+            Vec3::new(15.0, 0.0, 0.0),
+        ),
+        5.0,
+    );
+    assert!(placement_offered(&probe, &turned));
+    // A NaN sphere centre passes both distance gates (the unordered
+    // compare); the sphere gate's sign-bit test lets it through too.
+    let mut nan = body_at(14.0);
+    nan.sphere.0 = Vec3::NAN;
+    assert!(placement_offered(&probe, &nan));
 }
 
 /// The same root skips when the group words share a bit; different roots
@@ -1007,15 +1030,9 @@ fn the_placement_query_gates_with_the_two_bound_tests() {
 /// original's `(a & b & 0x5555_5550) << 1 & (a | b)`).
 #[test]
 fn the_placement_query_filters_by_root_and_layers() {
-    let mut probe = PlacementBody {
-        sphere: (Vec3::ZERO, 10.0),
-        mesh: (Vec3::ZERO, Vec3::splat(5.0)),
-        mesh_radius: 8.66,
-        root: 1,
-        words: (0x10, 0x10),
-        key: 10,
-        static_only: false,
-    };
+    let mut probe = placement_body((Vec3::ZERO, 10.0), Affine3A::IDENTITY, 5.0);
+    probe.words = (0x10, 0x10);
+    probe.key = 10;
     let mut body = probe;
     body.key = 20;
     body.root = 2;
@@ -1043,8 +1060,8 @@ fn the_placement_query_filters_by_root_and_layers() {
     assert!(!placement_offered(&probe, &body));
     probe.words.0 = 0x20;
     assert!(placement_offered(&probe, &body));
-    // A body held to the world only is never pushed.
-    body.static_only = true;
+    // A disabled body (an item on the cursor) is never offered.
+    body.disabled = true;
     assert!(!placement_offered(&probe, &body));
 }
 
@@ -1052,24 +1069,14 @@ fn the_placement_query_filters_by_root_and_layers() {
 /// neighbour table's order and orders each offered body by its key.
 #[test]
 fn the_placement_query_walks_the_nine_cells_in_order() {
-    let probe = PlacementBody {
-        sphere: (Vec3::new(599.0, 0.0, 0.0), 10.0),
-        mesh: (Vec3::new(599.0, 0.0, 0.0), Vec3::splat(5.0)),
-        mesh_radius: 8.66,
-        root: 0,
-        words: (0, 0),
-        key: 10,
-        static_only: false,
+    let at = |x: f32, z: f32, key: u16| {
+        let centre = Vec3::new(x, 0.0, z);
+        let mut body = placement_body((centre, 10.0), Affine3A::from_translation(centre), 5.0);
+        body.key = key;
+        body
     };
-    let at = |x: f32, z: f32, key: u16| PlacementBody {
-        sphere: (Vec3::new(x, 0.0, z), 10.0),
-        mesh: (Vec3::new(x, 0.0, z), Vec3::splat(5.0)),
-        mesh_radius: 8.66,
-        root: 1,
-        words: (0, 0),
-        key,
-        static_only: false,
-    };
+    let mut probe = at(599.0, 0.0, 10);
+    probe.root = 0;
     // The probe's cell and the next one across the 600 cm edge, then a body
     // three cells away.
     let bodies = [at(599.0, 0.0, 20), at(601.0, 0.0, 5), at(1800.0, 0.0, 1)];

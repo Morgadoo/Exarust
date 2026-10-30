@@ -591,18 +591,19 @@ pub fn static_overlap_meet(
 }
 
 /// A body as the placement overlap query sees it, in world centimetres:
-/// the sphere around its collision spheres, its node's world-aligned mesh
-/// box and the sphere around it, the root body it belongs to, its two
-/// collision-filter words, its pair order key and whether its state
-/// carries the held-static-only bit.
+/// the sphere around its collision spheres, its mesh bound (in its own
+/// space) with the frame that carries it into the world, the root body it
+/// belongs to, its two collision-filter words, its pair order key and
+/// whether it is disabled.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlacementBody {
-    /// Centre and radius of the sphere around its collision spheres.
+    /// World centre and radius of the sphere around its collision spheres.
     pub sphere: (Vec3, f32),
-    /// Centre and half extents of its node's world-aligned mesh box.
-    pub mesh: (Vec3, Vec3),
-    /// Radius of the sphere around that mesh box.
-    pub mesh_radius: f32,
+    /// Its mesh bound (the node's box and the sphere around it) in its own
+    /// space.
+    pub mesh: Bounds,
+    /// The body's matrix: its own space to world centimetres.
+    pub frame: Affine3A,
     /// The root body it belongs to: a body's own tree shares one, and the
     /// original's same-root filter reads the group word.
     pub root: u32,
@@ -611,39 +612,41 @@ pub struct PlacementBody {
     pub words: (u32, u32),
     /// The pair order key, the same word the pair stage orders by.
     pub key: u16,
-    /// Whether its state carries the held-static-only bit (the original's
-    /// 0x800, an item held to the world only): such a body is not pushed.
-    pub static_only: bool,
+    /// Whether the body is disabled (the original's state bit 0x800, an
+    /// item on the cursor, [`crate::body::Ragdoll::disabled`]): such a body
+    /// is not offered.
+    pub disabled: bool,
 }
 
 /// Whether the original's placement overlap query offers `body` to
 /// `probe`, both in world centimetres. The gates are the original's, in
 /// its order: the probe's bound sphere against the body's mesh sphere
 /// ([`intersect::spheres_separated`], touching counts); the probe's sphere
-/// centre within the probe's own radius of the body's mesh box; the
-/// body's sphere centre within the body's own radius of the probe's mesh
-/// box (each compare is a strict `<`, so a NaN distance skips); then the
-/// collision filters — the same root skips when the group words share a
-/// bit, and differing roots skip when the layer words name a shared
-/// exclusive channel ([`crate::body::pairs::layers_apart`]) — and a held
-/// static-only body is not offered. A body that passes is tested by
-/// [`placement_meet`] with the lower key first.
+/// centre within the probe's own radius of the body's oriented mesh box;
+/// the body's sphere centre within the body's own radius of the probe's
+/// oriented mesh box ([`mesh_box_distance2`]; each skips only when the
+/// radius² is at most the distance², so a NaN distance passes, as the
+/// unordered compare does); then the collision filters — the same root
+/// skips when the group words share a bit, and differing roots skip when
+/// the layer words name a shared exclusive channel
+/// ([`crate::body::pairs::layers_apart`]) — and a disabled body is not
+/// offered. A body that passes is tested by [`placement_meet`] with the
+/// lower key first.
 pub fn placement_offered(probe: &PlacementBody, body: &PlacementBody) -> bool {
     if intersect::spheres_separated(
         probe.sphere.0,
         probe.sphere.1,
-        body.mesh.0,
-        body.mesh_radius,
+        body.mesh.world_centre(&body.frame),
+        body.mesh.radius,
     ) {
         return false;
     }
     let reach2 = probe.sphere.1 * probe.sphere.1;
-    if !(intersect::point_aabb_distance_squared(probe.sphere.0, body.mesh.0, body.mesh.1) < reach2)
-    {
+    if mesh_box_distance2(probe.sphere.0, &body.mesh, &body.frame) >= reach2 {
         return false;
     }
     let own2 = body.sphere.1 * body.sphere.1;
-    if !(intersect::point_aabb_distance_squared(body.sphere.0, probe.mesh.0, probe.mesh.1) < own2) {
+    if mesh_box_distance2(body.sphere.0, &probe.mesh, &probe.frame) >= own2 {
         return false;
     }
     if probe.root == body.root {
@@ -653,7 +656,7 @@ pub fn placement_offered(probe: &PlacementBody, body: &PlacementBody) -> bool {
     } else if crate::body::pairs::layers_apart(body.words.1, probe.words.1) {
         return false;
     }
-    !body.static_only
+    !body.disabled
 }
 
 /// The bodies the placement overlap query offers `probe`, in the original's

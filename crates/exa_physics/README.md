@@ -141,12 +141,13 @@ overlap-only, placement and static-collider pre-tests, and the step's
 stages and budgets. The placement overlap query is
 `sector::placement_scan`: the bodies bucketed in the nine cells around the
 probe's own, in the neighbour table's order, each offered when its bound
-sphere and the probe's touch, the probe's sphere centre lies within its own
-radius of the body's mesh box and the body's sphere centre within its own
-radius of the probe's mesh box (both strict, so a NaN skips), the group
-words share no bit for a body of the same root and the layer words name no
-shared exclusive channel for another root, and the body is not held to the
-world only; each pair says which side goes first (the lower pair key, as
+sphere and the body's mesh sphere touch, the probe's sphere centre lies
+within its own radius of the body's oriented mesh box and the body's
+sphere centre within its own radius of the probe's
+(`sector::mesh_box_distance2`; both strict, a NaN distance passes), the
+group words share no bit for a body of the same root and the layer words
+name no shared exclusive channel for another root, and the body is not
+disabled (0x800, an item on the cursor); each pair says which side goes first (the lower pair key, as
 the original orders the two). Its static-collider grid (`sector::StaticGrid`: one
 cell per small collider, the footprint plus a one-cell margin with the
 wide bit for a larger one, a scan of the own cell then the eight
