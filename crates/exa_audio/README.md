@@ -158,7 +158,9 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
   voice volume × sound gain, pitch × voice pitch) at its place.
 - A character keeps a looping source per held item and a pair for its body
   (voice and foley), made lazily and freed on death (`LoopSources`);
-  `play_loop_attached` binds a looping variant to a caller-held handle.
+  `play_loop_attached` binds a looping variant to a caller-held handle,
+  and `play_buffer_attached` a named buffer (a fire's loop,
+  `exa_game::fire_sound`).
 - A clothing foley loop is chosen by the summed coverage per hit-sound
   class times the per-bone weights (`FoleyPlH`) and its volume by the
   class's volume factor; a golem body plays `FoleyPlH` at 2, or

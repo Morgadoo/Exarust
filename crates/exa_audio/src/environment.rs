@@ -628,6 +628,44 @@ impl AudioEnvironment {
         true
     }
 
+    /// Starts a buffer on a caller-held handle: like [`Self::play_buffer`],
+    /// but the voice is bound to `handle` (a voice it held before is let go)
+    /// so the caller can move, re-level and free it later. Returns false when
+    /// the handle is unset, the environment is silent or the pool is full.
+    #[allow(clippy::too_many_arguments)]
+    pub fn play_buffer_attached(
+        &mut self,
+        buffer: u32,
+        handle: VoiceHandle,
+        position: Vec3,
+        gain: f32,
+        pitch: f32,
+        extra_flags: u32,
+    ) -> bool {
+        if handle == VoiceHandle::NONE || !self.is_live() {
+            return false;
+        }
+        let Some(id) = self.allocate() else {
+            return false;
+        };
+        if let Some(old) = self.handles.get(handle.0 as usize).copied().flatten()
+            && let Some(voice) = self.voices.get_mut(old as usize)
+        {
+            voice.owner = None;
+        }
+        if let Some(slot) = self.handles.get_mut(handle.0 as usize) {
+            *slot = Some(id);
+        }
+        let voice = &mut self.voices[id as usize];
+        voice.flags = self.default_flags | extra_flags;
+        voice.owner = Some(handle.0);
+        voice.buffer = buffer;
+        voice.position = position;
+        voice.gain = gain;
+        voice.pitch = pitch;
+        true
+    }
+
     /// Frees a handle's voice: the original's source release. Leaves the
     /// handle unbound.
     pub fn free_handle(&mut self, bank: &mut SoundBank, handle: VoiceHandle) {
@@ -1252,6 +1290,25 @@ mod tests {
             env.allocate();
         }
         assert_eq!(env.allocate(), None);
+    }
+
+    /// A buffer started on a handle is bound to it, so the caller finds the
+    /// same voice next frame and frees it through the handle.
+    #[test]
+    fn a_buffer_on_a_handle_stays_bound_until_freed() {
+        let mut env = AudioEnvironment::new();
+        let mut bank = SoundBank::default();
+        assert!(!env.play_buffer_attached(1, VoiceHandle::NONE, Vec3::ZERO, 1.0, 1.0, 0));
+        let handle = env.new_handle();
+        assert!(env.play_buffer_attached(1, handle, Vec3::X, 0.5, 0.9, voice_flags::LOOPING));
+        let id = env.handle_voice(handle).expect("bound");
+        let voice = env.voice(id).copied().unwrap();
+        assert_eq!(voice.buffer, 1);
+        assert_eq!((voice.gain, voice.pitch), (0.5, 0.9));
+        assert_ne!(voice.flags & voice_flags::LOOPING, 0);
+        env.free_handle(&mut bank, handle);
+        assert_eq!(env.handle_voice(handle), None);
+        assert_eq!(env.voice(id).unwrap().flags, 0);
     }
 
     /// A stopped source frees an auto-free voice, deactivates any other and
