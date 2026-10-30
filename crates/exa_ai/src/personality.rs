@@ -9,8 +9,10 @@
 //!   draw spread over −1..1. The arousal starts at 10, the state at the
 //!   wait, the roam at its first phase.
 //! - **Attaching.** Without the race word's AI flag no contact sense is
-//!   installed and the state is the wait. With it, the sense is the
-//!   standard one for race class `0x12xx` and the ally sense otherwise; a dead
+//!   installed and the state is the wait: the brain keeps the base
+//!   perception every character shares ([`Sense::Base`]). With it, the sense
+//!   is the standard one for race class `0x12xx` (the Golem Suit) and the
+//!   ally sense otherwise; a dead
 //!   character gets the effect at 0 and nothing else; a statue race stands
 //!   sentry in the guard motion (`0x19`), effect at 0, marked as a statue;
 //!   any other gets the effect at 1. Then the roles are applied, which
@@ -24,9 +26,9 @@
 pub const AI_FLAG: u32 = 0x1000;
 /// The race word's statue flag.
 pub const STATUE_FLAG: u32 = 0x800_0000;
-/// The race class that keeps the standard sense; every other AI race
-/// uses the ally sense.
-pub const ALLY_CLASS: u32 = 0x1200;
+/// The race class that installs the standard sense (the Golem Suit); every
+/// other AI race installs the ally sense.
+pub const STANDARD_CLASS: u32 = 0x1200;
 /// The guard motion a statue stands in.
 pub const GUARD_MOTION: i32 = 0x19;
 /// The arousal a new brain starts with.
@@ -96,12 +98,22 @@ pub fn personality(
 }
 
 /// Which contact sense the brain uses.
+///
+/// The original's contact classifier calls the sense the attach installed
+/// and, when none is installed (every race without the AI flag: the humans
+/// and the beasts), the observed character's own perception, the one the
+/// base behaviour of every character carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Sense {
-    /// The standard per-contact sense of race class `0x12xx`: it weighs the
-    /// observed character's contacts as the threat estimate and takes the
-    /// leader for a friend.
+    /// No sense installed: the base perception
+    /// ([`crate::combatant::perceive`]), with the role database's attitude,
+    /// the group blend, the threat estimate and the familiarity drift.
     #[default]
+    Base,
+    /// The standard per-contact sense of race class `0x12xx`, the Golem
+    /// Suit ([`crate::combatant::standard_sense`]): it weighs the observed
+    /// character's contacts as the threat estimate, takes the player for a
+    /// friend and leaves every other attitude alone.
     Standard,
     /// The ally-aware sense of the other AI races: a fellow AI is an ally
     /// and each contact's threat is the largest threat to the allies
@@ -133,7 +145,7 @@ pub fn attach(race_word: u32, dead: bool) -> Attached {
     }
     // Race class `0x12xx` gets the standard sense; the other AI races the
     // ally-aware one.
-    let sense = if race_word & 0xFF00 == ALLY_CLASS {
+    let sense = if race_word & 0xFF00 == STANDARD_CLASS {
         Sense::Standard
     } else {
         Sense::Ally

@@ -1549,9 +1549,15 @@ fn spawn_players(
             // carries beside its duellist, from the duel record.
             if options.opponent_brain {
                 let mut roll = 0x2F1D_3B57;
+                // `--opponent-race`: the brain is made from another race
+                // byte, so it installs that race's sense.
+                let brain_record = CharacterRecord {
+                    race: options.opponent_race.unwrap_or(duel_record.race),
+                    ..duel_record.clone()
+                };
                 commands.entity(foe).insert((
                     exa_ai::roles::Relations::default(),
-                    exa_ai::brain::Npc::of_record(&duel_record, &mut roll),
+                    exa_ai::brain::Npc::of_record(&brain_record, &mut roll),
                     exa_ai::brain::CharacterId(duel_record.id),
                     exa_ai::Mind::new(0.0),
                 ));

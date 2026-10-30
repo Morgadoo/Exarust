@@ -2376,7 +2376,8 @@ pub fn ally_sense(
 /// is `1 − d/1200` (at most 0.99, compared in double), the view weight the
 /// observer's `(look·u·−0.5 + 0.5)²·0.25 + (forward·u·−0.5 + 0.5)·0.75`.
 ///
-/// A dead or asleep body (or an asleep observer) zeroes the noticeability,
+/// A dead or asleep body (or an observer standing as a statue, `statue`)
+/// zeroes the noticeability,
 /// caps the noticed level at 0.5 and clears concern, hostility and the
 /// selected third party. A knocked-out body keeps 24·c noticeability (its
 /// concern eases by 0.99 while it is out). Otherwise the noticeability is
@@ -2394,13 +2395,16 @@ pub fn ally_sense(
 /// (`·multiplier·0.5`) or the player (`·multiplier`) counts toward the
 /// threat, whose largest value raises the contact's concern target.
 ///
-/// The original leaves the attitude, the tolerance and the familiarity to
-/// the role side. Exarust's [`perceive`] computes them before this routine
-/// runs and this routine overwrites only the fields the original's sense
-/// owns.
+/// The original installs this routine only for race class `0x12xx` (the
+/// Golem Suit, [`crate::personality::Sense::Standard`]); the races without
+/// the AI flag install no sense and keep the base perception
+/// ([`perceive`]). The routine writes no attitude but the player's, no
+/// tolerance and no familiarity: every other contact keeps the attitude it
+/// was admitted with.
 #[allow(clippy::too_many_arguments)]
 pub fn standard_sense(
     observer: &Observer,
+    statue: bool,
     observed: &Observed,
     observed_contacts: &[Contact],
     own: &mut [Contact],
@@ -2440,7 +2444,8 @@ pub fn standard_sense(
     }
     let facing = observed.forward.dot(toward_observer) * 0.5 + 0.5;
     let looking = observed.look.dot(toward_observer) * 0.5 + 0.5;
-    let asleep = observer.asleep || observed.asleep;
+    // The observer's statue byte, not its sleep, takes the lying branch.
+    let asleep = statue || observed.asleep;
     let contact = &mut own[index];
     contact.closeness = closeness;
     if observed.condition & 0xA00 != 0 || asleep {
@@ -2765,7 +2770,7 @@ mod standard_tests {
         let other = world.spawn_empty().id();
         let mut own = vec![Contact::new(other)];
         assert_eq!(
-            standard_sense(&observer(me), &facing(other), &[], &mut own, 0, None),
+            standard_sense(&observer(me), false, &facing(other), &[], &mut own, 0, None),
             0
         );
         assert_eq!(own[0].flags, CONTACT_TRACKED | CONTACT_NOTICED);
@@ -2788,7 +2793,7 @@ mod standard_tests {
         let mut far = facing(other);
         far.position_cm = Vec3::new(0.0, 0.0, 1200.0);
         assert_eq!(
-            standard_sense(&observer(me), &far, &[], &mut own, 0, None),
+            standard_sense(&observer(me), false, &far, &[], &mut own, 0, None),
             -1
         );
         assert_eq!(own[0].flags, 0);
@@ -2797,13 +2802,13 @@ mod standard_tests {
         own[0].flags = CONTACT_TRACKED;
         far.position_cm = Vec3::new(0.0, 0.0, 1799.0);
         assert_eq!(
-            standard_sense(&observer(me), &far, &[], &mut own, 0, None),
+            standard_sense(&observer(me), false, &far, &[], &mut own, 0, None),
             0
         );
         assert_eq!(own[0].flags, CONTACT_TRACKED | CONTACT_NOTICED);
         far.position_cm = Vec3::new(0.0, 0.0, 1800.0);
         assert_eq!(
-            standard_sense(&observer(me), &far, &[], &mut own, 0, None),
+            standard_sense(&observer(me), false, &far, &[], &mut own, 0, None),
             -1
         );
         // Only the tracked bit clears: the noticed bit from the pass that
@@ -2828,7 +2833,7 @@ mod standard_tests {
         let mut dead = facing(other);
         dead.condition = CONDITION_DEAD;
         assert_eq!(
-            standard_sense(&observer(me), &dead, &[], &mut own, 0, None),
+            standard_sense(&observer(me), false, &dead, &[], &mut own, 0, None),
             0
         );
         assert_eq!(own[0].noticeability, 0.0);
@@ -2836,16 +2841,22 @@ mod standard_tests {
         assert_eq!(own[0].concern, 0.0);
         assert_eq!(own[0].hostility, 0.0);
         assert_eq!(own[0].selected, None);
-        // An asleep observer takes the same branch.
+        // An observer standing as a statue takes the same branch; one
+        // merely asleep does not.
+        let mut own = vec![Contact::new(other)];
+        own[0].noticed = 1.0;
+        assert_eq!(
+            standard_sense(&observer(me), true, &facing(other), &[], &mut own, 0, None),
+            0
+        );
+        assert_eq!((own[0].noticed, own[0].noticeability), (0.5, 0.0));
         let mut own = vec![Contact::new(other)];
         own[0].noticed = 1.0;
         let mut asleep = observer(me);
         asleep.asleep = true;
-        assert_eq!(
-            standard_sense(&asleep, &facing(other), &[], &mut own, 0, None),
-            0
-        );
-        assert_eq!((own[0].noticed, own[0].noticeability), (0.5, 0.0));
+        standard_sense(&asleep, false, &facing(other), &[], &mut own, 0, None);
+        assert_eq!(own[0].noticed, 1.0);
+        assert_eq!(own[0].noticeability, 2.25);
     }
 
     /// A knocked-out body is seen at 24·c; while it is out its concern
@@ -2860,7 +2871,7 @@ mod standard_tests {
         let mut out = facing(other);
         out.condition = CONDITION_OUT;
         assert_eq!(
-            standard_sense(&observer(me), &out, &[], &mut own, 0, None),
+            standard_sense(&observer(me), false, &out, &[], &mut own, 0, None),
             0
         );
         assert_eq!(own[0].noticeability, 12.0);
@@ -2869,7 +2880,7 @@ mod standard_tests {
         let mut down = facing(other);
         down.condition = CONDITION_DOWN;
         assert_eq!(
-            standard_sense(&observer(me), &down, &[], &mut own, 0, None),
+            standard_sense(&observer(me), false, &down, &[], &mut own, 0, None),
             0
         );
         assert_eq!(own[0].noticeability, 12.0);
@@ -2889,6 +2900,7 @@ mod standard_tests {
         assert_eq!(
             standard_sense(
                 &observer(me),
+                false,
                 &facing(player),
                 &[],
                 &mut own,
@@ -2922,6 +2934,7 @@ mod standard_tests {
         assert_eq!(
             standard_sense(
                 &observer(me),
+                false,
                 &facing(other),
                 &[third],
                 &mut own,
@@ -2947,6 +2960,7 @@ mod standard_tests {
         let mut own = vec![Contact::new(other)];
         standard_sense(
             &observer(me),
+            false,
             &facing(other),
             &[theirs],
             &mut own,
@@ -2973,6 +2987,7 @@ mod standard_tests {
         let mut own = vec![Contact::new(other), Contact::new(second)];
         standard_sense(
             &observer(me),
+            false,
             &facing(other),
             &[quiet.clone(), stranger.clone()],
             &mut own,
@@ -2985,6 +3000,7 @@ mod standard_tests {
         own[0].selected = Some(stranger_entity);
         standard_sense(
             &observer(me),
+            false,
             &facing(other),
             &[quiet, stranger],
             &mut own,
@@ -3004,7 +3020,7 @@ mod standard_tests {
         own[0].kind = 2;
         own[0].threat = 3.0;
         assert_eq!(
-            standard_sense(&observer(me), &facing(other), &[], &mut own, 0, None),
+            standard_sense(&observer(me), false, &facing(other), &[], &mut own, 0, None),
             0
         );
         assert_eq!(

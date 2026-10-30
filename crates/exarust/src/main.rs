@@ -72,6 +72,9 @@
 //!                                     its target pass decides the fight: in a practice level (`arena`) its Unaligned role
 //!                                     rates the Unaligned player −100, so it engages once its hostility builds and keeps
 //!                                     fighting; a story player holds no arena role, so there it stays calm and roams
+//!          --opponent-race <n>        debug: --opponent-brain with the brain made from race byte n (the body stays
+//!                                     human), so it installs that race's contact sense: 18 the Golem Suit's standard
+//!                                     sense (the player is a friend), 16 the golem guard's ally sense
 //!          --undead-opponent <frame>  the debug duellist takes the story's body rules (it may rise again) and collapses
 //!                                     at that frame after the load; it dies, and 10 s later the AI manager's rule
 //!                                     raises it knocked out and it gets up (logged at info: "dies", "rises", "revived")
@@ -304,6 +307,9 @@ pub struct Options {
     pub still_opponent: bool,
     /// The debug duellist takes a level character's brain too.
     pub opponent_brain: bool,
+    /// `--opponent-race`: the race byte the debug duellist's brain is made
+    /// from (its body stays human), so it installs that race's sense.
+    pub opponent_race: Option<u8>,
     /// A shield on the duellist's off arm (an object model, or `any`).
     pub opponent_shield: Option<String>,
     /// A shield on the player's off arm (an object model, or `any`).
@@ -911,6 +917,11 @@ fn main() -> AppExit {
             "--heartbeat" => options.heartbeat = true,
             "--undying" => options.undying = true,
             "--arena-fell" => options.arena_fell = args.next().and_then(|v| v.parse().ok()),
+            "--opponent-race" => {
+                options.opponent = true;
+                options.opponent_brain = true;
+                options.opponent_race = args.next().and_then(|v| v.parse().ok());
+            }
             "--undead-opponent" => {
                 options.opponent = true;
                 options.undead_opponent = args.next().and_then(|v| v.parse().ok());

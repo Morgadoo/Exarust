@@ -62,13 +62,20 @@ level the room reach test, `rooms::in_sight`: the same room, or an open
 door whose point lies within 2 m of the other character; a level without a
 grid sees everyone) and every one it already knows, with that character's own contacts, the role database's attitude
 and the relations' trust in its threat estimate, and writes the contact
-words the integration reads. A race-class-`0x12xx` brain and every non-AI
-race run `combatant::perceive` (the standard sense `combatant::standard_sense`
-is tested but not scheduled, see below); the other AI races use the
+words the integration reads. The sense is the one the attach installed
+(`personality::Sense`), as the original's contact classifier calls it: a
+race without the AI bit (the humans and the beasts) installs none and runs
+the base perception every character carries (`combatant::perceive`, the
+role-driven one); the race class `0x12xx` (the Golem Suit) runs the
+standard sense (`combatant::standard_sense`); the other AI races use the
 ally-aware one (`combatant::ally_sense`), whose fellow AI is a brain whose
-race word carries the AI bit (`Npc::race_ai`). A sleeper that rates the player above a notice drops the
+race word carries the AI bit (`Npc::race_ai`). The pass logs at info each
+contact a sense starts or stops tracking, and each third party the
+standard or ally sense picks. A sleeper that rates the player above a notice drops the
 sleep role and wakes. A knocked-out or dead brain stops after its alert decay,
-before its morale and state (the original's condition bit `0x800`). A placed
+before its morale and state (the original's condition bit `0x800`), and
+senses nothing in the perception pass (the original's tick leaves before
+the target pass that senses). A placed
 brain takes its sense, statue mark and effect from the record's profession
 word, the race word the attach reads: the races whose word carries bit
 `0x1000` (the golems, race ids 17–21) install a sense, the class `0x1200`
@@ -234,8 +241,13 @@ is followed toward its carrot, and one ending in the brain's room within
 15 m of the threat remembers the exit's room. Without a followed route the
 body steers straight to the exit (the original fights that tick).
 
-`brain::Npc::run_pass` drifts the morale, integrates a brain's contacts and
-runs the target pass over every character seen this tick, and reports
+`brain::Npc::run_pass` drifts the morale, runs the integration's head
+(`contacts::aim`: the aim point, its freshness, the soothe damping's step),
+then the target pass over every character seen this tick, classifying the
+contacts as the perception left them, and then the integration's drift
+(`contacts::drift`: hostility, concern, noticed level, attention and the
+aggregates), which reads the level, attention and stress the pass has just
+written, as the original's tick orders them; it reports
 the engagement, the leave, the encounter and the greeting (Exarust has no
 dialogue engine). The AI tick (`brain::ai_tick`) runs it after the
 perception pass filled the contact words and before the duellist's combat
@@ -299,10 +311,10 @@ precision); the heaviest picks the selected character, which the original
 reads from the observer's own contact list at that entry's position in the
 observed's list, and only the observer
 (×multiplier×0.5) and the player (×multiplier) raise the concern target.
-The player body clears the concern and takes attitude 1. It is tested but
-not scheduled: the original installs it *instead of* the behaviour base's
-perception, and Exarust's role-driven hostility still comes from
-`perceive`'s attitude, which this routine overwrites for the player.
+The player body clears the concern and takes attitude 1; no other
+attitude is written, so every other contact keeps the one it was admitted
+with. The perception pass runs it for the Golem Suit's brain only; the
+observer's statue byte (not its sleep) takes the lying branch.
 
 `perceive` is one character looking at another; it writes the observer's
 contact for it. A character that cannot be perceived (an unseen power or a
