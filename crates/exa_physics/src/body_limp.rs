@@ -15,10 +15,20 @@
 //! flags do not ask for lifts; a body that is not walking puts every foot
 //! that does not touch down where it is ([`limp_foot`]).
 //!
-//! Nothing in the running game samples with these rules yet: a body asked
-//! to go limp keeps its physical pose
+//! Nothing in the running game samples with these rules, and nothing in
+//! the original does either: its body tick returns before the sampler for
+//! a dead body, and for a body whose muscles are off but which is not dead
+//! it jumps past the clip clock, the clip-end test and both samplers
+//! unless the body locomotes this tick (its movement decision, gated on
+//! the muscles, never runs) or one of two character words is set that no
+//! instruction in the executable writes (one is only cleared, the other
+//! only counted down). Muscles go off only with death (the collapse's
+//! dying tick, the corpse placement) and come back with the revive and the
+//! player's reset; the knock-out writes the condition and the wake nibble
+//! and never the muscles. A body asked to go limp keeps its physical pose
 //! ([`super::Ragdoll::go_limp`]) and a placed corpse is built from its
-//! saved pose, so these are tested rules with the original's numbers.
+//! saved pose, so these are tested rules with the original's numbers, kept
+//! for completeness.
 //! (Included from body.rs: `#[path = "body_limp.rs"] mod limp_sampler;`)
 
 use bevy::math::Affine3A;

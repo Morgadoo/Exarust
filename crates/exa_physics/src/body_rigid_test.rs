@@ -937,10 +937,13 @@ fn a_revival_drive_keeps_the_race_and_stats() {
         .with_drive()
         .with_race(race)
         .with_stats(stats);
+    body.drive.as_mut().unwrap().balance.value = 0.2;
     body.go_limp();
     assert_eq!(body.kept_muscles(), Some((race, stats)));
     let drive = body.revival_drive().unwrap();
     assert_eq!((drive.race, drive.stats), (race, stats));
+    // The dying body's balance comes back with the muscles.
+    assert_eq!(drive.balance().value, 0.2);
     assert_eq!(drive.stance(), 0.8);
     body.revive(drive);
     let d = body.drive.as_ref().unwrap();

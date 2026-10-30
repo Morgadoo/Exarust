@@ -83,7 +83,10 @@ the stagger step along the shock and the pain reaction's part and
 values). The running game's arc shocks (`exa_game::thaum`) apply their
 own clock and health rule and do not call `shock` yet; the body tick's
 shock stagger and the release of a release race (`Body::force_release`)
-are live.
+are live, and a staggered body on its feet holds the daze pose
+(`exa_anim::shock_hold`, through `exa_game`'s sampler stage). A revive's
+drive (`Ragdoll::revival_drive`) starts from the balance the body's last
+living tick measured, kept when its muscles went.
 
 A subtree marked `StaticGeometry` has its meshes copied into static
 triangle-mesh colliders. `NoStaticCollider` on a mesh (or subtree) under it
@@ -475,9 +478,14 @@ walking with support (both kept when the muscles go,
 `Ragdoll::limp_walking`/`limp_supported`), a foot the keys' flags
 (`limp_plant`, the capture's own flag as the source while leading in) do
 not ask for lifts, one they ask for plants at an anchor height of 3·scale
-cm with a step (`limp_anchor_height`, `limp_step`). It is not scheduled: the original samples only a body
-whose muscles are off and which is not dead, and a dead body's tick
-samples nothing.
+cm with a step (`limp_anchor_height`, `limp_step`). It has no caller, as in the original: its body tick returns
+before the sampler for a dead body, and for a body whose muscles are off
+but which is not dead it skips the clip clock, the clip-end test and the
+sampler unless the body locomotes this tick (the movement decision, which
+needs muscles, never runs for it) or one of two words that nothing in the
+executable writes is set. So no body samples with these rules in 0.9.5,
+whatever knocks it out: the knock-out writes the condition and the wake
+nibble, never the muscles (traced for C8).
 The placement's leg snap (`Ragdoll::snap_placement`) is a tested rule,
 not called by the spawn (run after the first clip sample with the
 controller moved to its ground, it left the player squatting for about a

@@ -517,6 +517,7 @@ impl Plugin for PlayerPlugin {
                     crate::player_practice::tick_player_practice,
                     request_attacks,
                     steer_player,
+                    release_held_wake,
                     take_player_stance,
                 )
                     .chain(),
@@ -721,6 +722,54 @@ fn cursor_look(
     }
     capture.0 = look.active;
 }
+
+/// The player's behaviour's release of a held knock-out: while the
+/// player's state flags hold the wake (0x40, which the story's revive
+/// sets), a mouse button (left or right), a movement key (forward, back,
+/// left, right) or the move stick deflected past a squared length of 0.1
+/// (compared in double precision) clears it, so the wake can finish and
+/// the body get up. The original's behaviour tick tests them in that order
+/// every tick, whatever the body does.
+pub(crate) fn release_held_wake(
+    keys: Res<ButtonInput<KeyCode>>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    bindings: Res<Bindings>,
+    pad: Option<Res<crate::gamepad::PlayPad>>,
+    pad_status: Option<Res<crate::gamepad::PadStatus>>,
+    players: Query<&Children, With<Player>>,
+    mut flags: Query<&mut exa_combat::StateFlags, With<PlayerBody>>,
+) {
+    let held = |action| bindings.pressed(&keys, action);
+    let pressed = buttons.pressed(MouseButton::Left)
+        || buttons.pressed(MouseButton::Right)
+        || held(Action::Forward)
+        || held(Action::Back)
+        || held(Action::Left)
+        || held(Action::Right)
+        || match (pad_status.as_deref(), pad.as_deref()) {
+            (Some(status), Some(pad)) if status.active() => {
+                f64::from(pad.frame().move_world.length_squared()) > HELD_WAKE_STICK2
+            }
+            _ => false,
+        };
+    if !pressed {
+        return;
+    }
+    for children in &players {
+        for child in children.iter() {
+            if let Ok(mut word) = flags.get_mut(child)
+                && word.has(exa_combat::StateFlags::HELD)
+            {
+                word.0 &= !exa_combat::StateFlags::HELD;
+                info!("player input releases its held knock-out wake");
+            }
+        }
+    }
+}
+
+/// The squared move-stick length past which the stick releases a held
+/// knock-out wake (the original's double 0.1).
+const HELD_WAKE_STICK2: f64 = 0.1;
 
 /// The player's behaviour each fixed tick, before its body's tick (as the
 /// original's behaviour runs before its movement decision): on its third
@@ -2212,6 +2261,7 @@ pub(crate) fn chase_camera(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::ecs::system::RunSystemOnce;
 
     #[test]
     fn steering_with_w_and_a_walks_a_circle() {
@@ -3035,6 +3085,27 @@ mod tests {
             character: Some(root),
         });
         (app, body)
+    }
+
+    /// A held knock-out wake (0x40) stays until the player gives input: a
+    /// movement key or a mouse button clears that bit alone.
+    #[test]
+    fn input_releases_a_held_knock_out_wake() {
+        let mut world = World::new();
+        world.init_resource::<ButtonInput<KeyCode>>();
+        world.init_resource::<ButtonInput<MouseButton>>();
+        world.init_resource::<Bindings>();
+        let body = world
+            .spawn((PlayerBody::new(0.0), exa_combat::StateFlags(0x70)))
+            .id();
+        world.spawn(Player).add_child(body);
+        world.run_system_once(release_held_wake).unwrap();
+        assert_eq!(world.get::<exa_combat::StateFlags>(body).unwrap().0, 0x70);
+        world
+            .resource_mut::<ButtonInput<MouseButton>>()
+            .press(MouseButton::Left);
+        world.run_system_once(release_held_wake).unwrap();
+        assert_eq!(world.get::<exa_combat::StateFlags>(body).unwrap().0, 0x30);
     }
 
     fn behaviour_tick(app: &mut App) {

@@ -619,8 +619,11 @@ fn a_shock_stagger_pins_energy_after_the_recovery() {
     world.get_mut::<StateFlags>(id).unwrap().0 = StateFlags::SHOCK_STAGGER;
     world.entity_mut(id).insert(ShockReady(500));
     world.insert_resource(BodyTicks(0));
+    world.init_resource::<ShockHeld>();
     world.run_system_once(recover_rising).unwrap();
     world.run_system_once(pin_shock_stagger).unwrap();
+    // The daze block took the shock's branch: the sampler holds the daze pose.
+    assert_eq!(world.resource::<ShockHeld>().0, Some(id));
     let energy = world
         .get::<Ragdoll>(id)
         .unwrap()
@@ -650,6 +653,11 @@ fn a_shock_stagger_pins_energy_after_the_recovery() {
     world.run_system_once(pin_shock_stagger).unwrap();
     assert_eq!(world.get::<StateFlags>(id).unwrap().0, 0);
     assert_eq!(world.get::<Animator>(id).unwrap().time, 4.0);
+    // The tick that clears the flag still takes the daze pose; the next
+    // one, with the flag clear, does not.
+    assert_eq!(world.resource::<ShockHeld>().0, Some(id));
+    world.run_system_once(pin_shock_stagger).unwrap();
+    assert_eq!(world.resource::<ShockHeld>().0, None);
 }
 
 /// The bearing's parry flag is the one the previous tick's attack stage
@@ -715,4 +723,31 @@ fn a_shock_stagger_bit_reaches_the_pins() {
         .bearing;
     assert!(bearing.shock_stagger);
     assert!(bearing.full_stance);
+}
+
+/// A shock-staggered body on its feet holds the daze pose: its pelvis
+/// (skin bone 1) keeps the Rebalance start's capture while it is up, and
+/// takes a random turn half way from the Defence stance's first key once
+/// its condition is down; with no capture there is no daze pose.
+#[test]
+fn a_shocked_body_holds_the_daze_pose() {
+    let motions = motions();
+    let body = pelvis(Quat::IDENTITY);
+    let mut anim = Animator::new("Default", "Rebalance");
+    let mut roll = exa_combat::Roll::default();
+    let daze = |anim: &Animator, condition: Condition, roll: &mut exa_combat::Roll| {
+        crate::stages::sampler::daze_pose(&motions, anim, &body, Some(&condition), roll)
+    };
+    assert!(daze(&anim, Condition::NORMAL, &mut roll).is_none());
+    let turn = Quat::from_rotation_y(0.3);
+    anim.capture = Some(exa_anim::ClipPose {
+        rotations: vec![turn],
+        root: Vec3::ZERO,
+    });
+    let up = daze(&anim, Condition::NORMAL, &mut roll).unwrap();
+    assert_eq!(up, vec![turn]);
+    let down = daze(&anim, Condition::DOWN, &mut roll).unwrap();
+    assert_eq!(down.len(), 1);
+    assert_ne!(down[0], turn);
+    assert!((down[0].length() - 1.0).abs() < 1e-5);
 }

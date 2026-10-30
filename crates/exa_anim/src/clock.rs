@@ -829,7 +829,10 @@ pub fn ragdoll_bracket(clip: &Clip, time: f32, looping: bool, blend: f32) -> Opt
     })
 }
 
-/// The held pose a shock stagger starts from: bones up to the
+/// The held pose a shock stagger starts from (the original's daze pose,
+/// written by its body tick's daze block every tick the stagger flag is
+/// set and held by the living sampler unless the body has lost support;
+/// `exa_game`'s sampler stage calls it): bones up to the
 /// pelvis and legs (1 to 7) keep the captured pose unless the body is down
 /// (its condition has the off-feet bit); every other bone takes a random
 /// turn of a random axis, each component drawn from 0..1 less 0.5 and

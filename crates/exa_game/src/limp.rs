@@ -510,11 +510,14 @@ const LIMP_CLOCK: f32 = 0.9;
 /// foot's contact state instead. Returns the legs a walking plant put
 /// down, whose steps ([`exa_physics::body::limp_step`]) the caller sounds.
 ///
-/// Not scheduled: the original's body tick runs it only for a body whose
-/// muscles are off and whose condition is not dead, and a dead body's tick
-/// returns before any sampling (its muscles go only as it dies, so a
-/// corpse is a free ragdoll). No Exarust body is in that state; snapping
-/// every limp body to its clip would freeze the dying in their last pose.
+/// No caller, as in the original: its body tick returns before any
+/// sampling for a dead body, and a body whose muscles are off but which
+/// is not dead skips the clip clock, the clip-end test and this sampler
+/// unless it locomotes this tick (the movement decision needs muscles) or
+/// one of two words nothing in the executable writes is set. Muscles go
+/// only as a body dies and come back with the revive, and the knock-out
+/// never touches them, so no body reaches it in 0.9.5; snapping every
+/// limp body to its clip would freeze the dying in their last pose.
 pub fn sample_limp(
     anim: &mut Animator,
     body: &mut Ragdoll,
@@ -715,6 +718,14 @@ impl Hold {
     /// The held pose and its weight, for `exa_anim::hold_toward`.
     pub(crate) fn toward(&self) -> Option<(&[Quat], f32)> {
         self.pose.as_deref().map(|p| (p, self.weight))
+    }
+
+    /// Holds `pose` in place of the physical pose, at the same weight: the
+    /// shock stagger's daze pose (`exa_anim::shock_hold`), which the
+    /// original's daze block writes into the held pose before its sampler
+    /// reads it.
+    pub(crate) fn hold(&mut self, pose: Vec<Quat>) {
+        self.pose = Some(pose);
     }
 }
 

@@ -312,8 +312,15 @@ the wake bits clear and a dormant body announces "Awaken". A held body
 down, the wake nibble replaced by 0x30, the wake clock at now plus the
 delay) and a corpse's revive (`condition::revive`: only on a dead
 character, knocked out at once, yellow health half the red, the unarmed
-hands set up again when the record's weapon slots are empty) are tested
-rules; nothing in the running game knocks out or revives yet. A
+hands set up again when the record's weapon slots are empty) run live:
+the game flow's lie-downs and the story's revive knock the player out, and
+the undead rise revives the dead. The wake (`condition::track_wake`) runs in
+the behaviour stage, before the posture decision, as the original's body
+tick wakes a body between its behaviour update and its posture block; it
+logs the start of waking and the wake. The knock-out never touches the
+muscles: a knocked-out body keeps them, and a dead body knocked out without
+a revive would stay a ragdoll (the original's muscles-off sampler is
+unreachable, see `exa_physics`' `body_limp.rs`). A
 collapse's start also runs the lower-leg pass on its feet (strike chain
 and thin-plate bit off, `Ragdoll::clear_death_strikes`). The status-effect pass
 (`condition::update_statuses`) updates only the owner's effects on phase
