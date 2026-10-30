@@ -1442,12 +1442,13 @@ run-scene set-up (viewport rectangle, flags and 15-character title, the
 renderer minimum that only rises, the camera record, the weather option bits
 and the audio listener with its global fallback, the task's copy of the
 seven-word camera record (the default record itself when the options name
-none), the option bytes for physics, the maximised viewport and the show
-flag, the listener pose step (the camera's two vectors copied into the
+none), the option bytes for physics (start the simulation, or refresh an
+existing one's grid size), the maximised viewport and the view toggle (read
+as a show flag, a guess), the listener pose step (the camera's two vectors copied into the
 listener, and the listener's point set to the half-way blend from the camera
 to the object it follows while its flag word carries `0x10`) and the
-scene-node despawn over `Scene::release_node`. Not modelled: the weather option calls and five
-option bytes whose callees were not identified. The actual camera, level and
+scene-node despawn over `Scene::release_node`. Not modelled: the weather option calls and the
+renderer toggle byte, whose callee's effect was not identified. The actual camera, level and
 listener stay in `exarust::viewer` and `crate::player`.
 
 ## The remaining screens' game side

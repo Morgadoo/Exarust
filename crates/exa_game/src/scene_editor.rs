@@ -9,9 +9,9 @@
 //! message posts become the flags of [`TaskTick`] that a host turns into
 //! Bevy events.
 //!
-//! Not modelled: the handful of option bytes whose callee was not
-//! identified (see [`SceneRunOptions`]) and the object-library manager the
-//! run-scene set-up creates.
+//! Not modelled: the renderer toggle byte whose callee's effect was not
+//! identified (see [`SceneRunOptions`]), the two weather option calls of
+//! the run-scene set-up and the object-library manager it creates.
 
 use bevy::math::Vec3;
 
@@ -153,11 +153,15 @@ pub struct SceneRunOptions {
     pub renderer_minimum: u32,
     /// Create the audio listener.
     pub listener: bool,
-    /// Starts the scene's simulation, or wakes an existing one.
+    /// Starts the scene's simulation, or, when it already has one, has that
+    /// simulation refresh its grid size from the scene's.
     pub physics: bool,
     /// Asks the viewport to maximise itself.
     pub maximise: bool,
-    /// Sets the view's show flag (and its second byte sets it again).
+    /// Gates the 3D view's toggle call, which turns its flag on only while
+    /// two global options allow it; a second byte first sets the view byte
+    /// the set-up already set when opening. Read as the view's show flag (a
+    /// guess: the flag's reader was not identified).
     pub show: bool,
     /// Gates a renderer toggle (callee not identified).
     pub renderer_toggle: bool,
@@ -181,7 +185,7 @@ pub const DEFAULT_CAMERA_RECORD: [u64; 7] = [
 /// between the camera and the object it follows.
 pub const LISTENER_FOLLOWS: u32 = 0x10;
 
-/// The audio listener's pose: the point the tick writes (`+0x10`), and the
+/// The audio listener's pose: the point the tick writes, and the
 /// two vectors it copies from the camera each frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ListenerPose {
@@ -228,11 +232,12 @@ pub struct SceneRun {
     pub camera_record: Option<[u64; 7]>,
     /// A navigation controller was created for the record.
     pub controller: bool,
-    /// The set-up's physics request started or woke the scene's simulation.
+    /// The set-up's physics request started the scene's simulation or
+    /// refreshed the existing one.
     pub physics: bool,
     /// The set-up asked the viewport to maximise itself.
     pub maximised: bool,
-    /// The set-up set the view's show flag (`+0x202`).
+    /// The set-up ran the view toggle (see [`SceneRunOptions::show`]).
     pub shown: bool,
 }
 
