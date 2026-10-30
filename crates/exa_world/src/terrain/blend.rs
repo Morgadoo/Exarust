@@ -186,20 +186,22 @@ impl RuleTree {
     }
 }
 
-/// The share of a tile's total weight below which a material is dropped:
-/// `1/510` of the vertices (the original forces material 0 in regardless).
+/// The total weight a material needs to be kept: half a channel byte
+/// (`0.5 / 255`, the original's constant, compared against the whole tile's
+/// summed leaf weights, not an average). A material that accumulates any
+/// weight anywhere in the tile passes.
 pub const MIN_TILE_SHARE: f32 = 1.0 / 510.0;
 
 /// The materials the original keeps for a tile, in palette order: every
-/// material whose total weight is above `1/510` of the vertices, and (with
-/// `merge`, the original's tile-flag test) material 0 always. Over a
-/// renderer's maximum the caller decides what to drop.
-pub fn used_materials(totals: &[f32], vertices: usize, merge: bool) -> Vec<usize> {
-    let threshold = MIN_TILE_SHARE * vertices as f32;
+/// material whose summed leaf weight is above [`MIN_TILE_SHARE`], and (with
+/// `merge`, the original's tile-flag test) material 0 always, whose total
+/// the original sets to 1 first. Over a renderer's maximum the caller
+/// decides what to drop.
+pub fn used_materials(totals: &[f32], merge: bool) -> Vec<usize> {
     totals
         .iter()
         .enumerate()
-        .filter(|&(at, &total)| (merge && at == 0) || total > threshold)
+        .filter(|&(at, &total)| (merge && at == 0) || total > MIN_TILE_SHARE)
         .map(|(at, _)| at)
         .collect()
 }
@@ -734,11 +736,13 @@ mod tests {
 
     #[test]
     fn the_used_list_keeps_the_share_threshold_and_forces_material_zero() {
-        // Four vertices give a threshold of 4/510 ≈ 0.00784.
-        let totals = [0.0, 2.0, 0.0078, 0.0079];
-        assert_eq!(used_materials(&totals, 4, false), vec![1, 3]);
-        assert_eq!(used_materials(&totals, 4, true), vec![0, 1, 3]);
-        assert_eq!(used_materials(&[], 4, true), Vec::<usize>::new());
+        // Half a channel byte, the constant the original compares the
+        // tile's summed leaf weight against.
+        assert_eq!(MIN_TILE_SHARE.to_bits(), 0x3B00_8081);
+        let totals = [0.0, 0.001, MIN_TILE_SHARE, 2.0];
+        assert_eq!(used_materials(&totals, false), vec![3]);
+        assert_eq!(used_materials(&totals, true), vec![0, 3]);
+        assert_eq!(used_materials(&[], true), Vec::<usize>::new());
     }
 
     #[test]

@@ -46,8 +46,8 @@ and the grid's rooms; portal clipping is next (see
   name-sorted brush table (the original's binary search), the
   eleven-brush limit (wired: later layers are dropped), the painted
   layers' 0.001 weight gate, the 256 × 256 byte channel accumulation per
-  vertex and leaf, the used-material list in palette order (the 1/510
-  share, material 0 forced), the used-material merge (the first keeps its
+  vertex and leaf, the used-material list in palette order (the tile's summed leaf
+  weight above 1/510, material 0 forced), the used-material merge (the first keeps its
   byte, the middles become their share of the running sum, the last keeps
   its byte) and the four-per-mask-plane packing (wired into the tile's
   splat, with the renderer's sixteen-layer cap keeping the heaviest

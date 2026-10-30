@@ -231,7 +231,8 @@ return the equal name the search meets first). A tile takes at most
 follows them. Material weights accumulate into one 256 × 256 byte channel
 each (vertex row·256 + column of the 241 × 241 tile), each weight times 255
 rounded to nearest even and capped at 255. A tile whose flags have all of
-bits 0–2 merges the used materials (weight above 1/510, material 0 always),
+bits 0–2 merges the used materials (the tile's summed leaf weight above
+1/510, i.e. half a channel byte, material 0 always),
 all but the first and the last, over the 241 × 241 corner, and packs them
 four per interleaved mask plane. Height rules (kind 0) can be rescaled:
 bound × scale + offset in single precision. The texture pass's Gaussian

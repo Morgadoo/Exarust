@@ -1799,7 +1799,7 @@ fn build_tile(
     // Materials above the share threshold, material 0 always (the
     // original's merge leaves it in). A palette with more materials than
     // the renderer stacks keeps the heaviest, material 0 first.
-    let mut used = blend::used_materials(&totals, n * n, true);
+    let mut used = blend::used_materials(&totals, true);
     let truncated = used.len() > SPLAT_LAYERS;
     if truncated {
         let mut ranked: Vec<usize> = used.iter().copied().filter(|&at| at != 0).collect();
