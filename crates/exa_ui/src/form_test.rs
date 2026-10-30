@@ -364,52 +364,6 @@ fn the_held_arrows_repeat() {
 }
 
 #[test]
-fn the_scroll_timer_moves_one_step_a_tick() {
-    let (scroll, steps) = ((0.2, 0.5), (0.05, 0.25));
-    // One step per 120 ms; a short tick moves nothing.
-    assert_eq!(
-        scroll_by_elapsed(attribute::VSCROLL, 120, scroll, steps),
-        ScrollBy::Vertical(0.25)
-    );
-    assert_eq!(
-        scroll_by_elapsed(attribute::VSCROLL, 119, scroll, steps),
-        ScrollBy::Vertical(0.25)
-    );
-    assert_eq!(
-        scroll_by_elapsed(attribute::VSCROLL, 59, scroll, steps),
-        ScrollBy::Vertical(0.5)
-    );
-    // Ties go to even: 0.5 tick is none, 1.5 ticks are two, 2.5 are two.
-    assert_eq!(
-        scroll_by_elapsed(attribute::VSCROLL, 60, scroll, steps),
-        ScrollBy::Vertical(0.5)
-    );
-    assert_eq!(
-        scroll_by_elapsed(attribute::VSCROLL, 180, scroll, steps),
-        ScrollBy::Vertical(0.0)
-    );
-    assert_eq!(
-        scroll_by_elapsed(attribute::VSCROLL, 300, scroll, steps),
-        ScrollBy::Vertical(0.0)
-    );
-    assert_eq!(
-        scroll_by_elapsed(attribute::VSCROLL, 420, scroll, steps),
-        ScrollBy::Vertical(-0.5)
-    );
-    // The horizontal timer runs the other way.
-    let ScrollBy::Horizontal(x) = scroll_by_elapsed(attribute::HSCROLL, 120, scroll, steps) else {
-        panic!("a horizontal scroll");
-    };
-    assert!((x - 0.15).abs() < 1e-7);
-    assert_eq!(scroll_by_elapsed(0, 1000, scroll, steps), ScrollBy::None);
-    // The vertical bar wins when a form has both.
-    assert_eq!(
-        scroll_by_elapsed(attribute::VSCROLL | attribute::HSCROLL, 120, scroll, steps),
-        ScrollBy::Vertical(0.25)
-    );
-}
-
-#[test]
 fn the_thumb_drags() {
     // 50 − 17 = 33 less the grab 5, over 398 − 30 − 121 = 247.
     assert!((drag_thumb_x(50, 5, 2, 400, 15, 121) - 28.0 / 247.0).abs() < 1e-7);
@@ -1358,63 +1312,75 @@ fn the_close_visibility_and_destroy_plans() {
 
 #[test]
 fn the_free_sweep_clears_the_global_slots() {
-    // A form in no slot runs no follow-up at all.
-    assert_eq!(
-        form_ref_sweep(FormGlobalRefs::default()),
-        FormRefSweep::default()
-    );
-    // The main form's reset and a parent-active slot clear stand alone.
-    let refs = FormGlobalRefs {
-        main: true,
-        parent_active: true,
-        ..FormGlobalRefs::default()
+    // Form 1 (child of the root 0) has children 2 and 3; 1 is freed.
+    let children = [vec![1], vec![2, 3], vec![], vec![]];
+    let parent = [None, Some(0), Some(1), Some(1)];
+    // Form 2's parent (1) is visible, form 3's is taken as hidden.
+    let parent_visible = [false, true, true, false];
+    let mut active = [Some(1), Some(3), None, None];
+    let mut slots = FormSlots {
+        main: Some(1),
+        pressed: Some(2),
+        saved_focus: Some(3),
+        focused: Some(2),
+        tooltip: Some(3),
+        task_pressed: Some(2),
+        task_press_word: 7,
+        dragging: Some(1),
+        drop_payload: Some(0),
     };
-    let sweep = form_ref_sweep(refs);
-    assert!(sweep.reset_main && sweep.clear_parent_active);
-    assert!(!sweep.task_focus_reset && !sweep.control_focus_reset);
-    // The focused form's parent flag picks the task focus call over the
-    // control focus reset; never both.
-    let focused = FormGlobalRefs {
-        focused: true,
-        parent_flag: true,
-        ..FormGlobalRefs::default()
+    let follow = sweep_freed_form(
+        &mut slots,
+        &mut active,
+        &children,
+        &parent,
+        &parent_visible,
+        1,
+    );
+    // Visit order 1, 2, 3: the fallback for the main form, the focused
+    // form's visible parent restores the focus, the tooltip resets.
+    assert_eq!(
+        follow,
+        vec![
+            SweepFollowUp::FallBack,
+            SweepFollowUp::ParentFocus(1),
+            SweepFollowUp::TooltipReset,
+        ]
+    );
+    // The main and focused slots are left to their follow-ups; the root
+    // (not swept) keeps the drop payload.
+    assert_eq!(
+        slots,
+        FormSlots {
+            main: Some(1),
+            focused: Some(2),
+            drop_payload: Some(0),
+            ..FormSlots::default()
+        }
+    );
+    assert_eq!(active, [None, None, None, None]);
+
+    // A focused form under a hidden parent clears the focus; the drop
+    // payload clears with its reset.
+    let mut slots = FormSlots {
+        focused: Some(3),
+        drop_payload: Some(3),
+        ..FormSlots::default()
     };
+    let mut active = [None; 4];
     assert_eq!(
-        form_ref_sweep(focused),
-        FormRefSweep {
-            task_focus_reset: true,
-            ..FormRefSweep::default()
-        }
+        sweep_freed_form(
+            &mut slots,
+            &mut active,
+            &children,
+            &parent,
+            &parent_visible,
+            3
+        ),
+        vec![SweepFollowUp::ClearFocus, SweepFollowUp::DropReset]
     );
-    assert_eq!(
-        form_ref_sweep(FormGlobalRefs {
-            focused: true,
-            ..FormGlobalRefs::default()
-        }),
-        FormRefSweep {
-            control_focus_reset: true,
-            ..FormRefSweep::default()
-        }
-    );
-    // The tooltip, the task's press word and the drop callback each carry
-    // their follow-up; the pressed, hovered and dragged slots only clear.
-    assert_eq!(
-        form_ref_sweep(FormGlobalRefs {
-            tooltip: true,
-            task_pressed: true,
-            drop_payload: true,
-            pressed: true,
-            hovered: true,
-            dragging: true,
-            ..FormGlobalRefs::default()
-        }),
-        FormRefSweep {
-            tooltip_owner_reset: true,
-            clear_press_word: true,
-            drop_reset: true,
-            ..FormRefSweep::default()
-        }
-    );
+    assert_eq!(slots.drop_payload, None);
+    assert_eq!(slots.focused, Some(3));
 }
 
 #[test]

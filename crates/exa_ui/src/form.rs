@@ -1479,67 +1479,114 @@ pub fn destroy_plan(
     }
 }
 
-/// Which of the GUI's single-form slots pointed at a form when it was
-/// freed. The original tests each slot in turn and clears the ones that
-/// match; the caller fills this from what it knows of the form.
+/// The GUI's single-form slots the free-time sweep tests, each the id of
+/// the form it holds. Slots whose role is not established keep the name
+/// the earlier passes gave them and say so.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct FormGlobalRefs {
-    /// The main (or skin-owning) form.
-    pub main: bool,
-    /// The form the pointer pressed, kept for the drag.
-    pub pressed: bool,
-    /// The form under the pointer.
-    pub hovered: bool,
-    /// Its parent's active-child slot.
-    pub parent_active: bool,
-    /// The form that held the focus.
-    pub focused: bool,
-    /// The shown tooltip.
-    pub tooltip: bool,
-    /// The task's pressed form (kept with its press word).
-    pub task_pressed: bool,
-    /// The form being dragged.
-    pub dragging: bool,
+pub struct FormSlots {
+    /// The main form; freeing it runs the focus fallback, which clears
+    /// the slot itself.
+    pub main: Option<usize>,
+    /// A form an input route records (named "pressed" by guess).
+    pub pressed: Option<usize>,
+    /// The focus a visible form saved when it lost the focus; a cleared
+    /// focus returns to it.
+    pub saved_focus: Option<usize>,
+    /// The focused form.
+    pub focused: Option<usize>,
+    /// The tooltip's owner.
+    pub tooltip: Option<usize>,
+    /// The task's pressed form and its press word.
+    pub task_pressed: Option<usize>,
+    pub task_press_word: i32,
+    /// A form the GUI's one-word setter records (named "dragging" by
+    /// guess).
+    pub dragging: Option<usize>,
     /// The task's drop payload form.
-    pub drop_payload: bool,
-    /// The focused form's parent has the flag that asks the parent task to
-    /// restore its own focus rather than the form's control focus to be
-    /// reset. The original reads the parent's flag byte; what it stands
-    /// for is not established, so the caller passes the tested bit.
-    pub parent_flag: bool,
+    pub drop_payload: Option<usize>,
 }
 
-/// The follow-ups the free-time sweep runs beside clearing the slots: the
-/// focus restored after the main form goes, the parent task's focus call
-/// or the form's control focus reset, the tooltip owner reset, the press
-/// word cleared and the drop callback reset.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct FormRefSweep {
-    pub reset_main: bool,
-    pub clear_parent_active: bool,
-    pub task_focus_reset: bool,
-    pub control_focus_reset: bool,
-    pub tooltip_owner_reset: bool,
-    pub clear_press_word: bool,
-    pub drop_reset: bool,
+/// A follow-up the free-time sweep asks for, in the order it runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SweepFollowUp {
+    /// The freed form was the main form: the focus falls back to the
+    /// root's last visible task ([`fallback_focus`]), clearing the main
+    /// slot.
+    FallBack,
+    /// The freed form held the focus and its parent is visible: the
+    /// parent restores its own focus.
+    ParentFocus(usize),
+    /// The freed form held the focus under a hidden parent: the focus is
+    /// cleared, which returns it to the saved focus or the root.
+    ClearFocus,
+    /// The freed form owned the tooltip: the tooltip is reset.
+    TooltipReset,
+    /// The freed form was the drop payload: the payload callback is reset.
+    DropReset,
 }
 
-/// The sweep a freed form runs over itself and, recursively, its children:
-/// every slot that pointed at it is cleared, the main form's reset and the
-/// focus restore follow, the focused form's parent flag picks the task's
-/// focus call over the control focus reset, the tooltip's owner is reset,
-/// and the task's pressed slot takes its press word with it, as does the
-/// drop payload its callback. The recursion visits children in order.
-pub fn form_ref_sweep(refs: FormGlobalRefs) -> FormRefSweep {
-    FormRefSweep {
-        reset_main: refs.main,
-        clear_parent_active: refs.parent_active,
-        task_focus_reset: refs.focused && refs.parent_flag,
-        control_focus_reset: refs.focused && !refs.parent_flag,
-        tooltip_owner_reset: refs.tooltip,
-        clear_press_word: refs.task_pressed,
-        drop_reset: refs.drop_payload,
+/// The sweep a freed form runs over itself and then, depth first with
+/// children in order, its whole tree. For each form, in the original's
+/// order: the main form runs the focus fallback; the pressed and saved
+/// focus slots clear; its parent's active-child slot clears; the focused
+/// form asks its parent to restore the focus when the parent is visible,
+/// else clears the focus (the focused slot is left to that follow-up);
+/// the tooltip slot clears with its reset; the task's pressed slot clears
+/// with its press word; the dragging slot clears; and the drop payload
+/// clears with its callback reset. `parent[f]` is a form's parent,
+/// `parent_visible[f]` whether that parent is visible and
+/// `active_child[p]` each parent's active-child slot.
+pub fn sweep_freed_form(
+    slots: &mut FormSlots,
+    active_child: &mut [Option<usize>],
+    children: &[Vec<usize>],
+    parent: &[Option<usize>],
+    parent_visible: &[bool],
+    root: usize,
+) -> Vec<SweepFollowUp> {
+    let mut follow = Vec::new();
+    for form in propagation_order(children, root) {
+        if slots.main == Some(form) {
+            follow.push(SweepFollowUp::FallBack);
+        }
+        if slots.pressed == Some(form) {
+            slots.pressed = None;
+        }
+        if slots.saved_focus == Some(form) {
+            slots.saved_focus = None;
+        }
+        let up = parent.get(form).copied().flatten();
+        if let Some(p) = up
+            && let Some(slot) = active_child.get_mut(p)
+            && *slot == Some(form)
+        {
+            *slot = None;
+        }
+        if slots.focused == Some(form) {
+            match up {
+                Some(p) if parent_visible.get(form).copied().unwrap_or(false) => {
+                    follow.push(SweepFollowUp::ParentFocus(p))
+                }
+                _ => follow.push(SweepFollowUp::ClearFocus),
+            }
+        }
+        if slots.tooltip == Some(form) {
+            slots.tooltip = None;
+            follow.push(SweepFollowUp::TooltipReset);
+        }
+        if slots.task_pressed == Some(form) {
+            slots.task_pressed = None;
+            slots.task_press_word = 0;
+        }
+        if slots.dragging == Some(form) {
+            slots.dragging = None;
+        }
+        if slots.drop_payload == Some(form) {
+            slots.drop_payload = None;
+            follow.push(SweepFollowUp::DropReset);
+        }
     }
+    follow
 }
 
 /// A control record for the runtime resize: its 16-bit place and size and
@@ -2298,43 +2345,6 @@ pub fn repeat_scroll(held: i32, over: bool, scroll: (f32, f32), steps: (f32, f32
     }
 }
 
-/// A scroll moved by elapsed time rather than by a tick: the original's
-/// scroll-timer step, one step every 120 ms.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ScrollBy {
-    Vertical(f32),
-    Horizontal(f32),
-    /// No scrollbar: nothing moves and the original does not ask for a
-    /// redraw.
-    None,
-}
-
-/// The elapsed-time scroll step: a form with a vertical scrollbar moves its
-/// vertical fraction down by `round(ms / 120)` vertical steps, else one with
-/// a horizontal scrollbar moves its horizontal fraction by `round(−ms / 120)`
-/// horizontal steps. The conversion is the engine's `CVTSD2SI` (a double,
-/// ties to even), the step is then a single-precision multiply and add.
-/// Returns the fraction to set and whether the form redraws.
-pub fn scroll_by_elapsed(
-    attributes: u32,
-    ms: i32,
-    scroll: (f32, f32),
-    steps: (f32, f32),
-) -> ScrollBy {
-    if attributes & attribute::VSCROLL != 0 {
-        let ticks = cvtsd2si64(f64::from(ms) * STEP_PER_MS) as f32;
-        ScrollBy::Vertical(scroll.1 - ticks * steps.1)
-    } else if attributes & attribute::HSCROLL != 0 {
-        let ticks = cvtsd2si64(f64::from(ms) * -STEP_PER_MS) as f32;
-        ScrollBy::Horizontal(ticks * steps.0 + scroll.0)
-    } else {
-        ScrollBy::None
-    }
-}
-
-/// The scroll timer's rate: `1 / 120` steps per millisecond.
-const STEP_PER_MS: f64 = 0.008_333_333_333_333_333;
-
 /// The vertical scrollbar's track and thumb.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VerticalScroll {
@@ -2925,8 +2935,8 @@ pub fn snap_slots(
 
 /// The client-area refresh a shown form runs over itself and its whole
 /// tree: each form recomputes its client rectangle from its own measures
-/// (the base class's client-area query), then visits its children in
-/// order. The walk is the same depth-first, children-in-order order
+/// (the base class's client-area query), runs a second per-form hook that
+/// the base class leaves empty, then visits its children in order. The walk is the same depth-first, children-in-order order
 /// [`propagation_order`] gives, the parent before its children. Returns
 /// each form's freshly measured client rectangle, in visit order.
 pub fn refresh_client_areas(
