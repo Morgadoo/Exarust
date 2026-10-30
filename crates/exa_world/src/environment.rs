@@ -518,23 +518,49 @@ fn live_environment(
         fog.near = f.near;
         fog.far = f.far;
     }
-    clear.0 = Color::linear_rgb(
-        frame.background[0],
-        frame.background[1],
-        frame.background[2],
-    );
-    *ambient = ambient_light(Vec3::from_array(frame.ambient));
-    // The light's colour and intensity take the frame's; under a sky the
-    // day record's colour is used as stored, as at the load.
+    let lit = republished(env, &frame);
+    let bg = lit.background;
+    clear.0 = Color::linear_rgb(bg.x, bg.y, bg.z);
+    *ambient = ambient_light(lit.ambient);
+    if let Some(sun) = lit.sun {
+        for (mut light, mut transform) in &mut lights {
+            light.color = Color::linear_rgb(sun.colour.x, sun.colour.y, sun.colour.z);
+            light.illuminance = sun.illuminance;
+            *transform = Transform::default().looking_to(-sun.towards, Vec3::Y);
+        }
+    }
+}
+
+/// The lighting a frame republishes: the same quantities, in the same
+/// units, as the load's [`Lighting`] (the ambient before the scene's ×16,
+/// the sun in lux, its unit direction, the fog in metres), so a frame that
+/// changes nothing leaves the level lit as it loaded.
+pub fn republished(env: &SceneEnvironment, frame: &Frame) -> Lighting {
+    // Under a sky the day record's colour is used as stored, as at the load.
     let colour = if env.sky && env.track.is_some() {
         Vec3::from_array(env.sky_sun_colour)
     } else {
         linear(env.sun_colour)
     };
-    for (mut light, mut transform) in &mut lights {
-        light.color = Color::linear_rgb(colour.x, colour.y, colour.z);
-        light.illuminance = frame.sun_intensity * LUX_PER_INTENSITY;
-        *transform = Transform::default().looking_to(-Vec3::from_array(env.sun_towards), Vec3::Y);
+    Lighting {
+        ambient: Vec3::from_array(frame.ambient),
+        sun: env.sun_light.then(|| Sun {
+            towards: Vec3::from_array(env.sun_towards).normalize(),
+            colour,
+            illuminance: frame.sun_intensity * LUX_PER_INTENSITY,
+            range: SUN_LIGHT_RANGE,
+        }),
+        fog: frame.fog.map(|fog| LevelFog {
+            colour: Vec3::from_array(fog.colour),
+            near: fog.near,
+            far: fog.far,
+        }),
+        sky: env.sky,
+        background: Vec3::new(
+            frame.background[0],
+            frame.background[1],
+            frame.background[2],
+        ),
     }
 }
 
@@ -698,6 +724,82 @@ mod tests {
         // The environment behind them is the preset's: a sky and a sun.
         assert!(scene.env.sky && scene.env.sun_light);
         assert!(scene.env.fog.enabled);
+    }
+
+    fn close(a: Vec3, b: Vec3) -> bool {
+        (a - b).abs().max_element() < 1e-5
+    }
+
+    /// The live frame republishes the load's lighting unchanged: the same
+    /// sun (in lux, its unit direction and colour), the same ambient before
+    /// the ×16, the same fog and clear colour. Only a lightning flash moves
+    /// the fog and the clear, and nothing moves the sun or the ambient.
+    #[test]
+    fn the_live_frames_republish_the_load_s_lighting() {
+        let mut flashes = 0;
+        for seed in 1..=64u32 {
+            let input = PresetInput {
+                seed,
+                engine_seed: seed,
+                now: 0,
+            };
+            let scene = level_lighting_scene("arenao3", None, 0, None, Some(input));
+            let load = scene.lighting.clone();
+            let sun = load.sun.expect("the outdoor preset lights a sun");
+            // 4.5 units under the sky, 160 lux a unit.
+            assert_eq!(sun.illuminance, 720.0);
+            let mut runtime = SceneEnvRuntime::new(scene.env, seed);
+            // Ten seconds of frames at 60 Hz, the view looking down.
+            for f in 0..600u32 {
+                let SceneEnvRuntime {
+                    env,
+                    weather,
+                    library,
+                    ..
+                } = &mut runtime;
+                let mut draws = || library.unit();
+                env.tick(f * 16, weather, &mut draws);
+                let frame = env.apply_frame([0.0, -0.7, -0.7]);
+                let live = republished(env, &frame);
+                assert!(close(live.ambient, load.ambient), "seed {seed}");
+                assert_eq!(live.sky, load.sky);
+                let s = live.sun.expect("the sun stays lit");
+                assert_eq!(s.illuminance, sun.illuminance, "seed {seed}");
+                assert!(close(s.colour, sun.colour), "seed {seed}");
+                assert!(close(s.towards, sun.towards), "seed {seed}");
+                assert!((s.towards.length() - 1.0).abs() < 1e-6);
+                if frame.flash {
+                    flashes += 1;
+                    continue;
+                }
+                let (a, b) = (live.fog.unwrap(), load.fog.unwrap());
+                assert!(close(a.colour, b.colour), "seed {seed}");
+                assert!((a.near - b.near).abs() < 1e-4 && (a.far - b.far).abs() < 1e-3);
+                assert!(close(live.background, load.background), "seed {seed}");
+            }
+        }
+        // Flashes are rare enough not to hide the check above.
+        assert!(flashes < 64 * 600 / 10);
+        // A level lit by its record's sun keeps the sky-less 3 units.
+        let env = Environment {
+            sun_mode: SunMode::On,
+            ..Default::default()
+        };
+        let scene = level_lighting_scene("menuscene", Some(&env), 0, None, None);
+        let mut runtime = SceneEnvRuntime::new(scene.env, 1);
+        let frame = runtime.env.apply_frame([0.0, 0.0, 1.0]);
+        let live = republished(&runtime.env, &frame);
+        assert_eq!(live.sun.unwrap().illuminance, SUN_LUX);
+        assert!(close(
+            live.sun.unwrap().colour,
+            scene.lighting.sun.unwrap().colour
+        ));
+        assert!(close(live.ambient, scene.lighting.ambient));
+        // An indoor level republishes no sun.
+        let scene = level_lighting_scene("exanima01", None, 3, None, Some(PresetInput::default()));
+        let mut runtime = SceneEnvRuntime::new(scene.env, 1);
+        let frame = runtime.env.apply_frame([0.0, 0.0, 1.0]);
+        assert!(republished(&runtime.env, &frame).sun.is_none());
     }
 
     #[test]
