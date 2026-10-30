@@ -37,17 +37,20 @@
 //!   the frame buffer behind the streak and that colour's bright pass.
 //! - **The draw**: the vertices are drawn as lines, the first
 //!   `round(4096·intensity)` vertices, so half that many drops show. The
-//!   frame runs one pass per supersample corner ([`frame_passes`]): the
-//!   corner's whole-pixel viewport shift, its `FrmCrd` (one over the screen
-//!   sides and the corner's 0/−1 offsets), and the drop set's own turn
-//!   ([`tilt`], two degrees about the first axis) scaled by
-//!   `sqrt(field / 70)` and multiplied by the corner's sub-frame composite.
-//!   With the view's reflection level above three — the shipped level is
-//!   four — each corner also draws the reflected set ([`reflected_tilt`]:
-//!   −2° about the first axis and 170° about the second). `EyeVec` is the
-//!   eye seen from that turn ([`eye_vector`]); the fragment pass reads the
-//!   frame buffer behind the streak, its bright pass and adds the rain's
-//!   colour, and the draw is `GL_LINES` over the drawn vertices.
+//!   frame runs one pass per sub-frame ([`frame_passes`]): the sub-frame's
+//!   whole-pixel viewport shift, its `FrmCrd` (one over the screen sides
+//!   and the corner's 0/−1 offsets), and `ObjMat`, the drop set's own turn
+//!   ([`tilt`], two degrees about the first axis) with every entry scaled
+//!   by `sqrt(field · (1/70))` (single precision, `field` the camera's
+//!   field value), placed at the drop box's centre and multiplied by the
+//!   sub-frame's composite. With the view's reflection level above three —
+//!   the shipped level is four — each sub-frame also draws the reflected
+//!   set ([`reflected_tilt`]: −2° about the first axis and 170° about the
+//!   second). `EyeVec` is the camera seen from that scaled, placed turn
+//!   ([`eye_vector`]: the camera less the box centre, dotted with each
+//!   row); the fragment pass reads the frame buffer behind the streak, its
+//!   bright pass and adds the rain's colour, and the draw is `GL_LINES`
+//!   over the drawn vertices. No renderer node draws the passes yet.
 //!
 //! The set is started by the scene's weather ([`drive_rain`]): the weather's
 //! effect existing creates it, a changed rain amount sets its intensity and
@@ -89,10 +92,11 @@ pub const UNIFORMS: [&str; 4] = ["ObjMat", "EyeVec", "RainCol0", "FrmCrd"];
 pub const FRAME_BUFFER_UNIT: u32 = 7;
 /// The reflection level a second, reflected pass needs: above this.
 pub const REFLECT_LEVEL: u32 = 3;
-/// The drop set's own tilt, degrees about the first axis, and its size
-/// divisor (`sqrt(field / 70)`).
+/// The drop set's tilt, degrees about the first axis.
 pub const TILT_DEGREES: f32 = 2.0;
-pub const SIZE_DIVISOR: f32 = 70.0;
+/// The factor the camera's field value takes before the square root that
+/// scales the turn: the original's single-precision 1/70.
+pub const FIELD_SCALE: f32 = f32::from_bits(0x3c6a_0ea1);
 /// The reflected pass's tilt and turn, degrees.
 pub const REFLECT_TILT_DEGREES: f32 = -2.0;
 pub const REFLECT_TURN_DEGREES: f32 = 170.0;
@@ -130,41 +134,47 @@ pub fn eye_fade(point: Vec3, eye: Vec3) -> f32 {
     d * d
 }
 
-/// The drop set's rotation: the engine's 3×3 turn, row by row, about the
-/// first axis by `a` and the second by `b` (radians). The sines and cosines
-/// are the engine's fast pair, so a call with the same angles gives the same
-/// bytes.
-pub fn turn(a: f32, b: f32) -> [[f32; 3]; 3] {
-    let (sin_a, cos_a) = exa_ui::engine_math::sin_cos(a);
-    let (sin_b, cos_b) = exa_ui::engine_math::sin_cos(b);
-    [
-        [cos_b, 0.0, -sin_b],
-        [sin_a * sin_b, cos_a, sin_a * cos_b],
-        [cos_a * sin_b, -sin_a, cos_a * cos_b],
-    ]
-}
-
-/// The drop set's rotation for its tilt: two degrees about the first axis.
-pub fn tilt() -> [[f32; 3]; 3] {
-    turn(TILT_DEGREES * DEGREES, 0.0)
+/// The drop set's rotation for its tilt: two degrees about the first axis,
+/// the engine's turn ([`exa_physics::engine_math::basis_from_pitch_yaw`],
+/// its columns the original's rows).
+pub fn tilt() -> Mat3A {
+    exa_physics::engine_math::basis_from_pitch_yaw(TILT_DEGREES * DEGREES, 0.0)
 }
 
 /// The reflected draw's rotation: the opposite tilt and a 170° turn.
-pub fn reflected_tilt() -> [[f32; 3]; 3] {
-    turn(
+pub fn reflected_tilt() -> Mat3A {
+    exa_physics::engine_math::basis_from_pitch_yaw(
         REFLECT_TILT_DEGREES * DEGREES,
         REFLECT_TURN_DEGREES * DEGREES,
     )
 }
 
-/// A point seen from a rotation, as the shader's `EyeVec` takes the camera:
-/// the point dotted with each row.
-pub fn eye_vector(point: Vec3, rotation: &[[f32; 3]; 3]) -> Vec3 {
-    Vec3::new(
-        point.dot(Vec3::from(rotation[0])),
-        point.dot(Vec3::from(rotation[1])),
-        point.dot(Vec3::from(rotation[2])),
-    )
+/// The scale every entry of the drop set's turn takes:
+/// `sqrt(field · (1/70))` in single precision.
+pub fn field_scale(field: f32) -> f32 {
+    (field * FIELD_SCALE).sqrt()
+}
+
+/// The camera as the shader's `EyeVec` takes it: the camera less the drop
+/// box's centre, dotted with each row of the scaled turn (the engine's
+/// point-into-frame helper, `(x·r.x + y·r.y) + z·r.z` per row).
+pub fn eye_vector(camera: Vec3, centre: Vec3, rows: &Mat3A) -> Vec3 {
+    let d = camera - centre;
+    let row = |r: Vec3A| (d.x * r.x + d.y * r.y) + d.z * r.z;
+    Vec3::new(row(rows.x_axis), row(rows.y_axis), row(rows.z_axis))
+}
+
+/// The drop set's object matrix before the sub-frame: the scaled turn's
+/// rows with `w = 0` and the box centre with `w = 1`, row-major as the
+/// renderer's matrices are.
+pub fn object_matrix(rows: &Mat3A, centre: Vec3) -> exa_render::subframe::Matrix {
+    let row = |r: Vec3A| [r.x, r.y, r.z, 0.0];
+    [
+        row(rows.x_axis),
+        row(rows.y_axis),
+        row(rows.z_axis),
+        [centre.x, centre.y, centre.z, 1.0],
+    ]
 }
 
 /// The `FrmCrd` frame coordinate: one over the screen's sides, with the
@@ -195,9 +205,9 @@ pub fn corner_offsets(corner: u32) -> [f32; 2] {
     ]
 }
 
-/// One pass of the rain's draw: a supersample corner, its whole-pixel
-/// viewport shift, its frame coordinate, the rotation its object matrix
-/// takes and whether it is the reflected draw.
+/// One pass of the rain's draw: a sub-frame, its whole-pixel viewport
+/// shift, its frame coordinate, its `ObjMat` and `EyeVec`, and whether it is
+/// the reflected draw.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RainPass {
     pub corner: u32,
@@ -205,38 +215,55 @@ pub struct RainPass {
     pub offsets: [f32; 2],
     /// `FrmCrd`.
     pub frame_coord: [f32; 4],
-    /// The rotation (and the eye vector's frame): the tilt, or the
-    /// reflected tilt.
-    pub rotation: [[f32; 3]; 3],
+    /// `ObjMat`: the scaled turn at the box centre times the sub-frame's
+    /// composite.
+    pub object: exa_render::subframe::Matrix,
+    /// `EyeVec`: the camera seen from the scaled, placed turn.
+    pub eye: Vec3,
     pub reflection: bool,
 }
 
-/// The frame's passes, in the original's order: for each of `corners`
-/// corners one draw with the drop set's tilt, then, when the view's
-/// reflection level is above three, the reflected draw at the same corner.
-pub fn frame_passes(corners: u32, reflection_level: u32, width: i32, height: i32) -> Vec<RainPass> {
-    let mut passes = Vec::with_capacity(corners as usize * 2);
-    for corner in 0..corners {
+/// The frame's passes, in the original's order: for each sub-frame one
+/// draw with the drop set's tilt, then, when the view's reflection level is
+/// above three, the reflected draw at the same sub-frame. `centre` is the
+/// drop box's centre, `camera` the eye and `field` the camera's field value
+/// the turn is scaled by.
+pub fn frame_passes(
+    subframes: &exa_render::subframe::Subframes,
+    reflection_level: u32,
+    size: [i32; 2],
+    centre: Vec3,
+    camera: Vec3,
+    field: f32,
+) -> Vec<RainPass> {
+    let scale = field_scale(field);
+    let scaled = |mut turn: Mat3A| {
+        exa_physics::engine_math::scale(&mut turn, scale);
+        turn
+    };
+    let plain = scaled(tilt());
+    let reflected = scaled(reflected_tilt());
+    let mut passes = Vec::with_capacity(subframes.len() * 2);
+    for corner in 0..subframes.len() {
+        let Some(composite) = subframes.composite(corner) else {
+            break;
+        };
+        let corner = corner as u32;
         let viewport = exa_render::subframe::viewport_shift(corner);
         let offsets = corner_offsets(corner);
-        let frame_coord = frame_coord(width, height, offsets);
-        passes.push(RainPass {
+        let frame_coord = frame_coord(size[0], size[1], offsets);
+        let pass = |rows: &Mat3A, reflection| RainPass {
             corner,
             viewport,
             offsets,
             frame_coord,
-            rotation: tilt(),
-            reflection: false,
-        });
+            object: exa_render::subframe::multiply(&object_matrix(rows, centre), composite),
+            eye: eye_vector(camera, centre, rows),
+            reflection,
+        };
+        passes.push(pass(&plain, false));
         if reflection_level > REFLECT_LEVEL {
-            passes.push(RainPass {
-                corner,
-                viewport,
-                offsets,
-                frame_coord,
-                rotation: reflected_tilt(),
-                reflection: true,
-            });
+            passes.push(pass(&reflected, true));
         }
     }
     passes
@@ -590,66 +617,103 @@ mod tests {
 
     #[test]
     fn the_set_is_drawn_tilted_off_the_first_axis() {
+        // Two degrees about the first axis: the engine's turn, its columns
+        // the original's rows.
         let t = tilt();
-        // Two degrees: the sine and cosine of 2π/90 in the engine's fast
-        // pair, the rows as the original builds them.
         let (sin, cos) = exa_ui::engine_math::sin_cos(TILT_DEGREES * DEGREES);
-        assert_eq!(t[0], [1.0, 0.0, 0.0]);
-        assert_eq!(t[1], [0.0, cos, sin]);
-        assert_eq!(t[2], [0.0, -sin, cos]);
+        assert_eq!(t.x_axis, Vec3A::new(1.0, 0.0, 0.0));
+        assert_eq!(t.y_axis, Vec3A::new(0.0, cos, sin));
+        assert_eq!(t.z_axis, Vec3A::new(0.0, -sin, cos));
         assert!((sin - 0.034_899_5).abs() < 1e-5);
-        // A point seen from the turn: the identity leaves it alone, the
-        // tilt moves its height into the depth.
-        let identity = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
-        let p = Vec3::new(1.0, 2.0, 3.0);
-        assert_eq!(eye_vector(p, &identity), p);
-        let seen = eye_vector(p, &t);
-        assert_eq!(seen.x, 1.0);
-        assert_eq!(seen.y, 2.0 * cos + 3.0 * sin);
-        assert_eq!(seen.z, -2.0 * sin + 3.0 * cos);
+        assert_eq!(DEGREES, 0.017_453_292);
         // The reflected set takes the opposite tilt and a 170° turn.
         let r = reflected_tilt();
         let (sin_a, cos_a) = exa_ui::engine_math::sin_cos(REFLECT_TILT_DEGREES * DEGREES);
         let (sin_b, cos_b) = exa_ui::engine_math::sin_cos(REFLECT_TURN_DEGREES * DEGREES);
-        assert_eq!(r[0], [cos_b, 0.0, -sin_b]);
-        assert_eq!(r[1], [sin_a * sin_b, cos_a, sin_a * cos_b]);
-        assert_eq!(r[2], [cos_a * sin_b, -sin_a, cos_a * cos_b]);
-        assert!(sin_b > 0.17);
-        assert_eq!(DEGREES, 0.017_453_292);
+        assert_eq!(r.x_axis, Vec3A::new(cos_b, 0.0, -sin_b));
+        assert_eq!(r.y_axis, Vec3A::new(sin_a * sin_b, cos_a, sin_a * cos_b));
+        assert_eq!(r.z_axis, Vec3A::new(cos_a * sin_b, -sin_a, cos_a * cos_b));
+        // The scale: sqrt(field · 1/70) in single precision; a field of 70
+        // is one.
+        assert!((FIELD_SCALE - 1.0 / 70.0).abs() < 1e-9);
+        assert_eq!(field_scale(70.0), (70.0f32 * FIELD_SCALE).sqrt());
+        assert!((field_scale(70.0) - 1.0).abs() < 1e-6);
+        assert_eq!(field_scale(280.0), (280.0f32 * FIELD_SCALE).sqrt());
+        // EyeVec: the camera less the box centre, dotted with each row.
+        let centre = Vec3::new(10.0, 20.0, 30.0);
+        let camera = Vec3::new(11.0, 22.0, 33.0);
+        assert_eq!(
+            eye_vector(camera, centre, &Mat3A::IDENTITY),
+            Vec3::new(1.0, 2.0, 3.0)
+        );
+        let seen = eye_vector(camera, centre, &t);
+        assert_eq!(seen.x, 1.0);
+        assert_eq!(seen.y, (1.0 * 0.0 + 2.0 * cos) + 3.0 * sin);
+        assert_eq!(seen.z, (1.0 * 0.0 + 2.0 * -sin) + 3.0 * cos);
     }
 
     #[test]
-    fn every_corner_draws_itself_and_its_reflection() {
-        let passes = frame_passes(4, 4, 512, 256);
-        assert_eq!(passes.len(), 8, "four corners, each with a reflection");
-        assert_eq!(
-            passes.iter().map(|p| p.corner).collect::<Vec<_>>(),
-            [0, 0, 1, 1, 2, 2, 3, 3]
-        );
+    fn every_sub_frame_draws_itself_and_its_reflection() {
+        use exa_render::subframe::{Subframes, ViewFrame, multiply};
+        let view = ViewFrame {
+            half_extents: [-10.0, -5.0],
+            viewport: [512, 256],
+            near: 1.0,
+            far: 100.0,
+            camera: [
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [0.0, 0.0, 0.0],
+            ],
+            frame_time: 0.1,
+        };
+        // The setting with the most sub-frames (four at most).
+        let setting = (0..8)
+            .max_by_key(|&s| exa_render::subframe::passes(s))
+            .unwrap();
+        let frames = Subframes::build(setting, 0, &view);
+        let n = frames.len();
+        assert!(n >= 2);
+        let centre = Vec3::new(100.0, 50.0, -20.0);
+        let camera = Vec3::new(100.0, 170.0, 400.0);
+        let passes = frame_passes(&frames, 4, [512, 256], centre, camera, 280.0);
+        assert_eq!(passes.len(), 2 * n, "each sub-frame with its reflection");
         assert_eq!(
             passes.iter().map(|p| p.reflection).collect::<Vec<_>>(),
-            [false, true, false, true, false, true, false, true]
+            (0..n).flat_map(|_| [false, true]).collect::<Vec<_>>()
         );
         assert_eq!(passes[0].viewport, exa_render::subframe::viewport_shift(0));
         assert_eq!(passes[0].offsets, [0.0, 0.0]);
         assert_eq!(passes[0].frame_coord, [1.0 / 512.0, 1.0 / 256.0, 0.0, 0.0]);
-        assert_eq!(passes[0].rotation, tilt());
-        assert_eq!(passes[1].rotation, reflected_tilt());
-        // Corner 1 has the x bit: its offsets are −1 and 0.
+        // Sub-frame 1 has the x bit: its offsets are −1 and 0.
         assert_eq!(passes[2].offsets, [-1.0, 0.0]);
         assert_eq!(passes[2].frame_coord, [1.0 / 512.0, 1.0 / 256.0, -1.0, 0.0]);
-        // Corner 3 has both bits.
-        assert_eq!(passes[6].offsets, [-1.0, -1.0]);
-        // At the shipped reflection level four the reflected pass runs; at
-        // or below three it does not.
-        assert_eq!(frame_passes(2, 3, 512, 256).len(), 2);
-        assert_eq!(frame_passes(2, 5, 512, 256).len(), 4);
+        // ObjMat: the doubled tilt (sqrt(280/70) = 2) at the box centre,
+        // times the sub-frame's composite; EyeVec from the same rows.
+        let mut rows = tilt();
+        exa_physics::engine_math::scale(&mut rows, field_scale(280.0));
+        let object = object_matrix(&rows, centre);
+        assert_eq!(object[3], [100.0, 50.0, -20.0, 1.0]);
+        assert_eq!(
+            object[0],
+            [rows.x_axis.x, rows.x_axis.y, rows.x_axis.z, 0.0]
+        );
+        assert_eq!(
+            passes[2].object,
+            multiply(&object, frames.composite(1).unwrap())
+        );
+        assert_eq!(passes[0].eye, eye_vector(camera, centre, &rows));
+        let mut flipped = reflected_tilt();
+        exa_physics::engine_math::scale(&mut flipped, field_scale(280.0));
+        assert_eq!(passes[1].eye, eye_vector(camera, centre, &flipped));
+        // At or below reflection level three the reflected pass is left out.
+        assert_eq!(
+            frame_passes(&frames, 3, [512, 256], centre, camera, 70.0).len(),
+            n
+        );
         // The scratch scale is one over three times the view scale + 0.15.
         assert_eq!(scratch_scale(1.0), (1.0f64 / 3.15) as f32);
-        assert_eq!(
-            passes[0].rotation,
-            turn(TILT_DEGREES * DEGREES, 0.0f32 * DEGREES)
-        );
         assert_eq!(
             (UNIFORMS, FRAME_BUFFER_UNIT),
             (["ObjMat", "EyeVec", "RainCol0", "FrmCrd"], 7)
