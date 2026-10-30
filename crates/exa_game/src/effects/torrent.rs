@@ -885,25 +885,23 @@ impl Torrent {
                 normals[i] = normal;
                 sum += normal;
             }
+            // The closing vertex takes the head's normal, then the stream's
+            // moving mean of the frame's normals is blended in and the head
+            // becomes that mean.
             normals[count - 1] = first;
-            let sum = normalize(sum);
-            normals[0] = normalize(lerp(normals[0], sum, NORMAL_AVERAGE));
-            normals[count - 1] = normals[0];
+            let mean = normalize(sum);
             let stream = &mut self.records[index];
-            stream.normals[0] = normals[0];
-            stream.normals[1] = normalize(lerp(
-                stream.normals[1],
-                normalize(cross(points[1] - points[0], eye)),
-                NORMAL_LERP,
-            ));
-            stream.normals[2] = normalize(lerp(
-                stream.normals[2],
-                normalize(cross(points[count - 1] - points[count - 3], eye)),
-                NORMAL_LERP,
-            ));
+            stream.normals[0] = normalize(lerp(stream.normals[0], mean, NORMAL_AVERAGE));
+            normals[0] = stream.normals[0];
+            // The two ends blend toward their frame normals; the blends are
+            // not normalised again.
+            let last_side = normalize(cross(points[count - 1] - points[count - 3], eye));
+            stream.normals[1] = lerp(stream.normals[1], first, NORMAL_AVERAGE);
+            stream.normals[2] = lerp(stream.normals[2], last_side, NORMAL_LERP);
             normals[0] = stream.normals[1];
             for i in 1..count - 1 {
-                let t = i as f32 / (count - 2) as f32;
+                // The share is a double division, then narrowed.
+                let t = (f64::from(i as i32) / f64::from((count - 2) as i32)) as f32;
                 normals[i] = normalize(lerp(stream.normals[1], stream.normals[2], t));
             }
             stream.normals[3] = normals[count - 2];
@@ -1191,6 +1189,40 @@ mod tests {
         assert_eq!(samples.len(), 3);
         assert_eq!(samples[0].weight, 1.0);
         assert_eq!(samples[2].weight, 0.0);
+    }
+
+    #[test]
+    fn the_stream_keeps_a_moving_mean_and_un_normalised_ends() {
+        let mut t = torrent();
+        // A straight stream along z, the eye off to +x: every normal of the
+        // frame is +y.
+        for stream in &mut t.records[..16] {
+            for (k, point) in stream.points.iter_mut().enumerate() {
+                point.life = 1;
+                point.at = Vec3::new(0.0, 0.0, 10.0 * k as f32);
+                point.previous = point.at;
+                point.width = 1.0;
+                point.age = 1.0;
+            }
+            stream.head = 3;
+            stream.source = Vec3::new(0.0, 0.0, -10.0);
+            stream.source_previous = stream.source;
+            stream.base_width = 1.0;
+            stream.split = false;
+        }
+        // The head's end normal is blended but not normalised again:
+        // lerp((0,0,4), (0,1,0), 0.1) = (0, 0.1, 3.6).
+        t.records[0].normals[1] = Vec3::new(0.0, 0.0, 4.0);
+        let frame = t.frame(0.0);
+        let _ = t.ribbon(&frame, Vec3::new(1000.0, 0.0, 0.0));
+        let stored = t.records[0].normals[1];
+        assert!((stored.x).abs() < 1e-6);
+        assert!((stored.y - 0.1).abs() < 1e-5, "{stored:?}");
+        assert!((stored.z - 3.6).abs() < 1e-5, "{stored:?}");
+        // The mean starts at zero, so it becomes the frame's mean direction
+        // (this frame's samples run back along z, so the sign is the
+        // stream's, not a fixed one).
+        assert!(t.records[0].normals[0].y.abs() > 0.99);
     }
 
     #[test]
