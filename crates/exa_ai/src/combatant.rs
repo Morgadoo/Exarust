@@ -180,6 +180,7 @@ pub fn break_mind_power(other: Entity, effects: &mut [Effect]) -> bool {
     }
     false
 }
+
 /// The effective attitude toward `other`, with the observer's mind powers
 /// applied in order: frenzy sets it to half the negated `aggression` (the
 /// record's) and stops; a binding or command power sourced on `other`
@@ -1597,8 +1598,8 @@ mod tests {
         );
     }
 
-    /// Only a binding or command sourced on the character, or a charm
-    /// aimed at it, is broken; the first match only.
+    /// Only a binding sourced on the character, or a charm aimed at it, is
+    /// broken (not a command), and the first match only.
     #[test]
     fn a_hold_is_broken_on_the_character_it_binds() {
         let (_me, other, third, _) = ids();
