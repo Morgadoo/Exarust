@@ -1517,9 +1517,10 @@ in world space there too):
   (`exa_physics::voxel::generated_surface_points`); the sphere query is a
   triangle tree over the same triangles, standing in for the node's
   collision query at level 2. A floor-set child gets the same points when
-  bit `0x10000` or bit `0x8` of its second flag word is set (the rule is
-  tested; the floor-set loader does not run it yet), and wall and
-  special-tile pieces take none.
+  bit `0x10000` or bit `0x8` of its second flag word is set, reached
+  through the loader's walk from the centre-floor variants (`+FM…`) and
+  skipping `#…`, `+…` and `[…]` subtrees; and wall and special-tile pieces
+  take none.
 - Each column remembers the lowest slice a point fell in. A sector's floor
   is the lowest over all its 30 × 30 columns.
 

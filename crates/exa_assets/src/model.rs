@@ -249,9 +249,41 @@ pub fn is_body_model(entry: &str) -> bool {
 /// A mesh part: its mesh and material.
 pub type Part = (Handle<Mesh>, Handle<ExaMaterial>);
 
+/// Which nodes the original's floor-set load generates surface points for:
+/// the walk starts at the children of every centre-floor variant (`+FM…`),
+/// skips a child (and its subtree) named `#…`, `+…` or `[…]`, and marks a
+/// class-`0x89` node whose second flag word has bit `0x10000` or bit `0x8`.
+/// The walk continues into every kept child.
+fn floor_set_generation_nodes(nodes: &[Node]) -> Vec<bool> {
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); nodes.len() + 1];
+    for (i, node) in nodes.iter().enumerate() {
+        if let Some(parent) = node.parent.filter(|&p| p <= nodes.len()) {
+            children[parent].push(i);
+        }
+    }
+    let mut out = vec![false; nodes.len()];
+    let mut stack: Vec<usize> = Vec::new();
+    for (i, node) in nodes.iter().enumerate() {
+        if node.name.starts_with("+FM") {
+            stack.extend(children[i + 1].iter().copied());
+        }
+    }
+    while let Some(i) = stack.pop() {
+        let node = &nodes[i];
+        if node.name.starts_with(['#', '+', '[']) {
+            continue;
+        }
+        if node.flags & 0xfff == 0x89 && exa_physics::voxel::floor_set_node_generates(node.flags2) {
+            out[i] = true;
+        }
+        stack.extend(children[i + 1].iter().copied());
+    }
+    out
+}
+
 /// The GI sample points a mesh node carries at load: the chunk's points
 /// when it has one, otherwise the original's runtime generation for a body
-/// model's part.
+/// model's part or a floor-set child.
 ///
 /// The original runs its surface generator at load for every class-`0x89`
 /// body-part node of a character's physics body, at 20 cm-parameter
@@ -259,19 +291,21 @@ pub type Part = (Handle<Mesh>, Handle<ExaMaterial>);
 /// is 2. Exarust keeps one model per part and has no collision level, so
 /// every mesh node of a body model is taken as a body part (guess), the
 /// node's stored triangles answer the sphere query, and the greedy cover
-/// is the builder's default. A node with a stored chunk keeps its points.
+/// is the builder's default. A floor-set child follows the loader's walk
+/// and flag test. A node with a stored chunk keeps its points.
 fn gi_points_for(
     node: &Node,
     mesh: Option<&RfcMesh>,
     skin_bone: Option<u16>,
     entry: &str,
+    floor_set: bool,
 ) -> Vec<Vec3> {
     if let Some(mesh) = mesh
         && skin_bone.is_none()
     {
         return mesh.gi_points.iter().map(|&p| Vec3::from(p)).collect();
     }
-    if !is_body_model(entry) {
+    if !(floor_set || is_body_model(entry)) {
         return Vec::new();
     }
     let Some(triangles) = mesh.and_then(mesh_triangles) else {
@@ -645,7 +679,9 @@ impl ModelLoader<'_> {
             self.cache.morph.parts.insert(m.parts_key, m.parts);
         }
         let mut nodes = Vec::with_capacity(scene.nodes.len());
-        for (node, built) in scene.nodes.iter().zip(built_nodes) {
+        // The floor-set load's generation walk, when this model has one.
+        let floor_set = floor_set_generation_nodes(&scene.nodes);
+        for (i, (node, built)) in scene.nodes.iter().zip(built_nodes).enumerate() {
             let mesh = match &node.body {
                 NodeBody::Mesh(mesh) => Some(mesh.as_ref()),
                 _ => None,
@@ -726,7 +762,7 @@ impl ModelLoader<'_> {
                 skin_bone,
                 bounds: (Vec3::from(node.bounds_centre), node.bounds_radius),
                 half_extents: Vec3::from(node.bounds_half_extents),
-                gi_points: Arc::new(gi_points_for(node, mesh, skin_bone, &entry)),
+                gi_points: Arc::new(gi_points_for(node, mesh, skin_bone, &entry, floor_set[i])),
                 gi_centred: node.flags2 & 0x10 != 0,
                 gi_thin: mesh
                     .and_then(|mesh| mesh.groups.first())
@@ -3378,6 +3414,60 @@ mod tests {
         );
         assert_eq!(apparel_texture_key("&short"), None);
         assert_eq!(apparel_texture_key("skinhuman"), None);
+    }
+
+    /// A minimal stored node for the floor-set generation walk.
+    fn generation_node(name: &str, parent: Option<usize>, class: u32, flags2: u32) -> Node {
+        Node {
+            kind: 0,
+            name: name.into(),
+            flags: class,
+            flags2,
+            parent,
+            transform: [[0.0; 3]; 4],
+            bounds_centre: [0.0; 3],
+            bounds_half_extents: [0.0; 3],
+            bounds_radius: 0.0,
+            rigid_body: None,
+            cloth_marker: false,
+            key_tracks: Vec::new(),
+            morph: None,
+            instance: None,
+            unknown_sub_chunks: Vec::new(),
+            body: NodeBody::NotMesh,
+        }
+    }
+
+    /// The floor-set loader starts at the children of every centre-floor
+    /// variant, skips `#`/`+`/`[` subtrees, and marks only class-0x89 nodes
+    /// whose second flag word has 0x10000 or 0x8.
+    #[test]
+    fn floor_set_children_are_generated_through_the_loaders_walk() {
+        let nodes = vec![
+            // 1: a mesh with the flag, child of the centre-floor variant.
+            generation_node("WCA04", Some(2), 0x89, 0x8),
+            // 2: the centre-floor variant itself.
+            generation_node("+FMA00", None, 0x89, 0),
+            // 3: a '+' child: skipped with its subtree, even with the flag.
+            generation_node("+FBA00", Some(2), 0x89, 0x8),
+            // 4: the skipped subtree's own child.
+            generation_node("deep", Some(3), 0x89, 0x10000),
+            // 5: a kept child without the flag bits.
+            generation_node("plain", Some(2), 0x89, 0x10),
+            // 6: the flag but not a mesh class.
+            generation_node("light", Some(2), 0x06, 0x10000),
+            // 7: outside any centre-floor variant.
+            generation_node("loose", None, 0x89, 0x8),
+            // 8: a kept grandchild with the flag.
+            generation_node("deepok", Some(5), 0x89, 0x10000),
+        ];
+        assert_eq!(
+            floor_set_generation_nodes(&nodes),
+            vec![true, false, false, false, false, false, false, true]
+        );
+        // A model with no centre-floor variant generates nothing.
+        let nodes = vec![generation_node("loose", None, 0x89, 0x8)];
+        assert_eq!(floor_set_generation_nodes(&nodes), vec![false]);
     }
 
     fn material_node(materials: &[&str]) -> ModelNode {
