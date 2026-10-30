@@ -640,10 +640,34 @@ fn run_save_steps(
                 ),
                 Err(error) => warn!("save: cannot drop slot {number}: {error}"),
             },
-            SaveStep::Checkpoint => match list.slots().copy_save_over_checkpoint(number) {
-                Ok(()) => info!("save: story slot {number}'s save kept as its checkpoint"),
-                Err(error) => warn!("save: cannot copy slot {number}'s checkpoint: {error}"),
-            },
+            SaveStep::Checkpoint => {
+                // The original's checkpoint routine saves first (with the
+                // writer's disable check) and only then copies the save over
+                // the checkpoint; an existing checkpoint is left alone.
+                let level = levels.iter().next().map(|root| root.name.as_str());
+                let now = ticks.as_ref().map_or(0, |ticks| ticks.millis() as u32);
+                let seconds = clock
+                    .as_ref()
+                    .map_or(0, |clock| crate::world_clock::stamped(clock, now));
+                let mut session = Session::story();
+                session.story = story_at(level.unwrap_or(""));
+                session.clock = seconds;
+                camera
+                    .as_deref()
+                    .copied()
+                    .unwrap_or_default()
+                    .stamp(&mut session);
+                let player = live_story_player(&players, created.as_deref());
+                let export = story_save_world(&mut session, player.as_ref());
+                let world = export.save_world(None, false);
+                match list.slots().checkpoint_full(number, &session, &world) {
+                    Ok(true) => info!("save: story slot {number}'s save kept as its checkpoint"),
+                    Ok(false) => {
+                        info!("save: story slot {number} already has a checkpoint; it stays")
+                    }
+                    Err(error) => warn!("save: cannot write slot {number}'s checkpoint: {error}"),
+                }
+            }
         }
     }
 }
@@ -1285,6 +1309,54 @@ mod tests {
         };
         assert_eq!(header.camera, [7034.0, 1532.5, 4748.5]);
         assert_eq!(header.zoom, 1.25);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_checkpoint_step_saves_first_then_copies_and_leaves_an_existing_one() {
+        let dir = folder("checkpoint-step");
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_plugins(SaveLivePlugin)
+            .insert_resource(SaveFolder(dir.clone()));
+        app.update();
+        app.world_mut().write_message(SaveToNewSlot);
+        app.update();
+        let number = app.world().resource::<SaveReport>().saved.unwrap();
+        // Creating a slot makes it current, which the flow's save steps need.
+        assert_eq!(
+            app.world().resource::<SlotLists>().story.current(),
+            number as i32
+        );
+        // No checkpoint yet: the step writes the save and copies it.
+        assert!(
+            !Slots::story(&dir)
+                .file(number, SlotKind::Checkpoint)
+                .exists()
+        );
+        app.world_mut().write_message(SaveStep::Checkpoint);
+        app.update();
+        assert!(
+            Slots::story(&dir)
+                .file(number, SlotKind::Checkpoint)
+                .is_file()
+        );
+        let save = std::fs::read(Slots::story(&dir).file(number, SlotKind::Save)).unwrap();
+        let checkpoint =
+            std::fs::read(Slots::story(&dir).file(number, SlotKind::Checkpoint)).unwrap();
+        assert_eq!(save, checkpoint);
+        // An existing checkpoint is left alone: its bytes do not change.
+        std::fs::write(
+            Slots::story(&dir).file(number, SlotKind::Checkpoint),
+            b"old",
+        )
+        .unwrap();
+        app.world_mut().write_message(SaveStep::Checkpoint);
+        app.update();
+        assert_eq!(
+            std::fs::read(Slots::story(&dir).file(number, SlotKind::Checkpoint)).unwrap(),
+            b"old"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
