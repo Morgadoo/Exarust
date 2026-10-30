@@ -183,6 +183,19 @@ pub fn rebalances(size: f32, balance: f32) -> bool {
     f64::from(size) < BIG_FROM && f64::from(balance) < REBALANCE_BELOW
 }
 
+/// The voice line a collapse asks for: the heavy groan.
+pub const COLLAPSE_VOICE_LINE: i32 = 2;
+
+/// The collapse's voice line, from the two draws the collapse routine makes
+/// before it asks for it (the first for the pitch, the second for the
+/// volume): a groan (voice line 2) at volume 0.15 + 0.1·second and pitch
+/// 0.8 + 0.1·first, both sums worked in double and narrowed once.
+pub fn collapse_voice(first: f32, second: f32) -> (f32, f32) {
+    let pitch = (f64::from(first) * 0.1 + 0.8) as f32;
+    let volume = (f64::from(second) * 0.1 + 0.15) as f32;
+    (volume, pitch)
+}
+
 /// A dying tick's Rebalance: when the body [`rebalances`], Rebalance (a
 /// looping held pose) starts with 20 frames of blend, linear, unless it
 /// already plays (the clip start then does nothing). Returns whether it
@@ -453,7 +466,38 @@ impl Plugin for CollapsePlugin {
             dying_tick
                 .in_set(CharacterStage::Posture)
                 .after(track_condition),
-        );
+        )
+        .add_message::<crate::pain::PainSounded>()
+        .add_systems(Update, collapse_groans);
+    }
+}
+
+/// The collapse's groan, on the tick a collapse starts: its two draws
+/// ([`collapse_voice`]: the first for the pitch, the second for the
+/// volume) ask the character's voice for line 2 through the pain voice's
+/// path, which applies the voice's waits and the character's gains. The
+/// draws come from this system's own roll, not the blow's.
+pub fn collapse_groans(
+    mut pains: MessageWriter<crate::pain::PainSounded>,
+    started: Query<(Entity, &Condition, Option<&GlobalTransform>), Added<Collapse>>,
+    mut roll: Local<Roll>,
+) {
+    for (fighter, condition, at) in &started {
+        if !condition.is_collapsing() {
+            continue;
+        }
+        let first = roll.next();
+        let second = roll.next();
+        let (volume, pitch) = collapse_voice(first, second);
+        pains.write(crate::pain::PainSounded {
+            fighter,
+            point: at.map_or(Vec3::ZERO, GlobalTransform::translation),
+            sounds: crate::pain::PainSounds {
+                wound: None,
+                voice: Some((COLLAPSE_VOICE_LINE, crate::pain::Loudness { volume, pitch })),
+            },
+        });
+        debug!("{fighter:?} collapses with a groan: volume {volume:.3}, pitch {pitch:.3}");
     }
 }
 

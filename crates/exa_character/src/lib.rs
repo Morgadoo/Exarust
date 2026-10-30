@@ -1532,6 +1532,13 @@ fn equip_outfits(
             }
         }
         let fights = fighter.is_some();
+        // The auto-parry gate's creature bit (the body rule flags), read
+        // before the fighter is taken below.
+        let body_rules = fighter
+            .as_ref()
+            .map_or(exa_formats::character_stats::BodyRules(0), |f| {
+                f.stats.rules
+            });
         // Its weapons and fists are held by its own size, scale and
         // encumbrance.
         let holder = Holder {
@@ -1695,12 +1702,13 @@ fn equip_outfits(
                             second_hand_factor: record.second_hand,
                             flip: flipped,
                             class: item.flags & 0xFFFF,
-                            // The auto-parry flag: off in the heavy-claws
-                            // state. Race flag bit 0 and the character
-                            // classes that also clear it are not carried
-                            // yet. [partial]
-                            soft_weld: !weapon_record::unarmed(race.index, race.weapons.claws)
-                                .heavy_claws,
+                            // The auto-parry flag: on unless the holder is
+                            // in the heavy-claws state or its race's rule
+                            // flags mark a creature body.
+                            soft_weld: exa_combat::grip::weapon_soft_weld(
+                                weapon_record::unarmed(race.index, race.weapons.claws).heavy_claws,
+                                body_rules,
+                            ),
                             kind: exa_physics::grip::HeldKind::Weapon,
                             holder_key: key.unwrap_or(Entity::PLACEHOLDER),
                             hands: [

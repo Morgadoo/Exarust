@@ -154,15 +154,15 @@ A flip SHALL start only on a request for the holder and step only while active, 
 - **THEN** the item is flipped, the flip is inactive and the record is rebuilt from the flipped side
 
 ### Requirement: Parry weld
-A held weapon SHALL get a stiff disabled world weld at its origin, and a soft disabled weld of strength 0.05 only when its holder may parry. The soft weld point SHALL be 0.3 times the top of the item's node box, in double, or the grip itself for the weapon class word 0x30. Death SHALL leave every grip link as it is, and a dead holder SHALL keep its held items.
+A held weapon SHALL get a stiff disabled world weld at its origin, and a soft disabled weld of strength 0.05 only when its holder may parry: not in the heavy-claws state and without the creature bit (bit 0) in its body rule flags. The soft weld point SHALL be 0.3 times the top of the item's node box, in double, or the grip itself for the weapon class word 0x30.
 
 #### Scenario: Holder in the heavy-claws state
 - **WHEN** a holder in the heavy-claws state holds a weapon
 - **THEN** the weapon gets the stiff origin weld alone
 
-#### Scenario: Corpse keeps its shield
-- **WHEN** the holder of a shield dies
-- **THEN** the shield's soft weld keeps its strength of 0.05 and the shield stays held
+#### Scenario: Creature holder
+- **WHEN** a holder whose body rule flags carry the creature bit holds a weapon
+- **THEN** the weapon gets the stiff origin weld alone
 
 ### Requirement: Base collision sound
 A non-striking held item's contact SHALL ring the base collision sound when the strength S is over 0.5 and either its clock has passed or S beats its last threshold. The volume SHALL be 1.5·v with v = min(0.01·S, 1), and the pitch (0.02·m + 0.9)·(0.6·v + 0.7) for mobility m.
@@ -286,11 +286,11 @@ When a gobbler (race index 8) starts to collapse, each lower leg's femur limit l
 - **THEN** its femur limit links keep their slack
 
 ### Requirement: Shield body words
-A held shield's body SHALL take the held and mark bits (0x20002) and a link mobility equal to its contact mobility.
+A held shield's or torch's body SHALL take the held and mark bits (0x20002), lose the foot-sole bit, and take a link mobility equal to its contact mobility.
 
 #### Scenario: Contact mobility 3.5
 - **WHEN** a shield whose contact mobility is 3.5 is held
-- **THEN** its link mobility is 3.5
+- **THEN** its link mobility is 3.5 and its sole bit is clear
 
 ### Requirement: Revive
 A revive SHALL act only on a dead character: it is knocked out at once (condition down, the wake nibble 0x30, the wake clock now), its yellow health becomes half its red, and its hands are set up unarmed again when the record's weapon slots are empty. Its body SHALL mark every limb below the pelvis muscled with its base contact mobility, give each foot the thin-plate bit and the 0x30 layer, turn the muscles on with tone and stance 0 and the living pin gain, and keep death's link-iteration count.
@@ -350,3 +350,24 @@ A rising character SHALL be set up unarmed exactly when both out-set hands of it
 #### Scenario: Kept shield
 - **WHEN** a character that collapsed with a sword and a shield rises
 - **THEN** it is not set up unarmed
+
+### Requirement: Death weld stiffening
+When the holder dies, each held item's soft weld SHALL take strength 1; no other grip link SHALL change, and a dead holder SHALL keep its held items.
+
+#### Scenario: Corpse keeps its shield
+- **WHEN** the holder of a shield dies
+- **THEN** the shield's soft weld takes strength 1 and the shield stays held
+
+### Requirement: Collapse weld slack
+On the tick a holder starts collapsing, each item it still holds after the collapse lets go of its weapons SHALL have its soft weld's slack set to 10 cm, leaving the link's smoothed length and strength as they were. Each later collapse SHALL write it again.
+
+#### Scenario: Collapsing with a shield
+- **WHEN** a holder with a shield starts collapsing
+- **THEN** the shield's soft weld has 10 cm of slack and strength 0.05
+
+### Requirement: Collapse groan
+A collapse's start SHALL ask the character's voice for line 2 with volume 0.15 + 0.1 × the second draw and pitch 0.8 + 0.1 × the first draw, each worked in double and narrowed once.
+
+#### Scenario: Draws of 0.3 and 0
+- **WHEN** the first draw is 0.3 and the second 0
+- **THEN** the pitch is 0.83 and the volume 0.15

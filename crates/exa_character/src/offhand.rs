@@ -189,7 +189,16 @@ fn attach_off_hands(
             second_hand_factor,
             flip: off.flip,
             class: class & 0xFFFF,
-            soft_weld: true,
+            // A weapon takes the auto-parry gate (heavy claws and creature
+            // bodies keep only the stiff origin weld); a shield always
+            // carries its own soft weld.
+            soft_weld: off.kind == OffKind::Shield
+                || exa_combat::grip::weapon_soft_weld(
+                    exa_formats::weapon_record::unarmed(race.index, race.weapons.claws).heavy_claws,
+                    fighter.map_or(exa_formats::character_stats::BodyRules(0), |f| {
+                        f.stats.rules
+                    }),
+                ),
             kind,
             holder_key,
             hands: [names(RIGHT_HAND), names(LEFT_HAND)],

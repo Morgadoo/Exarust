@@ -593,6 +593,34 @@ pub struct HoldRefresh {
     pub aim_weights: Option<[f32; 4]>,
 }
 
+/// Whether an equipped weapon gets the soft (parry) world weld: the
+/// original's auto-parry gate. It is on unless the game's global parry
+/// switch is off (it is on in retail), or the holder is in the heavy-claws
+/// state, or its body rule flags have the creature bit (the races whose
+/// first rule word bit 0 the init sets). Without the soft weld the weapon
+/// keeps only the stiff origin weld.
+pub fn weapon_soft_weld(heavy_claws: bool, rules: exa_formats::character_stats::BodyRules) -> bool {
+    !heavy_claws && !rules.has(exa_formats::character_stats::BodyRules::CREATURE)
+}
+
+#[cfg(test)]
+mod soft_weld_tests {
+    use super::*;
+    use exa_formats::character_stats::BodyRules;
+
+    /// A human's weapon can parry; the heavy claws and a creature race
+    /// (an ogre, a Fael, a ghoul) take only the stiff origin weld.
+    #[test]
+    fn the_auto_parry_gate_keeps_creatures_off_the_soft_weld() {
+        let human = BodyRules(BodyRules::TAKES_REMEDIES | BodyRules::MAY_RISE);
+        assert!(weapon_soft_weld(false, human));
+        assert!(!weapon_soft_weld(true, human));
+        let creature = BodyRules(BodyRules::CREATURE | BodyRules::TAKES_REMEDIES);
+        assert!(!weapon_soft_weld(false, creature));
+        assert!(!weapon_soft_weld(true, creature));
+    }
+}
+
 /// The equip/swap refresh: with `count` items held, the first one's class,
 /// start byte and node length give its measures; empty hands take the
 /// race's reach and no measures. The parry gate is the holder's and only
