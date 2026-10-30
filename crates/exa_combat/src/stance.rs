@@ -20,7 +20,7 @@
 //! parries, whose clips are stances while they last (L10).
 
 use bevy::prelude::*;
-use exa_anim::{Animator, Ease};
+use exa_anim::{Animator, Ease, Motions};
 use exa_physics::body::{CharacterTicks, Fallen, Ragdoll};
 
 use crate::condition::StateFlags;
@@ -251,9 +251,21 @@ pub fn take_daze(
     anim.ease = Ease::Smooth;
 }
 
+/// Whether the clip `action` is a power's (actions 0x22–0x28, Force Blast …
+/// Disp Form) by the motion set's action table. The original's body tick
+/// takes such a clip down its own branch, which writes the casting
+/// condition and skips the posture switch, so a looping cast clip (Force
+/// Barrier, Force Torrent) plays on under its cast hook.
+pub fn power_clip(motions: Option<&Motions>, action: &str) -> bool {
+    motions
+        .and_then(|m| m.0.action_index(action))
+        .is_some_and(|i| crate::condition::action::POWERS.contains(&i))
+}
+
 /// Whether a balanced fighter switches to its stance: a looping clip other
 /// than the stance's and not one of those the switch leaves alone, a
-/// balance of 0.8 or more and a muscle tone of 0.85 or more.
+/// balance of 0.8 or more and a muscle tone of 0.85 or more. A power's clip
+/// is checked by the caller ([`power_clip`]).
 pub fn switches_posture(anim: &Animator, stance: Stance, balance: f32, tone: f32) -> bool {
     anim.looping
         && anim.action != stance.action()
@@ -296,6 +308,7 @@ pub fn chest_point(root: &GlobalTransform, body: Option<&Ragdoll>) -> Vec3 {
 /// once ending in its stance, and the posture switch (30 frames, linear).
 #[allow(clippy::type_complexity)]
 fn take_stance(
+    motions: Option<Res<Motions>>,
     mut bodies: Query<(
         &mut Stance,
         &mut Animator,
@@ -378,6 +391,10 @@ fn take_stance(
             },
             None => (1.0, 1.0, 0),
         };
+        // A power's clip takes its own branch, which skips the switch.
+        if power_clip(motions.as_deref(), &anim.action) {
+            continue;
+        }
         // A Rebalance holds the switch off until its wait runs out.
         if wait < 1 && switches_posture(&anim, stance, balance, tone) {
             debug!("{} -> {}", anim.action, stance.action());
@@ -746,6 +763,70 @@ mod tests {
         app.update();
         let anim = app.world().get::<Animator>(id).unwrap();
         assert_eq!(anim.then.as_deref(), Some("Unconcious 1"));
+    }
+
+    /// A looping power clip (Force Barrier, the kinesis's and the barrier's
+    /// cast clip) is left to play: the posture switch neither takes it to
+    /// the exploration Idle nor to the Defence stance; a looping clip that
+    /// is no power's still switches.
+    #[test]
+    fn the_posture_switch_leaves_a_looping_cast_clip_alone() {
+        use exa_formats::rsq::{Action, Clip, Key, MotionSet, Moveset};
+        let names = ["Walk", "Idle", "Defence stance", "Force Barrier", "Torch"];
+        // Force Barrier at action 0x23, the rest before it filler.
+        let mut actions: Vec<String> = (0..0x23).map(|i| format!("a{i}")).collect();
+        actions[0] = names[0].into();
+        actions[1] = names[1].into();
+        actions[2] = names[2].into();
+        actions[3] = names[4].into();
+        actions.push(names[3].into());
+        let clip = || Clip {
+            mode: 1,
+            keys: vec![Key {
+                time: 10.0,
+                root: [0.0; 3],
+                rotations: vec![],
+                flags: vec![],
+            }],
+        };
+        let set = MotionSet {
+            bone_count: 0,
+            actions: actions
+                .iter()
+                .map(|n| Action {
+                    name: n.clone(),
+                    params: [0, 0],
+                })
+                .collect(),
+            movesets: vec![Moveset {
+                name: "Default".into(),
+                parent: String::new(),
+                clips: actions.iter().map(|_| Some(clip())).collect(),
+            }],
+        };
+        let motions = Motions::new(std::sync::Arc::new(set), std::sync::Arc::default(), 0.0);
+        assert!(power_clip(Some(&motions), "Force Barrier"));
+        assert!(!power_clip(Some(&motions), "Torch"));
+        assert!(!power_clip(None, "Force Barrier"));
+        let mut app = ticked();
+        app.insert_resource(motions);
+        let cast = |app: &mut App, stance: Stance, clip: &str| {
+            let mut anim = Animator::new("Default", "Idle");
+            anim.play_loop(clip);
+            app.world_mut()
+                .spawn((stance, anim, Fighter::default()))
+                .id()
+        };
+        let exploring = cast(&mut app, Stance::Idle, "Force Barrier");
+        let guarding = cast(&mut app, Stance::Defence, "Force Barrier");
+        let other = cast(&mut app, Stance::Idle, "Torch");
+        for _ in 0..10 {
+            app.update();
+        }
+        let action = |app: &App, id| app.world().get::<Animator>(id).unwrap().action.clone();
+        assert_eq!(action(&app, exploring), "Force Barrier");
+        assert_eq!(action(&app, guarding), "Force Barrier");
+        assert_eq!(action(&app, other), "Idle");
     }
 
     /// The daze in the body tick: a fighter whose energy is 0.62 takes the

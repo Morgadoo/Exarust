@@ -2182,6 +2182,10 @@ fn play_cast_motions(
         match motions.action_name(motion) {
             Some(name) => {
                 let name = name.to_string();
+                info!(
+                    "cast clip {name} (action {motion:#x}) starts; the posture switch leaves a \
+                     power's clip alone"
+                );
                 if motions.clip(&animator, &name).is_some_and(|c| c.loops()) {
                     animator.start(&name, true, None, 0, exa_anim::Ease::Linear);
                     debug!("cast motion {motion:#x}: {name}, looping");
