@@ -4532,20 +4532,34 @@ pub fn release_preview_icon(present: bool) -> bool {
     present
 }
 
-/// The number of preview items a material is applied to.
+/// Applies the preview's material to every item of its list, in order.
 ///
-/// The material is only applied when the preview's generator object exists.
-/// The loop runs from 0 through the item list's highest index (`high`, -1
-/// for an empty list), so it covers `high + 1` items. Every item gets the
-/// same material.
-pub fn preview_material_items(present: bool, high: i32) -> Option<usize> {
-    present.then(|| usize::try_from(high.saturating_add(1)).unwrap_or(0))
+/// The material is only applied when the preview's generator object exists;
+/// then each listed item, from the first through the list's last, is given
+/// the same material, and the applied items are returned in that order. An
+/// empty list applies nothing.
+pub fn apply_preview_material(present: bool, items: &[i32]) -> Vec<i32> {
+    if present { items.to_vec() } else { Vec::new() }
 }
 
-/// Releases a preview item's material; the material manager is called only
-/// when one is set.
-pub fn release_preview_material(present: bool) -> bool {
-    present
+/// Releases a preview item's material.
+///
+/// The material manager is called only when a material is set, and it is
+/// handed the field's address, so the generator slot is cleared as well as
+/// released.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreviewMaterialRelease {
+    /// The material manager ran.
+    pub released: bool,
+    /// The generator slot was cleared.
+    pub cleared: bool,
+}
+
+pub fn release_preview_material(present: bool) -> PreviewMaterialRelease {
+    PreviewMaterialRelease {
+        released: present,
+        cleared: present,
+    }
 }
 
 /// The model the dummy-head preview renders.
@@ -8097,13 +8111,27 @@ mod tests {
 
     #[test]
     fn a_preview_material_covers_every_listed_item() {
-        assert_eq!(preview_material_items(false, 3), None);
-        // An empty list's highest index is -1: no pass.
-        assert_eq!(preview_material_items(true, -1), Some(0));
-        assert_eq!(preview_material_items(true, 0), Some(1));
-        assert_eq!(preview_material_items(true, 3), Some(4));
-        assert!(release_preview_material(true));
-        assert!(!release_preview_material(false));
+        let items = [40, 41, 42, 43];
+        // Without a generator nothing is applied; with one, every listed
+        // item takes the same material in list order.
+        assert!(apply_preview_material(false, &items).is_empty());
+        assert_eq!(apply_preview_material(true, &items), items.to_vec());
+        assert!(apply_preview_material(true, &[]).is_empty());
+
+        assert_eq!(
+            release_preview_material(true),
+            PreviewMaterialRelease {
+                released: true,
+                cleared: true
+            }
+        );
+        assert_eq!(
+            release_preview_material(false),
+            PreviewMaterialRelease {
+                released: false,
+                cleared: false
+            }
+        );
     }
 
     #[test]
