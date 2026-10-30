@@ -366,8 +366,12 @@ pub struct Conversion {
     /// Points converted.
     pub points: i32,
     /// The skill that reached a new level. The body's technique bits are
-    /// read again then, and a rise in [`ARMOUR_SKILL`] redoes the armour.
+    /// read again then ([`technique_bits`]), and a rise in [`ARMOUR_SKILL`]
+    /// redoes the armour.
     pub raised: Option<usize>,
+    /// The body's technique word after a rise ([`technique_bits`]); `None`
+    /// when no skill rose.
+    pub techniques: Option<u32>,
     /// A companion's new AI skill and courage factors, its two attributes
     /// times 0.01, after a level.
     pub ai_factors: Option<[f32; 2]>,
@@ -758,6 +762,7 @@ impl Experience {
             .wrapping_mul(points as u32)
             .wrapping_add(self.player_clock);
         let mut raised = None;
+        let mut techniques = None;
         if let Some((skill, _)) = training_skill(&player.skills)
             && raise(
                 &mut player.skills[skill],
@@ -765,10 +770,13 @@ impl Experience {
             )
         {
             raised = Some(skill);
+            // The body's techniques are read again on a rise.
+            techniques = Some(technique_bits(&player.skills));
         }
         Conversion {
             points,
             raised,
+            techniques,
             ai_factors: None,
         }
     }
@@ -866,6 +874,7 @@ pub fn convert_companion(now: u32, companion: &mut Learner) -> Conversion {
         (points as u32).wrapping_shl(1) as u16,
     ) {
         out.raised = Some(skill);
+        out.techniques = Some(technique_bits(&companion.skills));
         companion.combat_skill += COMPANION_RAISE;
         if companion.combat_skill > ATTRIBUTE_CAP {
             companion.combat_skill = ATTRIBUTE_CAP;

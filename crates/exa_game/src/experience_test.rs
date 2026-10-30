@@ -148,6 +148,14 @@ fn a_level_reads_the_bodys_techniques() {
     assert_eq!(technique_bits(&odd), 0);
     let none = skills_with([0; SKILLS]);
     assert_eq!(technique_bits(&none), 0);
+    // A conversion that raises reports the word the body reads again.
+    let mut xp = Experience::default();
+    let mut player = trainee(1000, 4998);
+    player.skills[0].techniques[0] = 4;
+    let out = xp.convert_player(400, &mut player);
+    assert_eq!((out.points, out.raised), (2, Some(0)));
+    assert_eq!(out.techniques, Some(0x8));
+    assert_eq!(player.skills[0].points, 5000);
 }
 
 /// The account-wide experience round-trips through the binary settings
