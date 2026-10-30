@@ -990,9 +990,6 @@ pub fn throw_coast(from: [f32; 3], to: [f32; 3]) -> ([f32; 3], bool) {
     )
 }
 
-/// The flag a shell that was still held gains when the throw ends.
-pub const SHELL_END_FLAG: u32 = 0x200;
-
 /// The sub-nodes of a thrown item: the root, then every child depth first,
 /// the child order the original appends them in.
 pub fn collect_sub_nodes(root: u64, children: impl Fn(u64) -> Vec<u64>) -> Vec<u64> {
@@ -1031,22 +1028,20 @@ pub fn throw_grab(
     }
 }
 
-/// What ending a throw restores: every sub-node gets the item's own shell
-/// back, and a shell still held gains [`SHELL_END_FLAG`].
+/// What ending a throw restores: every collected sub-node gets the item's
+/// own shell back. (The same routine fades the lift's voice when the throw
+/// ends before its drop: [`ThrowSound::fade`].)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ThrowRestore {
     pub nodes: Vec<u64>,
     pub shell: u64,
-    pub shell_flag: u32,
 }
 
-/// The end of a throw: `nodes` return to `shell`, and a shell still in the
-/// lift's hands gains [`SHELL_END_FLAG`].
-pub fn throw_restore(nodes: &[u64], shell: u64, shell_held: bool) -> ThrowRestore {
+/// The end of a throw: `nodes` return to `shell`.
+pub fn throw_restore(nodes: &[u64], shell: u64) -> ThrowRestore {
     ThrowRestore {
         nodes: nodes.to_vec(),
         shell,
-        shell_flag: if shell_held { SHELL_END_FLAG } else { 0 },
     }
 }
 
@@ -1338,11 +1333,8 @@ mod tests {
         assert_eq!(grab.nodes, vec![1, 2, 4, 3]);
         assert_eq!(grab.previous_shell, 7);
         assert_eq!(grab.shell, 9);
-        let restore = throw_restore(&grab.nodes, grab.previous_shell, true);
+        let restore = throw_restore(&grab.nodes, grab.previous_shell);
         assert_eq!(restore.nodes, grab.nodes);
         assert_eq!(restore.shell, 7);
-        assert_eq!(restore.shell_flag, SHELL_END_FLAG);
-        assert_eq!(SHELL_END_FLAG, 0x200);
-        assert_eq!(throw_restore(&[1], 7, false).shell_flag, 0);
     }
 }
