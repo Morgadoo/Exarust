@@ -1,13 +1,17 @@
 //! The original's file plumbing: the shared folder table, compact file
 //! references (a folder index and a name kept inline up to 16 characters),
 //! the name rules built on them (entry stem, extension swap, full path), the
-//! directory prefixes it creates for a path, whole-file reads and writes, and
-//! the registry of file formats.
+//! directory prefixes it creates for a path, whole-file reads and writes (by
+//! path, by reference and over the search path), and the registry of file
+//! formats.
 //!
 //! Paths are the original's text: bytes with `\` between folders. Rules:
 //! `docs/formats/SETTINGS.md` (File plumbing).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use crate::mem_block::MemBlock;
+use crate::text;
 
 /// Longest name a file reference keeps inline.
 pub const INLINE_NAME: usize = 16;
@@ -240,6 +244,105 @@ pub fn write_whole_file(path: &Path, bytes: &[u8]) -> bool {
     std::fs::write(path, bytes).is_ok()
 }
 
+/// The message the original logs when a file cannot be opened.
+pub const OPEN_FAILED: &str = "Failed to open file: ";
+/// The message it logs when a file's contents cannot be read.
+pub const READ_FAILED: &str = "Unable to read contents of file: ";
+/// The log topic its file errors go to.
+pub const IO_TOPIC: &str = "File IO";
+
+/// Why a whole-file read left no block: the file could not be opened, or its
+/// contents could not be read (in which case the original clears the block).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileIssue {
+    Open,
+    Read,
+}
+
+impl FileIssue {
+    /// The line the original logs for this failure and the path or name it
+    /// tried, in its error log's third level.
+    pub fn message(self, name: &[u8]) -> String {
+        let prefix = match self {
+            Self::Open => OPEN_FAILED,
+            Self::Read => READ_FAILED,
+        };
+        format!("{prefix}{}", String::from_utf8_lossy(name))
+    }
+}
+
+/// A block read from a file ([`read_referenced_file`],
+/// [`read_from_search_path`]); a failure carries what the original logs.
+pub type FileRead = Result<MemBlock, FileIssue>;
+
+/// The original's text path as a filesystem path (its bytes are ANSI text).
+fn path_of(name: &[u8]) -> PathBuf {
+    PathBuf::from(String::from_utf8_lossy(name).into_owned())
+}
+
+/// Whether a path names something that exists (`GetFileAttributesA` says so
+/// for a file or a folder).
+pub fn file_exists(name: &[u8]) -> bool {
+    path_of(name).metadata().is_ok()
+}
+
+/// Reads a whole file named by `name`: on an open failure the original logs
+/// it and leaves the block alone; on a read failure it logs it and clears
+/// the block.
+pub fn read_file(name: &[u8]) -> FileRead {
+    let mut file = std::fs::File::open(path_of(name)).map_err(|_| FileIssue::Open)?;
+    let mut bytes = Vec::new();
+    use std::io::Read;
+    file.read_to_end(&mut bytes).map_err(|_| FileIssue::Read)?;
+    Ok(MemBlock::from_bytes(bytes))
+}
+
+/// Writes a whole block to `name`, creating or overwriting the file. An
+/// empty block makes an empty file (and counts as written). Whether all of
+/// it reached the file.
+pub fn write_file(name: &[u8], block: &MemBlock) -> bool {
+    write_whole_file(&path_of(name), block.bytes())
+}
+
+/// Reads the whole file a reference names: the folder's path and the name,
+/// or the name alone without a folder.
+pub fn read_referenced_file(table: &FolderTable, file: &FileRef) -> FileRead {
+    read_file(&file.open_path(table))
+}
+
+/// Writes a block to the full path a reference gives (a long name holding a
+/// separator is a path already; otherwise the folder's path and the name).
+pub fn write_referenced_file(table: &FolderTable, file: &FileRef, base: &[u8], block: &MemBlock) -> bool {
+    write_file(&file.full_path(table, base), block)
+}
+
+/// Reads the whole file `name` from the newest folder still in use where it
+/// exists. The first folder where it exists ends the search even when its
+/// read fails, as in the original. On an open failure nothing is read and
+/// the original logs the name; on a read failure the block is cleared.
+pub fn read_from_search_path(table: &FolderTable, name: &FileName) -> FileRead {
+    let issue = std::cell::Cell::new(None);
+    let read = read_from_folders(
+        table,
+        name,
+        file_exists,
+        |path| match read_file(path) {
+            Ok(block) => Some(block.into_bytes()),
+            Err(failure) => {
+                issue.set(Some(failure));
+                None
+            }
+        },
+    );
+    match read {
+        Some(bytes) => Ok(MemBlock::from_bytes(bytes)),
+        None => match issue.get() {
+            Some(failure) => Err(failure),
+            None => Err(FileIssue::Open),
+        },
+    }
+}
+
 /// Reads `name` from the newest registered folder, among those still in
 /// use, where it exists. The first folder where it exists ends the search
 /// even when the read fails.
@@ -346,19 +449,40 @@ impl<H: Clone> FormatRegistry<H> {
     }
 }
 
-/// The 0-based index of the first `c` in `s`, or −1.
+/// The 0-based index of the first `c` in `s`, or −1. The original's forward
+/// byte search ([`crate::text::find_byte`]).
 pub fn find_byte(c: u8, s: &[u8]) -> i32 {
-    s.iter().position(|&b| b == c).map_or(-1, |i| i as i32)
+    text::find_byte(c, s)
 }
 
-/// The 0-based index of the last `c` in `s`, or −1.
+/// The 0-based index of the last `c` in `s`, or −1 ([`crate::text::last_byte`]).
 pub fn find_last_byte(c: u8, s: &[u8]) -> i32 {
-    s.iter().rposition(|&b| b == c).map_or(-1, |i| i as i32)
+    if s.is_empty() {
+        return -1;
+    }
+    text::last_byte(c, s)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    impl FolderTable {
+        /// Sets an entry's use count, which only the readers of a file
+        /// decrement (their release is outside this pack).
+        fn set_uses(&mut self, index: usize, uses: u32) {
+            self.entries[index].uses = uses;
+        }
+
+        /// Adds an entry as it is: the tests need platform separators, which
+        /// [`FolderTable::register`] (as the original) never stores.
+        fn push_folder(&mut self, path: &[u8], uses: u32) {
+            self.entries.push(Folder {
+                path: path.to_vec(),
+                uses,
+            });
+        }
+    }
 
     #[test]
     fn folders_take_the_base_and_a_trailing_separator() {
@@ -444,6 +568,92 @@ mod tests {
         assert_eq!(got.as_deref(), Some(&b"B\\f"[..]));
         // The first existing folder ends the search even when its read fails.
         assert_eq!(read_from_folders(&t, &name, exists, |_| None), None);
+    }
+
+    /// A temporary folder for the file tests; the caller removes it.
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("exarust-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_whole_file_read_names_its_folder_and_the_search_path() {
+        let dir = temp_dir("file-ref-read");
+        let folder = dir.to_string_lossy().into_owned().into_bytes();
+        let mut t = FolderTable::new();
+        // The table stores a trailing separator.
+        t.register(&folder, b"");
+        let stored = &t.folders()[0].path.clone();
+        std::fs::write(format!("{}old.txt", String::from_utf8_lossy(stored)), b"old").unwrap();
+        std::fs::write(format!("{}new.txt", String::from_utf8_lossy(stored)), b"new").unwrap();
+        assert!(file_exists(&[stored.as_slice(), b"new.txt"].concat()));
+        assert!(!file_exists(&[stored.as_slice(), b"gone.txt"].concat()));
+        // By reference: the folder's path and the name.
+        let file = FileRef::new(1, b"new.txt");
+        let read = read_referenced_file(&t, &file).unwrap();
+        assert_eq!(read.bytes(), b"new");
+        assert_eq!(read.capacity(), 3);
+        // Without a folder the name is a path of its own (relative here).
+        let missing = read_referenced_file(&t, &FileRef::new(0, b"nowhere.txt"));
+        assert_eq!(missing, Err(FileIssue::Open));
+        assert_eq!(
+            FileIssue::Open.message(b"nowhere.txt"),
+            "Failed to open file: nowhere.txt"
+        );
+        assert_eq!(
+            FileIssue::Read.message(b"x"),
+            "Unable to read contents of file: x"
+        );
+        // A write by reference, an empty write and a failed open.
+        let file = FileRef::new(1, b"out.txt");
+        let block = MemBlock::from_bytes(vec![1, 2, 3]);
+        assert!(write_referenced_file(&t, &file, b"", &block));
+        assert_eq!(
+            std::fs::read(format!("{}out.txt", String::from_utf8_lossy(stored))).unwrap(),
+            [1, 2, 3]
+        );
+        assert!(write_referenced_file(&t, &file, b"", &MemBlock::new()));
+        assert_eq!(
+            std::fs::read(format!("{}out.txt", String::from_utf8_lossy(stored)))
+                .unwrap()
+                .len(),
+            0
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_search_path_takes_the_newest_folder_holding_the_file() {
+        let dir = temp_dir("file-ref-search");
+        let make = |name: &str| {
+            let path = dir.join(name);
+            std::fs::create_dir_all(&path).unwrap();
+            let mut bytes = path.to_string_lossy().into_owned().into_bytes();
+            bytes.push(std::path::MAIN_SEPARATOR as u8);
+            bytes
+        };
+        let old = make("old");
+        let new = make("new");
+        let mut t = FolderTable::new();
+        t.push_folder(&old, 1);
+        t.push_folder(&new, 1);
+        // Only the oldest folder holds it, then only the newest.
+        std::fs::write(dir.join("old").join("f.txt"), b"one").unwrap();
+        let name = FileName::new(b"f.txt");
+        assert_eq!(read_from_search_path(&t, &name).unwrap().bytes(), b"one");
+        std::fs::write(dir.join("new").join("f.txt"), b"two").unwrap();
+        assert_eq!(read_from_search_path(&t, &name).unwrap().bytes(), b"two");
+        // A folder with no uses left is skipped.
+        t.set_uses(1, 0);
+        assert_eq!(read_from_search_path(&t, &name).unwrap().bytes(), b"one");
+        // No folder holds it: nothing is read and the open failed.
+        assert_eq!(
+            read_from_search_path(&t, &FileName::new(b"gone.txt")),
+            Err(FileIssue::Open)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
