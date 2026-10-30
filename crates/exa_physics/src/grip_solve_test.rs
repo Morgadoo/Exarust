@@ -241,6 +241,8 @@ fn a_held_torch_takes_the_held_and_mark_bits() {
         let body = app.world().get::<Ragdoll>(entity).unwrap();
         assert_eq!(body.parts[0].state.0 & word, word, "{kind:?}");
         assert!(body.held_by.is_some());
+        let friction = if kind == HeldKind::Torch { 0.0 } else { 0.5 };
+        assert_eq!(body.parts[0].friction, friction, "{kind:?}");
     }
 }
 

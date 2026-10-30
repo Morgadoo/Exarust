@@ -1297,10 +1297,12 @@ death, constants read from the executable; six live retail collapses):
   lower legs leave the living lower legs' layer (0; Contacts between
   bodies, above). It asks for a groan (voice line 2) from the two draws it
   makes: volume 0.15 + 0.1·second, pitch 0.8 + 0.1·first, both sums in
-  double (`collapse_voice`). A collapse writes nothing to the items' grip
-  welds: the weapons and torch are dropped, and a shield is dropped with
-  them. Only a gobbler's collapse (race word `0x800`) slackens each
-  femur's limit link to 10 cm (`exa_physics::body::Ragdoll::slacken_femur_limits`).
+  double (`collapse_voice`). Every held item it still has then takes a
+  10 cm slack on its soft world weld
+  (`exa_physics::grip::GripLinks::slacken_soft_weld`), after the weapons
+  and torch have been dropped (the shield stays on the arm). A gobbler's
+  collapse also slackens each femur's limit link to 10 cm
+  (`exa_physics::body::Ragdoll::slacken_femur_limits`).
   (Not yet: a grab released.)
 - **Each tick**, in place of the posture block: the frame re-anchors on
   the pelvis with no reach; the arms' stiffness is 0.2; the dying tick

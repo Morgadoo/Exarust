@@ -352,12 +352,11 @@ tested rules of their own.
   kind byte) and rebuilds its `Blade` record from the flipped weapon
   section, and a weapon whose own hand flag (`0x2000000`) says it starts
   flipped is placed half a turn about y and built from the flipped side
-  at once. A collapsing holder lets every real held item go
-  (`GripRelease`: the grip stage frees them) — its weapons, its torch and
-  its shield; the bare fists that stand in an unarmed character's slots
-  are not items and stay. A dead holder's item takes death's stiff soft
-  weld (`adjust_welds`, on the tick the holder dies); a collapse writes no
-  weld. When the switch clip passes 60% the runtime trades the two held
+  at once. A collapsing holder lets its weapons and torch go
+  (`GripRelease`: the grip stage frees them) while the shield stays on the
+  arm; what is still held then takes the collapse's 10 cm soft-weld slack,
+  and a dead holder's item takes death's stiff soft weld (`adjust_welds`,
+  on the tick the holder enters each condition). When the switch clip passes 60% the runtime trades the two held
   weapons' blade slots, the attacker's primary and the `Hands` main and
   second weapon once, so `choose_held_movesets` picks the moveset again
   from the new main weapon (a two-hander and a one-hander trade "Two

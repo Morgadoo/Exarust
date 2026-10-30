@@ -290,10 +290,11 @@ pub fn flip_requests(
     }
 }
 
-/// Marks the items a collapsing holder lets go of: the original's collapse
-/// empties every real held slot (its weapons, its shield and its torch; the
-/// bare fists that stand in the slots of an unarmed body are not items and
-/// stay). A body that is dead without a collapse keeps its items.
+/// Marks the weapons and torches a collapsing holder lets go of. The
+/// original's collapse drops every weapon in the held list and then the
+/// torch it carries; a shield is not in that list (it hangs from the off
+/// hand's own array), so it stays on the arm. A body that is dead without a
+/// collapse keeps its items.
 pub fn release_collapsed(
     mut commands: Commands,
     held: Query<(Entity, &HeldGrip)>,
@@ -301,7 +302,7 @@ pub fn release_collapsed(
     owners: Query<&Condition>,
 ) {
     for (item, grip) in &held {
-        if grip.released {
+        if grip.released || grip.kind == HeldKind::Shield {
             continue;
         }
         let Some((owner, _)) = bodies
@@ -316,11 +317,12 @@ pub fn release_collapsed(
     }
 }
 
-/// The holder condition a held item's world welds last answered to, so
-/// death's stiffening lands on the tick the holder enters that condition,
-/// as the original's death routine writes it once when it runs (again at a
-/// later death). The change is not undone when the body rises: the
-/// original's revive does not rebuild the welds.
+/// The holder condition a held item's world welds last answered to, so the
+/// collapse's slack and death's stiffening land on the tick the holder
+/// enters that condition, as the original's collapse and death routines
+/// write them once when they run (and again at a later collapse or death).
+/// Neither change is undone when the body rises: the original's revive does
+/// not rebuild the welds.
 #[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct HeldWeld {
     /// The holder's condition the last time the welds were looked at; `None`
@@ -328,12 +330,14 @@ pub struct HeldWeld {
     pub seen: Option<Condition>,
 }
 
-/// Applies the original's death change to a held item's world welds: a dead
-/// holder's soft weld becomes as stiff as its origin weld (strength 1), so
-/// the corpse's item stays where it fell. It lands on the change into the
-/// death condition. Nothing is written on a collapse: the collapse routine
-/// only slackens a gobbler's femur limits, and a character's collapse drops
-/// its items outright ([`release_collapsed`]).
+/// Applies the original's collapse and death changes to a held item's world
+/// welds: a holder that starts collapsing gives its item's soft weld the
+/// 10 cm slack (the collapse drops its weapons and torch first, so what is
+/// left is the shield or torch that stays), and one that dies makes it
+/// stiff. Each lands on the change into the condition. The original's
+/// collapse gate also reads the motion's fall class, which Exarust's
+/// collapse always is (it starts Fall Backward) [guess on the motion
+/// class's meaning].
 #[allow(clippy::type_complexity)]
 pub fn adjust_welds(
     mut commands: Commands,
@@ -367,10 +371,13 @@ pub fn adjust_welds(
         if seen == Some(condition) {
             continue;
         }
-        if condition == Condition::DEAD
-            && let Some(links) = grip.links.as_mut()
-        {
-            links.stiffen_soft_weld();
+        if let Some(links) = grip.links.as_mut() {
+            if condition.is_collapsing() {
+                links.slacken_soft_weld();
+            }
+            if condition == Condition::DEAD {
+                links.stiffen_soft_weld();
+            }
         }
         let state = HeldWeld {
             seen: Some(condition),
@@ -542,10 +549,11 @@ mod tests {
         }])
     }
 
-    /// A collapsing holder lets go of every real held item: its weapons,
-    /// its torch and its shield. A dead one keeps everything.
+    /// A collapsing holder lets go of its weapons and torch but keeps the
+    /// shield on its arm (the collapse's weapon list does not hold it); a
+    /// dead one keeps everything.
     #[test]
-    fn a_collapse_drops_every_held_item() {
+    fn a_collapse_drops_the_weapon_and_keeps_the_shield() {
         let mut app = App::new();
         app.add_systems(Update, release_collapsed);
         let owner = app.world_mut().spawn(Condition::COLLAPSING).id();
@@ -577,13 +585,18 @@ mod tests {
         let torch = spawn(&mut app, exa_physics::grip::HeldKind::Torch);
         let shield = spawn(&mut app, exa_physics::grip::HeldKind::Shield);
         app.update();
-        for item in [weapon, torch, shield] {
+        for item in [weapon, torch] {
             assert!(
                 app.world()
                     .get::<exa_physics::grip::GripRelease>(item)
                     .is_some()
             );
         }
+        assert!(
+            app.world()
+                .get::<exa_physics::grip::GripRelease>(shield)
+                .is_none()
+        );
         // While alive nothing is marked; a dead body keeps its weapon too.
         app.world_mut()
             .entity_mut(owner)
@@ -606,10 +619,11 @@ mod tests {
         );
     }
 
-    /// Death makes a held item's soft weld stiff once; nothing is written
-    /// on a collapse (the original's collapse drops the item instead).
+    /// A collapse gives its still-held shield a 10 cm soft-weld slack; death
+    /// then makes it stiff; a body that rises and collapses again writes the
+    /// slack again.
     #[test]
-    fn death_stiffens_the_held_weld() {
+    fn the_held_weld_follows_collapse_and_death() {
         let mut app = App::new();
         app.add_systems(Update, adjust_welds);
         let owner = app.world_mut().spawn(Condition::COLLAPSING).id();
@@ -656,7 +670,7 @@ mod tests {
         };
         let links = item_links(&mut app);
         let shield = spawn(&mut app, exa_physics::grip::HeldKind::Shield, links);
-        // A collapse writes nothing to the welds.
+        // A collapse writes the weld's 10 cm slack.
         app.update();
         let links = app
             .world()
@@ -666,7 +680,7 @@ mod tests {
             .clone()
             .unwrap();
         let soft = links.world_soft.unwrap();
-        assert_eq!(links.links[soft].slack, 0.0);
+        assert_eq!(links.links[soft].slack, 0.10);
         assert_eq!(links.links[soft].strength, 0.05);
         assert_eq!(
             app.world().get::<HeldWeld>(shield).unwrap().seen,
@@ -683,7 +697,7 @@ mod tests {
             .clone()
             .unwrap();
         assert_eq!(links.links[soft].strength, 1.0);
-        assert_eq!(links.links[soft].slack, 0.0);
+        assert_eq!(links.links[soft].slack, 0.10);
         let state = *app.world().get::<HeldWeld>(shield).unwrap();
         assert_eq!(state.seen, Some(Condition::DEAD));
         app.update();
@@ -697,11 +711,11 @@ mod tests {
             .as_mut()
             .unwrap()
             .links[soft]
-            .strength = 0.2;
+            .slack = 0.02;
         app.update();
         let kept = app.world().get::<HeldGrip>(shield).unwrap();
-        assert_eq!(kept.links.as_ref().unwrap().links[soft].strength, 0.2);
-        // A body that rose and collapses again takes nothing.
+        assert_eq!(kept.links.as_ref().unwrap().links[soft].slack, 0.02);
+        // A body that rose and collapses again takes the slack again.
         app.world_mut()
             .entity_mut(owner)
             .insert(Condition::default());
@@ -717,7 +731,8 @@ mod tests {
             .links
             .clone()
             .unwrap();
-        assert_eq!(links.links[soft].strength, 0.2);
+        assert_eq!(links.links[soft].slack, 0.10);
+        assert_eq!(links.links[soft].strength, 1.0);
     }
 
     /// The flip command refuses a switching character and a section with no

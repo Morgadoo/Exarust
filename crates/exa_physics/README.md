@@ -646,11 +646,13 @@ flipped state and marks its record for a rebuild (the middle and end tests
 are double compares, as the original's). A flip command is refused while
 the character switches and for a section with no flipped-side kind byte
 (`GripLinks::begin_flip`), as the original's command does. A collapse
-writes no weld (it drops the character's items, and a gobbler's collapse
-only slackens its femur limit links); death makes a held item's soft weld
-as stiff as the origin weld (`GripLinks::stiffen_soft_weld`), so a
-corpse's item stays where it fell. `exa_character::grip_runtime`'s
-`adjust_welds` applies it on the tick the holder dies. Death's
+gives every held item's soft world weld a 10 cm slack
+(`GripLinks::slacken_soft_weld`, after the collapse has let the weapons
+go, so what is left is the shield it keeps), and death then makes
+that weld as stiff as the origin weld (`GripLinks::stiffen_soft_weld`), so
+a corpse's item stays where it fell; `exa_character::grip_runtime`'s
+`adjust_welds` applies each on the tick the holder enters that condition
+(only the slack is written, not the smoothed length). Death's
 other strength-1 write is to each lower leg's limit link
 (`Ragdoll::go_limp`). Emptying the hands
 restores each hand's link-mobility and contact-mobility words

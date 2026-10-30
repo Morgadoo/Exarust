@@ -383,8 +383,13 @@ pub fn mark_held(mut held: Query<(&HeldGrip, &mut Ragdoll)>) {
                     .state
                     .with(crate::part::PartState::HELD | crate::part::PartState::STRIKE_MARK);
             }
-            // A held item's friction is the character constructor's 0.5.
-            part.friction = 0.5;
+            // A held weapon's and shield's friction is the character
+            // constructor's 0.5; the torch's own attach leaves it 0.
+            part.friction = if grip.kind == HeldKind::Torch {
+                0.0
+            } else {
+                0.5
+            };
         }
         if grip.kind == HeldKind::Shield
             && let Some(part) = body.parts.get_mut(HeldGrip::ITEM_PART)
