@@ -640,95 +640,35 @@ impl<'a> Rfi<'a> {
     }
 }
 
-/// One registered image loader: the extension it serves and its
-/// description. The original's registry stores the extension key, the
-/// description and a load callback; the callback is the pack path in
-/// Exarust, so only the key and description are data here.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LoaderFormat {
-    pub extension: String,
-    pub description: String,
-}
+/// The image unit's registry key for the Rayform image: `rfi` padded to
+/// 16 bytes.
+pub const RFI_FORMAT_KEY: [u8; crate::file_ref::INLINE_NAME] = *b"rfi\0\0\0\0\0\0\0\0\0\0\0\0\0";
+/// The Rayform image's registry description.
+pub const RFI_FORMAT_DESCRIPTION: &str = "Rayform Image";
 
-/// The image-loader registry. Registering an extension replaces its earlier
-/// entry; freeing the registry drops every entry.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LoaderRegistry {
-    entries: Vec<LoaderFormat>,
-}
-
-impl LoaderRegistry {
-    /// The registry the unit initialises: the Rayform Image loader on
-    /// `rfi`.
-    pub fn builtin() -> Self {
-        let mut registry = Self::default();
-        registry.register("rfi", "Rayform Image");
-        registry
-    }
-
-    /// Registers an extension and its description, replacing an earlier
-    /// entry with the same extension.
-    pub fn register(&mut self, extension: impl Into<String>, description: impl Into<String>) {
-        let entry = LoaderFormat {
-            extension: extension.into().to_ascii_lowercase(),
-            description: description.into(),
-        };
-        if let Some(existing) = self
-            .entries
-            .iter_mut()
-            .find(|e| e.extension == entry.extension)
-        {
-            *existing = entry;
-        } else {
-            self.entries.push(entry);
-        }
-    }
-
-    pub fn get(&self, extension: &str) -> Option<&LoaderFormat> {
-        let extension = extension.to_ascii_lowercase();
-        self.entries.iter().find(|e| e.extension == extension)
-    }
-
-    pub fn entries(&self) -> &[LoaderFormat] {
-        &self.entries
-    }
-
-    pub fn len(&self) -> usize {
-        self.entries.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
-    /// Frees the registry.
-    pub fn clear(&mut self) {
-        self.entries.clear();
-    }
+/// The image unit's format registry as its start-up leaves it: the
+/// Rayform image alone at index 0, with no handler (the loader decodes
+/// index 0 itself and calls the registered handler for any other). It is
+/// the engine's shared [`crate::file_ref::FormatRegistry`].
+pub fn image_formats() -> crate::file_ref::FormatRegistry<()> {
+    let mut registry = crate::file_ref::FormatRegistry::new();
+    registry.add(RFI_FORMAT_KEY, (), RFI_FORMAT_DESCRIPTION);
+    registry
 }
 
 #[cfg(test)]
-mod loader_tests {
+mod format_tests {
     use super::*;
 
     #[test]
-    fn the_registry_starts_with_the_rayform_loader() {
-        let registry = LoaderRegistry::builtin();
-        assert_eq!(registry.get("rfi").unwrap().description, "Rayform Image");
-        assert_eq!(registry.get("RFI").unwrap().extension, "rfi");
-        assert!(registry.get("dds").is_none());
-    }
-
-    #[test]
-    fn registering_replaces_the_same_extension_and_clear_frees_it() {
-        let mut registry = LoaderRegistry::builtin();
-        registry.register("RFI", "Rayform Image 2");
-        assert_eq!(registry.len(), 1);
-        assert_eq!(registry.get("rfi").unwrap().description, "Rayform Image 2");
-        registry.register("dds", "DirectDraw Surface");
-        assert_eq!(registry.len(), 2);
-        registry.clear();
-        assert!(registry.is_empty());
+    fn the_image_registry_starts_with_the_rayform_image() {
+        let registry = image_formats();
+        assert_eq!(registry.formats().len(), 1);
+        assert_eq!(registry.find(&RFI_FORMAT_KEY), Some(0));
+        let mut upper = RFI_FORMAT_KEY;
+        upper[..3].copy_from_slice(b"RFI");
+        assert_eq!(registry.find(&upper), Some(0));
+        assert_eq!(registry.formats()[0].description, "Rayform Image");
     }
 }
 
