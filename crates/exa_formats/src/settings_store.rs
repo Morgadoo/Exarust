@@ -12,7 +12,12 @@
 //!   deepest chunk (or of the store), adding their bytes to it and to every
 //!   chunk around it;
 //! - a store read back whose first word is 0 fails its integrity check and
-//!   is discarded; an empty store is not written.
+//!   is discarded; an empty store is not written;
+//! - the program's exit hooks are a chain: registering puts a hook at the
+//!   head, and the settings hook saves and then calls the hook registered
+//!   before it.
+
+use std::path::Path;
 
 use crate::{Error, Result};
 
@@ -37,6 +42,47 @@ pub struct LoadedStore {
     pub store: SettingsStore,
     /// The file's first word was 0, so its contents were dropped.
     pub integrity_failed: bool,
+}
+
+/// One hook of an exit chain: it runs with the chain's context.
+pub type ExitHook<C> = Box<dyn FnMut(&mut C)>;
+
+/// The program's exit hooks: each registration goes to the head of the
+/// chain, and a hook calls the one registered before it when it is done.
+/// [`ExitHooks::run`] walks the chain from the last registered hook down,
+/// which is what the original's own hooks (each ending by calling the saved
+/// previous hook) give.
+#[derive(Default)]
+pub struct ExitHooks<C> {
+    hooks: Vec<ExitHook<C>>,
+}
+
+impl<C> ExitHooks<C> {
+    /// An empty chain.
+    pub fn new() -> Self {
+        Self { hooks: Vec::new() }
+    }
+
+    /// Registers `hook` at the head of the chain.
+    pub fn register(&mut self, hook: impl FnMut(&mut C) + 'static) {
+        self.hooks.push(Box::new(hook));
+    }
+
+    /// How many hooks are registered.
+    pub fn len(&self) -> usize {
+        self.hooks.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.hooks.is_empty()
+    }
+
+    /// Runs the chain, latest hook first.
+    pub fn run(&mut self, context: &mut C) {
+        for hook in self.hooks.iter_mut().rev() {
+            hook(context);
+        }
+    }
 }
 
 impl SettingsStore {
@@ -76,6 +122,16 @@ impl SettingsStore {
     /// original does not write.
     pub fn save(&self) -> Option<&[u8]> {
         (!self.data.is_empty()).then_some(&self.data[..])
+    }
+
+    /// Writes the store back as the original's exit save does: an empty
+    /// store is not written at all. Whether the file holds the store
+    /// afterwards (true when there was nothing to write).
+    pub fn save_to(&self, path: &Path) -> bool {
+        match self.save() {
+            Some(bytes) => crate::file_ref::write_whole_file(path, bytes),
+            None => true,
+        }
     }
 
     /// The raw bytes.
@@ -368,5 +424,37 @@ mod tests {
         );
         assert!(bad.set(&[1, 2], &[1]).is_err());
         assert_eq!(bad.get(&[1, 2]), None);
+    }
+
+    #[test]
+    fn the_exit_save_writes_a_store_and_skips_an_empty_one() {
+        let dir = std::env::temp_dir().join(format!("exarust-store-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.set");
+        // An empty store is not written: a file already there stays.
+        std::fs::write(&path, b"kept").unwrap();
+        assert!(SettingsStore::new().save_to(&path));
+        assert_eq!(std::fs::read(&path).unwrap(), b"kept");
+        // A store with contents is written whole.
+        let mut store = SettingsStore::new();
+        store.set(&BINDINGS_PATH, &[7; 4]).unwrap();
+        assert!(store.save_to(&path));
+        assert_eq!(std::fs::read(&path).unwrap(), store.bytes());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_exit_hooks_run_latest_first() {
+        let mut hooks: ExitHooks<Vec<&'static str>> = ExitHooks::new();
+        assert!(hooks.is_empty());
+        hooks.register(|log| log.push("first"));
+        hooks.register(|log| log.push("second"));
+        hooks.register(|log| log.push("third"));
+        assert_eq!(hooks.len(), 3);
+        let mut log = Vec::new();
+        hooks.run(&mut log);
+        // Registration puts each hook at the head, so the last runs first.
+        assert_eq!(log, ["third", "second", "first"]);
     }
 }
