@@ -258,7 +258,8 @@ normal when the centre is on the triangle), a swept sphere's first touch
 (the centre placed one radius in front of the plane, the closest point
 there, and the distance from the sweep's start
 `closest·d − start·d − √(r² − p²)`; a sweep that grazes the plane uses its
-end) and a point's distance to the nearest face of a reach (the plane
+end; the travel and the best hit are one field, so a mesh walk shortens the
+sweep to each accepted hit) and a point's distance to the nearest face of a reach (the plane
 distance within the reach and the squared distance under the reach's square
 less the epsilon). The range rejections are "below"/"above" compares that a
 NaN passes; only the final distance checks (`0 < t < best`, the sweep's

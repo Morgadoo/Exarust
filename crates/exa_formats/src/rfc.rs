@@ -2170,8 +2170,10 @@ impl Face {
 
     /// The distance along a sphere's sweep at which it first touches the
     /// face's front, if it does before `best`. `direction` is the unit
-    /// sweep direction and `length` its travel; `radius` is the sphere's.
-    /// `start` is the centre. The original finds the moment the centre is
+    /// sweep direction; `radius` is the sphere's; `start` is the centre.
+    /// The original keeps the sweep's travel and the best hit in one field,
+    /// so `best` is also the travel: a mesh walk shortens the sweep to each
+    /// accepted hit. The original finds the moment the centre is
     /// one radius in front of the plane, the closest point there, and
     /// measures from the sweep's start: `closest·direction −
     /// start·direction − √(radius² − perpendicular²)`. A sweep that only
@@ -2181,10 +2183,10 @@ impl Face {
         &self,
         start: [f32; 3],
         direction: [f32; 3],
-        length: f32,
         radius: f32,
         best: f32,
     ) -> Option<f32> {
+        let length = best;
         let start_distance = self.plane_distance(start);
         // These three compares are "below"/"above" forms: the original's
         // unordered (NaN) form continues, so a NaN start or sweep reaches
@@ -2314,7 +2316,8 @@ impl Mesh {
     }
 
     /// The nearest face a sphere's sweep meets, with the distance along the
-    /// sweep (see [`Face::swept_sphere`]).
+    /// sweep (see [`Face::swept_sphere`]). Each accepted hit shortens the
+    /// sweep the later faces are tested with, as the original's walk does.
     pub fn swept_sphere_hit(
         &self,
         start: [f32; 3],
@@ -2326,7 +2329,7 @@ impl Mesh {
         let mut found = None;
         for triangle in 0..self.indices.len() / 3 {
             if let Some(face) = self.face(triangle)
-                && let Some(t) = face.swept_sphere(start, direction, length, radius, best)
+                && let Some(t) = face.swept_sphere(start, direction, radius, best)
             {
                 best = t;
                 found = Some((triangle as u32, t));
@@ -3537,12 +3540,12 @@ mod tests {
         // A sweep with a NaN centre passes the three range compares and is
         // rejected by the perpendicular radius test.
         assert_eq!(
-            face.swept_sphere([f32::NAN, 1.5, -0.5], [0.0, -1.0, 0.0], 5.0, 0.5, 5.0),
+            face.swept_sphere([f32::NAN, 1.5, -0.5], [0.0, -1.0, 0.0], 0.5, 5.0),
             None
         );
         // A NaN sweep direction likewise.
         assert_eq!(
-            face.swept_sphere([0.5, 1.5, -0.5], [f32::NAN, -1.0, 0.0], 5.0, 0.5, 5.0),
+            face.swept_sphere([0.5, 1.5, -0.5], [f32::NAN, -1.0, 0.0], 0.5, 5.0),
             None
         );
     }
@@ -3625,22 +3628,22 @@ mod tests {
         // moment is the first corner and the gap is positive:
         // (1, 0, 0) − (1.3, 0.5, −0.3) = (−0.3, −0.5, 0.3), whose
         // perpendicular part is (−0.3, 0, 0.3) (0.18) and along part 0.5.
-        let t = face.swept_sphere([1.3, 1.5, -0.3], [0.0, -1.0, 0.0], 5.0, 0.5, 5.0);
+        let t = face.swept_sphere([1.3, 1.5, -0.3], [0.0, -1.0, 0.0], 0.5, 5.0);
         assert!(t.is_some_and(|t| (t - 1.235_425).abs() < 1e-3), "{t:?}");
         // The same sweep only 0.2 long stops well above the face.
         assert_eq!(
-            face.swept_sphere([1.3, 1.5, -0.3], [0.0, -1.0, 0.0], 0.2, 0.5, 0.2),
+            face.swept_sphere([1.3, 1.5, -0.3], [0.0, -1.0, 0.0], 0.5, 0.2),
             None
         );
         // Upward it runs away from the front.
         assert_eq!(
-            face.swept_sphere([1.3, 1.5, -0.3], [0.0, 1.0, 0.0], 5.0, 0.5, 5.0),
+            face.swept_sphere([1.3, 1.5, -0.3], [0.0, 1.0, 0.0], 0.5, 5.0),
             None
         );
-        // A parallel sweep over the interior touches at the moment its
+        // A sweep straight down over the interior touches at the moment its
         // centre is one radius over the plane: no perpendicular gap, so the
         // distance is the travel to the contact centre, 1.0.
-        let touch = face.swept_sphere([0.3, 1.5, -0.3], [0.0, -1.0, 0.0], 5.0, 0.5, 5.0);
+        let touch = face.swept_sphere([0.3, 1.5, -0.3], [0.0, -1.0, 0.0], 0.5, 5.0);
         assert!(touch.is_some_and(|t| (t - 1.0).abs() < 1e-3), "{touch:?}");
         let mesh = Mesh {
             positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0]],
@@ -3659,6 +3662,40 @@ mod tests {
         let hit = mesh.swept_sphere_hit([1.3, 1.5, -0.3], [0.0, -1.0, 0.0], 5.0, 0.5);
         assert!(
             hit.is_some_and(|(_, t)| (t - 1.235_425).abs() < 1e-3),
+            "{hit:?}"
+        );
+        // The walk shortens the sweep to each accepted hit. The floor meets
+        // the ball at 1.0; the wall beside it (plane x = 0, the ball 0.3 in
+        // front) is grazed, so its contact centre is the sweep's end: at
+        // the shortened travel 1.0 the gap is 1.0 − √(0.25 − 0.09) = 0.6
+        // and the wall wins. Swept the whole 5.0 it would be 4.6 and lose.
+        let walled = Mesh {
+            positions: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, -1.0],
+                [0.0, -10.0, 0.0],
+                [0.0, 0.0, -10.0],
+                [0.0, 10.0, 0.0],
+            ],
+            normals: vec![[0.0, 1.0, 0.0]; 6],
+            position_ids: vec![0, 1, 2, 3, 4, 5],
+            indices: vec![0, 1, 2, 3, 4, 5],
+            groups: vec![MeshGroup {
+                material: "m".into(),
+                first_index: 0,
+                index_count: 6,
+            }],
+            smoothing: vec![0; 6],
+            position_count: 6,
+            ..Mesh::default()
+        };
+        let wall = walled.face(1).expect("the wall");
+        let alone = wall.swept_sphere([0.3, 1.5, -0.3], [0.0, -1.0, 0.0], 0.5, 5.0);
+        assert!(alone.is_some_and(|t| (t - 4.6).abs() < 1e-3), "{alone:?}");
+        let hit = walled.swept_sphere_hit([0.3, 1.5, -0.3], [0.0, -1.0, 0.0], 5.0, 0.5);
+        assert!(
+            hit.is_some_and(|(face, t)| face == 1 && (t - 0.6).abs() < 1e-3),
             "{hit:?}"
         );
     }
