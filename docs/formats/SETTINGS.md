@@ -157,6 +157,12 @@ byte left at the end is dropped. Every macro gets a command list; only the
 first six are bound to a key, whose handler runs the commands through the
 debug command registry (not reproduced).
 
+The count of macros is a variable of the settings unit that is **not**
+reset by a re-read: a second read of the file (the hardware configuration
+reads it again when its page opens) parses its macros but they all land
+past the sixth and get no key handler. `parse_key_def_at` takes the count
+to start from; `Settings::reread` keeps it.
+
 ### Writing one setting
 
 A setting is written as `Name = value` (`" = "` between). Integers are
@@ -187,6 +193,13 @@ search, 0-based):
   `GUISize = 1`, `GILowPrecision = 1`. A fresh file therefore reads
   `\r\nFirstRun = 0`.
 
+The splice behind both rewriters moves the bytes after the line with a
+length that is `at` bytes too long (the original's count omits the start
+offset), so the original writes past the end of its block. The bytes it
+keeps are the ones a correct splice keeps, so Exarust copies exactly the
+tail and documents the overrun instead of reproducing it
+(`settings_ini::splice` via `text::splice`).
+
 Evidence: the settings registry, the reader, the boolean test, the two
 rewriters with their splice routine, the number formatters and the
 handlers' code in the graphics-and-keys cluster, the hardware
@@ -216,6 +229,10 @@ version 101, controller flag, count 23, the saved table's rows).
   their bytes are added to that chunk and every chunk enclosing it.
 - **Save**: on exit, through the program's exit hooks, when the store is
   not empty. The bindings dialog also saves it after storing the bindings.
+  Registering a hook puts it at the head of a chain and a hook calls the one
+  registered before it; the settings hook saves, then chains, so the store is
+  written before the earlier hooks run (`settings_store::ExitHooks`,
+  `SettingsStore::save_to`).
 
 Evidence: the store's path builder, loader, getter, setter with its
 ancestor walk and one-level descent, and the save and exit hook (component
@@ -267,10 +284,28 @@ and capacity) and a cursor (`exa_formats::data_stream::DataStream`).
 - **Search path**: a name is read from the newest folder still in use
   where it exists; the first folder where it exists ends the search even
   when the read fails.
+- **Whole-file reads** (`read_file`, `read_referenced_file`,
+  `read_from_search_path`): a failed open leaves the block alone and logs
+  `Failed to open file: <path>` at level 3 under the topic `File IO`; a
+  failed read clears the block and logs `Unable to read contents of file:
+  <path>`. The search path logs the bare name. Exarust returns the reason
+  as `FileIssue` (`message` gives the log line) instead of reading past
+  its block on a bad tree.
+- **Exists**: `file_exists` is `GetFileAttributesA` — true for a file or a
+  folder.
+- **Memory blocks** (`exa_formats::mem_block`): the block the reads fill
+  has a logical size, an allocation size and a kind. A general block grows
+  to exactly the size asked for and frees at zero; global memory is
+  allocated in `0x2000`-byte steps and only reallocated when the rounded
+  size changes; a resource's memory only accepts a resize to zero; a
+  borrowed view copies the smaller of its old and new sizes into a fresh
+  general block on its first resize. `duplicate` copies the contents into a
+  general block of the same size; `make_owned` gives a borrowed view its own
+  copy. The original's two resize routines differ only in the allocator they
+  call for a general block, so one `resize` serves both.
 - **Format registry**: `{key[16], handler, description, use count}`; a new
   format goes in below the run of used formats at the end (never below
   index 1); lookup matches the 16 key bytes ignoring ASCII case.
 
-Not reproduced: reading resources out of the executable, the memory
-blocks' other kinds (global and resource memory, borrowed views; a `Vec`
-stands in) and the error log's switches.
+Not reproduced: reading resources out of the executable and the error
+log's switches.
