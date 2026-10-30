@@ -29,7 +29,7 @@ pub const PANEL_KEY: KeyCode = KeyCode::F9;
 
 /// Flags dropped on a restart, each with its value: they name a place, a
 /// file or a scripted moment of the map being left.
-const DROPPED: [&str; 22] = [
+const DROPPED: [&str; 25] = [
     "--at",
     "--camera",
     "--corpse",
@@ -52,6 +52,9 @@ const DROPPED: [&str; 22] = [
     "--arena-level",
     "--arena-tier",
     "--arena-weapons",
+    "--use-item",
+    "--gui-drop",
+    "--doll-drop",
 ];
 
 const FONT: f32 = 15.0;

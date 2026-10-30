@@ -2457,6 +2457,38 @@ impl Flow {
     /// The practice ladder's next fight: the count advances, health gains a
     /// tenth of the maximum, the partner name and boss music change, and the
     /// round starts again.
+    /// The story scripts' `GameEvent` hook ([`crate::game_event::handle`]):
+    /// the background-unlock event sets its bit in the background word and
+    /// writes the whole word to the settings store at once (the store is
+    /// flushed with it); an event whose bit is already set writes nothing.
+    /// The hook runs whatever the mode, as the original registers it once
+    /// at start-up. The other effects are returned for the session to apply.
+    pub fn game_event(
+        &mut self,
+        code: u32,
+        story: crate::game_event::StoryContext,
+        player: &crate::game_event::EventPlayer,
+        draws: &mut dyn FnMut() -> f64,
+    ) -> (Vec<Step>, Vec<crate::game_event::Effect>) {
+        let effects =
+            crate::game_event::handle(code, story, player, self.unlocks.backgrounds, draws);
+        let mut steps = Vec::new();
+        let mut rest = Vec::new();
+        for effect in effects {
+            match effect {
+                crate::game_event::Effect::Unlock { bits } => {
+                    self.unlocks.backgrounds |= bits;
+                    steps.push(Step::SettingsWrite {
+                        key: BACKGROUND_UNLOCK_KEY,
+                        bytes: self.unlocks.background_bytes(),
+                    });
+                }
+                other => rest.push(other),
+            }
+        }
+        (steps, rest)
+    }
+
     pub fn practice_next(&mut self, now: u32) -> Vec<Step> {
         let step = practice::next_practice(
             self.practice.fight,
@@ -3256,6 +3288,7 @@ impl Plugin for FlowPlugin {
             .init_resource::<FlowSteps>()
             .add_message::<ForfeitMatch>()
             .add_message::<SettingsEntry>()
+            .add_message::<exa_script::ScriptEffect>()
             .add_message::<crate::save_live::SaveStep>()
             .init_resource::<GameView>()
             .init_resource::<BootToMenu>()
@@ -3267,10 +3300,55 @@ impl Plugin for FlowPlugin {
                 Update,
                 (
                     (apply_menu_choices, tick, follow_player).chain(),
-                    (travel, run_transition, apply_steps, reset_level_state).chain(),
+                    (
+                        travel,
+                        run_game_events,
+                        run_transition,
+                        apply_steps,
+                        reset_level_state,
+                    )
+                        .chain(),
                 )
                     .chain(),
             );
+    }
+}
+
+/// The consumer of the story scripts' `GameEvent` calls: each code runs the
+/// flow's hook ([`Flow::game_event`]) and its settings write joins the
+/// flow's steps, which [`apply_steps`] hands to the host's store. The
+/// effects on the player (fragments, awakenings, lines, sounds) have no
+/// consumer yet, so the hook is given a player without the memory role on
+/// a background other than the unknown one, which leaves the unlock as the
+/// only branch that acts.
+fn run_game_events(
+    mut events: MessageReader<exa_script::ScriptEffect>,
+    mut flow: ResMut<Flow>,
+    mut queued: ResMut<FlowSteps>,
+) {
+    for event in events.read() {
+        let &exa_script::dialogue::Effect::GameEvent(code) = &event.0 else {
+            continue;
+        };
+        let story = crate::game_event::StoryContext {
+            unknown_background: false,
+        };
+        let player = crate::game_event::EventPlayer {
+            memory_role: false,
+            raise_dead: false,
+            class: 0,
+            female: false,
+            potential: 0.0,
+            collected: 0,
+            voice_volume: 1.0,
+            voice_pitch: 1.0,
+        };
+        let (steps, rest) = flow.game_event(code, story, &player, &mut || 0.0);
+        info!("game event {code:#x}: {} settings write(s)", steps.len());
+        if !rest.is_empty() {
+            debug!("game event {code:#x}: not applied: {rest:?}");
+        }
+        queued.steps.extend(steps);
     }
 }
 
@@ -6479,5 +6557,68 @@ mod tests {
         assert_eq!(ClipClock::MotionMinus(1490).applied(7, 1000), 0xffff_fe16);
         assert_eq!(ClipClock::Push(2000).applied(1000, 0), 3000);
         assert_eq!(ClipClock::Push(2000).applied(u32::MAX, 0), 1999);
+    }
+
+    /// The background-unlock event sets bit 4 in the background word and
+    /// writes the whole word once; a second event writes nothing. Other
+    /// codes write nothing.
+    #[test]
+    fn the_game_event_hook_writes_the_background_unlock_once() {
+        let mut flow = Flow::default();
+        flow.unlocks.backgrounds = 1;
+        let story = crate::game_event::StoryContext {
+            unknown_background: false,
+        };
+        let player = crate::game_event::EventPlayer {
+            memory_role: false,
+            raise_dead: false,
+            class: 0,
+            female: false,
+            potential: 0.0,
+            collected: 0,
+            voice_volume: 1.0,
+            voice_pitch: 1.0,
+        };
+        let (steps, rest) =
+            flow.game_event(crate::game_event::UNLOCK_EVENT, story, &player, &mut || 0.0);
+        assert_eq!(
+            steps,
+            vec![Step::SettingsWrite {
+                key: BACKGROUND_UNLOCK_KEY,
+                bytes: [5, 0, 0, 0],
+            }]
+        );
+        assert!(rest.is_empty());
+        assert_eq!(flow.unlocks.backgrounds, 5);
+        let (again, _) =
+            flow.game_event(crate::game_event::UNLOCK_EVENT, story, &player, &mut || 0.0);
+        assert!(again.is_empty());
+        let (other, _) = flow.game_event(0xda_0115, story, &player, &mut || 0.0);
+        assert!(other.is_empty());
+    }
+
+    /// A script's `GameEvent(4)` reaches the flow's consumer, whose write
+    /// becomes the settings entry the host's store saves.
+    #[test]
+    fn a_script_game_event_reaches_the_settings_entry() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Flow>()
+            .init_resource::<FlowSteps>()
+            .add_message::<exa_script::ScriptEffect>()
+            .add_systems(Update, run_game_events);
+        app.world_mut().write_message(exa_script::ScriptEffect(
+            exa_script::dialogue::Effect::GameEvent(crate::game_event::UNLOCK_EVENT),
+        ));
+        app.update();
+        let steps = &app.world().resource::<FlowSteps>().steps;
+        assert_eq!(
+            steps,
+            &vec![Step::SettingsWrite {
+                key: BACKGROUND_UNLOCK_KEY,
+                bytes: [4, 0, 0, 0],
+            }]
+        );
+        assert_eq!(app.world().resource::<Flow>().unlocks.backgrounds, 4);
     }
 }

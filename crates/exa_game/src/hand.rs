@@ -1013,6 +1013,7 @@ impl Plugin for HandPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Hand>()
             .init_resource::<ItemCursor>()
+            .init_resource::<crate::gui_drop::GuiDrop>()
             .init_resource::<player_controls::PendingUses>()
             .init_resource::<player_controls::DeviceClock>()
             .add_message::<WorldClick>()
@@ -1026,6 +1027,7 @@ impl Plugin for HandPlugin {
                 Update,
                 (
                     press_hand,
+                    lift_gui_drops,
                     take_cloth,
                     gather_markers,
                     hold_hand,
@@ -1062,15 +1064,15 @@ type PlayerParts = (
 /// What the pick reads of the world beyond the characters: the colliders,
 /// the props' stand-ins and the scene nodes some static colliders came from.
 #[derive(bevy::ecs::system::SystemParam)]
-struct PickSources<'w> {
-    physics: Res<'w, Physics>,
-    stand_ins: Res<'w, StandIns>,
-    collider_nodes: Res<'w, ColliderNodes>,
+pub(crate) struct PickSources<'w> {
+    pub(crate) physics: Res<'w, Physics>,
+    pub(crate) stand_ins: Res<'w, StandIns>,
+    pub(crate) collider_nodes: Res<'w, ColliderNodes>,
 }
 
 /// Every body but the player's: its condition when it is a character's,
 /// and whether it is a prop's.
-type OtherBodies = (
+pub(crate) type OtherBodies = (
     Entity,
     &'static mut Ragdoll,
     Option<&'static Condition>,
@@ -1084,11 +1086,12 @@ type PressMechanisms<'w, 's> = (
     Query<'w, 's, ObjectIds>,
     Query<'w, 's, &'static mut DoorBody>,
     Query<'w, 's, &'static mut LeverBody>,
+    Option<Res<'w, player_controls::UseCursor>>,
 );
 
 /// What a body's nodes say of the placed object they belong to: its id,
 /// its template and the node above.
-type ObjectIds = (
+pub(crate) type ObjectIds = (
     Option<&'static exa_world::PlacedItem>,
     Option<&'static PlacedTemplate>,
     Option<&'static ChildOf>,
@@ -1101,7 +1104,7 @@ type ObjectIds = (
 /// placed object is over it; the template is the id itself when the
 /// object carries none, as the original's lookup returns the id it cannot
 /// resolve.
-fn object_ids(body: Entity, objects: &Query<ObjectIds>) -> (u32, u32) {
+pub(crate) fn object_ids(body: Entity, objects: &Query<ObjectIds>) -> (u32, u32) {
     let mut at = Some(body);
     while let Some(entity) = at {
         let Ok((placed, template, parent)) = objects.get(entity) else {
@@ -1174,7 +1177,7 @@ fn gather_markers(
 }
 
 /// The cursor's ray, from the chase camera through the pointer.
-fn cursor_ray(
+pub(crate) fn cursor_ray(
     scripted: &ScriptedPointer,
     windows: &Query<&Window, With<PrimaryWindow>>,
     cameras: &Query<(&Camera, &GlobalTransform), With<ChaseCamera>>,
@@ -1187,7 +1190,7 @@ fn cursor_ray(
 
 /// The pick under the cursor among the level, the props and every
 /// character, the player's body (`player`) included.
-fn pick_with(
+pub(crate) fn pick_with(
     ray: Option<Ray3d>,
     physics: &Physics,
     stand_ins: &StandIns,
@@ -1269,6 +1272,110 @@ fn take_cloth(
 }
 
 /// A left press: the pick named and its interaction started.
+/// Takes `part` of `body` onto the item cursor at the world point `at`:
+/// a frozen object (one a lock marker holds) is thawed, the part is held
+/// with the lift's plain grab, and every part's frame and the part's box
+/// are saved for a cancelled release. `ids` are the object's id and
+/// template. `None` when the grab is refused.
+fn lift(
+    ragdoll: &mut Ragdoll,
+    body: Entity,
+    part: usize,
+    at: Vec3,
+    ids: (u32, u32),
+) -> Option<HeldItem> {
+    if ragdoll.frozen() {
+        ragdoll.freeze(false);
+    }
+    if !ragdoll.grab(part, at, item_cursor::LIFT_STRENGTH, None) {
+        return None;
+    }
+    let saved: Vec<bevy::math::Affine3A> = ragdoll.parts.iter().map(|p| p.transform()).collect();
+    let (centre, half) = ragdoll
+        .parts
+        .get(part)
+        .map(|p| item_cursor::rest_box(p.rest))
+        .unwrap_or((Vec3::ZERO, Vec3::ZERO));
+    // The lift saves the part's frame, rotation included, as the original
+    // copies the held node's frame.
+    let world = ragdoll
+        .parts
+        .get(part)
+        .map(|p| p.transform())
+        .unwrap_or_default();
+    let saved_frame = Frame::new(
+        Vec3::from(world.translation),
+        bevy::math::Mat3::from_cols(
+            Vec3::from(world.x_axis),
+            Vec3::from(world.y_axis),
+            Vec3::from(world.z_axis),
+        ),
+    );
+    Some(HeldItem {
+        body,
+        part,
+        saved,
+        saved_frame,
+        shown: saved_frame,
+        centre,
+        half,
+        target: at,
+        item: ids.0,
+        model: ids.1,
+    })
+}
+
+/// Begins the lift of an item the GUI drop placed into the world, once its
+/// body exists: the deferred drop's run ends by beginning the lift on the
+/// new node, so the item rides the cursor while the button that dragged it
+/// out of the window stays down. A button already let go leaves the item
+/// where it was placed. The body's frame goes to the controls only when
+/// the drop's word lacked the placed bit ([`crate::gui_drop::GuiDropLift`]).
+fn lift_gui_drops(
+    mut commands: Commands,
+    buttons: Res<ButtonInput<MouseButton>>,
+    mut hand: ResMut<Hand>,
+    mut items: ResMut<ItemCursor>,
+    mut drop: ResMut<crate::gui_drop::GuiDrop>,
+    mut dropped: Query<(Entity, &mut Ragdoll, &crate::gui_drop::GuiDropLift), Without<PlayerBody>>,
+    mut player_bodies: Query<&mut PlayerBody>,
+) {
+    for (body, mut ragdoll, lift_of) in &mut dropped {
+        commands
+            .entity(body)
+            .remove::<crate::gui_drop::GuiDropLift>();
+        let lifting = buttons.pressed(MouseButton::Left)
+            && items.held.is_none()
+            && hand.holding == Holding::Nothing;
+        let at = ragdoll
+            .parts
+            .first()
+            .map(|p| Vec3::from(p.transform().translation))
+            .unwrap_or_default();
+        let held = lifting
+            .then(|| lift(&mut ragdoll, body, 0, at, (lift_of.item, lift_of.item)))
+            .flatten();
+        match held {
+            Some(held) => {
+                info!(
+                    "gui drop: lifting {:#x} onto the cursor (frame copied: {})",
+                    lift_of.item, lift_of.copy_frame
+                );
+                if let Some(mut pb) = player_bodies.iter_mut().next() {
+                    pb.hold_object(true);
+                }
+                items.begin(held);
+                hand.holding = Holding::Lift;
+            }
+            None => info!(
+                "gui drop: {:#x} left where it was placed (button up)",
+                lift_of.item
+            ),
+        }
+        drop.word = 0;
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn press_hand(
     real: Res<Time<Real>>,
@@ -1286,8 +1393,13 @@ fn press_hand(
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
     kinesis: Option<Res<KinesisPickHook>>,
     mut kinesis_picks: Option<ResMut<Messages<KinesisPicked>>>,
-    (over_gui, objects, mut doors, mut levers): PressMechanisms,
+    (over_gui, objects, mut doors, mut levers, use_cursor): PressMechanisms,
 ) {
+    // The press that ended the use cursor was taken by the cursor's
+    // callback (its answer's bit 0); the world does not see it.
+    if use_cursor.is_some_and(|cursor| cursor.took_press) {
+        return;
+    }
     let kinesis = kinesis.and_then(|k| k.0);
     let now = real.elapsed().as_millis() as i64;
     let pointer = windows.single().ok().and_then(|w| {
@@ -1477,52 +1589,14 @@ fn press_hand(
             let Ok((_, mut ragdoll, ..)) = bodies.get_mut(body) else {
                 return;
             };
-            // A frozen object (one a lock marker holds) is thawed by the
-            // press that takes it.
-            if ragdoll.frozen() {
-                ragdoll.freeze(false);
-            }
-            if !ragdoll.grab(part, at, item_cursor::LIFT_STRENGTH, None) {
-                return;
-            }
-            let saved: Vec<bevy::math::Affine3A> =
-                ragdoll.parts.iter().map(|p| p.transform()).collect();
-            let (centre, half) = ragdoll
-                .parts
-                .get(part)
-                .map(|p| item_cursor::rest_box(p.rest))
-                .unwrap_or((Vec3::ZERO, Vec3::ZERO));
-            // The lift saves the part's frame, rotation included, as the
-            // original copies the held node's frame.
-            let world = ragdoll
-                .parts
-                .get(part)
-                .map(|p| p.transform())
-                .unwrap_or_default();
-            let saved_frame = Frame::new(
-                Vec3::from(world.translation),
-                bevy::math::Mat3::from_cols(
-                    Vec3::from(world.x_axis),
-                    Vec3::from(world.y_axis),
-                    Vec3::from(world.z_axis),
-                ),
-            );
-            pb.hold_object(true);
+            // The lift keeps the object's id and its template, which a
+            // placement marker's name is compared with.
             let held_ids = object_ids(body, &objects);
-            items.begin(HeldItem {
-                body,
-                part,
-                saved,
-                saved_frame,
-                shown: saved_frame,
-                centre,
-                half,
-                target: at,
-                // The lift keeps the object's id and its template, which a
-                // placement marker's name is compared with.
-                item: held_ids.0,
-                model: held_ids.1,
-            });
+            let Some(held) = lift(&mut ragdoll, body, part, at, held_ids) else {
+                return;
+            };
+            pb.hold_object(true);
+            items.begin(held);
             hand.holding = Holding::Lift;
         }
         Press::Drag {

@@ -1127,7 +1127,10 @@ pub const USE_STATE: u32 = 0x100;
 pub const USE_CURSOR_MODE: u32 = 0x40;
 /// The cursor mode the use cursor's end restores.
 pub const RESTING_CURSOR_MODE: u32 = 4;
-/// The event word that ends the use cursor: the right button's release.
+/// The event word that ends the use cursor: the world view hands it to
+/// its pending callback before it serves the next mouse event (a press, a
+/// click, a drag start or a double click of any button), so the cursor
+/// ends on the next mouse press after it went up.
 pub const USE_END_EVENT: u32 = 0x80;
 /// The answer the use cursor's end gives (the other events answer 1).
 pub const USE_END_ANSWER: u32 = 0x81;
@@ -1170,27 +1173,30 @@ pub fn use_begin(class: u8, kind: u8, second: u32, playing: bool) -> UseBegin {
 /// What the use cursor's callback answers on one event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UseEnd {
-    /// The cursor ended: only the right button's release ends it.
+    /// The cursor ended: only [`USE_END_EVENT`] ends it.
     pub ended: bool,
-    /// The use dispatcher runs: the release came over the world, as the
-    /// view's own word says (bit 0; [guess: its setter is not traced]).
+    /// The use dispatcher runs: the GUI desk's button word has bit 0 set
+    /// [guess: the left button, as the desk's own button bits read 1 left,
+    /// 2 right and 4 middle]. The dispatcher itself decides whether the
+    /// pointer is over the world view or a window.
     pub dispatch: bool,
     /// The callback's answer: [`USE_END_ANSWER`] on the release, and
     /// [`USE_KEEP_ANSWER`] on any other event.
     pub answer: u32,
 }
 
-/// The use cursor's end: the release (event [`USE_END_EVENT`]) ends the
-/// cursor and runs the use when the release is over the world, answering
-/// [`USE_END_ANSWER`]; every other event keeps the callback, which answers
-/// [`USE_KEEP_ANSWER`]. The end also sets the player's action word to
-/// [`USE_ACTION`], clears the controls' use state and restores the shared
-/// cursor mode to [`RESTING_CURSOR_MODE`].
-pub fn use_end(event: u32, over_world: bool) -> UseEnd {
+/// The use cursor's end: [`USE_END_EVENT`] ends the cursor and runs the
+/// use when the desk's button word has bit 0 (`left`), answering
+/// [`USE_END_ANSWER`], whose bit 0 tells the view the event is taken; every
+/// other event keeps the callback, which answers [`USE_KEEP_ANSWER`]. The
+/// end also sets the player's action word to [`USE_ACTION`], clears the
+/// controls' use state and restores the shared cursor mode to
+/// [`RESTING_CURSOR_MODE`].
+pub fn use_end(event: u32, left: bool) -> UseEnd {
     if event == USE_END_EVENT {
         UseEnd {
             ended: true,
-            dispatch: over_world,
+            dispatch: left,
             answer: USE_END_ANSWER,
         }
     } else {
@@ -1199,6 +1205,101 @@ pub fn use_end(event: u32, over_world: bool) -> UseEnd {
             dispatch: false,
             answer: USE_KEEP_ANSWER,
         }
+    }
+}
+
+/// The item panel's double-click class of an entry: 0 lets the double
+/// click open the item as a container, 1 only closes the card, and 2
+/// closes the card and calls the game's use hook ([`use_begin`]). An item
+/// with no operative section is 0; classes 2, 4 and 8 are 0; class 0 is 2
+/// for the GUI item kind ([`GUI_ITEM_KIND`]) while the entry's used bits
+/// (`0xFF0000`) are clear and 0 otherwise (another class-0 kind runs its
+/// own use first, not modelled here); class 1 is 1 for a used liquid or
+/// kit (kinds 8, 14, 9, 10 with used bits) and 2 otherwise; any other class
+/// is 2.
+pub fn panel_use_class(operative: Option<(u8, u8)>, flags: u32) -> u8 {
+    let Some((class, kind)) = operative else {
+        return 0;
+    };
+    let used = flags & USED_MARK != 0;
+    match class {
+        2 | 4 | 8 => 0,
+        0 if kind == GUI_ITEM_KIND && !used => 2,
+        0 => 0,
+        1 if matches!(kind, POUR | POUR_MARKS | CLEAN | REPAIR) && used => 1,
+        _ => 2,
+    }
+}
+
+/// The use cursor's state between its begin and its end: the controls'
+/// state word ([`USE_STATE`] while it is up), the shared cursor mode, and
+/// what the use hook was called with (the item, its entry word, the
+/// entry's slot from one, and the panel's number), plus the item's
+/// usable kind the dispatcher reads.
+#[derive(bevy::prelude::Resource, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UseCursor {
+    pub state: u32,
+    pub cursor_mode: u32,
+    pub item: u32,
+    pub entry: u32,
+    pub slot: i32,
+    pub panel: u32,
+    pub kind: u8,
+    /// The press that ended the cursor this frame was taken (the end's
+    /// answer bit 0): the world's own press path skips it.
+    pub took_press: bool,
+}
+
+impl Default for UseCursor {
+    fn default() -> Self {
+        Self {
+            state: 0,
+            cursor_mode: RESTING_CURSOR_MODE,
+            item: 0,
+            entry: 0,
+            slot: 0,
+            panel: 0,
+            kind: 0,
+            took_press: false,
+        }
+    }
+}
+
+impl UseCursor {
+    /// Whether the cursor is up.
+    pub fn up(&self) -> bool {
+        self.state & USE_STATE != 0
+    }
+
+    /// Lifts the cursor ([`UseBegin::Cursor`]): the state word, the cursor
+    /// mode and the use's arguments.
+    pub fn lift(&mut self, item: u32, entry: u32, slot: i32, panel: u32, kind: u8) {
+        *self = Self {
+            state: USE_STATE,
+            cursor_mode: USE_CURSOR_MODE,
+            item,
+            entry,
+            slot,
+            panel,
+            kind,
+            took_press: false,
+        };
+    }
+
+    /// Runs the end for `event`; an ended cursor clears the state word,
+    /// restores the cursor mode and marks the press taken. `None` while the
+    /// cursor is down.
+    pub fn end(&mut self, event: u32, left: bool) -> Option<UseEnd> {
+        if !self.up() {
+            return None;
+        }
+        let end = use_end(event, left);
+        if end.ended {
+            self.state = 0;
+            self.cursor_mode = RESTING_CURSOR_MODE;
+            self.took_press = end.answer & 1 != 0;
+        }
+        Some(end)
     }
 }
 
@@ -2650,6 +2751,51 @@ mod tests {
     /// runs the use when the release is over the world; any other event
     /// keeps the callback and answers 1. The end's fixed effects are the
     /// action word 4, the cleared use state and the resting cursor mode 4.
+    /// The panel's double-click class: no operative section, the
+    /// compass-like classes 2, 4 and 8 and a plain class-0 kind open as a
+    /// container (0); the GUI item kind uses until its entry is marked
+    /// used; a used liquid or kit only closes the card; a key uses.
+    #[test]
+    fn the_panel_double_click_class() {
+        assert_eq!(panel_use_class(None, 0), 0);
+        for class in [2, 4, 8] {
+            assert_eq!(panel_use_class(Some((class, 11)), 0), 0);
+        }
+        assert_eq!(panel_use_class(Some((0, GUI_ITEM_KIND)), 0), 2);
+        assert_eq!(panel_use_class(Some((0, GUI_ITEM_KIND)), 0x10000), 0);
+        assert_eq!(panel_use_class(Some((0, 7)), 0), 0);
+        for kind in [POUR, POUR_MARKS, CLEAN, REPAIR] {
+            assert_eq!(panel_use_class(Some((1, kind)), 0), 2);
+            assert_eq!(panel_use_class(Some((1, kind)), 0xC8_0000), 1);
+        }
+        // A key (class 1, kind 0) uses whatever its flags say.
+        assert_eq!(panel_use_class(Some((1, 0)), 0xff_0000), 2);
+        assert_eq!(panel_use_class(Some((3, 1)), 0), 2);
+    }
+
+    /// The live cursor: lifted with its arguments, kept by nothing but the
+    /// end event, and on the end down again with the resting mode and the
+    /// press taken; a down cursor answers nothing.
+    #[test]
+    fn the_live_use_cursor_state() {
+        let mut cursor = UseCursor::default();
+        assert!(!cursor.up());
+        assert_eq!(cursor.end(USE_END_EVENT, true), None);
+        cursor.lift(0xb, 0xb, 3, 1, 0);
+        assert!(cursor.up());
+        assert_eq!(
+            (cursor.state, cursor.cursor_mode),
+            (USE_STATE, USE_CURSOR_MODE)
+        );
+        assert_eq!(cursor.end(0x2001, true).map(|e| e.ended), Some(false));
+        assert!(cursor.up());
+        let end = cursor.end(USE_END_EVENT, false).unwrap();
+        assert!(end.ended && !end.dispatch);
+        assert!(!cursor.up() && cursor.took_press);
+        assert_eq!(cursor.cursor_mode, RESTING_CURSOR_MODE);
+        assert_eq!(cursor.item, 0xb);
+    }
+
     #[test]
     fn the_use_cursor_end() {
         assert_eq!(

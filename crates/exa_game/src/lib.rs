@@ -49,6 +49,7 @@ pub mod footwork;
 pub mod frame;
 pub mod game_event;
 pub mod gamepad;
+pub mod gui_drop;
 pub mod gui_paint;
 pub mod gui_screens;
 pub mod hand;
@@ -127,6 +128,7 @@ pub mod tournament;
 pub mod trace;
 pub mod trade;
 pub mod transition_screen;
+pub mod use_cursor;
 pub mod window;
 pub mod world_clock;
 
@@ -155,6 +157,8 @@ impl Plugin for GamePlugin {
         .add_plugins((
             body_inventory::BodyInventoryPlugin,
             panel_live::PanelLivePlugin,
+            gui_drop::GuiDropPlugin,
+            use_cursor::UseCursorPlugin,
             npc_search::NpcSearchPlugin,
         ))
         .init_resource::<prelude::Tips>()

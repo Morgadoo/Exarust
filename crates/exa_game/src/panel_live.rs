@@ -18,12 +18,14 @@
 //! Exarust is a swap requested or a hand plan not yet applied. The loot
 //! window's panels install none.
 //!
-//! The original also drops a dragged item into the world when it leaves a
-//! panel. Exarust's GUI-to-world drop is not wired, so a release outside
-//! every panel cancels the drag and the entry stays where it was.
+//! A drag out of the player's pack held over the world view is taken by
+//! the controls and dropped into the world ([`crate::gui_drop`]); any other
+//! release outside every panel cancels the drag and the entry stays where
+//! it was.
 //!
-//! The right click's card, the double click's use and container opening
-//! are not wired here.
+//! The double click's use is [`crate::use_cursor`]'s; the right click's
+//! card is [`crate::item_card`]'s. The double click's container opening is
+//! not wired here.
 
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
@@ -259,8 +261,14 @@ fn press(
     mut drag: ResMut<PanelDrag>,
     catalogue: Option<Res<ItemCatalogue>>,
     swapping: Query<(), SwappingPlayer>,
+    use_cursor: Option<Res<crate::player_controls::UseCursor>>,
 ) {
-    if !buttons.just_pressed(MouseButton::Left) || drag.source.is_some() {
+    // The press that ended the use cursor is the cursor's: the desk holds
+    // the mouse for the world view while it is up.
+    if !buttons.just_pressed(MouseButton::Left)
+        || drag.source.is_some()
+        || use_cursor.is_some_and(|c| c.took_press)
+    {
         return;
     }
     let Ok(window) = windows.single() else {
@@ -579,7 +587,7 @@ pub struct PointerOverGui(pub bool);
 
 /// Sets [`PointerOverGui`] from the pointer and the open forms every frame;
 /// the character creator and its background picker fill the window.
-fn track_pointer(
+pub(crate) fn track_pointer(
     screens: Res<GameScreens>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut over: ResMut<PointerOverGui>,
@@ -604,6 +612,10 @@ fn track_pointer(
     });
 }
 
+/// The item panels' press and release.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PanelInput;
+
 /// The live item panel input.
 pub struct PanelLivePlugin;
 
@@ -613,7 +625,13 @@ impl Plugin for PanelLivePlugin {
             .init_resource::<PointerOverGui>()
             .add_message::<crate::doll_view::DollDrop>()
             .add_systems(Update, track_pointer.before(crate::hand::HandSystems))
-            .add_systems(Update, (press, release).chain().after(track_pointer));
+            .add_systems(
+                Update,
+                (press, release)
+                    .chain()
+                    .in_set(PanelInput)
+                    .after(track_pointer),
+            );
     }
 }
 

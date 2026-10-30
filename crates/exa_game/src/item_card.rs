@@ -351,8 +351,10 @@ fn request_card(
     mut view: ResMut<CardView>,
     mut icons: ResMut<PanelIcons>,
     time: Res<Time>,
+    use_cursor: Option<Res<crate::player_controls::UseCursor>>,
 ) {
-    if !buttons.just_pressed(MouseButton::Right) {
+    // The press that ended the use cursor is the cursor's.
+    if !buttons.just_pressed(MouseButton::Right) || use_cursor.is_some_and(|c| c.took_press) {
         return;
     }
     let Ok(window) = windows.single() else {
@@ -864,6 +866,7 @@ impl Plugin for ItemCardPlugin {
                 Update,
                 (card_press, request_card, world_cards, tick_card)
                     .chain()
+                    .after(crate::use_cursor::UseCursorSystems)
                     .before(crate::gui_screens::close_on_right_release),
             );
         app.add_systems(Update, draw_card.after(crate::gui_screens::draw_screens));
