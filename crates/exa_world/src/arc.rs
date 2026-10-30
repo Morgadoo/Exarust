@@ -30,7 +30,7 @@ impl Plugin for ArcPlugin {
 /// effects lane supplies `_ElecMat01`'s emissive map).
 #[derive(Resource)]
 struct ArcAssets {
-    material: Handle<ArcMaterial>,
+    texture: Handle<Image>,
 }
 
 /// An electric arc, at its node.
@@ -104,7 +104,6 @@ fn arc_assets(
     mut commands: Commands,
     done: Option<Res<ArcAssets>>,
     mut images: ResMut<Assets<Image>>,
-    mut materials: ResMut<Assets<ArcMaterial>>,
 ) {
     if done.is_some() {
         return;
@@ -121,8 +120,7 @@ fn arc_assets(
         RenderAssetUsages::RENDER_WORLD | RenderAssetUsages::MAIN_WORLD,
     );
     let texture = images.add(image);
-    let material = materials.add(ArcMaterial::new(texture));
-    commands.insert_resource(ArcAssets { material });
+    commands.insert_resource(ArcAssets { texture });
 }
 
 fn attach_arcs(
@@ -130,13 +128,16 @@ fn attach_arcs(
     assets: Option<Res<ArcAssets>>,
     arcs: Query<Entity, (With<ArcEffect>, Without<Mesh3d>)>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ArcMaterial>>,
 ) {
     let Some(assets) = assets else { return };
     for e in &arcs {
         let mesh = meshes.add(empty_particle_mesh());
+        // Each arc scrolls its own texture, so it gets its own material.
+        let material = materials.add(ArcMaterial::new(assets.texture.clone()));
         commands.entity(e).insert((
             Mesh3d(mesh),
-            MeshMaterial3d(assets.material.clone()),
+            MeshMaterial3d(material),
             NoFrustumCulling,
             bevy::light::NotShadowCaster,
             bevy::light::NotShadowReceiver,
@@ -164,14 +165,20 @@ fn tick_arcs(time: Res<Time>, mut commands: Commands, mut arcs: Query<(Entity, &
 
 fn build_arcs(
     cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
-    arcs: Query<(&ArcEffect, &Mesh3d)>,
+    arcs: Query<(&ArcEffect, &Mesh3d, &MeshMaterial3d<ArcMaterial>)>,
     mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ArcMaterial>>,
 ) {
     let Some(camera) = cameras.iter().next() else {
         return;
     };
     let view = camera.forward().as_vec3();
-    for (effect, mesh) in &arcs {
+    for (effect, mesh, material) in &arcs {
+        // The shader's texture offset, the arc's own scroll.
+        if let Some(mut material) = materials.get_mut(&material.0) {
+            material.tex_offset =
+                Vec4::new(effect.arc.tex_offset.x, effect.arc.tex_offset.y, 0.0, 0.0);
+        }
         let Some(mut mesh) = meshes.get_mut(&mesh.0) else {
             continue;
         };

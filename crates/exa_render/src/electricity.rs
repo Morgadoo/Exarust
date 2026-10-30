@@ -637,9 +637,13 @@ impl Arc {
     /// permanent arc never is).
     pub fn tick(&mut self) -> bool {
         self.age = self.age.saturating_add(1);
-        // [guess] The scroll rate; the original keeps it in the tendril
-        // tick.
-        self.tex_offset.y -= 0.005;
+        // The texture scroll the tendril emitter keeps: a step of 0.015 a
+        // tick, wrapping past 2. The emitter's own tick is modelled in the
+        // game's arc emitter; this is the shader's offset for one arc.
+        self.tex_offset.y += 0.015;
+        if self.tex_offset.y > 2.0 {
+            self.tex_offset.y -= 2.0;
+        }
         if self.lifetime == 0 || self.age < self.lifetime {
             return true;
         }
@@ -1057,6 +1061,24 @@ mod tests {
         assert_eq!(mesh.uvs[1], Vec2::new(0.0, 1.0));
         assert_eq!(mesh.uvs[2].y, 0.0);
         assert!(mesh.uvs[2].x > 0.0);
+    }
+
+    #[test]
+    fn the_arc_scrolls_its_texture_by_a_tick_and_wraps() {
+        let mut arc = Arc::new(ArcSpec::weapon(), Vec3::ZERO, Vec3::X * 30.0);
+        assert_eq!(arc.tex_offset, Vec2::ZERO);
+        arc.tick();
+        assert!((arc.tex_offset.y - 0.015).abs() < 1e-6);
+        // 134 ticks of 0.015 reach 2.01, which wraps to 0.01.
+        for _ in 0..133 {
+            arc.tick();
+        }
+        assert!(
+            (arc.tex_offset.y - 0.01).abs() < 1e-5,
+            "{}",
+            arc.tex_offset.y
+        );
+        assert_eq!(arc.tex_offset.x, 0.0);
     }
 
     #[test]
