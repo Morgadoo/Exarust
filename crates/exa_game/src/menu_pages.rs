@@ -644,10 +644,12 @@ pub enum MenuCommand {
 }
 
 /// The click handler's branch for `page` and the 1-based `row`, from the
-/// game-mode word, the session-state word and whether the versus lobby is
-/// available (which also decides whether the arena page's fourth row is
-/// VERSUS or BACK).
-pub fn menu_command(page: Page, row: usize, game: u32, state: u32, versus: bool) -> MenuCommand {
+/// game-mode word and whether the versus lobby is available (which also
+/// decides whether the arena page's fourth row is VERSUS or BACK). The
+/// session state is not read: the page's label shows EXIT once the session
+/// was won or ended, but the third row's action always finishes the match,
+/// and whether that is a forfeit depends on the game mode's story bit.
+pub fn menu_command(page: Page, row: usize, game: u32, _state: u32, versus: bool) -> MenuCommand {
     match page {
         Page::InGame => match row {
             1 => {
@@ -690,7 +692,9 @@ pub fn menu_command(page: Page, row: usize, game: u32, state: u32, versus: bool)
             1 => MenuCommand::Resume,
             2 => MenuCommand::OpenSettings,
             3 => MenuCommand::FinishMatch {
-                forfeit: state & 4 == 0,
+                // The story's mode has bit 2 set: its third row is an EXIT,
+                // every other mode's a forfeit.
+                forfeit: game & 4 == 0,
             },
             _ => MenuCommand::None,
         },
@@ -1061,7 +1065,9 @@ mod command_tests {
             command(Page::InGame, 4, PRACTICE, 3, false),
             MenuCommand::ExitToTitle
         );
-        // The end pages: the third row forfeits unless the state has bit 4.
+        // The end pages' third row finishes the match; the story's mode bit
+        // 2 makes it an EXIT, every other mode a forfeit, whatever the
+        // session state (the label reads that separately).
         assert_eq!(
             command(Page::ArenaPause, 1, ARENA, WON, false),
             MenuCommand::Resume
@@ -1072,14 +1078,18 @@ mod command_tests {
         );
         assert_eq!(
             command(Page::ArenaPause, 3, ARENA, WON, false),
-            MenuCommand::FinishMatch { forfeit: false }
-        );
-        assert_eq!(
-            command(Page::StoryPause, 3, ARENA, 3, false),
             MenuCommand::FinishMatch { forfeit: true }
         );
         assert_eq!(
-            command(Page::StoryPause, 3, ARENA, ENDED, false),
+            command(Page::ArenaPause, 3, ARENA, ENDED, false),
+            MenuCommand::FinishMatch { forfeit: true }
+        );
+        assert_eq!(
+            command(Page::StoryPause, 3, STORY, 3, false),
+            MenuCommand::FinishMatch { forfeit: false }
+        );
+        assert_eq!(
+            command(Page::StoryPause, 3, STORY, WON, false),
             MenuCommand::FinishMatch { forfeit: false }
         );
     }

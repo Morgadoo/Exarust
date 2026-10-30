@@ -1143,10 +1143,11 @@ program on the selected row. The screen follows `TMainMenu`'s rules
   game from the creator) and BACK; in-game CONTINUE (resume) or NEW GAME
   (a new practice character), MANUAL, SETTINGS and EXIT (arena: save and
   go to the title; story: the story's quit; otherwise the title); the end
-  pages resume, open the settings, or finish the match, as a forfeit
-  unless the session was won. Escape goes back from the arena and practice
-  pages, as the original's does at the main menu, and closes the screen
-  elsewhere; Backspace goes back.
+  pages resume, open the settings, or finish the match, as a forfeit in
+  every mode whose word lacks the story's value-4 bit (the session word
+  drives the row's EXIT label, not the action). Escape goes back from the
+  arena and practice pages, as the original's does at the main menu, and
+  closes the screen elsewhere; Backspace goes back.
 - **Font.** The original draws the rows with its menu font record, whose
   texture is `titlefont.rfi`: 112-pixel letter cells, A to Z in four
   columns, ascent 98, a space of 36, line height 128 and a trim of 6,
