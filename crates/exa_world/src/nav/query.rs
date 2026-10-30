@@ -1,8 +1,8 @@
 //! The pathfinder's grid queries.
 //!
 //! The line walk steps from the cell after the start along the longer axis
-//! (Z on a tie of |dx| and |dz|), up to but not including the asked end's
-//! own cell. A floor more than four above the current height blocks when
+//! (Z on a tie of |dx| and |dz|), up to and including the asked end's own
+//! cell. A floor more than four above the current height blocks when
 //! its underside is within ten. The straight walk uses five and fifteen,
 //! and follows a floor down. A line of 40 cm or less is not an obstacle; a
 //! longer one is when a floor is more than seven too high or an early
@@ -59,9 +59,9 @@ pub fn line_walk(grid: &NavGrid, start: Vec3, end: Vec3) -> LineHit {
     let mut major = start_i;
     let mut height = voxels(start.y, grid.base());
     let mut offered = count as i32;
-    // The original walks the cells after the start up to, not including,
-    // the asked end's cell.
-    for k in 0..count.saturating_sub(1) {
+    // The original walks the cells after the start up to and including the
+    // asked end's cell (its loop runs once per cell of the major span).
+    for k in 0..count {
         major += step;
         let minor = (major as f32 * slope + intercept).round_ties_even() as i32;
         let (x, z) = if x_major {
@@ -247,9 +247,7 @@ pub fn straight_walk(grid: &NavGrid, start: Vec3, end: Vec3) -> LineHit {
         };
     };
     let mut height = straight_height(grid, start);
-    // The asked end's own cell is not walked, as the original stops one
-    // cell short of it.
-    for k in 0..walk.count.saturating_sub(1) {
+    for k in 0..walk.count {
         let Some((x, z)) = walk.advance() else {
             break;
         };
@@ -278,7 +276,7 @@ pub fn obstacle(grid: &NavGrid, start: Vec3, end: Vec3) -> bool {
         return false;
     };
     let mut height = voxels(start.y, grid.base());
-    for k in 0..walk.count.saturating_sub(1) {
+    for k in 0..walk.count {
         let Some((x, z)) = walk.advance() else {
             break;
         };
@@ -596,37 +594,37 @@ mod tests {
     }
 
     #[test]
-    fn a_line_walk_does_not_enter_the_asked_cells_own_cell() {
-        // The original stops one cell short of the end: a wall standing in
-        // the end cell does not block the line, one in the cell before it
-        // does.
+    fn a_line_walk_enters_the_asked_cells_own_cell() {
+        // The original's loop runs once per cell of the major span, so the
+        // end cell is walked: a wall there blocks the line, one just past
+        // it does not.
+        let wall = NavCell {
+            floor: 40,
+            ..NavCell::default()
+        };
         let mut grid = flat(8, 8);
-        grid.set_cell(
-            6,
-            3,
-            Layer::Lower,
-            NavCell {
-                floor: 40,
-                ..NavCell::default()
-            },
-        );
+        grid.set_cell(7, 3, Layer::Lower, wall);
         let start = at(&grid, 1, 3);
         let end = at(&grid, 6, 3);
         assert!(!line_walk(&grid, start, end).blocked);
         assert!(!straight_walk(&grid, start, end).blocked);
         assert!(!obstacle(&grid, start, end));
-        grid.set_cell(
-            5,
-            3,
-            Layer::Lower,
-            NavCell {
-                floor: 40,
-                ..NavCell::default()
-            },
-        );
+        grid.set_cell(6, 3, Layer::Lower, wall);
         assert!(line_walk(&grid, start, end).blocked);
         assert!(straight_walk(&grid, start, end).blocked);
         assert!(obstacle(&grid, start, end));
+    }
+
+    /// On a tie of |dx| and |dz| the original walks along Z: a wall on the
+    /// diagonal's first Z step blocks, whichever axis would reach it.
+    #[test]
+    fn a_diagonal_line_steps_along_z() {
+        let grid = flat(8, 8);
+        let start = at(&grid, 1, 1);
+        let end = at(&grid, 4, 4);
+        let walk = raster(&grid, start, end, true).unwrap();
+        assert!(!walk.x_major);
+        assert_eq!(walk.count, 3);
     }
 
     #[test]

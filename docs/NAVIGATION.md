@@ -295,7 +295,7 @@ cell's lower and upper floor and underside):
   that always answers 0.
 - **Line walk** (`nav::line_walk`; the player's look-ahead, soft stop and
   footwork targets): one cell a step along the line's longer axis (Z when
-  |dx| = |dz|), from the cell after the start up to but not including the
+  |dx| = |dz|), from the cell after the start up to and including the
   asked end's own cell; a floor
   more than 4 above the running height blocks when less than 10 lie under
   its slab (an upper slab with nothing measured under it and its floor not
@@ -305,8 +305,8 @@ cell's lower and upper floor and underside):
   blocks), keeping the asked end's height.
 - **Straight walk** (`nav::straight_walk`, a walker without feet): from the
   floor under the start, 5 up and 15 under, following the floors down too,
-  over the cells after the start up to but not including the asked end's
-  own cell; it reads the floors as built, not those movers raised.
+  over the cells after the start up to and including the asked end's own
+  cell; it reads the floors as built, not those movers raised.
 - **Obstacle** (`nav::obstacle`): none on lines of 40 cm or less; longer,
   a floor more than 7 up with less than 15 under it, or, before the
   line's last two cells, a penalty over 60.
@@ -320,9 +320,8 @@ cell's lower and upper floor and underside):
   layer whose clearance plus penalty is under 80 the point stays, on its
   floor. Else a best-first flood in a 256-cell window round the point's
   cell: from a point off the floors (no layer, or clearance 255) first the
-  nearest cell by the squared 3-D distance to the point (a lower layer
-  without a floor included) that is not open sky and has more than 10
-  between its floor and the other layer's slab; then, from
+  nearest cell across the ground that has a floor (not open sky, with
+  more than 10 between its floor and the other layer's slab); then, from
   the cell, each neighbour in the original's order the line walk's reach
   steps onto (under 50 cm up, under 2.1 m down), keyed by its distance
   from the point (×10, in 3-D), keeping the cheapest; it stops at a cell
