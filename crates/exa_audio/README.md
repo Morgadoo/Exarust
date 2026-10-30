@@ -112,6 +112,12 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
 - Voices beyond the top: auto-free ones are freed; others lose their active
   bit, and a looping one keeps a restart request so it resumes when it ranks
   high again.
+- The music and ambience callers take the shared dummy voice when all 512
+  voices are in use (the original's other allocation): it has flags 0 and
+  source −1, is never ranked or bound, and writing to it changes nothing
+  audible. The one-shot and ambience one-shot paths keep the allocation that
+  reports no voice; the music and ambience callers' writes to the dummy are
+  dropped by the holder.
 - Every source is heard through OpenAL's linear clamped distance model with
   reference distance 4 m, maximum distance 30 m and rolloff 1: full gain
   inside 4 m, falling linearly to silence at 30 m. The heard gain is held
@@ -206,7 +212,8 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
 - Starting either fade during the other mirrors its progress (`now − round((1
   − t)·3000)`, in single precision), so the gains continue without a jump.
 - The Music setting acts only when A's volume is above 0.01: off stops A, on
-  plays the remembered name again at the remembered volume.
+  plays the remembered name again at the remembered volume. The compare is
+  unordered-safe, so a NaN volume is left alone, as the original's is.
 - The transition screen reads and writes A's voice gain (`music_gain`,
   `set_music_gain`) to fade the music out with the screen, then stops A and
   forgets its name at black. The story's level-entry check
@@ -223,7 +230,7 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
 
 - An area `X` has a bed `EnvX01` at `0.15 × volume`, pitch 1, looped on the
   interface bus, started at a random point in the first 0.8 s, and a one-shot
-  set `AmbX01…16`. Both names pass through a 15-character short string.
+  set `AmbX01…16`. Both names pass through a 15-*byte* short string.
 - Setting an area releases the old bed buffer only when it changes and the
   old set after loading the new one; the bed voice is reused.
 - The one-shot scheduler runs on the game clock. The first shot is due
@@ -233,8 +240,22 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
   rescheduled 5–15 s later. A stereo shot stays on the listener, at gain
   0.075–0.15 and pitch 0.8–1.0, and is rescheduled 15–45 s later. Every
   range is a unit draw scaled in double precision.
-- Only the outdoor arenas' known daylight case is wired: `NtrA` at volume 1
+- The mono direction is the two draws taken off 0.5 and normalised in single
+  precision; a squared length at or below the `f32` epsilon, or an unordered
+  one, sets only the first component to 1 and keeps the second draw's value.
+  The direction is scaled in centimetres and only then converted to metres.
+- A story level takes the area its name's bytes pick at full volume: the
+  fourth level names `AmbUWBA`, whose prefixes then build `EnvAmbUWBA01` and
+  `AmbAmbUWBA`, files that do not ship (the original's naming bug, kept);
+  every other story level clears the ambience.
+- Only the outdoor arenas' calm daylight case is wired: `NtrA` at volume 1
   (a still, dry day; the weather and time-of-day callers are not in Exarust).
+  `arena_ambience` holds the recovered full rule — rain > 0.01 stops the
+  ambience, daylight < 0.5 gives `NtrAN` at 0.3, a calm arena gives `NtrA` at
+  1, wind > 0.1 gives `NtrW` at 1 with bed gain `wind² × 0.2` and pitch
+  `0.6 + 0.5 × wind`, otherwise none — but the per-arena calm flag comes from
+  the arena progression's tables, which are not ported, so nothing calls it
+  yet.
 
 ### Reverb (`reverb`)
 
@@ -285,9 +306,13 @@ parameters are in. EFX is not applied by the backend (see [Gaps](#gaps)).
 - **Effect creation failure.** The original logs and stays silent when the
   effect slot or effect cannot be created. The failure is modelled with
   `Reverb::effect_ready`; there is no backend call to fail.
-- **Full pool.** The original returns a shared dummy voice when the pool is
-  full and lets callers write into it; Exarust reports no voice and the music
-  and ambience code skips the write.
+- **Full pool.** The music and ambience callers take the shared dummy voice
+  when all 512 voices are in use, as the original does; it is never ranked or
+  bound, so its writes are inaudible. The one-shot paths report no voice.
+- **Arena ambience table.** The per-arena calm flag and the night draw's
+  arena index come from the arena progression, which is not ported; the
+  viewer keeps the calm daylight `NtrA` choice. `arena_ambience` holds the
+  rest of the recovered rule.
 - **Buffer queries.** The music overlay's length query passes the table slot
   where OpenAL expects its own buffer name; both count up from 1 and reuse the
   lowest free one, so they agree, and Exarust reads the slot.
@@ -307,9 +332,9 @@ each pin their rules to synthetic numbers: generator words, variant picks,
 WAV layouts and walk steps, durations, frame-rounded lengths, audibility
 ranks, the distance slope, sorting, bus products and focus steps, source
 assignment, eviction, pause, handles, fades, mirrored starts, ambience
-placement and names, the reverb block's stored bits and the backend's
-restart rule. The installed-sets test reads `EXANIMA_DIR` and skips when it
-is not set.
+placement and names, the arena weather choice, the reverb block's stored bits
+and the backend's restart rule. The installed-sets test reads `EXANIMA_DIR`
+and skips when it is not set.
 
 `voices` holds the original's voice choice (a body with a feral level above
 0 speaks its undead voice, else its living one, with the record's sex bit)
