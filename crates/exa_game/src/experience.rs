@@ -88,8 +88,10 @@ pub const ARMOUR_SKILL: usize = 2;
 
 /// The body word's bit for each chosen technique, by skill: the skill's
 /// techniques up to its level, each mapping to the bit the body keeps.
+/// Skill 1 sets no bit; the armour skill holds the one 0x1000 technique.
 pub const TECHNIQUE_BITS: [&[(u8, u32)]; SKILLS] = [
     &[(1, 0x1), (2, 0x2), (3, 0x4), (4, 0x8)],
+    &[],
     &[(5, 0x1000)],
     &[
         (1, 0x0100_0000),
@@ -106,13 +108,14 @@ pub const TECHNIQUE_BITS: [&[(u8, u32)]; SKILLS] = [
         (6, 0x0020_0000),
         (8, 0x0001_0000),
     ],
-    &[],
 ];
 
 /// The techniques a body holds, read again when a skill reaches a new
-/// level: each of the six skills' chosen techniques up to its level, mapped
-/// to the body's word ([`TECHNIQUE_BITS`]). The armour refresh that follows
-/// a rise in [`ARMOUR_SKILL`] is the body's own.
+/// level: the word starts at 0 and each skill's chosen techniques up to its
+/// level (points / 5000 slots) map to the body's bits ([`TECHNIQUE_BITS`]).
+/// The original reads one slot per level with no bound; a level above the
+/// six slots (more points than training reaches) is clamped here. The
+/// armour refresh that follows a rise in [`ARMOUR_SKILL`] is the body's own.
 pub fn technique_bits(skills: &[Skill; SKILLS]) -> u32 {
     let mut bits = 0u32;
     for (index, skill) in skills.iter().enumerate() {
