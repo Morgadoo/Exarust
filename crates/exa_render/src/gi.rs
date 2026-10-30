@@ -46,9 +46,9 @@ impl Plugin for GiPlugin {
         let report = WarmUpReport(warm_up.report.clone());
         app.init_resource::<GiLights>()
             .init_resource::<GiSectorLights>()
-            .init_resource::<GiShapes>()
             .insert_resource(warm_up)
             .add_plugins((
+                crate::gi_shape::GiShapePlugin,
                 ExtractResourcePlugin::<GiTextures>::default(),
                 ExtractResourcePlugin::<GiPendingTextures>::default(),
                 ExtractResourcePlugin::<GiLights>::default(),
@@ -902,40 +902,7 @@ pub fn quad_indices(quads: usize) -> Vec<u16> {
     out
 }
 
-/// The TGIEmissive shapes registered with the manager, in registration
-/// order. The original appends a shape's pointer (and stores the manager in
-/// the shape), and unregisters by swapping the last list entry over the
-/// found one; a shape listed twice has both entries removed.
-#[derive(Resource, Default, Clone, Debug)]
-pub struct GiShapes(Vec<Entity>);
-
-impl GiShapes {
-    /// Registers a shape at the end.
-    pub fn register(&mut self, shape: Entity) {
-        self.0.push(shape);
-    }
-
-    /// Unregisters a shape: every entry equal to it is replaced by the last
-    /// list entry and the list shortens, as the original's walk does.
-    pub fn unregister(&mut self, shape: Entity) {
-        let old = self.0.len();
-        let mut list = self.0.clone();
-        let mut count = old;
-        for i in 0..old {
-            if list[i] == shape {
-                count -= 1;
-                list[i] = list[count];
-            }
-        }
-        list.truncate(count);
-        self.0 = list;
-    }
-
-    /// The registered shapes, in list order.
-    pub fn shapes(&self) -> &[Entity] {
-        &self.0
-    }
-}
+pub use crate::gi_shape::{GiShape, GiShapeProgram, GiShapeSample, GiShapes};
 
 /// A registered shape's volume for the manager's box: its world position
 /// and half extents (metres), in world X, Y, Z. A shape entity carries one
@@ -965,82 +932,48 @@ pub struct ShapeDraw {
 /// 256-wide block), and the slices from the centre less its vertical half
 /// extent, one more than twice it. Shapes whose centre is below slice 2, or
 /// whose clipped box is empty, draw nothing.
-pub fn shape_draw(volume: ShapeVolume, origin: Vec3, voxel: f32) -> Option<ShapeDraw> {
-    let p = (volume.position - origin) / voxel;
-    let centre = IVec3::new(
-        p.x.round_ties_even() as i32,
-        p.z.round_ties_even() as i32,
-        p.y.round_ties_even() as i32,
+///
+/// `dims` are the block's voxels in texture axes (X, Z depth, Y height); the
+/// manager's scale is one over the width times a voxel, and each centre is
+/// its voxel index: `round(width · ((p − block centre) · scale + 0.5))`,
+/// worked out in single precision in that order. The vertical centre is the
+/// world's zero (`below/width + p·scale`), and the half extents use the
+/// width on every axis, as the original does (all three presets are square).
+pub fn shape_draw(volume: ShapeVolume, origin: Vec3, dims: UVec3, voxel: f32) -> Option<ShapeDraw> {
+    let width = dims.x.max(1) as f32;
+    let inv = 1.0 / (width * voxel);
+    let centre = Vec3::new(
+        origin.x + 0.5 * width * voxel,
+        origin.y + 0.5 * dims.z as f32 * voxel,
+        origin.z + 0.5 * dims.y as f32 * voxel,
     );
-    let half = IVec3::new(
-        (volume.half.x / voxel).ceil() as i32,
-        (volume.half.z / voxel).ceil() as i32,
-        (volume.half.y / voxel).ceil() as i32,
-    );
-    let lo = (centre.xy() - half.xy()).max(IVec2::splat(SHAPE_LO));
-    let hi = (centre.xy() + half.xy()).min(IVec2::splat(SHAPE_HI));
-    (lo.x < hi.x && lo.y < hi.y && centre.z > 1).then_some(ShapeDraw {
+    // X and Z measure from the block's centre; the height measures from the
+    // world's zero (the block's vertical origin is its `below` offset).
+    let below = -origin.y / voxel;
+    let column = |p: f32, c: f32| (p - c) * inv + 0.5;
+    let centre_x = (width * column(volume.position.x, centre.x)).round_ties_even() as i32;
+    let centre_z =
+        (dims.y.max(1) as f32 * column(volume.position.z, centre.z)).round_ties_even() as i32;
+    let centre_y = (width * (below / width + volume.position.y * inv)).round_ties_even() as i32;
+    let half = |h: f32| (width * h * inv).ceil() as i32;
+    let half_x = half(volume.half.x);
+    let half_z = half(volume.half.z);
+    let half_y = half(volume.half.y);
+    let lo =
+        (IVec2::new(centre_x, centre_z) - IVec2::new(half_x, half_z)).max(IVec2::splat(SHAPE_LO));
+    let hi =
+        (IVec2::new(centre_x, centre_z) + IVec2::new(half_x, half_z)).min(IVec2::splat(SHAPE_HI));
+    (lo.x < hi.x && lo.y < hi.y && centre_y > 1).then_some(ShapeDraw {
         lo: lo.as_uvec2(),
         hi: hi.as_uvec2(),
-        first: centre.z - half.z,
-        count: half.z * 2 + 1,
+        first: centre_y - half_y,
+        count: half_y * 2 + 1,
     })
 }
 
 /// The first and one-past-last column a shape draws over (both axes).
 const SHAPE_LO: i32 = 8;
 const SHAPE_HI: i32 = 248;
-
-/// The shader-library program a registered GI shape injects with. The manager
-/// builds `gi_inject_v` and `gi_inject_g` once and links each program to one
-/// of these fragments; the shapes' own uniforms and fragment bodies belong
-/// to the effect classes, which are outside this component, so Exarust keeps
-/// only the manager's side: the name its program builder links.
-#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GiShapeProgram {
-    /// `gi_dome`: a sphere shell with a dome texture.
-    Dome,
-    /// `gi_cuboid`: a box with a soft edge falloff.
-    Cuboid,
-    /// `gi_bubble`: a sphere shell with a bubble texture.
-    Bubble,
-    /// `gi_telebubble`: the teleporter's pulsing bubble.
-    TeleBubble,
-    /// `gi_gradline`: a line light with a gradient along it.
-    GradLine,
-    /// `gi_multipoint`: a run of point lights.
-    Multipoint,
-}
-
-impl GiShapeProgram {
-    /// Every program, in the shader library's order.
-    pub const ALL: [Self; 6] = [
-        Self::Dome,
-        Self::Cuboid,
-        Self::Bubble,
-        Self::TeleBubble,
-        Self::GradLine,
-        Self::Multipoint,
-    ];
-
-    /// The entry's name in the shader library (the manager links
-    /// `gi_inject_v` and `gi_inject_g` with it).
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Dome => "gi_dome",
-            Self::Cuboid => "gi_cuboid",
-            Self::Bubble => "gi_bubble",
-            Self::TeleBubble => "gi_telebubble",
-            Self::GradLine => "gi_gradline",
-            Self::Multipoint => "gi_multipoint",
-        }
-    }
-
-    /// The program a shader-library name names, if the manager knows it.
-    pub fn from_name(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|p| p.name() == name)
-    }
-}
 
 /// The four corners of one shape injection quad, in texture units (x,
 /// Z depth, Y height), as the manager's shape loop builds them: the shape's
@@ -2408,27 +2341,6 @@ mod tests {
     }
 
     #[test]
-    fn shapes_register_at_the_end_and_leave_by_swap_removal() {
-        let mut world = World::new();
-        let a = world.spawn_empty().id();
-        let b = world.spawn_empty().id();
-        let c = world.spawn_empty().id();
-        let mut shapes = GiShapes::default();
-        for e in [a, b, c] {
-            shapes.register(e);
-        }
-        assert_eq!(shapes.shapes(), &[a, b, c]);
-        shapes.unregister(b);
-        assert_eq!(shapes.shapes(), &[a, c]);
-        // A duplicate's both entries go.
-        shapes.register(c);
-        shapes.unregister(c);
-        assert_eq!(shapes.shapes(), &[a]);
-        shapes.unregister(a);
-        assert!(shapes.shapes().is_empty());
-    }
-
-    #[test]
     fn a_shapes_box_is_rounded_and_margin_clipped() {
         let draw = shape_draw(
             ShapeVolume {
@@ -2436,6 +2348,7 @@ mod tests {
                 half: Vec3::splat(1.0),
             },
             Vec3::ZERO,
+            BLOCK,
             0.2,
         )
         .unwrap();
@@ -2448,6 +2361,7 @@ mod tests {
                 half: Vec3::splat(4.0),
             },
             Vec3::ZERO,
+            BLOCK,
             0.2,
         )
         .unwrap();
@@ -2461,6 +2375,7 @@ mod tests {
                     half: Vec3::splat(0.3),
                 },
                 Vec3::ZERO,
+                BLOCK,
                 0.2,
             )
         };
@@ -2976,16 +2891,6 @@ mod tests {
     }
 
     #[test]
-    fn a_shape_program_is_named_by_its_shader_library_entry() {
-        assert_eq!(GiShapeProgram::Dome.name(), "gi_dome");
-        assert_eq!(GiShapeProgram::Multipoint.name(), "gi_multipoint");
-        for program in GiShapeProgram::ALL {
-            assert_eq!(GiShapeProgram::from_name(program.name()), Some(program));
-        }
-        assert_eq!(GiShapeProgram::from_name("gi_inject_f"), None);
-    }
-
-    #[test]
     fn a_shapes_quad_walks_its_clipped_box() {
         let dims = UVec3::new(256, 256, 64);
         let draw = shape_draw(
@@ -2994,6 +2899,7 @@ mod tests {
                 half: Vec3::splat(1.0),
             },
             Vec3::ZERO,
+            BLOCK,
             0.2,
         )
         .unwrap();
