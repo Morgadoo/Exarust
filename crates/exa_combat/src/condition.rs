@@ -246,8 +246,9 @@ impl StateFlags {
     /// nothing clears it. In Exarust only the play flag `--flat-floor`
     /// sets it, on the player.
     pub const SPLAY: u32 = 0x1000;
-    /// Blows on it are turned: the striker recoils and nothing is dealt
-    /// (what sets it was not traced).
+    /// Blows on it are turned: the striker recoils and nothing is dealt.
+    /// The golem sentry sets it on a statue with its sleep scales (the
+    /// latch), and the golem wake clears it.
     pub const TURNS_BLOWS: u32 = 0x400;
     /// A potion halves yellow damage until it expires.
     pub const POTION: u32 = 0x80_0000;
