@@ -408,6 +408,16 @@ impl DeviceFields {
     pub fn offset_direction(self) -> bool {
         self.flags & 0x02 != 0
     }
+
+    /// The arc's direction: the node's third axis when the record's flag
+    /// bit 0x02 asks for an offset direction, else the default +X.
+    pub fn direction(self, node_third_axis: Vec3) -> Vec3 {
+        if self.offset_direction() {
+            node_third_axis.normalize_or(Vec3::X)
+        } else {
+            Vec3::X
+        }
+    }
 }
 
 /// Errors from an arc's data.
@@ -1084,6 +1094,12 @@ mod tests {
             }
         );
         assert!(f.offset_direction());
+        // The direction follows the node's third axis only with the flag.
+        assert_eq!(f.direction(Vec3::NEG_Z), Vec3::NEG_Z);
+        assert_eq!(
+            DeviceFields { flags: 0, ..f }.direction(Vec3::NEG_Z),
+            Vec3::X
+        );
         let s = ArcSpec::device_fields(f, Vec3::NEG_Z);
         // 1.5 cm size, four sizes a segment: 240 / 6 = 40 segments.
         assert!((s.size - 1.5).abs() < 1e-6);
