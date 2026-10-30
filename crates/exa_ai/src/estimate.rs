@@ -7,11 +7,11 @@
 //! reach. A body scale above 1.3 adds 2; otherwise the estimate is
 //! quartered.
 //!
-//! The sums keep the original's precision and order: the level part and
-//! the combat-skill part are added in double precision, the weapon bytes
-//! are summed in single precision, and the weapon term joins the estimate
-//! in double precision. The share of each weapon byte is a hundredth: the
-//! original divides by 100 rather than using a precomputed factor.
+//! The sums keep the original's precision and order: the level part
+//! (levels times the double 0.4 plus 2) is built in double precision and
+//! cut to a float, the combat-skill part joins it in double precision, each
+//! weapon byte times the double 0.01 joins the running float sum in double
+//! precision, and the weapon term joins the estimate in double precision.
 
 use exa_formats::characters::{SKILLS, Skill};
 use exa_formats::weapon_stats::{StatBytes, at};
@@ -33,19 +33,20 @@ pub fn total_levels(skills: &[Skill; SKILLS]) -> i32 {
 }
 
 /// The level and combat-skill part of the estimate, before any weapon and
-/// the body's scale: `(levels·0.4 + 2) + combat_skill·0.02`, the first
-/// term in single precision and the sum in double, cut back to a float.
+/// the body's scale: `(levels·0.4 + 2) + combat_skill·0.02`, each step in
+/// double precision and cut back to a float.
 pub fn fighting_base(skills: &[Skill; SKILLS], combat_skill: f32) -> f32 {
     let levels = total_levels(skills);
-    let level_part = (levels as f32) * 0.4 + 2.0;
+    let level_part = (f64::from(levels) * 0.4 + f64::from(2.0f32)) as f32;
     (f64::from(combat_skill) * 0.02 + f64::from(level_part)) as f32
 }
 
 /// Add the held weapon and the body scale to a base estimate.
 ///
-/// `weapon` is the weapon's stat bytes and reach in cm. The bytes are
-/// summed in single precision, each a hundredth, then the sum times the
-/// reach joins the base in double precision and is cut back to a float.
+/// `weapon` is the weapon's stat bytes and the character's reach in cm.
+/// Each byte times the double 0.01 joins the float sum in double precision
+/// (the first is only cut to a float), then the sum times the reach joins
+/// the base in double precision and is cut back to a float.
 pub fn fighting_estimate_with_base(
     base: f32,
     weapon: Option<(&StatBytes, f32)>,
@@ -123,6 +124,18 @@ mod tests {
             fighting_estimate_with_base(4.2, None, 1.3).to_bits(),
             1.05f32.to_bits()
         );
+    }
+
+    /// The level part is built in double precision: nine levels give the
+    /// float nearest 5.6, where a float `9·0.4 + 2` would give the next one
+    /// up.
+    #[test]
+    fn the_level_part_is_built_in_double_precision() {
+        let skills = skills_with([25_000, 20_000, 0, 0, 0, 0]);
+        assert_eq!(total_levels(&skills), 9);
+        assert_eq!(fighting_base(&skills, 0.0).to_bits(), 0x40b3_3333);
+        let skills = skills_with([25_000, 25_000, 15_000, 0, 0, 0]);
+        assert_eq!(fighting_base(&skills, 0.0).to_bits(), 0x40e6_6666);
     }
 
     #[test]
