@@ -1947,8 +1947,10 @@ mod roster_tests {
     }
 }
 
-/// The engine's MT19937 generator, used only for the arena rank roll.
-#[derive(Debug, Clone)]
+/// The run-time library's MT19937 unit generator, apart from the engine's
+/// own LCG: the arena's rank and candidate-level rolls read it, as do the
+/// effects that ask the library for a random value.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mt19937 {
     state: [u32; 624],
     index: usize,

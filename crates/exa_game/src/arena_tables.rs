@@ -12,8 +12,10 @@
 //!
 //! What Exarust has no live model for keeps the chunk a save already holds,
 //! or the reader's default when there is none: the hireables, the
-//! tournament's field, prizes, events and history, the day's specials and
-//! daily tallies, and the company's second name string and three words. The
+//! tournament's prize and events (and its field until one is drawn), the
+//! day's specials, and the company's second name string and three words.
+//! The day's spent and earned tallies, the lifetime coin records and the
+//! prize history are the career's; the coin values are stored as coin words. The
 //! merchant's stock type and specialisation are the career's
 //! (`ArenaCareer::merchant_kinds` and `merchant_rank`, 0 and −1 in a new
 //! career, as the original's writer stores its two words), and its two
@@ -33,6 +35,7 @@ use crate::arena_log::ArenaLog;
 use crate::arsenal::{Arsenal, ArsenalEntry};
 use crate::hub_windows::ArenaCareer;
 use crate::staff::Staff;
+use exa_ui::match_board::pack_coins;
 
 /// The company record's sixteen words, in the writer's order.
 pub const RECORD_WON: usize = 0;
@@ -224,21 +227,25 @@ pub fn from_live(
         words: previous.company.words,
         records: {
             let mut records = previous.company.records;
-            records[RECORD_WON] = career.company.won;
-            records[RECORD_LOST] = career.company.lost;
-            records[RECORD_TOURNAMENTS_WON] = career.company.tournaments_won;
-            records[RECORD_SEASONS_WON] = career.company.seasons_won;
-            records[RECORD_DEATHS] = career.company.deaths;
-            records[RECORD_EARNED] = career.company.earned;
-            records[RECORD_SPENT] = career.company.spent;
+            for (slot, value) in career.company.records().values().iter().enumerate() {
+                if let Some(word) = records.get_mut(slot) {
+                    // The two lifetime coin totals are coin words like the
+                    // purse; the eleven counts are plain.
+                    *word = if slot == RECORD_EARNED || slot == RECORD_SPENT {
+                        pack_coins(*value)
+                    } else {
+                        *value
+                    };
+                }
+            }
             records
         },
     };
 
     tables.day = DayChunk {
         matches_today: career.matches_today,
-        spent_today: previous.day.spent_today,
-        earned_today: previous.day.earned_today,
+        spent_today: pack_coins(career.company.spent),
+        earned_today: pack_coins(career.company.earned),
         specials: previous.day.specials,
         log_word: previous.day.log_word,
         log: career
@@ -288,6 +295,7 @@ pub fn from_live(
     tables.tournament = TournamentChunk {
         rows: rows_from_roster(&career.entries),
         field,
+        history: career.prize_history,
         ..previous.tournament
     };
     tables
@@ -317,13 +325,25 @@ pub fn apply(
     career.company.stock = tables.shop_stock.clone();
     career.company.emblem = emblem_from_bytes(&tables.company.emblem);
     let records = &tables.company.records;
-    career.company.won = records[RECORD_WON];
-    career.company.lost = records[RECORD_LOST];
-    career.company.tournaments_won = records[RECORD_TOURNAMENTS_WON];
-    career.company.seasons_won = records[RECORD_SEASONS_WON];
-    career.company.deaths = records[RECORD_DEATHS];
-    career.company.earned = records[RECORD_EARNED];
-    career.company.spent = records[RECORD_SPENT];
+    career
+        .company
+        .book_records(&crate::arena_match::CompanyRecords {
+            matches_won: records[RECORD_WON],
+            matches_lost: records[RECORD_LOST],
+            matches_forfeited: records[RECORD_FORFEITED],
+            tournaments_won: records[RECORD_TOURNAMENTS_WON],
+            tournaments_lost: records[RECORD_TOURNAMENTS_LOST],
+            seasons_won: records[RECORD_SEASONS_WON],
+            beasts_fought: records[RECORD_BEASTS_FOUGHT],
+            beasts_defeated: records[RECORD_BEASTS_DEFEATED],
+            hires: records[RECORD_HIRES],
+            deaths: records[RECORD_DEATHS],
+            fired: records[RECORD_FIRED],
+            earned: crate::career::coin_total(records[RECORD_EARNED]),
+            spent: crate::career::coin_total(records[RECORD_SPENT]),
+        });
+    career.company.spent = crate::career::coin_total(tables.day.spent_today);
+    career.company.earned = crate::career::coin_total(tables.day.earned_today);
 
     career.matches_today = tables.day.matches_today;
     career.log = ArenaLog {
@@ -350,6 +370,7 @@ pub fn apply(
     // A field whose first company is 0 stays empty, so the next tournament
     // asks for a new one.
     career.rivals = tables.tournament.field.map(|company| company as i32);
+    career.prize_history = tables.tournament.history;
 }
 
 /// The hub stash's item ids from a save's tables.
@@ -401,6 +422,14 @@ mod tests {
         career.company.lost = 2;
         career.company.spent = 40;
         career.company.earned = 55;
+        career.company.total_spent = 400;
+        career.company.total_earned = 550;
+        career.company.matches_forfeited = 4;
+        career.company.tournaments_lost = 5;
+        career.company.beasts_fought = 6;
+        career.company.beasts_defeated = 7;
+        career.company.hires = 8;
+        career.company.fired = 9;
         career.company.seasons_won = 1;
         career.company.tournaments_won = 2;
         career.company.deaths = 1;
@@ -456,8 +485,16 @@ mod tests {
         assert_eq!(tables.company.name, b"Rivals");
         assert_eq!(tables.company.records[RECORD_WON], 3);
         assert_eq!(tables.company.records[RECORD_LOST], 2);
-        assert_eq!(tables.company.records[RECORD_EARNED], 55);
-        assert_eq!(tables.company.records[RECORD_SPENT], 40);
+        assert_eq!(tables.company.records[RECORD_FORFEITED], 4);
+        assert_eq!(tables.company.records[RECORD_TOURNAMENTS_LOST], 5);
+        assert_eq!(tables.company.records[RECORD_BEASTS_FOUGHT], 6);
+        assert_eq!(tables.company.records[RECORD_BEASTS_DEFEATED], 7);
+        assert_eq!(tables.company.records[RECORD_HIRES], 8);
+        assert_eq!(tables.company.records[RECORD_FIRED], 9);
+        // The lifetime coin totals are coin words: 550 copper is 3 gold,
+        // 9 silver and 10 copper; 400 is 2 gold, 9 silver and 4 copper.
+        assert_eq!(tables.company.records[RECORD_EARNED], 0x0003_090a);
+        assert_eq!(tables.company.records[RECORD_SPENT], 0x0002_0904);
         assert_eq!(tables.company.records[RECORD_SEASONS_WON], 1);
         assert_eq!(tables.company.records[RECORD_TOURNAMENTS_WON], 2);
         assert_eq!(tables.company.records[RECORD_DEATHS], 1);
@@ -466,6 +503,26 @@ mod tests {
             career.company.emblem
         );
         assert_eq!(tables.day.matches_today, 2);
+        // The day's tallies: 40 copper is 3 silver and 4 copper, 55 is
+        // 4 silver and 7 copper.
+        assert_eq!(tables.day.spent_today, 0x0304);
+        assert_eq!(tables.day.earned_today, 0x0407);
+        assert_eq!(tables.tournament.history, career.prize_history);
+        // The load puts the coin words back as copper.
+        let mut loaded = ArenaCareer::default();
+        apply(
+            &mut loaded,
+            &mut Staff::default(),
+            &mut Arsenal::default(),
+            &mut Vec::new(),
+            &tables,
+        );
+        assert_eq!(
+            (loaded.company.total_earned, loaded.company.total_spent),
+            (550, 400)
+        );
+        assert_eq!((loaded.company.earned, loaded.company.spent), (55, 40));
+        assert_eq!(loaded.prize_history, career.prize_history);
         assert_eq!(tables.day.log.len(), 1);
         assert_eq!(tables.day.log[0][0..4], 5i32.to_le_bytes());
         assert_eq!(tables.day.log[0][4..8], 6i32.to_le_bytes());
@@ -516,6 +573,7 @@ mod tests {
     #[test]
     fn the_weeks_field_round_trips_through_the_tournament_chunk() {
         let mut career = career("Rivals");
+        career.rivals = [0; crate::career::RIVAL_FIELD];
         let staff = Staff::default();
         let arsenal = Arsenal::default();
         let previous = ArenaTables::default();

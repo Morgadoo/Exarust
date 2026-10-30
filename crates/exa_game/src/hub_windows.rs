@@ -42,7 +42,6 @@ use exa_ui::match_board::{
 use exa_ui::skin::SkinPalette;
 use exa_ui::table_view;
 
-use crate::arena;
 use crate::arena::Roster;
 use crate::arena_board;
 use crate::career::{Company, Member, Profession};
@@ -93,6 +92,31 @@ pub struct ArenaCareer {
     /// The hub's items as the physician's weapon query reads them, supplied
     /// by the host that knows the scene.
     pub venue_items: Vec<crate::arena_spawn::PlacedItem>,
+    /// The hire list: ten candidates, newest first, each a generated record
+    /// with the role the candidate draw gave it.
+    pub hire_pool: Vec<Member>,
+    /// The profession grid's drift, shared across the list's generations.
+    pub hire_catalog: crate::arena_outfit::ProfessionCatalog,
+    /// The appearance variant the next candidate avoids.
+    pub hire_previous: u32,
+    /// The day's six standard matches, rolled once and kept until the day
+    /// ends ([`crate::arena::generate_daily_board`]).
+    pub daily_rows: [crate::arena::MatchInstance; 6],
+    /// The day ended and its shop and merchant shelves still need their
+    /// nightly restock, which the live shop world supplies on the next
+    /// frame.
+    pub restock_pending: bool,
+    /// The week's tournament board: six event rows, its prize and the
+    /// shuffled company field.
+    pub tournament: Option<crate::arena::TournamentBoard>,
+    /// The last eight weekly prizes, so a new draw avoids them.
+    pub prize_history: [u32; 8],
+    /// The run-time library's unit generator (a Mersenne twister apart from
+    /// the engine's LCG). A candidate's level and the boards' rank rolls
+    /// read it in turn, as the original's one shared library sequence. The
+    /// original seeds it once from the clock at start-up; a default career
+    /// seeds it from a fixed word [guess].
+    pub random: crate::arena::Mt19937,
     /// The roll the window actions draw from.
     pub roll: u32,
     /// The manager-entry warning is still armed: the first Begin that
@@ -105,7 +129,7 @@ pub struct ArenaCareer {
 
 impl Default for ArenaCareer {
     fn default() -> Self {
-        Self {
+        let mut career = Self {
             company: Company::new("The Company"),
             player: Member {
                 name: "Manager".to_string(),
@@ -126,10 +150,24 @@ impl Default for ArenaCareer {
             merchant_kinds: 0,
             merchant_rank: -1,
             venue_items: Vec::new(),
+            hire_pool: Vec::new(),
+            hire_catalog: crate::arena_outfit::ProfessionCatalog::default(),
+            hire_previous: 0,
+            daily_rows: crate::arena::generate_daily_board(0x1234_5678, || 0.5),
+            restock_pending: false,
+            tournament: None,
+            prize_history: [0; 8],
+            random: crate::arena::Mt19937::new(DEFAULT_RANDOM_SEED),
             roll: 0,
             warn_manager: true,
             rivals: [0; crate::career::RIVAL_FIELD],
-        }
+        };
+        // A default career is what the play-mode hub starts with: ten
+        // candidates, drawn from a fixed seed until a session host replaces
+        // the career.
+        career.fill_hire_pool_at(0x1234_5678);
+        career.regenerate_tournament_at(0x1234_5678);
+        career
     }
 }
 
@@ -150,26 +188,134 @@ impl ArenaCareer {
         self.merchant_stock.clear();
         self.merchant_kinds = 0;
         self.merchant_rank = -1;
-        self.company.won = 0;
-        self.company.lost = 0;
-        self.company.tournaments_won = 0;
-        self.company.seasons_won = 0;
-        self.company.deaths = 0;
+        self.company
+            .book_records(&crate::arena_match::CompanyRecords::default());
         self.company.earned = 0;
         self.company.spent = 0;
         self.company.day = 0;
         self.matches_today = 0;
         self.log.records.clear();
+        self.restock_pending = false;
         self.company.roster.clear();
         self.company.copper = 0;
         self.company.weeks = [false; 4];
+        // The reset leaves the hire list and the week's event rows alone and
+        // ends by rolling the day's six matches.
+        self.regenerate_daily_board_at(crate::arena_match::counter_now() as u32);
     }
 
-    /// A new career's records: the reset, then the starting purse of 343
-    /// copper.
+    /// A new career's records, in the original's order: the reset (which
+    /// rolls the day's matches), the starting purse of 343 copper, the
+    /// week's tournament and then the ten hire-list candidates.
     pub fn start_new_career(&mut self) {
         self.reset();
         self.company.copper = crate::career::STARTING_COPPER;
+        self.regenerate_tournament_at(crate::arena_match::counter_now() as u32);
+        self.fill_hire_pool_at(crate::arena_match::counter_now());
+    }
+
+    /// Roll the week's tournament from `seed`: the event entries are
+    /// cleared, then its prize (avoiding the last eight), six event rows at
+    /// tier 5 down and the sixteen-company field, which becomes the career's
+    /// rival field. The rank rolls read the library generator.
+    pub fn regenerate_tournament_at(&mut self, seed: u32) {
+        self.entries = Roster::default();
+        let random = &mut self.random;
+        let board = crate::arena::generate_tournament_board(seed, &mut self.prize_history, || {
+            random.unit()
+        });
+        self.rivals = board.companies.map(i32::from);
+        self.tournament = Some(board);
+    }
+
+    /// Roll the day's six standard matches from `seed`, the board's LCG
+    /// seed; the rank rolls read the library generator.
+    pub fn regenerate_daily_board_at(&mut self, seed: u32) {
+        let random = &mut self.random;
+        self.daily_rows = crate::arena::generate_daily_board(seed, || random.unit());
+    }
+
+    /// Fill the hire list with ten candidates. The original reseeds from the
+    /// performance counter before each candidate; the live counter is read
+    /// once and each later candidate's seed is moved on by a fixed odd step,
+    /// so two candidates never share a seed [guess: the real counter's
+    /// spacing depends on the machine].
+    pub fn fill_hire_pool_at(&mut self, counter: u64) {
+        let mut pool = Vec::with_capacity(crate::hirelings::POOL_SIZE);
+        for index in 0..crate::hirelings::POOL_SIZE {
+            let seed = counter.wrapping_add((index as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            pool.push(draw_hire_member(
+                seed,
+                &mut self.hire_catalog,
+                &mut self.hire_previous,
+                &mut self.random,
+            ));
+        }
+        self.hire_pool = pool;
+    }
+
+    /// Fill the hire list from the live counter.
+    pub fn fill_hire_pool(&mut self) {
+        self.fill_hire_pool_at(crate::arena_match::counter_now());
+    }
+
+    /// Renew the list for a new day: the oldest candidate leaves, and one or
+    /// two come while fewer than eight are listed ([`crate::hirelings::renew_pool`]).
+    /// The count draw steps the career's roll; the original steps the
+    /// engine's shared LCG wherever the restock left it [guess].
+    pub fn renew_hire_pool(&mut self) {
+        if self.hire_pool.is_empty() {
+            self.fill_hire_pool();
+            return;
+        }
+        let mut pool = std::mem::take(&mut self.hire_pool);
+        let mut catalog = std::mem::take(&mut self.hire_catalog);
+        let mut previous = self.hire_previous;
+        let random = &mut self.random;
+        let mut counter = crate::arena_match::counter_now();
+        crate::hirelings::renew_pool(&mut pool, &mut self.roll, || {
+            let member = draw_hire_member(counter, &mut catalog, &mut previous, random);
+            counter = counter.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            member
+        });
+        self.hire_catalog = catalog;
+        self.hire_previous = previous;
+        self.hire_pool = pool;
+    }
+
+    /// What a listed candidate costs: the rank from its six skill levels and
+    /// the hire fee. The live list carries no item facts, so the outfit's
+    /// gear value is not added (a gap against the original, whose candidate
+    /// is dressed from the object database).
+    pub fn hire_price(&self, index: usize) -> u32 {
+        self.hire_pool.get(index).map_or(0, |member| {
+            crate::career::Company::listed_price(&member.skills, &[])
+        })
+    }
+
+    /// Hire the candidate at `index`: the company's own funds, room and
+    /// duplicate checks, then the joining record and the removal from the
+    /// list. The candidate's skills and techniques come across. Returns its
+    /// role on success.
+    pub fn hire_candidate(
+        &mut self,
+        index: usize,
+    ) -> Result<crate::career::Profession, crate::career::HireError> {
+        let Some(member) = self.hire_pool.get(index).cloned() else {
+            return Err(crate::career::HireError::Funds);
+        };
+        self.company
+            .hire_listed(member.name.clone(), member.profession, &member.skills, &[])?;
+        if let Some(joined) = self.company.roster.last_mut() {
+            joined.skill_xp = member.skill_xp;
+            joined.techniques = member.techniques;
+        }
+        self.log.append_words(
+            crate::staff::LOG_JOINED,
+            crate::staff::name_words(&name16(&member.name)),
+        );
+        self.hire_pool.remove(index);
+        Ok(member.profession)
     }
 
     /// The week's tournament field. A field whose first company is 0 asks
@@ -184,31 +330,31 @@ impl ArenaCareer {
 
     /// The board from this career's company, player, day and daily rows.
     pub fn board(&self) -> Board {
-        let rows = arena::generate_daily_board(0, || 0.5);
-        let mut board = arena_board::open(&self.company, &self.player, self.company.day, &rows);
+        let mut board = arena_board::open(
+            &self.company,
+            &self.player,
+            self.company.day,
+            &self.daily_rows,
+        );
         board.matches_played = self.matches_today as i32;
+        if let Some(tournament) = &self.tournament {
+            board.tournament_events = arena_board::daily_events(&tournament.rows);
+            // The winners table stores a company id less one.
+            board.tournament_companies = tournament
+                .companies
+                .iter()
+                .map(|&company| i32::from(company) - 1)
+                .collect();
+            board.tournament_prize_item = Some(tournament.prize_id);
+        }
         board.show();
         board
     }
 
     /// The company's thirteen records as the records window and the match
-    /// read them (the counts the career does not keep read 0).
+    /// read them.
     pub fn records(&self) -> crate::arena_match::CompanyRecords {
-        crate::arena_match::CompanyRecords {
-            matches_won: self.company.won,
-            matches_lost: self.company.lost,
-            matches_forfeited: 0,
-            tournaments_won: self.company.tournaments_won,
-            tournaments_lost: 0,
-            seasons_won: self.company.seasons_won,
-            beasts_fought: 0,
-            beasts_defeated: 0,
-            hires: 0,
-            deaths: self.company.deaths,
-            fired: 0,
-            earned: self.company.earned,
-            spent: self.company.spent,
-        }
+        self.company.records()
     }
 
     /// Company Status's lines from this career.
@@ -253,13 +399,91 @@ impl ArenaCareer {
     }
 }
 
-fn name16(name: &str) -> [u8; 16] {
+pub(crate) fn name16(name: &str) -> [u8; 16] {
     let mut out = [0u8; 16];
     let bytes = name.as_bytes();
     let len = bytes.len().min(15);
     out[..len].copy_from_slice(&bytes[..len]);
     out
 }
+
+/// Draw one hire-list candidate. The profession, and a combatant's or
+/// trainer's level, come from [`crate::hirelings::draw_candidate`]; the
+/// candidate's record then runs the random-NPC pass from the draw's roll
+/// (the original reseeds its shared sequence from the performance counter
+/// before each candidate, then draws the role and the record from it). The
+/// item outfit pass is not run: the hub has no item-fact table, so the
+/// candidate carries no gear and the price adds no gear value.
+fn draw_hire_member(
+    counter: u64,
+    catalog: &mut crate::arena_outfit::ProfessionCatalog,
+    previous: &mut u32,
+    random: &mut crate::arena::Mt19937,
+) -> Member {
+    // The role draws step the engine's LCG; a trainer's or combatant's level
+    // reads the library generator, and the record's pass then continues the
+    // LCG from where the role draws left it.
+    let (candidate, roll) = crate::hirelings::draw_candidate(counter, || random.unit());
+    let male: Vec<(&str, &str)> = crate::arena_names::MALE_NAMES
+        .iter()
+        .map(|name| (*name, ""))
+        .collect();
+    let female: Vec<(&str, &str)> = crate::arena_names::FEMALE_NAMES
+        .iter()
+        .map(|name| (*name, ""))
+        .collect();
+    let names = crate::arena_outfit::NameTable {
+        male: &male,
+        female: &female,
+    };
+    let request = crate::arena_outfit::NpcRequest {
+        level: candidate.level,
+        forced_flags: if candidate.older { 0x2_0000 } else { 0 },
+        warmth: 0.0,
+        previous_variant: *previous,
+        names: &names,
+    };
+    let mut lcg = crate::arena_outfit::Lcg::new(roll);
+    let profile = crate::arena_outfit::random_npc_lcg(&mut lcg, &request, catalog);
+    *previous = profile.variant;
+    let name = if profile.name.1.is_empty() {
+        profile.name.0.to_string()
+    } else {
+        format!("{} {}", profile.name.0, profile.name.1)
+    };
+    let mut member = Member {
+        name,
+        profession: candidate.profession,
+        xp: 0,
+        skills: [0; 6],
+        skill_xp: [0; 6],
+        techniques: [[0; 6]; 6],
+        loadouts: Default::default(),
+        health: u16::MAX,
+        in_entry: false,
+    };
+    for (index, row) in profile
+        .professions
+        .rows
+        .iter()
+        .take(member.skill_xp.len())
+        .enumerate()
+    {
+        member.skill_xp[index] = row.experience;
+        member.techniques[index].copy_from_slice(&row.levels[..6]);
+    }
+    if candidate.profession == Profession::Trainer {
+        crate::hirelings::snap_trainer(&mut member.skill_xp, &mut member.techniques);
+    }
+    // The six levels the fee and the upkeep read.
+    member.skills = member
+        .skill_xp
+        .map(|xp| u32::from(xp) / u32::from(crate::career::SKILL_STEP));
+    member
+}
+
+/// The default career's library-generator seed.
+const DEFAULT_RANDOM_SEED: u32 = 0x1234_5678;
 
 fn record_of(member: &Member, id: u8, controlled: bool) -> ManageRecord {
     ManageRecord {
@@ -1621,5 +1845,147 @@ mod tests {
             app.update();
         }
         assert_eq!(app.world().resource::<GuiFrames>().frames.len(), 1);
+    }
+
+    #[test]
+    fn a_reset_clears_both_the_daily_and_the_lifetime_tallies() {
+        let mut career = ArenaCareer::default();
+        career.company.earned = 30;
+        career.company.spent = 40;
+        career.company.total_earned = 300;
+        career.company.total_spent = 400;
+        career.company.hires = 3;
+        career.reset();
+        assert_eq!(
+            (
+                career.company.earned,
+                career.company.spent,
+                career.company.total_earned,
+                career.company.total_spent,
+                career.company.hires
+            ),
+            (0, 0, 0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn the_board_reads_the_days_kept_rows() {
+        let mut career = ArenaCareer::default();
+        let first = career.board().events.clone();
+        assert_eq!(career.daily_rows.len(), 6);
+        // The board's events are the stored rows.
+        for (event, row) in career.board().events.iter().zip(career.daily_rows) {
+            assert_eq!(event.kind, row.id);
+            assert_eq!(event.tier, row.rank);
+        }
+        // A new roll on a new day gives a new set of rows.
+        career.regenerate_daily_board_at(0x9E37_79B9);
+        let second = career.board().events;
+        assert_ne!(
+            first.iter().map(|e| e.kind).collect::<Vec<_>>(),
+            second.iter().map(|e| e.kind).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn the_board_carries_the_weeks_tournament() {
+        let mut career = ArenaCareer::default();
+        let tournament = career.tournament.clone().expect("the week's board");
+        let board = career.board();
+        for (event, row) in board.tournament_events.iter().zip(&tournament.rows) {
+            assert_eq!(event.kind, row.id);
+        }
+        assert_eq!(board.tournament_prize_item, Some(tournament.prize_id));
+        // The company field is stored less one, as the winners table reads
+        // it.
+        assert_eq!(
+            board.tournament_companies.first().copied(),
+            Some(i32::from(tournament.companies[0]) - 1)
+        );
+        // A new week draws a new prize and avoids the last eight.
+        let old = career.tournament.as_ref().expect("the old board").clone();
+        career.regenerate_tournament_at(0x2468_ACE0);
+        let new = career.tournament.as_ref().expect("the new board");
+        assert_ne!(new.prize_id, 0);
+        assert_ne!(career.prize_history[0], 0);
+        assert_ne!(old.companies, new.companies);
+    }
+
+    #[test]
+    fn a_default_career_lists_ten_candidates_and_the_seed_decides_them() {
+        let career = ArenaCareer::default();
+        assert_eq!(career.hire_pool.len(), crate::hirelings::POOL_SIZE);
+        assert_eq!(career.company.copper, crate::career::STARTING_COPPER);
+        // The list is generated from the fixed placeholder seed; the same
+        // seed gives the same ten.
+        let mut again = ArenaCareer {
+            hire_pool: Vec::new(),
+            hire_previous: 0,
+            hire_catalog: crate::arena_outfit::ProfessionCatalog::default(),
+            random: crate::arena::Mt19937::new(DEFAULT_RANDOM_SEED),
+            ..ArenaCareer::default()
+        };
+        again.fill_hire_pool_at(0x1234_5678);
+        assert_eq!(again.hire_pool, career.hire_pool);
+        assert!(career.hire_pool.iter().all(|m| !m.name.is_empty()));
+        assert!(
+            career
+                .hire_pool
+                .iter()
+                .any(|m| m.profession != Profession::Combatant)
+        );
+        // Each candidate's levels are its skill words over 5000, which the
+        // fee and the upkeep read.
+        for member in &career.hire_pool {
+            assert_eq!(
+                member.skills,
+                member.skill_xp.map(|xp| u32::from(xp) / 5000)
+            );
+        }
+    }
+
+    #[test]
+    fn a_new_week_clears_the_entries_and_draws_the_rival_field() {
+        let mut career = ArenaCareer::default();
+        career.entries[2].count = 1;
+        career.entries[2].team_id = 1;
+        career.regenerate_tournament_at(0x2468_ACE0);
+        assert_eq!(career.entries, Roster::default());
+        let board = career.tournament.as_ref().expect("the week's board");
+        assert_eq!(career.rivals, board.companies.map(i32::from));
+        assert!(
+            career
+                .rivals
+                .iter()
+                .all(|&company| (1..=19).contains(&company))
+        );
+    }
+
+    #[test]
+    fn a_hire_takes_the_price_and_books_the_joining() {
+        let mut career = ArenaCareer::default();
+        career.company.roster.clear();
+        career.company.copper = 1000;
+        career.company.spent = 0;
+        career.log.records.clear();
+        let member = career.hire_pool[0].clone();
+        let price = career.hire_price(0);
+        let before = career.hire_pool.len();
+        assert_eq!(career.hire_candidate(0), Ok(member.profession));
+        assert_eq!(career.hire_pool.len(), before - 1);
+        assert_eq!(career.company.copper, 1000 - price);
+        assert_eq!(career.company.spent, price);
+        assert_eq!(career.company.hires, 1);
+        assert_eq!(career.company.roster.len(), 1);
+        assert_eq!(career.company.roster[0].name, member.name);
+        assert_eq!(career.company.roster[0].skill_xp, member.skill_xp);
+        assert_eq!(career.log.records.len(), 1);
+        assert_eq!(career.log.records[0].id, crate::staff::LOG_JOINED);
+        // A short purse is refused without spending.
+        let mut poor = ArenaCareer::default();
+        poor.company.copper = 0;
+        assert_eq!(poor.hire_candidate(0), Err(crate::career::HireError::Funds));
+        assert_eq!(poor.company.spent, 0);
+        assert_eq!(poor.hire_pool.len(), crate::hirelings::POOL_SIZE);
     }
 }

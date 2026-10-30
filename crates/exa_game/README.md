@@ -1519,3 +1519,39 @@ forfeited. The hub (in arena mode or under the play view's practice
 stand-in) then puts the manager at the saved 300 cm, half turn placement
 and asks for the shopkeeper and one body per employed merchant or physician
 at their `arena_spawn` spots.
+
+The hub's career now keeps all thirteen company records
+(`career::Company::records`/`book_records`): the match return books the
+counts it changes (wins, losses, forfeits, Beast wins, and the company
+deaths the match's falls counted) onto the career's current records, the
+match start counts a Beast match entered, and the records window reads the
+lifetime coin totals, which the night rolls from the day's earned and spent
+(the day's spent then holds only the wages). The dismiss dialog's Dismiss
+books one more fired, logs the leaving name and drops the id from the
+tournament entries and the log's saved records. The hire list is live: a new
+career fills ten candidates (`ArenaCareer::fill_hire_pool_at`, one
+counter-seeded `hirelings::draw_candidate` plus random-NPC pass each, the
+trainer's snap), the loadout form's hire page lists them with their fee and
+upkeep, HIRE runs the company's funds, room and duplicate checks
+(`Company::hire_listed`), books the hire and the joining and removes the
+candidate, and End Day renews the list. A candidate's level and the boards'
+rank rolls read the career's one run-time library generator
+(`ArenaCareer::random`, the Mersenne twister apart from the engine's LCG);
+the per-candidate counter spacing is a guess. The candidate's item outfit is
+not generated (the hub holds no item-fact table), so its price has no gear
+share [limitation]. The Arsenal window and the kit release a dismissal makes
+in the original are still not built. End Day rests the manager and gives him
+the first trainer's lesson before the staff, books a tournament lost when the
+company entered a week a rival took, then, in the original's order, asks the
+live shop world to rotate the shop's shelf and the employed merchant's stock
+(`hub_restock`, on the next frame), renews the hire list, rolls a new week's
+board the day after a tournament day and rolls the day's six standard
+matches. The week's board (`ArenaCareer::regenerate_tournament_at`) clears
+the event entries and draws six event rows, the weekly prize that avoids the
+last eight and the sixteen-company field, which becomes the career's rival
+field that the board's winners table and the match launch read. The arena
+reset keeps the hire list and the week's events, as the original's does, and
+ends by rolling the day's matches. The arena save's company chunk carries
+all thirteen records (the two coin totals as coin words), the day chunk the
+day's spent and earned coin words and the tournament chunk the prize
+history; the week's event rows and the hire list are not yet saved.

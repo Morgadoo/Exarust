@@ -313,8 +313,14 @@ pub struct Company {
     pub roster: Vec<Member>,
     pub won: u32,
     pub lost: u32,
+    /// Forfeited matches.
+    pub matches_forfeited: u32,
     pub spent: u32,
     pub earned: u32,
+    /// Lifetime copper spent, rolled from the day's tally when the day ends.
+    pub total_spent: u32,
+    /// Lifetime copper earned, rolled from the day's tally when the day ends.
+    pub total_earned: u32,
     /// Days ended. A new career is on day 0.
     pub day: u32,
     /// Whether the company took each week of the current season.
@@ -326,8 +332,18 @@ pub struct Company {
     pub reward_ids: Vec<u32>,
     /// Weeks the company won outright.
     pub tournaments_won: u32,
+    /// Tournaments the company entered and did not win.
+    pub tournaments_lost: u32,
+    /// Beast matches entered (the Beast template started).
+    pub beasts_fought: u32,
+    /// Beast matches won.
+    pub beasts_defeated: u32,
+    /// Fighters and specialists hired or recruited on the roster.
+    pub hires: u32,
     /// Specialists who died before a match. The session save does not store this.
     pub deaths: u32,
+    /// Employees dismissed.
+    pub fired: u32,
     /// The shop's shelf, oldest first. The session save does not store this.
     pub stock: Vec<u32>,
     /// The company's emblem.
@@ -373,18 +389,72 @@ impl Company {
             roster: Vec::new(),
             won: 0,
             lost: 0,
+            matches_forfeited: 0,
             spent: 0,
             earned: 0,
+            total_spent: 0,
+            total_earned: 0,
             day: 0,
             weeks: [false; 4],
             seasons_won: 0,
             season_rewards: 0,
             reward_ids: Vec::new(),
             tournaments_won: 0,
+            tournaments_lost: 0,
+            beasts_fought: 0,
+            beasts_defeated: 0,
+            hires: 0,
             deaths: 0,
+            fired: 0,
             stock: Vec::new(),
             emblem: exa_ui::EmblemRecord::default(),
         }
+    }
+
+    /// The company's thirteen lifetime records, in the Company Records
+    /// window's order.
+    #[must_use]
+    pub fn records(&self) -> crate::arena_match::CompanyRecords {
+        crate::arena_match::CompanyRecords {
+            matches_won: self.won,
+            matches_lost: self.lost,
+            matches_forfeited: self.matches_forfeited,
+            tournaments_won: self.tournaments_won,
+            tournaments_lost: self.tournaments_lost,
+            seasons_won: self.seasons_won,
+            beasts_fought: self.beasts_fought,
+            beasts_defeated: self.beasts_defeated,
+            hires: self.hires,
+            deaths: self.deaths,
+            fired: self.fired,
+            earned: self.total_earned,
+            spent: self.total_spent,
+        }
+    }
+
+    /// Put the thirteen lifetime records back, as the arena save chunk's
+    /// load and the match return do.
+    pub fn book_records(&mut self, records: &crate::arena_match::CompanyRecords) {
+        self.won = records.matches_won;
+        self.lost = records.matches_lost;
+        self.matches_forfeited = records.matches_forfeited;
+        self.tournaments_won = records.tournaments_won;
+        self.tournaments_lost = records.tournaments_lost;
+        self.seasons_won = records.seasons_won;
+        self.beasts_fought = records.beasts_fought;
+        self.beasts_defeated = records.beasts_defeated;
+        self.hires = records.hires;
+        self.deaths = records.deaths;
+        self.fired = records.fired;
+        self.total_earned = records.earned;
+        self.total_spent = records.spent;
+    }
+
+    /// A match starts: the Beast counts one more beast match entered.
+    pub fn record_match_started(&mut self, template: i32) {
+        let mut records = self.records();
+        records.start(template);
+        self.book_records(&records);
     }
 
     /// Confirm a shop basket. Empty baskets are refused. The copper still
@@ -548,12 +618,16 @@ impl Company {
         }
         self.copper -= price;
         self.spent += price;
+        self.hires = self.hires.wrapping_add(1);
+        let levels: [u32; 6] = std::array::from_fn(|index| skills.get(index).copied().unwrap_or(0));
         self.roster.push(Member {
             name: name.into(),
             profession,
             xp: 0,
-            skills: [0; 6],
-            skill_xp: [0; 6],
+            skills: levels,
+            skill_xp: levels.map(|level| {
+                u16::try_from(level.saturating_mul(u32::from(SKILL_STEP))).unwrap_or(u16::MAX)
+            }),
             techniques: [[0; 6]; 6],
             loadouts: Default::default(),
             health: u16::MAX,
@@ -634,8 +708,13 @@ impl Company {
             .iter()
             .map(|member| Self::wage(member.profession, &member.skills))
             .sum();
+        // The night rolls the day's tallies into the lifetime records and
+        // leaves only the wages in today's spending.
+        self.total_earned = self.total_earned.saturating_add(self.earned);
+        self.total_spent = self.total_spent.saturating_add(self.spent);
+        self.earned = 0;
+        self.spent = wages;
         self.copper = self.copper.saturating_sub(wages);
-        self.spent = self.spent.saturating_add(wages);
         let mut night = Night {
             wages,
             week_won: None,
@@ -789,8 +868,7 @@ pub struct Night {
     pub season: bool,
 }
 
-/// Health after one night. The step is 6553, or 9830 with a physician,
-/// and the pool stops at 65535.
+/// A skill word's level: the word over 5000.
 fn skill_level(word: u16) -> u32 {
     u32::from(word) / u32::from(SKILL_STEP)
 }
@@ -798,8 +876,9 @@ fn skill_level(word: u16) -> u32 {
 /// One lesson. The first skill under level 5 whose technique at that level
 /// the trainer knows gains 1000 divided by one plus the six levels, the
 /// story's skill lump (`experience::add_skill_lump`). A sum that reaches a
-/// new multiple of 5000 snaps to it.
-fn teach(student: &mut Member, trainer: &Member) {
+/// new multiple of 5000 snaps to it. The day's end gives it to the manager
+/// first, then to each combatant in staff order.
+pub fn teach(student: &mut Member, trainer: &Member) {
     let skills: [Skill; 6] = std::array::from_fn(|index| Skill {
         points: student.skill_xp[index],
         techniques: student.techniques[index],
@@ -852,7 +931,10 @@ pub fn copy_rank_loadout(member: &mut Member) -> bool {
     false
 }
 
-fn rested(health: u16, physician: bool) -> u16 {
+/// The night's recovery: [`REST`] (6553), or [`REST_WITH_PHYSICIAN`] (9830)
+/// with one employed, stopped at full health (65535).
+#[must_use]
+pub fn rested(health: u16, physician: bool) -> u16 {
     let step = if physician { REST_WITH_PHYSICIAN } else { REST };
     let sum = u32::from(health) + u32::from(step);
     if sum < u32::from(FULL_HEALTH) {
@@ -2392,5 +2474,51 @@ mod tests {
         assert_eq!(pair.roster[0].name, "Shop");
         assert_eq!(pair.roster[0].health, 100);
         assert_eq!(pair.deaths, 1);
+    }
+
+    #[test]
+    fn the_thirteen_records_round_trip_and_the_day_rolls_the_tallies() {
+        let mut company = Company::new("Ash");
+        let mut records = company.records();
+        assert_eq!(records.values(), [0; 13]);
+        records.matches_won = 4;
+        records.matches_lost = 2;
+        records.matches_forfeited = 1;
+        records.tournaments_won = 2;
+        records.tournaments_lost = 3;
+        records.seasons_won = 1;
+        records.beasts_fought = 5;
+        records.beasts_defeated = 3;
+        records.hires = 7;
+        records.deaths = 2;
+        records.fired = 1;
+        records.earned = 900;
+        records.spent = 400;
+        company.book_records(&records);
+        assert_eq!(company.records(), records);
+        // A day rolls today's copper into the lifetime totals and leaves
+        // the wages in today's spending.
+        company.hire("a", Profession::Combatant).unwrap();
+        company.earned = 30;
+        company.spent = 40;
+        let night = company.end_day([0; 6]);
+        assert_eq!(night.wages, 1);
+        assert_eq!(company.total_earned, 930);
+        assert_eq!(company.total_spent, 440);
+        assert_eq!(company.earned, 0);
+        assert_eq!(company.spent, 1);
+    }
+
+    #[test]
+    fn a_started_beast_match_counts_one_more_fought() {
+        let mut company = Company::new("Ash");
+        company.record_match_started(11);
+        company.record_match_started(1);
+        assert_eq!(company.beasts_fought, 1);
+        let mut records = company.records();
+        records.beasts_defeated = 1;
+        company.book_records(&records);
+        assert_eq!(company.beasts_fought, 1);
+        assert_eq!(company.beasts_defeated, 1);
     }
 }
