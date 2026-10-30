@@ -45,9 +45,11 @@ and the grid's rooms; portal clipping is next (see
   eleven-brush limit (wired: later layers are dropped), and, not wired,
   the height-rule scaling, the byte channel accumulation, the
   four-per-plane mask packing, the Gaussian blur kernel and the
-  used-material merge, whose rule walk takes a value above the low bound
-  and below the high one (a NaN takes the first child whole) and stops a
-  branch whose weight is not above 0.001; the palette falls back to `default.ftb` as the original does; a tile's geometry
+  used-material merge, whose rule walk sends an input at or below the low
+  bound wholly to the first child, one at or above the high bound to the
+  second, and splits anything else (a NaN included), and starts a layer's
+  or the remainder's walk only above the double 0.001 (the remainder loses
+  each layer in turn); the palette falls back to `default.ftb` as the original does; a tile's geometry
   and masks are built on the async compute pool (the original's terrain
   worker), each palette material's diffuse and normal maps come through
   the original's terrain texture path (a live record, else a load queued

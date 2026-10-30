@@ -15,11 +15,10 @@ pub const NOISE_SIDE: usize = 480;
 /// Noise maps are generated from these seeds (inputs 3, 4 and 7).
 const NOISE_SEEDS: [u32; 3] = [137, 476, 7359];
 const NOISE_OCTAVES: u32 = 4;
-/// Leftover weight below this is ignored.
-const LEFTOVER_EPSILON: f32 = 0.001;
-/// A branch whose weight is not above this is not walked (the original's
-/// `0.001 < weight` gate).
-const MIN_WEIGHT: f32 = 0.001;
+/// A walk (a painted layer's, or the leftover's) starts only when its
+/// weight, widened to double, is above this double. Inside a walk no
+/// weight is gated.
+const MIN_WEIGHT: f64 = 0.001;
 /// Deeper rule chains are treated as cycles.
 const MAX_DEPTH: usize = 32;
 /// The most painted brushes a tile evaluates: the original keeps eleven
@@ -95,50 +94,55 @@ impl RuleTree {
 
     /// Material weights of one vertex. `layers` pairs each painted layer's
     /// node with its weight (0..=1); `out` has one slot per material.
+    ///
+    /// The original walks the layers in order with a running remainder
+    /// that starts at 1 and loses each layer's weight in turn (a skipped
+    /// layer's too), then walks node 0 with what remains. A walk starts
+    /// only when its weight widened to double is above the double 0.001.
     pub fn weigh(&self, layers: &[(usize, f32)], inputs: &[f32; INPUTS], out: &mut [f32]) {
-        let mut painted = 0.0;
+        let mut remainder = 1.0f32;
         for &(node, w) in layers {
-            painted += w;
-            if w > MIN_WEIGHT {
+            remainder -= w;
+            if f64::from(w) > MIN_WEIGHT {
                 self.descend(node, w, inputs, out, 0);
             }
         }
-        let leftover = 1.0 - painted;
-        if leftover > LEFTOVER_EPSILON && !self.nodes.is_empty() {
-            self.descend(0, leftover, inputs, out, 0);
+        if f64::from(remainder) > MIN_WEIGHT && !self.nodes.is_empty() {
+            self.descend(0, remainder, inputs, out, 0);
         }
     }
 
     fn descend(&self, node: usize, w: f32, inputs: &[f32; INPUTS], out: &mut [f32], depth: usize) {
-        if !matches!(
-            w.partial_cmp(&MIN_WEIGHT),
-            Some(std::cmp::Ordering::Greater)
-        ) {
-            return;
-        }
         match self.nodes.get(node) {
-            Some(&Node::Material(m)) => out[m] += w,
+            Some(&Node::Material(m)) => {
+                if let Some(slot) = out.get_mut(m) {
+                    *slot += w;
+                }
+            }
             Some(&Node::Rule { kind, lo, hi, a, b }) if depth < MAX_DEPTH => {
                 let v = inputs.get(kind).copied().unwrap_or(0.0);
-                // The original tests `lo <= v && v != lo` (v > lo, false for
-                // a NaN) and then `v < hi`; anything else takes the first
-                // child whole. A NaN therefore takes the first child.
-                if v > lo {
-                    if v < hi {
-                        let t = (v - lo) / (hi - lo);
-                        // The original pushes the first child and walks the
-                        // second, so the second child's subtree adds first.
-                        if let Some(b) = b {
-                            self.descend(b, w * t, inputs, out, depth + 1);
-                        }
-                        if let Some(a) = a {
-                            self.descend(a, w * (1.0 - t), inputs, out, depth + 1);
-                        }
-                    } else if let Some(b) = b {
+                // An ordered input at or below the low bound follows the
+                // first child with the whole weight, one at or above the
+                // high bound the second child. Anything else (in range, or
+                // a NaN, which orders with neither bound) splits: the
+                // original pushes the first child with `(1 − t)·w` and
+                // walks the second with `w·t` first.
+                if v <= lo {
+                    if let Some(a) = a {
+                        self.descend(a, w, inputs, out, depth + 1);
+                    }
+                } else if v >= hi {
+                    if let Some(b) = b {
                         self.descend(b, w, inputs, out, depth + 1);
                     }
-                } else if let Some(a) = a {
-                    self.descend(a, w, inputs, out, depth + 1);
+                } else {
+                    let t = (v - lo) / (hi - lo);
+                    if let Some(b) = b {
+                        self.descend(b, w * t, inputs, out, depth + 1);
+                    }
+                    if let Some(a) = a {
+                        self.descend(a, (1.0 - t) * w, inputs, out, depth + 1);
+                    }
                 }
             }
             _ => {}
@@ -580,32 +584,30 @@ mod tests {
     }
 
     #[test]
-    fn a_nan_input_takes_the_first_child_and_tiny_weights_stop() {
+    fn a_nan_input_splits_and_only_a_walk_start_is_gated() {
         let p = palette(vec![rule("Split", 0, "Sand", "Rock", 0.0, 2.0)]);
         let tree = RuleTree::new(&p);
         let split = RuleTree::node(&p, "Split").unwrap();
-        // A NaN input is neither above the low bound nor below the high
-        // one: the original takes the first child whole.
-        let mut out = [0.0; 2];
+        // A NaN input orders with neither bound, so the original takes
+        // the split branch and both children receive NaN weights.
+        let mut out = [0.0f32; 2];
         tree.weigh(&[(split, 1.0)], &inputs(f32::NAN, 1.0), &mut out);
-        assert_eq!(out, [1.0, 0.0]);
-        // A branch at exactly 0.001 is not walked; the leftover still is.
-        let mut out = [0.0; 2];
+        assert!(out[0].is_nan() && out[1].is_nan(), "{out:?}");
+        // 0.0009 widened to double is not above the double 0.001: the
+        // layer is not walked, but the remainder still loses it.
+        let mut out = [0.0f32; 2];
+        tree.weigh(&[(split, 0.0009)], &inputs(1.0, 1.0), &mut out);
+        let rest = 1.0f32 - 0.0009;
+        assert_eq!(out, [(1.0 - 0.5) * rest, rest * 0.5]);
+        // The f32 0.001 widens to 0.0010000000475, above the double gate,
+        // and its halves (0.0005, below the gate) still reach the
+        // materials: inside a walk no weight is gated.
+        let mut out = [0.0f32; 2];
         tree.weigh(&[(split, 0.001)], &inputs(1.0, 1.0), &mut out);
-        assert!((out[0] - 0.4995).abs() < 1e-7, "{out:?}");
-        assert!((out[1] - 0.4995).abs() < 1e-7, "{out:?}");
-        // Just above it both the branch and the leftover are walked: the
-        // split's halves are each above the gate, so they reach materials.
-        let mut out = [0.0; 2];
-        tree.weigh(&[(split, 0.01)], &inputs(1.0, 1.0), &mut out);
-        assert!((out[0] - 0.5).abs() < 1e-6, "{out:?}");
-        assert!((out[1] - 0.5).abs() < 1e-6, "{out:?}");
-        // At 0.0011 the branch's halves are below the gate, so only the
-        // leftover reaches the materials.
-        let mut out = [0.0; 2];
-        tree.weigh(&[(split, 0.0011)], &inputs(1.0, 1.0), &mut out);
-        assert!((out[0] - 0.499_45).abs() < 1e-6, "{out:?}");
-        assert!((out[1] - 0.499_45).abs() < 1e-6, "{out:?}");
+        let rest = 1.0f32 - 0.001;
+        let sand = (1.0 - 0.5) * 0.001f32 + (1.0 - 0.5) * rest;
+        let rock = 0.001f32 * 0.5 + rest * 0.5;
+        assert_eq!(out, [sand, rock]);
     }
 
     #[test]
