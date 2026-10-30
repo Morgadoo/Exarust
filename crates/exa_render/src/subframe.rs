@@ -551,10 +551,16 @@ impl Subframes {
     pub fn apply_depth_offset(&mut self, duration: f32) {
         let samples = sample_count(self.setting);
         let first = self.quarter.wrapping_mul(4);
+        // The engine reads the first pass's lane once, before the loop, and
+        // writes every pass's lane from it (so the offsets do not compound
+        // pass by pass).
+        let Some(base) = self.projections.first().map(|p| p[2][2]) else {
+            return;
+        };
         for i in 0..self.projections.len() {
             let slot = first + i as u32;
             let projection = &mut self.projections[i];
-            projection[2][2] += shutter_offset(slot, duration, samples);
+            projection[2][2] = shutter_offset(slot, duration, samples) + base;
             self.composites[i] = multiply(&self.views[i], projection);
         }
     }

@@ -53,9 +53,10 @@ pub const MOTION_BLUR: u32 = 0x20;
 /// the frame's fade, `1 − fade`.
 pub const FRAME_FADE: u32 = 0x2000_0000;
 
-/// An object's render-flag word bit `0x2_0000`: the scene's emissive scale is
-/// used instead of the geometry record's.
-pub const EMISSIVE_SCENE_SCALE: u32 = 0x2_0000;
+/// A material word bit (`TexDif`, the diffuse map): a draw's per-draw
+/// emissive scale is the scene's when the material has this bit, else the
+/// geometry record's own.
+pub const MATERIAL_DIFFUSE_MAP: u32 = 0x2_0000;
 
 /// Which of the two per-draw variants a draw takes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -115,9 +116,6 @@ pub struct DrawObject<'a> {
     /// [`OBJECT_SUBFRAME_CLOCK`], [`OBJECT_VERTEX_DELTA`] and
     /// [`OBJECT_GI_SPECULAR`].
     pub object_flags: u32,
-    /// The render object's render-flag word (its `0x8` field):
-    /// [`EMISSIVE_SCENE_SCALE`].
-    pub render_flags: u32,
     /// The object's world matrix (its `0x40` field), row-major.
     pub world: [[f32; 4]; 4],
     /// The liquid-level point in the object's space (its `0x390` field).
@@ -143,7 +141,6 @@ impl Default for DrawObject<'_> {
                 shutter: 0.0,
             },
             object_flags: 0,
-            render_flags: 0,
             world: [
                 [1.0, 0.0, 0.0, 0.0],
                 [0.0, 1.0, 0.0, 0.0],
@@ -384,7 +381,7 @@ impl DrawState {
         };
         let emissive_scale =
             if object.material & 8 != 0 && object.geometry.flags & EMISSIVE_PER_DRAW != 0 {
-                Some(if object.render_flags & EMISSIVE_SCENE_SCALE != 0 {
+                Some(if object.material & MATERIAL_DIFFUSE_MAP != 0 {
                     scene.emissive_scale
                 } else {
                     object.geometry.emissive
@@ -746,11 +743,11 @@ mod tests {
         scene.emissive_scale = 2.0;
         let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
         assert_eq!(plan.emissive_scale, Some(0.25));
-        object.render_flags = EMISSIVE_SCENE_SCALE;
+        object.material = 0x8 | MATERIAL_DIFFUSE_MAP;
         let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
         assert_eq!(plan.emissive_scale, Some(2.0));
         // Only a record with the emissive bit is rescaled.
-        object.material = 0x7;
+        object.material = 0x7 | MATERIAL_DIFFUSE_MAP;
         let plan = state.prepare(&object, &scene, DrawPath::Supersampled, false);
         assert_eq!(plan.emissive_scale, None);
         // And only a geometry whose flags ask for it.
