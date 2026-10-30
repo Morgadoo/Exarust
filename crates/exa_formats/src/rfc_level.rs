@@ -12,8 +12,14 @@
 //! scene builder over a [`crate::rfc::Scene`] follows it.
 
 use crate::chunk::{Chunks, list_children, rfc_chunks};
-use crate::rfc::Mesh as ReadMesh;
-use crate::rfc_write::{ExportMesh, GiPoints, IndexMap, MeshPart, VertexStream};
+use crate::level::LevelGrid;
+use crate::rfc::{Mesh as ReadMesh, Node as ReadNode, NodeBody, Scene as ReadScene};
+use crate::rfc_write::{
+    ATTACH_CLOTH, ATTACH_EMITTER, Attachment, AttachmentData, ExportBody, ExportGrid, ExportLight,
+    ExportLink, ExportMesh, ExportSound, ExportTrack, ExportVoxelLight, GiPoints, IndexMap,
+    LightAnimation, MeshPart, NodeData, SceneNode, VertexStream,
+};
+use crate::rigid_body::RigidBody;
 use crate::{Error, Result};
 
 /// Root chunks read here.
@@ -271,6 +277,260 @@ fn stored_name(name: &str) -> Option<[u8; 16]> {
     (n > 0 && out[0] != 0).then_some(out)
 }
 
+/// The friction, group mask and last header word a rigid body's stored
+/// header carries. The reader skips them, so a converted body writes the
+/// values every shipped body holds (friction 0.75, the rest zero).
+pub const BODY_FRICTION: f32 = 0.75;
+pub const BODY_GROUP_MASK: u32 = 0;
+pub const BODY_LAST: u32 = 0;
+
+/// A level node in the exporter's form.
+///
+/// The reader stores each node's matrix as the file held it (local when the
+/// parent is the root or exported, world otherwise), so the conversion keeps
+/// it as both the local and the world placement: the writer stores whichever
+/// the node's parent calls for, which is the frame the file held.
+pub fn export_node(level: &ReadScene, index: usize) -> Result<SceneNode> {
+    let node = level
+        .nodes
+        .get(index)
+        .ok_or_else(|| Error::Malformed(format!("node {index} out of the level")))?;
+    let parent = match node.parent {
+        Some(0) | None => None,
+        Some(p) if p <= level.nodes.len() => Some(p - 1),
+        Some(p) => {
+            return Err(Error::Malformed(format!(
+                "node {index} parent {p} out of the level"
+            )));
+        }
+    };
+    let transform = matrix_cm(&node.transform);
+    let mut out = SceneNode {
+        name: stored_name(&node.name).unwrap_or([0; 16]),
+        flags: node.flags,
+        flags2: node.flags2,
+        parent,
+        local: transform,
+        world: transform,
+        half_extents: node.bounds_half_extents.map(|v| v * 100.0),
+        centre: node.bounds_centre.map(|v| v * 100.0),
+        radius: node.bounds_radius * 100.0,
+        // Every shipped node stores a zero tail word, which the reader drops.
+        tail: 0,
+        ..Default::default()
+    };
+    out.shares = match node.instance {
+        Some(0) | None => None,
+        Some(i) if i <= level.nodes.len() => Some(i - 1),
+        Some(i) => {
+            return Err(Error::Malformed(format!(
+                "node {index} instance {i} out of the level"
+            )));
+        }
+    };
+    out.body = export_body(node);
+    out.attachment = match &node.body {
+        NodeBody::Emitter { kind, size } => Some(Attachment {
+            class: ATTACH_EMITTER,
+            id: 0,
+            data: AttachmentData::Emitter {
+                kind: *kind,
+                size: *size,
+            },
+        }),
+        _ => node
+            .rigid_body
+            .as_ref()
+            .and_then(|b| b.as_ref().ok())
+            .map(|body| Attachment {
+                class: body.class,
+                id: 0,
+                data: AttachmentData::Body(Box::new(export_rigid_body(body))),
+            })
+            .or_else(|| {
+                // The marker's word is zero in every shipped file and the
+                // reader drops it.
+                node.cloth_marker.then(|| Attachment {
+                    class: ATTACH_CLOTH,
+                    id: 0,
+                    data: AttachmentData::Cloth {
+                        marker: 0,
+                        particles: Vec::new(),
+                    },
+                })
+            }),
+    };
+    out.tracks = node
+        .tracks()
+        .map(|t| ExportTrack {
+            on_translation: true,
+            // A free track's stored word is not kept (it is any word but 1,
+            // 2 and 3); the named modes keep theirs.
+            mode: match t.mode {
+                crate::key_track::PlayMode::Once => 1,
+                crate::key_track::PlayMode::Reverse => 2,
+                crate::key_track::PlayMode::Loop => 3,
+                crate::key_track::PlayMode::Free => 0,
+            },
+            duration: t.duration,
+            keys: t
+                .keys
+                .iter()
+                .map(|k| {
+                    (
+                        k.time,
+                        [
+                            k.position[0] * 100.0,
+                            k.position[1] * 100.0,
+                            k.position[2] * 100.0,
+                        ],
+                    )
+                })
+                .collect(),
+        })
+        .collect();
+    Ok(out)
+}
+
+/// A node's body by its stored kind. An emitter is an attachment, not a
+/// body, so it leaves the body empty.
+fn export_body(node: &ReadNode) -> NodeData {
+    match &node.body {
+        NodeBody::Mesh(m) => NodeData::Mesh(Box::new(export_mesh(m))),
+        NodeBody::Light(l) => NodeData::Light(ExportLight {
+            flags: l.flags,
+            color: l.color,
+            multiplier: l.multiplier,
+            intensity: l.intensity,
+            radius: l.radius * 100.0,
+            // The word the reader skips (the original's +0x228) is zero in
+            // the shipped lights.
+            unread: 0.0,
+            softness: l.softness,
+            spot: l.spot.unwrap_or([0.0; 2]),
+            animation: l
+                .animation
+                .map(|a| LightAnimation {
+                    amplitude: a.amplitude,
+                    speed: a.speed,
+                    emissive: a.emissive,
+                })
+                .unwrap_or_default(),
+        }),
+        NodeBody::VoxelLight(l) => NodeData::VoxelLight(ExportVoxelLight {
+            color: l.color,
+            intensity: l.intensity,
+            radius: l.radius * 100.0,
+        }),
+        NodeBody::Camera { target, value } => NodeData::Target {
+            node: target.map(|t| t - 1),
+            value: *value,
+        },
+        NodeBody::Instance(_)
+        | NodeBody::Sector
+        | NodeBody::Emitter { .. }
+        | NodeBody::NotMesh
+        | NodeBody::Invalid(_) => NodeData::None,
+    }
+}
+
+/// Three metre rows and a translation become the file's centimetre matrix.
+fn matrix_cm(m: &[[f32; 3]; 4]) -> [[f32; 3]; 4] {
+    [
+        m[0],
+        m[1],
+        m[2],
+        [m[3][0] * 100.0, m[3][1] * 100.0, m[3][2] * 100.0],
+    ]
+}
+
+/// A rigid body in the exporter's form, in centimetres. Its links are the
+/// stored points (the reader keeps no barycentric weights), and the header
+/// words the reader skips take the shipped values.
+pub fn export_rigid_body(body: &RigidBody) -> ExportBody {
+    ExportBody {
+        mobility: body.mobility,
+        rest: body
+            .rest
+            .map(|p| [p[0] * 100.0, p[1] * 100.0, p[2] * 100.0]),
+        point_masses: body.point_masses,
+        friction: BODY_FRICTION,
+        group_mask: BODY_GROUP_MASK,
+        last: BODY_LAST,
+        spheres: body
+            .spheres
+            .iter()
+            .map(|s| {
+                [
+                    s.centre[0] * 100.0,
+                    s.centre[1] * 100.0,
+                    s.centre[2] * 100.0,
+                    s.radius * 100.0,
+                ]
+            })
+            .collect(),
+        weighted_links: false,
+        centre: [0.0; 3],
+        links: body
+            .links
+            .iter()
+            .map(|l| ExportLink {
+                flags: l.flags,
+                on_body: [
+                    l.on_body[0] * 100.0,
+                    l.on_body[1] * 100.0,
+                    l.on_body[2] * 100.0,
+                    0.0,
+                ],
+                on_parent: [
+                    l.on_parent[0] * 100.0,
+                    l.on_parent[1] * 100.0,
+                    l.on_parent[2] * 100.0,
+                    0.0,
+                ],
+                parent_rest: None,
+                slack: l.slack * 100.0,
+                strength: l.strength,
+                smoothing: l.smoothing,
+                axis: l.axis.unwrap_or([0.0; 3]).map(|v| v * 100.0),
+            })
+            .collect(),
+        sounds: body
+            .sounds
+            .iter()
+            .map(|s| ExportSound {
+                id: s.id,
+                point: [s.point[0] * 100.0, s.point[1] * 100.0, s.point[2] * 100.0],
+                sound: stored_name(&s.sound).unwrap_or([0; 16]),
+                volume: s.volume,
+                pitch: s.pitch,
+            })
+            .collect(),
+    }
+}
+
+/// A level's tile grid in the exporter's form: its sets' names, size and
+/// three planes.
+pub fn export_grid(grid: &LevelGrid) -> ExportGrid {
+    ExportGrid {
+        wall_sets: grid
+            .wall_sets
+            .iter()
+            .map(|s| stored_name(s).unwrap_or([0; 16]))
+            .collect(),
+        floor_sets: grid
+            .floor_sets
+            .iter()
+            .map(|s| stored_name(s).unwrap_or([0; 16]))
+            .collect(),
+        width: grid.width,
+        height: grid.height,
+        plane_a: grid.edges.clone(),
+        plane_b: grid.plane_b.clone(),
+        plane_c: grid.plane_c.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,6 +723,330 @@ mod tests {
             export_mesh(&read_mesh()).streams[0].data[..24]
         );
         assert_eq!(again.triangles, [0, 1, 2, 0, 2, 3]);
+    }
+
+    use crate::rfc_write::{
+        Attachment, AttachmentData, ExportBody, ExportGrid, ExportLight, ExportTrack, IDENTITY,
+        NodeData, SceneNode, class, flags,
+    };
+
+    fn name16(s: &str) -> [u8; 16] {
+        let mut n = [0u8; 16];
+        n[..s.len()].copy_from_slice(s.as_bytes());
+        n
+    }
+
+    fn write(level: &crate::rfc_write::ExportScene) -> Vec<u8> {
+        crate::rfc_write::Exporter::new()
+            .export(level, &crate::rfc_write::ExportOptions::default(), None)
+            .unwrap()
+    }
+
+    fn at(t: [f32; 3]) -> [[f32; 3]; 4] {
+        let mut m = IDENTITY;
+        m[3] = t;
+        m
+    }
+
+    fn body() -> ExportBody {
+        ExportBody {
+            mobility: 1.5,
+            rest: [
+                [0.0, 0.0, 0.0],
+                [10.0, 0.0, 0.0],
+                [0.0, 20.0, 0.0],
+                [0.0, 0.0, 40.0],
+            ],
+            point_masses: [4.0; 4],
+            friction: 0.75,
+            group_mask: 0,
+            last: 0,
+            spheres: vec![[1.0, 2.0, 3.0, 4.0]],
+            weighted_links: false,
+            centre: [0.0; 3],
+            links: vec![crate::rfc_write::ExportLink {
+                flags: 0,
+                on_body: [1.0, 2.0, 3.0, 0.0],
+                on_parent: [4.0, 5.0, 6.0, 0.0],
+                parent_rest: None,
+                slack: 7.0,
+                strength: 8.0,
+                smoothing: 9.0,
+                axis: [0.0; 3],
+            }],
+            sounds: vec![crate::rfc_write::ExportSound {
+                id: 3,
+                point: [1.0, 2.0, 3.0],
+                sound: name16("stone"),
+                volume: 0.5,
+                pitch: 1.25,
+            }],
+        }
+    }
+
+    #[test]
+    fn nodes_convert_with_their_frames_bounds_and_attachments() {
+        let mut mesh = SceneNode {
+            name: name16("Crate"),
+            flags: class::MESH | flags::SAVED | flags::ATTACHED,
+            parent: None,
+            local: at([100.0, 200.0, 300.0]),
+            world: at([100.0, 200.0, 300.0]),
+            half_extents: [10.0, 20.0, 30.0],
+            centre: [1.0, 2.0, 3.0],
+            radius: 40.0,
+            body: NodeData::Mesh(Box::new(export_mesh(&read_mesh()))),
+            attachment: Some(Attachment {
+                class: 0x1000_0000,
+                id: 0,
+                data: AttachmentData::Body(Box::new(body())),
+            }),
+            tracks: vec![ExportTrack {
+                on_translation: true,
+                mode: 1,
+                duration: 3.0,
+                keys: vec![(0.0, [0.0, 0.0, 0.0]), (3.0, [0.0, -5.0, 0.0])],
+            }],
+            ..Default::default()
+        };
+        mesh.tail = 0;
+        let child = SceneNode {
+            name: name16("Lid"),
+            flags: class::PLAIN | flags::SAVED,
+            parent: Some(0),
+            local: at([0.0, 50.0, 0.0]),
+            world: at([0.0, 50.0, 0.0]),
+            ..Default::default()
+        };
+        let mut light = SceneNode {
+            name: name16("Torch"),
+            flags: class::LIGHT | flags::SAVED,
+            flags2: 0x200,
+            body: NodeData::Light(ExportLight {
+                flags: 0x1_0010,
+                color: [1.0, 0.5, 0.25],
+                multiplier: 0.1,
+                intensity: 60.0,
+                radius: 630.0,
+                unread: 0.0,
+                softness: 0.5,
+                spot: [2.0, 3.0],
+                animation: crate::rfc_write::LightAnimation {
+                    amplitude: 4.0,
+                    speed: 5.0,
+                    emissive: 6.0,
+                },
+            }),
+            ..Default::default()
+        };
+        light.tail = 0;
+        let mut camera = SceneNode {
+            name: name16("Cam"),
+            flags: class::TARGET | flags::SAVED,
+            body: NodeData::Target {
+                node: Some(0),
+                value: 7,
+            },
+            ..Default::default()
+        };
+        camera.tail = 0;
+        let mut loose_camera = SceneNode {
+            name: name16("CamNone"),
+            flags: class::TARGET | flags::SAVED,
+            body: NodeData::Target {
+                node: None,
+                value: 8,
+            },
+            ..Default::default()
+        };
+        loose_camera.tail = 0;
+        let mut emitter = SceneNode {
+            name: name16("Fire"),
+            flags: class::PLAIN | flags::SAVED | flags::ATTACHED,
+            attachment: Some(Attachment {
+                class: ATTACH_EMITTER,
+                id: 0,
+                data: AttachmentData::Emitter {
+                    kind: 0x3DD0_E002,
+                    size: 2.5,
+                },
+            }),
+            ..Default::default()
+        };
+        emitter.tail = 0;
+        let scene = crate::rfc_write::ExportScene {
+            nodes: vec![mesh, child, light, camera, loose_camera, emitter],
+            whole_scene: false,
+            ..Default::default()
+        };
+        let parsed = crate::rfc::Scene::parse(&write(&scene)).unwrap();
+        assert!(parsed.level_errors.is_empty(), "{:?}", parsed.level_errors);
+
+        let n = export_node(&parsed, 0).unwrap();
+        assert_eq!(n.name, name16("Crate"));
+        assert_eq!(n.flags & flags::CLASS, class::MESH);
+        assert_eq!(n.local[3], [100.0, 200.0, 300.0]);
+        // Centimetres survive the metre round trip to float precision.
+        for (a, b) in n.half_extents.iter().zip([10.0, 20.0, 30.0]) {
+            assert!((a - b).abs() < 1e-3);
+        }
+        for (a, b) in n.centre.iter().zip([1.0, 2.0, 3.0]) {
+            assert!((a - b).abs() < 1e-3);
+        }
+        assert!((n.radius - 40.0).abs() < 1e-3);
+        let Some(Attachment {
+            class: 0x1000_0000,
+            data: AttachmentData::Body(b),
+            ..
+        }) = &n.attachment
+        else {
+            panic!("no body")
+        };
+        assert_eq!(b.friction, BODY_FRICTION);
+        assert!((b.rest[3][2] - 40.0).abs() < 1e-3);
+        assert_eq!(b.spheres, [[1.0, 2.0, 3.0, 4.0]]);
+        for (a, b) in b.links[0].on_parent.iter().zip([4.0, 5.0, 6.0, 0.0]) {
+            assert!((a - b).abs() < 1e-3);
+        }
+        assert_eq!(b.sounds[0].sound, name16("stone"));
+        assert_eq!(n.tracks.len(), 1);
+        assert_eq!((n.tracks[0].mode, n.tracks[0].duration), (1, 3.0));
+        assert!((n.tracks[0].keys[1].1[1] + 5.0).abs() < 1e-3);
+        assert!(matches!(n.body, NodeData::Mesh(_)));
+
+        let lid = export_node(&parsed, 1).unwrap();
+        assert_eq!(lid.parent, Some(0));
+        assert_eq!(lid.local[3], [0.0, 50.0, 0.0]);
+
+        let t = export_node(&parsed, 2).unwrap();
+        let NodeData::Light(l) = &t.body else {
+            panic!("not a light")
+        };
+        assert_eq!(l.radius, 630.0);
+        assert_eq!(l.spot, [2.0, 3.0]);
+        assert_eq!(l.animation.amplitude, 4.0);
+        assert_eq!(l.animation.emissive, 6.0);
+
+        let cam = export_node(&parsed, 3).unwrap();
+        assert!(matches!(
+            cam.body,
+            NodeData::Target {
+                node: Some(0),
+                value: 7
+            }
+        ));
+        let none = export_node(&parsed, 4).unwrap();
+        assert!(matches!(
+            none.body,
+            NodeData::Target {
+                node: None,
+                value: 8
+            }
+        ));
+
+        let fire = export_node(&parsed, 5).unwrap();
+        assert!(matches!(
+            fire.attachment,
+            Some(Attachment {
+                data: AttachmentData::Emitter {
+                    kind: 0x3DD0_E002,
+                    size: 2.5
+                },
+                ..
+            })
+        ));
+        // A node past the list is an error, never a panic.
+        assert!(export_node(&parsed, 6).is_err());
+    }
+
+    #[test]
+    fn a_cloth_marker_and_a_grid_convert() {
+        let mut cloth = SceneNode {
+            name: name16("Banner"),
+            flags: class::MESH | flags::SAVED | flags::ATTACHED,
+            body: NodeData::Mesh(Box::new(export_mesh(&read_mesh()))),
+            ..Default::default()
+        };
+        cloth.tail = 0;
+        let grid = ExportGrid {
+            wall_sets: vec![name16("gews_a"), name16("gews_b")],
+            floor_sets: vec![name16("gefs_a")],
+            width: 4,
+            height: 4,
+            plane_a: (0..16).collect(),
+            plane_b: (16..32).collect(),
+            plane_c: (32..48).collect(),
+        };
+        let scene = crate::rfc_write::ExportScene {
+            nodes: vec![cloth],
+            grid: Some(grid),
+            ..Default::default()
+        };
+        // The writer needs a cloth attachment to write the marker; the
+        // conversion reads the marker flag from a parsed level, so give the
+        // scene one here.
+        let mut scene = scene;
+        scene.nodes[0].attachment = Some(Attachment {
+            class: ATTACH_CLOTH,
+            id: 0,
+            data: AttachmentData::Cloth {
+                marker: 0,
+                particles: vec![[1.0, 2.0, 3.0, 0.0]],
+            },
+        });
+        let parsed = crate::rfc::Scene::parse(&write(&scene)).unwrap();
+        let n = export_node(&parsed, 0).unwrap();
+        assert!(matches!(
+            n.attachment,
+            Some(Attachment {
+                data: AttachmentData::Cloth { marker: 0, .. },
+                ..
+            })
+        ));
+        let g = export_grid(parsed.grid.as_ref().unwrap());
+        assert_eq!(g.wall_sets, [name16("gews_a"), name16("gews_b")]);
+        assert_eq!(g.floor_sets, [name16("gefs_a")]);
+        assert_eq!((g.width, g.height), (4, 4));
+        // The reader fills the grid's border cells from the interior (the
+        // original loader's rule), so only the interior words return as
+        // stored; the other two planes are raw.
+        for y in 1..3usize {
+            for x in 1..3usize {
+                assert_eq!(g.plane_a[y * 4 + x], (y * 4 + x) as u32);
+            }
+        }
+        assert_eq!(g.plane_b, (16..32).collect::<Vec<_>>());
+        assert_eq!(g.plane_c, (32..48).collect::<Vec<_>>());
+    }
+
+    /// Every node of the installed level converts and writes back: the same
+    /// count, names, parents and placements (to a millimetre).
+    #[test]
+    fn a_shipped_level_converts_its_nodes() {
+        let Some(dir) = exa_rpk::locate_install(None) else {
+            return;
+        };
+        let game = exa_rpk::GameData::open(&dir).unwrap();
+        let resource = game.pack(exa_rpk::PackKind::Resource).unwrap();
+        let scene = crate::rfc::Scene::parse(resource.get("exanima01.rfc").unwrap()).unwrap();
+        let nodes: Vec<_> = (0..scene.nodes.len())
+            .map(|i| export_node(&scene, i).unwrap())
+            .collect();
+        let out = crate::rfc_write::ExportScene {
+            nodes,
+            ..Default::default()
+        };
+        let again = crate::rfc::Scene::parse(&write(&out)).unwrap();
+        assert!(again.level_errors.is_empty(), "{:?}", again.level_errors);
+        assert_eq!(again.nodes.len(), scene.nodes.len());
+        for (a, b) in scene.nodes.iter().zip(&again.nodes) {
+            assert_eq!(stored_name(&a.name), stored_name(&b.name));
+            assert_eq!(a.parent, b.parent);
+            for k in 0..3 {
+                assert!((a.transform[3][k] - b.transform[3][k]).abs() < 1e-3);
+            }
+            assert!((a.bounds_radius - b.bounds_radius).abs() < 1e-3);
+        }
     }
 
     /// The installed story level converts every mesh and reads back: the
