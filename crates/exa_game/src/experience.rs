@@ -206,6 +206,44 @@ pub fn global_xp_from_setting(value: &[u8]) -> Option<u32> {
     Some(u32::from_le_bytes(word))
 }
 
+/// The setting value the account-wide experience is stored as: its four
+/// bytes, little-endian.
+pub fn global_xp_to_setting(xp: u32) -> [u8; 4] {
+    xp.to_le_bytes()
+}
+
+/// The six story hooks the experience unit installs at start-up, in the
+/// order its registration fills them: the event each fires on. A hook runs
+/// only while the game fills its slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Hook {
+    /// A new story clears the item kinds and the levels
+    /// ([`Experience::begin`]).
+    NewGame,
+    /// A level loads: its music and ambience and its explored cells
+    /// ([`Experience::enter_level`]).
+    LevelEnter,
+    /// The level is built and the session begins: the player's carried
+    /// experience becomes the pool ([`Experience::start_level`]).
+    LevelStart,
+    /// The once-a-second tick ([`Experience::tick`]).
+    Tick,
+    /// A character dies ([`Experience::discover_kill`]).
+    Kill,
+    /// An item is picked up ([`Experience::discover_item`]).
+    Pickup,
+}
+
+/// The hooks a story installs, in registration order.
+pub const STORY_HOOKS: [Hook; 6] = [
+    Hook::NewGame,
+    Hook::LevelEnter,
+    Hook::LevelStart,
+    Hook::Tick,
+    Hook::Kill,
+    Hook::Pickup,
+];
+
 /// A combatant's fighting estimate. Two plus 0.4 a skill level, plus 0.02
 /// a point of combat skill, plus with a weapon 0.02 of its impact, slash,
 /// crush, pierce and thrust hundredths times its reach. A body scale above
@@ -501,6 +539,35 @@ impl Experience {
         self.current = Some(index);
     }
 
+    /// The level-start hook: the player's carried experience becomes the
+    /// account pool and both the account's and the player's clocks restart
+    /// at `now`. The original runs it once the level is built, before the
+    /// story's first tick.
+    pub fn start_level(&mut self, now: u32, player: &mut Learner) {
+        self.player_clock = now;
+        self.global_clock = now;
+        self.pool = player.experience;
+    }
+
+    /// Store the account-wide experience under [`GLOBAL_XP_KEY`] in the
+    /// binary settings store, as the game does before it saves the store.
+    pub fn save_global(
+        &self,
+        store: &mut exa_formats::settings_store::SettingsStore,
+    ) -> exa_formats::Result<()> {
+        store.set(&GLOBAL_XP_KEY, &global_xp_to_setting(self.global))
+    }
+
+    /// Read the account-wide experience back, if the store holds it; an
+    /// absent or empty value keeps the current number.
+    pub fn load_global(&mut self, store: &exa_formats::settings_store::SettingsStore) {
+        if let Some(value) = store.get(&GLOBAL_XP_KEY)
+            && let Some(xp) = global_xp_from_setting(value)
+        {
+            self.global = xp;
+        }
+    }
+
     /// Explore around a position, in the original's units. Returns the
     /// cells newly found.
     pub fn explore(
@@ -630,7 +697,8 @@ impl Experience {
             .find(|p| p.flags & POWER_IN_TRAINING != 0)
         {
             player.power_progress = paid.wrapping_add(player.power_progress);
-            let levels = (player.power_progress / SCALE as u32) as i32;
+            // The original divides the 32-bit accumulator as a signed number.
+            let levels = (player.power_progress as i32) / SCALE;
             if levels > 0 {
                 player.power_progress = player
                     .power_progress

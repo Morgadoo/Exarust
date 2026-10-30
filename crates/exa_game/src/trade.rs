@@ -204,11 +204,11 @@ fn round_low(value: f32) -> i32 {
 }
 
 /// The draw weight of an item of `rarity` hundredths, or `None` when its
-/// share is not above 0.005.
+/// share is not above 0.005. Every byte rarity leaves the share finite, so
+/// "not above" is the whole test (the original also skips an unordered one).
 pub fn rarity_weight(rarity: u8) -> Option<i32> {
     let share = (1.0f64 - f64::from(rarity) * 0.01) as f32;
-    // A byte's share is never NaN, so this is the original's "not above".
-    if f64::from(share) <= RARE_LIMIT {
+    if f64::from(share).partial_cmp(&RARE_LIMIT) != Some(std::cmp::Ordering::Greater) {
         return None;
     }
     let grow = 1.0f32 + share;
@@ -404,11 +404,34 @@ pub fn variant_unit(seed: &mut u32) -> f32 {
     (f64::from(*seed) * f64::from_bits(0x3df0_0000_0000_0000)) as f32
 }
 
+/// The step of the quality field: one of its 31 parts.
+pub const QUALITY_STEP: f64 = 1.0 / 31.0;
+
+/// The share a new apparel copy's description phrase reads off the body's
+/// quality word at `0x1a9`: the low two bits (the condition) as a number,
+/// plus the quality in bits 2 to 6, each one 1/31, negated when bit 7 is
+/// set. The phrase builder that takes this value and the personality flag
+/// lies outside this crate. A body too short reads nothing.
+pub fn apparel_quality(body: &[u8]) -> f32 {
+    let Some(&byte) = body.get(0x1a9) else {
+        return 0.0;
+    };
+    let condition = f32::from(i16::from(byte & 0x03));
+    let size = f32::from(i16::from((byte & 0x7c) >> 2));
+    let quality = (f64::from(size) * QUALITY_STEP) as f32;
+    if byte & 0x80 != 0 {
+        condition - quality
+    } else {
+        condition + quality
+    }
+}
+
 /// A shop's new apparel copy, on its item body: the condition byte at
 /// `0x1a9` keeps its low two bits and takes a quality `q = 2u − 1` from the
 /// variant roll, `round(|31q|)` in bits 2 to 6 and bit 7 when `q < 0`; the
 /// damage byte becomes 0x40, the dirt byte 0x35, and the byte after them
-/// takes 5 in bits 3 to 5 and 3 in bits 6 and 7. A body too short is left.
+/// takes 5 in bits 3 to 5 and 3 in bits 6 and 7. The body's [`apparel_quality`]
+/// then feeds the item's condition phrase. A body too short is left.
 pub fn apparel_condition(body: &mut [u8], seed: &mut u32) {
     if body.len() < 0x1b4 {
         return;
@@ -499,6 +522,12 @@ pub struct Transaction {
 /// only when something is due. Each bought item leaves the shelf at its
 /// first place, the rest keeping their order. Returns the stock's duplicate
 /// pairs afterwards.
+///
+/// The original moves the player's basket instead of the shelf: the items
+/// taken from the shop join it and the items offered leave it, and the arena's
+/// callbacks then move them between the shelf and the character. Exarust's
+/// shelf is the same list seen from the shop's side, so the items the player
+/// gives join it and the items bought leave it.
 pub fn settle(
     money: &mut u32,
     tallies: &mut [u32; 2],

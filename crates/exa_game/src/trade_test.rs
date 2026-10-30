@@ -165,6 +165,29 @@ fn duplicates_and_the_halving_search() {
     assert_eq!(find_entry(&[], 1), None);
 }
 
+/// The quality the condition phrase reads back after a copy: the low two
+/// bits plus the signed field of 31 parts, and a body too short reads 0.
+#[test]
+fn a_new_apparel_copy_reads_its_quality() {
+    let mut body = vec![0u8; 0x1b4];
+    // Condition 1, quality 2 of 31, negative.
+    body[0x1a9] = 0x80 | 2 << 2 | 1;
+    assert_eq!(apparel_quality(&body), 0.935_483_87);
+    body[0x1a9] = 2 << 2 | 3;
+    assert_eq!(apparel_quality(&body), 3.064_516);
+    // 31 of 31 is 1 above the condition, and bit 7 negates it away.
+    body[0x1a9] = 0x80 | 31 << 2 | 1;
+    assert_eq!(apparel_quality(&body), 0.0);
+    assert_eq!(apparel_quality(&[]), 0.0);
+    // A copy's condition feeds it: seed 0 gives 31 of 31, negative, over
+    // the low bits it kept.
+    let mut body = vec![0u8; 0x1b4];
+    body[0x1a9] = 3;
+    let mut seed = 0;
+    apparel_condition(&mut body, &mut seed);
+    assert_eq!(apparel_quality(&body), 2.0);
+}
+
 /// Seed 0 steps to 1, a unit of 2^−32: q rounds to −1, giving 31 in bits
 /// 2 to 6 and the sign bit, over the low two bits kept.
 #[test]

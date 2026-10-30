@@ -64,6 +64,18 @@ pub const LABEL_ROWS_PLAIN: [i32; 2] = [0x1a, 0x12];
 /// The item kind the character view's drop callback never moves to the
 /// pack.
 pub const KEPT_KIND: u32 = 8;
+/// The preview camera's turn factor, written onto the preview's scene node
+/// when the window is laid out: the single-precision 0.05.
+pub const PREVIEW_TURN: f32 = 0.05;
+/// The preview camera's view word, written beside the turn factor.
+pub const PREVIEW_VIEW: i32 = 0x1000;
+
+/// The preview camera's two words the layout writes: the turn factor and
+/// the view word. The renderer that owns the preview's scene node takes
+/// them; the original writes them only when the viewport has a scene node.
+pub fn preview_camera() -> (f32, i32) {
+    (PREVIEW_TURN, PREVIEW_VIEW)
+}
 
 /// The stock panel's place on a page `page_width` wide: its right edge
 /// 0x10 inside the page's, at the top.
@@ -129,6 +141,15 @@ pub struct ShopWindow {
     pub pack: Vec<(u32, i32)>,
     /// The player's copper (the purse record).
     pub money: u32,
+    /// The stock list the stock panel was bound to, in shelf order. Empty
+    /// until the layout binds it.
+    pub stock: Vec<u32>,
+    /// The stock list's own number, the opener's argument; `None` when no
+    /// source has one.
+    pub stock_list: Option<i32>,
+    /// How many times the window has been laid out, the opener's one
+    /// included.
+    pub layouts: u32,
     /// Opened with the merchant's category and rank options.
     pub merchant: bool,
     pub shown: bool,
@@ -155,6 +176,9 @@ impl ShopWindow {
             totals: (0, 0),
             pack: Vec::new(),
             money,
+            stock: Vec::new(),
+            stock_list: None,
+            layouts: 0,
             merchant,
             shown: true,
             trading: true,
@@ -188,6 +212,35 @@ impl ShopWindow {
             BUY_BASKET,
             stock_panel(WINDOW_SIZE.0),
         ]
+    }
+
+    /// The layout the opener runs: the stock panel is loaded from `stock`
+    /// (the shop's or the merchant's list) and the container takes the
+    /// list's own number. `list` is that number; `None` leaves it unset.
+    /// The preview camera words are [`preview_camera`]'s.
+    pub fn bind_stock(&mut self, stock: &[u32], list: Option<i32>) {
+        self.stock.clear();
+        self.stock.extend_from_slice(stock);
+        self.stock_list = list;
+        self.layout_count();
+    }
+
+    /// One more layout, as the opener and the preview's re-layout do.
+    fn layout_count(&mut self) {
+        self.layouts = self.layouts.wrapping_add(1);
+    }
+
+    /// The character view asked for the item under the cursor: an item
+    /// found lays the window out again (so the pack shows it) and answers
+    /// false; nothing found answers true.
+    pub fn recollect(&mut self, picked: Option<i32>) -> bool {
+        match picked {
+            Some(_) => {
+                self.layout_count();
+                false
+            }
+            None => true,
+        }
     }
 
     /// The character view's take-off callback: an item with a negative
@@ -357,6 +410,9 @@ mod tests {
         let window = ShopWindow::new(300, false);
         assert_eq!(window.label_rows, [0x1a, 0x12]);
         assert!(window.shown && window.trading && window.character_view);
+        assert_eq!((window.layouts, window.stock_list), (0, None));
+        assert!(window.stock.is_empty());
+        assert_eq!(preview_camera(), (0.05, 0x1000));
         // The stock's x: 0x36c − 0xe4 − 0x10 = 0x278.
         assert_eq!(
             window.panels(),
@@ -431,6 +487,24 @@ mod tests {
         assert_eq!((row.buy, row.sell, row.balance), (0, 10, -10));
         let row = window.buy_changed();
         assert_eq!((row.buy, row.balance), (40, 30));
+    }
+
+    #[test]
+    fn the_layout_binds_the_stock_and_the_preview_re_lays_it() {
+        let mut window = ShopWindow::new(10, false);
+        window.bind_stock(&[7, 0x8000_0002], Some(3));
+        assert_eq!(window.stock, [7, 0x8000_0002]);
+        assert_eq!((window.stock_list, window.layouts), (Some(3), 1));
+        // A pick lays the window out again and answers false; nothing
+        // picked answers true and leaves the count alone.
+        assert!(!window.recollect(Some(4)));
+        assert_eq!(window.layouts, 2);
+        assert!(window.recollect(None));
+        assert_eq!(window.layouts, 2);
+        // Binding again replaces the list.
+        window.bind_stock(&[], None);
+        assert!(window.stock.is_empty());
+        assert_eq!((window.stock_list, window.layouts), (None, 3));
     }
 
     #[test]
