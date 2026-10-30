@@ -915,6 +915,9 @@ pub struct SceneNode {
     pub removed: bool,
     /// A light's aliases (copies of it registered in other sectors).
     pub aliases: Vec<usize>,
+    /// The values a light's last alias sync copied (colour, range, cone,
+    /// flags, intensity, scale); `None` until one runs.
+    pub alias_values: Option<crate::light_source::AliasValues>,
     /// The node's cell and spill mask.
     pub cell: CellSpill,
     /// The frame word bits [`INHERIT_FADE`]/[`INHERIT_HIDDEN`].
@@ -986,6 +989,7 @@ impl SceneNode {
             refs: 0,
             removed: false,
             aliases: Vec::new(),
+            alias_values: None,
             cell: CellSpill::MARKED,
             inherited: 0,
             mask: 0,
@@ -1307,6 +1311,26 @@ impl Scene {
         }
         self.nodes[alias].sector = None;
         true
+    }
+
+    /// Copies a light's current values to every alias, as the original's
+    /// alias sync does: the aliases are marked moved (so their shadow faces
+    /// reset) and keep the copied values. Returns how many were written.
+    pub fn sync_light_aliases(
+        &mut self,
+        light: usize,
+        values: &crate::light_source::AliasValues,
+    ) -> usize {
+        let aliases = self.nodes[light].aliases.clone();
+        self.nodes[light].alias_values = Some(*values);
+        for &alias in &aliases {
+            if let Some(a) = self.nodes.get_mut(alias) {
+                a.alias_values = Some(*values);
+                a.moved = true;
+                a.mask = 0;
+            }
+        }
+        aliases.len()
     }
 
     /// Sets the room sectors' states (room `i` is sector `i + 1`) from the
@@ -5488,6 +5512,29 @@ mod tests {
         scene.sectors[1].rotation = Mat3::IDENTITY;
         scene.classify(Vec3::ZERO, std::slice::from_ref(&view), &no_project);
         assert_eq!(scene.sectors[1].mask, 0);
+    }
+
+    #[test]
+    fn an_alias_sync_copies_the_light_values_and_marks_the_alias_moved() {
+        let mut scene = Scene::new((0, 0));
+        let light = scene.add_node(NodeKind::Light, None);
+        let alias = scene.add_node(NodeKind::Light, None);
+        scene.nodes[light].aliases.push(alias);
+        let values = crate::light_source::AliasValues {
+            flags: 1,
+            colour: [0.5, 0.25, 0.125],
+            intensity: 3.0,
+            radius: 4.0,
+            softness: 0.25,
+            spot: Some([1.0, 2.0]),
+            ranged: true,
+            scale: 0.5,
+            shadow_offset: 1,
+        };
+        assert_eq!(scene.sync_light_aliases(light, &values), 1);
+        assert_eq!(scene.nodes[light].alias_values, Some(values));
+        assert_eq!(scene.nodes[alias].alias_values, Some(values));
+        assert!(scene.nodes[alias].moved);
     }
 
     #[test]
