@@ -1154,3 +1154,10 @@ A drag out of the player's pack held over the world view, with no drop pending a
 #### Scenario: A salve with no model
 - **WHEN** a claimed drop's item builds no body
 - **THEN** the controls' word is 0x1000 again, the claimed drag is gone and the queue is empty
+
+### Requirement: Combat steps move a muscled body
+While a combat footwork step is under way, the player's capsule SHALL move at the step's velocity even though a muscled body otherwise walks by its carry, and SHALL stop with the step.
+
+#### Scenario: W held in the open
+- **WHEN** W is held in combat mode facing open floor in the practice arena
+- **THEN** the player steps forward step after step, about 1.6 cm a tick, playing the combat walk

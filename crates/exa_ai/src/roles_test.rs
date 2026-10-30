@@ -571,3 +571,48 @@ fn removing_a_level_relation_selects_the_level_table() {
     assert_eq!(rel.locale(), Some(9));
     assert_eq!(rel.levels.len(), 1);
 }
+
+/// The shipped arena roles, as the original hands them out: the practice
+/// start makes the player Unaligned like its opponent, a new career makes
+/// it the company's Faction 1, and a two-sided match's opponents hold
+/// Faction 2. Unaligned and the factions rate every other arena side −100
+/// at tolerance 0 and their own faction +100 at tolerance 100; none rates a
+/// story character (Player, Human, the unknown), so an arena fighter stays
+/// calm toward one. Skipped without the game.
+#[test]
+fn the_shipped_arena_roles_set_the_sides() {
+    let Some(dir) = exa_rpk::locate_install(None) else {
+        return;
+    };
+    let game = exa_rpk::GameData::open(&dir).unwrap();
+    let resource = game.pack(exa_rpk::PackKind::Resource).unwrap();
+    let b = RoleDb::parse(resource.get("charroles.rdb").unwrap()).unwrap();
+    let unaligned = Roles::arena(&b);
+    let company = Roles::company(&b);
+    let opponent = Roles::only(&b, FACTION_2);
+    let story = Roles::new_character(&b, 0);
+    assert_eq!(unaligned.ids().collect::<Vec<_>>(), vec![UNALIGNED]);
+    assert_eq!(company.ids().collect::<Vec<_>>(), vec![FACTION_1]);
+    let rate = |a: &Roles, them: &Roles| {
+        let mut rel = Relations::default();
+        let r = attitude(
+            &b,
+            a,
+            &mut rel,
+            &Partner {
+                id: 0x8000_0002,
+                roles: them,
+                former: None,
+            },
+            2,
+        );
+        (r.attitude, r.tolerance)
+    };
+    assert_eq!(rate(&unaligned, &unaligned), (-100.0, 0.0));
+    assert_eq!(rate(&opponent, &company), (-100.0, 0.0));
+    assert_eq!(rate(&opponent, &unaligned), (-100.0, 0.0));
+    assert_eq!(rate(&company, &company), (100.0, 100.0));
+    assert_eq!(rate(&company, &opponent), (-100.0, 0.0));
+    assert_eq!(rate(&unaligned, &story), (0.0, 0.0));
+    assert_eq!(rate(&opponent, &story), (0.0, 0.0));
+}

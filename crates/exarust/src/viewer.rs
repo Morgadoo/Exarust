@@ -1181,13 +1181,15 @@ fn spawn_players(
             info!("player knows powers: {:x?}", options.powers);
         }
         // A new story character is Player, Human and the unknown background
-        // (Exarust has no background choice); the practice and arena
-        // fighters are unaligned [inf: the arena start clears the roles and
-        // adds Unaligned].
-        let roles = if story {
-            exa_ai::roles::Roles::new_character(&book, 0)
-        } else {
-            exa_ai::roles::Roles::arena(&book)
+        // (Exarust has no background choice). The practice start clears the
+        // player's roles and adds Unaligned, as its opponent holds; a new
+        // arena career clears them and adds the company's Faction 1, as its
+        // staff and teammates hold, while a two-sided match's opponents hold
+        // Faction 2. Scenes no mode plays keep the practice roles.
+        let roles = match exa_world::start::mode(name) {
+            Some(exa_world::start::Mode::Story) => exa_ai::roles::Roles::new_character(&book, 0),
+            Some(exa_world::start::Mode::Arena) => exa_ai::roles::Roles::company(&book),
+            _ => exa_ai::roles::Roles::arena(&book),
         };
         commands.entity(model).insert((
             roles,

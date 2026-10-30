@@ -503,6 +503,25 @@ struct Sensed {
     ai: bool,
 }
 
+/// The character a duellist's target names: the fighter at or under it. A
+/// duellist aims at a character's root, which carries its body, while the
+/// perception keys its contacts by the fighter under that root, so the
+/// target pass, the contact copies and the entry compare that fighter.
+pub fn foe_of(
+    target: Entity,
+    is_fighter: impl Fn(Entity) -> bool,
+    children: &Query<&Children>,
+) -> Entity {
+    if is_fighter(target) {
+        return target;
+    }
+    children
+        .get(target)
+        .ok()
+        .and_then(|c| c.iter().find(|&e| is_fighter(e)))
+        .unwrap_or(target)
+}
+
 /// Runs one perception pass for every brain over every character it can
 /// sense ([`combatant::perceive`]), with the observed character's own
 /// contacts, the role-derived attitude, the relations' trust in the threat
@@ -519,6 +538,7 @@ pub fn perceive_all(
     level: Option<Res<exa_world::room_view::LevelRooms>>,
     players: Query<Entity, With<RatedPlayer>>,
     bodies: Query<&CharacterBody>,
+    children: Query<&Children>,
     mut chars: ParamSet<(
         Query<(
             Entity,
@@ -617,7 +637,15 @@ pub fn perceive_all(
     for (entity, mut npc, mut combatant, duellist, mind, gt, fighter, roles, mut relations) in
         &mut chars.p1()
     {
-        let target = duellist.map(|d| d.target).or(player);
+        let target = duellist
+            .map(|d| {
+                foe_of(
+                    d.target,
+                    |e| candidates.iter().any(|c| c.entity == e),
+                    &children,
+                )
+            })
+            .or(player);
         let position_cm = gt.map_or(Vec3::ZERO, |g| g.translation() * 100.0);
         let forward = gt.map_or(Vec3::Z, |g| g.rotation() * Vec3::Z);
         let observer = Observer {
@@ -846,6 +874,8 @@ pub fn ai_tick(
     players: Query<(Entity, &GlobalTransform), With<RatedPlayer>>,
     targets: Query<(Entity, &GlobalTransform)>,
     fighters: Query<(Entity, &GlobalTransform), With<Fighter>>,
+    children: Query<&Children>,
+    mut traced_s: Local<u32>,
     mut npcs: Query<(
         Entity,
         &mut Npc,
@@ -868,6 +898,9 @@ pub fn ai_tick(
         return;
     }
     let now = ticks.as_ref().map_or(0, |t| t.millis() as u32);
+    // The debug trace below runs once a second.
+    let trace = now / 1000 != *traced_s;
+    *traced_s = now / 1000;
     let player = players.iter().next().map(|(entity, _)| entity);
     for (
         _entity,
@@ -894,7 +927,10 @@ pub fn ai_tick(
         if condition.0 & combatant::CONDITION_OUT != 0 {
             continue;
         }
-        let target = duellist.as_deref().map(|d| d.target).or(player);
+        let target = duellist
+            .as_deref()
+            .map(|d| foe_of(d.target, |e| fighters.contains(e), &children))
+            .or(player);
         let observer_cm = gt.map_or(Vec3::ZERO, |g| g.translation() * 100.0);
         let target_cm = target
             .and_then(|t| targets.get(t).ok())
@@ -1027,6 +1063,23 @@ pub fn ai_tick(
             &mut roll,
             &place,
         );
+        // A debug trace of how the brain rates its target, once a second
+        // (`RUST_LOG=exa_ai::brain=debug`).
+        if let Some(c) = npc.contacts.iter().find(|c| Some(c.id) == target_id)
+            && trace
+        {
+            debug!(
+                "{talking}: rates its target: attitude {:.1}, tolerance {:.2}, concern {:.3}, \
+                 hostility {:.3}, seen {:.3}, stress {:.3}, pass level {}, in combat {in_combat}",
+                c.soothe,
+                c.tolerance,
+                c.concern,
+                c.hostility,
+                c.seen,
+                npc.pass.stress,
+                npc.pass.level
+            );
+        }
         // The contact the target pass attends, as the idle states' attention
         // reads it: its notice score and the yaw from the body to it.
         let attended = npc.pass.attention.map(|id| {
@@ -2167,6 +2220,65 @@ mod tests {
         // The combatant's contact follows the brain's integrated hostility.
         let cb = w.get::<Combatant>(hostile).unwrap();
         assert!(cb.contact(player).unwrap().hostility > 0.0);
+    }
+
+    /// A duellist aims at the player's root, which carries no fighter; the
+    /// fighter is its child, as the running game spawns a character. The
+    /// perception keys its contact by that fighter, and the target pass,
+    /// the combatant's contact and the entry follow it, so the hostile
+    /// brain still engages.
+    #[test]
+    fn a_duellist_aimed_at_the_players_root_engages_its_fighter() {
+        let mut app = App::new();
+        app.insert_resource(db()).add_systems(
+            Update,
+            (apply_new_roles, rate_the_player, perceive_all, ai_tick).chain(),
+        );
+        let root = app
+            .world_mut()
+            .spawn(GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 2.0)))
+            .id();
+        let player = app
+            .world_mut()
+            .spawn((
+                GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 2.0)),
+                Fighter::default(),
+                Condition::NORMAL,
+                RatedPlayer,
+                Roles::new_character(&db().book, 0),
+                CharacterId(PLAYER_ID),
+                ChildOf(root),
+            ))
+            .id();
+        let npc = app
+            .world_mut()
+            .spawn((
+                held(&[8, 2]),
+                Relations::default(),
+                Npc::new([0.0; 4]),
+                Combatant::default(),
+                crate::Duellist::new(root),
+                Mind::new(0.0),
+                GlobalTransform::default(),
+                Fighter::default(),
+                Condition::NORMAL,
+                CharacterId(2),
+            ))
+            .id();
+        for _ in 0..700 {
+            app.update();
+        }
+        let w = app.world();
+        assert!(w.get::<crate::Duellist>(npc).unwrap().engaged);
+        assert_eq!(
+            w.get::<Npc>(npc).unwrap().pass.target,
+            Some(player.to_bits())
+        );
+        let cb = w.get::<Combatant>(npc).unwrap();
+        assert!(cb.in_combat);
+        assert_eq!(cb.target, Some(player));
+        assert!(cb.contact(player).unwrap().hostility > 0.0);
+        assert!(cb.contact(root).is_none(), "no contact for the bare root");
     }
 
     /// An NPC brain and a player two metres apart, the brain's duellist

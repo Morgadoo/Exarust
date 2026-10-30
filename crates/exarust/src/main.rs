@@ -52,9 +52,10 @@
 //!          --shield <m|any>           play mode: the player carries this shield on its off arm (no torch then)
 //!          --still-opponent           the duellist stands its ground: it faces the player in its stance but neither walks nor strikes
 //!          --opponent-brain           the debug duellist also takes a level character's brain (its record's Npc, relations and
-//!                                     id), so its perception, morale and hit reactions run as a level duellist's do; its
-//!                                     arena role leaves it calm toward the player, so it neither starts the fight nor
-//!                                     stays in it, and its idle activity may walk it away
+//!                                     id), so its perception, morale and hit reactions run as a level duellist's do, and
+//!                                     its target pass decides the fight: in a practice level (`arena`) its Unaligned role
+//!                                     rates the Unaligned player −100, so it engages once its hostility builds and keeps
+//!                                     fighting; a story player holds no arena role, so there it stays calm and roams
 //!          --undead-opponent <frame>  the debug duellist takes the story's body rules (it may rise again) and collapses
 //!                                     at that frame after the load; it dies, and 10 s later the AI manager's rule
 //!                                     raises it knocked out and it gets up (logged at info: "dies", "rises", "revived")
