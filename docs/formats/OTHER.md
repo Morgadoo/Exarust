@@ -655,7 +655,8 @@ item-fact pass reads those, the appearance bytes and the occupancy table
 (`ItemFacts::of_item`).
 
 Appearance block (100 bytes): quality, damage and dirt bytes (the painter uses
-q = x, damage = x/(2−x), dirt = (x²+x)/2 with x = byte/255), their packed
+q = x, damage = 2/(2−x) − 1, dirt = (x²+x)·0.5 with x = byte × 1/255 in
+double narrowed to float, the remaps in float in that order), their packed
 spreads ([Armour](#armour)), then eight 12-byte layers: +0 flags (`0x1` the
 first layer's material sets the armour variants a leather adds and later
 such layers copy it, `0x2` layers of one random set share a material), +1

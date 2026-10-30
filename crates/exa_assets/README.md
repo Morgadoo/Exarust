@@ -27,18 +27,19 @@ splits on the groups, and up to three damped distance blends elsewhere
 ([`docs/formats/RSQ.md`](../../docs/formats/RSQ.md), Skinning). The shipped
 human and ogre bodies are checked watertight. The weights run in the model
 build on the compute pool; a mesh that ships weights keeps them. The
-builder's group stack (`skin::GroupStack`: sixteen group-bearing frames of
-their groups' centres in centimetres, an empty frame for a node without
-groups, an empty push past the limit accepted, and a depth-only clear)
-drives `skin::auto_skin_build`, which returns each part's frame for its
-children (`pushed`; a mesh that keeps a shipped skin stream pushes none).
-The per-node model build walks the tree from its roots with the inherited
-frame, so a garment child's nearest-joint match reads its parent part's
-group centres as the stack's reader does (a parent centre only lowers the
-bar and is never taken).
+builder's group stack limits are `skin::GroupStack` (sixteen frames of
+group centres in centimetres; only the separate empty push skips the
+limit). `skin::auto_skin_build` returns each part's frame for its children
+(`pushed`; empty for a mesh that keeps a shipped skin stream or finds no
+group), and the per-node model build walks the tree from its roots handing
+each child its parent's frame (`skin::ParentFrame`), so a garment child's
+nearest-joint match carries its group centres through its node transform
+and compares them with the parent part's centres as the stack's reader
+does (a parent centre only lowers the bar and is never taken).
 `model::underscore_skinned_child` and `model::skinned_mesh_under` are the
-wound and effect lookups (the `_`-named child, then the deepest skinned
-mesh in reverse child order).
+wound and effect lookups (the `_`-named child; and a skinned child in
+reverse child order, else the first found in the subtrees in forward
+order).
 
 Power tree sheets (`Game::load_tree_sheets`): the domain icon sheets, the
 frames, mods and flamelets, and the domain wheel, which the tree's load

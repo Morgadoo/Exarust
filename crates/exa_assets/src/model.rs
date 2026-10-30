@@ -22,7 +22,7 @@ use crate::paint::{
     factory_colour, factory_wear, layer_material, library, normal_library, paint_with,
     specular_library,
 };
-use crate::skin::{Joint, Seams, VertexSkin, auto_skin_build};
+use crate::skin::{Joint, ParentFrame, Seams, VertexSkin, auto_skin_build};
 use crate::texture::{self, ColorSpace, has_alpha, material_word, rfi_to_texture};
 use crate::texture_cache::{TextureCache, TextureKey};
 use exa_formats::factory::EmblemLayer;
@@ -1963,11 +1963,10 @@ pub(crate) fn scene_skins(
 
 /// The recursive per-node pass of the skin builder. Each part pushes its
 /// groups' centres for the parts below it and the apparel matching reads the
-/// frame on top: the one pushed by the nearest ancestor that pushed one. A
-/// part that keeps a shipped skin stream pushes nothing (its children keep
-/// the frame above) and a part without groups pushes an empty frame. Only
-/// bone-named mesh children are visited, as the original's skinned-mesh test
-/// admits them.
+/// frame on top, the one its parent part pushed. A part that keeps a shipped
+/// skin stream, or that has no group, pushes an empty frame. Only bone-named
+/// mesh children are visited, as the original's skinned-mesh test admits
+/// them.
 struct SkinPass<'a> {
     scene: &'a Scene,
     pack: PackKind,
@@ -1986,14 +1985,11 @@ impl SkinPass<'_> {
             NodeBody::Mesh(mesh) => node_skin(self.scene, index, mesh, self.pack, incoming),
             _ => None,
         };
-        let Some((bone, weights, pushed)) = build else {
+        let Some((bone, weights, outgoing)) = build else {
             self.state[index] = 2;
             return;
         };
         self.results[index] = Some((bone, weights));
-        // A shipped stream pushes no frame, so the children see the frame
-        // that was already on top.
-        let outgoing = pushed.unwrap_or_else(|| incoming.to_vec());
         let children: Vec<usize> = (0..self.scene.nodes.len())
             .filter(|&i| {
                 let node = &self.scene.nodes[i];
@@ -2013,7 +2009,8 @@ impl SkinPass<'_> {
 /// Skin weights of a node's mesh: worked out from its seams for body parts
 /// and garments alike (nodes named after a bone), with the parent and the
 /// bone-named children as joints and the enclosing part's group centres as
-/// the apparel matching's parent frame. A `Resource` model of a race body is
+/// the apparel matching's parent frame (read through the node's own
+/// transform). A `Resource` model of a race body is
 /// a body part; a `Characters` model is apparel, whose seams are the marked
 /// ones.
 fn node_skin(
@@ -2022,7 +2019,7 @@ fn node_skin(
     mesh: &RfcMesh,
     pack: PackKind,
     parents: &[Vec3],
-) -> Option<(u16, Vec<VertexSkin>, Option<Vec<Vec3>>)> {
+) -> Option<(u16, Vec<VertexSkin>, Vec<Vec3>)> {
     let node = &scene.nodes[index];
     // Nodes the original leaves out of the skin (its flag bit 5).
     if node.flags & 0x20 != 0 {
@@ -2059,7 +2056,11 @@ fn node_skin(
     } else {
         Seams::Body
     };
-    let build = auto_skin_build(mesh, bone, &joints, seams, parents);
+    let frame = ParentFrame {
+        centres: parents,
+        placement: node.transform,
+    };
+    let build = auto_skin_build(mesh, bone, &joints, seams, &frame);
     Some((bone, build.weights, build.pushed))
 }
 

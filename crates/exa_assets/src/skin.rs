@@ -754,7 +754,14 @@ pub struct GroupFrame {
 }
 
 /// The builder's group stack, pushed around the recursive pass over a body's
-/// children. The original pushes an empty frame for a node without groups.
+/// children. The original pushes an empty frame for a node without groups
+/// and for one that keeps a shipped skin stream. The model build carries the
+/// frames down its own recursion (`model::scene_skins`); this type pins the
+/// limit rules.
+///
+/// Not reproduced: each original frame has room for eight centres, and a
+/// part with more groups writes the rest into the next frame's slot (a
+/// child's push then overwrites them). Exarust keeps every centre.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GroupStack {
     frames: Vec<GroupFrame>,
@@ -795,15 +802,7 @@ impl GroupStack {
         self.frames.push(GroupFrame::default());
     }
 
-    /// Clears every frame's centre list without popping any: the depth
-    /// stays, as the original's per-frame cleanup does.
-    pub fn clear_frames(&mut self) {
-        for frame in &mut self.frames {
-            frame.centres.clear();
-        }
-    }
-
-    /// Pops every frame and frees its lists.
+    /// Pops every frame.
     pub fn clear(&mut self) {
         self.frames.clear();
     }
@@ -814,21 +813,60 @@ impl GroupStack {
     }
 }
 
+/// The enclosing part's frame as a child part's apparel matching reads it:
+/// the top of the original's group stack.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ParentFrame<'a> {
+    /// The parent part's group centres, in the parent's space, centimetres.
+    pub centres: &'a [Vec3],
+    /// The child part's local transform (three axis rows, then the
+    /// translation in metres), which carries a group centre into the
+    /// parent's space before it is compared with `centres`.
+    pub placement: [[f32; 3]; 4],
+}
+
+impl ParentFrame<'_> {
+    /// No frame: the stack is empty or its top frame holds no centre.
+    pub const NONE: ParentFrame<'static> = ParentFrame {
+        centres: &[],
+        placement: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.0; 3]],
+    };
+
+    /// `centre` (the child's space, centimetres) in the parent's space, as
+    /// the engine's point transform sums it: `(x·r0 + y·r1) + (z·r2 + t)`
+    /// per component. The translation is scaled back to centimetres; the
+    /// original reads it in the file's centimetres directly, so a value that
+    /// does not survive the metre round trip may differ in the last bit.
+    fn to_parent(&self, centre: Vec3) -> Vec3 {
+        let [r0, r1, r2, t] = self.placement;
+        let axis = |i: usize| {
+            (centre.x * r0[i] + centre.y * r1[i]) + (centre.z * r2[i] + t[i] * CM_PER_METRE)
+        };
+        Vec3::new(axis(0), axis(1), axis(2))
+    }
+}
+
 /// The apparel's joint matching with the parent group stack's top frame:
 /// a group starts at its first joint's distance, the parent centres can only
 /// lower that bar, and a later joint is taken when strictly nearer than the
 /// bar so far. A parent centre is never taken itself: a group nearer to a
 /// parent centre than to any of its own later joints keeps its first joint.
-/// With no parents this is [`match_apparel`]. `parents` are the parent
-/// groups' centres in the part's space, in centimetres.
-pub(crate) fn match_apparel_with_context(groups: &mut [Group], joints: &[Joint], parents: &[Vec3]) {
+/// The group's centre is carried into the parent's space by the child's
+/// placement before each parent comparison. With no parents this is
+/// [`match_apparel`].
+pub(crate) fn match_apparel_with_context(
+    groups: &mut [Group],
+    joints: &[Joint],
+    parent: &ParentFrame,
+) {
     if joints.is_empty() {
         return;
     }
     for group in groups {
         let mut best = distance_squared(group.centre, joints[0].pivot * CM_PER_METRE);
-        for &parent in parents {
-            let d = distance_squared(group.centre, parent);
+        let in_parent = parent.to_parent(group.centre);
+        for &centre in parent.centres {
+            let d = distance_squared(in_parent, centre);
             if d < best {
                 best = d;
             }
@@ -851,10 +889,11 @@ pub struct SkinBuild {
     /// The vertices' weights, indexed like `mesh.positions`.
     pub weights: Vec<VertexSkin>,
     /// The frame the part pushes for its children: every group's centre in
-    /// the part's space (centimetres), or `None` when the mesh keeps a
-    /// shipped skin stream. The original then pushes no frame, so the
-    /// children keep seeing the frame above.
-    pub pushed: Option<Vec<Vec3>>,
+    /// the part's space (centimetres). A mesh that keeps a shipped skin
+    /// stream, or that finds no group, pushes an empty frame (the original
+    /// clears its group count before the push), so its children see no
+    /// parent centre.
+    pub pushed: Vec<Vec3>,
 }
 
 /// Skin weights of every vertex of `mesh`, a part of bone `own` meeting its
@@ -862,37 +901,36 @@ pub struct SkinBuild {
 /// indexed like `mesh.positions`; their weights are those of the position id
 /// they share.
 pub fn auto_skin(mesh: &Mesh, own: u16, joints: &[Joint], seams: Seams) -> Vec<VertexSkin> {
-    auto_skin_with_context(mesh, own, joints, seams, &[])
+    auto_skin_with_context(mesh, own, joints, seams, &ParentFrame::NONE)
 }
 
 /// [`auto_skin`] with the enclosing part's group centres as the apparel
 /// matching's parent context ([`match_apparel_with_context`]): a parent
 /// centre nearer than a garment group's later joints keeps the group on its
-/// first joint. `parents` are in the part's space, in centimetres.
+/// first joint.
 pub fn auto_skin_with_context(
     mesh: &Mesh,
     own: u16,
     joints: &[Joint],
     seams: Seams,
-    parents: &[Vec3],
+    parent: &ParentFrame,
 ) -> Vec<VertexSkin> {
-    auto_skin_build(mesh, own, joints, seams, parents).weights
+    auto_skin_build(mesh, own, joints, seams, parent).weights
 }
 
 /// The whole skin build: the weights plus the group centres the part pushes
-/// for its children (see [`SkinBuild`]). `parents` are the enclosing part's
-/// group centres in the part's space, in centimetres; they are read only by
-/// the apparel matching.
+/// for its children (see [`SkinBuild`]). `parent` is the enclosing part's
+/// frame; only the apparel matching reads it.
 pub fn auto_skin_build(
     mesh: &Mesh,
     own: u16,
     joints: &[Joint],
     seams: Seams,
-    parents: &[Vec3],
+    parent: &ParentFrame,
 ) -> SkinBuild {
     let rigid = [(own, 1.0), (own, 0.0), (own, 0.0), (own, 0.0)];
     // A mesh that ships with weights keeps them; the original only builds
-    // weights for a mesh without a skin stream, and pushes no frame for it.
+    // weights for a mesh without a skin stream, and pushes an empty frame.
     if let Some(skin) = &mesh.skin
         && skin.len() >= mesh.positions.len()
     {
@@ -910,13 +948,13 @@ pub fn auto_skin_build(
             .collect();
         return SkinBuild {
             weights,
-            pushed: None,
+            pushed: Vec::new(),
         };
     }
     let Some(mut builder) = Builder::new(mesh) else {
         return SkinBuild {
             weights: vec![rigid; mesh.positions.len()],
-            pushed: Some(Vec::new()),
+            pushed: Vec::new(),
         };
     };
     let mut groups = Vec::new();
@@ -927,13 +965,13 @@ pub fn auto_skin_build(
     if groups.is_empty() {
         return SkinBuild {
             weights: vec![rigid; mesh.positions.len()],
-            pushed: Some(Vec::new()),
+            pushed: Vec::new(),
         };
     }
     match seams {
         Seams::Body => match_body(&mut groups, joints),
-        Seams::Apparel if parents.is_empty() => match_apparel(&mut groups, joints),
-        Seams::Apparel => match_apparel_with_context(&mut groups, joints, parents),
+        Seams::Apparel if parent.centres.is_empty() => match_apparel(&mut groups, joints),
+        Seams::Apparel => match_apparel_with_context(&mut groups, joints, parent),
     }
     let pushed = groups.iter().map(|group| group.centre).collect();
     let by_position = builder.weights(&groups, joints, own);
@@ -942,10 +980,7 @@ pub fn auto_skin_build(
         .iter()
         .map(|&p| by_position.get(p as usize).copied().unwrap_or(rigid))
         .collect();
-    SkinBuild {
-        weights,
-        pushed: Some(pushed),
-    }
+    SkinBuild { weights, pushed }
 }
 
 #[cfg(test)]
@@ -1578,15 +1613,30 @@ mod tests {
                 pivot: Vec3::new(0.1, 0.0, 0.0),
             },
         ];
+        let frame = |centres| ParentFrame {
+            centres,
+            ..ParentFrame::NONE
+        };
         // A parent centre at 1 cm: 1 < 100 beats joint 1's 100 cm².
-        let parents = [Vec3::new(1.0, 0.0, 0.0)];
-        match_apparel_with_context(&mut groups, &own, &parents);
+        let near = [Vec3::new(1.0, 0.0, 0.0)];
+        match_apparel_with_context(&mut groups, &own, &frame(&near));
         assert_eq!(groups[0].joint, Some(0));
         assert_eq!(groups[0].bone(&own), 1);
         // A parent centre at 100 cm changes nothing: joint 1 is nearest.
-        let parents = [Vec3::new(100.0, 0.0, 0.0)];
-        match_apparel_with_context(&mut groups, &own, &parents);
+        let far = [Vec3::new(100.0, 0.0, 0.0)];
+        match_apparel_with_context(&mut groups, &own, &frame(&far));
         assert_eq!(groups[0].joint, Some(1));
+        // The group's centre is carried into the parent's space first: a
+        // parent centre at 20 cm is 400 cm² from the untransformed centre
+        // (joint 1 wins at 100), but the child placed 0.2 m along x puts the
+        // centre on it (0 cm²), so the first joint stays.
+        let centres = [Vec3::new(20.0, 0.0, 0.0)];
+        match_apparel_with_context(&mut groups, &own, &frame(&centres));
+        assert_eq!(groups[0].joint, Some(1));
+        let mut placed = frame(&centres);
+        placed.placement[3] = [0.2, 0.0, 0.0];
+        match_apparel_with_context(&mut groups, &own, &placed);
+        assert_eq!(groups[0].joint, Some(0));
         // No parents is the plain matching.
         let mut plain = [Group {
             centre: Vec3::ZERO,
@@ -1596,18 +1646,42 @@ mod tests {
         assert_eq!(plain[0].joint, Some(1));
     }
 
+    /// The placement is the engine's row-vector point transform with the
+    /// translation in centimetres: a quarter turn about z sends (3, 0, 0) cm
+    /// to (0, 3, 0) before the 1 m shift along z.
+    #[test]
+    fn a_placement_carries_a_centre_into_the_parent() {
+        let frame = ParentFrame {
+            centres: &[],
+            placement: [
+                [0.0, 1.0, 0.0],
+                [-1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [0.0, 0.0, 1.0],
+            ],
+        };
+        assert_eq!(
+            frame.to_parent(Vec3::new(3.0, 0.0, 0.0)),
+            Vec3::new(0.0, 3.0, 100.0)
+        );
+        assert_eq!(
+            ParentFrame::NONE.to_parent(Vec3::new(1.5, -2.0, 7.0)),
+            Vec3::new(1.5, -2.0, 7.0)
+        );
+    }
+
     /// A built part pushes every group's centre in centimetres; the strip's
     /// wide-seam group ends as the box of its 20-30 cm top edge, centre
-    /// (25, 10, 0) cm. A part that keeps a shipped skin stream pushes no
-    /// frame, and a part without groups pushes an empty one.
+    /// (25, 10, 0) cm. A part that keeps a shipped skin stream, or that has
+    /// no group, pushes an empty frame.
     #[test]
     fn a_built_part_pushes_its_group_centres() {
         let joints = [Joint {
             bone: 13,
             pivot: Vec3::new(0.2, 0.05, 0.0),
         }];
-        let build = auto_skin_build(&strip(), 12, &joints, Seams::Body, &[]);
-        assert_eq!(build.pushed, Some(vec![Vec3::new(25.0, 10.0, 0.0)]));
+        let build = auto_skin_build(&strip(), 12, &joints, Seams::Body, &ParentFrame::NONE);
+        assert_eq!(build.pushed, vec![Vec3::new(25.0, 10.0, 0.0)]);
 
         let mut shipped = strip();
         let n = shipped.positions.len();
@@ -1619,15 +1693,15 @@ mod tests {
             n
         ]);
         assert_eq!(
-            auto_skin_build(&shipped, 12, &joints, Seams::Body, &[]).pushed,
-            None
+            auto_skin_build(&shipped, 12, &joints, Seams::Body, &ParentFrame::NONE).pushed,
+            Vec::<Vec3>::new()
         );
 
         let mut plain = strip();
         plain.triangle_flags = None;
         assert_eq!(
-            auto_skin_build(&plain, 12, &joints, Seams::Body, &[]).pushed,
-            Some(Vec::new())
+            auto_skin_build(&plain, 12, &joints, Seams::Body, &ParentFrame::NONE).pushed,
+            Vec::<Vec3>::new()
         );
     }
 
@@ -1662,17 +1736,22 @@ mod tests {
         for vertex in 0..3 {
             assert!((weight(&plain, vertex, 9) - 0.125).abs() < 1e-6, "{vertex}");
         }
-        let build = auto_skin_build(&m, 7, &joints, Seams::Apparel, &[Vec3::new(5.0, 5.0, 0.0)]);
+        let frame = ParentFrame {
+            centres: &[Vec3::new(5.0, 5.0, 0.0)],
+            ..ParentFrame::NONE
+        };
+        let build = auto_skin_build(&m, 7, &joints, Seams::Apparel, &frame);
         for vertex in 0..3 {
             assert!((weight(&build.weights, vertex, 8) - 0.125).abs() < 1e-6);
             assert!(weight(&build.weights, vertex, 9) < 1e-9);
         }
-        assert_eq!(build.pushed, Some(vec![Vec3::new(5.0, 5.0, 0.0)]));
+        assert_eq!(build.pushed, vec![Vec3::new(5.0, 5.0, 0.0)]);
     }
 
     /// The group stack keeps sixteen group-bearing frames; the seventeenth
-    /// is refused. Empty frames do not test the limit, and the depth-only
-    /// clear empties every frame without popping one.
+    /// is refused, as is a push of no centres (the original's push tests the
+    /// limit whatever the group count). Only the separate empty push skips
+    /// the test.
     #[test]
     fn the_group_stack_holds_sixteen_frames() {
         let mut stack = GroupStack::new();
@@ -1681,11 +1760,7 @@ mod tests {
         }
         assert_eq!(stack.len(), 16);
         assert!(stack.push(vec![Vec3::ZERO]).is_err());
-        assert_eq!(stack.len(), 16);
-        stack.clear_frames();
-        for frame in &stack.frames {
-            assert!(frame.centres.is_empty());
-        }
+        assert!(stack.push(Vec::new()).is_err());
         assert_eq!(stack.len(), 16);
         stack.clear();
         assert!(stack.is_empty());
