@@ -48,7 +48,13 @@ pub fn bed_name(area: &str) -> String {
 
 /// Cuts a name to the 15 characters a short string holds.
 fn short_string(mut name: String) -> String {
-    if let Some((cut, _)) = name.char_indices().nth(MAX_NAME_LEN) {
+    if name.len() > MAX_NAME_LEN {
+        // The original's short string holds 15 bytes; a Rust string can only
+        // be cut at a character boundary.
+        let mut cut = MAX_NAME_LEN;
+        while cut > 0 && !name.is_char_boundary(cut) {
+            cut -= 1;
+        }
         name.truncate(cut);
     }
     name
@@ -168,22 +174,16 @@ impl AudioEnvironment {
         let default_flags = self.default_flags;
         if !bank.buffer_is_stereo(buffer) {
             // A random horizontal direction from the anchor.
-            let mut x = 0.5 - bank.random_unit();
-            let mut z = 0.5 - bank.random_unit();
-            let length2 = z * z + x * x;
-            if length2 <= SILENCE {
-                x = 1.0;
-            } else {
-                let scale = 1.0 / length2.sqrt();
-                x *= scale;
-                z *= scale;
-            }
+            let (x, z) = one_shot_direction(bank.random_unit(), bank.random_unit());
             // The original draws this distance from the runtime library's
             // own random stream, not the engine generator; its generator and
             // seed are outside the evidence, so a stand-in stream serves.
             let distance_cm = self.rtl_random.unit_f64() * f64::from(ONE_SHOT_DISTANCE_SPREAD_CM);
             let distance_cm = (distance_cm + f64::from(ONE_SHOT_DISTANCE_MIN_CM)) as f32;
-            let position = self.listener.anchor + Vec3::new(x, 0.0, z) * (distance_cm / CM_PER_M);
+            // The original scales the direction in centimetres and adds the
+            // anchor there; positions here are metres.
+            let offset_cm = Vec3::new(x, 0.0, z) * distance_cm;
+            let position = self.listener.anchor + offset_cm / CM_PER_M;
             let first_two = bank.set_last(self.ambience.set) < 2;
             // Every range is a unit draw scaled by double-precision constants.
             let gain = if first_two {
@@ -224,6 +224,25 @@ impl AudioEnvironment {
 /// double precision and stored as a single.
 fn scaled_draw(bank: &mut SoundBank, spread: f64, base: f64) -> f32 {
     (f64::from(bank.random_unit()) * spread + base) as f32
+}
+
+/// The horizontal direction of a mono one-shot from its two draws:
+/// `(0.5 − x, 0.5 − z)`, normalised in single precision. When the squared
+/// length is at or below the `f32` epsilon — or unordered, which the
+/// original's compare treats the same — it sets only the first component to
+/// 1 and keeps the second draw's value.
+fn one_shot_direction(x_draw: f32, z_draw: f32) -> (f32, f32) {
+    let mut x = 0.5 - x_draw;
+    let mut z = 0.5 - z_draw;
+    let length2 = z * z + x * x;
+    if length2 > SILENCE {
+        let scale = 1.0 / length2.sqrt();
+        x *= scale;
+        z *= scale;
+    } else {
+        x = 1.0;
+    }
+    (x, z)
 }
 
 /// Sets or clears the level's ambience when the resource changes (once the
@@ -433,5 +452,39 @@ mod tests {
         let stereo = bank.insert_test_buffer(1.0, 1000, true);
         assert!(!bank.buffer_is_stereo(mono));
         assert!(bank.buffer_is_stereo(stereo));
+    }
+
+    /// The direction is the two draws taken off 0.5, normalised in single
+    /// precision. A zero vector (both draws exactly 0.5) falls back to the
+    /// original's `x = 1` and keeps z; an unordered draw does the same.
+    #[test]
+    fn a_mono_direction_is_normalised_or_falls_back_to_x() {
+        let (x, z) = one_shot_direction(0.0, 0.0);
+        let unit = 1.0f32 / 2.0f32.sqrt();
+        assert!((x - unit).abs() < 1e-7 && (z - unit).abs() < 1e-7);
+        assert_eq!(one_shot_direction(0.5, 0.5), (1.0, 0.0));
+        let (x, z) = one_shot_direction(f32::NAN, 0.25);
+        assert_eq!(x, 1.0);
+        assert_eq!(z, 0.25);
+        // The squared length and its sum keep the original's order.
+        let (x, z) = one_shot_direction(0.25, 0.75);
+        assert!((x * x + z * z - 1.0).abs() < 1e-6);
+        assert_eq!(short_string("abcdefghijklmnop".into()), "abcdefghijklmno");
+        assert_eq!(short_string("éééééééé".into()), "ééééééé");
+    }
+
+    /// A quiet or unordered remembered volume is left alone by the music
+    /// setting, as the original's unordered-safe compare does.
+    #[test]
+    fn a_quiet_or_unordered_volume_ignores_the_music_setting() {
+        let mut env = AudioEnvironment::new();
+        let mut bank = SoundBank::default();
+        let buffer = bank.insert_test_buffer(1.0, 1000, false);
+        env.music_play_now(&mut bank, "quiet", f32::NAN, |_, _| buffer);
+        env.update(&mut bank, &crate::environment::UpdateInput::default());
+        let a = env.music.a.expect("a voice");
+        env.music_set_enabled(&mut bank, false, |_, _| 0);
+        assert_ne!(env.voice(a).unwrap().flags, 0);
+        assert!(!env.music.enabled);
     }
 }

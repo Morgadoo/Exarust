@@ -448,7 +448,8 @@ impl AudioEnvironment {
             return;
         }
         self.music.enabled = enabled;
-        if MIN_VOLUME >= self.music.a_volume {
+        // The original's compare skips an unordered volume too.
+        if self.music.a_volume <= MIN_VOLUME || self.music.a_volume.is_nan() {
             return;
         }
         if enabled {
