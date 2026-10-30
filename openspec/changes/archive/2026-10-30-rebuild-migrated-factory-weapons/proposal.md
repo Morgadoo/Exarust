@@ -13,7 +13,7 @@ Phase 3 (world and objects: the object database) in docs/PLAN.md.
 
 ## Evidence
 
-The object database pack's assembly: the look roll's generator steps, tables (families 0, 4, 8, 14, 19, 25, 28; trim pairs; count 7) and the 6.0 constant; the accessors' `+0x18` and signed `>= 1` test; the migration's `@` compare followed by the factory call and the unconditional weapon condition refresh; the factory's first-seed fix and choice writes; the 63-bit random draw modulo `0xFFFFFFFF`.
+The object database pack's assembly: the look roll's generator steps, tables (families 0, 4, 8, 14, 19, 25, 28; trim pairs; count 7) and the 6.0 constant; the accessors' children-count read and signed `>= 1` test; the migration's `@` compare followed by the factory call and the unconditional weapon condition refresh; the factory's first-seed fix and choice writes; the 63-bit random draw modulo `0xFFFFFFFF`.
 
 ## Out of scope
 
