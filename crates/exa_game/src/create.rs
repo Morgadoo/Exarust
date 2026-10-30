@@ -3918,6 +3918,24 @@ pub fn apply_loaded_preset(profession: i32) -> PresetLoad {
     }
 }
 
+/// The record a preset saved under `keys` holds, as the creator's preset
+/// load reads it from the settings store: the chunk at the two keys is a
+/// whole character record; once it parses, the race byte is cleared from
+/// the profession word ([`apply_loaded_preset`]) and the known powers and
+/// the power slots are emptied. `None` when the store has no such chunk or
+/// it does not parse (the creator then makes a new record or takes the
+/// template).
+pub fn load_preset(
+    store: &exa_formats::settings_store::SettingsStore,
+    keys: PresetKeys,
+) -> Option<CharacterRecord> {
+    let bytes = store.get(&[keys.root, keys.character])?;
+    let mut record = CharacterRecord::parse(0, bytes).ok()?;
+    record.race = 0;
+    record.powers = None;
+    Some(record)
+}
+
 /// What adopting a background's template did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TemplateUse {

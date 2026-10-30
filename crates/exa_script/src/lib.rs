@@ -33,6 +33,7 @@ impl Plugin for ScriptPlugin {
         app.init_resource::<Conversations>()
             .add_message::<Narrate>()
             .add_message::<Talk>()
+            .add_message::<PadTalk>()
             .add_message::<NarrateText>()
             .add_message::<PickReply>()
             .add_message::<LeaveDialogue>()
@@ -153,6 +154,11 @@ pub struct NarrateText {
 #[derive(Message, Debug, Clone, Copy)]
 pub struct Talk(pub u32);
 
+/// The player talks to a character with the gamepad's Talk (opens the reply
+/// panel with its first entry highlighted, [`dialogue::Panel::by_pad`]).
+#[derive(Message, Debug, Clone, Copy)]
+pub struct PadTalk(pub u32);
+
 /// The player picks entry n of the reply panel.
 #[derive(Message, Debug, Clone, Copy)]
 pub struct PickReply(pub usize);
@@ -191,6 +197,7 @@ fn run_conversations(
     mut narrate: MessageReader<Narrate>,
     mut narrate_text: MessageReader<NarrateText>,
     mut talk: MessageReader<Talk>,
+    mut pad_talk: MessageReader<PadTalk>,
     mut pick: MessageReader<PickReply>,
     mut leave: MessageReader<LeaveDialogue>,
     mut effects: MessageWriter<ScriptEffect>,
@@ -206,6 +213,9 @@ fn run_conversations(
         }
         for t in talk.read() {
             engine.talk(scene, t.0);
+        }
+        for t in pad_talk.read() {
+            engine.talk_with(scene, t.0, true);
         }
         for p in pick.read() {
             engine.pick(scene, p.0);

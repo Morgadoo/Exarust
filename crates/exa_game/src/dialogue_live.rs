@@ -21,7 +21,20 @@
 //! left click released over a band picks it ([`exa_script::PickReply`]),
 //! as the panel's input answers the click. The pointer over the shown panel
 //! counts as over the GUI ([`crate::panel_live::PointerOverGui`]), so the
-//! world's own press and click paths leave it.
+//! world's own press and click paths leave it. The engine opening the panel
+//! shows the form with the base form's 256-tick fade on the GUI (real-time)
+//! clock, and closing it starts the hide fade; the draw runs at the fade's
+//! alpha, handed to the line skin's palette as both scales.
+//!
+//! **The gamepad.** The pad's command word reaches the dialogue as the
+//! player controls' pad routine reads it: with the reply panel open and the
+//! power bar closed, Select (`0x10000`) picks the highlighted entry, else a
+//! step down the list (`0x80`, the move stick's vertical axis under −0.1)
+//! moves the highlight forward, else a step up (`0x40`) moves it back. The
+//! pad's Talk (`0x20000`) closes an open panel, as the keyboard's does, and
+//! otherwise talks to the character the target query finds in the pad mode
+//! ([`exa_script::PadTalk`]), whose panel highlights its first entry. The
+//! reader turns the stick into those steps while the panel is open.
 //!
 //! **The paint.** After the open screens, every showing bubble is measured
 //! and placed (a character's over its body position lifted 120 cm, the
@@ -159,8 +172,47 @@ pub struct ReplyPanel {
     pub window: DialogueWindow,
     /// The pointer where the panel last saw it (window pixels).
     pointer: Option<IVec2>,
-    /// The engine's highlight it last saw.
-    highlight: usize,
+}
+
+/// What the pad's frame asks of the open reply panel, in the order the
+/// player controls' pad routine tests the bits: Select picks, else a step
+/// down moves the highlight forward, else a step up moves it back. Nothing
+/// while the power bar is open (its own steps take the stick).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PadPanel {
+    Pick,
+    Forward,
+    Back,
+}
+
+/// The panel command of the pad's newly pressed `bits`, with the power bar
+/// open or not.
+pub fn pad_panel(bits: u32, power_bar: bool) -> Option<PadPanel> {
+    use crate::gamepad::command;
+    if power_bar {
+        return None;
+    }
+    if bits & command::USE != 0 {
+        Some(PadPanel::Pick)
+    } else if bits & command::STEP_DOWN != 0 {
+        Some(PadPanel::Forward)
+    } else if bits & command::STEP_UP != 0 {
+        Some(PadPanel::Back)
+    } else {
+        None
+    }
+}
+
+/// The pad's newly pressed command bits this frame, when a gamepad drives
+/// the player.
+fn pad_pressed(
+    pad: Option<&crate::gamepad::PlayPad>,
+    status: Option<&crate::gamepad::PadStatus>,
+) -> u32 {
+    match (pad, status) {
+        (Some(pad), Some(status)) if status.active() => pad.frame().pressed,
+        _ => 0,
+    }
 }
 
 /// The window's physical size, the pointer in physical pixels and the
@@ -210,12 +262,15 @@ fn focus_talk_target(
     >,
     mut focus: ResMut<DialogueFocus>,
     ids: Query<&CharacterId>,
+    pad: Option<Res<crate::gamepad::PlayPad>>,
+    pad_status: Option<Res<crate::gamepad::PadStatus>>,
 ) {
     let talk = bindings.key(Action::Talk) & 0xFFFF;
     let pressed = keys
         .get_just_pressed()
         .filter_map(|&k| virtual_key(k))
-        .any(|key| key & 0xFF == talk);
+        .any(|key| key & 0xFF == talk)
+        || pad_pressed(pad.as_deref(), pad_status.as_deref()) & crate::gamepad::command::TALK != 0;
     if !pressed
         || conversations
             .as_deref()
@@ -246,13 +301,7 @@ fn focus_talk_target(
         camera: None,
     };
     let lens = bubble_camera(eye, camera.clip_from_view());
-    let player_id = conversations.as_deref().and_then(|c| c.player);
     let candidates = nearby.iter().filter_map(|&e| {
-        // A character sharing the player's id cannot be talked to: the
-        // engine would take it for the player.
-        if ids.get(e).ok().map(|id| id.0) == player_id {
-            return None;
-        }
         let (_, gt, body, condition) = characters.get(e).ok()?;
         let chest = exa_combat::stance::chest_point(gt, body) * 100.0;
         Some((
@@ -272,16 +321,45 @@ fn focus_talk_target(
     );
 }
 
+/// The pad's Talk: an open panel closes (the keyboard Talk's leave), and
+/// otherwise the focused character is talked to in the pad mode.
+fn pad_talk(
+    pad: Option<Res<crate::gamepad::PlayPad>>,
+    pad_status: Option<Res<crate::gamepad::PadStatus>>,
+    conversations: Option<Res<Conversations>>,
+    focus: Res<DialogueFocus>,
+    mut talk: MessageWriter<exa_script::PadTalk>,
+    mut leave: MessageWriter<exa_script::LeaveDialogue>,
+) {
+    if pad_pressed(pad.as_deref(), pad_status.as_deref()) & crate::gamepad::command::TALK == 0 {
+        return;
+    }
+    if conversations
+        .as_deref()
+        .is_some_and(|c| c.engine.panel.open)
+    {
+        info!("dialogue: pad Talk leaves");
+        leave.write(exa_script::LeaveDialogue);
+    } else if let Some(who) = focus.0 {
+        info!("dialogue: pad Talk to character {who:#x}");
+        talk.write(exa_script::PadTalk(who));
+    }
+}
+
 /// Mirrors the engine's panel into the reply panel, follows the pointer
 /// over it and turns a click on a band into a pick.
 #[allow(clippy::too_many_arguments)]
 fn panel_input(
     time: Res<Time<Virtual>>,
+    real: Res<Time<Real>>,
     conversations: Option<Res<Conversations>>,
     textures: Option<Res<GuiTextures>>,
     scripted: Option<Res<ScriptedPointer>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     buttons: Res<ButtonInput<MouseButton>>,
+    pad: Option<Res<crate::gamepad::PlayPad>>,
+    pad_status: Option<Res<crate::gamepad::PadStatus>>,
+    casters: Query<&crate::thaum::cast::PowerCaster, With<PlayerBody>>,
     mut panel: ResMut<ReplyPanel>,
     mut over: ResMut<crate::panel_live::PointerOverGui>,
     mut pick: MessageWriter<exa_script::PickReply>,
@@ -297,39 +375,65 @@ fn panel_input(
         return;
     };
     let now = time.elapsed().as_millis() as u32;
+    // The base form's fades run on the GUI clock, the system's milliseconds.
+    let gui_now = real.elapsed().as_millis() as u32;
     let (size, pointer, unit) = window_frame(window, scripted.as_deref());
     let empty = GuiTextures::default();
     let (font, _) = main_font(unit, textures.as_deref().unwrap_or(&empty));
     let ReplyPanel {
         window: reply,
         pointer: last,
-        highlight,
     } = &mut *panel;
     if engine_panel.open {
         reply.create(size.x, size.y);
     }
     let was_open = reply.open;
     let changed = reply.sync(engine_panel, &font, unit, size.y, now);
+    if reply.open && !was_open {
+        reply.show(gui_now);
+    } else if !reply.open && was_open {
+        reply.hide(gui_now);
+    }
     if changed || was_open != reply.open {
         info!(
-            "dialogue panel: {} with {} entries at {now} ms",
+            "dialogue panel: {} with {} entries at {now} ms (GUI clock {gui_now}, pad mode {}, highlight {})",
             if reply.open { "shown" } else { "hidden" },
-            reply.view.entries.len()
+            reply.view.entries.len(),
+            engine_panel.by_pad,
+            reply.view.hover
         );
     }
     if !reply.open {
         *last = None;
         return;
     }
-    if engine_panel.highlight != *highlight {
-        *highlight = engine_panel.highlight;
-        reply.view.hover = engine_panel.highlight as i32;
+    let power_bar = casters.iter().any(|c| c.bar_open);
+    match pad_panel(
+        pad_pressed(pad.as_deref(), pad_status.as_deref()),
+        power_bar,
+    ) {
+        Some(PadPanel::Pick) => {
+            if let Some(n) = reply.highlighted() {
+                info!("dialogue: pad Select picks reply {}", n + 1);
+                pick.write(exa_script::PickReply(n));
+            }
+        }
+        Some(step) => {
+            reply.step_highlight(step == PadPanel::Forward);
+            info!(
+                "dialogue: pad step {:?} highlights {}",
+                step, reply.view.hover
+            );
+        }
+        None => {}
     }
     let Some(at) = pointer else {
         return;
     };
-    // The hover follows the pointer's moves (and a new list under it).
-    if *last != Some(at) || changed {
+    // The hover follows the pointer's moves, and a new list under a mouse
+    // panel's pointer; a pad panel's new list keeps the first entry its
+    // layout highlighted until the pointer moves.
+    if *last != Some(at) || (changed && !engine_panel.by_pad) {
         *last = Some(at);
         reply.point(at.x, at.y, unit);
     }
@@ -348,16 +452,12 @@ fn panel_input(
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn paint_dialogue(
     time: Res<Time<Virtual>>,
+    real: Res<Time<Real>>,
     conversations: Option<ResMut<Conversations>>,
     textures: Option<Res<GuiTextures>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform), With<ChaseCamera>>,
-    characters: Query<(
-        &CharacterId,
-        &GlobalTransform,
-        Option<&Ragdoll>,
-        Has<PlayerBody>,
-    )>,
+    characters: Query<(&CharacterId, &GlobalTransform, Option<&Ragdoll>)>,
     menu: Option<Res<crate::menu_screen::MenuScreen>>,
     mut panel: ResMut<ReplyPanel>,
     mut frames: ResMut<GuiFrames>,
@@ -365,7 +465,7 @@ fn paint_dialogue(
     let Some(mut conversations) = conversations else {
         return;
     };
-    if conversations.engine.bubbles.list.is_empty() && !panel.window.open {
+    if conversations.engine.bubbles.list.is_empty() && !panel.window.visible {
         return;
     }
     if menu.is_some_and(|menu| menu.open) {
@@ -375,6 +475,7 @@ fn paint_dialogue(
         return;
     };
     let now = time.elapsed().as_millis() as u32;
+    let gui_now = real.elapsed().as_millis() as u32;
     let (size, _, unit) = window_frame(window, None);
     let empty = GuiTextures::default();
     let textures = textures.as_deref().unwrap_or(&empty);
@@ -399,13 +500,7 @@ fn paint_dialogue(
             let Speaker::Character(id) = speaker else {
                 return None;
             };
-            // The player body wins over a level character that carries
-            // the same id (Exarust's player id is a guess that a level's
-            // first record shares).
-            let (_, gt, body, _) = characters
-                .iter()
-                .filter(|(c, ..)| c.0 == id)
-                .max_by_key(|(.., player)| *player)?;
+            let (_, gt, body) = characters.iter().find(|(c, ..)| c.0 == id)?;
             let at = body
                 .and_then(|b| b.drive.as_ref())
                 .and_then(|d| d.anchor())
@@ -426,11 +521,17 @@ fn paint_dialogue(
             }
         }
     }
-    if panel.window.open {
-        let palette = ChoicePalette::of_skin(&crate::gui_paint::palette());
-        // The interface alpha is 1 in play (no fade of the whole interface
-        // is modelled).
-        let paint = panel.window.paint(&font, &palette, unit, size.y, 1.0, now);
+    // The form's fade: while one runs its alpha is the skin's two scales
+    // (the line skin's palette alphas) and the box's alpha; after the draw
+    // the scales are back at 1.
+    if let Some(alpha) = panel.window.fade_alpha(gui_now) {
+        let palette = ChoicePalette::of_skin(&exa_ui::line_skin::shown_palette(alpha));
+        if alpha < 1.0 {
+            debug!("dialogue panel: fade alpha {alpha} at GUI clock {gui_now}");
+        }
+        let paint = panel
+            .window
+            .paint(&font, &palette, unit, size.y, alpha, now);
         frame.push(GuiLayer::new(paint.box_batch(unit), LayerTexture::None));
         for (quads, ink) in [
             (&paint.normal, paint.normal_ink),
@@ -458,12 +559,15 @@ impl Plugin for DialogueLivePlugin {
             .init_resource::<crate::panel_live::PointerOverGui>()
             .init_resource::<GuiFrames>()
             .add_message::<exa_script::PickReply>()
+            .add_message::<exa_script::PadTalk>()
+            .add_message::<exa_script::LeaveDialogue>()
             .add_systems(
                 Update,
                 (
                     focus_talk_target
                         .before(HotkeySet)
                         .after(crate::player::cursor_ground),
+                    pad_talk.after(focus_talk_target),
                     panel_input
                         .after(crate::panel_live::track_pointer)
                         .before(crate::hand::HandSystems),
@@ -505,6 +609,22 @@ mod tests {
         assert_eq!(talk_target::<u32>(cursor, []), None);
         // The stored float is 3.4e38.
         assert_eq!(NO_TARGET, 3.4e38);
+    }
+
+    /// The pad routine's order: Select first, then a step down (forward),
+    /// then a step up; nothing while the power bar is open.
+    #[test]
+    fn the_pad_bits_drive_the_panel_in_the_routines_order() {
+        use crate::gamepad::command::{STEP_DOWN, STEP_UP, TALK, USE};
+        assert_eq!(pad_panel(USE | STEP_DOWN, false), Some(PadPanel::Pick));
+        assert_eq!(
+            pad_panel(STEP_DOWN | STEP_UP, false),
+            Some(PadPanel::Forward)
+        );
+        assert_eq!(pad_panel(STEP_UP, false), Some(PadPanel::Back));
+        assert_eq!(pad_panel(TALK, false), None);
+        assert_eq!(pad_panel(USE, true), None);
+        assert_eq!(pad_panel(0, false), None);
     }
 
     /// Without the level's rooms, the nearby list is every seen character

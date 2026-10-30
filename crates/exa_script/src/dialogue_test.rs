@@ -570,6 +570,39 @@ fn the_player_picks_a_topic() {
     assert_eq!(e.bubbles.list[1].text, b"I am Derrin.");
 }
 
+/// The gamepad's Talk opens the panel in the pad mode, the keyboard's in
+/// the mouse mode; a talk that finds nothing leaves the mode alone.
+#[test]
+fn the_pad_talk_keeps_its_mode() {
+    let ask = node(
+        0xF,
+        "Ask",
+        &[],
+        vec![branch(0, &[(2, "Who are you?")], "", "", vec![])],
+    );
+    let db = RoleDb {
+        roles: vec![
+            role(200, 0, 0, vec![entry(0x2, 1, Some(graph(1, vec![ask])))]),
+            role(1, 0, 0, vec![]),
+        ],
+    };
+    let mut cast = Cast {
+        characters: vec![person(GUARD, &[200], &db), person(PLAYER, &[1], &db)],
+    };
+    let mut e = Engine::default();
+    let mut s = scene(&db, None, &mut cast, 0);
+    e.talk_with(&mut s, GUARD, true);
+    assert!(e.panel.open);
+    assert!(e.panel.by_pad);
+    e.talk(&mut s, GUARD);
+    assert!(!e.panel.by_pad);
+    e.talk_with(&mut s, GUARD, true);
+    // Nobody to talk to: the panel closes and the mode stays.
+    e.talk_with(&mut s, 77, false);
+    assert!(!e.panel.open);
+    assert!(e.panel.by_pad);
+}
+
 /// The narrator's Corlian node: the text, three replies offered, a pick
 /// raises its game event.
 #[test]

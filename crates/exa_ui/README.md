@@ -773,7 +773,10 @@ while the engine's panel is open (an emptied list leaves the box), holds
 the engine's pick for a second, hovers the bands under the pointer, answers
 a click with the hovered entry and builds a frame's draw (the eased height,
 the rounded box of radius 2 at alpha 160, "N." and the wrapped text in the
-label or highlight ink).
+label or highlight ink). The form keeps the base form's show and hide fade
+(`show`, `hide`, `fade_alpha`: 256 ticks, its rows kept through the hide)
+and the gamepad's highlight (`step_highlight`, `highlighted`, the first
+entry highlighted on each layout of a pad-opened panel).
 `picker_fields` has the creator's marker (its point and its free or
 bound colour), keys and physique cross, the physique picker's
 constructor, the point's body-shape weights and the press, release and

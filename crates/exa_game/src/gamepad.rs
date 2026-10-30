@@ -1096,8 +1096,9 @@ impl FocusStack {
 /// bar is open its horizontal axis steps left and right, and while a
 /// dialogue is open its vertical axis steps up and down (the power bar is
 /// checked first); with neither the stick is analog. Both are owned by the
-/// game's power bar and dialogue, outside this component; Exarust has
-/// neither yet and leaves both off.
+/// game's power bar and dialogue, outside this component: the reader takes
+/// them from the player's power bar and the conversation engine's reply
+/// panel each frame.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StepModes {
     /// The power bar is open.
@@ -1750,12 +1751,37 @@ fn read_pad(
     cameras: Query<&GlobalTransform, With<crate::player::ChaseCamera>>,
     bindings: Res<crate::bindings::Bindings>,
     focus: Res<FocusStack>,
+    conversations: Option<Res<exa_script::Conversations>>,
+    casters: Query<&crate::thaum::cast::PowerCaster, With<crate::player::PlayerBody>>,
     mut menu: ResMut<MenuPad>,
     mut play: ResMut<PlayPad>,
     mut status: ResMut<PadStatus>,
+    scripted: Option<ResMut<ScriptedPad>>,
+    loading: Option<Res<exa_ui::LoadingStatus>>,
 ) {
     let now = time.elapsed().as_millis() as i64;
-    let Some(pad) = pads.iter().next() else {
+    let scripted_sample = scripted
+        .filter(|_| loading.is_none())
+        .map(|mut scripted| scripted.next_sample());
+    let sample = match (pads.iter().next(), scripted_sample) {
+        (Some(pad), _) => {
+            status.connected = true;
+            if !bindings.controller && !status.auto && pad_activity(pad) {
+                status.auto = true;
+                info!("gamepad: controller mode on");
+            }
+            Some(sample_pad(pad))
+        }
+        (None, Some(sample)) => {
+            // The scripted pad stands in for a connected one, in controller
+            // mode.
+            status.connected = true;
+            status.auto = true;
+            Some(sample)
+        }
+        (None, None) => None,
+    };
+    let Some(sample) = sample else {
         status.connected = false;
         menu.frame(
             now,
@@ -1768,12 +1794,6 @@ fn read_pad(
         );
         return;
     };
-    status.connected = true;
-    if !bindings.controller && !status.auto && pad_activity(pad) {
-        status.auto = true;
-        info!("gamepad: controller mode on");
-    }
-    let sample = sample_pad(pad);
     let variant = if players.iter().next().is_some_and(|body| body.combat) {
         Variant::Combat
     } else {
@@ -1799,11 +1819,85 @@ fn read_pad(
     });
     let ctx = PlayContext {
         variant,
+        modes: StepModes {
+            power_bar: casters.iter().any(|c| c.bar_open),
+            dialogue: conversations
+                .as_deref()
+                .is_some_and(|c| c.engine.panel.open),
+        },
         camera_right: right,
         camera_forward: forward,
         ..PlayContext::default()
     };
     play.update(now, &sample, ctx);
+}
+
+/// `--pad-press`: a scripted gamepad for checks without one (a debug aid,
+/// not the original's). Each entry holds an action over its frames, counted
+/// from the first frame after the load: `talk`, `select` and the other
+/// digital actions by their Exarust names, `up` and `down` the move stick
+/// pushed fully up or down. While it is set it stands in for a connected
+/// pad in controller mode.
+#[derive(Resource, Debug, Clone, Default, PartialEq)]
+pub struct ScriptedPad {
+    /// The action, its stick value (for the move stick) and its frames.
+    pub presses: Vec<(Id, Vec2, std::ops::Range<u32>)>,
+    frame: u32,
+}
+
+impl ScriptedPad {
+    /// Reads `name@frame` or `name@from-to` entries, comma separated.
+    pub fn parse(list: &str) -> Option<Self> {
+        let presses = list
+            .split(',')
+            .filter(|entry| !entry.trim().is_empty())
+            .map(|entry| {
+                let (name, frames) = entry.trim().rsplit_once('@')?;
+                let (id, value) = match name {
+                    "up" => (Id::Move, Vec2::Y),
+                    "down" => (Id::Move, Vec2::NEG_Y),
+                    "talk" => (Id::Talk, Vec2::ZERO),
+                    "select" => (Id::Select, Vec2::ZERO),
+                    "powers" => (Id::Powers, Vec2::ZERO),
+                    "use-power" => (Id::UsePower, Vec2::ZERO),
+                    "combat" => (Id::Combat, Vec2::ZERO),
+                    "pause" => (Id::PauseMenu, Vec2::ZERO),
+                    _ => return None,
+                };
+                let (from, to) = match frames.split_once('-') {
+                    Some((from, to)) => (from.parse().ok()?, to.parse().ok()?),
+                    None => {
+                        let at: u32 = frames.parse().ok()?;
+                        (at, at.checked_add(1)?)
+                    }
+                };
+                (to > from).then_some((id, value, from..to))
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(Self { presses, frame: 0 })
+    }
+
+    /// The next frame's sample: every entry whose frames hold it.
+    pub fn next_sample(&mut self) -> PadSample {
+        self.frame += 1;
+        let mut sample = PadSample {
+            connected: true,
+            ..PadSample::default()
+        };
+        for (id, value, frames) in &self.presses {
+            if !frames.contains(&self.frame) {
+                continue;
+            }
+            if frames.start == self.frame {
+                info!("scripted pad: {id:?} at frame {}", self.frame);
+            }
+            match id.kind() {
+                Kind::Digital => sample.set_digital(*id, true),
+                Kind::Analog => sample.set_analog(*id, *value),
+            }
+        }
+        sample
+    }
 }
 
 /// The first connected gamepad's action data, read through the default

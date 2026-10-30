@@ -1293,10 +1293,17 @@ fn open_from_menu(
     }
 }
 
-/// The record a creator opens with: the entry's plan, a background's
-/// template where the story names one, full health, the mode's gear filter
-/// and the underwear.
-pub fn entry_record(entry: CreatorEntry, template: Option<CharacterRecord>) -> CharacterRecord {
+/// The record a creator opens with: the entry's plan, the background's
+/// saved preset ([`create::load_preset`]) or, without one, a new record for
+/// the unknown background and the background's template for a named one;
+/// full health, the mode's gear filter and the underwear. The unknown
+/// background clears a preset's hands and lists; a named background moves
+/// its template's gear into the preset.
+pub fn entry_record(
+    entry: CreatorEntry,
+    template: Option<CharacterRecord>,
+    preset: Option<CharacterRecord>,
+) -> CharacterRecord {
     let plan = create::plan_creation_entry(
         entry.screen_mode,
         entry.game_mode,
@@ -1309,11 +1316,29 @@ pub fn entry_record(entry: CreatorEntry, template: Option<CharacterRecord>) -> C
     let mut record = CharacterRecord::reset();
     if let Ok(plan) = plan {
         if let create::EntrySource::Background(background) = plan.source
-            && let Some(bg) = create::plan_background(background, false)
-            && bg.source == create::PresetSource::Template
-            && let Some(template) = template
+            && let Some(bg) = create::plan_background(background, preset.is_some())
         {
-            record = template;
+            match (bg.source, preset, template) {
+                (create::PresetSource::Saved, Some(preset), template) => {
+                    record = preset;
+                    match (bg.gear, template) {
+                        (create::BackgroundGear::Reset, _) => {
+                            record.hands = [exa_formats::characters::ItemRef::NONE;
+                                exa_formats::characters::HANDS];
+                            record.worn.clear();
+                            record.inventory.clear();
+                        }
+                        (create::BackgroundGear::Template, Some(template)) => {
+                            record.hands = template.hands;
+                            record.worn = template.worn;
+                            record.inventory = template.inventory;
+                        }
+                        (create::BackgroundGear::Template, None) => {}
+                    }
+                }
+                (create::PresetSource::Template, _, Some(template)) => record = template,
+                _ => {}
+            }
         }
         if plan.full_health {
             record.pools = Pools::FULL;
@@ -1355,6 +1380,30 @@ pub fn entry_record(entry: CreatorEntry, template: Option<CharacterRecord>) -> C
         ));
     }
     record
+}
+
+/// The settings store in the user folder `folder` (`Exanima.set`), when
+/// the file reads.
+pub fn settings_store(
+    folder: &std::path::Path,
+) -> Option<exa_formats::settings_store::SettingsStore> {
+    let bytes = std::fs::read(folder.join(crate::slots::STORE_FILE)).ok()?;
+    Some(exa_formats::settings_store::SettingsStore::load(bytes).store)
+}
+
+/// The record a story character who skipped the creator starts from: the
+/// creator's opening record for the unknown background, which is the
+/// background's saved preset when the settings store holds one
+/// ([`entry_record`]); the original's BEGIN commits that record unchanged
+/// when nothing is edited. Without a preset the creator would open a new,
+/// nameless record, which the original refuses to begin ("Please name your
+/// character"), so there is none.
+pub fn story_opening_record(
+    store: &exa_formats::settings_store::SettingsStore,
+) -> Option<CharacterRecord> {
+    let keys = create::background_preset(0)?.keys;
+    let preset = create::load_preset(store, keys)?;
+    Some(entry_record(CreatorEntry::story(0), None, Some(preset)))
 }
 
 /// Loads a GUI texture the screens need once.
@@ -1410,6 +1459,7 @@ fn open_screens(
     game: Option<Res<exa_assets::Game>>,
     mut textures: Option<ResMut<GuiTextures>>,
     windows: Query<&Window, With<PrimaryWindow>>,
+    folder: Option<Res<crate::save_live::SaveFolder>>,
 ) {
     let picked = pickers.read().last().copied();
     let entry = creators.read().last().copied();
@@ -1481,7 +1531,22 @@ fn open_screens(
                 .and_then(|g| crate::prelude::ActorCache::new().template(g, name, false)),
             _ => None,
         };
-        let record = entry_record(entry, template);
+        // A story background opens on its saved preset when the settings
+        // store holds one.
+        let preset = (entry.screen_mode == 4)
+            .then(|| folder.as_deref().and_then(|f| settings_store(&f.0)))
+            .flatten()
+            .and_then(|store| {
+                let keys = create::background_preset(entry.background)?.keys;
+                create::load_preset(&store, keys)
+            });
+        if let Some(preset) = &preset {
+            info!(
+                "creator: background {} opens on its saved preset {:?}",
+                entry.background, preset.name
+            );
+        }
+        let record = entry_record(entry, template, preset);
         info!(
             "creator: opens for screen mode {}, game mode {:#x}, background {} at {size:?}, unit {unit}",
             entry.screen_mode, entry.game_mode, entry.background
@@ -2282,7 +2347,7 @@ mod tests {
     fn creator() -> Creator {
         Creator::open(
             CreatorEntry::story(0),
-            entry_record(CreatorEntry::story(0), None),
+            entry_record(CreatorEntry::story(0), None, None),
             (1024, 768),
             4,
             vec!["hair a".into(), "hair b".into()],
@@ -2451,12 +2516,57 @@ mod tests {
             ..CharacterRecord::reset()
         };
         // The unknown background takes a new record, not the template.
-        let unknown = entry_record(CreatorEntry::story(0), Some(template.clone()));
+        let unknown = entry_record(CreatorEntry::story(0), Some(template.clone()), None);
         assert_eq!(unknown.pools, Pools::FULL);
         assert!(unknown.worn.iter().all(|w| w.index() == 8));
         // A named background without a preset takes its template.
-        let knight = entry_record(CreatorEntry::story(1), Some(template));
+        let knight = entry_record(CreatorEntry::story(1), Some(template.clone()), None);
         assert_eq!(knight.worn.len(), 2);
+        // A saved preset: the unknown background keeps its body and name
+        // and drops its gear to the braies; a knight's takes the template's
+        // gear.
+        let preset = CharacterRecord {
+            name: "Tester".into(),
+            skin: [7, 9],
+            hands: [exa_formats::characters::ItemRef::new(0x31, 0); exa_formats::characters::HANDS],
+            worn: vec![exa_formats::characters::ItemRef::new(0x50, 0)],
+            ..CharacterRecord::reset()
+        };
+        let unknown = entry_record(CreatorEntry::story(0), None, Some(preset.clone()));
+        assert_eq!((unknown.name.as_str(), unknown.skin), ("Tester", [7, 9]));
+        assert!(unknown.hands.iter().all(|h| h.id == 0));
+        assert_eq!(unknown.worn.len(), 1);
+        assert_eq!(unknown.worn[0].index(), 8);
+        assert_eq!(unknown.pools, Pools::FULL);
+        let knight = entry_record(CreatorEntry::story(1), Some(template), Some(preset));
+        assert_eq!(knight.name, "Tester");
+        assert_eq!(knight.worn.len(), 2);
+        assert!(knight.hands.iter().all(|h| h.id == 0));
+    }
+
+    /// The uncreated story player is the unknown background's opening
+    /// record when the settings store holds its preset, and none otherwise.
+    #[test]
+    fn the_uncreated_player_opens_from_the_stored_preset() {
+        let mut store = exa_formats::settings_store::SettingsStore::new();
+        assert!(story_opening_record(&store).is_none());
+        let saved = CharacterRecord {
+            name: "Tester".into(),
+            race: 3,
+            ..CharacterRecord::reset()
+        };
+        store
+            .set(&[0x6431_bc02, 0x6431_cc01], &saved.to_bytes().unwrap())
+            .unwrap();
+        let record = story_opening_record(&store).unwrap();
+        assert_eq!(record.name, "Tester");
+        assert_eq!(record.race, 0, "the preset load clears the race byte");
+        // Another background's preset is not the unknown one's.
+        let mut other = exa_formats::settings_store::SettingsStore::new();
+        other
+            .set(&[0x6431_bc03, 0x6431_cc01], &saved.to_bytes().unwrap())
+            .unwrap();
+        assert!(story_opening_record(&other).is_none());
     }
 
     #[test]

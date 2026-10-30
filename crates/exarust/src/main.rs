@@ -122,8 +122,11 @@
 //!                                     after loading, as a drag out of the window would (hold LMB to lift it)
 //!          --doll-drop ID:FLAGS@FRAME debug: put the item with its flags into the pack and drop it onto the
 //!                                     inventory's character view at that frame after loading
+//!          --pad-press name@frame,... debug: a scripted gamepad in controller mode (talk, select, up, down, powers,
+//!                                     use-power, combat, pause; `name@from-to` holds it), frames after the load
 //!          --save-dir <dir>           the folder the game saves into (a new slot only; a slot file that holds bytes is
-//!                                     never written over) and loads `--arena-slot` from
+//!                                     never written over) and loads `--arena-slot` from; its Exanima.set gives a
+//!                                     story player who skipped the creator the unknown background's saved preset
 //!          --save-at frame,...        with --save-dir: save the session to a new slot at frames after the load (the
 //!                                     story at the loaded level, or the arena company when the hub is loaded)
 //!          --arena-slot <n>           with --save-dir: the arena hub, once entered, loads ArenaNNN.rsg as the original's
@@ -389,6 +392,8 @@ pub struct Options {
     /// `--save-dir`: the folder the running game saves into and loads
     /// arena slots from.
     pub save_dir: Option<std::path::PathBuf>,
+    /// `--pad-press`: the scripted gamepad's actions.
+    pub pad_press: Option<exa_game::gamepad::ScriptedPad>,
     /// `--save-at`: frames after the load at which a save to a new slot is
     /// asked for.
     pub save_at: Vec<u32>,
@@ -962,6 +967,16 @@ fn main() -> AppExit {
                 }
             }
             "--save-dir" => options.save_dir = args.next().map(std::path::PathBuf::from),
+            "--pad-press" => {
+                let list = args.next().unwrap_or_default();
+                match exa_game::gamepad::ScriptedPad::parse(&list) {
+                    Some(pad) => options.pad_press = Some(pad),
+                    None => {
+                        eprintln!("--pad-press: cannot read {list:?} (name@frame,...)");
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
             "--save-at" => {
                 let list = args.next().unwrap_or_default();
                 match list
@@ -1360,6 +1375,9 @@ fn main() -> AppExit {
     .insert_resource(exa_game::save_live::ScriptedSaves(options.save_at.clone()));
     if options.story_session {
         app.insert_resource(exa_game::flow::StorySession);
+    }
+    if let Some(pad) = &options.pad_press {
+        app.insert_resource(pad.clone());
     }
     if let Some(dir) = &options.save_dir {
         app.insert_resource(exa_game::save_live::SaveFolder(dir.clone()));
