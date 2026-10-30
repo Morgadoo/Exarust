@@ -243,6 +243,12 @@ Done (change `blit-terrain-set-copies`; terrain6 lane, DeepSeek, stalled after t
 
 Done (change `draw-the-hair-program`; gpuprog lane, Claude): hair now draws with the original's own hair program (anisotropic strand highlights, wrapped diffuse and rim, strand alpha) instead of the PBR program, and a material without MatSpc draws no specular. FLX_GPUPrograms 75% → 78%.
 
+Round 38 shadowdirect2: the original's whole-scene sun map for sunlit levels without terrain; review removed an invented fitted minimum and fixed the caster walk and the NaN max.
+
+Round 38 voxels3: floor sets that ship without GI points now get them at load; review fixed the triangle tree skipping right subtrees and the wiring that never ran.
+
+Done (change `wire-gi-shapes-and-dynamic-occupancy`; vxgi6 lane, DeepSeek with REA, reviewed): the voxel GI's shape bodies are ported, moving GI meshes update the built blocks' occupancy with a sub-upload gated on builds as the original does, and the options' shading quality reaches the GI; the review fixed an undrained patch list, ghost occupancy, the cuboid frame and two float orders. TVXGIManager 80% → 84%.
+
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
 Done (change `add-apparel-painting`): object database items and the
@@ -1173,6 +1179,12 @@ Done (navigation3 lane, DeepSeek with REA, reviewed): the navigation camera's ed
 
 Done (sceneenv3 lane, DeepSeek with REA, reviewed): the scene environment now ticks live (rain, lightning, fog, ambient and sun republished); the review fixed four lane errors against the assembly. A dark outdoor shot was a drawn night (outdoor levels draw their day per load; compare with EXA_SCENE_SEED), not a regression. TSceneEnvironment 65% → 82%, RFE_GridEnvs 61% → 68%.
 
+Round 38 chardata3: the character data unit's record copies, entry walks, item import and armour/equip weights; review fixed the entry walk, added the import walk and migrate-first, and the short weapon section rank.
+
+Round 38 tetra8: body run-time links, tick take, disabled state and the two-step transform; review reverted a shared rest-point array the original does not have.
+
+Round 38 undead: dead bodies rise live through the AI manager's rise rule; the revive keeps race and stats and undoes go-limp (clips and controller back). Flag --undead-opponent shows it.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
@@ -1368,6 +1380,8 @@ Done (particles3 lane, DeepSeek with REA, reviewed): the particle emitters run t
 Done (change `wire-the-skin-parent-frame`; skinning3 lane, DeepSeek with REA, reviewed): the skin build passes group centres from parent to child parts as the original does, and apparel paint uses the original's double-precision condition and mask names. RF_Skinning 82% → 85%, FLX_Character_Textures 77% → 79%.
 
 Done (change `hold-bodies-and-arm-strikes`; thaumforce lane, Claude): kinesis and throw now hold their bodies in the force's own environment under a shell over the body's meshes, and Strikes puts an aura on each held weapon with the original's strikes shader; GPU runs show both. The posture switch now leaves a power's looping clip alone, as the original does, so a kinesis no longer ends at once. SG_Thaum_Force about 78% → 80%.
+
+Round 38 audioenv3: the full voice pool's stand-in voice, story-level ambience and the outdoor arena weather ambience rule.
 
 ### Phase 6 — AI (started)
 
@@ -1983,6 +1997,14 @@ Done (matchboard3 lane, DeepSeek with REA, reviewed; merged with the hub windows
 
 Done (change `continue-from-the-saves-screen`; savescreen lane, Claude): the menu's CONTINUE opens the original's saves' character screen and loads a story save into the running game with its player record, clock and position; story saves now hold the player and the flow's save steps write the slot. A same-frame double teardown that crashed the terrain build on load was fixed. XA_SaveGames 70% → 73%.
 
+Round 38 intersection3: published light records and scene-node alias bookkeeping; the spread is a no-op until the room flood links sectors.
+
+Round 38 mbfix: the match board and Manage Company draw tables at the table view's title and cell pens, built at the live unit; headers no longer overlap their first row.
+
+Round 38 teleporters3: the reconstruction device's scan aura and reconstruction word; review added the missing identity write.
+
+Done (change `read-technique-bits-and-the-trade-basket`; xptrade3 lane, DeepSeek with REA, reviewed): the experience unit's account write, level-start hook and hook order, the technique word on a level rise and the shop's basket transaction, quality share and stock binding follow the original; the review fixed a one-skill shift in the technique bits and reverted a signed reading of the power progress.
+
 ### Phase 8 — Polish and release
 
 Performance (streaming, culling, GPU timings), settings, controller
@@ -2212,4 +2234,10 @@ against Exarust and lists the largest missing ones. In order:
    open questions each change notes ("Open", "Not wired") are the list.
 
 Done (change `reproduce-the-base-library-helpers`; osmain2 lane, reviewed): the base library's fixed 16-byte names (ellipsis past sixteen, offset writes, appends, byte/word/ANSI compares) are in `exa_formats::text`, the packed RGBA8 store in `exa_formats::colour`, the vector lengths, SSE-NaN component min/max, unit projection, XZ heading and yaw/elevation directions in `exa_physics::engine_math`, the priority hook lists in `exa_game::hooks`, and the tagged deferred-call cancellation and the performance-counter millisecond clock in `exa_game::frame`. The review corrected the case-insensitive ANSI compare (it falls back on the length difference), the ANSI lowering (it never reaches the last byte) and the projection's sum order, and folded duplicate converters, frac and heading into existing code. Nothing is wired into the frame loop yet. FLX_System about 63% → 72%.
+
+Round 38 hwconfig3: the hardware configuration's benchmark workload, readouts and help box; review removed an invented tab-switch activation that re-ran the benchmark and reset the keys.
+
+Round 38 rfcexport3: the level exporter's preparation hooks, condition words and a loaded level converted back for the save; review fixed the character database tag, byte-exact names, instance meshes and the material list count.
+
+Round 38 settingsio3: the engine's memory blocks, whole-file reads and the settings exit save; review fixed the search-path miss logging, the block copy and a duplicated KeyDef counter.
 
