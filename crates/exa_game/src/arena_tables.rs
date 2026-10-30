@@ -224,13 +224,11 @@ pub fn from_live(
         words: previous.company.words,
         records: {
             let mut records = previous.company.records;
-            records[RECORD_WON] = career.company.won;
-            records[RECORD_LOST] = career.company.lost;
-            records[RECORD_TOURNAMENTS_WON] = career.company.tournaments_won;
-            records[RECORD_SEASONS_WON] = career.company.seasons_won;
-            records[RECORD_DEATHS] = career.company.deaths;
-            records[RECORD_EARNED] = career.company.earned;
-            records[RECORD_SPENT] = career.company.spent;
+            for (slot, value) in career.company.records().values().iter().enumerate() {
+                if let Some(word) = records.get_mut(slot) {
+                    *word = *value;
+                }
+            }
             records
         },
     };
@@ -317,13 +315,23 @@ pub fn apply(
     career.company.stock = tables.shop_stock.clone();
     career.company.emblem = emblem_from_bytes(&tables.company.emblem);
     let records = &tables.company.records;
-    career.company.won = records[RECORD_WON];
-    career.company.lost = records[RECORD_LOST];
-    career.company.tournaments_won = records[RECORD_TOURNAMENTS_WON];
-    career.company.seasons_won = records[RECORD_SEASONS_WON];
-    career.company.deaths = records[RECORD_DEATHS];
-    career.company.earned = records[RECORD_EARNED];
-    career.company.spent = records[RECORD_SPENT];
+    career
+        .company
+        .book_records(&crate::arena_match::CompanyRecords {
+            matches_won: records[RECORD_WON],
+            matches_lost: records[RECORD_LOST],
+            matches_forfeited: records[RECORD_FORFEITED],
+            tournaments_won: records[RECORD_TOURNAMENTS_WON],
+            tournaments_lost: records[RECORD_TOURNAMENTS_LOST],
+            seasons_won: records[RECORD_SEASONS_WON],
+            beasts_fought: records[RECORD_BEASTS_FOUGHT],
+            beasts_defeated: records[RECORD_BEASTS_DEFEATED],
+            hires: records[RECORD_HIRES],
+            deaths: records[RECORD_DEATHS],
+            fired: records[RECORD_FIRED],
+            earned: records[RECORD_EARNED],
+            spent: records[RECORD_SPENT],
+        });
 
     career.matches_today = tables.day.matches_today;
     career.log = ArenaLog {
@@ -401,6 +409,14 @@ mod tests {
         career.company.lost = 2;
         career.company.spent = 40;
         career.company.earned = 55;
+        career.company.total_spent = 400;
+        career.company.total_earned = 550;
+        career.company.matches_forfeited = 4;
+        career.company.tournaments_lost = 5;
+        career.company.beasts_fought = 6;
+        career.company.beasts_defeated = 7;
+        career.company.hires = 8;
+        career.company.fired = 9;
         career.company.seasons_won = 1;
         career.company.tournaments_won = 2;
         career.company.deaths = 1;
@@ -456,8 +472,14 @@ mod tests {
         assert_eq!(tables.company.name, b"Rivals");
         assert_eq!(tables.company.records[RECORD_WON], 3);
         assert_eq!(tables.company.records[RECORD_LOST], 2);
-        assert_eq!(tables.company.records[RECORD_EARNED], 55);
-        assert_eq!(tables.company.records[RECORD_SPENT], 40);
+        assert_eq!(tables.company.records[RECORD_FORFEITED], 4);
+        assert_eq!(tables.company.records[RECORD_TOURNAMENTS_LOST], 5);
+        assert_eq!(tables.company.records[RECORD_BEASTS_FOUGHT], 6);
+        assert_eq!(tables.company.records[RECORD_BEASTS_DEFEATED], 7);
+        assert_eq!(tables.company.records[RECORD_HIRES], 8);
+        assert_eq!(tables.company.records[RECORD_FIRED], 9);
+        assert_eq!(tables.company.records[RECORD_EARNED], 550);
+        assert_eq!(tables.company.records[RECORD_SPENT], 400);
         assert_eq!(tables.company.records[RECORD_SEASONS_WON], 1);
         assert_eq!(tables.company.records[RECORD_TOURNAMENTS_WON], 2);
         assert_eq!(tables.company.records[RECORD_DEATHS], 1);

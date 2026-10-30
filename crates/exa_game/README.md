@@ -1541,4 +1541,6 @@ the shop's shelf and the employed merchant's stock (`hub_restock`). A new
 career and each tournament week also roll the week's board
 (`ArenaCareer::regenerate_tournament_at`): six event rows, the weekly prize
 that avoids the last eight, and the sixteen-company field, which the board's
-tournament tab and its winners table read.
+tournament tab and its winners table read. The arena save's company chunk now
+carries all thirteen records, and its load puts them back through
+`Company::book_records`.
