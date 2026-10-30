@@ -119,10 +119,11 @@ component), draw box, program names, quad and shared uniforms, the three linked 
   layer/opacity selection and the opaque list's grouping by material program
   key (the layer is bits 4-7 of the blend word), the per-list draw walk (one
   program bind per material group, entries filtered by the renderer's
-  visibility mask, sectors in scene order with the `0x1000_0000` region bit,
-  the blended entry's `1 − opacity` alpha under the `0x203` word) and the
-  particle pass (both list classes depth-only per sector, then per sector the
-  vertex-coloured list and the textured one with per-entry alpha), with the
+  visibility mask, sectors in scene order, the entries' `0x1000_0000`
+  scissor switches, the blended entry's `1 − opacity` alpha under the
+  `0x203` word) and the particle pass (its own visibility mask, both lists
+  depth-only per sector, the second with its textures, then per sector both
+  lists in colour with per-entry alpha), with the
   Bevy phase each step maps to
   ([`docs/RENDERING.md`](../../docs/RENDERING.md), Pass order).
 - `view`: the 3D view's arithmetic: the perspective frustum's half extents,
