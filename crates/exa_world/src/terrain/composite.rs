@@ -2564,6 +2564,43 @@ mod tests {
     }
 
     #[test]
+    fn a_moving_focus_never_hands_out_a_set_twice() {
+        // Twenty tiles' worth of blocks on a 6 m grid, driven for eighty
+        // frames while the focus sweeps across and away: every set a block
+        // holds is unique, the free and held sets always add up to the pools,
+        // the selection never passes its 189 entries and no more than 21
+        // blocks hold a high set.
+        let centres: Vec<Vec2> = (0..20)
+            .flat_map(|row| (0..20).map(move |col| Vec2::new(col as f32 * 6.0, row as f32 * 6.0)))
+            .collect();
+        let mut sel = selector(&centres);
+        for (index, block) in sel.blocks.iter_mut().enumerate() {
+            block.visible = index % 3 == 0;
+        }
+        for frame in 0..80 {
+            let focus = Vec2::new(frame as f32 * 7.5, frame as f32 * 5.0);
+            sel.reselect(focus);
+            let mut held = std::collections::HashSet::new();
+            for block in sel.blocks() {
+                if let Some(set) = block.set() {
+                    assert!(held.insert(set), "set {set} handed out twice");
+                }
+            }
+            assert_eq!(
+                held.len() + sel.pools().high_free() + sel.pools().low_free(),
+                HIGH_SETS + LOW_SETS
+            );
+            assert!(sel.selected().len() <= MAX_SELECTED);
+            let high = sel
+                .blocks()
+                .iter()
+                .filter(|block| block.set().is_some_and(|set| (set as usize) < HIGH_SETS))
+                .count();
+            assert!(high <= HIGH_SETS);
+        }
+    }
+
+    #[test]
     fn a_low_block_turns_high_and_trades_its_set() {
         let mut sel = selector(&[Vec2::ZERO]);
         sel.block_mut(0).unwrap().visible = true;
