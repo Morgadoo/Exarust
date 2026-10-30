@@ -1021,6 +1021,42 @@ impl LevelCharacters {
         }
         Ok(out)
     }
+
+    /// Every entry of a level section's character database read whole, by
+    /// id: the record and the object database it carries, as the prelude's
+    /// loader builds them ([`read_entry`]). A deleted entry (empty) or a
+    /// stub that is not a record comes back as an error.
+    pub fn read_entries(
+        b: &[u8],
+    ) -> Result<Vec<(u32, Result<(CharacterRecord, crate::objdb::ObjectDb)>)>> {
+        let mut out = Vec::new();
+        for (tag, body) in sections(b)?.1 {
+            if tag == CHARACTER_DB {
+                out = read_entries_database(body)?;
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Reads a character database's entries by id (an RDB such as the payload
+/// of a save's `#worldchrdb` chunk), each with the object database its
+/// sub-chunks carry.
+pub fn read_character_entries(
+    b: &[u8],
+) -> Result<Vec<(u32, Result<(CharacterRecord, crate::objdb::ObjectDb)>)>> {
+    read_entries_database(b)
+}
+
+fn read_entries_database(
+    b: &[u8],
+) -> Result<Vec<(u32, Result<(CharacterRecord, crate::objdb::ObjectDb)>)>> {
+    let db = Database::parse(b)?;
+    Ok(db
+        .records
+        .iter()
+        .map(|rec| (rec.id, read_entry(rec.id, db.payload(rec))))
+        .collect())
 }
 
 /// Reads a character database's records by id (an RDB such as the payload

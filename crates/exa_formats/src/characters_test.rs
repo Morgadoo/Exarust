@@ -1309,3 +1309,82 @@ fn shipped_entries_read_their_own_databases() {
         .sum();
     assert_eq!(items, listed);
 }
+
+/// A section's database read entry by entry: each record with the object
+/// database its entry carries, and the errors of the entries that are not
+/// records.
+#[test]
+fn a_sections_entries_carry_their_own_databases() {
+    let mut body = front("vi01", 0, &[0x8000_0010]);
+    body.extend(middle(&[], &[]));
+    body.extend(v7_rest(&[]));
+    let mut rec = frame(7, &body);
+    let mut db = crate::objdb::Store::from_records([(1, 0, &[0u8; 4][..])]);
+    db.set_flags(0, crate::objdb::MAGIC);
+    let items = db.write();
+    rec.extend(ACTOR_ITEMS.to_le_bytes());
+    rec.extend((items.len() as u32).to_le_bytes());
+    rec.extend(&items);
+    // Two table entries: the record at the table's end, and an empty slot
+    // whose entry is not a record.
+    let mut rdb = u32s(&[0xDBAC_CD00, 32, 3, 0, 0, rec.len() as u32, 0, 0, 0, 0]);
+    rdb.extend(&rec);
+    let mut b = 0i32.to_le_bytes().to_vec();
+    b.extend(u32s(&[CHARACTER_DB, rdb.len() as u32]));
+    b.extend(&rdb);
+    let entries = LevelCharacters::read_entries(&b).unwrap();
+    assert_eq!(entries.len(), 2);
+    let (id, entry) = &entries[0];
+    assert_eq!(*id, 3);
+    let (record, own) = entry.as_ref().unwrap();
+    assert_eq!(record.worn_ids().collect::<Vec<_>>(), [0x8000_0010]);
+    assert!(own.base.find(1).is_some());
+    assert!(entries[1].1.is_err());
+    // The free function reads the database alone, without a section.
+    let entries = read_character_entries(&rdb).unwrap();
+    assert_eq!(entries.len(), 2);
+    assert_eq!(entries[0].1.as_ref().unwrap().1.base.len(), 1);
+}
+
+/// Every shipped level section reads entry by entry, and the entry-owned
+/// databases hold items for the records that name local ones (skipped
+/// without the game).
+#[test]
+fn shipped_sections_read_their_entry_databases() {
+    let Some(dir) = exa_rpk::locate_install(None) else {
+        return;
+    };
+    let game = exa_rpk::GameData::open(&dir).unwrap();
+    let resource = game.pack(exa_rpk::PackKind::Resource).unwrap();
+    let mut sections = 0;
+    let mut entries = 0;
+    for e in resource.entries() {
+        if !(e.name.starts_with("exanima") && e.name.ends_with(".rfc")) {
+            continue;
+        }
+        let Some(bytes) = resource.get(&e.name) else {
+            continue;
+        };
+        for c in crate::chunk::rfc_chunks(bytes).unwrap().flatten() {
+            if c.tag != CHARACTERS {
+                continue;
+            }
+            sections += 1;
+            for (id, entry) in LevelCharacters::read_entries(c.data).unwrap() {
+                match entry {
+                    Ok((record, own)) => {
+                        entries += 1;
+                        assert_eq!(record.id, id);
+                        // No shipped level entry carries its own item
+                        // database: the items live in the level's own.
+                        assert!(own.base.is_empty(), "{}", record.name);
+                        assert!(own.strings.is_empty(), "{}", record.name);
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
+    }
+    assert_eq!(sections, 13);
+    assert!(entries > 480, "{entries}");
+}
