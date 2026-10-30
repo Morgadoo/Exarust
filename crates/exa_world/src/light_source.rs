@@ -222,8 +222,8 @@ pub struct DerivedLight {
     pub inject_scale: f32,
     /// Rec. 601 luminance of [`DerivedLight::colour`].
     pub luminance: f32,
-    /// The point light's falloff end: 1.25 radii when ranged, else the
-    /// unranged far plane.
+    /// The shadow's far plane and the light node's bounding radius: the
+    /// radius when ranged, else the unranged far plane.
     pub reach: f32,
     /// The shadow filter's strength: `0.8 / radius` when ranged with a
     /// positive radius, else 0.
@@ -274,11 +274,7 @@ impl DerivedLight {
             ],
             inject_scale,
             luminance: luminance(colour),
-            reach: if ranged {
-                light.radius * REACH_RADII
-            } else {
-                UNRANGED_FAR
-            },
+            reach: if ranged { light.radius } else { UNRANGED_FAR },
             shadow_strength: if ranged && light.radius > 0.0 {
                 ((1.0 / light.radius) as f64 * 0.8) as f32
             } else {
@@ -635,7 +631,7 @@ mod tests {
                 c.z * derived.inject_scale
             ]
         );
-        assert_eq!(derived.reach, 2.5);
+        assert_eq!(derived.reach, 2.0);
         assert_eq!(derived.shadow_strength, 0.4);
         assert_eq!(derived.shadow_offset, 1);
         assert_eq!((derived.shaping_y, derived.shaping_z), (1.0, 1.0));
