@@ -1206,3 +1206,66 @@ fn a_hovering_body_probes_once_under_its_pelvis() {
     body.measure_balance(NONE);
     assert_eq!(drive(&body).feet_mode, feet::FeetMode::FlatFloor);
 }
+
+/// The step's end: a foot anchored but not reached (touched or not) is
+/// passed over, an anchored foot that has reached is a candidate, the foot
+/// nearest the target wins across the ground and becomes touching (its
+/// ramp bits kept), and its anchor takes its posed point unless it had
+/// reached. When no foot is a candidate the first leg is used, as the
+/// original's index starts there.
+#[test]
+fn the_step_end_plants_the_nearest_free_foot() {
+    let frame = Vec3::ZERO;
+    let (chest, fast) = (Vec3::ZERO, Vec3::ZERO);
+    let spots = [
+        Some(Vec3::new(1.0, 0.0, 0.0)),
+        Some(Vec3::new(0.2, 0.0, 0.0)),
+    ];
+    let ankles = [Vec3::new(1.0, 0.3, 0.0), Vec3::new(0.2, 0.0, 0.0)];
+    let mut body = biped();
+    {
+        let (drive, legs) = (body.drive.as_mut().unwrap(), &mut body.legs);
+        for leg in legs.iter_mut() {
+            leg.state = FootState(0);
+        }
+        // Leg 0 is anchored and has not reached: passed over.
+        legs[0].state = FootState(FootState::ANCHORED);
+        legs[1].state = FootState(FootState::RAMP_SLOW);
+        end_step(&mut drive.steps, legs, &spots, &ankles, frame, chest, fast);
+        assert!(legs[1].state.has(FootState::TOUCHING));
+        assert!(legs[1].state.has(FootState::RAMP_SLOW));
+        assert!(!legs[1].state.has(FootState::ANCHORED));
+        assert_eq!(legs[1].anchor, ankles[1]);
+        assert!(!legs[0].state.has(FootState::TOUCHING));
+        assert_eq!(drive.steps.standing, ankles[1] - spots[1].unwrap());
+        assert!(drive.steps.placed);
+    }
+    // A touched-but-anchored foot is still passed over.
+    {
+        let (drive, legs) = (body.drive.as_mut().unwrap(), &mut body.legs);
+        legs[0].state = FootState(FootState::ANCHORED | FootState::TOUCHING);
+        legs[1].state = FootState(0);
+        end_step(&mut drive.steps, legs, &spots, &ankles, frame, chest, fast);
+        assert!(legs[1].state.has(FootState::TOUCHING));
+    }
+    // An anchored foot that has reached is a candidate, and its anchor is
+    // left alone.
+    {
+        let (drive, legs) = (body.drive.as_mut().unwrap(), &mut body.legs);
+        legs[0].state = FootState(FootState::ANCHORED | FootState::REACHED);
+        legs[0].anchor = Vec3::new(9.0, 9.0, 9.0);
+        legs[1].state = FootState(FootState::ANCHORED);
+        end_step(&mut drive.steps, legs, &spots, &ankles, frame, chest, fast);
+        assert!(legs[0].state.has(FootState::TOUCHING));
+        assert_eq!(legs[0].anchor, Vec3::new(9.0, 9.0, 9.0));
+    }
+    // No candidate: the first leg is used and set touching.
+    {
+        let (drive, legs) = (body.drive.as_mut().unwrap(), &mut body.legs);
+        for leg in legs.iter_mut() {
+            leg.state = FootState(FootState::ANCHORED);
+        }
+        end_step(&mut drive.steps, legs, &spots, &ankles, frame, chest, fast);
+        assert!(legs[0].state.has(FootState::TOUCHING));
+    }
+}
