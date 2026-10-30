@@ -24,10 +24,10 @@
 //! ([`MechanismRecords::dispatch`]): a door order (open, close and lock,
 //! toggle, [`exa_physics::mechanism::open_doors`] and its siblings) on
 //! every door body under the object's node, each woken, or a class 5 push
-//! on the push surface under it. A class 6 fire job puts the node's lights
-//! out and spawns a fire at the signalled size; a light job scales the
-//! lights under the node on or off. A relay is logged and not run: relays
-//! need the level's listener lists, which no system holds yet. A
+//! on the push surface under it. A class 6 fire job spawns a fire at the
+//! node at the signalled size. A light job (it powers the electric object
+//! under the node, `exa_physics::mechanism::electric`) and a relay are not
+//! run: no system holds electric objects or the level's listener lists. A
 //! target with no record, or no body of the right kind under it (a static
 //! sliding door), does nothing.
 //!
@@ -138,9 +138,8 @@ type MechanismParts = (
 
 /// Runs each mechanism signal on its target's records: a door order on the
 /// door bodies under the target's node (each woken), a push on its push
-/// surface, a fire job (a fire is spawned at the node and its own lights
-/// put out), a light job (the lights under the node are scaled on or off)
-/// or a relay/job that nothing else runs.
+/// surface, or a fire job (a fire is spawned at the node). Light jobs and
+/// relays are not run.
 pub fn route_signals(
     mut signals: MessageReader<MechanismSignal>,
     mut commands: Commands,
@@ -148,7 +147,6 @@ pub fn route_signals(
     objects: Query<(Entity, &MechanismRecords)>,
     children: Query<&Children>,
     mut bodies: Query<MechanismParts>,
-    mut lights: Query<&mut crate::light_source::LightSource>,
 ) {
     let now = ticks.map_or(0, |t| t.millis() as i32);
     for signal in signals.read() {
@@ -177,23 +175,15 @@ pub fn route_signals(
             }
             Dispatch::Relay(_) => {}
             Dispatch::Job(mechanism::Job::Fire { size }) => {
-                // The fire replaces the node's own lights, then grows at
-                // the signalled size (hundredths, or 2 for a zero word).
-                for &e in &nodes {
-                    if let Ok(mut light) = lights.get_mut(e) {
-                        light.set_scale(0.0);
-                    }
-                }
+                // A fire at the node's position, of the signalled size
+                // (hundredths, or 2 for a zero word); the node's own lights
+                // are left as they are.
                 crate::fire::spawn_fire(&mut commands, node, mechanism::job_fire_size(size));
             }
-            Dispatch::Job(mechanism::Job::Light { on }) => {
-                let scale = if on { 1.0 } else { 0.0 };
-                for &e in &nodes {
-                    if let Ok(mut light) = lights.get_mut(e) {
-                        light.set_scale(scale);
-                    }
-                }
-            }
+            // A light job powers the electric object under the node (or
+            // spawns one for an odd value), which the ECS does not hold yet:
+            // the rule is `mechanism::electric`.
+            Dispatch::Job(mechanism::Job::Light { .. }) => {}
             Dispatch::None => {}
         }
     }
