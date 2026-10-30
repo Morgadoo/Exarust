@@ -308,7 +308,7 @@ light in the environment word (unlit rows have an empty one).
 | 0 | `ViewPos` | camera eye (cm), `w` = the quarter's sub-frame offset × the frame scale (as `TimeDlt.x`) |
 | 16 | `ViewSiz` | viewport width, height (one less when multisampled) |
 | 24 | `ViewPrj` | `tan(fov/2)·500`, `aspect·tan(fov/2)·500` |
-| 32 | `CamMat` | camera view-projection, column-major |
+| 32 | `CamMat` | the camera's view matrix; the templates read its 3×3 rotation (`mat3(CamMat)`) |
 | 96 | `SdwMat` | the sun's world-to-shadow matrix |
 | 160 | `VXGIScl` | `1/(W·20)`, `1/(H·20)`, `1/(D·20)`, `1/SdwSmps` (texels across X, Z, up) |
 | 176 | `Ambient` | linear level ambient × exposure × 15, `w` = 8 indoors or 3 outdoors |
@@ -359,7 +359,8 @@ Each sub-frame also shifts its viewport by the sample's whole-pixel offset
 its animation clock (`n = 4q + subframe`), and, for a geometry whose flag
 word has `0x20`, rewrites the projection's depth lane (`m22`) to
 `((n + 0.5)·shutter/N + m22) − shutter·0.5` and rebuilds the composite.
-`exa_render::subframe` holds the tables and the arithmetic.
+`exa_render::view` holds the level and jitter tables and
+`exa_render::subframe` the projection, view and composite fill.
 
 ## Lights
 

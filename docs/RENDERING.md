@@ -67,6 +67,10 @@ scale, the projection, the point-to-window projection, the pass schedule,
 the framebuffer viewport and region stacks and the view copy's quad, pinned
 by tests.
 
+The original's per-sub-frame projection, view and object matrices and their
+viewport shifts, animation clocks and depth-lane offsets are
+`exa_render::subframe`, built from the view's tables.
+
 Exarust (`exa_render::supersample`) draws the scene at twice the window's
 resolution on each axis, an ordered 2 × 2 grid instead of the jittered
 four. A display camera resolves each 2 × 2 block by bilinear sampling at
@@ -198,13 +202,14 @@ the drawing state's one stale flag, which a later lit draw consumes even
 when the changing draw had no lights. The material block is rewritten when
 the frame's fade bit is set and `1 − fade` differs from the stored diffuse
 alpha by more than `0x33FFFFD7` (an unordered compare does not rewrite),
-and when the geometry asks for a per-draw emissive scale (the scene's or
-the geometry's). On the super-sampled path the liquid level is the liquid
-point's world height and the GI corner is uploaded for the environment's
-GI bit. A surface draws the scene's super-sampling sub-frames (halved under
-sun mode 3 for the object's `0x40000000` frame bit), each with its own
-`SdwSmp` window, viewport shift, animation clock and, for a geometry whose
-flag word has `0x20`, a depth-lane offset
+and when the geometry asks for a per-draw emissive scale (the scene's for a
+material with a diffuse map, else the geometry record's own). On the
+super-sampled path the liquid level is the liquid point's world height and
+the GI corner is uploaded for the environment's GI bit. A surface draws
+the scene's super-sampling sub-frames (halved under sun mode 3 for the
+object's `0x40000000` frame bit), each with its own `SdwSmp` window,
+viewport shift, animation clock and, for a geometry whose flag word has
+`0x20`, a depth-lane offset
 `((n + 0.5)·shutter/N + lane) − shutter·0.5` in single precision (`n` the
 frame's sample index, `N` the setting's sample count, `shutter` the
 geometry's length), after which the sub-frame composite is rebuilt
