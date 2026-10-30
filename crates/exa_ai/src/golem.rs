@@ -2,36 +2,57 @@
 //! `RFE_Effects_Electricity` unit by address).
 //!
 //! - **Wake** ([`wake`]): a guardian whose body flag word lacks
-//!   [`WAKE_EXEMPT`] shows its node again, plays `golem_act` at its body
-//!   (volume ½, pitch 0.9 plus a fifth of a draw), stops being dormant,
+//!   [`WAKE_EXEMPT`] loses the statue bit of its record's race word, plays
+//!   `golem_act` at its body (volume ½, pitch 0.9 plus a fifth of a draw),
+//!   clears its behaviour's statue byte (the ally sense's gate),
 //!   clears its stance and pose words, keeps its body awake for 256 ticks,
 //!   takes the body's place and angle as its home, sets its glow material to
 //!   full and, when the body still carries its sleep scales, restores every
 //!   limb's mass and multiplies every part's value by 50.
-//! - **Sleep** ([`sleep`]): the node is hidden, the guardian dormant, the
+//! - **Sleep** ([`sleep`]): the race word takes the statue bit, the
+//!   behaviour its statue byte, the
 //!   stance 1, the pose 2, the alarm word 0, the dormant behaviour installed
 //!   and the glow material faded out; the first time, every limb takes a
 //!   twentieth of its stored mass and every part's value a fiftieth (both in
 //!   double).
+//! - **Zone check** ([`moved_enough`], [`zone_entered`], [`carries`]): the
+//!   AI manager's frame checks a character's zones once it is more than
+//!   3 cm (squared 9, strictly) from the point it was last checked at, then
+//!   moves that point to it. A zone is entered when the character is within
+//!   its node's radius (squared, single precision), within 0.1 (squared, in
+//!   double) of its box, and the last checked point was not (0.1 or more);
+//!   a comparison with a NaN passes each test. For the player, an alarm
+//!   zone ([`exa_formats::objdb::Volume::alarm_pass`]) ends the check while
+//!   its state flags carry [`ALARM_EXEMPT`], is crossed freely when the
+//!   player carries the zone's pass item (in the inventory, or nested in a
+//!   carried container), and rings the alarm trigger otherwise.
 //! - **Alarm trigger** ([`alarm_trigger`], [`wake_guardian`]): checking a
-//!   zone arms it (point and number) unless another armed zone is kept, then
+//!   zone arms it (point and pass) unless another armed zone is kept, then
 //!   every body within 800 cm of the point is offered to the wake callback:
-//!   a dormant guardian wakes and records the player as its target with a
-//!   radius word of 10.
+//!   a guardian whose statue byte is set wakes, and its contact list becomes
+//!   the player alone at a concern of 10. A trigger that woke any counts one
+//!   more alarm. A level start disarms it ([`AlarmZone::reset`]).
 //! - **Alarm return** ([`go_home`], [`alarm_post`]): every awake guardian
 //!   within 3000 cm of the player that is not already returning is put back
 //!   at its home, facing its home angle, and falls asleep. When one did, the
 //!   player is put 200 cm past the far face of the `Alarm_` box that holds
 //!   the armed zone's point, 10 cm up, facing back across it with a draw.
 //!
-//! The radius query ([`radius_query`]) is the original's: the bodies of the
-//! point's 6 m sector and of the sectors that sector lists, each with the
-//! node flag [`QUERY_FLAG`] and a squared plane distance (x and z only)
-//! strictly under the radius squared.
+//! The radius query ([`radius_query`]) is the original's: the characters
+//! linked into the room of the point's 6 m cell and into the rooms behind
+//! that room's exits, each whose record's race word carries the AI bit
+//! [`AI_BIT`] and whose squared plane distance (x and z only) is strictly
+//! under the radius squared.
 //!
 //! Evidence: the golem activation, dormancy, radius query, wake callback,
 //! alarm trigger, alarm lookup, pose reset, homeward callback and alarm
-//! return routines of `Exanima.exe`, checked against their instructions.
+//! return routines of `Exanima.exe`, the AI manager's frame and its zone
+//! check, the inventory search and the alarm reset, checked against their
+//! instructions. The word the wake clears and the radius query tests is the
+//! record's race word (the attach reads the same word through the body's
+//! record; it was first read as the node's render word). The second caller
+//! of the wake, inside the ally sense, needs the statue byte both set and
+//! clear, so the alarm trigger is its only live caller.
 
 use bevy::math::Vec3;
 use exa_physics::body::locomotion::heading_of;
@@ -57,8 +78,23 @@ pub const ALARM_NODE_REACH: f64 = 0.1;
 pub const ALARM_HEIGHT: f32 = 10.0;
 /// How far past the alarm box's far face the player is put (200 cm).
 pub const ALARM_OFFSET: f32 = 200.0;
-/// The radius word a woken guardian's target record takes (10).
-pub const TARGET_RADIUS: f32 = 10.0;
+/// The concern a woken guardian's single contact, the player, starts at
+/// (10).
+pub const WAKE_CONCERN: f32 = 10.0;
+/// The squared distance (cm²) a character must move past its last checked
+/// point before its zones are checked again: strictly over 9.
+pub const CHECK_STEP_SQ: f32 = 9.0;
+/// The squared distance (cm²) to a zone's box within which a point is in
+/// it (0.1, compared in double).
+pub const ZONE_REACH: f64 = 0.1;
+/// The state-flag bit that ends the player's zone check at an alarm zone
+/// (what sets it was not traced).
+pub const ALARM_EXEMPT: u32 = 0x2_0000;
+/// The height the alarm reset puts the disarmed point at (1.1·10⁶ cm).
+pub const RESET_HEIGHT: f32 = 1_100_000.0;
+/// How deep the pass search follows containers inside containers (the
+/// original's recursion is unbounded; shipped containers nest once at most).
+pub const CARRY_DEPTH: usize = 16;
 
 /// The name every alarm node starts with.
 pub const ALARM_NODE_PREFIX: &str = "Alarm_";
@@ -74,12 +110,13 @@ pub const WAKE_TICKS: u32 = 256;
 /// Ticks a pose reset keeps the body awake (32).
 pub const POSE_TICKS: u32 = 32;
 
-/// The node's render bit that hides a dormant golem.
-pub const HIDDEN_RENDER_BIT: u32 = 0x0800_0000;
+/// The race word's statue bit: the wake clears it, the sleep sets it.
+pub const STATUE_BIT: u32 = crate::personality::STATUE_FLAG;
 /// The body latch saying its sleep scales are applied.
 pub const SLEEP_SCALES_LATCH: u32 = 0x400;
-/// The node render bit a body needs for the radius query to visit it.
-pub const QUERY_FLAG: u32 = 0x1000;
+/// The race word's AI bit a character needs for the radius query to visit
+/// it (the golem races).
+pub const AI_BIT: u32 = crate::personality::AI_FLAG;
 /// The body flag-word bit that keeps the wake routine from running (its
 /// meaning beyond that is not traced).
 pub const WAKE_EXEMPT: u32 = 0x100;
@@ -128,8 +165,8 @@ pub fn alarm_angle(heading: f32, roll: f64) -> f32 {
 pub struct QueryBody {
     /// The body's place (cm).
     pub at: Vec3,
-    /// Its node's render word; only [`QUERY_FLAG`] bodies are visited.
-    pub node_flags: u32,
+    /// Its record's race word; only [`AI_BIT`] characters are visited.
+    pub race_word: u32,
     /// Its behaviour (opaque; the callback decides).
     pub character: u64,
 }
@@ -137,8 +174,8 @@ pub struct QueryBody {
 /// The original's radius query over the bodies of a sector and of the
 /// sectors it lists, in that order (the caller gathers them): a body is
 /// offered to `accept` when its squared plane distance (x and z only,
-/// summed x then z) is strictly under `radius²` and its node carries
-/// [`QUERY_FLAG`]. Returns how many `accept` took.
+/// summed x then z) is strictly under `radius²` and its race word
+/// carries [`AI_BIT`]. Returns how many `accept` took.
 pub fn radius_query(
     point: Vec3,
     radius: f32,
@@ -152,7 +189,7 @@ pub fn radius_query(
         let dz = body.at.z - point.z;
         let d2 = dx * dx + dz * dz;
         // An ordered compare: a distance that is not a number is not inside.
-        if d2 < r2 && body.node_flags & QUERY_FLAG != 0 && accept(body) {
+        if d2 < r2 && body.race_word & AI_BIT != 0 && accept(body) {
             count += 1;
         }
     }
@@ -182,14 +219,15 @@ pub fn sector_index(point: Vec3, width: i32, height: i32) -> Option<usize> {
     (0 <= index && i64::from(index) < cells).then_some(index as usize)
 }
 
-/// What a guardian's wake or sleep writes on its node, body and behaviour.
+/// What a guardian's wake or sleep writes on its record, body and
+/// behaviour.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GolemChange {
-    /// The node's render word after the change.
-    pub render: u32,
+    /// The record's race word after the change.
+    pub race_word: u32,
     /// The value the glow material ([`GLOW_MATERIAL`]) is faded to.
     pub glow: f32,
-    /// The behaviour's dormant byte.
+    /// The behaviour's statue byte (the ally sense's gate).
     pub dormant: bool,
     /// The body's pose word.
     pub pose: i32,
@@ -221,7 +259,9 @@ pub enum Hook {
 /// The state a wake or sleep reads.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GolemState {
-    pub render: u32,
+    /// The record's race word.
+    pub race_word: u32,
+    /// The behaviour's statue byte.
     pub dormant: bool,
     /// The body's sleep-scale latch ([`SLEEP_SCALES_LATCH`]).
     pub latch: bool,
@@ -237,8 +277,8 @@ pub struct GolemState {
 }
 
 /// Wakes a guardian (`None` when its body flag word carries
-/// [`WAKE_EXEMPT`]): the node shows again, the behaviour stops being
-/// dormant, the stance and pose words clear, the body wakes for 256 ticks,
+/// [`WAKE_EXEMPT`]): the race word loses [`STATUE_BIT`], the statue byte
+/// clears, the stance and pose words clear, the body wakes for 256 ticks,
 /// its place and angle become the home, the glow material goes to full and,
 /// while the latch is set, the latch clears, every limb takes back its
 /// stored mass and every part's value is multiplied by 50. Returns the
@@ -260,7 +300,7 @@ pub fn wake(state: &GolemState, body_flags: u32, roll: f64) -> Option<(GolemChan
         }
     }
     let change = GolemChange {
-        render: state.render & !HIDDEN_RENDER_BIT,
+        race_word: state.race_word & !STATUE_BIT,
         glow: 1.0,
         dormant: false,
         pose: 0,
@@ -276,7 +316,8 @@ pub fn wake(state: &GolemState, body_flags: u32, roll: f64) -> Option<(GolemChan
     Some((change, wake_pitch(roll)))
 }
 
-/// Puts a guardian to sleep: hides its node, marks it dormant with stance 1
+/// Puts a guardian to sleep: sets the race word's statue bit and the
+/// statue byte, with stance 1
 /// and pose 2, clears its alarm word, installs the dormant behaviour and
 /// fades its glow material out. The first time (latch clear) the latch is
 /// set, every limb takes a twentieth of its stored mass and every part a
@@ -295,7 +336,7 @@ pub fn sleep(state: &GolemState) -> GolemChange {
         }
     }
     GolemChange {
-        render: state.render | HIDDEN_RENDER_BIT,
+        race_word: state.race_word | STATUE_BIT,
         glow: 0.0,
         dormant: true,
         pose: 2,
@@ -445,58 +486,136 @@ pub fn pose_reset(input: PoseReset, parts: usize) -> PosedBody {
     }
 }
 
-/// The armed alarm zone: whether one is armed, its point and its number.
+/// The armed alarm zone: whether one is armed, its point and the pass item
+/// of the zone that armed it (the original keeps the pass as the zone's
+/// number).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct AlarmZone {
     pub armed: bool,
     pub at: Vec3,
-    pub zone: i32,
+    pub pass: u32,
+}
+
+impl AlarmZone {
+    /// The alarm reset a level start runs: disarmed, the point at
+    /// [`RESET_HEIGHT`] over the origin. It also zeroes the alarm count.
+    pub fn reset() -> Self {
+        Self {
+            armed: false,
+            at: Vec3::new(0.0, RESET_HEIGHT, 0.0),
+            pass: 0,
+        }
+    }
 }
 
 /// The alarm trigger's arming step, before its 800 cm query: the zone is
-/// armed with this point and number unless another zone is armed and
-/// `replaceable` (the original's test of the player against the armed zone,
-/// which this component does not carry) answers false, which keeps the
-/// armed zone. Returns whether this zone was armed.
+/// armed with this point and pass unless another zone is armed and
+/// `replaceable` answers false for the armed zone's pass (the original asks
+/// whether the player carries it), which keeps the armed zone. Returns
+/// whether this zone was armed.
 pub fn alarm_trigger(
     armed: &mut AlarmZone,
     point: Vec3,
-    zone: i32,
-    replaceable: impl FnOnce(i32) -> bool,
+    pass: u32,
+    replaceable: impl FnOnce(u32) -> bool,
 ) -> bool {
-    if armed.armed && zone != armed.zone && !replaceable(armed.zone) {
+    if armed.armed && pass != armed.pass && !replaceable(armed.pass) {
         return false;
     }
     *armed = AlarmZone {
         armed: true,
         at: point,
-        zone,
+        pass,
     };
     true
 }
 
-/// The target record a woken guardian takes: armed 1, the player's
-/// behaviour, the radius word 10 (the rest of its 0x68 bytes zeroed).
+/// What the wake callback writes on a woken guardian's contact list: one
+/// contact (the count word 1, the entry's other 0x68 bytes zeroed), the
+/// player, at a concern of [`WAKE_CONCERN`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GolemWake {
-    pub armed: i32,
+    pub contacts: i32,
     pub target: u64,
-    pub radius: f32,
+    pub concern: f32,
 }
 
-/// The wake callback the alarm trigger's query runs: a dormant guardian is
-/// woken ([`wake`], which may itself do nothing for an exempt body) and the
-/// callback accepts it; when there is a player the guardian also records it
-/// as its target. `None` (refused) for a guardian that is awake.
-pub fn wake_guardian(dormant: bool, player: Option<u64>) -> Option<Option<GolemWake>> {
-    if !dormant {
+/// The wake callback the alarm trigger's query runs: a guardian whose
+/// statue byte is set is woken ([`wake`], which may itself do nothing for
+/// an exempt body) and the callback accepts it; when there is a player the
+/// guardian's contacts also become the player alone ([`GolemWake`]).
+/// `None` (refused) for a guardian whose statue byte is clear.
+pub fn wake_guardian(statue: bool, player: Option<u64>) -> Option<Option<GolemWake>> {
+    if !statue {
         return None;
     }
     Some(player.map(|target| GolemWake {
-        armed: 1,
+        contacts: 1,
         target,
-        radius: TARGET_RADIUS,
+        concern: WAKE_CONCERN,
     }))
+}
+
+/// Whether a character at `at` has moved far enough from the point its
+/// zones were last checked at for the AI manager's frame to check them
+/// again: the squared distance strictly over [`CHECK_STEP_SQ`] (a NaN
+/// distance never is).
+pub fn moved_enough(at: Vec3, checked: Vec3) -> bool {
+    let d = at - checked;
+    d.x * d.x + d.y * d.y + d.z * d.z > CHECK_STEP_SQ
+}
+
+/// Whether a character at `at`, last checked at `checked`, has entered the
+/// zone of box `bounds` and node radius `radius`: it is not farther than
+/// the radius (squared distance to the box centre against the radius
+/// squared, single precision), not more than [`ZONE_REACH`] from the box
+/// (in double), and the checked point was not under [`ZONE_REACH`] from
+/// it. Each comparison lets a NaN through, as the original's jumps do.
+pub fn zone_entered(at: Vec3, checked: Vec3, bounds: &Obb, radius: f32) -> bool {
+    let d = at - bounds.centre;
+    let d2 = d.x * d.x + d.y * d.y + d.z * d.z;
+    let r2 = radius * radius;
+    if d2 > r2 {
+        return false;
+    }
+    let now = f64::from(point_obb_distance_squared(at, bounds));
+    if now > ZONE_REACH {
+        return false;
+    }
+    let before = f64::from(point_obb_distance_squared(checked, bounds));
+    // Unordered (a NaN) counts as outside, as the original's jump does.
+    before.partial_cmp(&ZONE_REACH) != Some(std::cmp::Ordering::Less)
+}
+
+/// The original's inventory search: whether a character whose inventory
+/// lists `carried` (item ids) carries `item`, there or inside a carried
+/// container, at any depth ([`CARRY_DEPTH`] here). `contents` gives a
+/// container's children, `None` for an item that is not one.
+pub fn carries<'a>(
+    carried: impl IntoIterator<Item = u32>,
+    item: u32,
+    contents: &dyn Fn(u32) -> Option<&'a [u32]>,
+) -> bool {
+    fn inside<'a>(
+        list: &mut dyn Iterator<Item = u32>,
+        item: u32,
+        contents: &dyn Fn(u32) -> Option<&'a [u32]>,
+        depth: usize,
+    ) -> bool {
+        for id in list {
+            if id == item {
+                return true;
+            }
+            if depth < CARRY_DEPTH
+                && let Some(children) = contents(id)
+                && inside(&mut children.iter().copied(), item, contents, depth + 1)
+            {
+                return true;
+            }
+        }
+        false
+    }
+    inside(&mut carried.into_iter(), item, contents, 0)
 }
 
 #[cfg(test)]
@@ -505,7 +624,7 @@ mod tests {
 
     fn state() -> GolemState {
         GolemState {
-            render: 0,
+            race_word: 0,
             dormant: false,
             latch: false,
             at: Vec3::new(1.0, 2.0, 3.0),
@@ -527,12 +646,12 @@ mod tests {
     #[test]
     fn a_wake_restores_the_limbs_while_the_latch_is_set() {
         let mut s = state();
-        s.render = HIDDEN_RENDER_BIT | 0x20;
+        s.race_word = STATUE_BIT | AI_BIT;
         s.latch = true;
         s.limb_scales = vec![1.0, 0.5];
         s.glow_scales = vec![0.02, 0.04];
         let (change, pitch) = wake(&s, 0, 0.5).expect("not exempt");
-        assert_eq!(change.render, 0x20);
+        assert_eq!(change.race_word, AI_BIT, "the wake clears the statue bit");
         assert!(!change.dormant);
         assert_eq!((change.pose, change.stance), (0, 0));
         assert_eq!(change.glow, 1.0);
@@ -555,7 +674,7 @@ mod tests {
     fn a_sleep_scales_once() {
         let mut s = state();
         let change = sleep(&s);
-        assert_eq!(change.render, HIDDEN_RENDER_BIT);
+        assert_eq!(change.race_word, STATUE_BIT);
         assert!(change.dormant);
         assert_eq!((change.pose, change.stance), (2, 1));
         assert_eq!(change.alarm, Some(0));
@@ -596,16 +715,16 @@ mod tests {
     fn the_radius_query_measures_the_plane_strictly_inside() {
         let body = |x: f32, y: f32, flags: u32, id: u64| QueryBody {
             at: Vec3::new(x, y, 0.0),
-            node_flags: flags,
+            race_word: flags,
             character: id,
         };
         let bodies = [
-            body(799.0, 0.0, QUERY_FLAG, 1),
-            body(800.0, 0.0, QUERY_FLAG, 2),
+            body(799.0, 0.0, AI_BIT, 1),
+            body(800.0, 0.0, AI_BIT, 2),
             // Far above: only x and z count.
-            body(0.0, 5000.0, QUERY_FLAG, 3),
+            body(0.0, 5000.0, AI_BIT, 3),
             body(1.0, 0.0, 0, 4),
-            body(f32::NAN, 0.0, QUERY_FLAG, 5),
+            body(f32::NAN, 0.0, AI_BIT, 5),
         ];
         let mut seen = Vec::new();
         let count = radius_query(Vec3::ZERO, 800.0, bodies, |b| {
@@ -682,7 +801,7 @@ mod tests {
     fn a_trigger_keeps_the_armed_zone_unless_it_may_be_replaced() {
         let mut zone = AlarmZone::default();
         assert!(alarm_trigger(&mut zone, Vec3::X, 4, |_| false));
-        assert_eq!((zone.armed, zone.zone, zone.at), (true, 4, Vec3::X));
+        assert_eq!((zone.armed, zone.pass, zone.at), (true, 4, Vec3::X));
         // The same zone re-arms without the test.
         assert!(alarm_trigger(&mut zone, Vec3::Y, 4, |_| unreachable!()));
         assert_eq!(zone.at, Vec3::Y);
@@ -691,23 +810,121 @@ mod tests {
             assert_eq!(armed, 4);
             false
         }));
-        assert_eq!(zone.zone, 4);
+        assert_eq!(zone.pass, 4);
         assert!(alarm_trigger(&mut zone, Vec3::Z, 5, |_| true));
-        assert_eq!(zone.zone, 5);
+        assert_eq!(zone.pass, 5);
     }
 
     #[test]
-    fn the_wake_callback_takes_any_dormant_guardian() {
+    fn the_wake_callback_takes_any_statue_guardian() {
         let wake = wake_guardian(true, Some(9)).expect("accepted");
         assert_eq!(
             wake,
             Some(GolemWake {
-                armed: 1,
+                contacts: 1,
                 target: 9,
-                radius: 10.0
+                concern: 10.0
             })
         );
         assert_eq!(wake_guardian(true, None), Some(None));
         assert_eq!(wake_guardian(false, Some(9)), None);
+    }
+
+    /// The reset disarms the alarm and lifts its point 1.1·10⁶ cm over the
+    /// origin.
+    #[test]
+    fn the_alarm_reset_disarms_it() {
+        let reset = AlarmZone::reset();
+        assert!(!reset.armed);
+        assert_eq!(reset.at, Vec3::new(0.0, 1_100_000.0, 0.0));
+        assert_eq!(RESET_HEIGHT.to_bits(), 0x4986_4700);
+    }
+
+    /// The zones are checked only past 3 cm from the last checked point,
+    /// strictly: 3 cm exactly is not enough, and a NaN never is.
+    #[test]
+    fn a_zone_check_waits_for_three_centimetres() {
+        assert!(!moved_enough(Vec3::new(3.0, 0.0, 0.0), Vec3::ZERO));
+        assert!(moved_enough(Vec3::new(3.0, 0.1, 0.0), Vec3::ZERO));
+        assert!(moved_enough(
+            Vec3::new(0.0, 0.0, -2.0),
+            Vec3::new(0.0, 2.3, 0.0)
+        ));
+        assert!(!moved_enough(Vec3::splat(f32::NAN), Vec3::ZERO));
+    }
+
+    /// A zone is entered when the character is in its sphere and box (0.1
+    /// of slack, squared) and the last checked point was out of the box.
+    #[test]
+    fn a_zone_is_entered_from_outside_its_box() {
+        // The exanima06 gate's box: half extents 170, 100, 150, turned a
+        // quarter about y (its first axis is +z).
+        let bounds = Obb::new(
+            Vec3::new(1050.0, 100.0, 6900.0),
+            Vec3::new(170.0, 100.0, 150.0),
+            [Vec3::Z, Vec3::Y, -Vec3::X],
+        );
+        let radius = (170.0f32 * 170.0 + 150.0 * 150.0 + 100.0 * 100.0).sqrt();
+        let outside = Vec3::new(1050.0, 0.0, 6700.0);
+        let inside = Vec3::new(1050.0, 0.0, 6740.0);
+        assert!(zone_entered(inside, outside, &bounds, radius));
+        // Already inside last time: no new entry.
+        assert!(!zone_entered(
+            inside,
+            Vec3::new(1050.0, 0.0, 6750.0),
+            &bounds,
+            radius
+        ));
+        // Still outside: the box along world z reaches 170 cm (6730).
+        assert!(!zone_entered(
+            Vec3::new(1050.0, 0.0, 6725.0),
+            outside,
+            &bounds,
+            radius
+        ));
+        // 0.3 cm past the face is 0.09 squared: inside; 0.4 cm (0.16) is not.
+        assert!(zone_entered(
+            Vec3::new(1050.0, 0.0, 6729.7),
+            outside,
+            &bounds,
+            radius
+        ));
+        assert!(!zone_entered(
+            Vec3::new(1050.0, 0.0, 6729.6),
+            outside,
+            &bounds,
+            radius
+        ));
+        // Across x the box reaches only 150 cm.
+        assert!(!zone_entered(
+            Vec3::new(1210.0, 0.0, 6900.0),
+            outside,
+            &bounds,
+            radius
+        ));
+        // A radius too short refuses a point the box holds.
+        assert!(!zone_entered(inside, outside, &bounds, 10.0));
+        // A checked point that is not a number lets the entry through.
+        assert!(zone_entered(inside, Vec3::splat(f32::NAN), &bounds, radius));
+    }
+
+    /// The pass search looks through the inventory and into carried
+    /// containers, at any depth.
+    #[test]
+    fn the_pass_may_be_carried_in_a_container() {
+        let contents = |id: u32| -> Option<&'static [u32]> {
+            match id {
+                10 => Some(&[11, 12]),
+                12 => Some(&[476]),
+                _ => None,
+            }
+        };
+        assert!(carries([1, 474], 474, &contents));
+        assert!(carries([1, 10], 476, &contents));
+        assert!(!carries([1, 10], 477, &contents));
+        assert!(!carries([], 474, &contents));
+        // A container that holds itself ends at the depth bound.
+        let looped = |id: u32| -> Option<&'static [u32]> { (id == 5).then_some(&[5][..]) };
+        assert!(!carries([5], 474, &looped));
     }
 }
