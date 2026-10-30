@@ -71,9 +71,9 @@ before its morale and state (the original's condition bit `0x800`). A placed
 brain takes its sense, statue mark and effect from the record's profession
 word, the race word the attach reads: the races whose word carries bit
 `0x1000` (the golems, race ids 17–21) install a sense, the class `0x1200`
-(the Golem Suit) the standard one and the others the ally-aware one, and a
-statue bit marks it a sentry. Every other race keeps the behaviour base's
-perception. The original's tick ends by registering the character's
+(the Golem Suit) the standard one and the others the ally-aware one, and the
+statue bit marks a statue, whose sense clears what it sees. Every other race
+keeps the behaviour base's perception. The original's tick ends by registering the character's
 nav footprint unless it follows a route with its locomotion active at 1 cm
 a tick or faster (`brain::stamps_footprint`). The game's footprint system
 asks that gate for every NPC each fixed tick: the route-following flag is a
