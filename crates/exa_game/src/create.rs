@@ -188,24 +188,6 @@ pub fn creation_label(word: i32) -> CreationLabel {
     }
 }
 
-/// Clears the first used creation slot and every slot after it, the last
-/// included. The first used slot keeps its first technique byte.
-pub fn clear_creation_slots(slots: &mut [[u8; 8]; 6]) -> Option<usize> {
-    let first = slots
-        .iter()
-        .position(|slot| u16::from_le_bytes([slot[0], slot[1]]) != 0)?;
-    let slot = &mut slots[first];
-    slot[0] = 0;
-    slot[1] = 0;
-    for byte in &mut slot[3..] {
-        *byte = 0;
-    }
-    for later in &mut slots[first + 1..] {
-        *later = [0; 8];
-    }
-    Some(first)
-}
-
 /// The body form's constructor values: 172 wide with no border, 592 tall
 /// (540 in the compact layout), twelve controls in its table, the caption
 /// `VHM` and a scale of 1.0, the physique picker at 8, 64 and the tone
@@ -1986,18 +1968,40 @@ pub struct SkillPage {
     pub editable: bool,
     /// The page selector's value (4 for the arena, else 6).
     pub page: i32,
+    /// The second preview panel was hidden first (it exists).
+    pub second_panel_hidden: bool,
+    /// The skills panel was made (none existed) rather than shown again.
+    pub created: bool,
+    /// The panel is shown, made or not.
+    pub shown: bool,
+    /// The panel's flag word gained `0x20000` when it was made.
+    pub panel_flags: u32,
+    /// The existing panel's record pointer was rebound to the edited record.
+    pub record_rebound: bool,
 }
 
 /// Picks the skills page for the game and screen modes. `account` is the
 /// account's global experience and `committed_worth` the worth of the last
-/// committed character.
+/// committed character; `second_panel` says whether the second preview
+/// panel exists and `existing` whether the skills panel was already made.
+///
+/// The second preview panel is hidden first when it exists. The skills
+/// panel is made at [`skill_panel_place`] with its flag word gaining
+/// `0x20000` and shown; an existing one is shown again with its record
+/// pointer rebound to the edited record. The headed page then shows the
+/// account's experience (or, on the arena's page, the character's skills
+/// and their progress).
 pub fn skill_page(
     game_mode: i32,
     screen_mode: i32,
     account: u32,
     committed_worth: u32,
+    second_panel: bool,
+    existing: bool,
 ) -> SkillPage {
     let continuing = screen_mode == 12;
+    let created = !existing;
+    let panel_flags = if created { 0x2_0000 } else { 0 };
     let new_global = new_global_experience(account, committed_worth);
     let tab = (!continuing).then_some(exa_ui::creation::SKILLS);
     if game_mode == 8 {
@@ -2011,6 +2015,11 @@ pub fn skill_page(
             apply_budget: false,
             editable: false,
             page: 4,
+            second_panel_hidden: second_panel,
+            created,
+            shown: true,
+            panel_flags,
+            record_rebound: existing,
         }
     } else if continuing {
         SkillPage {
@@ -2023,6 +2032,11 @@ pub fn skill_page(
             apply_budget: false,
             editable: false,
             page: 6,
+            second_panel_hidden: second_panel,
+            created,
+            shown: true,
+            panel_flags,
+            record_rebound: existing,
         }
     } else {
         SkillPage {
@@ -2035,6 +2049,11 @@ pub fn skill_page(
             apply_budget: true,
             editable: true,
             page: 6,
+            second_panel_hidden: second_panel,
+            created,
+            shown: true,
+            panel_flags,
+            record_rebound: existing,
         }
     }
 }
@@ -2504,6 +2523,9 @@ pub struct Submit {
     pub tab_flags: bool,
     /// The equipment page was shown.
     pub form_shown: bool,
+    /// The page state word takes 2: the advanced editor is scheduled and
+    /// commits in place of the mode's own.
+    pub advanced_editor: bool,
     pub commit: Option<CommitKind>,
 }
 
@@ -2572,6 +2594,7 @@ pub fn submit_creation(input: SubmitInput) -> Submit {
                 ready_flags: false,
                 tab_flags: false,
                 form_shown: false,
+                advanced_editor: false,
                 commit: None,
             };
         }
@@ -2593,6 +2616,7 @@ pub fn submit_creation(input: SubmitInput) -> Submit {
             ready_flags: input.known_powers == 0 && input.game_mode == 0x1010,
             tab_flags: true,
             form_shown: true,
+            advanced_editor: false,
             commit: None,
         };
     }
@@ -2607,6 +2631,7 @@ pub fn submit_creation(input: SubmitInput) -> Submit {
             ready_flags: false,
             tab_flags: false,
             form_shown: false,
+            advanced_editor: true,
             commit: Some(CommitKind::PowerTree),
         };
     }
@@ -2629,6 +2654,7 @@ pub fn submit_creation(input: SubmitInput) -> Submit {
         ready_flags: false,
         tab_flags: false,
         form_shown: false,
+        advanced_editor: false,
         commit: Some(commit),
     }
 }
@@ -2719,8 +2745,15 @@ pub struct PageSwitch {
     /// A non-continued character's two appearance panels were shown again
     /// and both their tab state words set to `0x110`.
     pub appearance_panels_shown: bool,
+    /// The appearance panels' two tab state words (both `0x110` when they
+    /// were shown, both 0 for a continued character).
+    pub appearance_tab_words: [u32; 2],
     /// The creator form was shown again with its page state cleared.
     pub form_shown: bool,
+    /// The page state word was set back to 0 after the show.
+    pub page_state_cleared: bool,
+    /// The equipment tab's state word lost the `0x110` bits.
+    pub tab_word_cleared: bool,
     /// The NEXT button's form was found and its disabled bit cleared.
     pub next_enabled: bool,
 }
@@ -2729,13 +2762,16 @@ pub struct PageSwitch {
 /// the creator from the appearance page: a recruit returns to the arena,
 /// anyone else to the menu.
 ///
-/// On the way back only the first built of the weapons panel, the skills
-/// panel (which also slides with `0x2d`) and the versus lobby form is
-/// hidden; the versus skills panel and the versus equipment form are then
-/// hidden when they exist. A non-continued character shows its two
-/// appearance panels again and sets both tab state words to `0x110`. The
-/// form is shown with page state 0, the tabs read NAME and HAIR, the NEXT
-/// button is enabled and the appearance editor is stored.
+/// Only the page state 1 (the equipment page) comes back; any other state
+/// leaves instead. On the way back only the first built of the weapons
+/// panel, the skills panel (which also slides with `0x2d`) and the versus
+/// lobby form is hidden; the versus skills panel and the versus equipment
+/// form are then hidden when they exist. A non-continued character shows its
+/// two appearance panels again and sets both tab state words to `0x110`.
+/// The form is then shown, its page state word cleared, the tabs read NAME
+/// and HAIR, the equipment tab's state word loses the `0x110` bits, the NEXT
+/// button's form is captioned and enabled, and the appearance editor is
+/// stored.
 pub fn switch_creation_page(
     page: CreationScreenPage,
     screen_mode: i32,
@@ -2751,6 +2787,7 @@ pub fn switch_creation_page(
         } else {
             None
         };
+        let appearance_panels_shown = screen_mode != 12;
         PageSwitch {
             page: CreationScreenPage::Appearance,
             destination: PageDestination::Appearance,
@@ -2759,8 +2796,15 @@ pub fn switch_creation_page(
             skills_slide: (hidden_first == Some(HiddenPanel::Skills)).then_some(0x2d),
             versus_skills_hidden: panels.versus_skills,
             versus_equipment_hidden: panels.versus_equipment,
-            appearance_panels_shown: screen_mode != 12,
+            appearance_panels_shown,
+            appearance_tab_words: if appearance_panels_shown {
+                [0x110, 0x110]
+            } else {
+                [0, 0]
+            },
             form_shown: true,
+            page_state_cleared: true,
+            tab_word_cleared: true,
             next_enabled: true,
         }
     } else {
@@ -2773,7 +2817,10 @@ pub fn switch_creation_page(
             versus_skills_hidden: false,
             versus_equipment_hidden: false,
             appearance_panels_shown: false,
+            appearance_tab_words: [0, 0],
             form_shown: false,
+            page_state_cleared: false,
+            tab_word_cleared: false,
             next_enabled: false,
         }
     }
@@ -3266,15 +3313,21 @@ pub fn weapon_kit_table(game_mode: i32, intro: bool) -> Option<KitTable> {
 }
 
 /// One starting kit entry: an item and the appearance it is given.
+///
+/// A table entry is 19 bytes: the item, the variant word, three tint bytes,
+/// four bytes this unit does not read, then the four colour-layer bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct KitItem {
     pub item: u32,
-    /// The item instance's variant word.
+    /// The variant word.
     pub variant: u32,
-    /// The two dye bytes.
-    pub dyes: [u8; 2],
-    /// The three colour bytes.
-    pub colours: [u8; 3],
+    /// The three tint bytes. An alias's target takes all three; a made
+    /// instance takes the second and third as its two dye bytes, each only
+    /// when it is set.
+    pub tint: [u8; 3],
+    /// The four colour-layer bytes a made instance writes and the kit match
+    /// compares.
+    pub layers: [u8; 4],
 }
 
 impl KitItem {
@@ -3283,8 +3336,8 @@ impl KitItem {
         Self {
             item,
             variant: 0,
-            dyes: [0; 2],
-            colours: [0; 3],
+            tint: [0; 3],
+            layers: [0; 4],
         }
     }
 }
@@ -3294,19 +3347,22 @@ impl KitItem {
 pub struct KitRecord {
     /// The item's base id.
     pub base: u32,
-    pub colours: [u8; 3],
+    /// The first byte of each of the item's four colour layers, or none
+    /// when the record has no colour-layer block.
+    pub layers: Option<[u8; 4]>,
 }
 
 /// Whether a kit entry already covers an item.
 ///
-/// The item matches by id, or its database record's base id and colour
-/// bytes match the entry.
+/// The item matches by id, or its database record's base id matches the
+/// entry and its four colour-layer bytes equal the entry's, compared in
+/// layer order. A record without a colour-layer block never matches.
 pub fn kit_item_matches(item: u32, record: Option<&KitRecord>, spec: &KitItem) -> bool {
     if item == spec.item {
         return true;
     }
     match record {
-        Some(record) => record.base == spec.item && record.colours == spec.colours,
+        Some(record) => record.base == spec.item && record.layers == Some(spec.layers),
         None => false,
     }
 }
@@ -3352,77 +3408,86 @@ pub fn missing_weapons(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResolvedKitItem {
     pub item: u32,
-    /// The appearance to write, or none for a plain item.
+    /// The appearance written on the resolved item, or none for a plain
+    /// item.
     pub appearance: Option<KitAppearance>,
-    /// A made item's four colour layers each end with this byte (five); an
-    /// alias writes its three bytes directly and has no marker.
-    pub layer_marker: Option<u8>,
 }
 
-/// The appearance a kit entry gives an item instance.
+/// The byte a made instance writes at the end of each colour layer.
+pub const KIT_LAYER_MARKER: u8 = 5;
+
+/// The appearance a kit entry writes on the item it resolves to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct KitAppearance {
-    pub variant: u32,
-    pub dyes: [u8; 2],
-    pub colours: [u8; 3],
+pub enum KitAppearance {
+    /// An alias's target record takes the variant in both of its variant
+    /// words and the three tint bytes, each set through the record's own
+    /// setter with a zero blend.
+    Alias { variant: u32, tint: [u8; 3] },
+    /// A made instance takes the variant word, the four colour-layer bytes
+    /// (each layer ending with [`KIT_LAYER_MARKER`]) and the second and third
+    /// tint bytes as its two dye bytes where they are set: a zero leaves the
+    /// item's own byte. Its description is rebuilt only for a non-zero
+    /// variant.
+    Instance {
+        variant: u32,
+        layers: [u8; 4],
+        dyes: [Option<u8>; 2],
+    },
 }
 
-impl From<&KitItem> for KitAppearance {
-    fn from(spec: &KitItem) -> Self {
-        Self {
-            variant: spec.variant,
-            dyes: spec.dyes,
-            colours: spec.colours,
-        }
-    }
+/// The route a kit entry takes through the item database.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KitRoute {
+    /// The item record's flag bit 0 is clear: the entry is added as itself.
+    Plain,
+    /// The item has an appearance block and follows to an alias record.
+    /// `marker` is that record's first name byte; only [`ALIAS_MARKER`]
+    /// makes the alias apply, and any other byte leaves the entry as itself.
+    Alias { marker: u8 },
+    /// A fresh instance of the item.
+    Instance,
 }
 
-/// Resolves a kit entry by the database flags it meets.
+/// The alias record's marker byte that makes a kit entry follow it.
+pub const ALIAS_MARKER: u8 = b'@';
+
+/// Resolves a kit entry by the route its database record takes.
 ///
-/// A plain database item is added as itself. Otherwise the database makes
-/// a new item for the entry (`created`): an item with a colour block is an
-/// alias whose target is made, any other a fresh instance of the item, and
-/// either takes the entry's variant, dyes and colours. When an alias makes
-/// nothing the item is added unchanged; when an instance cannot be made
-/// nothing is added (item 0).
+/// A plain record adds the entry as itself. An alias whose marker is
+/// [`ALIAS_MARKER`] gives the entry's variant and tint to the item the
+/// database resolves it to (`created`); with nothing resolved, or any other
+/// marker, the entry is added unchanged. An instance takes the entry's
+/// variant, colour layers and set dyes on the item made for it, and with
+/// nothing made nothing is added (item 0).
 ///
-/// The database's sub-record flags are reduced to these cases here; their
-/// exact layout belongs to the object database.
-pub fn resolve_kit_item(
-    spec: &KitItem,
-    database_flag: bool,
-    has_colour_block: bool,
-    created: Option<u32>,
-) -> ResolvedKitItem {
-    if !database_flag {
-        return ResolvedKitItem {
+/// The record's sub-record layout belongs to the object database; only the
+/// route, the marker byte and the made item cross this boundary.
+pub fn resolve_kit_item(spec: &KitItem, route: KitRoute, created: Option<u32>) -> ResolvedKitItem {
+    match (route, created) {
+        (KitRoute::Alias { marker }, Some(item)) if marker == ALIAS_MARKER => ResolvedKitItem {
+            item,
+            appearance: Some(KitAppearance::Alias {
+                variant: spec.variant,
+                tint: spec.tint,
+            }),
+        },
+        // Any other marker, or no target, leaves the entry as itself.
+        (KitRoute::Alias { .. }, _) | (KitRoute::Plain, _) => ResolvedKitItem {
             item: spec.item,
             appearance: None,
-            layer_marker: None,
-        };
-    }
-    match (created, has_colour_block) {
-        // A created alias's bytes go straight into its three layers.
-        (Some(item), true) => ResolvedKitItem {
+        },
+        (KitRoute::Instance, Some(item)) => ResolvedKitItem {
             item,
-            appearance: Some(KitAppearance::from(spec)),
-            layer_marker: None,
+            appearance: Some(KitAppearance::Instance {
+                variant: spec.variant,
+                layers: spec.layers,
+                dyes: [spec.tint[1], spec.tint[2]].map(|dye| (dye != 0).then_some(dye)),
+            }),
         },
-        // A made instance marks each colour layer with five.
-        (Some(item), false) => ResolvedKitItem {
-            item,
-            appearance: Some(KitAppearance::from(spec)),
-            layer_marker: Some(5),
-        },
-        (None, true) => ResolvedKitItem {
-            item: spec.item,
-            appearance: None,
-            layer_marker: None,
-        },
-        (None, false) => ResolvedKitItem {
+        // An instance that could not be made adds nothing.
+        (KitRoute::Instance, None) => ResolvedKitItem {
             item: 0,
             appearance: None,
-            layer_marker: None,
         },
     }
 }
@@ -3459,6 +3524,55 @@ pub fn apparel_panel_place(tall: bool) -> PanelPlace {
     }
 }
 
+/// What showing the equipment page's apparel panel did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApparelPanel {
+    /// The versus equipment form was hidden first (it exists).
+    pub versus_equipment_hidden: bool,
+    /// The panel was made (none existed) rather than shown again.
+    pub created: bool,
+    pub shown: bool,
+    /// The panel's item loop finished (the made panel only).
+    pub finished: bool,
+    /// The screen's current equipment form took the panel.
+    pub current_form: bool,
+    /// The kit entries the loop added.
+    pub items: usize,
+}
+
+/// Shows the equipment page's apparel panel and fills it with the mode's
+/// kit.
+///
+/// The versus equipment form is hidden first when it exists, and the form's
+/// first tab is captioned APPAREL. A missing panel is made at
+/// [`apparel_panel_place`], shown and bound as the current equipment form
+/// at once, then filled from [`apparel_kit_table`]'s entries: every entry
+/// the worn list does not already cover is resolved and added
+/// ([`missing_apparel`], [`resolve_kit_item`]) and the panel finishes. A
+/// named story background (no table) returns right after that binding, with
+/// no items and no finish. A panel that already exists is shown again,
+/// keeps its items and is bound as the current form; the table is not
+/// consulted.
+pub fn show_apparel_panel(
+    has_versus_equipment: bool,
+    existing: bool,
+    kit_entries: Option<usize>,
+    added: usize,
+) -> ApparelPanel {
+    let created = !existing;
+    // Both routes bind the panel as the current equipment form: the made
+    // one before the table is picked, the existing one after it is shown.
+    let filled = created && kit_entries.is_some();
+    ApparelPanel {
+        versus_equipment_hidden: has_versus_equipment,
+        created,
+        shown: true,
+        finished: filled,
+        current_form: true,
+        items: if filled { added } else { 0 },
+    }
+}
+
 /// The weapons panel beside the apparel one.
 pub fn weapon_panel_place(parent_width: i32, tall: bool) -> PanelPlace {
     PanelPlace {
@@ -3466,6 +3580,55 @@ pub fn weapon_panel_place(parent_width: i32, tall: bool) -> PanelPlace {
         y: 0x18,
         w: 0xac,
         h: if tall { 0x26c } else { 0x238 },
+    }
+}
+
+/// The bit the weapons panel sets in its flag word.
+pub const WEAPON_PANEL_FLAGS: u32 = 0x2_0000;
+
+/// What showing the equipment page's weapons panel did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WeaponPanel {
+    /// The second preview panel was hidden first (it exists).
+    pub second_panel_hidden: bool,
+    /// The panel was made (none existed) rather than shown again.
+    pub created: bool,
+    pub shown: bool,
+    /// The panel's item loop finished (the made panel only).
+    pub finished: bool,
+    /// The panel's flag word gained [`WEAPON_PANEL_FLAGS`] when it was
+    /// made.
+    pub flags: u32,
+    /// The kit entries the loop added.
+    pub items: usize,
+}
+
+/// Shows the equipment page's weapons panel and fills it with the mode's
+/// kit.
+///
+/// The second preview panel is hidden first when it exists and the form's
+/// second tab is captioned WEAPONS. A missing panel is made beside the
+/// apparel one at [`weapon_panel_place`] with [`WEAPON_PANEL_FLAGS`] set,
+/// shown, and filled from [`weapon_kit_table`]'s entries: every entry whose
+/// item id none of the first two hands' base items equals is resolved and
+/// added ([`missing_weapons`], [`resolve_kit_item`]), then the panel
+/// finishes. An existing panel is only shown again. Story mode offers no
+/// weapons, so its panel is made and left empty.
+pub fn show_weapon_panel(
+    has_second_panel: bool,
+    existing: bool,
+    kit_entries: Option<usize>,
+    added: usize,
+) -> WeaponPanel {
+    let created = !existing;
+    let empty = kit_entries.is_none_or(|entries| entries == 0);
+    WeaponPanel {
+        second_panel_hidden: has_second_panel,
+        created,
+        shown: true,
+        finished: created,
+        flags: if created { WEAPON_PANEL_FLAGS } else { 0 },
+        items: if created && !empty { added } else { 0 },
     }
 }
 
@@ -3623,17 +3786,91 @@ pub fn equipment_tab(index: i32) -> EquipmentTab {
     }
 }
 
-/// Whether a voice selection takes: only when its sample exists. The
-/// voice caption then shows the letter `A` plus the index.
-pub fn select_voice(index: i32, sample_exists: bool) -> Option<i32> {
-    sample_exists.then_some(index)
+/// Which of the record's two voice words a selection wrote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VoiceWord {
+    /// Nothing was written.
+    None,
+    /// The record's voice word (the plain selection's).
+    Voice,
+    /// The record's variant voice word (the selection beside the voice).
+    Variant,
 }
 
-/// Whether a variant voice selection takes. A record whose race byte is
-/// set takes the index directly, with no sample and no preview; a human
-/// needs the `DA` sample to exist.
-pub fn select_variant_voice(index: i32, race_set: bool, sample_exists: bool) -> Option<i32> {
-    (race_set || sample_exists).then_some(index)
+/// What selecting a voice did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VoiceChoice {
+    /// The voice the screen keeps, when the selection took.
+    pub index: Option<i32>,
+    /// The record word the selection wrote.
+    pub word: VoiceWord,
+    /// The caption's letter: the index plus `A`, truncated to a byte. The
+    /// plain selection's caption is the base form's seventh control, the
+    /// variant's the ninth.
+    pub caption: Option<u8>,
+    /// The sample loaded and its preview plays (previews are not muted).
+    pub plays: bool,
+}
+
+/// Selects a voice, taking it only when its sample exists.
+///
+/// The `_GruntS` sample named after the prefix and the one-based voice must
+/// load for anything to happen: the screen keeps the index, the record's
+/// voice word takes it, the caption shows `A` plus the index and the sample
+/// previews at the voice's stored pitch (volume 0.4) unless previews are
+/// muted.
+pub fn select_voice(index: i32, sample_exists: bool, muted: bool) -> VoiceChoice {
+    if !sample_exists {
+        return VoiceChoice {
+            index: None,
+            word: VoiceWord::None,
+            caption: None,
+            plays: false,
+        };
+    }
+    VoiceChoice {
+        index: Some(index),
+        word: VoiceWord::Voice,
+        caption: Some(index.wrapping_add(0x41) as u8),
+        plays: !muted,
+    }
+}
+
+/// Selects the variant voice beside the voice.
+///
+/// A record whose race band (bits 8 through 15 of its profession word) is
+/// set takes the index straight into the variant voice word, with no sample
+/// and no preview. Otherwise the `DA` sample must load: the screen keeps
+/// the index, the variant voice word takes it, the ninth control's caption
+/// shows `A` plus the index, and the sample previews like the plain one.
+pub fn select_variant_voice(
+    index: i32,
+    race_band: bool,
+    sample_exists: bool,
+    muted: bool,
+) -> VoiceChoice {
+    if race_band {
+        return VoiceChoice {
+            index: Some(index),
+            word: VoiceWord::Variant,
+            caption: None,
+            plays: false,
+        };
+    }
+    if !sample_exists {
+        return VoiceChoice {
+            index: None,
+            word: VoiceWord::None,
+            caption: None,
+            plays: false,
+        };
+    }
+    VoiceChoice {
+        index: Some(index),
+        word: VoiceWord::Variant,
+        caption: Some(index.wrapping_add(0x41) as u8),
+        plays: !muted,
+    }
 }
 
 /// The record fields a loaded preset leaves behind.
@@ -3686,10 +3923,18 @@ pub struct PreviewPush {
     /// The item selected after the push, if the previous last one was
     /// hovered.
     pub selected: Option<i32>,
+    /// The item view's entry list was refreshed.
+    pub refreshed: bool,
+    /// The icon manager finished the new icon.
+    pub finished: bool,
 }
 
 /// Adds a preview icon; a hovered last item moves the selection to the new
 /// last one.
+///
+/// The icon is registered with the icon manager first, then the list grows
+/// by one entry holding the new icon, the item view's entries are refreshed
+/// and the manager finishes. The selection then follows the hover rule.
 pub fn push_preview(count: i32, hovered: Option<i32>) -> PreviewPush {
     let count = count.wrapping_add(1);
     // The hovered index is zero-extended and the count sign-extended, both
@@ -3697,15 +3942,78 @@ pub fn push_preview(count: i32, hovered: Option<i32>) -> PreviewPush {
     let selected = hovered
         .filter(|hovered| u64::from(*hovered as u32) as i64 + 1 == i64::from(count) - 1)
         .map(|_| count - 1);
-    PreviewPush { count, selected }
+    PreviewPush {
+        count,
+        selected,
+        refreshed: true,
+        finished: true,
+    }
 }
 
-/// The text row a pick in the continue screen's list shows, from its
-/// one-based position: that row's text fills the details box. The
-/// original indexes without a check; a position below one shows nothing
-/// here.
-pub fn continue_name_row(selected: i32) -> Option<usize> {
-    usize::try_from(selected.checked_sub(1)?).ok()
+/// The row and name a pick in the continue screen's list shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContinueNameRow<'a> {
+    /// The row the page keeps: the one-based pick less one, unchecked.
+    pub row: i32,
+    /// The row's name, which fills the details box's name control.
+    pub text: Option<&'a str>,
+}
+
+/// The name a pick in the continue screen's list fills in.
+///
+/// The control reports a one-based row; the page stores it less one and the
+/// name of the list entry at that row becomes the name control's text. The
+/// original computes the index without a check; here a pick with no row
+/// behind it stores the word and writes no text.
+pub fn continue_name_row<'a>(selected: i32, rows: &[&'a str]) -> ContinueNameRow<'a> {
+    let row = selected.wrapping_sub(1);
+    let text = usize::try_from(row)
+        .ok()
+        .and_then(|row| rows.get(row))
+        .copied();
+    ContinueNameRow { row, text }
+}
+
+/// The two texts the continue page opens with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContinueTexts<'a> {
+    /// The row the page keeps, when it is written (always the first).
+    pub row: Option<i32>,
+    /// The label list's selection and length: the first of the list's
+    /// entries; missing when the list is empty.
+    pub label: Option<[i32; 2]>,
+    /// The label's text: the list's first display string, or none (the
+    /// text is cleared) when the list is empty.
+    pub label_text: Option<&'a str>,
+    /// The details box's name: the first entry's name, or none (cleared).
+    pub name_text: Option<&'a str>,
+}
+
+/// Fills the continue page's label and name box when it opens.
+///
+/// The list belongs to the save manager, which refreshes it first: its
+/// display strings (`labels`, whose length is the list's count) and the
+/// entries' names (`names`). With any entry the label selects the first of
+/// `count` entries and shows its display string, and the pick handler runs
+/// on that selection ([`continue_name_row`] with row one), so the page keeps
+/// row 0 and the name box takes the first name. An empty list clears both
+/// texts and leaves the kept row alone.
+pub fn continue_texts<'a>(labels: &[&'a str], names: &[&'a str]) -> ContinueTexts<'a> {
+    if labels.is_empty() {
+        return ContinueTexts {
+            row: None,
+            label: None,
+            label_text: None,
+            name_text: None,
+        };
+    }
+    let pick = continue_name_row(1, names);
+    ContinueTexts {
+        row: Some(pick.row),
+        label: Some([1, labels.len() as i32]),
+        label_text: labels.first().copied(),
+        name_text: pick.text,
+    }
 }
 
 /// The delete confirmation's text: the question and the character's name.
@@ -3718,9 +4026,39 @@ pub fn copy_creation_name(name: &str) -> String {
     name.to_string()
 }
 
-/// Creates the creator's icon sheet once.
-pub fn ensure_creation_icons(existing: bool) -> bool {
-    !existing
+/// What the creator's icon sheet leaves behind, and its reload hook.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CreationIconHook {
+    /// The sheet was built (the manager was missing).
+    pub built: bool,
+    /// A previous texture-reload hook exists and is called before every
+    /// rebuild ([`build_creation_icons`]'s chain).
+    pub previous_hook: bool,
+    /// This builder took the reload hook's slot, after the previous one.
+    pub installed: bool,
+}
+
+/// Gets the creator's icon sheet, building it on first use.
+///
+/// An existing manager is returned untouched: no rebuild and no chaining. A
+/// missing one is built, the texture-reload hook already installed is kept
+/// to be called first, and the builder takes the hook's slot so the sheet is
+/// cut again when the textures reload [the hook's slot is a global this unit
+/// only chains into].
+pub fn ensure_creation_icons(existing: bool, previous_hook: bool) -> CreationIconHook {
+    if existing {
+        CreationIconHook {
+            built: false,
+            previous_hook,
+            installed: false,
+        }
+    } else {
+        CreationIconHook {
+            built: true,
+            previous_hook,
+            installed: true,
+        }
+    }
 }
 
 /// The voice variants played last, so a preview does not repeat one.
@@ -4173,20 +4511,34 @@ pub fn release_preview_icon(present: bool) -> bool {
     present
 }
 
-/// The number of preview items a material is applied to.
+/// Applies the preview's material to every item of its list, in order.
 ///
-/// The material is only applied when the preview's generator object exists.
-/// The loop runs from 0 through the item list's highest index (`high`, -1
-/// for an empty list), so it covers `high + 1` items. Every item gets the
-/// same material.
-pub fn preview_material_items(present: bool, high: i32) -> Option<usize> {
-    present.then(|| usize::try_from(high.saturating_add(1)).unwrap_or(0))
+/// The material is only applied when the preview's generator object exists;
+/// then each listed item, from the first through the list's last, is given
+/// the same material, and the applied items are returned in that order. An
+/// empty list applies nothing.
+pub fn apply_preview_material(present: bool, items: &[i32]) -> Vec<i32> {
+    if present { items.to_vec() } else { Vec::new() }
 }
 
-/// Releases a preview item's material; the material manager is called only
-/// when one is set.
-pub fn release_preview_material(present: bool) -> bool {
-    present
+/// Releases a preview item's material.
+///
+/// The material manager is called only when a material is set, and it is
+/// handed the field's address, so the generator slot is cleared as well as
+/// released.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PreviewMaterialRelease {
+    /// The material manager ran.
+    pub released: bool,
+    /// The generator slot was cleared.
+    pub cleared: bool,
+}
+
+pub fn release_preview_material(present: bool) -> PreviewMaterialRelease {
+    PreviewMaterialRelease {
+        released: present,
+        cleared: present,
+    }
 }
 
 /// The model the dummy-head preview renders.
@@ -4624,27 +4976,46 @@ pub fn continue_view(input: ContinueViewInput<'_>) -> ContinueView {
 
 /// What opening the continue page does.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ContinuePageOpen {
+pub struct ContinuePageOpen<'a> {
     pub gui_hidden: bool,
     pub view: ContinueView,
     pub button: CreationContinue,
     pub reset_dialog: bool,
+    /// The label and name box the page fills in ([`continue_texts`]).
+    pub texts: ContinueTexts<'a>,
+    /// The view's left edge and the panels ([`continue_place`]).
+    pub place: ContinuePlace,
+}
+
+/// The save manager's list a continue page opens on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContinueSaveList<'a> {
+    /// The entries' display strings; their count is the list's.
+    pub labels: &'a [&'a str],
+    /// The entries' names, by row.
+    pub names: &'a [&'a str],
 }
 
 /// Opens the continue page: hides the in-game GUI, builds the character
-/// view, lays out the save or checkpoint button and, when the save manager
-/// reports a reset to the portal is needed, opens that dialog.
-pub fn open_continue_page(
+/// view, lays out the save or checkpoint button, fills the label and name
+/// box from the save list and, when the save manager reports a reset to the
+/// portal is needed, opens that dialog.
+pub fn open_continue_page<'a>(
     input: ContinueViewInput<'_>,
+    saves: ContinueSaveList<'a>,
     kind: SaveKind,
     availability: SaveAvailability,
     reset_to_portal: bool,
-) -> ContinuePageOpen {
+    unit: i32,
+    tall: bool,
+) -> ContinuePageOpen<'a> {
     ContinuePageOpen {
         gui_hidden: true,
         view: continue_view(input),
         button: creation_continue_button(kind.code(), availability.0 as i32),
         reset_dialog: reset_to_portal,
+        texts: continue_texts(saves.labels, saves.names),
+        place: continue_place(unit, tall),
     }
 }
 
@@ -4740,6 +5111,13 @@ pub const CREATION_ICON_SHEET: &str = "charcreate.rfi";
 pub const CREATION_ICON_WORD: u32 = 0x203;
 /// The icon manager's flags the sheet sets.
 pub const CREATION_ICON_FLAGS: u32 = 0x0100_2008;
+/// The sheet's height: four [`CREATION_ICON_SIZE`] cells stacked.
+pub const CREATION_ICON_HEIGHT: i32 = 4 * CREATION_ICON_SIZE;
+/// The flags the cell image is made with (the icon manager's own).
+pub const CREATION_ICON_IMAGE_FLAGS: u32 = 0x2000_0000;
+/// The mip level the Kaiser pass leaves each cell at: the whole 96 by 96
+/// image is filtered each time, then cut from the sheet.
+pub const CREATION_ICON_MIP: u32 = 0;
 
 /// What building the creator's icon sheet did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -4753,17 +5131,28 @@ pub struct CreationIconSheet {
     pub icon_size: i32,
     /// The sheet loaded.
     pub loaded: bool,
-    /// The 96-pixel cells added, in the order the original cuts them.
+    /// The 96-pixel cells added, in the order the original cuts them, and
+    /// the band each is cut from (288, 192, 96 and 0).
     pub cells: usize,
+    pub bands: [i32; 4],
+    /// The cell image's size and flags, and the mip level kept.
+    pub cell_size: i32,
+    pub image_flags: u32,
+    pub mip: u32,
+    /// The manager's reset call ran (it existed).
+    pub reset: bool,
 }
 
 /// Builds or rebinds the creator's icon sheet.
 ///
-/// An existing manager is reset first; otherwise one is made with the
-/// 0x203 word and the `0x0100_2008` flags. Its icon size is set to eight
-/// GUI units (32 at unit 4) either way. A missing sheet adds no cells. A present one
-/// is cut into four 96-pixel cells at 288, 192, 96 and 0, each registered
-/// as an icon, then the manager finishes.
+/// A previous reload hook, when one exists, runs first (the chain
+/// [`ensure_creation_icons`] installs). An existing manager is reset;
+/// otherwise one is made with the 0x203 word and the `0x0100_2008` flags.
+/// Its icon size is set to eight GUI units (32 at unit 4) either way. A
+/// missing sheet adds no cells. A present one is decoded into a 96 by 96
+/// image with the `0x2000_0000` flags and the sheet's own format, filtered
+/// by the Kaiser pass and registered as four icons, cut at 288, 192, 96 and
+/// 0 from the 96 by 384 sheet, then the manager finishes.
 pub fn build_creation_icons(unit: i32, existing: bool, load_ok: bool) -> CreationIconSheet {
     CreationIconSheet {
         reused: existing,
@@ -4776,6 +5165,15 @@ pub fn build_creation_icons(unit: i32, existing: bool, load_ok: bool) -> Creatio
         } else {
             0
         },
+        bands: if load_ok {
+            CREATION_ICON_OFFSETS
+        } else {
+            [0; 4]
+        },
+        cell_size: CREATION_ICON_SIZE,
+        image_flags: CREATION_ICON_IMAGE_FLAGS,
+        mip: CREATION_ICON_MIP,
+        reset: existing,
     }
 }
 
@@ -4973,30 +5371,6 @@ mod tests {
         assert_eq!(creation_label(0x4ff).code(), Some("ML"));
         assert_eq!(creation_label(0x500), CreationLabel::None);
         assert_eq!(creation_label(0x500).code(), None);
-    }
-
-    #[test]
-    fn the_creation_slots_clear_from_the_first_used() {
-        let mut slots = [[0u8; 8]; 6];
-        slots[1] = [1, 2, 3, 4, 5, 6, 7, 8];
-        slots[5] = [7; 8];
-        assert_eq!(clear_creation_slots(&mut slots), Some(1));
-        assert_eq!(slots[0], [0; 8]);
-        assert_eq!(slots[1], [0, 0, 3, 0, 0, 0, 0, 0]);
-        assert_eq!(slots[2], [0; 8]);
-        assert_eq!(slots[3], [0; 8]);
-        assert_eq!(slots[4], [0; 8]);
-        // The clear runs through the sixth slot too.
-        assert_eq!(slots[5], [0; 8]);
-
-        let mut empty = [[0u8; 8]; 6];
-        assert_eq!(clear_creation_slots(&mut empty), None);
-        assert!(empty.iter().all(|slot| slot == &[0u8; 8]));
-
-        let mut last = [[0u8; 8]; 6];
-        last[5] = [7; 8];
-        assert_eq!(clear_creation_slots(&mut last), Some(5));
-        assert_eq!(last[5], [0, 0, 7, 0, 0, 0, 0, 0]);
     }
 
     #[test]
@@ -6042,6 +6416,14 @@ mod tests {
         assert_eq!(skills[2], Skill::default());
         assert_eq!(skills[3], Skill::default());
 
+        // The first used slot keeps its first technique byte and loses the
+        // other five; every later slot is cleared whole, the last included.
+        let mut last = [Skill::default(); SKILLS];
+        last[5] = skill(25000, [1, 2, 3, 4, 5, 6]);
+        assert_eq!(clear_skills_from_first_used(&mut last), Some(5));
+        assert_eq!(last[5], skill(0, [1, 0, 0, 0, 0, 0]));
+        assert_eq!(last[0], Skill::default());
+
         let mut empty = [Skill::default(); SKILLS];
         assert_eq!(clear_skills_from_first_used(&mut empty), None);
     }
@@ -6125,7 +6507,7 @@ mod tests {
 
     #[test]
     fn the_skills_page_follows_the_mode() {
-        let arena = skill_page(8, 0, 20000, 0);
+        let arena = skill_page(8, 0, 20000, 0, true, false);
         assert_eq!(arena.mode, SkillPageMode::Arena);
         assert_eq!(arena.tab, Some("SKILLS"));
         assert_eq!(arena.heading, None);
@@ -6134,12 +6516,12 @@ mod tests {
         assert!(!arena.editable);
         assert_eq!(arena.page, 4);
 
-        let arena_continue = skill_page(8, 12, 20000, 0);
+        let arena_continue = skill_page(8, 12, 20000, 0, true, false);
         assert_eq!(arena_continue.tab, None);
         assert_eq!(arena_continue.heading, Some("Current skill progress"));
         assert!(!arena_continue.clear_skills);
 
-        let global = skill_page(4, 0, 12000, 0);
+        let global = skill_page(4, 0, 12000, 0, true, false);
         assert_eq!(global.mode, SkillPageMode::Global);
         assert_eq!(global.heading, Some("Global experience"));
         assert_eq!(global.value, Some(12000));
@@ -6149,13 +6531,36 @@ mod tests {
 
         // 30000 experience is worth 48750; less a committed 37500 leaves
         // 11250, which buys back 10000 experience.
-        let continued = skill_page(4, 12, 30000, 37500);
+        let continued = skill_page(4, 12, 30000, 37500, true, false);
         assert_eq!(continued.mode, SkillPageMode::NewGlobal);
         assert_eq!(continued.heading, Some("New global experience"));
         assert_eq!(continued.value, Some(10000));
         assert_eq!(continued.worth_left, 11250);
         assert!(!continued.editable);
         assert!(!continued.apply_budget);
+
+        // Every page hides the second preview panel first and makes the
+        // skills panel with its 0x20000 flag; the panel is shown either way.
+        for page in [arena, arena_continue, global, continued] {
+            assert!(page.second_panel_hidden);
+            assert!(page.created && page.shown);
+            assert_eq!(page.panel_flags, 0x2_0000);
+            assert!(!page.record_rebound);
+        }
+        // A second visit shows the existing panel again with its record
+        // pointer rebound and no new flags; a missing second preview panel
+        // is not hidden.
+        let again = skill_page(4, 0, 12000, 0, false, true);
+        assert!(!again.second_panel_hidden);
+        assert!(!again.created && again.shown);
+        assert_eq!(again.panel_flags, 0);
+        assert!(again.record_rebound);
+        assert_eq!(again.value, Some(12000));
+        // Of the three pages, the arena's reads the character's skills, not
+        // the account's, so its experience word stays empty. 20000 experience
+        // is worth 27500.
+        assert_eq!(arena.value, None);
+        assert_eq!(arena.worth_left, 27500);
     }
 
     #[test]
@@ -6474,6 +6879,12 @@ mod tests {
             equipment_hook: false,
         });
         assert_eq!(advanced.commit, Some(CommitKind::PowerTree));
+        // The equipment page with powers moves its page state to 2 (the
+        // advanced editor) instead of committing, while a record without
+        // powers commits on the same page.
+        assert!(advanced.advanced_editor);
+        assert!(!advanced.build_equipment && !advanced.form_shown);
+        assert!(!recruit.advanced_editor);
 
         let free = submit_creation(SubmitInput {
             page: CreationScreenPage::Equipment,
@@ -6506,6 +6917,10 @@ mod tests {
         assert!(!back.versus_skills_hidden && !back.versus_equipment_hidden);
         assert!(back.form_shown && back.next_enabled);
         assert!(back.appearance_panels_shown);
+        // Both appearance tab words take 0x110, the page state word clears
+        // and the equipment tab word loses its 0x110 bits.
+        assert_eq!(back.appearance_tab_words, [0x110, 0x110]);
+        assert!(back.page_state_cleared && back.tab_word_cleared);
 
         // Weapons come first: the skills panel is neither hidden nor slid.
         let both = switch_creation_page(
@@ -6536,12 +6951,18 @@ mod tests {
 
         let continued = switch_creation_page(CreationScreenPage::Equipment, 12, arena_panels);
         assert!(!continued.appearance_panels_shown);
+        // A continued character's two tab words are left alone.
+        assert_eq!(continued.appearance_tab_words, [0, 0]);
+        assert!(continued.page_state_cleared && continued.tab_word_cleared);
 
         let arena =
             switch_creation_page(CreationScreenPage::Appearance, 10, BuiltPanels::default());
         assert_eq!(arena.destination, PageDestination::Arena);
         assert!(arena.header.is_none());
         assert_eq!(arena.hidden_first, None);
+        // Leaving from the appearance page clears nothing.
+        assert!(!arena.page_state_cleared && !arena.tab_word_cleared);
+        assert_eq!(arena.appearance_tab_words, [0, 0]);
 
         let other = switch_creation_page(CreationScreenPage::Appearance, 4, BuiltPanels::default());
         assert_eq!(other.destination, PageDestination::Menu);
@@ -6807,8 +7228,8 @@ mod tests {
         let seven = KitItem {
             item: 7,
             variant: 2,
-            dyes: [4, 5],
-            colours: [1, 2, 3],
+            tint: [4, 5, 6],
+            layers: [1, 2, 3, 4],
         };
 
         assert!(kit_item_matches(5, None, &five));
@@ -6817,7 +7238,7 @@ mod tests {
             9,
             Some(&KitRecord {
                 base: 5,
-                colours: [0; 3]
+                layers: Some([0; 4])
             }),
             &five
         ));
@@ -6825,7 +7246,17 @@ mod tests {
             9,
             Some(&KitRecord {
                 base: 7,
-                colours: [1, 2, 3]
+                layers: Some([1, 2, 3, 4])
+            }),
+            &seven
+        ));
+        // The fourth layer byte counts, and a record without a colour-layer
+        // block never matches by base.
+        assert!(!kit_item_matches(
+            9,
+            Some(&KitRecord {
+                base: 7,
+                layers: Some([1, 2, 3, 5])
             }),
             &seven
         ));
@@ -6833,7 +7264,7 @@ mod tests {
             9,
             Some(&KitRecord {
                 base: 7,
-                colours: [1, 2, 4]
+                layers: None
             }),
             &seven
         ));
@@ -6842,7 +7273,7 @@ mod tests {
         let record_of = |item: u32| match item {
             9 => Some(KitRecord {
                 base: 7,
-                colours: [1, 2, 3],
+                layers: Some([1, 2, 3, 4]),
             }),
             _ => None,
         };
@@ -6866,40 +7297,80 @@ mod tests {
         let spec = KitItem {
             item: 12,
             variant: 9,
-            dyes: [3, 4],
-            colours: [5, 6, 7],
+            tint: [2, 3, 4],
+            layers: [5, 6, 7, 8],
         };
 
-        let plain = resolve_kit_item(&spec, false, false, None);
+        let plain = resolve_kit_item(&spec, KitRoute::Plain, None);
         assert_eq!(
             plain,
             ResolvedKitItem {
                 item: 12,
                 appearance: None,
-                layer_marker: None
             }
         );
 
-        // An instance is a new item the database made for the entry.
-        assert_eq!(resolve_kit_item(&spec, true, false, None).item, 0);
-        let instance = resolve_kit_item(&spec, true, false, Some(30));
+        // An instance is a new item the database made for the entry: the
+        // four layer bytes (each layer then marked with five) and the
+        // second and third tint bytes as dyes.
+        assert_eq!(resolve_kit_item(&spec, KitRoute::Instance, None).item, 0);
+        let instance = resolve_kit_item(&spec, KitRoute::Instance, Some(30));
         assert_eq!(instance.item, 30);
-        assert_eq!(instance.layer_marker, Some(5));
+        assert_eq!(KIT_LAYER_MARKER, 5);
         assert_eq!(
             instance.appearance,
-            Some(KitAppearance {
+            Some(KitAppearance::Instance {
                 variant: 9,
-                dyes: [3, 4],
-                colours: [5, 6, 7]
+                layers: [5, 6, 7, 8],
+                dyes: [Some(3), Some(4)],
+            })
+        );
+        // A zero dye byte is left alone, keeping the item's own byte; the
+        // first tint byte never reaches an instance.
+        let no_dyes = KitItem {
+            tint: [9, 0, 4],
+            ..spec
+        };
+        assert_eq!(
+            resolve_kit_item(&no_dyes, KitRoute::Instance, Some(30)).appearance,
+            Some(KitAppearance::Instance {
+                variant: 9,
+                layers: [5, 6, 7, 8],
+                dyes: [None, Some(4)],
             })
         );
 
-        let alias = resolve_kit_item(&spec, true, true, Some(21));
+        // An alias applies only with its marker byte; then its target takes
+        // the variant and all three tint bytes.
+        let alias = resolve_kit_item(
+            &spec,
+            KitRoute::Alias {
+                marker: ALIAS_MARKER,
+            },
+            Some(21),
+        );
         assert_eq!(alias.item, 21);
-        assert!(alias.appearance.is_some());
-        assert_eq!(alias.layer_marker, None);
+        assert_eq!(
+            alias.appearance,
+            Some(KitAppearance::Alias {
+                variant: 9,
+                tint: [2, 3, 4],
+            })
+        );
+        assert_eq!(ALIAS_MARKER, b'@');
 
-        let no_alias = resolve_kit_item(&spec, true, true, None);
+        // Any other marker leaves the entry as itself, and so does a marker
+        // without a made item.
+        let other = resolve_kit_item(&spec, KitRoute::Alias { marker: b'#' }, Some(21));
+        assert_eq!(other.item, 12);
+        assert!(other.appearance.is_none());
+        let no_alias = resolve_kit_item(
+            &spec,
+            KitRoute::Alias {
+                marker: ALIAS_MARKER,
+            },
+            None,
+        );
         assert_eq!(no_alias.item, 12);
         assert!(no_alias.appearance.is_none());
     }
@@ -6910,6 +7381,90 @@ mod tests {
         assert_eq!(CREATION_ICON_OFFSETS, [288, 192, 96, 0]);
         assert_eq!(creation_icon_size(4), 32);
         assert_eq!(creation_icon_size(5), 40);
+    }
+
+    #[test]
+    fn the_apparel_panel_is_made_once_and_bound() {
+        // The first visit hides the versus equipment form, makes the panel,
+        // fills it from the kit and binds it as the current equipment form.
+        assert_eq!(
+            show_apparel_panel(true, false, Some(5), 3),
+            ApparelPanel {
+                versus_equipment_hidden: true,
+                created: true,
+                shown: true,
+                finished: true,
+                current_form: true,
+                items: 3,
+            }
+        );
+        // A second visit only shows it again: no items, nothing finished,
+        // and it is still bound.
+        assert_eq!(
+            show_apparel_panel(false, true, Some(5), 3),
+            ApparelPanel {
+                versus_equipment_hidden: false,
+                created: false,
+                shown: true,
+                finished: false,
+                current_form: true,
+                items: 0,
+            }
+        );
+        // A named story background stops after the made panel is bound:
+        // it is the current equipment form but gets no items or finish.
+        assert_eq!(
+            show_apparel_panel(false, false, None, 4),
+            ApparelPanel {
+                versus_equipment_hidden: false,
+                created: true,
+                shown: true,
+                finished: false,
+                current_form: true,
+                items: 0,
+            }
+        );
+        // An existing panel is bound whatever the mode's table.
+        assert!(show_apparel_panel(false, true, None, 0).current_form);
+    }
+
+    #[test]
+    fn the_weapons_panel_is_made_once_and_filled() {
+        assert_eq!(
+            show_weapon_panel(true, false, Some(6), 2),
+            WeaponPanel {
+                second_panel_hidden: true,
+                created: true,
+                shown: true,
+                finished: true,
+                flags: 0x2_0000,
+                items: 2,
+            }
+        );
+        assert_eq!(
+            show_weapon_panel(false, true, Some(6), 2),
+            WeaponPanel {
+                second_panel_hidden: false,
+                created: false,
+                shown: true,
+                finished: false,
+                flags: 0,
+                items: 0,
+            }
+        );
+        // Story mode's table is empty: the panel is made and finished with
+        // nothing in it.
+        assert_eq!(
+            show_weapon_panel(false, false, Some(0), 0),
+            WeaponPanel {
+                second_panel_hidden: false,
+                created: true,
+                shown: true,
+                finished: true,
+                flags: 0x2_0000,
+                items: 0,
+            }
+        );
     }
 
     #[test]
@@ -7047,11 +7602,69 @@ mod tests {
 
     #[test]
     fn a_voice_selection_needs_its_sample() {
-        assert_eq!(select_voice(3, true), Some(3));
-        assert_eq!(select_voice(3, false), None);
-        assert_eq!(select_variant_voice(2, true, false), Some(2));
-        assert_eq!(select_variant_voice(2, false, false), None);
-        assert_eq!(select_variant_voice(2, false, true), Some(2));
+        // A plain voice takes only with its sample: the screen keeps the
+        // index, the record's voice word takes it, the seventh control shows
+        // `A` plus the index and the sample previews unless muted.
+        assert_eq!(
+            select_voice(3, true, false),
+            VoiceChoice {
+                index: Some(3),
+                word: VoiceWord::Voice,
+                caption: Some(0x44),
+                plays: true,
+            }
+        );
+        assert_eq!(
+            select_voice(0, true, true),
+            VoiceChoice {
+                index: Some(0),
+                word: VoiceWord::Voice,
+                caption: Some(0x41),
+                plays: false,
+            }
+        );
+        assert_eq!(
+            select_voice(3, false, false),
+            VoiceChoice {
+                index: None,
+                word: VoiceWord::None,
+                caption: None,
+                plays: false,
+            }
+        );
+
+        // The variant voice of a race with its band set takes the index into
+        // the variant word with no sample, no caption and no preview; a
+        // human needs its `DA` sample, and then captions and previews like
+        // the plain voice.
+        assert_eq!(
+            select_variant_voice(2, true, false, false),
+            VoiceChoice {
+                index: Some(2),
+                word: VoiceWord::Variant,
+                caption: None,
+                plays: false,
+            }
+        );
+        assert_eq!(
+            select_variant_voice(2, false, false, false),
+            VoiceChoice {
+                index: None,
+                word: VoiceWord::None,
+                caption: None,
+                plays: false,
+            }
+        );
+        assert_eq!(
+            select_variant_voice(2, false, true, false),
+            VoiceChoice {
+                index: Some(2),
+                word: VoiceWord::Variant,
+                caption: Some(0x43),
+                plays: true,
+            }
+        );
+        assert!(!select_variant_voice(2, false, true, true).plays);
     }
 
     #[test]
@@ -7105,31 +7718,98 @@ mod tests {
             push_preview(4, None),
             PreviewPush {
                 count: 5,
-                selected: None
+                selected: None,
+                refreshed: true,
+                finished: true
             }
         );
         assert_eq!(
             push_preview(4, Some(3)),
             PreviewPush {
                 count: 5,
-                selected: Some(4)
+                selected: Some(4),
+                refreshed: true,
+                finished: true
             }
         );
         assert_eq!(
             push_preview(4, Some(2)),
             PreviewPush {
                 count: 5,
-                selected: None
+                selected: None,
+                refreshed: true,
+                finished: true
             }
         );
     }
 
     #[test]
     fn the_continue_row_and_delete_text_follow_the_selection() {
-        assert_eq!(continue_name_row(1), Some(0));
-        assert_eq!(continue_name_row(3), Some(2));
-        assert_eq!(continue_name_row(0), None);
-        assert_eq!(continue_name_row(-1), None);
+        let rows = ["Mira", "Ann", "Bob"];
+        assert_eq!(
+            continue_name_row(1, &rows),
+            ContinueNameRow {
+                row: 0,
+                text: Some("Mira")
+            }
+        );
+        assert_eq!(
+            continue_name_row(3, &rows),
+            ContinueNameRow {
+                row: 2,
+                text: Some("Bob")
+            }
+        );
+        // The pick is not checked: zero stores -1 and writes nothing, and a
+        // row past the list has no text either.
+        assert_eq!(
+            continue_name_row(0, &rows),
+            ContinueNameRow {
+                row: -1,
+                text: None
+            }
+        );
+        assert_eq!(
+            continue_name_row(-1, &rows),
+            ContinueNameRow {
+                row: -2,
+                text: None
+            }
+        );
+        assert_eq!(
+            continue_name_row(4, &rows),
+            ContinueNameRow { row: 3, text: None }
+        );
+
+        // The page opens on the list's first entry: the label selects it of
+        // the list's three and shows its display string, the page keeps row
+        // 0 and the name box takes the first name.
+        let labels = ["Mira, day 3", "Ann, day 1", "Bob, day 9"];
+        assert_eq!(
+            continue_texts(&labels, &rows),
+            ContinueTexts {
+                row: Some(0),
+                label: Some([1, 3]),
+                label_text: Some("Mira, day 3"),
+                name_text: Some("Mira"),
+            }
+        );
+        // An empty list clears both texts and keeps the stored row.
+        assert_eq!(
+            continue_texts(&[], &rows),
+            ContinueTexts {
+                row: None,
+                label: None,
+                label_text: None,
+                name_text: None,
+            }
+        );
+        // The count is the label list's; a name list shorter than it leaves
+        // no name to show.
+        let short = continue_texts(&labels, &[]);
+        assert_eq!(short.label, Some([1, 3]));
+        assert_eq!(short.row, Some(0));
+        assert_eq!(short.name_text, None);
 
         assert_eq!(delete_confirm_text("Delete ", "Mira"), "Delete Mira?");
         assert_eq!(copy_creation_name("Mira"), "Mira");
@@ -7141,8 +7821,8 @@ mod tests {
 
     #[test]
     fn the_icon_sheet_is_created_once() {
-        assert!(ensure_creation_icons(false));
-        assert!(!ensure_creation_icons(true));
+        assert!(ensure_creation_icons(false, false).installed);
+        assert!(!ensure_creation_icons(true, false).built);
     }
 
     #[test]
@@ -7385,7 +8065,9 @@ mod tests {
             add_preview_icon(&mut list, 10, None),
             PreviewPush {
                 count: 1,
-                selected: None
+                selected: None,
+                refreshed: true,
+                finished: true
             }
         );
         assert_eq!(list.icons, vec![10]);
@@ -7396,7 +8078,9 @@ mod tests {
             add_preview_icon(&mut list, 11, Some(0)),
             PreviewPush {
                 count: 2,
-                selected: Some(1)
+                selected: Some(1),
+                refreshed: true,
+                finished: true
             }
         );
         assert_eq!(list.selected, Some(1));
@@ -7407,7 +8091,9 @@ mod tests {
             add_preview_icon(&mut list, 12, Some(0)),
             PreviewPush {
                 count: 3,
-                selected: None
+                selected: None,
+                refreshed: true,
+                finished: true
             }
         );
         assert_eq!(list.selected, Some(1));
@@ -7421,13 +8107,27 @@ mod tests {
 
     #[test]
     fn a_preview_material_covers_every_listed_item() {
-        assert_eq!(preview_material_items(false, 3), None);
-        // An empty list's highest index is -1: no pass.
-        assert_eq!(preview_material_items(true, -1), Some(0));
-        assert_eq!(preview_material_items(true, 0), Some(1));
-        assert_eq!(preview_material_items(true, 3), Some(4));
-        assert!(release_preview_material(true));
-        assert!(!release_preview_material(false));
+        let items = [40, 41, 42, 43];
+        // Without a generator nothing is applied; with one, every listed
+        // item takes the same material in list order.
+        assert!(apply_preview_material(false, &items).is_empty());
+        assert_eq!(apply_preview_material(true, &items), items.to_vec());
+        assert!(apply_preview_material(true, &[]).is_empty());
+
+        assert_eq!(
+            release_preview_material(true),
+            PreviewMaterialRelease {
+                released: true,
+                cleared: true
+            }
+        );
+        assert_eq!(
+            release_preview_material(false),
+            PreviewMaterialRelease {
+                released: false,
+                cleared: false
+            }
+        );
     }
 
     #[test]
@@ -7619,10 +8319,17 @@ mod tests {
 
     #[test]
     fn the_continue_page_lays_out_the_chosen_kind() {
+        let saves = ContinueSaveList {
+            labels: &["Mira, day 3", "Ann, day 1"],
+            names: &["Mira", "Ann"],
+        };
         let page = open_continue_page(
             continue_input("Mira"),
+            saves,
             SaveKind::Save,
             SaveAvailability(2),
+            true,
+            4,
             true,
         );
         assert!(page.gui_hidden);
@@ -7630,11 +8337,24 @@ mod tests {
         assert!(page.button.mirrored);
         assert!(!page.button.enabled);
         assert!(page.reset_dialog);
+        assert_eq!(page.texts.row, Some(0));
+        assert_eq!(page.texts.name_text, Some("Mira"));
+        assert_eq!(page.texts.label_text, Some("Mira, day 3"));
+        assert_eq!(page.texts.label, Some([1, 2]));
+        assert_eq!(page.place.view_x, 4 * 0x3b);
+        assert_eq!(page.place.details.h, 0x140);
 
+        let saves = ContinueSaveList {
+            labels: &[],
+            names: &["Mira", "Ann"],
+        };
         let page = open_continue_page(
             continue_input("Mira"),
+            saves,
             SaveKind::Checkpoint,
             SaveAvailability(3),
+            false,
+            4,
             false,
         );
         assert_eq!(
@@ -7643,6 +8363,9 @@ mod tests {
         );
         assert!(page.button.enabled);
         assert!(!page.reset_dialog);
+        assert_eq!(page.texts.name_text, None);
+        assert_eq!(page.texts.label_text, None);
+        assert_eq!(page.place.details.h, 0x104);
     }
 
     #[test]
@@ -7713,11 +8436,56 @@ mod tests {
         assert_eq!(build_creation_icons(5, false, true).icon_size, 40);
         assert!(built.loaded);
         assert_eq!(built.cells, 4);
+        // The cells are cut from a 96 by 384 sheet, top band first, at mip
+        // level 0 of a 96 by 96 image made with the manager's own flags.
+        assert_eq!(built.bands, [288, 192, 96, 0]);
+        assert_eq!(built.cell_size, 96);
+        assert_eq!(CREATION_ICON_HEIGHT, 384);
+        assert_eq!(built.image_flags, 0x2000_0000);
+        assert_eq!(built.mip, 0);
+        assert!(!built.reset);
 
+        // A manager that exists is reset instead of made, and a missing
+        // sheet still resets it but adds no cells.
         let missing = build_creation_icons(4, true, false);
         assert!(missing.reused);
+        assert!(missing.reset);
         assert!(!missing.loaded);
         assert_eq!(missing.cells, 0);
+        assert_eq!(missing.bands, [0; 4]);
+        assert_eq!(missing.icon_size, 32);
+    }
+
+    #[test]
+    fn the_icon_sheet_chains_the_reload_hook_once() {
+        // The first call builds the sheet and takes the reload hook's slot,
+        // keeping the hook that was already there.
+        assert_eq!(
+            ensure_creation_icons(false, true),
+            CreationIconHook {
+                built: true,
+                previous_hook: true,
+                installed: true,
+            }
+        );
+        // With no earlier hook the slot is still taken.
+        assert_eq!(
+            ensure_creation_icons(false, false),
+            CreationIconHook {
+                built: true,
+                previous_hook: false,
+                installed: true,
+            }
+        );
+        // An existing manager is returned untouched: no rebuild, no chain.
+        assert_eq!(
+            ensure_creation_icons(true, false),
+            CreationIconHook {
+                built: false,
+                previous_hook: false,
+                installed: false,
+            }
+        );
     }
 
     #[test]

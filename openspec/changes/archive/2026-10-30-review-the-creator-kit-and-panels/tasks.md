@@ -1,0 +1,7 @@
+- [x] Model the kit entry's tint and four colour layers; rewrite the resolver and match (exa_game::create)
+- [x] Bind the apparel panel before the story background returns
+- [x] Take the skills page's panel state as inputs
+- [x] Open the continue page's texts on the list's first entry
+- [x] Remove the preview list's raw layout constants
+- [x] Crate README
+- [x] fmt, clippy -D warnings, tests

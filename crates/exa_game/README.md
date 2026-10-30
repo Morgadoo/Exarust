@@ -263,8 +263,15 @@ leftover to the skill in training up to its next level, and shows the
 account's worth less the committed character's, converted back to
 experience (each level of worth at weights 4, 5, …, only the first partial
 level, quartered toward zero). The apparel and weapon kits come from the
-original's seven tables by mode, skip what the record already holds and
-resolve aliases and new instances. The two pages name their tabs and final
+original's seven tables by mode, skip what the record already holds (by
+id, or by base id and the entry's four colour-layer bytes) and resolve
+aliases (the record's `@` marker: the target takes the variant and the
+three tint bytes) and new instances (the variant, the four layer bytes each
+marked with five, and the second and third tint bytes as dyes where set).
+The apparel panel is bound as the current equipment form as soon as it is
+made, and the skills panel takes its flag only when made. The continue
+page's label selects the save manager's first entry and its name box takes
+that entry's name; an empty list clears both. The two pages name their tabs and final
 button (RECRUIT, BEGIN, READY or CREATE), list the equipment panels per
 mode, open the power tree for a record with powers, and the continue screen
 toggles between a save and a checkpoint only while both exist, with its
@@ -310,8 +317,10 @@ the two editor sub-forms) and the routing of a drop onto the preview (item
 `0x4000`, and `0x8000` to the weapon list without the placing step) are
 modelled. Painting the form and its controls, loading the model and the
 sounds' samples, the object database behind the kit, record serialization,
-the power tree's own screen and the running mode transitions are not in,
-and nothing here is wired into the running game yet. Rules are plain
+the power tree's own screen and the running mode transitions are not in;
+the running creator (`creator_screen`) and save chooser (`save_screen`)
+call these rules where they have the caller (the voice pick goes through
+`select_voice`), and the panels and continue texts are not wired yet. Rules are plain
 functions with tests pinned to concrete numbers.
 
 Story experience (`experience`): new item kinds, kills and explored map
