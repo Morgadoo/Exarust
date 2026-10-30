@@ -143,8 +143,11 @@ pub const LIGHT_NO_SNAPSHOT: u32 = 0x10;
 pub const NEEDS_BUCKETS: u32 = 0x3_0000;
 /// Light word ([`SceneNode::light_flags`]): the light flickers.
 pub const LIGHT_FLICKER: u32 = 0x1_0000;
-/// Light word ([`SceneNode::light_flags`]): the light has a shadow cube map.
-/// Such a light only spreads an alias to a sector its sphere reaches.
+/// Option word ([`SceneNode::flags`]): the alias gate's bit. A light that
+/// carries it only spreads an alias to a sector its sphere reaches. The
+/// name is a guess: the bit sits next to [`NEEDS_BUCKETS`] in the option
+/// word, the alias refresh copies it with the word's third byte, and the
+/// model reads it as the light carrying a shadow cube map.
 pub const LIGHT_SHADOW_CUBE: u32 = 0x4_0000;
 /// Option word bits that pick how a light's activation snapshot is taken;
 /// [`SNAPSHOT_FLAT`] in them drops the snapshot's height.
@@ -832,7 +835,7 @@ pub struct LightAlias {
 /// One entry of a light node's link list: the weight one of the light's
 /// sector aliases gives it and the doubly linked list's neighbours, as the
 /// original's 24-byte records hold them. The list runs heaviest first and
-/// a NaN weight counts as heavier than any number.
+/// a NaN weight stops the sort's walk wherever it meets one.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct LightLink {
     /// The weight the alias's link method gave this link (the original's
@@ -2152,11 +2155,13 @@ impl Scene {
 
     /// Orders the light's link list heaviest first, as the original's
     /// weight sort does: every entry after the head is taken off the chain
-    /// and walked back over the heavier entries until one is at least as
-    /// heavy (`<=`, so an equal weight stops it and a NaN weight walks past
-    /// every number), then linked in behind it — at the head when none is.
-    /// The starting chain's order does not matter; the result is the
-    /// stable order by descending weight.
+    /// and walked back while the entry before it is strictly lighter
+    /// (`before < entry`, an ordered compare: an equal weight stops it and
+    /// a NaN on either side stops it too), then linked in behind the entry
+    /// it stopped at — at the head when it walked past them all. Without
+    /// NaN weights the result is the stable order by descending weight
+    /// whatever the starting chain; a NaN entry stays behind the entry it
+    /// first meets and blocks every later entry from passing it.
     ///
     /// A model whose chain is malformed (an index out of range or a cycle)
     /// is left as it is instead of trapping; the original trusts its list.
@@ -2176,10 +2181,11 @@ impl Scene {
                 n.links[next as usize].prev = before;
             }
             n.links[before as usize].next = next;
-            // Walk back while the entry is heavier than the one before it.
+            // Walk back while the entry before is strictly lighter (an
+            // unordered compare stops the walk).
             let mut at = before;
             loop {
-                if n.links[item].weight <= n.links[at as usize].weight {
+                if !(n.links[at as usize].weight < n.links[item].weight) {
                     break;
                 }
                 at = n.links[at as usize].prev;
@@ -2234,16 +2240,16 @@ impl Scene {
     /// (the spread walk stops there); an alias with an older stamp is
     /// refreshed — its stamp copied and marked moved — and its index is
     /// returned; without an alias one is made, owned by the sector, marked
-    /// moved, with the light's needed shadow faces at all six when the
-    /// light has a shadow cube, and it marks the sector's lights changed.
+    /// moved, and it marks [`LIGHT_ADDED`]. A new alias of a light with the
+    /// gate bit carries a shadow map whose needed faces start at all six
+    /// (a guess: the original copies the light's shadow map into the
+    /// alias, which the model has no record of).
     pub fn find_or_create_alias(&mut self, light: usize, sector: usize) -> Option<usize> {
-        if self.nodes[light].light_flags & LIGHT_SHADOW_CUBE != 0
-            && !self.light_reaches(light, sector)
-        {
+        if self.nodes[light].flags & LIGHT_SHADOW_CUBE != 0 && !self.light_reaches(light, sector) {
             return None;
         }
         let stamp = self.nodes[light].link_stamp;
-        let shadow = self.nodes[light].light_flags & LIGHT_SHADOW_CUBE != 0;
+        let shadow = self.nodes[light].flags & LIGHT_SHADOW_CUBE != 0;
         if let Some(index) = self.sectors[sector]
             .aliases
             .iter()
@@ -2252,12 +2258,12 @@ impl Scene {
             if self.sectors[sector].aliases[index].stamp == stamp {
                 return None;
             }
+            // The refresh copies the light's stamp and marks the alias
+            // moved; the next node pass resets a moved alias's needed
+            // faces ([`Scene::frame`]).
             let alias = &mut self.sectors[sector].aliases[index];
             alias.stamp = stamp;
             alias.moved = true;
-            if shadow {
-                alias.shadow_faces = Some(0x3f);
-            }
             return Some(index);
         }
         self.sectors[sector].aliases.push(LightAlias {
@@ -2326,8 +2332,9 @@ impl Scene {
     /// the sector (a new one is owned by the sector, starts moved and marks
     /// [`LIGHT_ADDED`]); in grid mode the light's cell is stored and it is
     /// reported in [`FrameEvents::activated`] (an omni light floods the
-    /// cells, another kind fills them), otherwise its alias is relinked
-    /// ([`FrameEvents::alias_links`]); then a flickering light takes its
+    /// cells, another kind fills them), otherwise its alias spreads along
+    /// the sector's linked sectors ([`Scene::spread_aliases`]) and is
+    /// relinked ([`FrameEvents::alias_links`]); then a flickering light takes its
     /// first step and its alias copies are refreshed. Auxiliary nodes below
     /// state 2 take state 2 and snapshot their position.
     pub fn activate_lights(&mut self, sector: usize, events: &mut FrameEvents) {
@@ -2378,6 +2385,9 @@ impl Scene {
                 store_cell(&mut self.nodes[light], self.grid);
                 events.activated.push(light);
             } else {
+                // The original spreads the light's alias along the
+                // sector's linked sectors before its links are rebuilt.
+                self.spread_aliases(light, sector);
                 events.alias_links.push(light);
             }
             if self.nodes[light].light_flags & LIGHT_FLICKER != 0 {
@@ -4742,6 +4752,28 @@ mod tests {
     }
 
     #[test]
+    fn activation_without_a_grid_spreads_the_alias_to_linked_sectors() {
+        let mut scene = Scene::new((0, 0));
+        let first = scene.add_node(NodeKind::Sector, None);
+        let second = scene.add_node(NodeKind::Sector, None);
+        scene.add_batch(&[first, second]);
+        scene.sectors[1].linked = vec![2];
+        scene.sectors[2].linked = vec![1];
+        let light = scene.add_node(NodeKind::Light, None);
+        scene.register(light, 1);
+        let mut events = FrameEvents::default();
+        scene.activate_lights(1, &mut events);
+        // The sector's own alias, then the spread one in the linked room,
+        // carrying the light's stamp; the walk does not come back.
+        assert_eq!(scene.sectors[1].aliases.len(), 1);
+        assert_eq!(scene.sectors[2].aliases.len(), 1);
+        assert_eq!(scene.sectors[2].aliases[0].light, light);
+        assert_eq!(scene.sectors[2].aliases[0].stamp, 1);
+        assert!(scene.sectors[2].aliases[0].moved);
+        assert_eq!(events.alias_links, [light]);
+    }
+
+    #[test]
     fn activation_snapshots_flat_and_relinks_without_a_grid() {
         let mut scene = Scene::new((0, 0));
         let sector = scene.add_node(NodeKind::Sector, None);
@@ -5212,7 +5244,7 @@ mod tests {
         assert_eq!(scene.sectors[2].aliases[0].shadow_faces, None);
         // With one, the sphere (radius sqrt 3 at the origin) misses the far
         // box: no alias.
-        scene.nodes[light].light_flags |= LIGHT_SHADOW_CUBE;
+        scene.nodes[light].flags |= LIGHT_SHADOW_CUBE;
         scene.nodes[light].link_stamp = 2;
         scene.sectors[2].aliases.clear();
         scene.spread_aliases(light, 1);
@@ -5270,10 +5302,15 @@ mod tests {
         assert_eq!(chain_of(&scene.nodes[light]), vec![0, 1, 2]);
         scene.reset_links(light, &[1.0, f32::NAN, 2.0]);
         scene.order_links(light);
-        // The NaN entry goes to the head when it is taken; every later
-        // weight compares false against it and walks past, so the last
-        // numeric entry ends up ahead of it.
-        assert_eq!(chain_of(&scene.nodes[light]), vec![2, 1, 0]);
+        // The NaN entry stops at once behind 1.0, and 2.0 stops at the NaN
+        // before it: every compare with a NaN is unordered and ends the
+        // walk, so nothing moves.
+        assert_eq!(chain_of(&scene.nodes[light]), vec![0, 1, 2]);
+        // A NaN further back still blocks: 3.0 passes 1.0 but stops at
+        // the NaN.
+        scene.reset_links(light, &[f32::NAN, 1.0, 3.0]);
+        scene.order_links(light);
+        assert_eq!(chain_of(&scene.nodes[light]), vec![0, 2, 1]);
     }
 
     #[test]
