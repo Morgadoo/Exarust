@@ -195,6 +195,8 @@ pub struct Pip {
     pub height: i32,
     /// The texture's u at the right edge (the left is [`PIP_U`]`[0]`).
     pub u_right: f32,
+    /// The texture's v at the bottom edge (the top is [`PIP_V`]`[0]`).
+    pub v_right: f32,
 }
 
 /// Lays out a skill's pips from `x`, `y`: twelve units wide, each
@@ -209,10 +211,12 @@ pub fn lay_out_pips(x: i32, y: i32, unit: i32, experience: i32) -> Vec<Pip> {
     let mut out = Vec::new();
     for i in 0..count {
         let mut u_right = PIP_U[1];
+        let mut v_right = PIP_V[1];
         if i64::from(count) - 1 == i64::from(i) && f64::from(share) < 0.99 {
             share = (f64::from(share) * 0.8 + 0.1) as f32;
             width = round_i64(width as f32 * share) as i32;
             u_right = (PIP_U[1] - PIP_U[0]) * share + PIP_U[0];
+            v_right = (PIP_V[1] - PIP_V[0]) * share + PIP_V[0];
         }
         out.push(Pip {
             x,
@@ -220,6 +224,7 @@ pub fn lay_out_pips(x: i32, y: i32, unit: i32, experience: i32) -> Vec<Pip> {
             width,
             height,
             u_right,
+            v_right,
         });
         x = x + width - unit;
     }
@@ -273,6 +278,9 @@ pub struct NodeDraw {
     pub technique: Option<u8>,
     /// The colour's alpha byte (the hover highlight's when hovered).
     pub alpha: u8,
+    /// The full colour word the node draws with (the line colour, its
+    /// alpha halved for the slot in training, or the highlight).
+    pub colour: u32,
     pub hovered: bool,
 }
 
@@ -302,30 +310,35 @@ pub fn technique_nodes(
     if count == 0 {
         return nodes;
     }
-    let mut line = scaled_alpha(LINE_COLOUR, alpha);
-    let highlight = scaled_alpha(HIGHLIGHT_COLOUR, alpha);
+    let mut line = LINE_COLOUR;
+    let highlight = HIGHLIGHT_COLOUR;
     for column in 0..count {
         let (nx, ny) = node_place(x, y, unit, column);
         let hovered = node_hovered(selected, skill, column);
         let technique = techniques.get(column as usize).copied().unwrap_or(0);
         if technique == 0 {
+            let colour = if hovered { highlight } else { line };
             nodes.push(NodeDraw {
                 x: nx,
                 y: ny,
                 technique: None,
-                alpha: if hovered { highlight } else { line },
+                alpha: scaled_alpha(colour, alpha),
+                colour,
                 hovered,
             });
             break;
         }
         if column == count - 1 && training {
-            line >>= 1;
+            // The original halves the alpha byte only, leaving the RGB.
+            line = (line & 0x00ff_ffff) | (((line >> 24) >> 1) << 24);
         }
+        let colour = if hovered { highlight } else { line };
         nodes.push(NodeDraw {
             x: nx,
             y: ny,
             technique: Some(technique),
-            alpha: if hovered { highlight } else { line },
+            alpha: scaled_alpha(colour, alpha),
+            colour,
             hovered,
         });
     }
@@ -742,7 +755,8 @@ mod tests {
                 y: 10,
                 width: 48,
                 height: 8,
-                u_right: PIP_U[1]
+                u_right: PIP_U[1],
+                v_right: PIP_V[1]
             }
         );
         assert_eq!(pips[1].x, 44);
@@ -750,6 +764,7 @@ mod tests {
         assert_eq!(pips[2].x, 88);
         assert_eq!(pips[2].width, 24);
         assert!((pips[2].u_right - 0.678_571_4).abs() < 1e-6);
+        assert!((pips[2].v_right - 0.75).abs() < 1e-6);
         // A share of 0.99 or more is a whole pip.
         let full = lay_out_pips(0, 0, 4, 9_950);
         assert_eq!(full[1].width, 48);
@@ -764,8 +779,11 @@ mod tests {
         assert_eq!(nodes.len(), 2);
         assert_eq!((nodes[0].x, nodes[0].y), (8, 118));
         assert_eq!(nodes[0].alpha, 0x78);
+        assert_eq!(nodes[0].colour, LINE_COLOUR);
         assert_eq!(nodes[1].x, 52);
         assert_eq!(nodes[1].alpha, 0x3c);
+        // Only the alpha byte is halved; the RGB keeps the line's.
+        assert_eq!(nodes[1].colour, 0x3cf0_f8ff);
         // The open-slot flag shows an empty node after the level.
         let nodes = technique_nodes(5_000, &[3, 0, 0, 0, 0, 0], true, 1, 0x0202, 0, 100, 4, 1.0);
         assert_eq!(nodes.len(), 2);
