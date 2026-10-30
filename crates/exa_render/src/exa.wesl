@@ -165,6 +165,40 @@ fn blended(rgb: vec3<f32>, alpha: f32) -> vec4<f32> {
     return vec4(rgb, a);
 }
 
+// The original's world fog (its `fog` snippet, fog mode 1, below the
+// voxel-march quality): b = min(distance · FogColr.w, 1) with FogColr.w one
+// over the stored span, and the surface mixed by b towards the fog colour
+// (the frame's scratch colour) × (amb · 0.5 + 0.5). The span reaches the
+// shader as the camera's linear `DistanceFog` (start 0, end the span, in
+// metres, as `exa_world::environment` sets it; Bevy binds it only to a
+// view with one); without it, or in any other mode, there is no fog.
+fn fog_amount(p: vec3<f32>) -> f32 {
+@if(DISTANCE_FOG) {
+    let f = view_bindings::fog;
+    if f.mode == mesh_view_types::FOG_MODE_LINEAR {
+        return min(distance(p, view_bindings::view.world_position.xyz) / f.be.y, 1.0);
+    }
+}
+    return 0.0;
+}
+
+fn fog_colour() -> vec3<f32> {
+@if(DISTANCE_FOG) {
+    return view_bindings::fog.base_color.rgb;
+}
+@else {
+    return vec3(0.0);
+}
+}
+
+fn fogged(colour: vec3<f32>, p: vec3<f32>, amb: vec3<f32>) -> vec3<f32> {
+    let b = fog_amount(p);
+    if b <= 0.0 {
+        return colour;
+    }
+    return mix(colour, fog_colour() * (amb * 0.5 + 0.5), b);
+}
+
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
     var out: FragmentOutput;
@@ -236,7 +270,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
                 a *= em.a;
             }
         } else if has(OPACITY_MAP) {
-            a *= textureSampleBias(opacity_map, opacity_sampler, uv, material.texture_bias).a;
+            // The fog fades a bare opacity map's surface out: its alpha
+            // × (1 − b).
+            a *= textureSampleBias(opacity_map, opacity_sampler, uv, material.texture_bias).a
+                * (1.0 - fog_amount(p));
         }
         out.color = blended(e, a);
         return out;
@@ -582,6 +619,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             he *= em;
         }
         c += he;
+        c = fogged(c, p, ambient);
         if has(FADE_TO_BLACK) {
             let a = min(length(p.xz) / FADE_RADIUS, 1.0);
             c *= 1.0 - a * (2.0 - a);
@@ -636,6 +674,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         e *= em * (s.ndv * s.ndv * fall.z + 1.0 - fall.z);
     }
     colour += e;
+    // The lit programs' fog. Outdoors the original takes the voxel GI's
+    // light for `amb` before the environment cube's factor, indoors its
+    // ambient; Exarust's GI ambient carries no cube factor, so the ambient
+    // stands for both.
+    colour = fogged(colour, p, ambient);
     // The character screen's fade: black by FADE_RADIUS from the origin.
     if has(FADE_TO_BLACK) {
         let a = min(length(p.xz) / FADE_RADIUS, 1.0);

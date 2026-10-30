@@ -999,12 +999,23 @@ The screen fade SHALL run 5000 ticks with alpha `1 - (start + 5000 - now)/5000` 
 - **WHEN** the ramp reaches 1
 - **THEN** the mask is 0.75 * 1.333 = 0.99975 and the pass receives 0.00025
 
-### Requirement: GI sun injection
-The system SHALL inject the sun into every drawn GI sector's group ahead of its point lights, at its colour times 3 × 0.3 × 0.01 times the voxel's openness and its visibility in the sun's shadow map: the map's comparison alone under an open sky, otherwise that comparison less the one 0.01 deeper, at least 0. The sun SHALL be left out when its colour times 3 has a third component of at most 1.19e−7.
+### Requirement: GI sky light injection
+The system SHALL inject the GI manager's sky light into every drawn GI sector's group ahead of its point lights: the environment's record fog colour as the frame leaves it (lightning included) times 3 × 0.3 × 0.01, shining straight down, times the voxel's openness and its sky visibility. It SHALL be left out when the colour times 3 has a third component of at most 1.19e−7. The scene's sun light SHALL NOT be injected into the GI.
 
-#### Scenario: Sun in a group
-- **WHEN** a drawn sector lists five point lights and the sun is up
-- **THEN** its group's first light is the sun and it counts towards the twelve
+#### Scenario: Sky light in a group
+- **WHEN** a drawn sector lists five point lights under a sky
+- **THEN** its group's first light is the sky light and it counts towards the twelve
+
+#### Scenario: Indoors
+- **WHEN** an indoor level, whose record fog colour is zero, is lit
+- **THEN** its GI has no sky light
+
+### Requirement: GI sky visibility
+A voxel SHALL see the GI sky light when it is at or above its column's sky floor: the slice above the column's highest voxel with an occupancy byte of 10 or more, or slice 0 for a column without one.
+
+#### Scenario: Under a roof
+- **WHEN** a column has a roof voxel at slice 2 above an open voxel
+- **THEN** the sky light reaches slices 3 and up of that column and not the voxel under the roof
 
 ### Requirement: GI cube shadows
 The system SHALL shadow each point light's GI injection by its cached cube shadow, comparing the distance (in block-width units) times ((bias + 0.94)/far) × 5120, formed in double precision, plus 0.01 along the direction from the light to the voxel; far is the light's radius in centimetres when its range is on, else 3.4e38. It SHALL place the light at its position over the block's width on each axis with the height over the width.

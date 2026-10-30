@@ -76,6 +76,9 @@ pub struct Lighting {
     pub sky: bool,
     /// Linear background colour.
     pub background: Vec3,
+    /// The GI's sky light before the manager's factor of 3: the record's
+    /// fog colour as the frame leaves it (zero without a sky).
+    pub sky_light: Vec3,
 }
 
 /// Present while the level has an open sky.
@@ -379,6 +382,7 @@ pub fn level_lighting_scene(
             frame.background[1],
             frame.background[2],
         ),
+        sky_light: Vec3::from_array(frame.sky_light),
     };
     LevelScene { lighting, env }
 }
@@ -413,7 +417,7 @@ pub fn reference_ambient() -> GlobalAmbientLight {
 /// `parent`, and fog for the cameras.
 pub fn apply_lighting(commands: &mut Commands, lighting: &Lighting, parent: Entity) {
     commands.insert_resource(ambient_light(lighting.ambient));
-    commands.insert_resource(exa_render::gi::GiSunSky(lighting.sky));
+    commands.insert_resource(exa_render::gi::GiSkyLight(lighting.sky_light));
     let bg = lighting.background;
     commands.insert_resource(ClearColor(Color::linear_rgb(bg.x, bg.y, bg.z)));
     if let Some(sun) = lighting.sun {
@@ -499,6 +503,7 @@ fn sky_cameras(
 /// weather ticks (the rain fades, the lightning flickers, the time of day
 /// advances), and the frame's values go to the renderer's resources when
 /// they changed. The tick runs once a frame, never inside the fixed step.
+#[allow(clippy::too_many_arguments)]
 fn live_environment(
     time: Res<Time>,
     cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
@@ -506,6 +511,7 @@ fn live_environment(
     mut fog: Option<ResMut<LevelFog>>,
     mut clear: ResMut<ClearColor>,
     mut ambient: ResMut<GlobalAmbientLight>,
+    mut sky_light: Option<ResMut<exa_render::gi::GiSkyLight>>,
     mut lights: Query<(&mut DirectionalLight, &mut Transform), With<SunLight>>,
 ) {
     let Some(mut runtime) = runtime else {
@@ -553,6 +559,9 @@ fn live_environment(
         fog.far = f.far;
     }
     let lit = republished(env, &frame);
+    if let Some(sky_light) = sky_light.as_mut() {
+        sky_light.set_if_neq(exa_render::gi::GiSkyLight(lit.sky_light));
+    }
     let bg = lit.background;
     clear.0 = Color::linear_rgb(bg.x, bg.y, bg.z);
     *ambient = ambient_light(lit.ambient);
@@ -595,6 +604,7 @@ pub fn republished(env: &SceneEnvironment, frame: &Frame) -> Lighting {
             frame.background[1],
             frame.background[2],
         ),
+        sky_light: Vec3::from_array(frame.sky_light),
     }
 }
 
@@ -808,11 +818,15 @@ mod tests {
                 assert!(close(live.background, load.background), "seed {seed}");
                 let (a, b) = (live.fog.unwrap(), load.fog.unwrap());
                 assert!((a.near - b.near).abs() < 1e-4 && (a.far - b.far).abs() < 1e-3);
+                // The fog colour is the frame's scratch colour, which follows
+                // the view's place on the horizon gradient, not the strike.
+                let scratch = Vec3::new(frame.clear[0], frame.clear[1], frame.clear[2]);
+                assert!(close(a.colour, scratch), "seed {seed}");
                 if env.weather.lightning.active {
                     strikes += 1;
                     continue;
                 }
-                assert!(close(a.colour, b.colour), "seed {seed}");
+                assert!(close(live.sky_light, load.sky_light), "seed {seed}");
             }
         }
         // Strikes are rare enough not to hide the check above.
@@ -839,10 +853,11 @@ mod tests {
         assert!(republished(&runtime.env, &frame).sun.is_none());
     }
 
-    /// A strike in an outdoor arena brightens the fog towards the lightning
-    /// blue by I / (I + 2) · 3 along its flicker and leaves the clear, the
-    /// fog's reach, the sun and the ambient as they loaded; once it ends the
-    /// fog colour is the record's again.
+    /// A strike in an outdoor arena brightens the GI's sky light (the
+    /// record's fog colour) towards the lightning blue by I / (I + 2) · 3
+    /// along its flicker and leaves the clear, the shader's fog, the sun and
+    /// the ambient as they loaded; once it ends the sky light is the
+    /// record's again.
     #[test]
     fn a_strike_brightens_the_fog_and_never_clears_black() {
         let input = PresetInput {
@@ -882,19 +897,21 @@ mod tests {
             let fog = frame.fog.unwrap();
             let lf = load.fog.unwrap();
             assert!((fog.near - lf.near).abs() < 1e-4 && (fog.far - lf.far).abs() < 1e-3);
+            let sky = frame.sky_light;
             if env.weather.lightning.active {
                 let i = frame.lightning;
                 assert_eq!(i, env.weather.lightning.intensity);
                 let t = (i / (i + 2.0)) * 3.0;
                 for (c, blue) in LIGHTNING_FOG.iter().enumerate() {
                     let want = record[c] + blue * t;
-                    assert!((fog.colour[c] - want).abs() < 1e-6, "{c}: {fog:?}");
+                    assert!((sky[c] - want).abs() < 1e-6, "{c}: {sky:?}");
                 }
+                assert_eq!(live.sky_light, Vec3::from_array(sky));
                 brightest = brightest.max(i);
             } else {
                 // The strike ended this tick: the record's colour again.
                 assert_eq!(frame.lightning, 0.0);
-                assert!(close(Vec3::from_array(fog.colour), lf.colour));
+                assert!(close(Vec3::from_array(sky), load.sky_light));
             }
             assert!(now < 10_000, "the strike ends");
         }
@@ -937,19 +954,27 @@ mod tests {
 
     #[test]
     fn the_outdoor_fog_is_linear_and_a_kilometre_deep() {
-        let outdoor = level_lighting("arenao3", None, 0);
+        let scene = level_lighting_scene("arenao3", None, 0, None, None);
+        let outdoor = scene.lighting.clone();
         let fog = outdoor.fog.unwrap();
+        // The shader's fog runs from the eye over the stored span, 1 km;
+        // the low sun's narrowing (to 0.8310 of it) stays in the model.
         assert_eq!(fog.near, 0.0);
-        // 1 km, narrowed by the low sun the default time puts up (a
-        // daylight factor of 0.4978): 0.8310.
-        assert!((fog.far - 831.011).abs() < 2e-2, "{}", fog.far);
-        // The fog colour is the day record's fog at the default time: the
-        // third and fourth records' colours, linearised and scaled by the
-        // 0.375 the sun placement applies.
+        assert_eq!(fog.far, 1000.0);
+        assert!((scene.env.fog.current_far * 0.01 - 831.011).abs() < 2e-2);
+        // Its colour is the frame's scratch colour, the horizon under the
+        // sky, not the record's fog colour.
+        let mut env = scene.env.clone();
+        let frame = env.apply_frame([0.0, 0.0, 1.0]);
+        let scratch = Vec3::new(frame.clear[0], frame.clear[1], frame.clear[2]);
+        assert!((fog.colour - scratch).abs().max_element() < 1e-6);
+        // The record's fog at the default time (the third and fourth
+        // records' colours, linearised and scaled by the 0.375 the sun
+        // placement applies) is the GI's sky light instead.
         assert!(
-            (fog.colour.x - 0.023_596_8).abs() < 1e-5,
+            (outdoor.sky_light.x - 0.023_596_8).abs() < 1e-5,
             "{}",
-            fog.colour.x
+            outdoor.sky_light.x
         );
         // The sun light takes the record's sun colour as stored: the third
         // record's 0.02 red a share of 0.3965 towards the fourth's 0.8.

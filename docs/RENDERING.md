@@ -1581,7 +1581,7 @@ its width, at the slice's middle ((slice + 0.5)/width), as the original's
 - open = max(1 − 13·occ, 0);
 - for the eight diagonal neighbours n at ±1.33 voxels:
   - a = open(n);
-  - P = light(n) · a² (· a with a sun);
+  - P = light(n) · a² (· a with the sky light);
   - sum += mix(old, P, a);
 - open fades out over the lowest slices: · (1 − 2^(−16·r)), r the slice
   centre over the block's slice count;
@@ -1611,28 +1611,36 @@ its width, at the slice's middle ((slice + 0.5)/width), as the original's
   same far plane, so they hold ≈ 0 and its unranged taps would be shadowed
   wherever geometry is; not confirmed in a running game]. The original binds light i's cube map to its
   own `Shadow<i>` sampler; Exarust's shared pool carries the slot instead;
-- the sun joins each drawn sector's group first and adds
-  lin(colour)·intensity·3·0.3·0.01 · visibility · open (the manager's sun
-  factor 3, then three times the 0.1 injection share; it is left out when
-  the scaled colour's third component is at most 1.19e−7), visibility from the
-  same fitted sun map Bevy renders: under a sky its first comparison alone,
-  otherwise max(first comparison − the comparison 0.01 deeper, 0) (on
-  Bevy's reverse-Z map, ndc.z − 0.01; the 0.01 is the original's depth
-  units, kept as is [guess]). The
-  original keeps a separate 1024² map for this; Exarust reads Bevy's fitted
-  map (4096² at the top shadow detail) [adaptation], and without one the
-  sun is unshadowed;
+- the manager's sky light joins each drawn sector's group first and adds
+  colour·3·0.3·0.01 · visibility · open, where the colour is the scene
+  environment's record fog colour as the frame leaves it (the day record's
+  fog × 0.375, plus the lightning blue during a strike; zero without a sky)
+  and 3 is the manager's constant, then three times the 0.1 injection
+  share; it is left out when the scaled colour's third component is at
+  most 1.19e−7. The light shines straight down, with its own 1024² map of
+  depth reach 1600, whose first comparison alone counts under a sky.
+  Exarust stands the volume's columns in for that map [adaptation]: a voxel
+  sees the sky at or above its column's floor, the slice above the
+  column's highest voxel with an occupancy byte of 10 or more (openness
+  under one half), uploaded once per block (moving meshes do not move it).
+  The colour is used as the frame keeps it [guess: the light node's own
+  activation was not followed]. The scene's sun light does not reach the
+  volume (Exarust injected it here before, with the same factor 3: a
+  misreading of this light). Under a sky the original's GI shading takes
+  an outdoor curve, (1 − a)²·0.08/(a + 0.035) + a and the environment cube
+  × `Ambient.w`·5, which Exarust does not have yet (it keeps the indoor
+  curve), so the outdoor GI ambient is fainter than the original's;
 - a light's shading is (2^((ly + (1 − ly)·y)·z) − 1)/(2^z − 1), ly the
   light's vertical direction; unshaped lights carry (1, 1, 1);
 - the original's program carries two matrix-shadow light slots (`SdwMat`,
   `SdwMat2` for the first two lights whose shadow is one 2D map, i.e. the
-  sun and spots); before drawing a group it moves the first such light at
-  index 2 or later to slot 1 when the sun owns slot 0, or the first at
-  index 1 or later to slot 0 without a sun. Exarust has no spot lights and
-  the sun is always slot 0, so a group keeps its order; every point light
+  sky light and spots); before drawing a group it moves the first such light at
+  index 2 or later to slot 1 when the sky light owns slot 0, or the first at
+  index 1 or later to slot 0 without it. Exarust has no spot lights and
+  the sky light is always slot 0, so a group keeps its order; every point light
   carries its cube slot instead of a fixed `Shadow<i>` binding;
 - the lights injected are the sector's own: each sector's 6 m cell lists the
-  lights whose flood windows reached it (up to 12), with the sun ahead of
+  lights whose flood windows reached it (up to 12), with the sky light ahead of
   them when it is up (it counts towards the twelve). A spot-shaped light is
   dropped from a sector when it no longer carries down to the middle of the
   sector's floor slice: its horizontal offsets from the cell's centre count
@@ -1855,10 +1863,35 @@ thing a strike changes (the clear, the sun, the ambient and the fog's reach
 stay as they were, and the original has no exposure step to move). The
 intensity starts at zero, steps by (0.2 + 0.1·r) and then by ±(0.1…0.3)
 every 50…89 ms, scaled by the strike's attenuation (1 − reach·0.0002)² and
-held at zero or above, and the strike ends 100…599 ms after it began. The original's shader
-uses a linear falloff, b = min(distance · 1/fogDistance, 1), and mixes the
-surface towards the fog colour; Exarust asks Bevy for `FogFalloff::Linear`
-between the same near and far distances.
+held at zero or above, and the strike ends 100…599 ms after it began. The frame
+tints the record's colour whether or not the level fogs. The renderer's
+uniform build reads neither the weather's near nor its far value (where
+they go is not traced).
+
+**World fog.** The world programs' fog uniform `FogColr` is the frame's
+scratch colour (below) with one over the *stored* span in its fourth slot.
+Their `fog` snippet (fog mode 1, below the voxel-march quality) mixes the
+surface, after its emissive term, by b = min(d · FogColr.w, 1) for the eye
+distance d towards FogColr.rgb · (amb · 0.5 + 0.5), where `amb` is the
+voxel GI's light before its environment-cube factor outdoors and the
+ambient indoors; an unlit surface with only an opacity map has its alpha
+scaled by 1 − b. Exarust hands the scratch colour and the span (start 0,
+in metres) to the cameras' linear `DistanceFog`, and the world material
+(`exa.wesl`, every lit program including hair) reads Bevy's fog uniform
+and applies the original's mix with its own ambient for `amb` (its GI
+ambient has no cube factor). So a clear noon fogs over about 250 m towards
+the horizon colour, a storm over about 100 m; indoor levels have no fog.
+The 16-step voxel fog march of the top shading quality, and fog on the
+terrain's own draw and the effect shaders, are not ported.
+
+**The record fog colour lights the GI.** Its one reader is the voxel GI
+manager: times the manager's constant 3 it is the colour of a directional
+light that shines straight down, with its own 1024² depth map, and that
+light is the first light of every drawn GI sector (see
+[Voxel GI](#voxel-gi)). That is where a lightning strike shows in the
+original: the outdoor GI, and with it the ambient of everything under the
+sky, flashes blue. With `--no-gi` a strike shows nowhere, in the original's
+terms as in Exarust's.
 
 **Clear colour and sky.** The clear colour is the level's background. With
 fog on it can be the fog colour instead (the original tests a high bit of
@@ -1872,11 +1905,9 @@ switch in one place and nothing in the executable sets it, so it is off in
 the shipped game; a lightning strike does not turn it on (Exarust's earlier
 stand-in did, and cleared each strike to black). `EXA_LIGHTNING_FRAME=<n>`
 forces a strike 316 cm from the view from frame `n` on whenever none is
-running, so a capture after it always falls inside a strike. Where the
-original's renderer draws the lightning-tinted record fog colour is not yet
-traced (its shader's fog uniform is the scratch colour), and Exarust's world
-material samples no fog, so a strike does not show on the level yet. Exarust draws
-Bevy's atmosphere instead (see below) and keeps the gradient for the record. The
+running, so a capture after it always falls inside a strike. The strike
+lights the GI's sky light (above). Exarust draws Bevy's atmosphere for the
+open sky (see below) and keeps the gradient for the record and the fog. The
 frame also publishes the values the renderer's globals take: a scene value
 from the sun's height (−100000 up to 0.4, −25 above it, compared in double
 precision; probably a shadow or clip distance, its reader is not ported),

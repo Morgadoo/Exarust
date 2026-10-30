@@ -20,7 +20,7 @@ use bevy::render::diagnostic::RecordDiagnostics;
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
 use bevy::render::render_asset::RenderAssets;
 use bevy::render::render_resource::binding_types::{
-    sampler, texture_3d, texture_storage_3d, uniform_buffer,
+    sampler, texture_2d, texture_3d, texture_storage_3d, uniform_buffer,
 };
 use bevy::render::render_resource::{
     BindGroupEntries, BindGroupLayoutDescriptor, BindGroupLayoutEntries, BindGroupLayoutEntry,
@@ -54,8 +54,6 @@ impl Plugin for GiPlugin {
                 ExtractResourcePlugin::<GiPendingTextures>::default(),
                 ExtractResourcePlugin::<GiOccupancyPatches>::default(),
                 ExtractResourcePlugin::<GiLights>::default(),
-                ExtractResourcePlugin::<GiSunShadow>::default(),
-                ExtractResourcePlugin::<GiSunSky>::default(),
             ))
             .add_systems(
                 PostUpdate,
@@ -164,6 +162,9 @@ pub struct GiTextures {
     pub occupancy: Handle<Image>,
     pub light: Handle<Image>,
     scratch: Handle<Image>,
+    /// Per column (X fastest, then Z), the lowest slice the sky light
+    /// reaches ([`sky_floors`]).
+    sky_floor: Handle<Image>,
     pub origin: Vec3,
     pub extent: Vec3,
     /// Voxel edge, metres, and the texture's size (X, Z, Y).
@@ -317,35 +318,19 @@ pub fn gi_shadow_bias(offset: i32) -> f32 {
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct GiRanged(pub bool);
 
-/// The id the sun has in the GI's light sets. Point lights count up from 0,
-/// so the largest value never names one.
-pub const SUN_LIGHT_ID: u32 = u32::MAX;
+/// The id the sky light has in the GI's light sets. Point lights count up
+/// from 0, so the largest value never names one.
+pub const SKY_LIGHT_ID: u32 = u32::MAX;
 
-/// The sun's fitted shadow matrix (world metres to Bevy's clip space) and
-/// whether it may be sampled. The world's sun-shadow fit writes it; without
-/// it the sun still lights the volume, unshadowed.
-#[derive(Resource, Clone, Copy, Debug, PartialEq, ExtractResource)]
-#[extract_app(RenderApp)]
-pub struct GiSunShadow {
-    pub clip_from_world: Mat4,
-    pub enabled: bool,
-}
-
-impl Default for GiSunShadow {
-    fn default() -> Self {
-        Self {
-            clip_from_world: Mat4::IDENTITY,
-            enabled: false,
-        }
-    }
-}
-
-/// Whether the level has an open sky: the original's sun branch then takes
-/// the shadow map's first sample alone rather than its two-sample
-/// difference.
-#[derive(Resource, Clone, Copy, Debug, Default, ExtractResource)]
-#[extract_app(RenderApp)]
-pub struct GiSunSky(pub bool);
+/// The GI manager's sky light: the scene environment's record fog colour,
+/// which a lightning strike brightens towards blue, as the frame keeps it
+/// (linear). The manager scales it by [`SKY_GI_SCALE`] and injects it
+/// straight down, shadowed from above; it is left out while the scaled
+/// colour's third component is at most 1.19e−7 (so indoors, where the
+/// record's fog colour is zero, there is none). The world sets it each
+/// frame; without it the volume has no sky light.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
+pub struct GiSkyLight(pub Vec3);
 
 /// A GI light shape (the original's abstract `TGIEmissive` base: a dome, a
 /// cuboid, a bubble, a line or a multi-point shape). Gameplay effects
@@ -755,15 +740,15 @@ struct GiGroupUniform {
 #[derive(Clone, Copy, Default, ShaderType)]
 struct GiLight {
     /// A point light at (x, z depth, y height) in texture units, its inverse
-    /// radius in them in `w`; for the sun only `w` is read (unused).
+    /// radius in them in `w`; for the sky light only `w` is read (unused).
     position_radius: Vec4,
     /// The injected colour in `rgb`; `w` is the cube lookup's depth scale
     /// ((bias + 0.94)/R × 5120, the original's 5120 = 256 × 20 cm).
     colour_shadow: Vec4,
     /// x, y: vertical shaping (y, z); z: 1/(2^z − 1); w: 0 for a point
-    /// light and 1 for the sun. The original keeps the shaping one lane up
-    /// (y, z, w of `Light[3i+2]`, x unwritten) and splits the sun into its
-    /// own program branch.
+    /// light and 1 for the sky light. The original keeps the shaping one lane
+    /// up (y, z, w of `Light[3i+2]`, x unwritten) and splits its directional
+    /// light into its own program branch.
     shaping: Vec4,
 }
 
@@ -802,11 +787,8 @@ struct GiParams {
     extent: Vec4,
     /// The base ambient every open voxel gains per step, per channel.
     base: Vec4,
-    /// The sun's fitted shadow matrix (world metres to clip space).
-    sun_matrix: Mat4,
-    /// x: the shadow map may be sampled, y: the level has a sky, z: the
-    /// steps reach the top slice.
-    sun_flags: UVec4,
+    /// z: the steps reach the top slice (x and y unused).
+    flags: UVec4,
     /// The groups of sectors drawn this frame.
     groups: [GiGroupUniform; MAX_GROUPS],
     /// Per sector (X fastest), its group or u32::MAX.
@@ -822,17 +804,17 @@ struct GiParams {
 
 /// Lumens per unit of the original's light intensity (see `exa_world`).
 const LUMENS_PER_INTENSITY: f32 = 8.0;
-/// Lux per unit of the original's sun intensity (see `exa_world`).
-const SUN_LUX: f32 = 160.0;
-/// The manager's sun factor: the scene's sun colour times 3 is the GI sun.
-const SUN_GI_SCALE: f32 = 3.0;
-/// The manager's injection share; point lights take 1.5 times it, the sun 3.
+/// The manager's sky-light factor: the environment's record fog colour
+/// times 3 is the GI's sky light (a constructor constant of the manager).
+pub const SKY_GI_SCALE: f32 = 3.0;
+/// The manager's injection share; point lights take 1.5 times it, the sky
+/// light 3.
 const INJECTION_SHARE: f32 = 0.1;
 
 /// The manager's light-injection share for a shading quality: 0.1, or 0.09
 /// at the high quality (above 3), which is what the original's per-frame
 /// entry stores in the field its light sources read. The GI's own point and
-/// sun uniforms use the fixed 0.1, as the original's per-block injection
+/// sky-light uniforms use the fixed 0.1, as the original's per-block injection
 /// reads the unqualified value; a source outside the GI manager (the effects'
 /// direct light) takes this one.
 pub fn injection_share(high_quality: bool) -> f32 {
@@ -843,13 +825,20 @@ pub fn injection_share(high_quality: bool) -> f32 {
         INJECTION_SHARE
     }
 }
-/// The sun's intensity below which the original leaves it out of the GI.
-const SUN_EPSILON: f32 = 1.192_09e-7;
-/// The original's own sun shadow map for the GI: 1024², with its direct-light
-/// softness of 1600 (the sun filter radius). Exarust samples Bevy's fitted sun map instead, so these
-/// stay as the original's numbers for reference.
-pub const GI_SUN_SHADOW_SIZE: u32 = 1024;
-pub const GI_SUN_SOFTNESS: f32 = 1600.0;
+/// The scaled sky colour's third component at or below which the original
+/// leaves the sky light out of the GI.
+const SKY_EPSILON: f32 = 1.192_09e-7;
+/// The original's own map for the sky light: 1024², looking straight down,
+/// with a depth reach of 1600 cm. Exarust stands the volume's own columns
+/// in for it (see [`sky_floors`]), so these stay as the original's numbers
+/// for reference.
+pub const GI_SKY_SHADOW_SIZE: u32 = 1024;
+pub const GI_SKY_SHADOW_REACH: f32 = 1600.0;
+/// The occupancy byte from which a voxel shades the sky light below it
+/// [adaptation]: the voxel's openness 1 − 13·occupancy is then under one
+/// half. The original's map is drawn from the scene's meshes; Exarust reads
+/// the volume the meshes were rasterised into.
+pub const SKY_OCCLUDER: u8 = 10;
 /// Light ranges are 1.25 radii; the volume falls off over one radius.
 const REACH: f32 = 1.25;
 /// The shadow far plane an unranged light's record holds, 3.4e38, as the
@@ -1302,6 +1291,37 @@ pub fn drawn_slices(floor: u32, depth: u32, top_slice: bool) -> std::ops::Range<
     floor.min(top)..top
 }
 
+/// Whether the GI takes the sky light this frame: the original tests only
+/// the third component of the colour scaled by the manager's 3.
+pub fn sky_light_active(colour: Vec3) -> bool {
+    colour.z * SKY_GI_SCALE > SKY_EPSILON
+}
+
+/// The sky light's reach in a block, one value per column (X fastest, then
+/// Z): the slice above the column's highest voxel of at least
+/// [`SKY_OCCLUDER`], 0 for a column with none. The original shades the
+/// light with its own depth map drawn straight down over the scene and,
+/// under a sky, takes that map's comparison alone, so a voxel is lit when
+/// nothing stands above it; the column's highest occluder is that map at the
+/// volume's resolution [adaptation]. A moving mesh's occupancy patches do
+/// not move these floors.
+pub fn sky_floors(cells: &[u8], size: UVec3) -> Vec<u16> {
+    let (w, d, h) = (size.x as usize, size.y as usize, size.z as usize);
+    let mut floors = vec![0u16; w * d];
+    for (column, floor) in floors.iter_mut().enumerate() {
+        for y in (0..h).rev() {
+            if cells
+                .get(column + y * w * d)
+                .is_some_and(|&c| c >= SKY_OCCLUDER)
+            {
+                *floor = (y + 1) as u16;
+                break;
+            }
+        }
+    }
+    floors
+}
+
 fn volume_image(size: UVec3, format: TextureFormat, data: Vec<u8>, storage: bool) -> Image {
     let mut image = Image::new(
         Extent3d {
@@ -1359,6 +1379,20 @@ fn create_textures(
         false,
     ));
     let empty = vec![0u8; voxels * 4];
+    let floors = sky_floors(&volume.cells, size);
+    let mut sky_floor = Image::new(
+        Extent3d {
+            width: size.x,
+            height: size.y,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        floors.iter().flat_map(|f| f.to_le_bytes()).collect(),
+        TextureFormat::R16Uint,
+        RenderAssetUsages::RENDER_WORLD,
+    );
+    sky_floor.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST;
+    let sky_floor = images.add(sky_floor);
     let light = images.add(light_image(size, empty.clone()));
     let scratch = images.add(volume_image(size, TextureFormat::Rgba8Unorm, empty, true));
     let extent = Vec3::new(size.x as f32, size.z as f32, size.y as f32) * volume.voxel;
@@ -1368,6 +1402,7 @@ fn create_textures(
         occupancy,
         light,
         scratch,
+        sky_floor,
         origin: volume.origin,
         extent,
         voxel: volume.voxel,
@@ -1427,8 +1462,9 @@ struct LightSource {
     ranged: bool,
     /// The cached cube shadow's slot + 1 (0 without one).
     cube: u32,
-    /// The sun, which is injected by its shadow map rather than a position.
-    sun: bool,
+    /// The sky light, injected straight down where the sky reaches rather
+    /// than from a position.
+    sky: bool,
 }
 
 impl LightSource {
@@ -1438,13 +1474,13 @@ impl LightSource {
     }
 
     /// The light's per-step colour: the injection share 0.1 times 1.5 and
-    /// the original's `(1 − dim)²` for a point light; for the sun its colour
-    /// is first scaled by the manager's sun factor 3 and then by the share
-    /// times 3 (0.9 in all). The uniform's 0.01 is still to come.
+    /// the original's `(1 − dim)²` for a point light; for the sky light its
+    /// colour is first scaled by the manager's factor 3 and then by the
+    /// share times 3 (0.9 in all). The uniform's 0.01 is still to come.
     fn injection_colour(&self) -> Vec3 {
         let colour = self.colour * self.intensity;
-        if self.sun {
-            return colour * SUN_GI_SCALE * (INJECTION_SHARE * 3.0);
+        if self.sky {
+            return colour * SKY_GI_SCALE * (INJECTION_SHARE * 3.0);
         }
         let dim = (1.0 - self.dim) * (1.0 - self.dim);
         colour * (dim * INJECTION_SHARE * 1.5)
@@ -1499,7 +1535,7 @@ const SHAPE_FLOOR: f32 = f32::from_bits(0x33ff_ffd7);
 fn gather_lights(
     mut gi: ResMut<GiLights>,
     lights: GiLightQuery,
-    suns: Query<(&DirectionalLight, &GlobalTransform), Without<crate::supersample::Offscreen>>,
+    sky: Option<Res<GiSkyLight>>,
     voxel_lights: Query<(&VoxelLight, &GlobalTransform)>,
     textures: Option<Res<GiTextures>>,
     pending: Option<Res<GiPendingTextures>>,
@@ -1540,29 +1576,22 @@ fn gather_lights(
                 bias: bias.map_or(gi_shadow_bias(0), |b| b.0),
                 ranged: ranged.is_none_or(|r| r.0),
                 cube: cube.and_then(|c| c.slot).map_or(0, |s| s + 1),
-                sun: false,
+                sky: false,
             },
         );
     }
-    // The original's sun: the scene's directional light, its colour already
-    // in the original's units, injected from every marked sector's group.
-    let sun = suns
-        .iter()
-        .next()
-        .filter(|(light, _)| light.illuminance > 0.0);
+    // The original's first GI light: the manager's own sky light, the
+    // environment's record fog colour (lightning included) times 3, shining
+    // straight down. The scene's sun light does not reach the volume.
+    let sky = sky.map_or(Vec3::ZERO, |s| s.0);
     // The original tests only the scaled colour's third component.
-    let sun_active = sun.is_some_and(|(light, _)| {
-        let c = light.color.to_linear();
-        let i = light.illuminance / SUN_LUX;
-        c.blue * i * SUN_GI_SCALE > SUN_EPSILON
-    });
-    if sun_active && let Some((light, _)) = sun {
-        let c = light.color.to_linear();
+    let sky_active = sky_light_active(sky);
+    if sky_active {
         sources.insert(
-            SUN_LIGHT_ID,
+            SKY_LIGHT_ID,
             LightSource {
-                colour: Vec3::new(c.red, c.green, c.blue),
-                intensity: light.illuminance / SUN_LUX,
+                colour: sky,
+                intensity: 1.0,
                 radius: 0.0,
                 position: Vec3::ZERO,
                 multiplier: 1.0,
@@ -1571,7 +1600,7 @@ fn gather_lights(
                 bias: 0.0,
                 ranged: true,
                 cube: 0,
-                sun: true,
+                sky: true,
             },
         );
     }
@@ -1581,8 +1610,8 @@ fn gather_lights(
         // sectors from the bottom slice, with the scene's lights.
         groups.clear();
         let mut list = GiSector::default();
-        if sun_active {
-            list.push(SUN_LIGHT_ID);
+        if sky_active {
+            list.push(SKY_LIGHT_ID);
         }
         for &id in sectors.sectors[0].ids() {
             list.push(id);
@@ -1603,7 +1632,7 @@ fn gather_lights(
         );
         return;
     }
-    // Each marked sector keeps the sun and then the lights of its cell that
+    // Each marked sector keeps the sky light and then the lights of its cell that
     // the downward shaping lets reach its floor slice, in the cell's order.
     // A light the injection does not know is kept for the grouping and
     // dropped from the draw, as the original drops a light without its GI
@@ -1617,8 +1646,8 @@ fn gather_lights(
             let drawn = sectors.drawn[i];
             let mut kept = GiSector::default();
             if drawn && u32::from(floor) < depth {
-                if sun_active {
-                    kept.push(SUN_LIGHT_ID);
+                if sky_active {
+                    kept.push(SKY_LIGHT_ID);
                 }
                 let cell = Vec2::new(
                     ((sectors.from_middle.x + x as i32) as f32 + 0.5) * CELL_CM,
@@ -1627,7 +1656,7 @@ fn gather_lights(
                 let floor_y = VOXEL_CM * ((f32::from(floor) + 0.5) - below);
                 for &id in sectors.sector(x, z).ids() {
                     match sources.get(&id) {
-                        Some(source) if !source.sun && !shape_reaches(source, cell, floor_y) => {}
+                        Some(source) if !source.sky && !shape_reaches(source, cell, floor_y) => {}
                         _ => kept.push(id),
                     }
                 }
@@ -1671,7 +1700,7 @@ fn push_groups(
                 continue;
             };
             let colour = source.injection_colour() * source.multiplier;
-            let light = if source.sun {
+            let light = if source.sky {
                 GiLight {
                     colour_shadow: colour.extend(1.0),
                     shaping: Vec4::new(1.0, 1.0, 1.0, 1.0),
@@ -1818,14 +1847,11 @@ struct GiPipeline {
     layout: BindGroupLayoutDescriptor,
     sampler: Sampler,
     cube_sampler: Sampler,
-    sun_sampler: Sampler,
     pipeline: CachedComputePipelineId,
-    /// A 1-layer depth array and a six-face cube bound while the real shadow
-    /// maps are absent (before the first camera's view bindings exist).
-    dummy_sun: TextureView,
+    /// A six-face cube bound while the cached cubes are absent.
     dummy_cube: TextureView,
-    /// Kept alive while the views above point into them.
-    _dummies: (Texture, Texture),
+    /// Kept alive while the view above points into it.
+    _dummy: Texture,
 }
 
 /// A depth texture and its view, for the fallback shadow maps.
@@ -1885,8 +1911,7 @@ fn init_pipeline(
                 uniform_buffer::<GiParams>(false),
                 depth_texture_entry(TextureViewDimension::CubeArray),
                 sampler(SamplerBindingType::Comparison),
-                depth_texture_entry(TextureViewDimension::D2Array),
-                sampler(SamplerBindingType::Comparison),
+                texture_2d(TextureSampleType::Uint),
             ),
         ),
     );
@@ -1898,13 +1923,6 @@ fn init_pipeline(
         entry_point: Some("propagate".into()),
         ..default()
     });
-    let (sun_texture, dummy_sun) = depth_texture(
-        &device,
-        1,
-        1,
-        TextureFormat::Depth32Float,
-        TextureViewDimension::D2Array,
-    );
     let (cube_texture, dummy_cube) = depth_texture(
         &device,
         1,
@@ -1926,17 +1944,9 @@ fn init_pipeline(
             min_filter: FilterMode::Linear,
             ..default()
         }),
-        // Bevy's sun map is reverse-Z, compared greater-or-equal.
-        sun_sampler: device.create_sampler(&SamplerDescriptor {
-            compare: Some(CompareFunction::GreaterEqual),
-            mag_filter: FilterMode::Linear,
-            min_filter: FilterMode::Linear,
-            ..default()
-        }),
         pipeline,
-        dummy_sun,
         dummy_cube,
-        _dummies: (sun_texture, cube_texture),
+        _dummy: cube_texture,
     });
 }
 
@@ -2021,15 +2031,6 @@ fn prepare_bind_group(
     textures: Option<Res<GiTextures>>,
     pending: Option<Res<GiPendingTextures>>,
     lights: Res<GiLights>,
-    sun_shadow: Option<Res<GiSunShadow>>,
-    sun_sky: Option<Res<GiSunSky>>,
-    shadow_views: Query<
-        &bevy::pbr::ViewShadowBindings,
-        (
-            Without<crate::supersample::DisplayCamera>,
-            Without<crate::supersample::Offscreen>,
-        ),
-    >,
     pipeline: Option<Res<GiPipeline>>,
     cache: Res<PipelineCache>,
     images: Res<RenderAssets<GpuImage>>,
@@ -2043,18 +2044,15 @@ fn prepare_bind_group(
         commands.remove_resource::<GiBindGroup>();
         return;
     };
-    let (Some(light), Some(occupancy), Some(scratch)) = (
+    let (Some(light), Some(occupancy), Some(scratch), Some(sky_floor)) = (
         images.get(&textures.light),
         images.get(&textures.occupancy),
         images.get(&textures.scratch),
+        images.get(&textures.sky_floor),
     ) else {
         return;
     };
     let cube = images.get(&crate::cube_shadows::CUBE_POOL);
-    let sun = shadow_views
-        .iter()
-        .next()
-        .map(|v| &v.directional_light_depth_texture_view);
     let mut entries = [GiLight::default(); MAX_GROUP_LIGHTS];
     for (slot, l) in entries.iter_mut().zip(&lights.lights) {
         *slot = *l;
@@ -2079,19 +2077,11 @@ fn prepare_bind_group(
     for (slot, l) in voxel_entries.iter_mut().zip(&lights.voxel_lights) {
         *slot = *l;
     }
-    let sun_shadow = sun_shadow.as_deref().copied().unwrap_or_default();
-    let shaded = sun_shadow.enabled && sun.is_some();
     let value = GiParams {
         origin: textures.origin.extend(0.0),
         extent: textures.extent.extend(0.0),
         base: textures.base_ambient.extend(0.0),
-        sun_matrix: sun_shadow.clip_from_world,
-        sun_flags: UVec4::new(
-            shaded as u32,
-            sun_sky.as_deref().is_some_and(|s| s.0) as u32,
-            textures.top_slice as u32,
-            0,
-        ),
+        flags: UVec4::new(0, 0, textures.top_slice as u32, 0),
         groups,
         sector_groups,
         lights: entries,
@@ -2127,8 +2117,7 @@ fn prepare_bind_group(
             binding,
             cube.map_or(&pipeline.dummy_cube, |c| &c.texture_view),
             &pipeline.cube_sampler,
-            sun.unwrap_or(&pipeline.dummy_sun),
-            &pipeline.sun_sampler,
+            &sky_floor.texture_view,
         )),
     );
     if owed.serial != textures.serial {
@@ -2248,6 +2237,7 @@ mod tests {
             occupancy: Handle::default(),
             light: Handle::default(),
             scratch: Handle::default(),
+            sky_floor: Handle::default(),
             origin: Vec3::ZERO,
             extent: Vec3::ONE,
             voxel: 0.2,
@@ -2279,6 +2269,34 @@ mod tests {
             warm_up: 10,
             top_slice: false,
         }
+    }
+
+    #[test]
+    fn the_sky_light_reaches_down_to_each_column_s_highest_occluder() {
+        // 2 × 2 columns, 4 slices; cells X fastest, then Z, then height.
+        let size = UVec3::new(2, 2, 4);
+        let mut cells = vec![0u8; 16];
+        // Column (1, 0): a roof at slice 2 and a floor at slice 0.
+        cells[1 + 2 * 4] = 255;
+        cells[1] = 255;
+        // Column (0, 1): faint occupancy below the occluder byte only.
+        cells[2 + 3 * 4] = SKY_OCCLUDER - 1;
+        // Column (1, 1): the occluder byte at the top slice.
+        cells[3 + 3 * 4] = SKY_OCCLUDER;
+        assert_eq!(sky_floors(&cells, size), vec![0, 3, 0, 4]);
+    }
+
+    #[test]
+    fn the_sky_light_needs_a_blue_above_the_epsilon_once_tripled() {
+        // The manager tests the scaled colour's third component alone.
+        assert!(!sky_light_active(Vec3::ZERO));
+        assert!(!sky_light_active(Vec3::new(1.0, 1.0, 0.0)));
+        assert!(!sky_light_active(Vec3::new(0.0, 0.0, 3.9e-8)));
+        assert!(sky_light_active(Vec3::new(0.0, 0.0, 4.0e-8)));
+        // The default-time record's fog (×0.375, linear) lights the volume;
+        // a strike's blue (0.2, 0.3, 1.0)·1.5 makes it brighter.
+        assert!(sky_light_active(Vec3::new(0.0236, 0.03, 0.05)));
+        assert_eq!(SKY_GI_SCALE, 3.0);
     }
 
     #[test]
@@ -2513,21 +2531,21 @@ mod tests {
     }
 
     #[test]
-    fn the_sun_is_the_first_light_of_every_group() {
+    fn the_sky_light_is_the_first_light_of_every_group() {
         let mut sectors = [GiSectorPlan::default(); 64];
-        sectors[0] = plan(true, 10, &[SUN_LIGHT_ID, 5]);
-        sectors[1] = plan(true, 10, &[SUN_LIGHT_ID, 5]);
+        sectors[0] = plan(true, 10, &[SKY_LIGHT_ID, 5]);
+        sectors[1] = plan(true, 10, &[SKY_LIGHT_ID, 5]);
         let (groups, _) = group(&sectors, 64);
         assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].lights.ids(), &[SUN_LIGHT_ID, 5]);
-        // The sun counts towards the twelve-light cap: eleven point lights
+        assert_eq!(groups[0].lights.ids(), &[SKY_LIGHT_ID, 5]);
+        // The sky light counts towards the twelve-light cap: eleven point lights
         // plus it fill a group.
         let eleven: Vec<u32> = (0..11).collect();
-        let mut with_sun = vec![SUN_LIGHT_ID];
-        with_sun.extend(eleven);
+        let mut with_sky = vec![SKY_LIGHT_ID];
+        with_sky.extend(eleven);
         let mut sectors = [GiSectorPlan::default(); 64];
-        sectors[0] = plan(true, 10, &with_sun);
-        sectors[1] = plan(true, 10, &with_sun);
+        sectors[0] = plan(true, 10, &with_sky);
+        sectors[1] = plan(true, 10, &with_sky);
         let (groups, _) = group(&sectors, 64);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].lights.ids().len(), 12);
@@ -2549,7 +2567,7 @@ mod tests {
                 bias: 0.025,
                 ranged: true,
                 cube: 3,
-                sun: false,
+                sky: false,
             },
         );
         let mut groups = vec![GiGroupPlan {
@@ -2576,24 +2594,24 @@ mod tests {
         assert_eq!(light.colour_shadow.w, scale);
         assert_eq!(light.shaping, Vec4::new(1.0, 1.0, 1.0, 0.0));
         assert_eq!(gi.cube_slots, vec![2]);
-        // The sun's colour is scaled by 3 × 0.3, not 0.15.
+        // The sky light's colour is scaled by 3 × 0.3, not 0.15.
         sources.insert(
-            SUN_LIGHT_ID,
+            SKY_LIGHT_ID,
             LightSource {
-                sun: true,
+                sky: true,
                 cube: 0,
                 ..sources[&1]
             },
         );
         let mut gi = GiLights::default();
-        groups[0].lights = GiSector::new([SUN_LIGHT_ID]);
+        groups[0].lights = GiSector::new([SKY_LIGHT_ID]);
         push_groups(&mut gi, &groups, &sources, [0; 64], Vec3::ZERO, Vec3::ONE);
         assert!((gi.lights[0].colour_shadow.x - 0.9).abs() < 1e-6);
         assert_eq!(gi.lights[0].shaping.w, 1.0);
         assert_eq!(gi.cube_slots, vec![u32::MAX]);
-        // The original's separate GI sun map's numbers.
-        assert_eq!(GI_SUN_SHADOW_SIZE, 1024);
-        assert_eq!(GI_SUN_SOFTNESS, 1600.0);
+        // The original's separate sky-light map's numbers.
+        assert_eq!(GI_SKY_SHADOW_SIZE, 1024);
+        assert_eq!(GI_SKY_SHADOW_REACH, 1600.0);
     }
 
     #[test]
@@ -2861,7 +2879,7 @@ mod tests {
             bias: 0.025,
             ranged: true,
             cube: 0,
-            sun: false,
+            sky: false,
         };
         // The cell's centre at the origin, the floor slice's middle 1 m up
         // (in centimetres).
@@ -2972,7 +2990,7 @@ mod tests {
             bias,
             ranged,
             cube: 1,
-            sun: false,
+            sky: false,
         };
         // The shipped bias 0.025: ((0.025 + 0.94)/200 cm) × 5120 = 24.704.
         let scale = source(0.025, 2.0, true).cube_shadow_scale();

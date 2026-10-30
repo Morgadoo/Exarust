@@ -2025,6 +2025,7 @@ mod tests {
                 fog: None,
                 sky: false,
                 background: Vec3::ZERO,
+                sky_light: Vec3::ZERO,
             };
             info
         });
