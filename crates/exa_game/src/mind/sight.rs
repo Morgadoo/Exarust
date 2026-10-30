@@ -637,6 +637,36 @@ pub struct SpiritScreen {
     pub started_ms: u32,
 }
 
+/// The glows a scene has added, in the original's list order. The
+/// constructor makes one glow per sensed body, sets its first value to 1,
+/// its stamp to 0 and its kind to 2, and appends it to the scene's effect
+/// list; [`MindGlows::add`] keeps that order and [`MindGlows::step`] ticks
+/// every glow and drops the ones whose three seconds have run out.
+#[derive(bevy::prelude::Resource, Debug, Clone, Default, PartialEq)]
+pub struct MindGlows(pub Vec<MindGlow>);
+
+impl MindGlows {
+    /// Appends a glow for `body` at the end of the list.
+    pub fn add(&mut self, body: BodyId) -> &mut MindGlow {
+        self.0.push(MindGlow::new(body));
+        self.0.last_mut().expect("a glow was just pushed")
+    }
+
+    /// Ticks every glow and drops the finished ones. Answers the bodies
+    /// whose glow ended this step, in list order.
+    pub fn step(&mut self, now_ms: u32) -> Vec<BodyId> {
+        let mut ended = Vec::new();
+        self.0.retain_mut(|glow| {
+            let alive = glow.step(now_ms);
+            if !alive {
+                ended.push(glow.entry.body);
+            }
+            alive
+        });
+        ended
+    }
+}
+
 /// The spirit screen's start sound.
 pub const SPIRIT_SCREEN_SOUND: &str = "ThmMnd_B02";
 pub const SPIRIT_SCREEN_VOLUME: f32 = 0.2;
@@ -935,5 +965,19 @@ mod tests {
         assert_eq!(init.amplitude, 1.0);
         assert_eq!(init.pivot, [0.5, 0.5]);
         assert_eq!(init.noise.scale, SPIRIT_SCREEN_PERIOD_S);
+    }
+
+    #[test]
+    fn a_glow_is_appended_and_dropped_after_its_three_seconds() {
+        let mut glows = MindGlows::default();
+        let glow = glows.add(7);
+        assert_eq!(
+            (glow.entry.body, glow.entry.first, glow.entry.kind),
+            (7, 1.0, 2)
+        );
+        assert!(glows.step(100).is_empty());
+        assert_eq!(glows.0.len(), 1);
+        assert_eq!(glows.step(3200), vec![7]);
+        assert!(glows.0.is_empty());
     }
 }
