@@ -32,6 +32,34 @@ pub fn preview_side(pixel_format: u32, high_quality: bool) -> u32 {
     }
 }
 
+/// The player's inventory preview job: the side its maps are drawn at and
+/// the model it paints. The original starts it only when the shown item's
+/// model differs from the one the last job painted (it compares the model
+/// records, which two items share when their model names match).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreviewJob {
+    /// The side of the generated maps ([`preview_side`]).
+    pub side: u32,
+    /// The model the job paints.
+    pub model: String,
+}
+
+impl PreviewJob {
+    /// The job to start for `model`, or `None` when `shown` is already that
+    /// model.
+    pub fn start(
+        pixel_format: u32,
+        high_quality: bool,
+        model: &str,
+        shown: Option<&str>,
+    ) -> Option<Self> {
+        (shown != Some(model)).then(|| Self {
+            side: preview_side(pixel_format, high_quality),
+            model: model.to_string(),
+        })
+    }
+}
+
 /// The two format words a texture job carries: its side, then the same word
 /// as the target format.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -156,6 +184,26 @@ mod tests {
         assert_eq!(preview_side(3, false), 0x200);
         assert_eq!(preview_side(3, true), 0x400);
         assert_eq!(preview_side(5, true), 0x400);
+    }
+
+    /// The preview starts only when the model changes, at the side the
+    /// setting gives.
+    #[test]
+    fn the_preview_job_starts_for_a_new_model_only() {
+        assert_eq!(
+            PreviewJob::start(3, true, "BrPlate A", None),
+            Some(PreviewJob {
+                side: 0x400,
+                model: "BrPlate A".into()
+            })
+        );
+        assert_eq!(
+            PreviewJob::start(3, true, "BrPlate A", Some("BrPlate A")),
+            None
+        );
+        let job = PreviewJob::start(2, true, "BrPlate B", Some("BrPlate A")).unwrap();
+        assert_eq!(job.side, 0x200);
+        assert_eq!(job.model, "BrPlate B");
     }
 
     #[test]
