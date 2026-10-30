@@ -66,7 +66,10 @@ and the grid's rooms; portal clipping is next (see
   (`AddPass`, `Textured`, `Masked`, `BaseNrm`), every per-layer value the
   passes upload, the driver's pass list with its mask uploads, the mask and
   height passes' clears/blending/clamps/quads, the block palette and mask
-  quads, `TexPos`, the wet-floor gloss term (wired into `terrain.wesl`
+  quads, `TexPos` (half the split less the block index shifted down by the
+  level difference, a wrapping byte with a five-bit shift count, so the
+  shipped level-4/5 sets carry no block bits and read 0…1 across the block),
+  the wet-floor gloss term (wired into `terrain.wesl`
   through the palette's wetness) and the selection's look point, cut-offs,
   light-distance sort, set stealing and one-block-a-frame rule;
   `terrain::live` is the live driver: a tile is spawned hidden and the frame
