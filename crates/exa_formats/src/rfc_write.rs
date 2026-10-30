@@ -305,10 +305,10 @@ pub enum NodeData {
     Mesh(Box<ExportMesh>),
     Light(ExportLight),
     VoxelLight(ExportVoxelLight),
-    /// Class 3: another node's export number and a word (guess: an aim
-    /// target).
+    /// Class 3: another node's export number (0 for none) and a word
+    /// (guess: an aim target).
     Target {
-        node: usize,
+        node: Option<usize>,
         value: u32,
     },
 }
@@ -1262,8 +1262,10 @@ impl<'a> Walk<'a> {
             },
             tag::NODE_TARGET => match &node.body {
                 NodeData::Target { node: t, value } => {
-                    self.node(*t)?;
-                    w.u32(self.index[*t] as u32);
+                    if let Some(t) = t {
+                        self.node(*t)?;
+                    }
+                    w.u32(t.map_or(0, |t| self.index[t] as u32));
                     w.u32(*value);
                     Ok(())
                 }

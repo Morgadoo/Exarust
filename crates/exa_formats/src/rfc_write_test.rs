@@ -798,13 +798,31 @@ fn a_voxel_light_reads_back() {
 fn a_target_node_stores_the_target_number() {
     let mut t = node("Cam", class::TARGET | flags::SAVED, None);
     t.body = NodeData::Target {
-        node: 1,
+        node: Some(1),
         value: 0x3F80_0000,
     };
     let b = export(&scene_of(vec![t, plain("Aim", None)]));
     let kids = chunks(&roots(&b)[0].1[4..]);
     assert_eq!(kids[0].0, tag::NODE_TARGET);
     assert_eq!(words(&kids[0].1[112..]), [2, 0x3F80_0000]);
+
+    // No target stores 0, as the reader keeps a zero target as none.
+    let mut none = node("Cam", class::TARGET | flags::SAVED, None);
+    none.body = NodeData::Target {
+        node: None,
+        value: 7,
+    };
+    let b = export(&scene_of(vec![none]));
+    let kids = chunks(&roots(&b)[0].1[4..]);
+    assert_eq!(words(&kids[0].1[112..]), [0, 7]);
+    let s = Scene::parse(&b).unwrap();
+    assert!(matches!(
+        s.nodes[0].body,
+        NodeBody::Camera {
+            target: None,
+            value: 7
+        }
+    ));
 }
 
 #[test]
