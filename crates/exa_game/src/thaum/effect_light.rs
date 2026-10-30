@@ -42,6 +42,7 @@ use crate::effects::bubble::{Bubble, BubbleEffect, SIZE_CM};
 use crate::effects::emissive::{self, FALLOFF_CM, MultiPointLight};
 use crate::effects::force_dome::{BARRIER_DRAW_SCALE, Barrier, Bubble as ForceBubble};
 use crate::effects::torrent::Torrent;
+use crate::thaum::barricade::Barricade;
 
 /// Centimetres a metre.
 const CM: f32 = 100.0;
@@ -249,6 +250,49 @@ pub(crate) fn force_bubble_lights(
             &mut shapes,
             placed,
             "force bubble light",
+        );
+    }
+}
+
+/// The barricade's light shape this frame: the `gi_cuboid_fn` box at the
+/// wall's middle, its `bExt` from [`emissive::barricade_light`] over the
+/// node's full size, the colour incl. the 1.2 gain, its texture window from
+/// the wall's two random offsets, in the node's box plus 60 cm.
+pub fn barricade_shape(wall: &Barricade, gain: f32) -> (GiShape, ShapeVolume) {
+    let light = emissive::barricade_light(wall.state, wall.progress, wall.node_half * 2.0, gain);
+    let (centre, half) = emissive::world_box(
+        wall.centre,
+        [Vec3::X, Vec3::Y, Vec3::Z],
+        wall.node_half,
+        FALLOFF_CM,
+    );
+    let shape = GiShape {
+        program: GiShapeProgram::CuboidFn,
+        colour: light.colour,
+        matrix: Mat4::from_translation(-wall.centre),
+        half: light.extent,
+        tex_pos: Vec2::from(wall.texture),
+        ..default()
+    };
+    (shape, volume_of(centre, half))
+}
+
+/// The barricades' lights, refreshed from their state every frame; a
+/// barricade's light leaves with it.
+pub(crate) fn barricade_lights(
+    mut commands: Commands,
+    walls: Query<(Entity, &super::live::LiveBarricade, Option<&EffectLight>)>,
+    mut shapes: Query<(&mut GiShape, &mut ShapeVolume)>,
+) {
+    for (entity, live, light) in &walls {
+        let placed = barricade_shape(&live.wall, GI_LIGHT_SCALE);
+        place_light(
+            &mut commands,
+            entity,
+            light,
+            &mut shapes,
+            placed,
+            "barricade light",
         );
     }
 }
@@ -783,6 +827,28 @@ mod tests {
                 .shapes()
                 .is_empty()
         );
+    }
+
+    /// A standing barricade's `gi_cuboid_fn`: the node's full size less 60
+    /// across and 40 up, the 1.2 gain, and the box plus 60 cm.
+    #[test]
+    fn a_barricade_registers_its_textured_box() {
+        use crate::thaum::barricade::{WallFrame, state};
+        let frame = WallFrame::facing(Vec3::new(0.0, 100.0, 0.0), Vec3::X);
+        let mut draws = Mt19937::new(1);
+        let mut wall = Barricade::raise(frame, 0.25, 1000, |_, _, _| None, None, &mut draws);
+        wall.state = state::STANDING;
+        wall.progress = 1.0;
+        let (shape, volume) = barricade_shape(&wall, GI_LIGHT_SCALE);
+        assert_eq!(shape.program, GiShapeProgram::CuboidFn);
+        assert_eq!(shape.half, Vec3::new(0.0, 160.0, 10.0));
+        assert_eq!(
+            shape.colour,
+            crate::effects::emissive::DOME_COLOUR * (GI_LIGHT_SCALE * 1.2)
+        );
+        assert_eq!(shape.tex_pos, Vec2::from(wall.texture));
+        assert_eq!(volume.position, Vec3::new(0.0, 1.0, 0.0));
+        assert_eq!(volume.half, Vec3::new(1.0, 1.7, 0.75));
     }
 
     /// A standing barrier's dome: the gi_dome shell at the drawn centre, the

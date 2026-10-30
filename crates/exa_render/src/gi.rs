@@ -4068,6 +4068,9 @@ mod tests {
         assert_eq!(GiShapeProgram::TeleBubble.index(), 3);
         assert_eq!(GiShapeProgram::GradLine.index(), 4);
         assert_eq!(GiShapeProgram::Multipoint.index(), 5);
+        // The barricade's box is numbered after the library's six, so the
+        // pass's branches stay as they were.
+        assert_eq!(GiShapeProgram::CuboidFn.index(), 6);
     }
 
     #[test]

@@ -120,6 +120,7 @@ impl Plugin for ThaumEffectsPlugin {
                             super::effect_light::bubble_lights,
                             super::effect_light::barrier_lights,
                             super::effect_light::force_bubble_lights,
+                            super::effect_light::barricade_lights,
                             super::effect_light::drop_orphan_lights,
                         )
                             .chain(),
