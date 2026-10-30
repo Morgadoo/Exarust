@@ -443,6 +443,23 @@ fn power_down_devices(
     }
 }
 
+/// Strip a reconstructed player's live body: no hand or worn data, the
+/// underwear rule, and yellow and red health at the record's 0x7FFF share
+/// of the maximum. The original strips the character record (hands and worn
+/// list cleared, one empty action, health and stamina at 0x7FFF), runs the
+/// underwear rule on the cleared list, and leaves a dressed copy of the
+/// record as the corpse; Exarust has no record copy and no undress pass, so
+/// the drawn garments stay, and the corpse is left to the record owner.
+pub fn strip_body(commands: &mut Commands, entity: Entity, fighter: &mut exa_combat::Fighter) {
+    let share = teleporters::stripped_share();
+    fighter.health.yellow = fighter.health.max * share;
+    fighter.health.red = fighter.health.max * share;
+    commands
+        .entity(entity)
+        .remove::<Wielded>()
+        .insert((Outfit::default(), WearsUnderwear));
+}
+
 /// The session end: the player's red health, the mode and the latch decide
 /// it. The first reconstruction after a scan strips the player: no hand or
 /// worn data, the underwear rule, and yellow and red health at the record's
@@ -464,13 +481,7 @@ fn end_sessions(
         let identity = identities.get(end.user).map(|i| i.0).unwrap_or(0);
         let outcome = teleporters::session_end(fighter.health.red, end.story, identity, &mut latch);
         if outcome == (SessionEnd::Reconstructed { stripped: true }) {
-            let share = teleporters::stripped_share();
-            fighter.health.yellow = fighter.health.max * share;
-            fighter.health.red = fighter.health.max * share;
-            commands
-                .entity(end.user)
-                .remove::<Wielded>()
-                .insert((Outfit::default(), WearsUnderwear));
+            strip_body(&mut commands, end.user, &mut fighter);
         }
         ended.write(SessionEnded {
             user: end.user,
@@ -780,6 +791,47 @@ mod tests {
 
     fn health(app: &App, user: Entity) -> exa_combat::Health {
         app.world().get::<Fighter>(user).unwrap().health
+    }
+
+    /// The strip the flow applies when a scanned story player dies: the
+    /// hands and worn data go, the underwear rule stays, and yellow and red
+    /// health are the record's 0x7FFF share of the maximum.
+    #[test]
+    fn a_stripped_body_loses_its_gear_and_keeps_just_under_half_health() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut app = App::new();
+        let user = app
+            .world_mut()
+            .spawn((
+                Fighter::of_stats(
+                    None,
+                    CharacterStats {
+                        max_health: 200.0,
+                        yellow: 200.0,
+                        red: 0.0,
+                        ..Default::default()
+                    },
+                ),
+                Outfit::default(),
+                Wielded::model("ub05ssworda"),
+            ))
+            .id();
+        app.world_mut()
+            .run_system_once(
+                move |mut commands: Commands, mut fighters: Query<(Entity, &mut Fighter)>| {
+                    for (entity, mut fighter) in &mut fighters {
+                        strip_body(&mut commands, entity, &mut fighter);
+                    }
+                },
+            )
+            .expect("the strip runs");
+        let health = app.world().get::<Fighter>(user).unwrap().health;
+        // 200 × 0.4999924 = 99.9985.
+        assert!((health.yellow - 99.998_47).abs() < 1e-3, "{health:?}");
+        assert!((health.red - 99.998_47).abs() < 1e-3, "{health:?}");
+        assert!(app.world().get::<Wielded>(user).is_none());
+        assert!(app.world().get::<WearsUnderwear>(user).is_some());
+        assert!(app.world().get::<Outfit>(user).unwrap().0.is_empty());
     }
 
     #[test]
