@@ -732,3 +732,41 @@ fn the_wake_clears_the_waking_bit_once_the_body_is_ready() {
         .tone;
     assert_eq!(tone, 0.5);
 }
+
+/// Death takes the voice volume to 0 on the tick the condition becomes
+/// dead; a living character keeps its voice, and the sound gain stays.
+#[test]
+fn death_silences_the_voice() {
+    let mut app = App::new();
+    app.add_systems(Update, silence_the_dead);
+    let voice = crate::voice::CharacterVoice {
+        volume: 1.2,
+        gain: 1.0,
+        ..Default::default()
+    };
+    let alive = app
+        .world_mut()
+        .spawn((Condition::COLLAPSING, voice.clone()))
+        .id();
+    let dying = app
+        .world_mut()
+        .spawn((Condition::COLLAPSING, voice.clone()))
+        .id();
+    app.update();
+    *app.world_mut().get_mut::<Condition>(dying).unwrap() = Condition::DEAD;
+    app.update();
+    let volume = |e| {
+        app.world()
+            .get::<crate::voice::CharacterVoice>(e)
+            .unwrap()
+            .volume
+    };
+    assert_eq!(volume(alive), 1.2);
+    assert_eq!(volume(dying), 0.0);
+    let gain = app
+        .world()
+        .get::<crate::voice::CharacterVoice>(dying)
+        .unwrap()
+        .gain;
+    assert_eq!(gain, 1.0);
+}

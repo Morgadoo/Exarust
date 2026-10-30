@@ -469,7 +469,28 @@ impl Plugin for ConditionPlugin {
             (track_condition, track_wake)
                 .chain()
                 .in_set(CharacterStage::Posture),
-        );
+        )
+        .add_systems(FixedUpdate, silence_the_dead);
+    }
+}
+
+/// Death's voice write: a character whose condition becomes dead has its
+/// voice volume (the first of its voice's two gains,
+/// [`crate::voice::CharacterVoice::volume`]) set to 0, so a corpse makes
+/// no pain or other voice line; a revive gives it back. It runs on the tick
+/// the condition changes (every death path writes the condition), so it
+/// costs nothing on a steady tick.
+pub fn silence_the_dead(
+    mut voices: Query<(Entity, &Condition, &mut crate::voice::CharacterVoice), Changed<Condition>>,
+) {
+    for (entity, condition, mut voice) in &mut voices {
+        if *condition == Condition::DEAD && voice.volume != 0.0 {
+            debug!(
+                "{entity:?} dies: its voice volume {} goes to 0",
+                voice.volume
+            );
+            voice.volume = 0.0;
+        }
     }
 }
 

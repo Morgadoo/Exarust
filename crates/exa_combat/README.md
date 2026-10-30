@@ -380,7 +380,10 @@ still on its wait is refused. Lines 1, 2 and 3 play the voice's short
 groan, heavy groan and grunt sets (`_GroanS`, `_GroanH`, `_GruntS`: the
 voice entry's slots 1, 2 and 0, from the assembly). Every fighter carries
 its voice (`CharacterVoice`: the sets, the wound set, the gains and the
-clock), built by `exa_game::character_voice`.
+clock), built by `exa_game::character_voice`. Death takes the voice
+volume (the first gain) to 0 on the tick the condition becomes dead
+(`condition::silence_the_dead`), as the original's death routine does, so
+a corpse voices nothing.
 
 The damage routine's pain sounds (`pain`): after the damage call, the
 victim's wound sound (its own, `WndFls`, `SkelHit` or `HitGlm`) and its
