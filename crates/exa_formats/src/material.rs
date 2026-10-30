@@ -103,6 +103,16 @@ pub fn uv_transform(angle: f32, scale: [f32; 2], offset: [f32; 2]) -> [f32; 12] 
     m
 }
 
+/// Applies the texture-coordinate matrix built by [`uv_transform`] to one
+/// texture coordinate, as the mesh build's channel copy does:
+/// `(u·m0 + v·m3) + m9` and `(u·m1 + v·m4) + m10`, each sum in that order.
+pub fn uv_transform_point(matrix: &[f32; 12], uv: [f32; 2]) -> [f32; 2] {
+    [
+        (uv[0] * matrix[0] + uv[1] * matrix[3]) + matrix[9],
+        (uv[0] * matrix[1] + uv[1] * matrix[4]) + matrix[10],
+    ]
+}
+
 /// The engine's single-precision epsilon: the loader replaces a refraction
 /// word smaller than it in magnitude by 1.
 const REFRACTION_EPSILON: f32 = f32::from_bits(0x33FF_FFD7);
@@ -694,6 +704,25 @@ mod tests {
         assert!((m[1] - 1.0).abs() < 1e-6 && (m[3] + 1.0).abs() < 1e-6);
         assert_eq!(m[9], ((0.5 - m[0] * 0.5) - m[3] * 0.5) + 0.0);
         assert!((m[9] - 1.0).abs() < 1e-6 && m[10].abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_uv_transform_maps_a_coordinate_in_the_engine_order() {
+        // Scale 2 about the centre, no rotation, shifted by (0.25, −0.5):
+        // u' = 2u − 0.5 + 0.25 = 2u − 0.25; v' = 2v − 1.0.
+        let m = uv_transform(0.0, [2.0, 2.0], [0.25, -0.5]);
+        assert_eq!(uv_transform_point(&m, [0.0, 0.0]), [-0.25, -1.0]);
+        assert_eq!(uv_transform_point(&m, [0.5, 0.5]), [0.75, 0.0]);
+        assert_eq!(uv_transform_point(&m, [1.0, 1.0]), [1.75, 1.0]);
+        // A hand-built matrix pins the row/column choice: only x and the
+        // translation move u; a nonzero m2, m5, m7 or m11 is not read.
+        let m = [
+            3.0, 5.0, 99.0, 7.0, 11.0, 99.0, 99.0, 99.0, 99.0, 13.0, 17.0, 99.0,
+        ];
+        assert_eq!(
+            uv_transform_point(&m, [2.0, 4.0]),
+            [3.0 * 2.0 + 7.0 * 4.0 + 13.0, 5.0 * 2.0 + 11.0 * 4.0 + 17.0]
+        );
     }
 
     #[test]

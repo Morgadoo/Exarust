@@ -413,6 +413,11 @@ pub struct ModelCache {
     /// The GI thin-mesh flag by material cache key
     /// ([`ModelLoader::thin_for_gi`]).
     thin: HashMap<String, bool>,
+    /// The texture-coordinate matrix of each material by cache key, when its
+    /// record's extra flags carry it. The mesh build applies it to the GPU
+    /// texture coordinates (no stored record in the mesh unit's shipped data
+    /// sets it).
+    uv_transforms: HashMap<String, Option<[f32; 12]>>,
     /// Morph bodies and the shares of the morphs models take
     /// ([`crate::morph`]).
     pub(crate) morph: MorphCache,
@@ -751,9 +756,21 @@ impl ModelLoader<'_> {
                     let (parts, part_materials) = built
                         .meshes
                         .into_iter()
-                        .map(|(group, bevy_mesh)| {
+                        .map(|(group, mut bevy_mesh)| {
                             let name = &mesh.groups[group].material;
                             let material = self.material(&entry, &scene, name);
+                            // The GPU build copies the texture coordinates
+                            // through the material's matrix when its record
+                            // asks for one (extra flags 0x40); the split
+                            // tangents still come from the stored channel.
+                            if let Some(matrix) = self.uv_transform_of(&entry, &scene, name)
+                                && let Some(bevy::mesh::VertexAttributeValues::Float32x2(uvs)) =
+                                    bevy_mesh.attribute_mut(Mesh::ATTRIBUTE_UV_0)
+                            {
+                                for uv in uvs.iter_mut() {
+                                    *uv = exa_formats::material::uv_transform_point(&matrix, *uv);
+                                }
+                            }
                             ((self.meshes.add(bevy_mesh), material), name.clone())
                         })
                         .unzip();
@@ -949,13 +966,17 @@ impl ModelLoader<'_> {
         // set follows from the name (see `apparel_texture_key`).
         if let Some(texture_key) = apparel_texture_key(name) {
             let handle = self.apparel_material(&texture_key);
-            self.cache.materials.insert(key, handle.clone());
+            self.cache.materials.insert(key.clone(), handle.clone());
+            self.cache.uv_transforms.insert(key, None);
             return handle;
         }
         // The original's material manager wins over a file's own list: the
         // reader adds a file's material only when the manager has no record
         // of that name, so a library material shades the surface.
         let source = library_material(self.game, name).or(local);
+        // The mesh build's texture-coordinate matrix comes from the record
+        // that shades the surface, under extra flag 0x40.
+        let uv_transform = source.as_ref().and_then(|m| m.uv_transform);
         let mat = match source {
             // The body's skin is drawn as the original's built-in skin.
             Some(_) if crate::human_skin::is_race_skin(entry, name) => {
@@ -972,13 +993,25 @@ impl ModelLoader<'_> {
             None => {
                 self.warn_once(format!("material {name:?} not found"));
                 let handle = self.builtin_default_material();
-                self.cache.materials.insert(key, handle.clone());
+                self.cache.materials.insert(key.clone(), handle.clone());
+                self.cache.uv_transforms.insert(key, None);
                 return handle;
             }
         };
         let handle = self.materials.add(mat);
-        self.cache.materials.insert(key, handle.clone());
+        self.cache.materials.insert(key.clone(), handle.clone());
+        self.cache.uv_transforms.insert(key, uv_transform);
         handle
+    }
+
+    /// The texture-coordinate matrix the record that shades `name` asks for
+    /// (extra flags `0x40`), as the mesh build applies it to the GPU stream.
+    fn uv_transform_of(&self, entry: &str, scene: &Scene, name: &str) -> Option<[f32; 12]> {
+        self.cache
+            .uv_transforms
+            .get(&Self::material_key(entry, scene, name))
+            .copied()
+            .flatten()
     }
 
     /// The built-in `_Default` material every unknown name resolves to,

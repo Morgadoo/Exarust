@@ -589,6 +589,34 @@ impl EditMesh {
         self.clone()
     }
 
+    /// Add the colour stream the original's colour-channel helper creates:
+    /// the first stream's id with the shared-channel bit, the colour format
+    /// word, the first stream's channel and element count, filled opaque
+    /// white unless `data` supplies the bytes. The new stream goes last and
+    /// its index is returned. The original also gives the new element to
+    /// every instance of the mesh; Exarust shares an instance's whole model
+    /// instead, so there is nothing to broadcast.
+    pub fn add_colour_channel(&mut self, data: Option<Vec<[u8; 4]>>) -> usize {
+        let (id, channel, count) = self
+            .streams
+            .first()
+            .map_or((COLOUR_STREAM.0, 0, 0), |stream| {
+                (
+                    stream.id | SHARES_CHANNEL,
+                    stream.channel,
+                    stream.data.len(),
+                )
+            });
+        let colours = data.unwrap_or_else(|| vec![[255; 4]; count]);
+        self.streams.push(Stream {
+            id,
+            format: COLOUR_STREAM.1,
+            channel,
+            data: StreamData::Rgba8(colours),
+        });
+        self.streams.len() - 1
+    }
+
     /// The incidence, built when missing.
     pub(crate) fn incidence(&mut self) -> Result<&mut Incidence, MeshError> {
         if self.incidence.is_none() {

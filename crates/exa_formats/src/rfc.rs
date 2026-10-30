@@ -2125,6 +2125,9 @@ impl Face {
     #[allow(clippy::neg_cmp_op_on_partial_ord)] // a NaN takes the original's branch
     pub fn sphere_push(&self, centre: [f32; 3], radius: f32) -> Option<[f32; 3]> {
         let distance = self.plane_distance(centre);
+        // The original's `0 ≤ distance && distance < radius` compiles to
+        // compares whose unordered (NaN) form continues, so a NaN centre
+        // reaches the push below.
         if distance < 0.0 || distance >= radius {
             return None;
         }
@@ -2150,6 +2153,8 @@ impl Face {
     /// `max² − the engine's epsilon`.
     pub fn within(&self, point: [f32; 3], max: f32) -> Option<f32> {
         let distance = self.plane_distance(point);
+        // The compare is a "greater" one, so a NaN distance passes here and
+        // is rejected by the squared-distance test below.
         if distance.abs() > max {
             return None;
         }
@@ -2165,21 +2170,27 @@ impl Face {
 
     /// The distance along a sphere's sweep at which it first touches the
     /// face's front, if it does before `best`. `direction` is the unit
-    /// sweep direction and `length` its travel; `radius` is the sphere's.
-    /// `start` is the centre. The original finds the moment the centre is
-    /// one radius in front of the plane, the closest point there, and the
-    /// gap from that centre along the sweep; a sweep that only grazes the
-    /// plane (a zero change) uses its end.
+    /// sweep direction; `radius` is the sphere's; `start` is the centre.
+    /// The original keeps the sweep's travel and the best hit in one field,
+    /// so `best` is also the travel: a mesh walk shortens the sweep to each
+    /// accepted hit. The original finds the moment the centre is
+    /// one radius in front of the plane, the closest point there, and
+    /// measures from the sweep's start: `closest·direction −
+    /// start·direction − √(radius² − perpendicular²)`. A sweep that only
+    /// grazes the plane (a zero change) uses its end.
     #[allow(clippy::neg_cmp_op_on_partial_ord)] // a NaN takes the original's branch
     pub fn swept_sphere(
         &self,
         start: [f32; 3],
         direction: [f32; 3],
-        length: f32,
         radius: f32,
         best: f32,
     ) -> Option<f32> {
+        let length = best;
         let start_distance = self.plane_distance(start);
+        // These three compares are "below"/"above" forms: the original's
+        // unordered (NaN) form continues, so a NaN start or sweep reaches
+        // the perpendicular test, which rejects it.
         if start_distance < 0.0 {
             return None;
         }
@@ -2190,18 +2201,18 @@ impl Face {
         if start_distance + delta > radius {
             return None;
         }
-        let centre = if !(delta.abs() < FACE_EPSILON) {
+        let centre = if delta.abs() < FACE_EPSILON {
+            [
+                start[0] + direction[0] * length,
+                start[1] + direction[1] * length,
+                start[2] + direction[2] * length,
+            ]
+        } else {
             let travel = ((radius - start_distance) / delta) * length;
             [
                 start[0] + direction[0] * travel,
                 start[1] + direction[1] * travel,
                 start[2] + direction[2] * travel,
-            ]
-        } else {
-            [
-                start[0] + direction[0] * length,
-                start[1] + direction[1] * length,
-                start[2] + direction[2] * length,
             ]
         };
         let distance = self.plane_distance(centre);
@@ -2217,7 +2228,10 @@ impl Face {
         if !(perpendicular < radius * radius) {
             return None;
         }
-        let t = along - (radius * radius - perpendicular).sqrt();
+        // The distance is measured from the sweep's start, as the
+        // original's `closest·direction − start·direction − √(r² − p²)`.
+        let cast = dot3(closest, direction) - dot3(start, direction);
+        let t = cast - (radius * radius - perpendicular).sqrt();
         if 0.0 < t && t < best { Some(t) } else { None }
     }
 }
@@ -2302,7 +2316,8 @@ impl Mesh {
     }
 
     /// The nearest face a sphere's sweep meets, with the distance along the
-    /// sweep (see [`Face::swept_sphere`]).
+    /// sweep (see [`Face::swept_sphere`]). Each accepted hit shortens the
+    /// sweep the later faces are tested with, as the original's walk does.
     pub fn swept_sphere_hit(
         &self,
         start: [f32; 3],
@@ -2314,7 +2329,7 @@ impl Mesh {
         let mut found = None;
         for triangle in 0..self.indices.len() / 3 {
             if let Some(face) = self.face(triangle)
-                && let Some(t) = face.swept_sphere(start, direction, length, radius, best)
+                && let Some(t) = face.swept_sphere(start, direction, radius, best)
             {
                 best = t;
                 found = Some((triangle as u32, t));
@@ -3514,7 +3529,7 @@ mod tests {
             face.ray([0.5, 5.0, -0.5], [f32::NAN, -1.0, 0.0], 10.0),
             None
         );
-        // A NaN centre passes every sphere rejection and is pushed by NaN.
+        // A NaN centre passes the front compare and is pushed by NaN.
         let push = face.sphere_push([f32::NAN, 0.5, -0.5], 1.0);
         assert!(
             push.is_some_and(|p| p.iter().any(|x| x.is_nan())),
@@ -3522,6 +3537,17 @@ mod tests {
         );
         // The reach test's last compare is a strict "under", so NaN misses.
         assert_eq!(face.within([f32::NAN, 0.5, -0.5], 1.0), None);
+        // A sweep with a NaN centre passes the three range compares and is
+        // rejected by the perpendicular radius test.
+        assert_eq!(
+            face.swept_sphere([f32::NAN, 1.5, -0.5], [0.0, -1.0, 0.0], 0.5, 5.0),
+            None
+        );
+        // A NaN sweep direction likewise.
+        assert_eq!(
+            face.swept_sphere([0.5, 1.5, -0.5], [f32::NAN, -1.0, 0.0], 0.5, 5.0),
+            None
+        );
     }
 
     /// The ray test is one-sided and front-only: a ray running against the
@@ -3602,23 +3628,23 @@ mod tests {
         // moment is the first corner and the gap is positive:
         // (1, 0, 0) − (1.3, 0.5, −0.3) = (−0.3, −0.5, 0.3), whose
         // perpendicular part is (−0.3, 0, 0.3) (0.18) and along part 0.5.
-        let t = face.swept_sphere([1.3, 1.5, -0.3], [0.0, -1.0, 0.0], 5.0, 0.5, 5.0);
-        assert!(t.is_some_and(|t| (t - 0.235_425).abs() < 1e-3), "{t:?}");
+        let t = face.swept_sphere([1.3, 1.5, -0.3], [0.0, -1.0, 0.0], 0.5, 5.0);
+        assert!(t.is_some_and(|t| (t - 1.235_425).abs() < 1e-3), "{t:?}");
         // The same sweep only 0.2 long stops well above the face.
         assert_eq!(
-            face.swept_sphere([1.3, 1.5, -0.3], [0.0, -1.0, 0.0], 0.2, 0.5, 0.2),
+            face.swept_sphere([1.3, 1.5, -0.3], [0.0, -1.0, 0.0], 0.5, 0.2),
             None
         );
         // Upward it runs away from the front.
         assert_eq!(
-            face.swept_sphere([1.3, 1.5, -0.3], [0.0, 1.0, 0.0], 5.0, 0.5, 5.0),
+            face.swept_sphere([1.3, 1.5, -0.3], [0.0, 1.0, 0.0], 0.5, 5.0),
             None
         );
-        // A perpendicular sweep touches at the contact moment: no gap.
-        assert_eq!(
-            face.swept_sphere([0.3, 1.5, -0.3], [0.0, -1.0, 0.0], 5.0, 0.5, 5.0),
-            None
-        );
+        // A sweep straight down over the interior touches at the moment its
+        // centre is one radius over the plane: no perpendicular gap, so the
+        // distance is the travel to the contact centre, 1.0.
+        let touch = face.swept_sphere([0.3, 1.5, -0.3], [0.0, -1.0, 0.0], 0.5, 5.0);
+        assert!(touch.is_some_and(|t| (t - 1.0).abs() < 1e-3), "{touch:?}");
         let mesh = Mesh {
             positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0]],
             normals: vec![[0.0, 1.0, 0.0]; 3],
@@ -3635,7 +3661,41 @@ mod tests {
         };
         let hit = mesh.swept_sphere_hit([1.3, 1.5, -0.3], [0.0, -1.0, 0.0], 5.0, 0.5);
         assert!(
-            hit.is_some_and(|(_, t)| (t - 0.235_425).abs() < 1e-3),
+            hit.is_some_and(|(_, t)| (t - 1.235_425).abs() < 1e-3),
+            "{hit:?}"
+        );
+        // The walk shortens the sweep to each accepted hit. The floor meets
+        // the ball at 1.0; the wall beside it (plane x = 0, the ball 0.3 in
+        // front) is grazed, so its contact centre is the sweep's end: at
+        // the shortened travel 1.0 the gap is 1.0 − √(0.25 − 0.09) = 0.6
+        // and the wall wins. Swept the whole 5.0 it would be 4.6 and lose.
+        let walled = Mesh {
+            positions: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, -1.0],
+                [0.0, -10.0, 0.0],
+                [0.0, 0.0, -10.0],
+                [0.0, 10.0, 0.0],
+            ],
+            normals: vec![[0.0, 1.0, 0.0]; 6],
+            position_ids: vec![0, 1, 2, 3, 4, 5],
+            indices: vec![0, 1, 2, 3, 4, 5],
+            groups: vec![MeshGroup {
+                material: "m".into(),
+                first_index: 0,
+                index_count: 6,
+            }],
+            smoothing: vec![0; 6],
+            position_count: 6,
+            ..Mesh::default()
+        };
+        let wall = walled.face(1).expect("the wall");
+        let alone = wall.swept_sphere([0.3, 1.5, -0.3], [0.0, -1.0, 0.0], 0.5, 5.0);
+        assert!(alone.is_some_and(|t| (t - 4.6).abs() < 1e-3), "{alone:?}");
+        let hit = walled.swept_sphere_hit([0.3, 1.5, -0.3], [0.0, -1.0, 0.0], 5.0, 0.5);
+        assert!(
+            hit.is_some_and(|(face, t)| face == 1 && (t - 0.6).abs() < 1e-3),
             "{hit:?}"
         );
     }
