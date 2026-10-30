@@ -57,6 +57,10 @@ While an alarm is armed, the alarm return SHALL offer the characters within 3000
 - **WHEN** an awake guardian's condition carries `0x800`
 - **THEN** the homeward callback refuses it
 
+#### Scenario: Nobody in reach
+- **WHEN** the only guardian stands exactly 3000 cm from the player
+- **THEN** nobody is sent home and the player is not moved
+
 ### Requirement: Homeward callback
 A guardian sent home SHALL have its home filled from the body's place and angle when the home's x is exactly 0, its tone, stance factor and a third word set to 1 and its condition 0, ask for Stand 2, be put at its home facing its home angle and fall asleep.
 

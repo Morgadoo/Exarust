@@ -12,6 +12,7 @@
 
 use std::sync::{Arc, RwLock};
 
+pub mod parts;
 pub mod tracks;
 
 use bevy::prelude::*;

@@ -372,6 +372,32 @@ pub fn factory_colour(index: u8) -> Vec3 {
     Vec3::from_array(palette::lifted_bytes(index).map(|b| f32::from(b) * pixel::BYTE_UNIT))
 }
 
+/// A stored texture layer's strength at one wear step, as the original's
+/// layer-list pass computes it: `opacity · 1000` at step 0, that scaled by
+/// `1 − decay · 0.005` (double) at step 1, and by `(1 − decay · 0.005)`
+/// raised to the step through the engine's logarithm and exponential for
+/// any later step, rounded half to even. A layer with `max_step` above 0
+/// has no strength from that step on (0).
+pub fn layer_strength(opacity: u8, decay: u8, step: i32, max_step: u8) -> i32 {
+    if max_step > 0 && step >= i32::from(max_step) {
+        return 0;
+    }
+    let full = f32::from(opacity) * 1000.0;
+    match step {
+        0 => (u32::from(opacity) * 1000) as i32,
+        1 => {
+            let kept = 1.0 - f64::from(decay) * 0.005;
+            (kept * f64::from(full)).round_ties_even() as i32
+        }
+        _ => {
+            let kept = (1.0 - f64::from(decay) * 0.005) as f32;
+            let grown =
+                crate::human_skin::engine_exp(crate::human_skin::engine_ln(kept) * step as f32);
+            (grown * full).round_ties_even() as i32
+        }
+    }
+}
+
 /// A factory layer's wear weight (`MatCol.w`): its finish byte's low level
 /// plus one, in sixteenths.
 pub fn factory_wear(finish: u8) -> f32 {
@@ -2788,5 +2814,25 @@ mod tests {
             let n = normal_of(finish(material), material, &t, &samples, Vec2::ZERO);
             assert!(n.is_finite(), "material {material}: {n}");
         }
+    }
+
+    /// A stored layer's strength: full at step 0, the decayed share at
+    /// step 1 (double), the engine's power for later steps, and 0 from its
+    /// maximum step on. Concrete values are the engine's own fast
+    /// logarithm and exponential.
+    #[test]
+    fn a_layer_strength_follows_its_decay_steps() {
+        assert_eq!(layer_strength(200, 40, 0, 0), 200_000);
+        assert_eq!(layer_strength(200, 40, 1, 0), 160_000);
+        assert_eq!(layer_strength(200, 40, 2, 0), 127_996);
+        assert_eq!(layer_strength(200, 40, 3, 0), 102_395);
+        assert_eq!(layer_strength(200, 40, 4, 0), 81_915);
+        assert_eq!(layer_strength(200, 40, 5, 0), 65_531);
+        assert_eq!(layer_strength(255, 0, 2, 0), 255_009);
+        assert_eq!(layer_strength(128, 20, 2, 0), 103_683);
+        // The maximum step ends it: step 2 is the first with none.
+        assert_eq!(layer_strength(200, 40, 2, 2), 0);
+        assert_eq!(layer_strength(200, 40, 1, 2), 160_000);
+        assert_eq!(layer_strength(200, 40, 0, 3), 200_000);
     }
 }

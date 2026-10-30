@@ -42,7 +42,7 @@ The system SHALL name a sound set's variants as the original does, the set's pre
 - **THEN** it holds every variant of the sword impacts, of the nine voices' grunts and of both footstep sets, and no seventh variant or tenth voice
 
 ### Requirement: Fall sounds
-A body falling to its death SHALL scream once with a heavy groan at its chest, at gain 0.2–0.35 and pitch 0.95–1.05 times its voice volume and pitch (the pitch from the first of two draws); the player SHALL hear `pitdeath01` at gain 0.1, not placed in the world, when the pit sounds.
+A body falling to its death SHALL scream once by requesting line 2 (the heavy groan) of its own voice, at gain 0.2–0.35 and pitch 0.95–1.05 (the pitch from the first of two draws) through the voice request's waits and gains, at its chest; a body without a voice SHALL not scream. The player SHALL hear `pitdeath01` at gain 0.1, not placed in the world, when the pit sounds.
 
 #### Scenario: Draws
 - **WHEN** the scream's two draws are 0 and 1, then 1 and 0.5

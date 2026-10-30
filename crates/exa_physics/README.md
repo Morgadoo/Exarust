@@ -80,7 +80,10 @@ sound's draws (pitch first, then gain), the races that are released into
 the shocked state instead (and that release), race index 1 that only
 rings, and the burn of the others (yellow health, the shock-stagger bit,
 the stagger step along the shock and the pain reaction's part and
-values). Nothing in the running game calls it yet.
+values). The running game's arc shocks (`exa_game::thaum`) apply their
+own clock and health rule and do not call `shock` yet; the body tick's
+shock stagger and the release of a release race (`Body::force_release`)
+are live.
 
 A subtree marked `StaticGeometry` has its meshes copied into static
 triangle-mesh colliders. `NoStaticCollider` on a mesh (or subtree) under it

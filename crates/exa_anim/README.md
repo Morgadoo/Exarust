@@ -72,10 +72,38 @@ owed to the next frame), 0.6 × the race's base a tick, added in double
   inverse, each inverse relative to the mesh's part in rest), the joints
   captured in the original's walk (`capture_joints`: depth first in child
   order, the first node of a bone number setting its frame and a repeated
-  bone ending its branch), and a mesh's vertex translation. Bevy's GPU
-  skinning performs the per-frame deform; the bind uses these numbers.
+  bone ending its branch), and a mesh's vertex translation. The runtime
+  skin controller's per-frame passes are here too, as tested rules that
+  nothing in the running game calls yet (Bevy's GPU skinning performs the
+  per-frame deform): a frame's per-bone matrices (`frame_matrices`: each
+  joint turned back into the mesh node's frame by `joint_in_node_frame`,
+  the inverse bind applied before it by `compose`), the matrix blend
+  (`blend_skin_matrix`, which `skin_vertex` uses), the second skin order
+  that blends transformed positions (`skin_vertex_by_positions`, the
+  in-place bake `bake_skin_positions` and the per-index
+  `prime_previous_positions`, which resets a bad first joint to 1), the
+  per-part deform that writes one entry per index with the normal rotated
+  and normalised, the tangent rotated with its w kept and the
+  previous-position delta (`deform_part`), the origin shift of those
+  streams (`shift_previous_positions`), the element upload size
+  (`element_bytes`), the mesh's grown bounds (`bounds_from_parts`, middle
+  taken as `min + (max − min)·½`), the near-light vertex tint
+  (`tint_alpha`, range against the squared distance) and the 600-tick
+  fade-in (`fade_alpha`).
   Meshes bind under an `Animator` body root or a `SkinnedRoot` one (a
   level's placed dead have no clips, but their skin still binds).
+- Part motion state (`parts`): the animation ids a fresh body's parts are
+  numbered (`MotionParts::assign_ids`, depth first in child order, a part
+  without a numbered controller ending its branch) and the transfers
+  across a rebuilt model: `copy_from` (by role: a part whose controller
+  takes no copies ends the branch; it takes its source's controller state,
+  or has its source word cleared when the source has none; each source
+  child claims the first new child of its role with an id below 1, which
+  takes the source child's id and its new parent's controller link) and
+  `copy_by_id` (children matched by id), with `start` choosing between
+  numbering and copying the first listed body. The controller state is
+  the caller's; models do not rebuild in the running game yet, so nothing
+  calls these.
 - Node keyframe tracks (`tracks`): `NodeTracks` on a scene node,
   `StartTracks` starts the tracks of a node and the nodes under it as
   using an object does (once and reverse swap at each start), and every
