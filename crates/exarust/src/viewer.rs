@@ -76,7 +76,7 @@ impl Plugin for ViewerPlugin {
                 (
                     fly_camera,
                     screenshot_after_frames,
-                    fell_arena_opponents,
+                    (fell_arena_opponents, fell_undead_opponent),
                     equip_debug_shields,
                     shove_at_frame,
                     shove_props_at_frame,
@@ -1392,6 +1392,9 @@ fn spawn_players(
                     (!item.model.is_empty()).then(|| item.model.clone())
                 })
                 .unwrap_or_else(|| "ub05ssworda".into());
+            // `--undead-opponent`: the story's body rules, under which a
+            // living human may rise again.
+            let undead = options.undead_opponent.is_some();
             let stats = match &practice {
                 Some(opponent) => {
                     let race = exa_formats::races::of_character(&races, opponent.record.race);
@@ -1399,11 +1402,19 @@ fn spawn_players(
                         &opponent.record,
                         race,
                         Spawn {
-                            story: false,
+                            story: undead,
                             dead: false,
                         },
                     )
                 }
+                None if undead => CharacterStats::derive(
+                    &CharacterRecord::reset(),
+                    exa_formats::races::of_character(&races, exa_character::HUMAN),
+                    Spawn {
+                        story: true,
+                        dead: false,
+                    },
+                ),
                 None => new_human(0.0),
             }
             .with_encumbrance(outfit_encumbrance(&outfit));
@@ -2217,6 +2228,74 @@ fn fell_arena_opponents(
         felled += 1;
     }
     info!("arena fell: {felled} opponents drop dead");
+}
+
+/// `--undead-opponent <frame>`: at that frame after the load every living
+/// duellist collapses (as a killing blow starts it: the collapse clip, its
+/// dying tick, then death writing the rise clock), so the AI manager's rise
+/// rule can raise it 10 s after it dies. A debug tool.
+#[allow(clippy::type_complexity)]
+fn fell_undead_opponent(
+    mut commands: Commands,
+    options: Res<Options>,
+    loading: Option<Res<exa_ui::LoadingStatus>>,
+    mut frames: Local<u32>,
+    mut duellists: Query<
+        (
+            Entity,
+            &mut exa_combat::Condition,
+            Option<&mut exa_combat::StateFlags>,
+            &mut exa_anim::Animator,
+            &mut exa_physics::body::Ragdoll,
+            &exa_combat::Fighter,
+        ),
+        (
+            With<exa_ai::Duellist>,
+            Without<exa_game::player::PlayerBody>,
+        ),
+    >,
+) {
+    let Some(at) = options.undead_opponent else {
+        return;
+    };
+    if loading.is_some() || *frames > at {
+        return;
+    }
+    *frames += 1;
+    if *frames != at {
+        return;
+    }
+    for (entity, mut condition, flags, mut anim, mut body, fighter) in &mut duellists {
+        let Some(energy) = body.drive.as_ref().map(|d| d.energy) else {
+            continue;
+        };
+        let mut word = flags.as_deref().copied().unwrap_or_default();
+        if !exa_combat::collapse::start_collapse(
+            &mut condition,
+            &mut word,
+            &mut anim,
+            Some(&mut body),
+            energy,
+            None,
+        ) {
+            continue;
+        }
+        match flags {
+            Some(mut f) => *f = word,
+            None => {
+                commands.entity(entity).insert(word);
+            }
+        }
+        commands
+            .entity(entity)
+            .insert(exa_combat::collapse::Collapse::default());
+        info!(
+            "undead opponent {entity:?} collapses: rules {:#x} (may rise {}), red {:.3}",
+            fighter.stats.rules.0,
+            fighter.stats.rules.0 & exa_formats::character_stats::BodyRules::MAY_RISE != 0,
+            fighter.health.red
+        );
+    }
 }
 
 /// `--press` and `--click`: presses each scripted key or mouse button (and

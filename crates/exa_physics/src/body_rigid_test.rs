@@ -897,6 +897,53 @@ fn a_revive_raises_a_corpse_knocked_out() {
     assert_eq!(body.link_iterations(), 10);
 }
 
+/// Going limp keeps the race's factors and the character's stats the
+/// muscles read, and the revival drive is built over them (a golem's stance
+/// and damping, a small character's scale), not over the human default; a
+/// body that never had muscles has none.
+#[test]
+fn a_revival_drive_keeps_the_race_and_stats() {
+    let setup = [PartSetup {
+        bone: 1,
+        entity: Entity::PLACEHOLDER,
+        parent: None,
+        world: Affine3A::IDENTITY,
+        centre: Vec3::ZERO,
+        half: Vec3::splat(0.1),
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot: None,
+        pins: Vec::new(),
+        spheres: None,
+    }];
+    let race = crate::body::RaceMuscles {
+        stance: 0.8,
+        damping_ratio: 0.95,
+        clip_rate: 0.7,
+        golem: true,
+        ..crate::body::RaceMuscles::HUMAN
+    };
+    let stats = crate::body::BodyStats {
+        scale: 0.85,
+        max_energy: 0.9,
+        ..crate::body::BodyStats::HUMAN
+    };
+    assert!(Ragdoll::new(&setup).revival_drive().is_none());
+    let mut body = Ragdoll::new(&setup)
+        .with_drive()
+        .with_race(race)
+        .with_stats(stats);
+    body.go_limp();
+    assert_eq!(body.kept_muscles(), Some((race, stats)));
+    let drive = body.revival_drive().unwrap();
+    assert_eq!((drive.race, drive.stats), (race, stats));
+    assert_eq!(drive.stance(), 0.8);
+    body.revive(drive);
+    let d = body.drive.as_ref().unwrap();
+    assert_eq!((d.race, d.stats), (race, stats));
+    assert_eq!((d.tone, d.stance()), (0.0, 0.0), "knocked out");
+}
+
 /// The contact share writes the part of a bone from its base and leaves a
 /// body without that bone alone.
 #[test]

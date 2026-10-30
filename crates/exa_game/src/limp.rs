@@ -47,13 +47,23 @@ pub struct LimpPlugin;
 
 impl Plugin for LimpPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (build_bodies, go_limp).chain().after(AnimSystems))
-            .add_systems(
-                FixedUpdate,
-                watch_spawns.after(exa_physics::body::BodySystems),
+        app.add_systems(
+            Update,
+            (
+                build_bodies,
+                go_limp,
+                crate::rise::rise_the_dead,
+                crate::rise::restore_revived,
             )
-            .add_systems(Update, pace_swings)
-            .add_plugins(CharacterTickPlugin);
+                .chain()
+                .after(AnimSystems),
+        )
+        .add_systems(
+            FixedUpdate,
+            watch_spawns.after(exa_physics::body::BodySystems),
+        )
+        .add_systems(Update, pace_swings)
+        .add_plugins(CharacterTickPlugin);
     }
 }
 
@@ -416,32 +426,51 @@ pub(crate) fn part_setup(
     }
 }
 
+/// What go-limp took from a body so its character tick stops: its clip
+/// player and the controller of its character. The original keeps all of
+/// it through death (death only turns the muscles off and the dead leave
+/// the body tick), so Exarust keeps it here and a revive gives it back
+/// ([`crate::rise::restore_revived`]).
+#[derive(Component, Debug, Clone)]
+pub struct LimpKept {
+    /// The body's clip player as it was when the muscles went.
+    pub animator: Option<Animator>,
+    /// The character the body belongs to (the entity whose controller was
+    /// taken) and that controller.
+    pub character: Option<(Entity, CharacterBody)>,
+}
+
 /// Takes the muscles of bodies asked to go limp (unless a death took them
 /// in its tick already); they keep the motion they have unless the request
 /// gives them a velocity, stop being animated and their character stops
-/// being steered.
+/// being steered. What goes is kept ([`LimpKept`]) for a revive.
+#[allow(clippy::type_complexity)]
 fn go_limp(
     mut commands: Commands,
-    mut bodies: Query<(Entity, &GoLimp, &mut Ragdoll)>,
+    mut bodies: Query<(Entity, &GoLimp, &mut Ragdoll, Option<&Animator>)>,
     parents: Query<&ChildOf>,
-    controlled: Query<(), With<CharacterBody>>,
+    controlled: Query<&CharacterBody>,
 ) {
-    for (root, limp, mut body) in &mut bodies {
+    for (root, limp, mut body, anim) in &mut bodies {
         if body.drive.is_some() {
             body.go_limp();
         }
         if let Some(velocity) = limp.velocity {
             body.set_velocity(velocity);
         }
-        commands
-            .entity(root)
-            .remove::<(GoLimp, Physical, Animator, TickedClips)>();
-        if let Some(character) = parents
+        let character = parents
             .iter_ancestors(root)
-            .find(|&a| controlled.contains(a))
-        {
+            .find_map(|a| controlled.get(a).ok().map(|c| (a, c.clone())));
+        if let Some((character, _)) = character {
             commands.entity(character).remove::<CharacterBody>();
         }
+        commands
+            .entity(root)
+            .remove::<(GoLimp, Physical, Animator, TickedClips)>()
+            .insert(LimpKept {
+                animator: anim.cloned(),
+                character,
+            });
     }
 }
 

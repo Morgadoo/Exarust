@@ -51,6 +51,9 @@
 //!                                     model loads); a blade that meets it is blocked (logged "a block" at info)
 //!          --shield <m|any>           play mode: the player carries this shield on its off arm (no torch then)
 //!          --still-opponent           the duellist stands its ground: it faces the player in its stance but neither walks nor strikes
+//!          --undead-opponent <frame>  the debug duellist takes the story's body rules (it may rise again) and collapses
+//!                                     at that frame after the load; it dies, and 10 s later the AI manager's rule
+//!                                     raises it knocked out and it gets up (logged at info: "dies", "rises", "revived")
 //!          --arena-match <id>         in an arena, lay the match out as the original's template <id> does (1 duel, 2 doubles,
 //!                                     3 skirmish, 4 fray, 5 reserve, 6 pugilism, 7 elimination, 8 challenger, 9 captain,
 //!                                     12 brawl, 13 valiance, 14 valour): the player takes the company's first place and a
@@ -371,6 +374,10 @@ pub struct Options {
     /// Play mode: every arena opponent drops dead at this frame after the
     /// load, so the round ends and its end screen opens (a debug tool).
     pub arena_fell: Option<u32>,
+    /// `--undead-opponent <frame>`: the debug duellist takes the story's
+    /// body rules (it may rise) and collapses at this frame after the load
+    /// (a debug tool for the undead rise).
+    pub undead_opponent: Option<u32>,
     /// `--arena-auto`: the auto-match switch (continue and rematch alone).
     pub arena_auto: bool,
     /// `--open-hub-window <name>`: open a hub window once the hub is
@@ -780,6 +787,10 @@ fn main() -> AppExit {
             "--heartbeat" => options.heartbeat = true,
             "--undying" => options.undying = true,
             "--arena-fell" => options.arena_fell = args.next().and_then(|v| v.parse().ok()),
+            "--undead-opponent" => {
+                options.opponent = true;
+                options.undead_opponent = args.next().and_then(|v| v.parse().ok());
+            }
             "--arena-auto" => options.arena_auto = true,
             "--open-hub-window" => {
                 let name = args.next().unwrap_or_default();
