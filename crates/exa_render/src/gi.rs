@@ -47,12 +47,14 @@ impl Plugin for GiPlugin {
         let report = WarmUpReport(warm_up.report.clone());
         app.init_resource::<GiLights>()
             .init_resource::<GiSectorLights>()
+            .init_resource::<GiTextureCache>()
             .insert_resource(warm_up)
             .add_plugins((
                 crate::gi_shape::GiShapePlugin,
                 ExtractResourcePlugin::<GiTextures>::default(),
                 ExtractResourcePlugin::<GiPendingTextures>::default(),
                 ExtractResourcePlugin::<GiOccupancyPatches>::default(),
+                ExtractResourcePlugin::<GiTextureCache>::default(),
                 ExtractResourcePlugin::<GiLights>::default(),
             ))
             .add_systems(
@@ -165,6 +167,11 @@ pub struct GiTextures {
     /// Per column (X fastest, then Z), the lowest slice the sky light
     /// reaches ([`sky_floors`]).
     sky_floor: Handle<Image>,
+    /// The shape programs' `Tex0`: the manager's shapes share one 2D
+    /// texture. No effect registers a shape yet, so it is a white 1×1 texel
+    /// (the ridge and bubble bodies read its red channel) [guess: the
+    /// original binds each shape class's own texture].
+    pub shape_texture: Handle<Image>,
     pub origin: Vec3,
     pub extent: Vec3,
     /// Voxel edge, metres, and the texture's size (X, Z, Y).
@@ -711,6 +718,8 @@ pub struct GiLights {
     /// Per sector (X fastest), its group or 255.
     sector_groups: [u8; SECTORS * SECTORS],
     voxel_lights: Vec<GiVoxelLight>,
+    /// The registered shapes drawn into this block, in list order.
+    shapes: Vec<GiShapeUniform>,
 }
 
 impl Default for GiLights {
@@ -721,6 +730,7 @@ impl Default for GiLights {
             groups: Vec::new(),
             sector_groups: [u8::MAX; SECTORS * SECTORS],
             voxel_lights: Vec::new(),
+            shapes: Vec::new(),
         }
     }
 }
@@ -760,10 +770,52 @@ const SECTOR_VOXELS: u32 = 30;
 const MARGIN: u32 = 8;
 /// The most lights one sector records and one group injects.
 pub const MAX_SECTOR_LIGHTS: usize = 12;
+/// The light textures the manager keeps for the level's blocks: the
+/// original's nine.
+pub const RESIDENT_BLOCKS: usize = 9;
 /// Groups of sectors a block draws at once, one per sector at most.
 const MAX_GROUPS: usize = SECTORS * SECTORS;
 /// The flat light array the groups index into.
 const MAX_GROUP_LIGHTS: usize = MAX_GROUPS * MAX_SECTOR_LIGHTS;
+
+/// A registered emissive shape as the pass's shape loop reads it: the
+/// manager's clipped box (the original's per-shape draw range), the shape's
+/// program and the uniforms its fragment body reads. Shape-space lengths
+/// (the body constants, `half`, the line, the points) are in centimetres,
+/// the space the original's `bMat` maps a world position into; the box is in
+/// voxels, as [`shape_draw`] works it out.
+#[derive(Clone, Copy, Default, ShaderType)]
+struct GiShapeUniform {
+    /// x: the program ([`GiShapeProgram::ALL`]'s index), y: the first slice
+    /// of the draw as a signed value (the centre less the vertical half
+    /// extent, which may be below slice 0), z: its slice count.
+    head: UVec4,
+    /// The clipped column box: lo X, lo Z, hi X, hi Z.
+    clip: UVec4,
+    /// The injected colour.
+    colour: Vec4,
+    /// x: `Atten`, y: `Radius`, z: `Fade`, w: `Pulse`.
+    params: Vec4,
+    /// x: `Anim`.
+    extra: Vec4,
+    /// `bMat`: world centimetres into the shape's space.
+    matrix: Mat4,
+    /// `bExt`: the shape's half extents.
+    half: Vec4,
+    /// `TexPos`: the texture window's origin.
+    tex_pos: Vec4,
+    /// `Line[0]`, `Line[1]`.
+    line0: Vec4,
+    line1: Vec4,
+    /// `Grad`: the split point and its two end weights.
+    grad: Vec4,
+    /// `PointLgt`: the extra point light (position, weight).
+    point_light: Vec4,
+    /// `Light[2i]`: each multipoint's position.
+    point_pos: [Vec4; MAX_SHAPE_POINTS],
+    /// `Light[2i+1]`: each multipoint's colour.
+    point_col: [Vec4; MAX_SHAPE_POINTS],
+}
 
 /// A voxel light as the pass reads it.
 #[derive(Clone, Copy, Default, ShaderType)]
@@ -780,6 +832,12 @@ struct GiVoxelLight {
 /// Voxel lights injected into a block at once; the corpus has at most a
 /// handful in a level.
 const MAX_VOXEL_LIGHTS: usize = 64;
+/// Registered shapes injected into a block at once. The original walks the
+/// scene's whole shape list; a level holds a handful of effects at a time.
+pub const MAX_SHAPES: usize = 16;
+/// The most points one multi-point shape injects (the original's list is
+/// unbounded; a shape is capped here).
+pub const MAX_SHAPE_POINTS: usize = 8;
 
 #[derive(Clone, ShaderType)]
 struct GiParams {
@@ -800,6 +858,9 @@ struct GiParams {
     /// x = the number of voxel lights.
     voxel_count: UVec4,
     voxel_lights: [GiVoxelLight; MAX_VOXEL_LIGHTS],
+    /// x = the number of registered shapes drawn this frame.
+    shape_count: UVec4,
+    shapes: [GiShapeUniform; MAX_SHAPES],
 }
 
 /// Lumens per unit of the original's light intensity (see `exa_world`).
@@ -839,6 +900,37 @@ pub const GI_SKY_SHADOW_REACH: f32 = 1600.0;
 /// half. The original's map is drawn from the scene's meshes; Exarust reads
 /// the volume the meshes were rasterised into.
 pub const SKY_OCCLUDER: u8 = 10;
+
+/// The manager's own map for the sky light, as its set-up leaves it (Exarust
+/// stands the volume's columns in for the map, so this keeps the original's
+/// numbers for reference). The map is 1024², two of its depth fields are both
+/// set to 1600 cm [guess: its near and far reach], its direct-light softness
+/// is `(width·10)·0.5` (5120, the integer product converted, then halved),
+/// and its view matrix turns the scene to look straight down: X kept, the
+/// map's Y the scene's −Z and its Z the scene's −Y.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SkyShadowSetup {
+    pub size: u32,
+    pub depth_range: (f32, f32),
+    pub softness: f32,
+    /// The scene-to-map view matrix.
+    pub view: Mat4,
+}
+
+/// [`SkyShadowSetup`] for the manager's map.
+pub fn sky_shadow_setup() -> SkyShadowSetup {
+    SkyShadowSetup {
+        size: GI_SKY_SHADOW_SIZE,
+        depth_range: (GI_SKY_SHADOW_REACH, GI_SKY_SHADOW_REACH),
+        softness: ((GI_SKY_SHADOW_SIZE as i64 * 10) as f32) * 0.5,
+        view: Mat4::from_cols_array(&[
+            1.0, 0.0, 0.0, 0.0, //
+            0.0, 0.0, -1.0, 0.0, //
+            0.0, -1.0, 0.0, 0.0, //
+            0.0, 0.0, 0.0, 1.0,
+        ]),
+    }
+}
 /// Light ranges are 1.25 radii; the volume falls off over one radius.
 const REACH: f32 = 1.25;
 /// The shadow far plane an unranged light's record holds, 3.4e38, as the
@@ -1151,26 +1243,32 @@ pub struct MarginBlit {
 }
 
 /// The margin copy from block `(dx, dz)`'s neighbour (each −1, 0 or 1, not
-/// both 0): a one-sector margin column or row on that side, the interior on
-/// the other axis, and the original's UV offset of ∓240/256. A diagonal
-/// neighbour fills both margins.
+/// both 0), from the original's fixed table of texture fractions: on that
+/// side the strip `0..1/32` (or `31/32..1`) with the UV offset ±15/16, on
+/// the other axis the interior `1/32..31/32` with none. The fractions do not
+/// depend on the block's size: a 256-wide block copies 8 columns from 240
+/// over, a 128-wide one 4 columns from 120 over. A diagonal neighbour fills
+/// both margins.
 pub fn margin_blit(dims: UVec3, dx: i32, dz: i32) -> Option<MarginBlit> {
     if dx == 0 && dz == 0 {
         return None;
     }
-    let m = 8u32;
-    let columns = |d: i32, size: u32| match d.signum() {
-        -1 => 0..m,
-        1 => size - m..size,
-        _ => m..size - m,
-    };
-    let xs = columns(dx, dims.x);
-    let zs = columns(dz, dims.y);
-    let fraction = (dims.x as f32 - 16.0) / dims.x as f32;
+    // Per side (−1, 0, 1): the strip's low and high fraction and the offset.
+    const TABLE: [(f32, f32, f32); 3] = [
+        (0.0, 0.031_25, 0.9375),
+        (0.031_25, 0.968_75, 0.0),
+        (0.968_75, 1.0, -0.9375),
+    ];
+    let side = |d: i32| TABLE[(d.signum() + 1) as usize];
+    // A quad edge at fraction f covers the texels whose centres lie below
+    // f·size; the table's fractions are whole texels at power-of-two sizes.
+    let texel = |f: f32, size: u32| (f * size as f32).round() as u32;
+    let (x0, x1, ox) = side(dx);
+    let (z0, z1, oz) = side(dz);
     Some(MarginBlit {
-        lo: UVec2::new(xs.start, zs.start),
-        hi: UVec2::new(xs.end, zs.end),
-        offset: Vec2::new(-dx as f32 * fraction, -dz as f32 * fraction),
+        lo: UVec2::new(texel(x0, dims.x), texel(z0, dims.y)),
+        hi: UVec2::new(texel(x1, dims.x), texel(z1, dims.y)),
+        offset: Vec2::new(ox, oz),
         slices: dims.z.saturating_sub(1),
     })
 }
@@ -1358,12 +1456,107 @@ fn light_image(size: UVec3, data: Vec<u8>) -> Image {
     image
 }
 
+/// The light textures the manager keeps for the level's blocks: up to
+/// [`RESIDENT_BLOCKS`] blocks, as the original's manager owns nine. A block
+/// keeps its light and scratch textures after the camera leaves it, so
+/// walking back into a block reuses its accumulated light (the original
+/// steps all nine every frame; Exarust steps one and keeps the others'
+/// light as it was). A block's occupancy is always uploaded fresh from the
+/// world's cells.
+#[derive(Resource, Default, Clone, ExtractResource)]
+#[extract_app(RenderApp)]
+pub struct GiTextureCache {
+    entries: Vec<CachedGiTextures>,
+    /// The frame counter that ranks the entries for eviction.
+    clock: u64,
+}
+
+/// The light textures one block keeps while the camera is elsewhere.
+#[derive(Clone)]
+struct CachedGiTextures {
+    sector: IVec2,
+    dims: UVec3,
+    light: Handle<Image>,
+    scratch: Handle<Image>,
+    used: u64,
+}
+
+impl GiTextureCache {
+    /// The textures of `sector` at `dims`, if the block is resident.
+    fn take_reusable(
+        &mut self,
+        sector: IVec2,
+        dims: UVec3,
+    ) -> Option<(Handle<Image>, Handle<Image>)> {
+        self.clock += 1;
+        let entry = self
+            .entries
+            .iter_mut()
+            .find(|e| e.sector == sector && e.dims == dims)?;
+        entry.used = self.clock;
+        Some((entry.light.clone(), entry.scratch.clone()))
+    }
+
+    /// Records a block's textures, evicting the least recently used entry
+    /// beyond [`RESIDENT_BLOCKS`] that is not `keep`.
+    fn insert(
+        &mut self,
+        sector: IVec2,
+        dims: UVec3,
+        light: Handle<Image>,
+        scratch: Handle<Image>,
+        keep: IVec2,
+    ) {
+        self.clock += 1;
+        self.entries
+            .retain(|e| !(e.sector == sector && e.dims == dims));
+        self.entries.push(CachedGiTextures {
+            sector,
+            dims,
+            light,
+            scratch,
+            used: self.clock,
+        });
+        while self.entries.len() > RESIDENT_BLOCKS {
+            let victim = self
+                .entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.sector != keep)
+                .min_by_key(|(_, e)| e.used)
+                .map(|(i, _)| i);
+            match victim {
+                Some(i) => {
+                    self.entries.remove(i);
+                }
+                None => break,
+            }
+        }
+    }
+
+    /// The resident block at `sector` with `dims`, if it is kept.
+    pub fn resident(&self, sector: IVec2, dims: UVec3) -> Option<Handle<Image>> {
+        self.entries
+            .iter()
+            .find(|e| e.sector == sector && e.dims == dims)
+            .map(|e| e.light.clone())
+    }
+
+    /// The resident blocks, oldest use first.
+    pub fn sectors(&self) -> Vec<IVec2> {
+        let mut out: Vec<(u64, IVec2)> = self.entries.iter().map(|e| (e.used, e.sector)).collect();
+        out.sort_unstable_by_key(|(used, _)| *used);
+        out.into_iter().map(|(_, s)| s).collect()
+    }
+}
+
 fn create_textures(
     mut commands: Commands,
     volume: Option<Res<GiVolume>>,
     active: Option<Res<GiTextures>>,
     mut images: ResMut<Assets<Image>>,
     mut warm_up: ResMut<GiWarmUp>,
+    mut cache: Option<ResMut<GiTextureCache>>,
 ) {
     let Some(volume) = volume else { return };
     if !volume.is_changed() {
@@ -1378,7 +1571,6 @@ fn create_textures(
         volume.cells.as_ref().clone(),
         false,
     ));
-    let empty = vec![0u8; voxels * 4];
     let floors = sky_floors(&volume.cells, size);
     let mut sky_floor = Image::new(
         Extent3d {
@@ -1393,16 +1585,53 @@ fn create_textures(
     );
     sky_floor.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST;
     let sky_floor = images.add(sky_floor);
-    let light = images.add(light_image(size, empty.clone()));
-    let scratch = images.add(volume_image(size, TextureFormat::Rgba8Unorm, empty, true));
+    // A block the camera is returning to keeps the light it accumulated, and
+    // took with it the steps it had already run. A new block starts black.
+    let (light, scratch, warm_up_steps) = match cache
+        .as_deref_mut()
+        .and_then(|c| c.take_reusable(volume.sector, size))
+    {
+        Some((light, scratch)) => (light, scratch, 0),
+        None => {
+            let empty = vec![0u8; voxels * 4];
+            let light = images.add(light_image(size, empty.clone()));
+            let scratch = images.add(volume_image(size, TextureFormat::Rgba8Unorm, empty, true));
+            if let Some(cache) = cache.as_deref_mut() {
+                cache.insert(
+                    volume.sector,
+                    size,
+                    light.clone(),
+                    scratch.clone(),
+                    volume.sector,
+                );
+            }
+            (light, scratch, volume.warm_up)
+        }
+    };
+    let shape_texture = images.add({
+        let mut image = Image::new(
+            Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            vec![255; 4],
+            TextureFormat::Rgba8Unorm,
+            RenderAssetUsages::RENDER_WORLD,
+        );
+        image.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST;
+        image
+    });
     let extent = Vec3::new(size.x as f32, size.z as f32, size.y as f32) * volume.voxel;
     warm_up.serial += 1;
-    warm_up.steps = volume.warm_up;
+    warm_up.steps = warm_up_steps;
     let textures = GiTextures {
         occupancy,
         light,
         scratch,
         sky_floor,
+        shape_texture,
         origin: volume.origin,
         extent,
         voxel: volume.voxel,
@@ -1410,7 +1639,7 @@ fn create_textures(
         floors: volume.floors.clone(),
         sector: volume.sector,
         base_ambient: volume.base_ambient,
-        warm_up: volume.warm_up,
+        warm_up: warm_up_steps,
         top_slice: volume.top_slice,
         serial: warm_up.serial,
     };
@@ -1537,6 +1766,7 @@ fn gather_lights(
     lights: GiLightQuery,
     sky: Option<Res<GiSkyLight>>,
     voxel_lights: Query<(&VoxelLight, &GlobalTransform)>,
+    shapes: Query<(&GiShape, &ShapeVolume, &GlobalTransform)>,
     textures: Option<Res<GiTextures>>,
     pending: Option<Res<GiPendingTextures>>,
     sectors: Option<Res<GiSectorLights>>,
@@ -1547,12 +1777,18 @@ fn gather_lights(
     gi.cube_slots.clear();
     gi.groups.clear();
     gi.voxel_lights.clear();
+    gi.shapes.clear();
     gi.sector_groups = [u8::MAX; SECTORS * SECTORS];
     let textures = pending.as_ref().map(|p| &p.0).or(textures.as_deref());
     let (Some(textures), Some(sectors)) = (textures, sectors) else {
         return;
     };
     gather_voxel_lights(&mut gi.voxel_lights, textures, voxel_lights.iter());
+    gather_shapes(
+        &mut gi.shapes,
+        textures,
+        shapes.iter().map(|(shape, volume, _)| (shape, volume)),
+    );
     let sectors = &*sectors.0;
     // Marks made for another block (the frame a new block arrives) light
     // nothing; the next frame's are its own.
@@ -1629,6 +1865,8 @@ fn gather_lights(
             of_sector,
             textures.origin,
             textures.extent,
+            textures.voxel,
+            sky_active,
         );
         return;
     }
@@ -1676,11 +1914,45 @@ fn gather_lights(
         of_sector,
         textures.origin,
         textures.extent,
+        textures.voxel,
+        sky_active,
     );
+}
+
+/// Orders a group's lights as the injection does just before it draws the
+/// group: the first light whose shadow is a 2D matrix (`kind` 2: the sky
+/// light, a spot) at or after index 2 moves to slot 1 when the sky light is
+/// up (it owns slot 0), or the first at or after index 1 moves to slot 0
+/// when it is down. The scan checks the last light too, as the original's do-while
+/// does; a group shorter than the start needs no scan.
+pub fn plan_light_slots(lights: &mut [u32], matrix_shadow: impl Fn(u32) -> bool, sky_up: bool) {
+    let n = lights.len();
+    if sky_up {
+        if n < 3 {
+            return;
+        }
+        for i in 2..n {
+            if matrix_shadow(lights[i]) {
+                lights.swap(1, i);
+                return;
+            }
+        }
+    } else {
+        if n < 2 {
+            return;
+        }
+        for i in 1..n {
+            if matrix_shadow(lights[i]) {
+                lights.swap(0, i);
+                return;
+            }
+        }
+    }
 }
 
 /// Lays the groups' lights out for the pass, dropping the lights the
 /// injection does not know.
+#[allow(clippy::too_many_arguments)]
 fn push_groups(
     gi: &mut GiLights,
     groups: &[GiGroupPlan],
@@ -1688,15 +1960,37 @@ fn push_groups(
     of_sector: [u8; SECTORS * SECTORS],
     origin: Vec3,
     extent: Vec3,
+    voxel: f32,
+    sky_up: bool,
 ) {
     // `extent` is in world axes (X, height, Z): the texture's second axis
     // is world Z, its third the height over the block's width.
     let width = extent.x.max(1e-6);
-    let depth = extent.z.max(1e-6);
+    // The original's light uniforms are centimetres: its scale is
+    // `1/(W·fc)` (W voxels, fc cm each), positions measure from the block's
+    // **centre** and carry the +0.5 texture half-texel, and the height is
+    // `below/W + y·scale` (below in voxels). Same values, its own order.
+    let inv = 1.0 / (width * CM_PER_M);
+    let centre_cm = Vec2::new(
+        origin.x * CM_PER_M + width * CM_PER_M * 0.5,
+        origin.z * CM_PER_M + extent.z.max(1e-6) * CM_PER_M * 0.5,
+    );
+    let width_voxels = (width / voxel.max(1e-6)).max(1.0);
+    let below = (-origin.y / voxel.max(1e-6)).round();
     for group in groups {
         let first = gi.lights.len();
-        for id in group.lights.ids() {
-            let Some(source) = sources.get(id) else {
+        // The injection drops the lights without their GI flag, then moves
+        // a matrix-shadow light to its slot.
+        let mut ids: Vec<u32> = group
+            .lights
+            .ids()
+            .iter()
+            .copied()
+            .filter(|id| sources.contains_key(id))
+            .collect();
+        plan_light_slots(&mut ids, |id| id == SKY_LIGHT_ID, sky_up);
+        for id in ids {
+            let Some(source) = sources.get(&id) else {
                 continue;
             };
             let colour = source.injection_colour() * source.multiplier;
@@ -1707,14 +2001,15 @@ fn push_groups(
                     ..default()
                 }
             } else {
-                let p = source.position - origin;
+                let p = source.position * CM_PER_M;
                 let shaping = source.shaping;
+                let radius_cm = (source.radius * CM_PER_M).max(1e-6);
                 GiLight {
                     position_radius: Vec4::new(
-                        p.x / width,
-                        p.z / depth,
-                        p.y / width,
-                        width / source.radius.max(1e-6),
+                        (p.x - centre_cm.x) * inv + 0.5,
+                        (p.z - centre_cm.y) * inv + 0.5,
+                        below / width_voxels + p.y * inv,
+                        1.0 / (radius_cm * inv),
                     ),
                     colour_shadow: colour.extend(source.cube_shadow_scale()),
                     shaping: Vec4::new(shaping.x, shaping.y, 1.0 / (shaping.y.exp2() - 1.0), 0.0),
@@ -1764,6 +2059,61 @@ fn shape_reaches(source: &LightSource, cell: Vec2, floor_y: f32) -> bool {
     // dy² to them.
     let c = dy / (dy * dy + (dz * dz + dx * dx)).sqrt();
     c + (1.0 - c) * source.shaping.x > SHAPE_FLOOR
+}
+
+/// The registered shapes that draw into the block, in list order, as the
+/// manager's per-shape loop prepares them: each shape's clip box from its
+/// world volume ([`shape_draw`], the original's rounding and 8-voxel
+/// clipping) and the uniforms its fragment body reads. A shape whose box
+/// falls outside the block draws nothing. The original walks the scene's
+/// shape list and, for each, calls the shape's own program builder with the
+/// block; Exarust's one compute pass evaluates the body over that box.
+fn gather_shapes<'a>(
+    out: &mut Vec<GiShapeUniform>,
+    textures: &GiTextures,
+    shapes: impl Iterator<Item = (&'a GiShape, &'a ShapeVolume)>,
+) {
+    for (shape, volume) in shapes {
+        let Some(draw) = shape_draw(*volume, textures.origin, textures.dims, textures.voxel) else {
+            continue;
+        };
+        out.push(GiShapeUniform {
+            head: UVec4::new(
+                shape.program.index(),
+                draw.first as u32,
+                draw.count.max(0) as u32,
+                0,
+            ),
+            clip: UVec4::new(draw.lo.x, draw.lo.y, draw.hi.x, draw.hi.y),
+            colour: shape.colour.extend(0.0),
+            params: Vec4::new(shape.atten, shape.radius, shape.fade, shape.pulse),
+            extra: Vec4::new(shape.anim, 0.0, 0.0, 0.0),
+            matrix: shape.matrix,
+            half: shape.half.extend(0.0),
+            tex_pos: shape.tex_pos.extend(0.0).extend(0.0),
+            line0: shape.line[0].extend(0.0),
+            line1: shape.line[1].extend(0.0),
+            grad: shape.grad.extend(0.0),
+            point_light: shape.point_light,
+            point_pos: {
+                let mut a = [Vec4::ZERO; MAX_SHAPE_POINTS];
+                for (slot, &(p, _)) in a.iter_mut().zip(shape.points.iter()) {
+                    *slot = p.extend(0.0);
+                }
+                a
+            },
+            point_col: {
+                let mut a = [Vec4::ZERO; MAX_SHAPE_POINTS];
+                for (slot, &(_, c)) in a.iter_mut().zip(shape.points.iter()) {
+                    *slot = c.extend(0.0);
+                }
+                a
+            },
+        });
+        if out.len() == MAX_SHAPES {
+            break;
+        }
+    }
 }
 
 /// The voxel lights that reach into the block, nearest its centre first (the
@@ -1842,9 +2192,22 @@ fn give_materials_gi(
     }
 }
 
+/// The margin copy's parameters: the block's dims, the destination strip and
+/// the UV offset into the neighbour.
+#[derive(Clone, Copy, Default, ShaderType)]
+struct GiBlitParams {
+    dims: UVec4,
+    strip: UVec4,
+    offset: Vec4,
+}
+
 #[derive(Resource)]
 struct GiPipeline {
     layout: BindGroupLayoutDescriptor,
+    /// The margin copy's own layout and pipeline (`gi_blit_f` in the
+    /// original; `margin_blit` in `gi.wesl`).
+    blit_layout: BindGroupLayoutDescriptor,
+    blit_pipeline: CachedComputePipelineId,
     sampler: Sampler,
     cube_sampler: Sampler,
     pipeline: CachedComputePipelineId,
@@ -1912,15 +2275,36 @@ fn init_pipeline(
                 depth_texture_entry(TextureViewDimension::CubeArray),
                 sampler(SamplerBindingType::Comparison),
                 texture_2d(TextureSampleType::Uint),
+                texture_2d(TextureSampleType::Float { filterable: true }),
             ),
         ),
     );
+    let shader =
+        assets.load(AssetPath::from_path_buf(embedded_path!("gi.wesl")).with_source("embedded"));
     let pipeline = cache.queue_compute_pipeline(ComputePipelineDescriptor {
         label: Some("exa_gi_propagate".into()),
         layout: vec![layout.clone()],
-        shader: assets
-            .load(AssetPath::from_path_buf(embedded_path!("gi.wesl")).with_source("embedded")),
+        shader: shader.clone(),
         entry_point: Some("propagate".into()),
+        ..default()
+    });
+    let blit_layout = BindGroupLayoutDescriptor::new(
+        "exa_gi_blit",
+        &BindGroupLayoutEntries::sequential(
+            ShaderStages::COMPUTE,
+            (
+                texture_3d(TextureSampleType::Float { filterable: true }),
+                sampler(SamplerBindingType::Filtering),
+                texture_storage_3d(TextureFormat::Rgba8Unorm, StorageTextureAccess::WriteOnly),
+                uniform_buffer::<GiBlitParams>(false),
+            ),
+        ),
+    );
+    let blit_pipeline = cache.queue_compute_pipeline(ComputePipelineDescriptor {
+        label: Some("exa_gi_margin_blit".into()),
+        layout: vec![blit_layout.clone()],
+        shader,
+        entry_point: Some("margin_blit".into()),
         ..default()
     });
     let (cube_texture, dummy_cube) = depth_texture(
@@ -1932,6 +2316,8 @@ fn init_pipeline(
     );
     commands.insert_resource(GiPipeline {
         layout,
+        blit_layout,
+        blit_pipeline,
         sampler: device.create_sampler(&SamplerDescriptor {
             mag_filter: FilterMode::Linear,
             min_filter: FilterMode::Linear,
@@ -1954,6 +2340,16 @@ fn init_pipeline(
 #[derive(Resource)]
 struct GiBindGroup {
     bind_group: bevy::render::render_resource::BindGroup,
+    /// One bind group per resident neighbour whose margin this block takes.
+    blits: Vec<GiMarginCopy>,
+}
+
+/// One neighbour's margin copy: its region and its bind group.
+struct GiMarginCopy {
+    blit: MarginBlit,
+    bind_group: bevy::render::render_resource::BindGroup,
+    /// Kept alive with the bind group that points into it.
+    _uniform: UniformBuffer<GiBlitParams>,
 }
 
 /// The warm-up of the volume being lit: its serial, its length and the
@@ -2037,6 +2433,7 @@ fn prepare_bind_group(
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
     mut owed: ResMut<GiOwed>,
+    texture_cache: Option<Res<GiTextureCache>>,
     mut buffer: Local<Option<UniformBuffer<GiParams>>>,
 ) {
     let textures = pending.as_ref().map(|p| &p.0).or(textures.as_deref());
@@ -2052,6 +2449,11 @@ fn prepare_bind_group(
     ) else {
         return;
     };
+    let Some(shape_texture) = images.get(&textures.shape_texture) else {
+        return;
+    };
+    let empty_cache = GiTextureCache::default();
+    let texture_cache = texture_cache.as_deref().unwrap_or(&empty_cache);
     let cube = images.get(&crate::cube_shadows::CUBE_POOL);
     let mut entries = [GiLight::default(); MAX_GROUP_LIGHTS];
     for (slot, l) in entries.iter_mut().zip(&lights.lights) {
@@ -2077,6 +2479,10 @@ fn prepare_bind_group(
     for (slot, l) in voxel_entries.iter_mut().zip(&lights.voxel_lights) {
         *slot = *l;
     }
+    let mut shape_entries = [GiShapeUniform::default(); MAX_SHAPES];
+    for (slot, s) in shape_entries.iter_mut().zip(&lights.shapes) {
+        *slot = *s;
+    }
     let value = GiParams {
         origin: textures.origin.extend(0.0),
         extent: textures.extent.extend(0.0),
@@ -2093,6 +2499,8 @@ fn prepare_bind_group(
             0,
         ),
         voxel_lights: voxel_entries,
+        shape_count: UVec4::new(lights.shapes.len().min(MAX_SHAPES) as u32, 0, 0, 0),
+        shapes: shape_entries,
     };
     // One buffer, rewritten every frame (the parameters are about 42 KiB).
     let params = match &mut *buffer {
@@ -2118,6 +2526,7 @@ fn prepare_bind_group(
             cube.map_or(&pipeline.dummy_cube, |c| &c.texture_view),
             &pipeline.cube_sampler,
             &sky_floor.texture_view,
+            &shape_texture.texture_view,
         )),
     );
     if owed.serial != textures.serial {
@@ -2127,7 +2536,56 @@ fn prepare_bind_group(
             left: textures.warm_up,
         };
     }
-    commands.insert_resource(GiBindGroup { bind_group });
+    // The active block's margins take each resident neighbour's light: one
+    // copy per neighbouring block the manager keeps (the original's loop
+    // over its block array at the block grid's ±1). A block being warmed
+    // takes none until it is bound.
+    let mut blits = Vec::new();
+    if pending.is_none() {
+        for dz in -1..=1 {
+            for dx in -1..=1 {
+                if dx == 0 && dz == 0 {
+                    continue;
+                }
+                let sector = textures.sector + IVec2::new(dx * SECTORS as i32, dz * SECTORS as i32);
+                let Some(source) = texture_cache.resident(sector, textures.dims) else {
+                    continue;
+                };
+                let Some(source) = images.get(&source) else {
+                    continue;
+                };
+                let Some(blit) = margin_blit(textures.dims, dx, dz) else {
+                    continue;
+                };
+                let value = GiBlitParams {
+                    dims: textures.dims.extend(blit.slices),
+                    strip: UVec4::new(blit.lo.x, blit.lo.y, blit.hi.x, blit.hi.y),
+                    offset: blit.offset.extend(0.0).extend(0.0),
+                };
+                let mut uniform = UniformBuffer::from(value);
+                uniform.write_buffer(&device, &queue);
+                let Some(binding) = uniform.binding() else {
+                    continue;
+                };
+                let bind_group = device.create_bind_group(
+                    "exa_gi_blit",
+                    &cache.get_bind_group_layout(&pipeline.blit_layout),
+                    &BindGroupEntries::sequential((
+                        &source.texture_view,
+                        &pipeline.sampler,
+                        &scratch.texture_view,
+                        binding,
+                    )),
+                );
+                blits.push(GiMarginCopy {
+                    blit,
+                    bind_group,
+                    _uniform: uniform,
+                });
+            }
+        }
+    }
+    commands.insert_resource(GiBindGroup { bind_group, blits });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2195,6 +2653,29 @@ fn propagate(
                 size.depth_or_array_layers.div_ceil(4),
             );
         }
+        // The active block's margins take its resident neighbours' light,
+        // as the original copies a neighbour's margin into the block it is
+        // about to inject. The step cleared them; the copies fill them.
+        if let Some(blit_pipeline) = cache.get_compute_pipeline(pipeline.blit_pipeline) {
+            for copy in &bind_group.blits {
+                let width = copy.blit.hi.x.saturating_sub(copy.blit.lo.x);
+                let height = copy.blit.hi.y.saturating_sub(copy.blit.lo.y);
+                if width == 0 || height == 0 || copy.blit.slices == 0 {
+                    continue;
+                }
+                let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
+                    label: Some("exa_gi_margin_blit"),
+                    timestamp_writes: None,
+                });
+                pass.set_pipeline(blit_pipeline);
+                pass.set_bind_group(0, &copy.bind_group, &[]);
+                pass.dispatch_workgroups(
+                    width.div_ceil(4),
+                    height.div_ceil(4),
+                    copy.blit.slices.div_ceil(4),
+                );
+            }
+        }
         // The new step becomes the light the surfaces and the next step read.
         encoder.copy_texture_to_texture(
             TexelCopyTextureInfo {
@@ -2238,6 +2719,7 @@ mod tests {
             light: Handle::default(),
             scratch: Handle::default(),
             sky_floor: Handle::default(),
+            shape_texture: Handle::default(),
             origin: Vec3::ZERO,
             extent: Vec3::ONE,
             voxel: 0.2,
@@ -2498,6 +2980,19 @@ mod tests {
         let low = at(0.4).unwrap();
         assert_eq!((low.first, low.count), (0, 5));
         assert_eq!((low.lo, low.hi), (UVec2::new(48, 28), UVec2::new(52, 32)));
+        // A shape reaching below slice 0 keeps the original's negative first
+        // slice (centre 2, half 3: slices −1..5), not a shifted range.
+        let deep = shape_draw(
+            ShapeVolume {
+                position: Vec3::new(10.0, 0.4, 6.0),
+                half: Vec3::splat(0.6),
+            },
+            Vec3::ZERO,
+            BLOCK,
+            0.2,
+        )
+        .unwrap();
+        assert_eq!((deep.first, deep.count), (-1, 7));
     }
 
     #[test]
@@ -2528,6 +3023,40 @@ mod tests {
         assert_eq!(quad[1], Vec3::new(8.0 / 256.0, 8.0 / 256.0, -0.5 / 64.0));
         assert_eq!(quad[2], Vec3::new(8.0 / 256.0, 248.0 / 256.0, -0.5 / 64.0));
         assert_eq!(quad[3], Vec3::new(0.0, 248.0 / 256.0, -0.5 / 64.0));
+    }
+
+    #[test]
+    fn a_margin_copy_reads_the_neighbours_same_world_texel() {
+        // The blit samples the neighbour at the destination's own texture
+        // coordinates plus the offset, which must be the same world texel.
+        let dims = UVec3::new(256, 256, 64);
+        for (dx, dz, inside) in [(-1, 0, 0u32), (1, 0, 255), (0, -1, 0), (0, 1, 255)] {
+            let blit = margin_blit(dims, dx, dz).unwrap();
+            let (dest, offset, step) = if dx != 0 {
+                (inside, blit.offset.x, -dx * 240)
+            } else {
+                (inside, blit.offset.y, -dz * 240)
+            };
+            let n = if dx != 0 { dims.x } else { dims.y } as f32;
+            let source = (dest as f32 + 0.5) / n + offset;
+            // The same texel in the neighbour, 240 voxels over.
+            let world = (dest as f32 + step as f32 + 0.5) / n;
+            assert!(
+                (source - world).abs() < 1e-6,
+                "{dx},{dz}: {source} != {world}"
+            );
+        }
+        // Slices: every one but the top is copied.
+        assert_eq!(margin_blit(dims, -1, 0).unwrap().slices, 63);
+        // The table is in fractions: a 128-wide block copies 4 columns,
+        // still offset by 15/16.
+        let small = margin_blit(UVec3::new(128, 128, 16), 1, 0).unwrap();
+        assert_eq!(
+            (small.lo, small.hi),
+            (UVec2::new(124, 4), UVec2::new(128, 124))
+        );
+        assert_eq!(small.offset, Vec2::new(-0.9375, 0.0));
+        assert_eq!(small.slices, 15);
     }
 
     #[test]
@@ -2584,10 +3113,26 @@ mod tests {
             Vec3::new(0.0, -6.8, 0.0),
             // World axes: 51.2 m across, 12.8 m tall.
             Vec3::new(51.2, 12.8, 51.2),
+            0.2,
+            false,
         );
         let light = gi.lights[0];
-        let expected = Vec4::new(10.0 / 51.2, 6.0 / 51.2, 8.8 / 51.2, 25.6);
-        assert!((light.position_radius - expected).abs().max_element() < 1e-6);
+        // The original's order: (cm − the block's centre cm)·(1/5120) + 0.5,
+        // the height as below/W + y·(1/5120), and 1/(R·(1/5120)).
+        let inv = 1.0f32 / 5120.0;
+        let expected = Vec4::new(
+            (1000.0 - 2560.0) * inv + 0.5,
+            (600.0 - 2560.0) * inv + 0.5,
+            34.0 / 256.0 + 200.0 * inv,
+            1.0 / (200.0 * inv),
+        );
+        assert_eq!(light.position_radius, expected);
+        assert!(
+            (light.position_radius - Vec4::new(10.0 / 51.2, 6.0 / 51.2, 8.8 / 51.2, 25.6))
+                .abs()
+                .max_element()
+                < 1e-6
+        );
         assert!((light.colour_shadow.x - 0.15).abs() < 1e-6);
         // ((0.025 bias + 0.94) / 200 cm) × 5120, in double.
         let scale = ((0.025f64 + 0.94) / 200.0 * 5120.0) as f32;
@@ -2605,13 +3150,28 @@ mod tests {
         );
         let mut gi = GiLights::default();
         groups[0].lights = GiSector::new([SKY_LIGHT_ID]);
-        push_groups(&mut gi, &groups, &sources, [0; 64], Vec3::ZERO, Vec3::ONE);
+        push_groups(
+            &mut gi,
+            &groups,
+            &sources,
+            [0; 64],
+            Vec3::ZERO,
+            Vec3::ONE,
+            0.2,
+            true,
+        );
         assert!((gi.lights[0].colour_shadow.x - 0.9).abs() < 1e-6);
         assert_eq!(gi.lights[0].shaping.w, 1.0);
         assert_eq!(gi.cube_slots, vec![u32::MAX]);
         // The original's separate sky-light map's numbers.
-        assert_eq!(GI_SKY_SHADOW_SIZE, 1024);
-        assert_eq!(GI_SKY_SHADOW_REACH, 1600.0);
+        let sky = sky_shadow_setup();
+        assert_eq!(sky.size, 1024);
+        assert_eq!(sky.depth_range, (1600.0, 1600.0));
+        assert_eq!(sky.softness, 5120.0);
+        // Looking straight down: the scene's up (+Y) is the map's −Z.
+        assert_eq!(sky.view.transform_vector3(Vec3::Y), Vec3::NEG_Z);
+        assert_eq!(sky.view.transform_vector3(Vec3::Z), Vec3::NEG_Y);
+        assert_eq!(sky.view.transform_vector3(Vec3::X), Vec3::X);
     }
 
     #[test]
@@ -3043,6 +3603,208 @@ mod tests {
     }
 
     #[test]
+    fn the_shape_programs_are_numbered_in_the_shader_librarys_order() {
+        assert_eq!(GiShapeProgram::Dome.index(), 0);
+        assert_eq!(GiShapeProgram::Cuboid.index(), 1);
+        assert_eq!(GiShapeProgram::Bubble.index(), 2);
+        assert_eq!(GiShapeProgram::TeleBubble.index(), 3);
+        assert_eq!(GiShapeProgram::GradLine.index(), 4);
+        assert_eq!(GiShapeProgram::Multipoint.index(), 5);
+    }
+
+    #[test]
+    fn a_registered_shape_packs_its_clip_box_and_uniforms() {
+        let mut t = fake_textures(1);
+        t.dims = BLOCK;
+        t.origin = Vec3::ZERO;
+        t.voxel = 0.2;
+        let shape = GiShape {
+            program: GiShapeProgram::Cuboid,
+            colour: Vec3::new(1.0, 2.0, 3.0),
+            atten: 0.25,
+            half: Vec3::new(100.0, 50.0, 100.0),
+            matrix: Mat4::from_translation(Vec3::new(-5.0, -200.0, -600.0)),
+            ..default()
+        };
+        let volume = ShapeVolume {
+            position: Vec3::new(10.0, 2.0, 6.0),
+            half: Vec3::splat(1.0),
+        };
+        let mut out = Vec::new();
+        gather_shapes(
+            &mut out,
+            &t,
+            [(shape.clone(), volume)].iter().map(|(s, v)| (s, v)),
+        );
+        assert_eq!(out.len(), 1);
+        let u = out[0];
+        // The draw box: columns 45..55 and 25..35, slices 5..16 (the
+        // centre's 10 ± 5), as `shape_draw` works it out.
+        assert_eq!(u.head.x, GiShapeProgram::Cuboid.index());
+        assert_eq!((u.head.y, u.head.z), (5, 11));
+        assert_eq!(u.clip, UVec4::new(45, 25, 55, 35));
+        assert_eq!(u.colour, Vec4::new(1.0, 2.0, 3.0, 0.0));
+        assert_eq!(u.params, Vec4::new(0.25, 0.0, 0.0, 0.0));
+        assert_eq!(u.half, Vec4::new(100.0, 50.0, 100.0, 0.0));
+        assert_eq!(u.matrix.w_axis, Vec4::new(-5.0, -200.0, -600.0, 1.0));
+        // A shape whose box is below slice 2 draws nothing; one outside the
+        // block's columns too.
+        let low = ShapeVolume {
+            position: Vec3::new(10.0, -5.0, 6.0),
+            half: Vec3::splat(1.0),
+        };
+        let mut out = Vec::new();
+        gather_shapes(
+            &mut out,
+            &t,
+            [(shape.clone(), low)].iter().map(|(s, v)| (s, v)),
+        );
+        assert!(out.is_empty());
+        let out_of_block = ShapeVolume {
+            position: Vec3::new(200.0, 2.0, 6.0),
+            half: Vec3::splat(1.0),
+        };
+        let mut out = Vec::new();
+        gather_shapes(
+            &mut out,
+            &t,
+            [(shape.clone(), out_of_block)].iter().map(|(s, v)| (s, v)),
+        );
+        assert!(out.is_empty());
+        // At most MAX_SHAPES are kept.
+        let many = vec![(shape.clone(), volume); MAX_SHAPES + 4];
+        let mut out = Vec::new();
+        gather_shapes(&mut out, &t, many.iter().map(|(s, v)| (s, v)));
+        assert_eq!(out.len(), MAX_SHAPES);
+    }
+
+    #[test]
+    fn a_multipoint_shape_carries_eight_points() {
+        let mut t = fake_textures(1);
+        t.dims = BLOCK;
+        let points: Vec<(Vec3, Vec3)> = (0..10)
+            .map(|i| (Vec3::splat(i as f32), Vec3::new(i as f32, 0.0, 0.0)))
+            .collect();
+        let shape = GiShape {
+            program: GiShapeProgram::Multipoint,
+            points: Arc::from(points),
+            ..default()
+        };
+        let volume = ShapeVolume {
+            position: Vec3::new(10.0, 2.0, 6.0),
+            half: Vec3::splat(1.0),
+        };
+        let mut out = Vec::new();
+        gather_shapes(&mut out, &t, [(shape, volume)].iter().map(|(s, v)| (s, v)));
+        let u = out[0];
+        assert_eq!(u.point_pos[0], Vec4::new(0.0, 0.0, 0.0, 0.0));
+        assert_eq!(u.point_pos[7], Vec4::new(7.0, 7.0, 7.0, 0.0));
+        assert_eq!(u.point_col[7], Vec4::new(7.0, 0.0, 0.0, 0.0));
+        // Beyond the cap the points are dropped.
+        assert_eq!(
+            u.point_col[MAX_SHAPE_POINTS - 1],
+            Vec4::new(7.0, 0.0, 0.0, 0.0)
+        );
+    }
+
+    #[test]
+    fn a_matrix_shadow_light_moves_to_the_sky_slots_place() {
+        let is_matrix = |id: u32| id == 99;
+        // Sky light up: it owns slot 0, so the first matrix light from index 2
+        // moves to slot 1.
+        let mut ids = vec![SKY_LIGHT_ID, 7, 99, 11];
+        plan_light_slots(&mut ids, is_matrix, true);
+        assert_eq!(ids, vec![SKY_LIGHT_ID, 99, 7, 11]);
+        // Index 1 is never scanned while the sky light is up.
+        let mut ids = vec![5, 99, 9];
+        plan_light_slots(&mut ids, is_matrix, true);
+        assert_eq!(ids, vec![5, 99, 9]);
+        // The scan reaches the last light even when the group is only three
+        // long (the original's do-while checks one past its bound).
+        let mut ids = vec![5, 7, 99];
+        plan_light_slots(&mut ids, is_matrix, true);
+        assert_eq!(ids, vec![5, 99, 7]);
+        // Sun down: the first matrix light from index 1 moves to slot 0.
+        let mut ids = vec![5, 99, 9];
+        plan_light_slots(&mut ids, is_matrix, false);
+        assert_eq!(ids, vec![99, 5, 9]);
+        // Only the first one moves.
+        let mut ids = vec![5, 9, 11];
+        plan_light_slots(&mut ids, |id| id == 11, false);
+        assert_eq!(ids, vec![11, 9, 5]);
+        // A group too short to hold a slot is left alone; so is one with no
+        // matrix light.
+        let mut one = vec![5];
+        plan_light_slots(&mut one, is_matrix, true);
+        assert_eq!(one, vec![5]);
+        let mut plain = vec![5, 7, 9];
+        plan_light_slots(&mut plain, is_matrix, true);
+        assert_eq!(plain, vec![5, 7, 9]);
+    }
+
+    #[test]
+    fn a_block_the_camera_returns_to_keeps_its_light_texture() {
+        let mut app = App::new();
+        app.insert_resource(Assets::<Image>::default())
+            .init_resource::<GiWarmUp>()
+            .init_resource::<GiTextureCache>()
+            .add_systems(Update, (create_textures, swap_warm_textures).chain());
+        let current = |app: &App| {
+            app.world()
+                .get_resource::<GiPendingTextures>()
+                .map(|p| p.0.light.id())
+                .unwrap_or_else(|| app.world().resource::<GiTextures>().light.id())
+        };
+        let mut volume = block_volume(Vec3::ZERO);
+        volume.sector = IVec2::new(4, 4);
+        app.insert_resource(volume);
+        app.update();
+        let first = app.world().resource::<GiTextures>().light.id();
+        assert_eq!(app.world().resource::<GiTextures>().warm_up, 10);
+        // Leaving the block and coming back reuses its light texture and
+        // skips the warm-up (the block already holds its light).
+        let mut other = block_volume(Vec3::ZERO);
+        other.sector = IVec2::new(12, 4);
+        app.insert_resource(other);
+        app.update();
+        assert_ne!(current(&app), first);
+        let mut back = block_volume(Vec3::ZERO);
+        back.sector = IVec2::new(4, 4);
+        app.insert_resource(back);
+        app.update();
+        assert_eq!(app.world().resource::<GiTextures>().light.id(), first);
+        assert_eq!(app.world().resource::<GiTextures>().warm_up, 0);
+        assert!(app.world().resource::<GiWarmUp>().finished());
+    }
+
+    #[test]
+    fn the_cache_keeps_nine_blocks_and_evicts_the_least_recent() {
+        let mut cache = GiTextureCache::default();
+        let dims = UVec3::new(4, 4, 4);
+        for i in 0..12 {
+            let sector = IVec2::new(i, 0);
+            let light = Handle::<Image>::default();
+            cache.insert(sector, dims, light.clone(), light.clone(), sector);
+            // Touch the older entries after the first nine are in, so the
+            // last-used order is not creation order.
+            if i >= 8 {
+                cache.take_reusable(IVec2::new(0, 0), dims);
+            }
+        }
+        assert_eq!(cache.sectors().len(), RESIDENT_BLOCKS);
+        // Block 0 was touched, so block 1 (the least recently used) went.
+        assert!(!cache.sectors().contains(&IVec2::new(1, 0)));
+        assert!(cache.sectors().contains(&IVec2::new(0, 0)));
+        assert!(cache.sectors().contains(&IVec2::new(11, 0)));
+        // A different size is a different entry.
+        assert!(
+            cache
+                .take_reusable(IVec2::new(0, 0), UVec3::splat(8))
+                .is_none()
+        );
+    }
+
+    #[test]
     fn the_propagation_shader_validates() {
         let module =
             naga::front::wgsl::parse_str(include_str!("gi.wesl")).expect("gi.wesl parses as WGSL");
@@ -3090,6 +3852,10 @@ mod tests {
         assert_eq!(
             size_of("GiParams"),
             <GiParams as ShaderType>::min_size().get()
+        );
+        assert_eq!(
+            size_of("GiBlit"),
+            <GiBlitParams as ShaderType>::min_size().get()
         );
     }
 }

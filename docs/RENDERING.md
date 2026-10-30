@@ -1452,10 +1452,15 @@ in world space there too):
   block's black patches or propagation halo; the warm block replaces it in
   one step. A level change drops both blocks. When a load ends, the block
   is rebuilt around the camera's starting view if it is not already there.
-  Nine resident light textures, their per-object `VXGIPos` selection and
-  the neighbour margin blits are not wired (`GiBlockLayout::sample_transform`
-  and `sample_at` keep the per-object offset and scale, `margin_blit` the
-  columns and UV offsets).
+  The renderer keeps up to nine blocks' light and scratch textures
+  (`GiTextureCache`), as the original owns nine: a block the camera comes
+  back to reuses the light it accumulated and skips the warm-up, and its
+  occupancy is uploaded whole again from the world's cells. Only the
+  camera's block runs a light step each frame, so a resident neighbour's
+  light is as the last step left it; the original steps all nine. Per-object
+  `VXGIPos` selection across blocks is not wired either (a surface samples
+  the camera's block, clamped at its edge; `GiBlockLayout::sample_transform`
+  and `sample_at` keep the original's per-object offset and scale).
 - Surfaces **sample** the volume with the original's per-object transform:
   `texture(p·scale + offset)` with `p` in world centimetres, the offset's X
   and Z half a texture minus the block's centre over its width and its Y
@@ -1621,7 +1626,10 @@ its width, at the slice's middle ((slice + 0.5)/width), as the original's
   and 3 is the manager's constant, then three times the 0.1 injection
   share; it is left out when the scaled colour's third component is at
   most 1.19e−7. The light shines straight down, with its own 1024² map of
-  depth reach 1600, whose first comparison alone counts under a sky.
+  depth reach 1600, whose first comparison alone counts under a sky (its
+  set-up, `sky_shadow_setup`: two depth fields both 1600, a softness of
+  (1024·10)·0.5 and a view that keeps X and sends the scene's Y to −Z and Z
+  to −Y).
   Exarust stands the volume's columns in for that map [adaptation]: a voxel
   sees the sky at or above its column's floor, the slice above the
   column's highest voxel with an occupancy byte of 10 or more (openness
@@ -1635,13 +1643,28 @@ its width, at the slice's middle ((slice + 0.5)/width), as the original's
   curve), so the outdoor GI ambient is fainter than the original's;
 - a light's shading is (2^((ly + (1 − ly)·y)·z) − 1)/(2^z − 1), ly the
   light's vertical direction; unshaped lights carry (1, 1, 1);
+- a registered shape adds its fragment body's colour per voxel over the
+  manager's clipped box (`shape_draw`) and slice range, after the point
+  lights and before the voxel lights. The pass evaluates the six bodies
+  (`gi_dome`, `gi_cuboid`, `gi_bubble`, `gi_telebubble`, `gi_gradline`,
+  `gi_multipoint`) with the original's operation order and GL comparison
+  semantics, over the voxel's world centimetres through the shape's `bMat`;
+  the shape's own `Tex0` is not modelled — the pass binds one white texel
+  for every shape, since no effect registers one yet [guess]. The manager's
+  own shape chain (the list, the box, the quad and the shared uniforms) is
+  in `gi_shape`/`shape_draw`; the effect classes that register shapes are a
+  different component;
 - the original's program carries two matrix-shadow light slots (`SdwMat`,
   `SdwMat2` for the first two lights whose shadow is one 2D map, i.e. the
   sky light and spots); before drawing a group it moves the first such light at
   index 2 or later to slot 1 when the sky light owns slot 0, or the first at
-  index 1 or later to slot 0 without it. Exarust has no spot lights and
-  the sky light is always slot 0, so a group keeps its order; every point light
-  carries its cube slot instead of a fixed `Shadow<i>` binding;
+  index 1 or later to slot 0 without it (its scan reaches the last
+  light, as its do-while does; `plan_light_slots`). Exarust has no spot
+  lights and the sky light is always slot 0, so a group keeps its order;
+  every point light carries its cube slot instead of a fixed `Shadow<i>`
+  binding; the light uniform's position is formed in the original's
+  centimetres: `(p - block centre)*(1/(W*fc)) + 0.5`, the height
+  `below/W + y*(1/(W*fc))`, and `w = 1/(R*(1/(W*fc)))`;
 - the lights injected are the sector's own: each sector's 6 m cell lists the
   lights whose flood windows reached it (up to 12), with the sky light ahead of
   them when it is up (it counts towards the twelve). A spot-shaped light is
@@ -1724,11 +1747,19 @@ its width, at the slice's middle ((slice + 0.5)/width), as the original's
   it, and its bytes from `sub_upload`) into the bound block and one warming
   behind it; the world drains the patches every frame. A whole-block upload
   stands in when a texture is created;
-- a neighbour block's margin copy: one margin column or row, the interior
-  on the other axis, UV offset ∓240/256, every slice but the top, and the
+- a neighbour block's margin copy, from the original's fixed table of
+  texture fractions: on the neighbour's side the strip 0..1/32 (or
+  31/32..1) with the UV offset ±15/16, on the other axis the interior
+  1/32..31/32; every slice but the top, and the
   destination quad's four corners with the original's base z of
-  −0.5/depth (`margin_blit`, `margin_quad`). With one resident block no
-  neighbour light texture exists to copy from, so the pass is not run.
+  −0.5/depth (`margin_blit`, `margin_quad`). The pass runs every step for
+  each resident neighbour the manager holds (`GiTextureCache`): the step
+  clears the margins and each copy fills one, reading the neighbour's sRGB
+  light at the same world texel (its own coordinates plus the offset) and
+  re-encoding it into the block's target. During a warm-up the block being
+  warmed takes no copies; once it is bound it takes them. A neighbour the
+  manager does not keep (beyond nine, or not yet built) leaves its margin
+  dark, as the original's untextured block does.
 
 **Voxel lights** (`0x3D0C` nodes: glowing items and a few level nodes)
 add straight into the volume, after the propagation, every step and in
