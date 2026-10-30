@@ -1297,15 +1297,17 @@ pub fn select_main_menu(index: i32, stamp: i32, now: i32, sound_ready: bool) -> 
 /// The sound cues the main menu asks for.
 pub const SELECT_SOUND: &str = "MenuSel";
 pub const CLICK_SOUND: &str = "MenuClick";
-/// The gain the two cues play at (a guess: the original passes a flags word
-/// rather than a linear gain to its audio front end).
-pub const MENU_SOUND_GAIN: f32 = 0.2;
-/// The cue pitch: a random roll from 0 to 1 becomes 0.8 through 1.2, the
-/// original's `roll · 0.4 + 0.8`.
-pub fn menu_sound_pitch(roll: f32) -> f32 {
-    // The original's roll is a double and its mix is in double precision,
-    // converted to the single the audio call takes.
-    (f64::from(roll) * 0.4 + 0.8) as f32
+/// The gain the two cues play at: the single-precision 0.06 the select,
+/// confirm and key handlers pass the audio environment's one-shot call.
+pub const MENU_SOUND_GAIN: f32 = 0.06;
+/// The voice flags of the two cues: the interface bus, listener-relative
+/// and unattenuated (0x4060), at the origin.
+pub const MENU_SOUND_FLAGS: u32 = 0x4060;
+/// The cue pitch: the run-time library's unit draw (a double in [0, 1))
+/// times 0.4 plus 0.8, in double precision, narrowed to the single the
+/// audio call takes: 0.8 through 1.2.
+pub fn menu_sound_pitch(draw: f64) -> f32 {
+    (draw * 0.4 + 0.8) as f32
 }
 
 /// The title art's texture (`maintitle01.rfi`).
@@ -2474,10 +2476,14 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_cues_pitch_from_half_to_one_and_a_fifth() {
-        assert!((menu_sound_pitch(0.0) - 0.8).abs() < 1e-7);
-        assert!((menu_sound_pitch(0.5) - 1.0).abs() < 1e-7);
-        assert!((menu_sound_pitch(1.0) - 1.2).abs() < 1e-7);
+    fn the_menu_cues_pitch_from_four_fifths_to_six_fifths() {
+        assert_eq!(menu_sound_pitch(0.0), 0.8);
+        assert_eq!(menu_sound_pitch(0.5), 1.0);
+        // The mix is a double narrowed once: 0.999…·0.4 + 0.8 is 1.2 in
+        // single precision.
+        assert_eq!(menu_sound_pitch(1.0 - f64::EPSILON), 1.2);
+        assert_eq!(MENU_SOUND_GAIN.to_bits(), 0x3d75_c28f);
+        assert_eq!(MENU_SOUND_FLAGS, 0x4060);
         assert_eq!((SELECT_SOUND, CLICK_SOUND), ("MenuSel", "MenuClick"));
     }
 }

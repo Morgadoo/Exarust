@@ -6,7 +6,7 @@
 //! (`titlefont.rfi`) and its title with `maintitle01.rfi`; both load with
 //! the GUI textures, and the base font stands in only when a sheet is
 //! missing. Hovering a row and pressing one play `MenuSel` and `MenuClick`
-//! through the sound bank at a rolled 0.8–1.2 pitch. The row positions,
+//! as audio-environment one-shots at gain 0.06 and a drawn 0.8–1.2 pitch. The row positions,
 //! widths, selection, press, commands and page flow are the original's. A
 //! row is selected under the pointer or with Up and Down, a press nudges
 //! the selected row down, and the row runs on the release over it or on
@@ -15,7 +15,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use bevy::audio::{AudioPlayer, AudioSource, PlaybackMode, PlaybackSettings, Volume};
+use bevy::audio::AudioSource;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use exa_ui::gui_core::{FormHost, FormId, GuiRect, GuiTask};
@@ -26,8 +26,8 @@ use exa_ui::gui_font::{FONTBASE_24, gui_level, level_for_unit};
 use exa_ui::gui_text::{MenuFont, menu_font_scale};
 use exa_ui::icon_atlas::IconQuad;
 use exa_ui::menu::{
-    CLICK_SOUND, MENU_SOUND_GAIN, MENU_TITLE_INK, MENU_TITLE_TEXTURE, SELECT_SOUND, back_main_menu,
-    menu_row_scale, menu_sound_pitch, select_main_menu, title_place,
+    CLICK_SOUND, MENU_SOUND_FLAGS, MENU_SOUND_GAIN, MENU_TITLE_INK, MENU_TITLE_TEXTURE,
+    SELECT_SOUND, back_main_menu, menu_row_scale, menu_sound_pitch, select_main_menu, title_place,
 };
 use exa_ui::skin::{SkinBatch, SkinInk};
 
@@ -51,30 +51,30 @@ pub enum MenuCue {
 }
 
 /// A cue the screen asks the audio system to play: its pitch has already
-/// been rolled from the menu's own generator.
+/// been drawn.
 #[derive(Message, Debug, Clone, Copy, PartialEq)]
 pub struct MenuSound {
     pub cue: MenuCue,
     pub pitch: f32,
 }
 
-/// The menu's cue generator: the original draws a new pitch for every
-/// select and click. The generator's sequence is Exarust's own (the
-/// original's random call is outside this unit).
-#[derive(Resource, Debug, Clone, Copy)]
-pub struct MenuSoundRoll(pub u32);
+/// The menu's cue draws: the original takes each pitch from the run-time
+/// library's unit generator (the Mersenne twister, not the engine's LCG).
+/// The original seeds that generator from the clock at start-up; this
+/// stream starts from the twister's standard seed [guess].
+#[derive(Resource, Debug, Clone)]
+pub struct MenuSoundRoll(pub crate::arena::Mt19937);
 
 impl Default for MenuSoundRoll {
     fn default() -> Self {
-        Self(0x2f6b_1d43)
+        Self(crate::arena::Mt19937::new(5489))
     }
 }
 
 impl MenuSoundRoll {
-    /// The next roll, 0 through 1.
-    pub fn roll(&mut self) -> f32 {
-        self.0 = self.0.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-        (self.0 >> 8) as f32 / (1u32 << 24) as f32
+    /// The next unit draw, in [0, 1).
+    pub fn roll(&mut self) -> f64 {
+        self.0.unit()
     }
 }
 
@@ -512,42 +512,45 @@ fn input(
     }
 }
 
-/// Plays a cue the input asked for: the menu's `MenuSel` or `MenuClick`
-/// set through the sound bank, at the rolled pitch. Missing audio or a
+/// Plays a cue the input asked for, as the original's handlers do: the
+/// `MenuSel` or `MenuClick` buffer (each loaded once, as the constructor
+/// does) as a one-shot of the audio environment at the origin, gain 0.06,
+/// the drawn pitch and the interface flags 0x4060. Missing audio or a
 /// missing cue leaves the menu silent.
 fn play_menu_sounds(
     mut sounds: MessageReader<MenuSound>,
     game: Option<Res<exa_assets::Game>>,
     mut bank: Option<ResMut<exa_audio::SoundBank>>,
     mut sources: Option<ResMut<Assets<AudioSource>>>,
-    mut commands: Commands,
+    mut env: Option<ResMut<exa_audio::AudioEnvironment>>,
+    mut buffers: Local<Option<[Option<u32>; 2]>>,
 ) {
-    let Some(game) = game else {
+    let (Some(game), Some(bank), Some(sources), Some(env)) =
+        (game, bank.as_mut(), sources.as_mut(), env.as_mut())
+    else {
         sounds.clear();
         return;
     };
+    let [select, click] = *buffers.get_or_insert_with(|| {
+        [
+            bank.load_buffer(&game, sources, SELECT_SOUND),
+            bank.load_buffer(&game, sources, CLICK_SOUND),
+        ]
+    });
     for sound in sounds.read() {
-        let name = match sound.cue {
-            MenuCue::Select => SELECT_SOUND,
-            MenuCue::Click => CLICK_SOUND,
+        let buffer = match sound.cue {
+            MenuCue::Select => select,
+            MenuCue::Click => click,
         };
-        let Some(clip) = bank
-            .as_mut()
-            .zip(sources.as_mut())
-            .and_then(|(bank, sources)| bank.get(&game, sources, name))
-        else {
-            continue;
-        };
-        commands.spawn((
-            AudioPlayer(clip),
-            PlaybackSettings {
-                mode: PlaybackMode::Despawn,
-                volume: Volume::Linear(MENU_SOUND_GAIN),
-                speed: sound.pitch,
-                spatial: false,
-                ..default()
-            },
-        ));
+        if let Some(buffer) = buffer {
+            env.play_buffer(
+                buffer,
+                Vec3::ZERO,
+                MENU_SOUND_GAIN,
+                sound.pitch,
+                MENU_SOUND_FLAGS,
+            );
+        }
     }
 }
 
@@ -1026,18 +1029,13 @@ mod tests {
     }
 
     #[test]
-    fn the_sound_roll_spans_the_unit_interval() {
+    fn the_sound_roll_reads_the_library_generator() {
         let mut roll = MenuSoundRoll::default();
-        let mut low = 1.0f32;
-        let mut high = 0.0f32;
-        for _ in 0..1000 {
-            let value = roll.roll();
-            assert!((0.0..=1.0).contains(&value));
-            low = low.min(value);
-            high = high.max(value);
-        }
-        assert!(low < 0.05 && high > 0.95);
-        assert!((menu_sound_pitch(0.0) - 0.8).abs() < 1e-7);
+        // The twister's first output from its standard seed, 3499211612,
+        // times 2⁻³².
+        assert_eq!(roll.roll(), 3_499_211_612.0 / 4_294_967_296.0);
+        let pitch = menu_sound_pitch(roll.roll());
+        assert!((0.8..1.2).contains(&pitch));
     }
 
     #[test]
