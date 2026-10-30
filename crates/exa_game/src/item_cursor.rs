@@ -500,11 +500,17 @@ pub fn segment_meets_sphere(origin: Vec3, segment: Vec3, centre: Vec3, radius: f
 
 /// The first placement marker the cursor's ray meets, in order: the ray's
 /// unit direction `dir` must not climb (its height part at most minus the
-/// float epsilon; the original refuses the whole placement otherwise), the item must carry an object id (`item`, nonzero;
-/// `model` is that object's model id), the segment `dir·length` must meet
-/// the marker's sphere, the marker's name must give `item` or `model`, and
-/// the item must fit the marker's frame (`fits`). The item then takes the
-/// marker's frame, with the hover word from its link byte.
+/// float epsilon; the original refuses the whole placement otherwise), the
+/// item must carry an object id (`item`, nonzero; `model` is that object's
+/// model id), the segment `dir·length` must meet the marker's sphere, the
+/// marker's name must give `item` or `model`, and the item must not
+/// overlap anything at the marker's frame (`overlaps`). The item then
+/// takes the marker's frame, with the hover word from its link byte.
+///
+/// The original copies the marker's matrix into the held node, asks the
+/// scene whether the body (or any of its children) then meets another
+/// body, and takes the marker only when it does not; an overlapping
+/// marker is restored and the search goes on with the next one.
 pub fn snap_to_marker(
     origin: Vec3,
     dir: Vec3,
@@ -512,7 +518,7 @@ pub fn snap_to_marker(
     item: u32,
     model: u32,
     markers: &[PlacementMarker],
-    mut fits: impl FnMut(Frame) -> bool,
+    mut overlaps: impl FnMut(Frame) -> bool,
 ) -> Option<Placement> {
     // Only an ordered climb refuses: a NaN height passes, as the
     // original's compare lets it.
@@ -528,7 +534,7 @@ pub fn snap_to_marker(
         if id != item && id != model {
             continue;
         }
-        if !fits(marker.frame) {
+        if overlaps(marker.frame) {
             continue;
         }
         return Some(Placement {
@@ -785,14 +791,14 @@ impl ItemCursor {
 
     /// The placement marker the held item snaps onto, if the cursor's ray
     /// (unit `dir`, `length` m) meets one named for the item or its model
-    /// and the item fits there: the marker's frame and hover word. None
-    /// without a held item or markers.
+    /// and the item does not overlap anything at the marker's frame: the
+    /// marker's frame and hover word. None without a held item or markers.
     pub fn snap(
         &self,
         origin: Vec3,
         dir: Vec3,
         length: f32,
-        fits: impl FnMut(Frame) -> bool,
+        overlaps: impl FnMut(Frame) -> bool,
     ) -> Option<Placement> {
         let held = self.held.as_ref()?;
         snap_to_marker(
@@ -802,7 +808,7 @@ impl ItemCursor {
             held.item,
             held.model,
             &self.markers,
-            fits,
+            overlaps,
         )
     }
 
@@ -1287,30 +1293,50 @@ mod tests {
         let above = Vec3::new(0.0, 100.0, 10.0);
         // A ray that does not descend, or an item without an id, places
         // nothing.
-        assert!(snap_to_marker(Vec3::ZERO, Vec3::Z, 100.0, 7, 0, &markers, |_| true).is_none());
-        assert!(snap_to_marker(above, Vec3::NEG_Y, 100.0, 0, 9, &markers, |_| true).is_none());
+        assert!(snap_to_marker(Vec3::ZERO, Vec3::Z, 100.0, 7, 0, &markers, |_| false).is_none());
+        assert!(snap_to_marker(above, Vec3::NEG_Y, 100.0, 0, 9, &markers, |_| false).is_none());
         // Straight down from above, 50 cm from the first marker and inside
         // its 60 cm radius, named for the item.
-        let p = snap_to_marker(above, Vec3::NEG_Y, 100.0, 7, 0, &markers, |_| true).unwrap();
+        let p = snap_to_marker(above, Vec3::NEG_Y, 100.0, 7, 0, &markers, |_| false).unwrap();
         assert_eq!(p.hover, HOVER_MARKER);
         assert_eq!(p.frame.position, Vec3::new(0.5, 0.0, 10.0));
         // The model id names the second marker, with the L link.
-        let p = snap_to_marker(above, Vec3::NEG_Y, 100.0, 3, 9, &markers, |_| true).unwrap();
+        let p = snap_to_marker(above, Vec3::NEG_Y, 100.0, 3, 9, &markers, |_| false).unwrap();
         assert_eq!(p.hover, HOVER_LOCK);
         // A segment that stops short of the markers meets neither: its end
         // is 40 m above them.
-        assert!(snap_to_marker(above, Vec3::NEG_Y, 60.0, 7, 9, &markers, |_| true).is_none());
-        // A refused fit falls through to the next marker.
+        assert!(snap_to_marker(above, Vec3::NEG_Y, 60.0, 7, 9, &markers, |_| false).is_none());
+        // A marker the item would overlap is refused and the search falls
+        // through to the next one.
         let mut tried = 0;
         let p = snap_to_marker(above, Vec3::NEG_Y, 100.0, 7, 9, &markers, |_| {
             tried += 1;
-            tried > 1
+            tried < 2
         })
         .unwrap();
         assert_eq!(p.frame.position, Vec3::new(0.0, 0.0, 10.0));
         assert_eq!(tried, 2);
         // No name match gives none.
-        assert!(snap_to_marker(above, Vec3::NEG_Y, 100.0, 3, 4, &markers, |_| true).is_none());
+        assert!(snap_to_marker(above, Vec3::NEG_Y, 100.0, 3, 4, &markers, |_| false).is_none());
+    }
+
+    /// A marker the item would overlap is refused even when its name
+    /// matches, so the only matching marker gives none; a marker the item
+    /// clears is taken.
+    #[test]
+    fn a_marker_the_item_overlaps_is_refused() {
+        let markers = [PlacementMarker {
+            name: *b"00000007",
+            link: b'K',
+            centre: Vec3::new(0.0, 0.0, 10.0),
+            radius: 0.5,
+            frame: Frame::new(Vec3::new(0.0, 0.0, 10.0), Mat3::IDENTITY),
+        }];
+        let above = Vec3::new(0.0, 100.0, 10.0);
+        assert!(snap_to_marker(above, Vec3::NEG_Y, 100.0, 7, 0, &markers, |_| true).is_none());
+        let p = snap_to_marker(above, Vec3::NEG_Y, 100.0, 7, 0, &markers, |_| false).unwrap();
+        assert_eq!(p.frame.position, Vec3::new(0.0, 0.0, 10.0));
+        assert_eq!(p.hover, HOVER_MARKER);
     }
 
     /// The segment test: from the start behind it, from the end past it,

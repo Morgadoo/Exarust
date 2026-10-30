@@ -1117,6 +1117,91 @@ pub fn use_press(has_body: bool, usable: Option<u8>) -> UsePress {
     }
 }
 
+/// The operative kind that opens the GUI item it names instead of lifting
+/// the use cursor over the world: class 0, kind 0x11, its second word the
+/// item the use opens.
+pub const GUI_ITEM_KIND: u8 = 0x11;
+/// The controls' state word while the use cursor is up (bit 8).
+pub const USE_STATE: u32 = 0x100;
+/// The shared cursor-mode word while the use cursor is up.
+pub const USE_CURSOR_MODE: u32 = 0x40;
+/// The cursor mode the use cursor's end restores.
+pub const RESTING_CURSOR_MODE: u32 = 4;
+/// The event word that ends the use cursor: the right button's release.
+pub const USE_END_EVENT: u32 = 0x80;
+/// The answer the use cursor's end gives (the other events answer 1).
+pub const USE_END_ANSWER: u32 = 0x81;
+/// The answer an event other than the release gives.
+pub const USE_KEEP_ANSWER: u32 = 1;
+/// The player behaviour's action word the use cursor's end sets (a
+/// 32-bit word, written only when a player exists).
+pub const USE_ACTION: u32 = 4;
+
+/// What the right press asks of the use cursor, before the use itself
+/// runs: class 0, kind 0x11 opens the item its second word names (the
+/// cancel then puts it back); any other section lifts the cursor over the
+/// world, but only while play is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UseBegin {
+    /// Open the GUI item at the section's second word, with the cancel
+    /// callback (which puts the item back).
+    OpenGui { item: u32 },
+    /// The use cursor is up: the controls' state word is [`USE_STATE`]
+    /// and the shared cursor mode [`USE_CURSOR_MODE`].
+    Cursor,
+    /// Play is off: nothing begins.
+    Nothing,
+}
+
+/// The use cursor's begin, in the original's order: the operative section
+/// (class 0, kind 0x11) opens the GUI item its second word names whatever
+/// else is on; any other section lifts the cursor when play is on, and
+/// nothing happens when it is off.
+pub fn use_begin(class: u8, kind: u8, second: u32, playing: bool) -> UseBegin {
+    if class == 0 && kind == GUI_ITEM_KIND {
+        UseBegin::OpenGui { item: second }
+    } else if playing {
+        UseBegin::Cursor
+    } else {
+        UseBegin::Nothing
+    }
+}
+
+/// What the use cursor's callback answers on one event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UseEnd {
+    /// The cursor ended: only the right button's release ends it.
+    pub ended: bool,
+    /// The use dispatcher runs: the release came over the world, as the
+    /// view's own word says (bit 0; [guess: its setter is not traced]).
+    pub dispatch: bool,
+    /// The callback's answer: [`USE_END_ANSWER`] on the release, and
+    /// [`USE_KEEP_ANSWER`] on any other event.
+    pub answer: u32,
+}
+
+/// The use cursor's end: the release (event [`USE_END_EVENT`]) ends the
+/// cursor and runs the use when the release is over the world, answering
+/// [`USE_END_ANSWER`]; every other event keeps the callback, which answers
+/// [`USE_KEEP_ANSWER`]. The end also sets the player's action word to
+/// [`USE_ACTION`], clears the controls' use state and restores the shared
+/// cursor mode to [`RESTING_CURSOR_MODE`].
+pub fn use_end(event: u32, over_world: bool) -> UseEnd {
+    if event == USE_END_EVENT {
+        UseEnd {
+            ended: true,
+            dispatch: over_world,
+            answer: USE_END_ANSWER,
+        }
+    } else {
+        UseEnd {
+            ended: false,
+            dispatch: false,
+            answer: USE_KEEP_ANSWER,
+        }
+    }
+}
+
 /// The values the use cursor reads from a world item: its operative
 /// section and the condition bytes of its weapon or apparel section. The
 /// material byte the repair kit's step divides by is the model section's
@@ -1186,29 +1271,47 @@ pub enum SpawnRun {
     /// nothing is placed.
     Dropped,
     /// The node's body has no physics: the original's "Game object has no
-    /// physics: <name>" content error, the node freed.
-    ContentError,
+    /// physics: <name>" content error, the node freed and the state word
+    /// reset to [`SPAWN_ARMED`] with the node forgotten.
+    ContentError { word: u32 },
     /// The node is attached at its frame, its condition word written, the
-    /// lift begun and the placement run at the lift's height limit.
-    Placed { condition: u32, place_limit_cm: f32 },
+    /// lift begun and the placement run at the lift's height limit. The
+    /// body's frame is copied to the controls only when the state word
+    /// lacks [`SPAWN_DONE`]; the run ends with the word at [`SPAWN_DONE`]
+    /// and the drag-end callback installed.
+    Placed {
+        condition: u32,
+        place_limit_cm: f32,
+        end_word: u32,
+        copy_frame: bool,
+    },
 }
 
+/// The controls' state word bit that arms a GUI drop (a node is queued).
+pub const SPAWN_ARMED: u32 = 0x1000;
+/// The controls' state word bit that ends a drop: placed. The same bit
+/// set before the run keeps the body's frame out of the controls.
+pub const SPAWN_DONE: u32 = 0x2000;
+
 /// The deferred drop task's run: a node is required, the controls' state
-/// word must hold bit 0x1000 (`armed`), and the node's body must have
-/// physics. A placed node takes the drag's condition word and the lift's
-/// −100000 cm placement limit. [The content error also resets the state
-/// word to 0x1000 and forgets the node.]
-pub fn run_spawn(queued: bool, armed: bool, has_body: bool, condition: u32) -> SpawnRun {
+/// word must hold bit [`SPAWN_ARMED`], and the node's body must have
+/// physics. A placed node takes the drag's condition word, the lift's
+/// −100000 cm placement limit, [`SPAWN_DONE`] as its end word, and the
+/// body's frame when the word lacked [`SPAWN_DONE`]. The content error
+/// resets the word to [`SPAWN_ARMED`].
+pub fn run_spawn(queued: bool, word: u32, has_body: bool, condition: u32) -> SpawnRun {
     if !queued {
         SpawnRun::Nothing
-    } else if !armed {
+    } else if word & SPAWN_ARMED == 0 {
         SpawnRun::Dropped
     } else if !has_body {
-        SpawnRun::ContentError
+        SpawnRun::ContentError { word: SPAWN_ARMED }
     } else {
         SpawnRun::Placed {
             condition,
             place_limit_cm: -100_000.0,
+            end_word: SPAWN_DONE,
+            copy_frame: word & SPAWN_DONE == 0,
         }
     }
 }
@@ -2523,6 +2626,65 @@ mod tests {
         assert_eq!(use_target(0), UseTarget::Nothing);
     }
 
+    /// The use cursor's begin: class 0, kind 0x11 opens the item its second
+    /// word names whatever else is on; any other section lifts the cursor
+    /// only while play is on; with play off nothing begins.
+    #[test]
+    fn the_use_cursor_begin() {
+        assert_eq!(
+            use_begin(0, 0x11, 0x1234, false),
+            UseBegin::OpenGui { item: 0x1234 }
+        );
+        assert_eq!(
+            use_begin(0, 0x11, 0x1234, true),
+            UseBegin::OpenGui { item: 0x1234 }
+        );
+        // The kind alone does not open: the class must be zero.
+        assert_eq!(use_begin(3, 0x11, 7, true), UseBegin::Cursor);
+        assert_eq!(use_begin(0, 9, 7, true), UseBegin::Cursor);
+        assert_eq!(use_begin(0, 0, 0, true), UseBegin::Cursor);
+        assert_eq!(use_begin(0, 9, 7, false), UseBegin::Nothing);
+    }
+
+    /// The use cursor's end: only the 0x80 release ends it, answers 0x81 and
+    /// runs the use when the release is over the world; any other event
+    /// keeps the callback and answers 1. The end's fixed effects are the
+    /// action word 4, the cleared use state and the resting cursor mode 4.
+    #[test]
+    fn the_use_cursor_end() {
+        assert_eq!(
+            use_end(USE_END_EVENT, true),
+            UseEnd {
+                ended: true,
+                dispatch: true,
+                answer: 0x81
+            }
+        );
+        assert_eq!(
+            use_end(USE_END_EVENT, false),
+            UseEnd {
+                ended: true,
+                dispatch: false,
+                answer: 0x81
+            }
+        );
+        assert_eq!(
+            use_end(0, true),
+            UseEnd {
+                ended: false,
+                dispatch: false,
+                answer: 1
+            }
+        );
+        assert_eq!(use_end(0xfb01, true).answer, USE_KEEP_ANSWER);
+        assert_eq!(USE_ACTION, 4);
+        assert_eq!(
+            (USE_STATE, USE_CURSOR_MODE, RESTING_CURSOR_MODE),
+            (0x100, 0x40, 4)
+        );
+        assert_eq!(GUI_ITEM_KIND, 0x11);
+    }
+
     /// A GUI use: a cleaning or repair kit works on the entry; a kind 0x10
     /// moves it only when it is the same item.
     #[test]
@@ -2666,15 +2828,41 @@ mod tests {
     /// lift's −100000 cm limit.
     #[test]
     fn the_deferred_spawn_runs_in_order() {
-        assert_eq!(run_spawn(false, true, true, 7), SpawnRun::Nothing);
-        assert_eq!(run_spawn(true, false, true, 7), SpawnRun::Dropped);
-        assert_eq!(run_spawn(true, true, false, 7), SpawnRun::ContentError);
+        // No node queued: nothing runs.
+        assert_eq!(run_spawn(false, SPAWN_ARMED, true, 7), SpawnRun::Nothing);
+        // The word without the armed bit frees the node and places nothing.
+        assert_eq!(run_spawn(true, 0, true, 7), SpawnRun::Dropped);
         assert_eq!(
-            run_spawn(true, true, true, 7),
+            run_spawn(true, SPAWN_DONE, true, 7),
+            SpawnRun::Dropped,
+            "0x2000 is not the armed bit"
+        );
+        // A node without physics is the content error, the word back to the
+        // armed value.
+        assert_eq!(
+            run_spawn(true, SPAWN_ARMED, false, 7),
+            SpawnRun::ContentError { word: SPAWN_ARMED }
+        );
+        // A placed node takes the condition, the −100000 cm placement limit,
+        // the done word, and copies the frame when the word lacked it.
+        assert_eq!(
+            run_spawn(true, SPAWN_ARMED, true, 7),
             SpawnRun::Placed {
                 condition: 7,
-                place_limit_cm: -100_000.0
+                place_limit_cm: -100_000.0,
+                end_word: SPAWN_DONE,
+                copy_frame: true
             }
         );
+        assert_eq!(
+            run_spawn(true, SPAWN_ARMED | SPAWN_DONE, true, 7),
+            SpawnRun::Placed {
+                condition: 7,
+                place_limit_cm: -100_000.0,
+                end_word: SPAWN_DONE,
+                copy_frame: false
+            }
+        );
+        assert_eq!((SPAWN_ARMED, SPAWN_DONE), (0x1000, 0x2000));
     }
 }
