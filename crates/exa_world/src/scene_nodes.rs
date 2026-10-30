@@ -2497,15 +2497,19 @@ impl Scene {
     /// `direction` for `length` (the camera unit's `cut_away_segment`). The
     /// segment must meet the mesh's bounding sphere (its box's centre and
     /// the box's radius); a [`CUT_AWAY_SPHERE`] mesh is then marked, and a
-    /// [`CUT_AWAY_TESTED`] or overhead mesh would be asked its own segment
-    /// or ray callback (guess: with no CPU triangles Exarust stops at the
-    /// sphere). Any other kind, or a miss, clears a marked mesh. Marking or
-    /// clearing carries to the parent ([`CUT_AWAY_PARENT`]) and to the mesh
-    /// children ([`CUT_AWAY_CHILDREN`]); a mesh that was not marked is left
-    /// alone, children included.
+    /// [`CUT_AWAY_TESTED`] mesh would be asked its own segment callback
+    /// (guess: with no CPU triangles Exarust stops at the sphere). The
+    /// overhead mesh's own ray callback is likewise the sphere test. Any
+    /// other kind is not marked at all.
     ///
-    /// Returns how many meshes changed their mark (the original returns
-    /// nothing useful).
+    /// Marking carries to the parent ([`CUT_AWAY_PARENT`]) on every marked
+    /// kind, but to the mesh children ([`CUT_AWAY_CHILDREN`]) only from the
+    /// overhead kind; clearing a mark carries to the parent and always to
+    /// the children, as the original's two branches do. A mesh that was not
+    /// marked is left alone, children included.
+    ///
+    /// Returns how many meshes changed their mark (the original returns its
+    /// found byte, always zero by then).
     pub fn detect_cut_away(
         &mut self,
         from: Vec3,
@@ -2548,7 +2552,9 @@ impl Scene {
                 {
                     marked.push(parent);
                 }
-                if flags & CUT_AWAY_CHILDREN != 0 {
+                // The mark cascades to the children from the overhead kind
+                // only; a clear cascades from every kind.
+                if flags & CUT_AWAY_CHILDREN != 0 && (!cut || kind == CUT_AWAY_OVERHEAD) {
                     marked.extend(
                         node.children
                             .iter()
@@ -3806,13 +3812,18 @@ mod tests {
         let bit = scene.add_node(NodeKind::Mesh, Some(piece));
         let light = scene.add_node(NodeKind::Light, Some(piece));
         let focus = Vec3::new(0.0, 0.0, 30.0);
+        // The sphere kind marks on the camera's segment and carries to the
+        // parent, but not to the children: only the overhead kind's mark
+        // cascades down.
         assert_eq!(
             scene.detect_cut_away(Vec3::new(0.0, 0.0, -5.0), Vec3::Z, 10.0, focus),
-            3
+            2
         );
-        assert!(scene.nodes[group].cut_away && scene.nodes[bit].cut_away);
+        assert!(scene.nodes[group].cut_away);
+        assert!(!scene.nodes[bit].cut_away);
         assert!(!scene.nodes[light].cut_away);
-        // Clearing carries too.
+        // Clearing carries to the parent and to the children.
+        scene.nodes[bit].cut_away = true;
         assert_eq!(
             scene.detect_cut_away(Vec3::new(0.0, 0.0, 50.0), Vec3::Z, 1.0, focus),
             3
@@ -3825,6 +3836,37 @@ mod tests {
             0
         );
         assert!(scene.nodes[bit].cut_away);
+    }
+
+    #[test]
+    fn an_overhead_mark_carries_to_the_mesh_children() {
+        let (mut scene, sector, _) = node_scene();
+        scene.sectors[sector].mask = MAIN;
+        let roof = scene.add_node(NodeKind::Mesh, None);
+        scene.set_frame(
+            roof,
+            Vec3::new(0.0, 0.0, 30.0),
+            Mat3::IDENTITY,
+            Vec3::splat(1.0),
+        );
+        scene.register(roof, sector);
+        scene.nodes[roof].scene_flags |= CUT_AWAY_OVERHEAD | CUT_AWAY_CHILDREN;
+        let bit = scene.add_node(NodeKind::Mesh, Some(roof));
+        let focus = Vec3::new(0.0, 0.0, 30.0);
+        // The overhead segment starts ten metres above the focus: its hit
+        // marks the roof and cascades to the roof's mesh children.
+        assert_eq!(
+            scene.detect_cut_away(Vec3::new(0.0, 0.0, -50.0), Vec3::Z, 1.0, focus),
+            2
+        );
+        assert!(scene.nodes[roof].cut_away && scene.nodes[bit].cut_away);
+        // A focus elsewhere clears the mark and the children with it.
+        let away = Vec3::new(0.0, 0.0, 200.0);
+        assert_eq!(
+            scene.detect_cut_away(Vec3::new(0.0, 0.0, -50.0), Vec3::Z, 1.0, away),
+            2
+        );
+        assert!(!scene.nodes[roof].cut_away && !scene.nodes[bit].cut_away);
     }
 
     #[test]

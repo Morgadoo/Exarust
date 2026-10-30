@@ -766,6 +766,25 @@ pub fn cut_away_segment(focus: Vec3, back: Vec3, max_distance: f32) -> (Vec3, Ve
     (start, toward, max_distance * 2.0 - 1.0)
 }
 
+/// A followed object as the cut-away driver reads it: its position and,
+/// when its node reports one, the point that stands in for it.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FollowedFocus {
+    pub position: Vec3,
+    pub point: Option<Vec3>,
+}
+
+/// The point the cut-away probe centres on: the camera's stored point when
+/// it follows nothing, else the followed object's own point when its node
+/// reports one, else the object's position. The original moves a local
+/// point by the followed object's parent frame; Exarust keeps world
+/// transforms, so the caller passes world points.
+pub fn cut_away_focus(stored: Vec3, followed: Option<FollowedFocus>) -> Vec3 {
+    followed.map_or(stored, |followed| {
+        followed.point.unwrap_or(followed.position)
+    })
+}
+
 /// The offset one kick puts on the eye, before the chase camera's shake
 /// carries it. Three draws make a small random offset (x and z in ±0.5, y
 /// in 0–0.15, the last scaled in double precision). The kick's
@@ -841,19 +860,28 @@ pub fn translate_points(points: (Vec3, Vec3), by: Vec3) -> (Vec3, Vec3) {
     (points.0 + by, points.1 + by)
 }
 
-/// A camera controller's attachment to its viewport. The original detaches
-/// its controller while the editor's own drag handlers run: the camera node
-/// drops its back-pointer to the controller, the editor's press and move
-/// callbacks are installed, and the viewport's saved zoom handler is put
-/// back on attach. Exarust has no viewport callbacks, so the two observable
-/// flags are kept here and the handler swap is the caller's. A new
-/// controller is bound (the constructor points the node at it).
+/// A camera controller's attachment to its viewport. A preset sets or
+/// clears the viewport's wheel handler and adds its editor or free-camera
+/// press and move handlers to the viewport's handler list (it never removes
+/// any), first saving the viewport's wheel handler when its saved slot is
+/// empty. Detaching the controller clears the camera node's back-pointer,
+/// removes the free camera's press (drag start) and move handlers from the
+/// list and puts the saved wheel handler back; the editor's handlers stay.
+/// Attaching only points the node at the controller again. Exarust has no
+/// viewport callbacks, so the slots and the two observable flags are kept
+/// here and the actual handler binding is the host's; the original's list
+/// can hold a handler twice, which these flags cannot say.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Attachment {
-    /// The editor's handlers are installed (`detached`).
+    /// The controller is detached from its viewport.
     pub editing: bool,
     /// The camera node points back at this controller.
     pub bound: bool,
+    /// The viewport's installed handlers.
+    pub handlers: Handlers,
+    /// The wheel handler saved for the detach; `false` is the empty slot,
+    /// which the next preset fills again from the viewport.
+    pub saved_wheel: bool,
 }
 
 impl Default for Attachment {
@@ -861,33 +889,62 @@ impl Default for Attachment {
         Self {
             editing: false,
             bound: true,
+            handlers: Handlers::default(),
+            saved_wheel: false,
         }
     }
 }
 
 impl Attachment {
+    /// Applies a preset's flags to the viewport: an empty saved slot takes
+    /// the viewport's wheel handler, the wheel handler is then set or
+    /// cleared, and the press and move handlers [`preset_handlers`] asks
+    /// for are added to those already installed.
+    pub fn install(&mut self, flags: u32) {
+        if !self.saved_wheel {
+            self.saved_wheel = self.handlers.wheel;
+        }
+        let asked = preset_handlers(flags);
+        let handlers = &mut self.handlers;
+        handlers.wheel = asked.wheel;
+        handlers.editor_press |= asked.editor_press;
+        handlers.editor_move |= asked.editor_move;
+        handlers.free_press |= asked.free_press;
+        handlers.free_move |= asked.free_move;
+    }
+
     /// Sets the attachment to `detached` and returns whether it changed.
-    /// Detaching installs the editor's handlers and unbinds the node;
-    /// attaching binds it again. Setting the state it already has does
-    /// nothing, as the original's byte compare does.
+    /// Detaching removes the free camera's press and move handlers,
+    /// restores the saved wheel handler and unbinds the camera node;
+    /// attaching binds the node again. Setting the state it already has
+    /// does nothing, as the original's byte compare does.
     pub fn set_detached(&mut self, detached: bool) -> bool {
         if self.editing == detached {
             return false;
         }
         self.editing = detached;
         self.bound = !detached;
+        if detached {
+            self.handlers.free_press = false;
+            self.handlers.free_move = false;
+            self.handlers.wheel = self.saved_wheel;
+        }
         true
     }
 }
 
 /// One node the preset's editor scan reads: the class byte and marker at
-/// the node's two flags, its world position and its box's half extents.
+/// the node's two flags, its class word, its world position and its box's
+/// half extents.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EditorNode {
     /// The node's class byte (`0xA9` is the editor's target).
     pub class: u8,
     /// The node's second class byte (`0xAE` raises the preset's extra flag).
     pub marker: u8,
+    /// The node's class word; the scan keeps only nodes whose low twelve
+    /// bits are one.
+    pub class_word: u32,
     pub position: Vec3,
     pub half_extents: Vec3,
 }
@@ -903,11 +960,10 @@ pub struct TargetBox {
 
 /// The editor preset's scan (the preset flag `0x400000`): start from the
 /// view's `fallback` centre with an 800 by 0 by 1000 box and no raised flag;
-/// every node of class `0xA9` whose class word's low twelve bits are one
-/// replaces the box with its position and its three half extents, and a
-/// marker of `0xAE` raises the flag. The last such
-/// node in the scene order wins. The class word's low bits are the caller's
-/// [`EditorNode::class`] check here.
+/// every node whose class byte is `0xA9` and whose class word's low twelve
+/// bits are one replaces the box with its position and its three half
+/// extents, and such a node's marker of `0xAE` raises the flag. The last
+/// such node in the scene order wins.
 pub fn scan_target(nodes: &[EditorNode], fallback: Vec3) -> TargetBox {
     let mut target = TargetBox {
         centre: fallback,
@@ -915,12 +971,13 @@ pub fn scan_target(nodes: &[EditorNode], fallback: Vec3) -> TargetBox {
         raised: false,
     };
     for node in nodes {
-        if node.class == 0xA9 && node.marker == 0xAE {
-            target.raised = true;
+        if node.class != 0xA9 || node.class_word & 0xfff != 1 {
+            continue;
         }
-        if node.class == 0xA9 {
-            target.centre = node.position;
-            target.half_extents = node.half_extents;
+        target.centre = node.position;
+        target.half_extents = node.half_extents;
+        if node.marker == 0xAE {
+            target.raised = true;
         }
     }
     target
@@ -1277,6 +1334,31 @@ mod tests {
     }
 
     #[test]
+    fn the_cut_away_probe_centres_on_the_followed_object() {
+        let stored = Vec3::new(1.0, 2.0, 3.0);
+        // Nothing followed keeps the camera's stored point.
+        assert_eq!(cut_away_focus(stored, None), stored);
+        // A followed object with no point of its own gives its position.
+        let followed = FollowedFocus {
+            position: Vec3::new(4.0, 5.0, 6.0),
+            point: None,
+        };
+        assert_eq!(
+            cut_away_focus(stored, Some(followed)),
+            Vec3::new(4.0, 5.0, 6.0)
+        );
+        // A node's own point wins over the object's position.
+        let followed = FollowedFocus {
+            position: Vec3::new(4.0, 5.0, 6.0),
+            point: Some(Vec3::new(7.0, 8.0, 9.0)),
+        };
+        assert_eq!(
+            cut_away_focus(stored, Some(followed)),
+            Vec3::new(7.0, 8.0, 9.0)
+        );
+    }
+
+    #[test]
     fn a_wall_probe_alternates_between_the_step_and_the_one_below() {
         assert_eq!(probe_length(2000.0), 3850.0);
         // No step taken: the present step, 0.05 higher, climbing, 30 cm.
@@ -1497,6 +1579,46 @@ mod tests {
     }
 
     #[test]
+    fn a_detach_removes_the_free_handlers_and_restores_the_wheel() {
+        let mut attachment = Attachment::default();
+        // The first preset finds no wheel (the slot stays empty), installs
+        // its own wheel and the free camera's press and move.
+        attachment.install(0x200);
+        assert!(!attachment.saved_wheel);
+        assert_eq!(attachment.handlers, preset_handlers(0x200));
+        // Detaching removes the free press and move and puts the empty
+        // wheel back.
+        assert!(attachment.set_detached(true));
+        assert_eq!(attachment.handlers, Handlers::default());
+        // An editor preset adds its handlers; a detach leaves them.
+        attachment.install(0x200 | 0x10_0000);
+        assert!(attachment.set_detached(false));
+        assert!(attachment.bound && attachment.handlers.wheel);
+        assert!(attachment.set_detached(true));
+        assert!(attachment.handlers.editor_press && attachment.handlers.editor_move);
+        assert!(!attachment.handlers.wheel);
+        // Presets only add press and move handlers: a free preset after
+        // the editor's keeps the editor's too.
+        attachment.install(0);
+        assert!(attachment.handlers.editor_press && attachment.handlers.free_press);
+        // A controller that finds a wheel on the viewport saves it once and
+        // puts it back when it detaches.
+        let mut other = Attachment {
+            handlers: Handlers {
+                wheel: true,
+                ..Handlers::default()
+            },
+            ..Attachment::default()
+        };
+        other.install(0x10_0000);
+        assert!(other.saved_wheel && !other.handlers.wheel);
+        other.install(0x200);
+        assert!(other.saved_wheel);
+        other.set_detached(true);
+        assert!(other.handlers.wheel);
+    }
+
+    #[test]
     fn the_editor_preset_scans_for_its_target_box() {
         let view = Vec3::new(1.0, 2.0, 3.0);
         let empty = scan_target(&[], view);
@@ -1507,25 +1629,28 @@ mod tests {
             EditorNode {
                 class: 0xA9,
                 marker: 0,
+                class_word: 1,
                 position: Vec3::new(10.0, 20.0, 30.0),
                 half_extents: Vec3::new(5.0, 6.0, 7.0),
             },
             EditorNode {
                 class: 0xA8,
                 marker: 0xAE,
+                class_word: 1,
                 position: Vec3::ZERO,
                 half_extents: Vec3::ZERO,
             },
             EditorNode {
                 class: 0xA9,
                 marker: 0xAE,
+                class_word: 0x1001,
                 position: Vec3::new(40.0, 50.0, 60.0),
                 half_extents: Vec3::new(8.0, 9.0, 10.0),
             },
         ];
         let target = scan_target(&nodes, view);
-        // The last 0xA9 wins with all three half extents; the 0xAE marks it
-        // raised.
+        // The last 0xA9 whose class word ends in one wins with all three
+        // half extents; the 0xAE marks it raised.
         assert_eq!(target.centre, Vec3::new(40.0, 50.0, 60.0));
         assert_eq!(target.half_extents, Vec3::new(8.0, 9.0, 10.0));
         assert!(target.raised);
@@ -1533,6 +1658,22 @@ mod tests {
         let target = scan_target(&nodes[..2], view);
         assert_eq!(target.centre, Vec3::new(10.0, 20.0, 30.0));
         assert!(!target.raised);
+        // A 0xA9 node whose class word's low twelve bits are not one is
+        // not the editor's target at all, marker or not.
+        let other = EditorNode {
+            class: 0xA9,
+            marker: 0xAE,
+            class_word: 2,
+            position: Vec3::new(70.0, 80.0, 90.0),
+            half_extents: Vec3::new(1.0, 2.0, 3.0),
+        };
+        let target = scan_target(&[other], view);
+        assert_eq!(target.centre, view);
+        assert_eq!(target.half_extents, Vec3::new(800.0, 0.0, 1000.0));
+        assert!(!target.raised);
+        // The high bits do not matter.
+        let target = scan_target(&[nodes[2]], view);
+        assert_eq!(target.centre, Vec3::new(40.0, 50.0, 60.0));
         // The preset only scans under its editor flag.
         assert!(preset_target(&PresetFields::default(), &nodes, view).is_none());
         let fields = PresetFields {

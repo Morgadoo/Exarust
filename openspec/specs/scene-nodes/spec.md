@@ -204,3 +204,10 @@ A node whose `flags & 0x300000` is `0x100000` SHALL hide every light node (`flag
 #### Scenario: Fade at and above the limit
 - **WHEN** a fade-rule light with a light child, a hide-rule light, a both-bits light, a plain light and a fade-rule fire are walked at 0.12 and then 0.13
 - **THEN** only the hide-rule light is hidden at 0.12, and at 0.13 the fade light, its child and the fire join it
+
+### Requirement: Cut-away cascade
+A cut-away mark SHALL carry to the mesh's parent under the parent bit for every marked kind, and to its mesh children under the children bit only from the overhead kind. Clearing a marked mesh SHALL carry to the parent and the mesh children from every kind; a mesh that was not marked SHALL be left alone, children included.
+
+#### Scenario: Children follow only an overhead mark
+- **WHEN** a sphere-kind mesh with the parent and children bits is hit by the camera's segment, and later an overhead mesh with the children bit is hit and then missed
+- **THEN** the first marks itself and its parent but not its mesh child, the overhead mark carries to its mesh child, and its clear clears the child

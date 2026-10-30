@@ -247,9 +247,12 @@ pub fn nearest_hit(
 /// distance and shortens the segment. The original keeps no node; with no
 /// hit the distance is [`floor_distance`].
 ///
-/// [guess: the original's callback for this pick reports a count of hits
-/// along a segment and writes the distance back; the nearest face stands in
-/// for it]
+/// The original's mesh callback writes the nearest distance it finds below
+/// the asked length back into its query and returns that face's index plus
+/// one (zero for none), so the recorded distance is the crossing plus the
+/// mesh's distance. Its column test sweeps a sphere of the query's radius
+/// against the mesh's face planes; [`RayMesh`]'s nearest hit stands in for
+/// it [guess: the swept radius is not modelled].
 pub fn kinesis_hit(
     ray: Ray,
     layer_mask: u32,
@@ -297,10 +300,14 @@ pub fn kinesis_hit(
 /// segment shortens (the original keeps the least distance reported). The
 /// distance is [`floor_distance`] when nothing is found.
 ///
-/// The original's accept test is a per-node callback and its mesh test
-/// counts the ground surfaces under a column; Exarust has neither, so the
-/// accept test is the caller's closure and [`RayMesh`]'s nearest hit stands
-/// in for the column. The crossing uses the engine's `1 / direction.y`,
+/// The original's accept test is a per-node callback, and its mesh
+/// callback sweeps a sphere of the grown radius down the column against
+/// the mesh's face planes, writing the nearest distance below the asked
+/// length back into its query and returning that face's index plus one;
+/// the pick then records the crossing plus that distance and the face.
+/// Exarust has neither callback, so the accept test is the caller's closure
+/// and [`RayMesh`]'s nearest hit stands in for the column [guess: the swept
+/// radius is not modelled]. The crossing uses the engine's `1 / direction.y`,
 /// held to zero when it is positive (the ray looks up): a level ray gives
 /// an infinite crossing, as the original's division does.
 pub fn ground_hit(
