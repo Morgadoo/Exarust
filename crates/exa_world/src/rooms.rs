@@ -13,6 +13,8 @@
 //!
 //! Pure data and rules; the Bevy side is [`crate::room_view`].
 
+use std::collections::HashMap;
+
 use bevy::math::{Vec2, Vec3};
 use exa_formats::level::LevelGrid;
 
@@ -552,18 +554,26 @@ pub fn rotate_edge_word(word: u32, quarter: u8) -> u32 {
 
 /// The cell step the original takes from a direction vector: `atan2(x, z)`
 /// in `[−π, π]`, then one of the four quadrants. The step is opposite to
-/// the vector.
+/// the vector. The original computes `π/2` as the `f32` and widens it to
+/// double before adding or subtracting the double `π/4`, so its quarter-turn
+/// edges are slightly wider than `±π/4` and its positive third edge slightly
+/// above `3π/4`; the tests run in this order and leave the step at zero in
+/// the narrow gaps (a NaN likewise). Used to bind a door to the cell behind
+/// it.
 pub fn cell_step_from_dir(dir: Vec2) -> (i32, i32) {
-    let v = dir.x.atan2(dir.y);
-    let quarter = std::f32::consts::FRAC_PI_4;
-    if v.abs() < quarter {
+    let a = dir.x.atan2(dir.y) as f64;
+    let quarter = std::f64::consts::FRAC_PI_4;
+    let half_pi = std::f32::consts::FRAC_PI_2 as f64;
+    if a.abs() < quarter {
         (0, -1)
-    } else if v.abs() > 3.0 * quarter {
-        (0, 1)
-    } else if v > quarter {
+    } else if a > half_pi - quarter && a < half_pi + quarter {
         (-1, 0)
-    } else {
+    } else if a.abs() > 3.0 * quarter {
+        (0, 1)
+    } else if a > -half_pi - quarter && a < -half_pi + quarter {
         (1, 0)
+    } else {
+        (0, 0)
     }
 }
 
@@ -586,6 +596,52 @@ pub fn door_link_at(rooms: &Rooms, position: Vec2, facing: Vec2) -> Option<DoorL
                 .copied()
                 .find(|l| l.from == from && l.to == to)
         })
+}
+
+/// The door body standing in each door link, as the original binds a placed
+/// door to the portals of the two rooms it joins. A link is keyed by its
+/// `(from, to)` cells, so both sides carry the same body.
+#[derive(Debug, Clone, Default)]
+pub struct DoorBodies {
+    per_link: HashMap<(u32, u32), u32>,
+}
+
+impl DoorBodies {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Binds `body` to the door link a door at `position` (metres, X/Z) and
+    /// facing `facing` (the X and Z of its third matrix row) stands in: the
+    /// door's cell, the neighbouring cell opposite its facing, and the
+    /// room's link between the two. The body is written into both rooms'
+    /// link entries, as the original does, and `None` means the cell has no
+    /// such link. A door without a body of its own is not bound (the
+    /// original returns before the write when its data source is missing).
+    pub fn bind(
+        &mut self,
+        rooms: &Rooms,
+        position: Vec2,
+        facing: Vec2,
+        body: u32,
+    ) -> Option<DoorLink> {
+        let link = door_link_at(rooms, position, facing)?;
+        self.per_link.insert((link.from, link.to), body);
+        self.per_link.insert((link.to, link.from), body);
+        Some(link)
+    }
+
+    /// The body standing in a link, read from either side.
+    pub fn body(&self, link: DoorLink) -> Option<u32> {
+        self.per_link.get(&(link.from, link.to)).copied()
+    }
+
+    /// Forgets a link and its reverse (the original clears both rooms'
+    /// entries when a door goes).
+    pub fn remove(&mut self, link: DoorLink) {
+        self.per_link.remove(&(link.from, link.to));
+        self.per_link.remove(&(link.to, link.from));
+    }
 }
 
 /// Whether the segment from `eye` to `point` crosses the open doorway.
@@ -1625,11 +1681,53 @@ mod tests {
     }
 
     #[test]
+    fn a_door_binds_to_both_sides_of_its_link() {
+        let rooms = Rooms::flood(&two_rooms().0);
+        let link = rooms.room(0).unwrap().links[0];
+        let reverse = rooms.room(1).unwrap().links[0];
+        let mut doors = DoorBodies::new();
+        // The door stands in cell (2, 1) facing −X, so the neighbour is +X.
+        assert_eq!(
+            doors.bind(&rooms, Vec2::new(-1.0, 3.0), Vec2::new(-1.0, 0.0), 7),
+            Some(link)
+        );
+        assert_eq!(doors.body(link), Some(7));
+        assert_eq!(doors.body(reverse), Some(7));
+        // Facing the other way looks for a link behind the door.
+        assert_eq!(
+            doors.bind(&rooms, Vec2::new(-1.0, 3.0), Vec2::new(1.0, 0.0), 8),
+            None
+        );
+        assert_eq!(doors.body(link), Some(7));
+        // A diagonal facing takes no cell step and so finds no link.
+        assert_eq!(
+            doors.bind(&rooms, Vec2::new(-1.0, 3.0), Vec2::new(1.0, 1.0), 9),
+            None
+        );
+        doors.remove(reverse);
+        assert_eq!(doors.body(link), None);
+        assert_eq!(doors.body(reverse), None);
+    }
+
+    #[test]
     fn the_direction_step_is_opposite_the_vector() {
         assert_eq!(cell_step_from_dir(Vec2::new(0.0, 1.0)), (0, -1));
         assert_eq!(cell_step_from_dir(Vec2::new(1.0, 0.0)), (-1, 0));
         assert_eq!(cell_step_from_dir(Vec2::new(0.0, -1.0)), (0, 1));
         assert_eq!(cell_step_from_dir(Vec2::new(-1.0, 0.0)), (1, 0));
+        // Inside each quadrant, away from the quarter turns.
+        for (angle, step) in [
+            (0.5f32, (0, -1)),
+            (2.0, (-1, 0)),
+            (-2.0, (1, 0)),
+            (-0.5, (0, -1)),
+            (std::f32::consts::PI, (0, 1)),
+        ] {
+            let (sin, cos) = angle.sin_cos();
+            assert_eq!(cell_step_from_dir(Vec2::new(sin, cos)), step, "{angle}");
+        }
+        // A NaN angle matches none of the ordered tests: no step.
+        assert_eq!(cell_step_from_dir(Vec2::new(f32::NAN, 0.0)), (0, 0));
     }
 
     #[test]
