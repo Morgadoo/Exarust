@@ -76,7 +76,12 @@ asks that gate for every NPC each fixed tick: the route-following flag is a
 roam or patrol leg, a flight route or a duellist's chase route
 (`brain::follows_route`), the locomotion is the walk the AI asks of the
 body and the speed is the last fixed step's walk along the facing; a
-refused NPC keeps its footprint off the grid.
+refused NPC keeps its footprint off the grid. The tick's grabbed flag
+(`brain::grab_timeout`) stays while the body reports the grabbed condition,
+unless the state is not the combat state and the body's hook refuses event
+`0x10`, which releases the grip and clears it; outside that condition it
+clears once 500 ms have passed since the grab (at exactly 500 ms it
+holds).
 The sense's familiarity drift is added to the observer's relation with the
 character it saw when that relation exists (a stranger's is dropped),
 scaled by the elapsed count the brain's ticks seen carry (the contact

@@ -1254,6 +1254,67 @@ pub fn stamps_footprint(following_route: bool, moving: bool, speed_cm: f32) -> b
     !following_route || !moving || speed_cm < 1.0
 }
 
+/// The grabbed condition word the body reports while a grip holds it.
+pub const GRABBED_CONDITION: u32 = 0x20;
+/// How long a grab may hold the flag outside the grabbed condition (ms).
+pub const GRAB_TIMEOUT_MS: u32 = 500;
+
+/// What the AI tick's grabbed-flag step does: whether the flag stays set
+/// and whether the grip is released.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Grab {
+    /// The flag stays set after the step.
+    pub held: bool,
+    /// The mechanic is told to release the grip (the body's own call, which
+    /// Exarust does not model).
+    pub released: bool,
+}
+
+/// The AI tick's grabbed flag: a flag that is not set is untouched. While
+/// the body is in the grabbed condition the flag stays, unless the tick's
+/// state is not the combat state and the body's hook refuses event 0x10
+/// (an answer under zero): then the grip is released and the flag clears.
+/// Outside that condition the flag clears once 500 ms have passed since the
+/// grab began; at exactly 500 ms it still holds, and the sum is widened so
+/// it cannot wrap.
+pub fn grab_timeout(
+    held: bool,
+    condition: u32,
+    in_combat_state: bool,
+    hook_answer: Option<i32>,
+    grabbed_at_ms: u32,
+    now_ms: u32,
+) -> Grab {
+    if !held {
+        return Grab {
+            held: false,
+            released: false,
+        };
+    }
+    if condition == GRABBED_CONDITION {
+        if !in_combat_state && hook_answer.is_some_and(|answer| answer < 0) {
+            return Grab {
+                held: false,
+                released: true,
+            };
+        }
+        return Grab {
+            held: true,
+            released: false,
+        };
+    }
+    if u64::from(grabbed_at_ms) + u64::from(GRAB_TIMEOUT_MS) < u64::from(now_ms) {
+        return Grab {
+            held: false,
+            released: false,
+        };
+    }
+    Grab {
+        held: true,
+        released: false,
+    }
+}
+
 /// The original's route-following flag, as Exarust keeps it: a brain walks
 /// a roam or patrol leg, or a flight route, or its duellist walks a chase
 /// route ([`crate::Duellist::follows_route`]).
@@ -2961,6 +3022,35 @@ mod tests {
         assert!(stamps_footprint(true, true, 0.999_999_94));
         assert!(!stamps_footprint(true, true, 1.0));
         assert!(!stamps_footprint(true, true, f32::NAN));
+    }
+
+    #[test]
+    fn the_grabbed_flag_holds_the_condition_and_times_out() {
+        // A flag that is not set changes nothing.
+        assert_eq!(
+            grab_timeout(false, 0, false, Some(-1), 0, 10_000),
+            Grab {
+                held: false,
+                released: false
+            }
+        );
+        // In the grabbed condition the hook's refusal releases the grip; a
+        // non-negative answer, no hook, or the combat state keeps it.
+        assert_eq!(
+            grab_timeout(true, GRABBED_CONDITION, false, Some(-1), 0, 0),
+            Grab {
+                held: false,
+                released: true
+            }
+        );
+        assert!(grab_timeout(true, GRABBED_CONDITION, false, Some(0), 0, 0).held);
+        assert!(grab_timeout(true, GRABBED_CONDITION, false, None, 0, 0).held);
+        assert!(grab_timeout(true, GRABBED_CONDITION, true, Some(-1), 0, 0).held);
+        // Outside it the flag clears strictly after 500 ms.
+        assert!(grab_timeout(true, 1, false, None, 1_000, 1_500).held);
+        assert!(!grab_timeout(true, 1, false, None, 1_000, 1_501).held);
+        // The sum is widened: a grab near the top does not wrap away.
+        assert!(grab_timeout(true, 1, false, None, u32::MAX, 100).held);
     }
 
     #[test]
