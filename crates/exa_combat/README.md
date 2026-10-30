@@ -397,6 +397,21 @@ then the player's pit after `PIT_AFTER` (1000 ms) and death after
 which `track_condition` writes each tick). Rules:
 [`docs/formats/RSQ.md`](../../docs/formats/RSQ.md) (Falling to death).
 
+## Head tracking
+
+`aim` is the combatant's head tracking, ticked by the behaviour: two
+relaxed angles, a yaw and a pitch, chase the look-at point's direction
+(yaw from the engine's planar routine, pitch the negated engine arc sine).
+Each moves at most π/100 a tick — the double π/100 compared in double
+precision, the float it rounds to added — and the yaw is then held within
+±45° of the body's facing; the near variant floors the pitch target at the
+float nearest −0.6, the far one has no floor. A look-at within 50 cm
+horizontally reuses the previous direction; between 50 and 100 cm the
+height is replaced by `(10000 − d²)·1e-4` before normalising. The result
+is the unit direction, the point 250 cm along it (150 cm for the far
+variant) and its flat direction. The direction's sine and cosine are
+Rust's, not the engine's fast trig.
+
 ## Scope
 
 - Hit detection from physics contacts (edge, point, blunt surfaces of a weapon).
