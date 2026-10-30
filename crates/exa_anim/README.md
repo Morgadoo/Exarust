@@ -93,14 +93,17 @@ owed to the next frame), 0.6 × the race's base a tick, added in double
   Meshes bind under an `Animator` body root or a `SkinnedRoot` one (a
   level's placed dead have no clips, but their skin still binds).
 - Part motion state (`parts`): the animation ids a fresh body's parts are
-  numbered (`MotionParts::assign_ids`, depth first in child order, parts
-  without a controller skipped) and the transfer across a rebuilt model
-  (`MotionParts::copy_from`, `start`): the source root's controller state,
-  then each source child's onto the first new child of the same role with
-  a clear id, recursively, the source's shared word onto every claimed
-  child, and a source part without a controller skipped whole. The
-  controller state is the caller's; models do not rebuild in the running
-  game yet.
+  numbered (`MotionParts::assign_ids`, depth first in child order, a part
+  without a numbered controller ending its branch) and the transfers
+  across a rebuilt model: `copy_from` (by role: a part whose controller
+  takes no copies ends the branch; it takes its source's controller state,
+  or has its source word cleared when the source has none; each source
+  child claims the first new child of its role with an id below 1, which
+  takes the source child's id and its new parent's controller link) and
+  `copy_by_id` (children matched by id), with `start` choosing between
+  numbering and copying the first listed body. The controller state is
+  the caller's; models do not rebuild in the running game yet, so nothing
+  calls these.
 - Node keyframe tracks (`tracks`): `NodeTracks` on a scene node,
   `StartTracks` starts the tracks of a node and the nodes under it as
   using an object does (once and reverse swap at each start), and every
