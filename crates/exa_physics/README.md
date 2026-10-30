@@ -646,13 +646,11 @@ flipped state and marks its record for a rebuild (the middle and end tests
 are double compares, as the original's). A flip command is refused while
 the character switches and for a section with no flipped-side kind byte
 (`GripLinks::begin_flip`), as the original's command does. A collapse
-gives every held item's soft world weld a 10 cm slack
-(`GripLinks::slacken_soft_weld`, after the collapse has let the weapons
-go, so what is left is the shield or torch it keeps), and death then makes
-that weld as stiff as the origin weld (`GripLinks::stiffen_soft_weld`), so
-a corpse's item stays where it fell; `exa_character::grip_runtime`'s
-`adjust_welds` applies each on the tick the holder enters that condition
-(only the slack is written, not the smoothed length). Death's
+writes no weld (it drops the character's items, and a gobbler's collapse
+only slackens its femur limit links); death makes a held item's soft weld
+as stiff as the origin weld (`GripLinks::stiffen_soft_weld`), so a
+corpse's item stays where it fell. `exa_character::grip_runtime`'s
+`adjust_welds` applies it on the tick the holder dies. Death's
 other strength-1 write is to each lower leg's limit link
 (`Ragdoll::go_limp`). Emptying the hands
 restores each hand's link-mobility and contact-mobility words
@@ -670,26 +668,31 @@ its own `Ragdoll` (one part per stored rigid node), pulled every iteration to th
 hand and arm by their mobility shares with the body's own limp link law (a
 slack link's smoothed length kept from tick to tick), and kept off its
 holder's body and the other items of the same character (the original's
-all-ones group mask, as `Ragdoll::held_by`). Its generic world weld is the
-stiff origin link, plus the soft (parry) weld when the holder may parry,
-0.3 of the node box's top above the grip (at the grip for a two-hander of
-the exact class 0x30). The character's equip and the torch
+all-ones group mask, as `Ragdoll::held_by`). A holder whose muscles are on
+takes the living laws instead: a hand link closes `|d|/(1 + 0.001·|d|_cm)`
+of its gap, and a world weld steps one strength centimetre a pass
+(`strength·10/|d|` centimetres past 10 cm); a limp holder takes the limp
+damper for the hands and the plain world law for the welds. Its generic
+world weld is the stiff origin link, plus the soft (parry) weld when the
+holder may parry, 0.3 of the node box's top above the grip (at the grip for
+a two-hander of the exact class 0x30). The character's equip and the torch
 light a held item's body and its `HeldGrip`.
 
 A link without the runtime pivot flag is a **limit link**
 (`body::MODEL_LINK_PIVOT`, marked through `Ragdoll::set_link_flags`): the
-living iteration compares the link's slack with the gap's square
-(`|d|²·100 > slack` in metres, as the original's centimetres), moves the
-part alone by the strength times the gap, and cuts the move to 10 cm (2 cm
-for a `MODEL_LINK_HORIZONTAL` link, which ignores the vertical y gap and
-runs only in the tick's first two passes). A NaN gap is not "inside the
-slack"; its non-finite move is dropped. The original's skeleton
-registration sets the pivot flag on every link of a parented part (the
-shipped skeletons store the word as 0), so a character body has no limit
-links and the game does not call `set_link_flags`; the law is kept tested
-for the root world links that clear the flag. Limit links are left out of
-the anchors, and a limp body skips them (the original's limp solver has a
-separate limit law of its own, not ported).
+living iteration lets the part alone move one `strength` centimetre along
+the gap once the gap passes the link's slack (an ordered compare, so a NaN
+gap does not move, and a gap exactly on the slack does not either), or
+`strength·10/|d|` centimetres past a 10 cm gap (2 cm for a
+`MODEL_LINK_HORIZONTAL` link, which ignores the vertical y gap and runs
+only in the tick's first two passes). The squared gap sums x² + y² first,
+then z², as the original. The original's skeleton registration sets the
+pivot flag on every link of a parented part (the shipped skeletons store
+the word as 0), so a character body has no limit links and the game does
+not call `set_link_flags`; the law is kept tested for the root world links
+that clear the flag. Limit links are left out of the anchors, and a limp
+body skips them (the original's limp solver has a separate limit law of
+its own, not ported).
 
 The mesh voxeliser (`voxel`) keeps the original's occupancy map of a
 rigid-body mesh (`VoxelMap`: the 0.02 resolution, unit scale and caller's

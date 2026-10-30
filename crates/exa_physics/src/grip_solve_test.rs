@@ -139,6 +139,125 @@ fn a_disabled_link_is_skipped_and_a_world_link_moves_the_item_alone() {
     assert!((point - anchor).length() < 0.001);
 }
 
+/// A torch and a shield take the held and mark bits (`0x20002`) when they
+/// are held; a weapon takes the weapon bit and the mark bit (`0x20001`).
+#[test]
+fn a_held_torch_takes_the_held_and_mark_bits() {
+    use crate::grip::{HeldGrip, HeldKind};
+    use crate::part::PartState;
+    let item = Entity::from_raw_u32(20).unwrap();
+    let grip = |kind| HeldGrip {
+        spec: crate::grip::GripSpec {
+            hand: 0,
+            links: Vec::new(),
+            second_hand: None,
+            arm: None,
+            extra: None,
+        },
+        scale: 1.0,
+        size: 1.0,
+        second_hand_factor: 1.0,
+        flip: false,
+        class: 0,
+        soft_weld: true,
+        kind,
+        holder_key: item,
+        hands: [None, None],
+        arms: [None, None],
+        links: Some(links(pivot(
+            [1.0, 0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0, 0.0],
+            (1.0, 0.0),
+        ))),
+        released: false,
+    };
+    for (kind, word) in [
+        (HeldKind::Torch, PartState::HELD | PartState::STRIKE_MARK),
+        (HeldKind::Shield, PartState::HELD | PartState::STRIKE_MARK),
+        (
+            HeldKind::Weapon,
+            PartState::STRIKING | PartState::STRIKE_MARK,
+        ),
+    ] {
+        let mut app = App::new();
+        app.add_systems(Update, crate::grip_solve::mark_held);
+        let entity = app
+            .world_mut()
+            .spawn((rigid(item, Vec3::ZERO, 1.0), grip(kind)))
+            .id();
+        app.update();
+        let body = app.world().get::<Ragdoll>(entity).unwrap();
+        assert_eq!(body.parts[0].state.0 & word, word, "{kind:?}");
+        assert!(body.held_by.is_some());
+    }
+}
+
+/// A world weld in a living holder is a limit link: it moves the item one
+/// strength centimetre a pass, or `strength·10/|d|` centimetres past 10 cm.
+/// The centroid weights make each move a pure translation, so the item's
+/// displacement is the link's correction.
+#[test]
+fn a_living_world_weld_steps_by_its_strength() {
+    let w = [1.0, 0.0, 0.0, 0.0];
+    let item = Entity::from_raw_u32(1).unwrap();
+    let hand = Entity::from_raw_u32(2).unwrap();
+    let mut item_body = rigid(item, Vec3::ZERO, 1.0);
+    let mut holder = rigid(hand, Vec3::ZERO, 1.0).with_drive();
+    let start = item_body.point_at(0, &w).unwrap();
+    let mut weld = pivot(w, [0.0; 4], (1.0, 0.0));
+    weld.hand = None;
+    weld.anchor = Some(start + Vec3::new(0.0, 0.01, 0.0));
+    weld.strength = 0.05;
+    let mut stage = solver(item, hand, links(weld.clone()));
+    stage.links(&mut [&mut item_body, &mut holder], 0);
+    // 1 cm: 0.05 cm of the gap, 0.0005 m.
+    let point = item_body.point_at(0, &w).unwrap();
+    assert!((point.y - (start.y + 0.0005)).abs() < 1e-7, "{point}");
+
+    // 20 cm: strength·10/20 = 0.025 cm, 0.00025 m.
+    let mut item_body = rigid(item, Vec3::ZERO, 1.0);
+    weld.anchor = Some(start + Vec3::new(0.0, 0.2, 0.0));
+    let mut stage = solver(item, hand, links(weld));
+    stage.links(&mut [&mut item_body, &mut holder], 0);
+    let point = item_body.point_at(0, &w).unwrap();
+    assert!((point.y - (start.y + 0.00025)).abs() < 1e-7, "{point}");
+
+    // A dead holder (no muscles) takes the plain world law: 1 cm at
+    // strength 1, 10·1²/20 = 0.5 cm at 20 cm.
+    let mut holder = rigid(hand, Vec3::ZERO, 1.0);
+    let mut item_body = rigid(item, Vec3::ZERO, 1.0);
+    let mut weld = pivot(w, [0.0; 4], (1.0, 0.0));
+    weld.hand = None;
+    weld.anchor = Some(start + Vec3::new(0.0, 0.01, 0.0));
+    let mut stage = solver(item, hand, links(weld.clone()));
+    stage.links(&mut [&mut item_body, &mut holder], 0);
+    let point = item_body.point_at(0, &w).unwrap();
+    assert!((point.y - (start.y + 0.01)).abs() < 1e-7, "{point}");
+    let mut item_body = rigid(item, Vec3::ZERO, 1.0);
+    weld.anchor = Some(start + Vec3::new(0.0, 0.2, 0.0));
+    let mut stage = solver(item, hand, links(weld));
+    stage.links(&mut [&mut item_body, &mut holder], 0);
+    let point = item_body.point_at(0, &w).unwrap();
+    assert!((point.y - (start.y + 0.005)).abs() < 1e-6, "{point}");
+}
+
+/// A living holder's hand link is a living pivot: the gap closes by
+/// 1/(1 + 0.001·|d|_cm), not the squared softening of the limp law.
+#[test]
+fn a_living_hand_link_softens_by_its_gap_in_centimetres() {
+    let w = [1.0, 0.0, 0.0, 0.0];
+    let item = Entity::from_raw_u32(1).unwrap();
+    let hand = Entity::from_raw_u32(2).unwrap();
+    let mut item_body = rigid(item, Vec3::ZERO, 1.0);
+    let mut holder = rigid(hand, Vec3::new(0.1, 0.0, 0.0), 1.0).with_drive();
+    let start = item_body.point_at(0, &w).unwrap();
+    let mut stage = solver(item, hand, links(pivot(w, w, (1.0, 0.0))));
+    stage.links(&mut [&mut item_body, &mut holder], 0);
+    // 10 cm: 1/1.01 of the gap, 0.09901 m. The limp law would give 1/1.1.
+    let point = item_body.point_at(0, &w).unwrap();
+    assert!((point.x - (start.x + 0.1 / 1.01)).abs() < 1e-6, "{point}");
+}
+
 /// The builder turns a held item and its character body into the grip's
 /// links: the table's one main pivot, then the stiff disabled origin weld
 /// (an ordinary item has no soft weld).

@@ -73,6 +73,18 @@ fn find_body(bodies: &[&mut Ragdoll], key: Entity) -> Option<usize> {
 
 /// The correction of one grip link and the two shares, from the item's and
 /// the character's bodies as they stand.
+///
+/// The link's law depends on what it joins and on whether the holder's
+/// muscles are on, as the original's item body is a child of the hand in
+/// the same tree:
+/// - a hand link while the holder lives is a living pivot, closing
+///   `|d|/(1 + 0.001·|d|_cm)` of its gap (strength is not read);
+/// - a world weld while the holder lives is a living limit link past its
+///   slack (one strength centimetre along the gap, `strength·10/|d|` past
+///   10 cm), the item moving alone;
+/// - a limp body takes the limp link law (a smoothed damper inside the
+///   slack) and, for a world weld, the plain world-link law (one strength
+///   centimetre, `10·strength²/|d|` past `10·strength` cm).
 fn link_correction(
     item: &Ragdoll,
     holder: &Ragdoll,
@@ -83,18 +95,77 @@ fn link_correction(
         Some(part) => holder.point_at(part, &link.on_hand)?,
         None => link.anchor?,
     };
-    // The limp rigid body's own link law, with a pivot's 0.001 softening.
-    let correction = crate::body::limp_law(
-        b - a,
-        link.slack,
-        link.strength,
-        SOFTENING,
-        link.smoothing,
-        &mut link.length,
-    )?;
+    let d = b - a;
+    if d.length_squared() <= crate::body::LINK_EPSILON2 {
+        return None;
+    }
+    let correction = match (holder.drive.is_some(), link.hand) {
+        (true, Some(_)) => living_pivot(d),
+        (true, None) => living_limit(d, link.slack, link.strength)?,
+        (false, Some(_)) => crate::body::limp_law(
+            d,
+            link.slack,
+            link.strength,
+            SOFTENING,
+            link.smoothing,
+            &mut link.length,
+        )?,
+        (false, None) => limp_world(d, link.slack, link.strength)?,
+    };
     correction
         .is_finite()
         .then_some((correction, link.shares.0, link.shares.1))
+}
+
+/// The living pivot law: the gap less its `0.001` per gap centimetre
+/// softening. The strength is not read (the original's pivot branch uses
+/// the two mobility shares alone).
+fn living_pivot(d: Vec3) -> Vec3 {
+    d / (1.0 + 0.001 * d.length() * 100.0)
+}
+
+/// The living limit law on the gap `d` (m) against the link's `slack` (m)
+/// and `strength`: past the slack the part moves `strength` centimetres
+/// along the gap, or `strength·10/|d|` centimetres beyond a 10 cm gap. The
+/// inside compare is ordered and equality moves nothing, so a NaN gap is
+/// left alone.
+fn living_limit(d: Vec3, slack: f32, strength: f32) -> Option<Vec3> {
+    let len2 = d.length_squared();
+    let slack2 = slack * slack;
+    if slack2.partial_cmp(&len2) != Some(std::cmp::Ordering::Less) {
+        return None;
+    }
+    let len = len2.sqrt();
+    let s = if len <= 0.10 {
+        strength * 0.01
+    } else {
+        strength * 0.10 * 0.01 / len
+    };
+    Some(d * (s / len))
+}
+
+/// The plain world-link law of a limp body: past the slack the item moves
+/// `strength` centimetres along the gap (for a zero slack), or
+/// `strength·(|d| − slack)/|d|` of it; the zero-slack step is cut to
+/// `10·strength²/|d|` centimetres past `10·strength` cm.
+fn limp_world(d: Vec3, slack: f32, strength: f32) -> Option<Vec3> {
+    let len2 = d.length_squared();
+    let slack2 = slack * slack;
+    if slack2.partial_cmp(&len2) != Some(std::cmp::Ordering::Less) {
+        return None;
+    }
+    let len = len2.sqrt();
+    if slack == 0.0 {
+        let cap = strength * 0.10;
+        let s = if len <= cap {
+            strength * 0.01
+        } else {
+            strength * strength * 0.001 / len
+        };
+        Some(d * (s / len))
+    } else {
+        Some(d * (strength * (len - slack) / len2))
+    }
 }
 
 impl SolverStage for GripSolver {
@@ -306,7 +377,11 @@ pub fn mark_held(mut held: Query<(&HeldGrip, &mut Ragdoll)>) {
             if grip.kind == HeldKind::Weapon {
                 crate::grip::weapon_words(part);
             } else {
-                part.state = part.state.with(crate::part::PartState::HELD);
+                // A shield's and a torch's own attach routine writes the
+                // held and mark bits (`0x20002`).
+                part.state = part
+                    .state
+                    .with(crate::part::PartState::HELD | crate::part::PartState::STRIKE_MARK);
             }
             // A held item's friction is the character constructor's 0.5.
             part.friction = 0.5;

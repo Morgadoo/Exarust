@@ -242,10 +242,10 @@ fn pivots_and_limits_correct_as_the_original() {
     assert!(close(pivot.living(torn), torn / (1.0 + 0.3)));
 }
 
-/// A limit link is a skeleton link without the pivot flag: its slack is a
-/// squared distance, and past it the part alone is pulled by the strength
-/// times its gap, cut to 10 cm (2 cm and horizontal-only for a horizontal
-/// link).
+/// A limit link is a skeleton link without the pivot flag: past its slack
+/// the part alone moves one strength centimetre along the gap, or
+/// `strength·cap/|d|` centimetres once the gap is over the 10 cm cap (2 cm
+/// and horizontal-only for a horizontal link).
 #[test]
 fn a_limit_link_pulls_its_part_alone_and_caps_at_ten_centimetres() {
     let mut body = pelvis_and_femur();
@@ -255,22 +255,22 @@ fn a_limit_link_pulls_its_part_alone_and_caps_at_ten_centimetres() {
     assert!(link.limit);
     assert!(!link.horizontal);
     let close = |a: Option<Vec3>, b: Vec3| a.is_some_and(|a| a.abs_diff_eq(b, 1e-6));
-    // 3 cm: 9 cm² is past the 3.03 cm slack, inside the 10 cm cap, so the
-    // part moves by the whole gap at strength 1.
-    let gap = Vec3::new(0.03, 0.0, 0.0);
-    assert!(close(link.limit_correction(gap), gap));
-    // 20 cm: the cap leaves strength·10/|d| of the gap, a 10 cm move.
+    // 5 cm: past the 3.029 cm slack and inside the 10 cm cap, the part
+    // alone moves one strength centimetre (strength 1) along the gap.
+    let gap = Vec3::new(0.05, 0.0, 0.0);
+    assert!(close(link.limit_correction(gap), Vec3::new(0.01, 0.0, 0.0)));
+    // 20 cm: the cap leaves strength·10/|d| of a centimetre, half a
+    // centimetre at 20 cm.
     let far = Vec3::new(0.2, 0.0, 0.0);
     let c = link.limit_correction(far).unwrap();
-    assert!((c.length() - 0.1).abs() < 1e-6, "{c}");
+    assert!((c.length() - 0.005).abs() < 1e-6, "{c}");
     assert!(c.x > 0.0);
-    // A gap of zero is inside the slack; a NaN gap goes on to a
-    // non-finite move, which the iteration drops.
+    // A gap inside the slack or exactly on it moves nothing, and an
+    // ordered compare leaves a NaN gap alone too.
     assert_eq!(link.limit_correction(Vec3::ZERO), None);
-    assert!(!link.limit_correction(Vec3::NAN).unwrap().is_finite());
-    // The second link's 3.029 cm slack: a 1.7 cm gap's square (2.89) is
-    // under it, so nothing moves.
-    assert_eq!(link.limit_correction(Vec3::new(0.017, 0.0, 0.0)), None);
+    assert_eq!(link.limit_correction(Vec3::new(0.03, 0.0, 0.0)), None);
+    assert_eq!(link.limit_correction(Vec3::new(link.slack, 0.0, 0.0)), None);
+    assert_eq!(link.limit_correction(Vec3::NAN), None);
     // Horizontal: the vertical (y) gap is ignored and the cap is 2 cm.
     let mut body = pelvis_and_femur();
     assert!(body.set_link_flags(
@@ -288,9 +288,10 @@ fn a_limit_link_pulls_its_part_alone_and_caps_at_ten_centimetres() {
     assert!(flat.limit && flat.horizontal);
     assert_eq!(flat.limit_correction(Vec3::new(0.0, 0.3, 0.0)), None);
     let c = flat.limit_correction(Vec3::new(0.3, 0.3, 0.0)).unwrap();
-    assert!((c.length() - 0.02).abs() < 1e-6, "{c}");
+    // 2 cm of cap at 30 cm: 2/30 of a centimetre, 0.000667 m.
+    assert!((c.length() - 0.02 * 0.01 / 0.3).abs() < 1e-9, "{c}");
     assert_eq!(c.y, 0.0);
-    assert!((c.x - 0.02).abs() < 1e-6, "{c}");
+    assert!((c.x - 0.02 * 0.01 / 0.3).abs() < 1e-9, "{c}");
     // A flag list longer than the part's stored links is refused.
     assert!(!body.set_link_flags(1, &[0, 0, 0]));
 }

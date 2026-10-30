@@ -214,7 +214,7 @@ pub const MODEL_LINK_PIVOT: u32 = 0x1_0000;
 /// and runs in the tick's first two iterations.
 pub const MODEL_LINK_HORIZONTAL: u32 = 0x200;
 /// Squared gaps (m², 1.19e-7 cm²) a link, or the pose drive, leaves alone.
-const LINK_EPSILON2: f32 = 1.19e-11;
+pub(crate) const LINK_EPSILON2: f32 = 1.19e-11;
 /// A living body's slack-link correction is cut to this (m, 80 cm); a
 /// pivot farther apart is reported but corrected in full.
 const MAX_CORRECTION: f32 = 0.8;
@@ -1148,8 +1148,8 @@ pub struct Link {
     /// The pivot at the part's origin, not one of the skeleton's links.
     pub origin: bool,
     /// A limit link: a skeleton link without the pivot flag. Its slack is
-    /// compared with the gap's square, and its correction moves the part
-    /// alone, at most 10 cm (2 cm when horizontal) past it.
+    /// a distance; past it the part alone moves one strength centimetre
+    /// along the gap (strength·10/|d| past 10 cm, 2 cm when horizontal).
     pub limit: bool,
     /// A limit link that only holds horizontally, in the first two
     /// iterations of the tick.
@@ -1231,15 +1231,15 @@ impl Link {
     }
 
     /// The correction of a living body's limit link with gap `d` (the
-    /// parent's point minus the part's). The link's slack is a squared
-    /// distance in the original's centimetres, so the test is
-    /// `|d|² > slack` there (`|d|²·100 > slack` here, metres). Past it the
-    /// part alone moves by `strength·d`, its magnitude cut to 10 cm once
-    /// the gap is over 10 cm (2 cm and horizontal-only, the vertical y gap
-    /// zeroed, for a horizontal link). The squared length sums x² + y²
-    /// first, then z². Only an ordered "inside the slack" compare returns
-    /// nothing: a NaN gap goes on to the strength-scaled move, as the
-    /// original's branch does (the caller drops a non-finite move).
+    /// parent's point minus the part's). The original compares the squared
+    /// gap (cm²) with the link's stored squared slack, so here the linear
+    /// slack (m) is squared: inside it (or exactly on it) nothing moves,
+    /// and an ordered compare keeps a NaN gap from moving too. Past it the
+    /// part alone is moved one `strength` centimetre along the gap, or
+    /// `strength·cap/|d|` centimetres once the gap is over the cap (10 cm,
+    /// 2 cm for a horizontal link, whose vertical y gap is zeroed and which
+    /// runs only in the first two iterations). The squared length sums
+    /// x² + y² first, then z², as the original's `(x² + y²) + z²`.
     fn limit_correction(&self, d: Vec3) -> Option<Vec3> {
         let d = if self.horizontal {
             Vec3::new(d.x, 0.0, d.z)
@@ -1247,16 +1247,22 @@ impl Link {
             d
         };
         let len2 = (d.x * d.x + d.y * d.y) + d.z * d.z;
-        if len2 * CM <= self.slack {
+        let slack2 = self.slack * self.slack;
+        // Strictly past the slack: equality and an unordered (NaN) compare
+        // both leave the part alone.
+        if slack2.partial_cmp(&len2) != Some(std::cmp::Ordering::Less) {
             return None;
         }
-        let cap = if self.horizontal { 2.0 } else { 10.0 };
-        let cap2 = (cap / CM) * (cap / CM);
-        if len2 > cap2 {
-            Some(d * (self.strength * cap / CM / len2.sqrt()))
+        let len = len2.sqrt();
+        let cap = if self.horizontal { 0.02 } else { 0.10 };
+        // The step is `strength` cm (or `strength·cap/|d|`), scaled to
+        // metres: `d̂·s` with s in centimetres.
+        let s = if len <= cap {
+            self.strength * 0.01
         } else {
-            Some(d * self.strength)
-        }
+            self.strength * cap * 0.01 / len
+        };
+        Some(d * (s / len))
     }
 
     /// The correction of a limp body's link with gap `d`: a pivot closes
