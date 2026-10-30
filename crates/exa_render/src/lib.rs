@@ -21,6 +21,7 @@ pub mod light_slots;
 pub mod lights;
 pub mod material;
 pub mod material_state;
+pub mod mind_sight;
 pub mod mipmap;
 pub mod passes;
 pub mod post;
@@ -84,7 +85,7 @@ impl Plugin for RenderPlugin {
             lights::LightsPlugin,
             cube_shadows::CubeShadowsPlugin,
             shell::ShellPlugin,
-            glow::GlowPlugin,
+            (glow::GlowPlugin, mind_sight::MindSightPlugin),
             smoke::SmokePlugin,
             terrain_composite::TerrainCompositePlugin,
         ))

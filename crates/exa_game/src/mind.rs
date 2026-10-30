@@ -17,6 +17,7 @@
 //!   `(1 − smooth2)·rate + 1000·smooth2`.
 
 pub mod casts;
+pub mod draw;
 pub mod sight;
 
 /// Milliseconds for the spirit form to charge or fade by one.
