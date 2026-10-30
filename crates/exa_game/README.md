@@ -743,8 +743,8 @@ object does (`exa_world::dropped_object`). The deferred drop
 ends with the state word at 0x2000 and keeps the body's frame out of the
 controls when the word already had that bit. The wheel's set wraps its
 grip angle into ±π (the single π
-over the double one) before turning toward it; a NaN view/axle dot takes its
-second grip (the original's ordered double compare). The controls unit also
+over the double one) before turning toward it; a NaN view/axle dot is not
+under 0.2 and takes its first grip. The controls unit also
 appends the Character and Spectate game modes in that order, each id the
 table's new length plus two, its 16 name bytes and the same start/end hooks;
 `GameModes` is the live table and registers them at start-up

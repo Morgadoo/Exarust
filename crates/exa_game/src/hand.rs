@@ -498,11 +498,14 @@ pub fn ray_plane(origin: Vec3, dir: Vec3, normal: Vec3, offset: f32) -> Option<V
 
 /// Whether the wheel turns by its first grip: the camera's view axis lies
 /// along the lever's axle by at least 0.2. The dot is single precision and
-/// its absolute value is widened to double and compared with the double
-/// 0.2 in the original's ordered form, so a NaN takes the second grip.
+/// its absolute value is widened to double; the original tests "under the
+/// double 0.2" as not-parity and carry, so a NaN is not under and takes the
+/// first grip.
 pub fn first_wheel_grip(view: Vec3, across: Vec3) -> bool {
     let along = (view.x * across.x + view.y * across.y + view.z * across.z).abs();
-    f64::from(along) >= FIRST_GRIP
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
+    let below = f64::from(along) < FIRST_GRIP;
+    !below
 }
 
 /// A door's drag link: its flags (the iteration limit alone), its last
@@ -3347,7 +3350,8 @@ mod tests {
         assert!(!first_wheel_grip(Vec3::new(0.199_999, 0.0, 0.98), Vec3::X));
         // The single-precision 0.2 is above the double 0.2.
         assert!(first_wheel_grip(Vec3::new(-0.2, 0.0, 0.98), Vec3::X));
-        // The ordered compare refuses a NaN: it takes the second grip.
-        assert!(!first_wheel_grip(Vec3::NAN, Vec3::X));
+        // A NaN is not under 0.2 (the under test needs no parity): it
+        // takes the first grip.
+        assert!(first_wheel_grip(Vec3::NAN, Vec3::X));
     }
 }
