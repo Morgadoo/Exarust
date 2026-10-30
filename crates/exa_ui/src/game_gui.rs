@@ -1429,10 +1429,6 @@ pub enum HudLayer {
     Hook,
     Curtain,
     Compass,
-    /// The quick power bar, drawn while it holds slots.
-    PowerBar,
-    /// The extra indicators beside the bars.
-    Extras,
     StatusMarker,
     /// The hook drawn with the marker's skin bound.
     MarkerHook,
@@ -1453,21 +1449,14 @@ pub struct HudFrame {
     pub player: bool,
     pub curtain: bool,
     pub compass: bool,
-    /// The quick power bar holds at least one slot.
-    pub power_bar: bool,
-    /// The extra indicators' flag is set.
-    pub extras: bool,
     pub bars_alpha: f32,
     pub gauge_alpha: f32,
     pub message: bool,
 }
 
 /// The HUD's passes, in the original's order. Without a player (and the
-/// HUD on) the draw stops after the hook, dialogue included; with the HUD
-/// off it goes on to the dialogue. The quick bar and the extra indicators
-/// come after the bar frames' skins and before the status marker's. The
-/// curtain and compass are Exarust's own layers over the original's, which
-/// draws them outside this pass.
+/// HUD on) the draw stops after the hook; with the HUD off it goes on to
+/// the dialogue.
 pub fn hud_layers(frame: HudFrame) -> Vec<HudLayer> {
     const INVISIBLE: f32 = 1.192_09e-7;
     let mut layers = Vec::new();
@@ -1486,12 +1475,6 @@ pub fn hud_layers(frame: HudFrame) -> Vec<HudLayer> {
         }
         if frame.compass {
             layers.push(HudLayer::Compass);
-        }
-        if frame.power_bar {
-            layers.push(HudLayer::PowerBar);
-        }
-        if frame.extras {
-            layers.push(HudLayer::Extras);
         }
         layers.push(HudLayer::StatusMarker);
         layers.push(HudLayer::MarkerHook);

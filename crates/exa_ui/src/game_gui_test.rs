@@ -427,8 +427,6 @@ fn the_hud_layers() {
         player: true,
         curtain: true,
         compass: true,
-        power_bar: true,
-        extras: true,
         bars_alpha: 1.0,
         gauge_alpha: 0.5,
         message: true,
@@ -441,8 +439,6 @@ fn the_hud_layers() {
             Hook,
             Curtain,
             Compass,
-            PowerBar,
-            Extras,
             StatusMarker,
             MarkerHook,
             Bars,
@@ -469,28 +465,7 @@ fn the_hud_layers() {
             message: false,
             ..full
         }),
-        vec![PowerBar, Extras, StatusMarker, MarkerHook, Bars, Dialogue]
-    );
-    // The quick bar and the extras come after the hook and before the
-    // marker; a frame with no player never reaches them.
-    assert_eq!(
-        hud_layers(HudFrame {
-            enabled: true,
-            power_bar: true,
-            extras: true,
-            player: false,
-            ..HudFrame::default()
-        }),
-        vec![]
-    );
-    assert_eq!(
-        hud_layers(HudFrame {
-            enabled: true,
-            player: true,
-            power_bar: true,
-            ..HudFrame::default()
-        }),
-        vec![PowerBar, StatusMarker, MarkerHook, Dialogue]
+        vec![StatusMarker, MarkerHook, Bars, Dialogue]
     );
 }
 
