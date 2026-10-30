@@ -236,11 +236,10 @@ pub struct DerivedLight {
     pub shaping_z: f32,
 }
 
-/// Rec. 601 luminance in double precision, summed as the converter does:
-/// `b·0.114 + (g·0.587 + r·0.299)`.
+/// Rec. 601 luminance in single precision, summed as the engine does:
+/// `(g·0.587 + r·0.299) + b·0.114`.
 pub fn luminance(rgb: [f32; 3]) -> f32 {
-    let sum = f64::from(rgb[1]) * 0.587 + f64::from(rgb[0]) * 0.299;
-    (f64::from(rgb[2]) * 0.114 + sum) as f32
+    (rgb[1] * 0.587 + rgb[0] * 0.299) + rgb[2] * 0.114
 }
 
 impl DerivedLight {
@@ -640,9 +639,8 @@ mod tests {
         assert_eq!(derived.shadow_strength, 0.4);
         assert_eq!(derived.shadow_offset, 1);
         assert_eq!((derived.shaping_y, derived.shaping_z), (1.0, 1.0));
-        let expected = (f64::from(derived.colour[2]) * 0.114
-            + (f64::from(derived.colour[1]) * 0.587 + f64::from(derived.colour[0]) * 0.299))
-            as f32;
+        let expected =
+            (derived.colour[1] * 0.587 + derived.colour[0] * 0.299) + derived.colour[2] * 0.114;
         assert_eq!(derived.luminance, expected);
         // An unranged light reaches the far plane and has no shadow
         // strength; a zero radius does not divide.
