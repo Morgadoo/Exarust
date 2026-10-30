@@ -55,84 +55,139 @@ impl Plugin for GiVolumePlugin {
     }
 }
 
-/// Takes a moving GI mesh's old points out of every built block it left and
-/// puts its new ones in, as the original's dynamic update does: the box is
-/// the old and new frames' padded extent, only the blocks it meets are
-/// touched, the weight is ∓20 (a quarter for a thin mesh), and the changed
-/// region goes to the renderer as a sub-upload. The mesh's frame is kept in
-/// [`GiMoved`], its old frame; a mesh that has not moved is left alone.
-/// The moving GI meshes the dynamic update looks at.
-type GiMoverQuery<'w, 's> = Query<
+/// The GI meshes the level's source collects, with their thin and centred
+/// flags.
+type GiSourceMeshes<'w, 's> = Query<
     'w,
     's,
     (
         Entity,
         &'static GiPoints,
         &'static GlobalTransform,
-        Option<&'static GiMoved>,
         Has<GiThinMesh>,
         Has<GiCentredMesh>,
     ),
 >;
 
-#[allow(clippy::too_many_arguments)]
+/// The GI meshes the dynamic update follows: those the level's source
+/// collected, each with the frames [`GiMoved`] keeps.
+type GiMoverQuery<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static GiPoints,
+        &'static GlobalTransform,
+        &'static mut GiMoved,
+        Has<GiThinMesh>,
+        Has<GiCentredMesh>,
+    ),
+>;
+
+/// Takes a moving GI mesh's old points out of every built block it meets and
+/// puts its new ones in, as the original's dynamic update does: nothing runs
+/// while a block build is in flight (the original returns while its build
+/// count is above zero, keeping the old frame), the box is the old and new
+/// frames' padded extent, only the built blocks it meets are touched, the
+/// weight is ∓20 (a quarter for a thin mesh), the old points come out before
+/// the new go in, and the changed region goes to the renderer as a
+/// sub-upload. A block built after a mesh moved holds the mesh where the
+/// level's source collected it, so its first pass here moves the mesh from
+/// that frame to its last one.
 fn update_dynamic(
-    mut commands: Commands,
-    movers: GiMoverQuery,
+    mut movers: GiMoverQuery,
+    build: Option<Res<GiBuild>>,
     mut built: ResMut<GiBuiltBlocks>,
     mut patches: Option<ResMut<exa_render::gi::GiOccupancyPatches>>,
 ) {
-    for (entity, points, at, moved, thin, centred) in &movers {
+    // Each frame's patches are applied once by the renderer.
+    if let Some(patches) = patches.as_mut()
+        && !patches.0.is_empty()
+    {
+        patches.0.clear();
+    }
+    if build.is_some() {
+        return;
+    }
+    let mut sink = patches.as_deref_mut().map(|p| &mut p.0);
+    // Blocks built since the last pass: bring every mesh that has moved
+    // since the source was collected to where it last was.
+    for block in built.0.values_mut() {
+        if block.synced {
+            continue;
+        }
+        Arc::make_mut(block).synced = true;
+        for (points, _, moved, thin, centred) in &movers {
+            if moved.source != moved.last {
+                move_points(
+                    block,
+                    &points.0,
+                    moved.source,
+                    moved.last,
+                    thin,
+                    centred,
+                    &mut sink,
+                );
+            }
+        }
+    }
+    for (points, at, mut moved, thin, centred) in &mut movers {
         let now = at.affine();
-        let Some(GiMoved(old)) = moved else {
-            // The first frame the mesh is seen only records where it is.
-            commands.entity(entity).insert(GiMoved(now));
-            continue;
-        };
-        if *old == now {
+        if moved.last == now {
             continue;
         }
-        let (Some(before), Some(after)) =
-            (point_bounds(&points.0, *old), point_bounds(&points.0, now))
-        else {
-            commands.entity(entity).insert(GiMoved(now));
-            continue;
-        };
-        // The union of the two frames' boxes, which every touched block must
-        // meet.
-        let bounds = (before.0.min(after.0), before.1.max(after.1));
-        let old_points: Vec<Vec3> = points.0.iter().map(|&p| old.transform_point3(p)).collect();
-        let new_points: Vec<Vec3> = points.0.iter().map(|&p| now.transform_point3(p)).collect();
-        for (index, block) in built.0.iter_mut() {
-            if !boxes_meet(bounds, block.bounds()) {
-                continue;
-            }
-            let dirty = Arc::make_mut(block);
-            let mut occupancy = dirty.occupancy();
-            let Some(region) = occupancy.update_dynamic(&old_points, &new_points, thin, centred)
-            else {
-                continue;
-            };
-            let Some(bytes) = sub_upload(
-                &occupancy.cells,
-                UVec3::new(SIDE as u32, SIDE as u32, dirty.depth as u32),
-                region,
-            ) else {
-                continue;
-            };
-            let sector = dirty.sector;
-            dirty.set_occupancy(occupancy);
-            if let Some(patches) = patches.as_mut() {
-                patches.0.push(exa_render::gi::GiOccupancyPatch {
-                    sector,
-                    lo: region.lo,
-                    hi: region.hi,
-                    bytes,
-                });
-            }
-            let _ = index;
+        for block in built.0.values_mut() {
+            move_points(block, &points.0, moved.last, now, thin, centred, &mut sink);
         }
-        commands.entity(entity).insert(GiMoved(now));
+        moved.last = now;
+    }
+}
+
+/// Moves one mesh's points from frame `old` to frame `new` in one built
+/// block when the two frames' padded boxes meet it, and queues the changed
+/// region's bytes.
+fn move_points(
+    block: &mut Arc<BuiltBlock>,
+    points: &[Vec3],
+    old: Affine3A,
+    new: Affine3A,
+    thin: bool,
+    centred: bool,
+    sink: &mut Option<&mut Vec<exa_render::gi::GiOccupancyPatch>>,
+) {
+    let (Some(before), Some(after)) = (point_bounds(points, old), point_bounds(points, new)) else {
+        return;
+    };
+    // The union of the two frames' boxes, which a touched block must meet.
+    let bounds = (before.0.min(after.0), before.1.max(after.1));
+    if !boxes_meet(bounds, block.bounds()) {
+        return;
+    }
+    let old_points: Vec<Vec3> = points.iter().map(|&p| old.transform_point3(p)).collect();
+    let new_points: Vec<Vec3> = points.iter().map(|&p| new.transform_point3(p)).collect();
+    let block = Arc::make_mut(block);
+    let dims = UVec3::new(SIDE as u32, SIDE as u32, block.depth as u32);
+    let sector = block.sector;
+    // The cells are edited in place unless a volume still shares them.
+    let cells = Arc::make_mut(&mut block.cells);
+    let mut occupancy = Occupancy {
+        origin: block.origin,
+        depth: block.depth,
+        cells: std::mem::take(cells),
+        // The dynamic update never writes the per-column floors; the
+        // block's own stay as built.
+        lowest: vec![255u8; SIDE * SIDE],
+        sector,
+    };
+    let region = occupancy.update_dynamic(&old_points, &new_points, thin, centred);
+    *cells = occupancy.cells;
+    let Some(region) = region else { return };
+    if let (Some(sink), Some(bytes)) = (sink.as_mut(), sub_upload(cells, dims, region)) {
+        sink.push(exa_render::gi::GiOccupancyPatch {
+            sector,
+            lo: region.lo,
+            hi: region.hi,
+            bytes,
+        });
     }
 }
 
@@ -693,28 +748,12 @@ struct BuiltBlock {
     floors: Arc<Vec<u8>>,
     terrain_columns: usize,
     floor_points: usize,
+    /// Whether the dynamic update has brought the meshes that moved since
+    /// the source was collected to their last frames in this block.
+    synced: bool,
 }
 
 impl BuiltBlock {
-    /// The block's occupancy as the editable block the dynamic update needs:
-    /// its origin, height and first sector with the built cells.
-    fn occupancy(&self) -> Occupancy {
-        Occupancy {
-            origin: self.origin,
-            depth: self.depth,
-            cells: self.cells.as_ref().clone(),
-            // The dynamic update never touches the per-column floors; the
-            // block's own are rebuilt when it is next built from scratch.
-            lowest: vec![255u8; SIDE * SIDE],
-            sector: self.sector,
-        }
-    }
-
-    /// Replaces the block's cells with an edited occupancy's.
-    fn set_occupancy(&mut self, occupancy: Occupancy) {
-        self.cells = Arc::new(occupancy.cells);
-    }
-
     /// The world box the block's voxels cover.
     fn bounds(&self) -> (Vec3, Vec3) {
         let lo = self.origin;
@@ -733,12 +772,17 @@ fn boxes_meet(a: (Vec3, Vec3), b: (Vec3, Vec3)) -> bool {
         && b.0.z <= a.1.z
 }
 
-/// A GI mesh that moves: its last frame's world transform, so the update can
-/// take the points out where they were and put them in where they are, as the
-/// original's node keeps its old and new frames. The original only updates
-/// nodes whose kind is a GI mesh and that hold points.
-#[derive(Component, Clone, Copy, Debug)]
-pub struct GiMoved(pub Affine3A);
+/// A GI mesh's frames for the dynamic update, set when the level's source
+/// collects it: `source` is where the block builds splat its points and
+/// `last` where the update last put them, as the original's node keeps its
+/// old and new frames. The original only updates nodes whose kind is a GI
+/// mesh and that hold points; a mesh spawned after the collection is not
+/// followed.
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+pub struct GiMoved {
+    pub source: Affine3A,
+    pub last: Affine3A,
+}
 
 /// The extent of a point set transformed by `at`, padded 1.5 voxels each
 /// side in world space (the original's dirty box).
@@ -763,12 +807,7 @@ fn collect_source(
     mut commands: Commands,
     pending: Option<Res<PendingGi>>,
     settings: Res<GiSettings>,
-    points: Query<(
-        &GiPoints,
-        &GlobalTransform,
-        Has<GiThinMesh>,
-        Has<GiCentredMesh>,
-    )>,
+    points: GiSourceMeshes,
     floors: Query<(&Mesh3d, &GlobalTransform, &GiFloor)>,
     terrain: Query<(&Mesh3d, &GlobalTransform), With<GiTerrain>>,
     meshes: Res<Assets<Mesh>>,
@@ -832,12 +871,7 @@ pub fn unload_level(commands: &mut Commands, state: &mut GiState) {
 fn build_level(
     commands: &mut Commands,
     pending: &PendingGi,
-    points: Query<(
-        &GiPoints,
-        &GlobalTransform,
-        Has<GiThinMesh>,
-        Has<GiCentredMesh>,
-    )>,
+    points: GiSourceMeshes,
     floors: Query<(&Mesh3d, &GlobalTransform, &GiFloor)>,
     terrain: Query<(&Mesh3d, &GlobalTransform), With<GiTerrain>>,
     meshes: Res<Assets<Mesh>>,
@@ -857,9 +891,18 @@ fn build_level(
     commands.insert_resource(GiResidency::new(&layout));
     commands.insert_resource(GiBlocks(Arc::new(layout)));
     // Only shared or copied here; the world-space work runs elsewhere.
+    // Each mesh's frame now is where the block builds splat it; the dynamic
+    // update follows it from there.
     let points: Vec<_> = points
         .iter()
-        .map(|(gi, at, thin, centred)| (gi.0.clone(), at.affine(), thin, centred))
+        .map(|(entity, gi, at, thin, centred)| {
+            let at = at.affine();
+            commands.entity(entity).insert(GiMoved {
+                source: at,
+                last: at,
+            });
+            (gi.0.clone(), at, thin, centred)
+        })
         .collect();
     let floors: Vec<(MeshCopy, GiFloor)> = floors
         .iter()
@@ -1343,6 +1386,7 @@ fn build_block(
         floors: Arc::new(floors),
         terrain_columns,
         floor_points,
+        synced: false,
     };
     Arc::new(built)
 }
@@ -1602,7 +1646,8 @@ impl Occupancy {
     /// The region of the volume a point set touches, for a sub-upload: the
     /// original grows the box by 1.5 voxels on each side in world voxels
     /// (CVTSS2SI, rounding ties to even), takes the block's first voxel off,
-    /// clamps it to the block, and leaves `None` when it is empty. The
+    /// clamps it to the block (its end to one short of the size), and leaves
+    /// `None` when it is empty. The
     /// original boxes the object's oriented bounds (old and new); this takes
     /// the extent of the points it is given. [adaptation: point extent]
     pub fn region_of(&self, points: impl IntoIterator<Item = Vec3>) -> Option<VoxelRegion> {
@@ -1623,8 +1668,10 @@ impl Occupancy {
         let dims = UVec3::new(SIDE as u32, SIDE as u32, self.depth as u32);
         let lo = Vec3::new(lo.x.max(0.0), lo.z.max(0.0), lo.y.max(0.0));
         let hi = Vec3::new(hi.x.max(0.0), hi.z.max(0.0), hi.y.max(0.0));
+        // The upload keeps its end below the last voxel on each axis (an end
+        // at or past the size becomes size − 1), as the original's does.
         let lo = lo.min(dims.as_vec3());
-        let hi = hi.min(dims.as_vec3());
+        let hi = hi.min(dims.as_vec3() - Vec3::ONE);
         let lo = UVec3::new(lo.x as u32, lo.y as u32, lo.z as u32);
         let hi = UVec3::new(hi.x as u32, hi.y as u32, hi.z as u32);
         (lo.x < hi.x && lo.y < hi.y && lo.z < hi.z).then_some(VoxelRegion { lo, hi })
@@ -1745,16 +1792,9 @@ mod tests {
         }
     }
 
-    /// A moving GI mesh takes its old points out of every built block it
-    /// meets and puts its new ones in, and the changed region goes out as a
-    /// sub-upload; a mesh that has not moved is left alone.
-    #[test]
-    fn a_moving_gi_mesh_updates_the_blocks_it_meets() {
-        use exa_render::gi::{GiOccupancyPatch, GiOccupancyPatches};
-
-        // A block at the origin, 64 slices, with a point at the centre of
-        // voxel (100, 100) of slice 5, so it fills exactly that cell.
-        let at = Vec3::new(20.1, 1.1, 20.1);
+    /// A block holding one point at the centre of voxel (100, 100) of slice
+    /// 5, so the point fills exactly that cell.
+    fn one_point_block(at: Vec3, synced: bool) -> GiBuiltBlocks {
         let mut occupancy = Occupancy::new_at(Vec3::ZERO, 64, IVec2::new(4, 4));
         occupancy.splat(at);
         let block = Arc::new(BuiltBlock {
@@ -1765,30 +1805,51 @@ mod tests {
             floors: Arc::new(occupancy.floors()),
             terrain_columns: 1,
             floor_points: 1,
+            synced,
         });
         let mut built = GiBuiltBlocks::default();
         built.0.insert(0, block);
+        built
+    }
 
+    /// The occupancy byte of the cell holding `p` in block 0.
+    fn cell_at(app: &App, p: Vec3) -> u8 {
+        let cells = &app.world().resource::<GiBuiltBlocks>().0[&0].cells;
+        let g = (p / VOXEL).floor().as_ivec3();
+        cells[(g.x + g.y * SIDE as i32 * SIDE as i32 + g.z * SIDE as i32) as usize]
+    }
+
+    /// A moving GI mesh takes its old points out of every built block it
+    /// meets and puts its new ones in, and the changed region goes out as a
+    /// sub-upload once; a mesh that has not moved is left alone.
+    #[test]
+    fn a_moving_gi_mesh_updates_the_blocks_it_meets() {
+        use exa_render::gi::{GiOccupancyPatch, GiOccupancyPatches};
+
+        let at = Vec3::new(20.1, 1.1, 20.1);
         let mut app = App::new();
-        app.insert_resource(built)
+        app.insert_resource(one_point_block(at, true))
             .insert_resource(GiOccupancyPatches::default())
             .add_systems(Update, update_dynamic);
-        let points: Arc<Vec<Vec3>> = Arc::new(vec![at]);
         let e = app
             .world_mut()
             .spawn((
-                GiPoints(points),
-                GlobalTransform::from_translation(Vec3::ZERO),
+                GiPoints(Arc::new(vec![at])),
+                GlobalTransform::IDENTITY,
+                GiMoved {
+                    source: Affine3A::IDENTITY,
+                    last: Affine3A::IDENTITY,
+                },
             ))
             .id();
-        // The first frame records the frame and changes nothing.
+        // Unmoved: nothing changes.
         app.update();
         assert!(app.world().resource::<GiOccupancyPatches>().0.is_empty());
-        assert_eq!(app.world().get::<GiMoved>(e).unwrap().0, Affine3A::IDENTITY);
+        assert_eq!(cell_at(&app, at), 20);
         // Moving it one voxel along x takes the old point out and puts the
         // new one in.
-        *app.world_mut().get_mut::<GlobalTransform>(e).unwrap() =
-            GlobalTransform::from_translation(Vec3::new(VOXEL, 0.0, 0.0));
+        let moved = Affine3A::from_translation(Vec3::new(VOXEL, 0.0, 0.0));
+        *app.world_mut().get_mut::<GlobalTransform>(e).unwrap() = moved.into();
         app.update();
         let patches = app.world().resource::<GiOccupancyPatches>();
         assert_eq!(patches.0.len(), 1);
@@ -1799,20 +1860,68 @@ mod tests {
         // = 103; the texture's Z (world z) 99 and 102; the height 4 and 7.
         assert_eq!(patch.lo, UVec3::new(99, 99, 4));
         assert_eq!(patch.hi, UVec3::new(103, 102, 7));
-        let cells = &app.world().resource::<GiBuiltBlocks>().0[&0].cells;
-        let at_old = at;
-        let at_new = at + Vec3::X * VOXEL;
-        assert_eq!(
-            Occupancy::new_at(Vec3::ZERO, 64, IVec2::ZERO).at(at_old),
-            Some(0)
-        );
-        let read = |p: Vec3| {
-            let g = (p / VOXEL).floor().as_ivec3();
-            cells[(g.x + g.y * SIDE as i32 * SIDE as i32 + g.z * SIDE as i32) as usize]
-        };
+        assert_eq!(patch.bytes.len(), 4 * 3 * 3);
         // The old cell is empty, the new one holds the point's 20.
-        assert_eq!(read(at_old), 0);
-        assert_eq!(read(at_new), 20);
+        assert_eq!(cell_at(&app, at), 0);
+        assert_eq!(cell_at(&app, at + Vec3::X * VOXEL), 20);
+        let frames = app.world().get::<GiMoved>(e).unwrap();
+        assert_eq!((frames.source, frames.last), (Affine3A::IDENTITY, moved));
+        // The next frame drains the patch: the renderer applies each once.
+        app.update();
+        assert!(app.world().resource::<GiOccupancyPatches>().0.is_empty());
+    }
+
+    /// While a block build is in flight the update waits and keeps the old
+    /// frame, as the original returns while its build count is above zero;
+    /// a block built afterwards gets the mesh moved from where the source
+    /// collected it to where it last was.
+    #[test]
+    fn the_dynamic_update_waits_for_a_build_and_syncs_new_blocks() {
+        use exa_render::gi::GiOccupancyPatches;
+
+        let at = Vec3::new(20.1, 1.1, 20.1);
+        let moved = Affine3A::from_translation(Vec3::new(VOXEL, 0.0, 0.0));
+        let mut app = App::new();
+        app.add_plugins(TaskPoolPlugin::default())
+            .insert_resource(GiBuiltBlocks::default())
+            .insert_resource(GiOccupancyPatches::default())
+            .add_systems(Update, update_dynamic);
+        let e = app
+            .world_mut()
+            .spawn((
+                GiPoints(Arc::new(vec![at])),
+                GlobalTransform::from(moved),
+                GiMoved {
+                    source: Affine3A::IDENTITY,
+                    last: Affine3A::IDENTITY,
+                },
+            ))
+            .id();
+        let task = AsyncComputeTaskPool::get()
+            .spawn(async move { one_point_block(at, false).0[&0].clone() });
+        app.world_mut().insert_resource(GiBuild {
+            task,
+            block: 0,
+            background: true,
+        });
+        app.update();
+        assert_eq!(
+            app.world().get::<GiMoved>(e).unwrap().last,
+            Affine3A::IDENTITY
+        );
+        // With no build the move is followed (no block to edit yet).
+        app.world_mut().remove_resource::<GiBuild>();
+        app.update();
+        assert_eq!(app.world().get::<GiMoved>(e).unwrap().last, moved);
+        // A block built now holds the point at the source frame; its first
+        // pass brings it to the mesh's last frame.
+        app.insert_resource(one_point_block(at, false));
+        assert_eq!(cell_at(&app, at), 20);
+        app.update();
+        assert_eq!(app.world().resource::<GiOccupancyPatches>().0.len(), 1);
+        assert!(app.world().resource::<GiBuiltBlocks>().0[&0].synced);
+        assert_eq!(cell_at(&app, at), 0);
+        assert_eq!(cell_at(&app, at + Vec3::X * VOXEL), 20);
     }
 
     /// The settings screen's shading quality reaches the GI settings: 4 and
@@ -2210,6 +2319,12 @@ mod tests {
         let region = o.region_of([Vec3::splat(4.0 * VOXEL)]).unwrap();
         assert_eq!(region.lo, UVec3::splat(2));
         assert_eq!(region.hi, UVec3::splat(6));
+        // A box past the block's far side ends one voxel short of it.
+        let far = o
+            .region_of([Vec3::new(255.5, 10.5, 255.5) * VOXEL])
+            .unwrap();
+        assert_eq!(far.lo, UVec3::new(254, 254, 9));
+        assert_eq!(far.hi, UVec3::new(255, 255, 12));
     }
 
     #[test]

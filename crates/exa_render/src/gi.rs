@@ -991,7 +991,9 @@ pub fn shape_draw(volume: ShapeVolume, origin: Vec3, dims: UVec3, voxel: f32) ->
     let centre_z =
         (dims.y.max(1) as f32 * column(volume.position.z, centre.z)).round_ties_even() as i32;
     let centre_y = (width * (below / width + volume.position.y * inv)).round_ties_even() as i32;
-    let half = |h: f32| (width * h * inv).ceil() as i32;
+    // The half extent is scaled first, then widened: `width · (h · scale)`,
+    // rounded up (the engine's ceiling helper).
+    let half = |h: f32| (width * (h * inv)).ceil() as i32;
     let half_x = half(volume.half.x);
     let half_z = half(volume.half.z);
     let half_y = half(volume.half.y);
@@ -1957,6 +1959,8 @@ const MAX_STEPS_PER_FRAME: u32 = 16;
 
 /// Writes a moving mesh's changed occupancy region into the block's texture,
 /// as the original's sub-upload does (`glTexSubImage3D` over the dirty box).
+/// Both the bound block and one warming behind it take a patch for their
+/// own block.
 fn apply_occupancy_patches(
     patches: Option<Res<GiOccupancyPatches>>,
     textures: Option<Res<GiTextures>>,
@@ -1968,44 +1972,45 @@ fn apply_occupancy_patches(
     if patches.0.is_empty() {
         return;
     }
-    let textures = pending.as_ref().map(|p| &p.0).or(textures.as_deref());
-    let Some(textures) = textures else { return };
-    let Some(occupancy) = images.get(&textures.occupancy) else {
-        return;
-    };
-    for patch in &patches.0 {
-        // Only the block whose texture is bound takes the write; a patch for
-        // another resident block waits until it is bound.
-        if patch.sector != textures.sector {
+    let targets = [textures.as_deref(), pending.as_ref().map(|p| &p.0)];
+    for textures in targets.into_iter().flatten() {
+        let Some(occupancy) = images.get(&textures.occupancy) else {
             continue;
-        }
-        let size = patch.hi.saturating_sub(patch.lo);
-        if size.min_element() == 0 || patch.bytes.is_empty() {
-            continue;
-        }
-        queue.write_texture(
-            TexelCopyTextureInfo {
-                texture: &occupancy.texture,
-                mip_level: 0,
-                origin: Origin3d {
-                    x: patch.lo.x,
-                    y: patch.lo.y,
-                    z: patch.lo.z,
+        };
+        for patch in &patches.0 {
+            // A patch for a block that is not bound waits until that block
+            // is uploaded whole from its edited cells.
+            if patch.sector != textures.sector {
+                continue;
+            }
+            let size = patch.hi.saturating_sub(patch.lo);
+            if size.min_element() == 0 || patch.bytes.len() != size.element_product() as usize {
+                continue;
+            }
+            queue.write_texture(
+                TexelCopyTextureInfo {
+                    texture: &occupancy.texture,
+                    mip_level: 0,
+                    origin: Origin3d {
+                        x: patch.lo.x,
+                        y: patch.lo.y,
+                        z: patch.lo.z,
+                    },
+                    aspect: Default::default(),
                 },
-                aspect: Default::default(),
-            },
-            &patch.bytes,
-            TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(size.x),
-                rows_per_image: Some(size.y),
-            },
-            Extent3d {
-                width: size.x,
-                height: size.y,
-                depth_or_array_layers: size.z,
-            },
-        );
+                &patch.bytes,
+                TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(size.x),
+                    rows_per_image: Some(size.y),
+                },
+                Extent3d {
+                    width: size.x,
+                    height: size.y,
+                    depth_or_array_layers: size.z,
+                },
+            );
+        }
     }
 }
 

@@ -1664,7 +1664,7 @@ its width, at the slice's middle ((slice + 0.5)/width), as the original's
   own `shading.flb` programs, ported line for line and evaluated per voxel
   (`exa_render::gi_shape`: a shape's fragment reads only its own uniforms and
   the voxel's position, so a per-voxel evaluation is what its quad-per-slice
-  draw computes): the dome's ridge texture, 70 m cap and 6× shell weight, the
+  draw computes): the dome's ridge texture, 70-unit cap and 6× shell weight (the bodies' constants are in the original's centimetres, the space `bMat` maps a voxel into), the
   cuboid's `max(|p| − bExt, 0)` falloff at 0.0002, the bubble's cubed texture
   and vertical fade, the telebubble's three-plane texture and pulse (its
   squared shell term is computed and overwritten, as in the original), the
@@ -1676,13 +1676,19 @@ its width, at the slice's middle ((slice + 0.5)/width), as the original's
   in (+20) over a box padded 1.5 voxels each side, rounded ties to even in
   world voxels (`Occupancy::update_dynamic`; the original pads the
   object's oriented bounds, Exarust the points' extent [adaptation]). A
-  moving GI mesh (one carrying `GiPoints`) is followed every frame: its last
-  frame is kept in `GiMoved`, and only the built blocks its old and new
-  padded boxes meet are edited, exactly as the original tests each block's
-  voxel bounds. The changed box is uploaded as a sub-rectangle
-  (`GiOccupancyPatch`: the region and its bytes from `sub_upload`) when its
-  block is the one bound; a whole-block upload still stands in when a
-  texture is created;
+  GI mesh the level's source collected is followed every frame
+  (`GiMoved` keeps its source and last frames). Nothing runs while a block
+  build is in flight, as the original returns while its build count is above
+  zero; the old points come out before the new go in, and only the built
+  blocks the old and new padded boxes meet are edited (the original compares
+  integer voxel boxes, Exarust world boxes [adaptation]). A block built after
+  a mesh moved holds it at the source frame, so its first pass moves it to
+  the last one (the original's builder reads the current frames). The
+  changed box is uploaded as a sub-rectangle (`GiOccupancyPatch`: the region,
+  its end kept one voxel short of the size as the original's upload keeps
+  it, and its bytes from `sub_upload`) into the bound block and one warming
+  behind it; the world drains the patches every frame. A whole-block upload
+  stands in when a texture is created;
 - a neighbour block's margin copy: one margin column or row, the interior
   on the other axis, UV offset ∓240/256, every slice but the top, and the
   destination quad's four corners with the original's base z of
