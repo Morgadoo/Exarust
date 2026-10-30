@@ -1,0 +1,5 @@
+- [x] Client-area refresh over the tree, with a test
+- [x] Free-time slot sweep over the tree, with ordered follow-ups and a test
+- [x] Remove the duplicate wheel step
+- [x] Docs (docs/UI.md, exa_ui README)
+- [x] fmt, clippy -D warnings, tests
