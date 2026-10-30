@@ -788,10 +788,14 @@ fn class_grab_and_state_words_reach_their_parts() {
     assert_eq!(body.parts[0].class_word, 0x400);
     assert_eq!(body.parts[1].class_word, 0x430);
     assert_eq!(body.parts[2].class_word, 0x430);
+    // The grab bit goes into the layer masks the pair stage reads; the
+    // class words keep what the class writer gave them.
     body.raise_grab_layer(1);
-    assert_eq!(body.parts[0].class_word, 0x440);
-    assert_eq!(body.parts[1].class_word, 0x470);
-    assert_eq!(body.parts[2].class_word, 0x470);
+    let layers: Vec<u32> = body.parts.iter().map(|p| p.pairing.layer).collect();
+    assert_eq!(layers, [0x40, 0x40, 0x40, 0]);
+    assert_eq!(body.parts[0].class_word, 0x400);
+    assert_eq!(body.parts[1].class_word, 0x430);
+    assert_eq!(body.parts[2].class_word, 0x430);
     assert_eq!(body.parts[3].class_word, 0x400);
     body.raise_state_flag(4);
     assert!(body.parts.iter().all(|p| p.state_word & 4 != 0));

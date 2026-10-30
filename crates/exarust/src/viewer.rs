@@ -1454,8 +1454,13 @@ fn spawn_players(
                 ),
                 Some(opponent) => {
                     let race = exa_formats::races::of_character(&races, opponent.record.race);
+                    // `--opponent-feral` overrides the template's feral level.
+                    let record = CharacterRecord {
+                        feral: options.opponent_feral.unwrap_or(opponent.record.feral),
+                        ..opponent.record.clone()
+                    };
                     CharacterStats::derive(
-                        &opponent.record,
+                        &record,
                         race,
                         Spawn {
                             story: false,
@@ -1463,7 +1468,8 @@ fn spawn_players(
                         },
                     )
                 }
-                None => new_human(0.0),
+                // `--opponent-feral`: a feral character's stats.
+                None => new_human(options.opponent_feral.unwrap_or(0.0)),
             }
             .with_encumbrance(match &practice {
                 // The record's own worn items, as the original weighs them.
@@ -1483,6 +1489,12 @@ fn spawn_players(
                 );
             }
             log_encumbrance("duellist", &stats);
+            if options.opponent_feral.is_some() {
+                info!(
+                    "duellist: feral {:.2}, rule bits {:#x}",
+                    stats.feral, stats.rules.0
+                );
+            }
             if let Some(opponent) = &practice {
                 duellist.reaction_ms = opponent.reaction_ms;
             }

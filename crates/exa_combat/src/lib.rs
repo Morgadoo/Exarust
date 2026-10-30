@@ -97,6 +97,7 @@ impl Plugin for CombatPlugin {
                 collapse::CollapsePlugin,
                 regen::RegenerationPlugin,
                 impact::plugin,
+                bite::plugin,
             ))
             .add_message::<wounds::Bleed>()
             .add_message::<wounds::Spray>()
@@ -148,6 +149,7 @@ impl Plugin for CombatPlugin {
                     track_blades,
                     detect_hits,
                     react_to_hits,
+                    bite::open_bites,
                 )
                     .chain()
                     .in_set(CombatSystems)
@@ -687,12 +689,13 @@ fn react_to_hits(
         MessageWriter<pain::PainSounded>,
         MessageWriter<pain::BlowFelt>,
     ),
-    (mut winds, mut rungs, mut weapon_rings, mut clashes, mut notices): (
+    (mut winds, mut rungs, mut weapon_rings, mut clashes, mut notices, mut bites): (
         MessageWriter<SecondWindFired>,
         MessageWriter<block::ShieldRung>,
         MessageWriter<impact::WeaponSounded>,
         MessageWriter<pain::ClashFelt>,
         MessageWriter<BlowNoticed>,
+        MessageWriter<bite::BiteTaken>,
     ),
     mut fighters: Query<(
         Entity,
@@ -1119,7 +1122,7 @@ fn react_to_hits(
             info!(
                 "hit on {:?} bone {} at tick {tick} by {}, {:.0} cm, {:.1} cm/tick: impact {:.2} \
              ({:.2} at the hit), penetration {:.2} at readiness {:.2}, wound {:.3} (yellow {:.3}, \
-             red {:.3} of {:.2})",
+             red {:.3} of {:.2}), bite {:.3} (class {:#x})",
                 hit.target,
                 hit.bone,
                 if hit.weapon.armed() {
@@ -1136,7 +1139,9 @@ fn react_to_hits(
                 outcome.wound,
                 f.health.yellow,
                 f.health.red,
-                f.health.max
+                f.health.max,
+                outcome.bite,
+                attacks.get(hit.attacker).map_or(0, |a| a.weapon_class)
             );
             if killed && !condition.dying() {
                 // A lethal wound starts the collapse on a living body, with the
@@ -1175,6 +1180,21 @@ fn react_to_hits(
             // killing blow ends its attack.
             if attacking && killed {
                 commands.entity(hit.target).remove::<Attacking>();
+            }
+            // The bite: a wound deeper than a tenth by a held weapon sticks
+            // it in the struck part (opened before the next tick's solver).
+            let class = attacks.get(hit.attacker).map_or(0, |a| a.weapon_class);
+            if bite::bites(outcome.bite, class) {
+                bites.write(bite::BiteTaken {
+                    attacker: hit.attacker,
+                    striker: hit.striker,
+                    target: hit.target,
+                    bone: hit.bone,
+                    point: hit.point,
+                    velocity: hit.velocity * (CM_PER_M / BODY_HZ),
+                    bite: outcome.bite,
+                    smoothing: outcome.smoothing,
+                });
             }
             Some(StrikerReaction::Wounded(outcome))
         };
@@ -1409,6 +1429,7 @@ mod tests {
             .add_message::<impact::WeaponSounded>()
             .add_message::<SecondWindFired>()
             .add_message::<crate::block::ShieldRung>()
+            .add_message::<bite::BiteTaken>()
             .add_systems(Update, react_to_hits);
         app
     }
@@ -1517,6 +1538,51 @@ mod tests {
             strike,
         });
         app.update();
+    }
+
+    fn bites_taken(app: &App) -> Vec<bite::BiteTaken> {
+        let messages = app.world().resource::<Messages<bite::BiteTaken>>();
+        messages.get_cursor().read(messages).copied().collect()
+    }
+
+    /// A wound deeper than a tenth by a held weapon asks for the bite with
+    /// the contact, the strike's velocity in cm a tick, the depth and the
+    /// zone smoothing; the same wound dealt with the fists (class 0x80)
+    /// asks for none.
+    #[test]
+    fn a_deep_cut_by_a_held_weapon_asks_for_the_bite() {
+        let blow = outcome(9);
+        assert!(f64::from(blow.bite) > 0.1, "the cut bites {}", blow.bite);
+        let mut app = reactions();
+        let (attacker, blade) = swordsman(&mut app);
+        let target = app
+            .world_mut()
+            .spawn((Fighter::default(), Animator::new("Default", "Idle")))
+            .id();
+        swung(&mut app, attacker, blade, target, cut());
+        let taken = bites_taken(&app);
+        assert_eq!(taken.len(), 1, "{taken:?}");
+        let b = taken[0];
+        assert_eq!(
+            (b.attacker, b.striker, b.target, b.bone),
+            (attacker, blade, target, 9)
+        );
+        assert_eq!(b.bite, blow.bite);
+        assert_eq!(b.smoothing, blow.smoothing);
+        assert_eq!(b.velocity, Vec3::new(3.0, 0.0, 0.0) * (100.0 / 83.0));
+
+        let mut app = reactions();
+        let (attacker, blade) = swordsman(&mut app);
+        app.world_mut()
+            .get_mut::<Attacking>(attacker)
+            .unwrap()
+            .weapon_class = 0x80;
+        let target = app
+            .world_mut()
+            .spawn((Fighter::default(), Animator::new("Default", "Idle")))
+            .id();
+        swung(&mut app, attacker, blade, target, cut());
+        assert!(bites_taken(&app).is_empty());
     }
 
     /// A blow that strikes a held shield's body is blocked with the
@@ -2863,6 +2929,7 @@ mod tests {
             .add_message::<impact::WeaponSounded>()
             .add_message::<SecondWindFired>()
             .add_message::<crate::block::ShieldRung>()
+            .add_message::<bite::BiteTaken>()
             .init_resource::<exa_physics::body::BodyTicks>()
             .add_systems(Update, (wounds::count_down_wounds, react_to_hits).chain());
         app.update();

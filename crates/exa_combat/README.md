@@ -79,7 +79,13 @@ pitch and muffling and each layer's ringing (`hit_sounds`). An armed bite
 above 0.1 sticks the weapon (`bite::stick`); its grab (`bite::grab_of`)
 pulls by the original's shares of the weapon's and the struck part's link
 mobilities, and once it breaks every grab to that part is dropped with the
-grab layer (`bite::BiteHold`, not live yet). A blow on a
+grab layer (`bite::BiteHold`). The hit reaction asks for the bite after a
+wound by a held weapon (class bits 0x30) whose depth, in double, passes
+0.1 (`bite::bites`, `BiteTaken`); `bite::open_bites` builds it with the
+holder's link-iteration count as the lifetime unit (20, 15 for a feral
+body) and the strike's velocity in the weapon's frame as the grab axis,
+on the weapon's own body or, for a held model with none, on the hand that
+carries it. A blow on a
 shield or a weapon (`Guard`) meets no layer and draws no roll: a weapon's
 parry deals nothing and sags the parrier (`parried`), a shield takes it on
 its arm's stamina and leaks yellow (`block`, the block path with its
