@@ -36,9 +36,11 @@
 //! traced; so the live leaves stay behind the loader's flag, and a static
 //! leaf is what a level gets by default.
 //!
+//! Its sounds go out as the hinged leaf's do (`crate::mechanism_sound`),
+//! the knock on the slam set.
+//!
 //! Not reproduced: the hand's drag of a sliding leaf (the press only
-//! records it), the door's sounds (reported, not played) and the navigation
-//! passage report.
+//! records it) and the navigation passage report.
 //!
 //! Evidence: the door's init (its sliding branch) and sliding step, the
 //! world-link slider law, read in the instructions.
@@ -47,6 +49,7 @@ use bevy::prelude::*;
 
 use super::{BodySystems, BodyTicks, CM, Ragdoll, WAKE_COUNT, weights};
 use crate::door::{self, Door, DoorTick, Record, Tick};
+use crate::mechanism_sound::{self, MechanismSounded};
 
 /// The handle's distance from the origin (cm), as the hinged leaf's.
 const HANDLE_CM: f32 = 150.0;
@@ -71,6 +74,8 @@ pub struct SlideBody {
     handle: [f32; 4],
     /// Where the handle was at the last tick (m).
     handle_at: Vec3,
+    /// Where it was the tick before (m), where a wait's open plays.
+    handle_before: Vec3,
     /// The handle's smoothed motion (cm a tick).
     smoothed: Vec3,
     /// The fraction last written into the travel link: a command that
@@ -120,6 +125,7 @@ impl SlideBody {
             travel,
             handle,
             handle_at,
+            handle_before: handle_at,
             smoothed: Vec3::ZERO,
             written: fraction,
         })
@@ -140,6 +146,7 @@ impl SlideBody {
         let leaf = &body.parts[0];
         let handle = leaf.point(&self.handle);
         let moved = (handle - self.handle_at) * CM;
+        self.handle_before = self.handle_at;
         self.handle_at = handle;
         self.smoothed = self.smoothed * 0.5 + moved * 0.5;
         let s = self.smoothed;
@@ -156,11 +163,27 @@ impl SlideBody {
         self.written = link.length;
         out
     }
+
+    /// The sound requests of a tick's report (`crate::mechanism_sound`):
+    /// the creak voice at the body's centre; the knock and the slam (both
+    /// the slam set) and the unlatch at the handle point.
+    pub fn sounds(&self, source: Entity, body: &Ragdoll, out: &DoorTick) -> Vec<MechanismSounded> {
+        mechanism_sound::door_cues(
+            source,
+            &self.door.record,
+            true,
+            out,
+            Vec3::from(body.parts[0].transform().translation),
+            self.handle_at,
+            self.handle_before,
+        )
+    }
 }
 
 /// Builds the glue of sliding leaves registered this frame and steps every
 /// awake one after the solver. Added by [`crate::prop::PropPlugin`].
 pub(crate) fn plugin(app: &mut App) {
+    crate::mechanism_sound::register(app);
     app.add_systems(
         FixedUpdate,
         (
@@ -187,12 +210,17 @@ fn register_slides(
     }
 }
 
-/// Steps every awake sliding leaf.
-fn step_slides(ticks: Option<Res<BodyTicks>>, mut slides: Query<(&mut SlideBody, &mut Ragdoll)>) {
+/// Steps every awake sliding leaf and sends the sounds each tick asks for.
+fn step_slides(
+    ticks: Option<Res<BodyTicks>>,
+    mut slides: Query<(Entity, &mut SlideBody, &mut Ragdoll)>,
+    mut sounds: MessageWriter<MechanismSounded>,
+) {
     let now = ticks.map_or(0, |t| t.millis() as i32);
-    for (mut glue, mut body) in &mut slides {
+    for (e, mut glue, mut body) in &mut slides {
         if !body.asleep() {
-            glue.tick(&mut body, now);
+            let out = glue.tick(&mut body, now);
+            sounds.write_batch(glue.sounds(e, &body, &out));
         }
     }
 }

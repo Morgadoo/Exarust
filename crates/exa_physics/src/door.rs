@@ -1205,6 +1205,38 @@ impl Sound {
             self.pitch + self.pitch_spread * roll,
         )
     }
+
+    /// The volume and pitch with the original's draws: the pitch's share
+    /// is drawn first and the volume's second, each only when it has one
+    /// (a knock or a slam draws once, the unlatch and the lock sounds
+    /// twice). Each level is `draw·spread + base`, formed in double
+    /// precision and narrowed, as the original forms it. Returns `(volume,
+    /// pitch)`.
+    ///
+    /// The bases and spreads are the original's double literals (0.1,
+    /// 0.05, …) kept in single precision; they are widened by their
+    /// shortest decimal spelling so that 0.1 widens to the double 0.1, not
+    /// to the single 0.1's exact value.
+    pub fn levels(&self, mut draw: impl FnMut() -> f64) -> (f32, f32) {
+        let pitch = if self.pitch_spread != 0.0 {
+            (draw() * wide(self.pitch_spread) + wide(self.pitch)) as f32
+        } else {
+            self.pitch
+        };
+        let volume = if self.volume_spread != 0.0 {
+            (draw() * wide(self.volume_spread) + wide(self.volume)) as f32
+        } else {
+            self.volume
+        };
+        (volume, pitch)
+    }
+}
+
+/// A single-precision literal widened to the double it was written as:
+/// the shortest decimal that reads back as `x`, read as a double. A value
+/// with no such spelling widens exactly.
+fn wide(x: f32) -> f64 {
+    x.to_string().parse().unwrap_or(f64::from(x))
 }
 
 /// An object word as a door leaves it: the mode in the low byte, the

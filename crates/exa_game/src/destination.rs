@@ -495,6 +495,47 @@ mod tests {
         assert!(app.world().resource::<Messages<JourneySave>>().is_empty());
     }
 
+    /// One fixed tick of both bubble steppers at `ms`, in the effects'
+    /// order: the journeys' tick, then the plain bubbles' tick.
+    fn both_ticks(app: &mut App, ms: u32) {
+        tick(app, ms);
+        app.world_mut()
+            .run_system_once(crate::effects::bubble::tick_bubbles)
+            .expect("the bubble tick runs");
+    }
+
+    /// A journey's bubble is stepped once a tick, by its journey: the
+    /// plain bubbles' tick leaves it, so the rest's end turns it into the
+    /// shrink's first phase and only the next tick into the shrink. A
+    /// bubble without a journey is the plain tick's, once a tick too.
+    #[test]
+    fn a_journey_bubble_is_stepped_once_a_tick() {
+        use crate::effects::bubble::BubbleState;
+        let mut app = app();
+        open(&mut app, POWER_CRYSTAL, 0);
+        at(&mut app, 0);
+        at(&mut app, 500);
+        app.world_mut().write_message(input(Some((100, -110)), 0));
+        at(&mut app, 600);
+        app.world_mut().write_message(input(None, 1));
+        at(&mut app, 600);
+        let plain = app
+            .world_mut()
+            .spawn(BubbleEffect(Bubble::new(600, false, [0.0, 0.0])))
+            .id();
+        let bubble = journey_entity(&mut app);
+        let state = |app: &App, e: Entity| app.world().get::<BubbleEffect>(e).unwrap().0.state;
+        both_ticks(&mut app, 2_401);
+        assert_eq!(state(&app, bubble), BubbleState::Idle);
+        assert_eq!(state(&app, plain), BubbleState::Idle);
+        both_ticks(&mut app, 2_902);
+        assert_eq!(state(&app, bubble), BubbleState::ShrinkIn);
+        assert_eq!(state(&app, plain), BubbleState::ShrinkIn);
+        both_ticks(&mut app, 2_903);
+        assert_eq!(state(&app, bubble), BubbleState::Shrink);
+        assert_eq!(state(&app, plain), BubbleState::Shrink);
+    }
+
     #[test]
     fn an_adapter_journey_holds_then_marks_the_teleporter_and_saves() {
         let mut app = app();

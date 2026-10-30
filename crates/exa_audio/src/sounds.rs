@@ -114,8 +114,10 @@ pub fn lock_sound_levels(pitch_draw: f64, volume_draw: f64) -> (f32, f32) {
 
 /// Plays the named one-shots: a door's lock sound
 /// ([`exa_physics::mechanism::LockSounded`]) at its drawn levels, and the
-/// point sounds at theirs. Each name's buffer is loaded once and kept; a
-/// sound the packs do not hold plays nothing.
+/// point sounds at theirs. The lock sound is a numbered set (`doorb_lko01`
+/// …, as the door's init loads it); a point sound is one file. Each name is
+/// loaded once and kept; a sound the packs do not hold plays nothing.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn named_sounds(
     game: Option<Res<Game>>,
     mut locks: MessageReader<exa_physics::mechanism::LockSounded>,
@@ -124,6 +126,7 @@ pub(crate) fn named_sounds(
     mut sources: ResMut<Assets<AudioSource>>,
     mut env: ResMut<AudioEnvironment>,
     mut loaded: Local<HashMap<String, Option<u32>>>,
+    mut lock_sets: Local<HashMap<String, u32>>,
 ) {
     let Some(game) = game else {
         locks.clear();
@@ -134,12 +137,14 @@ pub(crate) fn named_sounds(
         let pitch_draw = bank.rng().unit_f64();
         let volume_draw = bank.rng().unit_f64();
         let (volume, pitch) = lock_sound_levels(pitch_draw, volume_draw);
-        let buffer = *loaded
+        let set = *lock_sets
             .entry(lock.name.clone())
-            .or_insert_with(|| bank.load_buffer(&game, &mut sources, &lock.name));
-        if let Some(buffer) = buffer {
-            env.play_buffer(buffer, lock.position, volume, pitch, 0);
-        }
+            .or_insert_with(|| bank.load_set(&game, &mut sources, &lock.name));
+        env.play_set(&mut bank, set, lock.position, volume, pitch, 0);
+        info!(
+            "mechanism sound: {} volume {volume:.4} pitch {pitch:.4} at ({:.2}, {:.2}, {:.2})",
+            lock.name, lock.position.x, lock.position.y, lock.position.z
+        );
     }
     for point in points.read() {
         let buffer = *loaded

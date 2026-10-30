@@ -39,9 +39,13 @@
 //! held at its closed angle by the drive until the held pull count runs
 //! out (about seven ticks of pull below closed), then it swings free.
 //!
-//! Not reproduced: the door's sounds (the step reports them), the
-//! navigation passage report, the last-pusher stamp, sliding doors (they
-//! stay static level geometry).
+//! **Sounds** (`crate::mechanism_sound`): each awake tick sends the creak
+//! voice (`door?_hng` at the body's centre) and the knock, slam (`slm`)
+//! and unlatch (`opn`) one-shots at the handle point the step reports.
+//!
+//! Not reproduced: the navigation passage report, the last-pusher stamp,
+//! sliding doors (they stay static level geometry unless the loader is
+//! asked for them, `crate::body::slide_body`).
 //!
 //! Evidence: the door's init and hinged step, the hand's door press and
 //! drag handler and the engine's link-adding routine, read in the
@@ -53,6 +57,7 @@ use bevy::prelude::*;
 use super::{BodySystems, BodyTicks, CM, LINK_DISABLED, Ragdoll, WAKE_COUNT, WorldLink, weights};
 use crate::door::{self, Door, Record, Tick};
 use crate::engine_math::{direction_from_yaw, heading, normalize_approx};
+use crate::mechanism_sound::{self, MechanismSounded};
 
 /// A hinged leaf's mobility, whatever its file stores.
 pub const HINGED_MOBILITY: f32 = 0.05;
@@ -95,6 +100,9 @@ pub struct DoorBody {
     handle: [f32; 4],
     /// Where the handle was at the last tick (m).
     handle_at: Vec3,
+    /// Where it was the tick before (m): the point an open the step makes
+    /// before it measures the handle plays at.
+    handle_before: Vec3,
     /// The handle's smoothed motion (cm a tick).
     smoothed: Vec3,
     /// The other leaf of a double door.
@@ -155,6 +163,7 @@ impl DoorBody {
             stop,
             handle,
             handle_at: leaf.point(&handle),
+            handle_before: leaf.point(&handle),
             smoothed: Vec3::ZERO,
             partner: None,
             hand: None,
@@ -204,11 +213,18 @@ impl DoorBody {
         ((u64::from(self.seed) * 100) >> 32) as u32
     }
 
-    /// One tick of an awake leaf, after the solver's tick.
-    pub fn tick(&mut self, body: &mut Ragdoll, now_ms: i32, partner: Option<&mut Door>) {
+    /// One tick of an awake leaf, after the solver's tick. Returns the
+    /// step's report, whose sounds [`Self::sounds`] turns into requests.
+    pub fn tick(
+        &mut self,
+        body: &mut Ragdoll,
+        now_ms: i32,
+        partner: Option<&mut Door>,
+    ) -> door::DoorTick {
         let leaf = &body.parts[0];
         let handle = leaf.point(&self.handle);
         let moved = (handle - self.handle_at) * CM;
+        self.handle_before = self.handle_at;
         self.handle_at = handle;
         self.smoothed = self.smoothed * 0.5 + moved * 0.5;
         let s = self.smoothed;
@@ -235,6 +251,34 @@ impl DoorBody {
         if let Some(angle) = out.drive {
             self.drive(body, angle);
         }
+        out
+    }
+
+    /// The sound requests of a tick's report (`crate::mechanism_sound`):
+    /// the creak voice at the body's centre, the knock, slam and unlatch at
+    /// the handle point the tick measured, a finished wait's open at the
+    /// one the tick before measured.
+    pub fn sounds(
+        &self,
+        source: Entity,
+        body: &Ragdoll,
+        out: &door::DoorTick,
+    ) -> Vec<MechanismSounded> {
+        mechanism_sound::door_cues(
+            source,
+            &self.door.record,
+            false,
+            out,
+            self.origin(body),
+            self.handle_at,
+            self.handle_before,
+        )
+    }
+
+    /// The handle point (m) as the last tick measured it: where the door's
+    /// lock, unlatch and slam sounds play.
+    pub fn handle_point(&self) -> Vec3 {
+        self.handle_at
     }
 
     /// Whether the leaf is latched and not being unlocked: a press rattles
@@ -316,6 +360,7 @@ impl DoorBody {
 /// leaves of a double door, and steps every awake leaf after the solver.
 /// Added by [`crate::prop::PropPlugin`].
 pub(crate) fn plugin(app: &mut App) {
+    crate::mechanism_sound::register(app);
     app.add_systems(
         FixedUpdate,
         (
@@ -389,10 +434,12 @@ fn register_doors(
     }
 }
 
-/// Steps every awake leaf, its partner's door rules taken along.
+/// Steps every awake leaf, its partner's door rules taken along, and
+/// sends the sounds each tick asks for.
 fn step_doors(
     ticks: Option<Res<BodyTicks>>,
     mut doors: Query<(Entity, &mut DoorBody, &mut Ragdoll)>,
+    mut sounds: MessageWriter<MechanismSounded>,
 ) {
     let now = ticks.map_or(0, |t| t.millis() as i32);
     let awake: Vec<(Entity, Option<Entity>)> = doors
@@ -403,7 +450,8 @@ fn step_doors(
     for (e, partner) in awake {
         let mut other = partner.and_then(|p| doors.get(p).ok().map(|(_, g, _)| g.door));
         if let Ok((_, mut glue, mut body)) = doors.get_mut(e) {
-            glue.tick(&mut body, now, other.as_mut());
+            let out = glue.tick(&mut body, now, other.as_mut());
+            sounds.write_batch(glue.sounds(e, &body, &out));
         }
         if let (Some(p), Some(door)) = (partner, other)
             && let Ok((_, mut glue, _)) = doors.get_mut(p)
