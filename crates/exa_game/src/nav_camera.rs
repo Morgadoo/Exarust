@@ -868,6 +868,24 @@ pub fn apply_preset(fields: PresetFields) -> Preset {
     }
 }
 
+/// Applies a preset record to a controller that already has a distance
+/// field, as the original does when the editor has placed the camera by
+/// hand: the controller keeps its own distance (`distance`) and clears the
+/// keep byte when that byte is set, otherwise it takes the record's
+/// distance. Either way the result is raised to the smallest distance.
+/// Returns the preset and the keep byte after the call (always clear).
+pub fn apply_preset_to(fields: PresetFields, distance: f32, keep: bool) -> (Preset, bool) {
+    let mut preset = apply_preset(fields);
+    if keep {
+        preset.distance = if distance < preset.min_distance {
+            preset.min_distance
+        } else {
+            distance
+        };
+    }
+    (preset, false)
+}
+
 /// The segment the camera's cut-away driver casts: it starts twice the
 /// camera's largest distance out along the backward vector from the
 /// looked-at point (past the eye) and runs back towards the point for
@@ -1819,6 +1837,31 @@ mod tests {
         assert_eq!(target.centre, Vec3::new(40.0, 50.0, 60.0));
         assert!(target.raised);
         assert_eq!(preset_target(&fields, &[], view).unwrap().centre, view);
+    }
+
+    #[test]
+    fn a_preset_keeps_a_hand_placed_distance_once() {
+        let fields = PresetFields {
+            distance: 2000.0,
+            ..PresetFields::default()
+        };
+        // The record's distance when the keep byte is clear.
+        let (preset, keep) = apply_preset_to(fields, 1500.0, false);
+        assert_eq!(preset.distance, 2000.0);
+        assert!(!keep);
+        assert!(!preset.derive_distance);
+        // The controller's own distance when the byte is set, raised to
+        // the smallest; the byte is cleared after the call.
+        let (preset, keep) = apply_preset_to(fields, 1500.0, true);
+        assert_eq!(preset.distance, 1500.0);
+        assert!(!keep);
+        let (preset, _) = apply_preset_to(fields, 5.0, true);
+        assert_eq!(preset.distance, 10.0);
+        // A zero record distance still derives the distance from the eye,
+        // even when the field was kept.
+        let (preset, _) = apply_preset_to(PresetFields::default(), 1500.0, true);
+        assert_eq!(preset.distance, 1500.0);
+        assert!(preset.derive_distance);
     }
 
     #[test]
