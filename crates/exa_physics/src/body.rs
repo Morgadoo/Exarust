@@ -184,7 +184,7 @@ const LINK_MOBILITY: f32 = 0.175;
 const CM: f32 = 100.0;
 /// A link with at most this slack (m, 0.01 cm) is a pivot in a living
 /// body; in a limp one, a link with at most 1.19e-7 cm.
-const PIVOT_SLACK: f32 = 1e-4;
+pub(crate) const PIVOT_SLACK: f32 = 1e-4;
 const LIMP_PIVOT_SLACK: f32 = 1.19e-9;
 /// A limp slack link whose length is this close (m, 1.19e-7 cm) to its
 /// smoothed length is left alone.
@@ -217,7 +217,7 @@ pub const MODEL_LINK_HORIZONTAL: u32 = 0x200;
 pub(crate) const LINK_EPSILON2: f32 = 1.19e-11;
 /// A living body's slack-link correction is cut to this (m, 80 cm); a
 /// pivot farther apart is reported but corrected in full.
-const MAX_CORRECTION: f32 = 0.8;
+pub(crate) const MAX_CORRECTION: f32 = 0.8;
 /// A lower leg's link with more slack than this (m, 10 cm) limits the leg;
 /// it pulls at this strength while the body lives.
 const LEG_LIMIT_SLACK: f32 = 0.1;

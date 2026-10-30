@@ -100,7 +100,11 @@ fn link_correction(
         return None;
     }
     let correction = match (holder.drive.is_some(), link.hand) {
-        (true, Some(_)) => living_pivot(d),
+        (true, Some(_)) if link.slack <= crate::body::PIVOT_SLACK => living_pivot(d),
+        // A hand link with slack is one of the original's joint muscles:
+        // its animated pull is the body solver's anchor work, which a
+        // cross-body link has no anchor for; its hard radial limit is kept.
+        (true, Some(_)) => living_radius(d, link.slack)?,
         (true, None) => living_limit(d, link.slack, link.strength)?,
         (false, Some(_)) => crate::body::limp_law(
             d,
@@ -122,6 +126,23 @@ fn link_correction(
 /// the two mobility shares alone).
 fn living_pivot(d: Vec3) -> Vec3 {
     d / (1.0 + 0.001 * d.length() * 100.0)
+}
+
+/// A living slack link's radial limit: inside the slack nothing moves; past
+/// it the excess is taken back, cut to 80 cm (the original's excessive
+/// constraint report). Its muscle pull toward the animated anchor is not
+/// modelled here (the cross-body link has no anchor).
+fn living_radius(d: Vec3, slack: f32) -> Option<Vec3> {
+    let len = d.length();
+    if len <= slack {
+        return None;
+    }
+    let excess = d * ((len - slack) / len);
+    if excess.length() > crate::body::MAX_CORRECTION {
+        Some(excess.clamp_length_max(crate::body::MAX_CORRECTION))
+    } else {
+        Some(excess)
+    }
 }
 
 /// The living limit law on the gap `d` (m) against the link's `slack` (m)

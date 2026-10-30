@@ -671,10 +671,12 @@ hand and arm by their mobility shares with the body's own limp link law (a
 slack link's smoothed length kept from tick to tick), and kept off its
 holder's body and the other items of the same character (the original's
 all-ones group mask, as `Ragdoll::held_by`). A holder whose muscles are on
-takes the living laws instead: a hand link closes `|d|/(1 + 0.001·|d|_cm)`
-of its gap, and a world weld steps one strength centimetre a pass
-(`strength·10/|d|` centimetres past 10 cm); a limp holder takes the limp
-damper for the hands and the plain world law for the welds. Its generic
+takes the living laws instead: a hand link without slack closes
+`|d|/(1 + 0.001·|d|_cm)` of its gap (a link with slack keeps its radius,
+its animated muscle pull being the body solver's work), and a world weld
+steps one strength centimetre a pass (`strength·10/|d|` centimetres past
+10 cm); a limp holder takes the limp damper for the hands and the plain
+world law for the welds. Its generic
 world weld is the stiff origin link, plus the soft (parry) weld when the
 holder may parry, 0.3 of the node box's top above the grip (at the grip for
 a two-hander of the exact class 0x30). The character's equip and the torch

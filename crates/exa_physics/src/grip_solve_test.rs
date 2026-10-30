@@ -295,6 +295,32 @@ fn a_living_world_weld_steps_by_its_strength() {
     assert!((point.y - (start.y + 0.005)).abs() < 1e-6, "{point}");
 }
 
+/// A living hand link with slack keeps its radius: a gap inside the 4 cm
+/// slack does not move, one past it takes back the excess.
+#[test]
+fn a_living_slack_hand_link_keeps_its_radius() {
+    let w = [1.0, 0.0, 0.0, 0.0];
+    let item = Entity::from_raw_u32(1).unwrap();
+    let hand = Entity::from_raw_u32(2).unwrap();
+    let mut holder = rigid(hand, Vec3::new(0.02, 0.0, 0.0), 1.0).with_drive();
+    let mut link = pivot(w, w, (1.0, 0.0));
+    link.slack = 0.04;
+    link.length = 0.04;
+    let mut item_body = rigid(item, Vec3::ZERO, 1.0);
+    let start = item_body.point_at(0, &w).unwrap();
+    let mut stage = solver(item, hand, links(link.clone()));
+    stage.links(&mut [&mut item_body, &mut holder], 0);
+    let point = item_body.point_at(0, &w).unwrap();
+    assert!((point - start).length() < 1e-7, "{point}");
+    // 5 cm: the excess is 1 cm, taken back by the item's whole share.
+    holder = rigid(hand, Vec3::new(0.05, 0.0, 0.0), 1.0).with_drive();
+    let mut item_body = rigid(item, Vec3::ZERO, 1.0);
+    let mut stage = solver(item, hand, links(link));
+    stage.links(&mut [&mut item_body, &mut holder], 0);
+    let point = item_body.point_at(0, &w).unwrap();
+    assert!((point.x - (start.x + 0.01)).abs() < 1e-6, "{point}");
+}
+
 /// A living holder's hand link is a living pivot: the gap closes by
 /// 1/(1 + 0.001·|d|_cm), not the squared softening of the limp law.
 #[test]
