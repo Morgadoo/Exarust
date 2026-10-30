@@ -315,23 +315,27 @@ pub fn release_collapsed(
     }
 }
 
-/// What a held item's world welds have already taken from its holder's
-/// condition: the collapse's 10 cm soft-weld slack and death's stiffening
-/// land once each, and a body that rises again keeps them (the original's
-/// revive does not rebuild the welds).
+/// The holder condition a held item's world welds last answered to, so the
+/// collapse's slack and death's stiffening land on the tick the holder
+/// enters that condition, as the original's collapse and death routines
+/// write them once when they run (and again at a later collapse or death).
+/// Neither change is undone when the body rises: the original's revive does
+/// not rebuild the welds.
 #[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct HeldWeld {
-    pub collapsed: bool,
-    pub stiff: bool,
+    /// The holder's condition the last time the welds were looked at; `None`
+    /// before the first look.
+    pub seen: Option<Condition>,
 }
 
 /// Applies the original's collapse and death changes to a held item's world
-/// welds: a collapsing holder's item takes the 10 cm soft-weld slack (the
-/// collapse routine's, which runs after it has let go of the weapons, so
-/// what is left is the shield or torch that stays), and a dead holder's
-/// item takes the stiff soft weld. The original's collapse gate also reads
-/// the motion's fall class, which Exarust's collapse always is (it starts
-/// Fall Backward) [guess on the motion class's meaning].
+/// welds: a holder that starts collapsing gives its item's soft weld the
+/// 10 cm slack (the collapse routine writes it after it has let go of the
+/// weapons, so what is left is the shield or torch that stays), and one
+/// that dies makes it stiff. Each lands on the change into the condition.
+/// The original's collapse gate also reads the motion's fall class, which
+/// Exarust's collapse always is (it starts Fall Backward) [guess on the
+/// motion class's meaning].
 #[allow(clippy::type_complexity)]
 pub fn adjust_welds(
     mut commands: Commands,
@@ -361,26 +365,25 @@ pub fn adjust_welds(
         else {
             continue;
         };
-        let mut state = weld.as_ref().map_or(HeldWeld::default(), |w| **w);
-        let before = state;
+        let seen = weld.as_ref().and_then(|w| w.seen);
+        if seen == Some(condition) {
+            continue;
+        }
         if let Some(links) = grip.links.as_mut() {
-            if condition.is_collapsing() && !state.collapsed {
+            if condition.is_collapsing() {
                 links.slacken_soft_weld();
-                state.collapsed = true;
             }
-            if condition == Condition::DEAD && !state.stiff {
+            if condition == Condition::DEAD {
                 links.stiffen_soft_weld();
-                state.stiff = true;
             }
         }
-        if state != before {
-            match weld {
-                Some(mut current) => {
-                    *current = state;
-                }
-                None => {
-                    commands.entity(item).insert(state);
-                }
+        let state = HeldWeld {
+            seen: Some(condition),
+        };
+        match weld {
+            Some(mut current) => *current = state,
+            None => {
+                commands.entity(item).insert(state);
             }
         }
     }
@@ -678,7 +681,10 @@ mod tests {
         let soft = links.world_soft.unwrap();
         assert_eq!(links.links[soft].slack, 0.10);
         assert_eq!(links.links[soft].strength, 0.05);
-        assert!(app.world().get::<HeldWeld>(shield).unwrap().collapsed);
+        assert_eq!(
+            app.world().get::<HeldWeld>(shield).unwrap().seen,
+            Some(Condition::COLLAPSING)
+        );
         // Death stiffens it; the tick after that changes nothing more.
         app.world_mut().entity_mut(owner).insert(Condition::DEAD);
         app.update();
@@ -692,9 +698,43 @@ mod tests {
         assert_eq!(links.links[soft].strength, 1.0);
         assert_eq!(links.links[soft].slack, 0.10);
         let state = *app.world().get::<HeldWeld>(shield).unwrap();
-        assert!(state.stiff && state.collapsed);
+        assert_eq!(state.seen, Some(Condition::DEAD));
         app.update();
         assert_eq!(*app.world().get::<HeldWeld>(shield).unwrap(), state);
+        // Something else loosens the weld while the body lies dead; the
+        // death does not write again until the condition changes.
+        let loosen = |app: &mut App| {
+            app.world_mut()
+                .get_mut::<HeldGrip>(shield)
+                .unwrap()
+                .links
+                .as_mut()
+                .unwrap()
+                .links[soft]
+                .slack = 0.02;
+        };
+        loosen(&mut app);
+        app.update();
+        let kept = app.world().get::<HeldGrip>(shield).unwrap();
+        assert_eq!(kept.links.as_ref().unwrap().links[soft].slack, 0.02);
+        // A body that rose and collapses again takes the slack again.
+        app.world_mut()
+            .entity_mut(owner)
+            .insert(Condition::default());
+        app.update();
+        app.world_mut()
+            .entity_mut(owner)
+            .insert(Condition::COLLAPSING);
+        app.update();
+        let links = app
+            .world()
+            .get::<HeldGrip>(shield)
+            .unwrap()
+            .links
+            .clone()
+            .unwrap();
+        assert_eq!(links.links[soft].slack, 0.10);
+        assert_eq!(links.links[soft].strength, 1.0);
     }
 
     fn spec() -> GripSpec {

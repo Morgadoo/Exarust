@@ -1027,9 +1027,9 @@ impl GripLinks {
         let Some(soft) = self.world_soft.filter(|&i| i < self.links.len()) else {
             return false;
         };
-        let link = &mut self.links[soft];
-        link.slack = COLLAPSE_WELD_SLACK;
-        link.length = COLLAPSE_WELD_SLACK;
+        // Only the slack is written: the smoothed length the limp law holds
+        // inside it is left as it was.
+        self.links[soft].slack = COLLAPSE_WELD_SLACK;
         true
     }
 
@@ -1497,7 +1497,7 @@ mod tests {
         assert_eq!(links.links[soft].strength, 0.05);
         assert!(links.slacken_soft_weld());
         assert_eq!(links.links[soft].slack, 0.10);
-        assert_eq!(links.links[soft].length, 0.10);
+        assert_eq!(links.links[soft].length, 0.0);
         // The stiff origin weld of a weapon is not what either changes
         // (a torch has none, so the soft index stands in).
         assert!(links.stiffen_soft_weld());

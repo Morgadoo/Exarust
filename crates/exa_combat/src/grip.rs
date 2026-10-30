@@ -621,7 +621,8 @@ mod soft_weld_tests {
     }
 }
 
-/// The equip/swap refresh: with `count` items held, the first one's class,/// start byte and node length give its measures; empty hands take the
+/// The equip/swap refresh: with `count` items held, the first one's class,
+/// start byte and node length give its measures; empty hands take the
 /// race's reach and no measures. The parry gate is the holder's and only
 /// counts while something is held.
 pub fn refresh_hold(

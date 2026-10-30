@@ -356,7 +356,7 @@ tested rules of their own.
   (`GripRelease`: the grip stage frees them) while the shield stays on the
   arm; what is still held then takes the collapse's 10 cm soft-weld slack,
   and a dead holder's item takes death's stiff soft weld (`adjust_welds`,
-  once each). When the switch clip passes 60% the runtime trades the two held
+  on the tick the holder enters each condition). When the switch clip passes 60% the runtime trades the two held
   weapons' blade slots, the attacker's primary and the `Hands` main and
   second weapon once, so `choose_held_movesets` picks the moveset again
   from the new main weapon (a two-hander and a one-hander trade "Two
