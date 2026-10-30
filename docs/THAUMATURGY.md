@@ -105,7 +105,12 @@ plumbing (`casting::reserve`, `release_reserve`, `spend_tick`,
   cost, clamps the focus at zero below the double 0.001 and fades over
   1.2 s through `exa_game::mind`; the spirit body is a race 0xE00 record
   sharing the caster's known powers, 60 cm along its facing, with its
-  focus pool, techniques and running powers.
+  focus pool, techniques and running powers. Its spawn keeps the caster's
+  basis, flags the new node 0x1000, and gives the body the 0x220000 status
+  bits and player behaviour mode 4 (`power::spirit_spawn`); the character
+  itself is not generated yet. A power's deferred calls
+  (`power::post_deferred`/`run_deferred`) dispatch by domain and clear the
+  HUD's ending flag for a call no update handles.
 - **Force**: Shell halves a blow's energy (the body's hit damping is 0.5)
   and clears it at the end; a bubble or barricade ends once its centre is
   more than 20 m from the caster; Strikes sets the strike factor 1.0 and
@@ -318,8 +323,11 @@ the body's power id's domain evaluator and, when that answers nothing,
 the hook with 0x10; a negative answer ends the cast and the AI lets it
 go. Before its state the AI lets go of a cast whose body has not read
 casting 500 ms after it began. The
-player swap, the spirit body's character generation and the effect meshes are descriptions here, not
-spawned entities. The held body's shell hum (`thmfrc_knsdr`), the swing
+player swap, the spirit body's character generation and the effect meshes
+are descriptions here, not spawned entities. The spirit body's spawn
+descriptor is in `thaum::power::spirit_spawn` and the deferred power calls
+in `thaum::power::{post_deferred, run_deferred}`. The held body's shell hum
+(`thmfrc_knsdr`), the swing
 ripple on a strikes aura and the box lights of the held body and the
 weapon are not wired. A kinesis pick,
 and each tick a throw coasts after its shell drops, stamp the body with

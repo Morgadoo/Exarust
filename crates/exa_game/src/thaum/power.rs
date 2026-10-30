@@ -33,11 +33,16 @@
 //!   The player must know at least one power, and a distance that is not a
 //!   number passes the range test (the original only refuses one above
 //!   20 m).
-//! - **Spirit body** ([`spirit_body`]): the record the original builds for
-//!   the spirit the player controls in Spirit Form — race 0xE00, status
-//!   bits 0x220000, the copied record fields, focus pool and power list
-//!   rebound to the new body, 60 cm along the caster's facing — and the
-//!   control handover.
+//! - **Spirit body** ([`spirit_body`], [`spirit_spawn`]): the record the
+//!   original builds for the spirit the player controls in Spirit Form —
+//!   race 0xE00, status bits 0x220000, the copied record fields, focus pool
+//!   and power list rebound to the new body, its node flag 0x1000 and
+//!   player behaviour mode 4 — the spawn 60 cm along the caster's facing,
+//!   and the control handover.
+//! - **Deferred calls** ([`post_deferred`], [`run_deferred`]): a power id
+//!   and its object word queued for the unit's next pass; the pass
+//!   dispatches by domain (Force, Energy, Displacement) and clears the
+//!   HUD's ending flag for a call no update handles.
 
 pub mod displacement;
 pub mod energy;
@@ -407,6 +412,8 @@ pub struct SpiritRecord {
     pub focus: f32,
     pub reserved: f32,
     pub pool_word: u32,
+    /// The word at the record's 0xa60, copied into the spawn's transform.
+    pub phase_word: u32,
 }
 
 /// The spirit body the Spirit Form power creates: a new record of race
@@ -463,6 +470,94 @@ pub fn spirit_body(record: &SpiritRecord, powers: &[KnownPower]) -> SpiritBody {
 pub const HANDED_OVER: u32 = 0x0010_0000;
 /// The bits the body that takes control carries.
 pub const IN_CONTROL: u32 = 0x0060_0000;
+
+/// A posted power call: the object word and the power id it runs, the
+/// 16-byte argument the original queues.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeferredPower {
+    pub object: u32,
+    pub word: u32,
+}
+
+/// The domain a deferred call's update dispatches to. A Mind power or any
+/// other id has no update in this list; the original then clears the HUD's
+/// ending flag.
+pub fn deferred_domain(word: u32) -> Option<u32> {
+    match word & DOMAIN_MASK {
+        DOMAIN_FORCE => Some(DOMAIN_FORCE),
+        DOMAIN_ENERGY => Some(DOMAIN_ENERGY),
+        DOMAIN_DISPLACEMENT => Some(DOMAIN_DISPLACEMENT),
+        _ => None,
+    }
+}
+
+/// Posts a call to the deferred list.
+pub fn post_deferred(list: &mut Vec<DeferredPower>, object: u32, word: u32) {
+    list.push(DeferredPower { object, word });
+}
+
+/// Runs the posted calls in order, emptying the list. `update` answers
+/// whether the call was handled; an unhandled call clears `hud_ending`.
+/// Returns one flag a call.
+pub fn run_deferred(
+    list: &mut Vec<DeferredPower>,
+    mut update: impl FnMut(&DeferredPower) -> bool,
+    hud_ending: &mut bool,
+) -> Vec<bool> {
+    let mut handled = Vec::with_capacity(list.len());
+    for call in list.drain(..) {
+        let ok = deferred_domain(call.word).is_some() && update(&call);
+        if !ok {
+            *hud_ending = false;
+        }
+        handled.push(ok);
+    }
+    handled
+}
+
+/// The spirit body's spawn: where the character appears and the words its
+/// new node and body take.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpiritSpawn {
+    /// The caster's place 60 cm along its facing.
+    pub at_cm: [f32; 3],
+    /// The basis the new body keeps, the caster's.
+    pub basis: [[f32; 3]; 3],
+    /// The record word the spawn copies (its sixth field).
+    pub phase_word: u32,
+    /// The new node's flag.
+    pub node_flags: u32,
+    /// The status bits the new body takes.
+    pub status: u32,
+    pub behaviour_mode: u32,
+}
+
+/// The node flag a spawned effect carrier takes.
+pub const SPIRIT_NODE_FLAG: u32 = 0x1000;
+
+/// The spirit body's spawn from the caster's place, facing and basis: the
+/// character appears [`SPIRIT_DISTANCE`] ahead, with the caster's basis,
+/// the record's phase word, the node's 0x1000 flag, the status bits
+/// [`SPIRIT_STATUS`] and behaviour mode [`SPIRIT_BEHAVIOUR_MODE`].
+pub fn spirit_spawn(
+    record: &SpiritRecord,
+    caster_at: [f32; 3],
+    facing: [f32; 3],
+    basis: [[f32; 3]; 3],
+) -> SpiritSpawn {
+    SpiritSpawn {
+        at_cm: [
+            caster_at[0] + facing[0] * SPIRIT_DISTANCE,
+            caster_at[1] + facing[1] * SPIRIT_DISTANCE,
+            caster_at[2] + facing[2] * SPIRIT_DISTANCE,
+        ],
+        basis,
+        phase_word: record.phase_word,
+        node_flags: SPIRIT_NODE_FLAG,
+        status: SPIRIT_STATUS,
+        behaviour_mode: SPIRIT_BEHAVIOUR_MODE,
+    }
+}
 
 /// Hands control to another body: the caster keeps [`HANDED_OVER`] and the
 /// target gains [`IN_CONTROL`], as the possession and the spirit form do.
@@ -718,6 +813,7 @@ mod tests {
             focus: 0.8,
             reserved: 0.25,
             pool_word: 3,
+            phase_word: 0x5a,
         };
         let powers = [KnownPower {
             id: 0x201,
@@ -732,6 +828,61 @@ mod tests {
         assert_eq!(spirit.block, [1, 2, 3, 4, 5]);
         assert_eq!((spirit.focus, spirit.reserved), (0.8, 0.25));
         assert_eq!(spirit.record_id, 7);
+    }
+
+    #[test]
+    fn a_deferred_call_runs_its_domain_and_clears_an_unhandled_hud() {
+        let mut list = Vec::new();
+        post_deferred(&mut list, 7, 0x20208);
+        post_deferred(&mut list, 8, 0x10601);
+        post_deferred(&mut list, 9, 0x103);
+        assert_eq!(list.len(), 3);
+        assert_eq!(deferred_domain(0x20208), Some(DOMAIN_FORCE));
+        assert_eq!(deferred_domain(0x401), Some(DOMAIN_ENERGY));
+        assert_eq!(deferred_domain(0x10601), Some(DOMAIN_DISPLACEMENT));
+        assert_eq!(deferred_domain(0x103), None);
+        let mut hud = true;
+        let mut seen = Vec::new();
+        let handled = run_deferred(
+            &mut list,
+            |call| {
+                seen.push((call.object, call.word));
+                call.object != 8
+            },
+            &mut hud,
+        );
+        assert_eq!(handled, vec![true, false, false]);
+        // An unknown domain never reaches its update.
+        assert_eq!(seen, vec![(7, 0x20208), (8, 0x10601)]);
+        assert!(!hud);
+        assert!(list.is_empty());
+        // An empty queue does nothing.
+        let mut hud = false;
+        assert!(run_deferred(&mut Vec::new(), |_| true, &mut hud).is_empty());
+        assert!(!hud);
+    }
+
+    #[test]
+    fn the_spirit_spawns_sixty_centimetres_ahead() {
+        let record = SpiritRecord {
+            phase_word: 9,
+            ..SpiritRecord::default()
+        };
+        let spawn = spirit_spawn(
+            &record,
+            [10.0, 20.0, 30.0],
+            [0.0, 0.0, 1.0],
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        );
+        assert_eq!(spawn.at_cm, [10.0, 20.0, 90.0]);
+        assert_eq!(
+            spawn.basis,
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+        );
+        assert_eq!(spawn.phase_word, 9);
+        assert_eq!(spawn.node_flags, 0x1000);
+        assert_eq!(spawn.status, SPIRIT_STATUS);
+        assert_eq!(spawn.behaviour_mode, 4);
     }
 
     #[test]
