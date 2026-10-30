@@ -92,6 +92,79 @@ pub struct ObjectDb {
     link_remap_on: bool,
 }
 
+/// A record taken out of a database ready to be put into another: its
+/// payload, its table flags and the texts of the model's two own strings
+/// (`None` for an id that is an inherit, a shared string, or own text the
+/// source library has lost).
+struct Copy {
+    payload: Vec<u8>,
+    flags: u32,
+    texts: [Option<Vec<u8>>; 2],
+}
+
+/// Takes a record out of `db`'s `source` tier, resolving its own model
+/// strings in `db`'s library; `None` for an id without database bits or a
+/// record number and for one the tier lacks.
+fn copy_source(db: &ObjectDb, source: Tier, id: u32) -> Option<Copy> {
+    if id & ID_MASK == 0 || id & TAG_MASK == 0 {
+        return None;
+    }
+    let at = db.store(source).find_index(id & ID_MASK)?;
+    let view = db.store(source).view(at)?;
+    let flags = db.store(source).entries()[at].flags;
+    let payload = view.payload().to_vec();
+    let mut texts = [None, None];
+    if let Some(model) = section_range(&payload, MODEL) {
+        for (i, field) in [0x14, 0x18].into_iter().enumerate() {
+            let raw = u32_at(&payload[model.clone()], field);
+            // Only an own-library id (bit 31 with a record number) is
+            // remapped; an inherit and a shared id stay as they are.
+            if raw <= INHERIT {
+                continue;
+            }
+            texts[i] = db.library(source).bytes(raw & ID_MASK).map(<[u8]>::to_vec);
+        }
+    }
+    Some(Copy {
+        payload,
+        flags,
+        texts,
+    })
+}
+
+/// Puts a taken record into `db`'s `target` tier under its first free id,
+/// moving each own string into the tier's library (or an inherit when the
+/// text is gone).
+fn copy_into(db: &mut ObjectDb, target: Tier, copy: Copy) -> u32 {
+    let Copy {
+        mut payload,
+        flags,
+        texts,
+    } = copy;
+    if let Some(model) = section_range(&payload, MODEL) {
+        for (i, field) in [0x14, 0x18].into_iter().enumerate() {
+            let raw = u32_at(&payload[model.clone()], field);
+            if raw <= INHERIT {
+                continue;
+            }
+            let new = match &texts[i] {
+                Some(text) => {
+                    let slot = db.library_mut(target).alloc();
+                    db.library_mut(target).set(slot, text);
+                    slot | 0x8000_0000
+                }
+                None => INHERIT,
+            };
+            set_u32(&mut payload[model.clone()], field, new);
+        }
+    }
+    let new = db.store(target).first_free_id();
+    let (_, to) = db.store_mut(target).insert(new);
+    db.store_mut(target).set_flags(to, flags);
+    db.store_mut(target).store(to, &payload);
+    new | target.tag()
+}
+
 impl ObjectDb {
     /// Reads `objdb.rdb` and `objstrings.rdb` into the base tier, as the
     /// original's lazy loader does (an empty `strings` gives an empty
@@ -467,45 +540,23 @@ impl ObjectDb {
     /// one whose record the source tier lacks, come back unchanged. The new
     /// id carries the target tier's tag.
     pub fn copy_record(&mut self, id: u32, source: Tier, target: Tier) -> u32 {
-        if id & ID_MASK == 0 || id & TAG_MASK == 0 {
-            return id;
+        match copy_source(self, source, id) {
+            Some(copy) => copy_into(self, target, copy),
+            None => id,
         }
-        let Some(at) = self.store(source).find_index(id & ID_MASK) else {
-            return id;
-        };
-        let Some(view) = self.store(source).view(at) else {
-            return id;
-        };
-        let flags = self.store(source).entries()[at].flags;
-        let mut payload = view.payload().to_vec();
-        if let Some(model) = section_range(&payload, MODEL) {
-            for field in [0x14, 0x18] {
-                let raw = u32_at(&payload[model.clone()], field);
-                // Only an own-library id (bit 31 with a record number) is
-                // remapped; an inherit and a shared id stay as they are.
-                if raw <= INHERIT {
-                    continue;
-                }
-                let new = match self
-                    .library(source)
-                    .bytes(raw & ID_MASK)
-                    .map(<[u8]>::to_vec)
-                {
-                    Some(text) => {
-                        let slot = self.library_mut(target).alloc();
-                        self.library_mut(target).set(slot, &text);
-                        slot | 0x8000_0000
-                    }
-                    None => INHERIT,
-                };
-                set_u32(&mut payload[model.clone()], field, new);
-            }
+    }
+
+    /// [`Self::copy_record`] out of another database: a record of the
+    /// other database's `source` tier (its payload, flags and own strings)
+    /// is copied into this one under the first free id of `target`, with the
+    /// same string rule. The prelude loader reads each entry's own database
+    /// beside the live one this way. Ids the other database lacks, and ids
+    /// without database bits or a record number, come back unchanged.
+    pub fn copy_record_from(&mut self, id: u32, own: &ObjectDb, source: Tier, target: Tier) -> u32 {
+        match copy_source(own, source, id) {
+            Some(copy) => copy_into(self, target, copy),
+            None => id,
         }
-        let new = self.store(target).first_free_id();
-        let (_, to) = self.store_mut(target).insert(new);
-        self.store_mut(target).set_flags(to, flags);
-        self.store_mut(target).store(to, &payload);
-        new | target.tag()
     }
 
     /// Copies an instance record into a tier, as the character-data unit
@@ -1346,6 +1397,45 @@ mod tests {
         let model = db.find(WORLD | lost & ID_MASK).unwrap().model().unwrap();
         assert_eq!(model.name_id & 0x8000_0000, 0x8000_0000);
         assert_eq!(db.world_strings.refs(model.name_id & ID_MASK), 0);
+    }
+
+    #[test]
+    fn a_record_copies_out_of_another_database() {
+        // The entry's own database: one item whose own string names it.
+        let mut own = ObjectDb::default();
+        let text = own.strings.add(b"Entry blade");
+        put(
+            &mut own.base,
+            1,
+            NAME | MODEL,
+            &item("Blade", 0, 0, text | 0x8000_0000, INHERIT),
+        );
+        // A live local database with one record of its own.
+        let mut live = ObjectDb::default();
+        put(
+            &mut live.local,
+            1,
+            NAME,
+            &payload(&[(NAME, header("Live", 0, 0))]),
+        );
+        let copied = live.copy_record_from(LOCAL | 1, &own, Tier::Base, Tier::Local);
+        assert_eq!(copied, LOCAL | 2, "the live tier's next free id");
+        let model = live.find(copied).unwrap().model().unwrap();
+        assert_eq!(
+            live.local_strings
+                .bytes(model.name_id & ID_MASK)
+                .map(<[u8]>::to_vec)
+                .as_deref(),
+            Some(&b"Entry blade"[..])
+        );
+        // The entry database is only read.
+        assert_eq!(own.base.len(), 1);
+        assert_eq!(own.strings.refs(text), 1);
+        // An id the other database lacks stays as it is.
+        assert_eq!(
+            live.copy_record_from(LOCAL | 9, &own, Tier::Base, Tier::Local),
+            LOCAL | 9
+        );
     }
 
     #[test]
