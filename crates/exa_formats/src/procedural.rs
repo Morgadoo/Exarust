@@ -431,7 +431,8 @@ pub struct Program {
     pub name: String,
     /// The define word the variant compiles with (0 for the plain program).
     pub define: u32,
-    /// Material-layer samplers the program declares, `Tex0…Tex{textures-1}`.
+    /// Material-layer samplers the program declares, `Tex0…`; sampler `i`
+    /// is bound to texture unit `i` (see [`sampler_name`]).
     pub textures: usize,
     /// An extra sampler bound after the layer samplers: its name and unit.
     pub extra_sampler: Option<(String, u32)>,
@@ -476,9 +477,9 @@ pub const DEFINE_PATTERN: u32 = 0x2_0000;
 pub const DEFINE_ALTERNATE_NORMAL: u32 = 0x20_0000;
 pub const DEFINE_PAINTED_PATTERN: u32 = 0x40_0000;
 
-/// The family name a material's programs compile from (`TProcMaterial`'s
-/// +0x120 field), and the optional alternate specular and normal families
-/// (+0x130 and +0x140). The subclasses' setups name them.
+/// The family name a material's programs compile from, and the optional
+/// alternate specular and normal families. The subclasses' setups name
+/// them.
 fn families(id: u8, m: &Material) -> (&'static str, Option<&'static str>, Option<&'static str>) {
     match m.family {
         Family::Cloth => {
@@ -502,6 +503,14 @@ fn families(id: u8, m: &Material) -> (&'static str, Option<&'static str>, Option
         Family::Resin => ("resin", None, None),
         Family::PlanksPainted => ("plankpai", None, None),
     }
+}
+
+/// The name of layer sampler `index`: `Tex` and one character, `'0'` plus
+/// the index, as the original writes it (index 10 would be `Tex:`; the
+/// shipped materials stay below it).
+pub fn sampler_name(index: usize) -> String {
+    let c = char::from(b'0'.wrapping_add(index as u8));
+    format!("Tex{c}")
 }
 
 /// Every program variant a material compiles, in the compile pass's order:
@@ -547,7 +556,7 @@ pub fn programs(id: u8) -> Vec<Program> {
             name: format!("{family}_d"),
             define: DEFINE_PAINTED_PATTERN,
             textures: colour + 2,
-            extra_sampler: Some((format!("Tex{}", colour + 2), 8)),
+            extra_sampler: Some((sampler_name(colour + 2), 8)),
             units_from: 2,
             uniforms: PAINTED_PATTERN_UNIFORMS,
         });
@@ -589,7 +598,7 @@ pub fn programs(id: u8) -> Vec<Program> {
             name: format!("{nrm_family}_n"),
             define: DEFINE_ALTERNATE_NORMAL,
             textures: normal + 3,
-            extra_sampler: Some((format!("Tex{}", normal + 3), 8)),
+            extra_sampler: Some((sampler_name(normal + 3), 8)),
             units_from: 3,
             uniforms: PASS_UNIFORMS,
         });
@@ -777,7 +786,7 @@ mod tests {
     }
 
     #[test]
-    fn a_steel_material_compiles_its_seven_programs() {
+    fn a_steel_material_compiles_its_four_programs() {
         let p = programs(12);
         assert_eq!(
             p.iter().map(|p| p.pass).collect::<Vec<_>>(),
@@ -873,6 +882,13 @@ mod tests {
         let resin = programs(24);
         assert!(resin.iter().any(|p| p.pass == Pass::Alpha));
         assert!(!resin.iter().any(|p| p.pass == Pass::Pattern));
+    }
+
+    #[test]
+    fn sampler_names_are_one_character_past_tex() {
+        assert_eq!(sampler_name(0), "Tex0");
+        assert_eq!(sampler_name(8), "Tex8");
+        assert_eq!(sampler_name(10), "Tex:");
     }
 
     #[test]

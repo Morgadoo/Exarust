@@ -10,10 +10,11 @@
 //! Bevy's task pool (`exa_character::equip_outfits`, `ModelLoader::paint*`).
 //! The formats are what [`crate::paint::Painted`] says the painter writes.
 
-/// One queued paint job. The original's entries are objects with a `run`
-/// method (slot 13 of their class); here the caller supplies the work.
+/// One queued paint job. The original's entries are objects whose run
+/// method the flush calls and then frees the object; here the caller
+/// supplies the work and gets the job back.
 pub trait PaintWork {
-    /// Runs the job (the original's virtual `run`, slot 9).
+    /// Runs the job.
     fn run(&mut self);
 }
 
@@ -154,7 +155,7 @@ pub struct Surface {
 
 impl Surface {
     /// Targets per surface: colour, normal and surface, in the order the
-    /// job's `+0x10`, `+0x18` and `+0x20` texture pointers hold them.
+    /// original's cached surface holds its three textures.
     pub const TARGETS: usize = 3;
 
     fn new(width: u32, height: u32, extra: bool) -> Self {

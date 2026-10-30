@@ -102,9 +102,12 @@ impl StatBytes {
     }
 }
 
-/// Hit sound classes of the weapon section's sound byte, in the original's
-/// table order: a sword, a mace, an axe, a hammer, a mace, a club, wood,
-/// claws, and a body-to-body collision.
+/// Hit sound classes of the weapon section's sound byte, in the item
+/// factory's table order: a sword, a mace, an axe, a hammer, a mace, a club,
+/// wood, claws, and a body-to-body collision. This is the factory's own
+/// table, which the executable keeps apart from the weapon record's
+/// [`crate::weapon_record::HIT_SOUNDS`]: the two differ at class 3
+/// (`WH_HammerA` here, `WH_ClubMW` there).
 pub const IMPACT_SOUNDS: [&str; 9] = [
     "WH_SwordA",
     "WH_MaceMA",
@@ -120,7 +123,8 @@ pub const IMPACT_SOUNDS: [&str; 9] = [
 /// The hit sound a factory weapon's body plays, from its section's sound
 /// byte: the table's entry at that index, or a sword when the class is past
 /// the table (the build reads the table without a bounds test; [guess] an
-/// out-of-range byte cannot ship, so the fallback is Exarust's).
+/// out-of-range byte cannot ship, so the fallback is Exarust's). A build
+/// without a weapon section also takes `WH_SwordA`.
 pub fn impact_sound(class: u8) -> &'static str {
     IMPACT_SOUNDS
         .get(class as usize)
