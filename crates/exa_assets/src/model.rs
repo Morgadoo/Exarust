@@ -409,6 +409,9 @@ pub struct ModelCache {
     pub(crate) factories: HashMap<String, Arc<exa_formats::factory::Factory>>,
     /// The environment cube, once looked for.
     environment: Option<Option<Handle<Image>>>,
+    /// A material's own environment-cube override, by folded texture name
+    /// (the reflection layer, `Mat.TexRef`).
+    environment_overrides: HashMap<String, Option<Handle<Image>>>,
     /// Body model stems (lower case) of the races that bleed, once read.
     bleeding_stems: Option<HashSet<String>>,
     /// Mobility divisors and collision sound sets by material cache key
@@ -1194,6 +1197,13 @@ impl ModelLoader<'_> {
             mat.params.flags |= flags::OPACITY_FALLOFF;
         }
         mat.environment = self.environment_map();
+        // A record's reflection layer is its own environment cube, bound in
+        // place of the scene's (`Mat.TexRef`, the env-override slot).
+        if let Some(name) = m.texture(TextureSlot::Reflection).map(str::to_owned)
+            && let Some(cube) = self.environment_map_named(&name)
+        {
+            mat.environment = Some(cube);
+        }
         // Dirt mode 4 (blood) needs a diffuse map and a program with dirt.
         if m.extra & DIRT_MODE == DIRT_MODE_BLOOD
             && mat.diffuse_map.is_some()
@@ -1206,8 +1216,8 @@ impl ModelLoader<'_> {
         // volume), but only a record whose material state keeps its
         // reflection layer (`Mat.TexRef`) reflects it inside the volume;
         // every other surface's specular GI there is a quarter of the
-        // ambient. The original loads that layer's own cube; Exarust binds
-        // the level's.
+        // ambient. A record's own cube is bound above; without a layer the
+        // level's stays.
         mat = mat.with_map_flags();
         if !reflects_cube(m) {
             mat.params.flags &= !flags::ENVIRONMENT;
@@ -1614,6 +1624,52 @@ impl ModelLoader<'_> {
         }
         let handle = image.map(|i| self.images.add(i));
         self.cache.environment = Some(handle.clone());
+        handle
+    }
+
+    /// A material's own environment cube: the reflection layer's texture
+    /// (`Mat.TexRef`), loaded like the scene's cube (six sRGB faces with
+    /// their mip chains) and cached by folded name. The original binds this
+    /// cube in place of the scene's when the record carries it.
+    ///
+    /// The scene's own cube name returns the scene's handle, and a texture
+    /// that is not a six-face cube is refused (the reflection binding is a
+    /// cube; the level's cube stays then).
+    pub fn environment_map_named(&mut self, name: &str) -> Option<Handle<Image>> {
+        let key = name.to_ascii_lowercase();
+        if key == ENVIRONMENT_MAP {
+            return self.environment_map();
+        }
+        if let Some(h) = self.cache.environment_overrides.get(&key) {
+            return h.clone();
+        }
+        let settings = *self.cache.textures.settings();
+        let image = self
+            .game
+            .texture(name)
+            .and_then(|b| Rfi::parse(b).ok())
+            .and_then(|rfi| {
+                rfi_to_texture(
+                    &rfi,
+                    ColorSpace::Srgb,
+                    self.bc_supported,
+                    texture::default_flags(),
+                    &settings,
+                )
+                .ok()
+            })
+            .filter(|image| {
+                image
+                    .texture_view_descriptor
+                    .as_ref()
+                    .and_then(|v| v.dimension)
+                    == Some(bevy::render::render_resource::TextureViewDimension::Cube)
+            });
+        if image.is_none() {
+            self.warn_once(format!("environment map {name:?} is not a readable cube"));
+        }
+        let handle = image.map(|i| self.images.add(i));
+        self.cache.environment_overrides.insert(key, handle.clone());
         handle
     }
 

@@ -196,6 +196,160 @@ pub fn shadow_quality_offset(flags: u32) -> i32 {
     }
 }
 
+/// Node flag (`flags2`) `0x10000`: activation gives the light no GI
+/// injection colour.
+pub const NODE_NO_GI: u32 = 0x1_0000;
+/// Node flag (`flags2`) `0x20000`: activation zeroes the light's second
+/// colour slot ([`DerivedLight::second_colour`]).
+pub const NODE_NO_SECOND_COLOUR: u32 = 0x2_0000;
+/// Node flag (`flags2`) `0x100000`: activation copies it into a byte of the
+/// light and the alias sync into each alias (its reader is not traced; the
+/// light constructor sets it).
+pub const NODE_FLAG_BIT: u32 = 0x10_0000;
+/// The far plane an unranged light uses (the original's `3.4e38`).
+pub const UNRANGED_FAR: f32 = f32::from_bits(0x7f7f_c99e);
+/// The engine's small-value threshold: an intensity below it becomes 0.
+const TINY: f32 = f32::from_bits(0x33ff_ffd7);
+
+/// The light values activation derives from a record on the original's
+/// modern-lighting path (its GI setting on, the one Exarust renders): the
+/// linear colour times the current intensity, its Rec. 601 luminance, the
+/// GI colour, the light-node colour and the falloff.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DerivedLight {
+    /// The current intensity after activation's clamp (below the engine's
+    /// epsilon it becomes 0; a NaN stays).
+    pub intensity: f32,
+    /// The linear colour multiplied by the intensity (the shader's direct
+    /// colour source).
+    pub colour: [f32; 3],
+    /// The second colour slot: [`DerivedLight::colour`], or zero with node
+    /// flag [`NODE_NO_SECOND_COLOUR`] (its reader is not traced).
+    pub second_colour: [f32; 3],
+    /// The colour the voxel GI injects: the direct colour times the
+    /// record's multiplier, zero with node flag [`NODE_NO_GI`].
+    pub gi_colour: [f32; 3],
+    /// The light node's own colour: the linear colour times
+    /// `√intensity · multiplier · 3` (single precision, in that order).
+    pub inject_colour: [f32; 3],
+    /// The scale of [`DerivedLight::inject_colour`].
+    pub inject_scale: f32,
+    /// Rec. 601 luminance of [`DerivedLight::colour`]
+    /// ([`exa_formats::colour::luma`]).
+    pub luminance: f32,
+    /// The shadow's far plane and the light node's bounding radius: the
+    /// radius when ranged, else [`UNRANGED_FAR`].
+    pub reach: f32,
+    /// The falloff coefficient `0.8 / radius` (`1 / radius` in single
+    /// precision, the product in double) when ranged, else 0: the shader's
+    /// `(1 − d · k)⁴`. The original's radius is in centimetres; Exarust's
+    /// is in metres, so `k` is per metre.
+    pub attenuation: f32,
+    /// The light's shadow-quality offset (`0`, `+1`, `−1` or `−2`).
+    pub shadow_offset: i32,
+    /// The vertical shaping's `y` when the light has a spot, else 1.
+    pub shaping_y: f32,
+    /// The vertical shaping's `z` when the light has a spot, else 1.
+    pub shaping_z: f32,
+}
+
+impl DerivedLight {
+    /// Derives a light's render values from its record, its node's
+    /// `flags2` word and its current intensity. Ranged means the record's
+    /// [`Light::ranged`] (the node flag and a radius above zero).
+    pub fn of(light: &Light, node_flags: u32, intensity: f32) -> Self {
+        // An ordered compare: a NaN intensity is kept.
+        let intensity = if intensity < TINY { 0.0 } else { intensity };
+        let linear = exa_render::material::linear_rgb(light.color);
+        let colour = [
+            linear.x * intensity,
+            linear.y * intensity,
+            linear.z * intensity,
+        ];
+        let (shaping_y, shaping_z) = crate::vertical_shaping(light);
+        let inject_scale = intensity.sqrt() * light.multiplier * 3.0;
+        let gi_colour = if node_flags & NODE_NO_GI != 0 {
+            [0.0; 3]
+        } else {
+            colour.map(|c| c * light.multiplier)
+        };
+        let second_colour = if node_flags & NODE_NO_SECOND_COLOUR != 0 {
+            [0.0; 3]
+        } else {
+            colour
+        };
+        Self {
+            intensity,
+            colour,
+            second_colour,
+            gi_colour,
+            inject_colour: [
+                linear.x * inject_scale,
+                linear.y * inject_scale,
+                linear.z * inject_scale,
+            ],
+            inject_scale,
+            luminance: exa_formats::colour::luma(colour),
+            reach: if light.ranged {
+                light.radius
+            } else {
+                UNRANGED_FAR
+            },
+            attenuation: if light.ranged {
+                (f64::from(1.0 / light.radius) * 0.8) as f32
+            } else {
+                0.0
+            },
+            shadow_offset: shadow_quality_offset(light.flags),
+            shaping_y,
+            shaping_z,
+        }
+    }
+}
+
+/// The values a light's alias sync copies onto each alias: the node word's
+/// bits 16–23 (the alias keeps its other bits), the derived direct colour
+/// (into two slots), the GI and second colours, the luminance, the
+/// falloff, the softness, the [`NODE_FLAG_BIT`] and the reach. The
+/// original also copies the light's world matrix and a frame stamp, which
+/// Exarust's alias nodes take from their own transform.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AliasValues {
+    /// The node word bits 16–23 the alias takes.
+    pub node_flags: u32,
+    pub colour: [f32; 3],
+    pub second_colour: [f32; 3],
+    pub gi_colour: [f32; 3],
+    pub luminance: f32,
+    pub attenuation: f32,
+    pub softness: f32,
+    pub flag_bit: bool,
+    pub reach: f32,
+}
+
+impl AliasValues {
+    /// The alias copy of a light's derived values.
+    pub fn of(derived: &DerivedLight, node_flags: u32, softness: f32) -> Self {
+        Self {
+            node_flags: node_flags & 0x00FF_0000,
+            colour: derived.colour,
+            second_colour: derived.second_colour,
+            gi_colour: derived.gi_colour,
+            luminance: derived.luminance,
+            attenuation: derived.attenuation,
+            softness,
+            flag_bit: node_flags & NODE_FLAG_BIT != 0,
+            reach: derived.reach,
+        }
+    }
+
+    /// An alias node word after the sync: bits 16–23 from the light, the
+    /// rest the alias's own.
+    pub fn alias_word(&self, alias_word: u32) -> u32 {
+        self.node_flags | alias_word & 0xFF00_FFFF
+    }
+}
+
 /// The scene's frame time for the flicker: whole milliseconds since the
 /// last frame, held to 0…[`FRAME_MS_CAP`].
 pub fn frame_ms(delta_ms: u128) -> f32 {
@@ -456,5 +610,88 @@ mod tests {
             rng.draw(),
             (f64::from(0x0808_8406u32) / 4_294_967_296.0) as f32
         );
+    }
+
+    fn light(flags: u32, intensity: f32, radius: f32, ranged: bool) -> Light {
+        Light {
+            flags,
+            color: [1.0, 0.5, 0.25],
+            multiplier: 1.0,
+            intensity,
+            radius,
+            softness: 0.25,
+            spot: None,
+            ranged,
+            animation: None,
+        }
+    }
+
+    #[test]
+    fn derived_light_values_follow_the_activation() {
+        let l = light(1, 4.0, 2.0, true);
+        let derived = DerivedLight::of(&l, exa_formats::rfc::RANGED, 4.0);
+        let c = exa_render::material::linear_rgb([1.0, 0.5, 0.25]);
+        assert_eq!(derived.colour, [c.x * 4.0, c.y * 4.0, c.z * 4.0]);
+        assert_eq!(derived.second_colour, derived.colour);
+        assert_eq!(derived.gi_colour, derived.colour);
+        // √4 · 1 · 3 = 6.
+        assert_eq!(derived.inject_scale, 6.0);
+        assert_eq!(derived.inject_colour, [c.x * 6.0, c.y * 6.0, c.z * 6.0]);
+        assert_eq!(derived.reach, 2.0);
+        // 1/2 = 0.5 in single precision, × 0.8 in double = 0.4.
+        assert_eq!(derived.attenuation, 0.4);
+        assert_eq!(derived.shadow_offset, 1);
+        assert_eq!((derived.shaping_y, derived.shaping_z), (1.0, 1.0));
+        assert_eq!(derived.luminance, exa_formats::colour::luma(derived.colour));
+        // An unranged light reaches the far plane with no falloff.
+        let derived = DerivedLight::of(&light(0, 1.0, 0.0, false), 0, 1.0);
+        assert_eq!(derived.reach, UNRANGED_FAR);
+        assert_eq!(derived.reach, 3.4e38);
+        assert_eq!(derived.attenuation, 0.0);
+        // A 3 m radius: 1/3 rounds in single precision before the double
+        // multiply.
+        let derived = DerivedLight::of(&light(0, 1.0, 3.0, true), 0, 1.0);
+        assert_eq!(derived.attenuation, (f64::from(1.0f32 / 3.0) * 0.8) as f32);
+        // The GI colour carries the multiplier; node flag 0x10000 zeroes it,
+        // 0x20000 the second slot. The body's flicker bit does neither.
+        let mut l = light(FLICKER, 2.0, 1.0, true);
+        l.multiplier = 0.5;
+        assert_eq!(DerivedLight::of(&l, 0, 2.0).gi_colour, [c.x, c.y, c.z]);
+        assert_eq!(DerivedLight::of(&l, NODE_NO_GI, 2.0).gi_colour, [0.0; 3]);
+        let d = DerivedLight::of(&l, NODE_NO_SECOND_COLOUR, 2.0);
+        assert_eq!(d.second_colour, [0.0; 3]);
+        assert_eq!(d.gi_colour, [c.x, c.y, c.z]);
+    }
+
+    #[test]
+    fn a_tiny_intensity_becomes_zero_and_a_nan_stays() {
+        let l = light(0, 0.0, 1.0, true);
+        let d = DerivedLight::of(&l, 0, 1.0e-8);
+        assert_eq!(d.intensity, 0.0);
+        assert_eq!(d.colour, [0.0; 3]);
+        assert_eq!(d.inject_scale, 0.0);
+        let d = DerivedLight::of(&l, 0, -2.0);
+        assert_eq!(d.intensity, 0.0);
+        let d = DerivedLight::of(&l, 0, f32::NAN);
+        assert!(d.intensity.is_nan() && d.inject_scale.is_nan());
+        // The threshold itself is kept.
+        assert_eq!(DerivedLight::of(&l, 0, TINY).intensity, TINY);
+    }
+
+    #[test]
+    fn an_alias_takes_the_derived_values_and_the_flag_byte() {
+        let l = light(0, 2.0, 4.0, true);
+        let node = 0x0012_3456 | NODE_FLAG_BIT;
+        let derived = DerivedLight::of(&l, node, 2.0);
+        let values = AliasValues::of(&derived, node, 0.25);
+        assert_eq!(values.node_flags, 0x0012_0000 | NODE_FLAG_BIT);
+        assert_eq!(values.alias_word(0xAB00_00CD), 0xAB12_00CD | NODE_FLAG_BIT);
+        assert!(values.flag_bit);
+        assert_eq!(values.colour, derived.colour);
+        assert_eq!(values.gi_colour, derived.gi_colour);
+        assert_eq!(values.luminance, derived.luminance);
+        assert_eq!(values.attenuation, derived.attenuation);
+        assert_eq!(values.reach, 4.0);
+        assert_eq!(values.softness, 0.25);
     }
 }

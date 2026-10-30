@@ -107,6 +107,20 @@ impl IconImage {
         }
         out
     }
+
+    /// An icon from the renderer's readback: tightly packed RGBA8 rows as
+    /// the framebuffer returns them (top row first), stored bottom-up as
+    /// the atlas does. The side must fit a `u16`; a short readback gives an
+    /// empty image at the same side.
+    pub fn from_icon_pixels(pixels: &exa_render::icon_render::IconPixels) -> Self {
+        let side = u16::try_from(pixels.side).unwrap_or(0);
+        let mut image = Self::new(side, side, 4);
+        let expected = usize::from(side) * usize::from(side) * 4;
+        if pixels.rgba.len() >= expected {
+            image.pixels = pixels.flip_rows();
+        }
+        image
+    }
 }
 
 /// The smallest power of two from 1 to 65536 that holds `n`; 1 when none
@@ -708,5 +722,22 @@ mod tests {
             (3.0, Some([9, 9, 9, 0x7f]), GLOW_SHADER)
         );
         assert_eq!((g[4].ink, g[4].shader), (Some([255; 4]), ICON_SHADER));
+    }
+
+    #[test]
+    fn a_renderer_readback_enters_the_atlas_bottom_up() {
+        let pixels = exa_render::icon_render::IconPixels {
+            side: 2,
+            rgba: vec![
+                1, 2, 3, 255, 4, 5, 6, 255, // top
+                7, 8, 9, 255, 10, 11, 12, 255, // bottom
+            ],
+        };
+        let image = IconImage::from_icon_pixels(&pixels);
+        assert_eq!((image.width, image.height, image.channels), (2, 2, 4));
+        assert_eq!(
+            image.pixels,
+            vec![7, 8, 9, 255, 10, 11, 12, 255, 1, 2, 3, 255, 4, 5, 6, 255]
+        );
     }
 }

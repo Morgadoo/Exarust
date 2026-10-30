@@ -16,6 +16,7 @@ pub mod gi;
 pub mod gi_shape;
 pub mod glow;
 pub mod hair_program;
+pub mod icon_render;
 pub mod image_noise;
 pub mod light_slots;
 pub mod lights;

@@ -13,6 +13,7 @@ pub mod editor;
 pub mod environment;
 pub mod fire;
 pub mod flame;
+pub mod geometry_node;
 pub mod gi_residency;
 pub mod gi_volume;
 pub mod grid;

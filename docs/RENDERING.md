@@ -619,8 +619,9 @@ such names.
   reflection layer kept by the factory (`Mat.TexRef`, slot `0x100000`:
   metals, glass, eyes, skin) samples it, at mip (rough − 0.05)·8, × the GI
   ambient × 8 × 2; every other surface's specular GI there is **a quarter
-  of the ambient** (the shader's `{?Mat.TexRef?}` alternate). The original
-  loads the layer's own cube; Exarust binds the level's.
+  of the ambient** (the shader's `{?Mat.TexRef?}` alternate). A record with
+  the layer binds its own cube (`ModelLoader::environment_map_named`, loaded
+  like the scene's); every other surface keeps the level's.
 - Roughness ("Gloss" in the shaders) depends on the maps present:
   - 1 − glossiness × specular map green;
   - otherwise 1 − glossiness × gloss map red;
@@ -1450,8 +1451,12 @@ compiles `shading_v` + `shadesmk_f` once per state key (the material
 state's 64-bit word under `0x0003_C00F_0048_0008`), sets `UVOfst =
 (0.5, t + 0.5, t)` with `t` = the parent node's scale plus the scene time's
 milliseconds mod 80 000 over 80 000 (summed in double precision), and draws
-the mesh; with the supersampled quad passes on it repeats the draw once per
-pass. The program (`shadesmk.wesl`, line for line): `a = |N·V|·1.5 − 1`;
+the mesh; with the supersampled quad passes on it repeats the draw in each
+pass once per sub-view the pass draws (the level's first-pass count, at most
+four), each with that sub-view's viewport and matrix (`smoke::pass_draws`).
+`smoke::ProgramCache` holds one program per key; a failed build is kept as
+−1 and the mesh is skipped. The program (`shadesmk.wesl`, line
+for line): `a = |N·V|·1.5 − 1`;
 with an opacity texture `a += A(uv + (0, z))·A(uv + (0, z) + (x, y))` for
 `UVOfst = (x, y, z)`, else `a += 0.25`; then `a = (a − 1 + vertex
 alpha)·0.8` over a black colour. The original's fog and dither snippets
@@ -3186,6 +3191,20 @@ green and 0.75, mixes the highlight towards white by the vertex's red, adds
 that over the pixel by the square of its transparency, adds the glow to the
 alpha and scales the fragment by the vertex alpha. The GUI draw path
 reproduces it as `SkinMode::HltCol`.
+
+**Character thumbnails.** `exa_render::icon_render` is the character
+creation renderer (`FLX_IconRender`), a different private view from the
+item renderer: a 30° field of view, a 10 cm near plane, a view value of 0.8
+and a cleared view flag (read as bloom and sharpen, unconfirmed), and a
+target twice the icon's side. The colour renderbuffer is
+`sRGB8`, or `sRGB8_ALPHA8` for a character cut-out; the destination image
+is RGBA8 with flags `0x20000000`. Its private scene's ambient multiplier is
+100 with the icon preset's `(0.35, 0.36, 0.37)` ambient. One instance is
+reused: a new icon size resizes the image, target and view, and a walk over
+the renderer's object list draws one object per step. The readback enters
+the icon atlas through `IconImage::from_icon_pixels`, which flips
+top-down rows (an assumption about the readback) to the atlas's bottom-up
+ones. Nothing spawns this renderer yet.
 
 ## Procedural noise
 

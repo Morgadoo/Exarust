@@ -428,6 +428,30 @@ impl TerrainBlock {
     pub fn shadow_bias(&self) -> u32 {
         exa_render::shadow_bias::FLOOR
     }
+
+    /// What activation sets on the block: the geometry node's shadow step
+    /// and bias from its option word, a unit bound on every axis, and
+    /// whether the block's kd-tree is built (not for a block whose
+    /// external-draw bit is set). The floor's shadow-bias level is
+    /// [`TerrainBlock::shadow_bias`].
+    pub fn activation(option: u32, external_draw: bool) -> TerrainActivation {
+        TerrainActivation {
+            shadow: crate::geometry_node::shadow_scales(option),
+            bound: [1.0; 3],
+            build_tree: !external_draw,
+        }
+    }
+}
+
+/// What activating a terrain block sets.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TerrainActivation {
+    /// The shadow step and bias ([`crate::geometry_node::shadow_scales`]).
+    pub shadow: (f32, f32),
+    /// The geometry node's bound, 1 on every axis for a terrain block.
+    pub bound: [f32; 3],
+    /// Whether the block's kd-tree is built.
+    pub build_tree: bool,
 }
 
 fn apply_splats(
@@ -2243,6 +2267,19 @@ mod tests {
                 assert_eq!((c.z - 6.0 * by as f32 + 21.0).abs(), 0.0);
             }
         }
+    }
+
+    #[test]
+    fn a_terrain_block_activates_with_a_unit_bound() {
+        let activation = TerrainBlock::activation(0, false);
+        assert_eq!(activation.shadow, (1.0, 1.0));
+        assert_eq!(activation.bound, [1.0; 3]);
+        assert!(activation.build_tree);
+        assert!(!TerrainBlock::activation(0, true).build_tree);
+        assert_eq!(
+            TerrainBlock::activation(0x0008_0000 | 2 << 16, false).shadow,
+            (1.01, 1.01)
+        );
     }
 
     #[test]
