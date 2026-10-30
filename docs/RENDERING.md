@@ -2877,8 +2877,9 @@ vec2 vTex; …` and `in vec3 vrTex; in vec4 vrCol; uniform vec3 env0; …`).
   (0.4, 0, 0) toward (0.31, 0, 0.78) with the second's alpha; an undead mind
   has (0.3, 0.3, 0.3, 1), the same, and (0.5, 0.5, 0.6, 0.5). `MindCol0.w`
   is the overlay alpha less the entry's fade.
-- **Geometry**: one 15 cm sphere of 16 segments (eight latitude rings), its
-  vertices shaped once by `shape_sphere` (x × 0.8, the half projection on
+- **Geometry**: one 15 cm sphere of 16 segments (eight latitude rings; the
+  polyhedron helper is outside the pack, so the triangulation is a
+  reconstruction [guess]), its vertices shaped once by `shape_sphere` (x × 0.8, the half projection on
   (0, −0.8, 0.2) subtracted, a `1 − z/100` taper above the middle and 2 cm
   up); its normals stay the unshaped sphere's. The object matrix is the
   head node's three axes times the record's three scales and the anchor as

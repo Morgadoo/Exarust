@@ -74,6 +74,9 @@ pub struct MindSightAssets {
 impl MindSightAssets {
     /// The sphere the original builds: a 15 cm sphere of 16 segments,
     /// shaped once by [`shape_sphere`], its normals the unshaped sphere's.
+    /// The original's polyhedron helper is outside this pack; this is a
+    /// 16-segment UV reconstruction of its `(16, 15, 0, 0, 2)` call
+    /// [guess: the triangulation].
     pub fn sphere(&self) -> Mesh {
         let mut positions = Vec::new();
         let mut normals = Vec::new();
