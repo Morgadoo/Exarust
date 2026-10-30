@@ -785,6 +785,21 @@ impl Exporter {
         options: &ExportOptions,
         extra: Option<&mut ExtraChunks<'_>>,
     ) -> Result<Vec<u8>> {
+        let mut hooks = NoHooks;
+        self.export_with(scene, options, extra, &mut hooks)
+    }
+
+    /// [`Self::export`] with the scene's preparation hooks: the walk offers
+    /// each mesh part and the character writer offers each character with a
+    /// body, and the node writer offers each attachment, exactly where the
+    /// original calls the scene's own methods.
+    pub fn export_with(
+        &mut self,
+        scene: &ExportScene,
+        options: &ExportOptions,
+        extra: Option<&mut ExtraChunks<'_>>,
+        hooks: &mut dyn ExportHooks,
+    ) -> Result<Vec<u8>> {
         let mut walk = Walk::new(scene)?;
         let roots: Vec<usize> = (0..scene.nodes.len())
             .filter(|&i| scene.nodes[i].parent.is_none())
@@ -792,10 +807,10 @@ impl Exporter {
         for r in roots {
             if scene.nodes[r].flags & flags::CLASS == class::GROUP {
                 for c in walk.children[r].clone() {
-                    walk.visit(c)?;
+                    walk.visit(c, options, hooks)?;
                 }
             } else {
-                walk.visit(r)?;
+                walk.visit(r, options, hooks)?;
             }
         }
         let entries = walk.number()?;
@@ -818,7 +833,7 @@ impl Exporter {
             w.open(tag::NODE_LIST);
             w.u32(entries.len() as u32);
             for e in &entries {
-                walk.write_node(&mut w, e, options)?;
+                walk.write_node(&mut w, e, options, hooks)?;
             }
             w.close()?;
         }
@@ -831,7 +846,7 @@ impl Exporter {
         if !walk.characters.is_empty() {
             w.open(tag::CHARACTERS);
             w.u32(walk.characters.len() as u32);
-            walk.write_characters(&mut w, options)?;
+            walk.write_characters(&mut w, options, hooks)?;
             w.close()?;
         }
         if scene.whole_scene
@@ -1022,7 +1037,12 @@ impl<'a> Walk<'a> {
     }
 
     /// The collection pass over one node and its subtree.
-    fn visit(&mut self, i: usize) -> Result<()> {
+    fn visit(
+        &mut self,
+        i: usize,
+        options: &ExportOptions,
+        hooks: &mut dyn ExportHooks,
+    ) -> Result<()> {
         let f = self.flags[i];
         if f & flags::OWNED != 0 {
             return Ok(());
@@ -1048,6 +1068,13 @@ impl<'a> Walk<'a> {
                 let NodeData::Mesh(mesh) = &self.scene.nodes[i].body else {
                     return Err(Error::Malformed(format!("mesh node {i} has no mesh")));
                 };
+                // The original keeps a second part list for this pass and
+                // offers its parts last-first; Exarust has one part list.
+                if !options.skip_part_prepare && !mesh.parts.is_empty() {
+                    for part in (0..mesh.parts.len()).rev() {
+                        hooks.prepare_part(i, part);
+                    }
+                }
                 for part in &mesh.parts {
                     if let Some(m) = &part.material {
                         self.add_material(m);
@@ -1058,7 +1085,7 @@ impl<'a> Walk<'a> {
             self.index[i] = self.nodes.len() as i32;
         }
         for c in self.children[i].clone() {
-            self.visit(c)?;
+            self.visit(c, options, hooks)?;
         }
         Ok(())
     }
@@ -1123,7 +1150,13 @@ impl<'a> Walk<'a> {
             .map_or(0, |p| self.index[p] as u32)
     }
 
-    fn write_node(&self, w: &mut ChunkWriter, e: &Entry, options: &ExportOptions) -> Result<()> {
+    fn write_node(
+        &self,
+        w: &mut ChunkWriter,
+        e: &Entry,
+        options: &ExportOptions,
+        hooks: &mut dyn ExportHooks,
+    ) -> Result<()> {
         let node = self.node(e.node)?;
         let f = self.flags[e.node];
         let kind = if f & flags::PROP != 0 {
@@ -1138,6 +1171,11 @@ impl<'a> Walk<'a> {
                 _ => tag::NODE_PLAIN,
             }
         };
+        // The original lets the attachment bring itself up to date before
+        // its node's chunk is opened, whatever the node's data source.
+        if f & flags::ATTACHED != 0 && node.attachment.is_some() {
+            hooks.prepare_attachment(e.node);
+        }
         w.open(kind);
         w.bytes(&node.name);
         w.u32(f & flags::HEADER_MASK);
@@ -1325,7 +1363,19 @@ impl<'a> Walk<'a> {
         w.close()
     }
 
-    fn write_characters(&self, w: &mut ChunkWriter, options: &ExportOptions) -> Result<()> {
+    fn write_characters(
+        &self,
+        w: &mut ChunkWriter,
+        options: &ExportOptions,
+        hooks: &mut dyn ExportHooks,
+    ) -> Result<()> {
+        // Every character written with its body refreshes its record first;
+        // a class-1 node is written without a body and is not offered.
+        for &i in &self.characters {
+            if self.flags[i] & flags::CLASS != class::PLAIN {
+                hooks.prepare_character(i);
+            }
+        }
         if let Some(db) = self.scene.character_db.as_ref().filter(|d| d.count > 0) {
             w.open(tag::CHARACTER_DB);
             write_rdb(w, CHARACTER_DB_MAGIC, db)?;

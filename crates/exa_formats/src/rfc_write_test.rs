@@ -701,6 +701,66 @@ fn condition_words_round_to_even_and_zero_non_positive_daze() {
     }
 }
 
+#[derive(Default)]
+struct Recording {
+    calls: Vec<(&'static str, usize, usize)>,
+}
+
+impl ExportHooks for Recording {
+    fn prepare_part(&mut self, node: usize, part: usize) {
+        self.calls.push(("part", node, part));
+    }
+
+    fn prepare_attachment(&mut self, node: usize) {
+        self.calls.push(("attachment", node, 0));
+    }
+
+    fn prepare_character(&mut self, node: usize) {
+        self.calls.push(("character", node, 0));
+    }
+}
+
+#[test]
+fn the_walk_offers_parts_last_first_attachments_and_characters() {
+    let mesh = mesh_node("M", quad());
+    let mut attached = node("Body", class::PLAIN | flags::SAVED | flags::ATTACHED, None);
+    attached.attachment = Some(Attachment {
+        class: ATTACH_BODY,
+        id: 0,
+        data: AttachmentData::Body(Box::new(body())),
+    });
+    let mut character = character(0);
+    character.flags = flags::CHARACTER | flags::SAVED;
+    let scene = scene_of(vec![mesh, attached, character]);
+
+    let mut record = Recording::default();
+    Exporter::new()
+        .export_with(&scene, &ExportOptions::default(), None, &mut record)
+        .unwrap();
+    assert_eq!(
+        record.calls,
+        [
+            ("part", 0, 1),
+            ("part", 0, 0),
+            ("attachment", 1, 0),
+            ("character", 2, 0),
+        ]
+    );
+
+    // The part-preparation switch leaves out the part pass alone: the
+    // materials are still collected and the other hooks still run.
+    let mut record = Recording::default();
+    let options = ExportOptions {
+        skip_part_prepare: true,
+        ..ExportOptions::default()
+    };
+    let bytes = Exporter::new()
+        .export_with(&scene, &options, None, &mut record)
+        .unwrap();
+    assert_eq!(record.calls, [("attachment", 1, 0), ("character", 2, 0)]);
+    assert!(roots(&bytes).iter().any(|(t, _)| *t == tag::MATERIAL_LIST));
+}
+
 #[test]
 fn a_voxel_light_reads_back() {
     let mut n = node("@Omni001", class::VOXEL_LIGHT | flags::SAVED, None);
