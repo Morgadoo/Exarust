@@ -241,6 +241,8 @@ Done (change `review-the-terrain-mask-window-and-set-copy`; terrain5 lane, DeepS
 
 Done (change `blit-terrain-set-copies`; terrain6 lane, DeepSeek, stalled after three commits, reviewed): when the 21 high-resolution terrain sets run out, the block giving its high set away keeps a copy of its baked image (the selector records the copy, the renderer blits it with the original's copy program before the frame's bakes), behind EXA_TERRAIN_SETS=1; the review restored the NaN-kept-low rule the lane had broken and made the copy wait for a drawn high set. FLX_Terrain_Texrender2 68% → 70%, TStaticTerrain 71% → 72%.
 
+Done (change `draw-the-hair-program`; gpuprog lane, Claude): hair now draws with the original's own hair program (anisotropic strand highlights, wrapped diffuse and rim, strand alpha) instead of the PBR program, and a material without MatSpc draws no specular. FLX_GPUPrograms 75% → 78%.
+
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
 Done (change `add-apparel-painting`): object database items and the
@@ -821,6 +823,8 @@ Done (change `index-the-cloth-body-parts`; hairon pass by a Claude agent): the c
 
 Done (change `give-prop-parts-their-mesh-triangles`; simsector7 lane, DeepSeek, reviewed): prop parts carry their node mesh's triangles, so a prop collides by its mesh (one-sided, as the original's sphere-against-mesh queries) whenever it is the less mobile side of a pair; the review stopped the lane copying every mesh node's triangles at load and fixed a clippy failure the lane had reported as passing. exanima01: 60 FPS. TSimSector 75% → 76%.
 
+Done (objdb3 lane, DeepSeek with REA, reviewed): the object database's editor look roll, container accessors, old-layout paint seed and the migration's factory step follow the original. SG_ObjectDB2 90% → 92%.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
@@ -1165,6 +1169,10 @@ Done (change `pull-doors-as-bodies`; doorbodies pass by a Claude agent): a place
 
 Done (change `review-the-plant-ground-grass-hooks-and-node-visibility`; gridenv4 lane, DeepSeek, reviewed): the plant ground's diagonal normal correction, the grass chunk's draw and shadow tests and the importer's visibility walks are ported from the assembly as tested rules (the review moved the grass sun-shadow bit onto the node's mask word); none is wired, Exarust having no block or node draw words and no fade value at load. TTerrainGrass 72% → 75%, RF_Import_RFC2 73% → 74%.
 
+Done (navigation3 lane, DeepSeek with REA, reviewed): the navigation camera's editor scan, cut-away cascade and focus, the viewport attachment and the gamepad zoom follow the original; the review fixed four lane errors. RF_Navigation 74% → 77%.
+
+Done (sceneenv3 lane, DeepSeek with REA, reviewed): the scene environment now ticks live (rain, lightning, fog, ambient and sun republished); the review fixed four lane errors against the assembly. A dark outdoor shot was a drawn night (outdoor levels draw their day per load; compare with EXA_SCENE_SEED), not a regression. TSceneEnvironment 65% → 82%, RFE_GridEnvs 61% → 68%.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
@@ -1349,6 +1357,18 @@ Done (playerctl10 lane, Claude): the world-object click runs as the original's c
 
 Done (motilepart11 lane, Claude): held weapons keep their weapon bit as in the original, so clashes and weapon parries now happen live (they had been misread as blocks); a torch blocks with the bare arm; a block rings the shield's or torch's own material sound. TMotilePart 57% → 58%.
 
+Done (itemfactory3 lane, DeepSeek with REA, reviewed): factory weapons paint each part at its atlas region's size with the original's width crop and repaint on a condition change; the procedural material's programs, pass uniforms, job ring and surface cache are modelled; the review fixed the UVScale fold, the crop, a repaint misplacement bug and the sampler names.
+
+Done (motiledyn11 lane, Claude): a struck player's camera now jolts and the pad rumbles as the original's damage routine does, the striking weapon rings once per swing on its first clash, and getting up gives the legs the clip's reach; a GPU duel logs the jolts, rings and clashes. TMotileDynamics about 80% reproduced, 68% live.
+
+Done (motilepart12 lane, Claude): a block rings the striking weapon at the original's own rule, fists carry the weapon bit while unarmed, and death silences the voice. TMotilePart 58% → 59%.
+
+Done (particles3 lane, DeepSeek with REA, reviewed): the particle emitters run their per-frame pass with the original's light, emissive and sound rules, fire emitters carry their detail values and loop sound, and the arc texture scrolls as the original's. TParticleSystem 82% → 86%.
+
+Done (change `wire-the-skin-parent-frame`; skinning3 lane, DeepSeek with REA, reviewed): the skin build passes group centres from parent to child parts as the original does, and apparel paint uses the original's double-precision condition and mask names. RF_Skinning 82% → 85%, FLX_Character_Textures 77% → 79%.
+
+Done (change `hold-bodies-and-arm-strikes`; thaumforce lane, Claude): kinesis and throw now hold their bodies in the force's own environment under a shell over the body's meshes, and Strikes puts an aura on each held weapon with the original's strikes shader; GPU runs show both. The posture switch now leaves a power's looping clip alone, as the original does, so a kinesis no longer ends at once. SG_Thaum_Force about 78% → 80%.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
@@ -1461,6 +1481,12 @@ Done (change `follow-and-search-the-dead`; charai pass by a Claude agent): the A
 Done (change `route-the-flight-on-its-turn`; motileai6 lane, DeepSeek, stalled after two commits, reviewed): on levels with a navigation grid a fleeing NPC picks and routes its way out on its own planning turn, replans while no route is followed or near the goal, follows only routes whose ends lie more than 150 cm apart and marks the exit's room as fled when the route ends near the threat, so it runs around walls to its door instead of beelining. The review replaced the lane's copy of the route planner with the real one (it had dropped the planner turn and the follow test), routed from the feet's height, and removed a stand reset that duplicated the existing look settle and a restart that changed nothing. The idle return is a tested function its chase caller does not call yet. TMotileAI about 78% → 79% with this round's combat-state work.
 
 Done (change `review-the-motile-ai-tick-rules`; motileai7 lane, DeepSeek, reviewed): the duellist's entry takes its target through the original's set-target rule (flat bearing, aim from its yaw), the AI leaves a fight through the leave-combat routine, familiarity drifts only existing relations, and removed characters are forgotten; the review fixed the lane's footprint gate (it read the combat state, not the route-following flag) and removed its duplicate footprint stamps, invented first-sighting relations, a combat-idle stance on entry and the estimate tick's rules in set-target. TMotileAI 79% → 81%.
+
+Done (change `measure-the-combatant-origin`; combatant3 lane, DeepSeek with REA, reviewed): the duellist scores its combat places from the opponent's measured origin and publishes the original's fighting estimate; the review corrected five lane rules against the assembly. TCombatant 86% → 92%.
+
+Done (change `raise-the-skin-boxes-and-style-frames`; guiskin3 lane, DeepSeek with REA, reviewed): the GUI draw skin's boxes, troughs, thumbs and style frames follow the original's virtual table; the review reverted three lane errors against the assembly. TGUIDrawSkin 90% → 91%.
+
+Done (motileai8 lane, Claude): NPC footprints follow the original's gate in play, the duellist leads a moving foe when it sets its target, leaving a fight runs the original's leave routine with its 3 s look timer, contacts are admitted by weight as the original does, and the duellist holds its stance while parrying. TMotileAI 81% → 83%.
 
 ### Phase 7 — Game modes and content
 
@@ -1944,6 +1970,18 @@ Done (change `review-the-arena-return-and-draws`; arena6 lane, DeepSeek, reviewe
 Done (change `run-the-story-wake-and-combat-mode`; gamemain5 lane, Claude, after the DeepSeek provider failed): the game flow's combat-mode setter, the revive's order, the story respawn giving the controls back, the first wake-up ending when the body is up (the original's wake tick now runs) and the camera turning to each start's shot follow the original. SG_GameMain 58% → 60%.
 
 Done (savegames8 lane, Claude, after the DeepSeek provider failed): saves now run in the game: a story or arena session saves to a new slot and an arena slot loads back as the original's full load does (tables, list regeneration with the item classification, clock, player reset), on the original's cached slot list; the scan's repeat rule was corrected. GPU runs wrote and reloaded both kinds of slot. XA_SaveGames 67% → 70%.
+
+Done (change `score-the-arena-rounds-and-close-the-bracket`; arena7 lane, Claude): arena fighters keep the original's combat score and each round's experience is now credited live to the company's records, tournaments draw their winners from the scene and close the bracket as the original does, the roster shows its health gauges, and a slot load resets the arena stores first. XA_Arena 82% → 84%.
+
+Done (change `build-the-hub-windows-from-their-tables`; arenawin lane, Claude): the arena hub's company windows are built from the original's control tables and wired to the arena logic (a draw-order bug that left them blank was fixed). XA_Arena 84% → 85%.
+
+Done (change `run-the-character-creator`; charcreate5 lane, Claude): the original's character creator now runs from the main menu, with its forms read from the constructors, its preview on the creation floor and its commit starting the game with the created record (spawned with its physique, skin, hair and name). The background picker shows its four silhouette cards. Not yet: the saves' screen, the arena and versus commits.
+
+Done (change `reproduce-the-dormant-gui-controls`; dormantgui lane, Claude): the editor-only popup menu, tree view and the game-object editor's handlers are reproduced from the assembly as tested types with no live caller, as the retail game never builds them. TGUITreeView and TGUIMenu 0% → 90%, the dormant object editor 0% → 40%.
+
+Done (matchboard3 lane, DeepSeek with REA, reviewed; merged with the hub windows): the arena match board is drawn from its decoded template records like the other hub windows, with the original's day-end rule and actions; the review restored three lane errors. TMatchBoard 83% → 90%.
+
+Done (change `continue-from-the-saves-screen`; savescreen lane, Claude): the menu's CONTINUE opens the original's saves' character screen and loads a story save into the running game with its player record, clock and position; story saves now hold the player and the flow's save steps write the slot. A same-frame double teardown that crashed the terrain build on load was fixed. XA_SaveGames 70% → 73%.
 
 ### Phase 8 — Polish and release
 
