@@ -431,56 +431,28 @@ impl TerrainBlock {
         exa_render::shadow_bias::FLOOR
     }
 
-    /// The number of blocks a tile has per side at `level`.
-    pub fn blocks_per_side(level: u32) -> u32 {
-        1u32 << level
-    }
-
-    /// The block's low and high corners in its tile's space, metres. The
-    /// slab is flat: y runs 10 cm either side of the tile's surface.
-    pub fn min_max(&self, size: f32, tile_centre: Vec3) -> (Vec3, Vec3) {
-        let centre = Self::centre_in_tile(size, self.bx, self.by, self.level) + tile_centre;
-        let half = Self::half_extents(size, self.level);
-        (centre - half, centre + half)
-    }
-
-    /// What activation sets on the block: visible, the floor's shadow-bias
-    /// level, the three shadow scales of one, and whether its kd-tree is
-    /// built (the original skips it for a block whose external-draw bit is
-    /// set).
-    pub fn activation(&self, external_draw: bool) -> TerrainActivation {
+    /// What activation sets on the block: the geometry node's shadow step
+    /// and bias from its option word, a unit bound on every axis, and
+    /// whether the block's kd-tree is built (not for a block whose
+    /// external-draw bit is set). The floor's shadow-bias level is
+    /// [`TerrainBlock::shadow_bias`].
+    pub fn activation(option: u32, external_draw: bool) -> TerrainActivation {
         TerrainActivation {
-            visible: true,
-            shadow_bias: self.shadow_bias(),
-            shadow_scales: [1.0; 3],
+            shadow: crate::geometry_node::shadow_scales(option),
+            bound: [1.0; 3],
             build_tree: !external_draw,
         }
-    }
-
-    /// The block a tile-space point falls in at `level`, or `None` outside
-    /// the tile.
-    pub fn block_at(size: f32, point: Vec3, level: u32) -> Option<(u32, u32)> {
-        let (step, half) = Self::step(size, level);
-        let first = half - size * 0.5;
-        let side = Self::blocks_per_side(level);
-        let axis = |v: f32| {
-            let f = (v - first) / step;
-            if f < 0.0 || f >= side as f32 {
-                None
-            } else {
-                Some(f.floor() as u32)
-            }
-        };
-        Some((axis(point.x)?, axis(point.z)?))
     }
 }
 
 /// What activating a terrain block sets.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TerrainActivation {
-    pub visible: bool,
-    pub shadow_bias: u32,
-    pub shadow_scales: [f32; 3],
+    /// The shadow step and bias ([`crate::geometry_node::shadow_scales`]).
+    pub shadow: (f32, f32),
+    /// The geometry node's bound, 1 on every axis for a terrain block.
+    pub bound: [f32; 3],
+    /// Whether the block's kd-tree is built.
     pub build_tree: bool,
 }
 
@@ -2272,36 +2244,15 @@ mod tests {
     }
 
     #[test]
-    fn a_terrain_block_activates_flat_and_visible() {
-        let block = TerrainBlock {
-            bx: 3,
-            by: 4,
-            level: TerrainBlock::LEVEL,
-            room: Some(2),
-        };
-        let activation = block.activation(false);
-        assert!(activation.visible);
-        assert_eq!(activation.shadow_bias, exa_render::shadow_bias::FLOOR);
-        assert_eq!(activation.shadow_scales, [1.0; 3]);
+    fn a_terrain_block_activates_with_a_unit_bound() {
+        let activation = TerrainBlock::activation(0, false);
+        assert_eq!(activation.shadow, (1.0, 1.0));
+        assert_eq!(activation.bound, [1.0; 3]);
         assert!(activation.build_tree);
-        assert!(!block.activation(true).build_tree);
-        assert_eq!(TerrainBlock::blocks_per_side(3), 8);
-        let (min, max) = block.min_max(48.0, Vec3::new(100.0, -1.0, 50.0));
-        assert_eq!(min, Vec3::new(94.0, -1.1, 50.0));
-        assert_eq!(max, Vec3::new(100.0, -0.9, 56.0));
-        // A point on the block's centre finds it; the tile's edge is in the
-        // last block and outside the tile is None.
+        assert!(!TerrainBlock::activation(0, true).build_tree);
         assert_eq!(
-            TerrainBlock::block_at(48.0, Vec3::new(-3.0, 0.0, 3.0), 3),
-            Some((3, 4))
-        );
-        assert_eq!(
-            TerrainBlock::block_at(48.0, Vec3::new(21.0, 0.0, 21.0), 3),
-            Some((7, 7))
-        );
-        assert_eq!(
-            TerrainBlock::block_at(48.0, Vec3::new(28.0, 0.0, 0.0), 3),
-            None
+            TerrainBlock::activation(0x0008_0000 | 2 << 16, false).shadow,
+            (1.01, 1.01)
         );
     }
 
