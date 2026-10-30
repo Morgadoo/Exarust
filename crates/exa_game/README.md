@@ -1009,9 +1009,11 @@ the kit and a press on the kit releases it, `LoadoutCloseRequest` closes it
 and the paint lays the backdrop, the arsenal, the equipment and the
 preview out at the constructor's rectangles through the GUI draw path. The
 shelf marks the items a kit has equipped (`mark_stock`), and an item
-dragged back to the arsenal goes through the company arsenal's own lend
-query and entry write (`return_to_arsenal`: `Arsenal::release`, then a new
-entry with no flags for an item it neither lent nor held). The
+dragged back to the arsenal asks the company arsenal's lend query only when
+the form's own entry was not lent (`return_to_arsenal`: `Arsenal::release`,
+which gives back the first lend of every box), then writes a new entry with
+no flags for an item of another category that neither had lent; nothing
+calls `return_to_arsenal` from the live screen yet. The
 session save carries the company emblem (`arena_tables`) but not the six
 per-rank kits; they start empty on load. The technique selector's bridge
 (`techniques`) reads a

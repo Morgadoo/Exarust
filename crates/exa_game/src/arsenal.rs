@@ -184,22 +184,25 @@ impl Arsenal {
         true
     }
 
-    /// Clear `mask` from the first entry, box by box on the item's shelf,
-    /// that holds the item with any bit of `mask` set.
+    /// Clear `mask` from the first entry of each box on the item's shelf
+    /// that holds the item with any bit of `mask` set; whether any did. The
+    /// original's walk goes on to the next box after a hit, so every box
+    /// gives back one lend.
     pub fn release(&mut self, item: u32, kind: ItemKind, mask: u32) -> bool {
         let Some(shelf) = shelf_of(kind) else {
             return false;
         };
+        let mut released = false;
         for entries in &mut self.shelves[shelf] {
             if let Some(entry) = entries
                 .iter_mut()
                 .find(|entry| entry.item == item && entry.flags & mask != 0)
             {
                 entry.flags &= !mask;
-                return true;
+                released = true;
             }
         }
-        false
+        released
     }
 
     /// An item leaves the company. `holders` are the manager, then the
@@ -340,6 +343,19 @@ mod tests {
         });
         assert!(arsenal.release(7, sword, 0x200));
         assert_eq!(arsenal.shelves[WEAPONS][3][0].flags, 0);
+        // A hit does not end the walk: each box gives back its first lend.
+        arsenal.shelves[WEAPONS][0][0].flags = 0x200;
+        arsenal.shelves[WEAPONS][3][0].flags = 0x200;
+        arsenal.shelves[WEAPONS][3].push(ArsenalEntry {
+            item: 7,
+            flags: 0x200,
+            first: 40,
+            second: 4,
+        });
+        assert!(arsenal.release(7, sword, 0x200));
+        assert_eq!(arsenal.shelves[WEAPONS][0][0].flags, 0);
+        assert_eq!(arsenal.shelves[WEAPONS][3][0].flags, 0);
+        assert_eq!(arsenal.shelves[WEAPONS][3][1].flags, 0x200);
         let rock = ItemKind {
             known: true,
             ..ItemKind::default()

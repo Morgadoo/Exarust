@@ -4,8 +4,9 @@
 //! Evidence: the loadout form's routines in the retail image, read from
 //! the instructions. The form is 1024 × 768 with the character-creation
 //! preview between the arsenal (left) and the equipment (right). Mode 1
-//! (creation) adds a name box and edits rank 5; mode 3 (champion) only
-//! shows the kit. An item may be equipped when its rank is at most the
+//! (named creation here) adds a name box, edits rank 5 and shows the hire
+//! block (HIRE, fee, upkeep, profession) in place of the rank and shelf
+//! rows; mode 3 (champion) only shows the kit. An item may be equipped when its rank is at most the
 //! form's rank (5 when unset) and its cost fits the rank's limit; a weapon
 //! costs its points less what it displaces from the hands. The paint fills
 //! the form black before the base draws.
@@ -55,12 +56,6 @@ pub const ARMOUR_KEEP: u32 = 0x100;
 /// The flag the form puts on an arsenal entry the shown record has
 /// equipped (a hand or a worn item).
 pub const EQUIPPED_MARK: u32 = 0x200;
-/// The equipment container's slots and their state words.
-pub const EQUIPMENT_SLOTS: usize = 24;
-/// A slot shown; the state word's visibility bits.
-pub const SLOT_SHOWN: u32 = 0x110;
-/// A slot hidden.
-pub const SLOT_HIDDEN: u32 = 0;
 /// The rank an unset form rank stands for.
 pub const MAX_RANK_UNSET: i32 = 5;
 
@@ -373,16 +368,63 @@ pub fn clear_pointed(editor: &mut LoadoutEditor, item: u32) -> bool {
     }
 }
 
-/// The equipment container's slot states in creation mode: the first
-/// eighteen slots are shown ([`SLOT_SHOWN`]) and the last six hidden
-/// ([`SLOT_HIDDEN`]).
+/// The constructor's record changes for a mode word, made to the 28
+/// control records ([`crate::arena_forms::LOADOUT_RECORDS`]) before they are
+/// laid out. Mode 1 widens Previous and Next to 112 (Next moving to x 120),
+/// hides Dismiss, the rank, points and encumbrance rows and the ten shelf
+/// and box buttons ([`crate::settings::HIDDEN`]), and shows the hire block
+/// (HIRE, the fee and upkeep rows and the profession, state 0). Mode 3
+/// disables the list, the rank and the first four shelf buttons and hides
+/// Previous, Next, Dismiss and the points row. The other modes keep the
+/// table as shipped.
 #[must_use]
-pub fn creation_equipment_slots() -> [u32; EQUIPMENT_SLOTS] {
-    let mut slots = [SLOT_HIDDEN; EQUIPMENT_SLOTS];
-    for slot in slots.iter_mut().take(18) {
-        *slot = SLOT_SHOWN;
+pub fn mode_records(mode: LoadoutMode) -> [crate::creation_forms::FormRecord; 28] {
+    use crate::arena_forms::loadout as role;
+    use crate::gui_controls::state::DISABLED;
+    use crate::settings::HIDDEN;
+    let mut records = crate::arena_forms::LOADOUT_RECORDS;
+    match mode {
+        LoadoutMode::Creation => {
+            records[role::PREVIOUS].w = 0x70;
+            records[role::NEXT].x = 0x78;
+            records[role::NEXT].w = 0x70;
+            let hidden = [
+                role::DISMISS,
+                role::RANK_LABEL,
+                role::RANK,
+                role::POINTS,
+                role::ENCUMBRANCE_LABEL,
+                role::ENCUMBRANCE,
+            ];
+            for index in hidden.into_iter().chain(role::SHELVES).chain(role::BOXES) {
+                records[index].state = HIDDEN;
+            }
+            for index in [
+                role::HIRE,
+                role::FEE_LABEL,
+                role::FEE,
+                role::UPKEEP_LABEL,
+                role::UPKEEP,
+                role::PROFESSION,
+            ] {
+                records[index].state = 0;
+            }
+        }
+        LoadoutMode::Champion => {
+            let disabled = [role::LIST, role::RANK];
+            for index in disabled
+                .into_iter()
+                .chain(role::SHELVES[..4].iter().copied())
+            {
+                records[index].state = DISABLED;
+            }
+            for index in [role::PREVIOUS, role::NEXT, role::DISMISS, role::POINTS] {
+                records[index].state = HIDDEN;
+            }
+        }
+        LoadoutMode::Arena | LoadoutMode::Match => {}
     }
-    slots
+    records
 }
 
 /// Marks the arsenal entries the shown record has equipped: first the mark
@@ -984,7 +1026,16 @@ pub fn controls(
     unit: i32,
     client: crate::gui_controls::LayoutClient,
 ) -> Vec<crate::gui_controls::Control> {
-    let mut records: Vec<crate::gui_controls::Control> = crate::arena_forms::LOADOUT_RECORDS
+    controls_for(LoadoutMode::Arena, unit, client)
+}
+
+/// [`controls`] with a mode's record changes ([`mode_records`]) made first.
+pub fn controls_for(
+    mode: LoadoutMode,
+    unit: i32,
+    client: crate::gui_controls::LayoutClient,
+) -> Vec<crate::gui_controls::Control> {
+    let mut records: Vec<crate::gui_controls::Control> = mode_records(mode)
         .iter()
         .map(crate::record_form::record_control)
         .collect();
@@ -999,6 +1050,16 @@ mod tests {
     fn item(id: u32, points: i32, rank: i32) -> LoadoutItem {
         LoadoutItem::weapon(id, 0x20, points, rank)
     }
+
+    const LOADOUT_RECORDS_STATE: [u32; 28] = {
+        let mut states = [0; 28];
+        let mut i = 0;
+        while i < 28 {
+            states[i] = crate::arena_forms::LOADOUT_RECORDS[i].state;
+            i += 1;
+        }
+        states
+    };
 
     fn editor() -> LoadoutEditor {
         LoadoutEditor {
@@ -1283,14 +1344,36 @@ mod tests {
     }
 
     #[test]
-    fn creation_shows_eighteen_slots_and_hides_six() {
-        let slots = creation_equipment_slots();
-        assert_eq!(slots.len(), 24);
-        assert!(slots[..18].iter().all(|&state| state == SLOT_SHOWN));
-        assert!(slots[18..].iter().all(|&state| state == SLOT_HIDDEN));
-        // The two words are the original's visibility bits.
-        assert_eq!(SLOT_SHOWN, 0x110);
-        assert_eq!(SLOT_HIDDEN, 0);
+    fn the_mode_words_change_the_constructors_records() {
+        use crate::arena_forms::loadout as role;
+        use crate::settings::HIDDEN;
+        let hire = mode_records(LoadoutMode::Creation);
+        assert_eq!((hire[role::PREVIOUS].w, hire[role::NEXT].x), (0x70, 0x78));
+        assert_eq!(hire[role::NEXT].w, 0x70);
+        // Dismiss to encumbrance (4..=9) and the shelves and boxes (11..=20)
+        // are hidden; the panel (10) and CLOSE (21) keep their words.
+        for index in (4..=9).chain(11..=20) {
+            assert_eq!(hire[index].state, HIDDEN, "record {index}");
+        }
+        assert_eq!(hire[role::PANEL].state, LOADOUT_RECORDS_STATE[role::PANEL]);
+        assert_eq!(hire[role::CLOSE].state, LOADOUT_RECORDS_STATE[role::CLOSE]);
+        // The hire block, hidden in the shipped table, is shown.
+        for index in 22..=27 {
+            assert_eq!(LOADOUT_RECORDS_STATE[index], HIDDEN);
+            assert_eq!(hire[index].state, 0, "record {index}");
+        }
+        let champion = mode_records(LoadoutMode::Champion);
+        for index in [1, 6, 11, 12, 13, 14] {
+            assert_eq!(champion[index].state, 0x10, "record {index}");
+        }
+        for index in [2, 3, 4, 7] {
+            assert_eq!(champion[index].state, HIDDEN, "record {index}");
+        }
+        assert_eq!(champion[15].state, LOADOUT_RECORDS_STATE[15]);
+        assert_eq!(
+            mode_records(LoadoutMode::Arena),
+            crate::arena_forms::LOADOUT_RECORDS
+        );
     }
 
     #[test]

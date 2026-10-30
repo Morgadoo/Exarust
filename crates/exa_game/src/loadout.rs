@@ -397,12 +397,18 @@ pub fn item_from_facts(
     Some(item)
 }
 
-/// A drop returned to the company arsenal: the arsenal answers whether it
-/// had lent the item under the form's mask (clearing the mask's bit), then
-/// the form's own return rule sorts the item into the kit container it left
-/// ([`exa_ui::loadout::return_to_stock`]). An item the arsenal neither lent
-/// nor had is written back as a new entry with no flags, on the shelf its
-/// catalogue kind names.
+/// A drop returned to the company arsenal. The form first looks for its
+/// own arsenal entry lent under its mask (for an item of its category);
+/// only when none is found does it ask the company arsenal whether it lent
+/// the item under the mask (clearing the mask's bit, [`Arsenal::release`]).
+/// Then the form's return rule sorts the item into the kit container it
+/// left ([`exa_ui::loadout::return_to_stock`]). An item of another category
+/// that neither had lent is written back as a new entry with no flags on
+/// the shelf its catalogue kind names ([`Arsenal::stow`]); an unlent item
+/// of the form's own category stays on the drag and is not written.
+///
+/// [`Arsenal::release`]: crate::arsenal::Arsenal::release
+/// [`Arsenal::stow`]: crate::arsenal::Arsenal::stow
 pub fn return_to_arsenal(
     arsenal: &mut crate::arsenal::Arsenal,
     editor: &mut LoadoutEditor,
@@ -414,9 +420,15 @@ pub fn return_to_arsenal(
         // A champion's form takes nothing and never asks the arsenal.
         return exa_ui::loadout::return_to_stock(editor, item, source, false);
     }
-    let lent = arsenal.release(item.id, kind, editor.mask);
+    let mask = editor.mask;
+    let lent_by_form = item.category == editor.category
+        && editor
+            .arsenal
+            .iter()
+            .any(|entry| entry.id == item.id && entry.flags & mask != 0);
+    let lent = !lent_by_form && arsenal.release(item.id, kind, mask);
     let returned = exa_ui::loadout::return_to_stock(editor, item, source, lent);
-    if returned.keep_item || returned.zero_stock {
+    if returned.zero_stock {
         arsenal.stow(item.id, kind, 0);
     }
     returned
@@ -690,7 +702,7 @@ mod tests {
         assert_eq!(arsenal.shelves[crate::arsenal::CLOTHING][0][0].item, 9);
         assert_eq!(arsenal.shelves[crate::arsenal::CLOTHING][0][0].flags, 0);
         // An item of the form's own shelf the arsenal did not lend keeps
-        // the drag's item and is added back too.
+        // the drag's item and is not written back.
         let weapon = LoadoutItem::weapon(11, 0x10, 2, 0);
         let done = return_to_arsenal(
             &mut arsenal,
@@ -699,9 +711,33 @@ mod tests {
             exa_ui::loadout::DropSource::Weapons,
             weapon_kind(),
         );
-        assert!(done.keep_item);
-        assert_eq!(arsenal.shelves[crate::arsenal::WEAPONS][0].len(), 1);
-        assert_eq!(arsenal.shelves[crate::arsenal::WEAPONS][0][0].item, 11);
+        assert!(done.keep_item && !done.zero_stock);
+        assert!(arsenal.shelves[crate::arsenal::WEAPONS][0].is_empty());
+    }
+
+    #[test]
+    fn the_forms_own_lent_entry_spares_the_company_arsenal() {
+        let mut arsenal = crate::arsenal::Arsenal::default();
+        assert!(arsenal.stow(7, weapon_kind(), 0x400));
+        let mut editor = editor_for(&member(), 0, LoadoutMode::Arena, &facts);
+        editor.category = 0x10;
+        editor.mask = 0x400;
+        let mut lent = LoadoutItem::weapon(7, 0x10, 2, 0);
+        lent.flags = 0x400;
+        editor.arsenal = vec![lent];
+        let item = LoadoutItem::weapon(7, 0x10, 2, 0);
+        let done = return_to_arsenal(
+            &mut arsenal,
+            &mut editor,
+            &item,
+            exa_ui::loadout::DropSource::Weapons,
+            weapon_kind(),
+        );
+        // The form's entry gave the lend back; the company arsenal was not
+        // asked, so its own entry keeps the bit.
+        assert!(done.released);
+        assert_eq!(editor.arsenal[0].flags & 0x400, 0);
+        assert_eq!(arsenal.shelves[crate::arsenal::WEAPONS][0][0].flags, 0x400);
     }
 
     #[test]

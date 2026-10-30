@@ -437,10 +437,13 @@ entry a hand holds. `apply_drop` is the list model's equip onto the kit
 behind the equip gate. Its paint frame lays the backdrop, the two
 containers and the preview out at the constructor's rectangles as flat
 fills, in the paint's order. Its list model of the kit is Exarust's own.
-The creation form's equipment container shows its first eighteen slots and
-hides the last six (`creation_equipment_slots`), and every refresh marks the
-arsenal entries the shown kit has in hand or wears with
-`EQUIPPED_MARK` (`mark_equipped`). The divination
+The constructor's per-mode record changes are `mode_records` (used by
+`controls_for`): mode word 1 widens Previous and Next, hides Dismiss, the
+rank, points and encumbrance rows and the shelf and box buttons, and shows
+the hire block (HIRE, fee, upkeep, profession); mode 3 disables the list,
+the rank and four shelf buttons and hides Previous, Next, Dismiss and the
+points row. Every refresh marks the arsenal entries the shown kit has in
+hand or wears with `EQUIPPED_MARK` (`mark_equipped`). The divination
 reading (`div_card`) deals three distinct cards out of twenty-two, eases
 the deal and the turns by `(3 − 2t)·t²`, turns each card half over about
 a swinging axis and draws the original's drop shadow; the side facing
