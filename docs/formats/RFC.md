@@ -1543,3 +1543,26 @@ a dead body stores `CAC0E100`, every part's matrix then the two held
 items' (identity for an empty hand); a save adds the AI home, in mode 1 the
 flat pose and the motion state, and `CAC0EC00` with what the attached
 objects wrote and their count, taken out again when none wrote.
+
+**Converting a loaded level back.** `rfc_level` builds the exporter's
+scene from a section the reader decoded: `LevelScene` writes every node,
+then the props (their part records as owned children), the placed objects,
+the placed characters, the grid, the section's material library, the local
+object database and its strings, the character database and the
+environment, at `whole_scene`. Two records the reader drops are scanned
+separately (`LevelRaw::scan`): the material payloads, the object database
+and string bodies, the environment record, and the character database body
+(the characters section's `CECCDB00`), which a written section needs because
+its placements name records by id. Three round-trip rules follow from the
+format: the header mask clears a node's saved bit `0x40000`, so a converted
+node marks itself saved again (the walk skips non-plain nodes without it);
+`_Default`, the name the writer stores for a part with no material, reads
+back as no material rather than a phantom library entry; and a legacy flat
+pose has no bone tree to write, so the conversion refuses it instead of
+guessing a hierarchy. A mesh's GI points keep the 40 cm lattice spacing
+every shipped point chunk carries (the reader keeps the points only), and a
+free keyframe track's stored mode word is not kept and becomes 0.
+`exa_game::level_transition::exported_level_section` is the save's one call:
+it converts a loaded section and writes it again with the save switches and
+the story settings gate, for storage in the save package under the level's
+locale name.
