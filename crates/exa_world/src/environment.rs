@@ -174,9 +174,10 @@ pub fn clock_seed() -> u32 {
     (clock as u32) ^ ((clock >> 32) as u32)
 }
 
+/// The engine's sRGB curve, the same helper the scene environment and the
+/// presets use (its fast logarithm and exponential, not Bevy's exact curve).
 fn linear(srgb: [f32; 3]) -> Vec3 {
-    let c = Color::srgb(srgb[0], srgb[1], srgb[2]).to_linear();
-    Vec3::new(c.red, c.green, c.blue)
+    Vec3::from_array(srgb.map(crate::presets::srgb_to_linear))
 }
 
 /// The lighting of `level`, given its environment record and the number of
@@ -303,7 +304,11 @@ pub fn level_lighting_preset(
             far: fog.far,
         }),
         sky,
-        background: Vec3::from_array(frame.background),
+        background: Vec3::new(
+            frame.background[0],
+            frame.background[1],
+            frame.background[2],
+        ),
     }
 }
 
@@ -645,7 +650,10 @@ mod tests {
         };
         for level in ["exanima01", "exanima02"] {
             let lit = level_lighting(level, Some(&record), 7);
-            let want = linear(record.ambient);
+            // The engine's own sRGB curve (its fast logarithm and
+            // exponential), not Bevy's exact one: the two differ in the
+            // last digits.
+            let want = Vec3::from_array(record.ambient.map(crate::presets::srgb_to_linear));
             assert!((lit.ambient - want).abs().max_element() < 1e-6, "{level}");
             assert!(lit.sun.is_none() && lit.fog.is_none() && !lit.sky);
             assert_eq!(lit.background, Vec3::ZERO);
@@ -655,7 +663,8 @@ mod tests {
         let sun = lit.sun.unwrap();
         let want = Vec3::from_array(record.sun_direction()).normalize();
         assert!((sun.towards - want).abs().max_element() < 1e-6);
-        assert!((sun.colour - linear(record.sun_colour)).abs().max_element() < 1e-6);
+        let want = Vec3::from_array(record.sun_colour.map(crate::presets::srgb_to_linear));
+        assert!((sun.colour - want).abs().max_element() < 1e-6);
         assert_eq!(sun.illuminance, SUN_LUX);
     }
 
