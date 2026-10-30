@@ -735,12 +735,9 @@ pub fn frame(
                 frame.push(shadow_layer(unit, &m, place));
             }
             CardDraw::Back { .. } => {
-                // The card is drawn as two triangles per side and the
-                // renderer culls the one facing away: an upright card shows
-                // its back, a card turned past the halfway point its face.
-                if turn_now.as_ref().is_some_and(|m| m[8] < 0.0) {
-                    continue;
-                }
+                // The card draw turns face culling off before it draws
+                // and back on after, so both sides are painted, the back
+                // first.
                 let par_z = light_z(turn_now.as_ref());
                 if let Some(image) = back_image(sheet, image_w, image_h, [255; 4], par_z) {
                     let quad = back_quad(half_w, half_h);
@@ -752,11 +749,6 @@ pub fn frame(
                 }
             }
             CardDraw::Face { card, mirrored, .. } => {
-                // The face is the side the same culling keeps once the
-                // turn has carried it past edge-on.
-                if turn_now.as_ref().is_some_and(|m| m[8] >= 0.0) {
-                    continue;
-                }
                 let par_z = light_z(turn_now.as_ref());
                 if let Some(image) = face_image(sheet, card, image_w, image_h, [255; 4], par_z) {
                     let x = if mirrored { -half_w } else { half_w };
@@ -1067,11 +1059,11 @@ mod tests {
             },
         ];
         let frame_turning = frame(&turning, &sheet, 6, 600, 400);
-        // Shadow and back: at 0.5 rad the card still shows its back, the
-        // face culled.
-        assert_eq!(frame_turning.layers.len(), 2);
+        // Shadow, back, face: the card draw paints both sides with face
+        // culling off.
+        assert_eq!(frame_turning.layers.len(), 3);
         assert!(frame_turning.layers[0].batch.vertices.len() > 18);
-        // Past edge-on the face is the side the culling keeps.
+        // Past edge-on both sides are still painted.
         let turned = [
             place,
             CardDraw::Turn {
@@ -1087,8 +1079,7 @@ mod tests {
             },
         ];
         let frame_turned = frame(&turned, &sheet, 6, 600, 400);
-        assert_eq!(frame_turned.layers.len(), 2);
-        assert_eq!(frame_turned.layers[1].batch.primitives.len(), 1);
+        assert_eq!(frame_turned.layers.len(), 3);
         let held = |mirrored| {
             let draws = [
                 place,
