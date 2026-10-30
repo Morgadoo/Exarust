@@ -10,8 +10,8 @@ Queuing a tile's bake SHALL clear the record's bit 0x100. With a pending record,
 - **THEN** 0xe890 height bytes and 0x2a300 packed bytes are copied and the record gains 0x4000 and loses 0x2000
 
 ### Requirement: Block node
-The terrain manager's record SHALL hold one whole-tile block descriptor, as the original's record allocates a single childless block node.
+The terrain unit SHALL allocate a tile record's block node as a single zero-filled root with no children (the whole-tile descriptor) and SHALL NOT build the 85-node quarter tree itself; the descriptor walk SHALL visit only the children some other unit attaches.
 
 #### Scenario: Update
-- **WHEN** the height bounds change
+- **WHEN** a record built by the terrain unit alone has its height bounds changed
 - **THEN** only the whole-tile descriptor is recomputed

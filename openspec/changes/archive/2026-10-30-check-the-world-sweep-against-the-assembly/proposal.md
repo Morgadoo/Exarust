@@ -19,8 +19,9 @@ Evidence (REA on the 0.9.5 build and the objdump listing):
   is gated, the weight widened to double against the double 0.001; the
   remainder loses each painted layer in turn.
 - Terrain manager: the record's block node is a single zero-filled 90-byte
-  root whose child pointer is never set, so the four-way recursive update
-  only refreshes the whole-tile descriptor. The tile hand-off is a GPU
+  root whose child pointer the terrain unit never sets, so on its own the
+  four-way recursive update only refreshes the whole-tile descriptor (no
+  writer of the children was found in the unit). The tile hand-off is a GPU
   read-back: renderer feature bit 0x2000 copies the 244² height plane into
   the record, 0x1000 the 240² × 3 packed plane to the manager's callback;
   the record then loses 0x2000 and gains 0x4000. Queuing a bake clears the
