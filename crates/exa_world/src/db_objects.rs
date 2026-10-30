@@ -17,7 +17,8 @@
 //! carries node flag `0x4000`, and each of its children `0x5000` plus the
 //! parent's hidden bit; a create asked to hide marks the whole tree
 //! hidden. The collision body a first load uses is the record's mechanism
-//! ([`Item::mechanism`]).
+//! ([`collision_body`]: a lever's, a push surface's or a door's class, in
+//! the original's section order).
 //!
 //! Evidence: the object manager's routines (RF_DBObjects) in the assembly.
 
@@ -26,7 +27,7 @@ use std::sync::Arc;
 
 use bevy::prelude::Component;
 use exa_formats::containers;
-use exa_formats::objdb::{self, Item};
+use exa_formats::objdb::{self, Item, operative};
 
 /// The node flag every tree the manager makes carries (the model's root,
 /// a factory weapon's, the container volume and the placeholder).
@@ -211,6 +212,42 @@ pub fn material_rule(item: &Item, name: &str) -> MaterialRule {
 /// byte: a class only up to 6 (an index into the original's sound table).
 pub fn impact_sound_class(byte: u8) -> Option<u8> {
     (byte <= 6).then_some(byte)
+}
+
+/// The collision body the manager builds a model's tree with. On a first
+/// load the original picks one of three rigid-body classes from the
+/// record's sections, before the model's own bodies are read: an
+/// operative section takes the class its operative class names (a lever's
+/// or a push surface's), a door's section the door's, and any other record
+/// none. Because the operative test comes first, an operative record that
+/// is not a lever or a push surface takes none even when it also has a
+/// door section.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollisionBody {
+    /// The record's model needs no mechanism body.
+    None,
+    /// A hinged or sliding door's.
+    Door,
+    /// A lever's.
+    Lever,
+    /// A pressure plate's or button's push surface.
+    PushSurface,
+}
+
+/// The collision body `item` is built with, from its sections' record
+/// flags in the original's order (see [`CollisionBody`]).
+pub fn collision_body(item: &Item) -> CollisionBody {
+    if let Some(operative) = item.operative {
+        match operative.class {
+            operative::LEVER => CollisionBody::Lever,
+            operative::PUSH_SURFACE => CollisionBody::PushSurface,
+            _ => CollisionBody::None,
+        }
+    } else if item.door.is_some() {
+        CollisionBody::Door
+    } else {
+        CollisionBody::None
+    }
 }
 
 /// Whether a factory weapon of `id` is first copied to the local database:
@@ -462,6 +499,42 @@ mod tests {
         assert!(factory_copies_locally(0x40, 7));
         assert!(!factory_copies_locally(0x40, 0x4000_0007));
         assert!(!factory_copies_locally(0, 7));
+    }
+
+    #[test]
+    fn the_collision_body_follows_the_records_sections_in_the_originals_order() {
+        let mut lever = item("lever");
+        lever.operative = Some(Operative {
+            class: operative::LEVER,
+            ..operative_item("").operative.unwrap()
+        });
+        assert_eq!(collision_body(&lever), CollisionBody::Lever);
+        let mut plate = item("plate");
+        plate.operative = Some(Operative {
+            class: operative::PUSH_SURFACE,
+            ..operative_item("").operative.unwrap()
+        });
+        assert_eq!(collision_body(&plate), CollisionBody::PushSurface);
+        let mut door = item("door");
+        door.door = Some(Door {
+            flags: 0,
+            key: 0,
+            lock_sound: 0,
+            slam_sound: 0,
+            hinge_sound: 0,
+            unlatch_sound: 0,
+        });
+        assert_eq!(collision_body(&door), CollisionBody::Door);
+        // The operative section is tested first: a lever that is also a
+        // door takes the lever's class, and an operative of another class
+        // takes none even with a door section.
+        let mut both = lever;
+        both.door = door.door;
+        assert_eq!(collision_body(&both), CollisionBody::Lever);
+        let mut other = operative_item("gate");
+        other.door = door.door;
+        assert_eq!(collision_body(&other), CollisionBody::None);
+        assert_eq!(collision_body(&item("chair")), CollisionBody::None);
     }
 
     #[test]
