@@ -251,23 +251,31 @@ pub const READ_FAILED: &str = "Unable to read contents of file: ";
 /// The log topic its file errors go to.
 pub const IO_TOPIC: &str = "File IO";
 
-/// Why a whole-file read left no block: the file could not be opened, or its
-/// contents could not be read (in which case the original clears the block).
+/// Why a whole-file read left no block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileIssue {
+    /// The file could not be opened. The original logs this only while its
+    /// error log is switched on.
     Open,
+    /// The contents could not be read. The original always logs this; the
+    /// read by reference also clears the block, the search-path read leaves
+    /// it at the file's size.
     Read,
+    /// No folder of the search path holds the file: nothing was opened and
+    /// nothing is logged.
+    Missing,
 }
 
 impl FileIssue {
     /// The line the original logs for this failure and the path or name it
-    /// tried, in its error log's third level.
-    pub fn message(self, name: &[u8]) -> String {
+    /// tried, at its error log's third level; `None` when it logs nothing.
+    pub fn message(self, name: &[u8]) -> Option<String> {
         let prefix = match self {
             Self::Open => OPEN_FAILED,
             Self::Read => READ_FAILED,
+            Self::Missing => return None,
         };
-        format!("{prefix}{}", String::from_utf8_lossy(name))
+        Some(format!("{prefix}{}", String::from_utf8_lossy(name)))
     }
 }
 
@@ -349,8 +357,9 @@ pub fn write_referenced_file(
 
 /// Reads the whole file `name` from the newest folder still in use where it
 /// exists. The first folder where it exists ends the search even when its
-/// read fails, as in the original. On an open failure nothing is read and
-/// the original logs the name; on a read failure the block is cleared.
+/// read fails, as in the original. An open or read failure there is logged
+/// with the bare name (not the folder's path); when no folder holds the
+/// file the original returns without logging ([`FileIssue::Missing`]).
 pub fn read_from_search_path(table: &FolderTable, name: &FileName) -> FileRead {
     let issue = std::cell::Cell::new(None);
     let read = read_from_folders(table, name, file_exists, |path| match read_file(path) {
@@ -364,7 +373,7 @@ pub fn read_from_search_path(table: &FolderTable, name: &FileName) -> FileRead {
         Some(bytes) => Ok(MemBlock::from_bytes(bytes)),
         None => match issue.get() {
             Some(failure) => Err(failure),
-            None => Err(FileIssue::Open),
+            None => Err(FileIssue::Missing),
         },
     }
 }
@@ -633,13 +642,14 @@ mod tests {
         let missing = read_referenced_file(&t, &FileRef::new(0, b"nowhere.txt"));
         assert_eq!(missing, Err(FileIssue::Open));
         assert_eq!(
-            FileIssue::Open.message(b"nowhere.txt"),
-            "Failed to open file: nowhere.txt"
+            FileIssue::Open.message(b"nowhere.txt").as_deref(),
+            Some("Failed to open file: nowhere.txt")
         );
         assert_eq!(
-            FileIssue::Read.message(b"x"),
-            "Unable to read contents of file: x"
+            FileIssue::Read.message(b"x").as_deref(),
+            Some("Unable to read contents of file: x")
         );
+        assert_eq!(FileIssue::Missing.message(b"x"), None);
         // A write by reference, an empty write and a failed open.
         let file = FileRef::new(1, b"out.txt");
         let block = MemBlock::from_bytes(vec![1, 2, 3]);
@@ -718,10 +728,10 @@ mod tests {
         // A folder with no uses left is skipped.
         t.set_uses(1, 0);
         assert_eq!(read_from_search_path(&t, &name).unwrap().bytes(), b"one");
-        // No folder holds it: nothing is read and the open failed.
+        // No folder holds it: nothing is opened and nothing is logged.
         assert_eq!(
             read_from_search_path(&t, &FileName::new(b"gone.txt")),
-            Err(FileIssue::Open)
+            Err(FileIssue::Missing)
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
