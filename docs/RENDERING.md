@@ -399,6 +399,24 @@ A render state's blend layer is bits 4–7 of its blend word
 (`passes::blend_layer`); the low four bits are blend factors and play no
 part in the order.
 
+The draw of a list (`passes::plan_list`) walks its material groups in list
+order, binds a group's program once, and draws the group's entries whose
+flag word shares a bit with the renderer's visibility mask; a group with no
+visible entry is not bound at all. Sectors are walked in scene order under
+the same test (`passes::visible_sectors`); a sector whose word has bit
+`0x1000_0000` sets its own scissor rectangle from its record first. A
+blended entry is drawn with the group's alpha state at `1 − opacity` and the
+blend word `0x203`, restored to `0x100` after it
+(`passes::entry_alpha`, `passes::ENTRY_BLEND_WORD`).
+
+The particles own two list classes: the vertex-coloured one and the
+textured one (`passes::ParticleList`). Their pass walks the scene's
+particle sectors (flag word bit 0) twice over: first depth-only with the
+colour writes masked, all vertex-coloured draws and then all textured ones;
+then, with the colour writes back on and depth writes off, per sector the
+vertex-coloured list and the textured one with the per-entry alpha
+(`passes::particle_pass`).
+
 The opaque list is grouped by material program key: the first state stays
 first, each next slot takes the first unused state with the current key,
 and when none is left it takes the last unused state and moves to its key.

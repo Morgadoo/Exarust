@@ -117,14 +117,20 @@ component), draw box, program names, quad and shared uniforms, the three linked 
   blended per-sector lists with depth writes off, the particles' depth
   pre-pass and colour, the environment's weather), the blended list's
   layer/opacity selection and the opaque list's grouping by material program
-  key (the layer is bits 4-7 of the blend word), with the Bevy phase each
-  step maps to
+  key (the layer is bits 4-7 of the blend word), the per-list draw walk (one
+  program bind per material group, entries filtered by the renderer's
+  visibility mask, sectors in scene order with the `0x1000_0000` region bit,
+  the blended entry's `1 − opacity` alpha under the `0x203` word) and the
+  particle pass (both list classes depth-only per sector, then per sector the
+  vertex-coloured list and the textured one with per-entry alpha), with the
+  Bevy phase each step maps to
   ([`docs/RENDERING.md`](../../docs/RENDERING.md), Pass order).
 - `view`: the 3D view's arithmetic: the perspective frustum's half extents,
   the super-sampling levels (1/2/3/4/8 sub-views, up to four a pass, their
-  sub-pixel jitters and sharpen strengths), the separate render-scale mode,
-  the point-to-window projection, the framebuffer viewport and seven-deep
-  region stacks, the original's integer rectangle clip and the view copy's
+  sub-pixel jitters, sharpen strengths and per-pass schedule), the separate
+  render-scale mode, the point-to-window projection, the framebuffer
+  viewport and seven-deep region stacks, the original's integer rectangle
+  clip and the view copy's
   quad ([`docs/RENDERING.md`](../../docs/RENDERING.md), Supersampling).
 - `shell`: `ShellMaterial`, the rooms' shells drawn opaque, unlit pure black, and the fading lid overlay (blended, no depth test, drawn last) ([`docs/RENDERING.md`](../../docs/RENDERING.md), Rooms and black fill).
 - `electricity`: the electric arcs' rules and material. `ArcMaterial` is the original's `_ElecMat01` fragment program (the texture's red mixed a third into the ribbon's V, the 24th and 6th powers, EleCol and EdgCol, squared, additive and two-sided; `arc.wesl`); the module also holds the 84-byte arc record, the weapon, spark-burst and device presets (sustained or one-shot), the charge an electrified item spends, the arc checks' release and rebuild rules and the jittered tendril ribbon (U along, V across) ([`docs/RENDERING.md`](../../docs/RENDERING.md), Electricity).

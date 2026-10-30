@@ -300,6 +300,188 @@ pub fn released_flags(flags: u32, detail_level: i32, first_flag: bool, second_fl
     adjusted
 }
 
+/// A render state as a list draw reads it: the entry's visibility bits and
+/// its opacity. The program key is the group's, not the entry's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StateRecord {
+    /// The entry's visibility flag word (the scene node's word). A sector's
+    /// own word decides whether the sector is walked at all.
+    pub flags: u32,
+    /// The material's opacity, used by the blended list as `1 − opacity`.
+    pub opacity: f32,
+}
+
+/// A material group of a render-state list: the entries that share one
+/// compiled program.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DrawGroup {
+    /// The program key the group is bound by.
+    pub key: i16,
+    /// The group's entries, in list order.
+    pub entries: Vec<StateRecord>,
+}
+
+/// One program bind and the entries it draws: indices into its group's
+/// entry list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListDraw {
+    /// The group's index in the list.
+    pub group: usize,
+    /// The indices of the entries the bind draws, in list order.
+    pub entries: Vec<usize>,
+}
+
+/// Whether an entry or sector is drawn under the renderer's visibility mask:
+/// the original tests `mask & word != 0`, so a word with no bit in common is
+/// skipped and a zero mask draws nothing.
+pub fn visible(mask: u32, word: u32) -> bool {
+    mask & word != 0
+}
+
+/// The binds one list makes under a visibility mask.
+///
+/// The list keeps its entries grouped by material program; the draw walks
+/// the groups in list order, binds each group's program once, and then draws
+/// only the entries whose flag word shares a bit with the mask. A group with
+/// no visible entry is not bound at all. Within a group the entries keep
+/// their list order.
+pub fn plan_list(groups: &[DrawGroup], mask: u32) -> Vec<ListDraw> {
+    let mut out = Vec::new();
+    for (group, entries) in groups.iter().enumerate() {
+        let draws: Vec<usize> = entries
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| visible(mask, entry.flags))
+            .map(|(i, _)| i)
+            .collect();
+        if !draws.is_empty() {
+            out.push(ListDraw {
+                group,
+                entries: draws,
+            });
+        }
+    }
+    out
+}
+
+/// The sectors a list is drawn into: their indices in scene order, keeping
+/// only the sectors whose flag word shares a bit with the mask.
+pub fn visible_sectors(words: &[u32], mask: u32) -> Vec<usize> {
+    words
+        .iter()
+        .enumerate()
+        .filter(|(_, word)| visible(mask, **word))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// The bit of a sector's flag word that gives it its own scissor rectangle.
+/// The sector's record then holds the rectangle the blended list's draws are
+/// clipped to; a sector without the bit inherits whatever region is set.
+pub const SECTOR_REGION_BIT: u32 = 0x1000_0000;
+
+/// The bit of a sector's flag word that draws the particles' lists.
+pub const SECTOR_PARTICLE_BIT: u32 = 1;
+
+/// The blend word a list's state carries by default (blended, depth writes
+/// off).
+pub const LIST_BLEND_WORD: u16 = 0x100;
+/// The word the blended list's per-entry draw switches to while one entry is
+/// drawn: additive, so a premultiplied colour adds.
+pub const ENTRY_BLEND_WORD: u16 = 0x203;
+
+/// The alpha a blended list's entry is drawn with: `1 − opacity` in single
+/// precision, the group's alpha state set for that one entry and restored
+/// after it.
+pub fn entry_alpha(opacity: f32) -> f32 {
+    1.0 - opacity
+}
+
+/// The two particle lists' classes, in the order the pass draws them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParticleList {
+    /// The vertex-coloured particles (the pass's first list).
+    VertexColour,
+    /// The textured particles (its second list).
+    Textured,
+}
+
+/// Which of the particles' two passes a draw belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParticleStage {
+    /// Depth only: colour writes masked off, depth writes on.
+    Depth,
+    /// Colour: colour writes on, depth writes off, per-entry alpha.
+    Colour,
+    /// Textured colour: as [`ParticleStage::Colour`], with the group's
+    /// texture bound once per group.
+    TexturedColour,
+}
+
+/// One draw of the particle pass: a stage, a list class and the sector it
+/// belongs to (a sector index into the scene's particle sectors).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParticleDraw {
+    pub stage: ParticleStage,
+    pub list: ParticleList,
+    pub sector: usize,
+}
+
+/// The particle pass's draw order for `sectors` particle sectors.
+///
+/// The pass masks the colour writes, draws both list classes of every
+/// particle sector depth-only in sector order (the vertex-coloured list
+/// first), restores the colour mask with depth writes off, and then draws
+/// both classes again per sector with the per-entry opacity blend. The
+/// sectors walked are the scene's sectors whose flag word has bit 0; each
+/// sector's two lists are drawn in the same order in both halves.
+pub fn particle_pass(sectors: usize) -> Vec<ParticleDraw> {
+    let mut out = Vec::with_capacity(sectors * 4);
+    for sector in 0..sectors {
+        out.push(ParticleDraw {
+            stage: ParticleStage::Depth,
+            list: ParticleList::VertexColour,
+            sector,
+        });
+    }
+    for sector in 0..sectors {
+        out.push(ParticleDraw {
+            stage: ParticleStage::Depth,
+            list: ParticleList::Textured,
+            sector,
+        });
+    }
+    for sector in 0..sectors {
+        out.push(ParticleDraw {
+            stage: ParticleStage::Colour,
+            list: ParticleList::VertexColour,
+            sector,
+        });
+        out.push(ParticleDraw {
+            stage: ParticleStage::TexturedColour,
+            list: ParticleList::Textured,
+            sector,
+        });
+    }
+    out
+}
+
+/// How a particle stage writes: the two colour stages write colour and no
+/// depth, the depth pre-pass the reverse.
+impl ParticleStage {
+    /// Whether the stage writes colour.
+    pub fn writes_colour(self) -> bool {
+        !matches!(self, Self::Depth)
+    }
+
+    /// Whether the stage writes depth: the depth pre-pass does, the colour
+    /// stages do not.
+    pub fn writes_depth(self) -> bool {
+        matches!(self, Self::Depth)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -488,5 +670,140 @@ mod tests {
             released_flags(all, 2, false, true),
             (all & !(0x0080_0000 | 0x0020_0000)) & !6
         );
+    }
+
+    fn group(key: i16, entries: &[(u32, f32)]) -> DrawGroup {
+        DrawGroup {
+            key,
+            entries: entries
+                .iter()
+                .map(|&(flags, opacity)| StateRecord { flags, opacity })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_list_binds_a_group_only_when_one_entry_is_visible() {
+        let groups = [
+            group(1, &[(0x1, 1.0), (0x2, 1.0)]),
+            group(2, &[(0x4, 1.0)]),
+            group(3, &[(0x8, 1.0), (0x1, 1.0), (0x10, 1.0)]),
+        ];
+        // A mask of 1: groups 0 and 2 are bound, group 1 is skipped
+        // entirely, and within a group only the visible entries draw.
+        let plan = plan_list(&groups, 0x1);
+        assert_eq!(
+            plan,
+            [
+                ListDraw {
+                    group: 0,
+                    entries: vec![0],
+                },
+                ListDraw {
+                    group: 2,
+                    entries: vec![1],
+                },
+            ]
+        );
+        // A zero mask draws nothing, an all-bits mask draws everything in
+        // list order.
+        assert!(plan_list(&groups, 0).is_empty());
+        let plan = plan_list(&groups, !0);
+        assert_eq!(plan.len(), 3);
+        assert_eq!(plan[2].entries, [0, 1, 2]);
+        // Equal-key groups keep their own order; grouping happened when the
+        // list was built.
+        assert!(plan_list(&[], !0).is_empty());
+    }
+
+    #[test]
+    fn sectors_are_walked_in_scene_order_under_the_mask() {
+        let words = [0x1, 0x2, 0x8_0000_0000u64 as u32 | 0x4, 0];
+        assert_eq!(visible_sectors(&words, 0x1), [0]);
+        assert_eq!(visible_sectors(&words, 0x6), [1, 2]);
+        assert!(visible_sectors(&words, 0).is_empty());
+        // The region and particle bits are ordinary visibility bits until a
+        // sector is drawn.
+        assert!(visible(0x1000_0000, SECTOR_REGION_BIT));
+        assert!(visible(1, SECTOR_PARTICLE_BIT));
+        assert!(!visible(1, 2));
+    }
+
+    #[test]
+    fn a_blended_entry_draws_at_one_less_its_opacity() {
+        assert_eq!(entry_alpha(1.0), 0.0);
+        assert_eq!(entry_alpha(0.25), 0.75);
+        assert_eq!(entry_alpha(0.0), 1.0);
+        // Single precision, and a NaN stays NaN.
+        assert_eq!(entry_alpha(0.1), 0.9);
+        assert!(entry_alpha(f32::NAN).is_nan());
+        assert_eq!(LIST_BLEND_WORD, 0x100);
+        assert_eq!(ENTRY_BLEND_WORD, 0x203);
+    }
+
+    #[test]
+    fn the_particle_pass_draws_depth_first_then_colour() {
+        let plan = particle_pass(2);
+        assert_eq!(plan.len(), 8);
+        // Both list classes are drawn depth-only for every sector first:
+        // vertex-coloured for all sectors, then textured.
+        assert_eq!(
+            plan[..4],
+            [
+                ParticleDraw {
+                    stage: ParticleStage::Depth,
+                    list: ParticleList::VertexColour,
+                    sector: 0
+                },
+                ParticleDraw {
+                    stage: ParticleStage::Depth,
+                    list: ParticleList::VertexColour,
+                    sector: 1
+                },
+                ParticleDraw {
+                    stage: ParticleStage::Depth,
+                    list: ParticleList::Textured,
+                    sector: 0
+                },
+                ParticleDraw {
+                    stage: ParticleStage::Depth,
+                    list: ParticleList::Textured,
+                    sector: 1
+                },
+            ]
+        );
+        // The colour half is per sector, vertex-coloured then textured.
+        assert_eq!(
+            plan[4..],
+            [
+                ParticleDraw {
+                    stage: ParticleStage::Colour,
+                    list: ParticleList::VertexColour,
+                    sector: 0
+                },
+                ParticleDraw {
+                    stage: ParticleStage::TexturedColour,
+                    list: ParticleList::Textured,
+                    sector: 0
+                },
+                ParticleDraw {
+                    stage: ParticleStage::Colour,
+                    list: ParticleList::VertexColour,
+                    sector: 1
+                },
+                ParticleDraw {
+                    stage: ParticleStage::TexturedColour,
+                    list: ParticleList::Textured,
+                    sector: 1
+                },
+            ]
+        );
+        assert!(particle_pass(0).is_empty());
+        for draw in particle_pass(1) {
+            assert_eq!(draw.stage.writes_colour(), !draw.stage.writes_depth());
+        }
+        assert!(ParticleStage::Depth.writes_depth());
+        assert!(ParticleStage::Colour.writes_colour());
+        assert!(ParticleStage::TexturedColour.writes_colour());
     }
 }
