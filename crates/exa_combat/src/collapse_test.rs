@@ -1016,3 +1016,39 @@ fn the_dropped_weapon_meets_another_body() {
     assert_eq!(at.y.to_bits(), 0x3f7e_43be);
     assert_eq!(at.z.to_bits(), 0xbe49_2d0c);
 }
+
+/// A collapse's start asks for its groan once, from its own roll's first
+/// two draws (the first the pitch, the second the volume); a later tick
+/// asks nothing more, and a body added already dead asks nothing.
+#[test]
+fn a_starting_collapse_groans_once() {
+    let mut app = App::new();
+    app.add_message::<crate::pain::PainSounded>()
+        .add_systems(Update, collapse_groans);
+    let fighter = app
+        .world_mut()
+        .spawn((Condition::COLLAPSING, Collapse::default()))
+        .id();
+    app.world_mut()
+        .spawn((Condition::DEAD, Collapse::default()));
+    app.update();
+    app.update();
+    let messages = app
+        .world()
+        .resource::<bevy::ecs::message::Messages<crate::pain::PainSounded>>();
+    let mut cursor = messages.get_cursor();
+    let all: Vec<_> = cursor.read(messages).collect();
+    assert_eq!(all.len(), 1);
+    let mut roll = Roll::default();
+    let (first, second) = (roll.next(), roll.next());
+    // The second draw from the start state is 0x8088406·2⁻³².
+    assert_eq!(second, (0x0808_8406_u32 as f64 * 2f64.powi(-32)) as f32);
+    let (volume, pitch) = collapse_voice(first, second);
+    assert_eq!(all[0].fighter, fighter);
+    assert_eq!(
+        all[0].sounds.voice,
+        Some((2, crate::pain::Loudness { volume, pitch }))
+    );
+    assert_eq!(all[0].sounds.wound, None);
+    assert!((volume - 0.153_138).abs() < 1e-5 && (pitch - 0.8).abs() < 1e-6);
+}

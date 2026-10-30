@@ -308,7 +308,9 @@ A killing blow on a living body starts its collapse (`collapse`):
 collapsing, Fall Backward with round((1.2 − E) × 300) frames of blend from
 the energy the blow leaves (`collapse_blend`), the groan its routine asks
 for from the two draws it makes (`collapse_voice`: voice line 2, volume
-0.15 + 0.1·second, pitch 0.8 + 0.1·first, both sums in double), off its
+0.15 + 0.1·second, pitch 0.8 + 0.1·first, both sums in double; sent by
+`collapse_groans` as a `PainSounded` voice line on the tick `Collapse` is
+inserted, so the character's voice waits and gains apply), off its
 controller, its
 lower legs out of the living lower legs' collision layer
 (`exa_physics::body::pairs::set_leg_layers`); its
