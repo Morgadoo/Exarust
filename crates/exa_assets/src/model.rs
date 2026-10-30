@@ -1631,8 +1631,15 @@ impl ModelLoader<'_> {
     /// (`Mat.TexRef`), loaded like the scene's cube (six sRGB faces with
     /// their mip chains) and cached by folded name. The original binds this
     /// cube in place of the scene's when the record carries it.
+    ///
+    /// The scene's own cube name returns the scene's handle, and a texture
+    /// that is not a six-face cube is refused (the reflection binding is a
+    /// cube; the level's cube stays then).
     pub fn environment_map_named(&mut self, name: &str) -> Option<Handle<Image>> {
         let key = name.to_ascii_lowercase();
+        if key == ENVIRONMENT_MAP {
+            return self.environment_map();
+        }
         if let Some(h) = self.cache.environment_overrides.get(&key) {
             return h.clone();
         }
@@ -1650,9 +1657,16 @@ impl ModelLoader<'_> {
                     &settings,
                 )
                 .ok()
+            })
+            .filter(|image| {
+                image
+                    .texture_view_descriptor
+                    .as_ref()
+                    .and_then(|v| v.dimension)
+                    == Some(bevy::render::render_resource::TextureViewDimension::Cube)
             });
         if image.is_none() {
-            self.warn_once(format!("environment map {name:?} could not be read"));
+            self.warn_once(format!("environment map {name:?} is not a readable cube"));
         }
         let handle = image.map(|i| self.images.add(i));
         self.cache.environment_overrides.insert(key, handle.clone());
