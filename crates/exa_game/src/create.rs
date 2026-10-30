@@ -3605,17 +3605,91 @@ pub fn equipment_tab(index: i32) -> EquipmentTab {
     }
 }
 
-/// Whether a voice selection takes: only when its sample exists. The
-/// voice caption then shows the letter `A` plus the index.
-pub fn select_voice(index: i32, sample_exists: bool) -> Option<i32> {
-    sample_exists.then_some(index)
+/// Which of the record's two voice words a selection wrote.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VoiceWord {
+    /// Nothing was written.
+    None,
+    /// The record's voice word (the plain selection's).
+    Voice,
+    /// The record's variant voice word (the selection beside the voice).
+    Variant,
 }
 
-/// Whether a variant voice selection takes. A record whose race byte is
-/// set takes the index directly, with no sample and no preview; a human
-/// needs the `DA` sample to exist.
-pub fn select_variant_voice(index: i32, race_set: bool, sample_exists: bool) -> Option<i32> {
-    (race_set || sample_exists).then_some(index)
+/// What selecting a voice did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VoiceChoice {
+    /// The voice the screen keeps, when the selection took.
+    pub index: Option<i32>,
+    /// The record word the selection wrote.
+    pub word: VoiceWord,
+    /// The caption's letter: the index plus `A`, truncated to a byte. The
+    /// plain selection's caption is the base form's seventh control, the
+    /// variant's the ninth.
+    pub caption: Option<u8>,
+    /// The sample loaded and its preview plays (previews are not muted).
+    pub plays: bool,
+}
+
+/// Selects a voice, taking it only when its sample exists.
+///
+/// The `_GruntS` sample named after the prefix and the one-based voice must
+/// load for anything to happen: the screen keeps the index, the record's
+/// voice word takes it, the caption shows `A` plus the index and the sample
+/// previews at the voice's stored pitch (volume 0.4) unless previews are
+/// muted.
+pub fn select_voice(index: i32, sample_exists: bool, muted: bool) -> VoiceChoice {
+    if !sample_exists {
+        return VoiceChoice {
+            index: None,
+            word: VoiceWord::None,
+            caption: None,
+            plays: false,
+        };
+    }
+    VoiceChoice {
+        index: Some(index),
+        word: VoiceWord::Voice,
+        caption: Some(index.wrapping_add(0x41) as u8),
+        plays: !muted,
+    }
+}
+
+/// Selects the variant voice beside the voice.
+///
+/// A record whose race band (bits 8 through 15 of its profession word) is
+/// set takes the index straight into the variant voice word, with no sample
+/// and no preview. Otherwise the `DA` sample must load: the screen keeps
+/// the index, the variant voice word takes it, the ninth control's caption
+/// shows `A` plus the index, and the sample previews like the plain one.
+pub fn select_variant_voice(
+    index: i32,
+    race_band: bool,
+    sample_exists: bool,
+    muted: bool,
+) -> VoiceChoice {
+    if race_band {
+        return VoiceChoice {
+            index: Some(index),
+            word: VoiceWord::Variant,
+            caption: None,
+            plays: false,
+        };
+    }
+    if !sample_exists {
+        return VoiceChoice {
+            index: None,
+            word: VoiceWord::None,
+            caption: None,
+            plays: false,
+        };
+    }
+    VoiceChoice {
+        index: Some(index),
+        word: VoiceWord::Variant,
+        caption: Some(index.wrapping_add(0x41) as u8),
+        plays: !muted,
+    }
 }
 
 /// The record fields a loaded preset leaves behind.
@@ -7154,11 +7228,69 @@ mod tests {
 
     #[test]
     fn a_voice_selection_needs_its_sample() {
-        assert_eq!(select_voice(3, true), Some(3));
-        assert_eq!(select_voice(3, false), None);
-        assert_eq!(select_variant_voice(2, true, false), Some(2));
-        assert_eq!(select_variant_voice(2, false, false), None);
-        assert_eq!(select_variant_voice(2, false, true), Some(2));
+        // A plain voice takes only with its sample: the screen keeps the
+        // index, the record's voice word takes it, the seventh control shows
+        // `A` plus the index and the sample previews unless muted.
+        assert_eq!(
+            select_voice(3, true, false),
+            VoiceChoice {
+                index: Some(3),
+                word: VoiceWord::Voice,
+                caption: Some(0x44),
+                plays: true,
+            }
+        );
+        assert_eq!(
+            select_voice(0, true, true),
+            VoiceChoice {
+                index: Some(0),
+                word: VoiceWord::Voice,
+                caption: Some(0x41),
+                plays: false,
+            }
+        );
+        assert_eq!(
+            select_voice(3, false, false),
+            VoiceChoice {
+                index: None,
+                word: VoiceWord::None,
+                caption: None,
+                plays: false,
+            }
+        );
+
+        // The variant voice of a race with its band set takes the index into
+        // the variant word with no sample, no caption and no preview; a
+        // human needs its `DA` sample, and then captions and previews like
+        // the plain voice.
+        assert_eq!(
+            select_variant_voice(2, true, false, false),
+            VoiceChoice {
+                index: Some(2),
+                word: VoiceWord::Variant,
+                caption: None,
+                plays: false,
+            }
+        );
+        assert_eq!(
+            select_variant_voice(2, false, false, false),
+            VoiceChoice {
+                index: None,
+                word: VoiceWord::None,
+                caption: None,
+                plays: false,
+            }
+        );
+        assert_eq!(
+            select_variant_voice(2, false, true, false),
+            VoiceChoice {
+                index: Some(2),
+                word: VoiceWord::Variant,
+                caption: Some(0x43),
+                plays: true,
+            }
+        );
+        assert!(!select_variant_voice(2, false, true, true).plays);
     }
 
     #[test]

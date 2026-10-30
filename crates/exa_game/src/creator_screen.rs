@@ -1024,10 +1024,20 @@ impl Creator {
     }
 
     fn select_voice(&mut self, voice: i32) {
-        self.voice = voice;
-        self.record.voice_number = voice.max(0) as u32;
-        self.record.voice = exa_formats::characters::voice_name(voice.max(0) as u32);
-        self.base[base::VOICE_LETTER].text = vec![(voice as u8).wrapping_add(b'A')];
+        // The screen's plain selection: the record's voice word and the
+        // seventh control's caption come from the character unit's rule (the
+        // sample would be looked up in the sound pack; the screen's list
+        // already holds only voices it found).
+        let choice = create::select_voice(voice, true, false);
+        let Some(index) = choice.index else {
+            return;
+        };
+        self.voice = index;
+        if choice.word == create::VoiceWord::Voice {
+            self.record.voice_number = index.max(0) as u32;
+            self.record.voice = exa_formats::characters::voice_name(index.max(0) as u32);
+        }
+        self.base[base::VOICE_LETTER].text = vec![choice.caption.unwrap_or(b'A')];
     }
 
     /// The submit state the final button reads.
