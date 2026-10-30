@@ -652,13 +652,15 @@ impl SoundState {
         if template_flags & flags::SOUND_MOTION == 0 {
             self.volume =
                 (f64::from(self.base) * 0.05 * (rng.unit() - 0.5) + f64::from(self.volume)) as f32;
-            // The bounds compare in double precision.
-            if f64::from(self.base) * 0.8 <= f64::from(self.volume) {
-                if f64::from(self.base) * 1.2 < f64::from(self.volume) {
-                    self.volume = self.base * 1.2;
-                }
-            } else {
-                self.volume = self.base * 0.8;
+            // The bounds are worked out and compared in double precision; a
+            // NaN volume fails both unordered compares and is kept.
+            let low = f64::from(self.base) * 0.8;
+            let high = f64::from(self.base) * 1.2;
+            let volume = f64::from(self.volume);
+            if volume < low {
+                self.volume = low as f32;
+            } else if high < volume {
+                self.volume = high as f32;
             }
         }
         if template_flags & flags::ONE_SHOT != 0 {
@@ -966,8 +968,7 @@ impl Emitter {
                 spawned += 1;
                 // The pull is along the source's own second axis, untransformed.
                 let src = self.sources[index];
-                // The source's stored angle, reset to zero by the ring builder.
-                self.slots[slot].q += src.axes[0] * -src.kick;
+                self.slots[slot].q += src.axes[1] * -src.kick;
                 if p.start_life == 0 && self.next == self.params.capacity {
                     self.active = false;
                     break;
@@ -1183,7 +1184,13 @@ impl Emitter {
         let e = (max - self.bounds.centre) + Vec3::splat(5.0);
         self.bounds.extent = e;
         let squared = e.z * e.z + (e.y * e.y + e.x * e.x);
-        self.bounds.radius = if 0.0 < squared { squared.sqrt() } else { 0.0 };
+        // The original keeps the squared value unless it is positive (so a
+        // NaN stays NaN).
+        self.bounds.radius = if 0.0 < squared {
+            squared.sqrt()
+        } else {
+            squared
+        };
     }
 
     /// A body contact pass over a slot range: particles inside the body are
@@ -1236,20 +1243,27 @@ impl Emitter {
         frame
     }
 
-    /// The material's level-of-detail scalar for a camera at `eye`: the
-    /// emitter's detail value over the distance to its node, never sharper
-    /// than one (`detail · 1000 / distance`).
+    /// The material's level-of-detail scalar for a camera at `eye` (cm):
+    /// the emitter's detail value times 1000 over the *squared* distance to
+    /// its node, the squared distance held at one or more. The original's
+    /// distance helper returns the squared length (`(x² + y²) + z²`, no
+    /// square root); a NaN distance fails the compare and is kept.
     pub fn lod_scale(&self, eye: Vec3) -> f32 {
-        let distance = (self.node.position - eye).length().max(1.0);
-        self.detail * 1000.0 / distance
+        let d = eye - self.node.position;
+        let mut squared = d.x * d.x + d.y * d.y + d.z * d.z;
+        if squared < 1.0 {
+            squared = 1.0;
+        }
+        self.detail * 1000.0 / squared
     }
 
     /// The four corners of the fixed screen quad a material that draws one
-    /// asks for: each corner is a point of the camera's forward axis
-    /// displaced half a unit along its right or up axis, normalised, in the
-    /// original's corner order.
+    /// asks for: each corner is 0.3 of the camera's back axis (the camera
+    /// row the original negates for its forward axis, so pointing at the
+    /// viewer) displaced half a unit along its right or up axis, normalised,
+    /// in the original's corner order (−up, +right, −right, +up).
     pub fn camera_quad(view: View) -> [Vec3; 4] {
-        let forward = view.forward * 0.3;
+        let forward = -view.forward * 0.3;
         [
             (forward - view.up * 0.5).normalize_or(Vec3::NEG_Y),
             (forward + view.right * 0.5).normalize_or(Vec3::X),
@@ -1869,6 +1883,18 @@ mod tests {
         let mut rng = Scripted::new(&[], &[0.5, 0.5]);
         one.frame(0.5, crate::particles::flags::ONE_SHOT, &mut rng);
         assert!((one.volume - 0.5).abs() < 1e-6, "{}", one.volume);
+        // A NaN volume fails both unordered compares and is kept.
+        let mut lost = SoundState::new(0.5, true);
+        lost.volume = f32::NAN;
+        let mut rng = Scripted::new(&[], &[0.5, 0.5]);
+        lost.frame(1.0, 0, &mut rng);
+        assert!(lost.volume.is_nan());
+        // The bound itself is the double-precision product, narrowed once.
+        let mut odd = SoundState::new(0.7, true);
+        odd.volume = 10.0;
+        let mut rng = Scripted::new(&[], &[0.5, 0.5]);
+        odd.frame(1.0, 0, &mut rng);
+        assert_eq!(odd.volume, (f64::from(0.7f32) * 1.2) as f32);
         // A template with no sound does not walk at all.
         let mut silent = SoundState::new(0.5, false);
         let mut rng = Scripted::new(&[], &[0.0, 0.0]);
@@ -1928,7 +1954,7 @@ mod tests {
 
     #[test]
     fn the_flat_quad_fades_on_the_age_square() {
-        // (1 − f²) · 255 with f = 1 − life/start_life = 0.5 → 191.
+        // (1 − f²) · 255 with f = 1 − life/start_life = 1 − 52/103.
         let mut e = torch();
         e.first = 0;
         e.next = 1;
@@ -1952,17 +1978,20 @@ mod tests {
     }
 
     #[test]
-    fn the_level_of_detail_is_the_size_over_the_distance() {
+    fn the_level_of_detail_is_the_detail_over_the_squared_distance() {
         let mut e = torch();
         e.size = 0.2;
         e.detail = 0.4;
         e.node.position = Vec3::new(100.0, 0.0, 0.0);
-        // The detail, not the size: 0.4 · 1000 / 100 = 4.
-        assert!((e.lod_scale(Vec3::ZERO) - 4.0).abs() < 1e-6);
-        // A camera 1000 cm away gets four tenths.
-        assert!((e.lod_scale(Vec3::new(1100.0, 0.0, 0.0)) - 0.4).abs() < 1e-6);
-        // Closer than a centimetre is held at one.
-        assert!((e.lod_scale(Vec3::new(100.5, 0.0, 0.0)) - 400.0).abs() < 1e-3);
+        // The detail, not the size, over the squared distance:
+        // 0.4 · 1000 / 100² = 0.04.
+        assert!((e.lod_scale(Vec3::ZERO) - 0.04).abs() < 1e-7);
+        // A camera 10 cm away: 400 / 100 = 4.
+        assert!((e.lod_scale(Vec3::new(110.0, 0.0, 0.0)) - 4.0).abs() < 1e-6);
+        // A squared distance under one is held at one: 400.
+        assert_eq!(e.lod_scale(Vec3::new(100.5, 0.0, 0.0)), 400.0);
+        // A NaN eye fails the compare and stays NaN.
+        assert!(e.lod_scale(Vec3::splat(f32::NAN)).is_nan());
     }
 
     #[test]
@@ -1974,14 +2003,14 @@ mod tests {
             forward: Vec3::NEG_Z,
         };
         let q = Emitter::camera_quad(view);
-        // Each corner is a third of a unit along the view, half along right
-        // or up, then normalised: the thirds become 0.5145 and the halves
-        // 0.8575.
+        // Each corner is 0.3 along the camera's back axis (+Z here, towards
+        // the viewer), half along right or up, then normalised: 0.3/0.5831
+        // = 0.5145 and 0.5/0.5831 = 0.8575.
         let want = [0.514_495_7, 0.857_492_9];
-        assert!((q[0].y + want[1]).abs() < 1e-5 && (q[0].z + want[0]).abs() < 1e-5);
-        assert!((q[1].x - want[1]).abs() < 1e-5 && (q[1].z + want[0]).abs() < 1e-5);
-        assert!((q[2].x + want[1]).abs() < 1e-5 && (q[2].z + want[0]).abs() < 1e-5);
-        assert!((q[3].y - want[1]).abs() < 1e-5 && (q[3].z + want[0]).abs() < 1e-5);
+        assert!((q[0].y + want[1]).abs() < 1e-5 && (q[0].z - want[0]).abs() < 1e-5);
+        assert!((q[1].x - want[1]).abs() < 1e-5 && (q[1].z - want[0]).abs() < 1e-5);
+        assert!((q[2].x + want[1]).abs() < 1e-5 && (q[2].z - want[0]).abs() < 1e-5);
+        assert!((q[3].y - want[1]).abs() < 1e-5 && (q[3].z - want[0]).abs() < 1e-5);
         for corner in q {
             assert!((corner.length() - 1.0).abs() < 1e-5);
         }
