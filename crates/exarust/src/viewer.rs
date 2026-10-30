@@ -1308,7 +1308,7 @@ fn spawn_players(
         };
         let player_shield = shields.player.is_some();
         commands.insert_resource(shields);
-        if exa_world::start::keeps_torch(name) && !player_shield {
+        if exa_world::start::keeps_torch(name) && !player_shield && !options.no_torch {
             commands.entity(model).insert(exa_game::torch::CarriesTorch);
         }
         if let Some(w) = &options.weapon {

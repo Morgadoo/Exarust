@@ -2093,8 +2093,10 @@ the cell's rotation; see [formats/RFC.md](formats/RFC.md) (Grid building).
   - the **shadow softness**.
 
   Nodes whose flags (`flags2`) masked by `0x300` equal `0x200` add the spot
-  values q, p. Node flag `0x40000` makes the light fall off with distance;
-  without it, it reaches everywhere at full strength.
+  values q, p. Node flag `0x40000` with a radius above zero makes the light
+  fall off with distance. Without both, it reaches everywhere at full
+  strength: the original's activation then leaves the attenuation 0 and
+  the far plane unbounded.
 - Lights with spot values are shaped vertically:
   - y = ½·sin(qπ/2) for q ≥ 0, otherwise 3 − 3/cos(qπ/2); z = p + 1;
   - factor max((2^(z·(Ly + (1 − Ly)·y)) − 1)/(2^z − 1), 0), with Ly the
@@ -2297,6 +2299,30 @@ the cell's rotation; see [formats/RFC.md](formats/RFC.md) (Grid building).
     The GI lookup splits its taps the same way.
 - The sun's colour per unit of intensity is 160 lux in Exarust's scene units
   (scaled back in the shader).
+- **exanima01's start room.** Two level lights hang over the spawn:
+  - the pool light, 4 m up: grey (sRGB about 0.81), intensity 60, radius
+    630 cm, GI multiplier 0.1, shaped straight down (q 0, p 15: shaping
+    (0, 16));
+  - a faint fill, 2.5 m up: white, intensity 0.1, radius 2450 cm, GI
+    multiplier 0.
+
+  On the floor 3.9 m below, the pool's shaping halves about 1.5 m out and
+  falls under a tenth at 3 m. That is the cold white pool, about 3 m
+  wide, with white specular, that the original shows around a player who
+  holds no torch. It is not the player light, which a normal start leaves
+  off (see `docs/PLAYER.md`, The player light). Exarust draws both lights.
+  Its exanima01 start puts the torch in the player's hand, and the torch
+  drowns the pool; the original's story start has the torch lying on the
+  floor beside the player.
+
+  Matched to a retail capture (1600×1080, the retail FOV 29.93, torch laid
+  on the floor with `--floor-torch`), the frame measures (25.5, 16.9, 11.4)
+  sRGB against retail's (24.2, 17.0, 12.2), and the pool 70.9 against
+  70.6. Retail's distant surfaces change from frame to frame: the top wall
+  reads 9.0, 6.3 and 2.9 in captures 2 s apart, and Exarust's reads 5.8.
+  Not explained yet: in the dim periphery, retail's neutral light is about
+  1.7 times Exarust's. Exarust lights it only with the fill's direct term,
+  and its GI adds nothing there.
 
 ### Sun shadow fit
 

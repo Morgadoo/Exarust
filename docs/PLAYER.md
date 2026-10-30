@@ -1801,7 +1801,13 @@ character body's possession routines; addresses are in the research notes.
   There is no additive arm layer: the whole moveset changes, in and out of
   combat, as the held items pick it ([Moveset from held items](#moveset-from-held-items)). A new game puts the torch in the off hand for two of the four
   backgrounds; the player in the reference captures holds it raised in the
-  right hand.
+  right hand. Exarust's exanima01 start gives the player the lit torch in
+  hand. A 2026-10-30 capture of the original's story start (background 0,
+  the start letter, no torch in hand) shows the torch lying on the floor
+  about 2 m from the player. With the torch on the floor, the start room's
+  own pool light shows around the player (`docs/RENDERING.md`, Lights). Not
+  reproduced yet: `--no-torch` and `--floor-torch` stand in for it in
+  comparisons.
 - **The two carries** of the right hand. "Torch" defines four clips, Walk,
   Cmbt - Idle, Attack Mid and Idle, each replacing One Handed's whole; the
   guard (Defence stance) and the other attacks are One Handed's. The two

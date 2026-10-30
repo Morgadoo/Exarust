@@ -29,8 +29,57 @@ pub struct TorchPlugin;
 
 impl Plugin for TorchPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, light_torches);
+        app.init_resource::<FloorTorch>()
+            .add_systems(Update, (light_torches, lay_floor_torch));
     }
+}
+
+/// `--floor-torch x,y,z`: a lit torch lying on the floor there (metres), as
+/// the original's story start has the player's torch beside the body
+/// (Exarust's debug option, for comparisons with the original).
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq)]
+pub struct FloorTorch(pub Option<Vec3>);
+
+/// Lays the [`FloorTorch`] once the player stands in the level: the
+/// torch's model on its side, its fire and light burning as a wall
+/// torch's do.
+#[allow(clippy::too_many_arguments)]
+fn lay_floor_torch(
+    mut commands: Commands,
+    mut floor: ResMut<FloorTorch>,
+    game: Option<Res<Game>>,
+    players: Query<(), With<crate::player::PlayerBody>>,
+    mut cache: ResMut<ModelCache>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<exa_render::material::ExaMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    support: Option<Res<CompressedImageFormatSupport>>,
+) {
+    let (Some(at), Some(game)) = (floor.0, game) else {
+        return;
+    };
+    if players.is_empty() {
+        return;
+    }
+    floor.0 = None;
+    let mut loader = ModelLoader {
+        game: &game.0,
+        cache: &mut cache,
+        meshes: &mut meshes,
+        materials: &mut materials,
+        images: &mut images,
+        bc_supported: model::bc_supported(support.as_deref()),
+    };
+    let Some(torch) = loader.model(PackKind::Objects, TORCH) else {
+        warn!("{TORCH} not found: no torch on the floor");
+        return;
+    };
+    // On its side, the handle along the floor.
+    let placement = Transform::from_translation(at)
+        .with_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2 * 0.9));
+    let (root, _) = exa_world::spawn_model_nodes(&mut commands, &torch, Some(placement));
+    commands.entity(root).insert(Name::new("FloorTorch"));
+    info!("floor torch laid at {at}");
 }
 
 /// A body carrying a lit torch: in the right hand, or in the left beside a

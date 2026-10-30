@@ -306,8 +306,9 @@ pub struct Light {
     /// Vertical spot shaping (q, p), stored for nodes whose flags masked by
     /// `0x300` are `0x200`.
     pub spot: Option<[f32; 2]>,
-    /// Falls off with distance (node flag `0x40000`); otherwise the light
-    /// reaches everywhere at full strength.
+    /// Falls off with distance (node flag `0x40000` and a radius above
+    /// zero, [`ranged`]); otherwise the light reaches everywhere at full
+    /// strength.
     pub ranged: bool,
     /// The flicker and fade parameters a body with flag `0x10000` or
     /// `0x20000` stores after the shaping words; `None` for the others,
@@ -1577,7 +1578,8 @@ fn read_light(c: &mut Cursor<'_>, node_flags: u32) -> Result<Light> {
     c.skip(4)?;
     let multiplier = c.f32()?;
     let intensity = c.f32()?;
-    let radius = c.f32()? * CENTIMETRES_TO_METRES;
+    let radius_cm = c.f32()?;
+    let radius = radius_cm * CENTIMETRES_TO_METRES;
     // One unread value, then the softness.
     c.skip(4)?;
     let softness = c.f32()?;
@@ -1594,9 +1596,18 @@ fn read_light(c: &mut Cursor<'_>, node_flags: u32) -> Result<Light> {
         radius,
         softness,
         spot,
-        ranged: node_flags & RANGED != 0,
+        ranged: ranged(node_flags, radius_cm),
         animation: None,
     })
+}
+
+/// Whether a light falls off with distance: the node flag [`RANGED`] and a
+/// stored radius above zero (a NaN radius is not). The original's light
+/// activation gives a light without both the forward attenuation 0 and the
+/// far plane of an unbounded light, so it reaches everywhere at full
+/// strength.
+pub fn ranged(node_flags: u32, radius_cm: f32) -> bool {
+    node_flags & RANGED != 0 && radius_cm > 0.0
 }
 
 /// The flicker and fade words of a light body whose flags ask for them:
@@ -3997,6 +4008,47 @@ mod tests {
         b.extend(u32s(&[0]));
         b.extend(f32s(&[1.0, 1.0, 100.0, 0.0, 0.5]));
         b
+    }
+
+    /// A light falls off only with the range flag and a radius above zero:
+    /// the flag with a zero, negative or NaN radius reaches everywhere, as
+    /// the original's activation leaves such a light unranged.
+    #[test]
+    fn a_light_is_ranged_with_the_flag_and_a_radius() {
+        assert!(ranged(RANGED, 100.0));
+        assert!(ranged(RANGED | 0x10_0100, 1200.0));
+        assert!(!ranged(0x10_0100, 1200.0));
+        assert!(!ranged(RANGED, 0.0));
+        assert!(!ranged(RANGED, -5.0));
+        assert!(!ranged(RANGED, f32::NAN));
+        let light = |radius: f32| {
+            let mut b = u32s(&[0]);
+            b.extend(f32s(&[1.0, 1.0, 1.0]));
+            b.extend(u32s(&[0]));
+            b.extend(f32s(&[0.0, 0.1, radius, 0.0, 0.5]));
+            b
+        };
+        let nodes = [
+            node_flags("Fill", 0, RANGED | 0x10_0100, 0, 0, &light(2450.0)),
+            node_flags("Zero", 0, RANGED | 0x10_0100, 0, 0, &light(0.0)),
+        ];
+        let mut list = u32s(&[nodes.len() as u32]);
+        for body in &nodes {
+            list.extend(chunk(NODE_LIGHT, body));
+        }
+        let mut f = vec![0xCF, 0xAF];
+        f.extend(0x3D23u16.to_le_bytes());
+        f.extend(chunk(NODE_LIST, &list));
+        let scene = Scene::parse(&f).unwrap();
+        let lights: Vec<(f32, bool)> = scene
+            .nodes
+            .iter()
+            .map(|n| match &n.body {
+                NodeBody::Light(l) => (l.radius, l.ranged),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(lights, [(24.5, true), (0.0, false)]);
     }
 
     #[test]

@@ -70,6 +70,7 @@ pub mod item_panel_draw;
 pub mod joint_trace;
 pub mod level_change;
 pub mod level_transition;
+pub mod light_probe;
 pub mod limp;
 pub mod loadout;
 pub mod loadout_screen;
@@ -178,6 +179,7 @@ impl Plugin for GamePlugin {
                 hotkeys::HotkeyPlugin,
                 equip::EquipPlugin,
                 player_light::PlayerLightPlugin,
+                light_probe::LightProbePlugin,
                 commands::CommandPlugin,
             ),
             (script_cast::ScriptCastPlugin, hud::HudPlugin),

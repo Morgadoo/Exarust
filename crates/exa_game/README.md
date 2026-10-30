@@ -574,7 +574,9 @@ blow's low-health check on the player's body (`exa_combat::Weakened`;
 `hud`), the
 held torch (`torch`, which fills its hand and holds it by the grip
 table's one-handed or off-hand grip for the holder's size and race; its
-tests pin the "Torch" clips' arm on the body model), the teleporter and reconstruction devices (`teleporters`: a `UseDevice`
+tests pin the "Torch" clips' arm on the body model; `--floor-torch` lays
+one on the floor for retail comparisons), the debug light listing around
+the player (`light_probe`, `--debug-lights`), the teleporter and reconstruction devices (`teleporters`: a `UseDevice`
 request finds the device's crystal slot and the placed object on it; a
 teleporter asks for the destination screen with its rows and level ids, a
 reconstruction device puts the effects' scan on the player, waiting
