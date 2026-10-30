@@ -3168,9 +3168,9 @@ the depth weight), bent toward F while F is above it,
 `h = F·((r·0.11 + 1) − 1/(8r + 1))` with `r = h/F`, then
 `distance = h / sin(fov/2) + depth half · weight` (the runtime's sine, as
 the original divides by it); the camera moves to that distance from the
-box's centre along +Z. The editor's own helper moves an existing camera
-along its direction to the box instead
-(`item_renderer::frame_camera`). A small item thus draws small in
+box's centre along +Z. The engine's fit itself puts the node it moves at
+the box's centre plus the old direction from that node to the view node,
+times the distance (`item_renderer::frame_node`, a tested model). A small item thus draws small in
 its cell and one at least F across fills it. The plan's screen scale is
 the perspective scale, `icon · 1/tan(fov/2) / distance · 0.5` [guess: the
 view's scale field read as `1/tan(fov/2)`], so the plan's extents are the

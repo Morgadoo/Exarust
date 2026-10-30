@@ -28,8 +28,9 @@ renderbuffers at twice that, the two RGBA image headers, the sun along
 (0, 0, 350) with a 40° field of view and a 10 cm near field;
 `frame_distance` is the engine's scene fit the render frames the item with
 (its distance divides by the sine, not the tangent, as the original's
-does), and `frame_camera` moves an existing camera along its direction to
-the box, the editor's own helper.
+does), and `frame_node` is where the fit puts the node it moves: the box's
+centre plus the old direction from that node to the view, times the fit
+distance (a tested model; the icon camera is placed by `item_icon`).
 `item_icon` adds what the running camera needs: that fit in metres on +Z
 from the box's centre, the framing presets' sun direction, the model's
 baked scene and a CPU rasteriser; the tests pin the fit, the camera, the

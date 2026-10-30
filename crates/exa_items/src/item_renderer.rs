@@ -208,22 +208,30 @@ pub fn frame_distance(half: [f32; 3], framing: f32, fov_degrees: f32) -> f32 {
     half[2] * weight + distance
 }
 
-/// The camera the scene fit moves to frame a box (`0x06BFA0`): the
-/// direction from the camera to the target (the engine's normalise, a zero
-/// vector staying zero), and the camera moved along it by
-/// [`frame_distance`]. The original moves its camera node, not the target,
-/// so the view keeps its angle. The direction uses an exact normalise; the
-/// engine's approximate reciprocal square root differs in the last bits.
-pub fn frame_camera(
-    camera: Vec3,
-    target: Vec3,
+/// Where the scene fit puts the node it moves (the view's eye node): the
+/// box's centre plus the direction from that node's old world position
+/// towards the view node's, times [`frame_distance`]. The original first
+/// sets the node's position to the centre, then adds the direction it
+/// measured before, normalised with the engine's normalise (the squares
+/// summed `(x² + z²) + y²`, times the approximate reciprocal square root;
+/// a zero direction stays zero).
+pub fn frame_node(
+    centre: Vec3,
+    eye: Vec3,
+    view: Vec3,
     half: [f32; 3],
     framing: f32,
     fov_degrees: f32,
 ) -> Vec3 {
     let distance = frame_distance(half, framing, fov_degrees);
-    let direction = (target - camera).normalize_or_zero();
-    camera + direction * distance
+    let d = view - eye;
+    let sum = d.y * d.y + (d.x * d.x + d.z * d.z);
+    let direction = if sum == 0.0 {
+        Vec3::ZERO
+    } else {
+        d * exa_formats::rfc::reciprocal_sqrt(sum)
+    };
+    centre + direction * distance
 }
 
 /// A 3 × 4 row-major transform: three rows of `[x, y, z, w]`.
@@ -583,16 +591,19 @@ mod tests {
     }
 
     #[test]
-    fn the_scene_fit_moves_an_existing_camera_along_its_direction() {
-        // A camera 10 m down -Z from the target: the fit puts it at the
-        // distance from where it was, along the unchanged direction.
-        let camera = Vec3::new(0.0, 0.0, 1000.0);
-        let target = Vec3::ZERO;
-        let moved = frame_camera(camera, target, [5.0, 5.0, 5.0], 70.0, 40.0);
+    fn the_scene_fit_puts_its_node_at_the_centre_plus_the_old_direction() {
+        // The node sat 10 m down +Z from the view node: the direction to
+        // the view is -Z, so the node lands the fit distance from the box's
+        // centre along -Z, wherever it was before.
+        let centre = Vec3::new(5.0, 6.0, 7.0);
+        let eye = Vec3::new(0.0, 0.0, 1000.0);
+        let view = Vec3::ZERO;
+        let moved = frame_node(centre, eye, view, [5.0, 5.0, 5.0], 70.0, 40.0);
         let distance = frame_distance([5.0, 5.0, 5.0], 70.0, 40.0);
-        assert!((moved - Vec3::new(0.0, 0.0, 1000.0 - distance)).length() < 1e-3);
-        // A camera at the target has no direction: it stays.
-        assert_eq!(frame_camera(target, target, [5.0; 3], 70.0, 40.0), target);
+        let unit = exa_formats::rfc::reciprocal_sqrt(1_000_000.0) * -1000.0;
+        assert_eq!(moved, centre + Vec3::new(0.0, 0.0, unit) * distance);
+        // A node at the view node's position has no direction: the centre.
+        assert_eq!(frame_node(centre, view, view, [5.0; 3], 70.0, 40.0), centre);
     }
 
     #[test]
