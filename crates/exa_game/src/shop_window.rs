@@ -150,6 +150,9 @@ pub struct ShopWindow {
     /// How many times the window has been laid out, the opener's one
     /// included.
     pub layouts: u32,
+    /// The item the preview was last laid out on, when a pick re-ran the
+    /// layout; `None` while it shows the character it opened with.
+    pub preview_subject: Option<i32>,
     /// Opened with the merchant's category and rank options.
     pub merchant: bool,
     pub shown: bool,
@@ -179,6 +182,7 @@ impl ShopWindow {
             stock: Vec::new(),
             stock_list: None,
             layouts: 0,
+            preview_subject: None,
             merchant,
             shown: true,
             trading: true,
@@ -231,11 +235,12 @@ impl ShopWindow {
     }
 
     /// The character view asked for the item under the cursor: an item
-    /// found lays the window out again (so the pack shows it) and answers
-    /// false; nothing found answers true.
+    /// found lays the window out again with the preview on that item and
+    /// answers false; nothing found answers true.
     pub fn recollect(&mut self, picked: Option<i32>) -> bool {
         match picked {
-            Some(_) => {
+            Some(item) => {
+                self.preview_subject = Some(item);
                 self.layout_count();
                 false
             }
@@ -498,9 +503,9 @@ mod tests {
         // A pick lays the window out again and answers false; nothing
         // picked answers true and leaves the count alone.
         assert!(!window.recollect(Some(4)));
-        assert_eq!(window.layouts, 2);
+        assert_eq!((window.layouts, window.preview_subject), (2, Some(4)));
         assert!(window.recollect(None));
-        assert_eq!(window.layouts, 2);
+        assert_eq!((window.layouts, window.preview_subject), (2, Some(4)));
         // Binding again replaces the list.
         window.bind_stock(&[], None);
         assert!(window.stock.is_empty());
