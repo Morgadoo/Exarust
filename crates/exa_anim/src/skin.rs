@@ -57,28 +57,8 @@ pub fn skin_vertex(
     weights: [f32; 4],
     matrices: &[SkinRows],
 ) -> Vec3 {
-    let at = |j: i32| usize::try_from(j - 1).ok().and_then(|i| matrices.get(i));
-    let Some(first) = at(joints[0]) else {
-        return Vec3::ZERO;
-    };
-    let mut m = first.map(|row| row.map(|v| v * weights[0]));
-    for k in 1..4 {
-        if joints[k] < 1 {
-            break;
-        }
-        let Some(next) = at(joints[k]) else {
-            break;
-        };
-        for (row, other) in m.iter_mut().zip(next) {
-            for (v, o) in row.iter_mut().zip(other) {
-                *v += o * weights[k];
-            }
-        }
-    }
-    let p = position.to_array();
-    Vec3::from_array(std::array::from_fn(|c| {
-        (p[0] * m[0][c] + p[1] * m[1][c]) + (p[2] * m[2][c] + m[3][c])
-    }))
+    blend_skin_matrix(&SkinBinding { joints, weights }, matrices)
+        .map_or(Vec3::ZERO, |m| transform_point(m, position))
 }
 
 /// A vertex's joints as the mesh stores them: four one-based joint numbers
@@ -107,14 +87,41 @@ pub fn transform_vector(m: SkinRows, p: Vec3) -> Vec3 {
     }))
 }
 
-/// The inverse of a point for a rotation matrix: `dot(p − t, column)` per
-/// component, the original's placement helper.
-pub fn inverse_transform_point(m: SkinRows, p: Vec3) -> Vec3 {
-    let d = p - Vec3::from_array(m[3]);
+/// A direction turned back by a rotation matrix (the transpose): its dot
+/// with each axis row, summed `(x·a + y·b) + z·c`.
+pub fn inverse_transform_vector(m: SkinRows, v: Vec3) -> Vec3 {
     Vec3::from_array(std::array::from_fn(|c| {
-        let column = Vec3::from_array(m[c]);
-        d.dot(column)
+        (v.x * m[c][0] + v.y * m[c][1]) + v.z * m[c][2]
     }))
+}
+
+/// The inverse of a point for a rotation matrix: the point less the
+/// translation, turned back by [`inverse_transform_vector`] (the original's
+/// placement helper).
+pub fn inverse_transform_point(m: SkinRows, p: Vec3) -> Vec3 {
+    inverse_transform_vector(m, p - Vec3::from_array(m[3]))
+}
+
+/// The product of two 12-float matrices in the original's order: `a` is
+/// applied first, then `b` (each row of `a` turned by `b`'s axes, summed
+/// `(x·b₀ + y·b₁) + z·b₂`, and `a`'s translation carried through `b` as a
+/// point). In Bevy's terms this is `b * a`.
+pub fn compose(a: SkinRows, b: SkinRows) -> SkinRows {
+    let turn = |r: [f32; 3]| -> [f32; 3] {
+        std::array::from_fn(|c| (r[0] * b[0][c] + r[1] * b[1][c]) + r[2] * b[2][c])
+    };
+    [
+        turn(a[0]),
+        turn(a[1]),
+        turn(a[2]),
+        transform_point(b, Vec3::from_array(a[3])).to_array(),
+    ]
+}
+
+/// The length of a vector as the original's helper sums it:
+/// `√((x² + z²) + y²)`.
+pub fn length(v: Vec3) -> f32 {
+    ((v.x * v.x + v.z * v.z) + v.y * v.y).sqrt()
 }
 
 /// A direction scaled by the reciprocal square root of its length², summed
@@ -131,28 +138,32 @@ pub fn normalised(v: Vec3) -> Vec3 {
     }
 }
 
-/// A joint's matrix in the mesh node's frame, as the original's rebind
-/// computes it: the node's rotation times the joint's, and the joint's
-/// translation less the node's, turned by the node's rotation.
-pub fn joint_in_node_frame(joint: Mat4, node: Mat4) -> Mat4 {
-    let rotation = Mat4::from_cols(
-        node.x_axis.truncate().extend(0.0),
-        node.y_axis.truncate().extend(0.0),
-        node.z_axis.truncate().extend(0.0),
-        Vec4::W,
-    );
-    let mut out = rotation * joint;
-    out.w_axis = rotation
-        .transform_vector3(joint.w_axis.truncate() - node.w_axis.truncate())
-        .extend(1.0);
-    out
+/// A joint's matrix in the mesh node's frame, as the original computes it
+/// before each skin pass: every axis row of the joint turned back by the
+/// node's rotation ([`inverse_transform_vector`]) and the joint's
+/// translation placed in the node ([`inverse_transform_point`]); the node's
+/// rotation is taken to be orthonormal.
+pub fn joint_in_node_frame(joint: SkinRows, node: SkinRows) -> SkinRows {
+    let back = |r: [f32; 3]| inverse_transform_vector(node, Vec3::from_array(r)).to_array();
+    [
+        back(joint[0]),
+        back(joint[1]),
+        back(joint[2]),
+        inverse_transform_point(node, Vec3::from_array(joint[3])).to_array(),
+    ]
 }
 
-/// The per-joint skin matrices of a frame: every base matrix times its
-/// joint's, from `base` and `joints` in bone order. `joints_local` says
-/// the joint matrices are already in the node's frame; otherwise each is
+/// The per-joint skin matrices of a frame, in bone order: each base matrix
+/// (the joint's inverse bind) applied first, then its joint's matrix
+/// ([`compose`]). `joints_local` says the joint matrices are already in the
+/// node's frame (the original's mesh flag for it); otherwise each is first
 /// brought into it with [`joint_in_node_frame`].
-pub fn frame_matrices(base: &[Mat4], joints: &[Mat4], node: Mat4, joints_local: bool) -> Vec<Mat4> {
+pub fn frame_matrices(
+    base: &[SkinRows],
+    joints: &[SkinRows],
+    node: SkinRows,
+    joints_local: bool,
+) -> Vec<SkinRows> {
     base.iter()
         .zip(joints)
         .map(|(&base, &joint)| {
@@ -161,7 +172,7 @@ pub fn frame_matrices(base: &[Mat4], joints: &[Mat4], node: Mat4, joints_local: 
             } else {
                 joint_in_node_frame(joint, node)
             };
-            base * joint
+            compose(base, joint)
         })
         .collect()
 }
@@ -219,7 +230,8 @@ pub fn skin_vertex_by_positions(
 }
 
 /// Every rest position skinned the position-blended way, in vertex order:
-/// the pass that bakes a pose into a mesh's own position stream.
+/// the pass that bakes a pose into a mesh's own position stream (it checks
+/// no joint number; a first joint without a matrix gives the origin here).
 pub fn bake_skin_positions(
     rest: &[Vec3],
     bindings: &[SkinBinding],
@@ -229,6 +241,51 @@ pub fn bake_skin_positions(
         .zip(bindings)
         .map(|(&p, binding)| skin_vertex_by_positions(p, binding, matrices))
         .collect()
+}
+
+/// The previous-position stream a part's motion pass starts from, filled
+/// the position-blended way ([`skin_vertex_by_positions`]) for every index
+/// of the part's stream (`previous[slot]` from the rest position of vertex
+/// `indices[slot]`). A vertex whose first joint number is below 1 or past
+/// the matrices has that joint number set to 1 and its slot left as it
+/// was, as the original does.
+pub fn prime_previous_positions(
+    indices: &[u32],
+    rest: &[Vec3],
+    bindings: &mut [SkinBinding],
+    matrices: &[SkinRows],
+    previous: &mut [Vec3],
+) {
+    for (slot, &vertex) in indices.iter().enumerate() {
+        let (Some(binding), Some(&p), Some(out)) = (
+            bindings.get_mut(vertex as usize),
+            rest.get(vertex as usize),
+            previous.get_mut(slot),
+        ) else {
+            continue;
+        };
+        let first = binding.joints[0];
+        if first < 1 || usize::try_from(first).is_ok_and(|n| n > matrices.len()) {
+            binding.joints[0] = 1;
+            continue;
+        }
+        *out = skin_vertex_by_positions(p, binding, matrices);
+    }
+}
+
+/// Moves a skinned mesh's previous-position streams by `offset`, part by
+/// part, as the original does when the world origin shifts: a part with no
+/// such stream ends the walk (the parts after it keep theirs). The mesh's
+/// centres move with the same addition (the caller's).
+pub fn shift_previous_positions(parts: &mut [Option<Vec<Vec3>>], offset: Vec3) {
+    for part in parts {
+        let Some(previous) = part else {
+            return;
+        };
+        for p in previous {
+            *p += offset;
+        }
+    }
 }
 
 /// The normal and tangent one vertex carries after a deform, and the
@@ -346,15 +403,16 @@ pub struct WorldBounds {
     pub radius: f32,
 }
 
-/// One part as the bounds pass reads it: its centre in its bone's space, its
-/// half extents along its own axes, its own rotation matrix and the cap on
-/// its projected radius.
+/// One part as the bounds pass reads it: its world centre, its half extents
+/// along its own axes, its own world matrix and its bounding radius, which
+/// caps its projected extent. The original walks the root node first, then
+/// its child nodes of the skinned kind depth first.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BoundsPart {
     pub centre: Vec3,
     pub half: Vec3,
     pub matrix: SkinRows,
-    /// The original's stored limit on the part's projected radius (cm).
+    /// The part's own bounding radius (cm), the cap on its projected extent.
     pub reach_limit: f32,
 }
 
@@ -397,10 +455,11 @@ pub fn bounds_from_parts(centre: Vec3, node: SkinRows, parts: &[BoundsPart]) -> 
     }
     let min = Vec3::from_array(min);
     let max = Vec3::from_array(max);
-    let local_centre = (min + max) * 0.5;
+    // The middle as the original's interpolation takes it: min + (max − min)·½.
+    let local_centre = min + (max - min) * 0.5;
     let half = max - local_centre;
     let centre = transform_point(node, local_centre);
-    let radius = ((half.x * half.x + half.z * half.z) + half.y * half.y).sqrt();
+    let radius = length(half);
     WorldBounds {
         min,
         max,
@@ -417,6 +476,8 @@ pub fn bounds_from_parts(centre: Vec3, node: SkinRows, parts: &[BoundsPart]) -> 
 pub struct TintLight {
     pub origin: Vec3,
     pub direction: Vec3,
+    /// The reach, compared with the vertex's squared distance (the
+    /// original's units: cm²).
     pub range: f32,
 }
 
@@ -439,18 +500,18 @@ impl TintLight {
 }
 
 /// One vertex's alpha after the near-light tint, in the original's order:
-/// the vertex less the light's origin gives the distance and the dot with
-/// the direction over its length; a positive dot removes the part facing
-/// the light from the distance; inside the range the alpha becomes
-/// `(1 − ((1 − f)·r + f)²·f)·255` with `f = 1 − distance/range` and one
-/// uniform draw `r`, kept only when it beats the stored alpha (ordered) and
-/// rounded to even. `None` when the vertex is out of range, faces away or
-/// the value does not beat the stored alpha.
+/// the vertex less the light's origin gives the squared distance `s` and
+/// the dot with the direction over its length; a positive dot scales `s` by
+/// `1 − dot/√s`; unless the range is below `s` (a NaN `s` passes) the alpha
+/// becomes `(1 − ((1 − f)·r + f)²·f)·255` with `f = 1 − s/range` in single
+/// and the rest in double with one uniform draw `r`, kept only when it is
+/// below the stored alpha (ordered) and rounded half to even. `None` when
+/// the vertex is out of range or the value is not below the stored alpha.
 pub fn tint_alpha(vertex: Vec3, stored: u8, light: &TintLight, roll: f64) -> Option<u8> {
     let d = vertex - light.origin;
     let mut distance = (d.x * d.x + d.y * d.y) + d.z * d.z;
     let dot = ((d.x * light.direction.x + d.y * light.direction.y) + d.z * light.direction.z)
-        / light.direction.length();
+        / length(light.direction);
     if dot > 0.0 {
         distance *= 1.0 - dot / distance.sqrt();
     }
@@ -773,24 +834,70 @@ mod tests {
         assert_eq!(baked[1], Vec3::new(0.75, 0.5, 0.0));
     }
 
-    /// The per-frame matrices: the base times the joint, and the joint first
-    /// brought through the node by its rotation.
+    /// The per-frame matrices: the joint is first placed in the node's
+    /// frame (turned back by the node's rotation), then the base is applied
+    /// before it.
     #[test]
     fn the_frame_matrices_compose_through_the_node() {
-        let node = Mat4::from_rotation_z(std::f32::consts::FRAC_PI_2)
-            * Mat4::from_translation(Vec3::new(10.0, 0.0, 0.0));
-        let joint = Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0));
+        // The node sits at (0, 10, 0) with its x axis along world +y.
+        let node = skin_rows(
+            Mat4::from_translation(Vec3::new(0.0, 10.0, 0.0))
+                * Mat4::from_rotation_z(std::f32::consts::FRAC_PI_2),
+        );
+        let joint = skin_rows(Mat4::from_translation(Vec3::new(0.0, 1.0, 0.0)));
         let local = joint_in_node_frame(joint, node);
-        // The joint less the node's world place, turned 90° about z: the
-        // node's place is (0,10,0), so (0,1,0) − (0,10,0) = (0,−9,0) →
-        // (9,0,0).
-        assert!((local.w_axis.truncate() - Vec3::new(9.0, 0.0, 0.0)).length() < 1e-5);
-        let base = Mat4::IDENTITY;
-        let frames = frame_matrices(&[base], &[joint], node, false);
-        assert!((frames[0].w_axis.truncate() - Vec3::new(9.0, 0.0, 0.0)).length() < 1e-5);
-        // A joint already in the node's frame skips the node step.
-        let direct = frame_matrices(&[base], &[joint], node, true);
-        assert_eq!(direct[0], joint);
+        // The joint is 9 below the node along world y, which is the node's
+        // −x: (−9, 0, 0) in the node's frame, and its axes turn back by
+        // the node's rotation (world x is the node's −y).
+        assert!((Vec3::from_array(local[3]) - Vec3::new(-9.0, 0.0, 0.0)).length() < 1e-5);
+        assert!((Vec3::from_array(local[0]) - Vec3::new(0.0, -1.0, 0.0)).length() < 1e-6);
+        // The base is applied first: a base translation of (1, 0, 0) under
+        // a joint turned 90° about z lands on (0, 1, 0), not (1, 0, 0)
+        // turned after the fact.
+        let base = skin_rows(Mat4::from_translation(Vec3::new(1.0, 0.0, 0.0)));
+        let turn = skin_rows(Mat4::from_rotation_z(std::f32::consts::FRAC_PI_2));
+        let frames = frame_matrices(&[base], &[turn], node, true);
+        assert!((Vec3::from_array(frames[0][3]) - Vec3::new(0.0, 1.0, 0.0)).length() < 1e-6);
+        let same = skin_rows(
+            Mat4::from_rotation_z(std::f32::consts::FRAC_PI_2)
+                * Mat4::from_translation(Vec3::new(1.0, 0.0, 0.0)),
+        );
+        for (row, other) in frames[0].iter().zip(same) {
+            assert!((Vec3::from_array(*row) - Vec3::from_array(other)).length() < 1e-6);
+        }
+        // Without the local flag the joint goes through the node first.
+        let through = frame_matrices(&[skin_rows(Mat4::IDENTITY)], &[joint], node, false);
+        assert!((Vec3::from_array(through[0][3]) - Vec3::new(-9.0, 0.0, 0.0)).length() < 1e-5);
+    }
+
+    /// The previous positions start from the position-blended skin of
+    /// each index's vertex; a bad first joint is reset to 1 and its slot
+    /// kept. A shift moves every stream until a part without one.
+    #[test]
+    fn the_previous_positions_prime_and_shift() {
+        let a = skin_rows(Mat4::from_translation(Vec3::new(1.0, 0.0, 0.0)));
+        let mut bindings = [
+            SkinBinding {
+                joints: [1, 0, 0, 0],
+                weights: [0.5, 0.0, 0.0, 0.0],
+            },
+            SkinBinding {
+                joints: [2, 0, 0, 0],
+                weights: [1.0, 0.0, 0.0, 0.0],
+            },
+        ];
+        let rest = [Vec3::new(1.0, 2.0, 0.0), Vec3::ZERO];
+        let mut previous = [Vec3::splat(7.0); 3];
+        prime_previous_positions(&[0, 1, 0], &rest, &mut bindings, &[a], &mut previous);
+        assert_eq!(previous[0], Vec3::new(1.0, 1.0, 0.0));
+        assert_eq!(previous[1], Vec3::splat(7.0));
+        assert_eq!(bindings[1].joints[0], 1);
+        // The third slot reads vertex 0 again.
+        assert_eq!(previous[2], Vec3::new(1.0, 1.0, 0.0));
+        let mut parts = vec![Some(vec![Vec3::ZERO]), None, Some(vec![Vec3::ONE])];
+        shift_previous_positions(&mut parts, Vec3::X);
+        assert_eq!(parts[0], Some(vec![Vec3::X]));
+        assert_eq!(parts[2], Some(vec![Vec3::ONE]));
     }
 
     /// The bounds grow from the mesh's centre by each part's projected
@@ -831,6 +938,20 @@ mod tests {
         );
         assert_eq!(nan.min, Vec3::ZERO);
         assert_eq!(nan.max, Vec3::ZERO);
+        // The middle is min + (max − min)·½, which differs from the plain
+        // average in the last bit for a box from −0.1 to 0.3.
+        let small = bounds_from_parts(
+            Vec3::ZERO,
+            node,
+            &[BoundsPart {
+                centre: Vec3::new(0.1, 0.0, 0.0),
+                half: Vec3::new(0.2, 0.0, 0.0),
+                ..part
+            }],
+        );
+        assert_eq!(small.min.x, 0.1f32 - 0.2);
+        assert_eq!(small.centre.x, 0.1);
+        assert_ne!(small.centre.x, (small.min.x + small.max.x) * 0.5);
         // A node placement moves the centre into world space.
         let moved = bounds_from_parts(
             Vec3::ZERO,
