@@ -1862,8 +1862,12 @@ flash tint (zero from the constructor), halved. The original reads that
 switch in one place and nothing in the executable sets it, so it is off in
 the shipped game; a lightning strike does not turn it on (Exarust's earlier
 stand-in did, and cleared each strike to black). `EXA_LIGHTNING_FRAME=<n>`
-forces a strike 316 cm from the view at frame `n` for captures. Exarust draws Bevy's
-atmosphere instead (see below) and keeps the gradient for the record. The
+forces a strike 316 cm from the view from frame `n` on whenever none is
+running, so a capture after it always falls inside a strike. Where the
+original's renderer draws the lightning-tinted record fog colour is not yet
+traced (its shader's fog uniform is the scratch colour), and Exarust's world
+material samples no fog, so a strike does not show on the level yet. Exarust draws
+Bevy's atmosphere instead (see below) and keeps the gradient for the record. The
 frame also publishes the values the renderer's globals take: a scene value
 from the sun's height (−100000 up to 0.4, −25 above it, compared in double
 precision; probably a shadow or clip distance, its reader is not ported),

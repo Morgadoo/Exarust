@@ -102,8 +102,9 @@ pub struct SceneEnvRuntime {
     pub published: Option<Frame>,
     /// Frames run since the level loaded.
     pub frames: u32,
-    /// A debug aid: the frame at which a lightning strike is forced
-    /// (`EXA_LIGHTNING_FRAME=<n>`), so a flash can be captured on demand.
+    /// A debug aid (`EXA_LIGHTNING_FRAME=<n>`): from this frame on, a
+    /// lightning strike is forced whenever none is running, so every frame
+    /// after it is inside a strike and a capture always shows one.
     pub force_strike_at: Option<u32>,
 }
 
@@ -527,7 +528,7 @@ fn live_environment(
     } = &mut *runtime;
     env.view = view;
     let mut draws = || library.unit();
-    if *force_strike_at == Some(*frames) && !env.weather.lightning.active {
+    if force_strike_at.is_some_and(|at| *frames >= at) && !env.weather.lightning.active {
         env.strike_lightning(FORCED_STRIKE_OFFSET, view, now, weather, &mut draws);
         info!("EXA_LIGHTNING_FRAME: strike forced at frame {frames} ({now} ms)");
     }
@@ -538,7 +539,7 @@ fn live_environment(
             "lightning frame {frames}: intensity {:.4}, clear {:?}, fog {:?}",
             frame.lightning,
             frame.background,
-            frame.fog.map(|f| f.colour)
+            frame.fog.map(|f| (f.colour, f.near, f.far))
         );
     }
     *frames = frames.saturating_add(1);

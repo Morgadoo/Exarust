@@ -27,7 +27,8 @@ Phase: Phase 5 (world rendering), the scene environment's weather.
   The switch stays modelled, with its tint, for a caller that sets it.
   `Frame` publishes the running strike's intensity (`lightning`).
 - `exa_world::environment`: `EXA_LIGHTNING_FRAME=<n>` (a debug aid) forces a
-  strike 316 cm from the view at frame `n` and logs the strike's frames.
+  strike 316 cm from the view from frame `n` on whenever none is running
+  and logs the strike's frames.
 - Tests on the original's numbers: the strike's attenuation (0.8775 at
   316 cm), the fog colour along the flicker, the clear, sun, ambient and fog
   reach kept, and the record's colour back at the strike's end.
