@@ -9,10 +9,11 @@
 //! message posts become the flags of [`TaskTick`] that a host turns into
 //! Bevy events.
 //!
-//! Not modelled: the task tick's copy of the camera pose into the audio
-//! listener (and its mid-point blend of two positions), the weather
-//! option calls of the run-scene set-up, and the handful of option bytes
-//! whose callee was not identified (see [`SceneRunOptions`]).
+//! Not modelled: the renderer toggle byte whose callee's effect was not
+//! identified (see [`SceneRunOptions`]), the two weather option calls of
+//! the run-scene set-up and the object-library manager it creates.
+
+use bevy::math::Vec3;
 
 use exa_world::scene_nodes::{Released, Scene};
 
@@ -152,14 +153,67 @@ pub struct SceneRunOptions {
     pub renderer_minimum: u32,
     /// Create the audio listener.
     pub listener: bool,
-    /// Gates a scene preparation call (callee not identified).
-    pub prepare_scene: bool,
-    /// Gates a viewport call (callee not identified).
-    pub viewport_call: bool,
-    /// Gates a viewport flag, with a second byte (callees not identified).
-    pub viewport_flag: bool,
+    /// Starts the scene's simulation, or, when it already has one, has that
+    /// simulation refresh its grid size from the scene's.
+    pub physics: bool,
+    /// Asks the viewport to maximise itself.
+    pub maximise: bool,
+    /// Gates the 3D view's toggle call, which turns its flag on only while
+    /// two global options allow it; a second byte first sets the view byte
+    /// the set-up already set when opening. Read as the view's show flag (a
+    /// guess: the flag's reader was not identified).
+    pub show: bool,
     /// Gates a renderer toggle (callee not identified).
     pub renderer_toggle: bool,
+}
+
+/// The seven-word camera record the run-scene set-up copies into the task
+/// when the options name none: distance 10 000 and 0.01, 0 and 100, 2000
+/// and 60, 10 000 and 0 in the two halves of the seven words, opening with
+/// the mode word `0x20b01`.
+pub const DEFAULT_CAMERA_RECORD: [u64; 7] = [
+    0x0000_0000_0002_0b01,
+    0,
+    0,
+    0x3c23_d70a_461c_4000,
+    0x42c8_0000_0000_0000,
+    0x4270_0000_44fa_0000,
+    0x0000_0000_461c_4000,
+];
+
+/// The audio listener flag whose set bit makes the tick put the listener
+/// between the camera and the object it follows.
+pub const LISTENER_FOLLOWS: u32 = 0x10;
+
+/// The audio listener's pose: the point the tick writes, and the
+/// two vectors it copies from the camera each frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ListenerPose {
+    pub position: Vec3,
+    pub look: Vec3,
+    pub up: Vec3,
+}
+
+/// One camera pose the tick publishes: the camera's two vectors, its
+/// position, and the position of the object it follows.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct CameraPose {
+    pub look: Vec3,
+    pub up: Vec3,
+    pub position: Vec3,
+    pub followed: Vec3,
+}
+
+/// The tick's listener step: the listener's two vectors take the camera's,
+/// and when its flag word carries [`LISTENER_FOLLOWS`] its point is the
+/// half-way blend from the camera to the followed object (the original's
+/// `a + (b − a)·0.5`). Otherwise the point is left as it was.
+pub fn publish_listener(pose: &mut ListenerPose, flags: u32, camera: CameraPose) {
+    pose.look = camera.look;
+    pose.up = camera.up;
+    if flags & LISTENER_FOLLOWS != 0 {
+        pose.position = camera.position + (camera.followed - camera.position) * 0.5;
+    }
 }
 
 /// A scene the editor has opened in a viewport.
@@ -171,19 +225,30 @@ pub struct SceneRun {
     /// The viewport's title: the scene name cut to [`TITLE_CHARS`]
     /// characters (the copy's argument order was not confirmed).
     pub title: String,
-    /// The task's copy of the camera record.
+    /// The task's copy of the camera record: the options', or
+    /// [`DEFAULT_CAMERA_RECORD`] when they name none.
+    pub task_camera: [u64; 7],
+    /// The options' camera record, when they named one.
     pub camera_record: Option<[u64; 7]>,
     /// A navigation controller was created for the record.
     pub controller: bool,
+    /// The set-up's physics request started the scene's simulation or
+    /// refreshed the existing one.
+    pub physics: bool,
+    /// The set-up asked the viewport to maximise itself.
+    pub maximised: bool,
+    /// The set-up ran the view toggle (see [`SceneRunOptions::show`]).
+    pub shown: bool,
 }
 
 impl SceneRun {
     /// Opens a scene in a new viewport. The viewport gets its rectangle,
-    /// flags and title; the renderer minimum is raised if the options ask
-    /// for more; a camera record is copied, creates the controller and sets
-    /// the scene's camera mode to 1 directly; option bits replace the
-    /// weather word's; a requested listener is created, or an existing one
-    /// without its flag bits falls back to the global listener.
+    /// flags and title and is shown; the renderer minimum is raised if the
+    /// options ask for more; a camera record is copied (the default when
+    /// none is named), creates the controller and sets the scene's camera
+    /// mode to 1 directly; option bits replace the weather word's; a
+    /// requested listener is created, or an existing one without its flag
+    /// bits falls back to the global listener.
     pub fn open(scene_name: &str, options: &SceneRunOptions, scene: &mut SceneSettings) -> Self {
         let title = scene_name.chars().take(TITLE_CHARS).collect();
         if options.renderer_minimum > scene.renderer_minimum {
@@ -207,8 +272,12 @@ impl SceneRun {
             viewport: VIEWPORT,
             viewport_flags: VIEWPORT_FLAGS,
             title,
+            task_camera: options.camera.unwrap_or(DEFAULT_CAMERA_RECORD),
             camera_record: options.camera,
             controller: options.camera.is_some(),
+            physics: options.physics,
+            maximised: options.maximise,
+            shown: options.show,
         }
     }
 }
@@ -570,6 +639,7 @@ mod tests {
         assert_eq!(run.title, "exanima_level_o");
         assert!(run.controller);
         assert_eq!(run.camera_record.unwrap()[6], 7);
+        assert_eq!(run.task_camera[6], 7);
         // The minimum only rises, so 5 stays; bits 0x60 are replaced.
         assert_eq!(scene.renderer_minimum, 5);
         assert_eq!(scene.weather_flags, 0x4f);
@@ -594,6 +664,48 @@ mod tests {
         assert_eq!(scene.camera_mode, 4);
         assert_eq!(scene.listener, Listener::None);
         assert!(!run.controller && run.camera_record.is_none());
+        // With no record the task still gets the default seven-word record.
+        assert_eq!(run.task_camera, DEFAULT_CAMERA_RECORD);
+        // Word 3 halves: 10000.0f low, 0.01f high.
+        assert_eq!(f32::from_bits(DEFAULT_CAMERA_RECORD[3] as u32), 10_000.0);
+        assert_eq!(
+            f32::from_bits((DEFAULT_CAMERA_RECORD[3] >> 32) as u32),
+            0.01
+        );
+    }
+
+    #[test]
+    fn the_run_options_drive_the_physics_viewport_and_show_flags() {
+        let options = SceneRunOptions {
+            physics: true,
+            maximise: true,
+            show: true,
+            ..SceneRunOptions::default()
+        };
+        let mut scene = SceneSettings::default();
+        let run = SceneRun::open("x", &options, &mut scene);
+        assert!(run.physics && run.maximised && run.shown);
+    }
+
+    #[test]
+    fn the_listener_takes_the_camera_vectors_and_half_the_followed_point() {
+        let camera = CameraPose {
+            look: Vec3::new(1.0, 0.0, 0.0),
+            up: Vec3::new(0.0, 1.0, 0.0),
+            position: Vec3::new(0.0, 0.0, 0.0),
+            followed: Vec3::new(8.0, 4.0, -2.0),
+        };
+        let mut pose = ListenerPose {
+            position: Vec3::new(9.0, 9.0, 9.0),
+            ..ListenerPose::default()
+        };
+        // Without the flag the two vectors still copy and the point stays.
+        publish_listener(&mut pose, 0, camera);
+        assert_eq!(pose.look, Vec3::X);
+        assert_eq!(pose.up, Vec3::Y);
+        assert_eq!(pose.position, Vec3::new(9.0, 9.0, 9.0));
+        publish_listener(&mut pose, LISTENER_FOLLOWS, camera);
+        assert_eq!(pose.position, Vec3::new(4.0, 2.0, -1.0));
     }
 
     #[test]

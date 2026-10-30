@@ -248,15 +248,18 @@ impl Environment {
     /// writes it: each per-second retention raised to `1/ticks`, the
     /// gravity vector scaled by the reciprocal of `ticks²` (a float
     /// multiply, as the vector scale does it) and the two speed thresholds
-    /// squared after their per-tick conversion. A non-positive retention
-    /// gives 0.
+    /// squared after their per-tick conversion. A retention that is not
+    /// above zero — a negative one or a NaN, as the unordered compare
+    /// leaves it — gives 0.
     pub fn configure_step(&self, ticks: u32) -> StepEnvironment {
         let s = f64::from(ticks);
         let raise = |r: f32| {
-            if r <= 0.0 {
-                0.0
-            } else {
+            // The original branches on `r > 0.0`, an ordered compare whose
+            // failure on a NaN takes the zero branch.
+            if r > 0.0 {
                 (f64::from(r).ln() / s).exp() as f32
+            } else {
+                0.0
             }
         };
         let per_tick = ticks as f32;
@@ -278,9 +281,10 @@ impl Environment {
     /// else resting, each its per-second value raised to a tick (none for
     /// a retention at or under zero).
     pub fn retention(&self, moved: f32) -> f32 {
-        let per_second = if moved > self.fast_speed / 83.0 {
+        let ticks = TICK_HZ as f32;
+        let per_second = if moved > self.fast_speed / ticks {
             self.fast
-        } else if moved > self.slow_speed / 83.0 {
+        } else if moved > self.slow_speed / ticks {
             self.slow
         } else {
             self.resting
@@ -1296,6 +1300,13 @@ pub struct Simulation {
     pub watch: Vec<usize>,
     /// The listeners, called with a removed watch entry.
     pub listeners: Vec<usize>,
+    /// The simulation's time scale word: 1.0 from the constructor.
+    pub scale: f32,
+    /// The most steps a frame catches up on: `1000/83 − 1` = 11.
+    pub backlog: u32,
+    /// How many dynamics environments exist: 5, or 1 when the process
+    /// shares one.
+    pub environments: u32,
 }
 
 impl Simulation {
@@ -1312,6 +1323,9 @@ impl Simulation {
             shift: [0, 0],
             watch: Vec::new(),
             listeners: Vec::new(),
+            scale: 1.0,
+            backlog: MAX_BACKLOG_STEPS,
+            environments: DEFAULT_ENVIRONMENTS,
         }
     }
 
@@ -1335,35 +1349,59 @@ impl Simulation {
         }
     }
 
-    /// Creates the simulation's sector for a scene (the original's
-    /// sector-creation slot): a scene of its own appends a sector with the
-    /// scene's node; a shared scene reuses the first sector. Every new
-    /// sector uses the simulation's grids.
-    pub fn add_sector(&mut self, scene: u32, node: Option<usize>, shared: bool) -> usize {
+    /// Creates the simulation's sector for a scene node (the original's
+    /// sector-creation slot) and hands it the node's children.
+    ///
+    /// A scene of its own appends a sector with the node and, while that
+    /// sector holds no static nodes yet, returns the node's `children` for
+    /// the caller to register at once (the original registers each child's
+    /// subtree immediately, not through the pending list); every new sector
+    /// uses the simulation's grids. A shared scene reuses the first sector
+    /// and leaves its scene word and node as they are: the children are
+    /// appended to its pending list (registered by the next update) and
+    /// nothing is returned for immediate registration. The original also
+    /// points the node's add hook at that sector and can reuse a simulation
+    /// object the node already carries; neither is modelled here.
+    pub fn add_sector(
+        &mut self,
+        scene: u32,
+        node: Option<usize>,
+        children: &[usize],
+        shared: bool,
+    ) -> (usize, Vec<usize>) {
         if shared && let Some(first) = self.sectors.first_mut() {
-            first.scene = scene;
-            first.node = node;
-            return 0;
+            first.add_nodes(children);
+            return (0, Vec::new());
         }
         let mut sector = Sector::new(scene);
         sector.node = node;
         sector.uses_grid = true;
+        let register = if sector.nodes.is_empty() {
+            children.to_vec()
+        } else {
+            Vec::new()
+        };
         self.sectors.push(sector);
-        self.sectors.len() - 1
+        (self.sectors.len() - 1, register)
     }
 
-    /// The scene's node-added hook: a batch of sector nodes becomes sectors
-    /// (one when the scene is shared); the batch's other nodes are left to
-    /// the caller's hook. Returns how many sectors now stand for the batch.
-    pub fn add_sector_nodes(&mut self, scene: u32, nodes: &[Option<usize>], shared: bool) -> usize {
-        if shared {
-            self.add_sector(scene, nodes.first().copied().flatten(), true);
-            return 1;
+    /// The scene's node-added hook for a batch of sector nodes: every node
+    /// in the batch goes through [`Self::add_sector`] in order, shared or
+    /// not (the original tests only the first node's class; the caller
+    /// passes the batch once that test holds). Returns the children to
+    /// register at once, in order.
+    pub fn add_sector_nodes(
+        &mut self,
+        scene: u32,
+        sectors: &[(usize, Vec<usize>)],
+        shared: bool,
+    ) -> Vec<usize> {
+        let mut register = Vec::new();
+        for (node, children) in sectors {
+            let (_, now) = self.add_sector(scene, Some(*node), children, shared);
+            register.extend(now);
         }
-        for &node in nodes {
-            self.add_sector(scene, node, false);
-        }
-        nodes.len()
+        register
     }
 
     /// Adds a body to the watch list, last.

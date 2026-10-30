@@ -893,6 +893,10 @@ pub struct SceneNode {
     /// The frame in the sector's space, kept by [`Scene::refresh`].
     pub world: Vec3,
     pub world_rotation: Mat3,
+    /// The frame the scene's snapshot callback last copied
+    /// ([`SceneNode::snapshot_world`]).
+    pub previous: Vec3,
+    pub previous_rotation: Mat3,
     /// The frame has not been worked out since the local frame changed.
     pub stale: bool,
     /// The frame changed since the last visibility pass (the original's
@@ -977,6 +981,8 @@ impl SceneNode {
             half_extents: Vec3::ZERO,
             world: Vec3::ZERO,
             world_rotation: Mat3::IDENTITY,
+            previous: Vec3::ZERO,
+            previous_rotation: Mat3::IDENTITY,
             stale: true,
             moved: false,
             sector: None,
@@ -1006,6 +1012,16 @@ impl SceneNode {
             links: Vec::new(),
             link_stamp: 1,
         }
+    }
+
+    /// Copies the node's world frame into its previous frame, as the scene's
+    /// snapshot callback does (the original copies the 3×4 world matrix).
+    /// The original calls it from the sector's per-frame node pass, after
+    /// the node's draw-side update, for the nodes that pass reaches; that
+    /// pass is not modelled, so nothing here calls it yet.
+    pub fn snapshot_world(&mut self) {
+        self.previous = self.world;
+        self.previous_rotation = self.world_rotation;
     }
 
     /// The node's oriented box, with its bounding radius as the original
@@ -1176,6 +1192,7 @@ impl Sector {
         self.portals.clear();
         self.visible_portals.clear();
         self.views.clear();
+        self.linked.clear();
     }
 }
 
@@ -2006,6 +2023,30 @@ impl Scene {
             n.scene_flags |= DELETING;
         }
         self.pending_free.push(node);
+    }
+
+    /// Empties everything the original's destructor frees: the scene's
+    /// hooks and transition list, its renderers and plugins, its lights and
+    /// both material queues, then every sector's lists and the scene's node
+    /// and geometry arrays. Rust frees memory by ownership; this leaves the
+    /// model in the post-destructor state for a scene object that is kept
+    /// (the original's scene global is cleared as well).
+    pub fn destroy(&mut self) {
+        self.nodes.clear();
+        for sector in &mut self.sectors {
+            sector.destroy();
+        }
+        self.sectors.clear();
+        self.geometry.clear();
+        self.transitions.clear();
+        self.removals = RemovalQueue::default();
+        self.renderers.clear();
+        self.plugins.clear();
+        self.lights.clear();
+        self.material_adds.clear();
+        self.material_removes.clear();
+        self.pending_free.clear();
+        self.material_count = 0;
     }
 
     /// Sets the detail level and its 0.01 scale (the original's item and
@@ -3894,6 +3935,15 @@ mod tests {
         assert!((scene.nodes[child].world - Vec3::new(1.0, 0.0, -2.0)).length() < 1e-5);
         // The update marks the whole subtree moved.
         assert!(scene.nodes[root].moved && scene.nodes[child].moved);
+        // The refresh leaves the snapshot alone; the callback copies the
+        // world frame.
+        assert_eq!(scene.nodes[child].previous, Vec3::ZERO);
+        scene.nodes[child].snapshot_world();
+        assert_eq!(scene.nodes[child].previous, scene.nodes[child].world);
+        assert_eq!(
+            scene.nodes[child].previous_rotation,
+            scene.nodes[child].world_rotation
+        );
     }
 
     #[test]
@@ -4318,6 +4368,29 @@ mod tests {
         assert_eq!(portal.quad[1].z, -0.5);
         assert_eq!(portal.quad[2].y, 2.5);
         assert!((portal.distance(Vec3::new(-1.0, 0.0, 0.0)) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_scene_destroy_empties_every_list() {
+        let mut scene = Scene::new((4, 4));
+        let node = scene.add_node(NodeKind::Mesh, None);
+        scene.register(node, 0);
+        scene.lights.push(9);
+        scene.renderers.push(1);
+        scene.plugins.push(2);
+        scene.transitions.push(Transition {
+            node,
+            controller: 3,
+            start: 0,
+        });
+        scene.material_adds.push(4);
+        scene.queue_removal(node, false);
+        scene.destroy();
+        assert!(scene.nodes.is_empty() && scene.sectors.is_empty());
+        assert!(scene.geometry.is_empty() && scene.transitions.is_empty());
+        assert!(scene.renderers.is_empty() && scene.plugins.is_empty());
+        assert!(scene.lights.is_empty() && scene.material_adds.is_empty());
+        assert!(scene.removals.is_empty());
     }
 
     #[test]

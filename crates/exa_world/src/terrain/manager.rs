@@ -487,8 +487,9 @@ impl BlockDescriptor {
     /// (`column`, `row`). With the tile's `bounds` the vertical extent is
     /// the min and max over the block's `(16 >> level)²` bounds cells
     /// (the max compare is a separate, NaN-safe test); without them the
-    /// centre is 0 and the half extent 10. One is added to the vertical half
-    /// extent either way.
+    /// centre is 0 and the half extent 10. The vertical half extent is the
+    /// raw half of the span, plus 1 cm: a flat block gets 1 cm, not a
+    /// clamped minimum.
     pub fn new(level: u32, column: u16, row: u16, bounds: Option<&HeightBounds>) -> Self {
         let (centre_y, mut half_y) = match bounds {
             Some(bounds) => {
@@ -508,10 +509,7 @@ impl BlockDescriptor {
                 }
                 let raw = (hi - lo) * 0.5;
                 let centre = lo + raw;
-                // The original keeps a flat block's half extent at 1 mm;
-                // the centre keeps the raw half.
-                let half = if raw < 0.001 { 0.001 } else { raw };
-                (centre, half)
+                (centre, raw)
             }
             None => (0.0, 10.0),
         };
@@ -528,6 +526,46 @@ impl BlockDescriptor {
             centre: [centre_x, centre_y, centre_z],
             half: [half_extent, half_y, half_extent],
             radius: length(half_extent, half_y, half_extent),
+        }
+    }
+}
+
+/// One node of the tile's block tree as the descriptor walk sees it: a
+/// block's level and first bounds cell, and its four children when it was
+/// split. The original builds the tree outside this unit and walks it
+/// after every tile's bounds are known.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BlockNode {
+    pub level: u32,
+    pub column: u16,
+    pub row: u16,
+    /// Four children in the original's order, or none for a leaf.
+    pub children: Vec<BlockNode>,
+}
+
+impl BlockNode {
+    /// A leaf node.
+    pub fn leaf(level: u32, column: u16, row: u16) -> Self {
+        Self {
+            level,
+            column,
+            row,
+            children: Vec::new(),
+        }
+    }
+
+    /// The descriptor walk: this node's descriptor, then each child's in
+    /// order (the original recurses into all four when the split pointer is
+    /// set).
+    pub fn walk(&self, bounds: Option<&HeightBounds>, out: &mut Vec<BlockDescriptor>) {
+        out.push(BlockDescriptor::new(
+            self.level,
+            self.column,
+            self.row,
+            bounds,
+        ));
+        for child in &self.children {
+            child.walk(bounds, out);
         }
     }
 }
@@ -833,12 +871,29 @@ mod tests {
         let block = BlockDescriptor::new(3, 2, 5, Some(&local));
         assert_eq!(block.centre[1], 2.0);
         assert_eq!(block.half[1], 7.0);
-        // A flat block keeps the original's 1 mm half extent (plus the one
-        // every block gets).
+        // A flat block keeps the raw half of 0 plus the one every block
+        // gets: 1 cm, with no clamp of its own.
         let flat = [[(5.0f32, 5.0f32); BOUND_CELLS]; BOUND_CELLS];
         let block = BlockDescriptor::new(3, 0, 0, Some(&flat));
         assert_eq!(block.centre[1], 5.0);
-        assert!((block.half[1] - 1.001).abs() < 1e-6);
+        assert_eq!(block.half[1], 1.0);
+    }
+
+    #[test]
+    fn the_block_walk_visits_a_node_then_its_four_children() {
+        let mut root = BlockNode::leaf(0, 0, 0);
+        root.children = (0..4)
+            .map(|i| BlockNode::leaf(1, (i % 2) * 8, (i / 2) * 8))
+            .collect();
+        let mut out = Vec::new();
+        root.walk(None, &mut out);
+        assert_eq!(out.len(), 5);
+        assert_eq!(out[0].centre, [0.0, 0.0, 0.0]);
+        assert_eq!(out[0].half[0], 2400.0);
+        // A level-1 child is half the tile, centred a quarter in.
+        assert_eq!(out[1].centre, [-1200.0, 0.0, -1200.0]);
+        assert_eq!(out[1].half[0], 1200.0);
+        assert_eq!(out[4].centre, [1200.0, 0.0, 1200.0]);
     }
 
     #[test]

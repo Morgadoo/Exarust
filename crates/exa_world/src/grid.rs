@@ -47,8 +47,9 @@ const SPECIAL_HAS_FLOOR: [bool; 10] = [
 const CELL_CM: f32 = 600.0;
 
 /// A part is fully transparent below this material alpha; its vertices are
-/// marked in the added vertex channel.
-pub const TRANSPARENT_ALPHA: f32 = 0.01;
+/// marked in the added vertex channel. The original widens the `f32` alpha
+/// to double and compares it with this `f64` 0.01.
+pub const TRANSPARENT_ALPHA: f64 = 0.01;
 /// The value a fully transparent part writes into the vertex channel.
 pub const TRANSPARENT_MARK: f32 = 0.0;
 /// What the added vertex channel holds before any part marks it: every byte
@@ -65,9 +66,10 @@ pub const NODE_EXTRA_MARK: u32 = 0x1000_0000;
 /// replaces with 1.
 pub const GRID_WORD_NIBBLE: u32 = 0xf_0000;
 
-/// Whether a material's alpha makes the part fully transparent.
+/// Whether a material's alpha makes the part fully transparent: the alpha
+/// widened to double is below [`TRANSPARENT_ALPHA`] (a NaN is not).
 pub fn marks_transparent(alpha: f32) -> bool {
-    alpha < TRANSPARENT_ALPHA
+    f64::from(alpha) < TRANSPARENT_ALPHA
 }
 
 /// The added vertex channel for a model of `vertices` vertices, unmarked.
@@ -120,6 +122,64 @@ pub fn link_grid_word(kind: u32, word: u32) -> u32 {
     } else {
         word
     }
+}
+
+/// One node of a loaded set as the grid loader's link pass sees it: the
+/// class word (low 12 bits), the flags word whose bit 0 marks a node the
+/// link skips, its runtime grid word, whether it is its own master, its
+/// name and its children.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SetNode {
+    pub kind: u32,
+    pub flags: u32,
+    /// The runtime word whose bits 16–19 the link replaces with 1.
+    pub word: u32,
+    pub self_master: bool,
+    pub name: String,
+    pub children: Vec<usize>,
+}
+
+/// The grid loader's link pass over a set tree, from `roots` in order:
+/// every node whose flags bit 0 is clear and that is its own master is
+/// recorded in `linked` (the original's node and geometry link calls) and,
+/// when it is a mesh holder (kind 0x89), has its grid word's nibble set to
+/// 1.
+///
+/// The walk itself always descends into every child, whatever the guard
+/// decided. Returns how many nodes were linked.
+pub fn link_grid_nodes(nodes: &mut [SetNode], roots: &[usize], linked: &mut Vec<usize>) -> usize {
+    let mut count = 0;
+    for &root in roots {
+        if root >= nodes.len() {
+            continue;
+        }
+        if nodes[root].flags & 1 == 0 && nodes[root].self_master {
+            nodes[root].word = link_grid_word(nodes[root].kind, nodes[root].word);
+            linked.push(root);
+            count += 1;
+        }
+        let children = nodes[root].children.clone();
+        count += link_grid_nodes(nodes, &children, linked);
+    }
+    count
+}
+
+/// The top-level `+F` floor pieces of a set tree whose root is `root`: the
+/// children whose name starts with `+F` and that are their own master.
+/// The original runs the transparent-vertex pass over each of them.
+pub fn floor_piece_roots(nodes: &[SetNode], root: usize) -> Vec<usize> {
+    let Some(node) = nodes.get(root) else {
+        return Vec::new();
+    };
+    node.children
+        .iter()
+        .copied()
+        .filter(|&child| {
+            nodes
+                .get(child)
+                .is_some_and(|n| n.name.as_bytes().starts_with(b"+F") && n.self_master)
+        })
+        .collect()
 }
 
 /// Whether a set piece child is sent through the subdivider (at
@@ -316,8 +376,10 @@ fn index_floor_set(model: Arc<Model>) -> FloorSet {
     s
 }
 
+/// The pack entry of a set: the original appends `".rfc"` to the name
+/// unchanged (the archive's own lookup folds case).
 fn set_entry(name: &str) -> String {
-    format!("{}.rfc", name.to_ascii_lowercase())
+    format!("{name}.rfc")
 }
 
 /// What a grid build produced.
@@ -1907,7 +1969,11 @@ mod tests {
     #[test]
     fn only_fully_transparent_parts_are_marked() {
         assert!(marks_transparent(0.009));
-        assert!(!marks_transparent(0.01));
+        // The `f32` 0.01 is 0.009999999776…, below the original's `f64`
+        // 0.01, so it is transparent; the next single above it is not.
+        assert!(marks_transparent(0.01));
+        assert!(!marks_transparent(0.010_000_001));
+        assert!(!marks_transparent(f32::NAN));
         let mut channel = unmarked_channel(6);
         assert!(channel[0].is_nan());
         // Two triangles over vertex ids 0..4; the table sends 0, 1, 2, 3 to
@@ -1940,6 +2006,58 @@ mod tests {
         // A mesh holder's nibble becomes 1; other bits stay.
         assert_eq!(link_grid_word(0x2089, 0x00ab_0123), 0x00a1_0123);
         assert_eq!(link_grid_word(0x7, 0x00ab_0123), 0x00ab_0123);
+    }
+
+    #[test]
+    fn the_link_walk_skips_flagged_and_owned_nodes_but_descends() {
+        let mut nodes = vec![
+            // Root: flagged, so not linked itself.
+            SetNode {
+                kind: 0x7,
+                flags: 1,
+                word: 0x1234,
+                self_master: true,
+                name: "root".into(),
+                children: vec![1, 2, 3],
+            },
+            // Mesh holder, its own master: linked and its nibble set.
+            SetNode {
+                kind: 0x2089,
+                word: 0x00ab_0123,
+                self_master: true,
+                name: "+Fmiddle".into(),
+                ..SetNode::default()
+            },
+            // An owned instance: not linked, but its child is walked.
+            SetNode {
+                kind: 0x2089,
+                word: 0x00ab_0123,
+                self_master: false,
+                name: "+Fleft".into(),
+                children: vec![4],
+                ..SetNode::default()
+            },
+            SetNode {
+                name: "+Fright".into(),
+                self_master: true,
+                ..SetNode::default()
+            },
+            SetNode {
+                kind: 0x2089,
+                word: 0,
+                self_master: true,
+                name: "child".into(),
+                ..SetNode::default()
+            },
+        ];
+        let mut linked = Vec::new();
+        assert_eq!(link_grid_nodes(&mut nodes, &[0], &mut linked), 3);
+        assert_eq!(linked, [1, 4, 3]);
+        assert_eq!(nodes[1].word, 0x00a1_0123);
+        assert_eq!(nodes[2].word, 0x00ab_0123);
+        // The +F pieces of the root that are their own master: the middle
+        // and right slots, not the owned left one.
+        assert_eq!(floor_piece_roots(&nodes, 0), [1, 3]);
     }
 
     #[test]

@@ -1165,7 +1165,10 @@ included (`segment`), the boolean ray that projects onto the dominant plane
 which take the mesh-side leaf test as a closure because the original
 keeps it outside the tree. `TerrainKdTree` is the 30 x 30 cell block tree:
 leaves list two triangles per cell, the range is packed in the root word,
-and a block's translation moves only the split planes. Assumptions (the
+a block's translation moves only the split planes, and an attach caches the
+mesh's box as its centre less and plus its half extent (a clone owns copies
+of the arrays where the original shares them; the planes are only ever moved
+after the copy). Assumptions (the
 stored triangle normal's orientation and the standalone root box) are in
 the module docs. The game still takes the level's collision from rapier's
 trimesh BVH; this module has tests of its own and no game path yet, apart
@@ -1173,11 +1176,16 @@ from the terrain manager's block trees.
 
 `controller` and `sim_object` are the original's two abstract bases: the
 physics controller (kind word, attached node, flag reset that clears bits 0
-and 3, no-op step/post-step/wake/translate/interpolate slots and a render
-fraction of 0.0) and the non-rigid simulated object (an empty
+and 3, no-op step/post-step/wake/translate/interpolate slots, a false slot,
+a float pass-through slot and a render fraction of 0.0) and the non-rigid simulated object (an empty
 after-collisions stub plus the static/body/object contact hooks). `dynamics`
 gains the environment's per-tick conversion (`configure_step`: retention
-raised to 1/83, gravity over 83², the squared per-tick speed bands), the
+raised to 1/83, gravity over 83², the squared per-tick speed bands; a
+retention that is not above zero, a NaN included, stores zero), the
 simulation constructor's constants (12 ms step, 11-step backlog), the
-per-frame interpolation fraction with its [−2, 2] clamp and the sector's
+per-frame interpolation fraction with its [−2, 2] clamp, the scene's
+sector creation (a new sector with no static nodes yet hands its node's
+children back for immediate registration; a shared scene reuses the first
+sector for every node of the batch, keeps its scene word and node, and
+queues the children as pending) and the sector's
 pending-batch append.

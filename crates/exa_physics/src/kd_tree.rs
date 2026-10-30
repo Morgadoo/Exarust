@@ -1021,8 +1021,9 @@ impl TerrainKdTree {
     }
 
     /// Caches the box of the mesh the tree is attached to, from the mesh's
-    /// centre and half extent. Unlike [`KdTree`]'s root cell it has no
-    /// padding.
+    /// centre and half extent: `centre − half` and `centre + half`, as the
+    /// original works them out with its vector subtract and add. Unlike
+    /// [`KdTree`]'s root cell it has no padding.
     pub fn attach(&mut self, centre: Vec3, half: Vec3) {
         self.min = centre - half;
         self.max = centre + half;

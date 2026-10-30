@@ -673,6 +673,15 @@ fn the_environment_converts_to_a_tick() {
     let inert = Environment::INERT.configure_step(83);
     assert_eq!(inert.retention, [0.0; 3]);
     assert_eq!(inert.gravity, Vec3::ZERO);
+    // A retention that is not above zero (a NaN included, as the
+    // original's ordered compare fails on it) stores zero.
+    let nan = Environment {
+        fast: f32::NAN,
+        slow: -1.0,
+        ..Environment::DEFAULT
+    }
+    .configure_step(83);
+    assert_eq!(nan.retention, [0.0, 0.0, 0.964_550_44]);
 }
 
 /// The frame fraction is one plus the time past the last step, in steps,
@@ -710,10 +719,22 @@ fn the_constructor_constants() {
     assert_eq!(f64::from(TICK_HZ), crate::STEP_HZ);
     assert_eq!(STEP_MS, (1000.0 / f64::from(TICK_HZ)).round() as u32);
     assert_eq!(DEFAULT_ENVIRONMENTS, 5);
+    let sim = Simulation::new(
+        STEP_MS,
+        GridSize {
+            width: 1,
+            height: 1,
+        },
+    );
+    assert_eq!(sim.scale, 1.0);
+    assert_eq!(sim.backlog, 11);
+    assert_eq!(sim.environments, 5);
 }
 
-/// A scene of its own appends a sector per sector node; a shared scene
-/// reuses the first one.
+/// A scene of its own appends a sector per sector node and hands back the
+/// node's children for immediate registration; a shared scene reuses the
+/// first sector for every node of the batch, keeps its scene word and node,
+/// and queues the children as pending.
 #[test]
 fn a_simulation_adds_or_reuses_scene_sectors() {
     let mut sim = Simulation::new(
@@ -723,13 +744,22 @@ fn a_simulation_adds_or_reuses_scene_sectors() {
             height: 1,
         },
     );
-    assert_eq!(sim.add_sector_nodes(4, &[Some(10), Some(11)], false), 2);
+    assert_eq!(
+        sim.add_sector_nodes(4, &[(10, vec![7, 8]), (11, vec![9])], false),
+        [7, 8, 9]
+    );
     assert_eq!(sim.sectors.len(), 2);
     assert_eq!(sim.sectors[0].scene, 4);
     assert_eq!(sim.sectors[0].node, Some(10));
     assert!(sim.sectors[0].uses_grid);
-    assert_eq!(sim.add_sector_nodes(9, &[Some(20)], true), 1);
+    assert!(sim.sectors[0].pending.is_empty());
+    assert_eq!(sim.sectors[0].flags & sector::PENDING, 0);
+    let shared = sim.add_sector_nodes(9, &[(20, vec![30]), (21, vec![31, 32])], true);
+    assert!(shared.is_empty());
     assert_eq!(sim.sectors.len(), 2);
-    assert_eq!(sim.sectors[0].scene, 9);
-    assert_eq!(sim.sectors[0].node, Some(20));
+    assert_eq!(sim.sectors[0].scene, 4);
+    assert_eq!(sim.sectors[0].node, Some(10));
+    assert_eq!(sim.sectors[0].pending, [30, 31, 32]);
+    assert_ne!(sim.sectors[0].flags & sector::PENDING, 0);
+    assert!(sim.sectors[1].pending.is_empty());
 }
