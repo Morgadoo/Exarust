@@ -117,11 +117,11 @@ impl Motions {
         self.0.table_clip(&table, action)
     }
 
-    /// Starts a motion the game requested by its number, as the body tick
-    /// starts the requested action: the clip loops when it is a looping one,
-    /// else plays once back into the current combat or idle action, from
-    /// where the body is, with no blend past its first key. `None` when the
-    /// motion set has no clip of that number. Returns the clip's name.
+    /// Starts a motion by its action number (a cast's requested action, or
+    /// the game flow's action switch): the clip loops when it is a looping
+    /// one, else plays once back into the current combat or idle action,
+    /// from where the body is, with no blend past its first key. `None` when
+    /// the motion set has no action of that number. Returns the clip's name.
     pub fn start_requested(&self, anim: &mut Animator, motion: u32) -> Option<String> {
         let name = self.action_name(motion)?.to_string();
         let follow = match anim.action.as_str() {
