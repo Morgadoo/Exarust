@@ -1242,19 +1242,26 @@ pub fn weapon_tier(tier: u32) -> Option<&'static [WeaponEntry]> {
     WEAPON_TIERS.get(tier as usize).copied()
 }
 
-/// Picks one of an entry's non-zero variants with the engine generator.
-pub fn pick_variant(entry: &WeaponEntry, rng: &mut crate::item_container::Rng) -> Option<u32> {
-    let count = entry.variants.iter().filter(|&&v| v != 0).count() as u32;
-    if count == 0 {
-        return None;
-    }
-    let index = rng.below(count) as usize;
-    entry
+/// Picks one of an entry's variant ids, the engine's way.
+///
+/// The original counts the row's three slots whose value is positive (the
+/// compare is unsigned, so a zero or a negative slot is left out), steps
+/// the roll once and takes the slot at `(count · roll) >> 32` **without**
+/// skipping the empty slots in between: a row of `[7, 0, 9]` can draw the
+/// zero. A drawn zero means no weapon. The original then passes the id to
+/// the item variant and condition roll, which Exarust applies when the
+/// item is instantiated.
+pub fn pick_variant(entry: &WeaponEntry, rng: &mut crate::item_container::Rng) -> u32 {
+    let count = entry
         .variants
         .iter()
+        .filter(|&&variant| (variant as i32) > 0)
+        .count() as u32;
+    entry
+        .variants
+        .get(rng.below(count) as usize)
         .copied()
-        .filter(|&v| v != 0)
-        .nth(index)
+        .unwrap_or(0)
 }
 
 /// A tier's point limit.
@@ -1282,16 +1289,41 @@ mod weapon_tests {
     }
 
     #[test]
-    fn a_variant_is_drawn_from_the_non_zero_ones() {
+    fn a_variant_is_drawn_among_the_set_slots() {
         let entry = &weapon_tier(2).unwrap()[1];
         let mut rng = Rng(12345);
         let index = rng.below(3) as usize;
-        let expected = entry.variants.iter().copied().nth(index);
+        let expected = entry.variants[index];
         let mut rng = Rng(12345);
         assert_eq!(pick_variant(entry, &mut rng), expected);
         let single = &weapon_tier(0).unwrap()[0];
         let mut rng = Rng(1);
-        assert_eq!(pick_variant(single, &mut rng), Some(23));
+        assert_eq!(pick_variant(single, &mut rng), 23);
+        // An empty row draws slot zero, which is no weapon.
+        let empty = WeaponEntry {
+            name: "None",
+            variants: &[],
+        };
+        assert_eq!(pick_variant(&empty, &mut Rng(0)), 0);
+    }
+
+    #[test]
+    fn the_variant_draw_keeps_the_empty_slots() {
+        // Two set slots (7 and 9) and an interior zero: the count is two but
+        // the draw indexes the row as it stands, so the high roll takes the
+        // zero. A negative slot does not count either.
+        let row = WeaponEntry {
+            name: "Interior",
+            variants: &[7, 0, 9],
+        };
+        assert_eq!(pick_variant(&row, &mut Rng(0)), 7);
+        assert_eq!(pick_variant(&row, &mut Rng(u32::MAX)), 0);
+        let negative = WeaponEntry {
+            name: "Negative",
+            variants: &[7, 0x8000_0000, 9],
+        };
+        assert_eq!(pick_variant(&negative, &mut Rng(0)), 7);
+        assert_eq!(pick_variant(&negative, &mut Rng(u32::MAX)), 0x8000_0000);
     }
 
     #[test]
@@ -2027,6 +2059,7 @@ pub fn pick_weapon_row(tier: u32, rng: &mut crate::item_container::Rng) -> Optio
 }
 
 /// Picks one variant of a tier's row (0-based, as `set_weapon` receives it).
+/// A drawn zero is no weapon, kept as the engine returns it.
 pub fn pick_weapon_variant(
     tier: u32,
     row: u32,
@@ -2034,7 +2067,7 @@ pub fn pick_weapon_variant(
 ) -> Option<u32> {
     let rows = WEAPON_TIERS.get(tier as usize)?;
     let entry = rows.get(row as usize)?;
-    pick_variant(entry, rng)
+    Some(pick_variant(entry, rng))
 }
 
 /// A spawned opponent's level: 60000 + rand(9999) for a company, else
