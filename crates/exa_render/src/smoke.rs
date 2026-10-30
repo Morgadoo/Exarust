@@ -8,9 +8,11 @@
 //! the opacity texture once shifted by `t` down and again shifted by
 //! `(0.5, t + 0.5)` more, multiplies the two alphas, and adds the surface's
 //! facing ratio and the vertex alpha (`shadesmk.wesl`). With the
-//! supersampled quad passes on, the original repeats the draw once per
-//! pass with that pass's viewport; Exarust's supersampled camera draws the
-//! scene once.
+//! supersampled quad passes on, the original repeats the draw in each pass
+//! once per sub-view, with that sub-view's viewport and matrix
+//! ([`pass_draws`]); Exarust's supersampled camera draws the scene once.
+//! The program cache ([`ProgramCache`]) keeps one program per key; a
+//! failed build is kept as −1 and the mesh is then skipped.
 //!
 //! Nothing spawns a smoke mesh yet: the material plug-in that routes a
 //! record here is registered at run time and not ported.
@@ -95,11 +97,13 @@ impl ProgramCache {
     }
 }
 
-/// How many times one mesh is drawn for the current supersampling sub-view
-/// count: once without supersampling, once per sub-view (quadrant) otherwise.
-/// [`crate::view::SupersampleLevel::subviews`] gives the level's count.
-pub fn quadrant_draws(supersample_subviews: u32) -> u32 {
-    supersample_subviews.max(1)
+/// How many times one smoke mesh is drawn in each supersampling pass: once
+/// per sub-view the pass draws, each with that sub-view's viewport and
+/// matrix (the level's first-pass count, at most four; one without
+/// supersampling). Exarust's supersampled camera draws the scene once, so
+/// nothing repeats the draw yet.
+pub fn pass_draws(level: crate::view::SupersampleLevel) -> u32 {
+    level.subviews().min(crate::view::SUBVIEWS_PER_PASS) as u32
 }
 
 /// The smoke program's state key from a material state's 64-bit word.
@@ -244,17 +248,12 @@ mod tests {
     }
 
     #[test]
-    fn the_quadrant_count_is_one_without_supersampling() {
-        assert_eq!(quadrant_draws(0), 1);
-        assert_eq!(quadrant_draws(1), 1);
-        assert_eq!(quadrant_draws(2), 2);
-        assert_eq!(
-            quadrant_draws(crate::view::SupersampleLevel(3).subviews() as u32),
-            4
-        );
-        assert_eq!(
-            quadrant_draws(crate::view::SupersampleLevel(4).subviews() as u32),
-            8
-        );
+    fn a_pass_draws_the_mesh_once_per_sub_view() {
+        use crate::view::SupersampleLevel;
+        assert_eq!(pass_draws(SupersampleLevel(0)), 1);
+        assert_eq!(pass_draws(SupersampleLevel(1)), 2);
+        assert_eq!(pass_draws(SupersampleLevel(3)), 4);
+        // Eight sub-views take two passes of four draws each.
+        assert_eq!(pass_draws(SupersampleLevel(4)), 4);
     }
 }

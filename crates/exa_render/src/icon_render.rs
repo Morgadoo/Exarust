@@ -3,22 +3,31 @@
 //! icon's size, then read the pixels back into an RGBA image the icon atlas
 //! uploads.
 //!
-//! The private scene is created with scene mode 1 and an ambient multiplier
-//! of 100 (linear ambient `1 · 100`), and its environment record is applied
-//! with the icon preset: ambient `(0.35, 0.36, 0.37, 1)`, fog off, background
-//! black and a unit global light. The view takes a 30° field of view, a near
-//! plane of 10 engine units (10 cm), bloom 0.8, sharpen off, and a render
-//! target twice the icon width and height. The target's colour buffer is
-//! `GL_SRGB8` normally and `GL_SRGB8_ALPHA8` when transparency is wanted
-//! (characters cut out), with a `GL_DEPTH_COMPONENT` depth buffer; the
-//! destination image is RGBA8 with flags `0x2000_0000`.
+//! The private scene is created with scene mode 1, an ambient multiplier
+//! of 100 (a stored 1.0 times 100) and a second
+//! scene value of 0.5 (not traced further). Its environment record is the
+//! icon preset, whose ambient is `(0.35, 0.36, 0.37)` (the record's other
+//! fields are not in the evidence), and the record's four words after it
+//! are then set to `(0, 0, 0, 1)` ([`GLOBAL_LIGHT`]). The view takes a 30°
+//! field of view and a 10-unit (10 cm) near plane; it also stores 0.8 into
+//! one view field and passes `0x3f4ccc01` (just under 0.8) to a view
+//! setter, which Exarust reads as the bloom (a guess), and clears one view
+//! flag, read as the sharpen (a guess). The render target is twice the
+//! icon's width and height: its colour buffer is `GL_SRGB8`, or
+//! `GL_SRGB8_ALPHA8` when transparency is wanted (characters cut out, the
+//! view's own format word then RGBA8), with a `GL_DEPTH_COMPONENT` depth
+//! buffer. The destination image is RGBA8 with flags `0x2000_0000` at the
+//! icon's own size.
 //!
 //! The renderer keeps one instance and reuses it: a new icon size only
 //! resizes the image, the render target and the view. Character creation
 //! walks its list of object nodes, rendering one per step (a worker drives
-//! the same step), and stops the list when it is done. The pixel readback
-//! itself is the still-capture path's; [`IconTarget::readback`] models the
-//! row flip into the atlas's bottom-up rows.
+//! the same step), and stops the list when it is done. The render-and-read
+//! into the destination image is the view's capture call; the readback's
+//! row order ([`IconPixels`], top row first) is Exarust's assumption, and
+//! `exa_ui::icon_atlas::IconImage::from_icon_pixels` flips it into the
+//! atlas's bottom-up rows. Nothing in the game spawns this renderer yet;
+//! the item renderer (`exa_items::item_renderer`) is the live icon path.
 //!
 //! Rules: `docs/RENDERING.md` (Icons).
 
@@ -30,15 +39,17 @@ pub const FOV_DEGREES: f32 = 30.0;
 pub const NEAR_ENGINE_UNITS: f32 = 10.0;
 /// The render target is this many times the icon's side.
 pub const TARGET_SCALE: u32 = 2;
-/// The view's bloom strength.
+/// The view value read as the bloom strength (a guess: the set-up stores
+/// 0.8 there).
 pub const BLOOM: f32 = 0.8;
-/// The view's sharpen is off.
+/// The view flag read as the sharpen (a guess: the set-up clears it).
 pub const SHARPEN: bool = false;
 /// The scene's ambient multiplier: the preset ambient times 100.
 pub const AMBIENT_MULTIPLIER: f32 = 100.0;
-/// The scene's preset ambient colour, sRGB.
+/// The icon preset's ambient colour.
 pub const AMBIENT_COLOUR: [f32; 3] = [0.35, 0.36, 0.37];
-/// The scene's preset global light, sRGB RGBA.
+/// The four environment words the set-up writes after applying the preset
+/// (their reader is not traced).
 pub const GLOBAL_LIGHT: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 /// The destination image's format word (RGBA8) and flags.
 pub const DESTINATION_FORMAT: u32 = 0x0100_E608;
