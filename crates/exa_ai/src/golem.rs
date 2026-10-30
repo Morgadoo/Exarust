@@ -11,7 +11,7 @@
 //!   limb's mass and multiplies every part's value by 50.
 //! - **Sleep** ([`sleep`]): the race word takes the statue bit, the
 //!   behaviour its statue byte, the
-//!   stance 1, the pose 2, the alarm word 0, the dormant behaviour installed
+//!   stance 1, the pose 2, the condition word 0, the dormant behaviour installed
 //!   and the glow material faded out; the first time, every limb takes a
 //!   twentieth of its stored mass and every part's value a fiftieth (both in
 //!   double).
@@ -32,11 +32,19 @@
 //!   a guardian whose statue byte is set wakes, and its contact list becomes
 //!   the player alone at a concern of 10. A trigger that woke any counts one
 //!   more alarm. A level start disarms it ([`AlarmZone::reset`]).
-//! - **Alarm return** ([`go_home`], [`alarm_post`]): every awake guardian
-//!   within 3000 cm of the player that is not already returning is put back
-//!   at its home, facing its home angle, and falls asleep. When one did, the
-//!   player is put 200 cm past the far face of the `Alarm_` box that holds
-//!   the armed zone's point, 10 cm up, facing back across it with a draw.
+//! - **Alarm return** ([`alarm_return`], [`go_home`], [`alarm_post`]): the
+//!   story revive of a knocked-out player (five seconds after its body
+//!   died with red health of at least 0.01, before the save) runs it while
+//!   an alarm is armed. Every guardian whose race word carries the AI bit,
+//!   standing within 3000 cm (x and z) of the player in the player's room
+//!   or a room behind its exits, that is awake (statue byte clear) and not
+//!   dying (condition bit 0x800) is sent home: its tone and stance factor
+//!   and a third word become 1, its condition 0, it asks for Stand 2, is
+//!   reset at its home facing its home angle, and falls asleep. When one
+//!   did, the player is reset 200 cm past the third-axis face of the first
+//!   `Alarm_` box that holds the armed zone's point, facing back across it
+//!   with a draw, asking for motion 0x1d, its condition dead (0xA00) and
+//!   its tone and stance factor 0. The alarm stays armed.
 //!
 //! The radius query ([`radius_query`]) is the original's: the characters
 //! linked into the room of the point's 6 m cell and into the rooms behind
@@ -122,9 +130,9 @@ pub const AI_BIT: u32 = crate::personality::AI_FLAG;
 /// The body flag-word bit that keeps the wake routine from running (its
 /// meaning beyond that is not traced).
 pub const WAKE_EXEMPT: u32 = 0x100;
-/// The alarm-word bit of a body that is already returning: the homeward
-/// callback skips it.
-pub const RETURNING: u32 = 0x800;
+/// The condition word's dying bit (0x800, held by the dead condition
+/// 0xA00 too): the homeward callback skips a guardian that carries it.
+pub const DYING: u32 = 0x800;
 
 /// The pose request a homeward guardian's body takes before its reset
 /// (0x19).
@@ -132,8 +140,9 @@ pub const WAKE_POSE: i32 = 0x19;
 /// The pose request the player's body takes before the alarm return's reset
 /// (0x1d).
 pub const RETURN_POSE: i32 = 0x1d;
-/// The alarm word the player's body carries after the alarm return (0xa00).
-pub const RETURN_ALARM: u32 = 0xa00;
+/// The condition word the player's body carries after the alarm return:
+/// dead (0xA00), which the story revive's own revive raises.
+pub const RETURN_CONDITION: u32 = 0xa00;
 
 /// The sleep scale of a limb: its stored mass times 0.05, in double.
 pub fn fade_in_scale(source: f32) -> f32 {
@@ -235,8 +244,8 @@ pub struct GolemChange {
     pub pose: i32,
     /// The body's stance byte.
     pub stance: i32,
-    /// The body's alarm word, when the change writes it.
-    pub alarm: Option<u32>,
+    /// The body's condition word, when the change writes it.
+    pub condition: Option<u32>,
     /// Ticks the body is woken for, when the change wakes it.
     pub wake_ticks: Option<u32>,
     /// The behaviour's home and angle, when the change writes them.
@@ -307,7 +316,7 @@ pub fn wake(state: &GolemState, body_flags: u32, roll: f64) -> Option<(GolemChan
         dormant: false,
         pose: 0,
         stance: 0,
-        alarm: None,
+        condition: None,
         wake_ticks: Some(WAKE_TICKS),
         home: Some((state.at, state.angle)),
         hook: None,
@@ -320,7 +329,7 @@ pub fn wake(state: &GolemState, body_flags: u32, roll: f64) -> Option<(GolemChan
 
 /// Puts a guardian to sleep: sets the race word's statue bit and the
 /// statue byte, with stance 1
-/// and pose 2, clears its alarm word, installs the dormant behaviour and
+/// and pose 2, clears its condition word, installs the dormant behaviour and
 /// fades its glow material out. The first time (latch clear) the latch is
 /// set, every limb takes a twentieth of its stored mass and every part a
 /// fiftieth of its value, both in double.
@@ -343,7 +352,7 @@ pub fn sleep(state: &GolemState) -> GolemChange {
         dormant: true,
         pose: 2,
         stance: 1,
-        alarm: Some(0),
+        condition: Some(0),
         wake_ticks: None,
         home: None,
         hook: Some(Hook::Dormant),
@@ -359,24 +368,26 @@ pub struct GoHome {
     /// The home the guardian is put back at, and its angle (filled from the
     /// body's place and angle when the home's x was 0).
     pub home: (Vec3, f32),
-    /// The body's two speed words and the third word it sets with them (all
-    /// 1; the third word's role is not traced).
-    pub speeds: [f32; 3],
+    /// The body's tone, its stance factor (the tone product) and a third
+    /// word it sets with them (all 1; the third word's role is not traced).
+    pub tones: [f32; 3],
+    /// The body's condition word (0).
+    pub condition: u32,
     /// The pose request the body takes before the reset ([`WAKE_POSE`]).
     pub request: i32,
     /// The sleep that follows the reset.
     pub sleep: GolemChange,
 }
 
-/// The homeward callback: an awake guardian (behaviour not dormant) whose
-/// body is not already returning ([`RETURNING`]) is sent home. A home whose
-/// x is exactly 0 is first filled from the body's place and angle (an
-/// ordered compare: a NaN x keeps the home). The body's speed words are set
-/// to 1 and its alarm word cleared, the pose request becomes
+/// The homeward callback: an awake guardian (statue byte clear) whose
+/// condition word lacks [`DYING`] is sent home. A home whose x is exactly
+/// 0 is first filled from the body's place and angle (an ordered compare:
+/// a NaN x keeps the home). The body's tone and stance factor and a third
+/// word become 1 and its condition 0, the pose request becomes
 /// [`WAKE_POSE`], the body is reset at the home ([`pose_reset`]) and the
 /// guardian falls asleep. `None` (the callback answers 0) otherwise.
-pub fn go_home(state: &GolemState, alarm: u32, home: (Vec3, f32)) -> Option<GoHome> {
-    if alarm & RETURNING != 0 || state.dormant {
+pub fn go_home(state: &GolemState, condition: u32, home: (Vec3, f32)) -> Option<GoHome> {
+    if condition & DYING != 0 || state.dormant {
         return None;
     }
     let home = if home.0.x == 0.0 {
@@ -386,10 +397,63 @@ pub fn go_home(state: &GolemState, alarm: u32, home: (Vec3, f32)) -> Option<GoHo
     };
     Some(GoHome {
         home,
-        speeds: [1.0; 3],
+        tones: [1.0; 3],
+        condition: 0,
         request: WAKE_POSE,
         sleep: sleep(state),
     })
+}
+
+/// What the alarm return does to the player once a guardian went home: the
+/// post it is reset at ([`alarm_post`]), the pose request it takes before
+/// the reset ([`RETURN_POSE`]), its condition ([`RETURN_CONDITION`]) and
+/// its tone and stance factor (0).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ReturnedPlayer {
+    pub post: AlarmPost,
+    pub request: i32,
+    pub condition: u32,
+    pub tones: [f32; 2],
+}
+
+/// What one alarm return did: how many guardians the homeward callback
+/// sent home, and the player's reset when one went home and an `Alarm_`
+/// box holds the armed zone's point.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AlarmReturn {
+    pub sent_home: usize,
+    pub player: Option<ReturnedPlayer>,
+}
+
+/// The alarm return the story revive runs: `None` while no alarm is armed.
+/// Otherwise the bodies around the player at `player` (the caller gathers
+/// those of the player's room and the rooms behind its exits) go through
+/// the radius query of [`HOME_RADIUS`] with `send_home` (the homeward
+/// callback, [`go_home`]); when it took any, the first `Alarm_` node
+/// holding the armed zone's point ([`alarm_lookup`]) gives the player's
+/// post, its facing drawn from `roll` (drawn only then).
+pub fn alarm_return<'a>(
+    armed: &AlarmZone,
+    player: Vec3,
+    bodies: impl IntoIterator<Item = QueryBody>,
+    send_home: impl FnMut(QueryBody) -> bool,
+    nodes: impl IntoIterator<Item = (&'a str, AlarmNode)>,
+    roll: impl FnOnce() -> f64,
+) -> Option<AlarmReturn> {
+    if !armed.armed {
+        return None;
+    }
+    let sent_home = radius_query(player, HOME_RADIUS, bodies, send_home);
+    let player = (sent_home > 0)
+        .then(|| alarm_lookup(armed.at, nodes))
+        .flatten()
+        .map(|node| ReturnedPlayer {
+            post: alarm_post(&node, roll()),
+            request: RETURN_POSE,
+            condition: RETURN_CONDITION,
+            tones: [0.0; 2],
+        });
+    Some(AlarmReturn { sent_home, player })
 }
 
 /// A level node named `Alarm_`: its box (centre, half extents and axis
@@ -420,7 +484,8 @@ pub fn is_alarm_node(name: &str) -> bool {
 
 /// Where the alarm return puts the player: the box's centre plus its third
 /// axis times its third half extent plus 200 (summed in single precision),
-/// with the height replaced by 10.
+/// with the height replaced by 10 (which the pose reset replaces in turn by
+/// the body's own standing height).
 pub fn alarm_point(node: &AlarmNode) -> Vec3 {
     let b = &node.bounds;
     let reach = ALARM_OFFSET + b.half_extents.z;
@@ -751,7 +816,7 @@ mod tests {
         assert_eq!(change.wake_ticks, Some(256));
         assert_eq!(change.home, Some((Vec3::new(1.0, 2.0, 3.0), 0.5)));
         assert_eq!(change.hook, None, "a wake installs no behaviour");
-        assert_eq!(change.alarm, None);
+        assert_eq!(change.condition, None);
         assert_eq!(change.limb_scales, vec![20.0, 10.0]);
         assert_eq!(change.glow_scales, vec![0.02 * 50.0, 0.04 * 50.0]);
         assert!(!change.latch);
@@ -770,7 +835,7 @@ mod tests {
         assert_eq!(change.race_word, STATUE_BIT);
         assert!(change.dormant);
         assert_eq!((change.pose, change.stance), (2, 1));
-        assert_eq!(change.alarm, Some(0));
+        assert_eq!(change.condition, Some(0));
         assert_eq!(change.hook, Some(Hook::Dormant));
         assert_eq!(change.wake_ticks, None);
         assert_eq!(change.limb_scales, vec![1.0, 0.5]);
@@ -789,14 +854,23 @@ mod tests {
         let s = state();
         let home = go_home(&s, 0, (Vec3::new(0.0, 7.0, 9.0), 1.5)).expect("awake");
         assert_eq!(home.home, (Vec3::new(1.0, 2.0, 3.0), 0.5), "x = 0 fills");
-        assert_eq!(home.speeds, [1.0; 3]);
+        assert_eq!(home.tones, [1.0; 3]);
+        assert_eq!(home.condition, 0);
         assert_eq!(home.request, WAKE_POSE);
         assert!(home.sleep.dormant);
         let kept = go_home(&s, 0, (Vec3::new(4.0, 0.0, 0.0), 1.5)).unwrap();
         assert_eq!(kept.home, (Vec3::new(4.0, 0.0, 0.0), 1.5));
         let nan = go_home(&s, 0, (Vec3::new(f32::NAN, 0.0, 0.0), 1.5)).unwrap();
         assert!(nan.home.0.x.is_nan(), "a NaN x is not 0: the home stays");
-        assert!(go_home(&s, RETURNING, (Vec3::ZERO, 0.0)).is_none());
+        assert!(go_home(&s, DYING, (Vec3::ZERO, 0.0)).is_none());
+        assert!(
+            go_home(&s, RETURN_CONDITION, (Vec3::ZERO, 0.0)).is_none(),
+            "dead"
+        );
+        assert!(
+            go_home(&s, 0x200, (Vec3::ZERO, 0.0)).is_some(),
+            "down is not dying"
+        );
         let dormant = GolemState {
             dormant: true,
             ..state()
@@ -872,6 +946,126 @@ mod tests {
             alarm_angle(0.25, 1.0),
             (0.5 + (0.25f64 + std::f64::consts::PI)) as f32
         );
+    }
+
+    /// The exanima06 gate passed by token 474: centre (1050, 100, 6900),
+    /// half extents (170, 100, 150), turned a quarter about y.
+    fn gate() -> AlarmNode {
+        AlarmNode {
+            bounds: Obb::new(
+                Vec3::new(1050.0, 100.0, 6900.0),
+                Vec3::new(170.0, 100.0, 150.0),
+                [Vec3::Z, Vec3::Y, -Vec3::X],
+            ),
+        }
+    }
+
+    /// With the gate's alarm armed, the awake golems within 3000 cm of the
+    /// knocked-out player go home and the player is reset 200 cm past the
+    /// gate box's third-axis face at x = 700 cm, facing back across it
+    /// (the axis's heading −π/2, plus π, plus the draw less ½).
+    #[test]
+    fn the_alarm_return_sends_golems_home_and_posts_the_player() {
+        let armed = AlarmZone {
+            armed: true,
+            at: Vec3::new(1050.0, 100.0, 6900.0),
+            pass: 474,
+        };
+        let body = |x: f32, z: f32, id: u64| QueryBody {
+            at: Vec3::new(x, 0.0, z),
+            race_word: AI_BIT,
+            character: id,
+        };
+        let player = Vec3::new(1050.0, 0.0, 6800.0);
+        let bodies = [
+            body(1000.0, 7000.0, 1),
+            body(1050.0, 9799.0, 2),
+            // 3000 cm off along z: not strictly inside.
+            body(1050.0, 9800.0, 3),
+            // Asleep: the callback refuses it.
+            body(900.0, 7500.0, 4),
+        ];
+        let mut sent = Vec::new();
+        let mut rolls = 0;
+        let done = alarm_return(
+            &armed,
+            player,
+            bodies,
+            |b| {
+                let awake = b.character != 4;
+                if awake {
+                    sent.push(b.character);
+                }
+                awake
+            },
+            [("Alarm_000001DA", gate())],
+            || {
+                rolls += 1;
+                0.75
+            },
+        )
+        .expect("armed");
+        assert_eq!(sent, [1, 2]);
+        assert_eq!(done.sent_home, 2);
+        assert_eq!(rolls, 1);
+        let returned = done.player.expect("a post");
+        assert_eq!(returned.post.at, Vec3::new(700.0, 10.0, 6900.0));
+        let heading = heading_of(-Vec3::X);
+        assert_eq!(returned.post.angle, alarm_angle(heading, 0.75));
+        assert!((returned.post.angle - (std::f32::consts::FRAC_PI_2 + 0.25)).abs() < 1e-3);
+        assert_eq!(returned.request, RETURN_POSE);
+        assert_eq!(returned.condition, 0xA00);
+        assert_eq!(returned.tones, [0.0, 0.0]);
+    }
+
+    /// Disarmed, the return does nothing; armed with every guardian asleep
+    /// it sends none home and leaves the player (no draw); a guardian sent
+    /// home with no `Alarm_` box holding the point leaves the player too.
+    #[test]
+    fn the_alarm_return_needs_an_armed_zone_and_a_guardian_sent_home() {
+        let body = QueryBody {
+            at: Vec3::new(1000.0, 0.0, 7000.0),
+            race_word: AI_BIT,
+            character: 1,
+        };
+        let player = Vec3::new(1050.0, 0.0, 6800.0);
+        let never = || -> f64 { unreachable!("no draw") };
+        assert_eq!(
+            alarm_return(
+                &AlarmZone::reset(),
+                player,
+                [body],
+                |_| true,
+                [("Alarm_000001DA", gate())],
+                never
+            ),
+            None
+        );
+        let armed = AlarmZone {
+            armed: true,
+            at: Vec3::new(1050.0, 100.0, 6900.0),
+            pass: 474,
+        };
+        let none = alarm_return(
+            &armed,
+            player,
+            [body],
+            |_| false,
+            [("Alarm_000001DA", gate())],
+            never,
+        )
+        .unwrap();
+        assert_eq!((none.sent_home, none.player), (0, None));
+        let lost = alarm_return(
+            &armed,
+            player,
+            [body],
+            |_| true,
+            [("Door_1", gate())],
+            never,
+        )
+        .unwrap();
+        assert_eq!((lost.sent_home, lost.player), (1, None));
     }
 
     #[test]
