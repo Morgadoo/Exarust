@@ -5876,10 +5876,10 @@ pub fn draw_bar_with_boxes(
             palette.control[4],
             palette.control[0],
         );
-        bevel_rect(batch, inner, palette.control[6], palette.control[4]);
+        bevel_rect(batch, inner, palette.control[7], palette.control[4]);
     } else {
         vertical_gradient(batch, inner, unit, palette.control[5], palette.control[1]);
-        vertical_gradient_frame(batch, inner, unit, palette.control[6], palette.control[4]);
+        vertical_gradient_frame(batch, inner, unit, palette.control[7], palette.control[4]);
     }
     batch.set_ink(palette.control[0]);
     outline_rect(batch, rect);
@@ -12079,6 +12079,52 @@ mod tests {
             [0, 0, 0, 0xa0]
         );
         assert_eq!(batch.vertices_of(&batch.primitives[3])[0].x, 5.0);
+    }
+
+    #[test]
+    fn a_bar_draws_the_clamped_gradients_idle_and_the_boxes_pressed() {
+        let mut batch = SkinBatch::new();
+        let palette = palette_for_faces();
+        draw_bar_with_boxes(
+            &mut batch,
+            GuiRect::corners(10.0, 20.0, 30.0, 60.0),
+            4,
+            false,
+            &palette,
+        );
+        // Idle: the filled gradient from the form group's sixth shade above
+        // to its second below, the line gradient from the eighth to the
+        // fifth, then the outline in the first.
+        assert_eq!(batch.primitives.len(), 3);
+        let fill = batch.vertices_of(&batch.primitives[0]);
+        assert_eq!((fill[0].x, fill[0].y), (29.0, 21.0));
+        assert_eq!(fill[0].ink, [30, 5, 0, 60]);
+        assert_eq!(fill[fill.len() - 1].ink, [30, 1, 0, 60]);
+        assert!(fill.iter().any(|v| v.ink == [30, 1, 0, 60]));
+        let frame = batch.vertices_of(&batch.primitives[1]);
+        assert_eq!((frame[0].x, frame[0].y), (28.5, 21.5));
+        assert_eq!(frame[0].ink, [30, 7, 0, 60]);
+        assert!(frame.iter().any(|v| v.ink == [30, 4, 0, 60]));
+        let outline = batch.vertices_of(&batch.primitives[2]);
+        assert_eq!(outline[0].ink, [30, 0, 0, 60]);
+
+        // Pressed: the gradient boxes from the fifth shade up to the first,
+        // the bevel from the eighth to the fifth.
+        let mut pressed = SkinBatch::new();
+        draw_bar_with_boxes(
+            &mut pressed,
+            GuiRect::corners(10.0, 20.0, 30.0, 60.0),
+            4,
+            true,
+            &palette,
+        );
+        assert_eq!(pressed.primitives.len(), 3);
+        let face = pressed.vertices_of(&pressed.primitives[0]);
+        assert_eq!((face[0].x, face[0].y), (28.0, 22.0));
+        assert_eq!(face[0].ink, [30, 0, 0, 60]);
+        let bevel = pressed.vertices_of(&pressed.primitives[1]);
+        assert_eq!(bevel[0].ink, [30, 4, 0, 60]);
+        assert!(bevel.iter().any(|v| v.ink == [30, 7, 0, 60]));
     }
 
     #[test]
