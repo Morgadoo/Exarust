@@ -94,6 +94,78 @@ pub fn ambience_for_level(level: &str) -> Option<AmbienceArea> {
 #[derive(Resource, Clone, Debug, Default, PartialEq)]
 pub struct LevelAmbience(pub Option<AmbienceArea>);
 
+/// An outdoor arena's ambience, as the original chooses it when the arena's
+/// scene is set up: from the scene's rain, daylight and wind, and the
+/// arena's own silent-day flag.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ArenaAmbience {
+    /// The area to play, or `None` to stop the ambience.
+    pub area: Option<AmbienceArea>,
+    /// The wind loop's own bed gain and pitch, which the original overrides
+    /// after setting the area (they replace the bed's `0.15 × volume`).
+    pub bed: Option<(f32, f32)>,
+}
+
+/// The rain amount above which the weather's own rain sound replaces the
+/// ambience.
+pub const RAIN_AMBIENCE_LIMIT: f64 = 0.01;
+/// The daylight factor below which the outdoor arenas play the night bed.
+pub const NIGHT_DAYLIGHT_LIMIT: f32 = 0.5;
+/// The night bed's volume.
+pub const NIGHT_VOLUME: f32 = 0.3;
+/// The wind strength above which the outdoor arenas play the wind bed.
+pub const WIND_LIMIT: f64 = 0.1;
+/// The wind bed's gain as a fraction of the squared strength, and its pitch
+/// base and rise.
+pub const WIND_GAIN: f64 = 0.2;
+pub const WIND_PITCH_BASE: f64 = 0.6;
+
+/// The outdoor arenas' ambience from the scene's weather, in the original's
+/// order: heavy rain stops it (the weather code plays the rain instead); a
+/// daylight factor below 0.5 plays the night bed `NtrAN` at 0.3; a calm
+/// arena plays the day bed `NtrA` at full volume; otherwise a wind above 0.1
+/// plays `NtrW` at full volume with the bed's gain `wind² × 0.2` and pitch
+/// `0.6 + 0.5 × wind`; a still day stops it. `calm` is the arena's entry in
+/// the original's per-arena table; that table's index comes from the arena
+/// progression, which is not ported, so nothing in the running game calls
+/// this yet.
+pub fn arena_ambience(daylight: f32, wind: f32, raining: f32, calm: bool) -> ArenaAmbience {
+    // The original compares the single fields against double constants.
+    if f64::from(raining) > RAIN_AMBIENCE_LIMIT {
+        return ArenaAmbience::default();
+    }
+    if NIGHT_DAYLIGHT_LIMIT > daylight {
+        return ArenaAmbience {
+            area: Some(AmbienceArea {
+                name: "NtrAN".into(),
+                volume: NIGHT_VOLUME,
+            }),
+            bed: None,
+        };
+    }
+    if calm {
+        return ArenaAmbience {
+            area: Some(AmbienceArea {
+                name: "NtrA".into(),
+                volume: 1.0,
+            }),
+            bed: None,
+        };
+    }
+    if f64::from(wind) > WIND_LIMIT {
+        let gain = ((wind * wind) as f64 * WIND_GAIN) as f32;
+        let pitch = ((wind * 0.5) as f64 + WIND_PITCH_BASE) as f32;
+        return ArenaAmbience {
+            area: Some(AmbienceArea {
+                name: "NtrW".into(),
+                volume: 1.0,
+            }),
+            bed: Some((gain, pitch)),
+        };
+    }
+    ArenaAmbience::default()
+}
+
 /// The area to play and the volume the game mode asks for.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AmbienceArea {
@@ -148,6 +220,30 @@ impl AudioEnvironment {
             bank.release_set(self.ambience.set);
         }
         self.ambience.set = set;
+    }
+
+    /// Applies an arena's weather ambience: clears it when the choice has no
+    /// area, otherwise sets the area and then gives the wind loop its own bed
+    /// gain and pitch, as the arena setup overrides them after setting it.
+    pub fn apply_arena_ambience(
+        &mut self,
+        bank: &mut SoundBank,
+        choice: ArenaAmbience,
+        bed_buffer: u32,
+        set: u32,
+    ) {
+        let Some(area) = choice.area else {
+            self.clear_ambience(bank);
+            return;
+        };
+        self.apply_ambience(bank, bed_buffer, set, area.volume);
+        if let Some((gain, pitch)) = choice.bed
+            && let Some(id) = self.ambience.bed_voice
+            && let Some(voice) = self.voice_mut(id)
+        {
+            voice.gain = gain;
+            voice.pitch = pitch;
+        }
     }
 
     /// Clears the area's ambience: the bed voice, its buffer and the set.
@@ -519,5 +615,69 @@ mod tests {
         env.music_set_enabled(&mut bank, false, |_, _| 0);
         assert_ne!(env.voice(a).unwrap().flags, 0);
         assert!(!env.music.enabled);
+    }
+
+    /// The outdoor arena's choice, in the original's order: rain stops it,
+    /// a dark scene plays the night bed at 0.3, a calm arena the day bed,
+    /// a wind above 0.1 the wind bed at `wind² × 0.2` gain and
+    /// `0.6 + 0.5 × wind` pitch, and a still day nothing.
+    #[test]
+    fn arena_ambience_follows_rain_daylight_and_wind() {
+        let rainy = arena_ambience(1.0, 0.0, 0.02, false);
+        assert_eq!(rainy, ArenaAmbience::default());
+        let night = arena_ambience(0.4, 0.0, 0.0, false);
+        assert_eq!(night.area.as_ref().map(|a| a.name.as_str()), Some("NtrAN"));
+        assert_eq!(night.area.as_ref().map(|a| a.volume), Some(0.3));
+        assert_eq!(night.bed, None);
+        let calm = arena_ambience(0.9, 0.0, 0.0, true);
+        assert_eq!(calm.area.as_ref().map(|a| a.name.as_str()), Some("NtrA"));
+        assert_eq!(calm.area.as_ref().map(|a| a.volume), Some(1.0));
+        let windy = arena_ambience(0.9, 0.5, 0.0, false);
+        assert_eq!(windy.area.as_ref().map(|a| a.name.as_str()), Some("NtrW"));
+        let (gain, pitch) = windy.bed.expect("the wind bed");
+        assert!((gain - 0.05).abs() < 1e-7, "{gain}");
+        assert!((pitch - 0.85).abs() < 1e-7, "{pitch}");
+        assert_eq!(
+            arena_ambience(0.9, 0.099, 0.0, false),
+            ArenaAmbience::default()
+        );
+        // The single 0.1 is a hair above the double threshold 0.1, so it
+        // takes the wind branch, as the original's single-to-double compare
+        // does.
+        assert_eq!(
+            arena_ambience(0.9, 0.1, 0.0, false)
+                .area
+                .as_ref()
+                .map(|a| a.name.as_str()),
+            Some("NtrW")
+        );
+        // Unordered values take the not-greater branch: no rain, no night,
+        // no wind.
+        assert_eq!(
+            arena_ambience(f32::NAN, f32::NAN, f32::NAN, false),
+            ArenaAmbience::default()
+        );
+    }
+
+    /// The wind choice's bed overrides the area's 0.15 × volume gain and
+    /// pitch 1; a night choice keeps the plain bed.
+    #[test]
+    fn the_wind_bed_takes_its_own_gain_and_pitch() {
+        let mut env = AudioEnvironment::new();
+        let mut bank = SoundBank::default();
+        let bed = bank.insert_test_buffer(3.0, 3000, false);
+        let choice = arena_ambience(0.9, 0.5, 0.0, false);
+        env.apply_arena_ambience(&mut bank, choice, bed, SoundBank::EMPTY_SET);
+        let id = env.ambience.bed_voice.expect("a bed voice");
+        assert!((env.voice(id).unwrap().gain - 0.05).abs() < 1e-7);
+        assert!((env.voice(id).unwrap().pitch - 0.85).abs() < 1e-7);
+        let night = arena_ambience(0.4, 0.0, 0.0, false);
+        env.apply_arena_ambience(&mut bank, night, bed, SoundBank::EMPTY_SET);
+        assert!((env.voice(id).unwrap().gain - 0.045).abs() < 1e-7);
+        assert_eq!(env.voice(id).unwrap().pitch, 1.0);
+        // A choice without an area clears the ambience.
+        env.apply_arena_ambience(&mut bank, ArenaAmbience::default(), 0, 0);
+        assert!(!env.ambience.installed);
+        assert_eq!(env.ambience.bed_voice, None);
     }
 }
