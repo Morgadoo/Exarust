@@ -142,10 +142,29 @@ macro_rules! terrain_splat {
                 #[texture($bn)]
                 pub $normal: Option<Handle<Image>>,
             )*
-            /// The voxel GI light volume, once it exists.
+            /// The voxel GI light volume of the camera's block, once it
+            /// exists: the per-object pick's slot 0.
             #[texture(123, dimension = "3d")]
             #[sampler(124)]
             pub gi_volume: Option<Handle<Image>>,
+            /// The resident neighbours' light volumes, slots 1 to 8 (read
+            /// through `gi_volume`'s sampler).
+            #[texture(110, dimension = "3d")]
+            pub gi_volume_1: Option<Handle<Image>>,
+            #[texture(111, dimension = "3d")]
+            pub gi_volume_2: Option<Handle<Image>>,
+            #[texture(112, dimension = "3d")]
+            pub gi_volume_3: Option<Handle<Image>>,
+            #[texture(113, dimension = "3d")]
+            pub gi_volume_4: Option<Handle<Image>>,
+            #[texture(114, dimension = "3d")]
+            pub gi_volume_5: Option<Handle<Image>>,
+            #[texture(115, dimension = "3d")]
+            pub gi_volume_6: Option<Handle<Image>>,
+            #[texture(116, dimension = "3d")]
+            pub gi_volume_7: Option<Handle<Image>>,
+            #[texture(117, dimension = "3d")]
+            pub gi_volume_8: Option<Handle<Image>>,
             /// The environment cube.
             #[texture(125, dimension = "cube")]
             #[sampler(126)]
@@ -161,6 +180,27 @@ macro_rules! terrain_splat {
         }
 
         impl TerrainSplat {
+            /// Binds the resident GI blocks in their slots. The terrain
+            /// reads the voxel's bottom, as the original's terrain and grass
+            /// callers pass the flag that drops the half slice.
+            pub fn set_gi_slots(&mut self, slots: &exa_render::gi::GiSlots) {
+                let [s0, s1, s2, s3, s4, s5, s6, s7, s8] = slots.lights.clone();
+                self.gi_volume = s0;
+                self.gi_volume_1 = s1;
+                self.gi_volume_2 = s2;
+                self.gi_volume_3 = s3;
+                self.gi_volume_4 = s4;
+                self.gi_volume_5 = s5;
+                self.gi_volume_6 = s6;
+                self.gi_volume_7 = s7;
+                self.gi_volume_8 = s8;
+                self.params.gi_origin = slots.origins_floor[0];
+                self.params.gi_extent = slots.extent;
+                self.params.gi_grid = slots.grid;
+                self.params.gi_cells = slots.cells;
+                self.params.gi_origins = slots.origins_floor;
+            }
+
             /// Layer `k`'s diffuse, surface and normal textures.
             pub fn layer(&self, k: usize) -> Option<[&Option<Handle<Image>>; 3]> {
                 match k {
@@ -190,6 +230,14 @@ macro_rules! terrain_splat {
                     composite_height: None,
                     $($diffuse: None, $surface: None, $normal: None,)*
                     gi_volume: None,
+                    gi_volume_1: None,
+                    gi_volume_2: None,
+                    gi_volume_3: None,
+                    gi_volume_4: None,
+                    gi_volume_5: None,
+                    gi_volume_6: None,
+                    gi_volume_7: None,
+                    gi_volume_8: None,
                     environment: None,
                     lights: Handle::default(),
                     shadow_cubes: exa_render::cube_shadows::CUBE_POOL,
@@ -231,7 +279,8 @@ pub struct SplatParams {
     /// Per layer: gloss factor (f10 × 1.5 × min(f9, 1)), then the parallax
     /// height's base, reference and scale (f20 + (B − f21)·f22).
     pub surface: [Vec4; SPLAT_LAYERS],
-    /// The GI volume's lowest corner and size (metres).
+    /// The camera's GI block's sample origin (slot 0 of
+    /// [`SplatParams::gi_origins`]) and the shared sample size (metres).
     pub gi_origin: Vec4,
     pub gi_extent: Vec4,
     /// The block's `TexPos` (x, y and the scale z): the composite coordinate
@@ -251,6 +300,17 @@ pub struct SplatParams {
     pub pad1: u32,
     pub pad2: u32,
     pub pad3: u32,
+    /// The per-object GI pick (`exa_render::gi::GiSlots`): the block grid's
+    /// low edge in world centimetres (xy) and the mode (z).
+    pub gi_grid: Vec4,
+    /// Each resident block's block-grid cell (xy, z = 1 when bound).
+    pub gi_cells: [IVec4; exa_render::gi::RESIDENT_BLOCKS],
+    /// Each resident block's sample origin (metres, the voxel's bottom).
+    pub gi_origins: [Vec4; exa_render::gi::RESIDENT_BLOCKS],
+    /// The tile's side in metres (x): a terrain block is an eighth of it,
+    /// and the GI pick reads the block's centre, as the original passes
+    /// each terrain block's own position.
+    pub tile: Vec4,
 }
 
 /// Which optional inputs a terrain material has.
@@ -394,10 +454,12 @@ fn apply_splats(
     }
 }
 
-/// Points terrain materials at the GI volume when it is (re)built, and new
-/// materials as they come.
+/// Points terrain materials at the resident GI blocks when the camera's
+/// block is (re)built or the resident set changes, and new materials as
+/// they come.
 fn give_terrain_gi(
     textures: Option<Res<exa_render::gi::GiTextures>>,
+    neighbours: Option<Res<exa_render::gi::GiNeighbours>>,
     mut materials: ResMut<Assets<TerrainMaterial>>,
     mut events: MessageReader<AssetEvent<TerrainMaterial>>,
 ) {
@@ -412,20 +474,24 @@ fn give_terrain_gi(
             _ => None,
         })
         .collect();
-    let ids: Vec<AssetId<TerrainMaterial>> = if textures.is_changed() {
-        materials.ids().collect()
-    } else {
-        added
-    };
+    let ids: Vec<AssetId<TerrainMaterial>> =
+        if textures.is_changed() || neighbours.as_ref().is_some_and(|n| n.is_changed()) {
+            materials.ids().collect()
+        } else {
+            added
+        };
+    if ids.is_empty() {
+        return;
+    }
+    let slots = exa_render::gi::GiSlots::new(
+        &textures,
+        neighbours.as_ref().map_or(&[][..], |n| &n.blocks[..]),
+    );
     for id in ids {
         let Some(mut m) = materials.get_mut(id) else {
             continue;
         };
-        m.gi_volume = Some(textures.light.clone());
-        // The terrain and grass callers read the voxel's bottom, not its
-        // centre (the original passes the flag that drops the half slice).
-        m.params.gi_origin = textures.sample_origin_floor();
-        m.params.gi_extent = textures.sample_extent();
+        m.set_gi_slots(&slots);
         m.params.flags |= terrain_flags::GI;
         if std::env::var_os("EXA_GI_DEBUG").is_some() {
             m.params.flags |= terrain_flags::DEBUG_GI;
@@ -578,7 +644,19 @@ impl Plants {
                 continue;
             }
             grown += chunk.len();
-            let baked = vegetation::bake(&self.variants, chunk, place);
+            // The chunk stands at its 6 m block's centre, its plants around
+            // it: the original's grass caller looks the GI block up from
+            // that block's own position, as the shader does from a mesh's
+            // origin.
+            let (bx, by) = (k % vegetation::CHUNKS, k / vegetation::CHUNKS);
+            let centre = TerrainBlock::centre_in_tile(
+                (n - 1) as f32 * s,
+                bx as u32,
+                by as u32,
+                TerrainBlock::LEVEL,
+            );
+            let mut baked = vegetation::bake(&self.variants, chunk, place);
+            baked.positions.iter_mut().for_each(|p| *p -= centre);
             let mut mesh = Mesh::new(
                 PrimitiveTopology::TriangleList,
                 RenderAssetUsages::default(),
@@ -612,7 +690,7 @@ impl Plants {
                     exa_physics::NoStaticCollider,
                     Mesh3d(loader.meshes.add(mesh)),
                     MeshMaterial3d(self.material.clone()),
-                    Transform::IDENTITY,
+                    Transform::from_translation(centre),
                     Visibility::default(),
                     ChildOf(tile_entity),
                 ))
@@ -620,7 +698,6 @@ impl Plants {
             if let Some(b) = blocks {
                 // The point set is partitioned into the tile's 8 × 8 chunks:
                 // chunk `k` is column `k % 8`, row `k / 8`.
-                let (bx, by) = (k % vegetation::CHUNKS, k / vegetation::CHUNKS);
                 if let Some(room) = b.room(bx, by) {
                     commands.entity(e).insert(InRoom(room));
                 }
@@ -1290,6 +1367,12 @@ impl TerrainBuild {
             ..default()
         };
         splat.params.layers = built.materials.len() as u32;
+        splat.params.tile = Vec4::new(
+            self.terrain.spacing * (TILE_VERTICES - 1) as f32,
+            0.0,
+            0.0,
+            0.0,
+        );
         splat.params.wetness = self.palette.wetness;
         if self.palette.wetness > composite::WET_FLOOR_THRESHOLD {
             splat.params.flags |= terrain_flags::WET_FLOOR;
@@ -2093,9 +2176,10 @@ mod tests {
     #[test]
     fn the_material_uniform_matches_the_shaders_layout() {
         // Four arrays of 16 vec4, the GI box and the composite's two vec4,
-        // then six words padded to 32 bytes.
+        // then six words padded to 32 bytes, then the GI pick: its grid
+        // vec4, nine cells and nine origins, and the tile's size.
         let size = shader_uniform_size();
-        assert_eq!(size, 4 * 16 * 16 + 4 * 16 + 32);
+        assert_eq!(size, 4 * 16 * 16 + 4 * 16 + 32 + 16 + 9 * 16 + 9 * 16 + 16);
         assert_eq!(size, <SplatParams as ShaderType>::min_size().get());
     }
 
