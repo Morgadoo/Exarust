@@ -68,7 +68,10 @@ impl CameraSwitch {
     /// the camera object. An existing controller drops its target and, given
     /// a record, follows it; without one it is detached. With no controller,
     /// a record creates one. The scene's listeners are notified last.
-    /// Returns whether the controller was created.
+    /// Returns whether the controller was created. The original then
+    /// applies the record as the controller's preset (its handlers through
+    /// [`Attachment::install`]); the record's preset fields are not carried
+    /// here, so that step is the caller's.
     pub fn switch(&mut self, mode: u32, data: Option<u32>) -> bool {
         self.left = (self.mode >= FIRST_CALLBACK_MODE).then_some(self.mode);
         self.mode = mode;
