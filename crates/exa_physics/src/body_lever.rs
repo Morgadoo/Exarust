@@ -40,9 +40,12 @@
 //! clears the hold and wakes the lever.
 //!
 //! Not reproduced: the creak and the return's tick loop are reported by the
-//! step but not played (the audio side has no mechanism hookup), and a kind
-//! 6 lever's light fade (no light node is looked up, so every lever
-//! signals). The original runs the lever's rules in the body's own step
+//! step but not played (the audio side has no mechanism hookup), and the
+//! kind 6 lever's light fade is reported as a [`LeverTick::light`] direction
+//! but nothing applies it to a spawned light. The light node under the lever
+//! is found at registration (a light node at or under the arm node's
+//! parent, the operative's node) and handed to [`Lever::configure`]. The original runs the
+//! lever's rules in the body's own step
 //! between its integration and the link passes; Exarust runs them after the
 //! solver's tick, as it does the doors'.
 //!
@@ -74,6 +77,9 @@ pub struct PendingLever {
     pub record: Record,
     pub saved: i32,
     pub id: u32,
+    /// A light node was found under the lever's node: a kind 6 lever fades
+    /// it.
+    pub light: bool,
 }
 
 /// A lever's body glue: the lever's rules and what they read from the arm.
@@ -194,7 +200,7 @@ impl LeverBody {
         let shape = lever::Shape { detent0, ..shape };
         let angle = glue.angle_of(glue.arm_at);
         glue.lever = Lever::new(shape, angle);
-        glue.lever.configure(&pending.record, false);
+        glue.lever.configure(&pending.record, pending.light);
         if glue.lever.return_ms != 0 && ((pending.saved as u32) >> 16) != 0 {
             glue.lever.restore(pending.saved, now_ms);
             glue.armed = true;

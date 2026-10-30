@@ -587,6 +587,83 @@ pub fn opacity_byte(y: f32) -> u8 {
 /// The opacity slope, 0.00625 as the single-precision constant.
 const OPACITY_SLOPE: f32 = 0.006_25;
 
+/// Bytes of the packed plane a tile's bake reads back: 240² cells of
+/// three bytes (two compressed-normal bytes and the opacity byte).
+pub const TILE_PACKED_READBACK_BYTES: usize = 240 * 240 * 3;
+/// Bytes of the 244² single-channel height plane a tile's bake reads back.
+pub const TILE_HEIGHT_READBACK_BYTES: usize = TILE_APRON * TILE_APRON;
+
+/// Renderer feature bit: the bake reads the packed plane back.
+pub const READBACK_PACKED: u32 = 0x1000;
+/// Renderer feature bit: the bake reads the height plane back.
+pub const READBACK_HEIGHTS: u32 = 0x2000;
+/// Record state bit cleared when the record's bake is queued (the name is
+/// Exarust's guess).
+pub const RECORD_BAKE_WAITING: u32 = 0x100;
+/// Record state bit the read-back hand-off clears (the name is Exarust's
+/// guess).
+pub const RECORD_READBACK_DUE: u32 = 0x2000;
+/// Record state bit the read-back hand-off sets (the name is Exarust's
+/// guess).
+pub const RECORD_READ_BACK: u32 = 0x4000;
+/// A vertex's position bytes.
+pub const VERTEX_STRIDE_PLAIN: usize = 12;
+/// A vertex's position and normal bytes (the tile's full vertex buffer).
+pub const VERTEX_STRIDE_FULL: usize = 24;
+
+/// Bytes of the vertex buffer a record allocates when its tiles get GPU
+/// buffers: every vertex's position, and its normal when the renderer's
+/// normals flag is on (the original's 0xc and 0x18 strides over the
+/// manager's vertex count).
+pub fn vertex_upload_bytes(config: &ManagerConfig, with_normals: bool) -> usize {
+    let stride = if with_normals {
+        VERTEX_STRIDE_FULL
+    } else {
+        VERTEX_STRIDE_PLAIN
+    };
+    config.vertex_count as usize * stride
+}
+
+/// Queues a record's bake: it becomes the pending read-back and loses
+/// [`RECORD_BAKE_WAITING`]. Which planes the bake renders follows the
+/// renderer's feature bits, as [`take_readback`] reads them.
+pub fn queue_readback(state: &mut u32) {
+    *state &= !RECORD_BAKE_WAITING;
+}
+
+/// What one read-back hand-off copies, in bytes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TileReadback {
+    /// The height plane copied into the record (its normals are then
+    /// recomputed from it).
+    pub height_bytes: usize,
+    /// The packed plane copied out and handed to the manager's callback.
+    pub packed_bytes: usize,
+}
+
+/// The read-back hand-off: with no pending record nothing happens (`None`).
+/// Otherwise the height plane is copied when the renderer reads heights back
+/// and the packed plane when it reads that back (heights first), the record
+/// loses [`RECORD_READBACK_DUE`] and gains [`RECORD_READ_BACK`] whichever
+/// planes were read, and the pending slot empties.
+pub fn take_readback(features: u32, pending: &mut Option<&mut u32>) -> Option<TileReadback> {
+    let state = pending.take()?;
+    let readback = TileReadback {
+        height_bytes: if features & READBACK_HEIGHTS != 0 {
+            TILE_HEIGHT_READBACK_BYTES
+        } else {
+            0
+        },
+        packed_bytes: if features & READBACK_PACKED != 0 {
+            TILE_PACKED_READBACK_BYTES
+        } else {
+            0
+        },
+    };
+    *state = (*state & !RECORD_READBACK_DUE) | RECORD_READ_BACK;
+    Some(readback)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -894,6 +971,41 @@ mod tests {
         assert_eq!(out[1].centre, [-1200.0, 0.0, -1200.0]);
         assert_eq!(out[1].half[0], 1200.0);
         assert_eq!(out[4].centre, [1200.0, 0.0, 1200.0]);
+    }
+
+    #[test]
+    fn the_vertex_upload_is_every_vertex_at_twelve_or_twenty_four_bytes() {
+        let c = config();
+        assert_eq!(vertex_upload_bytes(&c, false), 58081 * 12);
+        assert_eq!(vertex_upload_bytes(&c, true), VERTEX_BUFFER_BYTES);
+    }
+
+    #[test]
+    fn a_readback_copies_the_planes_the_renderer_reads_and_marks_the_record() {
+        // Queuing clears the waiting bit only.
+        let mut record = RECORD_BAKE_WAITING | RECORD_READBACK_DUE | 7;
+        queue_readback(&mut record);
+        assert_eq!(record, RECORD_READBACK_DUE | 7);
+        // Heights (0x2000) copy 244² = 0xe890 bytes, the packed plane
+        // (0x1000) 240² × 3 = 0x2a300.
+        let mut pending = Some(&mut record);
+        let plan = take_readback(READBACK_HEIGHTS | READBACK_PACKED, &mut pending);
+        assert_eq!(
+            plan,
+            Some(TileReadback {
+                height_bytes: 0xe890,
+                packed_bytes: 0x2_a300,
+            })
+        );
+        assert!(pending.is_none());
+        assert_eq!(record, RECORD_READ_BACK | 7);
+        // With neither plane read the record is still marked.
+        let mut other = RECORD_READBACK_DUE;
+        let plan = take_readback(0, &mut Some(&mut other));
+        assert_eq!(plan, Some(TileReadback::default()));
+        assert_eq!(other, RECORD_READ_BACK);
+        // No pending record: nothing.
+        assert_eq!(take_readback(READBACK_HEIGHTS, &mut None), None);
     }
 
     #[test]

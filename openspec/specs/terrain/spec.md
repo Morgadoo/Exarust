@@ -451,12 +451,20 @@ At a rule, an ordered input at or below the low bound SHALL send the whole weigh
 - **WHEN** a rule's input is below its low bound and its above child is a rule with a NaN input
 - **THEN** the whole weight reaches the below child and no total turns NaN
 
+#### Scenario: NaN input
+- **WHEN** a rule with bounds 0 and 2 reads a NaN input
+- **THEN** both children receive NaN weights
+
 ### Requirement: Terrain layer remainder
 A painted layer's weight SHALL be its byte times the single-precision 1/255. A running remainder SHALL start at 1 and lose each painted layer's weight in turn; each layer and then the remainder (sent to the first rule) SHALL be walked only when its weight widened to double is above the double 0.001.
 
 #### Scenario: Remainder order
 - **WHEN** painted bytes 12 and 25 are walked
 - **THEN** the remainder is (1 − w₀) − w₁ in single precision, 0.85490197
+
+#### Scenario: Small layer
+- **WHEN** a layer weighs 0.0009 and another walk weighs the f32 0.001
+- **THEN** the first is not walked but still leaves the remainder 0.9991, and the second is walked and its halves of 0.0005 reach the materials
 
 ### Requirement: Terrain used materials and covers
 Each leaf SHALL add ROUND(w·255) to its material's byte, comparing the low 32 bits of the 64-bit sum as a signed integer with 255. The tile SHALL use, in palette order, material 0 and every material whose summed leaf weight is above 1/510; their merged channel bytes SHALL be the tile's covers.

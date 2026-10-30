@@ -508,6 +508,9 @@ pub fn register_bodies(
                     record: crate::mechanisms::lever_record(&lever.record),
                     saved: lever.saved,
                     id: lever.id,
+                    // The original's finder starts at the parent of the
+                    // arm's node (the operative's node), not at the arm.
+                    light: light_under(model, model.nodes[top].parent.unwrap_or(top)),
                 });
             }
             (Placement::Plate(plate), Some(Rules::Plate)) => {
@@ -521,6 +524,32 @@ pub fn register_bodies(
         }
     }
     counts
+}
+
+/// Whether a light node stands at or under `root` in the model's tree.
+/// The original's kind 6 lever set-up walks from the parent of the arm's
+/// node, the node first and then each child in order, for the first node
+/// whose class bits (mask 0x5f) are 5, and keeps it so the lever can fade
+/// it; the loaded model records a light node as `light` (a guess for that
+/// class test), so this searches those nodes and walks up their parents.
+fn light_under(model: &Model, root: usize) -> bool {
+    model.nodes.iter().enumerate().any(|(at, node)| {
+        if node.light.is_none() {
+            return false;
+        }
+        let mut step = at;
+        // Bounded by the node count so a cycle in bad input ends.
+        for _ in 0..model.nodes.len() {
+            if step == root {
+                return true;
+            }
+            match model.nodes.get(step).and_then(|n| n.parent) {
+                Some(parent) => step = parent,
+                None => return false,
+            }
+        }
+        false
+    })
 }
 
 /// Which of a spawned model's nodes its placement marks as level geometry
@@ -616,6 +645,37 @@ mod tests {
                 .collect(),
             sounds: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_light_is_found_under_the_levers_node() {
+        use exa_formats::rfc::Light;
+        let light = || Light {
+            flags: 0,
+            color: [1.0; 3],
+            multiplier: 0.0,
+            intensity: 1.0,
+            radius: 1.0,
+            softness: 0.0,
+            spot: None,
+            ranged: false,
+            animation: None,
+        };
+        let mut model = Model {
+            nodes: vec![
+                crate::tests::node("lever", None, None),
+                crate::tests::node("arm", Some(0), None),
+                crate::tests::node("lamp", Some(1), None),
+            ],
+        };
+        assert!(!light_under(&model, 0));
+        model.nodes[2].light = Some(light());
+        assert!(light_under(&model, 0));
+        assert!(light_under(&model, 1));
+        // A light outside the lever's subtree does not count.
+        model.nodes[1].parent = Some(2);
+        model.nodes[2].parent = None;
+        assert!(!light_under(&model, 1));
     }
 
     /// The meshes with bodies the grid build sees: a loose sack's body

@@ -24,9 +24,10 @@
 //! ([`MechanismRecords::dispatch`]): a door order (open, close and lock,
 //! toggle, [`exa_physics::mechanism::open_doors`] and its siblings) on
 //! every door body under the object's node, each woken, or a class 5 push
-//! on the push surface under it. A relay or a deferred job (a fire, a
-//! light) is logged and not run: relays need the level's listener lists
-//! and jobs the fire and light spawning, which no system holds yet. A
+//! on the push surface under it. A class 6 fire job spawns a fire at the
+//! node at the signalled size. A light job (it powers the electric object
+//! under the node, `exa_physics::mechanism::electric`) and a relay are not
+//! run: no system holds electric objects or the level's listener lists. A
 //! target with no record, or no body of the right kind under it (a static
 //! sliding door), does nothing.
 //!
@@ -137,9 +138,11 @@ type MechanismParts = (
 
 /// Runs each mechanism signal on its target's records: a door order on the
 /// door bodies under the target's node (each woken), a push on its push
-/// surface. Relays and jobs are logged only.
+/// surface, or a fire job (a fire is spawned at the node). Light jobs and
+/// relays are not run.
 pub fn route_signals(
     mut signals: MessageReader<MechanismSignal>,
+    mut commands: Commands,
     ticks: Option<Res<BodyTicks>>,
     objects: Query<(Entity, &MechanismRecords)>,
     children: Query<&Children>,
@@ -170,7 +173,18 @@ pub fn route_signals(
                     }
                 }
             }
-            Dispatch::Relay(_) | Dispatch::Job(_) | Dispatch::None => {}
+            Dispatch::Relay(_) => {}
+            Dispatch::Job(mechanism::Job::Fire { size }) => {
+                // A fire at the node's position, of the signalled size
+                // (hundredths, or 2 for a zero word); the node's own lights
+                // are left as they are.
+                crate::fire::spawn_fire(&mut commands, node, mechanism::job_fire_size(size));
+            }
+            // A light job powers the electric object under the node (or
+            // spawns one for an odd value), which the ECS does not hold yet:
+            // the rule is `mechanism::electric`.
+            Dispatch::Job(mechanism::Job::Light { .. }) => {}
+            Dispatch::None => {}
         }
     }
 }

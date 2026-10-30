@@ -960,7 +960,9 @@ top byte.
 
 A lever (`src/lever.rs`) reads its operative record's targets, flags and
 auto-return time (×100 ms), and finds a linked light under its node when
-its kind is 6. Its last pin (slack ≤ 1 cm) gives the axle and its longest
+its kind is 6; registration finds a light node at or under the arm node's
+parent (`PendingLever::light`) and hands it to `Lever::configure`. Its last
+pin (slack ≤ 1 cm) gives the axle and its longest
 link the arm; the frame's zero is the arm's anchor and the detents are at
 −α and +α, α = 2·asin(slack / 2r). The step drives the arm 0.02 rad toward
 the hand (held), the off detent (forced), its home (returning) or the
