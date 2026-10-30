@@ -2415,6 +2415,71 @@ mod tests {
         );
     }
 
+    /// The perception and the AI tick of 47 brains (exanima06's statue
+    /// count) around the player, every one present, a tick an update: the
+    /// mean wall time a tick with every brain running its pass and with
+    /// the target pass's turn. Run with `--release --ignored --nocapture`.
+    #[test]
+    #[ignore = "a timing bench: run with --release --ignored --nocapture"]
+    fn ai_cost_of_47_brains() {
+        let run = |turns: bool| {
+            let mut app = App::new();
+            app.insert_resource(db()).add_systems(
+                Update,
+                (
+                    apply_new_roles,
+                    rate_the_player,
+                    crate::pass_turn::rotate_pass_turn,
+                    perceive_all,
+                    ai_tick,
+                )
+                    .chain(),
+            );
+            if turns {
+                app.init_resource::<crate::pass_turn::PassTurn>();
+            }
+            let player = app
+                .world_mut()
+                .spawn((
+                    GlobalTransform::IDENTITY,
+                    Fighter::default(),
+                    RatedPlayer,
+                    Roles::new_character(&db().book, 0),
+                    CharacterId(PLAYER_ID),
+                ))
+                .id();
+            for i in 0..47u32 {
+                let angle = i as f32 * 0.7;
+                let at = Vec3::new(angle.cos(), 0.0, angle.sin()) * (2.0 + (i % 9) as f32 * 2.0);
+                app.world_mut().spawn((
+                    held(&[2]),
+                    Relations::default(),
+                    Npc::new([0.0; 4]),
+                    Combatant::default(),
+                    crate::Duellist::new(player),
+                    Mind::new(0.0),
+                    GlobalTransform::from_translation(at),
+                    Fighter::default(),
+                    Condition::NORMAL,
+                    CharacterId(10 + i),
+                ));
+            }
+            for _ in 0..50 {
+                app.update();
+            }
+            let started = std::time::Instant::now();
+            for _ in 0..400 {
+                app.update();
+            }
+            started.elapsed().as_secs_f64() * 1000.0 / 400.0
+        };
+        let every = run(false);
+        let turn = run(true);
+        println!(
+            "47 brains: {every:.3} ms a tick with every brain's pass, {turn:.3} ms with the turn"
+        );
+    }
+
     /// A brain out of the scene neither perceives nor waits for the target
     /// pass, so the present brain has the pass every other tick.
     #[test]
