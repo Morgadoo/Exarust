@@ -374,9 +374,34 @@ fn direct(s: Surface, world_position: vec4<f32>, nrm: vec3<f32>, frag: vec2<f32>
     return out;
 }
 
+// The original's frame across the normal for the GI taps, with its 0.1
+// clamp that keeps the 1/(1 + n.z) term finite toward −Z.
+struct GiFrame {
+    ax: vec3<f32>,
+    ay: vec3<f32>,
+}
+
+fn gi_frame(n: vec3<f32>) -> GiFrame {
+    let a = 1.0 / max(1.0 + n.z, 0.1);
+    let cross_xy = -n.x * n.y * a;
+    return GiFrame(
+        vec3(1.0 - n.x * n.x * a, cross_xy, -n.x),
+        vec3(cross_xy, 1.0 - n.y * n.y * a, -n.y),
+    );
+}
+
+// Where disc tap `j` reads the GI volume (texture axes X, Z, Y): spread half
+// a unit across the normal and taken 20 cm out along it. `origin` and
+// `extent` place the volume (metres).
+fn gi_tap(f: GiFrame, origin: vec3<f32>, extent: vec3<f32>, p: vec3<f32>, n: vec3<f32>, t: Taps, j: i32) -> vec3<f32> {
+    let rs = tap(t, j);
+    let d = n + (f.ax * rs.x + f.ay * rs.y) * 0.5;
+    let w = (p + d * 0.2 - origin) / extent;
+    return w.xzy;
+}
+
 // The GI volume around a surface point: the fragment's disc taps (`t`),
-// spread half a unit across the normal and taken 20 cm out along it; light
-// and openness averaged. `origin` and `extent` place the volume (metres).
+// light and openness averaged.
 fn gi_sample(
     volume: texture_3d<f32>,
     volume_sampler: sampler,
@@ -386,26 +411,34 @@ fn gi_sample(
     n: vec3<f32>,
     t: Taps,
 ) -> vec4<f32> {
-    // The original's frame across the normal, with its 0.1 clamp that keeps
-    // the 1/(1 + n.z) term finite toward −Z.
-    let a = 1.0 / max(1.0 + n.z, 0.1);
-    let cross_xy = -n.x * n.y * a;
-    let ax = vec3(1.0 - n.x * n.x * a, cross_xy, -n.x);
-    let ay = vec3(cross_xy, 1.0 - n.y * n.y * a, -n.y);
+    let f = gi_frame(n);
     var sum = vec4(0.0);
     for (var j = t.first; j < t.first + t.count; j++) {
-        let rs = tap(t, j);
-        let d = n + (ax * rs.x + ay * rs.y) * 0.5;
-        let w = (p + d * 0.2 - origin) / extent;
-        sum += textureSampleLevel(volume, volume_sampler, w.xzy, 0.0);
+        sum += textureSampleLevel(volume, volume_sampler, gi_tap(f, origin, extent, p, n, t, j), 0.0);
     }
     return sum / f32(t.count);
 }
 
-// Whether `p` lies inside the GI volume.
-fn in_gi(origin: vec3<f32>, extent: vec3<f32>, p: vec3<f32>) -> bool {
-    let w = (p - origin) / extent;
-    return all(w >= vec3(0.0)) && all(w <= vec3(1.0));
+// The resident GI block an object samples, as the original's per-object
+// lookup picks it from the object's origin `o` (world metres): its offset
+// from the block grid's low edge (`grid.xy`, centimetres) times 1/4800,
+// floored per axis, names a block-grid cell, and the slot whose block holds
+// that cell (`cells[k].xy`, with `cells[k].z` 1 for a bound slot) is the
+// one sampled. `GI_NO_BLOCK` when no resident block holds it: the original
+// then binds texture 0, which reads (0, 0, 0, 1). With `grid.z` 0 (a level
+// whose grid has no built cell) every object samples slot 0.
+const GI_NO_BLOCK: u32 = 9u;
+fn gi_slot(grid: vec4<f32>, cells: array<vec4<i32>, 9>, o: vec3<f32>) -> u32 {
+    if grid.z == 0.0 {
+        return 0u;
+    }
+    let cell = vec2<i32>(floor((o.xz * 100.0 - grid.xy) * 0.00020833334));
+    for (var k = 0u; k < 9u; k++) {
+        if cells[k].z != 0 && all(cells[k].xy == cell) {
+            return k;
+        }
+    }
+    return GI_NO_BLOCK;
 }
 
 // The ambient from a GI sample `g` (light, openness): lifted where faint,

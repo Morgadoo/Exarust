@@ -15,7 +15,7 @@ import bevy_pbr::render::{
     mesh_types::MESH_FLAGS_SHADOW_RECEIVER_BIT,
 };
 import exa_render::shading::{
-    Surface, taps, direct, schlick, gi_sample, in_gi, gi_ambient,
+    Surface, Taps, taps, direct, schlick, gi_frame, gi_tap, gi_slot, gi_ambient, GI_NO_BLOCK,
     REFLECTION_STRENGTH, ENVIRONMENT_FALLBACK, AMBIENT_SCALE,
 };
 import exa_render::terrain_layers::{sharpen, stack_colour, stack_xy, normal_xy, layer_height};
@@ -48,6 +48,14 @@ struct TerrainSplat {
     pad1: u32,
     pad2: u32,
     pad3: u32,
+    // The per-object GI pick (`exa_render::gi::GiSlots`): the block grid's
+    // low edge in cm (xy) and the mode (z); each slot's block-grid cell
+    // (xy, z = 1 when bound) and sample origin (the voxel's bottom).
+    gi_grid: vec4<f32>,
+    gi_cells: array<vec4<i32>, 9>,
+    gi_origins: array<vec4<f32>, 9>,
+    // The tile's side in metres (x).
+    tile: vec4<f32>,
 }
 
 const GI: u32 = 1u;
@@ -120,6 +128,14 @@ const COMPOSITE: u32 = 32u;
 @group(constants::MATERIAL_BIND_GROUP) @binding(193) var normal13: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(194) var normal14: texture_2d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(195) var normal15: texture_2d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(110) var gi_volume_1: texture_3d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(111) var gi_volume_2: texture_3d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(112) var gi_volume_3: texture_3d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(113) var gi_volume_4: texture_3d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(114) var gi_volume_5: texture_3d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(115) var gi_volume_6: texture_3d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(116) var gi_volume_7: texture_3d<f32>;
+@group(constants::MATERIAL_BIND_GROUP) @binding(117) var gi_volume_8: texture_3d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(123) var gi_volume: texture_3d<f32>;
 @group(constants::MATERIAL_BIND_GROUP) @binding(124) var gi_sampler: sampler;
 @group(constants::MATERIAL_BIND_GROUP) @binding(125) var environment_map: texture_cube<f32>;
@@ -127,6 +143,51 @@ const COMPOSITE: u32 = 32u;
 
 fn has(bit: u32) -> bool {
     return (splat.flags & bit) != 0u;
+}
+
+// Resident block `k`'s light at texture position `w`; with no block, the
+// original's texture 0: no light and full openness.
+fn gi_texel(k: u32, w: vec3<f32>) -> vec4<f32> {
+    switch k {
+        case 0u: { return textureSampleLevel(gi_volume, gi_sampler, w, 0.0); }
+        case 1u: { return textureSampleLevel(gi_volume_1, gi_sampler, w, 0.0); }
+        case 2u: { return textureSampleLevel(gi_volume_2, gi_sampler, w, 0.0); }
+        case 3u: { return textureSampleLevel(gi_volume_3, gi_sampler, w, 0.0); }
+        case 4u: { return textureSampleLevel(gi_volume_4, gi_sampler, w, 0.0); }
+        case 5u: { return textureSampleLevel(gi_volume_5, gi_sampler, w, 0.0); }
+        case 6u: { return textureSampleLevel(gi_volume_6, gi_sampler, w, 0.0); }
+        case 7u: { return textureSampleLevel(gi_volume_7, gi_sampler, w, 0.0); }
+        case 8u: { return textureSampleLevel(gi_volume_8, gi_sampler, w, 0.0); }
+        default: { return vec4(0.0, 0.0, 0.0, 1.0); }
+    }
+}
+
+// The GI sample of resident block `k` (`gi_slot`): the disc taps around
+// the surface point, light and openness averaged.
+fn gi_block_sample(k: u32, p: vec3<f32>, n: vec3<f32>, t: Taps) -> vec4<f32> {
+    if k >= GI_NO_BLOCK {
+        return vec4(0.0, 0.0, 0.0, 1.0);
+    }
+    let extent = splat.gi_extent.xyz;
+    let origin = splat.gi_origins[k].xyz;
+    let f = gi_frame(n);
+    var sum = vec4(0.0);
+    for (var j = t.first; j < t.first + t.count; j++) {
+        sum += gi_texel(k, gi_tap(f, origin, extent, p, n, t, j));
+    }
+    return sum / f32(t.count);
+}
+
+// The centre of the 6 m terrain block a point lies on (world metres): the
+// tile (centred on the mesh's origin `c`) is eight blocks a side. The
+// original's terrain caller looks the GI block up from each terrain
+// block's own position.
+fn terrain_block_centre(c: vec3<f32>, p: vec3<f32>) -> vec3<f32> {
+    let size = max(splat.tile.x, 1e-3);
+    let step = size / 8.0;
+    let i = clamp(floor((p.xz - c.xz + size * 0.5) / step), vec2(0.0), vec2(7.0));
+    let xz = c.xz - size * 0.5 + (i + 0.5) * step;
+    return vec3(xz.x, c.y, xz.y);
 }
 
 // Layer `k`'s textures at `uv` (base level).
@@ -430,10 +491,13 @@ fn fragment(
     let k = (s.rough + 1.0) * (s.rough + 1.0) / 8.0;
     let gv = s.ndv / (s.ndv * (1.0 - k) + k);
     var reflected: vec3<f32>;
-    let gi_origin = splat.gi_origin.xyz;
-    let gi_extent = splat.gi_extent.xyz;
-    if has(GI) && in_gi(gi_origin, gi_extent, wp) {
-        let g = gi_sample(gi_volume, gi_sampler, gi_origin, gi_extent, wp, n, disc);
+    if has(GI) {
+        // The resident block the terrain block's centre falls in (the
+        // original's per-object `VXGIPos`); no block reads black.
+        let world_from_local = mesh[in.instance_index].world_from_local;
+        let c = vec3(world_from_local[0].w, world_from_local[1].w, world_from_local[2].w);
+        let slot = gi_slot(splat.gi_grid, splat.gi_cells, terrain_block_centre(c, in.world_position.xyz));
+        let g = gi_block_sample(slot, wp, n, disc);
         if has(DEBUG_GI) {
             var dbg: FragmentOutput;
             dbg.color = vec4(g.rgb * 10.0, 1.0);

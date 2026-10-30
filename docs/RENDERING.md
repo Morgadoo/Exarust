@@ -607,14 +607,15 @@ such names.
 - Without voxel GI, ambient = environment cube at the normal (mip 5) ×
   level ambient × 16, added to the lights before the diffuse colour.
   **The game always runs with voxel GI** (GI mode 3), whose bounce light
-  replaces this term (see Voxel GI). Exarust uses the cube path only outside
-  the GI block or with `--no-gi`.
+  replaces this term (see Voxel GI). Exarust uses the cube path only with
+  `--no-gi`; an object no resident GI block holds takes no GI light, as the
+  original's texture 0.
 - The cube is `genref01r` for every indoor level (six 256² sRGB faces, each
   with nine mips); outdoors it is `genref02r` masked by `genref02rm`. The
   level record's `EnvMapIA01` is unread.
 - Reflections sample the cube along the mirror direction at mip
   (rough − 0.1)·8, as (e + e²) × level ambient × 8 × the geometry term,
-  for every surface outside the GI volume. Inside it only a record with a
+  for every surface without voxel GI. With it only a record with a
   reflection layer kept by the factory (`Mat.TexRef`, slot `0x100000`:
   metals, glass, eyes, skin) samples it, at mip (rough − 0.05)·8, × the GI
   ambient × 8 × 2; every other surface's specular GI there is **a quarter
@@ -1488,8 +1489,9 @@ in world space there too):
   (3, 3). The block's top is the level record's highest point (`0x98`),
   truncated to whole voxels.
 - The original keeps up to nine blocks resident around a point 20 m in
-  front of the camera; Exarust keeps one and picks the block the camera's
-  own cell falls in (the original's per-object lookup floors the offset
+  front of the camera and steps them all; Exarust does too, and binds as
+  the camera's block (the one it warms first and the loading screen waits
+  for) the block the camera's own cell falls in (the original's per-object lookup floors the offset
   from the block grid's edge, counted from the level grid's half size in
   float, over 48 m), or, when that one has no geometry, the block nearest
   the focus 20 m ahead measured from its 24 m half extent, as the
@@ -1517,12 +1519,34 @@ in world space there too):
   The renderer keeps up to nine blocks' light and scratch textures
   (`GiTextureCache`), as the original owns nine: a block the camera comes
   back to reuses the light it accumulated and skips the warm-up, and its
-  occupancy is uploaded whole again from the world's cells. Only the
-  camera's block runs a light step each frame, so a resident neighbour's
-  light is as the last step left it; the original steps all nine. Per-object
-  `VXGIPos` selection across blocks is not wired either (a surface samples
-  the camera's block, clamped at its edge; `GiBlockLayout::sample_transform`
-  and `sample_at` keep the original's per-object offset and scale).
+  occupancy is uploaded whole again from the world's cells. Every block
+  the residency steps besides the camera's (built, holding one of the nine
+  textures) is published as a resident neighbour (`GiNeighbourVolumes`, in
+  layout order, left alone while it names the same builds) and gets its
+  textures (`GiNeighbours`), its own sector marks and cell lights, its
+  margin copies and one light step a frame after the camera block's. A
+  neighbour without kept light owes the volume's warm-up; the neighbours
+  share 16 extra steps a frame [adaptation: the original's texture objects
+  are handed between blocks with their old light and steps start from
+  there]. A level change empties the cache.
+- **Per-object pick.** The original looks the block up for every object
+  it draws (each terrain and grass block once): the object's position
+  less the block grid's low edge, in centimetres, times 1/4800, floored on
+  each ground axis, names the block, whose light texture and `VXGIPos` it
+  binds; a position off the grid, or a block without a light texture,
+  binds texture 0, which reads (0, 0, 0, 1). The surface program then
+  samples with no box test (a fragment beyond the block reads its clamped
+  edge; the texture keeps the engine's clamp wrap). Exarust binds nine
+  slots in every lit material (`GiSlots`: the camera's block in slot 0,
+  the neighbours after it, each slot's sample origin and block-grid cell
+  `GiPick`, and the grid's edge) and picks per draw in the fragment
+  shader from the mesh's world origin (`gi_slot`); terrain takes the
+  centre of the 6 m terrain block under the fragment (the tile is eight
+  blocks a side), and plant chunks stand at their block's centre. An
+  object no slot holds samples (0, 0, 0, 1). The focus-centred block of a
+  grid with no built cell is off the grid and lights every object. Which
+  point the original's lit-material builder passes for a node was not
+  traced to its field [guess: the node's origin].
 - Surfaces **sample** the volume with the original's per-object transform:
   `texture(p·scale + offset)` with `p` in world centimetres, the offset's X
   and Z half a texture minus the block's centre over its width and its Y
@@ -1809,18 +1833,19 @@ its width, at the slice's middle ((slice + 0.5)/width), as the original's
   it, and its bytes from `sub_upload`) into the bound block and one warming
   behind it; the world drains the patches every frame. A whole-block upload
   stands in when a texture is created;
-- a neighbour block's margin copy, from the original's fixed table of
-  texture fractions: on the neighbour's side the strip 0..1/32 (or
+- a neighbour block's margin copy (into every stepping block), from the
+  original's fixed table of texture fractions: on the neighbour's side the strip 0..1/32 (or
   31/32..1) with the UV offset ±15/16, on the other axis the interior
   1/32..31/32; every slice but the top, and the
   destination quad's four corners with the original's base z of
-  −0.5/depth (`margin_blit`, `margin_quad`). The pass runs every step for
-  each resident neighbour the manager holds (`GiTextureCache`): the step
-  clears the margins and each copy fills one, reading the neighbour's sRGB
-  light at the same world texel (its own coordinates plus the offset) and
-  re-encoding it into the block's target. During a warm-up the block being
-  warmed takes no copies; once it is bound it takes them. A neighbour the
-  manager does not keep (beyond nine, or not yet built) leaves its margin
+  −0.5/depth (`margin_blit`, `margin_quad`). The pass runs every step of
+  every stepping block for each stepping block beside it: the step clears
+  the margins and each copy fills one, reading the neighbour's sRGB light
+  at the same world texel (its own coordinates plus the offset) and
+  re-encoding it into the block's target. The copies' bind groups are kept
+  while both blocks keep their textures. A block warming behind the
+  camera's takes no copies; once it is bound it takes them. A neighbour
+  that does not step (beyond nine, or not yet built) leaves its margin
   dark, as the original's untextured block does.
 
 **Voxel lights** (`0x3D0C` nodes: glowing items and a few level nodes)

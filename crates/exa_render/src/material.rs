@@ -283,7 +283,8 @@ pub struct ExaParams {
     pub texture_bias: f32,
     pub pad1: u32,
     pub pad2: u32,
-    /// The GI volume's lowest corner (m), and its size (m).
+    /// The camera's GI block's sample origin (m; the per-object pick's slot
+    /// 0, [`ExaParams::gi_origins`]) and the shared sample size (m).
     pub gi_origin: Vec4,
     pub gi_extent: Vec4,
     /// Parallax scale per UV axis (xy), displacement-shadow step (z) and
@@ -299,6 +300,15 @@ pub struct ExaParams {
     /// toward the centre; a lit surface's emissive map is weighted by
     /// N·V²·z + 1 − z (zero for none).
     pub opacity_falloff: Vec4,
+    /// The per-object GI pick ([`crate::gi::GiSlots`]): the block grid's
+    /// low edge in world centimetres (xy) and the mode (z: 1 picks by the
+    /// object's origin, 0 samples slot 0).
+    pub gi_grid: Vec4,
+    /// Each resident block's cell in the block grid (xy), z = 1 when the
+    /// slot holds a block.
+    pub gi_cells: [IVec4; crate::gi::RESIDENT_BLOCKS],
+    /// Each resident block's sample origin (m).
+    pub gi_origins: [Vec4; crate::gi::RESIDENT_BLOCKS],
 }
 
 impl ExaParams {
@@ -333,6 +343,9 @@ impl Default for ExaParams {
             displacement: Vec4::ZERO,
             subsurface: Vec4::ZERO,
             opacity_falloff: Vec4::ZERO,
+            gi_grid: Vec4::ZERO,
+            gi_cells: [IVec4::ZERO; crate::gi::RESIDENT_BLOCKS],
+            gi_origins: [Vec4::ZERO; crate::gi::RESIDENT_BLOCKS],
         }
     }
 }
@@ -370,10 +383,29 @@ pub struct ExaMaterial {
     #[texture(115)]
     #[sampler(116)]
     pub gloss_map: Option<Handle<Image>>,
-    /// The voxel GI light volume (8-bit sRGB, sampled through an sRGB view).
+    /// The voxel GI light volume (8-bit sRGB, sampled through an sRGB view)
+    /// of the camera's block: the per-object pick's slot 0.
     #[texture(117, dimension = "3d")]
     #[sampler(118)]
     pub gi_volume: Option<Handle<Image>>,
+    /// The resident neighbours' light volumes, slots 1 to 8 of the pick
+    /// (read through `gi_volume`'s sampler).
+    #[texture(121, dimension = "3d")]
+    pub gi_volume_1: Option<Handle<Image>>,
+    #[texture(122, dimension = "3d")]
+    pub gi_volume_2: Option<Handle<Image>>,
+    #[texture(123, dimension = "3d")]
+    pub gi_volume_3: Option<Handle<Image>>,
+    #[texture(124, dimension = "3d")]
+    pub gi_volume_4: Option<Handle<Image>>,
+    #[texture(125, dimension = "3d")]
+    pub gi_volume_5: Option<Handle<Image>>,
+    #[texture(126, dimension = "3d")]
+    pub gi_volume_6: Option<Handle<Image>>,
+    #[texture(127, dimension = "3d")]
+    pub gi_volume_7: Option<Handle<Image>>,
+    #[texture(128, dimension = "3d")]
+    pub gi_volume_8: Option<Handle<Image>>,
     /// Height map (red, linear) for parallax and displacement shadows.
     #[texture(119)]
     #[sampler(120)]
@@ -412,6 +444,14 @@ impl Default for ExaMaterial {
             dirt_map: None,
             gloss_map: None,
             gi_volume: None,
+            gi_volume_1: None,
+            gi_volume_2: None,
+            gi_volume_3: None,
+            gi_volume_4: None,
+            gi_volume_5: None,
+            gi_volume_6: None,
+            gi_volume_7: None,
+            gi_volume_8: None,
             height_map: None,
             lights: Handle::default(),
             shadow_cubes: crate::cube_shadows::CUBE_POOL,
@@ -424,6 +464,26 @@ impl Default for ExaMaterial {
 }
 
 impl ExaMaterial {
+    /// Binds the resident GI blocks in their slots, with the half-voxel
+    /// lift the original's per-object lookup gives most surfaces.
+    pub fn set_gi_slots(&mut self, slots: &crate::gi::GiSlots) {
+        let [s0, s1, s2, s3, s4, s5, s6, s7, s8] = slots.lights.clone();
+        self.gi_volume = s0;
+        self.gi_volume_1 = s1;
+        self.gi_volume_2 = s2;
+        self.gi_volume_3 = s3;
+        self.gi_volume_4 = s4;
+        self.gi_volume_5 = s5;
+        self.gi_volume_6 = s6;
+        self.gi_volume_7 = s7;
+        self.gi_volume_8 = s8;
+        self.params.gi_origin = slots.origins[0];
+        self.params.gi_extent = slots.extent;
+        self.params.gi_grid = slots.grid;
+        self.params.gi_cells = slots.cells;
+        self.params.gi_origins = slots.origins;
+    }
+
     /// Whether the surface casts as the original's alpha-tested caster
     /// does: both sides, dropping the texels whose cut texture (the opacity
     /// map, else the diffuse map) has an alpha below ½. Alpha-tested

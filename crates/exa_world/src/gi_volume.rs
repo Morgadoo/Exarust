@@ -23,7 +23,10 @@ use bevy::prelude::*;
 use bevy::tasks::{AsyncComputeTaskPool, Task, block_on, poll_once};
 use bevy::transform::TransformSystems;
 use exa_physics::voxel::{self, Bounds};
-use exa_render::gi::{GiSector, GiSectorLights, GiVolume};
+use exa_render::gi::{
+    GiNeighbourSectorLights, GiNeighbourVolumes, GiPick, GiSector, GiSectorLights, GiSectors,
+    GiVolume,
+};
 
 use crate::gi_residency::GiResidency;
 use crate::shadow_links::LevelWalls;
@@ -35,6 +38,7 @@ impl Plugin for GiVolumePlugin {
         app.init_resource::<GiSettings>()
             .init_resource::<GiState>()
             .init_resource::<GiSectorLights>()
+            .init_resource::<GiNeighbourSectorLights>()
             .init_resource::<GiBuiltBlocks>()
             .init_resource::<exa_render::gi::GiOccupancyPatches>()
             .add_systems(
@@ -43,6 +47,7 @@ impl Plugin for GiVolumePlugin {
                     feed_shading_quality,
                     collect_source,
                     follow_camera,
+                    publish_neighbour_volumes,
                     update_dynamic,
                     publish_sector_lights,
                 )
@@ -388,16 +393,23 @@ impl GiBlockLayout {
     /// per-object lookup floors the offset times 1/4800 cm into the block
     /// grid. `None` when that block has no geometry.
     pub fn block_at(&self, at: Vec3) -> Option<usize> {
-        let offset = at.xz() * CM_PER_M - self.cells_origin_cm;
-        let index = IVec2::new(
-            (offset.x * BLOCK_INV_CM).floor() as i32,
-            (offset.y * BLOCK_INV_CM).floor() as i32,
-        );
+        let index = GiPick::cell_of(self.cells_origin_cm, at);
         if index.x < 0 || index.y < 0 || index.x >= self.columns || index.y >= self.rows {
             return None;
         }
         let slot = (index.x + index.y * self.columns) as usize;
         self.blocks.iter().position(|b| b.slot == slot)
+    }
+
+    /// Where block `index` sits for the per-object pick: the grid's low
+    /// edge and the block's cell in the block grid.
+    pub fn pick(&self, index: usize) -> Option<GiPick> {
+        let block = self.blocks.get(index)?;
+        let columns = self.columns.max(1) as usize;
+        Some(GiPick {
+            cells_origin_cm: self.cells_origin_cm,
+            cell: IVec2::new((block.slot % columns) as i32, (block.slot / columns) as i32),
+        })
     }
 
     /// A block's centre in the ground plane (X, Z), world centimetres:
@@ -439,9 +451,6 @@ pub struct GiSample {
     /// height (slice count × voxel) for Y.
     pub scale: Vec3,
 }
-
-/// One over a block's 48 m width, in centimetres, as the original's f32.
-const BLOCK_INV_CM: f32 = 1.0 / 4800.0;
 
 impl GiBlockLayout {
     /// A block's per-object GI sample transform, as the original builds it
@@ -829,6 +838,10 @@ fn collect_source(
     commands.remove_resource::<GiBuild>();
     commands.remove_resource::<exa_render::gi::GiTextures>();
     commands.remove_resource::<exa_render::gi::GiPendingTextures>();
+    commands.remove_resource::<GiNeighbourVolumes>();
+    // The last level's light textures must not stand in for this one's
+    // blocks at the same cells.
+    commands.insert_resource(exa_render::gi::GiTextureCache::default());
     if !settings.enabled {
         commands.remove_resource::<GiVolume>();
         commands.remove_resource::<GiSource>();
@@ -863,6 +876,8 @@ pub fn unload_level(commands: &mut Commands, state: &mut GiState) {
     commands.remove_resource::<GiResidency>();
     commands.remove_resource::<exa_render::gi::GiTextures>();
     commands.remove_resource::<exa_render::gi::GiPendingTextures>();
+    commands.remove_resource::<GiNeighbourVolumes>();
+    commands.insert_resource(exa_render::gi::GiTextureCache::default());
     commands.insert_resource(GiBuiltBlocks::default());
     *state = GiState::Off;
 }
@@ -1045,7 +1060,8 @@ fn follow_camera(
                 }
                 if !build.background {
                     commands.insert_resource(GiBlock { index: build.block });
-                    commands.insert_resource(volume_of(&built, &level, &settings));
+                    let pick = blocks.as_ref().and_then(|b| b.0.pick(build.block));
+                    commands.insert_resource(volume_of(&built, &level, &settings, pick));
                     active = Some(build.block);
                     *state = GiState::Built;
                 }
@@ -1107,7 +1123,7 @@ fn follow_camera(
         let cached = cache.0.get(&index).cloned();
         if let Some(built) = cached {
             commands.insert_resource(GiBlock { index });
-            commands.insert_resource(volume_of(&built, &level, &settings));
+            commands.insert_resource(volume_of(&built, &level, &settings, blocks.0.pick(index)));
             *state = GiState::Built;
             return;
         }
@@ -1133,8 +1149,14 @@ fn follow_camera(
     *state = GiState::Building;
 }
 
-/// The renderer's volume for a built block.
-fn volume_of(block: &BuiltBlock, level: &PendingGi, settings: &GiSettings) -> GiVolume {
+/// The renderer's volume for a built block, with where it sits for the
+/// per-object pick (`None` for the fallback block of an empty grid).
+fn volume_of(
+    block: &BuiltBlock,
+    level: &PendingGi,
+    settings: &GiSettings,
+    pick: Option<GiPick>,
+) -> GiVolume {
     GiVolume {
         origin: block.origin,
         size: UVec3::new(SIDE as u32, SIDE as u32, block.depth as u32),
@@ -1150,20 +1172,73 @@ fn volume_of(block: &BuiltBlock, level: &PendingGi, settings: &GiSettings) -> Gi
         sector: block.sector,
         warm_up: settings.warm_up,
         top_slice: level.top_slice,
+        pick,
     }
 }
 
-/// Marks the block's sectors the camera needs and lists each sector's 6 m
-/// cell lights, as the original does every frame: the cells within six of
-/// the focus cell (and 37 cells squared), built in plane A, whose box meets
-/// the view, then every such cell next to a marked one; each block then
-/// draws a sector with the lights its cell's flood lists.
+/// Lists the other blocks the manager steps this frame for the renderer:
+/// every block the residency steps (built and holding one of the nine light
+/// textures) except the camera's, in layout order. The list is left alone
+/// while it names the same builds, so the surfaces keep their bindings.
+#[allow(clippy::too_many_arguments)]
+fn publish_neighbour_volumes(
+    mut commands: Commands,
+    source: Option<Res<GiSource>>,
+    block: Option<Res<GiBlock>>,
+    blocks: Option<Res<GiBlocks>>,
+    residency: Option<Res<GiResidency>>,
+    built: Res<GiBuiltBlocks>,
+    settings: Res<GiSettings>,
+    current: Option<Res<GiNeighbourVolumes>>,
+) {
+    let (Some(source), Some(block), Some(blocks), Some(residency)) =
+        (source, block, blocks, residency)
+    else {
+        if current.is_some() {
+            commands.remove_resource::<GiNeighbourVolumes>();
+        }
+        return;
+    };
+    let mut wanted: Vec<usize> = residency
+        .stepping()
+        .map(|b| b.block)
+        .filter(|&i| i != block.index && built.0.contains_key(&i))
+        .collect();
+    wanted.sort_unstable();
+    let volumes: Vec<GiVolume> = wanted
+        .iter()
+        .map(|&i| volume_of(&built.0[&i], &source.level, &settings, blocks.0.pick(i)))
+        .collect();
+    let same = |a: &GiVolume, b: &GiVolume| {
+        a.sector == b.sector
+            && Arc::ptr_eq(&a.floors, &b.floors)
+            && a.base_ambient == b.base_ambient
+            && a.top_slice == b.top_slice
+    };
+    if let Some(current) = &current
+        && current.0.len() == volumes.len()
+        && current.0.iter().zip(&volumes).all(|(a, b)| same(a, b))
+    {
+        return;
+    }
+    commands.insert_resource(GiNeighbourVolumes(volumes));
+}
+
+/// Marks each stepping block's sectors the camera needs and lists each
+/// sector's 6 m cell lights, as the original does every frame: the cells
+/// within six of the focus cell (and 37 cells squared), built in plane A,
+/// whose box meets the view, then every such cell next to a marked one;
+/// each block then draws a sector with the lights its cell's flood lists.
+/// The camera's block (or the block warming behind it) fills
+/// [`GiSectorLights`], each resident neighbour [`GiNeighbourSectorLights`].
 #[allow(clippy::too_many_arguments)]
 fn publish_sector_lights(
     mut lights: ResMut<GiSectorLights>,
+    mut neighbour_lights: Option<ResMut<GiNeighbourSectorLights>>,
     source: Option<Res<GiSource>>,
     textures: Option<Res<exa_render::gi::GiTextures>>,
     pending: Option<Res<exa_render::gi::GiPendingTextures>>,
+    neighbours: Option<Res<exa_render::gi::GiNeighbours>>,
     walls: Option<Res<LevelWalls>>,
     cameras: Query<(&GlobalTransform, &Frustum), exa_render::supersample::SceneCamera>,
     point_lights: Query<&exa_render::lights::LightId>,
@@ -1173,6 +1248,44 @@ fn publish_sector_lights(
     let textures = pending.as_ref().map(|p| &p.0).or(textures.as_deref());
     let Some(textures) = textures else { return };
     let grid = &source.level.grid;
+    let camera = cameras.iter().next();
+    if walls.is_none() {
+        // A level without a wall grid draws the scene's lights in its one
+        // group. [guess: in their registration order, ascending ids]
+        scene_lights.clear();
+        scene_lights.extend(point_lights.iter().map(|id| id.0));
+        scene_lights.sort_unstable();
+    }
+    let fill = |state: &mut GiSectors, textures: &exa_render::gi::GiTextures| {
+        block_sectors(
+            state,
+            textures,
+            grid,
+            camera,
+            walls.as_deref(),
+            &scene_lights,
+        );
+    };
+    fill(Arc::make_mut(&mut lights.0), textures);
+    let Some(out) = neighbour_lights.as_deref_mut() else {
+        return;
+    };
+    let blocks = neighbours.as_deref().map_or(&[][..], |n| &n.blocks[..]);
+    out.0.resize_with(blocks.len(), Default::default);
+    for (state, textures) in out.0.iter_mut().zip(blocks) {
+        fill(Arc::make_mut(state), textures);
+    }
+}
+
+/// One block's sector marks and cell lights for this frame.
+fn block_sectors(
+    state: &mut GiSectors,
+    textures: &exa_render::gi::GiTextures,
+    grid: &GiGrid,
+    camera: Option<(&GlobalTransform, &Frustum)>,
+    walls: Option<&LevelWalls>,
+    scene_lights: &[u32],
+) {
     let block = textures.sector;
     // Every built block fills the floors of its sectors; a cell no built
     // block covers keeps 255, as the manager starts them all.
@@ -1188,7 +1301,7 @@ fn publish_sector_lights(
         top: textures.dims().z as f32,
         below: (-textures.origin.y / VOXEL).round(),
     };
-    let marks = match cameras.iter().next() {
+    let marks = match camera {
         Some((at, frustum)) => {
             let focus = at.translation() + at.forward().as_vec3() * FOCUS_AHEAD;
             sector_marks(
@@ -1204,12 +1317,11 @@ fn publish_sector_lights(
         // headless views have no frustum).
         None => [true; SECTORS * SECTORS],
     };
-    let state = Arc::make_mut(&mut lights.0);
     state.block = block;
     state.from_middle = block - IVec2::new((grid.width >> 1) as i32, (grid.height >> 1) as i32);
     state.grid = walls.is_some();
     state.drawn = marks;
-    match walls.as_deref() {
+    match walls {
         Some(walls) => {
             for z in 0..SECTORS {
                 for x in 0..SECTORS {
@@ -1219,11 +1331,6 @@ fn publish_sector_lights(
             }
         }
         None => {
-            // A level without a wall grid draws the scene's lights in its
-            // one group. [guess: in their registration order, ascending ids]
-            scene_lights.clear();
-            scene_lights.extend(point_lights.iter().map(|id| id.0));
-            scene_lights.sort_unstable();
             state.sectors = [GiSector::new(scene_lights.iter().copied()); SECTORS * SECTORS];
         }
     }
@@ -1942,6 +2049,73 @@ mod tests {
         app.world_mut().remove_resource::<ShadingQuality>();
         app.update();
         assert!(app.world().resource::<GiSettings>().high_quality);
+    }
+
+    #[test]
+    fn each_block_s_pick_names_the_block_its_points_fall_in() {
+        // On an odd grid the block grid's edge (the grid's half size in
+        // float) sits half a cell off the blocks' own centres (its integer
+        // half), so only points within 21 m of a centre are sure to pick it.
+        for (size, reach) in [(32, 23.9), (33, 20.9)] {
+            let layout = GiBlockLayout::new(&open_grid(size), 6.0, 0.0);
+            assert!(layout.blocks.len() > 1);
+            for (i, block) in layout.blocks.iter().enumerate() {
+                let pick = layout.pick(i).unwrap();
+                assert_eq!(pick.cells_origin_cm, layout.cells_origin_cm);
+                // The block's centre and points near its edges pick it, by
+                // the same rule the shader runs per object.
+                let centre = layout.centre_cm(block) / 100.0;
+                for (dx, dz) in [(0.0, 0.0), (-reach, -reach), (reach, reach)] {
+                    let at = Vec3::new(centre.x + dx, 1.0, centre.y + dz);
+                    assert_eq!(GiPick::cell_of(pick.cells_origin_cm, at), pick.cell);
+                    assert_eq!(layout.block_at(at), Some(i));
+                }
+            }
+            assert!(layout.pick(layout.blocks.len()).is_none());
+        }
+    }
+
+    #[test]
+    fn the_resident_blocks_beside_the_camera_s_are_published() {
+        let mut app = App::new();
+        app.add_plugins((TaskPoolPlugin::default(), GiVolumePlugin))
+            .init_resource::<Assets<Mesh>>();
+        app.world_mut()
+            .spawn((Camera3d::default(), GlobalTransform::default()));
+        let level = PendingGi {
+            centre: Vec3::ZERO,
+            top: 6.0,
+            bottom: 0.0,
+            base_ambient: [0.04, 0.04, 0.04],
+            grid: open_grid(32),
+            top_slice: false,
+        };
+        app.insert_resource(level.clone());
+        update_until(&mut app, |w| {
+            w.get_resource::<GiNeighbourVolumes>()
+                .is_some_and(|n| n.0.len() >= 2)
+        });
+        let layout = GiBlockLayout::new(&level.grid, level.top, level.bottom);
+        let active = app.world().resource::<GiVolume>().clone();
+        let at = layout.block_at(Vec3::ZERO).unwrap();
+        assert_eq!(active.pick, layout.pick(at));
+        let neighbours = &app.world().resource::<GiNeighbourVolumes>().0;
+        let mut last = None;
+        for volume in neighbours {
+            // Not the camera's block, listed in layout order, each with its
+            // own pick.
+            assert_ne!(volume.sector, active.sector);
+            let i = layout
+                .blocks
+                .iter()
+                .position(|b| b.sector == volume.sector)
+                .unwrap();
+            assert!(last.is_none_or(|l| l < i));
+            last = Some(i);
+            assert_eq!(volume.pick, layout.pick(i));
+            assert_eq!(volume.origin, layout.blocks[i].origin);
+        }
+        assert!(neighbours.len() < exa_render::gi::RESIDENT_BLOCKS);
     }
 
     #[test]

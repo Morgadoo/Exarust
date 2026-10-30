@@ -28,7 +28,7 @@ use bevy::render::render_resource::{
     ComputePipelineDescriptor, Extent3d, FilterMode, PipelineCache, Sampler, SamplerBindingType,
     SamplerDescriptor, ShaderStages, ShaderType, StorageTextureAccess, TexelCopyTextureInfo,
     Texture, TextureDimension, TextureFormat, TextureSampleType, TextureUsages, TextureView,
-    TextureViewDescriptor, TextureViewDimension, UniformBuffer,
+    TextureViewDescriptor, TextureViewDimension, TextureViewId, UniformBuffer,
 };
 use bevy::render::render_resource::{Origin3d, TexelCopyBufferLayout};
 use bevy::render::renderer::{RenderContext, RenderDevice, RenderQueue, ViewQuery};
@@ -48,20 +48,25 @@ impl Plugin for GiPlugin {
         app.init_resource::<GiLights>()
             .init_resource::<GiSectorLights>()
             .init_resource::<GiTextureCache>()
+            .init_resource::<GiNeighbours>()
+            .init_resource::<GiNeighbourLights>()
+            .init_resource::<GiNeighbourSectorLights>()
             .insert_resource(warm_up)
             .add_plugins((
                 crate::gi_shape::GiShapePlugin,
                 ExtractResourcePlugin::<GiTextures>::default(),
                 ExtractResourcePlugin::<GiPendingTextures>::default(),
                 ExtractResourcePlugin::<GiOccupancyPatches>::default(),
-                ExtractResourcePlugin::<GiTextureCache>::default(),
                 ExtractResourcePlugin::<GiLights>::default(),
+                ExtractResourcePlugin::<GiNeighbours>::default(),
+                ExtractResourcePlugin::<GiNeighbourLights>::default(),
             ))
             .add_systems(
                 PostUpdate,
                 (
                     create_textures,
                     swap_warm_textures,
+                    create_neighbour_textures,
                     gather_lights,
                     give_materials_gi,
                 )
@@ -73,6 +78,7 @@ impl Plugin for GiPlugin {
         };
         render_app
             .init_resource::<GiOwed>()
+            .init_resource::<GiNeighbourOwed>()
             .insert_resource(report)
             .add_systems(RenderStartup, init_pipeline)
             .add_systems(
@@ -155,7 +161,69 @@ pub struct GiVolume {
     /// Whether the steps reach the top slice (the environment record's
     /// flag `0x20`); otherwise it is cleared every step.
     pub top_slice: bool,
+    /// Where the block sits for the per-object pick ([`GiPick`]); `None`
+    /// for the focus-centred block of a level whose grid has no built cell,
+    /// which every object samples.
+    pub pick: Option<GiPick>,
 }
+
+/// A block's place in the manager's block grid, as the original's
+/// per-object lookup finds it: an object's world position less the grid's
+/// low edge, in centimetres, times 1/4800, floored per axis, names the
+/// block it samples.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GiPick {
+    /// The block grid's low edge (X, Z), world centimetres.
+    pub cells_origin_cm: Vec2,
+    /// The block's cell in that grid (X, Z).
+    pub cell: IVec2,
+}
+
+impl GiPick {
+    /// One over a block's 48 m, in centimetres, as the original's f32.
+    pub const INV_BLOCK_CM: f32 = 1.0 / 4800.0;
+
+    /// The block-grid cell an object at `at` (world metres) samples.
+    pub fn cell_of(cells_origin_cm: Vec2, at: Vec3) -> IVec2 {
+        let offset = at.xz() * CM_PER_M - cells_origin_cm;
+        IVec2::new(
+            (offset.x * Self::INV_BLOCK_CM).floor() as i32,
+            (offset.y * Self::INV_BLOCK_CM).floor() as i32,
+        )
+    }
+}
+
+/// The other blocks the manager steps this frame, built and holding one of
+/// its nine light textures, as the world publishes them (nearest the focus
+/// first is not kept: they are listed in the layout's order, so a moving
+/// camera does not reshuffle the surfaces' bindings). The original steps
+/// every resident block each frame and binds each object to the block it
+/// stands in; the camera's block is [`GiVolume`].
+#[derive(Resource, Clone, Default)]
+pub struct GiNeighbourVolumes(pub Vec<GiVolume>);
+
+/// The resident neighbours' textures, in [`GiNeighbourVolumes`]' order
+/// less the bound and warming blocks, at most [`RESIDENT_BLOCKS`] − 1.
+#[derive(Resource, Clone, Default, ExtractResource)]
+#[extract_app(RenderApp)]
+pub struct GiNeighbours {
+    pub blocks: Vec<GiTextures>,
+}
+
+/// Each resident neighbour's sector marks and cell lights, as the world
+/// fills [`GiSectorLights`] for the camera's block.
+#[derive(Resource, Clone, Default)]
+pub struct GiNeighbourSectorLights(pub Vec<Arc<GiSectors>>);
+
+/// The lights each resident neighbour injects this frame, by the block's
+/// first cell.
+#[derive(Resource, Clone, Default, ExtractResource)]
+#[extract_app(RenderApp)]
+pub struct GiNeighbourLights(Vec<(IVec2, GiLights)>);
+
+/// Serials of neighbour blocks start here, apart from the camera block's
+/// (which the loading screen's warm-up report counts).
+const NEIGHBOUR_SERIAL: u32 = 1 << 31;
 
 /// The GI textures and where they sit.
 #[derive(Resource, Clone, ExtractResource)]
@@ -186,6 +254,8 @@ pub struct GiTextures {
     warm_up: u32,
     /// Whether the steps reach the top slice.
     top_slice: bool,
+    /// Where the block sits for the per-object pick.
+    pub pick: Option<GiPick>,
     /// Which volume these are (counting from 1), so the render world starts
     /// each volume's warm-up once.
     serial: u32,
@@ -1562,6 +1632,36 @@ fn create_textures(
     if !volume.is_changed() {
         return;
     }
+    warm_up.serial += 1;
+    let textures = block_textures(
+        &volume,
+        &mut images,
+        cache.as_deref_mut(),
+        volume.sector,
+        warm_up.serial,
+    );
+    warm_up.steps = textures.warm_up;
+    // The first block is shown while it warms (the loading screen waits);
+    // a later block warms behind the old one.
+    if active.is_some() {
+        commands.insert_resource(GiPendingTextures(textures));
+    } else {
+        commands.insert_resource(textures);
+    }
+}
+
+/// A block's textures from its volume. A block the manager still holds
+/// keeps the light it accumulated and the steps it had already run; a new
+/// block starts black with the volume's warm-up. The occupancy and the sky
+/// floors are uploaded fresh from the world's cells. `keep` is the block
+/// the texture cache must not evict (the camera's).
+fn block_textures(
+    volume: &GiVolume,
+    images: &mut Assets<Image>,
+    mut cache: Option<&mut GiTextureCache>,
+    keep: IVec2,
+    serial: u32,
+) -> GiTextures {
     // Texture axes: X, Z, Y.
     let size = UVec3::new(volume.size.x, volume.size.y, volume.size.z);
     let voxels = (size.x * size.y * size.z) as usize;
@@ -1585,8 +1685,6 @@ fn create_textures(
     );
     sky_floor.texture_descriptor.usage = TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST;
     let sky_floor = images.add(sky_floor);
-    // A block the camera is returning to keeps the light it accumulated, and
-    // took with it the steps it had already run. A new block starts black.
     let (light, scratch, warm_up_steps) = match cache
         .as_deref_mut()
         .and_then(|c| c.take_reusable(volume.sector, size))
@@ -1596,14 +1694,8 @@ fn create_textures(
             let empty = vec![0u8; voxels * 4];
             let light = images.add(light_image(size, empty.clone()));
             let scratch = images.add(volume_image(size, TextureFormat::Rgba8Unorm, empty, true));
-            if let Some(cache) = cache.as_deref_mut() {
-                cache.insert(
-                    volume.sector,
-                    size,
-                    light.clone(),
-                    scratch.clone(),
-                    volume.sector,
-                );
+            if let Some(cache) = cache {
+                cache.insert(volume.sector, size, light.clone(), scratch.clone(), keep);
             }
             (light, scratch, volume.warm_up)
         }
@@ -1624,9 +1716,7 @@ fn create_textures(
         image
     });
     let extent = Vec3::new(size.x as f32, size.z as f32, size.y as f32) * volume.voxel;
-    warm_up.serial += 1;
-    warm_up.steps = warm_up_steps;
-    let textures = GiTextures {
+    GiTextures {
         occupancy,
         light,
         scratch,
@@ -1641,15 +1731,67 @@ fn create_textures(
         base_ambient: volume.base_ambient,
         warm_up: warm_up_steps,
         top_slice: volume.top_slice,
-        serial: warm_up.serial,
-    };
-    // The first block is shown while it warms (the loading screen waits);
-    // a later block warms behind the old one.
-    if active.is_some() {
-        commands.insert_resource(GiPendingTextures(textures));
-    } else {
-        commands.insert_resource(textures);
+        pick: volume.pick,
+        serial,
     }
+}
+
+/// Makes the textures of the resident neighbours the world lists, as the
+/// original keeps a light texture for every resident block. A neighbour
+/// already made keeps its textures; one the camera's block or the warming
+/// block now is drops out (that block holds them), and a new one is made
+/// from the cache, so a block the camera has left keeps its light. Nothing
+/// changes while the list stays the same, so the surfaces keep their
+/// bindings.
+fn create_neighbour_textures(
+    volumes: Option<Res<GiNeighbourVolumes>>,
+    active: Option<Res<GiTextures>>,
+    pending: Option<Res<GiPendingTextures>>,
+    mut neighbours: ResMut<GiNeighbours>,
+    mut images: ResMut<Assets<Image>>,
+    mut cache: Option<ResMut<GiTextureCache>>,
+    mut serial: Local<u32>,
+) {
+    let (Some(volumes), Some(active)) = (volumes, active) else {
+        if !neighbours.blocks.is_empty() {
+            neighbours.blocks.clear();
+        }
+        return;
+    };
+    let pending = pending.as_ref().map(|p| p.0.sector);
+    let wanted: Vec<&GiVolume> = volumes
+        .0
+        .iter()
+        .filter(|v| v.sector != active.sector && Some(v.sector) != pending)
+        .filter(|v| UVec3::new(v.size.x, v.size.y, v.size.z) == active.dims)
+        .take(RESIDENT_BLOCKS - 1)
+        .collect();
+    let made =
+        |v: &GiVolume, t: &GiTextures| v.sector == t.sector && Arc::ptr_eq(&v.floors, &t.floors);
+    if wanted.len() == neighbours.blocks.len()
+        && wanted
+            .iter()
+            .zip(&neighbours.blocks)
+            .all(|(v, t)| made(v, t))
+    {
+        return;
+    }
+    let mut blocks = Vec::with_capacity(wanted.len());
+    for v in wanted {
+        if let Some(t) = neighbours.blocks.iter().find(|t| made(v, t)) {
+            blocks.push(t.clone());
+            continue;
+        }
+        *serial += 1;
+        blocks.push(block_textures(
+            v,
+            &mut images,
+            cache.as_deref_mut(),
+            active.sector,
+            NEIGHBOUR_SERIAL | *serial,
+        ));
+    }
+    neighbours.blocks = blocks;
 }
 
 /// Swaps in a rebuilt block once its warm-up has run in full. The old block
@@ -1760,41 +1902,26 @@ const VOXEL_CM: f32 = 20.0;
 /// `f32::EPSILON`.
 const SHAPE_FLOOR: f32 = f32::from_bits(0x33ff_ffd7);
 
+/// The lights every stepping block injects this frame: the camera's block
+/// (or the block warming behind it) and each resident neighbour, each from
+/// its own sector marks and cell lists, as the original injects every
+/// resident block.
 #[allow(clippy::too_many_arguments)]
 fn gather_lights(
     mut gi: ResMut<GiLights>,
+    mut neighbour_lights: ResMut<GiNeighbourLights>,
     lights: GiLightQuery,
     sky: Option<Res<GiSkyLight>>,
     voxel_lights: Query<(&VoxelLight, &GlobalTransform)>,
     shapes: Query<(&GiShape, &ShapeVolume, &GlobalTransform)>,
     textures: Option<Res<GiTextures>>,
     pending: Option<Res<GiPendingTextures>>,
+    neighbours: Res<GiNeighbours>,
     sectors: Option<Res<GiSectorLights>>,
+    neighbour_sectors: Option<Res<GiNeighbourSectorLights>>,
     mut sources: Local<HashMap<u32, LightSource>>,
     mut groups: Local<Vec<GiGroupPlan>>,
 ) {
-    gi.lights.clear();
-    gi.cube_slots.clear();
-    gi.groups.clear();
-    gi.voxel_lights.clear();
-    gi.shapes.clear();
-    gi.sector_groups = [u8::MAX; SECTORS * SECTORS];
-    let textures = pending.as_ref().map(|p| &p.0).or(textures.as_deref());
-    let (Some(textures), Some(sectors)) = (textures, sectors) else {
-        return;
-    };
-    gather_voxel_lights(&mut gi.voxel_lights, textures, voxel_lights.iter());
-    gather_shapes(
-        &mut gi.shapes,
-        textures,
-        shapes.iter().map(|(shape, volume, _)| (shape, volume)),
-    );
-    let sectors = &*sectors.0;
-    // Marks made for another block (the frame a new block arrives) light
-    // nothing; the next frame's are its own.
-    if sectors.block != textures.sector {
-        return;
-    }
     // The lights the cells record, by their shader id.
     sources.clear();
     for (light, at, id, share, radius, shaping, cube, dim, bias, ranged) in &lights {
@@ -1840,6 +1967,74 @@ fn gather_lights(
             },
         );
     }
+    let block = |out: &mut GiLights,
+                 textures: &GiTextures,
+                 sectors: Option<&GiSectors>,
+                 groups: &mut Vec<GiGroupPlan>| {
+        block_lights(
+            out,
+            textures,
+            sectors,
+            &sources,
+            sky_active,
+            voxel_lights.iter(),
+            shapes.iter().map(|(shape, volume, _)| (shape, volume)),
+            groups,
+        );
+    };
+    let textures = pending.as_ref().map(|p| &p.0).or(textures.as_deref());
+    match textures {
+        Some(textures) => block(
+            &mut gi,
+            textures,
+            sectors.as_deref().map(|s| &*s.0),
+            &mut groups,
+        ),
+        None => *gi = GiLights::default(),
+    }
+    let neighbour_sectors = neighbour_sectors.as_deref().map_or(&[][..], |n| &n.0[..]);
+    let mut out = std::mem::take(&mut neighbour_lights.0);
+    out.resize_with(neighbours.blocks.len(), Default::default);
+    for (slot, textures) in out.iter_mut().zip(&neighbours.blocks) {
+        let sectors = neighbour_sectors
+            .iter()
+            .find(|s| s.block == textures.sector)
+            .map(|s| &**s);
+        slot.0 = textures.sector;
+        block(&mut slot.1, textures, sectors, &mut groups);
+    }
+    neighbour_lights.0 = out;
+}
+
+/// One block's injected lights: its voxel lights and shapes, then its
+/// marked sectors' groups with the lights their cells list.
+#[allow(clippy::too_many_arguments)]
+fn block_lights<'a, 'b>(
+    gi: &mut GiLights,
+    textures: &GiTextures,
+    sectors: Option<&GiSectors>,
+    sources: &HashMap<u32, LightSource>,
+    sky_active: bool,
+    voxel_lights: impl Iterator<Item = (&'a VoxelLight, &'a GlobalTransform)>,
+    shapes: impl Iterator<Item = (&'b GiShape, &'b ShapeVolume)>,
+    groups: &mut Vec<GiGroupPlan>,
+) {
+    gi.lights.clear();
+    gi.cube_slots.clear();
+    gi.groups.clear();
+    gi.voxel_lights.clear();
+    gi.shapes.clear();
+    gi.sector_groups = [u8::MAX; SECTORS * SECTORS];
+    let Some(sectors) = sectors else {
+        return;
+    };
+    gather_voxel_lights(&mut gi.voxel_lights, textures, voxel_lights);
+    gather_shapes(&mut gi.shapes, textures, shapes);
+    // Marks made for another block (the frame a new block arrives) light
+    // nothing; the next frame's are its own.
+    if sectors.block != textures.sector {
+        return;
+    }
     let depth = textures.dims.z;
     if !sectors.grid {
         // Without a sector grid the original draws one group of all 64
@@ -1859,9 +2054,9 @@ fn gather_lights(
         });
         let of_sector = [0; SECTORS * SECTORS];
         push_groups(
-            &mut gi,
-            &groups,
-            &sources,
+            gi,
+            groups,
+            sources,
             of_sector,
             textures.origin,
             textures.extent,
@@ -1906,11 +2101,11 @@ fn gather_lights(
             };
         }
     }
-    let of_sector = group_sectors(&plans, depth, &mut groups);
+    let of_sector = group_sectors(&plans, depth, groups);
     push_groups(
-        &mut gi,
-        &groups,
-        &sources,
+        gi,
+        groups,
+        sources,
         of_sector,
         textures.origin,
         textures.extent,
@@ -2152,10 +2347,75 @@ fn gather_voxel_lights<'a>(
     out.extend(near.into_iter().take(MAX_VOXEL_LIGHTS).map(|(_, l)| l));
 }
 
-/// Points every surface material at the volume once it exists (and new
-/// materials as they come).
+/// What a surface binds to sample the resident blocks: each block's light
+/// texture in its own slot, the camera's block in slot 0, and where each
+/// sits, so the shader picks an object's block by the original's
+/// per-object rule ([`GiPick`]).
+#[derive(Clone, Debug, Default)]
+pub struct GiSlots {
+    /// Each slot's light texture.
+    pub lights: [Option<Handle<Image>>; RESIDENT_BLOCKS],
+    /// Each slot's sample origin, with the half-voxel lift (most surfaces)
+    /// and without it (the terrain and grass callers).
+    pub origins: [Vec4; RESIDENT_BLOCKS],
+    pub origins_floor: [Vec4; RESIDENT_BLOCKS],
+    /// Each slot's block-grid cell (x, y), and 1 in z when it holds a
+    /// block.
+    pub cells: [IVec4; RESIDENT_BLOCKS],
+    /// The block grid's low edge in world centimetres (x, y) and the pick's
+    /// mode in z: 1 when objects pick their block from the grid, 0 when
+    /// every object samples slot 0 (a level whose grid has no built cell).
+    pub grid: Vec4,
+    /// The shared sample scale (every block of a level has the same size).
+    pub extent: Vec4,
+}
+
+impl GiSlots {
+    /// The slots for the camera's block and the resident neighbours.
+    pub fn new(active: &GiTextures, neighbours: &[GiTextures]) -> Self {
+        let mut slots = Self {
+            extent: active.sample_extent(),
+            ..default()
+        };
+        slots.grid = match active.pick {
+            Some(pick) => pick.cells_origin_cm.extend(1.0).extend(0.0),
+            None => Vec4::ZERO,
+        };
+        let blocks = std::iter::once(active).chain(
+            neighbours
+                .iter()
+                .filter(|n| n.dims == active.dims && n.pick.is_some() && active.pick.is_some()),
+        );
+        for (k, t) in blocks.take(RESIDENT_BLOCKS).enumerate() {
+            slots.lights[k] = Some(t.light.clone());
+            slots.origins[k] = t.sample_origin();
+            slots.origins_floor[k] = t.sample_origin_floor();
+            let cell = t.pick.map_or(IVec2::ZERO, |p| p.cell);
+            slots.cells[k] = IVec4::new(cell.x, cell.y, 1, 0);
+        }
+        slots
+    }
+
+    /// The slot an object at `at` (world metres) samples, as the shader
+    /// picks it; `None` when no resident block holds it (the original then
+    /// binds texture 0, which reads black).
+    pub fn slot_of(&self, at: Vec3) -> Option<usize> {
+        if self.grid.z == 0.0 {
+            return Some(0);
+        }
+        let cell = GiPick::cell_of(self.grid.truncate().truncate(), at);
+        self.cells
+            .iter()
+            .position(|c| c.z != 0 && c.x == cell.x && c.y == cell.y)
+    }
+}
+
+/// Points every surface material at the resident blocks once the camera's
+/// block exists, again whenever the resident set changes, and new materials
+/// as they come.
 fn give_materials_gi(
     textures: Option<Res<GiTextures>>,
+    neighbours: Res<GiNeighbours>,
     mut materials: ResMut<Assets<ExaMaterial>>,
     mut events: MessageReader<AssetEvent<ExaMaterial>>,
 ) {
@@ -2170,11 +2430,16 @@ fn give_materials_gi(
             _ => None,
         })
         .collect();
-    let ids: Vec<AssetId<ExaMaterial>> = if textures.is_changed() {
+    let ids: Vec<AssetId<ExaMaterial>> = if textures.is_changed() || neighbours.is_changed() {
         materials.ids().collect()
     } else {
         added
     };
+    if ids.is_empty() {
+        return;
+    }
+    let slots = GiSlots::new(&textures, &neighbours.blocks);
+    let debug = std::env::var_os("EXA_GI_DEBUG").is_some();
     for id in ids {
         let Some(mut m) = materials.get_mut(id) else {
             continue;
@@ -2182,11 +2447,9 @@ fn give_materials_gi(
         if m.params.flags & flags::LIT == 0 {
             continue;
         }
-        m.gi_volume = Some(textures.light.clone());
-        m.params.gi_origin = textures.sample_origin();
-        m.params.gi_extent = textures.sample_extent();
+        m.set_gi_slots(&slots);
         m.params.flags |= flags::GI;
-        if std::env::var_os("EXA_GI_DEBUG").is_some() {
+        if debug {
             m.params.flags |= flags::DEBUG_GI;
         }
     }
@@ -2345,11 +2608,27 @@ struct GiBindGroup {
 }
 
 /// One neighbour's margin copy: its region and its bind group.
+#[derive(Clone)]
 struct GiMarginCopy {
     blit: MarginBlit,
     bind_group: bevy::render::render_resource::BindGroup,
     /// Kept alive with the bind group that points into it.
-    _uniform: UniformBuffer<GiBlitParams>,
+    _uniform: Arc<UniformBuffer<GiBlitParams>>,
+}
+
+/// The margin copies made in earlier frames, by the destination's scratch
+/// view, the source's light view and the side: they stay the same while
+/// both blocks keep their textures, so they are made once.
+type MarginCopies = HashMap<(TextureViewId, TextureViewId, i32, i32), GiMarginCopy>;
+
+/// What the step preparation keeps between frames: each block's parameter
+/// buffer, the margin copies and the copies used this frame.
+#[derive(Default)]
+struct GiStepBuffers {
+    buffer: Option<UniformBuffer<GiParams>>,
+    neighbour_buffers: Vec<Option<UniformBuffer<GiParams>>>,
+    copies: MarginCopies,
+    used: Vec<(TextureViewId, TextureViewId, i32, i32)>,
 }
 
 /// The warm-up of the volume being lit: its serial, its length and the
@@ -2361,17 +2640,34 @@ struct GiOwed {
     left: u32,
 }
 
+/// The warm-up steps each resident neighbour still owes, by its serial.
+#[derive(Resource, Default)]
+struct GiNeighbourOwed(HashMap<u32, u32>);
+
+/// One resident neighbour's step this frame.
+struct GiNeighbourStep {
+    serial: u32,
+    light: Handle<Image>,
+    scratch: Handle<Image>,
+    bind: GiBindGroup,
+}
+
+/// The resident neighbours' steps this frame, after the camera block's.
+#[derive(Resource)]
+struct GiNeighbourSteps(Vec<GiNeighbourStep>);
+
 /// Warm-up steps done in one frame at most; the rest follow in later frames.
 const MAX_STEPS_PER_FRAME: u32 = 16;
 
 /// Writes a moving mesh's changed occupancy region into the block's texture,
 /// as the original's sub-upload does (`glTexSubImage3D` over the dirty box).
-/// Both the bound block and one warming behind it take a patch for their
-/// own block.
+/// The bound block, one warming behind it and each resident neighbour take
+/// a patch for their own block.
 fn apply_occupancy_patches(
     patches: Option<Res<GiOccupancyPatches>>,
     textures: Option<Res<GiTextures>>,
     pending: Option<Res<GiPendingTextures>>,
+    neighbours: Option<Res<GiNeighbours>>,
     images: Res<RenderAssets<GpuImage>>,
     queue: Res<RenderQueue>,
 ) {
@@ -2379,8 +2675,11 @@ fn apply_occupancy_patches(
     if patches.0.is_empty() {
         return;
     }
-    let targets = [textures.as_deref(), pending.as_ref().map(|p| &p.0)];
-    for textures in targets.into_iter().flatten() {
+    let targets = [textures.as_deref(), pending.as_ref().map(|p| &p.0)]
+        .into_iter()
+        .flatten()
+        .chain(neighbours.iter().flat_map(|n| n.blocks.iter()));
+    for textures in targets {
         let Some(occupancy) = images.get(&textures.occupancy) else {
             continue;
         };
@@ -2426,220 +2725,273 @@ fn prepare_bind_group(
     mut commands: Commands,
     textures: Option<Res<GiTextures>>,
     pending: Option<Res<GiPendingTextures>>,
+    neighbours: Option<Res<GiNeighbours>>,
     lights: Res<GiLights>,
+    neighbour_lights: Option<Res<GiNeighbourLights>>,
     pipeline: Option<Res<GiPipeline>>,
     cache: Res<PipelineCache>,
     images: Res<RenderAssets<GpuImage>>,
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
     mut owed: ResMut<GiOwed>,
-    texture_cache: Option<Res<GiTextureCache>>,
-    mut buffer: Local<Option<UniformBuffer<GiParams>>>,
+    mut neighbour_owed: ResMut<GiNeighbourOwed>,
+    mut kept: Local<GiStepBuffers>,
 ) {
-    let textures = pending.as_ref().map(|p| &p.0).or(textures.as_deref());
-    let (Some(textures), Some(pipeline)) = (textures, pipeline) else {
+    let GiStepBuffers {
+        buffer,
+        neighbour_buffers,
+        copies,
+        used,
+    } = &mut *kept;
+    used.clear();
+    let stepping = pending.as_ref().map(|p| &p.0).or(textures.as_deref());
+    let (Some(stepping), Some(pipeline)) = (stepping, pipeline) else {
         commands.remove_resource::<GiBindGroup>();
+        commands.remove_resource::<GiNeighbourSteps>();
         return;
     };
-    let (Some(light), Some(occupancy), Some(scratch), Some(sky_floor)) = (
-        images.get(&textures.light),
-        images.get(&textures.occupancy),
-        images.get(&textures.scratch),
-        images.get(&textures.sky_floor),
-    ) else {
+    let neighbours = neighbours.as_deref().map_or(&[][..], |n| &n.blocks[..]);
+    // The blocks whose light a block's margins can take: the bound block
+    // and every resident neighbour (the original copies from each resident
+    // block of its block array at the grid's ±1).
+    let residents: Vec<&GiTextures> = textures.as_deref().into_iter().chain(neighbours).collect();
+    let mut context = BlockContext {
+        pipeline: &pipeline,
+        cache: &cache,
+        images: &images,
+        device: &device,
+        queue: &queue,
+        residents: &residents,
+        copies,
+        used,
+    };
+    // A block being warmed takes no margins until it is bound.
+    let Some(active) = context.bind_group(stepping, &lights, buffer, pending.is_none()) else {
         return;
     };
-    let Some(shape_texture) = images.get(&textures.shape_texture) else {
-        return;
-    };
-    let empty_cache = GiTextureCache::default();
-    let texture_cache = texture_cache.as_deref().unwrap_or(&empty_cache);
-    let cube = images.get(&crate::cube_shadows::CUBE_POOL);
-    let mut entries = [GiLight::default(); MAX_GROUP_LIGHTS];
-    for (slot, l) in entries.iter_mut().zip(&lights.lights) {
-        *slot = *l;
-    }
-    let mut cubes = [UVec4::splat(u32::MAX); MAX_GROUP_LIGHTS / 4];
-    for (i, &slot) in lights.cube_slots.iter().enumerate() {
-        cubes[i / 4][i % 4] = slot;
-    }
-    let mut groups = [GiGroupUniform::default(); MAX_GROUPS];
-    for (slot, g) in groups.iter_mut().zip(&lights.groups) {
-        *slot = *g;
-    }
-    let mut sector_groups = [UVec4::splat(u32::MAX); SECTORS * SECTORS / 4];
-    for (i, &group) in lights.sector_groups.iter().enumerate() {
-        sector_groups[i / 4][i % 4] = if group == u8::MAX {
-            u32::MAX
-        } else {
-            u32::from(group)
-        };
-    }
-    let mut voxel_entries = [GiVoxelLight::default(); MAX_VOXEL_LIGHTS];
-    for (slot, l) in voxel_entries.iter_mut().zip(&lights.voxel_lights) {
-        *slot = *l;
-    }
-    let mut shape_entries = [GiShapeUniform::default(); MAX_SHAPES];
-    for (slot, s) in shape_entries.iter_mut().zip(&lights.shapes) {
-        *slot = *s;
-    }
-    let value = GiParams {
-        origin: textures.origin.extend(0.0),
-        extent: textures.extent.extend(0.0),
-        base: textures.base_ambient.extend(0.0),
-        flags: UVec4::new(0, 0, textures.top_slice as u32, 0),
-        groups,
-        sector_groups,
-        lights: entries,
-        cubes,
-        voxel_count: UVec4::new(
-            lights.voxel_lights.len().min(MAX_VOXEL_LIGHTS) as u32,
-            0,
-            0,
-            0,
-        ),
-        voxel_lights: voxel_entries,
-        shape_count: UVec4::new(lights.shapes.len().min(MAX_SHAPES) as u32, 0, 0, 0),
-        shapes: shape_entries,
-    };
-    // One buffer, rewritten every frame (the parameters are about 42 KiB).
-    let params = match &mut *buffer {
-        Some(params) => {
-            params.set(value);
-            params
-        }
-        none => none.insert(UniformBuffer::from(value)),
-    };
-    params.write_buffer(&device, &queue);
-    let Some(binding) = params.binding() else {
-        return;
-    };
-    let bind_group = device.create_bind_group(
-        "exa_gi",
-        &cache.get_bind_group_layout(&pipeline.layout),
-        &BindGroupEntries::sequential((
-            &light.texture_view,
-            &occupancy.texture_view,
-            &pipeline.sampler,
-            &scratch.texture_view,
-            binding,
-            cube.map_or(&pipeline.dummy_cube, |c| &c.texture_view),
-            &pipeline.cube_sampler,
-            &sky_floor.texture_view,
-            &shape_texture.texture_view,
-        )),
-    );
-    if owed.serial != textures.serial {
+    if owed.serial != stepping.serial {
         *owed = GiOwed {
-            serial: textures.serial,
-            total: textures.warm_up,
-            left: textures.warm_up,
+            serial: stepping.serial,
+            total: stepping.warm_up,
+            left: stepping.warm_up,
         };
     }
-    // The active block's margins take each resident neighbour's light: one
-    // copy per neighbouring block the manager keeps (the original's loop
-    // over its block array at the block grid's ±1). A block being warmed
-    // takes none until it is bound.
-    let mut blits = Vec::new();
-    if pending.is_none() {
-        for dz in -1..=1 {
-            for dx in -1..=1 {
-                if dx == 0 && dz == 0 {
-                    continue;
-                }
-                let sector = textures.sector + IVec2::new(dx * SECTORS as i32, dz * SECTORS as i32);
-                let Some(source) = texture_cache.resident(sector, textures.dims) else {
-                    continue;
-                };
-                let Some(source) = images.get(&source) else {
-                    continue;
-                };
-                let Some(blit) = margin_blit(textures.dims, dx, dz) else {
-                    continue;
-                };
-                let value = GiBlitParams {
-                    dims: textures.dims.extend(blit.slices),
-                    strip: UVec4::new(blit.lo.x, blit.lo.y, blit.hi.x, blit.hi.y),
-                    offset: blit.offset.extend(0.0).extend(0.0),
-                };
-                let mut uniform = UniformBuffer::from(value);
-                uniform.write_buffer(&device, &queue);
-                let Some(binding) = uniform.binding() else {
-                    continue;
-                };
-                let bind_group = device.create_bind_group(
-                    "exa_gi_blit",
-                    &cache.get_bind_group_layout(&pipeline.blit_layout),
-                    &BindGroupEntries::sequential((
-                        &source.texture_view,
-                        &pipeline.sampler,
-                        &scratch.texture_view,
-                        binding,
-                    )),
-                );
-                blits.push(GiMarginCopy {
-                    blit,
-                    bind_group,
-                    _uniform: uniform,
-                });
-            }
-        }
+    commands.insert_resource(active);
+    // Every resident neighbour steps too, with its own lights; a new one
+    // owes its warm-up.
+    let neighbour_lights = neighbour_lights.as_deref().map_or(&[][..], |n| &n.0[..]);
+    neighbour_owed
+        .0
+        .retain(|serial, _| neighbours.iter().any(|n| n.serial == *serial));
+    neighbour_buffers.resize_with(neighbours.len(), || None);
+    let empty = GiLights::default();
+    let mut steps = Vec::with_capacity(neighbours.len());
+    for (block, buffer) in neighbours.iter().zip(neighbour_buffers.iter_mut()) {
+        let lights = neighbour_lights
+            .iter()
+            .find(|(sector, _)| *sector == block.sector)
+            .map_or(&empty, |(_, l)| l);
+        let Some(bind) = context.bind_group(block, lights, buffer, true) else {
+            continue;
+        };
+        neighbour_owed
+            .0
+            .entry(block.serial)
+            .or_insert(block.warm_up);
+        steps.push(GiNeighbourStep {
+            serial: block.serial,
+            light: block.light.clone(),
+            scratch: block.scratch.clone(),
+            bind,
+        });
     }
-    commands.insert_resource(GiBindGroup { bind_group, blits });
+    // Copies no block made this frame belong to textures that are gone.
+    copies.retain(|key, _| used.contains(key));
+    commands.insert_resource(GiNeighbourSteps(steps));
 }
 
-#[allow(clippy::too_many_arguments)]
-fn propagate(
-    view: ViewQuery<(
-        &ExtractedView,
-        Has<crate::supersample::DisplayCamera>,
-        Has<crate::supersample::Offscreen>,
-    )>,
-    textures: Option<Res<GiTextures>>,
-    pending: Option<Res<GiPendingTextures>>,
-    bind_group: Option<Res<GiBindGroup>>,
-    pipeline: Option<Res<GiPipeline>>,
-    cache: Res<PipelineCache>,
-    images: Res<RenderAssets<GpuImage>>,
-    mut owed: ResMut<GiOwed>,
-    report: Res<WarmUpReport>,
-    mut ctx: RenderContext,
-) {
-    // Once per frame, for the scene view (not a supersampling display or an
-    // off-screen scene).
-    let (_, display, offscreen) = view.into_inner();
-    if display || offscreen {
-        return;
+/// What building one block's step needs.
+struct BlockContext<'a> {
+    pipeline: &'a GiPipeline,
+    cache: &'a PipelineCache,
+    images: &'a RenderAssets<GpuImage>,
+    device: &'a RenderDevice,
+    queue: &'a RenderQueue,
+    residents: &'a [&'a GiTextures],
+    copies: &'a mut MarginCopies,
+    used: &'a mut Vec<(TextureViewId, TextureViewId, i32, i32)>,
+}
+
+impl BlockContext<'_> {
+    /// One block's step bind group, its parameters written to `buffer`, and
+    /// with `margins` a copy from each resident block next to it.
+    fn bind_group(
+        &mut self,
+        textures: &GiTextures,
+        lights: &GiLights,
+        buffer: &mut Option<UniformBuffer<GiParams>>,
+        margins: bool,
+    ) -> Option<GiBindGroup> {
+        let images = self.images;
+        let (light, occupancy, scratch, sky_floor, shape_texture) = (
+            images.get(&textures.light)?,
+            images.get(&textures.occupancy)?,
+            images.get(&textures.scratch)?,
+            images.get(&textures.sky_floor)?,
+            images.get(&textures.shape_texture)?,
+        );
+        let cube = images.get(&crate::cube_shadows::CUBE_POOL);
+        let mut entries = [GiLight::default(); MAX_GROUP_LIGHTS];
+        for (slot, l) in entries.iter_mut().zip(&lights.lights) {
+            *slot = *l;
+        }
+        let mut cubes = [UVec4::splat(u32::MAX); MAX_GROUP_LIGHTS / 4];
+        for (i, &slot) in lights.cube_slots.iter().enumerate() {
+            cubes[i / 4][i % 4] = slot;
+        }
+        let mut groups = [GiGroupUniform::default(); MAX_GROUPS];
+        for (slot, g) in groups.iter_mut().zip(&lights.groups) {
+            *slot = *g;
+        }
+        let mut sector_groups = [UVec4::splat(u32::MAX); SECTORS * SECTORS / 4];
+        for (i, &group) in lights.sector_groups.iter().enumerate() {
+            sector_groups[i / 4][i % 4] = if group == u8::MAX {
+                u32::MAX
+            } else {
+                u32::from(group)
+            };
+        }
+        let mut voxel_entries = [GiVoxelLight::default(); MAX_VOXEL_LIGHTS];
+        for (slot, l) in voxel_entries.iter_mut().zip(&lights.voxel_lights) {
+            *slot = *l;
+        }
+        let mut shape_entries = [GiShapeUniform::default(); MAX_SHAPES];
+        for (slot, s) in shape_entries.iter_mut().zip(&lights.shapes) {
+            *slot = *s;
+        }
+        let value = GiParams {
+            origin: textures.origin.extend(0.0),
+            extent: textures.extent.extend(0.0),
+            base: textures.base_ambient.extend(0.0),
+            flags: UVec4::new(0, 0, textures.top_slice as u32, 0),
+            groups,
+            sector_groups,
+            lights: entries,
+            cubes,
+            voxel_count: UVec4::new(
+                lights.voxel_lights.len().min(MAX_VOXEL_LIGHTS) as u32,
+                0,
+                0,
+                0,
+            ),
+            voxel_lights: voxel_entries,
+            shape_count: UVec4::new(lights.shapes.len().min(MAX_SHAPES) as u32, 0, 0, 0),
+            shapes: shape_entries,
+        };
+        // One buffer per block, rewritten every frame (the parameters are
+        // about 42 KiB).
+        let params = match buffer {
+            Some(params) => {
+                params.set(value);
+                params
+            }
+            none => none.insert(UniformBuffer::from(value)),
+        };
+        params.write_buffer(self.device, self.queue);
+        let binding = params.binding()?;
+        let bind_group = self.device.create_bind_group(
+            "exa_gi",
+            &self.cache.get_bind_group_layout(&self.pipeline.layout),
+            &BindGroupEntries::sequential((
+                &light.texture_view,
+                &occupancy.texture_view,
+                &self.pipeline.sampler,
+                &scratch.texture_view,
+                binding,
+                cube.map_or(&self.pipeline.dummy_cube, |c| &c.texture_view),
+                &self.pipeline.cube_sampler,
+                &sky_floor.texture_view,
+                &shape_texture.texture_view,
+            )),
+        );
+        // The block's margins take each resident neighbour's light: one copy
+        // per neighbouring block the manager keeps (the original's loop over
+        // its block array at the block grid's ±1).
+        let mut blits = Vec::new();
+        if margins {
+            for dz in -1..=1 {
+                for dx in -1..=1 {
+                    if dx == 0 && dz == 0 {
+                        continue;
+                    }
+                    let sector =
+                        textures.sector + IVec2::new(dx * SECTORS as i32, dz * SECTORS as i32);
+                    let Some(source) = self
+                        .residents
+                        .iter()
+                        .find(|r| r.sector == sector && r.dims == textures.dims)
+                    else {
+                        continue;
+                    };
+                    let Some(source) = images.get(&source.light) else {
+                        continue;
+                    };
+                    let Some(blit) = margin_blit(textures.dims, dx, dz) else {
+                        continue;
+                    };
+                    let key = (scratch.texture_view.id(), source.texture_view.id(), dx, dz);
+                    self.used.push(key);
+                    if let Some(copy) = self.copies.get(&key) {
+                        blits.push(copy.clone());
+                        continue;
+                    }
+                    let value = GiBlitParams {
+                        dims: textures.dims.extend(blit.slices),
+                        strip: UVec4::new(blit.lo.x, blit.lo.y, blit.hi.x, blit.hi.y),
+                        offset: blit.offset.extend(0.0).extend(0.0),
+                    };
+                    let mut uniform = UniformBuffer::from(value);
+                    uniform.write_buffer(self.device, self.queue);
+                    let Some(binding) = uniform.binding() else {
+                        continue;
+                    };
+                    let bind_group = self.device.create_bind_group(
+                        "exa_gi_blit",
+                        &self.cache.get_bind_group_layout(&self.pipeline.blit_layout),
+                        &BindGroupEntries::sequential((
+                            &source.texture_view,
+                            &self.pipeline.sampler,
+                            &scratch.texture_view,
+                            binding,
+                        )),
+                    );
+                    let copy = GiMarginCopy {
+                        blit,
+                        bind_group,
+                        _uniform: Arc::new(uniform),
+                    };
+                    self.copies.insert(key, copy.clone());
+                    blits.push(copy);
+                }
+            }
+        }
+        Some(GiBindGroup { bind_group, blits })
     }
-    let textures = pending.as_ref().map(|p| &p.0).or(textures.as_deref());
-    let (Some(textures), Some(bind_group), Some(pipeline)) = (textures, bind_group, pipeline)
-    else {
-        return;
-    };
-    let (Some(compute), Some(light), Some(scratch)) = (
-        cache.get_compute_pipeline(pipeline.pipeline),
-        images.get(&textures.light),
-        images.get(&textures.scratch),
-    ) else {
-        return;
-    };
+}
+
+/// Runs `steps` light steps of one block: the propagation into its scratch
+/// target, its margin copies, then the scratch copied over its light.
+fn run_steps(
+    encoder: &mut bevy::render::render_resource::CommandEncoder,
+    compute: &bevy::render::render_resource::ComputePipeline,
+    blit_pipeline: Option<&bevy::render::render_resource::ComputePipeline>,
+    bind_group: &GiBindGroup,
+    light: &GpuImage,
+    scratch: &GpuImage,
+    steps: u32,
+) {
     let size = light.texture.size();
-    // The warm-up runs a few steps a frame (all of it in one frame stalled
-    // the window for seconds); then one step per frame.
-    let steps = owed.left.clamp(1, MAX_STEPS_PER_FRAME);
-    owed.left -= steps.min(owed.left);
-    report.0.store(
-        (u64::from(owed.serial) << 32) | u64::from(owed.total - owed.left),
-        Ordering::Release,
-    );
-    // A GPU timing span for the frame profiler, when render diagnostics are
-    // on.
-    let diagnostics = ctx.diagnostic_recorder();
-    let span = diagnostics
-        .as_deref()
-        .map(|d| d.time_span(ctx.command_encoder(), "exa_gi"));
     for _ in 0..steps {
-        let encoder = ctx.command_encoder();
         {
             let mut pass = encoder.begin_compute_pass(&ComputePassDescriptor {
                 label: Some("exa_gi_propagate"),
@@ -2653,10 +3005,10 @@ fn propagate(
                 size.depth_or_array_layers.div_ceil(4),
             );
         }
-        // The active block's margins take its resident neighbours' light,
-        // as the original copies a neighbour's margin into the block it is
-        // about to inject. The step cleared them; the copies fill them.
-        if let Some(blit_pipeline) = cache.get_compute_pipeline(pipeline.blit_pipeline) {
+        // The block's margins take its resident neighbours' light, as the
+        // original copies a neighbour's margin into the block it is about
+        // to inject. The step cleared them; the copies fill them.
+        if let Some(blit_pipeline) = blit_pipeline {
             for copy in &bind_group.blits {
                 let width = copy.blit.hi.x.saturating_sub(copy.blit.lo.x);
                 let height = copy.blit.hi.y.saturating_sub(copy.blit.lo.y);
@@ -2691,6 +3043,94 @@ fn propagate(
                 aspect: Default::default(),
             },
             size,
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn propagate(
+    view: ViewQuery<(
+        &ExtractedView,
+        Has<crate::supersample::DisplayCamera>,
+        Has<crate::supersample::Offscreen>,
+    )>,
+    textures: Option<Res<GiTextures>>,
+    pending: Option<Res<GiPendingTextures>>,
+    bind_group: Option<Res<GiBindGroup>>,
+    neighbour_steps: Option<Res<GiNeighbourSteps>>,
+    pipeline: Option<Res<GiPipeline>>,
+    cache: Res<PipelineCache>,
+    images: Res<RenderAssets<GpuImage>>,
+    mut owed: ResMut<GiOwed>,
+    mut neighbour_owed: ResMut<GiNeighbourOwed>,
+    report: Res<WarmUpReport>,
+    mut ctx: RenderContext,
+) {
+    // Once per frame, for the scene view (not a supersampling display or an
+    // off-screen scene).
+    let (_, display, offscreen) = view.into_inner();
+    if display || offscreen {
+        return;
+    }
+    let textures = pending.as_ref().map(|p| &p.0).or(textures.as_deref());
+    let (Some(textures), Some(bind_group), Some(pipeline)) = (textures, bind_group, pipeline)
+    else {
+        return;
+    };
+    let (Some(compute), Some(light), Some(scratch)) = (
+        cache.get_compute_pipeline(pipeline.pipeline),
+        images.get(&textures.light),
+        images.get(&textures.scratch),
+    ) else {
+        return;
+    };
+    let blit = cache.get_compute_pipeline(pipeline.blit_pipeline);
+    // The warm-up runs a few steps a frame (all of it in one frame stalled
+    // the window for seconds); then one step per frame.
+    let steps = owed.left.clamp(1, MAX_STEPS_PER_FRAME);
+    owed.left -= steps.min(owed.left);
+    report.0.store(
+        (u64::from(owed.serial) << 32) | u64::from(owed.total - owed.left),
+        Ordering::Release,
+    );
+    // A GPU timing span for the frame profiler, when render diagnostics are
+    // on.
+    let diagnostics = ctx.diagnostic_recorder();
+    let span = diagnostics
+        .as_deref()
+        .map(|d| d.time_span(ctx.command_encoder(), "exa_gi"));
+    run_steps(
+        ctx.command_encoder(),
+        compute,
+        blit,
+        &bind_group,
+        light,
+        scratch,
+        steps,
+    );
+    // Then each resident neighbour, one step a frame as the original steps
+    // every resident block; a new neighbour's warm-up shares one frame's
+    // budget of extra steps with the others.
+    let mut budget = MAX_STEPS_PER_FRAME;
+    for step in neighbour_steps.iter().flat_map(|s| s.0.iter()) {
+        let (Some(light), Some(scratch)) = (images.get(&step.light), images.get(&step.scratch))
+        else {
+            continue;
+        };
+        let left = neighbour_owed.0.get(&step.serial).copied().unwrap_or(0);
+        let steps = left.min(budget).max(1);
+        budget -= steps.min(budget);
+        if let Some(left) = neighbour_owed.0.get_mut(&step.serial) {
+            *left -= steps.min(*left);
+        }
+        run_steps(
+            ctx.command_encoder(),
+            compute,
+            blit,
+            &step.bind,
+            light,
+            scratch,
+            steps,
         );
     }
     if let Some(span) = span {
@@ -2735,6 +3175,7 @@ mod tests {
             base_ambient: Vec3::ZERO,
             warm_up: 10,
             top_slice: false,
+            pick: None,
             serial,
         }
     }
@@ -2750,6 +3191,7 @@ mod tests {
             sector: IVec2::ZERO,
             warm_up: 10,
             top_slice: false,
+            pick: None,
         }
     }
 
@@ -3802,6 +4244,135 @@ mod tests {
                 .take_reusable(IVec2::new(0, 0), UVec3::splat(8))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn an_object_picks_the_block_its_origin_falls_in() {
+        // The grid's low edge at (−4800, −4200) cm: one block is 48 m.
+        let edge = Vec2::new(-4800.0, -4200.0);
+        assert_eq!(
+            GiPick::cell_of(edge, Vec3::new(-48.0, 0.0, -42.0)),
+            IVec2::ZERO
+        );
+        // Just short of both far edges, then on them.
+        assert_eq!(
+            GiPick::cell_of(edge, Vec3::new(-0.01, 9.0, 5.99)),
+            IVec2::ZERO
+        );
+        assert_eq!(
+            GiPick::cell_of(edge, Vec3::new(0.0, 0.0, 6.0)),
+            IVec2::new(1, 1)
+        );
+        // Below the edge the floor goes negative, outside every block.
+        assert_eq!(
+            GiPick::cell_of(edge, Vec3::new(-48.5, 0.0, -42.0)),
+            IVec2::new(-1, 0)
+        );
+        assert_eq!(GiPick::INV_BLOCK_CM, f32::from_bits(0x395a_740e));
+    }
+
+    fn picked_textures(cell: IVec2, serial: u32) -> GiTextures {
+        let mut t = fake_textures(serial);
+        t.light = Handle::Uuid(
+            bevy::asset::uuid::Uuid::from_u128(u128::from(serial)),
+            default(),
+        );
+        t.origin = Vec3::new(cell.x as f32 * 48.0, -14.6, cell.y as f32 * 48.0);
+        t.pick = Some(GiPick {
+            cells_origin_cm: Vec2::ZERO,
+            cell,
+        });
+        t
+    }
+
+    #[test]
+    fn the_slots_hold_the_camera_block_first_then_the_neighbours() {
+        let active = picked_textures(IVec2::new(1, 0), 1);
+        let neighbours = [
+            picked_textures(IVec2::new(0, 0), 2),
+            picked_textures(IVec2::new(1, 1), 3),
+        ];
+        let slots = GiSlots::new(&active, &neighbours);
+        assert_eq!(slots.grid, Vec4::new(0.0, 0.0, 1.0, 0.0));
+        assert_eq!(
+            slots.lights[0].as_ref().map(|h| h.id()),
+            Some(active.light.id())
+        );
+        assert_eq!(
+            slots.lights[2].as_ref().map(|h| h.id()),
+            Some(neighbours[1].light.id())
+        );
+        assert!(slots.lights[3].is_none());
+        assert_eq!(slots.cells[1], IVec4::new(0, 0, 1, 0));
+        assert_eq!(slots.cells[3], IVec4::ZERO);
+        assert_eq!(slots.origins[2], neighbours[1].sample_origin());
+        assert_eq!(slots.origins_floor[2], neighbours[1].sample_origin_floor());
+        // The pick: the camera's block, a neighbour, and a block no slot
+        // holds (the original's texture 0).
+        assert_eq!(slots.slot_of(Vec3::new(50.0, 0.0, 10.0)), Some(0));
+        assert_eq!(slots.slot_of(Vec3::new(60.0, 0.0, 50.0)), Some(2));
+        assert_eq!(slots.slot_of(Vec3::new(10.0, 0.0, 10.0)), Some(1));
+        assert_eq!(slots.slot_of(Vec3::new(10.0, 0.0, 50.0)), None);
+        // A block that is not on the grid is sampled by every object.
+        let mut lone = fake_textures(9);
+        lone.pick = None;
+        let slots = GiSlots::new(&lone, &neighbours);
+        assert_eq!(slots.grid.z, 0.0);
+        assert!(slots.lights[1].is_none());
+        assert_eq!(slots.slot_of(Vec3::splat(1.0e4)), Some(0));
+    }
+
+    #[test]
+    fn the_resident_neighbours_get_textures_once() {
+        let mut app = App::new();
+        app.insert_resource(Assets::<Image>::default())
+            .init_resource::<GiWarmUp>()
+            .init_resource::<GiTextureCache>()
+            .init_resource::<GiNeighbours>()
+            .insert_resource(block_volume(Vec3::ZERO))
+            .add_systems(
+                Update,
+                (
+                    create_textures,
+                    swap_warm_textures,
+                    create_neighbour_textures,
+                )
+                    .chain(),
+            );
+        let neighbour = |sector: IVec2| {
+            let mut v = block_volume(Vec3::X * 48.0);
+            v.sector = sector;
+            v.floors = Arc::new(vec![0; 4]);
+            v
+        };
+        // The camera's block is listed too; it holds its own textures.
+        let listed = vec![neighbour(IVec2::ZERO), neighbour(IVec2::new(8, 0))];
+        app.insert_resource(GiNeighbourVolumes(listed.clone()));
+        app.update();
+        let blocks = &app.world().resource::<GiNeighbours>().blocks;
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].sector, IVec2::new(8, 0));
+        assert_eq!(blocks[0].warm_up, 10);
+        assert!(blocks[0].serial & NEIGHBOUR_SERIAL != 0);
+        let light = blocks[0].light.id();
+        // The same list leaves the textures (and the surfaces' bindings)
+        // alone.
+        app.world_mut().resource_mut::<GiNeighbours>().set_changed();
+        app.update();
+        app.update();
+        assert!(!app.world().resource_ref::<GiNeighbours>().is_changed());
+        assert_eq!(
+            app.world().resource::<GiNeighbours>().blocks[0].light.id(),
+            light
+        );
+        // A block dropped and listed again reuses the light it kept.
+        app.insert_resource(GiNeighbourVolumes(vec![neighbour(IVec2::new(0, 8))]));
+        app.update();
+        app.insert_resource(GiNeighbourVolumes(listed));
+        app.update();
+        let blocks = &app.world().resource::<GiNeighbours>().blocks;
+        assert_eq!(blocks[0].light.id(), light);
+        assert_eq!(blocks[0].warm_up, 0);
     }
 
     #[test]
