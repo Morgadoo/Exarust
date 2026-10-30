@@ -2,7 +2,18 @@
 
 The game binary: `exarust [--game <dir>] [options] (play <level> | level
 <name> | character [moveset/action] | model <pack> <entry> | texture
-<name>)`; the options are listed at the top of `src/main.rs`. It grows into
+<name>)`; the options are listed at the top of `src/main.rs`.
+`exarust grid <scene>…` (`src/grid.rs`) opens one window split into four
+quadrants, each a separate game in a child process started with
+`--offscreen <file>` (`src/offscreen.rs`): no OS window, its cameras
+drawing into an image that is read back each frame into a shared-memory
+file, and input arriving on standard input. The window's four cameras each
+have a viewport a quarter of its size, recomputed on resize, as in Bevy's
+split-screen example. The host launches the games one at a time against
+`nvidia-smi`'s free memory and forwards input to the quadrant last
+clicked. `exarust grid-swap <n> <scene>` replaces one quadrant's game and
+`exarust grid-shot <file>` saves the composed window
+([`docs/PLAYER.md`](../../docs/PLAYER.md), Unattended runs). It grows into
 the full game as `exa_game` gains modes (see `docs/PLAN.md`). The debug
 flags (`--debug-bodies`, `--joint-trace`, `--pair-trace`, `--corpse`,
 `--fixed-frames`, `--sim-speed`, `--pause-at-tick`, `--pause-on-stretch`,

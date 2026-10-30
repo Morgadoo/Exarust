@@ -1964,6 +1964,7 @@ fn screenshot_after_frames(
     time: Res<Time<Virtual>>,
     mut frames: Local<u32>,
     mut exit: MessageWriter<AppExit>,
+    offscreen: Option<Res<crate::offscreen::OffscreenTarget>>,
 ) {
     let Some(path) = &options.screenshot else {
         return;
@@ -1979,9 +1980,13 @@ fn screenshot_after_frames(
     }
     *frames += 1;
     if *frames == options.frames {
-        commands
-            .spawn(Screenshot::primary_window())
-            .observe(save_to_disk(path.clone()));
+        // Offscreen (a grid quadrant), the image the window's cameras
+        // draw into.
+        let shot = match &offscreen {
+            Some(target) => Screenshot::image(target.image.clone()),
+            None => Screenshot::primary_window(),
+        };
+        commands.spawn(shot).observe(save_to_disk(path.clone()));
     }
     if *frames == options.frames + 20 {
         exit.write(AppExit::Success);
