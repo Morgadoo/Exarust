@@ -212,6 +212,9 @@ pub struct DerivedLight {
     /// The linear colour multiplied by the current intensity (the shader's
     /// direct colour source).
     pub colour: [f32; 3],
+    /// The colour the voxel GI injects: [`DerivedLight::colour`] times
+    /// [`DerivedLight::gi_radius`].
+    pub gi_colour: [f32; 3],
     /// Rec. 601 luminance of [`DerivedLight::colour`].
     pub luminance: f32,
     /// The radius the voxel GI injects over: `√intensity · radius · 3`.
@@ -249,10 +252,16 @@ impl DerivedLight {
         ];
         let (shaping_y, shaping_z) = crate::vertical_shaping(light);
         let ranged = light.flags & RANGED != 0 || light.ranged;
+        let gi_radius = intensity.max(0.0).sqrt() * light.radius * 3.0;
         Self {
             colour,
+            gi_colour: [
+                colour[0] * gi_radius,
+                colour[1] * gi_radius,
+                colour[2] * gi_radius,
+            ],
             luminance: luminance(colour),
-            gi_radius: intensity.max(0.0).sqrt() * light.radius * 3.0,
+            gi_radius,
             reach: if ranged {
                 light.radius * REACH_RADII
             } else {
@@ -604,6 +613,14 @@ mod tests {
         let c = exa_render::material::linear_rgb([1.0, 0.5, 0.25]);
         assert_eq!(derived.colour, [c.x * 4.0, c.y * 4.0, c.z * 4.0]);
         assert_eq!(derived.gi_radius, 4.0f32.sqrt() * 2.0 * 3.0);
+        assert_eq!(
+            derived.gi_colour,
+            [
+                derived.colour[0] * derived.gi_radius,
+                derived.colour[1] * derived.gi_radius,
+                derived.colour[2] * derived.gi_radius
+            ]
+        );
         assert_eq!(derived.reach, 2.5);
         assert_eq!(derived.shadow_strength, 0.4);
         assert_eq!(derived.shadow_offset, 1);
