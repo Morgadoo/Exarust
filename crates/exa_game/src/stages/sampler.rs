@@ -43,8 +43,8 @@ use exa_physics::body::locomotion::{
     Locomotion, Locomotor, Stop, flags, forward, head_look, twist_spine,
 };
 use exa_physics::body::{
-    FemurPosture, Ragdoll, TickedCharacter, femur_posture_turn, foot_pitch_target, foot_rest_turn,
-    hunch_applies, hunch_turn, step_hunch, world_with,
+    FemurPosture, Ragdoll, TickedCharacter, femur_posture_turn, foot_pitch_target, hunch_applies,
+    hunch_turn, step_hunch, world_with,
 };
 
 use crate::limp::{Lean, Pace, clip_pose, clip_tick, physical_turns, run_overlay};
@@ -355,7 +355,7 @@ pub(crate) fn sample_parts(
     twist_spine(&mut parts, &spine(body, nodes), twist);
     pitch_thorax(&mut parts, body, feral);
     look_with_head(&mut parts, body, look);
-    Some((foot_pitch(parts, body, posture), head_parent))
+    Some((foot_pitch(parts, body), head_parent))
 }
 
 /// The head's parent in the chain before the torso twist, in the same
@@ -505,22 +505,19 @@ fn look_with_head(parts: &mut [Affine3A], body: &Ragdoll, look: Option<&mut Look
     p.matrix3 = head_look(&p.matrix3, look.dir, look.weight, &mut look.yaw, false);
 }
 
-/// Step 8, the foot pitch: each foot first takes the body tick's rest turn
-/// (the same combat or splay mode as the thighs), then, on its feet, it
-/// pitches about its side axis so a point 20 cm times the body scale
-/// ahead of the ankle meets the ground. The correction eases at most 0.01
-/// rad a tick plus its rate. A placement stores that angle at once and
-/// clears the rate. Off its feet the foot keeps the clip, with the rest
-/// turn.
-fn foot_pitch(
-    mut parts: Vec<Affine3A>,
-    body: &mut Ragdoll,
-    posture: FemurPosture,
-) -> Vec<Affine3A> {
+/// Step 8, the foot pitch: each foot pitches about its side axis so a
+/// point 20 cm times the body scale ahead of the ankle meets the ground.
+/// The correction eases at most 0.01 rad a tick plus its rate. A placement
+/// stores that angle at once and clears the rate. Off its feet the foot
+/// keeps the clip.
+fn foot_pitch(mut parts: Vec<Affine3A>, body: &mut Ragdoll) -> Vec<Affine3A> {
     let (off_feet, scale) = match body.drive.as_ref() {
         Some(drive) => (drive.bearing.off_feet, drive.stats.scale),
         None => return parts,
     };
+    if off_feet {
+        return parts;
+    }
     let count = body.legs().len();
     for i in 0..count {
         let (shin, foot) = {
@@ -536,24 +533,7 @@ fn foot_pitch(
         else {
             continue;
         };
-        // The original writes the foot's rest turn in the body tick and
-        // its sampler applies it before the pitch. Left-multiplying the
-        // sampled local turn is the reading used here (a guess; the part
-        // is at its rest rotation otherwise). An identity rest turn
-        // leaves an off-feet foot exactly as sampled.
-        let rest = foot_rest_turn(posture, i);
-        if off_feet && rest == Quat::IDENTITY {
-            continue;
-        }
         let local = parent.inverse() * placed;
-        let local = Affine3A {
-            matrix3: Mat3A::from_quat(rest) * local.matrix3,
-            translation: local.translation,
-        };
-        if off_feet {
-            parts[foot] = parent * local;
-            continue;
-        }
         let target = foot_pitch_target(
             parent.y_axis.y,
             parent.z_axis.y,
@@ -819,11 +799,7 @@ mod tests {
         .with_drive();
         assert_eq!(body.legs()[0].foot, Some(2));
         let tip = Affine3A::from_quat(Quat::from_rotation_x(-std::f32::consts::FRAC_PI_2));
-        let pitched = foot_pitch(
-            vec![Affine3A::IDENTITY, tip, tip],
-            &mut body,
-            FemurPosture::Level,
-        );
+        let pitched = foot_pitch(vec![Affine3A::IDENTITY, tip, tip], &mut body);
         let local = pitched[1].inverse() * pitched[2];
         let want = Quat::from_rotation_x(0.01);
         let got = local.to_scale_rotation_translation().1;
@@ -835,25 +811,9 @@ mod tests {
         ])
         .with_drive();
         down.drive.as_mut().unwrap().bearing.off_feet = true;
-        let kept = foot_pitch(
-            vec![Affine3A::IDENTITY, tip, tip],
-            &mut down,
-            FemurPosture::Level,
-        );
+        let kept = foot_pitch(vec![Affine3A::IDENTITY, tip, tip], &mut down);
         assert_eq!(kept[2], tip);
         assert_eq!(down.legs()[0].pitch, 0.0);
-        // The body tick's rest turn reaches the foot even off its feet:
-        // splayed it is 5° about (−1, 0, 0), combat (1 − height)·−1.5°.
-        let splayed = foot_pitch(
-            vec![Affine3A::IDENTITY, tip, tip],
-            &mut down,
-            FemurPosture::Splayed,
-        );
-        let rest = (splayed[1].inverse() * splayed[2])
-            .to_scale_rotation_translation()
-            .1;
-        let want = Quat::from_axis_angle(Vec3::NEG_X, 5.0 * 0.017_453_292);
-        assert!(rest.abs_diff_eq(want, 1e-6), "{rest} vs {want}");
     }
 
     /// A placement of a shin pointing straight up stores the whole pitch
@@ -902,11 +862,7 @@ mod tests {
             body.legs()[0].pitch
         );
         assert_eq!(body.legs()[0].pitch_rate, 0.0);
-        let pitched = foot_pitch(
-            vec![Affine3A::IDENTITY, tip, tip],
-            &mut body,
-            FemurPosture::Level,
-        );
+        let pitched = foot_pitch(vec![Affine3A::IDENTITY, tip, tip], &mut body);
         let got = (pitched[1].inverse() * pitched[2])
             .to_scale_rotation_translation()
             .1;

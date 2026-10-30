@@ -398,10 +398,7 @@ before the fold, bends the thigh and shin and re-places the foot under the
 bent shin, as the original's IK chain places every part by its parent's;
 the next aim puts the record in the world after its carry), the chain the
 muscles follow, and
-the foot's height over its floor, which the foot pitch levels, and the
-foot's rest turn (`body::foot_rest_turn`): −1.5° × (1 − the record's
-height) about (−1, 0, 0) in combat and on its feet, else 5° with the state
-word's splay bit, else none, the second leg the other way. Each foot's sole floor is the
+the foot's height over its floor, which the foot pitch levels. Each foot's sole floor is the
 original's Ground Query (`contact::Level::floor_below`, a point ray from
 30 cm over the foot's ground 60 cm down against floor-flagged pieces): the
 hit, or the ground plus the leg's offset where it misses, never over the

@@ -59,7 +59,7 @@ pub use balance::{Balance, Leg, legs_swap, reset_heading};
 mod bend;
 #[path = "body_limp.rs"]
 mod limp_sampler;
-pub use bend::{FemurPosture, femur_posture_turn, foot_pitch_target, foot_rest_turn};
+pub use bend::{FemurPosture, femur_posture_turn, foot_pitch_target};
 pub use limp_sampler::{
     LimpFoot, limp_anchor_height, limp_foot, limp_plant, limp_pose_height, limp_step, snap_part,
 };
