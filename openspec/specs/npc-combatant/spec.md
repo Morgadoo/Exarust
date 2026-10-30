@@ -89,3 +89,10 @@ A character with a brain SHALL react to each blow it is told of in this order: t
 #### Scenario: A wound from the player beside a bystander
 - **WHEN** a brain with courage 0.7 and confidence 0.4 and a neutral contact for the player is wounded by the player, a bystander standing 100 cm along the player's look within its reach plus 100 cm
 - **THEN** its courage becomes `((1.4)·0.025 + 0.95)·0.7`, the player's swing is marked and offered its combat rating, and the player's contact's concern becomes 1.49 with its flags word 3
+
+### Requirement: The step clear on entering combat
+A duellist entering combat SHALL clear its queued step with its body's own speed along its heading (cm a tick), so a move point farther than 8 × speed + 20 cm is put that far straight ahead of the body.
+
+#### Scenario: A walking body enters combat
+- **WHEN** a body moving at 2 cm a tick with a move point 100 cm away enters combat
+- **THEN** the move point is 36 cm ahead of the body
