@@ -963,7 +963,11 @@ matrix's depth term (double precision for the effect material and the
 tendril, single for the shader and the shell), the layer colours, the
 time and brightness uniforms and the shader's texture coordinate, with no
 draw at all while the pass count is zero — are in `thaum::effect_pass`.
-`effect_material` also runs the material routines' node transitions
+The force geometry's supersample passes upload their own object matrix
+(the node's matrix times the pass's) to `ObjMat`, pass 0 before the
+viewport walk and each later pass after its shift
+(`effects::effect_geometry::force_uploads`). `effect_material` also runs
+the material routines' node transitions
 (`dress`: the noise made before the shared shader, the flag and state
 bits, the aura's and shell's one replacement sub-object and the material's
 parameter block) and the `gi_multipoint` table's lookup, creation,

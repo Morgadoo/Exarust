@@ -35,7 +35,10 @@
 //!   scaled by `(300 − keep)·0.01` under a keeping distance of 200.
 //!
 //! The relation number, the viewer's fields and the AI that reads the
-//! words are outside this group; nothing registers these entities yet.
+//! words are outside this group. [`DangerSight`] holds the registered
+//! effects by entity (the barricade publishes its wall while it stands and
+//! drops it when it falls) and gives the nearest barricade's record to a
+//! viewer.
 //!
 //! Evidence: the blast, wave and barricade entities' place, assessment and
 //! avoidance routines, read from `Exanima.exe`.
@@ -54,6 +57,62 @@ pub const SEEN_FLAG: u32 = 4;
 /// A released blast pushes a viewer within this distance, cm, this hard.
 pub const AVOID_RANGE_CM: f32 = 500.0;
 pub const AVOID_PUSH: f32 = 6.0;
+
+/// An effect registered with the AI's sight.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Danger {
+    /// A barricade's wall, rising while it grows, with the strong flag that
+    /// triples the fear.
+    Barricade {
+        wall: Wall,
+        rising: bool,
+        strong: bool,
+    },
+}
+
+/// The effects the AI's sight may ask about: each live effect publishes its
+/// entry by its entity and removes it when it goes.
+#[derive(Resource, Debug, Default)]
+pub struct DangerSight {
+    pub entries: Vec<(Entity, Danger)>,
+}
+
+impl DangerSight {
+    /// Puts `danger` under `entity`, replacing an earlier entry.
+    pub fn publish(&mut self, entity: Entity, danger: Danger) {
+        match self.entries.iter_mut().find(|(e, _)| *e == entity) {
+            Some(slot) => slot.1 = danger,
+            None => self.entries.push((entity, danger)),
+        }
+    }
+
+    /// Drops `entity`'s entry.
+    pub fn remove(&mut self, entity: Entity) {
+        self.entries.retain(|(e, _)| *e != entity);
+    }
+
+    /// The nearest registered barricade as `viewer` sees it, with the
+    /// viewer's `relation` word; `None` when none is within sight.
+    pub fn barricade_seen(&self, viewer: &Viewer, relation: f32) -> Option<(Entity, Seen)> {
+        let mut best: Option<(Entity, Seen, f32)> = None;
+        for (entity, danger) in &self.entries {
+            let Danger::Barricade {
+                wall,
+                rising,
+                strong,
+            } = danger;
+            let mut seen = Seen::default();
+            if !assess_barricade(wall, *rising, *strong, viewer, relation, &mut seen) {
+                continue;
+            }
+            let d = wall_point(wall, viewer.chest).distance(viewer.chest);
+            if best.as_ref().is_none_or(|(_, _, found)| d < *found) {
+                best = Some((*entity, seen, d));
+            }
+        }
+        best.map(|(entity, seen, _)| (entity, seen))
+    }
+}
 
 /// The words of the AI's record an assessment fills.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -351,6 +410,45 @@ pub fn avoid_barricade(wall: &Wall, body: Vec3, keeper: &Keeper) -> Avoidance {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_sight_registers_a_wall_and_offers_the_nearest() {
+        let entity = Entity::from_raw_u32(7).unwrap();
+        let mut sight = DangerSight::default();
+        sight.publish(
+            entity,
+            Danger::Barricade {
+                wall: Wall {
+                    centre: Vec3::new(0.0, 0.0, 600.0),
+                    along: Vec3::X,
+                    half_width: 300.0,
+                },
+                rising: false,
+                strong: false,
+            },
+        );
+        let (found, seen) = sight.barricade_seen(&viewer(), 0.0).expect("seen");
+        assert_eq!(found, entity);
+        assert_eq!(seen.flags & SEEN_FLAG, SEEN_FLAG);
+        assert!(seen.near > 0.0 && seen.fear > 0.0);
+        // Far away nothing is seen; a nearer wall wins.
+        let far = Entity::from_raw_u32(8).unwrap();
+        sight.publish(
+            far,
+            Danger::Barricade {
+                wall: Wall {
+                    centre: Vec3::new(0.0, 0.0, 5000.0),
+                    along: Vec3::X,
+                    half_width: 300.0,
+                },
+                rising: false,
+                strong: false,
+            },
+        );
+        assert_eq!(sight.barricade_seen(&viewer(), 0.0).unwrap().0, entity);
+        sight.remove(entity);
+        assert_eq!(sight.barricade_seen(&viewer(), 0.0), None);
+    }
+
     use super::*;
 
     fn viewer() -> Viewer {

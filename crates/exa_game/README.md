@@ -483,7 +483,8 @@ points, the camera in its frame and its fade), and the node attach
 run), `effects::force_wave`
 (32 chunks 80 cm out, the charge, release, thrown step, trails and
 lives), `effects::danger` (what the AI sees of a blast, a wave and a
-barricade, and the steps away), `effects::emissive` (the seven GI lights'
+barricade, the steps away, and the registered `DangerSight` a standing
+barricade publishes its wall to), `effects::emissive` (the seven GI lights'
 programs, extents, colours and boxes — injected for the force Barrier and
 Bubble while they live, with shape builders for the cuboid and tendril),
 `effects::effect_geometry` (the geometry

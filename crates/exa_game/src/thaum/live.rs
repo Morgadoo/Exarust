@@ -406,6 +406,7 @@ fn tick_barricades(
     ticks: Option<Res<BodyTicks>>,
     mut roll: ResMut<EffectRoll>,
     mut nav: Option<ResMut<NavGrid>>,
+    mut sight: Option<ResMut<crate::effects::danger::DangerSight>>,
 ) {
     let now = ticks.map_or(0, |t| t.millis()) as u32;
     for (wall_entity, mut live, stamped) in &mut walls {
@@ -419,6 +420,28 @@ fn tick_barricades(
         }
         if live.wall.tick(now) {
             debug!("barricade {wall_entity}: gone");
+        }
+        // The standing wall is what the AI's sight sees: it publishes its
+        // line while it rises or stands and drops it when it falls.
+        if let Some(sight) = sight.as_deref_mut() {
+            if live.wall.state == crate::thaum::barricade::state::GONE {
+                sight.remove(wall_entity);
+            } else if live.wall.entity {
+                sight.publish(
+                    wall_entity,
+                    crate::effects::danger::Danger::Barricade {
+                        wall: crate::effects::danger::Wall {
+                            centre: live.wall.centre,
+                            along: live.wall.frame.x,
+                            half_width: live.wall.half_width,
+                        },
+                        rising: live.wall.state == crate::thaum::barricade::state::RISING,
+                        // The entity's strong byte is not modelled (a guess:
+                        // no stronger fear).
+                        strong: false,
+                    },
+                );
+            }
         }
         for (mut body, mut swing) in &mut bodies {
             let character = body.drive.as_ref().map(|d| {

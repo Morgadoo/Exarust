@@ -22,6 +22,10 @@
 //! | torrent | `effectforce_v` | `effecttorrent_f` |
 //! | effect (generic) | — | — |
 //!
+//! Each supersample pass uploads its own object matrix to `ObjMat`: pass 0
+//! with the renderer's current viewport, then every later pass after its
+//! whole-pixel viewport shift ([`force_uploads`]).
+//!
 //! The barrier, bubble and barricade bind `ObjMat`, `ViewPos`, `Fade`,
 //! `TexPos`, `ColPt` and `EmiTex`; the bubble and barricade add `TexOfs`
 //! (the barrier has none); the barricade adds its `BExt`; the strikes add
@@ -212,6 +216,41 @@ pub fn force_passes(
         .collect()
 }
 
+/// One object-matrix upload of a force geometry's supersample pass: the
+/// matrix written to `ObjMat`, the pass it belongs to and the viewport the
+/// draw sets for it. The first pass is uploaded before any viewport is set
+/// (the renderer's current view), every later pass after its own.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ObjMatUpload {
+    pub pass: i32,
+    /// `ObjMat`: the node's matrix times the pass's texture matrix.
+    pub matrix: [[f32; 4]; 4],
+    /// The whole-pixel viewport the pass draws in (zero for the first).
+    pub viewport: [i32; 2],
+    /// The first pass, drawn before the viewport walk.
+    pub before_viewports: bool,
+}
+
+/// The object matrices a force geometry uploads in a frame, in the
+/// renderer's order: pass 0 with the current viewport, then each later pass
+/// after its own viewport shift.
+pub fn force_uploads(node: [[f32; 4]; 4], pass_matrices: &[[[f32; 4]; 4]]) -> Vec<ObjMatUpload> {
+    pass_matrices
+        .iter()
+        .enumerate()
+        .map(|(pass, texture)| ObjMatUpload {
+            pass: pass as i32,
+            matrix: pass_matrix(node, *texture),
+            viewport: if pass == 0 {
+                [0, 0]
+            } else {
+                exa_render::subframe::viewport_shift(pass as u32)
+            },
+            before_viewports: pass == 0,
+        })
+        .collect()
+}
+
 /// The `Fade` a dome geometry draws at: `max(1 − alpha, 0)` while the
 /// effect is under state 3, the alpha itself from 3 on.
 pub fn dome_fade(state: u32, alpha: f32) -> f32 {
@@ -297,6 +336,44 @@ mod tests {
         let out = pass_matrix(node, pass);
         assert_eq!(out[0][0], 0.0);
         assert_ne!(out[0][0], 1.0);
+    }
+
+    #[test]
+    fn each_pass_uploads_its_object_matrix() {
+        let node = [
+            [2.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let passes = [
+            [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 2.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+        ];
+        let uploads = force_uploads(node, &passes);
+        assert_eq!(uploads.len(), 2);
+        // Pass 0 draws with the current view and the node's own matrix.
+        assert_eq!(uploads[0].pass, 0);
+        assert!(uploads[0].before_viewports);
+        assert_eq!(uploads[0].viewport, [0, 0]);
+        assert_eq!(uploads[0].matrix, node);
+        // Pass 1 takes the sub-frame's viewport and the product.
+        assert_eq!(uploads[1].pass, 1);
+        assert!(!uploads[1].before_viewports);
+        assert_eq!(uploads[1].viewport, exa_render::subframe::viewport_shift(1));
+        assert_eq!(uploads[1].matrix, pass_matrix(node, passes[1]));
+        assert_eq!(uploads[1].matrix[0][0], 2.0);
+        assert_eq!(uploads[1].matrix[1][1], 2.0);
     }
 
     #[test]
