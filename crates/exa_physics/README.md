@@ -1103,9 +1103,14 @@ centimetres) or a NaN stores zero, the record's smoothing starts at zero
 and the length the routine measures is overwritten with zero. A link to a
 scene node is `Ragdoll::add_world_link`, a plain world link with the code
 flag and a world anchor. A clone copies its rest particles; the original's
-clone shares only its template's collision-sphere array and copies it
-before a write, which no caller reaches, so Rust's copying `Clone` gives
-the same behaviour. The body also keeps the particles where the last
+clone slot keeps the part states and axes, shares its template's
+collision-sphere array (copying it only before a write) and copies no link
+that code made at run time or that can break (its flags' `0x401000` mask,
+which drops every origin pivot, since the copy re-runs its own setup). That
+slot is `Ragdoll::runtime_clone`, which remaps the indices of the links it
+keeps so a leg's limit link follows its link; no run-time caller exists, so
+the tests and tooling use the whole-state `Clone`, which shares the sphere
+array the same way. The body also keeps the particles where the last
 post-step left them (the original's third particle set, rolled each
 post-step and on the first tick of sleep), so `Part::two_step_point`
 gives a point's displacement since then (two ticks mid-step, one between
