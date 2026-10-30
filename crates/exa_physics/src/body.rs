@@ -3679,6 +3679,103 @@ impl Ragdoll {
         }
     }
 
+    /// The original's run-time link adder: appends a link from a point on
+    /// part `part` to a point on part `parent`, as the grip code, the shape
+    /// builders and the sector's placement make them after a body is built.
+    ///
+    /// `on_part` and `on_parent` are points in the two parts' own spaces
+    /// (m) and become weights over each part's rest particles. The link is
+    /// a body link made by code, carrying the two parts' mobility shares
+    /// ([`grab_shares`] without its sign, which the solver applies), the
+    /// pivot softness the registration gives a zero one, and `strength`.
+    /// `slack` (m) is squared when stored by the original and set to zero
+    /// when it compares at or under the general epsilon in centimetres, or
+    /// when it is a NaN (the original's unordered compare takes the same
+    /// branch); Exarust keeps the distance its laws compare against. The
+    /// original also measures the points' current distance into the link's
+    /// smoothed length and then overwrites it with zero before returning,
+    /// so only the zero is kept, and its freshly allocated record leaves
+    /// the smoothing at zero (a run-time link's damper has no lag).
+    ///
+    /// The link is inserted at the end of `part`'s own links, so the
+    /// per-part ranges and every index into them stay in step. Returns the
+    /// new link's index, or `None` when a part is missing or `part` is
+    /// `parent`.
+    pub fn add_link(
+        &mut self,
+        part: usize,
+        parent: usize,
+        on_part: Vec3,
+        on_parent: Vec3,
+        slack: f32,
+        strength: f32,
+    ) -> Option<usize> {
+        if part >= self.parts.len() || parent >= self.parts.len() || part == parent {
+            return None;
+        }
+        let weights_on_part = weights(&self.parts[part], on_part);
+        let weights_on_parent = weights(&self.parts[parent], on_parent);
+        let (m, m_parent) = (
+            self.parts[part].link_mobility,
+            self.parts[parent].link_mobility,
+        );
+        // The two shares as the registration stores them: the parent's is
+        // negated by the solver, as every body link's is.
+        let shares = (m / (m + m_parent), m_parent / (m + m_parent));
+        let slack = if slack * CM <= GENERAL_EPSILON || slack.is_nan() {
+            0.0
+        } else {
+            slack
+        };
+        let link = Link {
+            part,
+            parent,
+            on_part: weights_on_part,
+            on_parent: weights_on_parent,
+            slack,
+            strength,
+            flags: LINK_BODY | LINK_CODE,
+            softness: PIVOT_SOFTENING,
+            iteration_limit: None,
+            // The original's record starts zeroed and the adder does not
+            // write the smoothing.
+            smoothing: 0.0,
+            length: 0.0,
+            shares,
+            origin: false,
+            limit: false,
+            horizontal: false,
+            anchor: None,
+            kept: None,
+            history: (Vec3::ZERO, Vec3::ZERO),
+        };
+        let at = self
+            .links_of
+            .get(part)
+            .map_or(self.links.len(), |range| range.end);
+        self.links.insert(at, link);
+        for (i, range) in self.links_of.iter_mut().enumerate() {
+            if i == part {
+                range.end = at + 1;
+            } else {
+                if range.start >= at {
+                    range.start += 1;
+                }
+                if range.end >= at {
+                    range.end += 1;
+                }
+            }
+        }
+        for p in &mut self.parts {
+            if let Some(k) = p.leg_limit.as_mut()
+                && *k >= at
+            {
+                *k += 1;
+            }
+        }
+        Some(at)
+    }
+
     /// The part of `bone`.
     pub fn part_of(&self, bone: usize) -> Option<&Part> {
         self.parts.iter().find(|p| p.bone == bone)
@@ -4899,6 +4996,103 @@ mod tests {
                 spheres: None,
             },
         ])
+    }
+
+    /// The run-time link adder takes the two points' weights over each
+    /// part's rest particles, the mobility shares, the pivot softness and
+    /// the strength, and puts the link at the end of its part's own links.
+    #[test]
+    fn the_run_time_link_adder_carries_the_parts_and_the_slack() {
+        let mut body = two_parts(0.0);
+        assert_eq!(body.links.len(), 2);
+        assert_eq!(body.links_of(0).len(), 0);
+        assert_eq!(body.links_of(1).len(), 2);
+        let at = body
+            .add_link(1, 0, Vec3::ZERO, Vec3::ZERO, 0.02, 0.5)
+            .expect("both parts exist");
+        assert_eq!(at, 2);
+        assert_eq!(body.links.len(), 3);
+        assert_eq!(body.links_of(1).len(), 3);
+        let l = &body.links[at];
+        assert_eq!((l.part, l.parent), (1, 0));
+        assert_eq!(l.slack, 0.02);
+        assert_eq!(l.strength, 0.5);
+        assert_eq!(l.flags, LINK_BODY | LINK_CODE);
+        assert_eq!(l.softness, PIVOT_SOFTENING);
+        assert_eq!(l.smoothing, 0.0);
+        assert_eq!(l.length, 0.0);
+        assert!(!l.origin && !l.limit && !l.horizontal);
+        // The shares are the two link mobilities': 0.7·0.175 and
+        // 0.45·0.175 over their sum, the parent's kept positive (the
+        // solver negates it).
+        let (m, m_parent) = (body.parts[1].link_mobility, body.parts[0].link_mobility);
+        assert!((l.shares.0 - m / (m + m_parent)).abs() < 1e-7);
+        assert!((l.shares.1 - m_parent / (m + m_parent)).abs() < 1e-7);
+        assert!((l.shares.0 - 0.608_695_7).abs() < 1e-6, "{:?}", l.shares);
+        assert!((l.shares.1 - 0.391_304_3).abs() < 1e-6, "{:?}", l.shares);
+        // The weights are barycentric, so they sum to one and place the
+        // point where it was: each part's own origin.
+        assert!((l.on_part.iter().sum::<f32>() - 1.0).abs() < 1e-6);
+        assert!((l.on_parent.iter().sum::<f32>() - 1.0).abs() < 1e-6);
+        assert!(
+            body.parts[0]
+                .point(&l.on_parent)
+                .distance(body.origin_at(0).unwrap())
+                < 1e-6
+        );
+        assert!(
+            body.parts[1]
+                .point(&l.on_part)
+                .distance(body.origin_at(1).unwrap())
+                < 1e-6
+        );
+    }
+
+    /// A slack at or under the general epsilon (in centimetres), and a NaN,
+    /// store a zero slack; a missing or repeated part adds nothing.
+    #[test]
+    fn the_run_time_link_adder_zeroes_a_tiny_slack() {
+        let mut body = two_parts(0.0);
+        let tiny = body.add_link(1, 0, Vec3::ZERO, Vec3::ZERO, 1e-9, 1.0);
+        assert_eq!(tiny, Some(2));
+        assert_eq!(body.links[2].slack, 0.0);
+        let nan = body
+            .add_link(1, 0, Vec3::ZERO, Vec3::ZERO, f32::NAN, 1.0)
+            .unwrap();
+        assert_eq!(body.links[nan].slack, 0.0);
+        // 1.19209e-7 cm is the epsilon: just over it is kept.
+        let over = body
+            .add_link(1, 0, Vec3::ZERO, Vec3::ZERO, 1.2e-9, 1.0)
+            .unwrap();
+        assert_eq!(body.links[over].slack, 1.2e-9);
+        assert_eq!(body.add_link(0, 0, Vec3::ZERO, Vec3::ZERO, 0.0, 1.0), None);
+        assert_eq!(body.add_link(2, 0, Vec3::ZERO, Vec3::ZERO, 0.0, 1.0), None);
+        assert_eq!(body.add_link(1, 9, Vec3::ZERO, Vec3::ZERO, 0.0, 1.0), None);
+        assert_eq!(body.links.len(), 5);
+    }
+
+    /// A link added at run time is solved: pulled apart beyond its slack, one
+    /// iteration brings its two points closer.
+    #[test]
+    fn a_run_time_link_is_solved() {
+        let mut body = two_parts(0.0);
+        let at = body
+            .add_link(1, 0, Vec3::ZERO, Vec3::ZERO, 0.01, 1.0)
+            .unwrap();
+        for x in &mut body.parts[1].positions {
+            *x += Vec3::new(0.5, 0.0, 0.0);
+        }
+        let gap = |b: &Ragdoll| {
+            let l = &b.links[at];
+            b.parts[l.parent]
+                .point(&l.on_parent)
+                .distance(b.parts[l.part].point(&l.on_part))
+        };
+        let before = gap(&body);
+        assert!(before > 0.3, "{before}");
+        body.iterate();
+        let after = gap(&body);
+        assert!(after < before, "{after} vs {before}");
     }
 
     /// The sole turns the solver reads are taken once when the targets are
