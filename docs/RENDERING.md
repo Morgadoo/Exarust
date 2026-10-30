@@ -2768,6 +2768,16 @@ rules in `exa_render::electricity` and a Bevy layer in `exa_world::arc`.
   charge (heavy when the record's kind word has 0x10; a spent charge or a
   missing record clears the item's arc effect) and always spawns the spark
   burst there, charged or not (`discharge`).
+- **Level tone.** The template selection's per-call values are in
+  `electric_tone`: the effect level (a negative level is zero), the brief
+  choice (level 5 never, below 3 always, 3 on an even roll, above 3 only
+  on a roll divisible by eight), the strength
+  `level·0.05 + scale + (1 − level·0.05)·curve` with the level term in
+  double and the sum clamped above at one (a not-a-number kept), the
+  opacity `0.7 − strength·0.6` blended with the node's own alpha as
+  `alpha·0.3 + node·0.7` (double) and overwritten for the brief effect by
+  `0.4 − curve·0.375`, the intensity `roll + level·0.4` in double, and the
+  template lifetime 0x16 (brief) or 0x44.
 - **Geometry.** Each tendril is a polyline of `segments` points between the
   arc's ends (along +X, the segments end to end, unless a record or a
   device sets the direction and length), jittered inside them; each

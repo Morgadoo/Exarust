@@ -59,6 +59,83 @@ pub fn random_brightness(roll: f64) -> f32 {
     (0.8 + roll * 0.2) as f32
 }
 
+/// An electric effect's strength and opacity, from the level its owner
+/// asked for (0..5), the caller's strength scale, the emitter's curve
+/// samples, the node's own alpha and the run-time roll.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ElectricTone {
+    /// The effect's strength, `(level·0.05 + scale + (1 − level·0.05)·curve)`
+    /// with the level term in double, clamped above at one (a not-a-number
+    /// stays).
+    pub strength: f32,
+    /// The opacity, `0.7 − strength·0.6`, blended with the node's own alpha
+    /// as `alpha·0.3 + node·0.7` (both in double); the brief effect
+    /// overwrites it with `0.4 − curve·0.375`.
+    pub alpha: f32,
+    /// The glow's intensity, `roll + level·0.4` in double.
+    pub intensity: f32,
+}
+
+/// The level word's clamp: a negative level counts as zero.
+pub fn effect_level(level: i32) -> i32 {
+    if level < 0 { 0 } else { level }
+}
+
+/// Whether this call builds the brief effect: level 5 never, below 3
+/// always, 3 on a one-in-two roll, above 3 on a one-in-eight roll (the
+/// effect's own flag would suppress the last, and this entry point clears
+/// it).
+pub fn brief_effect(level: i32, roll: u32) -> bool {
+    if level == 5 {
+        false
+    } else if level < 3 {
+        true
+    } else if level == 3 {
+        roll.is_multiple_of(2)
+    } else {
+        roll.is_multiple_of(8)
+    }
+}
+
+/// The effect's strength, opacity and intensity. `curve` and `brief_curve`
+/// are the emitter's curve samples (the original draws them from its own
+/// generator), `scale` the caller's strength term and `node_alpha` the
+/// node's own alpha.
+pub fn electric_tone(
+    level: i32,
+    scale: f32,
+    curve: f32,
+    brief_curve: f32,
+    node_alpha: f32,
+    roll: f32,
+    brief: bool,
+) -> ElectricTone {
+    let level = effect_level(level);
+    let level_part = (f64::from(level) * 0.05) as f32;
+    let mut strength = level_part + scale + (1.0 - level_part) * curve;
+    if strength > 1.0 {
+        strength = 1.0;
+    }
+    let mut alpha = (0.7 - f64::from(strength) * 0.6) as f32;
+    if node_alpha > 0.0 {
+        alpha = (f64::from(alpha) * 0.3 + f64::from(node_alpha) * 0.7) as f32;
+    }
+    if brief {
+        alpha = (0.4 - f64::from(brief_curve) * 0.375) as f32;
+    }
+    ElectricTone {
+        strength,
+        alpha,
+        intensity: (f64::from(roll) + f64::from(level) * 0.4) as f32,
+    }
+}
+
+/// The lifetime word the template choice takes: the brief effect 0x16, the
+/// long one 0x44.
+pub fn template_lifetime(brief: bool) -> u16 {
+    if brief { 0x16 } else { 0x44 }
+}
+
 /// A light an arc adds to the world: a voxel light (the weapon's and the
 /// spark's) or the point light of a level device.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1004,6 +1081,48 @@ impl Material for ArcMaterial {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tone follows the level, the caller's scale and the curve: the
+    /// level term is a double 0.05, the sum is `(level + scale) + rest`,
+    /// the clamp keeps a not-a-number, and the alpha's node blend is in
+    /// double.
+    #[test]
+    fn an_electric_tone_follows_its_level_and_node() {
+        let tone = electric_tone(2, 0.25, 0.5, 0.0, 0.0, 0.5, false);
+        let level_part = (2.0f64 * 0.05) as f32;
+        let strength = level_part + 0.25 + (1.0 - level_part) * 0.5;
+        assert_eq!(tone.strength, strength);
+        assert_eq!(tone.alpha, (0.7 - f64::from(strength) * 0.6) as f32);
+        assert_eq!(tone.intensity, (0.5f64 + 2.0 * 0.4) as f32);
+        // The node's alpha blends in at 0.7 against the tone's 0.3.
+        let node = electric_tone(2, 0.25, 0.5, 0.0, 1.0, 0.5, false);
+        assert_eq!(node.alpha, (f64::from(tone.alpha) * 0.3 + 1.0 * 0.7) as f32);
+        // The brief effect overwrites the alpha from its own curve.
+        let brief = electric_tone(4, 0.0, 0.5, 0.25, 1.0, 0.0, true);
+        assert_eq!(brief.alpha, (0.4 - 0.25f64 * 0.375) as f32);
+        // Above one the strength clamps.
+        let hot = electric_tone(5, 2.0, 1.0, 0.0, 0.0, 0.0, false);
+        assert_eq!(hot.strength, 1.0);
+        // A negative level counts as zero.
+        let none = electric_tone(-3, 0.5, 0.5, 0.0, 0.0, 0.0, false);
+        assert_eq!(none.strength, 0.5 + 0.5);
+        assert_eq!(effect_level(-3), 0);
+        assert_eq!(effect_level(4), 4);
+    }
+
+    /// The brief choice: level 5 never, below 3 always, 3 on an even roll,
+    /// above 3 only on a roll divisible by eight.
+    #[test]
+    fn the_brief_effect_is_chosen_by_level_and_roll() {
+        assert!(!brief_effect(5, 0));
+        assert!(brief_effect(2, 1));
+        assert!(brief_effect(3, 4));
+        assert!(!brief_effect(3, 5));
+        assert!(brief_effect(4, 16));
+        assert!(!brief_effect(4, 17));
+        assert_eq!(template_lifetime(true), 0x16);
+        assert_eq!(template_lifetime(false), 0x44);
+    }
 
     #[test]
     fn the_spark_colour_is_green() {
