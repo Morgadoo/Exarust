@@ -607,14 +607,15 @@ pub const WORLD_FIRES: u32 = 0x1_0000;
 /// The material flag the marker import sets on the host mesh so its own
 /// emissive stops (the fire drives the mesh's emissive from then on).
 pub const HOST_EMISSIVE_OFF: u32 = 0x10;
-/// The low bits of a geometry sub-object's kind word.
+/// The mask over a node's kind word that leaves 9 for a geometry node.
 pub const GEOMETRY_KIND: u32 = 0x5f;
 
-/// The host mesh a fire marker sits on: its sub-object's kind and material
-/// flags and the two emissive scales the import clears.
+/// The host node a fire marker sits under: its kind, its first
+/// sub-object's material flags and the two emissive scales the import
+/// clears.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct HostMesh {
-    /// The sub-object's kind word; a geometry's low bits are 9.
+    /// The node's kind word; a geometry's, masked by [`GEOMETRY_KIND`], is 9.
     pub kind: u32,
     /// The material's flag word.
     pub material_flags: u32,
@@ -629,7 +630,8 @@ pub struct HostMesh {
 pub struct ImportedFire {
     /// The marker's size (the four bytes after its record).
     pub size: f32,
-    /// The marker's brightness field, copied to the fire.
+    /// The marker node's field the import copies to the fire node (its
+    /// meaning is not traced; nothing reads it in Exarust).
     pub brightness: f32,
 }
 
@@ -665,9 +667,10 @@ pub fn recreate(size: f32, host_flags: u32, emitter_flags: u32) -> (Preset, u32)
 }
 
 /// The keys as the linear pipeline loads them: the RGB of keys 1 to `count`
-/// (the table's first key is left alone) goes to a float (×1/255), is scaled
-/// by 0.7, back to a byte (×255, rounded half to even, saturated); the alpha
-/// is untouched.
+/// (the original's table starts with its count word, so key `k` is
+/// `entries[k − 1]` here) goes to a float (×1/255), is scaled by 0.7, back
+/// to a byte (×255, rounded half to even, saturated); the alpha is
+/// untouched.
 pub fn load_scale(entries: &[Key], count: usize) -> Vec<Key> {
     const SCALE: f32 = 0.7;
     let channel = |b: u8| {
@@ -678,7 +681,7 @@ pub fn load_scale(entries: &[Key], count: usize) -> Vec<Key> {
         .iter()
         .enumerate()
         .map(|(i, key)| {
-            if i >= 1 && i <= count {
+            if i < count {
                 [channel(key[0]), channel(key[1]), channel(key[2]), key[3]]
             } else {
                 *key
@@ -687,45 +690,31 @@ pub fn load_scale(entries: &[Key], count: usize) -> Vec<Key> {
         .collect()
 }
 
-/// The colour space the legacy (non-linear) key path runs through: a
-/// channel encoded to sRGB (`c·12.92` up to 0.04045, else
-/// `1.055·c^(1/2.4) − 0.055`). The original's power is its own logarithm
-/// and exponential; Exarust uses the standard library's, so the values agree
-/// to a few units in the last place.
-fn srgb_encode(c: f32) -> f32 {
-    let x = f64::from(c);
-    if x <= 0.04045 {
-        (x * 12.92) as f32
-    } else {
-        let p = (c.ln() * 0.416_666_66).exp();
-        (f64::from(p) * 1.055 - 0.055) as f32
-    }
-}
-
 /// The keys as the legacy (non-linear) pipeline loads them, which the
 /// shipped game does not run (its pipeline flag selects the linear path):
-/// each of keys 1 to `count` is read as bytes, encoded to sRGB, pulled 0.35
-/// of the way toward its luminance (`0.298·r + 0.587·g + 0.114·b`), scaled
-/// by 0.75 and written back as three bytes rounded half to even; the alpha
-/// is untouched.
+/// each of keys 1 to `count` (`entries[0..count]`) is read as bytes (×1/255),
+/// encoded to sRGB (the engine's curve: `c·12.92` up to 0.0031308, else
+/// `1.055·c^(1/2.4) − 0.055` through its fast logarithm and exponential),
+/// pulled 0.35 of the way toward its Rec. 601 luma (0.299, 0.587, 0.114),
+/// scaled by 0.75 and stored back as three bytes (×255, rounded half to
+/// even, saturated); the alpha is untouched.
 pub fn load_scale_legacy(entries: &[Key], count: usize) -> Vec<Key> {
-    let channel = |b: u8| srgb_encode(f32::from(b) * (1.0 / 255.0));
+    use exa_formats::colour::{channel_byte, desaturate};
+    let read = |b: u8| f32::from(b) * exa_formats::pixel::BYTE_UNIT;
     entries
         .iter()
         .enumerate()
         .map(|(i, key)| {
-            if i < 1 || i > count {
+            if i >= count {
                 return *key;
             }
-            let mut c = [channel(key[0]), channel(key[1]), channel(key[2])];
-            let lum = (c[0] * 0.298 + c[1] * 0.587) + c[2] * 0.114;
-            for v in &mut c {
-                *v = (*v + (lum - *v) * 0.35) * 0.75;
-            }
+            let encoded =
+                [read(key[0]), read(key[1]), read(key[2])].map(exa_assets::human_skin::srgb_encode);
+            let c = desaturate(encoded, 0.35).map(|v| v * 0.75);
             [
-                (c[0] * 255.0).round_ties_even().clamp(0.0, 255.0) as u8,
-                (c[1] * 255.0).round_ties_even().clamp(0.0, 255.0) as u8,
-                (c[2] * 255.0).round_ties_even().clamp(0.0, 255.0) as u8,
+                channel_byte(c[0]),
+                channel_byte(c[1]),
+                channel_byte(c[2]),
                 key[3],
             ]
         })
@@ -855,7 +844,8 @@ fn drive_hosts(
     mut hosts: Query<(Entity, &mut FireHost)>,
     mut handles: Query<&mut MeshMaterial3d<exa_render::material::ExaMaterial>>,
     mut materials: ResMut<Assets<exa_render::material::ExaMaterial>>,
-    emitters: Query<(&Fire, &ChildOf)>,
+    children: Query<&Children>,
+    fires: Query<&Fire>,
 ) {
     for (node, mut host) in &mut hosts {
         if host.base.is_none() {
@@ -873,10 +863,11 @@ fn drive_hosts(
             }
         }
         // The fire riding this node, if any, scales the part's emissive.
-        let scale = emitters
-            .iter()
-            .find(|(_, parent)| parent.parent() == node)
-            .map(|(fire, _)| fire.emissive);
+        let scale = children
+            .get(node)
+            .ok()
+            .and_then(|kids| kids.iter().find_map(|kid| fires.get(kid).ok()))
+            .map(|fire| fire.emissive);
         let Some(scale) = scale else { continue };
         let Some(base) = host.base else { continue };
         let Ok(handle) = handles.get(host.part) else {
@@ -1059,22 +1050,21 @@ mod tests {
 
     #[test]
     fn the_legacy_key_path_runs_through_srgb_and_desaturates() {
-        // One key after the first: (128, 64, 0), alpha 32.
-        let raw = &[[0u8, 0, 0, 0], [128, 64, 0, 32]];
+        // Key 1 is (128, 64, 0), alpha 32; key 2 lies past the count.
+        let raw = &[[128u8, 64, 0, 32], [10, 20, 30, 40]];
         let out = load_scale_legacy(raw, 1);
-        // The first key is untouched.
-        assert_eq!(out[0], [0, 0, 0, 0]);
-        // sRGB-encoded: 0.502 → 0.734, 0.251 → 0.538, 0 → 0.
-        let e = |b: u8| srgb_encode(f32::from(b) / 255.0);
-        let (r, g, b) = (e(128), e(64), e(0));
-        let lum = (r * 0.298 + g * 0.587) + b * 0.114;
-        let want = |c: f32| ((c + (lum - c) * 0.35) * 0.75 * 255.0).round_ties_even() as u8;
-        assert_eq!(out[1], [want(r), want(g), want(b), 32]);
-        // 0.734 pulled an eighth toward the luminance 0.535 and scaled by
-        // 0.75 is 0.498·255 ≈ 127.
-        assert!((120..140).contains(&out[1][0]), "{:?}", out[1]);
-        // The linear path leaves the same key untouched at its own index.
-        assert_eq!(load_scale(raw, 1)[1], [90, 45, 0, 32]);
+        assert_eq!(out[1], [10, 20, 30, 40]);
+        // 128/255 = 0.50196 encodes to 0.7366, 64/255 = 0.25098 to 0.5381,
+        // 0 stays 0 (the linear segment). Luma: 0.299·0.7366 + 0.587·0.5381
+        // = 0.5361. Red: (0.7366 + (0.5361 − 0.7366)·0.35)·0.75 = 0.4998 →
+        // ×255 = 127.46 → 127; green: (0.5381 − 0.0007)·0.75·255 = 102.77 →
+        // 103; blue: 0.5361·0.35·0.75·255 = 35.89 → 36.
+        assert_eq!(out[0], [127, 103, 36, 32]);
+        // The linear path's 0.7 on the same key.
+        assert_eq!(load_scale(raw, 1)[0], [90, 45, 0, 32]);
+        // Black stays black.
+        let dark = load_scale_legacy(&[[0, 0, 0, 0]], 1);
+        assert_eq!(dark[0], [0, 0, 0, 0]);
     }
 
     #[test]
