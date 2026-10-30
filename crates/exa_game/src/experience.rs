@@ -86,6 +86,48 @@ pub const AUTO_TECHNIQUES: [(usize, u8); 15] = [
 /// The skill whose rise also redoes the wearer's armour.
 pub const ARMOUR_SKILL: usize = 2;
 
+/// The body word's bit for each chosen technique, by skill: the skill's
+/// techniques up to its level, each mapping to the bit the body keeps.
+pub const TECHNIQUE_BITS: [&[(u8, u32)]; SKILLS] = [
+    &[(1, 0x1), (2, 0x2), (3, 0x4), (4, 0x8)],
+    &[(5, 0x1000)],
+    &[
+        (1, 0x0100_0000),
+        (2, 0x0200_0000),
+        (3, 0x0400_0000),
+        (4, 0x0800_0000),
+        (5, 0x1000_0000),
+        (6, 0x2000_0000),
+    ],
+    &[(6, 0x0080_0000)],
+    &[
+        (1, 0x0010_0000),
+        (5, 0x0040_0000),
+        (6, 0x0020_0000),
+        (8, 0x0001_0000),
+    ],
+    &[],
+];
+
+/// The techniques a body holds, read again when a skill reaches a new
+/// level: each of the six skills' chosen techniques up to its level, mapped
+/// to the body's word ([`TECHNIQUE_BITS`]). The armour refresh that follows
+/// a rise in [`ARMOUR_SKILL`] is the body's own.
+pub fn technique_bits(skills: &[Skill; SKILLS]) -> u32 {
+    let mut bits = 0u32;
+    for (index, skill) in skills.iter().enumerate() {
+        let chosen = (level(skill.points) as usize).min(TECHNIQUE_SLOTS);
+        for &technique in &skill.techniques[..chosen] {
+            for &(value, bit) in TECHNIQUE_BITS[index] {
+                if technique == value {
+                    bits |= bit;
+                }
+            }
+        }
+    }
+    bits
+}
+
 /// A skill word's level.
 pub fn level(points: u16) -> u32 {
     exa_ai::estimate::skill_level(points)

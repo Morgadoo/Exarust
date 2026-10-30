@@ -128,6 +128,28 @@ fn a_companion_level_raises_skill_and_courage() {
     assert_eq!(idle.skills[2].techniques[0], 1);
 }
 
+/// A level's rise reads the body's techniques again: each skill's chosen
+/// techniques up to its level map to the body's bits, one map per skill,
+/// and a value outside a skill's map adds nothing.
+#[test]
+fn a_level_reads_the_bodys_techniques() {
+    let mut skills = skills_with([10_000, 5_000, 15_000, 5_000, 5_000, 0]);
+    skills[0].techniques[..2].copy_from_slice(&[1, 2]);
+    skills[1].techniques[0] = 5;
+    skills[2].techniques[..3].copy_from_slice(&[1, 2, 3]);
+    skills[3].techniques[0] = 6;
+    skills[4].techniques[0] = 8;
+    assert_eq!(technique_bits(&skills), 0x0781_1003);
+    // A value a skill does not use, and the slot past the level, add
+    // nothing.
+    let mut odd = skills_with([5_000, 5_000, 5_000, 5_000, 5_000, 5_000]);
+    odd[1].techniques[0] = 7;
+    odd[0].techniques[1] = 1;
+    assert_eq!(technique_bits(&odd), 0);
+    let none = skills_with([0; SKILLS]);
+    assert_eq!(technique_bits(&none), 0);
+}
+
 /// The account-wide experience round-trips through the binary settings
 /// store under its key; an empty store leaves the number alone.
 #[test]
