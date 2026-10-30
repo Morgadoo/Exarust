@@ -159,19 +159,6 @@ pub const SNAPSHOT_FLAT: u32 = 0x200;
 /// sector.
 pub const CLASS_SECTOR: u32 = 0x11;
 
-/// The word a watched node toggles between when it joins a watch pair (1)
-/// and on the next watch (2). The original keeps it in the node; the model
-/// stores it on [`SceneNode::watch_word`].
-pub const WATCH_ON: u32 = 1;
-/// The second value [`WATCH_ON`] toggles to.
-pub const WATCH_OFF: u32 = 2;
-/// Milliseconds to seconds: the watch step narrows the signed stamp
-/// difference to a double and multiplies it by this.
-pub const WATCH_MS_TO_SECONDS: f64 = 0.001;
-/// Entries a grid cell's pair list holds: the original's cell record is 200
-/// bytes, a count and twelve 16-byte pairs.
-pub const CELL_PAIRS: usize = 12;
-
 /// The far sort key a reset node takes: the original's `-100000.0`.
 pub const SORT_KEY_NONE: f32 = -100_000.0;
 
@@ -975,10 +962,6 @@ pub struct SceneNode {
     /// meaning they are due. An alias copies it so a spread walk knows
     /// whether the alias is current.
     pub link_stamp: u32,
-    /// The watch word: [`WATCH_ON`] or [`WATCH_OFF`] once a watch pair
-    /// names the node, 0 otherwise. The original keeps this as an unnamed
-    /// word at the node's offset 0x1c; the name is Exarust's guess.
-    pub watch_word: u32,
 }
 
 impl SceneNode {
@@ -1022,7 +1005,6 @@ impl SceneNode {
             link_head: -1,
             links: Vec::new(),
             link_stamp: 1,
-            watch_word: 0,
         }
     }
 
@@ -1197,106 +1179,6 @@ impl Sector {
     }
 }
 
-/// One watched pair: a timed node and the node it is watched against, with
-/// the stamp the pair was added at (game ms).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Watch {
-    pub node: usize,
-    pub watched: usize,
-    pub stamp: u32,
-}
-
-/// The scene's timed watch pairs. Adding a pair toggles the watched node's
-/// [`SceneNode::watch_word`] between [`WATCH_ON`] and [`WATCH_OFF`]; the
-/// step hands each timed node the seconds since its stamp and drops it when
-/// the timed action answers false, moving the last pair into its slot.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct WatchList {
-    pub entries: Vec<Watch>,
-}
-
-impl WatchList {
-    /// Adds a pair unless the same pair is already watched. An added pair
-    /// takes the stamp `now` and toggles the watched node's word.
-    pub fn add(&mut self, nodes: &mut [SceneNode], node: usize, watched: usize, now: u32) -> bool {
-        if self
-            .entries
-            .iter()
-            .any(|w| w.node == node && w.watched == watched)
-        {
-            return false;
-        }
-        self.entries.push(Watch {
-            node,
-            watched,
-            stamp: now,
-        });
-        let word = &mut nodes[watched].watch_word;
-        *word = if *word == WATCH_ON {
-            WATCH_OFF
-        } else {
-            WATCH_ON
-        };
-        true
-    }
-
-    /// Removes the first pair naming `node`, moving the last pair into its
-    /// slot. Returns whether it was watched.
-    pub fn remove(&mut self, node: usize) -> bool {
-        let Some(at) = self.entries.iter().position(|w| w.node == node) else {
-            return false;
-        };
-        self.entries.swap_remove(at);
-        true
-    }
-
-    /// Steps every pair: the timed node gets the signed stamp difference in
-    /// seconds (a wrapping 32-bit difference widened to a signed 64-bit one,
-    /// then the double 0.001), and a pair whose action answers false is
-    /// replaced by the last pair, which is looked at next.
-    pub fn step(&mut self, now: u32, mut keep: impl FnMut(usize, f64) -> bool) -> usize {
-        let mut at = 0;
-        while at < self.entries.len() {
-            let entry = self.entries[at];
-            let seconds = (now.wrapping_sub(entry.stamp) as i64) as f64 * WATCH_MS_TO_SECONDS;
-            if keep(entry.node, seconds) {
-                at += 1;
-            } else {
-                self.entries.swap_remove(at);
-            }
-        }
-        at
-    }
-}
-
-/// One grid cell's pair list: the original's 200-byte record, a count and
-/// twelve 16-byte pairs of node ids. A removal moves the last pair into the
-/// removed slot; the list never grows past [`CELL_PAIRS`].
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct CellPairs {
-    pub pairs: Vec<(usize, usize)>,
-}
-
-impl CellPairs {
-    /// Appends a pair; a full list drops the pair (the original has no
-    /// overflow path).
-    pub fn insert(&mut self, first: usize, second: usize) {
-        if self.pairs.len() < CELL_PAIRS {
-            self.pairs.push((first, second));
-        }
-    }
-
-    /// Removes the first pair whose first node is `node`, moving the last
-    /// pair into its slot. Returns whether it was there.
-    pub fn remove_first(&mut self, node: usize) -> bool {
-        let Some(at) = self.pairs.iter().position(|&(first, _)| first == node) else {
-            return false;
-        };
-        self.pairs.swap_remove(at);
-        true
-    }
-}
-
 /// The whole scene graph.
 #[derive(Clone, Debug)]
 pub struct Scene {
@@ -1334,11 +1216,6 @@ pub struct Scene {
     /// Nodes whose release was deferred to their owner (the scene's free
     /// list).
     pub pending_free: Vec<usize>,
-    /// The timed watch pairs.
-    pub watches: WatchList,
-    /// The grid cells' pair lists, `row · columns + column` (empty when the
-    /// scene has no grid).
-    pub cells: Vec<CellPairs>,
 }
 
 impl Scene {
@@ -1364,58 +1241,7 @@ impl Scene {
             material_adds: Vec::new(),
             material_removes: Vec::new(),
             pending_free: Vec::new(),
-            watches: WatchList::default(),
-            cells: vec![CellPairs::default(); grid.0.saturating_mul(grid.1)],
         }
-    }
-
-    /// Appends a pair to the list of grid cell (`column`, `row`). Returns
-    /// false past the grid's bounds or when the cell already holds
-    /// [`CELL_PAIRS`] pairs.
-    pub fn add_cell_pair(
-        &mut self,
-        column: usize,
-        row: usize,
-        first: usize,
-        second: usize,
-    ) -> bool {
-        let (columns, rows) = self.grid;
-        if column >= columns || row >= rows {
-            return false;
-        }
-        let cell = row * columns + column;
-        let Some(list) = self.cells.get_mut(cell) else {
-            return false;
-        };
-        if list.pairs.len() >= CELL_PAIRS {
-            return false;
-        }
-        list.insert(first, second);
-        true
-    }
-
-    /// Adds a watch pair, toggling the watched node's word. See
-    /// [`WatchList::add`].
-    pub fn add_watch(&mut self, node: usize, watched: usize, now: u32) -> bool {
-        self.watches.add(&mut self.nodes, node, watched, now)
-    }
-
-    /// Steps the watch pairs; see [`WatchList::step`].
-    pub fn step_watches(&mut self, now: u32, keep: impl FnMut(usize, f64) -> bool) -> usize {
-        self.watches.step(now, keep)
-    }
-
-    /// Removes the first pair naming `node` from every grid cell, as the
-    /// node-remove hook does: each cell's scan takes the one pair whose
-    /// first id is the node. Returns how many cells lost a pair.
-    pub fn remove_cell_pairs(&mut self, node: usize) -> usize {
-        let mut removed = 0;
-        for cell in &mut self.cells {
-            if cell.remove_first(node) {
-                removed += 1;
-            }
-        }
-        removed
     }
 
     /// Adds a node, with `parent` none for a node that hangs from its
@@ -5512,54 +5338,22 @@ mod tests {
     }
 
     #[test]
-    fn a_watch_pair_toggles_the_word_and_steps_in_seconds() {
-        let mut scene = Scene::new((4, 3));
-        let timed = scene.add_node(NodeKind::Callback, None);
-        let watched = scene.add_node(NodeKind::Mesh, None);
-        assert!(scene.add_watch(timed, watched, 1000));
-        assert_eq!(scene.nodes[watched].watch_word, WATCH_ON);
-        // The same pair is not added twice.
-        assert!(!scene.add_watch(timed, watched, 1200));
-        // Another watched node starts at 1 too; the same pair toggles once
-        // more only if it is added again after removal.
-        let other = scene.add_node(NodeKind::Mesh, None);
-        assert!(scene.add_watch(timed, other, 1000));
-        assert_eq!(scene.nodes[other].watch_word, WATCH_ON);
-        scene.nodes[other].watch_word = WATCH_OFF;
-        assert!(scene.watches.remove(timed));
-        assert!(scene.watches.remove(timed));
-        assert!(!scene.watches.remove(timed));
-        assert!(scene.add_watch(timed, other, 1000));
-        assert_eq!(scene.nodes[other].watch_word, WATCH_ON);
-        let seen = std::cell::RefCell::new(Vec::new());
-        let left = scene.step_watches(3536, |node, seconds| {
-            seen.borrow_mut().push((node, seconds));
-            node != timed
-        });
-        assert_eq!(left, 0);
-        // 2536 ms is 2.536 s in double precision.
-        assert_eq!(seen.borrow()[0], (timed, 2.536));
-        assert!(scene.watches.entries.is_empty());
-    }
-
-    #[test]
-    fn a_cell_list_holds_twelve_pairs_and_swaps_the_last_in() {
-        let mut scene = Scene::new((3, 2));
-        assert_eq!(scene.cells.len(), 6);
-        assert!(scene.add_cell_pair(1, 1, 7, 70));
-        assert!(scene.add_cell_pair(1, 1, 8, 80));
-        assert!(scene.add_cell_pair(2, 0, 7, 71));
-        assert!(!scene.add_cell_pair(3, 0, 1, 2));
-        for i in 0..CELL_PAIRS {
-            assert!(scene.add_cell_pair(0, 0, 100 + i, 0));
-        }
-        assert!(!scene.add_cell_pair(0, 0, 999, 0));
-        // Only pairs whose first id is the node leave.
-        assert_eq!(scene.remove_cell_pairs(7), 2);
-        assert_eq!(scene.cells[4].pairs, vec![(8, 80)]);
-        assert!(scene.cells[2].pairs.is_empty());
-        // The last pair takes the removed slot.
-        assert_eq!(scene.cells[0].pairs[0], (100, 0));
-        assert_eq!(scene.cells[0].pairs.len(), CELL_PAIRS);
+    fn a_rotated_active_room_meets_views_along_its_axes() {
+        let mut scene = Scene::new((0, 0));
+        scene.sectors.push(Sector::new("room", None));
+        let room = &mut scene.sectors[1];
+        room.in_scene = true;
+        room.state = SectorState::Active;
+        // A long thin room along world z once turned a quarter about y.
+        room.rotation = Mat3::from_rotation_y(std::f32::consts::FRAC_PI_2);
+        room.bounds.world_centre = Vec3::ZERO;
+        room.bounds.first = Bounds::new(Vec3::ZERO, Vec3::new(10.0, 1.0, 1.0));
+        // A view box 1 m wide at z = 8 m: met only by the turned room.
+        let view = box_view_at(Vec3::new(0.0, 0.0, 8.0), 0.5);
+        scene.classify(Vec3::ZERO, std::slice::from_ref(&view), &no_project);
+        assert_eq!(scene.sectors[1].mask, 1);
+        scene.sectors[1].rotation = Mat3::IDENTITY;
+        scene.classify(Vec3::ZERO, std::slice::from_ref(&view), &no_project);
+        assert_eq!(scene.sectors[1].mask, 0);
     }
 }
