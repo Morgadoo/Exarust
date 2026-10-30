@@ -2701,8 +2701,15 @@ pub struct PageSwitch {
     /// A non-continued character's two appearance panels were shown again
     /// and both their tab state words set to `0x110`.
     pub appearance_panels_shown: bool,
+    /// The appearance panels' two tab state words (both `0x110` when they
+    /// were shown, both 0 for a continued character).
+    pub appearance_tab_words: [u32; 2],
     /// The creator form was shown again with its page state cleared.
     pub form_shown: bool,
+    /// The page state word was set back to 0 after the show.
+    pub page_state_cleared: bool,
+    /// The equipment tab's state word lost the `0x110` bits.
+    pub tab_word_cleared: bool,
     /// The NEXT button's form was found and its disabled bit cleared.
     pub next_enabled: bool,
 }
@@ -2711,13 +2718,16 @@ pub struct PageSwitch {
 /// the creator from the appearance page: a recruit returns to the arena,
 /// anyone else to the menu.
 ///
-/// On the way back only the first built of the weapons panel, the skills
-/// panel (which also slides with `0x2d`) and the versus lobby form is
-/// hidden; the versus skills panel and the versus equipment form are then
-/// hidden when they exist. A non-continued character shows its two
-/// appearance panels again and sets both tab state words to `0x110`. The
-/// form is shown with page state 0, the tabs read NAME and HAIR, the NEXT
-/// button is enabled and the appearance editor is stored.
+/// Only the page state 1 (the equipment page) comes back; any other state
+/// leaves instead. On the way back only the first built of the weapons
+/// panel, the skills panel (which also slides with `0x2d`) and the versus
+/// lobby form is hidden; the versus skills panel and the versus equipment
+/// form are then hidden when they exist. A non-continued character shows its
+/// two appearance panels again and sets both tab state words to `0x110`.
+/// The form is then shown, its page state word cleared, the tabs read NAME
+/// and HAIR, the equipment tab's state word loses the `0x110` bits, the NEXT
+/// button's form is captioned and enabled, and the appearance editor is
+/// stored.
 pub fn switch_creation_page(
     page: CreationScreenPage,
     screen_mode: i32,
@@ -2733,6 +2743,7 @@ pub fn switch_creation_page(
         } else {
             None
         };
+        let appearance_panels_shown = screen_mode != 12;
         PageSwitch {
             page: CreationScreenPage::Appearance,
             destination: PageDestination::Appearance,
@@ -2741,8 +2752,15 @@ pub fn switch_creation_page(
             skills_slide: (hidden_first == Some(HiddenPanel::Skills)).then_some(0x2d),
             versus_skills_hidden: panels.versus_skills,
             versus_equipment_hidden: panels.versus_equipment,
-            appearance_panels_shown: screen_mode != 12,
+            appearance_panels_shown,
+            appearance_tab_words: if appearance_panels_shown {
+                [0x110, 0x110]
+            } else {
+                [0, 0]
+            },
             form_shown: true,
+            page_state_cleared: true,
+            tab_word_cleared: true,
             next_enabled: true,
         }
     } else {
@@ -2755,7 +2773,10 @@ pub fn switch_creation_page(
             versus_skills_hidden: false,
             versus_equipment_hidden: false,
             appearance_panels_shown: false,
+            appearance_tab_words: [0, 0],
             form_shown: false,
+            page_state_cleared: false,
+            tab_word_cleared: false,
             next_enabled: false,
         }
     }
@@ -6687,6 +6708,10 @@ mod tests {
         assert!(!back.versus_skills_hidden && !back.versus_equipment_hidden);
         assert!(back.form_shown && back.next_enabled);
         assert!(back.appearance_panels_shown);
+        // Both appearance tab words take 0x110, the page state word clears
+        // and the equipment tab word loses its 0x110 bits.
+        assert_eq!(back.appearance_tab_words, [0x110, 0x110]);
+        assert!(back.page_state_cleared && back.tab_word_cleared);
 
         // Weapons come first: the skills panel is neither hidden nor slid.
         let both = switch_creation_page(
@@ -6717,12 +6742,18 @@ mod tests {
 
         let continued = switch_creation_page(CreationScreenPage::Equipment, 12, arena_panels);
         assert!(!continued.appearance_panels_shown);
+        // A continued character's two tab words are left alone.
+        assert_eq!(continued.appearance_tab_words, [0, 0]);
+        assert!(continued.page_state_cleared && continued.tab_word_cleared);
 
         let arena =
             switch_creation_page(CreationScreenPage::Appearance, 10, BuiltPanels::default());
         assert_eq!(arena.destination, PageDestination::Arena);
         assert!(arena.header.is_none());
         assert_eq!(arena.hidden_first, None);
+        // Leaving from the appearance page clears nothing.
+        assert!(!arena.page_state_cleared && !arena.tab_word_cleared);
+        assert_eq!(arena.appearance_tab_words, [0, 0]);
 
         let other = switch_creation_page(CreationScreenPage::Appearance, 4, BuiltPanels::default());
         assert_eq!(other.destination, PageDestination::Menu);
