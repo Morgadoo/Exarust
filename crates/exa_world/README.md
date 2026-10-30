@@ -184,11 +184,12 @@ and the grid's rooms; portal clipping is next (see
   0x7f-filled channel read with a 244 stride, packed normals and opacity
   bytes), the Sobel normal with the processor's approximate reciprocal square
   root, the vertex-height pass, the 16 × 16 height bounds, the block
-  descriptor (centre, half extents, radius), the 4-ary block culling tree
-  (85 descriptors, rebuilt in preorder) and the 8 × 8 translated block
-  kd-trees. Its upload slot sizes the vertex buffer (12 or 24 bytes a
-  vertex), the packed 240² × 3 plane, the 244² height plane, the resident
-  bit and the four texture sides released on unload. Only the detail
+  descriptor (centre, half extents, radius) and the 8 × 8 translated block
+  kd-trees. A record's GPU vertex buffer is sized at 12 or 24 bytes a
+  vertex (`vertex_upload_bytes`), and the bake's read-back hand-off
+  (`queue_readback`, `take_readback`) copies the 244² height plane and the
+  240² × 3 packed plane by the renderer's feature bits and marks the record
+  (not wired: Exarust builds tiles on the CPU). Only the detail
   displacement is shared with the running terrain build; its own normal
   keeps the exact square root.
 - `terrain::plugins`: the terrain extension list (attach order, activate

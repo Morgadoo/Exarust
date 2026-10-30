@@ -532,79 +532,6 @@ impl BlockDescriptor {
     }
 }
 
-/// The nodes of the terrain manager's block tree: one whole-tile root, four
-/// quadrants, sixteen quarters and sixty-four 6 m blocks.
-pub const BLOCK_TREE_NODES: usize = 1 + 4 + 16 + 64;
-
-/// One node of the block culling tree: the block's descriptor and its four
-/// children (preorder, the children in column-major order).
-#[derive(Clone, Debug, PartialEq)]
-pub struct BlockNode {
-    pub descriptor: BlockDescriptor,
-    pub children: [Option<usize>; 4],
-}
-
-/// The 4-ary block culling tree the manager updates before a draw: the root
-/// covers the tile, each level quarters the previous one and the leaves are
-/// the 64 6 m blocks. The descriptors come from the tile's 16 × 16 height
-/// bounds exactly as [`BlockDescriptor::new`] reads them.
-///
-/// Guess: the original's recursive update visits a node's children 0x5a
-/// bytes apart but does not name their ordering; the model takes them
-/// column-major (low bit column, high bit row) and quarters the bounds-cell
-/// span at each level, which reproduces the 8 × 8 leaves and their two-cell
-/// span.
-#[derive(Clone, Debug, PartialEq)]
-pub struct BlockTree {
-    pub nodes: Vec<BlockNode>,
-}
-
-impl BlockTree {
-    /// Builds the 85 nodes from a tile's height bounds.
-    pub fn new(bounds: &HeightBounds) -> Self {
-        let mut tree = Self {
-            nodes: Vec::with_capacity(BLOCK_TREE_NODES),
-        };
-        tree.grow(0, 0, 0, bounds);
-        tree
-    }
-
-    fn grow(&mut self, level: u32, column: u16, row: u16, bounds: &HeightBounds) -> usize {
-        let index = self.nodes.len();
-        self.nodes.push(BlockNode {
-            descriptor: BlockDescriptor::new(level, column, row, Some(bounds)),
-            children: [None; 4],
-        });
-        if level < 3 {
-            let half = 1u16 << (3 - level);
-            let mut children = [None; 4];
-            for (slot, child) in children.iter_mut().enumerate() {
-                let dc = (slot as u16 & 1) * half;
-                let dr = (slot as u16 >> 1) * half;
-                *child = Some(self.grow(level + 1, column + dc, row + dr, bounds));
-            }
-            self.nodes[index].children = children;
-        }
-        index
-    }
-
-    /// The leaf at block (column, row), which is a level-3 node.
-    pub fn leaf(&self, column: u16, row: u16) -> Option<&BlockNode> {
-        self.nodes.iter().find(|n| {
-            n.descriptor.level == 3 && n.descriptor.column == column && n.descriptor.row == row
-        })
-    }
-
-    /// Recomputes every node's descriptor from new height bounds, in the
-    /// original's preorder walk (the parent before its children).
-    pub fn update(&mut self, bounds: &HeightBounds) {
-        for node in &mut self.nodes {
-            let d = node.descriptor;
-            node.descriptor = BlockDescriptor::new(d.level, d.column, d.row, Some(bounds));
-        }
-    }
-}
-
 /// The opacity byte of a vertex from its height `y`: `(160 − (15 − y)) ×
 /// 0.00625`, zero below 0, 255 above 1, else `v × 255` rounded to nearest
 /// even.
@@ -622,30 +549,34 @@ pub fn opacity_byte(y: f32) -> u8 {
 /// The opacity slope, 0.00625 as the single-precision constant.
 const OPACITY_SLOPE: f32 = 0.006_25;
 
-/// Bytes of the packed plane a tile uploads: 240² cells of three bytes
-/// (two compressed-normal bytes and the opacity byte).
-pub const TILE_PACKED_UPLOAD_BYTES: usize = 240 * 240 * 3;
-/// Bytes of the 244² height plane a tile uploads.
-pub const TILE_HEIGHT_UPLOAD_BYTES: usize = TILE_APRON * TILE_APRON;
-/// Sides of the four textures a tile holds: colour, normal and gloss at
-/// 244, bump at half that.
-pub const TILE_TEXTURE_SIDES: [u32; 4] = [244, 244, 244, 122];
+/// Bytes of the packed plane a tile's bake reads back: 240² cells of
+/// three bytes (two compressed-normal bytes and the opacity byte).
+pub const TILE_PACKED_READBACK_BYTES: usize = 240 * 240 * 3;
+/// Bytes of the 244² single-channel height plane a tile's bake reads back.
+pub const TILE_HEIGHT_READBACK_BYTES: usize = TILE_APRON * TILE_APRON;
 
-/// Manager state word: the tile has a packed plane to upload (two
-/// compressed-normal bytes and the opacity byte per cell).
-pub const UPLOAD_PACKED: u32 = 0x2000;
-/// Manager state word: the tile has a height plane to upload.
-pub const UPLOAD_HEIGHTS: u32 = 0x1000;
-/// Manager state word: the tile is resident on the GPU.
-pub const RESIDENT: u32 = 0x4000;
+/// Renderer feature bit: the bake reads the packed plane back.
+pub const READBACK_PACKED: u32 = 0x1000;
+/// Renderer feature bit: the bake reads the height plane back.
+pub const READBACK_HEIGHTS: u32 = 0x2000;
+/// Record state bit cleared when the record's bake is queued (the name is
+/// Exarust's guess).
+pub const RECORD_BAKE_WAITING: u32 = 0x100;
+/// Record state bit the read-back hand-off clears (the name is Exarust's
+/// guess).
+pub const RECORD_READBACK_DUE: u32 = 0x2000;
+/// Record state bit the read-back hand-off sets (the name is Exarust's
+/// guess).
+pub const RECORD_READ_BACK: u32 = 0x4000;
 /// A vertex's position bytes.
 pub const VERTEX_STRIDE_PLAIN: usize = 12;
 /// A vertex's position and normal bytes (the tile's full vertex buffer).
 pub const VERTEX_STRIDE_FULL: usize = 24;
 
-/// Bytes the vertex buffer upload writes: every vertex's position, and its
-/// normal when the renderer's normals flag is on (the original's 0xc and
-/// 0x18 strides over the manager's vertex count).
+/// Bytes of the vertex buffer a record allocates when its tiles get GPU
+/// buffers: every vertex's position, and its normal when the renderer's
+/// normals flag is on (the original's 0xc and 0x18 strides over the
+/// manager's vertex count).
 pub fn vertex_upload_bytes(config: &ManagerConfig, with_normals: bool) -> usize {
     let stride = if with_normals {
         VERTEX_STRIDE_FULL
@@ -655,47 +586,44 @@ pub fn vertex_upload_bytes(config: &ManagerConfig, with_normals: bool) -> usize 
     config.vertex_count as usize * stride
 }
 
-/// What one tile's upload writes, in bytes: the packed plane and the height
-/// plane, and whether either was bound. A Bevy mesh/image upload takes the
-/// same buffers through the renderer; the manager's slot keeps the state.
+/// Queues a record's bake: it becomes the pending read-back and loses
+/// [`RECORD_BAKE_WAITING`]. Which planes the bake renders follows the
+/// renderer's feature bits, as [`take_readback`] reads them.
+pub fn queue_readback(state: &mut u32) {
+    *state &= !RECORD_BAKE_WAITING;
+}
+
+/// What one read-back hand-off copies, in bytes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct TileUpload {
-    pub vertex_stride: usize,
-    pub packed_bytes: usize,
+pub struct TileReadback {
+    /// The height plane copied into the record (its normals are then
+    /// recomputed from it).
     pub height_bytes: usize,
-    /// The tile was bound before the upload (the original's texture slot
-    /// is non-zero).
-    pub bound: bool,
+    /// The packed plane copied out and handed to the manager's callback.
+    pub packed_bytes: usize,
 }
 
-/// Uploads a tile's planes into its renderer slot from the manager state
-/// word and returns what was written. The packed plane clears its bit, the
-/// height plane keeps its own; every upload sets the resident bit. A tile
-/// with neither bit only becomes resident.
-pub fn tile_upload(state: &mut u32, vertex_stride: usize, bound: bool) -> TileUpload {
-    // A tile with no record bound is not touched (the original returns
-    // without clearing or setting anything).
-    if !bound {
-        return TileUpload::default();
-    }
-    let packed = *state & UPLOAD_PACKED != 0;
-    let heights = *state & UPLOAD_HEIGHTS != 0;
-    let upload = TileUpload {
-        vertex_stride,
-        packed_bytes: if packed { TILE_PACKED_UPLOAD_BYTES } else { 0 },
-        height_bytes: if heights { TILE_HEIGHT_UPLOAD_BYTES } else { 0 },
-        bound,
+/// The read-back hand-off: with no pending record nothing happens (`None`).
+/// Otherwise the height plane is copied when the renderer reads heights back
+/// and the packed plane when it reads that back (heights first), the record
+/// loses [`RECORD_READBACK_DUE`] and gains [`RECORD_READ_BACK`] whichever
+/// planes were read, and the pending slot empties.
+pub fn take_readback(features: u32, pending: &mut Option<&mut u32>) -> Option<TileReadback> {
+    let state = pending.take()?;
+    let readback = TileReadback {
+        height_bytes: if features & READBACK_HEIGHTS != 0 {
+            TILE_HEIGHT_READBACK_BYTES
+        } else {
+            0
+        },
+        packed_bytes: if features & READBACK_PACKED != 0 {
+            TILE_PACKED_READBACK_BYTES
+        } else {
+            0
+        },
     };
-    *state &= !UPLOAD_PACKED;
-    *state |= RESIDENT;
-    upload
-}
-
-/// Releases a tile's renderer slot: the resident and upload bits go, and the
-/// four textures to free come back (colour, normal, gloss, bump sides).
-pub fn tile_release(state: &mut u32) -> [u32; 4] {
-    *state &= !(RESIDENT | UPLOAD_PACKED | UPLOAD_HEIGHTS);
-    TILE_TEXTURE_SIDES
+    *state = (*state & !RECORD_READBACK_DUE) | RECORD_READ_BACK;
+    Some(readback)
 }
 
 #[cfg(test)]
@@ -991,49 +919,6 @@ mod tests {
     }
 
     #[test]
-    fn the_block_tree_quarters_the_tile_four_ways_down_to_the_blocks() {
-        let mut bounds = [[(0.0f32, 0.0f32); BOUND_CELLS]; BOUND_CELLS];
-        bounds[0][0] = (-10.0, 30.0);
-        bounds[15][15] = (0.0, 1000.0);
-        let tree = BlockTree::new(&bounds);
-        assert_eq!(tree.nodes.len(), BLOCK_TREE_NODES);
-        // The root covers the whole tile; its first child is the level-1
-        // quadrant at cell (0, 0) spanning eight bounds cells.
-        assert_eq!(
-            tree.nodes[0].descriptor,
-            BlockDescriptor::new(0, 0, 0, Some(&bounds))
-        );
-        let first = tree.nodes[0].children[0].unwrap();
-        assert_eq!(tree.nodes[first].descriptor.level, 1);
-        assert_eq!(
-            tree.nodes[first].descriptor,
-            BlockDescriptor::new(1, 0, 0, Some(&bounds))
-        );
-        // The last child of the root sits at cell (8, 8).
-        let last = tree.nodes[0].children[3].unwrap();
-        assert_eq!(tree.nodes[last].descriptor.column, 8);
-        assert_eq!(tree.nodes[last].descriptor.row, 8);
-        // Leaves are the 64 six-metre blocks, two bounds cells apart.
-        let leaf = tree.leaf(2, 4).unwrap();
-        assert_eq!(
-            leaf.descriptor,
-            BlockDescriptor::new(3, 2, 4, Some(&bounds))
-        );
-        assert!(leaf.children.iter().all(Option::is_none));
-        // A flat block keeps the 1 mm half extent plus the one added to
-        // every block.
-        let flat = [[(5.0f32, 5.0f32); BOUND_CELLS]; BOUND_CELLS];
-        let tree = BlockTree::new(&flat);
-        assert!((tree.leaf(14, 14).unwrap().descriptor.half[1] - 1.001).abs() < 1e-6);
-        // An update rewrites the descriptors from the new bounds.
-        let mut tree = tree;
-        let mut moved = flat;
-        moved[15][15] = (0.0, 4.0);
-        tree.update(&moved);
-        assert_eq!(tree.leaf(14, 14).unwrap().descriptor.centre[1], 2.5);
-    }
-
-    #[test]
     fn the_vertex_upload_is_every_vertex_at_twelve_or_twenty_four_bytes() {
         let c = config();
         assert_eq!(vertex_upload_bytes(&c, false), 58081 * 12);
@@ -1041,35 +926,31 @@ mod tests {
     }
 
     #[test]
-    fn a_tile_upload_writes_its_planes_and_release_frees_them() {
-        // Both planes bound: 240² × 3 = 172 800 and 244² = 59 536 bytes.
-        let mut state = UPLOAD_PACKED | UPLOAD_HEIGHTS;
-        let plan = tile_upload(&mut state, 24, true);
-        assert_eq!(plan.packed_bytes, 0x2_a300);
-        assert_eq!(plan.height_bytes, 0xe890);
-        assert_eq!(plan.vertex_stride, 24);
-        assert!(plan.bound);
-        assert_eq!(state, RESIDENT | UPLOAD_HEIGHTS);
-        // The height bit alone uploads only the height plane; the resident
-        // bit stays.
-        let plan = tile_upload(&mut state, 12, true);
-        assert_eq!(plan.packed_bytes, 0);
-        assert_eq!(plan.height_bytes, TILE_HEIGHT_UPLOAD_BYTES);
-        assert_eq!(state, RESIDENT | UPLOAD_HEIGHTS);
-        // Nothing to write still marks a bound tile resident.
-        let mut idle = 0;
-        let plan = tile_upload(&mut idle, 0, true);
-        assert_eq!((plan.packed_bytes, plan.height_bytes), (0, 0));
-        assert_eq!(idle, RESIDENT);
-        // An unbound tile is left alone and uploads nothing.
-        let mut unbound = UPLOAD_PACKED;
-        let plan = tile_upload(&mut unbound, 24, false);
-        assert_eq!(plan, TileUpload::default());
-        assert_eq!(unbound, UPLOAD_PACKED);
-        // A release frees the four texture slots and every state bit.
-        let sides = tile_release(&mut idle);
-        assert_eq!(sides, [244, 244, 244, 122]);
-        assert_eq!(idle, 0);
+    fn a_readback_copies_the_planes_the_renderer_reads_and_marks_the_record() {
+        // Queuing clears the waiting bit only.
+        let mut record = RECORD_BAKE_WAITING | RECORD_READBACK_DUE | 7;
+        queue_readback(&mut record);
+        assert_eq!(record, RECORD_READBACK_DUE | 7);
+        // Heights (0x2000) copy 244² = 0xe890 bytes, the packed plane
+        // (0x1000) 240² × 3 = 0x2a300.
+        let mut pending = Some(&mut record);
+        let plan = take_readback(READBACK_HEIGHTS | READBACK_PACKED, &mut pending);
+        assert_eq!(
+            plan,
+            Some(TileReadback {
+                height_bytes: 0xe890,
+                packed_bytes: 0x2_a300,
+            })
+        );
+        assert!(pending.is_none());
+        assert_eq!(record, RECORD_READ_BACK | 7);
+        // With neither plane read the record is still marked.
+        let mut other = RECORD_READBACK_DUE;
+        let plan = take_readback(0, &mut Some(&mut other));
+        assert_eq!(plan, Some(TileReadback::default()));
+        assert_eq!(other, RECORD_READ_BACK);
+        // No pending record: nothing.
+        assert_eq!(take_readback(READBACK_HEIGHTS, &mut None), None);
     }
 
     #[test]
