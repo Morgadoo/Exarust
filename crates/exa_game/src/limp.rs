@@ -218,8 +218,13 @@ fn build_bodies(
 /// The first clip sampled the way the pose-only sampler places a body:
 /// the clock's bracket without the living sampler's ease or clamp
 /// ([`placement_bracket`]), its root taken from the source key for the
-/// first three gait clips ([`placement_root_from_key`]).
-fn placement_pose(anim: &Animator, clip: &Clip, action: Option<usize>) -> Option<ClipPose> {
+/// first three gait clips ([`placement_root_from_key`]). Also returns the
+/// bracket it sampled.
+fn placement_pose(
+    anim: &Animator,
+    clip: &Clip,
+    action: Option<usize>,
+) -> Option<(ClipPose, exa_anim::Bracket)> {
     let still = in_place(action);
     let capture_key = anim.capture.is_some().then_some(anim.capture_key);
     let pick = placement_bracket(clip, anim.time, anim.blend, clip.loops(), capture_key)?;
@@ -232,7 +237,7 @@ fn placement_pose(anim: &Animator, clip: &Clip, action: Option<usize>) -> Option
             pose.root.z = 0.0;
         }
     }
-    Some(pose)
+    Some((pose, b))
 }
 
 /// The placement's sampling: the body's clip at its current clock, posed on
@@ -259,7 +264,7 @@ fn spawn_pose(
         return;
     };
     let action = motions.0.action_index(&anim.action);
-    let Some(pose) = placement_pose(anim, clip, action) else {
+    let Some((pose, _)) = placement_pose(anim, clip, action) else {
         return;
     };
     let pose = pose.scaled(stature.map_or(1.0, |s| s.0));
@@ -350,18 +355,9 @@ fn original_spawn_pose<L: Level + ?Sized>(
         return;
     };
     let action = motions.0.action_index(&anim.action);
-    let Some(pose) = placement_pose(anim, clip, action) else {
+    let Some((pose, b)) = placement_pose(anim, clip, action) else {
         return;
     };
-    let b = placement_bracket(
-        clip,
-        anim.time,
-        anim.blend,
-        clip.loops(),
-        anim.capture.is_some().then_some(anim.capture_key),
-    )
-    .map(|p| p.bracket);
-    let Some(b) = b else { return };
     let pose = pose.scaled(stature.map_or(1.0, |s| s.0));
     let posed: Vec<Affine3A> = found
         .iter()
@@ -1389,7 +1385,7 @@ pub(crate) mod tests {
         let mut anim = Animator::new("Default", "Idle");
         anim.time = 10.0;
         anim.blend = 4.0;
-        let pose = placement_pose(&anim, &clip, None).unwrap();
+        let (pose, _) = placement_pose(&anim, &clip, None).unwrap();
         let b = placement_bracket(&clip, 10.0, 4.0, clip.loops(), None)
             .unwrap()
             .bracket;
