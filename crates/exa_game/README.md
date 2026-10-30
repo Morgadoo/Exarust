@@ -865,11 +865,11 @@ quarter-turn release snap, the stepped wheel zoom (the chase camera's
 wheel goes through it), the stepped gamepad zoom (`gamepad_zoom`: `gamepad::zoom_step`'s
 move, which the pad drives live, then the pitch floor and held pitch), the vertical zoom slide, the zoom's cubed
 pitch offset and the editor's grab drag and face-aligned target. The
-editor's viewport attachment keeps the handler set a preset's flags ask
-for, saves the wheel handler once, and restores it while removing the
-editor's press and move handlers when the controller detaches; the scene
-editor's camera switch drives that state as its followed record comes and
-goes.
+editor's viewport attachment keeps the handler set a preset's flags add,
+saves the viewport's wheel handler while its slot is empty, and restores
+it while removing the free camera's press and move handlers when the
+controller detaches; the scene editor's camera switch drives that state
+as its followed record comes and goes.
 
 The arena's per-rank kits are in (`loadout`): `Member::loadouts` holds
 six of the record's own loadouts (hands and worn items); the editor takes
