@@ -161,25 +161,32 @@ pub fn bubble_shape(
     (shape, volume_of(centre, half))
 }
 
-/// The Barrier's light shape this frame: the `gi_dome` shell at the drawn
-/// cap's centre, its `bMat` the translation there and the `100/r` scale that
-/// makes the program's 100-unit shell the barrier's radius, the colour and
-/// extent of [`emissive::barrier_light`], in the mesh node's box plus 60 cm.
+/// The Barrier's light shape this frame: the `gi_dome` shell in the cap
+/// node's own frame (its `bMat` the inverse of the node's place and facing,
+/// where the program's 100-unit shell is the cap's sphere, its cap toward
+/// +z), the colour and extent of [`emissive::barrier_light`], in the node's
+/// 85 × 85 × 25 cm box 75 cm ahead, turned with it, plus 60 cm. [inf: the
+/// node's basis is the cap frame the push uses, the facing flattened; the
+/// original orthogonalises its up against an unflattened facing.]
 pub fn barrier_shape(barrier: &Barrier, alpha: f32, gain: f32) -> (GiShape, ShapeVolume) {
     let dome = &barrier.dome;
-    let centre = barrier.drawn_centre(alpha);
+    let frame =
+        super::barrier_live::cap_frame(barrier.frame_place(alpha), barrier.frame_facing(alpha));
     let light = emissive::barrier_light(dome.phase, dome.shown_share, BARRIER_DRAW_SCALE, gain);
-    let scale = 100.0 / dome.radius;
     let (box_centre, half) = emissive::world_box(
-        centre,
-        [Vec3::X, Vec3::Y, Vec3::Z],
-        Vec3::splat(dome.radius),
+        barrier.drawn_centre(alpha),
+        [
+            frame.matrix3.x_axis.into(),
+            frame.matrix3.y_axis.into(),
+            frame.matrix3.z_axis.into(),
+        ],
+        BARRIER_DRAW_SCALE,
         FALLOFF_CM,
     );
     let shape = GiShape {
         program: GiShapeProgram::Dome,
         colour: light.colour,
-        matrix: Mat4::from_translation(-centre) * Mat4::from_scale(Vec3::splat(scale)),
+        matrix: Mat4::from(frame.inverse()),
         half: light.extent,
         tex_pos: Vec2::from(dome.tex_pos),
         ..default()
@@ -902,16 +909,20 @@ mod tests {
         assert_eq!(volume.half, Vec3::new(1.0, 1.7, 0.75));
     }
 
-    /// A standing barrier's dome: the gi_dome shell at the drawn centre, the
-    /// 85/85/25 scale less 60 across and 40 up, and the colour
-    /// `(0.14, 0.08, 1)·strength·gain·0.8`.
+    /// A standing barrier's dome: the gi_dome shell in the cap's frame, the
+    /// 85/85/25 scale less 60 across and 40 up, the colour
+    /// `(0.14, 0.08, 1)·strength·gain·0.8`, and the node's box 75 cm ahead.
     #[test]
     fn a_barrier_registers_its_gi_dome() {
         let (mut barrier, _) = Barrier::cast(100.0, Vec3::ZERO, 0.0, 0, &mut Mt19937::new(1));
         barrier.dome.phase = crate::effects::force_dome::Phase::Standing;
         barrier.dome.shown_share = 1.0;
-        barrier.pose.first = barrier.dome.at.to_array();
-        barrier.pose.first_previous = barrier.dome.at.to_array();
+        let at = Vec3::new(200.0, 0.0, 0.0);
+        barrier.pose.first = at.to_array();
+        barrier.pose.first_previous = at.to_array();
+        // Facing +x: the cap's +z is world +x.
+        barrier.pose.second = [1.0, 0.0, 0.0];
+        barrier.pose.second_previous = [1.0, 0.0, 0.0];
         let (shape, volume) = barrier_shape(&barrier, 0.0, GI_LIGHT_SCALE);
         assert_eq!(shape.program, GiShapeProgram::Dome);
         assert_eq!(shape.half, Vec3::new(25.0, 45.0, 25.0));
@@ -919,9 +930,15 @@ mod tests {
             shape.colour,
             crate::effects::emissive::DOME_COLOUR * (GI_LIGHT_SCALE * 0.8)
         );
-        assert_eq!(shape.matrix.transform_point3(Vec3::ZERO), -barrier.dome.at);
-        assert_eq!(volume.position, Vec3::new(0.0, 1.0, 0.0));
-        assert_eq!(volume.half, Vec3::splat(1.7));
+        // The node's place is the shell's centre, and the cap's apex 100 cm
+        // along the facing is the shell's +z pole.
+        assert!(shape.matrix.transform_point3(at).length() < 1e-4);
+        let apex = shape.matrix.transform_point3(at + Vec3::X * 100.0);
+        assert!((apex - Vec3::new(0.0, 0.0, 100.0)).length() < 1e-3);
+        // The box: 85 × 85 × 25 turned to face +x, centred 75 cm ahead,
+        // widened 10 cm, rounded, plus 60 cm.
+        assert_eq!(volume.position, Vec3::new(2.75, 0.0, 0.0));
+        assert_eq!(volume.half, Vec3::new(0.95, 1.55, 1.55));
     }
 
     /// A standing force bubble's shell: `gi_bubble` with the radius five past
