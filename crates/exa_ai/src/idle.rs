@@ -14,8 +14,10 @@
 //! inside a facing-scaled 100 cm, and outside a 400 cm band it sets an
 //! urgency and replans when the leader has moved more than 100 cm. Sleep
 //! lies dormant: the dormant condition and flag, tone 0, a statue, and
-//! gait 2. The tick after that changes nothing. Seeing a contact, and only
-//! when the flags are exactly the dormant flag, knocks that sleeper out.
+//! gait 2. Its tick, the current state from then on, writes the dormant
+//! flag and the dormant condition again and nothing else. Seeing a contact,
+//! and only when the flags are exactly the dormant flag, knocks that
+//! sleeper out.
 //! For 1500 ms the tone stays 0. Then it rises by 0.001 a tick, and the
 //! clip base climbs by 0.01 a tick after 8 s until the tone is 1.
 
@@ -480,7 +482,8 @@ pub const SLEEP_GAIT: i32 = 2;
 /// The sleep activity. Seeing a contact removes it.
 pub const SLEEP_ROLE: u16 = 44;
 
-/// Which tick is installed. Sleep's tick changes nothing.
+/// Which tick is installed. Sleep's tick only re-asserts the dormant flag
+/// and condition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdleTick {
     Active,
@@ -505,7 +508,8 @@ pub struct Sleeper {
 ///
 /// The condition becomes dormant. The dormant flag is set and the other
 /// flags stay. Tone becomes 0, so the tone target does too. The body is a
-/// statue and its gait is 2. The tick installed afterwards changes nothing.
+/// statue and its gait is 2. The tick installed afterwards is
+/// [`sleep_tick`].
 pub fn sleep(sleeper: &mut Sleeper, drive: &mut Drive) {
     sleeper.flags.0 |= StateFlags::DORMANT;
     sleeper.condition = Condition::DORMANT;
@@ -515,8 +519,13 @@ pub fn sleep(sleeper: &mut Sleeper, drive: &mut Drive) {
     sleeper.tick = IdleTick::Sleep;
 }
 
-/// The tick sleep installs. It does not write the sleeper or the tone.
-pub fn sleep_tick(_sleeper: &mut Sleeper, _drive: &mut Drive) {}
+/// The tick sleep installs, every AI tick while it is the current state:
+/// the dormant flag joins the flags and the condition becomes dormant
+/// again. It writes nothing else (no tone, statue or gait).
+pub fn sleep_tick(sleeper: &mut Sleeper) {
+    sleeper.flags.0 |= StateFlags::DORMANT;
+    sleeper.condition = Condition::DORMANT;
+}
 
 /// Pin gain a knock-out writes, the float 0.08.
 pub const KNOCK_OUT_PIN_BITS: u32 = 0x3da3_d70a;
@@ -1586,7 +1595,7 @@ mod tests {
     }
 
     #[test]
-    fn a_sleeper_lies_dormant_and_its_tick_changes_nothing() {
+    fn a_sleeper_lies_dormant_and_its_tick_reasserts_it() {
         let mut sleeper = Sleeper {
             condition: Condition::WALKING,
             flags: StateFlags(StateFlags::SHOCK_STAGGER),
@@ -1612,11 +1621,19 @@ mod tests {
         assert_eq!(sleeper.tick, IdleTick::Sleep);
 
         let kept = sleeper;
-        let tone = drive.tone;
-        sleep_tick(&mut sleeper, &mut drive);
+        sleep_tick(&mut sleeper);
         assert_eq!(sleeper, kept);
-        assert_eq!(drive.tone, tone);
-        assert_eq!(drive.tone_target(), 0.0);
+        // The posture decision rewrote the condition and a knock-out the
+        // flags: the tick puts the dormant flag and condition back, and
+        // leaves the other bits, the statue and the gait.
+        sleeper.condition = Condition::DOWN;
+        sleeper.flags = StateFlags(0x20);
+        sleep_tick(&mut sleeper);
+        assert_eq!(sleeper.condition, Condition::DORMANT);
+        assert_eq!(sleeper.flags.0, 0x30);
+        assert!(sleeper.statue);
+        assert_eq!(sleeper.gait, 2);
+        sleeper = kept;
 
         sleep(&mut sleeper, &mut drive);
         assert_eq!(sleeper, kept);

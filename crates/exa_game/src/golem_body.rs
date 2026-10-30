@@ -24,6 +24,9 @@
 //!   ([`exa_ai::golem::sleep_scales`]);
 //! - a body not playing Stand 2 is asked to.
 //!
+//! The sleep activity's entry sets the same statue rest on a sleeper's
+//! body and its knock-out clears it ([`rest_sleepers`]).
+//!
 //! The wake ([`crate::golem_alarm`]) clears the statue byte, so the next
 //! sentry tick stands the body, and undoes the scales
 //! ([`exa_ai::golem::wake_scales`], [`undo_sleep_scales`]).
@@ -58,6 +61,7 @@ impl Plugin for GolemBodyPlugin {
             Update,
             (
                 stand_sentries.after(exa_ai::brain::idle_walk),
+                rest_sleepers.after(exa_ai::brain::ai_tick),
                 trace_guardians,
             ),
         );
@@ -95,6 +99,35 @@ pub fn undo_sleep_scales(body: &mut Ragdoll) {
     let woken = golem::wake_scales(&contact_bases(body), &held_parts(body));
     for (part, mobility) in body.parts.iter_mut().zip(woken) {
         part.pairing.mobility = mobility;
+    }
+}
+
+/// The sleep activity's statue byte and gait word on the body (both kept
+/// as its statue rest): its entry sets them (gait 2), a knock-out clears
+/// them (gait 0), as the brain reports ([`exa_ai::brain::StatueByte`]).
+pub fn rest_sleepers(
+    mut commands: Commands,
+    mut changed: MessageReader<exa_ai::brain::StatueByte>,
+    mut rests: Query<&mut StatueRest>,
+) {
+    for change in changed.read() {
+        match rests.get_mut(change.entity) {
+            Ok(mut rest) => {
+                if rest.0 != change.set {
+                    rest.0 = change.set;
+                }
+            }
+            Err(_) => {
+                if let Ok(mut entity) = commands.get_entity(change.entity) {
+                    entity.insert(StatueRest(change.set));
+                }
+            }
+        }
+        debug!(
+            "{:?}: the statue rest {} with the sleep",
+            change.entity,
+            if change.set { "is set" } else { "clears" }
+        );
     }
 }
 

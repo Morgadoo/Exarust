@@ -398,3 +398,10 @@ On a tick without its target pass a brain SHALL keep the last pass's report and 
 #### Scenario: The hostile still engages
 - **WHEN** a hostile and a neutral brain share the turn for 700 ticks
 - **THEN** each has the pass every other tick and the hostile brain engages the player
+
+### Requirement: Asleep is the dormant flag
+The perception SHALL read a body as asleep when its state flags carry the dormant flag (0x10), whatever else they carry: an asleep observer's reach SHALL halve and an asleep observed body SHALL be weighed as lying. A sleeper and a knocked-out body both carry it.
+
+#### Scenario: Sleeper and knocked-out body
+- **WHEN** an observer with flags 0x10, and one with flags 0x30, look at a body with flags 0x30
+- **THEN** both observers read themselves as asleep and the body as asleep

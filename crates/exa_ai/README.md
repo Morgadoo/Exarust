@@ -71,8 +71,17 @@ standard sense (`combatant::standard_sense`); the other AI races use the
 ally-aware one (`combatant::ally_sense`), whose fellow AI is a brain whose
 race word carries the AI bit (`Npc::race_ai`). The pass logs at info each
 contact a sense starts or stops tracking, and each third party the
-standard or ally sense picks. A sleeper that rates the player above a notice drops the
-sleep role and wakes. A knocked-out or dead brain stops after its alert decay,
+standard or ally sense picks. The sleep activity (the one shipped sleeper is
+`GdnShaperD` in `exanima67`) lies the body dormant once it has a drive: the
+dormant condition and flag, tone 0, the statue byte and gait 2 (the game's
+statue rest, through `brain::StatueByte`); while the sleep is the current
+state each AI tick writes the dormant flag and condition again and runs no
+idle head. The perception reads the dormant flag as asleep (the observer's
+reach halves, the observed lies). A body whose flags are exactly the
+dormant flag and whose target pass finds anyone above a notice drops role
+44 (applied again on the next tick) and is knocked out at once (the shared
+knock-out and its wake timer); the body tick's wake raises it. Rating the
+player no longer wakes anyone. A knocked-out or dead brain stops after its alert decay,
 before its morale and state (the original's condition bit `0x800`), and
 senses nothing in the perception pass (the original's tick leaves before
 the target pass that senses). A placed
@@ -128,7 +137,7 @@ look's wide pan waits 3 s and the sway and narrow pan 0.5 s.
 | `walker` | the idle states' head (the attention's notice score and clamped window, the 50° focus window), the roam and patrol step on the planning turn (the goal picked only on the turn, the 150 cm follow span, the forced home leg, the settle before the pause), and the walk along the followed route (100 cm flat arrival, Exarust's give-up deadline) |
 | `motion` | the AI's look and body motion: the head look toward a point (a quarter turn, 0.02 easing), the whole-look smoothing (`(0.0062831854·gap + sway)·0.7`, a 30° write threshold), the idle look (0.1 of the gap, 1 % pitch), the out-of-combat look chain (the body look toward the head offset, the 0.4/0.64 smoothing and the gait helper's 30° write, with the stepping, live-target and combat cases), the step/combat walk (the 0.7/0.007 facing threshold, the 150 cm goal hold, the run and sprint flags), the walk stop (8·crouch + 20), the steer line (120 cm, 3600 cm²), the way share, the body in the way (each body shifted 20 cm along the walk direction, skipping the remembered and carried bodies), the alert pan (both draws every tick, one in 300 and 75, the body turned by the sway with a foe), the out-of-combat sway, and the aim, settle and snap |
 | `rooms` | the 600 cm room cell grid (the floored, half-offset flat index, the per-cell occupant lists, the old-cell memory and the cell's nearby characters) and the level's side of it: the cell-to-room table, a room's exits at the cell centres behind its door links with shut doors from the room tracker, a room's reference point, and the sight test (the room reach test) |
-| `lifecycle` | the script-object factory, the scripted action hook, the removal/destroy/disable hooks, the idle return, the investigation of a disturbance and its goal callback (the pathfinder's nearest walkable point, mode 20, radius 100 cm), the idle driver's state machine (turn, plan a room, walk, test the exit, use the object, plan home, search the room) with its exit/use/object checks and room walk (every unvisited exit weighed, the previous cell included; going back clears the avoided exits; the first avoided exit sets its marker), the go-to-object state, and the object goal |
+| `lifecycle` | the script-object factory, the scripted action hook, the removal/destroy/disable hooks, the idle return (called by the chase's leave, with `restart_idle`), the investigation of a disturbance (sampled live in the waits' head with the shipped constant 0, so it never walks) and its goal callback (the pathfinder's nearest walkable point, mode 20, radius 100 cm), the idle driver's state machine (turn, plan a room, walk, test the exit, use the object, plan home, search the room) with its exit/use/object checks and room walk (every unvisited exit weighed, the previous cell included; going back clears the avoided exits; the first avoided exit sets its marker), the go-to-object state, and the object goal (the idle driver and go-to-object state have no caller: in 0.9.5 only a never-set flag installs them, on the player body) |
 | `estimate` | the fighting estimate from a record's skills and combat skill, the held weapon's stat bytes and reach, and the body scale |
 | `struck` | the hit reaction in the running game: each blow `exa_combat` notices (a wound, a clash or a block, in the damage routine's order) runs the combatant base's courage and attacker mark, then the AI's concern rise with the threat estimate over the brain's nearby list (only under the cap); a non-duellist attacker's lesson goes out as `Taught` |
 | `combatant` | the behaviour base: contacts, perception, the AI's standard and ally-class per-contact senses, the ally-class races' sense (the 3 concern floor, attitude 100 for a fellow AI, the 1200/1800 cm range, the threat to an ally weighed by the observed state, 0.3 of it as the concern target, the observed body's in-combat mark weighing 0.25 over 0.1; run by the perception pass for every AI race outside class `0x12xx`), the attitude and trust overrides, concern, references, the queued step, the nav footprint |
