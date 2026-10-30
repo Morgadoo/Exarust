@@ -490,6 +490,109 @@ pub fn set_control_on(
     }
 }
 
+/// What showing a control did besides its own state: the other controls of
+/// its group that were hidden, and the state word's low byte after the
+/// call with the lit bit masked off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ControlVisibility {
+    /// The other controls of the group whose shown and lit bits cleared.
+    pub hidden: usize,
+    /// The control's state's low byte, with the lit bit masked off.
+    pub state_byte: u8,
+}
+
+/// Shows or hides a control (the original's visibility helper). Hiding
+/// clears only its shown bit. Showing first clears the shown and lit bits
+/// of every control of its group that is shown (the control itself
+/// included; a group of 0 has none), reporting each unless `quiet`, then
+/// sets its own shown bit; the lit bit then follows the shown bit. Unless
+/// `quiet`, the control itself reports too. Returns the other controls
+/// hidden and the previous state byte.
+pub fn set_control_visible(
+    controls: &mut [Control],
+    index: usize,
+    show: bool,
+    quiet: bool,
+    events: &mut Vec<ControlEvent>,
+) -> ControlVisibility {
+    let Some(control) = controls.get(index) else {
+        return ControlVisibility::default();
+    };
+    let group = control.group;
+    let mut hidden = 0;
+    if !show {
+        controls[index].state &= !control_state::ON;
+    } else {
+        if group != 0 {
+            for (other, control) in controls.iter_mut().enumerate() {
+                if control.group == group && control.state & control_state::ON != 0 {
+                    control.state &= !(control_state::ON | control_state::LIT);
+                    if !quiet && control.reports {
+                        events.push(ControlEvent::Changed(other));
+                    }
+                    if other != index {
+                        hidden += 1;
+                    }
+                }
+            }
+        }
+        controls[index].state |= control_state::ON;
+    }
+    let control = &mut controls[index];
+    control.state =
+        (control.state & !control_state::LIT) | ((control.state & control_state::ON) << 1);
+    let state_byte = (control.state & !control_state::LIT) as u8;
+    if !quiet && control.reports {
+        events.push(ControlEvent::Changed(index));
+    }
+    ControlVisibility { hidden, state_byte }
+}
+
+/// Where a message box's result goes: the box stores its parent's result
+/// field and tells the parent to close.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MessageBoxButton {
+    /// The value stored: 1 for Ok, 0 for Cancel or the close mark.
+    pub result: i32,
+    /// The parent form hears the close message.
+    pub closes: bool,
+    /// The box is destroyed (the close mark's own message).
+    pub destroys: bool,
+}
+
+/// The Ok button's answer (message box callback): store 1, close the
+/// parent.
+pub const MESSAGE_OK: MessageBoxButton = MessageBoxButton {
+    result: 1,
+    closes: true,
+    destroys: false,
+};
+
+/// The Cancel button's answer: store 0, close the parent.
+pub const MESSAGE_CANCEL: MessageBoxButton = MessageBoxButton {
+    result: 0,
+    closes: true,
+    destroys: false,
+};
+
+/// The close mark's answer: store 0, destroy the box through the parent.
+pub const MESSAGE_CLOSE: MessageBoxButton = MessageBoxButton {
+    result: 0,
+    closes: false,
+    destroys: true,
+};
+
+/// The three callbacks a message box's buttons and close mark run.
+pub fn message_box_button(ok: bool, close_mark: bool) -> MessageBoxButton {
+    if close_mark {
+        MESSAGE_CLOSE
+    } else if ok {
+        MESSAGE_OK
+    } else {
+        MESSAGE_CANCEL
+    }
+}
+
 /// Sets a control's text and tells it (message 0x400).
 pub fn set_control_text(
     controls: &mut [Control],
@@ -1176,8 +1279,8 @@ impl GuiTask {
             return;
         }
         let near = |a: i32, b: i32| (i64::from(a) - i64::from(b)).abs() < 2;
-        let result = if i64::from(self.clock.wrapping_sub(self.pointer.press_stamp))
-            < i64::from(DOUBLE_CLICK)
+        let result = if u64::from(self.clock.wrapping_sub(self.pointer.press_stamp))
+            < u64::from(DOUBLE_CLICK)
             && word == self.pointer.last_word
             && near(self.pointer.x, self.pointer.press_x)
             && near(self.pointer.y, self.pointer.press_y)
@@ -1447,6 +1550,32 @@ impl TooltipClasses {
     /// tooltip).
     pub fn get(&self, index: i32) -> Option<i32> {
         (index >= 1 && index <= self.count).then_some(index)
+    }
+}
+
+/// The registered form factories: each registration appends a factory and
+/// returns its 1-based index, which a tooltip record's hint message answers
+/// to build its tooltip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FormFactories {
+    pub count: i32,
+}
+
+impl FormFactories {
+    /// Appends a factory, returning its 1-based index.
+    pub fn register(&mut self) -> i32 {
+        self.count += 1;
+        self.count
+    }
+
+    /// The index of a registered factory (0 or less is none).
+    pub fn get(&self, index: i32) -> Option<i32> {
+        (index >= 1 && index <= self.count).then_some(index)
+    }
+
+    /// Clears every registration (the task's shutdown frees the array).
+    pub fn clear(&mut self) {
+        self.count = 0;
     }
 }
 
@@ -2083,6 +2212,113 @@ mod tests {
         assert_eq!(classes.get(2), Some(2));
         assert_eq!(classes.get(0), None);
         assert_eq!(classes.get(3), None);
+    }
+
+    #[test]
+    fn showing_a_control_clears_its_group_and_follows_the_shown_bit() {
+        let mut controls = vec![
+            Control::new(2, 0, 0, 16, 16),
+            Control::new(2, 0, 0, 16, 16),
+            Control::new(2, 0, 0, 16, 16),
+        ];
+        for control in controls.iter_mut() {
+            control.group = 1;
+            control.reports = true;
+        }
+        controls[0].state = control_state::ON | control_state::LIT;
+        controls[2].group = 2;
+        controls[2].state = control_state::ON | control_state::LIT;
+        let mut events = Vec::new();
+        let shown = set_control_visible(&mut controls, 1, true, false, &mut events);
+        // The previous member of the group hides; the other group stays.
+        assert_eq!(shown.hidden, 1);
+        assert_eq!(
+            controls[0].state & (control_state::ON | control_state::LIT),
+            0
+        );
+        assert_eq!(
+            controls[1].state & (control_state::ON | control_state::LIT),
+            control_state::ON | control_state::LIT
+        );
+        assert_eq!(
+            controls[2].state & (control_state::ON | control_state::LIT),
+            control_state::ON | control_state::LIT
+        );
+        assert_eq!(
+            events,
+            vec![ControlEvent::Changed(0), ControlEvent::Changed(1)]
+        );
+        // The returned byte is the new shown bit, with the lit bit masked
+        // off: 0x20 and the restored low bits, not 0x60.
+        assert_eq!(shown.state_byte, 0x20);
+        // A quiet show reports nothing but still hides.
+        events.clear();
+        let quiet = set_control_visible(&mut controls, 0, true, true, &mut events);
+        assert_eq!(quiet.hidden, 1);
+        assert!(events.is_empty());
+        // Hiding clears the shown bit; the lit bit follows it, so it
+        // clears too.
+        let hidden = set_control_visible(&mut controls, 0, false, false, &mut events);
+        assert_eq!(
+            controls[0].state & (control_state::ON | control_state::LIT),
+            0
+        );
+        assert_eq!(hidden.state_byte, 0);
+        assert_eq!(events, vec![ControlEvent::Changed(0)]);
+        // A control of no group hides nobody.
+        controls[2].group = 0;
+        assert_eq!(
+            set_control_visible(&mut controls, 2, true, false, &mut events).hidden,
+            0
+        );
+    }
+
+    #[test]
+    fn a_message_box_button_stores_its_result_and_closes_the_parent() {
+        assert_eq!(message_box_button(true, false), MESSAGE_OK);
+        assert_eq!(message_box_button(false, false), MESSAGE_CANCEL);
+        assert_eq!(message_box_button(true, true), MESSAGE_CLOSE);
+        assert_eq!(MESSAGE_OK.result, 1);
+        assert_eq!(MESSAGE_CANCEL.result, 0);
+        let cols = [MESSAGE_OK, MESSAGE_CANCEL];
+        assert_eq!(cols.map(|m| m.closes), [true, true]);
+        let close = MESSAGE_CLOSE;
+        assert_eq!((close.closes, close.destroys), (false, true));
+    }
+
+    #[test]
+    fn form_factories_count_from_one_until_cleared() {
+        let mut factories = FormFactories::default();
+        assert_eq!(factories.register(), 1);
+        assert_eq!(factories.register(), 2);
+        assert_eq!(factories.get(2), Some(2));
+        assert_eq!(factories.get(0), None);
+        assert_eq!(factories.get(3), None);
+        factories.clear();
+        assert_eq!(factories.get(1), None);
+        assert_eq!(factories.register(), 1);
+    }
+
+    #[test]
+    fn a_double_click_uses_an_unsigned_clock_difference() {
+        let (mut task, _id, log) = task_with(|f| f.press_result = 0);
+        task.update(false, (50, 50));
+        task.clock = 400;
+        task.press(1);
+        task.release(1);
+        // A clock wrap makes the difference huge as unsigned, so this is a
+        // single press even though it looks negative as a signed number.
+        task.clock = 100;
+        task.press(1);
+        assert_eq!(log.lock().unwrap().presses, vec![0x1001, 0x2001, 0x1001]);
+        // Just inside the window it is a double click again.
+        task.release(1);
+        task.clock = 401;
+        task.press(1);
+        assert_eq!(
+            log.lock().unwrap().presses,
+            vec![0x1001, 0x2001, 0x1001, 0x2001, 0x8001, 0x1001]
+        );
     }
 
     #[test]
