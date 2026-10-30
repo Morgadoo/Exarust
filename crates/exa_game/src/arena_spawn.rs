@@ -387,10 +387,11 @@ pub fn rival_outfits(rivals: &[i32; crate::career::RIVAL_FIELD]) -> Vec<i32> {
 /// The weapon slot a hire-list opponent draws from an event row's three
 /// slots.
 ///
-/// The original counts the slots that are set (the second counts only when
-/// set, the third likewise, without checking that the earlier ones were),
-/// steps the roll once and takes the slot at `(count · roll) >> 32`. With no
-/// slot set the first slot (zero) is returned.
+/// The original counts the slots that are set — an unsigned compare against
+/// zero, so any non-zero word counts, and the second and third are counted
+/// without checking that the earlier ones were — steps the roll once and
+/// takes the slot at `(count · roll) >> 32` as the row stands, empty slots
+/// included. With no slot set the first slot (zero) is returned.
 #[must_use]
 pub fn pick_weapon_slot(slots: [u32; 3], roll: u32) -> u32 {
     let count = u64::from(slots[0] != 0) + u64::from(slots[1] != 0) + u64::from(slots[2] != 0);
@@ -481,6 +482,13 @@ mod tests {
         assert_eq!(pick_weapon_slot([7, 8, 9], u32::MAX), 9);
         assert_eq!(pick_weapon_slot([7, 8, 0], u32::MAX), 8);
         assert_eq!(pick_weapon_slot([0, 0, 0], u32::MAX), 0);
+        // The draw indexes the row as it stands: an interior zero is a slot
+        // the count can reach; a word with the top bit set counts like any
+        // other non-zero slot (the compare is unsigned).
+        assert_eq!(pick_weapon_slot([7, 0, 9], u32::MAX), 0);
+        assert_eq!(pick_weapon_slot([7, 0, 9], 0), 7);
+        assert_eq!(pick_weapon_slot([7, 0x8000_0000, 9], 0), 7);
+        assert_eq!(pick_weapon_slot([7, 0x8000_0000, 9], u32::MAX), 9);
     }
 
     #[test]
