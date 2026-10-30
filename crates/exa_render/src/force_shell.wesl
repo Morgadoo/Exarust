@@ -2,7 +2,10 @@
 // over a copy of the caster's skinned meshes (or a held body's or weapon's
 // rigid ones), and with `STRIKES` the strikes program `effectfrcstrk_f`
 // (fixed 0.01 coordinates, four ripple points, its own rim and the
-// `Gradient` dimming). The vertex stage is Bevy's
+// `Gradient` dimming), and with `SCAN` the teleporter scan's
+// `effectscan_f` (fixed 0.03 coordinates, no ripple points, the fade term
+// clamped to 100 instead of 1, and the `Colour` uniform for the violet
+// ramp, its alpha limit and no `ColourInt`). The vertex stage is Bevy's
 // skinned mesh stage with the copy's placement added: each vertex moves out
 // along its skinned normal by `push` (2 cm, the skinned copy's
 // `position + 2·normal`). The fragment stage carries the world position and
@@ -47,6 +50,9 @@ struct ForceShellParams {
     // `Gradient` (the strikes program): the brightest point (cm, local)
     // and the dimming per centimetre from it.
     gradient: vec4<f32>,
+    // `Colour` (the scan program): its colour scaled by the scan's colour
+    // scale.
+    colour: vec4<f32>,
 }
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> shell: ForceShellParams;
@@ -94,12 +100,21 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     var va = dot(vwr, nrm);
     var a: f32;
     var f = (1.0 - fade) * 3.0;
-    f = clamp(f - dot(lpos, shell.fade_plane.xyz) - shell.fade_plane.w, 0.0, 1.0);
+    var f_max = 1.0;
+@if(SCAN) {
+    // `effectscan_f` lets the fade term run to 100.
+    f_max = 100.0;
+}
+    f = clamp(f - dot(lpos, shell.fade_plane.xyz) - shell.fade_plane.w, 0.0, f_max);
     var th = f;
     a = 0.5 * shell.tex_scale;
 @if(STRIKES) {
     // `effectfrcstrk_f` scales its coordinates by a fixed 0.01.
     a = 0.01;
+}
+@if(SCAN) {
+    // `effectscan_f` scales its coordinates by a fixed 0.03.
+    a = 0.03;
 }
     var tcz = lpos.xy * a;
     var tcy = lpos.xz * a;
@@ -128,6 +143,10 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 @if(STRIKES) {
     points = 4;
     bright = 0.07;
+}
+@if(SCAN) {
+    // `effectscan_f` has no ripple points.
+    points = 0;
 }
     for (var i = 0; i < points; i++) {
         let point = shell.colour_points[i];
@@ -171,6 +190,8 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 @if(!STRIKES) {
     va = 1.1 - max(-va, 0.0) + b * b * 0.1;
     va = (va + c) * (1.0 + fade) * max(1.0 - va * va * 1.0, 0.0);
+}
+@if(!STRIKES && !SCAN) {
     va = va * colour_int;
 }
 @if(STRIKES) {
@@ -186,6 +207,9 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     a = a * 0.5 + 0.5;
     a = (a * a + a) * 0.5;
     var alpha_scale = min(colour_int, 1.0);
+@if(SCAN) {
+    alpha_scale = min(shell.colour.a, 1.0);
+}
 @if(STRIKES) {
     // Brightest at the gradient's point, dimming away from it; no colour
     // limit on the alpha.
@@ -202,11 +226,18 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     b = b * b * 4.0;
     a = a * 0.4 * (1.0 - b) + max(1.0 / (1.3 - a) - 1.0, 0.0) * b;
     a = a * (1.0 - fade * fade * 0.5);
-    let fcol = vec3(0.45, 0.33, 0.95);
+    var fcol = vec3(0.45, 0.33, 0.95);
+    // The ramp's brightening with the fade term: `3 − ColourInt` in the
+    // shell, a plain 3 in the scan.
+    var lift = 3.0 - colour_int;
+@if(SCAN) {
+    fcol = shell.colour.rgb * 0.3;
+    lift = 3.0;
+}
     c = clamp((0.5 - a) * 10.0 + 0.5, 0.0, 1.0);
     var col = vec3(1.0) - (1.0 - fcol) * (1.0 - a) * 2.0;
     col = mix(col, fcol * a * 2.0, vec3(c));
-    col = col * 1.5 * (1.0 + f * (3.0 - colour_int));
+    col = col * 1.5 * (1.0 + f * lift);
     col = max(col - 0.1, vec3(0.0));
     col = col * col;
     va = va * va;

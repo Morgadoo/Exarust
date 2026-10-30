@@ -2909,11 +2909,41 @@ the shipped GLSL (`effectforce_f`, `effecttorrent_f`, `effectsmoke_f`,
   coordinates instead of `TexScale`, four ripple points at 0.07, its own rim
   (`(t − 0.1 + b²·0.2)² + f` for `t = max(−va, 0)`, doubled by
   `ColourInt`), the `Gradient` dimming and no colour limit on the alpha.
+- **Displacement shell** (`DispShellMaterial`, `disp_shell.wesl`): the
+  shipped `dispshell_v`/`dispshell_f` over a copy of a vanishing body's
+  skinned meshes (Vanish, the Long Door), each vertex 2 cm out along its
+  skinned normal. `LclMat` is the inverse of the body node's frame (cm),
+  `EmiTex` the `_EffectShell01` record's emissive layer `FlameletsA3`
+  (read raw), `TexPos` the shell's two creation draws and `TexOfs`
+  `(now mod 40000)·2.5e−5`, `Fade` `(1 − shown²)²`, `Opacity` 1,
+  `TexScale` 0.015, and `Interior` one less the vanish's shown amount: 0
+  gives the outer rim, 1 the darkened inside of the silhouette
+  (`max(−va, 0)³` by the lookups). The colour is black, so under the
+  premultiplied blend the shell only darkens. The uniform is 144 bytes:
+  `LclMat` 0, `ViewPos` 64, `FdPln` 80, `TexPos`/`TexOfs` 96, `Fade` 112,
+  `Interior` 116, `TexScale` 120, `Opacity` 124, the push 128. Its
+  `depth_only` form is the vanish's segment depth pass: the unmoved copy
+  with colour writes off and depth writes on, drawn among the blended
+  surfaces with a −0.001 sort bias so it lands just before the shell (the
+  original runs it after the scene; drawn opaque it would leave holes in
+  the unsorted opaque phase). `exa_game::thaum::vanish_live` drives both
+  (THAUMATURGY.md, Displacement).
+- **Scan aura** (`ForceShellMaterial` with `scan`, `SCAN` in
+  `force_shell.wesl`): the teleporter scan's `effectshell_v` with
+  `effectscan_f`: fixed 0.03 coordinates, the fade term clamped to 100,
+  no ripple points, `fcol = Colour.rgb·0.3`, the alpha limited by
+  `Colour.a`, no `ColourInt` on the rim and the ramp's lift a plain 3.
+  `Colour` (offset 272 in the uniform, now 288 bytes) is (0.45, 0.95,
+  0.33, 1) times the scan's colour scale; `TexPos` is never set (zero),
+  `Fade` is one less the shown fraction, `EmiTex` the `_ForceNoise`
+  picture. `exa_game::effects::scan_draw` copies the scanned body's
+  skinned meshes and drops the copies when the node leaves.
 - **Render state** comes from the material records the routines create:
   `_ForceMat01` and `_ForceAura01` carry blend word 0x163 (source ONE,
   destination ONE_MINUS_SRC_ALPHA, layer 6), Bevy's premultiplied blend,
   without depth writes; the force record's flags 0x480018 are two-sided,
-  the aura's 0x480008 one-sided. Outputs are clamped to [0, 1] as the
+  the aura's 0x480008 one-sided; `_EffectShell01` and `_ScanAura01` carry
+  the aura's blend word and flags. Outputs are clamped to [0, 1] as the
   original's 8-bit target clamps them.
 - **`_ForceNoise`**: 256 by 256 one-byte red texels (`R8Unorm`), repeating,
   linear, with a 2×2 box mip chain (rounded means) when the parameter

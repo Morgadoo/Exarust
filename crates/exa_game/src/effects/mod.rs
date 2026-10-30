@@ -38,6 +38,7 @@ pub mod portal_effect;
 pub mod rain;
 pub mod ribbon;
 pub mod scan;
+pub mod scan_draw;
 pub mod shell;
 pub mod torrent;
 pub mod vanish;

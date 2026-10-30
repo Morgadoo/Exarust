@@ -5,14 +5,21 @@
 //! [`ForceRibbonMaterial`] with `smoke`), the force-shell aura
 //! (`effectshell_v`/`effectshell_f` over a copy of the caster's skinned
 //! meshes or of a held body's or weapon's rigid ones, and `effectfrcstrk_f`
-//! for a Force Strikes weapon aura, [`ForceShellMaterial`]), and the animated `_ForceNoise` picture
-//! both bind as `EmiTex` ([`noise_image`], [`noise_mips`]).
+//! for a Force Strikes weapon aura, and `effectscan_f` for the teleporter
+//! scan's aura, [`ForceShellMaterial`]), the displacement shell
+//! (`dispshell_v`/`dispshell_f` over a copy of a vanishing body's skinned
+//! meshes, and that copy's depth-only pass, [`DispShellMaterial`]), and the
+//! animated `_ForceNoise` picture the force programs bind as `EmiTex`
+//! ([`noise_image`], [`noise_mips`]).
 //!
 //! The render states are the materials' records: `_ForceMat01` and
 //! `_ForceAura01` both carry the blend word 0x163 (source ONE, destination
 //! ONE_MINUS_SRC_ALPHA, blend layer 6), which is Bevy's premultiplied
 //! blend; the force record's flags 0x480018 make it two-sided, the aura's
-//! 0x480008 one-sided. Blended draws write no depth. Each fragment's output
+//! 0x480008 one-sided. `_EffectShell01` (the displacement shell) and
+//! `_ScanAura01` (the scan) carry the same blend word and flags; the
+//! displacement shell's `EmiTex` is its record's emissive layer,
+//! `FlameletsA3`. Blended draws write no depth. Each fragment's output
 //! is clamped to [0, 1] as the original's 8-bit target clamps it.
 //!
 //! The original draws each effect once per supersample layer with the
@@ -27,8 +34,8 @@ use bevy::mesh::MeshVertexBufferLayoutRef;
 use bevy::pbr::{Material, MaterialPipeline, MaterialPipelineKey, MaterialPlugin};
 use bevy::prelude::*;
 use bevy::render::render_resource::{
-    AsBindGroup, Extent3d, RenderPipelineDescriptor, ShaderType, SpecializedMeshPipelineError,
-    TextureDimension, TextureFormat,
+    AsBindGroup, ColorWrites, Extent3d, RenderPipelineDescriptor, ShaderType,
+    SpecializedMeshPipelineError, TextureDimension, TextureFormat,
 };
 use bevy::shader::ShaderRef;
 
@@ -38,9 +45,11 @@ impl Plugin for ForceEffectsPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "force_ribbon.wesl");
         embedded_asset!(app, "force_shell.wesl");
+        embedded_asset!(app, "disp_shell.wesl");
         app.add_plugins((
             MaterialPlugin::<ForceRibbonMaterial>::default(),
             MaterialPlugin::<ForceShellMaterial>::default(),
+            MaterialPlugin::<DispShellMaterial>::default(),
         ));
     }
 }
@@ -52,6 +61,17 @@ pub const FORCE_BLEND_WORD: u16 = 0x163;
 pub const FORCE_RECORD_FLAGS: u32 = 0x0048_0018;
 /// The `_ForceAura01` record's flags: emissive, one-sided.
 pub const AURA_RECORD_FLAGS: u32 = 0x0048_0008;
+/// The `_EffectShell01` record's blend word: ONE, ONE_MINUS_SRC_ALPHA,
+/// layer 6, as the force records'.
+pub const DISP_SHELL_BLEND_WORD: u16 = 0x163;
+/// The `_EffectShell01` record's flags: emissive, one-sided.
+pub const DISP_SHELL_RECORD_FLAGS: u32 = 0x0048_0008;
+/// The `_EffectShell01` record's emissive layer: the picture the
+/// displacement shell binds as `EmiTex`.
+pub const DISP_SHELL_TEXTURE: &str = "flameletsa3";
+/// The `_ScanAura01` record's blend word and flags: the aura's.
+pub const SCAN_BLEND_WORD: u16 = 0x163;
+pub const SCAN_RECORD_FLAGS: u32 = 0x0048_0008;
 /// The record flags' two-sided bit.
 pub const TWO_SIDED: u32 = 0x10;
 /// The skinned shell copy's push along its normal: 2 cm.
@@ -74,6 +94,7 @@ pub fn blend_alpha_mode(word: u16) -> Option<AlphaMode> {
 fn shader(name: &str) -> ShaderRef {
     let path = match name {
         "ribbon" => embedded_path!("force_ribbon.wesl"),
+        "disp" => embedded_path!("disp_shell.wesl"),
         _ => embedded_path!("force_shell.wesl"),
     };
     ShaderRef::Path(AssetPath::from_path_buf(path).with_source("embedded"))
@@ -214,6 +235,9 @@ pub struct ForceShellParams {
     /// `Gradient` (the strikes program only): the point the aura glows
     /// brightest at (cm, local) and the dimming per centimetre from it.
     pub gradient: Vec4,
+    /// `Colour` (the scan program only): the scan's colour times its
+    /// colour scale.
+    pub colour: Vec4,
 }
 
 impl Default for ForceShellParams {
@@ -229,13 +253,15 @@ impl Default for ForceShellParams {
             fade: 1.0,
             push: SHELL_PUSH_M,
             gradient: Vec4::ZERO,
+            colour: Vec4::ZERO,
         }
     }
 }
 
 /// The force-shell aura's material, one per aura, shared by its copies.
 /// With `strikes` it runs the strikes program (`effectfrcstrk_f`, the aura
-/// Force Strikes puts on a weapon) over the same vertex stage.
+/// Force Strikes puts on a weapon) over the same vertex stage, with `scan`
+/// the teleporter scan's (`effectscan_f`, the `_ScanAura01` aura).
 #[derive(Asset, TypePath, AsBindGroup, Clone, Debug)]
 #[bind_group_data(ForceShellKey)]
 pub struct ForceShellMaterial {
@@ -247,16 +273,22 @@ pub struct ForceShellMaterial {
     pub noise: Handle<Image>,
     /// The strikes program instead of the shell's.
     pub strikes: bool,
+    /// The scan program instead of the shell's.
+    pub scan: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct ForceShellKey {
     strikes: bool,
+    scan: bool,
 }
 
 impl From<&ForceShellMaterial> for ForceShellKey {
     fn from(m: &ForceShellMaterial) -> Self {
-        Self { strikes: m.strikes }
+        Self {
+            strikes: m.strikes,
+            scan: m.scan,
+        }
     }
 }
 
@@ -298,6 +330,150 @@ impl Material for ForceShellMaterial {
             && let Some(fragment) = descriptor.fragment.as_mut()
         {
             fragment.shader_defs.push("STRIKES".into());
+        }
+        if key.bind_group_data.scan
+            && let Some(fragment) = descriptor.fragment.as_mut()
+        {
+            fragment.shader_defs.push("SCAN".into());
+        }
+        Ok(())
+    }
+}
+
+/// The displacement shell program's uniform, laid out as `DispShellParams`
+/// in `disp_shell.wesl`.
+#[derive(Clone, Copy, Debug, PartialEq, ShaderType)]
+pub struct DispShellParams {
+    /// `LclMat` times the metre-to-centimetre scale.
+    pub local_from_world: Mat4,
+    /// `ViewPos` (cm, local); w unused.
+    pub view_pos: Vec4,
+    /// `FdPln`.
+    pub fade_plane: Vec4,
+    /// `TexPos` in xy, `TexOfs` in z.
+    pub tex: Vec4,
+    /// `Fade`: (1 − shown²)².
+    pub fade: f32,
+    /// `Interior`: 1 − the vanish's shown amount.
+    pub interior: f32,
+    /// `TexScale`.
+    pub tex_scale: f32,
+    /// `Opacity`.
+    pub opacity: f32,
+    /// The copy's push along its normal (m): 2 cm for the shell, none for
+    /// the depth pass.
+    pub push: f32,
+}
+
+impl Default for DispShellParams {
+    fn default() -> Self {
+        Self {
+            local_from_world: Mat4::from_scale(Vec3::splat(100.0)),
+            view_pos: Vec4::ZERO,
+            fade_plane: Vec4::ZERO,
+            tex: Vec4::ZERO,
+            fade: 1.0,
+            interior: 0.0,
+            tex_scale: 0.015,
+            opacity: 1.0,
+            push: SHELL_PUSH_M,
+        }
+    }
+}
+
+/// The displacement shell's material (`dispshell_v`/`dispshell_f`, the
+/// `_EffectShell01` record), one per shell, shared by its copies. With
+/// `depth_only` it is the vanish's depth pass over the same copies: the
+/// body's parts drawn with colour writes off and depth writes on, sorted
+/// just before the shell.
+#[derive(Asset, TypePath, AsBindGroup, Clone, Debug)]
+#[bind_group_data(DispShellKey)]
+pub struct DispShellMaterial {
+    #[uniform(0)]
+    pub params: DispShellParams,
+    /// `EmiTex` (unit 0): the record's emissive layer, `FlameletsA3`.
+    #[texture(1)]
+    #[sampler(2)]
+    pub texture: Handle<Image>,
+    /// The depth pass instead of the shell.
+    pub depth_only: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct DispShellKey {
+    depth_only: bool,
+}
+
+impl From<&DispShellMaterial> for DispShellKey {
+    fn from(m: &DispShellMaterial) -> Self {
+        Self {
+            depth_only: m.depth_only,
+        }
+    }
+}
+
+/// How far ahead of the shell (in the blended draws' back-to-front sort)
+/// the depth pass goes, so it is drawn first.
+pub const DEPTH_PASS_SORT_BIAS: f32 = -0.001;
+
+impl Material for DispShellMaterial {
+    fn vertex_shader() -> ShaderRef {
+        shader("disp")
+    }
+
+    fn fragment_shader() -> ShaderRef {
+        shader("disp")
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        if self.depth_only {
+            // Drawn among the blended surfaces, after the opaque scene, as
+            // the vanish's pass runs once the scene is down.
+            AlphaMode::Blend
+        } else {
+            blend_alpha_mode(DISP_SHELL_BLEND_WORD).unwrap_or(AlphaMode::Premultiplied)
+        }
+    }
+
+    fn depth_bias(&self) -> f32 {
+        if self.depth_only {
+            DEPTH_PASS_SORT_BIAS
+        } else {
+            0.0
+        }
+    }
+
+    fn enable_prepass() -> bool {
+        false
+    }
+
+    fn enable_shadows() -> bool {
+        false
+    }
+
+    fn enable_oit() -> bool {
+        false
+    }
+
+    fn specialize(
+        _pipeline: &MaterialPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &MeshVertexBufferLayoutRef,
+        key: MaterialPipelineKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        if DISP_SHELL_RECORD_FLAGS & TWO_SIDED != 0 {
+            descriptor.primitive.cull_mode = None;
+        }
+        if key.bind_group_data.depth_only {
+            if let Some(depth) = descriptor.depth_stencil.as_mut() {
+                depth.depth_write_enabled = Some(true);
+            }
+            if let Some(fragment) = descriptor.fragment.as_mut() {
+                fragment.shader_defs.push("DEPTH_ONLY".into());
+                for target in fragment.targets.iter_mut().flatten() {
+                    target.write_mask = ColorWrites::empty();
+                }
+            }
         }
         Ok(())
     }
@@ -434,7 +610,12 @@ mod tests {
     /// `defs` defines them, the vertex stage and the imports cut out and the
     /// Bevy vertex output stubbed, so naga can parse and validate it.
     fn shell_fragment(defs: &[&str]) -> String {
-        let source = include_str!("force_shell.wesl");
+        program_fragment(include_str!("force_shell.wesl"), "ForceShellParams", defs)
+    }
+
+    /// A shell-like program's fragment stage (`source`, its uniform struct
+    /// `uniform`), as [`shell_fragment`] cuts it.
+    fn program_fragment(source: &str, uniform: &str, defs: &[&str]) -> String {
         let defined = |cond: &str| {
             cond.split("&&").all(|term| {
                 let term = term.trim();
@@ -463,7 +644,7 @@ mod tests {
                 out.push('\n');
             }
         }
-        let start = out.find("struct ForceShellParams").expect("the uniform");
+        let start = out.find(&format!("struct {uniform}")).expect("the uniform");
         let vertex = out.find("@vertex").expect("the vertex stage");
         let vertex_end = vertex + out[vertex..].find("\n}\n").expect("its end") + 3;
         let body = format!("{}{}", &out[start..vertex], &out[vertex_end..]);
@@ -473,6 +654,112 @@ mod tests {
              @location(1) world_normal: vec3<f32>,\n}}\n{}",
             body.replace("constants::MATERIAL_BIND_GROUP", "2")
         )
+    }
+
+    fn validate(source: &str, defs: &[&str]) {
+        let module = naga::front::wgsl::parse_str(source)
+            .unwrap_or_else(|e| panic!("{defs:?}: {}\n{source}", e.emit_to_string(source)));
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .unwrap_or_else(|e| panic!("{defs:?}: {e:?}"));
+    }
+
+    #[test]
+    fn the_scan_fragment_validates_with_its_own_terms() {
+        let source = shell_fragment(&["SCAN"]);
+        validate(&source, &["SCAN"]);
+        // Fixed 0.03 coordinates, the fade term up to 100, no ripple
+        // points, the `Colour` uniform's ramp and alpha limit, no
+        // `ColourInt` on the rim.
+        assert!(source.contains("a = 0.03;"));
+        assert!(source.contains("f_max = 100.0;"));
+        assert!(source.contains("points = 0;"));
+        assert!(source.contains("fcol = shell.colour.rgb * 0.3;"));
+        assert!(source.contains("alpha_scale = min(shell.colour.a, 1.0);"));
+        assert!(!source.contains("va = va * colour_int;"));
+        let plain = shell_fragment(&[]);
+        assert!(plain.contains("va = va * colour_int;"));
+        assert!(!plain.contains("f_max = 100.0;"));
+    }
+
+    #[test]
+    fn the_displacement_shell_fragment_validates() {
+        for defs in [&[][..], &["DEPTH_ONLY"][..]] {
+            let source = program_fragment(include_str!("disp_shell.wesl"), "DispShellParams", defs);
+            validate(&source, defs);
+            assert!(source.contains("th = mix(th, tst, shell.interior);"));
+            assert_eq!(source.contains("out = vec4(0.0);"), !defs.is_empty());
+        }
+    }
+
+    #[test]
+    fn the_displacement_shell_uniform_matches_the_shaders_layout() {
+        let source = include_str!("disp_shell.wesl");
+        let size = wgsl_struct_size(source, "DispShellParams");
+        // A matrix, three vec4, four words and the push, padded to 16.
+        assert_eq!(size, 144);
+        assert_eq!(size, <DispShellParams as ShaderType>::min_size().get());
+        let offsets = wgsl_offsets(source, "DispShellParams");
+        let expected = [
+            ("local_from_world", 0),
+            ("view_pos", 64),
+            ("fade_plane", 80),
+            ("tex", 96),
+            ("fade", 112),
+            ("interior", 116),
+            ("tex_scale", 120),
+            ("opacity", 124),
+            ("push", 128),
+        ];
+        let got: Vec<(&str, u32)> = offsets.iter().map(|(n, o)| (n.as_str(), *o)).collect();
+        assert_eq!(got, expected);
+        let params = DispShellParams {
+            interior: 0.75,
+            push: 0.0,
+            tex: Vec4::new(0.25, 0.5, 0.125, 0.0),
+            ..DispShellParams::default()
+        };
+        let mut buffer = bevy::render::render_resource::encase::UniformBuffer::new(Vec::new());
+        buffer.write(&params).unwrap();
+        let bytes = buffer.into_inner();
+        let word = |at: usize| f32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+        assert_eq!(word(104), 0.125);
+        assert_eq!(word(112), 1.0);
+        assert_eq!(word(116), 0.75);
+        assert_eq!(word(120), 0.015);
+        assert_eq!(word(124), 1.0);
+        assert_eq!(word(128), 0.0);
+    }
+
+    #[test]
+    fn the_displacement_shell_and_scan_records_blend_as_the_aura() {
+        assert_eq!(
+            blend_alpha_mode(DISP_SHELL_BLEND_WORD),
+            Some(AlphaMode::Premultiplied)
+        );
+        assert_eq!(DISP_SHELL_RECORD_FLAGS & TWO_SIDED, 0);
+        assert_eq!(
+            blend_alpha_mode(SCAN_BLEND_WORD),
+            Some(AlphaMode::Premultiplied)
+        );
+        assert_eq!(SCAN_RECORD_FLAGS, AURA_RECORD_FLAGS);
+        let shell = DispShellMaterial {
+            params: DispShellParams::default(),
+            texture: Handle::default(),
+            depth_only: false,
+        };
+        let depth = DispShellMaterial {
+            depth_only: true,
+            ..shell.clone()
+        };
+        assert_eq!(shell.alpha_mode(), AlphaMode::Premultiplied);
+        assert_eq!(depth.alpha_mode(), AlphaMode::Blend);
+        assert_eq!(shell.depth_bias(), 0.0);
+        assert!(depth.depth_bias() < 0.0);
+        assert_ne!(DispShellKey::from(&shell), DispShellKey::from(&depth));
     }
 
     #[test]
@@ -496,9 +783,9 @@ mod tests {
     fn the_shell_uniform_matches_the_shaders_layout() {
         let source = include_str!("force_shell.wesl");
         let size = wgsl_struct_size(source, "ForceShellParams");
-        // A matrix, two vec4, eight ripple points, a vec4, four words and
-        // the strikes gradient.
-        assert_eq!(size, 64 + 16 + 16 + 8 * 16 + 16 + 16 + 16);
+        // A matrix, two vec4, eight ripple points, a vec4, four words, the
+        // strikes gradient and the scan colour.
+        assert_eq!(size, 64 + 16 + 16 + 8 * 16 + 16 + 16 + 16 + 16);
         assert_eq!(size, <ForceShellParams as ShaderType>::min_size().get());
         let offsets = wgsl_offsets(source, "ForceShellParams");
         let expected = [
@@ -512,6 +799,7 @@ mod tests {
             ("fade", 248),
             ("push", 252),
             ("gradient", 256),
+            ("colour", 272),
         ];
         let got: Vec<(&str, u32)> = offsets.iter().map(|(n, o)| (n.as_str(), *o)).collect();
         assert_eq!(got, expected);
@@ -520,6 +808,7 @@ mod tests {
             colour_int: 2.0,
             push: 3.0,
             gradient: Vec4::new(0.0, 70.0, 0.0, 0.01),
+            colour: Vec4::new(1.35, 2.85, 0.99, 3.0),
             ..ForceShellParams::default()
         };
         let mut buffer = bevy::render::render_resource::encase::UniformBuffer::new(Vec::new());
@@ -532,6 +821,7 @@ mod tests {
         assert_eq!(word(252), 3.0);
         assert_eq!(word(260), 70.0);
         assert_eq!(word(268), 0.01);
+        assert_eq!(word(284), 3.0);
     }
 
     #[test]

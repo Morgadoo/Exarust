@@ -163,6 +163,7 @@ impl Plugin for TeleportPlugin {
             .init_resource::<Possession>()
             .init_resource::<Latch>()
             .init_resource::<scan::ScanBuild>()
+            .init_resource::<DebugScan>()
             .add_message::<UseDevice>()
             .add_message::<OpenPortalScreen>()
             .add_message::<DeviceSound>()
@@ -174,7 +175,8 @@ impl Plugin for TeleportPlugin {
                 (use_devices, glow_devices, power_down_devices, end_sessions)
                     .chain()
                     .after(crate::effects::advance_clock),
-            );
+            )
+            .add_systems(Update, debug_scan);
     }
 }
 
@@ -327,28 +329,12 @@ fn use_devices(
                 ) else {
                     continue;
                 };
-                // The effect node is created first and rolls its two draws,
-                // then the device builds its aura.
-                let tex_pos = build.draws();
-                let mut aura = scan::ScanAura::default();
-                let scan::ScanBuild {
-                    aura: shader, lock, ..
-                } = &mut *build;
-                scan::build_aura(&mut aura, shader, lock, true);
-                scan::start_aura(&mut aura);
+                spawn_device_scan(&mut commands, &mut build, use_it.user, clock.now_ms);
                 let ScanTiming {
-                    effect_at_ms,
                     pulse_ramp_ms,
                     pulse_hold_ms,
                     ..
                 } = teleporters::scan_timing(clock.now_ms);
-                commands.spawn((
-                    Name::new(crate::effects::scan::MATERIAL),
-                    ScanEffect(scan_for_device(effect_at_ms, tex_pos)),
-                    aura,
-                    Transform::default(),
-                    ChildOf(use_it.user),
-                ));
                 sounds.write(DeviceSound::scan(user_transform.translation()));
                 let identity = identities.get(use_it.user).map(|i| i.0).unwrap_or(0);
                 latch.begin(identity);
@@ -370,13 +356,83 @@ fn use_devices(
     }
 }
 
-/// The scan a reconstruction device starts: waiting for `at_ms`, its close
-/// looping with the flash, carrying the two creation draws the device's
-/// effect node rolls (the original stores them and never reads them).
+/// The scan a reconstruction device starts: waiting for `at_ms`, its
+/// colour scale at the device's 3, its close looping with the flash,
+/// carrying the two creation draws the device's effect node rolls (the
+/// original stores them and never reads them).
 pub fn scan_for_device(at_ms: u32, tex_pos: [f32; 2]) -> Scan {
     let mut scan = Scan::delayed(at_ms, tex_pos);
     scan.looping = true;
+    scan.colour_scale = teleporters::SCAN_SCALE;
     scan
+}
+
+/// Puts a reconstruction device's scan on `user` at `now_ms`: the effect
+/// node is created first and rolls its two draws, then the device builds
+/// its aura and starts it; the node waits 1600 ms as a child of the user.
+pub fn spawn_device_scan(
+    commands: &mut Commands,
+    build: &mut scan::ScanBuild,
+    user: Entity,
+    now_ms: u32,
+) -> Entity {
+    let tex_pos = build.draws();
+    let mut aura = scan::ScanAura::default();
+    let scan::ScanBuild {
+        aura: shader, lock, ..
+    } = build;
+    scan::build_aura(&mut aura, shader, lock, true);
+    scan::start_aura(&mut aura);
+    let timing = teleporters::scan_timing(now_ms);
+    commands
+        .spawn((
+            Name::new(crate::effects::scan::MATERIAL),
+            ScanEffect(scan_for_device(timing.effect_at_ms, tex_pos)),
+            aura,
+            Transform::default(),
+            ChildOf(user),
+        ))
+        .id()
+}
+
+/// The debug scan (`--debug-scan <frame>`): at that frame after the load
+/// the player gets a reconstruction device's scan, as a use that passed the
+/// device's checks starts it, and its sound.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DebugScan(pub Option<u32>);
+
+#[allow(clippy::too_many_arguments)]
+fn debug_scan(
+    mut commands: Commands,
+    script: Res<DebugScan>,
+    loading: Option<Res<exa_ui::LoadingStatus>>,
+    clock: Res<EffectClock>,
+    players: Query<(Entity, &GlobalTransform), With<crate::player::PlayerBody>>,
+    mut build: ResMut<scan::ScanBuild>,
+    mut sounds: MessageWriter<DeviceSound>,
+    mut frames: Local<u32>,
+) {
+    let Some(frame) = script.0 else {
+        return;
+    };
+    if loading.is_some() || *frames > frame {
+        return;
+    }
+    *frames += 1;
+    if *frames != frame {
+        return;
+    }
+    let Some((player, at)) = players.iter().next() else {
+        info!("debug scan: no player at frame {frame}");
+        return;
+    };
+    let scan = spawn_device_scan(&mut commands, &mut build, player, clock.now_ms);
+    sounds.write(DeviceSound::scan(at.translation()));
+    info!(
+        "debug scan: {scan:?} on the player at {} ms, opening at {} ms",
+        clock.now_ms,
+        clock.now_ms.wrapping_add(teleporters::SCAN_DELAY_MS)
+    );
 }
 
 /// Step every device glow and scale the voxel lights of the device's nodes
@@ -527,6 +583,8 @@ mod tests {
         assert_eq!(teleporters::SCAN_SCALE, crate::effects::scan::FLASH_SCALE);
         let mut scan = scan_for_device(teleporters::scan_timing(1_000).effect_at_ms, [0.5, 0.25]);
         assert!(scan.looping);
+        // The device starts the scan's colour at three times its own.
+        assert_eq!(scan.colour_scale, teleporters::SCAN_SCALE);
         assert_eq!(scan.stamp, 2_600);
         assert_eq!(scan.tex_pos, [0.5, 0.25]);
         assert!(!scan.step(2_600).remove);

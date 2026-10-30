@@ -143,6 +143,11 @@
 //!          --debug-barricade          play mode: a force barricade raised 2 m in front of the player
 //!          --debug-wisps              play mode: the constant displacement's wisps on the player's body
 //!          --powers <id,id,...>       play mode: the powers the player knows (hex or decimal), for the power bar
+//!          --debug-cast slot@f[~r]    play mode: at frame f after the load the player casts the power in bar slot
+//!                                     slot (0-based, the order of --powers) and at frame r uses it again (the release);
+//!                                     the cursor's ground point goes 1.5 m beyond the player; repeatable
+//!          --debug-scan <frame>       play mode: at that frame after the load the player gets a reconstruction
+//!                                     device's scan (it opens 1600 ms later), as a use that passed the checks starts it
 //!          --debug-force-cast <s>     play mode: every s seconds the player casts its first power at the nearest character, logging GI shapes and struck bodies' pin gain
 //!          --health yellow,red        play mode: the player's starting health (a human's full health is 0.25)
 //!          --give id,id,...           play mode: the player starts with these items in its pack (e.g. `474`, the
@@ -408,6 +413,10 @@ pub struct Options {
     pub weapon_blood: Option<exa_character::blood::DebugWeaponBlood>,
     /// Test thaumaturgy effects on the player.
     pub thaum_debug: exa_game::thaum::live::ThaumDebug,
+    /// Scripted casts of the player's bar slots (`--debug-cast`).
+    pub debug_casts: Vec<exa_game::thaum::debug_cast::DebugCast>,
+    /// The frame a debug scan goes on the player (`--debug-scan`).
+    pub debug_scan: Option<u32>,
     /// The player's starting yellow and red health.
     pub health: Option<[f32; 2]>,
     /// Items the player starts with in its pack.
@@ -886,6 +895,17 @@ fn main() -> AppExit {
             "--debug-arcs" => options.thaum_debug.arcs = true,
             "--debug-barricade" => options.thaum_debug.barricade = true,
             "--debug-wisps" => options.thaum_debug.wisps = true,
+            "--debug-cast" => {
+                let text = args.next().unwrap_or_default();
+                match exa_game::thaum::debug_cast::DebugCast::parse(&text) {
+                    Some(cast) => options.debug_casts.push(cast),
+                    None => {
+                        eprintln!("--debug-cast: cannot read {text:?} (slot@frame[~release])");
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
+            "--debug-scan" => options.debug_scan = args.next().and_then(|v| v.parse().ok()),
             "--debug-force-cast" => {
                 options.thaum_debug.cast_every =
                     args.next().and_then(|v| v.parse().ok()).unwrap_or(4);
@@ -1356,6 +1376,10 @@ fn main() -> AppExit {
     ))
     .insert_resource(options.use_item)
     .insert_resource(options.gui_drop)
+    .insert_resource(exa_game::thaum::debug_cast::DebugCasts(
+        options.debug_casts.clone(),
+    ))
+    .insert_resource(exa_game::teleporters::DebugScan(options.debug_scan))
     .insert_resource(options.doll_drop)
     .insert_resource(exa_game::save_live::ScriptedSaves(options.save_at.clone()));
     if options.story_session {
