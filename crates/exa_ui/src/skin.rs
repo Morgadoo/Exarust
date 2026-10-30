@@ -3453,7 +3453,7 @@ pub fn hit_skin(
             if let Some(code) = probe_if(4, -5) {
                 return code;
             }
-            if let Some(code) = probe_if(8, -10) {
+            if let Some(code) = probe_if(8, -6) {
                 return code;
             }
             return -3;
@@ -3469,10 +3469,10 @@ pub fn hit_skin(
         return -8;
     }
     if (place.flags & 0x100) != 0 && y >= place.limit_bottom {
-        if let Some(code) = probe(-14) {
+        if let Some(code) = probe(-13) {
             return code;
         }
-        if let Some(code) = probe(-13) {
+        if let Some(code) = probe(-14) {
             return code;
         }
         return -12;
@@ -10891,13 +10891,20 @@ mod tests {
         assert_eq!(hit_skin(place(0x3), 10, 40, 5, &none), -3);
         let five = |code: i32| (code == -5).then_some([0, 0, 200, 200]);
         assert_eq!(hit_skin(place(0x5), 10, 40, 5, &five), -5);
+        // Bit 8 is the small mark's code -6; a probe for -10 misses it.
+        let six = |code: i32| (code == -6).then_some([0, 0, 200, 200]);
+        assert_eq!(hit_skin(place(0x9), 10, 40, 5, &six), -6);
         let ten = |code: i32| (code == -10).then_some([0, 0, 200, 200]);
-        assert_eq!(hit_skin(place(0x9), 10, 40, 5, &ten), -10);
+        assert_eq!(hit_skin(place(0x9), 10, 40, 5, &ten), -3);
         assert_eq!(hit_skin(place(0x21), 10, 50, 5, &four), 0);
 
         let only_ten = |code: i32| (code == -10).then_some([0, 0, 200, 200]);
         assert_eq!(hit_skin(place(0x200), 90, 10, 5, &only_ten), -10);
         assert_eq!(hit_skin(place(0x200), 90, 10, 5, &none), -8);
+        // The horizontal scrollbar probes its up arrow (-13) before its
+        // down arrow (-14), so a point in both answers -13.
+        let both = |code: i32| matches!(code, -13 | -14).then_some([0, 0, 200, 200]);
+        assert_eq!(hit_skin(place(0x100), 10, 90, 5, &both), -13);
         assert_eq!(hit_skin(place(0x100), 10, 90, 5, &none), -12);
 
         let edge = |code: i32| (code == -4).then_some([10, 20, 30, 40]);
