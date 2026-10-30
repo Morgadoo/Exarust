@@ -168,7 +168,7 @@ mod tests {
         let child = scene.add_node(NodeKind::Mesh, Some(parent));
         scene.register(child, 1);
         assert_eq!(detach(&mut scene, child), 1);
-        assert!(scene.sectors[1].meshes.is_empty());
+        assert_eq!(scene.sectors[1].meshes, [child]);
         assert_eq!(attach(&mut scene, parent, &[child]), 1);
         assert_eq!(scene.nodes[child].parent, Some(parent));
         let report = clear_scene(&mut scene);

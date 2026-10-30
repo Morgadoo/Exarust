@@ -1492,8 +1492,12 @@ impl Scene {
 
     /// Takes a subtree out of the scene while leaving its owner and parent
     /// links alone, as the content helper's detach does: every node loses
-    /// [`IN_SCENE`], leaves its sector's lists and the scene's geometry
-    /// list, and a light drops its aliases. Returns how many nodes changed.
+    /// [`IN_SCENE`], a light leaves its sector's light list and drops its
+    /// aliases, an auxiliary node leaves the auxiliary list, a geometry node
+    /// leaves the scene's geometry list. Meshes stay in their sector's mesh
+    /// list until the membership pass or a release drops them, as the
+    /// original's detach only recurses through the sector lists it owns.
+    /// Returns how many nodes changed.
     pub fn detach_subtree(&mut self, node: usize) -> usize {
         let Some(n) = self.nodes.get(node) else {
             return 0;
@@ -1503,15 +1507,23 @@ impl Scene {
         let kind = n.kind;
         let mut count = 0;
         if let Some(s) = sector.and_then(|s| self.sectors.get_mut(s)) {
-            s.meshes.retain(|&m| m != node);
-            s.lights.retain(|&l| l != node);
-            s.auxiliary.retain(|&a| a != node);
-            if kind == NodeKind::Light {
-                s.changes |= LINKS_CHANGED;
+            match kind {
+                NodeKind::Light => {
+                    s.lights.retain(|&l| l != node);
+                    s.changes |= LINKS_CHANGED;
+                }
+                NodeKind::Auxiliary => s.auxiliary.retain(|&a| a != node),
+                _ => {}
             }
         }
-        self.geometry.retain(|&g| g != node);
-        let aliases = std::mem::take(&mut self.nodes[node].aliases);
+        if kind == NodeKind::Geometry {
+            self.geometry.retain(|&g| g != node);
+        }
+        let aliases = if kind == NodeKind::Light {
+            std::mem::take(&mut self.nodes[node].aliases)
+        } else {
+            Vec::new()
+        };
         for alias in aliases {
             if let Some(alias) = self.nodes.get_mut(alias) {
                 alias.sector = None;
@@ -5544,9 +5556,11 @@ mod tests {
         scene.register(child, 1);
         assert_eq!(scene.sectors[1].meshes, [mesh]);
         assert_eq!(scene.geometry, [child]);
-        // Detaching takes the subtree out of the lists but keeps the owner.
+        // Detaching takes the subtree out of the scene but keeps the owner;
+        // the mesh list waits for the membership pass, while the geometry
+        // list drops its geometry child at once.
         assert_eq!(scene.detach_subtree(mesh), 1);
-        assert!(scene.sectors[1].meshes.is_empty());
+        assert_eq!(scene.sectors[1].meshes, [mesh]);
         assert!(scene.geometry.is_empty());
         assert_eq!(scene.nodes[mesh].sector, Some(1));
         assert_eq!(scene.nodes[child].sector, Some(1));
