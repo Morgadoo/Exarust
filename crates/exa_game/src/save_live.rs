@@ -62,6 +62,46 @@ use crate::staff::Staff;
 #[derive(Resource, Clone, Debug, PartialEq, Eq)]
 pub struct SaveFolder(pub PathBuf);
 
+/// The view's camera target and zoom a save stamps into its header. The
+/// original's writers copy the scene view's target (centimetres) and its
+/// zoom word into both headers, and the readers put them back into the view;
+/// the host sets this from its camera, and a load replaces it with the
+/// saved values so the character screen's preview continues where the save
+/// left the view. Without it a save writes the header's defaults (the
+/// origin, zoom 1), which is what Exarust wrote before the rule was wired.
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct SaveCamera {
+    /// The camera's target, centimetres.
+    pub target_cm: [f32; 3],
+    /// The camera's zoom word.
+    pub zoom: f32,
+}
+
+impl Default for SaveCamera {
+    fn default() -> Self {
+        Self {
+            target_cm: [0.0; 3],
+            zoom: 1.0,
+        }
+    }
+}
+
+impl SaveCamera {
+    /// Stamps the pair into a session's header.
+    pub fn stamp(&self, session: &mut Session) {
+        session.camera = self.target_cm;
+        session.zoom = self.zoom;
+    }
+
+    /// The camera a loaded save restores.
+    pub fn of_session(session: &Session) -> Self {
+        Self {
+            target_cm: session.camera,
+            zoom: session.zoom,
+        }
+    }
+}
+
 /// The two slot managers' cached lists over the save folder.
 #[derive(Resource, Clone, Debug, PartialEq, Eq)]
 pub struct SlotLists {
@@ -447,6 +487,7 @@ fn save_to_new_slot(
     ticks: Option<Res<exa_physics::body::BodyTicks>>,
     career: Option<Res<crate::hub_windows::ArenaCareer>>,
     stores: Res<ArenaStores>,
+    camera: Option<Res<SaveCamera>>,
     players: PlayerSaveQuery,
     created: Option<Res<crate::creator_screen::CreatedCharacter>>,
     mut report: ResMut<SaveReport>,
@@ -465,6 +506,11 @@ fn save_to_new_slot(
     let fallback = crate::hub_windows::ArenaCareer::default();
     let career = career.as_deref().unwrap_or(&fallback);
     let mut session = live_session(level, seconds, career, &stores);
+    camera
+        .as_deref()
+        .copied()
+        .unwrap_or_default()
+        .stamp(&mut session);
     let (name, export) = match session.mode {
         Mode::Arena => (
             Some(career.player.name.clone()),
@@ -509,6 +555,7 @@ fn run_save_steps(
     levels: Query<&exa_world::LevelRoot>,
     clock: Option<Res<exa_combat::remedy::WorldClock>>,
     ticks: Option<Res<exa_physics::body::BodyTicks>>,
+    camera: Option<Res<SaveCamera>>,
     players: PlayerSaveQuery,
     fighters: Query<&exa_combat::Fighter, With<crate::player::PlayerBody>>,
     created: Option<Res<crate::creator_screen::CreatedCharacter>>,
@@ -557,6 +604,11 @@ fn run_save_steps(
                 let mut session = Session::story();
                 session.story = story_at(level.unwrap_or(""));
                 session.clock = seconds;
+                camera
+                    .as_deref()
+                    .copied()
+                    .unwrap_or_default()
+                    .stamp(&mut session);
                 let player = live_story_player(&players, created.as_deref());
                 let export = story_save_world(&mut session, player.as_ref());
                 match list.save_current(&session, &export.save_world(None, false)) {
@@ -592,6 +644,10 @@ pub struct ArenaRestore {
     pub shelved: usize,
     /// The world clock's saved seconds.
     pub clock: u32,
+    /// The view's camera target the save carried, centimetres.
+    pub camera: [f32; 3],
+    /// The view's zoom the save carried.
+    pub zoom: f32,
     /// The player's record with the load's reset applied (race byte
     /// cleared), ready for the import.
     pub player: Option<CharacterRecord>,
@@ -632,10 +688,14 @@ pub fn restore_arena(
     career.reset();
     stores.reset();
     let mut clock = 0;
+    let mut camera = [0.0; 3];
+    let mut zoom = 1.0;
     if let PlayerHeader::Arena(header) = &loaded.data.header {
         career.company.copper = header.money;
         career.company.day = header.day;
         clock = header.clock;
+        camera = header.camera;
+        zoom = header.zoom;
     }
     let chunks: Vec<save_package::Chunk<'_>> = loaded
         .data
@@ -679,6 +739,8 @@ pub fn restore_arena(
         applied,
         shelved,
         clock,
+        camera,
+        zoom,
         player,
     }
 }
@@ -786,6 +848,10 @@ fn load_arena_slot(
     clock.write(crate::world_clock::RestoreWorldClock {
         saved_seconds: restored.clock,
     });
+    commands.insert_resource(SaveCamera {
+        target_cm: restored.camera,
+        zoom: restored.zoom,
+    });
     commands.insert_resource(crate::arena_hub_live::HubSlots {
         slots: list.slots().clone(),
         number: request.number,
@@ -841,12 +907,12 @@ pub fn restore_story(
     list.select(index);
     let loaded = list.load_current(prefer_checkpoint)?;
     let locale = loaded.level_locale_name();
-    let session = crate::session::read_package(&loaded.package).unwrap_or_else(|_| {
-        let mut session = Session::story();
-        session.story = story_at(&locale);
-        session.clock = loaded.data.header.clock();
-        session
-    });
+    // Exarust's own payload when the save has one; otherwise the retail
+    // player data's globals (its journal, clock, experience and transition
+    // state), which the original's reader restores without any payload of
+    // ours.
+    let session = crate::session::read_package(&loaded.package)
+        .unwrap_or_else(|_| crate::session::session_from_player_data(&loaded.data));
     let level = story_at(&locale).level();
     let mut player = loaded.player_record();
     if let Some(record) = player.as_mut() {
@@ -916,6 +982,7 @@ fn load_story_slot(
             clock.write(crate::world_clock::RestoreWorldClock {
                 saved_seconds: restored.session.clock,
             });
+            commands.insert_resource(SaveCamera::of_session(&restored.session));
             if let Some(record) = restored.player.clone() {
                 if let Some(created) = created.as_mut() {
                     created.0 = Some(record.clone());
@@ -1152,6 +1219,50 @@ mod tests {
         assert_eq!(restored.kind, save_package::SlotKind::Save);
         // An index outside the list answers nothing.
         assert_eq!(list.character_screen_select(5, 1).availability, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_story_save_stamps_the_views_camera_and_its_load_restores_it() {
+        let dir = folder("camera");
+        let mut lists = SlotLists::new(&dir);
+        let career = crate::hub_windows::ArenaCareer::default();
+        let mut session = live_session(Some("exanima02"), 77, &career, &ArenaStores::default());
+        let camera = SaveCamera {
+            target_cm: [7034.0, 1532.5, 4748.5],
+            zoom: 1.25,
+        };
+        camera.stamp(&mut session);
+        let number = save_new_slot(
+            &mut lists.story,
+            &session,
+            Some("Ash"),
+            &SaveWorld::default(),
+        )
+        .unwrap()
+        .unwrap();
+        // The file's header carries the pair, and a load brings it back.
+        let (_, kind) = Slots::story(&dir).load(number, false).unwrap();
+        assert_eq!(kind, SlotKind::Save);
+        let mut list = SlotList::new(Slots::story(&dir));
+        let restored = restore_story(&mut list, number, false).unwrap();
+        assert_eq!(restored.session.camera, [7034.0, 1532.5, 4748.5]);
+        assert_eq!(restored.session.zoom, 1.25);
+        assert_eq!(SaveCamera::of_session(&restored.session), camera);
+        // The header itself holds the values, not only the Exarust payload.
+        let bytes = std::fs::read(Slots::story(&dir).file(number, SlotKind::Save)).unwrap();
+        let package = save_package::PackageImage::read(&bytes).unwrap();
+        let data = save_package::PlayerData::parse(
+            package.section(save_package::PLAYER_DATA).unwrap(),
+            save_package::Flavour::Story,
+        )
+        .unwrap();
+        assert_eq!(data.header.locale(), save_package::name("exanima02"));
+        let save_package::PlayerHeader::Story(header) = data.header else {
+            panic!("story")
+        };
+        assert_eq!(header.camera, [7034.0, 1532.5, 4748.5]);
+        assert_eq!(header.zoom, 1.25);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
