@@ -37,8 +37,8 @@
 //!   original builds for the spirit the player controls in Spirit Form —
 //!   race 0xE00, status bits 0x220000, the copied record fields, focus pool
 //!   and power list rebound to the new body, its node flag 0x1000 and
-//!   player behaviour mode 4 — the spawn 60 cm along the caster's facing,
-//!   and the control handover.
+//!   player behaviour mode 4 — the spawn on the caster's ground height 60 cm
+//!   along its facing, and the control handover.
 //! - **Deferred calls** ([`post_deferred`], [`run_deferred`]): a power id
 //!   and its object word queued for the unit's next pass; the pass
 //!   dispatches by domain (Force, Energy, Displacement) and clears the
@@ -412,8 +412,6 @@ pub struct SpiritRecord {
     pub focus: f32,
     pub reserved: f32,
     pub pool_word: u32,
-    /// The word at the record's 0xa60, copied into the spawn's transform.
-    pub phase_word: u32,
 }
 
 /// The spirit body the Spirit Form power creates: a new record of race
@@ -519,12 +517,11 @@ pub fn run_deferred(
 /// new node and body take.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SpiritSpawn {
-    /// The caster's place 60 cm along its facing.
+    /// The caster's place on its ground height, 60 cm along its facing.
     pub at_cm: [f32; 3],
-    /// The basis the new body keeps, the caster's.
+    /// The basis the new body keeps, the caster's (rows x, y, z; z the
+    /// facing).
     pub basis: [[f32; 3]; 3],
-    /// The record word the spawn copies (its sixth field).
-    pub phase_word: u32,
     /// The new node's flag.
     pub node_flags: u32,
     /// The status bits the new body takes.
@@ -535,24 +532,23 @@ pub struct SpiritSpawn {
 /// The node flag a spawned effect carrier takes.
 pub const SPIRIT_NODE_FLAG: u32 = 0x1000;
 
-/// The spirit body's spawn from the caster's place, facing and basis: the
-/// character appears [`SPIRIT_DISTANCE`] ahead, with the caster's basis,
-/// the record's phase word, the node's 0x1000 flag, the status bits
-/// [`SPIRIT_STATUS`] and behaviour mode [`SPIRIT_BEHAVIOUR_MODE`].
-pub fn spirit_spawn(
-    record: &SpiritRecord,
-    caster_at: [f32; 3],
-    facing: [f32; 3],
-    basis: [[f32; 3]; 3],
-) -> SpiritSpawn {
+/// The spirit body's spawn from the caster's frame: its place with the
+/// height replaced by the caster's ground height, then moved
+/// [`SPIRIT_DISTANCE`] along the basis's facing row (single precision); the
+/// caster's basis, the node's 0x1000 flag, the status bits
+/// [`SPIRIT_STATUS`] and behaviour mode [`SPIRIT_BEHAVIOUR_MODE`]. The
+/// original then hands the point to the scene's placement query, which may
+/// move it; that query is not reproduced here.
+pub fn spirit_spawn(caster_at: [f32; 3], ground_y: f32, basis: [[f32; 3]; 3]) -> SpiritSpawn {
+    let facing = basis[2];
+    let base = [caster_at[0], ground_y, caster_at[2]];
     SpiritSpawn {
         at_cm: [
-            caster_at[0] + facing[0] * SPIRIT_DISTANCE,
-            caster_at[1] + facing[1] * SPIRIT_DISTANCE,
-            caster_at[2] + facing[2] * SPIRIT_DISTANCE,
+            base[0] + facing[0] * SPIRIT_DISTANCE,
+            base[1] + facing[1] * SPIRIT_DISTANCE,
+            base[2] + facing[2] * SPIRIT_DISTANCE,
         ],
         basis,
-        phase_word: record.phase_word,
         node_flags: SPIRIT_NODE_FLAG,
         status: SPIRIT_STATUS,
         behaviour_mode: SPIRIT_BEHAVIOUR_MODE,
@@ -813,7 +809,6 @@ mod tests {
             focus: 0.8,
             reserved: 0.25,
             pool_word: 3,
-            phase_word: 0x5a,
         };
         let powers = [KnownPower {
             id: 0x201,
@@ -863,23 +858,13 @@ mod tests {
     }
 
     #[test]
-    fn the_spirit_spawns_sixty_centimetres_ahead() {
-        let record = SpiritRecord {
-            phase_word: 9,
-            ..SpiritRecord::default()
-        };
-        let spawn = spirit_spawn(
-            &record,
-            [10.0, 20.0, 30.0],
-            [0.0, 0.0, 1.0],
-            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
-        );
-        assert_eq!(spawn.at_cm, [10.0, 20.0, 90.0]);
-        assert_eq!(
-            spawn.basis,
-            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
-        );
-        assert_eq!(spawn.phase_word, 9);
+    fn the_spirit_spawns_sixty_centimetres_ahead_on_the_ground() {
+        // The caster stands at 20 cm with its ground at 5 cm, facing +z: the
+        // spirit appears at the ground height, 60 cm ahead.
+        let basis = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let spawn = spirit_spawn([10.0, 20.0, 30.0], 5.0, basis);
+        assert_eq!(spawn.at_cm, [10.0, 5.0, 90.0]);
+        assert_eq!(spawn.basis, basis);
         assert_eq!(spawn.node_flags, 0x1000);
         assert_eq!(spawn.status, SPIRIT_STATUS);
         assert_eq!(spawn.behaviour_mode, 4);

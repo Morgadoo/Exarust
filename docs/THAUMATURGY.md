@@ -106,7 +106,8 @@ plumbing (`casting::reserve`, `release_reserve`, `spend_tick`,
   1.2 s through `exa_game::mind`; the spirit body is a race 0xE00 record
   sharing the caster's known powers, 60 cm along its facing, with its
   focus pool, techniques and running powers. Its spawn keeps the caster's
-  basis, flags the new node 0x1000, and gives the body the 0x220000 status
+  basis, stands on the caster's ground height before the 60 cm step,
+  flags the new node 0x1000, and gives the body the 0x220000 status
   bits and player behaviour mode 4 (`power::spirit_spawn`); the character
   itself is not generated yet. A power's deferred calls
   (`power::post_deferred`/`run_deferred`) dispatch by domain and clear the
