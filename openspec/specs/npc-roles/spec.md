@@ -94,11 +94,15 @@ The entry finder SHALL take, for each of A's roles newest first, the role's firs
 - **THEN** it gives none, while the entry's corpse accessor finds the script
 
 ### Requirement: Level characters carry roles
-Each living placed character SHALL carry its record's roles, empty relations and a brain that applies the roles when it appears. Every frame the brain SHALL rate the player from both sides' roles and keep that attitude, tolerance and its record's traits in its contact rating. The player SHALL carry the new-character roles in the story and the arena roles elsewhere.
+Each living placed character SHALL carry its record's roles, empty relations and a brain that applies the roles when it appears. Every frame the brain SHALL rate the player from both sides' roles and keep that attitude, tolerance and its record's traits in its contact rating. The player SHALL carry the new-character roles in the story, only the company's Faction 1 in the arena, and only Unaligned in practice and in scenes no mode plays.
 
 #### Scenario: A patrolling skeleton
 - **WHEN** a skeleton holding Activity Patrol with traits 20 and −30 appears while the player is Player, Human and the unknown background
 - **THEN** it patrols and rates the player −50 at tolerance 0 with traits 20 and −30
+
+#### Scenario: The arena sides
+- **WHEN** an Unaligned fighter rates the Unaligned practice player, a Faction 2 opponent rates the Faction 1 career player, Faction 1 staff rate that player, and an Unaligned fighter rates a story player
+- **THEN** they are −100 at tolerance 0, −100 at tolerance 0, +100 at tolerance 100, and 0
 
 ### Requirement: Sleepers wake and hostile characters duel
 A sleeper rating the player above a notice SHALL lose the sleep role and have its roles applied again. A level character SHALL duel the player once its brain's target pass enters combat against the player, and the fight start SHALL NOT engage it.
