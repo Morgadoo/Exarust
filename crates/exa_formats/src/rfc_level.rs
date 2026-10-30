@@ -8,8 +8,9 @@
 //! keeps the points only). [`LevelRaw`] scans those from the section's
 //! chunks, so the conversion needs no second parse of the whole file.
 //!
-//! Conversion starts here: [`LevelRaw::scan`] is the first piece, and the
-//! scene builder over a [`crate::rfc::Scene`] follows it.
+//! [`level_scene`] assembles the whole scene from a [`crate::rfc::Scene`]
+//! and a [`LevelRaw`]; `exa_game::level_transition::exported_level_section`
+//! is the save's one call. The live save does not call it yet.
 
 use crate::chunk::{Chunks, rfc_chunks};
 use crate::level::{LevelGrid, PropAttachment};
