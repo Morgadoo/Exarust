@@ -14,9 +14,9 @@
 //!   ([`super::arcs::hand_arcs`]) ride the right hand, the charge plays
 //!   `thmnrg_chrga` and the release `thmnrg_shock`.
 //! - **Shock weapons**: a persistent power that needs a weapon in hand and
-//!   a free slot; its creator ([`shock_weapons`]) arms every held weapon
-//!   with an arc record ([`super::arcs::weapon_arcs`]), holds its cost and
-//!   joins the active powers with `0x2040b` and a weapon-change hook. A
+//!   a free slot; its creator arms every held weapon with an arc record
+//!   ([`armed_weapon_arcs`], [`super::arcs::weapon_arcs`]), holds its cost
+//!   and joins the active powers with `0x2040b` and a weapon-change hook. A
 //!   later weapon put away takes its node's end flag and clears its hook,
 //!   dropping it from the armed list; a weapon taken while fewer than four
 //!   carry arcs gains them. A blade that strikes a body shocks its
@@ -231,35 +231,17 @@ pub fn shock_power(owner: u64, clip_ms: u32, base_cost: f32) -> ShockPower {
     }
 }
 
-/// The shock weapons power the creator makes: its owner, the weapons it
-/// armed with their arcs in creation order, the cost it holds, the word it
-/// joins the active powers with and the weapon-change hook it installs.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ShockWeapons {
-    pub owner: u64,
-    /// The armed weapons and their arcs, in the order the caster held them.
-    pub armed: Vec<(u64, ArcParams)>,
-    /// The cost the power holds.
-    pub cost: f32,
-    pub active_flags: u32,
-    /// The weapon-change hook is installed on the owner.
-    pub hook: bool,
-}
-
-/// Creates the shock weapons power: one arc record per held weapon (the
-/// creator arms every weapon; the four-weapon cap is the change hook's),
-/// the held cost and the `0x2040b` membership.
-pub fn shock_weapons(owner: u64, held: &[u64], cost: f32) -> ShockWeapons {
-    ShockWeapons {
-        owner,
-        armed: held
-            .iter()
-            .map(|&weapon| (weapon, super::arcs::weapon_arcs()))
-            .collect(),
-        cost,
-        active_flags: SHOCK_WEAPONS,
-        hook: true,
-    }
+/// The arc records the shock weapons creator makes: one
+/// [`super::arcs::weapon_arcs`] record per held weapon, in the order the
+/// caster holds them (the creator arms every held weapon; the four-weapon
+/// cap is the change hook's). The power object itself, its held cost and
+/// its `0x2040b` membership are [`super::power::energy::ShockWeapons`] and
+/// the cast that pushes it; the per-weapon arc entities are not spawned
+/// yet.
+pub fn armed_weapon_arcs(held: &[u64]) -> Vec<(u64, ArcParams)> {
+    held.iter()
+        .map(|&weapon| (weapon, super::arcs::weapon_arcs()))
+        .collect()
 }
 
 /// What a shock weapon's blade did to a struck body: the character takes a
@@ -478,16 +460,13 @@ mod tests {
     }
 
     #[test]
-    fn shock_weapons_arms_each_held_weapon_and_holds_its_cost() {
-        let power = shock_weapons(7, &[2, 3], 0.3);
-        assert_eq!(power.active_flags, SHOCK_WEAPONS);
-        assert!(power.hook);
-        assert_eq!(power.cost, 0.3);
+    fn shock_weapons_arms_each_held_weapon() {
+        let armed = armed_weapon_arcs(&[2, 3]);
         assert_eq!(
-            power.armed.iter().map(|(w, _)| *w).collect::<Vec<_>>(),
+            armed.iter().map(|(w, _)| *w).collect::<Vec<_>>(),
             vec![2, 3]
         );
-        let (_, arcs) = &power.armed[0];
+        let (_, arcs) = &armed[0];
         assert_eq!((arcs.count, arcs.segments, arcs.life), (40, 4, 20));
         assert_eq!((arcs.size, arcs.scale, arcs.light), (2.0, 0.75, 0.02));
         assert_eq!((arcs.sound, arcs.volume), (Some("electricity03"), 0.15));
