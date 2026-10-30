@@ -1632,13 +1632,28 @@ its width, at the slice's middle ((slice + 0.5)/width), as the original's
   curve), so the outdoor GI ambient is fainter than the original's;
 - a light's shading is (2^((ly + (1 − ly)·y)·z) − 1)/(2^z − 1), ly the
   light's vertical direction; unshaped lights carry (1, 1, 1);
+- a registered shape adds its fragment body's colour per voxel over the
+  manager's clipped box (`shape_draw`) and slice range, after the point
+  lights and before the voxel lights. The pass evaluates the six bodies
+  (`gi_dome`, `gi_cuboid`, `gi_bubble`, `gi_telebubble`, `gi_gradline`,
+  `gi_multipoint`) with the original's operation order and GL comparison
+  semantics, over the voxel's world centimetres through the shape's `bMat`;
+  the shape's own `Tex0` is not modelled — the pass binds one white texel
+  for every shape, since no effect registers one yet [guess]. The manager's
+  own shape chain (the list, the box, the quad and the shared uniforms) is
+  in `gi_shape`/`shape_draw`; the effect classes that register shapes are a
+  different component;
 - the original's program carries two matrix-shadow light slots (`SdwMat`,
   `SdwMat2` for the first two lights whose shadow is one 2D map, i.e. the
   sky light and spots); before drawing a group it moves the first such light at
   index 2 or later to slot 1 when the sky light owns slot 0, or the first at
-  index 1 or later to slot 0 without it. Exarust has no spot lights and
-  the sky light is always slot 0, so a group keeps its order; every point light
-  carries its cube slot instead of a fixed `Shadow<i>` binding;
+  index 1 or later to slot 0 without it (its scan reaches the last
+  light, as its do-while does; `plan_light_slots`). Exarust has no spot
+  lights and the sky light is always slot 0, so a group keeps its order;
+  every point light carries its cube slot instead of a fixed `Shadow<i>`
+  binding; the light uniform's position is formed in the original's
+  centimetres: `(p - block centre)*(1/(W*fc)) + 0.5`, the height
+  `below/W + y*(1/(W*fc))`, and `w = 1/(R*(1/(W*fc)))`;
 - the lights injected are the sector's own: each sector's 6 m cell lists the
   lights whose flood windows reached it (up to 12), with the sky light ahead of
   them when it is up (it counts towards the twelve). A spot-shaped light is
