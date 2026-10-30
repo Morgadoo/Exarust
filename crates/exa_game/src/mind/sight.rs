@@ -641,6 +641,42 @@ pub struct SpiritScreen {
 pub const SPIRIT_SCREEN_SOUND: &str = "ThmMnd_B02";
 pub const SPIRIT_SCREEN_VOLUME: f32 = 0.2;
 
+/// The spirit screen's picture: 512 by 512 one-byte texels, four octaves at
+/// an amplitude of one, a half-texel pivot and a 0.8 s noise period.
+pub const SPIRIT_SCREEN_SIDE: u32 = 512;
+/// The screen's upload buffer, one byte a texel.
+pub const SPIRIT_SCREEN_BYTES: usize = (SPIRIT_SCREEN_SIDE * SPIRIT_SCREEN_SIDE) as usize;
+/// The noise's amplitude and pivot.
+pub const SPIRIT_SCREEN_AMPLITUDE: f32 = 1.0;
+pub const SPIRIT_SCREEN_PIVOT: [f32; 2] = [0.5, 0.5];
+/// The noise period, seconds.
+pub const SPIRIT_SCREEN_PERIOD_S: f32 = 0.8;
+
+/// The values the spirit screen's setup builds: its picture size, octaves,
+/// amplitude, pivot, upload size and noise.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SpiritScreenInit {
+    pub side: u32,
+    pub octaves: u32,
+    pub amplitude: f32,
+    pub pivot: [f32; 2],
+    pub bytes: usize,
+    pub noise: ScreenNoise,
+}
+
+/// The spirit screen's setup values, as its constructor builds the 512²
+/// one-byte picture and its noise object.
+pub fn spirit_screen_init() -> SpiritScreenInit {
+    SpiritScreenInit {
+        side: SPIRIT_SCREEN_SIDE,
+        octaves: SPIRIT_NOISE.octaves,
+        amplitude: SPIRIT_SCREEN_AMPLITUDE,
+        pivot: SPIRIT_SCREEN_PIVOT,
+        bytes: SPIRIT_SCREEN_BYTES,
+        noise: SPIRIT_NOISE,
+    }
+}
+
 /// Starts the spirit screen: off, its hook is registered (true) and its
 /// noise restamped; it shows (state 3) unless already shown, its alpha
 /// restarts unless it is fading, and it is stamped. The caller also locks
@@ -888,5 +924,16 @@ mod tests {
             (screen.state, screen.alpha, screen.started_ms),
             (3, 0.5, 20)
         );
+    }
+
+    #[test]
+    fn the_spirit_screen_builds_its_512_picture() {
+        let init = spirit_screen_init();
+        assert_eq!(init.side, 512);
+        assert_eq!(init.bytes, 512 * 512);
+        assert_eq!(init.octaves, 4);
+        assert_eq!(init.amplitude, 1.0);
+        assert_eq!(init.pivot, [0.5, 0.5]);
+        assert_eq!(init.noise.scale, SPIRIT_SCREEN_PERIOD_S);
     }
 }

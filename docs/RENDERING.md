@@ -2888,6 +2888,10 @@ vec2 vTex; …` and `in vec3 vrTex; in vec4 vrCol; uniform vec3 env0; …`).
   and one amplitude, then the 0.25 s period and target 1), sampled
   repeating and linear as `R8Unorm`; it is made on the first frame an anchor
   exists and uploaded only when `NoiseField::tick` reports a new picture.
+- **Spirit screen setup**: its constructor builds a 512² one-byte picture
+  (262 144 bytes) with four octaves at an amplitude of one, a half-texel
+  pivot and a 0.8 s noise period (`sight::spirit_screen_init`). The
+  screen's own draw callback is outside the pack.
 - **Wiring**: `MindSightAnchor` carries a body's `SightAnchor` and
   `SightEntry`; the `PostUpdate` system spawns or updates one child sphere
   and material an anchor, and removes it while the overlay alpha is zero.

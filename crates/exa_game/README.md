@@ -410,8 +410,9 @@ dwell windows, slot reuse), the entry colours, the billboard, the glow, the
 sphere's shaping and the spirit screen's start. `mind::draw` draws the entry
 spheres with the original's sight program (`exa_render::mind_sight`), its
 per-entry uniforms and the 256² animated noise picture; nothing creates an
-anchor yet, so the pass idles. The spirit screen's own quad and the casting
-AI are not in.
+anchor yet, so the pass idles. The spirit screen's 512² picture and noise
+setup are in (`sight::spirit_screen_init`); its own quad and the casting AI
+are not in.
 
 The small effect nodes (`effects`) are in, on the original's game clock
 in whole milliseconds: a level portal marker (the `0x3DD0E004` emitter
