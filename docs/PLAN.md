@@ -253,6 +253,8 @@ Round 39 gridenv5: the grid manager's room and active queries, door binding with
 
 Round 39 terrain7: the static terrain audit found one deviation, TexPos for a node deeper than the block level (32-bit level difference masked to five bits, signed whole-tile test); the live draw is unchanged, and a sweep test pins that composite sets are never handed out twice.
 
+Round 40 streaming6: the chunk-end stack and the placed object's node kind in the player test; review removed a duplicate, wrong character-section reader and fixed the kind order.
+
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
 Done (change `add-apparel-painting`): object database items and the
@@ -841,6 +843,10 @@ Round 39 playerctl10: the lift refuses an overlapping placement marker; review f
 
 Round 39 simsector8: cloth level contacts gathered after the step and the placement overlap query; review made its boxes oriented and let a NaN distance pass.
 
+Round 40 tetra9: the body's clone slot and shared sphere arrays; review fixed a rebase build break and the clone's link range remap.
+
+Round 40 wireui: the use cursor, the GUI-to-world drop and the scripts' GameEvent background unlock run live; the light toggle reads the held part's lit mark, so a lit torch dropped on the doll goes out on the first press.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
@@ -1201,6 +1207,12 @@ Round 39 motilepart10: held item weld changes at collapse and death, and the col
 
 Round 39 risehands: a collapse now empties every hand except a shield's in the character's hands and the record's out set, as the original's came-loose hook does, and the rise reads the record's out set, so the unarmed set-up runs (confirmed on the GPU).
 
+Round 40 charcreate6: the creator's starting kit, equipment panels and continue page as tested rules, the voice pick live; review reworked the kit entry layout and bound the apparel panel.
+
+Round 40 charview2: the doll's hand scene and the figure's drag start as tested functions, the masked take-in flags and Insight's off-hand drop live; review restored two readings the lane had changed and split out the grip recompute.
+
+Round 40 itemgui5: the icon atlas follows the interface scale live and the model-attach decisions are tested; review read the take-in gate as a wait and the 0x100 attach mark as shadow casting.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
@@ -1403,6 +1415,10 @@ Round 39 lightning: a strike no longer clears the frame to black. The flash-clea
 
 Round 39 worldfog: the world material applies the original's fog (scratch colour over the stored fog span, mixed by the GI or ambient term, alpha fade on unlit opacity surfaces); the lightning-tinted record fog colour now lights the voxel GI from the sky, as in the original.
 
+Round 40 meshunits4: the mesh unit's swept-sphere test and the material texture matrix; review made the sweep shorten to each accepted hit.
+
+Round 40 vxgi7: GI shapes drawn on the GPU, resident blocks and neighbour margins; review fixed the margin fractions, the sky map matrix and the telebubble rounding.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
@@ -1527,6 +1543,8 @@ Round 39 aihit: blows now reach the struck character's behaviour in the original
 Round 39 motileai8: the NPC brain's hit reaction, grabbed-flag timeout and investigation goal as tested functions; review reverted a wrong move of the alert look's 45 degree gate and made a NaN concern skip the reaction.
 
 Round 39 thaumtree8: the power tree's bar and prompt hit tests follow the live interface scale, and the bar no longer fades with the wheel.
+
+Round 40 aiengage: brain-bearing characters now engage the player (the brain and duel tick name the foe by the player's fighter, not its root, so the target pass's pick matches); the player's arena roles follow the original (Unaligned in practice, the company's Faction 1 in the arena); combat-mode W moves a muscled body again (the capsule takes the footwork step's velocity). GPU: a brain duellist engages at tick 270 and lands 8 hits in 50 s.
 
 ### Phase 7 — Game modes and content
 
@@ -2037,6 +2055,10 @@ Round 39 gamemain6: the expert ladder unlock write and the flow's motions throug
 
 Round 39 savegames9: the save-disable flag, checkpoint save-then-copy and retail save restore live; review made the readers drop the header camera pair and kept the checkpoint copy under the disable flag.
 
+Round 40 blastfx2: the force blast and torrent checked against the assembly; review replaced duplicate min/max helpers, restored the double texture walk and rebuilt the torrent ribbon as the original draws it.
+
+Round 40 dialogue4: dialogue keys and the script cast mirror wired; review made scripts read red health and kept their role changes.
+
 ### Phase 8 — Polish and release
 
 Performance (streaming, culling, GPU timings), settings, controller
@@ -2272,4 +2294,8 @@ Round 38 hwconfig3: the hardware configuration's benchmark workload, readouts an
 Round 38 rfcexport3: the level exporter's preparation hooks, condition words and a loaded level converted back for the save; review fixed the character database tag, byte-exact names, instance meshes and the material list count.
 
 Round 38 settingsio3: the engine's memory blocks, whole-file reads and the settings exit save; review fixed the search-path miss logging, the block copy and a duplicated KeyDef counter.
+
+Round 40 gamegui6: the form base's client-area refresh and freed-form slot sweep; review removed a duplicate wheel rule and rewrote the sweep over real slot state.
+
+Round 40 osmain4: the super-sampled pass schedule, the renderer's list walk, the particle pass and the overlay layout as tested models; review fixed the scissor bit, the particle masks and the overlay box height.
 
