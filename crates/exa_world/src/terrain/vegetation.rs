@@ -16,6 +16,9 @@ use exa_physics::engine_math::{reciprocal_sqrt, sin_cos};
 const POINT_SEED: u32 = 0x1797_2D3E;
 const POINT_RADIUS: f32 = 1.3;
 const ATTEMPTS: usize = 30;
+/// The scatter grid's cell side per unit of radius: the original's double
+/// for 1/√2, one unit in the last place below the correctly rounded value.
+const CELL_PER_RADIUS: f64 = f64::from_bits(0x3FE6_A09E_667F_3BCC);
 /// Tile side in vertex steps.
 const SIDE: f32 = 240.0;
 /// The density mask is sampled at 240 × 240 texels: a vertex step `p` reads
@@ -123,24 +126,29 @@ pub fn points() -> &'static [Vec<Vec2>] {
 
 fn poisson_disc() -> Vec<Vec2> {
     let r = POINT_RADIUS;
-    let cell = r * std::f32::consts::FRAC_1_SQRT_2;
-    let dim = (SIDE / cell).round() as usize + 1;
+    // The cell side is the radius times the original's 1/√2 in double,
+    // narrowed once; the side over it is converted to the nearest whole
+    // (ties to even), plus one.
+    let cell = (f64::from(r) * CELL_PER_RADIUS) as f32;
+    let dim = (SIDE / cell).round_ties_even() as usize + 1;
     let mut grid: Vec<Vec<usize>> = vec![Vec::new(); dim * dim];
-    let cell_of = |p: Vec2| ((p.x / cell) as usize, (p.y / cell) as usize);
     let mut rng = Lcg(POINT_SEED);
     let mut points = Vec::new();
     let mut active = Vec::new();
     let add = |p: Vec2, points: &mut Vec<Vec2>, grid: &mut Vec<Vec<usize>>| {
-        let (cx, cy) = cell_of(p);
+        let (cx, cy) = grid_cell(p, cell);
         let slot = &mut grid[cy.min(dim - 1) * dim + cx.min(dim - 1)];
+        // A cell holds four points. The original writes the fifth past its
+        // end (a buffer overrun); the model keeps the first four, which is
+        // what the neighbour search can still read.
         if slot.len() < 4 {
             slot.push(points.len());
-        } else {
-            slot[3] = points.len();
         }
         points.push(p);
     };
-    let first = Vec2::new(rng.unit() * SIDE, rng.unit() * SIDE);
+    // The draws are the engine's: the 32-bit step widened to double, times
+    // 2⁻³², rounded to single once.
+    let first = Vec2::new(rng.unit_exact() * SIDE, rng.unit_exact() * SIDE);
     add(first, &mut points, &mut grid);
     active.push(0);
     let margin = r / 4.0;
@@ -148,15 +156,15 @@ fn poisson_disc() -> Vec<Vec2> {
         let pick = rng.below(active.len() as u32) as usize;
         let centre = points[active[pick]];
         for _ in 0..ATTEMPTS {
-            let angle = rng.unit() * std::f32::consts::TAU;
-            let radius = (rng.unit() + 1.0) * r;
+            let angle = rng.unit_exact() * std::f32::consts::TAU;
+            let radius = (rng.unit_exact() + 1.0) * r;
             // The engine's sine and cosine: the cosine is the x offset.
             let (sin, cos) = sin_cos(angle);
             let p = centre + Vec2::new(cos * radius, sin * radius);
             if p.x <= margin || p.y <= margin || p.x >= SIDE - margin || p.y >= SIDE - margin {
                 continue;
             }
-            let (cx, cy) = cell_of(p);
+            let (cx, cy) = grid_cell(p, cell);
             let near = (cy.saturating_sub(2)..=(cy + 2).min(dim - 1)).any(|y| {
                 (cx.saturating_sub(2)..=(cx + 2).min(dim - 1)).any(|x| {
                     grid[y * dim + x]
@@ -169,9 +177,21 @@ fn poisson_disc() -> Vec<Vec2> {
                 add(p, &mut points, &mut grid);
             }
         }
+        // The active list swaps its last point into the chosen slot, as the
+        // original's range delete moves the tail in.
         active.swap_remove(pick);
     }
     points
+}
+
+/// The scatter grid's cell of a point: each coordinate divided by the cell
+/// size and rounded to the nearest whole, ties to even, as the original's
+/// conversion (`CVTSS2SI`) does.
+fn grid_cell(p: Vec2, cell: f32) -> (usize, usize) {
+    (
+        (p.x / cell).round_ties_even() as usize,
+        (p.y / cell).round_ties_even() as usize,
+    )
 }
 
 /// Splits points into chunks by partitioning in place: rows first, then
@@ -569,12 +589,46 @@ mod tests {
     #[test]
     fn the_scatter_starts_at_the_seeds_first_two_draws() {
         let mut rng = Lcg(POINT_SEED);
-        let first = Vec2::new(rng.unit() * SIDE, rng.unit() * SIDE);
+        let first = Vec2::new(rng.unit_exact() * SIDE, rng.unit_exact() * SIDE);
+        assert_eq!(first, Vec2::new(183.017_03, 35.931_23));
         let all: Vec<Vec2> = points().iter().flatten().copied().collect();
         assert!(
             all.iter().any(|p| p.distance(first) < 1e-6),
             "{first:?} is not in the set"
         );
+        // The whole set from the seed: 21 035 points, a concrete check of
+        // every draw, the rounded grid cells and the active-list removal.
+        assert_eq!(all.len(), 21_035);
+    }
+
+    #[test]
+    fn the_scatter_grid_cell_rounds_to_the_nearest_even() {
+        // Half a cell below rounds down, half a cell above up; the exact
+        // halves go to the even cell, as the original's conversion does.
+        assert_eq!(grid_cell(Vec2::new(0.4, 0.6), 1.0), (0, 1));
+        assert_eq!(grid_cell(Vec2::new(0.5, 1.5), 1.0), (0, 2));
+        assert_eq!(grid_cell(Vec2::new(2.5, 3.5), 1.0), (2, 4));
+        // Truncation would put 0.6 in cell 0; the rounded index is 1.
+        assert_eq!(grid_cell(Vec2::new(0.6, 0.6), 1.0), (1, 1));
+    }
+
+    #[test]
+    fn the_scatter_cell_is_narrowed_from_double() {
+        // 1.3 × the original's 1/√2 in double narrows to 0x3F6B533C; the
+        // single-precision product would be one unit lower (0x3F6B533B).
+        // The original's double is one unit below the correctly rounded
+        // 1/√2.
+        assert_eq!(
+            CELL_PER_RADIUS.to_bits() + 1,
+            std::f64::consts::FRAC_1_SQRT_2.to_bits()
+        );
+        let cell = (f64::from(POINT_RADIUS) * CELL_PER_RADIUS) as f32;
+        assert_eq!(cell.to_bits(), 0x3F6B_533C);
+        assert_eq!(
+            (POINT_RADIUS * std::f32::consts::FRAC_1_SQRT_2).to_bits(),
+            0x3F6B_533B
+        );
+        assert_eq!((SIDE / cell).round_ties_even() as usize + 1, 262);
     }
 
     #[test]

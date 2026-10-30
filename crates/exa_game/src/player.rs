@@ -36,8 +36,7 @@ use exa_ui::CursorCapture;
 
 use crate::bindings::{Action, Bindings};
 use crate::nav_camera::{
-    align_behind, clamp_pitch, frame_step, orbit_per_pixel, orbit_pitch, orbit_yaw, pitch_floor,
-    pitch_held,
+    align_behind, clamp_pitch, orbit_per_pixel, orbit_pitch, orbit_yaw, pitch_floor, pitch_held,
 };
 
 use crate::footwork::{self, StepGate};
@@ -1798,8 +1797,11 @@ pub struct ChaseCamera {
     /// Zoom: the target and the shown value (800–2000).
     zoom: f32,
     shown_zoom: f32,
-    /// How far the last camera tick ends after the present frame (s).
-    ahead: f32,
+    /// The real time since the camera started (ms), rounded once to the
+    /// frame stamp the tick driver compares against.
+    elapsed_ms: f64,
+    /// The original's integer tick clock.
+    frame: crate::nav_camera::FrameDriver,
     /// The backward unit vector and zoom the tick before the last left: a
     /// frame shows them between these and the last tick's.
     before: (Vec3, f32),
@@ -1828,7 +1830,8 @@ impl Default for ChaseCamera {
             pitch: min_pitch(ZOOM_START),
             zoom: ZOOM_START,
             shown_zoom: ZOOM_START,
-            ahead: 0.0,
+            elapsed_ms: 0.0,
+            frame: crate::nav_camera::FrameDriver::default(),
             before: (Vec3::Z, ZOOM_START),
             shake: Vec3::ZERO,
             shake_before: Vec3::ZERO,
@@ -2054,7 +2057,12 @@ impl ChaseCamera {
         focus: Vec3,
         obstructed: &mut impl FnMut(Vec3, Vec3, f32, f32) -> bool,
     ) -> f32 {
-        let (ran, t) = frame_step(&mut self.ahead, dt);
+        // The original compares the frame's millisecond stamp with the
+        // tick clock; the elapsed real time is kept unrounded so the
+        // rounding happens once, against the absolute clock.
+        self.elapsed_ms += f64::from(dt) * 1000.0;
+        // The stamp wraps at 2³² ms as the original's tick count does.
+        let (ran, t) = self.frame.step(self.elapsed_ms.round() as u64 as u32);
         for _ in 0..ran {
             self.tick();
             self.probe_wall(focus, obstructed);
@@ -2138,6 +2146,10 @@ pub(crate) fn chase_camera(
                 pitch_floor(cam.shown_zoom),
                 MAX_PITCH,
             );
+        } else if bindings.mouse_just_released(&buttons, Action::Orbit) {
+            // The drag's close message snaps the target a quarter turn from
+            // the shown yaw when it turned past an eighth (`nav_drag`).
+            cam.yaw = crate::nav_drag::free_drag_release(cam.yaw, cam.shown_yaw);
         }
         if scroll.delta.y != 0.0 {
             // The wheel's handler reads the zoom as a stop level, subtracts
@@ -3692,7 +3704,7 @@ mod tests {
         // The first frame starts a tick that ends 7 ms after it: 10 ms in.
         let t = cam.advance(0.010);
         assert!((t - 0.010 / 0.017).abs() < 1e-5);
-        assert!((cam.ahead - 0.007).abs() < 1e-6);
+        assert_eq!((cam.frame.clock, cam.frame.frame), (17, 10));
         // 7 ms more reach its end: no new tick, all the way in.
         let zoom = cam.shown_zoom;
         assert!((cam.advance(0.007) - 1.0).abs() < 1e-4);
@@ -3706,7 +3718,7 @@ mod tests {
             nine.tick();
         }
         assert!((cam.shown_zoom - nine.shown_zoom).abs() < 1e-3);
-        assert_eq!(cam.ahead, 0.0);
+        assert_eq!(cam.frame.clock, cam.frame.frame);
     }
 
     #[test]

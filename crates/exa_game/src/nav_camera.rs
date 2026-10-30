@@ -22,6 +22,8 @@ pub const ORBIT_PER_PIXEL: f32 = 0.0025;
 pub const ORBIT_PER_SCREEN: f64 = 4.8;
 /// The camera's tick (s) and how many a frame may run.
 pub const TICK: f32 = 0.017;
+/// The tick in the original's integer milliseconds.
+pub const TICK_MS: u32 = 17;
 pub const MAX_TICKS: u32 = 9;
 /// The pitch floor under zoom 1000, the added steepness per zoom unit and
 /// the zoom where the added part starts (rad, rad per unit, original zoom).
@@ -278,14 +280,15 @@ pub fn clamp_distance(distance: f32, min: f32, max: f32) -> f32 {
     }
 }
 
-/// Pulls a placement's pitch below the horizon into the limits the stepped
-/// camera keeps: at least the held pitch `floor`, at most `cap`. The
-/// original stores the negated value; a NaN takes neither side.
+/// Pulls a placement's pitch (negative with the eye above the point) into
+/// the limits the stepped camera keeps: the look-down amount `−pitch` is at
+/// least the held pitch `floor` and at most `cap`. The original negates,
+/// compares and negates back, so a NaN takes neither side and stays.
 pub fn clamp_fixed_pitch(pitch: f32, floor: f32, cap: f32) -> f32 {
-    if floor > pitch {
-        floor
-    } else if pitch > cap {
-        cap
+    if -pitch < floor {
+        -floor
+    } else if -pitch > cap {
+        -cap
     } else {
         pitch
     }
@@ -470,6 +473,140 @@ pub fn lift_out_of_geometry(
     })
 }
 
+/// One camera frame's ticks, as the original's integer clock runs them: the
+/// controller keeps the millisecond at which its last tick ends and the
+/// frame's own millisecond stamp. A frame moves the clock a tick at a time
+/// while it lies before the frame, at most nine ticks, then snaps it to the
+/// frame (a longer stall drops the rest). The frame lies
+/// `1 − (clock − frame) / 17` of the way into the last tick.
+///
+/// The compares are the original's unsigned 32-bit compares, so a wrapped
+/// clock behaves as its `GetTickCount` does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrameDriver {
+    /// The millisecond the last tick ends at.
+    pub clock: u32,
+    /// The present frame's millisecond.
+    pub frame: u32,
+}
+
+impl FrameDriver {
+    /// A driver whose first tick ends at `frame`, as the constructor sets
+    /// its clock to the frame stamp.
+    pub fn new(frame: u32) -> Self {
+        Self {
+            clock: frame,
+            frame,
+        }
+    }
+
+    /// Steps to `frame`: the ticks to run and how far into the last one the
+    /// frame lies (0–1). The clock is not moved when the frame has not
+    /// passed it.
+    pub fn step(&mut self, frame: u32) -> (u32, f32) {
+        self.frame = frame;
+        let mut ran = 0;
+        while self.clock < self.frame && ran < MAX_TICKS {
+            self.clock = self.clock.wrapping_add(TICK_MS);
+            ran += 1;
+        }
+        if self.clock < self.frame {
+            self.clock = self.frame;
+        }
+        // The original widens the zero-extended difference to a signed
+        // 64-bit word, divides in double, subtracts in double and narrows
+        // once.
+        let behind = u64::from(self.clock).wrapping_sub(u64::from(self.frame)) as i64;
+        let into = (1.0 - behind as f64 / f64::from(TICK_MS)) as f32;
+        (ran, into)
+    }
+}
+
+/// The angle the controller's constructor stores (rad): 45°, the stepped
+/// camera's field of view at its 2000 zoom.
+pub const FOCUS_ANGLE: f32 = f32::from_bits(0x3f49_0fdb);
+/// The priority the constructor gives its frame tick on the scene's task
+/// list.
+pub const FRAME_TICK_PRIORITY: i32 = 7;
+/// The priority the constructor gives the camera node's frame-rebuild hook.
+pub const MATRIX_HOOK_PRIORITY: i32 = 0;
+
+/// A camera controller as the unit's constructor builds it and its
+/// destructor takes apart. The original binds a viewport and a scene node,
+/// adds the point-translate hook to the camera node's matrix-rebuild list
+/// and the frame tick to the scene's task list, swaps the viewport's GUI
+/// callback for the destructor (keeping the old one), and applies the
+/// preset. Exarust has no viewport GUI lists, so the registrations are the
+/// flags here and the host performs them; the numeric state is the
+/// preset's.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NavController {
+    /// The fields the preset put on the controller.
+    pub preset: Preset,
+    /// The angle the constructor stores.
+    pub focus_angle: f32,
+    /// The camera node points back at this controller.
+    pub camera_bound: bool,
+    /// The viewport points back at this controller.
+    pub viewport_bound: bool,
+    /// The point-translate hook was added to the camera node's rebuild
+    /// list.
+    pub matrix_hook: bool,
+    /// The hook's priority there.
+    pub matrix_hook_priority: i32,
+    /// The constructor saved a viewport GUI callback for the destructor.
+    /// It copies whatever slot the viewport had, so this is clear when the
+    /// viewport had none, and the destructor then runs nothing.
+    pub viewport_callback_saved: bool,
+    /// The destructor is the viewport's GUI callback.
+    pub destructor_installed: bool,
+    /// The frame tick was added to the scene's task list.
+    pub frame_tick: bool,
+    /// The frame tick's priority there.
+    pub frame_tick_priority: i32,
+    /// The tick clock, started at the present frame.
+    pub frame: FrameDriver,
+}
+
+impl NavController {
+    /// Builds a controller from a preset record and the present frame
+    /// stamp, in the original's constructor order: the 45° angle, the node
+    /// and viewport back-links, the rebuild hook, the saved viewport
+    /// callback and the destructor, the frame tick, then the preset (which
+    /// may place the camera), and the clock set to the frame.
+    /// `viewport_callback` is whether the viewport had a GUI callback for
+    /// the constructor to save.
+    pub fn new(fields: PresetFields, frame_time: u32, viewport_callback: bool) -> Self {
+        let preset = apply_preset(fields);
+        Self {
+            preset,
+            focus_angle: FOCUS_ANGLE,
+            camera_bound: true,
+            viewport_bound: true,
+            matrix_hook: true,
+            matrix_hook_priority: MATRIX_HOOK_PRIORITY,
+            viewport_callback_saved: viewport_callback,
+            destructor_installed: true,
+            frame_tick: true,
+            frame_tick_priority: FRAME_TICK_PRIORITY,
+            frame: FrameDriver::new(frame_time),
+        }
+    }
+
+    /// Takes the controller apart: the destructor runs the viewport
+    /// callback it saved, when the slot is not empty, and then frees the
+    /// controller. Returns whether a saved callback ran; the ECS drop frees the state. The back-pointers
+    /// are cleared, as the host would.
+    pub fn release(&mut self) -> bool {
+        self.camera_bound = false;
+        self.viewport_bound = false;
+        self.destructor_installed = false;
+        let ran = self.viewport_callback_saved;
+        self.viewport_callback_saved = false;
+        ran
+    }
+}
+
 /// A frame's backward vector and zoom between the last two ticks: the
 /// vectors blended `a + (b − a)·t` and normalised by the reciprocal of
 /// their exact length (no guard for zero, as the original's), the zooms
@@ -505,22 +642,6 @@ pub fn fov_from_zoom(zoom: f32, divisor: f32, aspect: f64) -> f32 {
     let fov = zoom / divisor * 45.0 * scale;
     // `clamp` keeps a NaN, as the original's compares let it pass.
     fov.clamp(10.0, 100.0).to_radians()
-}
-
-/// One camera frame's ticks: given the time until the next tick (`ahead`,
-/// negative once it has passed), returns how many ticks to run and how far
-/// the frame lies into the last one (0–1). At most nine ticks run; a
-/// backlog beyond them is dropped by moving the tick clock to now, as the
-/// original does.
-pub fn frame_step(ahead: &mut f32, dt: f32) -> (u32, f32) {
-    *ahead -= dt;
-    let mut ran = 0;
-    while *ahead < 0.0 && ran < MAX_TICKS {
-        *ahead += TICK;
-        ran += 1;
-    }
-    *ahead = ahead.max(0.0);
-    (ran, 1.0 - (f64::from(*ahead) / f64::from(TICK)) as f32)
 }
 
 /// The constant the camera's preset divides several values by: 59². It is
@@ -754,6 +875,24 @@ pub fn apply_preset(fields: PresetFields) -> Preset {
     }
 }
 
+/// Applies a preset record to a controller that already has a distance
+/// field, as the original does when the editor has placed the camera by
+/// hand: the controller keeps its own distance (`distance`) and clears the
+/// keep byte when that byte is set, otherwise it takes the record's
+/// distance. Either way the result is raised to the smallest distance.
+/// Returns the preset and the keep byte after the call (always clear).
+pub fn apply_preset_to(fields: PresetFields, distance: f32, keep: bool) -> (Preset, bool) {
+    let mut preset = apply_preset(fields);
+    if keep {
+        preset.distance = if distance < preset.min_distance {
+            preset.min_distance
+        } else {
+            distance
+        };
+    }
+    (preset, false)
+}
+
 /// The segment the camera's cut-away driver casts: it starts twice the
 /// camera's largest distance out along the backward vector from the
 /// looked-at point (past the eye) and runs back towards the point for
@@ -882,6 +1021,11 @@ pub struct Attachment {
     /// The wheel handler saved for the detach; `false` is the empty slot,
     /// which the next preset fills again from the viewport.
     pub saved_wheel: bool,
+    /// The controller's redraw byte, which the detach sets: while it is set
+    /// the frame driver leaves the scene's and its caller's redraw requests
+    /// standing; once the camera tick clears it (and nothing forces a
+    /// redraw) the frame driver clears them.
+    pub redraw: bool,
 }
 
 impl Default for Attachment {
@@ -891,6 +1035,7 @@ impl Default for Attachment {
             bound: true,
             handlers: Handlers::default(),
             saved_wheel: false,
+            redraw: false,
         }
     }
 }
@@ -928,8 +1073,14 @@ impl Attachment {
             self.handlers.free_press = false;
             self.handlers.free_move = false;
             self.handlers.wheel = self.saved_wheel;
+            self.redraw = true;
         }
         true
+    }
+
+    /// The camera tick's clear of the redraw byte.
+    pub fn clear_redraw(&mut self) {
+        self.redraw = false;
     }
 }
 
@@ -1202,28 +1353,51 @@ mod tests {
         assert_eq!(clamp_distance(5.0, 10.0, 10000.0), 10.0);
         assert_eq!(clamp_distance(20000.0, 10.0, 10000.0), 10000.0);
         assert_eq!(clamp_distance(2000.0, 10.0, 10000.0), 2000.0);
-        assert_eq!(clamp_fixed_pitch(0.5, 0.8, 1.5), 0.8);
-        assert_eq!(clamp_fixed_pitch(2.0, 0.8, 1.5), 1.5);
-        assert_eq!(clamp_fixed_pitch(1.0, 0.8, 1.5), 1.0);
+        assert_eq!(clamp_fixed_pitch(-0.5, 0.8, 1.5), -0.8);
+        assert_eq!(clamp_fixed_pitch(-2.0, 0.8, 1.5), -1.5);
+        assert_eq!(clamp_fixed_pitch(-1.0, 0.8, 1.5), -1.0);
+        // The look-down amount is exactly at a bound: kept.
+        assert_eq!(clamp_fixed_pitch(-0.8, 0.8, 1.5), -0.8);
+        assert_eq!(clamp_fixed_pitch(-1.5, 0.8, 1.5), -1.5);
+        // A NaN pitch is unordered and passes both compares.
+        assert!(clamp_fixed_pitch(f32::NAN, 0.8, 1.5).is_nan());
     }
 
     #[test]
     fn a_frame_runs_at_most_nine_ticks_and_blends_the_rest() {
-        let mut ahead = 0.0;
         // 17 ms is exactly one tick: the frame starts the next.
-        let (ran, t) = frame_step(&mut ahead, 0.017);
-        assert_eq!(ran, 1);
+        let mut driver = FrameDriver::default();
+        let (ran, t) = driver.step(17);
+        assert_eq!((ran, driver.clock), (1, 17));
         assert!((t - 1.0).abs() < 1e-6);
-        // Half a tick into the next.
-        let mut ahead = -0.0085;
-        let (ran, t) = frame_step(&mut ahead, 0.0);
-        assert_eq!(ran, 1);
-        assert!((t - 0.5).abs() < 1e-6);
-        // A 1 s stall runs nine ticks and snaps the clock to now.
-        let mut ahead = 0.0;
-        let (ran, t) = frame_step(&mut ahead, 1.0);
+        // 10 ms in: the clock lands on 17 and 7 ms are left.
+        let mut driver = FrameDriver::default();
+        let (ran, t) = driver.step(10);
+        assert_eq!((ran, driver.clock), (1, 17));
+        assert!((t - (1.0 - 7.0 / 17.0)).abs() < 1e-6, "{t}");
+        // The subtraction is double and the narrowing happens once.
+        assert_eq!(t.to_bits(), ((1.0f64 - 7.0 / 17.0) as f32).to_bits());
+        // The next frame at 17 ms runs no tick and is all the way in.
+        let (ran, t) = driver.step(17);
+        assert_eq!((ran, driver.clock), (0, 17));
+        assert_eq!(t, 1.0);
+        // A 1 s stall runs nine ticks and snaps the clock to the frame.
+        let mut driver = FrameDriver::default();
+        let (ran, t) = driver.step(1000);
         assert_eq!((ran, t), (9, 1.0));
-        assert_eq!(ahead, 0.0);
+        assert_eq!(driver.clock, 1000);
+        // A driver built at a stamp already stands at that frame.
+        let mut driver = FrameDriver::new(500);
+        assert_eq!(driver.step(500), (0, 1.0));
+        // The compares are unsigned 32-bit compares: a clock just below
+        // the wrap is beyond a small frame stamp, so no tick runs (a
+        // signed compare would run one).
+        let mut driver = FrameDriver {
+            clock: u32::MAX - 8,
+            frame: 0,
+        };
+        let (ran, _) = driver.step(8);
+        assert_eq!((ran, driver.clock), (0, u32::MAX - 8));
     }
 
     #[test]
@@ -1570,6 +1744,10 @@ mod tests {
         let mut attachment = Attachment::default();
         assert!(attachment.set_detached(true));
         assert!(attachment.editing && !attachment.bound);
+        // The detach sets the redraw byte, which the camera tick clears.
+        assert!(attachment.redraw);
+        attachment.clear_redraw();
+        assert!(!attachment.redraw);
         // Setting the state it already has changes nothing.
         assert!(!attachment.set_detached(true));
         assert!(attachment.editing && !attachment.bound);
@@ -1684,5 +1862,68 @@ mod tests {
         assert_eq!(target.centre, Vec3::new(40.0, 50.0, 60.0));
         assert!(target.raised);
         assert_eq!(preset_target(&fields, &[], view).unwrap().centre, view);
+    }
+
+    #[test]
+    fn a_preset_keeps_a_hand_placed_distance_once() {
+        let fields = PresetFields {
+            distance: 2000.0,
+            ..PresetFields::default()
+        };
+        // The record's distance when the keep byte is clear.
+        let (preset, keep) = apply_preset_to(fields, 1500.0, false);
+        assert_eq!(preset.distance, 2000.0);
+        assert!(!keep);
+        assert!(!preset.derive_distance);
+        // The controller's own distance when the byte is set, raised to
+        // the smallest; the byte is cleared after the call.
+        let (preset, keep) = apply_preset_to(fields, 1500.0, true);
+        assert_eq!(preset.distance, 1500.0);
+        assert!(!keep);
+        let (preset, _) = apply_preset_to(fields, 5.0, true);
+        assert_eq!(preset.distance, 10.0);
+        // A zero record distance still derives the distance from the eye,
+        // even when the field was kept.
+        let (preset, _) = apply_preset_to(PresetFields::default(), 1500.0, true);
+        assert_eq!(preset.distance, 1500.0);
+        assert!(preset.derive_distance);
+    }
+
+    #[test]
+    fn the_controller_is_built_with_the_preset_and_torn_down() {
+        let mut controller = NavController::new(PresetFields::default(), 1234, true);
+        // The constructor stores 45°, binds the scene and viewport, hooks
+        // the camera node's rebuild (priority 0) and the frame tick
+        // (priority 7), keeps the viewport callback and installs the
+        // destructor.
+        assert_eq!(controller.focus_angle, FOCUS_ANGLE);
+        assert_eq!(controller.focus_angle.to_bits(), 0x3f49_0fdb);
+        assert!(controller.camera_bound && controller.viewport_bound);
+        assert!(controller.matrix_hook);
+        assert_eq!(controller.matrix_hook_priority, 0);
+        assert!(controller.viewport_callback_saved && controller.destructor_installed);
+        assert!(controller.frame_tick);
+        assert_eq!(controller.frame_tick_priority, 7);
+        // The preset is applied and the clock stands at the frame.
+        assert_eq!(
+            controller.preset.view,
+            apply_preset(PresetFields::default()).view
+        );
+        assert_eq!(
+            (controller.frame.clock, controller.frame.frame),
+            (1234, 1234)
+        );
+        assert_eq!(controller.frame.step(1251), (1, 1.0));
+        // The destructor runs the saved viewport callback once and clears
+        // the back-pointers.
+        assert!(controller.release());
+        assert!(!controller.release());
+        assert!(!controller.camera_bound && !controller.viewport_bound);
+        assert!(!controller.destructor_installed);
+        // A viewport without a callback leaves the saved slot empty, and
+        // the destructor runs nothing.
+        let mut bare = NavController::new(PresetFields::default(), 0, false);
+        assert!(!bare.viewport_callback_saved && bare.destructor_installed);
+        assert!(!bare.release());
     }
 }

@@ -130,6 +130,24 @@ pub fn plane_hit(ray: Ray, plane: Plane) -> PlaneHit {
     }
 }
 
+/// The plane pick against a plane carried by a node's frame: the original
+/// moves the ray's point and direction through the node's world-to-frame
+/// matrix, then picks in that space. `to_frame` is the matrix that takes a
+/// world point into the frame (the node's inverse world transform); the
+/// returned point is in the frame's space.
+///
+/// The engine's point transform sums `(x·c₀ + y·c₁) + (z·c₂ + t)`, the
+/// translation joining the third column before the pairs meet; its vector
+/// transform sums `(x·c₀ + y·c₁) + z·c₂`.
+pub fn plane_hit_in_frame(ray: Ray, plane: Plane, to_frame: bevy::math::Affine3A) -> PlaneHit {
+    let m = to_frame.matrix3;
+    let o = ray.origin;
+    let origin =
+        Vec3::from((m.x_axis * o.x + m.y_axis * o.y) + (m.z_axis * o.z + to_frame.translation));
+    let direction = to_frame.transform_vector3(ray.direction);
+    plane_hit(Ray::new(origin, direction), plane)
+}
+
 /// What both mesh picks record when they meet nothing: the distance along
 /// the ray to the ground plane `y = 0`, `origin.y / −direction.y` (no
 /// guard for a level ray).
@@ -431,6 +449,24 @@ impl RayMesh for PhysicsMesh<'_> {
     }
 }
 
+/// A mesh answered by the engine's triangle kd-tree, as a level mesh's own
+/// ray callback answers: the tree's front-face ray walk gives the nearest
+/// face within the pick's distance. This is the CPU-mesh stand-in the picks
+/// use where a mesh carries its tree; [`Triangles`] remains for a small
+/// mesh without one.
+pub struct KdMesh<'a> {
+    /// The mesh's built triangle kd-tree.
+    pub tree: &'a exa_physics::kd_tree::KdTree,
+}
+
+impl RayMesh for KdMesh<'_> {
+    fn nearest_hit(&self, ray: Ray, within: f32) -> Option<(usize, f32)> {
+        self.tree
+            .ray(ray.origin, ray.direction, within)
+            .map(|hit| (hit.triangle as usize, hit.distance))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -636,6 +672,83 @@ mod tests {
         behind.bounds.half_extents = Vec3::splat(0.5);
         // Now both bounds hold the start; the mesh itself is met at 1 m.
         assert!(nearest_hit(r, 10.0, 1, &[behind]).is_some());
+    }
+
+    #[test]
+    fn a_kd_tree_mesh_answers_the_pick_with_its_own_faces() {
+        use exa_physics::kd_tree::{KdTree, Triangle};
+        // An upward-facing 20 m floor of two triangles.
+        let floor = [
+            Triangle::new(
+                Vec3::new(-10.0, 0.0, -10.0),
+                Vec3::new(-10.0, 0.0, 10.0),
+                Vec3::new(10.0, 0.0, -10.0),
+            ),
+            Triangle::new(
+                Vec3::new(10.0, 0.0, -10.0),
+                Vec3::new(-10.0, 0.0, 10.0),
+                Vec3::new(10.0, 0.0, 10.0),
+            ),
+        ];
+        let tree = KdTree::build(&floor, false);
+        let mesh = KdMesh { tree: &tree };
+        let down = ray(Vec3::new(0.5, 5.0, 0.5), -Vec3::Y);
+        let (face, distance) = mesh.nearest_hit(down, 10.0).unwrap();
+        assert!(face <= 1);
+        assert!((distance - 5.0).abs() < 1e-6, "{distance}");
+        // The pick's distance bounds the tree's walk.
+        assert!(mesh.nearest_hit(down, 4.0).is_none());
+        // The tree's front-face walk refuses a ray from below.
+        let up = ray(Vec3::new(0.5, -5.0, 0.5), Vec3::Y);
+        assert!(mesh.nearest_hit(up, 10.0).is_none());
+    }
+
+    #[test]
+    fn a_plane_in_a_node_frame_is_picked_in_that_frame() {
+        // A frame lifted 2 m and turned a quarter turn about Y; the pick
+        // gets the inverse, which takes world points into the frame.
+        let frame = bevy::math::Affine3A::from_rotation_translation(
+            bevy::math::Quat::from_rotation_y(std::f32::consts::FRAC_PI_2),
+            Vec3::new(0.0, 2.0, 0.0),
+        )
+        .inverse();
+        // The world ray looks straight down from y = 7; in the frame it
+        // starts at (0, 5, 0) and still looks down.
+        let hit = plane_hit_in_frame(
+            ray(Vec3::new(0.0, 7.0, 0.0), -Vec3::Y),
+            Plane::new(Vec3::Y, 0.0),
+            frame,
+        );
+        assert!((hit.distance - 5.0).abs() < 1e-5, "{}", hit.distance);
+        assert!(hit.point.length() < 1e-5);
+        // The direction turns too: a world −X ray is the frame's −Z.
+        let hit = plane_hit_in_frame(
+            ray(Vec3::new(0.0, 2.0, 0.0), -Vec3::X),
+            Plane::new(Vec3::new(0.0, 0.0, -1.0), 3.0),
+            frame,
+        );
+        assert!((hit.distance - 3.0).abs() < 1e-5, "{}", hit.distance);
+    }
+
+    #[test]
+    fn the_node_frame_adds_the_translation_to_the_third_column_first() {
+        // A shear whose third column feeds x: x' = x + z + t. With x = 1
+        // and z = t = 2⁻²⁴ the engine's `x + (z + t)` is 1 + 2⁻²³, where a
+        // left-to-right sum would round to 1 twice.
+        let tiny = f32::EPSILON / 2.0;
+        let to_frame = bevy::math::Affine3A::from_cols(
+            bevy::math::Vec3A::X,
+            bevy::math::Vec3A::Y,
+            bevy::math::Vec3A::new(1.0, 0.0, 1.0),
+            bevy::math::Vec3A::new(tiny, 0.0, 0.0),
+        );
+        let hit = plane_hit_in_frame(
+            ray(Vec3::new(1.0, 0.0, tiny), Vec3::Y),
+            Plane::new(Vec3::Y, 5.0),
+            to_frame,
+        );
+        assert_eq!(hit.distance, 5.0);
+        assert_eq!(hit.point.x, 1.0 + f32::EPSILON);
     }
 
     #[test]

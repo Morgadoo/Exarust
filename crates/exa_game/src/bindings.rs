@@ -182,6 +182,12 @@ impl Bindings {
             .is_some_and(|button| buttons.just_pressed(button))
     }
 
+    /// Whether `action`'s mouse button was released this frame.
+    pub fn mouse_just_released(&self, buttons: &ButtonInput<MouseButton>, action: Action) -> bool {
+        self.mouse_button(action)
+            .is_some_and(|button| buttons.just_released(button))
+    }
+
     /// Whether `action`'s key went down this frame.
     pub fn just_pressed(&self, keys: &ButtonInput<KeyCode>, action: Action) -> bool {
         let code = self.key(action);
@@ -468,6 +474,21 @@ pub fn mouse_button(code: u32) -> Option<MouseButton> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_mouse_action_reports_its_press_and_release() {
+        let bindings = Bindings::default();
+        assert!(bindings.mouse_button(Action::Orbit).is_some());
+        let mut buttons = ButtonInput::default();
+        let button = bindings.mouse_button(Action::Orbit).unwrap();
+        buttons.press(button);
+        assert!(bindings.mouse_just_pressed(&buttons, Action::Orbit));
+        assert!(bindings.mouse_pressed(&buttons, Action::Orbit));
+        assert!(!bindings.mouse_just_released(&buttons, Action::Orbit));
+        buttons.release(button);
+        assert!(!bindings.mouse_pressed(&buttons, Action::Orbit));
+        assert!(bindings.mouse_just_released(&buttons, Action::Orbit));
+    }
 
     /// Every key of the shipped table comes back to its code.
     #[test]

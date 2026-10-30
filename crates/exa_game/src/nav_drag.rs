@@ -58,18 +58,28 @@ pub fn zoom_slide(dy: f32, base: f32, low: f32, high: f32) -> f32 {
 }
 
 /// The stepped camera's zoom and held pitch after `stick` zoom steps (the
-/// original's integer step count): the zoom moves as
-/// [`crate::gamepad::zoom_step`] moves it (the step
-/// `(stick · 0.008333334) · ((max − min) · 0.2)`, held between the bounds,
-/// a NaN kept), then the pitch floor follows the new zoom ([`pitch_floor`])
-/// and the held pitch is the steeper of it and the asked pitch
-/// ([`pitch_held`]). Only the stepped camera moves at all (the preset's
-/// flag `0x200000`); the running game's pad already moves its zoom through
-/// `zoom_step` and holds the pitch each frame.
+/// original's integer step count). Only a stepped camera (the preset's flag
+/// `0x200000`) moves: otherwise the zoom and the asked pitch come back
+/// unchanged. A stepped camera moves the zoom as [`crate::gamepad::zoom_step`]
+/// moves it (the step `(stick · 0.008333334) · ((max − min) · 0.2)`, held
+/// between the bounds, a NaN kept), then the pitch floor follows the new zoom
+/// ([`pitch_floor`]) and the held pitch is the steeper of it and the asked
+/// pitch ([`pitch_held`]). The running game's pad already moves its zoom
+/// through `zoom_step` and holds the pitch each frame.
 ///
 /// The original first derives the zoom's current stop level, rounds it to
 /// an integer and discards it; that dead work is left out here.
-pub fn gamepad_zoom(zoom: f32, stick: i32, low: f32, high: f32, asked_pitch: f32) -> (f32, f32) {
+pub fn gamepad_zoom(
+    zoom: f32,
+    stick: i32,
+    low: f32,
+    high: f32,
+    asked_pitch: f32,
+    stepped: bool,
+) -> (f32, f32) {
+    if !stepped {
+        return (zoom, asked_pitch);
+    }
     let zoom = crate::gamepad::zoom_step(zoom, stick, low, high);
     let pitch = pitch_held(asked_pitch, pitch_floor(zoom));
     (zoom, pitch)
@@ -299,24 +309,35 @@ mod tests {
     fn a_gamepad_stick_moves_the_stepped_zoom_by_a_stop_share() {
         // A notch of 120 units is one 1/120, times the 240 stop: 240 of
         // zoom. From 1280 that is 1040, and the pitch floor is 0.805.
-        let (zoom, pitch) = gamepad_zoom(1280.0, 120, 800.0, 2000.0, 0.5);
+        let (zoom, pitch) = gamepad_zoom(1280.0, 120, 800.0, 2000.0, 0.5, true);
         let step = 120.0f32 * WHEEL_UNIT * 240.0;
         assert_eq!(zoom, 1280.0 - step);
         let floor = pitch_floor(zoom);
         assert_eq!(pitch, pitch_held(0.5, floor));
         assert!((pitch - 0.805).abs() < 1e-6, "{pitch}");
         // The other way, and held at the least and the most.
-        let (zoom, _) = gamepad_zoom(800.0, -120, 800.0, 2000.0, 0.5);
+        let (zoom, _) = gamepad_zoom(800.0, -120, 800.0, 2000.0, 0.5, true);
         assert_eq!(zoom, 800.0 + step);
-        assert_eq!(gamepad_zoom(800.0, 10000, 800.0, 2000.0, 0.5).0, 800.0);
-        assert_eq!(gamepad_zoom(2000.0, -10000, 800.0, 2000.0, 0.5).0, 2000.0);
+        assert_eq!(
+            gamepad_zoom(800.0, 10000, 800.0, 2000.0, 0.5, true).0,
+            800.0
+        );
+        assert_eq!(
+            gamepad_zoom(2000.0, -10000, 800.0, 2000.0, 0.5, true).0,
+            2000.0
+        );
         // A NaN zoom keeps its NaN through both compares, and its NaN floor
         // leaves the asked pitch.
-        let (zoom, pitch) = gamepad_zoom(f32::NAN, 1, 800.0, 2000.0, 0.5);
+        let (zoom, pitch) = gamepad_zoom(f32::NAN, 1, 800.0, 2000.0, 0.5, true);
         assert!(zoom.is_nan());
         assert_eq!(pitch, 0.5);
         // A steeper asked pitch wins over the floor.
-        assert_eq!(gamepad_zoom(800.0, 0, 800.0, 2000.0, 1.2).1, 1.2);
+        assert_eq!(gamepad_zoom(800.0, 0, 800.0, 2000.0, 1.2, true).1, 1.2);
+        // A camera that is not stepped leaves both fields alone.
+        assert_eq!(
+            gamepad_zoom(1280.0, 120, 800.0, 2000.0, 0.5, false),
+            (1280.0, 0.5)
+        );
     }
 
     #[test]
