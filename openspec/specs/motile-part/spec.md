@@ -97,7 +97,7 @@ A part that is not a limb and holds a 1-based blood spot SHALL release it and ta
 - **THEN** the limb keeps 1 and the weapon releases the spot and takes 0
 
 ### Requirement: Held item body
-An equipped item whose model has a rigid root SHALL be its own solver body, tied to its holder by the grip links. These links use the limp link law (pivot softening 0.001 per cm squared), with the item and the hand each moved by their share of the mobility sum. The item SHALL never meet its holder's body or another item the same holder holds. It SHALL be freed, with friction 0.75 and its own group masks, when its holder loses its drive.
+An equipped item whose model has a rigid root SHALL be its own solver body, tied to its holder by the grip links. Whether the holder lives or not, its pivot links SHALL use the limp link law (pivot softening 0.001 per cm squared), with the item and the hand each moved by their share of the mobility sum. The item SHALL never meet its holder's body or another item the same holder holds. It SHALL be freed, with friction 0.75 and its own group masks, when its holder loses its drive.
 
 #### Scenario: Held at the grip
 - **WHEN** a held item's body and its holder's body tick together for many solver ticks
@@ -106,6 +106,11 @@ An equipped item whose model has a rigid root SHALL be its own solver body, tied
 #### Scenario: Holder falls
 - **WHEN** the holder's body goes limp
 - **THEN** the item's links stop acting and the item falls free
+
+#### Scenario: Living holder's hand pivot
+- **WHEN** a living holder's hand pivot has a 10 cm gap
+- **THEN** the gap closes by 1/1.1, as for a limp holder
+
 
 ### Requirement: Grip link build
 The grip builder SHALL make the main links from the table's points scaled by the body scale, mirrored in x and z when flipped, with the table's slack and strength 1, and 0.01 smoothing on the second link. A grip with a second hand SHALL add that hand's link, with points scaled by the character's size and the item point's y scaled by the record's second-hand factor. It SHALL also add an arm link whose hand-side point is the table's raw point. Every link left at zero smoothing SHALL take 0.001.
@@ -351,23 +356,30 @@ A rising character SHALL be set up unarmed exactly when both out-set hands of it
 - **WHEN** a character that collapsed with a sword and a shield rises
 - **THEN** it is not set up unarmed
 
-### Requirement: Death weld stiffening
-When the holder dies, each held item's soft weld SHALL take strength 1; no other grip link SHALL change, and a dead holder SHALL keep its held items.
-
-#### Scenario: Corpse keeps its shield
-- **WHEN** the holder of a shield dies
-- **THEN** the shield's soft weld takes strength 1 and the shield stays held
-
-### Requirement: Collapse weld slack
-On the tick a holder starts collapsing, each item it still holds after the collapse lets go of its weapons SHALL have its soft weld's slack set to 10 cm, leaving the link's smoothed length and strength as they were. Each later collapse SHALL write it again.
-
-#### Scenario: Collapsing with a shield
-- **WHEN** a holder with a shield starts collapsing
-- **THEN** the shield's soft weld has 10 cm of slack and strength 0.05
-
 ### Requirement: Collapse groan
 A collapse's start SHALL ask the character's voice for line 2 with volume 0.15 + 0.1 × the second draw and pitch 0.8 + 0.1 × the first draw, each worked in double and narrowed once.
 
 #### Scenario: Draws of 0.3 and 0
 - **WHEN** the first draw is 0.3 and the second 0
 - **THEN** the pitch is 0.83 and the volume 0.15
+
+### Requirement: Held item world weld law
+A held item's world weld (a grip link without the pivot flag) SHALL move the item alone, past its slack, by strength times the gap, cut to a 10·strength² cm move once the gap exceeds 10·strength cm, or by strength times the excess for a link with slack, whether the holder lives or not.
+
+#### Scenario: Soft weld 20 cm away
+- **WHEN** an enabled soft world weld of strength 0.05 without slack has a 20 cm gap
+- **THEN** the item moves 0.025 cm toward its anchor
+
+### Requirement: Held item drop words
+A dropped held item SHALL lose only its strike, chain and mark bits (0x30001), keeping its other state bits, and take friction 0.75.
+
+#### Scenario: Dropped torch
+- **WHEN** a held torch with the held and mark bits is dropped
+- **THEN** its mark bit clears and its held bit stays
+
+### Requirement: Torch friction
+A held torch's body SHALL have friction 0, while a held weapon's or shield's has 0.5.
+
+#### Scenario: Torch in hand
+- **WHEN** a torch is held
+- **THEN** its body's friction is 0
