@@ -67,9 +67,13 @@ per-contact sense; the other AI races use the ally-aware one
 (`combatant::ally_sense`), in which a fellow brain stands in for the race
 word's AI bit. A sleeper that rates the player above a notice drops the
 sleep role and wakes. A knocked-out or dead brain stops after its alert decay,
-before its morale and state (the original's condition bit `0x800`). No
-running race word selects the ally sense yet, so every level brain keeps
-the standard one. The original's tick ends by registering the character's
+before its morale and state (the original's condition bit `0x800`). A placed
+brain takes its sense, statue mark and effect from the record's profession
+word, the race word the attach reads: the races whose word carries bit
+`0x1000` (the golems, race ids 17–21) install a sense, the class `0x1200`
+(the Golem Suit) the standard one and the others the ally-aware one, and a
+statue bit marks it a sentry. Every other race keeps the behaviour base's
+perception. The original's tick ends by registering the character's
 nav footprint unless it follows a route with its locomotion active at 1 cm
 a tick or faster (`brain::stamps_footprint`). The game's footprint system
 asks that gate for every NPC each fixed tick: the route-following flag is a

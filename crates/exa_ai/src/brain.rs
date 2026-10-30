@@ -153,6 +153,9 @@ pub struct Npc {
     pub sense: personality::Sense,
     /// The attach found a statue: its contact sense clears what it sees.
     pub statue: bool,
+    /// Its race word carries the AI bit `0x1000`: the ally sense's mark of
+    /// a fellow AI character (the golem races).
+    pub race_ai: bool,
     /// The level room it stands in, −1 unknown.
     pub level_room: i32,
     /// The level room before the current one: a room whose only exit leads
@@ -245,6 +248,7 @@ impl Npc {
             fled: crate::flee::FledRooms::default(),
             sense: personality::Sense::Standard,
             statue: false,
+            race_ai: false,
             level_room: -1,
             previous_room: -1,
             flight: None,
@@ -259,7 +263,9 @@ impl Npc {
 
     /// The brain of `record`: its traits and the personality they give,
     /// drawing the jitter from `roll` and keeping the generator's next
-    /// state.
+    /// state. The record's profession word is the race word the attach
+    /// reads, so the golem races take the ally or, for the race class
+    /// `0x12xx`, the standard sense, and a statue bit marks a sentry.
     pub fn of_record(record: &CharacterRecord, roll: &mut u32) -> Self {
         let personality = personality::personality(
             record.combat_skill,
@@ -277,6 +283,12 @@ impl Npc {
             },
             ..Self::new(record.traits)
         };
+        let attached = personality::attach(record.profession(), false);
+        if let Some(sense) = attached.sense {
+            brain.sense = sense;
+        }
+        brain.statue = attached.statue;
+        brain.race_ai = record.profession() & personality::AI_FLAG != 0;
         brain.fighting_base = crate::estimate::fighting_base(&record.skills, record.combat_skill);
         brain.roll = *roll;
         brain
@@ -497,9 +509,8 @@ struct Sensed {
     speed: f32,
     contacts: Vec<Contact>,
     roles: Option<Roles>,
-    /// It carries a brain, i.e. belongs to the AI class the ally sense
-    /// treats as a fellow [guess: the race word's AI bit is not modelled,
-    /// so a brain stands in for it].
+    /// Its race word carries the AI bit, the ally sense's mark of a fellow
+    /// AI character ([`Npc::race_ai`]).
     ai: bool,
 }
 
@@ -553,7 +564,7 @@ pub fn perceive_all(
             Option<&CharacterId>,
             Option<&Roles>,
             Option<&ChildOf>,
-            Has<Npc>,
+            Option<&Npc>,
             Has<MindWarded>,
             Option<&exa_physics::body::locomotion::Locomotor>,
         )>,
@@ -594,7 +605,7 @@ pub fn perceive_all(
                 id,
                 roles,
                 child,
-                ai,
+                npc,
                 hidden,
                 locomotor,
             )| {
@@ -627,7 +638,7 @@ pub fn perceive_all(
                     speed,
                     contacts: combatant.map_or_else(Vec::new, |c| c.contacts.clone()),
                     roles: roles.cloned(),
-                    ai,
+                    ai: npc.is_some_and(|n| n.race_ai),
                 }
             },
         )
@@ -3221,5 +3232,52 @@ mod tests {
         assert_eq!((npc.pass.encounter, npc.pass.greet), (None, None));
         assert!(combatant.contacts.is_empty());
         assert_eq!((combatant.target, combatant.look_target), (None, None));
+    }
+}
+
+#[cfg(test)]
+mod race_word_tests {
+    use super::*;
+    use exa_formats::characters::CharacterRecord;
+
+    /// The record's profession word is the race word the attach reads: the
+    /// Golem Guard (race byte 16, class `0x1100`) carries the AI bit and
+    /// takes the ally sense; the Golem Suit (race byte 18, class `0x1200`)
+    /// the standard sense; a human has no AI bit and keeps the standard
+    /// sense; the statue bit marks a sentry.
+    #[test]
+    fn the_profession_word_picks_the_sense() {
+        let guard = CharacterRecord {
+            race: 16,
+            ..CharacterRecord::default()
+        };
+        let suit = CharacterRecord {
+            race: 18,
+            ..CharacterRecord::default()
+        };
+        let human = CharacterRecord::default();
+        let statue = CharacterRecord {
+            race: 16,
+            profession_rest: personality::STATUE_FLAG,
+            ..CharacterRecord::default()
+        };
+        let mut roll = 0;
+        assert_eq!(
+            Npc::of_record(&guard, &mut roll).sense,
+            personality::Sense::Ally
+        );
+        assert_eq!(
+            Npc::of_record(&suit, &mut roll).sense,
+            personality::Sense::Standard
+        );
+        assert_eq!(
+            Npc::of_record(&human, &mut roll).sense,
+            personality::Sense::Standard
+        );
+        assert!(Npc::of_record(&statue, &mut roll).statue);
+        // The ally sense's fellow mark is the race word's AI bit, not the
+        // mere presence of a brain: a human has none.
+        assert!(Npc::of_record(&guard, &mut roll).race_ai);
+        assert!(!Npc::of_record(&human, &mut roll).race_ai);
     }
 }
