@@ -46,6 +46,14 @@ pub const MATCH_TYPES: [&str; 6] = ["Duel", "Doubles", "Skirmish", "Fray", "Rese
 pub const TABS: [&str; 4] = ["Matches", "Events", "Tournament", "Season"];
 /// The board's title.
 pub const TITLE: &str = "Matches";
+/// The template's label above the company table.
+pub const AVAILABLE_LABEL: &str = "Available";
+/// The template's close button caption.
+pub const CLOSE_LABEL: &str = "Close";
+/// The template's day-end button caption.
+pub const END_DAY_LABEL: &str = "End Day";
+/// The template's tournament forfeit button caption.
+pub const FORFEIT_LABEL: &str = "Forfeit";
 /// Matches a company may enter in one day.
 pub const MATCHES_PER_DAY: u32 = 3;
 /// Pugilism's match type id. The standard tab stores no tier for it.
@@ -233,8 +241,13 @@ pub struct BoardLayout {
     pub picture: Rect,
     pub reward_panel: Rect,
     pub enter_button: Rect,
+    pub close_button: Rect,
+    pub end_day_button: Rect,
+    pub forfeit_button: Rect,
     pub entered_label: Rect,
+    pub available_label: Rect,
     pub status_label: Rect,
+    pub season_picture: Rect,
     pub reward_slots: [Rect; 4],
 }
 
@@ -244,13 +257,28 @@ pub struct BoardLayout {
 pub const ROW_HEIGHT: i32 = 30;
 
 /// Builds the board's layout. `compact` shortens the form, the team table
-/// and the reward panel. The tab strip, the button and label rectangles and
-/// the reward-slot rectangles are not in the board's own methods; they are
-/// placed from the form template's order and are guesses.
+/// and the reward panel.
+///
+/// The tables and the two child panels come from the constructor. The tab
+/// strip, the four bottom buttons and the two labels above the fighter
+/// tables come from the form template: the template stores x, width and y
+/// in quarter pixels, the layout rounds x and width down to a multiple of
+/// four (round half to even), multiplies y by four and lifts every control
+/// by half its height less eight. The bottom row is anchored to the form's
+/// bottom edge. The status label shares the primary button's place; its
+/// height is the label class's default, which is not decoded, so it takes
+/// the button row's height. Reward-slot sizes are the label class's default
+/// too and stay a guess.
 pub fn layout(compact: bool) -> BoardLayout {
     let height = if compact { 636 } else { 656 };
     let team_height = if compact { 224 } else { 244 };
     let reward_height = if compact { 100 } else { 120 };
+    // The bottom row: the template's y of two quarters, ten quarters above
+    // the bottom edge less half the button height less eight.
+    let bottom = height - 46;
+    // The template's season item slots: two rows at y 60 and 100 quarters.
+    let slot = 60;
+    let slot_y = |row: i32| row * 4 - (slot - 16) / 2;
     BoardLayout {
         form: Rect {
             x: 0,
@@ -260,35 +288,35 @@ pub fn layout(compact: bool) -> BoardLayout {
         },
         title_y: 8,
         tab_strip: Rect {
-            x: 8,
-            y: 8,
-            w: 588,
-            h: 24,
+            x: 20,
+            y: 14,
+            w: 548,
+            h: 28,
         },
         tabs: [
             Rect {
-                x: 8,
-                y: 8,
-                w: 147,
-                h: 24,
+                x: 20,
+                y: 14,
+                w: 128,
+                h: 28,
             },
             Rect {
-                x: 155,
-                y: 8,
-                w: 147,
-                h: 24,
+                x: 160,
+                y: 14,
+                w: 128,
+                h: 28,
             },
             Rect {
-                x: 302,
-                y: 8,
-                w: 147,
-                h: 24,
+                x: 300,
+                y: 14,
+                w: 128,
+                h: 28,
             },
             Rect {
-                x: 449,
-                y: 8,
-                w: 147,
-                h: 24,
+                x: 440,
+                y: 14,
+                w: 128,
+                h: 28,
             },
         ],
         match_table: TableLayout {
@@ -398,47 +426,77 @@ pub fn layout(compact: bool) -> BoardLayout {
             h: reward_height,
         },
         enter_button: Rect {
-            x: 396,
-            y: 600,
-            w: 192,
+            x: 300,
+            y: bottom,
+            w: 129,
+            h: 28,
+        },
+        close_button: Rect {
+            x: 160,
+            y: bottom,
+            w: 129,
+            h: 28,
+        },
+        end_day_button: Rect {
+            x: 20,
+            y: bottom,
+            w: 129,
+            h: 28,
+        },
+        forfeit_button: Rect {
+            x: 440,
+            y: bottom,
+            w: 129,
             h: 28,
         },
         entered_label: Rect {
-            x: 40,
-            y: 250,
-            w: 240,
-            h: 20,
+            x: 408,
+            y: 322,
+            w: 128,
+            h: 28,
+        },
+        available_label: Rect {
+            x: 116,
+            y: 322,
+            w: 128,
+            h: 28,
         },
         status_label: Rect {
-            x: 40,
-            y: 276,
-            w: 520,
-            h: 40,
+            x: 300,
+            y: bottom,
+            w: 160,
+            h: 28,
+        },
+        season_picture: Rect {
+            x: 372,
+            y: 28,
+            w: 160,
+            h: 600,
         },
         reward_slots: [
             Rect {
-                x: 300,
-                y: 476,
-                w: 60,
-                h: 60,
+                x: 12,
+                y: slot_y(60),
+                w: slot,
+                h: slot,
             },
             Rect {
-                x: 368,
-                y: 476,
-                w: 60,
-                h: 60,
+                x: 172,
+                y: slot_y(60),
+                w: slot,
+                h: slot,
             },
             Rect {
-                x: 436,
-                y: 476,
-                w: 60,
-                h: 60,
+                x: 12,
+                y: slot_y(100),
+                w: slot,
+                h: slot,
             },
             Rect {
-                x: 504,
-                y: 476,
-                w: 60,
-                h: 60,
+                x: 172,
+                y: slot_y(100),
+                w: slot,
+                h: slot,
             },
         ],
     }
@@ -513,6 +571,8 @@ pub mod control {
     /// arena's own checks decide). Its role, ending the day, is a guess
     /// from that rule.
     pub const DAY_END: usize = 12;
+    /// The Close button. The board never changes its state.
+    pub const CLOSE: usize = 13;
     /// The primary Enter/Begin/Continue button.
     pub const ENTER: usize = 14;
     /// The secondary tournament button.
@@ -555,6 +615,39 @@ pub mod control {
 
 /// The number of control slots the methods touch.
 pub const CONTROL_COUNT: usize = 23;
+
+/// The states the form template gives its controls before any tab is
+/// applied: the four tabs, the two labels above the fighter tables, the
+/// close button and the season picture are shown; the standard tab's four
+/// controls, the prize item and its caption, the day-end button, the
+/// primary and secondary buttons, the status text, the four season items
+/// and the season tail start hidden. The tab show then sets the visible
+/// tab's own controls.
+pub const TEMPLATE_CONTROLS: [u32; CONTROL_COUNT] = [
+    0,
+    0,
+    0,
+    0,
+    control::HIDDEN,
+    control::HIDDEN,
+    control::HIDDEN,
+    control::HIDDEN,
+    0,
+    0,
+    control::HIDDEN,
+    control::HIDDEN,
+    control::HIDDEN,
+    0,
+    control::HIDDEN,
+    control::HIDDEN,
+    control::HIDDEN,
+    0,
+    control::HIDDEN,
+    control::HIDDEN,
+    control::HIDDEN,
+    control::HIDDEN,
+    control::HIDDEN,
+];
 
 /// A match record as the board reads it: a standard match, a daily event, a
 /// tournament event, or the board's selected match. The fields follow the
@@ -1003,10 +1096,7 @@ impl Board {
     /// standard tab open. The board does not own the installation's data:
     /// the caller fills the events, entries and names.
     pub fn new(compact: bool, day: u32, fighters: Vec<Fighter>) -> Self {
-        let mut controls = [0u32; CONTROL_COUNT];
-        for state in controls.iter_mut().take(4) {
-            *state = control::DISABLED;
-        }
+        let controls = TEMPLATE_CONTROLS;
         let mut board = Self {
             compact,
             day,
@@ -1166,6 +1256,17 @@ impl Board {
     /// The primary button's state.
     pub fn enter_state(&self) -> u32 {
         self.controls[control::ENTER]
+    }
+
+    /// Whether a control is shown and enabled.
+    pub fn control_enabled(&self, index: usize) -> bool {
+        let state = self.controls.get(index).copied().unwrap_or(control::HIDDEN);
+        !control::hidden(state) && !control::disabled(state)
+    }
+
+    /// Whether the control at an index is shown, hidden or disabled.
+    pub fn control_state(&self, index: usize) -> u32 {
+        self.controls.get(index).copied().unwrap_or(control::HIDDEN)
     }
 
     /// The primary button's update after a lineup change. The tournament
@@ -1906,6 +2007,21 @@ impl Board {
         if !control::hidden(self.enter_state()) && layout.enter_button.contains(point.0, point.1) {
             return BoardHit::Enter;
         }
+        if !control::hidden(self.controls[control::CLOSE])
+            && layout.close_button.contains(point.0, point.1)
+        {
+            return BoardHit::Close;
+        }
+        if self.control_enabled(control::DAY_END)
+            && layout.end_day_button.contains(point.0, point.1)
+        {
+            return BoardHit::EndDay;
+        }
+        if self.control_enabled(control::SECONDARY)
+            && layout.forfeit_button.contains(point.0, point.1)
+        {
+            return BoardHit::Forfeit;
+        }
         for &slot in self.visible_tables() {
             let table = self.table_layout(slot);
             if !table.rect.contains(point.0, point.1) {
@@ -1931,6 +2047,9 @@ impl Board {
         match self.hit_test(point) {
             BoardHit::Tab(index) => self.handle(BoardInput::SelectTab(index)),
             BoardHit::Enter => self.handle(BoardInput::Confirm),
+            BoardHit::Close => self.handle(BoardInput::Close),
+            BoardHit::EndDay => BoardAction::EndDay,
+            BoardHit::Forfeit => BoardAction::Forfeit,
             BoardHit::Table { slot, row, .. } => match slot {
                 TableSlot::Match => self.handle(BoardInput::SelectMatch(row)),
                 TableSlot::Rank => self.handle(BoardInput::SelectRank(row)),
@@ -2243,6 +2362,10 @@ impl Board {
                 self.paint_fighters(&mut paint, &layout);
             }
             BoardTab::Season => {
+                paint.push(BoardPaint::Frame {
+                    widget: Widget::SeasonPicture,
+                    rect: layout.season_picture,
+                });
                 self.paint_table(&mut paint, &layout.season_table, &|board, row| {
                     board
                         .season_cells(row)
@@ -2256,6 +2379,9 @@ impl Board {
                 }
             }
         }
+        // The template's own controls: the bottom row, the labels above the
+        // two fighter tables and the close button. The status label shares
+        // the primary button's place, so only one of them is visible.
         if !control::hidden(self.enter_state()) {
             paint.push(BoardPaint::Label {
                 widget: Widget::EnterButton,
@@ -2263,7 +2389,33 @@ impl Board {
                 text: self.tab_button_label(),
             });
         }
+        if !control::hidden(self.control_state(control::SECONDARY)) {
+            paint.push(BoardPaint::Label {
+                widget: Widget::ForfeitButton,
+                rect: Some(layout.forfeit_button),
+                text: FORFEIT_LABEL.to_string(),
+            });
+        }
+        if !control::hidden(self.control_state(control::CLOSE)) {
+            paint.push(BoardPaint::Label {
+                widget: Widget::CloseButton,
+                rect: Some(layout.close_button),
+                text: CLOSE_LABEL.to_string(),
+            });
+        }
+        if !control::hidden(self.control_state(control::DAY_END)) {
+            paint.push(BoardPaint::Label {
+                widget: Widget::EndDayButton,
+                rect: Some(layout.end_day_button),
+                text: END_DAY_LABEL.to_string(),
+            });
+        }
         if self.tab != BoardTab::Season {
+            paint.push(BoardPaint::Label {
+                widget: Widget::AvailableLabel,
+                rect: Some(layout.available_label),
+                text: AVAILABLE_LABEL.to_string(),
+            });
             paint.push(BoardPaint::Label {
                 widget: Widget::EnteredLabel,
                 rect: Some(layout.entered_label),
@@ -2427,6 +2579,16 @@ pub enum Widget {
     EnterButton,
     /// The "Entered n/m" label.
     EnteredLabel,
+    /// The label above the company table.
+    AvailableLabel,
+    /// The Close button.
+    CloseButton,
+    /// The End Day button.
+    EndDayButton,
+    /// The tournament's Forfeit button.
+    ForfeitButton,
+    /// The season's reward picture.
+    SeasonPicture,
 }
 
 /// One entry in the board's paint list.
@@ -2560,6 +2722,12 @@ pub enum BoardHit {
     },
     /// The primary Enter/Begin/Continue button.
     Enter,
+    /// The Close button.
+    Close,
+    /// The End Day button.
+    EndDay,
+    /// The tournament's Forfeit button.
+    Forfeit,
     /// Nothing the board handles.
     Outside,
 }
@@ -2594,6 +2762,10 @@ pub enum BoardAction {
     BeginTournament,
     /// The next tournament round begins.
     ContinueTournament,
+    /// The day ends and the arena rolls the next one.
+    EndDay,
+    /// The company forfeits its tournament place.
+    Forfeit,
     /// The form closes.
     Close,
 }
@@ -2738,6 +2910,45 @@ mod tests {
         assert_eq!(compact.roster_table.rect.h, 224);
         assert_eq!(compact.lineup_table.rect.h, 224);
         assert_eq!(compact.reward_panel.h, 100);
+    }
+
+    #[test]
+    fn the_form_template_places_the_tabs_and_the_bottom_row() {
+        let wide = layout(false);
+        let rect = |x, y, w, h| Rect { x, y, w, h };
+        // The template's tabs: x 20, 162, 300, 440 quarter pixels, of which
+        // the rounding to a multiple of four takes 162 down to 160; y is
+        // five quarters less half the height less eight.
+        assert_eq!(
+            wide.tabs,
+            [
+                rect(20, 14, 128, 28),
+                rect(160, 14, 128, 28),
+                rect(300, 14, 128, 28),
+                rect(440, 14, 128, 28),
+            ]
+        );
+        // The bottom row sits 46 pixels above the form's bottom edge; its
+        // buttons are 128 pixels wide plus the template's one-pixel nudge.
+        assert_eq!(wide.end_day_button, rect(20, 610, 129, 28));
+        assert_eq!(wide.close_button, rect(160, 610, 129, 28));
+        assert_eq!(wide.enter_button, rect(300, 610, 129, 28));
+        assert_eq!(wide.forfeit_button, rect(440, 610, 129, 28));
+        assert_eq!(wide.status_label, rect(300, 610, 160, 28));
+        // The labels above the two fighter tables, and the season picture.
+        assert_eq!(wide.available_label, rect(116, 322, 128, 28));
+        assert_eq!(wide.entered_label, rect(408, 322, 128, 28));
+        assert_eq!(wide.season_picture, rect(372, 28, 160, 600));
+        // The season's four item slots: two rows, x 12 and 172.
+        assert_eq!(wide.reward_slots[0], rect(12, 218, 60, 60));
+        assert_eq!(wide.reward_slots[1], rect(172, 218, 60, 60));
+        assert_eq!(wide.reward_slots[2], rect(12, 378, 60, 60));
+        assert_eq!(wide.reward_slots[3], rect(172, 378, 60, 60));
+
+        let compact = layout(true);
+        assert_eq!(compact.end_day_button, rect(20, 590, 129, 28));
+        assert_eq!(compact.enter_button, rect(300, 590, 129, 28));
+        assert_eq!(compact.available_label, wide.available_label);
     }
 
     #[test]
@@ -3551,7 +3762,10 @@ mod tests {
     #[test]
     fn the_hit_test_follows_the_layout_and_the_tab() {
         let mut board = board();
-        assert_eq!(board.hit_test((10, 18)), BoardHit::Tab(0));
+        assert_eq!(board.hit_test((30, 20)), BoardHit::Tab(0));
+        assert_eq!(board.hit_test((200, 20)), BoardHit::Tab(1));
+        // The second tab's template x of 162 quarter pixels rounds to 160.
+        assert_eq!(board.hit_test((150, 20)), BoardHit::Outside);
         assert_eq!(
             board.hit_test((10, 70)),
             BoardHit::Table {
@@ -3569,7 +3783,10 @@ mod tests {
             }
         );
         assert_eq!(board.hit_test((10_000, 10_000)), BoardHit::Outside);
-        assert_eq!(board.hit_test((450, 610)), BoardHit::Enter);
+        // The test board is the compact form: its bottom row is 46 pixels
+        // above the 636-pixel bottom edge.
+        assert_eq!(board.hit_test((350, 600)), BoardHit::Enter);
+        assert_eq!(board.hit_test((200, 600)), BoardHit::Close);
         assert_eq!(board.handle(BoardInput::SelectTab(1)), BoardAction::Changed);
         assert_eq!(
             board.hit_test((454, 70)),
@@ -3580,15 +3797,15 @@ mod tests {
             }
         );
         assert_eq!(board.handle(BoardInput::SelectTab(3)), BoardAction::Changed);
-        assert_eq!(board.hit_test((450, 610)), BoardHit::Outside);
+        assert_eq!(board.hit_test((350, 620)), BoardHit::Outside);
     }
 
     #[test]
     fn a_click_selects_and_confirms() {
         let mut board = board();
-        assert_eq!(board.click((155, 18)), BoardAction::Changed);
+        assert_eq!(board.click((200, 20)), BoardAction::Changed);
         assert_eq!(board.tab, BoardTab::Events);
-        assert_eq!(board.click((10, 18)), BoardAction::Changed);
+        assert_eq!(board.click((30, 20)), BoardAction::Changed);
         assert_eq!(board.tab, BoardTab::Matches);
         assert_eq!(
             board.click((10, 56 + 2 * ROW_HEIGHT + 5)),
@@ -3604,7 +3821,7 @@ mod tests {
         assert_eq!(board.click((300, 348 + 5)), BoardAction::Changed);
         assert_eq!(board.team_selection, Some(0));
         // Skirmish takes three: Anna, Borin and Cael fill it.
-        assert_eq!(board.click((450, 610)), BoardAction::EnterMatch);
+        assert_eq!(board.click((350, 600)), BoardAction::EnterMatch);
         // The arena, not the board, counts the match.
         assert_eq!(board.matches_played, 0);
         assert_eq!(board.click((10_000, 10_000)), BoardAction::None);
@@ -3757,6 +3974,45 @@ mod tests {
             _ => None,
         });
         assert_eq!(greyed, Some(true));
+    }
+
+    #[test]
+    fn the_bottom_row_reports_its_buttons() {
+        let mut board = board();
+        let layout = board.layout();
+        let centre = |rect: Rect| (rect.x + rect.w / 2, rect.y + rect.h / 2);
+        assert_eq!(board.click(centre(layout.close_button)), BoardAction::Close);
+        // End Day follows its control state: hidden until a match is played
+        // (or the tournament day's entries settle).
+        assert_eq!(
+            board.hit_test(centre(layout.end_day_button)),
+            BoardHit::Outside
+        );
+        board.matches_played = 1;
+        let tab = board.tab;
+        board.apply_tab(None, tab);
+        assert_eq!(
+            board.click(centre(layout.end_day_button)),
+            BoardAction::EndDay
+        );
+        // Forfeit is the tournament tab's secondary button and stays hidden
+        // elsewhere.
+        assert_eq!(
+            board.hit_test(centre(layout.forfeit_button)),
+            BoardHit::Outside
+        );
+        board.day = 7;
+        board.entries[0].participants = vec![Participant {
+            slot: 1,
+            value: 0,
+            weapon: 0,
+        }];
+        board.show();
+        assert_eq!(board.tab, BoardTab::Tournament);
+        assert_eq!(
+            board.click(centre(layout.forfeit_button)),
+            BoardAction::Forfeit
+        );
     }
 
     #[test]
