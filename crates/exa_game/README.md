@@ -846,21 +846,30 @@ numeric fields (the 59² view and size scales, the 59th roots of the
 retention and the rate, the pitch bounds, the 10/10000 distance range and
 both cameras' speeds, the distance raised to the smallest, and the
 editor-only target scan for the `0xA9` nodes with its `0xAE` marker), the
-cut-away segment, the kick offset and the 123-point jittered disc table.
-Its picking unit is `nav_pick`: the screen ray's near-to-far form, the
-plane pick, the node walk with the class, layer and option bits, the
-segment against each bounding sphere and box, the nearest mesh within the
-best distance, the ground pick with its 5 cm/1 mm grown sphere and
-top-of-sphere ask, the ground-plane fallback and the kinesis pick; the
-cursor's aim plane and reach use them, and the physics world answers as
-the mesh callback because Exarust keeps no CPU triangles. Its free-camera
-drag and zoom handlers are `nav_drag`: the absolute drag's yaw and
-arc-sine pitch with its pixel bounds and quarter-turn release snap, the
-stepped wheel zoom (the chase camera's wheel goes through it), the stick
-zoom (the gamepad's), the vertical zoom slide, the zoom's cubed pitch
-offset and the editor's grab drag and face-aligned target. The editor's
-viewport attachment flags and the handler set a preset's flags ask for are
-in `nav_camera`; installing them has no Exarust counterpart.
+cut-away segment and the point the probe centres on (the stored point,
+the followed object's own point or its position), the kick offset and the
+123-point jittered disc table; the preset's editor target scan keeps a node
+only when its class byte is the editor's and its class word's low twelve
+bits are one, its marker raising the extra flag. Its picking unit is
+`nav_pick`: the screen ray's near-to-far form, the plane pick, the node
+walk with the class, layer and option bits, the segment against each
+bounding sphere and box, the nearest mesh within the best distance, the
+ground pick with its 5 cm/1 mm grown sphere and top-of-sphere ask, and the
+kinesis pick; both record the reach and its end point rather than a hit
+distance, and the last node whose callback answers wins; the ground-plane
+fallback is the miss. The cursor's aim plane and reach use them, and the
+physics world answers as the mesh callback because Exarust keeps no CPU
+triangles. Its free-camera drag and zoom handlers are `nav_drag`: the
+absolute drag's yaw and arc-sine pitch with its pixel bounds and
+quarter-turn release snap, the stepped wheel zoom (the chase camera's
+wheel goes through it), the stepped gamepad stick zoom (`gamepad_zoom`,
+the stick's share of a stop), the vertical zoom slide, the zoom's cubed
+pitch offset and the editor's grab drag and face-aligned target. The
+editor's viewport attachment keeps the handler set a preset's flags ask
+for, saves the wheel handler once, and restores it while removing the
+editor's press and move handlers when the controller detaches; the scene
+editor's camera switch drives that state as its followed record comes and
+goes.
 
 The arena's per-rank kits are in (`loadout`): `Member::loadouts` holds
 six of the record's own loadouts (hands and worn items); the editor takes
