@@ -51,7 +51,8 @@ pub fn heavy_claws(race: Option<&RaceWeaponry>) -> bool {
 
 /// Writes both hands' contact mobility after the hands change (or the body
 /// is new): the emptying of the hands and the refresh that follows every
-/// equip, as [`refreshed_hand_mobility`].
+/// equip, as [`refreshed_hand_mobility`]; and the fists' weapon bit
+/// ([`Ragdoll::set_fist`]), on while the character is unarmed.
 #[allow(clippy::type_complexity)]
 pub fn refresh_hand_contacts(
     mut bodies: Query<
@@ -67,6 +68,17 @@ pub fn refresh_hand_contacts(
         let (armed, heavy) = (armed(hands), heavy_claws(race));
         for bone in [RIGHT_HAND, LEFT_HAND] {
             body.set_contact_share(bone, |base| refreshed_hand_mobility(base, armed, heavy));
+            // The fists are the unarmed character's held items: the
+            // unarmed set-up gives both hands the weapon bit, and emptying
+            // the hands for an equip takes it away. [inf] A torch alone
+            // counts as unarmed here, as the refresh's class test does.
+            body.set_fist(bone, !armed);
+        }
+        if bevy::log::tracing::enabled!(bevy::log::Level::DEBUG) {
+            debug!(
+                "hands refreshed: armed {armed}, heavy claws {heavy}, fists {}",
+                if armed { "off" } else { "on (weapon bit)" }
+            );
         }
     }
 }
@@ -200,6 +212,45 @@ mod tests {
         });
         app.update();
         assert_eq!(mobility(&app, e, 1), base * 0.5);
+    }
+
+    /// Empty hands are fists: both hands carry the weapon bit (0x1) and the
+    /// pelvis does not; a sword takes it off both, dropping it puts it
+    /// back, and no other bit of the hands' class words changes.
+    #[test]
+    fn unarmed_hands_carry_the_weapon_bit() {
+        use exa_physics::part::PartState;
+        let mut app = App::new();
+        app.add_systems(Update, refresh_hand_contacts);
+        let body = arms();
+        let before: Vec<u32> = body.parts.iter().map(|p| p.state.bits()).collect();
+        let e = app
+            .world_mut()
+            .spawn((Fighter::default(), Hands::default(), body))
+            .id();
+        let states = |app: &App| -> Vec<u32> {
+            app.world()
+                .get::<Ragdoll>(e)
+                .unwrap()
+                .parts
+                .iter()
+                .map(|p| p.state.bits())
+                .collect()
+        };
+        app.update();
+        let fists = states(&app);
+        assert_eq!(fists[0], before[0]);
+        assert_eq!(fists[1], before[1] | PartState::STRIKING);
+        assert_eq!(fists[2], before[2] | PartState::STRIKING);
+        app.world_mut().get_mut::<Hands>(e).unwrap().main = Some(HeldItem {
+            flags: 0x10,
+            light: false,
+        });
+        app.update();
+        assert_eq!(states(&app), before);
+        app.world_mut().get_mut::<Hands>(e).unwrap().main = None;
+        app.update();
+        assert_eq!(states(&app), fists);
     }
 
     /// A Sir (race index 4, heavy claws) has its unarmed hands at a
