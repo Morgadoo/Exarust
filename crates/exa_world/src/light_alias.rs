@@ -200,7 +200,9 @@ pub fn reach_plain(light: &AliasLight, node: &AliasNode) -> AliasHit {
 /// The gated reach test, with the cell flood's answer passed as `gate`
 /// (pass `true` when the light's flags lack [`FLOOD_GATED`]). An early miss
 /// reports a zero weight and mask, and lit only when the node's bucket held
-/// a mask before. See the module docs for the rule.
+/// a mask before. See the module docs for the rule. The negated compares
+/// are the original's unordered branches.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 pub fn reach(light: &AliasLight, node: &AliasNode, gate: bool) -> AliasHit {
     let miss = AliasHit {
         weight: 0.0,

@@ -539,6 +539,7 @@ impl ZoomSpring {
     /// `carried·0.998` in double to the motion, anything else (a NaN too)
     /// snaps the motion to the target. The motion never falls under half
     /// the range.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
     pub fn step(&mut self) {
         let last = self.motion - self.previous;
         self.previous = self.motion;
