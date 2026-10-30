@@ -741,6 +741,60 @@ pub fn shared_surface_points(
     Arc::new(surface_points(bounds, p, inside, cover))
 }
 
+/// The parameter every runtime call of the surface generator passes: 20,
+/// in the centimetres the original's meshes and its generator work in, so
+/// the sampling step is 4 cm.
+pub const GENERATED_POINT_PARAMETER: f32 = 20.0;
+
+/// The centimetres per metre the original's generators work in.
+const CM_PER_M: f32 = 100.0;
+
+/// The second flag word bits that make a floor-set child node get runtime
+/// surface points: the original generates them when either bit `0x10000`
+/// or bit `0x8` is set on the node, and for neither bit otherwise.
+pub const GENERATED_POINT_FLAGS2: u32 = 0x0001_0008;
+
+/// Whether a floor-set child node gets its surface points generated at
+/// load. The original runs the generator on every `+`-named-free child of
+/// a centre-floor variant whose second flag word has bit `0x10000` or bit
+/// `0x8` set; the walk skips children named `#…`, `+…` and `[…]`.
+pub fn floor_set_node_generates(flags2: u32) -> bool {
+    flags2 & GENERATED_POINT_FLAGS2 != 0
+}
+
+/// The surface generator run at load on a mesh that ships without a GI
+/// point chunk, in the mesh's own space (metres).
+///
+/// The original's generator works in centimetres at
+/// [`GENERATED_POINT_PARAMETER`]; Exarust's mesh positions and bounds are
+/// metres, so the bounds and triangles are scaled up, sampled, and the
+/// points scaled back. The scaling back is a guess: the RFC stores its
+/// coordinates in centimetres and the reader divides by 100, so recovering
+/// them is within a float ulp rather than bit for bit.
+///
+/// The point query is [`mesh_touches`] over the given triangles, the
+/// stand-in for the node's collision query; see its note.
+pub fn generated_surface_points(
+    bounds: Bounds,
+    triangles: &[[Vec3; 3]],
+    cover: SurfaceCover,
+) -> Vec<Vec3> {
+    let bounds = Bounds {
+        centre: bounds.centre * CM_PER_M,
+        half_extents: bounds.half_extents * CM_PER_M,
+    };
+    let scaled: Vec<[Vec3; 3]> = triangles.iter().map(|t| t.map(|p| p * CM_PER_M)).collect();
+    surface_points(
+        bounds,
+        GENERATED_POINT_PARAMETER,
+        |point, radius| mesh_touches(&scaled, point, radius),
+        cover,
+    )
+    .into_iter()
+    .map(|p| p / CM_PER_M)
+    .collect()
+}
+
 /// Whether a sphere touches a mesh given as triangles: the query the
 /// surface generator makes through a node's collision data.
 ///

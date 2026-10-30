@@ -634,3 +634,49 @@ fn the_columns_meet_the_same_faces_as_the_whole_list() {
     }
     assert!(hits > 40);
 }
+
+#[test]
+fn the_floor_sets_flagged_children_get_generated_points() {
+    // The original generates surface points for a floor-set child when
+    // bit 0x10000 or bit 0x8 of its second flag word is set.
+    assert!(floor_set_node_generates(0x8));
+    assert!(floor_set_node_generates(0x10000));
+    assert!(floor_set_node_generates(0x10008));
+    assert!(floor_set_node_generates(0xffff_ffff));
+    assert!(!floor_set_node_generates(0));
+    assert!(!floor_set_node_generates(0x10));
+    assert!(!floor_set_node_generates(0x1000));
+    assert!(!floor_set_node_generates(0x2_0000));
+    assert_eq!(GENERATED_POINT_FLAGS2, 0x10008);
+}
+
+#[test]
+fn generated_points_are_the_centimetre_run_scaled_back() {
+    // A metre-space mesh is the original's centimetre mesh divided by 100;
+    // the generator runs in centimetres at its runtime parameter 20.
+    let triangles = quad(-0.5, -0.5, 0.5, 0.5, 0.0);
+    let bounds = Bounds {
+        centre: Vec3::ZERO,
+        half_extents: Vec3::new(0.5, 0.0, 0.5),
+    };
+    let points = generated_surface_points(bounds, &triangles, SurfaceCover::Greedy);
+    assert!(!points.is_empty());
+    let cm_triangles: Vec<[Vec3; 3]> = triangles.iter().map(|t| t.map(|p| p * 100.0)).collect();
+    let expected: Vec<Vec3> = surface_points(
+        Bounds {
+            centre: bounds.centre * 100.0,
+            half_extents: bounds.half_extents * 100.0,
+        },
+        GENERATED_POINT_PARAMETER,
+        |point, radius| mesh_touches(&cm_triangles, point, radius),
+        SurfaceCover::Greedy,
+    )
+    .into_iter()
+    .map(|p| p / 100.0)
+    .collect();
+    assert_eq!(points, expected);
+    // Every point stays inside the mesh's own bounds.
+    for p in &points {
+        assert!(p.abs().cmple(bounds.half_extents + Vec3::splat(0.01)).all());
+    }
+}
