@@ -893,8 +893,8 @@ pub struct SceneNode {
     /// The frame in the sector's space, kept by [`Scene::refresh`].
     pub world: Vec3,
     pub world_rotation: Mat3,
-    /// The frame before the last refresh: the matrix the scene's snapshot
-    /// callback keeps for interpolating a draw between two updates.
+    /// The frame the scene's snapshot callback last copied
+    /// ([`SceneNode::snapshot_world`]).
     pub previous: Vec3,
     pub previous_rotation: Mat3,
     /// The frame has not been worked out since the local frame changed.
@@ -1016,6 +1016,9 @@ impl SceneNode {
 
     /// Copies the node's world frame into its previous frame, as the scene's
     /// snapshot callback does (the original copies the 3×4 world matrix).
+    /// The original calls it from the sector's per-frame node pass, after
+    /// the node's draw-side update, for the nodes that pass reaches; that
+    /// pass is not modelled, so nothing here calls it yet.
     pub fn snapshot_world(&mut self) {
         self.previous = self.world;
         self.previous_rotation = self.world_rotation;
@@ -1524,9 +1527,6 @@ impl Scene {
         {
             self.refresh(parent);
         }
-        // The scene's snapshot callback keeps the frame the node had before
-        // this update.
-        self.nodes[node].snapshot_world();
         let frame = parent.map(|p| (self.nodes[p].world, self.nodes[p].world_rotation));
         let body = &mut self.nodes[node];
         match frame {
@@ -3935,11 +3935,15 @@ mod tests {
         assert!((scene.nodes[child].world - Vec3::new(1.0, 0.0, -2.0)).length() < 1e-5);
         // The update marks the whole subtree moved.
         assert!(scene.nodes[root].moved && scene.nodes[child].moved);
-        // The snapshot kept the frame before the update (identity here); a
-        // second refresh keeps the first frame.
+        // The refresh leaves the snapshot alone; the callback copies the
+        // world frame.
         assert_eq!(scene.nodes[child].previous, Vec3::ZERO);
-        scene.refresh(root);
+        scene.nodes[child].snapshot_world();
         assert_eq!(scene.nodes[child].previous, scene.nodes[child].world);
+        assert_eq!(
+            scene.nodes[child].previous_rotation,
+            scene.nodes[child].world_rotation
+        );
     }
 
     #[test]
