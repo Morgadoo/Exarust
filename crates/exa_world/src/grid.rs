@@ -70,6 +70,55 @@ pub fn marks_transparent(alpha: f32) -> bool {
     alpha < TRANSPARENT_ALPHA
 }
 
+/// A model's added vertex channel: the original's 24-byte record plus the
+/// per-vertex marks. The first word is the record tag combined with the
+/// first channel's own word; the second is the shared flag.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VertexChannel {
+    /// The record tag ([`CHANNEL_RECORD_WORD`]).
+    pub word: u32,
+    /// The first channel's word as the tag's low bits ([`CHANNEL_SHARED`]).
+    pub shared: bool,
+    /// The model's vertex table, one channel slot per vertex.
+    pub remap: Vec<u32>,
+    /// One mark per channel slot ([`CHANNEL_UNMARKED`] before any part).
+    pub marks: Vec<f32>,
+}
+
+/// The tag a merged mesh's added vertex channel carries (the original's
+/// 0x2b40100 record word).
+pub const CHANNEL_RECORD_WORD: u32 = 0x02b4_0100;
+/// The first channel's word bit the added channel copies.
+pub const CHANNEL_SHARED: u32 = 0x0400_0000;
+/// A collision part below this linear extent (metres) marks its vertices as
+/// fully transparent.
+pub const TRANSPARENT_EXTENT: f32 = 0.01;
+
+impl VertexChannel {
+    /// Creates a channel over `vertices` slots, every slot unmarked.
+    pub fn new(vertices: usize) -> Self {
+        Self {
+            word: CHANNEL_RECORD_WORD,
+            shared: false,
+            remap: (0..vertices as u32).collect(),
+            marks: unmarked_channel(vertices),
+        }
+    }
+
+    /// Marks the vertices of a fully transparent part, through the model's
+    /// vertex table, as the wall-set loader does. False, with the channel
+    /// untouched, when the part is not fully transparent.
+    pub fn mark_part(&mut self, alpha: f32, triangles: &[[u32; 3]]) -> bool {
+        mark_transparent_triangles(alpha, triangles, &self.remap, &mut self.marks)
+    }
+}
+
+/// Whether a part is marked as fully transparent: its alpha is below
+/// [`TRANSPARENT_ALPHA`] and it has a triangle range to mark.
+pub fn marks_part(alpha: f32, first_triangle: i32, last_triangle: i32) -> bool {
+    marks_transparent(alpha) && first_triangle >= 0 && last_triangle >= first_triangle
+}
+
 /// The added vertex channel for a model of `vertices` vertices, unmarked.
 pub fn unmarked_channel(vertices: usize) -> Vec<f32> {
     vec![f32::from_bits(CHANNEL_UNMARKED); vertices]
@@ -1931,6 +1980,41 @@ mod tests {
             &mut other
         ));
         assert!(other[0].is_nan());
+    }
+
+    #[test]
+    fn the_vertex_channel_record_starts_unmarked_and_marks_parts() {
+        let mut channel = VertexChannel::new(4);
+        assert_eq!(channel.word, CHANNEL_RECORD_WORD);
+        assert!(!channel.shared);
+        assert_eq!(channel.remap, vec![0, 1, 2, 3]);
+        assert!(channel.marks.iter().all(|m| m.is_nan()));
+        // A transparent part marks its triangle vertices through the table.
+        channel.remap = vec![3, 1, 0, 2];
+        assert!(channel.mark_part(0.0, &[[1, 2, 3]]));
+        assert_eq!(channel.marks[1], 0.0);
+        assert_eq!(channel.marks[0], 0.0);
+        assert_eq!(channel.marks[2], 0.0);
+        assert_eq!(channel.marks[3].to_bits(), CHANNEL_UNMARKED);
+        // An opaque part leaves the channel alone.
+        let before = channel
+            .marks
+            .iter()
+            .map(|m| m.to_bits())
+            .collect::<Vec<_>>();
+        assert!(!channel.mark_part(0.5, &[[0, 0, 0]]));
+        assert_eq!(
+            channel
+                .marks
+                .iter()
+                .map(|m| m.to_bits())
+                .collect::<Vec<_>>(),
+            before
+        );
+        // The part gate also needs a non-empty triangle range.
+        assert!(!marks_part(0.0, 2, 1));
+        assert!(!marks_part(0.0, -1, 3));
+        assert!(marks_part(0.0, 0, 0));
     }
 
     #[test]
