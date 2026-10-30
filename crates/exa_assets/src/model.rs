@@ -403,8 +403,8 @@ pub struct ModelCache {
     pub(crate) factory_geometry: HashMap<String, Arc<Model>>,
     /// Parsed factory recipes, by lower-case name.
     pub(crate) factories: HashMap<String, Arc<exa_formats::factory::Factory>>,
-    /// The environment cube, once looked for.
-    environment: Option<Option<Handle<Image>>>,
+    /// The environment cubes by name, once looked for.
+    environment: HashMap<&'static str, Option<Handle<Image>>>,
     /// Body model stems (lower case) of the races that bleed, once read.
     bleeding_stems: Option<HashSet<String>>,
     /// Mobility divisors and collision sound sets by material cache key
@@ -1547,13 +1547,25 @@ impl ModelLoader<'_> {
     /// The environment cube the original lights and reflects with
     /// (`genref01r` indoors): six faces with their mip chains, sRGB.
     pub fn environment_map(&mut self) -> Option<Handle<Image>> {
-        if let Some(h) = &self.cache.environment {
+        self.environment_cube(ENVIRONMENT_MAP)
+    }
+
+    /// The environment cube of a level under an open sky (`genref02r`).
+    /// [guess] The original first tints it through its mask
+    /// (`genref02rm`) by the day record's sky tint; Exarust binds it as
+    /// stored.
+    pub fn sky_environment_map(&mut self) -> Option<Handle<Image>> {
+        self.environment_cube(SKY_ENVIRONMENT_MAP)
+    }
+
+    fn environment_cube(&mut self, name: &'static str) -> Option<Handle<Image>> {
+        if let Some(h) = self.cache.environment.get(name) {
             return h.clone();
         }
         let settings = *self.cache.textures.settings();
         let image = self
             .game
-            .texture(ENVIRONMENT_MAP)
+            .texture(name)
             .and_then(|b| Rfi::parse(b).ok())
             .and_then(|rfi| {
                 rfi_to_texture(
@@ -1566,12 +1578,10 @@ impl ModelLoader<'_> {
                 .ok()
             });
         if image.is_none() {
-            self.warn_once(format!(
-                "environment map {ENVIRONMENT_MAP} could not be read"
-            ));
+            self.warn_once(format!("environment map {name} could not be read"));
         }
         let handle = image.map(|i| self.images.add(i));
-        self.cache.environment = Some(handle.clone());
+        self.cache.environment.insert(name, handle.clone());
         handle
     }
 
@@ -2703,6 +2713,7 @@ fn blend_mode(word: u32, has_alpha: bool) -> AlphaMode {
 
 /// The environment cube of indoor scenes.
 const ENVIRONMENT_MAP: &str = "genref01r";
+const SKY_ENVIRONMENT_MAP: &str = "genref02r";
 
 /// An image of a painted map with a box-filtered mip chain. An sRGB map keeps
 /// its texels as painted and averages its colour in linear light, as the GPU

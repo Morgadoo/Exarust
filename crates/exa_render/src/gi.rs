@@ -62,6 +62,7 @@ impl Plugin for GiPlugin {
                     swap_warm_textures,
                     gather_lights,
                     give_materials_gi,
+                    bind_level_cube,
                 )
                     .chain()
                     .in_set(GiSystems),
@@ -331,6 +332,22 @@ pub const SKY_LIGHT_ID: u32 = u32::MAX;
 /// frame; without it the volume has no sky light.
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
 pub struct GiSkyLight(pub Vec3);
+
+/// The level's open sky as the surface programs see it, set by the world
+/// when a level's lighting is applied. Under a sky (the original's
+/// `Env.Outdoor` program switch, the environment's sky flag) the programs
+/// shade the GI with the outdoor lift and the environment cube's factor
+/// ([`crate::gi_ambient::outdoor`]); without it, or without the resource,
+/// with the indoor lift.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct GiOutdoor {
+    /// The level has an open sky.
+    pub sky: bool,
+    /// The environment cube the level's lit surfaces bind (the original
+    /// swaps its cube for the open sky's one); `None` leaves each
+    /// material's own.
+    pub cube: Option<Handle<Image>>,
+}
 
 /// A GI light shape (the original's abstract `TGIEmissive` base: a dome, a
 /// cuboid, a bubble, a line or a multi-point shape). Gameplay effects
@@ -1806,6 +1823,7 @@ fn gather_voxel_lights<'a>(
 /// materials as they come).
 fn give_materials_gi(
     textures: Option<Res<GiTextures>>,
+    outdoor: Option<Res<GiOutdoor>>,
     mut materials: ResMut<Assets<ExaMaterial>>,
     mut events: MessageReader<AssetEvent<ExaMaterial>>,
 ) {
@@ -1820,7 +1838,9 @@ fn give_materials_gi(
             _ => None,
         })
         .collect();
-    let ids: Vec<AssetId<ExaMaterial>> = if textures.is_changed() {
+    let open_sky = outdoor.as_ref().is_some_and(|o| o.sky);
+    let sky_changed = outdoor.as_ref().is_some_and(|o| o.is_changed());
+    let ids: Vec<AssetId<ExaMaterial>> = if textures.is_changed() || sky_changed {
         materials.ids().collect()
     } else {
         added
@@ -1836,8 +1856,47 @@ fn give_materials_gi(
         m.params.gi_origin = textures.sample_origin();
         m.params.gi_extent = textures.sample_extent();
         m.params.flags |= flags::GI;
+        if open_sky {
+            m.params.flags |= flags::OUTDOOR;
+        } else {
+            m.params.flags &= !flags::OUTDOOR;
+        }
         if std::env::var_os("EXA_GI_DEBUG").is_some() {
             m.params.flags |= flags::DEBUG_GI;
+        }
+    }
+}
+
+/// Binds the level's environment cube ([`GiOutdoor::cube`]) to every
+/// material that has a cube, when the level changes it and as materials
+/// come: the original swaps its one cube for the open sky's.
+fn bind_level_cube(
+    outdoor: Option<Res<GiOutdoor>>,
+    mut materials: ResMut<Assets<ExaMaterial>>,
+    mut events: MessageReader<AssetEvent<ExaMaterial>>,
+) {
+    let Some(cube) = outdoor.as_ref().and_then(|o| o.cube.clone()) else {
+        events.clear();
+        return;
+    };
+    let added: Vec<AssetId<ExaMaterial>> = events
+        .read()
+        .filter_map(|e| match e {
+            AssetEvent::Added { id } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    let ids: Vec<AssetId<ExaMaterial>> = if outdoor.is_some_and(|o| o.is_changed()) {
+        materials.ids().collect()
+    } else {
+        added
+    };
+    for id in ids {
+        let rebind = materials
+            .get(id)
+            .is_some_and(|m| m.environment.as_ref().is_some_and(|e| *e != cube));
+        if rebind && let Some(mut m) = materials.get_mut(id) {
+            m.environment = Some(cube.clone());
         }
     }
 }

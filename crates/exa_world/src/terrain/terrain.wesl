@@ -15,8 +15,8 @@ import bevy_pbr::render::{
     mesh_types::MESH_FLAGS_SHADOW_RECEIVER_BIT,
 };
 import exa_render::shading::{
-    Surface, taps, direct, schlick, gi_sample, in_gi, gi_ambient,
-    REFLECTION_STRENGTH, ENVIRONMENT_FALLBACK, AMBIENT_SCALE,
+    Surface, taps, direct, schlick, gi_sample, in_gi, gi_ambient, gi_ambient_outdoor,
+    REFLECTION_STRENGTH, AMBIENT_W_OUTDOOR, ENVIRONMENT_FALLBACK, AMBIENT_SCALE,
 };
 import exa_render::terrain_layers::{sharpen, stack_colour, stack_xy, normal_xy, layer_height};
 
@@ -56,6 +56,8 @@ const DEBUG_GI: u32 = 4u;
 const SPLIT_TAPS: u32 = 8u;
 const WET_FLOOR: u32 = 16u;
 const COMPOSITE: u32 = 32u;
+// The level has an open sky: the GI takes the original's outdoor shading.
+const OUTDOOR: u32 = 64u;
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> splat: TerrainSplat;
 // Every layer texture is read through one repeating sampler.
@@ -439,11 +441,28 @@ fn fragment(
             dbg.color = vec4(g.rgb * 10.0, 1.0);
             return dbg;
         }
-        ambient = gi_ambient(g, level);
+        // Under an open sky: the outdoor lift, × the cube at mip 7 ×
+        // `Ambient.w`·5, and the reflection × the light before that factor
+        // × `Ambient.w` (3 there, 8 indoors).
+        var gi_light: vec3<f32>;
+        var ambient_w = REFLECTION_STRENGTH;
+        if has(OUTDOOR) {
+            var cube = vec3(ENVIRONMENT_FALLBACK);
+            if has(ENVIRONMENT) {
+                cube = textureSampleLevel(environment_map, environment_sampler, n, 7.0).rgb;
+            }
+            let o = gi_ambient_outdoor(g, level, cube);
+            ambient = o.ambient;
+            gi_light = o.light;
+            ambient_w = AMBIENT_W_OUTDOOR;
+        } else {
+            ambient = gi_ambient(g, level);
+            gi_light = ambient;
+        }
         if has(ENVIRONMENT) {
             mirrored = textureSampleLevel(environment_map, environment_sampler, r, max(s.rough - 0.05, 0.0) * 8.0).rgb;
         }
-        reflected = mirrored * ambient * REFLECTION_STRENGTH * 2.0 * gv;
+        reflected = mirrored * (gi_light * ambient_w * 2.0) * gv;
     } else {
         if has(ENVIRONMENT) {
             ambient = textureSampleLevel(environment_map, environment_sampler, n, 5.0).rgb * level;

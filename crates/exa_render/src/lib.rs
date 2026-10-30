@@ -13,6 +13,7 @@ pub mod flame;
 pub mod force_effects;
 pub mod geometry;
 pub mod gi;
+pub mod gi_ambient;
 pub mod gi_shape;
 pub mod glow;
 pub mod hair_program;
