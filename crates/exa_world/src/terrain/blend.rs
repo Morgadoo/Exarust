@@ -429,18 +429,17 @@ pub fn scale_rule_heights(rules: &mut [BlendRule], scale: f32, offset: f32) {
     }
 }
 
-/// Adds one vertex's weight to a material channel's byte, rounding the
-/// weight to 0..=255 and saturating: the original's accumulator.
+/// Adds one vertex's weight to a material channel's byte, as the original's
+/// accumulator does: `ROUND(weight·255)` to a 64-bit integer (ties to even;
+/// NaN or out of range is the integer indefinite, low word zero), the byte
+/// added in 64 bits, the low 32 bits compared as a signed integer, and the
+/// byte set to that sum when it is at most 255 or to 255 otherwise. So a
+/// positive weight saturates, a NaN weight leaves the byte alone, and a
+/// negative weight subtracts modulo 256.
 pub fn accumulate(current: u8, weight: f32) -> u8 {
-    let add = (weight * 255.0).round_ties_even();
-    let add = if add < 0.0 {
-        0
-    } else if add > 255.0 {
-        255
-    } else {
-        add as u8
-    };
-    current.saturating_add(add)
+    let add = round_to_i64(weight * 255.0);
+    let sum = add.wrapping_add(i64::from(current)) as i32;
+    if sum <= 0xff { sum as u8 } else { 0xff }
 }
 
 /// Packs used materials into interleaved mask planes, four per plane: the
@@ -858,6 +857,20 @@ mod tests {
         assert_eq!(rules[0].lo, 30.0);
         assert_eq!(rules[0].hi, 0.755f32 * 100.0 + 5.0, "no truncation");
         assert_eq!((rules[1].lo, rules[1].hi), (-0.5, 1.5));
+    }
+
+    #[test]
+    fn the_channel_accumulator_rounds_to_64_bits_and_compares_the_low_word() {
+        // Positive weights saturate at 255.
+        assert_eq!(accumulate(0, 0.5), 128);
+        assert_eq!(accumulate(10, 0.5), 138);
+        assert_eq!(accumulate(255, 1.0), 255);
+        // A NaN weight converts to the integer indefinite, whose low word
+        // is zero, so the byte stays.
+        assert_eq!(accumulate(100, f32::NAN), 100);
+        // A negative weight subtracts modulo 256 rather than clamping:
+        // ROUND(-0.5·255) is -128 (ties to even), 100 - 128 = -28.
+        assert_eq!(accumulate(100, -0.5), (-28i32) as u8);
     }
 
     #[test]
