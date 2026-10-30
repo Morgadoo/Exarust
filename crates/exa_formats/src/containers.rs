@@ -133,11 +133,7 @@ impl Container {
     pub fn parse(body: &[u8]) -> Option<Self> {
         let b = body.get(..0x18)?;
         let u16_at = |o: usize| u16::from_le_bytes([b[o], b[o + 1]]);
-        let count = u32::from_le_bytes(b[0x14..0x18].try_into().ok()?) as usize;
-        let rest = body.get(0x18..0x18usize.checked_add(count.checked_mul(CHILD_LEN)?)?)?;
-        let children = rest
-            .as_chunks::<CHILD_LEN>()
-            .0
+        let children = children(body)?
             .iter()
             .map(|c| Child {
                 id: u32::from_le_bytes(c[0..4].try_into().expect("4 bytes")),
@@ -154,6 +150,17 @@ impl Container {
             children,
         })
     }
+}
+
+/// The child entries a container body holds, as the original's accessor
+/// hands them out: they begin at body `0x18` and run for the count at
+/// `0x14`, twelve bytes each. `None` when the body is shorter than its
+/// header or than the stated count.
+pub fn children(body: &[u8]) -> Option<&[[u8; CHILD_LEN]]> {
+    let b = body.get(..0x18)?;
+    let count = u32::from_le_bytes(b[0x14..0x18].try_into().ok()?) as usize;
+    let rest = body.get(0x18..0x18usize.checked_add(count.checked_mul(CHILD_LEN)?)?)?;
+    Some(rest.as_chunks::<CHILD_LEN>().0)
 }
 
 /// One row of a random table.
@@ -296,6 +303,15 @@ mod tests {
         assert_eq!(c.children[1].flags, 0x100);
         assert_eq!(Container::parse(&body[..body.len() - 1]), None);
         assert_eq!(Container::parse(&body[..0x17]), None);
+        // The accessor the search walks hands back the same two entries.
+        let entries = children(&body).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            u32::from_le_bytes(entries[0][0..4].try_into().unwrap()),
+            0x349
+        );
+        assert_eq!(&entries[1][4..8], &0x100u32.to_le_bytes());
+        assert_eq!(children(&body[..body.len() - 1]), None);
     }
 
     #[test]

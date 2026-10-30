@@ -515,7 +515,9 @@ pub struct Weapon {
 }
 
 impl Weapon {
-    fn parse(b: &[u8]) -> Option<Self> {
+    /// Reads a weapon section body; `None` when it is shorter than the
+    /// section's fields.
+    pub fn parse(b: &[u8]) -> Option<Self> {
         if b.len() < 0x5A {
             return None;
         }
@@ -870,6 +872,7 @@ pub fn experience_for_level(level: u32) -> u32 {
     TABLE.get(level as usize).copied().unwrap_or(2000)
 }
 
+mod editor;
 mod migrate;
 mod packed;
 mod record;
@@ -879,13 +882,15 @@ mod store;
 mod tiers;
 mod upgrade;
 
+pub use editor::{LookRoll, look_roll};
 pub use migrate::{material_set, variant_scales};
 pub use packed::{
     FractionWord, Quantised, amount_add, amount_bytes, amount_compact, amount_expand, amount_sub,
     amount_total, amount_units,
 };
 pub use record::{
-    Header, Model, Record, Section, Sections, append_section, remove_section, resize_section,
+    Header, Model, Record, Section, Sections, append_section, counted_list, remove_section,
+    resize_section,
 };
 pub use store::{Store, TableEntry};
 pub use tiers::{ObjectDb, Tier, UseEffect};

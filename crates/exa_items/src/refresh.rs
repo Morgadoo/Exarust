@@ -17,6 +17,8 @@ use crate::instance::{
     weapon_condition,
 };
 use crate::palette::{ApparelBlock, Palette};
+use exa_formats::factory::{Choices, DEFAULT_METAL, Factory, STORED};
+use exa_formats::weapon_stats::{self, StatBytes};
 
 /// A seed that asks for the template's.
 pub const TEMPLATE_SEED: u32 = 0xFFFF_FFFF;
@@ -43,6 +45,65 @@ pub fn take_weapon_template(copy: &mut [u8], template: &[u8]) -> bool {
         copy[a..b].copy_from_slice(&template[a..b]);
     }
     true
+}
+
+/// The migration's factory pass over a weapon body whose model names a
+/// factory (`@…`), as the original's migration hands it to the item
+/// factory: the body's seeds, quality and stored choices build the weapon
+/// and the results are written back into the body.
+///
+/// - A body with no stored choices and only its first seed takes that seed
+///   for both and the stored and rerolled marks, and the factory's initial
+///   choices are written in: the selection byte of each part that was
+///   picked (an unpicked part's byte is left as it was) and the first three
+///   areas' material, finish, colour and mode 5.
+/// - A body that rolls at random with a first seed stores the roll: the
+///   stored mark, every part's selection byte and the first four areas.
+/// - The stat bytes are then written from the recipe over the template's.
+///
+/// The condition scaling that follows is the migration's
+/// ([`exa_formats::objdb::ObjectDb::migrate_with`]). Returns false when the
+/// body is too short to hold a weapon section.
+pub fn factory_pass(factory: &Factory, body: &mut [u8]) -> bool {
+    let Some(weapon) = exa_formats::objdb::Weapon::parse(body) else {
+        return false;
+    };
+    let spec = weapon.spec(DEFAULT_METAL);
+    let built = factory.build(&spec);
+    let first_seed_only = spec.flags & STORED == 0 && spec.seeds[0] != 0 && spec.seeds[1] == 0;
+    let stored_roll = !first_seed_only && spec.flags & STORED == 0 && spec.seeds[0] != 0;
+    if first_seed_only || stored_roll {
+        body[0..4].copy_from_slice(&built.flags.to_le_bytes());
+        body[8..12].copy_from_slice(&built.seeds[1].to_le_bytes());
+        if let Some(choices) = &built.choices {
+            write_choices(body, choices, first_seed_only);
+        }
+    }
+    let Some(base) = StatBytes::from_section(body) else {
+        return false;
+    };
+    let stats = weapon_stats::factory_stats(factory, &built.generated, base);
+    body[0x30..0x30 + stats.0.len()].copy_from_slice(&stats.0);
+    true
+}
+
+/// Writes stored choices into a weapon body: selection bytes from `0x50`
+/// (ten at most; with `picked_only` a zero, unpicked, entry is skipped) and
+/// the areas' eight-byte rows from `0x10` (material, finish at +3, colour at
+/// +4, mode at +7).
+fn write_choices(body: &mut [u8], choices: &Choices, picked_only: bool) {
+    for (i, &pick) in choices.selection.iter().enumerate().take(10) {
+        if !(picked_only && pick == 0) {
+            body[0x50 + i] = pick;
+        }
+    }
+    for (k, area) in choices.areas.iter().enumerate().take(4) {
+        let row = &mut body[0x10 + 8 * k..0x18 + 8 * k];
+        row[0] = area.material;
+        row[3] = area.finish;
+        row[4] = area.colour;
+        row[7] = area.mode;
+    }
 }
 
 /// A weapon body's condition block.
@@ -172,6 +233,97 @@ mod tests {
         b[8..12].copy_from_slice(&5u32.to_le_bytes());
         b[0xC] = 255;
         b
+    }
+
+    fn empty_factory() -> Factory {
+        Factory {
+            version: 2,
+            atlas: [0, 0],
+            parts: Vec::new(),
+            areas: Vec::new(),
+            tags: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_migration_factory_pass_fixes_the_seed_and_stores_the_roll() {
+        // A body with one seed only and no stored choices takes that seed
+        // for both and the stored and rerolled marks.
+        let mut body = weapon_body();
+        body[4..8].copy_from_slice(&0x1234_5678u32.to_le_bytes());
+        body[8..12].fill(0);
+        body[0..4].fill(0);
+        body[0x30..=0x42].fill(20);
+        body[0x50..0x5A].fill(0xAA);
+        assert!(factory_pass(&empty_factory(), &mut body));
+        assert_eq!(&body[4..8], &0x1234_5678u32.to_le_bytes());
+        assert_eq!(&body[8..12], &0x1234_5678u32.to_le_bytes());
+        assert_eq!(
+            u32::from_le_bytes(body[0..4].try_into().unwrap()),
+            exa_formats::factory::STORED_AND_REROLLED
+        );
+        // A factory with no parts picks nothing, so the selection bytes
+        // stay as they were.
+        assert!(body[0x50..0x5A].iter().all(|&b| b == 0xAA));
+        // The stat bytes come from the recipe over the template's; the
+        // condition scaling is the migration's, so slash stays 20.
+        let expected = weapon_stats::factory_stats(
+            &empty_factory(),
+            &empty_factory()
+                .build(&exa_formats::factory::WeaponSpec {
+                    flags: 0,
+                    seeds: [0x1234_5678, 0],
+                    quality: 255,
+                    metal: DEFAULT_METAL,
+                    choices: None,
+                })
+                .generated,
+            StatBytes([20; 0x13]),
+        );
+        assert_eq!(&body[0x30..0x43], &expected.0);
+        assert_eq!(body[0x37], 20);
+
+        // A random roll with a first seed stores it: the stored mark only,
+        // and every part's selection byte (none here).
+        let mut rolled = weapon_body();
+        rolled[0..4].fill(0);
+        rolled[4..8].copy_from_slice(&7u32.to_le_bytes());
+        rolled[8..12].copy_from_slice(&9u32.to_le_bytes());
+        assert!(factory_pass(&empty_factory(), &mut rolled));
+        assert_eq!(u32::from_le_bytes(rolled[0..4].try_into().unwrap()), STORED);
+        assert_eq!(&rolled[8..12], &9u32.to_le_bytes());
+
+        // A body too short for a weapon section is left alone.
+        assert!(!factory_pass(&empty_factory(), &mut [0u8; 0x30]));
+    }
+
+    #[test]
+    fn stored_choices_land_in_the_body() {
+        let choices = Choices {
+            selection: vec![2, 0, 3],
+            areas: vec![
+                exa_formats::factory::AreaChoice {
+                    material: 4,
+                    finish: 5,
+                    colour: 6,
+                    mode: 5,
+                },
+                exa_formats::factory::AreaChoice {
+                    material: 7,
+                    finish: 8,
+                    colour: 9,
+                    mode: 0x45,
+                },
+            ],
+        };
+        let mut body = [0xEEu8; 0x60];
+        write_choices(&mut body, &choices, true);
+        // The unpicked second part keeps its byte.
+        assert_eq!(&body[0x50..0x54], &[2, 0xEE, 3, 0xEE]);
+        assert_eq!(&body[0x10..0x18], &[4, 0xEE, 0xEE, 5, 6, 0xEE, 0xEE, 5]);
+        assert_eq!(&body[0x18..0x20], &[7, 0xEE, 0xEE, 8, 9, 0xEE, 0xEE, 0x45]);
+        write_choices(&mut body, &choices, false);
+        assert_eq!(&body[0x50..0x53], &[2, 0, 3]);
     }
 
     #[test]
