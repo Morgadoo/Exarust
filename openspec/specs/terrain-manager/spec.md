@@ -18,3 +18,10 @@ The static terrain set-up SHALL mark the scene only when the manager is created,
 #### Scenario: Reuse
 - **WHEN** the static terrain is created twice
 - **THEN** the second call reuses the manager and does not mark the scene again
+
+### Requirement: Block descriptor
+The terrain manager model SHALL give a block descriptor a vertical half extent of half the block's height span plus one centimetre with no other minimum, and SHALL walk a block tree as a node's descriptor followed by its four children's in order.
+
+#### Scenario: A flat block
+- **WHEN** every bounds cell of a block is at 5.0
+- **THEN** the descriptor's vertical centre is 5.0 and its vertical half extent is 1.0
