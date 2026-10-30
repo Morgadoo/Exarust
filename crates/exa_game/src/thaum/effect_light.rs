@@ -157,6 +157,172 @@ pub fn bubble_shape(
     (shape, volume_of(centre, half))
 }
 
+/// The force Barrier's dome shape: the `gi_dome` program, its extent
+/// (`max(scale − 60, ...)` across and 40 up for a barrier's node), its
+/// colour times the manager's light scale and its frame (the barrier's
+/// node is unturned), in the node's world box plus 60 cm.
+pub fn barrier_shape(
+    light: &emissive::FacedLight,
+    at_cm: Vec3,
+    scale_cm: Vec3,
+) -> (GiShape, ShapeVolume) {
+    let (centre, half) =
+        emissive::world_box(at_cm, [Vec3::X, Vec3::Y, Vec3::Z], scale_cm, FALLOFF_CM);
+    let shape = GiShape {
+        program: GiShapeProgram::Dome,
+        colour: light.colour * GI_LIGHT_SCALE,
+        matrix: Mat4::from_translation(-at_cm),
+        half: light.extent,
+        ..default()
+    };
+    (shape, volume_of(centre, half))
+}
+
+/// The force Bubble's shell shape: the `gi_bubble` program with the light's
+/// radius plus five, its colour, its fade and its frame, in the node's
+/// world box plus 60 cm.
+pub fn force_bubble_shape(
+    light: &emissive::BubbleLight,
+    at_cm: Vec3,
+    scale_cm: Vec3,
+) -> (GiShape, ShapeVolume) {
+    let (centre, half) =
+        emissive::world_box(at_cm, [Vec3::X, Vec3::Y, Vec3::Z], scale_cm, FALLOFF_CM);
+    let shape = GiShape {
+        program: GiShapeProgram::Bubble,
+        colour: light.colour * GI_LIGHT_SCALE,
+        matrix: Mat4::from_translation(-at_cm),
+        half: Vec3::splat(light.radius),
+        radius: light.radius,
+        fade: light.fade,
+        ..default()
+    };
+    (shape, volume_of(centre, half))
+}
+
+/// A cuboid emissive's box shape: the `gi_cuboid` program, `max(scale −
+/// 20, 10)` half extents, the light's own colour times the manager's scale
+/// and the node's frame, in the node's world box plus 80 cm.
+pub fn cuboid_shape(
+    at_cm: Vec3,
+    axes: [Vec3; 3],
+    scale_cm: Vec3,
+    colour: Vec3,
+) -> (GiShape, ShapeVolume) {
+    let light = emissive::cuboid_light(scale_cm, colour * GI_LIGHT_SCALE);
+    let (centre, half) = emissive::world_box(at_cm, axes, scale_cm, emissive::CUBOID_FALLOFF_CM);
+    let shape = GiShape {
+        program: GiShapeProgram::Cuboid,
+        colour: light.colour,
+        matrix: Mat4::from_translation(-at_cm),
+        half: light.extent,
+        ..default()
+    };
+    (shape, volume_of(centre, half))
+}
+
+/// A tendril image's multi-point light: one point a strand anchor with its
+/// intensity, [`emissive::tendril_light`]'s colour at the image's scale and
+/// the manager's, attenuation 16000, in the points' box plus 120 cm moved
+/// by the node's place.
+pub fn tendril_shape(
+    points: &[(Vec3, f32)],
+    at_cm: Vec3,
+    scale: f32,
+    gain: f32,
+) -> Option<(GiShape, ShapeVolume)> {
+    let lit = emissive::tendril_light(points, scale, gain);
+    let places: Vec<Vec3> = points.iter().map(|&(at, _)| at).collect();
+    let (centre, half) = emissive::point_box(&places)?;
+    let (centre, half) = emissive::node_box(centre, half, at_cm);
+    let shape = GiShape {
+        program: GiShapeProgram::Multipoint,
+        atten: emissive::MULTIPOINT_ATTENUATION,
+        points: lit.into(),
+        ..default()
+    };
+    Some((shape, volume_of(centre, half)))
+}
+
+/// The force barriers' dome lights: each live barrier registers its dome
+/// shape from its phase and share over the cap's 85 by 85 by 25 cm node,
+/// and drops it when the barrier is gone.
+#[allow(clippy::type_complexity)]
+pub(crate) fn barrier_lights(
+    mut commands: Commands,
+    barriers: Query<(
+        Entity,
+        &super::barrier_live::LiveBarrier,
+        Option<&EffectLight>,
+    )>,
+    mut shapes: Query<(&mut GiShape, &mut ShapeVolume)>,
+) {
+    for (entity, live, light) in &barriers {
+        if live.barrier.dome.removed {
+            if let Some(light) = light {
+                commands.entity(light.0).despawn();
+                commands.entity(entity).remove::<EffectLight>();
+            }
+            continue;
+        }
+        let dome = &live.barrier.dome;
+        let lit = emissive::barrier_light(
+            dome.phase,
+            dome.shown_share,
+            super::super::effects::force_dome::BARRIER_DRAW_SCALE,
+            GI_LIGHT_SCALE,
+        );
+        let placed = barrier_shape(
+            &lit,
+            dome.at,
+            super::super::effects::force_dome::BARRIER_DRAW_SCALE,
+        );
+        place_light(
+            &mut commands,
+            entity,
+            light,
+            &mut shapes,
+            placed,
+            "barrier light",
+        );
+    }
+}
+
+/// The force bubbles' shell lights: each live bubble registers its shell
+/// shape from its phase, share and radius, and drops it when the bubble is
+/// gone.
+#[allow(clippy::type_complexity)]
+pub(crate) fn force_bubble_lights(
+    mut commands: Commands,
+    bubbles: Query<(
+        Entity,
+        &super::bubble_live::LiveBubble,
+        Option<&EffectLight>,
+    )>,
+    mut shapes: Query<(&mut GiShape, &mut ShapeVolume)>,
+) {
+    for (entity, live, light) in &bubbles {
+        let dome = &live.bubble.dome;
+        if dome.removed {
+            if let Some(light) = light {
+                commands.entity(light.0).despawn();
+                commands.entity(entity).remove::<EffectLight>();
+            }
+            continue;
+        }
+        let lit = emissive::bubble_light(dome.phase, dome.shown_share, dome.radius, GI_LIGHT_SCALE);
+        let placed = force_bubble_shape(&lit, dome.at, Vec3::splat(dome.radius));
+        place_light(
+            &mut commands,
+            entity,
+            light,
+            &mut shapes,
+            placed,
+            "force bubble light",
+        );
+    }
+}
+
 /// Writes `shape` to the effect's light, registering one first if it has
 /// none.
 fn place_light(
@@ -593,6 +759,67 @@ mod tests {
         assert_eq!(shape.matrix.transform_point3(at), Vec3::ZERO);
         assert_eq!(volume.position, at / CM);
         assert_eq!(volume.half, Vec3::splat((120.0 + 10.0 + 60.0) / CM));
+    }
+
+    #[test]
+    fn the_dome_cuboid_and_tendril_lights_take_their_boxes() {
+        // The Barrier's dome: its extent, colour at the manager's scale and
+        // its node's world box plus 60 cm.
+        let extent = Vec3::new(25.0, 45.0, 25.0);
+        let light = emissive::FacedLight {
+            extent,
+            colour: emissive::DOME_COLOUR * 0.5,
+        };
+        let at = Vec3::new(100.0, 50.0, 0.0);
+        let scale = Vec3::splat(85.0);
+        let (shape, volume) = barrier_shape(&light, at, scale);
+        assert_eq!(shape.program, GiShapeProgram::Dome);
+        assert_eq!(shape.half, extent);
+        assert_eq!(shape.colour, emissive::DOME_COLOUR * 0.5 * GI_LIGHT_SCALE);
+        assert_eq!(shape.matrix.transform_point3(at), Vec3::ZERO);
+        assert_eq!(volume.position, at / CM);
+        // The bounds are the scale plus 10 rounded, the half plus 60.
+        assert_eq!(volume.half, Vec3::splat((85.0 + 10.0 + 60.0) / CM));
+        // The Bubble's shell takes the radius plus five and the fade.
+        let light = emissive::BubbleLight {
+            radius: 105.0,
+            fade: 0.25,
+            colour: emissive::BUBBLE_COLOUR * 0.5,
+        };
+        let (shape, _) = force_bubble_shape(&light, at, scale);
+        assert_eq!(shape.program, GiShapeProgram::Bubble);
+        assert_eq!((shape.radius, shape.fade), (105.0, 0.25));
+        assert_eq!(shape.half, Vec3::splat(105.0));
+        // A cuboid: max(scale − 20, 10) per axis, its own colour and the
+        // node's box plus 80 cm.
+        let (shape, volume) = cuboid_shape(
+            at,
+            [Vec3::X, Vec3::Y, Vec3::Z],
+            Vec3::new(25.0, 50.0, 31.0),
+            Vec3::X,
+        );
+        assert_eq!(shape.program, GiShapeProgram::Cuboid);
+        assert_eq!(shape.half, Vec3::new(10.0, 30.0, 11.0));
+        assert_eq!(shape.colour, Vec3::X * GI_LIGHT_SCALE);
+        assert_eq!(
+            volume.half,
+            Vec3::new(25.0 + 10.0 + 80.0, 50.0 + 10.0 + 80.0, 31.0 + 10.0 + 80.0) / CM
+        );
+        // A tendril's points make one multipoint light each, attenuation
+        // 16000, in their box plus 120 cm moved by the node.
+        let points = [(Vec3::ZERO, 1.0), (Vec3::new(10.0, 0.0, 0.0), 2.0)];
+        let (shape, volume) = tendril_shape(&points, at, 0.5, 0.5).expect("a shape");
+        assert_eq!(shape.program, GiShapeProgram::Multipoint);
+        assert_eq!(shape.atten, emissive::MULTIPOINT_ATTENUATION);
+        assert_eq!(shape.points.len(), 2);
+        assert_eq!(
+            shape.points[1].1,
+            emissive::TENDRIL_COLOUR * (0.5 * 2.0 * 0.5)
+        );
+        // The points' middle is 5 cm out from the node's place.
+        assert_eq!(volume.position, (at + Vec3::X * 5.0) / CM);
+        assert_eq!(volume.half, Vec3::new(5.0 + 120.0, 120.0, 120.0) / CM);
+        assert_eq!(tendril_shape(&[], at, 1.0, 1.0), None);
     }
 
     /// A blast's light is registered on its first frame, kept while its

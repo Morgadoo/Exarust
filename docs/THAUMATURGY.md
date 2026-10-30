@@ -999,7 +999,11 @@ uniforms are modelled in `effects::rain`, and the scene weather now starts
 the set and frames it at the camera. The GI emissive objects behind
 the domes, the bubble, the barricade, the strikes, the tendril and the
 teleporter bubble are modelled in `effects::emissive` (their programs,
-extents, colours and boxes) but not injected into the voxel volume.
+extents, colours and boxes). The force Barrier's and force Bubble's are
+injected while they live (`thaum::effect_light::barrier_lights` and
+`force_bubble_lights`, the dome and bubble programs); the barricade's,
+cuboid's, strikes' and tendril's have shapes built (`cuboid_shape`,
+`tendril_shape`) with nothing live that owns one yet.
 The force blast and torrent are not drawn: their ribbon vertex builds
 are not ported. A cast blast or bolt runs as an entity, without its draw,
 sounds, light, alert or stun. Their geometry classes (`effectforce_v` with

@@ -484,7 +484,9 @@ run), `effects::force_wave`
 (32 chunks 80 cm out, the charge, release, thrown step, trails and
 lives), `effects::danger` (what the AI sees of a blast, a wave and a
 barricade, and the steps away), `effects::emissive` (the seven GI lights'
-extents, colours and boxes), `effects::effect_geometry` (the geometry
+programs, extents, colours and boxes — injected for the force Barrier and
+Bubble while they live, with shape builders for the cuboid and tendril),
+`effects::effect_geometry` (the geometry
 flags, programs, uniforms, pass rows and fades) and `effects::vanish`
 (hide, show, lend, phase hook and finish). A cast starts its dome or wave,
 but none of these is drawn: the rain's caller is the scene's weather, the
