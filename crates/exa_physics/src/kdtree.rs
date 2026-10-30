@@ -112,32 +112,29 @@ pub fn decode_three_bits(word: u16) -> i16 {
     if word & 8 != 0 { -value } else { value }
 }
 
-/// How many query callbacks a mesh receives: the original installs seven
-/// (ray, sphere, capsule and four more), each with the mesh as its context.
+/// How many query callbacks a built mesh receives.
 pub const QUERY_CALLBACKS: usize = 7;
-/// The callback slot order the install writes, as the mesh's callback table
-/// stores it. The first three are the ray, sphere and capsule queries the
-/// task names; the rest are the other mesh queries the same table holds.
-pub const QUERY_RAY: usize = 0;
-pub const QUERY_SPHERE: usize = 1;
-pub const QUERY_CAPSULE: usize = 2;
 
-/// A mesh's query callback table. The original stores a function pointer
-/// and a context per slot; Exarust keeps opaque callback ids, which the
-/// installer copies from a built mesh to every instance that shares it.
+/// A mesh's query callback table: seven slots, each a callback with the
+/// mesh's tree as its context, in the order the install writes them (which
+/// query each slot serves is not traced here). Exarust keeps opaque
+/// callback ids.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct QueryTable {
     pub callbacks: [u32; QUERY_CALLBACKS],
+    /// The tree the callbacks query.
+    pub context: u32,
 }
 
 impl QueryTable {
     /// The table a build installs on a mesh.
-    pub fn new(callbacks: [u32; QUERY_CALLBACKS]) -> Self {
-        Self { callbacks }
+    pub fn new(callbacks: [u32; QUERY_CALLBACKS], context: u32) -> Self {
+        Self { callbacks, context }
     }
 
-    /// Copies the table onto a mesh and every instance that shares it,
-    /// returning how many targets were written (the mesh counts too).
+    /// Writes the table onto a mesh and copies it, context included, onto
+    /// every instance of the mesh. Returns how many tables were written
+    /// (the mesh counts too).
     pub fn install(&self, mesh: &mut QueryTable, instances: &mut [QueryTable]) -> usize {
         *mesh = *self;
         for instance in instances.iter_mut() {
@@ -147,22 +144,23 @@ impl QueryTable {
     }
 }
 
-/// The background builder's two queues and its stop flag.
+/// The background builder's two rings and its flags.
 ///
 /// The original's idle-priority thread pops a mesh from the incoming ring,
-/// builds its kd-tree, and pushes the built mesh to the outgoing ring, which
-/// the frame hook drains and installs the query callbacks on. Meshes queued
-/// while the thread is stopping are still built but not handed back. A mesh
-/// that has been deleted is skipped, and its reference count is dropped.
+/// builds its kd-tree and pushes the mesh to the outgoing ring, which the
+/// frame hook drains, installing the query callbacks. A queue reset sets
+/// the discard flag and empties both rings; a mesh in the build then is
+/// not handed back, and the next queued mesh clears the flag again. A
+/// deleted mesh is skipped. The thread's idle flag starts set, clears on a
+/// push or a pop, and is set again when the thread finds the ring empty.
+/// The reference count each queued mesh holds is the caller's: Rust owns
+/// the entries here.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackgroundBuilder<T> {
     incoming: Ring<T>,
     outgoing: Ring<T>,
-    stop: bool,
-    /// Whether a queued mesh has not yet woke the thread. The original sets
-    /// its "kick" status bit once per push and clears it when the thread
-    /// starts.
-    kick: bool,
+    discard: bool,
+    idle: bool,
 }
 
 impl<T> Default for BackgroundBuilder<T> {
@@ -172,46 +170,33 @@ impl<T> Default for BackgroundBuilder<T> {
 }
 
 impl<T> BackgroundBuilder<T> {
+    /// A builder with two rings of [`RING_SLOTS`] and the idle flag set.
     pub fn new() -> Self {
         Self {
             incoming: Ring::new(),
             outgoing: Ring::new(),
-            stop: false,
-            kick: false,
+            discard: false,
+            idle: true,
         }
     }
 
-    /// Queues a mesh. A stopped builder takes no more work.
-    pub fn enqueue(&mut self, mesh: T) -> bool {
-        if self.stop {
-            return false;
-        }
+    /// Queues a mesh: clears the discard and idle flags and pushes it.
+    pub fn enqueue(&mut self, mesh: T) {
+        self.discard = false;
+        self.idle = false;
         self.incoming.push(mesh);
-        self.kick = true;
-        true
     }
 
-    /// Takes the next mesh to build, clearing the kick. `None` when the
-    /// queue is empty (the thread goes to sleep).
+    /// Takes the next mesh to build; with none the thread goes idle.
     pub fn take_incoming(&mut self) -> Option<T> {
-        let mesh = self.incoming.pop()?;
-        self.kick = false;
-        Some(mesh)
-    }
-
-    /// Hands a built mesh back to the frame hook. A stopping builder drops
-    /// it instead.
-    pub fn finish(&mut self, mesh: T) -> bool {
-        if self.stop {
-            return false;
-        }
-        self.outgoing.push(mesh);
-        true
+        let mesh = self.incoming.pop();
+        self.idle = mesh.is_none();
+        mesh
     }
 
     /// Runs one build step with the caller's deleted test and build: a
-    /// deleted mesh is dropped, a live one is built and handed back.
-    /// Returns whether a mesh was processed.
+    /// deleted mesh is dropped, a live one is built and handed back unless
+    /// a reset came in. Returns whether a mesh was taken.
     pub fn build_one<D, B>(&mut self, mut deleted: D, mut build: B) -> bool
     where
         D: FnMut(&T) -> bool,
@@ -222,7 +207,9 @@ impl<T> BackgroundBuilder<T> {
         };
         if !deleted(&mesh) {
             build(&mesh);
-            self.finish(mesh);
+            if !self.discard {
+                self.outgoing.push(mesh);
+            }
         }
         true
     }
@@ -232,18 +219,14 @@ impl<T> BackgroundBuilder<T> {
         self.outgoing.pop()
     }
 
-    /// Asks the builder to stop after its current mesh.
-    pub fn stop(&mut self) {
-        self.stop = true;
+    /// Whether a reset's discard is in force.
+    pub fn is_discarding(&self) -> bool {
+        self.discard
     }
 
-    pub fn is_stopping(&self) -> bool {
-        self.stop
-    }
-
-    /// Whether a push is waiting to wake the thread.
-    pub fn kick_pending(&self) -> bool {
-        self.kick
+    /// Whether the thread is idle.
+    pub fn is_idle(&self) -> bool {
+        self.idle
     }
 
     pub fn queued(&self) -> usize {
@@ -254,17 +237,11 @@ impl<T> BackgroundBuilder<T> {
         self.outgoing.len()
     }
 
-    /// Empties both queues and stops the builder, as a session end does.
+    /// The queue reset: sets the discard flag and empties both rings.
     pub fn clear(&mut self) {
+        self.discard = true;
         self.incoming.clear();
         self.outgoing.clear();
-        self.kick = false;
-        self.stop = true;
-    }
-
-    /// Starts the builder again after [`BackgroundBuilder::clear`].
-    pub fn resume(&mut self) {
-        self.stop = false;
     }
 }
 
@@ -324,57 +301,57 @@ mod tests {
     #[test]
     fn the_builder_queues_drains_and_hands_built_meshes_back() {
         let mut builder = BackgroundBuilder::new();
-        assert!(builder.enqueue(10));
-        assert!(builder.enqueue(11));
+        assert!(builder.is_idle());
+        builder.enqueue(10);
+        builder.enqueue(11);
         assert_eq!(builder.queued(), 2);
-        assert!(builder.kick_pending());
+        assert!(!builder.is_idle());
         let mut built = Vec::new();
         assert!(builder.build_one(|m| *m == 11, |m| built.push(*m)));
         assert_eq!(built, [10]);
-        assert_eq!(builder.built(), 1);
+        assert!(!builder.is_idle());
         assert_eq!(builder.take_built(), Some(10));
         assert!(builder.take_built().is_none());
         // The deleted mesh is dropped rather than built.
         assert!(builder.build_one(|m| *m == 11, |m| built.push(*m)));
         assert_eq!(built, [10]);
-        assert_eq!(builder.queued(), 0);
+        // An empty ring sends the thread idle.
+        assert!(!builder.build_one(|_| false, |_| {}));
+        assert!(builder.is_idle());
     }
 
     #[test]
-    fn a_stopping_builder_takes_no_work_and_hands_nothing_back() {
+    fn a_reset_discards_until_the_next_push() {
         let mut builder = BackgroundBuilder::new();
         builder.enqueue(1);
-        builder.stop();
-        assert!(!builder.enqueue(2));
-        assert_eq!(builder.queued(), 1);
-        assert!(builder.build_one(|_| false, |_| {}));
-        assert_eq!(builder.queued(), 0);
-        assert_eq!(builder.built(), 0);
-    }
-
-    #[test]
-    fn clearing_the_builder_stops_it_until_resumed() {
-        let mut builder = BackgroundBuilder::new();
-        builder.enqueue(1);
+        builder.enqueue(2);
+        let first = builder.take_incoming();
+        assert_eq!(first, Some(1));
         builder.clear();
-        assert!(builder.is_stopping());
-        assert!(!builder.enqueue(2));
+        assert!(builder.is_discarding());
         assert_eq!((builder.queued(), builder.built()), (0, 0));
-        builder.resume();
-        assert!(builder.enqueue(3));
-        assert_eq!(builder.queued(), 1);
+        // A build that was running when the reset came is not handed back.
+        builder.enqueue(3);
+        assert!(!builder.is_discarding());
+        let mut later = BackgroundBuilder::new();
+        later.enqueue(4);
+        later.clear();
+        later.incoming.push(5);
+        assert!(later.build_one(|_| false, |_| {}));
+        assert_eq!(later.built(), 0);
+        // The next push clears the flag, and its mesh comes back.
+        assert!(builder.build_one(|_| false, |_| {}));
+        assert_eq!(builder.take_built(), Some(3));
     }
 
     #[test]
     fn the_query_table_installs_on_the_mesh_and_every_instance() {
-        let table = QueryTable::new([1, 2, 3, 4, 5, 6, 7]);
+        let table = QueryTable::new([1, 2, 3, 4, 5, 6, 7], 9);
         let mut mesh = QueryTable::default();
         let mut instances = [QueryTable::default(); 2];
         assert_eq!(table.install(&mut mesh, &mut instances), 3);
         assert_eq!(mesh, table);
         assert_eq!(instances, [table; 2]);
-        assert_eq!(table.callbacks[QUERY_RAY], 1);
-        assert_eq!(table.callbacks[QUERY_SPHERE], 2);
-        assert_eq!(table.callbacks[QUERY_CAPSULE], 3);
+        assert_eq!(instances[1].context, 9);
     }
 }
