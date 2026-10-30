@@ -2368,7 +2368,8 @@ pub fn ally_sense(
 /// ally class installs: `observer` looks at `observed`, whose contacts are
 /// `observed_contacts`, and writes `own[index]`.
 ///
-/// It clears the alarm word first. A character that cannot be perceived
+/// It clears the threat word first; a contact that is not a character ends
+/// it there (0). A character that cannot be perceived
 /// ends it (−1) without touching the contact; out of the 1200 cm range
 /// (1800 cm while tracked) the contact stops being tracked and the sense
 /// reports −1. In range the contact is tracked and noticed; the closeness
@@ -2387,11 +2388,11 @@ pub fn ally_sense(
 /// after the view. For a live one the sense weighs every character contact
 /// of the observed: its weight from the observed's state and the contact's
 /// closeness and view, softened by `min((concern + hostility)·0.15, 1)` in
-/// the original's precision. The heaviest raw weight is the contact's
-/// selected character; only a third party that is the observer
+/// the original's precision. The heaviest softened weight picks the
+/// contact's selected character, read from the observer's own list at that
+/// position as the original does; only a third party that is the observer
 /// (`·multiplier·0.5`) or the player (`·multiplier`) counts toward the
-/// threat, whose largest value raises the concern target ([`Sight`]'s
-/// `threat` output).
+/// threat, whose largest value raises the contact's concern target.
 ///
 /// The original leaves the attitude, the tolerance and the familiarity to
 /// the role side. Exarust's [`perceive`] computes them before this routine
@@ -2407,6 +2408,10 @@ pub fn standard_sense(
     player: Option<Entity>,
 ) -> i32 {
     own[index].threat = 0.0;
+    // Only a character is sensed: any other kind ends the sense at once.
+    if own[index].kind != 1 {
+        return 0;
+    }
     if observed.gone {
         return -1;
     }
@@ -2477,9 +2482,9 @@ pub fn standard_sense(
     // The threat estimate over the observed character's own contacts.
     let multiplier = threat_multiplier(observed);
     let mut heaviest = 0.0f32;
-    let mut selected = None;
+    let mut heaviest_at = None;
     let mut largest = 0.0f32;
-    for third in observed_contacts.iter() {
+    for (at, third) in observed_contacts.iter().enumerate() {
         if third.kind != 1 {
             continue;
         }
@@ -2495,7 +2500,7 @@ pub fn standard_sense(
             half * half * ((1.0 - soften) * w8 + weight * soften)
         };
         if heaviest < value {
-            selected = Some(third.character);
+            heaviest_at = Some(at);
             heaviest = value;
         }
         let scaled = if third.character == observer.entity {
@@ -2509,6 +2514,12 @@ pub fn standard_sense(
             largest = scaled;
         }
     }
+    // The original reads the selected character out of the observer's own
+    // contact list at the position the heaviest entry has in the observed
+    // character's list, not out of the observed's list. Past the end of the
+    // observer's list Exarust selects nobody [guess: the original reads
+    // whatever its fixed contact array holds there].
+    let selected = heaviest_at.and_then(|at| own.get(at)).map(|c| c.character);
     let contact = &mut own[index];
     contact.selected = selected;
     if contact.concern_target < largest {
@@ -2868,7 +2879,8 @@ mod standard_tests {
     /// One third party that is the observer itself: its weight at 600 cm,
     /// concern 2 (soften 0.3) and multiplier 8 is the concern target
     /// 0.102589; a third party that is neither the observer nor the player
-    /// is still selected but raises nothing.
+    /// raises nothing. The selected character is the observer's own contact
+    /// at the heaviest entry's position in the observed's list.
     #[test]
     fn the_standard_sense_weighs_the_threat_to_itself_and_the_player() {
         let mut world = World::new();
@@ -2891,7 +2903,9 @@ mod standard_tests {
             ),
             0
         );
-        assert_eq!(own[0].selected, Some(me));
+        // Position 0 of the observed's list selects the observer's own
+        // contact 0, the observed itself, not the third party `me`.
+        assert_eq!(own[0].selected, Some(other));
         assert!(
             (own[0].concern_target - 0.102589).abs() < 1e-6,
             "{}",
@@ -2912,29 +2926,63 @@ mod standard_tests {
             0,
             Some(player),
         );
-        assert_eq!(own[0].selected, Some(player));
+        assert_eq!(own[0].selected, Some(other));
         assert!(
             (own[0].concern_target - 0.205178).abs() < 1e-6,
             "{}",
             own[0].concern_target
         );
 
-        // A third party that is neither raises nothing.
+        // A third party that is neither raises nothing; at position 1 it
+        // selects the observer's contact 1, and with no contact there
+        // nobody.
         let stranger_entity = world.spawn_empty().id();
         let mut stranger = Contact::new(stranger_entity);
         stranger.closeness = 0.5;
         stranger.view = 1.0;
         stranger.concern = 2.0;
-        let mut own = vec![Contact::new(other)];
+        let quiet = Contact::new(player);
+        let second = world.spawn_empty().id();
+        let mut own = vec![Contact::new(other), Contact::new(second)];
         standard_sense(
             &observer(me),
             &facing(other),
-            &[stranger],
+            &[quiet.clone(), stranger.clone()],
             &mut own,
             0,
             Some(player),
         );
-        assert_eq!(own[0].selected, Some(stranger_entity));
+        assert_eq!(own[0].selected, Some(second));
         assert_eq!(own[0].concern_target, 0.0);
+        let mut own = vec![Contact::new(other)];
+        own[0].selected = Some(stranger_entity);
+        standard_sense(
+            &observer(me),
+            &facing(other),
+            &[quiet, stranger],
+            &mut own,
+            0,
+            Some(player),
+        );
+        assert_eq!(own[0].selected, None);
+    }
+
+    /// A contact that is not a character only has its threat word cleared.
+    #[test]
+    fn the_standard_sense_ignores_a_contact_that_is_not_a_character() {
+        let mut world = World::new();
+        let me = world.spawn_empty().id();
+        let other = world.spawn_empty().id();
+        let mut own = vec![Contact::new(other)];
+        own[0].kind = 2;
+        own[0].threat = 3.0;
+        assert_eq!(
+            standard_sense(&observer(me), &facing(other), &[], &mut own, 0, None),
+            0
+        );
+        assert_eq!(
+            (own[0].threat, own[0].flags, own[0].closeness),
+            (0.0, 0, 0.0)
+        );
     }
 }
