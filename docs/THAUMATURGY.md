@@ -657,7 +657,11 @@ height and size rise as the smooth step `(3 − 2x)·x²` over the first 400,
 the pitch as the smooth step of the tree's ease over 900);
 closing runs 900 ms, the marked slots falling as `1 − f⁴` and the rest as
 `1 − 1.5f`, then clears the slots' flash and picked bits. The bar's slots
-step their own flashes (200 ms to lit, then a fade over their duration). The running-power budget is the highest Concentration
+step their own flashes (200 ms to lit, then a fade over their duration).
+Their hit test and the creation prompt's buttons are laid out at the live
+interface unit (a 17-unit pitch, an 8-unit top, a 12- or 7-unit radius, and
+the prompt's 5/37-unit button bounds), so the pointer tracks the drawing at
+every interface level. The running-power budget is the highest Concentration
 technique of 2 to 4, one less without the focus item; powers past it are
 told to end. The grant routine (`grant_power`) adds a power to a record
 that holds Insight's seventh technique when its node's first link names a
