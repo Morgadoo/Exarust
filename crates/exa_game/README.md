@@ -22,8 +22,9 @@ opponent's plan (traits t0..t2 set to −100, 100 and 100, team `0x10`, a
 used). The flow's `Step::Tip` now shows the popup (`TipBannerText`): the
 index picks a tip or one of the six indexed messages through `Tips::show`,
 and `TipsScreenPlugin` paints the banner — a translucent box centred 8 units
-down, its text in `FONTBASE_24` — through the GUI draw path. The two tables
-live in `exa_ui::game_tips`. The binary's `--opponent` builds its fighter from `opponent01`
+down, its text in `FONTBASE_24` — through the GUI draw path; `Step::ClosePrelude`
+and `Step::HideEndMenu` hide it again (the original's end-menu hide also
+hides the tips). The two tables live in `exa_ui::game_tips`. The binary's `--opponent` builds its fighter from `opponent01`
 when the actors are installed and gives it that team and delay.
 
 The power tree (`thaum::tree`) is the whole screen's rules: the domain's

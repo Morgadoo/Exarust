@@ -3625,6 +3625,19 @@ fn apply_menu_choices(
     }
 }
 
+/// Hides the tips popup: the counts stay, the banner goes.
+fn hide_tip(
+    tips: Option<&mut crate::prelude::Tips>,
+    banner: Option<&mut crate::prelude::TipBannerText>,
+) {
+    if let Some(tips) = tips {
+        tips.hide();
+    }
+    if let Some(banner) = banner {
+        banner.0.clear();
+    }
+}
+
 /// Applies the flow's steps to the running app's own pieces: the menu and
 /// end-menu forms, the title logo, the interface and controls flags and the
 /// practice heal's health. A level load or world teardown becomes an
@@ -3687,6 +3700,11 @@ fn apply_steps(
                 if let Some(end) = end.as_mut() {
                     end.close();
                 }
+                // The end menu's hide also hides the tips popup.
+                hide_tip(tips.as_deref_mut(), banner.as_deref_mut());
+            }
+            Step::ClosePrelude => {
+                hide_tip(tips.as_deref_mut(), banner.as_deref_mut());
             }
             Step::Tip(index) => {
                 if let Some(tips) = tips.as_mut() {
@@ -4056,6 +4074,24 @@ pub(crate) fn run_to_black(flow: &mut Flow) -> Vec<Step> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hiding_the_tip_clears_the_banner_and_keeps_the_counts() {
+        let mut tips = crate::prelude::Tips::default();
+        let shown = tips.show(3);
+        let mut banner = crate::prelude::TipBannerText(
+            shown
+                .and_then(crate::prelude::banner_text)
+                .unwrap_or_default()
+                .to_string(),
+        );
+        assert_eq!(banner.0, "You have died.");
+        let counts = tips.shown;
+        hide_tip(Some(&mut tips), Some(&mut banner));
+        assert!(banner.0.is_empty());
+        assert_eq!(tips.current, None);
+        assert_eq!(tips.shown, counts);
+    }
 
     #[test]
     fn the_mode_and_phase_words_round_trip() {
