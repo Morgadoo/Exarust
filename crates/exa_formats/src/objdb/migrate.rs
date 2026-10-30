@@ -43,11 +43,13 @@ fn plain_layer_byte(material: u8) -> u8 {
     }
 }
 
-/// The item factory's stat pass, as the original's migration runs it: a
-/// weapon whose model names a factory (`@…`) is rebuilt from that factory
-/// and its own seeds and stored choices, and the body's stat bytes are
-/// written in place. `factory` is called with the name after the `@` and
-/// the weapon section body.
+/// The item factory's pass, as the original's migration runs it: a weapon
+/// whose model names a factory (`@…`) is rebuilt from that factory and its
+/// own seeds and stored choices, the seeds, flags, choices and stat bytes
+/// written into the body in place. It is called with the name after the
+/// `@` (at most fifteen bytes) and the weapon section body, and does
+/// nothing when no factory has that name. The condition scaling that
+/// follows is the migration's own.
 pub type FactoryPass<'a> = &'a mut (dyn FnMut(&str, &mut [u8]) + 'a);
 
 impl ObjectDb {
@@ -60,9 +62,11 @@ impl ObjectDb {
 
     /// [`Self::migrate`] with the item factory's stat pass to hand: a
     /// migrated factory weapon (its model named `@…`) has its stats rebuilt
-    /// from the factory, as the original does inside the migration. Without
-    /// a pass the template's stats stay, which is what the original would
-    /// do with no factory table.
+    /// from the factory, as the original does inside the migration. Either
+    /// way the factory weapon's stat bytes are then scaled by its own
+    /// quality and damage (capped at 160) and its model's value word
+    /// rescaled, as the original does even when no factory has the name;
+    /// without a pass that is all that changes.
     pub fn migrate_with(&mut self, id: u32, factory: Option<FactoryPass<'_>>) -> bool {
         if id & ID_MASK == 0 {
             return false;
@@ -177,13 +181,12 @@ impl ObjectDb {
                     refresh_condition(&mut payload, body, t, model.clone());
                 }
                 super::WEAPON => {
-                    // The name the record shows, which the original's walk
-                    // read off the model section it visited before this one.
-                    let name = model
-                        .clone()
-                        .or_else(|| section_range(&payload, MODEL))
-                        .and_then(|m| payload.get(m))
-                        .map(model_name);
+                    // The name the record shows, read off the model section
+                    // the walk visited before this one. The original reads
+                    // through that pointer unconditionally (a record whose
+                    // weapon section comes first would fault); here such a
+                    // record is simply not a factory weapon.
+                    let name = model.clone().and_then(|m| payload.get(m)).map(model_name);
                     let b = &mut payload[body];
                     if u32_at(t, 4) == 0xFFFF_FFFF {
                         set_u32(b, 4, 0xFFFF_FFFF);
@@ -199,11 +202,23 @@ impl ObjectDb {
                         for (at, len) in [(0x30, 0x10), (0x40, 1), (0x42, 1)] {
                             copy_bytes(t, b, at, len);
                         }
-                        // A factory weapon is then rebuilt from its factory.
-                        if let (Some(pass), Some(name)) = (factory.as_mut(), name)
-                            && let Some(factory_name) = name.strip_prefix('@')
+                        // A factory weapon is then rebuilt from its factory
+                        // (when the caller has one by that name) and, in
+                        // every case, scaled by its own condition.
+                        if let Some(factory_name) =
+                            name.as_deref().and_then(|n| n.strip_prefix('@'))
                         {
-                            pass(factory_name, b);
+                            if let Some(pass) = factory.as_mut() {
+                                pass(factory_name, b);
+                            }
+                            let (quality, damage) = (b[0xC], b[0xD]);
+                            if let Some(stats) = crate::weapon_stats::StatBytes::from_section(b) {
+                                let scaled = crate::weapon_stats::condition(stats, quality, damage);
+                                b[0x30..0x30 + scaled.0.len()].copy_from_slice(&scaled.0);
+                            }
+                            if let Some(m) = model.clone() {
+                                rescale_value(&mut payload[m], quality, quality, damage);
+                            }
                         }
                     }
                 }
@@ -385,18 +400,30 @@ fn refresh_condition(
             }
         }
     }
-    let Some(model) = model else {
+    if let Some(model) = model {
+        rescale_value(&mut payload[model], template[0x1B0], q, d);
+    }
+}
+
+/// Scales a model section's value word `0x1E` (compact amount) by
+/// condition, as both of the original's condition refreshes do: value /
+/// (2·tq² + 0.5) · (2·q² + 0.5) · (2·(1 − d)² + 0.5) · 0.5, with `tq` the
+/// base quality, `q` and `d` the item's own, all /255 in double and the
+/// curve in float. The weapon refresh passes its own quality as the base.
+fn rescale_value(model: &mut [u8], base_quality: u8, quality: u8, damage: u8) {
+    if model.len() < 0x20 {
         return;
-    };
+    }
     let curve = |x: f32| x * x * 2.0 + 0.5;
-    let template_quality = curve((f64::from(template[0x1B0]) / 255.0) as f32);
-    let quality = curve((f64::from(q) / 255.0) as f32);
-    let wear = curve((1.0 - f64::from(d) / 255.0) as f32);
-    let scale = quality * wear * 0.5;
-    let m = &mut payload[model];
-    let value = amount_expand(u16_at(m, 0x1E));
-    let scaled = round_f32(value as f32 / template_quality * scale);
-    set_u16(m, 0x1E, amount_compact(scaled as u32));
+    let base = curve((f64::from(base_quality) / 255.0) as f32);
+    let made = curve((f64::from(quality) / 255.0) as f32);
+    let wear = curve((1.0 - f64::from(damage) / 255.0) as f32);
+    // The weapon refresh multiplies made · (wear · 0.5), the body refresh
+    // (made · wear) · 0.5; halving is exact, so the two agree.
+    let scale = made * (wear * 0.5);
+    let value = amount_expand(u16_at(model, 0x1E));
+    let scaled = round_f32(value as f32 / base * scale);
+    set_u16(model, 0x1E, amount_compact(scaled as u32));
 }
 
 #[cfg(test)]
@@ -603,18 +630,30 @@ mod tests {
 
     #[test]
     fn a_factory_weapon_is_rebuilt_by_the_factory_pass() {
-        let mut db = template_and_instance(0, 0);
-        // The template's model is a factory weapon (its name starts with
-        // `@`), and the migration gives the instance that model before it
-        // reaches the weapon section. It then hands the factory the name
-        // after the `@` and the weapon body.
-        let t = db.find(10).unwrap();
-        let mut p = t.payload().to_vec();
-        let m = section_range(&p, MODEL).unwrap();
-        p[m.start..m.start + 16].fill(0);
-        p[m.start..m.start + 11].copy_from_slice(b"@sword_lnga");
-        db.base.store(0, &p);
+        fn factory_db() -> ObjectDb {
+            let mut db = template_and_instance(0, 0);
+            // The template's model is a factory weapon (its name starts
+            // with `@`), and the migration gives the instance that model
+            // before it reaches the weapon section.
+            let t = db.find(10).unwrap();
+            let mut p = t.payload().to_vec();
+            let m = section_range(&p, MODEL).unwrap();
+            p[m.start..m.start + 16].fill(0);
+            p[m.start..m.start + 11].copy_from_slice(b"@sword_lnga");
+            db.base.store(0, &p);
+            db
+        }
+        let weapon = |db: &ObjectDb| {
+            db.find(LOCAL | 1)
+                .unwrap()
+                .section(WEAPON)
+                .unwrap()
+                .to_vec()
+        };
+        let value = |db: &ObjectDb| db.find(LOCAL | 1).unwrap().model().unwrap().value;
 
+        // The pass gets the name after the `@` and the weapon body.
+        let mut db = factory_db();
         let mut calls: Vec<(String, Vec<u8>)> = Vec::new();
         let mut pass = |name: &str, body: &mut [u8]| {
             calls.push((name.to_string(), body[0x30..0x34].to_vec()));
@@ -622,22 +661,43 @@ mod tests {
         };
         assert!(db.migrate_with(LOCAL | 1, Some(&mut pass)));
         assert_eq!(calls, [(String::from("sword_lnga"), vec![9, 9, 9, 9])]);
-        assert_eq!(
-            db.find(LOCAL | 1).unwrap().section(WEAPON).unwrap()[0x30],
-            42
-        );
+        let w = weapon(&db);
+        // The weight byte the pass wrote is not a scaled stat. The
+        // instance's quality and damage are 0, so the condition factor is
+        // 0.8: slash and pierce 9·0.8 = 7.2 → 7, crush (0.8·0.7 + 0.3)·9 =
+        // 7.74 → 8, thrust 7; impact 9 is only capped.
+        assert_eq!(w[0x30], 42);
+        assert_eq!((w[0x32], w[0x33]), (9, 7));
+        assert_eq!(&w[0x37..0x3A], &[7, 8, 7]);
+        assert_eq!(&w[0x3D..0x40], &[7, 8, 7]);
+        // The value word is rescaled twice: the body's condition refresh
+        // (quality 255 on both sides, no damage) takes 1000 to
+        // 1000 / 2.5 · (2.5 · (2.5 · 0.5)) = 1250, then the weapon's, with
+        // its own quality 0 as the base, to 1250 / 0.5 · (0.5 · (2.5 · 0.5))
+        // = 1562.5, which rounds to even: 1562.
+        let factory_value = value(&db);
+        assert_eq!(amount_expand(factory_value), 1562);
+
+        // Without a pass (or with no factory of that name) the original
+        // still scales the template's stats and the value.
+        let mut db = factory_db();
+        assert!(db.migrate_with(LOCAL | 1, None));
+        let w = weapon(&db);
+        assert_eq!((w[0x30], w[0x33]), (9, 7));
+        assert_eq!(&w[0x37..0x3A], &[7, 8, 7]);
+        assert_eq!(value(&db), factory_value);
 
         // A model that is not a factory's never reaches the pass, and the
-        // migration without one keeps the template's stats.
+        // migration keeps the template's stats and only the body's value
+        // refresh applies.
         let mut db = template_and_instance(0, 0);
         let mut calls = 0;
         let mut pass = |_: &str, _: &mut [u8]| calls += 1;
         assert!(db.migrate_with(LOCAL | 1, Some(&mut pass)));
         assert_eq!(calls, 0);
-        assert_eq!(
-            db.find(LOCAL | 1).unwrap().section(WEAPON).unwrap()[0x30],
-            9
-        );
+        let w = weapon(&db);
+        assert_eq!((w[0x30], w[0x37]), (9, 9));
+        assert_eq!(amount_expand(value(&db)), 1250);
     }
 
     #[test]

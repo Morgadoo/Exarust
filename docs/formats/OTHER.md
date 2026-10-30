@@ -150,10 +150,14 @@ template migration with the condition refresh, the item-use test, the
 editor's look roll, the container child accessor and the counted view
 list, and the packed fields and amounts (`exa_formats::objdb`,
 `exa_formats::objstrings`). The migration of a factory weapon (`@…`) hands
-the model name and the weapon body to a caller-supplied factory pass, which
-`exa_items::refresh::factory_pass` fills from the recipe (seeds, quality,
-damage and dirt, the first seed copied to the second with the stored-choice
-marks when only it is set) and the condition scaling. The oldest layout's
+the name after the `@` and the weapon body to a caller-supplied factory
+pass, which `exa_items::refresh::factory_pass` fills (seeds, quality and
+stored choices feed the recipe; a body with only its first seed copies it
+to the second, takes the stored and rerolled marks and has the initial
+choices written in; a random roll with a first seed is stored; the recipe's
+stat bytes are written). The migration then scales the stat bytes by the
+weapon's own quality and damage and rescales the model's value word, with
+or without a factory. The oldest layout's
 paint seeds are two draws of the run-time library's Mersenne twister
 (`exa_world::db_objects::paint_seed`). The scene lookup by database id and
 the entity-id rewrite walk the placed objects' model roots
