@@ -2368,7 +2368,7 @@ callers (nothing spawns an arc yet).
 
 `exa_render::force_effects` holds the Force effects' programs, ported from
 the shipped GLSL (`effectforce_f`, `effecttorrent_f`, `effectshell_v` /
-`effectshell_f`); `exa_game::thaum::effect_draw` submits them
+`effectshell_f`, `effectfrcstrk_f`); `exa_game::thaum::effect_draw` submits them
 ([THAUMATURGY.md](THAUMATURGY.md), The shaped-force aura).
 
 - **Ribbons** (`ForceRibbonMaterial`, `force_ribbon.wesl`): the blast, bolt
@@ -2387,9 +2387,18 @@ the shipped GLSL (`effectforce_f`, `effecttorrent_f`, `effectshell_v` /
   lookups blended by the squared normal, the eight `ColPt` ripples, the fade
   plane `FdPln`, the rim and the violet ramp). The viewer direction is
   normalised per fragment (the original interpolates a per-vertex unit
-  vector). The uniform is 256 bytes: `LclMat` 0, `ViewPos` 64, `FdPln` 80,
+  vector). The uniform is 272 bytes: `LclMat` 0, `ViewPos` 64, `FdPln` 80,
   `ColPt` 96, `TexPos` 224, `ColourInt` 240, `TexScale` 244, `Fade` 248,
-  the push 252.
+  the push 252, `Gradient` 256. A held body's or a weapon's aura copies the
+  body's rigid meshes (each copy a child of its source mesh, moved out 2 cm
+  along its normal) and `LclMat` takes the world into the body's first
+  part's frame, the original's object space; the fade plane comes from the
+  meshes' box fitted in that frame when the copies are made
+  (`effect_draw::draw_rigid_auras`). With the `STRIKES` definition (a Force
+  Strikes weapon aura) the fragment stage is `effectfrcstrk_f`: fixed 0.01
+  coordinates instead of `TexScale`, four ripple points at 0.07, its own rim
+  (`(t − 0.1 + b²·0.2)² + f` for `t = max(−va, 0)`, doubled by
+  `ColourInt`), the `Gradient` dimming and no colour limit on the alpha.
 - **Render state** comes from the material records the routines create:
   `_ForceMat01` and `_ForceAura01` carry blend word 0x163 (source ONE,
   destination ONE_MINUS_SRC_ALPHA, layer 6), Bevy's premultiplied blend,
@@ -2406,7 +2415,7 @@ the shipped GLSL (`effectforce_f`, `effecttorrent_f`, `effectshell_v` /
   draws each effect once a frame and its supersample resolve does the rest.
 - **Tests.** Both programs compose with Bevy's modules and validate under
   naga (`tests/surface_shader.rs`: blast, torrent, skinned with storage and
-  uniform skins, rigid); both uniforms match their WGSL structs in size and
+  uniform skins, rigid, strikes); both uniforms match their WGSL structs in size and
   member offsets.
 
 ## Rooms and black fill

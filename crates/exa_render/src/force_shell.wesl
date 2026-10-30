@@ -1,5 +1,8 @@
 // The force-shell aura: the original's `effectshell_v` / `effectshell_f`
-// over a copy of the caster's skinned meshes. The vertex stage is Bevy's
+// over a copy of the caster's skinned meshes (or a held body's or weapon's
+// rigid ones), and with `STRIKES` the strikes program `effectfrcstrk_f`
+// (fixed 0.01 coordinates, four ripple points, its own rim and the
+// `Gradient` dimming). The vertex stage is Bevy's
 // skinned mesh stage with the copy's placement added: each vertex moves out
 // along its skinned normal by `push` (2 cm, the skinned copy's
 // `position + 2·normal`). The fragment stage carries the world position and
@@ -41,6 +44,9 @@ struct ForceShellParams {
     fade: f32,
     // The copy's push along the skinned normal (m).
     push: f32,
+    // `Gradient` (the strikes program): the brightest point (cm, local)
+    // and the dimming per centimetre from it.
+    gradient: vec4<f32>,
 }
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> shell: ForceShellParams;
@@ -91,6 +97,10 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     f = clamp(f - dot(lpos, shell.fade_plane.xyz) - shell.fade_plane.w, 0.0, 1.0);
     var th = f;
     a = 0.5 * shell.tex_scale;
+@if(STRIKES) {
+    // `effectfrcstrk_f` scales its coordinates by a fixed 0.01.
+    a = 0.01;
+}
     var tcz = lpos.xy * a;
     var tcy = lpos.xz * a;
     var tcx = lpos.yz * a;
@@ -111,12 +121,20 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     tcx.x = tcx.x - f * f * 0.4;
     var cm = 0.0;
     var cf = 0.0;
-    for (var i = 0; i < 8; i++) {
+    // The shell takes eight ripple points; the strikes program four, each
+    // brightening half as much.
+    var points = 8;
+    var bright = 0.15;
+@if(STRIKES) {
+    points = 4;
+    bright = 0.07;
+}
+    for (var i = 0; i < points; i++) {
         let point = shell.colour_points[i];
         let cp = lpos - point.xyz;
         a = dot(cp, cp);
         a = max(1.0 - a * 0.0005, 0.0);
-        cf = cf + a * a * point.w * 0.15;
+        cf = cf + a * a * point.w * bright;
         cm = cm + a * point.w * 0.03;
     }
     cm = cm * abs(va);
@@ -150,16 +168,34 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     th = 0.5 * max(1.0 - th * th * 1.5, 0.0);
     f = max(1.0 - f, 0.0);
     var c = f + cf;
+@if(!STRIKES) {
     va = 1.1 - max(-va, 0.0) + b * b * 0.1;
     va = (va + c) * (1.0 + fade) * max(1.0 - va * va * 1.0, 0.0);
     va = va * colour_int;
+}
+@if(STRIKES) {
+    c = f;
+    var t = max(-va, 0.0);
+    va = t - 0.1 + b * b * 0.2;
+    t = t * t;
+    va = (va * va + c) * (1.0 + fade) * max(1.0 - t * t * 1.0, 0.0);
+    va = va * colour_int * 2.0;
+}
     c = clamp((0.5 - i1) * 10.0 + 0.5, 0.0, 1.0);
     a = mix(b, a, c);
     a = a * 0.5 + 0.5;
     a = (a * a + a) * 0.5;
+    var alpha_scale = min(colour_int, 1.0);
+@if(STRIKES) {
+    // Brightest at the gradient's point, dimming away from it; no colour
+    // limit on the alpha.
+    let dst = 1.0 - max(length(lpos - shell.gradient.xyz) * shell.gradient.w, 0.0);
+    a = a * dst;
+    alpha_scale = 1.0;
+}
     f = f * f;
     let ta = (1.0 - ta_base) - f * f * 6.0;
-    let alpha = ta * th * th * 0.5 * min(colour_int, 1.0);
+    let alpha = ta * th * th * 0.5 * alpha_scale;
     a = max(a - f * f * 2.5, 0.0);
     b = max(a - 0.5, 0.0);
     b = b * b;

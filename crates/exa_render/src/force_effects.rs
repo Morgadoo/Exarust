@@ -2,7 +2,8 @@
 //! and the torrent's streams (`effectforce_v` with `effectforce_f` or
 //! `effecttorrent_f`, [`ForceRibbonMaterial`]), the force-shell aura
 //! (`effectshell_v`/`effectshell_f` over a copy of the caster's skinned
-//! meshes, [`ForceShellMaterial`]), and the animated `_ForceNoise` picture
+//! meshes or of a held body's or weapon's rigid ones, and `effectfrcstrk_f`
+//! for a Force Strikes weapon aura, [`ForceShellMaterial`]), and the animated `_ForceNoise` picture
 //! both bind as `EmiTex` ([`noise_image`], [`noise_mips`]).
 //!
 //! The render states are the materials' records: `_ForceMat01` and
@@ -183,6 +184,9 @@ pub struct ForceShellParams {
     pub fade: f32,
     /// The copy's push along its normal (m).
     pub push: f32,
+    /// `Gradient` (the strikes program only): the point the aura glows
+    /// brightest at (cm, local) and the dimming per centimetre from it.
+    pub gradient: Vec4,
 }
 
 impl Default for ForceShellParams {
@@ -197,12 +201,16 @@ impl Default for ForceShellParams {
             tex_scale: 0.015,
             fade: 1.0,
             push: SHELL_PUSH_M,
+            gradient: Vec4::ZERO,
         }
     }
 }
 
 /// The force-shell aura's material, one per aura, shared by its copies.
+/// With `strikes` it runs the strikes program (`effectfrcstrk_f`, the aura
+/// Force Strikes puts on a weapon) over the same vertex stage.
 #[derive(Asset, TypePath, AsBindGroup, Clone, Debug)]
+#[bind_group_data(ForceShellKey)]
 pub struct ForceShellMaterial {
     #[uniform(0)]
     pub params: ForceShellParams,
@@ -210,6 +218,19 @@ pub struct ForceShellMaterial {
     #[texture(1)]
     #[sampler(2)]
     pub noise: Handle<Image>,
+    /// The strikes program instead of the shell's.
+    pub strikes: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct ForceShellKey {
+    strikes: bool,
+}
+
+impl From<&ForceShellMaterial> for ForceShellKey {
+    fn from(m: &ForceShellMaterial) -> Self {
+        Self { strikes: m.strikes }
+    }
 }
 
 impl Material for ForceShellMaterial {
@@ -241,10 +262,15 @@ impl Material for ForceShellMaterial {
         _pipeline: &MaterialPipeline,
         descriptor: &mut RenderPipelineDescriptor,
         _layout: &MeshVertexBufferLayoutRef,
-        _key: MaterialPipelineKey<Self>,
+        key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
         if AURA_RECORD_FLAGS & TWO_SIDED != 0 {
             descriptor.primitive.cull_mode = None;
+        }
+        if key.bind_group_data.strikes
+            && let Some(fragment) = descriptor.fragment.as_mut()
+        {
+            fragment.shader_defs.push("STRIKES".into());
         }
         Ok(())
     }
@@ -377,12 +403,75 @@ mod tests {
         assert_eq!(size, <ForceRibbonParams as ShaderType>::min_size().get());
     }
 
+    /// The shell program's fragment stage with the `@if` blocks taken as
+    /// `defs` defines them, the vertex stage and the imports cut out and the
+    /// Bevy vertex output stubbed, so naga can parse and validate it.
+    fn shell_fragment(defs: &[&str]) -> String {
+        let source = include_str!("force_shell.wesl");
+        let defined = |cond: &str| {
+            cond.split("&&").all(|term| {
+                let term = term.trim();
+                match term.strip_prefix('!') {
+                    Some(name) => !defs.contains(&name),
+                    None => defs.contains(&term),
+                }
+            })
+        };
+        let mut out = String::new();
+        let mut stack: Vec<bool> = Vec::new();
+        for line in source.lines() {
+            if let Some(cond) = line
+                .strip_prefix("@if(")
+                .and_then(|rest| rest.strip_suffix(") {"))
+            {
+                stack.push(defined(cond));
+                continue;
+            }
+            if line == "}" && !stack.is_empty() {
+                stack.pop();
+                continue;
+            }
+            if stack.iter().all(|&on| on) {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        let start = out.find("struct ForceShellParams").expect("the uniform");
+        let vertex = out.find("@vertex").expect("the vertex stage");
+        let vertex_end = vertex + out[vertex..].find("\n}\n").expect("its end") + 3;
+        let body = format!("{}{}", &out[start..vertex], &out[vertex_end..]);
+        format!(
+            "struct VertexOutput {{\n    @builtin(position) position: vec4<f32>,\n    \
+             @location(0) world_position: vec4<f32>,\n    \
+             @location(1) world_normal: vec3<f32>,\n}}\n{}",
+            body.replace("constants::MATERIAL_BIND_GROUP", "2")
+        )
+    }
+
+    #[test]
+    fn the_shell_and_strikes_fragments_validate() {
+        for defs in [&[][..], &["STRIKES"][..]] {
+            let source = shell_fragment(defs);
+            let module = naga::front::wgsl::parse_str(&source)
+                .unwrap_or_else(|e| panic!("{defs:?}: {}\n{source}", e.emit_to_string(&source)));
+            naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::all(),
+            )
+            .validate(&module)
+            .unwrap_or_else(|e| panic!("{defs:?}: {e:?}"));
+            assert_eq!(source.contains("a = 0.01;"), !defs.is_empty());
+            assert_eq!(source.contains("shell.gradient.w"), !defs.is_empty());
+        }
+    }
+
     #[test]
     fn the_shell_uniform_matches_the_shaders_layout() {
         let source = include_str!("force_shell.wesl");
         let size = wgsl_struct_size(source, "ForceShellParams");
-        // A matrix, two vec4, eight ripple points, a vec4 and four words.
-        assert_eq!(size, 64 + 16 + 16 + 8 * 16 + 16 + 16);
+        // A matrix, two vec4, eight ripple points, a vec4, four words and
+        // the strikes gradient.
+        assert_eq!(size, 64 + 16 + 16 + 8 * 16 + 16 + 16 + 16);
         assert_eq!(size, <ForceShellParams as ShaderType>::min_size().get());
         let offsets = wgsl_offsets(source, "ForceShellParams");
         let expected = [
@@ -395,6 +484,7 @@ mod tests {
             ("tex_scale", 244),
             ("fade", 248),
             ("push", 252),
+            ("gradient", 256),
         ];
         let got: Vec<(&str, u32)> = offsets.iter().map(|(n, o)| (n.as_str(), *o)).collect();
         assert_eq!(got, expected);
@@ -402,6 +492,7 @@ mod tests {
         let params = ForceShellParams {
             colour_int: 2.0,
             push: 3.0,
+            gradient: Vec4::new(0.0, 70.0, 0.0, 0.01),
             ..ForceShellParams::default()
         };
         let mut buffer = bevy::render::render_resource::encase::UniformBuffer::new(Vec::new());
@@ -412,6 +503,8 @@ mod tests {
         assert_eq!(word(240), 2.0);
         assert_eq!(word(244), 0.015);
         assert_eq!(word(252), 3.0);
+        assert_eq!(word(260), 70.0);
+        assert_eq!(word(268), 0.01);
     }
 
     #[test]

@@ -80,6 +80,7 @@ impl Plugin for ViewerPlugin {
                     equip_debug_shields,
                     shove_at_frame,
                     shove_props_at_frame,
+                    kinesis_pick_at_frame,
                     start_fight,
                     launch_arena_match,
                     arena_exit,
@@ -1751,6 +1752,62 @@ fn shove_at_frame(
                 });
             }
         }
+    }
+}
+
+/// How far from the player `--kinesis-pick` looks for a prop (m).
+const KINESIS_PICK_REACH: f32 = 5.0;
+
+/// `--kinesis-pick`: at that frame after loading, the player's running
+/// Kinesis takes the nearest prop body within [`KINESIS_PICK_REACH`] (not a
+/// held item), as the hand's pick hands it the prop it would lift.
+#[allow(clippy::type_complexity)]
+fn kinesis_pick_at_frame(
+    options: Res<Options>,
+    loading: Option<Res<exa_ui::LoadingStatus>>,
+    mut frames: Local<u32>,
+    hook: Option<Res<exa_game::thaum::kinesis_live::KinesisPickHook>>,
+    players: Query<&GlobalTransform, With<exa_game::player::Player>>,
+    bodies: Query<
+        (Entity, &exa_physics::body::Ragdoll),
+        (
+            With<exa_physics::prop::PropBody>,
+            Without<exa_physics::grip::HeldGrip>,
+        ),
+    >,
+    mut picks: MessageWriter<exa_game::thaum::kinesis_live::KinesisPicked>,
+) {
+    let Some(at) = options.kinesis_pick else {
+        return;
+    };
+    if loading.is_some() {
+        return;
+    }
+    *frames += 1;
+    if *frames != at {
+        return;
+    }
+    let Some(caster) = hook.and_then(|h| h.0) else {
+        warn!("--kinesis-pick: the player runs no kinesis at frame {at}");
+        return;
+    };
+    let Some(player) = players.iter().next().map(GlobalTransform::translation) else {
+        warn!("--kinesis-pick: no player");
+        return;
+    };
+    let nearest = bodies
+        .iter()
+        .filter_map(|(e, body)| {
+            let d = (Vec3::from(body.parts.first()?.transform().translation) - player).length();
+            (d <= KINESIS_PICK_REACH).then_some((e, d))
+        })
+        .min_by(|a, b| a.1.total_cmp(&b.1));
+    match nearest {
+        Some((body, d)) => {
+            info!("--kinesis-pick: the kinesis takes {body:?}, {d:.2} m from the player");
+            picks.write(exa_game::thaum::kinesis_live::KinesisPicked { caster, body });
+        }
+        None => warn!("--kinesis-pick: no prop body within {KINESIS_PICK_REACH} m"),
     }
 }
 

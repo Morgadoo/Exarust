@@ -288,11 +288,13 @@ fn the_force_ribbon_shader_composes_and_validates() {
 fn the_force_shell_shader_composes_and_validates() {
     let (mut cache, shell) = cache_with_every_shader_and("embedded://exa_render/force_shell.wesl");
     // A skinned body or apparel mesh (storage-buffer skins), the same with
-    // uniform-buffer skins, and a rigid mesh.
-    let variants: [&[&'static str]; 3] = [
+    // uniform-buffer skins, a rigid mesh (a held prop), and a rigid weapon
+    // with the strikes program.
+    let variants: [&[&'static str]; 4] = [
         &["VERTEX_UVS", "VERTEX_UVS_A", "SKINNED"],
         &["SKINNED", "SKINS_USE_UNIFORM_BUFFERS"],
         &["VERTEX_UVS", "VERTEX_UVS_A", "VERTEX_TANGENTS"],
+        &["VERTEX_UVS", "VERTEX_UVS_A", "STRIKES"],
     ];
     for (pipeline, extra) in variants.iter().enumerate() {
         let module = cache

@@ -110,7 +110,18 @@ plumbing (`casting::reserve`, `release_reserve`, `spend_tick`,
   and clears it at the end; a bubble or barricade ends once its centre is
   more than 20 m from the caster; Strikes sets the strike factor 1.0 and
   the swing factor 3.0, keeps at most four weapon auras, ripples an aura
-  at half a swing's strength and plays `thmfrc_brf` as it ends; Kinesis
+  at half a swing's strength and plays `thmfrc_brf` as it ends. Each item
+  its caster holds gets an aura (`exa_game::thaum::hold_live`): a force
+  shell over the item's rigid meshes with colour 2.8, fade-plane scale 1,
+  impact gain 1.5 and pitch 0.8 and ripple scale 3, drawn with the strikes
+  program `effectfrcstrk_f` (fixed 0.01 texture coordinates, four ripple
+  points, its own rim, and a `Gradient` brightest at the middle of the
+  weapon's striking part: `(0, c, 0, 0.5/(c − s))` from the record's start,
+  end and length, the middle raised half way to 0.7 when under it, or 0.6
+  and 0.15 of the node box's top without a record; its fade plane
+  `(0, 1, 0, cy − hy)·(scale/hy)` over the node box). An item put away
+  loses its aura, one taken gains one while fewer than four carry one, the
+  running power steps its auras' ripples, and its end closes them all; Kinesis
   waits on the hand for its pick while it runs (a press that would lift a
   prop hands it the prop, and the pick alone answers the reach: a point
   it can take is in reach wherever it is, any other out of it),
@@ -127,17 +138,29 @@ plumbing (`casting::reserve`, `release_reserve`, `spend_tick`,
   weight, and the body wakes. It turns by `reach²` times the double 0.001
   a tick by the stick or the key pairs (each pair if/else), about the
   camera's right axis and the vertical, and stamps its user for 2 s
-  (`exa_game::thaum::kinesis_live`); Throw
+  (`exa_game::thaum::kinesis_live`). The pick also puts the body in the
+  held environment (no gravity; the per-second retentions 0.125 above
+  40 cm/s, 0.0125 above 20 and 0.025 at rest, in place of the body's own:
+  `exa_physics::dynamics::Environment::HELD`, `Ragdoll::hold_in`), wraps
+  it in a force shell (colour 2.8, fade-plane scale 0.5, texture scale
+  `(1/r + 0.015)·0.5` for its bounding radius r in cm) over its rigid
+  meshes and plays `thmfrc_knsst` at it (0.3, pitch `0.8 + 0.4·roll`); its
+  end closes the shell and gives the environment back, unless it handed
+  the body to a throw (`exa_game::thaum::hold_live`); Throw
   takes the body a charging kinesis holds, else the first body the
   cursor's ray meets passing over the level: a dead character, or a prop
   whose mobility widened to double is at least 0.01 (a single 0.01 is
   not), that the hand does not hold, and plays `thmfrc_knsst` there (0.3,
-  pitch `0.8 + 0.4·roll`). It holds no reserve: its lift aims 100 cm
+  pitch `0.8 + 0.4·roll`), putting it in the held environment under the
+  same shell (a dead character's shell copies its skinned meshes); a
+  throw from a kinesis takes the kinesis's shell and environment. It
+  holds no reserve: its lift aims 100 cm
   above the body and spends `tick·cost·0.00125` every steered tick at
   `mass/(0.1 + mass)` of the unit direction (less a fifth of the body's
   own motion), drops the shell after 800 ms and coasts at six times that
   share toward the caster's aim point (the player's cursor; ending at
-  once within 100 cm), and restores the materials 200 ms later. A body
+  once within 100 cm), and gives the body its environment back 200 ms
+  later (an earlier end closes the shell and gives it back at once). A body
   handed from a kinesis is lifted at its centre and spends nothing a
   tick: that start never stores the cast's cost. Every lift plays
   `thmfrc_throw` at the body (0.6, pitch `1 + 0.2·roll`), a one-shot that
@@ -292,8 +315,9 @@ the hook with 0x10; a negative answer ends the cast and the AI lets it
 go. Before its state the AI lets go of a cast whose body has not read
 casting 500 ms after it began. The
 player swap, the spirit body's character generation and the effect meshes are descriptions here, not
-spawned entities; the kinesis's held material, pick shell and pick
-sound, and the throw's shell and material, are not wired. A kinesis pick,
+spawned entities. The held body's shell hum (`thmfrc_knsdr`), the swing
+ripple on a strikes aura and the box lights of the held body and the
+weapon are not wired. A kinesis pick,
 and each tick a throw coasts after its shell drops, stamp the body with
 the caster for 2 s (`thaum::user_stamp`): a limb the body hurts while the
 stamp holds adds the script's concern toward the caster (amount 0.9, gain

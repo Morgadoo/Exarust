@@ -33,8 +33,12 @@
 //! order (forward 1, left 2, back 4, right 8), and the turn as the
 //! camera-axis turn times the vertical one.]
 //! The pick stamps the body with the caster for 2 s
-//! ([`super::user_stamp`]). The held body's material, the pick's shell and
-//! its sound are not wired.
+//! ([`super::user_stamp`]), puts it in the held environment under a force
+//! shell (`super::hold_live`) and plays `thmfrc_knsst` at it (volume 0.3,
+//! pitch `0.8 + 0.4·roll` in double). The kinesis's end gives both back,
+//! unless it handed the body to a throw, which takes them over.
+//! [inf: the pick's shell also names `thmfrc_knsdr` as its sound; the
+//! shell's hum is not played.]
 
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
@@ -47,10 +51,15 @@ use exa_physics::prop::{PropBody, StandIns};
 use exa_ui::ScriptedPointer;
 
 use super::cast::{ActiveClass, PowerCaster};
+use super::force::KINESIS_SOUND;
+use super::hold_live::{body_radius, grab_body};
+use super::live::EffectRoll;
 use super::power::force::{
     Kinesis, KinesisTarget, cursor_aim, kinesis_spin, kinesis_turn, kinesis_velocity, settle_aim,
 };
+use super::power::force::{PICK_VOLUME, pick_pitch};
 use super::power::{ENDING, RUNNING};
+use super::throw_live::{ThrowAudio, play};
 use crate::bindings::{Action, Bindings};
 use crate::player::{ChaseCamera, PlayerBody, window_ray};
 
@@ -113,17 +122,22 @@ pub fn pick_depth(extents: Vec3) -> f32 {
 }
 
 /// The kinesis takes what the hand lifted.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn take_kinesis_picks(
     mut commands: Commands,
     mut picked: MessageReader<KinesisPicked>,
     ticks: Option<Res<BodyTicks>>,
     mut casters: Query<&mut PowerCaster>,
-    props: Query<&Ragdoll, With<PropBody>>,
+    mut props: Query<&mut Ragdoll, With<PropBody>>,
     physics: Option<Res<Physics>>,
     stand_ins: Option<Res<StandIns>>,
+    mut roll: ResMut<EffectRoll>,
+    mut audio: ThrowAudio,
+    mut pick_set: Local<Option<u32>>,
 ) {
     for pick in picked.read() {
-        let (Ok(mut caster), Ok(body)) = (casters.get_mut(pick.caster), props.get(pick.body))
+        let (Ok(mut caster), Ok(mut body)) =
+            (casters.get_mut(pick.caster), props.get_mut(pick.body))
         else {
             continue;
         };
@@ -151,8 +165,28 @@ pub(super) fn take_kinesis_picks(
         });
         kinesis.depth = pick_depth(extents);
         kinesis.aim = (centre * CM).to_array();
+        let radius = body_radius(pick.body, &body, physics.as_deref(), stand_ins.as_deref());
+        let shell = grab_body(
+            &mut commands,
+            pick.body,
+            &mut body,
+            true,
+            radius,
+            now,
+            &mut roll,
+        );
+        kinesis.shell = Some(shell.to_bits());
+        kinesis.material = Some(pick.body.to_bits());
+        play(
+            &mut audio,
+            &mut pick_set,
+            KINESIS_SOUND,
+            centre,
+            PICK_VOLUME,
+            pick_pitch,
+        );
         info!(
-            "kinesis: holds {:?} at depth {:.1} cm",
+            "kinesis: holds {:?} at depth {:.1} cm under shell {shell:?}",
             pick.body, kinesis.depth
         );
     }
