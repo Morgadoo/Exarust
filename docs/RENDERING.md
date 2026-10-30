@@ -549,14 +549,20 @@ compare: a NaN stays) and then:
   sets bit 4, the shadow links' rebuild flags.
 
 A light alias's reach (`exa_world::light_alias`) is the original's
-per-node weighting: the plain test is the luma of the alias and node
-colours against the alias's 0.01 cutoff; the gated test adds the sphere
-overlap, the oriented-box distance under the light radius, the shell-or-box
-falloff distance, `max(1 − d·falloff, 0)⁴`, the spot's vertical blend and
-`max((cos(2·t·cone) − 1)·exponent, 0)`, the intensity and colour-product
-luma, and the six-face shadow mask (each face cleared when the node lies
-beyond it by more than its flags word read as a float). `SpotShape::of`
-builds the light node's three spot constants from the record's `(q, p)`.
+per-node weighting, a tested model with no caller yet: the plain test is
+the luma of the alias and node colours against the alias's 0.01 cutoff;
+the gated test (behind the cell flood when the light's flags carry
+`0x2000000`) adds the sphere overlap, the oriented-box distance under the
+light radius, the falloff distance (the box distance, or the squared
+sphere shell when that is larger), `max(1 − d·falloff, 0)⁴`, the spot's
+vertical blend from the box's lowest point and
+`max((2^(t·cone) − 1)·exponent, 0)` with the engine's fast logarithm and
+exponential, the intensity gate, the colour-product luma times the
+unscaled weight, and the six-face shadow mask (each face cleared when the
+node lies beyond it by more than the node's bounding radius).
+`SpotShape::of` builds the light's three spot constants from the record's
+`(q, p)`: `1/(2^(p+1) − 1)` with the same fast functions, the flat factor
+`sin(q·π/2)/2` (or `3 − 3/cos(q·π/2)` below zero) in double, and `p + 1`.
 The cell flood that answers the gate is the scene-node unit's; the alias's
 field copy and construction are not modelled beyond these values. The sun
 map's two matrix builders are `sun_fit::light_view_matrix` (rows
@@ -566,11 +572,6 @@ scales and `−(max + min)/span` translation). The cube map's size comes from
 the quality word through `shadow_map::cube_draw_settings` (the table
 halved, the softness and the high-detail flag), and its pooled face size is
 that key.
-
-The shape words the constructor also sets — a 0.25 exponent, a 1 factor,
-a 2 quality word and the spot's cone factor `1/(acos(cos 2 · (p + 1)) − 1)`
-— are read by the shading uniforms elsewhere (`vertical_shaping` covers
-the spot's two vertical values); they are not part of the tested model.
 
 ## Surfaces
 

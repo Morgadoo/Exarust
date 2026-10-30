@@ -2,42 +2,46 @@
 //! node, and which of the six shadow-cube faces it reaches it through.
 //!
 //! A light alias is the light's copy in one sector. When a sector node asks,
-//! the alias runs either the plain reach test (an unranged light, node flag
-//! `0x40000` clear) or the gated one (a ranged light, whose cell flood has
-//! already decided that its sphere crosses the sector; the gate itself is
-//! the caller's). Both return a weight and a face mask, and report whether
-//! the weight passes the alias's cutoff.
+//! the alias runs either the plain reach test or the gated one. Both return
+//! a weight and a face mask, and report whether the weight passes the
+//! alias's cutoff.
 //!
-//! - **Plain reach** (`0x053400`): the component-wise product of the alias's
-//!   colour and the node's colour, its Rec. 601 luma; above the cutoff the
-//!   node is lit and the mask is one (the mask's one bit in the shadow map),
-//!   else the mask is zero.
-//! - **Gated reach** (`0x0530B0`): the light sphere must meet the node's
-//!   sphere, and the distance from the light to the node's oriented box must
-//!   be under the light's radius. The falloff distance is that box distance,
-//!   or the sphere shell `(√d² − node radius)²` when the node lies outside
-//!   the light sphere and the shell is the smaller of the two; the weight is
-//!   `max(1 − distance · falloff, 0)⁴`. A spot light then shapes it: the
-//!   distance from a point above the light to the node's box gives
-//!   `t = (light y − node top) / √((light y − node top)² + d²)`, blended
-//!   toward one by the light's flat factor, and multiplied by
-//!   `max((cos(2·t·cone) − 1)·exponent, 0)`; `t` at or under 2⁻²³ zeroes
-//!   the weight. The weight times the alias's intensity must pass the
-//!   cutoff, then times the luma of the colour product. The face mask starts
-//!   all six and clears a face when the node lies beyond it by more than the
-//!   node's flags word read as a float, over that face's four plane tests.
+//! - **Plain reach**: the component-wise product of the alias's colour and
+//!   the node's colour, its Rec. 601 luma; above the cutoff (an ordered
+//!   compare) the node is lit and the mask is one, else zero.
+//! - **Gated reach**: when the light's node flags carry `0x2000000`, the
+//!   scene's cell flood must first say the light reaches the node's sector
+//!   (the caller's answer). The light sphere must then meet the node's
+//!   sphere, and the squared distance from the light to the node's oriented
+//!   box must be under the light's squared radius. The falloff distance is
+//!   that box distance, or the squared sphere shell `(√d² − node radius)²`
+//!   when the node's centre lies outside its own radius of the light and
+//!   the shell is the larger; the weight is `max(1 − d·falloff, 0)⁴`. A spot
+//!   (alias flags `& 0x300 == 0x200`) then shapes it: from the box's lowest
+//!   point `b` (the centre's height less each axis's vertical reach), with
+//!   `dy = light y − b` and `d` the box distance of the light moved to that
+//!   height, `t = dy/√(dy² + d)` is blended toward one by the spot's flat
+//!   factor and the weight is multiplied by
+//!   `max((exp(ln 2 · (t·cone)) − 1)·exponent, 0)` with the engine's fast
+//!   logarithm and exponential; `t` at or under 2⁻²³ zeroes the weight. The
+//!   weight times the alias's intensity must pass the cutoff; the result
+//!   is then the (unscaled) weight times the luma of the colour product,
+//!   lit when that passes the cutoff too. The face mask starts with all six
+//!   faces and clears a face when the node lies beyond it by more than the
+//!   node's bounding radius, over that face's four plane tests.
 //!
 //! Rules: `docs/RENDERING.md` (Lights).
 
 use bevy::math::Vec3;
+use exa_assets::vertex_cache::{fast_exp, fast_ln};
+use exa_formats::colour::luma;
+use exa_physics::intersect::{Obb, point_obb_distance_squared};
 
-/// The engine's "a distance this small is not a distance": 2⁻²³.
-const TINY: f32 = 1.192_089_982_282_595_9e-7;
+/// The engine's small-value threshold (2⁻²³, rounded as stored).
+const TINY: f32 = f32::from_bits(0x33ff_ffd7);
 
-/// The luma weights, Rec. 601.
-const LUMA_R: f32 = 0.298_999_99;
-const LUMA_G: f32 = 0.587;
-const LUMA_B: f32 = 0.114;
+/// The light node flag that makes the gated test ask the cell flood first.
+pub const FLOOD_GATED: u32 = 0x200_0000;
 
 /// The six face normals of the original's shadow-cube face test
 /// (`0.7071` on two axes each, the diagonal pairs).
@@ -61,61 +65,57 @@ pub const FACE_TESTS: [[(usize, f32); 4]; 6] = [
     [(2, 1.0), (3, -1.0), (4, 1.0), (5, -1.0)],
 ];
 
-/// A spot's shaping constants, as the light node computes them from its
-/// record's `(q, p)` pair: the cone exponent
-/// `1/(acos(cos 2 · (p + 1)) − 1)`, the flat factor
-/// `½·sin(q·π/2)` for `q ≥ 0` or `3 − 3/cos(q·π/2)` below it, and `p + 1`.
+/// A spot's shaping constants, as the light's activation computes them from
+/// its record's `(q, p)` pair: the cone exponent
+/// `1/(exp(ln 2 · (p + 1)) − 1)` with the engine's fast logarithm and
+/// exponential, the flat factor `sin(q·π·0.5)·0.5` for `q` not below zero
+/// (a NaN too) or `3 − 3/cos(q·0.5·π)` below it (the angle and the factor in
+/// double precision), and `p + 1`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SpotShape {
-    /// The cone exponent (`0x248`).
+    /// The cone exponent.
     pub exponent: f32,
-    /// The flat factor the vertical blend uses (`0x24C`).
+    /// The flat factor the vertical blend uses.
     pub flat: f32,
-    /// `p + 1`, the vertical exponent (`0x250`).
+    /// `p + 1`, the vertical exponent.
     pub cone: f32,
-    /// The record's `p`, kept for the shape.
-    pub p: f32,
-    /// The record's `q`, kept for the shape.
-    pub q: f32,
 }
 
 impl SpotShape {
-    /// The shape a record's `(q, p)` pair gives, in single precision. The
-    /// sine, cosine and arc cosine are the engine's fast pair.
+    /// The shape a record's `(q, p)` pair gives.
     pub fn of(q: f32, p: f32) -> Self {
-        use exa_physics::engine_math::{acos, sin_cos};
-        let half_pi = std::f32::consts::FRAC_PI_2;
-        let exponent = 1.0 / (acos(sin_cos(2.0).1 * (p + 1.0)) - 1.0);
-        let flat = if q >= 0.0 {
-            0.5 * sin_cos(q * half_pi).0
+        let cone = p + 1.0;
+        let exponent = 1.0 / (fast_exp(fast_ln(2.0) * cone) - 1.0);
+        let flat = if q < 0.0 {
+            let angle = f64::from(q * 0.5) * std::f64::consts::PI;
+            (-3.0 / angle.cos() + 3.0) as f32
         } else {
-            3.0 - 3.0 / sin_cos(q * half_pi).1
+            let angle = f64::from(q) * std::f64::consts::PI * 0.5;
+            (angle.sin() * 0.5) as f32
         };
         Self {
             exponent,
             flat,
-            cone: p + 1.0,
-            p,
-            q,
+            cone,
         }
     }
 }
 
 /// One light alias's lighting values: the position (the light's own, moved
 /// into the sector), radius, derived colour, intensity factor, cutoff,
-/// falloff and spot shaping, plus the flag word (`0x300` spot, `0x10000`
-/// shadow masks) and whether the alias has a mask accumulator.
+/// falloff and spot shaping, plus its node flag word (`0x300` spot) and
+/// whether the alias has a mask accumulator.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AliasLight {
     pub position: Vec3,
     pub radius: f32,
-    /// The derived colour (`0x1D4`).
+    /// The derived colour.
     pub colour: Vec3,
-    /// The intensity factor (`0x1E0`).
+    /// The intensity factor.
     pub intensity: f32,
-    /// The weight under which a node is unlit (`0x1E4`, 0.01).
+    /// The weight under which a node is unlit (0.01).
     pub cutoff: f32,
-    /// The inverse reach the falloff uses (`0x230`).
+    /// The inverse reach the falloff uses.
     pub falloff: f32,
     pub flags: u32,
     pub spot: Option<SpotShape>,
@@ -123,28 +123,36 @@ pub struct AliasLight {
     pub has_mask: bool,
 }
 
-/// The node a light alias lights: its centre, half extents and frame axes,
-/// its top and the three offsets the spot's top uses, its colour, flags and
-/// the mask accumulated before this call.
+/// The node a light alias lights: its oriented box (centre, half extents
+/// and unit axes as rows), its bounding radius, its colour and the face
+/// mask its bucket held before this call.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AliasNode {
     pub centre: Vec3,
-    /// The node's bounding radius (`0x2C`).
+    /// The node's bounding radius (also the face test's threshold).
     pub radius: f32,
     pub half: Vec3,
     /// The box's unit axes.
     pub axes: [Vec3; 3],
-    /// The box's top (`0x24`).
-    pub top: f32,
-    /// The three `(offset, half extent)` pairs the top is lowered by.
-    pub drops: [(f32, f32); 3],
-    /// The node's colour (`0x1F8`).
+    /// The node's colour.
     pub colour: Vec3,
-    /// The node's flag word, whose low bits double as the face threshold
-    /// when read as a float (the original's own comparison).
-    pub flags: u32,
-    /// The mask accumulated before this call (`0x10`).
+    /// The face mask the node's bucket held before this call.
     pub mask: u32,
+}
+
+impl AliasNode {
+    fn obb(&self) -> Obb {
+        Obb::new(self.centre, self.half, self.axes)
+    }
+
+    /// The box's lowest point: the centre's height less each axis's
+    /// vertical reach, subtracted in axis order.
+    fn bottom(&self) -> f32 {
+        self.centre.y
+            - self.axes[0].y.abs() * self.half.x
+            - self.axes[1].y.abs() * self.half.y
+            - self.axes[2].y.abs() * self.half.z
+    }
 }
 
 /// What one reach test reports.
@@ -158,46 +166,12 @@ pub struct AliasHit {
     pub lit: bool,
 }
 
-/// The original's ordered `a > b`: false on either NaN (an unordered
-/// compare fails every branch that needs it).
-fn greater(a: f32, b: f32) -> bool {
-    !a.is_nan() && !b.is_nan() && a > b
-}
-
-/// [`greater`]'s complement: `a <= b` or either NaN.
-fn not_greater(a: f32, b: f32) -> bool {
-    !greater(a, b)
-}
-
-/// The complement of a strict less-than: `a >= b` or either NaN.
-fn not_less(a: f32, b: f32) -> bool {
-    a.is_nan() || b.is_nan() || a >= b
-}
-
-/// The squared distance from a point to an oriented box: the point in the
-/// box frame, each axis past its half extent squared and summed.
-pub fn box_distance_squared(point: Vec3, centre: Vec3, axes: [Vec3; 3], half: Vec3) -> f32 {
-    let d = point - centre;
-    let local = [d.dot(axes[0]), d.dot(axes[1]), d.dot(axes[2])];
-    let mut sum = 0.0;
-    for (axis, extent) in local.into_iter().zip([half.x, half.y, half.z]) {
-        let past = axis.abs() - extent;
-        if past > 0.0 {
-            sum += past * past;
-        }
-    }
-    sum
-}
-
-/// The cube faces a node is reached through, all six unless a face's plane
-/// test puts the node beyond it by more than the node's flags read as a
-/// float. `d[i]` is the node's position less the light's along face normal
-/// `i`.
+/// The cube faces a node is reached through: all six unless one of a
+/// face's four plane tests puts the node beyond it by more than
+/// `threshold` (the node's bounding radius). `d[i]` is the node's position
+/// less the light's along face normal `i`; a NaN test clears nothing.
 pub fn face_mask(node: Vec3, light: Vec3, threshold: f32) -> u32 {
-    let d: Vec<f32> = FACE_NORMALS
-        .iter()
-        .map(|n| node.dot(*n) - light.dot(*n))
-        .collect();
+    let d = FACE_NORMALS.map(|n| node.dot(n) - light.dot(n));
     let mut mask = 0x3F;
     for (i, tests) in FACE_TESTS.iter().enumerate() {
         for &(index, sign) in tests {
@@ -210,114 +184,91 @@ pub fn face_mask(node: Vec3, light: Vec3, threshold: f32) -> u32 {
     mask
 }
 
-/// The luma in the original's accumulation order, `z·0.114 + y·0.587 + x·0.299`.
-fn luma(v: Vec3) -> f32 {
-    v.z * LUMA_B + v.y * LUMA_G + v.x * LUMA_R
-}
-
-/// The plain reach test (`0x053400`): the luma of the colour product against
-/// the cutoff. A lit node gets a mask of one and sets the alias's mask to
-/// one.
+/// The plain reach test: the luma of the colour product against the
+/// cutoff (ordered: a NaN luma is unlit). A lit node gets a mask of one,
+/// and so does the alias's accumulator.
 pub fn reach_plain(light: &AliasLight, node: &AliasNode) -> AliasHit {
-    let weight = luma(light.colour * node.colour);
-    if weight <= light.cutoff {
-        AliasHit {
-            weight,
-            mask: 0,
-            lit: false,
-        }
-    } else {
-        AliasHit {
-            weight,
-            mask: 1,
-            lit: true,
-        }
+    let weight = luma((light.colour * node.colour).to_array());
+    let lit = light.cutoff < weight;
+    AliasHit {
+        weight,
+        mask: u32::from(lit),
+        lit,
     }
 }
 
-/// The gated reach test (`0x0530B0`), with the cell flood's answer passed as
-/// `gate`. See the module docs for the rule.
+/// The gated reach test, with the cell flood's answer passed as `gate`
+/// (pass `true` when the light's flags lack [`FLOOD_GATED`]). An early miss
+/// reports a zero weight and mask, and lit only when the node's bucket held
+/// a mask before. See the module docs for the rule.
 pub fn reach(light: &AliasLight, node: &AliasNode, gate: bool) -> AliasHit {
+    let miss = AliasHit {
+        weight: 0.0,
+        mask: 0,
+        lit: node.mask != 0,
+    };
     if !gate {
-        return AliasHit {
-            weight: 0.0,
-            mask: 0,
-            lit: node.mask != 0,
-        };
+        return miss;
     }
-    // The light and node spheres must overlap: an unordered radius compare
-    // fails, as the original's does.
-    let centre_delta = light.position - node.centre;
-    let centre_sq = centre_delta.x * centre_delta.x
-        + centre_delta.y * centre_delta.y
-        + centre_delta.z * centre_delta.z;
+    // The spheres must overlap; an unordered compare misses.
+    let delta = light.position - node.centre;
+    let centre_sq = (delta.x * delta.x + delta.y * delta.y) + delta.z * delta.z;
     let reach_sum = light.radius + node.radius;
-    if not_greater(reach_sum * reach_sum, centre_sq) {
-        return AliasHit {
-            weight: 0.0,
-            mask: 0,
-            lit: node.mask != 0,
-        };
+    if !(reach_sum * reach_sum > centre_sq) {
+        return miss;
     }
-    let box_sq = box_distance_squared(light.position, node.centre, node.axes, node.half);
-    if not_less(box_sq, light.radius * light.radius) {
-        return AliasHit {
-            weight: 0.0,
-            mask: 0,
-            lit: node.mask != 0,
-        };
+    let obb = node.obb();
+    let box_sq = point_obb_distance_squared(light.position, &obb);
+    if !(box_sq < light.radius * light.radius) {
+        return miss;
     }
-    // The falloff distance: the shell distance when the node is outside the
-    // light sphere and that is the smaller value, else the box distance.
-    let node_radius_sq = node.radius * node.radius;
-    let mut distance_sq = box_sq;
-    if node_radius_sq < centre_sq {
+    // The shell distance when the node's centre lies outside its own radius
+    // and the shell is not the smaller (an unordered compare keeps it).
+    let mut distance = box_sq;
+    if centre_sq > node.radius * node.radius {
         let shell = centre_sq.sqrt() - node.radius;
         let shell_sq = shell * shell;
-        if shell_sq >= box_sq {
-            distance_sq = shell_sq;
+        if !(shell_sq < box_sq) {
+            distance = shell_sq;
         }
     }
-    // The colour product's luma is taken before the distance, as the
-    // original multiplies it in later.
-    let colour_luma = luma(light.colour * node.colour);
-    let mut distance = distance_sq;
+    let product = light.colour * node.colour;
     if distance > TINY {
         distance = distance.sqrt();
     }
-    let mut weight = (1.0 - distance * light.falloff).max(0.0);
+    // MAXSS returns its second operand, zero, on a NaN.
+    let mut weight = maxss(1.0 - distance * light.falloff, 0.0);
     weight *= weight;
     weight *= weight;
     if let Some(spot) = light.spot
         && light.flags & 0x300 == 0x200
     {
-        let top = node.top - node.drops.iter().map(|(o, h)| o.abs() * h).sum::<f32>();
-        let probe = Vec3::new(light.position.x, top, light.position.z);
-        let d = box_distance_squared(probe, node.centre, node.axes, node.half);
-        let dy = light.position.y - top;
-        let t = dy / (dy * dy + d).sqrt();
-        let t = t + (1.0 - t) * spot.flat;
-        if t <= TINY {
-            weight = 0.0;
+        let bottom = node.bottom();
+        let probe = Vec3::new(light.position.x, bottom, light.position.z);
+        let d = point_obb_distance_squared(probe, &obb);
+        let dy = light.position.y - bottom;
+        let mut t = dy / (dy * dy + d).sqrt();
+        t += (1.0 - t) * spot.flat;
+        if t > TINY {
+            let x = t * spot.cone;
+            let shaped = (fast_exp(fast_ln(2.0) * x) - 1.0) * spot.exponent;
+            weight *= maxss(shaped, 0.0);
         } else {
-            // The original's fast cosine and arc cosine, exactly.
-            use exa_physics::engine_math::{acos, sin_cos};
-            let shaped = (acos(sin_cos(2.0).1 * t * spot.cone) - 1.0) * spot.exponent;
-            weight *= shaped.max(0.0);
+            weight = 0.0;
         }
     }
-    let scaled = weight * light.intensity;
-    if scaled <= light.cutoff {
-        return AliasHit {
-            weight: 0.0,
-            mask: 0,
-            lit: node.mask != 0,
-        };
+    if !(weight * light.intensity > light.cutoff) {
+        return miss;
     }
-    let weight = scaled * colour_luma;
-    let lit = weight > light.cutoff;
-    let mask = face_mask(node.centre, light.position, f32::from_bits(node.flags));
+    let weight = luma(product.to_array()) * weight;
+    let lit = light.cutoff < weight;
+    let mask = face_mask(node.centre, light.position, node.radius);
     AliasHit { weight, mask, lit }
+}
+
+/// `MAXSS`: the first operand when it is larger, else the second.
+fn maxss(a: f32, b: f32) -> f32 {
+    if a > b { a } else { b }
 }
 
 /// The alias's mask accumulator after a lit node: the node's face mask ORs
@@ -337,10 +288,7 @@ mod tests {
             radius: 17.320_51,
             half: Vec3::new(10.0, 10.0, 10.0),
             axes: [Vec3::X, Vec3::Y, Vec3::Z],
-            top: 10.0,
-            drops: [(0.0, 0.0); 3],
             colour: Vec3::new(1.0, 1.0, 1.0),
-            flags: 0,
             mask: 0,
         }
     }
@@ -360,67 +308,112 @@ mod tests {
     }
 
     #[test]
+    fn the_face_tables_are_the_originals() {
+        assert_eq!(FACE_NORMALS[0].x.to_bits(), 0x3f35_04f3);
+        assert_eq!(FACE_TESTS[2], [(0, -1.0), (1, 1.0), (4, -1.0), (5, -1.0)]);
+    }
+
+    #[test]
     fn the_plain_reach_is_the_colour_products_luma_against_the_cutoff() {
         let light = light();
         let hit = reach_plain(&light, &node());
-        assert_eq!(hit.weight, 1.0);
+        assert_eq!(hit.weight, (0.299f32 + 0.587) + 0.114);
         assert_eq!((hit.mask, hit.lit), (1, true));
-        // Half the colour is half the luma; under the cutoff is unlit.
         let mut dim = node();
         dim.colour = Vec3::splat(0.005);
         let hit = reach_plain(&light, &dim);
-        assert!(hit.weight < 0.01);
         assert_eq!((hit.mask, hit.lit), (0, false));
-        // The luma order shows on mixed colours.
-        dim.colour = Vec3::new(1.0, 0.0, 0.0);
-        assert_eq!(reach_plain(&light, &dim).weight, 0.298_999_99);
+        // A NaN luma is unlit (the ordered compare).
+        dim.colour = Vec3::NAN;
+        assert!(!reach_plain(&light, &dim).lit);
     }
 
     #[test]
-    fn the_gated_reach_falls_off_and_merges_the_face_mask() {
+    fn the_gated_reach_falls_off_and_masks_by_the_node_radius() {
         let light = light();
-        let mut n = node();
-        // 90 cm from the box's near face: distance 90, falloff 0.001 →
-        // 0.91⁴.
+        let n = node();
+        // 90 cm from the box's near face (the shell, 100 − 17.32, is the
+        // smaller): distance 90, falloff 0.001 → 0.91⁴, times the luma.
         let hit = reach(&light, &n, true);
-        let expected = 0.91f32 * 0.91 * 0.91 * 0.91;
-        assert!((hit.weight - expected).abs() < 1e-6, "{}", hit.weight);
+        let mut w = 1.0f32 - 90.0 * 0.001;
+        w *= w;
+        w *= w;
+        assert_eq!(hit.weight, ((0.299f32 + 0.587) + 0.114) * w);
         assert!(hit.lit);
-        // The node sits along +z: only the face pointing back at it stays
-        // (the pair whose tests are all negative), the rest clear.
+        // The node sits along +z: only the face pointing back at it stays.
         assert_eq!(hit.mask, 1 << 5);
-        // A closed gate or a light sphere that misses the node is unlit.
+        // A closed gate or a light sphere that misses is a miss.
         assert!(!reach(&light, &n, false).lit);
         let mut far = light;
         far.radius = 1.0;
-        assert!(!reach(&far, &n, true).lit);
-        // A node inside the light's radius but past the box distance uses
-        // the box distance; the sphere shell only when the node is outside.
-        let mut inside = n;
-        inside.centre = Vec3::new(0.0, 0.0, 500.0);
-        let hit = reach(&light, &inside, true);
-        assert!(hit.lit);
+        assert_eq!(reach(&far, &n, true).weight, 0.0);
+        // A node whose radius covers the light keeps every face.
+        let mut big = n;
+        big.radius = 1000.0;
+        assert_eq!(reach(&light, &big, true).mask, 0x3F);
+        // The intensity gates the weight but does not scale the result.
+        let mut bright = light;
+        bright.intensity = 4.0;
+        assert_eq!(reach(&bright, &n, true).weight, hit.weight);
+        let mut faint = light;
+        faint.intensity = 0.001;
+        let missed = reach(&faint, &n, true);
+        assert_eq!((missed.weight, missed.lit), (0.0, false));
         // The mask accumulator ORs the mask and keeps its own bits.
         assert_eq!(merge_mask(0b10, 0b01, 0b100), 0b111);
         assert_eq!(merge_mask(0, 0x3F, 0), 0x3F);
-        // The node's flags word doubles as the face threshold when read as
-        // a float: an infinite float keeps every face.
-        n.flags = 0x7F80_0000;
-        assert_eq!(reach(&light, &n, true).mask, 0x3F);
     }
 
     #[test]
-    fn a_spot_shapes_the_weight_and_zeroes_a_point_below_the_cone() {
+    fn the_shell_distance_is_the_larger_of_the_two() {
+        // A long thin box: the box distance (10) is below the shell
+        // (√(100² + 0) − 50 = 50), so the shell is used.
+        let light = light();
+        let mut n = node();
+        n.half = Vec3::new(10.0, 10.0, 90.0);
+        n.radius = 50.0;
+        let hit = reach(&light, &n, true);
+        let mut w = 1.0f32 - 50.0 * 0.001;
+        w *= w;
+        w *= w;
+        assert_eq!(hit.weight, ((0.299f32 + 0.587) + 0.114) * w);
+    }
+
+    #[test]
+    fn a_spot_shapes_the_weight_with_the_fast_power_of_two() {
+        let shape = SpotShape::of(1.0, 1.0);
+        assert_eq!(shape.cone, 2.0);
+        assert_eq!(shape.exponent, 1.0 / (fast_exp(fast_ln(2.0) * 2.0) - 1.0));
+        assert_eq!(
+            shape.flat,
+            ((std::f64::consts::PI * 0.5).sin() * 0.5) as f32
+        );
+        let below = SpotShape::of(-0.5, 0.0);
+        let angle = f64::from(-0.5f32 * 0.5) * std::f64::consts::PI;
+        assert_eq!(below.flat, (-3.0 / angle.cos() + 3.0) as f32);
+        // A NaN q takes the sine branch.
+        assert!(SpotShape::of(f32::NAN, 0.0).flat.is_nan());
+        // The light 10 above the box's bottom height, right over it.
         let mut light = light();
         light.flags = 0x200;
-        light.spot = Some(SpotShape::of(1.0, 1.0));
-        let hit = reach(&light, &node(), true);
-        // The spot multiplies the falloff weight by its shaped term.
-        assert!(hit.weight > 0.0 && hit.weight < 0.91f32.powi(4));
-        // The top used by the probe is lowered by the three drops.
-        let mut dropped = node();
-        dropped.drops = [(50.0, 0.2), (0.0, 1.0), (0.0, 1.0)];
-        let hit = reach(&light, &dropped, true);
-        assert!(hit.weight >= 0.0);
+        light.position = Vec3::new(0.0, 0.0, 95.0);
+        light.spot = Some(SpotShape::of(0.0, 1.0));
+        let mut n = node();
+        n.centre = Vec3::new(0.0, -20.0, 100.0);
+        let hit = reach(&light, &n, true);
+        // The bottom is −30: dy = 30, the probe at (0, −30, 95) is inside
+        // the box's footprint (d = 0), so t = 1 and the term is
+        // (2^2 − 1)·exponent with the fast functions.
+        let spot = light.spot.unwrap();
+        let term = (fast_exp(fast_ln(2.0) * (1.0 * spot.cone)) - 1.0) * spot.exponent;
+        // The box distance is 10 (the light 10 above the box's top).
+        let mut w = 1.0f32 - 10.0 * 0.001;
+        w *= w;
+        w *= w;
+        w *= term;
+        assert_eq!(hit.weight, ((0.299f32 + 0.587) + 0.114) * w);
+        // A light below the box's bottom: t ≤ 0 zeroes the weight.
+        light.position = Vec3::new(0.0, -60.0, 95.0);
+        assert_eq!(reach(&light, &n, true).weight, 0.0);
     }
 }
