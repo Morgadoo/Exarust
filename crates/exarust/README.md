@@ -33,7 +33,7 @@ start from `EXARUST_USER_DIR`, else `~/.config/exarust`: the window size,
 full screen, vertical sync, supersampling, the frame-rate readout and the
 GUI size they name apply unless the command line overrides them, and the
 store's key bindings are used. `--no-settings` ignores them. The store is
-written back on exit through its exit-hook chain, and a store with no
+written back on exit (`SettingsStore::save_to`), and a store with no
 contents is not written.
 With `--opponent` the fight starts when the level shows: the duellist enters
 combat and, in a practice or arena level, the player's combat mode turns on.

@@ -237,18 +237,15 @@ fn the_key_def_count_carries_over_a_reread() {
     let (s, _) = Settings::read(&text, 1080);
     assert_eq!(s.hotkeys.len(), 6);
     assert!(s.hotkeys.iter().all(|h| h.bound));
-    assert_eq!(s.key_defs_parsed, 6);
     text.extend_from_slice(b"KeyDef = alt+g: yy\r\n");
     let (mut s, _) = Settings::read(&text, 1080);
     assert_eq!(s.hotkeys.len(), 7);
     assert!(s.hotkeys[5].bound && !s.hotkeys[6].bound);
-    // A second read into the same settings keeps the count: every macro of
-    // the new file is past the six and stays unbound, though it is added to
-    // the list.
+    // A second read into the same settings keeps the list (and so the
+    // count): the new file's macro lands past the six and stays unbound.
     s.reread(b"KeyDef = ctrl+n: zz\r\n", 1080);
     assert_eq!(s.hotkeys.len(), 8);
     assert!(!s.hotkeys[7].bound);
-    assert_eq!(s.key_defs_parsed, 8);
     assert_eq!(s.hotkeys[7].commands, [b"zz".to_vec()]);
     // A re-read changes only what it names.
     let mut s = Settings::read(b"ShadowQuality = 4\r\n", 1080).0;

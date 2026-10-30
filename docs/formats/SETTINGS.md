@@ -157,11 +157,10 @@ byte left at the end is dropped. Every macro gets a command list; only the
 first six are bound to a key, whose handler runs the commands through the
 debug command registry (not reproduced).
 
-The count of macros is a variable of the settings unit that is **not**
-reset by a re-read: a second read of the file (the hardware configuration
-reads it again when its page opens) parses its macros but they all land
-past the sixth and get no key handler. `parse_key_def_at` takes the count
-to start from; `Settings::reread` keeps it.
+The count of macros is the length of the settings unit's macro list,
+which a re-read never clears: a second read of the file appends its macros
+after the first read's, so past the sixth they get no key handler.
+`Settings::reread` applies a file onto live settings and keeps the list.
 
 ### Writing one setting
 
@@ -286,11 +285,13 @@ and capacity) and a cursor (`exa_formats::data_stream::DataStream`).
   when the read fails.
 - **Whole-file reads** (`read_file`, `read_referenced_file`,
   `read_from_search_path`): a failed open leaves the block alone and logs
-  `Failed to open file: <path>` at level 3 under the topic `File IO`; a
-  failed read clears the block and logs `Unable to read contents of file:
-  <path>`. The search path logs the bare name. Exarust returns the reason
-  as `FileIssue` (`message` gives the log line) instead of reading past
-  its block on a bad tree.
+  `Failed to open file: <path>` at level 3 under the topic `File IO`, only
+  while the error log is switched on; a failed read always logs `Unable to
+  read contents of file: <path>`, and the read by reference then clears the
+  block (the search-path read leaves it at the file's size). The search
+  path logs the bare name, and when no folder holds the file it logs
+  nothing. Exarust returns the reason as `FileIssue` (`message` gives the
+  log line, none for `Missing`).
 - **Exists**: `file_exists` is `GetFileAttributesA` — true for a file or a
   folder.
 - **Resources** (`read_resource`): a named payload of the executable under
@@ -305,8 +306,10 @@ and capacity) and a cursor (`exa_formats::data_stream::DataStream`).
   allocated in `0x2000`-byte steps and only reallocated when the rounded
   size changes; a resource's memory only accepts a resize to zero; a
   borrowed view copies the smaller of its old and new sizes into a fresh
-  general block on its first resize. `duplicate` copies the contents into a
-  general block of the same size; `make_owned` gives a borrowed view its own
+  general block on its first resize. `copy_into` resizes a destination
+  block by its own kind's rules to the source's size and copies the
+  destination's new size of bytes (`duplicate` does it into a new general
+  block); `make_owned` gives a borrowed view its own
   copy. The original's two resize routines differ only in the allocator they
   call for a general block, so one `resize` serves both.
 - **Format registry**: `{key[16], handler, description, use count}`; a new

@@ -437,17 +437,11 @@ pub struct Hotkey {
 }
 
 /// Parses a `KeyDef` value, `<shift|ctrl|alt>+<key>: cmd; cmd; …`, adding
-/// a hotkey to `hotkeys` as the next of the macros parsed into that list
-/// (so only a list's first six macros are bound).
+/// a hotkey to `hotkeys` as the next of the macros parsed into that list.
+/// The original's macro count is the length of its macro list, which a
+/// re-read of the file never clears, so only the list's first six macros
+/// are ever bound.
 pub fn parse_key_def(text: &[u8], hotkeys: &mut Vec<Hotkey>) {
-    parse_key_def_at(text, hotkeys, hotkeys.len())
-}
-
-/// [`parse_key_def`] with `first` macros already parsed before this one:
-/// only a macro whose place in that count is below [`BOUND_HOTKEYS`] is
-/// bound. The original counts every macro it ever parses in a variable that
-/// survives a re-read of the file, so a later read's macros go unbound.
-pub fn parse_key_def_at(text: &[u8], hotkeys: &mut Vec<Hotkey>, first: usize) {
     let len = text.len() as i64;
     let at = |i: i64| -> u8 {
         if i >= 0 && i < len {
@@ -503,7 +497,7 @@ pub fn parse_key_def_at(text: &[u8], hotkeys: &mut Vec<Hotkey>, first: usize) {
     if rem <= 1 {
         return;
     }
-    let bound = first < BOUND_HOTKEYS;
+    let bound = hotkeys.len() < BOUND_HOTKEYS;
     let mut commands = Vec::new();
     while rem > 1 {
         while rem > 0 && at(cmd) == b' ' {
@@ -571,11 +565,6 @@ pub struct Settings {
     pub fps_cap: i32,
     /// The `KeyDef` hotkeys, in file order.
     pub hotkeys: Vec<Hotkey>,
-    /// How many `KeyDef` values this settings object has parsed, across
-    /// every read of a file into it. The original keeps this count in a
-    /// variable that survives a re-read, so only the first six macros ever
-    /// get a key handler; a later read's macros are parsed but unbound.
-    pub key_defs_parsed: usize,
     pub window_width: i32,
     pub window_height: i32,
     pub touchscreen: bool,
@@ -634,7 +623,6 @@ impl Default for Settings {
             supersample: 0,
             fps_cap: -1,
             hotkeys: Vec::new(),
-            key_defs_parsed: 0,
             window_width: 1600,
             window_height: 1080,
             touchscreen: false,
@@ -713,11 +701,7 @@ impl Settings {
             "FPSLimit" => self.fps_cap = fps_cap(int),
             "KeyDef" => {
                 if let Value::Text(text) = &assignment.value {
-                    let before = self.hotkeys.len();
-                    parse_key_def_at(text, &mut self.hotkeys, self.key_defs_parsed);
-                    if self.hotkeys.len() > before {
-                        self.key_defs_parsed = self.hotkeys.len();
-                    }
+                    parse_key_def(text, &mut self.hotkeys);
                 }
             }
             "WindowWidth" => self.window_width = int,
@@ -744,8 +728,8 @@ impl Settings {
 
     /// Re-reads a settings file into these settings, as the original's
     /// second read does: every line applies again, the settings it does not
-    /// name keep their values, and the `KeyDef` count carries on, so this
-    /// file's macros come out unbound. Gives every assignment it made.
+    /// name keep their values, and the `KeyDef` macros are added after the
+    /// ones already parsed, so past the sixth they come out unbound. Gives every assignment it made.
     pub fn reread(&mut self, bytes: &[u8], display_height: u32) -> Vec<Assignment> {
         let assignments = read_assignments(bytes, &REGISTRY);
         for a in &assignments {
