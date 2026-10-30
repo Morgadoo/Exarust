@@ -393,6 +393,18 @@ pub enum ListRelease {
     Freed,
 }
 
+impl ListRelease {
+    /// The release for a shared object's count: `None` when absent, a
+    /// count above one clears it, one or less frees it.
+    pub fn for_count(count: Option<i32>) -> Self {
+        match count {
+            None => ListRelease::None,
+            Some(n) if n > 1 => ListRelease::Cleared,
+            Some(_) => ListRelease::Freed,
+        }
+    }
+}
+
 /// What a close remembers and tells the game.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClosePlan {
@@ -433,13 +445,74 @@ pub fn close_plan(
     ClosePlan {
         notify_id: has_view.then(|| closed_window_id(record_id)),
         save_pack: has_view && pack_dirty,
-        list: match list_count {
-            None => ListRelease::None,
-            Some(n) if n > 1 => ListRelease::Cleared,
-            Some(_) => ListRelease::Freed,
-        },
+        list: ListRelease::for_count(list_count),
         remembered: is_player.then_some(position),
         base: true,
+    }
+}
+
+/// The doll's view alpha's factor: the bind sets the doll form's alpha to
+/// the character view's scale times ten (the view's own scale field, a
+/// tenth of the alpha).
+pub const VIEW_FADE_FACTOR: f32 = 10.0;
+
+/// The doll's view fade: the view's scale times [`VIEW_FADE_FACTOR`].
+pub fn doll_fade(view_scale: f32) -> f32 {
+    view_scale * VIEW_FADE_FACTOR
+}
+
+/// What binding a body to the open inventory does: the doll's model is
+/// loaded (`model`), the two draw-order words take 0x60 and 0 (the body's
+/// flag word `0x1000000` puts them the other way), and the doll's alpha
+/// follows the view's scale.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BindView {
+    /// A body was bound and its model is looked up.
+    pub model: bool,
+    /// The two draw-order words: (front, back).
+    pub layers: (i32, i32),
+    /// The doll form's alpha.
+    pub fade: f32,
+}
+
+/// The bind for a body whose flag word has (or lacks) bit 24.
+pub fn bind_view(has_body: bool, body_flag_0x1000000: bool, view_scale: f32) -> BindView {
+    BindView {
+        model: has_body,
+        layers: if body_flag_0x1000000 {
+            (0, 0x60)
+        } else {
+            (0x60, 0)
+        },
+        fade: doll_fade(view_scale),
+    }
+}
+
+/// What closing the open inventory releases besides the form: the shared
+/// list (by count), the pane (by count) and the character view's panel
+/// redraw.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CloseParts {
+    /// The list's release: a count of 1 frees it, a larger one clears its
+    /// entries, the rest decrements it.
+    pub list: ListRelease,
+    /// The pane's release, the same rule.
+    pub pane: ListRelease,
+    /// The character view's panel is redrawn from the body's pack.
+    pub redraw_panel: bool,
+}
+
+/// The parts a close releases, by the list's and pane's counts (`None`
+/// when the object is absent) and the view's panel flag.
+pub fn close_parts(
+    list_count: Option<i32>,
+    pane_count: Option<i32>,
+    redraw_flag: bool,
+) -> CloseParts {
+    CloseParts {
+        list: ListRelease::for_count(list_count),
+        pane: ListRelease::for_count(pane_count),
+        redraw_panel: redraw_flag,
     }
 }
 
@@ -484,6 +557,36 @@ mod tests {
             x: 0,
             y: 0,
         }
+    }
+
+    #[test]
+    fn binding_a_body_sets_the_dolls_layers_and_fade() {
+        let bound = bind_view(true, false, 75.0);
+        assert!(bound.model);
+        assert_eq!(bound.layers, (0x60, 0));
+        // The view's field is a tenth of the alpha the doll form gets.
+        assert_eq!(bound.fade, 750.0);
+        let flipped = bind_view(true, true, 75.0);
+        assert_eq!(flipped.layers, (0, 0x60));
+        assert_eq!(flipped.fade, 750.0);
+        let none = bind_view(false, false, 10.0);
+        assert!(!none.model);
+        assert_eq!(none.layers, (0x60, 0));
+        assert_eq!(none.fade, 100.0);
+    }
+
+    #[test]
+    fn closing_releases_the_list_and_the_pane_by_their_counts() {
+        let parts = close_parts(Some(3), Some(1), true);
+        assert_eq!(parts.list, ListRelease::Cleared);
+        assert_eq!(parts.pane, ListRelease::Freed);
+        assert!(parts.redraw_panel);
+        let parts = close_parts(None, Some(2), false);
+        assert_eq!(parts.list, ListRelease::None);
+        assert_eq!(parts.pane, ListRelease::Cleared);
+        assert!(!parts.redraw_panel);
+        assert_eq!(ListRelease::for_count(Some(1)), ListRelease::Freed);
+        assert_eq!(ListRelease::for_count(None), ListRelease::None);
     }
 
     #[test]

@@ -2531,7 +2531,11 @@ popup and the character view still wait for their hosts.
   bottom of the client area, of capacity 400 and items up to 50; only what
   the character wears counts against the pack when it is bound. A
   right-button release closes it. The running inventory is
-  `exa_game::gui_screens` with its view in `exa_game::doll_view`.
+  `exa_game::gui_screens` with its view in `exa_game::doll_view`. Binding a
+  body loads the doll's model, sets the two draw-order words (0x60 and 0,
+  swapped when the body's flag word has bit 24) and the doll's alpha to
+  the view's scale times ten; closing releases the shared list and the
+  pane by their counts and redraws the view's panel when its flag asks.
 - **Arsenal** (`exa_items::arsenal`): up to five 236-pixel columns laid 60
   units apart (240 pixels at unit 4), as many as fit after a 12-unit margin
   (and 61 for the inventory while shown), scrolled by two arrows. The form
