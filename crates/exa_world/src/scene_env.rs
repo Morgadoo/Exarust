@@ -1698,6 +1698,20 @@ impl SceneEnvironment {
         let mut change = RainChange::default();
         if requested > 0.0 {
             change.start_rain = true;
+            // A request creates the looping sound (when there is none; its
+            // flags start clear) and the rain effect (when there is none).
+            if !self.weather.sound.exists {
+                self.weather.sound = RainSound {
+                    exists: true,
+                    ..RainSound::default()
+                };
+            }
+            if !self.weather.effect.exists {
+                self.weather.effect = RainEffect {
+                    exists: true,
+                    ..RainEffect::default()
+                };
+            }
             self.weather.thunder_allowed = RAIN_THUNDER < requested;
             if self.weather.thunder_allowed {
                 change.thunder = true;
@@ -1861,21 +1875,24 @@ impl SceneEnvironment {
         }
         // The rain sound takes its volume and pitch from the effect; its
         // start bit decides whether it plays, its stop bit whether it stops.
+        // Only a created sound is driven.
         let sound = &mut self.weather.sound;
-        if 0.0 < self.weather.rain {
-            sound.volume = self.weather.effect.volume;
-            sound.pitch = self.weather.effect.pitch;
-        } else {
-            sound.volume = 0.0;
-        }
-        if sound.started {
-            if (sound.volume as f64) < RAIN_MIN {
-                sound.stop_requested = true;
-                events.stop_sound = true;
+        if sound.exists {
+            if 0.0 < self.weather.rain {
+                sound.volume = self.weather.effect.volume;
+                sound.pitch = self.weather.effect.pitch;
+            } else {
+                sound.volume = 0.0;
             }
-        } else if (sound.volume as f64) > RAIN_MIN {
-            sound.started = true;
-            events.start_sound = true;
+            if sound.started {
+                if (sound.volume as f64) < RAIN_MIN {
+                    sound.stop_requested = true;
+                    events.stop_sound = true;
+                }
+            } else if (sound.volume as f64) > RAIN_MIN {
+                sound.started = true;
+                events.start_sound = true;
+            }
         }
         if self.weather.thunder_allowed || self.weather.lightning.active {
             if self.weather.thunder_pending && self.weather.thunder_at < now {
@@ -3188,12 +3205,18 @@ mod tests {
     #[test]
     fn the_rain_sound_follows_the_effect() {
         let mut env = SceneEnvironment::new(5);
-        env.weather.rain = 0.5;
-        env.weather.target = 0.5;
-        env.weather.effect.volume = 0.5;
-        env.weather.effect.pitch = 1.2;
         let mut rng = WeatherRng::new(0);
         let mut system = || 0.5;
+        env.weather.rain = 0.5;
+        env.weather.target = 0.5;
+        // Without a rain request there is no sound object to drive.
+        assert!(!env.tick(5, &mut rng, &mut system).start_sound);
+        assert_eq!(env.weather.sound, RainSound::default());
+        // A request creates the sound and the effect.
+        env.set_rain(0.5, 5, &mut rng);
+        assert!(env.weather.sound.exists && env.weather.effect.exists);
+        env.weather.effect.volume = 0.5;
+        env.weather.effect.pitch = 1.2;
         let events = env.tick(10, &mut rng, &mut system);
         assert!(events.start_sound);
         assert_eq!(
