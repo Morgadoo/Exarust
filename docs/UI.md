@@ -2685,11 +2685,21 @@ plain draw and input records.
   changed hand is detached, then attached by its item's sections: a weapon
   as a weapon part (the off hand's weapon that also has a light section as
   an off-hand light), a shield as a shield, an item with only a light
-  section as an off-hand light, and anything else not at all. The item's
+  section as an off-hand light, and — in the hand-scene builder — a
+  modelled item with none of those sections as a weapon. The item's
   `0x1000000` flag is written to the body's flip byte and `0x2000000`
-  lights its held part. The stance restarts with blend 20 after every
-  re-dress unless the body is in its weapon-swap state (`0x1F`), and the
-  sets then trade only when a hand changed. A weapon's take-out clears
+  lights its held part. A weapon node settles at −1, a shield's at the
+  largest word. The stance restarts with blend 20 after every re-dress,
+  and the dynamics restarted too unless the body is in its weapon-swap
+  state (`0x1F`); the body is refreshed when no hand attached a shield or
+  a light, and the sets then trade only when a hand changed. A weapon's
+  or light's take-in writes only the top bit of the dragged item's flags
+  into the record (a shield keeps all of them); the model still takes its
+  lit and flipped marks from the full flags. Releasing a hand's old model
+  detaches its scene node, refreshes the body when neither record hand
+  names an item, and restarts the stance when the model's flags carry bit
+  1. A set swap writes the view's two `0x60`-frame counters onto the side
+  the second-set flag leaves. A weapon's take-out clears
   the record entry that names it (either hand's) and, when it was scheduled
   for the main hand and the weapon was the body's first attached weapon,
   promotes the off hand's light or weapon into it — never a shield — the
@@ -2748,7 +2758,10 @@ protection value, the weapon section read first; the shield and the core
 crystal have none.
 
 A drop from the view's own panel only charges back the refunded cost.
-Otherwise apparel is worn, with both the doll and the shown character's
+A weapon dropped on the view's right half while the character knows
+Insight's technique 8 (one technique per 5000 points, the fifth skill
+slot) goes into the off hand instead of the main hand. Otherwise apparel
+is worn, with both the doll and the shown character's
 mesh and textures rebuilt, the character data told of the equip change,
 and the shown character's pack (when it is not where the drag began)
 charged the item's bulk, locked or not; a weapon is taken into the doll's

@@ -376,17 +376,22 @@ pub fn current_card(item: u32, flags: u32) -> Option<(u32, u32)> {
     (item != 0).then_some((item, flags))
 }
 
+/// Whether the character knows technique 8 of the skill the view reads: one
+/// technique per 5000 points is looked at, up to the techniques stored.
+pub fn insight_known(points: u16, techniques: &[u8]) -> bool {
+    let levels = usize::from(points / 5000);
+    techniques
+        .iter()
+        .take(levels)
+        .any(|technique| *technique == 8)
+}
+
 /// Whether the pointer is on the figure's right half while the character
 /// knows technique 8 of the skill the view reads (`points` and its
 /// technique bytes; the block at the record's fifth skill slot, Insight, by
-/// its place, a guess): one technique per 5000 points is looked at.
+/// its place, a guess).
 pub fn insight_blocks(points: u16, techniques: &[u8], cursor_x: i32, width: u32) -> bool {
-    let levels = usize::from(points / 5000);
-    let known = techniques
-        .iter()
-        .take(levels)
-        .any(|technique| *technique == 8);
-    known && ((width >> 1) as i32) < cursor_x
+    insight_known(points, techniques) && ((width >> 1) as i32) < cursor_x
 }
 
 /// The direction, in the camera's space, the figure's node is turned to
@@ -559,6 +564,9 @@ pub struct DropPlan {
     /// The mind cost the drag-over test stored is charged (a drop back on
     /// the view the drag came from).
     pub charge_cost: bool,
+    /// A weapon goes into the off hand: the pointer was on the figure's
+    /// right half and the character knows Insight's technique 8.
+    pub off_wanted: bool,
 }
 
 impl DropPlan {
@@ -573,6 +581,7 @@ impl DropPlan {
             show: false,
             clear_mark: false,
             charge_cost: false,
+            off_wanted: false,
         }
     }
 }
@@ -606,6 +615,8 @@ pub struct DropFacts {
     pub takes_core: bool,
     /// The doll's race wears apparel.
     pub race_wears_apparel: bool,
+    /// A weapon goes into the off hand ([`insight_blocks`]).
+    pub insight: bool,
 }
 
 impl Default for DropFacts {
@@ -627,6 +638,7 @@ impl Default for DropFacts {
             has_shield: false,
             takes_core: false,
             race_wears_apparel: false,
+            insight: false,
         }
     }
 }
@@ -669,6 +681,7 @@ pub fn figure_drop(facts: DropFacts) -> DropPlan {
             show: false,
             clear_mark: false,
             charge_cost: false,
+            off_wanted: false,
         },
         FigureDrop::Weapon => DropPlan {
             kind,
@@ -681,6 +694,7 @@ pub fn figure_drop(facts: DropFacts) -> DropPlan {
             show: false,
             clear_mark: false,
             charge_cost: false,
+            off_wanted: facts.insight,
         },
         FigureDrop::Shield => DropPlan {
             kind,
@@ -692,6 +706,7 @@ pub fn figure_drop(facts: DropFacts) -> DropPlan {
             show: false,
             clear_mark: false,
             charge_cost: false,
+            off_wanted: false,
         },
         FigureDrop::Hand => DropPlan {
             kind,
@@ -703,6 +718,7 @@ pub fn figure_drop(facts: DropFacts) -> DropPlan {
             show: true,
             clear_mark: facts.shown,
             charge_cost: false,
+            off_wanted: false,
         },
     }
 }
@@ -897,6 +913,12 @@ mod tests {
         assert!(insight_blocks(5000, &[8], 100, 100));
         assert!(!insight_blocks(5000, &[8], 50, 100));
         assert!(!insight_blocks(10000, &[7, 7], 100, 100));
+        // The technique check alone (the drop's near-hand gate).
+        assert!(!insight_known(0, &[8]));
+        assert!(insight_known(5000, &[8]));
+        assert!(!insight_known(5000, &[7]));
+        // Only the levels the points fund are read.
+        assert!(!insight_known(5000, &[7, 8]));
     }
 
     #[test]
@@ -1219,16 +1241,32 @@ mod tests {
             ..Default::default()
         });
         assert!(plan.give_to_panel && plan.cost.is_none());
-        // A shield has no cost.
+        // The pointer's right half with Insight's technique 8 asks for the
+        // off hand; a shield ignores it.
+        let plan = figure_drop(DropFacts {
+            has_weapon: true,
+            insight: true,
+            ..Default::default()
+        });
+        assert!(plan.off_wanted);
+        assert!(!plan.charge_cost);
+        let plan = figure_drop(DropFacts {
+            has_weapon: true,
+            ..Default::default()
+        });
+        assert!(!plan.off_wanted);
+        // A shield has no cost, and the off-hand request does not apply.
         let plan = figure_drop(DropFacts {
             has_shield: true,
             shown: true,
+            insight: true,
             mind_cost: true,
             ..Default::default()
         });
         assert_eq!(plan.kind, FigureDrop::Shield);
         assert_eq!(plan.cost, None);
         assert_eq!(plan.attach, [true, true]);
+        assert!(!plan.off_wanted);
         // The core crystal is shown and the shown character's mark
         // cleared; with no one shown there is no mark to clear.
         let plan = figure_drop(DropFacts {

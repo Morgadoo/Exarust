@@ -463,6 +463,7 @@ fn release(
             flags: drag.flags,
             icon: drag.icon,
             bulk: drag.bulk,
+            right_half: at.x - view.left > view.width() / 2,
         });
         *drag = PanelDrag::default();
         return;
