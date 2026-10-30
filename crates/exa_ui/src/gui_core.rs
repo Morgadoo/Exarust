@@ -1531,42 +1531,23 @@ pub fn set_modal(task: &mut GuiTask, form: Option<FormId>) {
     task.modal = form;
 }
 
-/// The registered tooltip classes: each registration returns a 1-based
-/// index, which a record's 0x8000 message answers to pick its tooltip.
+/// The registered tooltip factories (the task's form factory table): each
+/// registration returns a 1-based index, which a record's hint message
+/// answers to build its tooltip; 0 or less is the default tooltip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TooltipClasses {
     pub count: i32,
 }
 
 impl TooltipClasses {
-    pub fn register(&mut self) -> i32 {
-        self.count += 1;
-        self.count
-    }
-
-    /// Whether an index names a registered class (0 or less is the default
-    /// tooltip).
-    pub fn get(&self, index: i32) -> Option<i32> {
-        (index >= 1 && index <= self.count).then_some(index)
-    }
-}
-
-/// The registered form factories: each registration appends a factory and
-/// returns its 1-based index, which a tooltip record's hint message answers
-/// to build its tooltip.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct FormFactories {
-    pub count: i32,
-}
-
-impl FormFactories {
     /// Appends a factory, returning its 1-based index.
     pub fn register(&mut self) -> i32 {
         self.count += 1;
         self.count
     }
 
-    /// The index of a registered factory (0 or less is none).
+    /// Whether an index names a registered factory (0 or less is the
+    /// default tooltip).
     pub fn get(&self, index: i32) -> Option<i32> {
         (index >= 1 && index <= self.count).then_some(index)
     }
@@ -2290,7 +2271,7 @@ mod tests {
 
     #[test]
     fn form_factories_count_from_one_until_cleared() {
-        let mut factories = FormFactories::default();
+        let mut factories = TooltipClasses::default();
         assert_eq!(factories.register(), 1);
         assert_eq!(factories.register(), 2);
         assert_eq!(factories.get(2), Some(2));

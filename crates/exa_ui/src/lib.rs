@@ -154,11 +154,11 @@ pub use gui_controls::{
     check_label_ink, label_draw, layout_records, register_class, register_default_classes,
 };
 pub use gui_core::{
-    ControlVisibility, DropState, EdgeForm, FormFactories, FormHost, FormId, GuiMetrics, GuiTask,
-    HitResult, MESSAGE_CANCEL, MESSAGE_CLOSE, MESSAGE_OK, MessageBoxButton, MessageBoxPlan,
-    PlaceRequest, PlainForm, PointerState, TickResult, TooltipClasses, TooltipRequest, TooltipShow,
-    clamp_form, drag_limit, drag_threshold, edge_rect, message_box_button, message_box_plan,
-    place_form, set_control, set_control_on, set_control_text, set_control_visible, set_modal,
+    ControlVisibility, DropState, EdgeForm, FormHost, FormId, GuiMetrics, GuiTask, HitResult,
+    MESSAGE_CANCEL, MESSAGE_CLOSE, MESSAGE_OK, MessageBoxButton, MessageBoxPlan, PlaceRequest,
+    PlainForm, PointerState, TickResult, TooltipClasses, TooltipRequest, TooltipShow, clamp_form,
+    drag_limit, drag_threshold, edge_rect, message_box_button, message_box_plan, place_form,
+    set_control, set_control_on, set_control_text, set_control_visible, set_modal,
 };
 pub use gui_draw::{
     BLEND_ADDITIVE, BLEND_ALPHA, BLEND_PREMULTIPLIED, BLEND_REPLACE, BlendFactor, GuiCanvas,

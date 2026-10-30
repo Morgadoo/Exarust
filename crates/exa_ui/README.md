@@ -604,7 +604,8 @@ destroys through the parent), `place_form`, `clamp_form` and `edge_rect`
 its placement, clamp and grips, `GuiMetrics` the level switch's lengths,
 `set_control_on` a toggle group's switch, `set_control_visible` a control's
 shown group (clearing the other members' shown and lit bits and reporting
-each), and `FormFactories` the factory table the tooltip records name.
+each), and `TooltipClasses` the factory table the tooltip records name
+(registered from one, cleared on shutdown).
 
 `gui_text` holds the text support routines: measuring with a font's advance
 table, selecting a font and its texture, one line's glyph quads (plain,
