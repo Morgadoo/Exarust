@@ -665,9 +665,9 @@ pub enum AlertLooked {
 /// pans ±π/2 every 700 ms; the offset eases 0.05 toward the pan and the
 /// pitch target is zero.
 ///
-/// With a foe the gap from the body's physical facing is wrapped; past 45°
-/// the look takes the foe's yaw, and [`turn_towards`] then eases the body's
-/// offset toward the look plus its sway.
+/// With a foe the gap from the AI's look yaw is wrapped; past 45° the look
+/// takes the foe's yaw, and [`turn_towards`] then eases the body's offset
+/// toward the look plus its sway.
 #[allow(clippy::too_many_arguments, clippy::neg_cmp_op_on_partial_ord)]
 pub fn alert_look(
     panic: f32,
@@ -715,7 +715,7 @@ pub fn alert_look(
             smooth: dir_of(look_smoothing(facing_yaw, alert.offset)),
         });
     };
-    let d = gap(foe, facing_yaw);
+    let d = gap(foe, turn.look);
     let took = f64::from(d.abs()) > std::f64::consts::FRAC_PI_4;
     if took {
         turn.look = foe;
@@ -1343,48 +1343,6 @@ mod tests {
         assert_eq!(out, AlertLooked::Foe { look: None });
         assert_eq!(turn.look, 0.5);
         assert!(alert.marked, "past 1 panic the body is marked");
-        // The 45° gate measures from the body's facing, not the AI's look:
-        // a foe 57° off the facing takes the look even though the look
-        // already points 29° from it.
-        let mut alert = AlertLook::default();
-        let mut turn = Turning {
-            look: 0.5,
-            ..Turning::default()
-        };
-        let out = alert_look(
-            0.5,
-            true,
-            &mut alert,
-            &mut turn,
-            0.0,
-            Some(1.0),
-            0.0,
-            10,
-            &mut roll,
-        )
-        .unwrap();
-        assert_eq!(out, AlertLooked::Foe { look: Some(1.0) });
-        assert_eq!(turn.look, 1.0);
-        // A foe inside 45° of the facing leaves the look alone, whatever
-        // the AI's look held.
-        let mut turn = Turning {
-            look: 2.0,
-            ..Turning::default()
-        };
-        let out = alert_look(
-            0.5,
-            true,
-            &mut alert,
-            &mut turn,
-            0.0,
-            Some(0.5),
-            0.0,
-            10,
-            &mut roll,
-        )
-        .unwrap();
-        assert_eq!(out, AlertLooked::Foe { look: None });
-        assert_eq!(turn.look, 2.0);
     }
 
     /// The aim and settle take the body's yaw and draw a 1–4 s sway timer;
