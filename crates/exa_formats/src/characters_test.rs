@@ -1371,16 +1371,13 @@ fn shipped_sections_read_their_entry_databases() {
             }
             sections += 1;
             for (id, entry) in LevelCharacters::read_entries(c.data).unwrap() {
-                match entry {
-                    Ok((record, own)) => {
-                        entries += 1;
-                        assert_eq!(record.id, id);
-                        // No shipped level entry carries its own item
-                        // database: the items live in the level's own.
-                        assert!(own.base.is_empty(), "{}", record.name);
-                        assert!(own.strings.is_empty(), "{}", record.name);
-                    }
-                    Err(_) => {}
+                if let Ok((record, own)) = entry {
+                    entries += 1;
+                    assert_eq!(record.id, id);
+                    // No shipped level entry carries its own item
+                    // database: the items live in the level's own.
+                    assert!(own.base.is_empty(), "{}", record.name);
+                    assert!(own.strings.is_empty(), "{}", record.name);
                 }
             }
         }
