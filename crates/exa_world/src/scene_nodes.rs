@@ -1539,26 +1539,25 @@ impl Scene {
     }
 
     /// Attaches `nodes` as the children of `parent`, as the content helper's
-    /// attach does: each node leaves its old parent's list, takes `parent`
-    /// and the parent's owner, and has its frame refreshed. The list is
-    /// appended in order. Returns how many nodes were attached.
+    /// attach does: the array is appended to the parent's children in
+    /// order and each node takes `parent` as its parent and the parent's
+    /// owner. Nothing else changes: the original neither unlinks a node from
+    /// an earlier parent (its callers attach detached nodes) nor refreshes
+    /// the frames. Out-of-range indices are skipped. Returns how many nodes
+    /// were attached.
     pub fn attach_nodes(&mut self, parent: usize, nodes: &[usize]) -> usize {
+        if parent >= self.nodes.len() {
+            return 0;
+        }
         let owner = self.owner_of(parent);
         let mut attached = 0;
         for &node in nodes {
-            if node >= self.nodes.len() || node == parent {
+            if node >= self.nodes.len() {
                 continue;
-            }
-            if let Some(old) = self.nodes[node].parent
-                && let Some(old) = self.nodes.get_mut(old)
-            {
-                old.children.retain(|&child| child != Some(node));
             }
             self.nodes[node].parent = Some(parent);
             self.nodes[node].sector = owner;
-            self.nodes[node].stale = true;
             self.nodes[parent].children.push(Some(node));
-            self.refresh(node);
             attached += 1;
         }
         attached
@@ -1573,10 +1572,14 @@ impl Scene {
         self.nodes.get(parent).and_then(|n| n.sector)
     }
 
-    /// Clears the scene's content as the content helper does: every
-    /// top-level node's subtree is detached and released, sector lists,
-    /// geometry, transitions, removals and the free list are emptied. The
-    /// scene's own sector stays. Returns the released nodes' indices.
+    /// Clears the scene's content: every top-level node's subtree is
+    /// detached and released, and the sector lists, geometry, transitions,
+    /// removals and the free list are emptied; the scene's own sector
+    /// stays. A simplified model of the original's clear, which also waits
+    /// for the collision builder, unlinks aliases other scenes hold, walks
+    /// the nodes into holder scenes and queues their removal; the running
+    /// level change uses `level_lifecycle`'s despawn. Returns the released
+    /// nodes' indices.
     pub fn clear_content(&mut self) -> Vec<usize> {
         let roots: Vec<usize> = self
             .nodes
