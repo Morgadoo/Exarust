@@ -113,7 +113,7 @@ pub fn body_radius(
     if bounds.is_none() {
         for part in &ragdoll.parts {
             let world = part.transform();
-            for &(centre, radius) in &part.spheres {
+            for &(centre, radius) in part.spheres.iter() {
                 let c = world.transform_point3(centre);
                 let (lo, hi) = (c - radius, c + radius);
                 bounds = Some(bounds.map_or((lo, hi), |(a, b)| (a.min(lo), b.max(hi))));

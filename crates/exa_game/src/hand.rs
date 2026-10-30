@@ -871,7 +871,7 @@ pub(crate) fn character_hit<'a>(
     for (body, ragdoll, condition) in characters {
         for (part, p) in ragdoll.parts.iter().enumerate() {
             let at = p.transform();
-            for &(centre, radius) in &p.spheres {
+            for &(centre, radius) in p.spheres.iter() {
                 let reach = best.map_or(max, |b| b.0);
                 if let Some(t) = ray_sphere(origin, dir, at.transform_point3(centre), radius, reach)
                     && best.is_none_or(|b| t < b.0)
@@ -1996,7 +1996,8 @@ fn hold_hand(
                     // The spheres are gathered only when a marker named
                     // for the item is met, once per frame.
                     type Spheres = Vec<(Vec3, f32)>;
-                    let mut gathered: Option<(Vec<(Affine3A, Spheres)>, Spheres)> = None;
+                    let mut gathered: Option<(Vec<(Affine3A, std::sync::Arc<Spheres>)>, Spheres)> =
+                        None;
                     let bodies_ref = &bodies;
                     let held_part = items.held.as_ref().map(|held| held.part);
                     let overlaps = |frame: Frame| {

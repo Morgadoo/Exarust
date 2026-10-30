@@ -707,11 +707,13 @@ fn props_rest_on_each_other() {
     let mut table = ball(1, 0, Vec3::new(0.0, 0.06, 0.0), 0.1);
     {
         let p = &mut table.parts[0];
-        p.spheres = (-2..=2)
-            .flat_map(|i| {
-                (-1..=1).map(move |k| (Vec3::new(0.1 * i as f32, 0.0, 0.1 * k as f32), 0.06))
-            })
-            .collect();
+        p.spheres = std::sync::Arc::new(
+            (-2..=2)
+                .flat_map(|i| {
+                    (-1..=1).map(move |k| (Vec3::new(0.1 * i as f32, 0.0, 0.1 * k as f32), 0.06))
+                })
+                .collect(),
+        );
         p.pairing = Pairing::new(&p.rest, &p.rest_inverse, &p.spheres, 0.05);
     }
     let mut ticks = 0;
@@ -1043,7 +1045,7 @@ fn mesh_side(mesh: Vec<[Vec3; 3]>) -> Ragdoll {
     // fallback is never used; a body with no spheres at all would be left
     // out of the pair stage (the original's bodies always carry some).
     let far = [(Vec3::new(0.0, 0.0, 10.0), 0.01)];
-    b.parts[0].spheres = far.to_vec();
+    b.parts[0].spheres = std::sync::Arc::new(far.to_vec());
     b.parts[0].pairing.sphere = Bounds::of_spheres(&far);
     b.parts[0].pairing.mesh = Bounds {
         centre: Vec3::ZERO,
@@ -1259,7 +1261,7 @@ fn sheet_side(grid: bool) -> Ragdoll {
     } else {
         None
     };
-    b.parts[0].spheres = spheres;
+    b.parts[0].spheres = std::sync::Arc::new(spheres);
     b
 }
 

@@ -12,6 +12,8 @@
 //! wakes it. Evidence: `docs/formats/RFC.md` (Rigid body),
 //! `docs/formats/README.md`.
 
+use std::sync::Arc;
+
 use bevy::math::{Affine3A, Mat3};
 use bevy::prelude::*;
 
@@ -136,9 +138,9 @@ impl Part {
             // Registration gives the link mobility the contact mobility.
             link_mobility: s.mobility,
             gravity: gravity_shares(s.point_masses),
-            spheres: s.spheres.clone(),
+            spheres: Arc::new(s.spheres.clone()),
             triangles: s.triangles.clone(),
-            sphere_grid: SphereGrid::build(&s.spheres).map(std::sync::Arc::new),
+            sphere_grid: SphereGrid::build(&s.spheres).map(Arc::new),
             pairing: {
                 let mut pairing = Pairing::new(&rest, &rest_inverse, &s.spheres, s.mobility);
                 if let Some(mesh) = s.mesh {
