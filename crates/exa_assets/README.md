@@ -551,3 +551,11 @@ emitter of the node its instance word names (1-based), at its own transform
 and parent. `ModelLoader` follows instance chains to the first stored node
 and copies its parts, GI points and GI flags (centred, thin), light, emitters and shadow bias onto the
 instance's model node (`instance_root`).
+
+A node that ships without a GI point chunk is generated at load only where
+the original does: a body model's mesh part, and a floor-set child reached
+through the loader's walk from the centre-floor variants (`+FM…`) that skips
+`#…`, `+…` and `[…]` subtrees and tests bit `0x10000` or bit `0x8` of the
+node's second flag word. The generator runs in the original's centimetres at
+parameter 20 with the greedy cover (`exa_physics::voxel::generated_surface_points`);
+a stored chunk wins, and walls take none.
