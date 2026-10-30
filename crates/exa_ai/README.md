@@ -77,7 +77,8 @@ statue bit marks a statue, whose sense clears what it sees. Every other race
 keeps the behaviour base's perception. A statue keeps that mark
 until a golem alarm zone wakes it (`exa_game::golem_alarm`, the only live
 caller of `golem::wake`): the player stepping into an alarm zone without its
-pass item wakes every statue within 800 cm of it. The original's tick ends by registering the character's
+pass item wakes every statue within 800 cm of it, and the story revive's
+alarm return puts the awake ones back to sleep at home. The original's tick ends by registering the character's
 nav footprint unless it follows a route with its locomotion active at 1 cm
 a tick or faster (`brain::stamps_footprint`). The game's footprint system
 asks that gate for every NPC each fixed tick: the route-following flag is a
@@ -132,7 +133,7 @@ look's wide pan waits 3 s and the sway and narrow pan 0.5 s.
 | `route` | the one-planner-a-frame turn (the longest waiter remembered, strictly), the route start (two points and 150 cm, or forced), the path's flat length, and the navigation grid as the router (`exa_world::nav::find_path`, not a second pathfinder) |
 | `sense`, `hear`, `fight`, `place`, `path`, `order` | contact rating, noise and alert, attack choice, combat positions, path following (the planner is `exa_world::nav::path`), steering orders |
 | `ground` | the pathfinder's answers the combat state asks in centimetres: a place's ground cost (the cost sample through the combatant's formula), the line walk's clamp and the obstacle test, each the abstract pathfinder's without a grid |
-| `golem` | the golem guardians: wake (the race word's statue bit and the statue byte cleared, `golem_act`, the glow material at full, the limbs' mass restored) and sleep (the statue bit, a twentieth of the mass, a fiftieth of each part's value), the zone check (the 3 cm step, the radius and box tests, the pass search through carried containers), the alarm trigger's arming, reset and wake callback (the contacts become the player at concern 10), the homeward callback, the `Alarm_` box that holds the armed point, the strict plane-distance radius query over the AI-bit characters of a room and the rooms behind its exits, the player's post 200 cm past the box at 10 cm up, and the pose reset |
+| `golem` | the golem guardians: wake (the race word's statue bit and the statue byte cleared, `golem_act`, the glow material at full, the limbs' mass restored) and sleep (the statue bit, a twentieth of the mass, a fiftieth of each part's value), the zone check (the 3 cm step, the radius and box tests, the pass search through carried containers), the alarm trigger's arming, reset and wake callback (the contacts become the player at concern 10), the homeward callback (an awake guardian not dying), the alarm return (`alarm_return`), the `Alarm_` box that holds the armed point, the strict plane-distance radius query over the AI-bit characters of a room and the rooms behind its exits, the player's post 200 cm past the box at 10 cm up, and the pose reset |
 
 **Roles and attitude.** Adding a role adds it, or marks it explicit, and
 while the role just handled inherits (flag `0x10000`) its parent: a parent
@@ -254,8 +255,10 @@ turn (`route::PlanTurn`) is kept per system: the duellists' chase, the idle
 walk and the flight each keep their own.
 
 The golem guardians' rules are plain functions with tests; the alarm zones
-of `exanima06` run live through `exa_game::golem_alarm`, while the alarm
-return and the sleep have no live caller yet.
+of `exanima06` run live through `exa_game::golem_alarm`, and so does the
+alarm return (`golem::alarm_return`): the story revive of a knocked-out
+player sends the awake golems within 3000 cm home asleep and puts the
+player 200 cm past the `Alarm_` box.
 
 Not in yet: role init scripts other than Activity and IdleActivity have no
 effect (the interpreter runs them, but the AI's host exposes only those two

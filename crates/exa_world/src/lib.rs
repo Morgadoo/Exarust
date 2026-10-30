@@ -317,6 +317,11 @@ pub struct AlarmVolume {
     pub radius: f32,
     /// The pass item's id.
     pub pass: u32,
+    /// The object's node is an `Alarm_` node, which the alarm return looks
+    /// up: its item's name starts with `Alarm_` [inferred: the object node
+    /// takes its item's name; every shipped alarm item is named `Alarm_`
+    /// and its pass in hex].
+    pub alarm_node: bool,
 }
 
 /// Every alarm zone a level places, in placement order, from its objects
@@ -354,6 +359,7 @@ pub fn alarm_volumes(scene: &Scene, global: &[Item]) -> Vec<AlarmVolume> {
             ),
             radius: db_objects::container_volume(extents).radius,
             pass,
+            alarm_node: item.name.as_bytes().starts_with(b"Alarm_"),
         });
     }
     out
@@ -2236,6 +2242,10 @@ mod tests {
             .find(|z| (z.bounds.centre - Vec3::new(1050.0, 100.0, 6900.0)).length() < 0.5)
             .expect("the zone at (10.5, 1, 69) m");
         assert_eq!(gate.pass, 474);
+        assert!(
+            zones.iter().all(|z| z.alarm_node),
+            "every alarm item is named Alarm_"
+        );
         assert_eq!(gate.bounds.half_extents, Vec3::new(170.0, 100.0, 150.0));
         assert!((gate.bounds.axes[0] - Vec3::Z).length() < 1e-5);
         assert!(

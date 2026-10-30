@@ -141,6 +141,12 @@
 //!          --powers <id,id,...>       play mode: the powers the player knows (hex or decimal), for the power bar
 //!          --debug-force-cast <s>     play mode: every s seconds the player casts its first power at the nearest character, logging GI shapes and struck bodies' pin gain
 //!          --health yellow,red        play mode: the player's starting health (a human's full health is 0.25)
+//!          --give id,id,...           play mode: the player starts with these items in its pack (e.g. `474`, the
+//!                                     exanima06 gate's key token)
+//!          --fell-player <frame>      play mode: the player collapses at this frame after the load, as a blow that
+//!                                     empties its yellow health starts it (its red health is kept; a debug tool)
+//!          --story-session            play mode: the level runs as a story-mode session (the story hook's knock-out,
+//!                                     revive with its alarm return, and death), not a practice session without one
 //!          --perks a,b,...            play mode: the player's perks (e.g. `remise,feint`: hold to chain the other
 //!                                     side's attack, renew a released swing)
 //!          --heartbeat                play mode: the low-health heartbeat in any level (the original: story mode only)
@@ -394,6 +400,10 @@ pub struct Options {
     pub thaum_debug: exa_game::thaum::live::ThaumDebug,
     /// The player's starting yellow and red health.
     pub health: Option<[f32; 2]>,
+    /// Items the player starts with in its pack.
+    pub give: Vec<u32>,
+    /// The play level runs as a story-mode session.
+    pub story_session: bool,
     /// The player's perks.
     pub perks: exa_formats::characters::Perks,
     /// Let the low-health heartbeat play in any level.
@@ -407,6 +417,9 @@ pub struct Options {
     /// body rules (it may rise) and collapses at this frame after the load
     /// (a debug tool for the undead rise).
     pub undead_opponent: Option<u32>,
+    /// `--fell-player <frame>`: the player collapses at this frame after
+    /// the load (a debug tool for the story knock-out and revive).
+    pub fell_player: Option<u32>,
     /// `--arena-auto`: the auto-match switch (continue and rematch alone).
     pub arena_auto: bool,
     /// `--open-hub-window <name>`: open a hub window once the hub is
@@ -825,6 +838,19 @@ fn main() -> AppExit {
                     options.health = pair;
                 }
             }
+            "--give" => {
+                let list = args.next().unwrap_or_default();
+                let ids: Option<Vec<u32>> =
+                    list.split(',').map(|v| v.trim().parse().ok()).collect();
+                match ids {
+                    Some(ids) => options.give = ids,
+                    None => {
+                        eprintln!("--give: cannot read {list:?} (id,id,...)");
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
+            "--story-session" => options.story_session = true,
             "--heartbeat" => options.heartbeat = true,
             "--undying" => options.undying = true,
             "--arena-fell" => options.arena_fell = args.next().and_then(|v| v.parse().ok()),
@@ -832,6 +858,7 @@ fn main() -> AppExit {
                 options.opponent = true;
                 options.undead_opponent = args.next().and_then(|v| v.parse().ok());
             }
+            "--fell-player" => options.fell_player = args.next().and_then(|v| v.parse().ok()),
             "--arena-auto" => options.arena_auto = true,
             "--open-hub-window" => {
                 let name = args.next().unwrap_or_default();
@@ -1313,6 +1340,9 @@ fn main() -> AppExit {
     .insert_resource(options.gui_drop)
     .insert_resource(options.doll_drop)
     .insert_resource(exa_game::save_live::ScriptedSaves(options.save_at.clone()));
+    if options.story_session {
+        app.insert_resource(exa_game::flow::StorySession);
+    }
     if let Some(dir) = &options.save_dir {
         app.insert_resource(exa_game::save_live::SaveFolder(dir.clone()));
         if let Some(number) = options.arena_slot {

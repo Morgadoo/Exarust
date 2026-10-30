@@ -1295,6 +1295,12 @@ pub enum Step {
     KnockOut {
         delay_ms: u32,
     },
+    /// The story revive's alarm return, before its save: while an alarm is
+    /// armed the awake golems around the player go home and sleep, and
+    /// when one did the player is put outside the alarm box
+    /// ([`crate::golem_alarm::return_from_alarm`] takes the step before the
+    /// steps are applied).
+    AlarmReturn,
     /// Raise the knocked-out player's dead body (the story revive): only a
     /// dead condition word (0xA00) is raised; combat mode is left, the
     /// yellow health becomes half the red and the body is laid down to wake
@@ -2620,8 +2626,9 @@ impl Flow {
         }
     }
 
-    /// The revived story player, behind the transition: a session in a game
-    /// mode is saved first (without the death rule), combat mode is left,
+    /// The revived story player, behind the transition: the alarm return
+    /// runs ([`Step::AlarmReturn`]), a session in a game
+    /// mode is saved (without the death rule), combat mode is left,
     /// the dead body is raised and laid down, its wake held (0x40) and its
     /// wake clock pushed two seconds on, the controls and the game view
     /// return, the wake-up animation is watched again two seconds on, and
@@ -2635,7 +2642,9 @@ impl Flow {
             delayed: false,
             start_ms: now.wrapping_add(WAKE_DELAY_MS),
         };
-        let mut steps = vec![Step::ClosePrelude];
+        // The world's revive pass runs before the save; its first part is
+        // the alarm return (the rest of the pass is not reproduced).
+        let mut steps = vec![Step::ClosePrelude, Step::AlarmReturn];
         if self.mode.is_game() {
             steps.push(Step::Save {
                 drop_on_low_health: false,
@@ -3283,6 +3292,15 @@ fn turn_into(offset: Vec3, rotation: [[f32; 3]; 3]) -> Vec3 {
 /// exit.
 pub struct FlowPlugin;
 
+/// The flow's frame systems other plugins order against: the transition
+/// that runs a pending action (and queues its steps), then the application
+/// of the queued steps.
+#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FlowSystems {
+    Transition,
+    ApplySteps,
+}
+
 impl Plugin for FlowPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Flow>()
@@ -3304,8 +3322,8 @@ impl Plugin for FlowPlugin {
                     (
                         travel,
                         run_game_events,
-                        run_transition,
-                        apply_steps,
+                        run_transition.in_set(FlowSystems::Transition),
+                        apply_steps.in_set(FlowSystems::ApplySteps),
                         reset_level_state,
                     )
                         .chain(),
@@ -3437,7 +3455,8 @@ fn tick(
 /// original's). The practice round hook is not installed: a directly
 /// launched level is not a practice arena, and its corpses or any fallen
 /// character would end a "round" at once. A practice started from the menu
-/// installs the hook itself.
+/// installs the hook itself. With [`StorySession`] the level runs as a
+/// story-mode session with the story hook instead.
 fn follow_player(
     mut flow: ResMut<Flow>,
     mut queued: ResMut<FlowSteps>,
@@ -3445,12 +3464,18 @@ fn follow_player(
     players: Query<(), Added<crate::player::PlayerBody>>,
     ticks: Option<Res<exa_physics::body::BodyTicks>>,
     mut clock: Option<MessageWriter<crate::world_clock::RestoreWorldClock>>,
+    story: Option<Res<StorySession>>,
 ) {
     if players.is_empty() || flow.mode.is_game() {
         return;
     }
     let now = ticks.as_ref().map_or(0, |ticks| ticks.millis() as u32);
-    for step in flow.switch_mode(Mode::Practice, now) {
+    let mode = if story.is_some() {
+        Mode::Story
+    } else {
+        Mode::Practice
+    };
+    for step in flow.switch_mode(mode, now) {
         debug!("game flow: {step:?}");
         queued.steps.push(step);
     }
@@ -3463,10 +3488,22 @@ fn follow_player(
     // A title the splash put up stays over the level until it is closed.
     flow.menu_open = menu.is_some_and(|menu| menu.open);
     flow.phase = Phase::Playing;
-    flow.hook = Hook::None;
     flow.practice.start_ms = now;
-    debug!("game flow: a play level is running as a practice-mode session");
+    if story.is_some() {
+        // The story hook runs: its knock-out, revive and death.
+        info!("game flow: a play level is running as a story-mode session");
+    } else {
+        flow.hook = Hook::None;
+        debug!("game flow: a play level is running as a practice-mode session");
+    }
 }
+
+/// A debug aid (`--story-session`): a play level the flow follows runs as
+/// a story-mode session, so the story hook's knock-out, revive (with its
+/// alarm return) and death run as in the story, instead of a practice-mode
+/// session without a hook.
+#[derive(Resource, Debug, Clone, Copy, Default)]
+pub struct StorySession;
 
 /// A teleporter journey is the game's level exit. The destination's
 /// level-entry music check reads the track the music's main voice plays.
@@ -4431,10 +4468,12 @@ mod tests {
                 .any(|step| matches!(step, Step::Wake(WakePose { flags: 0x40, .. })))
         );
         assert_eq!(flow.story.wake.start_ms, 8101);
-        // The revival closes the prelude, then saves the story.
+        // The revival closes the prelude, runs the alarm return, then saves
+        // the story.
         assert_eq!(steps.first(), Some(&Step::ClosePrelude));
+        assert_eq!(steps.get(1), Some(&Step::AlarmReturn));
         assert_eq!(
-            steps.get(1),
+            steps.get(2),
             Some(&Step::Save {
                 drop_on_low_health: false
             })
@@ -4600,6 +4639,16 @@ mod tests {
         assert!(at(Step::CombatMode(false)) < at(Step::ReviveBody));
         assert!(at(Step::ReviveBody) < at(Step::Wake(WakePose::revived())));
         assert!(at(Step::Wake(WakePose::revived())) < at(Step::Controls(true)));
+        // The alarm return runs after the prelude closes and before the
+        // save and the body's revive.
+        assert!(at(Step::ClosePrelude) < at(Step::AlarmReturn));
+        assert!(
+            at(Step::AlarmReturn)
+                < at(Step::Save {
+                    drop_on_low_health: false
+                })
+        );
+        assert!(at(Step::AlarmReturn) < at(Step::ReviveBody));
         assert_eq!(flow.phase, Phase::Playing);
         // The wake-up animation is watched from two seconds on.
         assert!(flow.story.wake.animating);

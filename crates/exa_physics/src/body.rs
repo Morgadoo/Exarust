@@ -3656,6 +3656,16 @@ impl Ragdoll {
         self.lift();
     }
 
+    /// The next aim carries the body with its root's move since the last
+    /// one ([`Ragdoll::carry`]): it stands on its controller and an aim has
+    /// taken a root. Moving such a body's root moves the body with it; any
+    /// other body must be placed where its root goes.
+    pub fn carried(&self) -> bool {
+        self.drive
+            .as_ref()
+            .is_some_and(|d| d.supported && d.root.is_some())
+    }
+
     /// The character's controller moved `moved` since the last aim to
     /// follow the body's frame (the character tick tells it before the
     /// aim): the carry leaves that move out, since the body has made it

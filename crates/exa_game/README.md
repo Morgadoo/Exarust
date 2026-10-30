@@ -480,7 +480,13 @@ manager's zone check for the player (past 3 cm from its last checked
 point), the pass item search, and the ring that wakes the statue golems
 within 800 cm of the zone (statue bit and byte cleared, `golem_act`, home
 taken, the player their only contact at concern 10) with the level start's
-reset. A spawned body (the scene bodies, the arena's
+reset, and the alarm return the story revive runs before its save
+(`flow::Step::AlarmReturn`): while an alarm is armed, every awake golem
+within 3000 cm of the knocked-out player goes home (Stand 2, put at its
+home facing its home angle) and sleeps (statue bit and byte, statue rest,
+the sleep scales), and when one did the player is put 200 cm past the
+third-axis face of the `Alarm_` box holding the armed point, facing back
+across it, asking for motion 0x1d. A spawned body (the scene bodies, the arena's
 fighters and a level's placed characters) gets the list its worn items
 register (`item_effects::WornEffects`, from the armour pass's
 `exa_formats::encumbrance::WornSpecials`): a healing item on a body that

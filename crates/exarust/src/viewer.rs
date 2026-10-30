@@ -78,7 +78,8 @@ impl Plugin for ViewerPlugin {
                 (
                     fly_camera,
                     screenshot_after_frames,
-                    (fell_arena_opponents, fell_undead_opponent),
+                    (fell_arena_opponents, fell_undead_opponent, fell_player),
+                    give_items,
                     equip_debug_shields,
                     shove_at_frame,
                     shove_props_at_frame,
@@ -2331,6 +2332,27 @@ fn fell_arena_opponents(
     info!("arena fell: {felled} opponents drop dead");
 }
 
+/// `--give`: the player starts with the listed items in its pack, given as
+/// an item is given to a character whose pack is not open
+/// ([`exa_items::possession::Possessions::give`]). A debug tool.
+fn give_items(
+    options: Res<Options>,
+    mut players: Query<
+        (Entity, &mut exa_items::possession::Possessions),
+        Added<exa_game::player::PlayerBody>,
+    >,
+) {
+    if options.give.is_empty() {
+        return;
+    }
+    for (player, mut possessions) in &mut players {
+        for &id in &options.give {
+            possessions.give(id, 0);
+        }
+        info!("give: the player {player:?} carries {:?}", options.give);
+    }
+}
+
 /// The debug duellist `--opponent` spawns (not a level's characters, which
 /// carry a duellist too).
 #[derive(Component, Debug, Clone, Copy)]
@@ -2396,6 +2418,71 @@ fn fell_undead_opponent(
             "undead opponent {entity:?} collapses: rules {:#x} (may rise {}), red {:.3}",
             fighter.stats.rules.0,
             fighter.stats.rules.0 & exa_formats::character_stats::BodyRules::MAY_RISE != 0,
+            fighter.health.red
+        );
+    }
+}
+
+/// `--fell-player <frame>`: at that frame after the load the player
+/// collapses as a blow that empties its yellow health starts it (the
+/// collapse clip, its dying tick, then death); its red health is kept, so
+/// the story hook knocks it out rather than ending the session. A debug
+/// tool.
+#[allow(clippy::type_complexity)]
+fn fell_player(
+    mut commands: Commands,
+    options: Res<Options>,
+    loading: Option<Res<exa_ui::LoadingStatus>>,
+    mut frames: Local<u32>,
+    mut players: Query<
+        (
+            Entity,
+            &mut exa_combat::Condition,
+            Option<&mut exa_combat::StateFlags>,
+            &mut exa_anim::Animator,
+            &mut exa_physics::body::Ragdoll,
+            &mut exa_combat::Fighter,
+        ),
+        With<exa_game::player::PlayerBody>,
+    >,
+) {
+    let Some(at) = options.fell_player else {
+        return;
+    };
+    if loading.is_some() || *frames > at {
+        return;
+    }
+    *frames += 1;
+    if *frames != at {
+        return;
+    }
+    for (entity, mut condition, flags, mut anim, mut body, mut fighter) in &mut players {
+        let Some(energy) = body.drive.as_ref().map(|d| d.energy) else {
+            continue;
+        };
+        let mut word = flags.as_deref().copied().unwrap_or_default();
+        if !exa_combat::collapse::start_collapse(
+            &mut condition,
+            &mut word,
+            &mut anim,
+            Some(&mut body),
+            energy,
+            None,
+        ) {
+            continue;
+        }
+        fighter.health.yellow = 0.0;
+        match flags {
+            Some(mut f) => *f = word,
+            None => {
+                commands.entity(entity).insert(word);
+            }
+        }
+        commands
+            .entity(entity)
+            .insert(exa_combat::collapse::Collapse::default());
+        info!(
+            "fell player: {entity:?} collapses at frame {at}, red {:.3}",
             fighter.health.red
         );
     }

@@ -25,6 +25,25 @@
 //!   brain's integration copy) become the player alone at a concern of 10. A ring that woke any counts one more alarm.
 //! - **Reset.** Each level start disarms the alarm and zeroes the count
 //!   ([`GolemAlarm::default`]).
+//! - **Return.** The story revive of a knocked-out player
+//!   ([`crate::flow::Step::AlarmReturn`], before its save) runs the alarm
+//!   return while an alarm is armed ([`return_from_alarm`],
+//!   [`exa_ai::golem::alarm_return`]): every character in the player's
+//!   room or a room behind its exits whose race word carries the AI bit
+//!   and which stands strictly within 3000 cm (x and z) of the player is
+//!   offered to the homeward callback. An awake guardian (statue byte
+//!   clear) that is not dying goes home ([`exa_ai::golem::go_home`]): its
+//!   tone and stance factor become 1, its condition 0, it plays Stand 2,
+//!   it is put at its home facing its home angle and woken for 32 ticks,
+//!   and it falls asleep ([`exa_ai::golem::sleep`]: the race word's statue
+//!   bit and the statue byte set, the statue rest on, the condition 0 and,
+//!   the first time, the sleep latch and scales). With the statue byte set
+//!   its ally sense clears its concern for the player, so its target pass
+//!   leaves combat. When one went home, the player is put 200 cm past the
+//!   third-axis face of the first `Alarm_` box holding the armed zone's
+//!   point, facing back across it with a draw, and asks for motion 0x1d;
+//!   its condition is dead and its tone and stance factor 0, which the
+//!   revive that follows raises. The alarm stays armed.
 //!
 //! Evidence: the original's AI manager frame (the 3 cm step and the checked
 //! point), its zone check, the inventory search, the alarm trigger, its
@@ -36,10 +55,23 @@
 //! sleep scales the sentry put on a statue come off with its latch
 //! ([`crate::golem_body::undo_sleep_scales`]).
 //!
+//! Evidence for the return: the story knock-out hook (the dead condition
+//! with red health of at least 0.01, five seconds), the story revive that
+//! runs the world's revive pass before its save, that pass's first call
+//! (the alarm return, only while the alarm's armed byte is set), its 3000
+//! cm radius query around the player, the homeward callback, the guardian
+//! sleep, the `Alarm_` lookup and the pose reset.
+//!
 //! Not reproduced: the stance byte the wake clears (Exarust's statues never
-//! set it), the glow fade of the skin material `go` to 1 (no live
-//! skin-material fade: it is logged), the alarm return that sends awake golems home when the player
-//! falls, the zone check's other trigger kinds (the any-character routine
+//! set it), the glow fade of the skin material `go` (to 1 on a wake, to 0
+//! on a sleep: no live skin-material fade, it is logged), the rest of the
+//! world's revive pass (every brain's reset and every body's wake), the
+//! pose reset's transition bytes, angular words and the parts' reached
+//! bit, the body links' re-measure after the move (Exarust's links keep
+//! their rest lengths) and the pose reset's frame height: the original
+//! puts the frame at the body's own standing-height word, Exarust keeps
+//! the character root's height [guess: the floor under it], the zone
+//! check's other trigger kinds (the any-character routine
 //! and the level transitions, which have their own Exarust paths), and the
 //! contents of a carried container that is a level-local item (the item
 //! catalogue holds only the game database's containers). The checked point
@@ -47,15 +79,18 @@
 //! lists come from each character's current position ([guess: without a
 //! level room grid every character is offered]).
 
+use bevy::math::Affine3A;
 use bevy::prelude::*;
 use exa_ai::brain::{Npc, RatedPlayer};
 use exa_ai::combatant::{Combatant, Contact};
-use exa_ai::golem::{self, AlarmZone, GolemState, QueryBody};
+use exa_ai::golem::{self, AlarmNode, AlarmZone, GolemState, QueryBody};
+use exa_anim::{Animator, Motions};
 use exa_character::record::CharacterData;
-use exa_combat::{Fighter, StateFlags};
+use exa_combat::{Condition, Fighter, StateFlags};
 use exa_items::catalogue::ItemCatalogue;
 use exa_items::possession::Possessions;
 use exa_physics::body::Ragdoll;
+use exa_physics::body::locomotion::Locomotion;
 use exa_world::AlarmVolume;
 use exa_world::room_view::LevelRooms;
 
@@ -93,7 +128,12 @@ impl Plugin for GolemAlarmPlugin {
             .init_resource::<GolemAlarm>()
             .add_systems(
                 Update,
-                check_alarm_zones.after(crate::rise::restore_revived),
+                (
+                    check_alarm_zones.after(crate::rise::restore_revived),
+                    return_from_alarm
+                        .after(crate::flow::FlowSystems::Transition)
+                        .before(crate::flow::FlowSystems::ApplySteps),
+                ),
             );
     }
 }
@@ -208,6 +248,21 @@ pub fn check_alarm_zones(
     });
     let carries = |item: u32| golem::carries(carried.iter().copied(), item, &contents);
     let exempt = flags.is_some_and(|f| f.has(golem::ALARM_EXEMPT));
+    // A zone entered with its pass is crossed freely: logged, as the
+    // proof a carried pass let the player through.
+    if !exempt {
+        for volume in volumes
+            .0
+            .iter()
+            .filter(|v| golem::zone_entered(at, checked, &v.bounds, v.radius) && carries(v.pass))
+        {
+            let centre = volume.bounds.centre;
+            info!(
+                "alarm zone at ({:.0}, {:.0}, {:.0}) cm: the player at ({:.0}, {:.0}, {:.0}) cm carries pass {} and crosses it",
+                centre.x, centre.y, centre.z, at.x, at.y, at.z, volume.pass
+            );
+        }
+    }
     for volume in rung_zones(&volumes.0, at, checked, exempt, &carries) {
         let centre = volume.bounds.centre;
         let armed = golem::alarm_trigger(&mut alarm.armed, centre, volume.pass, carries);
@@ -245,26 +300,34 @@ fn offered_characters(
     centre: Vec3,
     guardians: &Guardians,
 ) -> Vec<QueryBody> {
-    let body = |entity: Entity, gt: &GlobalTransform, data: &CharacterData| QueryBody {
-        at: gt.translation() * 100.0,
-        race_word: data.record.profession(),
-        character: entity.to_bits(),
-    };
+    let bodies: Vec<QueryBody> = guardians
+        .iter()
+        .map(|(entity, gt, data, ..)| QueryBody {
+            at: gt.translation() * 100.0,
+            race_word: data.record.profession(),
+            character: entity.to_bits(),
+        })
+        .collect();
+    offered_in_rooms(level, centre, bodies)
+}
+
+/// The bodies a radius query around `centre` visits, in its order: those
+/// standing in each of [`query_rooms`] in turn (all of them when the level
+/// has no room grid).
+pub fn offered_in_rooms(
+    level: Option<&LevelRooms>,
+    centre: Vec3,
+    bodies: Vec<QueryBody>,
+) -> Vec<QueryBody> {
     let Some(level) = level else {
-        return guardians
-            .iter()
-            .map(|(entity, gt, data, ..)| body(entity, gt, data))
-            .collect();
+        return bodies;
     };
     let mut offered = Vec::new();
     for room in query_rooms(level, centre) {
         offered.extend(
-            guardians
+            bodies
                 .iter()
-                .filter(|(_, gt, ..)| {
-                    exa_ai::rooms::level_room(&level.rooms, gt.translation() * 100.0) == room
-                })
-                .map(|(entity, gt, data, ..)| body(entity, gt, data)),
+                .filter(|body| exa_ai::rooms::level_room(&level.rooms, body.at) == room),
         );
     }
     offered
@@ -363,6 +426,343 @@ fn wake_one(
     true
 }
 
+/// The player the alarm return resets.
+type ReturnPlayers<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static GlobalTransform,
+        &'static mut Transform,
+        Option<&'static ChildOf>,
+        Option<&'static mut Ragdoll>,
+        Option<&'static mut Condition>,
+        Option<&'static mut Locomotion>,
+        Option<&'static mut crate::player::PlayerBody>,
+    ),
+    (With<RatedPlayer>, Without<Npc>),
+>;
+
+/// The guardians the alarm return may send home.
+type ReturnGuardians<'w, 's> = Query<
+    'w,
+    's,
+    (
+        Entity,
+        &'static GlobalTransform,
+        &'static mut Transform,
+        Option<&'static ChildOf>,
+        &'static mut CharacterData,
+        &'static mut Npc,
+        Option<&'static mut Condition>,
+        Option<&'static mut Ragdoll>,
+        Option<&'static mut StateFlags>,
+        Option<&'static mut crate::golem_body::StatueRest>,
+        Option<&'static mut Animator>,
+        Option<&'static mut Locomotion>,
+    ),
+    Without<RatedPlayer>,
+>;
+
+/// The character roots (the controllers' entities) the resets move.
+type ReturnRoots<'w, 's> =
+    Query<'w, 's, &'static mut Transform, (Without<RatedPlayer>, Without<Npc>)>;
+
+/// Where a reset puts a body: its character root at `at` (cm; the root
+/// keeps its own height), facing `angle`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Reset {
+    pub at: Vec3,
+    pub angle: f32,
+}
+
+/// The body-root move a reset makes: from the root at `from` (m) facing
+/// `from_angle` to the root at `to` (m) facing `angle`, applied to every
+/// part so the body keeps its pose about the root.
+pub fn reset_move(from: Vec3, from_angle: f32, to: Vec3, angle: f32) -> Affine3A {
+    Affine3A::from_rotation_translation(Quat::from_rotation_y(angle), to)
+        * Affine3A::from_quat(Quat::from_rotation_y(from_angle).inverse())
+        * Affine3A::from_translation(-from)
+}
+
+/// The pose reset's move of one character: its root goes to the reset's
+/// place at its own height, its model faces the reset's angle, every part
+/// of its body moves with it and the body is woken for
+/// [`golem::POSE_TICKS`] ticks. A standing body is carried with its root
+/// by its next aim ([`Ragdoll::carried`]: its parts, feet, targets and
+/// frame); any other (a fallen or limp body) is placed at once. Returns
+/// the root's new place (m).
+fn reset_character(
+    reset: Reset,
+    model: &GlobalTransform,
+    transform: &mut Transform,
+    parent: Option<&ChildOf>,
+    roots: &mut ReturnRoots,
+    body: Option<&mut Ragdoll>,
+) -> Vec3 {
+    let from_angle = exa_physics::body::locomotion::heading_of(model.rotation() * Vec3::Z);
+    let root = parent.and_then(|p| roots.get_mut(p.parent()).ok());
+    let (from, to, parent_turn) = match root {
+        Some(mut root) => {
+            let from = root.translation;
+            let to = Vec3::new(reset.at.x / 100.0, from.y, reset.at.z / 100.0);
+            root.translation = to;
+            (from, to, root.rotation)
+        }
+        None => {
+            let from = transform.translation;
+            let to = Vec3::new(reset.at.x / 100.0, from.y, reset.at.z / 100.0);
+            transform.translation = to;
+            (from, to, Quat::IDENTITY)
+        }
+    };
+    transform.rotation = parent_turn.inverse() * Quat::from_rotation_y(reset.angle);
+    if let Some(body) = body {
+        if !body.carried() {
+            let moved = reset_move(from, from_angle, to, reset.angle);
+            let worlds: Vec<Affine3A> = body.parts.iter().map(|p| moved * p.transform()).collect();
+            body.place_at(&worlds);
+        }
+        body.wake_to(golem::POSE_TICKS as i32);
+    }
+    to
+}
+
+/// Turns a locomotion request to face `angle`.
+fn face(locomotion: Option<Mut<Locomotion>>, angle: f32) {
+    if let Some(mut l) = locomotion {
+        l.heading = angle;
+        l.look = angle;
+        l.cursor = angle;
+        l.desired = angle;
+    }
+}
+
+/// The story revive's alarm return ([`crate::flow::Step::AlarmReturn`]):
+/// taken out of the flow's steps before they are applied, so the guardians
+/// and the player are reset before the save and the body's revive. When
+/// the player was reset, the step becomes its motion request (0x1d).
+#[allow(clippy::too_many_arguments)]
+pub fn return_from_alarm(
+    mut queued: ResMut<crate::flow::FlowSteps>,
+    alarm: Res<GolemAlarm>,
+    volumes: Res<AlarmVolumes>,
+    level: Option<Res<LevelRooms>>,
+    motions: Option<Res<Motions>>,
+    mut bank: Option<ResMut<exa_audio::SoundBank>>,
+    mut players: ReturnPlayers,
+    mut guardians: ReturnGuardians,
+    mut roots: ReturnRoots,
+) {
+    let Some(at) = queued
+        .steps
+        .iter()
+        .position(|step| *step == crate::flow::Step::AlarmReturn)
+    else {
+        return;
+    };
+    queued.steps.remove(at);
+    let Some((_, player_gt, ..)) = players.iter().next() else {
+        return;
+    };
+    let player_at = player_gt.translation() * 100.0;
+    let bodies: Vec<QueryBody> = guardians
+        .iter()
+        .map(|(entity, gt, _, _, data, ..)| QueryBody {
+            at: gt.translation() * 100.0,
+            race_word: data.record.profession(),
+            character: entity.to_bits(),
+        })
+        .collect();
+    let offered = offered_in_rooms(level.as_deref(), player_at, bodies);
+    let nodes = volumes.0.iter().map(|v| {
+        (
+            if v.alarm_node {
+                golem::ALARM_NODE_PREFIX
+            } else {
+                ""
+            },
+            AlarmNode { bounds: v.bounds },
+        )
+    });
+    let stand = motions
+        .as_deref()
+        .and_then(|m| m.action_name(golem::WAKE_POSE as u32))
+        .map(str::to_string);
+    let send_home = |body: QueryBody| {
+        send_guardian_home(
+            &mut guardians,
+            &mut roots,
+            Entity::from_bits(body.character),
+            stand.as_deref(),
+        )
+    };
+    let roll = || {
+        bank.as_deref_mut()
+            .map_or(0.5, |bank| bank.rng().unit_f64())
+    };
+    let Some(done) = golem::alarm_return(&alarm.armed, player_at, offered, send_home, nodes, roll)
+    else {
+        info!("alarm return: no alarm armed");
+        return;
+    };
+    let Some(returned) = done.player else {
+        info!(
+            "alarm return around ({:.0}, {:.0}, {:.0}) cm: {} guardian(s) sent home, the player stays",
+            player_at.x, player_at.y, player_at.z, done.sent_home
+        );
+        return;
+    };
+    let post = returned.post;
+    for (entity, gt, mut transform, parent, body, condition, locomotion, player_body) in
+        &mut players
+    {
+        let mut body = body;
+        let to = reset_character(
+            Reset {
+                at: post.at,
+                angle: post.angle,
+            },
+            gt,
+            &mut transform,
+            parent,
+            &mut roots,
+            body.as_deref_mut(),
+        );
+        if let Some(drive) = body.as_deref_mut().and_then(|b| b.drive.as_mut()) {
+            drive.tone = returned.tones[0];
+            drive.set_stance(returned.tones[1]);
+        }
+        if let Some(mut condition) = condition {
+            condition.0 = returned.condition;
+        }
+        face(locomotion, post.angle);
+        if let Some(mut player_body) = player_body {
+            player_body.aim = post.angle;
+        }
+        info!(
+            "alarm return: {} guardian(s) sent home; the player {entity:?} is put at ({:.0}, {:.0}, {:.0}) cm (post ({:.0}, {:.0}, {:.0})) facing {:.3} rad, condition {:#x}, motion {:#x}",
+            done.sent_home,
+            to.x * 100.0,
+            to.y * 100.0,
+            to.z * 100.0,
+            post.at.x,
+            post.at.y,
+            post.at.z,
+            post.angle,
+            returned.condition,
+            returned.request
+        );
+    }
+    queued.steps.insert(
+        at,
+        crate::flow::Step::RequestAction(returned.request as u32),
+    );
+}
+
+/// The homeward callback on one offered character: an awake guardian that
+/// is not dying goes home and falls asleep. Returns whether it went.
+fn send_guardian_home(
+    guardians: &mut ReturnGuardians,
+    roots: &mut ReturnRoots,
+    entity: Entity,
+    stand: Option<&str>,
+) -> bool {
+    let Ok((
+        _,
+        gt,
+        mut transform,
+        parent,
+        mut data,
+        mut npc,
+        condition,
+        body,
+        flags,
+        rest,
+        animator,
+        locomotion,
+    )) = guardians.get_mut(entity)
+    else {
+        return false;
+    };
+    let latch = flags
+        .as_deref()
+        .is_some_and(|f| f.has(golem::SLEEP_SCALES_LATCH));
+    let at = gt.translation() * 100.0;
+    let state = GolemState {
+        race_word: data.record.profession(),
+        dormant: npc.statue,
+        latch,
+        at,
+        angle: exa_physics::body::locomotion::heading_of(gt.rotation() * Vec3::Z),
+        masses: Vec::new(),
+        limb_scales: Vec::new(),
+        glow_scales: Vec::new(),
+    };
+    let word = condition.as_deref().map_or(0, |c| c.0);
+    let home = npc.guard_home.unwrap_or((Vec3::ZERO, 0.0));
+    let Some(gone) = golem::go_home(&state, word, home) else {
+        return false;
+    };
+    npc.guard_home = Some(gone.home);
+    let mut body = body;
+    if let Some(drive) = body.as_deref_mut().and_then(|b| b.drive.as_mut()) {
+        drive.tone = gone.tones[0];
+        drive.set_stance(gone.tones[1]);
+    }
+    if let (Some(mut anim), Some(stand)) = (animator, stand) {
+        anim.play_loop(stand);
+    }
+    let reset = Reset {
+        at: gone.home.0,
+        angle: gone.home.1,
+    };
+    let to = reset_character(
+        reset,
+        gt,
+        &mut transform,
+        parent,
+        roots,
+        body.as_deref_mut(),
+    );
+    face(locomotion, reset.angle);
+    {
+        let brain = &mut *npc;
+        exa_ai::motion::snap_to_body(&mut brain.gaze, &mut brain.turn, reset.angle);
+    }
+    // The sleep.
+    let sleep = gone.sleep;
+    data.record.set_profession(sleep.race_word);
+    npc.statue = sleep.dormant;
+    if let Some(mut condition) = condition {
+        condition.0 = sleep.condition.unwrap_or(gone.condition);
+    }
+    if let Some(mut rest) = rest {
+        rest.0 = true;
+    }
+    if sleep.latch && !latch {
+        if let Some(mut flags) = flags {
+            flags.0 |= golem::SLEEP_SCALES_LATCH;
+        }
+        if let Some(body) = body.as_deref_mut() {
+            crate::golem_body::apply_sleep_scales(body);
+        }
+    }
+    info!(
+        "{entity:?} goes home to ({:.0}, {:.0}, {:.0}) cm facing {:.3} rad (root at ({:.0}, {:.0}, {:.0}) cm) and sleeps: race word {:#010x}, Stand 2, glow 'go' to {} (not faded live)",
+        gone.home.0.x,
+        gone.home.0.y,
+        gone.home.0.z,
+        gone.home.1,
+        to.x * 100.0,
+        to.y * 100.0,
+        to.z * 100.0,
+        sleep.race_word,
+        sleep.glow
+    );
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,6 +783,7 @@ mod tests {
             ),
             radius: (170.0f32 * 170.0 + 150.0 * 150.0 + 100.0 * 100.0).sqrt(),
             pass: 474,
+            alarm_node: true,
         }
     }
 
@@ -661,5 +1062,187 @@ mod tests {
             |p| p == 474
         ));
         assert_eq!(alarm.armed.pass, 476);
+    }
+
+    /// The story revive's alarm return app: the gate armed, the steps the
+    /// revive queued.
+    fn return_app() -> App {
+        let mut app = App::new();
+        app.insert_resource(AlarmVolumes(vec![gate()]))
+            .insert_resource(GolemAlarm {
+                armed: AlarmZone {
+                    armed: true,
+                    at: gate().bounds.centre,
+                    pass: 474,
+                },
+                rung: 1,
+            })
+            .insert_resource(crate::flow::FlowSteps {
+                steps: vec![
+                    crate::flow::Step::ClosePrelude,
+                    crate::flow::Step::AlarmReturn,
+                    crate::flow::Step::Save {
+                        drop_on_low_health: false,
+                    },
+                ],
+            })
+            .add_systems(Update, return_from_alarm);
+        app
+    }
+
+    /// A character model at `at_m` facing `yaw`, under a root carrying its
+    /// place (as the play spawn builds one).
+    fn character(app: &mut App, at_m: Vec3, yaw: f32) -> (Entity, Entity) {
+        let root = app
+            .world_mut()
+            .spawn(Transform::from_translation(at_m))
+            .id();
+        let turn = Quat::from_rotation_y(yaw);
+        let model = app
+            .world_mut()
+            .spawn((
+                Transform::from_rotation(turn),
+                GlobalTransform::from(Transform::from_translation(at_m).with_rotation(turn)),
+                ChildOf(root),
+            ))
+            .id();
+        (root, model)
+    }
+
+    /// A woken golem: statue byte clear, its home where it was woken.
+    fn woken(app: &mut App, at_m: Vec3, home_cm: Vec3, home_angle: f32) -> (Entity, Entity) {
+        let (root, model) = character(app, at_m, 1.0);
+        let record = CharacterRecord {
+            race: 16,
+            profession_rest: STATUE_FLAG,
+            ..CharacterRecord::default()
+        };
+        let mut roll = 0;
+        let mut npc = Npc::of_record(&record, &mut roll);
+        npc.statue = false;
+        npc.guard_home = Some((home_cm, home_angle));
+        let mut data = CharacterData::of_record(record);
+        let word = data.record.profession() & !STATUE_FLAG;
+        data.record.set_profession(word);
+        app.world_mut().entity_mut(model).insert((
+            data,
+            npc,
+            Condition::COMBAT_IDLE,
+            StateFlags::default(),
+            crate::golem_body::StatueRest(false),
+        ));
+        (root, model)
+    }
+
+    /// The knocked-out player at the gate's south face: the woken golems
+    /// within 3000 cm go home (put at their homes, facing their home
+    /// angles) and sleep (statue byte and bit, condition 0, statue rest);
+    /// a golem 31 m off stays awake; the player is put 200 cm past the
+    /// box's third-axis face, at x = 700 cm and z = 6900 cm on its own
+    /// floor, facing +x across the gate, its condition dead; the step
+    /// becomes its motion request 0x1d, before the save.
+    #[test]
+    fn the_alarm_return_sends_the_golems_home_and_puts_the_player_outside() {
+        let mut app = return_app();
+        let (player_root, player) = character(&mut app, Vec3::new(10.5, 0.0, 67.0), 0.0);
+        app.world_mut()
+            .entity_mut(player)
+            .insert((RatedPlayer, Condition::DEAD));
+        let home = Vec3::new(900.0, 0.0, 7500.0);
+        let (golem_root, golem) = woken(&mut app, Vec3::new(10.0, 0.0, 66.0), home, 2.0);
+        let far_home = Vec3::new(1050.0, 0.0, 9900.0);
+        let (_, far) = woken(&mut app, Vec3::new(10.5, 0.0, 98.0), far_home, 0.0);
+        app.update();
+        let w = app.world();
+        let npc = w.get::<Npc>(golem).unwrap();
+        assert!(npc.statue, "asleep");
+        assert_eq!(npc.guard_home, Some((home, 2.0)));
+        let word = w.get::<CharacterData>(golem).unwrap().profession();
+        assert_ne!(word & STATUE_FLAG, 0);
+        assert_eq!(w.get::<Condition>(golem).unwrap().0, 0);
+        assert!(w.get::<crate::golem_body::StatueRest>(golem).unwrap().0);
+        assert!(
+            w.get::<StateFlags>(golem)
+                .unwrap()
+                .has(golem::SLEEP_SCALES_LATCH)
+        );
+        let root = w.get::<Transform>(golem_root).unwrap().translation;
+        assert!((root - Vec3::new(9.0, 0.0, 75.0)).length() < 1e-5);
+        let facing = w.get::<Transform>(golem).unwrap().rotation * Vec3::Z;
+        assert!((facing - Vec3::new(2.0f32.sin(), 0.0, 2.0f32.cos())).length() < 1e-5);
+        // 3100 cm off: out of the query, still awake.
+        assert!(!w.get::<Npc>(far).unwrap().statue);
+        // The player.
+        let at = w.get::<Transform>(player_root).unwrap().translation;
+        assert!((at - Vec3::new(7.0, 0.0, 69.0)).length() < 1e-4, "{at}");
+        let facing = w.get::<Transform>(player).unwrap().rotation * Vec3::Z;
+        assert!((facing - Vec3::X).length() < 1e-3, "{facing}");
+        assert_eq!(w.get::<Condition>(player).unwrap().0, 0xA00);
+        assert_eq!(
+            w.resource::<crate::flow::FlowSteps>().steps,
+            vec![
+                crate::flow::Step::ClosePrelude,
+                crate::flow::Step::RequestAction(0x1d),
+                crate::flow::Step::Save {
+                    drop_on_low_health: false
+                },
+            ]
+        );
+        // The alarm stays armed.
+        assert!(w.resource::<GolemAlarm>().armed.armed);
+    }
+
+    /// With every golem asleep (or none near) the return sends none home
+    /// and leaves the player where it fell; disarmed it does nothing. The
+    /// step is taken either way.
+    #[test]
+    fn the_alarm_return_leaves_the_player_without_a_golem_sent_home() {
+        let mut app = return_app();
+        let (player_root, player) = character(&mut app, Vec3::new(10.5, 0.0, 67.0), 0.0);
+        app.world_mut().entity_mut(player).insert(RatedPlayer);
+        let (_, golem) = woken(
+            &mut app,
+            Vec3::new(10.0, 0.0, 66.0),
+            Vec3::new(900.0, 0.0, 7500.0),
+            2.0,
+        );
+        app.world_mut().get_mut::<Npc>(golem).unwrap().statue = true;
+        app.update();
+        let w = app.world();
+        let at = w.get::<Transform>(player_root).unwrap().translation;
+        assert_eq!(at, Vec3::new(10.5, 0.0, 67.0));
+        assert_eq!(w.resource::<crate::flow::FlowSteps>().steps.len(), 2);
+
+        let mut app = return_app();
+        app.insert_resource(GolemAlarm::default());
+        let (player_root, player) = character(&mut app, Vec3::new(10.5, 0.0, 67.0), 0.0);
+        app.world_mut().entity_mut(player).insert(RatedPlayer);
+        let (_, golem) = woken(
+            &mut app,
+            Vec3::new(10.0, 0.0, 66.0),
+            Vec3::new(900.0, 0.0, 7500.0),
+            2.0,
+        );
+        app.update();
+        let w = app.world();
+        assert!(!w.get::<Npc>(golem).unwrap().statue);
+        let at = w.get::<Transform>(player_root).unwrap().translation;
+        assert_eq!(at, Vec3::new(10.5, 0.0, 67.0));
+        assert_eq!(w.resource::<crate::flow::FlowSteps>().steps.len(), 2);
+    }
+
+    /// The reset's move keeps a part's place about the root: a point 1 m
+    /// ahead of a root at the origin facing +z ends 1 m ahead of the new
+    /// root facing +x.
+    #[test]
+    fn the_reset_move_carries_the_pose_about_the_root() {
+        let moved = reset_move(
+            Vec3::ZERO,
+            0.0,
+            Vec3::new(7.0, 0.0, 69.0),
+            std::f32::consts::FRAC_PI_2,
+        );
+        let ahead = moved.transform_point3(Vec3::Z);
+        assert!((ahead - Vec3::new(8.0, 0.0, 69.0)).length() < 1e-5);
     }
 }
