@@ -617,7 +617,10 @@ of the loaded slots, a list of objects waiting to be freed and the slot of
 from the last to the first and falls back to `_Default` for an unknown name
 or unreadable data. Dropping a count below zero is an error; reaching zero
 queues the object for freeing and empties its slot
-(`exa_assets::material_manager`, bookkeeping only, not driven by the loader).
+(`exa_assets::material_manager`, bookkeeping only, not driven by the
+loader; it also answers whether a provider can give a material's data and
+whether any provider knows the name, the two presence probes the original's
+own provider and import pass use).
 An unknown name in Exarust shades with the `_Default` record, shared by all
 such names.
 

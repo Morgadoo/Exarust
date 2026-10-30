@@ -206,6 +206,35 @@ impl<T> MaterialManager<T> {
         slot
     }
 
+    /// Whether a provider can give the material's data: the providers are
+    /// asked from the last to the first, and the first that answers decides
+    /// (`Found` true, `NoData` false). No provider means no data.
+    pub fn provides(&self, name: &str, mut ask: impl FnMut(usize, &str) -> Lookup<T>) -> bool {
+        for provider in (0..self.providers).rev() {
+            match ask(provider, name) {
+                Lookup::Found { .. } => return true,
+                Lookup::NoData => return false,
+                Lookup::Missing => {}
+            }
+        }
+        false
+    }
+
+    /// Whether any provider knows the name, whatever its data: `Found` and
+    /// `NoData` both count, `Missing` does not.
+    pub fn any_provider_has(
+        &self,
+        name: &str,
+        mut ask: impl FnMut(usize, &str) -> Lookup<T>,
+    ) -> bool {
+        for provider in (0..self.providers).rev() {
+            if !matches!(ask(provider, name), Lookup::Missing) {
+                return true;
+            }
+        }
+        false
+    }
+
     /// The material called `name` with one more user: the one already in
     /// the table, else the one a provider builds (`ask` gets the provider
     /// slot, last to first, and the name), else the `_Default` material
@@ -354,6 +383,31 @@ mod tests {
         );
         assert_eq!(m.material(slot), Some(&"plug-in wall"));
         assert_eq!(m.source(slot), Some((1, 0)));
+    }
+
+    #[test]
+    fn the_data_and_presence_queries_stop_at_the_first_answer() {
+        let known = [("Cobweb01", "web")];
+        let m = Manager::new(1);
+        // The last provider answers first; a missing one is skipped.
+        assert!(m.provides("cobweb01", |p, name| {
+            if p == 1 {
+                ask_only(1, &known)(1, name)
+            } else {
+                Lookup::Missing
+            }
+        }));
+        assert!(!m.provides("cobweb01", |p, name| {
+            if p == 1 {
+                Lookup::NoData
+            } else {
+                ask_only(0, &known)(0, name)
+            }
+        }));
+        assert!(!m.provides("nothing", |_, _| Lookup::Missing));
+        // Presence counts a provider that knows the name but has no data.
+        assert!(m.any_provider_has("cobweb01", |_, _| Lookup::NoData));
+        assert!(!m.any_provider_has("nothing", |_, _| Lookup::Missing));
     }
 
     #[test]

@@ -10,8 +10,10 @@ Material bookkeeping (`material_manager`): the original's per-scene
 material manager as a generic table (own provider in slot 0 with the global
 plug-in providers behind it, slot reuse from a search hint, the loaded and
 waiting-to-free lists, the `_Default` slot, get-or-load with the fallback to
-`_Default`, release with the negative-count error). It is not driven by the
-loader yet; `ModelLoader` shades an unknown material name with the built-in
+`_Default`, release with the negative-count error, and the two provider
+queries: whether a provider can give the data (the last to first, the first
+answer deciding) and whether any provider knows the name at all). It is not
+driven by the loader yet; `ModelLoader` shades an unknown material name with the built-in
 `_Default` record (`exa_formats::material::Material::builtin_default`), one
 shared handle for all such names.
 
