@@ -964,9 +964,9 @@ tendril, single for the shader and the shell), the layer colours, the
 time and brightness uniforms and the shader's texture coordinate, with no
 draw at all while the pass count is zero — are in `thaum::effect_pass`.
 The force geometry's supersample passes upload their own object matrix
-(the node's matrix times the pass's) to `ObjMat`, pass 0 before the
-viewport walk and each later pass after its shift
-(`effects::effect_geometry::force_uploads`). `effect_material` also runs
+(the node's matrix times the pass's) to `ObjMat`, pass 0 before its
+viewport is set and each later pass after its shift; with a single pass
+nothing is drawn on that path (`effects::effect_geometry::force_uploads`). `effect_material` also runs
 the material routines' node transitions
 (`dress`: the noise made before the shared shader, the flag and state
 bits, the aura's and shell's one replacement sub-object and the material's
@@ -995,17 +995,21 @@ the lights and sounds. The blast-family and torrent ribbons and the shell
 aura draw with their own ported programs (`effectforce_f`,
 `effecttorrent_f`, `effectshell`; The shaped-force aura). The arcs
 upload their ribbon's UVs. The barricade's navigation stamp is applied to
-the grid (`exa_world::nav::stamp`); the AI's sight of it is still
-`effects::danger`, which nothing registers yet. The domes, the wave and
+the grid (`exa_world::nav::stamp`); a standing barricade publishes its
+wall to `effects::danger::DangerSight`, which no AI reads yet. The domes, the wave and
 the rain are not drawn yet (the materials' pass plans are computed but no
-renderer binds them); the rain's frame passes, its tilt and its shader
-uniforms are modelled in `effects::rain`, and the scene weather now starts
-the set and frames it at the camera. The GI emissive objects behind
+renderer binds them); the rain's frame passes (its tilt scaled by
+`sqrt(field/70)`, placed at the drop box's centre and multiplied by each
+sub-frame's composite, its `EyeVec`) and its shader uniforms are modelled in
+`effects::rain`, and the scene weather now starts the set and frames it at
+the camera. The GI emissive objects behind
 the domes, the bubble, the barricade, the strikes, the tendril and the
 teleporter bubble are modelled in `effects::emissive` (their programs,
 extents, colours and boxes). The force Barrier's and force Bubble's are
 injected while they live (`thaum::effect_light::barrier_lights` and
-`force_bubble_lights`, the dome and bubble programs); the barricade's,
+`force_bubble_lights`, the dome and bubble programs, the colour taking the
+manager's light scale once and the Barrier's frame its cap node's, turned
+to its facing 75 cm ahead); the barricade's,
 cuboid's, strikes' and tendril's have shapes built (`cuboid_shape`,
 `tendril_shape`) with nothing live that owns one yet.
 The force blast and torrent are not drawn: their ribbon vertex builds
