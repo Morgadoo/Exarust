@@ -9,8 +9,11 @@
 //! argument. The slot table order is not in the evidence, so which of the
 //! eight identity slots is the step, the post-step, the wake, the
 //! interpolation or the translation is an inference from how the solver
-//! drives a controller; the trait names those five and leaves the false and
-//! float-passing slots out. Nothing in the game drives a controller yet.
+//! drives a controller; the trait names those five plus [`accepts`] and
+//! [`pass_through`]. Nothing in the game drives a controller yet.
+//!
+//! [`accepts`]: PhysicsController::accepts
+//! [`pass_through`]: PhysicsController::pass_through
 
 use bevy::math::Vec3;
 
@@ -26,6 +29,11 @@ pub trait PhysicsController {
     /// The post-step, after the solver's phases.
     fn post_step(&mut self) {}
 
+    /// The slot that answers false in the base.
+    fn accepts(&self) -> bool {
+        false
+    }
+
     /// Attaches the controller to a scene node (the base stores the
     /// node).
     fn attach(&mut self, _node: Option<u32>) {}
@@ -39,6 +47,11 @@ pub trait PhysicsController {
 
     /// Moves the controlled object.
     fn translate(&mut self, _offset: Vec3) {}
+
+    /// The slot that returns its float argument unchanged.
+    fn pass_through(&mut self, value: f32) -> f32 {
+        value
+    }
 
     /// The fraction the base answers: 0.0.
     fn render_fraction(&self) -> f32 {
@@ -118,6 +131,14 @@ mod tests {
                 ..InertController::new(7)
             }
         );
+    }
+
+    #[test]
+    fn the_false_and_pass_through_slots_keep_their_bodies() {
+        let mut c = InertController::new(0);
+        assert!(!c.accepts());
+        assert_eq!(c.pass_through(-1.5), -1.5);
+        assert_eq!(c.pass_through(f32::NAN).to_bits(), f32::NAN.to_bits());
     }
 
     #[test]

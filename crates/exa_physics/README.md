@@ -1175,8 +1175,8 @@ from the terrain manager's block trees.
 
 `controller` and `sim_object` are the original's two abstract bases: the
 physics controller (kind word, attached node, flag reset that clears bits 0
-and 3, no-op step/post-step/wake/translate/interpolate slots and a render
-fraction of 0.0) and the non-rigid simulated object (an empty
+and 3, no-op step/post-step/wake/translate/interpolate slots, a false slot,
+a float pass-through slot and a render fraction of 0.0) and the non-rigid simulated object (an empty
 after-collisions stub plus the static/body/object contact hooks). `dynamics`
 gains the environment's per-tick conversion (`configure_step`: retention
 raised to 1/83, gravity over 83², the squared per-tick speed bands; a
