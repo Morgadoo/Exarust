@@ -689,8 +689,9 @@ on the cursor; the movement inputs (the pad's raw move stick past a squared
 0.1, else the move keys) turn it by `0.25·frame ms·0.0025` rad a frame,
 ramping to `1.0` after 300 ms of turning and falling back after 500 ms of
 quiet; each frame the cursor's ray, the held item left out, places it at
-the level hit when that is at or above the height the player stands at, and
-at the ray's crossing of that height otherwise (a miss too), then slides it along the ray
+the level hit when that is strictly over the height the player stands at,
+and at the ray's crossing of that height otherwise (a miss too; a climbing
+ray places nothing, `lift_point`), then slides it along the ray
 from 600 cm before that point (never behind the eye) to the nearest
 contact of every collision sphere of every part, each carried with the
 placed grab point (a sweep starting inside the level is no contact),

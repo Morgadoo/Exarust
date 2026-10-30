@@ -22,11 +22,13 @@
 //! at the fast one.
 //!
 //! **Where it may go.** Each frame the cursor's ray is picked against the
-//! level; a hit at or above the height the player stands at places the item
-//! there. Otherwise the item goes where the ray crosses that height; a ray
-//! that climbs (its height component over −1.19209e−7) refuses the
-//! placement. (A GUI drop uses the far placement limit −100000 cm instead,
-//! which no level reaches.) The item is put there
+//! level; a hit strictly over the height the player stands at places the
+//! item there. Otherwise (a hit at or under it, a NaN height, or no hit) the
+//! item goes where the ray crosses that height; a ray that climbs (its
+//! height component over −1.19209e−7) refuses the placement whether or not
+//! it hit ([`lift_point`]). (A GUI drop uses the far placement limit
+//! −100000 cm instead, which no level reaches, and [`place_point`]'s tests.)
+//! The item is put there
 //! and the box test (its rest points and half extents in its turned saved
 //! frame at most 280 cm high and at least −1000 cm low,
 //! `hand::box_ok_local`) decides the routine's answer.
@@ -427,6 +429,27 @@ pub fn place_point(origin: Vec3, dir: Vec3, hit: Option<(Vec3, f32)>, limit: f32
             if dir.y > -TURN_EPSILON {
                 return None;
             }
+            let t = (limit / 100.0 - origin.y) / dir.y;
+            let at = origin + dir * t;
+            at.is_finite().then_some(at)
+        }
+    }
+}
+
+/// Where the lift's own placement puts the item (m), with `limit` the
+/// height the player stands at (cm). It differs from [`place_point`] in
+/// its tests: the hit is kept only when it is strictly over the limit (an
+/// ordered "limit under height", so a NaN height or a hit at the limit
+/// takes the plane), and a ray climbing more than the float epsilon gives
+/// no point whether or not the pick hit (the original tests the ray after
+/// both branches). Otherwise the item goes where the ray crosses `limit`.
+pub fn lift_point(origin: Vec3, dir: Vec3, hit: Option<(Vec3, f32)>, limit: f32) -> Option<Vec3> {
+    if dir.y > -TURN_EPSILON {
+        return None;
+    }
+    match hit {
+        Some((at, height_cm)) if limit < height_cm => Some(at),
+        _ => {
             let t = (limit / 100.0 - origin.y) / dir.y;
             let at = origin + dir * t;
             at.is_finite().then_some(at)
@@ -1178,16 +1201,39 @@ mod tests {
         // A NaN height is not "under" the limit: the hit is kept.
         assert_eq!(place_point(o, down, Some((at, f32::NAN)), 0.0), Some(at));
         assert_eq!(place_point(o, down, Some((at, f32::NAN)), 5.0), Some(at));
-        // The lift's limit is the player's height: a hit at the floor
-        // (0 cm) under a player standing at 170 cm falls to the plane at
-        // 170 cm, while a hit at 180 cm (a table) is kept.
-        let floor = place_point(o, down, Some((at, 0.0)), 170.0).unwrap();
+    }
+
+    /// The lift's own placement: its limit is the player's height, a hit
+    /// strictly over it is kept, one at or under it (or a NaN height) goes
+    /// to the plane, and a climbing ray gives nothing even with a hit.
+    #[test]
+    fn the_lift_point_tests() {
+        let o = Vec3::new(0.0, 10.0, 0.0);
+        let down = Vec3::new(0.6, -0.8, 0.0);
+        let at = Vec3::new(1.0, 2.0, 0.0);
+        // A hit at the floor (0 cm) under a player standing at 170 cm
+        // falls to the plane at 170 cm: t = (1.7 − 10) / −0.8 = 10.375 m.
+        let floor = lift_point(o, down, Some((at, 0.0)), 170.0).unwrap();
         assert!((floor.y - 1.7).abs() < 1e-5, "{floor}");
+        assert!((floor.x - 6.225).abs() < 1e-5, "{floor}");
+        // A hit at 180 cm (a table) is kept.
         let table = Vec3::new(0.5, 1.8, 0.5);
         assert_eq!(
-            place_point(o, down, Some((table, table.y * 100.0)), 170.0),
+            lift_point(o, down, Some((table, 180.0)), 170.0),
             Some(table)
         );
+        // At the limit, or a NaN height: the plane.
+        let level = lift_point(o, down, Some((table, 170.0)), 170.0).unwrap();
+        assert!((level.y - 1.7).abs() < 1e-5);
+        let nan = lift_point(o, down, Some((table, f32::NAN)), 170.0).unwrap();
+        assert!((nan.y - 1.7).abs() < 1e-5);
+        // No hit: the plane.
+        assert!(lift_point(o, down, None, 170.0).is_some());
+        // A climbing (or level) ray refuses even with a hit over the limit.
+        assert_eq!(lift_point(o, Vec3::Y, Some((table, 180.0)), 170.0), None);
+        assert_eq!(lift_point(o, Vec3::X, Some((table, 180.0)), 170.0), None);
+        // A NaN ray passes the climb test and gives no finite plane point.
+        assert_eq!(lift_point(o, Vec3::NAN, None, 170.0), None);
     }
 
     /// The placement frame is placed either way; its answer says whether

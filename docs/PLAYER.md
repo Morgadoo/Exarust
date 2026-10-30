@@ -767,12 +767,14 @@ the last starts from `0.25` again; the product is taken in double. A piece
 under 1.19209e−7 is no turn.
 
 Each frame the cursor's ray is picked against the level, the held item left
-out. The lift's limit is the height the player stands at: a hit at or above
-it places the item there; a hit under it, and a cursor over nothing, falls
-to the point where the ray crosses the player's height, unless the ray
-climbs (its height part over −1.19209e−7) and the placement is refused
-(`item_cursor::place_point`). A GUI drop instead uses the far placement
-limit −100000 cm, which no level reaches.
+out. The lift's limit is the height the player stands at: a hit strictly
+over it places the item there; a hit at or under it (or a NaN height), and a
+cursor over nothing, fall to the point where the ray crosses the player's
+height. A ray that climbs (its height part over −1.19209e−7) refuses the
+placement whether or not it hit (`item_cursor::lift_point`). A GUI drop
+instead uses the far placement limit −100000 cm, which no level reaches,
+keeps a hit at or over it (a NaN height too) and tests the climb only when
+it falls to the plane (`item_cursor::place_point`).
 The placement holds only when the item's box (its rest points' centre and
 half extents in its saved frame, turned as above) stays within 280 cm up
 and −1000 cm down and the item's new place is within reach of the hip

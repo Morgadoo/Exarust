@@ -1992,7 +1992,7 @@ fn hold_hand(
                 // The cursor's ray places the item against the level, the
                 // held item itself left out of the pick (as the original
                 // flags its node while it picks). The item goes there
-                // whether or not its box fits. A hit under the player's
+                // whether or not its box fits. A hit not over the player's
                 // height, and a cursor over nothing, fall to the height the
                 // player stands at. As in the original, the item then
                 // slides along the ray from 600 cm before that placed point
@@ -2040,11 +2040,12 @@ fn hold_hand(
                                 .collect()
                         })
                         .unwrap_or_default();
-                    // The point the cursor places: a hit at or above the
-                    // player's height is kept, anything under it (and a
-                    // cursor over nothing) falls to the height the player
-                    // stands at. That is the lift's limit; a GUI drop uses
-                    // the far placement limit instead.
+                    // The point the cursor places: a hit over the
+                    // player's height is kept, anything else (and a cursor
+                    // over nothing) falls to the height the player stands
+                    // at; a climbing ray places nothing. That is the
+                    // lift's own rule (`lift_point`); a GUI drop uses the
+                    // far placement limit and `place_point` instead.
                     let limit =
                         player.map_or(item_cursor::PLACEMENT_LIMIT_CM, |(feet, _)| feet.y * CM);
                     let hit_at = hit.map(|(_, t)| {
@@ -2052,7 +2053,7 @@ fn hold_hand(
                         (at, at.y * CM)
                     });
                     let point =
-                        item_cursor::place_point(origin, dir, hit_at, limit).and_then(|base| {
+                        item_cursor::lift_point(origin, dir, hit_at, limit).and_then(|base| {
                             // The sweep starts 600 cm before the placed point
                             // (Exarust never starts it behind the eye).
                             let distance_cm = ((base - origin).dot(dir) * CM).max(0.0);
