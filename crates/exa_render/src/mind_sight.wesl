@@ -4,7 +4,7 @@
 // noise coordinates and its normal dotted with `EyeVec`, squared, gives the
 // facing. The fragment stage cuts the noise picture's red channel by
 // `MindCol1.w` and `MindCol2.w` to mix the three colours, weights the result
-// by `clamp((1 − facing)·−0.3 + tex, 0, 1)`, squares and doubles it and
+// by `clamp((1 − facing)·−0.3 + tex, 0, 1)`, clamps, squares and quadruples it and
 // writes `MindCol0.w · facing` as alpha. Bevy's mesh stage supplies the
 // model and view-projection matrices the original's `ObjMat` holds.
 // Rules: exa_render::mind_sight and docs/RENDERING.md (Mind sight).

@@ -1,15 +1,15 @@
 //! The Mind domain's screen program: the sense overlay's sphere, the same
 //! program the original builds for its mind-sight glow passes.
 //!
-//! The vertex stage is the original's `s_in_vec3_vPos__in_vec3_vNrm__in_v…`
-//! program: the sphere's local position dotted with the two texture axes
+//! The vertex stage is the original's source beginning `in vec3 vPos; in
+//! vec3 vNrm; in vec2 vTex;`: the sphere's local position dotted with the two texture axes
 //! gives `vrTex.xy`, and the local normal dotted with the eye direction
 //! gives `vrTex.z` as the squared facing (`max(dot, 0)²`). The fragment
-//! stage is `s_in_vec3_vrTex__in_vec4_vrCol__un…`: the noise picture's red
+//! stage is the source beginning `in vec3 vrTex; in vec4 vrCol;`: the noise picture's red
 //! channel is cut by two thresholds, the first two colours are mixed by
 //! the first cut and the third by the second, the result is weighted by
-//! `clamp((1 − facing) · −0.3 + tex, 0, 1)`, squared and doubled, and the
-//! alpha is `MindCol0.w · facing`.
+//! `clamp((1 − facing) · −0.3 + tex, 0, 1)`, clamped to 0–1, squared and
+//! multiplied by four, and the alpha is `MindCol0.w · facing`.
 //!
 //! The uniforms are the original's `ObjMat`, `TexVecU`, `TexVecV`,
 //! `EyeVec`, `MindCol0..2` and `EmiTex`; [`MindSightMaterial`] is drawn by
@@ -77,8 +77,12 @@ impl Material for MindSightMaterial {
         Self::vertex_shader()
     }
 
+    /// The original draws the spheres after the scene with the depth test
+    /// off, under a state block whose blend word is 0; the fragment's alpha
+    /// is `MindCol0.w · facing`. Exarust blends by that alpha over the
+    /// scene [guess: the blend factors].
     fn alpha_mode(&self) -> AlphaMode {
-        AlphaMode::Opaque
+        AlphaMode::Blend
     }
 
     fn enable_prepass() -> bool {
@@ -95,9 +99,14 @@ impl Material for MindSightMaterial {
         _layout: &MeshVertexBufferLayoutRef,
         _key: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
-        // The original never turns culling off for the sight spheres; a
-        // sphere seen from inside still needs both faces here.
+        // Both faces draw, so a sphere seen from inside still shows
+        // [guess: the original's cull state].
         descriptor.primitive.cull_mode = None;
+        // The original turns the depth test off around the sight draw.
+        if let Some(depth) = descriptor.depth_stencil.as_mut() {
+            depth.depth_compare = Some(bevy::render::render_resource::CompareFunction::Always);
+            depth.depth_write_enabled = Some(false);
+        }
         Ok(())
     }
 }
@@ -123,7 +132,8 @@ fn mix(x: Vec3, y: Vec3, a: f32) -> Vec3 {
 }
 
 /// The fragment stage's output for a sampled noise value, the three
-/// colours and `vrTex.z` (the squared facing).
+/// colours and `vrTex.z` (the squared facing): the shipped source's
+/// `col = clamp(col * a, 0.0, 1.0)` comes before the square.
 pub fn fragment_colour(tex: f32, colour0: Vec4, colour1: Vec4, colour2: Vec4, facing: f32) -> Vec4 {
     let a = gl_clamp((tex - colour1.w) * 8.0, 0.0, 1.0);
     let mut col = mix(colour0.truncate(), colour1.truncate(), a);
@@ -132,6 +142,11 @@ pub fn fragment_colour(tex: f32, colour0: Vec4, colour1: Vec4, colour2: Vec4, fa
     let b = gl_clamp(1.0 - facing, 0.0, 1.0);
     let a = gl_clamp(b * -0.3 + tex, 0.0, 1.0);
     let col = col * a;
+    let col = Vec3::new(
+        gl_clamp(col.x, 0.0, 1.0),
+        gl_clamp(col.y, 0.0, 1.0),
+        gl_clamp(col.z, 0.0, 1.0),
+    );
     let rgb = col * col * 4.0;
     rgb.extend(colour0.w * facing)
 }
@@ -147,7 +162,7 @@ mod tests {
         let colour2 = Vec4::new(0.4, 0.0, 0.0, 0.1);
         let out = fragment_colour(1.0, colour0, colour1, colour2, 0.0);
         // Both cuts are full at 1: the third colour, weighted by
-        // clamp(1 − 0.3) = 0.7, then squared and doubled.
+        // clamp(1 − 0.3) = 0.7, then squared and times four.
         let lit = Vec3::new(0.4, 0.0, 0.0) * 0.7;
         assert!((out.truncate() - lit * lit * 4.0).length() < 1e-6);
         assert_eq!(out.w, 0.0);
@@ -157,6 +172,14 @@ mod tests {
         assert_eq!(dim.truncate(), Vec3::ZERO);
         let facing = fragment_colour(1.0, colour0, colour1, colour2, 1.0);
         assert_eq!(facing.w, 0.5);
+    }
+
+    #[test]
+    fn the_weighted_colour_is_clamped_before_the_square() {
+        // A colour of 3 at full weight clamps to 1 and squares to 4, not 36.
+        let bright = Vec4::new(3.0, 0.5, -1.0, 0.0);
+        let out = fragment_colour(1.0, bright, bright, bright, 1.0);
+        assert_eq!(out.truncate(), Vec3::new(4.0, 1.0, 0.0));
     }
 
     #[test]
