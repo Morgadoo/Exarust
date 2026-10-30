@@ -3539,13 +3539,14 @@ pub struct ApparelPanel {
 ///
 /// The versus equipment form is hidden first when it exists, and the form's
 /// first tab is captioned APPAREL. A missing panel is made at
-/// [`apparel_panel_place`], shown and bound as the current equipment form,
-/// then filled from [`apparel_kit_table`]'s entries: every entry the worn
-/// list does not already cover is resolved and added ([`missing_apparel`],
-/// [`resolve_kit_item`]) and the panel finishes. A panel that already exists
-/// is shown again and keeps its items. A named story background returns
-/// before the final binding, so the screen's current equipment form is left
-/// as it was.
+/// [`apparel_panel_place`], shown and bound as the current equipment form
+/// at once, then filled from [`apparel_kit_table`]'s entries: every entry
+/// the worn list does not already cover is resolved and added
+/// ([`missing_apparel`], [`resolve_kit_item`]) and the panel finishes. A
+/// named story background (no table) returns right after that binding, with
+/// no items and no finish. A panel that already exists is shown again,
+/// keeps its items and is bound as the current form; the table is not
+/// consulted.
 pub fn show_apparel_panel(
     has_versus_equipment: bool,
     existing: bool,
@@ -3553,25 +3554,16 @@ pub fn show_apparel_panel(
     added: usize,
 ) -> ApparelPanel {
     let created = !existing;
-    if kit_entries.is_none() {
-        // The panel stands, but a named story background stops before the
-        // current form is bound and before the made panel finishes.
-        return ApparelPanel {
-            versus_equipment_hidden: has_versus_equipment,
-            created,
-            shown: true,
-            finished: false,
-            current_form: false,
-            items: 0,
-        };
-    }
+    // Both routes bind the panel as the current equipment form: the made
+    // one before the table is picked, the existing one after it is shown.
+    let filled = created && kit_entries.is_some();
     ApparelPanel {
         versus_equipment_hidden: has_versus_equipment,
         created,
         shown: true,
-        finished: created,
+        finished: filled,
         current_form: true,
-        items: if created { added } else { 0 },
+        items: if filled { added } else { 0 },
     }
 }
 
@@ -7416,19 +7408,21 @@ mod tests {
                 items: 0,
             }
         );
-        // A named story background shows the panel but leaves the current
-        // equipment form alone and never finishes the made panel.
+        // A named story background stops after the made panel is bound:
+        // it is the current equipment form but gets no items or finish.
         assert_eq!(
-            show_apparel_panel(false, false, None, 0),
+            show_apparel_panel(false, false, None, 4),
             ApparelPanel {
                 versus_equipment_hidden: false,
                 created: true,
                 shown: true,
                 finished: false,
-                current_form: false,
+                current_form: true,
                 items: 0,
             }
         );
+        // An existing panel is bound whatever the mode's table.
+        assert!(show_apparel_panel(false, true, None, 0).current_form);
     }
 
     #[test]
