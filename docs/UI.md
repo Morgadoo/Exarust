@@ -532,23 +532,32 @@ assembly, and the standard-match and rank-label tables in `Exanima.exe`.
   The message box is 520 by 96 at 40, 276. The tournament picture is 192 by
   180 at 396, 56 and the reward panel 292 by 120 (100 compact) at 296, 472.
   The season table is 280 by 132 at 32, 60, one 160-wide column.
-  The form template places the rest: the four tabs 128 by 28 with captions
-  Standard, Specials, Tournament and Season at x 20, 160, 300 and 440 (the
-  template's 162 rounds to 160) and y 14; the bottom row 46 pixels above
-  the form's bottom edge, 128 by 28, End Day at 20, Close at 160, Enter (or
-  Begin/Continue) at 300 and Forfeit at 440, with the status text at 300,
-  40 pixels above the edge; "Available" at 116, 322 and "Entered n/m" at
-  408, 322; "Entry:" at 200, 248 and "Prize:" at 360, 248; the tournament's
-  "Prize" at 412, 64; "Prize for this season" at 32, 216; the season
-  picture 160 by 600 at 372, 28 and its four item slots at 12 and 172 from
-  y 236 and 396. The template's x is snapped to a multiple of four (the
-  quarter rounded half to even); its y is in four-pixel rows, lifted by
-  half the control's height less eight up to 32 pixels tall and by four
-  above; a bottom-anchored control stands `y + 8` rows above the parent's
-  bottom edge (taken as the form's height, a guess), lifted the same way.
-  A label left at zero height is taken as 16 pixels and an item slot as 60
-  (the class defaults are not decoded).
-- **Drawing order.** The form, the four tabs, then the visible child views
+  The form is a base form (border 2, the base attribute word) with the
+  arena windows' placement word 0xb800; the board's rectangles are in its
+  client. The form template places the rest: 23 records of the toolkit's
+  table format (`match_board::TEMPLATE_RECORDS`), the constructor passing
+  the last index, 22, laid out by the toolkit's own pass as the company
+  windows' tables are (`record_form`). The four tabs (a radio group)
+  128 by 28 with captions Standard, Specials, Tournament and Season at
+  x 20, 160, 300 and 440 (the template's 162 rounds to 160) and y 14; the
+  bottom row 46 pixels above the client's bottom edge (y 606, 586
+  compact), 128 by 28, End Day at 20, Close at 160, Enter (or
+  Begin/Continue) at 300 and Forfeit at 440, with the status text 160 by
+  20 at 300, 610; "Available" at 116, 322 and "Entered n/m" at 408, 322;
+  "Entry:" at 200, 246 and "Prize:" at 360, 246, each followed eight
+  pixels on by its coin control (128 by 24, 4 higher); the tournament's
+  prize item 160 by 160 at 412, 76 and its "Prize" caption 160 by 20 at
+  412, 62; "Prize for this season" 280 by 20 at 32, 214; the season
+  picture 160 by 600 at 372, 28 and its four item slots 160 by 160 at 12
+  and 172 from y 236 and 396. The pass snaps x to a multiple of four (the
+  quarter rounded half to even); y is in four-pixel rows, lifted by half
+  the control's height less eight up to 32 pixels tall and by four above;
+  a bottom-anchored record (style bit 0x80000) stands `y + 8` rows above
+  the client's bottom edge, lifted the same way. A size the template
+  leaves at zero is the class table's: a label is 20 tall and keeps a zero
+  width, an item icon 160 square, a coin control 128 by 24.
+- **Drawing order.** The form and its template records (the hub draws them
+  as the company windows' records are drawn), then the visible child views
   in the order the constructor made them: match, rank and tier lists,
   picture, reward panel, events, winners, message, company, lineup and
   season tables. A table draws its frame, its column headers, then its rows
@@ -562,10 +571,8 @@ assembly, and the standard-match and rank-label tables in `Exanima.exe`.
   (`Board::click`).
 
 Known guesses: the row height; the three one-column list widths (the
-constructor sets only the table widths); the label and item-slot classes'
-own sizes, so the three captions are 160 by 16 and the season slots 60 by
-60; the prize item's slot place; where the template's controls draw
-relative to the child views; the class bytes for the three staff
+constructor sets only the table widths); that the template's records draw
+before the child views; the class bytes for the three staff
 professions; the meaning of flag 1 on a daily event. The weapon check's
 item kind of a fighter's event value, the name and health column callbacks
 and the coin icons themselves are the arena's item GUI's, outside this

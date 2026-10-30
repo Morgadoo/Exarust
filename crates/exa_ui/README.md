@@ -354,9 +354,11 @@ the four tabs (Standard, Specials, Tournament, Season), the bottom row (End
 Day, Close, Enter/Begin/Continue, Forfeit, and the status text), the
 "Available", "Entered n/m", "Entry:", "Prize:", tournament "Prize" and
 "Prize for this season" captions, and the season's picture and item slots,
-placed by `template_x` (x snapped to four, ties to even), `template_y`
-(four-pixel rows lifted by half the height less eight) and
-`template_bottom_y` (rows above the bottom edge). Each control starts at the state the template gives it. The
+kept as the template's 23 records (`TEMPLATE_RECORDS`, the board's form
+`form_spec`) and laid out by the toolkit's own pass through `record_form`
+(x snapped to four, ties to even; four-pixel rows lifted by half the height
+less eight; bottom-anchored rows above the client's bottom edge; zero sizes
+from the class table). Each control starts at the state the template gives it. The
 coin columns carry their callback's decision in the paint list (a dash four
 pixels in, or the gold, silver and copper counts). The tournament status
 line, primary button, "Entered n/m" label and the show, close and control

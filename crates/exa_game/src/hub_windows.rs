@@ -17,10 +17,14 @@
 //! Manage Company and the windows it opens (Company Records, Company
 //! Status, the loadout form and its dismiss dialog, and the yes/no dialog)
 //! are built from their constructors' record tables ([`crate::hub_forms`]).
+//! The board's form is built the same way from its template's records
+//! ([`exa_ui::match_board::TEMPLATE_RECORDS`]): the frame, tabs, bottom row,
+//! captions and coin controls draw as those windows' records do, and the
+//! board's paint list draws its child views in the form's client.
 //!
-//! What is not drawn: the board's pictures, prize items and reward slots,
-//! the trade window's item icons and character preview, and the board's
-//! and trade window's own close controls. Escape and a right-button release
+//! What is not drawn: the board's pictures, prize items and reward slots
+//! (drawn as panels), the trade window's item icons and character preview,
+//! and the trade window's own close control. Escape and a right-button release
 //! close the top window.
 
 use std::collections::HashMap;
@@ -32,8 +36,8 @@ use exa_ui::gui_core::{FormHost, FormId, GuiRect, GuiTask, NO_CONTROL};
 use exa_ui::gui_draw::{GuiFrames, GuiTextures};
 use exa_ui::line_skin::shown_palette;
 use exa_ui::match_board::{
-    Board, BoardAction, BoardPaint, BoardTab, CellValue, CloseState, CoinDraw, Rect, TableLayout,
-    TableSlot, Widget,
+    Board, BoardAction, BoardPaint, CellValue, CloseState, CoinDraw, Rect, TableLayout, TableSlot,
+    Widget,
 };
 use exa_ui::skin::SkinPalette;
 
@@ -365,6 +369,9 @@ pub struct HubWindows {
     /// The closed board's saved tab and list selections, restored when it
     /// is opened again.
     pub board_state: Option<CloseState>,
+    /// The board's form, built from its template's records as the company
+    /// windows are ([`exa_ui::match_board::TEMPLATE_RECORDS`]).
+    pub board_form: Option<exa_ui::record_form::RecordForm>,
     pub manage: Option<ManageRefresh>,
     pub shop: Option<ShopModel>,
     /// The table-built forms: Manage Company and the windows stacked on it.
@@ -385,11 +392,13 @@ impl HubWindows {
         self.kind == kind
     }
 
-    /// The board's action from a form-local click.
+    /// The board's action from a form-local click: the board hit-tests in
+    /// its client, inside the form's border.
     pub fn board_click(&mut self, point: (i32, i32)) -> BoardAction {
-        self.board
-            .as_mut()
-            .map_or(BoardAction::None, |board| board.click(point))
+        let border = self.board_form.as_ref().map_or(0, |f| f.geometry.border);
+        self.board.as_mut().map_or(BoardAction::None, |board| {
+            board.click((point.0 - border, point.1 - border))
+        })
     }
 
     /// The shop's trade button from a form-local click: the button is inside
@@ -422,12 +431,22 @@ impl HubWindows {
         if let Some(state) = &self.board_state {
             board.restore(state);
         }
+        // The board's own tables and paint list are in unit-4 pixels, so
+        // its form is built at unit 4 whatever the screen's unit.
+        let form = exa_ui::record_form::RecordForm::open(
+            &exa_ui::match_board::form_spec(board.compact),
+            self.task.screen,
+            4,
+        );
+        let r = form.rect();
+        let controls = board_controls(&form);
         self.board = Some(board);
+        self.board_form = Some(form);
         self.kind = HubWindowKind::Board;
         self.push(
             HubWindowKind::Board,
-            board_bounds(self.task.screen),
-            board_controls(),
+            GuiRect::new(r.x, r.y, r.w, r.h),
+            controls,
         );
     }
 
@@ -509,6 +528,7 @@ impl HubWindows {
         self.task.active_control = NO_CONTROL;
         self.kind = HubWindowKind::None;
         self.board = None;
+        self.board_form = None;
         self.manage = None;
         self.shop = None;
         self.forms.clear();
@@ -536,42 +556,22 @@ impl HubWindows {
     }
 }
 
-/// The board's controls: the four tabs, the Enter button and the template's
-/// other bottom-row buttons (End Day, Close and Forfeit). The board's own
-/// paint list draws them; these records let the form host hit-test and
-/// select them.
-fn board_controls() -> Vec<Control> {
-    let layout = exa_ui::match_board::layout(false);
-    let mut records = Vec::new();
-    for (index, tab) in layout.tabs.iter().enumerate() {
-        let mut control = Control::new(1, tab.x, tab.y, tab.w, tab.h);
-        control.style = BUTTON_STYLE;
-        control.text = BoardTab::from_index(index)
-            .map(BoardTab::label)
-            .unwrap_or(BOARD_TITLE)
-            .as_bytes()
-            .to_vec();
-        records.push(control);
-    }
-    let buttons = [
-        (layout.end_day_button, exa_ui::match_board::END_DAY_LABEL),
-        (layout.close_button, exa_ui::match_board::CLOSE_LABEL),
-        (layout.enter_button, "Enter"),
-        (layout.forfeit_button, exa_ui::match_board::FORFEIT_LABEL),
-    ];
-    for (rect, text) in buttons {
-        let mut control = Control::new(1, rect.x, rect.y, rect.w, rect.h);
-        control.style = BUTTON_STYLE;
-        control.text = text.as_bytes().to_vec();
-        records.push(control);
-    }
-    records
-}
-
-/// The board's form place: centred in the task's screen.
-fn board_bounds(screen: (i32, i32)) -> GuiRect {
-    let layout = exa_ui::match_board::layout(false);
-    centred((layout.form.w, layout.form.h), screen)
+/// The board's buttons for the form host: the template's button records
+/// (the four tabs, then End Day, Close, Enter and Forfeit), form-local.
+/// The board's own hit test decides what a click does; these records let
+/// the form host hit-test and select them.
+fn board_controls(form: &exa_ui::record_form::RecordForm) -> Vec<Control> {
+    let border = form.geometry.border;
+    form.controls()
+        .iter()
+        .filter(|c| c.class == 1)
+        .map(|c| {
+            let mut c = c.clone();
+            c.x += border;
+            c.y += border;
+            c
+        })
+        .collect()
 }
 
 fn centred(size: (i32, i32), screen: (i32, i32)) -> GuiRect {
@@ -712,69 +712,93 @@ pub(crate) fn paint_panel(painted: &mut gui_paint::Painted, rect: GuiRect, look:
     }
 }
 
-/// The board's paint list through the GUI path.
-fn paint_board(board: &Board, bounds: GuiRect, look: &Look) -> gui_paint::Painted {
+/// The board's template records as the board's state has them: each
+/// record's state word is the board's control word, the primary button
+/// and the two labels carry the board's text, and the two coin controls
+/// the standard match's entry fee and prize.
+fn sync_board_form(board: &Board, form: &mut exa_ui::record_form::RecordForm) {
+    use exa_ui::match_board::control;
+    for (i, &state) in board.controls.iter().enumerate() {
+        form.set_state(i, state);
+    }
+    form.set_amount(control::STANDARD_FEE, board.standard_fee);
+    form.set_amount(control::STANDARD_PRIZE, board.standard_prize);
+    for item in board.paint() {
+        if let BoardPaint::Label { widget, text, .. } = item {
+            let record = match widget {
+                Widget::EnterButton => control::ENTER,
+                Widget::EnteredLabel => control::ENTERED,
+                Widget::Status => control::STATUS,
+                _ => continue,
+            };
+            form.set_text(record, &text);
+        }
+    }
+}
+
+/// Whether a paint item is one of the template's own records, which the
+/// board's form draws.
+fn template_drawn(item: &BoardPaint) -> bool {
+    match item {
+        BoardPaint::Tab { .. }
+        | BoardPaint::Frame {
+            widget: Widget::Form,
+            ..
+        } => true,
+        BoardPaint::Label { widget, .. } => matches!(
+            widget,
+            Widget::EnterButton
+                | Widget::EnteredLabel
+                | Widget::AvailableLabel
+                | Widget::CloseButton
+                | Widget::EndDayButton
+                | Widget::ForfeitButton
+                | Widget::Status
+                | Widget::EntryCaption
+                | Widget::PrizeCaption
+                | Widget::TournamentPrizeCaption
+                | Widget::SeasonCaption
+        ),
+        _ => false,
+    }
+}
+
+/// The board through the GUI path: its form built from the template's
+/// records, drawn as the company windows are ([`crate::hub_forms::paint_form`]:
+/// the frame, the tabs, the bottom row, the captions and the coin
+/// controls), then the board's child views from its paint list in the
+/// form's client. The pictures and item slots, which the item GUI fills,
+/// draw as panels.
+fn paint_board(
+    board: &Board,
+    form: &exa_ui::record_form::RecordForm,
+    look: &Look,
+) -> gui_paint::Painted {
+    let r = form.rect();
+    let bounds = GuiRect::new(r.x, r.y, r.w, r.h);
     let mut painted = gui_paint::Painted {
         client: client(bounds),
         ..Default::default()
     };
-    paint_window(&mut painted, bounds, BOARD_TITLE, look);
-    let unit = look.unit;
-    let (font, size) = screen_font(look.textures, unit);
+    let mut form = form.clone();
+    sync_board_form(board, &mut form);
+    crate::hub_forms::paint_form(&mut painted, &form, look);
+    let (ox, oy) = form.origin();
+    let origin = GuiRect::new(ox, oy, r.w, r.h);
     for item in board.paint() {
+        if template_drawn(&item) {
+            continue;
+        }
         match item {
-            BoardPaint::Frame {
-                widget: Widget::Form,
-                ..
-            } => {}
             BoardPaint::Frame { rect, .. } => {
-                paint_panel(&mut painted, at(bounds, rect), look);
+                paint_panel(&mut painted, at(origin, rect), look);
             }
-            BoardPaint::Tab {
-                rect,
-                title,
-                selected,
-                ..
-            } => {
-                let button = at(bounds, rect);
-                let caption = if selected {
-                    format!("[{title}]")
-                } else {
-                    title.to_string()
-                };
-                // The tab records' own words are not traced: a lone
-                // button whose on and lit bits stand for the selection (a
-                // guess).
-                let state = if selected {
-                    exa_ui::gui_controls::state::ON | exa_ui::gui_controls::state::LIT
-                } else {
-                    0
-                };
-                let words = gui_paint::ButtonWords {
-                    style: BUTTON_STYLE,
-                    state,
-                    group: 0,
-                };
-                for layer in gui_paint::paint_line_button(
-                    button,
-                    words,
-                    unit,
-                    &look.palette,
-                    look.fade,
-                    &font,
-                    size,
-                    &caption,
-                )
-                .layers
-                {
-                    painted.push(layer);
-                }
-            }
+            BoardPaint::Tab { .. } => {}
             BoardPaint::Table { rect, .. } => {
-                paint_panel(&mut painted, at(bounds, rect), look);
+                paint_panel(&mut painted, at(origin, rect), look);
             }
             BoardPaint::Column { rect, title, .. } => {
-                paint_text(&mut painted, at(bounds, rect), title, look);
+                paint_text(&mut painted, at(origin, rect), title, look);
             }
             BoardPaint::Cell { rect, value, .. } => {
                 let text = match value {
@@ -788,7 +812,7 @@ fn paint_board(board: &Board, bounds: GuiRect, look: &Look) -> gui_paint::Painte
                         // table hands the gauge draw the cell's left one
                         // unit in, its pen line five units under the row's
                         // top and the column's width.
-                        let cell = at(bounds, rect);
+                        let cell = at(origin, rect);
                         let unit = look.unit;
                         let marker = crate::manage::health_marker(
                             cell.left + unit,
@@ -803,7 +827,7 @@ fn paint_board(board: &Board, bounds: GuiRect, look: &Look) -> gui_paint::Painte
                     CellValue::Empty => String::new(),
                 };
                 if !text.is_empty() {
-                    paint_text(&mut painted, at(bounds, rect), &text, look);
+                    paint_text(&mut painted, at(origin, rect), &text, look);
                 }
             }
             BoardPaint::Coin { rect, draw, .. } => {
@@ -818,12 +842,12 @@ fn paint_board(board: &Board, bounds: GuiRect, look: &Look) -> gui_paint::Painte
                 };
                 if !text.is_empty() {
                     let cell = Rect { x, ..rect };
-                    paint_text(&mut painted, at(bounds, cell), &text, look);
+                    paint_text(&mut painted, at(origin, cell), &text, look);
                 }
             }
             BoardPaint::Label { rect, text, .. } => {
                 if let Some(rect) = rect {
-                    paint_text(&mut painted, at(bounds, rect), &text, look);
+                    paint_text(&mut painted, at(origin, rect), &text, look);
                 }
             }
         }
@@ -1087,7 +1111,8 @@ pub fn draw_hub_windows(
         HubWindowKind::Board => windows
             .board
             .as_ref()
-            .map(|board| paint_board(board, bounds, &look)),
+            .zip(windows.board_form.as_ref())
+            .map(|(board, form)| paint_board(board, form, &look)),
         HubWindowKind::Manage => windows.manage.as_ref().and_then(|manage| {
             windows
                 .forms
@@ -1144,6 +1169,11 @@ mod tests {
     use crate::arena_hub::{ARENA_MODE, HubTarget, hub_click};
     use crate::arena_spawn::generic_plan;
     use crate::career::Profession;
+    use exa_ui::match_board::BoardTab;
+
+    /// The board form's border: a form-local point is a client point
+    /// moved by it.
+    const B: i32 = exa_ui::arena_forms::BASE_BORDER;
 
     #[test]
     fn the_board_and_manage_fade_in_and_the_trade_window_does_not() {
@@ -1338,14 +1368,19 @@ mod tests {
         let career = career();
         windows.open_board(&career);
         let layout = exa_ui::match_board::layout(false);
-        let action = windows.board_click((layout.tabs[2].x + 1, layout.tabs[2].y + 1));
+        let action = windows.board_click((layout.tabs[2].x + 1 + B, layout.tabs[2].y + 1 + B));
         assert_eq!(action, BoardAction::Changed);
         assert_eq!(windows.board.as_ref().unwrap().tab, BoardTab::Tournament);
     }
 
     #[test]
     fn the_form_host_holds_the_boards_bottom_row() {
-        let records = board_controls();
+        let form = exa_ui::record_form::RecordForm::open(
+            &exa_ui::match_board::form_spec(false),
+            (1280, 720),
+            4,
+        );
+        let records = board_controls(&form);
         let layout = exa_ui::match_board::layout(false);
         // Four tabs and the four bottom-row buttons.
         assert_eq!(records.len(), 8);
@@ -1362,9 +1397,9 @@ mod tests {
             let record = &records[4 + index];
             assert_eq!(
                 (record.x, record.y, record.w, record.h),
-                (rect.x, rect.y, rect.w, rect.h)
+                (rect.x + B, rect.y + B, rect.w, rect.h)
             );
-            assert_eq!(record.y, bottom);
+            assert_eq!(record.y, bottom + B);
         }
         assert_eq!(records[4].text, b"End Day".to_vec());
         assert_eq!(records[5].text, b"Close".to_vec());
@@ -1374,12 +1409,37 @@ mod tests {
     }
 
     #[test]
+    fn the_board_form_takes_the_boards_states_and_text() {
+        use exa_ui::match_board::control;
+        let mut windows = HubWindows::default();
+        windows.open_board(&career());
+        let board = windows.board.as_ref().unwrap();
+        let mut form = windows.board_form.clone().unwrap();
+        sync_board_form(board, &mut form);
+        let c = form.controls();
+        assert_eq!(c[control::TAB_MATCHES].state, board.controls[0]);
+        assert_eq!(c[control::ENTER].text, b"Enter".to_vec());
+        assert_eq!(c[control::ENTERED].text, board.entered_label().into_bytes());
+        assert_eq!(form.amounts[control::STANDARD_FEE], board.standard_fee);
+        // The template's records draw the tabs and the bottom row; the
+        // board's child views stay with its paint list.
+        assert!(
+            board
+                .paint()
+                .iter()
+                .filter(|i| !template_drawn(i))
+                .all(|i| { !matches!(i, BoardPaint::Tab { .. }) })
+        );
+    }
+
+    #[test]
     fn the_board_enter_in_a_duel_asks_for_the_match() {
         let mut windows = HubWindows::default();
         let career = career();
         windows.open_board(&career);
         let layout = exa_ui::match_board::layout(false);
-        let action = windows.board_click((layout.enter_button.x + 1, layout.enter_button.y + 1));
+        let action =
+            windows.board_click((layout.enter_button.x + 1 + B, layout.enter_button.y + 1 + B));
         assert_eq!(action, BoardAction::EnterMatch);
     }
 
@@ -1422,19 +1482,25 @@ mod tests {
         windows.open_board(&career);
         let form = windows.task.form(windows.form.unwrap()).unwrap();
         let layout = exa_ui::match_board::layout(false);
-        assert_eq!(form.hit_test(layout.tabs[0].x + 1, layout.tabs[0].y + 1), 1);
+        assert_eq!(
+            form.hit_test(layout.tabs[0].x + 1 + B, layout.tabs[0].y + 1 + B),
+            1
+        );
         // The Enter button is the seventh record: four tabs, End Day,
         // Close, then Enter.
         assert_eq!(
-            form.hit_test(layout.enter_button.x + 1, layout.enter_button.y + 1),
+            form.hit_test(layout.enter_button.x + 1 + B, layout.enter_button.y + 1 + B),
             7
         );
         assert_eq!(
-            form.hit_test(layout.close_button.x + 1, layout.close_button.y + 1),
+            form.hit_test(layout.close_button.x + 1 + B, layout.close_button.y + 1 + B),
             6
         );
         assert_eq!(
-            form.hit_test(layout.end_day_button.x + 1, layout.end_day_button.y + 1),
+            form.hit_test(
+                layout.end_day_button.x + 1 + B,
+                layout.end_day_button.y + 1 + B
+            ),
             5
         );
         assert_eq!(form.hit_test(2, 2), 0);

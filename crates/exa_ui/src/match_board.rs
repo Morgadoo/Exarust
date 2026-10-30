@@ -21,6 +21,9 @@
 //! refreshes, fighter assignment and coin cell callback, read against their
 //! assembly (`docs/UI.md`, Arena match board).
 
+use crate::creation_forms::{FormRecord, record};
+use crate::record_form::FormSpec;
+
 /// The rank labels in the original's table order. A fighter's rank is one
 /// of the first six; a record's rank index past Master reads the dash and
 /// the staff labels that follow them in the same table.
@@ -259,6 +262,8 @@ pub struct BoardLayout {
     pub tournament_prize_caption: Rect,
     pub season_caption: Rect,
     pub season_picture: Rect,
+    /// The tournament's prize item.
+    pub prize_slot: Rect,
     pub reward_slots: [Rect; 4],
 }
 
@@ -267,78 +272,164 @@ pub struct BoardLayout {
 /// board's methods, so this is a guess from those fits.
 pub const ROW_HEIGHT: i32 = 30;
 
-/// A template control's x: the form template stores it in pixels and the
-/// placement snaps it to a multiple of four, rounding the quarter half to
-/// even (162 lands on 160, 166 on 168).
-pub fn template_x(x: i32) -> i32 {
-    let quarter = f64::from(x) * 0.25;
-    // The instruction rounds to nearest with ties to even.
-    let rounded = quarter.round_ties_even();
-    (rounded as i32) * 4
-}
+/// The form template's 23 records, as the board's constructor hands them
+/// to the form's table builder (it passes the last index, 22), in control
+/// order ([`control`]): the four tabs (a radio group), the standard tab's
+/// "Entry:" and "Prize:" captions each with its coin control, "Available"
+/// and "Entered n/m" above the fighter tables, the tournament's prize item
+/// and its "Prize" caption, the bottom row (End Day, Close, Enter and
+/// Forfeit, bottom-anchored), the status text on Enter's place, the season
+/// picture, its four item slots and the "Prize for this season" caption.
+/// The words are copied as stored ([`FormRecord`]); a record whose callback
+/// is set reports its changes. The records are laid out by the toolkit's
+/// own pass through [`crate::record_form`], as the arena's company windows
+/// are, and the class table gives the sizes the template leaves at zero.
+///
+/// Evidence: the board's constructor and the template array it passes
+/// (`docs/UI.md`, Arena match board).
+pub const TEMPLATE_RECORDS: [FormRecord; CONTROL_COUNT] = [
+    tab(0x14, 0x5, "Standard"),
+    tab(0xa2, 0x8000, "Specials"),
+    tab(0x12c, 0x8000, "Tournament"),
+    tab(0x1b8, 0x8000, "Season"),
+    FormRecord {
+        text: Some(ENTRY_CAPTION),
+        style: 0x1300,
+        state: control::HIDDEN,
+        ..record(0x5, 0x0, 0xc8, 0x3e, 0x0, 0x0)
+    },
+    FormRecord {
+        state: control::HIDDEN,
+        ..record(0xac03, 0x0, 0x8008, 0x8000, 0x0, 0x0)
+    },
+    FormRecord {
+        text: Some(PRIZE_CAPTION),
+        style: 0x1300,
+        state: control::HIDDEN,
+        ..record(0x5, 0x0, 0x168, 0x3e, 0x0, 0x0)
+    },
+    FormRecord {
+        state: control::HIDDEN,
+        ..record(0xac03, 0x0, 0x8008, 0x8000, 0x0, 0x0)
+    },
+    FormRecord {
+        text: Some(AVAILABLE_LABEL),
+        ..record(0x5, 0x0, 0x74, 0x52, 0x80, 0x1c)
+    },
+    FormRecord {
+        text: Some("Entered 1/1"),
+        ..record(0x5, 0x0, 0x198, 0x8000, 0x80, 0x1c)
+    },
+    FormRecord {
+        state: control::HIDDEN,
+        reports: true,
+        ..record(0xac05, 0x0, 0x19c, 0x14, 0x0, 0x0)
+    },
+    FormRecord {
+        text: Some(TOURNAMENT_PRIZE_CAPTION),
+        style: 0x3300,
+        state: control::HIDDEN,
+        ..record(0x5, 0x0, 0x19c, 0x10, 0xa0, 0x0)
+    },
+    bottom_button(0x14, 0x2, END_DAY_LABEL, control::HIDDEN),
+    bottom_button(0xa0, 0x2, CLOSE_LABEL, control::SHOWN),
+    bottom_button(0x12c, 0x8000, "Enter", control::HIDDEN),
+    bottom_button(0x1b8, 0x8000, FORFEIT_LABEL, control::HIDDEN),
+    FormRecord {
+        style: 0x8_2300,
+        state: control::HIDDEN,
+        ..record(0x5, 0x0, 0x12c, 0x8000, 0xa0, 0x0)
+    },
+    record(0x7, 0x0, 0x174, 0x8, 0xa0, 0x258),
+    season_item(0xc, 0x3c),
+    season_item(0xac, 0x3c),
+    season_item(0xc, 0x64),
+    season_item(0xac, 0x64),
+    FormRecord {
+        text: Some(SEASON_CAPTION),
+        style: 0x3300,
+        state: control::HIDDEN,
+        ..record(0x5, 0x0, 0x20, 0x36, 0x118, 0x0)
+    },
+];
 
-/// A template control's y from the top: the template's y is in four-pixel
-/// rows; a control up to 32 pixels tall is lifted by half its height less
-/// eight, a taller one by four pixels.
-pub fn template_y(y: i32, h: i32) -> i32 {
-    if h < 33 {
-        y * 4 - ((h - 16) >> 1)
-    } else {
-        y * 4 - 4
+const fn tab(x: i32, y: i32, text: &'static str) -> FormRecord {
+    FormRecord {
+        group: 1,
+        text: Some(text),
+        reports: true,
+        ..record(0x1, 0x0, x, y, 0x80, 0x1c)
     }
 }
 
-/// A bottom-anchored template control's y: `y + 8` rows above the parent's
-/// bottom edge, lifted by half its height less eight.
-pub fn template_bottom_y(bottom: i32, y: i32, h: i32) -> i32 {
-    bottom - (y + 8) * 4 - ((h - 16) >> 1)
+/// A bottom-row button: style bit 0x80000 anchors it to the client's
+/// bottom edge.
+const fn bottom_button(x: i32, y: i32, text: &'static str, state: u32) -> FormRecord {
+    FormRecord {
+        text: Some(text),
+        style: 0x2048_3300,
+        state,
+        reports: true,
+        ..record(0x1, 0x0, x, y, 0x80, 0x1c)
+    }
 }
 
-/// The label class's default height, used where the template leaves a
-/// label's height at zero. The class table is filled at run time and not
-/// decoded; one 16-pixel text line is a guess.
-pub const LABEL_HEIGHT: i32 = 16;
+const fn season_item(x: i32, y: i32) -> FormRecord {
+    FormRecord {
+        state: control::HIDDEN,
+        reports: true,
+        ..record(0xac05, 0x0, x, y, 0x0, 0x0)
+    }
+}
 
-/// The item slot's default size, used for the template's item slots. The
-/// class table is not decoded; 60 pixels is a guess.
-pub const ITEM_SLOT_SIZE: i32 = 60;
+/// The board's form: 604 wide and 656 tall (636 in the compact form, which
+/// the constructor picks from a display flag), the placement word the
+/// arena's windows OR in, and the base form's border and attribute word,
+/// which the constructor leaves alone.
+pub const fn form_spec(compact: bool) -> FormSpec {
+    FormSpec {
+        size: (604, if compact { 636 } else { 656 }),
+        border: crate::arena_forms::BASE_BORDER,
+        placement: crate::arena_forms::PLACEMENT,
+        attributes: crate::arena_forms::BASE_ATTRIBUTES,
+        title: TITLE,
+        records: &TEMPLATE_RECORDS,
+        children: &[],
+    }
+}
 
-/// Builds the board's layout. `compact` shortens the form, the team table
-/// and the reward panel.
+/// The template's records laid out at unit 4 in the form's client: the
+/// toolkit's pass snaps x to a multiple of four (the quarter rounded half
+/// to even), takes y in four-pixel rows lifted by half the height less
+/// eight up to 32 pixels and by four above, and stands a bottom-anchored
+/// record `y + 8` rows above the client's bottom edge.
+pub fn template_rects(compact: bool) -> [Rect; CONTROL_COUNT] {
+    let spec = form_spec(compact);
+    let geometry = crate::record_form::geometry(&spec, spec.size, 4);
+    let mut rects = [Rect::default(); CONTROL_COUNT];
+    for (rect, c) in rects.iter_mut().zip(&geometry.controls) {
+        *rect = Rect {
+            x: c.x,
+            y: c.y,
+            w: c.w,
+            h: c.h,
+        };
+    }
+    rects
+}
+
+/// Builds the board's layout, in the form's client. `compact` shortens the
+/// form, the team table and the reward panel.
 ///
 /// The tables and the two child panels come from the constructor. The tab
-/// strip, the four bottom buttons, the labels and captions, the season
-/// picture and its item slots come from the form template through
-/// [`template_x`], [`template_y`] and [`template_bottom_y`]. The bottom row
-/// and the status label are anchored to the parent's bottom edge, taken to
-/// be the form's height (a guess: the parent field is not decoded). Heights
-/// the template leaves at zero are the class defaults [`LABEL_HEIGHT`] and
-/// [`ITEM_SLOT_SIZE`], which are guesses, as are the caption widths.
+/// strip, the four bottom buttons, the labels and captions, the prize
+/// item, the season picture and its item slots are the form template's
+/// records as the toolkit lays them out ([`template_rects`]).
 pub fn layout(compact: bool) -> BoardLayout {
     let height = if compact { 636 } else { 656 };
     let team_height = if compact { 224 } else { 244 };
     let reward_height = if compact { 100 } else { 120 };
-    // The bottom row: the template's y of two rows, bottom-anchored.
-    let bottom = template_bottom_y(height, 2, 28);
-    let slot = ITEM_SLOT_SIZE;
-    let button = |x: i32| Rect {
-        x: template_x(x),
-        y: bottom,
-        w: template_x(128),
-        h: 28,
-    };
-    let label = |x: i32, y: i32, w: i32| Rect {
-        x: template_x(x),
-        y: template_y(y, LABEL_HEIGHT),
-        w,
-        h: LABEL_HEIGHT,
-    };
-    let item = |x: i32, y: i32| Rect {
-        x: template_x(x),
-        y: template_y(y, slot),
-        w: slot,
-        h: slot,
-    };
+    let t = template_rects(compact);
     BoardLayout {
         form: Rect {
             x: 0,
@@ -348,18 +439,17 @@ pub fn layout(compact: bool) -> BoardLayout {
         },
         title_y: 8,
         tab_strip: Rect {
-            x: template_x(20),
-            y: template_y(5, 28),
-            w: template_x(440) + 128 - template_x(20),
-            h: 28,
+            x: t[control::TAB_MATCHES].x,
+            y: t[control::TAB_MATCHES].y,
+            w: t[control::TAB_SEASON].right() - t[control::TAB_MATCHES].x,
+            h: t[control::TAB_MATCHES].h,
         },
-        // The template's four tabs: x 20, 162, 300 and 440 on row 5.
-        tabs: [20, 162, 300, 440].map(|x| Rect {
-            x: template_x(x),
-            y: template_y(5, 28),
-            w: 128,
-            h: 28,
-        }),
+        tabs: [
+            t[control::TAB_MATCHES],
+            t[control::TAB_EVENTS],
+            t[control::TAB_TOURNAMENT],
+            t[control::TAB_SEASON],
+        ],
         match_table: TableLayout {
             slot: TableSlot::Match,
             rect: Rect {
@@ -466,43 +556,25 @@ pub fn layout(compact: bool) -> BoardLayout {
             w: 292,
             h: reward_height,
         },
-        end_day_button: button(20),
-        close_button: button(160),
-        enter_button: button(300),
-        forfeit_button: button(440),
-        available_label: Rect {
-            x: template_x(116),
-            y: template_y(82, 28),
-            w: 128,
-            h: 28,
-        },
-        entered_label: Rect {
-            x: template_x(408),
-            y: template_y(82, 28),
-            w: 128,
-            h: 28,
-        },
-        // The status text shares the primary button's row and x; its width
-        // is the template's, its height the label default.
-        status_label: Rect {
-            x: template_x(300),
-            y: template_bottom_y(height, 2, LABEL_HEIGHT),
-            w: 160,
-            h: LABEL_HEIGHT,
-        },
-        // The template leaves the two standard captions' widths at the
-        // class default; 160 is a guess.
-        entry_caption: label(200, 62, 160),
-        prize_caption: label(360, 62, 160),
-        tournament_prize_caption: label(412, 16, 160),
-        season_caption: label(32, 54, 280),
-        season_picture: Rect {
-            x: template_x(372),
-            y: template_y(8, 600),
-            w: 160,
-            h: 600,
-        },
-        reward_slots: [item(12, 60), item(172, 60), item(12, 100), item(172, 100)],
+        end_day_button: t[control::DAY_END],
+        close_button: t[control::CLOSE],
+        enter_button: t[control::ENTER],
+        forfeit_button: t[control::SECONDARY],
+        available_label: t[control::SHARED],
+        entered_label: t[control::ENTERED],
+        status_label: t[control::STATUS],
+        entry_caption: t[control::STANDARD_ENTRY_CAPTION],
+        prize_caption: t[control::STANDARD_PRIZE_CAPTION],
+        tournament_prize_caption: t[control::PRIZE_CAPTION],
+        season_caption: t[control::SEASON_TAIL],
+        season_picture: t[control::SEASON_PICTURE],
+        prize_slot: t[control::PRIZE_ITEM],
+        reward_slots: [
+            t[control::SEASON_ITEM_0],
+            t[control::SEASON_ITEM_1],
+            t[control::SEASON_ITEM_2],
+            t[control::SEASON_ITEM_3],
+        ],
     }
 }
 
@@ -631,31 +703,15 @@ pub const CONTROL_COUNT: usize = 23;
 /// primary and secondary buttons, the status text, the four season items
 /// and the season tail start hidden. The tab show then sets the visible
 /// tab's own controls.
-pub const TEMPLATE_CONTROLS: [u32; CONTROL_COUNT] = [
-    0,
-    0,
-    0,
-    0,
-    control::HIDDEN,
-    control::HIDDEN,
-    control::HIDDEN,
-    control::HIDDEN,
-    0,
-    0,
-    control::HIDDEN,
-    control::HIDDEN,
-    control::HIDDEN,
-    0,
-    control::HIDDEN,
-    control::HIDDEN,
-    control::HIDDEN,
-    0,
-    control::HIDDEN,
-    control::HIDDEN,
-    control::HIDDEN,
-    control::HIDDEN,
-    control::HIDDEN,
-];
+pub const TEMPLATE_CONTROLS: [u32; CONTROL_COUNT] = {
+    let mut states = [0; CONTROL_COUNT];
+    let mut i = 0;
+    while i < CONTROL_COUNT {
+        states[i] = TEMPLATE_RECORDS[i].state;
+        i += 1;
+    }
+    states
+};
 
 /// A match record as the board reads it: a standard match, a daily event, a
 /// tournament event, or the board's selected match. The fields follow the
@@ -2356,7 +2412,7 @@ impl Board {
                 if self.tournament_reward.is_some() {
                     paint.push(BoardPaint::Frame {
                         widget: Widget::Prize,
-                        rect: layout.reward_slots[0],
+                        rect: layout.prize_slot,
                     });
                 }
                 let status = self.tournament_status();
@@ -2957,22 +3013,31 @@ mod tests {
     }
 
     #[test]
-    fn the_template_placement_rounds_and_lifts() {
-        // x snaps to a multiple of four with ties to even.
-        assert_eq!(template_x(162), 160);
-        assert_eq!(template_x(166), 168);
-        assert_eq!(template_x(161), 160);
-        assert_eq!(template_x(163), 164);
-        assert_eq!(template_x(-6), -8);
-        // y: rows of four, lifted by half the height less eight up to 32
-        // pixels, by four above.
-        assert_eq!(template_y(5, 28), 14);
-        assert_eq!(template_y(5, 32), 12);
-        assert_eq!(template_y(5, 33), 16);
-        assert_eq!(template_y(5, 0), 28);
-        assert_eq!(template_y(5, 15), 21);
-        assert_eq!(template_bottom_y(656, 2, 28), 610);
-        assert_eq!(template_bottom_y(636, 2, 16), 596);
+    fn the_template_records_carry_the_captions_and_states() {
+        let captions: Vec<_> = TEMPLATE_RECORDS.iter().filter_map(|r| r.text).collect();
+        assert_eq!(
+            captions,
+            [
+                "Standard",
+                "Specials",
+                "Tournament",
+                "Season",
+                "Entry:",
+                "Prize:",
+                "Available",
+                "Entered 1/1",
+                "Prize",
+                "End Day",
+                "Close",
+                "Enter",
+                "Forfeit",
+                "Prize for this season",
+            ]
+        );
+        assert_eq!(TEMPLATE_CONTROLS[control::CLOSE], control::SHOWN);
+        assert_eq!(TEMPLATE_CONTROLS[control::ENTER], control::HIDDEN);
+        assert_eq!(TEMPLATE_CONTROLS[control::SEASON_PICTURE], control::SHOWN);
+        assert_eq!(form_spec(true).size, (604, 636));
     }
 
     #[test]
@@ -2992,34 +3057,41 @@ mod tests {
             ]
         );
         // The bottom row: row 2, bottom-anchored, sits (2 + 8) * 4 plus
-        // half of 28 less 8 = 46 pixels above the form's bottom edge; the
-        // buttons keep the template's 128-pixel width.
-        assert_eq!(wide.end_day_button, rect(20, 610, 128, 28));
-        assert_eq!(wide.close_button, rect(160, 610, 128, 28));
-        assert_eq!(wide.enter_button, rect(300, 610, 128, 28));
-        assert_eq!(wide.forfeit_button, rect(440, 610, 128, 28));
-        // The status text: a 16-pixel label 40 pixels above the edge.
-        assert_eq!(wide.status_label, rect(300, 616, 160, 16));
+        // half of 28 less 8 = 46 pixels above the client's bottom edge
+        // (652: the form's 656 less its border of 2 top and bottom).
+        assert_eq!(wide.end_day_button, rect(20, 606, 128, 28));
+        assert_eq!(wide.close_button, rect(160, 606, 128, 28));
+        assert_eq!(wide.enter_button, rect(300, 606, 128, 28));
+        assert_eq!(wide.forfeit_button, rect(440, 606, 128, 28));
+        // The status text: a label of the class's 20 pixels, 42 above the
+        // edge.
+        assert_eq!(wide.status_label, rect(300, 610, 160, 20));
         // The labels above the two fighter tables: row 82 is 328, lifted
         // by 6; the season picture is taller than 32, so lifted by 4.
         assert_eq!(wide.available_label, rect(116, 322, 128, 28));
         assert_eq!(wide.entered_label, rect(408, 322, 128, 28));
         assert_eq!(wide.season_picture, rect(372, 28, 160, 600));
-        // The captions sit on their rows unlifted (a 16-pixel label).
-        assert_eq!(wide.entry_caption, rect(200, 248, 160, 16));
-        assert_eq!(wide.prize_caption, rect(360, 248, 160, 16));
-        assert_eq!(wide.tournament_prize_caption, rect(412, 64, 160, 16));
-        assert_eq!(wide.season_caption, rect(32, 216, 280, 16));
-        // The season's four item slots: rows 60 and 100, x 12 and 172; a
-        // 60-pixel slot is taller than 32, so lifted by 4.
-        assert_eq!(wide.reward_slots[0], rect(12, 236, 60, 60));
-        assert_eq!(wide.reward_slots[1], rect(172, 236, 60, 60));
-        assert_eq!(wide.reward_slots[2], rect(12, 396, 60, 60));
-        assert_eq!(wide.reward_slots[3], rect(172, 396, 60, 60));
+        // The captions take the label class's height (20, lifted by 2);
+        // the two standard captions keep the template's zero width.
+        assert_eq!(wide.entry_caption, rect(200, 246, 0, 20));
+        assert_eq!(wide.prize_caption, rect(360, 246, 0, 20));
+        assert_eq!(wide.tournament_prize_caption, rect(412, 62, 160, 20));
+        assert_eq!(wide.season_caption, rect(32, 214, 280, 20));
+        // The item slots take the item icon class's 160 pixels, taller
+        // than 32, so lifted by 4.
+        assert_eq!(wide.prize_slot, rect(412, 76, 160, 160));
+        assert_eq!(wide.reward_slots[0], rect(12, 236, 160, 160));
+        assert_eq!(wide.reward_slots[1], rect(172, 236, 160, 160));
+        assert_eq!(wide.reward_slots[2], rect(12, 396, 160, 160));
+        assert_eq!(wide.reward_slots[3], rect(172, 396, 160, 160));
+        // A coin control follows its caption by the anchor's gap of 8, on
+        // the caption's row (a 24-pixel coin lifts by 4).
+        let t = template_rects(false);
+        assert_eq!(t[control::STANDARD_FEE], rect(208, 244, 128, 24));
 
         let compact = layout(true);
-        assert_eq!(compact.end_day_button, rect(20, 590, 128, 28));
-        assert_eq!(compact.enter_button, rect(300, 590, 128, 28));
+        assert_eq!(compact.end_day_button, rect(20, 586, 128, 28));
+        assert_eq!(compact.enter_button, rect(300, 586, 128, 28));
         assert_eq!(compact.available_label, wide.available_label);
     }
 

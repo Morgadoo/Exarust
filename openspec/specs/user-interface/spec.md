@@ -3392,21 +3392,34 @@ template's captions and initial states.
   standard tab shows the "Entry:" and "Prize:" captions
 
 ### Requirement: Match board template placement
-A template control's x SHALL be snapped to a multiple of four with the
-quarter rounded half to even. Its y SHALL be in four-pixel rows, lifted by
-half its height less eight when at most 32 pixels tall and by four
-otherwise. A bottom-anchored control SHALL stand `y + 8` rows above the
-parent's bottom edge, lifted the same way.
+The match board's template records SHALL be laid out by the toolkit's
+record layout pass in the board form's client, as the company windows'
+are: x snapped to a multiple of four (the quarter rounded half to even), y
+in four-pixel rows lifted by half the height less eight up to 32 pixels
+tall and by four above, a bottom-anchored record `y + 8` rows above the
+client's bottom edge, and a size left at zero taken from its class.
 
 #### Scenario: Tabs and bottom row
 - **WHEN** the wide board is laid out
 - **THEN** the four tabs are 128 by 28 at x 20, 160, 300 and 440 and y 14,
   and End Day, Close, Enter and Forfeit are 128 by 28 at x 20, 160, 300 and
-  440 and y 610
+  440 and y 606
 
 #### Scenario: A tall control lifts by four
-- **WHEN** a template control on row 60 is 60 pixels tall
+- **WHEN** a season item slot on row 60 takes the item icon class's 160
+  pixels
 - **THEN** its y is 236
+
+### Requirement: Match board drawn from its template
+The hub SHALL draw the match board's form and template records through
+the same record-form draw as the company windows, with each record's state
+taken from the board's control word, and then the board's child views in
+the form's client.
+
+#### Scenario: The tabs and the bottom row are records
+- **WHEN** the board is open on the standard tab
+- **THEN** its tabs and bottom-row buttons are drawn from the template's
+  records and the board's paint list draws its tables in the client
 
 ### Requirement: Match board day-end and bottom-row actions
 The day-end button SHALL be enabled, on the tournament day with any entered
