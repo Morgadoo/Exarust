@@ -115,7 +115,13 @@ alpha, the 0.1 mix and the 1.5 alpha), `beard_normal` and
 the sRGB colour target and linear surface and normal targets, its rows
 split over the machine's threads (up to eight; the same texels on every
 machine). The race maps are read unshifted: the look seed's two offsets
-(`UVOfs`) belong to the decomposition programs only (`decomp`). `SkinCompositeJob` is
+(`UVOfs`) belong to the decomposition programs only (`decomp`).
+`compose_with_decomp` runs the callback's decomposition branch: with a
+`Decomp` amount above zero the three `chardecomp` passes replace the base
+programs (the seam mask's red channel square-rooted, the decay maps, the
+height map's cavity and the ancient normal), then the beard overlays draw
+on top. The living load no amount, so the running path draws `compose`.
+`SkinCompositeJob` is
 the job as data: `ModelLoader::composited_skin` decodes the race, layer and
 beard maps on the CPU, composes and uploads the three maps as an
 `ExaMaterial` (white diffuse, packed surface, normal, subsurface, blood),

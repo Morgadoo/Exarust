@@ -1042,6 +1042,16 @@ texel and stores the original's sRGB colour target and linear surface and
 normal targets, its rows split over up to eight threads (same texels, same
 result). The `chargen_*` programs bind no `UVOfs`: the record's two seed
 offsets shift only the decomposition pass's `skindecomp` fetch.
+`compose_with_decomp` runs the callback's decomposition branch
+(`exa_assets::decomp`, the `chardecomp_d/_s/_n` passes): when the `Decomp`
+amount is above zero the three base programs are not drawn and the
+decomposition material replaces their result, the seam mask's red channel
+square-rooted, the skin's own colour used as `SknCol`, the decay maps added,
+the normal pass carving the height map's cavity and adding
+`ancientnrmm0` and `humandcmpn`. The beard overlays draw on top and the
+apparel layers last. The amount comes from the creator's decomposition
+slider; a living character draws none, so the loader still calls
+`compose`.
 
 The running skin is the composite, not the race maps plus tint.
 `SkinJob::composite_job` describes the job
