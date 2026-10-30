@@ -3275,7 +3275,7 @@ index draws. `effects::fire_node` builds the `_FlameMat01` node's warm
 built each frame from the two shifted ends of the line and the two lagging
 points: 16 sections of 8 vertices, the cross-section turned toward the
 interpolated lag, its width 1.5 times the line over the section count and
-its far side wobbled by 0.2 of the line times one less the direction's
+its far side wobbled by 0.2 of the line (multiplied in double) times one less the direction's
 face-on weight, with the fixed 0.025-step texture coordinates, the
 black/black/white/white vertex colours and 192 indices. The row's material
 (`exa_render::flame_row`, `flame_row.wesl`) is the shipped `_FlameMat01`

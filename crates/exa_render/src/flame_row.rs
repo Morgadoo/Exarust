@@ -112,11 +112,11 @@ impl FlameRowMaterial {
         }
     }
 
-    /// The uniform for a frame at `now_ms` and a fade in 0..1
-    /// (`exa_game::effects::fire_row::texture_animation`).
-    pub fn set_animation(&mut self, now_ms: u32, fade: f32) {
-        let offset = (f64::from(now_ms % 50_000) * 0.000_02) as f32;
-        self.anim.anim = Vec4::new(offset, offset * -2.0, (1.0 - fade) * 0.5, 0.0);
+    /// Sets `Anim` from the frame's values, as
+    /// `exa_game::effects::fire_row::texture_animation` computes them (the
+    /// rolling offset, twice its negative, half of one less the fade).
+    pub fn set_animation(&mut self, anim: [f32; 3]) {
+        self.anim.anim = Vec3::from_array(anim).extend(0.0);
     }
 }
 
@@ -173,11 +173,9 @@ mod tests {
     }
 
     #[test]
-    fn the_animation_uniform_is_the_roll_and_half_the_fade() {
+    fn the_animation_uniform_carries_the_three_values() {
         let mut material = FlameRowMaterial::new(Handle::default(), Handle::default());
-        material.set_animation(25_000, 0.0);
+        material.set_animation([0.5, -1.0, 0.5]);
         assert_eq!(material.anim.anim, Vec4::new(0.5, -1.0, 0.5, 0.0));
-        material.set_animation(50_000, 1.0);
-        assert_eq!(material.anim.anim, Vec4::new(0.0, -0.0, 0.0, 0.0));
     }
 }

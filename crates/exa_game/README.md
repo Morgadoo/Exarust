@@ -432,11 +432,12 @@ ability word and fuel decide ignition, `FireSizzleA` plays at 0.3 and the
 yet, so nothing lights one). The ribbon is built per frame: 16 sections of
 8 vertices swept from the shifted pair of ends toward the lagging ones
 (the cross-section turned toward the lag, the far face wobbled by 0.2 of
-the line), with the fixed texture steps, black/black/white/white corner
+the line, that share taken in double), with the fixed texture steps, black/black/white/white corner
 colours and 192 indices, in `FlameRow::ribbon_positions`/`ribbon_mesh`;
 `exa_render::flame_row` is the `_FlameMat01` program (four texture reads,
 the vertical falloff, the `Anim` roll and the 1 × 5 palette) [guess: the
-record's blend state is additive]. A displacement shell opens over 400 ms and
+record's blend state is additive]; with no lit item, neither has a live
+caller yet. A displacement shell opens over 400 ms and
 closes over 300 ms from its shown value, with the fade (1 − shown²)², the
 texture offset, its fade plane and 900 over the squared distance as its
 detail; a teleporter scan opens over 4800 ms, closes over 800 ms and

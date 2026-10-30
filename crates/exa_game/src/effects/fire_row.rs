@@ -22,6 +22,7 @@ use bevy::prelude::*;
 
 use crate::arena::Mt19937;
 use crate::effects::{Frame, round_i32};
+use crate::thaum::engine::{length, normalize};
 
 /// One tick's lerp of the original's helper: `a + (b − a)·t`.
 fn lerp(a: Vec3, b: Vec3, t: f32) -> Vec3 {
@@ -182,26 +183,9 @@ pub const GRADIENT_UNIT: i32 = 1;
 /// original's rounding.
 pub const LAG_DIRECTION_SCALE: f32 = 0.05;
 /// The ribbon's cross-section wobble: this share of the interpolated line's
-/// length, times one less the direction's face-on weight.
-pub const WOBBLE_SCALE: f32 = 0.2;
-
-/// The original's length of a vector: `sqrt((x² + z²) + y²)`, in single
-/// precision in that order.
-pub fn length_cm(v: Vec3) -> f32 {
-    ((v.x * v.x + v.z * v.z) + v.y * v.y).sqrt()
-}
-
-/// The original's fast normalisation: the processor's reciprocal square
-/// root estimate, with a zero vector left zero.
-pub fn fast_normalize(v: Vec3) -> Vec3 {
-    let sum = (v.x * v.x + v.z * v.z) + v.y * v.y;
-    let scale = if sum == 0.0 {
-        0.0
-    } else {
-        exa_formats::rfc::reciprocal_sqrt(sum)
-    };
-    v * scale
-}
+/// length (taken in double and rounded once), times one less the
+/// direction's face-on weight.
+pub const WOBBLE_SCALE: f64 = 0.2;
 
 /// The original's dot product: `(x·x + y·y) + z·z`.
 fn dot(a: Vec3, b: Vec3) -> f32 {
@@ -503,24 +487,24 @@ impl FlameRow {
     /// original's does.
     pub fn ribbon_positions(&self, camera_cm: Vec3, t: f32) -> Vec<[f32; 3]> {
         let (pair_start, pair_end) = self.ribbon_ends(t);
-        let line = length_cm(pair_start - pair_end);
+        let line = length(pair_start - pair_end);
         let width = line / SECTIONS as f32 * SECTION_WIDTH;
         let lag_start = lerp(self.older_lag_start, self.lag_start, t);
         let lag_end = lerp(self.older_lag_end, self.lag_end, t);
         let delta_start = (lag_start - pair_start) * LAG_DIRECTION_SCALE;
         let delta_end = (lag_end - pair_end) * LAG_DIRECTION_SCALE;
-        let wobble_span = line * WOBBLE_SCALE;
+        let wobble_span = (f64::from(line) * WOBBLE_SCALE) as f32;
         let mut out = Vec::with_capacity((SECTIONS * 8) as usize);
         for i in 0..SECTIONS {
             let section = (i as f32 + 0.5) / SECTIONS as f32;
             let point = lerp(pair_start, pair_end, section);
             let mut direction = lerp(delta_start, delta_end, section);
-            let direction_length = length_cm(direction);
+            let direction_length = length(direction);
             direction *= 1.0 / direction_length;
-            let to_camera = fast_normalize(point - camera_cm);
+            let to_camera = normalize(point - camera_cm);
             let across = direction.cross(to_camera);
             let side = to_camera.cross(across);
-            let across_length = length_cm(across);
+            let across_length = length(across);
             let half_width = width / across_length;
             let face = across * half_width;
             let weight = 1.0 - dot(direction, to_camera).abs();
