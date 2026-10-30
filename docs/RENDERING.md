@@ -2188,15 +2188,20 @@ surviving corners, and works in centimetres (×100):
   caster side and stays a returned value.
 
 The render routine's caster pass walks the scene's caster list: a node
-without the caster flag is skipped, the list's head draws without the volume
-test, every later node is skipped when its box lies wholly beyond a face of
-the caster volume (its centre farther than both the box's radius and its
-support along the face normal, a NaN never culling), a kept node's stored
-vector pushes the volume's faces by its projection, and the node's parts are
-tested the same way: an unflagged part keeps its map-visible bit, an outside
-part clears it and draws nothing, an inside part sets it and draws with the
-cull face its flag picks (front or back, through the cached switch) or with
-culling off when its texture is marked alpha-tested. Exarust models the walk
+without the caster flag is skipped, a flagged node clears its map-visible
+bit, the list's head is kept without the volume test (and without moving the
+volume), every later node is skipped when its box lies wholly beyond a face
+of the caster volume (its centre farther than the box's radius, or a positive
+distance beyond its support along the face normal, a NaN never culling), a
+kept later node's stored vector pushes the volume's faces in place by its
+projection (for its own parts and every node after it), a kept node sets its
+bit, and the node's parts are tested the same way: an unflagged part keeps
+its map-visible bit, an outside part clears it and draws nothing, an inside
+part sets it, switches to the cull face its flag picks (front or back,
+through the cached switch) and draws each of its meshes whose draw flag is
+set, plainly or, for a mesh marked alpha-cut, through the alpha-tested
+program with the mesh's texture bound and another geometry state (taken to
+be culling off; the state word is not decoded). Exarust models the walk
 in `exa_render::sun_casters` and pins it with tests; nothing drives it yet
 (Bevy's shadow pass draws the cascade's casters with its own frustum culling,
 and Exarust has no scene-node caster flag or per-part box at the original's

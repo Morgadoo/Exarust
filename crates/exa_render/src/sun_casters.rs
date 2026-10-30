@@ -3,23 +3,29 @@
 //!
 //! The original's render routine walks the scene's shadow-caster node list in
 //! order. A node without the caster flag is skipped, so only registered
-//! casters are ever drawn. The list's head is drawn without the volume test —
-//! the original treats it as the level's own node — and every later node is
-//! tested against the caster volume: a node whose box lies wholly beyond one
-//! of the volume's planes is skipped, and a kept node's stored offset then
-//! moves the volume ([`ShadowVolume::translate`]), so casters behind it are
-//! still found. The node's parts are tested the same way: a part without the
-//! caster flag is left alone (its map-visible bit keeps whatever it had), a
-//! part outside the volume has its visible bit cleared and draws nothing, and
-//! a part inside sets the bit and draws.
+//! casters are ever drawn. A flagged node first clears its map-visible bit.
+//! The list's head is drawn without the volume test and without moving the
+//! volume — the original treats it as the level's own node — and every later
+//! node is tested against the caster volume: a node whose box lies wholly
+//! beyond one of the volume's planes is skipped (its bit stays clear), and a
+//! kept node's stored vector then pushes the volume's faces in place
+//! ([`ShadowVolume::push_faces`]), for its own parts and every node after
+//! it. A kept node (the head included) sets its bit. The node's parts are
+//! tested the same way: a part without the caster flag is left alone (its
+//! map-visible bit keeps whatever it had), a part outside the volume has its
+//! visible bit cleared and draws nothing, and a part inside sets the bit and
+//! draws its meshes.
 //!
 //! A drawn part culls the faces its own flag asks for: front faces for a
 //! flagged part, back faces otherwise, through the cached face switch the
 //! cube pass also uses ([`crate::shadow_map::CasterCull`]; the pass starts
-//! with back culling and the flag cleared, and ends with back culling). A
-//! part with a texture marked alpha-tested binds that texture and draws with
-//! culling off, both sides, so a leaf's shadow follows its strands; the part
-//! flag itself is still set through the cache first, as the original does.
+//! with back culling and the flag cleared, and ends with back culling). The
+//! switch is made once per part, before its meshes. Each of the part's
+//! meshes with its draw flag set then draws: plainly, or, when the mesh is
+//! marked alpha-cut, through the alpha-tested program with the mesh's
+//! texture bound and a different geometry state (\[guess: culling off, so
+//! both sides cast; the state word is not decoded]), after which the plain
+//! program and state are restored.
 //!
 //! The pass sets the depth function to less, enables the polygon offset with
 //! the fit's [`crate::sun_fit::CasterBias`] and disables it again at the end.
@@ -130,19 +136,25 @@ impl ShadowVolume {
     }
 }
 
-/// One part of a caster node: a mesh primitive with its box and the flags the
-/// pass reads.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// One mesh of a caster part, with the two flags the pass reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CasterMesh {
+    /// The mesh draws at all; a clear flag skips it.
+    pub drawn: bool,
+    /// The mesh cuts its shadow by its texture's alpha: it draws through the
+    /// alpha-tested program with that texture bound.
+    pub alpha_cut: bool,
+}
+
+/// One part of a caster node: its box, its flags and its meshes.
+#[derive(Debug, Clone, PartialEq)]
 pub struct CasterPart {
     /// The part's caster flag: only flagged parts are tested and drawn.
     pub casts: bool,
     pub box3: OrientedBox,
-    /// The part has a texture to bind.
-    pub textured: bool,
-    /// The part's material cuts its shadow by that texture's alpha.
-    pub alpha_tested: bool,
     /// The part culls front faces instead of back ones.
     pub front_cull: bool,
+    pub meshes: Vec<CasterMesh>,
 }
 
 /// One node of the scene's caster list.
@@ -158,18 +170,20 @@ pub struct CasterNode {
     pub parts: Vec<CasterPart>,
 }
 
-/// One draw the pass issues.
+/// One mesh draw the pass issues.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CasterDraw {
     /// The node in the list.
     pub node: usize,
     /// The part within the node.
     pub part: usize,
-    /// The face switch this draw needs, `None` when the cached face already
-    /// fits.
+    /// The mesh within the part.
+    pub mesh: usize,
+    /// The face switch made for this part before its meshes, on the part's
+    /// first draw only; `None` when the cached face already fitted.
     pub cull: Option<CullFace>,
-    /// The draw binds the part's texture and culls nothing, so both sides
-    /// cast.
+    /// The draw goes through the alpha-tested program with the mesh's
+    /// texture bound.
     pub alpha_cut: bool,
 }
 
@@ -177,6 +191,13 @@ pub struct CasterDraw {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct CasterPass {
     pub draws: Vec<CasterDraw>,
+    /// Per inside part, the face switch made before its meshes (`None` when
+    /// the cache already fitted), in walk order, also for a part whose
+    /// meshes all skip.
+    pub part_culls: Vec<(usize, usize, Option<CullFace>)>,
+    /// Per node: the map-visible bit the pass left (clear for a flagged node
+    /// that failed the test; an unflagged node's bit is left, false here).
+    pub node_visible: Vec<bool>,
     /// Per node, per part: the map-visible bit the pass left.
     pub visible: Vec<Vec<bool>>,
     /// The cached cull face at the end of the walk.
@@ -196,6 +217,7 @@ impl CasterPass {
 pub fn caster_draws(nodes: &[CasterNode], volume: &mut ShadowVolume) -> CasterPass {
     let mut pass = CasterPass {
         visible: nodes.iter().map(|n| vec![false; n.parts.len()]).collect(),
+        node_visible: vec![false; nodes.len()],
         ..Default::default()
     };
     let mut cull = CasterCull::default();
@@ -204,14 +226,18 @@ pub fn caster_draws(nodes: &[CasterNode], volume: &mut ShadowVolume) -> CasterPa
         if !node.casts {
             continue;
         }
-        // The list's head is drawn without the test, as the original's first
-        // node is the level itself.
-        if index > 0 && !volume.reaches(&node.box3) {
-            continue;
+        pass.node_visible[index] = false;
+        // The list's head is drawn without the test and without the push, as
+        // the original's first node is the level itself.
+        if index > 0 {
+            if !volume.reaches(&node.box3) {
+                continue;
+            }
+            // A kept node pushes the volume in place, for its own parts and
+            // every node after it.
+            volume.push_faces(node.offset);
         }
-        // A kept node moves the volume, so a caster just behind it is found
-        // by the parts that follow.
-        volume.push_faces(node.offset);
+        pass.node_visible[index] = true;
         for (part_index, part) in node.parts.iter().enumerate() {
             if !part.casts {
                 continue;
@@ -221,13 +247,20 @@ pub fn caster_draws(nodes: &[CasterNode], volume: &mut ShadowVolume) -> CasterPa
                 continue;
             }
             pass.visible[index][part_index] = true;
-            let cull = cull.set(part.front_cull);
-            pass.draws.push(CasterDraw {
-                node: index,
-                part: part_index,
-                cull,
-                alpha_cut: part.textured && part.alpha_tested,
-            });
+            let mut switch = cull.set(part.front_cull);
+            pass.part_culls.push((index, part_index, switch));
+            for (mesh_index, mesh) in part.meshes.iter().enumerate() {
+                if !mesh.drawn {
+                    continue;
+                }
+                pass.draws.push(CasterDraw {
+                    node: index,
+                    part: part_index,
+                    mesh: mesh_index,
+                    cull: switch.take(),
+                    alpha_cut: mesh.alpha_cut,
+                });
+            }
         }
     }
     cull.end_pass();
@@ -243,9 +276,11 @@ mod tests {
         CasterPart {
             casts: true,
             box3: OrientedBox::from_min_max(min, max),
-            textured: false,
-            alpha_tested: false,
             front_cull: false,
+            meshes: vec![CasterMesh {
+                drawn: true,
+                alpha_cut: false,
+            }],
         }
     }
 
@@ -346,26 +381,32 @@ mod tests {
         // A small volume at the origin; a far node is outside it.
         let volume = ShadowVolume::from_min_max(v(-10.0, -10.0, -10.0), v(10.0, 10.0, 10.0));
         let far_part = part(v(1000.0, 0.0, 0.0), v(1010.0, 10.0, 10.0));
-        // As the head it draws none the less: the parts are still tested.
+        // As the head it is kept none the less: the parts are still tested.
         let nodes = vec![
-            node(v(1000.0, 0.0, 0.0), v(1010.0, 10.0, 10.0), vec![far_part]),
+            node(
+                v(1000.0, 0.0, 0.0),
+                v(1010.0, 10.0, 10.0),
+                vec![far_part.clone()],
+            ),
             node(v(1000.0, 0.0, 0.0), v(1010.0, 10.0, 10.0), vec![far_part]),
         ];
         let pass = caster_draws(&nodes, &mut volume.clone());
         // The head's parts are outside the volume, so nothing visible; the
-        // second node is outside it and skipped.
+        // second node is outside it and skipped with its bit cleared.
         assert_eq!(pass.draws.len(), 0);
         assert_eq!(pass.visible_parts(), 0);
+        assert_eq!(pass.node_visible, vec![true, false]);
         // With a part inside, the head draws it and the second node draws
-        // too (its box now reaches the volume).
+        // too (its box reaches the volume).
         let inside = part(v(-1.0, -1.0, -1.0), v(1.0, 1.0, 1.0));
         let nodes = vec![
-            node(v(-1.0, -1.0, -1.0), v(1.0, 1.0, 1.0), vec![inside]),
+            node(v(-1.0, -1.0, -1.0), v(1.0, 1.0, 1.0), vec![inside.clone()]),
             node(v(-1.0, -1.0, -1.0), v(1.0, 1.0, 1.0), vec![inside]),
         ];
         let pass = caster_draws(&nodes, &mut volume.clone());
         assert_eq!(pass.draws.len(), 2);
         assert_eq!(pass.visible_parts(), 2);
+        assert_eq!(pass.node_visible, vec![true, true]);
     }
 
     #[test]
@@ -388,34 +429,55 @@ mod tests {
         let pass = caster_draws(&nodes, &mut volume.clone());
         assert!(pass.draws.is_empty());
         assert_eq!(pass.visible, vec![vec![false], vec![false]]);
+        assert_eq!(pass.node_visible, vec![false, true]);
     }
 
     #[test]
-    fn a_kept_node_moves_the_volume_for_the_nodes_after_it() {
+    fn a_kept_node_after_the_head_moves_the_volume() {
         // The caster volume is a small box at the origin and every part sits
-        // 500 cm along +X. The head's vector of −500 cm moves the volume
-        // onto them, so its own parts and the node after it are drawn.
-        let mut volume = ShadowVolume::from_min_max(v(-1.0, -1.0, -1.0), v(1.0, 1.0, 1.0));
+        // 500 cm along +X.
+        let volume = ShadowVolume::from_min_max(v(-1.0, -1.0, -1.0), v(1.0, 1.0, 1.0));
+        let near_part = part(v(-1.0, -1.0, -1.0), v(1.0, 1.0, 1.0));
         let far_part = part(v(499.0, -1.0, -1.0), v(501.0, 1.0, 1.0));
-        let mut head = node(v(499.0, -1.0, -1.0), v(501.0, 1.0, 1.0), vec![far_part]);
+        // The head's vector is never applied: with −500 cm on the head the
+        // volume stays at the origin, so the head's far part is outside.
+        let mut head = node(
+            v(499.0, -1.0, -1.0),
+            v(501.0, 1.0, 1.0),
+            vec![far_part.clone()],
+        );
         head.offset = v(-500.0, 0.0, 0.0);
+        let mut moved = volume.clone();
+        let pass = caster_draws(&[head], &mut moved);
+        assert!(pass.draws.is_empty());
+        assert_eq!(moved, volume);
+        // A second node at the origin with −500 cm is kept, pushes the volume
+        // onto +500 cm, and its own far part then draws while its near part
+        // is outside; the node after it is tested against the moved volume.
+        let mut second = node(
+            v(-1.0, -1.0, -1.0),
+            v(1.0, 1.0, 1.0),
+            vec![near_part.clone(), far_part.clone()],
+        );
+        second.offset = v(-500.0, 0.0, 0.0);
         let nodes = vec![
-            head,
+            node(v(-1.0, -1.0, -1.0), v(1.0, 1.0, 1.0), vec![]),
+            second,
             node(v(499.0, -1.0, -1.0), v(501.0, 1.0, 1.0), vec![far_part]),
         ];
-        let pass = caster_draws(&nodes, &mut volume.clone());
+        let mut moved = volume.clone();
+        let pass = caster_draws(&nodes, &mut moved);
+        assert_eq!(pass.visible, vec![vec![], vec![false, true], vec![true]]);
         assert_eq!(pass.draws.len(), 2);
-        assert_eq!(pass.visible, vec![vec![true], vec![true]]);
-        // Without the vector the volume stays at the origin: the head draws
-        // nothing (its parts are tested against the volume as it stands after
-        // the head's push) and the second node is outside it.
-        let nodes = vec![
-            node(v(499.0, -1.0, -1.0), v(501.0, 1.0, 1.0), vec![far_part]),
-            node(v(499.0, -1.0, -1.0), v(501.0, 1.0, 1.0), vec![far_part]),
-        ];
-        let pass = caster_draws(&nodes, &mut volume);
-        assert_eq!(pass.draws.len(), 0);
-        assert_eq!(pass.visible, vec![vec![false], vec![false]]);
+        assert_eq!(pass.node_visible, vec![true, true, true]);
+        // The volume was pushed in place: its +X face now stands at 501.
+        let face = moved
+            .volume
+            .planes
+            .iter()
+            .find(|p| p.normal == Vec3::X)
+            .unwrap();
+        assert_eq!(face.offset, -501.0);
     }
 
     #[test]
@@ -423,13 +485,13 @@ mod tests {
         let mut volume =
             ShadowVolume::from_min_max(v(-100.0, -100.0, -100.0), v(100.0, 100.0, 100.0));
         let back = part(v(-1.0, -1.0, -1.0), v(1.0, 1.0, 1.0));
-        let mut front = back;
+        let mut front = back.clone();
         front.front_cull = true;
         // Back, back, front, back: only the changes are reported.
         let nodes = vec![node(
             v(-1.0, -1.0, -1.0),
             v(1.0, 1.0, 1.0),
-            vec![back, back, front, back],
+            vec![back.clone(), back.clone(), front, back],
         )];
         let pass = caster_draws(&nodes, &mut volume);
         let culls: Vec<_> = pass.draws.iter().map(|d| d.cull).collect();
@@ -443,36 +505,49 @@ mod tests {
     }
 
     #[test]
-    fn an_alpha_tested_part_draws_both_sides() {
+    fn each_drawn_mesh_draws_plain_or_alpha_cut() {
         let mut volume =
             ShadowVolume::from_min_max(v(-100.0, -100.0, -100.0), v(100.0, 100.0, 100.0));
-        let plain = part(v(-1.0, -1.0, -1.0), v(1.0, 1.0, 1.0));
-        let mut cut = plain;
-        cut.textured = true;
-        cut.alpha_tested = true;
-        // A texture without the alpha flag draws whole, like an untextured
-        // part.
-        let mut textured = plain;
-        textured.textured = true;
+        let mut mixed = part(v(-1.0, -1.0, -1.0), v(1.0, 1.0, 1.0));
+        mixed.front_cull = true;
+        mixed.meshes = vec![
+            CasterMesh {
+                drawn: true,
+                alpha_cut: false,
+            },
+            CasterMesh {
+                drawn: false,
+                alpha_cut: true,
+            },
+            CasterMesh {
+                drawn: true,
+                alpha_cut: true,
+            },
+        ];
+        // A part whose meshes all skip still switches the face.
+        let mut silent = part(v(-1.0, -1.0, -1.0), v(1.0, 1.0, 1.0));
+        silent.meshes[0].drawn = false;
         let nodes = vec![node(
             v(-1.0, -1.0, -1.0),
             v(1.0, 1.0, 1.0),
-            vec![plain, cut, textured],
+            vec![mixed, silent],
         )];
         let pass = caster_draws(&nodes, &mut volume);
-        let alpha: Vec<_> = pass.draws.iter().map(|d| d.alpha_cut).collect();
-        assert_eq!(alpha, vec![false, true, false]);
-        // The front-cull flag is still set through the cache before the cut
-        // draw disables culling, so a part after it asks for its own face.
-        let mut front = plain;
-        front.front_cull = true;
-        let nodes = vec![node(
-            v(-1.0, -1.0, -1.0),
-            v(1.0, 1.0, 1.0),
-            vec![cut, front],
-        )];
-        let pass = caster_draws(&nodes, &mut volume);
-        assert_eq!(pass.draws[1].cull, Some(CullFace::Front));
+        let draws: Vec<_> = pass
+            .draws
+            .iter()
+            .map(|d| (d.mesh, d.cull, d.alpha_cut))
+            .collect();
+        // The face switch rides on the part's first draw only.
+        assert_eq!(
+            draws,
+            vec![(0, Some(CullFace::Front), false), (2, None, true)]
+        );
+        assert_eq!(
+            pass.part_culls,
+            vec![(0, 0, Some(CullFace::Front)), (0, 1, Some(CullFace::Back))]
+        );
+        assert_eq!(pass.visible, vec![vec![true, true]]);
     }
 
     #[test]
