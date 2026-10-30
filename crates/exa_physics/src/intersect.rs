@@ -742,6 +742,11 @@ impl ConvexVolume {
             let mut cap = if turn_first { vec![b, a] } else { vec![a, b] };
             chain(&mut segments, &mut cap);
             let ends = (cap[0] - cap[cap.len() - 1]).length_squared();
+            // The original closes a cap whose ends are nearer than 0.01 cm
+            // by dropping its last point; otherwise (an unordered, i.e.
+            // NaN, distance included) it turns the cap round and chains it
+            // on from its start. The squared distance, summed
+            // (x² + y²) + z², is compared in double against 1e-4.
             if f64::from(ends) < CLOSED2 {
                 cap.pop();
             } else {
@@ -770,8 +775,11 @@ impl ConvexVolume {
     /// at least 1 cm long becomes a side plane: its normal
     /// `light.xyz × edge`, normalised, through the edge, with the polygon
     /// of the edge and the edge moved 10 000 along `−light.xyz`. Returns
-    /// the volume, side planes first, and how many side planes it has.
-    pub fn shadow_volume(&self, light: Vec4) -> (ConvexVolume, usize) {
+    /// the volume, side planes first, and the original's count of them:
+    /// the original counts a volume's planes by their last index, so this
+    /// is one less than the number of side planes and −1 with none (its
+    /// only shipped caller ignores the answer).
+    pub fn shadow_volume(&self, light: Vec4) -> (ConvexVolume, i32) {
         let towards = light.truncate();
         let open: Vec<bool> = self
             .planes
@@ -789,7 +797,7 @@ impl ConvexVolume {
                 }
             }
         }
-        let sides = planes.len();
+        let sides = planes.len() as i32 - 1;
         planes.extend(
             self.planes
                 .iter()
@@ -815,7 +823,11 @@ fn silhouette_side(a: &Plane, b: &Plane, light: Vec3) -> Option<Plane> {
             continue;
         }
         let edge = va[next] - va[k];
-        if edge.length_squared() < MIN_EDGE2 {
+        // The original sums the edge's squares (x² + y²) + z² and skips
+        // only an edge whose squared length is below 1 cm²; an unordered
+        // (NaN) length still makes a plane.
+        let length_squared = (edge.x * edge.x + edge.y * edge.y) + edge.z * edge.z;
+        if length_squared < MIN_EDGE2 {
             continue;
         }
         let normal = normalised(light.cross(edge));

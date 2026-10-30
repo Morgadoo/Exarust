@@ -26,6 +26,7 @@ pub mod nav;
 pub mod node_parts;
 pub mod particles;
 pub mod presets;
+pub mod published_light;
 pub mod room_view;
 pub mod rooms;
 pub mod scene_env;
