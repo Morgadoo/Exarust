@@ -474,8 +474,9 @@ fn bind_skins(
             ));
         }
         let (inverse_bindposes, joints) = bound[&key].clone();
-        // The mesh is drawn from here on, with its skin.
-        commands.entity(mesh).insert((
+        // The mesh is drawn from here on, with its skin. A load may despawn
+        // the body in this same frame, so the insert must not panic.
+        commands.entity(mesh).try_insert((
             Mesh3d(skinned.mesh.clone()),
             SkinnedMesh {
                 inverse_bindposes,
