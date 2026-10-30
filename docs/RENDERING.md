@@ -1565,7 +1565,11 @@ its width, at the slice's middle ((slice + 0.5)/width), as the original's
 - k = min(8·Σa, 1) · (0.3·open + 0.699);
 - light = sum·k/8 + base·open + Σ lights;
 - base = level record `0x30` (as stored) × 0.001, per channel, or × 0.002
-  below shading quality 4 (`GiSettings::high_quality`);
+  below shading quality 4 (`GiSettings::high_quality`, fed every frame from
+  the settings screen's `ShadingQuality`; the same flag drops the manager's
+  light share from 0.1 to 0.1 × 0.9 (taken in double precision and narrowed:
+  0.09's nearest float), which only sources
+  outside the GI manager read — `gi::injection_share`);
 - each point light adds
   lin(colour)·intensity·multiplier·(1 − dim)²·0.15·0.01 · (1 − d/R)⁴ ·
   open · cube shadow · shaping. The point light's uniforms are the
@@ -1657,16 +1661,35 @@ its width, at the slice's middle ((slice + 0.5)/width), as the original's
   `gi_inject_g`), the four corners of a slice's quad in texture units
   (`shape_quad`, r = −(first + 0.5)/depth with each instance adding its
   layer) and the program-wide uniforms `SliceSz` = 1/depth and `ZTrn` =
-  (−D/W, D/W) (`shape_uniforms`). No gameplay shape registers yet; the
-  subclasses' own uniforms and fragment bodies belong to the effect
-  classes, which are outside this component;
+  (−D/W, D/W) (`shape_uniforms`). The six fragment bodies are the original's
+  own `shading.flb` programs, ported line for line and evaluated per voxel
+  (`exa_render::gi_shape`: a shape's fragment reads only its own uniforms and
+  the voxel's position, so a per-voxel evaluation is what its quad-per-slice
+  draw computes): the dome's ridge texture, 70-unit cap and 6× shell weight (the bodies' constants are in the original's centimetres, the space `bMat` maps a voxel into), the
+  cuboid's `max(|p| − bExt, 0)` falloff at 0.0002, the bubble's cubed texture
+  and vertical fade, the telebubble's three-plane texture and pulse (its
+  squared shell term is computed and overwritten, as in the original), the
+  gradline's two-ended gradient with its point light, and the multipoint's
+  points at a quarter (its occlusion term is computed and unused). A shape
+  entity's `GiShape` component lists and unlists it, as the effects'
+  constructors and destructors do. No gameplay effect registers one yet;
 - a moving GI mesh takes its old points out (weight −20) and its new ones
   in (+20) over a box padded 1.5 voxels each side, rounded ties to even in
   world voxels (`Occupancy::update_dynamic`; the original pads the
-  object's oriented bounds, Exarust the points' extent [adaptation]); no GI mesh moves in Exarust's levels yet (doors and
-  mechanisms are static), and a full block upload stands in for the
-  original's sub-upload (the region and its bytes are `VoxelRegion`,
-  `sub_upload`);
+  object's oriented bounds, Exarust the points' extent [adaptation]). A
+  GI mesh the level's source collected is followed every frame
+  (`GiMoved` keeps its source and last frames). Nothing runs while a block
+  build is in flight, as the original returns while its build count is above
+  zero; the old points come out before the new go in, and only the built
+  blocks the old and new padded boxes meet are edited (the original compares
+  integer voxel boxes, Exarust world boxes [adaptation]). A block built after
+  a mesh moved holds it at the source frame, so its first pass moves it to
+  the last one (the original's builder reads the current frames). The
+  changed box is uploaded as a sub-rectangle (`GiOccupancyPatch`: the region,
+  its end kept one voxel short of the size as the original's upload keeps
+  it, and its bytes from `sub_upload`) into the bound block and one warming
+  behind it; the world drains the patches every frame. A whole-block upload
+  stands in when a texture is created;
 - a neighbour block's margin copy: one margin column or row, the interior
   on the other axis, UV offset ∓240/256, every slice but the top, and the
   destination quad's four corners with the original's base z of

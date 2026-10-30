@@ -30,6 +30,7 @@ use bevy::render::render_resource::{
     Texture, TextureDimension, TextureFormat, TextureSampleType, TextureUsages, TextureView,
     TextureViewDescriptor, TextureViewDimension, UniformBuffer,
 };
+use bevy::render::render_resource::{Origin3d, TexelCopyBufferLayout};
 use bevy::render::renderer::{RenderContext, RenderDevice, RenderQueue, ViewQuery};
 use bevy::render::texture::GpuImage;
 use bevy::render::view::ExtractedView;
@@ -46,11 +47,12 @@ impl Plugin for GiPlugin {
         let report = WarmUpReport(warm_up.report.clone());
         app.init_resource::<GiLights>()
             .init_resource::<GiSectorLights>()
-            .init_resource::<GiShapes>()
             .insert_resource(warm_up)
             .add_plugins((
+                crate::gi_shape::GiShapePlugin,
                 ExtractResourcePlugin::<GiTextures>::default(),
                 ExtractResourcePlugin::<GiPendingTextures>::default(),
+                ExtractResourcePlugin::<GiOccupancyPatches>::default(),
                 ExtractResourcePlugin::<GiLights>::default(),
                 ExtractResourcePlugin::<GiSunShadow>::default(),
                 ExtractResourcePlugin::<GiSunSky>::default(),
@@ -75,7 +77,9 @@ impl Plugin for GiPlugin {
             .add_systems(RenderStartup, init_pipeline)
             .add_systems(
                 Render,
-                prepare_bind_group.in_set(RenderSystems::PrepareBindGroups),
+                (apply_occupancy_patches, prepare_bind_group)
+                    .chain()
+                    .in_set(RenderSystems::PrepareBindGroups),
             )
             .add_systems(Core3d, propagate.in_set(Core3dSystems::Prepass));
     }
@@ -234,6 +238,24 @@ impl GiTextures {
 #[derive(Resource, Clone, ExtractResource)]
 #[extract_app(RenderApp)]
 pub struct GiPendingTextures(pub GiTextures);
+
+/// One changed sub-rectangle of a block's occupancy, for a sub-upload: the
+/// block's first 6 m cell, the region in texture axes (X, Z depth, Y height)
+/// and its bytes, X fastest, then Z, then height.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GiOccupancyPatch {
+    pub sector: IVec2,
+    pub lo: UVec3,
+    pub hi: UVec3,
+    pub bytes: Vec<u8>,
+}
+
+/// The occupancy patches the world found this frame (a moving mesh took its
+/// old points out and put its new ones in). The world drains the list every
+/// frame, so each patch is applied once.
+#[derive(Resource, Default, Clone, ExtractResource)]
+#[extract_app(RenderApp)]
+pub struct GiOccupancyPatches(pub Vec<GiOccupancyPatch>);
 
 /// A light's share of the GI injection (its record's multiplier); lights
 /// without one inject in full.
@@ -806,6 +828,21 @@ const SUN_LUX: f32 = 160.0;
 const SUN_GI_SCALE: f32 = 3.0;
 /// The manager's injection share; point lights take 1.5 times it, the sun 3.
 const INJECTION_SHARE: f32 = 0.1;
+
+/// The manager's light-injection share for a shading quality: 0.1, or 0.09
+/// at the high quality (above 3), which is what the original's per-frame
+/// entry stores in the field its light sources read. The GI's own point and
+/// sun uniforms use the fixed 0.1, as the original's per-block injection
+/// reads the unqualified value; a source outside the GI manager (the effects'
+/// direct light) takes this one.
+pub fn injection_share(high_quality: bool) -> f32 {
+    if high_quality {
+        // The product is taken in double precision and narrowed.
+        (INJECTION_SHARE as f64 * 0.9) as f32
+    } else {
+        INJECTION_SHARE
+    }
+}
 /// The sun's intensity below which the original leaves it out of the GI.
 const SUN_EPSILON: f32 = 1.192_09e-7;
 /// The original's own sun shadow map for the GI: 1024², with its direct-light
@@ -902,40 +939,7 @@ pub fn quad_indices(quads: usize) -> Vec<u16> {
     out
 }
 
-/// The TGIEmissive shapes registered with the manager, in registration
-/// order. The original appends a shape's pointer (and stores the manager in
-/// the shape), and unregisters by swapping the last list entry over the
-/// found one; a shape listed twice has both entries removed.
-#[derive(Resource, Default, Clone, Debug)]
-pub struct GiShapes(Vec<Entity>);
-
-impl GiShapes {
-    /// Registers a shape at the end.
-    pub fn register(&mut self, shape: Entity) {
-        self.0.push(shape);
-    }
-
-    /// Unregisters a shape: every entry equal to it is replaced by the last
-    /// list entry and the list shortens, as the original's walk does.
-    pub fn unregister(&mut self, shape: Entity) {
-        let old = self.0.len();
-        let mut list = self.0.clone();
-        let mut count = old;
-        for i in 0..old {
-            if list[i] == shape {
-                count -= 1;
-                list[i] = list[count];
-            }
-        }
-        list.truncate(count);
-        self.0 = list;
-    }
-
-    /// The registered shapes, in list order.
-    pub fn shapes(&self) -> &[Entity] {
-        &self.0
-    }
-}
+pub use crate::gi_shape::{GiShape, GiShapeProgram, GiShapeSample, GiShapes};
 
 /// A registered shape's volume for the manager's box: its world position
 /// and half extents (metres), in world X, Y, Z. A shape entity carries one
@@ -965,82 +969,50 @@ pub struct ShapeDraw {
 /// 256-wide block), and the slices from the centre less its vertical half
 /// extent, one more than twice it. Shapes whose centre is below slice 2, or
 /// whose clipped box is empty, draw nothing.
-pub fn shape_draw(volume: ShapeVolume, origin: Vec3, voxel: f32) -> Option<ShapeDraw> {
-    let p = (volume.position - origin) / voxel;
-    let centre = IVec3::new(
-        p.x.round_ties_even() as i32,
-        p.z.round_ties_even() as i32,
-        p.y.round_ties_even() as i32,
+///
+/// `dims` are the block's voxels in texture axes (X, Z depth, Y height); the
+/// manager's scale is one over the width times a voxel, and each centre is
+/// its voxel index: `round(width · ((p − block centre) · scale + 0.5))`,
+/// worked out in single precision in that order. The vertical centre is the
+/// world's zero (`below/width + p·scale`), and the half extents use the
+/// width on every axis, as the original does (all three presets are square).
+pub fn shape_draw(volume: ShapeVolume, origin: Vec3, dims: UVec3, voxel: f32) -> Option<ShapeDraw> {
+    let width = dims.x.max(1) as f32;
+    let inv = 1.0 / (width * voxel);
+    let centre = Vec3::new(
+        origin.x + 0.5 * width * voxel,
+        origin.y + 0.5 * dims.z as f32 * voxel,
+        origin.z + 0.5 * dims.y as f32 * voxel,
     );
-    let half = IVec3::new(
-        (volume.half.x / voxel).ceil() as i32,
-        (volume.half.z / voxel).ceil() as i32,
-        (volume.half.y / voxel).ceil() as i32,
-    );
-    let lo = (centre.xy() - half.xy()).max(IVec2::splat(SHAPE_LO));
-    let hi = (centre.xy() + half.xy()).min(IVec2::splat(SHAPE_HI));
-    (lo.x < hi.x && lo.y < hi.y && centre.z > 1).then_some(ShapeDraw {
+    // X and Z measure from the block's centre; the height measures from the
+    // world's zero (the block's vertical origin is its `below` offset).
+    let below = -origin.y / voxel;
+    let column = |p: f32, c: f32| (p - c) * inv + 0.5;
+    let centre_x = (width * column(volume.position.x, centre.x)).round_ties_even() as i32;
+    let centre_z =
+        (dims.y.max(1) as f32 * column(volume.position.z, centre.z)).round_ties_even() as i32;
+    let centre_y = (width * (below / width + volume.position.y * inv)).round_ties_even() as i32;
+    // The half extent is scaled first, then widened: `width · (h · scale)`,
+    // rounded up (the engine's ceiling helper).
+    let half = |h: f32| (width * (h * inv)).ceil() as i32;
+    let half_x = half(volume.half.x);
+    let half_z = half(volume.half.z);
+    let half_y = half(volume.half.y);
+    let lo =
+        (IVec2::new(centre_x, centre_z) - IVec2::new(half_x, half_z)).max(IVec2::splat(SHAPE_LO));
+    let hi =
+        (IVec2::new(centre_x, centre_z) + IVec2::new(half_x, half_z)).min(IVec2::splat(SHAPE_HI));
+    (lo.x < hi.x && lo.y < hi.y && centre_y > 1).then_some(ShapeDraw {
         lo: lo.as_uvec2(),
         hi: hi.as_uvec2(),
-        first: centre.z - half.z,
-        count: half.z * 2 + 1,
+        first: centre_y - half_y,
+        count: half_y * 2 + 1,
     })
 }
 
 /// The first and one-past-last column a shape draws over (both axes).
 const SHAPE_LO: i32 = 8;
 const SHAPE_HI: i32 = 248;
-
-/// The shader-library program a registered GI shape injects with. The manager
-/// builds `gi_inject_v` and `gi_inject_g` once and links each program to one
-/// of these fragments; the shapes' own uniforms and fragment bodies belong
-/// to the effect classes, which are outside this component, so Exarust keeps
-/// only the manager's side: the name its program builder links.
-#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
-pub enum GiShapeProgram {
-    /// `gi_dome`: a sphere shell with a dome texture.
-    Dome,
-    /// `gi_cuboid`: a box with a soft edge falloff.
-    Cuboid,
-    /// `gi_bubble`: a sphere shell with a bubble texture.
-    Bubble,
-    /// `gi_telebubble`: the teleporter's pulsing bubble.
-    TeleBubble,
-    /// `gi_gradline`: a line light with a gradient along it.
-    GradLine,
-    /// `gi_multipoint`: a run of point lights.
-    Multipoint,
-}
-
-impl GiShapeProgram {
-    /// Every program, in the shader library's order.
-    pub const ALL: [Self; 6] = [
-        Self::Dome,
-        Self::Cuboid,
-        Self::Bubble,
-        Self::TeleBubble,
-        Self::GradLine,
-        Self::Multipoint,
-    ];
-
-    /// The entry's name in the shader library (the manager links
-    /// `gi_inject_v` and `gi_inject_g` with it).
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Dome => "gi_dome",
-            Self::Cuboid => "gi_cuboid",
-            Self::Bubble => "gi_bubble",
-            Self::TeleBubble => "gi_telebubble",
-            Self::GradLine => "gi_gradline",
-            Self::Multipoint => "gi_multipoint",
-        }
-    }
-
-    /// The program a shader-library name names, if the manager knows it.
-    pub fn from_name(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|p| p.name() == name)
-    }
-}
 
 /// The four corners of one shape injection quad, in texture units (x,
 /// Z depth, Y height), as the manager's shape loop builds them: the shape's
@@ -1986,6 +1958,63 @@ struct GiOwed {
 /// Warm-up steps done in one frame at most; the rest follow in later frames.
 const MAX_STEPS_PER_FRAME: u32 = 16;
 
+/// Writes a moving mesh's changed occupancy region into the block's texture,
+/// as the original's sub-upload does (`glTexSubImage3D` over the dirty box).
+/// Both the bound block and one warming behind it take a patch for their
+/// own block.
+fn apply_occupancy_patches(
+    patches: Option<Res<GiOccupancyPatches>>,
+    textures: Option<Res<GiTextures>>,
+    pending: Option<Res<GiPendingTextures>>,
+    images: Res<RenderAssets<GpuImage>>,
+    queue: Res<RenderQueue>,
+) {
+    let Some(patches) = patches else { return };
+    if patches.0.is_empty() {
+        return;
+    }
+    let targets = [textures.as_deref(), pending.as_ref().map(|p| &p.0)];
+    for textures in targets.into_iter().flatten() {
+        let Some(occupancy) = images.get(&textures.occupancy) else {
+            continue;
+        };
+        for patch in &patches.0 {
+            // A patch for a block that is not bound waits until that block
+            // is uploaded whole from its edited cells.
+            if patch.sector != textures.sector {
+                continue;
+            }
+            let size = patch.hi.saturating_sub(patch.lo);
+            if size.min_element() == 0 || patch.bytes.len() != size.element_product() as usize {
+                continue;
+            }
+            queue.write_texture(
+                TexelCopyTextureInfo {
+                    texture: &occupancy.texture,
+                    mip_level: 0,
+                    origin: Origin3d {
+                        x: patch.lo.x,
+                        y: patch.lo.y,
+                        z: patch.lo.z,
+                    },
+                    aspect: Default::default(),
+                },
+                &patch.bytes,
+                TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(size.x),
+                    rows_per_image: Some(size.y),
+                },
+                Extent3d {
+                    width: size.x,
+                    height: size.y,
+                    depth_or_array_layers: size.z,
+                },
+            );
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn prepare_bind_group(
     mut commands: Commands,
@@ -2408,27 +2437,6 @@ mod tests {
     }
 
     #[test]
-    fn shapes_register_at_the_end_and_leave_by_swap_removal() {
-        let mut world = World::new();
-        let a = world.spawn_empty().id();
-        let b = world.spawn_empty().id();
-        let c = world.spawn_empty().id();
-        let mut shapes = GiShapes::default();
-        for e in [a, b, c] {
-            shapes.register(e);
-        }
-        assert_eq!(shapes.shapes(), &[a, b, c]);
-        shapes.unregister(b);
-        assert_eq!(shapes.shapes(), &[a, c]);
-        // A duplicate's both entries go.
-        shapes.register(c);
-        shapes.unregister(c);
-        assert_eq!(shapes.shapes(), &[a]);
-        shapes.unregister(a);
-        assert!(shapes.shapes().is_empty());
-    }
-
-    #[test]
     fn a_shapes_box_is_rounded_and_margin_clipped() {
         let draw = shape_draw(
             ShapeVolume {
@@ -2436,6 +2444,7 @@ mod tests {
                 half: Vec3::splat(1.0),
             },
             Vec3::ZERO,
+            BLOCK,
             0.2,
         )
         .unwrap();
@@ -2448,6 +2457,7 @@ mod tests {
                 half: Vec3::splat(4.0),
             },
             Vec3::ZERO,
+            BLOCK,
             0.2,
         )
         .unwrap();
@@ -2461,6 +2471,7 @@ mod tests {
                     half: Vec3::splat(0.3),
                 },
                 Vec3::ZERO,
+                BLOCK,
                 0.2,
             )
         };
@@ -2727,6 +2738,18 @@ mod tests {
     }
 
     #[test]
+    fn the_light_share_drops_at_the_high_shading_quality() {
+        assert_eq!(injection_share(false), 0.1);
+        // The product is double precision: 0.1f32 × 0.9 = 0.09000000134,
+        // which narrows to 0.09's own nearest float (a single-precision
+        // product would give 0.089999996, one step lower).
+        assert_eq!(injection_share(true), 0.09);
+        assert_eq!(injection_share(true).to_bits(), 0x3db8_51ec);
+        assert_ne!(injection_share(true), 0.1f32 * 0.9);
+        assert!(injection_share(true) < injection_share(false));
+    }
+
+    #[test]
     fn the_fill_estimate_counts_lights_sectors_and_slices() {
         // (2 + 2) lights × 3 sectors × (63 − 46) slices + 80.
         assert_eq!(GiGroupPlan::cost(2, 3, 46, 64), 284);
@@ -2976,16 +2999,6 @@ mod tests {
     }
 
     #[test]
-    fn a_shape_program_is_named_by_its_shader_library_entry() {
-        assert_eq!(GiShapeProgram::Dome.name(), "gi_dome");
-        assert_eq!(GiShapeProgram::Multipoint.name(), "gi_multipoint");
-        for program in GiShapeProgram::ALL {
-            assert_eq!(GiShapeProgram::from_name(program.name()), Some(program));
-        }
-        assert_eq!(GiShapeProgram::from_name("gi_inject_f"), None);
-    }
-
-    #[test]
     fn a_shapes_quad_walks_its_clipped_box() {
         let dims = UVec3::new(256, 256, 64);
         let draw = shape_draw(
@@ -2994,6 +3007,7 @@ mod tests {
                 half: Vec3::splat(1.0),
             },
             Vec3::ZERO,
+            BLOCK,
             0.2,
         )
         .unwrap();
