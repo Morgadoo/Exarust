@@ -448,8 +448,7 @@ impl TintLight {
 /// the value does not beat the stored alpha.
 pub fn tint_alpha(vertex: Vec3, stored: u8, light: &TintLight, roll: f64) -> Option<u8> {
     let d = vertex - light.origin;
-    let distance = (d.x * d.x + d.y * d.y) + d.z * d.z;
-    let mut distance = distance;
+    let mut distance = (d.x * d.x + d.y * d.y) + d.z * d.z;
     let dot = ((d.x * light.direction.x + d.y * light.direction.y) + d.z * light.direction.z)
         / light.direction.length();
     if dot > 0.0 {
