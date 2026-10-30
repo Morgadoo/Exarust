@@ -13,13 +13,19 @@
 //!
 //! A column is the same item container the pack is: its child frame takes
 //! the pack's style and attribute bits (0x80, 0x10 and 0x100000) and its
-//! entries draw through the icon panel. The scroll arrows and the template
-//! buttons are line-skin buttons. The inventory key shows or hides the
-//! embedded inventory; Escape closes the arsenal.
+//! entries draw through the icon panel. The eight controls come from the
+//! form's control template: each 44 × 44 design pixels (11 units), the two
+//! arrows, five template buttons and the inventory toggle. The template
+//! names pictures (6 for the arrows, 1–5 for the template buttons, 7 for
+//! the toggle), not captions; they are drawn here as line-skin buttons
+//! with stand-in captions [guess: the pictures are not traced]. The
+//! inventory key shows or hides the embedded inventory; Escape closes the
+//! arsenal.
 //!
-//! The arena's store fills the columns ([`ArsenalWindow::set_column`]) and
-//! owns the drop rules (`exa_items::arsenal::drop_in`); the window here is
-//! the form and its input.
+//! Not wired: nothing in the running game opens the window or sends its
+//! key and scroll messages yet, and no arena store fills the columns
+//! ([`ArsenalWindow::set_column`]); the drop rules stay the tested
+//! `exa_items::arsenal::drop_in` and `column_hook`.
 //!
 //! Evidence: the arsenal view's constructor, layout routine, close, key,
 //! scroll and drop handlers and the item container's constructor.
@@ -27,7 +33,7 @@
 use bevy::prelude::*;
 
 use exa_items::arsenal::{
-    self, CHECKED_OUT, ColumnPlace, Key, Layout, TOGGLE_CONTROL, arsenal_controls, arsenal_form,
+    self, ColumnPlace, Key, Layout, TOGGLE_CONTROL, arsenal_controls, arsenal_form,
 };
 use exa_ui::gui_core::GuiRect;
 use exa_ui::gui_draw::{GuiFrames, GuiTextures};
@@ -37,18 +43,22 @@ use crate::gui_paint::{self, Frame, Painted};
 use crate::item_container::Container;
 use crate::item_panel_draw::PanelIcons;
 
-/// The form's title [guess: the constructor's title-table call passes 7,
-/// whose string is not traced; the arena's window is called the arsenal].
+/// The form's title [guess: the constructor sets no caption that was
+/// traced; its call with 7 loads the eight-entry control template, controls
+/// 0 to 7].
 pub const TITLE: &str = "Arsenal";
 /// The form's style: the base constructor's centred-title bits.
 pub const STYLE: u32 = gui_paint::SCREEN_STYLE;
-/// The two scroll arrows' captions.
+/// The two scroll arrows' stand-in captions (the template's picture 6).
 pub const LEFT_ARROW: &str = "<";
 pub const RIGHT_ARROW: &str = ">";
-/// The five template buttons' captions, one per column.
+/// The five template buttons' stand-in captions (pictures 1 to 5).
 pub const TEMPLATE_LABELS: [&str; 5] = ["1", "2", "3", "4", "5"];
-/// The inventory toggle's caption.
+/// The inventory toggle's stand-in caption (picture 7).
 pub const TOGGLE_LABEL: &str = "Inventory";
+/// A control's side in design pixels (at unit 4), as the template sizes
+/// all eight.
+pub const CONTROL_SIDE: i32 = 44;
 
 /// A key event the arsenal handles. Codes are the pooled input's translated
 /// keys; flag bit 2 marks a release (which the arsenal ignores).
@@ -183,39 +193,11 @@ impl ArsenalWindow {
         self.scroll = self.layout().scroll;
     }
 
-    /// The columns' control flags after the constructor: the green and
-    /// yellow highlight masks.
-    pub fn column_flags(&self) -> (u32, u32) {
-        (arsenal::HIGHLIGHT_GREEN, arsenal::HIGHLIGHT_YELLOW)
-    }
-
-    /// Whether a payload may be dropped into a column: the original refuses
-    /// a payload that came from a column ([`arsenal::column_hook`]).
-    pub fn column_accepts(&self, from_column: bool) -> bool {
-        from_column
-    }
-
-    /// Whether the embedded inventory takes a payload: it does unless the
-    /// payload is marked checked out.
-    pub fn inventory_accepts(&self, flags: u32) -> bool {
-        arsenal::inventory_accepts(flags)
-    }
-
-    /// Sets one column's panel (the arena's store fills them).
+    /// Sets one column's panel (for an arena store to fill; none does yet).
     pub fn set_column(&mut self, column: usize, items: Container) {
         if let Some(slot) = self.columns.get_mut(column) {
             *slot = items;
         }
-    }
-
-    /// The checked-out mark a payload from another column carries.
-    pub fn check_out(flags: &mut u32, add_ref: &mut dyn FnMut()) -> bool {
-        arsenal::column_hook(false, flags, add_ref)
-    }
-
-    /// The checked-out bit a payload may carry.
-    pub fn is_checked_out(flags: u32) -> bool {
-        flags & CHECKED_OUT != 0
     }
 }
 
@@ -320,13 +302,15 @@ pub fn paint_arsenal(window: &ArsenalWindow, textures: &GuiTextures) -> ArsenalP
         let rect = GuiRect::new(
             origin.0 + i32::from(at[0]),
             origin.1 + i32::from(at[1]),
-            window.unit * arsenal::ARROW_WIDTH_UNITS,
-            window.unit * 6,
+            CONTROL_SIDE * window.unit / 4,
+            CONTROL_SIDE * window.unit / 4,
         );
         buttons.push((index, rect));
         let button = gui_paint::paint_line_button(
             rect,
             gui_paint::ButtonWords {
+                // [guess: the template's style words are not mapped onto
+                // the line skin's]
                 style: 0x40,
                 state: 0,
                 group: 0,
@@ -568,7 +552,6 @@ mod tests {
         assert_eq!(form.height, FRAME_HEIGHT);
         assert!(form.inventory_shown);
         assert_eq!(form.last_control, 7);
-        assert_eq!(window.column_flags(), (0x400, 0x200));
         assert_eq!(window.columns.len(), COLUMNS);
         // A column frame's initial size at the default unit.
         let places = window.column_places(&window.layout());
@@ -607,21 +590,5 @@ mod tests {
                 .count(),
             6
         );
-    }
-
-    #[test]
-    fn a_drop_from_a_column_is_refused_and_the_pack_takes_unchecked_payloads() {
-        let window = window();
-        assert!(window.column_accepts(true));
-        assert!(!window.column_accepts(false));
-        let mut flags = 0;
-        let mut refs = 0;
-        assert!(!ArsenalWindow::check_out(&mut flags, &mut || refs += 1));
-        assert_eq!(flags, CHECKED_OUT);
-        assert_eq!(refs, 1);
-        assert!(window.inventory_accepts(0));
-        assert!(!window.inventory_accepts(CHECKED_OUT));
-        assert!(ArsenalWindow::is_checked_out(CHECKED_OUT));
-        assert!(!ArsenalWindow::is_checked_out(0));
     }
 }

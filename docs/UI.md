@@ -2543,13 +2543,15 @@ popup and the character view still wait for their hosts.
   inventory toggle. Escape or a right-button release closes it; the
   inventory key shows or hides the inventory. A borrowed item stays in its
   column marked `0x200`, which the inventory refuses, until it is returned.
-  Closing saves the five columns into the chosen set, if any. The running
-  window is `exa_game::arsenal_view`: the form and column frame, the
-  visible columns as item panels and the control row draw through the GUI
-  draw path (the arrows and the six-entry template row whose last entry is
-  the inventory toggle), armoured with the pack's style and attribute
-  words; Escape, the inventory key and the scroll arrows run the window's
-  rules, and the arena's store fills the columns.
+  Closing saves the five columns into the chosen set, if any. The form is
+  painted by `exa_game::arsenal_view`: the form and column frame, the
+  visible columns as item panels and the eight template controls (44 × 44
+  design pixels: the arrows and the six-entry row whose last entry is the
+  inventory toggle) draw through the GUI draw path with the pack's style
+  and attribute words, the controls' pictures stood in by captions;
+  Escape, the inventory key and the scroll arrows run the window's rules.
+  Nothing in the running game opens it yet and no arena store fills its
+  columns.
 - **Popups** (`exa_ui::popups`): the item card fades in and out on a 256-unit
   squared curve, brings its task child to the front once its shown clock is
   reached (or a fade-in already past it ends) and gates its hit test on that
