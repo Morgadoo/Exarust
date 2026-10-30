@@ -359,10 +359,11 @@ pub fn drop_on_panel(
         return None;
     }
     // The body's equipment panel takes only the core crystal its body
-    // wants (`core_ok`, the body's `takes_core` test); anything else is
-    // refused and the source's drag ends.
+    // wants (`core_ok`, the body's `takes_core` test: the AL crystal for a
+    // race flagged for it, crystal A for one flagged for that); anything
+    // else is refused and the source's drag ends.
     if matches!(destination, Panel::BodyEquipment(_)) {
-        if core_ok && id == exa_items::char_loot::POWER_CRYSTAL_AL {
+        if core_ok {
             if let Some(container) = container_mut(screens, source) {
                 container.finish_drag(destination.number(), false, true, id, bulk);
             }
@@ -509,8 +510,8 @@ fn release(
     let unit = container(&screens, destination).map_or(4, |container| container.unit);
     let vscale = container(&screens, destination).map_or(1.0, |container| container.vscale);
     // The body's equipment panel's accept filter: the crystal its race takes
-    // while it wears none (`exa_items::char_loot::accepts`). The race flags
-    // are the race record's first flag word at offset 0x18.
+    // while it wears none (`exa_items::char_loot::accepts`), read from the
+    // race record's flag word.
     let core_ok = match destination {
         Panel::BodyEquipment(body) => body_entity(&mut bodies, body).is_some_and(|entity| {
             let worn = bodies
@@ -787,8 +788,8 @@ mod tests {
         assert!(refused.is_none());
         assert_eq!(screens.pack.entries.len(), 1);
         assert_eq!(screens.pack.entries[0].drag & 1, 0);
-        // The body's own crystal is accepted when its accept filter says so,
-        // and nothing else is even with the filter.
+        // The body's own crystal is accepted when its accept filter says so
+        // and refused when it does not.
         let crystal = exa_items::char_loot::POWER_CRYSTAL_AL;
         screens.pack.entries = vec![Entry {
             cell: Cell::new(10, 10),
@@ -845,15 +846,25 @@ mod tests {
             )
             .is_none()
         );
+        // Crystal A, for a race flagged for it, goes through the same
+        // filter: the panel takes whatever the body's test accepts.
+        let crystal_a = exa_items::possession::crystal::A;
+        screens.pack.entries = vec![Entry {
+            cell: Cell::new(10, 10),
+            id: crystal_a,
+            icon: 4,
+            flags: 0,
+            drag: 1,
+        }];
         let drag = PanelDrag {
             source: Some(Panel::PlayerPack),
             icon: 4,
             grab: Cell::new(0, 0),
-            id: 11,
+            id: crystal_a,
             flags: 0,
             bulk: 0,
         };
-        assert!(
+        assert_eq!(
             drop_on_panel(
                 &mut screens,
                 &icons,
@@ -863,7 +874,8 @@ mod tests {
                 Cell::new(50, 50),
                 true,
             )
-            .is_none()
+            .map(|(panel, id, _, _)| (panel, id)),
+            Some((Panel::BodyEquipment(7), crystal_a))
         );
     }
 
