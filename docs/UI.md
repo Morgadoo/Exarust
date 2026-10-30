@@ -2943,7 +2943,8 @@ callbacks:
 - **Settings page**: a child at 0, 64, the form's width less 8 by 408,
   holding the 27 records: the device readout (the renderer's name in
   Exarust; "Valve Steam Deck" on the Deck in the original) and the memory
-  readout ("Unknown" without a figure, which Exarust never has), a rule,
+  readout ("Unknown" without a figure; Exarust reads the DRM cards'
+  `mem_info_vram_total` when it can and says "Unknown" otherwise), a rule,
   then each option's label at x 16 and its slider (x 168, 140 wide, style
   0x405320, steps 0, 3, 3, 1, 3, 1, 3, 3) or checkbox.
 - **Controls page**: a child of the form's width less 16, 416 high, with a
@@ -3196,12 +3197,12 @@ and those already decoded keep theirs. The LOD bias is not: the original
 sets it on every bind, so a change rewrites every loaded material's bias
 (`exa_render::material::set_texture_bias`).
 
-Not reproduced, for lack of the matching feature: shading quality (Exarust
-has one shader), shadow detail (no per-detail shadow path), vertex-buffer,
-mipmap, swap-copy and GI-precision switches (the GI is already the
-original's 8-bit low-precision format), the video-memory figure (the
-readout says "Unknown") and the shader cache itself (Bevy compiles shaders
-as needed; the progress screen is shown). The controller bindings are in: the default pad table plays the
+Not reproduced, for lack of the matching feature: the shading quality's
+high path (Exarust has one shader; its `> 5` flag rule is kept), shadow
+detail (no per-detail shadow path), vertex-buffer, mipmap, swap-copy and
+GI-precision switches (the GI is already the original's 8-bit low-precision
+format) and the shader cache itself (Bevy compiles shaders as needed; the
+progress screen is shown). The controller bindings are in: the default pad table plays the
 game ([PLAYER.md](PLAYER.md), Gamepad); Steam's own binding screen and
 prompts are not, since Exarust does not link Steam. The aim speed is stored
 and shown but acts nowhere yet: in the original it eases the screen cursor
