@@ -86,6 +86,16 @@ event-driven winit loop.
   shows it when Bevy's renderer finds no usable adapter, through `zenity`
   or `kdialog`, else on standard error (always on standard error in an
   unattended run).
+- **Timed overlay.** Level-4 and level-5 messages join a ring of sixteen
+  slots (fifteen lines) and stay two seconds plus 50 ms a byte, the oldest
+  dropping one a tick once its expiry is strictly past; a push into a full
+  ring is dropped. The ring is drawn as one panel one interface unit in
+  from the window's corner, eighty units wide, grown by each line's wrapped
+  height plus a unit of gap, filled at alpha `0x80` in style 3; the lines
+  sit two units in and advance the same way (`exa_game::frame::LogOverlay`
+  and `overlay_layout`). Exarust does not draw the overlay yet: the rules
+  are pinned so a GUI pass can. `exa_ui::fps` shows how a font line becomes
+  an `ImageNode`.
 - **Reported failures.** A full-screen size the display refuses is logged
   as "Error : Display mode not supported." (level 4) and the desktop's size
   is kept; Exarust logs it when the settings' `ScreenWidth`/`ScreenHeight`
