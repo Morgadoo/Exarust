@@ -462,7 +462,11 @@ default, or the golem's `HitGlm`; the foley sums each layer's coverage times
 its bone's weight per class, picks the largest class sum times its factor,
 and above 1 gives the loop's volume (the class's volume factor). The
 golem bodies' `FoleyPlH` (2) and `Golem_Foley` (6, or 1 for race 0x1200)
-are the body loops. `exa_audio` plays them.
+are the body loops. `exa_audio` plays them. The classes are the item
+byte's as the armour builder copies it (0 flesh, 1 cloth, 2 leather, 3
+mail, 4 plate, 5 `HitHbr`, 6 golem), the order of every per-class table:
+the foley factors (0, 0, 0.3, 0.6, 1, 1) and volumes, the part impact's
+and foley's sets and the damage routine's layer loudness.
 
 `swing_voice` holds the swing voice's lifecycle, wired: `run_swings` keeps
 each fighter's `SwingVoice` (required by `SwingState`) and sends a

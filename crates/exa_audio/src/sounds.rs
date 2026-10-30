@@ -5,11 +5,18 @@
 //! Evidence: the part's sound set names (`SwingHA`, `StmHeal01`, `HitGlm`,
 //! `FoleyPlH`, `Golem_Foley`) and the pack's numbered variants: `swingha`
 //! 6, `stmheal` 1, `bdycol` 6, `skelhit` 6, `hitclt` 1, `hitltr` 4,
-//! `hitchn` 3, `hitplt` 8, `hitglm` 6, `foleyplh` 9, `golem_foley` 6. The
-//! class-to-set mapping follows the apparel doc (0 flesh, 1 cloth, 2
-//! leather, 3 mail, 4 plate, 6 golem); the flesh and skeleton defaults are
-//! `BdyCol` and `SkelHit` (a guess: their runtime pointers are built
-//! elsewhere).
+//! `hitchn` 3, `hitplt` 8, `hithbr` 6, `hitglm` 6, `foleyclt` 6, `foleyltr`
+//! 6, `foleychn` 6, `foleyplt` 7, `foleyhbr` 6, `foleyplh` 9,
+//! `golem_foley` 6. The character class's first setup loads the part
+//! impact's class table in the item byte's own order (0 `FlsCol`, 1
+//! `HitClt`, 2 `HitLtr`, 3 `HitChn`, 4 `HitPlt`, 5 `HitHbr`, 6 `HitGlm`)
+//! and the foley's (0 `FoleyFls`, 1 `FoleyClt`, 2 `FoleyLtr`, 3
+//! `FoleyChn`, 4 `FoleyPlt`, 5 `FoleyHbr`); the armour builder copies the
+//! byte into the layer as is, and the part's hit-sound routine and its
+//! foley routine index those tables by it. Class 0 never reaches the part
+//! table: it takes the flesh default `bdycol` (`SkelHit` for a skeleton
+//! race). The pack has no `foleyfls`, and class 0 and 1 never win the
+//! foley (their factor is 0).
 
 use bevy::prelude::*;
 
@@ -32,30 +39,44 @@ pub const HIT_FLESH: SoundSet<'static> = SoundSet::new("bdycol", 6);
 pub const HIT_SKELETON: SoundSet<'static> = SoundSet::new("skelhit", 6);
 /// The golem's hit sound (`HitGlm`).
 pub const HIT_GOLEM: SoundSet<'static> = SoundSet::new("hitglm", 6);
-/// Cloth (`hitclt`), leather (`hitltr`), mail (`hitchn`) and plate
-/// (`hitplt`).
+/// The part impact's armour classes 1 to 5: cloth (`hitclt`), leather
+/// (`hitltr`), mail (`hitchn`), plate (`hitplt`) and the sixth class
+/// (`hithbr`); class 6 is [`HIT_GOLEM`].
 pub const HIT_CLOTH: SoundSet<'static> = SoundSet::new("hitclt", 1);
 pub const HIT_LEATHER: SoundSet<'static> = SoundSet::new("hitltr", 4);
 pub const HIT_MAIL: SoundSet<'static> = SoundSet::new("hitchn", 3);
 pub const HIT_PLATE: SoundSet<'static> = SoundSet::new("hitplt", 8);
+pub const HIT_HBR: SoundSet<'static> = SoundSet::new("hithbr", 6);
 /// The clothing foley (`FoleyPlH`) and the golem's (`Golem_Foley`).
 pub const FOLEY_PLAYER: SoundSet<'static> = SoundSet::new("foleyplh", 9);
 pub const FOLEY_GOLEM: SoundSet<'static> = SoundSet::new("golem_foley", 6);
+/// The armour foley loops by hit-sound class, the original's table order:
+/// 0 `FoleyFls` (not in the pack), 1 cloth, 2 leather, 3 mail, 4 plate,
+/// 5 the sixth class.
+pub const FOLEY_CLASSES: [Option<SoundSet<'static>>; 6] = [
+    None,
+    Some(SoundSet::new("foleyclt", 6)),
+    Some(SoundSet::new("foleyltr", 6)),
+    Some(SoundSet::new("foleychn", 6)),
+    Some(SoundSet::new("foleyplt", 7)),
+    Some(SoundSet::new("foleyhbr", 6)),
+];
 
-/// The set a part's material plays, or none when the class has no set.
+/// The set a part's material plays, or none when the class has no set:
+/// the layer's class indexes the part table in the item byte's order (1
+/// cloth, 2 leather, 3 mail, 4 plate, 5 `HitHbr`, 6 golem). Class 0 is the
+/// flesh default, which [`exa_combat::sounds::part_hit_sound`] gives as
+/// [`HitSound::Flesh`] or [`HitSound::Skeleton`].
 pub fn hit_set(sound: HitSound) -> Option<SoundSet<'static>> {
     match sound {
-        HitSound::Flesh => Some(HIT_FLESH),
+        HitSound::Flesh | HitSound::Class(0) => Some(HIT_FLESH),
         HitSound::Skeleton => Some(HIT_SKELETON),
-        HitSound::Golem => Some(HIT_GOLEM),
-        // The layer's stored classes: 2 cloth, 3 leather, 4 mail, 5 plate;
-        // 0/1 are flesh and bone (the defaults).
-        HitSound::Class(0 | 1) => Some(HIT_FLESH),
-        HitSound::Class(2) => Some(HIT_CLOTH),
-        HitSound::Class(3) => Some(HIT_LEATHER),
-        HitSound::Class(4) => Some(HIT_MAIL),
-        HitSound::Class(5) => Some(HIT_PLATE),
-        HitSound::Class(6) => Some(HIT_GOLEM),
+        HitSound::Golem | HitSound::Class(6) => Some(HIT_GOLEM),
+        HitSound::Class(1) => Some(HIT_CLOTH),
+        HitSound::Class(2) => Some(HIT_LEATHER),
+        HitSound::Class(3) => Some(HIT_MAIL),
+        HitSound::Class(4) => Some(HIT_PLATE),
+        HitSound::Class(5) => Some(HIT_HBR),
         HitSound::Class(_) => None,
     }
 }
@@ -64,7 +85,8 @@ pub fn hit_set(sound: HitSound) -> Option<SoundSet<'static>> {
 pub fn foley_set(kind: FoleyKind) -> Option<SoundSet<'static>> {
     match kind {
         FoleyKind::None => None,
-        FoleyKind::Player | FoleyKind::Class(_) => Some(FOLEY_PLAYER),
+        FoleyKind::Class(class) => FOLEY_CLASSES.get(usize::from(class)).copied().flatten(),
+        FoleyKind::Player => Some(FOLEY_PLAYER),
         FoleyKind::Golem => Some(FOLEY_GOLEM),
     }
 }
@@ -292,22 +314,103 @@ pub(crate) fn swing_voices(
 mod tests {
     use super::*;
 
-    /// Every class maps to a shipped set, and unknown classes do not.
+    /// The part impact's classes follow the item byte's order (0 flesh, 1
+    /// cloth, 2 leather, 3 mail, 4 plate, 5 `HitHbr`, 6 golem), and unknown
+    /// classes have no set.
     #[test]
-    fn the_hit_and_foley_sets_cover_the_classes() {
+    fn the_hit_sets_follow_the_item_bytes_order() {
         assert_eq!(hit_set(HitSound::Flesh), Some(HIT_FLESH));
         assert_eq!(hit_set(HitSound::Skeleton), Some(HIT_SKELETON));
         assert_eq!(hit_set(HitSound::Golem), Some(HIT_GOLEM));
-        assert_eq!(hit_set(HitSound::Class(2)), Some(HIT_CLOTH));
-        assert_eq!(hit_set(HitSound::Class(3)), Some(HIT_LEATHER));
-        assert_eq!(hit_set(HitSound::Class(4)), Some(HIT_MAIL));
-        assert_eq!(hit_set(HitSound::Class(5)), Some(HIT_PLATE));
-        assert_eq!(hit_set(HitSound::Class(6)), Some(HIT_GOLEM));
-        assert_eq!(hit_set(HitSound::Class(9)), None);
+        let names: Vec<_> = (0..8)
+            .map(|c| hit_set(HitSound::Class(c)).map(|s| s.prefix))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                Some("bdycol"),
+                Some("hitclt"),
+                Some("hitltr"),
+                Some("hitchn"),
+                Some("hitplt"),
+                Some("hithbr"),
+                Some("hitglm"),
+                None
+            ]
+        );
+    }
+
+    /// A class's foley loop is the original's per-class set (no flesh set),
+    /// a golem's its own, and no loop none.
+    #[test]
+    fn the_foley_sets_follow_the_item_bytes_order() {
+        let names: Vec<_> = (0..7)
+            .map(|c| foley_set(FoleyKind::Class(c)).map(|s| s.prefix))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                None,
+                Some("foleyclt"),
+                Some("foleyltr"),
+                Some("foleychn"),
+                Some("foleyplt"),
+                Some("foleyhbr"),
+                None
+            ]
+        );
         assert_eq!(foley_set(FoleyKind::None), None);
         assert_eq!(foley_set(FoleyKind::Player), Some(FOLEY_PLAYER));
-        assert_eq!(foley_set(FoleyKind::Class(2)), Some(FOLEY_PLAYER));
         assert_eq!(foley_set(FoleyKind::Golem), Some(FOLEY_GOLEM));
+    }
+
+    /// A worn breastplate (item byte 4) rings plate, a mail shirt (3) mail
+    /// and leather boots (2) leather; a full plate body loops `foleyplt`.
+    #[test]
+    fn worn_items_ring_their_own_class() {
+        use exa_combat::damage::{Layer, PartArmour};
+        use exa_combat::sounds::part_hit_sound;
+        let part = |material| PartArmour {
+            outer: Some(Layer {
+                material,
+                coverage: 1.0,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let set = |m| hit_set(part_hit_sound(&part(m), false, false).unwrap());
+        assert_eq!(set(4), Some(HIT_PLATE));
+        assert_eq!(set(3), Some(HIT_MAIL));
+        assert_eq!(set(2), Some(HIT_LEATHER));
+        assert_eq!(set(1), Some(HIT_CLOTH));
+        assert_eq!(set(0), Some(HIT_FLESH));
+        let loop_ = foley(&[part(4); 18], false, false, false);
+        assert_eq!(loop_.kind, FoleyKind::Class(4));
+        assert_eq!(foley_set(loop_.kind).map(|s| s.prefix), Some("foleyplt"));
+    }
+
+    /// The installed `Sound.rpk` holds every variant of the part impact's
+    /// and the armour foley's sets and no more, and no `foleyfls` (skipped
+    /// without `EXANIMA_DIR`).
+    #[test]
+    fn the_installed_class_sets_have_every_variant() {
+        use exa_assets::{GameData, PackKind, locate_install};
+        let Some(dir) = locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(&dir).unwrap();
+        let sounds = game.pack(PackKind::Sound).unwrap();
+        let sets = (0..7)
+            .filter_map(|c| hit_set(HitSound::Class(c)))
+            .chain([HIT_SKELETON])
+            .chain(FOLEY_CLASSES.iter().flatten().copied());
+        for set in sets {
+            for i in 0..set.count {
+                assert!(sounds.get(&set.name(i)).is_some(), "{}", set.name(i));
+            }
+            assert!(sounds.get(&set.name(set.count)).is_none(), "{set:?}");
+        }
+        assert!(sounds.get("foleyfls01").is_none());
     }
 
     /// The lock sound's levels: draws 0 give volume 0.15 and pitch 0.9,

@@ -182,6 +182,10 @@ pub(crate) fn impact_sounds(
             .entry(set.prefix)
             .or_insert_with(|| bank.load_set(&game, &mut sources, set.prefix));
         env.play_set(&mut bank, id, sound.point, gain, sound.pitch, 0);
+        debug!(
+            "limb impact: {:?} bone {} foley {} {} gain {gain:.4} pitch {:.3}",
+            sound.target, sound.bone, sound.foley, set.prefix, sound.pitch
+        );
     }
 }
 
@@ -253,7 +257,7 @@ fn sound_class(sound: exa_combat::sounds::HitSound) -> u8 {
 mod tests {
     use super::*;
     use crate::environment::voice_flags;
-    use crate::sounds::{FOLEY_PLAYER, HIT_FLESH};
+    use crate::sounds::{FOLEY_CLASSES, HIT_FLESH};
     use exa_combat::damage::{Layer, PartArmour};
 
     /// A block rings the struck item's root part's set; an item without a
@@ -309,20 +313,20 @@ mod tests {
         assert_eq!(impact_play(&sound, &fighter), Some((HIT_FLESH, 0.4)));
         sound.foley = true;
         assert_eq!(impact_play(&sound, &fighter), None);
-        let leather = Layer {
+        let mail = Layer {
             material: 3,
             coverage: 1.0,
             ..Default::default()
         };
         fighter.armour = [PartArmour {
-            outer: Some(leather),
+            outer: Some(mail),
             ..Default::default()
         }; 18];
         let loop_ = foley(&fighter.armour, false, false, false);
         assert!(loop_.volume > 0.0);
         assert_eq!(
             impact_play(&sound, &fighter),
-            Some((FOLEY_PLAYER, 0.4 * loop_.volume))
+            Some((FOLEY_CLASSES[3].unwrap(), 0.4 * loop_.volume))
         );
     }
 }
