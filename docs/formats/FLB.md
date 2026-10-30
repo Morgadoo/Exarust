@@ -281,6 +281,11 @@ accumulates (1, 2, 3, 4, 8, 15, 24, 66) and the first entry of the shared
 jitter table (0, 1, 3, 6, 10, 18, 33, 57, whose differences are the counts).
 A quarter draws at most four sub-frames (`min(samples, 4)`, so the 3-sample
 setting draws three), and a frame draws `ceil(samples/4)` quarters.
+Sub-frame `i` of quarter `q` reads jitter entry `first + 4q + i` with no
+stop at the setting's own run, so the 15-sample setting's sixteenth
+sub-frame takes entry 33 and the 66-sample setting's last two take the
+table's zero padding and the first two numbers of the `SdwSmp` table stored
+after it.
 `DspSdws` is 0 without `DispSdw`, otherwise 4 over the setting's sample
 count, at least 1: 4 without super-sampling, 1 at the 4× setting.
 
@@ -342,27 +347,28 @@ nothing when the scene has no such texture. Any other program whose shader
 word (scene bits included) has local reflections (`0x400000`) binds the
 scene texture's low field when there is one.
 
-#### Sub-frame matrices
+### Sub-frame matrices
 
 A quarter builds one projection per sub-frame from the camera's near-plane
-half extents as the view stores them (the vertical one and aspect times it,
-both negative) shifted by the sample's jitter: `d = 2·half·jitter/viewport`
+half extents as the view stores them (aspect times the vertical one, then
+the vertical one, both negative) shifted by the sample's jitter: `d = 2·half·jitter/viewport`
 per axis, the frustum edges `half + d` and `−half + d`, and the usual
 perspective terms `2n/(right−left)`, `2n/(top−bottom)`, the two centre
 offsets and the depth terms (an infinite projection for a zero far plane).
-The view matrix transposes the camera's world rotation and negates its
-translation (`−Rᵀt`); the composite is `view · projection`, and a draw
+The view matrix transposes the camera's world rotation, and its translation
+row is the negated camera position dotted with each camera axis row; the composite is `view · projection`, and a draw
 uploads the object's world matrix and the object times that composite.
 
 Each sub-frame also shifts its viewport by the sample's whole-pixel offset
 ((0,0), (1,0), (0,1), (1,1)), carries `((n + 0.5)/N − 0.5)·frame time` as
-its animation clock (`n = 4q + subframe`), and, for a geometry whose flag
+its animation clock (`n = 4q + subframe`; summed as
+`(q·step)·4 + (step·0.5 − time·0.5)` plus `subframe·step`), and, for a geometry whose flag
 word has `0x20`, rewrites the projection's depth lane (`m22`) to
 `((n + 0.5)·shutter/N + m22) − shutter·0.5` and rebuilds the composite.
 `exa_render::view` holds the level and jitter tables and
 `exa_render::subframe` the projection, view and composite fill.
 
-## Lights
+### Lights
 
 Each light is three `vec4`s:
 

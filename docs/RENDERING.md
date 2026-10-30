@@ -188,9 +188,10 @@ compare widens the opacity to double; a NaN takes the low branch), or, when
 the scene asks for its own refraction, that texture's low and high fields; a
 program with local reflections binds the scene texture's low field.
 
-**Draw state.** A draw reads three per-object words: its render material
-word (the lit bits gather lights, the diffuse-map bit `0x20000` picks the
-scene's emissive scale over the geometry's own), its object-flag word
+**Draw state.** A draw reads the drawing state's material key (taken from
+the material; its lit bits gather lights) and three words of the render
+object: its own word (`0x20000` picks the object's own emissive scale over
+the geometry record's), its flag word
 (`0x10` the sub-frame animation clock, `0x8000` the vertex-delta stream,
 `0x800000` the specular GI lookup) and its frame word (`0x20000000` the
 fade, `0x40000000` half passes). It rebuilds its object word from the
@@ -202,8 +203,8 @@ the drawing state's one stale flag, which a later lit draw consumes even
 when the changing draw had no lights. The material block is rewritten when
 the frame's fade bit is set and `1 − fade` differs from the stored diffuse
 alpha by more than `0x33FFFFD7` (an unordered compare does not rewrite),
-and when the geometry asks for a per-draw emissive scale (the scene's for a
-material with a diffuse map, else the geometry record's own). On the
+and when the geometry asks for a per-draw emissive scale (the object's own
+when its own word has `0x20000`, else the geometry record's). On the
 super-sampled path the liquid level is the liquid point's world height and
 the GI corner is uploaded for the environment's GI bit. A surface draws
 the scene's super-sampling sub-frames (halved under sun mode 3 for the
