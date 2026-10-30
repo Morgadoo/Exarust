@@ -849,6 +849,10 @@ Round 40 wireui: the use cursor, the GUI-to-world drop and the scripts' GameEven
 
 Round 41 navigation4: the camera's integer tick clock, the orbit release snap and the exact grass scatter live; review fixed the cell side precision, the node-frame transform order, the callback slot and the redraw byte.
 
+Round 42 motiledyn10: the body tick's link-iteration ramp (5 while dormant, else one a tick toward round((1 - 0.25 feral) 1660/83), half to even) wired into the body timers, and the default spawn samples its first clip by the pose-only sampler's key pick; review removed three duplicate blocks the lane had ported with errors.
+
+Round 42 playerctl11: the lift's placement limit and last frame, the world use cursor and drop record wiring; review fixed nine rules including the wheel NaN, the timed list order, the repair copies' offsets (now sharing the refresh passes) and the tagged use id.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
@@ -1215,6 +1219,8 @@ Round 40 charview2: the doll's hand scene and the figure's drag start as tested 
 
 Round 40 itemgui5: the icon atlas follows the interface scale live and the model-attach decisions are tested; review read the take-in gate as a wait and the 0x100 attach mark as shadow casting.
 
+Round 42 motilepart11: held item grip laws and drop and torch words; review reverted a wrong limit-link law and removed round 39's invented held-weld writes at death and collapse (those routines write the legs' limit links).
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
@@ -1425,6 +1431,12 @@ Round 41 particles4: particle quad frames, the fire host emissive driver and the
 
 Round 41 shaders5: the super-sampling sub-frame fill as a tested model; review fixed the view matrix translation row, the clock order and the emissive word, and folded duplicate helpers.
 
+Round 42 giseam: the outdoor shadow seam at the camera GI block's edge is gone (step 23.7 to 2.3 grey levels) by stepping every resident block and picking each object's block as the original does.
+
+Round 42 lightpool: the exanima01 start room's white pool is the level's own shaped light, which Exarust draws; the held torch drowns it (retail's story start leaves the torch on the floor). At matched framing with the torch on the floor, frame means match retail within 1-2 levels. A light now ranges only with the flag and a radius above zero; --debug-lights, --no-torch and --floor-torch added for retail comparisons.
+
+Round 42 skinning4 (re-landed with the bone-0 bind fix after a GPU regression): garment cull, depth-first joint capture and skin decomposition live; review gave the cull bits back to the garment slots, fixed the joint walk and rewired the decomposition inputs.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
@@ -1553,6 +1565,10 @@ Round 39 thaumtree8: the power tree's bar and prompt hit tests follow the live i
 Round 40 aiengage: brain-bearing characters now engage the player (the brain and duel tick name the foe by the player's fighter, not its root, so the target pass's pick matches); the player's arena roles follow the original (Unaligned in practice, the company's Faction 1 in the arena); combat-mode W moves a muscled body again (the capsule takes the footwork step's velocity). GPU: a brain duellist engages at tick 270 and lands 8 hits in 50 s.
 
 Round 41 combatant4: the duellist reads its foe's swing word, fighter blades and reach, and scores places by engagement level; review moved the foe lookups onto the fighter after round 40's foe fix.
+
+Round 42 golemwake: the golem alarm zones run live: the AI manager's zone check for the player (3 cm step, radius and box tests, the key-token pass search) wakes every statue golem within 800 cm of an entered exanima06 alarm zone, which then targets the player at concern 10 (GPU-checked); golems cannot fight yet because their bodies are not physical in Exarust.
+
+Round 42 motileai9: the standard AI sense ported and the race word picking each brain's sense live; review added the kind gate and fixed the selected character read.
 
 ### Phase 7 — Game modes and content
 
@@ -2066,6 +2082,12 @@ Round 39 savegames9: the save-disable flag, checkpoint save-then-copy and retail
 Round 40 blastfx2: the force blast and torrent checked against the assembly; review replaced duplicate min/max helpers, restored the double texture walk and rebuilt the torrent ribbon as the original draws it.
 
 Round 40 dialogue4: dialogue keys and the script cast mirror wired; review made scripts read red health and kept their role changes.
+
+Round 42 arena8: the arena's day end, company records and live hire list; review moved the rolls onto the library's Mersenne twister, fixed the day-end order, sent match deaths to the career and packed the coin records in saves.
+
+Round 42 dialogue: Talk starts a conversation, the reply panel and speech bubbles are painted and replies pick by click or digit; Derrin, the unknown background's companion, now stands in the first level so there is someone to talk to.
+
+Round 42 fxwire: the force blast, torrent and teleporter bubble register their GI lights live (the blast lights the struck opponent blue on the GPU), and a blast or torrent hit writes the pin gain and sets the balance's landing momentum to 5; the effect frame's inverse transform was fixed (it applied the frame twice).
 
 ### Phase 8 — Polish and release
 
