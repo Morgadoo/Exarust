@@ -310,6 +310,23 @@ pub struct Cast {
     pub characters: Vec<Character>,
 }
 
+/// A live character's values the session's script cast mirrors: the body's
+/// identity, role list and the AI values scripts read. Created by the app
+/// from the running world.
+#[derive(Debug, Clone, Copy)]
+pub struct Reading<'a> {
+    pub id: u32,
+    pub name: &'a str,
+    /// The role list the AI holds; a role already known keeps its values.
+    pub roles: &'a [HeldRole],
+    /// Health pool and maximum.
+    pub health: (f32, f32),
+    pub awake: bool,
+    /// AI arousal (dialogues need it low).
+    pub arousal: f32,
+    pub out_of_action: bool,
+}
+
 impl Cast {
     pub fn get(&self, id: u32) -> Option<&Character> {
         self.characters.iter().find(|c| c.id == id)
@@ -317,5 +334,123 @@ impl Cast {
 
     pub fn get_mut(&mut self, id: u32) -> Option<&mut Character> {
         self.characters.iter_mut().find(|c| c.id == id)
+    }
+
+    /// Mirror the live readings into the cast. A new id is added; an existing
+    /// character keeps its relations, its topic memory and every role value
+    /// the scripts wrote, and takes the reading's name, roles, health, awake,
+    /// arousal and out-of-action state. A role the reading dropped leaves the
+    /// list; a role it added comes from the reading. The order of the
+    /// readings is the order of new characters.
+    pub fn mirror(&mut self, readings: &[Reading<'_>]) {
+        for reading in readings {
+            let i = match self.characters.iter().position(|c| c.id == reading.id) {
+                Some(i) => i,
+                None => {
+                    self.characters
+                        .push(Character::new(reading.id, reading.name));
+                    self.characters.len() - 1
+                }
+            };
+            let character = &mut self.characters[i];
+            character.name.clear();
+            character.name.push_str(reading.name);
+            character.health = reading.health;
+            character.awake = reading.awake;
+            character.arousal = reading.arousal;
+            character.out_of_action = reading.out_of_action;
+            let mut merged = Vec::with_capacity(reading.roles.len());
+            for held in reading.roles {
+                merged.push(
+                    character
+                        .roles
+                        .iter()
+                        .find(|r| r.id == held.id)
+                        .cloned()
+                        .unwrap_or_else(|| held.clone()),
+                );
+            }
+            character.roles = merged;
+        }
+    }
+
+    /// Drop a character (a level unload): its relations and memory go.
+    /// Answers whether it was there.
+    pub fn forget(&mut self, id: u32) -> bool {
+        match self.characters.iter().position(|c| c.id == id) {
+            Some(i) => {
+                self.characters.remove(i);
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn role(id: u32) -> HeldRole {
+        HeldRole {
+            id,
+            weight: 1.0,
+            explicit: true,
+            inherited: 0,
+            values: Vec::new(),
+        }
+    }
+
+    fn reading<'a>(id: u32, name: &'a str, roles: &'a [HeldRole]) -> Reading<'a> {
+        Reading {
+            id,
+            name,
+            roles,
+            health: (1.0, 1.0),
+            awake: true,
+            arousal: 0.0,
+            out_of_action: false,
+        }
+    }
+
+    #[test]
+    fn a_mirror_adds_a_character_and_keeps_its_relations() {
+        let roles = [role(5), role(6)];
+        let mut cast = Cast::default();
+        cast.mirror(&[reading(9, "Derrin", &roles)]);
+        assert_eq!(cast.characters.len(), 1);
+        let c = cast.get(9).unwrap();
+        assert_eq!(c.name, "Derrin");
+        assert_eq!(c.roles.iter().map(|r| r.id).collect::<Vec<_>>(), [5, 6]);
+        // A relation the script made survives a later mirror.
+        cast.get_mut(9).unwrap().add_relation(3, 7, 0);
+        let mut r = reading(9, "Derrin", &roles[..1]);
+        r.arousal = 0.5;
+        cast.mirror(&[r]);
+        let c = cast.get(9).unwrap();
+        assert!(c.holds_toward(3, 7));
+        assert_eq!(c.roles.iter().map(|r| r.id).collect::<Vec<_>>(), [5]);
+        assert_eq!(c.arousal, 0.5);
+        assert!(cast.forget(9));
+        assert!(!cast.forget(9));
+        assert!(cast.get(9).is_none());
+    }
+
+    #[test]
+    fn a_mirror_keeps_the_role_values_the_scripts_wrote() {
+        let roles = [role(5)];
+        let mut cast = Cast::default();
+        cast.mirror(&[reading(2, "Corlian", &roles)]);
+        cast.get_mut(2).unwrap().roles[0].values = vec![11, 12];
+        // The AI's list still says the role with no values: the script's
+        // values stay.
+        cast.mirror(&[reading(2, "Corlian", &roles)]);
+        assert_eq!(cast.get(2).unwrap().roles[0].values, [11, 12]);
+        // A new role comes from the reading, in its own list.
+        let more = [role(5), role(8)];
+        cast.mirror(&[reading(2, "Corlian", &more)]);
+        let c = cast.get(2).unwrap();
+        assert_eq!(c.roles.iter().map(|r| r.id).collect::<Vec<_>>(), [5, 8]);
+        assert_eq!(c.roles[0].values, [11, 12]);
     }
 }
