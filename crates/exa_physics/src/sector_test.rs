@@ -962,3 +962,127 @@ fn the_object_stage_walks_the_nine_cells_around_its_own() {
     near.insert(body, 7);
     assert_eq!(near.around(object).collect::<Vec<_>>(), [7]);
 }
+
+/// The placement overlap query's gates: the probe's bound sphere and the
+/// body's mesh sphere must touch; the probe's sphere centre must lie
+/// within its own radius of the body's mesh box, and the body's sphere
+/// centre within its own radius of the probe's mesh box, each strict.
+#[test]
+fn the_placement_query_gates_with_the_two_bound_tests() {
+    let probe = PlacementBody {
+        sphere: (Vec3::ZERO, 10.0),
+        mesh: (Vec3::ZERO, Vec3::splat(5.0)),
+        mesh_radius: Vec3::splat(5.0).length(),
+        root: 0,
+        words: (0, 0),
+        key: 10,
+        static_only: false,
+    };
+    let body_at = |x: f32| PlacementBody {
+        sphere: (Vec3::ZERO, 10.0),
+        mesh: (Vec3::new(x, 0.0, 0.0), Vec3::splat(5.0)),
+        mesh_radius: Vec3::splat(5.0).length(),
+        root: 1,
+        words: (0, 0),
+        key: 20,
+        static_only: false,
+    };
+    // 20 cm apart, the two mesh spheres (10 + 8.66) do not touch.
+    assert!(!placement_offered(&probe, &body_at(20.0)));
+    // 15 cm: the spheres touch, but the probe's centre is 10 cm outside
+    // the body's box, equal to its radius, and the compare is strict.
+    assert!(!placement_offered(&probe, &body_at(15.0)));
+    // 14 cm: 9 cm outside, under the 10 cm radius.
+    assert!(placement_offered(&probe, &body_at(14.0)));
+    // The body's own sphere at the origin is within its 10 cm radius of
+    // the probe's box until it is 15 cm out; it is here 0 cm out, and a
+    // small body sphere fails the second gate instead.
+    let mut far_sphere = body_at(14.0);
+    far_sphere.sphere = (Vec3::new(0.0, 0.0, 20.0), 1.0);
+    assert!(!placement_offered(&probe, &far_sphere));
+}
+
+/// The same root skips when the group words share a bit; different roots
+/// skip only when the layer words name a shared exclusive channel (the
+/// original's `(a & b & 0x5555_5550) << 1 & (a | b)`).
+#[test]
+fn the_placement_query_filters_by_root_and_layers() {
+    let mut probe = PlacementBody {
+        sphere: (Vec3::ZERO, 10.0),
+        mesh: (Vec3::ZERO, Vec3::splat(5.0)),
+        mesh_radius: 8.66,
+        root: 1,
+        words: (0x10, 0x10),
+        key: 10,
+        static_only: false,
+    };
+    let mut body = probe;
+    body.key = 20;
+    body.root = 2;
+    // Different roots, the same channel 0x10: the shifted test is 0x20 &
+    // 0x10, clear, so the body is offered.
+    assert!(placement_offered(&probe, &body));
+    // Channel 0x20 in both: (0x20 << 1) & 0x20 is clear too.
+    probe.words.1 = 0x20;
+    body.words.1 = 0x20;
+    assert!(placement_offered(&probe, &body));
+    // Channel 1 in both: the masked test is non-zero and (1 << 1) & 1 is
+    // zero — the exclusive low bit is not a shared channel.
+    probe.words.1 = 1;
+    body.words.1 = 1;
+    assert!(placement_offered(&probe, &body));
+    // Channel 0x10 in both, with 0x20 set in one: the exclusive bit of the
+    // pair is shared, so they skip.
+    probe.words.1 = 0x10;
+    body.words.1 = 0x30;
+    assert!(!placement_offered(&probe, &body));
+    // The same root reads the group word: any shared bit skips.
+    body.root = probe.root;
+    probe.words = (0x10, 2);
+    body.words = (0x10, 2);
+    assert!(!placement_offered(&probe, &body));
+    probe.words.0 = 0x20;
+    assert!(placement_offered(&probe, &body));
+    // A body held to the world only is never pushed.
+    body.static_only = true;
+    assert!(!placement_offered(&probe, &body));
+}
+
+/// The placement query walks the nine cells around the probe's own in the
+/// neighbour table's order and orders each offered body by its key.
+#[test]
+fn the_placement_query_walks_the_nine_cells_in_order() {
+    let probe = PlacementBody {
+        sphere: (Vec3::new(599.0, 0.0, 0.0), 10.0),
+        mesh: (Vec3::new(599.0, 0.0, 0.0), Vec3::splat(5.0)),
+        mesh_radius: 8.66,
+        root: 0,
+        words: (0, 0),
+        key: 10,
+        static_only: false,
+    };
+    let at = |x: f32, z: f32, key: u16| PlacementBody {
+        sphere: (Vec3::new(x, 0.0, z), 10.0),
+        mesh: (Vec3::new(x, 0.0, z), Vec3::splat(5.0)),
+        mesh_radius: 8.66,
+        root: 1,
+        words: (0, 0),
+        key,
+        static_only: false,
+    };
+    // The probe's cell and the next one across the 600 cm edge, then a body
+    // three cells away.
+    let bodies = [at(599.0, 0.0, 20), at(601.0, 0.0, 5), at(1800.0, 0.0, 1)];
+    let mut grid = CellGrid::new();
+    let cell = cell_of(Vec3::new(599.0, 0.0, 0.0), (0, 0));
+    for (id, body) in bodies.iter().enumerate() {
+        grid.insert(cell_of(body.sphere.0, (0, 0)), id);
+    }
+    // Only the body in the own cell and the one in the next cell are
+    // offered; the own cell comes first, and each says whether it goes
+    // first (a key under the probe's 10).
+    assert_eq!(
+        placement_scan(&probe, &grid, cell, &bodies),
+        [(0, false), (1, true)]
+    );
+}

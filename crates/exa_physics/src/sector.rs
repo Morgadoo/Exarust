@@ -590,6 +590,97 @@ pub fn static_overlap_meet(
     sphere_centre.distance_squared(mesh_centre) <= reach * reach
 }
 
+/// A body as the placement overlap query sees it, in world centimetres:
+/// the sphere around its collision spheres, its node's world-aligned mesh
+/// box and the sphere around it, the root body it belongs to, its two
+/// collision-filter words, its pair order key and whether its state
+/// carries the held-static-only bit.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlacementBody {
+    /// Centre and radius of the sphere around its collision spheres.
+    pub sphere: (Vec3, f32),
+    /// Centre and half extents of its node's world-aligned mesh box.
+    pub mesh: (Vec3, Vec3),
+    /// Radius of the sphere around that mesh box.
+    pub mesh_radius: f32,
+    /// The root body it belongs to: a body's own tree shares one, and the
+    /// original's same-root filter reads the group word.
+    pub root: u32,
+    /// The collision-filter words: the group word (same root) and the
+    /// layer word (different roots), as the pair stage's `Pairing` words.
+    pub words: (u32, u32),
+    /// The pair order key, the same word the pair stage orders by.
+    pub key: u16,
+    /// Whether its state carries the held-static-only bit (the original's
+    /// 0x800, an item held to the world only): such a body is not pushed.
+    pub static_only: bool,
+}
+
+/// Whether the original's placement overlap query offers `body` to
+/// `probe`, both in world centimetres. The gates are the original's, in
+/// its order: the probe's bound sphere against the body's mesh sphere
+/// ([`intersect::spheres_separated`], touching counts); the probe's sphere
+/// centre within the probe's own radius of the body's mesh box; the
+/// body's sphere centre within the body's own radius of the probe's mesh
+/// box (each compare is a strict `<`, so a NaN distance skips); then the
+/// collision filters — the same root skips when the group words share a
+/// bit, and differing roots skip when the layer words name a shared
+/// exclusive channel ([`crate::body::pairs::layers_apart`]) — and a held
+/// static-only body is not offered. A body that passes is tested by
+/// [`placement_meet`] with the lower key first.
+pub fn placement_offered(probe: &PlacementBody, body: &PlacementBody) -> bool {
+    if intersect::spheres_separated(
+        probe.sphere.0,
+        probe.sphere.1,
+        body.mesh.0,
+        body.mesh_radius,
+    ) {
+        return false;
+    }
+    let reach2 = probe.sphere.1 * probe.sphere.1;
+    if !(intersect::point_aabb_distance_squared(probe.sphere.0, body.mesh.0, body.mesh.1) < reach2)
+    {
+        return false;
+    }
+    let own2 = body.sphere.1 * body.sphere.1;
+    if !(intersect::point_aabb_distance_squared(body.sphere.0, probe.mesh.0, probe.mesh.1) < own2) {
+        return false;
+    }
+    if probe.root == body.root {
+        if body.words.0 & probe.words.0 != 0 {
+            return false;
+        }
+    } else if crate::body::pairs::layers_apart(body.words.1, probe.words.1) {
+        return false;
+    }
+    !body.static_only
+}
+
+/// The bodies the placement overlap query offers `probe`, in the original's
+/// scan order: the ids of the nine cells around the probe's own cell (the
+/// own cell first, then the eight neighbours in [`NEAR_OFFSETS`] order,
+/// [`CellGrid::around`]), each with whether the body is the first side of
+/// the overlap test (its key below the probe's, as the original calls
+/// [`placement_meet`] with the lower key first). A body is bucketed in one
+/// cell only, so no id repeats.
+pub fn placement_scan(
+    probe: &PlacementBody,
+    grid: &CellGrid,
+    cell: (i32, i32),
+    bodies: &[PlacementBody],
+) -> Vec<(usize, bool)> {
+    let mut out = Vec::new();
+    for id in grid.around(cell) {
+        let Some(body) = bodies.get(id) else {
+            continue;
+        };
+        if placement_offered(probe, body) {
+            out.push((id, body.key < probe.key));
+        }
+    }
+    out
+}
+
 /// The squared distance a world point lies outside a part's mesh box, as
 /// the original's point-to-oriented-box routine gives it: the point in the
 /// part's frame, each axis's overhang squared and summed x, y, z from 0;
