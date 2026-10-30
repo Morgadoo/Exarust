@@ -915,10 +915,37 @@ pub struct BarrierFrame {
     pub hum_at: Vec3,
 }
 
+/// The Bubble's draw program: the Barrier's vertex shader with its own
+/// fragment shader.
+pub const BUBBLE_VERTEX_PROGRAM: &str = "effectbarrier_v";
+pub const BUBBLE_FRAGMENT_PROGRAM: &str = "effectbubble_f";
+/// The uniforms the bubble's program looks up, in the constructor's order
+/// (the `EmiTex` sampler is bound to unit 0).
+pub const BUBBLE_UNIFORMS: [&str; 7] = [
+    "ObjMat", "TexOfs", "ViewPos", "Fade", "TexPos", "ColPt", "EmiTex",
+];
+/// The unit the bubble's `EmiTex` sampler binds.
+pub const BUBBLE_TEXTURE_UNIT: u32 = 0;
+
 /// The Bubble.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Bubble {
     pub dome: Dome,
+}
+
+/// What a bubble's frame hands its draw.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BubbleFrame {
+    /// `ColPt`: the eight ripple points, their shown amount in the fourth
+    /// slot.
+    pub points: [[f32; 4]; 8],
+    /// `TexPos`.
+    pub tex_pos: [f32; 2],
+    /// `ViewPos`: the camera in the bubble's frame (the bubble is unturned).
+    pub view_pos: Vec3,
+    /// `Fade`: `max(1 − previous, 0)` while growing or holding, the
+    /// shrinking share afterwards.
+    pub fade: f32,
 }
 
 impl Bubble {
@@ -986,6 +1013,22 @@ impl Bubble {
             _ => {}
         }
         (None, false)
+    }
+
+    /// The draw the bubble's own frame uploads: the eight ripple points,
+    /// the texture position, the camera seen from the bubble's frame and
+    /// the fade. `None` once the bubble has left the scene.
+    pub fn frame(&mut self, camera: Vec3) -> Option<BubbleFrame> {
+        if self.dome.removed {
+            return None;
+        }
+        self.dome.ripples.copy_points();
+        Some(BubbleFrame {
+            points: self.dome.ripples.points,
+            tex_pos: self.dome.tex_pos,
+            view_pos: camera - self.dome.at,
+            fade: self.dome.fade(),
+        })
     }
 
     /// One of the caster's own parts, `local` its centre in the bubble's
@@ -1338,6 +1381,43 @@ mod tests {
         assert_eq!(bubble.dome.share, 0.0);
         bubble.tick(2701, &mut roll);
         assert_eq!(bubble.dome.phase, Phase::Gone);
+    }
+
+    #[test]
+    fn the_bubble_draw_takes_its_points_place_and_fade() {
+        let (mut bubble, _) = Bubble::cast(
+            120.0,
+            Vec3::new(10.0, 0.0, 0.0),
+            0,
+            Vec3::ZERO,
+            0.0,
+            &mut random(),
+        );
+        bubble.dome.ripples.strike(Vec3::new(5.0, 6.0, 7.0), 1.0);
+        bubble.dome.ripples.tick();
+        bubble.dome.share = 0.25;
+        bubble.dome.shown_share = 0.25;
+        let camera = Vec3::new(10.0, 20.0, 30.0);
+        let frame = bubble.frame(camera).expect("a frame");
+        // The camera seen from the bubble's place.
+        assert_eq!(frame.view_pos, Vec3::new(0.0, 20.0, 30.0));
+        // max(1 − 0.25, 0) while growing.
+        assert_eq!(frame.fade, 0.75);
+        assert_eq!(frame.points[0][3], bubble.dome.ripples.list[0].shown);
+        assert_eq!(frame.points[1][3], 0.0);
+        assert_eq!(frame.tex_pos, bubble.dome.tex_pos);
+        // Shrinking draws the share itself.
+        bubble.dome.phase = Phase::Shrinking;
+        assert_eq!(bubble.frame(camera).unwrap().fade, 0.25);
+        // A removed bubble draws nothing.
+        bubble.dome.removed = true;
+        assert!(bubble.frame(camera).is_none());
+        assert_eq!(
+            (BUBBLE_VERTEX_PROGRAM, BUBBLE_FRAGMENT_PROGRAM),
+            ("effectbarrier_v", "effectbubble_f")
+        );
+        assert_eq!(BUBBLE_UNIFORMS[6], "EmiTex");
+        assert_eq!(BUBBLE_TEXTURE_UNIT, 0);
     }
 
     #[test]

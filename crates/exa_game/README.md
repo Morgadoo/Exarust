@@ -475,7 +475,9 @@ current positions, the 3- and 5-bit look draws), `effects::fire_node`
 (the eight-ripple list, the cast sound, the Barrier's damped height,
 800 ms grow window, drain, drawn radius, frame and keep-out, the Bubble's
 1200 ms grow, break and 700 ms fall and its two keep-outs, the character
-contact and balance drain, the double-sided meshes, and the node attach
+contact and balance drain, the double-sided meshes, the Bubble's draw
+(`effectbarrier_v`/`effectbubble_f`, its seven uniforms, the eight ripple
+points, the camera in its frame and its fade), and the node attach
 (flag 0x10000, the owner back pointer and the frame hook) and destroy
 (clear hook, light, material, object) that the live bubbles and barriers
 run), `effects::force_wave`
