@@ -1510,6 +1510,16 @@ in world space there too):
   the hardware's approximate reciprocal square root (the plane is rescaled
   by its y, so only rounding differs).
   A flat floor at height 0 fills the slice from −20 to 0 cm.
+- A mesh that ships without a point chunk is generated at load only where
+  the original does. A body model's part (the character physics-body
+  trigger) gets the general surface generator on its own triangles, run in
+  centimetres at parameter 20 (a 4 cm step) and greedy-covered
+  (`exa_physics::voxel::generated_surface_points`); the sphere query is a
+  triangle tree over the same triangles, standing in for the node's
+  collision query at level 2. A floor-set child gets the same points when
+  bit `0x10000` or bit `0x8` of its second flag word is set (the rule is
+  tested; the floor-set loader does not run it yet), and wall and
+  special-tile pieces take none.
 - Each column remembers the lowest slice a point fell in. A sector's floor
   is the lowest over all its 30 × 30 columns.
 
