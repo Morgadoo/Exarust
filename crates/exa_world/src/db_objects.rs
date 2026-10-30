@@ -127,6 +127,19 @@ pub fn container_volume(extents: [f32; 3]) -> ContainerVolume {
     }
 }
 
+/// One paint seed of the oldest item-body layout, as the object database's
+/// conversion draws it: two words from the run-time library's Mersenne
+/// twister, the second's top bit cleared and placed in the high half (the
+/// first word low), which the conversion then reduces modulo `0xFFFFFFFF`.
+/// The original seeds that twister from the clock at start-up, so only the
+/// draws' order and number are reproduced; the caller supplies the
+/// generator.
+pub fn paint_seed(mt: &mut crate::particles::Mt19937) -> u64 {
+    let low = u64::from(mt.next_u32());
+    let high = u64::from(mt.next_u32() & 0x7FFF_FFFF);
+    (high << 32) | low
+}
+
 /// The node flags a child of a managed tree takes: its parent's hidden
 /// bit, its own bits and [`MANAGED_CHILD`].
 pub fn child_flags(parent: u32, child: u32) -> u32 {
@@ -341,6 +354,29 @@ mod tests {
         let p = PlaceholderNode::default();
         assert_eq!(p.extents, [50.0; 3]);
         assert_eq!(p.radius, container_volume([50.0; 3]).radius);
+    }
+
+    #[test]
+    fn a_paint_seed_is_two_twister_words_with_the_top_bit_cleared() {
+        // The standard seed 5489 gives the twister's reference outputs
+        // 0xD091BB5C then 0x22AE9EF6, so the seed is
+        // 0x22AE9EF6_D091BB5C and reduces to 0xF3405A52.
+        let mut mt = crate::particles::Mt19937::new(5489);
+        let seed = paint_seed(&mut mt);
+        assert_eq!(seed, 0x22AE_9EF6_D091_BB5C);
+        assert_eq!(seed % 0xFFFF_FFFF, 0xF340_5A52);
+        // The database's oldest body layout takes one per body through the
+        // store's seed hook.
+        let mut file = exa_formats::objdb::MAGIC.to_le_bytes().to_vec();
+        file.extend(16u32.to_le_bytes());
+        let mut seeds = 0;
+        let store = exa_formats::objdb::Store::parse_with_seeds(&file, &mut || {
+            seeds += 1;
+            paint_seed(&mut crate::particles::Mt19937::new(7))
+        });
+        assert!(store.is_ok());
+        // An empty database has no bodies, so the hook is never drawn from.
+        assert_eq!(seeds, 0);
     }
 
     #[test]
