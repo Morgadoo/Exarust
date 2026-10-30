@@ -60,6 +60,11 @@ pub const PROCTOR: u32 = 27;
 pub const VILLAGER: u32 = 24;
 /// The arena's unaligned role.
 pub const UNALIGNED: u32 = 16;
+/// The arena's first faction: the career company's role, which a new
+/// career gives the player.
+pub const FACTION_1: u32 = 17;
+/// The arena's second faction: a two-sided match's opponents.
+pub const FACTION_2: u32 = 18;
 /// A level character's id has the top bit set.
 pub const LOCAL_ID: u32 = 0x8000_0000;
 /// Relations are kept by the id's low 28 bits.
@@ -201,10 +206,22 @@ impl Roles {
         roles
     }
 
-    /// An arena fighter: its roles cleared, then Unaligned.
+    /// An arena fighter: its roles cleared, then Unaligned. The practice
+    /// start gives the player this, and a practice opponent holds it.
     pub fn arena(book: &RoleDb) -> Self {
+        Self::only(book, UNALIGNED)
+    }
+
+    /// A career player: its roles cleared, then the company's Faction 1,
+    /// as a new career gives the player.
+    pub fn company(book: &RoleDb) -> Self {
+        Self::only(book, FACTION_1)
+    }
+
+    /// Its roles cleared, then `id` (and the parents it inherits).
+    pub fn only(book: &RoleDb, id: u32) -> Self {
         let mut roles = Self::default();
-        roles.add(book, UNALIGNED);
+        roles.add(book, id);
         roles
     }
 }
