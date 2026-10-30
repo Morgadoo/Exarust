@@ -3017,8 +3017,8 @@ undrawn whatever the player should not see (`exa_world::rooms`,
   within 2 m of that cell's centre (it computes each door's point too, but
   compares the light with the centre). Both index cells as row × width +
   column checked only against the cell count. Exarust reproduces both
-  (`Rooms::light_reach`, `Rooms::light_spill`); every door still counts as
-  open because placed doors are not mechanisms yet. The control-side query
+  (`Rooms::light_reach`, `Rooms::light_spill`), with nothing calling them
+  yet. The control-side query
   (`Rooms::door_reach`) is looser: it reads both cells without the room
   checks, so the same room, or two points both in no room, always reach;
   otherwise the first link of the first point's room into the second
@@ -3027,8 +3027,31 @@ undrawn whatever the player should not see (`exa_world::rooms`,
   its cell and the direction of its third matrix row (the quadrant of the
   engine's quick-arccosine yaw
   picks the cell behind it, with the original's widened quarter edges), and
-  the body lands in both rooms' entries (`DoorBodies`); no mechanism reads
-  it yet. The room manager's active-room
+  the body lands in both rooms' entries (`DoorBodies`).
+- **Doors and rooms.** At load the level builder binds every placed object
+  of the door kind to its link with the body of its object node's first
+  child (the leaf; no child, no binding; a child without a body leaves the
+  link open). Wherever the room manager reads a link's door (the active-room
+  walk, the reach query, the spill) the link counts as open while it has no
+  body or the body's pair flag is clear. The door step sets that flag on
+  both leaves of a pair while each unlocked leaf is shut or less than
+  0.4 rad from shut (a sliding leaf: at 0.8 of its travel to shut or more),
+  so a door swung 0.4 rad or more open counts as open, and so does a locked
+  door, which never sets it (the gates and portcullises the database marks
+  locked). A shut door only keeps the room behind it from turning active:
+  the room-state pass makes every door neighbour of an active room adjacent
+  and hides each again when the room leaves without reading the doors, and
+  the portal pass clips adjacent rooms through every doorway, shut or not,
+  so the room behind a shut door is drawn under its black lid, black from
+  the gameplay camera. The wall light flood never reads doors. Exarust binds
+  the doors as the level's objects are placed (`room_view::PlacedDoor`,
+  `BoundDoor`) and each frame gives every bound link, both directions, the
+  state of its hinged or sliding leaf (`rooms::link_open`,
+  `RoomTracker::set_door`); a static leaf (a sliding door without
+  `--sliding-doors`) leaves its link open. `exanima01` binds 96 of its 140
+  door objects; the rest stand where no link of their cell lies behind
+  them. `--toggle-door FRAME` gives the nearest bound door its own toggle,
+  for checks. The room manager's active-room
   flag (`RoomTracker::is_active`) is the low bit of a room's working state:
   set once the room has faded in (and while it is wanted again mid
   fade-out), clear while it fades in or out.
@@ -3485,9 +3508,9 @@ parallax and wetness, the outdoor environment cube's masked tint (the rule
 is in `scene_env::tint_environment_cube`, not uploaded), the day record table
 (a constant table in the executable, not decoded) and a driven time of day
 and weather, and the sun light's cloud dimmer (the model has it, the light
-does not apply it). A shut door leaves the room behind it hidden. A point
-in the next room is shown only when the view crosses the doorway
-(`rooms::seen_through`). A passage loads the level its id names. The lid
+does not apply it). Adjacent rooms are drawn whole under their lids, not
+clipped through their doorways (`rooms::seen_through` is unused). A passage
+loads the level its id names. The lid
 is not drawn into the lights' cube faces, and light does not yet pass
 through the portals (the wall flood of [Lights](#lights) bounds it).
 Software rendering here cannot afford the light shadows, so test frames use

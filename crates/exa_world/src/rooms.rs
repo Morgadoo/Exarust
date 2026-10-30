@@ -13,7 +13,7 @@
 //!
 //! Pure data and rules; the Bevy side is [`crate::room_view`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bevy::math::{Vec2, Vec3};
 use exa_formats::level::LevelGrid;
@@ -476,17 +476,16 @@ impl Rooms {
     }
 }
 
-/// The rooms behind `room`'s open doors. A shut door, listed in `closed`,
-/// does not load the room it faces.
-fn far_rooms(rooms: &Rooms, room: u16, closed: &[DoorLink]) -> Vec<u16> {
+/// The rooms behind every door link of `room`, shut or open: the original
+/// makes each of them adjacent to an active room, and hides each again when
+/// the room leaves, without reading the doors. Only the active-room walk
+/// ([`RoomTracker::wanted_through`]) reads them.
+fn far_rooms(rooms: &Rooms, room: u16) -> Vec<u16> {
     let mut out = Vec::new();
     let Some(here) = rooms.room(room) else {
         return out;
     };
     for link in &here.links {
-        if closed.contains(link) {
-            continue;
-        }
         if let Some(next) = rooms.room_of_index(link.to)
             && !out.contains(&next)
         {
@@ -604,7 +603,7 @@ pub fn door_link_at(rooms: &Rooms, position: Vec2, facing: Vec2) -> Option<DoorL
 /// `(from, to)` cells, so both sides carry the same body.
 #[derive(Debug, Clone, Default)]
 pub struct DoorBodies {
-    per_link: HashMap<(u32, u32), u32>,
+    per_link: HashMap<(u32, u32), u64>,
 }
 
 impl DoorBodies {
@@ -624,7 +623,7 @@ impl DoorBodies {
         rooms: &Rooms,
         position: Vec2,
         facing: Vec2,
-        body: u32,
+        body: u64,
     ) -> Option<DoorLink> {
         let link = door_link_at(rooms, position, facing)?;
         self.per_link.insert((link.from, link.to), body);
@@ -633,8 +632,17 @@ impl DoorBodies {
     }
 
     /// The body standing in a link, read from either side.
-    pub fn body(&self, link: DoorLink) -> Option<u32> {
+    pub fn body(&self, link: DoorLink) -> Option<u64> {
         self.per_link.get(&(link.from, link.to)).copied()
+    }
+
+    /// How many link entries carry a body (each bound door fills two).
+    pub fn len(&self) -> usize {
+        self.per_link.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.per_link.is_empty()
     }
 
     /// Forgets a link and its reverse (the original clears both rooms'
@@ -643,6 +651,19 @@ impl DoorBodies {
         self.per_link.remove(&(link.from, link.to));
         self.per_link.remove(&(link.to, link.from));
     }
+}
+
+/// Whether a door link counts as open where the original's room manager
+/// reads it (the active-room walk, the two-point reach query and the light
+/// spill), from the pair flag of the door body bound to it (`None`: no body,
+/// or a node without one). The link is open while there is no body or its
+/// flag is clear. The door's step sets that flag on both leaves of a pair
+/// while each unlocked leaf is shut or less than 0.4 rad from shut (a
+/// sliding leaf: travel at least 0.8 of shut), so a leaf swung 0.4 rad or
+/// more open counts as open, and so does a locked door, which never sets
+/// it (the gates and portcullises the database marks locked).
+pub fn link_open(pair_flag: Option<bool>) -> bool {
+    !pair_flag.unwrap_or(false)
 }
 
 /// Whether the segment from `eye` to `point` crosses the open doorway.
@@ -760,8 +781,8 @@ pub struct RoomTracker {
     since: Vec<u64>,
     /// The active list, in order.
     list: Vec<u16>,
-    /// Doors that are shut. A door not listed is open.
-    closed: Vec<DoorLink>,
+    /// Door links (from, to) that count as shut. A link not listed is open.
+    closed: HashSet<(u32, u32)>,
 }
 
 impl RoomTracker {
@@ -773,23 +794,39 @@ impl RoomTracker {
             fade: vec![Fade::None; rooms],
             since: vec![0; rooms],
             list: Vec::new(),
-            closed: Vec::new(),
+            closed: HashSet::new(),
         }
     }
 
-    /// Shuts or opens the door `link`. A shut door does not load the room
-    /// behind it.
+    /// Shuts or opens the door `link` (one direction; [`Self::set_door`]
+    /// sets both). A shut door does not make the room behind it active; that
+    /// room stays adjacent.
     pub fn set_open(&mut self, link: DoorLink, open: bool) {
-        self.closed.retain(|door| *door != link);
-        if !open {
-            self.closed.push(link);
+        if open {
+            self.closed.remove(&(link.from, link.to));
+        } else {
+            self.closed.insert((link.from, link.to));
         }
+    }
+
+    /// Shuts or opens the door `link` from both of its rooms, as the
+    /// original's door binding gives both rooms' link entries the same body.
+    /// Returns whether anything changed.
+    pub fn set_door(&mut self, link: DoorLink, open: bool) -> bool {
+        let reverse = DoorLink {
+            from: link.to,
+            to: link.from,
+        };
+        let changed = self.is_open(link) != open || self.is_open(reverse) != open;
+        self.set_open(link, open);
+        self.set_open(reverse, open);
+        changed
     }
 
     /// Whether the door `link` is open: the room walk itself, and a
     /// character looking for a way out of a room, both read it.
     pub fn is_open(&self, link: DoorLink) -> bool {
-        !self.closed.contains(&link)
+        !self.closed.contains(&(link.from, link.to))
     }
 
     pub fn state(&self, room: u16) -> RoomState {
@@ -871,8 +908,10 @@ impl RoomTracker {
     /// One frame with the anchor at `anchor` (metres, X/Z) at time `now`
     /// (ms). Nothing changes while the anchor's cell has no room.
     pub fn update(&mut self, rooms: &Rooms, anchor: Vec2, now: u64) {
-        let closed = self.closed.clone();
-        let mut wanted = Self::wanted_through(rooms, anchor, |link| !closed.contains(&link));
+        let closed = &self.closed;
+        let mut wanted = Self::wanted_through(rooms, anchor, |link| {
+            !closed.contains(&(link.from, link.to))
+        });
         if wanted.is_empty() {
             return;
         }
@@ -893,7 +932,7 @@ impl RoomTracker {
             } else if self.fade[ri] == Fade::Leaving {
                 if now >= self.since[ri] + FADE_MS {
                     self.list.swap_remove(i);
-                    for nb in far_rooms(rooms, r, &closed) {
+                    for nb in far_rooms(rooms, r) {
                         if let Some(s) = self.next.get_mut(nb as usize) {
                             *s = RoomState::Hidden;
                         }
@@ -915,7 +954,7 @@ impl RoomTracker {
         self.list.extend(wanted);
         for &r in &self.list {
             let ri = r as usize;
-            for nb in far_rooms(rooms, r, &closed) {
+            for nb in far_rooms(rooms, r) {
                 if let Some(s) = self.next.get_mut(nb as usize) {
                     *s = RoomState::Adjacent;
                 }
@@ -1299,8 +1338,9 @@ mod tests {
         assert_eq!(RoomTracker::wanted(&rooms, Vec2::new(0.5, 3.0)), [1, 0]);
     }
 
-    /// A shut door leaves the room behind it unloaded. Opening it loads
-    /// that room. A passage replaces the loaded level.
+    /// A shut door keeps the room behind it adjacent (drawn under its lid)
+    /// even within 2 m of its door point; opening it makes that room active.
+    /// A passage replaces the loaded level.
     #[test]
     fn a_shut_door_and_a_passage_change_what_is_loaded() {
         let g = two_rooms();
@@ -1308,10 +1348,26 @@ mod tests {
         let link = rooms.room(0).unwrap().links[0];
         let inside = Vec2::new(-8.0, 3.0);
         let mut shut = RoomTracker::new(rooms.len());
-        shut.set_open(link, false);
+        assert!(shut.set_door(link, false));
+        assert!(!shut.set_door(link, false));
         shut.update(&rooms, inside, 2_000);
         assert_eq!(shut.state(0), RoomState::Active);
-        assert_eq!(shut.state(1), RoomState::Hidden);
+        assert_eq!(shut.state(1), RoomState::Adjacent);
+        // At the door: the shut door is not walked, so room 1 stays adjacent.
+        shut.update(&rooms, near_door(1.0), 2_100);
+        assert_eq!(shut.active(), [0]);
+        assert_eq!(shut.state(1), RoomState::Adjacent);
+        // From the other side the reverse link is shut too.
+        assert_eq!(
+            RoomTracker::wanted_through(&rooms, Vec2::new(0.5, 3.0), |l| shut.is_open(l)),
+            [1]
+        );
+        // Opened: the room behind it enters at once.
+        assert!(shut.set_door(link, true));
+        shut.update(&rooms, near_door(1.0), 2_200);
+        assert_eq!(shut.active(), [0, 1]);
+        assert_eq!(shut.state(1), RoomState::Active);
+        assert_eq!(shut.fade(1), Fade::Entering);
         let mut open = RoomTracker::new(rooms.len());
         open.update(&rooms, inside, 2_000);
         assert_eq!(open.state(1), RoomState::Adjacent);
@@ -1900,6 +1956,130 @@ mod tests {
         ];
         group_links(&mut links, &cell_room);
         assert_eq!(links.iter().map(|l| l.to).collect::<Vec<_>>(), [1, 3, 2, 0]);
+    }
+
+    /// A link is open without a body and while its body's pair flag is
+    /// clear; the flag follows the door's own numbers: set while an
+    /// unlocked hinge is shut or less than 0.4 rad from shut, or a slider
+    /// is at 0.8 of its travel to shut or more; never on a locked door.
+    #[test]
+    fn a_link_follows_its_door_body_pair_flag() {
+        use exa_physics::door::{Door, LOCKED, Record, Shape};
+        assert!(link_open(None));
+        assert!(link_open(Some(false)));
+        assert!(!link_open(Some(true)));
+
+        let hinge = Shape {
+            sliding: false,
+            travel_link: 0,
+            sign: 1.0,
+            radius: 100.0,
+            half_swing: 0.8,
+            stop_slack: 79.15,
+            axis: Vec3::Y,
+        };
+        let flag =
+            |record: Record, heading: f32| Door::new(record, hinge, 0, heading, 0.0).both_passable;
+        let plain = Record::default();
+        let locked = Record {
+            flags: LOCKED,
+            ..Record::default()
+        };
+        // Shut (within 0.04 rad of the closed angle 0.8).
+        assert!(!link_open(Some(flag(plain, 0.8))));
+        // Open but less than 0.4 rad from shut: still counts shut.
+        assert!(!link_open(Some(flag(plain, 0.8 - 0.39))));
+        // 0.4 rad or more open: open.
+        assert!(link_open(Some(flag(plain, 0.8 - 0.41))));
+        // Locked: open whether shut or not.
+        assert!(link_open(Some(flag(locked, 0.8))));
+        assert!(link_open(Some(flag(locked, 0.0))));
+
+        let slider = Shape {
+            sliding: true,
+            ..hinge
+        };
+        let slide =
+            |record: Record, travel: f32| Door::new(record, slider, 0, 0.0, travel).both_passable;
+        assert!(!link_open(Some(slide(plain, 1.0))));
+        assert!(!link_open(Some(slide(plain, 0.8))));
+        assert!(link_open(Some(slide(plain, 0.79))));
+        assert!(link_open(Some(slide(plain, 0.0))));
+        assert!(link_open(Some(slide(locked, 1.0))));
+    }
+
+    /// Every door link of an active room makes the room behind it
+    /// adjacent, shut or open, and the rooms two doors away stay hidden.
+    #[test]
+    fn shut_doors_keep_their_rooms_adjacent() {
+        let mut g = Grid::new(8, 3);
+        g.open(1, 1, [7, 7, 7, 0xB])
+            .open(2, 1, [7, 0xB, 7, 0xB])
+            .open(3, 1, [7, 0xB, 7, 0xB])
+            .open(4, 1, [7, 0xB, 7, 7]);
+        let rooms = Rooms::flood(&g.0);
+        assert_eq!(rooms.len(), 4);
+        let a = rooms.room_of_cell(1, 1).unwrap();
+        let b = rooms.room_of_cell(2, 1).unwrap();
+        let c = rooms.room_of_cell(3, 1).unwrap();
+        let mut t = RoomTracker::new(rooms.len());
+        for link in rooms.room(b).unwrap().links.clone() {
+            t.set_door(link, false);
+        }
+        t.update(&rooms, Vec2::new(-15.0, 3.0), 0);
+        assert_eq!(t.state(a), RoomState::Active);
+        assert_eq!(t.state(b), RoomState::Adjacent);
+        assert_eq!(t.state(c), RoomState::Hidden);
+    }
+
+    /// The installed `exanima01`'s door objects bind to door links, each
+    /// on both sides: 96 of 140 (skipped without the game).
+    #[test]
+    fn shipped_doors_bind_to_links() {
+        use exa_formats::rdb::Database;
+        use exa_formats::rfc::{PlacedObject, Scene};
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let Ok(game) = exa_assets::GameData::open(&dir) else {
+            return;
+        };
+        let res = game.pack(exa_assets::PackKind::Resource).unwrap();
+        let global =
+            exa_formats::objdb::items(&Database::parse(res.get("objdb.rdb").unwrap()).unwrap());
+        let scene = Scene::parse(res.get("exanima01.rfc").unwrap()).unwrap();
+        let rooms = Rooms::flood(scene.grid.as_ref().unwrap());
+        // Each placed object of the door kind: its position and the X and
+        // Z of its third matrix row.
+        let doors: Vec<(Vec2, Vec2)> = scene
+            .placed_objects
+            .iter()
+            .filter(|o| {
+                let items = if o.is_local() {
+                    &scene.local_items
+                } else {
+                    &global
+                };
+                let id = o.id & PlacedObject::ID_MASK;
+                items.iter().find(|i| i.id == id).is_some_and(|i| {
+                    crate::db_objects::node_kind(i) == crate::db_objects::KIND_DOOR
+                })
+            })
+            .map(|o| {
+                (
+                    Vec2::new(o.transform[3][0], o.transform[3][2]),
+                    Vec2::new(o.transform[2][0], o.transform[2][2]),
+                )
+            })
+            .collect();
+        let mut bodies = DoorBodies::new();
+        let bound = doors
+            .iter()
+            .enumerate()
+            .filter(|(i, (p, f))| bodies.bind(&rooms, *p, *f, *i as u64).is_some())
+            .count();
+        assert_eq!((bound, doors.len()), (96, 140));
+        assert_eq!(bodies.len(), 2 * bound);
     }
 
     pub(crate) fn shipped_grid(level: &str) -> Option<LevelGrid> {
