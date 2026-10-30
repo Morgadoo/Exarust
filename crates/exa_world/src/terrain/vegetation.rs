@@ -16,6 +16,9 @@ use exa_physics::engine_math::{reciprocal_sqrt, sin_cos};
 const POINT_SEED: u32 = 0x1797_2D3E;
 const POINT_RADIUS: f32 = 1.3;
 const ATTEMPTS: usize = 30;
+/// The scatter grid's cell side per unit of radius: the original's double
+/// for 1/√2, one unit in the last place below the correctly rounded value.
+const CELL_PER_RADIUS: f64 = f64::from_bits(0x3FE6_A09E_667F_3BCC);
 /// Tile side in vertex steps.
 const SIDE: f32 = 240.0;
 /// The density mask is sampled at 240 × 240 texels: a vertex step `p` reads
@@ -123,8 +126,11 @@ pub fn points() -> &'static [Vec<Vec2>] {
 
 fn poisson_disc() -> Vec<Vec2> {
     let r = POINT_RADIUS;
-    let cell = r * std::f32::consts::FRAC_1_SQRT_2;
-    let dim = (SIDE / cell).round() as usize + 1;
+    // The cell side is the radius times the original's 1/√2 in double,
+    // narrowed once; the side over it is converted to the nearest whole
+    // (ties to even), plus one.
+    let cell = (f64::from(r) * CELL_PER_RADIUS) as f32;
+    let dim = (SIDE / cell).round_ties_even() as usize + 1;
     let mut grid: Vec<Vec<usize>> = vec![Vec::new(); dim * dim];
     let mut rng = Lcg(POINT_SEED);
     let mut points = Vec::new();
@@ -604,6 +610,25 @@ mod tests {
         assert_eq!(grid_cell(Vec2::new(2.5, 3.5), 1.0), (2, 4));
         // Truncation would put 0.6 in cell 0; the rounded index is 1.
         assert_eq!(grid_cell(Vec2::new(0.6, 0.6), 1.0), (1, 1));
+    }
+
+    #[test]
+    fn the_scatter_cell_is_narrowed_from_double() {
+        // 1.3 × the original's 1/√2 in double narrows to 0x3F6B533C; the
+        // single-precision product would be one unit lower (0x3F6B533B).
+        // The original's double is one unit below the correctly rounded
+        // 1/√2.
+        assert_eq!(
+            CELL_PER_RADIUS.to_bits() + 1,
+            std::f64::consts::FRAC_1_SQRT_2.to_bits()
+        );
+        let cell = (f64::from(POINT_RADIUS) * CELL_PER_RADIUS) as f32;
+        assert_eq!(cell.to_bits(), 0x3F6B_533C);
+        assert_eq!(
+            (POINT_RADIUS * std::f32::consts::FRAC_1_SQRT_2).to_bits(),
+            0x3F6B_533B
+        );
+        assert_eq!((SIDE / cell).round_ties_even() as usize + 1, 262);
     }
 
     #[test]

@@ -389,8 +389,9 @@ One system grows grass and plants (`exa_world::terrain::vegetation`):
   (`s = s·0x08088405 + 1`) seeded `0x17972D3E`: radius 1.3 vertex steps
   (26 cm) over 240 × 240, 30 attempts per active point, margin r/4. Draws
   are widened to double and scaled by 2⁻³², rounded to single once. The
-  neighbour grid's cell is the quotient rounded to nearest even (not
-  truncated); each cell lists four points at most, and retiring an active
+  neighbour grid's cell side is r × 1/√2 in double (the original's
+  double is one unit in the last place low), narrowed once, and a
+  point's cell is the quotient rounded to nearest even (not truncated); each cell lists four points at most, and retiring an active
   point swaps the list's last point into its slot (the original's range
   delete moves the tail in). The set
   is partitioned in place into 8 × 8 chunks of 6 m, rows first.
