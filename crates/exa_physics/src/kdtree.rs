@@ -254,11 +254,16 @@ impl<T> BackgroundBuilder<T> {
         self.outgoing.len()
     }
 
-    /// Empties both queues, as a session end does.
+    /// Empties both queues and stops the builder, as a session end does.
     pub fn clear(&mut self) {
         self.incoming.clear();
         self.outgoing.clear();
         self.kick = false;
+        self.stop = true;
+    }
+
+    /// Starts the builder again after [`BackgroundBuilder::clear`].
+    pub fn resume(&mut self) {
         self.stop = false;
     }
 }
@@ -345,6 +350,19 @@ mod tests {
         assert!(builder.build_one(|_| false, |_| {}));
         assert_eq!(builder.queued(), 0);
         assert_eq!(builder.built(), 0);
+    }
+
+    #[test]
+    fn clearing_the_builder_stops_it_until_resumed() {
+        let mut builder = BackgroundBuilder::new();
+        builder.enqueue(1);
+        builder.clear();
+        assert!(builder.is_stopping());
+        assert!(!builder.enqueue(2));
+        assert_eq!((builder.queued(), builder.built()), (0, 0));
+        builder.resume();
+        assert!(builder.enqueue(3));
+        assert_eq!(builder.queued(), 1);
     }
 
     #[test]
