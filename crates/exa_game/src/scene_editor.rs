@@ -16,6 +16,8 @@
 
 use exa_world::scene_nodes::{Released, Scene};
 
+use crate::nav_camera::Attachment;
+
 /// The frame cap, 1/60 s in milliseconds, as the double the original
 /// compares and divides with.
 pub const FRAME_CAP_MS: f64 = 16.666_666_666_666_668;
@@ -55,6 +57,9 @@ pub struct CameraSwitch {
     pub notified: bool,
     /// The mode whose leave callback ran on the last switch.
     pub left: Option<u32>,
+    /// The navigation controller's viewport attachment: a followed record
+    /// binds it and dropping the record detaches it.
+    pub attachment: Attachment,
 }
 
 impl CameraSwitch {
@@ -76,6 +81,7 @@ impl CameraSwitch {
             }
             (true, record) => {
                 self.target = record;
+                self.attachment.set_detached(record.is_none());
                 false
             }
             (false, None) => false,
@@ -508,11 +514,17 @@ mod tests {
         assert_eq!(c.viewport_mode, 1);
         assert!(c.notified);
         assert_eq!(c.left, None);
-        // The controller follows a new record, or lets go.
+        // The controller follows a new record, bound to the viewport.
         assert!(!c.switch(2, Some(7)));
         assert_eq!(c.target, Some(7));
+        assert!(!c.attachment.editing && c.attachment.bound);
+        // Dropping the record detaches the controller, and a new record
+        // binds it again.
         assert!(!c.switch(0, None));
         assert_eq!(c.target, None);
+        assert!(c.attachment.editing && !c.attachment.bound);
+        assert!(!c.switch(1, Some(9)));
+        assert!(!c.attachment.editing && c.attachment.bound);
         // Only modes from 3 up have a leave callback.
         c.switch(5, None);
         assert_eq!(c.left, None);
