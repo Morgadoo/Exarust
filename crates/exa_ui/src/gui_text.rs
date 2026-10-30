@@ -78,6 +78,21 @@ pub fn font_uv(font: &GuiFont, texture: (u16, u16)) -> Option<(f32, f32)> {
     ))
 }
 
+/// The bit a font record adds to the word it loads its texture with.
+pub const FONT_TEXTURE_BIT: u32 = 0x100;
+
+/// The word a font record's texture is loaded with: the requested word, or
+/// the GUI's default word when the request is −1, with [`FONT_TEXTURE_BIT`]
+/// set.
+pub fn font_texture_word(requested: u32, default: u32) -> u32 {
+    let requested = if requested == u32::MAX {
+        default
+    } else {
+        requested
+    };
+    requested | FONT_TEXTURE_BIT
+}
+
 /// The atlas cell of one byte: its column and row over 16. The sample
 /// spans this corner plus the font's sample step ([`font_uv`]).
 pub fn glyph_cell(byte: u8) -> (f32, f32) {
@@ -761,6 +776,21 @@ mod tests {
         );
         assert_eq!(font_uv(&RAYFORM_10, (0, 10)), None);
         assert_eq!(glyph_cell(b'A'), (0.0625, 0.25));
+    }
+
+    #[test]
+    fn a_font_texture_word_takes_the_default_and_the_gui_bit() {
+        assert_eq!(font_texture_word(0, 0x33), 0x100);
+        assert_eq!(font_texture_word(u32::MAX, 0x33), 0x133);
+        assert_eq!(font_texture_word(0x2000, 0x33), 0x2100);
+    }
+
+    #[test]
+    fn a_wrapped_block_hands_its_glyphs_to_the_render() {
+        let f = tens();
+        let wrapped = draw_wrapped(&f, b"aa bb", 0, 10, 20, 60, 0, false);
+        let batch = crate::gui_draw::text_batch(&f, &wrapped.quads, [1, 2, 3, 255], (1024, 1024));
+        assert_eq!(batch.vertices.len(), wrapped.quads.len() * 4);
     }
 
     #[test]

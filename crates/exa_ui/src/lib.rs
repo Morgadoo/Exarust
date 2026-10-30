@@ -175,10 +175,11 @@ pub use gui_task::{
     modifier_score,
 };
 pub use gui_text::{
-    ELLIPSIS, FontBinding, MENU_FONT, MenuFont, TextQuad, WrappedDraw, add_gap, add_gap_to_fonts,
-    count_lines, draw_line, draw_line_centred, draw_line_plain, draw_span, draw_tail,
-    draw_truncated, draw_wrapped, draw_wrapped_at, ellipsis_fit, fit_menu_width, fit_width,
-    font_uv, glyph_cell, measure, measure_in, menu_font_scale, needs_rescale,
+    ELLIPSIS, FONT_TEXTURE_BIT, FontBinding, MENU_FONT, MenuFont, TextQuad, WrappedDraw, add_gap,
+    add_gap_to_fonts, count_lines, draw_line, draw_line_centred, draw_line_plain, draw_span,
+    draw_tail, draw_truncated, draw_wrapped, draw_wrapped_at, ellipsis_fit, fit_menu_width,
+    fit_width, font_texture_word, font_uv, glyph_cell, measure, measure_in, menu_font_scale,
+    needs_rescale,
 };
 pub use heartbeat::Heartbeat;
 pub use help_system::{

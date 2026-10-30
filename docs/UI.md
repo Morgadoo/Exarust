@@ -25,7 +25,10 @@ italic (1 to 8), a gap (6, 8, 10, 12, 17, 24) and a line height (12, 16,
 original adds the gap to once at start-up. In `fontbase24r` a space
 advances 21, "A" 28, "i" 12 and "m" 37. A glyph's texture cell is its
 column and row over 16; the quad's top samples the cell's far edge (the
-glyphs are stored upside down).
+glyphs are stored upside down). A font record loads its texture with the
+requested word or, for a request of −1, the GUI's default word (0x33),
+with bit 0x100 set; the sample step is the glyph quad over that texture's
+size.
 
 A GUI scale level (0 to 5, the index of the scale in the table below)
 sets the GUI unit, the main and small fonts and the cells of the two icon
