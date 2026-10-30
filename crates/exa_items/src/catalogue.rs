@@ -127,8 +127,8 @@ pub struct CardFacts {
     pub armour: u8,
     /// The crystal-socket flag bit.
     pub sockets: bool,
-    /// The four crystal-socket words of the section the card shows (a
-    /// weapon's `+0x48`, else an apparel body's `+0x218`): the crystal kind
+    /// The four crystal-socket words of the section the card shows (the
+    /// weapon section's socket row, else the apparel body's): the crystal kind
     /// in bits 0–6 with `0x80` when the socket exists, and the charge in the
     /// high byte.
     pub socket_words: [u16; 4],
@@ -878,7 +878,7 @@ mod tests {
         weapon[0x3a] = 1; // material row
         weapon[0x42] = 0x42; // rank
         weapon[0x48] = 0x80; // sockets
-        weapon[0x49] = 2; // the B crystal, 0 charge
+        weapon[0x49] = 2; // the first socket's charge (empty, kind 0)
         weapon[0x4a] = 0x84; // the C crystal
         weapon[0x4b] = 200; // its charge
         weapon[0x4c] = 0x91; // the AR crystal

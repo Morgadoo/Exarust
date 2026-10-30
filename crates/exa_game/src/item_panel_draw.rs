@@ -314,8 +314,11 @@ impl PanelIcons {
     /// base times the GUI unit, its renderer is resized (the atlas is
     /// rebuilt at the new cell side, so every cell is given back), and every
     /// cached icon is drawn again. A slot's cell is gone until the render
-    /// finishes, and its half extents become the new unit plus half the
-    /// icon's own side. Does nothing when the unit is unchanged.
+    /// finishes; meanwhile its half extents are the new unit plus half the
+    /// icon side, and the finished render sets them from its measured size
+    /// (half rounded to even, plus the unit) as the original's loop does.
+    /// A freed slot (no id) has nothing to draw. Does nothing when the unit
+    /// is unchanged.
     pub fn rescale(&mut self, unit: i32, catalogue: Option<&ItemCatalogue>) {
         let unit = unit.max(1);
         if unit == self.cache.unit {
@@ -626,6 +629,5 @@ mod tests {
         manager.rescale(4, None);
         assert_eq!(manager.atlas.cell, 160);
         assert!(manager.pending.is_empty());
-        assert_eq!(manager.atlas.cell, 160);
     }
 }

@@ -120,8 +120,8 @@ pub fn crystal_of(kind: u8) -> Option<u32> {
 pub struct Sockets(pub [u16; 4]);
 
 impl Sockets {
-    /// The four socket words a section holds at `at` (a weapon's `+0x48`,
-    /// an apparel body's `+0x218`), little-endian. A byte past the section
+    /// The four socket words a section holds from byte `at` (the weapon
+    /// section's or the apparel body's socket row), little-endian. A byte past the section
     /// reads as zero.
     pub fn of_section(section: &[u8], at: usize) -> Self {
         let word = |i: usize| {

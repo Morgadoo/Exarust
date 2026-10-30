@@ -169,16 +169,11 @@ pub fn shield_desirability(byte: u8) -> f64 {
     f64::from(byte) * 0.05
 }
 
-/// Apparel's protection value: over the bones it covers, the sum of its
-/// four resistance bytes times the bone's weight times
-/// `√(coverage·0.01)·0.005`.
-/// The AI's and the character sheet's protection figure: the four resist
-/// bytes summed, times each bone's weight and the square root of its
-/// material strength. `coverage[i]` is the material table's entry `i + 1`
-/// (the item body's words from `+0x150`); the strength is multiplied by
-/// `0.01` and the square root by `0.005` in double precision, and the weight
-/// takes that product before the single-precision resist sum multiplies and
-/// adds it.
+/// Apparel's protection value, the AI's and the character sheet's figure:
+/// over the twenty bones, each nonzero coverage word `c` pairs with the
+/// bone's weight `w` (same index) and gives `w·(√(c·0.01)·0.005)` in double
+/// precision, rounded to single; the single-precision sum of the four
+/// resistance bytes multiplies it and the total adds it, bone by bone.
 pub fn protection_value(coverage: &[u32; 20], resist: [u8; 4]) -> f32 {
     let sum = resist.iter().map(|&r| u64::from(r)).sum::<u64>() as f32;
     let mut total = 0.0f32;
