@@ -20,13 +20,13 @@
 //! The world-load walk goes through the database in record order: an item
 //! body whose armour type byte is not zero runs the apparel palette
 //! generator on its palette byte's wealth plus signed variance and is
-//! refreshed; else a weapon record is refreshed; else a variant list is
-//! appended to the tables the fill will use.
+//! refreshed; else a weapon record is refreshed; else each child of a
+//! container whose item has a random table becomes a slot of the fill.
 
 use crate::instance::{MadeCondition, Spreads};
 use crate::refresh::{made_condition, write_condition};
 use exa_formats::containers::{self, RandomTable, RowCondition, TableEntry, entry};
-use exa_formats::objdb::Item;
+use exa_formats::objdb::{Item, Quantised};
 
 /// Section tags the grade, the row application and the walk read.
 const NAME: u32 = 0x1000_0000;
@@ -620,34 +620,13 @@ pub fn grade_object(source: &mut dyn GradeSource, id: u32, level: i32) -> u32 {
     copy
 }
 
-/// The palette byte an item body carries at `0x1A9`: its low two bits the
-/// wealth, bits 2 through 6 the variance magnitude (0..=31) and bit 7 the
-/// variance's sign.
-pub const PALETTE_BYTE: usize = 0x1A9;
-
 /// The armour type byte at `0x1A8`; the world-load walk reads a body's
-/// palette only when it is not zero.
+/// palette byte only when it is not zero.
 pub const ARMOUR_TYPE: usize = 0x1A8;
 
-/// The wealth the palette byte names (`byte & 3`), as a float.
-pub fn palette_wealth(palette: u16) -> f32 {
-    (palette & 3) as f32
-}
-
-/// The variance the palette byte names: bits 2 through 6 over 31, positive
-/// in single precision and, with bit 7 set, negated in double precision,
-/// as the original's two readers do.
-pub fn palette_variance(palette: u16) -> f32 {
-    let magnitude = i32::from((palette & 0x7C) >> 2);
-    if palette & 0x80 != 0 {
-        (-f64::from(magnitude) / 31.0) as f32
-    } else {
-        magnitude as f32 * (1.0 / 31.0)
-    }
-}
-
 /// What the world-load pass reads of the object database: each record's
-/// section tags, an item body's byte, and the refresh it runs.
+/// section tags, an item body's byte, a container section, and the refresh
+/// it runs.
 pub trait WorldSource {
     /// Every record id, in the database's order.
     fn ids(&self) -> Vec<u32>;
@@ -655,131 +634,64 @@ pub trait WorldSource {
     fn sections(&self, id: u32) -> Vec<u32>;
     /// The byte at `offset` of a record's item body.
     fn body_byte(&self, id: u32, offset: usize) -> Option<u8>;
-    /// A record's whole payload, for the variant-list walk.
-    fn payload(&self, id: u32) -> Option<Vec<u8>>;
+    /// A record's container section.
+    fn container(&self, id: u32) -> Option<containers::Container>;
     /// Refreshes a record's description and stats.
     fn refresh(&mut self, id: u32);
-    /// The palette byte (`0x1A9`) of a record's item body, as the two
-    /// bytes it spans. Defaults to reading [`WorldSource::body_byte`].
-    fn palette_byte(&self, id: u32) -> Option<u16> {
-        let low = self.body_byte(id, PALETTE_BYTE)?;
-        let high = self.body_byte(id, PALETTE_BYTE + 1).unwrap_or(0);
-        Some(u16::from_le_bytes([low, high]))
-    }
     /// Starts the apparel palette generator on a wealth value with mode 1
     /// (the original's shared palette, consumed by the texture painter).
     /// Exarust's painter keeps its own palette, so nothing is generated;
     /// the call is kept so the walk's reads and order are pinned.
     fn randomise_palette(&mut self, _wealth: f32) {}
-    /// Appends an object's variant list to the tables the walk builds:
-    /// each listed variant gets a table row at `row.offset` with `bulk`.
-    fn register_variants(&mut self, _object: u32, _table: &containers::VariantTable) {}
 }
 
-/// One row a variant list appends to an item's random table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct VariantRowRef {
-    /// The object whose `0x20000` list named the item.
-    pub object: u32,
-    /// The row's offset in that object's payload; the original stores the
-    /// payload-relative offset, not the row itself.
-    pub offset: usize,
-    /// The bulk the list shares among its rows (the section's word at
-    /// `0x0A`), stored in the row's second word.
-    pub bulk: u16,
-}
-
-/// The tables the world-load walk's variant lists feed, keyed by the item
-/// they name: for each listed item the original finds a table for its id
-/// or creates one, then appends a 20-byte row carrying the source offset
-/// and the list's bulk. Two objects naming the same item append to the
-/// same table in walk order.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct VariantRegistry {
-    tables: Vec<(u32, Vec<VariantRowRef>)>,
-}
-
-impl VariantRegistry {
-    /// An empty registry.
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Appends every row of `table` to the table of the item it names,
-    /// creating that table on first use. Returns how many rows were
-    /// appended.
-    pub fn register(&mut self, object: u32, table: &containers::VariantTable) -> usize {
-        for row in &table.rows {
-            let at = match self.tables.iter().position(|(id, _)| *id == row.id) {
-                Some(at) => at,
-                None => {
-                    self.tables.push((row.id, Vec::new()));
-                    self.tables.len() - 1
-                }
-            };
-            self.tables[at].1.push(VariantRowRef {
-                object,
-                offset: row.offset,
-                bulk: table.bulk,
-            });
-        }
-        table.rows.len()
-    }
-
-    /// The rows an item's table holds, in append order.
-    pub fn rows(&self, item: u32) -> &[VariantRowRef] {
-        self.tables
-            .iter()
-            .find(|(id, _)| *id == item)
-            .map_or(&[], |(_, rows)| rows)
-    }
-
-    /// The item ids with a table, in creation order.
-    pub fn items(&self) -> impl Iterator<Item = u32> + '_ {
-        self.tables.iter().map(|(id, _)| *id)
-    }
-
-    /// How many rows every table holds together.
-    pub fn len(&self) -> usize {
-        self.tables.iter().map(|(_, rows)| rows.len()).sum()
-    }
-
-    /// Whether no row has been appended.
-    pub fn is_empty(&self) -> bool {
-        self.tables.is_empty()
-    }
+/// The slot key the world-load walk gives a container child: the
+/// container's record id in the high bits, the child's index in the low
+/// sixteen.
+pub fn world_slot_key(record: u32, child: usize) -> usize {
+    ((record as usize) << 16) | (child & 0xFFFF)
 }
 
 /// The world-load pass's walk over the database, in record order:
 ///
 /// * a record with an item body whose armour type (`0x1A8`) is not zero
-///   reads its palette byte's wealth and variance, runs the palette
+///   reads its palette byte's (`0x1A9`) signed variance and wealth
+///   ([`Quantised::signed`], [`Quantised::count`]), runs the palette
 ///   generator on their sum and refreshes the record;
 /// * else a weapon record is refreshed;
-/// * else a record with a variant list (`0x20000`) hands it to
-///   [`WorldSource::register_variants`].
+/// * else each child of a container section whose item has a random table
+///   becomes a slot of `fill` drawing from that table, with the
+///   container's item limit and the key [`world_slot_key`].
 ///
-/// Returns how many records were refreshed. The original runs the
-/// container fill right after this walk, which `Fill::run` does.
-pub fn world_load(source: &mut dyn WorldSource) -> usize {
+/// Returns how many records were refreshed. The original runs the fill
+/// right after this walk, which [`Fill::run`] does.
+pub fn world_load(
+    source: &mut dyn WorldSource,
+    tables: &dyn TableSource,
+    fill: &mut Fill,
+) -> usize {
     let mut refreshed = 0;
     for id in source.ids() {
         let tags = source.sections(id);
         if tags.contains(&BODY) {
             if source.body_byte(id, ARMOUR_TYPE).is_some_and(|b| b != 0) {
-                let palette = source.palette_byte(id).unwrap_or(0);
-                source.randomise_palette(palette_wealth(palette) + palette_variance(palette));
+                let palette = Quantised([source.body_byte(id, PALETTE).unwrap_or(0), 0, 0, 0]);
+                source.randomise_palette(palette.signed() + f32::from(palette.count()));
                 source.refresh(id);
                 refreshed += 1;
             }
         } else if tags.contains(&WEAPON) {
             source.refresh(id);
             refreshed += 1;
-        } else if tags.contains(&containers::VARIANT_TABLE)
-            && let Some(payload) = source.payload(id)
-            && let Some(table) = containers::variant_table(&payload)
-        {
-            source.register_variants(id, &table);
+        } else if let Some(container) = source.container(id) {
+            for (k, child) in container.children.iter().enumerate() {
+                fill.add_slot(
+                    child.id,
+                    world_slot_key(id, k),
+                    i32::from(container.max_item),
+                    tables,
+                );
+            }
         }
     }
     refreshed
@@ -1116,14 +1028,13 @@ mod tests {
         id: u32,
         tags: Vec<u32>,
         body: Vec<u8>,
-        payload: Vec<u8>,
+        container: Option<containers::Container>,
     }
 
     struct World {
         records: Vec<Record>,
         refreshed: Vec<u32>,
         palettes: Vec<f32>,
-        variants: VariantRegistry,
     }
 
     impl WorldSource for World {
@@ -1144,11 +1055,11 @@ mod tests {
                 .and_then(|r| r.body.get(offset))
                 .copied()
         }
-        fn payload(&self, id: u32) -> Option<Vec<u8>> {
+        fn container(&self, id: u32) -> Option<containers::Container> {
             self.records
                 .iter()
                 .find(|r| r.id == id)
-                .map(|r| r.payload.clone())
+                .and_then(|r| r.container.clone())
         }
         fn refresh(&mut self, id: u32) {
             self.refreshed.push(id);
@@ -1156,125 +1067,81 @@ mod tests {
         fn randomise_palette(&mut self, wealth: f32) {
             self.palettes.push(wealth);
         }
-        fn register_variants(&mut self, object: u32, table: &containers::VariantTable) {
-            self.variants.register(object, table);
-        }
     }
 
-    fn record(id: u32, tags: Vec<u32>, body: Vec<u8>, payload: Vec<u8>) -> Record {
+    fn record(id: u32, tags: Vec<u32>, body: Vec<u8>) -> Record {
         Record {
             id,
             tags,
             body,
-            payload,
+            container: None,
         }
     }
 
     #[test]
-    fn the_world_load_walks_apparel_weapons_and_variant_lists() {
-        // A body of armour type 1 with palette byte 0x82: wealth 2, a
-        // negative variance of 0. 0x82 & 0x7c = 0, so variance 0.
+    fn the_world_load_walks_apparel_weapons_and_containers() {
+        // A body of armour type 1 with palette byte 0x96: wealth 2 and
+        // variance −5/31 (bits 2–6 hold 5, bit 7 the sign), taken in double
+        // as the shared reader does.
         let mut armour = vec![0u8; 0x1AC];
         armour[0x1A8] = 1;
-        armour[0x1A9] = 0x82;
+        armour[0x1A9] = 0x80 | (5 << 2) | 2;
         let mut plain = vec![0u8; 0x1AC];
         plain[0x1A9] = 0xFF;
-        // A variant list of one row.
-        let mut variant_body = vec![0u8; 0x18];
-        variant_body[0x0A..0x0C].copy_from_slice(&42u16.to_le_bytes());
-        variant_body[0x14..0x18].copy_from_slice(&1u32.to_le_bytes());
-        variant_body.extend_from_slice(&0x77u32.to_le_bytes());
-        variant_body.extend_from_slice(&[0; 8]);
-        let mut variant_payload = containers::VARIANT_TABLE.to_le_bytes().to_vec();
-        variant_payload.extend_from_slice(&((variant_body.len() + 8) as u32).to_le_bytes());
-        variant_payload.extend_from_slice(&variant_body);
-
+        // A container of three children: two name table 100, one an item
+        // without a table, which gets no slot.
+        let child = |id: u32| containers::Child {
+            id,
+            flags: 0,
+            x: 0,
+            y: 0,
+        };
+        let mut chest = record(6, vec![containers::CONTAINER], Vec::new());
+        chest.container = Some(containers::Container {
+            width: 4,
+            height: 4,
+            capacity: 100,
+            max_item: 40,
+            children: vec![child(100), child(55), child(100)],
+        });
         let mut world = World {
             records: vec![
-                record(1, vec![0x1000], armour, Vec::new()),
-                record(2, vec![0x1000], plain, Vec::new()),
-                record(3, vec![0x4000], Vec::new(), Vec::new()),
-                record(4, vec![0x200], Vec::new(), Vec::new()),
-                record(5, vec![0x1000], Vec::new(), Vec::new()),
-                record(
-                    6,
-                    vec![containers::VARIANT_TABLE],
-                    Vec::new(),
-                    variant_payload,
-                ),
+                record(1, vec![0x1000], armour),
+                record(2, vec![0x1000], plain),
+                record(3, vec![0x4000], Vec::new()),
+                record(4, vec![0x200], Vec::new()),
+                record(5, vec![0x1000], Vec::new()),
+                chest,
             ],
             refreshed: Vec::new(),
             palettes: Vec::new(),
-            variants: VariantRegistry::new(),
         };
-        assert_eq!(world_load(&mut world), 2);
-        assert_eq!(world.refreshed, [1, 3]);
-        assert_eq!(world.palettes, [2.0]);
-        assert_eq!(world.variants.len(), 1);
-        let rows = world.variants.rows(0x77);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].object, 6);
-        assert_eq!(rows[0].offset, 0x20);
-        assert_eq!(rows[0].bulk, 42);
-        assert_eq!(world.variants.items().collect::<Vec<_>>(), [0x77]);
-    }
-
-    #[test]
-    fn variant_lists_append_rows_to_the_named_items_table() {
-        let table = |bulk: u16, ids: &[u32]| containers::VariantTable {
-            bulk,
-            rows: ids
-                .iter()
-                .enumerate()
-                .map(|(at, &id)| containers::VariantRow {
-                    id,
-                    offset: 0x20 + at * 12,
-                })
-                .collect(),
-        };
-        let mut registry = VariantRegistry::new();
-        assert_eq!(registry.register(10, &table(40, &[0x77, 0x88])), 2);
-        // A second object naming the same item appends to its table rather
-        // than creating one.
-        assert_eq!(registry.register(11, &table(60, &[0x77])), 1);
-        assert_eq!(registry.items().collect::<Vec<_>>(), [0x77, 0x88]);
-        assert_eq!(registry.len(), 3);
-        assert_eq!(
-            registry.rows(0x77).to_vec(),
-            [
-                VariantRowRef {
-                    object: 10,
-                    offset: 0x20,
-                    bulk: 40
+        let db = Db(
+            HashMap::from([(
+                100,
+                RandomTable {
+                    min: 0,
+                    max: 0,
+                    entries: vec![row(0, 0, 0), row(22, 10, 0)],
                 },
-                VariantRowRef {
-                    object: 11,
-                    offset: 0x20,
-                    bulk: 60
-                }
-            ]
+            )]),
+            HashMap::new(),
         );
+        let mut fill = Fill::default();
+        assert_eq!(world_load(&mut world, &db, &mut fill), 2);
+        assert_eq!(world.refreshed, [1, 3]);
+        assert_eq!(world.palettes, [(-5.0f64 * (1.0 / 31.0)) as f32 + 2.0]);
+        assert_eq!(fill.draws.len(), 1);
+        let slots: Vec<(usize, i32)> = fill.draws[0]
+            .slots
+            .iter()
+            .map(|s| (s.child, s.max_item))
+            .collect();
         assert_eq!(
-            registry.rows(0x88).to_vec(),
-            [VariantRowRef {
-                object: 10,
-                offset: 0x2C,
-                bulk: 40
-            }]
+            slots,
+            [(world_slot_key(6, 0), 40), (world_slot_key(6, 2), 40)]
         );
-        assert!(registry.rows(0x99).is_empty());
-        assert!(!registry.is_empty());
-    }
-
-    #[test]
-    fn the_palette_byte_splits_into_wealth_and_a_signed_variance() {
-        assert_eq!(palette_wealth(0b10), 2.0);
-        assert_eq!(palette_wealth(0xFF), 3.0);
-        assert_eq!(palette_variance(0), 0.0);
-        // Bits 2..6: 31 over 31 is 1.
-        assert_eq!(palette_variance(31 << 2), 1.0);
-        // Bit 7 negates in double precision.
-        assert_eq!(palette_variance(0x80 | (5 << 2)), -(5.0 / 31.0) as f32);
+        assert_eq!(world_slot_key(6, 2), 0x6_0002);
     }
 
     #[test]
