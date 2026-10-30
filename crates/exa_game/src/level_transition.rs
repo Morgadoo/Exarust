@@ -148,6 +148,38 @@ pub fn export_for_save(input: &TransitionInput<'_>) -> exa_formats::Result<Vec<u
     export_save_level(input.scene, &input.options, settings)
 }
 
+/// The level section a save stores for the level it loaded: the section's
+/// chunk tree converted back into the exporter's scene
+/// ([`exa_formats::rfc_level::level_scene`]) and written again with the save
+/// switches, the story's settings chunk gated as [`export_for_save`] does.
+///
+/// The save package holds this section under the level's locale name, which
+/// is how the loader finds it again (`has_level_section`). A section that
+/// does not parse is an error, never a panic.
+pub fn exported_level_section(
+    level_bytes: &[u8],
+    story: bool,
+    settings: SettingsState,
+) -> exa_formats::Result<Vec<u8>> {
+    let scene = exa_formats::rfc::Scene::parse(level_bytes)?;
+    let raw = exa_formats::rfc_level::LevelRaw::scan(level_bytes)?;
+    let export = exa_formats::rfc_level::level_scene(&scene, &raw)?;
+    let settings =
+        (story && settings_chunk_written(settings.old, settings.saved)).then_some(SettingsChunk {
+            tag: save_tag_bytes(settings.old, settings.tag),
+            first: settings.first,
+            saved: settings.saved,
+        });
+    export_save_level(
+        &export,
+        &ExportOptions {
+            save_mode: true,
+            ..ExportOptions::default()
+        },
+        settings,
+    )
+}
+
 /// The whole level change: the exported section, the landing plan and the
 /// followers' placements and re-attach state.
 pub fn plan(input: &TransitionInput<'_>) -> exa_formats::Result<TransitionPlan> {
@@ -548,6 +580,63 @@ mod tests {
             whole_scene: true,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_loaded_level_section_is_converted_and_written_for_a_save() {
+        // A level section as the archive holds it: a plain node and a mesh.
+        let mut mesh_name = [0u8; 16];
+        mesh_name[..5].copy_from_slice(b"torch");
+        let scene = ExportScene {
+            nodes: vec![
+                SceneNode {
+                    name: [b'd', b'o', b'o', b'r', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+                    flags: class::PLAIN,
+                    local: exa_formats::rfc_write::IDENTITY,
+                    world: exa_formats::rfc_write::IDENTITY,
+                    ..Default::default()
+                },
+                SceneNode {
+                    name: mesh_name,
+                    flags: class::LIGHT | exa_formats::rfc_write::flags::SAVED,
+                    local: exa_formats::rfc_write::IDENTITY,
+                    world: exa_formats::rfc_write::IDENTITY,
+                    body: exa_formats::rfc_write::NodeData::Light(
+                        exa_formats::rfc_write::ExportLight {
+                            flags: 0x1_0010,
+                            color: [1.0, 0.5, 0.25],
+                            intensity: 60.0,
+                            radius: 300.0,
+                            softness: 0.5,
+                            ..Default::default()
+                        },
+                    ),
+                    ..Default::default()
+                },
+            ],
+            whole_scene: true,
+            ..Default::default()
+        };
+        let loaded = export_save_level(&scene, &ExportOptions::default(), None).unwrap();
+
+        // The save's section keeps the level's nodes and reads back; the
+        // settings chunk follows the story gate.
+        let saved = exported_level_section(&loaded, true, SettingsState::reset()).unwrap();
+        let parsed = exa_formats::rfc::Scene::parse(&saved).unwrap();
+        assert_eq!(parsed.nodes.len(), 2);
+        assert_eq!(parsed.nodes[0].name, "door");
+        assert!(!section_chunks(&saved).contains(&SAVE_SETTINGS_ID));
+
+        let mut settings = SettingsState::reset();
+        settings.saved = 3;
+        let saved = exported_level_section(&loaded, true, settings).unwrap();
+        assert_eq!(section_chunks(&saved).last(), Some(&SAVE_SETTINGS_ID));
+        // The arena writes no settings chunk.
+        let saved = exported_level_section(&loaded, false, settings).unwrap();
+        assert!(!section_chunks(&saved).contains(&SAVE_SETTINGS_ID));
+
+        // Garbage is an error, never a panic.
+        assert!(exported_level_section(b"not a level", true, SettingsState::reset()).is_err());
     }
 
     /// Top-level chunks of a level section (the four sanity/version bytes
