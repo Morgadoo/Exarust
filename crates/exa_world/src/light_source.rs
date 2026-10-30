@@ -212,13 +212,16 @@ pub struct DerivedLight {
     /// The linear colour multiplied by the current intensity (the shader's
     /// direct colour source).
     pub colour: [f32; 3],
-    /// The colour the voxel GI injects: [`DerivedLight::colour`] times
-    /// [`DerivedLight::gi_radius`].
+    /// The colour the voxel GI injects (`+0x1C8`): the direct colour times
+    /// the record's multiplier, zero for a light with the flicker flag.
     pub gi_colour: [f32; 3],
+    /// The light node's `+0x278` colour: the linear sRGB colour times
+    /// `√intensity · multiplier · 3`.
+    pub inject_colour: [f32; 3],
+    /// The scale of [`DerivedLight::inject_colour`].
+    pub inject_scale: f32,
     /// Rec. 601 luminance of [`DerivedLight::colour`].
     pub luminance: f32,
-    /// The radius the voxel GI injects over: `√intensity · radius · 3`.
-    pub gi_radius: f32,
     /// The point light's falloff end: 1.25 radii when ranged, else the
     /// unranged far plane.
     pub reach: f32,
@@ -252,16 +255,26 @@ impl DerivedLight {
         ];
         let (shaping_y, shaping_z) = crate::vertical_shaping(light);
         let ranged = light.flags & RANGED != 0 || light.ranged;
-        let gi_radius = intensity.max(0.0).sqrt() * light.radius * 3.0;
+        let inject_scale = intensity.max(0.0).sqrt() * light.multiplier * 3.0;
+        let gi = if light.flags & FLICKER != 0 {
+            [0.0; 3]
+        } else {
+            [
+                colour[0] * light.multiplier,
+                colour[1] * light.multiplier,
+                colour[2] * light.multiplier,
+            ]
+        };
         Self {
             colour,
-            gi_colour: [
-                colour[0] * gi_radius,
-                colour[1] * gi_radius,
-                colour[2] * gi_radius,
+            gi_colour: gi,
+            inject_colour: [
+                linear.x * inject_scale,
+                linear.y * inject_scale,
+                linear.z * inject_scale,
             ],
+            inject_scale,
             luminance: luminance(colour),
-            gi_radius,
             reach: if ranged {
                 light.radius * REACH_RADII
             } else {
@@ -612,13 +625,14 @@ mod tests {
         let derived = DerivedLight::of(&l, 4.0);
         let c = exa_render::material::linear_rgb([1.0, 0.5, 0.25]);
         assert_eq!(derived.colour, [c.x * 4.0, c.y * 4.0, c.z * 4.0]);
-        assert_eq!(derived.gi_radius, 4.0f32.sqrt() * 2.0 * 3.0);
+        assert_eq!(derived.gi_colour, derived.colour);
+        assert_eq!(derived.inject_scale, 4.0f32.sqrt() * 3.0);
         assert_eq!(
-            derived.gi_colour,
+            derived.inject_colour,
             [
-                derived.colour[0] * derived.gi_radius,
-                derived.colour[1] * derived.gi_radius,
-                derived.colour[2] * derived.gi_radius
+                c.x * derived.inject_scale,
+                c.y * derived.inject_scale,
+                c.z * derived.inject_scale
             ]
         );
         assert_eq!(derived.reach, 2.5);
@@ -635,6 +649,12 @@ mod tests {
         let derived = DerivedLight::of(&l, 1.0);
         assert_eq!(derived.reach, UNRANGED_FAR);
         assert_eq!(derived.shadow_strength, 0.0);
+        // The GI colour carries the multiplier; a flicker flag zeroes it.
+        let mut l = light(0, 2.0, 1.0, true);
+        l.multiplier = 0.5;
+        assert_eq!(DerivedLight::of(&l, 2.0).gi_colour, [c.x, c.y, c.z]);
+        l.flags = FLICKER;
+        assert_eq!(DerivedLight::of(&l, 2.0).gi_colour, [0.0; 3]);
     }
 
     #[test]
