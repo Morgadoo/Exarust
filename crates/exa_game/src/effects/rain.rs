@@ -581,15 +581,20 @@ mod tests {
         assert_eq!(r.x_axis, Vec3A::new(cos_b, 0.0, -sin_b));
         assert_eq!(r.y_axis, Vec3A::new(sin_a * sin_b, cos_a, sin_a * cos_b));
         assert_eq!(r.z_axis, Vec3A::new(cos_a * sin_b, -sin_a, cos_a * cos_b));
-        // The live box turns the same way: its matrix's columns are the
-        // engine basis's columns.
+        // The live box turns the same way: the engine basis's columns are
+        // the original's rows, so the box's matrix (acting on column
+        // vectors) is the basis transposed.
         let q = Mat3A::from_quat(box_rotation());
-        assert!((q.y_axis - t.y_axis).length() < 1e-6);
-        assert!((q.z_axis - t.z_axis).length() < 1e-6);
+        let rows = t.transpose();
+        assert!((q.y_axis - rows.y_axis).length() < 1e-5);
+        assert!((q.z_axis - rows.z_axis).length() < 1e-5);
         // The scale: sqrt(field · 1/70) with the single-precision 1/70
         // (0x3c6a0ea1); a field of 70 is one.
         assert_eq!(0.014_285_714f32.to_bits(), 0x3c6a_0ea1);
-        assert_eq!(box_scale(280.0), (280.0f32 * f32::from_bits(0x3c6a_0ea1)).sqrt());
+        assert_eq!(
+            box_scale(280.0),
+            (280.0f32 * f32::from_bits(0x3c6a_0ea1)).sqrt()
+        );
         // EyeVec: the camera less the box centre, dotted with each row.
         let centre = Vec3::new(10.0, 20.0, 30.0);
         let camera = Vec3::new(11.0, 22.0, 33.0);

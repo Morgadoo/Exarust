@@ -680,9 +680,7 @@ fn main() -> AppExit {
                     options.gi.warm_up = n;
                 }
             }
-            "--window-at" => {
-                options.window_at = args.next().as_deref().and_then(parse_window_at)
-            }
+            "--window-at" => options.window_at = args.next().as_deref().and_then(parse_window_at),
             "--size" => {
                 options.size = args.next().and_then(|v| {
                     let (w, h) = v.split_once('x')?;
