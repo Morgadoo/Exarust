@@ -142,7 +142,9 @@ impl HardwareConfig {
     /// read again over them for the draft, and the live quality levels,
     /// sampling, vertical sync and window mode go back to the saved ones
     /// ([`Screen::open`]). The Controls page takes a copy of `bindings`.
-    /// Nothing is measured: the benchmark runs only from Defaults.
+    /// Nothing is measured here: the auto-detection runs when the Settings
+    /// page is activated (a tab switch, [`HardwareConfig::activate_page`]) or
+    /// by Defaults.
     pub fn open(&mut self, bindings: Option<&Bindings>) {
         if self.screen.is_some() {
             return;
