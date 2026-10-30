@@ -1754,30 +1754,33 @@ impl Ragdoll {
     fn copy(&self, drop_runtime_links: bool) -> Self {
         let mut links = Vec::with_capacity(self.links.len());
         let mut remap = vec![None; self.links.len()];
+        // How many links are kept before each index (one past the end too),
+        // which maps every part's range onto the kept list.
+        let mut kept_before = Vec::with_capacity(self.links.len() + 1);
         for (k, l) in self.links.iter().enumerate() {
+            kept_before.push(links.len());
             if drop_runtime_links && l.flags & (LINK_CODE | LINK_BREAKABLE) != 0 {
                 continue;
             }
             remap[k] = Some(links.len());
             links.push(l.clone());
         }
+        kept_before.push(links.len());
         let mut parts = self.parts.clone();
         if drop_runtime_links {
             for p in &mut parts {
                 p.leg_limit = p.leg_limit.and_then(|k| remap.get(k).copied().flatten());
             }
         }
-        // A kept list stays grouped by part, so each part's range is the run
-        // of its links in the copied list.
-        let mut links_of = vec![0..0; parts.len()];
-        let mut at = 0;
-        for (i, range) in links_of.iter_mut().enumerate() {
-            let start = at;
-            while at < links.len() && links[at].part == i {
-                at += 1;
-            }
-            *range = start..at;
-        }
+        // Each part's range keeps the links of its old range that survive.
+        let links_of = self
+            .links_of
+            .iter()
+            .map(|r| {
+                let at = |k: usize| kept_before.get(k).copied().unwrap_or(links.len());
+                at(r.start)..at(r.end)
+            })
+            .collect();
         Self {
             parts,
             links,
@@ -1827,8 +1830,11 @@ impl Ragdoll {
     /// to it), and it copies no link that code made at run time ([`LINK_CODE`],
     /// which includes every origin pivot) and no link that can break
     /// ([`LINK_BREAKABLE`]); the indices into the kept links are remapped,
-    /// so a leg's limit link follows its link. World links and every other
-    /// field are copied.
+    /// so a leg's limit link follows its link, and each part's range keeps
+    /// its surviving links. World links and every other field are copied;
+    /// the original copies only the frame, flags, links, world links and the
+    /// shared arrays, since its copy then re-runs its setup, so this is a
+    /// superset of its state copy.
     pub fn runtime_clone(&self) -> Self {
         self.copy(true)
     }
@@ -5333,24 +5339,35 @@ mod tests {
     fn a_cloned_body_keeps_only_its_stored_links_and_shares_its_spheres() {
         let mut body = two_parts(0.0);
         // [0] is the skeleton's own link, [1] its origin pivot (a code link).
+        assert_eq!(body.links_of[1], 0..2);
+        let breakable = body
+            .add_link(1, 0, Vec3::ZERO, Vec3::ZERO, 0.0, 1.0)
+            .expect("both parts exist");
         let added = body
             .add_link(1, 0, Vec3::ZERO, Vec3::ZERO, 0.02, 0.5)
             .expect("both parts exist");
-        assert_eq!(added, 2);
-        assert_eq!(body.links.len(), 3);
-        // Make the added link a plain body link and the skeleton's link
-        // breakable, and point the leg's limit at the added one.
+        assert_eq!((breakable, added), (2, 3));
+        // Make one added link breakable and the other a plain body link, and
+        // point the leg's limit at the plain one.
+        body.links[breakable].flags = LINK_BODY | LINK_BREAKABLE;
         body.links[added].flags &= !LINK_CODE;
-        body.links[0].flags |= LINK_BREAKABLE;
         body.parts[1].leg_limit = Some(added);
         let clone = body.runtime_clone();
-        assert_eq!(clone.links.len(), 1);
-        assert_eq!(clone.links[0].part, 1);
-        assert_eq!(clone.links[0].slack, 0.02);
-        assert_eq!(clone.links[0].strength, 0.5);
-        assert_eq!(clone.parts[1].leg_limit, Some(0));
+        // The skeleton's link and the plain added link are kept.
+        assert_eq!(clone.links.len(), 2);
+        assert_eq!(clone.links[1].part, 1);
+        assert_eq!(clone.links[1].slack, 0.02);
+        assert_eq!(clone.links[1].strength, 0.5);
+        assert_eq!(clone.parts[1].leg_limit, Some(1));
+        // An added link joins its part's range; the clone's range keeps the
+        // two surviving links.
+        assert_eq!(body.links_of[1], 0..4);
         assert_eq!(clone.links_of[0], 0..0);
-        assert_eq!(clone.links_of[1], 0..1);
+        assert_eq!(clone.links_of[1], 0..2);
+        // The plain copy keeps every link and range as they were.
+        let copy = body.clone();
+        assert_eq!(copy.links.len(), 4);
+        assert_eq!(copy.links_of, body.links_of);
         // One sphere array behind both bodies.
         assert!(!body.parts[0].spheres.is_empty());
         assert!(std::sync::Arc::ptr_eq(
@@ -5363,7 +5380,7 @@ mod tests {
             *x += Vec3::new(0.5, 0.0, 0.0);
         }
         let gap = |b: &Ragdoll| {
-            let l = &b.links[0];
+            let l = &b.links[1];
             b.parts[l.parent]
                 .point(&l.on_parent)
                 .distance(b.parts[l.part].point(&l.on_part))
