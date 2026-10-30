@@ -120,6 +120,18 @@ pub fn crystal_of(kind: u8) -> Option<u32> {
 pub struct Sockets(pub [u16; 4]);
 
 impl Sockets {
+    /// The four socket words a section holds at `at` (a weapon's `+0x48`,
+    /// an apparel body's `+0x218`), little-endian. A byte past the section
+    /// reads as zero.
+    pub fn of_section(section: &[u8], at: usize) -> Self {
+        let word = |i: usize| {
+            let low = section.get(at + i * 2).copied().unwrap_or(0);
+            let high = section.get(at + i * 2 + 1).copied().unwrap_or(0);
+            u16::from(low) | u16::from(high) << 8
+        };
+        Self([word(0), word(1), word(2), word(3)])
+    }
+
     pub fn exists(&self, i: usize) -> bool {
         self.0.get(i).is_some_and(|s| s & u16::from(SOCKET) != 0)
     }
@@ -879,6 +891,24 @@ pub const ITEM_ICON_SHADER: &str = "in vec2 vrTex;\r\nin vec4 vrCol;\r\nout vec4
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_section_gives_its_four_socket_words() {
+        // Four little-endian words at the row's place; bytes past the end
+        // read as zero, so a short section is a row of empty sockets.
+        let mut section = vec![0u8; 0x4c];
+        section[0x48] = 0x80;
+        section[0x49] = 0x01;
+        section[0x4a] = 0x91;
+        section[0x4b] = 0x20;
+        let s = Sockets::of_section(&section, 0x48);
+        assert_eq!(s.0, [0x0180, 0x2091, 0, 0]);
+        assert!(s.exists(0) && s.exists(1) && !s.exists(2));
+        assert_eq!((s.kind(0), s.charge(0)), (0, 1));
+        assert_eq!((s.kind(1), s.charge(1)), (0x11, 0x20));
+        assert!(s.holds_ar());
+        assert_eq!(Sockets::of_section(&[], 0x48).0, [0, 0, 0, 0]);
+    }
 
     #[test]
     fn crystals_go_in_and_come_back() {
