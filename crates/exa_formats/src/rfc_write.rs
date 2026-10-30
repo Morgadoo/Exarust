@@ -965,6 +965,26 @@ pub fn lowercase_name(name: &[u8; 16]) -> [u8; 16] {
     name.map(|c| c.to_ascii_lowercase())
 }
 
+/// Appends a name to a mixed-case list unless the list already holds it
+/// lowercased, returning whether it was added. The original lowercases the
+/// name and compares all sixteen bytes against every entry before growing
+/// the list by one.
+pub fn add_unique_name(list: &mut Vec<[u8; 16]>, name: &[u8; 16]) -> bool {
+    let name = lowercase_name(name);
+    if list.contains(&name) {
+        return false;
+    }
+    list.push(name);
+    true
+}
+
+/// Whether a shared library already holds a name, compared lowercased: a
+/// material a library provides is not written into the file.
+pub fn library_holds(name: &[u8; 16], libraries: &[[u8; 16]]) -> bool {
+    let name = lowercase_name(name);
+    libraries.iter().any(|l| lowercase_name(l) == name)
+}
+
 /// A name with its extension replaced: from the last `.` (or the end of
 /// the name) on, the bytes become `suffix` and then zeros, cut at 16.
 pub fn replace_extension(name: &[u8; 16], suffix: &[u8; 4]) -> [u8; 16] {
@@ -1091,17 +1111,10 @@ impl<'a> Walk<'a> {
     }
 
     fn add_material(&mut self, name: &[u8; 16]) {
-        let name = lowercase_name(name);
-        if self.materials.contains(&name)
-            || self
-                .scene
-                .shared_materials
-                .iter()
-                .any(|s| lowercase_name(s) == name)
-        {
+        if library_holds(name, &self.scene.shared_materials) {
             return;
         }
-        self.materials.push(name);
+        add_unique_name(&mut self.materials, name);
     }
 
     /// Numbers props and placed objects after the scene nodes (the first

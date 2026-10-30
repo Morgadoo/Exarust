@@ -762,6 +762,23 @@ fn the_walk_offers_parts_last_first_attachments_and_characters() {
 }
 
 #[test]
+fn a_name_list_takes_each_lowercased_name_once() {
+    let mut list = Vec::new();
+    assert!(add_unique_name(&mut list, &name("Brick01.dds")));
+    assert!(!add_unique_name(&mut list, &name("brick01.DDS")));
+    assert!(!add_unique_name(&mut list, &name("BRICK01.DDS")));
+    assert!(add_unique_name(&mut list, &name("Stone")));
+    assert_eq!(list, [name("brick01.dds"), name("stone")]);
+
+    // A library's name is found lowercased, so a mixed-case material is
+    // not written into the file.
+    let libraries = [name("stone"), name("Wood")];
+    assert!(library_holds(&name("STONE"), &libraries));
+    assert!(library_holds(&name("wood"), &libraries));
+    assert!(!library_holds(&name("iron"), &libraries));
+}
+
+#[test]
 fn a_voxel_light_reads_back() {
     let mut n = node("@Omni001", class::VOXEL_LIGHT | flags::SAVED, None);
     n.body = NodeData::VoxelLight(ExportVoxelLight {
