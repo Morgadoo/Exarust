@@ -749,6 +749,14 @@ engineering of the light body loader; a light without them keeps the
 constructor's 0.1, 0.5 and 0.5). `exanima01` has 196 of these lights, all
 with body flags 0; arenas have one or two.
 
+A light falls off with distance only when its node's `flags2` has
+`0x40000` and its radius is above zero (a NaN radius is not); otherwise it
+reaches everywhere at full strength (`exa_formats::rfc::ranged`; the
+original's light activation sets the attenuation 0.8/R and the radius as
+the far plane only then). None of the 1439 lights in the installed levels
+and object library has the flag without a radius (corpus check,
+`shipped_start_room_lights`).
+
 ## Voxel light node (`3D0C`)
 
 Status: **verified** (REA on the node reader and the GI injection; every

@@ -1947,6 +1947,128 @@ mod tests {
         assert_eq!(point.shadow_map_near_z, 0.03);
     }
 
+    /// The vertical shaping factor the original's shader takes for a
+    /// surface under a light at drop `dy` and horizontal offset `dx`.
+    fn shaping_at(light: &exa_formats::rfc::Light, dy: f32, dx: f32) -> f32 {
+        let (y, z) = vertical_shaping(light);
+        let ly = dy / (dy * dy + dx * dx).sqrt();
+        ((2f32.powf(z * (ly + (1.0 - ly) * y)) - 1.0) / (2f32.powf(z) - 1.0)).max(0.0)
+    }
+
+    /// exanima01's start room is lit by two level lights over the spawn:
+    /// the pool light, grey (204/255), intensity 60, radius 630 cm, GI
+    /// multiplier 0.1, shaped downwards with q = 0 and p = 15, 4 m up; and a
+    /// faint fill, white, intensity 0.1, radius 2450 cm, GI multiplier 0,
+    /// 2.5 m up. The pool's shaping (0, 16) halves its light about 1.5 m out
+    /// on the floor 3.9 m below and leaves under a tenth at 3 m: the cold
+    /// white pool about 3 m wide the original shows around a player who
+    /// holds no torch. Both fall off with distance (1.25 radii).
+    #[test]
+    fn the_start_room_pool_light() {
+        let pool = exa_formats::rfc::Light {
+            flags: 0,
+            color: [0.8, 0.8, 0.8],
+            multiplier: 0.1,
+            intensity: 60.0,
+            radius: 6.3,
+            softness: 0.5,
+            spot: Some([0.0, 15.0]),
+            ranged: true,
+            animation: None,
+        };
+        assert_eq!(vertical_shaping(&pool), (0.0, 16.0));
+        assert_eq!(shaping_at(&pool, 3.88, 0.0), 1.0);
+        let half = shaping_at(&pool, 3.88, 1.5);
+        assert!((0.45..0.52).contains(&half), "{half}");
+        assert!(shaping_at(&pool, 3.88, 3.0) < 0.1);
+        let (point, gi, ..) = light_bundle(&pool);
+        assert!((point.range - 7.875).abs() < 1e-5);
+        assert_eq!(gi.0, 0.1);
+        let fill = exa_formats::rfc::Light {
+            color: [1.0, 1.0, 1.0],
+            multiplier: 0.0,
+            intensity: 0.1,
+            radius: 24.5,
+            spot: None,
+            ..pool
+        };
+        assert_eq!(vertical_shaping(&fill), (1.0, 1.0));
+        let (point, gi, ..) = light_bundle(&fill);
+        assert!((point.range - 30.625).abs() < 1e-4);
+        assert_eq!(gi.0, 0.0);
+    }
+
+    /// The installed exanima01 (with `EXANIMA_DIR`) holds the start room's
+    /// two lights with the record values above.
+    #[test]
+    fn shipped_start_room_lights() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(&dir).unwrap();
+        let resource = game.pack(exa_assets::PackKind::Resource).unwrap();
+        let scene = exa_formats::rfc::Scene::parse(resource.get("exanima01.rfc").unwrap()).unwrap();
+        let lights: Vec<&exa_formats::rfc::Light> = scene
+            .nodes
+            .iter()
+            .filter_map(|n| match &n.body {
+                exa_formats::rfc::NodeBody::Light(l) => Some(l),
+                _ => None,
+            })
+            .collect();
+        let pool = lights
+            .iter()
+            .find(|l| l.intensity == 60.0 && l.spot.is_some())
+            .expect("the pool light");
+        assert_eq!(pool.spot, Some([0.0, 15.0]));
+        assert!((pool.radius - 6.3).abs() < 1e-4, "{}", pool.radius);
+        assert!((pool.multiplier - 0.1).abs() < 1e-6);
+        assert!(
+            pool.color.iter().all(|c| (c - 0.8).abs() < 0.01),
+            "{:?}",
+            pool.color
+        );
+        assert!(pool.ranged);
+        let fill = lights
+            .iter()
+            .find(|l| l.intensity == 0.1 && l.multiplier == 0.0 && (l.radius - 24.5).abs() < 1e-3)
+            .expect("the fill light");
+        assert_eq!(fill.color, [1.0, 1.0, 1.0]);
+        assert!(fill.ranged && fill.spot.is_none());
+        // The range rule's radius test: shipped lights with the flag and no
+        // radius, over the levels and the object library.
+        let mut flagged_without_radius = 0;
+        let mut lights = 0;
+        for kind in [
+            exa_assets::PackKind::Resource,
+            exa_assets::PackKind::Objects,
+        ] {
+            let Some(pack) = game.pack(kind) else {
+                continue;
+            };
+            for entry in pack.entries() {
+                if !entry.name.to_ascii_lowercase().ends_with(".rfc") {
+                    continue;
+                }
+                let Some(Ok(scene)) = pack.get(&entry.name).map(exa_formats::rfc::Scene::parse)
+                else {
+                    continue;
+                };
+                for n in &scene.nodes {
+                    if let exa_formats::rfc::NodeBody::Light(l) = &n.body {
+                        lights += 1;
+                        if n.flags2 & exa_formats::rfc::RANGED != 0 && !l.ranged {
+                            flagged_without_radius += 1;
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!(
+            "shipped lights: {lights}, range flag without a radius: {flagged_without_radius}"
+        );
+    }
+
     /// Every level's transition marker is an object whose volume section
     /// names an entrance and the level it leads back from; `exanima01`'s
     /// single marker leads back from `exanima02` (locale id 3) at entrance
