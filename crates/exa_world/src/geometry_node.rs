@@ -277,13 +277,12 @@ pub fn hand_off_master(states: &mut [GeometryState], old: usize, new: usize, sep
         return;
     }
     let new_instances = if !separate {
-        let mut list: Vec<usize> = old_instances
-            .iter()
-            .copied()
-            .filter(|&i| i != new)
-            .collect();
-        list.retain(|&i| i != old);
-        list.push(old);
+        let mut list = old_instances.clone();
+        for entry in &mut list {
+            if *entry == new {
+                *entry = old;
+            }
+        }
         list
     } else if old_instances.len() <= 1 {
         Vec::new()
@@ -384,7 +383,7 @@ mod tests {
         hand_off_master(&mut states, 0, 1, false);
         assert!(states[0].instances.is_empty());
         assert_eq!(states[1].master, None);
-        assert_eq!(states[1].instances, vec![2, 0]);
+        assert_eq!(states[1].instances, vec![0, 2]);
         assert_eq!(states[2].master, Some(1));
         assert_eq!(states[0].master, Some(1));
         // A separate hand-off leaves the new node a master of the rest.
