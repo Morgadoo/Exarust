@@ -2177,17 +2177,28 @@ fn hold_hand(
                     match held_frame {
                         Some((word, frame, free)) => {
                             items.hover = word;
-                            if let Some(held) = items.held.as_mut() {
-                                held.shown = frame;
-                                held.target = free.unwrap_or(frame.position);
-                                // The frame the original keeps in the hand
-                                // (its held-body frame) is this one; a
-                                // later failed frame is put back here.
-                                held.last = Some(frame);
-                            }
+                            // The frame the original keeps in the hand (the
+                            // held node's frame once the placement holds);
+                            // a later failed frame is put back there. A
+                            // marker's frame is the part's own; a free
+                            // placement's frame is the grab point's, which
+                            // the spring pulls toward, so the part's frame
+                            // as it stands is kept instead.
+                            let mut last = frame;
                             if let Ok((_, mut ragdoll, ..)) = bodies.get_mut(body) {
                                 match free {
                                     Some(point) => {
+                                        if let Some(now) = ragdoll.parts.get(part) {
+                                            let now = now.transform();
+                                            last = Frame::new(
+                                                Vec3::from(now.translation),
+                                                bevy::math::Mat3::from_cols(
+                                                    Vec3::from(now.x_axis),
+                                                    Vec3::from(now.y_axis),
+                                                    Vec3::from(now.z_axis),
+                                                ),
+                                            );
+                                        }
                                         ragdoll.pull_grab_to(point);
                                         ragdoll.wake_to(DRAG_WAKE);
                                     }
@@ -2207,6 +2218,11 @@ fn hold_hand(
                                         ragdoll.hold_grab_still();
                                     }
                                 }
+                            }
+                            if let Some(held) = items.held.as_mut() {
+                                held.shown = frame;
+                                held.target = free.unwrap_or(frame.position);
+                                held.last = Some(last);
                             }
                         }
                         None => {
