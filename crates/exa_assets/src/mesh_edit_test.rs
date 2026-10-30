@@ -243,3 +243,28 @@ fn malformed_meshes_are_errors() {
     edit.streams.last_mut().unwrap().format |= KEY_UVS;
     assert!(edit.validate().is_err());
 }
+
+#[test]
+fn the_colour_channel_is_created_opaque_and_shares_the_positions() {
+    let mut edit = EditMesh::from_mesh(&square(), &[]).unwrap();
+    let at = edit.add_colour_channel(None);
+    let colour = &edit.streams[at];
+    // The first element's id with the shared-channel bit, and its channel
+    // and count: the colour stream follows the positions.
+    assert_eq!(colour.id, COLOUR_STREAM.0);
+    assert_eq!(colour.format, COLOUR_STREAM.1);
+    assert_eq!(colour.channel, 0);
+    assert_eq!(colour.data.len(), 4);
+    let StreamData::Rgba8(bytes) = &colour.data else {
+        panic!("colours");
+    };
+    assert_eq!(bytes, &vec![[255; 4]; 4]);
+    // A supplied stream keeps its bytes as they are.
+    let mut edit = EditMesh::from_mesh(&square(), &[]).unwrap();
+    let given = vec![[1, 2, 3, 4]; 4];
+    let at = edit.add_colour_channel(Some(given.clone()));
+    let StreamData::Rgba8(bytes) = &edit.streams[at].data else {
+        panic!("colours");
+    };
+    assert_eq!(bytes, &given);
+}
