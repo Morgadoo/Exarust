@@ -6260,7 +6260,7 @@ mod tests {
             let mut screen = EndMenuScreen::default();
             screen.show(end_menu(MENU_NEXT, Mode::Practice));
             screen.selected = Some(0);
-            assert_eq!(screen.confirm(&mut flow), vec![Step::Transition]);
+            assert_eq!(screen.confirm(&mut flow, &[]), vec![Step::Transition]);
             let input = TransitionInput {
                 clock_ms: 0,
                 music: Some(1.0),

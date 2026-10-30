@@ -1387,7 +1387,10 @@ selected row runs `menu_text` through `exa_ui::skin::SkinMode::MenuText`.
 its rows follow the end-session dispatch (`exa_ui::menu::dispatch_end_session`:
 mode, then row, then menu number): the next practice fight, practice's RESTART back to the menu form,
 the story respawn or exit, and the returns to the title behind the
-transition. The title's BEGIN opens the story's background picker and
+transition. A scripted mode the `EndHandlers` table holds hands the clicked
+row to its registered handler (`ScriptedEnd`) and leaves the menu to the
+script, as the original's registered table does; nothing registers one until
+the script crate runs. The title's BEGIN opens the story's background picker and
 the creator (`creator_screen`), as do the practice rows, NEW CAREER and
 VERSUS; the saves' character screen (CONTINUE) and the manual are not
 wired; SETTINGS opens the Settings form (`settings_form`).

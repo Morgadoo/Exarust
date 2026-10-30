@@ -54,35 +54,72 @@ pub enum EndAction {
     /// The second row in practice and the arena (EXIT, LOBBY): back to the
     /// title behind the transition.
     QuitToMenu,
+    /// A scripted mode's registered handler, with the clicked 1-based row.
+    /// The original calls the handler with the row and clears the form's
+    /// clicked item; the menu itself is the script's to close.
+    Scripted { handler: usize, item: i32 },
+}
+
+/// The scripted modes whose end-menu handler a story script registered, in
+/// registration order: the original's table of mode words, each entry
+/// carrying the handler the click calls. Exarust's script crate is empty, so
+/// nothing registers one yet; the table and its dispatch are here for the
+/// scripts that will.
+#[derive(Resource, Debug, Default, Clone, PartialEq, Eq)]
+pub struct EndHandlers {
+    /// The registered mode words, in order of registration.
+    pub modes: Vec<u32>,
+}
+
+impl EndHandlers {
+    /// Registers a scripted mode: the original appends its word and handler
+    /// (a mode already present is registered again).
+    pub fn register(&mut self, mode: u32) {
+        self.modes.push(mode);
+    }
+
+    /// The handler index for a mode: the first matching entry.
+    #[must_use]
+    pub fn handler_for(&self, mode: u32) -> Option<usize> {
+        self.modes.iter().position(|&registered| registered == mode)
+    }
+}
+
+/// A scripted mode's end-menu handler ran: its index and the clicked row.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScriptedEnd {
+    pub handler: usize,
+    pub item: i32,
 }
 
 /// The action of the 1-based `row` on `menu` in `mode`, or `None` where the
 /// dispatch does nothing: a row past the ones it handles (the arena's third
-/// row among them) and every scripted or menu mode, whose end-menu handler
-/// is the script's own (not modelled).
+/// row among them) and a scripted mode no script registered.
 ///
 /// The decision is the end-session menu's own click dispatch
-/// ([`exa_ui::menu::dispatch_end_session`]); Exarust registers no scripted
-/// mode handlers, so its handler table is empty.
-pub fn end_action(menu: &EndMenu, mode: Mode, row: usize) -> Option<EndAction> {
-    match end_dispatch(menu, mode, row, 0)? {
+/// ([`exa_ui::menu::dispatch_end_session`]).
+pub fn end_action(menu: &EndMenu, mode: Mode, row: usize, handlers: &[u32]) -> Option<EndAction> {
+    match end_dispatch(menu, mode, row, 0, handlers)? {
         EndSessionAction::PracticeRestart => Some(EndAction::Restart),
         EndSessionAction::NextPracticeFight { .. } => Some(EndAction::NextFight),
         EndSessionAction::BackToMenu => Some(EndAction::QuitToMenu),
         EndSessionAction::StoryRespawn => Some(EndAction::StoryContinue),
         EndSessionAction::StoryQuit => Some(EndAction::StoryExit),
         EndSessionAction::ArenaContinue => Some(EndAction::ArenaContinue),
-        EndSessionAction::Registered { .. } => None,
+        EndSessionAction::Registered { handler, item } => {
+            Some(EndAction::Scripted { handler, item })
+        }
     }
 }
 
 /// The end-session click for the 1-based `row` with the practice ladder at
-/// `fight`.
+/// `fight` and `handlers` the registered scripted modes.
 pub fn end_dispatch(
     menu: &EndMenu,
     mode: Mode,
     row: usize,
     fight: i32,
+    handlers: &[u32],
 ) -> Option<EndSessionAction> {
     let input = EndSessionInput {
         mode: mode.word(),
@@ -91,7 +128,7 @@ pub fn end_dispatch(
         fights: crate::practice::PRACTICE_FIGHTS,
         fight,
     };
-    dispatch_end_session(input, &[]).action
+    dispatch_end_session(input, handlers).action
 }
 
 /// One painted end-menu row: its place, text and ink.
@@ -182,6 +219,9 @@ pub struct EndMenuScreen {
     pub pressed: Option<usize>,
     /// The arena's no-row-selected flag.
     pub unselected: bool,
+    /// A registered scripted handler the last confirm asked for; the update
+    /// system sends it as a [`ScriptedEnd`] and clears it.
+    pub scripted: Option<ScriptedEnd>,
 }
 
 impl EndMenuScreen {
@@ -193,6 +233,7 @@ impl EndMenuScreen {
         self.unselected = menu.unselected;
         self.pressed = None;
         self.menu = Some(menu);
+        self.scripted = None;
     }
 
     /// Hides the menu.
@@ -201,6 +242,7 @@ impl EndMenuScreen {
         self.menu = None;
         self.pressed = None;
         self.selected = None;
+        self.scripted = None;
     }
 
     /// Moves the selection by `delta`, wrapping from no selection into the
@@ -221,20 +263,25 @@ impl EndMenuScreen {
         });
     }
 
-    /// Runs the selected row, returning the flow's steps. A row
-    /// the dispatch handles closes the menu first; the flow's own end-menu
-    /// steps then keep it hidden. A row it does not handle leaves the menu
-    /// as it is.
-    pub fn confirm(&mut self, flow: &mut Flow) -> Vec<Step> {
+    /// Runs the selected row, returning the flow's steps. A row the dispatch
+    /// handles closes the menu first; a registered scripted handler is left
+    /// for its script to close (the original only calls the handler). A row
+    /// the dispatch does not handle leaves the menu as it is.
+    pub fn confirm(&mut self, flow: &mut Flow, handlers: &[u32]) -> Vec<Step> {
         let Some(menu) = self.menu else {
             return Vec::new();
         };
         let Some(selected) = self.selected else {
             return Vec::new();
         };
-        let Some(action) = end_action(&menu, flow.mode, selected + 1) else {
+        let Some(action) = end_action(&menu, flow.mode, selected + 1, handlers) else {
             return Vec::new();
         };
+        if let EndAction::Scripted { handler, item } = action {
+            self.scripted = Some(ScriptedEnd { handler, item });
+            self.pressed = None;
+            return Vec::new();
+        }
         self.close();
         // Each row passes the original's music-fade argument: the next
         // fight fades the music only into the last fight (whose boss track
@@ -242,7 +289,13 @@ impl EndMenuScreen {
         match action {
             EndAction::NextFight => {
                 let into_last = matches!(
-                    end_dispatch(&menu, flow.mode, selected + 1, flow.practice.fight),
+                    end_dispatch(
+                        &menu,
+                        flow.mode,
+                        selected + 1,
+                        flow.practice.fight,
+                        handlers
+                    ),
                     Some(EndSessionAction::NextPracticeFight { last: true })
                 );
                 flow.transition(Action::NextPracticeFight, into_last)
@@ -263,6 +316,7 @@ impl EndMenuScreen {
                 flow.transition(Action::QuitToMenu, true)
             }
             EndAction::QuitToMenu => flow.transition(Action::QuitToMenu, true),
+            EndAction::Scripted { .. } => Vec::new(),
         }
     }
 }
@@ -271,19 +325,25 @@ pub struct EndMenuScreenPlugin;
 
 impl Plugin for EndMenuScreenPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<EndMenuScreen>().add_systems(
-            Update,
-            (update, draw)
-                .chain()
-                .after(crate::gui_screens::draw_screens),
-        );
+        app.init_resource::<EndMenuScreen>()
+            .init_resource::<EndHandlers>()
+            .add_message::<ScriptedEnd>()
+            .add_systems(
+                Update,
+                (update, draw)
+                    .chain()
+                    .after(crate::gui_screens::draw_screens),
+            );
     }
 }
 
 /// Reads the pointer and keys while the menu is open.
+#[allow(clippy::too_many_arguments)]
 fn update(
     mut screen: ResMut<EndMenuScreen>,
     mut flow: Option<ResMut<Flow>>,
+    handlers: Option<Res<EndHandlers>>,
+    mut scripts: MessageWriter<ScriptedEnd>,
     mut steps: ResMut<FlowSteps>,
     keys: Res<ButtonInput<KeyCode>>,
     mouse: Res<ButtonInput<MouseButton>>,
@@ -292,6 +352,7 @@ fn update(
     if !screen.open {
         return;
     }
+    let registered = handlers.as_ref().map_or(&[][..], |h| &h.modes[..]);
     if keys.just_pressed(KeyCode::ArrowDown) {
         screen.move_selection(1);
     }
@@ -301,7 +362,11 @@ fn update(
     if keys.just_pressed(KeyCode::Enter)
         && let Some(flow) = flow.as_mut()
     {
-        steps.steps.extend(screen.confirm(flow));
+        let out = screen.confirm(flow, registered);
+        if let Some(scripted) = screen.scripted.take() {
+            scripts.write(scripted);
+        }
+        steps.steps.extend(out);
         return;
     }
     let Ok(window) = windows.single() else {
@@ -331,7 +396,11 @@ fn update(
         && hit == Some(pressed)
         && let Some(flow) = flow.as_mut()
     {
-        steps.steps.extend(screen.confirm(flow));
+        let out = screen.confirm(flow, registered);
+        if let Some(scripted) = screen.scripted.take() {
+            scripts.write(scripted);
+        }
+        steps.steps.extend(out);
     }
 }
 
@@ -448,42 +517,82 @@ mod tests {
     fn the_end_menus_ask_for_the_original_actions() {
         let next = end_menu(MENU_NEXT, Mode::Practice);
         assert_eq!(
-            end_action(&next, Mode::Practice, 1),
+            end_action(&next, Mode::Practice, 1, &[]),
             Some(EndAction::NextFight)
         );
         let practice = end_menu(MENU_WON, Mode::Practice);
         assert_eq!(
-            end_action(&practice, Mode::Practice, 1),
+            end_action(&practice, Mode::Practice, 1, &[]),
             Some(EndAction::Restart)
         );
         assert_eq!(
-            end_action(&practice, Mode::Practice, 2),
+            end_action(&practice, Mode::Practice, 2, &[]),
             Some(EndAction::QuitToMenu)
         );
         let reconstructed = end_menu(MENU_RECONSTRUCTED, Mode::Story);
         assert_eq!(
-            end_action(&reconstructed, Mode::Story, 1),
+            end_action(&reconstructed, Mode::Story, 1, &[]),
             Some(EndAction::StoryContinue)
         );
         assert_eq!(
-            end_action(&reconstructed, Mode::Story, 2),
+            end_action(&reconstructed, Mode::Story, 2, &[]),
             Some(EndAction::StoryExit)
         );
         // The story's one-row EXIT menu exits the story.
         let won = end_menu(MENU_WON, Mode::Story);
-        assert_eq!(end_action(&won, Mode::Story, 1), Some(EndAction::StoryExit));
+        assert_eq!(
+            end_action(&won, Mode::Story, 1, &[]),
+            Some(EndAction::StoryExit)
+        );
         let arena = end_menu(crate::flow::MENU_ARENA, Mode::Arena);
         assert_eq!(
-            end_action(&arena, Mode::Arena, 1),
+            end_action(&arena, Mode::Arena, 1, &[]),
             Some(EndAction::ArenaContinue)
         );
         assert_eq!(
-            end_action(&arena, Mode::Arena, 2),
+            end_action(&arena, Mode::Arena, 2, &[]),
             Some(EndAction::QuitToMenu)
         );
         // The arena's third row and a scripted mode's rows do nothing here.
-        assert_eq!(end_action(&arena, Mode::Arena, 3), None);
-        assert_eq!(end_action(&won, Mode::Other(0x20), 1), None);
+        assert_eq!(end_action(&arena, Mode::Arena, 3, &[]), None);
+        assert_eq!(end_action(&won, Mode::Other(0x20), 1, &[]), None);
+    }
+
+    #[test]
+    fn a_registered_scripted_mode_hands_its_row_to_the_handler() {
+        let won = end_menu(MENU_WON, Mode::Story);
+        let mut handlers = EndHandlers::default();
+        assert_eq!(handlers.handler_for(0x20), None);
+        assert_eq!(
+            end_action(&won, Mode::Other(0x20), 1, &handlers.modes),
+            None
+        );
+        handlers.register(0x20);
+        // A second registration of the same word is kept; the first wins.
+        handlers.register(0x20);
+        assert_eq!(handlers.modes, [0x20, 0x20]);
+        assert_eq!(handlers.handler_for(0x20), Some(0));
+        assert_eq!(
+            end_action(&won, Mode::Other(0x20), 1, &handlers.modes),
+            Some(EndAction::Scripted {
+                handler: 0,
+                item: 1
+            })
+        );
+        // The confirm hands the row over and leaves the menu to the script.
+        let mut flow = Flow::default();
+        flow.mode = Mode::Other(0x20);
+        let mut screen = EndMenuScreen::default();
+        screen.show(won);
+        assert!(screen.confirm(&mut flow, &handlers.modes).is_empty());
+        assert_eq!(
+            screen.scripted,
+            Some(ScriptedEnd {
+                handler: 0,
+                item: 1
+            })
+        );
+        assert!(screen.open);
     }
 
     #[test]
@@ -493,7 +602,7 @@ mod tests {
         flow.phase = crate::flow::Phase::Ended;
         let mut screen = EndMenuScreen::default();
         screen.show(end_menu(MENU_WON, Mode::Practice));
-        let steps = screen.confirm(&mut flow);
+        let steps = screen.confirm(&mut flow, &[]);
         assert_eq!(steps, vec![Step::ClosePrelude, Step::Transition]);
         assert!(!screen.open);
         assert_eq!(flow.phase, crate::flow::Phase::Transition);
@@ -506,7 +615,7 @@ mod tests {
         flow.mode = Mode::Arena;
         screen.show(end_menu(crate::flow::MENU_ARENA, Mode::Arena));
         screen.selected = Some(2);
-        assert!(screen.confirm(&mut flow).is_empty());
+        assert!(screen.confirm(&mut flow, &[]).is_empty());
         assert!(screen.open);
     }
 
