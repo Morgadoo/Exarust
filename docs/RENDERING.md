@@ -2320,11 +2320,16 @@ flames' twice it, and every bed's twice its own size. A one-shot template
 records its ring deadline (start life + the ring's span + ½, rounded half
 to even), which the original stores for the game to read.
 
+The template's looping sound (`FireS02`, `FireS01`, `FireL01`) plays from
+`exa_game::fire_sound`: one looping voice a flame, loaded once through the
+sound bank by name, moved to the flame's node and given the emitter's
+walked volume and pitch every frame. A template with no sound, no game
+data or no audio device plays nothing.
+
 Still missing for fires: fires on other physics bodies (only the carried
 torch rides its item), the source frame following the body, body contacts
-being driven from the physics step, applying the emissive scale to the
-parent mesh's material, and playing the looping sound (the walks exist, no
-loop is started). The quality-scaled pool override is dead in the
+being driven from the physics step, and applying the emissive scale to the
+parent mesh's material. The quality-scaled pool override is dead in the
 original: its branch needs the quality constant to be below 4 and the
 shipped constant is 5, so the template's pool is always used.
 
