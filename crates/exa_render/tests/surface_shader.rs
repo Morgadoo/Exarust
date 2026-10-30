@@ -165,8 +165,9 @@ fn defs(extra: &[&'static str]) -> Vec<ShaderDefVal> {
 #[test]
 fn the_surface_shader_composes_and_validates() {
     let (mut cache, surface) = cache_with_every_shader();
-    // A textured, tangent-mapped, vertex-coloured mesh, and a bare one.
-    let variants: [&[&'static str]; 2] = [
+    // A textured, tangent-mapped, vertex-coloured mesh, a bare one, and a
+    // view with the level's fog.
+    let variants: [&[&'static str]; 3] = [
         &[
             "VERTEX_UVS",
             "VERTEX_UVS_A",
@@ -174,6 +175,7 @@ fn the_surface_shader_composes_and_validates() {
             "VERTEX_COLORS",
         ],
         &[],
+        &["VERTEX_UVS", "VERTEX_UVS_A", "DISTANCE_FOG"],
     ];
     for (pipeline, extra) in variants.iter().enumerate() {
         let module = cache

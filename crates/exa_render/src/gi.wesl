@@ -2,7 +2,8 @@
 // volume: each open voxel gathers its eight diagonal neighbours' light
 // (weighted by how open they are), keeps most of it, gains a faint base
 // ambient and the direct light of its sector's lights; point lights are
-// shadowed by their cube maps and the sun by its orthographic map. Voxel
+// shadowed by their cube maps and the sky light, which shines straight
+// down, by what stands above the voxel in its column. Voxel
 // lights (glowing items) then add their light straight into the voxels
 // around them. Light builds up over many steps. Storage is 8-bit sRGB like
 // the original's.
@@ -16,15 +17,15 @@
 
 struct GiLight {
     // A point light's position in texture units (x, z depth, y height) and
-    // the inverse of its radius in those units. Unused for the sun.
+    // the inverse of its radius in those units. Unused for the sky light.
     position_radius: vec4<f32>,
     // Per-step injection colour: linear colour × intensity × 0.15 (×0.9 for
-    // the sun), before the fragment's 0.01; in w the cube lookup's depth
+    // the sky light), before the fragment's 0.01; in w the cube lookup's depth
     // scale, ((bias + 0.94)/R)·5120 with the light's shadow bias (0.025 at
     // the shipped detail), so the compare value is d·(bias + 0.94)/R + 0.01.
     colour_shadow: vec4<f32>,
     // x, y: the light's vertical shaping (y, z); z: 1/(2^z − 1) (unshaped
-    // lights carry (1, 1, 1)); w: 0 for a point light, 1 for the sun, the
+    // lights carry (1, 1, 1)); w: 0 for a point light, 1 for the sky light, the
     // original's two program branches.
     shaping: vec4<f32>,
 }
@@ -55,11 +56,8 @@ struct GiParams {
     extent: vec4<f32>,
     // The base ambient every open voxel gains per step, per channel.
     base: vec4<f32>,
-    // The sun's fitted shadow matrix, world (m) to Bevy's clip space.
-    sun_matrix: mat4x4<f32>,
-    // x: 1 when the sun shadow map may be sampled, y: 1 under an open sky,
     // z: 1 when the steps reach the top slice (the level record's flag).
-    sun_flags: vec4<u32>,
+    flags: vec4<u32>,
     groups: array<GiGroup, 64>,
     // Per sector (X fastest), its group or 0xffffffff.
     sector_groups: array<vec4<u32>, 16>,
@@ -87,9 +85,8 @@ const FLIP_Z: vec3<f32> = vec3(1.0, 1.0, -1.0);
 // The cached point-light cubes (the original's `Shadow<i>` cube maps).
 @group(0) @binding(5) var shadow_cubes: texture_depth_cube_array;
 @group(0) @binding(6) var shadow_cube_sampler: sampler_comparison;
-// The sun's fitted orthographic depth map (the original's `Shadow0`).
-@group(0) @binding(7) var sun_shadow: texture_depth_2d_array;
-@group(0) @binding(8) var sun_shadow_sampler: sampler_comparison;
+// Per column (x, z depth), the lowest slice the sky light reaches.
+@group(0) @binding(7) var sky_floor: texture_2d<u32>;
 
 fn to_srgb(c: vec3<f32>) -> vec3<f32> {
     let l = clamp(c, vec3(0.0), vec3(1.0));
@@ -162,31 +159,13 @@ fn write_dark(id: vec3<u32>, dims: vec3<u32>) {
     textureStore(light_next, vec3<i32>(id), vec4(to_srgb(voxel_lights(id, dims)), 0.0));
 }
 
-// The sun's visibility at `at`: the fitted shadow map's comparison, with the
-// original's two-sample difference when the level has no sky, and the
-// voxel's openness. Without a shadow map the sun is unshadowed.
-fn sun_light(at: vec3<f32>, occ: f32) -> f32 {
-    if params.sun_flags.x == 0u {
-        return occ;
-    }
-    let clip = params.sun_matrix * vec4(at, 1.0);
-    if clip.w <= 0.0 {
-        return occ;
-    }
-    let ndc = clip.xyz / clip.w;
-    if any(ndc.xy < vec2(-1.0)) || any(ndc.xy > vec2(1.0)) || ndc.z < 0.0 || ndc.z > 1.0 {
-        return occ;
-    }
-    let uv = vec2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
-    let first = textureSampleCompareLevel(sun_shadow, sun_shadow_sampler, uv, 0, ndc.z);
-    if params.sun_flags.y != 0u {
-        return first * occ;
-    }
-    // The original's second sample is 0.01 deeper; Bevy's map is reverse-Z,
-    // so deeper is smaller. [guess: the depth scale of 0.01 is the
-    // original's map's, kept as is]
-    let second = textureSampleCompareLevel(sun_shadow, sun_shadow_sampler, uv, 0, ndc.z - 0.01);
-    return max(first - second, 0.0) * occ;
+// The sky light's visibility at voxel `id`: the original's map looking
+// straight down, taken by its first comparison alone under a sky, is lit
+// where nothing stands above; Exarust reads the column's highest occluder.
+// The voxel's openness then scales it.
+fn sky_light(id: vec3<u32>, occ: f32) -> f32 {
+    let floor = textureLoad(sky_floor, vec2<i32>(id.xy), 0).r;
+    return select(0.0, occ, id.z >= floor);
 }
 
 @compute @workgroup_size(4, 4, 4)
@@ -210,7 +189,7 @@ fn propagate(@builtin(global_invocation_id) id: vec3<u32>) {
         return;
     }
     let plan = params.groups[group];
-    if id.z < plan.floor || (id.z + 1u >= dims.z && params.sun_flags.z == 0u) {
+    if id.z < plan.floor || (id.z + 1u >= dims.z && params.flags.z == 0u) {
         write_dark(id, dims);
         return;
     }
@@ -224,7 +203,7 @@ fn propagate(@builtin(global_invocation_id) id: vec3<u32>) {
     var open = openness(occ0);
 
     // The program variant the original builds for a block depends on whether
-    // its first light is the sun: outdoors a neighbour's light counts by its
+    // its first light is the directional sky light: outdoors a neighbour's light counts by its
     // openness, indoors by its openness squared.
     var direct = false;
     if plan.count > 0u {
@@ -254,13 +233,9 @@ fn propagate(@builtin(global_invocation_id) id: vec3<u32>) {
     for (var i = 0u; i < plan.count; i++) {
         let lt = params.lights[plan.first + i];
         if lt.shaping.w == 1.0 {
-            // The sun: its light is the fitted world position through the
-            // shadow matrix (the original's `SdwMat` path).
-            // `at` is in texture axes (x, z depth, height over width);
-            // `extent` and `origin` in world axes (X, height, Z).
-            let world = params.origin.xyz
-                + vec3(at.x * params.extent.x, at.z * params.extent.x, at.y * params.extent.z);
-            rgb += lt.colour_shadow.rgb * sun_light(world, open) * 0.01;
+            // The sky light: no fall-off, shaded from above (the original's
+            // directional `SdwMat` path).
+            rgb += lt.colour_shadow.rgb * sky_light(id, open) * 0.01;
             continue;
         }
         let to = at - lt.position_radius.xyz;

@@ -1064,13 +1064,18 @@ pub struct Frame {
     /// colour towards the view, linearised when the track is not
     /// linearised at start-up).
     pub sky_colour: [f32; 4],
+    /// The record's fog colour as the frame leaves it, lightning included:
+    /// the GI manager's sky light before its own factor of 3 (zero without
+    /// a sky, whose turning off zeroes the record's fog colours).
+    pub sky_light: [f32; 3],
     /// Whether the scene's flash-clear switch is on (see [`Weather::flash`];
     /// never raised by a strike).
     pub flash: bool,
     /// The running strike's intensity, zero between strikes. It is the only
-    /// value a strike moves: the record's fog colour gains the lightning
-    /// blue by I / (I + 2) · 3. The clear, the sun and the ambient are left
-    /// as they are.
+    /// value a strike moves: the record's fog colour, and with it
+    /// [`Self::sky_light`], gains the lightning blue by I / (I + 2) · 3.
+    /// The clear, the sun, the ambient and the fog uniform are left as they
+    /// are.
     pub lightning: f32,
     /// The scene value the frame sets from the sun's height: −100000 while
     /// the body is at or below 0.4, −25 above it (the comparison in double
@@ -1088,14 +1093,16 @@ pub struct Frame {
     pub sun_intensity: f32,
 }
 
-/// One frame's fog.
+/// One frame's fog, as the world shader's fog uniform takes it: the frame's
+/// scratch colour and one over the stored span.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FrameFog {
-    /// Linear RGB.
+    /// The scratch colour's RGB: the horizon under a sky, the fog colour
+    /// without one (linear when colours are managed in linear light).
     pub colour: [f32; 3],
-    /// Where the fog starts, metres.
+    /// Where the fog starts, metres: always the eye.
     pub near: f32,
-    /// Where it reaches its full strength, metres.
+    /// Where it reaches its full strength, metres: the stored span.
     pub far: f32,
 }
 
@@ -1285,6 +1292,7 @@ impl SceneEnvironment {
                 ambient: linearise([DEFAULT_AMBIENT[0], DEFAULT_AMBIENT[1], DEFAULT_AMBIENT[2]]),
                 ambient_scale: AMBIENT_SCALE_INDOOR,
                 sky_colour: [0.0; 4],
+                sky_light: [0.0; 3],
                 flash: false,
                 lightning: 0.0,
                 shadow_far: -100_000.0,
@@ -1966,8 +1974,8 @@ impl SceneEnvironment {
     }
 
     /// The fog the weather has closed in: cloudy skies bring it nearer, and
-    /// a low sun narrows it further. Also the record's fog colour, which a
-    /// running strike brightens towards blue.
+    /// a low sun narrows it further. The renderer's uniforms do not read
+    /// these two values (the shader's fog runs over the stored span).
     fn weather_fog(&mut self) {
         let fog = &mut self.fog;
         fog.current_near = fog.near;
@@ -1990,9 +1998,14 @@ impl SceneEnvironment {
             factor = (1.0 - factor.sqrt() * (1.0 - low)) * factor;
         }
         fog.current_far = fog.current_far * factor + fog.current_near;
-        // The record's fog colour: a running strike adds the lightning's
-        // blue (as stored, not linearised) by I / (I + 2) · 3.
-        fog.current_colour = if self.weather.lightning.active {
+    }
+
+    /// The record's fog colour as the frame leaves it: a running strike adds
+    /// the lightning's blue (as stored, not linearised) by I / (I + 2) · 3.
+    /// The frame does this whether or not the level fogs; the GI's sky
+    /// light reads the result.
+    fn lit_record_fog(&mut self) {
+        self.fog.current_colour = if self.weather.lightning.active {
             let i = self.weather.lightning.intensity;
             let t = (i / (i + 2.0)) * 3.0;
             let c = self.record_fog;
@@ -2025,11 +2038,6 @@ impl SceneEnvironment {
     /// the scratch, and pulls the fog in.
     pub fn apply_frame(&mut self, view_forward: [f32; 3]) -> Frame {
         let linear = self.linear;
-        let fog_colour = if linear {
-            linearise([self.fog.colour[0], self.fog.colour[1], self.fog.colour[2]])
-        } else {
-            [self.fog.colour[0], self.fog.colour[1], self.fog.colour[2]]
-        };
         let mut scratch = self.frame.clear;
         let mut clear = self.clear_background();
         if self.sky {
@@ -2077,16 +2085,14 @@ impl SceneEnvironment {
                 self.fog.current_far = (self.fog.span as f64 * 0.1) as f32;
             }
         }
-        // Which of the two fog colours the shader takes is outside the
-        // model: under a sky the record's, without one the level's own.
+        self.lit_record_fog();
+        // The shader's fog uniform: the scratch colour, and one over the
+        // stored span (the weather's near and far do not reach it), from
+        // the eye out.
         let fog = self.fog.enabled.then_some(FrameFog {
-            colour: if self.sky {
-                self.fog.current_colour
-            } else {
-                fog_colour
-            },
-            near: self.fog.current_near * 0.01,
-            far: self.fog.current_far * 0.01,
+            colour: [scratch[0], scratch[1], scratch[2]],
+            near: 0.0,
+            far: self.fog.span * 0.01,
         });
         self.frame = Frame {
             background: clear,
@@ -2099,6 +2105,7 @@ impl SceneEnvironment {
                 AMBIENT_SCALE_INDOOR
             },
             sky_colour: scratch,
+            sky_light: self.fog.current_colour,
             flash: self.weather.flash,
             lightning: if self.weather.lightning.active {
                 self.weather.lightning.intensity
@@ -2822,7 +2829,43 @@ mod tests {
         assert!((env.fog.current_near + 501.0).abs() < 1e-3);
         // f = 0.3 narrowed further by the low sun (the 0.15 floor):
         // (1 − √0.3 · 0.85) · 0.3 = 0.1603; 50 100 · 0.1603 − 501 cm.
-        assert!((fog.far - 75.315_704).abs() < 1e-3, "{}", fog.far);
+        assert!(
+            (env.fog.current_far - 7_531.570_4).abs() < 0.1,
+            "{}",
+            env.fog.current_far
+        );
+        // The shader's fog does not follow: one over the stored 50 100 cm,
+        // from the eye.
+        assert_eq!(fog.near, 0.0);
+        assert_eq!(fog.far, 501.0);
+    }
+
+    #[test]
+    fn the_fog_uniform_is_the_scratch_colour_over_the_stored_span() {
+        // The original's world programs take FogColr = (the scratch colour,
+        // 1 / span): under a sky the horizon, without one the fog colour.
+        let mut env = SceneEnvironment::new(5);
+        env.fog.enabled = true;
+        let frame = env.apply_frame([0.0, 0.0, 1.0]);
+        let fog = frame.fog.unwrap();
+        assert_eq!(fog.colour, [frame.clear[0], frame.clear[1], frame.clear[2]]);
+        // 0.5 grey through the sRGB curve.
+        assert!(
+            (fog.colour[0] - 0.214_041_14).abs() < 1e-4,
+            "{:?}",
+            fog.colour
+        );
+        // The span (1² · 50 000 + 100 cm) in metres: b reaches 1 at 501 m.
+        assert_eq!(fog.far, 501.0);
+        env.set_sky(true);
+        let frame = env.apply_frame([0.0, 0.0, -1.0]);
+        let fog = frame.fog.unwrap();
+        assert_eq!(fog.colour, [frame.clear[0], frame.clear[1], frame.clear[2]]);
+        assert_eq!(frame.sky_colour[..3], fog.colour);
+        // A distance-2 fog spans 4 · 50 000 + 100 cm.
+        env.fog.distance = 2.0;
+        env.update_fog_span();
+        assert_eq!(env.apply_frame([0.0, 0.0, 1.0]).fog.unwrap().far, 2_001.0);
     }
 
     #[test]
@@ -2832,15 +2875,23 @@ mod tests {
         env.sky = true;
         env.daylight = 0.9;
         env.record_fog = [0.1, 0.1, 0.1];
-        let fog = env.apply_frame([0.0, 0.0, 1.0]).fog.unwrap();
-        assert_eq!(fog.colour, [0.1, 0.1, 0.1]);
+        let calm = env.apply_frame([0.0, 0.0, 1.0]);
+        assert_eq!(calm.sky_light, [0.1, 0.1, 0.1]);
         // Intensity 2: t = 2 / 4 · 3 = 1.5, the blue added as stored.
         env.weather.lightning.active = true;
         env.weather.lightning.intensity = 2.0;
-        let fog = env.apply_frame([0.0, 0.0, 1.0]).fog.unwrap();
-        assert!((fog.colour[0] - 0.4).abs() < 1e-6);
-        assert!((fog.colour[1] - 0.55).abs() < 1e-6);
-        assert!((fog.colour[2] - 1.6).abs() < 1e-6);
+        let frame = env.apply_frame([0.0, 0.0, 1.0]);
+        assert!((frame.sky_light[0] - 0.4).abs() < 1e-6);
+        assert!((frame.sky_light[1] - 0.55).abs() < 1e-6);
+        assert!((frame.sky_light[2] - 1.6).abs() < 1e-6);
+        // The shader's fog uniform is not the record's colour: a strike
+        // leaves it as it was.
+        assert_eq!(frame.fog, calm.fog);
+        // The frame tints the record's colour whether or not the level fogs.
+        env.fog.enabled = false;
+        let frame = env.apply_frame([0.0, 0.0, 1.0]);
+        assert!(frame.fog.is_none());
+        assert!((frame.sky_light[2] - 1.6).abs() < 1e-6);
     }
 
     #[test]
