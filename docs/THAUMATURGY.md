@@ -994,7 +994,9 @@ upload their ribbon's UVs. The barricade's navigation stamp is applied to
 the grid (`exa_world::nav::stamp`); the AI's sight of it is still
 `effects::danger`, which nothing registers yet. The domes, the wave and
 the rain are not drawn yet (the materials' pass plans are computed but no
-renderer binds them); the GI emissive objects behind
+renderer binds them); the rain's frame passes, its tilt and its shader
+uniforms are modelled in `effects::rain`, and the scene weather now starts
+the set and frames it at the camera. The GI emissive objects behind
 the domes, the bubble, the barricade, the strikes, the tendril and the
 teleporter bubble are modelled in `effects::emissive` (their programs,
 extents, colours and boxes) but not injected into the voxel volume.
