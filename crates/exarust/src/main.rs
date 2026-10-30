@@ -74,6 +74,9 @@
 //!          --trace-all                with --trace: every simulated character body, the player's among them
 //!          --debug-bodies             start with the body overlay and joint readout shown (F3 toggles it)
 //!          --debug-nav                draw the level's navigation grid around the view (F6 toggles it)
+//!          --no-torch                 play mode: the player starts without the carried torch
+//!          --floor-torch x,y,z        a lit torch lying on the floor here (metres), as the story start has it
+//!          --debug-lights M           log the point lights within M metres of the player, once
 //!          --nav-refresh-moved        debug: a door or prop that comes to rest somewhere new refreshes the navigation grid
 //!                                     under it (the original refreshes only where a lifted item is let go)
 //!          --static-doors             debug: hinged doors stay static level geometry, as before they became bodies
@@ -281,6 +284,12 @@ pub struct Options {
     pub debug_bodies: bool,
     /// Start with the navigation grid drawn.
     pub debug_nav: bool,
+    /// Play mode: the player carries no torch (Exarust's debug option).
+    pub no_torch: bool,
+    /// A lit torch lying on the floor here (metres; Exarust's debug option).
+    pub floor_torch: Option<[f32; 3]>,
+    /// Log the point lights within this many metres of the player.
+    pub debug_lights: Option<f32>,
     /// Refresh the navigation grid under moving meshes that come to rest
     /// (Exarust's debug option).
     pub nav_refresh_moved: bool,
@@ -707,6 +716,14 @@ fn main() -> AppExit {
             "--trace-all" => options.trace_all = true,
             "--debug-bodies" => options.debug_bodies = true,
             "--debug-nav" => options.debug_nav = true,
+            "--no-torch" => options.no_torch = true,
+            "--floor-torch" => {
+                options.floor_torch = args.next().and_then(|v| {
+                    let p: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect();
+                    (p.len() == 3).then(|| [p[0], p[1], p[2]])
+                })
+            }
+            "--debug-lights" => options.debug_lights = args.next().and_then(|v| v.parse().ok()),
             "--nav-refresh-moved" => options.nav_refresh_moved = true,
             "--static-doors" => options.static_doors = true,
             "--static-mechanisms" => options.static_mechanisms = true,
@@ -1232,6 +1249,10 @@ fn main() -> AppExit {
     .insert_resource(exa_world::nav::NavOverlay {
         on: options.debug_nav,
     })
+    .insert_resource(exa_game::light_probe::DebugLights(options.debug_lights))
+    .insert_resource(exa_game::torch::FloorTorch(
+        options.floor_torch.map(Vec3::from),
+    ))
     .insert_resource(exa_world::nav::NavRefreshMoved(options.nav_refresh_moved));
     if let Some(id) = options.searcher {
         app.insert_resource(exa_game::npc_search::DebugSearcher(id));
