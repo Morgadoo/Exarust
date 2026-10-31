@@ -1158,6 +1158,34 @@ struct MergePiece {
     /// The group's per-triangle flags, as the file stores them.
     flags: std::sync::Arc<[u32]>,
     cull: u32,
+    /// 0 for the body's parts, `i + 1` for the `i`th garment's.
+    garment: u32,
+}
+
+/// Which worn garment each triangle of a merged material run came from: the
+/// original's per-face table on the merged mesh, which its appends fill with
+/// the worn item's id (0 for the body's own parts) and the inventory view's
+/// pick reads under the pointer. Exarust's garments carry their model rather
+/// than an item, so a face keeps the garment's number (`0` the body, `i + 1`
+/// the `i`th of [`FaceGarments::models`]) and the reader maps the model to
+/// the worn item. One entry per triangle of the run's mesh, in its order.
+#[derive(Component, Clone, Debug, Default, PartialEq, Eq)]
+pub struct FaceGarments {
+    pub faces: Vec<u16>,
+    /// The garments' models, in the order the faces number them.
+    pub models: std::sync::Arc<[String]>,
+}
+
+impl FaceGarments {
+    /// The model of the garment face `face` belongs to, `None` for a face of
+    /// the body or one past the table.
+    pub fn model(&self, face: usize) -> Option<&str> {
+        let garment = usize::from(*self.faces.get(face)?);
+        garment
+            .checked_sub(1)
+            .and_then(|at| self.models.get(at))
+            .map(String::as_str)
+    }
 }
 
 /// Builds and spawns a character's one merged skinned mesh: the body's
@@ -1181,6 +1209,7 @@ fn spawn_merged_character(
         Option<Appearance>,
         Option<ApparelInfo>,
     )],
+    garment_names: &[String],
     node_entities: &HashMap<String, Entity>,
     children: &Query<&Children>,
     meshes_of: &Query<(), Or<(With<Mesh3d>, With<exa_assets::SkinnedPart>)>>,
@@ -1321,6 +1350,7 @@ fn spawn_merged_character(
                 bone,
                 flags: node.part_flags.get(part).cloned().unwrap_or_default(),
                 cull: step.cull,
+                garment: which as u32,
             });
         }
     }
@@ -1337,6 +1367,7 @@ fn spawn_merged_character(
                     handle: piece.handle.clone(),
                     triangle_flags: (!piece.flags.is_empty()).then_some(piece.flags.as_ref()),
                     cull: piece.cull,
+                    tag: piece.garment,
                 })
             })
             .collect();
@@ -1353,9 +1384,17 @@ fn spawn_merged_character(
     // The merged vertices are in the character frame's space (the frames
     // compose the body model's root nodes too), so the mesh entity sits at
     // the model root and takes identity as its own rest frame.
+    let models: std::sync::Arc<[String]> = garment_names.into();
     for (run, handle) in merged.merged.subobjects.iter().zip(&merged.materials) {
         let Some(run_mesh) = model::run_mesh(&merged.merged, run) else {
             continue;
+        };
+        let faces = FaceGarments {
+            faces: model::run_tags(&merged.merged, run)
+                .into_iter()
+                .map(|tag| tag.min(u32::from(u16::MAX)) as u16)
+                .collect(),
+            models: models.clone(),
         };
         let is_skin = exa_assets::human_skin::is_race_skin(body_entry, &run.material);
         let material = if is_skin {
@@ -1371,6 +1410,7 @@ fn spawn_merged_character(
                     bone: 0,
                     rest: Transform::IDENTITY,
                 },
+                faces,
                 ChildOf(body),
             ))
             .id();
@@ -1521,6 +1561,7 @@ fn equip_outfits(
         let mut hidden = 0u32;
         let mut protection = Vec::new();
         let mut garment_models = Vec::new();
+        let mut garment_names = Vec::new();
         for garment in &outfit.0 {
             let Some(apparel) = loader.morphed_model(PackKind::Characters, &garment.model, morph)
             else {
@@ -1540,6 +1581,7 @@ fn equip_outfits(
                 protection.push(armour);
             }
             garment_models.push((apparel, appearance, known));
+            garment_names.push(garment.model.clone());
         }
         // The dressed character's one merged skin mesh, through the
         // generator's dressed-mesh plan; the per-node draw when the body
@@ -1557,6 +1599,7 @@ fn equip_outfits(
                 &entry.0,
                 &model,
                 &garment_models,
+                &garment_names,
                 &node_entities,
                 &children,
                 &meshes_of,

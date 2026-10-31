@@ -188,7 +188,9 @@ physique values and the body morphs they select remain the body's concern
   each step into `exa_assets::model::DressedPart`s and runs
   `model::merge_dressed`, which merges the built parts and spawns one
   sub-mesh per material run, bound to the character's skeleton with the
-  root part as joint 0. The body nodes the merged mesh replaced stop
+  root part as joint 0. Each run carries `FaceGarments`: the garment each
+  of its triangles came from (0 the body) and the garments' models, which
+  the inventory figure's pick reads. The body nodes the merged mesh replaced stop
   drawing, and so do the body slots a garment covers (they are left out of
   the plan). Held items, hair and cloth stay as they are drawn today; no
   shipped material carries the occlusion mark, so that pass does nothing

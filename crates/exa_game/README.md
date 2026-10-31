@@ -1244,7 +1244,16 @@ yet). A drop on the inventory's figure is `doll_view`'s: apparel is worn
 through the equip conflict pass (displaced pieces back to the pack, the
 braies dropped, the outfit re-dressed), a weapon goes into the hands by
 the take-in plan and a shield into the off hand, the player's hands and
-held weapon following. No drag leaves the
+held weapon following. `figure_pick` takes items off the figure: the pick
+of the item under the pointer (the CPU-skinned merged runs' faces, whose
+garments name the worn item, then the other drawn meshes, a held item's
+answering its hand and slot), a left-press drag off the figure
+(`Panel::Figure`) ended by a pack's accept and drop and the view's release
+(the scheduled hand take-out with its promotion, or the garment off the
+worn list with the underwear rule and the pack charged its bulk), and the
+right-press card (`item_card::FigureCard`); `--figure-drag FROM>TO@FRAME`
+and `--figure-card AT@FRAME` script them. An open figure keeps its look
+until the inventory reopens (Exarust dresses a body once). No drag leaves the
 player's pack while the player's body swaps its weapon sets (a swap
 requested or its hand plan pending), the inventory's drag permission.
 Taking a worn item off a corpse does not re-dress its mesh.

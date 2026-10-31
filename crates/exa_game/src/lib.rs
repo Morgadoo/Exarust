@@ -45,6 +45,7 @@ pub mod equip;
 pub mod experience;
 pub mod experience_live;
 pub mod fall;
+pub mod figure_pick;
 pub mod fire_sound;
 pub mod flow;
 pub mod footprints;
@@ -186,6 +187,7 @@ impl Plugin for GamePlugin {
                 cursor::CursorPlugin,
                 char_view::CharViewPlugin,
                 doll_view::DollViewPlugin,
+                figure_pick::FigurePickPlugin,
             ),
             (
                 hand::HandPlugin,

@@ -144,6 +144,18 @@ pub struct WorldCard {
     pub delayed: bool,
 }
 
+/// The inventory figure's card action (its right press): the item the
+/// figure's pick found under `pointer` (physical pixels), with its flags.
+/// The original builds the card at once (no delay), as the item panel's
+/// card for a kind that does not wait; it belongs to the inventory like a
+/// panel's card ([`crate::figure_pick`]).
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FigureCard {
+    pub item: u32,
+    pub flags: u32,
+    pub pointer: (i32, i32),
+}
+
 /// `--item-card ID@FRAME`: the item's card opened at the pointer at that
 /// frame after the load, as a world object's immediate card request.
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -554,6 +566,52 @@ fn world_cards(
         );
         if view.shown.is_none() {
             debug!("item card: no card for world object {:#x}", request.item);
+        }
+    }
+}
+
+/// The figure's card requests ([`FigureCard`]): built and shown at once at
+/// the pointer, as a panel's card.
+#[allow(clippy::too_many_arguments)]
+fn figure_cards(
+    mut requests: MessageReader<FigureCard>,
+    catalogue: Option<Res<ItemCatalogue>>,
+    phrases: Option<Res<PhraseBook>>,
+    mut screens: ResMut<GameScreens>,
+    mut view: ResMut<CardView>,
+    mut icons: ResMut<PanelIcons>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    time: Res<Time>,
+) {
+    let now = time.elapsed().as_millis() as u32;
+    for request in requests.read() {
+        let (Some(catalogue), Ok(window)) = (catalogue.as_deref(), windows.single()) else {
+            continue;
+        };
+        let unit = if screens.pack.unit > 0 {
+            screens.pack.unit
+        } else {
+            card_unit(window, &screens)
+        };
+        show(
+            &mut view,
+            &mut screens,
+            &mut icons,
+            catalogue,
+            phrases.as_deref().unwrap_or(&PhraseBook::default()),
+            request.item,
+            request.flags,
+            request.pointer,
+            unit,
+            now,
+            false,
+        );
+        match &view.shown {
+            Some(card) => info!(
+                "figure card: {:#x} {:?} at {:?}",
+                request.item, card.name, card.at
+            ),
+            None => info!("figure card: {:#x} has no card", request.item),
         }
     }
 }
@@ -1139,6 +1197,7 @@ impl Plugin for ItemCardPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CardView>()
             .add_message::<WorldCard>()
+            .add_message::<FigureCard>()
             .add_systems(
                 Update,
                 (
@@ -1146,6 +1205,7 @@ impl Plugin for ItemCardPlugin {
                     request_card,
                     scripted_card,
                     world_cards,
+                    figure_cards,
                     tick_card,
                 )
                     .chain()

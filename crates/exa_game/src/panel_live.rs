@@ -11,6 +11,9 @@
 //! view whether it can take the item and equips it through that view, and
 //! a loot window has no running character view. A drop on the inventory's
 //! character view is handed to the view's drop ([`crate::doll_view`]).
+//! A drag off the figure ([`Panel::Figure`], started by
+//! [`crate::figure_pick`]) ends here too: its release is handed to
+//! [`crate::figure_pick::drop_from_figure`].
 //!
 //! The inventory installs a drag permission on its pack
 //! ([`exa_items::inventory_window::permission`]): nothing leaves the
@@ -52,6 +55,9 @@ pub enum Panel {
     /// An opened container's popup panel, by the container's tagged
     /// database id.
     Container(u32),
+    /// The inventory's character view: a drag off the figure
+    /// ([`crate::figure_pick`]). It has no item container of its own.
+    Figure,
 }
 
 impl Panel {
@@ -59,14 +65,14 @@ impl Panel {
     pub fn kind(self) -> PanelKind {
         match self {
             Panel::PlayerPack | Panel::BodyPack(_) | Panel::Container(_) => PanelKind::Pack,
-            Panel::BodyEquipment(_) => PanelKind::Equipment,
+            Panel::BodyEquipment(_) | Panel::Figure => PanelKind::Equipment,
         }
     }
 
     /// The body a loot panel belongs to, or `None` for the player's pack.
     pub fn body(self) -> Option<i32> {
         match self {
-            Panel::PlayerPack | Panel::Container(_) => None,
+            Panel::PlayerPack | Panel::Container(_) | Panel::Figure => None,
             Panel::BodyPack(body) | Panel::BodyEquipment(body) => Some(body),
         }
     }
@@ -81,6 +87,8 @@ impl Panel {
             // Both tag bits set keep a container clear of the bodies'
             // small numbers.
             Panel::Container(id) => id | 0xC000_0000,
+            // The pack's linked panel: the inventory's view.
+            Panel::Figure => crate::doll_view::DOLL_PANEL,
         }
     }
 }
@@ -152,6 +160,7 @@ pub(crate) fn container(screens: &GameScreens, panel: Panel) -> Option<&Containe
         Panel::BodyPack(body) => screens.loot_window(body).map(|window| &window.pack),
         Panel::BodyEquipment(body) => screens.loot_window(body).map(|window| &window.worn),
         Panel::Container(id) => screens.popup(id).map(|popup| &popup.panel),
+        Panel::Figure => None,
     }
 }
 
@@ -173,6 +182,7 @@ pub(crate) fn container_mut(screens: &mut GameScreens, panel: Panel) -> Option<&
             .iter_mut()
             .find(|popup| popup.id == id)
             .map(|popup| &mut popup.panel),
+        Panel::Figure => None,
     }
 }
 
@@ -228,6 +238,9 @@ fn owner_present(
     if matches!(panel, Panel::Container(_)) {
         return true;
     }
+    if panel == Panel::Figure {
+        return player.is_some();
+    }
     match panel.body() {
         None => player.is_some(),
         Some(index) => body_entity(bodies, index).is_some(),
@@ -253,8 +266,13 @@ type SwappingPlayer = (
     Or<(With<SwapRequested>, With<PendingHands>)>,
 );
 
+/// A release at a window point (physical pixels) a debug script asks for
+/// in place of the mouse's ([`crate::figure_pick`]'s `--figure-drag`).
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ScriptedRelease(pub Option<IVec2>);
+
 /// Starts a drag on the entry under the pointer.
-fn press(
+pub(crate) fn press(
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut screens: ResMut<GameScreens>,
@@ -444,14 +462,15 @@ pub fn drop_on_panel(
 }
 
 /// Ends the drag: a drop on another panel moves the item, a drop on the same
-/// panel only repositions it, and a release outside every panel cancels.
+/// panel only repositions it, and a release outside every panel cancels. A
+/// drag off the inventory's figure ends through [`crate::figure_pick`].
 #[allow(clippy::too_many_arguments)]
-fn release(
+pub(crate) fn release(
     buttons: Res<ButtonInput<MouseButton>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut screens: ResMut<GameScreens>,
     mut drag: ResMut<PanelDrag>,
-    icons: Res<PanelIcons>,
+    mut icons: ResMut<PanelIcons>,
     catalogue: Option<Res<ItemCatalogue>>,
     mut commands: Commands,
     mut bodies: Query<(Entity, &mut Possessions)>,
@@ -459,8 +478,11 @@ fn release(
     game: Option<Res<exa_assets::Game>>,
     player_bodies: Query<Entity, With<crate::player::PlayerBody>>,
     mut dropped: MessageWriter<crate::doll_view::DollDrop>,
+    mut scripted: ResMut<ScriptedRelease>,
+    mut figure: MessageWriter<crate::figure_pick::FigureRelease>,
 ) {
-    if !buttons.just_released(MouseButton::Left) || drag.source.is_none() {
+    let scripted = scripted.0.take();
+    if (scripted.is_none() && !buttons.just_released(MouseButton::Left)) || drag.source.is_none() {
         return;
     }
     let source = drag.source.unwrap();
@@ -468,9 +490,22 @@ fn release(
     let Ok(window) = windows.single() else {
         return;
     };
-    let at = window
-        .cursor_position()
-        .map(|pointer| (pointer * window.scale_factor()).as_ivec2());
+    let at = scripted.or_else(|| {
+        window
+            .cursor_position()
+            .map(|pointer| (pointer * window.scale_factor()).as_ivec2())
+    });
+    if source == Panel::Figure {
+        figure.write(crate::figure_pick::drop_from_figure(
+            &mut screens,
+            &mut icons,
+            catalogue.as_deref(),
+            *drag,
+            at,
+        ));
+        *drag = PanelDrag::default();
+        return;
+    }
     // A release over the inventory's character view hands the drag to the
     // view's drop (`crate::doll_view`), which ends the source's drag.
     if let (Some(at), Some(view)) = (at, crate::doll_view::open_view(&screens))
@@ -595,6 +630,7 @@ fn move_item(
                 body_inventory::take(&mut p, PanelKind::Equipment, id)
             }
             Panel::Container(_) => Some(flags & !exa_items::possession::HELD),
+            Panel::Figure => None,
         }
     };
     let Some(flags) = take_from(bodies) else {
@@ -624,7 +660,7 @@ fn move_item(
                 commands.entity(entity).insert(activation);
             }
         }
-        Panel::Container(_) => {}
+        Panel::Container(_) | Panel::Figure => {}
     }
 }
 
@@ -672,7 +708,9 @@ impl Plugin for PanelLivePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PanelDrag>()
             .init_resource::<PointerOverGui>()
+            .init_resource::<ScriptedRelease>()
             .add_message::<crate::doll_view::DollDrop>()
+            .add_message::<crate::figure_pick::FigureRelease>()
             .add_systems(Update, track_pointer.before(crate::hand::HandSystems))
             .add_systems(
                 Update,

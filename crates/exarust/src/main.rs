@@ -146,6 +146,10 @@
 //!                                     after loading, as a drag out of the window would (hold LMB to lift it)
 //!          --doll-drop ID:FLAGS@FRAME debug: put the item with its flags into the pack and drop it onto the
 //!                                     inventory's character view at that frame after loading
+//!          --figure-drag FROM>TO@FRAME debug: press on the inventory figure at FROM at that frame after loading
+//!                                     and release at TO two frames later (a drag off the figure); a point is
+//!                                     vX,Y (fractions of the view), pX,Y (of the pack panel) or X,Y (pixels)
+//!          --figure-card AT@FRAME     debug: the figure's card action (its right press) at AT
 //!          --save-dir <dir>           the folder the game saves into (a new slot only; a slot file that holds bytes is
 //!                                     never written over) and loads `--arena-slot` from
 //!          --save-at frame,...        with --save-dir: save the session to a new slot at frames after the load (the
@@ -420,6 +424,9 @@ pub struct Options {
     pub gui_drop: exa_game::gui_drop::GuiDropScript,
     /// `--item-card ID@FRAME`: the item's card opened at the pointer.
     pub item_card: exa_game::item_card::CardScript,
+    /// `--figure-drag FROM>TO@FRAME` and `--figure-card AT@FRAME`: a drag
+    /// off the inventory figure and its card action.
+    pub figure: exa_game::figure_pick::FigureScript,
     /// `--doll-drop ID:FLAGS@FRAME`: the item dropped onto the doll.
     pub doll_drop: exa_game::doll_view::DollDropScript,
     /// Play mode: in-process level changes at frames after the first load
@@ -1014,6 +1021,20 @@ fn main() -> AppExit {
                     }
                 }
             }
+            "--figure-drag" | "--figure-card" => {
+                let text = args.next().unwrap_or_default();
+                let ok = if a == "--figure-drag" {
+                    exa_game::figure_pick::FigureScript::parse_drag(&text)
+                        .map(|d| options.figure.drag = Some(d))
+                } else {
+                    exa_game::figure_pick::FigureScript::parse_card(&text)
+                        .map(|c| options.figure.card = Some(c))
+                };
+                if ok.is_none() {
+                    eprintln!("{a}: cannot read {text:?} (FROM>TO@FRAME or AT@FRAME)");
+                    return AppExit::from_code(2);
+                }
+            }
             "--use-item" | "--gui-drop" | "--doll-drop" | "--item-card" => {
                 let text = args.next().unwrap_or_default();
                 let ok =
@@ -1470,6 +1491,7 @@ fn main() -> AppExit {
     .insert_resource(options.gui_drop)
     .insert_resource(options.item_card)
     .insert_resource(options.doll_drop)
+    .insert_resource(options.figure.clone())
     .insert_resource(exa_game::save_live::ScriptedSaves(options.save_at.clone()));
     if options.story_session {
         app.insert_resource(exa_game::flow::StorySession);
