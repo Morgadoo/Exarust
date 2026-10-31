@@ -146,8 +146,10 @@
 //!                                     after loading, as a world object's click would
 //!          --gui-drop ID@FRAME        debug: put the item into the pack and drop it into the world at that frame
 //!                                     after loading, as a drag out of the window would (hold LMB to lift it)
-//!          --doll-drop ID:FLAGS@FRAME debug: put the item with its flags into the pack and drop it onto the
-//!                                     inventory's character view at that frame after loading
+//!          --doll-drop ID:FLAGS@FRAME[+],...  debug: put each item with its flags into the pack and drop it onto
+//!                                     the inventory's character view at its frame after loading (`+`: on the
+//!                                     view's right half with Insight's technique 8 known, so a weapon goes
+//!                                     into the off hand)
 //!          --save-dir <dir>           the folder the game saves into (a new slot only; a slot file that holds bytes is
 //!                                     never written over) and loads `--arena-slot` from
 //!          --save-at frame,...        with --save-dir: save the session to a new slot at frames after the load (the
@@ -1475,7 +1477,7 @@ fn main() -> AppExit {
     .insert_resource(options.use_item)
     .insert_resource(options.gui_drop)
     .insert_resource(options.item_card)
-    .insert_resource(options.doll_drop)
+    .insert_resource(options.doll_drop.clone())
     .insert_resource(exa_game::save_live::ScriptedSaves(options.save_at.clone()));
     if options.story_session {
         app.insert_resource(exa_game::flow::StorySession);

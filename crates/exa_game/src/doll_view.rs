@@ -4,8 +4,7 @@
 //! a dragged item.
 //!
 //! The figure is a copy of the player's body (its model, physique, skin,
-//! hair, outfit and main-hand weapon) standing at its own place far from
-//! the world, on a render layer no other camera takes. An off-screen
+//! hair and outfit) standing at its own place far from the world, on a render layer no other camera takes. An off-screen
 //! camera at the character view's pose (the figure point 100 cm up, the eye
 //! 410 cm away towards (−200, 60, 360), a 30° field of view) draws it into
 //! an image the size of the view, which a UI node shows under the GUI
@@ -20,6 +19,24 @@
 //! encumbrance, drawn with the dot sheet's whole and half dots in the
 //! label group's seventh ink, the dots centred on the record's height.
 //!
+//! The figure's hands are the view's hand scene, built from the player's
+//! record as the original's scene job builds it
+//! ([`exa_items::doll::scene_plan`]): each hand whose item differs from the
+//! one its model shows gets that item's model when it has one, attached as
+//! a weapon (the first or second held slot's grip), a shield (the left
+//! hand, turned -5° about z) or a light (the torch's grip for that hand);
+//! the job's steps run in the original's order
+//! ([`exa_items::doll::AttachPlan::rebuild_steps`]): the changed hands'
+//! old models detach, the new ones attach, the grip is recomputed (the
+//! figure's held moveset follows its hands) and the stance restarts with
+//! blend 20. A hand emptied without a new item releases its old model
+//! ([`exa_items::doll::release_model`]), its take-out being the drag off the
+//! figure's. So a shield, a second weapon and the torch show on the figure
+//! as the main-hand weapon does, and follow the record while the view is
+//! open. Exarust's carried torch is outside the record: the figure holds it
+//! in the hand the player holds it in when the record leaves that hand
+//! empty, else in the other hand when that one is empty [Exarust's].
+//!
 //! A drop on the view runs the character view's drop: apparel is worn
 //! through the equip conflict pass (the pieces it displaces go back to the
 //! pack, the braies are dropped), a weapon is taken into the hands by the
@@ -30,8 +47,8 @@
 //! GUI's control table and rating-dots draw (`docs/UI.md`, Character view).
 //! Guesses: the field of view is taken as vertical; the background (the
 //! view's own still when the inventory sets its flag) is taken as the
-//! inventory's own client showing through; the figure keeps the player's
-//! outfit and weapon but not its torch.
+//! inventory's own client showing through. Not drawn: a lit item's fire on
+//! the figure (the torch's model shows unlit; its lit mark is logged).
 
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::visibility::RenderLayers;
@@ -50,7 +67,10 @@ use exa_character::{Garment, Outfit, Wielded};
 use exa_formats::characters::{ID_MASK, ItemRef};
 use exa_formats::objdb::Item;
 use exa_items::catalogue::ItemCatalogue;
-use exa_items::doll::{IntoFacts, record_into, take_into_hands};
+use exa_items::doll::{
+    ApplyStep, AttachKind, IntoFacts, STANCE_BLEND, TakeOut, hand_node, record_into, release_model,
+    scene_plan, take_into_hands,
+};
 use exa_items::possession::{self, HELD, Hand, HoldStep, Possessions};
 use exa_ui::character_view::{
     DropFacts, FIELD_OF_VIEW, FIGURE_POINT, FigureDrop, default_camera_position, doll_facing,
@@ -240,8 +260,6 @@ pub struct DollScene {
     pub figure: Option<Entity>,
     /// The view's rectangle the scene was made for.
     pub view: GuiRect,
-    /// The weapon model the figure holds, to follow the player's.
-    pub weapon: Option<String>,
     /// The colour the camera clears to.
     pub backdrop: [u8; 4],
 }
@@ -408,7 +426,6 @@ fn spawn_scene(
         node,
         figure: None,
         view,
-        weapon: None,
         backdrop,
     }
 }
@@ -507,11 +524,11 @@ type PlayerLook<'a> = (
     Option<&'a exa_assets::BodyMorph>,
     Option<&'a exa_character::hair::Hair>,
     Option<&'a exa_character::RaceWeaponry>,
-    Option<&'a Wielded>,
 );
 
 /// Builds the figure from the player's body once the view exists, and
-/// keeps its outfit and weapon the player's.
+/// keeps its outfit the player's. Its hands are the hand scene's
+/// ([`rebuild_doll_hands`]).
 #[allow(clippy::too_many_arguments)]
 fn dress_doll(
     mut commands: Commands,
@@ -527,21 +544,12 @@ fn dress_doll(
     let Some(scene) = doll.scene.as_mut() else {
         return;
     };
-    let Some((outfit, body, skin, job, morph, hair, weaponry, wielded)) = players.iter().next()
-    else {
+    let Some((outfit, body, skin, job, morph, hair, weaponry)) = players.iter().next() else {
         return;
     };
-    let weapon = wielded.map(|w| w.model.clone());
     if let Some(figure) = scene.figure {
         if outfit.is_changed() {
             commands.entity(figure).insert(Outfit::clone(&outfit));
-        }
-        if weapon != scene.weapon {
-            match wielded {
-                Some(w) => commands.entity(figure).insert(w.clone()),
-                None => commands.entity(figure).remove::<Wielded>(),
-            };
-            scene.weapon = weapon;
         }
         return;
     }
@@ -571,6 +579,8 @@ fn dress_doll(
         body.clone(),
         exa_character::WearsUnderwear,
         crate::char_view::PreviewTurn::default(),
+        Hands::default(),
+        DollHands::default(),
     ));
     if let Some(skin) = skin {
         commands.entity(figure).insert(skin.clone());
@@ -587,11 +597,310 @@ fn dress_doll(
     if let Some(weaponry) = weaponry {
         commands.entity(figure).insert(*weaponry);
     }
-    if let Some(wielded) = wielded {
-        commands.entity(figure).insert(wielded.clone());
-    }
     scene.figure = Some(figure);
-    scene.weapon = weapon;
+}
+
+/// The figure's hand scene: the item each hand's model shows (the scene
+/// job's "current" hands) and the model's root node.
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DollHands {
+    pub shown: [Hand; 2],
+    pub nodes: [Option<Entity>; 2],
+}
+
+/// The hand Exarust's carried torch is in, from the player's hands: the
+/// main hand when its item is the torch, else the off hand when it holds a
+/// light. `None` without the torch.
+pub fn torch_hand(hands: &Hands, carries: bool) -> Option<usize> {
+    if !carries {
+        return None;
+    }
+    if hands
+        .main
+        .is_some_and(|main| main.light && main.flags == crate::torch::TORCH_FLAGS)
+    {
+        Some(0)
+    } else if hands.off_light {
+        Some(1)
+    } else {
+        None
+    }
+}
+
+/// The hands the figure's scene is built from: the record's out set, with
+/// Exarust's carried torch (outside the record, always burning) in its hand
+/// when the record leaves that hand empty, else in the other hand when
+/// that one is empty.
+pub fn figure_targets(out: &[Hand; 2], torch: Option<usize>) -> [Hand; 2] {
+    let mut targets = *out;
+    if let Some(hand) = torch {
+        let torch = Hand {
+            id: crate::flow::STORY_TORCH_ITEM,
+            flags: possession::LIT,
+        };
+        if let Some(free) = [hand, 1 - hand].into_iter().find(|&h| targets[h].id == 0) {
+            targets[free] = torch;
+        }
+    }
+    targets
+}
+
+/// Where a hand model hangs: the bone and its placement under it. A weapon
+/// takes its class's grip in the hand's held slot (the first for the main
+/// hand, the second for the off hand) with its flip; a light takes the
+/// same grip by its own weapon flags (the torch's when it has none),
+/// unflipped; a shield the left hand turned
+/// [`exa_character::offhand::SHIELD_TURN_DEGREES`] about z (the system then
+/// moves it into the forearm's frame at the hand's rest offset, as the
+/// original's shield placement has it). A weapon class the grip table
+/// lacks hangs at the hand's own bone.
+pub fn hand_placement(
+    kind: AttachKind,
+    hand: usize,
+    weapon_flags: Option<u32>,
+    flipped: bool,
+    holder: &exa_combat::grip::GripHolder,
+) -> (usize, Transform) {
+    use exa_combat::attack::Slot;
+    let own = if hand == 0 {
+        exa_character::RIGHT_HAND
+    } else {
+        exa_character::LEFT_HAND
+    };
+    let slot = if hand == 0 { Slot::First } else { Slot::Second };
+    let gripped = |flags: u32, flipped: bool| {
+        exa_combat::grip::grip(flags & 0xFFFF, slot).map_or((own, Transform::IDENTITY), |g| {
+            (
+                exa_character::grip_bone(g.hand),
+                g.placement(holder, flipped),
+            )
+        })
+    };
+    match kind {
+        AttachKind::Weapon => gripped(weapon_flags.unwrap_or(0), flipped),
+        AttachKind::Light => gripped(
+            weapon_flags.unwrap_or(u32::from(crate::torch::TORCH_FLAGS)),
+            false,
+        ),
+        AttachKind::Shield => (
+            exa_character::LEFT_HAND,
+            Transform::from_rotation(Quat::from_rotation_z(
+                exa_character::offhand::SHIELD_TURN_DEGREES.to_radians(),
+            )),
+        ),
+    }
+}
+
+/// The left forearm's bone, whose frame a shield's placement is in.
+const LEFT_FOREARM: usize = 16;
+
+/// The figure's hands the player's record makes.
+type PlayerHands<'a> = (
+    &'a Possessions,
+    Option<&'a Hands>,
+    Has<crate::torch::CarriesTorch>,
+    Option<&'a exa_combat::Fighter>,
+);
+
+/// The figure's own hand scene and what its holder reads.
+type FigureHands<'a> = (
+    &'a mut DollHands,
+    &'a mut Hands,
+    Option<&'a mut exa_anim::Animator>,
+    Option<&'a exa_character::RaceWeaponry>,
+);
+
+/// Runs the view's hand-scene job on the figure whenever the player's
+/// record (or the carried torch) changes what its hands hold: the plan by
+/// [`scene_plan`], its steps by [`exa_items::doll::AttachPlan::rebuild_steps`]
+/// (a hand emptied releases its model by [`release_model`]), the models
+/// placed by [`hand_placement`] under the figure's hand bones.
+#[allow(clippy::too_many_arguments)]
+fn rebuild_doll_hands(
+    mut commands: Commands,
+    doll: Res<InventoryDoll>,
+    players: Query<PlayerHands, With<crate::player::PlayerBody>>,
+    mut figures: Query<FigureHands, Without<crate::player::PlayerBody>>,
+    (children, parents, locals): (
+        Query<&Children>,
+        Query<&ChildOf>,
+        Query<&Transform, With<exa_anim::BodyPart>>,
+    ),
+    parts: Query<&exa_anim::BodyPart>,
+    catalogue: Option<Res<ItemCatalogue>>,
+    game: Option<Res<Game>>,
+    cache: Option<ResMut<ModelCache>>,
+    meshes: Option<ResMut<Assets<Mesh>>>,
+    materials: Option<ResMut<Assets<exa_render::material::ExaMaterial>>>,
+    images: Option<ResMut<Assets<Image>>>,
+    support: Option<Res<CompressedImageFormatSupport>>,
+) {
+    let Some(figure) = doll.scene.as_ref().and_then(|scene| scene.figure) else {
+        return;
+    };
+    let (Some(catalogue), Some(game)) = (catalogue.as_deref(), game) else {
+        return;
+    };
+    let Some((possessions, player_hands, carries, fighter)) = players.iter().next() else {
+        return;
+    };
+    let Ok((mut scene, mut hands, mut animator, race)) = figures.get_mut(figure) else {
+        return;
+    };
+    let torch = player_hands.and_then(|h| torch_hand(h, carries));
+    let targets = figure_targets(&possessions.out, torch);
+    let kind = |id: u32| catalogue.kind(id & ID_MASK);
+    let modelled = |id: u32| catalogue.model(id & ID_MASK).is_some();
+    let Some(plan) = scene_plan(&scene.shown, &targets, kind, modelled, false) else {
+        return;
+    };
+    // The hand bones must exist before the job runs.
+    let by_bone: HashMap<usize, Entity> = children
+        .iter_descendants(figure)
+        .filter_map(|e| parts.get(e).ok().map(|p| (p.bone, e)))
+        .collect();
+    if by_bone.is_empty() {
+        return;
+    }
+    let (Some(mut cache), Some(mut meshes), Some(mut materials), Some(mut images)) =
+        (cache, meshes, materials, images)
+    else {
+        return;
+    };
+    let mut loader = ModelLoader {
+        game: &game.0,
+        cache: &mut cache,
+        meshes: &mut meshes,
+        materials: &mut materials,
+        images: &mut images,
+        bc_supported: model::bc_supported(support.as_deref()),
+    };
+    let size = fighter.map_or(1.0, |f| f.stats.size);
+    let holder = race.copied().unwrap_or_default().grip_holder(size);
+    let present = [
+        scene.nodes[0].map(|_| scene.shown[0].id),
+        scene.nodes[1].map(|_| scene.shown[1].id),
+    ];
+    let main_grip = kind(targets[0].id).map(|k| k.grip());
+    let both_empty = targets[0].id == 0 && targets[1].id == 0;
+    let steps = plan.rebuild_steps(&present, class_word(main_grip), 0);
+    info!(
+        "doll hands: {:#x}/{:#x} -> {:#x}/{:#x}, steps {steps:?}",
+        scene.shown[0].id, scene.shown[1].id, targets[0].id, targets[1].id
+    );
+    for step in steps {
+        match step {
+            ApplyStep::Detach(hand) => {
+                // A hand left empty is the drag-off's take-out; a hand
+                // that takes another item makes room with a plain one.
+                let mode = if targets[hand].id == 0 {
+                    TakeOut::scheduled(hand).mode
+                } else {
+                    TakeOut::plain(hand, targets[hand].id).mode
+                };
+                let release = release_model(both_empty, mode);
+                if release.detach_node
+                    && let Some(node) = scene.nodes[hand].take()
+                    && let Ok(mut e) = commands.get_entity(node)
+                {
+                    e.despawn();
+                }
+                if release.restart
+                    && let Some(anim) = animator.as_mut()
+                {
+                    anim.start("Idle", true, None, STANCE_BLEND, exa_anim::Ease::Linear);
+                }
+                debug!("doll hands: hand {hand} released ({release:?})");
+            }
+            ApplyStep::Attach { hand, kind: attach } => {
+                let Some(take) = plan.attach[hand] else {
+                    continue;
+                };
+                let Some(item) = catalogue.model(take.id & ID_MASK) else {
+                    continue;
+                };
+                let loaded = match item.model.strip_prefix('@') {
+                    Some(factory) => loader.factory_weapon(factory, item.weapon.as_ref()),
+                    None => loader
+                        .model(PackKind::Objects, &item.model)
+                        .or_else(|| loader.model(PackKind::Objlib, &item.model)),
+                };
+                let Some(loaded) = loaded else {
+                    warn!("doll hands: {} not found", item.model);
+                    continue;
+                };
+                let sections = kind(take.id).unwrap_or_default();
+                let marks = exa_items::doll::model_marks(take.flags);
+                let (bone, mut placement) =
+                    hand_placement(attach, hand, sections.weapon, marks.flipped, &holder);
+                let Some(&(mut bone_entity)) = by_bone.get(&bone) else {
+                    continue;
+                };
+                let mut frame = bone;
+                // A shield sits at the hand's rest offset in the forearm's
+                // frame (the hand's own turn left out), when the hand hangs
+                // under its forearm.
+                if attach == AttachKind::Shield
+                    && let Some(&forearm) = by_bone.get(&LEFT_FOREARM)
+                    && parents
+                        .get(bone_entity)
+                        .is_ok_and(|p| p.parent() == forearm)
+                    && let Ok(rest) = locals.get(bone_entity)
+                {
+                    placement.translation = rest.translation;
+                    bone_entity = forearm;
+                    frame = LEFT_FOREARM;
+                }
+                let (root, _) =
+                    exa_world::spawn_model_nodes(&mut commands, &loaded, Some(placement));
+                commands.entity(root).insert((
+                    Name::new(format!("_InventoryHand{hand}")),
+                    ChildOf(bone_entity),
+                ));
+                if let Some(old) = scene.nodes[hand].replace(root)
+                    && let Ok(mut e) = commands.get_entity(old)
+                {
+                    e.despawn();
+                }
+                info!(
+                    "doll hands: hand {hand} shows {:#x} ({}) as {attach:?} under bone {frame}, node {:?}, flipped {}, lit {}",
+                    take.id,
+                    item.model,
+                    hand_node(sections),
+                    marks.flipped,
+                    marks.lit
+                );
+            }
+            ApplyStep::RefreshGrip => {
+                let held = Possessions {
+                    out: targets,
+                    ..Possessions::default()
+                };
+                hands.set_if_neq(crate::equip::hands_of(&held, kind));
+            }
+            ApplyStep::RestartStance => {
+                if let Some(anim) = animator.as_mut() {
+                    anim.start("Idle", true, None, STANCE_BLEND, exa_anim::Ease::Linear);
+                }
+            }
+            ApplyStep::ClearWeaponPart
+            | ApplyStep::RefreshBody
+            | ApplyStep::ClearAttachFlag
+            | ApplyStep::ExchangeSets => {}
+        }
+    }
+    // A changed hand whose old model the steps did not detach (its new item
+    // has no model) keeps nothing.
+    for hand in 0..2 {
+        if plan.changed[hand]
+            && plan.attach[hand].is_none()
+            && let Some(node) = scene.nodes[hand].take()
+            && let Ok(mut e) = commands.get_entity(node)
+        {
+            e.despawn();
+        }
+    }
+    scene.shown = targets;
 }
 
 /// Moves every mesh of the figure onto the view's layer, out of the shadow
@@ -920,60 +1229,108 @@ fn equip_dropped(
     }
 }
 
-/// `--doll-drop ID:FLAGS@FRAME`: the item, with its flags, put into the
-/// player's pack and dropped onto the character view at that frame after
-/// the load, as a drag from the pack onto the doll would (a debug tool).
-#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct DollDropScript(pub Option<(u32, u32, u32)>);
+/// One drop of the debug doll script: the item, its flags, the frame after
+/// the load, and whether it lands on the view's right half with Insight's
+/// technique 8 known (the near hand, which takes a second weapon).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DollDropEntry {
+    pub id: u32,
+    pub flags: u32,
+    pub frame: u32,
+    pub near: bool,
+}
+
+/// `--doll-drop ID:FLAGS@FRAME[+],...`: each item, with its flags, put into
+/// the player's pack and dropped onto the character view at its frame
+/// after the load, as a drag from the pack onto the doll would (a debug
+/// tool). A `+` drops it on the view's right half and first writes
+/// Insight's technique 8 into the player's record, so a weapon goes into
+/// the off hand by the drop's own rule.
+#[derive(Resource, Debug, Clone, Default, PartialEq, Eq)]
+pub struct DollDropScript(pub Vec<DollDropEntry>);
 
 impl DollDropScript {
     pub fn parse(text: &str) -> Option<Self> {
-        let (item, frame) = text.split_once('@')?;
-        let (id, flags) = item.split_once(':').unwrap_or((item, "0"));
-        Some(Self(Some((
-            crate::gui_drop::parse_id(id)?,
-            crate::gui_drop::parse_id(flags)?,
-            frame.trim().parse().ok()?,
-        ))))
+        text.split(',')
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(|entry| {
+                let (entry, near) = match entry.strip_suffix('+') {
+                    Some(rest) => (rest, true),
+                    None => (entry, false),
+                };
+                let (item, frame) = entry.split_once('@')?;
+                let (id, flags) = item.split_once(':').unwrap_or((item, "0"));
+                Some(DollDropEntry {
+                    id: crate::gui_drop::parse_id(id)?,
+                    flags: crate::gui_drop::parse_id(flags)?,
+                    frame: frame.trim().parse().ok()?,
+                    near,
+                })
+            })
+            .collect::<Option<Vec<_>>>()
+            .filter(|entries| !entries.is_empty())
+            .map(Self)
     }
 }
 
-/// The debug doll drop ([`DollDropScript`]).
+/// The debug doll drops ([`DollDropScript`]).
 fn scripted_doll_drop(
     script: Res<DollDropScript>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
     mut frames: Local<u32>,
-    mut players: Query<&mut Possessions, With<crate::player::PlayerBody>>,
+    mut players: Query<
+        (
+            &mut Possessions,
+            Option<&mut exa_character::record::CharacterData>,
+        ),
+        With<crate::player::PlayerBody>,
+    >,
     mut drops: MessageWriter<DollDrop>,
 ) {
-    let Some((id, flags, frame)) = script.0 else {
+    let Some(last) = script.0.iter().map(|e| e.frame).max() else {
         return;
     };
-    if loading.is_some() || *frames > frame {
+    if loading.is_some() || *frames > last {
         return;
     }
     *frames += 1;
-    if *frames != frame {
-        return;
+    for entry in script.0.iter().filter(|e| e.frame == *frames) {
+        let Some((mut p, data)) = players.iter_mut().next() else {
+            return;
+        };
+        if entry.near
+            && let Some(mut data) = data
+        {
+            // Insight's points reach one technique, and it is the eighth.
+            let skill = &mut data.record.skills[exa_formats::characters::INSIGHT];
+            skill.points = skill.points.max(5000);
+            if let Some(first) = skill.techniques.first_mut() {
+                *first = 8;
+            }
+        }
+        p.carried.push(possession::Carried {
+            id: entry.id,
+            flags: entry.flags,
+            x: 0,
+            y: 0,
+        });
+        info!(
+            "doll drop script: {:#x} (flags {:#x}) onto the doll at frame {}{}",
+            entry.id,
+            entry.flags,
+            entry.frame,
+            if entry.near { ", near hand" } else { "" }
+        );
+        drops.write(DollDrop {
+            source: Panel::PlayerPack,
+            id: entry.id,
+            flags: entry.flags,
+            icon: 0,
+            bulk: 0,
+            right_half: entry.near,
+        });
     }
-    let Some(mut p) = players.iter_mut().next() else {
-        return;
-    };
-    p.carried.push(possession::Carried {
-        id,
-        flags,
-        x: 0,
-        y: 0,
-    });
-    info!("doll drop script: {id:#x} (flags {flags:#x}) onto the doll at frame {frame}");
-    drops.write(DollDrop {
-        source: Panel::PlayerPack,
-        id,
-        flags,
-        icon: 0,
-        bulk: 0,
-        right_half: false,
-    });
 }
 
 /// A refused drop: the source's drag is cancelled and its entry stays.
@@ -994,7 +1351,13 @@ impl Plugin for DollViewPlugin {
             .add_message::<DollDrop>()
             .add_systems(
                 Update,
-                (sync_doll, dress_doll, scripted_doll_drop, equip_dropped)
+                (
+                    sync_doll,
+                    dress_doll,
+                    scripted_doll_drop,
+                    equip_dropped,
+                    rebuild_doll_hands,
+                )
                     .chain()
                     .after(gui_screens::draw_screens),
             )
@@ -1142,15 +1505,95 @@ mod tests {
 
     #[test]
     fn the_doll_drop_script_reads_item_flags_and_frame() {
+        let entry = |id, flags, frame, near| DollDropEntry {
+            id,
+            flags,
+            frame,
+            near,
+        };
         assert_eq!(
             DollDropScript::parse("0x1f:0x2000000@120"),
-            Some(DollDropScript(Some((0x1f, 0x0200_0000, 120))))
+            Some(DollDropScript(vec![entry(0x1f, 0x0200_0000, 120, false)]))
         );
         assert_eq!(
-            DollDropScript::parse("0x1f@3"),
-            Some(DollDropScript(Some((0x1f, 0, 3))))
+            DollDropScript::parse("0x1f@3,0x20@9+"),
+            Some(DollDropScript(vec![
+                entry(0x1f, 0, 3, false),
+                entry(0x20, 0, 9, true)
+            ]))
         );
         assert_eq!(DollDropScript::parse("0x1f"), None);
+        assert_eq!(DollDropScript::parse(""), None);
+    }
+
+    /// The figure's targets: the record's hands, with the carried torch in
+    /// its own hand when that hand is free, else in the other free one.
+    #[test]
+    fn the_carried_torch_fills_a_free_hand_of_the_figure() {
+        let sword = Hand { id: 0x20, flags: 0 };
+        let shield = Hand { id: 0x30, flags: 0 };
+        let torch = Hand {
+            id: crate::flow::STORY_TORCH_ITEM,
+            flags: possession::LIT,
+        };
+        let none = Hand::default();
+        assert_eq!(figure_targets(&[none, none], Some(0)), [torch, none]);
+        assert_eq!(figure_targets(&[sword, none], Some(1)), [sword, torch]);
+        // The torch's own hand taken: the other one.
+        assert_eq!(figure_targets(&[sword, none], Some(0)), [sword, torch]);
+        // Both taken, or no torch: the record alone.
+        assert_eq!(figure_targets(&[sword, shield], Some(1)), [sword, shield]);
+        assert_eq!(figure_targets(&[sword, none], None), [sword, none]);
+        let lit = |main, off_light| Hands {
+            main,
+            off_light,
+            ..Hands::default()
+        };
+        let torch_item = exa_character::held::HeldItem {
+            flags: crate::torch::TORCH_FLAGS,
+            light: true,
+        };
+        assert_eq!(torch_hand(&lit(Some(torch_item), false), true), Some(0));
+        assert_eq!(torch_hand(&lit(None, true), true), Some(1));
+        assert_eq!(torch_hand(&lit(Some(torch_item), false), false), None);
+        assert_eq!(torch_hand(&lit(None, false), true), None);
+    }
+
+    /// A shield hangs on the left hand turned -5° about z; a second weapon
+    /// takes the off-hand grip and the main weapon the first slot's; a
+    /// light takes the torch's grip in its hand.
+    #[test]
+    fn hand_models_hang_by_their_attach_kind() {
+        let holder = exa_combat::grip::GripHolder::HUMAN;
+        let (bone, shield) = hand_placement(AttachKind::Shield, 0, None, false, &holder);
+        assert_eq!(bone, exa_character::LEFT_HAND);
+        assert!(
+            shield
+                .rotation
+                .angle_between(Quat::from_rotation_z((-5.0f32).to_radians()))
+                < 1e-5
+        );
+        let sword = Some(0x11);
+        let (main, _) = hand_placement(AttachKind::Weapon, 0, sword, false, &holder);
+        let (off, _) = hand_placement(AttachKind::Weapon, 1, sword, false, &holder);
+        assert_eq!(main, exa_character::RIGHT_HAND);
+        assert_eq!(off, exa_character::LEFT_HAND);
+        let (torch_main, at_main) = hand_placement(AttachKind::Light, 0, None, false, &holder);
+        let (torch_off, at_off) = hand_placement(AttachKind::Light, 1, None, false, &holder);
+        assert_eq!(torch_main, crate::torch::TorchHand::Main.bone());
+        assert_eq!(torch_off, crate::torch::TorchHand::Off.bone());
+        assert_eq!(
+            at_main,
+            crate::torch::TorchHand::Main
+                .grip()
+                .placement(&holder, false)
+        );
+        assert_eq!(
+            at_off,
+            crate::torch::TorchHand::Off
+                .grip()
+                .placement(&holder, false)
+        );
     }
 
     /// The dots draw five whole dots and a half at 5.5, 12 pixels apart at

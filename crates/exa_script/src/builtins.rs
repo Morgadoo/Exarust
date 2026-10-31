@@ -146,7 +146,8 @@ pub trait Host {
         "nothing".to_string()
     }
     fn game_event(&mut self, _code: u32) {}
-    fn checkpoint_save(&mut self) {}
+    /// `CheckpointSave(n)` with the script's first actor slot.
+    fn checkpoint_save(&mut self, _actor: Option<Self::Actor>) {}
     /// `StartDialogue(topic)` for the script's first two actor slots (the
     /// original passes the request to the role unit, which finds a graph
     /// between them).
@@ -635,8 +636,16 @@ pub(crate) fn call_global<H: Host>(
             0
         }
         Global::CheckpointSave => {
-            host.checkpoint_save();
-            0
+            // The original compares the first actor slot with the player,
+            // reads its argument (the shipped `1`) and drops the value, and
+            // saves through the checkpoint routine only for the player
+            // while checkpoints are enabled (the game's half). It answers 1
+            // for the player and the slot's own (non-zero) object
+            // otherwise, which Exarust gives as 1 for any filled slot.
+            let actor = ctx.actor_at(0);
+            let _ = interp::arg_int(ctx, text, 0);
+            host.checkpoint_save(actor);
+            i32::from(actor.is_some())
         }
         Global::StartDialogue => {
             let a = ctx.actor_at(0);

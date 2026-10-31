@@ -141,6 +141,7 @@ pub mod use_cursor;
 pub mod weather;
 pub mod window;
 pub mod world_clock;
+pub mod zone_scripts;
 
 use bevy::prelude::*;
 
@@ -173,6 +174,7 @@ impl Plugin for GamePlugin {
             use_cursor::UseCursorPlugin,
             npc_search::NpcSearchPlugin,
             role_scripts::RoleScriptsPlugin,
+            zone_scripts::ZoneScriptsPlugin,
         ))
         .init_resource::<prelude::Tips>()
         .add_systems(Update, prelude::sync_tips_setting)

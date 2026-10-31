@@ -1141,3 +1141,35 @@ fn a_stored_event_reports_an_unknown_role() {
         )]
     );
 }
+
+/// A script zone's routine runs with the entering character as its one
+/// actor and `ZoneID` as a local; `CheckpointSave(1)` reports whether that
+/// actor is the player, which the game's checkpoint gate reads.
+#[test]
+fn a_zone_routine_runs_for_its_character_with_the_zone_id() {
+    let db = RoleDb { roles: vec![] };
+    let mut cast = Cast {
+        characters: vec![
+            Character::new(PLAYER, "Ermus"),
+            Character::new(GUARD, "Guard"),
+        ],
+    };
+    let mut e = Engine::default();
+    let mut s = scene(&db, None, &mut cast, 0);
+    assert_eq!(
+        e.run_zone_script(&mut s, PLAYER, 0, b"CheckpointSave(1);"),
+        0
+    );
+    assert_eq!(s.effects, [Effect::CheckpointSave { player: true }]);
+    let mut s = scene(&db, None, &mut cast, 0);
+    e.run_zone_script(&mut s, GUARD, 0, b"CheckpointSave(1);");
+    assert_eq!(s.effects, [Effect::CheckpointSave { player: false }]);
+    // The zone's id is the routine's local, read by a condition.
+    let routine = b"? ZoneID = 4 : { GameEvent(A1); } / { GameEvent(B2); };";
+    let mut s = scene(&db, None, &mut cast, 0);
+    e.run_zone_script(&mut s, PLAYER, 4, routine);
+    assert_eq!(s.effects, [Effect::GameEvent(0xA1)]);
+    let mut s = scene(&db, None, &mut cast, 0);
+    e.run_zone_script(&mut s, PLAYER, 3, routine);
+    assert_eq!(s.effects, [Effect::GameEvent(0xB2)]);
+}

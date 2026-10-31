@@ -251,6 +251,8 @@ pub struct LevelInfo {
     pub player_markers: Vec<PlayerMarker>,
     /// The level's alarm zones, in placement order ([`alarm_volumes`]).
     pub alarm_volumes: Vec<AlarmVolume>,
+    /// The level's script zones, in placement order ([`script_volumes`]).
+    pub script_volumes: Vec<ScriptVolume>,
     /// The level environment's reverb decay offset, seconds.
     pub reverb_decay: f32,
     pub bounds_min: Vec3,
@@ -326,14 +328,34 @@ pub struct AlarmVolume {
     pub alarm_node: bool,
 }
 
-/// Every alarm zone a level places, in placement order, from its objects
-/// and their items' volume sections: a model-less object (slot 0) whose
-/// record's volume section is an alarm zone.
-pub fn alarm_volumes(scene: &Scene, global: &[Item]) -> Vec<AlarmVolume> {
-    let mut out = Vec::new();
-    for object in &scene.placed_objects {
+/// A placed trigger volume's box and node radius, from its object's
+/// placement and its volume section's extents.
+fn trigger_bounds(
+    object: &exa_formats::rfc::PlacedObject,
+    volume: &objdb::Volume,
+) -> (exa_physics::intersect::Obb, f32) {
+    let extents = volume.extents.map(f32::from);
+    let row = |i: usize| Vec3::from_array(object.transform[i]);
+    let t = object.transform[3];
+    (
+        exa_physics::intersect::Obb::new(
+            Vec3::new(t[0], t[1], t[2]) * 100.0,
+            Vec3::from_array(extents),
+            [row(0), row(1), row(2)],
+        ),
+        db_objects::container_volume(extents).radius,
+    )
+}
+
+/// The model-less placed objects (slot 0) of a level whose record has a
+/// volume section, in placement order, with that record.
+fn trigger_objects<'a>(
+    scene: &'a Scene,
+    global: &'a [Item],
+) -> impl Iterator<Item = (&'a exa_formats::rfc::PlacedObject, &'a Item, objdb::Volume)> + 'a {
+    scene.placed_objects.iter().filter_map(move |object| {
         if object.slot != 0 {
-            continue;
+            return None;
         }
         let items: &[Item] = if object.is_local() {
             &scene.local_items
@@ -341,30 +363,65 @@ pub fn alarm_volumes(scene: &Scene, global: &[Item]) -> Vec<AlarmVolume> {
             global
         };
         let id = object.id & exa_formats::rfc::PlacedObject::ID_MASK;
-        let Some(item) = items.iter().find(|item| item.id == id) else {
-            continue;
-        };
-        let Some(volume) = item.volume else {
-            continue;
-        };
-        let Some(pass) = volume.alarm_pass() else {
-            continue;
-        };
-        let extents = volume.extents.map(f32::from);
-        let row = |i: usize| Vec3::from_array(object.transform[i]);
-        let t = object.transform[3];
-        out.push(AlarmVolume {
-            bounds: exa_physics::intersect::Obb::new(
-                Vec3::new(t[0], t[1], t[2]) * 100.0,
-                Vec3::from_array(extents),
-                [row(0), row(1), row(2)],
-            ),
-            radius: db_objects::container_volume(extents).radius,
-            pass,
-            alarm_node: item.name.as_bytes().starts_with(b"Alarm_"),
-        });
-    }
-    out
+        let item = items.iter().find(|item| item.id == id)?;
+        let volume = item.volume?;
+        Some((object, item, volume))
+    })
+}
+
+/// Every alarm zone a level places, in placement order, from its objects
+/// and their items' volume sections: a model-less object (slot 0) whose
+/// record's volume section is an alarm zone.
+pub fn alarm_volumes(scene: &Scene, global: &[Item]) -> Vec<AlarmVolume> {
+    trigger_objects(scene, global)
+        .filter_map(|(object, item, volume)| {
+            let pass = volume.alarm_pass()?;
+            let (bounds, radius) = trigger_bounds(object, &volume);
+            Some(AlarmVolume {
+                bounds,
+                radius,
+                pass,
+                alarm_node: item.name.as_bytes().starts_with(b"Alarm_"),
+            })
+        })
+        .collect()
+}
+
+/// A level's script zone: a placed trigger volume whose record carries a
+/// routine ([`objdb::Volume::runs_script`], [`objdb::Volume::script`]).
+/// Any character entering it runs the routine with itself as the one actor
+/// and the zone's id as the local `ZoneID` (`exa_game::zone_scripts`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScriptVolume {
+    /// The volume's box in centimetres, built as an alarm zone's
+    /// ([`AlarmVolume::bounds`]).
+    pub bounds: exa_physics::intersect::Obb,
+    /// The node's bounding radius (cm), as an alarm zone's.
+    pub radius: f32,
+    /// The zone's id ([`objdb::Volume::zone_id`]).
+    pub zone_id: u32,
+    /// The routine's text.
+    pub script: Vec<u8>,
+}
+
+/// Every script zone a level places, in placement order: a model-less
+/// object whose record's volume section is a script zone holding a
+/// routine. The shipped story levels place eleven (the `Checkpoint` zone of
+/// `exanima01` among them, `CheckpointSave(1);`).
+pub fn script_volumes(scene: &Scene, global: &[Item]) -> Vec<ScriptVolume> {
+    trigger_objects(scene, global)
+        .filter(|(_, _, volume)| volume.runs_script())
+        .filter_map(|(object, item, volume)| {
+            let script = item.volume_script.clone()?;
+            let (bounds, radius) = trigger_bounds(object, &volume);
+            Some(ScriptVolume {
+                bounds,
+                radius,
+                zone_id: volume.zone_id(),
+                script,
+            })
+        })
+        .collect()
 }
 
 /// A character placed in a level, resolved to what can be spawned.
@@ -2035,6 +2092,7 @@ impl LevelLoad {
                 spawn: self.scene.grid.as_ref().and_then(grid::spawn_point),
                 player_markers: player_markers(&self.scene, &self.global_items),
                 alarm_volumes: alarm_volumes(&self.scene, &self.global_items),
+                script_volumes: script_volumes(&self.scene, &self.global_items),
                 reverb_decay,
                 bounds_min: min,
                 bounds_max: max,
@@ -2311,6 +2369,35 @@ mod tests {
         // No other story level has one.
         let first = Scene::parse(resource.get("exanima01.rfc").unwrap()).unwrap();
         assert!(alarm_volumes(&first, &global).is_empty());
+    }
+
+    /// `exanima01` places six enter script zones: the `Checkpoint` zone's
+    /// `CheckpointSave(1);` and five narrator topics with their zone ids
+    /// (skipped without the game).
+    #[test]
+    fn shipped_script_volumes_hold_exanima01s_checkpoint() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(&dir).unwrap();
+        let resource = game.pack(exa_assets::PackKind::Resource).unwrap();
+        let db = exa_formats::rdb::Database::parse(resource.get("objdb.rdb").unwrap()).unwrap();
+        let global = exa_formats::objdb::items(&db);
+        let scene = Scene::parse(resource.get("exanima01.rfc").unwrap()).unwrap();
+        let zones = script_volumes(&scene, &global);
+        assert_eq!(zones.len(), 6);
+        let checkpoint = zones
+            .iter()
+            .find(|z| z.script == b"CheckpointSave(1);")
+            .expect("the checkpoint zone");
+        assert_eq!(checkpoint.zone_id, 0);
+        assert_eq!(checkpoint.bounds.half_extents, Vec3::new(80.0, 123.0, 50.0));
+        let ids: Vec<u32> = zones
+            .iter()
+            .filter(|z| z.script.starts_with(b"Actor.ActivateTopicN"))
+            .map(|z| z.zone_id)
+            .collect();
+        assert_eq!(ids.len(), 5);
     }
 
     /// Levels place records without a model (transition markers, usable
@@ -2965,6 +3052,7 @@ mod tests {
             equip_lock: 0,
             torch: false,
             volume: None,
+            volume_script: None,
             rank_word: 0,
             body_rank: 0,
             loadout_rank: 0,

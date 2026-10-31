@@ -13,11 +13,11 @@ A dormant AI SHALL be ticked by the manager. A dead character in the scene whose
 - **THEN** the first rises, the second stops rising, and only the 3.001 cm move checks the zones
 
 ### Requirement: Trigger zones
-A zone SHALL be entered within its radius at a shape distance of at most 0.1 after one of 0.1 or more. An entered `0x1xx` zone of kind `0x10` SHALL run its script for anyone; for the player, kind 2 SHALL change level unless the player carries the zone's item, a held player SHALL end the pass, kinds `0x20` and `0x21` SHALL raise a discovery (the latter a checkpoint) or release a controlled host and end the pass. A `0x2xx` zone of kind `0x10` SHALL run its script while the player is inside.
+A zone SHALL be entered within its radius at a shape distance of at most 0.1 after one of 0.1 or more, at the character's frame anchor (root x and z, pelvis height). An entered `0x1xx` zone of kind `0x10` SHALL run its routine for anyone; for the player, kind 2 is the golem alarm and bit `0x20` the level exit (`0x21` flagged) or a host's release. A `0x2xx` zone of kind `0x10` SHALL run while the player is inside.
 
 #### Scenario: Zone kinds
-- **WHEN** a character enters a script zone, the player enters a level-change zone free, held, and carrying its item, enters a checkpoint zone, and enters a discovery zone while hosting
-- **THEN** the script runs, the level changes only for the free player, the held player ends the pass, the checkpoint is raised, and the host is released
+- **WHEN** a character enters a script zone, the player enters an alarm zone while held, and enters an exit zone while hosting
+- **THEN** the routine runs, the held player ends the pass, and the host is released
 
 ### Requirement: Alert and approach
 Raising the group alert SHALL add one and hold it 10 s. A step from outside a circle of 60 × the target's scale SHALL be cut where it crosses it when the original's test (the cut point's z offset and an unwritten 0) has a cosine of 0.75 or more, or none. Inside, a distance squared under the radius SHALL push out to the circle, else the step SHALL be dropped.
@@ -32,3 +32,10 @@ The AI start-up of a scene SHALL give the scene a `_Temp` node with flag bit 0x1
 #### Scenario: A second scene
 - **WHEN** a scene without `_Temp` starts while the manager already runs
 - **THEN** the node is made and no second manager starts
+
+### Requirement: Live script zones
+Every frame, each character that moved more than 3 cm from its last checked point SHALL check the level's script zones in placement order, move its checked point, and run the routine of each zone it has just entered.
+
+#### Scenario: Entered once
+- **WHEN** a character steps from 2 m outside the checkpoint zone into it and then 5 cm further inside
+- **THEN** the routine runs once
