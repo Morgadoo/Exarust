@@ -45,6 +45,11 @@ pub struct Hair {
 #[derive(Component)]
 pub struct HairAttached;
 
+/// Marks the root a body's hair style hangs from under its head, which a
+/// refit removes when the head coverage changes the pieces it shows.
+#[derive(Component)]
+pub struct HairRoot;
+
 /// The head's bone in the body model.
 pub const HEAD: usize = 10;
 
@@ -121,7 +126,12 @@ pub fn attach_hair(
         };
         let shading = hair_shading(hair.colour, hair.feral, hair.light_variant);
         let root = commands
-            .spawn((Transform::IDENTITY, Visibility::default(), ChildOf(head)))
+            .spawn((
+                Transform::IDENTITY,
+                Visibility::default(),
+                ChildOf(head),
+                HairRoot,
+            ))
             .id();
         let mut entities = vec![Entity::PLACEHOLDER; model.nodes.len()];
         let mut hidden = vec![false; model.nodes.len()];

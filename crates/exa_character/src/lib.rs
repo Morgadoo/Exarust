@@ -36,6 +36,8 @@ pub mod rebuild;
 
 pub mod record;
 
+pub mod refit;
+
 pub mod runtime;
 
 pub mod texture_job;
@@ -89,6 +91,7 @@ impl Plugin for CharacterPlugin {
                     .run_if(resource_exists::<Game>)
                     .run_if(not(resource_exists::<UnderwearItems>)),
                 keep_underwear.run_if(resource_exists::<UnderwearItems>),
+                refit::request_refits,
                 equip_outfits,
                 finish_skin_composites.run_if(resource_exists::<Game>),
                 held::choose_held_movesets,
@@ -104,13 +107,13 @@ impl Plugin for CharacterPlugin {
 }
 
 /// Apparel to put on, on a body model root.
-#[derive(Component, Clone, Debug, Default)]
+#[derive(Component, Clone, Debug, Default, PartialEq)]
 pub struct Outfit(pub Vec<Garment>);
 
 /// A worn item: its model (an entry of `Characters.rpk`) and how it is
 /// painted. Without an appearance, the first object-database item worn as
 /// the model supplies one.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Garment {
     pub model: String,
     pub appearance: Option<Appearance>,
@@ -139,7 +142,7 @@ impl Outfit {
 }
 
 /// A weapon or tool from `Objects.rpk` held in the right hand.
-#[derive(Component, Clone, Debug)]
+#[derive(Component, Clone, Debug, PartialEq)]
 pub struct Wielded {
     /// An `Objects.rpk` model, or `@` and a factory name for an assembled
     /// weapon.
@@ -409,22 +412,27 @@ fn load_underwear_items(mut commands: Commands, game: Res<Game>) {
     commands.insert_resource(UnderwearItems::of(&objdb_items(&game.0)));
 }
 
-/// Keeps marked humans in underwear until they are dressed: the rule
-/// changes what an outfit holds, and dressing then fits and paints the
-/// underwear like any other garment.
+/// Keeps marked humans in underwear until they are dressed, and again when
+/// a dressed one's outfit changes (as the original runs the rule before it
+/// refits a record that lost an item): the rule changes what an outfit
+/// holds, and dressing then fits and paints the underwear like any other
+/// garment. A body dressed as it was given (no [`refit::DressedWith`] yet)
+/// is left as it is.
 #[allow(clippy::type_complexity)]
 fn keep_underwear(
     items: Res<UnderwearItems>,
     mut outfits: Query<
-        &mut Outfit,
+        (&mut Outfit, Has<Dressed>, Option<&refit::DressedWith>),
         (
             With<WearsUnderwear>,
-            Without<Dressed>,
             Or<(Added<WearsUnderwear>, Changed<Outfit>)>,
         ),
     >,
 ) {
-    for mut outfit in &mut outfits {
+    for (mut outfit, dressed, dressed_with) in &mut outfits {
+        if dressed && dressed_with.is_none_or(|d| d.outfit == *outfit) {
+            continue;
+        }
         // Marked changed only when the underwear goes on.
         if put_on_underwear(outfit.bypass_change_detection(), &items) {
             outfit.set_changed();
@@ -1160,6 +1168,18 @@ struct MergePiece {
     cull: u32,
 }
 
+/// The meshes the dress may hide: a body's own meshes, never one a dress
+/// spawned (a refit removes those in the same frame).
+type DressMeshes<'w, 's> = Query<
+    'w,
+    's,
+    (),
+    (
+        Or<(With<Mesh3d>, With<exa_assets::SkinnedPart>)>,
+        Without<refit::DressPart>,
+    ),
+>;
+
 /// Builds and spawns a character's one merged skinned mesh: the body's
 /// visible slots and every chosen garment node, in the generator's order,
 /// through [`dress::assemble`] and [`model::merge_dressed`]. Each material
@@ -1183,7 +1203,7 @@ fn spawn_merged_character(
     )],
     node_entities: &HashMap<String, Entity>,
     children: &Query<&Children>,
-    meshes_of: &Query<(), Or<(With<Mesh3d>, With<exa_assets::SkinnedPart>)>>,
+    meshes_of: &DressMeshes,
     skin_look: Option<&exa_assets::SkinLook>,
     skin_job: Option<&exa_assets::SkinCompositeJob>,
     pending: &mut PendingSkins,
@@ -1382,10 +1402,13 @@ fn spawn_merged_character(
                 job.waiting.push((entity, placeholder.clone()));
             }
         }
-        commands.entity(entity).insert(exa_assets::SkinnedPart {
-            bone: 0,
-            mesh: loader.meshes.add(run_mesh),
-        });
+        commands.entity(entity).insert((
+            exa_assets::SkinnedPart {
+                bone: 0,
+                mesh: loader.meshes.add(run_mesh),
+            },
+            refit::DressPart,
+        ));
     }
     // The body parts the merged mesh replaced, and the body slots a
     // garment covers (left out of the plan), are no longer drawn. A body
@@ -1405,7 +1428,9 @@ fn spawn_merged_character(
         };
         for child in children.get(entity).into_iter().flat_map(|c| c.iter()) {
             if meshes_of.contains(child) {
-                commands.entity(child).insert(Visibility::Hidden);
+                commands
+                    .entity(child)
+                    .insert((Visibility::Hidden, refit::DressHidden));
             }
         }
     }
@@ -1419,7 +1444,7 @@ fn equip_outfits(
     mut infos: Local<Option<HashMap<String, ItemInfo>>>,
     mut painting: ResMut<Painting>,
     (mut fitting, mut pending): (ResMut<Fitting>, ResMut<PendingSkins>),
-    meshes_of: Query<(), Or<(With<Mesh3d>, With<exa_assets::SkinnedPart>)>>,
+    meshes_of: DressMeshes,
     mut bodies: Query<
         (
             Entity,
@@ -1434,13 +1459,18 @@ fn equip_outfits(
             Option<&exa_assets::BodyModel>,
             Option<&exa_assets::SkinLook>,
             Option<&exa_assets::SkinCompositeJob>,
+            (
+                Option<&refit::Refit>,
+                Option<&refit::DressedWith>,
+                Option<&mut hair::Hair>,
+            ),
         ),
-        Without<Dressed>,
+        Or<(Without<Dressed>, With<refit::Refit>)>,
     >,
     children: Query<&Children>,
     names: Query<&Name>,
     parts: Query<(&BodyPart, Option<&PartBounds>)>,
-    ragdolls: Query<&exa_physics::body::Ragdoll>,
+    (ragdolls, marks): (Query<&exa_physics::body::Ragdoll>, refit::DressMarks),
     mut cache: ResMut<ModelCache>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<exa_render::material::ExaMaterial>>,
@@ -1494,34 +1524,45 @@ fn equip_outfits(
         body_model,
         skin_look,
         skin_job,
+        (refit, dressed_with, mut hair),
     ) in &mut bodies
     {
         if started.elapsed() >= DRESS_BUDGET {
             break;
         }
+        // A first dress builds both parts; a refit only the one that
+        // changed (`refit`).
+        let refit = refit.copied();
+        let (do_outfit, do_hands) = refit.map_or((true, true), |r| (r.outfit, r.hands));
         let race = race.copied().unwrap_or_default();
+        // The old dress's merged runs are body parts too; they are not
+        // bones to hang anything from.
         let by_bone: HashMap<usize, Entity> = children
             .iter_descendants(body)
+            .filter(|&e| !marks.parts.contains(e))
             .filter_map(|e| parts.get(e).ok().map(|(p, _)| (p.bone, e)))
             .collect();
         if by_bone.is_empty() {
             continue; // body parts not attached yet
         }
-        if !outfit_painted(
-            outfit,
-            morph,
-            infos,
-            &mut loader,
-            &mut painting,
-            &mut fitting,
-            deadline,
-        ) {
+        if do_outfit
+            && !outfit_painted(
+                outfit,
+                morph,
+                infos,
+                &mut loader,
+                &mut painting,
+                &mut fitting,
+                deadline,
+            )
+        {
             continue;
         }
         let mut hidden = 0u32;
         let mut protection = Vec::new();
         let mut garment_models = Vec::new();
-        for garment in &outfit.0 {
+        let garments = if do_outfit { &outfit.0[..] } else { &[] };
+        for garment in garments {
             let Some(apparel) = loader.morphed_model(PackKind::Characters, &garment.model, morph)
             else {
                 continue;
@@ -1541,10 +1582,51 @@ fn equip_outfits(
             }
             garment_models.push((apparel, appearance, known));
         }
+        if do_outfit && refit.is_some() {
+            // The refit's dressed mesh is built anew: what the old one
+            // spawned goes and the body parts it hid show again (those the
+            // new one covers are hidden again below).
+            let (removed, shown) = refit::tear_down_outfit(
+                &mut commands,
+                body,
+                &children,
+                &marks.parts,
+                &marks.hidden,
+            );
+            info!(
+                "refit {body}: outfit of {} garments ({removed} old parts removed, {shown} body parts shown)",
+                outfit.0.len()
+            );
+            // The hair keeps its pieces, goes, or grows again for the new
+            // head coverage.
+            if let Some(hair) = hair.as_mut() {
+                let word = refit::head_word(
+                    garment_models
+                        .iter()
+                        .filter_map(|(_, _, known)| known.as_ref().map(|k| &k.coverage[9])),
+                );
+                let cut = refit::hair_refit(hair.style, hair.head_word, word);
+                if word != hair.head_word {
+                    info!(
+                        "refit {body}: head coverage {:#x} -> {word:#x}, hair {cut:?}",
+                        hair.head_word
+                    );
+                    hair.head_word = word;
+                }
+                if cut != look::HairCut::Keep {
+                    for root in children.iter_descendants(body) {
+                        if marks.hair.contains(root) {
+                            commands.entity(root).despawn();
+                        }
+                    }
+                    commands.entity(body).remove::<hair::HairAttached>();
+                }
+            }
+        }
         // The dressed character's one merged skin mesh, through the
         // generator's dressed-mesh plan; the per-node draw when the body
         // model is not known.
-        let merged = body_model.and_then(|entry| {
+        let merged = body_model.filter(|_| do_outfit).and_then(|entry| {
             let model = loader.morphed_model(PackKind::Resource, &entry.0, morph)?;
             let node_entities: HashMap<String, Entity> = children
                 .iter_descendants(body)
@@ -1565,7 +1647,7 @@ fn equip_outfits(
                 &mut pending,
             ))
         });
-        if !merged.unwrap_or(false) {
+        if do_outfit && !merged.unwrap_or(false) {
             for (apparel, appearance, _known) in &garment_models {
                 // The whole model is painted from one stem, as the original
                 // rewrites every `&` material to the job's first stem.
@@ -1587,6 +1669,7 @@ fn equip_outfits(
                                 MeshMaterial3d(material),
                                 Transform::IDENTITY,
                                 ChildOf(parent),
+                                refit::DressPart,
                             ))
                             .id();
                         match node.skin_bone {
@@ -1604,7 +1687,9 @@ fn equip_outfits(
                 if bone < 32 && hidden & (1 << bone) != 0 {
                     for child in children.get(part).into_iter().flat_map(|c| c.iter()) {
                         if meshes_of.contains(child) {
-                            commands.entity(child).insert(Visibility::Hidden);
+                            commands
+                                .entity(child)
+                                .insert((Visibility::Hidden, refit::DressHidden));
                         }
                     }
                 }
@@ -1626,14 +1711,25 @@ fn equip_outfits(
                 .as_ref()
                 .map_or(Holder::AVERAGE, |f| f.stats.holder())
         };
-        if let Some(mut f) = fighter {
+        // The armour layers follow the outfit (the refit's equipment
+        // refresh).
+        if do_outfit && let Some(mut f) = fighter {
             f.armour = exa_combat::damage::armour_layers(
                 f.natural.as_ref(),
                 &protection,
                 f.stats.deflection,
             );
         }
-        if wielded.is_none() && fights {
+        if do_hands && refit.is_some() {
+            // Only the main hand's item and fists are replaced; the off
+            // hand and the torch keep theirs.
+            let removed = refit::tear_down_hands(&mut commands, body, &children, &marks.held);
+            info!(
+                "refit {body}: hands ({removed} old held parts removed), main hand {}",
+                wielded.map_or("empty", |w| w.model.as_str())
+            );
+        }
+        if do_hands && wielded.is_none() && fights {
             // Empty hands: the fists strike. Equipping them leaves the
             // fighter without a primary striker until its first attack.
             let hand = |bone| {
@@ -1654,13 +1750,15 @@ fn equip_outfits(
                         ChildOf(part),
                         exa_combat::Blade::new(body, record.length / CM_PER_M, record)
                             .in_slot(slot),
+                        refit::DressHeld,
                     ));
                 }
             }
             if let Some(mut attacker) = attacker {
                 attacker.primary = None;
             }
-        } else if let Some(held) = wielded
+        } else if do_hands
+            && let Some(held) = wielded
             // The weapon's item: given, or the first showing its model.
             && let item = held
                 .weapon
@@ -1737,6 +1835,7 @@ fn equip_outfits(
                     ChildOf(hand),
                     exa_combat::Blade::new(body, length, record),
                     exa_combat::wounds::BladeBlood::default(),
+                    refit::DressHeld,
                 ))
                 .id();
             // One entity per model node (the rigid nodes' bodies move
@@ -1852,7 +1951,19 @@ fn equip_outfits(
                 commands.entity(holder).insert(stain);
             }
         }
-        commands.entity(body).insert(Dressed);
+        // What the dress was built from, for the next refit's comparison:
+        // only the part that ran is brought up to date.
+        let mut with = dressed_with.cloned().unwrap_or_default();
+        if do_outfit {
+            with.outfit = outfit.clone();
+        }
+        if do_hands {
+            with.wielded = wielded.cloned();
+        }
+        commands
+            .entity(body)
+            .insert((Dressed, with))
+            .remove::<refit::Refit>();
     }
 }
 

@@ -450,8 +450,9 @@ fn power_down_devices(
 /// of the maximum. The original strips the character record (hands and worn
 /// list cleared, one empty action, health and stamina at 0x7FFF), runs the
 /// underwear rule on the cleared list, and leaves a dressed copy of the
-/// record as the corpse; Exarust has no record copy and no undress pass, so
-/// the drawn garments stay, and the corpse is left to the record owner.
+/// record as the corpse; Exarust has no record copy, so the corpse is left
+/// to the record owner. The emptied outfit and hand refit the live body
+/// (`exa_character::refit`): its garments and weapon come off.
 pub fn strip_body(commands: &mut Commands, entity: Entity, fighter: &mut exa_combat::Fighter) {
     let share = teleporters::stripped_share();
     fighter.health.yellow = fighter.health.max * share;
@@ -467,7 +468,7 @@ pub fn strip_body(commands: &mut Commands, entity: Entity, fighter: &mut exa_com
 /// worn data, the underwear rule, and yellow and red health at the record's
 /// 0x7FFF share of the maximum. (The original also leaves the dressed
 /// copy of the record behind as the corpse; Exarust has no record copy
-/// yet, and the wardrobe has no undress pass, so drawn garments stay.)
+/// yet.)
 fn end_sessions(
     mut ends: MessageReader<EndSession>,
     mut latch: ResMut<Latch>,
