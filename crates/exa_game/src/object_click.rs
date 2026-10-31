@@ -204,6 +204,9 @@ pub struct ClickOutputs<'w> {
     /// The use cursor a hand-held world item lifts
     /// (the controls' use state word and its dispatcher).
     use_cursor: Option<ResMut<'w, crate::player_controls::UseCursor>>,
+    /// Story discovery. A node's first touch awards the rank in its
+    /// placement word.
+    experience: Option<ResMut<'w, crate::experience_live::StoryExperience>>,
 }
 
 /// The dialogue side a narration goes through.
@@ -311,10 +314,20 @@ pub fn run_object_clicks(
                 Found::Node(_) => {
                     let flags = match sections.as_deref_mut() {
                         Some(s) => {
-                            let (placement, first) = player_controls::first_touch(s.placement);
+                            let word = s.placement;
+                            let (placement, first) = player_controls::first_touch(word);
                             if first {
                                 s.placement = placement;
                                 info!("object click: first touch of {id:#x}");
+                                if let Some(xp) = out.experience.as_deref_mut() {
+                                    let points =
+                                        xp.state.discover_kill(&mut xp.player, &mut xp.party, word);
+                                    if points != 0 {
+                                        info!(
+                                            "object click: first touch of {id:#x} earns {points}"
+                                        );
+                                    }
+                                }
                             }
                             s.placement
                         }
@@ -674,6 +687,34 @@ mod tests {
                 delayed: true
             }]
         );
+    }
+
+    /// The first touch of a node awards the rank in its placement word and
+    /// clears the bit, so a second click earns nothing.
+    #[test]
+    fn a_first_touch_earns_the_nodes_rank() {
+        let mut app = app();
+        app.insert_resource(crate::experience_live::StoryExperience::default());
+        let node = placed(
+            &mut app,
+            9,
+            Some(sections(None, false, player_controls::FIRST_TOUCH | 0x1000)),
+            Vec3::ZERO,
+        );
+        click(&mut app, Hit::SceneNode { node }, Vec3::ZERO, false);
+        let xp = app
+            .world()
+            .resource::<crate::experience_live::StoryExperience>();
+        assert_eq!(xp.state.pool, crate::experience::rarity_points(1) as u32);
+        assert_eq!(
+            app.world().get::<ObjectSections>(node).unwrap().placement,
+            0x1000
+        );
+        click(&mut app, Hit::SceneNode { node }, Vec3::ZERO, false);
+        let xp = app
+            .world()
+            .resource::<crate::experience_live::StoryExperience>();
+        assert_eq!(xp.state.pool, crate::experience::rarity_points(1) as u32);
     }
 
     /// A point on the level inside a placeholder's 50 cm half box finds
