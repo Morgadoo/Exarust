@@ -25,10 +25,10 @@ use bevy::window::{CursorGrabMode, CursorOptions, PrimaryWindow};
 use exa_anim::Stature;
 use exa_anim::{Animator, Ease, Motions};
 use exa_character::held::{Hands, HeldMoveset, class};
+use exa_combat::aim::{self, HeadTrack};
 use exa_combat::attack::{self, AttackKind, AttackMotion, Attacker, Busy, Request, Side, Slot};
 use exa_combat::stance::{self, Stance};
 use exa_combat::swing::{self, Swing, SwingAt, SwingState};
-use exa_combat::aim::{self, HeadTrack};
 use exa_combat::{AttackStart, Attacking, Blade, Condition, Fighter};
 use exa_physics::body::locomotion::{Locomotion, Locomotor, flags, forward, turn_between, yaw_of};
 use exa_physics::body::{BodyTicks, Fallen, GoLimp, MAX_ENERGY, Ragdoll};
@@ -81,9 +81,6 @@ const GRID_CELL: f32 = 0.3;
 /// The cursor's point lies on the plane this far above the player's ground
 /// (m): the original's aim plane, 80 cm.
 pub(crate) const AIM_HEIGHT: f32 = 0.8;
-/// In combat mode the heading turns to the cursor once it is further off
-/// than this (rad, 30°).
-const FACE_CURSOR_BEYOND: f32 = std::f32::consts::FRAC_PI_6;
 /// A press this soon (ms of the game clock) after the one before is a
 /// double click.
 const DOUBLE_CLICK_MS: u64 = 300;
@@ -309,10 +306,11 @@ fn latch_attack_button(
 }
 
 /// The combat-mode heading toward a cursor at yaw `aim`: the cursor's
-/// direction once it is more than 30° off, or at once while the left
-/// button is held (an attack request stands); else unchanged.
+/// direction once [`crate::player_behaviour::look_snaps`] (strictly over
+/// 30°, the gap wrapped into ±π in double precision), or at once while the
+/// left button is held (an attack request stands); else unchanged.
 fn combat_heading(heading: f32, aim: f32, requesting: bool) -> f32 {
-    if requesting || turn_between(heading, aim).abs() > FACE_CURSOR_BEYOND {
+    if requesting || crate::player_behaviour::look_snaps(heading, aim) {
         aim
     } else {
         heading
@@ -3159,10 +3157,7 @@ mod tests {
         }
         behaviour_tick(&mut app);
         let kept = app.world().get::<Locomotion>(body).unwrap().look;
-        assert_eq!(
-            kept, tracked,
-            "another action does not run the tracker"
-        );
+        assert_eq!(kept, tracked, "another action does not run the tracker");
     }
 
     /// A held knock-out wake (0x40) stays until the player gives input: a
@@ -3847,6 +3842,8 @@ mod tests {
                 assert_eq!(combat_heading(heading, aim, false), aim);
             }
         }
+        // An unordered aim fails the ordered compare and the heading stays.
+        assert_eq!(combat_heading(1.0, f32::NAN, false), 1.0);
     }
 
     #[test]
