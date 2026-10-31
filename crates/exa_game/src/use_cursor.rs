@@ -543,6 +543,8 @@ fn apply_pour(
     time: Option<Res<Time<Virtual>>>,
     mut sounds: MessageWriter<exa_audio::PointSounded>,
     mut roll: Local<Option<crate::arena::Mt19937>>,
+    catalogue: Option<Res<exa_items::catalogue::ItemCatalogue>>,
+    mut icons: Option<ResMut<crate::item_panel_draw::PanelIcons>>,
 ) {
     let now_ms = time.as_ref().map_or(0, |t| t.elapsed().as_millis() as u32);
     let world_s = exa_combat::remedy::world_seconds(clock.as_deref(), now_ms);
@@ -585,6 +587,17 @@ fn apply_pour(
             && applied.item_flags != flags
         {
             mark_panel_entry(&mut screens, cursor.panel, cursor.slot, applied.item_flags);
+            if let Some(icons) = icons.as_deref_mut() {
+                refresh_spent_icon(
+                    &mut screens,
+                    icons,
+                    catalogue.as_deref(),
+                    cursor.panel,
+                    cursor.slot,
+                    cursor.item,
+                    applied.item_flags,
+                );
+            }
         }
         if let Some(pour) = applied.pour {
             sounds.write(exa_audio::PointSounded {
@@ -613,6 +626,47 @@ fn panel_entry_flags(screens: &GameScreens, panel_number: u32, slot: i32) -> Opt
 }
 
 /// Writes the spent flags back onto that entry.
+/// The spent mark changes the entry's icon. The new slot is reserved with
+/// the marked flags; the old slot is released when it differs.
+fn refresh_spent_icon(
+    screens: &mut GameScreens,
+    icons: &mut crate::item_panel_draw::PanelIcons,
+    catalogue: Option<&exa_items::catalogue::ItemCatalogue>,
+    panel_number: u32,
+    slot: i32,
+    item: u32,
+    flags: u32,
+) {
+    if slot <= 0 {
+        return;
+    }
+    let (handle, _) = icons.reserve(item, flags, catalogue);
+    if handle == 0 {
+        return;
+    }
+    let Some(panel) = open_panels(screens)
+        .into_iter()
+        .find(|panel| panel.0.number() == panel_number)
+        .map(|panel| panel.0)
+    else {
+        icons.release(handle);
+        return;
+    };
+    let Some(container) = crate::panel_live::container_mut(screens, panel) else {
+        icons.release(handle);
+        return;
+    };
+    let Some(entry) = container.entries.get_mut(slot as usize - 1) else {
+        icons.release(handle);
+        return;
+    };
+    let old = entry.icon;
+    entry.icon = handle;
+    if old != 0 && old != handle {
+        icons.release(old);
+    }
+}
+
 fn mark_panel_entry(screens: &mut GameScreens, panel_number: u32, slot: i32, flags: u32) {
     let Some(panel) = open_panels(screens)
         .into_iter()
