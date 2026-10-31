@@ -25,10 +25,10 @@
 //! toggle, [`exa_physics::mechanism::open_doors`] and its siblings) on
 //! every door body under the object's node, each woken, or a class 5 push
 //! on the push surface under it. A class 6 fire job spawns a fire at the
-//! node at the signalled size. A light job (it powers the electric object
-//! under the node, `exa_physics::mechanism::electric`) is not run: no system
-//! holds electric objects. A relay forwards through the placed records: a
-//! broadcast to every tagged listener, a pair to both of its targets, and a
+//! node at the signalled size. A light job stores the signal's low bit, powers
+//! the electric emitter under the node, and for an odd value with none there
+//! starts the level device's arc. A relay forwards through the placed records:
+//! a broadcast to every tagged listener, a pair to both of its targets, and a
 //! combiner by the source record's bit, a sequence by the count in its value
 //! word. A target with no record, or no body of the right kind under it (a
 //! static sliding door), does nothing.
@@ -38,6 +38,7 @@
 //! and push-surface set-up and the signal dispatch read: the same fields
 //! in the same order.
 
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use exa_formats::objdb::{self, Item};
 use exa_physics::body::{
@@ -146,8 +147,8 @@ type MechanismParts = (
 /// Runs each mechanism signal on its target's records: a door order on the
 /// door bodies under the target's node (each woken), a push on its push
 /// surface, a fire job (a fire is spawned at the node), or a relay that
-/// forwards to the listeners or targets its records name. A light job is
-/// not run.
+/// forwards to the listeners or targets its records name. A light job stores
+/// the signal's low bit and powers the electric emitter under the node.
 /// A relay's forwarded signal, written after [`route_signals`] has finished
 /// reading the incoming queue.
 #[derive(Message, Clone, Copy)]
@@ -163,6 +164,13 @@ fn send_relay_forwards(
     }
 }
 
+/// The child list and the electric emitters a signal walks.
+#[derive(SystemParam)]
+struct NodeLinks<'w, 's> {
+    children: Query<'w, 's, &'static Children>,
+    devices: Query<'w, 's, &'static mut crate::arc::ElectricDevice>,
+}
+
 #[allow(private_interfaces)]
 pub fn route_signals(
     mut signals: MessageReader<MechanismSignal>,
@@ -170,7 +178,7 @@ pub fn route_signals(
     mut forwards: MessageWriter<RelayForward>,
     ticks: Option<Res<BodyTicks>>,
     mut objects: Query<(Entity, &mut MechanismRecords)>,
-    children: Query<&Children>,
+    mut links: NodeLinks,
     mut bodies: Query<MechanismParts>,
 ) {
     let now = ticks.map_or(0, |t| t.millis() as i32);
@@ -192,7 +200,7 @@ pub fn route_signals(
             "mechanism: {:#x} signals {} to {:#x}: {:?}",
             signal.source, signal.value, signal.target, dispatch
         );
-        let nodes = under(node, &children);
+        let nodes = under(node, &links.children);
         match dispatch {
             Dispatch::Doors(order) => order_doors(order, &nodes, &mut bodies, now),
             Dispatch::Plate { pushed } => {
@@ -219,13 +227,71 @@ pub fn route_signals(
                 // are left as they are.
                 crate::fire::spawn_fire(&mut commands, node, mechanism::job_fire_size(size));
             }
-            // A light job powers the electric object under the node (or
-            // spawns one for an odd value), which the ECS does not hold yet:
-            // the rule is `mechanism::electric`.
-            Dispatch::Job(mechanism::Job::Light { .. }) => {}
+            Dispatch::Job(mechanism::Job::Light { .. }) => {
+                light_job(node, signal, &mut objects, &mut links, &mut commands);
+            }
             Dispatch::None => {}
         }
     }
+}
+
+/// A light job. The signal's low bit is stored in the operative value word.
+/// The first direct child that is an electric emitter is left alone when it
+/// is already on, and otherwise has its life set to 10 and its state to 1.
+/// With no emitter, an odd value starts the level device's arc as a child,
+/// in the node's local space, along its third axis for the record's length.
+fn light_job(
+    node: Entity,
+    signal: &MechanismSignal,
+    objects: &mut Query<(Entity, &mut MechanismRecords)>,
+    links: &mut NodeLinks,
+    commands: &mut Commands,
+) {
+    let Some(fields) = ({
+        let found = objects
+            .iter_mut()
+            .find(|(_, other)| other.id == signal.target);
+        found.and_then(|(_, mut stored)| {
+            let record = stored.operative.as_mut()?;
+            if signal.value & 1 == 0 {
+                record.value &= !1;
+            } else {
+                record.value |= 1;
+            }
+            Some(exa_render::electricity::DeviceFields {
+                active: record.value & 1 != 0,
+                duration: record.target as u16,
+                length: (record.target >> 16) as u16,
+                branches: record.second as i16,
+                flags: (record.flags >> 8) as u8,
+            })
+        })
+    }) else {
+        return;
+    };
+    if let Ok(kids) = links.children.get(node) {
+        for child in kids.iter() {
+            if let Ok(mut device) = links.devices.get_mut(child) {
+                if device.state & 1 != 0 {
+                    return;
+                }
+                device.life = 10;
+                device.state = 1;
+                return;
+            }
+        }
+    }
+    if !fields.active {
+        return;
+    }
+    let length = f32::from(fields.length);
+    let axis = Vec3::Z;
+    let end = fields.end_point(Vec3::ZERO, axis).unwrap_or(axis * length);
+    let spec = exa_render::electricity::ArcSpec::device_fields(fields, axis);
+    let spawned = crate::arc::spawn_arc(commands, Some(node), spec, Vec3::ZERO, end);
+    commands
+        .entity(spawned)
+        .insert(crate::arc::ElectricDevice::default());
 }
 
 /// What a relay sends on from `signal`, read from the placed records.
@@ -275,7 +341,9 @@ fn relay_forwards(
                 code: operative.second,
             };
             let source = objects.iter().find_map(|(_, other)| {
-                (other.id == signal.source).then_some(other.operative).flatten()
+                (other.id == signal.source)
+                    .then_some(other.operative)
+                    .flatten()
             });
             let sent = if kind == mechanism::Relay::Combine {
                 relay::combine(
@@ -755,12 +823,10 @@ mod tests {
                 ..mechanism::Record::default()
             }),
         };
-        app.world_mut()
-            .spawn(listening(listener, 0, relay_id));
+        app.world_mut().spawn(listening(listener, 0, relay_id));
         app.world_mut()
             .spawn(listening(skipped, relay::SKIP_CLEAR, relay_id));
-        app.world_mut()
-            .spawn(listening(elsewhere, 0, 0x8000_0099));
+        app.world_mut().spawn(listening(elsewhere, 0, 0x8000_0099));
 
         #[derive(Resource, Default)]
         struct Caught(Vec<MechanismSignal>);
@@ -805,10 +871,11 @@ mod tests {
             value: 1,
         });
         app.world_mut().run_schedule(FixedUpdate);
-        assert!(
-            std::mem::take(&mut app.world_mut().resource_mut::<Caught>().0).is_empty()
+        assert!(std::mem::take(&mut app.world_mut().resource_mut::<Caught>().0).is_empty());
+        assert_eq!(
+            (stored(&app).value, stored(&app).flags),
+            (0, mechanism::SWITCH_OFF)
         );
-        assert_eq!((stored(&app).value, stored(&app).flags), (0, mechanism::SWITCH_OFF));
 
         assert!(signal(&mut app, 1).is_empty());
         assert_eq!(stored(&app).value, 0x110);
@@ -817,10 +884,7 @@ mod tests {
         // The same mark again flags the order, and keeps the switch-off bit.
         assert!(signal(&mut app, 1).is_empty());
         assert_eq!(stored(&app).value, 0x120);
-        assert_eq!(
-            stored(&app).flags,
-            mechanism::SWITCH_OFF | relay::WRONG
-        );
+        assert_eq!(stored(&app).flags, mechanism::SWITCH_OFF | relay::WRONG);
 
         set_mark(&mut app, 0);
         assert_eq!(
@@ -864,5 +928,88 @@ mod tests {
         );
         assert_eq!(stored(&app).value, 0);
         assert_eq!(stored(&app).flags, mechanism::SWITCH_OFF);
+    }
+
+    /// An even signal only clears the low bit. An odd one sets it and, with
+    /// no emitter under the node, starts the device arc. The next signal
+    /// finds that emitter off, writes its life and state, and does not start
+    /// another; once it is on, a signal leaves it.
+    #[test]
+    fn a_light_job_stores_its_bit_and_starts_one_device_arc() {
+        let id = 0x8000_0040;
+        let mut app = App::new();
+        app.add_plugins(MechanismPlugin);
+        let node = app
+            .world_mut()
+            .spawn(MechanismRecords {
+                id,
+                body: None,
+                door: None,
+                operative: Some(mechanism::Record {
+                    class: mechanism::JOB,
+                    kind: mechanism::LIGHT,
+                    value: 0x4,
+                    target: 1000 | (200 << 16),
+                    ..mechanism::Record::default()
+                }),
+            })
+            .id();
+        let send = |app: &mut App, value: i32| {
+            app.world_mut().write_message(MechanismSignal {
+                target: id,
+                source: 1,
+                value,
+            });
+            app.world_mut().run_schedule(FixedUpdate);
+            app.world_mut().flush();
+        };
+        let word = |app: &App| {
+            app.world()
+                .get::<MechanismRecords>(node)
+                .unwrap()
+                .operative
+                .unwrap()
+                .value
+        };
+        let devices = |app: &App| -> Vec<_> {
+            app.world()
+                .get::<Children>(node)
+                .into_iter()
+                .flat_map(|kids| kids.iter())
+                .filter_map(|child| {
+                    let device = app.world().get::<crate::arc::ElectricDevice>(child)?;
+                    let arc = &app.world().get::<crate::arc::ArcEffect>(child)?.arc;
+                    Some((*device, arc.start, arc.end, arc.spec.sound.clone()))
+                })
+                .collect()
+        };
+
+        send(&mut app, 0);
+        assert_eq!(word(&app), 0x4);
+        assert!(devices(&app).is_empty());
+
+        send(&mut app, 1);
+        assert_eq!(word(&app), 0x5);
+        assert_eq!(
+            devices(&app),
+            vec![(
+                crate::arc::ElectricDevice::default(),
+                Vec3::ZERO,
+                Vec3::new(0.0, 0.0, 200.0),
+                Some("electricity01".to_string()),
+            )]
+        );
+
+        send(&mut app, 0);
+        assert_eq!(word(&app), 0x4);
+        let found = devices(&app);
+        assert_eq!(found.len(), 1);
+        assert_eq!((found[0].0.state, found[0].0.life), (1, 10));
+
+        send(&mut app, 1);
+        assert_eq!(word(&app), 0x5);
+        let found = devices(&app);
+        assert_eq!(found.len(), 1);
+        assert_eq!((found[0].0.state, found[0].0.life), (1, 10));
     }
 }

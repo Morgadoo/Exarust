@@ -40,6 +40,15 @@ pub struct ArcEffect {
     accumulator: f32,
 }
 
+/// The electric emitter a light job watches on a direct child. Bit 0 of
+/// `state` means it is already on, and a signal that finds it off writes
+/// `life` to 10 and `state` to 1.
+#[derive(Component, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ElectricDevice {
+    pub state: i32,
+    pub life: i32,
+}
+
 /// Spawns an arc from `start` to `end` (world, cm) under `parent`.
 pub fn spawn_arc(
     commands: &mut Commands,
