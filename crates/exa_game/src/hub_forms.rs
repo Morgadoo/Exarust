@@ -64,6 +64,12 @@ pub struct HubForms {
     pub forms: Vec<OpenForm>,
     pub arsenal: Option<ArsenalForm>,
     pub marked: [[bool; 5]; 5],
+    /// Staff places whose employee left the company through a form, for
+    /// the staff's share of the leaving (the kit's release), which needs
+    /// the arena's stores ([`hub_form_input`]).
+    pub left: Vec<usize>,
+    /// Employees a form took on, for the staff list's matching entry.
+    pub joined: Vec<crate::staff::Employee>,
 }
 
 impl HubForms {
@@ -333,6 +339,9 @@ pub enum FormAnswer {
     None,
     /// Manage Company closed: the hub is no longer busy.
     ManageClosed,
+    /// Manage Company's Arsenal: every company window closed (Manage
+    /// Company's close clears the hub's busy flag) and the arsenal opens.
+    OpenArsenal,
 }
 
 impl HubWindows {
@@ -416,7 +425,11 @@ impl HubWindows {
                 manage::MANAGE => self.open_loadout(PAGE_ROSTER, career),
                 manage::HIRE => self.open_loadout(PAGE_HIRE, career),
                 manage::ARSENAL => {
-                    info!("hub manage: Arsenal opens the stash form, which is not built");
+                    // The arsenal's opener closes every company window
+                    // first (Manage Company among them), then builds the
+                    // arsenal view ([`crate::arsenal_view`]).
+                    self.close_window();
+                    return FormAnswer::OpenArsenal;
                 }
                 manage::RECRUIT => {
                     info!(
@@ -586,6 +599,13 @@ impl HubWindows {
                 match career.hire_candidate(index) {
                     Ok(role) => {
                         info!("hub hire: a {role:?} joined the company");
+                        if let Some(member) = career.company.roster.last() {
+                            self.forms.joined.push(crate::staff::Employee {
+                                class: staff_class(role),
+                                name: crate::hub_windows::name16(&member.name),
+                                ..crate::staff::Employee::default()
+                            });
+                        }
                         arsenal.select(arsenal.selection);
                     }
                     Err(error) => {
@@ -634,6 +654,8 @@ impl HubWindows {
             );
             crate::staff::unlink_entries(&mut career.entries, id);
             crate::staff::renumber_saved(&mut career.log, id);
+            // The kit's release runs on the arena's stores.
+            self.forms.left.push(index);
             info!("hub loadout: {} is dismissed", member.name);
         }
         let commit = arsenal.commit(|form| {
@@ -645,6 +667,46 @@ impl HubWindows {
         self.forms.arsenal = Some(arsenal);
         let _ = commit;
         self.refresh_manage(career);
+    }
+}
+
+/// The staff class of a hired profession.
+pub fn staff_class(role: Profession) -> u8 {
+    match role {
+        Profession::Combatant => crate::staff::COMBATANT,
+        Profession::Merchant => crate::staff::MERCHANT,
+        Profession::Physician => crate::staff::PHYSICIAN,
+        Profession::Trainer => crate::staff::TRAINER,
+    }
+}
+
+/// Runs the staff's share of the forms' joinings and leavings on the
+/// arena's stores: a hired employee joins the staff list (with no kit: the
+/// hire list carries no item facts), and a dismissed one leaves it, his kit
+/// going back to the arsenal ([`crate::staff::Staff::leave`]). A place the
+/// staff list does not hold (a hub career whose staff was never loaded) has
+/// nothing to release.
+pub fn apply_staff_changes(
+    forms: &mut HubForms,
+    stores: &mut crate::save_live::ArenaStores,
+    kinds: &crate::arsenal::ShelfKinds,
+) {
+    for employee in forms.joined.drain(..) {
+        stores.staff.admit(employee);
+    }
+    for index in forms.left.drain(..) {
+        let crate::save_live::ArenaStores { staff, arsenal, .. } = stores;
+        match staff.leave(index, arsenal, |item| kinds.kind(item)) {
+            Some(leaving) => info!(
+                "hub staff: employee {} left; {} kit entries back in the arsenal",
+                index + 1,
+                leaving.released
+            ),
+            None => info!(
+                "hub staff: employee {} is not on the staff list; nothing to release",
+                index + 1
+            ),
+        }
     }
 }
 
@@ -738,10 +800,22 @@ pub struct OpenHubWindow {
     pub done: bool,
 }
 
-/// The names `--open-hub-window` takes.
-pub const HUB_WINDOW_NAMES: [&str; 9] = [
+/// The names `--open-hub-window` takes. `dismiss` may name the roster row
+/// to dismiss (`dismiss:1`, the first employee; the manager's row 0 by
+/// default); `arsenal` opens the arsenal as Manage Company's Arsenal does.
+pub const HUB_WINDOW_NAMES: [&str; 10] = [
     "board", "shop", "manage", "records", "status", "loadout", "hire", "dismiss", "yesno",
+    "arsenal",
 ];
+
+/// Whether `--open-hub-window` takes `name`: one of [`HUB_WINDOW_NAMES`],
+/// or `dismiss:` and a row number.
+pub fn hub_window_name_ok(name: &str) -> bool {
+    HUB_WINDOW_NAMES.contains(&name)
+        || name
+            .strip_prefix("dismiss:")
+            .is_some_and(|row| row.parse::<i32>().is_ok())
+}
 
 /// Opens the asked window once.
 pub fn open_hub_window_on_load(
@@ -750,6 +824,7 @@ pub fn open_hub_window_on_load(
     mut windows: ResMut<HubWindows>,
     career: Res<ArenaCareer>,
     names: Res<crate::hub_windows::HubItemNames>,
+    mut open_arsenal: MessageWriter<crate::arsenal_view::OpenArsenal>,
 ) {
     if ask.done || !hub.manager_placed || windows.task.screen.0 == 0 {
         return;
@@ -763,8 +838,17 @@ pub fn open_hub_window_on_load(
             windows.open_manage(&career);
         }
     };
+    let (name, row) = match name.split_once(':') {
+        Some((name, row)) => (name.to_string(), row.parse::<i32>().unwrap_or(0)),
+        None => (name, 0),
+    };
     match name.as_str() {
         "board" => windows.open_board(&career),
+        "arsenal" => {
+            open_arsenal.write(crate::arsenal_view::OpenArsenal);
+            info!("hub window arsenal opens");
+            return;
+        }
         "shop" => windows.open_shop(false, &career, &names),
         "manage" => manage_first(&mut windows),
         "records" => {
@@ -787,7 +871,19 @@ pub fn open_hub_window_on_load(
         "dismiss" => {
             manage_first(&mut windows);
             windows.open_loadout(PAGE_ROSTER, &career);
-            windows.open_dismiss(&career.player.name);
+            let mut name = career.player.name.clone();
+            if let Some(mut arsenal) = windows.forms.arsenal {
+                arsenal.select(row);
+                let rows = loadout_rows(&mut arsenal, &career);
+                if let Some(row_name) = rows.get(arsenal.selection.max(0) as usize) {
+                    name = row_name.clone();
+                }
+                if let Some(form) = windows.forms.get_mut(FormWindow::Loadout) {
+                    refresh_loadout(form, &mut arsenal, &career);
+                }
+                windows.forms.arsenal = Some(arsenal);
+            }
+            windows.open_dismiss(&name);
         }
         "yesno" => {
             windows.open_board(&career);
@@ -804,8 +900,88 @@ pub fn open_hub_window_on_load(
     );
 }
 
+/// `--hub-employee-kit NAME:id,...`: once the hub is entered and the
+/// manager stands, a combatant NAME joins the company with this kit, as a
+/// loaded career's employee would stand: the staff list takes it through
+/// the hire (its kit stowed in the arsenal with the fighter's flag,
+/// [`crate::staff::Staff::hire`]) and the roster lists it. A debug tool for
+/// the dismissal's kit release.
+#[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
+pub struct HubEmployeeKit {
+    pub name: String,
+    pub kit: Vec<u32>,
+    pub done: bool,
+}
+
+/// Runs `--hub-employee-kit` once, when the shelf facts are read.
+pub fn hub_employee_kit_on_load(
+    ask: Option<ResMut<HubEmployeeKit>>,
+    hub: Res<crate::arena_hub_live::ArenaHub>,
+    mut career: ResMut<ArenaCareer>,
+    stores: Option<ResMut<crate::save_live::ArenaStores>>,
+    kinds: Option<Res<crate::arsenal::ShelfKinds>>,
+) {
+    let (Some(mut ask), Some(mut stores), Some(kinds)) = (ask, stores, kinds) else {
+        return;
+    };
+    if ask.done || !hub.manager_placed || kinds.0.is_empty() {
+        return;
+    }
+    ask.done = true;
+    let name = crate::hub_windows::name16(&ask.name);
+    let hire = crate::staff::Hire {
+        role: Some(Profession::Combatant),
+        name,
+        carried: Vec::new(),
+        loadouts: vec![crate::hirelings::Loadout {
+            hands: [0, 0],
+            items: ask.kit.clone(),
+        }],
+    };
+    let mut purse = 0;
+    let mut spent = 0;
+    let mut records = career.records();
+    let crate::save_live::ArenaStores { staff, arsenal, .. } = &mut *stores;
+    let joined = staff.hire(
+        hire,
+        0,
+        &mut Vec::<()>::new(),
+        None,
+        &mut purse,
+        &mut spent,
+        &mut records,
+        &mut career.log,
+        arsenal,
+        |item| kinds.kind(item),
+    );
+    if let Err(refusal) = joined {
+        warn!("--hub-employee-kit: {}", refusal.message());
+        return;
+    }
+    let member = crate::career::Member {
+        name: ask.name.clone(),
+        profession: Profession::Combatant,
+        ..career.player.clone()
+    };
+    career.company.roster.push(member);
+    let stowed: Vec<(u32, Option<usize>)> = ask
+        .kit
+        .iter()
+        .map(|&item| (item, crate::arsenal::shelf_of(kinds.kind(item))))
+        .collect();
+    info!(
+        "--hub-employee-kit: {} joins as employee {} with kit (item, shelf) {:?}",
+        ask.name,
+        stores.staff.employees.len(),
+        stowed
+    );
+}
+
 /// The pointer over the hub's table-built forms: moves, the left press and
-/// release go to the top form and its callbacks run.
+/// release go to the top form and its callbacks run. Manage Company's
+/// Arsenal asks for the arsenal ([`crate::arsenal_view::OpenArsenal`]), and
+/// the forms' joinings and leavings reach the arena's stores
+/// ([`apply_staff_changes`]).
 #[allow(clippy::too_many_arguments)]
 pub fn hub_form_input(
     mouse: Res<ButtonInput<MouseButton>>,
@@ -814,34 +990,45 @@ pub fn hub_form_input(
     mut windows: ResMut<HubWindows>,
     mut career: ResMut<ArenaCareer>,
     mut hub: ResMut<crate::arena_hub_live::ArenaHub>,
+    (stores, kinds): (
+        Option<ResMut<crate::save_live::ArenaStores>>,
+        Option<Res<crate::arsenal::ShelfKinds>>,
+    ),
+    mut open_arsenal: MessageWriter<crate::arsenal_view::OpenArsenal>,
 ) {
-    if windows.forms.is_empty() {
-        return;
-    }
-    let Ok(window) = windows_q.single() else {
-        return;
-    };
-    let pointer = match scripted.as_deref() {
-        Some(scripted) => scripted.position(window),
-        None => window.cursor_position(),
-    };
-    let Some(at) = pointer else {
-        return;
-    };
-    let at = (
-        (at.x * window.scale_factor()) as i32,
-        (at.y * window.scale_factor()) as i32,
-    );
-    let pressed = mouse.just_pressed(MouseButton::Left);
-    let released = mouse.just_released(MouseButton::Left);
-    if (pressed || released) && windows.forms.contains(at.0, at.1) {
-        windows.took_pointer = true;
-    }
-    let answered = windows.forms.input(at, pressed, released);
-    for (form, record, finished) in answered {
-        if windows.answer(&mut career, form, record, finished) == FormAnswer::ManageClosed {
-            hub.busy = false;
+    if !windows.forms.is_empty() {
+        let pointer = windows_q.single().ok().and_then(|window| {
+            let at = match scripted.as_deref() {
+                Some(scripted) => scripted.position(window),
+                None => window.cursor_position(),
+            }?;
+            Some((
+                (at.x * window.scale_factor()) as i32,
+                (at.y * window.scale_factor()) as i32,
+            ))
+        });
+        if let Some(at) = pointer {
+            let pressed = mouse.just_pressed(MouseButton::Left);
+            let released = mouse.just_released(MouseButton::Left);
+            if (pressed || released) && windows.forms.contains(at.0, at.1) {
+                windows.took_pointer = true;
+            }
+            let answered = windows.forms.input(at, pressed, released);
+            for (form, record, finished) in answered {
+                match windows.answer(&mut career, form, record, finished) {
+                    FormAnswer::ManageClosed => hub.busy = false,
+                    FormAnswer::OpenArsenal => {
+                        hub.busy = false;
+                        open_arsenal.write(crate::arsenal_view::OpenArsenal);
+                        info!("hub manage: Arsenal opens the arsenal");
+                    }
+                    FormAnswer::None => {}
+                }
+            }
         }
+    }
+    if let (Some(mut stores), Some(kinds)) = (stores, kinds) {
+        apply_staff_changes(&mut windows.forms, &mut stores, &kinds);
     }
 }
 

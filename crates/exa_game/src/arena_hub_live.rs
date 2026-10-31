@@ -150,6 +150,7 @@ impl Plugin for ArenaHubPlugin {
             .init_resource::<HubRoll>()
             .add_message::<WorldClick>()
             .add_message::<ArenaMatchLaunch>()
+            .add_message::<crate::arsenal_view::OpenArsenal>()
             .add_message::<crate::scene_bodies::SceneCommand>()
             .init_resource::<HubWindows>()
             .init_resource::<crate::hub_windows::ArenaCareer>()

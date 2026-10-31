@@ -79,6 +79,38 @@ impl Employee {
     pub fn fights(&self) -> bool {
         self.class & 3 != 0
     }
+
+    /// Gives the employee's kit back to the arsenal: a fighter (class below
+    /// 3) releases [`FIGHTER_KIT`] from each kit item; a specialist releases
+    /// [`SPECIALIST_KIT`] from each of his own items, his two hand items
+    /// and each worn item without [`WORN_KEPT`]. Returns how many releases
+    /// found an entry to clear.
+    pub fn release_kit(&self, arsenal: &mut Arsenal, kind: impl Fn(u32) -> ItemKind) -> usize {
+        let mut released = 0;
+        let mut release = |item: u32, mask: u32| {
+            if arsenal.release(item, kind(item), mask) {
+                released += 1;
+            }
+        };
+        if self.class < 3 {
+            for &item in &self.kit {
+                release(item, FIGHTER_KIT);
+            }
+        } else {
+            for &item in &self.carried {
+                release(item, SPECIALIST_KIT);
+            }
+            for &item in &self.hands {
+                release(item, SPECIALIST_KIT);
+            }
+            for &(item, flags) in &self.worn {
+                if flags & WORN_KEPT == 0 {
+                    release(item, SPECIALIST_KIT);
+                }
+            }
+        }
+        released
+    }
 }
 
 /// Why a hire or a recruitment did not happen.
@@ -153,6 +185,8 @@ pub struct Leaving {
     pub merchant_stock_cleared: bool,
     /// A merchant's or a physician's figure leaves the hub.
     pub figure_removed: bool,
+    /// How many of the employee's kit releases found an arsenal entry.
+    pub released: usize,
 }
 
 /// The company's staff and the manage table's order list.
@@ -360,7 +394,9 @@ impl Staff {
         Ok(())
     }
 
-    /// An employee leaves (a death, a dismissal, a departure).
+    /// An employee leaves (a death, a dismissal, a departure): the staff's
+    /// share ([`Self::leave`]), then the id is dropped from the tournament
+    /// entries and the log's "saved" records and the later ids renumbered.
     pub fn remove(
         &mut self,
         index: usize,
@@ -369,30 +405,31 @@ impl Staff {
         entries: &mut Roster,
         log: &mut ArenaLog,
     ) -> Option<Leaving> {
+        let leaving = self.leave(index, arsenal, kind)?;
+        let id = index as u32 + 1;
+        unlink_entries(entries, id);
+        renumber_saved(log, id);
+        Some(leaving)
+    }
+
+    /// The staff's share of a leaving: the number leaves the manage order,
+    /// the employee's kit goes back to the arsenal ([`Employee::release_kit`])
+    /// and the employee leaves the list. A merchant's leaving clears his
+    /// stock and removes his figure; a physician's removes his figure.
+    pub fn leave(
+        &mut self,
+        index: usize,
+        arsenal: &mut Arsenal,
+        kind: impl Fn(u32) -> ItemKind,
+    ) -> Option<Leaving> {
         let id = index as u32 + 1;
         drop_order(&mut self.order, id as i32);
         let employee = self.employees.get(index)?.clone();
         let mut leaving = Leaving {
             world: employee.world,
+            released: employee.release_kit(arsenal, kind),
             ..Leaving::default()
         };
-        if employee.class < 3 {
-            for &item in &employee.kit {
-                arsenal.release(item, kind(item), FIGHTER_KIT);
-            }
-        } else {
-            for &item in &employee.carried {
-                arsenal.release(item, kind(item), SPECIALIST_KIT);
-            }
-            for &item in &employee.hands {
-                arsenal.release(item, kind(item), SPECIALIST_KIT);
-            }
-            for &(item, flags) in &employee.worn {
-                if flags & WORN_KEPT == 0 {
-                    arsenal.release(item, kind(item), SPECIALIST_KIT);
-                }
-            }
-        }
         if employee.class == MERCHANT {
             leaving.merchant_stock_cleared = true;
             leaving.figure_removed = true;
@@ -400,9 +437,14 @@ impl Staff {
             leaving.figure_removed = true;
         }
         self.employees.remove(index);
-        unlink_entries(entries, id);
-        renumber_saved(log, id);
         Some(leaving)
+    }
+
+    /// Takes on an employee as the hire's last step: the list grows and the
+    /// manage order, once it holds anything, gains the new number.
+    pub fn admit(&mut self, employee: Employee) {
+        self.employees.push(employee);
+        self.note_order();
     }
 
     /// Dismiss an employee: log the name, count one more fired, and let
@@ -773,7 +815,13 @@ mod tests {
         let leaving = staff
             .remove(1, &mut books.arsenal, weapon, &mut entries, &mut books.log)
             .unwrap();
-        assert_eq!(leaving, Leaving::default());
+        assert_eq!(
+            leaving,
+            Leaving {
+                released: 2,
+                ..Leaving::default()
+            }
+        );
         assert_eq!(staff.employees.len(), 2);
         assert_eq!(entries[0].count, 1);
         assert_eq!(entries[0].entries[0].actor_id, 2);

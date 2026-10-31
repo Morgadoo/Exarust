@@ -22,8 +22,8 @@
 //! inventory key shows or hides the embedded inventory; Escape closes the
 //! arsenal.
 //!
-//! Not wired: nothing in the running game opens the window or sends its
-//! key and scroll messages yet, and no arena store fills the columns
+//! The hub's Arsenal row sends [`OpenArsenal`]. Not wired: no arena store
+//! fills the columns
 //! ([`ArsenalWindow::set_column`]); the drop rules stay the tested
 //! `exa_items::arsenal::drop_in` and `column_hook`.
 //!
@@ -72,6 +72,10 @@ pub struct ArsenalKey {
 /// low word `0x1002` left or `0x2002` right).
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ArsenalScroll(pub u32);
+
+/// The hub's Arsenal row asks the window to open.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct OpenArsenal;
 
 /// The live arsenal window.
 #[derive(Resource, Debug, Clone, PartialEq)]
@@ -382,6 +386,14 @@ pub fn column_layers(
 
 /// Sends the arsenal's key and scroll presses to the open window and draws
 /// it into the shared GUI frames after the screens.
+/// Opens the window when the hub asks. The set stays 0 until a store fills it.
+fn open_arsenal(mut window: ResMut<ArsenalWindow>, mut open: MessageReader<OpenArsenal>) {
+    if open.read().next().is_some() {
+        window.open(0);
+        info!("arsenal window opens");
+    }
+}
+
 fn arsenal_live(
     mut window: ResMut<ArsenalWindow>,
     mut keys: MessageReader<ArsenalKey>,
@@ -436,9 +448,11 @@ impl Plugin for ArsenalViewPlugin {
             .init_resource::<GuiFrames>()
             .add_message::<ArsenalKey>()
             .add_message::<ArsenalScroll>()
+            .add_message::<OpenArsenal>()
             .add_systems(
                 Update,
-                arsenal_live
+                (open_arsenal, arsenal_live)
+                    .chain()
                     .after(crate::gui_screens::draw_screens)
                     .after(crate::item_icon_render::IconRenderSystems),
             );

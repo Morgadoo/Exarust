@@ -263,6 +263,48 @@ impl Arsenal {
     }
 }
 
+/// The shelf facts of the game's object database, by item id, for the
+/// arena's live stows and releases ([`ItemKind::of_item`] for every record;
+/// an id the database does not hold goes on no shelf).
+#[derive(bevy::prelude::Resource, Clone, Debug, Default)]
+pub struct ShelfKinds(pub std::collections::HashMap<u32, ItemKind>);
+
+impl ShelfKinds {
+    /// The kind of `item`: unknown when the database does not hold it.
+    pub fn kind(&self, item: u32) -> ItemKind {
+        self.0.get(&item).copied().unwrap_or_default()
+    }
+
+    /// The kinds of every item record of the game's `objdb.rdb`.
+    pub fn of_game(game: &exa_assets::Game) -> Self {
+        let items = game
+            .0
+            .pack(exa_assets::PackKind::Resource)
+            .and_then(|pack| pack.get("objdb.rdb"))
+            .and_then(|bytes| exa_formats::rdb::Database::parse(bytes).ok())
+            .map(|db| exa_formats::objdb::items(&db))
+            .unwrap_or_default();
+        Self(crate::arena_ids::kinds_from_items(&items))
+    }
+}
+
+/// Reads the shelf facts once the game is open.
+pub fn load_shelf_kinds(
+    game: Option<bevy::prelude::Res<exa_assets::Game>>,
+    mut kinds: bevy::prelude::ResMut<ShelfKinds>,
+    mut done: bevy::prelude::Local<bool>,
+) {
+    if *done {
+        return;
+    }
+    let Some(game) = game else {
+        return;
+    };
+    *done = true;
+    *kinds = ShelfKinds::of_game(&game);
+    bevy::log::info!("arsenal: shelf facts for {} items", kinds.0.len());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

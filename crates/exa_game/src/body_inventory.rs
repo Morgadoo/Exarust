@@ -90,7 +90,7 @@ pub fn equipment_items(
 /// which the game's item database holds (`equip_lock` in `exa_formats`). A
 /// level-local id has no catalogue record yet, so it counts 0; the original
 /// promotes such a record into the world database when the level loads.
-fn item_bulk(id: u32, catalogue: Option<&ItemCatalogue>) -> i32 {
+pub(crate) fn item_bulk(id: u32, catalogue: Option<&ItemCatalogue>) -> i32 {
     catalogue
         .and_then(|catalogue| catalogue.bulk(id))
         .map_or(0, i32::from)
