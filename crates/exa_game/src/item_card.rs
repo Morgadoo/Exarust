@@ -351,6 +351,50 @@ fn pointer_and_unit(
 
 /// Shows a card for an item at a pointer position, replacing any open one.
 #[allow(clippy::too_many_arguments)]
+/// The model-section bit that asks the story to remember an item kind.
+const DISCOVERED_KIND: u32 = 0x80;
+/// Bits 4–6 of that word: the rarity tier the points table indexes.
+const RARITY_TIER: u32 = 0x70;
+
+/// The rarity tier an item card reports, when its model section asks to be
+/// remembered. No model, or the bit clear, is not a discovery.
+pub(crate) fn discovery_tier(model_flags: Option<u32>) -> Option<u8> {
+    let flags = model_flags?;
+    if flags & DISCOVERED_KIND == 0 {
+        return None;
+    }
+    Some(((flags & RARITY_TIER) >> 4) as u8)
+}
+
+/// A shown card remembers a new item kind in story mode. The points are the
+/// rarity tier's. A kind already seen, a mode that is not the story, and a
+/// model that does not ask earn nothing.
+fn note_item_discovery(
+    xp: Option<&mut crate::experience_live::StoryExperience>,
+    mode: i32,
+    catalogue: &ItemCatalogue,
+    item: u32,
+) {
+    let Some(xp) = xp else {
+        return;
+    };
+    let Some(tier) = discovery_tier(catalogue.card_facts(item).map(|facts| facts.model_flags))
+    else {
+        return;
+    };
+    let points = xp.state.discover_item(
+        mode,
+        Some(&mut xp.player),
+        &mut xp.party,
+        item as i32,
+        |_| Some(tier),
+    );
+    if points != 0 {
+        info!("item card: {item:#x} is a new kind, worth {points}");
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn show(
     view: &mut CardView,
     screens: &mut GameScreens,
@@ -427,6 +471,8 @@ fn request_card(
     mut icons: ResMut<PanelIcons>,
     time: Res<Time>,
     use_cursor: Option<Res<crate::player_controls::UseCursor>>,
+    mut experience: Option<ResMut<crate::experience_live::StoryExperience>>,
+    flow: Option<Res<crate::flow::Flow>>,
 ) {
     // The press that ended the use cursor is the cursor's.
     if !buttons.just_pressed(MouseButton::Right) || use_cursor.is_some_and(|c| c.took_press) {
@@ -518,6 +564,8 @@ fn request_card(
         now,
         false,
     );
+    let mode = flow.map(|flow| flow.mode.word() as i32).unwrap_or(0);
+    note_item_discovery(experience.as_deref_mut(), mode, catalogue, entry.id);
 }
 
 /// The world objects' card requests ([`WorldCard`]): a delayed one goes on
@@ -534,8 +582,11 @@ fn world_cards(
     windows: Query<&Window, With<PrimaryWindow>>,
     scripted: Option<Res<ScriptedPointer>>,
     time: Res<Time>,
+    mut experience: Option<ResMut<crate::experience_live::StoryExperience>>,
+    flow: Option<Res<crate::flow::Flow>>,
 ) {
     let now = time.elapsed().as_millis() as u32;
+    let mode = flow.map(|flow| flow.mode.word() as i32).unwrap_or(0);
     for request in requests.read() {
         if request.delayed {
             screens.card.toggle(request.item, request.flags, now);
@@ -567,6 +618,7 @@ fn world_cards(
         if view.shown.is_none() {
             debug!("item card: no card for world object {:#x}", request.item);
         }
+        note_item_discovery(experience.as_deref_mut(), mode, catalogue, request.item);
     }
 }
 
@@ -582,8 +634,11 @@ fn figure_cards(
     mut icons: ResMut<PanelIcons>,
     windows: Query<&Window, With<PrimaryWindow>>,
     time: Res<Time>,
+    mut experience: Option<ResMut<crate::experience_live::StoryExperience>>,
+    flow: Option<Res<crate::flow::Flow>>,
 ) {
     let now = time.elapsed().as_millis() as u32;
+    let mode = flow.map(|flow| flow.mode.word() as i32).unwrap_or(0);
     for request in requests.read() {
         let (Some(catalogue), Ok(window)) = (catalogue.as_deref(), windows.single()) else {
             continue;
@@ -613,6 +668,7 @@ fn figure_cards(
             ),
             None => info!("figure card: {:#x} has no card", request.item),
         }
+        note_item_discovery(experience.as_deref_mut(), mode, catalogue, request.item);
     }
 }
 
@@ -628,8 +684,11 @@ fn tick_card(
     windows: Query<&Window, With<PrimaryWindow>>,
     scripted: Option<Res<ScriptedPointer>>,
     time: Res<Time>,
+    mut experience: Option<ResMut<crate::experience_live::StoryExperience>>,
+    flow: Option<Res<crate::flow::Flow>>,
 ) {
     let now = time.elapsed().as_millis() as u32;
+    let mode = flow.map(|flow| flow.mode.word() as i32).unwrap_or(0);
     if let (Some(catalogue), Ok(window)) = (catalogue.as_deref(), windows.single())
         && let Some((item, flags)) = screens.card.build_due(now)
         && let Some((pointer, unit)) = pointer_and_unit(window, scripted.as_deref(), &screens)
@@ -648,6 +707,7 @@ fn tick_card(
             now,
             world,
         );
+        note_item_discovery(experience.as_deref_mut(), mode, catalogue, item);
     }
     // The card belongs to the item panels: when every panel is closed it
     // goes too, holding no icon reference for a form that no longer exists.
@@ -1219,6 +1279,15 @@ impl Plugin for ItemCardPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_marked_model_reports_its_rarity_tier() {
+        assert_eq!(discovery_tier(None), None);
+        assert_eq!(discovery_tier(Some(0x70)), None);
+        assert_eq!(discovery_tier(Some(0x80)), Some(0));
+        assert_eq!(discovery_tier(Some(0x80 | 0x30)), Some(3));
+        assert_eq!(discovery_tier(Some(0x80 | 0x70)), Some(7));
+    }
 
     #[test]
     fn the_card_draws_with_the_palette_at_its_squared_fade() {
