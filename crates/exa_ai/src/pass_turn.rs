@@ -24,10 +24,13 @@
 //!   pass left, the hostility and the noticed level drift, and the aim
 //!   point follows the foe.
 //!
-//! The waits are counted in AI ticks: Exarust runs the AI once per frame on
-//! the latest body tick, where the original runs it every body tick on the
-//! game loop's step counter. Both stamp and compare the same counter, so the
-//! order of the turns is the same.
+//! The waits are counted in body ticks: the brains' tick
+//! ([`crate::BrainTick`]) runs in the fixed step once per body tick, as the
+//! original runs its AI from every body tick, and the counter is the game
+//! loop's step counter as this tick's AI reads it: the body ticks run so
+//! far plus this one (the original's hook list runs before the counter
+//! advances, and the brains claim their turns after). Without a body clock
+//! (unit tests) the counter steps once per rotation.
 //!
 //! Evidence: the game loop's pre-tick hook list (the rotation, which also
 //! rotates the route planner's turn, [`crate::route::PlanTurn`]), the step
@@ -54,8 +57,16 @@ impl PassTurn {
     /// The start of a tick: the counter steps and the longest waiter of the
     /// last tick takes the turn. Returns the brain whose turn it is.
     pub fn rotate(&mut self) -> Option<u64> {
+        let next = self.turn.clock.wrapping_add(1);
+        self.rotate_to(next)
+    }
+
+    /// The start of a tick on the game loop's step counter `counter` (the
+    /// value this tick's brains stamp and measure their waits on): the
+    /// longest waiter of the last tick takes the turn.
+    pub fn rotate_to(&mut self, counter: u32) -> Option<u64> {
         self.waited = self.turn.longest_wait;
-        self.turn.clock = self.turn.clock.wrapping_add(1);
+        self.turn.clock = counter;
         self.turn.next_turn()
     }
 
@@ -85,8 +96,9 @@ impl PassTurn {
 }
 
 /// Passes the target pass's turn once per body tick, before the perception
-/// and the AI tick (without a body clock, once per frame). With the
-/// `exa_ai::pass_turn` debug log on, it names the brain whose turn it is.
+/// and the AI tick, on the step counter this tick's brains read (without a
+/// body clock, once per run). With the `exa_ai::pass_turn` debug log on, it
+/// names the brain whose turn it is.
 pub fn rotate_pass_turn(
     ticks: Option<Res<BodyTicks>>,
     turn: Option<ResMut<PassTurn>>,
@@ -101,20 +113,22 @@ pub fn rotate_pass_turn(
         }
         *rotated = Some(ticks.0);
     }
-    let current = turn.rotate();
+    let current = match ticks.as_deref() {
+        // The step counter after this tick's advance, as the brains read it.
+        Some(ticks) => turn.rotate_to(ticks.0.wrapping_add(1) as u32),
+        None => turn.rotate(),
+    };
     if let Some(brain) = current {
         debug!(
-            "AI tick {} (body tick {}): the target pass's turn goes to {:?}, which waited {} ticks",
+            "body tick {}: the target pass's turn goes to {:?}, which waited {} ticks",
             turn.turn.clock,
-            ticks.as_ref().map_or(0, |t| t.0),
             Entity::try_from_bits(brain).unwrap_or(Entity::PLACEHOLDER),
             turn.waited
         );
     } else {
         debug!(
-            "AI tick {} (body tick {}): no brain waited, no target pass",
-            turn.turn.clock,
-            ticks.as_ref().map_or(0, |t| t.0)
+            "body tick {}: no brain waited, no target pass",
+            turn.turn.clock
         );
     }
 }
@@ -214,6 +228,25 @@ mod tests {
         assert_eq!(tick(&mut turn, &[1, 2]), Some(1));
         assert_eq!(turn.turn.clock, 0);
         assert_eq!(turn.turn.last_plan(1), Some(0));
+    }
+
+    /// With a body clock the rotation runs once per body tick and the
+    /// counter is the step counter this tick's brains read: the body ticks
+    /// run so far plus this one; a second run on the same body tick does
+    /// nothing.
+    #[test]
+    fn the_counter_is_the_body_tick() {
+        let mut app = App::new();
+        app.init_resource::<PassTurn>()
+            .insert_resource(BodyTicks(41))
+            .add_systems(Update, rotate_pass_turn);
+        app.update();
+        assert_eq!(app.world().resource::<PassTurn>().turn.clock, 42);
+        app.update();
+        assert_eq!(app.world().resource::<PassTurn>().turn.clock, 42);
+        app.world_mut().resource_mut::<BodyTicks>().0 = 45;
+        app.update();
+        assert_eq!(app.world().resource::<PassTurn>().turn.clock, 46);
     }
 
     /// A forgotten brain leaves the queue.

@@ -890,7 +890,12 @@ pub(crate) fn plugin(app: &mut App) {
         .add_message::<ImpactSounded>()
         .add_message::<WeaponSounded>()
         .add_message::<CameraHit>()
-        .add_systems(FixedUpdate, sync_held_striking.before(BodySystems))
+        .add_systems(
+            FixedUpdate,
+            sync_held_striking
+                .after(exa_physics::body::TickBehaviour)
+                .before(BodySystems),
+        )
         .add_systems(FixedUpdate, strike_limbs.after(BodySystems))
         .add_systems(
             FixedUpdate,

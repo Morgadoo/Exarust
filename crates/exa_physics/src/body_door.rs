@@ -364,7 +364,9 @@ pub(crate) fn plugin(app: &mut App) {
     app.add_systems(
         FixedUpdate,
         (
-            register_doors.before(BodySystems),
+            register_doors
+                .after(crate::body::TickBehaviour)
+                .before(BodySystems),
             step_doors.after(BodySystems),
         ),
     );

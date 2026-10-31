@@ -653,6 +653,18 @@ fn a_power_list_parses_both_bases() {
     assert_eq!(parse_power_list("0x20z"), None);
 }
 
+/// The duellists' power system as the brains' tick runs it, alone: the
+/// answers before the combat state, the cast after it (the tests leave the
+/// combat state out and stand in for it through [`DuelPowers`]).
+fn duel_tick(app: &mut App) {
+    app.world_mut()
+        .run_system_cached(advise_duellists)
+        .expect("advise");
+    app.world_mut()
+        .run_system_cached(cast_for_duellists)
+        .expect("cast");
+}
+
 /// A duellist with a shock and a target 3 m ahead.
 fn duellist(app: &mut App) -> Entity {
     let target = app
@@ -678,7 +690,7 @@ fn duellist(app: &mut App) -> Entity {
 fn a_duellists_slots_are_answered_by_the_ai_evaluators() {
     let mut app = new_app();
     let npc = duellist(&mut app);
-    app.update();
+    duel_tick(&mut app);
     let powers = app.world().get::<DuelPowers>(npc).unwrap();
     assert_eq!(powers.slots[0], SHOCK);
     assert_eq!(powers.answers[0], 3);
@@ -688,7 +700,7 @@ fn a_duellists_slots_are_answered_by_the_ai_evaluators() {
     let target = app.world().get::<Duellist>(npc).unwrap().target;
     *app.world_mut().get_mut::<GlobalTransform>(target).unwrap() =
         GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 6.0));
-    app.update();
+    duel_tick(&mut app);
     assert_eq!(app.world().get::<DuelPowers>(npc).unwrap().answers[0], 0);
 }
 
@@ -699,7 +711,7 @@ fn a_duellists_chosen_power_is_cast() {
     let mut app = new_app();
     let npc = duellist(&mut app);
     app.world_mut().get_mut::<DuelPowers>(npc).unwrap().chosen = Some(SHOCK);
-    app.update();
+    duel_tick(&mut app);
     let state = app.world().get::<PowerCaster>(npc).unwrap();
     assert_eq!(state.last_result, code::STARTED);
     assert!(matches!(state.active[0].class, ActiveClass::Shock(_)));
@@ -717,14 +729,14 @@ fn a_duellists_stop_asks_the_hook_once_its_power_answers_nothing() {
     let mut app = new_app();
     let npc = duellist(&mut app);
     app.world_mut().get_mut::<DuelPowers>(npc).unwrap().chosen = Some(SHOCK);
-    app.update();
+    duel_tick(&mut app);
     app.world_mut().run_schedule(FixedUpdate);
     assert_eq!(
         cast_body(&app, npc).cast_hook,
         Some(super::super::power::energy::SHOCK_HOOK)
     );
     app.world_mut().get_mut::<DuelPowers>(npc).unwrap().probed = true;
-    app.update();
+    duel_tick(&mut app);
     let body = cast_body(&app, npc);
     assert_eq!(body.casting, SHOCK);
     assert_eq!(body.hook_asked & casting::hook_event::RELEASE, 0);
@@ -733,7 +745,7 @@ fn a_duellists_stop_asks_the_hook_once_its_power_answers_nothing() {
     *app.world_mut().get_mut::<GlobalTransform>(target).unwrap() =
         GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 6.0));
     app.world_mut().get_mut::<DuelPowers>(npc).unwrap().probed = true;
-    app.update();
+    duel_tick(&mut app);
     let powers = app.world().get::<DuelPowers>(npc).unwrap();
     assert!(!powers.running && !powers.probed);
     let body = cast_body(&app, npc);
@@ -778,7 +790,7 @@ fn a_duellists_blast_charges_throws_and_strikes() {
         ))
         .id();
     app.world_mut().get_mut::<DuelPowers>(npc).unwrap().chosen = Some(0x201);
-    app.update();
+    duel_tick(&mut app);
     let body = cast_body(&app, npc);
     assert_eq!(body.casting, 0x201);
     assert_eq!(body.cast_hook, Some(BLAST_HOOK));
@@ -852,7 +864,7 @@ fn a_duellists_barrier_rises_pushes_and_ends() {
         ))
         .id();
     app.world_mut().get_mut::<DuelPowers>(npc).unwrap().chosen = Some(BARRIER);
-    app.update();
+    duel_tick(&mut app);
     let body = cast_body(&app, npc);
     assert_eq!(body.casting, BARRIER);
     assert_eq!(body.cast_motion, Some(BARRIER_MOTION));
@@ -933,7 +945,7 @@ fn a_duellists_bubble_grows_pushes_and_breaks_when_cast_again() {
         ))
         .id();
     app.world_mut().get_mut::<DuelPowers>(npc).unwrap().chosen = Some(BUBBLE);
-    app.update();
+    duel_tick(&mut app);
     let body = cast_body(&app, npc);
     assert_eq!(body.casting, BUBBLE);
     assert_eq!(body.cast_motion, Some(BUBBLE_MOTION));
@@ -964,7 +976,7 @@ fn a_duellists_bubble_grows_pushes_and_breaks_when_cast_again() {
         start
     );
     app.world_mut().get_mut::<DuelPowers>(npc).unwrap().chosen = Some(BUBBLE);
-    app.update();
+    duel_tick(&mut app);
     tick(&mut app);
     tick(&mut app);
     assert_eq!(bubble(&mut app).unwrap().0, Phase::Shrinking);
@@ -1012,7 +1024,7 @@ fn a_duellists_wave_charges_throws_and_strikes() {
         ))
         .id();
     app.world_mut().get_mut::<DuelPowers>(npc).unwrap().chosen = Some(WAVE);
-    app.update();
+    duel_tick(&mut app);
     let body = cast_body(&app, npc);
     assert_eq!(body.casting, WAVE);
     assert_eq!(body.cast_motion, Some(WAVE_MOTION));
@@ -1081,7 +1093,7 @@ fn a_duellists_torrent_charges_pours_and_ends_on_the_release() {
         ))
         .id();
     app.world_mut().get_mut::<DuelPowers>(npc).unwrap().chosen = Some(TORRENT);
-    app.update();
+    duel_tick(&mut app);
     let body = cast_body(&app, npc);
     assert_eq!(body.casting, TORRENT);
     assert_eq!(body.cast_motion, Some(TORRENT_MOTION));

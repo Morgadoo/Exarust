@@ -187,7 +187,9 @@ pub(crate) fn plugin(app: &mut App) {
     app.add_systems(
         FixedUpdate,
         (
-            register_slides.before(BodySystems),
+            register_slides
+                .after(crate::body::TickBehaviour)
+                .before(BodySystems),
             step_slides.after(BodySystems),
         ),
     );

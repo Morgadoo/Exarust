@@ -10,7 +10,9 @@
 //!   every character before the ticks), a get-up's extra energy
 //!   (`balance`);
 //! - Behaviour: the player's input (`player` and `steering`, in
-//!   `FixedPreUpdate`) and the duellist (`exa_ai`, once a frame); the
+//!   `FixedPreUpdate`) and the AI (`exa_ai::BrainTick`: the brains, the
+//!   duellists' combat state and the walks, every body tick before the
+//!   character controllers); the
 //!   player's writes its locomotion request;
 //! - Posture: the condition (`exa_combat::condition`), the collapse's dying
 //!   tick (`exa_combat::collapse`), the falls, staggers and get-ups

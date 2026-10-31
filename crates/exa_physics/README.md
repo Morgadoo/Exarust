@@ -105,7 +105,10 @@ report what it holds. A level change uses it after despawning the old
 level's entities, with `CharacterHandles` removed from the surviving player
 so the fixed step registers its capsule again.
 
-Each fixed tick (83 Hz) moves the character controllers, then runs the
+Each fixed tick (83 Hz) first runs the behaviour (`body::TickBehaviour`:
+the AI's brains, `exa_ai::BrainTick`; the grips, the mechanisms'
+registration and the held weapons' sync are ordered after it), moves the
+character controllers (`CharacterControllers`), then runs the
 pre-step (`body::BodyPreStep`), the character ticks (`body::CharacterTicks`:
 each living character, player last, runs the nine stages of the
 `body::CharacterTick` schedule, `body::CharacterStage`, before the next one

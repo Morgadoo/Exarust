@@ -99,7 +99,7 @@ pub use timers::BodyTimers;
 
 pub use stages::{
     BodyPostStep, BodyPreStep, CharacterStage, CharacterTick, SolverStage, SolverStages,
-    TickedCharacter, run_character_ticks, solve_among, solve_with,
+    TickBehaviour, TickedCharacter, run_character_ticks, solve_among, solve_with,
 };
 pub use steps::step_length;
 #[path = "body_frame.rs"]

@@ -118,6 +118,8 @@
 //!          --debug-column x,z[/x,z…]  once loaded, log every mesh over each floor point: name, heights, shadow level, how it casts
 //!          --profiler                 frame profiler: main/render thread and GPU times, overlay shown (F10 toggles)
 //!          --perf-log <seconds>       frame profiler on, its report logged every so often
+//!          --schedule-ambiguities     log the fixed step's (and the brains' chain's) pairs of unordered systems that
+//!                                     touch the same data
 //! keys:    F9                         level and play views: the map panel (view switches, switch to another level)
 //!          --joint-trace <file.csv>   every joint of every simulated body after every 83 Hz tick (degrees, cm)
 //!          --pair-trace <file.csv>    every contact between two body parts found in each 83 Hz tick (cm)
@@ -383,6 +385,8 @@ pub struct Options {
     pub perf_log: Option<f32>,
     /// Turn the frame profiler on with its overlay shown (F10 toggles it).
     pub profiler: bool,
+    /// Log the fixed step's ambiguous system pairs when it is built.
+    pub schedule_ambiguities: bool,
     /// Write every joint after every tick here (CSV).
     pub joint_trace: Option<PathBuf>,
     /// Write every contact between body parts after every tick here (CSV).
@@ -849,6 +853,7 @@ fn main() -> AppExit {
             "--open-container" => options.open_container = args.next().and_then(|v| v.parse().ok()),
             "--perf-log" => options.perf_log = args.next().and_then(|v| v.parse().ok()),
             "--profiler" => options.profiler = true,
+            "--schedule-ambiguities" => options.schedule_ambiguities = true,
             "--debug-column" => {
                 options.debug_column = args
                     .next()
@@ -1294,6 +1299,7 @@ fn main() -> AppExit {
     };
 
     let fixed_frames = options.fixed_frames;
+    let schedule_ambiguities = options.schedule_ambiguities;
     let mut app = App::new();
     // The original holds a background window to 32 ms a frame (about 31 a
     // second) and runs the foreground one as fast as its pacing allows.
@@ -1534,6 +1540,19 @@ fn main() -> AppExit {
             );
     }
     app.add_systems(Startup, register_debug_commands);
+    if schedule_ambiguities {
+        // A debug aid: the fixed step's systems that touch the same data
+        // with no order between them, logged as the schedule is built.
+        use bevy::ecs::schedule::ScheduleLabel;
+        for label in [FixedUpdate.intern(), exa_ai::BrainChain.intern()] {
+            app.edit_schedule(label, |schedule| {
+                schedule.set_build_settings(bevy::ecs::schedule::ScheduleBuildSettings {
+                    ambiguity_detection: bevy::ecs::schedule::LogLevel::Warn,
+                    ..Default::default()
+                });
+            });
+        }
+    }
     if fixed_frames {
         // Whatever a frame took, it advances game time by 1/60 s: the frames'
         // clocks and the ticks they run repeat from run to run.

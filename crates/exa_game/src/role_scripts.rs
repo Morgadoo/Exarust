@@ -11,7 +11,7 @@
 //! [`exa_script::ScriptEffect`] messages.
 //!
 //! The encounter report is consumed here, so a contact reported once runs
-//! its scripts once even though the game updates every frame.  A character
+//! its scripts once even though the brains tick every body tick.  A character
 //! without a record id is skipped, as the original needs a character record
 //! for the actor slot.
 //!
@@ -29,7 +29,14 @@ pub struct RoleScriptsPlugin;
 
 impl Plugin for RoleScriptsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, run_encounter_scripts.after(exa_ai::brain::ai_tick));
+        // The encounters a target pass reports run in the brains' tick, every
+        // body tick, right after the AI tick that reported them.
+        app.add_systems(
+            exa_ai::BrainChain,
+            run_encounter_scripts
+                .after(exa_ai::brain::ai_tick)
+                .before(exa_ai::DuelSystems),
+        );
     }
 }
 

@@ -78,6 +78,8 @@ impl Plugin for PhysicsPlugin {
                 FixedUpdate,
                 (register_characters, move_characters, step_world)
                     .chain()
+                    .in_set(CharacterControllers)
+                    .after(body::TickBehaviour)
                     .before(body::BodyPreStep),
             )
             .add_systems(
@@ -89,6 +91,13 @@ impl Plugin for PhysicsPlugin {
         grip_solve::plugin(app);
     }
 }
+
+/// The character controllers' move at the start of each fixed step: the
+/// capsules are registered, swept by the velocities the AI and the last
+/// character ticks asked, and the rapier world steps. Before
+/// [`body::BodyPreStep`].
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CharacterControllers;
 
 /// Caps the game time a frame may advance at four fixed steps.
 fn limit_backlog(mut time: ResMut<Time<Virtual>>) {

@@ -7,7 +7,8 @@
 //! physical body of the human frame ([`crate::scene_bodies::physical_frame`]).
 //! A placed golem starts in Stand 2 ([`exa_ai::golem::start_motion`]).
 //!
-//! Each frame, a brain in the sentry idle state that is not fighting runs
+//! Each body tick, in the brains' chain (`exa_ai::BrainChain`), a brain in
+//! the sentry idle state that is not fighting runs
 //! the sentry tick ([`exa_ai::golem::sentry_rest`]):
 //!
 //! - a statue (its behaviour's statue byte set) playing the motion it asks
@@ -54,13 +55,15 @@ pub struct GolemBodyPlugin;
 
 impl Plugin for GolemBodyPlugin {
     fn build(&self, app: &mut App) {
+        // The sentry is an idle state of the AI tick: it runs in the
+        // brains' tick, every body tick, after the walks.
         app.add_systems(
-            Update,
-            (
-                stand_sentries.after(exa_ai::brain::idle_walk),
-                trace_guardians,
-            ),
-        );
+            exa_ai::BrainChain,
+            stand_sentries
+                .after(exa_ai::brain::idle_walk)
+                .after(crate::npc_search::follow_and_search),
+        )
+        .add_systems(Update, trace_guardians);
     }
 }
 

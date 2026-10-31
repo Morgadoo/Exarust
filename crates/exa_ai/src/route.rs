@@ -1,9 +1,10 @@
-//! One planner a frame, and the path it asks the navigation grid for.
+//! One planner a body tick, and the path it asks the navigation grid for.
 //!
 //! Only the brain whose turn it is plans; every other caller records how
 //! long it has waited, and the longest waiter is remembered for the next
 //! turn: a wait counts only when it is longer than the longest so far
-//! (unsigned, on the wrapping frame clock). The planner searches the
+//! (unsigned, on the wrapping tick clock: the brains' tick runs once per
+//! body tick, [`crate::BrainTick`]). The planner searches the
 //! navigation grid from the body's feet to its goal, and starts following
 //! when the path has at least two points and either the plan is forced or
 //! the path's ends are more than 150 cm apart horizontally (squared,
@@ -14,8 +15,8 @@
 //! owns the turn and the start test, so there is one pathfinder.
 //!
 //! Evidence: the original's plan turn and its route start, read from the
-//! instructions (the waiting count on the frame clock and its strict
-//! compare, the horizontal span in the start test).
+//! instructions (the waiting count on the step counter and its strict
+//! compare, the hand-over in the game loop's pre-tick hook list, the horizontal span in the start test).
 
 use bevy::math::Vec3;
 
@@ -47,14 +48,14 @@ pub struct Route {
     pub fraction: f32,
 }
 
-/// The turn: who may plan this frame, and who has waited longest.
+/// The turn: who may plan this tick, and who has waited longest.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PlanTurn {
-    /// The frame counter the waits are measured on.
+    /// The tick counter the waits are measured on.
     pub clock: u32,
     /// The brain whose turn it is.
     pub current: Option<u64>,
-    /// The longest waiter and how long it has waited (frames).
+    /// The longest waiter and how long it has waited (ticks).
     pub longest: Option<u64>,
     pub longest_wait: u32,
     /// When each brain last had its turn.
@@ -62,7 +63,7 @@ pub struct PlanTurn {
 }
 
 impl PlanTurn {
-    /// Whether `who` plans this frame; another brain's try records its
+    /// Whether `who` plans this tick; another brain's try records its
     /// wait.
     pub fn turn(&mut self, who: u64, clock: u32) -> bool {
         if self.current == Some(who) {
@@ -98,7 +99,7 @@ impl PlanTurn {
         }
     }
 
-    /// The last frame `who` planned.
+    /// The last tick `who` planned.
     pub fn last_plan(&self, who: u64) -> Option<u32> {
         self.last
             .iter()

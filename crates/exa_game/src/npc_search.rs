@@ -521,8 +521,8 @@ fn refresh_scene(
 }
 
 /// The follow state and the search, for every level brain whose roles
-/// choose the follow: the follow and the search once a body tick, the walk
-/// every frame.
+/// choose the follow: the follow, the search and the walk once a body
+/// tick, in the brains' chain (`exa_ai::BrainChain`).
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn follow_and_search(
     ticks: Option<Res<BodyTicks>>,
@@ -868,7 +868,7 @@ pub fn follow_and_search(
                 }
             }
         }
-        // The walk, every frame: steer along the followed route.
+        // The walk, every tick: steer along the followed route.
         let was_walking = state.walk.velocity != Vec3::ZERO;
         match exa_ai::walker::follow_walk(&mut state.walk, feet_cm, now) {
             Some(carrot) => {
@@ -911,13 +911,12 @@ impl Plugin for NpcSearchPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SearchItems>()
             .init_resource::<SearchWorld>()
+            .add_systems(Update, (load_search_items, make_debug_searcher))
+            // The follow and the search are idle states of the AI tick: they
+            // run in the brains' tick, every body tick, after the walks.
             .add_systems(
-                Update,
-                (
-                    load_search_items,
-                    make_debug_searcher.before(exa_ai::brain::apply_new_roles),
-                    follow_and_search.after(exa_ai::brain::idle_walk),
-                ),
+                exa_ai::BrainChain,
+                follow_and_search.after(exa_ai::brain::idle_walk),
             );
     }
 }

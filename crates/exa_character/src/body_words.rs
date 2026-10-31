@@ -160,6 +160,7 @@ impl Plugin for BodyWordsPlugin {
                 drop_collapsed_hands,
             )
                 .chain()
+                .after(exa_physics::body::TickBehaviour)
                 .before(exa_physics::grip_solve::GripSolveSet::Sync),
         );
     }

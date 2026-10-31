@@ -4,6 +4,24 @@ NPC behaviour: perception, path finding on the level grid, combat AI that drives
 
 **Phase:** Phase 6 (see [`docs/PLAN.md`](../../docs/PLAN.md)). Status: partial.
 
+**Schedule.** The AI runs in the fixed step, once per body tick, in the
+`BrainTick` set (one exclusive system running the `BrainChain` schedule
+on a single thread; its systems run one after the other anyway): after
+the presence check and the daze's stance, inside
+`exa_physics::body::TickBehaviour`, before the posture, the character
+controllers move (`exa_physics::CharacterControllers`), the body pre-step
+and the character ticks, as the original calls its AI from every body
+tick (its behaviour stage, after the pre-tick hooks rotated the turns). In
+it: the roles and the player's rating, the target pass's turn
+(`pass_turn::rotate_pass_turn`, on the step counter), the perception, the
+AI tick, the duellists' combat state (`DuelSystems`), the flight, the
+entering turn and the idle walk, and the game's AI-tick parts (the follow
+and search, the sentry, the encounter scripts, the duellists' powers).
+Only the removal forget is a frame system. The brains run over every brain
+ahead of the character ticks, not inside each body's tick, and read the
+frame's propagated transforms (they do not move between one frame's
+ticks).
+
 It already drives the play mode duellist with the original's combat
 state (`combat`), once per body tick: it enters combat in its guard with
 its eagerness at a half, and each tick weighs up to seventeen places
@@ -26,7 +44,7 @@ its brain's personality, else Exarust's default (skill 0, blend 1).
 A level's living characters carry a brain (`brain`): their record's roles,
 their relations and traits. When they appear their roles choose their idle
 activity, and they choose it again whenever the held roles change; every
-frame they rate the player from both sides' roles, which feeds the contact
+body tick they rate the player from both sides' roles, which feeds the contact
 rating (`sense`), and the brain's target pass decides whether the character
 engages the player. A character wearing a mind ward carries
 `brain::MindWarded`, the original's mind-masked bit: perception, the
@@ -43,7 +61,7 @@ score must reach 1, with a look window of `clamp(1 − 0.1·score, 0.25,
 model with the eased look (the original lets the body's locomotion turn the
 body; the running game ticks no locomotion request for an NPC, so the model
 is turned directly). A roaming or patrolling brain walks its legs
-(`brain::idle_walk`): on its turn of the one-planner-a-frame turn it picks
+(`brain::idle_walk`): on its turn of the one-planner-a-tick turn it picks
 a wander goal a quarter of the way from a drawn door's near cell to the
 cell behind it, routes it through the navigation grid (followed past
 150 cm end to end), walks it with the walk clip through the NPC driver,
@@ -53,8 +71,8 @@ mid-leg faces its route's goal. The original's reset when the level is
 written out on leaving it (the body heals to its lasting health, forgets
 every contact, and a roaming AI is put down along fresh wander paths and
 leaves combat) is `presence::reenter`; Exarust writes no level on leaving,
-so nothing calls it yet. Once a body tick (not once a frame, as the
-original runs it from the body tick) the brain's perception pass clears its
+so nothing calls it yet. Once a body tick (as the original runs it from
+the body tick) the brain's perception pass clears its
 contacts' concern targets, closeness and view (as the original's target
 pass does before it perceives), looks at every character within the largest
 perception reach that the level's sight callback lets it see (in a grid
@@ -137,8 +155,8 @@ look's wide pan waits 3 s and the sway and narrow pan 0.5 s.
 | `flee` | the flee start's morale, the way out of a room away from a threat, the fled-room memory, the flee state's tick and the cornered fall-back |
 | `cast` | the power-cast chooser (ten slots, per-slot cooldowns, the power system's word, the pool budget after a round to even, the flat 20 and the cumulative draw, the 6 s rest written to the slot of the chosen power's table place) |
 | `chase` | the chase route: the bark, the fresh-target and moved-foe (3-D) tests, the goal on the foe's ground and the route through the navigation grid, the reach test from the estimate to the route's end, the unreachable mark and its 3 s plus draw, and the leave-without-timers case |
-| `pass_turn` | the target pass's turn: one brain a tick, the longest waiter of the last tick (strictly longer, on a wrapping tick counter), its rotation before the perception, the claim of each present brain and the forget of a removed one |
-| `route` | the one-planner-a-frame turn (the longest waiter remembered, strictly), the route start (two points and 150 cm, or forced), the path's flat length, and the navigation grid as the router (`exa_world::nav::find_path`, not a second pathfinder) |
+| `pass_turn` | the target pass's turn: one brain a tick, the longest waiter of the last tick (strictly longer, on the wrapping step counter: the body ticks run so far plus this one), its rotation before the perception, the claim of each present brain and the forget of a removed one |
+| `route` | the one-planner-a-tick turn (the longest waiter remembered, strictly), the route start (two points and 150 cm, or forced), the path's flat length, and the navigation grid as the router (`exa_world::nav::find_path`, not a second pathfinder) |
 | `sense`, `hear`, `fight`, `place`, `path`, `order` | contact rating, noise and alert, attack choice, combat positions, path following (the planner is `exa_world::nav::path`), steering orders |
 | `ground` | the pathfinder's answers the combat state asks in centimetres: a place's ground cost (the cost sample through the combatant's formula), the line walk's clamp and the obstacle test, each the abstract pathfinder's without a grid |
 | `golem` | the golem guardians: wake (the race word's statue bit and the statue byte cleared, `golem_act`, the glow material at full, the limbs' mass restored) and sleep (the statue bit, a twentieth of the mass, a fiftieth of each part's value), the zone check (the 3 cm step, the radius and box tests, the pass search through carried containers), the alarm trigger's arming, reset and wake callback (the contacts become the player at concern 10), the homeward callback (an awake guardian not dying), the alarm return (`alarm_return`), the `Alarm_` box that holds the armed point, the strict plane-distance radius query over the AI-bit characters of a room and the rooms behind its exits, the player's post 200 cm past the box at 10 cm up, and the pose reset |
@@ -191,7 +209,7 @@ lead. Without a grid every answer is the abstract
 pathfinder's (cost 1, no clamp, in sight). The per-place scorer's notice and band
 terms are overwritten by its close formula, so they are not kept. A stuck
 fighter runs its chase route through the navigation grid when there is
-one (`chase`, `route`; the duellists share one plan turn a frame); only
+one (`chase`, `route`; the duellists share one plan turn a tick); only
 while it follows the route does the combat tick end there. The step gate
 (`combat::can_act`) also stays shut while the body's trailing-foot request
 is pending (`Locomotor::plant_request`, up to 500 ms after a clip
@@ -236,7 +254,7 @@ door links' cells as exit points), as the original's way-out query does,
 and `brain::flee_walk` runs a fleeing brain to that exit at the jog speed,
 putting the idle clip back when the flight ends. On a level with a
 navigation grid the way out is picked and routed on the brain's planning
-turn (`route::plan`, one planner a frame), again while no route is followed
+turn (`route::plan`, one planner a tick), again while no route is followed
 or within 150 cm of the goal; a route whose ends lie more than 150 cm apart
 is followed toward its carrot, and one ending in the brain's room within
 15 m of the threat remembers the exit's room. Without a followed route the
