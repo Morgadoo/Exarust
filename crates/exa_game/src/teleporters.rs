@@ -494,7 +494,7 @@ fn release_from_slots(
     let Some(items) = items.as_mut() else {
         return;
     };
-    let points: Vec<Vec3> = items.released_cm.drain(..).collect();
+    let points = std::mem::take(&mut items.released_cm);
     if points.is_empty() {
         return;
     }
