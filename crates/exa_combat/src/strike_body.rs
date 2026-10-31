@@ -7,10 +7,10 @@
 //! [`crate::swing`]; the held weapon's own handling forces are in
 //! [`crate::weapon`]. The nudges here return the push (cm) at the striker's
 //! point; the caller applies it with its weights. The fist nudge is applied while an unarmed window is open. The
-//! overhead's pull is applied on an armed overhead whose window is open.
-//! The edge alignment needs the blade's attach-time edge points, which are
-//! not kept, and the side swing's homing needs the engagement target's
-//! chest; neither is applied. The tangle break is wired ([`break_tangles`], each living
+//! overhead's pull is applied on an armed overhead whose window is open,
+//! the edge turns on the points 20 cm either side of the weapon's origin,
+//! and a side swing homes on [`StrikeChest`] when the engagement target's
+//! chest is known. The tangle break is wired ([`break_tangles`], each living
 //! body tick's readiness stage). Rules and constants: reverse engineering
 //! of the swing routine and the body tick.
 
@@ -150,6 +150,14 @@ pub fn edge_push(progress: f32, edge: &Edge) -> Option<(Vec3, Vec3)> {
     }
     let push = out * share;
     Some((push, -push))
+}
+
+/// The engagement target's chest height, written by the game before the
+/// swing. Absent, a side swing does not home.
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct StrikeChest {
+    /// Centimetres.
+    pub y_cm: f32,
 }
 
 /// Whether an armed overhead pulls its tip this tick: the strike window is

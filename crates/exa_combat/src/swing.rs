@@ -774,10 +774,11 @@ pub fn run_swings(
     ticked: Res<TickedCharacter>,
     ticks: Res<BodyTicks>,
     motions: Option<Res<Motions>>,
-    (blades, blade_frames, mut item_bodies): (
+    (blades, blade_frames, mut item_bodies, grips): (
         Query<&Blade>,
         Query<(Entity, &Blade, &GlobalTransform)>,
         Query<&mut Ragdoll, (With<Blade>, Without<Fighter>)>,
+        Query<&exa_physics::grip::HeldGrip>,
     ),
     mut fighters: Query<(
         &mut Animator,
@@ -792,6 +793,7 @@ pub fn run_swings(
         Option<&Stance>,
         &mut SwingVoice,
         Option<&StabAim>,
+        Option<&crate::strike_body::StrikeChest>,
     )>,
     mut cues: MessageWriter<SwingVoiceCue>,
 ) {
@@ -810,6 +812,7 @@ pub fn run_swings(
         stance,
         mut voice,
         stab_aim,
+        strike_chest,
     )) = fighters.get_mut(entity)
     else {
         return;
@@ -1012,32 +1015,187 @@ pub fn run_swings(
             aim_cm,
         );
     }
-    // An armed overhead, window open and clock past one half, pulls the
-    // primary weapon's tip toward the vertical plane through the chest
-    // along the heading. The edge alignment and the side swing's homing
-    // are not applied here.
-    if crate::strike_body::overhead_due(
-        progress,
-        attacking.weapon_class,
-        attacker
-            .primary
-            .is_some_and(|slot| state.open[slot.index()]),
-    ) && motion == AttackMotion::Overhead
+    // An armed primary weapon, window open and clock past one half: the
+    // edge turns across the blade, an overhead also pulls toward the
+    // chest's plane, and a side swing homes on the engagement target's
+    // chest when one is known.
+    if motion != AttackMotion::Stab
+        && crate::strike_body::overhead_due(
+            progress,
+            attacking.weapon_class,
+            attacker
+                .primary
+                .is_some_and(|slot| state.open[slot.index()]),
+        )
         && let Some(slot) = attacker.primary
         && let Some((item, blade, item_gt)) = blade_frames
             .iter()
             .find(|(_, b, _)| b.wielder == entity && b.slot == slot && b.record.armed())
         && let Some(body) = body.as_deref_mut()
     {
-        pull_overhead(
+        let class = u32::from(attacking.weapon_class);
+        let flipped = grips
+            .get(item)
+            .ok()
+            .and_then(|grip| grip.links.as_ref())
+            .is_some_and(|links| links.flipped);
+        align_edge(
             body,
             &mut item_bodies,
             item,
             blade,
             item_gt,
+            &state.tracker[slot.index()],
             progress,
-            u32::from(attacking.weapon_class),
+            class,
+            flipped,
         );
+        if motion == AttackMotion::Overhead {
+            pull_overhead(
+                body,
+                &mut item_bodies,
+                item,
+                blade,
+                item_gt,
+                progress,
+                class,
+            );
+        } else if let Some(chest) = strike_chest {
+            home_tip(
+                body,
+                &mut item_bodies,
+                item,
+                blade,
+                item_gt,
+                progress,
+                class,
+                chest.y_cm,
+            );
+        }
+    }
+}
+
+/// The edge points sit 20 cm either side of the weapon's origin, on its
+/// local X, which is where the attach writes them.
+const EDGE_CM: f32 = 20.0;
+
+/// Turns the edge into the swing: the tracker's velocity across the blade,
+/// pushed opposite ways at the two edge points.
+#[allow(clippy::too_many_arguments)]
+fn align_edge(
+    body: &mut Ragdoll,
+    item_bodies: &mut Query<&mut Ragdoll, (With<Blade>, Without<Fighter>)>,
+    item: Entity,
+    blade: &Blade,
+    at: &GlobalTransform,
+    tracker: &Tracker,
+    progress: f32,
+    class: u32,
+    flipped: bool,
+) {
+    let across = at.rotation() * Vec3::X;
+    let axis = at.rotation() * Vec3::Y;
+    if across.length_squared() == 0.0 || axis.length_squared() == 0.0 {
+        return;
+    }
+    let origin = at.translation() * CM;
+    let across = across.normalize();
+    let point = origin - across * EDGE_CM;
+    let other = origin + across * EDGE_CM;
+    let Some((at_point, at_other)) = crate::strike_body::edge_push(
+        progress,
+        &crate::strike_body::Edge {
+            velocity: tracker.velocity,
+            axis: axis.normalize(),
+            point,
+            guide: origin,
+            flipped,
+            greatsword: blade.record.flags & 0xFFFF
+                == exa_formats::weapon_record::flags::GREATSWORD,
+        },
+    ) else {
+        return;
+    };
+    push_weapon(
+        body,
+        item_bodies,
+        item,
+        blade.slot,
+        class,
+        point / CM,
+        at_point,
+    );
+    push_weapon(
+        body,
+        item_bodies,
+        item,
+        blade.slot,
+        class,
+        other / CM,
+        at_other,
+    );
+}
+
+/// Homes a side swing's tip on the engagement target's chest height.
+#[allow(clippy::too_many_arguments)]
+fn home_tip(
+    body: &mut Ragdoll,
+    item_bodies: &mut Query<&mut Ragdoll, (With<Blade>, Without<Fighter>)>,
+    item: Entity,
+    blade: &Blade,
+    at: &GlobalTransform,
+    progress: f32,
+    class: u32,
+    target_y_cm: f32,
+) {
+    let crouch = body.drive.as_ref().map_or(0.0, |d| d.bearing.crouch);
+    let tip = at.transform_point(Vec3::Y * blade.length);
+    let before = blade.tip_last.unwrap_or(tip);
+    let Some(gap) = crate::strike_body::vertical_homing(
+        progress,
+        tip.y * CM,
+        before.y * CM,
+        target_y_cm,
+        crouch,
+        blade.record.flags & 0xFFFF == exa_formats::weapon_record::flags::GREATSWORD,
+    ) else {
+        return;
+    };
+    push_weapon(
+        body,
+        item_bodies,
+        item,
+        blade.slot,
+        class,
+        tip,
+        Vec3::Y * gap,
+    );
+}
+
+/// Applies a push in centimetres at a world point in metres: on the item's
+/// own body, or through the gripping hand when the model has none.
+fn push_weapon(
+    body: &mut Ragdoll,
+    item_bodies: &mut Query<&mut Ragdoll, (With<Blade>, Without<Fighter>)>,
+    item: Entity,
+    slot: Slot,
+    class: u32,
+    at_m: Vec3,
+    push_cm: Vec3,
+) {
+    match item_bodies.get_mut(item) {
+        Ok(mut own) => own.push_at(0, at_m, push_cm / CM),
+        Err(_) => {
+            let grip_bone = match crate::grip::grip(class & 0xFFFF, slot).map(|g| g.hand) {
+                Some(crate::grip::GripHand::Left) => LEFT_HAND_BONE,
+                _ => RIGHT_HAND_BONE,
+            };
+            if let Some(i) = body.parts.iter().position(|p| p.bone == grip_bone)
+                && let Some(hand) = body.part_centre(i)
+            {
+                body.push_at(i, hand, push_cm / CM);
+            }
+        }
     }
 }
 

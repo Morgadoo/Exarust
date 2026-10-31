@@ -183,6 +183,11 @@ impl PlayerBody {
         self.crouch
     }
 
+    /// The opponent the auto-target is holding, if it has one.
+    pub(crate) fn foe(&self) -> Option<Entity> {
+        self.target
+    }
+
     /// A body crouching by `crouch`.
     #[cfg(test)]
     pub(crate) fn crouching(mut self, crouch: f32) -> Self {

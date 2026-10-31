@@ -83,6 +83,9 @@ impl Plugin for CharacterTickPlugin {
                     )
                         .chain()
                         .in_set(Movement),
+                    note_strike_chests
+                        .in_set(Attack)
+                        .before(exa_combat::swing::run_swings),
                     push_striking_fists
                         .in_set(Attack)
                         .after(exa_combat::swing::run_swings),
@@ -91,6 +94,47 @@ impl Plugin for CharacterTickPlugin {
                     carry::aim_body.in_set(Carry),
                 ),
             );
+    }
+}
+
+/// The ticked body's engagement target, as the swing's homing reads it:
+/// the player's auto-target, otherwise the brain's combat target. The
+/// chest height is the target body's, in centimetres. No target removes
+/// the mark, and a side swing then does not home.
+fn note_strike_chests(
+    ticked: Res<exa_physics::body::TickedCharacter>,
+    players: Query<&crate::player::PlayerBody>,
+    npcs: Query<&exa_ai::brain::Npc>,
+    bodies: Query<&Ragdoll>,
+    mut commands: Commands,
+) {
+    let foe = players
+        .get(ticked.body)
+        .ok()
+        .and_then(|player| player.foe())
+        .or_else(|| {
+            let brain = ticked.character.unwrap_or(ticked.body);
+            npcs.get(brain)
+                .ok()
+                .and_then(|npc| npc.pass.target)
+                .and_then(Entity::try_from_bits)
+        });
+    let chest = foe
+        .and_then(|foe| bodies.get(foe).ok())
+        .and_then(|body| body.chest_point());
+    match chest {
+        Some(chest) => {
+            commands
+                .entity(ticked.body)
+                .insert(exa_combat::strike_body::StrikeChest {
+                    y_cm: chest.y * 100.0,
+                });
+        }
+        None => {
+            commands
+                .entity(ticked.body)
+                .remove::<exa_combat::strike_body::StrikeChest>();
+        }
     }
 }
 
