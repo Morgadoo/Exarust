@@ -32,7 +32,10 @@ pub struct ScriptCastPlugin;
 
 impl Plugin for ScriptCastPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (mirror_player, mirror_cast).chain());
+        app.add_message::<exa_script::ScriptEffect>().add_systems(
+            Update,
+            (mirror_player, grant_witness_roles, mirror_cast).chain(),
+        );
     }
 }
 
@@ -57,6 +60,47 @@ fn mirror_player(
     let player = players.iter().next().map(|id| id.0);
     if conversations.player != player {
         conversations.player = player;
+    }
+}
+
+/// A script's `WitnessRole` grants that role to every character within
+/// 18 m of the player that the level's sight test can see. With no level
+/// grid the sight test answers yes. The role is added with the parents it
+/// inherits; the cast mirror copies the list on afterwards.
+fn grant_witness_roles(
+    mut effects: MessageReader<exa_script::ScriptEffect>,
+    level: Option<Res<exa_world::room_view::LevelRooms>>,
+    scripts: Option<Res<exa_script::Scripts>>,
+    players: Query<&GlobalTransform, With<PlayerBody>>,
+    mut characters: Query<(&GlobalTransform, &mut Roles)>,
+) {
+    let asked: Vec<u32> = effects
+        .read()
+        .filter_map(|effect| match effect.0 {
+            exa_script::dialogue::Effect::WitnessRole(role) => Some(role),
+            _ => None,
+        })
+        .collect();
+    if asked.is_empty() {
+        return;
+    }
+    let (Some(scripts), Some(player)) = (scripts.as_deref(), players.iter().next()) else {
+        return;
+    };
+    let origin = player.translation() * 100.0;
+    let level = level.as_deref();
+    for (transform, mut held) in &mut characters {
+        let at = transform.translation() * 100.0;
+        let delta = at - origin;
+        if !exa_script::builtins::witness_range(delta.x, delta.y, delta.z) {
+            continue;
+        }
+        if !exa_ai::rooms::in_sight(level, origin, at) {
+            continue;
+        }
+        for &role in &asked {
+            held.add(&scripts.roles, role);
+        }
     }
 }
 
@@ -216,5 +260,74 @@ mod tests {
         app.update();
         let conversations = app.world().resource::<Conversations>();
         assert_eq!(conversations.cast.get(3).unwrap().health, (0.2, 0.25));
+    }
+
+    fn body(at: Vec3) -> (GlobalTransform, Roles) {
+        (GlobalTransform::from_translation(at), Roles::default())
+    }
+
+    /// `WitnessRole` grants the role inside 18 m. With no level grid every
+    /// character in range is seen; a grid sees the same room or an open
+    /// door, and not a character merely in range beyond it.
+    #[test]
+    fn a_witnessed_role_reaches_who_can_see_the_player() {
+        let mut app = App::new();
+        app.add_message::<exa_script::ScriptEffect>()
+            .insert_resource(exa_script::Scripts::default())
+            .add_systems(Update, grant_witness_roles);
+        app.world_mut()
+            .spawn((PlayerBody::new(0.0), body(Vec3::ZERO)));
+        let near = app.world_mut().spawn(body(Vec3::new(10.0, 0.0, 0.0))).id();
+        let far = app.world_mut().spawn(body(Vec3::new(20.0, 0.0, 0.0))).id();
+        app.world_mut().write_message(exa_script::ScriptEffect(
+            exa_script::dialogue::Effect::WitnessRole(31),
+        ));
+        app.update();
+        assert!(app.world().get::<Roles>(near).unwrap().has(31));
+        assert!(!app.world().get::<Roles>(far).unwrap().has(31));
+
+        use exa_formats::level::LevelGrid;
+        use exa_world::room_view::LevelRooms;
+        use exa_world::rooms::{CELL_OPEN, Rooms};
+        let mut grid = LevelGrid {
+            wall_sets: vec!["GEWS_UWA01".into()],
+            floor_sets: vec!["GEFS_UWA01".into()],
+            width: 6,
+            height: 3,
+            edges: vec![0; 18],
+            plane_b: vec![0; 18],
+            plane_c: vec![0; 18],
+        };
+        let open = |edges: &mut Vec<u32>, x: u32, y: u32, sides: [u32; 4]| {
+            edges[(y * 6 + x) as usize] =
+                CELL_OPEN | sides[0] | sides[1] << 4 | sides[2] << 8 | sides[3] << 12;
+        };
+        open(&mut grid.edges, 1, 1, [7, 7, 7, 0]);
+        open(&mut grid.edges, 2, 1, [7, 0, 7, 0xB]);
+        open(&mut grid.edges, 3, 1, [7, 0xB, 7, 0]);
+        open(&mut grid.edges, 4, 1, [7, 0, 7, 7]);
+        let mut walled = App::new();
+        walled
+            .add_message::<exa_script::ScriptEffect>()
+            .insert_resource(exa_script::Scripts::default())
+            .insert_resource(LevelRooms::new(std::sync::Arc::new(Rooms::flood(&grid))))
+            .add_systems(Update, grant_witness_roles);
+        walled
+            .world_mut()
+            .spawn((PlayerBody::new(0.0), body(Vec3::new(-9.0, 0.0, 3.0))));
+        let seen = walled
+            .world_mut()
+            .spawn(body(Vec3::new(3.0, 0.0, 3.0)))
+            .id();
+        let hidden = walled
+            .world_mut()
+            .spawn(body(Vec3::new(9.0, 0.0, 3.0)))
+            .id();
+        walled.world_mut().write_message(exa_script::ScriptEffect(
+            exa_script::dialogue::Effect::WitnessRole(31),
+        ));
+        walled.update();
+        assert!(walled.world().get::<Roles>(seen).unwrap().has(31));
+        assert!(!walled.world().get::<Roles>(hidden).unwrap().has(31));
     }
 }

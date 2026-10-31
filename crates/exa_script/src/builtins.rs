@@ -372,7 +372,10 @@ pub const WITNESS_RADIUS_CM: f32 = 1800.0;
 /// Whether a character at `(dx, dy, dz)` from the actor is close enough for
 /// `WitnessRole`; line of sight is still the caller's to test.
 pub fn witness_range(dx: f32, dy: f32, dz: f32) -> bool {
-    dx * dx + dy * dy + dz * dz <= 3.24e6
+    let d2 = (dx * dx + dy * dy) + dz * dz;
+    // Greater than 18 m fails. An unordered distance passes, as the
+    // original's compare does.
+    !matches!(d2.partial_cmp(&3.24e6), Some(std::cmp::Ordering::Greater))
 }
 
 /// The characters a `WitnessRole` grant reaches: those within

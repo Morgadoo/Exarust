@@ -553,6 +553,7 @@ fn witness_role_reaches_eighteen_metres() {
     assert!(!witness_range(1801.0, 0.0, 0.0));
     assert!(!witness_range(1500.0, 0.0, 1500.0));
     assert!(witness_range(1000.0, 1000.0, 1000.0));
+    assert!(witness_range(f32::NAN, 0.0, 0.0));
     let near = builtins::witnesses(
         [0.0; 3],
         [(1, [100.0, 0.0, 0.0]), (2, [2000.0, 0.0, 0.0])],
