@@ -2335,6 +2335,7 @@ fn end_lift(
     let Ok((_, mut ragdoll, ..)) = bodies.get_mut(held.body) else {
         return;
     };
+    items.released_cm.push(held.shown.position * 100.0);
     ragdoll.release_grab();
     match outcome {
         Release::Drop | Release::LastFit | Release::OnMarker => ragdoll.wake(),

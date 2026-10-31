@@ -28,9 +28,8 @@
 //!
 //! All times are the effects' game clock ([`EffectClock`]). The scan and
 //! the glow are the device unit's own effects; the destination screen and
-//! its journey are [`crate::destination`]; the grab code that sends
-//! [`SlotReleased`], the level change and the corpse record a strip leaves
-//! behind belong to other modules that are not in yet.
+//! its journey are [`crate::destination`]; a let-go within 5 cm² of a device's `[` slot sends [`SlotReleased`].
+//! The level change and the corpse record a strip leaves behind are not in yet.
 
 use bevy::prelude::*;
 use exa_character::{Outfit, WearsUnderwear, Wielded};
@@ -172,7 +171,13 @@ impl Plugin for TeleportPlugin {
             .add_message::<SessionEnded>()
             .add_systems(
                 FixedUpdate,
-                (use_devices, glow_devices, power_down_devices, end_sessions)
+                (
+                    release_from_slots,
+                    use_devices,
+                    glow_devices,
+                    power_down_devices,
+                    end_sessions,
+                )
                     .chain()
                     .after(crate::effects::advance_clock),
             )
@@ -478,6 +483,38 @@ pub fn glowing(base: Vec3, strength: f32) -> Vec3 {
 
 /// A crystal taken off a reconstruction device: `devicepwra01` at the
 /// device and the latch cleared. Other devices ignore it.
+fn release_from_slots(
+    mut items: Option<ResMut<crate::item_cursor::ItemCursor>>,
+    devices: Query<Entity, With<TeleportDevice>>,
+    children: Query<&Children>,
+    names: Query<&Name>,
+    transforms: Query<&GlobalTransform>,
+    mut released: MessageWriter<SlotReleased>,
+) {
+    let Some(items) = items.as_mut() else {
+        return;
+    };
+    let points: Vec<Vec3> = items.released_cm.drain(..).collect();
+    if points.is_empty() {
+        return;
+    }
+    for device in &devices {
+        let Some(slot) = find_slot_entity(device, &children, &names) else {
+            continue;
+        };
+        let Ok(at) = transforms.get(slot) else {
+            continue;
+        };
+        let slot_cm = at.translation() * 100.0;
+        if points
+            .iter()
+            .any(|point| teleporters::released_from_slot(slot_cm, *point))
+        {
+            released.write(SlotReleased { device });
+        }
+    }
+}
+
 fn power_down_devices(
     mut released: MessageReader<SlotReleased>,
     devices: Query<(&TeleportDevice, &GlobalTransform)>,
@@ -613,6 +650,47 @@ mod tests {
         );
         assert_eq!(glowing(Vec3::ONE, 0.0), Vec3::ZERO);
         assert_eq!(glowing(Vec3::ONE, -0.5), Vec3::ZERO);
+    }
+
+    #[test]
+    fn a_let_go_on_the_slot_powers_the_device_down() {
+        let mut app = App::new();
+        app.init_resource::<crate::item_cursor::ItemCursor>()
+            .init_resource::<Latch>()
+            .init_resource::<crate::flow::Flow>()
+            .add_message::<SlotReleased>()
+            .add_message::<DeviceSound>()
+            .add_systems(Update, (release_from_slots, power_down_devices).chain());
+        let slot = app
+            .world_mut()
+            .spawn((
+                Name::new("[slot"),
+                Transform::from_xyz(1.0, 0.0, 0.0),
+                GlobalTransform::from(Transform::from_xyz(1.0, 0.0, 0.0)),
+            ))
+            .id();
+        let device = app
+            .world_mut()
+            .spawn((
+                TeleportDevice {
+                    kind: operative::RES_DEVICE,
+                    operative: operative(operative::RES_DEVICE),
+                },
+                Transform::default(),
+                GlobalTransform::default(),
+            ))
+            .id();
+        app.world_mut().entity_mut(slot).insert(ChildOf(device));
+        app.world_mut().resource_mut::<Latch>().begin(1);
+        app.world_mut()
+            .resource_mut::<crate::item_cursor::ItemCursor>()
+            .released_cm
+            .push(Vec3::new(100.0, 0.0, 0.0));
+        app.update();
+        assert_eq!(
+            app.world().resource::<Latch>().phase,
+            exa_world::teleporters::LatchPhase::Idle
+        );
     }
 
     fn operative(kind: u8) -> Operative {

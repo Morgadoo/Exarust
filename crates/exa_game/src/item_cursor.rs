@@ -828,6 +828,9 @@ pub struct ItemCursor {
     /// grid's refresh at the frame their lift took them from (the original
     /// rings the held node's box there when it lets the item go).
     pub let_go: Vec<exa_world::nav::NavMoved>,
+    /// Where an item was let go, in centimetres. The device pass reads it
+    /// and powers down a reconstruction device whose slot the point left.
+    pub released_cm: Vec<Vec3>,
 }
 
 impl ItemCursor {
