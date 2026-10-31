@@ -693,6 +693,22 @@ struct HubShop<'w> {
     names: ResMut<'w, crate::hub_windows::HubItemNames>,
 }
 
+/// The shop line for an item's catalogue value. A copy uses its source
+/// record. No value is a zero line, and the row stays on the shelf.
+fn shop_line_price(
+    catalogue: &exa_items::catalogue::ItemCatalogue,
+    live: &crate::shop_stock::LiveShopStock,
+    id: u32,
+) -> u16 {
+    let facts = catalogue.card_facts(id).or_else(|| {
+        live.parent_of_instance(id)
+            .and_then(|base| catalogue.card_facts(base))
+    });
+    facts
+        .map(|facts| exa_formats::containers::price_of(facts.coins))
+        .unwrap_or(0)
+}
+
 impl HubShop<'_> {
     /// Build the first stock when the shelf is empty, as the hub click does,
     /// and open the trade window on it.
@@ -738,6 +754,10 @@ impl HubShop<'_> {
             self.live.fill_names(catalogue, &mut self.names);
         }
         windows.open_shop(merchant, career, &self.names);
+        if let Some(catalogue) = self.catalogue.as_deref() {
+            let live = &self.live;
+            windows.price_shop_rows(|id| shop_line_price(catalogue, live, id));
+        }
     }
 
     /// The night's restock: the shop's shelf and, with a merchant employed,
