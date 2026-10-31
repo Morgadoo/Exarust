@@ -1682,10 +1682,11 @@ impl Door {
             }
         }
 
-        // The heading is already the stop's angle in the door frame. The
-        // swing sign is applied when the drive places the stop, not here:
-        // multiplying again folds an opened leaf back onto the shut angle.
-        self.angle = tick.heading;
+        // The stop's heading is in the hinge frame. The swing sign maps it
+        // onto the angle the shut test and the passage use. Dropping the
+        // sign makes a negative-swing leaf read under its shut angle and
+        // leave the shut state at rest.
+        self.angle = tick.heading * self.shape.sign;
 
         // The passage follows the heading just stored, shut or open. The
         // room route reads it: a hinge more than 0.4 rad past closed is
