@@ -1830,10 +1830,10 @@ piece's coverage of that bone is not consulted (the coverage test comes
 after and only gates the layer fold). The record's physique then moves the
 result by (physique − 0.5) × 8, all in single precision. Of the 380 shipped
 pieces 95 carry the mark; ten of those cover no part of the eleventh bone
-and one of them still counts with a display of 2. The part-box update
-reads the result (half of it on the box's third coordinate, a tenth on the
-second, in double):
-`exa_formats::encumbrance::head_extra`.
+and one of them still counts with a display of 2. The armour pass then moves a two-hander's or polearm's arm grip by the
+result (half of it on the point's third coordinate, in single precision, and
+a tenth on the second, in double):
+`exa_formats::encumbrance::head_extra`, applied by `exa_physics::grip::raise_arm`.
 
 ## Encumbrance
 

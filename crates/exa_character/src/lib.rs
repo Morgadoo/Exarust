@@ -1969,6 +1969,7 @@ fn equip_outfits(
                             ],
                             links: None,
                             released: false,
+                            head_extra: 0.0,
                         },
                         // What the equip refresh measures from this item,
                         // for the character's refresh.

@@ -174,6 +174,7 @@ fn a_dropped_item_clears_its_strike_flags() {
             (1.0, 0.0),
         ))),
         released: false,
+        head_extra: 0.0,
     };
     let mut app = App::new();
     app.add_systems(Update, crate::grip_solve::release_freed_grips);
@@ -222,6 +223,7 @@ fn a_held_torch_takes_the_held_and_mark_bits() {
             (1.0, 0.0),
         ))),
         released: false,
+        head_extra: 0.0,
     };
     for (kind, word) in [
         (HeldKind::Torch, PartState::HELD | PartState::STRIKE_MARK),
@@ -369,6 +371,7 @@ fn a_held_items_links_are_built_from_its_bodies() {
         arms: [Some(hand), None],
         links: None,
         released: false,
+        head_extra: 0.0,
     };
     let mut app = App::new();
     app.add_systems(Update, crate::grip_solve::build_grips);
@@ -521,6 +524,7 @@ fn a_grip_links_smoothed_length_carries_over_ticks() {
         arms: [None, None],
         links: Some(links(link.clone())),
         released: false,
+        head_extra: 0.0,
     };
     let mut app = App::new();
     let item_e = app.world_mut().spawn(grip).id();
@@ -583,6 +587,7 @@ fn a_shield_item_builds_its_face_pivots() {
         arms: [Some(hand), Some(hand)],
         links: None,
         released: false,
+        head_extra: 0.0,
     };
     let mut app = App::new();
     app.add_systems(Update, crate::grip_solve::build_grips);

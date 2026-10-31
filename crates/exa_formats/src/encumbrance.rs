@@ -244,9 +244,10 @@ pub fn held_shield<'a>(
 /// body's node of the eleventh slot, whatever the piece's coverage there
 /// (the coverage test comes after and only gates the layer fold); `worn`
 /// is therefore every worn piece of a body that has that node. A thinner
-/// piece never replaces the thickest. The part-box update reads the
-/// result (its box's third coordinate gains half of it, the second a tenth
-/// in double); nothing in Exarust consumes it yet.
+/// piece never replaces the thickest. The pass then moves a two-hander's or
+/// polearm's arm grip by the result: half of it on the point's third
+/// coordinate, in single precision, and a tenth of it on the second, in
+/// double. The grip builder applies that shift.
 pub fn head_extra<'a>(worn: impl IntoIterator<Item = &'a Armour>, physique: f32) -> f32 {
     let mut height = 0.0f32;
     for piece in worn {

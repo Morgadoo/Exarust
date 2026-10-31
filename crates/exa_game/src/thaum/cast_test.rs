@@ -549,6 +549,7 @@ fn strikes_put_an_aura_on_the_held_weapon() {
             arms: [None, None],
             links: None,
             released: false,
+            head_extra: 0.0,
         })
         .id();
     cast(&mut app, armed);

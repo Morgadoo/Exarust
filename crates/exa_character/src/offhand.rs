@@ -212,6 +212,7 @@ fn attach_off_hands(
             arms,
             links: None,
             released: false,
+            head_extra: 0.0,
         };
         commands
             .entity(root)
@@ -655,6 +656,7 @@ mod tests {
             arms: [None, None],
             links: None,
             released: false,
+            head_extra: 0.0,
         }
     }
 

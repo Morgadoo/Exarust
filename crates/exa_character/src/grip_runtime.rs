@@ -506,6 +506,7 @@ mod tests {
                 arms: [None, None],
                 links: None,
                 released: false,
+                head_extra: 0.0,
             };
             app.world_mut().entity_mut(e).insert((body, grip));
             e
@@ -609,6 +610,7 @@ mod tests {
                         arms: [None, None],
                         links: Some(links),
                         released: false,
+                        head_extra: 0.0,
                     },
                     record,
                     blade,
@@ -726,6 +728,7 @@ mod tests {
                 arms: [None, None],
                 links: None,
                 released: false,
+                head_extra: 0.0,
             };
             app.world_mut().spawn((grip, blade(slot))).id()
         };
@@ -783,6 +786,7 @@ mod tests {
                 arms: [None, None],
                 links: None,
                 released: false,
+                head_extra: 0.0,
             };
             let blade = Blade::new(
                 owner,
@@ -880,6 +884,7 @@ mod tests {
             arms: [None, None],
             links: None,
             released: false,
+            head_extra: 0.0,
         };
         app.world_mut()
             .entity_mut(item_e)
@@ -948,6 +953,7 @@ mod tests {
             arms: [None, None],
             links: Some(links),
             released: false,
+            head_extra: 0.0,
         };
         let record = HeldRecord {
             section: section(),

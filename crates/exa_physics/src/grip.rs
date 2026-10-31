@@ -16,7 +16,8 @@
 //!
 //! The numbers are the original's, in its centimetres and flags. Evidence:
 //! the grip table, the link builder (points scaled by the body's scale,
-//! the second hand's by its size and W24, the extra and flip points raw),
+//! the second hand's by its size and W24, the extra and flip points raw, the
+//! arm point then shifted by the head's extra height),
 //! the two grip callbacks, the relax pass and the flip animation.
 
 use bevy::math::{Affine3A, Vec3};
@@ -35,6 +36,9 @@ pub const DISABLED: u32 = 0x10_0000;
 pub const HORIZONTAL: u32 = 0x200;
 /// A runtime (world or grip) link, not one from the model file.
 pub const RUNTIME: u32 = 0x40_0000;
+/// Weapon-class bits of a two-hander or a polearm. The armour pass moves
+/// the arm grip only when the held weapon's class has one of them set.
+pub const ARMED_GRIP: u32 = 0x30;
 /// The smoothing every runtime link starts with when the builder leaves it
 /// at zero (the link init's 0.001).
 pub const DEFAULT_SMOOTHING: f32 = 0.001;
@@ -259,6 +263,10 @@ pub struct HeldGrip {
     pub links: Option<GripLinks>,
     /// The holder let go (died or collapsed): the links are not rebuilt.
     pub released: bool,
+    /// The head's extra height (cm) the armour pass last measured for the
+    /// holder. [`raise_arm`] adds it to the arm link when this grip is a
+    /// two-hander or a polearm. Zero leaves the table's point.
+    pub head_extra: f32,
 }
 
 impl HeldGrip {
@@ -405,6 +413,35 @@ fn make_link(
         shares: shares(item_mobility, parent_mobility),
         anchor: None,
     })
+}
+
+/// The arm link's part point after the armour pass: `part` is the table's
+/// point (cm). Its third coordinate gains half of `head_extra` in single
+/// precision; its second gains a tenth of `head_extra` in double, then
+/// narrowed. The first coordinate is copied unchanged.
+pub fn arm_part_with_head(part: Vec3, head_extra: f32) -> Vec3 {
+    let y = (f64::from(part.y) + f64::from(head_extra) * 0.1) as f32;
+    let z = part.z + head_extra * 0.5;
+    Vec3::new(part.x, y, z)
+}
+
+/// Moves a built grip's arm link onto [`arm_part_with_head`]. No change when
+/// the grip has no arm link or the part cannot take the point. `part_cm` is
+/// the table's own arm point, not yet scaled: the arm's point is not scaled
+/// by the character's size.
+pub fn raise_arm(links: &mut GripLinks, hand: &Ragdoll, part_cm: Vec3, head_extra: f32) -> bool {
+    let Some(index) = links.arm else {
+        return false;
+    };
+    let Some(part) = links.links.get(index).and_then(|link| link.hand) else {
+        return false;
+    };
+    let point = arm_part_with_head(part_cm, head_extra) * 0.01;
+    let Some(weights) = hand.weights_at(part, point) else {
+        return false;
+    };
+    links.links[index].on_hand = weights;
+    true
 }
 
 /// Builds the grip links of an item body held by a hand body, in the
@@ -1147,6 +1184,49 @@ mod tests {
         // The hand-side points are the same point mapped by the node matrix.
         let q = hand.rest_point_at(0, &links.links[3].on_hand).unwrap();
         assert!((q.x - 0.15).abs() < 1e-6);
+    }
+
+    /// A helm's extra height moves only the arm link: half of it on z, in
+    /// single precision, and a tenth of it on y, in double. Zero leaves the
+    /// table's point.
+    #[test]
+    fn the_arm_point_takes_the_heads_extra_height() {
+        let part = Vec3::new(-12.0, 3.0, 6.0);
+        assert_eq!(arm_part_with_head(part, 0.0), part);
+        let head = 10.0;
+        let shifted = arm_part_with_head(part, head);
+        assert_eq!(shifted.x, part.x);
+        assert_eq!(shifted.z, part.z + head * 0.5);
+        let y = (f64::from(part.y) + f64::from(head) * 0.1) as f32;
+        assert_eq!(shifted.y, y);
+        // The tenth is a double product, narrowed afterwards. For a point at
+        // y = 1 and a height of 2.59 that is not the single-precision product.
+        let odd = 2.59;
+        let at = Vec3::new(0.0, 1.0, 0.0);
+        let doubled = (f64::from(at.y) + f64::from(odd) * 0.1) as f32;
+        let singled = at.y + odd * 0.1;
+        assert_ne!(doubled, singled);
+        assert_eq!(arm_part_with_head(at, odd).y, doubled);
+
+        let item = body_at(Vec3::ZERO);
+        let hand = body_at(Vec3::ZERO);
+        let mut links = build(
+            &item,
+            &hand,
+            bindings(),
+            &grip(),
+            1.0,
+            1.0,
+            Affine3A::IDENTITY,
+            false,
+            1.0,
+        )
+        .unwrap();
+        let raw = links.links[links.arm.unwrap()].on_hand;
+        assert!(raise_arm(&mut links, &hand, part, head));
+        let raised = links.links[links.arm.unwrap()].on_hand;
+        assert_ne!(raw, raised);
+        assert_eq!(raised, hand.weights_at(0, shifted * 0.01).unwrap());
     }
 
     #[test]

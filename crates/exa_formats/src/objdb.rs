@@ -347,6 +347,13 @@ pub struct Burden {
     /// The crystal's charge byte: each step of an item effect advances it,
     /// 0xFF is spent.
     pub charge: u8,
+    /// Coverage display (the byte at the body's protection row): the armour
+    /// pass keeps the thickest one among pieces carrying [`Self::head_height_mark`].
+    pub display: u8,
+    /// The body's eleventh per-slot word is non-zero. The armour pass requires
+    /// it before this piece's display raises the head's extra height. [guess:
+    /// what the word holds is not established; the pass only tests it]
+    pub head_height_mark: bool,
 }
 
 impl Burden {
@@ -390,6 +397,10 @@ impl Burden {
             powered: byte(POWER_FLAGS_OFFSET) & POWERED != 0 && byte(CHARGE_OFFSET) != SPENT,
             power_flags: byte(POWER_FLAGS_OFFSET),
             charge: byte(CHARGE_OFFSET),
+            display: byte(PROTECTION_OFFSET + 7),
+            head_height_mark: body
+                .get(0x60..0x68)
+                .is_some_and(|w| w.iter().any(|&b| b != 0)),
         }
     }
 }

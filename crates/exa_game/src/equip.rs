@@ -16,7 +16,8 @@
 use bevy::prelude::*;
 use exa_character::held::{Hands, HeldItem, ShieldStyle};
 use exa_formats::characters::ID_MASK;
-use exa_formats::encumbrance::{Skills, encumbrance};
+use exa_formats::encumbrance::{Skills, encumbrance, head_extra};
+use exa_formats::objdb::Armour;
 use exa_items::catalogue::{ItemCatalogue, PendingHands};
 use exa_items::possession::{ItemKind, Possessions};
 
@@ -80,6 +81,69 @@ pub fn refresh_encumbrance(
         physical.stats.encumbrance = value;
         if let Some(mut fighter) = fighter {
             fighter.stats.encumbrance = value;
+        }
+    }
+}
+
+/// The eleventh body slot: the armour pass reads a worn piece's display only
+/// while walking that node. A body without it still takes the physique offset.
+const HEAD_SLOT: usize = 10;
+
+/// The head height the armour pass measured, onto each held weapon, and onto
+/// an arm link that is already built. A two-hander or a polearm is the only
+/// grip the pass moves. This runs before the grip builder, so a weapon whose
+/// links do not exist yet is shifted when they are built. Without a character
+/// record the physique is the average (0.5), which adds nothing.
+pub fn apply_head_height(
+    catalogue: Option<Res<ItemCatalogue>>,
+    bodies: Query<(
+        &exa_physics::body::Ragdoll,
+        Option<&Possessions>,
+        Option<&exa_character::record::CharacterData>,
+    )>,
+    mut held: Query<&mut exa_physics::grip::HeldGrip>,
+) {
+    let Some(catalogue) = catalogue.as_deref() else {
+        return;
+    };
+    for mut grip in &mut held {
+        if grip.kind != exa_physics::grip::HeldKind::Weapon
+            || grip.class & exa_physics::grip::ARMED_GRIP == 0
+        {
+            continue;
+        }
+        let Some((body, possessions, data)) = bodies.iter().find(|(body, _, _)| {
+            body.parts
+                .first()
+                .is_some_and(|part| part.entity == grip.holder_key)
+        }) else {
+            continue;
+        };
+        let physique = data.map_or(0.5, |data| data.record.physique[0]);
+        let worn: Vec<Armour> = if body.parts.iter().any(|part| part.bone == HEAD_SLOT) {
+            possessions.map_or_else(Vec::new, |possessions| {
+                possessions
+                    .worn
+                    .iter()
+                    .filter_map(|worn| catalogue.burden(worn.id & ID_MASK))
+                    .map(|burden| Armour {
+                        display: burden.display,
+                        head_height_mark: burden.head_height_mark,
+                        ..Armour::default()
+                    })
+                    .collect()
+            })
+        } else {
+            Vec::new()
+        };
+        let extra = head_extra(&worn, physique);
+        if grip.head_extra.to_bits() == extra.to_bits() {
+            continue;
+        }
+        let part = grip.spec.arm.map(|pair| pair.part);
+        grip.head_extra = extra;
+        if let (Some(links), Some(part)) = (grip.links.as_mut(), part) {
+            exa_physics::grip::raise_arm(links, body, part, extra);
         }
     }
 }
@@ -202,6 +266,10 @@ impl Plugin for EquipPlugin {
         )
         .add_systems(Update, refresh_encumbrance)
         .add_systems(Update, forget_collapsed_hands.before(refresh_encumbrance))
+        .add_systems(
+            FixedUpdate,
+            apply_head_height.before(exa_physics::grip_solve::GripSolveSet::Build),
+        )
         .add_systems(
             FixedUpdate,
             crate::item_effects::run_worn_effects

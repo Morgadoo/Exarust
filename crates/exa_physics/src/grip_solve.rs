@@ -241,6 +241,9 @@ pub fn build_grips(mut held: Query<(Entity, &mut HeldGrip)>, bodies: Query<&Ragd
             hand_parts: hands,
             arm_parts: arms,
         };
+        let arm_shift = (grip.kind == HeldKind::Weapon && grip.class & grip::ARMED_GRIP != 0)
+            .then(|| grip.spec.arm.map(|pair| (pair.part, grip.head_extra)))
+            .flatten();
         let built = match grip.kind {
             // The torch's own two pivots and its soft weld, from its attach
             // routine rather than the grip table.
@@ -281,6 +284,9 @@ pub fn build_grips(mut held: Query<(Entity, &mut HeldGrip)>, bodies: Query<&Ragd
             ),
         };
         if let Some(mut links) = built {
+            if let Some((part, head)) = arm_shift {
+                grip::raise_arm(&mut links, holder, part, head);
+            }
             // The world welds a held weapon gets, both built disabled: a
             // stiff one at its origin, and, when its holder may parry, the
             // soft (parry) weld 0.3 of the node box's top above the grip,
