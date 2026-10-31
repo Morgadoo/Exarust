@@ -267,7 +267,8 @@ pub struct BodyInventoryPlugin;
 
 impl Plugin for BodyInventoryPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, ensure_possessions);
+        app.add_message::<exa_script::ScriptEffect>()
+            .add_systems(Update, (ensure_possessions, activate_cores));
     }
 }
 
@@ -301,6 +302,58 @@ impl CoreActivated {
             dialogue: d.dialogue.unwrap_or(""),
             activated: d.activated,
         })
+    }
+}
+
+/// A core crystal just taken starts the body's "Activate" node with the
+/// player, then asks the brain to apply its roles again (the original sets
+/// the role-reapply byte after that call). The component is the record
+/// write; it is removed once the call has been made.
+type CoreBody<'a> = (
+    Entity,
+    &'a CoreActivated,
+    &'a exa_ai::brain::CharacterId,
+    Option<&'a exa_ai::roles::Roles>,
+    Option<Mut<'a, exa_ai::brain::Npc>>,
+);
+
+fn activate_cores(
+    mut commands: Commands,
+    conversations: Option<ResMut<exa_script::Conversations>>,
+    scripts: Option<Res<exa_script::Scripts>>,
+    time: Option<Res<Time<Virtual>>>,
+    mut cores: Query<CoreBody>,
+    players: Query<&exa_ai::brain::CharacterId, With<crate::player::PlayerBody>>,
+    mut effects: MessageWriter<exa_script::ScriptEffect>,
+) {
+    let (Some(mut conversations), Some(scripts), Some(player)) =
+        (conversations, scripts.as_deref(), players.iter().next())
+    else {
+        return;
+    };
+    let now = time
+        .map(|time| time.elapsed().as_millis() as u32)
+        .unwrap_or(0);
+    for (entity, core, id, roles, mut npc) in &mut cores {
+        if core.activated && !core.dialogue.is_empty() {
+            let topic = exa_formats::roles::Name::from_bytes(core.dialogue.as_bytes());
+            let (started, out) = conversations.with_scene(scripts, now, |engine, scene| {
+                engine.named_event(scene, id.0, player.0, topic, None)
+            });
+            for effect in out {
+                effects.write(exa_script::ScriptEffect(effect));
+            }
+            info!(
+                "core {}: the {} dialogue {}",
+                core.id,
+                core.dialogue,
+                if started { "started" } else { "was not found" }
+            );
+        }
+        if let (Some(roles), Some(npc)) = (roles, npc.as_mut()) {
+            npc.roles_key = !exa_ai::brain::roles_key(roles);
+        }
+        commands.entity(entity).remove::<CoreActivated>();
     }
 }
 
@@ -395,6 +448,33 @@ mod tests {
             }
         );
         assert_eq!(CoreActivated::of(7), None);
+    }
+
+    /// Taking the crystal starts its dialogue with the player and is then
+    /// forgotten. With no player the activation stays for a later tick.
+    #[test]
+    fn a_core_activation_starts_the_activate_dialogue() {
+        use exa_items::possession::crystal;
+        let mut app = App::new();
+        app.add_message::<exa_script::ScriptEffect>()
+            .insert_resource(exa_script::Conversations::default())
+            .insert_resource(exa_script::Scripts::default())
+            .add_systems(Update, activate_cores);
+        let body = app
+            .world_mut()
+            .spawn((
+                exa_ai::brain::CharacterId(9),
+                CoreActivated::of(crystal::AL).unwrap(),
+            ))
+            .id();
+        app.update();
+        assert!(app.world().get::<CoreActivated>(body).is_some());
+        app.world_mut().spawn((
+            crate::player::PlayerBody::new(0.0),
+            exa_ai::brain::CharacterId(1),
+        ));
+        app.update();
+        assert!(app.world().get::<CoreActivated>(body).is_none());
     }
 
     #[test]
