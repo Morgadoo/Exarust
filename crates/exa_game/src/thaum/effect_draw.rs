@@ -4,7 +4,7 @@
 //! ([`draw_shell_auras`]), drawn with `exa_render::force_effects`.
 //!
 //! - **The noise picture** is made the first frame a force effect (a shell
-//!   aura, a blast, bolt or wave, a torrent, a teleporter scan) exists, from the engine's noise
+//!   aura, a blast, bolt or wave, a torrent, a teleporter scan or bubble) exists, from the engine's noise
 //!   object ([`super::visuals::noise_field`]) seeded from the engine's
 //!   generator, and uploaded again (level 0 and its mip chain, the parameter
 //!   word's bit 0x40) only when the object's tick reports a new picture
@@ -66,6 +66,7 @@ type ForceEffect = Or<(
     With<LiveBlast>,
     With<LiveTorrent>,
     With<crate::effects::scan::ScanEffect>,
+    With<crate::effects::bubble::BubbleEffect>,
 )>;
 
 /// Whether any force effect that binds the noise picture is alive.

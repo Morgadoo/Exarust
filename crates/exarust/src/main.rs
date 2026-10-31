@@ -148,6 +148,8 @@
 //!                                     the cursor's ground point goes 1.5 m beyond the player; repeatable
 //!          --debug-scan <frame>       play mode: at that frame after the load the player gets a reconstruction
 //!                                     device's scan (it opens 1600 ms later), as a use that passed the checks starts it
+//!          --debug-bubble f[,hold]    play mode: at frame f after the load a teleport bubble is made around the player;
+//!                                     with hold it charges, swells and is freed after 7 s, else it rests and shrinks
 //!          --debug-force-cast <s>     play mode: every s seconds the player casts its first power at the nearest character, logging GI shapes and struck bodies' pin gain
 //!          --health yellow,red        play mode: the player's starting health (a human's full health is 0.25)
 //!          --give id,id,...           play mode: the player starts with these items in its pack (e.g. `474`, the
@@ -417,6 +419,8 @@ pub struct Options {
     pub debug_casts: Vec<exa_game::thaum::debug_cast::DebugCast>,
     /// The frame a debug scan goes on the player (`--debug-scan`).
     pub debug_scan: Option<u32>,
+    /// A teleport bubble made around the player (`--debug-bubble`).
+    pub debug_bubble: Option<exa_game::effects::bubble_draw::DebugBubbleAt>,
     /// The player's starting yellow and red health.
     pub health: Option<[f32; 2]>,
     /// Items the player starts with in its pack.
@@ -906,6 +910,16 @@ fn main() -> AppExit {
                 }
             }
             "--debug-scan" => options.debug_scan = args.next().and_then(|v| v.parse().ok()),
+            "--debug-bubble" => {
+                let text = args.next().unwrap_or_default();
+                match exa_game::effects::bubble_draw::DebugBubbleAt::parse(&text) {
+                    Some(at) => options.debug_bubble = Some(at),
+                    None => {
+                        eprintln!("--debug-bubble: cannot read {text:?} (frame[,hold])");
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
             "--debug-force-cast" => {
                 options.thaum_debug.cast_every =
                     args.next().and_then(|v| v.parse().ok()).unwrap_or(4);
@@ -1380,6 +1394,9 @@ fn main() -> AppExit {
         options.debug_casts.clone(),
     ))
     .insert_resource(exa_game::teleporters::DebugScan(options.debug_scan))
+    .insert_resource(exa_game::effects::bubble_draw::DebugBubble(
+        options.debug_bubble,
+    ))
     .insert_resource(options.doll_drop)
     .insert_resource(exa_game::save_live::ScriptedSaves(options.save_at.clone()));
     if options.story_session {

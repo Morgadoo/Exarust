@@ -8,8 +8,9 @@
 //! for a Force Strikes weapon aura, and `effectscan_f` for the teleporter
 //! scan's aura, [`ForceShellMaterial`]), the displacement shell
 //! (`dispshell_v`/`dispshell_f` over a copy of a vanishing body's skinned
-//! meshes, and that copy's depth-only pass, [`DispShellMaterial`]), and the
-//! animated `_ForceNoise` picture the force programs bind as `EmiTex`
+//! meshes, and that copy's depth-only pass, [`DispShellMaterial`]), the
+//! teleport bubble (`effecttele_v`/`effecttele_f` over the bubble's sphere,
+//! [`TeleBubbleMaterial`]), and the animated `_ForceNoise` picture the force programs bind as `EmiTex`
 //! ([`noise_image`], [`noise_mips`]).
 //!
 //! The render states are the materials' records: `_ForceMat01` and
@@ -19,7 +20,10 @@
 //! 0x480008 one-sided. `_EffectShell01` (the displacement shell) and
 //! `_ScanAura01` (the scan) carry the same blend word and flags; the
 //! displacement shell's `EmiTex` is its record's emissive layer,
-//! `FlameletsA3`. Blended draws write no depth. Each fragment's output
+//! `FlameletsA3`. `_TeleBubble01` (the teleport bubble) carries the same
+//! blend word and flags; its draw binds the `_ForceNoise` picture on unit 0
+//! in place of its record's `ForceEfctA2E` layer. Blended draws write no
+//! depth. Each fragment's output
 //! is clamped to [0, 1] as the original's 8-bit target clamps it.
 //!
 //! The original draws each effect once per supersample layer with the
@@ -46,10 +50,12 @@ impl Plugin for ForceEffectsPlugin {
         embedded_asset!(app, "force_ribbon.wesl");
         embedded_asset!(app, "force_shell.wesl");
         embedded_asset!(app, "disp_shell.wesl");
+        embedded_asset!(app, "tele_bubble.wesl");
         app.add_plugins((
             MaterialPlugin::<ForceRibbonMaterial>::default(),
             MaterialPlugin::<ForceShellMaterial>::default(),
             MaterialPlugin::<DispShellMaterial>::default(),
+            MaterialPlugin::<TeleBubbleMaterial>::default(),
         ));
     }
 }
@@ -72,6 +78,10 @@ pub const DISP_SHELL_TEXTURE: &str = "flameletsa3";
 /// The `_ScanAura01` record's blend word and flags: the aura's.
 pub const SCAN_BLEND_WORD: u16 = 0x163;
 pub const SCAN_RECORD_FLAGS: u32 = 0x0048_0008;
+/// The `_TeleBubble01` record's blend word and flags: the aura's. The
+/// record is one-sided; the bubble's mesh draws every face both ways.
+pub const TELE_BUBBLE_BLEND_WORD: u16 = 0x163;
+pub const TELE_BUBBLE_RECORD_FLAGS: u32 = 0x0048_0008;
 /// The record flags' two-sided bit.
 pub const TWO_SIDED: u32 = 0x10;
 /// The skinned shell copy's push along its normal: 2 cm.
@@ -95,6 +105,7 @@ fn shader(name: &str) -> ShaderRef {
     let path = match name {
         "ribbon" => embedded_path!("force_ribbon.wesl"),
         "disp" => embedded_path!("disp_shell.wesl"),
+        "tele" => embedded_path!("tele_bubble.wesl"),
         _ => embedded_path!("force_shell.wesl"),
     };
     ShaderRef::Path(AssetPath::from_path_buf(path).with_source("embedded"))
@@ -479,6 +490,90 @@ impl Material for DispShellMaterial {
     }
 }
 
+/// The teleport bubble program's uniforms (`effecttele_v`/`effecttele_f`).
+#[derive(Clone, Copy, Debug, PartialEq, ShaderType)]
+pub struct TeleBubbleParams {
+    /// `ViewPos`: the camera in the bubble's frame (cm); w unused.
+    pub view_pos: Vec4,
+    /// `TexPos` in xy (the bubble's two creation draws); zw unused.
+    pub tex_pos: Vec4,
+    /// `Scale`: the swell.
+    pub scale: f32,
+    /// `Fade`.
+    pub fade: f32,
+    /// `Pulse`: the charge.
+    pub pulse: f32,
+    /// `Anim`: the rolling texture offset.
+    pub anim: f32,
+    /// `Colr`: the colour scale.
+    pub colr: f32,
+}
+
+impl Default for TeleBubbleParams {
+    fn default() -> Self {
+        Self {
+            view_pos: Vec4::ZERO,
+            tex_pos: Vec4::ZERO,
+            scale: 1.0,
+            fade: 1.0,
+            pulse: 0.0,
+            anim: 0.0,
+            colr: 1.0,
+        }
+    }
+}
+
+/// The teleport bubble's material (`effecttele_v`/`effecttele_f`, the
+/// `_TeleBubble01` record): one a bubble, over a mesh in centimetres whose
+/// entity carries the centimetre-to-metre scale.
+#[derive(Asset, TypePath, AsBindGroup, Clone, Debug)]
+pub struct TeleBubbleMaterial {
+    #[uniform(0)]
+    pub params: TeleBubbleParams,
+    /// `EmiTex` (unit 0): the `_ForceNoise` picture.
+    #[texture(1)]
+    #[sampler(2)]
+    pub noise: Handle<Image>,
+}
+
+impl Material for TeleBubbleMaterial {
+    fn vertex_shader() -> ShaderRef {
+        shader("tele")
+    }
+
+    fn fragment_shader() -> ShaderRef {
+        shader("tele")
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        blend_alpha_mode(TELE_BUBBLE_BLEND_WORD).unwrap_or(AlphaMode::Premultiplied)
+    }
+
+    fn enable_prepass() -> bool {
+        false
+    }
+
+    fn enable_shadows() -> bool {
+        false
+    }
+
+    fn enable_oit() -> bool {
+        false
+    }
+
+    fn specialize(
+        _pipeline: &MaterialPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &MeshVertexBufferLayoutRef,
+        _key: MaterialPipelineKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        if TELE_BUBBLE_RECORD_FLAGS & TWO_SIDED != 0 {
+            descriptor.primitive.cull_mode = None;
+        }
+        Ok(())
+    }
+}
+
 /// The noise picture's mip chain, as the upload's mipmap generation builds
 /// it: level 0 is `pixels` (`side`² bytes), each next level the rounded
 /// mean of each 2×2 block, down to one pixel. Answers the bytes of every
@@ -693,6 +788,37 @@ mod tests {
             assert!(source.contains("th = mix(th, tst, shell.interior);"));
             assert_eq!(source.contains("out = vec4(0.0);"), !defs.is_empty());
         }
+    }
+
+    #[test]
+    fn the_tele_bubble_uniform_matches_the_shaders_layout() {
+        let source = include_str!("tele_bubble.wesl");
+        let size = wgsl_struct_size(source, "TeleBubbleParams");
+        // Two vec4 and five words, padded to 16.
+        assert_eq!(size, 64);
+        assert_eq!(size, <TeleBubbleParams as ShaderType>::min_size().get());
+        let offsets = wgsl_offsets(source, "TeleBubbleParams");
+        let got: Vec<(&str, u32)> = offsets.iter().map(|(n, o)| (n.as_str(), *o)).collect();
+        assert_eq!(
+            got,
+            [
+                ("view_pos", 0),
+                ("tex_pos", 16),
+                ("scale", 32),
+                ("fade", 36),
+                ("pulse", 40),
+                ("anim", 44),
+                ("colr", 48),
+            ]
+        );
+        assert_eq!(
+            blend_alpha_mode(TELE_BUBBLE_BLEND_WORD),
+            Some(AlphaMode::Premultiplied)
+        );
+        assert_eq!(TELE_BUBBLE_RECORD_FLAGS & TWO_SIDED, 0);
+        // The program declares `TexOfs` but never reads it, and its alpha is 0.
+        assert!(source.contains("vec4(col * col, 0.0)"));
+        assert!(!source.contains("tex_ofs"));
     }
 
     #[test]

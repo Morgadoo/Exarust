@@ -115,6 +115,8 @@ impl Plugin for ThaumEffectsPlugin {
                             super::effect_draw::drop_shell_copies,
                             crate::effects::scan_draw::draw_scans,
                             crate::effects::scan_draw::drop_scan_copies,
+                            crate::effects::bubble_draw::draw_bubbles,
+                            crate::effects::bubble_draw::drop_bubble_draws,
                             super::vanish_live::draw_vanishes,
                             super::vanish_live::drop_vanish_copies,
                         ),
@@ -914,6 +916,7 @@ mod tests {
             .init_asset::<exa_render::force_effects::ForceRibbonMaterial>()
             .init_asset::<exa_render::force_effects::ForceShellMaterial>()
             .init_asset::<exa_render::force_effects::DispShellMaterial>()
+            .init_asset::<exa_render::force_effects::TeleBubbleMaterial>()
             .add_plugins(ThaumEffectsPlugin);
         let mut grid = NavGrid::empty(40, 40, 0.0);
         for z in 0..40 {
@@ -1107,6 +1110,7 @@ mod tests {
             .init_asset::<exa_render::force_effects::ForceRibbonMaterial>()
             .init_asset::<exa_render::force_effects::ForceShellMaterial>()
             .init_asset::<exa_render::force_effects::DispShellMaterial>()
+            .init_asset::<exa_render::force_effects::TeleBubbleMaterial>()
             .add_plugins(ThaumEffectsPlugin);
         for _ in 0..3 {
             app.update();

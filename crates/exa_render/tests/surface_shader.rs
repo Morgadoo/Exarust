@@ -338,6 +338,18 @@ fn the_displacement_shell_shader_composes_and_validates() {
 }
 
 #[test]
+fn the_tele_bubble_shader_composes_and_validates() {
+    let (mut cache, bubble) = cache_with_every_shader_and("embedded://exa_render/tele_bubble.wesl");
+    // The bubble's sphere carries positions only.
+    let module = cache
+        .get(0, bubble, &defs(&[]))
+        .unwrap_or_else(|error| panic!("tele_bubble.wesl: {error}"));
+    let stages = stages(&module);
+    assert!(stages.contains(&naga::ShaderStage::Vertex));
+    assert!(stages.contains(&naga::ShaderStage::Fragment));
+}
+
+#[test]
 fn the_mind_sight_shader_composes_and_validates() {
     let (mut cache, sight) = cache_with_every_shader_and("embedded://exa_render/mind_sight.wesl");
     // A sphere mesh with and without normals (the shader's eye term falls
