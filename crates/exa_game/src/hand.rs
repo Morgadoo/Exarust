@@ -2439,24 +2439,31 @@ fn reach_hand(
     hand.out_of_reach = !in_reach;
 }
 
-/// Runs a dead character's role scripts on a double click: the roles in
-/// list order whose first Player-aimed entry carries the corpse section,
-/// each with the corpse as actor 0 and the player as actor 1, and the
-/// effects the scripts ask for go out as [`exa_script::ScriptEffect`].
+/// Runs a dead character's role scripts on a click: the roles in list
+/// order whose first Player-aimed entry carries the corpse section, each
+/// with the corpse as actor 0 and the player as actor 1, and the effects
+/// the scripts ask for go out as [`exa_script::ScriptEffect`]. A single
+/// click does this outside combat mode; a double click does it either way.
 fn run_corpse_scripts(
     mut clicks: MessageReader<WorldClick>,
     scripts: Option<Res<exa_script::Scripts>>,
     conversations: Option<ResMut<exa_script::Conversations>>,
     corpses: Query<(&exa_ai::roles::Roles, Option<&exa_ai::brain::CharacterId>)>,
-    players: Query<Option<&exa_ai::brain::CharacterId>, With<PlayerBody>>,
+    players: Query<(&PlayerBody, Option<&exa_ai::brain::CharacterId>), With<PlayerBody>>,
     time: Option<Res<Time<Virtual>>>,
     mut effects: MessageWriter<exa_script::ScriptEffect>,
 ) {
     let (Some(scripts), Some(mut conversations)) = (scripts, conversations) else {
         return;
     };
+    let (combat, player) = players
+        .iter()
+        .next()
+        .map(|(body, id)| (body.combat, id.map(|id| id.0)))
+        .unwrap_or((false, None));
+    let player = player.unwrap_or(exa_ai::brain::PLAYER_ID);
     for click in clicks.read() {
-        if !click.double {
+        if combat && !click.double {
             continue;
         }
         let Hit::Character {
@@ -2471,11 +2478,6 @@ fn run_corpse_scripts(
         let Some(corpse) = id.map(|id| id.0) else {
             continue;
         };
-        let player = players
-            .iter()
-            .next()
-            .and_then(|id| id.map(|id| id.0))
-            .unwrap_or(exa_ai::brain::PLAYER_ID);
         let list = exa_ai::roles::corpse_scripts(&scripts.roles, roles);
         if list.is_empty() {
             continue;
