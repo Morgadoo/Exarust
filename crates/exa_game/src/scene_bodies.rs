@@ -404,6 +404,19 @@ fn item_of(items: &[Item], id: u32) -> Option<&Item> {
     items.iter().find(|item| item.id == id & ID_MASK)
 }
 
+/// Loads a saved record's health pools onto `fighter`, as the spawn's last
+/// write does. Returns the state flags, with the potion bit when the record
+/// names an expiry.
+fn apply_saved_pools(
+    record: &exa_formats::characters::CharacterRecord,
+    fighter: &mut exa_combat::Fighter,
+) -> exa_combat::StateFlags {
+    let mut flags = exa_combat::StateFlags::default();
+    let mut focus = 1.0;
+    crate::save_live::restore_body_health(record, fighter, &mut flags, &mut focus);
+    flags
+}
+
 /// Builds a scene body from its plan. `None` when the record's body model
 /// cannot be loaded.
 ///
@@ -527,6 +540,10 @@ pub fn spawn_scene_body(
     }
     fighter.health.yellow = fighter.health.max * plan.health;
     fighter.health.red = fighter.health.yellow;
+    // A saved record's pools are the spawn's last write. A generated body
+    // keeps the plan's share; its record was just rolled and is not a save.
+    let saved_flags =
+        matches!(plan.look, BodyLook::Record(_)).then(|| apply_saved_pools(&record, &mut fighter));
     let worn = look
         .worn
         .iter()
@@ -579,6 +596,9 @@ pub fn spawn_scene_body(
         },
         ChildOf(root),
     ));
+    if let Some(flags) = saved_flags.filter(|flags| flags.0 != 0) {
+        commands.entity(model_entity).insert(flags);
+    }
     if let Some(job) = skin_composite {
         commands.entity(model_entity).insert(job);
     }
@@ -1115,6 +1135,29 @@ mod tests {
         assert_eq!(plan.actor(), None);
         assert_eq!(plan.name.as_deref(), Some("Shown"));
         assert!(matches!(plan.look, BodyLook::Record(_)));
+    }
+
+    /// A saved record's pools replace the plan's full health. Empty pools
+    /// leave the body empty; a full record leaves the plan's full health.
+    #[test]
+    fn a_saved_record_spawns_at_its_health_pools() {
+        let mut wounded = CharacterRecord::default();
+        wounded.pools.yellow = 0;
+        wounded.pools.red = 0;
+        let mut fighter = exa_combat::Fighter::default();
+        let max = fighter.health.max;
+        fighter.health.yellow = max;
+        fighter.health.red = max;
+        apply_saved_pools(&wounded, &mut fighter);
+        assert_eq!(fighter.health.yellow, 0.0);
+        assert_eq!(fighter.health.red, 0.0);
+
+        let mut fighter = exa_combat::Fighter::default();
+        fighter.health.yellow = max;
+        fighter.health.red = max;
+        apply_saved_pools(&CharacterRecord::default(), &mut fighter);
+        assert!((fighter.health.yellow - max).abs() < 1e-3);
+        assert!((fighter.health.red - max).abs() < 1e-3);
     }
 
     /// The installed game's body for an opponent is built with the merged
