@@ -34,13 +34,14 @@ impl Plugin for ScriptCastPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<exa_script::ScriptEffect>()
             .add_message::<exa_combat::impact::BadFall>()
+            .add_message::<exa_combat::DamageTaken>()
             .add_systems(
                 Update,
                 (
                     mirror_player,
                     grant_witness_roles,
                     mirror_cast,
-                    announce_bad_falls,
+                    announce_witnessed,
                 )
                     .chain(),
             );
@@ -147,13 +148,14 @@ fn mirror_cast(
     }
 }
 
-/// A hard impact's fall (at most one a second, from the impact pass) is the
-/// BadFall broadcast: every contact of the character that the level's sight
-/// test can see activates that topic. With no level grid the sight test
-/// answers yes. A character with no place, or no id, is not seen.
+/// A witnessed event: a hard fall, or a wound deep enough to notice. Every
+/// contact of the character that the level's sight test can see activates
+/// the topic. With no level grid the sight test answers yes. A character
+/// with no place, or no id, is not seen.
 #[allow(clippy::too_many_arguments)]
-fn announce_bad_falls(
+fn announce_witnessed(
     mut falls: MessageReader<exa_combat::impact::BadFall>,
+    mut wounds: MessageReader<exa_combat::DamageTaken>,
     conversations: Option<ResMut<Conversations>>,
     scripts: Option<Res<exa_script::Scripts>>,
     level: Option<Res<exa_world::room_view::LevelRooms>>,
@@ -162,13 +164,14 @@ fn announce_bad_falls(
     places: Query<(&CharacterId, &GlobalTransform)>,
     mut effects: MessageWriter<exa_script::ScriptEffect>,
 ) {
-    if falls.is_empty() {
+    if falls.is_empty() && wounds.is_empty() {
         return;
     }
     let (Some(mut conversations), Some(scripts)) = (conversations, scripts.as_deref()) else {
         return;
     };
     let fallen: Vec<Entity> = falls.read().map(|fall| fall.fighter).collect();
+    let hurt: Vec<Entity> = wounds.read().map(|wound| wound.fighter).collect();
     let mut at = std::collections::HashMap::new();
     for (id, transform) in &places {
         at.insert(id.0, transform.translation() * 100.0);
@@ -178,19 +181,25 @@ fn announce_bad_falls(
         .map(|time| time.elapsed().as_millis() as u32)
         .unwrap_or(0);
     let (_, out) = conversations.with_scene(scripts, now, |_engine, scene| {
-        for fighter in fallen {
+        let tell = |scene: &mut exa_script::dialogue::Scene<'_>, fighter: Entity, topic: &[u8]| {
             let Ok(id) = ids.get(fighter) else {
-                continue;
+                return;
             };
             exa_script::dialogue::broadcast(
                 scene,
                 id.0,
-                exa_formats::roles::Name::from_bytes(b"BadFall"),
+                exa_formats::roles::Name::from_bytes(topic),
                 |witness, actor| match (at.get(&actor), at.get(&witness)) {
                     (Some(from), Some(to)) => exa_ai::rooms::in_sight(level, *from, *to),
                     _ => false,
                 },
             );
+        };
+        for fighter in fallen {
+            tell(scene, fighter, b"BadFall");
+        }
+        for fighter in hurt {
+            tell(scene, fighter, b"DamageTaken");
         }
     });
     for effect in out {
@@ -390,8 +399,9 @@ mod tests {
         assert!(!walled.world().get::<Roles>(hidden).unwrap().has(31));
     }
 
-    /// A hard fall broadcasts BadFall to a contact the sight test can see.
-    /// A witness with no place is not seen, so its topic stays quiet.
+    /// A hard fall broadcasts BadFall, and a noticed wound broadcasts
+    /// DamageTaken, to a contact the sight test can see. A witness with no
+    /// place is not seen, so its topic stays quiet.
     #[test]
     fn a_hard_fall_reaches_a_witness_who_can_see_it() {
         use exa_formats::roles::{Dialogue, DialogueActor, Name, Node, Role, RoleDb, RoleEntry};
@@ -401,14 +411,7 @@ mod tests {
         fn title(s: &str) -> Name {
             Name::from_bytes(s.as_bytes())
         }
-        let fall = Node {
-            flags: 0x100 | 0xB_0000,
-            title: title("BadFall"),
-            position: [0.0; 2],
-            links: vec![],
-            branches: vec![],
-        };
-        let db = RoleDb {
+        let book = |topic: &str| RoleDb {
             roles: vec![
                 Role {
                     id: 31,
@@ -425,7 +428,13 @@ mod tests {
                                     ..DialogueActor::default()
                                 })
                                 .collect(),
-                            nodes: vec![Some(fall)],
+                            nodes: vec![Some(Node {
+                                flags: 0x100 | 0xB_0000,
+                                title: title(topic),
+                                position: [0.0; 2],
+                                links: vec![],
+                                branches: vec![],
+                            })],
                         }),
                         ..RoleEntry::default()
                     }],
@@ -440,7 +449,8 @@ mod tests {
                 },
             ],
         };
-        let run = |witness_placed: bool| {
+        let run = |topic: &str, witness_placed: bool| {
+            let db = book(topic);
             let mut witness = Character::new(1, "Witness");
             witness.add_role(&db, 31);
             witness.add_relation(2, 30, 0);
@@ -472,13 +482,20 @@ mod tests {
             } else {
                 app.world_mut().spawn(CharacterId(1));
             }
-            app.world_mut()
-                .write_message(exa_combat::impact::BadFall { fighter });
+            if topic == "DamageTaken" {
+                app.world_mut()
+                    .write_message(exa_combat::DamageTaken { fighter });
+            } else {
+                app.world_mut()
+                    .write_message(exa_combat::impact::BadFall { fighter });
+            }
             app.update();
             let cast = &app.world().resource::<Conversations>().cast;
             topics::block(cast.get(1).unwrap(), 2, 30, 31).and_then(|m| m.words.clone())
         };
-        assert_eq!(run(true), Some(vec![1, ACTIVATED]));
-        assert_eq!(run(false), None);
+        assert_eq!(run("BadFall", true), Some(vec![1, ACTIVATED]));
+        assert_eq!(run("BadFall", false), None);
+        assert_eq!(run("DamageTaken", true), Some(vec![1, ACTIVATED]));
+        assert_eq!(run("DamageTaken", false), None);
     }
 }
