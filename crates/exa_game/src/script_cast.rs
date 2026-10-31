@@ -32,10 +32,18 @@ pub struct ScriptCastPlugin;
 
 impl Plugin for ScriptCastPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<exa_script::ScriptEffect>().add_systems(
-            Update,
-            (mirror_player, grant_witness_roles, mirror_cast).chain(),
-        );
+        app.add_message::<exa_script::ScriptEffect>()
+            .add_message::<exa_combat::impact::BadFall>()
+            .add_systems(
+                Update,
+                (
+                    mirror_player,
+                    grant_witness_roles,
+                    mirror_cast,
+                    announce_bad_falls,
+                )
+                    .chain(),
+            );
     }
 }
 
@@ -136,6 +144,57 @@ fn mirror_cast(
             out_of_action: condition.map(|c| c.dying()),
         };
         conversations.cast.mirror(&[reading]);
+    }
+}
+
+/// A hard impact's fall (at most one a second, from the impact pass) is the
+/// BadFall broadcast: every contact of the character that the level's sight
+/// test can see activates that topic. With no level grid the sight test
+/// answers yes. A character with no place, or no id, is not seen.
+#[allow(clippy::too_many_arguments)]
+fn announce_bad_falls(
+    mut falls: MessageReader<exa_combat::impact::BadFall>,
+    conversations: Option<ResMut<Conversations>>,
+    scripts: Option<Res<exa_script::Scripts>>,
+    level: Option<Res<exa_world::room_view::LevelRooms>>,
+    time: Option<Res<Time<Virtual>>>,
+    ids: Query<&CharacterId>,
+    places: Query<(&CharacterId, &GlobalTransform)>,
+    mut effects: MessageWriter<exa_script::ScriptEffect>,
+) {
+    if falls.is_empty() {
+        return;
+    }
+    let (Some(mut conversations), Some(scripts)) = (conversations, scripts.as_deref()) else {
+        return;
+    };
+    let fallen: Vec<Entity> = falls.read().map(|fall| fall.fighter).collect();
+    let mut at = std::collections::HashMap::new();
+    for (id, transform) in &places {
+        at.insert(id.0, transform.translation() * 100.0);
+    }
+    let level = level.as_deref();
+    let now = time
+        .map(|time| time.elapsed().as_millis() as u32)
+        .unwrap_or(0);
+    let (_, out) = conversations.with_scene(scripts, now, |_engine, scene| {
+        for fighter in fallen {
+            let Ok(id) = ids.get(fighter) else {
+                continue;
+            };
+            exa_script::dialogue::broadcast(
+                scene,
+                id.0,
+                exa_formats::roles::Name::from_bytes(b"BadFall"),
+                |witness, actor| match (at.get(&actor), at.get(&witness)) {
+                    (Some(from), Some(to)) => exa_ai::rooms::in_sight(level, *from, *to),
+                    _ => false,
+                },
+            );
+        }
+    });
+    for effect in out {
+        effects.write(exa_script::ScriptEffect(effect));
     }
 }
 
@@ -329,5 +388,97 @@ mod tests {
         walled.update();
         assert!(walled.world().get::<Roles>(seen).unwrap().has(31));
         assert!(!walled.world().get::<Roles>(hidden).unwrap().has(31));
+    }
+
+    /// A hard fall broadcasts BadFall to a contact the sight test can see.
+    /// A witness with no place is not seen, so its topic stays quiet.
+    #[test]
+    fn a_hard_fall_reaches_a_witness_who_can_see_it() {
+        use exa_formats::roles::{Dialogue, DialogueActor, Name, Node, Role, RoleDb, RoleEntry};
+        use exa_script::cast::{Cast, Character, Contact};
+        use exa_script::topics::{self, ACTIVATED};
+
+        fn title(s: &str) -> Name {
+            Name::from_bytes(s.as_bytes())
+        }
+        let fall = Node {
+            flags: 0x100 | 0xB_0000,
+            title: title("BadFall"),
+            position: [0.0; 2],
+            links: vec![],
+            branches: vec![],
+        };
+        let db = RoleDb {
+            roles: vec![
+                Role {
+                    id: 31,
+                    name: title("Role31"),
+                    entries: vec![RoleEntry {
+                        kind: 0x2,
+                        target: 30,
+                        dialogue: Some(Dialogue {
+                            target: 30,
+                            actors: ["Actor 1", "Actor 2"]
+                                .iter()
+                                .map(|n| DialogueActor {
+                                    name: title(n),
+                                    ..DialogueActor::default()
+                                })
+                                .collect(),
+                            nodes: vec![Some(fall)],
+                        }),
+                        ..RoleEntry::default()
+                    }],
+                    ..Role::default()
+                },
+                Role {
+                    id: 30,
+                    flags: 1,
+                    name: title("Role30"),
+                    parent: 28,
+                    ..Role::default()
+                },
+            ],
+        };
+        let run = |witness_placed: bool| {
+            let mut witness = Character::new(1, "Witness");
+            witness.add_role(&db, 31);
+            witness.add_relation(2, 30, 0);
+            let mut fallen = Character::new(2, "Fallen");
+            fallen.contacts.push(Contact::new(1));
+            let mut cast = Cast::default();
+            cast.characters = vec![witness, fallen];
+            let mut conversations = Conversations::default();
+            conversations.cast = cast;
+            let mut app = App::new();
+            app.add_plugins(ScriptCastPlugin)
+                .insert_resource(exa_script::Scripts {
+                    roles: db.clone(),
+                    narrator: None,
+                })
+                .insert_resource(conversations);
+            let fighter = app
+                .world_mut()
+                .spawn((
+                    CharacterId(2),
+                    GlobalTransform::from_translation(Vec3::ZERO),
+                ))
+                .id();
+            if witness_placed {
+                app.world_mut().spawn((
+                    CharacterId(1),
+                    GlobalTransform::from_translation(Vec3::new(1.0, 0.0, 0.0)),
+                ));
+            } else {
+                app.world_mut().spawn(CharacterId(1));
+            }
+            app.world_mut()
+                .write_message(exa_combat::impact::BadFall { fighter });
+            app.update();
+            let cast = &app.world().resource::<Conversations>().cast;
+            topics::block(cast.get(1).unwrap(), 2, 30, 31).and_then(|m| m.words.clone())
+        };
+        assert_eq!(run(true), Some(vec![1, ACTIVATED]));
+        assert_eq!(run(false), None);
     }
 }

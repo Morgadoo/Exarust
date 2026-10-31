@@ -31,18 +31,22 @@
 //!
 //! [inf] The original reads the sinking point through the part's own
 //! weights; Exarust takes the root part's origin, and the character's
-//! counter as its root part's. The impact's voice request, the
-//! heavy-impact callback, the weapon branch and the level's impacts are
-//! not wired.
+//! counter as its root part's. A hard impact that is not from a character
+//! part asks for the pain grunt and, once a second while the down bit is
+//! set, the BadFall broadcast ([`hard_impact_cry`]). The heavy-impact
+//! callback is not wired.
 
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use exa_physics::body::{BodySystems, BodyTicks, GoLimp, Pairs, Ragdoll, Shove, SolverStages};
 use exa_physics::body::{Fallen, daze_energy};
 use exa_physics::part::{
-    Contact, ContactKind, HardImpact, PartState, base_impact_sound, classify, hard_impact,
-    limb_impact_damage, limb_impact_sound, stamp_sound_cooldown, weapon_impact_sound,
+    Contact, ContactKind, HardImpact, ImpactSound, PartState, base_impact_sound, classify,
+    hard_impact, limb_impact_damage, limb_impact_sound, limb_impact_voice, stamp_sound_cooldown,
+    weapon_impact_sound,
 };
+
+use crate::pain::{Loudness, PainSounded, PainSounds};
 
 use crate::attack::AttackMotion;
 use crate::damage::part_multipliers;
@@ -59,6 +63,10 @@ pub struct ImpactBook {
     pub height: Option<f32>,
     /// Each part's recent-impact counter, by part index.
     pub counts: Vec<i32>,
+    /// The game clock before which a hard impact does not repeat the fall's
+    /// script message. A hard impact stamps it a second ahead once it has
+    /// passed, whether or not the character is down.
+    pub fall_notice_ms: u32,
 }
 
 /// The impact damage taken falls by this a tick while over it.
@@ -178,7 +186,106 @@ struct Struck {
     part: usize,
     other: Entity,
     other_strikes: bool,
+    /// The other body is a character part: both of the limb-family bits are
+    /// set. Such a blow still sounds and hurts when the part is not itself
+    /// striking; it does not grunt or announce the fall.
+    other_limb: bool,
     impact: f32,
+}
+
+/// A hard impact on a down character, at most once a second: witnesses who
+/// can see the character activate their BadFall topic.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BadFall {
+    pub fighter: Entity,
+}
+
+/// What a sounding limb impact adds after its damage and its clock.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ImpactCry {
+    /// The grunt, when the other body is not a character part, the scaled
+    /// impact is over 15 and the character is not dead.
+    pub voice: Option<exa_physics::part::ImpactVoice>,
+    /// [`ImpactBook::fall_notice_ms`] after this impact.
+    pub notice_ms: u32,
+    /// The down bit is set and the one-second notice has elapsed.
+    pub bad_fall: bool,
+}
+
+/// The pain grunt and the fall notice a sounding limb impact adds. The
+/// grunt is line 1 at half the impact's volume; the voice's own spacing
+/// still gates whether it plays. The notice moves a second ahead whenever
+/// it has elapsed, and the fall is announced only then, and only while the
+/// down bit is set (getting up still has it; dead does not reach here).
+/// A character part, a scaled impact of 15 or less, and the dead condition
+/// leave the notice where it is.
+pub fn hard_impact_cry(
+    sound: &ImpactSound,
+    condition: u32,
+    other_limb: bool,
+    notice_ms: u32,
+    now: u32,
+) -> ImpactCry {
+    let voice = if other_limb {
+        None
+    } else {
+        limb_impact_voice(sound, condition)
+    };
+    if voice.is_none() {
+        return ImpactCry {
+            voice: None,
+            notice_ms,
+            bad_fall: false,
+        };
+    }
+    if notice_ms < now {
+        ImpactCry {
+            voice,
+            notice_ms: now.wrapping_add(1_000),
+            bad_fall: condition & Condition::DOWN.0 != 0,
+        }
+    } else {
+        ImpactCry {
+            voice,
+            notice_ms,
+            bad_fall: false,
+        }
+    }
+}
+
+/// Writes [`hard_impact_cry`] onto the character and the two messages.
+#[allow(clippy::too_many_arguments)]
+fn note_cry(
+    fighter: Entity,
+    point: Vec3,
+    condition: Condition,
+    book: &mut ImpactBook,
+    sound: &ImpactSound,
+    other_limb: bool,
+    now: u32,
+    cries: &mut ImpactCries,
+) {
+    let cry = hard_impact_cry(sound, condition.0, other_limb, book.fall_notice_ms, now);
+    book.fall_notice_ms = cry.notice_ms;
+    if let Some(voice) = cry.voice {
+        cries.pains.write(PainSounded {
+            fighter,
+            point,
+            sounds: PainSounds {
+                wound: None,
+                voice: Some((
+                    1,
+                    Loudness {
+                        volume: voice.volume,
+                        pitch: voice.pitch,
+                    },
+                )),
+            },
+        });
+    }
+    if cry.bad_fall {
+        cries.falls.write(BadFall { fighter });
+    }
 }
 
 /// Whether a hard impact is dropped after its sound and before the clock's
@@ -234,6 +341,13 @@ pub struct WeaponImpacts<'w, 's> {
     pub camera_hits: MessageWriter<'w, CameraHit>,
 }
 
+/// The pain grunt and the fall broadcast a hard limb impact writes.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct ImpactCries<'w> {
+    pains: MessageWriter<'w, PainSounded>,
+    falls: MessageWriter<'w, BadFall>,
+}
+
 /// Limb impacts from the pair stage's last detection, then each
 /// character's upkeep.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
@@ -259,6 +373,7 @@ pub fn strike_limbs(
     mut sounds: MessageWriter<ImpactSounded>,
     mut weakened: MessageWriter<Weakened>,
     mut winds: MessageWriter<SecondWindFired>,
+    mut cries: ImpactCries,
     mut roll: Local<Roll>,
     names: Query<(Option<&Name>, Option<&ChildOf>)>,
 ) {
@@ -334,12 +449,14 @@ pub fn strike_limbs(
                 };
                 let other_strikes =
                     other_part.state.is_limb() && other_part.state.has(PartState::STRIKING);
+                let other_limb = other_part.state.bits() & PartState::LIMB == PartState::LIMB;
                 if fighters.contains(target) {
                     struck.push(Struck {
                         target,
                         part: own.1,
                         other: other_root,
                         other_strikes,
+                        other_limb,
                         impact: *impact,
                     });
                     if bevy::log::tracing::enabled!(bevy::log::Level::DEBUG) {
@@ -474,6 +591,17 @@ pub fn strike_limbs(
         }
         let cooldown = sound.spread_cooldown(roll.below(CLOCK_SPREAD_MS));
         body.parts[root].sound_ready_ms = now.wrapping_add(cooldown);
+        let point = body.parts[root].transform().translation.into();
+        note_cry(
+            s.target,
+            point,
+            *condition,
+            &mut book,
+            &sound,
+            s.other_limb,
+            now,
+            &mut cries,
+        );
     }
     // A held item's own weapon-body impact: a held weapon (its permanent
     // weapon bit) rings its own set and, while its owner's window is open,
@@ -715,9 +843,9 @@ pub fn strike_limbs(
 /// health, daze, the taken total). As in [`strike_limbs`], a hard impact on
 /// a striking part during an overhead swing is dropped before the clock is
 /// set. With no other body the original skips the striker's combat-state
-/// step, so no [`LimbImpact`] is sent. The pain voice and the BadFall
-/// message the original adds for a scaled strength over 15 are not
-/// reproduced (nor are they for body blows).
+/// step, so no [`LimbImpact`] is sent. There is no other body, so the
+/// pain grunt and the BadFall broadcast run as they do for a blow that is
+/// not from a character part ([`hard_impact_cry`]).
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn level_impacts(
     mut commands: Commands,
@@ -737,6 +865,7 @@ pub fn level_impacts(
     mut shoves: MessageWriter<Shove>,
     mut weakened: MessageWriter<Weakened>,
     mut winds: MessageWriter<SecondWindFired>,
+    mut cries: ImpactCries,
     mut roll: Local<Roll>,
 ) {
     let now = ticks.as_ref().map_or(0, |t| t.millis()) as u32;
@@ -843,6 +972,10 @@ pub fn level_impacts(
             }
             let cooldown = sound.spread_cooldown(roll.below(CLOCK_SPREAD_MS));
             body.parts[root].sound_ready_ms = now.wrapping_add(cooldown);
+            let point = body.parts[root].transform().translation.into();
+            note_cry(
+                entity, point, *condition, &mut book, &sound, false, now, &mut cries,
+            );
         }
     }
 }
@@ -890,6 +1023,8 @@ pub(crate) fn plugin(app: &mut App) {
         .add_message::<ImpactSounded>()
         .add_message::<WeaponSounded>()
         .add_message::<CameraHit>()
+        .add_message::<PainSounded>()
+        .add_message::<BadFall>()
         .add_systems(
             FixedUpdate,
             sync_held_striking

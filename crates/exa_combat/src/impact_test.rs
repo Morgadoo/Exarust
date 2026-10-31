@@ -36,6 +36,57 @@ fn an_overhead_striking_part_drops_its_hard_impact() {
     assert!(!overhead_drop(false, false));
 }
 
+/// A scaled impact over 15 that is not from a character part grunts, and a
+/// down character announces the fall once a second. Standing still starts
+/// that second, so a fall inside it stays quiet. Dead, a character part
+/// and a scaled impact of 15 do neither.
+#[test]
+fn a_hard_impact_grunts_and_announces_one_fall_a_second() {
+    let hard = limb_impact_sound(100.0, true).unwrap();
+    let cry = hard_impact_cry(&hard, Condition::DOWN.0, false, 0, 50);
+    assert_eq!(cry.voice.unwrap().volume, 0.5);
+    assert_eq!(cry.voice.unwrap().pitch, 1.0);
+    assert!(cry.bad_fall);
+    assert_eq!(cry.notice_ms, 1_050);
+    // The grunt still happens; the fall does not, until the second elapses.
+    let again = hard_impact_cry(&hard, Condition::DOWN.0, false, cry.notice_ms, 1_050);
+    assert!(again.voice.is_some());
+    assert!(!again.bad_fall);
+    assert_eq!(again.notice_ms, 1_050);
+    let later = hard_impact_cry(&hard, Condition::DOWN.0, false, cry.notice_ms, 1_051);
+    assert!(later.bad_fall);
+    assert_eq!(later.notice_ms, 2_051);
+    // Standing grunts and starts the second, without the fall.
+    let stood = hard_impact_cry(&hard, Condition::NORMAL.0, false, 0, 10);
+    assert!(stood.voice.is_some());
+    assert!(!stood.bad_fall);
+    assert_eq!(stood.notice_ms, 1_010);
+    let fell = hard_impact_cry(&hard, Condition::DOWN.0, false, stood.notice_ms, 20);
+    assert!(fell.voice.is_some());
+    assert!(!fell.bad_fall);
+    // Getting up still has the down bit, so it announces.
+    let rising = hard_impact_cry(&hard, Condition::GETTING_UP.0, false, 0, 1);
+    assert!(rising.bad_fall);
+    // Dead, a character part, and 15 exactly stay silent and do not stamp.
+    assert_eq!(
+        hard_impact_cry(&hard, Condition::DEAD.0, false, 7, 100).notice_ms,
+        7
+    );
+    assert!(
+        hard_impact_cry(&hard, Condition::DEAD.0, false, 7, 100)
+            .voice
+            .is_none()
+    );
+    assert!(hard_impact_cry(&hard, 0, true, 7, 100).voice.is_none());
+    assert_eq!(hard_impact_cry(&hard, 0, true, 7, 100).notice_ms, 7);
+    let soft = limb_impact_sound(30.0, true).unwrap();
+    assert_eq!(soft.scaled, 15.0);
+    assert!(hard_impact_cry(&soft, 0, false, 0, 1).voice.is_none());
+    assert_eq!(hard_impact_cry(&soft, 0, false, 4, 1).notice_ms, 4);
+    // The clock at the notice itself has not passed it.
+    assert!(!hard_impact_cry(&hard, Condition::DOWN.0, false, 50, 50).bad_fall);
+}
+
 /// The impact damage taken falls by the double 0.01 while over it.
 #[test]
 fn the_impact_damage_taken_recovers() {
@@ -111,6 +162,8 @@ fn a_thrown_ball_hurts_the_limb_it_strikes() {
             .insert_resource(BodyTicks(100))
             .add_message::<LimbImpact>()
             .add_message::<ImpactSounded>()
+            .add_message::<crate::pain::PainSounded>()
+            .add_message::<BadFall>()
             .add_message::<WeaponSounded>()
             .add_message::<CameraHit>()
             .add_message::<Weakened>()
@@ -169,6 +222,8 @@ fn a_struck_weapon_body_rings_and_records_its_strength() {
         .insert_resource(BodyTicks(100))
         .add_message::<LimbImpact>()
         .add_message::<ImpactSounded>()
+        .add_message::<crate::pain::PainSounded>()
+        .add_message::<BadFall>()
         .add_message::<WeaponSounded>()
         .add_message::<CameraHit>()
         .add_message::<Weakened>()
@@ -236,6 +291,8 @@ fn an_overhead_strikers_hard_impact_sounds_and_is_dropped() {
         .insert_resource(BodyTicks(100))
         .add_message::<LimbImpact>()
         .add_message::<ImpactSounded>()
+        .add_message::<crate::pain::PainSounded>()
+        .add_message::<BadFall>()
         .add_message::<WeaponSounded>()
         .add_message::<CameraHit>()
         .add_message::<Weakened>()
@@ -345,6 +402,8 @@ fn a_limb_hitting_the_level_sounds_and_hurts() {
         .insert_resource(BodyTicks(100))
         .add_message::<LimbImpact>()
         .add_message::<ImpactSounded>()
+        .add_message::<crate::pain::PainSounded>()
+        .add_message::<BadFall>()
         .add_message::<Weakened>()
         .add_message::<SecondWindFired>()
         .add_message::<crate::block::ShieldRung>()
