@@ -91,6 +91,46 @@ fn tick(body: &mut Ragdoll, glue: &mut DoorBody, n: i32) {
     }
 }
 
+/// The room route reads the pair flag. A shut hinge keeps it set, so the
+/// link stays unroutable; swung 0.4 rad or more past closed, the flag
+/// clears and the link becomes routable.
+#[test]
+fn a_shut_door_stays_unroutable_until_it_opens() {
+    let (mut body, mut glue) = door_at(Vec3::ZERO, 0.0, 0, 0);
+    let shut = glue.door.shape.closed();
+    tick(&mut body, &mut glue, 1);
+    assert!(
+        glue.door.both_passable,
+        "a shut door's pair flag stays set, so the route stays shut"
+    );
+    glue.door.closed = false;
+    // A leaf left at rest sleeps after its first tick, and a sleeping leaf
+    // skips the door step. The solver also pulls an opened leaf back toward
+    // shut, so the stop is placed on the open side after that tick, where
+    // the heading the passage reads is measured.
+    body.wake();
+    body.tick(NONE);
+    let w = body.world[glue.stop].on_part;
+    let open = glue.stop_at(&body, shut - 0.41);
+    let at = body.parts[0].point(&w);
+    body.parts[0].push(&w, open - at);
+    glue.tick(&mut body, 24, None);
+    assert!(
+        (glue.heading(&body) - (shut - 0.41)).abs() < 0.05,
+        "heading {} wanted {}",
+        glue.heading(&body),
+        shut - 0.41
+    );
+    assert!(
+        !glue.door.both_passable,
+        "heading {} angle {} closed {} flag {}",
+        glue.heading(&body),
+        glue.door.angle,
+        glue.door.shape.closed(),
+        glue.door.both_passable
+    );
+}
+
 /// The leaf reads its shape, frame and shut angle from its links, at any
 /// turn of its node.
 #[test]
