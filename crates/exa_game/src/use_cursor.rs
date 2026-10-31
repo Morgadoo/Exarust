@@ -27,7 +27,8 @@
 //! character view (a liquid) or an item panel's entry
 //! ([`player_controls::use_release`]). Exarust applies the unlock, the rattle
 //! and a pour on the body (a salve fills its heal pool, an elixir sets the
-//! potion). A kit's timed clean or repair is still only reported.
+//! potion). A cleaning or repair kit plays its sound and lowers the item's
+//! dirt or wear over two seconds.
 //!
 //! The debug flag `--use-item ID@FRAME` puts the item into the player's pack
 //! and calls the use hook for it at that frame after the load, as its
@@ -69,8 +70,12 @@ pub struct UseHook {
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UseReleased {
     pub release: UseRelease,
+    /// The item the cursor was holding.
     pub item: u32,
     pub target: Option<Entity>,
+    /// The item the use lands on: a placed object's id, or the panel entry's
+    /// id. Zero when the release has no item under it.
+    pub subject: u32,
 }
 
 /// `--use-item ID@FRAME`: the item put into the player's pack and its use
@@ -348,6 +353,7 @@ fn end_use(
     let mut target = None;
     let mut door = DoorLock::None;
     let mut item_id = 0;
+    let mut subject = 0;
     let over = if over_gui {
         let in_view = at.zip(crate::doll_view::open_view(&under.screens));
         if in_view.is_some_and(|(at, view)| view.contains(at.x, at.y)) {
@@ -361,9 +367,12 @@ fn end_use(
                     entry_at(c, local).map(|i| c.entries[i].id)
                 });
             match entry {
-                Some(id) => UseOver::ItemWindow {
-                    same_item: id == item,
-                },
+                Some(id) => {
+                    subject = id;
+                    UseOver::ItemWindow {
+                        same_item: id == item,
+                    }
+                }
                 None => UseOver::OtherGui,
             }
         }
@@ -390,6 +399,7 @@ fn end_use(
                     classification(false, true, false)
                 } else {
                     item_id = crate::hand::object_ids(body, &under.objects).0;
+                    subject = item_id;
                     classification(false, false, item_id != 0)
                 }
             }
@@ -440,6 +450,7 @@ fn end_use(
         release,
         item,
         target,
+        subject,
     });
 }
 
@@ -549,6 +560,185 @@ fn mark_panel_entry(screens: &mut GameScreens, panel_number: u32, slot: i32, fla
     }
 }
 
+/// The dirt and wear bytes a kit reads. `None` is a missing section. An
+/// apparel section, even at dirt 0, hides the weapon's dirt: the original
+/// reads the body first and does not fall through.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct KitBytes {
+    apparel_dirt: Option<u8>,
+    weapon_dirt: Option<u8>,
+    apparel_wear: Option<u8>,
+    weapon_wear: Option<u8>,
+    material: u8,
+}
+
+fn kit_bytes(item: &exa_formats::objdb::Item) -> KitBytes {
+    KitBytes {
+        apparel_dirt: item
+            .appearance
+            .map(|appearance| appearance.dirt)
+            .or(item.has_body.then_some(0)),
+        weapon_dirt: item.weapon.as_ref().map(|weapon| weapon.dirt),
+        apparel_wear: item.appearance.map(|appearance| appearance.damage),
+        weapon_wear: item.weapon.as_ref().map(|weapon| weapon.damage),
+        material: item.equip_lock,
+    }
+}
+
+/// The dirt byte a clean reads: the apparel section's when the body has
+/// one, otherwise the weapon's.
+fn clean_dirt(bytes: KitBytes) -> Option<u8> {
+    bytes.apparel_dirt.or(bytes.weapon_dirt)
+}
+
+/// The wear byte a repair reads. A weapon section replaces the apparel's.
+fn repair_wear(bytes: KitBytes) -> Option<u8> {
+    bytes.weapon_wear.or(bytes.apparel_wear)
+}
+
+fn write_kit_byte(bytes: &mut KitBytes, section: u8, kind: u8, value: u8) {
+    let apparel = section == player_controls::APPAREL_SECTION;
+    if kind == player_controls::CLEAN {
+        if apparel {
+            bytes.apparel_dirt = Some(value);
+        } else {
+            bytes.weapon_dirt = Some(value);
+        }
+    } else if apparel {
+        bytes.apparel_wear = Some(value);
+    } else {
+        bytes.weapon_wear = Some(value);
+    }
+}
+
+/// Dirt and wear the kits have started changing, by item id. Seeded from
+/// the item record the first time a kit lands on it.
+#[derive(Resource, Debug, Default)]
+struct KitConditions {
+    bytes: std::collections::HashMap<u32, KitBytes>,
+    work: player_controls::TimedList,
+}
+
+/// A cleaning or repair kit the release named. The timed byte is stored on
+/// [`KitConditions`] and written down each frame; the sound plays at once.
+#[allow(clippy::too_many_arguments)]
+fn apply_kit(
+    mut released: MessageReader<UseReleased>,
+    mut kits: ResMut<KitConditions>,
+    players: Query<&GlobalTransform, With<PlayerBody>>,
+    targets: Query<&GlobalTransform>,
+    game: Option<Res<Game>>,
+    mut items: ResMut<DollItems>,
+    cursor: Res<UseCursor>,
+    mut screens: ResMut<GameScreens>,
+    time: Option<Res<Time<Virtual>>>,
+    mut sounds: MessageWriter<exa_audio::PointSounded>,
+    mut roll: Local<Option<crate::arena::Mt19937>>,
+) {
+    let now_ms = time.as_ref().map_or(0, |t| t.elapsed().as_millis() as u32);
+    items.ensure(game.as_deref());
+    for release in released.read() {
+        let kind = match release.release {
+            UseRelease::CleanWorld | UseRelease::CleanGui => player_controls::CLEAN,
+            UseRelease::RepairWorld | UseRelease::RepairGui => player_controls::REPAIR,
+            _ => continue,
+        };
+        let Some(subject) = (release.subject != 0).then_some(release.subject) else {
+            continue;
+        };
+        let bytes = *kits
+            .bytes
+            .entry(subject)
+            .or_insert_with(|| items.get(subject).map(kit_bytes).unwrap_or_default());
+        let at_point = matches!(release.release, UseRelease::CleanWorld);
+        let active = match kind {
+            player_controls::CLEAN => {
+                clean_dirt(bytes).is_some_and(|dirt| dirt > player_controls::CLEAN_TO)
+            }
+            _ => repair_wear(bytes)
+                .is_some_and(|wear| player_controls::repair_timed(wear, bytes.material).is_some()),
+        };
+        let draw = if active {
+            roll.get_or_insert_with(|| crate::arena::Mt19937::new(5489))
+                .unit() as f32
+        } else {
+            0.0
+        };
+        let use_ = player_controls::use_on(
+            kind,
+            0,
+            false,
+            0,
+            repair_wear(bytes),
+            clean_dirt(bytes),
+            bytes.material,
+            now_ms,
+            draw,
+            at_point,
+        );
+        if let Some(timed) = use_.outcome.timed() {
+            kits.work.push(player_controls::TimedItem {
+                timed,
+                item: subject,
+            });
+        }
+        if use_.marks != 0
+            && let Some(flags) = panel_entry_flags(&screens, cursor.panel, cursor.slot)
+        {
+            mark_panel_entry(&mut screens, cursor.panel, cursor.slot, flags | use_.marks);
+        }
+        if let Some(sound) = use_.sound {
+            let name = match sound.kind {
+                player_controls::UseSoundKind::Clean => "CleanItem01",
+                player_controls::UseSoundKind::Repair => "ReprSphereA1",
+                player_controls::UseSoundKind::Pour => continue,
+            };
+            let position = if at_point {
+                release
+                    .target
+                    .and_then(|entity| targets.get(entity).ok())
+                    .map(|transform| transform.translation())
+            } else {
+                players
+                    .iter()
+                    .next()
+                    .map(|transform| transform.translation())
+            };
+            sounds.write(exa_audio::PointSounded {
+                name: name.into(),
+                position: position.unwrap_or(Vec3::ZERO),
+                volume: sound.volume,
+                pitch: sound.pitch,
+                flags: 0,
+            });
+        }
+    }
+}
+
+/// One frame of the kits' timed bytes. A value is written only while it
+/// lowers the section's byte or arrives, apparel first.
+fn tick_kits(time: Option<Res<Time<Virtual>>>, mut kits: ResMut<KitConditions>) {
+    let now_ms = time.as_ref().map_or(0, |t| t.elapsed().as_millis() as u32);
+    settle_kits(&mut kits, now_ms);
+}
+
+fn settle_kits(kits: &mut KitConditions, now_ms: u32) {
+    let KitConditions { bytes, work } = kits;
+    let writes = work.tick_kind(now_ms, |id, section, kind| {
+        bytes.get(&id).and_then(|bytes| match (section, kind) {
+            (player_controls::APPAREL_SECTION, player_controls::CLEAN) => bytes.apparel_dirt,
+            (player_controls::WEAPON_SECTION, player_controls::CLEAN) => bytes.weapon_dirt,
+            (player_controls::APPAREL_SECTION, _) => bytes.apparel_wear,
+            _ => bytes.weapon_wear,
+        })
+    });
+    for (id, section, kind, value) in writes {
+        if let Some(bytes) = bytes.get_mut(&id) {
+            write_kit_byte(bytes, section, kind, value);
+        }
+    }
+}
+
 /// The use cursor's end, the panels' double click and the hook: the
 /// world's and the panels' own press paths run after it.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -563,6 +753,7 @@ impl Plugin for UseCursorPlugin {
         app.init_resource::<UseCursor>()
             .init_resource::<UseScript>()
             .init_resource::<DollItems>()
+            .init_resource::<KitConditions>()
             .add_message::<UseHook>()
             .add_message::<UseReleased>()
             .add_systems(
@@ -570,6 +761,8 @@ impl Plugin for UseCursorPlugin {
                 (
                     end_use,
                     apply_pour,
+                    apply_kit,
+                    tick_kits,
                     panel_double_click,
                     scripted_use,
                     begin_use,
@@ -696,6 +889,7 @@ mod tests {
             release: UseRelease::Pour,
             item: 1,
             target: Some(body),
+            subject: 0,
         });
         app.update();
         let pool = app
@@ -705,5 +899,36 @@ mod tests {
             .health
             .heal_pool;
         assert_eq!(pool, 0.2);
+    }
+
+    /// A clean starts at the apparel dirt and, once the two seconds are
+    /// spent, leaves it at 0x20. The weapon byte is written on the same pass
+    /// because the apparel write happened.
+    #[test]
+    fn a_clean_lowers_dirty_apparel_to_0x20() {
+        let mut kits = KitConditions::default();
+        kits.bytes.insert(
+            7,
+            KitBytes {
+                apparel_dirt: Some(0x80),
+                weapon_dirt: Some(0x80),
+                ..KitBytes::default()
+            },
+        );
+        kits.work.push(player_controls::TimedItem {
+            timed: player_controls::Timed {
+                kind: player_controls::CLEAN,
+                from: 0x80,
+                to: player_controls::CLEAN_TO,
+                started_ms: 0,
+            },
+            item: 7,
+        });
+        settle_kits(&mut kits, 0);
+        assert_eq!(kits.bytes[&7].apparel_dirt, Some(0x80));
+        settle_kits(&mut kits, 2_000);
+        assert_eq!(kits.bytes[&7].apparel_dirt, Some(player_controls::CLEAN_TO));
+        assert_eq!(kits.bytes[&7].weapon_dirt, Some(player_controls::CLEAN_TO));
+        assert!(kits.work.entries.is_empty());
     }
 }

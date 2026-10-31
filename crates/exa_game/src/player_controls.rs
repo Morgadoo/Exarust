@@ -201,6 +201,42 @@ impl TimedList {
         writes
     }
 
+    /// [`tick_sections`] for a kit, whose callback also hears the entry's
+    /// kind so a clean reads the dirt byte and a repair the wear byte.
+    /// Each write is `(item, section, kind, value)`.
+    pub fn tick_kind(
+        &mut self,
+        now_ms: u32,
+        mut current: impl FnMut(u32, u8, u8) -> Option<u8>,
+    ) -> Vec<(u32, u8, u8, u8)> {
+        let mut writes = Vec::with_capacity(self.entries.len() * 2);
+        let mut i = 0;
+        while i < self.entries.len() {
+            let entry = self.entries[i];
+            let (value, done) = entry.timed.value(now_ms);
+            let mut next_section = true;
+            if let Some(old) = current(entry.item, APPAREL_SECTION, entry.timed.kind) {
+                if old > value || done {
+                    writes.push((entry.item, APPAREL_SECTION, entry.timed.kind, value));
+                } else {
+                    next_section = false;
+                }
+            }
+            if next_section
+                && let Some(old) = current(entry.item, WEAPON_SECTION, entry.timed.kind)
+                && (old > value || done)
+            {
+                writes.push((entry.item, WEAPON_SECTION, entry.timed.kind, value));
+            }
+            if done {
+                self.entries.swap_remove(i);
+            } else {
+                i += 1;
+            }
+        }
+        writes
+    }
+
     /// One frame against the entries' own starting bytes: every value that
     /// lowers its start (or arrives) is returned, in the loop's order.
     pub fn tick(&mut self, now_ms: u32) -> Vec<(u32, u8)> {
