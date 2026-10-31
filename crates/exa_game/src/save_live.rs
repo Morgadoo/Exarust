@@ -621,6 +621,38 @@ pub fn stamp_story(session: &mut Session, flow: Option<&crate::flow::Flow>) {
     session.memory_flags = (flow.story.memory != 0).then_some(flow.story.memory);
 }
 
+/// The story's discovery chunk and its global-experience snapshot, from the
+/// live experience once the level-start hook has run. A story that has not
+/// started leaves the session's copies alone.
+pub fn stamp_discovery(
+    session: &mut Session,
+    experience: Option<&crate::experience_live::StoryExperience>,
+) {
+    let Some(experience) = experience.filter(|experience| experience.started) else {
+        return;
+    };
+    session.discovery = Some(experience.discovery());
+    session.global_experience = Some(experience.state.global);
+}
+
+/// Puts a loaded story's discovery chunk and global-experience snapshot onto
+/// the live experience. A chunk that does not parse is left unused. The
+/// account value from the settings is replaced when the save carried one.
+pub fn apply_loaded_discovery(
+    live: &mut crate::experience_live::StoryExperience,
+    session: &Session,
+) {
+    if let Some(bytes) = &session.discovery {
+        match crate::experience::read_discovery(bytes) {
+            Ok(found) => live.state.restore(found),
+            Err(error) => warn!("save: discovery data does not restore: {error:?}"),
+        }
+    }
+    if let Some(global) = session.global_experience {
+        live.state.global = global;
+    }
+}
+
 /// The live session with the story player's record and placement: the
 /// sections it writes besides the player data.
 fn story_save_world(
@@ -654,6 +686,7 @@ fn save_to_new_slot(
     created: Option<Res<crate::creator_screen::CreatedCharacter>>,
     mut report: ResMut<SaveReport>,
     flow: Option<Res<crate::flow::Flow>>,
+    experience: Option<Res<crate::experience_live::StoryExperience>>,
 ) {
     if requests.read().count() == 0 {
         return;
@@ -688,6 +721,7 @@ fn save_to_new_slot(
         ),
         Mode::Story => {
             stamp_story(&mut session, flow.as_deref());
+            stamp_discovery(&mut session, experience.as_deref());
             let player = live_story_player(&players, created.as_deref());
             let export = story_save_world(&mut session, player.as_ref());
             (player.map(|p| p.record.name), export)
@@ -731,6 +765,7 @@ fn run_save_steps(
     players: PlayerSaveQuery,
     fighters: Query<&exa_combat::Fighter, With<crate::player::PlayerBody>>,
     created: Option<Res<crate::creator_screen::CreatedCharacter>>,
+    experience: Option<Res<crate::experience_live::StoryExperience>>,
     mut report: ResMut<SaveReport>,
 ) {
     let steps: Vec<SaveStep> = steps.read().copied().collect();
@@ -787,6 +822,7 @@ fn run_save_steps(
                     .unwrap_or_default()
                     .stamp(&mut session);
                 stamp_story(&mut session, flow.as_deref());
+                stamp_discovery(&mut session, experience.as_deref());
                 let player = live_story_player(&players, created.as_deref());
                 let export = story_save_world(&mut session, player.as_ref());
                 match list.save_current(&session, &export.save_world(None, false)) {
@@ -823,6 +859,7 @@ fn run_save_steps(
                     .unwrap_or_default()
                     .stamp(&mut session);
                 stamp_story(&mut session, flow.as_deref());
+                stamp_discovery(&mut session, experience.as_deref());
                 let player = live_story_player(&players, created.as_deref());
                 let export = story_save_world(&mut session, player.as_ref());
                 // The disable flag skips the save but not the copy: the
@@ -1305,6 +1342,33 @@ mod tests {
         flow.story.memory = 0;
         stamp_story(&mut session, Some(&flow));
         assert_eq!(session.memory_flags, None);
+    }
+
+    /// A started story's save carries the item kinds it has seen and the
+    /// account experience; a load puts both back. A story that has not
+    /// started does not replace them.
+    #[test]
+    fn a_story_save_carries_discovery_and_a_load_restores_it() {
+        use crate::experience_live::StoryExperience;
+
+        let mut live = StoryExperience::default();
+        live.started = true;
+        live.state.seen = vec![77];
+        live.state.global = 40;
+        let mut session = Session::story();
+        stamp_discovery(&mut session, Some(&live));
+        assert_eq!(session.global_experience, Some(40));
+        let mut restored = StoryExperience::default();
+        restored.state.global = 1;
+        apply_loaded_discovery(&mut restored, &session);
+        assert_eq!(restored.state.seen, [77]);
+        assert_eq!(restored.state.global, 40);
+        live.started = false;
+        session.discovery = None;
+        session.global_experience = None;
+        stamp_discovery(&mut session, Some(&live));
+        assert!(session.discovery.is_none());
+        assert_eq!(session.global_experience, None);
     }
 
     #[test]

@@ -174,6 +174,7 @@ fn begin_story_experience(
     ticks: Option<Res<exa_physics::body::BodyTicks>>,
     play: Option<Res<PlaySession>>,
     players: Query<(Entity, &exa_character::record::CharacterData), With<PlayerBody>>,
+    loaded: Option<Res<crate::save_live::LoadedStory>>,
     mut commands: Commands,
     mut live: ResMut<StoryExperience>,
 ) {
@@ -185,6 +186,9 @@ fn begin_story_experience(
     };
     let now = now_ms(ticks.as_deref());
     live.begin(&data.record, now);
+    if let Some(loaded) = loaded.as_deref() {
+        crate::save_live::apply_loaded_discovery(&mut live, &loaded.0);
+    }
     info!(
         "experience: level start at {now} ms: pool {}, account {}, technique word {:#010x}",
         live.state.pool, live.state.global, live.technique_word
