@@ -465,6 +465,7 @@ impl Plugin for ConditionPlugin {
             FixedUpdate,
             PostureTick.after(StanceTick).before(CharacterTicks),
         )
+        .add_message::<Awakened>()
         .add_systems(
             CharacterTick,
             (
@@ -579,6 +580,12 @@ pub fn track_condition(
     }
 }
 
+/// A dormant body started to wake: witnesses who can see it activate Awaken.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Awakened {
+    pub fighter: Entity,
+}
+
 /// The ticked body's knock-out wake. The original's body tick runs it on
 /// every tick its state flags hold waking (0x20), right after the
 /// behaviour update and before the posture block (traced for C8: the call
@@ -604,6 +611,7 @@ pub fn track_wake(
         &mut Ragdoll,
         Option<&exa_anim::Animator>,
     )>,
+    mut awakened: MessageWriter<Awakened>,
 ) {
     let Ok((mut condition, mut flags, mut knock, mut body, anim)) = bodies.get_mut(ticked.body)
     else {
@@ -651,6 +659,11 @@ pub fn track_wake(
     knock.ready = out.ready;
     if let Some(stance) = out.stance {
         drive.set_stance(stance);
+    }
+    if out.awaken {
+        awakened.write(Awakened {
+            fighter: ticked.body,
+        });
     }
 }
 

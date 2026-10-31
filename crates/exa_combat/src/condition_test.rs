@@ -650,6 +650,7 @@ fn the_wake_clears_the_waking_bit_once_the_body_is_ready() {
     use exa_physics::body::BodyTicks;
     let mut app = App::new();
     app.insert_resource(BodyTicks(0))
+        .add_message::<Awakened>()
         .add_systems(Update, track_wake);
     let body = Ragdoll::new(&[]).with_drive();
     let stance = body.drive.as_ref().unwrap().race.stance;

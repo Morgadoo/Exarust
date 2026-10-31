@@ -35,6 +35,7 @@ impl Plugin for ScriptCastPlugin {
         app.add_message::<exa_script::ScriptEffect>()
             .add_message::<exa_combat::impact::BadFall>()
             .add_message::<exa_combat::DamageTaken>()
+            .add_message::<exa_combat::condition::Awakened>()
             .add_systems(
                 Update,
                 (
@@ -156,6 +157,7 @@ fn mirror_cast(
 fn announce_witnessed(
     mut falls: MessageReader<exa_combat::impact::BadFall>,
     mut wounds: MessageReader<exa_combat::DamageTaken>,
+    mut awakened: MessageReader<exa_combat::condition::Awakened>,
     conversations: Option<ResMut<Conversations>>,
     scripts: Option<Res<exa_script::Scripts>>,
     level: Option<Res<exa_world::room_view::LevelRooms>>,
@@ -164,7 +166,7 @@ fn announce_witnessed(
     places: Query<(&CharacterId, &GlobalTransform)>,
     mut effects: MessageWriter<exa_script::ScriptEffect>,
 ) {
-    if falls.is_empty() && wounds.is_empty() {
+    if falls.is_empty() && wounds.is_empty() && awakened.is_empty() {
         return;
     }
     let (Some(mut conversations), Some(scripts)) = (conversations, scripts.as_deref()) else {
@@ -172,6 +174,7 @@ fn announce_witnessed(
     };
     let fallen: Vec<Entity> = falls.read().map(|fall| fall.fighter).collect();
     let hurt: Vec<Entity> = wounds.read().map(|wound| wound.fighter).collect();
+    let waking: Vec<Entity> = awakened.read().map(|wake| wake.fighter).collect();
     let mut at = std::collections::HashMap::new();
     for (id, transform) in &places {
         at.insert(id.0, transform.translation() * 100.0);
@@ -200,6 +203,9 @@ fn announce_witnessed(
         }
         for fighter in hurt {
             tell(scene, fighter, b"DamageTaken");
+        }
+        for fighter in waking {
+            tell(scene, fighter, b"Awaken");
         }
     });
     for effect in out {
