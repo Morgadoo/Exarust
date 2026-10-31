@@ -26,6 +26,7 @@
 
 pub mod blast;
 pub mod bubble;
+pub mod bubble_draw;
 pub mod danger;
 pub mod effect_geometry;
 pub mod emissive;
@@ -176,7 +177,14 @@ impl Plugin for EffectsPlugin {
             )
                 .chain(),
         );
-        app.add_systems(Update, (fire_row::frame_rows, portal::light_portals));
+        app.init_resource::<bubble_draw::DebugBubble>().add_systems(
+            Update,
+            (
+                fire_row::frame_rows,
+                portal::light_portals,
+                bubble_draw::debug_bubble,
+            ),
+        );
     }
 }
 
