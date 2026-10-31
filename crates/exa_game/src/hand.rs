@@ -2399,7 +2399,11 @@ fn reach_hand(
     players: Query<(&GlobalTransform, &Children), With<Player>>,
     player_bodies: Query<PlayerParts, Without<PropBody>>,
     mut bodies: Query<OtherBodies, Without<PlayerBody>>,
-    levers: Query<&LeverBody>,
+    (levers, rooms, doors): (
+        Query<&LeverBody>,
+        Option<Res<exa_world::room_view::LevelRooms>>,
+        Query<&DoorBody>,
+    ),
 ) {
     let Some((feet, child)) = player_child(&players, &player_bodies) else {
         return;
@@ -2454,14 +2458,26 @@ fn reach_hand(
                 own.map(|r| (child, r, condition)),
             )
             .is_some_and(|p| {
-                // A lever's reach is measured from its node.
-                match p.hit {
+                // A door skips the room test. A lever is measured from its
+                // node. Anything else, and a lever, must also lie in the
+                // hip's room or through its open door.
+                let (to, offset) = match p.hit {
+                    Hit::Prop { body, .. } if doors.contains(body) => {
+                        return pick::within_reach(p.at.y * CM, (p.at - hip) * CM, ReachTo::Door);
+                    }
                     Hit::Prop { body, .. } if levers.contains(body) => {
                         let node = levers.get(body).map_or(p.at, |g| g.origin());
-                        pick::within_reach(p.at.y * CM, (node - hip) * CM, ReachTo::Wheel)
+                        (ReachTo::Wheel, node - hip)
                     }
-                    _ => pick::within_reach(p.at.y * CM, (p.at - hip) * CM, ReachTo::Point),
-                }
+                    _ => (ReachTo::Point, p.at - hip),
+                };
+                pick::reach(pick::Reach {
+                    to,
+                    height_cm: p.at.y * CM,
+                    offset_cm: offset * CM,
+                    region: lift_region(rooms.as_deref(), hip, p.at),
+                    region_applies: true,
+                })
             })
         }
     };
