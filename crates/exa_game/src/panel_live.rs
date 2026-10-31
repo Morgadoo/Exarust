@@ -480,6 +480,7 @@ pub(crate) fn release(
     mut dropped: MessageWriter<crate::doll_view::DollDrop>,
     mut scripted: ResMut<ScriptedRelease>,
     mut figure: MessageWriter<crate::figure_pick::FigureRelease>,
+    mut ended: MessageWriter<crate::use_cursor::GuiDragEnded>,
 ) {
     let scripted = scripted.0.take();
     if (scripted.is_none() && !buttons.just_released(MouseButton::Left)) || drag.source.is_none() {
@@ -503,6 +504,10 @@ pub(crate) fn release(
             *drag,
             at,
         ));
+        ended.write(crate::use_cursor::GuiDragEnded {
+            accepted: false,
+            id: drag.id,
+        });
         *drag = PanelDrag::default();
         return;
     }
@@ -520,6 +525,10 @@ pub(crate) fn release(
             bulk: drag.bulk,
             right_half: at.x - view.left > view.width() / 2,
         });
+        ended.write(crate::use_cursor::GuiDragEnded {
+            accepted: false,
+            id: drag.id,
+        });
         *drag = PanelDrag::default();
         return;
     }
@@ -530,6 +539,10 @@ pub(crate) fn release(
         if let Some(container) = container_mut(&mut screens, source) {
             container.finish_drag(0, true, true, 0, drag.bulk);
         }
+        ended.write(crate::use_cursor::GuiDragEnded {
+            accepted: false,
+            id: drag.id,
+        });
         *drag = PanelDrag::default();
         return;
     };
@@ -539,6 +552,10 @@ pub(crate) fn release(
         if let Some(container) = container_mut(&mut screens, source) {
             container.finish_drag(destination.number(), true, true, 0, drag.bulk);
         }
+        ended.write(crate::use_cursor::GuiDragEnded {
+            accepted: false,
+            id: drag.id,
+        });
         *drag = PanelDrag::default();
         return;
     }
@@ -578,6 +595,10 @@ pub(crate) fn release(
         local,
         core_ok,
     ) {
+        ended.write(crate::use_cursor::GuiDragEnded {
+            accepted: true,
+            id: drag.id,
+        });
         move_item(
             &mut commands,
             &mut bodies,
@@ -590,6 +611,11 @@ pub(crate) fn release(
             unit,
             vscale,
         );
+    } else {
+        ended.write(crate::use_cursor::GuiDragEnded {
+            accepted: false,
+            id: drag.id,
+        });
     }
     *drag = PanelDrag::default();
 }
@@ -709,6 +735,7 @@ impl Plugin for PanelLivePlugin {
         app.init_resource::<PanelDrag>()
             .init_resource::<PointerOverGui>()
             .init_resource::<ScriptedRelease>()
+            .add_message::<crate::use_cursor::GuiDragEnded>()
             .add_message::<crate::doll_view::DollDrop>()
             .add_message::<crate::figure_pick::FigureRelease>()
             .add_systems(Update, track_pointer.before(crate::hand::HandSystems))

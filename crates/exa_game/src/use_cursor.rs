@@ -55,6 +55,26 @@ use crate::player_controls::{
     self, DoorLock, PlaySession, UseBegin, UseCursor, UseOver, UseRelease,
 };
 
+/// A panel drag ended. `accepted` is a drop onto a panel; anything else,
+/// including a release outside every panel, is a cancel.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GuiDragEnded {
+    pub accepted: bool,
+    pub id: u32,
+}
+
+/// The kind-17 lift: the use item, the slot it came from (from one) and its
+/// panel. `panel` is `None` when no such lift is up.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct GuiItemLift {
+    /// The kind-17 item whose operative the accept reads.
+    pub item: u32,
+    /// The second word, which is the id on the drag.
+    pub dragged: u32,
+    pub slot: i32,
+    pub panel: Option<Panel>,
+}
+
 /// The game's use hook called by an item panel's double click: the item,
 /// its entry word, the entry's slot from one, and the panel.
 #[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,6 +303,7 @@ fn begin_use(
     catalogue: Option<Res<exa_items::catalogue::ItemCatalogue>>,
     mut icons: Option<ResMut<crate::item_panel_draw::PanelIcons>>,
     mut drag: Option<ResMut<crate::panel_live::PanelDrag>>,
+    mut lift: Option<ResMut<GuiItemLift>>,
 ) {
     for hook in hooks.read() {
         items.ensure(game.as_deref());
@@ -291,6 +312,9 @@ fn begin_use(
         match player_controls::use_begin(class, kind, second, playing) {
             UseBegin::OpenGui { item } => {
                 let Some(icons) = icons.as_deref_mut() else {
+                    if let Some(lift) = lift.as_deref_mut() {
+                        lift.panel = None;
+                    }
                     info!("use: {item:#x} has no icon manager, so it is not lifted");
                     continue;
                 };
@@ -319,6 +343,14 @@ fn begin_use(
                     flags: 0,
                     bulk,
                 };
+                if let Some(lift) = lift.as_deref_mut() {
+                    *lift = GuiItemLift {
+                        item: hook.item,
+                        dragged: item,
+                        slot: hook.slot,
+                        panel: Some(hook.panel),
+                    };
+                }
                 info!("use: {:#x} lifts the GUI item {item:#x}", hook.item);
             }
             UseBegin::Cursor => {
@@ -1022,6 +1054,7 @@ impl Plugin for UseCursorPlugin {
             .init_resource::<DollItems>()
             .init_resource::<KitConditions>()
             .init_resource::<LiveObjects>()
+            .init_resource::<GuiItemLift>()
             .add_message::<UseHook>()
             .add_message::<UseReleased>()
             .add_systems(
@@ -1041,7 +1074,98 @@ impl Plugin for UseCursorPlugin {
                     .after(crate::panel_live::track_pointer)
                     .before(crate::panel_live::PanelInput)
                     .before(crate::hand::HandSystems),
-            );
+            )
+            .add_systems(Update, settle_gui_lift.after(crate::panel_live::PanelInput));
+    }
+}
+
+/// An accepted drop of a kind-17 lift replaces the slot it came from with
+/// the operative's target, and plays the operative's sound. A cancel leaves
+/// that slot alone.
+#[allow(clippy::too_many_arguments)]
+fn settle_gui_lift(
+    mut ended: MessageReader<GuiDragEnded>,
+    mut lift: ResMut<GuiItemLift>,
+    mut screens: ResMut<GameScreens>,
+    items: Res<DollItems>,
+    mut icons: ResMut<crate::item_panel_draw::PanelIcons>,
+    catalogue: Option<Res<exa_items::catalogue::ItemCatalogue>>,
+    mut sounds: MessageWriter<exa_audio::PointSounded>,
+    players: Query<&GlobalTransform, With<PlayerBody>>,
+) {
+    for end in ended.read() {
+        let Some(panel) = lift.panel else {
+            continue;
+        };
+        if end.id != lift.dragged {
+            continue;
+        }
+        let item = lift.item;
+        let slot = lift.slot;
+        lift.panel = None;
+        if !end.accepted || slot <= 0 {
+            continue;
+        }
+        let Some(operative) = items.get(item).and_then(|item| item.operative) else {
+            continue;
+        };
+        if operative.class != 0 || operative.kind != player_controls::GUI_ITEM_KIND {
+            continue;
+        }
+        let (icon, half) = icons.reserve(operative.target, 0, catalogue.as_deref());
+        if icon == 0 {
+            continue;
+        }
+        let index = slot as usize - 1;
+        let replaced = {
+            let Some(container) = crate::panel_live::container_mut(&mut screens, panel) else {
+                icons.release(icon);
+                continue;
+            };
+            let icon_size = container.icon_size;
+            let client = container.client;
+            crate::item_container::replace_entry(
+                &mut container.entries,
+                &mut container.used,
+                index,
+                &crate::item_container::Replacement {
+                    id: operative.target,
+                    icon,
+                    flags: 0,
+                    bulk: &|id| {
+                        catalogue
+                            .as_deref()
+                            .and_then(|catalogue| catalogue.bulk(id))
+                            .map(i32::from)
+                            .unwrap_or(0)
+                    },
+                    half,
+                    icon_size,
+                    client,
+                },
+            )
+        };
+        let Some(old) = replaced else {
+            icons.release(icon);
+            continue;
+        };
+        if old != 0 && old != icon {
+            icons.release(old);
+        }
+        if let Some(name) = player_controls::use_sound_name(&operative) {
+            let position = players
+                .iter()
+                .next()
+                .map(|transform| transform.translation())
+                .unwrap_or(Vec3::ZERO);
+            sounds.write(exa_audio::PointSounded {
+                name,
+                position,
+                volume: 0.3,
+                pitch: 1.0,
+                flags: 0x400,
+            });
+        }
     }
 }
 
