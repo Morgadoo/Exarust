@@ -514,11 +514,24 @@ impl FlickerRng {
     }
 }
 
+/// Applies a kind 6 lever's fade to the light under it.
+fn fade_from_levers(
+    mut fades: MessageReader<exa_physics::body::LightFade>,
+    mut lights: Query<&mut LightSource>,
+) {
+    for fade in fades.read() {
+        if let Ok(mut source) = lights.get_mut(fade.light) {
+            source.set_scale(fade.scale);
+        }
+    }
+}
+
 pub struct LightSourcePlugin;
 
 impl Plugin for LightSourcePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<FlickerRng>()
+            .add_systems(FixedUpdate, fade_from_levers)
             .add_systems(Update, flicker_lights)
             .add_systems(PostUpdate, apply_light_state);
     }
@@ -640,6 +653,26 @@ mod tests {
         let s = LightSource::of(&light);
         assert_eq!((s.amplitude, s.speed, s.emissive), (0.3, 2.0, 0.75));
         assert_eq!(s.base_intensity, 4.0);
+    }
+
+    /// A kind 6 lever's fade sets its own light's scale and leaves another
+    /// light as it was.
+    #[test]
+    fn a_kind_6_fade_sets_only_the_linked_light() {
+        let mut app = App::new();
+        app.add_message::<exa_physics::body::LightFade>()
+            .add_systems(FixedUpdate, fade_from_levers);
+        let linked = app.world_mut().spawn(LightSource::new(0, 4.0)).id();
+        let other = app.world_mut().spawn(LightSource::new(0, 4.0)).id();
+        app.world_mut().write_message(exa_physics::body::LightFade {
+            light: linked,
+            scale: 1.0,
+        });
+        app.world_mut().run_schedule(FixedUpdate);
+        let linked = app.world().get::<LightSource>(linked).unwrap();
+        let other = app.world().get::<LightSource>(other).unwrap();
+        assert_eq!((linked.scale, linked.intensity), (1.0, 4.0));
+        assert_eq!((other.scale, other.intensity), (0.0, 4.0));
     }
 
     #[test]
