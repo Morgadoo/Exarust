@@ -12,9 +12,10 @@
 //! tests. The running game feeds the gamepad aim's point and ease, the
 //! auto-target and the bone lock ([`crate::player`]), and the contact list,
 //! the engaged enemy and the late-swing check ([`crate::player_practice`]);
-//! the camera's follow step and the screen-nearest character are tested
-//! rules with no caller yet ([`camera_follow_yaw`], [`closest_to_cursor`]).
-//! The look snap ([`look_snaps`]) is the combat heading's.
+//! the screen-nearest character is a tested rule with no caller yet
+//! ([`closest_to_cursor`]). The look snap ([`look_snaps`]) is the combat
+//! heading's, and the camera's follow step ([`camera_follow_yaw`]) runs
+//! while CamFollow is set.
 //!
 //! Evidence: the behaviour's aim point, gamepad aim, contacts, engaged
 //! enemy, screen-nearest character and its tick, read in the instructions

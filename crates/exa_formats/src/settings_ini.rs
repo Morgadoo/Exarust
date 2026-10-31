@@ -573,7 +573,8 @@ pub struct Settings {
     pub perf_index: f32,
     pub show_fps: bool,
     pub music: bool,
-    /// Whether the camera follows the player (read only; not traced).
+    /// Whether the camera follows the player's body. The option byte
+    /// starts clear.
     pub cam_follow: bool,
     /// Whether the renderer works in linear colour (read only; not traced).
     pub linear_rgb: bool,
@@ -630,9 +631,9 @@ impl Default for Settings {
             perf_index: 0.0,
             show_fps: false,
             music: true,
-            // The three defaults below are guesses: the handlers were not
-            // traced, and only their variables' kinds are known.
-            cam_follow: true,
+            // The camera-follow byte starts clear. The two defaults below
+            // are guesses: the handlers were not traced.
+            cam_follow: false,
             linear_rgb: false,
             software_audio: false,
             no_proc_mips: false,

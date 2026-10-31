@@ -8,8 +8,9 @@
 //! body tick's movement decision walks, stops and turns the body,
 //! `crate::stages::movement`). The steering starts only the walk, run and
 //! backpedal; what a standing character plays is its stance's. The
-//! camera follows the character's pelvis only: it never turns by itself,
-//! the middle mouse button orbits it and the wheel zooms by field of view.
+//! camera follows the character's pelvis only. It turns toward the body
+//! only while CamFollow is set, which starts clear; otherwise the middle
+//! mouse button orbits it and the wheel zooms by field of view.
 //! Combat mode (Tab, or the start of a fight) turns toward the cursor and
 //! steps relative to it; the left button requests attacks (held, it
 //! repeats them; released, the swing checks) with the clips of the moveset
@@ -525,7 +526,7 @@ impl Plugin for PlayerPlugin {
                 )
                     .chain(),
             )
-            .add_systems(FixedPreUpdate, follow_activation_centre)
+            .add_systems(FixedPreUpdate, (follow_activation_centre, follow_body_camera))
             .add_systems(Update, (begin_play_session, end_play_session))
             .add_systems(
                 Update,
@@ -1537,6 +1538,29 @@ fn pad_aim_cursor(
     aim.0 = Some(crate::player_behaviour::aim_point_step(
         current, want, speed,
     ));
+}
+
+/// When the camera-follow option is set, a yaw more than a tenth of a
+/// turn from the body's is put back to the body's yaw, that tenth toward
+/// the camera's own side. The option starts clear, so the orbit is left
+/// alone.
+fn follow_body_camera(
+    config: Option<Res<crate::hw_config::HardwareConfig>>,
+    mut cameras: Query<&mut ChaseCamera>,
+    bodies: Query<&Locomotor, With<PlayerBody>>,
+) {
+    if !config.is_some_and(|config| config.live.cam_follow) {
+        return;
+    }
+    let Some(body) = bodies.iter().next() else {
+        return;
+    };
+    let Ok(mut camera) = cameras.single_mut() else {
+        return;
+    };
+    if let Some(yaw) = crate::player_behaviour::camera_follow_yaw(camera.yaw, body.yaw) {
+        camera.yaw = yaw;
+    }
 }
 
 /// Combat mode (Tab), each frame: the cursor's direction is the aim, and
@@ -3844,6 +3868,35 @@ mod tests {
         }
         // An unordered aim fails the ordered compare and the heading stays.
         assert_eq!(combat_heading(1.0, f32::NAN, false), 1.0);
+    }
+
+    /// The camera follows the body only while the option is set. Off, or
+    /// with no configuration, the orbit yaw is left alone.
+    #[test]
+    fn the_camera_follows_the_body_only_when_asked() {
+        let run = |follow: bool| {
+            let mut app = App::new();
+            app.add_systems(Update, follow_body_camera);
+            let mut body = Locomotor::default();
+            body.yaw = 0.0;
+            app.world_mut().spawn((PlayerBody::new(0.0), body));
+            let mut camera_state = ChaseCamera::default();
+            camera_state.yaw = 1.0;
+            let camera = app.world_mut().spawn(camera_state).id();
+            if follow {
+                app.insert_resource(crate::hw_config::HardwareConfig::new(
+                    exa_formats::hw_config::Options {
+                        cam_follow: true,
+                        ..exa_formats::hw_config::Options::default()
+                    },
+                ));
+            }
+            app.update();
+            app.world().get::<ChaseCamera>(camera).unwrap().yaw
+        };
+        assert_eq!(run(false), 1.0);
+        let expect = crate::player_behaviour::camera_follow_yaw(1.0, 0.0).unwrap();
+        assert!((run(true) - expect).abs() < 1e-5);
     }
 
     #[test]

@@ -272,6 +272,7 @@ fn varied() -> Options {
         aim_speed: 0.4,
         controller: true,
         perf_index: 1.2,
+        cam_follow: false,
     }
 }
 

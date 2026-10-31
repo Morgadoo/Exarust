@@ -91,6 +91,9 @@ pub struct Options {
     pub controller: bool,
     /// The last GPU benchmark's best rate, divided by 60.
     pub perf_index: f32,
+    /// Whether the camera yaw follows the body's. The option byte starts
+    /// clear, so a fresh installation does not follow.
+    pub cam_follow: bool,
 }
 
 impl Default for Options {
@@ -114,6 +117,7 @@ impl Default for Options {
             aim_speed: AIM_SPEED_DEFAULT,
             controller: false,
             perf_index: 0.0,
+            cam_follow: false,
         }
     }
 }
@@ -1049,6 +1053,7 @@ pub fn options_from_settings(settings: &Settings) -> Options {
         aim_speed: settings.aim_speed,
         controller: settings.input_mode > 0,
         perf_index: settings.perf_index,
+        cam_follow: settings.cam_follow,
     }
 }
 
