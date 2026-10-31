@@ -70,6 +70,11 @@ struct FrameRecord {
     rest: f32,
     ticks: u32,
     render: f32,
+    /// The brains' ticks this frame (ms, inside Fixed) and how many ran.
+    brains: f32,
+    brain_runs: u32,
+    /// The brains' ticks split by part (ms, [`exa_ai::BrainTickClock::PARTS`]).
+    brain_parts: [f32; 5],
 }
 
 #[derive(Resource, Default)]
@@ -165,6 +170,7 @@ impl Plugin for ProfilerPlugin {
             .insert_resource(ProfilerOverlay { on: shown })
             .insert_resource(render_time.clone())
             .init_resource::<Probes>()
+            .init_resource::<exa_ai::BrainTickClock>()
             .init_resource::<Counts>()
             .init_resource::<FrameHistory>();
         // A probe schedule before First and after each timed schedule.
@@ -183,8 +189,9 @@ impl Plugin for ProfilerPlugin {
                 Probe(i),
                 move |probes: ResMut<Probes>,
                       history: ResMut<FrameHistory>,
-                      render: Res<RenderTime>| {
-                    probe(i, probes, history, render)
+                      render: Res<RenderTime>,
+                      brains: Option<ResMut<exa_ai::BrainTickClock>>| {
+                    probe(i, probes, history, render, brains)
                 },
             );
         }
@@ -215,6 +222,7 @@ fn probe(
     mut probes: ResMut<Probes>,
     mut history: ResMut<FrameHistory>,
     render: Res<RenderTime>,
+    brains: Option<ResMut<exa_ai::BrainTickClock>>,
 ) {
     let now = Instant::now();
     if i == 0 {
@@ -226,13 +234,24 @@ fn probe(
                     *stage = ms(a, b);
                 }
             }
-            let record = FrameRecord {
+            let mut record = FrameRecord {
                 total: ms(start, now),
                 stages,
                 rest: ms(end, now),
                 ticks: probes.ticks,
                 render: render.0.load(Ordering::Relaxed) as f32 / 1000.0,
+                ..Default::default()
             };
+            if let Some(mut brains) = brains {
+                record.brains = brains.spent.as_secs_f32() * 1000.0;
+                record.brain_runs = brains.runs;
+                for (ms, part) in record.brain_parts.iter_mut().zip(&brains.parts) {
+                    *ms = part.as_secs_f32() * 1000.0;
+                }
+                brains.spent = Default::default();
+                brains.runs = 0;
+                brains.parts = Default::default();
+            }
             if history.frames.len() == HISTORY {
                 history.frames.remove(0);
             }
@@ -318,6 +337,18 @@ fn report(
         };
         lines.push(format!("  {stage:<11}{ms:>6.2}{extra}"));
     }
+    lines.push(format!(
+        "  {:<11}{:>6.2}  (in Fixed, {:.1} runs)",
+        "brains",
+        avg(&|f| f.brains),
+        avg(&|f| f.brain_runs as f32)
+    ));
+    let parts: Vec<String> = exa_ai::BrainTickClock::PARTS
+        .iter()
+        .enumerate()
+        .map(|(k, name)| format!("{name} {:.2}", avg(&|f| f.brain_parts[k])))
+        .collect();
+    lines.push(format!("    brains split (ms): {}", parts.join(", ")));
     lines.push(format!("  {:<11}{main:>6.2}", "schedules"));
     lines.push(format!(
         "  {:<11}{:>6.2}  (extract, present, waits)",
@@ -532,6 +563,9 @@ mod tests {
             rest: 4.0,
             ticks: 2,
             render: 7.5,
+            brains: 0.5,
+            brain_runs: 2,
+            brain_parts: [0.1; 5],
         };
         let lines = report(&[frame; 4], None, &Counts::default());
         assert!(
@@ -543,6 +577,11 @@ mod tests {
             lines
                 .iter()
                 .any(|l| l.contains("Fixed") && l.contains("(2.0 ticks)"))
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("brains") && l.contains("0.50  (in Fixed, 2.0 runs)"))
         );
         assert!(
             lines

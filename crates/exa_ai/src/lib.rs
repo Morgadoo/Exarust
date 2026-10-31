@@ -3,7 +3,7 @@
 //! ([`combat`]) once per body tick: the state's footwork search picks the
 //! places it steps to (Exarust walks them in its combat walk), the blows
 //! it starts and the stance it guards in, and turns its heading; each
-//! frame the combatant's perception pass ([`combatant`]) keeps its contact
+//! tick the combatant's perception pass ([`combatant`]) keeps its contact
 //! with the target. NPCs act through the same pieces as the player (body
 //! velocity, animator, stance, attacks); the duellist does not release a
 //! swing yet.
@@ -13,6 +13,10 @@
 //! waited longest ([`pass_turn`]), runs the target pass: its perception
 //! fills the contacts it can sense and the pass decides whether it engages
 //! the player (or leaves the fight) as the duellist does.
+//!
+//! All of it runs in the fixed step, once per body tick ([`BrainTick`]),
+//! before the character controllers and the character ticks, as the
+//! original calls its AI from every body tick.
 
 use bevy::prelude::*;
 use exa_anim::{Animator, Motions};
@@ -91,23 +95,134 @@ impl Plugin for AiPlugin {
                 FixedUpdate,
                 presence::check_presence.before(exa_physics::body::CharacterTicks),
             )
+            // The brains' tick: every body tick, after the presence check
+            // and the daze's stance, before the posture, the character
+            // controllers' move and the character ticks (the original calls
+            // each brain's AI tick from its body's tick, after the daze and
+            // before the falls, once the pre-tick hooks rotated the turns).
+            .configure_sets(
+                FixedUpdate,
+                BrainTick
+                    .in_set(exa_physics::body::TickBehaviour)
+                    .after(presence::check_presence)
+                    .after(exa_combat::stance::StanceTick)
+                    .before(exa_combat::condition::PostureTick),
+            )
+            // The chain runs alone, on one thread, in its own schedule: its
+            // systems run one after the other anyway, and the fixed step's
+            // executor would add its dispatch and sync waits to each.
+            .edit_schedule(BrainChain, |schedule| {
+                schedule.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
+            })
+            .add_systems(FixedUpdate, run_brain_chain.in_set(BrainTick))
             .add_systems(
-                Update,
+                BrainChain,
                 (
                     (brain::apply_new_roles, brain::rate_the_player).chain(),
-                    brain::forget_removed,
+                    brain_clock_mark(0),
                     pass_turn::rotate_pass_turn,
                     brain::perceive_all,
+                    brain_clock_mark(1),
                     brain::ai_tick,
+                    brain_clock_mark(2),
                     duellist.in_set(DuelSystems),
+                    brain_clock_mark(3),
                     brain::flee_walk,
                     brain::face_entering,
                     brain::idle_walk,
                 )
                     .chain(),
-            );
+            )
+            // The scene's forget broadcast stays a frame system: it reads
+            // the frame's removals.
+            .add_systems(Update, brain::forget_removed);
     }
 }
+
+/// A debug clock over the brains' tick: while this resource exists, the
+/// wall time from the start to the end of each run of [`BrainTick`] is
+/// added up, with the runs, and split at marks in the chain
+/// ([`BrainTickClock::PARTS`]). The frame profiler reads and clears it each
+/// frame.
+#[derive(Resource, Debug, Default)]
+pub struct BrainTickClock {
+    pub spent: std::time::Duration,
+    pub runs: u32,
+    /// The time each part of the chain took, in [`BrainTickClock::PARTS`]'
+    /// order.
+    pub parts: [std::time::Duration; 5],
+    began: Option<std::time::Instant>,
+    last: Option<std::time::Instant>,
+}
+
+impl BrainTickClock {
+    /// The parts the chain's marks split it into: the roles and the
+    /// player's rating; the rotation and the perception; the AI tick (with
+    /// the encounter scripts and the powers' answers, which the game runs
+    /// around it); the duellists' combat state; the walks (the cast, the
+    /// flight, the entering turn, the idle walk, the follow and search, the
+    /// sentry).
+    pub const PARTS: [&'static str; 5] = ["roles", "perception", "AI tick", "duellists", "walks"];
+
+    fn mark(&mut self, part: usize) {
+        let now = std::time::Instant::now();
+        if let Some(last) = self.last {
+            self.parts[part] += now - last;
+        }
+        self.last = Some(now);
+    }
+}
+
+/// The schedule of one brains' tick, which [`BrainTick`] runs once per
+/// body tick, on a single thread. Game systems that belong to the AI tick
+/// are added to it, ordered against the chain's systems.
+#[derive(bevy::ecs::schedule::ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BrainChain;
+
+/// Runs the brains' tick ([`BrainChain`]), timed when the profiler keeps a
+/// [`BrainTickClock`].
+fn run_brain_chain(world: &mut World) {
+    let began = world
+        .contains_resource::<BrainTickClock>()
+        .then(std::time::Instant::now);
+    if let Some(mut clock) = world.get_resource_mut::<BrainTickClock>() {
+        clock.began = began;
+        clock.last = began;
+    }
+    world.run_schedule(BrainChain);
+    if let Some(mut clock) = world.get_resource_mut::<BrainTickClock>() {
+        clock.mark(4);
+        if let Some(began) = clock.began.take() {
+            clock.spent += began.elapsed();
+            clock.runs += 1;
+        }
+        clock.last = None;
+    }
+}
+
+/// A mark in the brain chain: the time since the last mark goes to `part`.
+fn brain_clock_mark(part: usize) -> impl FnMut(Option<ResMut<BrainTickClock>>) {
+    move |clock| {
+        if let Some(mut clock) = clock {
+            clock.mark(part);
+        }
+    }
+}
+
+/// The brains' tick in the fixed step, once per body tick: the system that
+/// runs the [`BrainChain`] schedule, which holds the roles, the
+/// target pass's turn ([`pass_turn::rotate_pass_turn`], the original's
+/// pre-tick hook), the perception, the AI tick, the duellists' combat
+/// state ([`DuelSystems`]) and the walks. It runs in
+/// [`exa_physics::body::TickBehaviour`], after the presence check and the
+/// daze's stance and before the posture, the character controllers, the
+/// grips and the character ticks: the AI's part of the body tick's
+/// behaviour stage, run over every brain ahead of the character ticks, as
+/// the player's input is. Game systems that
+/// belong to the AI tick (the follow and search, the sentries, the
+/// encounter scripts, the duellists' powers) join the [`BrainChain`] schedule.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct BrainTick;
 
 /// What a duellist's power system answers the combat state, and the power
 /// it chose. The game writes the answers before [`DuelSystems`] and casts
@@ -262,7 +377,8 @@ const CM: f32 = 100.0;
 const STEP_DONE: f32 = 0.1;
 /// A step that has not arrived ends after this long (ms) [Exarust's].
 const STEP_MOST_MS: u32 = 1000;
-/// Combat ticks run at most this many times a frame.
+/// Combat ticks run at most this many times a call (the brains' tick runs
+/// once per body tick, so one; a caller between ticks catches up).
 const MOST_TICKS: u64 = 4;
 
 /// A fighter's reach (m), as the original's equip refresh sets it: its
@@ -507,7 +623,7 @@ fn duellist(
     mut asked: MessageWriter<exa_combat::AttackAskedHook>,
     mut planning: Local<(PlanTurn, u32)>,
 ) {
-    // One brain plans a route a frame: the longest waiter of the last one.
+    // One brain plans a route a tick: the longest waiter of the last one.
     let (turn, frame) = &mut *planning;
     *frame = frame.wrapping_add(1);
     turn.next_turn();
@@ -759,7 +875,7 @@ fn duellist(
                 combatant.alert = floor;
             }
         }
-        // The brain's perception pass already saw the target this frame,
+        // The brain's perception pass already saw the target this tick,
         // with its own contacts and the relations' trust.
         combatant.target = Some(foe_key);
         let contact = &mut combatant.contacts[index];

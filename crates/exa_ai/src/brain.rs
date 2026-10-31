@@ -6,7 +6,7 @@
 //!   ([`crate::activity::apply_roles`]): the activity, the idle state (a
 //!   roam, patrol, sentry or wait routine) and the idle activity the
 //!   registry creates (the search). A sleeper's sighting radius is halved.
-//! - Every frame, the attitude and tolerance of each character toward the
+//! - Every body tick, the attitude and tolerance of each character toward the
 //!   player are worked out from both sides' roles
 //!   ([`crate::roles::attitude`]) and kept in its contact rating, together
 //!   with its record's traits. A sleeper that rates the player above a
@@ -55,8 +55,10 @@ use crate::search::Search;
 use crate::sense::{Decision, Mind, decide};
 
 /// The body tick the perception pass last ran on and the one the AI tick
-/// last consumed, so the brain's passes run once per fixed tick even when
-/// frames outnumber ticks (the original runs them from the body tick).
+/// last consumed, so the brain's passes run once per body tick even when
+/// called again between ticks (the running game calls them from the fixed
+/// step's [`crate::BrainTick`], once per body tick, as the original runs
+/// them from the body tick).
 #[derive(Resource, Debug, Clone, Copy, Default)]
 pub struct BrainClock {
     /// The tick [`perceive_all`] last perceived on.
@@ -1033,6 +1035,18 @@ pub fn ai_tick(
     let trace = now / 1000 != *traced_s;
     *traced_s = now / 1000;
     let player = players.iter().next().map(|(entity, _)| entity);
+    // Every fighter's place (cm) and 600 cm room cell, gathered once a tick
+    // for every brain's sightings and nearby list (no system here moves a
+    // fighter's global transform).
+    let size = rooms.as_deref().map(|r| r.size);
+    let places: Vec<(Entity, Vec3, Option<i32>)> = fighters
+        .iter()
+        .map(|(e, g)| {
+            let at = g.translation() * 100.0;
+            let cell = size.and_then(|size| crate::rooms::cell_index(at, size));
+            (e, at, cell)
+        })
+        .collect();
     for (
         _entity,
         mut npc,
@@ -1095,10 +1109,6 @@ pub fn ai_tick(
         // Every character the perception saw this tick is weighed, in the
         // contact list's order [guess: the original walks the world's
         // character list, which Exarust does not keep in that order].
-        let places: Vec<(u64, Vec3)> = fighters
-            .iter()
-            .map(|(e, g)| (e.to_bits(), g.translation() * 100.0))
-            .collect();
         let visible: Vec<contacts::Sighting> = npc
             .contacts
             .iter()
@@ -1109,8 +1119,8 @@ pub fn ai_tick(
                 } else {
                     places
                         .iter()
-                        .find(|(id, _)| *id == contact.id)
-                        .map_or(Vec3::ZERO, |(_, at)| *at)
+                        .find(|(e, ..)| e.to_bits() == contact.id)
+                        .map_or(Vec3::ZERO, |(_, at, _)| *at)
                 };
                 contacts::Sighting {
                     contact,
@@ -1156,17 +1166,10 @@ pub fn ai_tick(
             // The player carries no room cell, so the gather scans every
             // character of the brain's cell rather than the cell's linked
             // list (the original links every character with a behaviour).
-            let size = rooms.size;
-            let around: Vec<(u64, f32, bool)> = fighters
+            let around: Vec<(u64, f32, bool)> = places
                 .iter()
-                .filter(|(e, _)| *e != _entity)
-                .filter(|(_, g)| {
-                    crate::rooms::cell_index(g.translation() * 100.0, size) == Some(npc.room.cell)
-                })
-                .map(|(e, g)| {
-                    let at = g.translation() * 100.0;
-                    (e.to_bits(), (at - observer_cm).length_squared(), true)
-                })
+                .filter(|(e, _, cell)| *e != _entity && *cell == Some(npc.room.cell))
+                .map(|(e, at, _)| (e.to_bits(), (*at - observer_cm).length_squared(), true))
                 .collect();
             npc.nearby = contacts::nearby(&around)
                 .into_iter()
@@ -1198,7 +1201,7 @@ pub fn ai_tick(
             if turn.is_some() {
                 debug!(
                     target: "exa_ai::pass_turn",
-                    "{talking} {_entity:?}: runs the target pass on its turn (AI tick {})",
+                    "{talking} {_entity:?}: runs the target pass on its turn (body tick {})",
                     turn.as_ref().map_or(0, |t| t.turn.clock)
                 );
             }
@@ -1248,8 +1251,8 @@ pub fn ai_tick(
             } else {
                 places
                     .iter()
-                    .find(|(other, _)| *other == id)
-                    .map_or(observer_cm, |(_, at)| *at)
+                    .find(|(other, ..)| other.to_bits() == id)
+                    .map_or(observer_cm, |(_, at, _)| *at)
             };
             crate::walker::Attended {
                 score: npc.contacts.iter().find(|c| c.id == id).map(|c| {
@@ -1587,7 +1590,7 @@ pub fn forget_removed(
 ///
 /// On a level with a navigation grid the flight plans as the original's
 /// flee state does: the way out is picked and routed on the brain's
-/// planning turn (one planner a frame, [`crate::route::plan`]), again while
+/// planning turn (one planner a tick, [`crate::route::plan`]), again while
 /// no route is followed or within 150 cm of the goal; a route is followed
 /// when its ends lie more than 150 cm apart, and one ending in the brain's
 /// room within 15 m of the threat remembers the exit's room
@@ -1625,7 +1628,7 @@ pub fn flee_walk(
         clock.walked = ticks.0;
     }
     let now = ticks.as_ref().map_or(0, |t| t.millis() as u32);
-    // One brain plans a route a frame: the longest waiter of the last one
+    // One brain plans a route a tick: the longest waiter of the last one
     // [Exarust: the flight keeps its own turn beside the idle walk's and
     // the duellists'].
     let (turn, frame) = &mut *planning;
@@ -1782,7 +1785,7 @@ pub fn flee_walk(
 /// body tick, for a brain in the scene, standing, out of combat and not
 /// fleeing, whose idle head left the tick to its phases, it runs
 /// [`crate::walker::roam_step`] on the level's room table (its room's door
-/// exits) and the navigation grid (one planner a frame), then walks the
+/// exits) and the navigation grid (one planner a tick), then walks the
 /// followed route at the walk speed through the NPC driver
 /// ([`crate::order::follow`]) toward the route's carrot, playing the walk
 /// clip, and puts the idle clip back when the leg ends. A frame between
@@ -1815,7 +1818,7 @@ pub fn idle_walk(
         clock.idled = ticks.0;
     }
     let now = ticks.as_ref().map_or(0, |t| t.millis() as u32);
-    // One brain plans a route a frame: the longest waiter of the last one
+    // One brain plans a route a tick: the longest waiter of the last one
     // [Exarust: the idle walk keeps its own turn beside the duellists'].
     let (turn, frame) = &mut *planning;
     if steer {

@@ -1342,7 +1342,12 @@ observer's roles' encounter entries for anyone, for the partner in its
 locale, or for one of the partner's roles, with the observer as actor 0 and
 the partner as actor 1 through `exa_script` (`Conversations::with_scene`),
 and the effects go out as `ScriptEffect`; the meeting time is renewed on
-the AI's relation and the cast's record (`LastEnc`) before they run. The world's own press is held while
+the AI's relation and the cast's record (`LastEnc`) before they run. The follow and search, the golem sentry (`golem_body`), the encounter
+scripts (right after the AI tick that reported them) and the duellists'
+power system (`thaum::cast`: the answers before their combat state, the
+cast after it) run in the brains' chain (`exa_ai::BrainChain`), in the
+fixed step, once per
+body tick; the attack-hook answers run after it. The world's own press is held while
 the pointer is over an open screen. The journal's entry list and the
 controls' callbacks are not wired; the text keeps the level
 font's metrics and samples the base font's atlas while the Rayform faces

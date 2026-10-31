@@ -123,7 +123,10 @@ Three tools, from a quick look to a full timeline:
   (the same report in the log). Each frame's main thread is split by
   schedule: First, PreUpdate, the fixed 83 Hz ticks (with how many ran),
   Update, PostUpdate, Last, and the rest (extracting into the render
-  world, presenting, waiting). The render thread's schedule time sits
+  world, presenting, waiting); a `brains` line gives the wall time of the
+  AI's brains' tick inside the fixed ticks (`exa_ai::BrainTickClock`: from
+  its start to its end, so it includes waits at its sync points). The
+  render thread's schedule time sits
   beside it, then Bevy's GPU timestamps per pass and Exarust's own GPU
   spans (`exa_cube_shadows`, `exa_gi`). The overlay graphs the last 120
   frames: green within 60 FPS, yellow within 30, red beyond. Limits of

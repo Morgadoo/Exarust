@@ -466,6 +466,7 @@ pub fn plugin(app: &mut App) {
         .configure_sets(
             FixedUpdate,
             GripSolveSet::Build
+                .after(crate::body::TickBehaviour)
                 .before(GripSolveSet::Sync)
                 .before(BodySystems),
         )

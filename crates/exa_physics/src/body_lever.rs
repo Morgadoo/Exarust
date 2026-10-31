@@ -384,7 +384,9 @@ pub(crate) fn plugin(app: &mut App) {
     app.add_systems(
         FixedUpdate,
         (
-            register_levers.before(BodySystems),
+            register_levers
+                .after(crate::body::TickBehaviour)
+                .before(BodySystems),
             step_levers.after(BodySystems),
         ),
     );

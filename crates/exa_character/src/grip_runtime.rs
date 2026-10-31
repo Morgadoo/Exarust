@@ -398,18 +398,27 @@ pub struct GripRuntimePlugin;
 
 impl Plugin for GripRuntimePlugin {
     fn build(&self, app: &mut App) {
+        // After the AI's behaviour (`TickBehaviour`), as after the player's
+        // input: a weapon switch or grip the AI asks this tick is taken now.
+        use exa_physics::body::TickBehaviour;
         app.add_message::<FlipWeaponRequest>()
-            .add_systems(FixedUpdate, flip_requests.before(GripSolveSet::Sync))
-            .add_systems(FixedUpdate, animate_grips.before(GripSolveSet::Sync))
-            .add_systems(FixedUpdate, swap_on_switch.before(GripSolveSet::Sync))
-            .add_systems(FixedUpdate, refresh_holds.before(GripSolveSet::Sync))
             .add_systems(
                 FixedUpdate,
-                release_collapsed.before(exa_physics::grip_solve::GripSolveSet::Build),
+                (
+                    flip_requests,
+                    animate_grips,
+                    swap_on_switch,
+                    refresh_holds,
+                    resolve_pending_grips,
+                )
+                    .after(TickBehaviour)
+                    .before(GripSolveSet::Sync),
             )
             .add_systems(
                 FixedUpdate,
-                resolve_pending_grips.before(GripSolveSet::Sync),
+                release_collapsed
+                    .after(TickBehaviour)
+                    .before(exa_physics::grip_solve::GripSolveSet::Build),
             );
     }
 }

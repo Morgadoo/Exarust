@@ -29,6 +29,15 @@ use bevy::tasks::{ComputeTaskPool, ParallelSliceMut, TaskPool};
 use super::{BodySystems, CharacterTicks, FRICTION_PASSES, LINK_ITERATIONS, Ragdoll};
 use crate::contact::Level;
 
+/// The behaviour work at the start of each fixed step, before anything
+/// touches a body: the AI's brains (`exa_ai::BrainTick`), the original's
+/// AI tick that each body's tick calls before its posture, movement and
+/// limbs. The character controllers, the pre-step, the grips, the
+/// mechanisms' registration and the held weapons' sync come after it, as
+/// they come after the player's input (`FixedPreUpdate`).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TickBehaviour;
+
 /// The work before any character's tick. In the fixed step.
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BodyPreStep;
@@ -117,7 +126,14 @@ pub(super) fn configure(app: &mut App) {
     use CharacterStage::*;
     app.configure_sets(
         FixedUpdate,
-        (BodyPreStep, CharacterTicks, BodySystems, BodyPostStep).chain(),
+        (
+            TickBehaviour,
+            BodyPreStep,
+            CharacterTicks,
+            BodySystems,
+            BodyPostStep,
+        )
+            .chain(),
     )
     .edit_schedule(CharacterTick, |schedule| {
         schedule.set_executor(SingleThreadedExecutor::new());

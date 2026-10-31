@@ -410,22 +410,32 @@ impl Plugin for CastPlugin {
                     .chain()
                     .before(run_bar_commands),
             )
+            // The duellists' power system answers their combat state and
+            // casts what it chose, in the brains' tick, every body tick.
             .add_systems(
-                Update,
+                exa_ai::BrainChain,
                 (
-                    advise_duellists.before(DuelSystems),
-                    cast_for_duellists.after(DuelSystems),
-                    publish_power_factors
-                        .after(cast_for_duellists)
-                        .after(run_bar_commands),
+                    advise_duellists
+                        .after(exa_ai::brain::ai_tick)
+                        .after(crate::role_scripts::run_encounter_scripts)
+                        .before(DuelSystems),
+                    cast_for_duellists
+                        .after(DuelSystems)
+                        .before(exa_ai::brain::flee_walk),
                 ),
             )
+            .add_systems(Update, publish_power_factors.after(run_bar_commands))
             .add_systems(
                 FixedUpdate,
                 (
-                    reset_entered_casts.after(exa_ai::presence::check_presence),
-                    answer_attack_asks.before(tick_casters),
+                    reset_entered_casts
+                        .after(exa_ai::presence::check_presence)
+                        .before(exa_ai::BrainTick),
+                    answer_attack_asks
+                        .after(exa_ai::BrainTick)
+                        .before(tick_casters),
                     super::kinesis_live::take_kinesis_picks
+                        .after(exa_physics::body::TickBehaviour)
                         .before(BodySystems)
                         .before(tick_casters),
                     super::throw_live::sense_throws

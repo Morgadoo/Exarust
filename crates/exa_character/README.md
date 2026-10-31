@@ -360,7 +360,8 @@ tested rules of their own.
   places is still a static model. The physics grip stage builds the links once both
   bodies exist and pulls the item to the hand; the item never meets its
   holder's body. The grip runtime (`grip_runtime`) reads the holder's clip
-  every tick, applies the grip table entry's mode, steps an active flip
+  every tick (after the AI's behaviour, `exa_physics::body::TickBehaviour`,
+  as after the player's input, so a switch either asks is taken that tick), applies the grip table entry's mode, steps an active flip
   (started by a `FlipWeaponRequest` for the character's entity, refused
   while the character switches or the weapon section has no flipped-side
   kind byte) and rebuilds its `Blade` record from the flipped weapon
@@ -402,7 +403,7 @@ tested rules of their own.
   the AI reads is the equip pass's longest record reach, which overwrites
   the refresh's.
 - The hands' contact mobility (how far a contact push moves a hand) is
-  written by `body_words` on the ticks it changes: after every change of
+  written by `body_words` on the ticks it changes (after the AI's behaviour): after every change of
   the hands an armed character's hands are at their base and an unarmed
   one's at half (a quarter in the heavy-claws state), as the original's
   emptying of the hands and its equip refresh leave them; every attack
