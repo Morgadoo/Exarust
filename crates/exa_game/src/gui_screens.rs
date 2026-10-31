@@ -52,6 +52,9 @@ pub struct ScreenRequest {
     pub target: Option<i32>,
     /// The body's record flag word, for the loot window's show rule.
     pub flags: u32,
+    /// An inventory that is already the active form closes. The inventory
+    /// key asks for that; a script's `ShowInventory` does not.
+    pub toggle: bool,
 }
 
 impl ScreenRequest {
@@ -63,6 +66,7 @@ impl ScreenRequest {
             player_alive,
             target: None,
             flags: 0,
+            toggle: true,
         }
     }
 }
@@ -822,14 +826,27 @@ impl GameScreens {
         InventoryLayout::at(self.inventory_unit)
     }
 
-    /// The player's inventory: the show rule (toggling), then a new one is
-    /// registered as an open container and placed at its constructor's
-    /// (8, 8) or its remembered place.
+    /// The player's inventory, as the inventory key asks: an active one
+    /// closes.
     pub fn open_inventory(
         &mut self,
         player_ready: bool,
         player_alive: bool,
         unit: i32,
+    ) -> ScreenAction {
+        self.show_inventory(player_ready, player_alive, unit, true)
+    }
+
+    /// The player's inventory: the show rule, then a new one is registered
+    /// as an open container and placed at its constructor's (8, 8) or its
+    /// remembered place. `toggle` closes an inventory that is already the
+    /// active form; a script's `ShowInventory` passes false and leaves it.
+    pub fn show_inventory(
+        &mut self,
+        player_ready: bool,
+        player_alive: bool,
+        unit: i32,
+        toggle: bool,
     ) -> ScreenAction {
         let open = self.find(GameScreen::Inventory);
         let action = inventory_screen(InventoryInput {
@@ -838,7 +855,7 @@ impl GameScreens {
             open: open.is_some(),
             filling: false,
             active: self.focused() == Some(GameScreen::Inventory),
-            toggle: true,
+            toggle,
         });
         match (action, open) {
             (ScreenAction::Opened, _) => {
@@ -1252,6 +1269,7 @@ impl Plugin for GameScreensPlugin {
             .init_resource::<DebugOpenContainer>()
             .init_resource::<GuiFrames>()
             .add_message::<ScreenRequest>()
+            .add_message::<exa_script::ScriptEffect>()
             .add_message::<ContainerRequest>()
             .add_systems(
                 Update,
@@ -1259,6 +1277,7 @@ impl Plugin for GameScreensPlugin {
                     sync_screen_size,
                     register_level_items,
                     crate::container_fill::fill_level_containers,
+                    show_script_inventory,
                     open_requested_screens,
                     debug_open_container,
                     open_requested_containers,
@@ -1520,6 +1539,40 @@ fn sync_screen_size(
     }
 }
 
+/// A script's `ShowInventory` opens the player's inventory and leaves it
+/// when it is already the active form. The original asks for the named
+/// character's own screen; a character other than the player is left,
+/// because this game has no second character view to bind that screen to.
+fn show_script_inventory(
+    mut effects: MessageReader<exa_script::ScriptEffect>,
+    players: Query<
+        (&exa_ai::brain::CharacterId, Option<&exa_combat::Condition>),
+        With<crate::player::PlayerBody>,
+    >,
+    mut screens: MessageWriter<ScreenRequest>,
+) {
+    let Some((id, condition)) = players.iter().next() else {
+        return;
+    };
+    let word = condition.copied().unwrap_or_default();
+    for effect in effects.read() {
+        let exa_script::dialogue::Effect::ShowInventory(actor) = effect.0 else {
+            continue;
+        };
+        if actor != id.0 {
+            continue;
+        }
+        screens.write(ScreenRequest {
+            screen: GameScreen::Inventory,
+            player_ready: !word.dying(),
+            player_alive: !word.is_dead(),
+            target: None,
+            flags: 0,
+            toggle: false,
+        });
+    }
+}
+
 /// Opens the screens the hotkeys asked for; Escape closes the focused one.
 /// Nothing happens while the main menu is open.
 #[allow(clippy::too_many_arguments)]
@@ -1554,8 +1607,12 @@ fn open_requested_screens(
         }
         let action = match request.screen {
             GameScreen::Inventory => {
-                let action =
-                    screens.open_inventory(request.player_ready, request.player_alive, unit);
+                let action = screens.show_inventory(
+                    request.player_ready,
+                    request.player_alive,
+                    unit,
+                    request.toggle,
+                );
                 // The pack is the player's own carried list, as the original
                 // loads it when the inventory opens.
                 if action == ScreenAction::Opened
@@ -2595,6 +2652,69 @@ mod tests {
         );
     }
 
+    /// A script's `ShowInventory` of the player opens the inventory and
+    /// does not close it again. Another character, and a dead player, open
+    /// nothing.
+    #[test]
+    fn a_script_opens_the_players_inventory_without_closing_it() {
+        fn opened(actor: u32, condition: exa_combat::Condition) -> bool {
+            let mut app = App::new();
+            app.init_resource::<ButtonInput<KeyCode>>()
+                .init_resource::<GameScreens>()
+                .init_resource::<PanelIcons>()
+                .add_message::<ScreenRequest>()
+                .add_message::<exa_script::ScriptEffect>()
+                .add_systems(
+                    Update,
+                    (show_script_inventory, open_requested_screens).chain(),
+                );
+            app.world_mut().spawn((
+                crate::player::PlayerBody::new(0.0),
+                exa_ai::brain::CharacterId(7),
+                condition,
+            ));
+            app.world_mut().write_message(exa_script::ScriptEffect(
+                exa_script::dialogue::Effect::ShowInventory(actor),
+            ));
+            app.update();
+            app.world()
+                .resource::<GameScreens>()
+                .is_open(GameScreen::Inventory)
+        }
+        assert!(opened(7, exa_combat::Condition::NORMAL));
+        assert!(!opened(9, exa_combat::Condition::NORMAL));
+        assert!(!opened(7, exa_combat::Condition::DEAD));
+
+        let mut app = App::new();
+        app.init_resource::<ButtonInput<KeyCode>>()
+            .init_resource::<GameScreens>()
+            .init_resource::<PanelIcons>()
+            .add_message::<ScreenRequest>()
+            .add_message::<exa_script::ScriptEffect>()
+            .add_systems(
+                Update,
+                (show_script_inventory, open_requested_screens).chain(),
+            );
+        app.world_mut().spawn((
+            crate::player::PlayerBody::new(0.0),
+            exa_ai::brain::CharacterId(7),
+            exa_combat::Condition::NORMAL,
+        ));
+        let ask = |app: &mut App| {
+            app.world_mut().write_message(exa_script::ScriptEffect(
+                exa_script::dialogue::Effect::ShowInventory(7),
+            ));
+            app.update();
+        };
+        ask(&mut app);
+        ask(&mut app);
+        assert!(
+            app.world()
+                .resource::<GameScreens>()
+                .is_open(GameScreen::Inventory)
+        );
+    }
+
     #[test]
     fn the_inventory_request_binds_the_players_carried_list() {
         let mut app = App::new();
@@ -2669,6 +2789,7 @@ mod tests {
             player_alive: true,
             target: Some(target),
             flags: 0x300,
+            toggle: true,
         });
         app.update();
         let screens = app.world().resource::<GameScreens>();
@@ -2708,6 +2829,7 @@ mod tests {
             player_alive: true,
             target: Some(target),
             flags: 0,
+            toggle: true,
         });
         app.update();
         // 0x300 & 0xff00 == 0x300: the show rule refuses.
@@ -2732,6 +2854,7 @@ mod tests {
             player_alive: true,
             target: Some(7),
             flags: 0,
+            toggle: true,
         });
         app.update();
         let screens = app.world().resource::<GameScreens>();

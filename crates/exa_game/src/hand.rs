@@ -1817,6 +1817,7 @@ fn hold_hand(
                                 // flag word from its possessions; 0 passes
                                 // the show rule when it has none.
                                 flags: 0,
+                                toggle: true,
                             });
                         }
                     }
