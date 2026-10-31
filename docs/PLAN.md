@@ -1628,6 +1628,10 @@ A kind 6 lever fades the light found under it: a report of 0 sets that light's s
 
 The threat weight's movement bit now follows the body: a locomoting body weighs 16 and a still one 8, which is what the combatant's mirror bit already said but nothing set.
 
+A live door's passage follows its heading each tick. A shut hinge keeps its pair flag, so the room route stays shut, and a hinge more than 0.4 rad past closed clears it, so the route opens. A locked door stays routable. The navigation grid still has no door cells of its own.
+
+The kinesis aim takes the nearer of the level hit and another prop's mesh. A mesh closer than the floor is the aim; one past the floor is not. The held body is left out of that pick.
+
 ### Phase 7 — Game modes and content
 
 Done (change `run-an-arena-career`): a new company starts with 343 copper
