@@ -572,6 +572,44 @@ struct KitBytes {
     material: u8,
 }
 
+fn kit_bytes_from(stored: exa_formats::objdb::StoredCondition) -> KitBytes {
+    KitBytes {
+        apparel_dirt: stored.apparel_dirt,
+        weapon_dirt: stored.weapon_dirt,
+        apparel_wear: stored.apparel_wear,
+        weapon_wear: stored.weapon_wear,
+        material: stored.material,
+    }
+}
+
+/// The loaded object database. A kit reads and writes the record the item
+/// id names, so a local copy keeps its own dirt and wear.
+#[derive(Resource, Debug, Default)]
+struct LiveObjects {
+    db: Option<exa_formats::objdb::ObjectDb>,
+    tried: bool,
+}
+
+impl LiveObjects {
+    fn ensure(&mut self, game: Option<&Game>) {
+        if self.tried {
+            return;
+        }
+        self.tried = true;
+        let Some(game) = game else {
+            return;
+        };
+        let Some(pack) = game.0.pack(exa_assets::PackKind::Resource) else {
+            return;
+        };
+        let Some(bytes) = pack.get("objdb.rdb") else {
+            return;
+        };
+        let strings = pack.get("objstrings.rdb").unwrap_or_default();
+        self.db = exa_formats::objdb::ObjectDb::parse(bytes, strings).ok();
+    }
+}
+
 fn kit_bytes(item: &exa_formats::objdb::Item) -> KitBytes {
     KitBytes {
         apparel_dirt: item
@@ -625,6 +663,7 @@ struct KitConditions {
 fn apply_kit(
     mut released: MessageReader<UseReleased>,
     mut kits: ResMut<KitConditions>,
+    mut objects: ResMut<LiveObjects>,
     players: Query<&GlobalTransform, With<PlayerBody>>,
     targets: Query<&GlobalTransform>,
     game: Option<Res<Game>>,
@@ -636,7 +675,9 @@ fn apply_kit(
     mut roll: Local<Option<crate::arena::Mt19937>>,
 ) {
     let now_ms = time.as_ref().map_or(0, |t| t.elapsed().as_millis() as u32);
-    items.ensure(game.as_deref());
+    let game = game.as_deref();
+    objects.ensure(game);
+    items.ensure(game);
     for release in released.read() {
         let kind = match release.release {
             UseRelease::CleanWorld | UseRelease::CleanGui => player_controls::CLEAN,
@@ -646,10 +687,24 @@ fn apply_kit(
         let Some(subject) = (release.subject != 0).then_some(release.subject) else {
             continue;
         };
-        let bytes = *kits
-            .bytes
-            .entry(subject)
-            .or_insert_with(|| items.get(subject).map(kit_bytes).unwrap_or_default());
+        let bytes = *kits.bytes.entry(subject).or_insert_with(|| {
+            objects
+                .db
+                .as_ref()
+                .and_then(|db| db.stored_condition(subject))
+                .map(kit_bytes_from)
+                .or_else(|| items.get(subject).map(kit_bytes))
+                .unwrap_or_default()
+        });
+        if kind == player_controls::REPAIR
+            && objects
+                .db
+                .as_ref()
+                .and_then(|db| db.stored_condition(subject))
+                .is_some_and(|stored| stored.repair_refused)
+        {
+            continue;
+        }
         let at_point = matches!(release.release, UseRelease::CleanWorld);
         let active = match kind {
             player_controls::CLEAN => {
@@ -717,12 +772,23 @@ fn apply_kit(
 
 /// One frame of the kits' timed bytes. A value is written only while it
 /// lowers the section's byte or arrives, apparel first.
-fn tick_kits(time: Option<Res<Time<Virtual>>>, mut kits: ResMut<KitConditions>) {
+fn tick_kits(
+    time: Option<Res<Time<Virtual>>>,
+    mut kits: ResMut<KitConditions>,
+    mut objects: ResMut<LiveObjects>,
+) {
     let now_ms = time.as_ref().map_or(0, |t| t.elapsed().as_millis() as u32);
-    settle_kits(&mut kits, now_ms);
+    let writes = settle_kits(&mut kits, now_ms);
+    if let Some(db) = objects.db.as_mut() {
+        for (id, section, kind, value) in writes {
+            let apparel = section == player_controls::APPAREL_SECTION;
+            let dirt = kind == player_controls::CLEAN;
+            db.write_condition_byte(id, apparel, dirt, value);
+        }
+    }
 }
 
-fn settle_kits(kits: &mut KitConditions, now_ms: u32) {
+fn settle_kits(kits: &mut KitConditions, now_ms: u32) -> Vec<(u32, u8, u8, u8)> {
     let KitConditions { bytes, work } = kits;
     let writes = work.tick_kind(now_ms, |id, section, kind| {
         bytes.get(&id).and_then(|bytes| match (section, kind) {
@@ -732,11 +798,12 @@ fn settle_kits(kits: &mut KitConditions, now_ms: u32) {
             _ => bytes.weapon_wear,
         })
     });
-    for (id, section, kind, value) in writes {
+    for &(id, section, kind, value) in &writes {
         if let Some(bytes) = bytes.get_mut(&id) {
             write_kit_byte(bytes, section, kind, value);
         }
     }
+    writes
 }
 
 /// The use cursor's end, the panels' double click and the hook: the
@@ -754,6 +821,7 @@ impl Plugin for UseCursorPlugin {
             .init_resource::<UseScript>()
             .init_resource::<DollItems>()
             .init_resource::<KitConditions>()
+            .init_resource::<LiveObjects>()
             .add_message::<UseHook>()
             .add_message::<UseReleased>()
             .add_systems(

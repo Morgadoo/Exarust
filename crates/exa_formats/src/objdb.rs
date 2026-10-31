@@ -1102,7 +1102,7 @@ pub use record::{
     resize_section,
 };
 pub use store::{Store, TableEntry};
-pub use tiers::{ObjectDb, Tier, UseEffect};
+pub use tiers::{ObjectDb, StoredCondition, Tier, UseEffect};
 
 /// The object database's magic (`objdb.rdb` and a level's local database).
 pub const MAGIC: u32 = 0xDBAC_0D09;

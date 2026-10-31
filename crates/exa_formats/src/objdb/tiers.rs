@@ -5,8 +5,8 @@
 
 use super::record::{section_range, set_section_u32, set_u32, u32_at};
 use super::{
-    CONTAINER, DOOR, ID_MASK, INHERIT, Item, LOCAL, MODEL, NAME, OPERATIVE, RANDOM_TABLE, Record,
-    Store, TAG_MASK, WORLD,
+    BODY, CONTAINER, DOOR, ID_MASK, INHERIT, Item, LOCAL, MODEL, NAME, OPERATIVE, RANDOM_TABLE,
+    Record, Store, TAG_MASK, WEAPON, WORLD,
 };
 use crate::Result;
 use crate::objstrings::Library;
@@ -165,6 +165,18 @@ fn copy_into(db: &mut ObjectDb, target: Tier, copy: Copy) -> u32 {
     new | target.tag()
 }
 
+/// The dirt and wear bytes a kit reads from one record.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StoredCondition {
+    pub apparel_dirt: Option<u8>,
+    pub weapon_dirt: Option<u8>,
+    pub apparel_wear: Option<u8>,
+    pub weapon_wear: Option<u8>,
+    pub material: u8,
+    /// A repair stops: the body or the weapon still names the template seed.
+    pub repair_refused: bool,
+}
+
 impl ObjectDb {
     /// Reads `objdb.rdb` and `objstrings.rdb` into the base tier, as the
     /// original's lazy loader does (an empty `strings` gives an empty
@@ -223,6 +235,75 @@ impl ObjectDb {
     /// The body of the first section with `tag` of the record `id` names.
     pub fn section(&self, id: u32, tag: u32) -> Option<&[u8]> {
         self.find(id)?.section(tag)
+    }
+
+    /// Writes one byte of the record `id` names, at `offset` in the body of
+    /// its first section with `tag`. A missing record or section, or an
+    /// offset past that body, is left unchanged.
+    pub fn set_section_byte(&mut self, id: u32, tag: u32, offset: usize, value: u8) -> bool {
+        let tier = Tier::of(id);
+        let Some(at) = self.store(tier).find_index(Tier::index(id)) else {
+            return false;
+        };
+        let Some(range) = self
+            .store(tier)
+            .view(at)
+            .and_then(|record| section_range(record.payload(), tag))
+        else {
+            return false;
+        };
+        let Some(at_byte) = range.start.checked_add(offset) else {
+            return false;
+        };
+        if at_byte >= range.end {
+            return false;
+        }
+        let mut payload = self
+            .store(tier)
+            .view(at)
+            .map(|record| record.payload().to_vec())
+            .unwrap_or_default();
+        if at_byte >= payload.len() {
+            return false;
+        }
+        payload[at_byte] = value;
+        self.store_mut(tier).store(at, &payload);
+        true
+    }
+
+    /// The dirt, wear and material byte a kit reads from the record `id`
+    /// names. `None` when that id is not in the database. A body section
+    /// whose word at `0x1AC` is all ones, or a weapon section whose first
+    /// seed is, refuses a repair.
+    pub fn stored_condition(&self, id: u32) -> Option<StoredCondition> {
+        self.find(id)?;
+        let body = self.section(id, BODY);
+        let weapon = self.section(id, WEAPON);
+        let model = self.section(id, MODEL);
+        let repair_refused = body
+            .is_some_and(|body| body.len() >= 0x1B0 && u32_at(body, 0x1AC) == u32::MAX)
+            || weapon.is_some_and(|weapon| weapon.len() >= 8 && u32_at(weapon, 4) == u32::MAX);
+        Some(StoredCondition {
+            apparel_dirt: body.map(|body| body.get(0x1B2).copied().unwrap_or(0)),
+            apparel_wear: body.map(|body| body.get(0x1B1).copied().unwrap_or(0)),
+            weapon_dirt: weapon.map(|weapon| weapon.get(0x0E).copied().unwrap_or(0)),
+            weapon_wear: weapon.map(|weapon| weapon.get(0x0D).copied().unwrap_or(0)),
+            material: model
+                .and_then(|model| model.get(0x1C).copied())
+                .unwrap_or(0),
+            repair_refused,
+        })
+    }
+
+    /// Writes a kit byte back: apparel or weapon, dirt or wear.
+    pub fn write_condition_byte(&mut self, id: u32, apparel: bool, dirt: bool, value: u8) -> bool {
+        let (tag, offset) = match (apparel, dirt) {
+            (true, true) => (BODY, 0x1B2),
+            (true, false) => (BODY, 0x1B1),
+            (false, true) => (WEAPON, 0x0E),
+            (false, false) => (WEAPON, 0x0D),
+        };
+        self.set_section_byte(id, tag, offset, value)
     }
 
     /// The original's flagged section lookup: the table flags must share a
@@ -959,7 +1040,20 @@ impl ObjectDb {
 mod tests {
     use super::super::record::test_util::*;
     use super::*;
-    use crate::objdb::{BODY, INSTANCE_ON_USE};
+    use crate::objdb::{BODY, INSTANCE_ON_USE, WEAPON};
+
+    #[test]
+    fn a_section_byte_is_written_back_into_its_record() {
+        let mut db = ObjectDb::default();
+        let mut body = vec![0u8; 0x20];
+        body[0x0E] = 0x80;
+        let payload = payload(&[(WEAPON, body)]);
+        put(&mut db.base, 4, WEAPON, &payload);
+        assert!(db.set_section_byte(4, WEAPON, 0x0E, 0x20));
+        assert_eq!(db.section(4, WEAPON).unwrap()[0x0E], 0x20);
+        assert!(!db.set_section_byte(4, WEAPON, 0x100, 1));
+        assert!(!db.set_section_byte(9, WEAPON, 0, 1));
+    }
 
     fn put(store: &mut Store, id: u32, flags: u32, p: &[u8]) {
         let (_, at) = store.insert(id);
