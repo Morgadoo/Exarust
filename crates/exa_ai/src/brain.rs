@@ -586,6 +586,13 @@ impl Npc {
     }
 }
 
+/// The body's movement flag bit 2, as the threat weight reads it: set while
+/// the locomotor is moving this tick or the combatant's mirror already has
+/// the bit. A still body weighs 8 and a moving one 16.
+pub(crate) fn movement_bit(moving: bool, mirrored: bool) -> bool {
+    moving || mirrored
+}
+
 /// A character as one perception pass sees it this tick.
 #[derive(Debug, Clone)]
 struct Sensed {
@@ -741,9 +748,14 @@ pub fn perceive_all(
                     locomotion: locomotor.is_some_and(|l| l.amount != 0.0),
                     in_combat: combatant.is_some_and(|c| c.in_combat)
                         || duellist.is_some_and(|d| d.fighting()),
-                    // The body's movement flag bit 2 (a body moving), which
-                    // the combatant's mirror word keeps.
-                    stepping: combatant.is_some_and(|c| c.movement.flags & 0x4 != 0),
+                    // The body's movement flag bit 2: the combatant's mirror
+                    // keeps it, and a body the locomotor is moving this tick
+                    // has it too. The threat weight reads 16 while it is set
+                    // and 8 while the body only locomotes.
+                    stepping: movement_bit(
+                        locomotor.is_some_and(|l| l.moving()),
+                        combatant.is_some_and(|c| c.movement.flags & 0x4 != 0),
+                    ),
                     speed,
                     contacts: combatant.map_or_else(Vec::new, |c| c.contacts.clone()),
                     roles: roles.cloned(),
@@ -2381,6 +2393,15 @@ mod tests {
             spheres: None,
         }])
         .with_drive()
+    }
+
+    /// The threat weight's movement bit is set while the body moves and
+    /// while the combatant's mirror already has it, and clear otherwise.
+    #[test]
+    fn a_moving_body_sets_the_threat_weights_movement_bit() {
+        assert!(!movement_bit(false, false));
+        assert!(movement_bit(true, false));
+        assert!(movement_bit(false, true));
     }
 
     /// Applying the sleep role lies the body dormant on the next AI tick

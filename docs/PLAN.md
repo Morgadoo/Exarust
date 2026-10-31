@@ -1624,6 +1624,10 @@ The player's head tracker runs while it stabs (the behaviour tick calls it only 
 
 A mechanism relay now forwards in the running game: a broadcast reaches every tagged door linked to it, a pair sends to both targets, and a combiner keeps its state on the record. A sequence relay still has no stored counter, and a light job still has no electric object to power.
 
+A kind 6 lever fades the light found under it: a report of 0 sets that light's scale to 1 and a report of 1 sets it to 0. Another light is left unchanged.
+
+The threat weight's movement bit now follows the body: a locomoting body weighs 16 and a still one 8, which is what the combatant's mirror bit already said but nothing set.
+
 ### Phase 7 — Game modes and content
 
 Done (change `run-an-arena-career`): a new company starts with 343 copper
