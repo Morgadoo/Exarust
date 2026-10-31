@@ -33,8 +33,8 @@
 //! weights; Exarust takes the root part's origin, and the character's
 //! counter as its root part's. A hard impact that is not from a character
 //! part asks for the pain grunt and, once a second while the down bit is
-//! set, the BadFall broadcast ([`hard_impact_cry`]). The heavy-impact
-//! callback is not wired.
+//! set, the BadFall broadcast ([`hard_impact_cry`]). A volume over 0.3
+//! also asks the caster's force shell to ripple ([`ShellHit`]).
 
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
@@ -190,7 +190,22 @@ struct Struck {
     /// set. Such a blow still sounds and hurts when the part is not itself
     /// striking; it does not grunt or announce the fall.
     other_limb: bool,
+    /// The mean contact point (world, m).
+    point: Vec3,
     impact: f32,
+}
+
+/// A limb impact whose volume is over 0.3: the caster's force shell, when
+/// it has one, ripples at the contact. The shell keeps at most eight and
+/// ignores the rest. A dropped overhead still ripples; the original calls
+/// the shell before it returns.
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct ShellHit {
+    pub fighter: Entity,
+    /// The contact (world, m).
+    pub point: Vec3,
+    /// The impact sound's volume.
+    pub volume: f32,
 }
 
 /// A hard impact on a down character, at most once a second: witnesses who
@@ -346,6 +361,7 @@ pub struct WeaponImpacts<'w, 's> {
 pub struct ImpactCries<'w> {
     pains: MessageWriter<'w, PainSounded>,
     falls: MessageWriter<'w, BadFall>,
+    shells: MessageWriter<'w, ShellHit>,
 }
 
 /// Limb impacts from the pair stage's last detection, then each
@@ -457,6 +473,7 @@ pub fn strike_limbs(
                         other: other_root,
                         other_strikes,
                         other_limb,
+                        point: touch.point,
                         impact: *impact,
                     });
                     if bevy::log::tracing::enabled!(bevy::log::Level::DEBUG) {
@@ -526,6 +543,15 @@ pub fn strike_limbs(
             book.taken,
             overhead_drop(overhead, striking),
         );
+        // The shell's ripple is asked before a dropped overhead returns,
+        // and before the clock is set.
+        if hit.heavy {
+            cries.shells.write(ShellHit {
+                fighter: s.target,
+                point: s.point,
+                volume: sound.volume,
+            });
+        }
         // A dropped hard impact has already sounded; the original returns
         // before the clock's random spread is drawn and the clock is set.
         if hit.dropped {
@@ -915,6 +941,13 @@ pub fn level_impacts(
                 book.taken,
                 overhead_drop(overhead, striking),
             );
+            if damage.heavy {
+                cries.shells.write(ShellHit {
+                    fighter: entity,
+                    point: hit.point,
+                    volume: sound.volume,
+                });
+            }
             if damage.dropped {
                 continue;
             }
@@ -1025,6 +1058,7 @@ pub(crate) fn plugin(app: &mut App) {
         .add_message::<CameraHit>()
         .add_message::<PainSounded>()
         .add_message::<BadFall>()
+        .add_message::<ShellHit>()
         .add_systems(
             FixedUpdate,
             sync_held_striking

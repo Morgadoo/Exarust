@@ -555,6 +555,69 @@ pub(crate) fn draw_rigid_auras(
     }
 }
 
+/// The shell's impact sample, played at a hard hit.
+const SHELL_HIT_SOUND: &str = "thmfrc_shi";
+
+/// What a shell hit's sample takes from the game (none in tests without it).
+#[derive(bevy::ecs::system::SystemParam)]
+pub(crate) struct ShellHitAudio<'w> {
+    game: Option<Res<'w, exa_assets::Game>>,
+    bank: Option<ResMut<'w, exa_audio::SoundBank>>,
+    sources: Option<ResMut<'w, Assets<AudioSource>>>,
+    env: Option<ResMut<'w, exa_audio::AudioEnvironment>>,
+}
+
+impl ShellHitAudio<'_> {
+    fn play(&mut self, set: &mut Option<u32>, at: Vec3, volume: f32, pitch: f32) {
+        let (Some(game), Some(bank), Some(sources), Some(env)) = (
+            self.game.as_deref(),
+            self.bank.as_deref_mut(),
+            self.sources.as_deref_mut(),
+            self.env.as_deref_mut(),
+        ) else {
+            return;
+        };
+        let id = *set.get_or_insert_with(|| bank.load_set(game, sources, SHELL_HIT_SOUND));
+        env.play_set(bank, id, at, volume, pitch, 0);
+    }
+}
+
+/// A hard limb impact on a shelled caster ripples that shell at the contact,
+/// in the aura's frame (cm from the body's root), and plays `thmfrc_shi`
+/// when the shell's 400 ms gate is open. A caster with no shell is left
+/// alone. The impact asks only once its volume is over 0.3.
+pub(crate) fn ripple_shell_hits(
+    mut hits: MessageReader<exa_combat::impact::ShellHit>,
+    mut auras: Query<(&ShellAuraOf, &mut LiveShellAura)>,
+    bodies: Query<&Ragdoll>,
+    ticks: Option<Res<BodyTicks>>,
+    mut roll: Option<ResMut<EffectRoll>>,
+    mut audio: ShellHitAudio,
+    mut set: Local<Option<u32>>,
+) {
+    let now = ticks.as_ref().map_or(0, |t| t.millis()) as u32;
+    for hit in hits.read() {
+        let place = bodies
+            .get(hit.fighter)
+            .ok()
+            .and_then(aura_frame)
+            .map(|frame| {
+                let p = frame.local(hit.point * CM);
+                [p.x, p.y, p.z]
+            })
+            .unwrap_or([0.0; 3]);
+        for (of, mut aura) in &mut auras {
+            if of.0 != hit.fighter {
+                continue;
+            }
+            let mut unit = || roll.as_mut().map(|r| r.0.unit()).unwrap_or(0.0);
+            if let Some((pitch, volume)) = aura.0.hit(place, hit.volume, now, &mut unit) {
+                audio.play(&mut set, hit.point, volume, pitch);
+            }
+        }
+    }
+}
+
 /// Removes the copies of an aura that has left the scene.
 pub(crate) fn drop_shell_copies(
     mut commands: Commands,
@@ -572,6 +635,68 @@ pub(crate) fn drop_shell_copies(
 mod tests {
     use super::*;
     use crate::thaum::ForceShell;
+
+    /// A hard impact over volume 0.3 ripples the caster's shell at the
+    /// contact, measured in centimetres from the body's root. Another
+    /// body's shell is left alone.
+    #[test]
+    fn a_hard_impact_ripples_the_casters_shell() {
+        use bevy::math::Affine3A;
+        use exa_physics::body::PartSetup;
+
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_message::<exa_combat::impact::ShellHit>()
+            .insert_resource(BodyTicks(1_000))
+            .add_systems(Update, ripple_shell_hits);
+        let caster = app
+            .world_mut()
+            .spawn(Ragdoll::new(&[PartSetup {
+                bone: 1,
+                entity: Entity::PLACEHOLDER,
+                parent: None,
+                world: Affine3A::from_translation(Vec3::new(2.0, 0.0, 0.0)),
+                centre: Vec3::ZERO,
+                half: Vec3::splat(0.1),
+                spheres: None,
+                origin: Vec3::ZERO,
+                links: Vec::new(),
+                foot: None,
+                pins: Vec::new(),
+            }]))
+            .id();
+        let other = app.world_mut().spawn_empty().id();
+        app.world_mut().spawn((
+            ShellAuraOf(caster),
+            LiveShellAura(ForceShell::new(0, [0.0, 0.0])),
+        ));
+        app.world_mut().spawn((
+            ShellAuraOf(other),
+            LiveShellAura(ForceShell::new(0, [0.0, 0.0])),
+        ));
+        app.world_mut().write_message(exa_combat::impact::ShellHit {
+            fighter: caster,
+            point: Vec3::new(3.0, 0.4, 0.0),
+            volume: 0.5,
+        });
+        app.update();
+        let mut shells = app.world_mut().query::<(&ShellAuraOf, &LiveShellAura)>();
+        let mut found = None;
+        let mut spared = true;
+        for (of, aura) in shells.iter(app.world()) {
+            if of.0 == caster {
+                found = Some(aura.0.ripples.clone());
+            }
+            if of.0 == other {
+                spared = aura.0.ripples.is_empty();
+            }
+        }
+        let ripples = found.expect("the caster's shell");
+        assert_eq!(ripples.len(), 1);
+        assert_eq!(ripples[0].strength, 6.0);
+        assert_eq!(ripples[0].at, [100.0, 40.0, 0.0]);
+        assert!(spared);
+    }
 
     #[test]
     fn the_local_matrix_takes_world_metres_into_the_frame_in_cm() {

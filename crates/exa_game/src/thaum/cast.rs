@@ -394,6 +394,7 @@ impl Plugin for CastPlugin {
             .add_message::<super::throw_live::ThrowFade>()
             .add_message::<super::hold_live::HoldEnd>()
             .add_message::<exa_combat::impact::LimbImpact>()
+            .add_message::<exa_combat::impact::ShellHit>()
             .init_resource::<super::kinesis_live::KinesisPickHook>()
             .init_resource::<super::kinesis_live::KinesisCursor>()
             .init_resource::<super::kinesis_live::KinesisKeys>()
@@ -402,6 +403,7 @@ impl Plugin for CastPlugin {
             .init_resource::<EffectRoll>()
             .init_resource::<super::debug_cast::DebugCasts>()
             .add_systems(Update, (run_bar_commands, sync_screen_bar).chain())
+            .add_systems(Update, super::effect_draw::ripple_shell_hits)
             .add_systems(
                 Update,
                 super::debug_cast::run_debug_casts
