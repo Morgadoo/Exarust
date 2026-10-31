@@ -403,7 +403,9 @@ impl Plugin for CastPlugin {
             .init_resource::<EffectRoll>()
             .init_resource::<super::debug_cast::DebugCasts>()
             .add_systems(Update, (run_bar_commands, sync_screen_bar).chain())
+            .add_message::<exa_script::Narrate>()
             .add_systems(Update, super::effect_draw::ripple_shell_hits)
+            .add_systems(Update, super::power::teach_on_death)
             .add_systems(
                 Update,
                 super::debug_cast::run_debug_casts

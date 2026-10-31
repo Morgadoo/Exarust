@@ -398,6 +398,113 @@ pub fn glean(
     }
 }
 
+/// The ground point a range test reads, in centimetres: the standing
+/// position's x and z at the character's ground height. The behaviour writes
+/// that point before it runs; a fallen body's pelvis height is not it.
+pub(crate) fn ground_point_cm(body: &exa_physics::body::Ragdoll) -> Option<[f32; 3]> {
+    let drive = body.drive.as_ref()?;
+    let stand = drive.standing_point() * 100.0;
+    Some([stand.x, drive.character_ground() * 100.0, stand.z])
+}
+
+/// Power Glean's caller: a body whose condition has just become dead, and
+/// which already knows a power, may teach the player. A body that appears
+/// already dead (a placed corpse) does not. The player has to know a power
+/// too, and only a distance above 20 m refuses.
+#[allow(clippy::type_complexity)]
+pub(crate) fn teach_on_death(
+    mut seen: bevy::ecs::system::Local<std::collections::HashSet<bevy::prelude::Entity>>,
+    changed: bevy::prelude::Query<
+        (
+            bevy::prelude::Entity,
+            &exa_combat::Condition,
+            &exa_character::record::CharacterData,
+            &exa_physics::body::Ragdoll,
+        ),
+        (
+            bevy::prelude::Changed<exa_combat::Condition>,
+            bevy::prelude::Without<crate::player::PlayerBody>,
+        ),
+    >,
+    spawned: bevy::prelude::Query<
+        bevy::prelude::Entity,
+        bevy::prelude::Added<exa_combat::Condition>,
+    >,
+    mut players: bevy::prelude::Query<
+        (
+            &mut exa_character::record::CharacterData,
+            &exa_physics::body::Ragdoll,
+        ),
+        bevy::prelude::With<crate::player::PlayerBody>,
+    >,
+    mut narrate: bevy::prelude::MessageWriter<exa_script::Narrate>,
+) {
+    let mut deaths = Vec::new();
+    for (entity, condition, data, body) in &changed {
+        if spawned.contains(entity) {
+            if condition.is_dead() {
+                seen.insert(entity);
+            }
+            continue;
+        }
+        if !condition.is_dead() || !seen.insert(entity) {
+            continue;
+        }
+        let Some(powers) = data.record.powers.as_ref() else {
+            continue;
+        };
+        if powers.known.is_empty() {
+            continue;
+        }
+        let dead: Vec<KnownPower> = powers
+            .known
+            .iter()
+            .map(|power| KnownPower {
+                id: power.id,
+                word: power.flags,
+            })
+            .collect();
+        let Some(at) = ground_point_cm(body) else {
+            continue;
+        };
+        deaths.push((dead, at));
+    }
+    let Ok((mut player_data, player_body)) = players.single_mut() else {
+        return;
+    };
+    let Some(player_at) = ground_point_cm(player_body) else {
+        return;
+    };
+    let Some(player_powers) = player_data.record.powers.as_mut() else {
+        return;
+    };
+    let mut known: Vec<KnownPower> = player_powers
+        .known
+        .iter()
+        .map(|power| KnownPower {
+            id: power.id,
+            word: power.flags,
+        })
+        .collect();
+    for (dead, dead_at) in deaths {
+        let taught = glean(&dead, dead_at, &mut known, player_at, true);
+        let Some(learned) = taught.learned else {
+            continue;
+        };
+        player_powers.known.push(exa_formats::characters::Power {
+            id: learned.id,
+            flags: learned.word,
+            blob: None,
+        });
+        if taught.message.is_some() {
+            narrate.write(exa_script::Narrate {
+                topic: GLEAN_MESSAGE.to_string(),
+                delay: GLEAN_MESSAGE_MS,
+            });
+        }
+    }
+}
+
 /// The fields the spirit body copies from the caster's record and body.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SpiritRecord {
@@ -798,6 +905,125 @@ mod tests {
         let learned = glean(&dead, [0.0; 3], &mut player, [0.0; 3], true);
         assert_eq!(learned.learned.unwrap().id, 0x401);
         assert_eq!(learned.learned.unwrap().word, 0x9fff);
+    }
+
+    /// A body that becomes dead within 20 m teaches the player. One that
+    /// spawns dead, or whose ground point is past 20 m, does not.
+    #[test]
+    fn a_death_nearby_teaches_the_player_once() {
+        use bevy::prelude::*;
+        use exa_character::record::CharacterData;
+        use exa_combat::Condition;
+        use exa_formats::characters::{CharacterRecord, POWER_SLOTS, Power, Powers};
+        use exa_physics::body::Ragdoll;
+
+        use crate::player::PlayerBody;
+
+        fn knowing(ids: &[u32]) -> CharacterData {
+            let mut record = CharacterRecord::new();
+            record.powers = Some(Powers {
+                word: 0,
+                slots: [0; POWER_SLOTS],
+                known: ids
+                    .iter()
+                    .map(|id| Power {
+                        id: *id,
+                        flags: KNOWN_WORD,
+                        blob: None,
+                    })
+                    .collect(),
+            });
+            CharacterData::of_record(record)
+        }
+
+        fn body_at(x_m: f32, ground_m: f32) -> Ragdoll {
+            let mut body = Ragdoll::new(&[]).with_drive();
+            let drive = body.drive.as_mut().unwrap();
+            drive.set_standing_point(Vec3::new(x_m, 0.9, 0.0));
+            drive.set_character_ground(ground_m);
+            body
+        }
+
+        let mut app = App::new();
+        app.add_message::<exa_script::Narrate>()
+            .add_systems(Update, super::teach_on_death);
+        let player = app
+            .world_mut()
+            .spawn((
+                PlayerBody::new(0.0),
+                knowing(&[0x201]),
+                body_at(0.0, 0.0),
+                Condition::NORMAL,
+            ))
+            .id();
+        let corpse = app
+            .world_mut()
+            .spawn((
+                knowing(&[0x401, GLEAN_VANISH]),
+                body_at(1.0, 0.0),
+                Condition::NORMAL,
+            ))
+            .id();
+        let placed = app
+            .world_mut()
+            .spawn((knowing(&[GLEAN_VANISH]), body_at(0.0, 0.0), Condition::DEAD))
+            .id();
+        app.update();
+        app.world_mut().get_mut::<Condition>(corpse).unwrap().die();
+        app.update();
+
+        let known = &app
+            .world()
+            .get::<CharacterData>(player)
+            .unwrap()
+            .powers
+            .as_ref()
+            .unwrap()
+            .known;
+        assert_eq!(known.len(), 2);
+        assert_eq!(known[1].id, GLEAN_VANISH);
+        assert_eq!(known[1].flags, KNOWN_WORD);
+        assert_eq!(known[1].blob, None);
+        let messages = app.world().resource::<Messages<exa_script::Narrate>>();
+        let mut cursor = messages.get_cursor();
+        let narrated: Vec<_> = cursor.read(messages).collect();
+        assert_eq!(narrated.len(), 1);
+        assert_eq!(narrated[0].topic, GLEAN_MESSAGE);
+        assert_eq!(narrated[0].delay, GLEAN_MESSAGE_MS);
+
+        // Dying again, or the corpse that was already dead, adds nothing.
+        app.world_mut().get_mut::<Condition>(corpse).unwrap().die();
+        app.world_mut().get_mut::<Condition>(placed).unwrap().die();
+        app.update();
+        assert_eq!(
+            app.world()
+                .get::<CharacterData>(player)
+                .unwrap()
+                .powers
+                .as_ref()
+                .unwrap()
+                .known
+                .len(),
+            2
+        );
+
+        // Twenty metres of ground, not of pelvis height, is too far.
+        let high = app
+            .world_mut()
+            .spawn((knowing(&[0x401]), body_at(0.0, 21.0), Condition::NORMAL))
+            .id();
+        app.update();
+        app.world_mut().get_mut::<Condition>(high).unwrap().die();
+        app.update();
+        let known = &app
+            .world()
+            .get::<CharacterData>(player)
+            .unwrap()
+            .powers
+            .as_ref()
+            .unwrap()
+            .known;
+        assert_eq!(known.len(), 2, "a ground 21 m up is out of range");
     }
 
     #[test]

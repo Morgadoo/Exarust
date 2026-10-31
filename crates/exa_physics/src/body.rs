@@ -2252,6 +2252,25 @@ impl Drive {
         self.steps.standing
     }
 
+    /// Places the standing position (m). The step writes it; a test of a
+    /// range check without a step writes it here.
+    pub fn set_standing_point(&mut self, at: Vec3) {
+        self.steps.standing = at;
+        self.steps.placed = true;
+    }
+
+    /// The character's ground height (m): with support the lowest foot's
+    /// (their mean while walking), otherwise the ground under the pelvis.
+    pub fn character_ground(&self) -> f32 {
+        self.balance.under
+    }
+
+    /// Sets the character's ground height (m). The balance measure writes
+    /// it; a test without one writes it here.
+    pub fn set_character_ground(&mut self, y: f32) {
+        self.balance.under = y;
+    }
+
     /// The character frame's origin (m): the character's place across the
     /// ground, at the pelvis's height when last anchored (none before the
     /// first aim). The character's controller follows it.
