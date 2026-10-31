@@ -566,6 +566,108 @@ fn mark_panel_entry(screens: &mut GameScreens, panel_number: u32, slot: i32, fla
     }
 }
 
+/// A kind `0x10` use whose entry is the operative's target replaces that
+/// entry with the operative's second word, then drops the used entry.
+#[allow(clippy::too_many_arguments)]
+fn transfer_gui(
+    mut released: MessageReader<UseReleased>,
+    mut screens: ResMut<GameScreens>,
+    game: Option<Res<Game>>,
+    mut items: ResMut<DollItems>,
+    cursor: Res<UseCursor>,
+    catalogue: Option<Res<exa_items::catalogue::ItemCatalogue>>,
+    mut sounds: MessageWriter<exa_audio::PointSounded>,
+    players: Query<&GlobalTransform, With<PlayerBody>>,
+) {
+    items.ensure(game.as_deref());
+    for release in released.read() {
+        if release.release != UseRelease::TransferGui {
+            continue;
+        }
+        let Some((panel, index)) = release.subject_entry else {
+            continue;
+        };
+        let Some(operative) = items.get(release.item).and_then(|item| item.operative) else {
+            continue;
+        };
+        if operative.kind != 0x10 || release.subject != operative.target {
+            continue;
+        }
+        let replaced = {
+            let Some(container) = crate::panel_live::container_mut(&mut screens, panel) else {
+                continue;
+            };
+            let half = container.icon_size >> 1;
+            let icon = container
+                .entries
+                .get(index)
+                .map(|entry| entry.icon)
+                .unwrap_or(0);
+            let icon_size = container.icon_size;
+            let client = container.client;
+            crate::item_container::replace_entry(
+                &mut container.entries,
+                &mut container.used,
+                index,
+                &crate::item_container::Replacement {
+                    id: operative.second,
+                    icon,
+                    flags: 0,
+                    bulk: &|id| {
+                        catalogue
+                            .as_deref()
+                            .and_then(|catalogue| catalogue.bulk(id))
+                            .map(i32::from)
+                            .unwrap_or(0)
+                    },
+                    half: (half, half),
+                    icon_size,
+                    client,
+                },
+            )
+        };
+        if replaced.is_none() {
+            continue;
+        }
+        if cursor.slot > 0 {
+            let source = cursor.slot as usize - 1;
+            if let Some(source_panel) = open_panels(&screens)
+                .into_iter()
+                .find(|open| open.0.number() == cursor.panel)
+                .map(|open| open.0)
+                && let Some(source_container) =
+                    crate::panel_live::container_mut(&mut screens, source_panel)
+                && (source_panel != panel || source != index)
+            {
+                let id = source_container.entries.get(source).map(|entry| entry.id);
+                let bulk = id
+                    .and_then(|id| {
+                        catalogue
+                            .as_deref()
+                            .and_then(|catalogue| catalogue.bulk(id))
+                    })
+                    .map(i32::from)
+                    .unwrap_or(0);
+                let _ = source_container.remove_at(source, bulk);
+            }
+        }
+        if let Some(name) = player_controls::use_sound_name(&operative) {
+            let position = players
+                .iter()
+                .next()
+                .map(|transform| transform.translation())
+                .unwrap_or(Vec3::ZERO);
+            sounds.write(exa_audio::PointSounded {
+                name,
+                position,
+                volume: 0.3,
+                pitch: 1.0,
+                flags: 0x400,
+            });
+        }
+    }
+}
+
 /// The panel entry a use landed on takes the new record id.
 fn rewrite_entry(screens: &mut GameScreens, panel: Panel, index: usize, from: u32, to: u32) {
     let Some(container) = crate::panel_live::container_mut(screens, panel) else {
@@ -867,6 +969,7 @@ impl Plugin for UseCursorPlugin {
                     end_use,
                     apply_pour,
                     apply_kit,
+                    transfer_gui,
                     tick_kits,
                     panel_double_click,
                     scripted_use,
