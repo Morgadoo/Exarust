@@ -1645,6 +1645,18 @@ pub struct LevelExit {
     pub name: Option<&'static str>,
 }
 
+/// The 16-byte header name a kind-7 use looks up, with `A`–`Z` lowered.
+/// The original copies those sixteen bytes and adds `0x20` to each byte in
+/// that range, then looks for that text with `.rfc` on it.
+pub fn header_key(name: &str) -> String {
+    name.chars()
+        .map(|c| match c {
+            'A'..='Z' => char::from(c as u8 + 0x20),
+            other => other,
+        })
+        .collect()
+}
+
 /// A level name made to live as long as the program, so a looked-up
 /// destination can ride a [`Step`]: each distinct name is kept once.
 pub fn intern_locale(name: &str) -> &'static str {
@@ -3387,6 +3399,8 @@ impl Plugin for FlowPlugin {
             .init_resource::<BootToMenu>()
             .init_resource::<crate::transition_screen::TransitionOverlay>()
             .add_message::<MenuChoice>()
+            .add_message::<ReadNamedLevel>()
+            .init_resource::<crate::doll_view::DollItems>()
             .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
             .add_message::<exa_world::level_lifecycle::WorldReset>()
             .add_systems(Startup, boot)
@@ -3395,6 +3409,7 @@ impl Plugin for FlowPlugin {
                 (
                     (apply_menu_choices, tick, follow_player).chain(),
                     (
+                        open_named_level,
                         travel,
                         cross_exit_zones,
                         crate::game_event_live::run_game_events,
@@ -3548,6 +3563,46 @@ fn follow_player(
 /// session without a hook.
 #[derive(Resource, Debug, Clone, Copy, Default)]
 pub struct StorySession;
+
+/// A kind-7 use asks to load the level its header names.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReadNamedLevel {
+    pub id: u32,
+}
+
+/// Loads the level a kind-7 use named, when `name.rfc` is in the resource
+/// pack. A missing record, an empty name or a missing file leaves the
+/// current level.
+fn open_named_level(
+    mut reads: MessageReader<ReadNamedLevel>,
+    game: Option<Res<exa_assets::Game>>,
+    mut items: ResMut<crate::doll_view::DollItems>,
+    mut flow: ResMut<Flow>,
+    mut queued: ResMut<FlowSteps>,
+) {
+    items.ensure(game.as_deref());
+    for read in reads.read() {
+        let Some(name) = items.get(read.id).map(|item| header_key(&item.name)) else {
+            continue;
+        };
+        if name.is_empty() {
+            continue;
+        }
+        let file = format!("{name}.rfc");
+        let exists = game.as_ref().is_some_and(|game| {
+            game.0
+                .pack(exa_assets::PackKind::Resource)
+                .is_some_and(|pack| pack.get(&file).is_some())
+        });
+        if !exists {
+            continue;
+        }
+        for step in flow.leave_to_locale(intern_locale(&name), true) {
+            info!("game flow: a read use asks for {name}: {step:?}");
+            queued.steps.push(step);
+        }
+    }
+}
 
 /// A teleporter journey is the game's level exit. The destination's
 /// level-entry music check reads the track the music's main voice plays.
@@ -4468,6 +4523,14 @@ pub(crate) fn run_to_black(flow: &mut Flow) -> Vec<Step> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_header_name_is_lowered_for_the_level_file() {
+        assert_eq!(header_key("Exanima01"), "exanima01");
+        assert_eq!(header_key("already"), "already");
+        assert_eq!(header_key("A_B"), "a_b");
+        assert!(Flow::default().leave_to_locale("missing", false).is_empty());
+    }
 
     #[test]
     fn hiding_the_tip_clears_the_banner_and_keeps_the_counts() {

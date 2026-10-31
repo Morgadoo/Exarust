@@ -38,6 +38,7 @@ use exa_world::db_objects::PlaceholderNode;
 use exa_world::{ObjectSections, PartBounds, PlacedItem};
 
 use crate::div_card_screen::OpenDivination;
+use crate::flow::ReadNamedLevel;
 use crate::gui_screens::{ContainerRequest, GameScreens};
 use crate::hand::Hit;
 use crate::item_card::{CardView, WorldCard};
@@ -211,6 +212,8 @@ pub struct ClickOutputs<'w> {
     experience: Option<ResMut<'w, crate::experience_live::StoryExperience>>,
     /// A kind-5 take opens the divination reading.
     divination: MessageWriter<'w, OpenDivination>,
+    /// A kind-7 take asks to load the level its header names.
+    levels: MessageWriter<'w, ReadNamedLevel>,
 }
 
 /// The dialogue side a narration goes through.
@@ -433,10 +436,9 @@ pub fn run_object_clicks(
                         TakeUse::Powers => {
                             out.divination.write(OpenDivination { seed: 0 });
                         }
-                        // Kind 7 hands the header name to the registered
-                        // reader. That window is not built.
+                        // Kind 7 asks to load the level the header names.
                         TakeUse::NameHook => {
-                            info!("object take {id:#x}: the record's name goes to its reader");
+                            out.levels.write(ReadNamedLevel { id });
                         }
                     }
                 }
@@ -611,6 +613,7 @@ mod tests {
             .add_message::<WorldCard>()
             .add_message::<ContainerRequest>()
             .add_message::<OpenDivination>()
+            .add_message::<ReadNamedLevel>()
             .add_message::<exa_audio::PointSounded>()
             .init_resource::<PendingUses>()
             .init_resource::<DeviceClock>()
@@ -801,6 +804,25 @@ mod tests {
             vec![OpenDivination { seed: 0 }]
         );
         assert!(app.world().get_entity(deck).is_err());
+    }
+
+    /// A kind-7 take asks to load the level its header names, and the object
+    /// still leaves the scene.
+    #[test]
+    fn a_named_level_item_asks_to_load_it() {
+        let mut app = app();
+        let book = placed(
+            &mut app,
+            0x41,
+            Some(sections(Some((0, 7)), false, 0)),
+            Vec3::ZERO,
+        );
+        click(&mut app, Hit::SceneNode { node: book }, Vec3::ZERO, true);
+        assert_eq!(
+            drain::<ReadNamedLevel>(&mut app),
+            vec![ReadNamedLevel { id: 0x41 }]
+        );
+        assert!(app.world().get_entity(book).is_err());
     }
 
     /// A usable kind 1 item taken in hand lifts the use cursor and stays in
