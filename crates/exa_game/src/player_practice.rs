@@ -18,8 +18,10 @@
 //!   feeds the gain, and a gain over 10 pays four per whole point to the
 //!   record's practice count.
 //!
-//! The player has no record in Exarust, so the paid practice is kept on
-//! [`PlayerPractice::paid`] and logged; nothing converts it yet.
+//! The paid amount is the record's discovery counter (the same word a new
+//! map cell adds to): the body's record and, once the story has started,
+//! the learner the conversion spends. [`PlayerPractice::paid`] keeps the
+//! running total that was logged.
 
 use bevy::prelude::*;
 use exa_anim::{Animator, Motions};
@@ -39,8 +41,8 @@ use crate::player_behaviour::{self, Contact, NearFighter};
 pub struct PlayerPractice {
     /// The lesson, the gain and the fatigue.
     pub practice: exa_ai::combat::Practice,
-    /// The record's practice count this behaviour paid (Exarust's own
-    /// store: the player has no record).
+    /// The practice this behaviour has paid, kept so a log can say the
+    /// total. The record's discovery counter is what the original adds to.
     pub paid: i64,
     /// The contact list of the last tick, at most twelve.
     pub contacts: Vec<Contact>,
@@ -90,7 +92,9 @@ pub(crate) fn tick_player_practice(
         Option<&Condition>,
         Option<&mut SwingState>,
         Option<&Animator>,
+        Option<&mut CharacterData>,
     )>,
+    mut story: Option<ResMut<crate::experience_live::StoryExperience>>,
     others: Query<
         (
             Entity,
@@ -104,7 +108,9 @@ pub(crate) fn tick_player_practice(
         Without<PlayerBody>,
     >,
 ) {
-    for (me, root, pb, mut kept, gt, (req, body), condition, swing, anim) in &mut players {
+    for (me, root, pb, mut kept, gt, (req, body), condition, swing, anim, mut record) in
+        &mut players
+    {
         let condition = condition.copied().unwrap_or_default();
         let at = gt.translation() * CM;
         let facing = forward(body.yaw);
@@ -177,6 +183,14 @@ pub(crate) fn tick_player_practice(
         let paid = exa_ai::combat::practise(&mut kept.practice);
         if paid != 0 {
             kept.paid += i64::from(paid);
+            if let Some(record) = record.as_mut() {
+                record.experience = record.experience.wrapping_add(paid);
+            }
+            if let Some(story) = story.as_mut()
+                && story.started
+            {
+                story.player.experience = story.player.experience.wrapping_add(paid as u32);
+            }
             info!(
                 "practice: +{paid} to the practice count ({} in all; lesson {:.3}, fatigue {:.4})",
                 kept.paid, kept.practice.lesson, kept.practice.fatigue
@@ -207,6 +221,58 @@ pub(crate) fn take_lessons(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A gain past 10 pays the record's discovery counter, and the story
+    /// learner when the level has started. The amount is what one practice
+    /// tick returns, not four times that.
+    #[test]
+    fn a_paid_practice_joins_the_discovery_counter() {
+        use exa_character::record::CharacterData;
+        use exa_formats::characters::CharacterRecord;
+        use exa_physics::body::locomotion::{Locomotion, Locomotor};
+
+        use crate::experience_live::StoryExperience;
+
+        let mut trial = exa_ai::combat::Practice {
+            lesson: 1.0,
+            gain: 10.5,
+            fatigue: 0.0,
+        };
+        let paid = exa_ai::combat::practise(&mut trial);
+        assert!(paid > 0, "{paid}");
+
+        let mut app = App::new();
+        app.add_systems(Update, tick_player_practice);
+        let mut kept = PlayerPractice::default();
+        kept.practice.lesson = 1.0;
+        kept.practice.gain = 10.5;
+        let mut story = StoryExperience::default();
+        story.started = true;
+        story.player.experience = 100;
+        app.insert_resource(story);
+        let mut data = CharacterData::of_record(CharacterRecord::new());
+        data.experience = 100;
+        let player = app
+            .world_mut()
+            .spawn((
+                PlayerBody::new(0.0),
+                kept,
+                GlobalTransform::from_translation(Vec3::ZERO),
+                Locomotion::default(),
+                Locomotor::default(),
+                data,
+            ))
+            .id();
+        app.update();
+        let data = app.world().get::<CharacterData>(player).unwrap();
+        assert_eq!(data.experience, 100 + paid);
+        let story = app.world().resource::<StoryExperience>();
+        assert_eq!(story.player.experience, (100 + paid) as u32);
+        assert_eq!(
+            app.world().get::<PlayerPractice>(player).unwrap().paid,
+            i64::from(paid)
+        );
+    }
 
     /// A struck character's rating raises the player's lesson only when it
     /// is larger.
