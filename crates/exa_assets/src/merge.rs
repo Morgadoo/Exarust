@@ -56,6 +56,11 @@ pub struct MergePart<'a> {
     /// The part's slice of its mesh's index buffer, when it is one material
     /// group of a shared mesh.
     pub index_range: Option<(usize, usize)>,
+    /// The word every kept triangle of the part carries in
+    /// [`Merged::triangle_tags`]. The original's appends write their third
+    /// argument into the merged mesh's per-face table: the worn item's id
+    /// for a garment's parts, 0 for the body's.
+    pub tag: u32,
 }
 
 impl<'a> MergePart<'a> {
@@ -78,6 +83,7 @@ impl<'a> MergePart<'a> {
             cull: 0,
             occlude: false,
             index_range: None,
+            tag: 0,
         }
     }
 }
@@ -98,6 +104,10 @@ pub struct SubObject {
 pub struct Merged {
     pub mesh: Mesh,
     pub subobjects: Vec<SubObject>,
+    /// One word per merged triangle, in the final (material-run) order: the
+    /// [`MergePart::tag`] of the part the triangle came from. The renumber
+    /// pass permutes the original's per-face table with the faces.
+    pub triangle_tags: Vec<u32>,
 }
 
 /// The body's frame with no turn or shift.
@@ -146,6 +156,8 @@ struct Appended {
     edges: Vec<u8>,
     /// Whether each kept triangle's part carries the occlusion mark.
     marked: Vec<bool>,
+    /// The tag of each kept triangle's part.
+    tags: Vec<u32>,
     has_uv: bool,
     has_colour: bool,
     has_flags: bool,
@@ -171,6 +183,7 @@ pub fn merge(parts: &[MergePart]) -> Option<Merged> {
         flags: Vec::new(),
         edges: Vec::new(),
         marked: Vec::new(),
+        tags: Vec::new(),
         has_uv: false,
         has_colour: false,
         has_flags: false,
@@ -327,6 +340,7 @@ pub fn merge(parts: &[MergePart]) -> Option<Merged> {
                     .unwrap_or(0),
             );
             appended.marked.push(part.occlude);
+            appended.tags.push(part.tag);
         }
     }
     if appended.positions.is_empty() {
@@ -405,6 +419,7 @@ pub fn merge(parts: &[MergePart]) -> Option<Merged> {
     let mut flags = Vec::with_capacity(appended.triangles.len());
     let mut edges = Vec::with_capacity(appended.triangles.len());
     let mut marked = Vec::with_capacity(appended.triangles.len());
+    let mut tags = Vec::with_capacity(appended.triangles.len());
     let mut first = 0u32;
     for (index, subobject) in subobjects.iter_mut().enumerate() {
         let start = indices.len();
@@ -420,6 +435,7 @@ pub fn merge(parts: &[MergePart]) -> Option<Merged> {
             flags.push(appended.flags[t]);
             edges.push(appended.edges[t]);
             marked.push(appended.marked[t]);
+            tags.push(appended.tags[t]);
         }
         let count = indices.len() - start;
         if count == 0 {
@@ -456,7 +472,11 @@ pub fn merge(parts: &[MergePart]) -> Option<Merged> {
         subobject.first_index = first;
         first += subobject.index_count;
     }
-    Some(Merged { mesh, subobjects })
+    Some(Merged {
+        mesh,
+        subobjects,
+        triangle_tags: tags,
+    })
 }
 
 /// Merges the visible parts into one mesh, or `None` when nothing is left.
@@ -1526,5 +1546,48 @@ mod tests {
         };
         assert_eq!(points[4], [2.0, 0.0, 0.0]);
         assert!(assemble_editable(&[]).unwrap().is_none());
+    }
+
+    /// The per-face table follows the faces through the material regroup:
+    /// each merged triangle keeps the tag of the part it came from, and a
+    /// part's tag reaches only the triangles it kept.
+    #[test]
+    fn each_face_keeps_its_parts_tag_through_the_regroup() {
+        let body = mesh(&[[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], &[0, 1, 2]);
+        let shirt = mesh(
+            &[
+                [2.0, 0.0, 0.0],
+                [3.0, 0.0, 0.0],
+                [2.0, 1.0, 0.0],
+                [3.0, 1.0, 0.0],
+            ],
+            &[0, 1, 2, 1, 3, 2],
+        );
+        let skin2 = mesh(
+            &[[5.0, 0.0, 0.0], [6.0, 0.0, 0.0], [5.0, 1.0, 0.0]],
+            &[0, 1, 2],
+        );
+        let parts = [
+            part(&body, None, 1, "skin"),
+            MergePart {
+                tag: 0x2a,
+                ..part(&shirt, None, 2, "shirt")
+            },
+            part(&skin2, None, 3, "skin"),
+        ];
+        let merged = merge(&parts).unwrap();
+        // The skin run (the body, then the second skin part) comes first,
+        // then the shirt's two faces.
+        assert_eq!(merged.triangle_tags, [0, 0, 0x2a, 0x2a]);
+        assert_eq!(merged.mesh.indices.len() / 3, merged.triangle_tags.len());
+        // A culled face takes no entry.
+        let flags = [0x20_0000, 0];
+        let parts = [MergePart {
+            tag: 7,
+            triangle_flags: Some(&flags),
+            cull: 0x20_0000,
+            ..part(&shirt, None, 1, "shirt")
+        }];
+        assert_eq!(merge(&parts).unwrap().triangle_tags, [7]);
     }
 }

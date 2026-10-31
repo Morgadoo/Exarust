@@ -1110,7 +1110,7 @@ fn equip_dropped(
                 .iter_mut()
                 .find(|(entity, _)| entity.index().index() as i32 == body)
                 .and_then(|(_, mut b)| body_inventory::take(&mut b, PanelKind::Pack, drop.id)),
-            Panel::BodyEquipment(_) => None,
+            Panel::BodyEquipment(_) | Panel::Figure => None,
             Panel::Container(_) => Some(drop.flags & !HELD),
         };
         let Some(flags) = flags else {

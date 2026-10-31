@@ -445,7 +445,7 @@ pub fn frame_counter(value: i32) -> i32 {
 }
 
 /// A node of the figure's scene, as the hover pick walks it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PickNode {
     /// The node's identity.
     pub node: u32,
@@ -457,8 +457,9 @@ pub struct PickNode {
     pub item_flags: u32,
     /// The carried item's settle word: a negative one is still settling.
     pub item_settle: i32,
-    /// The node was under the pointer.
-    pub hit: bool,
+    /// How far along the pick's ray the node's nearest face is, `None` when
+    /// the ray misses it ([`nearest_face`] over the node's triangles).
+    pub distance: Option<f32>,
     /// The doll's item slot the node belongs to, 1-based (the original
     /// follows the node's parent chain to a settled node and looks it up
     /// among the attached items).
@@ -483,29 +484,108 @@ pub fn pickable(node: &PickNode) -> bool {
             && node.item_settle >= 0)
 }
 
+/// The smallest determinant the meshes' ray callback takes (the float word
+/// `0x33ffffd7`, just under 2⁻²³): a face seen edge-on, or from behind, is
+/// not hit.
+pub const FACE_DETERMINANT: f32 = f32::from_bits(0x33ff_ffd7);
+
+/// The scene meshes' ray test of one face, as their ray callback runs it:
+/// the unnormalised barycentric test, one-sided (the determinant
+/// `e1 · (dir × e2)` must reach [`FACE_DETERMINANT`], so only a face whose
+/// front turns toward the ray is met), `0 ≤ u ≤ det`, `v ≥ 0`,
+/// `u + v ≤ det`, and the distance `(e2 · q) / det` strictly between 0 and
+/// `within`. `dir` is the ray's unit direction, so the distance is in the
+/// scene's units.
+pub fn ray_face(
+    origin: bevy::math::Vec3,
+    dir: bevy::math::Vec3,
+    [v0, v1, v2]: [bevy::math::Vec3; 3],
+    within: f32,
+) -> Option<f32> {
+    let e1 = v1 - v0;
+    let e2 = v2 - v0;
+    let p = dir.cross(e2);
+    let det = e1.dot(p);
+    // NaN fails as the original's unordered compare does.
+    if det
+        .partial_cmp(&FACE_DETERMINANT)
+        .is_none_or(|order| order.is_lt())
+    {
+        return None;
+    }
+    let s = origin - v0;
+    let u = s.dot(p);
+    if !(0.0..=det).contains(&u) {
+        return None;
+    }
+    let q = s.cross(e1);
+    let v = dir.dot(q);
+    if v < 0.0 || u + v > det {
+        return None;
+    }
+    let t = e2.dot(q) / det;
+    (t > 0.0 && t < within).then_some(t)
+}
+
+/// The mesh callback's walk: every face in order, each tested within the
+/// nearest distance found so far ([`ray_face`]), answering the nearest
+/// face's index and distance, `None` when no face is nearer than `within`.
+pub fn nearest_face(
+    origin: bevy::math::Vec3,
+    dir: bevy::math::Vec3,
+    faces: impl IntoIterator<Item = [bevy::math::Vec3; 3]>,
+    within: f32,
+) -> Option<(usize, f32)> {
+    let mut best = within;
+    let mut found = None;
+    for (index, face) in faces.into_iter().enumerate() {
+        if let Some(t) = ray_face(origin, dir, face, best) {
+            best = t;
+            found = Some(index);
+        }
+    }
+    found.map(|index| (index, best))
+}
+
+/// The merged body mesh's answer to the pick: the item its per-face table
+/// gives the face under the pointer (0 for the body's own skin) and how far
+/// along the ray that face is.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BodyHit {
+    pub item: u32,
+    pub distance: f32,
+}
+
 /// What the pointer is over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Hover {
     /// The item under the pointer, 0 for none.
     pub item: u32,
     /// Its flags: the record hand entry's when the node is an attached
-    /// item, else the first carried entry's with that item.
+    /// item, else the first worn entry's with that item.
     pub flags: u32,
     /// The item slot, 1-based.
     pub slot: Option<usize>,
 }
 
 /// The item under the pointer. A hit on the item the view already shows
-/// answers that item and its flags. Otherwise the last pickable node under
-/// the pointer gives the item; `hand_flags` are the record's four hand
-/// entries' flag words, and the slot the node belongs to picks one (the
-/// node's own carried entry is not consulted), else the first carried
-/// entry naming the item does, else 0.
+/// answers that item and its flags. Otherwise the ray first meets the
+/// merged body mesh, which answers the item its per-face table gives the
+/// face (`body`; the search distance starts at the largest float), then
+/// every node in order, each only when it is nearer than the nearest hit so
+/// far (`reach`, the ray's own length, when the body was missed): the
+/// nearest wins. A node hit takes the node's item and sets the slot to the
+/// node's (cleared when the node is none of the doll's attached items).
+/// With a slot, its record hand entry's flag word (`hand_flags`, the
+/// record's hand entries) gives the flags; else the first worn entry
+/// naming the item does (`worn`, the record's worn list), else 0.
 pub fn hover_pick(
     shown: Option<(u32, u32)>,
+    body: Option<BodyHit>,
+    reach: f32,
     nodes: &[PickNode],
     hand_flags: &[u32],
-    carried: &[(u32, u32)],
+    worn: &[(u32, u32)],
 ) -> Hover {
     if let Some((item, flags)) = shown {
         return Hover {
@@ -514,26 +594,26 @@ pub fn hover_pick(
             slot: None,
         };
     }
-    let picked = nodes.iter().rev().find(|node| node.hit && pickable(node));
-    let Some(node) = picked else {
-        return Hover {
-            item: 0,
-            flags: 0,
-            slot: None,
-        };
-    };
-    let flags = match node.slot {
-        Some(index) if index >= 1 => hand_flags.get(index - 1).copied().unwrap_or(0),
-        _ => carried
+    let (mut item, mut best) = body.map_or((0, reach), |hit| (hit.item, hit.distance));
+    let mut slot = None;
+    for node in nodes.iter().filter(|node| pickable(node)) {
+        if let Some(distance) = node.distance
+            && distance < best
+        {
+            best = distance;
+            item = node.item;
+            slot = node.slot;
+        }
+    }
+    let slot = slot.filter(|index| *index >= 1);
+    let flags = match slot {
+        Some(index) => hand_flags.get(index - 1).copied().unwrap_or(0),
+        None => worn
             .iter()
-            .find(|(id, _)| *id == node.item)
+            .find(|(id, _)| *id == item)
             .map_or(0, |(_, flags)| *flags),
     };
-    Hover {
-        item: node.item,
-        flags,
-        slot: node.slot.filter(|index| *index >= 1),
-    }
+    Hover { item, flags, slot }
 }
 
 /// The plan a drop onto the figure makes.
@@ -1174,23 +1254,24 @@ mod tests {
         assert_eq!(frame_counter(i32::MIN), i32::MAX);
     }
 
-    fn node(flags: u32, item: u32, hit: bool) -> PickNode {
+    fn node(flags: u32, item: u32, distance: Option<f32>) -> PickNode {
         PickNode {
             node: item + 1,
             flags,
             item,
             item_flags: 0,
             item_settle: -1,
-            hit,
+            distance,
             slot: None,
         }
     }
 
     #[test]
-    fn the_hover_pick_walks_the_nodes() {
+    fn the_hover_pick_takes_the_nearest_hit() {
+        let far = 1000.0;
         // Nothing under the pointer.
         assert_eq!(
-            hover_pick(None, &[], &[], &[]),
+            hover_pick(None, None, far, &[], &[], &[]),
             Hover {
                 item: 0,
                 flags: 0,
@@ -1199,7 +1280,14 @@ mod tests {
         );
         // The shown icon wins wherever the pointer is.
         assert_eq!(
-            hover_pick(Some((7, 0x10)), &[node(0x89, 8, true)], &[], &[]),
+            hover_pick(
+                Some((7, 0x10)),
+                None,
+                far,
+                &[node(0x89, 8, Some(1.0))],
+                &[],
+                &[]
+            ),
             Hover {
                 item: 7,
                 flags: 0x10,
@@ -1207,24 +1295,40 @@ mod tests {
             }
         );
         // A node must carry all of 0x89 and must not be hidden.
-        assert!(!pickable(&node(0x88, 8, true)));
-        assert!(!pickable(&node(0x89 | PICK_HIDDEN, 8, true)));
-        let mut hidden = node(0x89, 8, true);
+        assert!(!pickable(&node(0x88, 8, Some(1.0))));
+        assert!(!pickable(&node(0x89 | PICK_HIDDEN, 8, Some(1.0))));
+        let mut hidden = node(0x89, 8, Some(1.0));
         hidden.item_flags = PICK_ITEM_HIDDEN;
         hidden.item_settle = 0;
         assert!(!pickable(&hidden));
         hidden.item_settle = -1;
         assert!(pickable(&hidden));
-        // The last node under the pointer wins; a non-hit node is skipped.
-        let mut held_node = node(0x89, 12, true);
+        // The body's face gives the worn item and the worn entry's flags.
+        let worn = [(12u32, 0x20u32), (30, 0x40)];
+        let body = BodyHit {
+            item: 30,
+            distance: 4.0,
+        };
+        assert_eq!(
+            hover_pick(None, Some(body), far, &[], &[1, 2], &worn),
+            Hover {
+                item: 30,
+                flags: 0x40,
+                slot: None
+            }
+        );
+        // A held item in front of the body wins with its hand's flags; one
+        // behind it does not, nor does a missed node.
+        let mut held_node = node(0x89, 12, Some(3.0));
         held_node.slot = Some(2);
-        let carried = [(12u32, 0x20u32)];
         assert_eq!(
             hover_pick(
                 None,
-                &[node(0x89, 8, true), held_node, node(0x89, 9, false)],
+                Some(body),
+                far,
+                &[node(0x89, 8, Some(5.0)), held_node, node(0x89, 9, None)],
                 &[1, 2],
-                &carried
+                &worn
             ),
             Hover {
                 item: 12,
@@ -1232,15 +1336,72 @@ mod tests {
                 slot: Some(2)
             }
         );
-        // Without a worn entry the carried list gives the flags.
+        // A nearer node that is no attached item (the hair) clears both the
+        // item and the slot.
+        let hair = node(0x89, 0, Some(2.0));
         assert_eq!(
-            hover_pick(None, &[node(0x89, 12, true)], &[], &carried),
+            hover_pick(None, Some(body), far, &[held_node, hair], &[1, 2], &worn),
+            Hover {
+                item: 0,
+                flags: 0,
+                slot: None
+            }
+        );
+        // Without the body, a node within the ray's reach is met; one past
+        // it is not. Equal distances keep the first.
+        assert_eq!(
+            hover_pick(None, None, 2.5, &[node(0x89, 12, Some(3.0))], &[], &worn).item,
+            0
+        );
+        assert_eq!(
+            hover_pick(
+                None,
+                None,
+                far,
+                &[node(0x89, 12, Some(3.0)), node(0x89, 30, Some(3.0))],
+                &[],
+                &worn
+            ),
             Hover {
                 item: 12,
                 flags: 0x20,
                 slot: None
             }
         );
+    }
+
+    #[test]
+    fn the_face_test_is_one_sided_and_nearest_first() {
+        use bevy::math::Vec3;
+        // A face in the plane z = 0, its front (e1 × e2) toward +z.
+        let face = [Vec3::ZERO, Vec3::X, Vec3::Y];
+        let origin = Vec3::new(0.25, 0.25, 5.0);
+        assert_eq!(ray_face(origin, Vec3::NEG_Z, face, 100.0), Some(5.0));
+        // From behind it is not met.
+        let behind = Vec3::new(0.25, 0.25, -5.0);
+        assert_eq!(ray_face(behind, Vec3::Z, face, 100.0), None);
+        // Nor past the search distance, nor outside its edges.
+        assert_eq!(ray_face(origin, Vec3::NEG_Z, face, 5.0), None);
+        let outside = Vec3::new(0.75, 0.75, 5.0);
+        assert_eq!(ray_face(outside, Vec3::NEG_Z, face, 100.0), None);
+        // A face behind the origin is not met either.
+        assert_eq!(ray_face(origin, Vec3::Z, face, 100.0), None);
+        // Of two faces the nearer answers, whatever the order.
+        let near = [
+            Vec3::new(0.0, 0.0, 2.0),
+            Vec3::new(1.0, 0.0, 2.0),
+            Vec3::new(0.0, 1.0, 2.0),
+        ];
+        assert_eq!(
+            nearest_face(origin, Vec3::NEG_Z, [face, near], f32::MAX),
+            Some((1, 3.0))
+        );
+        assert_eq!(
+            nearest_face(origin, Vec3::NEG_Z, [near, face], f32::MAX),
+            Some((0, 3.0))
+        );
+        assert_eq!(nearest_face(origin, Vec3::NEG_Z, [face], 1.0), None);
+        assert_eq!(FACE_DETERMINANT.to_bits(), 0x33ff_ffd7);
     }
 
     #[test]

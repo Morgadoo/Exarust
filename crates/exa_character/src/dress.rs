@@ -849,6 +849,7 @@ mod tests {
                     handle: handle.clone(),
                     triangle_flags: None,
                     cull: *cull,
+                    tag: 0,
                 },
             )
             .collect();

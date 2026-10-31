@@ -87,7 +87,10 @@ each built material group with its body-space frame, weight bone and cull
 bits, the built mesh is turned back into file streams
 (`positions`, `normals`, UVs, joint indices and weights), and each merged
 material run becomes a drawable sub-mesh (`model::run_mesh`) bound to the
-character's skeleton with the root part as joint 0
+character's skeleton with the root part as joint 0. Each part's `tag` is
+kept per merged triangle (`Merged::triangle_tags`, permuted with the faces
+by the material regroup, as the original's per-face item table;
+`model::run_tags` gives a run's slice)
 (`exa_character::dress::assemble` builds the plan). The per-node draw stays
 as the fallback for a character without its body model. The built meshes
 keep no vertex slot masks and no triangle flags, so on shipped data the

@@ -319,9 +319,12 @@ super-sampling choice and background wash (sRGB-decoded or boosted), and
 the task's per-frame rules: the race share's easing, the figure turning
 its node to the camera's space (`doll_facing`) and the frame counter's
 clamped step. It also holds what a pointer and a drag do: the hover pick
-over the figure's nodes (the `0x89` and hidden-flag filters, the
-settled-item filter, the last node under the pointer, the record hand
-entry's or the carried entry's flags), the drag-over answer and the mind cost
+(the nearest hit: the merged body mesh's face from the largest float, then
+the nodes past the `0x89`, hidden-flag and settled-item filters within the
+best distance or the ray's length, a node hit setting or clearing the slot,
+the record hand entry's or the worn entry's flags), the meshes' one-sided
+face test (`ray_face`, the determinant word `0x33ffffd7`) and its nearest
+walk (`nearest_face`), the drag-over answer and the mind cost
 a drag off the figure refunds (twice a weapon's desirability, else an
 apparel's protection value), the drop onto the figure (apparel worn with
 both characters refit and the shown pack charged the bulk at its wear-room

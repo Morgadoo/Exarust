@@ -2962,15 +2962,47 @@ it overlaps), or — only with a second character shown — twice the
 weapon's desirability less what it displaces.
 
 A hover shows the item under the pointer and its icon, and clears the
-shown item when the icon cannot be resolved. A hit on the shown icon
-answers the shown item. Otherwise the pick walks the figure's nodes and
-takes the last one under the pointer whose flags carry `0x89`, that is not
-flagged `0x4000000`, and whose item is not flagged `0x12000000` while
-settled; the record hand entry that the node's slot names gives the item's
-flags, else the first carried entry with that item does. (The slot is the
-1-based place among the doll's attached items, so its flags are one of the
-record's four hand flag words.) A frozen view starts drags
-only from a held item.
+shown item when the icon cannot be resolved.
+
+The pick (`exa_ui::character_view::hover_pick`) works as follows:
+- A hit on the shown icon answers the shown item.
+- Otherwise the screen point's ray (its unit direction, through the view's
+  camera) first meets the merged body mesh. That mesh is skinned to the
+  current pose on the CPU just before the test, and the search distance
+  starts at the largest float. The nearest face answers the item that the
+  mesh's per-face table gives it (see below).
+- Then the pick walks the figure's nodes. A node is tested only when its
+  flags carry `0x89`, it is not flagged `0x4000000`, and its item is not
+  flagged `0x12000000` while settled. Each test runs within the nearest
+  distance so far, or within the ray's own length when the body was
+  missed. So the nearest hit wins, and on equal distances the earlier one.
+- A node hit takes the node's item. It also sets the slot to the node's
+  1-based place among the doll's attached items, or clears it when the node
+  is none of them.
+- With a slot, the record's hand entry for that slot gives the item's flags.
+  Otherwise the first entry of the record's worn list with that item does,
+  else the flags are 0.
+
+The meshes' ray test (`ray_face`) is the unnormalised barycentric test, and
+it is one-sided:
+- the determinant `e1 · (dir × e2)` must reach the float word `0x33ffffd7`,
+  so a face is met only from the side it turns toward the ray;
+- the weights must satisfy `0 ≤ u ≤ det`, `v ≥ 0` and `u + v ≤ det`;
+- the distance `(e2 · q) / det` must lie strictly between 0 and the
+  distance so far, and a hit writes it back.
+
+The per-face table holds one word per merged triangle:
+- The skin builder's appends write their tag into every face they keep. The
+  culling append writes it only into the faces that survive its cull bits.
+- The renumber pass permutes the table with the faces.
+- The dressed-mesh builder tags a worn item's slot parts with the item's id,
+  and the body's parts with 0, so the body's skin answers no item.
+
+Exarust's outfit names garment models, not items
+(`exa_assets::merge::Merged::triangle_tags`,
+`exa_character::FaceGarments`). So a face keeps its garment's number, and
+the pick takes the first worn entry worn as that garment's model. A frozen
+view starts drags only from a held item.
 
 A release takes a hand's item out: over one of the doll's item slots the
 take-out is scheduled on the doll (unless a view byte of unknown name
@@ -3062,6 +3094,50 @@ the record. The pack is linked to the view, so its drag ends without
 losing the item's bulk; an item from another pack charges the pack its
 bulk (apparel) or is added to it marked held (a weapon or shield). The
 mind-cost checks are off for the player's own inventory.
+
+**Taking items off the running figure** (`exa_game::figure_pick`).
+
+The pick runs on the figure's own meshes:
+- The body is the figure's merged material runs, skinned through their
+  joints.
+- Every other drawn mesh is a node. A held item's meshes answer that hand's
+  record item and slot: a striker's meshes by its slot (the first item 1,
+  the second 2), the figure's shield 2, and a `FigureHeld` root its own
+  slot. Any other mesh (the hair) answers no item.
+
+A left press over the view starts a drag of the picked item through the
+drag-start plan. The player's view is not frozen or locked, and it charges
+no mind cost. The grab is half the icon size. The drag is a panel drag from
+the figure.
+
+A release on a pack panel (the player's, a body's or a container's) runs
+that panel's accept test and drop. The player's pack is linked to the view:
+- a held weapon's own pack entry loses its held mark and moves under the
+  pointer;
+- a garment is added without its bulk.
+
+Then the view's release runs:
+- **Held item.** The hand's scheduled take-out empties the hand, and the
+  off hand's weapon or light moves up into an emptied main hand. When the
+  item went to another panel, the player's pack drops its held entry. The
+  player's hands and held weapon follow the record.
+- **Worn item.** The garment leaves the worn list. Then the underwear rule
+  puts the braies back on when nothing worn covers the groin. The outfit
+  loses the garment, and the player's pack is charged the item's bulk.
+
+A release outside every panel, back on the view, or on a body's equipment
+panel cancels, and nothing moves. A drop back on the view is taken as a
+cancel; the original's drop answer for its own payload was not traced.
+
+A right press over the view opens the picked item's card at once, at the
+pointer (`exa_game::item_card::FigureCard`).
+
+Exarust dresses a body once, so an open figure keeps its old look until the
+inventory is opened again.
+
+The debug tools are `--figure-drag FROM>TO@FRAME` and
+`--figure-card AT@FRAME`. A point is `vX,Y` (fractions of the view), `pX,Y`
+(fractions of the pack panel) or `X,Y` (window pixels).
 
 ## Settings options
 

@@ -3124,6 +3124,7 @@ pub fn scene_merged_mesh(
                 cull: 0,
                 occlude: false,
                 index_range: Some((first, first + group.index_count as usize)),
+                tag: 0,
             });
         }
     }
@@ -3155,6 +3156,10 @@ pub struct DressedPart<'a> {
     /// ([`exa_character::layers::cull_bits`]; 0 for the body's own parts
     /// and overlays).
     pub cull: u32,
+    /// The word the part's triangles carry in the merged mesh's per-face
+    /// table ([`crate::merge::MergePart::tag`]): which worn garment the
+    /// part belongs to, 0 for the body's own parts.
+    pub tag: u32,
 }
 
 /// A character's merged mesh and the material of each of its runs, in the
@@ -3194,6 +3199,7 @@ pub fn merge_dressed(parts: &[DressedPart<'_>]) -> Option<DressedMerge> {
             cull: part.cull,
             occlude: false,
             index_range: None,
+            tag: part.tag,
         });
     }
     let merged = crate::merge::merge(&merge_parts)?;
@@ -3278,6 +3284,26 @@ fn render_streams(mesh: &Mesh) -> Option<RfcMesh> {
         uv_ids: Vec::new(),
         uv_count: 0,
     })
+}
+
+/// The per-face tags of one material run's triangles
+/// ([`crate::merge::Merged::triangle_tags`]), in the order [`run_mesh`]
+/// keeps them: the run's slice of the merged faces, each kept when all
+/// three of its corners are the run's vertices.
+pub fn run_tags(merged: &crate::merge::Merged, run: &crate::merge::SubObject) -> Vec<u32> {
+    let source = &merged.mesh;
+    let first = run.first_vertex.min(source.positions.len());
+    let last = (run.first_vertex + run.vertex_count).min(source.positions.len());
+    let faces = run.first_index / 3..(run.first_index + run.index_count) / 3;
+    faces
+        .filter(|&face| {
+            source
+                .indices
+                .get(face * 3..face * 3 + 3)
+                .is_some_and(|tri| tri.iter().all(|&i| (first..last).contains(&(i as usize))))
+        })
+        .map(|face| merged.triangle_tags.get(face).copied().unwrap_or(0))
+        .collect()
 }
 
 /// One material run of a merged character mesh as a drawable mesh: only the
@@ -4723,6 +4749,7 @@ mod tests {
                 handle: first_handle.clone(),
                 triangle_flags: None,
                 cull: 0,
+                tag: 0,
             },
             DressedPart {
                 mesh: &second,
@@ -4732,6 +4759,7 @@ mod tests {
                 handle: second_handle.clone(),
                 triangle_flags: None,
                 cull: 0,
+                tag: 5,
             },
         ];
         let merged = merge_dressed(&parts).expect("two parts");
@@ -4748,6 +4776,15 @@ mod tests {
         let skin = merged.merged.mesh.skin.as_ref().unwrap();
         assert_eq!(skin[0].bones[0], 3);
         assert_eq!(skin[3].bones[0], 7);
+        // Each run's faces keep their part's tag.
+        assert_eq!(merged.merged.triangle_tags, [0, 5]);
+        let tags: Vec<Vec<u32>> = merged
+            .merged
+            .subobjects
+            .iter()
+            .map(|run| run_tags(&merged.merged, run))
+            .collect();
+        assert_eq!(tags, [vec![0], vec![5]]);
         // Each run is its own compact sub-mesh, its indices rebased.
         for (run, expected) in merged.merged.subobjects.iter().zip([0.0f32, 10.0]) {
             let mesh = run_mesh(&merged.merged, run).expect("a run");
