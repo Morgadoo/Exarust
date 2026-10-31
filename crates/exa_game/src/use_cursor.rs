@@ -25,8 +25,9 @@
 //! unlocks it when latched; another key rattles it), a character (a liquid
 //! is poured), a placed item (cleaned or repaired); over a window, the
 //! character view (a liquid) or an item panel's entry
-//! ([`player_controls::use_release`]). Exarust applies the unlock; the other
-//! branches are reported in [`UseReleased`] for their own consumers.
+//! ([`player_controls::use_release`]). Exarust applies the unlock, the rattle
+//! and a pour on the body (a salve fills its heal pool, an elixir sets the
+//! potion). A kit's timed clean or repair is still only reported.
 //!
 //! The debug flag `--use-item ID@FRAME` puts the item into the player's pack
 //! and calls the use hook for it at that frame after the load, as its
@@ -435,6 +436,112 @@ fn end_use(
     });
 }
 
+/// A pour the release named, on the picked body or, over the character view,
+/// on the player. A salve fills the heal pool and an elixir sets the potion,
+/// when the body takes remedies; either kind marks the panel entry it came
+/// from. The elixir's pour plays at the body.
+#[allow(clippy::too_many_arguments)]
+fn apply_pour(
+    mut released: MessageReader<UseReleased>,
+    mut bodies: Query<(
+        &mut exa_combat::Fighter,
+        &mut exa_combat::StateFlags,
+        &GlobalTransform,
+    )>,
+    players: Query<Entity, With<PlayerBody>>,
+    cursor: Res<UseCursor>,
+    game: Option<Res<Game>>,
+    mut items: ResMut<DollItems>,
+    mut screens: ResMut<GameScreens>,
+    clock: Option<Res<exa_combat::remedy::WorldClock>>,
+    time: Option<Res<Time<Virtual>>>,
+    mut sounds: MessageWriter<exa_audio::PointSounded>,
+    mut roll: Local<Option<crate::arena::Mt19937>>,
+) {
+    let now_ms = time.as_ref().map_or(0, |t| t.elapsed().as_millis() as u32);
+    let world_s = exa_combat::remedy::world_seconds(clock.as_deref(), now_ms);
+    items.ensure(game.as_deref());
+    for release in released.read() {
+        if release.release != UseRelease::Pour {
+            continue;
+        }
+        let Some(body) = release.target.or_else(|| players.iter().next()) else {
+            continue;
+        };
+        let Ok((mut fighter, mut flags, transform)) = bodies.get_mut(body) else {
+            continue;
+        };
+        let value = items
+            .get(cursor.item)
+            .and_then(|item| item.operative.as_ref())
+            .map_or(0, |operative| operative.value);
+        let entry_flags = panel_entry_flags(&screens, cursor.panel, cursor.slot);
+        let source = if cursor.slot > 0 {
+            exa_combat::remedy::ItemSource::Inventory(cursor.slot as usize)
+        } else {
+            exa_combat::remedy::ItemSource::Direct
+        };
+        let applied = fighter.take_remedy(
+            &mut flags,
+            exa_combat::remedy::ItemUse {
+                kind: cursor.kind,
+                value,
+                flags: entry_flags.unwrap_or(0),
+                source,
+            },
+            world_s,
+            || {
+                roll.get_or_insert_with(|| crate::arena::Mt19937::new(5489))
+                    .unit()
+            },
+        );
+        if let Some(flags) = entry_flags
+            && applied.item_flags != flags
+        {
+            mark_panel_entry(&mut screens, cursor.panel, cursor.slot, applied.item_flags);
+        }
+        if let Some(pour) = applied.pour {
+            sounds.write(exa_audio::PointSounded {
+                name: exa_combat::remedy::POUR_SAMPLE.into(),
+                position: transform.translation(),
+                volume: pour.volume,
+                pitch: pour.pitch,
+                flags: 0,
+            });
+        }
+    }
+}
+
+/// The panel entry a use came from, when the cursor names one.
+fn panel_entry_flags(screens: &GameScreens, panel_number: u32, slot: i32) -> Option<u32> {
+    if slot <= 0 {
+        return None;
+    }
+    let panel = open_panels(screens)
+        .into_iter()
+        .find(|panel| panel.0.number() == panel_number)?;
+    container(screens, panel.0)?
+        .entries
+        .get(slot as usize - 1)
+        .map(|entry| entry.flags)
+}
+
+/// Writes the spent flags back onto that entry.
+fn mark_panel_entry(screens: &mut GameScreens, panel_number: u32, slot: i32, flags: u32) {
+    let Some(panel) = open_panels(screens)
+        .into_iter()
+        .find(|panel| panel.0.number() == panel_number)
+    else {
+        return;
+    };
+    let Some(container) = crate::panel_live::container_mut(screens, panel.0) else {
+        return;
+    };
+    if let Some(entry) = container.entries.get_mut((slot as usize).wrapping_sub(1)) {
+        entry.flags = flags;
+    }
+}
+
 /// The use cursor's end, the panels' double click and the hook: the
 /// world's and the panels' own press paths run after it.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -453,7 +560,13 @@ impl Plugin for UseCursorPlugin {
             .add_message::<UseReleased>()
             .add_systems(
                 Update,
-                (end_use, panel_double_click, scripted_use, begin_use)
+                (
+                    end_use,
+                    apply_pour,
+                    panel_double_click,
+                    scripted_use,
+                    begin_use,
+                )
                     .chain()
                     .in_set(UseCursorSystems)
                     .after(crate::panel_live::track_pointer)
@@ -546,5 +659,44 @@ mod tests {
         });
         app.update();
         assert!(!app.world().resource::<UseCursor>().up());
+    }
+
+    /// A salve poured on a body that takes remedies adds 0.2 to its heal pool.
+    #[test]
+    fn a_salve_fills_the_bodys_heal_pool() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<UseCursor>()
+            .init_resource::<DollItems>()
+            .init_resource::<GameScreens>()
+            .add_message::<UseReleased>()
+            .add_message::<exa_audio::PointSounded>()
+            .add_systems(Update, apply_pour);
+        let mut fighter = exa_combat::Fighter::default();
+        fighter.stats.rules = exa_formats::character_stats::BodyRules(
+            exa_formats::character_stats::BodyRules::TAKES_REMEDIES,
+        );
+        let body = app
+            .world_mut()
+            .spawn((
+                fighter,
+                exa_combat::StateFlags::default(),
+                GlobalTransform::default(),
+            ))
+            .id();
+        app.world_mut().resource_mut::<UseCursor>().kind = player_controls::POUR;
+        app.world_mut().write_message(UseReleased {
+            release: UseRelease::Pour,
+            item: 1,
+            target: Some(body),
+        });
+        app.update();
+        let pool = app
+            .world()
+            .get::<exa_combat::Fighter>(body)
+            .unwrap()
+            .health
+            .heal_pool;
+        assert_eq!(pool, 0.2);
     }
 }
