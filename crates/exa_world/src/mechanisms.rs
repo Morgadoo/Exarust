@@ -29,8 +29,9 @@
 //! under the node, `exa_physics::mechanism::electric`) is not run: no system
 //! holds electric objects. A relay forwards through the placed records: a
 //! broadcast to every tagged listener, a pair to both of its targets, and a
-//! combiner by the source record's bit. A target with no record, or no body
-//! of the right kind under it (a static sliding door), does nothing.
+//! combiner by the source record's bit, a sequence by the count in its value
+//! word. A target with no record, or no body of the right kind under it (a
+//! static sliding door), does nothing.
 //!
 //! Evidence: the object database's door and operative sections
 //! (`docs/formats/OTHER.md`) and the records the original's door, lever
@@ -232,7 +233,9 @@ pub fn route_signals(
 /// A broadcast walks every placed record in query order. A pair sends the
 /// same value to both of the relay's targets. A combiner takes its input
 /// bit from the source record's value word and is left unchanged when the
-/// source has no record. A sequence is not run: its counter is not stored.
+/// source has no record. A sequence keeps its count in that same word and a
+/// wrong order in the out-of-order flag. These records sit on placed objects,
+/// the only nodes a finished sequence clears.
 fn relay_forwards(
     kind: mechanism::Relay,
     signal: &MechanismSignal,
@@ -300,7 +303,55 @@ fn relay_forwards(
             }
             sent.into_iter().collect()
         }
-        mechanism::Relay::Sequence => Vec::new(),
+        mechanism::Relay::Sequence => {
+            let mut seq = relay::Sequence {
+                word: operative.value,
+                wrong: operative.flags & relay::WRONG != 0,
+                first: operative.target,
+                second: operative.second,
+            };
+            let source = objects.iter().find_map(|(_, other)| {
+                (other.id == signal.source)
+                    .then_some(other.operative)
+                    .flatten()
+            });
+            let tick = relay::sequence(
+                &mut seq,
+                signal.target,
+                source.map(|record| record.value),
+                signal.value,
+            );
+            let mut sent: Vec<_> = tick.forward.into_iter().collect();
+            if tick.clear_listeners {
+                sent.extend(objects.iter().filter_map(|(_, other)| {
+                    let record = other.operative?;
+                    relay::sequence_clears(
+                        relay::LISTENER_CLASS,
+                        record.flags,
+                        record.target,
+                        signal.target,
+                    )
+                    .then_some(relay::Forward {
+                        target: other.id,
+                        source: signal.target,
+                        value: 0,
+                    })
+                }));
+            }
+            if let Some((_, mut stored)) = objects
+                .iter_mut()
+                .find(|(_, other)| other.id == signal.target)
+                && let Some(record) = stored.operative.as_mut()
+            {
+                record.value = seq.word;
+                record.flags = if seq.wrong {
+                    record.flags | relay::WRONG
+                } else {
+                    record.flags & !relay::WRONG
+                };
+            }
+            sent
+        }
     }
 }
 
@@ -649,5 +700,169 @@ mod tests {
                 },
             ]
         );
+    }
+
+    /// The count is the relay's value word and a repeated mark sets the
+    /// out-of-order flag, leaving every other flag bit. A zero mark finishes:
+    /// the second target until eight ordered steps, then the first, and every
+    /// listener except one carrying the skip flag is cleared with 0.
+    #[test]
+    fn a_sequence_counts_in_the_value_word_and_clears_its_listeners() {
+        let relay_id = 0x8000_0100;
+        let source_id = 0x8000_0011;
+        let first = 0x8000_0020;
+        let second = 0x8000_0021;
+        let listener = 0x8000_0030;
+        let skipped = 0x8000_0031;
+        let elsewhere = 0x8000_0032;
+        let mut app = App::new();
+        app.add_plugins(MechanismPlugin);
+        let relay = app
+            .world_mut()
+            .spawn(MechanismRecords {
+                id: relay_id,
+                body: None,
+                door: None,
+                operative: Some(mechanism::Record {
+                    class: mechanism::RELAY,
+                    kind: 5,
+                    flags: mechanism::SWITCH_OFF,
+                    target: first,
+                    second,
+                    ..mechanism::Record::default()
+                }),
+            })
+            .id();
+        let source = app
+            .world_mut()
+            .spawn(MechanismRecords {
+                id: source_id,
+                body: None,
+                door: None,
+                operative: Some(mechanism::Record {
+                    value: 1,
+                    ..mechanism::Record::default()
+                }),
+            })
+            .id();
+        let listening = |id, flags, target| MechanismRecords {
+            id,
+            body: None,
+            door: None,
+            operative: Some(mechanism::Record {
+                flags,
+                target,
+                ..mechanism::Record::default()
+            }),
+        };
+        app.world_mut()
+            .spawn(listening(listener, 0, relay_id));
+        app.world_mut()
+            .spawn(listening(skipped, relay::SKIP_CLEAR, relay_id));
+        app.world_mut()
+            .spawn(listening(elsewhere, 0, 0x8000_0099));
+
+        #[derive(Resource, Default)]
+        struct Caught(Vec<MechanismSignal>);
+        fn catch_forwards(mut read: MessageReader<RelayForward>, mut caught: ResMut<Caught>) {
+            caught.0.extend(read.read().map(|forward| forward.0));
+        }
+        app.insert_resource(Caught::default());
+        app.add_systems(FixedUpdate, catch_forwards.after(route_signals));
+
+        let stored = |app: &App| {
+            app.world()
+                .get::<MechanismRecords>(relay)
+                .unwrap()
+                .operative
+                .unwrap()
+        };
+        let signal = |app: &mut App, value: i32| {
+            app.world_mut().write_message(MechanismSignal {
+                target: relay_id,
+                source: source_id,
+                value,
+            });
+            app.world_mut().run_schedule(FixedUpdate);
+            std::mem::take(&mut app.world_mut().resource_mut::<Caught>().0)
+        };
+        let set_mark = |app: &mut App, mark: u16| {
+            app.world_mut()
+                .get_mut::<MechanismRecords>(source)
+                .unwrap()
+                .operative
+                .as_mut()
+                .unwrap()
+                .value = mark;
+        };
+
+        // A value of 0, and a source with no record, leave the counter.
+        assert!(signal(&mut app, 0).is_empty());
+        assert_eq!(stored(&app).value, 0);
+        app.world_mut().write_message(MechanismSignal {
+            target: relay_id,
+            source: 7,
+            value: 1,
+        });
+        app.world_mut().run_schedule(FixedUpdate);
+        assert!(
+            std::mem::take(&mut app.world_mut().resource_mut::<Caught>().0).is_empty()
+        );
+        assert_eq!((stored(&app).value, stored(&app).flags), (0, mechanism::SWITCH_OFF));
+
+        assert!(signal(&mut app, 1).is_empty());
+        assert_eq!(stored(&app).value, 0x110);
+        assert_eq!(stored(&app).flags, mechanism::SWITCH_OFF);
+
+        // The same mark again flags the order, and keeps the switch-off bit.
+        assert!(signal(&mut app, 1).is_empty());
+        assert_eq!(stored(&app).value, 0x120);
+        assert_eq!(
+            stored(&app).flags,
+            mechanism::SWITCH_OFF | relay::WRONG
+        );
+
+        set_mark(&mut app, 0);
+        assert_eq!(
+            signal(&mut app, 1),
+            vec![
+                MechanismSignal {
+                    target: second,
+                    source: relay_id,
+                    value: 1,
+                },
+                MechanismSignal {
+                    target: listener,
+                    source: relay_id,
+                    value: 0,
+                },
+            ]
+        );
+        assert_eq!(stored(&app).value, 0);
+        assert_eq!(stored(&app).flags, mechanism::SWITCH_OFF);
+
+        for (step, mark) in [1_u16, 2, 4, 8, 16, 32, 64, 128].into_iter().enumerate() {
+            set_mark(&mut app, mark);
+            assert!(signal(&mut app, 1).is_empty(), "step {step} forwarded");
+        }
+        assert_eq!(stored(&app).flags, mechanism::SWITCH_OFF);
+        set_mark(&mut app, 0);
+        assert_eq!(
+            signal(&mut app, 1),
+            vec![
+                MechanismSignal {
+                    target: first,
+                    source: relay_id,
+                    value: 1,
+                },
+                MechanismSignal {
+                    target: listener,
+                    source: relay_id,
+                    value: 0,
+                },
+            ]
+        );
+        assert_eq!(stored(&app).value, 0);
+        assert_eq!(stored(&app).flags, mechanism::SWITCH_OFF);
     }
 }
