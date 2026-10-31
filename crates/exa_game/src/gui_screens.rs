@@ -746,7 +746,7 @@ pub struct GameScreens {
     pub popups: Vec<ContainerPopup>,
     /// Records the closed popups saved, waiting to be written back into
     /// their objects' container sections.
-    pub saved_containers: Vec<(Entity, ContainerRecord)>,
+    pub saved_containers: Vec<(Entity, u32, ContainerRecord)>,
     /// Icon handles freed by a closed panel, waiting for the icon manager
     /// to drop their references (the destroy's sweep).
     pub released_icons: Vec<usize>,
@@ -1195,7 +1195,7 @@ impl GameScreens {
                     if close.save_contents
                         && let Some(saved) = popup.panel.save_record(&popup.stored)
                     {
-                        self.saved_containers.push((popup.object, saved));
+                        self.saved_containers.push((popup.object, popup.id, saved));
                     }
                     let mut released = Vec::new();
                     popup.panel.release_all_icons(|icon| released.push(icon));
@@ -1313,6 +1313,8 @@ impl Plugin for GameScreensPlugin {
 fn open_requested_containers(
     mut requests: MessageReader<ContainerRequest>,
     objects: Query<&exa_world::ObjectSections>,
+    mut items: ResMut<crate::doll_view::DollItems>,
+    game: Option<Res<exa_assets::Game>>,
     catalogue: Option<Res<exa_items::catalogue::ItemCatalogue>>,
     mut icons: Option<ResMut<PanelIcons>>,
     mut card: Option<ResMut<crate::item_card::CardView>>,
@@ -1320,11 +1322,20 @@ fn open_requested_containers(
     windows: Query<&Window, With<PrimaryWindow>>,
     mut screens: ResMut<GameScreens>,
 ) {
+    items.ensure(game.as_deref());
     for request in requests.read() {
-        let Ok(sections) = objects.get(request.object) else {
-            continue;
-        };
-        let Some(section) = sections.container.as_ref() else {
+        let placed = objects
+            .get(request.object)
+            .ok()
+            .and_then(|sections| sections.container.clone());
+        let from_item = (request.object == Entity::PLACEHOLDER)
+            .then(|| {
+                items
+                    .get(request.id)
+                    .and_then(|item| item.container.clone())
+            })
+            .flatten();
+        let Some(section) = placed.or(from_item) else {
             continue;
         };
         let Some(icons) = icons.as_deref_mut() else {
@@ -1342,7 +1353,7 @@ fn open_requested_containers(
             .ok()
             .map(|window| exa_ui::scale::gui_scale(window.physical_height(), 0) as i32)
             .unwrap_or(4);
-        let record = container_record(section);
+        let record = container_record(&section);
         let (icon, (_, icon_half)) = icons.reserve(request.id, 0, catalogue.as_deref());
         let catalogue = catalogue.as_deref();
         let action = screens.open_container_popup(
@@ -1505,8 +1516,13 @@ fn register_level_items(
 fn store_saved_containers(
     mut screens: ResMut<GameScreens>,
     mut objects: Query<&mut exa_world::ObjectSections>,
+    mut items: ResMut<crate::doll_view::DollItems>,
 ) {
-    for (object, record) in screens.saved_containers.drain(..) {
+    for (object, id, record) in screens.saved_containers.drain(..) {
+        if object == Entity::PLACEHOLDER {
+            items.store_container(id, &record);
+            continue;
+        }
         if let Ok(mut sections) = objects.get_mut(object)
             && let Some(section) = sections.container.as_mut()
         {
@@ -2533,8 +2549,9 @@ mod tests {
         assert!(screens.close_popup(id));
         assert!(screens.popups.is_empty());
         assert!(!screens.containers.is_open(id as i32));
-        let (saved_object, saved) = screens.saved_containers.pop().unwrap();
+        let (saved_object, saved_id, saved) = screens.saved_containers.pop().unwrap();
         assert_eq!(saved_object, object);
+        assert_eq!(saved_id, id);
         assert_eq!(
             (saved.size, saved.capacity, saved.max_item),
             ((50, 30), 400, 60)

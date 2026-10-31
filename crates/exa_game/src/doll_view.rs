@@ -320,6 +320,20 @@ impl DollItems {
     pub fn get(&self, id: u32) -> Option<&Item> {
         self.items.get(&(id & ID_MASK))
     }
+
+    /// Writes a container popup's children back into the item's section.
+    /// An id the database does not hold, or an item with no container, is
+    /// left as it was.
+    pub fn store_container(&mut self, id: u32, record: &crate::item_container::ContainerRecord) {
+        let Some(section) = self
+            .items
+            .get_mut(&(id & ID_MASK))
+            .and_then(|item| item.container.as_mut())
+        else {
+            return;
+        };
+        crate::gui_screens::store_record(section, record);
+    }
 }
 
 /// Marks a mesh of the figure moved onto the view's layer.

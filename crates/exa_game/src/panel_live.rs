@@ -27,8 +27,8 @@
 //! it was.
 //!
 //! The double click's use is [`crate::use_cursor`]'s; the right click's
-//! card is [`crate::item_card`]'s. The double click's container opening is
-//! not wired here.
+//! card is [`crate::item_card`]'s. A double click on a container opens its
+//! popup ([`crate::use_cursor`]).
 
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;

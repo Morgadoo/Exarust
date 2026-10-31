@@ -2,10 +2,12 @@
 //! the next mouse press.
 //!
 //! **The begin.** The item panel's double click on an entry asks the item's
-//! double-click class ([`player_controls::panel_use_class`]); class 2
-//! closes the card and calls the game's use hook with the item, its entry
-//! word, its slot (from one) and the panel. The controls install that hook
-//! at start-up: [`player_controls::use_begin`] opens the GUI item a class-0
+//! double-click class ([`player_controls::panel_use_class`]). Class 0 on an
+//! item that has a container section opens that section in the container
+//! popup. Class 2 closes the card and calls the game's use hook with the
+//! item, its entry word, its slot (from one) and the panel. The controls
+//! install that hook at start-up: [`player_controls::use_begin`] opens the
+//! GUI item a class-0
 //! kind-0x11 section names (not wired: the readable's window), or, while
 //! play is on, lifts the use cursor (the controls' state word
 //! [`player_controls::USE_STATE`], the shared cursor mode
@@ -45,7 +47,6 @@ use exa_ui::ScriptedPointer;
 use crate::doll_view::DollItems;
 use crate::gui_screens::GameScreens;
 use crate::hand::{ObjectIds, OtherBodies, PickSources};
-use crate::item_container::PanelEvent;
 use crate::panel_live::{Panel, PointerOverGui, container, entry_at, open_panels, panel_at};
 use crate::player::{ChaseCamera, PlayerBody};
 use crate::player_controls::{
@@ -130,8 +131,9 @@ fn pointer(windows: &Query<&Window, With<PrimaryWindow>>) -> Option<IVec2> {
 }
 
 /// The item panel's double click: a second left press within the double
-/// click's time and distance on the same entry asks its double-click class;
-/// class 2 closes the card and calls the use hook.
+/// click's time and distance on the same entry asks its double-click class.
+/// Class 0 on a container opens its popup; class 2 closes the card and
+/// calls the use hook.
 #[allow(clippy::too_many_arguments)]
 fn panel_double_click(
     real: Res<Time<Real>>,
@@ -143,6 +145,7 @@ fn panel_double_click(
     mut screens: ResMut<GameScreens>,
     mut last: Local<Option<(IVec2, u64, Panel, usize)>>,
     mut hooks: MessageWriter<UseHook>,
+    mut containers: MessageWriter<crate::gui_screens::ContainerRequest>,
 ) {
     if !buttons.just_pressed(MouseButton::Left) || cursor.took_press {
         return;
@@ -177,24 +180,33 @@ fn panel_double_click(
     items.ensure(game.as_deref());
     let operative = operative_of(&items, entry.id).map(|(class, kind, _)| (class, kind));
     let use_class = player_controls::panel_use_class(operative, entry.flags);
-    let event = crate::item_container::panel_event(
-        0x8001,
-        Some(index),
-        true,
-        false,
-        use_class,
-        None,
-        panel_container.icon_size,
-        false,
-    );
-    if event == PanelEvent::UseItem {
-        let _ = screens.card.close(now as u32);
-        hooks.write(UseHook {
-            item: entry.id,
-            entry: entry.id,
-            slot: index as i32 + 1,
-            panel,
-        });
+    let is_container = items
+        .get(entry.id)
+        .is_some_and(|item| item.container.is_some());
+    match crate::item_container::double_click(use_class, is_container) {
+        crate::item_container::DoubleClick::UseItem => {
+            let _ = screens.card.close(now as u32);
+            hooks.write(UseHook {
+                item: entry.id,
+                entry: entry.id,
+                slot: index as i32 + 1,
+                panel,
+            });
+        }
+        // Class 0 on a container opens its record. The popup is the same one
+        // a placed chest uses; this item has no placed object, so the record
+        // is the item's own section.
+        crate::item_container::DoubleClick::OpenContainer => {
+            containers.write(crate::gui_screens::ContainerRequest {
+                object: Entity::PLACEHOLDER,
+                id: entry.id,
+                pointer: at,
+            });
+        }
+        crate::item_container::DoubleClick::CloseCard => {
+            let _ = screens.card.close(now as u32);
+        }
+        crate::item_container::DoubleClick::Nothing => {}
     }
 }
 
