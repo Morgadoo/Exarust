@@ -6,9 +6,9 @@
 //! item that has a container section opens that section in the container
 //! popup. Class 2 closes the card and calls the game's use hook with the
 //! item, its entry word, its slot (from one) and the panel. The controls
-//! install that hook at start-up: [`player_controls::use_begin`] opens the
-//! GUI item a class-0
-//! kind-0x11 section names (not wired: the readable's window), or, while
+//! install that hook at start-up: [`player_controls::use_begin`] lifts the
+//! GUI item a class-0 kind-0x11 section's second word names onto the panel
+//! drag when its icon reserves, or, while
 //! play is on, lifts the use cursor (the controls' state word
 //! [`player_controls::USE_STATE`], the shared cursor mode
 //! [`player_controls::USE_CURSOR_MODE`]) and holds the mouse for the world
@@ -127,7 +127,7 @@ fn operative_of(items: &DollItems, id: u32) -> Option<(u8, u8, u32)> {
     items
         .get(id)
         .and_then(|item| item.operative.as_ref())
-        .map(|o| (o.class, o.kind, o.target))
+        .map(|o| (o.class, o.kind, o.second))
 }
 
 /// The pointer in physical window pixels.
@@ -273,23 +273,53 @@ fn scripted_use(
 }
 
 /// The use hook ([`player_controls::use_begin`]).
+#[allow(clippy::too_many_arguments)]
 fn begin_use(
     mut hooks: MessageReader<UseHook>,
     game: Option<Res<Game>>,
     mut items: ResMut<DollItems>,
     session: Option<Res<PlaySession>>,
     mut cursor: ResMut<UseCursor>,
+    catalogue: Option<Res<exa_items::catalogue::ItemCatalogue>>,
+    mut icons: Option<ResMut<crate::item_panel_draw::PanelIcons>>,
+    mut drag: Option<ResMut<crate::panel_live::PanelDrag>>,
 ) {
     for hook in hooks.read() {
         items.ensure(game.as_deref());
-        let (class, kind, target) = operative_of(&items, hook.item).unwrap_or((0xff, 0xff, 0));
+        let (class, kind, second) = operative_of(&items, hook.item).unwrap_or((0xff, 0xff, 0));
         let playing = session.as_deref().is_some_and(|s| s.playing);
-        match player_controls::use_begin(class, kind, target, playing) {
+        match player_controls::use_begin(class, kind, second, playing) {
             UseBegin::OpenGui { item } => {
-                info!(
-                    "use: {:#x} opens the GUI item {item:#x} (no window for it yet)",
-                    hook.item
-                );
+                let Some(icons) = icons.as_deref_mut() else {
+                    info!("use: {item:#x} has no icon manager, so it is not lifted");
+                    continue;
+                };
+                let Some(drag) = drag.as_deref_mut() else {
+                    info!("use: {item:#x} has no drag, so it is not lifted");
+                    continue;
+                };
+                let (handle, half) = icons.reserve(item, 0, catalogue.as_deref());
+                if handle == 0 {
+                    info!("use: {item:#x} did not reserve an icon, so it is not lifted");
+                    continue;
+                }
+                if drag.icon != 0 && drag.icon != handle {
+                    icons.release(drag.icon);
+                }
+                let bulk = catalogue
+                    .as_deref()
+                    .and_then(|catalogue| catalogue.bulk(item))
+                    .map(i32::from)
+                    .unwrap_or(0);
+                *drag = crate::panel_live::PanelDrag {
+                    source: Some(hook.panel),
+                    icon: handle,
+                    grab: crate::item_container::Cell::new(half.0, half.1),
+                    id: item,
+                    flags: 0,
+                    bulk,
+                };
+                info!("use: {:#x} lifts the GUI item {item:#x}", hook.item);
             }
             UseBegin::Cursor => {
                 info!(
