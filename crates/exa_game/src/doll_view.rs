@@ -726,7 +726,11 @@ fn rebuild_doll_hands(
         Query<&ChildOf>,
         Query<&Transform, With<exa_anim::BodyPart>>,
     ),
-    parts: Query<&exa_anim::BodyPart>,
+    (parts, blades, shields): (
+        Query<&exa_anim::BodyPart>,
+        Query<(), With<exa_combat::Blade>>,
+        Query<&exa_combat::block::ShieldHold>,
+    ),
     catalogue: Option<Res<ItemCatalogue>>,
     game: Option<Res<Game>>,
     cache: Option<ResMut<ModelCache>>,
@@ -857,6 +861,16 @@ fn rebuild_doll_hands(
                     Name::new(format!("_InventoryHand{hand}")),
                     ChildOf(bone_entity),
                 ));
+                // The figure pick finds a held model's slot by its striker,
+                // the figure's shield or this marker: the hand roots built
+                // here (a weapon, a torch, an off-hand item) carry neither of the
+                // first two, so they take the marker.
+                let shield = shields.get(figure).ok().map(|hold| hold.item);
+                if let Some(mark) =
+                    figure_held_mark(hand, blades.contains(root), Some(root) == shield)
+                {
+                    commands.entity(root).insert(mark);
+                }
                 if let Some(old) = scene.nodes[hand].replace(root)
                     && let Ok(mut e) = commands.get_entity(old)
                 {
@@ -901,6 +915,19 @@ fn rebuild_doll_hands(
         }
     }
     scene.shown = targets;
+}
+
+/// The figure pick's marker for the model root a figure hand shows
+/// (`hand` 0 the main hand, 1 the off hand): its 1-based item slot, unless
+/// the root already answers the pick as a striker (it carries a
+/// [`exa_combat::Blade`]) or as the figure's shield
+/// ([`exa_combat::block::ShieldHold::item`]).
+pub fn figure_held_mark(
+    hand: usize,
+    carries_blade: bool,
+    is_shield: bool,
+) -> Option<crate::figure_pick::FigureHeld> {
+    (!carries_blade && !is_shield).then_some(crate::figure_pick::FigureHeld(hand + 1))
 }
 
 /// Moves every mesh of the figure onto the view's layer, out of the shadow
@@ -1371,6 +1398,17 @@ impl Plugin for DollViewPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A torch or off-hand root on the figure takes the pick's marker with
+    /// its 1-based slot; a striker or the figure's shield does not.
+    #[test]
+    fn figure_hand_roots_take_the_pick_marker() {
+        use crate::figure_pick::FigureHeld;
+        assert_eq!(figure_held_mark(0, false, false), Some(FigureHeld(1)));
+        assert_eq!(figure_held_mark(1, false, false), Some(FigureHeld(2)));
+        assert_eq!(figure_held_mark(0, true, false), None);
+        assert_eq!(figure_held_mark(1, false, true), None);
+    }
 
     /// The view is the doll panel less its 2-pixel border: 224 × 380 at
     /// unit 4 for the constructor's 228 × 384 panel.
