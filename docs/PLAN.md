@@ -865,6 +865,8 @@ Round 42 motiledyn10: the body tick's link-iteration ramp (5 while dormant, else
 
 Round 42 playerctl11: the lift's placement limit and last frame, the world use cursor and drop record wiring; review fixed nine rules including the wheel NaN, the timed list order, the repair copies' offsets (now sharing the refresh passes) and the tagged use id.
 
+Round 46 checkfig (P3, G6): the checkpoint is a level trigger volume in exanima01 whose routine calls CheckpointSave; the exe never calls it. Also corrected the npc-manager spec: zone kind 2 is the golem alarm and 0x20/0x21 the level exit.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
@@ -1459,6 +1461,8 @@ Round 45 gameevents (G1, G4 in part): the trace corrected the port's reading of 
 
 Round 45 storystart (U4, G2): the story start's steps reach the live game; tips show on knock-out and death; the manual opens from the menu. The start's "light" is the torch item laid at the start pose, which Exarust applies only without a carried torch, pending the owner's decision.
 
+Round 46 dialogue (U1): the dialogue is finished; the player is named from the creator's saved preset when the creator is skipped.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
@@ -1609,6 +1613,12 @@ Round 45 clashstain (C1, C7): the struck weapon rings on a clash and wounds ring
 Round 45 matclass: the armour class off-by-one was in the audio crate only and is fixed.
 
 Round 45 weaponbody: factory weapons are bodies and wound where they touch; golem stabs still mostly land on the haft (they stand inside their halberd's span), so a retail capture of a golem stab is the next check.
+
+Round 46 activities (C4): the backlog premise was wrong again; no role installs the idle driver and the investigation's disturbance is a constant 0, so NPCs never walk to objects in the original.
+
+Round 46 koknock (C8): the premise was wrong; a knocked-out body never turns its muscles off in the original. A revived story player never got up before; now input wakes them.
+
+Round 46 tickchain: AI timings no longer depend on the frame rate; cost 0.17 ms a tick in exanima06. Added --schedule-ambiguities and the profiler's brains line.
 
 ### Phase 7 — Game modes and content
 
@@ -2144,6 +2154,8 @@ Round 44 sweep-thaum-b (reviewed, change correct-the-thaumaturgy-sweep-b): sixte
 Round 44 sweep-ui-a: a UI sweep found most rules present; review fixed the lane's three changes (end pages' forfeit word, compact pip v range and node alpha order) and put the creation pickers on the form's client.
 
 Round 44 sweep-ui-b: control draws reuse the existing skin ports and the destination screen's skin colours are live; review fixed nine wrong or duplicated rules (physique NaN, colour picker callbacks, edit-page preview, drop-down band, picture corners, choice list).
+
+Round 46 auras (E3): the displacement shell and the teleporter scan aura draw; the shell only darkens, so a retail side-by-side would confirm its strength.
 
 ### Phase 8 — Polish and release
 
