@@ -247,8 +247,9 @@ pub struct StaggerTick {
 /// is set, energy becomes `max_energy − 0.5` (single precision; a NaN
 /// stays) and Rebalance starts unless `playing_rebalance`. The flag clears
 /// once `now_ms` is past `next_shock_ms`; a deadline still ahead, or equal
-/// to the clock, keeps it. The child-pose scatter that follows the energy
-/// write in the original is not here.
+/// to the clock, keeps it. The daze pose that follows the energy write in
+/// the original (`exa_anim::shock_hold`) is held by the game's sampler
+/// stage, once the Rebalance start's capture is taken.
 pub fn shock_stagger_tick(
     flags: u32,
     max_energy: f32,

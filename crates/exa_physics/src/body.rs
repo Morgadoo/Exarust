@@ -1798,6 +1798,11 @@ pub struct Ragdoll {
     /// The body was walking (its motion the walk's) when its muscles went:
     /// the muscles-off sampler plants by the keys' flags only then.
     limp_walking: bool,
+    /// The balance its last living tick measured, kept when the muscles
+    /// go: the original's balance is a character word that a dead body's
+    /// tick (which returns early) leaves alone, so a revive's first
+    /// posture decision reads it.
+    limp_balance: f32,
     /// The race's factors and the character's stats the muscles read when
     /// they went. The original keeps both on the character through death
     /// (death only turns the muscles off); Exarust drops the drive, so it
@@ -1881,6 +1886,7 @@ impl Ragdoll {
             limp_scale: self.limp_scale,
             limp_supported: self.limp_supported,
             limp_walking: self.limp_walking,
+            limp_balance: self.limp_balance,
             kept_muscles: self.kept_muscles,
             scrapes: self.scrapes.clone(),
             scrape_events: self.scrape_events.clone(),
@@ -2688,6 +2694,7 @@ impl Ragdoll {
             limp_scale: 1.0,
             limp_supported: false,
             limp_walking: false,
+            limp_balance: 1.0,
             kept_muscles: None,
             scrapes: Vec::new(),
             scrape_events: Vec::new(),
@@ -2749,11 +2756,18 @@ impl Ragdoll {
     /// The muscles a revive gives back: a fresh drive with the race's
     /// factors and the character's stats the body had when its muscles
     /// went ([`Drive::of_character`]), as the original's revive turns the
-    /// muscles on again over the race and stats the character kept. None
-    /// for a body that never had muscles (a level's placed dead).
+    /// muscles on again over the race and stats the character kept, with
+    /// the balance its last living tick measured (the original's revive
+    /// does not write the balance, and a dead body's tick never measures
+    /// it, so the revived body's first posture decision reads the dying
+    /// one's: lying, not standing weak). None for a body that never had
+    /// muscles (a level's placed dead).
     pub fn revival_drive(&self) -> Option<Drive> {
-        self.kept_muscles
-            .map(|(race, stats)| Drive::of_character(race, stats))
+        self.kept_muscles.map(|(race, stats)| {
+            let mut drive = Drive::of_character(race, stats);
+            drive.balance.value = self.limp_balance;
+            drive
+        })
     }
 
     /// The body scale the muscles-off sampler's height target reads.
@@ -3360,6 +3374,7 @@ impl Ragdoll {
             self.limp_scale = d.stats.scale;
             self.limp_supported = d.balance.has_support();
             self.limp_walking = d.bearing.walking;
+            self.limp_balance = d.balance.value;
             self.kept_muscles = Some((d.race, d.stats));
         }
         self.drive = None;

@@ -467,9 +467,12 @@ impl Plugin for ConditionPlugin {
         )
         .add_systems(
             CharacterTick,
-            (track_condition, track_wake)
-                .chain()
-                .in_set(CharacterStage::Posture),
+            (
+                // The original's body tick wakes a knocked-out body right
+                // after its behaviour update and before its posture block.
+                track_wake.in_set(CharacterStage::Behaviour),
+                track_condition.in_set(CharacterStage::Posture),
+            ),
         )
         .add_systems(FixedUpdate, silence_the_dead);
     }
@@ -577,10 +580,12 @@ pub fn track_condition(
 }
 
 /// The ticked body's knock-out wake. The original's body tick runs it on
-/// every tick its state flags hold waking (0x20); here it runs on a body
-/// that also carries a [`KnockOut`] (what a knock-out writes: the game
-/// flow's lie-down and the dead body's revive), after the condition (the
-/// order against the posture decision is a guess). One [`wake`] tick on
+/// every tick its state flags hold waking (0x20), right after the
+/// behaviour update and before the posture block (traced for C8: the call
+/// sits between the two in the body tick, with no muscles test); here it
+/// runs in the behaviour stage on a body that also carries a [`KnockOut`]
+/// (what a knock-out writes: the game flow's lie-down and the dead body's
+/// revive), so the posture decision reads the condition it wrote. One [`wake`] tick on
 /// the game clock writes the condition, the flags, the readiness, the
 /// drive's tone and its stance factor. The getting-up clock is read as the
 /// playing clip's progress, and the stance the full wake restores as the
@@ -630,7 +635,17 @@ pub fn track_wake(
         *condition = out.condition;
     }
     if *flags != out.flags {
+        if flags.0 & 0x30 == 0x30 && out.flags.0 & 0x30 == StateFlags::WAKING {
+            info!(
+                "{:?} starts to wake from its knock-out (tone {:.3})",
+                ticked.body, out.tone
+            );
+        }
         *flags = out.flags;
+    }
+    // A held wake (0x40) keeps its readiness at 1 and wakes every tick.
+    if out.awake && knock.ready < 1.0 {
+        info!("{:?} is awake after its knock-out", ticked.body);
     }
     drive.tone = out.tone;
     knock.ready = out.ready;

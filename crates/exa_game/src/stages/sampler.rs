@@ -47,6 +47,7 @@ use exa_physics::body::{
     hunch_turn, step_hunch, world_with,
 };
 
+use crate::balance::ShockHeld;
 use crate::limp::{Lean, Pace, clip_pose, clip_tick, physical_turns, run_overlay};
 
 /// What the sampler gave the ticked body this tick, which the carry stage
@@ -82,6 +83,7 @@ pub(crate) fn sample_clip(
     parents: Query<&ChildOf>,
     nodes: Query<(&Transform, Option<&BodyPart>)>,
     mut sampled: ResMut<SampledPose>,
+    (shocked, mut roll): (Option<Res<ShockHeld>>, Local<exa_combat::Roll>),
 ) {
     sampled.0 = None;
     let Some(motions) = motions else { return };
@@ -166,7 +168,17 @@ pub(crate) fn sample_clip(
     {
         c.clip_ended();
     }
-    let Some(hold) = hold else { return };
+    let Some(mut hold) = hold else { return };
+    // The shock stagger's daze pose: a body its daze block held in the
+    // shock this tick holds it unless it has lost support, which puts the
+    // physical pose back over it (the original's sampler call does so
+    // whenever the support is under 1).
+    if shocked.is_some_and(|s| s.0 == Some(root))
+        && let Some(daze) = daze_pose(&motions, &anim, &body, condition.as_deref(), &mut roll)
+    {
+        debug!("{root:?} holds the shock's daze pose");
+        hold.hold(daze);
+    }
     let Some(clip) = motions.clip(&anim, &anim.action) else {
         return;
     };
@@ -229,6 +241,41 @@ pub(crate) fn sample_clip(
         d.bearing.head_looks = head_looks;
     }
 }
+
+/// The daze pose a shock-staggered body holds this tick
+/// ([`exa_anim::shock_hold`]): the pelvis and legs (skin bones 1 to 7) keep
+/// the capture its Rebalance start took unless its condition is down (bit
+/// 0x200), and every other bone takes a random turn half way from the
+/// Defence stance's first key, four of the engine's draws a bone. None
+/// while its support is under 1 (the original's sampler call puts the
+/// physical pose back; a NaN support keeps the daze pose, as the unordered
+/// compare does), or with no capture or Defence stance clip.
+pub(crate) fn daze_pose(
+    motions: &Motions,
+    anim: &Animator,
+    body: &Ragdoll,
+    condition: Option<&Condition>,
+    roll: &mut exa_combat::Roll,
+) -> Option<Vec<Quat>> {
+    let support = body.drive.as_ref()?.support();
+    if support < 1.0 {
+        return None;
+    }
+    let capture = anim.capture.as_ref()?;
+    let defence = motions.clip(anim, Stance::Defence.action())?;
+    let first = defence.keys.first()?.time;
+    let defence_first = ClipPose::at(defence, first, 1.0, false)?;
+    let down = condition.is_some_and(|c| c.0 & DOWN_BIT != 0);
+    Some(exa_anim::shock_hold(
+        &defence_first.rotations,
+        &capture.rotations,
+        down,
+        &mut || roll.next(),
+    ))
+}
+
+/// The condition bit the daze pose reads as down: the whole body scatters.
+const DOWN_BIT: u32 = 0x200;
 
 /// The clips below this action index let the head look.
 const LOOKING_CLIPS: usize = 0x2C;

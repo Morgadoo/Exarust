@@ -56,7 +56,7 @@ pub struct BalancePlugin;
 
 impl Plugin for BalancePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
+        app.init_resource::<ShockHeld>().add_systems(
             CharacterTick,
             (
                 recover_rising.in_set(CharacterStage::Readiness),
@@ -781,14 +781,25 @@ fn recover_rising(
     }
 }
 
+/// The body the shock stagger held this tick: its daze block took the
+/// shock's branch, so the pose its sampler holds is the daze pose
+/// (`exa_anim::shock_hold`, which the sampler stage computes once the
+/// Rebalance start's capture is taken) unless the body has lost support.
+/// None when the ticked body was not staggered.
+#[derive(Resource, Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ShockHeld(pub(crate) Option<Entity>);
+
 /// The shock stagger, after this tick's energy recovery: energy becomes
 /// the most minus 0.5, the stance becomes Defence (without starting its
-/// clip), Rebalance starts with no blend unless it already plays, and the
-/// flag clears once the clock is past the next shock.
+/// clip), Rebalance starts with no blend unless it already plays, the
+/// daze pose is asked for ([`ShockHeld`]) and the flag clears once the
+/// clock is past the next shock (after the daze pose, which the clearing
+/// tick still takes).
 #[allow(clippy::type_complexity)]
 fn pin_shock_stagger(
     ticked: Res<TickedCharacter>,
     ticks: Option<Res<BodyTicks>>,
+    mut held: Option<ResMut<ShockHeld>>,
     mut bodies: Query<(
         &mut Ragdoll,
         &mut Animator,
@@ -797,6 +808,9 @@ fn pin_shock_stagger(
         Option<&ShockReady>,
     )>,
 ) {
+    if let Some(held) = held.as_mut() {
+        held.0 = None;
+    }
     let Ok((mut body, mut anim, stance, mut flags, ready)) = bodies.get_mut(ticked.body) else {
         return;
     };
@@ -823,6 +837,9 @@ fn pin_shock_stagger(
     }
     if step.play_rebalance {
         anim.start("Rebalance", true, None, 0, Ease::Linear);
+    }
+    if let Some(held) = held.as_mut() {
+        held.0 = Some(ticked.body);
     }
 }
 

@@ -2524,3 +2524,17 @@ A body's clone slot SHALL copy no link carrying the code flag or the breakable f
 #### Scenario: A clone of a two-part body
 - **WHEN** a two-part body with its stored link, its origin pivot, an added breakable link and an added plain link (the leg's limit) is cloned by the slot
 - **THEN** the clone keeps the stored and the plain link, the leg's limit points at the second, the part's link range spans both, and both bodies hold one sphere array
+
+### Requirement: Muscles-off sampler gate
+The muscles-off sampler SHALL have no caller: a dead body's tick ends before any sampling, and a body whose muscles are off and which is not dead samples nothing, its clip clock and clip-end test left alone, as the original's body tick skips them for a body that did not locomote (its movement decision needs muscles).
+
+#### Scenario: A knocked-out corpse
+- **WHEN** a dead body is knocked out without a revive
+- **THEN** it stays a ragdoll and its clip is neither advanced nor sampled
+
+### Requirement: Revived balance
+A revive's drive SHALL start from the balance the body's last living tick measured.
+
+#### Scenario: A body revived where it died
+- **WHEN** a body dies with balance 0.2 and is revived
+- **THEN** its first posture decision reads 0.2 and keeps it down
