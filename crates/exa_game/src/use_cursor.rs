@@ -76,6 +76,8 @@ pub struct UseReleased {
     /// The item the use lands on: a placed object's id, or the panel entry's
     /// id. Zero when the release has no item under it.
     pub subject: u32,
+    /// The panel entry under the pointer, when the use landed on one.
+    pub subject_entry: Option<(Panel, usize)>,
 }
 
 /// `--use-item ID@FRAME`: the item put into the player's pack and its use
@@ -354,6 +356,7 @@ fn end_use(
     let mut door = DoorLock::None;
     let mut item_id = 0;
     let mut subject = 0;
+    let mut subject_entry = None;
     let over = if over_gui {
         let in_view = at.zip(crate::doll_view::open_view(&under.screens));
         if in_view.is_some_and(|(at, view)| view.contains(at.x, at.y)) {
@@ -364,7 +367,9 @@ fn end_use(
                 .and_then(|at| panel_at(&panels, at))
                 .and_then(|(panel, local)| {
                     let c = container(&under.screens, panel)?;
-                    entry_at(c, local).map(|i| c.entries[i].id)
+                    let index = entry_at(c, local)?;
+                    subject_entry = Some((panel, index));
+                    Some(c.entries[index].id)
                 });
             match entry {
                 Some(id) => {
@@ -451,6 +456,7 @@ fn end_use(
         item,
         target,
         subject,
+        subject_entry,
     });
 }
 
@@ -560,6 +566,18 @@ fn mark_panel_entry(screens: &mut GameScreens, panel_number: u32, slot: i32, fla
     }
 }
 
+/// The panel entry a use landed on takes the new record id.
+fn rewrite_entry(screens: &mut GameScreens, panel: Panel, index: usize, from: u32, to: u32) {
+    let Some(container) = crate::panel_live::container_mut(screens, panel) else {
+        return;
+    };
+    if let Some(entry) = container.entries.get_mut(index)
+        && entry.id == from
+    {
+        entry.id = to;
+    }
+}
+
 /// The dirt and wear bytes a kit reads. `None` is a missing section. An
 /// apparel section, even at dirt 0, hides the weapon's dirt: the original
 /// reads the body first and does not fall through.
@@ -607,6 +625,12 @@ impl LiveObjects {
         };
         let strings = pack.get("objstrings.rdb").unwrap_or_default();
         self.db = exa_formats::objdb::ObjectDb::parse(bytes, strings).ok();
+    }
+
+    /// A marked template used on an item becomes its own local record. An
+    /// unmarked id, or a database that is not loaded, comes back unchanged.
+    fn instantiate(&mut self, id: u32) -> u32 {
+        self.db.as_mut().map(|db| db.instantiate(id)).unwrap_or(id)
     }
 }
 
@@ -713,6 +737,19 @@ fn apply_kit(
             _ => repair_wear(bytes)
                 .is_some_and(|wear| player_controls::repair_timed(wear, bytes.material).is_some()),
         };
+        let mut subject = subject;
+        if active {
+            let copy = objects.instantiate(subject);
+            if copy != subject {
+                if let Some((panel, index)) = release.subject_entry {
+                    rewrite_entry(&mut screens, panel, index, subject, copy);
+                }
+                if let Some(bytes) = kits.bytes.remove(&subject) {
+                    kits.bytes.insert(copy, bytes);
+                }
+                subject = copy;
+            }
+        }
         let draw = if active {
             roll.get_or_insert_with(|| crate::arena::Mt19937::new(5489))
                 .unit() as f32
@@ -958,6 +995,7 @@ mod tests {
             item: 1,
             target: Some(body),
             subject: 0,
+            subject_entry: None,
         });
         app.update();
         let pool = app
