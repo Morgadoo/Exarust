@@ -1682,7 +1682,16 @@ impl Door {
             }
         }
 
-        self.angle = tick.heading * self.shape.sign;
+        // The heading is already the stop's angle in the door frame. The
+        // swing sign is applied when the drive places the stop, not here:
+        // multiplying again folds an opened leaf back onto the shut angle.
+        self.angle = tick.heading;
+
+        // The passage follows the heading just stored, shut or open. The
+        // room route reads it: a hinge more than 0.4 rad past closed is
+        // routable, a shut one is not, and a locked door always is.
+        let own = !self.locked && (self.shape.sliding || self.open_passable());
+        self.set_passage(own, partner_passable);
 
         let motor_drive = self.drive();
 
@@ -1690,8 +1699,6 @@ impl Door {
         let mut shut_sound = None;
         let mut unlatch_sound = None;
         if !self.closed {
-            let own = !self.locked && self.open_passable();
-            self.set_passage(own, partner_passable);
             if self.angle <= self.shape.closed() {
                 self.near = near_below(self.angle, self.shape.closed());
             } else {
@@ -1718,7 +1725,6 @@ impl Door {
                 shut = true;
             }
         } else {
-            self.set_passage(!self.locked, partner_passable);
             let drive = if self.has_partner && !self.partner_near {
                 None
             } else if self.mode & MODE_TOGGLE == 0 {

@@ -29,6 +29,9 @@ pub const HEAD_AHEAD: f32 = 250.0;
 pub const HEAD_PITCH_FLOOR: f32 = f32::from_bits(0xbf19_999a);
 /// The yaw limit about the body's facing.
 pub const HEAD_YAW_LIMIT: f32 = std::f32::consts::FRAC_PI_4;
+/// The eye in the character frame (cm): 20 to the side and 10 up, the
+/// fixed offset the tracker transforms by the frame.
+pub const EYE_IN_FRAME_CM: [f32; 3] = [-20.0, 10.0, 0.0];
 
 /// The two relaxed angles.
 #[derive(Debug, Clone, Copy, PartialEq)]

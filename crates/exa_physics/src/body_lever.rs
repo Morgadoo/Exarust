@@ -44,9 +44,10 @@
 //! (`leverb_tck01`): started when a return is armed, at load too, faded
 //! while it returns and freed at its end or at the report of 0.
 //!
-//! Not reproduced: the kind 6 lever's light fade is reported as a
-//! [`LeverTick::light`] direction but nothing applies it to a spawned
-//! light. The light node under the lever is found at registration (a light
+//! A kind 6 lever fades the light found under it: a report of 0 sets the
+//! light's scale to 1 and a report of 1 sets it to 0
+//! ([`LeverTick::light`]). The light node under the lever is found at
+//! registration (a light
 //! node at or under the arm node's parent, the operative's node) and handed
 //! to [`Lever::configure`]. The original runs the lever's rules in the
 //! body's own step
@@ -85,6 +86,8 @@ pub struct PendingLever {
     /// A light node was found under the lever's node: a kind 6 lever fades
     /// it.
     pub light: bool,
+    /// The light entity under the lever, when the loader found one.
+    pub light_entity: Option<Entity>,
 }
 
 /// A lever's body glue: the lever's rules and what they read from the arm.
@@ -114,6 +117,8 @@ pub struct LeverBody {
     arm_at: Vec3,
     /// A timed return is armed and counting down.
     pub armed: bool,
+    /// The light a kind 6 lever fades.
+    light: Option<Entity>,
 }
 
 /// The engine's exact normalisation: the reciprocal of the root of
@@ -200,6 +205,7 @@ impl LeverBody {
             radius: shape.radius / CM,
             arm_at: part.point(&arm_weights),
             armed: false,
+            light: pending.light_entity.filter(|_| pending.light),
         };
         let detent0 = heading(glue.to_frame(tied)) - shape.half_swing;
         let shape = lever::Shape { detent0, ..shape };
@@ -358,6 +364,11 @@ impl LeverBody {
         sent
     }
 
+    /// The light a kind 6 lever fades, when one was found under it.
+    pub fn light(&self) -> Option<Entity> {
+        self.light
+    }
+
     /// The arm link's index in the body's world links.
     pub fn arm_link(&self) -> usize {
         self.arm
@@ -377,11 +388,20 @@ pub fn swing_clamp(detent0: f32, wanted: f32, span: f32) -> f32 {
     wrap(a + detent0)
 }
 
+/// A kind 6 lever's fade for the light under it: the light's scale becomes
+/// [`lever::LIGHT_IN`] on a report of 0 and [`lever::LIGHT_OUT`] on a report
+/// of 1.
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct LightFade {
+    pub light: Entity,
+    pub scale: f32,
+}
+
 /// Builds the lever glue of arms registered this frame and steps every
 /// awake arm after the solver. Added by [`crate::prop::PropPlugin`].
 pub(crate) fn plugin(app: &mut App) {
     crate::mechanism_sound::register(app);
-    app.add_systems(
+    app.add_message::<LightFade>().add_systems(
         FixedUpdate,
         (
             register_levers
@@ -444,6 +464,7 @@ fn step_levers(
     mut levers: Query<(Entity, &mut LeverBody, &mut Ragdoll)>,
     mut signals: MessageWriter<MechanismSignal>,
     mut sounds: MessageWriter<MechanismSounded>,
+    mut fades: MessageWriter<LightFade>,
 ) {
     let now = ticks.map_or(0, |t| t.millis() as i32);
     for (e, mut glue, mut body) in &mut levers {
@@ -463,6 +484,11 @@ fn step_levers(
             was_playing,
             &glue.lever,
         ));
+        if let Some(scale) = out.light
+            && let Some(light) = glue.light()
+        {
+            fades.write(LightFade { light, scale });
+        }
         for (target, value) in glue.signals(&out) {
             signals.write(MechanismSignal {
                 target,

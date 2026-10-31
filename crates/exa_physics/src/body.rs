@@ -123,7 +123,7 @@ pub mod door_body;
 pub use door_body::{DoorBody, PendingDoor};
 #[path = "body_lever.rs"]
 pub mod lever_body;
-pub use lever_body::{LeverBody, PendingLever};
+pub use lever_body::{LeverBody, LightFade, PendingLever};
 #[path = "body_plate.rs"]
 pub mod plate_body;
 pub use plate_body::{PendingPlate, PlateBody};

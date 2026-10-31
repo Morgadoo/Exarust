@@ -239,6 +239,59 @@ pub struct SteerView<'a> {
     /// How far along a ray (m) the level is first hit, passing over the
     /// held body; `None` within the range.
     pub hit: &'a dyn Fn(Vec3, Vec3, f32) -> Option<f32>,
+    /// How far along the same ray (m) a kinesis mesh is first hit. The
+    /// nearer of this and the level hit is the one the aim uses.
+    pub mesh: &'a dyn Fn(Vec3, Vec3, f32) -> Option<f32>,
+}
+
+/// The first thing a ray meets: the level hit or a kinesis mesh, whichever
+/// is nearer. A mesh with no level behind it still counts.
+fn first_hit(view: &SteerView, origin: Vec3, dir: Vec3, max: f32) -> Option<f32> {
+    match ((view.hit)(origin, dir, max), (view.mesh)(origin, dir, max)) {
+        (Some(level), Some(mesh)) => Some(level.min(mesh)),
+        (level, mesh) => level.or(mesh),
+    }
+}
+
+/// One other prop's triangles in world space, and the box around them.
+struct PropMesh {
+    triangles: Vec<[Vec3; 3]>,
+    centre: Vec3,
+    radius: f32,
+}
+
+/// How far along `dir` (m) the first of `meshes` stands, within `max`.
+/// The existing kinesis pick answers it.
+fn mesh_distance(meshes: &[PropMesh], origin: Vec3, dir: Vec3, max: f32) -> Option<f32> {
+    if meshes.is_empty() || max <= 0.0 {
+        return None;
+    }
+    let ray = crate::nav_pick::Ray::new(origin, dir).unit();
+    let views: Vec<crate::nav_pick::Triangles<'_>> = meshes
+        .iter()
+        .map(|mesh| crate::nav_pick::Triangles(&mesh.triangles))
+        .collect();
+    let candidates: Vec<crate::nav_pick::Candidate<'_>> = meshes
+        .iter()
+        .zip(views.iter())
+        .map(|(mesh, view)| {
+            let half = Vec3::splat(mesh.radius.max(0.001));
+            crate::nav_pick::Candidate {
+                class: crate::nav_pick::PICK_CLASS,
+                layers: u32::MAX,
+                flags: crate::nav_pick::KINESIS_NODE,
+                bounds: exa_physics::intersect::Obb::new(
+                    mesh.centre,
+                    half,
+                    [Vec3::X, Vec3::Y, Vec3::Z],
+                ),
+                radius: mesh.radius.max(0.001),
+                mesh: view,
+            }
+        })
+        .collect();
+    let (found, distance) = crate::nav_pick::kinesis_hit(ray, u32::MAX, 0.0, &candidates);
+    (found && distance <= max).then_some(distance)
 }
 
 /// One steering tick of `kinesis` on `body`'s first part, which has
@@ -249,11 +302,13 @@ pub fn steer(kinesis: &mut Kinesis, body: &mut Ragdoll, children: f32, view: &St
     };
     let mut pushed = false;
     if let Some((origin, dir)) = view.cursor
-        && let Some(t) = (view.hit)(origin, dir, AIM_RANGE)
+        && let Some(t) = first_hit(view, origin, dir, AIM_RANGE)
     {
         let point = cursor_aim(origin * CM, dir, t * CM, kinesis.depth);
         let to = point / CM - view.head;
         let length = to.length();
+        // The mesh that set the aim is not what blocks the line from the
+        // head. Only the level hit does.
         let clear = length > 0.0 && (view.hit)(view.head, to / length, length).is_none();
         if clear {
             kinesis.aim = settle_aim(point, dir, view.caster_y * CM).to_array();
@@ -291,7 +346,7 @@ pub fn child_parts(body: &Ragdoll) -> f32 {
 #[allow(clippy::type_complexity)]
 pub(super) fn steer_kinesis(
     mut casters: Query<(&mut PowerCaster, Option<&Ragdoll>), Without<PropBody>>,
-    mut props: Query<&mut Ragdoll, (With<PropBody>, Without<PowerCaster>)>,
+    mut props: Query<(Entity, &mut Ragdoll), (With<PropBody>, Without<PowerCaster>)>,
     cameras: Query<&GlobalTransform, With<ChaseCamera>>,
     cursor: Res<KinesisCursor>,
     keys: Res<KinesisKeys>,
@@ -302,6 +357,35 @@ pub(super) fn steer_kinesis(
         return;
     };
     let right = cameras.single().map_or(Vec3::X, |eye| *eye.right());
+    let mut meshes = Vec::new();
+    for (entity, body) in props.iter() {
+        for part in &body.parts {
+            let Some(local) = part.triangles.as_deref().filter(|t| !t.is_empty()) else {
+                continue;
+            };
+            let frame = part.transform();
+            let triangles: Vec<[Vec3; 3]> = local
+                .iter()
+                .map(|tri| tri.map(|p| frame.transform_point3(p)))
+                .collect();
+            let mut lo = triangles[0][0];
+            let mut hi = lo;
+            for tri in &triangles {
+                for p in tri {
+                    lo = lo.min(*p);
+                    hi = hi.max(*p);
+                }
+            }
+            meshes.push((
+                entity,
+                PropMesh {
+                    triangles,
+                    centre: (lo + hi) * 0.5,
+                    radius: (hi - lo).length() * 0.5,
+                },
+            ));
+        }
+    }
     for (mut caster, own) in &mut casters {
         let Some(own) = own else { continue };
         let Some(kinesis) = running(&mut caster) else {
@@ -310,7 +394,7 @@ pub(super) fn steer_kinesis(
         let Some(target) = kinesis.target.and_then(Entity::try_from_bits) else {
             continue;
         };
-        let Ok(mut body) = props.get_mut(target) else {
+        let Ok((_, mut body)) = props.get_mut(target) else {
             kinesis.target = None;
             continue;
         };
@@ -331,6 +415,16 @@ pub(super) fn steer_kinesis(
                 .fixed_pick_except(origin, dir, max, &skip)
                 .map(|(_, t)| t)
         };
+        let others: Vec<PropMesh> = meshes
+            .iter()
+            .filter(|(entity, _)| *entity != target)
+            .map(|(_, mesh)| PropMesh {
+                triangles: mesh.triangles.clone(),
+                centre: mesh.centre,
+                radius: mesh.radius,
+            })
+            .collect();
+        let mesh = |origin: Vec3, dir: Vec3, max: f32| mesh_distance(&others, origin, dir, max);
         let view = SteerView {
             cursor: cursor.0,
             head,
@@ -338,6 +432,7 @@ pub(super) fn steer_kinesis(
             right,
             keys: keys.0,
             hit: &hit,
+            mesh: &mesh,
         };
         let children = child_parts(&body);
         steer(kinesis, &mut body, children, &view);
@@ -390,6 +485,7 @@ mod tests {
             right: Vec3::X,
             keys: 0,
             hit,
+            mesh: &|_, _, _| None,
         }
     }
 
@@ -414,6 +510,40 @@ mod tests {
         let moved = (after - before) * CM;
         assert!(moved.x > 0.0, "{moved}");
         assert!(!body.asleep());
+    }
+
+    /// A kinesis mesh nearer than the floor is the aim hit. One past the
+    /// floor is not: the floor stays the hit.
+    #[test]
+    fn a_nearer_mesh_is_the_aim_hit_and_a_farther_one_is_not() {
+        let wall = PropMesh {
+            triangles: vec![[
+                Vec3::new(2.5, 4.0, -1.0),
+                Vec3::new(3.5, 4.0, -1.0),
+                Vec3::new(3.0, 4.0, 1.0),
+            ]],
+            centre: Vec3::new(3.0, 4.0, 0.0),
+            radius: 2.0,
+        };
+        let floor = |origin: Vec3, _: Vec3, _: f32| (origin.y > 5.0).then_some(10.0);
+        let near = mesh_distance(std::slice::from_ref(&wall), Vec3::new(3.0, 10.0, 0.0), Vec3::NEG_Y, 40.0);
+        assert!(near.is_some_and(|d| (d - 6.0).abs() < 0.05), "{near:?}");
+        let mut body = crate_body();
+        let mut k = running();
+        k.depth = 0.0;
+        let mut look = view(3.0, &floor);
+        let through = |origin, dir, max| mesh_distance(std::slice::from_ref(&wall), origin, dir, max);
+        look.mesh = &through;
+        assert!(steer(&mut k, &mut body, 0.0, &look));
+        let aimed = cursor_aim(Vec3::new(300.0, 1000.0, 0.0), Vec3::NEG_Y, 600.0, 0.0);
+        assert_eq!(Vec3::from(k.aim), settle_aim(aimed, Vec3::NEG_Y, 100.0));
+        let past = PropMesh {
+            centre: Vec3::new(3.0, -2.0, 0.0),
+            triangles: wall.triangles.clone(),
+            radius: wall.radius,
+        };
+        let far = mesh_distance(&[past], Vec3::new(3.0, 10.0, 0.0), Vec3::NEG_Y, 40.0);
+        assert!(far.is_none() || far.is_some_and(|d| d > 10.0), "{far:?}");
     }
 
     /// Without a cursor hit nothing is pushed and the aim stays; a blocked

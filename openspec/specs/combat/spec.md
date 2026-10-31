@@ -635,6 +635,17 @@ The result SHALL be the unit direction (cos p·sin y, −sin p, cos p·cos y), t
 - **WHEN** the yaw is one step and the pitch is zero
 - **THEN** the point is 250 cm along that direction and the flat direction keeps y at 0
 
+### Requirement: Head tracking while stabbing
+The player's behaviour SHALL run the head tracking only while its body's current action is the stab (action 11). The eye SHALL be the character frame times (−20, 10, 0) cm and the look-at SHALL be the aim point the behaviour already publishes. The tracked flat direction's yaw SHALL become the locomotion look the sampler reads. No other action SHALL run it.
+
+#### Scenario: A stab tracks
+- **WHEN** the player's current action is the stab
+- **THEN** the head tracking runs once and its flat yaw is the locomotion look
+
+#### Scenario: Another action does not
+- **WHEN** the player's current action is anything but the stab
+- **THEN** the head tracking does not run and the locomotion look is unchanged
+
 ### Requirement: Far head tracking
 The far head variant SHALL use a 150 cm look-ahead and no pitch floor, keeping the same look bands, π/100 slew and ±π/4 yaw clamp.
 

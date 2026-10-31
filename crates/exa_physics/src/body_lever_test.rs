@@ -80,6 +80,7 @@ fn lever_at(at: Vec3, time: u16, saved: i32) -> (Ragdoll, LeverBody) {
         saved,
         id: 0x8000_004a,
         light: false,
+        light_entity: None,
     };
     let glue =
         LeverBody::new(&body, &pending, Affine3A::IDENTITY, turn, at, 0).expect("a lever arm");
@@ -89,8 +90,33 @@ fn lever_at(at: Vec3, time: u16, saved: i32) -> (Ragdoll, LeverBody) {
     (body, glue)
 }
 
-/// A tick of the solver and then of the lever, as the game runs them; the
-/// signals the tick sent.
+/// A kind 6 lever keeps its light and reports the fade instead of a signal.
+#[test]
+fn a_kind_6_lever_names_the_light_it_fades() {
+    let body = Ragdoll::rigid(&[arm(Vec3::ZERO)]);
+    let turn = Quat::from_rotation_x(std::f32::consts::FRAC_PI_2 - ALPHA);
+    let light = Entity::from_bits(7);
+    let pending = PendingLever {
+        record: Record {
+            kind: lever::LIGHT_KIND,
+            ..record(0)
+        },
+        saved: 0,
+        id: 0x8000_004a,
+        light: true,
+        light_entity: Some(light),
+    };
+    let glue =
+        LeverBody::new(&body, &pending, Affine3A::IDENTITY, turn, Vec3::ZERO, 0).unwrap();
+    assert_eq!(glue.light(), Some(light));
+    let plain = PendingLever {
+        light: false,
+        light_entity: Some(light),
+        ..pending
+    };
+    let signalling = LeverBody::new(&body, &plain, Affine3A::IDENTITY, turn, Vec3::ZERO, 0).unwrap();
+    assert_eq!(signalling.light(), None);
+}
 fn tick(body: &mut Ragdoll, glue: &mut LeverBody, n: i32) -> Vec<(u32, i32)> {
     let now = n * 12;
     if glue.count_down(now) {

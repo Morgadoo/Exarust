@@ -43,7 +43,9 @@
 //! voice (`door?_hng` at the body's centre) and the knock, slam (`slm`)
 //! and unlatch (`opn`) one-shots at the handle point the step reports.
 //!
-//! Not reproduced: the navigation passage report, the last-pusher stamp,
+//! The navigation passage follows the angle each tick: a hinge more than
+//! 0.4 rad past closed clears its pair flag and the room route opens, a
+//! shut hinge keeps the flag and the route stays shut. The last-pusher stamp,
 //! sliding doors (they stay static level geometry unless the loader is
 //! asked for them, `crate::body::slide_body`).
 //!

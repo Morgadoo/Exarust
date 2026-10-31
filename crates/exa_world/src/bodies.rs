@@ -504,13 +504,15 @@ pub fn register_bodies(
                 });
             }
             (Placement::Lever(lever), Some(Rules::Lever)) => {
+                let light_root = model.nodes[top].parent.unwrap_or(top);
                 commands.entity(root).insert(PendingLever {
                     record: crate::mechanisms::lever_record(&lever.record),
                     saved: lever.saved,
                     id: lever.id,
                     // The original's finder starts at the parent of the
                     // arm's node (the operative's node), not at the arm.
-                    light: light_under(model, model.nodes[top].parent.unwrap_or(top)),
+                    light: light_under(model, light_root),
+                    light_entity: light_entity(model, nodes, light_root),
                 });
             }
             (Placement::Plate(plate), Some(Rules::Plate)) => {
@@ -524,6 +526,25 @@ pub fn register_bodies(
         }
     }
     counts
+}
+
+/// The first spawned light node at or under `root`, in node order. A kind 6
+/// lever fades this light.
+fn light_entity(model: &Model, nodes: &[Entity], root: usize) -> Option<Entity> {
+    model.nodes.iter().enumerate().find_map(|(at, node)| {
+        node.light.as_ref()?;
+        let mut step = at;
+        for _ in 0..model.nodes.len() {
+            if step == root {
+                return nodes.get(at).copied();
+            }
+            match model.nodes.get(step).and_then(|n| n.parent) {
+                Some(parent) => step = parent,
+                None => return None,
+            }
+        }
+        None
+    })
 }
 
 /// Whether a light node stands at or under `root` in the model's tree.

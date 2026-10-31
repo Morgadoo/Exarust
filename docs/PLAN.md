@@ -1620,6 +1620,18 @@ Round 46 koknock (C8): the premise was wrong; a knocked-out body never turns its
 
 Round 46 tickchain: AI timings no longer depend on the frame rate; cost 0.17 ms a tick in exanima06. Added --schedule-ambiguities and the profiler's brains line.
 
+The player's head tracker runs while it stabs (the behaviour tick calls it only then): the eye is the character frame times (−20, 10, 0) cm and the tracked flat yaw is the look the sampler reads. Other actions leave the look alone. The far variant still has no caller.
+
+A mechanism relay now forwards in the running game: a broadcast reaches every tagged door linked to it, a pair sends to both targets, and a combiner keeps its state on the record. A sequence relay still has no stored counter, and a light job still has no electric object to power.
+
+A kind 6 lever fades the light found under it: a report of 0 sets that light's scale to 1 and a report of 1 sets it to 0. Another light is left unchanged.
+
+The threat weight's movement bit now follows the body: a locomoting body weighs 16 and a still one 8, which is what the combatant's mirror bit already said but nothing set.
+
+A live door's passage follows its heading each tick. A shut hinge keeps its pair flag, so the room route stays shut, and a hinge more than 0.4 rad past closed clears it, so the route opens. A locked door stays routable. The navigation grid still has no door cells of its own.
+
+The kinesis aim takes the nearer of the level hit and another prop's mesh. A mesh closer than the floor is the aim; one past the floor is not. The held body is left out of that pick.
+
 ### Phase 7 — Game modes and content
 
 Done (change `run-an-arena-career`): a new company starts with 343 copper
