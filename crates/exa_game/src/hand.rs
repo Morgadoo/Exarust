@@ -1681,7 +1681,11 @@ fn hold_hand(
         Option<Res<crate::gamepad::PlayPad>>,
         Option<Res<crate::gamepad::PadStatus>>,
     ),
-    (mut clicks, mut objects): (MessageWriter<WorldClick>, MessageWriter<ObjectClick>),
+    (mut clicks, mut objects, rooms): (
+        MessageWriter<WorldClick>,
+        MessageWriter<ObjectClick>,
+        Option<Res<exa_world::room_view::LevelRooms>>,
+    ),
 ) {
     let released = buttons.just_released(MouseButton::Left);
     let player = player_child(&players, &player_bodies);
@@ -2165,9 +2169,10 @@ fn hold_hand(
                             .ok()
                             .map(|(_, own, ..)| hip_of(feet, own))
                     });
+                    let rooms = rooms.as_deref();
                     let in_reach = |at: Vec3| {
                         hip.is_some_and(|hip| {
-                            pick::walk_within_reach(at * CM, hip * CM, pick::Region::None)
+                            pick::walk_within_reach(at * CM, hip * CM, lift_region(rooms, hip, at))
                         })
                     };
                     let held_frame = match (snapped, point) {
@@ -2345,6 +2350,30 @@ fn end_lift(
             ragdoll.place_at(&held.saved);
             ragdoll.wake();
         }
+    }
+}
+
+/// The lift's navigation region: with no room grid the test does not apply.
+/// Otherwise the placement is inside when the control-side door query says
+/// the hip and the placement reach (the same room, open ground, or the
+/// hip's room's open door into the placement's cell).
+fn lift_region(
+    rooms: Option<&exa_world::room_view::LevelRooms>,
+    hip: Vec3,
+    at: Vec3,
+) -> pick::Region {
+    let Some(rooms) = rooms else {
+        return pick::Region::None;
+    };
+    let hip = Vec2::new(hip.x, hip.z);
+    let at = Vec2::new(at.x, at.z);
+    if rooms
+        .rooms
+        .door_reach(hip, at, |link| rooms.tracker.is_open(link))
+    {
+        pick::Region::Inside
+    } else {
+        pick::Region::Outside
     }
 }
 
@@ -3368,5 +3397,58 @@ mod tests {
         // A NaN is not under 0.2 (the under test needs no parity): it
         // takes the first grip.
         assert!(first_wheel_grip(Vec3::NAN, Vec3::X));
+    }
+
+    /// A lift across a shut door is outside the hip's room. The same room,
+    /// and the cell through an open door, stay inside. No room grid skips
+    /// the test.
+    #[test]
+    fn a_lift_stops_at_a_shut_door() {
+        use std::sync::Arc;
+
+        use exa_formats::level::LevelGrid;
+        use exa_world::room_view::LevelRooms;
+        use exa_world::rooms::{CELL_OPEN, DoorLink, Rooms};
+
+        let mut edges = vec![0u32; 18];
+        let open = |edges: &mut [u32], x: u32, y: u32, sides: [u32; 4]| {
+            let cell = (y * 6 + x) as usize;
+            edges[cell] =
+                CELL_OPEN | sides[0] | (sides[1] << 4) | (sides[2] << 8) | (sides[3] << 12);
+        };
+        open(&mut edges, 2, 1, [7, 7, 7, 0xB]);
+        open(&mut edges, 3, 1, [7, 0xB, 7, 7]);
+        let grid = LevelGrid {
+            wall_sets: Vec::new(),
+            floor_sets: Vec::new(),
+            width: 6,
+            height: 3,
+            edges,
+            plane_b: vec![0; 18],
+            plane_c: vec![0; 18],
+        };
+        let rooms = Rooms::flood(&grid);
+        let mut level = LevelRooms::new(Arc::new(rooms));
+        let at = |cell: u32| {
+            let centre = level.rooms.cell_centre(cell);
+            Vec3::new(centre.x, 0.0, centre.y)
+        };
+        let hip = at(1 * 6 + 2);
+        let across = at(1 * 6 + 3);
+        assert_eq!(lift_region(Some(&level), hip, hip), pick::Region::Inside);
+        assert_eq!(lift_region(Some(&level), hip, across), pick::Region::Inside);
+        level.tracker.set_door(
+            DoorLink {
+                from: 1 * 6 + 2,
+                to: 1 * 6 + 3,
+            },
+            false,
+        );
+        assert_eq!(
+            lift_region(Some(&level), hip, across),
+            pick::Region::Outside
+        );
+        assert_eq!(lift_region(Some(&level), hip, hip), pick::Region::Inside);
+        assert_eq!(lift_region(None, hip, across), pick::Region::None);
     }
 }
