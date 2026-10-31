@@ -576,6 +576,7 @@ fn transfer_gui(
     mut items: ResMut<DollItems>,
     cursor: Res<UseCursor>,
     catalogue: Option<Res<exa_items::catalogue::ItemCatalogue>>,
+    mut icons: Option<ResMut<crate::item_panel_draw::PanelIcons>>,
     mut sounds: MessageWriter<exa_audio::PointSounded>,
     players: Query<&GlobalTransform, With<PlayerBody>>,
 ) {
@@ -593,16 +594,26 @@ fn transfer_gui(
         if operative.kind != 0x10 || release.subject != operative.target {
             continue;
         }
+        // The original acquires the replacement's icon first and refuses the
+        // replace when that acquire fails. Without an icon manager the entry
+        // still changes and keeps its old slot.
+        let reserved = icons
+            .as_deref_mut()
+            .map(|icons| icons.reserve(operative.second, 0, catalogue.as_deref()));
+        if operative.second != 0 && reserved.is_some_and(|(handle, _)| handle == 0) {
+            continue;
+        }
         let replaced = {
             let Some(container) = crate::panel_live::container_mut(&mut screens, panel) else {
                 continue;
             };
-            let half = container.icon_size >> 1;
-            let icon = container
+            let kept = container
                 .entries
                 .get(index)
                 .map(|entry| entry.icon)
                 .unwrap_or(0);
+            let (icon, half) =
+                reserved.unwrap_or((kept, (container.icon_size >> 1, container.icon_size >> 1)));
             let icon_size = container.icon_size;
             let client = container.client;
             crate::item_container::replace_entry(
@@ -620,14 +631,27 @@ fn transfer_gui(
                             .map(i32::from)
                             .unwrap_or(0)
                     },
-                    half: (half, half),
+                    half,
                     icon_size,
                     client,
                 },
             )
         };
-        if replaced.is_none() {
+        let Some(old_icon) = replaced else {
+            if let Some((handle, _)) = reserved
+                && handle != 0
+                && let Some(icons) = icons.as_deref_mut()
+            {
+                icons.release(handle);
+            }
             continue;
+        };
+        if let Some((handle, _)) = reserved
+            && old_icon != 0
+            && old_icon != handle
+            && let Some(icons) = icons.as_deref_mut()
+        {
+            icons.release(old_icon);
         }
         if cursor.slot > 0 {
             let source = cursor.slot as usize - 1;
@@ -648,7 +672,12 @@ fn transfer_gui(
                     })
                     .map(i32::from)
                     .unwrap_or(0);
-                let _ = source_container.remove_at(source, bulk);
+                if let Some(entry) = source_container.remove_at(source, bulk)
+                    && entry.icon != 0
+                    && let Some(icons) = icons.as_deref_mut()
+                {
+                    icons.release(entry.icon);
+                }
             }
         }
         if let Some(name) = player_controls::use_sound_name(&operative) {
