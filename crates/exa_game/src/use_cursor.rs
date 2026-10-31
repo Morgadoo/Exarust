@@ -595,25 +595,27 @@ fn transfer_gui(
             continue;
         }
         // The original acquires the replacement's icon first and refuses the
-        // replace when that acquire fails. Without an icon manager the entry
-        // still changes and keeps its old slot.
-        let reserved = icons
+        // replace when that acquire fails, including when there is no icon
+        // manager to acquire from.
+        let Some((icon, half)) = icons
             .as_deref_mut()
-            .map(|icons| icons.reserve(operative.second, 0, catalogue.as_deref()));
-        if operative.second != 0 && reserved.is_some_and(|(handle, _)| handle == 0) {
+            .map(|icons| icons.reserve(operative.second, 0, catalogue.as_deref()))
+        else {
+            continue;
+        };
+        if icon == 0 {
             continue;
         }
+        let reserved = Some((icon, half));
         let replaced = {
             let Some(container) = crate::panel_live::container_mut(&mut screens, panel) else {
+                if icon != 0
+                    && let Some(icons) = icons.as_deref_mut()
+                {
+                    icons.release(icon);
+                }
                 continue;
             };
-            let kept = container
-                .entries
-                .get(index)
-                .map(|entry| entry.icon)
-                .unwrap_or(0);
-            let (icon, half) =
-                reserved.unwrap_or((kept, (container.icon_size >> 1, container.icon_size >> 1)));
             let icon_size = container.icon_size;
             let client = container.client;
             crate::item_container::replace_entry(
