@@ -267,6 +267,8 @@ Round 44 sweep-world: most of the lane's commits were invented or duplicate rule
 
 Round 45 doorrooms: the room behind a shut door is black again (the golem gate the owner reported); the round 39 door binding had no caller, so every link counted open. Plus tooling (cl/gridview): `exarust grid` splits one window into four Bevy viewports, each showing an offscreen game process, for parallel visual testing.
 
+Round 48 world: the lever light fades and a shut door keeps its route closed.
+
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
 Done (change `add-apparel-painting`): object database items and the
@@ -1463,6 +1465,8 @@ Round 45 storystart (U4, G2): the story start's steps reach the live game; tips 
 
 Round 46 dialogue (U1): the dialogue is finished; the player is named from the creator's saved preset when the creator is skipped.
 
+Round 48 shop: the arena shop's baskets are live. A carried item seeds the goods, a purchase joins them, and a sale takes them.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
@@ -1631,6 +1635,8 @@ The threat weight's movement bit now follows the body: a locomoting body weighs 
 A live door's passage follows its heading each tick. A shut hinge keeps its pair flag, so the room route stays shut, and a hinge more than 0.4 rad past closed clears it, so the route opens. A locked door stays routable. The navigation grid still has no door cells of its own.
 
 The kinesis aim takes the nearer of the level hit and another prop's mesh. A mesh closer than the floor is the aim; one past the floor is not. The held body is left out of that pick.
+
+Round 48 head: the head tracker runs during a stab. The far variant stays uncalled because its caller was not identified.
 
 ### Phase 7 — Game modes and content
 
