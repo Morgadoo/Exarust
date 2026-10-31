@@ -258,13 +258,7 @@ fn light_job(
             } else {
                 record.value |= 1;
             }
-            Some(exa_render::electricity::DeviceFields {
-                active: record.value & 1 != 0,
-                duration: record.target as u16,
-                length: (record.target >> 16) as u16,
-                branches: record.second as i16,
-                flags: (record.flags >> 8) as u8,
-            })
+            Some(device_fields(record))
         })
     }) else {
         return;
@@ -284,6 +278,30 @@ fn light_job(
     if !fields.active {
         return;
     }
+    start_device_arc(commands, node, fields);
+}
+
+/// The device-arc fields an operative record holds: the value word's low bit,
+/// the duration and length packed in the first target, the branch count in
+/// the second, and the flag byte above the record's flags.
+pub(crate) fn device_fields(record: &mechanism::Record) -> exa_render::electricity::DeviceFields {
+    exa_render::electricity::DeviceFields {
+        active: record.value & 1 != 0,
+        duration: record.target as u16,
+        length: (record.target >> 16) as u16,
+        branches: record.second as i16,
+        flags: (record.flags >> 8) as u8,
+    }
+}
+
+/// Starts the level device's arc as a child of `node`, in the node's local
+/// space, along its third axis for the record's length. A fresh emitter is
+/// off until a later signal catches it.
+pub(crate) fn start_device_arc(
+    commands: &mut Commands,
+    node: Entity,
+    fields: exa_render::electricity::DeviceFields,
+) -> Entity {
     let length = f32::from(fields.length);
     let axis = Vec3::Z;
     let end = fields.end_point(Vec3::ZERO, axis).unwrap_or(axis * length);
@@ -292,6 +310,7 @@ fn light_job(
     commands
         .entity(spawned)
         .insert(crate::arc::ElectricDevice::default());
+    spawned
 }
 
 /// What a relay sends on from `signal`, read from the placed records.

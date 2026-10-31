@@ -735,7 +735,8 @@ enum PlacedSpawn {
 
 /// What a placed object's node carries besides its tree: its sections,
 /// its door and operative records (for the signals and mechanisms) and,
-/// for a teleporter or reconstruction device, its device.
+/// for a teleporter or reconstruction device, its device. A light operative
+/// whose value bit is set also starts its device arc.
 fn insert_object_records(
     commands: &mut Commands,
     entity: Entity,
@@ -757,6 +758,19 @@ fn insert_object_records(
             kind: operative.kind,
             operative,
         });
+    }
+    // Level load starts a light operative's arc when its value bit is set.
+    // The kind byte alone decides it. A daylight fire is not started here:
+    // that branch reads the scene's daylight factor, which is not stored.
+    if let Some(operative) = item
+        .operative
+        .filter(|o| o.kind == objdb::operative::LIGHT && o.value & 1 != 0)
+    {
+        mechanisms::start_device_arc(
+            commands,
+            entity,
+            mechanisms::device_fields(&mechanisms::operative_record(&operative)),
+        );
     }
 }
 
@@ -2243,6 +2257,54 @@ mod tests {
         };
         let (point, ..) = light_bundle(&light);
         assert_eq!(point.shadow_map_near_z, 0.03);
+    }
+
+    /// Placing a light operative whose value bit is set starts one device
+    /// arc. A clear bit, or any other kind, does not.
+    #[test]
+    fn a_lit_operative_starts_its_device_arc_when_placed() {
+        let record = |value, kind| {
+            let mut item = Item::parse(1, &[]).expect("an empty item");
+            item.operative = Some(objdb::Operative {
+                class: objdb::operative::JOB,
+                kind,
+                flags: 0,
+                value,
+                time: 0,
+                target: 1000 | (200 << 16),
+                second: 0,
+                atlas: [0; 16],
+                destinations: [0; objdb::DESTINATIONS],
+            });
+            item
+        };
+        let arcs = |item: &Item| {
+            let mut world = World::new();
+            let mut queue = CommandQueue::default();
+            let node = world.spawn_empty().id();
+            let object = dropped_object(7, 0);
+            {
+                let mut commands = Commands::new(&mut queue, &world);
+                insert_object_records(&mut commands, node, item, &object);
+            }
+            queue.apply(&mut world);
+            world
+                .get::<Children>(node)
+                .into_iter()
+                .flat_map(|kids| kids.iter())
+                .filter_map(|child| {
+                    let _device = world.get::<arc::ElectricDevice>(child)?;
+                    let arc = &world.get::<arc::ArcEffect>(child)?.arc;
+                    Some((arc.start, arc.end))
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(arcs(&record(0, objdb::operative::LIGHT)).is_empty());
+        assert!(arcs(&record(1, objdb::operative::FIRE)).is_empty());
+        assert_eq!(
+            arcs(&record(1, objdb::operative::LIGHT)),
+            vec![(Vec3::ZERO, Vec3::new(0.0, 0.0, 200.0))]
+        );
     }
 
     /// The vertical shaping factor the original's shader takes for a
