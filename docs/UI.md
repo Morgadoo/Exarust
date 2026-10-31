@@ -451,7 +451,12 @@ speaks. Its draw eases the height, fills a rounded box of radius 2 at alpha
 main GUI font: the hovered or held row in the highlight group's ninth ink
 (alpha raised by half again), the others in the label group's ninth (its
 fifth while a pick is held), both fading over the second the pick is held.
-The pointer hovers the bands and a released left click picks one.
+The pointer hovers the bands and a released left click picks one. The form
+is made hidden, so the talk's show runs the base form's 256-tick show fade
+(GUI clock, system milliseconds) and the close its hide fade, the rows kept
+until the form goes: the box draws at the fade's alpha times 160 and the
+inks with the line skin's palette alphas scaled by it. The gamepad's
+highlight is the form's hover itself (see `docs/PLAYER.md`, Gamepad).
 
 ## Arena match board
 

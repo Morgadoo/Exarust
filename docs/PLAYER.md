@@ -442,9 +442,13 @@ already down is not a press.
   (`0x10` left under −0.1, `0x20` right over 0.1), and while a dialogue is
   open (the power bar checked first) its vertical axis does (`0x40` up,
   `0x80` down), each repeated every 300 ms while held through the command
-  word's edge filter; the move is zeroed and the run flag kept. Exarust's
-  power bar is opened by the keyboard handler, not the pad, and there is no
-  dialogue, so both step modes stay off.
+  word's edge filter; the move is zeroed and the run flag kept. The reader
+  takes both modes from the player's power bar and the reply panel. With
+  the panel open and the power bar closed, Select (`0x10000`) picks the
+  highlighted reply, else a step down moves the highlight forward, else a
+  step up moves it back; Talk (`0x20000`) closes an open panel and otherwise
+  talks in the pad mode, whose panel highlights its first entry on the open
+  and on each layout of a non-empty list.
 - **Camera.** `Camera`'s vertical axis has a 0.5 dead zone; its horizontal
   axis is zero under 0.1 (double precision, a NaN passes) and otherwise
   `|x|·x`. When the squared pair is over 0.01 the navigation unit's look

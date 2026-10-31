@@ -16,6 +16,24 @@
 //! the engine closes it. The engine's pick (its entry number from one) is
 //! the panel's pick: when it turns on, the panel holds it for a second.
 //!
+//! **The fade.** The constructor leaves the form hidden, so the talk's show
+//! starts the base form's show fade (256 GUI clock ticks, mode 0) and the
+//! close starts its hide fade; while one runs the draw hands its alpha to
+//! the skin as both scales (the box at that alpha times 160, the inks'
+//! alphas scaled with the palette) and sets them back to 1 after. A show
+//! asked for while the form is still visible (inside a hide fade) does not
+//! restart the fade, as the original's show tests the visible flag; the
+//! hide then ends and the form goes. The rows the form held stay through
+//! the hide fade ([`DialogueWindow::fade_alpha`]).
+//!
+//! **The gamepad.** A panel the gamepad's Talk opened highlights its first
+//! entry on the open and on every layout of a non-empty list. The pad's
+//! vertical steps move the highlight (the form's hover itself, which the
+//! pointer also sets): down the list while it is below the count, from none
+//! to the first; up while it is above the first. Select picks the
+//! highlighted entry when it is one of the list's ([`DialogueWindow::step_highlight`],
+//! [`DialogueWindow::highlighted`]).
+//!
 //! A frame's draw ([`DialogueWindow::paint`]) eases the height, then draws
 //! a rounded box of radius two at alpha 160 and, while the list has entries,
 //! each row's "N." and its wrapped text in the main GUI font: the hovered
@@ -37,6 +55,7 @@ use exa_script::dialogue::{Choice, Panel};
 use crate::dialogue_choices::{
     BOX_RADIUS, CREATE_GAP, ChoicePalette, ChoicesView, FontMetrics, PANEL_HEIGHT, PANEL_WIDTH,
 };
+use crate::form::{FadeStep, FormFade};
 use crate::gui_font::GuiFont;
 use crate::gui_text::{TextQuad, draw_line, draw_wrapped};
 use crate::skin::{GuiRect, SkinBatch, rounded_fill_fixed};
@@ -63,6 +82,11 @@ pub struct DialogueWindow {
     laid_out_as_narrator: bool,
     /// The engine's pick the view last mirrored.
     chosen: usize,
+    /// The base form's show and hide fade (GUI clock).
+    pub fade: FormFade,
+    /// The form's visible flag: set by the show, cleared when a hide fade
+    /// ends.
+    pub visible: bool,
 }
 
 /// One frame of the panel's draw: the box, then the rows' glyphs in their
@@ -130,15 +154,15 @@ impl DialogueWindow {
     ) -> bool {
         let narrator = panel.partner == Some(Speaker::Narrator);
         self.narrator = narrator;
+        let opening = panel.open && !self.open;
         self.open = panel.open;
         if !panel.open {
-            self.entries.clear();
-            self.view.entries.clear();
-            self.view.picked = 0;
-            self.chosen = 0;
+            // The close only hides the form: its rows stay for the hide
+            // fade, and the next open rebuilds them.
             return false;
         }
-        let changed = self.entries != panel.entries || self.laid_out_as_narrator != narrator;
+        let changed =
+            opening || self.entries != panel.entries || self.laid_out_as_narrator != narrator;
         if changed {
             self.view.entries.clear();
             for choice in &panel.entries {
@@ -159,6 +183,11 @@ impl DialogueWindow {
             self.view.dirty = false;
             self.entries = panel.entries.clone();
             self.laid_out_as_narrator = narrator;
+            // The layout of a list with entries highlights the first when
+            // the gamepad opened the panel.
+            if panel.by_pad && !self.view.entries.is_empty() {
+                self.view.hover = 1;
+            }
         }
         if panel.chosen != self.chosen {
             self.chosen = panel.chosen;
@@ -197,6 +226,61 @@ impl DialogueWindow {
     /// (from zero), as the panel's input answers a click.
     pub fn click(&self) -> Option<usize> {
         self.view.input(0x2001, 0).select
+    }
+
+    /// The gamepad's step: `forward` moves the highlight down the list while
+    /// it is below the count (from none to the first), otherwise up while it
+    /// is above the first. Nothing moves while the panel is closed.
+    pub fn step_highlight(&mut self, forward: bool) {
+        if !self.open {
+            return;
+        }
+        let hover = self.view.hover;
+        if forward {
+            if hover < self.view.entries.len() as i32 {
+                self.view.hover = (hover + 1).max(1);
+            }
+        } else if hover > 1 {
+            self.view.hover = hover - 1;
+        }
+    }
+
+    /// The entry the gamepad's Select picks (from zero): the highlighted
+    /// one, when it is one of the list's.
+    pub fn highlighted(&self) -> Option<usize> {
+        let hover = self.view.hover;
+        (hover > 0 && hover <= self.view.entries.len() as i32).then(|| hover as usize - 1)
+    }
+
+    /// The talk's show at GUI clock `now`: a hidden form starts its show
+    /// fade and becomes visible; a visible one (inside its hide fade) keeps
+    /// the fade it has.
+    pub fn show(&mut self, now: u32) {
+        if self.fade.start_show(now, self.visible) {
+            self.visible = true;
+        }
+    }
+
+    /// The close's hide at GUI clock `now`: the hide fade starts unless one
+    /// runs.
+    pub fn hide(&mut self, now: u32) {
+        self.fade.start_hide(now);
+    }
+
+    /// The alpha the form draws at, at GUI clock `now`, or `None` when it is
+    /// not drawn (hidden, or its hide fade has just ended, which hides it).
+    /// Outside a fade the alpha is 1.
+    pub fn fade_alpha(&mut self, now: u32) -> Option<f32> {
+        if !self.visible {
+            return None;
+        }
+        match self.fade.step(now) {
+            FadeStep::Close => {
+                self.visible = false;
+                None
+            }
+            FadeStep::Draw(alpha) => Some(alpha.unwrap_or(1.0)),
+        }
     }
 
     /// One frame of the draw at `now`: the height eased toward its target
@@ -333,11 +417,97 @@ mod tests {
         assert!(window.sync(&p, &FONT, 4, 600, 2600));
         assert!(window.open);
         assert!(window.view.entries.is_empty());
-        // The engine closes the panel: the window hides and clears.
+        // The engine closes the panel: the window hides, keeping what it
+        // shows for the hide fade.
+        p.entries.push(choice("Three", 0, 1));
+        window.sync(&p, &FONT, 4, 600, 2700);
         p.open = false;
         assert!(!window.sync(&p, &FONT, 4, 600, 3000));
         assert!(!window.open);
-        assert!(window.view.entries.is_empty());
+        assert_eq!(window.view.entries.len(), 1);
+        // The next open rebuilds even an identical list.
+        p.open = true;
+        assert!(window.sync(&p, &FONT, 4, 600, 4000));
+        assert_eq!(window.view.anim_end, 4500);
+    }
+
+    /// A pad-opened panel highlights its first entry on every layout; the
+    /// pad's steps move the highlight within the list and Select takes it.
+    #[test]
+    fn the_pad_highlight_starts_on_the_first_entry_and_steps() {
+        let mut window = DialogueWindow::new();
+        let mut p = panel(
+            vec![
+                choice("One", 0, 0),
+                choice("Two", 0, 1),
+                choice("Three", 0, 2),
+            ],
+            Some(Speaker::Character(5)),
+        );
+        p.by_pad = true;
+        window.sync(&p, &FONT, 4, 600, 0);
+        assert_eq!(window.view.hover, 1);
+        assert_eq!(window.highlighted(), Some(0));
+        window.step_highlight(false);
+        assert_eq!(window.view.hover, 1, "the first stays first");
+        for want in [2, 3, 3] {
+            window.step_highlight(true);
+            assert_eq!(window.view.hover, want);
+        }
+        assert_eq!(window.highlighted(), Some(2));
+        window.step_highlight(false);
+        assert_eq!(window.view.hover, 2);
+        // A new list goes back to the first.
+        p.entries.pop();
+        window.sync(&p, &FONT, 4, 600, 100);
+        assert_eq!(window.view.hover, 1);
+        // From the pointer's "none" (or the form's -1 above the bands) a
+        // step down takes the first; Select has nothing there.
+        window.view.hover = -1;
+        assert_eq!(window.highlighted(), None);
+        window.step_highlight(true);
+        assert_eq!(window.view.hover, 1);
+        // An empty list keeps the hover; a mouse-opened panel never sets it.
+        p.entries.clear();
+        window.view.hover = 0;
+        window.sync(&p, &FONT, 4, 600, 200);
+        assert_eq!(window.view.hover, 0);
+        let mut mouse = panel(vec![choice("One", 0, 0)], Some(Speaker::Character(5)));
+        mouse.by_pad = false;
+        let mut other = DialogueWindow::new();
+        other.sync(&mouse, &FONT, 4, 600, 0);
+        assert_eq!(other.view.hover, 0);
+        // Closed, the steps do nothing.
+        mouse.open = false;
+        other.sync(&mouse, &FONT, 4, 600, 10);
+        other.step_highlight(true);
+        assert_eq!(other.view.hover, 0);
+    }
+
+    /// The show fades the form in over 256 ticks, the hide out over 256
+    /// and then hides it; a show inside the hide fade does not restart it.
+    #[test]
+    fn the_form_fades_in_and_out() {
+        let mut window = DialogueWindow::new();
+        assert_eq!(window.fade_alpha(0), None, "made hidden");
+        window.show(1000);
+        assert_eq!(window.fade_alpha(1000), Some(0.0));
+        assert_eq!(window.fade_alpha(1064), Some(0.25));
+        assert_eq!(window.fade_alpha(1256), Some(1.0));
+        assert_eq!(window.fade_alpha(5000), Some(1.0));
+        // A second show while visible changes nothing.
+        window.show(5000);
+        assert_eq!(window.fade_alpha(5001), Some(1.0));
+        window.hide(6000);
+        assert_eq!(window.fade_alpha(6064), Some(0.75));
+        // A show inside the hide fade: still visible, so no new fade.
+        window.show(6100);
+        assert_eq!(window.fade_alpha(6192), Some(0.25));
+        assert_eq!(window.fade_alpha(6256), None);
+        assert!(!window.visible);
+        // Hidden now, the next show fades in again.
+        window.show(7000);
+        assert_eq!(window.fade_alpha(7128), Some(0.5));
     }
 
     /// The first talk makes the form: 400 × 120, centred on a 1280 × 720

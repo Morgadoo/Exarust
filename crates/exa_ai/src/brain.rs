@@ -92,9 +92,38 @@ pub struct RoleDatabase {
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CharacterId(pub u32);
 
-/// Exarust's id for the player: the original's new character id is not
-/// traced [guess].
-pub const PLAYER_ID: u32 = 1;
+/// The tag a character of the world character database carries in its id
+/// (the local database's characters, a level's own, carry `0x8000_0000`).
+pub const WORLD_CHARACTER: u32 = 0x4000_0000;
+
+/// A new player's id: a story start empties both character databases and
+/// adds the new character to the world one under its first free id from 1
+/// (so 1), and the id the character then carries is that number with the
+/// world database's tag, `0x4000_0001`. It can never equal a level
+/// character's id.
+pub const PLAYER_ID: u32 = WORLD_CHARACTER | 1;
+
+/// The id a character the world database keeps under `number` carries: the
+/// number's low 28 bits with the world tag (a loaded save's player).
+pub fn world_character_id(number: u32) -> u32 {
+    WORLD_CHARACTER | (number & 0x0FFF_FFFF)
+}
+
+/// The first free id from `start` in a database's ascending id list: each
+/// id met that equals the candidate moves it on by one, and the walk stops
+/// at the first id above it.
+pub fn first_free_id(ids: &[u32], start: u32) -> u32 {
+    let mut id = start;
+    for &taken in ids {
+        if id < taken {
+            break;
+        }
+        if id == taken {
+            id += 1;
+        }
+    }
+    id
+}
 
 /// Marks the character the brains rate: the player.
 #[derive(Component, Debug, Clone, Copy, Default)]
@@ -2223,6 +2252,22 @@ pub fn rate_the_player(
 mod tests {
     use super::*;
     use crate::roles::HeldRole;
+
+    /// A new player is the first character of the emptied world database:
+    /// id 1 with the world tag, never a level character's id; a save's
+    /// player keeps its world number.
+    #[test]
+    fn a_new_player_is_the_world_databases_first_character() {
+        assert_eq!(first_free_id(&[], 1), 1);
+        assert_eq!(PLAYER_ID, 0x4000_0001);
+        assert_eq!(PLAYER_ID & crate::roles::LOCAL_ID, 0);
+        assert_eq!(world_character_id(7), 0x4000_0007);
+        assert_eq!(world_character_id(0x4000_0003), 0x4000_0003);
+        // The first free id skips the ids it meets and stops above it.
+        assert_eq!(first_free_id(&[1, 2, 4], 1), 3);
+        assert_eq!(first_free_id(&[2, 3], 1), 1);
+        assert_eq!(first_free_id(&[1, 2, 3], 1), 4);
+    }
     use exa_formats::roles::{ATTITUDE, INHERITS_PARENT, Role, RoleEntry};
 
     fn record(id: u32, flags: u32, parent: u32, init: &str, entries: Vec<RoleEntry>) -> Role {

@@ -307,6 +307,11 @@ pub struct Panel {
     pub chosen: usize,
     /// The highlighted entry, from 1 (0: none).
     pub highlight: usize,
+    /// The panel was opened by the gamepad's Talk: the talk routine's mode
+    /// word is 1, and the panel then highlights its first entry on the open
+    /// and on every layout of a non-empty list. The keyboard's Talk and the
+    /// narrator store 0.
+    pub by_pad: bool,
 }
 
 /// A pending narrator message.
@@ -2204,13 +2209,22 @@ impl Engine {
         self.panel.can_pick = true;
     }
 
-    /// The player talks to `partner`: open the panel with its list.
+    /// The player talks to `partner` from the keyboard: open the panel with
+    /// its list.
     pub fn talk(&mut self, scene: &mut Scene<'_>, partner: u32) {
+        self.talk_with(scene, partner, false);
+    }
+
+    /// The player talks to `partner`, from the gamepad when `by_pad`: open
+    /// the panel with its list; an opened panel keeps the mode
+    /// ([`Panel::by_pad`]).
+    pub fn talk_with(&mut self, scene: &mut Scene<'_>, partner: u32, by_pad: bool) {
         self.panel.open = true;
         self.panel.other = false;
         self.panel.chosen = 0;
         if self.rebuild(scene, Speaker::Character(partner)) {
             self.panel.partner = Some(Speaker::Character(partner));
+            self.panel.by_pad = by_pad;
         } else {
             self.panel.open = false;
         }
@@ -2398,7 +2412,9 @@ impl Engine {
             self.panel.open = true;
             self.panel.other = false;
             self.panel.partner = Some(Speaker::Narrator);
-            if !self.rebuild(scene, Speaker::Narrator) {
+            if self.rebuild(scene, Speaker::Narrator) {
+                self.panel.by_pad = false;
+            } else {
                 self.panel.open = false;
             }
             self.narrator_done = false;

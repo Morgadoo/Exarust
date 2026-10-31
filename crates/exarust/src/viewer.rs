@@ -1062,16 +1062,38 @@ fn spawn_players(
     saved: Option<&exa_game::save_live::SavedPlayer>,
 ) {
     let (position, yaw) = (start.position, start.yaw);
+    let story = exa_world::start::mode(name) == Some(exa_world::start::Mode::Story);
+    // A story player who skipped the creator is the creator's opening
+    // record for the unknown background: its saved preset, when the user
+    // folder's settings store holds one (none otherwise: the original never
+    // begins a nameless character).
+    let opening = (story && created.is_none() && saved.is_none() && existing.is_none())
+        .then(|| {
+            options
+                .save_dir
+                .as_deref()
+                .and_then(exa_game::creator_screen::settings_store)
+        })
+        .flatten()
+        .and_then(|store| exa_game::creator_screen::story_opening_record(&store));
+    if let Some(record) = &opening {
+        info!(
+            "player: no character was created; the unknown background's saved preset {:?} opens",
+            record.name
+        );
+    }
     // A loaded save's player is its record: the record the save restored
     // wins over the creator's.
-    let created = saved.map(|saved| &saved.record).or(created);
+    let created = saved
+        .map(|saved| &saved.record)
+        .or(created)
+        .or(opening.as_ref());
     let races = game
         .0
         .pack(PackKind::Resource)
         .and_then(|p| p.get("races.rdb"))
         .and_then(|b| exa_formats::races::parse(b).ok())
         .unwrap_or_default();
-    let story = exa_world::start::mode(name) == Some(exa_world::start::Mode::Story);
     // The role database and the level's locale, which the brains of the
     // level's characters read.
     let resource = game.0.pack(PackKind::Resource);
@@ -1218,9 +1240,17 @@ fn spawn_players(
             Some(exa_world::start::Mode::Arena) => exa_ai::roles::Roles::company(&book),
             _ => exa_ai::roles::Roles::arena(&book),
         };
+        // A new character is the world character database's first, id 1
+        // with the world tag; a loaded save's player keeps the world number
+        // its record was saved under.
+        let player_id = saved
+            .map(|saved| saved.record.id & exa_formats::characters::ID_MASK)
+            .filter(|&number| number != 0)
+            .map_or(exa_ai::brain::PLAYER_ID, exa_ai::brain::world_character_id);
+        info!("player: character id {player_id:#x}");
         commands.entity(model).insert((
             roles,
-            exa_ai::brain::CharacterId(exa_ai::brain::PLAYER_ID),
+            exa_ai::brain::CharacterId(player_id),
             exa_ai::brain::RatedPlayer,
         ));
         if let Some(m) = morph {

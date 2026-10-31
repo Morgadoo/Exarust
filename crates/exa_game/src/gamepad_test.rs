@@ -908,3 +908,29 @@ fn the_pad_stick_stands_for_the_steering_keys() {
     let keys = pad_keys(Keys::default(), &frame(Vec3::Z * 0.1, false), 0.0);
     assert_eq!(keys, Keys::default());
 }
+
+/// The scripted pad holds each action over its frames and pushes the move
+/// stick fully for up and down; an unknown name or an empty range does not
+/// read.
+#[test]
+fn the_scripted_pad_holds_its_actions_over_their_frames() {
+    let mut scripted = ScriptedPad::parse("talk@2,down@3-5,select@6").unwrap();
+    assert!(!scripted.next_sample().digital(Id::Talk));
+    assert!(scripted.next_sample().digital(Id::Talk));
+    let third = scripted.next_sample();
+    assert!(!third.digital(Id::Talk));
+    assert_eq!(third.analog(Id::Move), Vec2::NEG_Y);
+    assert_eq!(scripted.next_sample().analog(Id::Move), Vec2::NEG_Y);
+    let fifth = scripted.next_sample();
+    assert_eq!(fifth.analog(Id::Move), Vec2::ZERO);
+    assert!(scripted.next_sample().digital(Id::Select));
+    assert_eq!(
+        ScriptedPad::parse("up@1")
+            .unwrap()
+            .next_sample()
+            .analog(Id::Move),
+        Vec2::Y
+    );
+    assert!(ScriptedPad::parse("jump@1").is_none());
+    assert!(ScriptedPad::parse("talk@4-4").is_none());
+}

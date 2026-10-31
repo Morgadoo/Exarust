@@ -1381,9 +1381,22 @@ pointer hovers its bands and a released left click picks one
 (`PickReply`); the pointer over it counts as over the GUI. After the open
 screens the bubbles are placed and drawn (a character's over its body
 position lifted 120 cm) and then the panel, both in the main GUI font of
-the window's level. `script_cast` makes the player body's character id
-the session's player and keeps a level character sharing that id out of
-the cast. A new story in `exanima01` places the unknown background's
+the window's level. The panel fades in and out with the base form's
+256-tick show and hide fade on the real-time GUI clock, its box and the
+line skin's inks at the fade's alpha. On a gamepad (`gamepad` turns the
+move stick into up and down steps while the panel is open), Select picks
+the highlighted entry, a step down or up moves the highlight, and the pad's
+Talk closes an open panel or talks in the pad mode (`exa_script::PadTalk`),
+whose panel highlights its first entry on every layout; `--pad-press`
+scripts a pad for checks. `script_cast` makes the player body's character
+id the session's player; a new player's id is the original's new-character
+id, `0x4000_0001` (the emptied world database's first, with its tag), so
+it never meets a level character's. A story player who skipped the creator
+starts from the creator's opening record for the unknown background, the
+preset saved in the user folder's `Exanima.set` (`--save-dir`;
+`creator_screen::story_opening_record`, `create::load_preset`), which
+gives its lines a name; the creator opens a story background on its saved
+preset too. A new story in `exanima01` places the unknown background's
 companion, Derrin (`xac_derrin`), at the story start's companion point
 (`exarust`'s viewer), so the first level has someone to talk to.
 

@@ -11,7 +11,9 @@
 //! and the change flag is cleared, so the AI applies the roles anew.
 //!
 //! The player's own character id is the session's player: the conversation
-//! engine speaks the player's lines and lists its replies for it.
+//! engine speaks the player's lines and lists its replies for it. A new
+//! player's id carries the world database's tag
+//! ([`exa_ai::brain::PLAYER_ID`]), so it never meets a level character's.
 //!
 //! The original keeps one character object the AI and the scripts both use;
 //! Exarust keeps the saved relation record in the script cast and mirrors
@@ -42,7 +44,6 @@ type LiveCharacter<'a> = (
     Option<&'a Fighter>,
     Option<&'a Condition>,
     Option<&'a Npc>,
-    Has<PlayerBody>,
 );
 
 /// The session's player is the player body's character id.
@@ -72,14 +73,7 @@ fn mirror_cast(
     let Some(mut conversations) = conversations else {
         return;
     };
-    let player = conversations.player;
-    for (id, mut roles, name, fighter, condition, npc, is_player) in &mut characters {
-        // A level character that shares the player's id stays out of the
-        // cast, so the player's entry keeps the player's roles (Exarust's
-        // player id is a guess that a level's first record shares).
-        if Some(id.0) == player && !is_player {
-            continue;
-        }
+    for (id, mut roles, name, fighter, condition, npc) in &mut characters {
         if let Some(c) = conversations.cast.get_mut(id.0)
             && c.roles_changed
         {
@@ -182,17 +176,17 @@ mod tests {
         assert!(conversations.cast.get(1).is_some());
     }
 
-    /// A level character sharing the player's id does not overwrite the
-    /// player's cast entry.
+    /// A level character numbered 1 and the new player (the world
+    /// database's 1) are two cast entries.
     #[test]
-    fn a_character_sharing_the_players_id_stays_out_of_the_cast() {
+    fn the_new_player_never_shares_a_level_characters_id() {
         let mut app = App::new();
         app.add_plugins(ScriptCastPlugin);
         app.insert_resource(Conversations::default());
         app.world_mut()
             .spawn((CharacterId(1), Roles(vec![role(8)]), Name::new("Zombie01")));
         app.world_mut().spawn((
-            CharacterId(1),
+            CharacterId(exa_ai::brain::PLAYER_ID),
             Roles(vec![role(7)]),
             Name::new("Ermus"),
             PlayerBody::new(0.0),
@@ -200,9 +194,11 @@ mod tests {
         app.update();
         app.update();
         let conversations = app.world().resource::<Conversations>();
-        let c = conversations.cast.get(1).unwrap();
-        assert_eq!(c.name, "Ermus");
-        assert_eq!(c.roles.iter().map(|r| r.id).collect::<Vec<_>>(), [7]);
+        assert_eq!(conversations.player, Some(0x4000_0001));
+        let player = conversations.cast.get(0x4000_0001).unwrap();
+        assert_eq!(player.name, "Ermus");
+        assert_eq!(player.roles.iter().map(|r| r.id).collect::<Vec<_>>(), [7]);
+        assert_eq!(conversations.cast.get(1).unwrap().name, "Zombie01");
     }
 
     /// The health scripts see is the red pool over the maximum.
