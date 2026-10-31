@@ -1223,7 +1223,8 @@ pub fn use_end(event: u32, left: bool) -> UseEnd {
 /// with no operative section is 0; classes 2, 4 and 8 are 0; class 0 is 2
 /// for the GUI item kind ([`GUI_ITEM_KIND`]) while the entry's used bits
 /// (`0xFF0000`) are clear and 0 otherwise (another class-0 kind runs its
-/// own use first, not modelled here); class 1 is 1 for a used liquid or
+/// own use first: kind 5 opens the divination reading, kind 7 the name
+/// reader's window, which is not built); class 1 is 1 for a used liquid or
 /// kit (kinds 8, 14, 9, 10 with used bits) and 2 otherwise; any other class
 /// is 2.
 pub fn panel_use_class(operative: Option<(u8, u8)>, flags: u32) -> u8 {

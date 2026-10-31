@@ -4,10 +4,9 @@
 //! it. The screen fills the window and draws the reading's own paint
 //! ([`exa_ui::div_card`]) through the GUI draw path.
 //!
-//! The item-use path that opens the reading in the original belongs to the
-//! object database's use entry; the item's use class was not read, so the
-//! game sends [`OpenDivination`] from the host that knows an item is a
-//! divination card [guess].
+//! A class-0 kind-5 use opens the reading ([`crate::use_cursor`] on an item
+//! panel, [`crate::object_click`] on a taken world object) and passes zero,
+//! which this screen deals from.
 
 use bevy::audio::PlaybackMode;
 use bevy::prelude::*;

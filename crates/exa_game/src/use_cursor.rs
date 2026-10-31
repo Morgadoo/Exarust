@@ -146,6 +146,7 @@ fn panel_double_click(
     mut last: Local<Option<(IVec2, u64, Panel, usize)>>,
     mut hooks: MessageWriter<UseHook>,
     mut containers: MessageWriter<crate::gui_screens::ContainerRequest>,
+    mut divination: MessageWriter<crate::div_card_screen::OpenDivination>,
 ) {
     if !buttons.just_pressed(MouseButton::Left) || cursor.took_press {
         return;
@@ -183,6 +184,14 @@ fn panel_double_click(
     let is_container = items
         .get(entry.id)
         .is_some_and(|item| item.container.is_some());
+    // Class 0 of a kind other than the GUI item runs its use before the
+    // class is applied. Kind 5 closes the card and opens the divination
+    // reading with the zero argument that use passes; the name reader's
+    // window is not built here.
+    if operative.is_some_and(|(class, kind)| class == 0 && kind == player_controls::TAKE_POWERS) {
+        let _ = screens.card.close(now as u32);
+        divination.write(crate::div_card_screen::OpenDivination { seed: 0 });
+    }
     match crate::item_container::double_click(use_class, is_container) {
         crate::item_container::DoubleClick::UseItem => {
             let _ = screens.card.close(now as u32);

@@ -17,7 +17,8 @@
 //! - The double click (in reach; with Ctrl in combat mode) runs the
 //!   object's own interaction ([`player_controls::double_click_object`]):
 //!   a usable kind 0 object leaves the scene with its use sound (a
-//!   consumable's doors open 2100 ms later through the deferred list), a
+//!   consumable's doors open 2100 ms later through the deferred list; kind 5
+//!   also opens the divination reading), a
 //!   usable kind 1 item lifts the use cursor and stays in the scene
 //!   (`crate::use_cursor`), and a container section opens the container's
 //!   popup.
@@ -36,6 +37,7 @@ use exa_physics::{ColliderNodes, Physics};
 use exa_world::db_objects::PlaceholderNode;
 use exa_world::{ObjectSections, PartBounds, PlacedItem};
 
+use crate::div_card_screen::OpenDivination;
 use crate::gui_screens::{ContainerRequest, GameScreens};
 use crate::hand::Hit;
 use crate::item_card::{CardView, WorldCard};
@@ -207,6 +209,8 @@ pub struct ClickOutputs<'w> {
     /// Story discovery. A node's first touch awards the rank in its
     /// placement word.
     experience: Option<ResMut<'w, crate::experience_live::StoryExperience>>,
+    /// A kind-5 take opens the divination reading.
+    divination: MessageWriter<'w, OpenDivination>,
 }
 
 /// The dialogue side a narration goes through.
@@ -424,7 +428,16 @@ pub fn run_object_clicks(
                     close_card(&mut out, now as u32);
                     match player_controls::take_use(usable.map_or(0, |u| u.kind)) {
                         TakeUse::Nothing => {}
-                        use_ => info!("object take {id:#x}: the record's use {use_:?}"),
+                        // Kind 5 closes the card (already done) and opens the
+                        // reading with the zero argument the use passes.
+                        TakeUse::Powers => {
+                            out.divination.write(OpenDivination { seed: 0 });
+                        }
+                        // Kind 7 hands the header name to the registered
+                        // reader. That window is not built.
+                        TakeUse::NameHook => {
+                            info!("object take {id:#x}: the record's name goes to its reader");
+                        }
                     }
                 }
                 _ => {}
@@ -597,6 +610,7 @@ mod tests {
         app.add_message::<ObjectClick>()
             .add_message::<WorldCard>()
             .add_message::<ContainerRequest>()
+            .add_message::<OpenDivination>()
             .add_message::<exa_audio::PointSounded>()
             .init_resource::<PendingUses>()
             .init_resource::<DeviceClock>()
@@ -768,6 +782,25 @@ mod tests {
             }]
         );
         assert!(app.world().get_entity(jar).is_err());
+    }
+
+    /// A kind-5 take opens the divination reading with the zero argument
+    /// the use passes, and the object still leaves the scene.
+    #[test]
+    fn a_divination_item_opens_the_reading() {
+        let mut app = app();
+        let deck = placed(
+            &mut app,
+            0x31,
+            Some(sections(Some((0, 5)), false, 0)),
+            Vec3::ZERO,
+        );
+        click(&mut app, Hit::SceneNode { node: deck }, Vec3::ZERO, true);
+        assert_eq!(
+            drain::<OpenDivination>(&mut app),
+            vec![OpenDivination { seed: 0 }]
+        );
+        assert!(app.world().get_entity(deck).is_err());
     }
 
     /// A usable kind 1 item taken in hand lifts the use cursor and stays in
