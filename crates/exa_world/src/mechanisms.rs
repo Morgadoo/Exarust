@@ -392,7 +392,7 @@ fn direct_children(world: &mut World, parent: Entity) -> Vec<Entity> {
     found
 }
 
-fn put_out_light(world: &mut World, entity: Entity) {
+pub(crate) fn put_out_light(world: &mut World, entity: Entity) {
     let hosts = direct_children(world, entity);
     for host in std::iter::once(entity).chain(hosts) {
         if let Some(mut source) = world

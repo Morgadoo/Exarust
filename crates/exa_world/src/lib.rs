@@ -735,8 +735,9 @@ enum PlacedSpawn {
 
 /// What a placed object's node carries besides its tree: its sections,
 /// its door and operative records (for the signals and mechanisms) and,
-/// for a teleporter or reconstruction device, its device. A light operative
-/// whose value bit is set also starts its device arc.
+/// for a teleporter or reconstruction device, its device. A switch-off flag
+/// puts the node's lights out, and a light operative whose value bit is set
+/// then starts its device arc.
 fn insert_object_records(
     commands: &mut Commands,
     entity: Entity,
@@ -757,6 +758,17 @@ fn insert_object_records(
         commands.entity(entity).insert(TeleportDevice {
             kind: operative.kind,
             operative,
+        });
+    }
+    // The switch-off runs before the kind's own setup, so a light that is
+    // then started is not the one this clears.
+    if item
+        .operative
+        .is_some_and(|operative| operative.flags & exa_physics::mechanism::SWITCH_OFF != 0)
+    {
+        let node = entity;
+        commands.queue(move |world: &mut World| {
+            mechanisms::put_out_light(world, node);
         });
     }
     // Level load starts a light operative's arc when its value bit is set.
@@ -2310,6 +2322,59 @@ mod tests {
         assert_eq!(
             arcs(&record(1, objdb::operative::LIGHT)),
             vec![(Vec3::ZERO, Vec3::new(0.0, 0.0, 200.0))]
+        );
+    }
+
+    /// A switch-off flag clears the node's light before a lit operative
+    /// starts its arc, so the arc is still there and the old light is out.
+    #[test]
+    fn a_switch_off_puts_the_node_light_out_before_the_arc() {
+        let item = |flags: u16| {
+            let mut item = Item::parse(1, &[]).expect("an empty item");
+            item.operative = Some(objdb::Operative {
+                class: objdb::operative::JOB,
+                kind: objdb::operative::LIGHT,
+                flags,
+                value: 1,
+                time: 0,
+                target: 1000 | (200 << 16),
+                second: 0,
+                atlas: [0; 16],
+                destinations: [0; objdb::DESTINATIONS],
+            });
+            item
+        };
+        let placed = |flags: u16| {
+            let mut world = World::new();
+            let mut queue = CommandQueue::default();
+            let node = {
+                let mut commands = Commands::new(&mut queue, &world);
+                let node = commands.spawn(light_source::LightSource::new(0, 4.0)).id();
+                insert_object_records(&mut commands, node, &item(flags), &dropped_object(7, 0));
+                node
+            };
+            queue.apply(&mut world);
+            let intensity = world
+                .get::<light_source::LightSource>(node)
+                .unwrap()
+                .intensity;
+            let arc = world
+                .query::<(Entity, &ChildOf)>()
+                .iter(&world)
+                .any(|(entity, child_of)| {
+                    child_of.parent() == node && world.get::<arc::ElectricDevice>(entity).is_some()
+                });
+            (intensity, arc)
+        };
+        assert_eq!(
+            placed(0),
+            (4.0, true),
+            "without the flag the light stays and the arc starts"
+        );
+        assert_eq!(
+            placed(exa_physics::mechanism::SWITCH_OFF),
+            (0.0, true),
+            "the flag puts the light out and the arc still starts"
         );
     }
 
