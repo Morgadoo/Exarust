@@ -89,7 +89,11 @@
 //!                                     4 s after the return to the hub, the last board match starts again with the
 //!                                     company's combatants (a debug tool for unattended arena runs)
 //!          --open-hub-window <name>   play arenahub: once the manager stands, open a hub window built from its control
-//!                                     table: manage, records, status, loadout, hire, dismiss, yesno (also board, shop)
+//!                                     table: manage, records, status, loadout, hire, dismiss[:row], yesno (also board,
+//!                                     shop, and arsenal, the arsenal view Manage Company's Arsenal opens)
+//!          --hub-employee-kit NAME:id,id,...  play arenahub: once the hub is entered, a combatant NAME joins the company
+//!                                     with these kit items, stowed in the arsenal as a hire stows a kit (a debug
+//!                                     stand-in for a loaded career's employee)
 //!          --trace <file.csv>         the player's body (else every simulated body) after every 83 Hz tick, in cm
 //!          --trace-all                with --trace: every simulated character body, the player's among them
 //!          --debug-bodies             start with the body overlay and joint readout shown (F3 toggles it)
@@ -132,6 +136,8 @@
 //!                                     loading (e.g. `.@400,F8@500,LMB@600`); `key@a-b` holds it from frame a to b
 //!          --cursor x,y               play mode: the cursor stays at this window point (logical pixels), for unattended runs
 //!          --click frame,...          click the left mouse button at frames after loading
+//!          --click-at x,y@frame;...   move the scripted pointer to the window point (logical pixels) and click the
+//!                                     left mouse button there at frames after loading
 //!          --toggle-door FRAME        debug: toggle the bound hinged door nearest the player (a shut one is driven
 //!                                     open) that many frames after the level's rooms exist, logging its angle
 //!          --object-click F[d][l],...  debug: click the placed container nearest the player at frames after
@@ -474,6 +480,12 @@ pub struct Options {
     /// `--open-hub-window <name>`: open a hub window once the hub is
     /// entered (a debug tool for screenshots).
     pub open_hub_window: Option<String>,
+    /// `--hub-employee-kit NAME:id,...`: a combatant with this kit joins
+    /// the company once the hub is entered (a debug tool).
+    pub hub_employee_kit: Option<(String, Vec<u32>)>,
+    /// `--click-at x,y@frame;...`: the scripted pointer moves there and
+    /// the left mouse button clicks, at frames after the load.
+    pub clicks_at: Vec<([f32; 2], u32)>,
     /// Play mode: the player's record's feral level (0..=1).
     pub feral: Option<f32>,
     /// `--opponent-feral <f>`: the debug duellist's feral level.
@@ -660,6 +672,36 @@ fn parse_level_changes(list: &str) -> Option<Vec<(String, u32)>> {
 }
 
 /// Reads `frame,...`.
+/// Reads `--click-at`'s `x,y@frame` entries, separated by `;`.
+fn parse_clicks_at(list: &str) -> Option<Vec<([f32; 2], u32)>> {
+    list.split(';')
+        .filter(|s| !s.trim().is_empty())
+        .map(|entry| {
+            let (at, frame) = entry.trim().split_once('@')?;
+            let (x, y) = at.split_once(',')?;
+            Some((
+                [x.trim().parse().ok()?, y.trim().parse().ok()?],
+                frame.trim().parse().ok()?,
+            ))
+        })
+        .collect()
+}
+
+/// Reads `--hub-employee-kit`'s `NAME:id,id,...`.
+fn parse_employee_kit(value: &str) -> Option<(String, Vec<u32>)> {
+    let (name, ids) = value.split_once(':')?;
+    let ids: Option<Vec<u32>> = ids
+        .split(',')
+        .filter(|s| !s.trim().is_empty())
+        .map(|id| id.trim().parse().ok())
+        .collect();
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some((name.to_string(), ids?))
+}
+
 fn parse_clicks(list: &str) -> Option<Vec<u32>> {
     list.split(',')
         .filter(|s| !s.trim().is_empty())
@@ -936,7 +978,7 @@ fn main() -> AppExit {
             "--arena-auto" => options.arena_auto = true,
             "--open-hub-window" => {
                 let name = args.next().unwrap_or_default();
-                if !exa_game::hub_forms::HUB_WINDOW_NAMES.contains(&name.as_str()) {
+                if !exa_game::hub_forms::hub_window_name_ok(&name) {
                     eprintln!(
                         "--open-hub-window: one of {:?}, not {name:?}",
                         exa_game::hub_forms::HUB_WINDOW_NAMES
@@ -993,6 +1035,26 @@ fn main() -> AppExit {
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
                     .collect();
+            }
+            "--click-at" => {
+                let list = args.next().unwrap_or_default();
+                match parse_clicks_at(&list) {
+                    Some(c) => options.clicks_at = c,
+                    None => {
+                        eprintln!("--click-at: cannot read {list:?} (x,y@frame;...)");
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
+            "--hub-employee-kit" => {
+                let value = args.next().unwrap_or_default();
+                match parse_employee_kit(&value) {
+                    Some(kit) => options.hub_employee_kit = Some(kit),
+                    None => {
+                        eprintln!("--hub-employee-kit: cannot read {value:?} (NAME:id,id,...)");
+                        return AppExit::from_code(2);
+                    }
+                }
             }
             "--click" => {
                 let list = args.next().unwrap_or_default();
@@ -1612,6 +1674,17 @@ mod tests {
         );
         assert_eq!(parse_clicks("300, 420,540"), Some(vec![300, 420, 540]));
         assert_eq!(parse_clicks("300,x"), None);
+        assert_eq!(
+            parse_clicks_at("10,20@30; 1.5,2@4"),
+            Some(vec![([10.0, 20.0], 30), ([1.5, 2.0], 4)])
+        );
+        assert_eq!(parse_clicks_at("10,20"), None);
+        assert_eq!(
+            parse_employee_kit("Brom:5,7"),
+            Some(("Brom".to_string(), vec![5, 7]))
+        );
+        assert_eq!(parse_employee_kit(":5"), None);
+        assert_eq!(parse_employee_kit("Brom:x"), None);
         assert_eq!(
             parse_level_changes("arenahub@200, arena1@450"),
             Some(vec![("arenahub".into(), 200), ("arena1".into(), 450)])

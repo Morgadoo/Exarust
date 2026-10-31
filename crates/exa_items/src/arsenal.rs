@@ -404,6 +404,118 @@ pub fn cont_frame_close(parent: u64) -> u64 {
 /// The inventory toggle's two control flag bits: shown sets them.
 pub const TOGGLE_BITS: u32 = 0x60;
 
+/// What a template control's callback does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ControlAction {
+    /// Scroll one column left, while the scroll is past zero, and lay out.
+    ScrollLeft,
+    /// Scroll one column right and lay out (the layout clamps it).
+    ScrollRight,
+    /// A shelf button: while it is down, the columns are stored into the
+    /// shown shelf's boxes and the shelf the button's value names is loaded.
+    Shelf,
+    /// Show the inventory while the button is down, hide it otherwise.
+    ToggleInventory,
+}
+
+/// One record of the form's eight-entry control template: every control
+/// is a 44 × 44 button with no caption; the words are the record's style,
+/// state and radio group, its picture in the arsenal icon list
+/// (`arsenalico.rfi`, handles 1 to 7) and the value its callback reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ControlRecord {
+    pub style: u32,
+    pub state: u32,
+    pub group: u16,
+    pub picture: u32,
+    pub value: u32,
+    pub action: ControlAction,
+}
+
+/// A button's down bit, and the two bits a down radio or toggle button
+/// carries ([`TOGGLE_BITS`]).
+pub const DOWN: u32 = 0x20;
+/// The radio group of the five shelf buttons, and the toggle's own group.
+pub const SHELF_GROUP: u16 = 0x1000;
+pub const TOGGLE_GROUP: u16 = 0x2000;
+/// The style bit that mirrors a button's picture (the right arrow's).
+pub const MIRRORED: u32 = 0x4000_0000;
+/// The template's controls: the two arrows (picture 6, the right one
+/// mirrored), the five shelf buttons (pictures 1 to 5, values 0 to 4, the
+/// first one down) and the inventory toggle (picture 7, down: the inventory
+/// starts shown).
+pub const CONTROLS: [ControlRecord; LAST_CONTROL + 1] = [
+    ControlRecord {
+        style: 0,
+        state: 0,
+        group: 0,
+        picture: 6,
+        value: 0,
+        action: ControlAction::ScrollLeft,
+    },
+    ControlRecord {
+        style: 0x4040_0080,
+        state: 0,
+        group: 0,
+        picture: 6,
+        value: 0,
+        action: ControlAction::ScrollRight,
+    },
+    shelf_record(0, TOGGLE_BITS),
+    shelf_record(1, 0),
+    shelf_record(2, 0),
+    shelf_record(3, 0),
+    shelf_record(4, 0),
+    ControlRecord {
+        style: 0x00c0_0080,
+        state: TOGGLE_BITS,
+        group: TOGGLE_GROUP,
+        picture: 7,
+        value: 0,
+        action: ControlAction::ToggleInventory,
+    },
+];
+
+const fn shelf_record(shelf: u32, state: u32) -> ControlRecord {
+    ControlRecord {
+        style: 0,
+        state,
+        group: SHELF_GROUP,
+        picture: shelf + 1,
+        value: shelf,
+        action: ControlAction::Shelf,
+    }
+}
+
+/// The first shelf button's control index.
+pub const FIRST_SHELF_CONTROL: usize = 2;
+
+/// The control states after a click on control `index`: a radio button
+/// goes down and the others of its group come up; a toggle flips; a plain
+/// button keeps its state.
+pub fn click_states(states: &mut [u32; LAST_CONTROL + 1], index: usize) {
+    let Some(record) = CONTROLS.get(index) else {
+        return;
+    };
+    match record.action {
+        ControlAction::Shelf => {
+            for (at, other) in CONTROLS.iter().enumerate() {
+                if other.group == record.group {
+                    states[at] &= !TOGGLE_BITS;
+                }
+            }
+            states[index] |= TOGGLE_BITS;
+        }
+        ControlAction::ToggleInventory => states[index] ^= TOGGLE_BITS,
+        ControlAction::ScrollLeft | ControlAction::ScrollRight => {}
+    }
+}
+
+/// A column panel's vertical scale in the compact layout (the constructor
+/// stores the single-precision word `0x3f5f6377`, about 0.8726); the
+/// normal layout keeps the panel's 1.
+pub const COMPACT_COLUMN_SCALE: f32 = f32::from_bits(0x3f5f_6377);
+
 /// The toggle control's flags after the inventory is shown or hidden; the
 /// arsenal then lays out again.
 pub fn toggle_flags(flags: u32, shown: bool) -> u32 {
@@ -558,5 +670,28 @@ mod tests {
         assert_eq!(toggle_flags(0x60, false), 0);
         assert_eq!(toggle_flags(0x1, true), 0x61);
         assert_eq!(cont_frame_close(9), 9);
+    }
+
+    #[test]
+    fn the_control_template_and_its_clicks() {
+        let pictures: Vec<_> = CONTROLS.iter().map(|c| c.picture).collect();
+        assert_eq!(pictures, [6, 6, 1, 2, 3, 4, 5, 7]);
+        let values: Vec<_> = CONTROLS[2..7].iter().map(|c| c.value).collect();
+        assert_eq!(values, [0, 1, 2, 3, 4]);
+        assert!(CONTROLS[1].style & MIRRORED != 0);
+        assert_eq!(CONTROLS[2].state, 0x60);
+        assert_eq!(CONTROLS[7].state, 0x60);
+        let mut states = CONTROLS.map(|c| c.state);
+        // A shelf click puts its button down and the first one up.
+        click_states(&mut states, 4);
+        assert_eq!(states[2], 0);
+        assert_eq!(states[4], 0x60);
+        // The toggle flips on its own; the arrows keep theirs.
+        click_states(&mut states, 7);
+        assert_eq!(states[7], 0);
+        click_states(&mut states, 0);
+        assert_eq!(states[0], 0);
+        assert_eq!(states[4], 0x60);
+        assert!((COMPACT_COLUMN_SCALE - 0.8726).abs() < 1e-4);
     }
 }

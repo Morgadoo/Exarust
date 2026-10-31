@@ -122,6 +122,13 @@ fn setup(
             done: false,
         });
     }
+    if let Some((name, kit)) = &options.hub_employee_kit {
+        commands.insert_resource(exa_game::hub_forms::HubEmployeeKit {
+            name: name.clone(),
+            kit: kit.clone(),
+            done: false,
+        });
+    }
     let bc = model::bc_supported(support.as_deref());
     info!("BC texture upload: {bc}");
     let mut loader = ModelLoader {
@@ -2748,9 +2755,12 @@ fn press_keys(
     loading: Option<Res<exa_ui::LoadingStatus>>,
     mut keys: ResMut<ButtonInput<KeyCode>>,
     mut buttons: ResMut<ButtonInput<MouseButton>>,
+    mut pointer: Option<ResMut<exa_ui::ScriptedPointer>>,
     mut frames: Local<u32>,
 ) {
-    if (options.press.is_empty() && options.clicks.is_empty()) || loading.is_some() {
+    if (options.press.is_empty() && options.clicks.is_empty() && options.clicks_at.is_empty())
+        || loading.is_some()
+    {
         return;
     }
     *frames += 1;
@@ -2772,6 +2782,19 @@ fn press_keys(
     for &at in &options.clicks {
         if at == frame {
             info!("clicking the left mouse button");
+            buttons.press(MouseButton::Left);
+        } else if at + 1 == frame {
+            buttons.release(MouseButton::Left);
+        }
+    }
+    // `--click-at`: the pointer moves on the press's frame and stays for
+    // the release on the next.
+    for &(point, at) in &options.clicks_at {
+        if at == frame {
+            info!("clicking the left mouse button at {point:?}");
+            if let Some(pointer) = pointer.as_deref_mut() {
+                pointer.0 = Some(Vec2::from(point));
+            }
             buttons.press(MouseButton::Left);
         } else if at + 1 == frame {
             buttons.release(MouseButton::Left);
