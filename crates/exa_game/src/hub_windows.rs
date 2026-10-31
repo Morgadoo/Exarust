@@ -527,6 +527,9 @@ pub struct ShopModel {
     pub merchant: bool,
     /// The stock's ids and names, in shelf order.
     pub stock: Vec<(u32, String)>,
+    /// Each row's price word, parallel to [`Self::stock`]. Zero means the
+    /// item body that holds the price is not live, so a click leaves the row.
+    pub prices: Vec<u16>,
 }
 
 /// A hub window's form: its rectangle and the controls the window manager
@@ -646,6 +649,23 @@ impl HubWindows {
             }
             return done;
         }
+        // A click on a priced stock row takes it into the buy basket. The
+        // row's place matches the shelf the window bound.
+        let panel = shop.window.panels()[4];
+        let stock_rect = GuiRect::new(panel[0], panel[1], panel[2], panel[3]);
+        if stock_rect.contains(point.0, point.1) {
+            let row = (point.1 - stock_rect.top - 4) / ROW_HEIGHT;
+            if row >= 0 {
+                let row = row as usize;
+                let price = shop.prices.get(row).copied().unwrap_or(0);
+                if price != 0 && shop.window.take_stock_row(row, price).is_some() {
+                    let (id, _) = shop.stock.remove(row);
+                    shop.prices.remove(row);
+                    info!("shop: item {id:#x} joins the buy basket at price {price}");
+                    return true;
+                }
+            }
+        }
         false
     }
 
@@ -717,6 +737,9 @@ impl HubWindows {
             window,
             merchant,
             stock: stock.iter().map(|&id| (id, names.name_of(id))).collect(),
+            // The price word lives on the item body, which the shop does
+            // not have yet. A zero leaves the row on the shelf.
+            prices: vec![0; stock.len()],
         };
         self.shop = Some(shop);
         self.kind = HubWindowKind::Shop;
@@ -1676,6 +1699,27 @@ mod tests {
     }
 
     #[test]
+    fn a_priced_stock_row_joins_the_buy_basket() {
+        let mut career = career();
+        career.company.stock = vec![7, 9];
+        let names = HubItemNames::default();
+        let mut windows = HubWindows::default();
+        windows.open_shop(false, &career, &names);
+        windows.shop.as_mut().unwrap().prices = vec![5, 12];
+        let panel = windows.shop.as_ref().unwrap().window.panels()[4];
+        let point = (panel[0] + 4, panel[1] + 4 + 2);
+        assert!(windows.shop_click(point, &mut career));
+        let shop = windows.shop.as_ref().unwrap();
+        assert_eq!(shop.stock.iter().map(|row| row.0).collect::<Vec<_>>(), [9]);
+        assert_eq!(shop.prices, [12]);
+        assert_eq!(shop.window.buy_items, [7]);
+        assert_eq!(shop.window.buy, [5]);
+        // A row with no price stays on the shelf.
+        windows.shop.as_mut().unwrap().prices[0] = 0;
+        assert!(!windows.shop_click(point, &mut career));
+        assert_eq!(windows.shop.as_ref().unwrap().window.buy_items, [7]);
+    }
+
     fn the_shop_trade_button_settles_through_the_company() {
         let mut career = career();
         career.company.stock = vec![7];
