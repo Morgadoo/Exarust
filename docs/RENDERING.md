@@ -1313,9 +1313,10 @@ the original's (54, 25, 21) and (47, 24, 20).
 
 Not yet: blood sprays, the attacker's own blood when it strikes with a
 body part of its own (creatures), the translucent
-program's blood ((0.5, 0.03, 0)), and dirt modes 1–3. Exarust never
-re-dresses a character, so the original's clean meshes after an equipment
-change do not arise yet.
+program's blood ((0.5, 0.03, 0)), and dirt modes 1–3. A refit after an
+equipment change (`exa_character::refit`) builds the merged mesh anew, so
+its colour stream starts clean, as the original's does: the blood painted
+before the change is gone from the body and the garments.
 
 ### Blood on weapons
 

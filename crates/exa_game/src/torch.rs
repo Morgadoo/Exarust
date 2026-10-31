@@ -31,7 +31,10 @@ impl Plugin for TorchPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<FloorTorch>()
             .init_resource::<StoryTorch>()
-            .add_systems(Update, (light_torches, lay_floor_torch));
+            .add_systems(
+                Update,
+                ((rehand_torches, light_torches).chain(), lay_floor_torch),
+            );
     }
 }
 
@@ -120,9 +123,9 @@ fn lay_floor_torch(
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct CarriesTorch;
 
-/// The torch is in the hand.
-#[derive(Component)]
-struct TorchLit;
+/// The torch is in the hand, and which one.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+struct TorchLit(TorchHand);
 
 /// The root of a carried torch's model.
 #[derive(Component)]
@@ -195,6 +198,60 @@ impl TorchHand {
     }
 }
 
+/// Moves a carried torch to the hand its rule now names when the main
+/// hand's weapon came or went (the character's refit gave or took it,
+/// `exa_character::refit`): the torch in its old hand goes, with the hand's
+/// light in [`Hands`], and [`light_torches`] lights it in the new one. A
+/// weapon taken into the free right hand sends the torch to the left, as
+/// the inventory figure's hand scene does; a weapon taken away brings it
+/// back to the right.
+#[allow(clippy::type_complexity)]
+fn rehand_torches(
+    mut commands: Commands,
+    mut bodies: Query<
+        (
+            Entity,
+            Has<Wielded>,
+            Option<&TorchHand>,
+            &TorchLit,
+            Option<&mut Hands>,
+        ),
+        With<CarriesTorch>,
+    >,
+    children: Query<&Children>,
+    roots: Query<(), With<TorchRoot>>,
+) {
+    for (body, wields, fixed, lit, hands) in &mut bodies {
+        let wanted = fixed.copied().unwrap_or(TorchHand::of(wields));
+        if wanted == lit.0 {
+            continue;
+        }
+        for entity in children.iter_descendants(body) {
+            if roots.contains(entity) {
+                commands.entity(entity).despawn();
+            }
+        }
+        if let Some(mut hands) = hands {
+            match lit.0 {
+                TorchHand::Main => {
+                    if hands
+                        .main
+                        .is_some_and(|m| m.light && m.flags == TORCH_FLAGS)
+                    {
+                        hands.main = None;
+                    }
+                }
+                TorchHand::Off => hands.off_light = false,
+            }
+        }
+        info!(
+            "torch moves from the {:?} hand to the {wanted:?} hand",
+            lit.0
+        );
+        commands.entity(body).remove::<TorchLit>();
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn light_torches(
     mut commands: Commands,
@@ -237,7 +294,7 @@ fn light_torches(
             images: &mut images,
             bc_supported: model::bc_supported(support.as_deref()),
         };
-        commands.entity(body).insert(TorchLit);
+        commands.entity(body).insert(TorchLit(hand));
         // The torch in its hand picks the moveset.
         if let Some(mut hands) = hands {
             match hand {
@@ -561,5 +618,50 @@ mod tests {
             "Cmbt - Idle wrist {}",
             combat.wrist
         );
+    }
+
+    /// A weapon taken into the right hand sends the torch to the left: its
+    /// old model goes and the hand's light is cleared, so the torch is lit
+    /// again in the new hand; taking the weapon away brings it back.
+    #[test]
+    fn a_weapon_moves_the_torch_to_the_free_hand() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .add_systems(Update, rehand_torches);
+        let torch = HeldItem {
+            flags: TORCH_FLAGS,
+            light: true,
+        };
+        let body = app
+            .world_mut()
+            .spawn((
+                CarriesTorch,
+                TorchLit(TorchHand::Main),
+                Hands {
+                    main: Some(torch),
+                    ..Hands::default()
+                },
+            ))
+            .id();
+        let root = app.world_mut().spawn((TorchRoot, ChildOf(body))).id();
+        app.update();
+        // Nothing in the right hand: the torch stays.
+        assert!(app.world().get::<TorchLit>(body).is_some());
+        app.world_mut()
+            .entity_mut(body)
+            .insert(Wielded::model("ub05ssworda"));
+        app.update();
+        assert!(app.world().get::<TorchLit>(body).is_none());
+        assert!(app.world().get_entity(root).is_err());
+        assert_eq!(app.world().get::<Hands>(body).unwrap().main, None);
+        // Lit in the left hand, then the weapon goes: back to the right.
+        app.world_mut()
+            .entity_mut(body)
+            .insert(TorchLit(TorchHand::Off));
+        app.world_mut().get_mut::<Hands>(body).unwrap().off_light = true;
+        app.world_mut().entity_mut(body).remove::<Wielded>();
+        app.update();
+        assert!(app.world().get::<TorchLit>(body).is_none());
+        assert!(!app.world().get::<Hands>(body).unwrap().off_light);
     }
 }
