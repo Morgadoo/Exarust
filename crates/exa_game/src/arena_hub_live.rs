@@ -686,11 +686,12 @@ fn confirming(windows: &HubWindows) -> bool {
 /// item catalogue (for the shelf's names), the live stock world and the
 /// name table the trade window shows.
 #[derive(bevy::ecs::system::SystemParam)]
-struct HubShop<'w> {
+struct HubShop<'w, 's> {
     game: Option<Res<'w, exa_assets::Game>>,
     catalogue: Option<Res<'w, exa_items::catalogue::ItemCatalogue>>,
     live: ResMut<'w, crate::shop_stock::LiveShopStock>,
     names: ResMut<'w, crate::hub_windows::HubItemNames>,
+    players: Query<'w, 's, &'static mut exa_items::possession::Possessions, With<crate::player::PlayerBody>>,
 }
 
 /// The shop line for an item's catalogue value. A copy uses its source
@@ -709,7 +710,7 @@ fn shop_line_price(
         .unwrap_or(0)
 }
 
-impl HubShop<'_> {
+impl HubShop<'_, '_> {
     /// Build the first stock when the shelf is empty, as the hub click does,
     /// and open the trade window on it.
     fn open(
@@ -752,6 +753,11 @@ impl HubShop<'_> {
         }
         if let Some(catalogue) = self.catalogue.as_deref() {
             self.live.fill_names(catalogue, &mut self.names);
+        }
+        if career.goods.is_empty()
+            && let Some(possessions) = self.players.iter().next()
+        {
+            career.seed_goods(possessions.carried.iter().map(|carried| carried.id));
         }
         windows.open_shop(merchant, career, &self.names);
         if let Some(catalogue) = self.catalogue.as_deref() {
@@ -896,6 +902,15 @@ fn hub_clicks(
                         }
                         HubWindowKind::Shop => {
                             let _ = windows.shop_click(local, &mut career);
+                            if career.goods_changed
+                                && let Some(mut possessions) = shop.players.iter_mut().next()
+                            {
+                                possessions.carried = crate::hub_windows::ArenaCareer::carried_after_trade(
+                                    &possessions.carried,
+                                    &career.goods,
+                                );
+                                career.goods_changed = false;
+                            }
                         }
                         HubWindowKind::Manage | HubWindowKind::None => {}
                     }

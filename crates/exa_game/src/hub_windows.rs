@@ -86,6 +86,9 @@ pub struct ArenaCareer {
     /// Items the company holds off the shelf: a purchase joins them and a
     /// sale takes them. The shop lists them in the pack.
     pub goods: Vec<u32>,
+    /// Set when a confirmed trade changed [`Self::goods`], so the player's
+    /// carried list can be written back.
+    pub goods_changed: bool,
     /// The merchant's stock type: the kinds it sells, 0 (the default kinds)
     /// in a new career. The save's merchant chunk keeps it.
     pub merchant_kinds: u32,
@@ -151,6 +154,7 @@ impl Default for ArenaCareer {
             picks: crate::arena_match::ArenaPicks::default(),
             merchant_stock: Vec::new(),
             goods: Vec::new(),
+            goods_changed: false,
             merchant_kinds: 0,
             merchant_rank: -1,
             venue_items: Vec::new(),
@@ -176,6 +180,37 @@ impl Default for ArenaCareer {
 }
 
 impl ArenaCareer {
+
+    /// Copy the player's loose items into the goods when the shop has not
+    /// traded yet. A later open keeps the goods the trade left.
+    pub fn seed_goods(&mut self, carried: impl IntoIterator<Item = u32>) {
+        if self.goods.is_empty() {
+            self.goods
+                .extend(carried.into_iter().filter(|id| *id != 0));
+        }
+    }
+
+    /// The carried list after a trade: items still held keep their cells,
+    /// and a purchase is appended at the pack's origin.
+    pub fn carried_after_trade(
+        old: &[exa_items::possession::Carried],
+        goods: &[u32],
+    ) -> Vec<exa_items::possession::Carried> {
+        goods
+            .iter()
+            .map(|&id| {
+                old.iter().find(|carried| carried.id == id).copied().unwrap_or(
+                    exa_items::possession::Carried {
+                        id,
+                        flags: 0,
+                        x: 0,
+                        y: 0,
+                    },
+                )
+            })
+            .collect()
+    }
+
     /// The arena's single reset, as a new career and an arena slot load
     /// run it before anything else: the shop's shelf, the merchant's stock
     /// (kinds 0, rank −1, any), the company's record words and the day's
@@ -191,6 +226,7 @@ impl ArenaCareer {
         self.company.stock.clear();
         self.merchant_stock.clear();
         self.goods.clear();
+        self.goods_changed = false;
         self.merchant_kinds = 0;
         self.merchant_rank = -1;
         self.company
@@ -674,6 +710,7 @@ impl HubWindows {
                         career.goods.remove(at);
                     }
                 }
+                career.goods_changed = true;
             }
             return done;
         }
@@ -1781,6 +1818,24 @@ mod tests {
     }
 
     #[test]
+    fn the_carried_list_seeds_the_goods_once() {
+        let mut career = career();
+        career.seed_goods([4, 0, 8]);
+        assert_eq!(career.goods, [4, 8]);
+        career.seed_goods([1]);
+        assert_eq!(career.goods, [4, 8]);
+        let old = [exa_items::possession::Carried {
+            id: 4,
+            flags: 3,
+            x: 10,
+            y: 2,
+        }];
+        let carried = ArenaCareer::carried_after_trade(&old, &[4, 9]);
+        assert_eq!(carried[0].flags, 3);
+        assert_eq!(carried[1].id, 9);
+        assert_eq!((carried[1].x, carried[1].y), (0, 0));
+    }
+
     fn a_sale_leaves_the_goods_and_a_purchase_joins_them() {
         let mut career = career();
         career.company.stock = vec![7];
