@@ -5,12 +5,14 @@
 //! - When a character's brain is added, its roles are applied
 //!   ([`crate::activity::apply_roles`]): the activity, the idle state (a
 //!   roam, patrol, sentry or wait routine) and the idle activity the
-//!   registry creates (the search). A sleeper's sighting radius is halved.
+//!   registry creates (the search). The sleep activity lies the body
+//!   dormant at once (the dormant condition and flag, tone 0, the statue
+//!   byte and gait 2) and makes its tick the current state, which writes
+//!   the dormant flag and condition again every AI tick.
 //! - Every body tick, the attitude and tolerance of each character toward the
 //!   player are worked out from both sides' roles
 //!   ([`crate::roles::attitude`]) and kept in its contact rating, together
-//!   with its record's traits. A sleeper that rates the player above a
-//!   notice loses the sleep role and wakes, and its roles are applied again.
+//!   with its record's traits.
 //! - One brain a tick, the one that has waited longest
 //!   ([`crate::pass_turn`]), runs the target pass: it perceives every
 //!   character it can sense ([`perceive_all`]): the combatant's perception
@@ -23,7 +25,12 @@
 //!   pass ([`contacts::target_pass`]) over this tick's sighting of its
 //!   target, and its report stays on the brain until its next pass. A
 //!   target pass that enters combat engages the brain's duellist, and one
-//!   that calms down leaves it.
+//!   that calms down leaves it. A body whose state flags are exactly the
+//!   dormant flag (a sleeper, not one already knocked out) that classifies
+//!   anyone above a notice drops the sleep role (its roles are applied
+//!   again on the next AI tick) and is knocked out with no delay; the body
+//!   tick's wake then raises it. The dormant flag (`0x10`, on the observer
+//!   or the observed) is what the perception reads as asleep.
 //!
 //! - Out of combat the AI tick runs the idle states' head (the alert
 //!   look-around, then the attention to the attended contact), and the
@@ -36,7 +43,7 @@
 
 use bevy::prelude::*;
 use exa_anim::{Animator, Motions};
-use exa_combat::{Condition, Fighter};
+use exa_combat::{Condition, Fighter, StateFlags};
 use exa_formats::characters::CharacterRecord;
 use exa_formats::roles::RoleDb;
 use exa_physics::CharacterBody;
@@ -52,7 +59,7 @@ use crate::personality::{self, Personality};
 use crate::roles::{self, Partner, Relations, Roles};
 use crate::rooms::{RoomCell, RoomCells};
 use crate::search::Search;
-use crate::sense::{Decision, Mind, decide};
+use crate::sense::Mind;
 
 /// The body tick the perception pass last ran on and the one the AI tick
 /// last consumed, so the brain's passes run once per body tick even when
@@ -186,6 +193,15 @@ pub struct Npc {
     pub head_took: bool,
     /// The attach step already snapped the AI's look to the body's facing.
     pub snapped: bool,
+    /// Applying roles chose the sleep activity: the next AI tick lies the
+    /// body dormant (the sleep entry's body side).
+    pub sleep_entry: bool,
+    /// The current state is the sleep tick (the sleep entry installs it as
+    /// both the idle and the current state); a knock-out or combat ends it.
+    pub sleeping: bool,
+    /// The investigation's memory: the cell it last sampled and the value
+    /// it kept ([`crate::lifecycle::investigate`]).
+    pub investigation: crate::lifecycle::Investigation,
 }
 
 /// Where a brain stands and the room graph its flight reads: the brain's
@@ -269,6 +285,9 @@ impl Npc {
             walk: crate::walker::IdleWalk::default(),
             head_took: false,
             snapped: false,
+            sleep_entry: false,
+            sleeping: false,
+            investigation: crate::lifecycle::Investigation::default(),
         }
     }
 
@@ -337,6 +356,11 @@ impl Npc {
             IdleState::Sentry => Routine::sentry(),
             IdleState::Wait | IdleState::Sleep | IdleState::Follow => Routine::wait(),
         };
+        // The sleep activity's entry writes the body at once and installs
+        // its tick as the idle and the current state; the other activities
+        // only replace the idle state.
+        self.sleep_entry = applied.state == IdleState::Sleep;
+        self.sleeping = self.sleep_entry;
         self.applied.insert(applied)
     }
 
@@ -617,14 +641,17 @@ pub fn perceive_all(
             Option<&ChildOf>,
             Option<&Npc>,
             Has<MindWarded>,
-            Option<&exa_physics::body::locomotion::Locomotor>,
+            (
+                Option<&exa_physics::body::locomotion::Locomotor>,
+                Option<&StateFlags>,
+            ),
         )>,
         Query<(
             Entity,
             &mut Npc,
             &mut Combatant,
             Option<&crate::Duellist>,
-            Option<&Mind>,
+            Option<&StateFlags>,
             Option<&GlobalTransform>,
             Option<&Fighter>,
             Option<&Roles>,
@@ -649,7 +676,7 @@ pub fn perceive_all(
                 _fighter,
                 condition,
                 combatant,
-                mind,
+                _mind,
                 duellist,
                 anim,
                 unseen,
@@ -658,7 +685,7 @@ pub fn perceive_all(
                 child,
                 npc,
                 hidden,
-                locomotor,
+                (locomotor, flags),
             )| {
                 let phase = anim
                     .zip(motions.as_deref())
@@ -676,7 +703,9 @@ pub fn perceive_all(
                     position_cm: gt.translation() * 100.0,
                     forward: gt.rotation() * Vec3::Z,
                     condition: condition.0,
-                    asleep: mind.is_some_and(|m| m.asleep),
+                    // The perception reads the observed body's dormant flag
+                    // as asleep (a sleeper, or a body knocked out).
+                    asleep: dormant(flags),
                     invisible: unseen.is_some(),
                     hidden,
                     phase,
@@ -696,7 +725,7 @@ pub fn perceive_all(
         .collect();
     let player = players.iter().next();
     let effects: &mut [combatant::Effect] = &mut [];
-    for (entity, mut npc, mut combatant, duellist, mind, gt, fighter, roles, mut relations) in
+    for (entity, mut npc, mut combatant, duellist, flags, gt, fighter, roles, mut relations) in
         &mut chars.p1()
     {
         // A knocked-out, collapsed or dead brain senses nothing: the
@@ -737,7 +766,8 @@ pub fn perceive_all(
             position_cm,
             look: forward,
             forward,
-            asleep: mind.is_some_and(|m| m.asleep),
+            // The observer's dormant flag halves its reach.
+            asleep: dormant(flags),
             perception: fighter.map_or(1.0, |f| f.stats.perception),
             calm: npc.integration.decay,
             aggression: npc.personality.map_or(0.0, |p| p.restraint),
@@ -986,6 +1016,55 @@ pub fn perceive_all(
     }
 }
 
+/// The body's statue byte changed: the sleep entry sets it (with the gait
+/// word 2), a knock-out clears it (with the gait word 0). The game keeps
+/// the two as the body's statue rest, which the posture stage turns into
+/// the dormant drive.
+#[derive(Message, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatueByte {
+    pub entity: Entity,
+    pub set: bool,
+}
+
+/// The sleep routines' view of a body: its condition and state flags (the
+/// statue and gait are the game's, written through [`StatueByte`]).
+fn sleeper_of(condition: &Condition, flags: Option<&StateFlags>) -> crate::idle::Sleeper {
+    crate::idle::Sleeper {
+        condition: *condition,
+        flags: flags.copied().unwrap_or_default(),
+        statue: false,
+        gait: 0,
+        tick: crate::idle::IdleTick::Active,
+        sighted: 0,
+        wake_at: 0,
+    }
+}
+
+/// Writes what the sleep entry left on its sleeper back to the body's
+/// condition and state flags.
+fn write_sleeper(
+    condition: &mut Condition,
+    flags: Option<&mut StateFlags>,
+    sleeper: &crate::idle::Sleeper,
+) {
+    if *condition != sleeper.condition {
+        *condition = sleeper.condition;
+    }
+    if let Some(flags) = flags
+        && *flags != sleeper.flags
+    {
+        *flags = sleeper.flags;
+    }
+}
+
+/// The body's state flags carry the dormant flag (`0x10`), which the
+/// perception reads as asleep, on the observer (its reach halves) and on
+/// the observed (lying, and skipped by the threat estimate). A sleeper and
+/// a knocked-out body both carry it.
+pub fn dormant(flags: Option<&StateFlags>) -> bool {
+    flags.is_some_and(|f| f.has(StateFlags::DORMANT))
+}
+
 /// Runs the brain's AI tick: drifts its morale, integrates the contacts the
 /// perception filled and runs the target pass over every character the
 /// perception saw this tick, with the body's health, down state, sleep,
@@ -999,6 +1078,9 @@ pub fn perceive_all(
 /// system, so this tick does not touch the grid.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub fn ai_tick(
+    mut commands: Commands,
+    db: Option<Res<RoleDatabase>>,
+    mut statues: Option<ResMut<Messages<StatueByte>>>,
     ticks: Option<Res<BodyTicks>>,
     mut clock: Option<ResMut<BrainClock>>,
     mut turn: Option<ResMut<crate::pass_turn::PassTurn>>,
@@ -1014,10 +1096,14 @@ pub fn ai_tick(
         &mut Npc,
         &mut Combatant,
         Option<&mut crate::Duellist>,
-        Option<&Mind>,
+        (
+            Option<&mut StateFlags>,
+            Option<&mut exa_physics::body::Ragdoll>,
+            Option<&mut Roles>,
+        ),
         Option<&GlobalTransform>,
         &Fighter,
-        &Condition,
+        &mut Condition,
         Option<&Name>,
         Option<&mut Transform>,
         Option<&crate::presence::Presence>,
@@ -1052,16 +1138,42 @@ pub fn ai_tick(
         mut npc,
         mut combatant,
         mut duellist,
-        mind,
+        (mut flags, mut body, mut roles),
         gt,
         fighter,
-        condition,
+        mut condition,
         name,
         transform,
         presence,
     ) in &mut npcs
     {
         let talking = name.map_or("character", |n| n.as_str());
+        // The sleep activity's entry (applying roles calls it, before the
+        // AI tick's condition gate): the dormant flag joins the others, the
+        // condition becomes dormant, the tone and the tone target 0, the
+        // body's statue byte is set and its gait word becomes 2.
+        // The original's body exists before its behaviour attaches; here the
+        // brain can be applied a frame or more before the physics builds the
+        // body, so the entry waits for the body's drive to write the tone.
+        if npc.sleep_entry
+            && let Some(drive) = body.as_deref_mut().and_then(|b| b.drive.as_mut())
+        {
+            npc.sleep_entry = false;
+            let mut sleeper = sleeper_of(&condition, flags.as_deref());
+            crate::idle::sleep(&mut sleeper, drive);
+            let tone = drive.tone;
+            write_sleeper(&mut condition, flags.as_deref_mut(), &sleeper);
+            if let Some(statues) = statues.as_deref_mut() {
+                statues.write(StatueByte {
+                    entity: _entity,
+                    set: sleeper.statue,
+                });
+            }
+            info!(
+                "{talking} lies dormant: condition {:#x}, flags {:#x}, tone {tone}, statue, gait {}",
+                condition.0, sleeper.flags.0, sleeper.gait
+            );
+        }
         // The AI tick's group alert decays one step every ten seconds.
         (npc.alert_count, npc.alert_until_ms) =
             crate::manager::decay_alert(npc.alert_count, npc.alert_until_ms, now);
@@ -1176,7 +1288,9 @@ pub fn ai_tick(
                 .map(|(id, _)| id)
                 .collect();
         }
-        let asleep = mind.is_some_and(|m| m.asleep);
+        // The target pass wakes a body whose flags are exactly the dormant
+        // flag: a sleeper, not a body already knocked out (`0x30`).
+        let asleep = flags.as_deref().is_some_and(|f| f.0 == StateFlags::DORMANT);
         let down = condition.0 & combatant::CONDITION_DOWN != 0;
         let mut roll = npc.roll;
         let place = FleePlace {
@@ -1224,6 +1338,48 @@ pub fn ai_tick(
                 down,
                 now,
                 &mut roll,
+            );
+        }
+        // A dormant sleeper that classified anyone above a notice drops the
+        // sleep role (its roles are applied again on the next AI tick) and
+        // is knocked out at once: the condition goes down, the wake nibble
+        // becomes dormant and waking, the wake clock is now, the statue
+        // byte and gait clear, the tone is 0, the pin gain the living one
+        // and the body is kept awake. The body tick's wake raises it.
+        if passed && npc.pass.knockout {
+            if let (Some(db), Some(roles)) = (db.as_deref(), roles.as_deref_mut()) {
+                roles.remove(&db.book, crate::idle::SLEEP_ROLE.into());
+            }
+            // The knock-out the game flow's lie-downs and the revive call
+            // (`exa_combat::condition::knock_out` and the body's side).
+            let mut written = flags.as_deref().copied().unwrap_or_default();
+            let knock = exa_combat::condition::knock_out(
+                &mut condition,
+                &mut written,
+                now,
+                contacts::KNOCKOUT as u32,
+            );
+            if let Some(flags) = flags.as_deref_mut() {
+                *flags = written;
+            }
+            if let Some(body) = body.as_deref_mut() {
+                body.knock_out();
+            }
+            commands.entity(_entity).insert(knock);
+            if let Some(statues) = statues.as_deref_mut() {
+                statues.write(StatueByte {
+                    entity: _entity,
+                    set: false,
+                });
+            }
+            npc.sleeping = false;
+            info!(
+                "{talking} wakes from its sleep at level {}: drops role {}, knocked out \
+                 (condition {:#x}, flags {:#x}, wakes from {now} ms)",
+                npc.pass.level,
+                crate::idle::SLEEP_ROLE,
+                condition.0,
+                written.0
             );
         }
         // A debug trace of how the brain rates its target, once a second
@@ -1335,13 +1491,26 @@ pub fn ai_tick(
                 }
             }
         }
+        // The current state's call. Entering combat replaces the sleep
+        // tick; while it is the current state it writes the dormant flag
+        // and the dormant condition again, and nothing else (no look, no
+        // turn): the posture decision of the body tick then reads them.
+        let fighting = duellist
+            .as_deref()
+            .is_some_and(|d| d.engaged || d.fighting());
+        if fighting {
+            npc.sleeping = false;
+        }
+        if npc.sleeping {
+            let mut sleeper = sleeper_of(&condition, flags.as_deref());
+            crate::idle::sleep_tick(&mut sleeper);
+            write_sleeper(&mut condition, flags.as_deref_mut(), &sleeper);
+        }
         // Out of combat the AI sways its look about its heading and the
         // body turns to that heading. Exarust turns the model directly: the
         // original lets the body's locomotion turn it, and the running game
         // ticks no locomotion request for an NPC.
-        let waiting = duellist
-            .as_deref()
-            .is_none_or(|d| !d.engaged && !d.fighting());
+        let waiting = !npc.sleeping && !fighting;
         if waiting
             && presence.is_none_or(|p| p.moves())
             && let Some(mut transform) = transform
@@ -1350,12 +1519,11 @@ pub fn ai_tick(
             // A brain that has never turned takes the body's placed facing
             // as its look through the attach step's snap, once.
             attach_snap(&mut npc, facing);
-            // The idle states' head: the alert look-around, then the
-            // attention to the attended contact; only when neither takes
-            // the tick is the in-combat mark cleared and the body turned
-            // (not while a roam's leg walks: its route steers it). The
-            // investigation that opens it never fires: the pathfinder's
-            // disturbance value is 0 in the shipped game.
+            // The idle states' head: the investigation, the alert
+            // look-around, then the attention to the attended contact; only
+            // when none takes the tick is the in-combat mark cleared and
+            // the body turned (not while a roam's leg walks: its route
+            // steers it).
             let encumbrance = fighter.stats.encumbrance;
             let roaming = matches!(
                 npc.routine.kind,
@@ -1366,6 +1534,31 @@ pub fn ai_tick(
                     npc.routine.phase,
                     crate::idle::Phase::WalkWander | crate::idle::Phase::WalkHome
                 );
+            // The investigation opens the wait's head every tick and the
+            // roam's and patrol's in their two waits, for a body in the
+            // scene that follows no route: it samples the level
+            // pathfinder's disturbance at its 600 cm cell. The shipped
+            // pathfinder answers the constant 0, so it never stamps or
+            // walks; the cell bookkeeping runs as the original's does.
+            let waits = match npc.routine.kind {
+                crate::idle::Kind::Wait => true,
+                crate::idle::Kind::Roam | crate::idle::Kind::Patrol => matches!(
+                    npc.routine.phase,
+                    crate::idle::Phase::Wait | crate::idle::Phase::WaitHome
+                ),
+                crate::idle::Kind::Sentry => false,
+            };
+            if waits && npc.walk.route.is_empty() {
+                let cell = crate::lifecycle::disturbance_cell(observer_cm);
+                let heard = crate::lifecycle::investigate(
+                    &mut npc.investigation,
+                    cell,
+                    crate::lifecycle::DISTURBANCE,
+                );
+                if heard != crate::lifecycle::Investigated::Nothing {
+                    info!("{talking}: the investigation hears a disturbance: {heard:?}");
+                }
+            }
             let mut alert = npc.alert;
             // [guess: out of combat the body keeps no foe, so the look pans.]
             let looked = motion::alert_look(
@@ -1999,48 +2192,30 @@ pub fn apply_new_roles(
     }
 }
 
-/// Rates the player from each brain's roles, keeps the rating in its
-/// contact rating, and wakes a sleeper that rates the player above a
-/// notice.
+/// Rates the player from each brain's roles and keeps the rating in its
+/// contact rating. (A sleeper wakes only in its target pass, which knocks
+/// it out: [`ai_tick`].)
 #[allow(clippy::type_complexity)]
 pub fn rate_the_player(
     db: Option<Res<RoleDatabase>>,
-    ticks: Option<Res<BodyTicks>>,
     players: Query<(&Roles, Option<&CharacterId>), (With<RatedPlayer>, Without<Npc>)>,
-    mut npcs: Query<(
-        &mut Roles,
-        &mut Relations,
-        &mut Npc,
-        &mut Mind,
-        Option<&Name>,
-    )>,
+    mut npcs: Query<(&Roles, &mut Relations, &Npc, &mut Mind)>,
 ) {
     let Some(db) = db else { return };
     let Some((player_roles, player_id)) = players.iter().next() else {
         return;
     };
-    let now = ticks.map_or(0, |t| t.millis() as u32);
     let partner = Partner {
         id: player_id.map_or(PLAYER_ID, |i| i.0),
         roles: player_roles,
         former: None,
     };
-    for (mut roles, mut relations, mut npc, mut mind, name) in &mut npcs {
-        let rating = roles::attitude(&db.book, &roles, &mut relations, &partner, db.locale);
+    for (roles, mut relations, npc, mut mind) in &mut npcs {
+        let rating = roles::attitude(&db.book, roles, &mut relations, &partner, db.locale);
         mind.attitude = rating.attitude;
         mind.tolerance = rating.tolerance;
         mind.t1 = npc.traits[1];
         mind.t2 = npc.traits[2];
-        if mind.asleep && decide(&mind) != Decision::Notice {
-            roles.remove(&db.book, crate::idle::SLEEP_ROLE.into());
-            let applied = npc.apply(&db, &roles, now).clone();
-            mind.asleep = applied.state == IdleState::Sleep;
-            let who = name.map_or("character", |n| n.as_str());
-            info!(
-                "{who} wakes: activity {} ({:?})",
-                applied.activity, applied.state
-            );
-        }
     }
 }
 
@@ -2143,12 +2318,35 @@ mod tests {
         assert_eq!((mind.t1, mind.t2), (20.0, -30.0));
     }
 
-    /// A sleeper halves its sighting radius; once it rates the player above
-    /// a notice it drops the sleep role and takes up its other activity
-    /// (here the roam, the default).
+    /// A one-part body with a drive at full tone.
+    fn living_body() -> exa_physics::body::Ragdoll {
+        use bevy::math::Affine3A;
+        use exa_physics::body::{PartSetup, Ragdoll};
+        Ragdoll::new(&[PartSetup {
+            bone: 11,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: Affine3A::from_translation(Vec3::ZERO),
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.06),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+            spheres: None,
+        }])
+        .with_drive()
+    }
+
+    /// Applying the sleep role lies the body dormant on the next AI tick
+    /// (condition 0x600, the dormant flag with the others, the statue
+    /// byte); its tick puts the dormant flag and condition back after the
+    /// body rewrote them; rating the player alone wakes nobody.
     #[test]
-    fn a_sleeper_wakes_when_it_rates_the_player() {
+    fn a_sleeper_lies_dormant_and_its_tick_keeps_it_so() {
         let mut app = app();
+        app.add_message::<StatueByte>()
+            .add_systems(Update, ai_tick.after(rate_the_player));
         let npc = app
             .world_mut()
             .spawn((
@@ -2156,20 +2354,136 @@ mod tests {
                 Relations::default(),
                 Npc::new([0.0; 4]),
                 Mind::new(0.0),
+                Combatant::default(),
+                GlobalTransform::IDENTITY,
+                Fighter::default(),
+                Condition::WALKING,
+                StateFlags(StateFlags::SHOCK_STAGGER),
+                living_body(),
             ))
             .id();
         app.update();
-        assert!(app.world().get::<Mind>(npc).unwrap().asleep);
+        let w = app.world();
+        let tone = |w: &World| {
+            w.get::<exa_physics::body::Ragdoll>(npc)
+                .and_then(|b| b.drive.as_ref().map(|d| d.tone))
+        };
+        assert_eq!(tone(w), Some(0.0));
+        assert_eq!(w.get::<Npc>(npc).unwrap().state(), Some(IdleState::Sleep));
+        assert!(w.get::<Npc>(npc).unwrap().sleeping);
+        assert_eq!(*w.get::<Condition>(npc).unwrap(), Condition::DORMANT);
         assert_eq!(
-            app.world().get::<Npc>(npc).unwrap().state(),
-            Some(IdleState::Sleep)
+            w.get::<StateFlags>(npc).unwrap().0,
+            StateFlags::SHOCK_STAGGER | StateFlags::DORMANT
         );
+        let statues: Vec<StatueByte> = w
+            .resource::<Messages<StatueByte>>()
+            .iter_current_update_messages()
+            .copied()
+            .collect();
+        assert_eq!(
+            statues,
+            vec![StatueByte {
+                entity: npc,
+                set: true
+            }]
+        );
+        // The body's posture rewrote the condition; a high concern alone
+        // (the contact rating) does not wake it.
+        *app.world_mut().get_mut::<Condition>(npc).unwrap() = Condition::DOWN;
         app.world_mut().get_mut::<Mind>(npc).unwrap().concern = 1.5;
         app.update();
         let w = app.world();
-        assert!(!w.get::<Mind>(npc).unwrap().asleep);
-        assert_eq!(w.get::<Npc>(npc).unwrap().state(), Some(IdleState::Roam));
+        assert_eq!(*w.get::<Condition>(npc).unwrap(), Condition::DORMANT);
+        assert!(w.get::<Roles>(npc).unwrap().has(44));
+    }
+
+    /// A sleeper whose flags are exactly the dormant flag and whose target
+    /// pass classifies its target above a notice drops the sleep role and
+    /// is knocked out at once; a knocked-out body (`0x30`) is not knocked
+    /// out again.
+    #[test]
+    fn the_target_pass_knocks_a_dormant_sleeper_out() {
+        let mut app = App::new();
+        app.insert_resource(db())
+            .add_message::<StatueByte>()
+            .add_systems(Update, (apply_new_roles, ai_tick).chain());
+        let player = app
+            .world_mut()
+            .spawn((
+                GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 2.0)),
+                Fighter::default(),
+                RatedPlayer,
+            ))
+            .id();
+        let mut brain = Npc::new([0.0; 4]);
+        brain.contacts.push(ContactRecord {
+            id: player.to_bits(),
+            sighting: 1.0,
+            seen: 1.0,
+            hostility: 5.0,
+            ..ContactRecord::default()
+        });
+        let npc = app
+            .world_mut()
+            .spawn((
+                held(&[44, 9, 2]),
+                brain,
+                Combatant::default(),
+                crate::Duellist::new(player),
+                GlobalTransform::IDENTITY,
+                Fighter::default(),
+                Condition::NORMAL,
+                StateFlags::default(),
+                living_body(),
+            ))
+            .id();
+        app.update();
+        let w = app.world();
         assert!(!w.get::<Roles>(npc).unwrap().has(44));
+        assert_eq!(*w.get::<Condition>(npc).unwrap(), Condition::DOWN);
+        assert_eq!(w.get::<StateFlags>(npc).unwrap().0, 0x30);
+        let knock = w.get::<exa_combat::condition::KnockOut>(npc).unwrap();
+        assert_eq!(knock.wake_at_ms, 0);
+        let drive = w
+            .get::<exa_physics::body::Ragdoll>(npc)
+            .and_then(|b| b.drive.clone())
+            .unwrap();
+        assert_eq!((drive.tone, drive.stance()), (0.0, 0.0));
+        assert!(!w.get::<Npc>(npc).unwrap().sleeping);
+        assert!(w.get::<crate::Duellist>(npc).unwrap().engaged);
+        // The next tick applies the roles again: the roam, no sleep tick.
+        app.update();
+        let w = app.world();
+        assert_eq!(w.get::<Npc>(npc).unwrap().state(), Some(IdleState::Roam));
+        assert_eq!(*w.get::<Condition>(npc).unwrap(), Condition::DOWN);
+        // A body already knocked out (dormant and waking) is not woken by
+        // the pass: only flags of exactly 0x10 are.
+        let mut brain = Npc::new([0.0; 4]);
+        brain.contacts.push(ContactRecord {
+            id: player.to_bits(),
+            sighting: 1.0,
+            seen: 1.0,
+            hostility: 5.0,
+            ..ContactRecord::default()
+        });
+        let out = app
+            .world_mut()
+            .spawn((
+                held(&[9, 2]),
+                brain,
+                Combatant::default(),
+                crate::Duellist::new(player),
+                GlobalTransform::IDENTITY,
+                Fighter::default(),
+                Condition::DOWN,
+                StateFlags(0x30),
+            ))
+            .id();
+        app.update();
+        let w = app.world();
+        assert!(w.get::<exa_combat::condition::KnockOut>(out).is_none());
+        assert_eq!(w.get::<StateFlags>(out).unwrap().0, 0x30);
     }
 
     /// A record's brain carries its traits and the personality they give.

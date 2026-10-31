@@ -82,6 +82,7 @@ impl Plugin for AiPlugin {
             .init_resource::<brain::BrainClock>()
             .init_resource::<pass_turn::PassTurn>()
             .add_message::<presence::Entered>()
+            .add_message::<brain::StatueByte>()
             .add_message::<exa_combat::AttackAskedHook>()
             .add_message::<exa_combat::BlowNoticed>()
             .add_message::<struck::Taught>()
@@ -1225,6 +1226,28 @@ fn duellist(
                     info!("duellist {entity:?} leaves combat: its foe is out of reach");
                     ai.leave();
                     combatant.in_combat = false;
+                    // The chase leaves through the idle return: the AI's
+                    // look, heading and eased offset take the body's look
+                    // yaw, the idle state's step restarts at 1, the idle
+                    // state becomes the current state and the body's
+                    // in-combat mark clears (no leave timers). The body's
+                    // target and focus words it clears first are the
+                    // duellist's fixed foe here [not modelled].
+                    if let Ok(mut brain) = brains.get_mut(entity) {
+                        let body_look = crate::motion::yaw_of(t.rotation * Vec3::Z);
+                        let brain = &mut *brain;
+                        let step = crate::lifecycle::return_to_idle(
+                            &mut brain.gaze,
+                            &mut brain.turn,
+                            body_look,
+                        );
+                        crate::lifecycle::restart_idle(brain);
+                        info!(
+                            "duellist {entity:?} returns to its idle state {:?} at step {step}, \
+                             looking at {body_look:.3} rad",
+                            brain.state()
+                        );
+                    }
                 }
             }
             if out.exit.is_some() {

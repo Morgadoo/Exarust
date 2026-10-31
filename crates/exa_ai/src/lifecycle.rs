@@ -167,11 +167,22 @@ pub const IDLE_RETURN_STEP: i32 = 1;
 /// start flag clears, the idle driver restarts at step 1, the idle state
 /// becomes the current state and the body's in-combat mark clears; the
 /// flags, the state and the mark are the caller's, and the step to restart
-/// at ([`IDLE_RETURN_STEP`]) is returned. Not called by the running game
-/// yet: its chase end belongs to the combat state.
+/// at ([`IDLE_RETURN_STEP`]) is returned. The chase that loses its foe
+/// calls it (with [`restart_idle`]); the attach and the level-leave reset
+/// are its other callers.
 pub fn return_to_idle(gaze: &mut Gaze, turn: &mut Turning, body_look_yaw: f32) -> i32 {
     crate::motion::leave_look(gaze, turn, body_look_yaw);
     IDLE_RETURN_STEP
+}
+
+/// The rest of the idle return, on the brain: the idle state's step
+/// restarts at 1 (the roam's and patrol's first wait, its deadline kept),
+/// the idle state becomes the current state (the sleep tick again for a
+/// sleeper) and the body's in-combat mark clears.
+pub fn restart_idle(brain: &mut crate::brain::Npc) {
+    brain.routine.phase = crate::idle::Phase::Wait;
+    brain.sleeping = brain.state() == Some(crate::activity::IdleState::Sleep);
+    brain.alert.marked = false;
 }
 
 /// The disturbance inside the value's own fluctuation: the same cell whose
@@ -184,6 +195,20 @@ pub const QUIET: f32 = 0.5;
 /// Compared in double precision, so a value of `0.3f32` (just over the f64
 /// 0.3) walks.
 pub const LOUD: f64 = 0.3;
+
+/// The disturbance the level's pathfinder answers for any cell: its
+/// disturbance slot returns the constant 0 in 0.9.5 (the abstract
+/// pathfinder's too), so an investigation never stamps or walks.
+pub const DISTURBANCE: f32 = 0.0;
+
+/// The 600 cm cell (x and z) the investigation samples at a body's
+/// position (cm).
+pub fn disturbance_cell(position_cm: bevy::math::Vec3) -> (i32, i32) {
+    (
+        (position_cm.x / 600.0).floor() as i32,
+        (position_cm.z / 600.0).floor() as i32,
+    )
+}
 
 /// The investigation's memory: the cell it last sampled and the value it
 /// kept.
@@ -1114,6 +1139,51 @@ mod tests {
             &mut state, false, false, 0.0, 1021, &mut roll
         ));
         assert_eq!(state.step, GoTo::Plan);
+    }
+
+    /// The shipped disturbance never stamps or walks, wherever the body
+    /// stands: the investigation only keeps the cell it sampled.
+    #[test]
+    fn the_shipped_disturbance_never_walks() {
+        let mut state = Investigation::default();
+        for at in [Vec3::ZERO, Vec3::new(-601.0, 0.0, 1199.0), Vec3::splat(5.0)] {
+            let cell = disturbance_cell(at);
+            for _ in 0..3 {
+                assert_eq!(
+                    investigate(&mut state, cell, DISTURBANCE),
+                    Investigated::Nothing
+                );
+            }
+            assert_eq!(state.cell, Some(cell));
+        }
+        assert_eq!(disturbance_cell(Vec3::new(-601.0, 0.0, 1199.0)), (-2, 1));
+    }
+
+    /// The idle return restarts the idle state's step and makes it the
+    /// current state: a sleeper's sleep tick again; the in-combat mark
+    /// clears.
+    #[test]
+    fn the_idle_return_restarts_the_idle_state() {
+        use crate::activity::{Applied, IdleState};
+        let mut brain = crate::brain::Npc::new([0.0; 4]);
+        brain.routine.phase = crate::idle::Phase::WalkHome;
+        brain.alert.marked = true;
+        restart_idle(&mut brain);
+        assert_eq!(brain.routine.phase, crate::idle::Phase::Wait);
+        assert!(!brain.alert.marked && !brain.sleeping);
+        brain.applied = Some(Applied {
+            activity: 3,
+            idle_activity: 0,
+            state: IdleState::Sleep,
+            leaves_party: false,
+            follow_band_cm: None,
+            phase_word: 0,
+            create_idle: None,
+            drop_idle: false,
+            skipped: Vec::new(),
+        });
+        restart_idle(&mut brain);
+        assert!(brain.sleeping);
     }
 
     /// Returning to idle takes the body's look yaw into the AI's look, its
