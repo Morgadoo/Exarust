@@ -294,6 +294,116 @@ pub(crate) fn device_fields(record: &mechanism::Record) -> exa_render::electrici
     }
 }
 
+/// What a placed fire record does once the scene's daylight scale is known.
+/// Above the daylight threshold the node's own light and its direct
+/// children's are put out. Otherwise a fire of the stored size is spawned,
+/// lifted by the stored height when the node has no light of its own, and
+/// the light it replaces is put out.
+pub(crate) fn apply_load_fires(world: &mut World, daylight: f32) {
+    let mut fires = Vec::new();
+    let mut douse = Vec::new();
+    let mut records = world.query::<(Entity, &MechanismRecords)>();
+    for (entity, records) in records.iter(world) {
+        let Some(operative) = records.operative else {
+            continue;
+        };
+        match mechanism::level_setup(Some(&operative), daylight).setup {
+            mechanism::Setup::Fire { size, lift } => {
+                fires.push((
+                    entity,
+                    mechanism::fire_size(size),
+                    mechanism::fire_lift(lift),
+                ));
+            }
+            mechanism::Setup::Daylight => douse.push(entity),
+            _ => {}
+        }
+    }
+    drop(records);
+    for entity in &douse {
+        put_out_light(world, *entity);
+    }
+    let placed: Vec<(Entity, Vec3)> = fires
+        .iter()
+        .map(|(entity, _, lift)| {
+            let shift = light_shift(world, *entity).unwrap_or(Vec3::new(0.0, *lift, 0.0));
+            (*entity, shift)
+        })
+        .collect();
+    let mut before = Vec::new();
+    for (entity, _) in &placed {
+        before.extend(direct_children(world, *entity));
+    }
+    let mut queue = bevy::ecs::world::CommandQueue::default();
+    {
+        let mut commands = Commands::new(&mut queue, world);
+        for (entity, size, _) in &fires {
+            crate::fire::spawn_fire(&mut commands, *entity, *size);
+        }
+    }
+    queue.apply(world);
+    for (entity, _, _) in &fires {
+        put_out_light(world, *entity);
+    }
+    for (entity, shift) in placed {
+        let spawned: Vec<Entity> = direct_children(world, entity)
+            .into_iter()
+            .filter(|child| !before.contains(child))
+            .collect();
+        for child in spawned {
+            if let Some(mut transform) = world.get_mut::<Transform>(child) {
+                transform.translation += shift;
+            }
+        }
+    }
+}
+
+/// Where a fire sits when the node already has a light: that light's local
+/// translation. `None` when the fire uses the record's lift instead.
+fn light_shift(world: &mut World, entity: Entity) -> Option<Vec3> {
+    if world
+        .get::<crate::light_source::LightSource>(entity)
+        .is_some()
+    {
+        return Some(Vec3::ZERO);
+    }
+    let child = direct_children(world, entity).into_iter().find(|child| {
+        world
+            .get::<crate::light_source::LightSource>(*child)
+            .is_some()
+    })?;
+    Some(
+        world
+            .get::<Transform>(child)
+            .map(|transform| transform.translation)
+            .unwrap_or(Vec3::ZERO),
+    )
+}
+
+/// Clears the intensity of the node's light and of each direct child's.
+fn direct_children(world: &mut World, parent: Entity) -> Vec<Entity> {
+    let mut query = world.query::<(Entity, &ChildOf)>();
+    let mut found = Vec::new();
+    for (entity, child_of) in query.iter(world) {
+        if child_of.parent() == parent {
+            found.push(entity);
+        }
+    }
+    found
+}
+
+fn put_out_light(world: &mut World, entity: Entity) {
+    let hosts = direct_children(world, entity);
+    for host in std::iter::once(entity).chain(hosts) {
+        if let Some(mut source) = world
+            .entity_mut(host)
+            .get_mut::<crate::light_source::LightSource>()
+        {
+            source.intensity = 0.0;
+        }
+    }
+}
+
 /// Starts the level device's arc as a child of `node`, in the node's local
 /// space, along its third axis for the record's length. A fresh emitter is
 /// off until a later signal catches it.
@@ -1030,5 +1140,95 @@ mod tests {
         let found = devices(&app);
         assert_eq!(found.len(), 1);
         assert_eq!((found[0].0.state, found[0].0.life), (1, 10));
+    }
+
+    /// Below the daylight threshold a fire record spawns a fire and lifts it
+    /// by the stored height. Above it the fire is not spawned and the node's
+    /// light is put out.
+    #[test]
+    fn a_load_fire_lights_until_the_daylight_is_up() {
+        let bare = |target| {
+            let mut world = World::new();
+            world.spawn(MechanismRecords {
+                id: 1,
+                body: None,
+                door: None,
+                operative: Some(mechanism::Record {
+                    class: mechanism::FIRE_CLASS,
+                    kind: mechanism::FIRE,
+                    target,
+                    ..mechanism::Record::default()
+                }),
+            });
+            world
+        };
+        let with_light = |target| {
+            let mut world = bare(target);
+            let entity = world
+                .query::<(Entity, &MechanismRecords)>()
+                .iter(&world)
+                .next()
+                .expect("the record")
+                .0;
+            world
+                .entity_mut(entity)
+                .insert(crate::light_source::LightSource::new(0, 4.0));
+            world
+        };
+        let flame_y = |world: &mut World| {
+            let entity = world
+                .query::<(Entity, &MechanismRecords)>()
+                .iter(world)
+                .next()
+                .unwrap()
+                .0;
+            direct_children(world, entity)
+                .into_iter()
+                .find_map(|child| {
+                    world
+                        .get::<crate::fire::Fire>(child)
+                        .map(|_| world.get::<Transform>(child).unwrap().translation.y)
+                })
+        };
+
+        let mut dark = bare(200);
+        apply_load_fires(&mut dark, 0.0);
+        let mut lifted = bare(200 | (50 << 16));
+        apply_load_fires(&mut lifted, 0.0);
+        let low = flame_y(&mut dark).expect("a fire in the dark");
+        let high = flame_y(&mut lifted).expect("a lifted fire");
+        assert!((high - low - 0.5).abs() < 1e-5, "{low} -> {high}");
+
+        let mut lit = with_light(200);
+        apply_load_fires(&mut lit, 0.0);
+        assert!(flame_y(&mut lit).is_some());
+        let entity = lit
+            .query::<(Entity, &MechanismRecords)>()
+            .iter(&lit)
+            .next()
+            .unwrap()
+            .0;
+        assert_eq!(
+            lit.get::<crate::light_source::LightSource>(entity)
+                .unwrap()
+                .intensity,
+            0.0
+        );
+
+        let mut day = with_light(200);
+        apply_load_fires(&mut day, 1.0);
+        assert!(flame_y(&mut day).is_none());
+        let entity = day
+            .query::<(Entity, &MechanismRecords)>()
+            .iter(&day)
+            .next()
+            .unwrap()
+            .0;
+        assert_eq!(
+            day.get::<crate::light_source::LightSource>(entity)
+                .unwrap()
+                .intensity,
+            0.0
+        );
     }
 }

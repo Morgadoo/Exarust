@@ -760,8 +760,8 @@ fn insert_object_records(
         });
     }
     // Level load starts a light operative's arc when its value bit is set.
-    // The kind byte alone decides it. A daylight fire is not started here:
-    // that branch reads the scene's daylight factor, which is not stored.
+    // The kind byte alone decides it. A fire record waits for the scene's
+    // daylight, which the lighting stage has, and is started there.
     if let Some(operative) = item
         .operative
         .filter(|o| o.kind == objdb::operative::LIGHT && o.value & 1 != 0)
@@ -2121,6 +2121,12 @@ impl LevelLoad {
             }),
         );
         environment::apply_lighting(commands, &scene_lighting.lighting, self.root);
+        // A fire record lights once the daylight scale is known: above the
+        // threshold its light is put out, otherwise a fire is spawned.
+        let daylight = scene_lighting.env.daylight_scale;
+        commands.queue(move |world: &mut World| {
+            mechanisms::apply_load_fires(world, daylight);
+        });
         // The live scene environment keeps ticking the preset's weather and
         // republishes its frame; both of its streams start from the same
         // clock seed the load drew with.
