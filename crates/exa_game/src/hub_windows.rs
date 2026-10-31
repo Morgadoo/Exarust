@@ -1836,6 +1836,7 @@ mod tests {
         assert_eq!((carried[1].x, carried[1].y), (0, 0));
     }
 
+    #[test]
     fn a_sale_leaves_the_goods_and_a_purchase_joins_them() {
         let mut career = career();
         career.company.stock = vec![7];
@@ -1864,6 +1865,7 @@ mod tests {
         assert!(!career.company.stock.contains(&7));
     }
 
+    #[test]
     fn the_catalogue_prices_a_stock_row() {
         let mut career = career();
         career.company.stock = vec![7];
@@ -1878,6 +1880,7 @@ mod tests {
         assert!(windows.shop.as_ref().unwrap().stock.is_empty());
     }
 
+    #[test]
     fn a_priced_stock_row_joins_the_buy_basket() {
         let mut career = career();
         career.company.stock = vec![7, 9];
@@ -1899,6 +1902,7 @@ mod tests {
         assert_eq!(windows.shop.as_ref().unwrap().window.buy_items, [7]);
     }
 
+    #[test]
     fn the_shop_trade_button_settles_through_the_company() {
         let mut career = career();
         career.company.stock = vec![7];
