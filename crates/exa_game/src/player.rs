@@ -28,6 +28,7 @@ use exa_character::held::{Hands, HeldMoveset, class};
 use exa_combat::attack::{self, AttackKind, AttackMotion, Attacker, Busy, Request, Side, Slot};
 use exa_combat::stance::{self, Stance};
 use exa_combat::swing::{self, Swing, SwingAt, SwingState};
+use exa_combat::aim::{self, HeadTrack};
 use exa_combat::{AttackStart, Attacking, Blade, Condition, Fighter};
 use exa_physics::body::locomotion::{Locomotion, Locomotor, flags, forward, turn_between, yaw_of};
 use exa_physics::body::{BodyTicks, Fallen, GoLimp, MAX_ENERGY, Ragdoll};
@@ -141,6 +142,9 @@ pub struct PlayerBody {
     target: Option<Entity>,
     /// How far it crouches, 0 to 1.
     crouch: f32,
+    /// The head tracker's two relaxed angles, kept between the stabs that
+    /// run it.
+    head: HeadTrack,
 }
 
 impl PlayerBody {
@@ -166,6 +170,7 @@ impl PlayerBody {
             last_attack: None,
             target: None,
             crouch: 0.0,
+            head: HeadTrack { yaw, pitch: 0.0 },
         }
     }
 
@@ -909,6 +914,29 @@ pub(crate) fn steer_player(
             Steering::latch(&mut req, &input);
             if pb.combat {
                 steering.aim(&mut req, to_cursor, state.off_feet());
+                // The behaviour runs its head tracking only while the body
+                // plays the stab (action 11). The eye is the character
+                // frame times (−20, 10, 0) cm and the look-at is the aim
+                // point; the tracked flat direction becomes the look the
+                // sampler reads.
+                if swinging && anim.action == "Stab" {
+                    if let Some(frame) = ragdoll.as_ref().and_then(|r| r.drive.as_ref()?.frame()) {
+                        let offset = Vec3::from(aim::EYE_IN_FRAME_CM) / 100.0;
+                        let eye = Vec3::from(frame.translation)
+                            + Vec3::from(frame.matrix3.x_axis) * offset.x
+                            + Vec3::from(frame.matrix3.y_axis) * offset.y
+                            + Vec3::from(frame.matrix3.z_axis) * offset.z;
+                        let look_at = cursor.0.unwrap_or(standing + forward(req.heading));
+                        let look = aim::track_head(
+                            &mut pb.head,
+                            forward(req.look).to_array(),
+                            eye.to_array(),
+                            forward(req.heading).to_array(),
+                            look_at.to_array(),
+                        );
+                        req.look = yaw_of(Vec3::from(look.flat));
+                    }
+                }
                 steering.fight(&mut req, body, standing, &line);
                 // A tap step's length (m) and the long step a held key aims.
                 // The reach already includes one √scale. The legs' extension
