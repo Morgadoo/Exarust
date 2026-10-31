@@ -532,9 +532,7 @@ pub fn register_bodies(
 /// lever fades this light.
 fn light_entity(model: &Model, nodes: &[Entity], root: usize) -> Option<Entity> {
     model.nodes.iter().enumerate().find_map(|(at, node)| {
-        if node.light.is_none() {
-            return None;
-        }
+        node.light.as_ref()?;
         let mut step = at;
         for _ in 0..model.nodes.len() {
             if step == root {
