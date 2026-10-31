@@ -198,6 +198,9 @@ pub(crate) fn decide_movement(
     // A body without muscles stands on level ground.
     let level = drive.map_or(1.0, |d| d.balance().level());
     let was_locomoting = body.locomoted;
+    // The game clock at this tick, moving or not: a stopped body's
+    // trailing-foot request lapses by it (and the stay check runs).
+    body.now = ticks.as_deref().map_or(0, BodyTicks::millis);
     // The head tilt steps every tick, before the body moves or stands.
     locomotion::lean(&mut body, drive.is_none_or(|d| d.balance().has_support()));
     if body.moving() {
@@ -223,9 +226,8 @@ pub(crate) fn decide_movement(
             heading: forward(req.heading),
             walking: anim.as_deref().is_some_and(|a| a.action == WALK),
             in_combat: matches!(state, Condition::ATTACKING | Condition::COMBAT_IDLE),
-            now: ticks.as_deref().map_or(0, BodyTicks::millis),
+            now: body.now,
         };
-        body.now = stride.now;
         let start = locomotion::locomote(&req, &mut body, &table, &stride);
         // The original clears its held items' motion flag and calls its
         // start callback on every tick another clip plays (done below,

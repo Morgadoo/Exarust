@@ -147,18 +147,23 @@ pub(crate) fn sample_clip(
     });
     // A clip that replaced Walk or Run asks the body tick for the trailing
     // foot, which it plants after this tick's sample; the request lapses
-    // 500 ms on and tells the behaviour its step is over.
+    // 500 ms on and the character's stay check is due
+    // (`exa_ai::manager::stay_check_due`, run by `crate::zone_scripts`).
     if let Some((_, l)) = locomotion.as_mut() {
-        l.step_done_notice = false;
         // A start this tick came before the movement decision in the
         // original's order, whose move branch drops the request.
         if anim.take_left_locomotion() && l.stop != Stop::Moving {
             l.plant_request = 2;
             l.plant_deadline = l.now.saturating_add(PLANT_WINDOW_MS);
+            debug!(
+                "trailing foot: {:?} replaced Walk or Run at {} ms; the stay check is due after {} ms",
+                anim.action, l.now, l.plant_deadline
+            );
         }
-        let (request, told) = plant_request_after(l.plant_request, l.plant_deadline, l.now);
+        let (request, due) =
+            exa_ai::manager::stay_check_due(l.plant_request, l.plant_deadline, l.now);
         l.plant_request = request;
-        l.step_done_notice = told;
+        l.stay_check_due |= due;
     }
     // A clip played once that ended into its stance this tick: a get-up
     // is over (the condition's clip-end writer).
@@ -282,18 +287,6 @@ const LOOKING_CLIPS: usize = 0x2C;
 
 /// An unplanted trailing-foot request lapses after this many milliseconds.
 const PLANT_WINDOW_MS: u64 = 500;
-
-/// The trailing-foot request one tick on: a live request (2 before its
-/// plant, 1 after) stays until the deadline; strictly past it the request
-/// clears and the behaviour is told. Returns the request and whether to
-/// tell the behaviour.
-pub(crate) fn plant_request_after(request: i32, deadline: u64, now: u64) -> (i32, bool) {
-    if request > 0 && now > deadline {
-        (0, true)
-    } else {
-        (request, false)
-    }
-}
 
 /// The thigh posture the body tick asks of the sampler: the combat turn
 /// (1 − height)·−1.5° while its behaviour is in combat and its condition
@@ -810,15 +803,16 @@ mod tests {
     }
 
     /// A trailing-foot request stays at its deadline and lapses strictly
-    /// after it, telling the behaviour; an already planted request (1) and
-    /// no request are unchanged.
+    /// after it, making the stay check due; an already planted request (1)
+    /// and no request are unchanged.
     #[test]
     fn an_unplanted_trailing_foot_lapses_after_500_ms() {
-        assert_eq!(plant_request_after(2, 1500, 1500), (2, false));
-        assert_eq!(plant_request_after(1, 1500, 1500), (1, false));
-        assert_eq!(plant_request_after(2, 1500, 1501), (0, true));
-        assert_eq!(plant_request_after(1, 1500, 1501), (0, true));
-        assert_eq!(plant_request_after(0, 1500, 1501), (0, false));
+        use exa_ai::manager::stay_check_due;
+        assert_eq!(stay_check_due(2, 1500, 1500), (2, false));
+        assert_eq!(stay_check_due(1, 1500, 1500), (1, false));
+        assert_eq!(stay_check_due(2, 1500, 1501), (0, true));
+        assert_eq!(stay_check_due(1, 1500, 1501), (0, true));
+        assert_eq!(stay_check_due(0, 1500, 1501), (0, false));
     }
 
     /// A shin pointing straight up pitches its foot 0.01 rad on the first

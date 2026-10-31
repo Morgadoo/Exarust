@@ -632,13 +632,12 @@ pub fn moved_enough(at: Vec3, checked: Vec3) -> bool {
     d.x * d.x + d.y * d.y + d.z * d.z > CHECK_STEP_SQ
 }
 
-/// Whether a character at `at`, last checked at `checked`, has entered the
-/// zone of box `bounds` and node radius `radius`: it is not farther than
-/// the radius (squared distance to the box centre against the radius
-/// squared, single precision), not more than [`ZONE_REACH`] from the box
-/// (in double), and the checked point was not under [`ZONE_REACH`] from
-/// it. Each comparison lets a NaN through, as the original's jumps do.
-pub fn zone_entered(at: Vec3, checked: Vec3, bounds: &Obb, radius: f32) -> bool {
+/// Whether a character at `at` is inside the zone of box `bounds` and node
+/// radius `radius`: not farther than the radius (squared distance to the
+/// box centre against the radius squared, single precision) and not more
+/// than [`ZONE_REACH`] from the box (in double). Each comparison lets a NaN
+/// through, as the original's jumps do. The stay check reads only this.
+pub fn zone_inside(at: Vec3, bounds: &Obb, radius: f32) -> bool {
     let d = at - bounds.centre;
     let d2 = d.x * d.x + d.y * d.y + d.z * d.z;
     let r2 = radius * radius;
@@ -646,7 +645,17 @@ pub fn zone_entered(at: Vec3, checked: Vec3, bounds: &Obb, radius: f32) -> bool 
         return false;
     }
     let now = f64::from(point_obb_distance_squared(at, bounds));
-    if now > ZONE_REACH {
+    now <= ZONE_REACH || now.is_nan()
+}
+
+/// Whether a character at `at`, last checked at `checked`, has entered the
+/// zone of box `bounds` and node radius `radius`: it is not farther than
+/// the radius (squared distance to the box centre against the radius
+/// squared, single precision), not more than [`ZONE_REACH`] from the box
+/// (in double), and the checked point was not under [`ZONE_REACH`] from
+/// it. Each comparison lets a NaN through, as the original's jumps do.
+pub fn zone_entered(at: Vec3, checked: Vec3, bounds: &Obb, radius: f32) -> bool {
+    if !zone_inside(at, bounds, radius) {
         return false;
     }
     let before = f64::from(point_obb_distance_squared(checked, bounds));

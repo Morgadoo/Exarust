@@ -1,7 +1,9 @@
 //! The alarm zones of the golem guardians, run live: the player stepping
 //! into an alarm zone without its pass wakes the statue golems around it.
 //!
-//! - **Zone check.** Each frame, once the player is more than 3 cm from the
+//! - **Zone check.** Each frame, once the player's point (its body frame's
+//!   anchor: the root's x and z at the pelvis height,
+//!   [`crate::zone_scripts::zone_point`]) is more than 3 cm from the
 //!   point its zones were last checked at ([`exa_ai::golem::moved_enough`]),
 //!   the level's alarm zones are checked in placement order and the point
 //!   moves to the player. A zone the player has just entered
@@ -72,10 +74,11 @@
 //! puts the frame at the body's own standing-height word, Exarust keeps
 //! the character root's height [guess: the floor under it], the zone
 //! check's other trigger kinds (the any-character routine
-//! and the level transitions, which have their own Exarust paths), and the
+//! and the level exits, run by [`crate::zone_scripts`]), and the
 //! contents of a carried container that is a level-local item (the item
 //! catalogue holds only the game database's containers). The checked point
-//! starts at the origin [guess: the body is allocated zeroed]; the room
+//! starts at the origin (the character object is allocated zero-filled and
+//! only the AI manager's frame writes it); the room
 //! lists come from each character's current position ([guess: without a
 //! level room grid every character is offered]).
 
@@ -215,6 +218,7 @@ pub fn check_alarm_zones(
             &GlobalTransform,
             Option<&StateFlags>,
             Option<&Possessions>,
+            Option<&Ragdoll>,
             Option<&mut AlarmCheckPoint>,
         ),
         With<RatedPlayer>,
@@ -224,10 +228,11 @@ pub fn check_alarm_zones(
     if volumes.0.is_empty() {
         return;
     }
-    let Some((player, gt, flags, possessions, point)) = players.iter_mut().next() else {
+    let Some((player, gt, flags, possessions, body, point)) = players.iter_mut().next() else {
         return;
     };
-    let at = gt.translation() * 100.0;
+    // The body frame's anchor: the root's x and z at the pelvis height.
+    let at = crate::zone_scripts::body_zone_point(gt.translation(), body);
     let checked = point.as_deref().map_or(Vec3::ZERO, |p| p.0);
     if !golem::moved_enough(at, checked) {
         return;

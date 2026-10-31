@@ -1633,12 +1633,31 @@ pub struct PlayerReading {
 /// A level exit requested by a trigger, a teleporter or a script.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LevelExit {
-    /// The campaign level's number, 1-based.
+    /// The level's number: the save rule reads it ([`CheckpointRule`]).
     pub level: u32,
     /// The spawn point in the new level.
     pub spawn: u32,
     /// Bit 0 asks for the fade and the AI hand-over.
     pub flags: u32,
+    /// The destination's name when the caller looked it up (an exit zone's
+    /// `locales.rdb` name, [`intern_locale`]); `None` reads `level` as the
+    /// campaign level ([`level_locale`]).
+    pub name: Option<&'static str>,
+}
+
+/// A level name made to live as long as the program, so a looked-up
+/// destination can ride a [`Step`]: each distinct name is kept once.
+pub fn intern_locale(name: &str) -> &'static str {
+    static NAMES: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+    let mut names = NAMES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(&kept) = names.iter().find(|&&kept| kept == name) {
+        return kept;
+    }
+    let kept: &'static str = Box::leak(name.to_owned().into_boxed_str());
+    names.push(kept);
+    kept
 }
 
 /// The level-exit save rule's inputs.
@@ -3011,7 +3030,7 @@ impl Flow {
         if self.phase == Phase::Transition {
             return Vec::new();
         }
-        let Some(locale) = level_locale(exit.level) else {
+        let Some(locale) = exit.name.or_else(|| level_locale(exit.level)) else {
             return Vec::new();
         };
         let mut steps = Vec::new();
@@ -3377,6 +3396,7 @@ impl Plugin for FlowPlugin {
                     (apply_menu_choices, tick, follow_player).chain(),
                     (
                         travel,
+                        cross_exit_zones,
                         crate::game_event_live::run_game_events,
                         run_transition.in_set(FlowSystems::Transition),
                         release_after_load,
@@ -3550,6 +3570,7 @@ fn travel(
                 level: journey.level,
                 spawn: journey.arrival,
                 flags: 1,
+                name: None,
             },
             CheckpointRule {
                 level: journey.level,
@@ -3563,6 +3584,61 @@ fn travel(
             info!(
                 "game flow: {} asks for level {} (spawn {}): {step:?}",
                 journey.user, journey.level, journey.arrival
+            );
+            queued.steps.push(step);
+        }
+    }
+}
+
+/// An exit zone the player entered is the game's level change (the
+/// original queues it as a deferred call from the zone check). Its level
+/// is a `locales.rdb` id and the save rule reads it as such; the
+/// checkpoint setting is the settings' (on without them), and the save is
+/// taken to hold neither `exanima04` nor the destination yet. The
+/// destination's level-entry music check reads the track the music's main
+/// voice plays.
+fn cross_exit_zones(
+    mut flow: ResMut<Flow>,
+    mut queued: ResMut<FlowSteps>,
+    mut crossed: Option<MessageReader<crate::zone_scripts::ExitZoneCrossed>>,
+    audio: Option<Res<exa_audio::AudioEnvironment>>,
+    config: Option<Res<crate::hw_config::HardwareConfig>>,
+) {
+    let Some(crossed) = crossed.as_mut() else {
+        return;
+    };
+    let playing = audio.as_ref().map_or("", |audio| audio.music_name());
+    let setting = config.as_ref().is_none_or(|c| c.live.checkpoints);
+    for exit in crossed.read() {
+        let name = exit.destination.as_deref().map(intern_locale);
+        let music_changes = name.is_some_and(|locale| {
+            exa_audio::story_music_changes_for_key(locale.as_bytes(), playing)
+        });
+        let steps = flow.level_exit(
+            LevelExit {
+                level: exit.level,
+                spawn: exit.entrance,
+                flags: u32::from(exit.flagged),
+                name,
+            },
+            CheckpointRule {
+                level: exit.level,
+                setting,
+                already_saved: false,
+            },
+            exit.condition,
+            music_changes,
+        );
+        if steps.is_empty() {
+            info!(
+                "game flow: the exit zone to level {} ({:?}) changes nothing",
+                exit.level, exit.destination
+            );
+        }
+        for step in steps {
+            info!(
+                "game flow: the exit zone asks for level {} ({:?}, entrance {}): {step:?}",
+                exit.level, exit.destination, exit.entrance
             );
             queued.steps.push(step);
         }
@@ -5117,6 +5193,7 @@ mod tests {
                 level: 6,
                 spawn: 0,
                 flags: 0,
+                name: None,
             },
             CheckpointRule {
                 level: 6,
@@ -5138,6 +5215,7 @@ mod tests {
                 level: 3,
                 spawn: 0,
                 flags: 0,
+                name: None,
             },
             rule,
             0,
@@ -5156,6 +5234,7 @@ mod tests {
             level: 40,
             spawn: 0,
             flags: 0,
+            name: None,
         };
         assert!(flow.level_exit(none, rule, 0, false).is_empty());
         let steps = flow.level_exit(
@@ -5163,6 +5242,7 @@ mod tests {
                 level: 3,
                 spawn: 4,
                 flags: 1,
+                name: None,
             },
             rule,
             0,
@@ -5188,6 +5268,7 @@ mod tests {
             level: 4,
             spawn: 0,
             flags: 0,
+            name: None,
         };
         assert!(flow.level_exit(next, rule, 0, false).is_empty());
         // The level loads at the exit's spawn point when the screen is black.
@@ -6511,6 +6592,7 @@ mod tests {
             level: 3,
             spawn: 0,
             flags: 1,
+            name: None,
         };
         flow.level_exit(exit, rule, 0, false);
         flow.transition_tick(screen_input(0), 0);

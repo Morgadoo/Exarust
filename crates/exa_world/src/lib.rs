@@ -253,6 +253,10 @@ pub struct LevelInfo {
     pub alarm_volumes: Vec<AlarmVolume>,
     /// The level's script zones, in placement order ([`script_volumes`]).
     pub script_volumes: Vec<ScriptVolume>,
+    /// The level's stay zones, in placement order ([`stay_volumes`]).
+    pub stay_volumes: Vec<ScriptVolume>,
+    /// The level's exit zones, in placement order ([`exit_volumes`]).
+    pub exit_volumes: Vec<ExitVolume>,
     /// The level environment's reverb decay offset, seconds.
     pub reverb_decay: f32,
     pub bounds_min: Vec3,
@@ -419,6 +423,74 @@ pub fn script_volumes(scene: &Scene, global: &[Item]) -> Vec<ScriptVolume> {
                 radius,
                 zone_id: volume.zone_id(),
                 script,
+            })
+        })
+        .collect()
+}
+
+/// Every stay zone a level places, in placement order: a model-less object
+/// whose record's volume section is a stay zone holding a routine
+/// ([`objdb::Volume::runs_stay_script`]). The player's stay check runs the
+/// routine of each one the player stands in (`exa_game::zone_scripts`).
+/// The shipped ones are the eight memory fragments (`XAU_Memory_*`), whose
+/// routines raise `GameEvent`; `exanima01` places two.
+pub fn stay_volumes(scene: &Scene, global: &[Item]) -> Vec<ScriptVolume> {
+    trigger_objects(scene, global)
+        .filter(|(_, _, volume)| volume.runs_stay_script())
+        .filter_map(|(object, item, volume)| {
+            let script = item.volume_script.clone()?;
+            let (bounds, radius) = trigger_bounds(object, &volume);
+            Some(ScriptVolume {
+                bounds,
+                radius,
+                zone_id: volume.zone_id(),
+                script,
+            })
+        })
+        .collect()
+}
+
+/// A level's exit zone: a placed trigger volume that is a level exit
+/// ([`objdb::Volume::level_exit`]). The player entering it queues the level
+/// change (`exa_game::zone_scripts`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExitVolume {
+    /// The volume's box in centimetres, built as an alarm zone's.
+    pub bounds: exa_physics::intersect::Obb,
+    /// The node's bounding radius (cm).
+    pub radius: f32,
+    /// The level, entrance and transition the exit asks for.
+    pub exit: objdb::LevelExit,
+    /// The destination's name in `locales.rdb`, lower-cased (`exanima02`),
+    /// `None` when the table has no such id (the level change then does
+    /// nothing).
+    pub destination: Option<String>,
+    /// The record's name (`>exanima02`), for the log.
+    pub name: String,
+}
+
+/// Every exit zone a level places, in placement order, with each
+/// destination's name looked up in `locales` (`locales.rdb`, when loaded).
+pub fn exit_volumes(
+    scene: &Scene,
+    global: &[Item],
+    locales: Option<&exa_formats::locales::LocaleDb>,
+) -> Vec<ExitVolume> {
+    trigger_objects(scene, global)
+        .filter_map(|(object, item, volume)| {
+            let exit = volume.level_exit()?;
+            let (bounds, radius) = trigger_bounds(object, &volume);
+            Some(ExitVolume {
+                bounds,
+                radius,
+                exit,
+                // The level change lower-cases the 16 name bytes it looks
+                // up (A to Z only): `Exanima02` loads `exanima02`.
+                destination: locales
+                    .and_then(|db| db.name_text(exit.level))
+                    .filter(|name| !name.is_empty())
+                    .map(|name| name.to_ascii_lowercase()),
+                name: item.name.clone(),
             })
         })
         .collect()
@@ -1580,6 +1652,8 @@ pub struct LevelLoad {
     entry: String,
     /// The level's id in `locales.rdb`, when it has one.
     locale: Option<u32>,
+    /// `locales.rdb`, for the exit zones' destinations.
+    locales: Option<exa_formats::locales::LocaleDb>,
     scene: Scene,
     root: Entity,
     stage: Stage,
@@ -1676,14 +1750,16 @@ impl LevelLoad {
             ))
             .id();
         let props = scene.props.len();
-        let locale = loader
+        let locales_bytes = loader
             .game
             .pack(PackKind::Resource)
-            .and_then(|p| p.get("locales.rdb"))
-            .and_then(|b| exa_formats::roles::locale_id(b, &entry));
+            .and_then(|p| p.get("locales.rdb"));
+        let locale = locales_bytes.and_then(|b| exa_formats::roles::locale_id(b, &entry));
+        let locales = locales_bytes.and_then(|b| exa_formats::locales::LocaleDb::load(b).ok());
         Some(Self {
             entry,
             locale,
+            locales,
             scene,
             root,
             stage: Stage::Grid,
@@ -2093,6 +2169,8 @@ impl LevelLoad {
                 player_markers: player_markers(&self.scene, &self.global_items),
                 alarm_volumes: alarm_volumes(&self.scene, &self.global_items),
                 script_volumes: script_volumes(&self.scene, &self.global_items),
+                stay_volumes: stay_volumes(&self.scene, &self.global_items),
+                exit_volumes: exit_volumes(&self.scene, &self.global_items, self.locales.as_ref()),
                 reverb_decay,
                 bounds_min: min,
                 bounds_max: max,
@@ -2398,6 +2476,53 @@ mod tests {
             .map(|z| z.zone_id)
             .collect();
         assert_eq!(ids.len(), 5);
+    }
+
+    /// `exanima01` places two memory fragment stay zones (`GameEvent`
+    /// C00001 and C00002) and one exit to `exanima02` (locale 3, entrance
+    /// 0, not flagged); `exanima03`'s exit to `exanima04` is flagged
+    /// (skipped without the game).
+    #[test]
+    fn shipped_stay_and_exit_volumes() {
+        let Some(dir) = exa_assets::locate_install(None) else {
+            return;
+        };
+        let game = GameData::open(&dir).unwrap();
+        let resource = game.pack(exa_assets::PackKind::Resource).unwrap();
+        let db = exa_formats::rdb::Database::parse(resource.get("objdb.rdb").unwrap()).unwrap();
+        let global = exa_formats::objdb::items(&db);
+        let locales =
+            exa_formats::locales::LocaleDb::load(resource.get("locales.rdb").unwrap()).unwrap();
+        let first = Scene::parse(resource.get("exanima01.rfc").unwrap()).unwrap();
+        let stays: Vec<Vec<u8>> = stay_volumes(&first, &global)
+            .into_iter()
+            .map(|z| z.script)
+            .collect();
+        assert_eq!(
+            stays,
+            [
+                b"GameEvent(C00001);".to_vec(),
+                b"GameEvent(C00002);".to_vec()
+            ]
+        );
+        let exits = exit_volumes(&first, &global, Some(&locales));
+        assert_eq!(exits.len(), 1);
+        assert_eq!(exits[0].destination.as_deref(), Some("exanima02"));
+        assert_eq!(
+            exits[0].exit,
+            exa_formats::objdb::LevelExit {
+                level: 3,
+                entrance: 0,
+                flagged: false
+            }
+        );
+        let third = Scene::parse(resource.get("exanima03.rfc").unwrap()).unwrap();
+        let flagged: Vec<_> = exit_volumes(&third, &global, Some(&locales))
+            .into_iter()
+            .filter(|e| e.exit.flagged)
+            .collect();
+        assert_eq!(flagged.len(), 1);
+        assert_eq!(flagged[0].destination.as_deref(), Some("exanima04"));
     }
 
     /// Levels place records without a model (transition markers, usable
