@@ -769,7 +769,7 @@ fn chained_side(motion: AttackMotion) -> Side {
 /// an attack started there under another condition, and the clip runs
 /// 1.25 × base.
 #[allow(clippy::type_complexity)]
-pub(crate) fn run_swings(
+pub fn run_swings(
     mut commands: Commands,
     ticked: Res<TickedCharacter>,
     ticks: Res<BodyTicks>,

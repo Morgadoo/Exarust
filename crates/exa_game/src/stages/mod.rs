@@ -83,11 +83,67 @@ impl Plugin for CharacterTickPlugin {
                     )
                         .chain()
                         .in_set(Movement),
+                    push_striking_fists
+                        .in_set(Attack)
+                        .after(exa_combat::swing::run_swings),
                     sampler::rise_thorax_hunch.in_set(Upkeep),
                     sampler::sample_clip.in_set(Sampler),
                     carry::aim_body.in_set(Carry),
                 ),
             );
+    }
+}
+
+/// An unarmed strike whose window is open pushes that hand along the
+/// cursor (the player's aim, otherwise the body's yaw), 10 cm at the
+/// middle of the clip down to nothing from nine tenths. The push is in
+/// centimetres; the part moves in metres, by its origin weights.
+type StrikingFist<'a> = (
+    &'a exa_combat::Attacking,
+    Mut<'a, Ragdoll>,
+    &'a Animator,
+    Option<&'a PlayerBody>,
+    Option<&'a exa_physics::body::locomotion::Locomotor>,
+);
+
+fn push_striking_fists(
+    motions: Option<Res<exa_anim::Motions>>,
+    mut bodies: Query<StrikingFist<'_>>,
+) {
+    let Some(motions) = motions else {
+        return;
+    };
+    for (attack, mut body, anim, player, loco) in &mut bodies {
+        let Some(clip) = motions.clip(anim, &anim.action) else {
+            continue;
+        };
+        let progress = anim.clip_progress(clip);
+        let Some(part) = body.parts.iter().position(|p| p.bone == bone_of(attack)) else {
+            continue;
+        };
+        let window = body.parts[part]
+            .state
+            .has(exa_physics::part::PartState::STRIKE_CHAIN);
+        let Some(yaw) = player.map(|p| p.aim).or(loco.map(|l| l.yaw)) else {
+            continue;
+        };
+        let Some((_, push)) = exa_combat::strike_body::striking_fist(
+            attack.weapon_class,
+            attack.motion,
+            progress,
+            window,
+            exa_physics::body::locomotion::forward(yaw),
+        ) else {
+            continue;
+        };
+        body.push_origin(part, push / 100.0);
+    }
+}
+
+fn bone_of(attack: &exa_combat::Attacking) -> usize {
+    match attack.motion {
+        exa_combat::attack::AttackMotion::Other(_) => 18,
+        _ => 17,
     }
 }
 

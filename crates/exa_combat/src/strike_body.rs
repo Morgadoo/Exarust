@@ -6,9 +6,9 @@
 //! The swing clock, the strike window and the velocity trackers are in
 //! [`crate::swing`]; the held weapon's own handling forces are in
 //! [`crate::weapon`]. The nudges here return the push (cm) at the striker's
-//! point; the caller applies it with its weights. They are reproduced but
-//! not wired: a plain weapon model has a body now, but the swing does not
-//! push it yet. The tangle break is wired ([`break_tangles`], each living
+//! point; the caller applies it with its weights. The fist nudge is applied while an unarmed window is open; the
+//! blade nudges are reproduced but not wired: the swing does not push a
+//! weapon body yet. The tangle break is wired ([`break_tangles`], each living
 //! body tick's readiness stage). Rules and constants: reverse engineering
 //! of the swing routine and the body tick.
 
@@ -72,6 +72,32 @@ pub fn fist_push(progress: f32, cursor: Vec3) -> Vec3 {
         return Vec3::ZERO;
     }
     cursor * ((1.0 - 2.0 * (progress - 0.5).abs()) * FIST_PUSH)
+}
+
+/// The fist nudge of an unarmed strike (class bit 0x80) whose window is
+/// open: the bone of the motion's hand (the right hand, the left for a
+/// combo) and the push along `cursor` (cm). Nothing without the fist
+/// class, a closed window, or from a clock of 0.9.
+pub fn striking_fist(
+    class: u8,
+    motion: crate::attack::AttackMotion,
+    progress: f32,
+    window: bool,
+    cursor: Vec3,
+) -> Option<(usize, Vec3)> {
+    if class & 0x80 == 0 || !window {
+        return None;
+    }
+    let push = fist_push(progress, cursor);
+    if push == Vec3::ZERO {
+        return None;
+    }
+    // The right hand is bone 17 and the left 18, the skeleton's hands.
+    let bone = match motion {
+        crate::attack::AttackMotion::Other(_) => 18,
+        _ => 17,
+    };
+    Some((bone, push))
 }
 
 /// The edge alignment's inputs: the slot's tracked velocity and the
@@ -402,6 +428,73 @@ mod tests {
         assert_eq!(fist_push(f32::NAN, Vec3::Z), Vec3::ZERO);
         // The f32 nearest 0.9 is under the double 0.9: still pushing.
         assert!(close(fist_push(0.9, Vec3::Z).z, 2.0));
+    }
+
+    /// An unarmed window pushes the motion's hand; a weapon, a closed
+    /// window and a late clock do not.
+    #[test]
+    fn an_unarmed_window_pushes_the_motions_hand() {
+        let cursor = Vec3::Z;
+        let (bone, push) = striking_fist(
+            0x80,
+            crate::attack::AttackMotion::Main(0),
+            0.5,
+            true,
+            cursor,
+        )
+        .unwrap();
+        assert_eq!(bone, 17);
+        assert!(close(push.length(), 10.0));
+        let (bone, _) = striking_fist(
+            0x80,
+            crate::attack::AttackMotion::Other(1),
+            0.5,
+            true,
+            cursor,
+        )
+        .unwrap();
+        assert_eq!(bone, 18);
+        assert_eq!(
+            striking_fist(
+                0x80,
+                crate::attack::AttackMotion::Overhead,
+                0.5,
+                true,
+                cursor
+            )
+            .map(|n| n.0),
+            Some(17)
+        );
+        assert!(
+            striking_fist(
+                0x10,
+                crate::attack::AttackMotion::Main(0),
+                0.5,
+                true,
+                cursor
+            )
+            .is_none()
+        );
+        assert!(
+            striking_fist(
+                0x80,
+                crate::attack::AttackMotion::Main(0),
+                0.5,
+                false,
+                cursor
+            )
+            .is_none()
+        );
+        assert!(
+            striking_fist(
+                0x80,
+                crate::attack::AttackMotion::Main(0),
+                0.91,
+                true,
+                cursor
+            )
+            .is_none()
+        );
     }
 
     fn edge(velocity: Vec3, flipped: bool, greatsword: bool) -> Edge {
