@@ -13,11 +13,17 @@
 //! - **Zones.** A zone is entered when the character is within its radius
 //!   and inside its shape (shape distance at most 0.1) and was outside it
 //!   (0.1 or more) at the last check. An enter zone (type `0x1xx`) of kind
-//!   `0x10` runs its script; for the player, kind 2 changes level unless the
-//!   player carries the zone's item (a held player ends the pass), and kinds
-//!   `0x20` and `0x21` raise a discovery (the second a checkpoint), or
-//!   release a controlled host instead and end the pass. A stay zone (type
-//!   `0x2xx`, kind `0x10`) runs its script while the player is inside.
+//!   `0x10` runs its script for anyone; for the player, kind 2 is a golem
+//!   alarm (a player whose state flags carry the alarm exemption ends the
+//!   pass; one carrying the zone's pass item crosses it; otherwise the alarm
+//!   rings), and a zone whose word has bit `0x20` is a level exit to the
+//!   level in the zone's item word, at the entrance in its value word, kind
+//!   `0x21` asking for the long transition; while a possession is active the
+//!   possession ends instead, and so does the pass.
+//! - **Stay zones.** The player's stay check runs every stay zone (type
+//!   `0x2xx`, kind `0x10`) the player is inside (radius and shape as for an
+//!   enter zone, whatever the last check), once: the character tick runs it
+//!   when a stop from Walk or Run is more than 500 ms old ([`stay`]).
 //! - **Alert.** Raising the group alert adds one and holds it for 10 s.
 //! - **Approach.** A step `v` from A toward B is kept out of a circle of
 //!   60 × B's body scale around B: from outside, a step that would cross
@@ -27,8 +33,11 @@
 //!   squared under the radius pushes out to the circle and otherwise the
 //!   step is dropped.
 //!
-//! Evidence: the original's AI manager frame, zone checks, alert counter
-//! and approach clamp. The clamp is the combat state's keep-off
+//! Evidence: the original's AI manager frame, its enter-zone check, the
+//! stay-zone check and its one caller in the character tick (behind the
+//! trailing-foot request a clip start leaving Walk or Run makes), the
+//! deferred level change the exit queues, the alert counter and the
+//! approach clamp. The clamp is the combat state's keep-off
 //! ([`crate::combat::keep_off`]), which keeps the original's last test as
 //! it reads (a vector whose first component is overwritten by its second).
 
@@ -144,13 +153,13 @@ pub fn moved_enough(last: bevy::math::Vec3, now: bevy::math::Vec3) -> bool {
 }
 
 /// A trigger zone's type word: `0x1xx` enter zones, `0x2xx` stay zones, the
-/// low byte the kind.
+/// low byte the kind; and its two words.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Zone {
     pub word: u32,
-    /// The item the player must not carry for a level change.
+    /// An alarm zone's pass item, a level exit's level (`locales.rdb`).
     pub item: u32,
-    /// The discovery's value.
+    /// A level exit's entrance in the new level.
     pub value: u32,
 }
 
@@ -159,18 +168,19 @@ pub struct Zone {
 pub enum ZoneDeed {
     /// Run the zone's script with its id.
     Script,
-    /// Change level.
-    ChangeLevel,
-    /// Raise a discovery: the zone's item, value, and whether it is a
-    /// checkpoint.
-    Discover {
-        item: u32,
-        value: u32,
-        checkpoint: bool,
+    /// Ring the golem alarm at the zone.
+    RingAlarm,
+    /// Queue the level change: the level, the entrance, and whether the
+    /// long transition (kind `0x21`) is asked for.
+    ChangeLevel {
+        level: u32,
+        entrance: u32,
+        flagged: bool,
     },
-    /// Release the controlled host; the zone pass ends here.
+    /// End the active possession; the zone pass ends here.
     ReleaseHost,
-    /// The player is held: the zone pass ends here, nothing done.
+    /// The player is exempt from the alarm: the zone pass ends here,
+    /// nothing done.
     Halt,
 }
 
@@ -182,13 +192,14 @@ pub fn inside(distance2: f32, radius: f32, shape: f32) -> bool {
 
 /// The deed of an enter zone the character just entered (`was_outside`:
 /// the shape distance at the last check was at least 0.1). `player`: the
-/// character is the player; `held`: the player's held flag; `carries`: it
-/// carries the zone's item; `hosting`: a host is under its control.
+/// character is the player; `exempt`: the player's state flags carry the
+/// alarm exemption; `carries`: it carries the zone's item; `hosting`: a
+/// possession is active.
 pub fn enter(
     zone: Zone,
     was_outside: bool,
     player: bool,
-    held: bool,
+    exempt: bool,
     carries: bool,
     hosting: bool,
 ) -> Option<ZoneDeed> {
@@ -203,27 +214,40 @@ pub fn enter(
         return None;
     }
     if kind == 2 {
-        if held {
+        if exempt {
             return Some(ZoneDeed::Halt);
         }
-        return (!carries).then_some(ZoneDeed::ChangeLevel);
+        return (!carries).then_some(ZoneDeed::RingAlarm);
     }
     if zone.word & 0x20 != 0 {
         if hosting {
             return Some(ZoneDeed::ReleaseHost);
         }
-        return Some(ZoneDeed::Discover {
-            item: zone.item,
-            value: zone.value,
-            checkpoint: kind == 0x21,
+        return Some(ZoneDeed::ChangeLevel {
+            level: zone.item,
+            entrance: zone.value,
+            flagged: kind == 0x21,
         });
     }
     None
 }
 
-/// Whether a stay zone runs its script for the player inside it.
+/// Whether the stay check runs a stay zone's script for the character
+/// inside it: only for the player, and only a stay zone of kind `0x10`.
 pub fn stay(zone: Zone, player: bool) -> bool {
     player && zone.word & 0xF00 == 0x200 && zone.word & 0xFF == 0x10
+}
+
+/// The trailing-foot request a stop from Walk or Run leaves, one tick on:
+/// a live request (`request` over 0) whose deadline (`deadline`, 500 ms
+/// after the clip start) has strictly passed clears, and the player's stay
+/// check runs (the second value).
+pub fn stay_check_due(request: i32, deadline: u64, now: u64) -> (i32, bool) {
+    if request > 0 && now > deadline {
+        (0, true)
+    } else {
+        (request, false)
+    }
 }
 
 /// The group alert raised: one more, held until 10 s from now.
@@ -320,9 +344,10 @@ mod tests {
         assert!(moved_enough(Vec3::ZERO, Vec3::new(3.001, 0.0, 0.0)));
     }
 
-    /// Script zones fire for anyone entering; a level change only for the
-    /// player, not held, without the item; discoveries and checkpoints, or
-    /// the host's release first; a stay zone runs for the player inside.
+    /// Script zones fire for anyone entering; for the player, kind 2 is
+    /// the golem alarm (the exemption ends the pass, the pass item lets it
+    /// through) and bit 0x20 a level exit (0x21 flagged), or the end of a
+    /// possession; a stay zone runs only from the stay check.
     #[test]
     fn zones_fire_by_their_type() {
         let z = |word| Zone {
@@ -341,7 +366,7 @@ mod tests {
         assert_eq!(enter(z(0x102), true, false, false, false, false), None);
         assert_eq!(
             enter(z(0x102), true, true, false, false, false),
-            Some(ZoneDeed::ChangeLevel)
+            Some(ZoneDeed::RingAlarm)
         );
         assert_eq!(
             enter(z(0x102), true, true, true, false, false),
@@ -350,12 +375,21 @@ mod tests {
         assert_eq!(enter(z(0x102), true, true, false, true, false), None);
         assert_eq!(
             enter(z(0x121), true, true, false, false, false),
-            Some(ZoneDeed::Discover {
-                item: 5,
-                value: 9,
-                checkpoint: true
+            Some(ZoneDeed::ChangeLevel {
+                level: 5,
+                entrance: 9,
+                flagged: true
             })
         );
+        assert_eq!(
+            enter(z(0x120), true, true, false, false, false),
+            Some(ZoneDeed::ChangeLevel {
+                level: 5,
+                entrance: 9,
+                flagged: false
+            })
+        );
+        assert_eq!(enter(z(0x120), true, false, false, false, false), None);
         assert_eq!(
             enter(z(0x120), true, true, false, false, true),
             Some(ZoneDeed::ReleaseHost)
@@ -364,6 +398,15 @@ mod tests {
         assert!(stay(z(0x210), true));
         assert!(!stay(z(0x210), false));
         assert!(!stay(z(0x110), true));
+    }
+
+    /// The stay check runs once a live trailing-foot request is strictly
+    /// past its deadline, and the request clears.
+    #[test]
+    fn the_stay_check_waits_out_the_request() {
+        assert_eq!(stay_check_due(2, 1_500, 1_500), (2, false));
+        assert_eq!(stay_check_due(1, 1_500, 1_501), (0, true));
+        assert_eq!(stay_check_due(0, 1_500, 9_999), (0, false));
     }
 
     /// The start-up makes the scene's `_Temp` node and the manager each

@@ -245,6 +245,48 @@ impl Volume {
         self.flags & Self::CLASS_MASK == Self::TRIGGER_CLASS && self.flags & 0xFF == Self::SCRIPT
     }
 
+    /// The class bits of a stay zone: a volume the player's stay check
+    /// runs while the player stands inside it.
+    pub const STAY_CLASS: u32 = 0x200;
+
+    /// Whether this is a stay zone that runs a routine: class
+    /// [`Volume::STAY_CLASS`] with the low byte [`Volume::SCRIPT`]. The
+    /// shipped memory fragments (`XAU_Memory_*`, flags `0x1210`) are the
+    /// eight such zones, each running `GameEvent(Cxxxxx);`.
+    pub fn runs_stay_script(&self) -> bool {
+        self.flags & Self::CLASS_MASK == Self::STAY_CLASS && self.flags & 0xFF == Self::SCRIPT
+    }
+
+    /// The bit of a trigger volume's flags that makes it a level exit
+    /// (when its low byte is neither [`Volume::SCRIPT`] nor
+    /// [`Volume::ALARM`]).
+    pub const EXIT_BIT: u32 = 0x20;
+    /// The low byte of a level exit that asks for the long transition (the
+    /// fade and the player's AI hand-over).
+    pub const FLAGGED_EXIT: u32 = 0x21;
+
+    /// The level exit a trigger volume (class `0x100`) is: the zone check
+    /// tests the low byte against [`Volume::SCRIPT`], then
+    /// [`Volume::ALARM`], then the whole flags word against
+    /// [`Volume::EXIT_BIT`]. The level is the word an alarm zone keeps its
+    /// pass in (a `locales.rdb` id), the entrance the arrival marker the
+    /// new level spawns the player at, and the low byte
+    /// [`Volume::FLAGGED_EXIT`] asks for the long transition. The shipped
+    /// exits are the `>name` volumes (flags `0x1120`; `0x1121` between
+    /// `exanima03` and `exanima04`). `None` for any other volume.
+    pub fn level_exit(&self) -> Option<LevelExit> {
+        let kind = self.flags & 0xFF;
+        (self.flags & Self::CLASS_MASK == Self::TRIGGER_CLASS
+            && kind != Self::SCRIPT
+            && kind != Self::ALARM
+            && self.flags & Self::EXIT_BIT != 0)
+            .then_some(LevelExit {
+                level: self.previous_level,
+                entrance: self.entrance,
+                flagged: kind == Self::FLAGGED_EXIT,
+            })
+    }
+
     /// A script zone's id: the word the transition marker keeps its
     /// entrance in, which the zone check hands the routine as the local
     /// `ZoneID`.
@@ -262,6 +304,17 @@ impl Volume {
         }
         b.get(0x18..0x18usize.checked_add(len)?)
     }
+}
+
+/// What a level exit volume asks for ([`Volume::level_exit`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LevelExit {
+    /// The destination's id in `locales.rdb`.
+    pub level: u32,
+    /// The arrival marker's entrance number in the destination.
+    pub entrance: u32,
+    /// The long transition (low byte `0x21`).
+    pub flagged: bool,
 }
 
 /// An overlapping worn item whose [`Item::equip_lock`] is over this cannot
@@ -1290,6 +1343,44 @@ mod tests {
         assert!(!stay.runs_script());
         stay.flags = 0x1102;
         assert!(!stay.runs_script());
+    }
+
+    /// A memory fragment's stay zone (`0x1210`) runs its routine; a level
+    /// exit (`0x1120`, `0x1121` flagged) names its level and entrance; the
+    /// script, alarm and stay zones are not exits.
+    #[test]
+    fn stay_zones_and_level_exits_by_their_flags() {
+        let volume = |flags| Volume {
+            extents: [100; 3],
+            flags,
+            entrance: 2,
+            previous_level: 9,
+        };
+        assert!(volume(0x1210).runs_stay_script());
+        assert!(!volume(0x1110).runs_stay_script());
+        assert!(!volume(0x1220).runs_stay_script());
+        assert_eq!(
+            volume(0x1120).level_exit(),
+            Some(LevelExit {
+                level: 9,
+                entrance: 2,
+                flagged: false
+            })
+        );
+        assert_eq!(
+            volume(0x1121).level_exit(),
+            Some(LevelExit {
+                level: 9,
+                entrance: 2,
+                flagged: true
+            })
+        );
+        // Any other low byte with bit 0x20 is an exit too, as the check
+        // reads it; script, alarm, stay and marker volumes are not.
+        assert!(volume(0x1160).level_exit().is_some_and(|e| !e.flagged));
+        for flags in [0x1110, 0x1102, 0x1210, 0x1220, 0x40, 0x1101] {
+            assert_eq!(volume(flags).level_exit(), None, "{flags:#x}");
+        }
     }
 
     #[test]

@@ -752,6 +752,34 @@ fn play_level(
     commands.insert_resource(exa_game::zone_scripts::ScriptVolumes(
         info.script_volumes.clone(),
     ));
+    // Its stay zones (the memory fragments) and its exits.
+    for zone in &info.stay_volumes {
+        info!(
+            "level {name}: stay zone {} at {:?} cm (half {:?}): {}",
+            zone.zone_id,
+            zone.bounds.centre,
+            zone.bounds.half_extents,
+            String::from_utf8_lossy(&zone.script)
+        );
+    }
+    for zone in &info.exit_volumes {
+        info!(
+            "level {name}: exit zone {} at {:?} cm (half {:?}): level {} ({:?}) entrance {}{}",
+            zone.name,
+            zone.bounds.centre,
+            zone.bounds.half_extents,
+            zone.exit.level,
+            zone.destination,
+            zone.exit.entrance,
+            if zone.exit.flagged { ", flagged" } else { "" }
+        );
+    }
+    commands.insert_resource(exa_game::zone_scripts::StayVolumes(
+        info.stay_volumes.clone(),
+    ));
+    commands.insert_resource(exa_game::zone_scripts::ExitVolumes(
+        info.exit_volumes.clone(),
+    ));
     // An arena match draws its track as the original's match start does:
     // the roll is the reversed counter, and the arena is the one named on
     // the command line, so the arena draw is not run. The hub's track is

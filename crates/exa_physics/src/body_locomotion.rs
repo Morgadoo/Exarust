@@ -369,14 +369,15 @@ pub struct Locomotor {
     pub start_notice: bool,
     /// The trailing-foot request: 2 when a clip replaced Walk or Run, 1
     /// once this tick has planted, 0 none. The body tick plants at the next
-    /// tick after the start and drops an unplanted request 500 ms on,
-    /// telling the behaviour its step is over.
+    /// tick after the start and clears the request 500 ms on, when the
+    /// character's stay check runs.
     pub plant_request: i32,
     pub plant_deadline: u64,
-    /// The 500 ms deadline passed with the trailing foot still unplanted
-    /// and the behaviour is to be told; set by the body's tick for that
-    /// tick only.
-    pub step_done_notice: bool,
+    /// The request's 500 ms passed: the stay check (the player's memory
+    /// fragment zones) is due. Set by the body's tick, cleared by the check
+    /// that runs it (`exa_game::zone_scripts`), so a frame of several ticks
+    /// keeps it.
+    pub stay_check_due: bool,
     /// The game clock (ms) at this tick: the look target's deadline is
     /// compared with it.
     pub now: u64,
@@ -422,7 +423,7 @@ impl Default for Locomotor {
             start_notice: false,
             plant_request: 0,
             plant_deadline: 0,
-            step_done_notice: false,
+            stay_check_due: false,
             now: 0,
         }
     }
