@@ -1620,6 +1620,8 @@ Round 46 koknock (C8): the premise was wrong; a knocked-out body never turns its
 
 Round 46 tickchain: AI timings no longer depend on the frame rate; cost 0.17 ms a tick in exanima06. Added --schedule-ambiguities and the profiler's brains line.
 
+The player's head tracker runs while it stabs (the behaviour tick calls it only then): the eye is the character frame times (−20, 10, 0) cm and the tracked flat yaw is the look the sampler reads. Other actions leave the look alone. The far variant still has no caller.
+
 ### Phase 7 — Game modes and content
 
 Done (change `run-an-arena-career`): a new company starts with 343 copper

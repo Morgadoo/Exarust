@@ -919,23 +919,27 @@ pub(crate) fn steer_player(
                 // frame times (−20, 10, 0) cm and the look-at is the aim
                 // point; the tracked flat direction becomes the look the
                 // sampler reads.
-                if swinging && anim.action == "Stab" {
-                    if let Some(frame) = ragdoll.as_ref().and_then(|r| r.drive.as_ref()?.frame()) {
-                        let offset = Vec3::from(aim::EYE_IN_FRAME_CM) / 100.0;
-                        let eye = Vec3::from(frame.translation)
-                            + Vec3::from(frame.matrix3.x_axis) * offset.x
-                            + Vec3::from(frame.matrix3.y_axis) * offset.y
-                            + Vec3::from(frame.matrix3.z_axis) * offset.z;
-                        let look_at = cursor.0.unwrap_or(standing + forward(req.heading));
-                        let look = aim::track_head(
-                            &mut pb.head,
-                            forward(req.look).to_array(),
-                            eye.to_array(),
-                            forward(req.heading).to_array(),
-                            look_at.to_array(),
-                        );
-                        req.look = yaw_of(Vec3::from(look.flat));
-                    }
+                if swinging
+                    && anim.action == "Stab"
+                    && let Some(frame) = ragdoll.as_ref().and_then(|r| r.drive.as_ref()?.frame())
+                {
+                    // The frame and the aim point are in metres; the
+                    // tracker works in the original's centimetres, so
+                    // both go across and the direction comes back.
+                    let offset = Vec3::from(aim::EYE_IN_FRAME_CM);
+                    let eye = Vec3::from(frame.translation) * 100.0
+                        + Vec3::from(frame.matrix3.x_axis) * offset.x
+                        + Vec3::from(frame.matrix3.y_axis) * offset.y
+                        + Vec3::from(frame.matrix3.z_axis) * offset.z;
+                    let look_at = cursor.0.unwrap_or(standing + forward(req.heading)) * 100.0;
+                    let look = aim::track_head(
+                        &mut pb.head,
+                        forward(req.look).to_array(),
+                        eye.to_array(),
+                        forward(req.heading).to_array(),
+                        look_at.to_array(),
+                    );
+                    req.look = yaw_of(Vec3::from(look.flat));
                 }
                 steering.fight(&mut req, body, standing, &line);
                 // A tap step's length (m) and the long step a held key aims.
@@ -3113,6 +3117,52 @@ mod tests {
             character: Some(root),
         });
         (app, body)
+    }
+
+    /// The behaviour runs the head tracker only while the body plays the
+    /// stab. A look-at well off the heading moves the look by one step;
+    /// any other action leaves the look where it is.
+    #[test]
+    fn the_head_tracks_only_while_the_player_stabs() {
+        use bevy::math::Affine3A;
+        use exa_combat::Attacking;
+
+        let (mut app, body) = steered_app("Stab", Stance::CombatIdle);
+        let mut ragdoll = Ragdoll::new(&[]).with_drive();
+        ragdoll
+            .drive
+            .as_mut()
+            .unwrap()
+            .set_frame(Affine3A::IDENTITY);
+        {
+            let mut entity = app.world_mut().entity_mut(body);
+            entity.insert((
+                ragdoll,
+                Attacking::new(AttackMotion::Stab, class::ONE_HANDED),
+            ));
+            let mut anim = entity.get_mut::<Animator>().unwrap();
+            anim.looping = false;
+        }
+        // Two metres to the body's right, far enough that the tracker
+        // takes the direction rather than the previous one.
+        app.insert_resource(CursorGround(Some(Vec3::new(2.0, 1.0, 0.0))));
+        behaviour_tick(&mut app);
+        let tracked = app.world().get::<Locomotion>(body).unwrap().look;
+        assert!(
+            tracked > 0.02 && tracked < 0.05,
+            "a stab moves the look one step toward the point, got {tracked}"
+        );
+        {
+            let mut entity = app.world_mut().entity_mut(body);
+            entity.remove::<Attacking>();
+            entity.get_mut::<Animator>().unwrap().action = "Attack Mid".into();
+        }
+        behaviour_tick(&mut app);
+        let kept = app.world().get::<Locomotion>(body).unwrap().look;
+        assert_eq!(
+            kept, tracked,
+            "another action does not run the tracker"
+        );
     }
 
     /// A held knock-out wake (0x40) stays until the player gives input: a
