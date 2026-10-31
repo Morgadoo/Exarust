@@ -299,17 +299,38 @@ fn the_force_shell_shader_composes_and_validates() {
     let (mut cache, shell) = cache_with_every_shader_and("embedded://exa_render/force_shell.wesl");
     // A skinned body or apparel mesh (storage-buffer skins), the same with
     // uniform-buffer skins, a rigid mesh (a held prop), and a rigid weapon
-    // with the strikes program.
-    let variants: [&[&'static str]; 4] = [
+    // with the strikes program, and a skinned body with the scan program.
+    let variants: [&[&'static str]; 5] = [
         &["VERTEX_UVS", "VERTEX_UVS_A", "SKINNED"],
         &["SKINNED", "SKINS_USE_UNIFORM_BUFFERS"],
         &["VERTEX_UVS", "VERTEX_UVS_A", "VERTEX_TANGENTS"],
         &["VERTEX_UVS", "VERTEX_UVS_A", "STRIKES"],
+        &["VERTEX_UVS", "VERTEX_UVS_A", "SKINNED", "SCAN"],
     ];
     for (pipeline, extra) in variants.iter().enumerate() {
         let module = cache
             .get(pipeline, shell, &defs(extra))
             .unwrap_or_else(|error| panic!("force_shell.wesl with {extra:?}: {error}"));
+        let stages = stages(&module);
+        assert!(stages.contains(&naga::ShaderStage::Vertex), "{extra:?}");
+        assert!(stages.contains(&naga::ShaderStage::Fragment), "{extra:?}");
+    }
+}
+
+#[test]
+fn the_displacement_shell_shader_composes_and_validates() {
+    let (mut cache, shell) = cache_with_every_shader_and("embedded://exa_render/disp_shell.wesl");
+    // A skinned body or apparel mesh (storage-buffer and uniform-buffer
+    // skins) for the shell, and the same for its depth pass.
+    let variants: [&[&'static str]; 3] = [
+        &["VERTEX_UVS", "VERTEX_UVS_A", "SKINNED"],
+        &["SKINNED", "SKINS_USE_UNIFORM_BUFFERS"],
+        &["VERTEX_UVS", "VERTEX_UVS_A", "SKINNED", "DEPTH_ONLY"],
+    ];
+    for (pipeline, extra) in variants.iter().enumerate() {
+        let module = cache
+            .get(pipeline, shell, &defs(extra))
+            .unwrap_or_else(|error| panic!("disp_shell.wesl with {extra:?}: {error}"));
         let stages = stages(&module);
         assert!(stages.contains(&naga::ShaderStage::Vertex), "{extra:?}");
         assert!(stages.contains(&naga::ShaderStage::Fragment), "{extra:?}");

@@ -400,7 +400,14 @@ impl Plugin for CastPlugin {
             .init_resource::<super::throw_live::ThrowPick>()
             .init_resource::<EffectDraws>()
             .init_resource::<EffectRoll>()
+            .init_resource::<super::debug_cast::DebugCasts>()
             .add_systems(Update, (run_bar_commands, sync_screen_bar).chain())
+            .add_systems(
+                Update,
+                super::debug_cast::run_debug_casts
+                    .after(crate::player::cursor_ground)
+                    .before(run_bar_commands),
+            )
             .add_systems(
                 Update,
                 (
@@ -457,6 +464,7 @@ impl Plugin for CastPlugin {
                     super::hold_live::end_holds,
                     super::hold_live::dress_strikes,
                     tick_shell_auras.after(tick_casters),
+                    super::vanish_live::step_vanishes.after(tick_casters),
                     super::kinesis_live::steer_kinesis,
                     super::throw_live::push_throws,
                     super::throw_live::sound_throws,
@@ -1568,6 +1576,17 @@ fn create_displacement(
                 0.0,
                 entity,
             );
+            if let Some(entity) = entity {
+                // The vanish effect builds the body's displacement shell,
+                // whose constructor draws its two texture positions.
+                let tex_pos = [roll.0.unit(), roll.0.unit()];
+                commands
+                    .entity(entity)
+                    .insert(super::vanish_live::LiveVanish::waiting(
+                        caster_entity,
+                        tex_pos,
+                    ));
+            }
             debug!("displacement vanish: effect node {entity:?}");
             entity
         }
@@ -1598,6 +1617,16 @@ fn create_displacement(
                 0.0,
                 entity,
             );
+            if let Some(entity) = entity {
+                // The Long Door runs the same vanish effect and shell.
+                let tex_pos = [roll.0.unit(), roll.0.unit()];
+                commands
+                    .entity(entity)
+                    .insert(super::vanish_live::LiveVanish::waiting(
+                        caster_entity,
+                        tex_pos,
+                    ));
+            }
             debug!("displacement long door: effect node {entity:?}");
             entity
         }

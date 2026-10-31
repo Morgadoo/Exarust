@@ -4,7 +4,7 @@
 //! ([`draw_shell_auras`]), drawn with `exa_render::force_effects`.
 //!
 //! - **The noise picture** is made the first frame a force effect (a shell
-//!   aura, a blast, bolt or wave, a torrent) exists, from the engine's noise
+//!   aura, a blast, bolt or wave, a torrent, a teleporter scan) exists, from the engine's noise
 //!   object ([`super::visuals::noise_field`]) seeded from the engine's
 //!   generator, and uploaded again (level 0 and its mip chain, the parameter
 //!   word's bit 0x40) only when the object's tick reports a new picture
@@ -61,7 +61,12 @@ pub struct ForceNoise {
 }
 
 /// The force effects that bind the noise picture.
-type ForceEffect = Or<(With<LiveShellAura>, With<LiveBlast>, With<LiveTorrent>)>;
+type ForceEffect = Or<(
+    With<LiveShellAura>,
+    With<LiveBlast>,
+    With<LiveTorrent>,
+    With<crate::effects::scan::ScanEffect>,
+)>;
 
 /// Whether any force effect that binds the noise picture is alive.
 pub(crate) fn force_effects_alive(effects: Query<(), ForceEffect>) -> bool {
@@ -197,6 +202,7 @@ pub fn shell_params(uniforms: &ShellUniforms) -> ForceShellParams {
         fade: uniforms.fade,
         push: SHELL_PUSH_M,
         gradient: Vec4::ZERO,
+        colour: Vec4::ZERO,
     }
 }
 
@@ -311,6 +317,7 @@ pub(crate) fn draw_shell_auras(
                     params,
                     noise: image.clone(),
                     strikes: false,
+                    scan: false,
                 });
                 for (source, mesh, skin) in &sources {
                     // A child of the source mesh: it sorts and hides with it.
@@ -511,6 +518,7 @@ pub(crate) fn draw_rigid_auras(
                     params: rigid_params(&aura.0, &frame, fit, strikes, view),
                     noise: image.clone(),
                     strikes: strikes.is_some(),
+                    scan: false,
                 });
                 for (source, mesh, ..) in &sources {
                     commands.spawn((

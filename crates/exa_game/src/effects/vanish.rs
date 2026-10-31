@@ -223,6 +223,33 @@ impl Vanish {
         self.items.fill(0.0);
     }
 
+    /// Reveal the bodies (shown 1, the show call with 0x20, the render bit
+    /// left alone) and the items: the table's revealing phase, and the
+    /// power's move as the body comes back.
+    pub fn reveal(&mut self) {
+        for body in &mut self.bodies {
+            body.shown = 1.0;
+            body.call = REVEAL_CALL;
+        }
+        self.items.fill(1.0);
+    }
+
+    /// Whether the vanish draws its bodies itself: a body whose show call
+    /// left bits 0x30 set is out of the scene's own draw (the original
+    /// clears its render bit 0) and drawn only by the vanish's segment
+    /// pass; a hide (call 0) gives it back.
+    pub fn draws_bodies(&self) -> bool {
+        self.bodies.iter().any(|body| body.call & SHOW_CALL != 0)
+    }
+
+    /// The power's move as the body comes back: the bodies are revealed,
+    /// the table restarts its clock at `now_ms` and moves on one entry.
+    pub fn come_back(&mut self, now_ms: u32) {
+        self.since_ms = now_ms;
+        self.reveal();
+        self.phase = self.phase.wrapping_add(1);
+    }
+
     /// Show the bodies and the items.
     pub fn show(&mut self) {
         for body in &mut self.bodies {
@@ -295,13 +322,7 @@ impl Vanish {
                         body.call = STAGE_CALL;
                     }
                 }
-                PhaseCall::Reveal => {
-                    for body in &mut self.bodies {
-                        body.shown = 1.0;
-                        body.call = REVEAL_CALL;
-                    }
-                    self.items.fill(1.0);
-                }
+                PhaseCall::Reveal => self.reveal(),
                 PhaseCall::Show => self.show(),
                 PhaseCall::Hide => self.hide(),
             }

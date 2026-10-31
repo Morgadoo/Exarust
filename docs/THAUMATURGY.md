@@ -581,6 +581,41 @@ roll is at most `100 >> (s + 1)` (s ≥ 0) or `100 − (100 >> (1 − s))`
 miss. A passing weapon loses its collisions for 500 ms and leaves a wisp
 at the contact. The AI's long door and summoning words carry their cost.
 
+### The vanish's shell and body draw
+
+`exa_game::thaum::vanish_live`. A Vanish or Long Door cast's effect node
+carries the vanish effect: its phase table (`effects::vanish`) and the
+body's displacement shell (`effects::shell::Shell`, drawn with
+`dispshell_v`/`dispshell_f`, RENDERING.md, Force effects).
+
+- **Two callbacks a frame.** Before the scene the shown amount comes from
+  the table's current entry (0x400 fades over the entry, reversed without
+  0x800; 0x1000 shows 1) and, above one half, the entry's segment pass
+  runs; after it the table moves on when the entry's end has passed, the
+  segment pass runs at one half or below, and the shell is drawn with
+  `Interior` = 1 − shown.
+- **The segment pass.** Bit 0x200 draws the body's parts depth only
+  (colour writes off), bit 0x400 draws them blended at the shown amount.
+  A body whose show call left bits 0x30 set (the stage 0x10, reveal 0x20
+  and show 0x30 calls) is out of the scene's own draw; a hide (0) gives it
+  back. Exarust hides the caster's meshes (keeping their visibility) while
+  the vanish draws the body and the pass does not show it; the fade half
+  shows the body above one half [guess for the 100–200 ms blend].
+- **The shell follows the power.** It opens over 400 ms from the cast;
+  the power writes state 2 (closing over 300 ms from where it is) as the
+  body vanishes, state 1 stamped now as it comes back, and state 2 with
+  leave to finish when the come-back ends. The shell's close calls the
+  table's phase hook: entry 4 and the show call, or on the last entry the
+  hide and the shell let go. For a player's Vanish cast at 0 ms the body
+  is drawn by the vanish from 350 ms, fades 350–450 ms, the shell's
+  inside darkens the hidden silhouette until it has closed (about 700 ms);
+  the release reopens the shell over a depth-only body, the body fades
+  back in 200–400 ms after it and returns to the scene at 400 ms, and the
+  shell closes 300 ms later.
+- **Debug.** `--debug-cast slot@frame[~release]` casts a bar slot at a
+  frame after the load (and uses it again at the release frame); the
+  cursor's ground point goes 1.5 m beyond the player for the Long Door.
+
 ## A constantly displaced body
 
 `exa_game::thaum::veil`. The body-side half of the constant displacement:

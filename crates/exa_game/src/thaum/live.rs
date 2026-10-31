@@ -113,6 +113,10 @@ impl Plugin for ThaumEffectsPlugin {
                             super::effect_draw::draw_shell_auras,
                             super::effect_draw::draw_rigid_auras,
                             super::effect_draw::drop_shell_copies,
+                            crate::effects::scan_draw::draw_scans,
+                            crate::effects::scan_draw::drop_scan_copies,
+                            super::vanish_live::draw_vanishes,
+                            super::vanish_live::drop_vanish_copies,
                         ),
                         (
                             super::effect_light::blast_lights,
@@ -909,6 +913,7 @@ mod tests {
             .init_asset::<Image>()
             .init_asset::<exa_render::force_effects::ForceRibbonMaterial>()
             .init_asset::<exa_render::force_effects::ForceShellMaterial>()
+            .init_asset::<exa_render::force_effects::DispShellMaterial>()
             .add_plugins(ThaumEffectsPlugin);
         let mut grid = NavGrid::empty(40, 40, 0.0);
         for z in 0..40 {
@@ -1101,6 +1106,7 @@ mod tests {
             .init_asset::<Image>()
             .init_asset::<exa_render::force_effects::ForceRibbonMaterial>()
             .init_asset::<exa_render::force_effects::ForceShellMaterial>()
+            .init_asset::<exa_render::force_effects::DispShellMaterial>()
             .add_plugins(ThaumEffectsPlugin);
         for _ in 0..3 {
             app.update();
