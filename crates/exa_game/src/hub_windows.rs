@@ -83,6 +83,9 @@ pub struct ArenaCareer {
     pub picks: crate::arena_match::ArenaPicks,
     /// The merchant's own stock, apart from the shop's shelf.
     pub merchant_stock: Vec<u32>,
+    /// Items the company holds off the shelf: a purchase joins them and a
+    /// sale takes them. The shop lists them in the pack.
+    pub goods: Vec<u32>,
     /// The merchant's stock type: the kinds it sells, 0 (the default kinds)
     /// in a new career. The save's merchant chunk keeps it.
     pub merchant_kinds: u32,
@@ -147,6 +150,7 @@ impl Default for ArenaCareer {
             matches_today: 0,
             picks: crate::arena_match::ArenaPicks::default(),
             merchant_stock: Vec::new(),
+            goods: Vec::new(),
             merchant_kinds: 0,
             merchant_rank: -1,
             venue_items: Vec::new(),
@@ -186,6 +190,7 @@ impl ArenaCareer {
     pub fn reset(&mut self) {
         self.company.stock.clear();
         self.merchant_stock.clear();
+        self.goods.clear();
         self.merchant_kinds = 0;
         self.merchant_rank = -1;
         self.company
@@ -530,6 +535,9 @@ pub struct ShopModel {
     /// Each row's price word, parallel to [`Self::stock`]. Zero means the
     /// catalogue has no value for that item, so a click leaves the row.
     pub prices: Vec<u16>,
+    /// The player's goods shown in the pack, and each one's price word.
+    pub goods: Vec<(u32, String)>,
+    pub good_prices: Vec<u16>,
 }
 
 /// A hub window's form: its rectangle and the controls the window manager
@@ -643,11 +651,47 @@ impl HubWindows {
             .last()
             .map(|_| GuiRect::new(0, SHOP_SIZE.1 - 32, 120, 28));
         if trade.is_some_and(|rect| rect.contains(point.0, point.1)) {
+            let bought: Vec<u32> = shop
+                .window
+                .buy_items
+                .iter()
+                .copied()
+                .filter(|id| *id != 0)
+                .collect();
+            let sold: Vec<u32> = shop
+                .window
+                .sell_items
+                .iter()
+                .copied()
+                .filter(|id| *id != 0)
+                .collect();
             let done = shop.window.confirm(&mut career.company);
             if done {
                 shop.window.money = career.company.copper;
+                career.goods.extend(bought);
+                for id in sold {
+                    if let Some(at) = career.goods.iter().position(|held| *held == id) {
+                        career.goods.remove(at);
+                    }
+                }
             }
             return done;
+        }
+        let pack = shop.window.panels()[1];
+        let pack_rect = GuiRect::new(pack[0], pack[1], pack[2], pack[3]);
+        if pack_rect.contains(point.0, point.1) {
+            let row = (point.1 - pack_rect.top - 4) / ROW_HEIGHT;
+            if row >= 0 {
+                let row = row as usize;
+                let price = shop.good_prices.get(row).copied().unwrap_or(0);
+                let id = shop.goods.get(row).map(|good| good.0).unwrap_or(0);
+                if price != 0 && shop.window.offer_item(id, price).is_some() {
+                    shop.goods.remove(row);
+                    shop.good_prices.remove(row);
+                    info!("shop: item {id:#x} joins the sell basket at price {price}");
+                    return true;
+                }
+            }
         }
         // A click on a priced stock row takes it into the buy basket. The
         // row's place matches the shelf the window bound.
@@ -740,6 +784,12 @@ impl HubWindows {
             // Filled from the catalogue after the window opens. A zero
             // leaves the row on the shelf.
             prices: vec![0; stock.len()],
+            goods: career
+                .goods
+                .iter()
+                .map(|&id| (id, names.name_of(id)))
+                .collect(),
+            good_prices: vec![0; career.goods.len()],
         };
         self.shop = Some(shop);
         self.kind = HubWindowKind::Shop;
@@ -758,6 +808,11 @@ impl HubWindows {
         };
         shop.prices = shop
             .stock
+            .iter()
+            .map(|(id, _)| price_of(*id))
+            .collect();
+        shop.good_prices = shop
+            .goods
             .iter()
             .map(|(id, _)| price_of(*id))
             .collect();
@@ -1277,6 +1332,20 @@ fn paint_shop(shop: &ShopModel, bounds: GuiRect, look: &Look) -> gui_paint::Pain
             look,
         );
     }
+    let pack = shop.window.panels()[1];
+    let pack_rect = at4(bounds, (pack[0], pack[1], pack[2], pack[3]));
+    for (row, (_, name)) in shop.goods.iter().enumerate() {
+        let y = pack_rect.top + 4 + ROW_HEIGHT * row as i32;
+        if y + ROW_HEIGHT > pack_rect.bottom {
+            break;
+        }
+        paint_text(
+            &mut painted,
+            GuiRect::new(pack_rect.left + 4, y, pack_rect.width() - 8, ROW_HEIGHT),
+            name,
+            look,
+        );
+    }
     let bottom = [
         (30, 0, format!("{}", shop.window.totals.1)),
         (260, 0, format!("{}", shop.window.totals.0)),
@@ -1712,6 +1781,34 @@ mod tests {
     }
 
     #[test]
+    fn a_sale_leaves_the_goods_and_a_purchase_joins_them() {
+        let mut career = career();
+        career.company.stock = vec![7];
+        career.goods = vec![9];
+        let names = HubItemNames::default();
+        let mut windows = HubWindows::default();
+        windows.open_shop(false, &career, &names);
+        windows.price_shop_rows(|id| match id {
+            7 => 5,
+            9 => 12,
+            _ => 0,
+        });
+        let pack = windows.shop.as_ref().unwrap().window.panels()[1];
+        assert!(windows.shop_click((pack[0] + 4, pack[1] + 6), &mut career));
+        assert_eq!(windows.shop.as_ref().unwrap().window.sell_items, [9]);
+        let point = (10, SHOP_SIZE.1 - 20);
+        assert!(windows.shop_click(point, &mut career));
+        assert_eq!(career.goods, Vec::<u32>::new());
+        assert!(career.company.stock.contains(&9));
+        windows.open_shop(false, &career, &names);
+        windows.price_shop_rows(|id| if id == 7 { 5 } else { 0 });
+        let panel = windows.shop.as_ref().unwrap().window.panels()[4];
+        assert!(windows.shop_click((panel[0] + 4, panel[1] + 6), &mut career));
+        assert!(windows.shop_click(point, &mut career));
+        assert_eq!(career.goods, [7]);
+        assert!(!career.company.stock.contains(&7));
+    }
+
     fn the_catalogue_prices_a_stock_row() {
         let mut career = career();
         career.company.stock = vec![7];
