@@ -790,6 +790,7 @@ fn insert_object_records(
 /// container) as a static model, or a model-less record as its container
 /// volume or placeholder node. `None` for objects of a slot other than the
 /// level's.
+#[allow(clippy::too_many_arguments)]
 fn spawn_placed_object(
     commands: &mut Commands,
     loader: &mut ModelLoader<'_>,
@@ -798,6 +799,7 @@ fn spawn_placed_object(
     parent: Entity,
     object: &exa_formats::rfc::PlacedObject,
     mechanism_bodies: bodies::MechanismBodies,
+    darkness: f32,
 ) -> Option<PlacedSpawn> {
     let item = level_item(scene, global, object)?;
     // `@` names a weapon assembled by a factory.
@@ -883,7 +885,7 @@ fn spawn_placed_object(
         }
         None => model,
     };
-    let (e, nodes) = spawn_model_nodes(commands, model, Some(placement));
+    let (e, nodes) = spawn_model_nodes_at(commands, model, Some(placement), darkness);
     mark_cloth_starts(commands, model, &nodes, &object.attachments);
     commands.entity(e).insert((
         Name::new(item.name.clone()),
@@ -949,6 +951,8 @@ struct PlacedObjectBuilder<'a, 'w, 's, 'l> {
     items: &'a [Item],
     root: Entity,
     mechanism_bodies: bodies::MechanismBodies,
+    /// The level's daylight scale, for the object's visibility rules.
+    darkness: f32,
     /// What the last entry's spawn came to.
     spawned: Option<PlacedSpawn>,
 }
@@ -964,6 +968,7 @@ impl exa_assets::content_stream::ContentBuilders for PlacedObjectBuilder<'_, '_,
             self.root,
             object,
             self.mechanism_bodies,
+            self.darkness,
         );
         let entity = match self.spawned {
             // The database builder found no model: the original's missing
@@ -1322,16 +1327,58 @@ fn apply_transform_attachments(
 /// Spawns `model` under a new entity. With a placement, the placement takes
 /// the place of the model's root transform, the way a level places an object;
 /// without one the stored node transforms are used.
+/// Whether a visibility rule on `index` or one of its ancestors hides it.
+/// `0x100000` hides a light. `0x200000` hides a light or a fire once
+/// `darkness` is above the limit; a NaN or exactly the limit leaves it shown.
+fn node_hidden(model: &Model, index: usize, darkness: f32) -> bool {
+    let node = &model.nodes[index];
+    let light = node.light.is_some();
+    let fire = node.fire.is_some();
+    if !light && !fire {
+        return false;
+    }
+    let mut at = Some(index);
+    for _ in 0..=model.nodes.len() {
+        let Some(i) = at else {
+            return false;
+        };
+        let flags = model.nodes[i].visibility & exa_formats::rfc::VISIBILITY_MASK;
+        if flags == exa_formats::rfc::VISIBILITY_HIDE && light {
+            return true;
+        }
+        if flags == exa_formats::rfc::VISIBILITY_FADE
+            && (light || fire)
+            && darkness > exa_formats::rfc::DARKNESS_LIMIT
+        {
+            return true;
+        }
+        at = model.nodes[i].parent;
+    }
+    false
+}
+
 pub fn spawn_model(commands: &mut Commands, model: &Model, placement: Option<Transform>) -> Entity {
     spawn_model_nodes(commands, model, placement).0
 }
 
 /// [`spawn_model`], also returning each node's entity (in the model's node
-/// order).
+/// order). Lights and fires a visibility rule hides are spawned hidden.
+/// `darkness` is the scene's daylight scale; pass 0 when the level has not
+/// placed the sun.
 pub fn spawn_model_nodes(
     commands: &mut Commands,
     model: &Model,
     placement: Option<Transform>,
+) -> (Entity, Vec<Entity>) {
+    spawn_model_nodes_at(commands, model, placement, 0.0)
+}
+
+/// [`spawn_model_nodes`] at a known daylight scale.
+pub fn spawn_model_nodes_at(
+    commands: &mut Commands,
+    model: &Model,
+    placement: Option<Transform>,
+    darkness: f32,
 ) -> (Entity, Vec<Entity>) {
     let root = commands
         .spawn((placement.unwrap_or_default(), Visibility::default()))
@@ -1356,7 +1403,11 @@ pub fn spawn_model_nodes(
                 // geometry carries no marker and stays the level.
                 exa_physics::StaticNode,
                 local,
-                Visibility::default(),
+                if node_hidden(model, i, darkness) {
+                    Visibility::Hidden
+                } else {
+                    Visibility::default()
+                },
                 PartBounds {
                     centre: node.bounds.0,
                     radius: node.bounds.1,
@@ -1718,6 +1769,12 @@ pub struct LevelLoad {
     /// found, and the placed player's position (metres) once built.
     missing_database_objects: usize,
     player_focus: Option<Vec3>,
+    /// The clock seed this load draws its day from, taken once.
+    engine_seed: u32,
+    /// The scene's daylight scale for that day. Visibility rules use it
+    /// while the level's models spawn; the lighting stage places the sun
+    /// with the same seed.
+    daylight: f32,
 }
 
 impl LevelLoad {
@@ -1782,6 +1839,20 @@ impl LevelLoad {
             .and_then(|p| p.get("locales.rdb"));
         let locale = locales_bytes.and_then(|b| exa_formats::roles::locale_id(b, &entry));
         let locales = locales_bytes.and_then(|b| exa_formats::locales::LocaleDb::load(b).ok());
+        let engine_seed = environment::clock_seed();
+        let daylight = environment::level_lighting_scene(
+            &entry,
+            scene.environment.as_ref(),
+            0,
+            None,
+            Some(environment::PresetInput {
+                seed: 0,
+                engine_seed,
+                now: 0,
+            }),
+        )
+        .env
+        .daylight_scale;
         Some(Self {
             entry,
             locale,
@@ -1810,6 +1881,8 @@ impl LevelLoad {
             stream: None,
             missing_database_objects: 0,
             player_focus: None,
+            engine_seed,
+            daylight,
         })
     }
 
@@ -1894,7 +1967,7 @@ impl LevelLoad {
                 }
                 if let Some(own) = loader.model(PackKind::Resource, &self.entry) {
                     self.lights += own.nodes.iter().filter(|n| n.light.is_some()).count();
-                    let (e, nodes) = spawn_model_nodes(commands, &own, None);
+                    let (e, nodes) = spawn_model_nodes_at(commands, &own, None, self.daylight);
                     bodies::mark_moving_meshes(commands, &own, &nodes, bodies::LevelGeometry::None);
                     self.bodies.add(bodies::register_bodies(
                         commands,
@@ -1945,7 +2018,12 @@ impl LevelLoad {
                                 }
                                 None => &model,
                             };
-                            let (e, nodes) = spawn_model_nodes(commands, model, Some(placement));
+                            let (e, nodes) = spawn_model_nodes_at(
+                                commands,
+                                model,
+                                Some(placement),
+                                self.daylight,
+                            );
                             mark_cloth_starts(commands, model, &nodes, &prop.attachments);
                             // A prop placed static is level geometry.
                             let (placement, geometry) = if prop.is_static() {
@@ -2015,6 +2093,7 @@ impl LevelLoad {
                         items: &self.global_items,
                         root: self.root,
                         mechanism_bodies: self.mechanism_bodies,
+                        darkness: self.daylight,
                         spawned: None,
                     };
                     stream.step(&mut builder);
@@ -2040,6 +2119,7 @@ impl LevelLoad {
                         items: &self.global_items,
                         root: self.root,
                         mechanism_bodies: self.mechanism_bodies,
+                        darkness: self.daylight,
                         spawned: None,
                     };
                     // Every entry is done, so the wait builds nothing more:
@@ -2120,7 +2200,7 @@ impl LevelLoad {
         // A level load applies the scene preset its name selects (the save
         // unit's indoor and outdoor presets), drawing the outdoor day and
         // weather from the clock seed the original takes at scene creation.
-        let engine_seed = environment::clock_seed();
+        let engine_seed = self.engine_seed;
         let scene_lighting = environment::level_lighting_scene(
             &self.entry,
             self.scene.environment.as_ref(),
@@ -2998,12 +3078,63 @@ mod tests {
             shadow_bias: 0,
             is_skin: false,
             placeholder: false,
+            visibility: 0,
             cloth: false,
             cloth_mesh: None,
             mesh: false,
             render_flags: 0,
             triangles: None,
         }
+    }
+
+    /// A fade rule hides a light under it only once the daylight is above
+    /// the limit. Exactly the limit, and a NaN, leave it shown. A hide rule
+    /// hides the light at any daylight.
+    #[test]
+    fn a_visibility_rule_hides_a_light_when_the_day_is_up() {
+        let mut parent = node("room", None, None);
+        parent.visibility = exa_formats::rfc::VISIBILITY_FADE;
+        let mut lamp = node("lamp", Some(0), None);
+        lamp.light = Some(exa_formats::rfc::Light {
+            flags: 0,
+            color: [1.0, 1.0, 1.0],
+            multiplier: 1.0,
+            intensity: 1.0,
+            radius: 1.0,
+            softness: 0.0,
+            spot: None,
+            ranged: true,
+            animation: None,
+        });
+        let model = Model {
+            nodes: vec![parent, lamp],
+        };
+        assert!(!node_hidden(&model, 1, exa_formats::rfc::DARKNESS_LIMIT));
+        assert!(!node_hidden(&model, 1, f32::NAN));
+        assert!(node_hidden(&model, 1, 0.13));
+        assert!(
+            !node_hidden(&model, 0, 0.13),
+            "the rule node itself is not a light"
+        );
+
+        let mut parent = node("room", None, None);
+        parent.visibility = exa_formats::rfc::VISIBILITY_HIDE;
+        let mut lamp = node("lamp", Some(0), None);
+        lamp.light = Some(exa_formats::rfc::Light {
+            flags: 0,
+            color: [1.0, 1.0, 1.0],
+            multiplier: 1.0,
+            intensity: 1.0,
+            radius: 1.0,
+            softness: 0.0,
+            spot: None,
+            ranged: true,
+            animation: None,
+        });
+        let model = Model {
+            nodes: vec![parent, lamp],
+        };
+        assert!(node_hidden(&model, 1, 0.0));
     }
 
     /// A node's centred GI flag (flags2 0x10) reaches its entity as

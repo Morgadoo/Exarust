@@ -1581,6 +1581,7 @@ mod tests {
             shadow_bias: 0,
             is_skin: false,
             placeholder: false,
+            visibility: 0,
             cloth: false,
             cloth_mesh: None,
             mesh: true,

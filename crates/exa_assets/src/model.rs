@@ -137,6 +137,10 @@ pub struct ModelNode {
     /// ([`exa_formats::rfc::Mesh::render_flags`]). The dressed-mesh pass
     /// reads flag `0x40` to find overlay meshes and mark slot meshes.
     pub render_flags: u32,
+    /// The node's visibility rule (`0x100000` hides its lights, `0x200000`
+    /// hides its lights and fires once the level's daylight is above the
+    /// threshold). Copied from the file; resolved when the model is spawned.
+    pub visibility: u32,
 }
 
 /// What a cloth node's controller is built from beyond its drawn parts:
@@ -855,6 +859,7 @@ impl ModelLoader<'_> {
                 mesh: mesh.is_some(),
                 triangles,
                 render_flags: mesh.map_or(0, |mesh| mesh.render_flags),
+                visibility: node.flags,
             });
         }
         // An instance node shares the node it names (1-based): the original
@@ -3668,6 +3673,7 @@ mod tests {
             shadow_bias: 0,
             is_skin: false,
             placeholder: false,
+            visibility: 0,
             cloth: false,
             cloth_mesh: None,
             mesh: false,
