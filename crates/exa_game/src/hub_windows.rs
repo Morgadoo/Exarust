@@ -528,7 +528,7 @@ pub struct ShopModel {
     /// The stock's ids and names, in shelf order.
     pub stock: Vec<(u32, String)>,
     /// Each row's price word, parallel to [`Self::stock`]. Zero means the
-    /// item body that holds the price is not live, so a click leaves the row.
+    /// catalogue has no value for that item, so a click leaves the row.
     pub prices: Vec<u16>,
 }
 
@@ -737,8 +737,8 @@ impl HubWindows {
             window,
             merchant,
             stock: stock.iter().map(|&id| (id, names.name_of(id))).collect(),
-            // The price word lives on the item body, which the shop does
-            // not have yet. A zero leaves the row on the shelf.
+            // Filled from the catalogue after the window opens. A zero
+            // leaves the row on the shelf.
             prices: vec![0; stock.len()],
         };
         self.shop = Some(shop);
@@ -748,6 +748,19 @@ impl HubWindows {
             centred(SHOP_SIZE, self.task.screen),
             Vec::new(),
         );
+    }
+
+    /// Fill each stock row's price word. `price_of` reads the catalogue
+    /// (the item, or the copy's source record). Zero leaves the row.
+    pub fn price_shop_rows(&mut self, price_of: impl Fn(u32) -> u16) {
+        let Some(shop) = self.shop.as_mut() else {
+            return;
+        };
+        shop.prices = shop
+            .stock
+            .iter()
+            .map(|(id, _)| price_of(*id))
+            .collect();
     }
 
     /// Closes the open window, running its own close bookkeeping.
@@ -1699,6 +1712,20 @@ mod tests {
     }
 
     #[test]
+    fn the_catalogue_prices_a_stock_row() {
+        let mut career = career();
+        career.company.stock = vec![7];
+        let names = HubItemNames::default();
+        let mut windows = HubWindows::default();
+        windows.open_shop(false, &career, &names);
+        windows.price_shop_rows(|id| if id == 7 { 24 } else { 0 });
+        let panel = windows.shop.as_ref().unwrap().window.panels()[4];
+        let point = (panel[0] + 4, panel[1] + 6);
+        assert!(windows.shop_click(point, &mut career));
+        assert_eq!(windows.shop.as_ref().unwrap().window.buy, [24]);
+        assert!(windows.shop.as_ref().unwrap().stock.is_empty());
+    }
+
     fn a_priced_stock_row_joins_the_buy_basket() {
         let mut career = career();
         career.company.stock = vec![7, 9];
