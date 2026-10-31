@@ -6,9 +6,11 @@
 //! The swing clock, the strike window and the velocity trackers are in
 //! [`crate::swing`]; the held weapon's own handling forces are in
 //! [`crate::weapon`]. The nudges here return the push (cm) at the striker's
-//! point; the caller applies it with its weights. The fist nudge is applied while an unarmed window is open; the
-//! blade nudges are reproduced but not wired: the swing does not push a
-//! weapon body yet. The tangle break is wired ([`break_tangles`], each living
+//! point; the caller applies it with its weights. The fist nudge is applied while an unarmed window is open. The
+//! overhead's pull is applied on an armed overhead whose window is open.
+//! The edge alignment needs the blade's attach-time edge points, which are
+//! not kept, and the side swing's homing needs the engagement target's
+//! chest; neither is applied. The tangle break is wired ([`break_tangles`], each living
 //! body tick's readiness stage). Rules and constants: reverse engineering
 //! of the swing routine and the body tick.
 
@@ -148,6 +150,14 @@ pub fn edge_push(progress: f32, edge: &Edge) -> Option<(Vec3, Vec3)> {
     }
     let push = out * share;
     Some((push, -push))
+}
+
+/// Whether an armed overhead pulls its tip this tick: the strike window is
+/// open, the weapon class uses a hand, and the clock is past one half and
+/// under nine tenths. The compares are the original's float ones, so a
+/// non-number clock does not pull.
+pub fn overhead_due(progress: f32, class: u8, window: bool) -> bool {
+    window && class & 0x30 != 0 && progress > 0.5 && progress < 0.9
 }
 
 /// The overhead's pull toward the vertical plane through the heading and
@@ -542,6 +552,18 @@ mod tests {
         assert!(edge_push(0.9, &edge(Vec3::X, false, false)).is_none());
         assert!(edge_push(0.9, &edge(Vec3::new(0.0, 0.0, 50.0), false, false)).is_none());
         assert!(edge_push(0.9, &edge(Vec3::splat(f32::NAN), false, false)).is_none());
+    }
+
+    /// An armed overhead pulls only while its window is open and the clock
+    /// is past one half and under nine tenths.
+    #[test]
+    fn an_armed_overhead_pulls_only_inside_its_window() {
+        assert!(overhead_due(0.6, 0x10, true));
+        assert!(!overhead_due(0.5, 0x10, true));
+        assert!(!overhead_due(0.9, 0x10, true));
+        assert!(!overhead_due(0.6, 0x10, false));
+        assert!(!overhead_due(0.6, 0, true));
+        assert!(!overhead_due(f32::NAN, 0x30, true));
     }
 
     /// The overhead pulls the tip toward the chest's plane: at a clock of

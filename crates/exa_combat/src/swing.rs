@@ -1012,6 +1012,84 @@ pub fn run_swings(
             aim_cm,
         );
     }
+    // An armed overhead, window open and clock past one half, pulls the
+    // primary weapon's tip toward the vertical plane through the chest
+    // along the heading. The edge alignment and the side swing's homing
+    // are not applied here.
+    if crate::strike_body::overhead_due(
+        progress,
+        attacking.weapon_class,
+        attacker
+            .primary
+            .is_some_and(|slot| state.open[slot.index()]),
+    ) && motion == AttackMotion::Overhead
+        && let Some(slot) = attacker.primary
+        && let Some((item, blade, item_gt)) = blade_frames
+            .iter()
+            .find(|(_, b, _)| b.wielder == entity && b.slot == slot && b.record.armed())
+        && let Some(body) = body.as_deref_mut()
+    {
+        pull_overhead(
+            body,
+            &mut item_bodies,
+            item,
+            blade,
+            item_gt,
+            progress,
+            u32::from(attacking.weapon_class),
+        );
+    }
+}
+
+/// Pulls the overhead's tip toward the chest's plane, along the character
+/// frame's facing (the body's heading, flattened). The push is in
+/// centimetres; the part moves in metres. A weapon with its own body takes
+/// it at the tip; a held model takes it through the gripping hand.
+fn pull_overhead(
+    body: &mut Ragdoll,
+    item_bodies: &mut Query<&mut Ragdoll, (With<Blade>, Without<Fighter>)>,
+    item: Entity,
+    blade: &Blade,
+    at: &GlobalTransform,
+    progress: f32,
+    class: u32,
+) {
+    let Some(frame) = body.drive.as_ref().and_then(|d| d.frame()) else {
+        return;
+    };
+    let Some(chest) = body.chest_point() else {
+        return;
+    };
+    let facing = frame.transform_vector3(Vec3::Z);
+    let flat = Vec3::new(facing.x, 0.0, facing.z);
+    if flat.length_squared() == 0.0 {
+        return;
+    }
+    let tip = at.transform_point(Vec3::Y * blade.length);
+    let before = blade.tip_last.unwrap_or(tip);
+    let Some(pull) = crate::strike_body::overhead_pull(
+        progress,
+        chest * CM,
+        tip * CM,
+        before * CM,
+        flat.normalize(),
+    ) else {
+        return;
+    };
+    match item_bodies.get_mut(item) {
+        Ok(mut own) => own.push_at(0, tip, pull / CM),
+        Err(_) => {
+            let grip_bone = match crate::grip::grip(class & 0xFFFF, blade.slot).map(|g| g.hand) {
+                Some(crate::grip::GripHand::Left) => LEFT_HAND_BONE,
+                _ => RIGHT_HAND_BONE,
+            };
+            if let Some(i) = body.parts.iter().position(|p| p.bone == grip_bone)
+                && let Some(at) = body.part_centre(i)
+            {
+                body.push_at(i, at, pull / CM);
+            }
+        }
+    }
 }
 
 /// The held weapon a stab drives: its entity, blade and frame, and the
