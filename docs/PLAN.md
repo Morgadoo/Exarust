@@ -1622,6 +1622,8 @@ Round 46 tickchain: AI timings no longer depend on the frame rate; cost 0.17 ms 
 
 The player's head tracker runs while it stabs (the behaviour tick calls it only then): the eye is the character frame times (−20, 10, 0) cm and the tracked flat yaw is the look the sampler reads. Other actions leave the look alone. The far variant still has no caller.
 
+A mechanism relay now forwards in the running game: a broadcast reaches every tagged door linked to it, a pair sends to both targets, and a combiner keeps its state on the record. A sequence relay still has no stored counter, and a light job still has no electric object to power.
+
 ### Phase 7 — Game modes and content
 
 Done (change `run-an-arena-career`): a new company starts with 343 copper

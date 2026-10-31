@@ -26,10 +26,11 @@
 //! every door body under the object's node, each woken, or a class 5 push
 //! on the push surface under it. A class 6 fire job spawns a fire at the
 //! node at the signalled size. A light job (it powers the electric object
-//! under the node, `exa_physics::mechanism::electric`) and a relay are not
-//! run: no system holds electric objects or the level's listener lists. A
-//! target with no record, or no body of the right kind under it (a static
-//! sliding door), does nothing.
+//! under the node, `exa_physics::mechanism::electric`) is not run: no system
+//! holds electric objects. A relay forwards through the placed records: a
+//! broadcast to every tagged listener, a pair to both of its targets, and a
+//! combiner by the source record's bit. A target with no record, or no body
+//! of the right kind under it (a static sliding door), does nothing.
 //!
 //! Evidence: the object database's door and operative sections
 //! (`docs/formats/OTHER.md`) and the records the original's door, lever
@@ -42,7 +43,7 @@ use exa_physics::body::{
     BodySystems, BodyTicks, DoorBody, PlateBody, Ragdoll, SlideBody, WAKE_COUNT,
 };
 use exa_physics::mechanism::{Dispatch, DoorOrder, LockSounded, MechanismSignal};
-use exa_physics::{door, lever, mechanism, plate};
+use exa_physics::{door, lever, mechanism, plate, relay};
 
 /// Routes the mechanisms' signals to their targets. Added by
 /// [`crate::WorldPlugin`].
@@ -56,10 +57,15 @@ impl Plugin for MechanismPlugin {
         if !app.world().contains_resource::<Messages<LockSounded>>() {
             app.add_message::<LockSounded>();
         }
-        app.add_message::<OpenDoorsUnder>().add_systems(
-            FixedUpdate,
-            (route_signals, open_doors_under).after(BodySystems),
-        );
+        app.add_message::<OpenDoorsUnder>()
+            .add_message::<RelayForward>()
+            .add_systems(
+                FixedUpdate,
+                (route_signals, open_doors_under)
+                    .after(BodySystems)
+                    .before(send_relay_forwards),
+            )
+            .add_systems(FixedUpdate, send_relay_forwards);
     }
 }
 
@@ -138,19 +144,42 @@ type MechanismParts = (
 
 /// Runs each mechanism signal on its target's records: a door order on the
 /// door bodies under the target's node (each woken), a push on its push
-/// surface, or a fire job (a fire is spawned at the node). Light jobs and
-/// relays are not run.
+/// surface, a fire job (a fire is spawned at the node), or a relay that
+/// forwards to the listeners or targets its records name. A light job is
+/// not run.
+/// A relay's forwarded signal, written after [`route_signals`] has finished
+/// reading the incoming queue.
+#[derive(Message, Clone, Copy)]
+pub(crate) struct RelayForward(MechanismSignal);
+
+/// Writes the relays' forwards into the signal queue.
+fn send_relay_forwards(
+    mut forwards: MessageReader<RelayForward>,
+    mut signals: MessageWriter<MechanismSignal>,
+) {
+    for forward in forwards.read() {
+        signals.write(forward.0);
+    }
+}
+
+#[allow(private_interfaces)]
 pub fn route_signals(
     mut signals: MessageReader<MechanismSignal>,
     mut commands: Commands,
+    mut forwards: MessageWriter<RelayForward>,
     ticks: Option<Res<BodyTicks>>,
-    objects: Query<(Entity, &MechanismRecords)>,
+    mut objects: Query<(Entity, &mut MechanismRecords)>,
     children: Query<&Children>,
     mut bodies: Query<MechanismParts>,
 ) {
     let now = ticks.map_or(0, |t| t.millis() as i32);
-    for signal in signals.read() {
-        let Some((node, records)) = objects.iter().find(|(_, r)| r.id == signal.target) else {
+    let incoming: Vec<MechanismSignal> = signals.read().copied().collect();
+    for signal in &incoming {
+        let Some((node, records)) = objects
+            .iter()
+            .find(|(_, r)| r.id == signal.target)
+            .map(|(e, r)| (e, *r))
+        else {
             info!(
                 "mechanism: {:#x} signals {} to {:#x}, which has no record here",
                 signal.source, signal.value, signal.target
@@ -173,7 +202,16 @@ pub fn route_signals(
                     }
                 }
             }
-            Dispatch::Relay(_) => {}
+            Dispatch::Relay(kind) => {
+                let sent = relay_forwards(kind, signal, records, &mut objects);
+                for forward in sent {
+                    forwards.write(RelayForward(MechanismSignal {
+                        target: forward.target,
+                        source: forward.source,
+                        value: forward.value,
+                    }));
+                }
+            }
             Dispatch::Job(mechanism::Job::Fire { size }) => {
                 // A fire at the node's position, of the signalled size
                 // (hundredths, or 2 for a zero word); the node's own lights
@@ -186,6 +224,83 @@ pub fn route_signals(
             Dispatch::Job(mechanism::Job::Light { .. }) => {}
             Dispatch::None => {}
         }
+    }
+}
+
+/// What a relay sends on from `signal`, read from the placed records.
+///
+/// A broadcast walks every placed record in query order. A pair sends the
+/// same value to both of the relay's targets. A combiner takes its input
+/// bit from the source record's value word and is left unchanged when the
+/// source has no record. A sequence is not run: its counter is not stored.
+fn relay_forwards(
+    kind: mechanism::Relay,
+    signal: &MechanismSignal,
+    records: MechanismRecords,
+    objects: &mut Query<(Entity, &mut MechanismRecords)>,
+) -> Vec<relay::Forward> {
+    let Some(operative) = records.operative else {
+        return Vec::new();
+    };
+    match kind {
+        mechanism::Relay::Broadcast => {
+            let listeners: Vec<relay::Listener> = objects
+                .iter()
+                .map(|(_, other)| relay::Listener {
+                    id: other.id,
+                    door_link: other.door.as_ref().map(|door| door.key),
+                    listens_to: other.operative.map(|record| record.target),
+                })
+                .collect();
+            relay::broadcast(signal.target, signal.source, signal.value, &listeners)
+        }
+        mechanism::Relay::Both => relay::forward_both(
+            true,
+            operative.target,
+            operative.second,
+            signal.source,
+            signal.value,
+        )
+        .into_iter()
+        .flatten()
+        .collect(),
+        mechanism::Relay::Combine | mechanism::Relay::Second => {
+            let mut combiner = relay::Combiner {
+                state: operative.value,
+                flags: operative.flags,
+                target: operative.target,
+                code: operative.second,
+            };
+            let source = objects.iter().find_map(|(_, other)| {
+                (other.id == signal.source).then_some(other.operative).flatten()
+            });
+            let sent = if kind == mechanism::Relay::Combine {
+                relay::combine(
+                    &mut combiner,
+                    signal.target,
+                    source.map(|record| record.value),
+                    signal.value,
+                )
+            } else {
+                relay::combine_else(
+                    &mut combiner,
+                    signal.target,
+                    source.map(|record| record.value),
+                    source.map_or(0, |record| record.second),
+                    signal.source,
+                    signal.value,
+                )
+            };
+            if let Some((_, mut stored)) = objects
+                .iter_mut()
+                .find(|(_, other)| other.id == signal.target)
+                && let Some(record) = stored.operative.as_mut()
+            {
+                record.value = combiner.state;
+            }
+            sent.into_iter().collect()
+        }
+        mechanism::Relay::Sequence => Vec::new(),
     }
 }
 
@@ -450,6 +565,89 @@ mod tests {
         assert_eq!(
             fire.dispatch(1),
             Dispatch::Job(mechanism::Job::Fire { size: 200 })
+        );
+    }
+
+    /// A broadcast reaches a tagged door whose link is the relay, including
+    /// the source, and skips a door linked elsewhere and an untagged id.
+    #[test]
+    fn a_broadcast_reaches_the_doors_linked_to_it() {
+        let relay_id = 0x8000_0100;
+        let linked = 0x8000_0010;
+        let source = 0x8000_0011;
+        let elsewhere = 0x8000_0012;
+        let untagged = 0x10;
+        let mut app = App::new();
+        app.add_plugins(MechanismPlugin);
+        let door = |id, key| MechanismRecords {
+            id,
+            body: Some(objdb::Mechanism::Door),
+            door: Some(door::Record {
+                key,
+                ..door::Record::default()
+            }),
+            operative: None,
+        };
+        app.world_mut().spawn((
+            MechanismRecords {
+                id: relay_id,
+                body: None,
+                door: None,
+                operative: Some(mechanism::Record {
+                    class: mechanism::RELAY,
+                    kind: 1,
+                    ..mechanism::Record::default()
+                }),
+            },
+            Transform::default(),
+        ));
+        for records in [
+            door(linked, relay_id),
+            door(source, relay_id),
+            door(elsewhere, 0x8000_0200),
+            door(untagged, relay_id),
+        ] {
+            app.world_mut().spawn((records, Transform::default()));
+        }
+        #[derive(Resource, Default)]
+        struct Caught(Vec<MechanismSignal>);
+        #[derive(Resource)]
+        struct From(u32);
+        fn catch_forwards(
+            mut read: MessageReader<RelayForward>,
+            from: Res<From>,
+            mut caught: ResMut<Caught>,
+        ) {
+            caught.0.extend(
+                read.read()
+                    .map(|forward| forward.0)
+                    .filter(|signal| signal.source == from.0),
+            );
+        }
+        app.insert_resource(Caught::default());
+        app.insert_resource(From(relay_id));
+        app.add_systems(FixedUpdate, catch_forwards.after(route_signals));
+        app.world_mut().write_message(MechanismSignal {
+            target: relay_id,
+            source,
+            value: 1,
+        });
+        app.world_mut().run_schedule(FixedUpdate);
+        let sent = app.world().resource::<Caught>().0.clone();
+        assert_eq!(
+            sent,
+            vec![
+                MechanismSignal {
+                    target: linked,
+                    source: relay_id,
+                    value: 1,
+                },
+                MechanismSignal {
+                    target: source,
+                    source: relay_id,
+                    value: 1,
+                },
+            ]
         );
     }
 }
