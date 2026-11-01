@@ -208,6 +208,28 @@ pub fn opponent_plan(
     body
 }
 
+/// How long a practice partner waits before it acts, added to the clock.
+const PRACTICE_PARTNER_ACT_MS: u32 = 3_000;
+
+/// A practice partner: the named actor template (`opponent01` and the rest),
+/// standing at the fixed place (identity facing, feet at 5 cm up and 107 cm
+/// along z) with the practice role. Its first action is three seconds after
+/// `now_ms`. A name the templates do not have spawns nothing.
+#[must_use]
+pub fn practice_partner_plan(name: &str, now_ms: u32) -> SceneBodyPlan {
+    let mut body = SceneBodyPlan::base(&Place {
+        position: [0.0, 5.0, 107.0],
+        forward: [0.0, 0.0, 1.0],
+    });
+    body.look = BodyLook::Actor(name.to_string());
+    body.name = Some(name.to_string());
+    // The same role the practice player is given. This spawn writes no team
+    // word; the plan's opponent team keeps it off the player's side.
+    body.roles = vec![0x10];
+    body.act_at_ms = now_ms.wrapping_add(PRACTICE_PARTNER_ACT_MS);
+    body
+}
+
 /// A hire-list opponent's plan: the profile's level byte is the event's gear
 /// tier; `weapon` is the event row's drawn variant, put in the generated
 /// record's main hand before the outfit pass.
@@ -1343,6 +1365,17 @@ mod tests {
         );
         assert!(app.world().get_entity(built[0].body.root).is_err());
         assert!(app.world().get_entity(built[0].body.model).is_err());
+    }
+
+    #[test]
+    fn a_practice_partner_stands_at_the_fixed_place() {
+        let plan = practice_partner_plan("opponent01", 1_000);
+        assert_eq!(plan.actor(), Some("opponent01"));
+        assert_eq!(plan.at, Vec3::new(0.0, 0.05, 1.07));
+        assert_eq!(plan.yaw, 0.0);
+        assert_eq!(plan.roles, vec![0x10]);
+        assert_eq!(plan.act_at_ms, 4_000);
+        assert_eq!(plan.name.as_deref(), Some("opponent01"));
     }
 
     /// An actor template wears the items of its own database. opponent01's

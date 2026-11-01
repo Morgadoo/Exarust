@@ -1372,6 +1372,10 @@ pub enum Step {
     /// preparation, then equip with no scene nodes. It runs once the player
     /// stands, which is when the record exists.
     DressPlayerKit,
+    /// Stand the practice partner named by the ten-byte `opponentNN` buffer.
+    SpawnPracticePartner {
+        name: [u8; 10],
+    },
     /// The health the practice heal writes (red, then yellow).
     Health {
         red_bits: u32,
@@ -2158,6 +2162,7 @@ impl Flow {
             // and equips it, with no scene nodes, once the player is
             // registered. Both passes run here, once this player stands.
             Step::DressPlayerKit,
+            Step::SpawnPracticePartner { name: step.name },
             // The controls are attached to the player, then combat mode is
             // turned on (the original skips it only in the story mode,
             // which never starts practice).
@@ -2618,6 +2623,7 @@ impl Flow {
             // The next fight prepares and equips the player's kit, with no
             // scene nodes, before it places the player.
             Step::DressPlayerKit,
+            Step::SpawnPracticePartner { name: step.name },
             Step::MenuHelp(false),
             // Combat mode goes on for the fight; the controls were never
             // taken (a won round leaves them).
@@ -3406,6 +3412,7 @@ impl Plugin for FlowPlugin {
             .add_message::<exa_audio::PointSounded>()
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
+            .add_message::<crate::scene_bodies::SceneCommand>()
             .init_resource::<GameView>()
             .init_resource::<BootToMenu>()
             .init_resource::<crate::transition_screen::TransitionOverlay>()
@@ -4237,6 +4244,16 @@ fn apply_steps(
                     }
                 }
             }
+            Step::SpawnPracticePartner { name } => {
+                let partner = String::from_utf8_lossy(&name);
+                let partner = partner.trim_end_matches('\0');
+                if !partner.is_empty() {
+                    out.bodies
+                        .write(crate::scene_bodies::SceneCommand::Spawn(Box::new(
+                            crate::scene_bodies::practice_partner_plan(partner, now),
+                        )));
+                }
+            }
             Step::StripPlayer => {
                 // The reconstruction device's strip: the player's live body
                 // loses its hands and worn data, keeps the underwear rule and
@@ -4354,6 +4371,7 @@ struct FlowOutputs<'w> {
     exit: MessageWriter<'w, AppExit>,
     saves: MessageWriter<'w, crate::save_live::SaveStep>,
     discovery: MessageWriter<'w, crate::experience_live::DiscoveryTick>,
+    bodies: MessageWriter<'w, crate::scene_bodies::SceneCommand>,
 }
 
 /// The resources the story start's and the tips' steps write.
@@ -4931,6 +4949,12 @@ mod tests {
             .expect("the arena reloads");
         assert_eq!(steps[load + 1], Step::PracticeFilter);
         assert_eq!(steps[load + 2], Step::DressPlayerKit);
+        assert_eq!(
+            steps[load + 3],
+            Step::SpawnPracticePartner {
+                name: *b"opponent16",
+            }
+        );
         // The fight turns combat mode on; the controls are not touched.
         assert!(steps.contains(&Step::CombatMode(true)));
         assert!(!steps.iter().any(|step| matches!(step, Step::Controls(_))));
@@ -6871,6 +6895,7 @@ mod tests {
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
+            .add_message::<crate::scene_bodies::SceneCommand>()
             .add_systems(Update, (release_after_load, apply_steps).chain());
         let view = Viewport {
             width: 1600,
@@ -7008,6 +7033,7 @@ mod tests {
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
+            .add_message::<crate::scene_bodies::SceneCommand>()
             .add_systems(Update, apply_steps);
         let steps = app.world_mut().resource_mut::<Flow>().knock_out(0);
         assert!(steps.contains(&Step::Tip(2)));
@@ -7071,6 +7097,7 @@ mod tests {
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
+            .add_message::<crate::scene_bodies::SceneCommand>()
             .add_systems(Update, apply_steps);
         let placement = Placement {
             rotation: yaw(90.0),
@@ -7211,6 +7238,7 @@ mod tests {
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
+            .add_message::<crate::scene_bodies::SceneCommand>()
             .add_systems(Update, apply_steps);
         let mut fighter = exa_combat::Fighter::default();
         fighter.health.max = 100.0;
@@ -7267,6 +7295,7 @@ mod tests {
             .add_message::<AppExit>()
             .add_message::<crate::save_live::SaveStep>()
             .add_message::<crate::experience_live::DiscoveryTick>()
+            .add_message::<crate::scene_bodies::SceneCommand>()
             .add_systems(Update, apply_steps);
         let mut fighter = exa_combat::Fighter::default();
         fighter.health.red = 0.5;
