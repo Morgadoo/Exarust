@@ -397,6 +397,8 @@ pub struct Body {
     pub stepping: bool,
     pub step_state: i32,
     pub step_started_ms: u32,
+    /// Feet that have reached their anchors in this step. Until the first,
+    /// changing step pays the step cost on top of the change.
     pub landings: i32,
     /// The footwork queue's state.
     pub queue: i32,

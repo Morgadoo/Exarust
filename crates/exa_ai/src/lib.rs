@@ -322,6 +322,9 @@ struct Stepping {
     started_ms: u32,
     /// 2 for the second half of a long step.
     state: i32,
+    /// The body's landing count when this step started, so the count the
+    /// combat tick reads is how many feet have landed since.
+    landed_from: u32,
 }
 
 impl Duellist {
@@ -1184,6 +1187,7 @@ fn duellist(
                         goal: Vec3::new(chest.x, root_gt.translation().y, chest.z) + offset / CM,
                         started_ms: now as u32,
                         state: 0,
+                        landed_from: ragdoll.map_or(0, Ragdoll::landings),
                     });
                     ai.queue = -1;
                 }
@@ -1378,6 +1382,9 @@ fn duellist(
                 stepping: stepping.is_some(),
                 step_state: stepping.map_or(0, |s| s.state),
                 step_started_ms: stepping.map_or(0, |s| s.started_ms),
+                landings: stepping.map_or(0, |s| {
+                    ragdoll.map_or(0, |body| body.landings().saturating_sub(s.landed_from)) as i32
+                }),
                 queue: ai.queue,
                 can_step: true,
                 rules: fighter.stats.rules.0,
@@ -1806,13 +1813,18 @@ fn duellist(
                         goal: Vec3::new(goal.x / CM, feet.y, goal.z / CM),
                         started_ms: now as u32,
                         state: 0,
+                        landed_from: ragdoll.map_or(0, Ragdoll::landings),
                     });
                 }
                 combat::Footstep::Continue { goal, .. } => {
+                    let landed_from = ai
+                        .step
+                        .map_or_else(|| ragdoll.map_or(0, Ragdoll::landings), |s| s.landed_from);
                     ai.step = Some(Stepping {
                         goal: Vec3::new(goal.x / CM, feet.y, goal.z / CM),
                         started_ms: now as u32,
                         state: 2,
+                        landed_from,
                     });
                 }
                 combat::Footstep::Queue { offset, .. } => ai.queued = Some(offset),
@@ -2299,6 +2311,7 @@ mod tests {
                     goal: Vec3::new(0.0, 0.0, 9.0),
                     started_ms: 0,
                     state: 0,
+                    landed_from: 0,
                 });
             }
             app.world_mut().insert_resource(BodyTicks(26));
@@ -2522,6 +2535,7 @@ mod tests {
         app.world_mut().get_mut::<Duellist>(target).unwrap().step = Some(Stepping {
             goal: Vec3::new(2.0, 0.0, -4.4),
             started_ms: 0,
+            landed_from: 0,
             state: 0,
         });
         let mut roll = 1;
@@ -2564,6 +2578,7 @@ mod tests {
             goal: Vec3::new(2.0, 0.0, 5.0),
             started_ms: 0,
             state: 0,
+            landed_from: 0,
         });
         let mut roll = 1;
         app.world_mut().get_mut::<Duellist>(fighter).unwrap().personality =
@@ -2614,6 +2629,7 @@ mod tests {
             goal: Vec3::new(2.0, 0.0, 1.0),
             started_ms: 0,
             state: 0,
+            landed_from: 0,
         });
         app.world_mut()
             .get_mut::<Combatant>(fighter)
@@ -2995,6 +3011,7 @@ mod tests {
                 goal: Vec3::new(0.0, 1.3, -1.0),
                 started_ms: 0,
                 state: 0,
+                landed_from: 0,
             });
             hold(&mut app, fighter, friend, concern, hostility);
             engage(&mut app, fighter);

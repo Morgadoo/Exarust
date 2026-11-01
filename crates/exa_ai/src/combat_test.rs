@@ -1030,6 +1030,56 @@ fn every_place_costs_its_ground_its_danger_and_its_closeness() {
     assert_eq!(contacts[0].priority, (0.1 + f64::from(v)) as f32);
 }
 
+#[test]
+fn a_step_change_costs_less_once_a_foot_has_landed() {
+    let places = |landings: i32| {
+        let me = Body {
+            stepping: true,
+            landings,
+            ..Body::default()
+        };
+        let mut mind = CombatMind {
+            step: 1,
+            step_cost: 4.0,
+            ..CombatMind::default()
+        };
+        let plan = Footwork {
+            first: 0,
+            last: 8,
+            mode: 0,
+            change: 5.0,
+            queue_taken: false,
+        };
+        let drives = Drives {
+            attack: 0.0,
+            strike: 0.0,
+            spacing: 0.0,
+            committed: false,
+            set_flags: 0,
+        };
+        let mut contacts = [];
+        search(
+            &mut mind,
+            &me,
+            None,
+            NOVICE,
+            plan,
+            &drives,
+            &mut contacts,
+            &mut Crowded,
+        )
+        .places
+    };
+    let airborne = places(0);
+    let landed = places(1);
+    // The direction it is already stepping is not a change.
+    assert_eq!(airborne[1].total, 1.0);
+    assert_eq!(landed[1].total, 1.0);
+    // Another direction pays the change, and the step cost until a foot lands.
+    assert_eq!(airborne[2].total, 21.0);
+    assert_eq!(landed[2].total, 6.0);
+}
+
 /// A nearer character replaces the foe at the standing place, and the steps
 /// after that are scored against the new one, so the step goes toward them.
 struct Beside;
