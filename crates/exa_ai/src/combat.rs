@@ -343,7 +343,7 @@ pub struct Foe {
     pub facing: Vec3,
     pub forward_speed: f32,
     pub scale: f32,
-    /// What striking it teaches.
+    /// What striking it teaches: its fighting estimate.
     pub lesson: f32,
 }
 

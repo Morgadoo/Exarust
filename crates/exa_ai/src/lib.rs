@@ -400,6 +400,19 @@ const MOST_TICKS: u64 = 4;
 /// longest held weapon's record reach (60 cm × its size plus the weapon's
 /// sweet spot), else (its fists) its race's unarmed reach (the human's
 /// 50 cm).
+/// What striking `record` teaches: the fighting estimate from its skills
+/// and combat skill, its held weapon and its scale. No record is a base of 0.
+fn foe_lesson(
+    record: Option<&exa_formats::characters::CharacterRecord>,
+    weapon: Option<(&exa_formats::weapon_stats::StatBytes, f32)>,
+    scale: f32,
+) -> f32 {
+    let base = record.map_or(0.0, |r| {
+        crate::estimate::fighting_base(&r.skills, r.combat_skill)
+    });
+    crate::estimate::fighting_estimate_with_base(base, weapon, scale)
+}
+
 fn reach_of(fighter: Entity, blades: &Query<&Blade>) -> f32 {
     blades
         .iter()
@@ -672,6 +685,7 @@ fn measure_contact(
             &Fighter,
             Option<&Animator>,
             Option<&exa_physics::body::locomotion::Locomotor>,
+            Option<&exa_character::record::CharacterData>,
         ),
         Without<Duellist>,
     >,
@@ -699,8 +713,8 @@ fn measure_contact(
     let forward = root.rotation() * Vec3::Z;
     let condition = body.map(|(c, ..)| *c).unwrap_or(Condition::NORMAL);
     let fighter = body.map(|(_, _, _, f, ..)| f);
-    let anim = body.and_then(|(_, _, _, _, a, _)| a);
-    let locomotor = body.and_then(|(.., l)| l);
+    let anim = body.and_then(|(_, _, _, _, a, _, _)| a);
+    let locomotor = body.and_then(|(.., l, _)| l);
     let (blades, swings, motions, combat_goal_m, attacks, observer_skill) = gear;
     let (stepping, step_goal_cm) =
         step_measure(body.and_then(|(_, _, rag, ..)| rag), combat_goal_m, chest);
@@ -792,6 +806,7 @@ fn friend_bystander(
             &Fighter,
             Option<&Animator>,
             Option<&exa_physics::body::locomotion::Locomotor>,
+            Option<&exa_character::record::CharacterData>,
         ),
         Without<Duellist>,
     >,
@@ -839,6 +854,7 @@ fn duellist(
             &Fighter,
             Option<&Animator>,
             Option<&exa_physics::body::locomotion::Locomotor>,
+            Option<&exa_character::record::CharacterData>,
         ),
         Without<Duellist>,
     >,
@@ -965,7 +981,7 @@ fn duellist(
             .unwrap_or_else(|| stance::chest_point(target, None))
             * CM;
         let target_forward = target.rotation() * Vec3::Z;
-        let foe_motion = foe_walk(target_body.and_then(|(.., l)| l), target_forward);
+        let foe_motion = foe_walk(target_body.and_then(|(.., l, _)| l), target_forward);
         if !ai.in_combat {
             // Entering combat: the guard, from the idle it stood in, its
             // eagerness at a half, and the published reach. The combat
@@ -1060,9 +1076,9 @@ fn duellist(
         // One perception pass on the target (the combatant's), then the
         // published arc the position score reads.
         let target_condition = target_body.map(|(c, ..)| *c).unwrap_or(Condition::NORMAL);
-        let target_fighter = target_body.map(|(_, _, _, f, _, _)| f);
-        let target_anim = target_body.and_then(|(_, _, _, _, a, _)| a);
-        let target_locomotor = target_body.and_then(|(_, _, _, _, _, l)| l);
+        let target_fighter = target_body.map(|(_, _, _, f, _, _, _)| f);
+        let target_anim = target_body.and_then(|(_, _, _, _, a, _, _)| a);
+        let target_locomotor = target_body.and_then(|(_, _, _, _, _, l, _)| l);
         let target_moving = target_locomotor.is_some_and(|l| l.amount != 0.0);
         let target_speed_cm = target_locomotor.map_or(0.0, |l| l.speed);
         let phase = target_anim
@@ -1276,6 +1292,14 @@ fn duellist(
             scale: target_fighter.map_or(1.0, |f| f.stats.scale),
             rules: target_fighter.map_or(0, |f| f.stats.rules.0),
             attack_flags: target_swing,
+            lesson: foe_lesson(
+                target_body.and_then(|(.., data)| data.map(|d| &d.record)),
+                blades
+                    .iter()
+                    .find(|b| b.wielder == foe_key && b.record.armed())
+                    .map(|b| (&b.record.stats, reach_of(foe_key, &blades) * CM)),
+                target_fighter.map_or(1.0, |f| f.stats.scale),
+            ),
             crouch: target_body
                 .and_then(|(_, _, rag, ..)| rag)
                 .map_or(0.0, Ragdoll::crouch),
@@ -1692,7 +1716,7 @@ fn duellist(
                     .unwrap_or_else(|| stance::chest_point(transform, None))
                     * CM;
                 let forward = transform.rotation() * Vec3::Z;
-                let walk = foe_walk(found.as_ref().and_then(|(.., l)| *l), forward);
+                let walk = foe_walk(found.as_ref().and_then(|(.., l, _)| *l), forward);
                 let (stepping, step_goal) = step_measure(
                     found.as_ref().and_then(|(_, _, rag, ..)| *rag),
                     combat_steps
@@ -2802,6 +2826,24 @@ mod tests {
         let (standing, fallback) = step_measure(None, None, Vec3::new(3.0, 0.0, 0.0));
         assert!(!standing);
         assert_eq!(fallback, Vec3::new(3.0, 0.0, 0.0));
+    }
+
+    /// Striking a foe teaches its fighting estimate.
+    #[test]
+    fn the_foes_lesson_is_its_fighting_estimate() {
+        let mut record = exa_formats::characters::CharacterRecord::new();
+        record.combat_skill = 50.0;
+        let lesson = foe_lesson(Some(&record), None, 1.0);
+        assert_eq!(
+            lesson.to_bits(),
+            crate::estimate::fighting_estimate_with_base(
+                crate::estimate::fighting_base(&record.skills, 50.0),
+                None,
+                1.0,
+            )
+            .to_bits()
+        );
+        assert_eq!(foe_lesson(None, None, 1.0), 0.0);
     }
 
     /// Empty hands with a stowed weapon play the draw. The first tick only
