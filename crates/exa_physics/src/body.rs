@@ -2341,6 +2341,12 @@ impl Drive {
         self.support
     }
 
+    /// Places the support the act gate reads. The balance measure writes it;
+    /// a test of that gate without one writes it here.
+    pub fn set_support(&mut self, support: f32) {
+        self.support = support;
+    }
+
     /// Takes each target's rotation once, for the solver's sole turns.
     fn refresh_turns(&mut self) {
         self.turns.clear();

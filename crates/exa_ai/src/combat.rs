@@ -447,10 +447,10 @@ pub struct Body {
     /// The body's power word has its busy bit (0x10), so no power is
     /// chosen [guess: what the bit means].
     pub power_busy: bool,
-    /// How firmly the body holds on, at least 0.7 to act [guess: name].
-    pub grip: f32,
-    /// Awareness above 0.7 to act [guess: name].
-    pub awareness: f32,
+    /// Muscle tone, 0 through 1. At least 0.7 to act.
+    pub tone: f32,
+    /// Support, grounded times balance. Above 0.7 to act.
+    pub support: f32,
     /// The body's trailing-foot request (2 when a clip replaced Walk or
     /// Run, 1 once planted, until its 500 ms deadline): 0 when free to
     /// act.
@@ -514,8 +514,8 @@ impl Default for Body {
             power_pool: 0.0,
             power_slots: [0; cast::SLOTS],
             power_busy: false,
-            grip: 1.0,
-            awareness: 1.0,
+            tone: 1.0,
+            support: 1.0,
             blocking: 0,
         }
     }
@@ -1909,13 +1909,13 @@ fn let_go(me: &Body, blow: &mut Blow) {
     }
 }
 
-/// Whether the body may act: no blocking condition bit, a grip of at least
-/// 0.7, an awareness above 0.7 (a double compare) and no trailing-foot
-/// request pending. A NaN grip or awareness fails its compare.
+/// Whether the body may act: no blocking condition bit, a tone of at least
+/// 0.7, support above 0.7 (a double compare) and no trailing-foot request
+/// pending. A tone or a support that is not a number fails its compare.
 pub fn can_act(me: &Body) -> bool {
     me.condition & exa_physics::motile::ACTION_BLOCK == 0
-        && 0.7 <= me.grip
-        && 0.7 < f64::from(me.awareness)
+        && 0.7 <= me.tone
+        && 0.7 < f64::from(me.support)
         && me.blocking == 0
 }
 

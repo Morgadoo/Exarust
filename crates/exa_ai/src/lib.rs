@@ -1355,6 +1355,12 @@ fn duellist(
                 balance: ragdoll
                     .and_then(|body| body.drive.as_ref())
                     .map_or(1.0, |drive| drive.balance().value),
+                tone: ragdoll
+                    .and_then(|body| body.drive.as_ref())
+                    .map_or(1.0, |drive| drive.tone),
+                support: ragdoll
+                    .and_then(|body| body.drive.as_ref())
+                    .map_or(1.0, |drive| drive.support()),
                 scale: fighter.stats.scale,
                 feral: fighter.stats.feral,
                 size: fighter.stats.size,
@@ -1365,9 +1371,6 @@ fn duellist(
                 step_state: stepping.map_or(0, |s| s.state),
                 step_started_ms: stepping.map_or(0, |s| s.started_ms),
                 queue: ai.queue,
-                // The body holds on and is aware; Exarust has no model of
-                // either, so the gate's grip and awareness are full and
-                // only the condition mask can refuse it.
                 can_step: true,
                 rules: fighter.stats.rules.0,
                 thrust_pref: primary.map_or(0, |r| {
@@ -2191,6 +2194,44 @@ mod tests {
             }
         }
         assert!(walked);
+    }
+
+    /// A tone under 0.7, or support that does not pass 0.7, leaves it
+    /// standing. The same body, toned and supported, steps in.
+    #[test]
+    fn without_tone_or_support_it_does_not_step() {
+        let walks = |tone: f32, support: f32| {
+            let (mut app, fighter, root) = duel(5.0, false);
+            let part = exa_physics::body::PartSetup {
+                bone: 1,
+                entity: Entity::PLACEHOLDER,
+                parent: None,
+                world: bevy::math::Affine3A::IDENTITY,
+                centre: Vec3::ZERO,
+                half: Vec3::splat(0.08),
+                origin: Vec3::ZERO,
+                links: vec![],
+                foot: None,
+                pins: Vec::new(),
+                spheres: None,
+            };
+            let mut ragdoll = Ragdoll::new(&[part]).with_drive();
+            let drive = ragdoll.drive.as_mut().unwrap();
+            drive.tone = tone;
+            drive.set_support(support);
+            app.world_mut().entity_mut(fighter).insert(ragdoll);
+            engage(&mut app, fighter);
+            for _ in 0..1500 {
+                step(&mut app);
+                if velocity(&app, root).length() > 0.0 {
+                    return true;
+                }
+            }
+            false
+        };
+        assert!(!walks(0.69, 1.0));
+        assert!(!walks(1.0, 0.7));
+        assert!(walks(1.0, 1.0));
     }
 
     /// A second character standing to the right is scored from its own chest,

@@ -1276,34 +1276,28 @@ fn a_fighting_follower_answers_its_leader() {
 }
 
 #[test]
-fn the_can_act_gate_reads_the_grip_the_awareness_and_the_block() {
+fn the_can_act_gate_reads_the_tone_the_support_and_the_block() {
     let ok = Body {
         condition: 0,
-        grip: 0.7,
-        awareness: 0.71,
+        tone: 0.7,
+        support: 0.71,
         blocking: 0,
         ..Body::default()
     };
     assert!(can_act(&ok));
-    // The grip compares in single precision with 0.7: just under fails.
-    assert!(!can_act(&Body { grip: 0.69, ..ok }));
-    // The awareness compares in double precision and must pass 0.7.
-    assert!(!can_act(&Body {
-        awareness: 0.7,
-        ..ok
-    }));
+    // The tone compares in single precision with 0.7: just under fails.
+    assert!(!can_act(&Body { tone: 0.69, ..ok }));
+    // The support compares in double precision and must pass 0.7.
+    assert!(!can_act(&Body { support: 0.7, ..ok }));
     assert!(!can_act(&Body { blocking: 1, ..ok }));
     assert!(!can_act(&Body {
         condition: exa_physics::motile::ACTION_BLOCK,
         ..ok
     }));
-    // A distance that is not a number fails every compare.
+    // A value that is not a number fails every compare.
     let nan = f32::NAN;
-    assert!(!can_act(&Body { grip: nan, ..ok }));
-    assert!(!can_act(&Body {
-        awareness: nan,
-        ..ok
-    }));
+    assert!(!can_act(&Body { tone: nan, ..ok }));
+    assert!(!can_act(&Body { support: nan, ..ok }));
 }
 
 #[test]
