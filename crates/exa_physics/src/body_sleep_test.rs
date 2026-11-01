@@ -135,6 +135,21 @@ fn a_shock_steps_from_the_standing_point() {
     assert!(steps.knockback);
     assert!((steps.target.x - 3.0).abs() < 1e-5, "{}", steps.target);
     assert!((steps.target.z - 2.0).abs() < 1e-5, "{}", steps.target);
+    // Aimed: the step leaves the frame origin, at the pelvis, not the feet.
+    let mut body = ball(Vec3::ZERO).with_drive();
+    body.drive
+        .as_mut()
+        .unwrap()
+        .set_standing_point(Vec3::new(1.0, 0.0, 2.0));
+    body.drive
+        .as_mut()
+        .unwrap()
+        .set_frame(Affine3A::from_translation(Vec3::new(1.0, 1.2, 2.0)));
+    body.shock_stagger(Vec3::X);
+    let target = body.drive.as_ref().unwrap().steps.target;
+    assert!((target.x - 3.0).abs() < 1e-5, "{target}");
+    assert!((target.y - 1.2).abs() < 1e-5, "{target}");
+    assert!((target.z - 2.0).abs() < 1e-5, "{target}");
 }
 
 /// A dormant statue's whole tree counts down by one a tick, floored at 1,

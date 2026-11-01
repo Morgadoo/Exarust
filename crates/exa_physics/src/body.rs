@@ -4289,7 +4289,13 @@ impl Ragdoll {
         let Some(drive) = self.drive.as_mut() else {
             return;
         };
-        let target = drive.standing_point() + direction * (crate::shock::STEP_PUSH / 100.0);
+        // The character frame's origin when the body has been aimed, else the
+        // standing point. The shock's direction is added in metres.
+        let origin = drive
+            .frame()
+            .map(|frame| Vec3::from(frame.translation))
+            .unwrap_or_else(|| drive.standing_point());
+        let target = origin + direction * (crate::shock::STEP_PUSH / 100.0);
         steps::begin_knockback(&mut drive.steps, target);
     }
 
