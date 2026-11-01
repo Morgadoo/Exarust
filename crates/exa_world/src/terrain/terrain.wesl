@@ -15,8 +15,9 @@ import bevy_pbr::render::{
     mesh_types::MESH_FLAGS_SHADOW_RECEIVER_BIT,
 };
 import exa_render::shading::{
-    Surface, Taps, taps, direct, schlick, gi_frame, gi_tap, gi_slot, gi_ambient, GI_NO_BLOCK,
-    REFLECTION_STRENGTH, ENVIRONMENT_FALLBACK, AMBIENT_SCALE,
+    Surface, Taps, taps, direct, schlick, gi_frame, gi_tap, gi_slot, gi_ambient,
+    gi_ambient_outdoor, GI_NO_BLOCK,
+    REFLECTION_STRENGTH, AMBIENT_W_OUTDOOR, ENVIRONMENT_FALLBACK, AMBIENT_SCALE,
 };
 import exa_render::terrain_layers::{sharpen, stack_colour, stack_xy, normal_xy, layer_height};
 
@@ -64,6 +65,8 @@ const DEBUG_GI: u32 = 4u;
 const SPLIT_TAPS: u32 = 8u;
 const WET_FLOOR: u32 = 16u;
 const COMPOSITE: u32 = 32u;
+// The level has an open sky: the GI takes the original's outdoor shading.
+const OUTDOOR: u32 = 64u;
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(100) var<uniform> splat: TerrainSplat;
 // Every layer texture is read through one repeating sampler.
@@ -491,6 +494,8 @@ fn fragment(
     let k = (s.rough + 1.0) * (s.rough + 1.0) / 8.0;
     let gv = s.ndv / (s.ndv * (1.0 - k) + k);
     var reflected: vec3<f32>;
+    // `Ambient.w`: 8, 3 under an open sky.
+    let ambient_w = select(REFLECTION_STRENGTH, AMBIENT_W_OUTDOOR, has(OUTDOOR));
     if has(GI) {
         // The resident block the terrain block's centre falls in (the
         // original's per-object `VXGIPos`); no block reads black.
@@ -503,17 +508,32 @@ fn fragment(
             dbg.color = vec4(g.rgb * 10.0, 1.0);
             return dbg;
         }
-        ambient = gi_ambient(g, level);
+        // Under an open sky: the outdoor lift, × the cube at mip 7 ×
+        // `Ambient.w`·5, and the reflection × the light before that factor
+        // × `Ambient.w` (3 there, 8 indoors).
+        var gi_light: vec3<f32>;
+        if has(OUTDOOR) {
+            var cube = vec3(ENVIRONMENT_FALLBACK);
+            if has(ENVIRONMENT) {
+                cube = textureSampleLevel(environment_map, environment_sampler, n, 7.0).rgb;
+            }
+            let sky = gi_ambient_outdoor(g, level, cube);
+            ambient = sky.ambient;
+            gi_light = sky.light;
+        } else {
+            ambient = gi_ambient(g, level);
+            gi_light = ambient;
+        }
         if has(ENVIRONMENT) {
             mirrored = textureSampleLevel(environment_map, environment_sampler, r, max(s.rough - 0.05, 0.0) * 8.0).rgb;
         }
-        reflected = mirrored * ambient * REFLECTION_STRENGTH * 2.0 * gv;
+        reflected = mirrored * (gi_light * ambient_w * 2.0) * gv;
     } else {
         if has(ENVIRONMENT) {
             ambient = textureSampleLevel(environment_map, environment_sampler, n, 5.0).rgb * level;
             mirrored = textureSampleLevel(environment_map, environment_sampler, r, max(s.rough - 0.1, 0.0) * 8.0).rgb;
         }
-        reflected = (mirrored + mirrored * mirrored) * level / AMBIENT_SCALE * REFLECTION_STRENGTH * gv;
+        reflected = (mirrored + mirrored * mirrored) * level / AMBIENT_SCALE * ambient_w * gv;
     }
     var out: FragmentOutput;
     let specular = lit.specular + reflected * schlick(s.f0, s.ndv);

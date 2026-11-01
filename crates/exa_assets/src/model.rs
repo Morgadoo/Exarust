@@ -411,8 +411,8 @@ pub struct ModelCache {
     pub(crate) factory_geometry: HashMap<String, Arc<Model>>,
     /// Parsed factory recipes, by lower-case name.
     pub(crate) factories: HashMap<String, Arc<exa_formats::factory::Factory>>,
-    /// The environment cube, once looked for.
-    environment: Option<Option<Handle<Image>>>,
+    /// The environment cubes by name, once looked for.
+    environment: HashMap<&'static str, Option<Handle<Image>>>,
     /// A material's own environment-cube override, by folded texture name
     /// (the reflection layer, `Mat.TexRef`).
     environment_overrides: HashMap<String, Option<Handle<Image>>>,
@@ -1604,13 +1604,39 @@ impl ModelLoader<'_> {
     /// The environment cube the original lights and reflects with
     /// (`genref01r` indoors): six faces with their mip chains, sRGB.
     pub fn environment_map(&mut self) -> Option<Handle<Image>> {
-        if let Some(h) = &self.cache.environment {
+        self.environment_cube(ENVIRONMENT_MAP)
+    }
+
+    /// The environment cube of a level under an open sky (`genref02r`).
+    /// [guess] The original first tints it through its mask
+    /// (`genref02rm`) by the day record's sky tint; Exarust binds it as
+    /// stored.
+    pub fn sky_environment_map(&mut self) -> Option<Handle<Image>> {
+        self.environment_cube(SKY_ENVIRONMENT_MAP)
+    }
+
+    /// What re-tinting the open sky's cube takes: its stored bytes, its
+    /// mask (`genref02rm`) and the settings it uploads with. `None` when
+    /// either image is missing.
+    pub fn sky_cube_source(&mut self) -> Option<SkyCubeSource> {
+        let cube = self.game.texture(SKY_ENVIRONMENT_MAP)?.to_vec();
+        let mask = self.game.texture(SKY_ENVIRONMENT_MASK)?.to_vec();
+        Some(SkyCubeSource {
+            cube,
+            mask,
+            settings: *self.cache.textures.settings(),
+            bc_supported: self.bc_supported,
+        })
+    }
+
+    fn environment_cube(&mut self, name: &'static str) -> Option<Handle<Image>> {
+        if let Some(h) = self.cache.environment.get(name) {
             return h.clone();
         }
         let settings = *self.cache.textures.settings();
         let image = self
             .game
-            .texture(ENVIRONMENT_MAP)
+            .texture(name)
             .and_then(|b| Rfi::parse(b).ok())
             .and_then(|rfi| {
                 rfi_to_texture(
@@ -1623,12 +1649,10 @@ impl ModelLoader<'_> {
                 .ok()
             });
         if image.is_none() {
-            self.warn_once(format!(
-                "environment map {ENVIRONMENT_MAP} could not be read"
-            ));
+            self.warn_once(format!("environment map {name} could not be read"));
         }
         let handle = image.map(|i| self.images.add(i));
-        self.cache.environment = Some(handle.clone());
+        self.cache.environment.insert(name, handle.clone());
         handle
     }
 
@@ -2816,6 +2840,49 @@ fn blend_mode(word: u32, has_alpha: bool) -> AlphaMode {
 
 /// The environment cube of indoor scenes.
 const ENVIRONMENT_MAP: &str = "genref01r";
+const SKY_ENVIRONMENT_MAP: &str = "genref02r";
+const SKY_ENVIRONMENT_MASK: &str = "genref02rm";
+
+/// The open sky's environment cube and its mask as stored, for the scene
+/// environment to tint and upload again when its record's sky tint
+/// changes (the original tints a copy of the cube through the mask at each
+/// sun placement and uploads it over the cube texture).
+#[derive(Clone, Debug)]
+pub struct SkyCubeSource {
+    /// The cube's `.rfi` bytes (`genref02r`): RGB texels, each face's mip
+    /// chain back to back.
+    pub cube: Vec<u8>,
+    /// The mask's `.rfi` bytes (`genref02rm`): one byte per cube texel.
+    pub mask: Vec<u8>,
+    pub settings: texture::TextureSettings,
+    pub bc_supported: bool,
+}
+
+impl SkyCubeSource {
+    /// The texel bytes of an `.rfi` (after its header), or `None` when it
+    /// does not parse or is packed.
+    pub fn texels(bytes: &[u8]) -> Option<std::ops::Range<usize>> {
+        let rfi = Rfi::parse(bytes).ok()?;
+        if rfi.is_packed() {
+            return None;
+        }
+        let start = bytes.len() - rfi.data.len();
+        Some(start..bytes.len())
+    }
+
+    /// The cube image from (tinted) cube bytes laid out as [`Self::cube`].
+    pub fn image(&self, cube: &[u8]) -> Option<Image> {
+        let rfi = Rfi::parse(cube).ok()?;
+        rfi_to_texture(
+            &rfi,
+            ColorSpace::Srgb,
+            self.bc_supported,
+            texture::default_flags(),
+            &self.settings,
+        )
+        .ok()
+    }
+}
 
 /// An image of a painted map with a box-filtered mip chain. An sRGB map keeps
 /// its texels as painted and averages its colour in linear light, as the GPU

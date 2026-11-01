@@ -13,8 +13,8 @@ import bevy_pbr::render::{
 };
 import exa_render::shading::{
     Surface, Lit, Taps, taps, lit_by, light_shadow, light, light_skin, schlick, view_depth, vertical_shaping,
-    gi_frame, gi_tap, gi_slot, gi_ambient, GI_NO_BLOCK,
-    REFLECTION_STRENGTH, ENVIRONMENT_FALLBACK, AMBIENT_SCALE, SUN_LUX,
+    gi_frame, gi_tap, gi_slot, gi_ambient, gi_ambient_outdoor, GI_NO_BLOCK,
+    REFLECTION_STRENGTH, AMBIENT_W_OUTDOOR, ENVIRONMENT_FALLBACK, AMBIENT_SCALE, SUN_LUX,
 };
 import exa_render::hair::{
     light_hair, hair_rim_colour, hair_ambient_weight, hair_reflection_dir, hair_reflection_weight,
@@ -93,6 +93,9 @@ const GREY_EMISSIVE: u32 = 134217728u;
 const HAIR: u32 = 268435456u;
 // The material word lacks `MatSpc`: no specular sum at all.
 const NO_SPECULAR: u32 = 536870912u;
+// The level has an open sky: the GI takes the original's outdoor shading
+// (`Env.Outdoor`, `exa_render::gi::GiOutdoor`).
+const OUTDOOR: u32 = 1073741824u;
 const BLOOD_TINT = vec3(0.6, 0.03, 0.0);
 const HAIR_BLOOD_TINT = vec3(0.45, 0.03, 0.02);
 const SKIN_ALPHA_FLOOR: f32 = 0.02;
@@ -608,11 +611,19 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let k = (s.rough + 1.0) * (s.rough + 1.0) / 8.0;
     let gv = s.ndv / (s.ndv * (1.0 - k) + k);
     var reflected: vec3<f32>;
+    // The GI's light before the outdoor cube factor (the original's `vgi`
+    // outdoors), `Ambient.w` (8, 3 under an open sky), and the hair
+    // reflection's share: the ambient and one half except under a sky.
+    var gi_light = vec3(0.0);
+    let ambient_w = select(REFLECTION_STRENGTH, AMBIENT_W_OUTDOOR, has(OUTDOOR));
+    var hair_share = 0.5;
     if has(GI) {
         // Voxel GI: the light of the resident block the object's origin
         // falls in (the original's per-object `VXGIPos`; no block reads
-        // black), lifted where faint, × the level ambient × 15 × openness;
-        // reflections take the cube × that.
+        // black), lifted where faint, × the level ambient × 15 × openness
+        // (outdoors with its own lift, then × the environment cube at mip 7
+        // × `Ambient.w`·5); reflections take the cube × the light before
+        // that factor.
         let world_from_local = mesh[in.instance_index].world_from_local;
         let o = vec3(world_from_local[0].w, world_from_local[1].w, world_from_local[2].w);
         let slot = gi_slot(material.gi_grid, material.gi_cells, o);
@@ -621,10 +632,19 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             out.color = vec4(g.rgb * 10.0, 1.0);
             return out;
         }
-        ambient = gi_ambient(g, level);
+        if has(OUTDOOR) {
+            let cube = textureSampleLevel(environment_map, environment_sampler, n, 7.0).rgb;
+            let sky = gi_ambient_outdoor(g, level, cube);
+            ambient = sky.ambient;
+            gi_light = sky.light;
+            hair_share = 0.25;
+        } else {
+            ambient = gi_ambient(g, level);
+            gi_light = ambient;
+        }
         if has(ENVIRONMENT) {
             mirrored = textureSampleLevel(environment_map, environment_sampler, r, max(s.rough - 0.05, 0.0) * 8.0).rgb;
-            reflected = mirrored * ambient * REFLECTION_STRENGTH * 2.0 * gv;
+            reflected = mirrored * (gi_light * ambient_w * 2.0) * gv;
         } else {
             // Without a reflection layer (`Mat.TexRef`) the specular GI is a
             // quarter of the ambient, not a cube sample.
@@ -635,7 +655,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // or without a reflection layer of its own.
         ambient = textureSampleLevel(environment_map, environment_sampler, n, 5.0).rgb * level;
         mirrored = textureSampleLevel(environment_map, environment_sampler, r, max(s.rough - 0.1, 0.0) * 8.0).rgb;
-        reflected = (mirrored + mirrored * mirrored) * level / AMBIENT_SCALE * REFLECTION_STRENGTH * gv;
+        reflected = (mirrored + mirrored * mirrored) * level / AMBIENT_SCALE * ambient_w * gv;
+        gi_light = ambient;
     }
     // The hair program: the ambient × (1.5 − 0.75·v·n) × MatDif, the map's
     // colour only under blood, the reflection about the normal bent across
@@ -653,7 +674,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             if has(ENVIRONMENT) {
                 let rd = hair_reflection_dir(v, n, strand_b);
                 let m = textureSampleLevel(environment_map, environment_sampler, rd, max(s.rough - 0.05, 0.0) * 8.0).rgb;
-                spc += m * ambient * (vec3(1.0) + material.specular.rgb) * REFLECTION_STRENGTH * 0.5 * hair_reflection_weight(s.ndv);
+                spc += m * gi_light * (vec3(1.0) + material.specular.rgb) * ambient_w * hair_share * hair_reflection_weight(s.ndv);
             }
             if has(SPECULAR_MAP) {
                 spc *= cavity;
@@ -669,7 +690,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             he *= em;
         }
         c += he;
-        c = fogged(c, p, ambient);
+        c = fogged(c, p, gi_light);
         if has(FADE_TO_BLACK) {
             let a = min(length(p.xz) / FADE_RADIUS, 1.0);
             c *= 1.0 - a * (2.0 - a);
@@ -726,9 +747,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     colour += e;
     // The lit programs' fog. Outdoors the original takes the voxel GI's
     // light for `amb` before the environment cube's factor, indoors its
-    // ambient; Exarust's GI ambient carries no cube factor, so the ambient
-    // stands for both.
-    colour = fogged(colour, p, ambient);
+    // ambient.
+    colour = fogged(colour, p, gi_light);
     // The character screen's fade: black by FADE_RADIUS from the origin.
     if has(FADE_TO_BLACK) {
         let a = min(length(p.xz) / FADE_RADIUS, 1.0);

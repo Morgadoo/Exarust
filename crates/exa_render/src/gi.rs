@@ -69,6 +69,7 @@ impl Plugin for GiPlugin {
                     create_neighbour_textures,
                     gather_lights,
                     give_materials_gi,
+                    bind_level_cube,
                 )
                     .chain()
                     .in_set(GiSystems),
@@ -408,6 +409,22 @@ pub const SKY_LIGHT_ID: u32 = u32::MAX;
 /// frame; without it the volume has no sky light.
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
 pub struct GiSkyLight(pub Vec3);
+
+/// The level's open sky as the surface programs see it, set by the world
+/// when a level's lighting is applied. Under a sky (the original's
+/// `Env.Outdoor` program switch, the environment's sky flag) the programs
+/// shade the GI with the outdoor lift and the environment cube's factor
+/// ([`crate::gi_ambient::outdoor`]); without it, or without the resource,
+/// with the indoor lift.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct GiOutdoor {
+    /// The level has an open sky.
+    pub sky: bool,
+    /// The environment cube the level's lit surfaces bind (the original
+    /// swaps its cube for the open sky's one); `None` leaves each
+    /// material's own.
+    pub cube: Option<Handle<Image>>,
+}
 
 /// A GI light shape (the original's abstract `TGIEmissive` base: a dome, a
 /// cuboid, a bubble, a line or a multi-point shape). Gameplay effects
@@ -2501,6 +2518,58 @@ struct GiBlitParams {
     dims: UVec4,
     strip: UVec4,
     offset: Vec4,
+}
+
+/// Binds the level's environment cube ([`GiOutdoor::cube`]) to every
+/// material that has a cube, when the level changes it and as materials
+/// come (the original swaps its one cube for the open sky's), and marks
+/// them with the open-sky switch ([`GiOutdoor::sky`]), with or without
+/// voxel GI.
+fn bind_level_cube(
+    outdoor: Option<Res<GiOutdoor>>,
+    mut materials: ResMut<Assets<ExaMaterial>>,
+    mut events: MessageReader<AssetEvent<ExaMaterial>>,
+) {
+    let Some(outdoor) = outdoor else {
+        events.clear();
+        return;
+    };
+    let added: Vec<AssetId<ExaMaterial>> = events
+        .read()
+        .filter_map(|e| match e {
+            AssetEvent::Added { id } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    let ids: Vec<AssetId<ExaMaterial>> = if outdoor.is_changed() {
+        materials.ids().collect()
+    } else {
+        added
+    };
+    for id in ids {
+        let Some(m) = materials.get(id) else {
+            continue;
+        };
+        let rebind = outdoor
+            .cube
+            .as_ref()
+            .is_some_and(|cube| m.environment.as_ref().is_some_and(|e| e != cube));
+        let sky = m.params.flags & flags::OUTDOOR != 0;
+        if !rebind && sky == outdoor.sky {
+            continue;
+        }
+        let Some(mut m) = materials.get_mut(id) else {
+            continue;
+        };
+        if rebind {
+            m.environment = outdoor.cube.clone();
+        }
+        if outdoor.sky {
+            m.params.flags |= flags::OUTDOOR;
+        } else {
+            m.params.flags &= !flags::OUTDOOR;
+        }
+    }
 }
 
 #[derive(Resource)]

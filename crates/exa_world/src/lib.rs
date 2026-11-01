@@ -2169,7 +2169,7 @@ impl LevelLoad {
                     self.stage = Stage::Lighting;
                 }
             }
-            Stage::Lighting => return self.finish(commands),
+            Stage::Lighting => return self.finish(commands, loader),
             Stage::Done => {}
         }
         self.progress()
@@ -2226,7 +2226,7 @@ impl LevelLoad {
     }
 
     /// Lighting and the GI request; the load's last step.
-    fn finish(&mut self, commands: &mut Commands) -> LoadProgress {
+    fn finish(&mut self, commands: &mut Commands, loader: &mut ModelLoader<'_>) -> LoadProgress {
         // A level load applies the scene preset its name selects (the save
         // unit's indoor and outdoor presets), drawing the outdoor day and
         // weather from the clock seed the original takes at scene creation.
@@ -2249,6 +2249,28 @@ impl LevelLoad {
         commands.queue(move |world: &mut World| {
             mechanisms::apply_load_fires(world, daylight);
         });
+        // The environment's sky flag switches the surface programs to the
+        // outdoor GI shading and swaps the cube for the open sky's.
+        let sky = scene_lighting.lighting.sky;
+        let cube = if sky {
+            loader.sky_environment_map()
+        } else {
+            loader.environment_map()
+        };
+        // Under a sky the cube is tinted by the record's sky tint through
+        // its mask once the environment's first sun placement has run.
+        let source = if sky { loader.sky_cube_source() } else { None };
+        match (&cube, source) {
+            (Some(image), Some(source)) => {
+                commands.insert_resource(environment::SkyCube {
+                    source,
+                    image: image.clone(),
+                    tinted: None,
+                });
+            }
+            _ => commands.remove_resource::<environment::SkyCube>(),
+        }
+        commands.insert_resource(exa_render::gi::GiOutdoor { sky, cube });
         // The live scene environment keeps ticking the preset's weather and
         // republishes its frame; both of its streams start from the same
         // clock seed the load drew with.

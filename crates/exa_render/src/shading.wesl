@@ -441,10 +441,44 @@ fn gi_slot(grid: vec4<f32>, cells: array<vec4<i32>, 9>, o: vec3<f32>) -> u32 {
     return GI_NO_BLOCK;
 }
 
-// The ambient from a GI sample `g` (light, openness): lifted where faint,
-// × the level ambient (`level`, passed ×16) × 15 × openness.
+// The original's `Ambient.xyz` with voxel GI: the level ambient (`level`,
+// passed ×16) × 15.
+fn gi_level(level: vec3<f32>) -> vec3<f32> {
+    return level / AMBIENT_SCALE * GI_SCALE;
+}
+
+// The ambient from a GI sample `g` (light, openness) indoors: lifted where
+// faint, (1 − a)²·0.03/(a + 0.016) + 0.47·a + 0.53 for a = |light|, × the
+// level ambient × 15 × openness.
 fn gi_ambient(g: vec4<f32>, level: vec3<f32>) -> vec3<f32> {
     let a = length(g.rgb);
-    let b = (1.0 - a) * (1.0 - a) * 0.03 / (a + 0.016) + 0.47 * a + 0.53;
-    return g.rgb * level / AMBIENT_SCALE * GI_SCALE * b * g.a;
+    let b = (1.0 - a) * (1.0 - a) * 0.03 / (a + 0.016) + (a * 0.47 + 0.53);
+    return g.rgb * (gi_level(level) * b * g.a);
+}
+
+// The GI's shading under an open sky (the original's `Env.Outdoor`).
+struct GiOutdoor {
+    // The ambient: `light` × the environment cube around the normal (mip 7)
+    // × `Ambient.w`·5.
+    ambient: vec3<f32>,
+    // The volume's light shaded, before the cube: what the reflections and
+    // the fog take for the ambient outdoors.
+    light: vec3<f32>,
+}
+
+// `Ambient.w` under an open sky (8 indoors, `REFLECTION_STRENGTH`).
+const AMBIENT_W_OUTDOOR: f32 = 3.0;
+
+// The ambient from a GI sample `g` under an open sky, with `cube` the
+// environment cube's colour around the normal at mip 7: the openness
+// is raised to 1 − (1 − open)·a·32 where the light a = |light| is faint
+// (never below it), the light is lifted by (1 − a)²·0.08/(a + 0.035) + a, × the level ambient
+// × 15 × openness; the ambient is that × the cube × `Ambient.w`·5.
+fn gi_ambient_outdoor(g: vec4<f32>, level: vec3<f32>, cube: vec3<f32>) -> GiOutdoor {
+    let a = length(g.rgb);
+    let occ = max(1.0 - (1.0 - g.a) * a * 32.0, g.a);
+    let b0 = 1.0 - a;
+    let b = (b0 * b0 * 0.08) / (a + 0.035) + a;
+    let light = g.rgb * (gi_level(level) * b * occ);
+    return GiOutdoor(light * (cube * (AMBIENT_W_OUTDOOR * 5.0)), light);
 }

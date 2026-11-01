@@ -621,8 +621,15 @@ fn upload_plan(rfi: &Rfi, space: ColorSpace, flags: u32, settings: &TextureSetti
     }
 }
 
+/// The stored face each cube layer takes. wgpu's layers are +X, −X, +Y,
+/// −Y, +Z, −Z; the original's uploader sends stored face k to the GL face
+/// target in its table −X, −Y, −Z, +X, +Y, +Z, so the sky of an outdoor
+/// cube (stored face 4) is +Y, up, and its ground (face 1) −Y.
+pub const CUBE_LAYER_FACES: [u32; 6] = [3, 0, 4, 1, 5, 2];
+
 /// A cube map as the original uploads it: six faces, each from the chosen
-/// detail level, in face order with each face's levels back to back. A
+/// detail level, placed on the original's face targets
+/// ([`CUBE_LAYER_FACES`]) with each face's levels back to back. A
 /// stored chain is sliced per face; a cube without one gets the Kaiser chain
 /// generated per face, and a block-compressed cube is refused (no shipped
 /// image is one; the original's per-face block upload is not decoded here).
@@ -655,7 +662,12 @@ fn cube_to_texture(
     };
     let mut data = Vec::new();
     let mut levels = 1u32;
-    for face in 0..rfi.header.faces() {
+    for layer in 0..rfi.header.faces() {
+        let face = if rfi.header.faces() == 6 {
+            CUBE_LAYER_FACES[layer as usize]
+        } else {
+            layer
+        };
         let decoded = rfi.decode_face_mips_rgba8(face)?;
         if chain {
             let last = if mipmapped {
@@ -1669,12 +1681,15 @@ mod level_tests {
         let view = image.texture_view_descriptor.as_ref().unwrap();
         assert_eq!(view.dimension, Some(TextureViewDimension::Cube));
         let data = image.data.as_ref().unwrap();
-        // Each face is its 2x2 base (16 bytes) then its 1x1 level (4).
+        // Each face is its 2x2 base (16 bytes) then its 1x1 level (4), on
+        // the original's targets: layer +X is stored face 3, −X face 0, +Y
+        // face 4, −Y face 1, +Z face 5, −Z face 2.
         assert_eq!(data.len(), 6 * (16 + 4));
-        assert_eq!(&data[..4], &[0, 0, 0, 255]);
-        assert_eq!(&data[16..20], &[0, 40, 0, 255]);
-        assert_eq!(&data[20..24], &[1, 0, 0, 255]);
-        assert_eq!(&data[116..120], &[5, 40, 0, 255]);
+        assert_eq!(&data[..4], &[3, 0, 0, 255]);
+        assert_eq!(&data[16..20], &[3, 40, 0, 255]);
+        assert_eq!(&data[20..24], &[0, 0, 0, 255]);
+        assert_eq!(&data[40..44], &[4, 0, 0, 255]);
+        assert_eq!(&data[116..120], &[2, 40, 0, 255]);
         // Without mipmapping each face is its base alone.
         let image = rfi_to_texture(
             &rfi,
@@ -1721,11 +1736,8 @@ mod level_tests {
         assert_eq!(image.texture_descriptor.mip_level_count, 1);
         let data = image.data.as_ref().unwrap();
         assert_eq!(data.len(), 6 * 4);
-        for face in 0..6u8 {
-            assert_eq!(
-                &data[face as usize * 4..face as usize * 4 + 4],
-                &[face, 50, 0, 255]
-            );
+        for (layer, face) in CUBE_LAYER_FACES.iter().enumerate() {
+            assert_eq!(&data[layer * 4..layer * 4 + 4], &[*face as u8, 50, 0, 255]);
         }
     }
 
@@ -1747,11 +1759,8 @@ mod level_tests {
         assert_eq!(image.texture_descriptor.mip_level_count, 1);
         let data = image.data.as_ref().unwrap();
         assert_eq!(data.len(), 6 * 4);
-        for face in 0..6u8 {
-            assert_eq!(
-                &data[face as usize * 4..face as usize * 4 + 4],
-                &[face, 40, 0, 255]
-            );
+        for (layer, face) in CUBE_LAYER_FACES.iter().enumerate() {
+            assert_eq!(&data[layer * 4..layer * 4 + 4], &[*face as u8, 40, 0, 255]);
         }
     }
 }

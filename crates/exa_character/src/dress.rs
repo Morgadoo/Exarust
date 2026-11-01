@@ -702,6 +702,7 @@ mod tests {
                 cloth_mesh: None,
                 mesh,
                 render_flags: 0,
+                visibility: 0,
                 triangles: None,
             }
         }

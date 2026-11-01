@@ -158,6 +158,9 @@ pub mod flags {
     /// The record's material word lacks `MatSpc` (`0x4`): every program
     /// leaves its whole specular sum (lights and reflection) out.
     pub const NO_SPECULAR: u32 = 536870912;
+    /// The level has an open sky: inside the GI volume the surface takes
+    /// the original's outdoor GI shading ([`crate::gi::GiOutdoor`]).
+    pub const OUTDOOR: u32 = 1073741824;
 }
 
 /// How a surface shows the blood that wounds paint into its mesh's vertex

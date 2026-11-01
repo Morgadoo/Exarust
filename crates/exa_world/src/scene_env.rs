@@ -1086,6 +1086,10 @@ pub struct Frame {
     pub tint: [f32; 3],
     /// The sun light's intensity word (3 without a sky, 4.5 under one).
     pub sun_intensity: f32,
+    /// The record's sky tint the open sky's cube is tinted by through its
+    /// mask ([`tint_environment_cube`]) at each sun placement, once one has
+    /// run; `None` before.
+    pub sky_cube_tint: Option<[f32; 3]>,
 }
 
 /// One frame's fog, as the world shader's fog uniform takes it: the frame's
@@ -1202,6 +1206,9 @@ pub struct SceneEnvironment {
     /// Whether the sky cube's masked tint ran and was uploaded on the last
     /// sun placement.
     pub tint_uploaded: bool,
+    /// The record's sky tint at the last sun placement: what the cube was
+    /// last tinted by.
+    pub cube_tint: [f32; 3],
     /// Whether the last sun placement called the scene's follow-up (the
     /// callback and the task post).
     pub sun_event: bool,
@@ -1294,11 +1301,13 @@ impl SceneEnvironment {
                 wind: 0.0,
                 tint: [1.0; 3],
                 sun_intensity: SUN_INTENSITY,
+                sky_cube_tint: None,
             },
             linear: true,
             dim_record_k: false,
             flash_tint: [0.0; 3],
             tint_uploaded: false,
+            cube_tint: [1.0; 3],
             sun_event: false,
             paused: false,
             time_follows_view: false,
@@ -1602,6 +1611,7 @@ impl SceneEnvironment {
         // The sky cube's masked tint, then its upload, when the cube exists.
         // The GPU side is `exa_render`'s; the rule and the state are here.
         if self.track.is_some() {
+            self.cube_tint = self.current.sky_tint;
             self.tint_uploaded = true;
         }
         // The record's fog (scaled by 0.375) becomes both fog colours, its
@@ -2127,6 +2137,7 @@ impl SceneEnvironment {
                 self.tint[2] * self.tint[3],
             ],
             sun_intensity: self.sun_light_intensity,
+            sky_cube_tint: self.tint_uploaded.then_some(self.cube_tint),
         };
         self.frame
     }
@@ -3125,6 +3136,13 @@ mod tests {
         assert_eq!(env.sun_light_colour, env.current.sun);
         assert_eq!(env.sun_light_intensity, SUN_INTENSITY_SKY);
         assert!(env.tint_uploaded && env.sun_event);
+        // The sky cube is tinted by the record's sky tint, and the frame
+        // hands it on.
+        assert_eq!(env.cube_tint, env.current.sky_tint);
+        assert_eq!(
+            env.apply_frame([0.0, 0.0, 1.0]).sky_cube_tint,
+            Some(env.current.sky_tint)
+        );
     }
 
     #[test]

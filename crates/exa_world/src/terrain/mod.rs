@@ -77,6 +77,7 @@ impl Plugin for TerrainPlugin {
                 (
                     apply_splats,
                     give_terrain_gi,
+                    bind_level_cube,
                     exa_render::supersample::sync_split_taps::<TerrainMaterial>,
                     sync_plant_shadows,
                 )
@@ -325,6 +326,9 @@ pub mod terrain_flags {
     pub const WET_FLOOR: u32 = 16;
     /// The block draws its baked composite set (`EXA_TERRAIN_SETS=1`).
     pub const COMPOSITE: u32 = 32;
+    /// The level has an open sky: the GI takes the original's outdoor
+    /// shading ([`exa_render::gi::GiOutdoor`]).
+    pub const OUTDOOR: u32 = 64;
 }
 
 impl exa_render::supersample::SplitTapsFlag for TerrainMaterial {
@@ -517,6 +521,58 @@ fn give_terrain_gi(
         m.params.flags |= terrain_flags::GI;
         if std::env::var_os("EXA_GI_DEBUG").is_some() {
             m.params.flags |= terrain_flags::DEBUG_GI;
+        }
+    }
+}
+
+/// Binds the level's environment cube ([`exa_render::gi::GiOutdoor::cube`]) to every
+/// material that has a cube, when the level changes it and as materials
+/// come (the original swaps its one cube for the open sky's), and marks
+/// them with the open-sky switch ([`exa_render::gi::GiOutdoor::sky`]), with or without
+/// voxel GI.
+fn bind_level_cube(
+    outdoor: Option<Res<exa_render::gi::GiOutdoor>>,
+    mut materials: ResMut<Assets<TerrainMaterial>>,
+    mut events: MessageReader<AssetEvent<TerrainMaterial>>,
+) {
+    let Some(outdoor) = outdoor else {
+        events.clear();
+        return;
+    };
+    let added: Vec<AssetId<TerrainMaterial>> = events
+        .read()
+        .filter_map(|e| match e {
+            AssetEvent::Added { id } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    let ids: Vec<AssetId<TerrainMaterial>> = if outdoor.is_changed() {
+        materials.ids().collect()
+    } else {
+        added
+    };
+    for id in ids {
+        let Some(m) = materials.get(id) else {
+            continue;
+        };
+        let rebind = outdoor
+            .cube
+            .as_ref()
+            .is_some_and(|cube| m.environment.as_ref().is_some_and(|e| e != cube));
+        let sky = m.params.flags & terrain_flags::OUTDOOR != 0;
+        if !rebind && sky == outdoor.sky {
+            continue;
+        }
+        let Some(mut m) = materials.get_mut(id) else {
+            continue;
+        };
+        if rebind {
+            m.environment = outdoor.cube.clone();
+        }
+        if outdoor.sky {
+            m.params.flags |= terrain_flags::OUTDOOR;
+        } else {
+            m.params.flags &= !terrain_flags::OUTDOOR;
         }
     }
 }
@@ -2221,6 +2277,18 @@ mod tests {
             .find(|(_, ty)| ty.name.as_deref() == Some("TerrainSplat"))
             .expect("a type");
         u64::from(layouter[handle].size)
+    }
+
+    #[test]
+    fn the_open_sky_flag_matches_the_shader() {
+        let source = include_str!("terrain.wesl");
+        assert!(source.contains(&format!(
+            "const OUTDOOR: u32 = {}u;",
+            terrain_flags::OUTDOOR
+        )));
+        // The outdoor branch reads the cube at mip 7 and the shared curve.
+        assert!(source.contains("environment_map, environment_sampler, n, 7.0"));
+        assert!(source.contains("gi_ambient_outdoor(g, level, cube)"));
     }
 
     #[test]
