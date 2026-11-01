@@ -405,6 +405,9 @@ fn shock_fighters(
             if !dying && let Some(mut flags) = flags {
                 flags.0 |= StateFlags::SHOCK_STAGGER;
             }
+            if !dying && let Some(mut body) = body {
+                body.shock_stagger(shock.direction);
+            }
         }
         match ready {
             Some(mut ready) => ready.0 = next,

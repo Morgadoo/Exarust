@@ -122,6 +122,21 @@ fn a_placed_body_runs_one_tick_then_sleeps() {
     assert_eq!(body.sleep, Sleep::Deep);
 }
 
+/// A shock's burn steps from the standing point, 2 m along the shock.
+#[test]
+fn a_shock_steps_from_the_standing_point() {
+    let mut body = ball(Vec3::ZERO).with_drive();
+    body.drive
+        .as_mut()
+        .unwrap()
+        .set_standing_point(Vec3::new(1.0, 0.0, 2.0));
+    body.shock_stagger(Vec3::X);
+    let steps = &body.drive.as_ref().unwrap().steps;
+    assert!(steps.knockback);
+    assert!((steps.target.x - 3.0).abs() < 1e-5, "{}", steps.target);
+    assert!((steps.target.z - 2.0).abs() < 1e-5, "{}", steps.target);
+}
+
 /// A dormant statue's whole tree counts down by one a tick, floored at 1,
 /// whatever its motion: from 256 it sleeps in its 255th tick.
 #[test]

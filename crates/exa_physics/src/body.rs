@@ -4278,6 +4278,16 @@ impl Ragdoll {
         steps::begin_knockback(&mut drive.steps, chest + offset);
     }
 
+    /// The shock burn's stagger step: from the standing point, 2 m along
+    /// `direction`.
+    pub fn shock_stagger(&mut self, direction: Vec3) {
+        let Some(drive) = self.drive.as_mut() else {
+            return;
+        };
+        let target = drive.standing_point() + direction * (crate::shock::STEP_PUSH / 100.0);
+        steps::begin_knockback(&mut drive.steps, target);
+    }
+
     /// Gives every particle a velocity (m/s) by placing its previous
     /// position behind it.
     pub fn set_velocity(&mut self, velocity: Vec3) {
