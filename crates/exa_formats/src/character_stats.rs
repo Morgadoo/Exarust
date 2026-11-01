@@ -324,6 +324,9 @@ pub struct CharacterStats {
     /// Its race walks on four limbs (the second flag word's
     /// [`crate::races::QUADRUPED`]): its stab is resolved as a swing.
     pub quadruped: bool,
+    /// The race's attack bonus (0.2 for the Fael, 0 otherwise). The combat
+    /// state's forward-step clock gate scales by one plus it.
+    pub attack_bonus: f32,
     /// Its race's footstep set.
     pub footsteps: FootstepSet,
     /// The race word's release bit: a shock releases it into the shocked
@@ -441,6 +444,7 @@ impl CharacterStats {
             deflection: record.deflection(),
             encumbrance: 0.0,
             quadruped: stats.flags2 & QUADRUPED != 0,
+            attack_bonus: stats.attack_bonus,
             footsteps: if golem {
                 FootstepSet::Golem
             } else {

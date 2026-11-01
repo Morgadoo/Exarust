@@ -709,6 +709,39 @@ fn duel() -> (Body, Foe) {
 }
 
 #[test]
+fn the_attack_bonus_holds_a_forward_step_open() {
+    let places = vec![
+        Place {
+            attack: 10.0,
+            ..Place::default()
+        },
+        Place::default(),
+    ];
+    let plan = Footwork {
+        first: 0,
+        last: 8,
+        mode: 0,
+        change: 1.0,
+        queue_taken: false,
+    };
+    let kept = |bonus: f32| {
+        let me = Body {
+            condition: ATTACKING,
+            clock: 0.33,
+            attack_bonus: bonus,
+            size: 1.0,
+            ..Body::default()
+        };
+        decide_attack(&me, 1.0, plan, &places, Some(1), 0.0, 0.0, false, &[]).1
+    };
+    // Skill 1 and no bonus: the gate is 0.3, and 0.33 is past it, so the
+    // forward step stands. The Fael's 0.2 stretches the gate to 0.36, and
+    // the step gives way.
+    assert_eq!(kept(0.0), Some(1));
+    assert_eq!(kept(0.2), Some(0));
+}
+
+#[test]
 fn a_long_step_is_scaled_by_the_leg_extension() {
     let me = Body {
         now_ms: 500,

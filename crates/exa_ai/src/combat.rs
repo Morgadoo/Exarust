@@ -411,7 +411,8 @@ pub struct Body {
     pub heavy_claw: bool,
     pub rules: u32,
     pub quadruped: bool,
-    /// The race's AI attack bonus.
+    /// The race's attack bonus. The forward-step clock gate scales by one
+    /// plus it.
     pub attack_bonus: f32,
     /// The record's feral level, 0 through 1. At or past a half the friend
     /// test is skipped and a close blow is overhead. A value that is not a

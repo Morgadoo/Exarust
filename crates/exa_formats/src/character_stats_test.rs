@@ -116,9 +116,21 @@ fn feral_weakens_the_undead() {
     assert_eq!((living.head_factor, living.walking_arms), (1.0, 0.2));
     assert_eq!((living.perception, living.attack_voice_step), (1.0, 3));
     assert!(close(living.step_reach(0.0), 0.8));
+    assert_eq!(living.attack_bonus, 0.0);
     // Feral levels beyond 1 are kept within 0…1.
     let beyond = CharacterStats::derive(&record(0, 0.0, 2.0), Some(&human), ALIVE);
     assert_eq!((beyond.feral, beyond.max_energy), (1.0, 0.9));
+}
+
+/// The race's attack bonus is kept: a human has none, and 0.2 is the Fael's.
+#[test]
+fn the_attack_bonus_is_kept() {
+    let stats = CharacterStats::derive(&record(0, 0.0, 0.0), Some(&human()), ALIVE);
+    assert_eq!(stats.attack_bonus, 0.0);
+    let mut fael = human();
+    fael.stats.attack_bonus = 0.2;
+    let fael = CharacterStats::derive(&record(0, 0.0, 0.0), Some(&fael), ALIVE);
+    assert_eq!(fael.attack_bonus, 0.2);
 }
 
 /// The step reach is 80 cm·√scale, 20 % shorter per unit of encumbrance:

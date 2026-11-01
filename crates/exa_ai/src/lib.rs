@@ -1363,6 +1363,7 @@ fn duellist(
                     .map_or(1.0, |drive| drive.support()),
                 scale: fighter.stats.scale,
                 feral: fighter.stats.feral,
+                attack_bonus: fighter.stats.attack_bonus,
                 size: fighter.stats.size,
                 encumbrance: fighter.stats.encumbrance,
                 reach_cm: reach * CM,
