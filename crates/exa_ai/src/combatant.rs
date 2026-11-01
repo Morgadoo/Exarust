@@ -133,6 +133,14 @@ pub struct Effect {
 /// The state a broken binding or charm takes.
 pub const MIND_BROKEN: u32 = 2;
 
+/// The mind powers on a character, in the order the relation walk reads them.
+/// A frenzy ends the walk at 0; a binding or command sourced on the other
+/// character, a charm aimed at it, and suspicion then change what remains.
+#[derive(Component, Debug, Clone, Default)]
+pub struct MindPowers {
+    pub effects: Vec<Effect>,
+}
+
 /// A raw attitude and the tolerance beside it, both from the role database.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Attitude {

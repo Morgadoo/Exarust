@@ -803,23 +803,22 @@ fn caster_relation(
     role_sets: &Query<&Roles>,
     locale: u32,
     now: u32,
+    effects: &[combatant::Effect],
 ) -> f32 {
-    let Some(relations) = relations else {
-        return 0.0;
+    let raw = if let Some(relations) = relations
+        && let Ok(id) = ids.get(caster)
+        && let Ok(roles) = role_sets.get(caster)
+    {
+        let partner = Partner {
+            id: id.0,
+            roles,
+            former: None,
+        };
+        relations.last_attitude(&partner, now, locale)
+    } else {
+        0.0
     };
-    let Ok(id) = ids.get(caster) else {
-        return 0.0;
-    };
-    let Ok(roles) = role_sets.get(caster) else {
-        return 0.0;
-    };
-    let partner = Partner {
-        id: id.0,
-        roles,
-        former: None,
-    };
-    let raw = relations.last_attitude(&partner, now, locale);
-    combatant::trust(caster, raw, false, &[])
+    combatant::trust(caster, raw, false, effects)
 }
 
 /// Who raised a force effect, when the live effect is still in the scene.
@@ -844,6 +843,7 @@ fn effect_caster(
 /// keeps only the cleared fear.
 fn see_force_effects(
     sight: ForceSight,
+    powers: Query<&combatant::MindPowers>,
     mut watchers: Query<(Entity, &mut Npc, Option<&Ragdoll>, Option<&mut Relations>)>,
 ) {
     let effects: Vec<_> = sight.hazards.iter().collect();
@@ -880,6 +880,7 @@ fn see_force_effects(
         };
         for (effect, hazard) in &effects {
             let caster = effect_caster(*effect, &sight.blasts, &sight.waves, &sight.walls);
+            let mind = powers.get(who).map(|powers| powers.effects.clone());
             let relation = caster.map_or(0.0, |caster| {
                 caster_relation(
                     caster,
@@ -888,6 +889,7 @@ fn see_force_effects(
                     &sight.roles,
                     locale,
                     now,
+                    mind.as_deref().unwrap_or(&[]),
                 )
             });
             let Some(seen) = hazard.assess(&viewer, relation, caster == Some(who)) else {
@@ -2038,6 +2040,110 @@ mod tests {
         assert_eq!(friend.force_sights[0].contact.alarm, 0.0);
         let stranger = app.world().get::<Npc>(stranger).unwrap();
         assert!(stranger.force_sights[0].contact.alarm > 0.0);
+    }
+
+    /// A frenzy wipes the relation, so a friend fears the wall again. Suspicion
+    /// lowers it and the fear rises. A binding to the caster takes the fear away.
+    #[test]
+    fn a_mind_power_changes_the_fear_of_the_wall() {
+        use bevy::math::Affine3A;
+        use exa_ai::combatant::{Effect, MindPowers, POWER_BIND, POWER_FRENZY, POWER_SUSPICION};
+        use exa_ai::roles::Relation;
+        use exa_physics::body::PartSetup;
+        let mut app = App::new();
+        app.add_systems(Update, see_force_effects);
+        let caster = app
+            .world_mut()
+            .spawn((CharacterId(1), Roles::default()))
+            .id();
+        let mut draws = Mt19937::new(1);
+        let wall = Barricade::raise(
+            WallFrame::facing(Vec3::new(0.0, 100.0, 200.0), Vec3::Z),
+            0.25,
+            0,
+            |_, _, _| None,
+            None,
+            &mut draws,
+        );
+        app.world_mut().spawn((
+            LiveBarricade {
+                wall,
+                caster: Some(caster),
+            },
+            crate::effects::danger::Hazard::Barricade {
+                wall: crate::effects::danger::Wall {
+                    centre: Vec3::new(0.0, 100.0, 200.0),
+                    along: Vec3::X,
+                    half_width: 150.0,
+                },
+                rising: true,
+                strong: false,
+            },
+        ));
+        let body = || {
+            Ragdoll::new(&[PartSetup {
+                bone: 0,
+                entity: Entity::PLACEHOLDER,
+                parent: None,
+                world: Affine3A::from_translation(Vec3::new(0.0, 1.0, 0.0)),
+                centre: Vec3::ZERO,
+                half: Vec3::splat(0.1),
+                origin: Vec3::ZERO,
+                links: vec![],
+                foot: None,
+                pins: Vec::new(),
+                spheres: None,
+            }])
+            .with_drive()
+        };
+        let mut relations = Relations::default();
+        relations.global.insert(
+            1,
+            Relation {
+                last: 100.0,
+                ..Relation::default()
+            },
+        );
+        let power = |kind, source| MindPowers {
+            effects: vec![Effect {
+                kind,
+                source,
+                target: None,
+                state: 0,
+            }],
+        };
+        let frenzied = app
+            .world_mut()
+            .spawn((
+                body(),
+                Npc::new([0.0; 4]),
+                relations,
+                power(POWER_FRENZY, None),
+            ))
+            .id();
+        let suspicious = app
+            .world_mut()
+            .spawn((body(), Npc::new([0.0; 4]), power(POWER_SUSPICION, None)))
+            .id();
+        let bound = app
+            .world_mut()
+            .spawn((body(), Npc::new([0.0; 4]), power(POWER_BIND, Some(caster))))
+            .id();
+        let plain = app.world_mut().spawn((body(), Npc::new([0.0; 4]))).id();
+        app.update();
+        let alarm = |id| {
+            app.world().get::<Npc>(id).unwrap().force_sights[0]
+                .contact
+                .alarm
+        };
+        assert!(alarm(frenzied) > 0.0, "a frenzy clears the friendship");
+        assert_eq!(alarm(bound), 0.0, "a binding trusts the caster");
+        let plain = alarm(plain);
+        let suspicious = alarm(suspicious);
+        assert!(
+            (suspicious - plain * 1.5).abs() < 1e-4,
+            "suspicion {suspicious} against {plain}"
+        );
     }
 
     #[test]
