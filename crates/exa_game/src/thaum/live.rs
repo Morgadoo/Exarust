@@ -34,8 +34,8 @@
 //!   the player, and the constant displacement's wisps on the player's
 //!   body. The player cannot cast yet: Exarust has no power bar.
 //!
-//! Not wired: a point light, the AI's sight of a barricade, the attack a
-//! barricade interrupts. A shock weapon's arcs (light points) place their
+//! Not wired: the AI's sight of a barricade, the attack a barricade
+//! interrupts. A shock weapon's arcs (light points) place their
 //! tendril light each frame. An emitter that carries a voxel light places
 //! it at the arcs' mean and sets its intensity from the frame.
 //! Rules: `docs/THAUMATURGY.md`.

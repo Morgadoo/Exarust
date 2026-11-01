@@ -2,7 +2,9 @@
 //! [`exa_render::electricity`]'s rules. An arc is a ribbon per tendril,
 //! rebuilt each frame from its jittered segments and drawn with the
 //! `_ElecMat01` material; its light is spawned with it: a voxel light for
-//! the weapon and spark presets, a point light for a level device.
+//! the weapon and spark presets, a point light for a level device. Each
+//! frame that point light takes the glow times how full the tendrils are
+//! times its flicker, and sits at the tendrils' mean.
 //! Rules: `docs/RENDERING.md` (Electricity).
 
 use bevy::asset::RenderAssetUsages;
@@ -21,7 +23,14 @@ impl Plugin for ArcPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             Update,
-            (arc_assets, attach_arcs, tick_arcs, build_arcs).chain(),
+            (
+                arc_assets,
+                attach_arcs,
+                tick_arcs,
+                build_arcs,
+                drive_device_lights,
+            )
+                .chain(),
         );
     }
 }
@@ -169,6 +178,26 @@ fn tick_arcs(time: Res<Time>, mut commands: Commands, mut arcs: Query<(Entity, &
             steps += 1;
         }
         effect.accumulator = effect.accumulator.min(dt);
+    }
+}
+
+/// The level device's point light follows the frame: its strength and where
+/// the tendrils' mean sits. A voxel light is left as it was spawned.
+fn drive_device_lights(
+    mut arcs: Query<(&mut ArcEffect, &Children)>,
+    mut lights: Query<(&mut PointLight, &mut Transform), Without<ArcEffect>>,
+) {
+    for (mut effect, children) in &mut arcs {
+        let Some((strength, at)) = effect.arc.point_frame() else {
+            continue;
+        };
+        let at = at / 100.0;
+        for child in children {
+            if let Ok((mut light, mut transform)) = lights.get_mut(*child) {
+                light.intensity = strength.max(0.0) * crate::LUMENS_PER_INTENSITY;
+                transform.translation = at;
+            }
+        }
     }
 }
 

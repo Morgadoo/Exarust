@@ -824,6 +824,8 @@ pub struct Arc {
     /// The texture offset the shader adds (`TexOfs`): the original passes
     /// `(0, scroll)`, the scroll kept by the tendril tick.
     pub tex_offset: Vec2,
+    /// The point light's flicker, walked each frame and held within 0.75–1.2.
+    flicker: f32,
     rng: LocalRng,
 }
 
@@ -842,6 +844,7 @@ impl Arc {
             lifetime: 0,
             tendrils: Vec::new(),
             tex_offset: Vec2::ZERO,
+            flicker: 0.0,
             rng,
         };
         arc.renew();
@@ -932,6 +935,38 @@ impl Arc {
     pub fn pass_clock(pass: i32, frame: i32, start: f32, divisor: i32) -> f32 {
         let counter = (i64::from(pass) + i64::from(frame)) as f32 + 0.5;
         (f64::from(counter) * 0.001 / f64::from(divisor) + f64::from(start) - 0.0005) as f32
+    }
+
+    /// One frame of a level device's point light: its strength is the glow's
+    /// intensity times how full the tendrils are times the flicker, and it
+    /// sits at the tendrils' mean (local centimetres). A voxel light has none.
+    pub fn point_frame(&mut self) -> Option<(f32, Vec3)> {
+        let glow = self.spec.glow?;
+        glow.point?;
+        let draw = f64::from(self.rng.unit());
+        self.flicker = ((draw - 0.5) * 0.5 + f64::from(self.flicker)) as f32;
+        self.flicker = self.flicker.clamp(0.75, 1.2);
+        let records = self.tendrils.len() as i64;
+        let denom = i64::from(self.spec.segments) * records;
+        let mut total = 0i64;
+        let mut sum = Vec3::ZERO;
+        for tendril in &self.tendrils {
+            total += tendril.len() as i64;
+            for point in tendril {
+                sum += *point;
+            }
+        }
+        let fill = if denom == 0 {
+            0.0
+        } else {
+            (total as f32 / denom as f32) * 2.0
+        };
+        let at = if total == 0 {
+            Vec3::ZERO
+        } else {
+            sum / total as f32
+        };
+        Some((glow.intensity * fill * self.flicker, at))
     }
 
     /// One tick: ages the arc and scrolls its texture; a sustained arc
@@ -1428,6 +1463,14 @@ mod tests {
         let point = glow.point.unwrap();
         assert_eq!(point.softness, 5.0);
         assert_eq!(point.multiplier, 2.0);
+        // Full tendrils fill the light by 2. The flicker starts at 0 and is
+        // held within 0.75–1.2, so the strength is the base 0.5 times that.
+        let mut arc = Arc::new(s, Vec3::ZERO, Vec3::Z * 200.0);
+        let (strength, at) = arc.point_frame().unwrap();
+        assert!((0.75..=1.2).contains(&strength), "{strength}");
+        assert!((at.z - 100.0).abs() < 1e-3, "{at}");
+        let mut weapon = Arc::new(ArcSpec::weapon(), Vec3::ZERO, Vec3::X);
+        assert!(weapon.point_frame().is_none());
         // A length too short for two segments falls back to ten.
         let s = ArcSpec::device(1000, 2, 0, Vec3::NEG_Z);
         assert_eq!(s.segments, 10);
