@@ -434,6 +434,9 @@ struct ContactMeasure {
     large: bool,
     skill: f32,
     blow: place::Blow,
+    /// Its condition is the dead word. The position score then writes
+    /// nothing, and the place keeps the zeros it started with.
+    dead: bool,
 }
 
 /// The combat state's view of a duel. The foe is the target. Another
@@ -509,6 +512,9 @@ impl combat::Field for DuelField<'_> {
     }
     fn score(&mut self, contact: usize, level: i32, point: Vec3) -> combat::PlaceScore {
         let measured = self.contact_at.get(contact).and_then(Option::as_ref);
+        if measured.is_some_and(|m| m.dead) {
+            return combat::PlaceScore::default();
+        }
         let (origin, forward) = measured
             .map(|m| (m.origin, m.forward))
             .unwrap_or((self.foe, self.foe_forward));
@@ -687,6 +693,7 @@ fn measure_contact(
         large: fighter.is_some_and(|f| f.stats.rules.has(1)),
         skill,
         blow,
+        dead: condition.is_dead(),
     })
 }
 
@@ -1913,6 +1920,7 @@ mod tests {
                     large: false,
                     skill: 0.0,
                     blow: place::Blow::default(),
+                    dead: false,
                 }),
             ],
             grid: None,
@@ -1928,6 +1936,88 @@ mod tests {
             clear.close
         );
         assert_eq!(field.score(0, 3, Vec3::new(100.0, 0.0, 0.0)).close, 0.0);
+    }
+
+    /// A dead character leaves the place's zeros. The same body, alive, is
+    /// close.
+    #[test]
+    fn a_dead_character_adds_nothing_to_the_place() {
+        use crate::combat::Field;
+
+        let measure = ContactMeasure {
+            origin: Vec3::new(100.0, 0.0, 0.0),
+            forward: Vec3::X,
+            reach_cm: 50.0,
+            size: 1.0,
+            large: false,
+            skill: 0.0,
+            blow: place::Blow::default(),
+            dead: true,
+        };
+        let spot = place::Spot {
+            other_reach_cm: 50.0,
+            my_reach_cm: 50.0,
+            other_size: 1.0,
+            my_step_cm: 80.0,
+            other_large: false,
+            melee: false,
+            level: 3,
+            feral: 0.0,
+            dull: false,
+            blow: place::Blow::default(),
+            wide: false,
+            observer_ahead: 1.0,
+            other_ahead: 1.0,
+            in_attack: false,
+            presses: false,
+            other_skill: 0.0,
+        };
+        let mut field = DuelField {
+            foe: Vec3::new(0.0, 0.0, 500.0),
+            heading: Vec3::Z,
+            foe_forward: Vec3::Z,
+            spot,
+            contact_at: vec![Some(measure)],
+            grid: None,
+            chase: None,
+            powers: None,
+        };
+        let dead = field.score(0, 0, Vec3::new(100.0, 0.0, 0.0));
+        assert_eq!(dead, combat::PlaceScore::default());
+        field.contact_at[0].as_mut().unwrap().dead = false;
+        assert!(field.score(0, 0, Vec3::new(100.0, 0.0, 0.0)).close > 0.0);
+    }
+
+    /// A dead body standing where a living one would push the step aside
+    /// does not. The step goes forward, at the foe.
+    #[test]
+    fn a_dead_character_does_not_push_the_step() {
+        let (mut app, foe, _) = duel(5.0, false);
+        engage(&mut app, foe);
+        step(&mut app);
+        let beside = app
+            .world_mut()
+            .spawn((
+                GlobalTransform::from_translation(Vec3::new(0.4, 0.0, 0.0)),
+                Fighter::default(),
+                Condition::DEAD,
+            ))
+            .id();
+        app.world_mut()
+            .get_mut::<Combatant>(foe)
+            .unwrap()
+            .contacts
+            .push(combatant::Contact::new(beside));
+        let mut goal = None;
+        for _ in 0..1500 {
+            step(&mut app);
+            if let Some(step) = app.world().get::<Duellist>(foe).unwrap().step {
+                goal = Some(step.goal);
+                break;
+            }
+        }
+        let goal = goal.expect("a step");
+        assert!(goal.z > 0.4 && goal.x > -0.4, "{goal:?}");
     }
 
     /// Within the approach band it strikes once eager enough, from where it
