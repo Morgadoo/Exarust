@@ -1364,6 +1364,10 @@ pub enum Step {
     Wake(WakePose),
     /// The motion the player is asked to play.
     RequestAction(u32),
+    /// The next fight's motion: the word is cleared first, so the clip starts
+    /// again even when it is already playing, and the start keeps no capture,
+    /// so it does not blend in from the pose the body held.
+    SnapAction(u32),
     /// Add the practice mode's player role.
     PracticePlayer {
         role: u32,
@@ -2632,9 +2636,11 @@ impl Flow {
                 red_bits: step.red_bits,
                 yellow_bits: step.yellow_bits,
             },
-            // The next fight starts from a clear condition word.
+            // The next fight starts from a clear condition word, then the
+            // Defence stance again: the motion word is cleared first, so a
+            // body already in it restarts, with no blend from the pose it held.
             Step::Condition(0),
-            Step::RequestAction(PRACTICE_MOTION),
+            Step::SnapAction(PRACTICE_MOTION),
             Step::PlacePlayer(placement),
             Step::Camera(camera::frame_point(
                 PRACTICE_POINT,
@@ -3849,6 +3855,38 @@ fn hide_tip(
     }
 }
 
+/// Starts `motion` on every player. `snap` is the next fight: the clip
+/// starts even when it is already playing, and the start's capture is
+/// dropped so the body does not blend in from the pose it held.
+fn request_action(
+    motions: &Option<Res<exa_anim::Motions>>,
+    players: &mut Query<PlayerParts, With<crate::player::PlayerBody>>,
+    motion: u32,
+    snap: bool,
+) {
+    let Some(motions) = motions.as_deref() else {
+        return;
+    };
+    for mut player in players {
+        let Some(animator) = player.animator.as_mut() else {
+            continue;
+        };
+        if !snap && motions.action_name(motion) == Some(animator.action.as_str()) {
+            continue;
+        }
+        if let Some(name) = motions.start_requested(animator, motion) {
+            if snap {
+                animator.pending = None;
+                animator.leading = false;
+                animator.capture = None;
+            }
+            debug!("game flow: requested motion {motion:#x} starts {name}");
+        } else {
+            debug!("game flow: requested motion {motion:#x} has no clip");
+        }
+    }
+}
+
 /// Applies the flow's steps to the running app's own pieces: the menu and
 /// end-menu forms, the title logo, the interface and controls flags and the
 /// practice heal's health. A level load or world teardown becomes an
@@ -4173,21 +4211,10 @@ fn apply_steps(
                 // that action keeps it; otherwise the clip starts by its
                 // action name (looping when the clip loops, else once back
                 // into the combat or idle action, with no blend).
-                if let Some(motions) = motions.as_deref() {
-                    for mut player in &mut players {
-                        let Some(animator) = player.animator.as_mut() else {
-                            continue;
-                        };
-                        if motions.action_name(motion) == Some(animator.action.as_str()) {
-                            continue;
-                        }
-                        if let Some(name) = motions.start_requested(animator, motion) {
-                            debug!("game flow: requested motion {motion:#x} starts {name}");
-                        } else {
-                            debug!("game flow: requested motion {motion:#x} has no clip");
-                        }
-                    }
-                }
+                request_action(&motions, &mut players, motion, false);
+            }
+            Step::SnapAction(motion) => {
+                request_action(&motions, &mut players, motion, true);
             }
             Step::Forfeit => {
                 out.forfeit.write(ForfeitMatch);
@@ -4967,8 +4994,10 @@ mod tests {
             yellow_bits: healed.to_bits()
         }));
         assert_eq!(healed.to_bits(), 0x3e66_6667);
-        // The round's condition word clears before the motion starts.
+        // The round's condition word clears before the motion starts, and
+        // the stance starts again with no blend from the pose it held.
         assert!(steps.contains(&Step::Condition(0)));
+        assert!(steps.contains(&Step::SnapAction(PRACTICE_MOTION)));
         assert!(steps.iter().any(|step| matches!(
             step,
             Step::Music {
