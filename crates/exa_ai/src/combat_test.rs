@@ -435,6 +435,31 @@ fn the_drives_of_a_fresh_pressing_fighter() {
 }
 
 #[test]
+fn a_recoil_holds_the_recovery_drive() {
+    let at = |until: u32| {
+        let me = Body {
+            now_ms: 1000,
+            recoil_until_ms: until,
+            weapon_class: 0x10,
+            ..Body::default()
+        };
+        let mut mind = CombatMind {
+            level: 3,
+            eagerness: 0.5,
+            pressing: true,
+            ..CombatMind::default()
+        };
+        // Seed 1's draw of 40 is 1, so a recovered fighter keeps the press.
+        let mut roll = 1;
+        drives(&mut mind, &me, None, MASTER, &mut roll)
+    };
+    // Still before the deadline the strike is half and the attack loses
+    // half a skill. At the deadline it has recovered.
+    assert_eq!((at(1500).attack, at(1500).strike), (1.5, 0.75));
+    assert_eq!((at(1000).attack, at(1000).strike), (3.0, 1.5));
+}
+
+#[test]
 fn a_cleaving_foe_doubles_the_drive() {
     let me = Body::default();
     let foe = Foe {

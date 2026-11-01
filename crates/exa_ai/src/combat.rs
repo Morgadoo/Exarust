@@ -434,6 +434,8 @@ pub struct Body {
     /// downs lower it; the side score shifts by a fifth of it.
     pub parry_bias: i32,
     pub thrust_pref: i32,
+    /// The game clock (ms) at which a stall, a recoil or a parry ends.
+    /// Before it the drives are the recovery ones and the stance stays.
     pub recoil_until_ms: u32,
     pub parrying: bool,
     pub yaw: f32,

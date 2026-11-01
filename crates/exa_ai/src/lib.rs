@@ -1350,6 +1350,7 @@ fn duellist(
                 power_slots: powers.as_deref().map_or([0; cast::SLOTS], |p| p.slots),
                 clock: anim.progress,
                 attack_flags: swinging.flags,
+                recoil_until_ms: swinging.end_ms.min(u64::from(u32::MAX)) as u32,
                 weapon_class: u32::from(class),
                 held: blades
                     .iter()
