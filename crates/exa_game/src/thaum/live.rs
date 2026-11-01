@@ -276,10 +276,13 @@ fn tick_arcs(
             && let Ok((_, body)) = bodies.get(weapon)
             && let Some(part) = body.parts.iter().find(|part| !part.spheres.is_empty())
         {
-            let origin = Vec3::from(part.transform().translation) * CM;
-            live.arcs.anchor = Some(origin);
+            let placed = part.transform();
+            live.arcs.anchor = Some(Vec3::from(placed.translation) * CM);
+            let (_, rotation, _) = placed.to_scale_rotation_translation();
+            live.arcs.frame = rotation;
             // The spheres stay in the weapon's own frame: a point more than
-            // 10 cm along it is where a tendril may start.
+            // 10 cm along its local y is where a tendril may start, turned
+            // with the weapon.
             live.arcs.source_spheres = part
                 .spheres
                 .iter()

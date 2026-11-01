@@ -64,7 +64,7 @@
 //! tests, branch and respawn helpers, bounds and frame, read from
 //! `Exanima.exe` (`context/re/thaum-arcs.md`).
 
-use bevy::math::Vec3;
+use bevy::math::{Quat, Vec3};
 
 use super::engine::{Draws, dist_sq, dot_zyx, jitter, length, lerp, normalize, sign};
 
@@ -263,8 +263,13 @@ pub struct ArcEmitter {
     pub anchor: Option<Vec3>,
     /// The plane the points stay above: its normal and a point on it.
     pub plane: Option<(Vec3, Vec3)>,
-    /// The spheres of the body the arcs come from, in the emitter's frame.
+    /// The spheres of the body the arcs come from, in the weapon's own frame.
+    /// A tendril starts from one whose local y is over 10 cm, turned by
+    /// [`ArcEmitter::frame`].
     pub source_spheres: Vec<Vec3>,
+    /// The weapon's rotation. Sphere picks are turned by it; identity leaves
+    /// them as stored.
+    pub frame: Quat,
     /// Characters already shocked (with [`SHOCK_ONCE`]).
     pub shocked: Vec<u64>,
     pub lights: Vec<LightPoint>,
@@ -328,6 +333,7 @@ impl ArcEmitter {
             anchor: None,
             plane: None,
             source_spheres: Vec::new(),
+            frame: Quat::IDENTITY,
             shocked: Vec::new(),
             lights: Vec::new(),
         }
@@ -465,7 +471,7 @@ impl ArcEmitter {
                 loop {
                     let pick = self.source_spheres[draws.below(n).max(0) as usize];
                     if 10.0 < pick.y {
-                        break Some(Origin::Fixed(pick));
+                        break Some(Origin::Fixed(self.frame * pick));
                     }
                 }
             } else {
@@ -1466,6 +1472,36 @@ pub const WEAPON_SHOCK: f32 = 0.01;
 mod tests {
     use super::super::engine::testing::Fixed;
     use super::*;
+
+    /// A sphere above 10 cm on the weapon starts a tendril there, turned by
+    /// the weapon's rotation. A quarter turn about vertical sends a point on
+    /// +z to +x.
+    #[test]
+    fn a_weapon_sphere_starts_turned_with_the_weapon() {
+        use std::f32::consts::FRAC_PI_2;
+
+        struct Still;
+        impl Draws for Still {
+            fn below(&mut self, _: i32) -> i32 {
+                0
+            }
+            fn unit(&mut self) -> f64 {
+                0.5
+            }
+        }
+        let mut arc = ArcEmitter::allocate(2, 2, 1.0);
+        arc.respawns = true;
+        arc.source_spheres = vec![Vec3::new(0.0, 20.0, 5.0)];
+        arc.frame = Quat::from_rotation_y(FRAC_PI_2);
+        arc.tick(&mut Still);
+        let started = arc
+            .tendrils
+            .iter()
+            .find(|t| t.count == 2 && t.points[0].y > 10.0);
+        let point = started.expect("a tendril").points[0];
+        let turned = arc.frame * Vec3::new(0.0, 20.0, 5.0);
+        assert!((point - turned).length() < 1e-4, "{point} {turned}");
+    }
 
     #[test]
     fn the_setup_sizes_the_records() {
