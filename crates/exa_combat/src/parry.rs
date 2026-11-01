@@ -1056,24 +1056,66 @@ pub fn end_for_request(
 struct Pick {
     motion: u8,
     clip: u8,
+    /// The blow cleaves: the armed parry refuses it.
+    cleaving: bool,
 }
 
 /// What the defender holds: whether it may parry at all (it holds something,
-/// a fist included) and whether what it holds is a weapon, whose parry (the
-/// grip, its speed from the weapon's handling) is not modelled yet.
+/// a fist included), whether the weapon it answers with is armed, the
+/// weapon's handling (W16) and how many items it holds (the parry's slot).
 #[derive(Clone, Copy, Debug, Default)]
 struct Held {
     allowed: bool,
     armed: bool,
+    /// The first armed item's handling.
+    handling: f32,
+    /// Every held item's count, the parry's slot bound.
+    count: u8,
 }
 
 fn held(wielder: Entity, blades: &Query<&Blade>) -> Held {
     let mut held = Held::default();
     for blade in blades.iter().filter(|b| b.wielder == wielder) {
         held.allowed = true;
-        held.armed |= blade.record.armed();
+        held.count = held.count.saturating_add(1);
+        if blade.record.armed() && !held.armed {
+            held.armed = true;
+            held.handling = blade.record.handling;
+        }
     }
     held
+}
+
+/// The armed parry's grip for `threat`, its point `distance_cm` from the
+/// defender's chest. A cleaving blow is refused. The shield's weight and the
+/// arm's stamina scale its speed and strength; an armed defender without a
+/// shield passes them as zero. `other_held` disables the other hand's grip.
+fn armed_parry_grip(
+    held: &Held,
+    motion: u8,
+    cleaving: bool,
+    distance_cm: f32,
+    shield: Option<(f32, f32)>,
+    other_held: bool,
+) -> Option<Grip> {
+    if !held.armed {
+        return None;
+    }
+    let (shield_weight, stamina) = shield.unwrap_or((0.0, 0.0));
+    armed_grip(&Arm {
+        handling: held.handling,
+        horizontal_cm: distance_cm,
+        passed: false,
+        cleaving,
+        shield: shield.is_some(),
+        shield_weight,
+        stamina,
+        attacking: false,
+        motion,
+        held: held.count,
+        has_grip: true,
+        other_held,
+    })
 }
 
 /// A fighter's reach in centimetres, as the equip refresh sets it: its
@@ -1141,6 +1183,38 @@ struct Defender<'a> {
     motion: u8,
     now: u64,
     held: Held,
+    /// The shield the defender holds, its parry effectiveness and its arm's
+    /// stamina: none for an armed defender without one.
+    shield: Option<(f32, f32)>,
+    /// The blow's ground distance from the defender's chest (cm), which the
+    /// armed parry's falloff reads.
+    distance_cm: f32,
+}
+
+impl Defender<'_> {
+    /// The armed grip for the blow `pick`: the weapon's handling and the
+    /// blow's distance give its strength; a cleaving blow has none.
+    fn armed_grip(&self, pick: Pick) -> Option<Grip> {
+        if !self.held.armed {
+            return Some(Grip {
+                speed: 1.0,
+                blend: 20,
+                strength: 0.0,
+                slot: 0,
+                flags: 0,
+                enabled: false,
+                other_disabled: false,
+            });
+        }
+        armed_parry_grip(
+            &self.held,
+            pick.motion,
+            pick.cleaving,
+            self.distance_cm,
+            self.shield,
+            self.held.count > 1,
+        )
+    }
 }
 
 impl Defender<'_> {
@@ -1181,7 +1255,23 @@ impl Defender<'_> {
             sync_guard(self.fighter);
             return false;
         }
-        let Some(pick) = pick.filter(|_| !self.held.armed) else {
+        // An armed defender's parry answers the blow through its weapon's
+        // grip: a cleaving blow, or a failed grip, ends it. An unarmed one
+        // answers every blow the trigger accepts.
+        let armed = self.held.armed;
+        let mut speed = 1.0_f32;
+        if armed {
+            let Some(pick) = pick else {
+                self.clear();
+                return false;
+            };
+            let Some(grip) = self.armed_grip(pick) else {
+                self.clear();
+                return false;
+            };
+            speed = grip.speed;
+        }
+        let Some(pick) = pick else {
             self.clear();
             return false;
         };
@@ -1203,7 +1293,7 @@ impl Defender<'_> {
         if let Some(stored) = if repick { Some(pick.clip) } else { parry.clip } {
             parry.counter = parry_counter(parry.counter, stored);
         }
-        let start = parry_start(chosen, parry.clip.map_or(-1, i32::from), 1.0, self.motion);
+        let start = parry_start(chosen, parry.clip.map_or(-1, i32::from), speed, self.motion);
         let mut left_attack = false;
         if let Some(start) = start
             && let Some(action) = clip_action(start.clip)
@@ -1292,10 +1382,16 @@ pub(crate) fn run_parries(
     // Whether the body checks a blow this tick: it parries, or it stands in
     // the combat idle ready to. `rests` is a body that only lets its counter
     // drift or its stance return.
-    let (parries, enters, rests, held) = {
+    let (parries, enters, rests, held, shield) = {
         let own = bodies.p0();
         let Ok((fighter, anim, swing, _, _, attacker, body)) = own.get(entity) else {
             return;
+        };
+        // The shield's parry effectiveness and its arm's stamina: the
+        // armed parry's speed and strength are made from them.
+        let shield = match fighter.guard {
+            Guard::Shield(guard) => Some((guard.parry, guard.stamina)),
+            _ => None,
         };
         let parries = fighter.parry.active;
         let ready = !parries
@@ -1312,12 +1408,15 @@ pub(crate) fn run_parries(
             && (fighter.parry.counter != 0
                 || is_parry_action(&anim.action)
                 || matches!(fighter.guard, Guard::Parry));
-        (parries, ready && held.allowed, rests, held)
+        (parries, ready && held.allowed, rests, held, shield)
     };
     if !(parries || enters || rests) {
         return;
     }
     let mut pick = None;
+    // The blow's ground distance from the defender's chest (cm), which the
+    // armed parry's falloff reads.
+    let mut pick_distance_cm = 0.0_f32;
     if parries || enters {
         let (def_chest, def_facing, shield, yellow, helpless, motion) = {
             let own = bodies.p1();
@@ -1396,7 +1495,9 @@ pub(crate) fn run_parries(
             pick = Some(Pick {
                 motion: motion_index,
                 clip: clip_for(&threat),
+                cleaving,
             });
+            pick_distance_cm = distance * 100.0;
         }
     }
     // A body with no blow to check and nothing to settle is left untouched
@@ -1405,51 +1506,57 @@ pub(crate) fn run_parries(
         return;
     }
     let active = {
-    let mut own = bodies.p0();
-    let Ok((mut fighter, mut anim, _, mut stance, condition, _, body)) = own.get_mut(entity) else {
-        return;
-    };
-    let mut defender = Defender {
-        dazed: body
-            .as_ref()
-            .and_then(|b| b.drive.as_ref())
-            .is_some_and(|d| d.dazed()),
-        motion: motions.0.action_index(&anim.action).unwrap_or(0) as u8,
-        condition: *condition,
-        now,
-        held,
-        fighter: &mut fighter,
-        anim: &mut anim,
-        stance: &mut stance,
-    };
-    let mut left_attack = false;
-    if enters && pick.is_some() {
-        left_attack |= defender.check(pick);
-    }
-    if defender.fighter.parry.active {
-        left_attack |= defender.check(pick);
-    } else {
-        defender.rest();
-    }
-    if left_attack {
-        commands.entity(entity).remove::<Attacking>();
-    }
-    defender.fighter.parry.active
+        let mut own = bodies.p0();
+        let Ok((mut fighter, mut anim, _, mut stance, condition, _, body)) = own.get_mut(entity)
+        else {
+            return;
+        };
+        let mut defender = Defender {
+            dazed: body
+                .as_ref()
+                .and_then(|b| b.drive.as_ref())
+                .is_some_and(|d| d.dazed()),
+            motion: motions.0.action_index(&anim.action).unwrap_or(0) as u8,
+            condition: *condition,
+            now,
+            held,
+            shield,
+            distance_cm: pick_distance_cm,
+            fighter: &mut fighter,
+            anim: &mut anim,
+            stance: &mut stance,
+        };
+        let mut left_attack = false;
+        if enters && pick.is_some() {
+            left_attack |= defender.check(pick);
+        }
+        if defender.fighter.parry.active {
+            left_attack |= defender.check(pick);
+        } else {
+            defender.rest();
+        }
+        if left_attack {
+            commands.entity(entity).remove::<Attacking>();
+        }
+        defender.fighter.parry.active
     };
     // While the parry holds, the hands and their parents take the arm bit
     // and each held grip past the pivot is enabled. The tick it ends, both
     // are released. A body that was not parrying is left alone.
     if active || parries {
         let mut own = bodies.p0();
-        let key = own.get_mut(entity).ok().and_then(|(_, _, _, _, _, _, body)| {
-            let mut body = body?;
-            if active {
-                body.hold_parry_arms(exa_physics::body::Ragdoll::PARRY_HANDS);
-            } else {
-                body.clear_parry_arms(exa_physics::body::Ragdoll::PARRY_HANDS);
-            }
-            body.parts.first().map(|part| part.entity)
-        });
+        let key = own
+            .get_mut(entity)
+            .ok()
+            .and_then(|(_, _, _, _, _, _, body)| {
+                let mut body = body?;
+                if active {
+                    body.hold_parry_arms(exa_physics::body::Ragdoll::PARRY_HANDS);
+                } else {
+                    body.clear_parry_arms(exa_physics::body::Ragdoll::PARRY_HANDS);
+                }
+                body.parts.first().map(|part| part.entity)
+            });
         if let Some(key) = key {
             for mut grip in &mut grips {
                 if grip.holder_key == key
@@ -1758,8 +1865,16 @@ mod wiring_tests {
         assert_eq!(anim.ease, Ease::Fast);
         assert!(anim.looping);
         let body = d.get::<Ragdoll>();
-        assert!(body.parts.iter().all(|part| part.state.has(exa_physics::part::PartState::ARM)));
-        let grip = d.app.world().get::<exa_physics::grip::HeldGrip>(d.grip).unwrap();
+        assert!(
+            body.parts
+                .iter()
+                .all(|part| part.state.has(exa_physics::part::PartState::ARM))
+        );
+        let grip = d
+            .app
+            .world()
+            .get::<exa_physics::grip::HeldGrip>(d.grip)
+            .unwrap();
         assert!(grip.links.as_ref().unwrap().links[1].enabled());
 
         d.tick();
@@ -1780,8 +1895,16 @@ mod wiring_tests {
         assert_eq!(*d.get::<Stance>(), Stance::CombatIdle);
         assert_eq!(d.get::<Fighter>().parry.counter, 4);
         let body = d.get::<Ragdoll>();
-        assert!(body.parts.iter().all(|part| !part.state.has(exa_physics::part::PartState::ARM)));
-        let grip = d.app.world().get::<exa_physics::grip::HeldGrip>(d.grip).unwrap();
+        assert!(
+            body.parts
+                .iter()
+                .all(|part| !part.state.has(exa_physics::part::PartState::ARM))
+        );
+        let grip = d
+            .app
+            .world()
+            .get::<exa_physics::grip::HeldGrip>(d.grip)
+            .unwrap();
         assert!(!grip.links.as_ref().unwrap().links[1].enabled());
         d.tick();
         assert_eq!(d.get::<Fighter>().parry.counter, 3);
@@ -1815,10 +1938,36 @@ mod wiring_tests {
         assert_eq!(d.get::<Animator>().blend, 20.0);
     }
 
+    /// An armed defender parries through its weapon: the clip's blend is
+    /// the weapon's handling (20 × handling, rounded), not the unarmed 1.0.
+    #[test]
+    fn an_armed_defender_parries_with_its_weapon() {
+        let mut d = Duel::high();
+        let me = d.me;
+        d.app.world_mut().spawn(Blade::new(me, 0.9, sword()));
+        d.tick();
+        let f = d.get::<Fighter>();
+        assert!(f.parry.active, "an armed defender parries now");
+        let handling = sword().handling;
+        let expected = (20.0 * handling).round_ties_even() as u32;
+        let anim = d.get::<Animator>();
+        assert_eq!(anim.blend, expected as f32);
+        assert_eq!(anim.action, "Parry Left");
+        // A cleaving blow is refused: the parry never starts.
+        let mut d = Duel::high();
+        let me = d.me;
+        d.app.world_mut().spawn(Blade::new(me, 0.9, sword()));
+        *d.app.world_mut().get_mut::<SwingState>(d.foe).unwrap() = SwingState {
+            flags: flags::CLEAVING,
+            ..SwingState::default()
+        };
+        d.tick();
+        assert!(!d.parrying());
+    }
+
     /// The combat idle's check needs its gates: the auto-parry deadline
     /// (400 ms after the last attack tick, strictly passed), muscle tone of
-    /// 0.85, hands holding something, nothing in them that is a weapon (its
-    /// grip is not modelled), and the combat idle itself.
+    /// 0.85, hands holding something, and the combat idle itself.
     #[test]
     fn the_idle_checks_only_when_ready() {
         let tries: [Try; 8] = [
@@ -1849,7 +1998,9 @@ mod wiring_tests {
                     d.app.world_mut().despawn(e);
                 }
             }),
-            ("armed", false, |d| {
+            // An armed defender parries through its weapon now that the
+            // armed grip is modelled; its speed is the weapon's handling.
+            ("armed", true, |d| {
                 let me = d.me;
                 assert!(sword().armed());
                 d.app.world_mut().spawn(Blade::new(me, 0.9, sword()));
