@@ -793,9 +793,9 @@ struct ForceSight<'w, 's> {
     ticks: Option<Res<'w, BodyTicks>>,
 }
 
-/// The viewer's relation to whoever raised the effect: the last attitude it
-/// keeps about that character, then the mind powers (a frenzy makes it 0).
-/// No stored relation, and no character to keep one about, leaves it 0.
+/// The last attitude the viewer keeps about whoever raised the effect. No
+/// stored relation, and no character to keep one about, leaves it 0. The
+/// mind powers are applied by the caller.
 fn caster_relation(
     caster: Entity,
     relations: Option<&mut Relations>,
@@ -803,9 +803,8 @@ fn caster_relation(
     role_sets: &Query<&Roles>,
     locale: u32,
     now: u32,
-    effects: &[combatant::Effect],
 ) -> f32 {
-    let raw = if let Some(relations) = relations
+    if let Some(relations) = relations
         && let Ok((_, id)) = ids.get(caster)
         && let Ok(roles) = role_sets.get(caster)
     {
@@ -817,8 +816,7 @@ fn caster_relation(
         relations.last_attitude(&partner, now, locale)
     } else {
         0.0
-    };
-    combatant::trust(caster, raw, false, effects)
+    }
 }
 
 /// Who raised a force effect, when the live effect is still in the scene.
@@ -845,6 +843,7 @@ fn see_force_effects(
     sight: ForceSight,
     powers: Query<&combatant::MindPowers>,
     casts: Query<&crate::mind::casts::MindBody>,
+    power_casters: Query<&super::cast::PowerCaster>,
     mut watchers: Query<(Entity, &mut Npc, Option<&Ragdoll>, Option<&mut Relations>)>,
 ) {
     let by_id: std::collections::HashMap<u32, Entity> = sight
@@ -884,6 +883,14 @@ fn see_force_effects(
             look: facing,
             facing,
         };
+        // The resistance technique averages a binding with the attitude it
+        // found. It is the technique bit on the viewer's cast body.
+        let resist = casts
+            .get(who)
+            .is_ok_and(|body| body.cast.techniques & crate::mind::casts::RESISTS_CONTROL != 0)
+            || power_casters.get(who).is_ok_and(|caster| {
+                caster.body.techniques & crate::mind::casts::RESISTS_CONTROL != 0
+            });
         for (effect, hazard) in &effects {
             let caster = effect_caster(*effect, &sight.blasts, &sight.waves, &sight.walls);
             let mut mind = powers
@@ -894,15 +901,15 @@ fn see_force_effects(
                 mind.extend(body.sight_effects(|id| by_id.get(&id).copied()));
             }
             let relation = caster.map_or(0.0, |caster| {
-                caster_relation(
+                let raw = caster_relation(
                     caster,
                     relations.as_deref_mut(),
                     &sight.ids,
                     &sight.roles,
                     locale,
                     now,
-                    &mind,
-                )
+                );
+                combatant::trust(caster, raw, resist, &mind)
             });
             let Some(seen) = hazard.assess(&viewer, relation, caster == Some(who)) else {
                 continue;
@@ -2147,6 +2154,19 @@ mod tests {
             .world_mut()
             .spawn((body(), Npc::new([0.0; 4]), power(POWER_BIND, Some(caster))))
             .id();
+        let mut resisted_body = crate::mind::casts::MindBody::new(1);
+        resisted_body.cast.techniques = crate::mind::casts::RESISTS_CONTROL;
+        resisted_body
+            .powers
+            .push(crate::mind::casts::MindPower::recorded(
+                POWER_BIND,
+                Some(1),
+                None,
+            ));
+        let resisted = app
+            .world_mut()
+            .spawn((body(), Npc::new([0.0; 4]), resisted_body))
+            .id();
         let plain = app.world_mut().spawn((body(), Npc::new([0.0; 4]))).id();
         app.update();
         let alarm = |id| {
@@ -2156,11 +2176,16 @@ mod tests {
         };
         assert!(alarm(frenzied) > 0.0, "a frenzy clears the friendship");
         assert_eq!(alarm(bound), 0.0, "a binding trusts the caster");
+        let resisted = alarm(resisted);
         let plain = alarm(plain);
         let suspicious = alarm(suspicious);
         assert!(
             (suspicious - plain * 1.5).abs() < 1e-4,
             "suspicion {suspicious} against {plain}"
+        );
+        assert!(
+            (resisted - plain * 0.5).abs() < 1e-4,
+            "resistance {resisted} against {plain}"
         );
     }
 
