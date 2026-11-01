@@ -177,11 +177,22 @@ pub struct ArcShocked {
 #[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ShockReady(pub u64);
 
+/// What a shock that lands does: when the next one is due, the yellow health
+/// left, and the hit sound's pitch and gain.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShockTaken {
+    pub next: u64,
+    pub yellow: f32,
+    pub pitch: f32,
+    pub gain: f32,
+}
+
 /// The shock reaction's clock and health rule, as the original's character
-/// takes a shock: `None` while the shock comes too early, else the next
-/// shock time and the yellow health left (`dying` keeps it). A released
-/// race (`released`, and not dying) is not burnt: its next shock is 500 ms
-/// on with no draw and its health is kept.
+/// takes a shock: `None` while the shock comes too early, and that refusal
+/// draws nothing. A shock that lands first draws the hit sound (pitch from
+/// the first draw, gain from the second). A released race (`released`, and
+/// not dying) is not burnt: its next shock is 500 ms on and its health is
+/// kept. Every other shock then draws the extra delay below 200 ms.
 pub fn shock_reaction(
     ready: Option<u64>,
     now: u64,
@@ -190,22 +201,30 @@ pub fn shock_reaction(
     dying: bool,
     released: bool,
     roll: &mut Roll,
-) -> Option<(u64, f32)> {
+) -> Option<ShockTaken> {
     if ready.is_some_and(|next| next > now + SHOCK_EARLY_MS) {
         return None;
     }
-    if released && !dying {
-        return Some((now + SHOCK_SPACING_MS, yellow));
-    }
-    let spread = (u64::from(roll.step()) * SHOCK_SPREAD_MS) >> 32;
-    let next = now + SHOCK_SPACING_MS + spread;
-    let left = if dying {
-        yellow
+    let pitch = (f64::from(roll.unit()) * 0.4 + 0.8) as f32;
+    let gain = (f64::from(roll.unit()) * 0.1 + 0.3) as f32;
+    let (next, yellow) = if released && !dying {
+        (now + SHOCK_SPACING_MS, yellow)
     } else {
-        let left = yellow - strength;
-        if left < 0.0 { 0.0 } else { left }
+        let spread = (u64::from(roll.step()) * SHOCK_SPREAD_MS) >> 32;
+        let left = if dying {
+            yellow
+        } else {
+            let left = yellow - strength;
+            if left < 0.0 { 0.0 } else { left }
+        };
+        (now + SHOCK_SPACING_MS + spread, left)
     };
-    Some((next, left))
+    Some(ShockTaken {
+        next,
+        yellow,
+        pitch,
+        gain,
+    })
 }
 
 /// Arcs in the scene: the body and bone whose part they ride (its place is
@@ -363,6 +382,7 @@ fn shock_fighters(
     ticks: Option<Res<BodyTicks>>,
     mut roll: ResMut<EffectRoll>,
     mut commands: Commands,
+    mut audio: ShockAudio,
 ) {
     let now = ticks.map_or(0, |t| t.millis());
     // Next shock times set this tick on fighters that had none yet (their
@@ -380,7 +400,7 @@ fn shock_fighters(
                 .find(|(e, _)| *e == shock.body)
                 .map(|&(_, next)| next)
         });
-        let Some((next, yellow)) = shock_reaction(
+        let Some(taken) = shock_reaction(
             known,
             now,
             fighter.health.yellow,
@@ -391,6 +411,13 @@ fn shock_fighters(
         ) else {
             continue;
         };
+        let next = taken.next;
+        let yellow = taken.yellow;
+        let chest = body
+            .as_deref()
+            .and_then(|b| b.drive.as_ref())
+            .and_then(|d| d.balance().chest());
+        play_shock(&mut audio, &mut commands, chest, taken.gain, taken.pitch);
         if fighter.stats.shocks_release && !dying {
             // A release race is not burnt: it is put into the shocked
             // state, its step ends and its clip rate stops.
@@ -402,8 +429,13 @@ fn shock_fighters(
             }
         } else {
             fighter.health.yellow = yellow;
-            if !dying && let Some(mut flags) = flags {
-                flags.0 |= StateFlags::SHOCK_STAGGER;
+            if !dying {
+                if let Some(condition) = condition.as_deref_mut() {
+                    *condition = Condition::NORMAL;
+                }
+                if let Some(mut flags) = flags {
+                    flags.0 |= StateFlags::SHOCK_STAGGER;
+                }
             }
             if !dying && let Some(mut body) = body {
                 body.shock_stagger(shock.direction);
@@ -415,6 +447,49 @@ fn shock_fighters(
                 set.push((shock.body, next));
                 commands.entity(shock.body).insert(ShockReady(next));
             }
+        }
+    }
+}
+
+/// What plays `elechit`. Absent in a test with no game loaded.
+#[derive(bevy::ecs::system::SystemParam)]
+struct ShockAudio<'w> {
+    game: Option<Res<'w, exa_assets::Game>>,
+    bank: Option<ResMut<'w, exa_audio::SoundBank>>,
+    sources: Option<ResMut<'w, bevy::asset::Assets<bevy::audio::AudioSource>>>,
+}
+
+/// The shock's hit, at the chest when there is one.
+fn play_shock(
+    audio: &mut ShockAudio,
+    commands: &mut Commands,
+    at: Option<Vec3>,
+    gain: f32,
+    pitch: f32,
+) {
+    let (Some(game), Some(bank), Some(sources)) = (
+        audio.game.as_ref(),
+        audio.bank.as_mut(),
+        audio.sources.as_mut(),
+    ) else {
+        return;
+    };
+    let Some(clip) = bank.get(game, sources, "elechit") else {
+        return;
+    };
+    let settings = bevy::audio::PlaybackSettings::DESPAWN
+        .with_volume(bevy::audio::Volume::Linear(gain))
+        .with_speed(pitch);
+    match at {
+        Some(at) => {
+            commands.spawn((
+                bevy::audio::AudioPlayer(clip),
+                settings.with_spatial(true),
+                Transform::from_translation(at),
+            ));
+        }
+        None => {
+            commands.spawn((bevy::audio::AudioPlayer(clip), settings));
         }
     }
 }
@@ -1014,36 +1089,35 @@ mod tests {
     #[test]
     fn a_shock_comes_within_150_ms_of_its_time() {
         let mut roll = Roll(0);
-        // Never shocked: it lands, the next is due 500 ms on plus a draw of
-        // the generator (state 1: 0 ms).
-        let (next, yellow) = shock_reaction(None, 0, 0.25, 0.05, false, false, &mut roll).unwrap();
-        assert_eq!(next, 500);
-        assert!((yellow - 0.2).abs() < 1e-6);
-        // 499 + 150 is short of 500 by a millisecond.
+        // The hit sound takes two draws, then the delay. From state 0 that
+        // delay is 172 ms, so the next shock is due at 672.
+        let taken = shock_reaction(None, 0, 0.25, 0.05, false, false, &mut roll).unwrap();
+        assert_eq!(taken.next, 672);
+        assert!((taken.yellow - 0.2).abs() < 1e-6);
+        assert!((taken.pitch - 0.8).abs() < 1e-5);
+        // 499 + 150 is short of 672 by more than the window.
         assert_eq!(
-            shock_reaction(Some(500), 349, 0.2, 0.05, false, false, &mut roll),
+            shock_reaction(Some(672), 521, 0.2, 0.05, false, false, &mut roll),
             None
         );
-        assert_eq!(roll, Roll(1), "a refused shock draws nothing");
-        // State 0x0808_8406 times 200, high half: 6 ms.
-        let (next, yellow) =
-            shock_reaction(Some(500), 350, 0.2, 0.05, false, false, &mut roll).unwrap();
-        assert_eq!(next, 856);
-        assert!((yellow - 0.15).abs() < 1e-6);
+        assert_eq!(roll, Roll(3_698_175_007), "a refused shock draws nothing");
+        let taken = shock_reaction(Some(672), 522, 0.2, 0.05, false, false, &mut roll).unwrap();
+        assert_eq!(taken.next, 1_156);
+        assert!((taken.yellow - 0.15).abs() < 1e-6);
         // Collapsing or dead: the clock moves, the health stays.
-        let (_, kept) = shock_reaction(None, 0, 0.1, 0.05, true, false, &mut roll).unwrap();
-        assert_eq!(kept, 0.1);
+        let kept = shock_reaction(None, 0, 0.1, 0.05, true, false, &mut roll).unwrap();
+        assert_eq!(kept.yellow, 0.1);
         assert_eq!(
-            shock_reaction(None, 0, 0.03, 0.05, false, false, &mut roll).map(|s| s.1),
+            shock_reaction(None, 0, 0.03, 0.05, false, false, &mut roll).map(|s| s.yellow),
             Some(0.0)
         );
-        // A released race: 500 ms on, no draw, its health kept.
+        // A released race: the sound's two draws, then 500 ms on, no delay
+        // draw, its health kept.
         let before = roll;
-        assert_eq!(
-            shock_reaction(None, 1_000, 0.2, 0.05, false, true, &mut roll),
-            Some((1_500, 0.2))
-        );
-        assert_eq!(roll, before, "a release draws nothing");
+        let released = shock_reaction(None, 1_000, 0.2, 0.05, false, true, &mut roll).unwrap();
+        assert_eq!(released.next, 1_500);
+        assert_eq!(released.yellow, 0.2);
+        assert_ne!(roll, before);
     }
 
     #[test]
@@ -1067,21 +1141,21 @@ mod tests {
         assert!((yellow(&app) - 0.20).abs() < 1e-6);
         assert_eq!(
             app.world().get::<ShockReady>(fighter),
-            Some(&ShockReady(500))
+            Some(&ShockReady(672))
         );
-        // 29 ticks are 348 ms: 348 + 150 is short of 500.
-        app.insert_resource(BodyTicks(29));
+        // 43 ticks are 516 ms: 516 + 150 is short of 672.
+        app.insert_resource(BodyTicks(43));
         app.world_mut().write_message(shock);
         app.update();
         assert!((yellow(&app) - 0.20).abs() < 1e-6);
-        // 30 ticks are 360 ms.
-        app.insert_resource(BodyTicks(30));
+        // 44 ticks are 528 ms: within 150 ms of 672.
+        app.insert_resource(BodyTicks(44));
         app.world_mut().write_message(shock);
         app.update();
         assert!((yellow(&app) - 0.15).abs() < 1e-6);
         assert_eq!(
             app.world().get::<ShockReady>(fighter),
-            Some(&ShockReady(866))
+            Some(&ShockReady(1_162))
         );
         assert_eq!(
             app.world().get::<StateFlags>(fighter).map(|f| f.0),
