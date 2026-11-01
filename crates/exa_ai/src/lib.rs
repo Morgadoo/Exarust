@@ -1542,16 +1542,23 @@ fn duellist(
                 if let Ok(mut brain) = brains.get_mut(entity) {
                     let body_look = crate::motion::yaw_of(t.rotation * Vec3::Z);
                     let brain = &mut *brain;
-                    let step = crate::lifecycle::return_to_idle(
+                    // The wide pan waits three seconds and the sway and the
+                    // narrow pan half a second, the timers the leave returns.
+                    crate::motion::leave_combat(
                         &mut brain.gaze,
                         &mut brain.turn,
+                        &mut brain.alert,
                         body_look,
+                        now as u32,
                     );
                     crate::lifecycle::restart_idle(brain);
                     info!(
-                        "duellist {entity:?} returns to its idle state {:?} at step {step}, \
-                         looking at {body_look:.3} rad",
-                        brain.state()
+                        "duellist {entity:?} returns to its idle state {:?}, looking at \
+                         {body_look:.3} rad; the wide pan waits until {} ms, the narrow pan \
+                         until {} ms",
+                        brain.state(),
+                        brain.alert.wide_at_ms,
+                        brain.alert.narrow_at_ms
                     );
                 }
             }
@@ -2323,6 +2330,11 @@ mod tests {
                 .target
                 .is_none()
         );
+        // Three body ticks have passed (12 ms each). The wide pan waits
+        // three seconds from that clock and the narrow pan half a second.
+        let npc = app.world().get::<brain::Npc>(fighter).unwrap();
+        assert_eq!(npc.alert.wide_at_ms, 3 * 12 + 3000);
+        assert_eq!(npc.alert.narrow_at_ms, 3 * 12 + 500);
     }
 
     #[test]
