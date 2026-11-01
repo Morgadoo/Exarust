@@ -108,6 +108,90 @@ fn the_shock_casts_makes_arcs_and_charges() {
     );
 }
 
+/// Shock weapons puts one arc on each armed blade, starting from a sphere
+/// more than 10 cm along the weapon, and tells those arcs to finish when the
+/// power ends. A fist is not armed.
+#[test]
+fn shock_weapons_arm_each_held_blade() {
+    use exa_formats::weapon_record::{Section, WeaponRecord, flags};
+    let mut app = new_app();
+    let caster = caster(&mut app, &[crate::thaum::energy::SHOCK_WEAPONS]);
+    let mut moves = HeldMoveset::default();
+    moves.weapon_class = 0x20;
+    app.world_mut().entity_mut(caster).insert(moves);
+    let sword = WeaponRecord::of_one_part(
+        flags::TWO_HANDED | flags::BLADED,
+        &Section::FISTS.stats,
+        false,
+        80.0,
+    );
+    let fist = WeaponRecord::of_one_part(0, &Section::FISTS.stats, false, 12.0);
+    let blade_body = Ragdoll::new(&[PartSetup {
+        bone: 0,
+        entity: Entity::PLACEHOLDER,
+        parent: None,
+        world: Affine3A::from_translation(Vec3::new(1.0, 0.0, 0.0)),
+        centre: Vec3::ZERO,
+        half: Vec3::splat(0.05),
+        spheres: Some(vec![(Vec3::new(0.0, 0.25, 0.0), 0.05)]),
+        origin: Vec3::ZERO,
+        links: Vec::new(),
+        foot: None,
+        pins: Vec::new(),
+    }]);
+    let blade = app
+        .world_mut()
+        .spawn((
+            Transform::from_xyz(1.0, 0.0, 0.0),
+            exa_combat::Blade::new(caster, 0.8, sword),
+            blade_body,
+        ))
+        .id();
+    app.world_mut().spawn((
+        Transform::default(),
+        exa_combat::Blade::new(caster, 0.12, fist).in_slot(exa_combat::attack::Slot::Second),
+    ));
+    cast(&mut app, caster);
+    let state = app.world().get::<PowerCaster>(caster).unwrap();
+    assert_eq!(state.last_result, code::STARTED);
+    let ActiveClass::ShockWeapons(power) = &state.active[0].class else {
+        panic!("shock weapons did not start");
+    };
+    assert_eq!(power.count, 1);
+    assert_eq!(state.active[0].companions.len(), 1);
+    let arc = state.active[0].companions[0];
+    let live = app.world().get::<LiveArcs>(arc).expect("the weapon arcs");
+    assert_eq!(live.weapon, Some(blade));
+    assert!(
+        live.arcs
+            .source_spheres
+            .iter()
+            .any(|sphere| sphere.y > 10.0),
+        "{:?}",
+        live.arcs.source_spheres
+    );
+    assert_eq!(count::<LiveArcs>(&mut app), 1);
+    {
+        let mut caster = app.world_mut().get_mut::<PowerCaster>(caster).unwrap();
+        caster.active[0].state = ENDING;
+        caster.sync_body();
+    }
+    app.world_mut().run_schedule(FixedUpdate);
+    assert!(
+        app.world()
+            .get::<PowerCaster>(caster)
+            .unwrap()
+            .active
+            .is_empty()
+    );
+    let live = app
+        .world()
+        .get::<LiveArcs>(arc)
+        .expect("the arcs finish in place");
+    assert!(live.arcs.ending);
+    assert!(!live.arcs.respawns);
+}
+
 /// Displacement: constant displacement makes its class, holds its cost and
 /// hangs its wisps on the body.
 #[test]

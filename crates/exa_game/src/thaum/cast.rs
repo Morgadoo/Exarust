@@ -38,7 +38,8 @@
 //!   damping and strike factor are put on its fighter, where the blows it
 //!   takes and deals read them.
 //! - **Live effects** ([`super::live`]): a shock's hand arcs, a barricade's
-//!   wall and a constant displacement's wisps are spawned with the power and
+//!   wall, a shock weapon's arcs (one on each held blade) and a constant
+//!   displacement's wisps are spawned with the power and
 //!   removed when it ends; a blast or bolt cast makes its blast entity
 //!   ([`super::blast_live`]), which plays the cast motion, takes the cast
 //!   hook and ticks after the body tick. Every other effect has no entity
@@ -145,6 +146,10 @@ pub struct ActiveEntry {
     pub tick_cost: f32,
     /// The live entity (arcs, wall, wisps), when one exists.
     pub entity: Option<Entity>,
+    /// Further live entities that end with this power (a shock weapon's arcs,
+    /// one per armed blade). They are told to finish rather than dropped at
+    /// once, so a tendril already in flight can leave.
+    pub companions: Vec<Entity>,
     /// What a throw's body is doing, read before each tick. None leaves the
     /// throw waiting.
     pub throw_view: Option<super::power::force::ThrowView>,
@@ -565,6 +570,12 @@ fn run_bar_commands(
     mut draws: ResMut<EffectDraws>,
     mut roll: ResMut<EffectRoll>,
     mut screen: Option<ResMut<PowerScreen>>,
+    weapons: Query<(
+        Entity,
+        &exa_combat::Blade,
+        Option<&Ragdoll>,
+        Option<&GlobalTransform>,
+    )>,
 ) {
     for command in commands_in.read().copied() {
         let Ok((
@@ -708,6 +719,7 @@ fn run_bar_commands(
                     standing: None,
                     throw_pick: picked,
                 };
+                let armed = weapon_arcs_of(entity, &weapons);
                 begin_cast(
                     &mut commands,
                     entity,
@@ -716,6 +728,7 @@ fn run_bar_commands(
                     start,
                     &place,
                     physics.as_deref(),
+                    &armed,
                     &mut draws,
                     &mut roll,
                 );
@@ -756,6 +769,7 @@ fn begin_cast(
     start: Option<CastStart>,
     place: &CastPlace,
     physics: Option<&Physics>,
+    weapons: &[WeaponArc],
     draws: &mut EffectDraws,
     roll: &mut EffectRoll,
 ) {
@@ -780,6 +794,7 @@ fn begin_cast(
             &context,
             place.ragdoll,
             physics,
+            weapons,
             draws,
             roll,
         );
@@ -935,6 +950,12 @@ fn cast_for_duellists(
     places: Query<&GlobalTransform>,
     mut draws: ResMut<EffectDraws>,
     mut roll: ResMut<EffectRoll>,
+    weapons: Query<(
+        Entity,
+        &exa_combat::Blade,
+        Option<&Ragdoll>,
+        Option<&GlobalTransform>,
+    )>,
 ) {
     let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
     for (
@@ -1015,6 +1036,7 @@ fn cast_for_duellists(
             standing: Some(at.translation() * CM),
             throw_pick: None,
         };
+        let armed = weapon_arcs_of(entity, &weapons);
         begin_cast(
             &mut commands,
             entity,
@@ -1023,6 +1045,7 @@ fn cast_for_duellists(
             start,
             &place,
             physics.as_deref(),
+            &armed,
             &mut draws,
             &mut roll,
         );
@@ -1171,6 +1194,7 @@ fn create_active(
     context: &CastContext,
     ragdoll: Option<&Ragdoll>,
     physics: Option<&Physics>,
+    weapons: &[WeaponArc],
     draws: &mut EffectDraws,
     roll: &mut EffectRoll,
 ) -> Option<Entity> {
@@ -1193,6 +1217,7 @@ fn create_active(
             start,
             context,
             ragdoll,
+            weapons,
             draws,
         ),
         CastStart::Displacement(start) => create_displacement(
@@ -1510,6 +1535,7 @@ fn create_energy(
     start: EnergyStart,
     context: &CastContext,
     ragdoll: Option<&Ragdoll>,
+    weapons: &[WeaponArc],
     draws: &mut EffectDraws,
 ) -> Option<Entity> {
     match start {
@@ -1536,6 +1562,8 @@ fn create_energy(
             let mut power = ShockWeapons::new();
             power.held =
                 PowerBase::new(super::energy::SHOCK_WEAPONS).accrue(&mut caster.body, cost);
+            let armed = spawn_weapon_arcs(commands, caster_entity, weapons, draws);
+            power.count = armed.len();
             push_active(
                 caster,
                 super::energy::SHOCK_WEAPONS,
@@ -1545,7 +1573,16 @@ fn create_energy(
                 0.0,
                 None,
             );
-            debug!("energy shock weapons: the per-weapon arc entities are not wired");
+            if let Some(entry) = caster.active.last_mut() {
+                entry.companions = armed;
+            }
+            debug!(
+                "energy shock weapons: {} arcs on the held blades",
+                caster
+                    .active
+                    .last()
+                    .map_or(0, |entry| entry.companions.len())
+            );
             None
         }
     }
@@ -1800,6 +1837,7 @@ fn push_active(
         class,
         tick_cost,
         entity,
+        companions: Vec::new(),
         throw_view: None,
     });
     caster.sync_body();
@@ -1828,6 +1866,82 @@ fn barricade_place(
     place_barricade(hit, context.caster, floor, roll.0.unit())
 }
 
+/// One held blade a shock-weapons cast arms: the weapon entity, where its
+/// body sits (cm) and its rigid-body spheres in its own frame (cm).
+struct WeaponArc {
+    entity: Entity,
+    anchor: Vec3,
+    spheres: Vec<Vec3>,
+}
+
+/// The caster's armed blades, in query order. A fist or a claw is not a
+/// weapon, so it is left out. Spheres come from the weapon's own body when
+/// it has one.
+fn weapon_arcs_of(
+    caster: Entity,
+    weapons: &Query<(
+        Entity,
+        &exa_combat::Blade,
+        Option<&Ragdoll>,
+        Option<&GlobalTransform>,
+    )>,
+) -> Vec<WeaponArc> {
+    let mut armed = Vec::new();
+    for (entity, blade, body, place) in weapons {
+        if blade.wielder != caster || !blade.record.armed() {
+            continue;
+        }
+        let mut anchor = place.map(|at| at.translation() * CM).unwrap_or(Vec3::ZERO);
+        let mut spheres = Vec::new();
+        if let Some(body) = body
+            && let Some(part) = body.parts.iter().find(|part| !part.spheres.is_empty())
+        {
+            anchor = Vec3::from(part.transform().translation) * CM;
+            spheres = part
+                .spheres
+                .iter()
+                .map(|(centre, _)| *centre * CM)
+                .collect();
+        }
+        armed.push(WeaponArc {
+            entity,
+            anchor,
+            spheres,
+        });
+    }
+    armed
+}
+
+/// One arc entity per armed blade. The arcs ride the weapon and start from
+/// its spheres.
+fn spawn_weapon_arcs(
+    commands: &mut Commands,
+    caster: Entity,
+    weapons: &[WeaponArc],
+    draws: &mut EffectDraws,
+) -> Vec<Entity> {
+    weapons
+        .iter()
+        .map(|weapon| {
+            let mut arcs = ArcEmitter::new(&super::arcs::weapon_arcs(), &mut draws.0);
+            arcs.anchor = Some(weapon.anchor);
+            arcs.source_spheres = weapon.spheres.clone();
+            commands
+                .spawn((
+                    Name::new("_WeaponArcs"),
+                    LiveArcs {
+                        arcs,
+                        hand: None,
+                        weapon: Some(weapon.entity),
+                        caster: Some(caster),
+                        keep: false,
+                    },
+                ))
+                .id()
+        })
+        .collect()
+}
+
 /// The shock's hand arcs.
 fn spawn_hand_arcs(
     commands: &mut Commands,
@@ -1843,6 +1957,7 @@ fn spawn_hand_arcs(
             LiveArcs {
                 arcs,
                 hand: Some((caster, RIGHT_HAND)),
+                weapon: None,
                 caster: Some(caster),
                 keep: false,
             },
@@ -1938,6 +2053,7 @@ fn tick_casters(
     mut moves: MessageWriter<Otherwhere>,
     mut holds: MessageWriter<super::hold_live::HoldEnd>,
     mut draws: ResMut<EffectDraws>,
+    mut arcs: Query<&mut LiveArcs>,
 ) {
     let now = ticks.as_deref().map_or(0, |t| t.millis() as u32);
     for (
@@ -2122,6 +2238,7 @@ fn tick_casters(
                             LiveArcs {
                                 arcs,
                                 hand: Some((caster_entity, RIGHT_HAND)),
+                                weapon: None,
                                 caster: Some(caster_entity),
                                 keep: false,
                             },
@@ -2198,6 +2315,12 @@ fn tick_casters(
                     body.condition &= !casting::CASTING;
                 }
                 let entry = active.swap_remove(index);
+                for companion in entry.companions {
+                    if let Ok(mut live) = arcs.get_mut(companion) {
+                        live.arcs.respawns = false;
+                        live.arcs.ending = true;
+                    }
+                }
                 if let ActiveClass::Throw(throw) = &entry.class
                     && throw.sound.fade
                     && let Some(voice) = throw.sound.voice

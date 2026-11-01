@@ -215,6 +215,8 @@ pub fn shock_reaction(
 pub struct LiveArcs {
     pub arcs: ArcEmitter,
     pub hand: Option<(Entity, usize)>,
+    /// The held weapon these arcs ride, when they are a shock weapon's.
+    pub weapon: Option<Entity>,
     pub caster: Option<Entity>,
     /// Kept in the scene when its tendrils are gone (the test arcs).
     pub keep: bool,
@@ -269,6 +271,20 @@ fn tick_arcs(
                 .ok()
                 .and_then(|(_, b)| part_point(b, bone_part(b, bone)?, HAND_ARCS_OFFSET));
             live.arcs.anchor = anchor.or(live.arcs.anchor);
+        }
+        if let Some(weapon) = live.weapon
+            && let Ok((_, body)) = bodies.get(weapon)
+            && let Some(part) = body.parts.iter().find(|part| !part.spheres.is_empty())
+        {
+            let origin = Vec3::from(part.transform().translation) * CM;
+            live.arcs.anchor = Some(origin);
+            // The spheres stay in the weapon's own frame: a point more than
+            // 10 cm along it is where a tendril may start.
+            live.arcs.source_spheres = part
+                .spheres
+                .iter()
+                .map(|(centre, _)| *centre * CM)
+                .collect();
         }
         live.arcs.tick(&mut draws.0);
         if let Some(physics) = physics.as_deref() {
@@ -593,6 +609,7 @@ fn spawn_debug_effects(
             LiveArcs {
                 arcs,
                 hand: Some((player, RIGHT_HAND)),
+                weapon: None,
                 caster: Some(player),
                 keep: true,
             },

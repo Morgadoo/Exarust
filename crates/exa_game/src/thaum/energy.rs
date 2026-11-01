@@ -236,8 +236,7 @@ pub fn shock_power(owner: u64, clip_ms: u32, base_cost: f32) -> ShockPower {
 /// caster holds them (the creator arms every held weapon; the four-weapon
 /// cap is the change hook's). The power object itself, its held cost and
 /// its `0x2040b` membership are [`super::power::energy::ShockWeapons`] and
-/// the cast that pushes it; the per-weapon arc entities are not spawned
-/// yet.
+/// the cast that pushes it. The cast spawns one arc entity per armed blade.
 pub fn armed_weapon_arcs(held: &[u64]) -> Vec<(u64, ArcParams)> {
     held.iter()
         .map(|&weapon| (weapon, super::arcs::weapon_arcs()))
