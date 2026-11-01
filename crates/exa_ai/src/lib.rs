@@ -768,6 +768,53 @@ fn measure_contact(
     })
 }
 
+/// Where the friend test stands a character: the body's anchor, or the chest
+/// before one is placed, and the step they are on. No transform: they are not
+/// here to stand in a strike. `concern_hostility` is absent when the fighter
+/// has no contact for them, and they are still a friend.
+#[allow(clippy::type_complexity)]
+fn friend_bystander(
+    who: Entity,
+    is_foe: bool,
+    concern_hostility: Option<f32>,
+    targets: &Query<(&GlobalTransform, Has<brain::MindWarded>)>,
+    bodies: &Query<
+        (
+            &Condition,
+            &GlobalTransform,
+            Option<&Ragdoll>,
+            &Fighter,
+            Option<&Animator>,
+            Option<&exa_physics::body::locomotion::Locomotor>,
+        ),
+        Without<Duellist>,
+    >,
+    children: &Query<&Children>,
+    combat_goal_m: Option<Vec3>,
+) -> Option<combat::Bystander> {
+    let (root, _) = targets.get(who).ok()?;
+    let body = std::iter::once(who)
+        .chain(children.iter_descendants(who))
+        .find_map(|e| bodies.get(e).ok());
+    let chest = body
+        .map(|(_, gt, rag, ..)| stance::chest_point(gt, rag))
+        .unwrap_or_else(|| stance::chest_point(root, None))
+        * CM;
+    let rag = body.and_then(|(_, _, rag, ..)| rag);
+    let (stepping, step_goal) = step_measure(rag, combat_goal_m, chest);
+    Some(combat::Bystander {
+        position: rag
+            .and_then(|rag| rag.drive.as_ref().and_then(|drive| drive.anchor()))
+            .map(|at| at * CM)
+            .unwrap_or(chest),
+        stepping,
+        step_goal,
+        out: body.is_some_and(|(c, ..)| c.is_dead()),
+        is_foe,
+        concern_hostility,
+    })
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn duellist(
     mut commands: Commands,
@@ -1502,6 +1549,44 @@ fn duellist(
                 }
             }
             field.contact_at = contact_at;
+            // The room list's nearby characters, once it has gathered any.
+            // Before that, the characters this fighter is already in contact
+            // with. Someone with no contact is still a friend.
+            let nearby = brains
+                .get(entity)
+                .ok()
+                .filter(|npc| !npc.nearby.is_empty())
+                .map(|npc| npc.nearby.clone());
+            let ids = nearby.unwrap_or_else(|| {
+                combatant
+                    .contacts
+                    .iter()
+                    .map(|c| c.character.to_bits())
+                    .collect::<Vec<_>>()
+            });
+            let foe_body = foe_key.to_bits();
+            let mut around = Vec::with_capacity(ids.len());
+            for id in ids {
+                let held = combatant
+                    .contacts
+                    .iter()
+                    .find(|c| c.character.to_bits() == id);
+                let goal = combat_steps
+                    .iter()
+                    .find(|(who, _)| who.to_bits() == id)
+                    .map(|(_, goal)| *goal);
+                if let Some(person) = friend_bystander(
+                    Entity::from_bits(id),
+                    !no_foe && (id == foe_id || id == foe_body),
+                    held.map(|c| c.concern + c.hostility),
+                    &targets,
+                    &bodies,
+                    &children,
+                    goal,
+                ) {
+                    around.push(person);
+                }
+            }
             let out = combat::tick(
                 mind,
                 &me,
@@ -1510,7 +1595,7 @@ fn duellist(
                     foe: (!no_foe).then_some(&foe),
                     focus: focused,
                     contacts: &mut contacts,
-                    around: &[],
+                    around: &around,
                     field: &mut field,
                     leader_calls: false,
                 },
@@ -2595,6 +2680,139 @@ mod tests {
             step(&mut tired);
             assert!(tired.world().get::<Attacking>(foe2).is_none());
         }
+    }
+
+    fn person_at(app: &mut App, at: Vec3) -> Entity {
+        app.world_mut()
+            .spawn((GlobalTransform::from_translation(at), Fighter::default()))
+            .id()
+    }
+
+    fn hold(app: &mut App, fighter: Entity, who: Entity, concern: f32, hostility: f32) {
+        let mut contact = combatant::Contact::new(who);
+        contact.concern = concern;
+        contact.hostility = hostility;
+        app.world_mut()
+            .get_mut::<Combatant>(fighter)
+            .unwrap()
+            .contacts
+            .push(contact);
+    }
+
+    /// True once the fighter starts a blow, within the same wait the rested
+    /// strike uses.
+    fn strikes(app: &mut App, fighter: Entity) -> bool {
+        for _ in 0..1500 {
+            step(app);
+            if app.world().get::<Attacking>(fighter).is_some() {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// A calm contact two metres ahead, inside the strike, stops the blow.
+    #[test]
+    fn a_friend_ahead_stops_the_strike() {
+        let (mut app, fighter, _) = duel(3.0, false);
+        let friend = person_at(&mut app, Vec3::new(0.0, 0.0, 2.0));
+        hold(&mut app, fighter, friend, 0.0, 0.0);
+        engage(&mut app, fighter);
+        assert!(!strikes(&mut app, fighter));
+    }
+
+    /// The same place does not stop the blow when the contact's concern and
+    /// hostility pass 1.8, nor when the contact is dead. Two metres is still
+    /// inside the strike and past the crowding that would stop a blow on its
+    /// own.
+    #[test]
+    fn a_hostile_or_dead_contact_does_not_stop_the_strike() {
+        let (mut app, fighter, _) = duel(3.0, false);
+        let friend = person_at(&mut app, Vec3::new(0.0, 0.0, 2.0));
+        hold(&mut app, fighter, friend, 1.0, 0.9);
+        engage(&mut app, fighter);
+        assert!(strikes(&mut app, fighter));
+
+        let (mut app, fighter, _) = duel(3.0, false);
+        let friend = person_at(&mut app, Vec3::new(0.0, 0.0, 2.0));
+        app.world_mut().entity_mut(friend).insert(Condition::DEAD);
+        hold(&mut app, fighter, friend, 0.0, 0.0);
+        engage(&mut app, fighter);
+        assert!(strikes(&mut app, fighter));
+    }
+
+    /// The foe stands in reach of the strike and is not a friend, so the blow
+    /// still goes. Their concern and hostility stay at or under 1.8, which
+    /// would have made anyone else a friend.
+    #[test]
+    fn the_foe_within_reach_does_not_count_as_a_friend() {
+        let (mut app, fighter, _) = duel(0.5, false);
+        engage(&mut app, fighter);
+        let mut sum = 0.0;
+        let mut struck = false;
+        for _ in 0..1500 {
+            step(&mut app);
+            if app.world().get::<Attacking>(fighter).is_some() {
+                let target = app.world().get::<Duellist>(fighter).unwrap().target;
+                let contact = app
+                    .world()
+                    .get::<Combatant>(fighter)
+                    .unwrap()
+                    .contacts
+                    .iter()
+                    .find(|c| c.character == target)
+                    .expect("the foe's contact");
+                sum = contact.concern + contact.hostility;
+                struck = true;
+                break;
+            }
+        }
+        assert!(struck);
+        assert!(
+            sum <= 1.8,
+            "foe concern and hostility {sum} would already skip them"
+        );
+    }
+
+    /// An ally the room list gathered, with no contact of their own, is still
+    /// a friend and stops the blow.
+    #[test]
+    fn a_nearby_ally_with_no_contact_stops_the_strike() {
+        let (mut app, fighter, _) = duel(3.0, false);
+        let ally = person_at(&mut app, Vec3::new(0.0, 0.0, 1.5));
+        let mut npc = brain::Npc::new([0.0; 4]);
+        npc.nearby.push(ally.to_bits());
+        app.world_mut().entity_mut(fighter).insert(npc);
+        engage(&mut app, fighter);
+        assert!(!strikes(&mut app, fighter));
+    }
+
+    /// A friend standing beyond the strike, stepping so the halfway point is
+    /// in it, stops the blow. The same step with concern and hostility past
+    /// 1.8 does not.
+    #[test]
+    fn a_friend_stepping_into_the_strike_stops_it() {
+        let arm = |concern: f32, hostility: f32, expect: bool| {
+            let (mut app, fighter, _) = duel(3.0, false);
+            let friend = person_at(&mut app, Vec3::new(0.0, 0.0, 4.0));
+            let hanger = app.world_mut().spawn_empty().id();
+            app.world_mut().entity_mut(friend).insert((
+                Duellist::new(Entity::PLACEHOLDER),
+                Transform::default(),
+                Animator::new("Default", "Idle"),
+                ChildOf(hanger),
+            ));
+            app.world_mut().get_mut::<Duellist>(friend).unwrap().step = Some(Stepping {
+                goal: Vec3::new(0.0, 1.3, -1.0),
+                started_ms: 0,
+                state: 0,
+            });
+            hold(&mut app, fighter, friend, concern, hostility);
+            engage(&mut app, fighter);
+            assert_eq!(strikes(&mut app, fighter), expect);
+        };
+        arm(0.0, 0.0, false);
+        arm(1.0, 0.9, true);
     }
 
     /// A duellist whose power system answers a usable power chooses it for

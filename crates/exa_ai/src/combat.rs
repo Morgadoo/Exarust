@@ -1501,7 +1501,7 @@ pub struct Bystander {
     pub position: Vec3,
     pub stepping: bool,
     pub step_goal: Vec3,
-    /// Lying in the knocked-out condition.
+    /// Its condition is the dead word, so it is not standing in the strike.
     pub out: bool,
     pub is_foe: bool,
     /// Its contact's concern and hostility, when the fighter has one.
