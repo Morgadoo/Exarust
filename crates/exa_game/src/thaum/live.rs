@@ -36,7 +36,8 @@
 //!   the player, and the constant displacement's wisps on the player's
 //!   body. The player cannot cast yet: Exarust has no power bar.
 //!
-//! A standing barricade is a force entity the target pass weighs. A held
+//! A barricade, a blast and a wave are force entities the target pass weighs.
+//! A held
 //! weapon's strike against the wall breaks its holder's attack. A shock
 //! weapon's arcs
 //! (light points) place their
@@ -102,7 +103,7 @@ impl Plugin for ThaumEffectsPlugin {
             )
             .add_systems(
                 exa_ai::BrainChain,
-                see_barricades.before(exa_ai::brain::ai_tick),
+                see_force_effects.before(exa_ai::brain::ai_tick),
             )
             .add_systems(
                 Update,
@@ -778,19 +779,35 @@ fn raise_wall_concern(record: &mut ContactRecord, aggression: f32) {
     record.flags = contact.flags;
 }
 
-/// Each brain's sight of the barricades: one sighting per wall within 12 m,
-/// carrying the assessment's fear as its alarm and the noticed flag. The
-/// relation to the caster is not known here, so the factor stays 1.
-fn see_barricades(
+/// Who raised a force effect, when the live effect is still in the scene.
+fn effect_caster(
+    entity: Entity,
+    blasts: &Query<&super::blast_live::LiveBlast>,
+    waves: &Query<&super::wave_live::LiveWave>,
+    walls: &Query<&LiveBarricade>,
+) -> Option<Entity> {
+    if let Ok(blast) = blasts.get(entity) {
+        return Some(blast.caster);
+    }
+    if let Ok(wave) = waves.get(entity) {
+        return Some(wave.caster);
+    }
+    walls.get(entity).ok().and_then(|wall| wall.caster)
+}
+
+/// Each brain's sight of the force effects: a barricade, a blast and a wave
+/// within 12 m. The assessment's fear is the contact's alarm. A blast the
+/// brain itself cast keeps only the cleared fear. The relation to the caster
+/// is not read here, so its factor stays 1.
+fn see_force_effects(
     hazards: Query<(Entity, &crate::effects::danger::Hazard)>,
-    mut watchers: Query<(&mut Npc, Option<&Ragdoll>)>,
+    blasts: Query<&super::blast_live::LiveBlast>,
+    waves: Query<&super::wave_live::LiveWave>,
+    walls: Query<&LiveBarricade>,
+    mut watchers: Query<(Entity, &mut Npc, Option<&Ragdoll>)>,
 ) {
-    let walls: Vec<_> = hazards
-        .iter()
-        .filter(|(_, hazard)| matches!(hazard, crate::effects::danger::Hazard::Barricade { .. }))
-        .map(|(entity, hazard)| (entity, *hazard))
-        .collect();
-    for (mut npc, body) in &mut watchers {
+    let effects: Vec<_> = hazards.iter().collect();
+    for (who, mut npc, body) in &mut watchers {
         npc.force_sights.clear();
         let Some(body) = body.filter(|body| body.drive.is_some()) else {
             continue;
@@ -816,11 +833,12 @@ fn see_barricades(
             look: facing,
             facing,
         };
-        for (wall, hazard) in &walls {
-            let Some(seen) = hazard.assess(&viewer, 0.0, false) else {
+        for (effect, hazard) in &effects {
+            let caster = effect_caster(*effect, &blasts, &waves, &walls);
+            let Some(seen) = hazard.assess(&viewer, 0.0, caster == Some(who)) else {
                 continue;
             };
-            let id = wall.to_bits();
+            let id = effect.to_bits();
             let mut record = npc
                 .contacts
                 .iter()
@@ -831,13 +849,16 @@ fn see_barricades(
                     ..ContactRecord::default()
                 });
             record.object = true;
-            record.flags |= combatant::CONTACT_NOTICED;
+            if seen.flags & crate::effects::danger::SEEN_FLAG != 0 {
+                record.flags |= combatant::CONTACT_NOTICED;
+            }
             record.alarm = seen.fear;
             let at = match hazard {
                 crate::effects::danger::Hazard::Barricade { wall, .. } => {
                     crate::effects::danger::wall_point(wall, chest)
                 }
-                _ => chest,
+                crate::effects::danger::Hazard::Blast { at, .. }
+                | crate::effects::danger::Hazard::Wave { at, .. } => *at,
             };
             npc.force_sights.push(exa_ai::contacts::Sighting {
                 contact: record,
@@ -1799,15 +1820,14 @@ mod tests {
         assert_eq!(npc.alert_count, 5, "the sound's gap has not passed");
     }
 
-    /// A brain standing against a barricade sees it: the sighting carries the
-    /// wall, the noticed flag and the assessment's fear. A wall 13 m off is
-    /// not seen.
+    /// A brain within sight of a barricade, a blast and a wave sees each of
+    /// them. A wall 13 m off is not seen.
     #[test]
-    fn a_brain_sees_the_barricade_in_front_of_it() {
+    fn a_brain_sees_the_force_effects_in_front_of_it() {
         use bevy::math::Affine3A;
         use exa_physics::body::PartSetup;
         let mut app = App::new();
-        app.add_systems(Update, see_barricades);
+        app.add_systems(Update, see_force_effects);
         let near = app
             .world_mut()
             .spawn((
@@ -1833,6 +1853,20 @@ mod tests {
                 rising: false,
                 strong: false,
             });
+        let blast = app
+            .world_mut()
+            .spawn(crate::effects::danger::Hazard::Blast {
+                at: Vec3::new(0.0, 100.0, 300.0),
+                released: false,
+            })
+            .id();
+        let wave = app
+            .world_mut()
+            .spawn(crate::effects::danger::Hazard::Wave {
+                at: Vec3::new(0.0, 100.0, 400.0),
+                released: true,
+            })
+            .id();
         let body = Ragdoll::new(&[PartSetup {
             bone: 0,
             entity: Entity::PLACEHOLDER,
@@ -1850,14 +1884,31 @@ mod tests {
         let who = app.world_mut().spawn((body, Npc::new([0.0; 4]))).id();
         app.update();
         let npc = app.world().get::<Npc>(who).unwrap();
-        assert_eq!(npc.force_sights.len(), 1);
-        let sight = npc.force_sights[0];
-        assert_eq!(sight.contact.id, near.to_bits());
+        assert_eq!(npc.force_sights.len(), 3);
+        let sight = npc
+            .force_sights
+            .iter()
+            .find(|sight| sight.contact.id == near.to_bits())
+            .unwrap();
         assert!(sight.contact.object);
         assert!(!sight.character);
         assert_ne!(sight.contact.flags & exa_ai::combatant::CONTACT_NOTICED, 0);
         assert!(sight.contact.alarm > 0.0, "{}", sight.contact.alarm);
         assert_eq!(sight.position_cm, Vec3::new(0.0, 100.0, 200.0));
+        let blast = npc
+            .force_sights
+            .iter()
+            .find(|sight| sight.contact.id == blast.to_bits())
+            .unwrap();
+        assert!(blast.contact.alarm > 0.0);
+        assert_eq!(blast.position_cm, Vec3::new(0.0, 100.0, 300.0));
+        let wave = npc
+            .force_sights
+            .iter()
+            .find(|sight| sight.contact.id == wave.to_bits())
+            .unwrap();
+        assert!(wave.contact.alarm > 0.0, "a released wave raises its fear");
+        assert_eq!(wave.position_cm, Vec3::new(0.0, 100.0, 400.0));
     }
 
     #[test]
