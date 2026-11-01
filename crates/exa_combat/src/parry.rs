@@ -384,7 +384,7 @@ fn wrap_pi(yaw: f32) -> f32 {
 /// A parry in progress on the defender: the original's parrying flag, the
 /// chosen parry clip (0x14–0x18), the attack motion the clip was picked for
 /// and the parry counter.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ParryState {
     /// It is parrying (the original's parrying flag, zero on a fresh body).
     pub active: bool,
@@ -399,6 +399,9 @@ pub struct ParryState {
     /// The game clock (ms) of the last tick a check kept the parry up, none
     /// before the first.
     pub last_ms: Option<u64>,
+    /// The armed parry's point (cm), which the held weapon's and the
+    /// shield's grips are tied to. Zero before the first measured parry.
+    pub point_cm: [f32; 3],
 }
 
 impl ParryState {
@@ -1073,6 +1076,20 @@ struct Held {
     count: u8,
 }
 
+/// The attacker's first armed blade point now and a tick ago (m), for the
+/// armed parry's point. Zero when it holds no armed blade.
+fn held_blade_tip(wielder: Entity, blades: &Query<&Blade>) -> (Vec3, Vec3) {
+    let Some(blade) = blades
+        .iter()
+        .find(|b| b.wielder == wielder && b.record.armed())
+    else {
+        return (Vec3::ZERO, Vec3::ZERO);
+    };
+    let now = blade.tip_last.unwrap_or(Vec3::ZERO);
+    let before = blade.swept_from.map_or(now, |(_, tip)| tip);
+    (now, before)
+}
+
 fn held(wielder: Entity, blades: &Query<&Blade>) -> Held {
     let mut held = Held::default();
     for blade in blades.iter().filter(|b| b.wielder == wielder) {
@@ -1186,15 +1203,40 @@ struct Defender<'a> {
     /// The shield the defender holds, its parry effectiveness and its arm's
     /// stamina: none for an armed defender without one.
     shield: Option<(f32, f32)>,
-    /// The blow's ground distance from the defender's chest (cm), which the
-    /// armed parry's falloff reads.
-    distance_cm: f32,
+    /// The attacker's and defender's chests and the attacker's blade point
+    /// now and a tick ago (cm), which the armed parry's point is made from.
+    attacker_chest_cm: Vec3,
+    defender_chest_cm: Vec3,
+    tip_cm: (Vec3, Vec3),
+    /// The armed parry's point this tick (cm), once measured.
+    point_cm: Option<Vec3>,
 }
 
 impl Defender<'_> {
     /// The armed grip for the blow `pick`: the weapon's handling and the
     /// blow's distance give its strength; a cleaving blow has none.
-    fn armed_grip(&self, pick: Pick) -> Option<Grip> {
+    /// The armed parry's point (cm): the blade point pulled back along its
+    /// sweep by the chest's lead, or 10 cm on once the blade has passed.
+    fn parry_point_cm(&mut self, pick: Pick) -> Vec3 {
+        if let Some(point) = self.point_cm {
+            return point;
+        }
+        let (now, before) = self.tip_cm;
+        let point = parry_point(
+            now,
+            before,
+            self.attacker_chest_cm,
+            self.defender_chest_cm,
+            i32::from(pick.motion),
+            0.0,
+        )
+        .point;
+        self.point_cm = Some(point);
+        self.fighter.parry.point_cm = point.to_array();
+        point
+    }
+
+    fn armed_grip(&mut self, pick: Pick) -> Option<Grip> {
         if !self.held.armed {
             return Some(Grip {
                 speed: 1.0,
@@ -1206,11 +1248,12 @@ impl Defender<'_> {
                 other_disabled: false,
             });
         }
+        let point = self.parry_point_cm(pick);
         armed_parry_grip(
             &self.held,
             pick.motion,
             pick.cleaving,
-            self.distance_cm,
+            parry_distance(point, self.defender_chest_cm),
             self.shield,
             self.held.count > 1,
         )
@@ -1414,9 +1457,11 @@ pub(crate) fn run_parries(
         return;
     }
     let mut pick = None;
-    // The blow's ground distance from the defender's chest (cm), which the
-    // armed parry's falloff reads.
-    let mut pick_distance_cm = 0.0_f32;
+    // The attacker's and defender's chests and the attacker's blade tip
+    // (m), which the armed parry's point is made from.
+    let mut pick_attacker_chest = Vec3::ZERO;
+    let mut pick_def_chest = Vec3::ZERO;
+    let mut pick_tip = (Vec3::ZERO, Vec3::ZERO);
     if parries || enters {
         let (def_chest, def_facing, shield, yellow, helpless, motion) = {
             let own = bodies.p1();
@@ -1432,6 +1477,7 @@ pub(crate) fn run_parries(
                 motions.0.action_index(&anim.action).unwrap_or(0) as u8,
             )
         };
+        pick_def_chest = def_chest;
         // The nearest foe attacking with a swing the trigger accepts.
         let mut best = f32::INFINITY;
         let foes = bodies.p1();
@@ -1492,12 +1538,16 @@ pub(crate) fn run_parries(
                 overhead: matches!(attacking.motion, crate::attack::AttackMotion::Overhead),
             };
             best = distance;
+            // The attacker's blade point now and a tick ago: the armed
+            // parry's point is the blade point pulled back along its sweep.
+            let (tip_now, tip_before) = held_blade_tip(e, &blades);
             pick = Some(Pick {
                 motion: motion_index,
                 clip: clip_for(&threat),
                 cleaving,
             });
-            pick_distance_cm = distance * 100.0;
+            pick_attacker_chest = chest;
+            pick_tip = (tip_now, tip_before);
         }
     }
     // A body with no blow to check and nothing to settle is left untouched
@@ -1521,7 +1571,10 @@ pub(crate) fn run_parries(
             now,
             held,
             shield,
-            distance_cm: pick_distance_cm,
+            attacker_chest_cm: pick_attacker_chest * 100.0,
+            defender_chest_cm: pick_def_chest * 100.0,
+            tip_cm: (pick_tip.0 * 100.0, pick_tip.1 * 100.0),
+            point_cm: None,
             fighter: &mut fighter,
             anim: &mut anim,
             stance: &mut stance,
@@ -1963,6 +2016,39 @@ mod wiring_tests {
         };
         d.tick();
         assert!(!d.parrying());
+    }
+
+    /// The armed parry's point is the blade point pulled back along its
+    /// sweep by the chest's lead, not the attacker's chest: the parry keeps
+    /// it, and it lies behind the blade point on the sweep's side.
+    #[test]
+    fn the_armed_parry_measures_its_point_from_the_blade() {
+        let mut d = Duel::high();
+        let me = d.me;
+        // The defender's own weapon arms the parry; the attacker's blade
+        // gives it its point. Its tip sits ahead of the meanwhile, 0.9 m
+        // over the blade's root.
+        d.app.world_mut().spawn(Blade::new(me, 0.9, sword()));
+        let foe = d.foe;
+        // The attacker's blade tip at (0, 150, 60) cm, sweeping 5 cm along
+        // +x since the last tick. This fixture runs only the character
+        // ticks, so the blade tracker that writes these is seeded here.
+        let mut blade = Blade::new(foe, 0.9, sword());
+        blade.tip_last = Some(Vec3::new(0.05, 1.5, 0.6));
+        blade.swept_from = Some((Vec3::ZERO, Vec3::new(0.0, 1.5, 0.6)));
+        d.app.world_mut().spawn(blade);
+        d.tick();
+        assert!(d.parrying());
+        let point = Vec3::from_array(d.get::<Fighter>().parry.point_cm);
+        assert!(point.is_finite(), "the point is measured: {point:?}");
+        assert!(point.length() > 1.0, "and is a real place: {point:?}");
+        // It is the blade point pulled back along its sweep, so it is not
+        // the blade tip itself.
+        let tip = Vec3::new(5.0, 150.0, 60.0);
+        assert!(
+            (point - tip).length() > 1.0,
+            "the point is not the blade tip: {point:?}"
+        );
     }
 
     /// The combat idle's check needs its gates: the auto-parry deadline
