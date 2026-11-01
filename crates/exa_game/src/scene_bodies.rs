@@ -575,6 +575,13 @@ pub fn spawn_scene_body(
     if let Some(effects) = crate::item_effects::WornEffects::of_specials(&specials, stats.rules.0) {
         commands.entity(model_entity).insert(effects);
     }
+    if specials
+        .effects
+        .iter()
+        .any(|item| item.special == exa_formats::objdb::Burden::GOLEM_SUIT)
+    {
+        commands.entity(model_entity).insert(exa_combat::GolemSuit);
+    }
     if specials.mind_ward {
         commands
             .entity(model_entity)

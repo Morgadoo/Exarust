@@ -121,7 +121,8 @@ pub(crate) struct FootClocks {
 ///   jitter ([`rustle_clock`]).
 /// - **Footstep** (a step ended), while its clock is behind: the pitch's and
 ///   the gain's draws ([`release_step`] at the body's step loudness and the
-///   character's footstep volume), the race's step set played at the body
+///   character's footstep volume), the race's step set (the golem suit's
+///   when one is worn) played at the body
 ///   root's place; the wet step ([`wet_release_step`]) would follow over
 ///   water, but Exarust's levels carry no water surface, so it never does;
 ///   then its clock 250 ms plus the jitter ([`release_step_clock`]).
@@ -134,7 +135,7 @@ pub(crate) struct FootClocks {
 pub(crate) fn foot_sounds(
     game: Option<Res<Game>>,
     mut cues: MessageReader<FootSounded>,
-    fighters: Query<&Fighter>,
+    fighters: Query<(&Fighter, Has<exa_combat::GolemSuit>)>,
     ticks: Option<Res<BodyTicks>>,
     mut bank: ResMut<SoundBank>,
     mut sources: ResMut<Assets<AudioSource>>,
@@ -148,7 +149,7 @@ pub(crate) fn foot_sounds(
     };
     let now = ticks.as_ref().map_or(0, |t| t.millis()) as u32;
     for sounded in cues.read() {
-        let Ok(fighter) = fighters.get(sounded.body) else {
+        let Ok((fighter, suit)) = fighters.get(sounded.body) else {
             continue;
         };
         let clock = clocks.entry(sounded.body).or_default();
@@ -190,8 +191,15 @@ pub(crate) fn foot_sounds(
                 if now <= clock.step {
                     continue;
                 }
-                let Some(name) = fighter.stats.footsteps.name() else {
+                let race = fighter.stats.footsteps.name().unwrap_or("");
+                let chosen = crate::voices::step_set(suit, race);
+                if chosen.is_empty() {
                     continue;
+                }
+                let name = if suit {
+                    "Golem_Stp"
+                } else {
+                    fighter.stats.footsteps.name().unwrap()
                 };
                 let p = bank.random_unit();
                 let g = bank.random_unit();

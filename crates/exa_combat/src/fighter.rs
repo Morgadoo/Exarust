@@ -16,6 +16,10 @@ use crate::parry::ParryState;
 use crate::swing::SwingState;
 use crate::wounds::WoundQueue;
 
+/// Worn golem suit: its footsteps use the suit's set, not the race's.
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct GolemSuit;
+
 /// A character that can fight and be hurt (on the body model root). It
 /// keeps the original's condition word and state flags beside it, the
 /// posture stage's branch and its fall.
