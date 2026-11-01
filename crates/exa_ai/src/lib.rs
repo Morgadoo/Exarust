@@ -1348,6 +1348,7 @@ fn duellist(
                 power_pool: powers.as_deref().map_or(0.0, |p| p.pool),
                 power_slots: powers.as_deref().map_or([0; cast::SLOTS], |p| p.slots),
                 clock: anim.progress,
+                attack_flags: swinging.flags,
                 weapon_class: u32::from(class),
                 held: blades
                     .iter()
@@ -1717,6 +1718,12 @@ fn duellist(
             {
                 step.goal = stopped.step_goal / CM;
             }
+            // The bits the tick set, and the clear it asks for once the
+            // swing is over: everything but the idle mask goes.
+            if out.blow.clear_flags {
+                swinging.flags &= swing::flags::KEPT_IDLE;
+            }
+            swinging.flags |= out.blow.set_flags;
             // The swing the combat state lets go of is released here, as
             // the player's own leave does: once a swing (its released bit
             // keeps a later tick from restarting the stall).

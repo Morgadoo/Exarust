@@ -435,6 +435,38 @@ fn the_drives_of_a_fresh_pressing_fighter() {
 }
 
 #[test]
+fn a_recoiled_swing_is_not_driven_as_a_live_one() {
+    let live = Body {
+        condition: ATTACKING,
+        clock: 0.55,
+        weapon_class: 0x10,
+        ..Body::default()
+    };
+    let recoiled = Body {
+        attack_flags: exa_combat::swing::flags::RECOILED,
+        ..live
+    };
+    let fresh = || CombatMind {
+        level: 3,
+        eagerness: 0.5,
+        pressing: true,
+        ..CombatMind::default()
+    };
+    let mut live_mind = fresh();
+    let mut recoiled_mind = fresh();
+    let mut roll = 0;
+    let open = drives(&mut live_mind, &live, None, NOVICE, &mut roll);
+    roll = 0;
+    let held = drives(&mut recoiled_mind, &recoiled, None, NOVICE, &mut roll);
+    // Still early in the clip, a live swing commits. A recoil leaves that
+    // drive for the recovery one.
+    assert!(open.committed);
+    assert_eq!((open.attack, open.strike), (12.0, 1.5));
+    assert!(!held.committed);
+    assert_eq!((held.attack, held.strike), (2.0, 0.75));
+}
+
+#[test]
 fn a_held_shield_quadruples_the_committed_attack() {
     let bare = Body {
         condition: ATTACKING,

@@ -374,6 +374,8 @@ pub struct Body {
     pub condition: u32,
     /// The current motion's clock, 0 to 1.
     pub clock: f32,
+    /// The swing's flags. Stalling, cleaving or a recoil leaves the live
+    /// swing's drive, and the idle mask keeps a place free to retarget.
     pub attack_flags: u32,
     pub weapon_class: u32,
     /// Held weapon bodies.
