@@ -81,6 +81,19 @@ fn a_knockback_step_keeps_the_blow_target() {
     assert!(!steps.knockback);
 }
 
+/// A knockback step reaches half again the plain length: a target 1 m out
+/// stays, where the plain 80 cm step (clamped at 1.1 of it) would stop at
+/// 88 cm.
+#[test]
+fn a_knockback_step_reaches_half_again() {
+    let mut steps = Steps::default();
+    begin_knockback(&mut steps, Vec3::new(1.0, 0.0, 0.0));
+    match consider(&mut steps, &trigger(1.0, true, 0.0)) {
+        Plan::Stepping(origin) => assert!(close(origin.x, 1.0), "{origin}"),
+        other => panic!("expected the knockback step, got {other:?}"),
+    }
+}
+
 fn trigger(balance: f32, supported: bool, h_cm: f32) -> Trigger {
     Trigger {
         balance,

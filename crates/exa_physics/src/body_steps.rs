@@ -94,6 +94,8 @@ pub(super) const LEAD_GAIN: f32 = 0.7;
 pub(super) const LEAD_KIND: f32 = 1.2;
 /// A knockback step's kind factor.
 pub(super) const KNOCKBACK_KIND: f32 = 1.0;
+/// A knockback step's length, against the plain step length.
+const KNOCKBACK_LENGTH: f32 = 1.5;
 /// Direction: (h²/60 + 0.25) · 0.36 · how forward the error is.
 const LEAD_DIR_OVER: f32 = 60.0;
 const LEAD_DIR_BIAS: f32 = 0.25;
@@ -362,7 +364,8 @@ pub(super) fn consider(steps: &mut Steps, t: &Trigger) -> Plan {
             steps.stepping = false;
             return Plan::Ended;
         }
-        let length = foot_step_length(t.reach, 0.0);
+        // A knockback step's length is one and a half times the step length.
+        let length = foot_step_length(t.reach, 0.0) * KNOCKBACK_LENGTH;
         return Plan::Stepping(stance_origin(steps.target, t.frame, length, t.scale));
     }
     steps.out_of_balance = false;
