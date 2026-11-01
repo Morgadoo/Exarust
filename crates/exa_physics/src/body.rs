@@ -3160,6 +3160,24 @@ impl Ragdoll {
     /// original's unarmed set-up makes both hands the held items and marks
     /// them so, and emptying the hands before an equip clears it. Only that
     /// bit changes. Returns whether a part took it.
+    /// A parry's end: each hand, and that hand's parent part, loses the arm
+    /// class bit. A hand with no part is skipped.
+    pub fn clear_parry_arms(&mut self, hands: [usize; 2]) {
+        let arm = crate::part::PartState::ARM;
+        for bone in hands {
+            let Some(i) = self.parts.iter().position(|part| part.bone == bone) else {
+                continue;
+            };
+            self.parts[i].state = self.parts[i].state.without(arm);
+            let Some(parent) = self.parts[i].parent else {
+                continue;
+            };
+            if let Some(part) = self.parts.get_mut(parent) {
+                part.state = part.state.without(arm);
+            }
+        }
+    }
+
     pub fn set_fist(&mut self, bone: usize, on: bool) -> bool {
         let Some(part) = self.parts.iter_mut().find(|p| p.bone == bone) else {
             return false;

@@ -851,24 +851,27 @@ fn friend_bystander(
 #[allow(clippy::type_complexity)]
 fn begin_requested(
     motions: Option<Res<Motions>>,
+    mut grips: Query<&mut exa_physics::grip::HeldGrip>,
     mut bodies: Query<(
         &mut Animator,
         &Condition,
         Option<&mut Stance>,
         (
-            Option<&Ragdoll>,
+            Option<&mut Ragdoll>,
             Option<&mut Fighter>,
             Option<&exa_physics::body::locomotion::Locomotor>,
             Option<&exa_physics::body::locomotion::Locomotion>,
         ),
     )>,
 ) {
-    for (mut anim, condition, mut stance, (ragdoll, mut fighter, locomotor, walk)) in &mut bodies {
+    for (mut anim, condition, mut stance, (mut ragdoll, mut fighter, locomotor, walk)) in
+        &mut bodies
+    {
         let pending = anim.requested;
         let (next, start) = combat::take_requested(
             pending,
             combat::RequestGate {
-                muscles: ragdoll.is_some_and(|body| body.drive.is_some()),
+                muscles: ragdoll.as_ref().is_some_and(|body| body.drive.is_some()),
                 fallen: condition.fallen_or_dying(),
                 busy: condition.busy(),
                 moving: locomotor.is_some_and(|step| step.moving()),
@@ -880,8 +883,26 @@ fn begin_requested(
             // to the stance that end chose.
             if let Some(fighter) = fighter.as_mut() {
                 let dazed = ragdoll
+                    .as_ref()
                     .and_then(|body| body.drive.as_ref())
                     .is_some_and(|drive| drive.dazed());
+                if fighter.parry.active
+                    && let Some(body) = ragdoll.as_mut()
+                {
+                    body.clear_parry_arms([
+                        exa_character::RIGHT_HAND,
+                        exa_character::LEFT_HAND,
+                    ]);
+                    if let Some(key) = body.parts.first().map(|part| part.entity) {
+                        for mut grip in &mut grips {
+                            if grip.holder_key == key
+                                && let Some(links) = grip.links.as_mut()
+                            {
+                                links.release_parry();
+                            }
+                        }
+                    }
+                }
                 if let Some(next) = exa_combat::parry::end_for_request(
                     fighter,
                     condition.clip_stands_still(),
@@ -3128,6 +3149,117 @@ mod tests {
             app.world().get::<Animator>(still).unwrap().then.as_deref(),
             Some(Stance::Idle.action())
         );
+    }
+
+    /// Ending the parry clears the arm bit on the hand and its parent, and
+    /// disables the held grip past the pivot. The pivot link stays.
+    #[test]
+    fn a_parry_end_unlocks_the_hand_and_the_grip() {
+        use exa_combat::damage::Guard;
+        use exa_physics::grip::{
+            DISABLED, ENABLED, GripLink, GripLinks, GripSpec, HeldGrip, HeldKind, PIVOT,
+        };
+        use exa_physics::part::PartState;
+
+        let mut app = App::new();
+        app.add_systems(Update, begin_requested);
+        let key = app.world_mut().spawn_empty().id();
+        let hand = app.world_mut().spawn_empty().id();
+        let part = |bone, entity, parent| exa_physics::body::PartSetup {
+            bone,
+            entity,
+            parent,
+            world: bevy::math::Affine3A::IDENTITY,
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.08),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+            spheres: None,
+        };
+        let mut body = Ragdoll::new(&[
+            part(1, key, None),
+            part(exa_character::RIGHT_HAND, hand, Some(0)),
+        ])
+        .with_drive();
+        body.parts[0].state = body.parts[0].state.with(PartState::ARM);
+        body.parts[1].state = body.parts[1].state.with(PartState::ARM);
+        let link = |flags| GripLink {
+            item: 0,
+            on_item: [1.0, 0.0, 0.0, 0.0],
+            hand: Some(0),
+            on_hand: [1.0, 0.0, 0.0, 0.0],
+            slack: 0.0,
+            length: 0.0,
+            strength: 1.0,
+            smoothing: 0.001,
+            flags,
+            shares: (1.0, 0.0),
+            anchor: None,
+        };
+        let grip = HeldGrip {
+            spec: GripSpec {
+                hand: 0,
+                links: vec![],
+                second_hand: None,
+                arm: None,
+                extra: None,
+            },
+            scale: 1.0,
+            size: 1.0,
+            second_hand_factor: 1.0,
+            flip: false,
+            class: 0x10,
+            soft_weld: false,
+            kind: HeldKind::Weapon,
+            holder_key: key,
+            hands: [Some(hand), None],
+            arms: [None, None],
+            links: Some(GripLinks {
+                links: vec![link(PIVOT), link(PIVOT | ENABLED)],
+                main: 1,
+                second: None,
+                arm: None,
+                extra: None,
+                flip: None,
+                flip_point: Vec3::ZERO,
+                flip_progress: 0.0,
+                flipped: false,
+                flip_active: false,
+                mode: -1,
+                relaxing: false,
+                record_dirty: false,
+                world_soft: None,
+                world_hard: None,
+            }),
+            released: false,
+            head_extra: 0.0,
+        };
+        let mut fighter = Fighter::default();
+        fighter.health.yellow = 1.0;
+        fighter.guard = Guard::Parry;
+        fighter.parry.active = true;
+        let holder = app
+            .world_mut()
+            .spawn((
+                Animator::new("Default", "Parry Left"),
+                Condition::NORMAL,
+                Stance::Idle,
+                body,
+                fighter,
+            ))
+            .id();
+        app.world_mut().get_mut::<Animator>(holder).unwrap().requested = combat::DRAW_WEAPON;
+        let item = app.world_mut().spawn(grip).id();
+        app.update();
+        let body = app.world().get::<Ragdoll>(holder).unwrap();
+        assert!(!body.parts[0].state.has(PartState::ARM));
+        assert!(!body.parts[1].state.has(PartState::ARM));
+        let links = app.world().get::<HeldGrip>(item).unwrap().links.as_ref().unwrap();
+        assert_eq!(links.links[0].flags, PIVOT);
+        assert_eq!(links.links[1].flags, DISABLED);
+        assert!(!app.world().get::<Fighter>(holder).unwrap().parry.active);
     }
 
     /// A body with muscles, so a requested motion can start.

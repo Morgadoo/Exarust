@@ -216,6 +216,19 @@ pub struct GripLinks {
     pub world_hard: Option<usize>,
 }
 
+impl GripLinks {
+    /// The parry's end on this item. The parry grip is the main link, and
+    /// only when its index is past the pivot: that link's flags become the
+    /// disabled bit alone. The pivot link is left as it is.
+    pub fn release_parry(&mut self) {
+        if self.main > 0
+            && let Some(link) = self.links.get_mut(self.main)
+        {
+            link.flags = DISABLED;
+        }
+    }
+}
+
 /// A held item its holder let go of: the collapse of a living body drops
 /// its weapons and torch (a shield stays on the arm). The grip stage frees
 /// the item's links and its body.
@@ -1088,6 +1101,56 @@ mod tests {
     use crate::body::PartSetup;
     use bevy::math::Affine3A;
     use bevy::prelude::Entity;
+
+    fn bare_link(flags: u32) -> GripLink {
+        GripLink {
+            item: 0,
+            on_item: [1.0, 0.0, 0.0, 0.0],
+            hand: Some(0),
+            on_hand: [1.0, 0.0, 0.0, 0.0],
+            slack: 0.0,
+            length: 0.0,
+            strength: 1.0,
+            smoothing: DEFAULT_SMOOTHING,
+            flags,
+            shares: (1.0, 0.0),
+            anchor: None,
+        }
+    }
+
+    fn links_of(main: usize, flags: u32) -> GripLinks {
+        GripLinks {
+            links: vec![bare_link(PIVOT), bare_link(flags)],
+            main,
+            second: None,
+            arm: None,
+            extra: None,
+            flip: None,
+            flip_point: Vec3::ZERO,
+            flip_progress: 0.0,
+            flipped: false,
+            flip_active: false,
+            mode: -1,
+            relaxing: false,
+            record_dirty: false,
+            world_soft: None,
+            world_hard: None,
+        }
+    }
+
+    /// The parry grip, past the pivot, loses every flag but the disabled bit.
+    /// A pivot at index 0 is not the parry grip and stays.
+    #[test]
+    fn a_parry_end_disables_the_grip_past_the_pivot() {
+        let mut links = links_of(1, PIVOT | ENABLED);
+        links.release_parry();
+        assert_eq!(links.links[0].flags, PIVOT);
+        assert_eq!(links.links[1].flags, DISABLED);
+        let mut pivot = links_of(0, PIVOT);
+        pivot.links[0].flags = PIVOT | ENABLED;
+        pivot.release_parry();
+        assert_eq!(pivot.links[0].flags, PIVOT | ENABLED);
+    }
 
     fn body_at(translation: Vec3) -> Ragdoll {
         Ragdoll::new(&[PartSetup {
