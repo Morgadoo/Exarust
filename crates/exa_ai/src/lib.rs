@@ -459,6 +459,8 @@ struct ContactMeasure {
     dead: bool,
     /// Condition, reach and whether it is moving, for a blow taken after a switch.
     posture: combat::Posture,
+    /// Where the aim estimate puts them: the chest, led toward a step.
+    lead: Vec3,
 }
 
 /// The combat state's view of a duel. The foe is the target. Another
@@ -674,6 +676,7 @@ fn measure_contact(
         Option<&Motions>,
         Option<Vec3>,
         &Query<&Attacking>,
+        f32,
     ),
     skill: f32,
 ) -> Option<ContactMeasure> {
@@ -692,7 +695,7 @@ fn measure_contact(
     let fighter = body.map(|(_, _, _, f, ..)| f);
     let anim = body.and_then(|(_, _, _, _, a, _)| a);
     let locomotor = body.and_then(|(.., l)| l);
-    let (blades, swings, motions, combat_goal_m, attacks) = gear;
+    let (blades, swings, motions, combat_goal_m, attacks, observer_skill) = gear;
     let (stepping, step_goal_cm) =
         step_measure(body.and_then(|(_, _, rag, ..)| rag), combat_goal_m, chest);
     let phase = anim
@@ -746,6 +749,21 @@ fn measure_contact(
                 .and_then(|(_, _, rag, ..)| rag)
                 .map_or(0.0, Ragdoll::crouch),
             motion: swing_motion(attacks.get(fighter_entity).ok()),
+        },
+        lead: {
+            let walk = foe_walk(locomotor, forward);
+            combat::foe_estimate(
+                &combat::Foe {
+                    chest,
+                    step_goal: step_goal_cm,
+                    stepping,
+                    running: walk.moving,
+                    facing: walk.facing,
+                    forward_speed: walk.speed_cm,
+                    ..combat::Foe::default()
+                },
+                observer_skill,
+            )
         },
     })
 }
@@ -1413,7 +1431,14 @@ fn duellist(
                         &targets,
                         &bodies,
                         &children,
-                        (queries.0, queries.1, queries.2, combat_goal, &attacks),
+                        (
+                            queries.0,
+                            queries.1,
+                            queries.2,
+                            combat_goal,
+                            &attacks,
+                            traits.skill,
+                        ),
                         skill,
                     ) else {
                         continue;
@@ -1428,7 +1453,7 @@ fn duellist(
                     hostility: c.hostility,
                     unreachable: c.flags & crate::contacts::UNREACHABLE != 0,
                     who: Some(c.character),
-                    estimate: estimate.or_else(|| measured.as_ref().map(|step| step.origin)),
+                    estimate: estimate.or_else(|| measured.as_ref().map(|step| step.lead)),
                     posture: if is_foe {
                         Some(combat::Posture {
                             condition: foe.condition,
@@ -2145,6 +2170,7 @@ mod tests {
                         crouch: 0.0,
                         motion: 0,
                     },
+                    lead: Vec3::ZERO,
                 }),
             ],
             grid: None,
@@ -2184,6 +2210,7 @@ mod tests {
                 crouch: 0.0,
                 motion: 0,
             },
+            lead: Vec3::ZERO,
         };
         let spot = place::Spot {
             other_reach_cm: 50.0,
@@ -2324,6 +2351,65 @@ mod tests {
         assert!(
             (estimate.x - 150.0).abs() < 1.0,
             "expected 150 cm along the step, got {estimate:?}"
+        );
+    }
+
+    /// A stepping character taken this tick is aimed at with the same
+    /// three-quarter lead, not the place-score point in front of their chest.
+    #[test]
+    fn a_character_taken_mid_tick_is_estimated_toward_its_step() {
+        let (mut app, fighter, _) = duel(8.0, false);
+        let mut roll = 1;
+        app.world_mut().get_mut::<Duellist>(fighter).unwrap().personality =
+            Some(personality::personality(100.0, [0.0; 4], 0.0, false, &mut roll));
+        engage(&mut app, fighter);
+        step(&mut app);
+        let beside = app
+            .world_mut()
+            .spawn((
+                GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 1.0)),
+                Fighter::default(),
+            ))
+            .id();
+        let root = app
+            .world_mut()
+            .spawn((CharacterBody::default(), GlobalTransform::IDENTITY))
+            .id();
+        app.world_mut().entity_mut(beside).insert((
+            Duellist::new(fighter),
+            Transform::default(),
+            Animator::new("Default", "Idle"),
+            ChildOf(root),
+        ));
+        app.world_mut().get_mut::<Duellist>(beside).unwrap().step = Some(Stepping {
+            goal: Vec3::new(2.0, 0.0, 1.0),
+            started_ms: 0,
+            state: 0,
+        });
+        app.world_mut()
+            .get_mut::<Combatant>(fighter)
+            .unwrap()
+            .contacts
+            .push(combatant::Contact::new(beside));
+        let mut npc = brain::Npc::new([0.0; 4]);
+        npc.contacts.push(contacts::ContactRecord {
+            id: beside.to_bits(),
+            level: 3,
+            ..contacts::ContactRecord::default()
+        });
+        app.world_mut().entity_mut(fighter).insert(npc);
+        step(&mut app);
+        let ai = app.world().get::<Duellist>(fighter).unwrap();
+        assert_eq!(ai.target, beside);
+        assert!(
+            (ai.mind.estimate.x - 150.0).abs() < 1.0,
+            "{:?}",
+            ai.mind.estimate
+        );
+        assert!(
+            ai.mind.heading > 0.02,
+            "heading {:.4} did not turn toward the step",
+            ai.mind.heading
         );
     }
 
