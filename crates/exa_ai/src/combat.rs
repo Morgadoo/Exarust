@@ -384,6 +384,8 @@ pub struct Body {
     pub requested_motion: i32,
     pub energy: f32,
     pub max_energy: f32,
+    /// How steady it stands: 1 on its feet, 0 when the balance is lost.
+    /// At or under 0.85 the chase does not run and the eagerness is cleared.
     pub balance: f32,
     pub scale: f32,
     pub size: f32,

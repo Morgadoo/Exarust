@@ -1352,6 +1352,9 @@ fn duellist(
                 motion: motion_of(attacking, *stance),
                 energy,
                 max_energy: most,
+                balance: ragdoll
+                    .and_then(|body| body.drive.as_ref())
+                    .map_or(1.0, |drive| drive.balance().value),
                 scale: fighter.stats.scale,
                 feral: fighter.stats.feral,
                 size: fighter.stats.size,
@@ -2681,6 +2684,44 @@ mod tests {
             step(&mut tired);
             assert!(tired.world().get::<Attacking>(foe2).is_none());
         }
+    }
+
+    /// A body at the balance line clears the eagerness, so no blow comes.
+    /// One fully balanced, with the same body, still strikes.
+    #[test]
+    fn off_balance_the_eagerness_stays_down() {
+        let stood = |balance: f32| {
+            let (mut app, fighter, _) = duel(3.0, false);
+            let part = exa_physics::body::PartSetup {
+                bone: 1,
+                entity: Entity::PLACEHOLDER,
+                parent: None,
+                world: bevy::math::Affine3A::IDENTITY,
+                centre: Vec3::ZERO,
+                half: Vec3::splat(0.08),
+                origin: Vec3::ZERO,
+                links: vec![],
+                foot: None,
+                pins: Vec::new(),
+                spheres: None,
+            };
+            let mut ragdoll = Ragdoll::new(&[part]).with_drive();
+            ragdoll.drive.as_mut().unwrap().balance_mut().value = balance;
+            app.world_mut().entity_mut(fighter).insert(ragdoll);
+            engage(&mut app, fighter);
+            // Entering sets the eagerness at a half. The next tick keeps it
+            // only while the body is past the balance line.
+            step(&mut app);
+            step(&mut app);
+            (app, fighter)
+        };
+        let (low, fighter) = stood(0.85);
+        assert_eq!(
+            low.world().get::<Duellist>(fighter).unwrap().mind.eagerness,
+            0.0
+        );
+        let (mut steady, fighter) = stood(1.0);
+        assert!(strikes(&mut steady, fighter));
     }
 
     fn person_at(app: &mut App, at: Vec3) -> Entity {
