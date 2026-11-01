@@ -1353,6 +1353,7 @@ fn duellist(
                 energy,
                 max_energy: most,
                 scale: fighter.stats.scale,
+                feral: fighter.stats.feral,
                 size: fighter.stats.size,
                 encumbrance: fighter.stats.encumbrance,
                 reach_cm: reach * CM,
@@ -2719,6 +2720,28 @@ mod tests {
         hold(&mut app, fighter, friend, 0.0, 0.0);
         engage(&mut app, fighter);
         assert!(!strikes(&mut app, fighter));
+    }
+
+    /// At half feral the ally ahead does not stop the blow. Just under a
+    /// half, it still does.
+    #[test]
+    fn a_feral_fighter_strikes_through_the_friend() {
+        let run = |feral: f32| {
+            let (mut app, fighter, _) = duel(3.0, false);
+            app.world_mut()
+                .get_mut::<Fighter>(fighter)
+                .unwrap()
+                .stats
+                .feral = feral;
+            let ally = person_at(&mut app, Vec3::new(0.0, 0.0, 1.5));
+            let mut npc = brain::Npc::new([0.0; 4]);
+            npc.nearby.push(ally.to_bits());
+            app.world_mut().entity_mut(fighter).insert(npc);
+            engage(&mut app, fighter);
+            strikes(&mut app, fighter)
+        };
+        assert!(run(0.5));
+        assert!(!run(0.499));
     }
 
     /// The same place does not stop the blow when the contact's concern and

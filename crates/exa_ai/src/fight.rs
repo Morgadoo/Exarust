@@ -53,7 +53,8 @@ pub struct Situation {
     pub phase: i32,
     /// Thrust preference, 1 to 9.
     pub thrust_pref: i32,
-    pub age: f32,
+    /// The record's feral level. At or past a half a close blow is overhead.
+    pub feral: f32,
     pub energy: f32,
     pub energy_max: f32,
     /// How far the body turns through the swing.
@@ -80,7 +81,7 @@ impl Default for Situation {
             skill: 0.0,
             phase: 0,
             thrust_pref: 1,
-            age: 0.0,
+            feral: 0.0,
             energy: 1.0,
             energy_max: 1.0,
             swing_turn: 1.0,
@@ -117,7 +118,7 @@ fn small(situation: &Situation) -> bool {
 }
 
 fn close_blow(situation: &Situation, roll: &mut u32) -> AttackMotion {
-    if situation.age >= 0.5 || situation.open_hands {
+    if situation.feral >= 0.5 || situation.open_hands {
         AttackMotion::Overhead
     } else if draw(roll, 11) < situation.thrust_pref {
         AttackMotion::Stab
@@ -246,7 +247,7 @@ mod tests {
             choose_attack(&armed, &mut roll).unwrap().motion,
             AttackMotion::Stab
         );
-        armed.age = 0.5;
+        armed.feral = 0.5;
         roll = 0;
         assert_eq!(
             choose_attack(&armed, &mut roll).unwrap().motion,

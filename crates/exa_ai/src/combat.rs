@@ -408,7 +408,10 @@ pub struct Body {
     pub quadruped: bool,
     /// The race's AI attack bonus.
     pub attack_bonus: f32,
-    pub age: f32,
+    /// The record's feral level, 0 through 1. At or past a half the friend
+    /// test is skipped and a close blow is overhead. A value that is not a
+    /// number counts as past the half for the friend test only.
+    pub feral: f32,
     pub parry_bias: i32,
     pub thrust_pref: i32,
     pub recoil_until_ms: u32,
@@ -486,7 +489,7 @@ impl Default for Body {
             rules: 0,
             quadruped: false,
             attack_bonus: 0.0,
-            age: 0.0,
+            feral: 0.0,
             parry_bias: 0,
             thrust_pref: 1,
             recoil_until_ms: 0,
@@ -969,7 +972,7 @@ pub fn drives(
         if f64::from(me.clock) > 0.6 {
             let e = f64::from(mind.eagerness);
             let r = f64::from(unit_draw(roll));
-            let spend = f64::from(1.0 - me.age * 0.5) * (0.5 - f64::from(k) * 0.2) * r;
+            let spend = f64::from(1.0 - me.feral * 0.5) * (0.5 - f64::from(k) * 0.2) * r;
             mind.eagerness = (e - spend) as f32;
             if mind.eagerness < 0.0 {
                 mind.eagerness = 0.0;
@@ -1427,7 +1430,7 @@ pub fn search(
                 places[at].distance_cm = s.distance_cm;
             }
         }
-        if i == 1 && 0.5 < me.age {
+        if i == 1 && 0.5 < me.feral {
             if 1 < mind.level {
                 places[at].total = (places[at].total - 0.0) - 1.0;
             }
@@ -1558,7 +1561,8 @@ pub fn decide_attack(
     if at > 0 && plan.mode != 1 && (me.size * 2.0) > places[0].attack - best_attack_cost {
         at = 0;
     }
-    let mut choice = if 0.5 <= me.age {
+    // At the half, past it, or not a number: the friend test is skipped.
+    let mut choice = if me.feral >= 0.5 || me.feral.is_nan() {
         1
     } else {
         let off = places[at].offset;
@@ -2358,7 +2362,7 @@ fn choose_blow(
         skill: k,
         phase: me.parry_bias,
         thrust_pref: me.thrust_pref,
-        age: me.age,
+        feral: me.feral,
         energy: me.energy,
         energy_max: me.max_energy,
         swing_turn: me.swing_amount.unwrap_or(0.0),
