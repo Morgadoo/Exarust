@@ -402,7 +402,10 @@ pub struct Body {
     pub queue: i32,
     /// It is free to step.
     pub can_step: bool,
+    /// The body is moving this tick.
     pub running: bool,
+    /// Its speed along its heading, centimetres a tick. Past 3, a moving
+    /// body charges and the tick ends.
     pub forward_speed: f32,
     pub shield: bool,
     pub heavy_claw: bool,

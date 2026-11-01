@@ -1395,6 +1395,8 @@ fn duellist(
                 // raised holds the gate shut until its plant's 500 ms
                 // deadline passes.
                 blocking: locomotor.map_or(0, |l| l.plant_request),
+                running: locomotor.is_some_and(|l| l.moving()),
+                forward_speed: locomotor.map_or(0.0, |l| l.speed),
                 // The body's parrying flag: while its auto-parry holds, the
                 // combat state leaves its stance motion alone.
                 parrying: fighter.parry.active,
@@ -2232,6 +2234,25 @@ mod tests {
         assert!(!walks(0.69, 1.0));
         assert!(!walks(1.0, 0.7));
         assert!(walks(1.0, 1.0));
+    }
+
+    /// Moving faster than 3 cm a tick, the tick ends on the charge and no
+    /// blow comes. At 3 it does not, and the blow comes.
+    #[test]
+    fn a_running_fighter_charges_instead_of_striking() {
+        use exa_physics::body::locomotion::{Locomotor, Stop};
+        let strikes_at = |speed: f32| {
+            let (mut app, fighter, _) = duel(3.0, false);
+            app.world_mut().entity_mut(fighter).insert(Locomotor {
+                speed,
+                stop: Stop::Moving,
+                ..Locomotor::default()
+            });
+            engage(&mut app, fighter);
+            strikes(&mut app, fighter)
+        };
+        assert!(!strikes_at(3.1));
+        assert!(strikes_at(3.0));
     }
 
     /// A second character standing to the right is scored from its own chest,
