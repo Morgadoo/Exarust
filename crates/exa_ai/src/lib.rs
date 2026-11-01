@@ -424,14 +424,30 @@ fn motion_of(attacking: Option<&Attacking>, stance: Stance) -> i32 {
     }
 }
 
-/// The combat state's view of a duel: the one contact is the target, which
-/// the position score rates from each place.
+/// A character besides the foe, measured as the position score measures
+/// the foe: from a point on its body, with its own reach, size and swing.
+struct ContactMeasure {
+    origin: Vec3,
+    forward: Vec3,
+    reach_cm: f32,
+    size: f32,
+    large: bool,
+    skill: f32,
+    blow: place::Blow,
+}
+
+/// The combat state's view of a duel. The foe is the target. Another
+/// character contact is scored from its own body (`contact_at`); a missing
+/// measurement is the foe.
 struct DuelField<'a> {
     foe: Vec3,
     heading: Vec3,
     /// The foe's body facing (unit).
     foe_forward: Vec3,
     spot: place::Spot,
+    /// One entry per contact the tick walks. `None` scores the foe (the
+    /// target, a barricade, a blast).
+    contact_at: Vec<Option<ContactMeasure>>,
     /// The level's navigation grid, the installed pathfinder (none: the
     /// abstract one).
     grid: Option<&'a exa_world::nav::NavGrid>,
@@ -491,9 +507,23 @@ impl combat::Field for DuelField<'_> {
         c.outcome = Some(outcome);
         ends
     }
-    fn score(&mut self, _contact: usize, level: i32, point: Vec3) -> combat::PlaceScore {
-        let spot = place::Spot { level, ..self.spot };
-        let p = place::score_place_at(point, self.foe, self.heading, self.foe_forward, spot);
+    fn score(&mut self, contact: usize, level: i32, point: Vec3) -> combat::PlaceScore {
+        let measured = self.contact_at.get(contact).and_then(Option::as_ref);
+        let (origin, forward) = measured
+            .map(|m| (m.origin, m.forward))
+            .unwrap_or((self.foe, self.foe_forward));
+        let mut spot = place::Spot { level, ..self.spot };
+        if let Some(m) = measured {
+            spot.other_reach_cm = m.reach_cm;
+            spot.other_size = m.size;
+            spot.other_large = m.large;
+            spot.other_skill = m.skill;
+            spot.blow = place::Blow {
+                skill: self.spot.blow.skill,
+                ..m.blow
+            };
+        }
+        let p = place::score_place_at(point, origin, self.heading, forward, spot);
         combat::PlaceScore {
             close: p.score.close,
             danger: p.score.danger,
@@ -569,6 +599,95 @@ fn published_blow(
         origin_in_arc: false,
         angle: 0.0,
     }
+}
+
+/// Where the position score measures `who` from. No transform: the caller
+/// leaves the contact out, rather than scoring it as the foe. A body under
+/// `who` supplies the chest, the reach and the swing; without one, `who`
+/// stands unarmed. Its step is not read (the same as the foe's).
+#[allow(clippy::type_complexity)]
+fn measure_contact(
+    who: Entity,
+    observer_cm: Vec3,
+    targets: &Query<(&GlobalTransform, Has<brain::MindWarded>)>,
+    bodies: &Query<
+        (
+            &Condition,
+            &GlobalTransform,
+            Option<&Ragdoll>,
+            &Fighter,
+            Option<&Animator>,
+            Option<&exa_physics::body::locomotion::Locomotor>,
+        ),
+        Without<Duellist>,
+    >,
+    children: &Query<&Children>,
+    gear: (
+        &Query<&Blade>,
+        &Query<&SwingState, Without<Duellist>>,
+        Option<&Motions>,
+    ),
+    skill: f32,
+) -> Option<ContactMeasure> {
+    let (root, _) = targets.get(who).ok()?;
+    let found = std::iter::once(who)
+        .chain(children.iter_descendants(who))
+        .find_map(|e| bodies.get(e).ok().map(|b| (e, b)));
+    let fighter_entity = found.as_ref().map(|(e, _)| *e).unwrap_or(who);
+    let body = found.as_ref().map(|(_, b)| *b);
+    let chest = body
+        .map(|(_, gt, rag, ..)| stance::chest_point(gt, rag))
+        .unwrap_or_else(|| stance::chest_point(root, None))
+        * CM;
+    let forward = root.rotation() * Vec3::Z;
+    let condition = body.map(|(c, ..)| *c).unwrap_or(Condition::NORMAL);
+    let fighter = body.map(|(_, _, _, f, ..)| f);
+    let anim = body.and_then(|(_, _, _, _, a, _)| a);
+    let locomotor = body.and_then(|(.., l)| l);
+    let (blades, swings, motions) = gear;
+    let phase = anim
+        .zip(motions)
+        .and_then(|(a, m)| m.clip(a, &a.action).map(|c| a.clip_progress(c)))
+        .unwrap_or(0.0);
+    let origin = place::measured_origin(place::Origin {
+        body_cm: root.translation() * CM,
+        chest_cm: chest,
+        forward,
+        speed_cm: locomotor.map_or(0.0, |l| l.speed),
+        condition: condition.0,
+        locomotion: locomotor.is_some_and(|l| l.amount != 0.0),
+        stepping: false,
+        step_goal_cm: chest,
+        attacking: condition == Condition::ATTACKING,
+        phase,
+        skill,
+    });
+    let swing_flags = swings.get(fighter_entity).map_or(0, |state| state.flags);
+    let yaw = atan2_xz(forward.x, forward.z);
+    let mut blow = anim.map_or(place::Blow::default(), |anim| {
+        published_blow(
+            fighter_entity,
+            blades,
+            anim,
+            phase,
+            yaw,
+            yaw,
+            condition == Condition::ATTACKING,
+            swing_flags,
+        )
+    });
+    let angle = atan2_xz(observer_cm.x - origin.x, observer_cm.z - origin.z);
+    blow.angle = angle;
+    blow.origin_in_arc = place::between(blow.arc_end, blow.arc_start, angle);
+    Some(ContactMeasure {
+        origin,
+        forward,
+        reach_cm: reach_of(fighter_entity, blades) * CM,
+        size: fighter.map_or(1.0, |f| f.stats.size),
+        large: fighter.is_some_and(|f| f.stats.rules.has(1)),
+        skill,
+        blow,
+    })
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
@@ -1124,6 +1243,7 @@ fn duellist(
                 heading: me.heading,
                 foe_forward: target_forward,
                 spot,
+                contact_at: Vec::new(),
                 grid: nav.as_deref(),
                 chase: nav.as_deref().map(|grid| DuelChase {
                     mind: chase_mind,
@@ -1149,22 +1269,68 @@ fn duellist(
             };
             // A chase mark lapses once its time has passed (the contact
             // integration's rule).
-            let held = &mut combatant.contacts[index];
-            if held.flags & crate::contacts::UNREACHABLE != 0
-                && held.unreachable_until_ms < now as u32
             {
-                held.flags &= !crate::contacts::UNREACHABLE;
+                let held = &mut combatant.contacts[index];
+                if held.flags & crate::contacts::UNREACHABLE != 0
+                    && held.unreachable_until_ms < now as u32
+                {
+                    held.flags &= !crate::contacts::UNREACHABLE;
+                }
             }
-            let marked = held.flags & crate::contacts::UNREACHABLE != 0;
-            let mut contacts = vec![combat::Contact {
-                level: 3,
-                is_foe: true,
-                character: true,
-                concern: held.concern,
-                hostility: held.hostility,
-                unreachable: marked,
-                ..combat::Contact::default()
-            }];
+            let marked = combatant.contacts[index].flags & crate::contacts::UNREACHABLE != 0;
+            let foe_id = combatant.contacts[index].character.to_bits();
+            // The target pass stored each character's level. The foe stays at
+            // the fight level when this duellist has no brain record of it.
+            let levels = brains.get(entity).ok().map(|npc| {
+                npc.contacts
+                    .iter()
+                    .filter(|c| !c.object)
+                    .map(|c| (c.id, c.level))
+                    .collect::<Vec<_>>()
+            });
+            let gear = (&blades, &target_swings, motions.as_deref());
+            let mut contacts = Vec::new();
+            let mut contact_at = Vec::new();
+            for c in &combatant.contacts {
+                let id = c.character.to_bits();
+                let is_foe = id == foe_id;
+                let level = levels
+                    .as_ref()
+                    .and_then(|levels| levels.iter().find(|(contact, _)| *contact == id))
+                    .map(|(_, level)| *level)
+                    .unwrap_or(if is_foe { 3 } else { 0 });
+                let measured = if is_foe {
+                    None
+                } else {
+                    let skill = brains
+                        .get(c.character)
+                        .ok()
+                        .and_then(|b| b.personality)
+                        .map_or(0.0, |p| p.skill);
+                    let Some(measured) = measure_contact(
+                        c.character,
+                        me_cm,
+                        &targets,
+                        &bodies,
+                        &children,
+                        gear,
+                        skill,
+                    ) else {
+                        continue;
+                    };
+                    Some(measured)
+                };
+                contacts.push(combat::Contact {
+                    level,
+                    is_foe,
+                    character: true,
+                    concern: c.concern,
+                    hostility: c.hostility,
+                    unreachable: c.flags & crate::contacts::UNREACHABLE != 0,
+                    ..combat::Contact::default()
+                });
+                contact_at.push(measured);
+            }
             if let Ok(npc) = brains.get(entity) {
                 for step in &npc.wall_steps {
                     contacts.push(combat::Contact {
@@ -1172,6 +1338,7 @@ fn duellist(
                         wall: Some(*step),
                         ..combat::Contact::default()
                     });
+                    contact_at.push(None);
                 }
                 for step in &npc.blast_steps {
                     contacts.push(combat::Contact {
@@ -1179,8 +1346,10 @@ fn duellist(
                         blast: Some(*step),
                         ..combat::Contact::default()
                     });
+                    contact_at.push(None);
                 }
             }
+            field.contact_at = contact_at;
             let out = combat::tick(
                 mind,
                 &me,
@@ -1197,7 +1366,7 @@ fn duellist(
             );
             let chased = field.chase.and_then(|c| c.outcome);
             placed = matches!(out.exit, None | Some(combat::Exit::NoPlace));
-            if marked && !contacts[0].unreachable {
+            if marked && contacts.iter().any(|c| c.is_foe && !c.unreachable) {
                 // The foe is in reach again.
                 combatant.contacts[index].flags &= !crate::contacts::UNREACHABLE;
             }
@@ -1674,6 +1843,91 @@ mod tests {
             }
         }
         assert!(walked);
+    }
+
+    /// A second character standing to the right is scored from its own chest,
+    /// so the first step's goal is to the left of it. Scored as the foe, five
+    /// metres ahead, the goal would be forward.
+    #[test]
+    fn the_duellist_steps_aside_from_another_character() {
+        let (mut app, foe, _) = duel(5.0, false);
+        engage(&mut app, foe);
+        step(&mut app);
+        let beside = app
+            .world_mut()
+            .spawn(GlobalTransform::from_translation(Vec3::new(0.4, 0.0, 0.0)))
+            .id();
+        app.world_mut()
+            .get_mut::<Combatant>(foe)
+            .unwrap()
+            .contacts
+            .push(combatant::Contact::new(beside));
+        let mut goal = None;
+        for _ in 0..1500 {
+            step(&mut app);
+            if let Some(step) = app.world().get::<Duellist>(foe).unwrap().step {
+                goal = Some(step.goal);
+                break;
+            }
+        }
+        let goal = goal.expect("a step");
+        assert!(goal.x < -0.4, "{goal:?}");
+    }
+
+    /// The place on a second contact is close; the same place scored as the
+    /// foe, five metres off, is not.
+    #[test]
+    fn another_contact_is_scored_from_its_own_chest() {
+        use crate::combat::Field;
+
+        let spot = place::Spot {
+            other_reach_cm: 50.0,
+            my_reach_cm: 50.0,
+            other_size: 1.0,
+            my_step_cm: 80.0,
+            other_large: false,
+            melee: false,
+            level: 3,
+            feral: 0.0,
+            dull: false,
+            blow: place::Blow::default(),
+            wide: false,
+            observer_ahead: 1.0,
+            other_ahead: 1.0,
+            in_attack: false,
+            presses: false,
+            other_skill: 0.0,
+        };
+        let mut field = DuelField {
+            foe: Vec3::new(0.0, 0.0, 500.0),
+            heading: Vec3::Z,
+            foe_forward: Vec3::Z,
+            spot,
+            contact_at: vec![
+                None,
+                Some(ContactMeasure {
+                    origin: Vec3::new(100.0, 0.0, 0.0),
+                    forward: Vec3::X,
+                    reach_cm: 50.0,
+                    size: 1.0,
+                    large: false,
+                    skill: 0.0,
+                    blow: place::Blow::default(),
+                }),
+            ],
+            grid: None,
+            chase: None,
+            powers: None,
+        };
+        let on_them = field.score(1, 0, Vec3::new(100.0, 0.0, 0.0));
+        let clear = field.score(1, 0, Vec3::new(-200.0, 0.0, 0.0));
+        assert!(
+            on_them.close > clear.close,
+            "{} vs {}",
+            on_them.close,
+            clear.close
+        );
+        assert_eq!(field.score(0, 3, Vec3::new(100.0, 0.0, 0.0)).close, 0.0);
     }
 
     /// Within the approach band it strikes once eager enough, from where it
