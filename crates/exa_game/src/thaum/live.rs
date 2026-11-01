@@ -50,10 +50,11 @@ use bevy::camera::visibility::NoFrustumCulling;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::transform::TransformSystems;
-use exa_ai::brain::Npc;
+use exa_ai::brain::{CharacterId, Npc, RoleDatabase};
 use exa_ai::combatant::{self, Contact};
 use exa_ai::contacts::ContactRecord;
 use exa_ai::manager::raise_alert;
+use exa_ai::roles::{Partner, Relations, Roles};
 use exa_combat::swing::SwingState;
 use exa_combat::{Condition, Fighter, StateFlags};
 use exa_physics::Physics;
@@ -779,6 +780,48 @@ fn raise_wall_concern(record: &mut ContactRecord, aggression: f32) {
     record.flags = contact.flags;
 }
 
+/// The queries the force sight reads besides the watching brain.
+#[derive(bevy::ecs::system::SystemParam)]
+struct ForceSight<'w, 's> {
+    hazards: Query<'w, 's, (Entity, &'static crate::effects::danger::Hazard)>,
+    blasts: Query<'w, 's, &'static super::blast_live::LiveBlast>,
+    waves: Query<'w, 's, &'static super::wave_live::LiveWave>,
+    walls: Query<'w, 's, &'static LiveBarricade>,
+    ids: Query<'w, 's, &'static CharacterId>,
+    roles: Query<'w, 's, &'static Roles>,
+    db: Option<Res<'w, RoleDatabase>>,
+    ticks: Option<Res<'w, BodyTicks>>,
+}
+
+/// The viewer's relation to whoever raised the effect: the last attitude it
+/// keeps about that character, then the mind powers (a frenzy makes it 0).
+/// No stored relation, and no character to keep one about, leaves it 0.
+fn caster_relation(
+    caster: Entity,
+    relations: Option<&mut Relations>,
+    ids: &Query<&CharacterId>,
+    role_sets: &Query<&Roles>,
+    locale: u32,
+    now: u32,
+) -> f32 {
+    let Some(relations) = relations else {
+        return 0.0;
+    };
+    let Ok(id) = ids.get(caster) else {
+        return 0.0;
+    };
+    let Ok(roles) = role_sets.get(caster) else {
+        return 0.0;
+    };
+    let partner = Partner {
+        id: id.0,
+        roles,
+        former: None,
+    };
+    let raw = relations.last_attitude(&partner, now, locale);
+    combatant::trust(caster, raw, false, &[])
+}
+
 /// Who raised a force effect, when the live effect is still in the scene.
 fn effect_caster(
     entity: Entity,
@@ -796,18 +839,20 @@ fn effect_caster(
 }
 
 /// Each brain's sight of the force effects: a barricade, a blast and a wave
-/// within 12 m. The assessment's fear is the contact's alarm. A blast the
-/// brain itself cast keeps only the cleared fear. The relation to the caster
-/// is not read here, so its factor stays 1.
+/// within 12 m. The assessment's fear is the contact's alarm, scaled by the
+/// viewer's relation to whoever raised it. A blast the brain itself cast
+/// keeps only the cleared fear.
 fn see_force_effects(
-    hazards: Query<(Entity, &crate::effects::danger::Hazard)>,
-    blasts: Query<&super::blast_live::LiveBlast>,
-    waves: Query<&super::wave_live::LiveWave>,
-    walls: Query<&LiveBarricade>,
-    mut watchers: Query<(Entity, &mut Npc, Option<&Ragdoll>)>,
+    sight: ForceSight,
+    mut watchers: Query<(Entity, &mut Npc, Option<&Ragdoll>, Option<&mut Relations>)>,
 ) {
-    let effects: Vec<_> = hazards.iter().collect();
-    for (who, mut npc, body) in &mut watchers {
+    let effects: Vec<_> = sight.hazards.iter().collect();
+    let now = sight
+        .ticks
+        .as_ref()
+        .map_or(0, |ticks| ticks.millis() as u32);
+    let locale = sight.db.as_ref().map_or(0, |db| db.locale);
+    for (who, mut npc, body, mut relations) in &mut watchers {
         npc.force_sights.clear();
         let Some(body) = body.filter(|body| body.drive.is_some()) else {
             continue;
@@ -834,8 +879,18 @@ fn see_force_effects(
             facing,
         };
         for (effect, hazard) in &effects {
-            let caster = effect_caster(*effect, &blasts, &waves, &walls);
-            let Some(seen) = hazard.assess(&viewer, 0.0, caster == Some(who)) else {
+            let caster = effect_caster(*effect, &sight.blasts, &sight.waves, &sight.walls);
+            let relation = caster.map_or(0.0, |caster| {
+                caster_relation(
+                    caster,
+                    relations.as_deref_mut(),
+                    &sight.ids,
+                    &sight.roles,
+                    locale,
+                    now,
+                )
+            });
+            let Some(seen) = hazard.assess(&viewer, relation, caster == Some(who)) else {
                 continue;
             };
             let id = effect.to_bits();
@@ -1909,6 +1964,80 @@ mod tests {
             .unwrap();
         assert!(wave.contact.alarm > 0.0, "a released wave raises its fear");
         assert_eq!(wave.position_cm, Vec3::new(0.0, 100.0, 400.0));
+    }
+
+    /// A full relation to the caster takes the fear to nothing. A brain with
+    /// no relation still fears the same wall.
+    #[test]
+    fn a_friend_does_not_fear_the_wall_they_raised() {
+        use bevy::math::Affine3A;
+        use exa_ai::roles::Relation;
+        use exa_physics::body::PartSetup;
+        let mut app = App::new();
+        app.add_systems(Update, see_force_effects);
+        let caster = app
+            .world_mut()
+            .spawn((CharacterId(1), Roles::default()))
+            .id();
+        let mut draws = Mt19937::new(1);
+        let wall = Barricade::raise(
+            WallFrame::facing(Vec3::new(0.0, 100.0, 200.0), Vec3::Z),
+            0.25,
+            0,
+            |_, _, _| None,
+            None,
+            &mut draws,
+        );
+        app.world_mut().spawn((
+            LiveBarricade {
+                wall,
+                caster: Some(caster),
+            },
+            crate::effects::danger::Hazard::Barricade {
+                wall: crate::effects::danger::Wall {
+                    centre: Vec3::new(0.0, 100.0, 200.0),
+                    along: Vec3::X,
+                    half_width: 150.0,
+                },
+                rising: true,
+                strong: false,
+            },
+        ));
+        let body = || {
+            Ragdoll::new(&[PartSetup {
+                bone: 0,
+                entity: Entity::PLACEHOLDER,
+                parent: None,
+                world: Affine3A::from_translation(Vec3::new(0.0, 1.0, 0.0)),
+                centre: Vec3::ZERO,
+                half: Vec3::splat(0.1),
+                origin: Vec3::ZERO,
+                links: vec![],
+                foot: None,
+                pins: Vec::new(),
+                spheres: None,
+            }])
+            .with_drive()
+        };
+        let mut relations = Relations::default();
+        relations.global.insert(
+            1,
+            Relation {
+                last: 100.0,
+                ..Relation::default()
+            },
+        );
+        let friend = app
+            .world_mut()
+            .spawn((body(), Npc::new([0.0; 4]), relations))
+            .id();
+        let stranger = app.world_mut().spawn((body(), Npc::new([0.0; 4]))).id();
+        app.update();
+        let friend = app.world().get::<Npc>(friend).unwrap();
+        assert_eq!(friend.force_sights.len(), 1);
+        assert_eq!(friend.force_sights[0].contact.alarm, 0.0);
+        let stranger = app.world().get::<Npc>(stranger).unwrap();
+        assert!(stranger.force_sights[0].contact.alarm > 0.0);
     }
 
     #[test]
