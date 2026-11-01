@@ -289,6 +289,9 @@ pub struct Duellist {
     last_tick: Option<u64>,
     /// The bearing the last estimate left: direction and distance (cm).
     bearing: (Vec3, f32),
+    /// A barricade or a blast the tick took instead of the foe (cm). While
+    /// set, the combat tick has no character foe and aims here.
+    focus: Option<Vec3>,
     /// The step it is taking (Exarust's stand-in for the body's step).
     step: Option<Stepping>,
     /// A step queued after it, as an offset from the chest (cm).
@@ -364,6 +367,7 @@ impl Duellist {
             chase: chase::ChaseMind::default(),
             route: Vec::new(),
             chasing: false,
+            focus: None,
             stab_aim: exa_combat::stab::StabAim::default(),
         }
     }
@@ -1273,6 +1277,7 @@ fn duellist(
             me.can_step = combat::can_act(&me) && !ai.holds_ground;
             ai.queue = 0;
             let ai_target_bits = ai.target.to_bits();
+            let focused = ai.focus;
             let Duellist {
                 mind,
                 roll,
@@ -1334,7 +1339,7 @@ fn duellist(
             let mut contact_at = Vec::new();
             for c in &combatant.contacts {
                 let id = c.character.to_bits();
-                let is_foe = id == foe_id;
+                let is_foe = id == foe_id && focused.is_none();
                 let level = levels
                     .as_ref()
                     .and_then(|levels| levels.iter().find(|(contact, _)| *contact == id))
@@ -1401,8 +1406,8 @@ fn duellist(
                 &me,
                 traits,
                 combat::World {
-                    foe: Some(&foe),
-                    focus: None,
+                    foe: focused.is_none().then_some(&foe),
+                    focus: focused,
                     contacts: &mut contacts,
                     around: &[],
                     field: &mut field,
@@ -1418,6 +1423,22 @@ fn duellist(
             }
             if let Some(b) = out.bearing {
                 ai.bearing = (b.to_target, b.distance_cm);
+            }
+            // A barricade or a blast that pressed harder: the foe is dropped
+            // and the aim goes to that entity. The commitment is not reset.
+            if let Some(point) = out.focus {
+                ai.focus = Some(point);
+                ai.mind.estimate = point;
+                let flat = Vec3::new(point.x - chest.x, 0.0, point.z - chest.z);
+                let d = flat.length();
+                let dir = if d > 1.0 { flat / d } else { ai.bearing.0 };
+                ai.bearing = (dir, if d > 1.0 { d } else { 1.0 });
+                ai.mind.aim = atan2_xz(dir.x, dir.z);
+                combatant.target = None;
+                if let Ok(mut brain) = brains.get_mut(entity) {
+                    brain.turn.look = ai.mind.aim;
+                }
+                info!("duellist {entity:?} focuses a force at {point:?}");
             }
             // A character that pressed harder than the foe becomes the target.
             // The estimate is placed on them and the aim turns to it, as a
@@ -1459,6 +1480,7 @@ fn duellist(
                 let bearing = combat::set_target(&mut ai.mind, lead, chest, previous);
                 ai.bearing = (bearing.to_target, bearing.distance_cm);
                 ai.target = who;
+                ai.focus = None;
                 combatant.target = Some(who);
                 if let Ok(mut brain) = brains.get_mut(entity) {
                     brain.turn.look = ai.mind.aim;
@@ -2182,6 +2204,35 @@ mod tests {
             }
         }
         assert!(took);
+    }
+
+    /// A released blast on the fighter presses harder than a far foe, so the
+    /// foe is dropped and the aim turns to the blast.
+    #[test]
+    fn a_blast_that_presses_harder_becomes_the_focus() {
+        let (mut app, fighter, _) = duel(8.0, false);
+        engage(&mut app, fighter);
+        step(&mut app);
+        let mut npc = brain::Npc::new([0.0; 4]);
+        npc.blast_steps.push(combat::BlastStep {
+            chest: Vec3::ZERO,
+            aim: Vec3::X,
+            released: true,
+            at: Vec3::new(200.0, 100.0, 0.0),
+        });
+        app.world_mut().entity_mut(fighter).insert(npc);
+        step(&mut app);
+        let ai = app.world().get::<Duellist>(fighter).unwrap();
+        let focus = ai.focus.expect("a focus");
+        assert!((focus.x - 200.0).abs() < 1.0, "{focus:?}");
+        assert!(ai.mind.aim.abs() > 1.0, "{}", ai.mind.aim);
+        assert!(
+            app.world()
+                .get::<Combatant>(fighter)
+                .unwrap()
+                .target
+                .is_none()
+        );
     }
 
     #[test]

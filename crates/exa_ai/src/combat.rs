@@ -539,6 +539,8 @@ pub struct BlastStep {
     pub chest: Vec3,
     pub aim: Vec3,
     pub released: bool,
+    /// Where the blast is (cm). A focus on it aims here.
+    pub at: Vec3,
 }
 
 /// The place score a barricade gives the combat tick. The close term stays 0.
@@ -1741,6 +1743,9 @@ pub struct Tick {
     /// A character contact that pressed harder than the foe. The caller takes
     /// it as the target.
     pub adopted: Option<Entity>,
+    /// A barricade or a blast that pressed harder. The caller drops the foe
+    /// and aims at this point.
+    pub focus: Option<Vec3>,
 }
 
 /// Why a tick ended early.
@@ -1936,6 +1941,7 @@ pub fn tick(
         blow: Blow::default(),
         look: None,
         adopted: None,
+        focus: None,
     };
     if !me.stepping && world.leader_calls {
         out.exit = Some(Exit::Follow);
@@ -2044,17 +2050,24 @@ pub fn tick(
     };
     let plan = footwork(mind, me, &d, k, roll);
     let found = search(mind, me, foe, traits, plan, &d, world.contacts, world.field);
-    if let Some(Some(c)) = found.retarget
-        && !world.contacts[c].is_foe
-        && world.contacts[c].character
-    {
-        // A new foe: committed afresh, the overshoot forgotten. The caller
-        // points the body at that character and places the estimate.
-        mind.fresh_target = true;
-        mind.commitment = 1.0;
-        mind.overshoot_mean = 0.0;
-        mind.stuck = 0;
-        out.adopted = world.contacts[c].who;
+    if let Some(Some(c)) = found.retarget {
+        let contact = &world.contacts[c];
+        if contact.character && !contact.is_foe {
+            // A new foe: committed afresh, the overshoot forgotten. The caller
+            // points the body at that character and places the estimate.
+            mind.fresh_target = true;
+            mind.commitment = 1.0;
+            mind.overshoot_mean = 0.0;
+            mind.stuck = 0;
+            out.adopted = contact.who;
+        } else if !contact.character {
+            // Not a character: the foe is dropped and this entity is the
+            // focus. The commitment is left as it was.
+            out.focus = contact
+                .wall
+                .map(|wall| wall.centre)
+                .or_else(|| contact.blast.map(|blast| blast.at));
+        }
     }
     let Some(mut chosen) = found.best_move else {
         out.search = Some(found);
@@ -2338,6 +2351,7 @@ mod wall_place {
             chest: Vec3::ZERO,
             aim: Vec3::Z,
             released: true,
+            at: Vec3::ZERO,
         };
         let on_line = blast_place(blast, Vec3::new(0.0, 0.0, 100.0));
         assert!(on_line.danger > 0.0, "{}", on_line.danger);

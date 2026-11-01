@@ -941,6 +941,7 @@ fn see_force_effects(
                             chest: caster_body.map(body_chest).unwrap_or(Vec3::ZERO),
                             aim: live.blast.aim,
                             released: *released,
+                            at: *at,
                         });
                     }
                     *at
