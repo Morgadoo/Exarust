@@ -445,6 +445,12 @@ impl Balance {
         self.extension
     }
 
+    /// Places the leg extension a long step is scaled by. The balance
+    /// measure writes it; a test of that scale without one writes it here.
+    pub fn set_extension(&mut self, extension: f32) {
+        self.extension = extension;
+    }
+
     /// How many feet have reached their anchors.
     pub fn landings(&self) -> u32 {
         self.landings

@@ -1367,6 +1367,9 @@ fn duellist(
                 encumbrance: fighter.stats.encumbrance,
                 reach_cm: reach * CM,
                 step_cm: spot.my_step_cm,
+                step_factor: ragdoll
+                    .and_then(|body| body.drive.as_ref())
+                    .map_or(1.0, |drive| drive.balance().extension()),
                 stepping: stepping.is_some(),
                 step_state: stepping.map_or(0, |s| s.state),
                 step_started_ms: stepping.map_or(0, |s| s.started_ms),
@@ -2253,6 +2256,60 @@ mod tests {
         };
         assert!(!strikes_at(3.1));
         assert!(strikes_at(3.0));
+    }
+
+    /// A long step's second half is scaled by the legs' extension. Half the
+    /// extension, half the length.
+    #[test]
+    fn a_long_step_follows_the_leg_extension() {
+        let length = |extension: f32| {
+            let (mut app, fighter, _) = duel(5.0, false);
+            let part = exa_physics::body::PartSetup {
+                bone: 1,
+                entity: Entity::PLACEHOLDER,
+                parent: None,
+                world: bevy::math::Affine3A::IDENTITY,
+                centre: Vec3::ZERO,
+                half: Vec3::splat(0.08),
+                origin: Vec3::ZERO,
+                links: vec![],
+                foot: None,
+                pins: Vec::new(),
+                spheres: None,
+            };
+            let mut ragdoll = Ragdoll::new(&[part]).with_drive();
+            let drive = ragdoll.drive.as_mut().unwrap();
+            drive.tone = 0.5;
+            drive.balance_mut().set_extension(extension);
+            app.world_mut().entity_mut(fighter).insert(ragdoll);
+            engage(&mut app, fighter);
+            step(&mut app);
+            {
+                let mut ai = app.world_mut().get_mut::<Duellist>(fighter).unwrap();
+                ai.mind.long_step = true;
+                ai.mind.step = 1;
+                ai.last_tick = Some(26);
+                ai.step = Some(Stepping {
+                    goal: Vec3::new(0.0, 0.0, 9.0),
+                    started_ms: 0,
+                    state: 0,
+                });
+            }
+            app.world_mut().insert_resource(BodyTicks(26));
+            step(&mut app);
+            let goal = app
+                .world()
+                .get::<Duellist>(fighter)
+                .unwrap()
+                .step
+                .unwrap()
+                .goal;
+            Vec3::new(goal.x, 0.0, goal.z).length()
+        };
+        let full = length(1.0);
+        let half = length(0.5);
+        assert!(full > 0.5, "{full}");
+        assert!((half - full * 0.5).abs() < 1e-3, "{half} vs {full}");
     }
 
     /// A second character standing to the right is scored from its own chest,

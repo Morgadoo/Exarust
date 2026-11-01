@@ -709,6 +709,57 @@ fn duel() -> (Body, Foe) {
 }
 
 #[test]
+fn a_long_step_is_scaled_by_the_leg_extension() {
+    let me = Body {
+        now_ms: 500,
+        step_started_ms: 0,
+        stepping: true,
+        step_cm: 80.0,
+        look: Vec3::Z,
+        chest: Vec3::ZERO,
+        ..Body::default()
+    };
+    let continued = |factor: f32| {
+        let mut mind = CombatMind {
+            long_step: true,
+            step: 1,
+            ..CombatMind::default()
+        };
+        let mut field = Flat::new(Vec3::ZERO);
+        let (step, _) = take_step(
+            &mut mind,
+            &Body {
+                step_factor: factor,
+                ..me
+            },
+            None,
+            Footwork {
+                first: 0,
+                last: 0,
+                mode: 0,
+                change: 1.0,
+                queue_taken: false,
+            },
+            0,
+            Vec3::ZERO,
+            &mut field,
+        );
+        match step {
+            Footstep::Continue { goal, step_cm } => (goal, step_cm),
+            other => panic!("expected the long step's second half, got {other:?}"),
+        }
+    };
+    let (full, full_cm) = continued(1.0);
+    let (half, half_cm) = continued(0.5);
+    // Unladen, the second half is one and a half times the step, times the
+    // extension: 120 cm, or 60 at half extension.
+    assert_eq!(full_cm, 120.0);
+    assert_eq!(half_cm, 60.0);
+    assert_eq!(full, Vec3::new(0.0, 0.0, 120.0));
+    assert_eq!(half, Vec3::new(0.0, 0.0, 60.0));
+}
+
+#[test]
 fn an_unreachable_strike_place_leaves_the_fighter_on_guard() {
     let (me, foe) = duel();
     let mut mind = CombatMind {
