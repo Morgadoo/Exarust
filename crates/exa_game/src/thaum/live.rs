@@ -34,8 +34,9 @@
 //!   the player, and the constant displacement's wisps on the player's
 //!   body. The player cannot cast yet: Exarust has no power bar.
 //!
-//! Not wired: the lights, the AI's sight of a
-//! barricade, the attack a barricade interrupts.
+//! Not wired: a voxel light and a point light, the AI's sight of a
+//! barricade, the attack a barricade interrupts. A shock weapon's arcs
+//! (light points) place their tendril light each frame.
 //! Rules: `docs/THAUMATURGY.md`.
 
 use bevy::asset::RenderAssetUsages;
@@ -51,7 +52,7 @@ use exa_physics::body::{BodySystems, BodyTicks, Ragdoll, step_length};
 use exa_render::glow::GlowMaterial;
 use exa_world::nav::{NavGrid, NavPatch, stamp_line, unstamp_line};
 
-use super::arcs::{ARC_COLOUR, ArcEmitter, ArcLimb, HAND_ARCS_OFFSET, hand_arcs};
+use super::arcs::{ARC_COLOUR, ArcEmitter, ArcLight, ArcLimb, HAND_ARCS_OFFSET, hand_arcs};
 use super::barricade::{
     Barricade, GridFrame, WAKE_TICKS, WallBody, WallBodyKind, WallFrame, barricade_mesh, nav_stamp,
     power_ends, slide_mesh,
@@ -586,6 +587,42 @@ fn apply_arc_hum(voice: &mut exa_audio::Voice, gain: f32, pitch: Option<f32>, at
     voice.position = at;
 }
 
+/// The frame's tendril light for arcs that gather light points. A point light
+/// and a voxel light are not this. An empty frame, or one that has ended,
+/// drops the light.
+fn drive_arc_light(
+    commands: &mut Commands,
+    entity: Entity,
+    held: Option<&super::effect_light::EffectLight>,
+    shapes: &mut Query<(
+        &mut exa_render::gi::GiShape,
+        &mut exa_render::gi::ShapeVolume,
+    )>,
+    arcs: &ArcEmitter,
+    strength: f32,
+    stop: bool,
+) {
+    if arcs.light_kind != ArcLight::Points {
+        return;
+    }
+    if stop || arcs.lights.is_empty() {
+        if let Some(held) = held {
+            commands.entity(held.0).despawn();
+            commands
+                .entity(entity)
+                .remove::<super::effect_light::EffectLight>();
+        }
+        return;
+    }
+    let points: Vec<_> = arcs.lights.iter().map(|p| (p.at, p.weight)).collect();
+    let Some(placed) =
+        super::effect_light::arc_shape(&points, strength, super::effect_light::GI_LIGHT_SCALE)
+    else {
+        return;
+    };
+    super::effect_light::place_light(commands, entity, held, shapes, placed, "arc light");
+}
+
 /// What plays `elechit`. Absent in a test with no game loaded.
 #[derive(bevy::ecs::system::SystemParam)]
 struct ShockAudio<'w> {
@@ -1023,7 +1060,16 @@ fn camera_axis(cameras: &Query<&GlobalTransform, exa_render::supersample::SceneC
 #[allow(clippy::too_many_arguments)]
 fn draw_arcs(
     mut commands: Commands,
-    mut arcs: Query<(Entity, &mut LiveArcs, Option<&EffectMesh>)>,
+    mut arcs: Query<(
+        Entity,
+        &mut LiveArcs,
+        Option<&EffectMesh>,
+        Option<&super::effect_light::EffectLight>,
+    )>,
+    mut shapes: Query<(
+        &mut exa_render::gi::GiShape,
+        &mut exa_render::gi::ShapeVolume,
+    )>,
     cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
     time: Res<Time<Fixed>>,
     mut draws: ResMut<EffectDraws>,
@@ -1034,7 +1080,7 @@ fn draw_arcs(
 ) {
     let eye = camera_axis(&cameras);
     let alpha = time.overstep_fraction();
-    for (entity, mut live, drawn) in &mut arcs {
+    for (entity, mut live, drawn, light) in &mut arcs {
         let frame = live.arcs.frame(alpha, eye, 0.0, |p| p, &mut draws.0);
         let at = live.arcs.anchor.map(|p| p / CM).unwrap_or(Vec3::ZERO);
         drive_arc_hum(
@@ -1044,6 +1090,15 @@ fn draw_arcs(
             at,
             frame.gain,
             frame.pitch,
+            frame.removed,
+        );
+        drive_arc_light(
+            &mut commands,
+            entity,
+            light,
+            &mut shapes,
+            &live.arcs,
+            frame.light,
             frame.removed,
         );
         if frame.removed && !live.keep {
@@ -1241,6 +1296,81 @@ mod tests {
         apply_arc_hum(&mut voice, 0.1, Some(0.7), Vec3::Y);
         assert_eq!(voice.pitch, 0.7);
         assert_eq!(voice.position, Vec3::Y);
+    }
+
+    /// Arcs that gather light points register a tendril light and drop it
+    /// when they end. A hand arc, which carries a voxel light, does not.
+    #[test]
+    fn a_shock_weapons_arcs_place_their_light() {
+        use bevy::asset::AssetPlugin;
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<GlowMaterial>()
+            .insert_resource(EffectDraws::default())
+            .add_systems(Update, draw_arcs);
+        let mut arcs = ArcEmitter::allocate(1, 4, 2.0);
+        arcs.light_kind = ArcLight::Points;
+        arcs.light = 0.02;
+        let arc = app
+            .world_mut()
+            .spawn(LiveArcs {
+                arcs,
+                hand: None,
+                weapon: None,
+                caster: None,
+                keep: true,
+            })
+            .id();
+        let hand = ArcEmitter::new(&hand_arcs(), &mut Mt19937::new(1));
+        let bare = app
+            .world_mut()
+            .spawn(LiveArcs {
+                arcs: hand,
+                hand: None,
+                weapon: None,
+                caster: None,
+                keep: true,
+            })
+            .id();
+        app.update();
+        assert!(
+            app.world()
+                .get::<crate::thaum::effect_light::EffectLight>(bare)
+                .is_none(),
+            "a voxel light is not this tendril light"
+        );
+        let held = app
+            .world()
+            .get::<crate::thaum::effect_light::EffectLight>(arc)
+            .expect("a light")
+            .0;
+        let placed = app.world().get::<exa_render::gi::GiShape>(held).unwrap();
+        assert_eq!(placed.program, exa_render::gi::GiShapeProgram::Multipoint);
+        assert_eq!(placed.atten, 16_000.0);
+        let got = placed.points.clone();
+        let live = app.world().get::<LiveArcs>(arc).unwrap();
+        let points: Vec<_> = live.arcs.lights.iter().map(|p| (p.at, p.weight)).collect();
+        let strength = live.arcs.tendrils[0].life * live.arcs.light;
+        let (expect, _) = crate::thaum::effect_light::arc_shape(
+            &points,
+            strength,
+            crate::thaum::effect_light::GI_LIGHT_SCALE,
+        )
+        .expect("the same points");
+        assert_eq!(got.as_ref(), expect.points.as_ref());
+        {
+            let mut live = app.world_mut().get_mut::<LiveArcs>(arc).unwrap();
+            live.arcs.ending = true;
+            live.arcs.total = 0;
+        }
+        app.update();
+        assert!(
+            app.world()
+                .get::<crate::thaum::effect_light::EffectLight>(arc)
+                .is_none()
+        );
+        assert!(app.world().get::<exa_render::gi::GiShape>(held).is_none());
     }
 
     #[test]

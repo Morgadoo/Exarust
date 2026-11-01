@@ -372,9 +372,22 @@ pub(crate) fn barricade_lights(
     }
 }
 
+/// A shock weapon's arc light this frame. The points are already in world
+/// centimetres (weight at least 1). Each takes the tendril colour
+/// `(0.25, 0.25, 1)` times the manager's scale, the point's weight and the
+/// frame's strength, at attenuation 16000, in the points' box plus 120 cm.
+/// No node place is added: the points were gathered in the world.
+pub fn arc_shape(
+    points: &[(Vec3, f32)],
+    strength: f32,
+    gain: f32,
+) -> Option<(GiShape, ShapeVolume)> {
+    tendril_shape(points, Vec3::ZERO, strength, gain)
+}
+
 /// Writes `shape` to the effect's light, registering one first if it has
 /// none.
-fn place_light(
+pub(crate) fn place_light(
     commands: &mut Commands,
     owner: Entity,
     light: Option<&EffectLight>,
@@ -843,6 +856,26 @@ mod tests {
         assert_eq!(volume.position, (at + Vec3::X * 5.0) / CM);
         assert_eq!(volume.half, Vec3::new(5.0 + 120.0, 120.0, 120.0) / CM);
         assert_eq!(tendril_shape(&[], at, 1.0, 1.0), None);
+    }
+
+    /// A shock weapon's arcs light their gathered points with the tendril
+    /// colour, the frame's strength and no extra node place.
+    #[test]
+    fn a_shock_weapons_arcs_light_their_points() {
+        let points = [
+            (Vec3::new(0.0, 10.0, 0.0), 1.0),
+            (Vec3::new(40.0, 10.0, 0.0), 2.0),
+        ];
+        let (shape, volume) = arc_shape(&points, 0.4, GI_LIGHT_SCALE).expect("a shape");
+        assert_eq!(shape.program, GiShapeProgram::Multipoint);
+        assert_eq!(shape.atten, emissive::MULTIPOINT_ATTENUATION);
+        assert_eq!(
+            shape.points[1].1,
+            emissive::TENDRIL_COLOUR * (GI_LIGHT_SCALE * 2.0 * 0.4)
+        );
+        assert_eq!(volume.position, Vec3::new(0.2, 0.1, 0.0));
+        assert_eq!(volume.half, Vec3::new(1.4, 1.2, 1.2));
+        assert_eq!(arc_shape(&[], 1.0, GI_LIGHT_SCALE), None);
     }
 
     /// A blast's light is registered on its first frame, kept while its
