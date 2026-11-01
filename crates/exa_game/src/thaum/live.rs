@@ -34,9 +34,10 @@
 //!   the player, and the constant displacement's wisps on the player's
 //!   body. The player cannot cast yet: Exarust has no power bar.
 //!
-//! Not wired: a voxel light and a point light, the AI's sight of a
-//! barricade, the attack a barricade interrupts. A shock weapon's arcs
-//! (light points) place their tendril light each frame.
+//! Not wired: a point light, the AI's sight of a barricade, the attack a
+//! barricade interrupts. A shock weapon's arcs (light points) place their
+//! tendril light each frame. An emitter that carries a voxel light places
+//! it at the arcs' mean and sets its intensity from the frame.
 //! Rules: `docs/THAUMATURGY.md`.
 
 use bevy::asset::RenderAssetUsages;
@@ -49,6 +50,7 @@ use exa_combat::{Condition, Fighter, StateFlags};
 use exa_physics::Physics;
 use exa_physics::body::locomotion::Locomotor;
 use exa_physics::body::{BodySystems, BodyTicks, Ragdoll, step_length};
+use exa_render::gi::VoxelLight;
 use exa_render::glow::GlowMaterial;
 use exa_world::nav::{NavGrid, NavPatch, stamp_line, unstamp_line};
 
@@ -587,6 +589,64 @@ fn apply_arc_hum(voice: &mut exa_audio::Voice, gain: f32, pitch: Option<f32>, at
     voice.position = at;
 }
 
+/// The voxel light an arc emitter owns.
+#[derive(Component, Debug, Clone, Copy)]
+struct HeldVoxel(Entity);
+
+/// Bits the frame sets on a voxel light's flag word after the colour update.
+const VOXEL_FRAME_FLAGS: u32 = 9;
+
+/// The frame's voxel light, at the arcs' mean. A point light is not this.
+/// An ended frame drops it. An emitter with no lamp (the kind set on its
+/// own) places nothing.
+fn drive_arc_voxel(
+    commands: &mut Commands,
+    entity: Entity,
+    held: Option<&HeldVoxel>,
+    lights: &mut Query<(&mut VoxelLight, &mut Transform, &mut GlobalTransform), Without<Camera3d>>,
+    arcs: &ArcEmitter,
+    strength: f32,
+    stop: bool,
+) {
+    let Some(lamp) = arcs.voxel else {
+        return;
+    };
+    if stop {
+        if let Some(held) = held {
+            commands.entity(held.0).despawn();
+            commands.entity(entity).remove::<HeldVoxel>();
+        }
+        return;
+    }
+    let at = arcs.mean / CM;
+    let place = Transform::from_translation(at);
+    match held.and_then(|held| lights.get_mut(held.0).ok()) {
+        Some((mut light, mut transform, mut global)) => {
+            light.set_intensity(strength);
+            light.flags |= VOXEL_FRAME_FLAGS;
+            *transform = place;
+            *global = GlobalTransform::from(place);
+        }
+        None => {
+            let mut light = VoxelLight::new(lamp.color, strength);
+            light.base_intensity = lamp.base_intensity;
+            light.radius = lamp.radius / CM;
+            light.active_radius = light.radius;
+            light.flags |= VOXEL_FRAME_FLAGS;
+            let id = commands
+                .spawn((
+                    Name::new("arc voxel light"),
+                    light,
+                    place,
+                    GlobalTransform::from(place),
+                    ChildOf(entity),
+                ))
+                .id();
+            commands.entity(entity).insert(HeldVoxel(id));
+        }
+    }
+}
+
 /// The frame's tendril light for arcs that gather light points. A point light
 /// and a voxel light are not this. An empty frame, or one that has ended,
 /// drops the light.
@@ -1070,6 +1130,8 @@ fn draw_arcs(
         &mut exa_render::gi::GiShape,
         &mut exa_render::gi::ShapeVolume,
     )>,
+    held_voxels: Query<&HeldVoxel>,
+    mut voxels: Query<(&mut VoxelLight, &mut Transform, &mut GlobalTransform), Without<Camera3d>>,
     cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
     time: Res<Time<Fixed>>,
     mut draws: ResMut<EffectDraws>,
@@ -1081,6 +1143,7 @@ fn draw_arcs(
     let eye = camera_axis(&cameras);
     let alpha = time.overstep_fraction();
     for (entity, mut live, drawn, light) in &mut arcs {
+        let voxel = held_voxels.get(entity).ok();
         let frame = live.arcs.frame(alpha, eye, 0.0, |p| p, &mut draws.0);
         let at = live.arcs.anchor.map(|p| p / CM).unwrap_or(Vec3::ZERO);
         drive_arc_hum(
@@ -1097,6 +1160,15 @@ fn draw_arcs(
             entity,
             light,
             &mut shapes,
+            &live.arcs,
+            frame.light,
+            frame.removed,
+        );
+        drive_arc_voxel(
+            &mut commands,
+            entity,
+            voxel,
+            &mut voxels,
             &live.arcs,
             frame.light,
             frame.removed,
@@ -1371,6 +1443,68 @@ mod tests {
                 .is_none()
         );
         assert!(app.world().get::<exa_render::gi::GiShape>(held).is_none());
+    }
+
+    /// A hand arc's voxel light sits at the arcs' mean. Its intensity is the
+    /// frame's, and it leaves when the arcs end.
+    #[test]
+    fn a_hand_arcs_voxel_light_follows_the_mean() {
+        use bevy::asset::AssetPlugin;
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()))
+            .init_asset::<Mesh>()
+            .init_asset::<GlowMaterial>()
+            .insert_resource(EffectDraws::default())
+            .add_systems(Update, draw_arcs);
+        let mut arcs = ArcEmitter::new(&hand_arcs(), &mut Mt19937::new(1));
+        arcs.total = arcs.segments * arcs.tendrils.len() as i32;
+        arcs.mean = Vec3::new(100.0, 200.0, -50.0);
+        let arc = app
+            .world_mut()
+            .spawn(LiveArcs {
+                arcs,
+                hand: None,
+                weapon: None,
+                caster: None,
+                keep: true,
+            })
+            .id();
+        app.update();
+        let held = app.world().get::<HeldVoxel>(arc).expect("a voxel light").0;
+        let (color, base, radius, active, flags, intensity) = {
+            let light = app.world().get::<VoxelLight>(held).unwrap();
+            (
+                light.color,
+                light.base_intensity,
+                light.radius,
+                light.active_radius,
+                light.flags,
+                light.intensity,
+            )
+        };
+        assert_eq!(color, [0.6, 0.6, 1.0]);
+        assert_eq!(base, 16.0);
+        assert_eq!(radius, 1.8);
+        assert_eq!(active, 1.8);
+        assert_eq!(flags & VOXEL_FRAME_FLAGS, VOXEL_FRAME_FLAGS);
+        let live = app.world().get::<LiveArcs>(arc).unwrap();
+        let fill = (live.arcs.total as f32
+            / (live.arcs.segments as f32 * live.arcs.tendrils.len() as f32))
+            * 2.0;
+        let expect = live.arcs.light * fill * live.arcs.light_flicker * 1.5;
+        assert!((intensity - expect).abs() < 1e-4, "{intensity}");
+        assert_eq!(
+            app.world().get::<Transform>(held).unwrap().translation,
+            Vec3::new(1.0, 2.0, -0.5)
+        );
+        {
+            let mut live = app.world_mut().get_mut::<LiveArcs>(arc).unwrap();
+            live.arcs.ending = true;
+            live.arcs.total = 0;
+        }
+        app.update();
+        assert!(app.world().get::<HeldVoxel>(arc).is_none());
+        assert!(app.world().get::<VoxelLight>(held).is_none());
     }
 
     #[test]

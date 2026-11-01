@@ -95,6 +95,39 @@ pub enum ArcLight {
     Points,
 }
 
+/// The voxel light an emitter carries. A record's is `(0.6, 0.6, 1)` with
+/// base intensity 16 and a radius of 180 cm; a spark burst's is `(0.5, 0.5, 1)`
+/// with base 8 and a radius of 100 cm. The frame writes the current intensity.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VoxelLamp {
+    /// sRGB.
+    pub color: [f32; 3],
+    /// The record's intensity. The frame replaces the current one.
+    pub base_intensity: f32,
+    /// Centimetres.
+    pub radius: f32,
+}
+
+impl VoxelLamp {
+    /// The light a voxel-kind arc record creates.
+    pub fn record() -> Self {
+        Self {
+            color: [0.6, 0.6, 1.0],
+            base_intensity: 16.0,
+            radius: 180.0,
+        }
+    }
+
+    /// The light a spark burst creates.
+    pub fn spark() -> Self {
+        Self {
+            color: [0.5, 0.5, 1.0],
+            base_intensity: 8.0,
+            radius: 100.0,
+        }
+    }
+}
+
 impl ArcLight {
     /// The kind a record's flags ask for.
     pub fn of_flags(flags: u32) -> Self {
@@ -250,6 +283,8 @@ pub struct ArcEmitter {
     pub volume: f32,
     pub sound: Option<&'static str>,
     pub light_kind: ArcLight,
+    /// The voxel light, when [`ArcLight::Voxel`] was created with one.
+    pub voxel: Option<VoxelLamp>,
     /// The texture scroll before and after the last tick.
     pub scroll: [f32; 2],
     pub light_flicker: f32,
@@ -322,6 +357,7 @@ impl ArcEmitter {
             volume: 0.1,
             sound: None,
             light_kind: ArcLight::None,
+            voxel: None,
             scroll: [0.0, 0.0],
             light_flicker: 0.0,
             gain_flicker: 0.0,
@@ -344,6 +380,9 @@ impl ArcEmitter {
         let mut arc = Self::allocate(params.count, params.segments, params.size);
         arc.flags = params.flags & 0xff;
         arc.light_kind = ArcLight::of_flags(params.flags);
+        if arc.light_kind == ArcLight::Voxel {
+            arc.voxel = Some(VoxelLamp::record());
+        }
         if EPSILON < params.scale {
             arc.length *= params.scale;
         }
@@ -1432,6 +1471,7 @@ pub fn spark_burst(draws: &mut impl Draws) -> ArcEmitter {
     arc.light = 8.0;
     arc.volume = 0.05;
     arc.light_kind = ArcLight::Voxel;
+    arc.voxel = Some(VoxelLamp::spark());
     arc.tendrils[0].timer = draws.below(10) + 10;
     for _ in 0..6 {
         arc.respawn(draws);
@@ -1545,6 +1585,7 @@ mod tests {
         assert_eq!(arc.width, 4.0);
         assert_eq!(arc.tendrils[0].timer, 14);
         assert_eq!(arc.light_kind, ArcLight::Voxel);
+        assert_eq!(arc.voxel, Some(VoxelLamp::record()));
         assert_eq!(arc.light, 48.0);
         let weapon = ArcEmitter::new(&weapon_arcs(), &mut draws);
         assert_eq!(weapon.length, 6.0);
@@ -1888,6 +1929,7 @@ mod tests {
         assert_eq!(live, 7);
         assert_eq!(burst.length, 24.0);
         assert!(burst.ending);
+        assert_eq!(burst.voxel, Some(VoxelLamp::spark()));
         assert_eq!(burst.tendrils[0].timer, 12);
     }
 }
