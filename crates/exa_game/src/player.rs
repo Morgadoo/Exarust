@@ -229,15 +229,24 @@ impl PlayerBody {
         self.steering.holds_object = holds;
     }
 
-    /// Turns combat mode on or off, as Tab does.
-    pub fn toggle_combat(&mut self) {
-        self.set_combat(!self.combat);
+    /// Turns combat mode on or off, as Tab does. True when this enters
+    /// combat mode.
+    pub fn toggle_combat(&mut self) -> bool {
+        self.set_combat(!self.combat)
     }
 
     /// Turns combat mode on (as the original does at the start of every
-    /// practice and arena fight) or off.
-    pub fn set_combat(&mut self, on: bool) {
+    /// practice and arena fight) or off. True when this enters combat mode:
+    /// the double-click clock is dropped, and the caller clears the
+    /// locomotion bits [`Locomotion::entered_combat`] does. A mode already
+    /// on is left as it is, clock included.
+    pub fn set_combat(&mut self, on: bool) -> bool {
+        let entered = on && !self.combat;
+        if entered {
+            self.attack.last_press = None;
+        }
         self.combat = on;
+        entered
     }
 }
 
@@ -3403,6 +3412,24 @@ mod tests {
         assert!(!overhead(press(&mut input, 10_750, false).1));
         assert!(overhead(press(&mut input, 11_049, false).1));
         assert!(!input.requested);
+    }
+
+    /// Entering combat mode drops the double-click clock, so a press 100 ms
+    /// later is not an overhead. A mode already on keeps the clock.
+    #[test]
+    fn entering_combat_drops_the_double_click_clock() {
+        let mut body = PlayerBody::new(0.0);
+        body.attack.tick(true, 1_000, false);
+        body.attack.tick(false, 1_012, false);
+        assert!(body.set_combat(true));
+        body.attack.tick(true, 1_100, false);
+        assert!(!body.attack.request().overhead);
+        body.attack.tick(false, 1_112, false);
+        body.attack.tick(true, 2_000, false);
+        body.attack.tick(false, 2_012, false);
+        assert!(!body.set_combat(true));
+        body.attack.tick(true, 2_200, false);
+        assert!(body.attack.request().overhead);
     }
 
     /// A synthetic motion set: the "Default" moveset's attacks and combat

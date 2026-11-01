@@ -340,7 +340,9 @@ fn press_hotkeys(
             debug!("hotkey {key:#x}: {action:?}");
             match action {
                 Hotkey::ToggleCombat => {
-                    pb.toggle_combat();
+                    if pb.toggle_combat() {
+                        req.entered_combat();
+                    }
                     pb.aim = req.heading;
                     if pb.combat
                         && let Some(hand) = hand.as_deref_mut()

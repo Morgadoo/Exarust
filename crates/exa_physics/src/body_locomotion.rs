@@ -175,6 +175,12 @@ impl Default for Locomotion {
 }
 
 impl Locomotion {
+    /// Combat mode's entry clears the backwards, heading-driven and
+    /// turn-about bits. A mode that was already on does not.
+    pub fn entered_combat(&mut self) {
+        self.flags &= !(flags::BACK | flags::KEYS | flags::TURN_ABOUT);
+    }
+
     /// The request and the body's state of a character standing still,
     /// facing `yaw`.
     pub fn facing(yaw: f32) -> (Locomotion, Locomotor) {

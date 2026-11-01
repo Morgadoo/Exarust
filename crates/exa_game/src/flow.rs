@@ -4063,7 +4063,13 @@ fn apply_steps(
             }
             Step::CombatMode(on) => {
                 for mut player in &mut players {
-                    player.body.set_combat(on);
+                    // Entering combat mode drops the double-click clock and
+                    // the walk bits. A mode already on keeps both.
+                    if player.body.set_combat(on)
+                        && let Some(req) = player.locomotion.as_mut()
+                    {
+                        req.entered_combat();
+                    }
                 }
             }
             Step::Health {
@@ -4576,6 +4582,7 @@ struct PlayerParts {
     kit: Option<&'static mut crate::save_kit::OwnDatabase>,
     roles: Option<&'static mut exa_ai::roles::Roles>,
     practice: Option<&'static mut crate::player_practice::PlayerPractice>,
+    locomotion: Option<&'static mut exa_physics::body::locomotion::Locomotion>,
     torch: Has<crate::torch::CarriesTorch>,
 }
 
@@ -5076,6 +5083,56 @@ mod tests {
                 .contacts
                 .is_empty()
         );
+    }
+
+    /// Entering combat mode clears the backwards, heading-driven and
+    /// turn-about bits. Turning it on again leaves whatever was set since.
+    #[test]
+    fn entering_combat_clears_the_walk_bits() {
+        use exa_physics::body::locomotion::flags::{BACK, KEYS, SPRINT, TURN_ABOUT};
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Flow>()
+            .init_resource::<FlowSteps>()
+            .init_resource::<GameView>()
+            .init_resource::<crate::player_controls::PlaySession>()
+            .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
+            .add_message::<exa_world::level_lifecycle::WorldReset>()
+            .add_message::<ForfeitMatch>()
+            .add_message::<SettingsEntry>()
+            .add_message::<AppExit>()
+            .add_message::<crate::save_live::SaveStep>()
+            .add_message::<crate::experience_live::DiscoveryTick>()
+            .add_message::<crate::scene_bodies::SceneCommand>()
+            .add_systems(Update, apply_steps);
+        let mut req = exa_physics::body::locomotion::Locomotion::default();
+        req.flags = BACK | KEYS | TURN_ABOUT | SPRINT;
+        let player = app
+            .world_mut()
+            .spawn((crate::player::PlayerBody::new(0.0), req))
+            .id();
+        app.world_mut()
+            .resource_mut::<FlowSteps>()
+            .steps
+            .push(Step::CombatMode(true));
+        app.update();
+        let flags = |app: &App| {
+            app.world()
+                .get::<exa_physics::body::locomotion::Locomotion>(player)
+                .unwrap()
+                .flags
+        };
+        assert_eq!(flags(&app), SPRINT);
+        app.world_mut()
+            .get_mut::<exa_physics::body::locomotion::Locomotion>(player)
+            .unwrap()
+            .flags = BACK | KEYS | TURN_ABOUT | SPRINT;
+        app.world_mut()
+            .resource_mut::<FlowSteps>()
+            .steps
+            .push(Step::CombatMode(true));
+        app.update();
+        assert_eq!(flags(&app), BACK | KEYS | TURN_ABOUT | SPRINT);
     }
 
     #[test]
