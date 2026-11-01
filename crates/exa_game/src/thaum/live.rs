@@ -196,6 +196,7 @@ pub struct ShockTaken {
 /// the first draw, gain from the second). A released race (`released`, and
 /// not dying) is not burnt: its next shock is 500 ms on and its health is
 /// kept. Every other shock then draws the extra delay below 200 ms.
+#[allow(clippy::too_many_arguments)]
 pub fn shock_reaction(
     ready: Option<u64>,
     now: u64,
@@ -203,6 +204,7 @@ pub fn shock_reaction(
     strength: f32,
     dying: bool,
     released: bool,
+    rings: bool,
     roll: &mut Roll,
 ) -> Option<ShockTaken> {
     if ready.is_some_and(|next| next > now + SHOCK_EARLY_MS) {
@@ -210,7 +212,10 @@ pub fn shock_reaction(
     }
     let pitch = (f64::from(roll.unit()) * 0.4 + 0.8) as f32;
     let gain = (f64::from(roll.unit()) * 0.1 + 0.3) as f32;
-    let (next, yellow) = if released && !dying {
+    // A race that only rings, and a released race, take the flat 500 ms and
+    // are not burnt. The hit sound was already drawn.
+    let quiet = rings || (released && !dying);
+    let (next, yellow) = if quiet {
         (now + SHOCK_SPACING_MS, yellow)
     } else {
         let spread = (u64::from(roll.step()) * SHOCK_SPREAD_MS) >> 32;
@@ -224,7 +229,7 @@ pub fn shock_reaction(
     };
     // A burn cries after the delay: the first draw is the pitch, the second
     // the gain. A release and a collapsing body do not.
-    let cry = if !dying && !(released && !dying) {
+    let cry = if !dying && !quiet {
         let first = roll.unit();
         let second = roll.unit();
         Some((
@@ -398,6 +403,7 @@ fn shock_fighters(
         Option<&mut exa_physics::body::locomotion::Locomotor>,
         Option<&mut exa_anim::Animator>,
         Option<&mut exa_combat::voice::CharacterVoice>,
+        Option<&exa_character::record::CharacterData>,
     )>,
     ticks: Option<Res<BodyTicks>>,
     motions: Option<Res<exa_anim::Motions>>,
@@ -420,6 +426,7 @@ fn shock_fighters(
             mut locomotor,
             mut animator,
             mut voice,
+            character,
         )) = fighters.get_mut(shock.body)
         else {
             continue;
@@ -438,6 +445,7 @@ fn shock_fighters(
             shock.strength,
             dying,
             fighter.stats.shocks_release,
+            character.is_some_and(|c| c.record.race == 1),
             &mut roll.0,
         ) else {
             continue;
@@ -449,6 +457,7 @@ fn shock_fighters(
             .and_then(|b| b.drive.as_ref())
             .and_then(|d| d.balance().chest());
         play_shock(&mut audio, &mut commands, chest, taken.gain, taken.pitch);
+        let rings = character.is_some_and(|c| c.record.race == 1);
         if fighter.stats.shocks_release && !dying {
             // A release race is not burnt: it is put into the shocked
             // state, its step ends and its clip rate stops.
@@ -458,7 +467,7 @@ fn shock_fighters(
             if let Some(condition) = condition.as_deref_mut() {
                 *condition = Condition::SHOCKED;
             }
-        } else {
+        } else if !rings {
             fighter.health.yellow = yellow;
             if !dying {
                 if let Some(condition) = condition.as_deref_mut() {
@@ -1181,35 +1190,44 @@ mod tests {
         let mut roll = Roll(0);
         // The hit sound takes two draws, then the delay. From state 0 that
         // delay is 172 ms, so the next shock is due at 672.
-        let taken = shock_reaction(None, 0, 0.25, 0.05, false, false, &mut roll).unwrap();
+        let taken = shock_reaction(None, 0, 0.25, 0.05, false, false, false, &mut roll).unwrap();
         assert_eq!(taken.next, 672);
         assert!((taken.yellow - 0.2).abs() < 1e-6);
         assert!((taken.pitch - 0.8).abs() < 1e-5);
         // 499 + 150 is short of 672 by more than the window.
         assert_eq!(
-            shock_reaction(Some(672), 521, 0.2, 0.05, false, false, &mut roll),
+            shock_reaction(Some(672), 521, 0.2, 0.05, false, false, false, &mut roll),
             None
         );
         assert_eq!(roll, Roll(1_172_187_917), "a refused shock draws nothing");
-        let taken = shock_reaction(Some(672), 522, 0.2, 0.05, false, false, &mut roll).unwrap();
+        let taken =
+            shock_reaction(Some(672), 522, 0.2, 0.05, false, false, false, &mut roll).unwrap();
         assert_eq!(taken.next, 1_054);
         assert!(taken.cry.is_some());
         assert!((taken.yellow - 0.15).abs() < 1e-6);
         // Collapsing or dead: the clock moves, the health stays.
-        let kept = shock_reaction(None, 0, 0.1, 0.05, true, false, &mut roll).unwrap();
+        let kept = shock_reaction(None, 0, 0.1, 0.05, true, false, false, &mut roll).unwrap();
         assert_eq!(kept.yellow, 0.1);
         assert!(kept.cry.is_none());
         assert_eq!(
-            shock_reaction(None, 0, 0.03, 0.05, false, false, &mut roll).map(|s| s.yellow),
+            shock_reaction(None, 0, 0.03, 0.05, false, false, false, &mut roll).map(|s| s.yellow),
             Some(0.0)
         );
         // A released race: the sound's two draws, then 500 ms on, no delay
         // draw, its health kept.
         let before = roll;
-        let released = shock_reaction(None, 1_000, 0.2, 0.05, false, true, &mut roll).unwrap();
+        let released =
+            shock_reaction(None, 1_000, 0.2, 0.05, false, true, false, &mut roll).unwrap();
         assert_eq!(released.next, 1_500);
         assert_eq!(released.yellow, 0.2);
         assert_ne!(roll, before);
+        // Race index 1 rings: the hit's two draws, a flat 500 ms, no burn.
+        let mut roll = Roll(0);
+        let rung = shock_reaction(None, 0, 0.25, 0.05, false, false, true, &mut roll).unwrap();
+        assert_eq!(rung.next, 500);
+        assert_eq!(rung.yellow, 0.25);
+        assert!(rung.cry.is_none());
+        assert_eq!(roll, Roll(0x0808_8406));
     }
 
     #[test]
@@ -1280,6 +1298,35 @@ mod tests {
         let req = app.world().get::<Locomotion>(fighter).unwrap();
         assert!(!req.moving && !req.free_walk);
         assert_eq!(app.world().get::<Locomotor>(fighter).unwrap().amount, 0.0);
+    }
+
+    /// Race index 1 only rings: its health stays and it is not staggered.
+    #[test]
+    fn a_ringing_race_is_not_burnt() {
+        let mut app = App::new();
+        app.add_message::<ArcShocked>()
+            .insert_resource(BodyTicks(0))
+            .insert_resource(EffectRoll(Roll(0)))
+            .add_systems(Update, shock_fighters);
+        let mut data = exa_character::record::CharacterData::default();
+        data.record.race = 1;
+        let fighter = app
+            .world_mut()
+            .spawn((Fighter::default(), data, StateFlags::NONE))
+            .id();
+        app.world_mut().write_message(ArcShocked {
+            body: fighter,
+            direction: Vec3::X,
+            strength: 0.05,
+        });
+        app.update();
+        let yellow = app.world().get::<Fighter>(fighter).unwrap().health.yellow;
+        assert!((yellow - 0.25).abs() < 1e-6);
+        assert_eq!(
+            app.world().get::<ShockReady>(fighter),
+            Some(&ShockReady(500))
+        );
+        assert_eq!(app.world().get::<StateFlags>(fighter).map(|f| f.0), Some(0));
     }
 
     /// A collapsing fighter keeps its yellow and does not take the stagger.
