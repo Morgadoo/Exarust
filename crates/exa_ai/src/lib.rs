@@ -1185,7 +1185,8 @@ fn duellist(
             dead: target_condition.is_dead(),
             reach_cm: reach_of(foe_key, &blades) * CM,
             chest: foe_chest,
-            step_goal: foe_chest,
+            step_goal: foe_step_cm,
+            stepping: foe_stepping,
             running: foe_motion.moving,
             forward_speed: foe_motion.speed_cm,
             facing: foe_motion.facing,
@@ -2290,6 +2291,40 @@ mod tests {
         }
         let goal = goal.expect("a step");
         assert!(goal.x > 0.4 && goal.z < 0.4, "{goal:?}");
+    }
+
+    /// A stepping foe is estimated three quarters of the way to the step, by
+    /// the fighter's own skill, not left at the chest.
+    #[test]
+    fn a_stepping_foe_is_estimated_toward_its_step() {
+        let (mut app, fighter, _) = duel(5.0, false);
+        let target = app.world().get::<Duellist>(fighter).unwrap().target;
+        let root = app
+            .world_mut()
+            .spawn((CharacterBody::default(), GlobalTransform::IDENTITY))
+            .id();
+        app.world_mut().entity_mut(target).insert((
+            Duellist::new(fighter),
+            Transform::default(),
+            Animator::new("Default", "Idle"),
+            ChildOf(root),
+        ));
+        app.world_mut().get_mut::<Duellist>(target).unwrap().step = Some(Stepping {
+            goal: Vec3::new(2.0, 0.0, 5.0),
+            started_ms: 0,
+            state: 0,
+        });
+        let mut roll = 1;
+        app.world_mut().get_mut::<Duellist>(fighter).unwrap().personality =
+            Some(personality::personality(100.0, [0.0; 4], 0.0, false, &mut roll));
+        engage(&mut app, fighter);
+        step(&mut app);
+        step(&mut app);
+        let estimate = app.world().get::<Duellist>(fighter).unwrap().mind.estimate;
+        assert!(
+            (estimate.x - 150.0).abs() < 1.0,
+            "expected 150 cm along the step, got {estimate:?}"
+        );
     }
 
     /// A near character at the fight level presses harder than a far foe, so
