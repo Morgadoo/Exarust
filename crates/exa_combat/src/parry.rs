@@ -1027,6 +1027,29 @@ pub fn parry_stance(yellow: f32, dazed: bool) -> Stance {
     }
 }
 
+/// Ends a parry before a requested motion starts. The grip links and the
+/// hands' class bit are not on the fighter yet, so those stays of the clear
+/// are not done. Returns the stance the clip should return to, unless the
+/// condition holds the clip still, in which case the stance is left alone.
+pub fn end_for_request(
+    fighter: &mut Fighter,
+    clip_stands_still: bool,
+    dazed: bool,
+) -> Option<Stance> {
+    if !fighter.parry.active {
+        return None;
+    }
+    fighter.parry.end();
+    if fighter.guard == Guard::Parry {
+        fighter.guard = Guard::Open;
+    }
+    if clip_stands_still {
+        None
+    } else {
+        Some(parry_stance(fighter.health.yellow, dazed))
+    }
+}
+
 /// The blow a parry answers: the attacker's motion (the counter's), and the
 /// parry clip the height table gives for it.
 #[derive(Clone, Copy, Debug)]

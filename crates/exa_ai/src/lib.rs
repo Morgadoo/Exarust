@@ -854,15 +854,16 @@ fn begin_requested(
     mut bodies: Query<(
         &mut Animator,
         &Condition,
-        Option<&Stance>,
+        Option<&mut Stance>,
         (
             Option<&Ragdoll>,
+            Option<&mut Fighter>,
             Option<&exa_physics::body::locomotion::Locomotor>,
             Option<&exa_physics::body::locomotion::Locomotion>,
         ),
     )>,
 ) {
-    for (mut anim, condition, stance, (ragdoll, locomotor, walk)) in &mut bodies {
+    for (mut anim, condition, mut stance, (ragdoll, mut fighter, locomotor, walk)) in &mut bodies {
         let pending = anim.requested;
         let (next, start) = combat::take_requested(
             pending,
@@ -875,7 +876,22 @@ fn begin_requested(
             },
         );
         if start {
-            let then = stance.copied().map(Stance::action).unwrap_or("Idle");
+            // A parry in progress ends before the clip, and the clip returns
+            // to the stance that end chose.
+            if let Some(fighter) = fighter.as_mut() {
+                let dazed = ragdoll
+                    .and_then(|body| body.drive.as_ref())
+                    .is_some_and(|drive| drive.dazed());
+                if let Some(next) = exa_combat::parry::end_for_request(
+                    fighter,
+                    condition.clip_stands_still(),
+                    dazed,
+                ) && let Some(slot) = stance.as_mut()
+                {
+                    **slot = next;
+                }
+            }
+            let then = stance.as_deref().copied().map(Stance::action).unwrap_or("Idle");
             if pending == combat::DRAW_WEAPON {
                 anim.play_once(combat::DRAW_WEAPON_ACTION, then);
             } else if let Some(set) = motions.as_deref() {
@@ -3050,6 +3066,68 @@ mod tests {
         assert_eq!(held.action, "Idle");
         assert_eq!(held.requested, combat::DRAW_WEAPON);
         assert!(held.snap_start);
+    }
+
+    /// A requested clip ends a parry first and returns to the stance that
+    /// end chose. A busy body keeps the parry and does not start. A body
+    /// whose clip stands still ends the parry and keeps its stance.
+    #[test]
+    fn a_requested_motion_ends_the_parry_first() {
+        use exa_combat::damage::Guard;
+
+        let mut app = App::new();
+        app.add_systems(Update, begin_requested);
+        let parrying = |app: &mut App, condition: Condition| {
+            let mut fighter = Fighter::default();
+            fighter.health.yellow = 1.0;
+            fighter.guard = Guard::Parry;
+            fighter.parry.active = true;
+            fighter.parry.clip = Some(0x14);
+            fighter.parry.counter_motion = Some(5);
+            let id = app
+                .world_mut()
+                .spawn((
+                    Animator::new("Default", "Parry Left"),
+                    condition,
+                    Stance::Idle,
+                    driven(),
+                    fighter,
+                ))
+                .id();
+            app.world_mut().get_mut::<Animator>(id).unwrap().requested = combat::DRAW_WEAPON;
+            id
+        };
+        let free = parrying(&mut app, Condition::NORMAL);
+        let busy = parrying(&mut app, Condition::ATTACKING);
+        let still = parrying(&mut app, Condition(Condition::STILL_CLIP_MASK));
+        app.update();
+
+        let ended = app.world().get::<Fighter>(free).unwrap();
+        assert!(!ended.parry.active);
+        assert!(ended.parry.clip.is_none());
+        assert!(ended.parry.counter_motion.is_none());
+        assert_eq!(ended.guard, Guard::Open);
+        assert_eq!(
+            *app.world().get::<Stance>(free).unwrap(),
+            Stance::CombatIdle
+        );
+        let anim = app.world().get::<Animator>(free).unwrap();
+        assert_eq!(anim.action, combat::DRAW_WEAPON_ACTION);
+        assert_eq!(anim.then.as_deref(), Some(Stance::CombatIdle.action()));
+
+        let kept = app.world().get::<Fighter>(busy).unwrap();
+        assert!(kept.parry.active);
+        assert_eq!(kept.parry.counter_motion, Some(5));
+        assert_eq!(kept.guard, Guard::Parry);
+        assert_eq!(app.world().get::<Animator>(busy).unwrap().action, "Parry Left");
+
+        let frozen = app.world().get::<Fighter>(still).unwrap();
+        assert!(!frozen.parry.active);
+        assert_eq!(*app.world().get::<Stance>(still).unwrap(), Stance::Idle);
+        assert_eq!(
+            app.world().get::<Animator>(still).unwrap().then.as_deref(),
+            Some(Stance::Idle.action())
+        );
     }
 
     /// A body with muscles, so a requested motion can start.
