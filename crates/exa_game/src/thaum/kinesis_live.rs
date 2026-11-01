@@ -353,6 +353,22 @@ pub(super) fn steer_kinesis(
     physics: Option<Res<Physics>>,
     stand_ins: Option<Res<StandIns>>,
 ) {
+    // Only a caster with a running kinesis and a held body steers anything.
+    // The per-prop triangle meshes below cost more than the whole rest of the
+    // tick, so build them only when one does.
+    let mut steering = false;
+    for (mut caster, own) in &mut casters {
+        if own.is_some()
+            && running(&mut caster)
+                .is_some_and(|k| k.target.and_then(Entity::try_from_bits).is_some())
+        {
+            steering = true;
+            break;
+        }
+    }
+    if !steering {
+        return;
+    }
     let (Some(physics), Some(stand_ins)) = (physics, stand_ins) else {
         return;
     };
