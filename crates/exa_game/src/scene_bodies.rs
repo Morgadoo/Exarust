@@ -404,6 +404,17 @@ fn item_of(items: &[Item], id: u32) -> Option<&Item> {
     items.iter().find(|item| item.id == id & ID_MASK)
 }
 
+/// The item a scene body wears or holds. An actor template's local id is one
+/// of that template's own items; every other id is the game's, with the
+/// database bits stripped. A generated or saved record has no own list.
+fn resolve_item<'a>(items: &'a [Item], own: &'a [Item], actor: bool, id: u32) -> Option<&'a Item> {
+    if actor {
+        crate::prelude::template_item(own, items, id)
+    } else {
+        item_of(items, id)
+    }
+}
+
 /// Loads a saved record's health pools onto `fighter`, as the spawn's last
 /// write does. Returns the state flags, with the potion bit when the record
 /// names an expiry.
@@ -458,6 +469,14 @@ pub fn spawn_scene_body(
     if plan.id != 0 {
         record.id = plan.id;
     }
+    // An actor template's local ids name the items after its record, not the
+    // game items of those numbers (opponent01's 2, 3 and 4 are its trousers,
+    // shirt and sandals).
+    let (actor, own) = if let BodyLook::Actor(name) = &plan.look {
+        (true, context.actors.own_items(context.game, name))
+    } else {
+        (false, Vec::new())
+    };
     let race = exa_formats::races::of_character(context.races, record.race);
     let model_name = race.map_or_else(|| model::BODY_MODEL.to_string(), |r| r.model());
     let moveset = race.map_or("Default", |r| r.moveset()).to_string();
@@ -486,9 +505,9 @@ pub fn spawn_scene_body(
         },
     )
     .with_encumbrance(exa_formats::encumbrance::of_record(&record, |id| {
-        item_of(context.items, id)
+        resolve_item(context.items, &own, actor, id)
     }));
-    let look = exa_world::record_look(&record, |id| item_of(context.items, id));
+    let look = exa_world::record_look(&record, |id| resolve_item(context.items, &own, actor, id));
     let root = commands
         .spawn((
             Transform::from_translation(plan.at + Vec3::Y * BODY_RISE),
@@ -516,7 +535,7 @@ pub fn spawn_scene_body(
             model: item.model.clone(),
             weapon: item.weapon,
             shield: item.shield,
-            shield_record: item_of(context.items, r.id).and_then(|i| i.shield),
+            shield_record: resolve_item(context.items, &own, actor, r.id).and_then(|i| i.shield),
             torch: item.torch,
         })
     });
@@ -527,8 +546,9 @@ pub fn spawn_scene_body(
     // The armour pass's special kinds, for the arena's generated fighters
     // as for the level's: kind 2 grants the second wind, 3/4/6 register
     // their item effects, 5 wards the mind, 7 quickens the focus.
-    let specials =
-        exa_formats::encumbrance::WornSpecials::of_record(&record, |id| item_of(context.items, id));
+    let specials = exa_formats::encumbrance::WornSpecials::of_record(&record, |id| {
+        resolve_item(context.items, &own, actor, id)
+    });
     fighter.second_wind.granted = specials.second_wind;
     if let Some(effects) = crate::item_effects::WornEffects::of_specials(&specials, stats.rules.0) {
         commands.entity(model_entity).insert(effects);
@@ -1313,6 +1333,77 @@ mod tests {
         );
         assert!(app.world().get_entity(built[0].body.root).is_err());
         assert!(app.world().get_entity(built[0].body.model).is_err());
+    }
+
+    /// An actor template wears the items of its own database. opponent01's
+    /// worn ids 2, 3 and 4 are its trousers, shirt and sandals, not the game's
+    /// gloves, helm and boots. Skipped without an installation.
+    #[test]
+    fn an_actor_template_wears_its_own_items() {
+        let Some(mut world) = real_world() else {
+            return;
+        };
+        let game = world.remove_resource::<Game>().unwrap();
+        let mut cache = world.remove_resource::<ModelCache>().unwrap();
+        let mut meshes = world.remove_resource::<Assets<Mesh>>().unwrap();
+        let mut materials = world
+            .remove_resource::<Assets<exa_render::material::ExaMaterial>>()
+            .unwrap();
+        let mut images = world.remove_resource::<Assets<Image>>().unwrap();
+        let items = game_items(&game).unwrap();
+        let facts: std::collections::BTreeMap<u32, ItemFacts> = items
+            .iter()
+            .map(|item| (item.id, ItemFacts::of_item(item)))
+            .collect();
+        let outfits = OutfitTables::build(|id| facts.get(&id.0).cloned());
+        let races = game_races(&game);
+        let book = game_roles(&game);
+        let mut actors = crate::prelude::ActorCache::new();
+        let mut professions = ProfessionCatalog::default();
+        let mut previous_variant = 0;
+        let mut roll = 0u32;
+        let player = world.spawn(()).id();
+        let mut plan = opponent_plan(generic_plan(1, 0), &place(), 0x12, 0, 0);
+        plan.look = BodyLook::Actor("opponent01".to_string());
+        plan.weapon = None;
+        let mut loader = ModelLoader {
+            game: &game.0,
+            cache: &mut cache,
+            meshes: &mut meshes,
+            materials: &mut materials,
+            images: &mut images,
+            bc_supported: false,
+        };
+        let mut commands = world.commands();
+        let spawned = {
+            let mut context = SpawnContext {
+                game: &game,
+                loader: &mut loader,
+                items: &items,
+                outfits: &outfits,
+                professions: &mut professions,
+                previous_variant: &mut previous_variant,
+                races: &races,
+                actors: &mut actors,
+                book: &book,
+                player,
+                now_ms: 0,
+                roll: &mut roll,
+                clock_seed: || 1,
+            };
+            spawn_scene_body(&mut commands, &mut context, &plan)
+        }
+        .expect("opponent01's body");
+        world.flush();
+        let outfit = world
+            .get::<exa_character::Outfit>(spawned.model)
+            .expect("outfit");
+        let models: Vec<&str> = outfit
+            .0
+            .iter()
+            .map(|garment| garment.model.as_str())
+            .collect();
+        assert_eq!(models, ["Trouser_A", "Shirty_A", "Sandals_B"]);
     }
 
     /// An app with the game's packs and the asset registries, when
