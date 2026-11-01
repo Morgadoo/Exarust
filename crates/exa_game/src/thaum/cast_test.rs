@@ -192,6 +192,71 @@ fn shock_weapons_arm_each_held_blade() {
     assert!(!live.arcs.respawns);
 }
 
+/// A blade taken while shock weapons runs gains arcs, until four weapons
+/// carry them. Releasing one ends its arcs and does not arm a blade that was
+/// already in hand past that cap.
+#[test]
+fn taking_or_dropping_a_weapon_changes_its_shock_arcs() {
+    use exa_formats::weapon_record::{Section, WeaponRecord, flags};
+    use exa_physics::grip::GripRelease;
+    let mut app = new_app();
+    let caster = caster(&mut app, &[crate::thaum::energy::SHOCK_WEAPONS]);
+    let mut moves = HeldMoveset::default();
+    moves.weapon_class = 0x20;
+    app.world_mut().entity_mut(caster).insert(moves);
+    let sword = || {
+        WeaponRecord::of_one_part(
+            flags::TWO_HANDED | flags::BLADED,
+            &Section::FISTS.stats,
+            false,
+            80.0,
+        )
+    };
+    let spawn_blade = |app: &mut App| {
+        app.world_mut()
+            .spawn((
+                Transform::default(),
+                exa_combat::Blade::new(caster, 0.8, sword()),
+            ))
+            .id()
+    };
+    let first = spawn_blade(&mut app);
+    cast(&mut app, caster);
+    let extra: Vec<Entity> = (0..4).map(|_| spawn_blade(&mut app)).collect();
+    app.world_mut().run_schedule(FixedUpdate);
+    let state = app.world().get::<PowerCaster>(caster).unwrap();
+    let ActiveClass::ShockWeapons(power) = &state.active[0].class else {
+        panic!("shock weapons did not stay up");
+    };
+    assert_eq!(power.count, 4, "a fifth weapon stays unarmed");
+    assert_eq!(state.active[0].companions.len(), 4);
+    let first_arc = state.active[0].companions[0];
+    assert_eq!(
+        app.world().get::<LiveArcs>(first_arc).unwrap().weapon,
+        Some(first)
+    );
+    app.world_mut().entity_mut(first).insert(GripRelease);
+    app.world_mut().run_schedule(FixedUpdate);
+    let state = app.world().get::<PowerCaster>(caster).unwrap();
+    let ActiveClass::ShockWeapons(power) = &state.active[0].class else {
+        panic!("shock weapons did not stay up");
+    };
+    assert_eq!(power.count, 3);
+    assert!(!state.active[0].companions.contains(&first_arc));
+    let ended = app.world().get::<LiveArcs>(first_arc).unwrap();
+    assert!(ended.arcs.ending);
+    assert!(!ended.arcs.respawns);
+    let _left_out = extra[3];
+    assert!(
+        state.active[0].companions.iter().all(|arc| app
+            .world()
+            .get::<LiveArcs>(*arc)
+            .unwrap()
+            .weapon
+            != Some(extra[3]))
+    );
+}
+
 /// Displacement: constant displacement makes its class, holds its cost and
 /// hangs its wisps on the body.
 #[test]

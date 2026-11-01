@@ -469,6 +469,7 @@ impl Plugin for CastPlugin {
                 FixedUpdate,
                 (
                     tick_casters,
+                    follow_weapon_changes.after(tick_casters),
                     apply_otherwhere.after(tick_casters),
                     super::hold_live::end_holds,
                     super::hold_live::dress_strikes,
@@ -1891,25 +1892,118 @@ fn weapon_arcs_of(
         if blade.wielder != caster || !blade.record.armed() {
             continue;
         }
-        let mut anchor = place.map(|at| at.translation() * CM).unwrap_or(Vec3::ZERO);
-        let mut spheres = Vec::new();
-        if let Some(body) = body
-            && let Some(part) = body.parts.iter().find(|part| !part.spheres.is_empty())
-        {
-            anchor = Vec3::from(part.transform().translation) * CM;
-            spheres = part
-                .spheres
-                .iter()
-                .map(|(centre, _)| *centre * CM)
-                .collect();
-        }
-        armed.push(WeaponArc {
-            entity,
-            anchor,
-            spheres,
-        });
+        armed.push(weapon_arc(entity, body, place));
     }
     armed
+}
+
+/// Where a weapon's arcs sit, from its body when it has spheres and from its
+/// place otherwise.
+fn weapon_arc(
+    entity: Entity,
+    body: Option<&Ragdoll>,
+    place: Option<&GlobalTransform>,
+) -> WeaponArc {
+    let mut anchor = place.map(|at| at.translation() * CM).unwrap_or(Vec3::ZERO);
+    let mut spheres = Vec::new();
+    if let Some(body) = body
+        && let Some(part) = body.parts.iter().find(|part| !part.spheres.is_empty())
+    {
+        anchor = Vec3::from(part.transform().translation) * CM;
+        spheres = part
+            .spheres
+            .iter()
+            .map(|(centre, _)| *centre * CM)
+            .collect();
+    }
+    WeaponArc {
+        entity,
+        anchor,
+        spheres,
+    }
+}
+
+/// A weapon put away or taken while shock weapons is running. Putting one
+/// away (its grip released, or the blade gone) stops its arcs respawning and
+/// ends them, and drops that arc from the list. A blade that just appeared
+/// is armed when fewer than four weapons already carry arcs. A blade that
+/// was already in hand and was not armed stays that way.
+#[allow(clippy::type_complexity)]
+fn follow_weapon_changes(
+    mut commands: Commands,
+    mut casters: Query<(Entity, &mut PowerCaster)>,
+    blades: Query<(
+        Entity,
+        Ref<exa_combat::Blade>,
+        Option<&Ragdoll>,
+        Option<&GlobalTransform>,
+        Option<&exa_physics::grip::GripRelease>,
+    )>,
+    mut arcs: Query<&mut LiveArcs>,
+    mut draws: ResMut<EffectDraws>,
+) {
+    for (caster_entity, mut caster) in &mut casters {
+        let Some(index) = caster
+            .active
+            .iter()
+            .position(|entry| matches!(entry.class, ActiveClass::ShockWeapons(_)))
+        else {
+            continue;
+        };
+        let fresh: Vec<WeaponArc> = blades
+            .iter()
+            .filter(|(_, blade, _, _, release)| {
+                blade.is_added()
+                    && blade.wielder == caster_entity
+                    && blade.record.armed()
+                    && release.is_none()
+            })
+            .map(|(entity, _, body, place, _)| weapon_arc(entity, body, place))
+            .collect();
+        let entry = &mut caster.active[index];
+        let mut kept = 0;
+        while kept < entry.companions.len() {
+            let arc_entity = entry.companions[kept];
+            let Some(weapon) = arcs.get(arc_entity).ok().and_then(|live| live.weapon) else {
+                entry.companions.swap_remove(kept);
+                continue;
+            };
+            let put_away = match blades.get(weapon) {
+                Ok((_, _, _, _, release)) => release.is_some(),
+                Err(_) => true,
+            };
+            if !put_away {
+                kept += 1;
+                continue;
+            }
+            if let Ok(mut live) = arcs.get_mut(arc_entity) {
+                live.arcs.respawns = false;
+                live.arcs.ending = true;
+            }
+            entry.companions.swap_remove(kept);
+        }
+        for weapon in &fresh {
+            if entry.companions.len() >= super::energy::MOST_WEAPONS {
+                break;
+            }
+            let already = entry
+                .companions
+                .iter()
+                .any(|arc| arcs.get(*arc).ok().and_then(|live| live.weapon) == Some(weapon.entity));
+            if already {
+                continue;
+            }
+            entry.companions.extend(spawn_weapon_arcs(
+                &mut commands,
+                caster_entity,
+                std::slice::from_ref(weapon),
+                &mut draws,
+            ));
+        }
+        if let ActiveClass::ShockWeapons(power) = &mut entry.class {
+            power.count = entry.companions.len();
+        }
+    }
 }
 
 /// One arc entity per armed blade. The arcs ride the weapon and start from
