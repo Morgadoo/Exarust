@@ -410,6 +410,8 @@ pub struct Body {
     pub shield: bool,
     pub heavy_claw: bool,
     pub rules: u32,
+    /// The race walks on four limbs. Beyond close range it thrusts on one
+    /// draw in four and otherwise swings, instead of the biped's thrust.
     pub quadruped: bool,
     /// The race's attack bonus. The forward-step clock gate scales by one
     /// plus it.

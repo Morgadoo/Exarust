@@ -709,6 +709,34 @@ fn duel() -> (Body, Foe) {
 }
 
 #[test]
+fn a_quadruped_thrusts_where_a_biped_swings() {
+    let foe = Foe {
+        chest: Vec3::new(0.0, 0.0, 100.0),
+        ..Foe::default()
+    };
+    let place = Place {
+        distance_cm: 100.0,
+        ..Place::default()
+    };
+    let blow = |quadruped: bool| {
+        let me = Body {
+            quadruped,
+            weapon_class: 0x10,
+            reach_cm: 50.0,
+            scale: 1.0,
+            ..Body::default()
+        };
+        let mut mind = CombatMind::default();
+        let mut roll = 0;
+        choose_blow(&mut mind, &me, Some(&foe), 0.0, 0, &place, &mut roll).motion
+    };
+    // A hundred centimetres is beyond eight tenths of a 50 cm reach. The
+    // quadruped's draw thrusts; the biped, open-handed, swings overhead.
+    assert_eq!(blow(true), Some(AttackMotion::Stab));
+    assert_eq!(blow(false), Some(AttackMotion::Overhead));
+}
+
+#[test]
 fn the_attack_bonus_holds_a_forward_step_open() {
     let places = vec![
         Place {

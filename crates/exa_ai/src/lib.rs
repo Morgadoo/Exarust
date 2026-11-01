@@ -1364,6 +1364,7 @@ fn duellist(
                 scale: fighter.stats.scale,
                 feral: fighter.stats.feral,
                 attack_bonus: fighter.stats.attack_bonus,
+                quadruped: fighter.stats.quadruped,
                 size: fighter.stats.size,
                 encumbrance: fighter.stats.encumbrance,
                 reach_cm: reach * CM,
