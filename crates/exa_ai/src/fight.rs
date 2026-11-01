@@ -276,6 +276,26 @@ mod tests {
             AttackMotion::Stab
         );
 
+        let lying = |supported: bool| Situation {
+            target_down: true,
+            target_supported: supported,
+            distance_cm: 100.0,
+            // A high parry memory would take the other side, so an overhead
+            // here is the down-and-supported blow and not that score.
+            phase: 100,
+            ..Situation::default()
+        };
+        roll = 0;
+        assert_eq!(
+            choose_attack(&lying(true), &mut roll).unwrap().motion,
+            AttackMotion::Overhead
+        );
+        roll = 0;
+        assert_eq!(
+            choose_attack(&lying(false), &mut roll).unwrap().motion,
+            AttackMotion::Other(0)
+        );
+
         let down = Situation {
             attacking: true,
             target_down: true,

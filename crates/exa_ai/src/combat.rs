@@ -326,7 +326,8 @@ pub struct Foe {
     /// The second condition word's death bit (`0x800`) or the condition's.
     pub dead: bool,
     pub crouch: f32,
-    /// It has support under it.
+    /// It has support under it. A down foe on support is struck overhead;
+    /// one with nothing under it is not.
     pub supported: bool,
     /// Its run mode [guess: name].
     pub running: bool,

@@ -1304,8 +1304,13 @@ fn duellist(
             crouch: target_body
                 .and_then(|(_, _, rag, ..)| rag)
                 .map_or(0.0, Ragdoll::crouch),
+            // No measured body keeps the default, supported. A body with a
+            // drive answers whether a foot holds it up.
+            supported: target_body
+                .and_then(|(_, _, rag, ..)| rag)
+                .and_then(|rag| rag.drive.as_ref())
+                .is_none_or(|drive| drive.balance().has_support()),
             motion: swing_motion(attacks.get(foe_key).ok()),
-            ..combat::Foe::default()
         };
         let dir_to_me = -flat.normalize_or_zero();
         let spot = place::Spot {
