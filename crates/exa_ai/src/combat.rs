@@ -467,8 +467,7 @@ pub struct Body {
     pub power_pool: f32,
     /// The record's ten power slots (0 empty).
     pub power_slots: [u32; cast::SLOTS],
-    /// The body's power word has its busy bit (0x10), so no power is
-    /// chosen [guess: what the bit means].
+    /// The body's item flags refuse every power, so none is chosen.
     pub power_busy: bool,
     /// Muscle tone, 0 through 1. At least 0.7 to act.
     pub tone: f32,

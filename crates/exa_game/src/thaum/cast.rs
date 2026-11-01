@@ -916,6 +916,7 @@ fn advise_duellists(
             pool: caster.body.focus,
             casting: caster.body.casting != 0,
             running: !caster.evaluator_idle || keeps,
+            refuses: caster.body.item_flags & super::tree::ITEM_REFUSES_POWERS != 0,
             probed: powers.probed,
             chosen: powers.chosen,
         };

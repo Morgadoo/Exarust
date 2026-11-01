@@ -241,6 +241,9 @@ pub struct DuelPowers {
     /// The power system still runs the body's cast: its domain's evaluator
     /// answers the body's power id, or the hook keeps event 0x10.
     pub running: bool,
+    /// The body's item flags refuse every power (bit 0x10), so the chooser
+    /// picks nothing.
+    pub refuses: bool,
     /// The combat state asked [`DuelPowers::running`]: the game then calls
     /// the hook with 0x10 when the evaluator answered nothing, and ends the
     /// cast on a negative answer.
@@ -1348,6 +1351,7 @@ fn duellist(
                 now_ms: now as u32,
                 condition: condition.0,
                 power_pool: powers.as_deref().map_or(0.0, |p| p.pool),
+                power_busy: powers.as_deref().is_some_and(|p| p.refuses),
                 power_slots: powers.as_deref().map_or([0; cast::SLOTS], |p| p.slots),
                 clock: anim.progress,
                 attack_flags: swinging.flags,
@@ -3058,6 +3062,30 @@ mod tests {
         };
         arm(0.0, 0.0, false);
         arm(1.0, 0.9, true);
+    }
+
+    /// A body whose item flags refuse powers never chooses one, however
+    /// usable the slot is.
+    #[test]
+    fn a_refusing_body_does_not_choose_a_power() {
+        let (mut app, foe, _) = duel(3.0, true);
+        let mut slots = [0; cast::SLOTS];
+        slots[0] = 0x401;
+        let mut answers = [0; cast::SLOTS];
+        answers[0] = cast::USABLE | 5;
+        app.world_mut().entity_mut(foe).insert(DuelPowers {
+            slots,
+            answers,
+            pool: 1.0,
+            refuses: true,
+            ..DuelPowers::default()
+        });
+        engage(&mut app, foe);
+        for _ in 0..400 {
+            step(&mut app);
+            assert!(app.world().get::<DuelPowers>(foe).unwrap().chosen.is_none());
+        }
+        assert!(!app.world().get::<Duellist>(foe).unwrap().mind.casting);
     }
 
     /// A duellist whose power system answers a usable power chooses it for
