@@ -257,6 +257,95 @@ fn taking_or_dropping_a_weapon_changes_its_shock_arcs() {
     );
 }
 
+/// A blade that still carries shock-weapon arcs shocks the body it hits by
+/// 0.01 and opens a spark. Once those arcs are ended, a later hit does not.
+#[test]
+fn an_armed_blade_shocks_the_body_it_hits() {
+    use exa_combat::impact::LimbImpact;
+    use exa_formats::weapon_record::{Section, WeaponRecord, flags};
+    let mut app = new_app();
+    let caster_entity = caster(&mut app, &[]);
+    let record = WeaponRecord::of_one_part(
+        flags::TWO_HANDED | flags::BLADED,
+        &Section::FISTS.stats,
+        false,
+        80.0,
+    );
+    let blade = app
+        .world_mut()
+        .spawn(exa_combat::Blade::new(caster_entity, 0.8, record))
+        .id();
+    let mut draws = EffectDraws::default();
+    let made = crate::thaum::arcs::ArcEmitter::new(&crate::thaum::arcs::weapon_arcs(), &mut draws.0);
+    let arc = app
+        .world_mut()
+        .spawn(LiveArcs {
+            arcs: made,
+            hand: None,
+            weapon: Some(blade),
+            caster: Some(caster_entity),
+            keep: false,
+        })
+        .id();
+    {
+        let mut state = app
+            .world_mut()
+            .get_mut::<PowerCaster>(caster_entity)
+            .unwrap();
+        let mut power = ShockWeapons::new();
+        power.count = 1;
+        state.active.push(ActiveEntry {
+            id: crate::thaum::energy::SHOCK_WEAPONS,
+            cast_id: crate::thaum::energy::SHOCK_WEAPONS,
+            state: RUNNING,
+            class: ActiveClass::ShockWeapons(power),
+            tick_cost: 0.0,
+            entity: None,
+            companions: vec![arc],
+            throw_view: None,
+        });
+    }
+    let mut fighter = exa_combat::Fighter::default();
+    fighter.health.yellow = 1.0;
+    let victim = app.world_mut().spawn(fighter).id();
+    app.world_mut().write_message(LimbImpact {
+        target: victim,
+        bone: 0,
+        other: blade,
+        amount: 1.0,
+    });
+    app.world_mut().run_schedule(FixedUpdate);
+    let yellow = app
+        .world()
+        .get::<exa_combat::Fighter>(victim)
+        .unwrap()
+        .health
+        .yellow;
+    assert!((yellow - 0.99).abs() < 1e-6, "{yellow}");
+    assert!(count::<LiveArcs>(&mut app) >= 2, "the spark burst");
+    app.world_mut()
+        .get_mut::<LiveArcs>(arc)
+        .unwrap()
+        .arcs
+        .ending = true;
+    let before = count::<LiveArcs>(&mut app);
+    app.world_mut().write_message(LimbImpact {
+        target: victim,
+        bone: 0,
+        other: blade,
+        amount: 1.0,
+    });
+    app.world_mut().run_schedule(FixedUpdate);
+    let yellow = app
+        .world()
+        .get::<exa_combat::Fighter>(victim)
+        .unwrap()
+        .health
+        .yellow;
+    assert!((yellow - 0.99).abs() < 1e-6, "{yellow}");
+    assert_eq!(count::<LiveArcs>(&mut app), before);
+}
+
 /// Displacement: constant displacement makes its class, holds its cost and
 /// hangs its wisps on the body.
 #[test]

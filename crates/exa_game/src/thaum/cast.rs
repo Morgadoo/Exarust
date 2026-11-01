@@ -463,6 +463,7 @@ impl Plugin for CastPlugin {
                         .before(tick_casters)
                         .after(super::throw_live::sense_throws),
                     super::user_stamp::blame_impacts.after(exa_combat::impact::strike_limbs),
+                    shock_weapon_hits.after(exa_combat::impact::strike_limbs),
                 ),
             )
             .add_systems(
@@ -2003,6 +2004,59 @@ fn follow_weapon_changes(
         if let ActiveClass::ShockWeapons(power) = &mut entry.class {
             power.count = entry.companions.len();
         }
+    }
+}
+
+/// A hit from a blade that still carries shock-weapon arcs. The struck body
+/// loses 0.01 yellow and a spark burst is queued at the struck part. A blade
+/// whose arcs were ended (put away) does not.
+#[allow(clippy::too_many_arguments)]
+fn shock_weapon_hits(
+    mut impacts: MessageReader<exa_combat::impact::LimbImpact>,
+    casters: Query<&PowerCaster>,
+    blades: Query<&exa_combat::Blade>,
+    arcs: Query<&LiveArcs>,
+    mut fighters: Query<&mut exa_combat::Fighter>,
+    bodies: Query<&Ragdoll>,
+    mut commands: Commands,
+    mut draws: ResMut<EffectDraws>,
+) {
+    for hit in impacts.read() {
+        let Ok(blade) = blades.get(hit.other) else {
+            continue;
+        };
+        let Some(caster) = casters.get(blade.wielder).ok() else {
+            continue;
+        };
+        let armed = caster.active.iter().any(|entry| {
+            matches!(entry.class, ActiveClass::ShockWeapons(_))
+                && entry.companions.iter().any(|arc| {
+                    arcs.get(*arc)
+                        .is_ok_and(|live| live.weapon == Some(hit.other) && !live.arcs.ending)
+                })
+        });
+        if !armed {
+            continue;
+        }
+        if let Ok(mut fighter) = fighters.get_mut(hit.target) {
+            let left = fighter.health.yellow - super::arcs::WEAPON_SHOCK;
+            fighter.health.yellow = if left < 0.0 { 0.0 } else { left };
+        }
+        let at = bodies.get(hit.target).ok().and_then(|body| {
+            bone_part(body, hit.bone).and_then(|part| part_point(body, part, Vec3::ZERO))
+        });
+        let mut burst = super::arcs::spark_burst(&mut draws.0);
+        burst.anchor = at;
+        commands.spawn((
+            Name::new("_WeaponSpark"),
+            LiveArcs {
+                arcs: burst,
+                hand: None,
+                weapon: None,
+                caster: Some(blade.wielder),
+                keep: false,
+            },
+        ));
     }
 }
 
