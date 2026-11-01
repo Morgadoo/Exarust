@@ -888,6 +888,7 @@ fn duellist(
             Option<&presence::Presence>,
             Option<&exa_combat::AttackHook>,
             Option<&exa_physics::body::locomotion::Locomotor>,
+            Option<&exa_physics::body::locomotion::Locomotion>,
             Option<&mut exa_character::record::CharacterData>,
         ),
     )>,
@@ -922,7 +923,7 @@ fn duellist(
         gt,
         ragdoll,
         fighter,
-        (mut powers, presence, attack_hook, locomotor, mut record),
+        (mut powers, presence, attack_hook, locomotor, walk, mut record),
     ) in &mut npcs
     {
         let Ok((mut body, root_gt)) = roots.get_mut(parent.parent()) else {
@@ -946,6 +947,28 @@ fn duellist(
         if !ai.engaged {
             continue;
         }
+        // The body tick starts a requested motion before the combat state
+        // reads it. A draw asked last tick starts now when the body is free;
+        // one the body will not start yet stays, and the state watches.
+        let pending = anim.requested;
+        let (next, start) = combat::take_requested(
+            pending,
+            combat::RequestGate {
+                muscles: ragdoll.is_some_and(|body| body.drive.is_some()),
+                fallen: condition.fallen_or_dying(),
+                busy: condition.busy(),
+                moving: locomotor.is_some_and(|l| l.moving()),
+                free_walk: walk.is_some_and(|w| w.free_walk),
+            },
+        );
+        if start {
+            if pending == combat::DRAW_WEAPON {
+                anim.play_once(combat::DRAW_WEAPON_ACTION, stance.action());
+            } else if let Some(set) = motions.as_deref() {
+                set.start_requested(&mut anim, pending as u32);
+            }
+        }
+        anim.requested = next;
         let Ok((target, target_warded)) = targets.get(ai.target) else {
             continue;
         };
@@ -1397,6 +1420,7 @@ fn duellist(
                     motion_of(attacking, *stance)
                 },
                 carried: record.as_deref().map_or(0, |data| data.hands[2].id),
+                requested_motion: anim.requested,
                 energy,
                 max_energy: most,
                 balance: ragdoll
@@ -1459,7 +1483,6 @@ fn duellist(
                 // combat state leaves its stance motion alone.
                 parrying: fighter.parry.active,
                 parry_bias: fighter.parry.counter,
-                ..combat::Body::default()
             };
             me.can_step = combat::can_act(&me) && !ai.holds_ground;
             ai.queue = 0;
@@ -1904,10 +1927,10 @@ fn duellist(
                     *stance = chosen;
                 }
             }
-            // Empty hands reach for the stowed set. An attack starting this
-            // tick plays instead; the draw is asked again once it is over.
-            if out.draw_weapon && anim.looping {
-                anim.play_once(combat::DRAW_WEAPON_ACTION, stance.action());
+            // Empty hands ask the body to draw the stowed set. The body tick
+            // starts it next frame, when the body is free to.
+            if out.draw_weapon {
+                anim.requested = combat::DRAW_WEAPON;
             }
             if let Some(motion) = out.blow.motion
                 && attacking.is_none()
@@ -2889,23 +2912,90 @@ mod tests {
         assert_eq!(foe_lesson(None, None, 1.0), 0.0);
     }
 
-    /// Empty hands with a stowed weapon play the draw. The first tick only
-    /// enters combat; the next one reaches for the stowed set.
+    /// A body with muscles, so a requested motion can start.
+    fn driven() -> Ragdoll {
+        let part = exa_physics::body::PartSetup {
+            bone: 1,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: bevy::math::Affine3A::IDENTITY,
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.08),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+            spheres: None,
+        };
+        Ragdoll::new(&[part]).with_drive()
+    }
+
+    /// Empty hands with a stowed weapon ask for the draw, and the next tick's
+    /// body start plays it. The first tick only enters combat.
     #[test]
     fn bare_hands_draw_the_stowed_weapon() {
         let (mut app, fighter, _) = duel(3.0, false);
         let mut record = exa_formats::characters::CharacterRecord::new();
         record.hands[2] = exa_formats::characters::ItemRef::new(7, 0);
-        app.world_mut()
-            .entity_mut(fighter)
-            .insert(exa_character::record::CharacterData::of_record(record));
+        app.world_mut().entity_mut(fighter).insert((
+            exa_character::record::CharacterData::of_record(record),
+            driven(),
+        ));
         engage(&mut app, fighter);
         step(&mut app);
         step(&mut app);
-        assert_eq!(
-            app.world().get::<Animator>(fighter).unwrap().action,
-            combat::DRAW_WEAPON_ACTION
-        );
+        let asked = app.world().get::<Animator>(fighter).unwrap();
+        assert_eq!(asked.requested, combat::DRAW_WEAPON);
+        assert_ne!(asked.action, combat::DRAW_WEAPON_ACTION);
+        step(&mut app);
+        let playing = app.world().get::<Animator>(fighter).unwrap();
+        assert_eq!(playing.action, combat::DRAW_WEAPON_ACTION);
+        assert_eq!(playing.requested, 0);
+    }
+
+    /// A draw the body has not started holds the fight at a watch, which
+    /// drops a lunge. Standing while busy drops the request instead, so the
+    /// lunge stays and the draw is asked again.
+    #[test]
+    fn a_pending_draw_watches_while_the_body_walks() {
+        use exa_physics::body::locomotion::{Locomotor, Stop};
+
+        let pending = |moving: bool| {
+            let (mut app, fighter, _) = duel(3.0, false);
+            let mut record = exa_formats::characters::CharacterRecord::new();
+            record.hands[2] = exa_formats::characters::ItemRef::new(7, 0);
+            app.world_mut().entity_mut(fighter).insert((
+                exa_character::record::CharacterData::of_record(record),
+                driven(),
+                Condition::ATTACKING,
+            ));
+            if moving {
+                app.world_mut().entity_mut(fighter).insert(Locomotor {
+                    stop: Stop::Moving,
+                    ..Locomotor::default()
+                });
+            }
+            engage(&mut app, fighter);
+            step(&mut app);
+            step(&mut app);
+            {
+                let mut ai = app.world_mut().get_mut::<Duellist>(fighter).unwrap();
+                ai.mind.lunging = true;
+                ai.mind.level = 3;
+            }
+            step(&mut app);
+            let lunging = app.world().get::<Duellist>(fighter).unwrap().mind.lunging;
+            let anim = app.world().get::<Animator>(fighter).unwrap();
+            (lunging, anim.action.clone(), anim.requested)
+        };
+        let (lunging, action, requested) = pending(true);
+        assert!(!lunging);
+        assert_ne!(action, combat::DRAW_WEAPON_ACTION);
+        assert_eq!(requested, combat::DRAW_WEAPON);
+        let (lunging, action, requested) = pending(false);
+        assert!(lunging);
+        assert_ne!(action, combat::DRAW_WEAPON_ACTION);
+        assert_eq!(requested, combat::DRAW_WEAPON);
     }
 
     /// Within the approach band it strikes once eager enough, from where it

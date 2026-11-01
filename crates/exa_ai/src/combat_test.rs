@@ -266,6 +266,69 @@ fn bare_hands_draw_a_carried_weapon() {
 }
 
 #[test]
+fn a_requested_motion_starts_only_when_the_body_is_free() {
+    let free = RequestGate {
+        muscles: true,
+        fallen: false,
+        busy: false,
+        moving: false,
+        free_walk: false,
+    };
+    assert_eq!(take_requested(DRAW_WEAPON, free), (0, true));
+    assert_eq!(take_requested(0, free), (0, false));
+    assert_eq!(
+        take_requested(
+            DRAW_WEAPON,
+            RequestGate {
+                muscles: false,
+                ..free
+            }
+        ),
+        (DRAW_WEAPON, false)
+    );
+    assert_eq!(
+        take_requested(
+            DRAW_WEAPON,
+            RequestGate {
+                fallen: true,
+                ..free
+            }
+        ),
+        (DRAW_WEAPON, false)
+    );
+    // Busy and standing: the request is dropped and nothing starts.
+    assert_eq!(
+        take_requested(DRAW_WEAPON, RequestGate { busy: true, ..free }),
+        (0, false)
+    );
+    // Busy and walking toward a goal: kept, still not started.
+    assert_eq!(
+        take_requested(
+            DRAW_WEAPON,
+            RequestGate {
+                busy: true,
+                moving: true,
+                ..free
+            }
+        ),
+        (DRAW_WEAPON, false)
+    );
+    // A free walk drops it even while moving.
+    assert_eq!(
+        take_requested(
+            DRAW_WEAPON,
+            RequestGate {
+                busy: true,
+                moving: true,
+                free_walk: true,
+                ..free
+            }
+        ),
+        (0, false)
+    );
+}
+
+#[test]
 fn one_tick_in_three_hundred_lunges() {
     let me = Body {
         reach_cm: 90.0,

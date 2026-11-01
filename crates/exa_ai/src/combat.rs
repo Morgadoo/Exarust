@@ -847,6 +847,37 @@ pub fn refresh_estimate(
     Some(bearing_to(mind.estimate, from, me.chest.y, me.to_target))
 }
 
+/// What the body tick knows when it starts a requested motion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequestGate {
+    /// The body has its muscles.
+    pub muscles: bool,
+    /// Down, getting up, dormant, collapsing or dead.
+    pub fallen: bool,
+    /// Walking, attacking, down or switching weapons: a request does not start.
+    pub busy: bool,
+    /// The body is walking.
+    pub moving: bool,
+    /// The walk has no goal. A busy body walking toward a goal keeps the request.
+    pub free_walk: bool,
+}
+
+/// The body tick's answer for a requested motion, before the combat state
+/// reads it: `(what the request is now, whether to start the old one)`.
+///
+/// With muscles and not fallen, a request above 0 starts when the body is
+/// not busy, and the request is dropped. A busy body drops it as well,
+/// unless it is walking toward a goal, which keeps it. Without muscles, or
+/// when fallen, the request is left as it was and nothing starts.
+pub fn take_requested(requested: i32, gate: RequestGate) -> (i32, bool) {
+    if gate.fallen || !gate.muscles || requested <= 0 {
+        return (requested, false);
+    }
+    let start = !gate.busy;
+    let keep = gate.busy && gate.moving && !gate.free_walk;
+    (if keep { requested } else { 0 }, start)
+}
+
 /// The weapon draw before a fight: fists or a one-handed class with
 /// nothing held reach for a carried weapon. `Some(true)` asks for the draw;
 /// `Some(false)` holds the level at a watch while it plays.

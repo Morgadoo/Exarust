@@ -283,6 +283,12 @@ pub struct Animator {
     /// change of target key ([`Animator::sample_ragdoll`]). Exarust starts
     /// clips at once, so nothing queues one yet.
     pub queued: Option<String>,
+    /// A motion the AI, the UI or a script asked the body to start. 0 is
+    /// none; a walk cannot be asked for here. The body tick starts it, with
+    /// no blend, when the body has muscles and is neither fallen nor busy,
+    /// and then drops the request. A busy body drops it too, unless it is
+    /// walking toward a goal, which keeps it until the next tick.
+    pub requested: i32,
     /// The target key of the last muscles-off sample, which the switch to
     /// a queued clip waits to see change. None before the first.
     pub last_target: Option<usize>,
@@ -316,6 +322,7 @@ impl Animator {
             pose: None,
             held: 0.0,
             queued: None,
+            requested: 0,
             last_target: None,
             left_locomotion: false,
         }
