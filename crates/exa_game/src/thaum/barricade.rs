@@ -702,7 +702,8 @@ pub struct WallShove {
     pub energy_loss: f32,
     /// The holder's attack is interrupted.
     pub interrupt: bool,
-    /// The AI notices the wall as an obstacle.
+    /// The impact sound played: the hitter's group alert is raised, and
+    /// concern toward this wall is added when it is already a contact.
     pub alarm: bool,
     pub sound: Option<WallSound>,
 }

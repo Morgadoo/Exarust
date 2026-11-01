@@ -19,7 +19,9 @@
 //!   knocks it back a step (doubled, at most its step length), sets its
 //!   instability counter to 100 and, while its energy is above 0.25,
 //!   lowers it, so a body struck by several parts loses that much for
-//!   each. While it stands its line is stamped on the navigation grid's
+//!   each. The part that plays the impact sound raises that character's
+//!   group alert and adds concern of 0.5, at gain 1, toward the wall.
+//!   While it stands its line is stamped on the navigation grid's
 //!   penalty (`exa_world::nav::stamp_line`, from the first tick a grid is
 //!   there) and taken back when its fall ends. Wisps follow their body
 //!   parts.
@@ -46,6 +48,9 @@ use bevy::camera::visibility::NoFrustumCulling;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::transform::TransformSystems;
+use exa_ai::brain::Npc;
+use exa_ai::combatant::Combatant;
+use exa_ai::manager::raise_alert;
 use exa_combat::swing::SwingState;
 use exa_combat::{Condition, Fighter, StateFlags};
 use exa_physics::Physics;
@@ -750,6 +755,11 @@ fn play_shock(
     }
 }
 
+/// Concern a front-limb impact adds toward the wall, and the gain it is
+/// added with.
+const WALL_CONCERN: f32 = 0.5;
+const WALL_CONCERN_GAIN: f32 = 1.0;
+
 /// A character's energy after the knocks of the parts a barricade struck in
 /// front this tick: each lowers it by its loss while it is above 0.25.
 pub fn energy_after_knocks(energy: f32, losses: &[f32]) -> f32 {
@@ -762,17 +772,18 @@ pub fn energy_after_knocks(energy: f32, losses: &[f32]) -> f32 {
 fn tick_barricades(
     mut commands: Commands,
     mut walls: Query<(Entity, &mut LiveBarricade, Option<&NavStamped>)>,
-    mut bodies: Query<(&mut Ragdoll, Option<&mut SwingState>)>,
+    mut bodies: Query<(Entity, &mut Ragdoll, Option<&mut SwingState>)>,
     ticks: Option<Res<BodyTicks>>,
     mut roll: ResMut<EffectRoll>,
     mut nav: Option<ResMut<NavGrid>>,
+    mut minds: Query<(&mut Npc, Option<&mut Combatant>)>,
 ) {
     let now = ticks.map_or(0, |t| t.millis()) as u32;
     for (wall_entity, mut live, stamped) in &mut walls {
         let live = &mut *live;
         if let Some(caster) = live.caster
             && let Ok(body) = bodies.get(caster)
-            && let Some(at) = body.0.parts.first().map(|p| p.transform().translation * CM)
+            && let Some(at) = body.1.parts.first().map(|p| p.transform().translation * CM)
             && power_ends(0, live.wall.centre, at.into())
         {
             live.wall.end();
@@ -802,7 +813,9 @@ fn tick_barricades(
                 });
         }
         let mut holders = Vec::new();
-        for (mut body, mut swing) in &mut bodies {
+        // Characters whose front limb played the impact sound this tick.
+        let mut noticed = Vec::new();
+        for (who, mut body, mut swing) in &mut bodies {
             let character = body.drive.as_ref().map(|d| {
                 let chest = bone_part(&body, CHEST)
                     .and_then(|k| part_point(&body, k, Vec3::ZERO))
@@ -852,6 +865,9 @@ fn tick_barricades(
                     }
                 }
                 touched |= shove.touched;
+                if shove.alarm {
+                    noticed.push(who);
+                }
                 for (sphere, push) in &shove.pushes {
                     body.push_sphere(k, *sphere, *push / CM);
                 }
@@ -875,8 +891,20 @@ fn tick_barricades(
             }
         }
         for holder in holders {
-            if let Ok((_, Some(mut swing))) = bodies.get_mut(holder) {
+            if let Ok((_, _, Some(mut swing))) = bodies.get_mut(holder) {
                 swing.force_interrupt(u64::from(now));
+            }
+        }
+        // The sound's notice: the hitter's group alert, and concern toward
+        // this wall when it is already one of the hitter's contacts.
+        for who in noticed {
+            let Ok((mut npc, combatant)) = minds.get_mut(who) else {
+                continue;
+            };
+            let aggression = npc.personality.map_or(0.0, |p| p.restraint);
+            (npc.alert_count, npc.alert_until_ms) = raise_alert(npc.alert_count, now);
+            if let Some(mut combatant) = combatant {
+                combatant.add_concern(wall_entity, aggression, WALL_CONCERN, WALL_CONCERN_GAIN);
             }
         }
         if live.wall.state == super::barricade::state::GONE {
@@ -1604,6 +1632,79 @@ mod tests {
             0,
             "the holder's attack stalls"
         );
+    }
+
+    /// A front limb that plays the impact sound raises the hitter's group
+    /// alert and adds concern toward the wall. Another contact is left alone,
+    /// and the same clock does not notice twice.
+    #[test]
+    fn a_front_limb_tells_its_ai_about_the_wall() {
+        use bevy::math::Affine3A;
+        use exa_ai::combatant::{CONTACT_CONCERN_FLAGS, Contact};
+        use exa_physics::body::PartSetup;
+        let frame = WallFrame::facing(Vec3::new(-15.0, 100.0, 0.0), Vec3::X);
+        let mut draws = Mt19937::new(1);
+        let mut wall = Barricade::raise(frame, 0.25, 1000, |_, _, _| None, None, &mut draws);
+        wall.tick(1000 + 1700);
+        let mut app = App::new();
+        app.insert_resource(BodyTicks(5_000))
+            .init_resource::<EffectRoll>()
+            .add_systems(Update, tick_barricades);
+        let wall_id = app
+            .world_mut()
+            .spawn(LiveBarricade { wall, caster: None })
+            .id();
+        let other = app.world_mut().spawn_empty().id();
+        let mut roll = 1u32;
+        let mut npc = Npc::new([0.0; 4]);
+        npc.alert_count = 4;
+        npc.alert_until_ms = 1;
+        npc.personality = Some(exa_ai::personality::personality(
+            0.0,
+            [0.0, 0.0, -25.0, 0.0],
+            0.0,
+            false,
+            &mut roll,
+        ));
+        let aggression = npc.personality.unwrap().restraint;
+        let mut combatant = Combatant::default();
+        let mut toward_wall = Contact::new(wall_id);
+        toward_wall.concern = 1.0;
+        let mut toward_other = Contact::new(other);
+        toward_other.concern = 2.0;
+        combatant.contacts.push(toward_wall);
+        combatant.contacts.push(toward_other);
+        let at = Vec3::new(0.0, 1.0, 0.0);
+        let body = Ragdoll::new(&[PartSetup {
+            bone: 0,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: Affine3A::from_translation(at),
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.1),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+            spheres: Some(vec![(Vec3::ZERO, 0.1)]),
+        }])
+        .with_drive();
+        let who = app.world_mut().spawn((body, npc, combatant)).id();
+        app.update();
+        let now = BodyTicks(5_000).millis() as u32;
+        let npc = app.world().get::<Npc>(who).unwrap();
+        assert_eq!((npc.alert_count, npc.alert_until_ms), raise_alert(4, now));
+        let combatant = app.world().get::<Combatant>(who).unwrap();
+        let mut expect = Contact::new(wall_id);
+        expect.concern = 1.0;
+        let raised = exa_ai::combatant::add_concern(&mut expect, aggression, 0.5, 1.0);
+        assert_eq!(combatant.contacts[0].concern, raised);
+        assert_eq!(combatant.contacts[0].flags, CONTACT_CONCERN_FLAGS);
+        assert_eq!(combatant.contacts[1].concern, 2.0);
+        assert_eq!(combatant.contacts[1].flags, 0);
+        app.update();
+        let npc = app.world().get::<Npc>(who).unwrap();
+        assert_eq!(npc.alert_count, 5, "the sound's gap has not passed");
     }
 
     #[test]
