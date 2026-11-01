@@ -387,15 +387,43 @@ pub(crate) fn measure_ground(
     }
 }
 
+/// The set a walking footstep uses: the golem suit's own when one is worn,
+/// otherwise the race's (none when the race has no set and no suit is worn).
+fn walking_set(race: Option<&'static str>, golem_suit: bool) -> Option<&'static str> {
+    let set = exa_audio::voices::step_set(golem_suit, race.unwrap_or(""));
+    if set.is_empty() {
+        None
+    } else if golem_suit {
+        Some("Golem_Stp")
+    } else {
+        race
+    }
+}
+
+/// Whether the worn effects include a golem suit.
+fn golem_suit(effects: Option<&crate::item_effects::WornEffects>) -> bool {
+    effects.is_some_and(|effects| {
+        effects
+            .items
+            .iter()
+            .any(|item| item.special == exa_formats::objdb::Burden::GOLEM_SUIT)
+    })
+}
+
 /// Emits the walk's footstep sounds at the feet the body planted this tick:
 /// at the character's place, `3·speed + 4` cm along its facing, in the
-/// race's set. The gain and pitch are drawn when the sound plays.
+/// race's set, or the golem suit's set when one is worn. The gain and pitch
+/// are drawn when the sound plays.
 pub(crate) fn gait_footsteps(
     ticked: Res<TickedCharacter>,
-    bodies: Query<(&Ragdoll, Option<&exa_combat::Fighter>)>,
+    bodies: Query<(
+        &Ragdoll,
+        Option<&exa_combat::Fighter>,
+        Option<&crate::item_effects::WornEffects>,
+    )>,
     mut steps: MessageWriter<Footstep>,
 ) {
-    let Ok((body, fighter)) = bodies.get(ticked.body) else {
+    let Ok((body, fighter, effects)) = bodies.get(ticked.body) else {
         return;
     };
     let Some(drive) = body.drive.as_ref() else {
@@ -404,7 +432,7 @@ pub(crate) fn gait_footsteps(
     let Some(fighter) = fighter else {
         return;
     };
-    let Some(set) = fighter.stats.footsteps.name() else {
+    let Some(set) = walking_set(fighter.stats.footsteps.name(), golem_suit(effects)) else {
         return;
     };
     let Some(origin) = drive.anchor().or_else(|| drive.root_point()) else {
@@ -801,6 +829,14 @@ mod tests {
         app.update();
         let body = *app.world().get::<Locomotor>(model).unwrap();
         assert_eq!(body.twist, Quat::IDENTITY);
+    }
+
+    #[test]
+    fn a_golem_suit_walks_in_the_golem_set() {
+        assert_eq!(walking_set(Some("StpMed"), false), Some("StpMed"));
+        assert_eq!(walking_set(Some("StpMed"), true), Some("Golem_Stp"));
+        assert_eq!(walking_set(None, true), Some("Golem_Stp"));
+        assert_eq!(walking_set(None, false), None);
     }
 }
 
