@@ -4206,8 +4206,28 @@ fn apply_steps(
             }
             Step::DressPlayerKit => {
                 for mut player in &mut players {
-                    if let Some(character) = player.character.as_deref_mut() {
-                        crate::save_kit::dress_kit(&mut character.record, &mut [], None, None);
+                    // The player's own database when the body carries one,
+                    // otherwise the level's local database. Neither loaded
+                    // leaves own ids as they are.
+                    if let Some(kit) = player.kit.as_deref_mut() {
+                        if let Some(character) = player.character.as_deref_mut() {
+                            crate::save_kit::dress_kit(
+                                &mut character.record,
+                                &mut [],
+                                None,
+                                Some(&mut kit.0),
+                            );
+                        }
+                    } else if let Some(character) = player.character.as_deref_mut() {
+                        crate::save_kit::dress_kit(
+                            &mut character.record,
+                            &mut [],
+                            None,
+                            story
+                                .level
+                                .as_deref_mut()
+                                .map(|records| &mut records.database),
+                        );
                     }
                     if let (Some(character), Some(possessions)) = (
                         player.character.as_deref(),
@@ -4343,6 +4363,9 @@ struct StoryParts<'w> {
     roles: Option<Res<'w, exa_ai::brain::RoleDatabase>>,
     start: Option<Res<'w, StoryStartPlayer>>,
     after_load: Option<ResMut<'w, AfterLoad>>,
+    /// The loaded level's local database, which the practice kit passes
+    /// copy through when the player carries no database of its own.
+    level: Option<ResMut<'w, exa_world::LevelLocalRecords>>,
 }
 
 /// The story start's writes the spawned player takes with the start
@@ -4489,6 +4512,7 @@ struct PlayerParts {
     animator: Option<&'static mut exa_anim::Animator>,
     possessions: Option<&'static mut exa_items::possession::Possessions>,
     character: Option<&'static mut exa_character::record::CharacterData>,
+    kit: Option<&'static mut crate::save_kit::OwnDatabase>,
     roles: Option<&'static mut exa_ai::roles::Roles>,
     torch: Has<crate::torch::CarriesTorch>,
 }

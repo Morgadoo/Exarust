@@ -86,11 +86,41 @@ pub struct LevelLocalItems(pub Vec<Item>);
 
 /// The loaded level's own records as stored and its string table, replaced
 /// at each level load: what the item catalogue builds the level's
-/// description cards from.
+/// description cards from. `database` is those records in the local tier,
+/// which the fighter kit passes copy through.
 #[derive(Resource, Debug, Clone, Default)]
 pub struct LevelLocalRecords {
     pub records: Vec<(u32, Vec<u8>)>,
     pub strings: Option<exa_formats::objstrings::Library>,
+    /// The same records as a local object database. Empty when the level
+    /// had no local database: the kit passes then leave own ids alone.
+    pub database: exa_formats::objdb::ObjectDb,
+}
+
+impl LevelLocalRecords {
+    /// The level's local records and the database the kit passes read.
+    pub fn load(
+        records: Vec<(u32, Vec<u8>)>,
+        strings: Option<exa_formats::objstrings::Library>,
+    ) -> Self {
+        let mut database = exa_formats::objdb::ObjectDb::default();
+        if let Some(strings) = strings.clone() {
+            database.local_strings = strings;
+        }
+        for (id, payload) in &records {
+            let index = id & exa_formats::objdb::ID_MASK;
+            if index == 0 {
+                continue;
+            }
+            let (_, at) = database.local.insert(index);
+            database.local.store(at, payload);
+        }
+        Self {
+            records,
+            strings,
+            database,
+        }
+    }
 }
 
 /// Marks the root entity of a spawned level.
@@ -1818,10 +1848,10 @@ impl LevelLoad {
             }
         });
         commands.insert_resource(LevelLocalItems(scene.local_items.clone()));
-        commands.insert_resource(LevelLocalRecords {
-            records: scene.local_records.clone(),
-            strings: scene.local_strings.clone(),
-        });
+        commands.insert_resource(LevelLocalRecords::load(
+            scene.local_records.clone(),
+            scene.local_strings.clone(),
+        ));
         let root = commands
             .spawn((
                 LevelRoot {

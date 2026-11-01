@@ -23,8 +23,16 @@
 //! Evidence: the two fighter-kit passes and the practice/arena preparation,
 //! read from the instructions (`docs/formats/SAVES.md`, Practice).
 
+use bevy::prelude::*;
 use exa_formats::characters::CharacterRecord;
 use exa_formats::objdb::{self, ObjectDb, Tier};
+
+/// The character's own object database, kept on the body the kit passes
+/// dress. An actor template's is the database after its record. Without it
+/// the passes read the loaded level's local database, and with neither they
+/// leave own ids alone.
+#[derive(Component, Debug, Clone, Default)]
+pub struct OwnDatabase(pub ObjectDb);
 
 /// Whether an id names an item of the character's own database: the top two
 /// bits are `10`.

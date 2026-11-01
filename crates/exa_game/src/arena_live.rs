@@ -394,16 +394,26 @@ type KitBody<'a> = (
     Entity,
     &'a mut exa_character::record::CharacterData,
     Option<&'a mut exa_items::possession::Possessions>,
+    Option<&'a mut crate::save_kit::OwnDatabase>,
     Has<crate::player::PlayerBody>,
 );
 
-/// Preparation then equip on one body that stays. The character's own
-/// database is not kept on the body, so an own id is left as it is.
-fn redress(kits: &mut Query<KitBody<'_>>, entity: Entity) {
-    let Ok((_, mut data, mut held, _)) = kits.get_mut(entity) else {
+/// Preparation then equip on one body that stays. An actor's own database
+/// is used when the body carries one; otherwise the loaded level's local
+/// database. With neither, own ids stay.
+fn redress(
+    kits: &mut Query<KitBody<'_>>,
+    level: Option<&mut exa_world::LevelLocalRecords>,
+    entity: Entity,
+) {
+    let Ok((_, mut data, mut held, mut own, _)) = kits.get_mut(entity) else {
         return;
     };
-    crate::save_kit::dress_kit(&mut data.record, &mut [], None, None);
+    let database = match own.as_deref_mut() {
+        Some(own) => Some(&mut own.0),
+        None => level.map(|level| &mut level.database),
+    };
+    crate::save_kit::dress_kit(&mut data.record, &mut [], None, database);
     if let Some(held) = held.as_mut() {
         crate::save_kit::mirror_kit(&data.record, held);
     }
@@ -680,6 +690,7 @@ fn continue_round(
     clock: Option<Res<crate::effects::EffectClock>>,
     (fighters, drawn): (Query<MatchBody<'_>>, Query<DrawBody<'_>>),
     mut kits: Query<KitBody<'_>>,
+    mut level: Option<ResMut<exa_world::LevelLocalRecords>>,
     mut commands: MessageWriter<SceneCommand>,
     mut exits: MessageWriter<ArenaExit>,
 ) {
@@ -722,6 +733,7 @@ fn continue_round(
                     career.as_deref(),
                     &fighters,
                     &mut kits,
+                    level.as_deref_mut(),
                     (&sides, mode),
                     now,
                     &mut commands,
@@ -751,6 +763,7 @@ fn continue_round(
                     career.as_deref(),
                     &fighters,
                     &mut kits,
+                    level.as_deref_mut(),
                     now,
                     &mut commands,
                 );
@@ -794,6 +807,7 @@ fn stand_next_round(
     career: Option<&crate::hub_windows::ArenaCareer>,
     fighters: &Query<MatchBody<'_>>,
     kits: &mut Query<KitBody<'_>>,
+    mut level: Option<&mut exa_world::LevelLocalRecords>,
     now_ms: u32,
     commands: &mut MessageWriter<SceneCommand>,
 ) {
@@ -821,7 +835,7 @@ fn stand_next_round(
             body.company || player
         };
         if dress {
-            redress(kits, entity);
+            redress(kits, level.as_deref_mut(), entity);
         }
     }
     if !fight.keeps_opponent {
@@ -835,7 +849,7 @@ fn stand_next_round(
             // never sees it. It is the continuing fighter when the round was
             // not lost.
             if fighters.iter().all(|(body, ..)| body != entity) {
-                redress(kits, entity);
+                redress(kits, level.as_deref_mut(), entity);
             }
         }
     }
@@ -875,6 +889,7 @@ fn stand_bracket_round(
     career: Option<&crate::hub_windows::ArenaCareer>,
     fighters: &Query<MatchBody<'_>>,
     kits: &mut Query<KitBody<'_>>,
+    mut level: Option<&mut exa_world::LevelLocalRecords>,
     (sides, mode): (&[crate::career::SideFighter], i32),
     now_ms: u32,
     commands: &mut MessageWriter<SceneCommand>,
@@ -929,7 +944,7 @@ fn stand_bracket_round(
             RaisedBody::Player => {
                 if let Some((entity, ..)) = fighters.iter().find(|(_, _, _, _, player)| *player) {
                     // A later round re-dresses the player who stays.
-                    redress(kits, entity);
+                    redress(kits, level.as_deref_mut(), entity);
                     commands.write(SceneCommand::Place {
                         body: entity,
                         at: Vec3::from_array(place.position) / 100.0,

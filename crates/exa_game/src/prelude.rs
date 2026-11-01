@@ -259,6 +259,8 @@ fn draw_tips(
 #[derive(Debug, Clone, Default)]
 pub struct ActorTemplates {
     entries: Vec<(String, CharacterRecord, Vec<Item>)>,
+    /// Each entry's own object database, when the entry parsed one.
+    databases: Vec<(String, exa_formats::objdb::ObjectDb)>,
 }
 
 /// The item a template's reference names: one with [`LOCAL_ITEM`] among
@@ -282,18 +284,21 @@ impl ActorTemplates {
         let Ok(archive) = Archive::parse(bytes) else {
             return Self::default();
         };
-        let entries = archive
-            .entries()
-            .iter()
-            .filter_map(|entry| {
-                let bytes = archive.bytes(entry);
-                let record = CharacterRecord::parse(0, bytes).ok()?;
-                // The database after the record: what its local ids name.
-                let items = exa_formats::characters::actor_items(bytes).unwrap_or_default();
-                Some((entry.name.clone(), record, items))
-            })
-            .collect();
-        Self { entries }
+        let mut entries = Vec::new();
+        let mut databases = Vec::new();
+        for entry in archive.entries() {
+            let bytes = archive.bytes(entry);
+            let Some(record) = CharacterRecord::parse(0, bytes).ok() else {
+                continue;
+            };
+            // The database after the record: what its local ids name.
+            let items = exa_formats::characters::actor_items(bytes).unwrap_or_default();
+            if let Ok((_, database)) = exa_formats::characters::read_entry(0, bytes) {
+                databases.push((entry.name.clone(), database));
+            }
+            entries.push((entry.name.clone(), record, items));
+        }
+        Self { entries, databases }
     }
 
     /// An empty library.
@@ -308,6 +313,7 @@ impl ActorTemplates {
                 .into_iter()
                 .map(|(name, record)| (name, record, Vec::new()))
                 .collect(),
+            databases: Vec::new(),
         }
     }
 
@@ -317,7 +323,16 @@ impl ActorTemplates {
     ) -> Self {
         Self {
             entries: entries.into_iter().collect(),
+            databases: Vec::new(),
         }
+    }
+
+    /// The template's own object database, when the entry had one.
+    pub fn own_database(&self, name: &str) -> Option<&exa_formats::objdb::ObjectDb> {
+        self.databases
+            .iter()
+            .find(|(entry, _)| entry == name)
+            .map(|(_, database)| database)
     }
 
     /// The template named `name`, exactly.
@@ -392,6 +407,19 @@ impl ActorCache {
             .get_or_insert_with(|| ActorTemplates::load(game))
             .own_items(name)
             .to_vec()
+    }
+
+    /// The template's own object database ([`ActorTemplates::own_database`]),
+    /// reading the library once.
+    pub fn own_database(
+        &mut self,
+        game: &Game,
+        name: &str,
+    ) -> Option<exa_formats::objdb::ObjectDb> {
+        self.library
+            .get_or_insert_with(|| ActorTemplates::load(game))
+            .own_database(name)
+            .cloned()
     }
 
     /// [`ActorCache::template`] with the library read by `load` when the

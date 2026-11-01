@@ -616,6 +616,16 @@ pub fn spawn_scene_body(
         },
         ChildOf(root),
     ));
+    // The kit passes copy through this database. Only an entry that actually
+    // parsed one is "loaded": an empty stand-in would clear own ids.
+    if let BodyLook::Actor(name) = &plan.look
+        && let Some(database) = context.actors.own_database(context.game, name)
+        && (!database.base.entries().is_empty() || !database.local.entries().is_empty())
+    {
+        commands
+            .entity(model_entity)
+            .insert(crate::save_kit::OwnDatabase(database));
+    }
     if let Some(flags) = saved_flags.filter(|flags| flags.0 != 0) {
         commands.entity(model_entity).insert(flags);
     }
@@ -1404,6 +1414,12 @@ mod tests {
             .map(|garment| garment.model.as_str())
             .collect();
         assert_eq!(models, ["Trouser_A", "Shirty_A", "Sandals_B"]);
+        let own = world
+            .get::<crate::save_kit::OwnDatabase>(spawned.model)
+            .expect("the template's own database");
+        assert!(own.0.base.find_index(2).is_some());
+        assert!(own.0.base.find_index(3).is_some());
+        assert!(own.0.base.find_index(4).is_some());
     }
 
     /// An app with the game's packs and the asset registries, when
