@@ -922,15 +922,25 @@ fn duellist(
             ai.mind.heading = yaw_of(t.rotation);
             // The target is set here: the estimate starts at the foe
             // estimate's lead (a moving foe's chest 30 ticks along its
-            // facing at its speed), the set-target's fresh flag, commitment
+            // facing at its speed, a stepping foe three quarters of the way
+            // to the step), the set-target's fresh flag, commitment
             // and cleared overshoot and stuck counts are set, and the
             // bearing and aim are measured from the chest; the brain's look
             // takes the aim's yaw too.
             let chest_cm = stance::chest_point(gt, ragdoll) * CM;
+            let (stepping, step_goal) = step_measure(
+                target_body.and_then(|(_, _, rag, ..)| rag),
+                combat_steps
+                    .iter()
+                    .find(|(id, _)| *id == foe_key)
+                    .map(|(_, goal)| *goal),
+                foe_chest,
+            );
             let lead = combat::foe_estimate(
                 &combat::Foe {
                     chest: foe_chest,
-                    step_goal: foe_chest,
+                    step_goal,
+                    stepping,
                     running: foe_motion.moving,
                     facing: foe_motion.facing,
                     forward_speed: foe_motion.speed_cm,
@@ -2346,6 +2356,11 @@ mod tests {
             Some(personality::personality(100.0, [0.0; 4], 0.0, false, &mut roll));
         engage(&mut app, fighter);
         step(&mut app);
+        let entered = app.world().get::<Duellist>(fighter).unwrap().mind.estimate;
+        assert!(
+            (entered.x - 150.0).abs() < 1.0,
+            "entering, expected 150 cm along the step, got {entered:?}"
+        );
         step(&mut app);
         let estimate = app.world().get::<Duellist>(fighter).unwrap().mind.estimate;
         assert!(
