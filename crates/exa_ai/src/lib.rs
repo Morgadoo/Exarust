@@ -1405,6 +1405,7 @@ fn duellist(
                 // The body's parrying flag: while its auto-parry holds, the
                 // combat state leaves its stance motion alone.
                 parrying: fighter.parry.active,
+                parry_bias: fighter.parry.counter,
                 ..combat::Body::default()
             };
             me.can_step = combat::can_act(&me) && !ai.holds_ground;

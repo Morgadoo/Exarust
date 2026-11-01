@@ -709,6 +709,34 @@ fn duel() -> (Body, Foe) {
 }
 
 #[test]
+fn a_high_parry_memory_picks_the_other_side() {
+    let place = Place {
+        distance_cm: 100.0,
+        ..Place::default()
+    };
+    let foe = Foe {
+        chest: Vec3::new(0.0, 0.0, 100.0),
+        ..Foe::default()
+    };
+    let blow = |bias: i32| {
+        let me = Body {
+            parry_bias: bias,
+            weapon_class: 0x10,
+            reach_cm: 50.0,
+            scale: 1.0,
+            ..Body::default()
+        };
+        let mut mind = CombatMind::default();
+        let mut roll = 22;
+        choose_blow(&mut mind, &me, Some(&foe), 0.0, 0, &place, &mut roll).motion
+    };
+    // The same draw scores under 4 with no memory, and over 4 once the
+    // memory has risen to 20, which is the other side.
+    assert_ne!(blow(0), Some(AttackMotion::Other(0)));
+    assert_eq!(blow(20), Some(AttackMotion::Other(0)));
+}
+
+#[test]
 fn a_quadruped_thrusts_where_a_biped_swings() {
     let foe = Foe {
         chest: Vec3::new(0.0, 0.0, 100.0),

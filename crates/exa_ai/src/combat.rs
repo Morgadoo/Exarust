@@ -420,6 +420,8 @@ pub struct Body {
     /// test is skipped and a close blow is overhead. A value that is not a
     /// number counts as past the half for the friend test only.
     pub feral: f32,
+    /// The parry-height memory. Left and right raise it toward 20 and the
+    /// downs lower it; the side score shifts by a fifth of it.
     pub parry_bias: i32,
     pub thrust_pref: i32,
     pub recoil_until_ms: u32,
