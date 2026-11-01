@@ -378,8 +378,12 @@ fn shock_fighters(
         Option<&mut Condition>,
         Option<&mut StateFlags>,
         Option<&mut Ragdoll>,
+        Option<&mut exa_physics::body::locomotion::Locomotion>,
+        Option<&mut exa_physics::body::locomotion::Locomotor>,
+        Option<&mut exa_anim::Animator>,
     )>,
     ticks: Option<Res<BodyTicks>>,
+    motions: Option<Res<exa_anim::Motions>>,
     mut roll: ResMut<EffectRoll>,
     mut commands: Commands,
     mut audio: ShockAudio,
@@ -389,7 +393,16 @@ fn shock_fighters(
     // component arrives with the commands).
     let mut set: Vec<(Entity, u64)> = Vec::new();
     for shock in shocks.read() {
-        let Ok((mut fighter, ready, mut condition, flags, body)) = fighters.get_mut(shock.body)
+        let Ok((
+            mut fighter,
+            ready,
+            mut condition,
+            flags,
+            body,
+            mut locomotion,
+            mut locomotor,
+            mut animator,
+        )) = fighters.get_mut(shock.body)
         else {
             continue;
         };
@@ -439,6 +452,21 @@ fn shock_fighters(
             }
             if !dying && let Some(mut body) = body {
                 body.shock_stagger(shock.direction);
+            }
+            if !dying {
+                // The walk stops and the Defence stance starts with no blend.
+                if let Some(req) = locomotion.as_deref_mut() {
+                    req.moving = false;
+                    req.free_walk = false;
+                }
+                if let Some(motor) = locomotor.as_deref_mut() {
+                    motor.amount = 0.0;
+                }
+                if let (Some(motions), Some(animator)) =
+                    (motions.as_deref(), animator.as_deref_mut())
+                {
+                    motions.start_requested(animator, 3);
+                }
             }
         }
         match ready {
@@ -1161,6 +1189,33 @@ mod tests {
             app.world().get::<StateFlags>(fighter).map(|f| f.0),
             Some(StateFlags::SHOCK_STAGGER)
         );
+    }
+
+    /// A burn stops the walk: the request is no longer moving or free, and
+    /// the locomotion amount is 0.
+    #[test]
+    fn a_shock_stops_the_walk() {
+        use exa_physics::body::locomotion::{Locomotion, Locomotor};
+        let mut app = App::new();
+        app.add_message::<ArcShocked>()
+            .insert_resource(BodyTicks(0))
+            .insert_resource(EffectRoll(Roll(0)))
+            .add_systems(Update, shock_fighters);
+        let mut req = Locomotion::default();
+        req.moving = true;
+        req.free_walk = true;
+        let mut motor = Locomotor::default();
+        motor.amount = 4.0;
+        let fighter = app.world_mut().spawn((Fighter::default(), req, motor)).id();
+        app.world_mut().write_message(ArcShocked {
+            body: fighter,
+            direction: Vec3::X,
+            strength: 0.05,
+        });
+        app.update();
+        let req = app.world().get::<Locomotion>(fighter).unwrap();
+        assert!(!req.moving && !req.free_walk);
+        assert_eq!(app.world().get::<Locomotor>(fighter).unwrap().amount, 0.0);
     }
 
     /// A collapsing fighter keeps its yellow and does not take the stagger.
