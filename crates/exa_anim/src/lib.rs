@@ -289,6 +289,9 @@ pub struct Animator {
     /// and then drops the request. A busy body drops it too, unless it is
     /// walking toward a goal, which keeps it until the next tick.
     pub requested: i32,
+    /// The start drops the capture, so the clip does not blend in from the
+    /// pose the body held. A next fight asks for this.
+    pub snap_start: bool,
     /// The target key of the last muscles-off sample, which the switch to
     /// a queued clip waits to see change. None before the first.
     pub last_target: Option<usize>,
@@ -323,6 +326,7 @@ impl Animator {
             held: 0.0,
             queued: None,
             requested: 0,
+            snap_start: false,
             last_target: None,
             left_locomotion: false,
         }

@@ -881,8 +881,16 @@ fn begin_requested(
             } else if let Some(set) = motions.as_deref() {
                 set.start_requested(&mut anim, pending as u32);
             }
+            if anim.snap_start {
+                anim.pending = None;
+                anim.leading = false;
+                anim.capture = None;
+            }
         }
         anim.requested = next;
+        if next == 0 {
+            anim.snap_start = false;
+        }
     }
 }
 
@@ -2989,6 +2997,59 @@ mod tests {
         assert_eq!(anim(walking).requested, combat::DRAW_WEAPON);
         assert_eq!(anim(limp).action, "Idle");
         assert_eq!(anim(limp).requested, combat::DRAW_WEAPON);
+    }
+
+    /// A forced start plays the clip with no capture to blend from. A busy
+    /// body keeps both the request and the force.
+    #[test]
+    fn a_forced_start_drops_the_capture() {
+        use exa_physics::body::locomotion::{Locomotor, Stop};
+
+        let mut app = App::new();
+        app.add_systems(Update, begin_requested);
+        let free = app
+            .world_mut()
+            .spawn((
+                Animator::new("Default", "Idle"),
+                Condition::NORMAL,
+                Stance::Idle,
+                driven(),
+            ))
+            .id();
+        {
+            let mut anim = app.world_mut().get_mut::<Animator>(free).unwrap();
+            anim.requested = combat::DRAW_WEAPON;
+            anim.snap_start = true;
+        }
+        let walking = app
+            .world_mut()
+            .spawn((
+                Animator::new("Default", "Idle"),
+                Condition::ATTACKING,
+                Stance::Idle,
+                driven(),
+                Locomotor {
+                    stop: Stop::Moving,
+                    ..Locomotor::default()
+                },
+            ))
+            .id();
+        {
+            let mut anim = app.world_mut().get_mut::<Animator>(walking).unwrap();
+            anim.requested = combat::DRAW_WEAPON;
+            anim.snap_start = true;
+        }
+        app.update();
+        let started = app.world().get::<Animator>(free).unwrap();
+        assert_eq!(started.action, combat::DRAW_WEAPON_ACTION);
+        assert_eq!(started.requested, 0);
+        assert!(started.pending.is_none());
+        assert!(!started.leading);
+        assert!(!started.snap_start);
+        let held = app.world().get::<Animator>(walking).unwrap();
+        assert_eq!(held.action, "Idle");
+        assert_eq!(held.requested, combat::DRAW_WEAPON);
+        assert!(held.snap_start);
     }
 
     /// A body with muscles, so a requested motion can start.

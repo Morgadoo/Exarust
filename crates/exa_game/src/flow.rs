@@ -3870,26 +3870,24 @@ fn request_action(
     motion: u32,
     snap: bool,
 ) {
-    let Some(motions) = motions.as_deref() else {
-        return;
-    };
-    for mut player in players {
+    for mut player in players.iter_mut() {
         let Some(animator) = player.animator.as_mut() else {
             continue;
         };
-        if !snap && motions.action_name(motion) == Some(animator.action.as_str()) {
+        // Already in the clip: leave it, unless the start is forced.
+        if !snap
+            && motions
+                .as_deref()
+                .and_then(|set| set.action_name(motion))
+                == Some(animator.action.as_str())
+        {
             continue;
         }
-        if let Some(name) = motions.start_requested(animator, motion) {
-            if snap {
-                animator.pending = None;
-                animator.leading = false;
-                animator.capture = None;
-            }
-            debug!("game flow: requested motion {motion:#x} starts {name}");
-        } else {
-            debug!("game flow: requested motion {motion:#x} has no clip");
-        }
+        // The body tick starts it when the body is free, and drops it when
+        // the body is busy or fallen. A forced start also drops the capture.
+        animator.requested = motion as i32;
+        animator.snap_start = snap;
+        debug!("game flow: requested motion {motion:#x}");
     }
 }
 
@@ -4219,13 +4217,14 @@ fn apply_steps(
                 }
             }
             Step::RequestAction(motion) => {
-                // The body's action switch, not forced: a body already in
-                // that action keeps it; otherwise the clip starts by its
-                // action name (looping when the clip loops, else once back
-                // into the combat or idle action, with no blend).
+                // Asked, not started. The body tick plays it when the body
+                // is free and drops it when the body is busy or fallen. A
+                // body already in that action is left as it is.
                 request_action(&motions, &mut players, motion, false);
             }
             Step::SnapAction(motion) => {
+                // The next fight: the same request, and the start drops the
+                // capture so the clip does not blend in from the old pose.
                 request_action(&motions, &mut players, motion, true);
             }
             Step::ForgetTarget => {
@@ -4362,15 +4361,15 @@ fn apply_steps(
                             story_possessions(possessions, start.off_hand, start.carried);
                         }
                     }
-                    if let (Some(motions), Some(animator)) =
-                        (motions.as_deref(), player.animator.as_mut())
-                        && motions.action_name(record[0]) != Some(animator.action.as_str())
+                    if let Some(animator) = player.animator.as_mut()
+                        && motions
+                            .as_deref()
+                            .and_then(|set| set.action_name(record[0]))
+                            != Some(animator.action.as_str())
                     {
-                        let started = motions.start_requested(animator, record[0]);
-                        debug!(
-                            "game flow: start record motion {:#x} starts {started:?}",
-                            record[0]
-                        );
+                        animator.requested = record[0] as i32;
+                        animator.snap_start = false;
+                        debug!("game flow: start record motion {:#x} is requested", record[0]);
                     }
                 }
                 commands.remove_resource::<StoryStartPlayer>();
@@ -5083,6 +5082,53 @@ mod tests {
                 .contacts
                 .is_empty()
         );
+    }
+
+    /// A script asks for a motion. It does not start the clip: a busy or
+    /// fallen body still gets to keep or drop the request.
+    #[test]
+    fn a_script_asks_for_a_motion_and_does_not_start_it() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Flow>()
+            .init_resource::<FlowSteps>()
+            .init_resource::<GameView>()
+            .init_resource::<crate::player_controls::PlaySession>()
+            .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
+            .add_message::<exa_world::level_lifecycle::WorldReset>()
+            .add_message::<ForfeitMatch>()
+            .add_message::<SettingsEntry>()
+            .add_message::<AppExit>()
+            .add_message::<crate::save_live::SaveStep>()
+            .add_message::<crate::experience_live::DiscoveryTick>()
+            .add_message::<crate::scene_bodies::SceneCommand>()
+            .insert_resource(exa_anim::Motions::fallback())
+            .add_systems(Update, apply_steps);
+        let player = app
+            .world_mut()
+            .spawn((
+                crate::player::PlayerBody::new(0.0),
+                exa_anim::Animator::new("Default", "Idle"),
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<FlowSteps>()
+            .steps
+            .push(Step::RequestAction(0x1f));
+        app.update();
+        let anim = app.world().get::<exa_anim::Animator>(player).unwrap();
+        assert_eq!(anim.action, "Idle");
+        assert_eq!(anim.requested, 0x1f);
+        assert!(!anim.snap_start);
+        app.world_mut()
+            .resource_mut::<FlowSteps>()
+            .steps
+            .push(Step::SnapAction(0x13));
+        app.update();
+        let anim = app.world().get::<exa_anim::Animator>(player).unwrap();
+        assert_eq!(anim.action, "Idle");
+        assert_eq!(anim.requested, 0x13);
+        assert!(anim.snap_start);
     }
 
     /// Entering combat mode clears the backwards, heading-driven and
