@@ -787,7 +787,7 @@ struct ForceSight<'w, 's> {
     blasts: Query<'w, 's, &'static super::blast_live::LiveBlast>,
     waves: Query<'w, 's, &'static super::wave_live::LiveWave>,
     walls: Query<'w, 's, &'static LiveBarricade>,
-    ids: Query<'w, 's, &'static CharacterId>,
+    ids: Query<'w, 's, (Entity, &'static CharacterId)>,
     roles: Query<'w, 's, &'static Roles>,
     db: Option<Res<'w, RoleDatabase>>,
     ticks: Option<Res<'w, BodyTicks>>,
@@ -799,14 +799,14 @@ struct ForceSight<'w, 's> {
 fn caster_relation(
     caster: Entity,
     relations: Option<&mut Relations>,
-    ids: &Query<&CharacterId>,
+    ids: &Query<(Entity, &CharacterId)>,
     role_sets: &Query<&Roles>,
     locale: u32,
     now: u32,
     effects: &[combatant::Effect],
 ) -> f32 {
     let raw = if let Some(relations) = relations
-        && let Ok(id) = ids.get(caster)
+        && let Ok((_, id)) = ids.get(caster)
         && let Ok(roles) = role_sets.get(caster)
     {
         let partner = Partner {
@@ -844,8 +844,14 @@ fn effect_caster(
 fn see_force_effects(
     sight: ForceSight,
     powers: Query<&combatant::MindPowers>,
+    casts: Query<&crate::mind::casts::MindBody>,
     mut watchers: Query<(Entity, &mut Npc, Option<&Ragdoll>, Option<&mut Relations>)>,
 ) {
+    let by_id: std::collections::HashMap<u32, Entity> = sight
+        .ids
+        .iter()
+        .map(|(entity, id)| (id.0, entity))
+        .collect();
     let effects: Vec<_> = sight.hazards.iter().collect();
     let now = sight
         .ticks
@@ -880,7 +886,13 @@ fn see_force_effects(
         };
         for (effect, hazard) in &effects {
             let caster = effect_caster(*effect, &sight.blasts, &sight.waves, &sight.walls);
-            let mind = powers.get(who).map(|powers| powers.effects.clone());
+            let mut mind = powers
+                .get(who)
+                .map(|powers| powers.effects.clone())
+                .unwrap_or_default();
+            if let Ok(body) = casts.get(who) {
+                mind.extend(body.sight_effects(|id| by_id.get(&id).copied()));
+            }
             let relation = caster.map_or(0.0, |caster| {
                 caster_relation(
                     caster,
@@ -889,7 +901,7 @@ fn see_force_effects(
                     &sight.roles,
                     locale,
                     now,
-                    mind.as_deref().unwrap_or(&[]),
+                    &mind,
                 )
             });
             let Some(seen) = hazard.assess(&viewer, relation, caster == Some(who)) else {
@@ -2121,9 +2133,15 @@ mod tests {
                 power(POWER_FRENZY, None),
             ))
             .id();
+        let mut cast = crate::mind::casts::MindBody::new(1);
+        cast.powers.push(crate::mind::casts::MindPower::recorded(
+            POWER_SUSPICION,
+            None,
+            None,
+        ));
         let suspicious = app
             .world_mut()
-            .spawn((body(), Npc::new([0.0; 4]), power(POWER_SUSPICION, None)))
+            .spawn((body(), Npc::new([0.0; 4]), cast))
             .id();
         let bound = app
             .world_mut()

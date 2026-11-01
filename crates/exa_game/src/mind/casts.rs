@@ -43,6 +43,9 @@
 // NaN-sensitive compares are kept as the original makes them.
 #![allow(clippy::neg_cmp_op_on_partial_ord)]
 
+use bevy::ecs::component::Component;
+use bevy::prelude::Entity;
+
 use crate::thaum::casting::{CastBody, FALLEN_OR_DYING, PERSISTENT, TickScale, price, spend};
 use crate::thaum::power::mind::{
     CONFUSED, CommandDeadCaster, CommandDeadTarget, ControlMindCaster, ENRAGED, LoyaltyCaster,
@@ -346,6 +349,15 @@ pub struct MindPower {
 }
 
 impl MindPower {
+    /// A power the casts record: its id, and the body that cast it or that it
+    /// works on.
+    pub fn recorded(id: u32, caster: Option<BodyId>, target: Option<BodyId>) -> Self {
+        let mut power = Self::new(id, MindClass::Other(PowerBase::new(id)));
+        power.caster = caster;
+        power.target = target;
+        power
+    }
+
     fn new(id: u32, class: MindClass) -> Self {
         Self {
             id,
@@ -366,7 +378,7 @@ impl MindPower {
 }
 
 /// A body as the Mind casts read and write it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Component, Debug, Clone, PartialEq)]
 pub struct MindBody {
     pub id: BodyId,
     /// Focus, spent and reserved focus, techniques, status and condition
@@ -411,6 +423,23 @@ impl MindBody {
             ai: MindAi::default(),
             powers: Vec::new(),
         }
+    }
+
+    /// The powers as the force sight's relation walk reads them. A body id
+    /// becomes the character that carries it.
+    pub fn sight_effects(
+        &self,
+        entity_of: impl Fn(BodyId) -> Option<Entity>,
+    ) -> Vec<exa_ai::combatant::Effect> {
+        self.powers
+            .iter()
+            .map(|power| exa_ai::combatant::Effect {
+                kind: power.id,
+                source: power.caster.and_then(&entity_of),
+                target: power.target.and_then(&entity_of),
+                state: u32::try_from(power.state()).unwrap_or(0),
+            })
+            .collect()
     }
 
     fn focus(&self) -> f32 {
