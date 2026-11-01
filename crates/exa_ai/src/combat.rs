@@ -407,6 +407,8 @@ pub struct Body {
     /// Its speed along its heading, centimetres a tick. Past 3, a moving
     /// body charges and the tick ends.
     pub forward_speed: f32,
+    /// A shield is held. Past 0.3 of its own swing the attack drive is
+    /// quadrupled instead of doubled, and the strike drive is doubled.
     pub shield: bool,
     /// The race's heavy claws. A swing turns fifty degrees further; without
     /// them, open hands turn fifty less.

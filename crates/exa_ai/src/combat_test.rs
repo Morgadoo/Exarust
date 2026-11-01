@@ -435,6 +435,36 @@ fn the_drives_of_a_fresh_pressing_fighter() {
 }
 
 #[test]
+fn a_held_shield_quadruples_the_committed_attack() {
+    let bare = Body {
+        condition: ATTACKING,
+        clock: 0.55,
+        weapon_class: 0x10,
+        ..Body::default()
+    };
+    let shielded = Body {
+        shield: true,
+        ..bare
+    };
+    let fresh = || CombatMind {
+        level: 3,
+        eagerness: 0.5,
+        ..CombatMind::default()
+    };
+    let mut bare_mind = fresh();
+    let mut shielded_mind = fresh();
+    let mut roll = 0;
+    let open = drives(&mut bare_mind, &bare, None, NOVICE, &mut roll);
+    roll = 0;
+    let held = drives(&mut shielded_mind, &shielded, None, NOVICE, &mut roll);
+    // Past 0.3 the attack drive is doubled, or quadrupled with a shield,
+    // and the shield doubles the strike drive. The press then scales both.
+    assert!(open.committed && held.committed);
+    assert_eq!((open.attack, open.strike), (12.0, 1.5));
+    assert_eq!((held.attack, held.strike), (24.0, 3.0));
+}
+
+#[test]
 fn a_swing_commits_and_measures_its_overshoot() {
     let me = Body {
         condition: ATTACKING,
