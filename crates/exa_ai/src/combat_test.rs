@@ -839,21 +839,115 @@ fn every_place_costs_its_ground_its_danger_and_its_closeness() {
     // contact is weighed as the foe, whose closeness is added once.
     assert_eq!(found.places[0].total, 3.5);
     assert_eq!(found.places[0].danger, 0.5);
-    assert_eq!(found.places[1].total, 4.5);
-    assert_eq!(found.places[9].total, 4.5);
+    // The standing place takes this contact as its foe, so the steps after
+    // add its closeness once, as a foe's, rather than twice.
+    assert_eq!(found.places[1].total, 3.5);
+    assert_eq!(found.places[9].total, 3.5);
     // Long steps past the first two directions cost 2 more.
-    assert_eq!(found.places[11].total, 6.5);
+    assert_eq!(found.places[11].total, 5.5);
     assert_eq!(found.best_move, Some(0));
     assert_eq!(found.best_attack, None);
-    assert_eq!(found.places[3].attack, 4.5);
+    assert_eq!(found.places[3].attack, 2.5);
     // The place it stands on re-chose its foe: the one contact, at level 1.
     assert_eq!(found.retarget, Some(Some(0)));
+    assert_eq!(found.switched, Some(0));
+    assert!(contacts[0].is_foe);
     assert_eq!(mind.level, 1);
     // Its priority: the danger weighted by (ahead + 1)·0.4 and 2·skill + 1,
     // plus a tenth of its level.
     let w = (f64::from(1.0f32) * 0.4) as f32;
     let v = 0.0 * 1.0 + ((1.0 + 1.0) * 0.0 + 3.0 * 0.5 * w);
     assert_eq!(contacts[0].priority, (0.1 + f64::from(v)) as f32);
+}
+
+/// A nearer character replaces the foe at the standing place, and the steps
+/// after that are scored against the new one, so the step goes toward them.
+struct Beside;
+
+impl Field for Beside {
+    fn score(&mut self, contact: usize, level: i32, point: Vec3) -> PlaceScore {
+        let origin = if contact == 0 {
+            Vec3::new(0.0, 0.0, 800.0)
+        } else {
+            Vec3::new(150.0, 0.0, 0.0)
+        };
+        let to = origin - point;
+        let d = (to.x * to.x + to.z * to.z).sqrt();
+        PlaceScore {
+            approach: if contact == 1 && level == 3 { 3.0 } else { 0.0 },
+            strike: if contact == 1 && level == 3 && point.x > 40.0 {
+                1.0
+            } else {
+                0.0
+            },
+            bearing: yaw(to),
+            distance_cm: d,
+            ..PlaceScore::default()
+        }
+    }
+}
+
+#[test]
+fn a_nearer_character_is_the_foe_for_the_steps_after() {
+    let me = Body {
+        look: Vec3::Z,
+        heading: Vec3::Z,
+        facing: Vec3::Z,
+        chest: Vec3::ZERO,
+        position: Vec3::ZERO,
+        step_cm: 80.0,
+        ..Body::default()
+    };
+    let mut mind = CombatMind::default();
+    let d = Drives {
+        attack: 0.0,
+        strike: 5.0,
+        spacing: 0.0,
+        committed: false,
+        set_flags: 0,
+    };
+    let plan = Footwork {
+        first: 0,
+        last: 8,
+        mode: 0,
+        change: 0.0,
+        queue_taken: false,
+    };
+    let mut contacts = [
+        Contact {
+            level: 3,
+            is_foe: true,
+            character: true,
+            estimate: Some(Vec3::new(0.0, 0.0, 800.0)),
+            ..Contact::default()
+        },
+        Contact {
+            level: 3,
+            character: true,
+            estimate: Some(Vec3::new(150.0, 0.0, 0.0)),
+            ..Contact::default()
+        },
+    ];
+    let found = search(
+        &mut mind,
+        &me,
+        None,
+        NOVICE,
+        plan,
+        &d,
+        &mut contacts,
+        &mut Beside,
+    );
+    assert_eq!(found.switched, Some(1));
+    assert!(!contacts[0].is_foe);
+    assert!(contacts[1].is_foe);
+    let step = found.best_move.expect("a step");
+    assert!(
+        found.places[step].offset.x > 0.0,
+        "place {step} totals {:?} offset {:?}",
+        found.places.iter().map(|p| p.total).collect::<Vec<_>>(),
+        found.places[step].offset
+    );
 }
 
 #[test]

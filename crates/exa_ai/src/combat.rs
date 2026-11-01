@@ -630,6 +630,8 @@ pub struct Contact {
     /// The character, when this contact is one. The tick adopts it when it
     /// presses harder than the foe.
     pub who: Option<Entity>,
+    /// Where this contact is estimated (cm), for the aim once it is taken.
+    pub estimate: Option<Vec3>,
     /// A barricade this contact is: the combat tick asks it for the step away
     /// instead of a fighter's place score.
     pub wall: Option<WallStep>,
@@ -1233,6 +1235,9 @@ pub struct Search {
     pub best_attack_cost: f32,
     /// The best contact this tick (a new foe), when re-chosen.
     pub retarget: Option<Option<usize>>,
+    /// A character contact that replaced the foe during the place loop, so
+    /// the places after the first are scored against it.
+    pub switched: Option<usize>,
     /// The attack drive after the search (a long side step halves it).
     pub attack: f32,
 }
@@ -1256,6 +1261,7 @@ pub fn search(
     let mut best_move = (NO_SCORE, None);
     let mut best_attack = (NO_SCORE, None);
     let mut retarget = None;
+    let mut switched = None;
     let mut chest = me.chest;
     let mut goal = me.step_goal;
     // The foe's score, kept from the last place that saw it.
@@ -1359,6 +1365,18 @@ pub fn search(
                 places[at].total += s.close * 2.0;
             }
             retarget = Some(best.1);
+            // The winner replaces the foe before the remaining places, so
+            // those are scored against it.
+            if let Some(c) = best.1
+                && contacts[c].character
+                && !contacts[c].is_foe
+            {
+                for contact in contacts.iter_mut() {
+                    contact.is_foe = false;
+                }
+                contacts[c].is_foe = true;
+                switched = Some(c);
+            }
             mind.level = best.1.map_or(0, |c| contacts[c].level);
         } else {
             for (c, contact) in contacts.iter().enumerate() {
@@ -1457,6 +1475,7 @@ pub fn search(
         best_move_cost: best_move.0,
         best_attack_cost: best_attack.0,
         retarget,
+        switched,
         attack,
     }
 }
@@ -1976,9 +1995,10 @@ pub fn tick(
         (None, None) => mind.estimate,
     };
     out.bearing = refresh_estimate(mind, me, fresh, k, roll);
-    let (to_target, distance_cm) = out.bearing.map_or((me.to_target, me.distance_cm), |b| {
-        (b.to_target, b.distance_cm)
-    });
+    let (mut to_target, mut distance_cm) =
+        out.bearing.map_or((me.to_target, me.distance_cm), |b| {
+            (b.to_target, b.distance_cm)
+        });
     match draw_weapon(me) {
         Some(true) => out.draw_weapon = true,
         Some(false) => mind.level = 1,
@@ -2050,24 +2070,45 @@ pub fn tick(
     };
     let plan = footwork(mind, me, &d, k, roll);
     let found = search(mind, me, foe, traits, plan, &d, world.contacts, world.field);
-    if let Some(Some(c)) = found.retarget {
+    if let Some(c) = found.switched {
         let contact = &world.contacts[c];
-        if contact.character && !contact.is_foe {
-            // A new foe: committed afresh, the overshoot forgotten. The caller
-            // points the body at that character and places the estimate.
-            mind.fresh_target = true;
-            mind.commitment = 1.0;
-            mind.overshoot_mean = 0.0;
-            mind.stuck = 0;
-            out.adopted = contact.who;
-        } else if !contact.character {
-            // Not a character: the foe is dropped and this entity is the
-            // focus. The commitment is left as it was.
-            out.focus = contact
-                .wall
-                .map(|wall| wall.centre)
-                .or_else(|| contact.blast.map(|blast| blast.at));
+        // A new foe, already the one the remaining places were scored
+        // against: committed afresh, the overshoot forgotten.
+        mind.fresh_target = true;
+        mind.commitment = 1.0;
+        mind.overshoot_mean = 0.0;
+        mind.stuck = 0;
+        out.adopted = contact.who;
+    } else if let Some(Some(c)) = found.retarget
+        && !world.contacts[c].character
+    {
+        // Not a character: the foe is dropped and this entity is the
+        // focus. The commitment is left as it was.
+        let contact = &world.contacts[c];
+        out.focus = contact
+            .wall
+            .map(|wall| wall.centre)
+            .or_else(|| contact.blast.map(|blast| blast.at));
+    }
+    let aim_at = found
+        .switched
+        .and_then(|c| world.contacts[c].estimate)
+        .or(out.focus);
+    if let Some(point) = aim_at {
+        // This tick's attack and heading face the contact just taken, not
+        // the foe the tick started with.
+        mind.estimate = point;
+        let flat = Vec3::new(point.x - me.chest.x, 0.0, point.z - me.chest.z);
+        let d = flat.length();
+        if d > 1.0 {
+            to_target = flat / d;
+            distance_cm = d;
         }
+        mind.aim = yaw(to_target);
+        out.bearing = Some(Bearing {
+            to_target,
+            distance_cm,
+        });
     }
     let Some(mut chosen) = found.best_move else {
         out.search = Some(found);

@@ -1357,6 +1357,11 @@ fn duellist(
                     .and_then(|levels| levels.iter().find(|(contact, _)| *contact == id))
                     .map(|(_, level)| *level)
                     .unwrap_or(if is_foe { 3 } else { 0 });
+                let estimate = if is_foe {
+                    Some(combat::foe_estimate(&foe, traits.skill))
+                } else {
+                    None
+                };
                 let measured = if is_foe {
                     None
                 } else {
@@ -1390,6 +1395,7 @@ fn duellist(
                     hostility: c.hostility,
                     unreachable: c.flags & crate::contacts::UNREACHABLE != 0,
                     who: Some(c.character),
+                    estimate: estimate.or_else(|| measured.as_ref().map(|step| step.origin)),
                     ..combat::Contact::default()
                 });
                 contact_at.push(measured);
@@ -1399,6 +1405,7 @@ fn duellist(
                     contacts.push(combat::Contact {
                         character: false,
                         wall: Some(*step),
+                        estimate: Some(step.centre),
                         ..combat::Contact::default()
                     });
                     contact_at.push(None);
@@ -1407,6 +1414,7 @@ fn duellist(
                     contacts.push(combat::Contact {
                         character: false,
                         blast: Some(*step),
+                        estimate: Some(step.at),
                         ..combat::Contact::default()
                     });
                     contact_at.push(None);
