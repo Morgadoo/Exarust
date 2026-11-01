@@ -435,6 +435,29 @@ fn the_drives_of_a_fresh_pressing_fighter() {
 }
 
 #[test]
+fn a_cleaving_foe_doubles_the_drive() {
+    let me = Body::default();
+    let foe = Foe {
+        attack_flags: exa_combat::swing::flags::CLEAVING,
+        ..Foe::default()
+    };
+    let mut mind = CombatMind {
+        level: 3,
+        eagerness: 0.5,
+        pressing: true,
+        ..CombatMind::default()
+    };
+    // Seed 1's draw of 40 is 1: the press holds.
+    let mut roll = 1;
+    let open = drives(&mut mind, &me, None, NOVICE, &mut roll);
+    mind.pressing = true;
+    roll = 1;
+    let cleaving = drives(&mut mind, &me, Some(&foe), NOVICE, &mut roll);
+    assert_eq!((open.attack, open.strike), (4.0, 1.5));
+    assert_eq!((cleaving.attack, cleaving.strike), (8.0, 3.0));
+}
+
+#[test]
 fn a_recoiled_swing_is_not_driven_as_a_live_one() {
     let live = Body {
         condition: ATTACKING,

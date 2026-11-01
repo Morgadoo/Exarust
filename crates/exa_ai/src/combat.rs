@@ -333,6 +333,8 @@ pub struct Foe {
     pub motion: i32,
     pub weapon_class: u32,
     pub rules: u32,
+    /// The foe's swing flags. A cleaving foe doubles the attack and the
+    /// strike drives.
     pub attack_flags: u32,
     pub chest: Vec3,
     pub step_goal: Vec3,

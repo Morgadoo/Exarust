@@ -1271,6 +1271,7 @@ fn duellist(
             facing: foe_motion.facing,
             scale: target_fighter.map_or(1.0, |f| f.stats.scale),
             rules: target_fighter.map_or(0, |f| f.stats.rules.0),
+            attack_flags: target_swing,
             crouch: target_body
                 .and_then(|(_, _, rag, ..)| rag)
                 .map_or(0.0, Ragdoll::crouch),
