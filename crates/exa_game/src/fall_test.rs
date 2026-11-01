@@ -153,6 +153,28 @@ fn the_player_fades_then_dies_4_seconds_after() {
     assert!(world.get_entity(root).is_err());
 }
 
+/// The player's death tells every other character to forget them: the body
+/// and its root, and nothing else.
+#[test]
+fn the_players_fall_makes_everyone_forget_them() {
+    let (mut world, root, body) = falling(Branch::Falling, true);
+    let other = world.spawn_empty().id();
+    let mut foe = exa_ai::combatant::Combatant::default();
+    foe.target = Some(body);
+    foe.look_target = Some(root);
+    foe.holder = Some(body);
+    foe.other_target = Some(other);
+    let watcher = world.spawn(foe).id();
+    check_at(&mut world, 0);
+    check_at(&mut world, 84);
+    check_at(&mut world, 334);
+    let kept = world.get::<exa_ai::combatant::Combatant>(watcher).unwrap();
+    assert_eq!(kept.target, None);
+    assert_eq!(kept.look_target, None);
+    assert_eq!(kept.holder, None);
+    assert_eq!(kept.other_target, Some(other));
+}
+
 /// The check runs only in the falls branch, and only on a living body.
 #[test]
 fn only_the_falls_branch_checks() {

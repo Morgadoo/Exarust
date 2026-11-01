@@ -134,6 +134,7 @@ pub(crate) fn fall_to_death(
         Option<&ChildOf>,
         Option<&mut CharacterVoice>,
     )>,
+    mut combatants: Query<&mut exa_ai::combatant::Combatant>,
     mut sets: Local<bevy::platform::collections::HashMap<String, u32>>,
 ) {
     let now = ticks.millis();
@@ -223,9 +224,19 @@ pub(crate) fn fall_to_death(
             }
             // The death routine's lower-leg pass, then the class writer's
             // 0: the feet leave the living layer before the body is taken
-            // out.
+            // out. The player's behaviour reset first tells every other
+            // character to forget them.
             body.clear_death_strikes();
             pairs::set_leg_layers(&mut body.parts, 0);
+            if player.is_some() {
+                let root = parent.map(ChildOf::parent);
+                for mut combatant in &mut combatants {
+                    combatant.forget(entity);
+                    if let Some(root) = root {
+                        combatant.forget(root);
+                    }
+                }
+            }
             take_out(&mut commands, entity, parent);
             info!(
                 "{entity:?} falls to its death, tick {}, {} ms after it was lost",
