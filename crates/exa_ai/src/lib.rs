@@ -888,7 +888,7 @@ fn duellist(
             Option<&presence::Presence>,
             Option<&exa_combat::AttackHook>,
             Option<&exa_physics::body::locomotion::Locomotor>,
-            Option<&exa_physics::body::locomotion::Locomotion>,
+            Option<&mut exa_physics::body::locomotion::Locomotion>,
             Option<&mut exa_character::record::CharacterData>,
         ),
     )>,
@@ -923,7 +923,7 @@ fn duellist(
         gt,
         ragdoll,
         fighter,
-        (mut powers, presence, attack_hook, locomotor, walk, mut record),
+        (mut powers, presence, attack_hook, locomotor, mut walk, mut record),
     ) in &mut npcs
     {
         let Ok((mut body, root_gt)) = roots.get_mut(parent.parent()) else {
@@ -958,7 +958,7 @@ fn duellist(
                 fallen: condition.fallen_or_dying(),
                 busy: condition.busy(),
                 moving: locomotor.is_some_and(|l| l.moving()),
-                free_walk: walk.is_some_and(|w| w.free_walk),
+                free_walk: walk.as_ref().is_some_and(|w| w.free_walk),
             },
         );
         if start {
@@ -1701,6 +1701,11 @@ fn duellist(
                     .record
                     .experience
                     .wrapping_add(out.practice_paid);
+            }
+            if out.clear_slow_turn
+                && let Some(walk) = walk.as_mut()
+            {
+                walk.slow_turn = false;
             }
             let chased = field.chase.and_then(|c| c.outcome);
             placed = matches!(out.exit, None | Some(combat::Exit::NoPlace));
@@ -2996,6 +3001,52 @@ mod tests {
         assert!(lunging);
         assert_ne!(action, combat::DRAW_WEAPON_ACTION);
         assert_eq!(requested, combat::DRAW_WEAPON);
+    }
+
+    /// Entering combat leaves the exploration slow turn. The next tick, once
+    /// the fight is underway, drops it. A fall never reaches that tick.
+    #[test]
+    fn a_fight_drops_the_exploration_slow_turn() {
+        use exa_physics::body::locomotion::Locomotion;
+
+        let (mut app, fighter, _) = duel(3.0, false);
+        app.world_mut().entity_mut(fighter).insert(Locomotion {
+            slow_turn: true,
+            ..Locomotion::default()
+        });
+        engage(&mut app, fighter);
+        step(&mut app);
+        assert!(
+            app.world()
+                .get::<Locomotion>(fighter)
+                .unwrap()
+                .slow_turn
+        );
+        step(&mut app);
+        assert!(
+            !app.world()
+                .get::<Locomotion>(fighter)
+                .unwrap()
+                .slow_turn
+        );
+
+        let (mut down, fighter, _) = duel(3.0, false);
+        down.world_mut().entity_mut(fighter).insert((
+            Locomotion {
+                slow_turn: true,
+                ..Locomotion::default()
+            },
+            Condition::DOWN,
+        ));
+        engage(&mut down, fighter);
+        step(&mut down);
+        step(&mut down);
+        assert!(
+            down.world()
+                .get::<Locomotion>(fighter)
+                .unwrap()
+                .slow_turn
+        );
     }
 
     /// Within the approach band it strikes once eager enough, from where it

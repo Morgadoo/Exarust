@@ -1842,6 +1842,9 @@ pub struct Tick {
     /// A barricade or a blast that pressed harder. The caller drops the foe
     /// and aims at this point.
     pub focus: Option<Vec3>,
+    /// The fight is underway, so the exploration slow turn is dropped. A
+    /// follow, a fall or a leave happens before that and leaves it.
+    pub clear_slow_turn: bool,
 }
 
 /// Why a tick ended early.
@@ -2038,6 +2041,7 @@ pub fn tick(
         look: None,
         adopted: None,
         focus: None,
+        clear_slow_turn: false,
     };
     if !me.stepping && world.leader_calls {
         out.exit = Some(Exit::Follow);
@@ -2066,6 +2070,9 @@ pub fn tick(
         });
         return out;
     }
+    // Past the follow, the fall and the leave: the exploration slow turn
+    // ends, before the estimate is looked at again.
+    out.clear_slow_turn = true;
     let fresh = match (foe, focus) {
         (Some(f), _) => foe_estimate(f, k),
         (None, Some(p)) => p,

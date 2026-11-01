@@ -1575,6 +1575,47 @@ fn early_exits() {
 }
 
 #[test]
+fn a_fight_drops_the_slow_turn() {
+    let (me, foe) = duel();
+    let mut mind = CombatMind::default();
+    let mut field = Flat::new(foe.chest);
+    let mut roll = 0;
+    let mut ran = |me: &Body, foe: Option<&Foe>, leader: bool| {
+        let mut contacts = [foe_contact(3)];
+        tick(
+            &mut mind,
+            me,
+            NOVICE,
+            World {
+                foe,
+                focus: None,
+                contacts: &mut contacts,
+                around: &[],
+                field: &mut field,
+                leader_calls: leader,
+            },
+            &mut roll,
+        )
+        .clear_slow_turn
+    };
+    assert!(ran(&me, Some(&foe), false));
+    let charging = Body {
+        running: true,
+        forward_speed: 3.5,
+        ..me
+    };
+    assert!(ran(&charging, Some(&foe), false));
+    assert!(!ran(&me, Some(&foe), true));
+    let down = Body {
+        condition: DOWN,
+        ..me
+    };
+    assert!(!ran(&down, Some(&foe), false));
+    let dead = Foe { dead: true, ..foe };
+    assert!(!ran(&me, Some(&dead), false));
+}
+
+#[test]
 fn the_guard_leans_against_a_side_swing() {
     let (me, mut foe) = duel();
     foe.motion = 5;
