@@ -445,6 +445,8 @@ struct ContactMeasure {
     /// Its condition is the dead word. The position score then writes
     /// nothing, and the place keeps the zeros it started with.
     dead: bool,
+    /// Condition, reach and whether it is moving, for a blow taken after a switch.
+    posture: combat::Posture,
 }
 
 /// The combat state's view of a duel. The foe is the target. Another
@@ -723,6 +725,11 @@ fn measure_contact(
         skill,
         blow,
         dead: condition.is_dead(),
+        posture: combat::Posture {
+            condition: condition.0,
+            reach_cm: reach_of(fighter_entity, blades) * CM,
+            running: locomotor.is_some_and(|l| l.moving()),
+        },
     })
 }
 
@@ -1396,6 +1403,15 @@ fn duellist(
                     unreachable: c.flags & crate::contacts::UNREACHABLE != 0,
                     who: Some(c.character),
                     estimate: estimate.or_else(|| measured.as_ref().map(|step| step.origin)),
+                    posture: if is_foe {
+                        Some(combat::Posture {
+                            condition: foe.condition,
+                            reach_cm: foe.reach_cm,
+                            running: foe.running,
+                        })
+                    } else {
+                        measured.as_ref().map(|step| step.posture)
+                    },
                     ..combat::Contact::default()
                 });
                 contact_at.push(measured);
@@ -2092,6 +2108,11 @@ mod tests {
                     skill: 0.0,
                     blow: place::Blow::default(),
                     dead: false,
+                    posture: combat::Posture {
+                        condition: 0,
+                        reach_cm: 50.0,
+                        running: false,
+                    },
                 }),
             ],
             grid: None,
@@ -2124,6 +2145,11 @@ mod tests {
             skill: 0.0,
             blow: place::Blow::default(),
             dead: true,
+            posture: combat::Posture {
+                condition: 0,
+                reach_cm: 50.0,
+                running: false,
+            },
         };
         let spot = place::Spot {
             other_reach_cm: 50.0,

@@ -951,6 +951,63 @@ fn a_nearer_character_is_the_foe_for_the_steps_after() {
 }
 
 #[test]
+fn a_downed_character_just_taken_is_struck_overhead() {
+    let (mut me, foe) = duel();
+    me.weapon_class = 0x10;
+    me.look = Vec3::Z;
+    me.heading = Vec3::Z;
+    me.step_cm = 80.0;
+    let mut mind = CombatMind {
+        level: 3,
+        eagerness: 6.0,
+        pressing: true,
+        ..CombatMind::default()
+    };
+    let mut contacts = [
+        Contact {
+            level: 3,
+            is_foe: true,
+            character: true,
+            estimate: Some(Vec3::new(0.0, 0.0, 800.0)),
+            posture: Some(Posture {
+                condition: 0,
+                reach_cm: 50.0,
+                running: false,
+            }),
+            ..Contact::default()
+        },
+        Contact {
+            level: 3,
+            character: true,
+            estimate: Some(Vec3::new(150.0, 0.0, 0.0)),
+            posture: Some(Posture {
+                condition: DOWN,
+                reach_cm: 40.0,
+                running: false,
+            }),
+            ..Contact::default()
+        },
+    ];
+    let mut field = Beside;
+    let mut roll = 1;
+    let t = tick(
+        &mut mind,
+        &me,
+        NOVICE,
+        World {
+            foe: Some(&foe),
+            focus: None,
+            contacts: &mut contacts,
+            around: &[],
+            field: &mut field,
+            leader_calls: false,
+        },
+        &mut roll,
+    );
+    assert_eq!(t.blow.motion, Some(AttackMotion::Overhead));
+}
+
+#[test]
 fn a_friend_in_the_way_stops_the_strike() {
     let (me, foe) = duel();
     let mut mind = CombatMind {

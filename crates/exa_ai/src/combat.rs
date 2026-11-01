@@ -632,6 +632,9 @@ pub struct Contact {
     pub who: Option<Entity>,
     /// Where this contact is estimated (cm), for the aim once it is taken.
     pub estimate: Option<Vec3>,
+    /// How this contact stands, so a blow taken after a switch reads them
+    /// and not the foe the tick started with.
+    pub posture: Option<Posture>,
     /// A barricade this contact is: the combat tick asks it for the step away
     /// instead of a fighter's place score.
     pub wall: Option<WallStep>,
@@ -639,6 +642,14 @@ pub struct Contact {
     pub blast: Option<BlastStep>,
     /// Its priority this tick (written).
     pub priority: f32,
+}
+
+/// The part of a character the blow and the guard lean read.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Posture {
+    pub condition: u32,
+    pub reach_cm: f32,
+    pub running: bool,
 }
 
 /// A contact's score of one place, from the position score.
@@ -2110,6 +2121,17 @@ pub fn tick(
             distance_cm,
         });
     }
+    // The blow and the guard lean read the character just taken.
+    let switched_foe = found.switched.and_then(|c| {
+        world.contacts[c].posture.map(|p| Foe {
+            condition: p.condition,
+            reach_cm: p.reach_cm,
+            running: p.running,
+            dead: p.condition & 0x800 != 0,
+            ..foe.copied().unwrap_or_default()
+        })
+    });
+    let strike_foe = switched_foe.as_ref().or(foe);
     let Some(mut chosen) = found.best_move else {
         out.search = Some(found);
         out.exit = Some(Exit::NoPlace);
@@ -2157,7 +2179,7 @@ pub fn tick(
         guard_kind = 1;
     }
     if guard_kind == 0 {
-        let blow = choose_blow(mind, me, foe, k, chosen, &place, roll);
+        let blow = choose_blow(mind, me, strike_foe, k, chosen, &place, roll);
         out.blow.motion = blow.motion;
         out.blow.set_flags |= blow.set_flags;
         if blow.guard {
@@ -2187,7 +2209,7 @@ pub fn tick(
                 }
             }
         }
-        if let Some(f) = foe {
+        if let Some(f) = strike_foe {
             let edge = f.reach_cm + 50.0;
             let mut lean = if distance_cm < edge {
                 if f.reach_cm - 70.0 < distance_cm {
