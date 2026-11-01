@@ -2810,6 +2810,12 @@ impl Ragdoll {
         self.drive.as_ref().is_some_and(|d| d.stepping())
     }
 
+    /// The step target (m) while a recovery or stagger step is running.
+    pub fn step_target(&self) -> Option<Vec3> {
+        let drive = self.drive.as_ref()?;
+        drive.stepping().then_some(drive.steps.target)
+    }
+
     /// The original's force release on a shocked body: the step that was
     /// running ends (its feet are placed next tick), the clip rate is set
     /// to 0 and the body's next allowed shock is stamped. The caller sets

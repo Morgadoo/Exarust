@@ -607,10 +607,28 @@ fn published_blow(
     }
 }
 
+/// The step the position score reads, in centimetres. A recovery or stagger
+/// step on the body wins, because that is the body's own step. Otherwise the
+/// combat step, which is kept on the duellist rather than written onto the
+/// body. Neither: not stepping, and `fallback_cm` is only a stand-in.
+fn step_measure(
+    ragdoll: Option<&Ragdoll>,
+    combat_goal_m: Option<Vec3>,
+    fallback_cm: Vec3,
+) -> (bool, Vec3) {
+    if let Some(target) = ragdoll.and_then(Ragdoll::step_target) {
+        return (true, target * CM);
+    }
+    if let Some(goal) = combat_goal_m {
+        return (true, goal * CM);
+    }
+    (false, fallback_cm)
+}
+
 /// Where the position score measures `who` from. No transform: the caller
 /// leaves the contact out, rather than scoring it as the foe. A body under
 /// `who` supplies the chest, the reach and the swing; without one, `who`
-/// stands unarmed. Its step is not read (the same as the foe's).
+/// stands unarmed. `combat_goal_m` is its combat step, when it has one.
 #[allow(clippy::type_complexity)]
 fn measure_contact(
     who: Entity,
@@ -632,6 +650,7 @@ fn measure_contact(
         &Query<&Blade>,
         &Query<&SwingState, Without<Duellist>>,
         Option<&Motions>,
+        Option<Vec3>,
     ),
     skill: f32,
 ) -> Option<ContactMeasure> {
@@ -650,7 +669,9 @@ fn measure_contact(
     let fighter = body.map(|(_, _, _, f, ..)| f);
     let anim = body.and_then(|(_, _, _, _, a, _)| a);
     let locomotor = body.and_then(|(.., l)| l);
-    let (blades, swings, motions) = gear;
+    let (blades, swings, motions, combat_goal_m) = gear;
+    let (stepping, step_goal_cm) =
+        step_measure(body.and_then(|(_, _, rag, ..)| rag), combat_goal_m, chest);
     let phase = anim
         .zip(motions)
         .and_then(|(a, m)| m.clip(a, &a.action).map(|c| a.clip_progress(c)))
@@ -662,8 +683,8 @@ fn measure_contact(
         speed_cm: locomotor.map_or(0.0, |l| l.speed),
         condition: condition.0,
         locomotion: locomotor.is_some_and(|l| l.amount != 0.0),
-        stepping: false,
-        step_goal_cm: chest,
+        stepping,
+        step_goal_cm,
         attacking: condition == Condition::ATTACKING,
         phase,
         skill,
@@ -756,6 +777,12 @@ fn duellist(
     turn.next_turn();
     let tick_now = ticks.as_ref().map(|t| t.0);
     let now = ticks.map_or(0, |t| t.millis());
+    // Each duellist's combat step, read before any of them moves, so a later
+    // one is scored against the step the earlier one had at the start.
+    let combat_steps: Vec<(Entity, Vec3)> = npcs
+        .iter()
+        .filter_map(|(entity, ai, ..)| ai.step.map(|step| (entity, step.goal)))
+        .collect();
     for (
         entity,
         mut ai,
@@ -1081,9 +1108,16 @@ fn duellist(
             .map_or(0.0, |p| p.skill);
         // The position score measures the foe from a point on its body,
         // not its body's own position: ahead of it standing, out from its
-        // chest by 70 ticks of its speed while it moves. The duellist's
-        // target's step flag is not exposed here, so the stepping branch is
-        // not taken [guess: only its locomotion amount is read].
+        // chest by 70 ticks of its speed while it moves, or part way to its
+        // step's goal while it steps.
+        let (foe_stepping, foe_step_cm) = step_measure(
+            target_body.and_then(|(_, _, rag, ..)| rag),
+            combat_steps
+                .iter()
+                .find(|(id, _)| *id == foe_key)
+                .map(|(_, goal)| *goal),
+            foe_chest,
+        );
         let foe_origin = place::measured_origin(place::Origin {
             body_cm: target.translation() * CM,
             chest_cm: foe_chest,
@@ -1091,8 +1125,8 @@ fn duellist(
             speed_cm: target_speed_cm,
             condition: target_condition.0,
             locomotion: target_moving,
-            stepping: false,
-            step_goal_cm: foe_chest,
+            stepping: foe_stepping,
+            step_goal_cm: foe_step_cm,
             attacking: target_condition == Condition::ATTACKING,
             phase,
             skill: foe_skill,
@@ -1295,7 +1329,7 @@ fn duellist(
                     .map(|c| (c.id, c.level))
                     .collect::<Vec<_>>()
             });
-            let gear = (&blades, &target_swings, motions.as_deref());
+            let queries = (&blades, &target_swings, motions.as_deref());
             let mut contacts = Vec::new();
             let mut contact_at = Vec::new();
             for c in &combatant.contacts {
@@ -1314,13 +1348,17 @@ fn duellist(
                         .ok()
                         .and_then(|b| b.personality)
                         .map_or(0.0, |p| p.skill);
+                    let combat_goal = combat_steps
+                        .iter()
+                        .find(|(id, _)| *id == c.character)
+                        .map(|(_, goal)| *goal);
                     let Some(measured) = measure_contact(
                         c.character,
                         me_cm,
                         &targets,
                         &bodies,
                         &children,
-                        gear,
+                        (queries.0, queries.1, queries.2, combat_goal),
                         skill,
                     ) else {
                         continue;
@@ -2018,6 +2056,58 @@ mod tests {
         }
         let goal = goal.expect("a step");
         assert!(goal.z > 0.4 && goal.x > -0.4, "{goal:?}");
+    }
+
+    /// A foe five metres ahead, stepping out to the right, is measured part
+    /// way to that goal. The fight approaches that point, so the first step
+    /// goes right instead of straight in.
+    #[test]
+    fn a_stepping_foe_is_measured_toward_its_step() {
+        let (mut app, foe, _) = duel(5.0, false);
+        let target = app.world().get::<Duellist>(foe).unwrap().target;
+        let root = app
+            .world_mut()
+            .spawn((CharacterBody::default(), GlobalTransform::IDENTITY))
+            .id();
+        app.world_mut().entity_mut(target).insert((
+            Duellist::new(foe),
+            Transform::default(),
+            Animator::new("Default", "Idle"),
+            ChildOf(root),
+        ));
+        app.world_mut().get_mut::<Duellist>(target).unwrap().step = Some(Stepping {
+            goal: Vec3::new(2.0, 0.0, -4.4),
+            started_ms: 0,
+            state: 0,
+        });
+        let mut roll = 1;
+        let mut npc = brain::Npc::new([0.0; 4]);
+        npc.personality = Some(personality::personality(
+            100.0, [0.0; 4], 0.0, false, &mut roll,
+        ));
+        app.world_mut().entity_mut(target).insert(npc);
+        engage(&mut app, foe);
+        step(&mut app);
+        let mut goal = None;
+        for _ in 0..1500 {
+            step(&mut app);
+            if let Some(step) = app.world().get::<Duellist>(foe).unwrap().step {
+                goal = Some(step.goal);
+                break;
+            }
+        }
+        let goal = goal.expect("a step");
+        assert!(goal.x > 0.4 && goal.z < 0.4, "{goal:?}");
+    }
+
+    #[test]
+    fn a_combat_step_is_the_measured_goal() {
+        let (stepping, goal) = step_measure(None, Some(Vec3::new(1.0, 0.0, 2.0)), Vec3::ZERO);
+        assert!(stepping);
+        assert_eq!(goal, Vec3::new(100.0, 0.0, 200.0));
+        let (standing, fallback) = step_measure(None, None, Vec3::new(3.0, 0.0, 0.0));
+        assert!(!standing);
+        assert_eq!(fallback, Vec3::new(3.0, 0.0, 0.0));
     }
 
     /// Within the approach band it strikes once eager enough, from where it

@@ -135,6 +135,8 @@ fn a_shock_steps_from_the_standing_point() {
     assert!(steps.knockback);
     assert!((steps.target.x - 3.0).abs() < 1e-5, "{}", steps.target);
     assert!((steps.target.z - 2.0).abs() < 1e-5, "{}", steps.target);
+    let target = steps.target;
+    assert_eq!(body.step_target(), Some(target));
     // Aimed: the step leaves the frame origin, at the pelvis, not the feet.
     let mut body = ball(Vec3::ZERO).with_drive();
     body.drive
