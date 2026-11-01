@@ -650,6 +650,10 @@ pub struct Posture {
     pub condition: u32,
     pub reach_cm: f32,
     pub running: bool,
+    /// How far they crouch, 0 to 1. Past 0.9 the blow is overhead.
+    pub crouch: f32,
+    /// Their attack motion. A side swing leans the guard.
+    pub motion: i32,
 }
 
 /// A contact's score of one place, from the position score.
@@ -2127,6 +2131,8 @@ pub fn tick(
             condition: p.condition,
             reach_cm: p.reach_cm,
             running: p.running,
+            crouch: p.crouch,
+            motion: p.motion,
             dead: p.condition & 0x800 != 0,
             ..foe.copied().unwrap_or_default()
         })

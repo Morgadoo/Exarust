@@ -419,6 +419,18 @@ fn weapon_class_of(fighter: Entity, blades: &Query<&Blade>) -> u8 {
 
 /// The motion id a clip plays, as the combat state reads it: the stances
 /// 3 and 4, the side attacks 5–7 and 8–10, the stab 11, the overhead 12.
+/// The attack motion the guard lean reads. Not swinging: 0, so the lean
+/// does not apply. A main-hand side is 5–7 and the other hand 8–10.
+fn swing_motion(attacking: Option<&Attacking>) -> i32 {
+    match attacking.map(|a| a.motion) {
+        Some(AttackMotion::Main(i)) => 5 + i as i32,
+        Some(AttackMotion::Other(i)) => 8 + i as i32,
+        Some(AttackMotion::Stab) => 0xb,
+        Some(AttackMotion::Overhead) => 0xc,
+        None => 0,
+    }
+}
+
 fn motion_of(attacking: Option<&Attacking>, stance: Stance) -> i32 {
     match attacking.map(|a| a.motion) {
         Some(AttackMotion::Main(i)) => 5 + i as i32,
@@ -661,6 +673,7 @@ fn measure_contact(
         &Query<&SwingState, Without<Duellist>>,
         Option<&Motions>,
         Option<Vec3>,
+        &Query<&Attacking>,
     ),
     skill: f32,
 ) -> Option<ContactMeasure> {
@@ -679,7 +692,7 @@ fn measure_contact(
     let fighter = body.map(|(_, _, _, f, ..)| f);
     let anim = body.and_then(|(_, _, _, _, a, _)| a);
     let locomotor = body.and_then(|(.., l)| l);
-    let (blades, swings, motions, combat_goal_m) = gear;
+    let (blades, swings, motions, combat_goal_m, attacks) = gear;
     let (stepping, step_goal_cm) =
         step_measure(body.and_then(|(_, _, rag, ..)| rag), combat_goal_m, chest);
     let phase = anim
@@ -729,6 +742,10 @@ fn measure_contact(
             condition: condition.0,
             reach_cm: reach_of(fighter_entity, blades) * CM,
             running: locomotor.is_some_and(|l| l.moving()),
+            crouch: body
+                .and_then(|(_, _, rag, ..)| rag)
+                .map_or(0.0, Ragdoll::crouch),
+            motion: swing_motion(attacks.get(fighter_entity).ok()),
         },
     })
 }
@@ -755,7 +772,11 @@ fn duellist(
         Without<Duellist>,
     >,
     children: Query<&Children>,
-    (blades, target_swings): (Query<&Blade>, Query<&SwingState, Without<Duellist>>),
+    (blades, target_swings, attacks): (
+        Query<&Blade>,
+        Query<&SwingState, Without<Duellist>>,
+        Query<&Attacking>,
+    ),
     mut brains: Query<&mut brain::Npc>,
     role_db: Option<Res<brain::RoleDatabase>>,
     role_lists: Query<&crate::roles::Roles>,
@@ -1170,6 +1191,10 @@ fn duellist(
             facing: foe_motion.facing,
             scale: target_fighter.map_or(1.0, |f| f.stats.scale),
             rules: target_fighter.map_or(0, |f| f.stats.rules.0),
+            crouch: target_body
+                .and_then(|(_, _, rag, ..)| rag)
+                .map_or(0.0, Ragdoll::crouch),
+            motion: swing_motion(attacks.get(foe_key).ok()),
             ..combat::Foe::default()
         };
         let dir_to_me = -flat.normalize_or_zero();
@@ -1387,7 +1412,7 @@ fn duellist(
                         &targets,
                         &bodies,
                         &children,
-                        (queries.0, queries.1, queries.2, combat_goal),
+                        (queries.0, queries.1, queries.2, combat_goal, &attacks),
                         skill,
                     ) else {
                         continue;
@@ -1408,6 +1433,10 @@ fn duellist(
                             condition: foe.condition,
                             reach_cm: foe.reach_cm,
                             running: foe.running,
+                            crouch: target_body
+                                .and_then(|(_, _, rag, ..)| rag)
+                                .map_or(0.0, Ragdoll::crouch),
+                            motion: swing_motion(attacks.get(foe_key).ok()),
                         })
                     } else {
                         measured.as_ref().map(|step| step.posture)
@@ -2112,6 +2141,8 @@ mod tests {
                         condition: 0,
                         reach_cm: 50.0,
                         running: false,
+                        crouch: 0.0,
+                        motion: 0,
                     },
                 }),
             ],
@@ -2149,6 +2180,8 @@ mod tests {
                 condition: 0,
                 reach_cm: 50.0,
                 running: false,
+                crouch: 0.0,
+                motion: 0,
             },
         };
         let spot = place::Spot {

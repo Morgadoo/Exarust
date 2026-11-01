@@ -2810,6 +2810,11 @@ impl Ragdoll {
         self.drive.as_ref().is_some_and(|d| d.stepping())
     }
 
+    /// How far the body crouches, 0 to 1.
+    pub fn crouch(&self) -> f32 {
+        self.drive.as_ref().map_or(0.0, |d| d.bearing.crouch)
+    }
+
     /// The step target (m) while a recovery or stagger step is running.
     pub fn step_target(&self) -> Option<Vec3> {
         let drive = self.drive.as_ref()?;
