@@ -116,6 +116,14 @@ impl Plugin for AiPlugin {
                 schedule.set_executor(bevy::ecs::schedule::SingleThreadedExecutor::new());
             })
             .add_systems(FixedUpdate, run_brain_chain.in_set(BrainTick))
+            // A requested motion starts before the behaviour reads it, for
+            // every body, not only one already in a fight.
+            .add_systems(
+                FixedUpdate,
+                begin_requested
+                    .in_set(exa_physics::body::TickBehaviour)
+                    .before(BrainTick),
+            )
             .add_systems(
                 BrainChain,
                 (
@@ -836,6 +844,48 @@ fn friend_bystander(
     })
 }
 
+/// Starts a motion a body was asked for, before the behaviour reads it.
+/// With muscles and not fallen, a free body starts it and the request is
+/// dropped. A busy body drops it too, unless it is walking toward a goal,
+/// which keeps it. A body without muscles, or a fallen one, keeps it.
+#[allow(clippy::type_complexity)]
+fn begin_requested(
+    motions: Option<Res<Motions>>,
+    mut bodies: Query<(
+        &mut Animator,
+        &Condition,
+        Option<&Stance>,
+        (
+            Option<&Ragdoll>,
+            Option<&exa_physics::body::locomotion::Locomotor>,
+            Option<&exa_physics::body::locomotion::Locomotion>,
+        ),
+    )>,
+) {
+    for (mut anim, condition, stance, (ragdoll, locomotor, walk)) in &mut bodies {
+        let pending = anim.requested;
+        let (next, start) = combat::take_requested(
+            pending,
+            combat::RequestGate {
+                muscles: ragdoll.is_some_and(|body| body.drive.is_some()),
+                fallen: condition.fallen_or_dying(),
+                busy: condition.busy(),
+                moving: locomotor.is_some_and(|step| step.moving()),
+                free_walk: walk.is_some_and(|step| step.free_walk),
+            },
+        );
+        if start {
+            let then = stance.copied().map(Stance::action).unwrap_or("Idle");
+            if pending == combat::DRAW_WEAPON {
+                anim.play_once(combat::DRAW_WEAPON_ACTION, then);
+            } else if let Some(set) = motions.as_deref() {
+                set.start_requested(&mut anim, pending as u32);
+            }
+        }
+        anim.requested = next;
+    }
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn duellist(
     mut commands: Commands,
@@ -947,28 +997,6 @@ fn duellist(
         if !ai.engaged {
             continue;
         }
-        // The body tick starts a requested motion before the combat state
-        // reads it. A draw asked last tick starts now when the body is free;
-        // one the body will not start yet stays, and the state watches.
-        let pending = anim.requested;
-        let (next, start) = combat::take_requested(
-            pending,
-            combat::RequestGate {
-                muscles: ragdoll.is_some_and(|body| body.drive.is_some()),
-                fallen: condition.fallen_or_dying(),
-                busy: condition.busy(),
-                moving: locomotor.is_some_and(|l| l.moving()),
-                free_walk: walk.as_ref().is_some_and(|w| w.free_walk),
-            },
-        );
-        if start {
-            if pending == combat::DRAW_WEAPON {
-                anim.play_once(combat::DRAW_WEAPON_ACTION, stance.action());
-            } else if let Some(set) = motions.as_deref() {
-                set.start_requested(&mut anim, pending as u32);
-            }
-        }
-        anim.requested = next;
         let Ok((target, target_warded)) = targets.get(ai.target) else {
             continue;
         };
@@ -2119,7 +2147,7 @@ mod tests {
         let mut app = App::new();
         app.init_resource::<Time>()
             .add_message::<exa_combat::AttackAskedHook>()
-            .add_systems(Update, duellist);
+            .add_systems(Update, (begin_requested, duellist).chain());
         let target = app
             .world_mut()
             .spawn((
@@ -2915,6 +2943,52 @@ mod tests {
             .to_bits()
         );
         assert_eq!(foe_lesson(None, None, 1.0), 0.0);
+    }
+
+    /// Outside a fight the body tick starts a requested draw when the body
+    /// is free, drops it when the body is busy and standing, and keeps it
+    /// while a busy body walks toward a goal. Without muscles it stays.
+    #[test]
+    fn the_body_tick_starts_a_requested_draw() {
+        use exa_physics::body::locomotion::{Locomotor, Stop};
+
+        let mut app = App::new();
+        app.add_systems(Update, begin_requested);
+        let spawn = |app: &mut App, condition: Condition, moving: bool, muscles: bool| {
+            let id = app
+                .world_mut()
+                .spawn((
+                    Animator::new("Default", "Idle"),
+                    condition,
+                    Stance::Idle,
+                ))
+                .id();
+            if muscles {
+                app.world_mut().entity_mut(id).insert(driven());
+            }
+            if moving {
+                app.world_mut().entity_mut(id).insert(Locomotor {
+                    stop: Stop::Moving,
+                    ..Locomotor::default()
+                });
+            }
+            app.world_mut().get_mut::<Animator>(id).unwrap().requested = combat::DRAW_WEAPON;
+            id
+        };
+        let free = spawn(&mut app, Condition::NORMAL, false, true);
+        let standing = spawn(&mut app, Condition::ATTACKING, false, true);
+        let walking = spawn(&mut app, Condition::ATTACKING, true, true);
+        let limp = spawn(&mut app, Condition::NORMAL, false, false);
+        app.update();
+        let anim = |id| app.world().get::<Animator>(id).unwrap();
+        assert_eq!(anim(free).action, combat::DRAW_WEAPON_ACTION);
+        assert_eq!(anim(free).requested, 0);
+        assert_eq!(anim(standing).action, "Idle");
+        assert_eq!(anim(standing).requested, 0);
+        assert_eq!(anim(walking).action, "Idle");
+        assert_eq!(anim(walking).requested, combat::DRAW_WEAPON);
+        assert_eq!(anim(limp).action, "Idle");
+        assert_eq!(anim(limp).requested, combat::DRAW_WEAPON);
     }
 
     /// A body with muscles, so a requested motion can start.
