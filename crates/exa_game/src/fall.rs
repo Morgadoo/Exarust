@@ -39,7 +39,40 @@ impl Plugin for FallPlugin {
                 .in_set(CharacterStage::Posture)
                 .after(crate::balance::take_posture),
         )
-        .add_systems(FixedUpdate, fall_out_of_world.after(BodySystems));
+        .add_systems(FixedUpdate, fall_out_of_world.after(BodySystems))
+        .add_systems(Update, drive_death_fade);
+    }
+}
+
+/// The death fade's world-bus gain and whether the game pauses, from how many
+/// milliseconds of game time have passed since it started.
+///
+/// The share of the three seconds is taken in single precision. The bus gain
+/// is one minus that share, held at 0 once the share reaches 1. The game
+/// pauses only once the share is past 1, so the moment it completes does not
+/// pause yet.
+pub(crate) fn death_fade_hold(elapsed_ms: f64) -> (f32, bool) {
+    let t = (elapsed_ms.max(0.0) * (1.0 / exa_ui::fade::FADE_MS)) as f32;
+    let pause = t > 1.0;
+    (1.0 - t.min(1.0), pause)
+}
+
+/// While the death fade runs, the world bus follows it down, and the game
+/// pauses once the fade has passed its three seconds.
+fn drive_death_fade(
+    fade: Res<DeathFade>,
+    mut time: ResMut<Time<Virtual>>,
+    mut audio: Option<ResMut<AudioEnvironment>>,
+) {
+    let Some(started) = fade.started else {
+        return;
+    };
+    let (gain, pause) = death_fade_hold((time.elapsed_secs_f64() - started) * 1000.0);
+    if let Some(audio) = audio.as_mut() {
+        audio.buses.world_fade = gain;
+    }
+    if pause && !time.is_paused() {
+        time.pause();
     }
 }
 

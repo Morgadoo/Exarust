@@ -175,6 +175,17 @@ fn the_players_fall_makes_everyone_forget_them() {
     assert_eq!(kept.other_target, Some(other));
 }
 
+/// The world bus follows the fade down, and the game pauses only once the
+/// three seconds are past, not at the moment they complete.
+#[test]
+fn the_death_fade_ducks_the_world_and_then_pauses() {
+    assert_eq!(death_fade_hold(0.0), (1.0, false));
+    assert_eq!(death_fade_hold(1500.0), (0.5, false));
+    assert_eq!(death_fade_hold(3000.0), (0.0, false));
+    assert_eq!(death_fade_hold(3000.1), (0.0, true));
+    assert_eq!(death_fade_hold(-10.0), (1.0, false));
+}
+
 /// The check runs only in the falls branch, and only on a living body.
 #[test]
 fn only_the_falls_branch_checks() {
