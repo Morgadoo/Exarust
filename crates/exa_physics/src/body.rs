@@ -4278,6 +4278,11 @@ impl Ragdoll {
         steps::begin_knockback(&mut drive.steps, chest + offset);
     }
 
+    /// The grip list holds a second entry: a shock's cry is the short groan.
+    pub fn second_grip(&self) -> bool {
+        self.grabs.len() > 1
+    }
+
     /// The shock burn's stagger step: from the standing point, 2 m along
     /// `direction`.
     pub fn shock_stagger(&mut self, direction: Vec3) {

@@ -185,6 +185,9 @@ pub struct ShockTaken {
     pub yellow: f32,
     pub pitch: f32,
     pub gain: f32,
+    /// The pain cry when the shock burns: its gain, then its pitch. A release
+    /// and a collapsing body draw none.
+    pub cry: Option<(f32, f32)>,
 }
 
 /// The shock reaction's clock and health rule, as the original's character
@@ -219,11 +222,24 @@ pub fn shock_reaction(
         };
         (now + SHOCK_SPACING_MS + spread, left)
     };
+    // A burn cries after the delay: the first draw is the pitch, the second
+    // the gain. A release and a collapsing body do not.
+    let cry = if !dying && !(released && !dying) {
+        let first = roll.unit();
+        let second = roll.unit();
+        Some((
+            (f64::from(second) * 0.2 + 0.4) as f32,
+            (f64::from(first) * 0.2 + 0.8) as f32,
+        ))
+    } else {
+        None
+    };
     Some(ShockTaken {
         next,
         yellow,
         pitch,
         gain,
+        cry,
     })
 }
 
@@ -381,6 +397,7 @@ fn shock_fighters(
         Option<&mut exa_physics::body::locomotion::Locomotion>,
         Option<&mut exa_physics::body::locomotion::Locomotor>,
         Option<&mut exa_anim::Animator>,
+        Option<&mut exa_combat::voice::CharacterVoice>,
     )>,
     ticks: Option<Res<BodyTicks>>,
     motions: Option<Res<exa_anim::Motions>>,
@@ -402,6 +419,7 @@ fn shock_fighters(
             mut locomotion,
             mut locomotor,
             mut animator,
+            mut voice,
         )) = fighters.get_mut(shock.body)
         else {
             continue;
@@ -450,6 +468,11 @@ fn shock_fighters(
                     flags.0 |= StateFlags::SHOCK_STAGGER;
                 }
             }
+            let cry_line = if body.as_deref().is_some_and(|b| b.second_grip()) {
+                1
+            } else {
+                2
+            };
             if !dying && let Some(mut body) = body {
                 body.shock_stagger(shock.direction);
             }
@@ -466,6 +489,22 @@ fn shock_fighters(
                     (motions.as_deref(), animator.as_deref_mut())
                 {
                     motions.start_requested(animator, 3);
+                }
+                if let Some((gain, pitch)) = taken.cry
+                    && let Some(voice) = voice.as_deref_mut()
+                {
+                    let name = voice.set(cry_line).unwrap_or_default().to_string();
+                    let set = audio.load_cry(&name);
+                    let answer = voice.speak(
+                        cry_line,
+                        set != exa_audio::SoundBank::EMPTY_SET,
+                        now as u32,
+                        gain,
+                        pitch,
+                    );
+                    if let exa_combat::voice::Answer::Played(spoken) = answer {
+                        audio.play_cry(set, chest, spoken.volume, spoken.pitch);
+                    }
                 }
             }
         }
@@ -485,6 +524,29 @@ struct ShockAudio<'w> {
     game: Option<Res<'w, exa_assets::Game>>,
     bank: Option<ResMut<'w, exa_audio::SoundBank>>,
     sources: Option<ResMut<'w, bevy::asset::Assets<bevy::audio::AudioSource>>>,
+    env: Option<ResMut<'w, exa_audio::AudioEnvironment>>,
+}
+
+impl ShockAudio<'_> {
+    /// The cry's set, or none when the game is not loaded.
+    fn load_cry(&mut self, name: &str) -> u32 {
+        let (Some(game), Some(bank), Some(sources)) = (
+            self.game.as_ref(),
+            self.bank.as_mut(),
+            self.sources.as_mut(),
+        ) else {
+            return exa_audio::SoundBank::EMPTY_SET;
+        };
+        bank.load_set(game, sources, name)
+    }
+
+    /// Plays a loaded cry at the chest.
+    fn play_cry(&mut self, set: u32, at: Option<Vec3>, gain: f32, pitch: f32) {
+        let (Some(bank), Some(env), Some(at)) = (self.bank.as_mut(), self.env.as_mut(), at) else {
+            return;
+        };
+        env.play_set(bank, set, at, gain, pitch, 0);
+    }
 }
 
 /// The shock's hit, at the chest when there is one.
@@ -1128,13 +1190,15 @@ mod tests {
             shock_reaction(Some(672), 521, 0.2, 0.05, false, false, &mut roll),
             None
         );
-        assert_eq!(roll, Roll(3_698_175_007), "a refused shock draws nothing");
+        assert_eq!(roll, Roll(1_172_187_917), "a refused shock draws nothing");
         let taken = shock_reaction(Some(672), 522, 0.2, 0.05, false, false, &mut roll).unwrap();
-        assert_eq!(taken.next, 1_156);
+        assert_eq!(taken.next, 1_054);
+        assert!(taken.cry.is_some());
         assert!((taken.yellow - 0.15).abs() < 1e-6);
         // Collapsing or dead: the clock moves, the health stays.
         let kept = shock_reaction(None, 0, 0.1, 0.05, true, false, &mut roll).unwrap();
         assert_eq!(kept.yellow, 0.1);
+        assert!(kept.cry.is_none());
         assert_eq!(
             shock_reaction(None, 0, 0.03, 0.05, false, false, &mut roll).map(|s| s.yellow),
             Some(0.0)
@@ -1183,7 +1247,7 @@ mod tests {
         assert!((yellow(&app) - 0.15).abs() < 1e-6);
         assert_eq!(
             app.world().get::<ShockReady>(fighter),
-            Some(&ShockReady(1_162))
+            Some(&ShockReady(1_060))
         );
         assert_eq!(
             app.world().get::<StateFlags>(fighter).map(|f| f.0),
