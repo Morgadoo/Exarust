@@ -1372,6 +1372,7 @@ fn duellist(
                     concern: c.concern,
                     hostility: c.hostility,
                     unreachable: c.flags & crate::contacts::UNREACHABLE != 0,
+                    who: Some(c.character),
                     ..combat::Contact::default()
                 });
                 contact_at.push(measured);
@@ -1417,6 +1418,52 @@ fn duellist(
             }
             if let Some(b) = out.bearing {
                 ai.bearing = (b.to_target, b.distance_cm);
+            }
+            // A character that pressed harder than the foe becomes the target.
+            // The estimate is placed on them and the aim turns to it, as a
+            // newly taken foe.
+            if let Some(who) = out.adopted.filter(|who| *who != ai.target)
+                && let Ok((transform, _)) = targets.get(who)
+            {
+                let found = std::iter::once(who)
+                    .chain(children.iter_descendants(who))
+                    .find_map(|e| bodies.get(e).ok());
+                let their_chest = found
+                    .as_ref()
+                    .map(|(_, gt, rag, ..)| stance::chest_point(gt, *rag))
+                    .unwrap_or_else(|| stance::chest_point(transform, None))
+                    * CM;
+                let forward = transform.rotation() * Vec3::Z;
+                let walk = foe_walk(found.as_ref().and_then(|(.., l)| *l), forward);
+                let (stepping, step_goal) = step_measure(
+                    found.as_ref().and_then(|(_, _, rag, ..)| *rag),
+                    combat_steps
+                        .iter()
+                        .find(|(id, _)| *id == who)
+                        .map(|(_, goal)| *goal),
+                    their_chest,
+                );
+                let lead = combat::foe_estimate(
+                    &combat::Foe {
+                        chest: their_chest,
+                        step_goal,
+                        running: walk.moving,
+                        facing: walk.facing,
+                        forward_speed: walk.speed_cm,
+                        stepping,
+                        ..combat::Foe::default()
+                    },
+                    traits.skill,
+                );
+                let previous = ai.bearing.0;
+                let bearing = combat::set_target(&mut ai.mind, lead, chest, previous);
+                ai.bearing = (bearing.to_target, bearing.distance_cm);
+                ai.target = who;
+                combatant.target = Some(who);
+                if let Ok(mut brain) = brains.get_mut(entity) {
+                    brain.turn.look = ai.mind.aim;
+                }
+                info!("duellist {entity:?} takes {who:?} as its foe");
             }
             if let Some(stopped) = out.stop_run
                 && let Some(step) = ai.step.as_mut()
@@ -2098,6 +2145,43 @@ mod tests {
         }
         let goal = goal.expect("a step");
         assert!(goal.x > 0.4 && goal.z < 0.4, "{goal:?}");
+    }
+
+    /// A near character at the fight level presses harder than a far foe, so
+    /// the duellist takes them as its target.
+    #[test]
+    fn the_duellist_takes_the_character_the_tick_prefers() {
+        let (mut app, fighter, _) = duel(8.0, false);
+        engage(&mut app, fighter);
+        step(&mut app);
+        let beside = app
+            .world_mut()
+            .spawn((
+                GlobalTransform::from_translation(Vec3::new(0.0, 0.0, 1.0)),
+                Fighter::default(),
+            ))
+            .id();
+        app.world_mut()
+            .get_mut::<Combatant>(fighter)
+            .unwrap()
+            .contacts
+            .push(combatant::Contact::new(beside));
+        let mut npc = brain::Npc::new([0.0; 4]);
+        npc.contacts.push(contacts::ContactRecord {
+            id: beside.to_bits(),
+            level: 3,
+            ..contacts::ContactRecord::default()
+        });
+        app.world_mut().entity_mut(fighter).insert(npc);
+        let mut took = false;
+        for _ in 0..30 {
+            step(&mut app);
+            if app.world().get::<Duellist>(fighter).unwrap().target == beside {
+                took = true;
+                break;
+            }
+        }
+        assert!(took);
     }
 
     #[test]

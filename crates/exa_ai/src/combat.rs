@@ -75,6 +75,7 @@
 //! one world frame, so those origins are zero here.
 
 use bevy::math::Vec3;
+use bevy::prelude::Entity;
 use exa_combat::attack::AttackMotion;
 use exa_combat::stance::{Stance, stance_by_energy};
 use exa_physics::engine_math::reciprocal_sqrt;
@@ -624,6 +625,9 @@ pub struct Contact {
     pub is_foe: bool,
     /// A character (otherwise an entity, which becomes the focus).
     pub character: bool,
+    /// The character, when this contact is one. The tick adopts it when it
+    /// presses harder than the foe.
+    pub who: Option<Entity>,
     /// A barricade this contact is: the combat tick asks it for the step away
     /// instead of a fighter's place score.
     pub wall: Option<WallStep>,
@@ -1734,6 +1738,9 @@ pub struct Tick {
     pub blow: Blow,
     /// The look direction from the heading.
     pub look: Option<Vec3>,
+    /// A character contact that pressed harder than the foe. The caller takes
+    /// it as the target.
+    pub adopted: Option<Entity>,
 }
 
 /// Why a tick ended early.
@@ -1928,6 +1935,7 @@ pub fn tick(
         marks: StepMarks::default(),
         blow: Blow::default(),
         look: None,
+        adopted: None,
     };
     if !me.stepping && world.leader_calls {
         out.exit = Some(Exit::Follow);
@@ -2040,11 +2048,13 @@ pub fn tick(
         && !world.contacts[c].is_foe
         && world.contacts[c].character
     {
-        // A new foe: committed afresh, the overshoot forgotten.
+        // A new foe: committed afresh, the overshoot forgotten. The caller
+        // points the body at that character and places the estimate.
         mind.fresh_target = true;
         mind.commitment = 1.0;
         mind.overshoot_mean = 0.0;
         mind.stuck = 0;
+        out.adopted = world.contacts[c].who;
     }
     let Some(mut chosen) = found.best_move else {
         out.search = Some(found);
