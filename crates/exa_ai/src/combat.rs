@@ -408,6 +408,8 @@ pub struct Body {
     /// body charges and the tick ends.
     pub forward_speed: f32,
     pub shield: bool,
+    /// The race's heavy claws. A swing turns fifty degrees further; without
+    /// them, open hands turn fifty less.
     pub heavy_claw: bool,
     pub rules: u32,
     /// The race walks on four limbs. Beyond close range it thrusts on one

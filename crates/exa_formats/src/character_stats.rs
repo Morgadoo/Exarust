@@ -324,6 +324,10 @@ pub struct CharacterStats {
     /// Its race walks on four limbs (the second flag word's
     /// [`crate::races::QUADRUPED`]): its stab is resolved as a swing.
     pub quadruped: bool,
+    /// The unarmed setup's heavy-claws state: Sir, the Fael, or a claws
+    /// word the left hand takes as heavy. A swing then turns fifty degrees
+    /// further.
+    pub heavy_claws: bool,
     /// The race's attack bonus (0.2 for the Fael, 0 otherwise). The combat
     /// state's forward-step clock gate scales by one plus it.
     pub attack_bonus: f32,
@@ -444,6 +448,7 @@ impl CharacterStats {
             deflection: record.deflection(),
             encumbrance: 0.0,
             quadruped: stats.flags2 & QUADRUPED != 0,
+            heavy_claws: weapon_record::unarmed(byte, stats.kind).heavy_claws,
             attack_bonus: stats.attack_bonus,
             footsteps: if golem {
                 FootstepSet::Golem

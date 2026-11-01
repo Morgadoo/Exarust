@@ -122,6 +122,24 @@ fn feral_weakens_the_undead() {
     assert_eq!((beyond.feral, beyond.max_energy), (1.0, 0.9));
 }
 
+/// Sir, the Fael and a heavy left claw keep the heavy-claws state; a
+/// human, a ghoul and a gobbler do not.
+#[test]
+fn the_heavy_claws_state_is_kept() {
+    let of = |byte: u8, kind: u32| {
+        let mut race = human();
+        race.stats.kind = kind;
+        CharacterStats::derive(&record(byte, 0.0, 0.0), Some(&race), ALIVE).heavy_claws
+    };
+    use crate::weapon_record::race;
+    assert!(!of(0, 0));
+    assert!(of(race::SIR, 0));
+    assert!(of(race::FAEL, 0));
+    assert!(!of(race::GHOUL, 0));
+    assert!(!of(race::GOBBLER, 1));
+    assert!(of(0, 0x20100));
+}
+
 /// The race's attack bonus is kept: a human has none, and 0.2 is the Fael's.
 #[test]
 fn the_attack_bonus_is_kept() {
