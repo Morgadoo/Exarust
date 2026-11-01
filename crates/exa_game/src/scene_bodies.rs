@@ -133,6 +133,9 @@ pub struct SceneBodyPlan {
     pub act_at_ms: u32,
     /// The behaviour reset the spawn writes, when the caller has one.
     pub behaviour: Option<BehaviourReset>,
+    /// The practice spawn: the record's first three traits are overwritten
+    /// before the body and its brain are built ([`crate::prelude::practice_opponent`]).
+    pub practice: bool,
 }
 
 impl SceneBodyPlan {
@@ -154,6 +157,7 @@ impl SceneBodyPlan {
             brain: BodyBrain::Duellist { reaction_ms: 0 },
             act_at_ms: 0,
             behaviour: None,
+            practice: false,
         }
     }
 
@@ -214,7 +218,8 @@ const PRACTICE_PARTNER_ACT_MS: u32 = 3_000;
 /// A practice partner: the named actor template (`opponent01` and the rest),
 /// standing at the fixed place (identity facing, feet at 5 cm up and 107 cm
 /// along z) with the practice role. Its first action is three seconds after
-/// `now_ms`. A name the templates do not have spawns nothing.
+/// `now_ms`. The spawn overwrites the record's first three traits before the
+/// brain is built. A name the templates do not have spawns nothing.
 #[must_use]
 pub fn practice_partner_plan(name: &str, now_ms: u32) -> SceneBodyPlan {
     let mut body = SceneBodyPlan::base(&Place {
@@ -227,6 +232,7 @@ pub fn practice_partner_plan(name: &str, now_ms: u32) -> SceneBodyPlan {
     // word; the plan's opponent team keeps it off the player's side.
     body.roles = vec![0x10];
     body.act_at_ms = now_ms.wrapping_add(PRACTICE_PARTNER_ACT_MS);
+    body.practice = true;
     body
 }
 
@@ -491,6 +497,10 @@ pub fn spawn_scene_body(
     if plan.id != 0 {
         record.id = plan.id;
     }
+    // Written before the body and its brain are built. The fourth trait stays.
+    if plan.practice {
+        record = crate::prelude::practice_opponent(record).record;
+    }
     // An actor template's local ids name the items after its record, not the
     // game items of those numbers (opponent01's 2, 3 and 4 are its trousers,
     // shirt and sandals).
@@ -698,6 +708,17 @@ pub fn spawn_scene_body(
                 duellist.engaged = true;
             } else {
                 duellist.engage_at_ms = Some(plan.act_at_ms.into());
+            }
+            // A practice partner's brain is built from the traits just written.
+            // Other duellists still wait for a brain of their own.
+            if plan.practice {
+                duellist.personality = Some(exa_ai::personality::personality(
+                    record.combat_skill,
+                    record.traits,
+                    record.feral,
+                    false,
+                    context.roll,
+                ));
             }
             commands.entity(model_entity).insert(duellist);
         }
@@ -1383,6 +1404,15 @@ mod tests {
         assert_eq!(plan.roles, vec![0x10]);
         assert_eq!(plan.act_at_ms, 4_000);
         assert_eq!(plan.name.as_deref(), Some("opponent01"));
+        assert!(plan.practice);
+        // The second and third traits are the ones the brain reads: confidence
+        // 1 and restraint −1. The fourth trait is not part of the write.
+        let written = crate::prelude::practice_opponent(CharacterRecord::default());
+        assert_eq!(written.record.traits[3], 0.0);
+        let mut roll = 0;
+        let mind =
+            exa_ai::personality::personality(0.0, written.record.traits, 0.0, false, &mut roll);
+        assert_eq!((mind.confidence, mind.restraint), (1.0, -1.0));
     }
 
     /// An actor template wears the items of its own database. opponent01's
@@ -1460,6 +1490,80 @@ mod tests {
         assert!(own.0.base.find_index(2).is_some());
         assert!(own.0.base.find_index(3).is_some());
         assert!(own.0.base.find_index(4).is_some());
+    }
+
+    /// A practice partner's record keeps the template's fourth trait and the
+    /// duellist fights with the three the spawn writes. Skipped without an
+    /// installation.
+    #[test]
+    fn a_practice_partner_fights_with_the_written_traits() {
+        let Some(mut world) = real_world() else {
+            return;
+        };
+        let game = world.remove_resource::<Game>().unwrap();
+        let mut cache = world.remove_resource::<ModelCache>().unwrap();
+        let mut meshes = world.remove_resource::<Assets<Mesh>>().unwrap();
+        let mut materials = world
+            .remove_resource::<Assets<exa_render::material::ExaMaterial>>()
+            .unwrap();
+        let mut images = world.remove_resource::<Assets<Image>>().unwrap();
+        let items = game_items(&game).unwrap();
+        let facts: std::collections::BTreeMap<u32, ItemFacts> = items
+            .iter()
+            .map(|item| (item.id, ItemFacts::of_item(item)))
+            .collect();
+        let outfits = OutfitTables::build(|id| facts.get(&id.0).cloned());
+        let races = game_races(&game);
+        let book = game_roles(&game);
+        let mut actors = crate::prelude::ActorCache::new();
+        let fourth = actors
+            .template(&game, "opponent01", false)
+            .expect("opponent01")
+            .traits[3];
+        let mut professions = ProfessionCatalog::default();
+        let mut previous_variant = 0;
+        let mut roll = 0u32;
+        let player = world.spawn(()).id();
+        let plan = practice_partner_plan("opponent01", 1_000);
+        let mut loader = ModelLoader {
+            game: &game.0,
+            cache: &mut cache,
+            meshes: &mut meshes,
+            materials: &mut materials,
+            images: &mut images,
+            bc_supported: false,
+        };
+        let mut commands = world.commands();
+        let spawned = {
+            let mut context = SpawnContext {
+                game: &game,
+                loader: &mut loader,
+                items: &items,
+                outfits: &outfits,
+                professions: &mut professions,
+                previous_variant: &mut previous_variant,
+                races: &races,
+                actors: &mut actors,
+                book: &book,
+                player,
+                now_ms: 1_000,
+                roll: &mut roll,
+                clock_seed: || 1,
+            };
+            spawn_scene_body(&mut commands, &mut context, &plan)
+        }
+        .expect("the practice partner");
+        world.flush();
+        let data = world
+            .get::<exa_character::record::CharacterData>(spawned.model)
+            .expect("record");
+        assert_eq!(data.traits, [-100.0, 100.0, 100.0, fourth]);
+        let mind = world
+            .get::<exa_ai::Duellist>(spawned.model)
+            .expect("duellist")
+            .personality
+            .expect("personality");
+        assert_eq!((mind.confidence, mind.restraint), (1.0, -1.0));
     }
 
     /// An app with the game's packs and the asset registries, when
