@@ -1368,6 +1368,10 @@ pub enum Step {
     PracticePlayer {
         role: u32,
     },
+    /// The practice start and the next practice fight dress the player's kit:
+    /// preparation, then equip with no scene nodes. It runs once the player
+    /// stands, which is when the record exists.
+    DressPlayerKit,
     /// The health the practice heal writes (red, then yellow).
     Health {
         red_bits: u32,
@@ -2150,6 +2154,10 @@ impl Flow {
             Step::PracticePlayer {
                 role: PRACTICE_ROLE,
             },
+            // The original prepares the player's kit before the arena import
+            // and equips it, with no scene nodes, once the player is
+            // registered. Both passes run here, once this player stands.
+            Step::DressPlayerKit,
             // The controls are attached to the player, then combat mode is
             // turned on (the original skips it only in the story mode,
             // which never starts practice).
@@ -2607,6 +2615,9 @@ impl Flow {
                 teardown: true,
             },
             Step::PracticeFilter,
+            // The next fight prepares and equips the player's kit, with no
+            // scene nodes, before it places the player.
+            Step::DressPlayerKit,
             Step::MenuHelp(false),
             // Combat mode goes on for the fight; the controls were never
             // taken (a won round leaves them).
@@ -4193,6 +4204,19 @@ fn apply_steps(
             Step::DropSave => {
                 out.saves.write(crate::save_live::SaveStep::Drop);
             }
+            Step::DressPlayerKit => {
+                for mut player in &mut players {
+                    if let Some(character) = player.character.as_deref_mut() {
+                        crate::save_kit::dress_kit(&mut character.record, &mut [], None, None);
+                    }
+                    if let (Some(character), Some(possessions)) = (
+                        player.character.as_deref(),
+                        player.possessions.as_deref_mut(),
+                    ) {
+                        crate::save_kit::mirror_kit(&character.record, possessions);
+                    }
+                }
+            }
             Step::StripPlayer => {
                 // The reconstruction device's strip: the player's live body
                 // loses its hands and worn data, keeps the underwear rule and
@@ -4464,6 +4488,7 @@ struct PlayerParts {
     ragdoll: Option<&'static mut exa_physics::body::Ragdoll>,
     animator: Option<&'static mut exa_anim::Animator>,
     possessions: Option<&'static mut exa_items::possession::Possessions>,
+    character: Option<&'static mut exa_character::record::CharacterData>,
     roles: Option<&'static mut exa_ai::roles::Roles>,
     torch: Has<crate::torch::CarriesTorch>,
 }
@@ -4881,6 +4906,7 @@ mod tests {
             })
             .expect("the arena reloads");
         assert_eq!(steps[load + 1], Step::PracticeFilter);
+        assert_eq!(steps[load + 2], Step::DressPlayerKit);
         // The fight turns combat mode on; the controls are not touched.
         assert!(steps.contains(&Step::CombatMode(true)));
         assert!(!steps.iter().any(|step| matches!(step, Step::Controls(_))));

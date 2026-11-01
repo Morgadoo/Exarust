@@ -15,10 +15,16 @@
 //! pair's new id into every attached scene node and the hand's own node that
 //! still holds the saved id, without stopping at the first.
 //!
+//! The practice start, the next practice fight and the next arena round run
+//! both passes ([`dress_kit`]). The character's own database is the one those
+//! passes copy through. When that database was never loaded, an own id is left
+//! as it is: a missing record becomes 0 only in a database that was loaded.
+//!
 //! Evidence: the two fighter-kit passes and the practice/arena preparation,
 //! read from the instructions (`docs/formats/SAVES.md`, Practice).
 
 use exa_formats::characters::CharacterRecord;
+use exa_formats::objdb::{self, ObjectDb, Tier};
 
 /// Whether an id names an item of the character's own database: the top two
 /// bits are `10`.
@@ -226,6 +232,99 @@ pub fn equip_kit(
     out
 }
 
+/// The tier of an own id in the character's database: a copy made by an
+/// earlier pass lives in the local store, an actor entry's items in the base
+/// store. `None` when that database has no such record.
+fn kit_tier(own: &ObjectDb, id: u32) -> Option<Tier> {
+    let index = id & objdb::ID_MASK;
+    if index == 0 {
+        return None;
+    }
+    if own.store(Tier::Local).find_index(index).is_some() {
+        Some(Tier::Local)
+    } else if own.store(Tier::Base).find_index(index).is_some() {
+        Some(Tier::Base)
+    } else {
+        None
+    }
+}
+
+/// The preparation pass's resolver. No database means it was never loaded, and
+/// the id stays. A loaded database that lacks the record returns 0. A record
+/// whose header word has no instance bit stays; one with the bit is copied
+/// into the temporary database and the new own id is returned.
+fn resolve_prepared(id: u32, own: Option<&ObjectDb>, temp: &mut ObjectDb) -> u32 {
+    let Some(own) = own else {
+        return id;
+    };
+    let Some(tier) = kit_tier(own, id) else {
+        return 0;
+    };
+    let keep = own
+        .store(tier)
+        .find_index(id & objdb::ID_MASK)
+        .and_then(|at| own.store(tier).view(at))
+        .is_some_and(|record| record.header_word() & objdb::INSTANCE_ON_USE == 0);
+    if keep {
+        return id;
+    }
+    temp.copy_record_from(id, own, tier, Tier::Local)
+}
+
+/// The equip pass's instantiator: an id the preparation copied into the
+/// temporary database is copied on into the character's database. Any other
+/// id, including one whose database was never loaded, stays.
+fn instantiate_prepared(id: u32, temp: &ObjectDb, own: Option<&mut ObjectDb>) -> u32 {
+    let Some(own) = own else {
+        return id;
+    };
+    if temp.find(id).is_none() {
+        return id;
+    }
+    own.copy_record_from(id, temp, Tier::Local, Tier::Local)
+}
+
+/// Both kit passes, in the original's order: preparation into a temporary
+/// database, then equip into the character's own database.
+///
+/// `own` is that database. `None` is a database that was never loaded: own ids
+/// are not cleared. The practice start and the next practice fight pass no
+/// scene nodes (their equip is called without a body). The next arena round
+/// passes the body's nodes.
+pub fn dress_kit(
+    record: &mut CharacterRecord,
+    attached_nodes: &mut [u32],
+    hand_node: Option<&mut u32>,
+    mut own: Option<&mut ObjectDb>,
+) -> (KitPreparation, KitEquip) {
+    let mut temp = ObjectDb::default();
+    let prepared = {
+        let own = own.as_deref();
+        prepare_kit(record, |id| resolve_prepared(id, own, &mut temp))
+    };
+    let equipped = equip_kit(record, attached_nodes, hand_node, |id| {
+        instantiate_prepared(id, &temp, own.as_deref_mut())
+    });
+    (prepared, equipped)
+}
+
+/// Copies the dressed record's item ids onto the possessions that mirror it.
+/// Flags and carried positions stay; only the ids the two passes rewrite move.
+pub fn mirror_kit(record: &CharacterRecord, possessions: &mut exa_items::possession::Possessions) {
+    for (slot, hand) in possessions.out.iter_mut().enumerate() {
+        hand.id = record.hands[slot].id;
+    }
+    for (slot, hand) in possessions.stowed.iter_mut().enumerate() {
+        hand.id = record.hands[2 + slot].id;
+    }
+    for (worn, saved) in possessions.worn.iter_mut().zip(record.worn.iter()) {
+        worn.id = saved.id;
+    }
+    for (carried, saved) in possessions.carried.iter_mut().zip(record.inventory.iter()) {
+        carried.id = saved.item;
+    }
+}
+
 /// One step of a practice/arena combatant's scene preparation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CombatantSceneStep {
@@ -421,6 +520,37 @@ mod tests {
         let equip = equip_kit(&mut record, &mut [], None, |id| id + 1);
         assert_eq!(equip.carried_instantiated, 1);
         assert_eq!(carried_ids(&record), vec![(OWN | 5) + 1]);
+    }
+
+    fn put_own(db: &mut exa_formats::objdb::ObjectDb, id: u32, flags: u32) {
+        let (_, at) = db.base.insert(id);
+        let mut payload = vec![0u8; 0x20];
+        payload[0x18..0x1c].copy_from_slice(&flags.to_le_bytes());
+        db.base.store(at, &payload);
+    }
+
+    #[test]
+    fn dressing_copies_only_an_instance_flagged_own_item() {
+        use exa_formats::objdb::{INSTANCE_ON_USE, ObjectDb};
+
+        let mut own = ObjectDb::default();
+        put_own(&mut own, 2, 0);
+        put_own(&mut own, 3, INSTANCE_ON_USE);
+        let mut dressed = record([OWN | 2, OWN | 3, 0, 0], &[], &[OWN | 9]);
+        let (prep, equip) = dress_kit(&mut dressed, &mut [], None, Some(&mut own));
+        // Unmarked own clothes stay. A loaded database that lacks the record
+        // returns 0. The flagged item is copied into the character database.
+        assert_eq!(dressed.hands[0].id, OWN | 2);
+        assert_ne!(dressed.hands[1].id, OWN | 3);
+        assert!(own_item(dressed.hands[1].id));
+        assert!(own.find(dressed.hands[1].id).is_some());
+        assert_eq!(carried_ids(&dressed), vec![0]);
+        assert_eq!(prep.hands[0].1, OWN | 2);
+        assert!(equip.temp_freed);
+        // No database was loaded: the same flagged id is not cleared.
+        let mut bare = record([OWN | 3, 0, 0, 0], &[], &[]);
+        dress_kit(&mut bare, &mut [], None, None);
+        assert_eq!(bare.hands[0].id, OWN | 3);
     }
 
     #[test]

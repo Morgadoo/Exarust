@@ -388,6 +388,27 @@ type MatchBody<'a> = (
     Has<crate::player::PlayerBody>,
 );
 
+/// A body whose kit the next round re-dresses: its record, the possessions
+/// that mirror the record, and whether it is the player.
+type KitBody<'a> = (
+    Entity,
+    &'a mut exa_character::record::CharacterData,
+    Option<&'a mut exa_items::possession::Possessions>,
+    Has<crate::player::PlayerBody>,
+);
+
+/// Preparation then equip on one body that stays. The character's own
+/// database is not kept on the body, so an own id is left as it is.
+fn redress(kits: &mut Query<KitBody<'_>>, entity: Entity) {
+    let Ok((_, mut data, mut held, _)) = kits.get_mut(entity) else {
+        return;
+    };
+    crate::save_kit::dress_kit(&mut data.record, &mut [], None, None);
+    if let Some(held) = held.as_mut() {
+        crate::save_kit::mirror_kit(&data.record, held);
+    }
+}
+
 /// A body the scene draw counts: every fighter the match stood, and the
 /// player's own body, which carries no scene marker.
 type DrawBody<'a> = (
@@ -658,6 +679,7 @@ fn continue_round(
     auto: Res<ArenaAutoContinue>,
     clock: Option<Res<crate::effects::EffectClock>>,
     (fighters, drawn): (Query<MatchBody<'_>>, Query<DrawBody<'_>>),
+    mut kits: Query<KitBody<'_>>,
     mut commands: MessageWriter<SceneCommand>,
     mut exits: MessageWriter<ArenaExit>,
 ) {
@@ -699,6 +721,7 @@ fn continue_round(
                     scene,
                     career.as_deref(),
                     &fighters,
+                    &mut kits,
                     (&sides, mode),
                     now,
                     &mut commands,
@@ -727,6 +750,7 @@ fn continue_round(
                     scene,
                     career.as_deref(),
                     &fighters,
+                    &mut kits,
                     now,
                     &mut commands,
                 );
@@ -760,19 +784,22 @@ fn continue_round(
 }
 
 /// The next round's bodies: the winner stays and the reserve or a fresh
-/// opponent comes, after the round's yield.
+/// opponent comes, after the round's yield. Whoever stays is re-dressed
+/// first: the continuing fighter, or the opponent who won when the fighter
+/// is replaced.
 #[allow(clippy::too_many_arguments)]
 fn stand_next_round(
     fight: &RoundFight,
     scene: &ArenaScene,
     career: Option<&crate::hub_windows::ArenaCareer>,
     fighters: &Query<MatchBody<'_>>,
+    kits: &mut Query<KitBody<'_>>,
     now_ms: u32,
     commands: &mut MessageWriter<SceneCommand>,
 ) {
     let opponent = opponent_place(scene.spawn_at);
     let ours = our_place(scene.spawn_at);
-    for (entity, _, condition, body, _) in fighters {
+    for (entity, _, condition, body, player) in fighters {
         // A company fighter that still stands fights on (`FreshOpponent`);
         // a dead one is cleared and the reserve takes its place. The
         // opponent who won keeps its place, which is the round's opponent
@@ -784,6 +811,32 @@ fn stand_next_round(
         };
         if clear {
             commands.write(SceneCommand::Despawn(entity));
+            continue;
+        }
+        // The fighter who goes on is re-dressed. When that fighter is dead
+        // the opponent who won is re-dressed instead, and the reserve comes in.
+        let dress = if fight.keeps_opponent {
+            !body.company
+        } else {
+            body.company || player
+        };
+        if dress {
+            redress(kits, entity);
+        }
+    }
+    if !fight.keeps_opponent {
+        let players: Vec<Entity> = kits
+            .iter()
+            .filter(|(.., player_body)| *player_body)
+            .map(|(entity, ..)| entity)
+            .collect();
+        for entity in players {
+            // The player's body carries no scene marker, so the loop above
+            // never sees it. It is the continuing fighter when the round was
+            // not lost.
+            if fighters.iter().all(|(body, ..)| body != entity) {
+                redress(kits, entity);
+            }
         }
     }
     // The scene work waits the round's yield before it touches the bodies;
@@ -821,6 +874,7 @@ fn stand_bracket_round(
     scene: &mut ArenaScene,
     career: Option<&crate::hub_windows::ArenaCareer>,
     fighters: &Query<MatchBody<'_>>,
+    kits: &mut Query<KitBody<'_>>,
     (sides, mode): (&[crate::career::SideFighter], i32),
     now_ms: u32,
     commands: &mut MessageWriter<SceneCommand>,
@@ -874,6 +928,8 @@ fn stand_bracket_round(
         match fighter.body {
             RaisedBody::Player => {
                 if let Some((entity, ..)) = fighters.iter().find(|(_, _, _, _, player)| *player) {
+                    // A later round re-dresses the player who stays.
+                    redress(kits, entity);
                     commands.write(SceneCommand::Place {
                         body: entity,
                         at: Vec3::from_array(place.position) / 100.0,
