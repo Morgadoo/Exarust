@@ -227,6 +227,17 @@ impl GripLinks {
             link.flags = DISABLED;
         }
     }
+
+    /// The parry's hold on this item: the same link the end disables, past
+    /// the pivot, loses the disabled bit and takes the enabled one. The
+    /// pivot link is left as it is.
+    pub fn hold_parry(&mut self) {
+        if self.main > 0
+            && let Some(link) = self.links.get_mut(self.main)
+        {
+            link.flags = (link.flags & !DISABLED) | ENABLED;
+        }
+    }
 }
 
 /// A held item its holder let go of: the collapse of a living body drops
@@ -1146,6 +1157,10 @@ mod tests {
         links.release_parry();
         assert_eq!(links.links[0].flags, PIVOT);
         assert_eq!(links.links[1].flags, DISABLED);
+        links.links[1].flags = DISABLED;
+        links.hold_parry();
+        assert_eq!(links.links[0].flags, PIVOT);
+        assert_eq!(links.links[1].flags, ENABLED);
         let mut pivot = links_of(0, PIVOT);
         pivot.links[0].flags = PIVOT | ENABLED;
         pivot.release_parry();

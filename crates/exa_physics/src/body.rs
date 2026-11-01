@@ -3160,22 +3160,43 @@ impl Ragdoll {
     /// original's unarmed set-up makes both hands the held items and marks
     /// them so, and emptying the hands before an equip clears it. Only that
     /// bit changes. Returns whether a part took it.
-    /// A parry's end: each hand, and that hand's parent part, loses the arm
-    /// class bit. A hand with no part is skipped.
-    pub fn clear_parry_arms(&mut self, hands: [usize; 2]) {
+    /// The right and left hands a parry locks, and each hand's parent with them.
+    pub const PARRY_HANDS: [usize; 2] = [17, 18];
+
+    fn set_parry_arms(&mut self, hands: [usize; 2], on: bool) {
         let arm = crate::part::PartState::ARM;
         for bone in hands {
             let Some(i) = self.parts.iter().position(|part| part.bone == bone) else {
                 continue;
             };
-            self.parts[i].state = self.parts[i].state.without(arm);
+            self.parts[i].state = if on {
+                self.parts[i].state.with(arm)
+            } else {
+                self.parts[i].state.without(arm)
+            };
             let Some(parent) = self.parts[i].parent else {
                 continue;
             };
             if let Some(part) = self.parts.get_mut(parent) {
-                part.state = part.state.without(arm);
+                part.state = if on {
+                    part.state.with(arm)
+                } else {
+                    part.state.without(arm)
+                };
             }
         }
+    }
+
+    /// A parry's hold: each hand, and that hand's parent part, takes the arm
+    /// class bit. A hand with no part is skipped.
+    pub fn hold_parry_arms(&mut self, hands: [usize; 2]) {
+        self.set_parry_arms(hands, true);
+    }
+
+    /// A parry's end: each hand, and that hand's parent part, loses the arm
+    /// class bit. A hand with no part is skipped.
+    pub fn clear_parry_arms(&mut self, hands: [usize; 2]) {
+        self.set_parry_arms(hands, false);
     }
 
     pub fn set_fist(&mut self, bone: usize, on: bool) -> bool {

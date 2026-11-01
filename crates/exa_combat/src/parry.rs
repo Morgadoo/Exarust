@@ -1270,7 +1270,7 @@ pub(crate) fn run_parries(
             &mut Stance,
             &Condition,
             &Attacker,
-            Option<&Ragdoll>,
+            Option<&mut Ragdoll>,
         )>,
         Query<(
             Entity,
@@ -1284,6 +1284,7 @@ pub(crate) fn run_parries(
         )>,
     )>,
     shields: Query<(), With<crate::block::ShieldHold>>,
+    mut grips: Query<&mut exa_physics::grip::HeldGrip>,
 ) {
     let Some(motions) = motions else { return };
     let now = ticks.as_ref().map_or(0, |t| t.millis());
@@ -1403,12 +1404,14 @@ pub(crate) fn run_parries(
     if !(parries || (enters && pick.is_some()) || rests) {
         return;
     }
+    let active = {
     let mut own = bodies.p0();
     let Ok((mut fighter, mut anim, _, mut stance, condition, _, body)) = own.get_mut(entity) else {
         return;
     };
     let mut defender = Defender {
         dazed: body
+            .as_ref()
             .and_then(|b| b.drive.as_ref())
             .is_some_and(|d| d.dazed()),
         motion: motions.0.action_index(&anim.action).unwrap_or(0) as u8,
@@ -1430,6 +1433,36 @@ pub(crate) fn run_parries(
     }
     if left_attack {
         commands.entity(entity).remove::<Attacking>();
+    }
+    defender.fighter.parry.active
+    };
+    // While the parry holds, the hands and their parents take the arm bit
+    // and each held grip past the pivot is enabled. The tick it ends, both
+    // are released. A body that was not parrying is left alone.
+    if active || parries {
+        let mut own = bodies.p0();
+        let key = own.get_mut(entity).ok().and_then(|(_, _, _, _, _, _, body)| {
+            let mut body = body?;
+            if active {
+                body.hold_parry_arms(exa_physics::body::Ragdoll::PARRY_HANDS);
+            } else {
+                body.clear_parry_arms(exa_physics::body::Ragdoll::PARRY_HANDS);
+            }
+            body.parts.first().map(|part| part.entity)
+        });
+        if let Some(key) = key {
+            for mut grip in &mut grips {
+                if grip.holder_key == key
+                    && let Some(links) = grip.links.as_mut()
+                {
+                    if active {
+                        links.hold_parry();
+                    } else {
+                        links.release_parry();
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1528,6 +1561,85 @@ mod wiring_tests {
     /// parries, and the setup that makes it differ from the ready one.
     type Try = (&'static str, bool, fn(&mut Duel));
 
+    fn parry_body() -> Ragdoll {
+        let part = |bone, parent, entity| exa_physics::body::PartSetup {
+            bone,
+            entity,
+            parent,
+            world: bevy::math::Affine3A::IDENTITY,
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.08),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+            spheres: None,
+        };
+        let key = Entity::from_raw_u32(7).unwrap();
+        Ragdoll::new(&[
+            part(13, None, key),
+            part(17, Some(0), Entity::PLACEHOLDER),
+            part(16, None, Entity::PLACEHOLDER),
+            part(18, Some(2), Entity::PLACEHOLDER),
+        ])
+        .with_drive()
+    }
+
+    fn parry_grip(key: Entity) -> exa_physics::grip::HeldGrip {
+        use exa_physics::grip::{GripLink, GripLinks, GripSpec, HeldGrip, HeldKind, PIVOT};
+        let link = |flags| GripLink {
+            item: 0,
+            on_item: [1.0, 0.0, 0.0, 0.0],
+            hand: Some(0),
+            on_hand: [1.0, 0.0, 0.0, 0.0],
+            slack: 0.0,
+            length: 0.0,
+            strength: 1.0,
+            smoothing: 0.001,
+            flags,
+            shares: (1.0, 0.0),
+            anchor: None,
+        };
+        HeldGrip {
+            spec: GripSpec {
+                hand: 0,
+                links: vec![],
+                second_hand: None,
+                arm: None,
+                extra: None,
+            },
+            scale: 1.0,
+            size: 1.0,
+            second_hand_factor: 1.0,
+            flip: false,
+            class: 0,
+            soft_weld: false,
+            kind: HeldKind::Weapon,
+            holder_key: key,
+            hands: [None, None],
+            arms: [None, None],
+            links: Some(GripLinks {
+                links: vec![link(PIVOT), link(PIVOT)],
+                main: 1,
+                second: None,
+                arm: None,
+                extra: None,
+                flip: None,
+                flip_point: Vec3::ZERO,
+                flip_progress: 0.0,
+                flipped: false,
+                flip_active: false,
+                mode: -1,
+                relaxing: false,
+                record_dirty: false,
+                world_soft: None,
+                world_hard: None,
+            }),
+            released: false,
+            head_extra: 0.0,
+        }
+    }
+
     /// An unarmed defender in the combat idle at the origin facing +Z, and
     /// a foe attacking it with Attack Mid at `progress`, standing at
     /// `foe_at`, the game clock at 12 000 ms (body tick 1000). The
@@ -1537,6 +1649,7 @@ mod wiring_tests {
         app: App,
         foe: Entity,
         me: Entity,
+        grip: Entity,
     }
 
     impl Duel {
@@ -1562,6 +1675,8 @@ mod wiring_tests {
                     GlobalTransform::from_translation(foe_at),
                 ))
                 .id();
+            let body = parry_body();
+            let key = body.parts[0].entity;
             let me = app
                 .world_mut()
                 .spawn((
@@ -1572,11 +1687,12 @@ mod wiring_tests {
                     Condition::COMBAT_IDLE,
                     Attacker::default(),
                     GlobalTransform::default(),
-                    Ragdoll::new(&[]).with_drive(),
+                    body,
                 ))
                 .id();
+            let grip = app.world_mut().spawn(parry_grip(key)).id();
             app.world_mut().spawn(Blade::new(me, 0.18, fist()));
-            Self { app, foe, me }
+            Self { app, foe, me, grip }
         }
 
         /// A foe 1 m ahead and 0.5 m higher: the table picks Parry Left.
@@ -1641,6 +1757,10 @@ mod wiring_tests {
         assert_eq!(anim.blend, 20.0);
         assert_eq!(anim.ease, Ease::Fast);
         assert!(anim.looping);
+        let body = d.get::<Ragdoll>();
+        assert!(body.parts.iter().all(|part| part.state.has(exa_physics::part::PartState::ARM)));
+        let grip = d.app.world().get::<exa_physics::grip::HeldGrip>(d.grip).unwrap();
+        assert!(grip.links.as_ref().unwrap().links[1].enabled());
 
         d.tick();
         d.tick();
@@ -1659,6 +1779,10 @@ mod wiring_tests {
         assert_eq!((anim.blend, anim.ease), (40.0, Ease::Smooth));
         assert_eq!(*d.get::<Stance>(), Stance::CombatIdle);
         assert_eq!(d.get::<Fighter>().parry.counter, 4);
+        let body = d.get::<Ragdoll>();
+        assert!(body.parts.iter().all(|part| !part.state.has(exa_physics::part::PartState::ARM)));
+        let grip = d.app.world().get::<exa_physics::grip::HeldGrip>(d.grip).unwrap();
+        assert!(!grip.links.as_ref().unwrap().links[1].enabled());
         d.tick();
         assert_eq!(d.get::<Fighter>().parry.counter, 3);
     }

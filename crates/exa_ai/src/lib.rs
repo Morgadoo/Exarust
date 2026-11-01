@@ -889,10 +889,7 @@ fn begin_requested(
                 if fighter.parry.active
                     && let Some(body) = ragdoll.as_mut()
                 {
-                    body.clear_parry_arms([
-                        exa_character::RIGHT_HAND,
-                        exa_character::LEFT_HAND,
-                    ]);
+                    body.clear_parry_arms(exa_physics::body::Ragdoll::PARRY_HANDS);
                     if let Some(key) = body.parts.first().map(|part| part.entity) {
                         for mut grip in &mut grips {
                             if grip.holder_key == key
