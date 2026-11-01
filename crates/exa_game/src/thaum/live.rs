@@ -34,7 +34,7 @@
 //!   the player, and the constant displacement's wisps on the player's
 //!   body. The player cannot cast yet: Exarust has no power bar.
 //!
-//! Not wired: the hum and impact sounds, the lights, the AI's sight of a
+//! Not wired: the lights, the AI's sight of a
 //! barricade, the attack a barricade interrupts.
 //! Rules: `docs/THAUMATURGY.md`.
 
@@ -527,6 +527,65 @@ fn shock_fighters(
     }
 }
 
+/// One frame of an arc hum. `voice` is the looping voice, if it has started.
+fn drive_arc_hum(
+    audio: &mut ShockAudio,
+    voice: &mut Option<u32>,
+    name: Option<&str>,
+    at: Vec3,
+    gain: f32,
+    pitch: Option<f32>,
+    stop: bool,
+) {
+    if stop {
+        if let Some(id) = voice.take()
+            && let Some(env) = audio.env.as_mut()
+            && let Some(playing) = env.voice_mut(id)
+        {
+            playing.flags |= exa_audio::voice_flags::STOP;
+        }
+        return;
+    }
+    let Some(name) = name else {
+        return;
+    };
+    let (Some(game), Some(bank), Some(sources), Some(env)) = (
+        audio.game.as_deref(),
+        audio.bank.as_deref_mut(),
+        audio.sources.as_deref_mut(),
+        audio.env.as_deref_mut(),
+    ) else {
+        return;
+    };
+    if voice.is_none() {
+        let set = bank.load_set(game, sources, name);
+        *voice = env.play_set(
+            bank,
+            set,
+            at,
+            gain,
+            pitch.unwrap_or(1.0),
+            exa_audio::voice_flags::LOOPING,
+        );
+        return;
+    }
+    if let Some(id) = *voice
+        && let Some(playing) = env.voice_mut(id)
+    {
+        apply_arc_hum(playing, gain, pitch, at);
+    }
+}
+
+/// The frame's hum on a voice that is already looping: its gain, its pitch
+/// when the arcs are filled enough to have one, and where it sits.
+fn apply_arc_hum(voice: &mut exa_audio::Voice, gain: f32, pitch: Option<f32>, at: Vec3) {
+    voice.gain = gain;
+    if let Some(pitch) = pitch {
+        voice.pitch = pitch;
+    }
+    voice.position = at;
+}
+
 /// What plays `elechit`. Absent in a test with no game loaded.
 #[derive(bevy::ecs::system::SystemParam)]
 struct ShockAudio<'w> {
@@ -970,11 +1029,23 @@ fn draw_arcs(
     mut draws: ResMut<EffectDraws>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<GlowMaterial>>,
+    mut audio: ShockAudio,
+    mut hums: Local<bevy::platform::collections::HashMap<Entity, Option<u32>>>,
 ) {
     let eye = camera_axis(&cameras);
     let alpha = time.overstep_fraction();
     for (entity, mut live, drawn) in &mut arcs {
         let frame = live.arcs.frame(alpha, eye, 0.0, |p| p, &mut draws.0);
+        let at = live.arcs.anchor.map(|p| p / CM).unwrap_or(Vec3::ZERO);
+        drive_arc_hum(
+            &mut audio,
+            hums.entry(entity).or_default(),
+            live.arcs.sound,
+            at,
+            frame.gain,
+            frame.pitch,
+            frame.removed,
+        );
         if frame.removed && !live.keep {
             commands.entity(entity).despawn();
             continue;
@@ -1155,6 +1226,21 @@ mod tests {
             (0..40).all(|z| (0..40).all(|x| grid.cell(x, z, Layer::Lower).penalty == 0)),
             "the fall takes it back"
         );
+    }
+
+    /// A looping hum takes the frame's gain, and its pitch only when the
+    /// frame has one. A stop asks the voice to end.
+    #[test]
+    fn the_arc_hum_follows_the_frame() {
+        let mut voice = exa_audio::Voice::default();
+        voice.pitch = 1.0;
+        apply_arc_hum(&mut voice, 0.25, None, Vec3::X);
+        assert_eq!(voice.gain, 0.25);
+        assert_eq!(voice.pitch, 1.0);
+        assert_eq!(voice.position, Vec3::X);
+        apply_arc_hum(&mut voice, 0.1, Some(0.7), Vec3::Y);
+        assert_eq!(voice.pitch, 0.7);
+        assert_eq!(voice.position, Vec3::Y);
     }
 
     #[test]
