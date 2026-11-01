@@ -869,6 +869,7 @@ fn duellist(
             Option<&presence::Presence>,
             Option<&exa_combat::AttackHook>,
             Option<&exa_physics::body::locomotion::Locomotor>,
+            Option<&exa_character::record::CharacterData>,
         ),
     )>,
     mut roots: Query<(&mut CharacterBody, &GlobalTransform)>,
@@ -902,7 +903,7 @@ fn duellist(
         gt,
         ragdoll,
         fighter,
-        (mut powers, presence, attack_hook, locomotor),
+        (mut powers, presence, attack_hook, locomotor, record),
     ) in &mut npcs
     {
         let Ok((mut body, root_gt)) = roots.get_mut(parent.parent()) else {
@@ -1356,7 +1357,12 @@ fn duellist(
                     .iter()
                     .filter(|b| b.wielder == entity && b.record.armed())
                     .count() as i32,
-                motion: motion_of(attacking, *stance),
+                motion: if anim.action == combat::DRAW_WEAPON_ACTION {
+                    combat::DRAW_WEAPON
+                } else {
+                    motion_of(attacking, *stance)
+                },
+                carried: record.map_or(0, |data| data.hands[2].id),
                 energy,
                 max_energy: most,
                 balance: ragdoll
@@ -1853,6 +1859,11 @@ fn duellist(
                     info!("duellist {entity:?} stance: {chosen:?}");
                     *stance = chosen;
                 }
+            }
+            // Empty hands reach for the stowed set. An attack starting this
+            // tick plays instead; the draw is asked again once it is over.
+            if out.draw_weapon && anim.looping {
+                anim.play_once(combat::DRAW_WEAPON_ACTION, stance.action());
             }
             if let Some(motion) = out.blow.motion
                 && attacking.is_none()
@@ -2787,6 +2798,25 @@ mod tests {
         let (standing, fallback) = step_measure(None, None, Vec3::new(3.0, 0.0, 0.0));
         assert!(!standing);
         assert_eq!(fallback, Vec3::new(3.0, 0.0, 0.0));
+    }
+
+    /// Empty hands with a stowed weapon play the draw. The first tick only
+    /// enters combat; the next one reaches for the stowed set.
+    #[test]
+    fn bare_hands_draw_the_stowed_weapon() {
+        let (mut app, fighter, _) = duel(3.0, false);
+        let mut record = exa_formats::characters::CharacterRecord::new();
+        record.hands[2] = exa_formats::characters::ItemRef::new(7, 0);
+        app.world_mut()
+            .entity_mut(fighter)
+            .insert(exa_character::record::CharacterData::of_record(record));
+        engage(&mut app, fighter);
+        step(&mut app);
+        step(&mut app);
+        assert_eq!(
+            app.world().get::<Animator>(fighter).unwrap().action,
+            combat::DRAW_WEAPON_ACTION
+        );
     }
 
     /// Within the approach band it strikes once eager enough, from where it

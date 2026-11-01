@@ -110,6 +110,8 @@ pub const DOWN: u32 = 0x200;
 pub const LYING: u32 = 0x300;
 /// The draw-weapon motion.
 pub const DRAW_WEAPON: i32 = 0x1f;
+/// The clip a draw plays: the stowed set comes out.
+pub const DRAW_WEAPON_ACTION: &str = "Switch Weapons";
 /// Weapon class: the fists.
 pub const FISTS: u32 = 0x80;
 /// Weapon class: claws.
@@ -382,7 +384,8 @@ pub struct Body {
     pub weapon_class: u32,
     /// Held weapon bodies.
     pub held: i32,
-    /// Weapons carried but not held [guess: the record's count].
+    /// The stowed set's main hand, its item id, 0 when that hand is empty.
+    /// Empty hands draw it.
     pub carried: u32,
     pub motion: i32,
     pub requested_motion: i32,
