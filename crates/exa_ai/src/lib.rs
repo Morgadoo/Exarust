@@ -292,6 +292,9 @@ pub struct Duellist {
     /// A barricade or a blast the tick took instead of the foe (cm). While
     /// set, the combat tick has no character foe and aims here.
     focus: Option<Vec3>,
+    /// Nothing pressed hard enough, so the foe and the focus were cleared.
+    /// The next tick has neither and leaves combat.
+    dropped: bool,
     /// The step it is taking (Exarust's stand-in for the body's step).
     step: Option<Stepping>,
     /// A step queued after it, as an offset from the chest (cm).
@@ -368,6 +371,7 @@ impl Duellist {
             route: Vec::new(),
             chasing: false,
             focus: None,
+            dropped: false,
             stab_aim: exa_combat::stab::StabAim::default(),
         }
     }
@@ -989,7 +993,7 @@ fn duellist(
         let index = combatant.contact_index(foe_key);
         // A focus has cleared the body target, so the old character is not
         // perceived and is not who the fighter attends.
-        if ai.focus.is_some() {
+        if ai.focus.is_some() || ai.dropped {
             combatant.target = None;
         } else if brains.get(entity).is_err() {
             // A duellist without a brain (the practice opponent) perceives
@@ -1040,7 +1044,7 @@ fn duellist(
         // The brain's perception pass already saw the target this tick,
         // with its own contacts and the relations' trust. A focus attends
         // that entity instead, so the old character stays unattended.
-        if ai.focus.is_none() {
+        if ai.focus.is_none() && !ai.dropped {
             combatant.target = Some(foe_key);
             let contact = &mut combatant.contacts[index];
             if target_condition.is_dead() && contact.died_ms.is_none() {
@@ -1284,7 +1288,8 @@ fn duellist(
             me.can_step = combat::can_act(&me) && !ai.holds_ground;
             ai.queue = 0;
             let ai_target_bits = ai.target.to_bits();
-            let focused = ai.focus;
+            let focused = if ai.dropped { None } else { ai.focus };
+            let no_foe = focused.is_some() || ai.dropped;
             let Duellist {
                 mind,
                 roll,
@@ -1346,7 +1351,7 @@ fn duellist(
             let mut contact_at = Vec::new();
             for c in &combatant.contacts {
                 let id = c.character.to_bits();
-                let is_foe = id == foe_id && focused.is_none();
+                let is_foe = id == foe_id && !no_foe;
                 let level = levels
                     .as_ref()
                     .and_then(|levels| levels.iter().find(|(contact, _)| *contact == id))
@@ -1413,7 +1418,7 @@ fn duellist(
                 &me,
                 traits,
                 combat::World {
-                    foe: focused.is_none().then_some(&foe),
+                    foe: (!no_foe).then_some(&foe),
                     focus: focused,
                     contacts: &mut contacts,
                     around: &[],
@@ -1446,6 +1451,19 @@ fn duellist(
                     brain.turn.look = ai.mind.aim;
                 }
                 info!("duellist {entity:?} focuses a force at {point:?}");
+                ai.dropped = false;
+            }
+            // Nothing beat the floor: the foe and the focus are both cleared.
+            // The next tick has neither and leaves.
+            if out
+                .search
+                .as_ref()
+                .is_some_and(|found| found.retarget == Some(None))
+            {
+                ai.focus = None;
+                ai.dropped = true;
+                combatant.target = None;
+                info!("duellist {entity:?} drops its foe and its focus: nothing pressed");
             }
             // A character that pressed harder than the foe becomes the target.
             // The estimate is placed on them and the aim turns to it, as a
@@ -1488,6 +1506,7 @@ fn duellist(
                 ai.bearing = (bearing.to_target, bearing.distance_cm);
                 ai.target = who;
                 ai.focus = None;
+                ai.dropped = false;
                 combatant.target = Some(who);
                 if let Ok(mut brain) = brains.get_mut(entity) {
                     brain.turn.look = ai.mind.aim;
@@ -1513,6 +1532,29 @@ fn duellist(
                 swinging.release(&swing, &at);
             }
             ai.chasing = out.exit == Some(combat::Exit::Chase);
+            if matches!(out.exit, Some(combat::Exit::Leave { .. })) {
+                info!("duellist {entity:?} leaves combat: it has no foe and no focus");
+                ai.leave();
+                ai.dropped = false;
+                ai.focus = None;
+                combatant.in_combat = false;
+                combatant.target = None;
+                if let Ok(mut brain) = brains.get_mut(entity) {
+                    let body_look = crate::motion::yaw_of(t.rotation * Vec3::Z);
+                    let brain = &mut *brain;
+                    let step = crate::lifecycle::return_to_idle(
+                        &mut brain.gaze,
+                        &mut brain.turn,
+                        body_look,
+                    );
+                    crate::lifecycle::restart_idle(brain);
+                    info!(
+                        "duellist {entity:?} returns to its idle state {:?} at step {step}, \
+                         looking at {body_look:.3} rad",
+                        brain.state()
+                    );
+                }
+            }
             if let Some(outcome) = chased {
                 let contact = &mut combatant.contacts[index];
                 if let Some(mark) = outcome.mark {
@@ -2235,6 +2277,45 @@ mod tests {
         let focus = ai.focus.expect("a focus");
         assert!((focus.x - 200.0).abs() < 1.0, "{focus:?}");
         assert!(ai.mind.aim.abs() > 1.0, "{}", ai.mind.aim);
+        assert!(
+            app.world()
+                .get::<Combatant>(fighter)
+                .unwrap()
+                .target
+                .is_none()
+        );
+    }
+
+    /// A held focus with nothing else pressing is cleared, and the next tick
+    /// leaves combat.
+    #[test]
+    fn nothing_pressing_drops_the_foe_and_the_focus() {
+        let (mut app, fighter, _) = duel(8.0, false);
+        engage(&mut app, fighter);
+        step(&mut app);
+        let target = app.world().get::<Duellist>(fighter).unwrap().target;
+        {
+            let mut ai = app.world_mut().get_mut::<Duellist>(fighter).unwrap();
+            ai.focus = Some(Vec3::new(100.0, 0.0, 0.0));
+        }
+        let mut npc = brain::Npc::new([0.0; 4]);
+        npc.contacts.push(contacts::ContactRecord {
+            id: target.to_bits(),
+            level: 0,
+            ..contacts::ContactRecord::default()
+        });
+        app.world_mut().entity_mut(fighter).insert(npc);
+        step(&mut app);
+        assert!(
+            app.world()
+                .get::<Duellist>(fighter)
+                .unwrap()
+                .focus
+                .is_none()
+        );
+        assert!(app.world().get::<Duellist>(fighter).unwrap().fighting());
+        step(&mut app);
+        assert!(!app.world().get::<Duellist>(fighter).unwrap().fighting());
         assert!(
             app.world()
                 .get::<Combatant>(fighter)
