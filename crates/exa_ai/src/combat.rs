@@ -531,6 +531,15 @@ pub struct WallStep {
     pub half_width: f32,
 }
 
+/// A blast the combat tick steps away from: the caster's chest, its aim and
+/// whether it has been released. A wave has no avoidance of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct BlastStep {
+    pub chest: Vec3,
+    pub aim: Vec3,
+    pub released: bool,
+}
+
 /// The place score a barricade gives the combat tick. The close term stays 0.
 /// The danger is the keep-away weight and the strike is the distance score,
 /// so a place against the wall costs more than one clear of it.
@@ -577,6 +586,32 @@ pub fn barricade_place(wall: WallStep, at: Vec3, body: &Body, skill: f32) -> Pla
     }
 }
 
+/// The place score a blast gives the combat tick. A released blast within
+/// 5 m of its line pushes; anything else does not. The close term stays 0.
+pub fn blast_place(blast: BlastStep, at: Vec3) -> PlaceScore {
+    let mut t = at.dot(blast.aim) - blast.chest.dot(blast.aim);
+    if t < 0.0 {
+        t = 0.0;
+    }
+    let nearest = blast.chest + blast.aim * t;
+    let mut flat = at - nearest;
+    flat.y = 0.0;
+    let distance = (flat.x * flat.x + flat.z * flat.z).sqrt();
+    let heading = wrap(yaw(flat) + std::f32::consts::PI);
+    let danger = if blast.released && distance < 500.0 {
+        (1.0 - distance * 0.002) * 6.0
+    } else {
+        0.0
+    };
+    PlaceScore {
+        close: 0.0,
+        danger,
+        bearing: heading,
+        distance_cm: distance,
+        ..PlaceScore::default()
+    }
+}
+
 /// One of the brain's contacts.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Contact {
@@ -592,6 +627,8 @@ pub struct Contact {
     /// A barricade this contact is: the combat tick asks it for the step away
     /// instead of a fighter's place score.
     pub wall: Option<WallStep>,
+    /// A blast this contact is.
+    pub blast: Option<BlastStep>,
     /// Its priority this tick (written).
     pub priority: f32,
 }
@@ -1282,9 +1319,12 @@ pub fn search(
             // Weighs every contact as the foe and picks the most pressing.
             let mut best = (0.1f32, None);
             for (c, contact) in contacts.iter_mut().enumerate() {
-                let mut s = match contact.wall {
-                    Some(wall) => barricade_place(wall, v, me, traits.skill),
-                    None => field.score(c, contact.level, v),
+                let mut s = if let Some(wall) = contact.wall {
+                    barricade_place(wall, v, me, traits.skill)
+                } else if let Some(blast) = contact.blast {
+                    blast_place(blast, v)
+                } else {
+                    field.score(c, contact.level, v)
                 };
                 let w = ((f64::from(s.ahead + 1.0)) * 0.4) as f32;
                 let mut value = s.strike * 1.0
@@ -1317,9 +1357,12 @@ pub fn search(
         } else {
             for (c, contact) in contacts.iter().enumerate() {
                 let level = if contact.is_foe { contact.level } else { 0 };
-                let mut s = match contact.wall {
-                    Some(wall) => barricade_place(wall, v, me, traits.skill),
-                    None => field.score(c, level, v),
+                let mut s = if let Some(wall) = contact.wall {
+                    barricade_place(wall, v, me, traits.skill)
+                } else if let Some(blast) = contact.blast {
+                    blast_place(blast, v)
+                } else {
+                    field.score(c, level, v)
                 };
                 if contact.is_foe {
                     foe_unreachable = contact.unreachable;
@@ -2277,6 +2320,28 @@ mod wall_place {
         assert!(near.danger > 0.0, "{}", near.danger);
         assert_eq!(far.danger, 0.0);
         assert!(near.danger > far.danger);
+    }
+
+    #[test]
+    fn a_released_blast_pushes_a_place_on_its_line() {
+        let blast = BlastStep {
+            chest: Vec3::ZERO,
+            aim: Vec3::Z,
+            released: true,
+        };
+        let on_line = blast_place(blast, Vec3::new(0.0, 0.0, 100.0));
+        assert!(on_line.danger > 0.0, "{}", on_line.danger);
+        assert_eq!(on_line.close, 0.0);
+        let held = BlastStep {
+            released: false,
+            ..blast
+        };
+        assert_eq!(blast_place(held, Vec3::new(0.0, 0.0, 100.0)).danger, 0.0);
+        assert_eq!(
+            blast_place(blast, Vec3::new(600.0, 0.0, 0.0)).danger,
+            0.0,
+            "off the line, or past 5 m, there is no push"
+        );
     }
 }
 

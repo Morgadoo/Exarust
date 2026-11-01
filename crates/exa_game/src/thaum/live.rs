@@ -844,7 +844,8 @@ fn see_force_effects(
     powers: Query<&combatant::MindPowers>,
     casts: Query<&crate::mind::casts::MindBody>,
     power_casters: Query<&super::cast::PowerCaster>,
-    mut watchers: Query<(Entity, &mut Npc, Option<&Ragdoll>, Option<&mut Relations>)>,
+    bodies: Query<&Ragdoll>,
+    mut watchers: Query<(Entity, &mut Npc, Option<&mut Relations>)>,
 ) {
     let by_id: std::collections::HashMap<u32, Entity> = sight
         .ids
@@ -857,20 +858,14 @@ fn see_force_effects(
         .as_ref()
         .map_or(0, |ticks| ticks.millis() as u32);
     let locale = sight.db.as_ref().map_or(0, |db| db.locale);
-    for (who, mut npc, body, mut relations) in &mut watchers {
+    for (who, mut npc, mut relations) in &mut watchers {
         npc.force_sights.clear();
         npc.wall_steps.clear();
-        let Some(body) = body.filter(|body| body.drive.is_some()) else {
+        npc.blast_steps.clear();
+        let Some(body) = bodies.get(who).ok().filter(|body| body.drive.is_some()) else {
             continue;
         };
-        let chest = bone_part(body, CHEST)
-            .and_then(|part| part_point(body, part, Vec3::ZERO))
-            .or_else(|| {
-                body.parts
-                    .first()
-                    .map(|part| Vec3::from(part.transform().translation) * CM)
-            })
-            .unwrap_or(Vec3::ZERO);
+        let chest = body_chest(body);
         let facing = body
             .parts
             .first()
@@ -939,8 +934,18 @@ fn see_force_effects(
                     });
                     crate::effects::danger::wall_point(wall, chest)
                 }
-                crate::effects::danger::Hazard::Blast { at, .. }
-                | crate::effects::danger::Hazard::Wave { at, .. } => *at,
+                crate::effects::danger::Hazard::Blast { at, released } => {
+                    if let Ok(live) = sight.blasts.get(*effect) {
+                        let caster_body = bodies.get(live.caster).ok();
+                        npc.blast_steps.push(exa_ai::combat::BlastStep {
+                            chest: caster_body.map(body_chest).unwrap_or(Vec3::ZERO),
+                            aim: live.blast.aim,
+                            released: *released,
+                        });
+                    }
+                    *at
+                }
+                crate::effects::danger::Hazard::Wave { at, .. } => *at,
             };
             npc.force_sights.push(exa_ai::contacts::Sighting {
                 contact: record,
@@ -950,6 +955,18 @@ fn see_force_effects(
             });
         }
     }
+}
+
+/// The chest of a body, in centimetres: the chest bone, else its first part.
+fn body_chest(body: &Ragdoll) -> Vec3 {
+    bone_part(body, CHEST)
+        .and_then(|part| part_point(body, part, Vec3::ZERO))
+        .or_else(|| {
+            body.parts
+                .first()
+                .map(|part| Vec3::from(part.transform().translation) * CM)
+        })
+        .unwrap_or(Vec3::ZERO)
 }
 
 /// A character's energy after the knocks of the parts a barricade struck in

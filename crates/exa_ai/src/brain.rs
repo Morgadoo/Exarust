@@ -236,6 +236,9 @@ pub struct Npc {
     pub force_sights: Vec<crate::contacts::Sighting>,
     /// Barricades the combat tick steps away from. Replaced each sight.
     pub wall_steps: Vec<crate::combat::WallStep>,
+    /// Released or charging blasts the combat tick steps away from. A wave
+    /// has no step of its own. Replaced each sight.
+    pub blast_steps: Vec<crate::combat::BlastStep>,
 }
 
 /// Where a brain stands and the room graph its flight reads: the brain's
@@ -324,6 +327,7 @@ impl Npc {
             investigation: crate::lifecycle::Investigation::default(),
             force_sights: Vec::new(),
             wall_steps: Vec::new(),
+            blast_steps: Vec::new(),
         }
     }
 

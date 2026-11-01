@@ -1173,6 +1173,13 @@ fn duellist(
                         ..combat::Contact::default()
                     });
                 }
+                for step in &npc.blast_steps {
+                    contacts.push(combat::Contact {
+                        character: false,
+                        blast: Some(*step),
+                        ..combat::Contact::default()
+                    });
+                }
             }
             let out = combat::tick(
                 mind,
