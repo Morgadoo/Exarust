@@ -231,6 +231,9 @@ pub struct Npc {
     /// The investigation's memory: the cell it last sampled and the value
     /// it kept ([`crate::lifecycle::investigate`]).
     pub investigation: crate::lifecycle::Investigation,
+    /// Force entities this pass can see (a barricade, weighed before the
+    /// characters). The effects tick fills it; the pass takes it.
+    pub force_sights: Vec<crate::contacts::Sighting>,
 }
 
 /// Where a brain stands and the room graph its flight reads: the brain's
@@ -317,6 +320,7 @@ impl Npc {
             sleep_entry: false,
             sleeping: false,
             investigation: crate::lifecycle::Investigation::default(),
+            force_sights: Vec::new(),
         }
     }
 
@@ -1259,30 +1263,35 @@ pub fn ai_tick(
             }
             _ => Vec::new(),
         };
-        // Every character the perception saw this tick is weighed, in the
-        // contact list's order [guess: the original walks the world's
-        // character list, which Exarust does not keep in that order].
-        let visible: Vec<contacts::Sighting> = npc
-            .contacts
-            .iter()
-            .filter(|c| !c.object && contacts::TINY < c.seen)
-            .map(|&contact| {
-                let at = if Some(contact.id) == target.map(Entity::to_bits) {
-                    target_cm
-                } else {
-                    places
-                        .iter()
-                        .find(|(e, ..)| e.to_bits() == contact.id)
-                        .map_or(Vec3::ZERO, |(_, at, _)| *at)
-                };
-                contacts::Sighting {
-                    contact,
-                    character: true,
-                    position_cm: at,
-                    room: level_room(at),
-                }
-            })
-            .collect();
+        // The world's force entities first, then every character the
+        // perception saw this tick, in the contact list's order. The original
+        // walks its entity list and then the nearby characters; Exarust has
+        // no separate character list, so the seen characters follow.
+        let mut visible = std::mem::take(&mut npc.force_sights);
+        for sighting in &mut visible {
+            sighting.room = level_room(sighting.position_cm);
+        }
+        visible.extend(
+            npc.contacts
+                .iter()
+                .filter(|c| !c.object && contacts::TINY < c.seen)
+                .map(|&contact| {
+                    let at = if Some(contact.id) == target.map(Entity::to_bits) {
+                        target_cm
+                    } else {
+                        places
+                            .iter()
+                            .find(|(e, ..)| e.to_bits() == contact.id)
+                            .map_or(Vec3::ZERO, |(_, at, _)| *at)
+                    };
+                    contacts::Sighting {
+                        contact,
+                        character: true,
+                        position_cm: at,
+                        room: level_room(at),
+                    }
+                }),
+        );
         let sees_foe = target.is_some_and(|t| visible.iter().any(|s| s.contact.id == t.to_bits()));
         let distances: Vec<(u64, f32)> = combatant
             .contacts

@@ -36,8 +36,9 @@
 //!   the player, and the constant displacement's wisps on the player's
 //!   body. The player cannot cast yet: Exarust has no power bar.
 //!
-//! Not wired: the AI's sight of a barricade. A held weapon's strike
-//! against the wall breaks its holder's attack. A shock weapon's arcs
+//! A standing barricade is a force entity the target pass weighs. A held
+//! weapon's strike against the wall breaks its holder's attack. A shock
+//! weapon's arcs
 //! (light points) place their
 //! tendril light each frame. An emitter that carries a voxel light places
 //! it at the arcs' mean and sets its intensity from the frame.
@@ -49,7 +50,8 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::transform::TransformSystems;
 use exa_ai::brain::Npc;
-use exa_ai::combatant::Combatant;
+use exa_ai::combatant::{self, Contact};
+use exa_ai::contacts::ContactRecord;
 use exa_ai::manager::raise_alert;
 use exa_combat::swing::SwingState;
 use exa_combat::{Condition, Fighter, StateFlags};
@@ -97,6 +99,10 @@ impl Plugin for ThaumEffectsPlugin {
                 (tick_arcs, tick_barricades, tick_wisps, shock_fighters)
                     .chain()
                     .after(BodySystems),
+            )
+            .add_systems(
+                exa_ai::BrainChain,
+                see_barricades.before(exa_ai::brain::ai_tick),
             )
             .add_systems(
                 Update,
@@ -760,6 +766,89 @@ fn play_shock(
 const WALL_CONCERN: f32 = 0.5;
 const WALL_CONCERN_GAIN: f32 = 1.0;
 
+/// The impact's concern, on the contact the sight pass keeps for the wall.
+/// The attitude it scales by is the contact's soothing term.
+fn raise_wall_concern(record: &mut ContactRecord, aggression: f32) {
+    let mut contact = Contact::new(Entity::PLACEHOLDER);
+    contact.concern = record.concern;
+    contact.attitude = record.soothe;
+    contact.flags = record.flags;
+    combatant::add_concern(&mut contact, aggression, WALL_CONCERN, WALL_CONCERN_GAIN);
+    record.concern = contact.concern;
+    record.flags = contact.flags;
+}
+
+/// Each brain's sight of the barricades: one sighting per wall within 12 m,
+/// carrying the assessment's fear as its alarm and the noticed flag. The
+/// relation to the caster is not known here, so the factor stays 1.
+fn see_barricades(
+    hazards: Query<(Entity, &crate::effects::danger::Hazard)>,
+    mut watchers: Query<(&mut Npc, Option<&Ragdoll>)>,
+) {
+    let walls: Vec<_> = hazards
+        .iter()
+        .filter(|(_, hazard)| matches!(hazard, crate::effects::danger::Hazard::Barricade { .. }))
+        .map(|(entity, hazard)| (entity, *hazard))
+        .collect();
+    for (mut npc, body) in &mut watchers {
+        npc.force_sights.clear();
+        let Some(body) = body.filter(|body| body.drive.is_some()) else {
+            continue;
+        };
+        let chest = bone_part(body, CHEST)
+            .and_then(|part| part_point(body, part, Vec3::ZERO))
+            .or_else(|| {
+                body.parts
+                    .first()
+                    .map(|part| Vec3::from(part.transform().translation) * CM)
+            })
+            .unwrap_or(Vec3::ZERO);
+        let facing = body
+            .parts
+            .first()
+            .map(|part| {
+                let (_, rotation, _) = part.transform().to_scale_rotation_translation();
+                rotation * Vec3::Z
+            })
+            .unwrap_or(Vec3::Z);
+        let viewer = crate::effects::danger::Viewer {
+            chest,
+            look: facing,
+            facing,
+        };
+        for (wall, hazard) in &walls {
+            let Some(seen) = hazard.assess(&viewer, 0.0, false) else {
+                continue;
+            };
+            let id = wall.to_bits();
+            let mut record = npc
+                .contacts
+                .iter()
+                .find(|contact| contact.id == id)
+                .copied()
+                .unwrap_or(ContactRecord {
+                    id,
+                    ..ContactRecord::default()
+                });
+            record.object = true;
+            record.flags |= combatant::CONTACT_NOTICED;
+            record.alarm = seen.fear;
+            let at = match hazard {
+                crate::effects::danger::Hazard::Barricade { wall, .. } => {
+                    crate::effects::danger::wall_point(wall, chest)
+                }
+                _ => chest,
+            };
+            npc.force_sights.push(exa_ai::contacts::Sighting {
+                contact: record,
+                character: false,
+                position_cm: at,
+                room: -1,
+            });
+        }
+    }
+}
+
 /// A character's energy after the knocks of the parts a barricade struck in
 /// front this tick: each lowers it by its loss while it is above 0.25.
 pub fn energy_after_knocks(energy: f32, losses: &[f32]) -> f32 {
@@ -776,7 +865,7 @@ fn tick_barricades(
     ticks: Option<Res<BodyTicks>>,
     mut roll: ResMut<EffectRoll>,
     mut nav: Option<ResMut<NavGrid>>,
-    mut minds: Query<(&mut Npc, Option<&mut Combatant>)>,
+    mut minds: Query<&mut Npc>,
 ) {
     let now = ticks.map_or(0, |t| t.millis()) as u32;
     for (wall_entity, mut live, stamped) in &mut walls {
@@ -896,15 +985,16 @@ fn tick_barricades(
             }
         }
         // The sound's notice: the hitter's group alert, and concern toward
-        // this wall when it is already one of the hitter's contacts.
+        // this wall when the sight pass has already made it a contact.
         for who in noticed {
-            let Ok((mut npc, combatant)) = minds.get_mut(who) else {
+            let Ok(mut npc) = minds.get_mut(who) else {
                 continue;
             };
             let aggression = npc.personality.map_or(0.0, |p| p.restraint);
             (npc.alert_count, npc.alert_until_ms) = raise_alert(npc.alert_count, now);
-            if let Some(mut combatant) = combatant {
-                combatant.add_concern(wall_entity, aggression, WALL_CONCERN, WALL_CONCERN_GAIN);
+            let id = wall_entity.to_bits();
+            if let Some(record) = npc.contacts.iter_mut().find(|c| c.id == id) {
+                raise_wall_concern(record, aggression);
             }
         }
         if live.wall.state == super::barricade::state::GONE {
@@ -1640,7 +1730,7 @@ mod tests {
     #[test]
     fn a_front_limb_tells_its_ai_about_the_wall() {
         use bevy::math::Affine3A;
-        use exa_ai::combatant::{CONTACT_CONCERN_FLAGS, Contact};
+        use exa_ai::combatant::CONTACT_CONCERN_FLAGS;
         use exa_physics::body::PartSetup;
         let frame = WallFrame::facing(Vec3::new(-15.0, 100.0, 0.0), Vec3::X);
         let mut draws = Mt19937::new(1);
@@ -1667,13 +1757,16 @@ mod tests {
             &mut roll,
         ));
         let aggression = npc.personality.unwrap().restraint;
-        let mut combatant = Combatant::default();
-        let mut toward_wall = Contact::new(wall_id);
-        toward_wall.concern = 1.0;
-        let mut toward_other = Contact::new(other);
-        toward_other.concern = 2.0;
-        combatant.contacts.push(toward_wall);
-        combatant.contacts.push(toward_other);
+        npc.contacts.push(ContactRecord {
+            id: wall_id.to_bits(),
+            concern: 1.0,
+            ..ContactRecord::default()
+        });
+        npc.contacts.push(ContactRecord {
+            id: other.to_bits(),
+            concern: 2.0,
+            ..ContactRecord::default()
+        });
         let at = Vec3::new(0.0, 1.0, 0.0);
         let body = Ragdoll::new(&[PartSetup {
             bone: 0,
@@ -1689,22 +1782,82 @@ mod tests {
             spheres: Some(vec![(Vec3::ZERO, 0.1)]),
         }])
         .with_drive();
-        let who = app.world_mut().spawn((body, npc, combatant)).id();
+        let who = app.world_mut().spawn((body, npc)).id();
         app.update();
         let now = BodyTicks(5_000).millis() as u32;
         let npc = app.world().get::<Npc>(who).unwrap();
         assert_eq!((npc.alert_count, npc.alert_until_ms), raise_alert(4, now));
-        let combatant = app.world().get::<Combatant>(who).unwrap();
-        let mut expect = Contact::new(wall_id);
+        let mut expect = Contact::new(Entity::PLACEHOLDER);
         expect.concern = 1.0;
         let raised = exa_ai::combatant::add_concern(&mut expect, aggression, 0.5, 1.0);
-        assert_eq!(combatant.contacts[0].concern, raised);
-        assert_eq!(combatant.contacts[0].flags, CONTACT_CONCERN_FLAGS);
-        assert_eq!(combatant.contacts[1].concern, 2.0);
-        assert_eq!(combatant.contacts[1].flags, 0);
+        assert_eq!(npc.contacts[0].concern, raised);
+        assert_eq!(npc.contacts[0].flags, CONTACT_CONCERN_FLAGS);
+        assert_eq!(npc.contacts[1].concern, 2.0);
+        assert_eq!(npc.contacts[1].flags, 0);
         app.update();
         let npc = app.world().get::<Npc>(who).unwrap();
         assert_eq!(npc.alert_count, 5, "the sound's gap has not passed");
+    }
+
+    /// A brain standing against a barricade sees it: the sighting carries the
+    /// wall, the noticed flag and the assessment's fear. A wall 13 m off is
+    /// not seen.
+    #[test]
+    fn a_brain_sees_the_barricade_in_front_of_it() {
+        use bevy::math::Affine3A;
+        use exa_physics::body::PartSetup;
+        let mut app = App::new();
+        app.add_systems(Update, see_barricades);
+        let near = app
+            .world_mut()
+            .spawn((
+                crate::effects::danger::Hazard::Barricade {
+                    wall: crate::effects::danger::Wall {
+                        centre: Vec3::new(0.0, 100.0, 200.0),
+                        along: Vec3::X,
+                        half_width: 150.0,
+                    },
+                    rising: true,
+                    strong: false,
+                },
+                Name::new("_NearWall"),
+            ))
+            .id();
+        app.world_mut()
+            .spawn(crate::effects::danger::Hazard::Barricade {
+                wall: crate::effects::danger::Wall {
+                    centre: Vec3::new(0.0, 100.0, 1400.0),
+                    along: Vec3::X,
+                    half_width: 150.0,
+                },
+                rising: false,
+                strong: false,
+            });
+        let body = Ragdoll::new(&[PartSetup {
+            bone: 0,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: Affine3A::from_translation(Vec3::new(0.0, 1.0, 0.0)),
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.1),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+            spheres: None,
+        }])
+        .with_drive();
+        let who = app.world_mut().spawn((body, Npc::new([0.0; 4]))).id();
+        app.update();
+        let npc = app.world().get::<Npc>(who).unwrap();
+        assert_eq!(npc.force_sights.len(), 1);
+        let sight = npc.force_sights[0];
+        assert_eq!(sight.contact.id, near.to_bits());
+        assert!(sight.contact.object);
+        assert!(!sight.character);
+        assert_ne!(sight.contact.flags & exa_ai::combatant::CONTACT_NOTICED, 0);
+        assert!(sight.contact.alarm > 0.0, "{}", sight.contact.alarm);
+        assert_eq!(sight.position_cm, Vec3::new(0.0, 100.0, 200.0));
     }
 
     #[test]
