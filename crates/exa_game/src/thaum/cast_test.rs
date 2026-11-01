@@ -276,7 +276,8 @@ fn an_armed_blade_shocks_the_body_it_hits() {
         .spawn(exa_combat::Blade::new(caster_entity, 0.8, record))
         .id();
     let mut draws = EffectDraws::default();
-    let made = crate::thaum::arcs::ArcEmitter::new(&crate::thaum::arcs::weapon_arcs(), &mut draws.0);
+    let made =
+        crate::thaum::arcs::ArcEmitter::new(&crate::thaum::arcs::weapon_arcs(), &mut draws.0);
     let arc = app
         .world_mut()
         .spawn(LiveArcs {
@@ -313,6 +314,7 @@ fn an_armed_blade_shocks_the_body_it_hits() {
         bone: 0,
         other: blade,
         amount: 1.0,
+        point: Vec3::new(1.0, 2.0, 3.0),
     });
     app.world_mut().run_schedule(FixedUpdate);
     let yellow = app
@@ -323,6 +325,12 @@ fn an_armed_blade_shocks_the_body_it_hits() {
         .yellow;
     assert!((yellow - 0.99).abs() < 1e-6, "{yellow}");
     assert!(count::<LiveArcs>(&mut app) >= 2, "the spark burst");
+    let sparked = app
+        .world_mut()
+        .query::<&LiveArcs>()
+        .iter(app.world())
+        .any(|live| live.arcs.anchor == Some(Vec3::new(100.0, 200.0, 300.0)));
+    assert!(sparked, "the spark sits on the contact");
     app.world_mut()
         .get_mut::<LiveArcs>(arc)
         .unwrap()
@@ -334,6 +342,7 @@ fn an_armed_blade_shocks_the_body_it_hits() {
         bone: 0,
         other: blade,
         amount: 1.0,
+        point: Vec3::ZERO,
     });
     app.world_mut().run_schedule(FixedUpdate);
     let yellow = app

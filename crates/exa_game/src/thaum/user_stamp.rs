@@ -100,6 +100,7 @@ mod tests {
             bone: 1,
             other,
             amount: 0.05,
+            point: Vec3::ZERO,
         };
         let concern = |app: &App| app.world().get::<Combatant>(target).unwrap().contacts[0].concern;
         app.world_mut().write_message(hit(stale));

@@ -2008,7 +2008,7 @@ fn follow_weapon_changes(
 }
 
 /// A hit from a blade that still carries shock-weapon arcs. The struck body
-/// loses 0.01 yellow and a spark burst is queued at the struck part. A blade
+/// loses 0.01 yellow and a spark burst is queued at the contact. A blade
 /// whose arcs were ended (put away) does not.
 #[allow(clippy::too_many_arguments)]
 fn shock_weapon_hits(
@@ -2017,7 +2017,6 @@ fn shock_weapon_hits(
     blades: Query<&exa_combat::Blade>,
     arcs: Query<&LiveArcs>,
     mut fighters: Query<&mut exa_combat::Fighter>,
-    bodies: Query<&Ragdoll>,
     mut commands: Commands,
     mut draws: ResMut<EffectDraws>,
 ) {
@@ -2042,9 +2041,7 @@ fn shock_weapon_hits(
             let left = fighter.health.yellow - super::arcs::WEAPON_SHOCK;
             fighter.health.yellow = if left < 0.0 { 0.0 } else { left };
         }
-        let at = bodies.get(hit.target).ok().and_then(|body| {
-            bone_part(body, hit.bone).and_then(|part| part_point(body, part, Vec3::ZERO))
-        });
+        let at = Some(hit.point * CM);
         let mut burst = super::arcs::spark_burst(&mut draws.0);
         burst.anchor = at;
         commands.spawn((

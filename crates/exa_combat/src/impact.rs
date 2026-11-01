@@ -142,6 +142,8 @@ pub struct LimbImpact {
     pub bone: usize,
     pub other: Entity,
     pub amount: f32,
+    /// The contact (world, m).
+    pub point: Vec3,
 }
 
 /// A limb impact's sound at the character (m): through the character's
@@ -579,6 +581,7 @@ pub fn strike_limbs(
                 target: s.target,
                 bone,
                 other: s.other,
+                point: s.point,
                 amount: hurt.amount,
             });
             info!(
