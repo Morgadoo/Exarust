@@ -34,8 +34,9 @@
 //!   the player, and the constant displacement's wisps on the player's
 //!   body. The player cannot cast yet: Exarust has no power bar.
 //!
-//! Not wired: the AI's sight of a barricade, the attack a barricade
-//! interrupts. A shock weapon's arcs (light points) place their
+//! Not wired: the AI's sight of a barricade. A held weapon's strike
+//! against the wall breaks its holder's attack. A shock weapon's arcs
+//! (light points) place their
 //! tendril light each frame. An emitter that carries a voxel light places
 //! it at the arcs' mean and sets its intensity from the frame.
 //! Rules: `docs/THAUMATURGY.md`.
@@ -800,6 +801,7 @@ fn tick_barricades(
                     strong: false,
                 });
         }
+        let mut holders = Vec::new();
         for (mut body, mut swing) in &mut bodies {
             let character = body.drive.as_ref().map(|d| {
                 let chest = bone_part(&body, CHEST)
@@ -830,20 +832,24 @@ fn tick_barricades(
                     mobility: part.inverse_mass,
                     step: character.map_or(80.0, |c| c.2),
                     spheres,
-                    kind: match character {
-                        Some((chest, scale, _)) => WallBodyKind::Limb { chest, scale },
-                        None => WallBodyKind::Other,
+                    kind: if part.state.has(exa_physics::part::PartState::STRIKE_CHAIN) {
+                        WallBodyKind::Weapon
+                    } else {
+                        match character {
+                            Some((chest, scale, _)) => WallBodyKind::Limb { chest, scale },
+                            None => WallBodyKind::Other,
+                        }
                     },
                 };
                 let shove = live.wall.shove(&tested, now, &mut roll.0);
-                // The original's Force walls interrupt the holder's attack
-                // when they strike a weapon part; the wall does not
-                // classify a held item's body yet, so this stays
-                // unexercised.
-                if shove.interrupt
-                    && let Some(state) = swing.as_mut()
-                {
-                    state.force_interrupt(u64::from(now));
+                // A held weapon's strike-chain bit: the wall breaks its
+                // holder's attack. The swing lives on the holder.
+                if shove.interrupt {
+                    if let Some(holder) = body.held_by {
+                        holders.push(holder);
+                    } else if let Some(state) = swing.as_mut() {
+                        state.force_interrupt(u64::from(now));
+                    }
                 }
                 touched |= shove.touched;
                 for (sphere, push) in &shove.pushes {
@@ -866,6 +872,11 @@ fn tick_barricades(
                     let losses: Vec<f32> = knocks.iter().map(|k| k.1).collect();
                     drive.energy = energy_after_knocks(drive.energy, &losses);
                 }
+            }
+        }
+        for holder in holders {
+            if let Ok((_, Some(mut swing))) = bodies.get_mut(holder) {
+                swing.force_interrupt(u64::from(now));
             }
         }
         if live.wall.state == super::barricade::state::GONE {
@@ -1533,6 +1544,66 @@ mod tests {
             Vec3::new(3.0, 0.0, 0.0),
             1.0
         ));
+    }
+
+    /// A held weapon whose strike chain meets the wall breaks the holder's
+    /// attack. The same weapon, not striking, does not.
+    #[test]
+    fn a_striking_weapon_breaks_on_the_wall() {
+        use bevy::math::Affine3A;
+        use exa_physics::body::PartSetup;
+        let frame = WallFrame::facing(Vec3::new(0.0, 100.0, 0.0), Vec3::X);
+        let mut draws = Mt19937::new(1);
+        let mut wall = Barricade::raise(frame, 0.25, 1000, |_, _, _| None, None, &mut draws);
+        wall.tick(1000 + 1700);
+        let mut app = App::new();
+        app.insert_resource(BodyTicks(5_000))
+            .init_resource::<EffectRoll>()
+            .add_systems(Update, tick_barricades);
+        app.world_mut().spawn(LiveBarricade { wall, caster: None });
+        let holder = app
+            .world_mut()
+            .spawn((
+                Ragdoll::new(&[]),
+                SwingState {
+                    strength: 0.0,
+                    ..SwingState::default()
+                },
+            ))
+            .id();
+        let at = Vec3::new(0.05, 1.0, 0.0);
+        let mut weapon = Ragdoll::new(&[PartSetup {
+            bone: 0,
+            entity: Entity::PLACEHOLDER,
+            parent: None,
+            world: Affine3A::from_translation(at),
+            centre: Vec3::ZERO,
+            half: Vec3::splat(0.1),
+            origin: Vec3::ZERO,
+            links: vec![],
+            foot: None,
+            pins: Vec::new(),
+            spheres: Some(vec![(Vec3::ZERO, 0.1)]),
+        }]);
+        weapon.held_by = Some(holder);
+        let weapon_id = app.world_mut().spawn(weapon).id();
+        app.update();
+        let swing = app.world().get::<SwingState>(holder).unwrap();
+        assert_eq!(swing.strength, 0.0, "not striking, so no break");
+        {
+            let mut body = app.world_mut().get_mut::<Ragdoll>(weapon_id).unwrap();
+            body.parts[0].state = body.parts[0]
+                .state
+                .with(exa_physics::part::PartState::STRIKE_CHAIN);
+        }
+        app.update();
+        let swing = app.world().get::<SwingState>(holder).unwrap();
+        assert_eq!(swing.strength, 1.0);
+        assert_ne!(
+            swing.flags & exa_combat::swing::flags::STALLING,
+            0,
+            "the holder's attack stalls"
+        );
     }
 
     #[test]
