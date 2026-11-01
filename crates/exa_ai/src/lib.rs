@@ -888,7 +888,7 @@ fn duellist(
             Option<&presence::Presence>,
             Option<&exa_combat::AttackHook>,
             Option<&exa_physics::body::locomotion::Locomotor>,
-            Option<&exa_character::record::CharacterData>,
+            Option<&mut exa_character::record::CharacterData>,
         ),
     )>,
     mut roots: Query<(&mut CharacterBody, &GlobalTransform)>,
@@ -922,7 +922,7 @@ fn duellist(
         gt,
         ragdoll,
         fighter,
-        (mut powers, presence, attack_hook, locomotor, record),
+        (mut powers, presence, attack_hook, locomotor, mut record),
     ) in &mut npcs
     {
         let Ok((mut body, root_gt)) = roots.get_mut(parent.parent()) else {
@@ -1396,7 +1396,7 @@ fn duellist(
                 } else {
                     motion_of(attacking, *stance)
                 },
-                carried: record.map_or(0, |data| data.hands[2].id),
+                carried: record.as_deref().map_or(0, |data| data.hands[2].id),
                 energy,
                 max_energy: most,
                 balance: ragdoll
@@ -1669,6 +1669,16 @@ fn duellist(
                 },
                 roll,
             );
+            // A gain past 10 pays four times its whole points into the
+            // record's experience.
+            if out.practice_paid != 0
+                && let Some(data) = record.as_mut()
+            {
+                data.record.experience = data
+                    .record
+                    .experience
+                    .wrapping_add(out.practice_paid);
+            }
             let chased = field.chase.and_then(|c| c.outcome);
             placed = matches!(out.exit, None | Some(combat::Exit::NoPlace));
             if marked && contacts.iter().any(|c| c.is_foe && !c.unreachable) {
@@ -2832,6 +2842,33 @@ mod tests {
         let (standing, fallback) = step_measure(None, None, Vec3::new(3.0, 0.0, 0.0));
         assert!(!standing);
         assert_eq!(fallback, Vec3::new(3.0, 0.0, 0.0));
+    }
+
+    /// A lesson large enough to push the gain past 10 pays four points of
+    /// experience per whole point, on the tick after combat is entered.
+    #[test]
+    fn a_practice_gain_is_paid_into_experience() {
+        let (mut app, fighter, _) = duel(3.0, true);
+        app.world_mut().entity_mut(fighter).insert(
+            exa_character::record::CharacterData::of_record(
+                exa_formats::characters::CharacterRecord::new(),
+            ),
+        );
+        engage(&mut app, fighter);
+        step(&mut app);
+        app.world_mut()
+            .get_mut::<Duellist>(fighter)
+            .unwrap()
+            .mind
+            .practice
+            .lesson = 200.0;
+        step(&mut app);
+        let experience = app
+            .world()
+            .get::<exa_character::record::CharacterData>(fighter)
+            .unwrap()
+            .experience;
+        assert_eq!(experience, 80);
     }
 
     /// Striking a foe teaches its fighting estimate.
