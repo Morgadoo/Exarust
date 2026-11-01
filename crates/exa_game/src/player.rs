@@ -188,6 +188,20 @@ impl PlayerBody {
         self.target
     }
 
+    /// Drops the stored combat target. The next fight's behaviour reset does
+    /// this while combat mode stays on; the stance tick only drops the target
+    /// when combat mode is off.
+    pub(crate) fn forget_target(&mut self) {
+        self.target = None;
+    }
+
+    /// A body whose stored combat target is `target`.
+    #[cfg(test)]
+    pub(crate) fn with_target(mut self, target: Entity) -> Self {
+        self.target = Some(target);
+        self
+    }
+
     /// A body crouching by `crouch`.
     #[cfg(test)]
     pub(crate) fn crouching(mut self, crouch: f32) -> Self {

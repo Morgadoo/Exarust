@@ -1368,6 +1368,10 @@ pub enum Step {
     /// again even when it is already playing, and the start keeps no capture,
     /// so it does not blend in from the pose the body held.
     SnapAction(u32),
+    /// The next fight's behaviour reset, before the new opponent exists. The
+    /// stored combat target and the contact list are dropped. Combat mode
+    /// stays on, so the stance tick does not do this itself.
+    ForgetTarget,
     /// Add the practice mode's player role.
     PracticePlayer {
         role: u32,
@@ -2625,8 +2629,10 @@ impl Flow {
             },
             Step::PracticeFilter,
             // The next fight prepares and equips the player's kit, with no
-            // scene nodes, before it places the player.
+            // scene nodes, before it places the player. The behaviour reset
+            // then drops the stored target, before the partner exists.
             Step::DressPlayerKit,
+            Step::ForgetTarget,
             Step::SpawnPracticePartner { name: step.name },
             Step::MenuHelp(false),
             // Combat mode goes on for the fight; the controls were never
@@ -4216,6 +4222,16 @@ fn apply_steps(
             Step::SnapAction(motion) => {
                 request_action(&motions, &mut players, motion, true);
             }
+            Step::ForgetTarget => {
+                // The behaviour reset, before the new opponent exists: the
+                // stored target and the contact list. Combat mode is left on.
+                for mut player in &mut players {
+                    player.body.forget_target();
+                    if let Some(practice) = player.practice.as_mut() {
+                        practice.contacts.clear();
+                    }
+                }
+            }
             Step::Forfeit => {
                 out.forfeit.write(ForfeitMatch);
             }
@@ -4559,6 +4575,7 @@ struct PlayerParts {
     character: Option<&'static mut exa_character::record::CharacterData>,
     kit: Option<&'static mut crate::save_kit::OwnDatabase>,
     roles: Option<&'static mut exa_ai::roles::Roles>,
+    practice: Option<&'static mut crate::player_practice::PlayerPractice>,
     torch: Has<crate::torch::CarriesTorch>,
 }
 
@@ -4976,8 +4993,10 @@ mod tests {
             .expect("the arena reloads");
         assert_eq!(steps[load + 1], Step::PracticeFilter);
         assert_eq!(steps[load + 2], Step::DressPlayerKit);
+        // The stored target is dropped before the partner exists.
+        assert_eq!(steps[load + 3], Step::ForgetTarget);
         assert_eq!(
-            steps[load + 3],
+            steps[load + 4],
             Step::SpawnPracticePartner {
                 name: *b"opponent16",
             }
@@ -5009,6 +5028,54 @@ mod tests {
         let step = practice::next_practice(7, Ladder::Expert, 0.2, 0.25);
         assert_eq!(&step.name, b"opponent16");
         assert!(step.boss);
+    }
+
+    /// The next fight's behaviour reset drops the stored target and the
+    /// contact list while combat mode stays on.
+    #[test]
+    fn the_next_fight_drops_the_stored_target() {
+        let mut app = App::new();
+        app.add_plugins(MinimalPlugins)
+            .init_resource::<Flow>()
+            .init_resource::<FlowSteps>()
+            .init_resource::<GameView>()
+            .init_resource::<crate::player_controls::PlaySession>()
+            .add_message::<exa_world::level_lifecycle::LevelChangeRequest>()
+            .add_message::<exa_world::level_lifecycle::WorldReset>()
+            .add_message::<ForfeitMatch>()
+            .add_message::<SettingsEntry>()
+            .add_message::<AppExit>()
+            .add_message::<crate::save_live::SaveStep>()
+            .add_message::<crate::experience_live::DiscoveryTick>()
+            .add_message::<crate::scene_bodies::SceneCommand>()
+            .add_systems(Update, apply_steps);
+        let foe = app.world_mut().spawn_empty().id();
+        let mut body = crate::player::PlayerBody::new(0.0).with_target(foe);
+        body.set_combat(true);
+        let mut practice = crate::player_practice::PlayerPractice::default();
+        practice.contacts.push(crate::player_behaviour::Contact {
+            body: foe.to_bits(),
+            score: 1.0,
+            closeness: 1.0,
+            facing: 1.0,
+        });
+        let player = app.world_mut().spawn((body, practice)).id();
+        app.world_mut()
+            .resource_mut::<FlowSteps>()
+            .steps
+            .push(Step::ForgetTarget);
+        app.update();
+        let world = app.world();
+        let body = world.get::<crate::player::PlayerBody>(player).unwrap();
+        assert!(body.combat);
+        assert_eq!(body.foe(), None);
+        assert!(
+            world
+                .get::<crate::player_practice::PlayerPractice>(player)
+                .unwrap()
+                .contacts
+                .is_empty()
+        );
     }
 
     #[test]
