@@ -522,6 +522,61 @@ pub struct Traits {
     pub blend: f32,
 }
 
+/// A barricade the combat tick steps away from: its middle, its axis and its
+/// half width.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct WallStep {
+    pub centre: Vec3,
+    pub along: Vec3,
+    pub half_width: f32,
+}
+
+/// The place score a barricade gives the combat tick. The close term stays 0.
+/// The danger is the keep-away weight and the strike is the distance score,
+/// so a place against the wall costs more than one clear of it.
+pub fn barricade_place(wall: WallStep, at: Vec3, body: &Body, skill: f32) -> PlaceScore {
+    let along = wall.along;
+    let mut t = at.dot(along) - wall.centre.dot(along);
+    let limit = wall.half_width;
+    if t.abs() > limit {
+        t = t.signum() * limit;
+    }
+    let point = wall.centre + along * t;
+    let mut flat = at - point;
+    flat.y = 0.0;
+    let distance = (flat.x * flat.x + flat.z * flat.z).sqrt();
+    let heading = wrap(yaw(flat) + std::f32::consts::PI);
+    let reach = if body.scale <= 1.3 {
+        body.reach_cm
+    } else {
+        body.reach_cm * 1.4
+    };
+    let score = (300.0 - (distance - reach).abs()) * 0.003;
+    let mut window = 150.0 - skill * 50.0;
+    let keep_at = body.reach_cm + 140.0;
+    let mut gap = (distance - keep_at) - 10.0;
+    if gap < 0.0 {
+        window *= 2.0;
+        gap = -gap;
+    }
+    let mut keep = 0.0;
+    if gap < window {
+        let w = (window - gap) / window;
+        keep = w * w * 0.5;
+        if keep_at < 200.0 {
+            keep *= (300.0 - keep_at) * 0.01;
+        }
+    }
+    PlaceScore {
+        close: 0.0,
+        danger: keep,
+        strike: score,
+        bearing: heading,
+        distance_cm: distance,
+        ..PlaceScore::default()
+    }
+}
+
 /// One of the brain's contacts.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Contact {
@@ -534,6 +589,9 @@ pub struct Contact {
     pub is_foe: bool,
     /// A character (otherwise an entity, which becomes the focus).
     pub character: bool,
+    /// A barricade this contact is: the combat tick asks it for the step away
+    /// instead of a fighter's place score.
+    pub wall: Option<WallStep>,
     /// Its priority this tick (written).
     pub priority: f32,
 }
@@ -1224,7 +1282,10 @@ pub fn search(
             // Weighs every contact as the foe and picks the most pressing.
             let mut best = (0.1f32, None);
             for (c, contact) in contacts.iter_mut().enumerate() {
-                let mut s = field.score(c, contact.level, v);
+                let mut s = match contact.wall {
+                    Some(wall) => barricade_place(wall, v, me, traits.skill),
+                    None => field.score(c, contact.level, v),
+                };
                 let w = ((f64::from(s.ahead + 1.0)) * 0.4) as f32;
                 let mut value = s.strike * 1.0
                     + ((k * 1.0 + 1.0) * s.approach + (k * 2.0 + 1.0) * s.danger * w);
@@ -1256,7 +1317,10 @@ pub fn search(
         } else {
             for (c, contact) in contacts.iter().enumerate() {
                 let level = if contact.is_foe { contact.level } else { 0 };
-                let mut s = field.score(c, level, v);
+                let mut s = match contact.wall {
+                    Some(wall) => barricade_place(wall, v, me, traits.skill),
+                    None => field.score(c, level, v),
+                };
                 if contact.is_foe {
                     foe_unreachable = contact.unreachable;
                     foe_seen = true;
@@ -2190,6 +2254,31 @@ fn choose_blow(
 #[cfg(test)]
 #[path = "combat_test.rs"]
 mod tests;
+
+#[cfg(test)]
+mod wall_place {
+    use super::*;
+
+    #[test]
+    fn a_place_against_the_wall_costs_more_than_one_clear_of_it() {
+        let wall = WallStep {
+            centre: Vec3::ZERO,
+            along: Vec3::X,
+            half_width: 300.0,
+        };
+        let body = Body {
+            scale: 1.0,
+            reach_cm: 50.0,
+            ..Body::default()
+        };
+        let near = barricade_place(wall, Vec3::new(0.0, 0.0, 80.0), &body, 0.0);
+        let far = barricade_place(wall, Vec3::new(0.0, 0.0, 800.0), &body, 0.0);
+        assert_eq!(near.close, 0.0);
+        assert!(near.danger > 0.0, "{}", near.danger);
+        assert_eq!(far.danger, 0.0);
+        assert!(near.danger > far.danger);
+    }
+}
 
 /// The brain's morale as the AI tick drifts it.
 #[derive(Debug, Clone, Copy, PartialEq)]

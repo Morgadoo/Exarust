@@ -1156,7 +1156,7 @@ fn duellist(
                 held.flags &= !crate::contacts::UNREACHABLE;
             }
             let marked = held.flags & crate::contacts::UNREACHABLE != 0;
-            let mut contacts = [combat::Contact {
+            let mut contacts = vec![combat::Contact {
                 level: 3,
                 is_foe: true,
                 character: true,
@@ -1165,6 +1165,15 @@ fn duellist(
                 unreachable: marked,
                 ..combat::Contact::default()
             }];
+            if let Ok(npc) = brains.get(entity) {
+                for step in &npc.wall_steps {
+                    contacts.push(combat::Contact {
+                        character: false,
+                        wall: Some(*step),
+                        ..combat::Contact::default()
+                    });
+                }
+            }
             let out = combat::tick(
                 mind,
                 &me,

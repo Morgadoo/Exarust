@@ -234,6 +234,8 @@ pub struct Npc {
     /// Force entities this pass can see (a barricade, weighed before the
     /// characters). The effects tick fills it; the pass takes it.
     pub force_sights: Vec<crate::contacts::Sighting>,
+    /// Barricades the combat tick steps away from. Replaced each sight.
+    pub wall_steps: Vec<crate::combat::WallStep>,
 }
 
 /// Where a brain stands and the room graph its flight reads: the brain's
@@ -321,6 +323,7 @@ impl Npc {
             sleeping: false,
             investigation: crate::lifecycle::Investigation::default(),
             force_sights: Vec::new(),
+            wall_steps: Vec::new(),
         }
     }
 

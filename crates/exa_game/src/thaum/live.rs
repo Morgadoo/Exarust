@@ -859,6 +859,7 @@ fn see_force_effects(
     let locale = sight.db.as_ref().map_or(0, |db| db.locale);
     for (who, mut npc, body, mut relations) in &mut watchers {
         npc.force_sights.clear();
+        npc.wall_steps.clear();
         let Some(body) = body.filter(|body| body.drive.is_some()) else {
             continue;
         };
@@ -931,6 +932,11 @@ fn see_force_effects(
             record.alarm = seen.fear;
             let at = match hazard {
                 crate::effects::danger::Hazard::Barricade { wall, .. } => {
+                    npc.wall_steps.push(exa_ai::combat::WallStep {
+                        centre: wall.centre,
+                        along: wall.along,
+                        half_width: wall.half_width,
+                    });
                     crate::effects::danger::wall_point(wall, chest)
                 }
                 crate::effects::danger::Hazard::Blast { at, .. }
