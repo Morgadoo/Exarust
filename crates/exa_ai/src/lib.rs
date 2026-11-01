@@ -987,7 +987,11 @@ fn duellist(
             target: Some(foe_key),
         };
         let index = combatant.contact_index(foe_key);
-        if brains.get(entity).is_err() {
+        // A focus has cleared the body target, so the old character is not
+        // perceived and is not who the fighter attends.
+        if ai.focus.is_some() {
+            combatant.target = None;
+        } else if brains.get(entity).is_err() {
             // A duellist without a brain (the practice opponent) perceives
             // its target itself. The player carries no contacts, so the
             // target's list and its trust are empty here; its raw attitude
@@ -1034,11 +1038,14 @@ fn duellist(
             }
         }
         // The brain's perception pass already saw the target this tick,
-        // with its own contacts and the relations' trust.
-        combatant.target = Some(foe_key);
-        let contact = &mut combatant.contacts[index];
-        if target_condition.is_dead() && contact.died_ms.is_none() {
-            contact.died_ms = Some(now);
+        // with its own contacts and the relations' trust. A focus attends
+        // that entity instead, so the old character stays unattended.
+        if ai.focus.is_none() {
+            combatant.target = Some(foe_key);
+            let contact = &mut combatant.contacts[index];
+            if target_condition.is_dead() && contact.died_ms.is_none() {
+                contact.died_ms = Some(now);
+            }
         }
         let target_swing = target_fighter_entity
             .and_then(|e| target_swings.get(e).ok())
@@ -2221,6 +2228,8 @@ mod tests {
             at: Vec3::new(200.0, 100.0, 0.0),
         });
         app.world_mut().entity_mut(fighter).insert(npc);
+        step(&mut app);
+        // The next tick must not attend the old character again.
         step(&mut app);
         let ai = app.world().get::<Duellist>(fighter).unwrap();
         let focus = ai.focus.expect("a focus");
