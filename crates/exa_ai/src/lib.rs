@@ -1291,6 +1291,7 @@ fn duellist(
             facing: foe_motion.facing,
             scale: target_fighter.map_or(1.0, |f| f.stats.scale),
             rules: target_fighter.map_or(0, |f| f.stats.rules.0),
+            weapon_class: u32::from(weapon_class_of(foe_key, &blades)),
             attack_flags: target_swing,
             lesson: foe_lesson(
                 target_body.and_then(|(.., data)| data.map(|d| &d.record)),

@@ -333,6 +333,8 @@ pub struct Foe {
     pub stepping: bool,
     pub reach_cm: f32,
     pub motion: i32,
+    /// Its weapon class. A large foe's claws quadruple the attack drive;
+    /// any other class doubles it.
     pub weapon_class: u32,
     pub rules: u32,
     /// The foe's swing flags. A cleaving foe doubles the attack and the

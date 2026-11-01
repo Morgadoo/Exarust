@@ -460,6 +460,33 @@ fn a_recoil_holds_the_recovery_drive() {
 }
 
 #[test]
+fn a_large_foes_claws_quadruple_the_attack() {
+    let me = Body {
+        weapon_class: 0x10,
+        ..Body::default()
+    };
+    let creature = |class: u32| Foe {
+        rules: 1,
+        weapon_class: class,
+        ..Foe::default()
+    };
+    let mut mind = CombatMind {
+        level: 3,
+        eagerness: 0.5,
+        pressing: true,
+        ..CombatMind::default()
+    };
+    // Seed 1's draw of 40 is 1: the press holds.
+    let mut roll = 1;
+    let fists = drives(&mut mind, &me, Some(&creature(FISTS)), NOVICE, &mut roll);
+    mind.pressing = true;
+    roll = 1;
+    let claws = drives(&mut mind, &me, Some(&creature(CLAWS)), NOVICE, &mut roll);
+    assert_eq!((fists.attack, fists.strike), (4.0, 1.5));
+    assert_eq!((claws.attack, claws.strike), (8.0, 1.5));
+}
+
+#[test]
 fn a_cleaving_foe_doubles_the_drive() {
     let me = Body::default();
     let foe = Foe {
