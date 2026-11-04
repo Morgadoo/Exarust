@@ -1351,8 +1351,10 @@ mod tests {
     fn a_story_save_carries_discovery_and_a_load_restores_it() {
         use crate::experience_live::StoryExperience;
 
-        let mut live = StoryExperience::default();
-        live.started = true;
+        let mut live = StoryExperience {
+            started: true,
+            ..Default::default()
+        };
         live.state.seen = vec![77];
         live.state.global = 40;
         let mut session = Session::story();

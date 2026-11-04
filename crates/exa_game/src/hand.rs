@@ -3449,14 +3449,15 @@ mod tests {
             let centre = level.rooms.cell_centre(cell);
             Vec3::new(centre.x, 0.0, centre.y)
         };
-        let hip = at(1 * 6 + 2);
-        let across = at(1 * 6 + 3);
+        let index = |x: u32, y: u32| y * 6 + x;
+        let hip = at(index(2, 1));
+        let across = at(index(3, 1));
         assert_eq!(lift_region(Some(&level), hip, hip), pick::Region::Inside);
         assert_eq!(lift_region(Some(&level), hip, across), pick::Region::Inside);
         level.tracker.set_door(
             DoorLink {
-                from: 1 * 6 + 2,
-                to: 1 * 6 + 3,
+                from: index(2, 1),
+                to: index(3, 1),
             },
             false,
         );

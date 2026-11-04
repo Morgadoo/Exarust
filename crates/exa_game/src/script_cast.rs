@@ -462,10 +462,13 @@ mod tests {
             witness.add_relation(2, 30, 0);
             let mut fallen = Character::new(2, "Fallen");
             fallen.contacts.push(Contact::new(1));
-            let mut cast = Cast::default();
-            cast.characters = vec![witness, fallen];
-            let mut conversations = Conversations::default();
-            conversations.cast = cast;
+            let cast = Cast {
+                characters: vec![witness, fallen],
+            };
+            let conversations = Conversations {
+                cast,
+                ..Default::default()
+            };
             let mut app = App::new();
             app.add_plugins(ScriptCastPlugin)
                 .insert_resource(exa_script::Scripts {

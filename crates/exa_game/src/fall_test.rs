@@ -159,11 +159,13 @@ fn the_player_fades_then_dies_4_seconds_after() {
 fn the_players_fall_makes_everyone_forget_them() {
     let (mut world, root, body) = falling(Branch::Falling, true);
     let other = world.spawn_empty().id();
-    let mut foe = exa_ai::combatant::Combatant::default();
-    foe.target = Some(body);
-    foe.look_target = Some(root);
-    foe.holder = Some(body);
-    foe.other_target = Some(other);
+    let foe = exa_ai::combatant::Combatant {
+        target: Some(body),
+        look_target: Some(root),
+        holder: Some(body),
+        other_target: Some(other),
+        ..Default::default()
+    };
     let watcher = world.spawn(foe).id();
     check_at(&mut world, 0);
     check_at(&mut world, 84);

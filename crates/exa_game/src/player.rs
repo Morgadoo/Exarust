@@ -3923,11 +3923,15 @@ mod tests {
         let run = |follow: bool| {
             let mut app = App::new();
             app.add_systems(Update, follow_body_camera);
-            let mut body = Locomotor::default();
-            body.yaw = 0.0;
+            let body = Locomotor {
+                yaw: 0.0,
+                ..Default::default()
+            };
             app.world_mut().spawn((PlayerBody::new(0.0), body));
-            let mut camera_state = ChaseCamera::default();
-            camera_state.yaw = 1.0;
+            let camera_state = ChaseCamera {
+                yaw: 1.0,
+                ..Default::default()
+            };
             let camera = app.world_mut().spawn(camera_state).id();
             if follow {
                 app.insert_resource(crate::hw_config::HardwareConfig::new(

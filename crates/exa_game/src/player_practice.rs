@@ -246,8 +246,10 @@ mod tests {
         let mut kept = PlayerPractice::default();
         kept.practice.lesson = 1.0;
         kept.practice.gain = 10.5;
-        let mut story = StoryExperience::default();
-        story.started = true;
+        let mut story = StoryExperience {
+            started: true,
+            ..Default::default()
+        };
         story.player.experience = 100;
         app.insert_resource(story);
         let mut data = CharacterData::of_record(CharacterRecord::new());

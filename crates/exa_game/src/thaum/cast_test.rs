@@ -116,8 +116,10 @@ fn shock_weapons_arm_each_held_blade() {
     use exa_formats::weapon_record::{Section, WeaponRecord, flags};
     let mut app = new_app();
     let caster = caster(&mut app, &[crate::thaum::energy::SHOCK_WEAPONS]);
-    let mut moves = HeldMoveset::default();
-    moves.weapon_class = 0x20;
+    let moves = HeldMoveset {
+        weapon_class: 0x20,
+        ..Default::default()
+    };
     app.world_mut().entity_mut(caster).insert(moves);
     let sword = WeaponRecord::of_one_part(
         flags::TWO_HANDED | flags::BLADED,
@@ -201,8 +203,10 @@ fn taking_or_dropping_a_weapon_changes_its_shock_arcs() {
     use exa_physics::grip::GripRelease;
     let mut app = new_app();
     let caster = caster(&mut app, &[crate::thaum::energy::SHOCK_WEAPONS]);
-    let mut moves = HeldMoveset::default();
-    moves.weapon_class = 0x20;
+    let moves = HeldMoveset {
+        weapon_class: 0x20,
+        ..Default::default()
+    };
     app.world_mut().entity_mut(caster).insert(moves);
     let sword = || {
         WeaponRecord::of_one_part(

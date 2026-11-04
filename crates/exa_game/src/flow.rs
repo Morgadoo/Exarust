@@ -5152,8 +5152,10 @@ mod tests {
             .add_message::<crate::experience_live::DiscoveryTick>()
             .add_message::<crate::scene_bodies::SceneCommand>()
             .add_systems(Update, apply_steps);
-        let mut req = exa_physics::body::locomotion::Locomotion::default();
-        req.flags = BACK | KEYS | TURN_ABOUT | SPRINT;
+        let req = exa_physics::body::locomotion::Locomotion {
+            flags: BACK | KEYS | TURN_ABOUT | SPRINT,
+            ..Default::default()
+        };
         let player = app
             .world_mut()
             .spawn((crate::player::PlayerBody::new(0.0), req))

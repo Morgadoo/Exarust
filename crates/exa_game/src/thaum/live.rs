@@ -1609,8 +1609,10 @@ mod tests {
     /// frame has one. A stop asks the voice to end.
     #[test]
     fn the_arc_hum_follows_the_frame() {
-        let mut voice = exa_audio::Voice::default();
-        voice.pitch = 1.0;
+        let mut voice = exa_audio::Voice {
+            pitch: 1.0,
+            ..Default::default()
+        };
         apply_arc_hum(&mut voice, 0.25, None, Vec3::X);
         assert_eq!(voice.gain, 0.25);
         assert_eq!(voice.pitch, 1.0);
@@ -2311,11 +2313,15 @@ mod tests {
             .insert_resource(BodyTicks(0))
             .insert_resource(EffectRoll(Roll(0)))
             .add_systems(Update, shock_fighters);
-        let mut req = Locomotion::default();
-        req.moving = true;
-        req.free_walk = true;
-        let mut motor = Locomotor::default();
-        motor.amount = 4.0;
+        let req = Locomotion {
+            moving: true,
+            free_walk: true,
+            ..Default::default()
+        };
+        let motor = Locomotor {
+            amount: 4.0,
+            ..Default::default()
+        };
         let fighter = app.world_mut().spawn((Fighter::default(), req, motor)).id();
         app.world_mut().write_message(ArcShocked {
             body: fighter,
