@@ -233,8 +233,12 @@ hook and ends the cast; it pushes other bodies' limb spheres out of its
 shell and opens ripples where they strike, and a struck character is
 shoved 40 cm (a knockback step here). The cap's frame (the dome's centre,
 z along the flattened facing) and one contact a body are Exarust's; the
-contact's balance drain and knock count, the sounds and the draw are not
-wired. A bubble cast makes its dome entity (`thaum::bubble_live`) at the
+contact's balance drain and knock count are not wired. Both domes are
+drawn and sounded each frame (`effects::dome_draw`, `thaum::dome_sound`):
+the cast's `thmfrc_ss`, a looping `thmfrc_bc02` hum started at volume 0
+and pitch 1, 0.8·r of its length in, then levelled and moved by every
+frame and freed with the dome, `thmfrc_bi` at each contact and the
+Bubble's `thmfrc_brf` when it breaks. A bubble cast makes its dome entity (`thaum::bubble_live`) at the
 cast place, 120 cm across: its start plays cast motion 0x24 with id
 0x20207 and takes the hook (0 to a call carrying bits 0x28, so a cast's
 start, event 0x20, is refused while it is set); the grow passing 1 clears
@@ -772,13 +776,14 @@ effect_geometry}`.
   (half while standing). It grows at `0.00125` a ms only while under
   800 ms have passed, so the tick never reaches 1; its drawn radius is
   `(2 − s)·s·0.9·r`. Ending flips the share; it shrinks at 0.002 a ms with
-  a drawn radius `(1 − s²)·0.9·r`. Its cap is drawn 85 by 85 by 25 cm,
-  75 cm along the facing, bound `√(25² + 85²)`, its glow four times the
-  power's hit value. A body part (not the caster's) inside the radius plus
+  a drawn radius `(1 − s²)·0.9·r` (the keep-out's; the drawn cap keeps
+  the full radius and grows through its `Fade`). Its node's bounds are a
+  box of 85 by 85 by 25 cm centred 75 cm along the facing, bound
+  `√(25² + 85²)`, its glow four times the power's hit value. A body part (not the caster's) inside the radius plus
   its own, above half the radius, within the drawn radius sideways and
   outside the inner surface is pushed out and ripples by half the push.
-- **The Bubble** (`force_dome::Bubble`): grows over 1200 ms, breaks with a
-  sound at volume 0.3 and shrinks over 700 ms. Its caster's parts that
+- **The Bubble** (`force_dome::Bubble`): grows over 1200 ms, breaks with
+  `thmfrc_brf` at volume 0.3 and shrinks over 700 ms. Its caster's parts that
   reach 10 cm inside the surface are pushed back in; other bodies' parts
   that the growing shell covers are pushed out. A struck character is
   shoved 40, plays a hit sound at most every 400 ms and loses balance.

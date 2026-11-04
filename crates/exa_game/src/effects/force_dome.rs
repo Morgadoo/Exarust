@@ -15,10 +15,12 @@
 //!   value toward it by at most 0.04, place 0.05 toward the target) and one
 //!   whose two values are both under 0.07 is replaced by the last.
 //! - **The cast** ([`Dome::cast`]): state 1 (growing) from the setup's
-//!   start time, reach 30, the node scaled to the radius; the cast sound
-//!   plays at the caster's x and z and the higher of its height plus 10 and
-//!   the ground plus 100, its volume the effect's (0.2 Barrier, 0.3 Bubble)
-//!   and its pitch `0.6 + 0.4·r`.
+//!   start time, reach 30, the node's bounding radius and box the dome's
+//!   radius; the cast sound (`thmfrc_ss`) plays at the caster's x and z and
+//!   the higher of its height plus 10 and the ground plus 100, its volume
+//!   the effect's (0.2 Barrier, 0.3 Bubble) and its pitch `0.6 + 0.4·r`;
+//!   then the hum (`thmfrc_bc02`) takes a looping voice
+//!   ([`crate::thaum::dome_sound`]).
 //! - **The frame** ([`Dome::frame`]): the level of detail is 500 over the
 //!   squared camera distance; the shader's eight ripple points are each
 //!   ripple's place and shown value (the free slots' values go to 0); while
@@ -37,9 +39,15 @@
 //!   is `(2 − share)·share·0.9·radius`. Ending flips the share and keeps the
 //!   clock it would have had; shrinking runs at `ms·0.002` with a drawn
 //!   radius of `(1 − share²)·0.9·radius`, and passes 1 to state 4. Its
-//!   draw scales the cap 85 by 85 by 25 cm, pushed 75 cm along the facing
-//!   (bounding radius `√(25² + 85²)`), its glow is four times the power's
-//!   hit value, and the hum follows 80 cm ahead.
+//!   frame turns the node to the blended facing at the blended place (the
+//!   mesh draws there), and centres its bounds 75 cm ahead along the
+//!   facing: a box of 85 by 85 by 25 cm, bounding radius `√(25² + 85²)`.
+//!   The texture position is the facing's yaw over 2π plus the first seed
+//!   and a half, and the place's height times 0.001 plus the second seed.
+//!   Its glow is four times the power's hit value, and the hum follows
+//!   80 cm ahead of the bounds' centre. The drawn radius only shapes the
+//!   keep-out: the cap's mesh keeps the full radius, and its grow and
+//!   shrink show through the shader's `Fade`.
 //! - **The Bubble** ([`Bubble`]): a full sphere. Growing at `ms/1200` passes
 //!   1 to standing; ending flips the share, plays the break sound (volume
 //!   0.3, pitch `0.6 + 0.2·r`) and shrinks at `ms/700` to state 4. Its glow
@@ -113,7 +121,8 @@ pub const BARRIER_END_MS: f32 = 500.0;
 pub const BUBBLE_GROW_PER_MS: f64 = 0.000_833_333_333_333_333_4;
 pub const BUBBLE_SHRINK_PER_MS: f64 = 0.001_428_571_428_571_428_6;
 pub const BUBBLE_END_MS: f32 = 700.0;
-/// The Barrier's drawn cap and its push along the facing, cm.
+/// The Barrier node's bounding box (half extents) and how far ahead of its
+/// place along the facing the box is centred, cm.
 pub const BARRIER_DRAW_SCALE: Vec3 = Vec3::new(85.0, 85.0, 25.0);
 pub const BARRIER_FORWARD_CM: f32 = 75.0;
 /// The Barrier's hum stands this far ahead of the cap's centre.
@@ -313,8 +322,8 @@ pub struct Dome {
     pub node: DomeNode,
     /// The dome's GI light object exists.
     pub light: bool,
-    /// The dome's render material exists.
-    pub material: bool,
+    /// The dome's hum voice exists (`thmfrc_bc02`, taken at the cast).
+    pub hum: bool,
 }
 
 /// The scene node a dome attaches to: its flags word, its owner back
@@ -337,8 +346,8 @@ pub struct DomeTeardown {
     pub cleared: bool,
     /// The GI light object was freed.
     pub light: bool,
-    /// The material was released and freed.
-    pub material: bool,
+    /// The hum voice was freed.
+    pub hum: bool,
     /// The object freed itself.
     pub object: bool,
 }
@@ -383,7 +392,7 @@ impl Dome {
             removed: false,
             node: DomeNode::default(),
             light: false,
-            material: false,
+            hum: false,
         };
         let sound = Sound {
             at: Vec3::new(caster.x, sound_height(caster.y, ground_y), caster.z),
@@ -406,18 +415,18 @@ impl Dome {
 
     /// Destroy the dome, as the class's destructor does: a real delete
     /// (`owned`) first runs the class's clear hook; the light object and
-    /// the render material are freed when they exist; the base object
+    /// the hum voice are freed when they exist; the base object
     /// leaves the scene; and an owned object frees itself. Returns what it
     /// had.
     pub fn destroy(&mut self, owned: bool) -> DomeTeardown {
         let teardown = DomeTeardown {
             cleared: owned,
             light: self.light,
-            material: self.material,
+            hum: self.hum,
             object: owned,
         };
         self.light = false;
-        self.material = false;
+        self.hum = false;
         self.removed = true;
         self.node.attached = false;
         self.node.owner = false;
@@ -792,16 +801,16 @@ impl Barrier {
         Vec3::from_array(at)
     }
 
-    /// The frame: the cap's place, facing, centre and texture position,
-    /// then the dome's frame values with the Barrier's glow and hum. `node_time`
-    /// is the node's own clock word the texture's second coordinate follows.
-    pub fn frame(&mut self, alpha: f32, camera: Vec3, node_time: f32) -> Option<BarrierFrame> {
+    /// The frame: the cap's place, facing, centre and texture position (its
+    /// second coordinate follows the place's height), then the dome's frame
+    /// values with the Barrier's glow and hum.
+    pub fn frame(&mut self, alpha: f32, camera: Vec3) -> Option<BarrierFrame> {
         let at = self.frame_place(alpha);
         let facing = self.frame_facing(alpha);
         let yaw = planar_yaw(facing);
         self.dome.tex_pos = [
             (f64::from(yaw) * 0.159_154_943_091_895_35 + f64::from(self.tex_seed[0]) + 0.5) as f32,
-            (f64::from(node_time) * 0.001 + f64::from(self.tex_seed[1])) as f32,
+            (f64::from(at.y) * 0.001 + f64::from(self.tex_seed[1])) as f32,
         ];
         let centre = at + facing * BARRIER_FORWARD_CM;
         self.dome.glow = self.hit * 4.0;
@@ -1254,21 +1263,21 @@ mod tests {
         assert_eq!(dome.node.flags, 0x0001_0000);
         dome.attach_node();
         assert_eq!(dome.node.flags, 0x0001_0000, "the bit is set once");
-        // A dome with a light and a material frees both on the real delete,
+        // A dome with a light and a hum frees both on the real delete,
         // runs its clear hook and frees itself; a plain free keeps the
-        // light and the material and only lets the base object go.
+        // light and the hum and only lets the base object go.
         dome.light = true;
-        dome.material = true;
+        dome.hum = true;
         assert_eq!(
             dome.destroy(true),
             DomeTeardown {
                 cleared: true,
                 light: true,
-                material: true,
+                hum: true,
                 object: true,
             }
         );
-        assert!(dome.removed && !dome.light && !dome.material);
+        assert!(dome.removed && !dome.light && !dome.hum);
         assert!(!dome.node.attached);
         let mut plain = Dome::cast(
             30.0,
@@ -1286,7 +1295,7 @@ mod tests {
             DomeTeardown {
                 cleared: false,
                 light: true,
-                material: false,
+                hum: false,
                 object: false,
             }
         );
@@ -1399,7 +1408,12 @@ mod tests {
         // Two snapshots: the place stands still, the facing is +z.
         assert_eq!(b.frame_place(0.5), b.dome.at);
         assert_eq!(b.tick_place(4, 0.5), b.dome.at);
-        let frame = b.frame(0.5, Vec3::new(0.0, 0.0, 1000.0), 0.0).unwrap();
+        let frame = b.frame(0.5, Vec3::new(0.0, 0.0, 1000.0)).unwrap();
+        // The texture's second coordinate follows the place's height.
+        assert_eq!(
+            b.dome.tex_pos[1],
+            (f64::from(frame.at.y) * 0.001 + f64::from(b.tex_seed[1])) as f32
+        );
         // The facing is the engine's approximate normalisation of +z.
         assert_eq!(frame.centre, frame.at + frame.facing * 75.0);
         assert!((frame.facing - Vec3::Z).length() < 1e-3);

@@ -25,9 +25,12 @@
 //!   node's matrix. The shove is a knockback step along the shove, as the
 //!   blast's knock is, and the contact runs once a body, not once a part.]
 //!
+//! The cast's `thmfrc_ss`, the hum and the hits' `thmfrc_bi` are queued on
+//! [`LiveBarrier::sounds`] and played by [`super::dome_sound`]; the cap is
+//! drawn by [`crate::effects::dome_draw`].
+//!
 //! Not wired: the balance the contact drains and the knock count (the body
-//! keeps its character's balance private), the hit and cast sounds, the
-//! glow and the draw.
+//! keeps its character's balance private).
 //!
 //! Evidence: the barrier's creator, start, hook, tick and keep-out, the
 //! cast-motion start, the spend and the cast end, read from `Exanima.exe`.
@@ -41,8 +44,9 @@ use super::barricade::WAKE_TICKS;
 use super::blast_live::{LimbSphere, bounds_miss, gather_limbs};
 use super::cast::PowerCaster;
 use super::casting::{self, CastBody, CastHook, spend_tick};
+use super::dome_sound::{DomeSet, DomeSounds};
 use super::live::{EffectDraws, EffectRoll};
-use crate::effects::force_dome::{Barrier, CONTACT_PUSH, DomeHit, Phase};
+use crate::effects::force_dome::{Barrier, CONTACT_PUSH, DomeHit, Phase, Sound};
 
 /// Centimetres a metre.
 const CM: f32 = 100.0;
@@ -63,6 +67,8 @@ pub struct LiveBarrier {
     pub hooked: bool,
     /// The cast generation whose hook the barrier took.
     pub generation: u64,
+    /// The sounds it queued and its hum.
+    pub sounds: DomeSounds,
 }
 
 /// The barrier's start on its caster: cast motion 0x23 with the power id,
@@ -91,6 +97,10 @@ pub fn hook_called(live: &mut LiveBarrier, body: &mut CastBody) -> bool {
         || body.casting != BARRIER
         || body.cast_hook != Some(BARRIER_HOOK);
     if called {
+        info!(
+            "force barrier: its hook was called (events asked {:#x}, casting {:#x}), it ends",
+            body.hook_asked, body.casting
+        );
         live.hooked = false;
         call_hook(&mut live.barrier);
     }
@@ -111,6 +121,10 @@ pub fn pay(live: &mut LiveBarrier, body: &mut CastBody) {
         live.barrier.rate * 0.5
     };
     if spend_tick(body, drain) {
+        info!(
+            "force barrier: focus {:.4} spent {:.4} falls short of {drain:.4}, it ends",
+            body.focus, body.spent
+        );
         if live.hooked {
             call_hook(&mut live.barrier);
             live.hooked = false;
@@ -130,13 +144,14 @@ pub(crate) fn cap_frame(at: Vec3, facing: Vec3) -> Affine3A {
 
 /// One body against the barrier: each limb sphere is pushed out of the
 /// shell and strikes a ripple. `limbs` is the caller's scratch buffer.
-/// Whether any part was pushed.
+/// The last pushed part's shell point in the world (cm), when any was
+/// pushed.
 pub(crate) fn keep_out(
     barrier: &mut Barrier,
     facing: Vec3,
     body: &mut Ragdoll,
     limbs: &mut Vec<LimbSphere>,
-) -> bool {
+) -> Option<Vec3> {
     let frame = cap_frame(barrier.dome.at, facing);
     let to_local = frame.inverse();
     barrier.dome.ripples.begin_body();
@@ -150,9 +165,9 @@ pub(crate) fn keep_out(
         high,
         (at - Vec3::splat(reach), at + Vec3::splat(reach)),
     ) {
-        return false;
+        return None;
     }
-    let mut pushed = false;
+    let mut pushed = None;
     for limb in limbs.iter() {
         if limb.inverse_mass <= 0.0 {
             continue;
@@ -168,7 +183,7 @@ pub(crate) fn keep_out(
             frame.transform_vector3(push.push) / CM,
         );
         barrier.dome.ripples.strike(push.ripple_at, push.strength);
-        pushed = true;
+        pushed = Some(frame.transform_point3(push.ripple_at));
     }
     pushed
 }
@@ -235,9 +250,10 @@ pub(crate) fn tick_barriers(
             if other == live.caster {
                 continue;
             }
-            if !keep_out(&mut live.barrier, facing, &mut body, &mut limbs) {
+            let Some(shell_point) = keep_out(&mut live.barrier, facing, &mut body, &mut limbs)
+            else {
                 continue;
-            }
+            };
             body.touch(WAKE_TICKS);
             let Some(at) = at.map(|a| a.translation() * CM) else {
                 continue;
@@ -255,6 +271,16 @@ pub(crate) fn tick_barriers(
             if let Some(shove) = contact.shove {
                 body.begin_knockback(shove * (CONTACT_PUSH / CM));
             }
+            if let Some([volume, pitch]) = contact.sound {
+                live.sounds.push(
+                    DomeSet::Hit,
+                    Sound {
+                        at: shell_point,
+                        volume,
+                        pitch,
+                    },
+                );
+            }
         }
     }
 }
@@ -270,7 +296,9 @@ pub fn new_barrier(
 ) -> LiveBarrier {
     let hooked = start_barrier(body);
     let generation = body.cast_generation;
-    let (mut barrier, _sound) = Barrier::cast(BARRIER_RADIUS, at, at.y, now, &mut draws.0);
+    let (mut barrier, sound) = Barrier::cast(BARRIER_RADIUS, at, at.y, now, &mut draws.0);
+    // The hum's start draws after the cast sound's pitch.
+    let hum_roll = draws.0.unit();
     barrier.dome.attach_node();
     barrier.rate = cost;
     LiveBarrier {
@@ -278,6 +306,7 @@ pub fn new_barrier(
         caster,
         hooked,
         generation,
+        sounds: DomeSounds::cast(sound, hum_roll),
     }
 }
 
@@ -303,6 +332,13 @@ mod tests {
         assert_eq!(barrier.barrier.dome.radius, BARRIER_RADIUS);
         // The dome rises to the ground plus 100.
         assert_eq!(barrier.barrier.dome.at, Vec3::new(0.0, 100.0, 0.0));
+        // The cast queues `thmfrc_ss` at 0.2 there.
+        let cue = barrier.sounds.cues[0];
+        assert_eq!(cue.set, DomeSet::Cast);
+        assert_eq!(
+            (cue.sound.at, cue.sound.volume),
+            (barrier.barrier.dome.at, 0.2)
+        );
     }
 
     #[test]

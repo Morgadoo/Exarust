@@ -3462,9 +3462,16 @@ materials' bindings, signatures and noise upload are in
 matrix's depth term, which the texture row above is, computed in double
 for the effect material and the tendril; the layer colours, time and
 brightness uniforms and the shader's texture coordinate) in
-`thaum::effect_pass`, as CPU draw plans; the
-original's `effectbarrier`, `effectbubble` and `effectfbrcd` programs
-themselves are not ported and nothing draws the domes yet.
+`thaum::effect_pass`, as CPU draw plans. The domes are drawn by
+`effects::dome_draw` with `effectbarrier_v` and `effectbarrier_f` or
+`effectbubble_f` (`exa_render::force_effects::ForceDomeMaterial`,
+`force_dome.wesl`): the Barrier's mesh in its node's frame, turned to the
+blended facing at the blended place (the 75 cm forward offset moves only
+its bounds), the Bubble's unturned; `ViewPos` the camera in that frame,
+`ColPt` the eight ripple points, `TexPos` and `Fade` the dome's, under the
+`_ForceBarrier01` record (emissive 0.25, opacity 0.5, blend word 0x163,
+flags 0x480008); once a frame, not once a supersample layer. The
+barricade's `effectfbrcd` program is not ported.
 `effects::emissive` models the seven GI lights the effects carry
 (`gi_dome`, `gi_bubble`, `gi_cuboid_fn`, `gi_cuboid`, `gi_gradline`,
 `gi_multipoint`, `gi_telebubble`) with their extents, colours and world

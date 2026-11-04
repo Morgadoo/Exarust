@@ -23,8 +23,12 @@
 //!   a knockback step, as the barrier's is, and the contact runs once a
 //!   body, not once a part.]
 //!
-//! Not wired: the balance the contact drains and the knock count, the cast,
-//! break and hit sounds, the glow and the draw.
+//! The cast's `thmfrc_ss`, the hum, the hits' `thmfrc_bi` and the break's
+//! `thmfrc_brf` are queued on [`LiveBubble::sounds`] and played by
+//! [`super::dome_sound`]; the sphere is drawn by
+//! [`crate::effects::dome_draw`].
+//!
+//! Not wired: the balance the contact drains and the knock count.
 //!
 //! Evidence: the bubble's start, hook, tick and keep-out, and its power
 //! class's control, read from `Exanima.exe`.
@@ -36,9 +40,10 @@ use super::barricade::WAKE_TICKS;
 use super::blast_live::{LimbSphere, gather_limbs};
 use super::cast::PowerCaster;
 use super::casting::{self, CastBody, CastHook};
+use super::dome_sound::{DomeSet, DomeSounds};
 use super::live::{EffectDraws, EffectRoll};
 use super::power::force::{BUBBLE, BUBBLE_MOTION};
-use crate::effects::force_dome::{Bubble, CONTACT_PUSH, Dome, DomeHit, Phase};
+use crate::effects::force_dome::{Bubble, CONTACT_PUSH, Dome, DomeHit, Phase, Sound};
 
 /// Centimetres a metre.
 const CM: f32 = 100.0;
@@ -53,6 +58,8 @@ pub const BUBBLE_RADIUS: f32 = 120.0;
 pub struct LiveBubble {
     pub bubble: Bubble,
     pub caster: Entity,
+    /// The sounds it queued and its hum.
+    pub sounds: DomeSounds,
 }
 
 /// A bubble for `caster` (at `standing`, cm, its feet) around `at`: the cast
@@ -70,10 +77,20 @@ pub fn new_bubble(
     if motion {
         body.cast_hook = Some(BUBBLE_HOOK);
     }
-    let (mut bubble, _sound) =
+    let (mut bubble, sound) =
         Bubble::cast(BUBBLE_RADIUS, at, now, standing, standing.y, &mut draws.0);
+    // The hum's start draws after the cast sound's pitch.
+    let hum_roll = draws.0.unit();
     bubble.dome.attach_node();
-    (LiveBubble { bubble, caster }, motion)
+    let sounds = DomeSounds::cast(sound, hum_roll);
+    (
+        LiveBubble {
+            bubble,
+            caster,
+            sounds,
+        },
+        motion,
+    )
 }
 
 /// The power's ending tells the dome to end.
@@ -138,13 +155,31 @@ pub(crate) fn keep_out(
     pushed
 }
 
-/// The response of a body the dome pushed.
-fn contact(dome: &mut Dome, hit: &DomeHit, now: u32, roll: &mut EffectRoll, body: &mut Ragdoll) {
+/// The response of a body the dome pushed: the shove, and the hit sound
+/// at the dome's place.
+fn contact(
+    dome: &mut Dome,
+    hit: &DomeHit,
+    now: u32,
+    roll: &mut EffectRoll,
+    body: &mut Ragdoll,
+    sounds: &mut DomeSounds,
+) {
     let Some(contact) = dome.contact(hit, now, &mut roll.0) else {
         return;
     };
     if let Some(shove) = contact.shove {
         body.begin_knockback(shove * (CONTACT_PUSH / CM));
+    }
+    if let Some([volume, pitch]) = contact.sound {
+        sounds.push(
+            DomeSet::Hit,
+            Sound {
+                at: dome.at,
+                volume,
+                pitch,
+            },
+        );
     }
 }
 
@@ -164,7 +199,10 @@ pub(crate) fn tick_bubbles(
         if casters.get(live.caster).is_err() {
             end_bubble(live);
         }
-        let (_break_sound, stood) = live.bubble.tick(now, &mut roll.0);
+        let (broke, stood) = live.bubble.tick(now, &mut roll.0);
+        if let Some(sound) = broke {
+            live.sounds.push(DomeSet::Break, sound);
+        }
         // The standing dome clears the hook and the power id itself, not
         // through the cast end: the cast motion plays on.
         if stood && let Ok(mut caster) = casters.get_mut(live.caster) {
@@ -194,7 +232,14 @@ pub(crate) fn tick_bubbles(
                 limp: body.drive.is_none(),
                 struck_flag: false,
             };
-            contact(&mut live.bubble.dome, &hit, now, &mut roll, &mut body);
+            contact(
+                &mut live.bubble.dome,
+                &hit,
+                now,
+                &mut roll,
+                &mut body,
+                &mut live.sounds,
+            );
         }
     }
 }
@@ -287,6 +332,8 @@ mod tests {
         end_bubble(&mut live);
         let (sound, _) = live.bubble.tick(1_312, &mut roll);
         assert!(sound.is_some());
+        assert_eq!(live.sounds.cues[0].set, DomeSet::Cast);
+        assert_eq!(live.sounds.cues[0].sound.volume, 0.3);
         assert_eq!(live.bubble.dome.phase, Phase::Shrinking);
         live.bubble.tick(2_100, &mut roll);
         assert_eq!(live.bubble.dome.phase, Phase::Gone);

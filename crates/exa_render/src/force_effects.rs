@@ -10,7 +10,9 @@
 //! (`dispshell_v`/`dispshell_f` over a copy of a vanishing body's skinned
 //! meshes, and that copy's depth-only pass, [`DispShellMaterial`]), the
 //! teleport bubble (`effecttele_v`/`effecttele_f` over the bubble's sphere,
-//! [`TeleBubbleMaterial`]), and the animated `_ForceNoise` picture the force programs bind as `EmiTex`
+//! [`TeleBubbleMaterial`]), the force domes (`effectbarrier_v` with
+//! `effectbarrier_f` over the Barrier's cap or `effectbubble_f` over the
+//! Bubble's sphere, [`ForceDomeMaterial`]), and the animated `_ForceNoise` picture the force programs bind as `EmiTex`
 //! ([`noise_image`], [`noise_mips`]).
 //!
 //! The render states are the materials' records: `_ForceMat01` and
@@ -22,7 +24,10 @@
 //! displacement shell's `EmiTex` is its record's emissive layer,
 //! `FlameletsA3`. `_TeleBubble01` (the teleport bubble) carries the same
 //! blend word and flags; its draw binds the `_ForceNoise` picture on unit 0
-//! in place of its record's `ForceEfctA2E` layer. Blended draws write no
+//! in place of its record's `ForceEfctA2E` layer. `_ForceBarrier01` (the
+//! Barrier's and the Bubble's material) carries the same emissive
+//! (0.25, 0.25, 0.25, 1), opacity 0.5, blend word and one-sided flags; its
+//! material routine binds the `_ForceNoise` picture. Blended draws write no
 //! depth. Each fragment's output
 //! is clamped to [0, 1] as the original's 8-bit target clamps it.
 //!
@@ -51,7 +56,9 @@ impl Plugin for ForceEffectsPlugin {
         embedded_asset!(app, "force_shell.wesl");
         embedded_asset!(app, "disp_shell.wesl");
         embedded_asset!(app, "tele_bubble.wesl");
+        embedded_asset!(app, "force_dome.wesl");
         app.add_plugins((
+            MaterialPlugin::<ForceDomeMaterial>::default(),
             MaterialPlugin::<ForceRibbonMaterial>::default(),
             MaterialPlugin::<ForceShellMaterial>::default(),
             MaterialPlugin::<DispShellMaterial>::default(),
@@ -82,6 +89,10 @@ pub const SCAN_RECORD_FLAGS: u32 = 0x0048_0008;
 /// record is one-sided; the bubble's mesh draws every face both ways.
 pub const TELE_BUBBLE_BLEND_WORD: u16 = 0x163;
 pub const TELE_BUBBLE_RECORD_FLAGS: u32 = 0x0048_0008;
+/// The `_ForceBarrier01` record's blend word and flags (the domes' and
+/// the barricade's material): the aura's.
+pub const FORCE_BARRIER_BLEND_WORD: u16 = 0x163;
+pub const FORCE_BARRIER_RECORD_FLAGS: u32 = 0x0048_0008;
 /// The record flags' two-sided bit.
 pub const TWO_SIDED: u32 = 0x10;
 /// The skinned shell copy's push along its normal: 2 cm.
@@ -106,6 +117,7 @@ fn shader(name: &str) -> ShaderRef {
         "ribbon" => embedded_path!("force_ribbon.wesl"),
         "disp" => embedded_path!("disp_shell.wesl"),
         "tele" => embedded_path!("tele_bubble.wesl"),
+        "dome" => embedded_path!("force_dome.wesl"),
         _ => embedded_path!("force_shell.wesl"),
     };
     ShaderRef::Path(AssetPath::from_path_buf(path).with_source("embedded"))
@@ -574,6 +586,104 @@ impl Material for TeleBubbleMaterial {
     }
 }
 
+/// The force domes' program uniforms (`effectbarrier_v` with
+/// `effectbarrier_f` or `effectbubble_f`), laid out as `ForceDomeParams` in
+/// `force_dome.wesl`.
+#[derive(Clone, Copy, Debug, PartialEq, ShaderType)]
+pub struct ForceDomeParams {
+    /// `ViewPos`: the camera in the node's frame (cm); w unused.
+    pub view_pos: Vec4,
+    /// `TexPos` in xy; zw unused.
+    pub tex_pos: Vec4,
+    /// `ColPt`: the eight ripple points in the node's frame (cm), their
+    /// shown amount in w.
+    pub colour_points: [Vec4; 8],
+    /// `Fade`.
+    pub fade: f32,
+}
+
+impl Default for ForceDomeParams {
+    fn default() -> Self {
+        Self {
+            view_pos: Vec4::ZERO,
+            tex_pos: Vec4::ZERO,
+            colour_points: [Vec4::ZERO; 8],
+            fade: 1.0,
+        }
+    }
+}
+
+/// A force dome's material (the `_ForceBarrier01` record): one a dome, over
+/// a mesh in centimetres whose entity carries the node's frame and the
+/// centimetre-to-metre scale. With `bubble` it runs `effectbubble_f`, else
+/// `effectbarrier_f`.
+#[derive(Asset, TypePath, AsBindGroup, Clone, Debug)]
+#[bind_group_data(ForceDomeKey)]
+pub struct ForceDomeMaterial {
+    #[uniform(0)]
+    pub params: ForceDomeParams,
+    /// `EmiTex` (unit 0): the `_ForceNoise` picture.
+    #[texture(1)]
+    #[sampler(2)]
+    pub noise: Handle<Image>,
+    /// The Bubble's program instead of the Barrier's.
+    pub bubble: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct ForceDomeKey {
+    bubble: bool,
+}
+
+impl From<&ForceDomeMaterial> for ForceDomeKey {
+    fn from(m: &ForceDomeMaterial) -> Self {
+        Self { bubble: m.bubble }
+    }
+}
+
+impl Material for ForceDomeMaterial {
+    fn vertex_shader() -> ShaderRef {
+        shader("dome")
+    }
+
+    fn fragment_shader() -> ShaderRef {
+        shader("dome")
+    }
+
+    fn alpha_mode(&self) -> AlphaMode {
+        blend_alpha_mode(FORCE_BARRIER_BLEND_WORD).unwrap_or(AlphaMode::Premultiplied)
+    }
+
+    fn enable_prepass() -> bool {
+        false
+    }
+
+    fn enable_shadows() -> bool {
+        false
+    }
+
+    fn enable_oit() -> bool {
+        false
+    }
+
+    fn specialize(
+        _pipeline: &MaterialPipeline,
+        descriptor: &mut RenderPipelineDescriptor,
+        _layout: &MeshVertexBufferLayoutRef,
+        key: MaterialPipelineKey<Self>,
+    ) -> Result<(), SpecializedMeshPipelineError> {
+        if FORCE_BARRIER_RECORD_FLAGS & TWO_SIDED != 0 {
+            descriptor.primitive.cull_mode = None;
+        }
+        if key.bind_group_data.bubble
+            && let Some(fragment) = descriptor.fragment.as_mut()
+        {
+            fragment.shader_defs.push("BUBBLE".into());
+        }
+        Ok(())
+    }
+}
+
 /// The noise picture's mip chain, as the upload's mipmap generation builds
 /// it: level 0 is `pixels` (`side`² bytes), each next level the rounded
 /// mean of each 2×2 block, down to one pixel. Answers the bytes of every
@@ -778,6 +888,52 @@ mod tests {
         let plain = shell_fragment(&[]);
         assert!(plain.contains("va = va * colour_int;"));
         assert!(!plain.contains("f_max = 100.0;"));
+    }
+
+    #[test]
+    fn the_dome_uniform_matches_the_shaders_layout() {
+        let source = include_str!("force_dome.wesl");
+        let size = wgsl_struct_size(source, "ForceDomeParams");
+        // Two vec4, eight points and the fade, padded to 16.
+        assert_eq!(size, 176);
+        assert_eq!(size, <ForceDomeParams as ShaderType>::min_size().get());
+        let offsets = wgsl_offsets(source, "ForceDomeParams");
+        let got: Vec<(&str, u32)> = offsets.iter().map(|(n, o)| (n.as_str(), *o)).collect();
+        assert_eq!(
+            got,
+            [
+                ("view_pos", 0),
+                ("tex_pos", 16),
+                ("colour_points", 32),
+                ("fade", 160),
+            ]
+        );
+        assert_eq!(
+            blend_alpha_mode(FORCE_BARRIER_BLEND_WORD),
+            Some(AlphaMode::Premultiplied)
+        );
+        assert_eq!(FORCE_BARRIER_RECORD_FLAGS & TWO_SIDED, 0);
+        assert!(!source.contains("tex_ofs"));
+    }
+
+    /// The dome program's fragment stage with its vertex stage cut out and
+    /// its `@if` blocks taken as `defs` define them, as naga can validate it.
+    fn dome_fragment(defs: &[&str]) -> String {
+        program_fragment(include_str!("force_dome.wesl"), "ForceDomeParams", defs)
+    }
+
+    #[test]
+    fn both_dome_fragments_validate_with_their_own_terms() {
+        let barrier = dome_fragment(&[]);
+        validate(&barrier, &[]);
+        assert!(barrier.contains("f = max(1.0 - f * 0.7, 0.0);"));
+        assert!(barrier.contains("vec4(col * col * 0.6, alpha)"));
+        assert!(!barrier.contains("tbw"));
+        let bubble = dome_fragment(&["BUBBLE"]);
+        validate(&bubble, &["BUBBLE"]);
+        assert!(bubble.contains("f = max(1.0 - f * 0.4, 0.0);"));
+        assert!(bubble.contains("let alpha = ta * th * th;"));
+        assert!(!bubble.contains("min(cm, 1.15)"));
     }
 
     #[test]
