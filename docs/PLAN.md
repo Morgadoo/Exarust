@@ -1249,6 +1249,8 @@ Round 48b items: the item uses that were only reported now act. Containers open 
 
 Round 48b parry: armed parries run with the weapon's speed, and the hands lock while a parry holds. The swing nudges and the walk-bit clears are live. The armed grip's strength is still unused.
 
+Round 49 loadout (P12): the loadout form equips and returns kit items and saves the manager's per-rank kits.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
@@ -1653,6 +1655,8 @@ Round 48 head: the head tracker runs during a stab. The far variant stays uncall
 Round 47 zones: stay zones and level exits run and the zone kinds are corrected.
 
 Round 48b aitick: the NPC combat tick reads the live body (balance, tone, support, feral, race flags, swing flags, speed) and weighs every contact, a step-led estimate, character switches and force foci, instead of the defaults it had.
+
+Round 49 auditfix: the 1 November death fade froze the game after a pit death; fixed with four other audit findings.
 
 ### Phase 7 — Game modes and content
 
@@ -2197,6 +2201,8 @@ Round 48b misc: script witnesses, ShowInventory and WitnessRole run live. The pr
 
 Round 48b shock: shock-weapon arcs arm, follow and end with the held blades, with their hum, voxel and GI lights; device arcs light their point light. Barricades, blasts and waves enter the brains' target pass with a mind-aware relation. A wall impact alerts the hitter. A hard hit ripples the shell, and a dying shaper can teach the player. The kinesis mesh gate (f32678884) is a performance early-out with no change in behaviour.
 
+Round 49 domes (E5): the force domes draw and sound; the Barrier only stands in combat mode, as in the original.
+
 ### Phase 8 — Polish and release
 
 Performance (streaming, culling, GPU timings), settings, controller
@@ -2440,4 +2446,6 @@ Round 40 osmain4: the super-sampled pass schedule, the renderer's list walk, the
 Round 44 sweep-render (reviewed): mostly tested models with no caller; the lane's invented sphere shadow mode, interleaved layout, upload copy and prepass change were removed.
 
 Round 44 weather (E1, cl/weather): rain and thunder are live, GPU-checked on arenao3 with night storm, day storm and dry seeds.
+
+Round 49 gibright: the reported outdoor overbright did not reproduce on main; the read-back probe (EXA_GI_PROBE) found the opposite fault, sky light reaching no voxel, and fixed it.
 
