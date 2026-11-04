@@ -3,7 +3,10 @@
 //!
 //! Evidence: the loadout form's routines in the retail image, read from
 //! the instructions. The form is 1024 × 768 with the character-creation
-//! preview between the arsenal (left) and the equipment (right). Mode 1
+//! preview between two item containers: the left one (called `arsenal`
+//! here) is the shown person's kit list and the right one (`equipment`)
+//! is the arsenal box the shelf and box buttons choose (the hub wires them
+//! in `exa_game::loadout_kit`). Mode 1
 //! (named creation here) adds a name box, edits rank 5 and shows the hire
 //! block (HIRE, fee, upkeep, profession) in place of the rank and shelf
 //! rows; mode 3 (champion) only shows the kit. An item may be equipped when its rank is at most the
@@ -277,7 +280,7 @@ impl LoadoutInks {
 }
 
 /// The layer one flat rectangle fills, in the draw path's solid program.
-fn solid_layer(rect: [i32; 4], ink: [u8; 4]) -> crate::gui_draw::GuiLayer {
+pub fn solid_layer(rect: [i32; 4], ink: [u8; 4]) -> crate::gui_draw::GuiLayer {
     let [x, y, w, h] = rect;
     let mut batch = crate::skin::SkinBatch::new();
     batch.select(1, 0, false);

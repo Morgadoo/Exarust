@@ -94,6 +94,8 @@
 //!          --hub-employee-kit NAME:id,id,...  play arenahub: once the hub is entered, a combatant NAME joins the company
 //!                                     with these kit items, stowed in the arsenal as a hire stows a kit (a debug
 //!                                     stand-in for a loaded career's employee)
+//!          --hub-arsenal id,id,...    play arenahub: once the hub is entered, stow these items in the arsenal with no
+//!                                     flags (a debug stock for the loadout form's kit)
 //!          --trace <file.csv>         the player's body (else every simulated body) after every 83 Hz tick, in cm
 //!          --trace-all                with --trace: every simulated character body, the player's among them
 //!          --debug-bodies             start with the body overlay and joint readout shown (F3 toggles it)
@@ -514,6 +516,9 @@ pub struct Options {
     /// `--hub-employee-kit NAME:id,...`: a combatant with this kit joins
     /// the company once the hub is entered (a debug tool).
     pub hub_employee_kit: Option<(String, Vec<u32>)>,
+    /// `--hub-arsenal id,...`: items stowed in the arsenal once the hub is
+    /// entered (a debug tool).
+    pub hub_arsenal: Vec<u32>,
     /// `--click-at x,y@frame;...`: the scripted pointer moves there and
     /// the left mouse button clicks, at frames after the load.
     pub clicks_at: Vec<([f32; 2], u32)>,
@@ -1095,6 +1100,16 @@ fn main() -> AppExit {
                     Some(c) => options.clicks_at = c,
                     None => {
                         eprintln!("--click-at: cannot read {list:?} (x,y@frame;...)");
+                        return AppExit::from_code(2);
+                    }
+                }
+            }
+            "--hub-arsenal" => {
+                let list = args.next().unwrap_or_default();
+                match parse_clicks(&list) {
+                    Some(items) => options.hub_arsenal = items,
+                    None => {
+                        eprintln!("--hub-arsenal: cannot read {list:?} (id,id,...)");
                         return AppExit::from_code(2);
                     }
                 }

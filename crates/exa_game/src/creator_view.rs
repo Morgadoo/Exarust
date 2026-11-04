@@ -78,6 +78,8 @@ pub struct CreatorScene {
     pub figure: Option<Entity>,
     /// The viewport the scene was made for, in window pixels.
     pub view: GuiRect,
+    /// The hub loadout preview's revision the figure was built from.
+    pub kit_revision: u64,
 }
 
 /// The preview's state while the creator is open.
@@ -198,6 +200,7 @@ fn spawn_scene(commands: &mut Commands, images: &mut Assets<Image>, view: GuiRec
         scene_lit: false,
         figure: None,
         view,
+        kit_revision: 0,
     }
 }
 
@@ -213,8 +216,14 @@ fn sync_view(
     mut pointer: ResMut<crate::char_view::PreviewPointer>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut nodes: Query<&mut Node>,
+    kit: Option<Res<crate::loadout_kit::KitPreview>>,
 ) {
-    let Some(rect) = screen.preview_px() else {
+    // The creator's viewport, else the hub loadout form's preview (the
+    // form reuses the creator's view helper).
+    let rect = screen
+        .preview_px()
+        .or_else(|| kit.as_ref().and_then(|kit| kit.rect));
+    let Some(rect) = rect else {
         if let Some(scene) = view.scene.take() {
             despawn_scene(&mut commands, scene);
             pointer.0 = None;
@@ -270,13 +279,43 @@ fn build_figure(
     materials: Option<ResMut<Assets<exa_render::material::ExaMaterial>>>,
     images: Option<ResMut<Assets<Image>>>,
     support: Option<Res<CompressedImageFormatSupport>>,
+    (kit, mut items): (
+        Option<Res<crate::loadout_kit::KitPreview>>,
+        Option<ResMut<crate::doll_view::DollItems>>,
+    ),
 ) {
     let Some(scene) = view.scene.as_mut() else {
         return;
     };
-    let Some((regenerate, record)) = screen.preview_record() else {
-        return;
+    // The hub loadout preview's record wears its kit: its worn items as
+    // the figure's outfit.
+    let mut outfit = None;
+    let (regenerate, record) = match screen.preview_record() {
+        Some((regenerate, record)) => (regenerate, record.clone()),
+        None => {
+            let Some(kit) = kit.as_deref() else {
+                return;
+            };
+            let Some(record) = kit.record.clone() else {
+                return;
+            };
+            let changed = scene.kit_revision != kit.revision;
+            scene.kit_revision = kit.revision;
+            if let Some(items) = items.as_deref_mut() {
+                items.ensure(game.as_deref());
+                outfit = Some(exa_character::Outfit(
+                    record
+                        .worn
+                        .iter()
+                        .filter_map(|worn| items.get(worn.id))
+                        .filter_map(crate::doll_view::garment_of)
+                        .collect(),
+                ));
+            }
+            (changed, record)
+        }
     };
+    let record = &record;
     let rebuild = scene.figure.is_none() || regenerate;
     if !rebuild && scene.floor_tried {
         return;
@@ -318,6 +357,15 @@ fn build_figure(
         e.despawn();
     }
     scene.figure = spawn_figure(&mut commands, &mut loader, &game, record);
+    if let (Some(figure), Some(outfit)) = (scene.figure, outfit) {
+        info!(
+            "loadout preview: {} (race {}) wears {} garments, figure {figure:?}",
+            record.name,
+            record.race,
+            outfit.0.len()
+        );
+        commands.entity(figure).insert(outfit);
+    }
 }
 
 /// The figure of `record`: its race's body morphed by its physique, its
@@ -422,8 +470,12 @@ fn tag_parts(
                 lit = true;
             }
         }
+        // The hub loadout preview keeps its stand-in light: in a level the
+        // floor scene's lights do not reach the view [deviation: the
+        // level's light list leaves them out].
         if lit
             && !scene.scene_lit
+            && scene.kit_revision == 0
             && let Ok(mut e) = commands.get_entity(scene.light)
         {
             e.despawn();

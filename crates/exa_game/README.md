@@ -1111,9 +1111,25 @@ dragged back to the arsenal asks the company arsenal's lend query only when
 the form's own entry was not lent (`return_to_arsenal`: `Arsenal::release`,
 which gives back the first lend of every box), then writes a new entry with
 no flags for an item of another category that neither had lent; nothing
-calls `return_to_arsenal` from the live screen yet. The
-session save carries the company emblem (`arena_tables`) but not the six
-per-rank kits; they start empty on load. The technique selector's bridge
+calls `return_to_arsenal` from the live screen yet. The hub's loadout
+form does not use that screen: its item side is `loadout_kit`. On the
+roster page the form draws the shown person's kit list (the hub stash for
+the manager, the employee's kit list otherwise, the equipped mark on what
+the shown rank wears or holds), the arsenal box the shelf and box buttons
+chose (the lend bit on what a fighter took) and, between them, the
+creator's view (`creator_view`) showing the person in the rank's kit. A
+press on an arsenal entry takes it onto the preview through the form's
+gate (the filter, the rank, twice the rank's point limit, a weapon's cost
+less what it displaces): the entry is lent, the item joins the kit list
+and the rank's loadout holds or wears it. A press on a kit-list entry
+gives it back: the shown box's lent entry, else the arsenal's lend query,
+else the shown box or its own shelf with no flags; every loadout then
+keeps at most as many hand copies as the list still holds. The points
+line reads the rank's cost. The arena save writes the manager's record
+with his six per-rank kits into the world character database and the
+load gives them back; employees' kits are not saved (the load does not
+restore the roster). `--hub-arsenal id,...` stocks the arsenal for checks.
+The company emblem is saved with the tables (`arena_tables`). The technique selector's bridge
 (`techniques`) reads a
 member's six skills (`skill_xp`, `techniques`) and its `xp` as the pool
 and writes them back with the levels. The company emblem is an
@@ -1703,7 +1719,10 @@ routines that were read from the original.
   preview's eye over `sgccflr01.rfc` with its own lights and the figure
   built from the creator's record (body morphed by its physique, skin,
   hair, underwear), rebuilt when the record changes, shown under the GUI
-  canvas in the viewport.
+  canvas in the viewport. With no creator open it shows the hub loadout
+  form's preview (`loadout_kit::KitPreview`): the record wearing the shown
+  rank's worn items, lit by the view's stand-in light (the level's light
+  list leaves the floor scene's lights out); the held items are not drawn.
 
 ## Scene bodies and the live arena round
 
