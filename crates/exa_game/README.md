@@ -407,7 +407,14 @@ a struck character takes, and its ribbon drawn with the glow material. A barrier
 (`thaum::barrier_live`): cast motion 0x23 and the hook that ends it, the
 focus it pays a tick, and its shell pushing other bodies' limb spheres out.
 A bubble cast runs its dome where it was cast (`thaum::bubble_live`),
-ending with its power. A wave cast runs its wave round the caster's body root
+ending with its power. Both domes run their frame step every frame and are
+drawn (`effects::dome_draw`: the cap or the sphere at the dome's radius in
+the node's frame, `effectbarrier_f`/`effectbubble_f` through
+`ForceDomeMaterial`, the `_ForceNoise` picture), and their sounds play
+(`thaum::dome_sound`: the cast's `thmfrc_ss`, the looping `thmfrc_bc02`
+hum at the frame's levels, the contacts' `thmfrc_bi` and the Bubble's
+break `thmfrc_brf`); a Barrier cast out of combat mode ends at once (its
+hook answers the controller's out-of-combat ask). A wave cast runs its wave round the caster's body root
 (`thaum::wave_live`): charging on the blast's hook, paying its drain each
 tick, and thrown into other bodies' limbs. A torrent cast runs its streams from
 the caster's right hand (`thaum::torrent_live`): charging and pouring on
@@ -514,7 +521,7 @@ contact and balance drain, the double-sided meshes, the Bubble's draw
 (`effectbarrier_v`/`effectbubble_f`, its seven uniforms, the eight ripple
 points, the camera in its frame and its fade), and the node attach
 (flag 0x10000, the owner back pointer and the frame hook) and destroy
-(clear hook, light, material, object) that the live bubbles and barriers
+(clear hook, light, hum voice, object) that the live bubbles and barriers
 run), `effects::force_wave`
 (32 chunks 80 cm out, the charge, release, thrown step, trails and
 lives), `effects::danger` (what the AI sees of a blast, a wave and a

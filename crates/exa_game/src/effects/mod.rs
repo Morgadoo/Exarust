@@ -6,7 +6,8 @@
 //! along a lit blade (`fire_row`) and its node (`fire_node`), the
 //! displacement shell (`shell`), the teleport bubble (`bubble`), the
 //! teleporter scan (`scan`), the domain wheel of the power screen
-//! (`wheel`), the rain (`rain`), the force domes (`force_dome`), the Force
+//! (`wheel`), the rain (`rain`), the force domes (`force_dome`, drawn by
+//! `dome_draw`), the Force
 //! Wave (`force_wave`), the vanish (`vanish`), the GI emissives the force
 //! effects carry (`emissive`), the force geometries' programs and pass rows
 //! (`effect_geometry`), what the AI sees of a blast, a wave or a
@@ -28,6 +29,7 @@ pub mod blast;
 pub mod bubble;
 pub mod bubble_draw;
 pub mod danger;
+pub mod dome_draw;
 pub mod effect_geometry;
 pub mod emissive;
 pub mod fire_node;

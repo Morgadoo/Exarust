@@ -44,6 +44,7 @@ pub mod cast;
 pub mod casting;
 pub mod debug_cast;
 pub mod displacement;
+pub mod dome_sound;
 pub mod effect_draw;
 pub mod effect_light;
 pub mod effect_material;
