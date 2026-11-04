@@ -45,6 +45,7 @@ impl Plugin for GiVolumePlugin {
                 PostUpdate,
                 (
                     feed_shading_quality,
+                    publish_base_ambient,
                     collect_source,
                     follow_camera,
                     publish_neighbour_volumes,
@@ -208,6 +209,31 @@ fn feed_shading_quality(
     let high = quality.high();
     if settings.high_quality != high {
         settings.high_quality = high;
+    }
+}
+
+/// The base ambient under an open sky: the original's injection takes the
+/// environment's fill field each frame, which a sky's sun placement keeps at
+/// the day record's fill (the level record's `0x30` only while there is no
+/// sky), × the same share as [`GiVolume::base_ambient`].
+fn publish_base_ambient(
+    runtime: Option<Res<crate::environment::SceneEnvRuntime>>,
+    settings: Res<GiSettings>,
+    base: Option<ResMut<exa_render::gi::GiBaseAmbient>>,
+) {
+    let Some(mut base) = base else { return };
+    let value = runtime
+        .filter(|r| r.env.sky)
+        .map(|r| Vec3::from(r.env.fill) * base_ambient_share(settings.high_quality));
+    base.set_if_neq(exa_render::gi::GiBaseAmbient(value));
+}
+
+/// The share of the fill colour a voxel gains per step.
+fn base_ambient_share(high_quality: bool) -> f32 {
+    if high_quality {
+        BASE_AMBIENT
+    } else {
+        BASE_AMBIENT_LOW_QUALITY
     }
 }
 
@@ -1163,12 +1189,7 @@ fn volume_of(
         voxel: VOXEL,
         floors: block.floors.clone(),
         cells: block.cells.clone(),
-        base_ambient: Vec3::from(level.base_ambient)
-            * if settings.high_quality {
-                BASE_AMBIENT
-            } else {
-                BASE_AMBIENT_LOW_QUALITY
-            },
+        base_ambient: Vec3::from(level.base_ambient) * base_ambient_share(settings.high_quality),
         sector: block.sector,
         warm_up: settings.warm_up,
         top_slice: level.top_slice,

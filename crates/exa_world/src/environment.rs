@@ -99,6 +99,50 @@ pub fn tinted_sky_cube(
     Some(cube)
 }
 
+/// The mean linear colour of each stored face of an RGB cube `.rfi` at each
+/// of `mips`, for the GI probe (`EXA_GI_PROBE`): the faces are stored one
+/// after another, each with its whole chain, as [`tinted_sky_cube`] reads
+/// them.
+fn sky_cube_face_means(bytes: &[u8], mips: &[u32]) -> Vec<(u32, Vec<[f32; 3]>)> {
+    let Ok(rfi) = exa_formats::rfi::Rfi::parse(bytes) else {
+        return Vec::new();
+    };
+    let Some(texels) = exa_assets::model::SkyCubeSource::texels(bytes) else {
+        return Vec::new();
+    };
+    let data = &bytes[texels];
+    let size = |m: u32| ((rfi.header.width >> m).max(1) * (rfi.header.height >> m).max(1)) as usize;
+    let chain: usize = (0..rfi.mip_count).map(size).sum();
+    let decode = |b: u8| {
+        let c = f32::from(b) / 255.0;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    mips.iter()
+        .filter(|&&m| m < rfi.mip_count)
+        .map(|&m| {
+            let start: usize = (0..m).map(size).sum();
+            let faces = (0..6)
+                .map(|f| {
+                    let base = (f * chain + start) * 3;
+                    let n = size(m);
+                    let mut sum = [0.0f32; 3];
+                    for t in 0..n {
+                        for (c, s) in sum.iter_mut().enumerate() {
+                            *s += data.get(base + t * 3 + c).copied().map_or(0.0, decode);
+                        }
+                    }
+                    sum.map(|s| s / n as f32)
+                })
+                .collect();
+            (m, faces)
+        })
+        .collect()
+}
+
 /// Tints the open sky's cube again when the frame's record sky tint changes
 /// (the original does it at each sun placement and uploads the copy over
 /// the cube texture).
@@ -127,6 +171,16 @@ fn tint_sky_cube(
             "open sky cube tinted by {tint:?} (ambient {:?}, GI sky light {:?}, fill {:?})",
             f.ambient, f.sky_light, runtime.env.fill
         );
+        if std::env::var_os("EXA_GI_PROBE").is_some()
+            && let Some(bytes) = tinted_sky_cube(&cube.source, tint)
+        {
+            for (mip, faces) in sky_cube_face_means(&bytes, &[5, 7]) {
+                info!(
+                    "GI probe: sky cube tinted by {tint:?}, mip {mip} face means (linear) {faces:?}; level ambient {:?}",
+                    f.ambient
+                );
+            }
+        }
     }
     let _ = images.insert(cube.image.id(), image);
 }

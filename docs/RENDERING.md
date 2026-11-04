@@ -1769,8 +1769,12 @@ its width, at the slice's middle ((slice + 0.5)/width), as the original's
   centre over the block's slice count;
 - k = min(8·Σa, 1) · (0.3·open + 0.699);
 - light = sum·k/8 + base·open + Σ lights;
-- base = level record `0x30` (as stored) × 0.001, per channel, or × 0.002
-  below shading quality 4 (`GiSettings::high_quality`, fed every frame from
+- base = the environment's fill × 0.001, per channel, or × 0.002
+  below shading quality 4; the fill is level record `0x30` (as stored)
+  without a sky, and under an open sky the day record's fill, which each
+  sun placement writes into the field the injection reads every frame
+  (`GiBaseAmbient`, published by the world each frame while the sky is
+  on: (0.156, 0.188, 0.223) at noon against arenao3's record 0.0395) (`GiSettings::high_quality`, fed every frame from
   the settings screen's `ShadingQuality`; the same flag drops the manager's
   light share from 0.1 to 0.1 × 0.9 (taken in double precision and narrowed:
   0.09's nearest float), which only sources
@@ -1804,10 +1808,18 @@ its width, at the slice's middle ((slice + 0.5)/width), as the original's
   set-up, `sky_shadow_setup`: two depth fields both 1600, a softness of
   (1024·10)·0.5 and a view that keeps X and sends the scene's Y to −Z and Z
   to −Y).
-  Exarust stands the volume's columns in for that map [adaptation]: a voxel
-  sees the sky at or above its column's floor, the slice above the
-  column's highest voxel with an occupancy byte of 10 or more (openness
-  under one half), uploaded once per block (moving meshes do not move it).
+  The map is drawn once, the first frame the sky light is up, around the
+  world's origin (a ±5120 cm square, edges clamped) with the depth window
+  ±1600 cm about height 0, compared less-than against a clear depth of 1,
+  so a voxel at or below −16 m is dark and open air above every mesh is
+  lit [inf: the map's centre is never set]. Exarust stands the volume's
+  columns in for that map [adaptation]: a voxel sees the sky at or above
+  its column's floor, the slice above the column's highest voxel below
+  the top slice with an occupancy byte of 10 or more (openness under one
+  half), uploaded once per block (moving meshes do not move it), and
+  above −16 m. The top slice is left out because it holds the block's
+  soft lid (26), which no mesh draws into the map; counted, it shut the
+  sky out of every column.
   The colour is used as the frame keeps it: the manager writes it into
   the light node's colour, which nothing else writes, and the injection
   reads that colour for a directional light and scales it by the
@@ -2007,14 +2019,15 @@ menu.
   is likewise l outdoors. The world material (`exa.wesl`) and the terrain
   (`terrain.wesl`) share the curves (`shading.wesl`, mirrored and tested
   in `exa_render::gi_ambient`).
-- Status: with the cube on its right faces, an open arena at noon is
-  overbright inside the GI block. Exarust's volume holds 0.3 to 0.95 per
-  channel in open air (the sky light and the base ambient through the
-  0.999 step), and the level ambient is 0.28 linear, so an upward surface
-  takes about 0.3 × 4.2 × 0.5 × 15 ≈ 10. For the original to look as it
-  does, its open-air volume would have to hold tens of times less. Where
-  the difference comes from (the sky light's map, the top slice, the
-  ambient) is not found yet.
+- Levels (arenao3 at noon, read back with `EXA_GI_PROBE`): the volume's
+  8-bit sRGB storage stops a channel's climb once a step's gain is under
+  half a code, so open air settles near (0.03, 0.04, 0.06) a voxel above
+  the sand and (0.07, 0.11, 0.19) a few metres up, not the 1/(1 − k)
+  steady state; the open sky cube's up face is about 0.2 at mip 7 (0.3 at
+  mip 5), the sides 0.07 to 0.12. An upward surface in shade takes about
+  0.3 of GI ambient, not the 10 an earlier estimate gave. Before the
+  sky-floor and base-ambient fixes the sky light reached no voxel and
+  the volume held only the braziers' warm light (blue 0.003).
 
 ## Environment and weather
 
