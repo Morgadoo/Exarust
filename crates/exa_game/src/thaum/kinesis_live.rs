@@ -542,13 +542,19 @@ mod tests {
             radius: 2.0,
         };
         let floor = |origin: Vec3, _: Vec3, _: f32| (origin.y > 5.0).then_some(10.0);
-        let near = mesh_distance(std::slice::from_ref(&wall), Vec3::new(3.0, 10.0, 0.0), Vec3::NEG_Y, 40.0);
+        let near = mesh_distance(
+            std::slice::from_ref(&wall),
+            Vec3::new(3.0, 10.0, 0.0),
+            Vec3::NEG_Y,
+            40.0,
+        );
         assert!(near.is_some_and(|d| (d - 6.0).abs() < 0.05), "{near:?}");
         let mut body = crate_body();
         let mut k = running();
         k.depth = 0.0;
         let mut look = view(3.0, &floor);
-        let through = |origin, dir, max| mesh_distance(std::slice::from_ref(&wall), origin, dir, max);
+        let through =
+            |origin, dir, max| mesh_distance(std::slice::from_ref(&wall), origin, dir, max);
         look.mesh = &through;
         assert!(steer(&mut k, &mut body, 0.0, &look));
         let aimed = cursor_aim(Vec3::new(300.0, 1000.0, 0.0), Vec3::NEG_Y, 600.0, 0.0);

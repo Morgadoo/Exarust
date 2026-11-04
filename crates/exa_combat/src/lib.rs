@@ -69,8 +69,8 @@ use exa_physics::body::{
 use exa_physics::part::{PART_SOUND_SPREAD_MS, part_sound_ready};
 use exa_world::PartBounds;
 pub use fighter::{
-    CombatScore, Damage, DamageTaken, Fighter, GolemSuit, Health, LowAnswer, ScoreEvent, SecondWind,
-    SecondWindFired, StoryMode, Taken, Weakened, answer_low_health, heal_second_wind,
+    CombatScore, Damage, DamageTaken, Fighter, GolemSuit, Health, LowAnswer, ScoreEvent,
+    SecondWind, SecondWindFired, StoryMode, Taken, Weakened, answer_low_health, heal_second_wind,
 };
 use swing::{Swing, SwingAt, SwingState};
 pub use weapon_blood::{WeaponBlood, WeaponBloodSpot};

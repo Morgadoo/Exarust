@@ -106,15 +106,15 @@ fn a_kind_6_lever_names_the_light_it_fades() {
         light: true,
         light_entity: Some(light),
     };
-    let glue =
-        LeverBody::new(&body, &pending, Affine3A::IDENTITY, turn, Vec3::ZERO, 0).unwrap();
+    let glue = LeverBody::new(&body, &pending, Affine3A::IDENTITY, turn, Vec3::ZERO, 0).unwrap();
     assert_eq!(glue.light(), Some(light));
     let plain = PendingLever {
         light: false,
         light_entity: Some(light),
         ..pending
     };
-    let signalling = LeverBody::new(&body, &plain, Affine3A::IDENTITY, turn, Vec3::ZERO, 0).unwrap();
+    let signalling =
+        LeverBody::new(&body, &plain, Affine3A::IDENTITY, turn, Vec3::ZERO, 0).unwrap();
     assert_eq!(signalling.light(), None);
 }
 fn tick(body: &mut Ragdoll, glue: &mut LeverBody, n: i32) -> Vec<(u32, i32)> {

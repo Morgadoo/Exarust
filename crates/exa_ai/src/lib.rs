@@ -909,7 +909,11 @@ fn begin_requested(
                     **slot = next;
                 }
             }
-            let then = stance.as_deref().copied().map(Stance::action).unwrap_or("Idle");
+            let then = stance
+                .as_deref()
+                .copied()
+                .map(Stance::action)
+                .unwrap_or("Idle");
             if pending == combat::DRAW_WEAPON {
                 anim.play_once(combat::DRAW_WEAPON_ACTION, then);
             } else if let Some(set) = motions.as_deref() {
@@ -1767,10 +1771,7 @@ fn duellist(
             if out.practice_paid != 0
                 && let Some(data) = record.as_mut()
             {
-                data.record.experience = data
-                    .record
-                    .experience
-                    .wrapping_add(out.practice_paid);
+                data.record.experience = data.record.experience.wrapping_add(out.practice_paid);
             }
             if out.clear_slow_turn
                 && let Some(walk) = walk.as_mut()
@@ -2743,8 +2744,12 @@ mod tests {
             landed_from: 0,
         });
         let mut roll = 1;
-        app.world_mut().get_mut::<Duellist>(fighter).unwrap().personality =
-            Some(personality::personality(100.0, [0.0; 4], 0.0, false, &mut roll));
+        app.world_mut()
+            .get_mut::<Duellist>(fighter)
+            .unwrap()
+            .personality = Some(personality::personality(
+            100.0, [0.0; 4], 0.0, false, &mut roll,
+        ));
         engage(&mut app, fighter);
         step(&mut app);
         let entered = app.world().get::<Duellist>(fighter).unwrap().mind.estimate;
@@ -2766,8 +2771,12 @@ mod tests {
     fn a_character_taken_mid_tick_is_estimated_toward_its_step() {
         let (mut app, fighter, _) = duel(8.0, false);
         let mut roll = 1;
-        app.world_mut().get_mut::<Duellist>(fighter).unwrap().personality =
-            Some(personality::personality(100.0, [0.0; 4], 0.0, false, &mut roll));
+        app.world_mut()
+            .get_mut::<Duellist>(fighter)
+            .unwrap()
+            .personality = Some(personality::personality(
+            100.0, [0.0; 4], 0.0, false, &mut roll,
+        ));
         engage(&mut app, fighter);
         step(&mut app);
         let beside = app
@@ -2999,11 +3008,7 @@ mod tests {
         let spawn = |app: &mut App, condition: Condition, moving: bool, muscles: bool| {
             let id = app
                 .world_mut()
-                .spawn((
-                    Animator::new("Default", "Idle"),
-                    condition,
-                    Stance::Idle,
-                ))
+                .spawn((Animator::new("Default", "Idle"), condition, Stance::Idle))
                 .id();
             if muscles {
                 app.world_mut().entity_mut(id).insert(driven());
@@ -3137,7 +3142,10 @@ mod tests {
         assert!(kept.parry.active);
         assert_eq!(kept.parry.counter_motion, Some(5));
         assert_eq!(kept.guard, Guard::Parry);
-        assert_eq!(app.world().get::<Animator>(busy).unwrap().action, "Parry Left");
+        assert_eq!(
+            app.world().get::<Animator>(busy).unwrap().action,
+            "Parry Left"
+        );
 
         let frozen = app.world().get::<Fighter>(still).unwrap();
         assert!(!frozen.parry.active);
@@ -3247,13 +3255,22 @@ mod tests {
                 fighter,
             ))
             .id();
-        app.world_mut().get_mut::<Animator>(holder).unwrap().requested = combat::DRAW_WEAPON;
+        app.world_mut()
+            .get_mut::<Animator>(holder)
+            .unwrap()
+            .requested = combat::DRAW_WEAPON;
         let item = app.world_mut().spawn(grip).id();
         app.update();
         let body = app.world().get::<Ragdoll>(holder).unwrap();
         assert!(!body.parts[0].state.has(PartState::ARM));
         assert!(!body.parts[1].state.has(PartState::ARM));
-        let links = app.world().get::<HeldGrip>(item).unwrap().links.as_ref().unwrap();
+        let links = app
+            .world()
+            .get::<HeldGrip>(item)
+            .unwrap()
+            .links
+            .as_ref()
+            .unwrap();
         assert_eq!(links.links[0].flags, PIVOT);
         assert_eq!(links.links[1].flags, DISABLED);
         assert!(!app.world().get::<Fighter>(holder).unwrap().parry.active);
@@ -3358,19 +3375,9 @@ mod tests {
         });
         engage(&mut app, fighter);
         step(&mut app);
-        assert!(
-            app.world()
-                .get::<Locomotion>(fighter)
-                .unwrap()
-                .slow_turn
-        );
+        assert!(app.world().get::<Locomotion>(fighter).unwrap().slow_turn);
         step(&mut app);
-        assert!(
-            !app.world()
-                .get::<Locomotion>(fighter)
-                .unwrap()
-                .slow_turn
-        );
+        assert!(!app.world().get::<Locomotion>(fighter).unwrap().slow_turn);
 
         let (mut down, fighter, _) = duel(3.0, false);
         down.world_mut().entity_mut(fighter).insert((
@@ -3383,12 +3390,7 @@ mod tests {
         engage(&mut down, fighter);
         step(&mut down);
         step(&mut down);
-        assert!(
-            down.world()
-                .get::<Locomotion>(fighter)
-                .unwrap()
-                .slow_turn
-        );
+        assert!(down.world().get::<Locomotion>(fighter).unwrap().slow_turn);
     }
 
     /// Within the approach band it strikes once eager enough, from where it

@@ -691,7 +691,12 @@ struct HubShop<'w, 's> {
     catalogue: Option<Res<'w, exa_items::catalogue::ItemCatalogue>>,
     live: ResMut<'w, crate::shop_stock::LiveShopStock>,
     names: ResMut<'w, crate::hub_windows::HubItemNames>,
-    players: Query<'w, 's, &'static mut exa_items::possession::Possessions, With<crate::player::PlayerBody>>,
+    players: Query<
+        'w,
+        's,
+        &'static mut exa_items::possession::Possessions,
+        With<crate::player::PlayerBody>,
+    >,
 }
 
 /// The shop line for an item's catalogue value. A copy uses its source
@@ -905,10 +910,11 @@ fn hub_clicks(
                             if career.goods_changed
                                 && let Some(mut possessions) = shop.players.iter_mut().next()
                             {
-                                possessions.carried = crate::hub_windows::ArenaCareer::carried_after_trade(
-                                    &possessions.carried,
-                                    &career.goods,
-                                );
+                                possessions.carried =
+                                    crate::hub_windows::ArenaCareer::carried_after_trade(
+                                        &possessions.carried,
+                                        &career.goods,
+                                    );
                                 career.goods_changed = false;
                             }
                         }

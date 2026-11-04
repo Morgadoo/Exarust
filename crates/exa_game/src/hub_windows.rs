@@ -180,13 +180,11 @@ impl Default for ArenaCareer {
 }
 
 impl ArenaCareer {
-
     /// Copy the player's loose items into the goods when the shop has not
     /// traded yet. A later open keeps the goods the trade left.
     pub fn seed_goods(&mut self, carried: impl IntoIterator<Item = u32>) {
         if self.goods.is_empty() {
-            self.goods
-                .extend(carried.into_iter().filter(|id| *id != 0));
+            self.goods.extend(carried.into_iter().filter(|id| *id != 0));
         }
     }
 
@@ -199,14 +197,15 @@ impl ArenaCareer {
         goods
             .iter()
             .map(|&id| {
-                old.iter().find(|carried| carried.id == id).copied().unwrap_or(
-                    exa_items::possession::Carried {
+                old.iter()
+                    .find(|carried| carried.id == id)
+                    .copied()
+                    .unwrap_or(exa_items::possession::Carried {
                         id,
                         flags: 0,
                         x: 0,
                         y: 0,
-                    },
-                )
+                    })
             })
             .collect()
     }
@@ -843,16 +842,8 @@ impl HubWindows {
         let Some(shop) = self.shop.as_mut() else {
             return;
         };
-        shop.prices = shop
-            .stock
-            .iter()
-            .map(|(id, _)| price_of(*id))
-            .collect();
-        shop.good_prices = shop
-            .goods
-            .iter()
-            .map(|(id, _)| price_of(*id))
-            .collect();
+        shop.prices = shop.stock.iter().map(|(id, _)| price_of(*id)).collect();
+        shop.good_prices = shop.goods.iter().map(|(id, _)| price_of(*id)).collect();
     }
 
     /// Closes the open window, running its own close bookkeeping.

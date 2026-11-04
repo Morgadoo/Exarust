@@ -3876,9 +3876,7 @@ fn request_action(
         };
         // Already in the clip: leave it, unless the start is forced.
         if !snap
-            && motions
-                .as_deref()
-                .and_then(|set| set.action_name(motion))
+            && motions.as_deref().and_then(|set| set.action_name(motion))
                 == Some(animator.action.as_str())
         {
             continue;
@@ -4369,7 +4367,10 @@ fn apply_steps(
                     {
                         animator.requested = record[0] as i32;
                         animator.snap_start = false;
-                        debug!("game flow: start record motion {:#x} is requested", record[0]);
+                        debug!(
+                            "game flow: start record motion {:#x} is requested",
+                            record[0]
+                        );
                     }
                 }
                 commands.remove_resource::<StoryStartPlayer>();
