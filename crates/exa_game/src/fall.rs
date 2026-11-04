@@ -9,10 +9,18 @@
 //! player's pit sound with the start of its fade to black
 //! (`exa_ui::DeathFade`) and its death 4 s after it was lost, or another
 //! character's death 3 s after: dead, no health left, and taken out of the
-//! world with everything it carries. After the body solver, a dead body
-//! whose root fell below −50 m loses its health and, unless it is the
-//! player's, is taken out the same way. Rules: `docs/formats/RSQ.md`
-//! (Falling to death).
+//! world with everything it carries. The player's body leaves the scene
+//! but stays the session's player, dead, so the session's hook can open
+//! the end menu. After the body solver, a dead body whose root fell below
+//! −50 m loses its health and, unless it is the player's, is taken out the
+//! same way. Rules: `docs/formats/RSQ.md` (Falling to death).
+//!
+//! The fade runs on the game clock the body ticks keep (12 ms a tick), the
+//! one timeline the original's frame clock and its simulation clock share:
+//! the fade completes, and the game pauses, only after the tick that kills
+//! the player has run. Leaving the session, the story's end-menu exit and
+//! the story's respawn reset it ([`reset_death_fade`]), which gives the
+//! game time back when the fade had paused it.
 
 use bevy::audio::Volume;
 use bevy::prelude::*;
@@ -23,7 +31,8 @@ use exa_combat::fall::{FallDeath, FallReading, scream_voice};
 use exa_combat::voice::{Answer, CharacterVoice};
 use exa_combat::{Condition, Fighter, Roll};
 use exa_physics::body::{
-    BodySystems, BodyTicks, CharacterStage, CharacterTick, Ragdoll, TickedCharacter, pairs,
+    BodySystems, BodyTicks, CharacterStage, CharacterTick, GAME_MS_PER_TICK, OutOfScene, Ragdoll,
+    TickedCharacter, pairs,
 };
 use exa_ui::DeathFade;
 
@@ -57,23 +66,59 @@ pub(crate) fn death_fade_hold(elapsed_ms: f64) -> (f32, bool) {
     (1.0 - t.min(1.0), pause)
 }
 
+/// The game clock between the body ticks (ms): the last tick's own clock
+/// (the counter has moved on past it) plus the share of the next tick the
+/// fixed step has already gathered, `overstep` (0 to 1). The next tick runs
+/// once this reaches its own clock, as the original's simulation ticks
+/// catch up with its frame clock.
+pub(crate) fn game_clock_ms(ticks: u64, overstep: f64) -> f64 {
+    let step = GAME_MS_PER_TICK as f64;
+    (ticks as f64 - 1.0).max(0.0) * step + overstep.clamp(0.0, 1.0) * step
+}
+
 /// While the death fade runs, the world bus follows it down, and the game
-/// pauses once the fade has passed its three seconds.
+/// pauses once the fade has passed its three seconds (the original's first
+/// state turning into its second, once).
 fn drive_death_fade(
-    fade: Res<DeathFade>,
+    mut fade: ResMut<DeathFade>,
+    ticks: Option<Res<BodyTicks>>,
+    fixed: Option<Res<Time<Fixed>>>,
     mut time: ResMut<Time<Virtual>>,
     mut audio: Option<ResMut<AudioEnvironment>>,
 ) {
-    let Some(started) = fade.started else {
+    let overstep = fixed.as_ref().map_or(0.0, |f| f.overstep_fraction_f64());
+    let now = game_clock_ms(ticks.map_or(0, |t| t.0), overstep);
+    if fade.now != now {
+        fade.now = now;
+    }
+    let Some(elapsed) = fade.elapsed() else {
         return;
     };
-    let (gain, pause) = death_fade_hold((time.elapsed_secs_f64() - started) * 1000.0);
+    let (gain, pause) = death_fade_hold(elapsed);
     if let Some(audio) = audio.as_mut() {
         audio.buses.world_fade = gain;
     }
-    if pause && !time.is_paused() {
+    if pause && !fade.paused {
+        fade.paused = true;
         time.pause();
+        info!("the death fade is complete: the game pauses");
     }
+}
+
+/// The original's fade reset: a fade that had paused the game gives the
+/// game time back, and the fade ends (its black layer goes). The world bus
+/// is the transition's to restore.
+pub fn reset_death_fade(fade: &mut DeathFade, time: Option<&mut Time<Virtual>>) {
+    if fade.paused
+        && let Some(time) = time
+    {
+        time.unpause();
+    }
+    if fade.started.is_some() || fade.paused {
+        info!("the death fade is reset");
+    }
+    fade.started = None;
+    fade.paused = false;
 }
 
 /// The pit sound the player hears 1 s after it is lost, on the interface:
@@ -152,7 +197,6 @@ pub(crate) fn fall_to_death(
     ticked: Res<TickedCharacter>,
     mut commands: Commands,
     ticks: Res<BodyTicks>,
-    time: Option<Res<Time<Virtual>>>,
     mut fade: Option<ResMut<DeathFade>>,
     mut sounds: Sounds,
     mut roll: Local<Roll>,
@@ -228,8 +272,12 @@ pub(crate) fn fall_to_death(
         }
         if step.pit {
             sounds.play(&mut commands, PIT_SOUND, PIT_GAIN, 1.0, None);
-            if let (Some(fade), Some(time)) = (fade.as_mut(), time.as_ref()) {
-                fade.started = Some(time.elapsed_secs_f64());
+            // The fade starts at this tick's own clock: the original
+            // stamps its frame clock, which the tick has just reached.
+            if let Some(fade) = fade.as_mut() {
+                fade.started = Some(now as f64);
+                fade.now = now as f64;
+                fade.paused = false;
             }
             info!(
                 "{entity:?} hears the pit, tick {}; the screen fades",
@@ -270,7 +318,11 @@ pub(crate) fn fall_to_death(
                     }
                 }
             }
-            take_out(&mut commands, entity, parent);
+            if player.is_some() {
+                leave_scene(&mut commands, entity, parent);
+            } else {
+                take_out(&mut commands, entity, parent);
+            }
             info!(
                 "{entity:?} falls to its death, tick {}, {} ms after it was lost",
                 ticks.0,
@@ -306,6 +358,19 @@ fn fall_out_of_world(
             take_out(&mut commands, entity, parent);
         }
         info!("{entity:?} fell out of the world");
+    }
+}
+
+/// Takes the player's fallen body out of the scene: the original removes
+/// its node from the scene but the session keeps it as its player, so the
+/// body stays, dead, out of the solver and the character ticks and hidden
+/// with its root.
+fn leave_scene(commands: &mut Commands, body: Entity, parent: Option<&ChildOf>) {
+    commands
+        .entity(body)
+        .insert((OutOfScene, Visibility::Hidden));
+    if let Some(parent) = parent {
+        commands.entity(parent.parent()).insert(Visibility::Hidden);
     }
 }
 

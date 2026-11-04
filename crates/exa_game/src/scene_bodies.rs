@@ -223,7 +223,7 @@ const PRACTICE_PARTNER_ACT_MS: u32 = 3_000;
 #[must_use]
 pub fn practice_partner_plan(name: &str, now_ms: u32) -> SceneBodyPlan {
     let mut body = SceneBodyPlan::base(&Place {
-        position: [0.0, 5.0, 107.0],
+        position: crate::prelude::PRACTICE_SPOT,
         forward: [0.0, 0.0, 1.0],
     });
     body.look = BodyLook::Actor(name.to_string());

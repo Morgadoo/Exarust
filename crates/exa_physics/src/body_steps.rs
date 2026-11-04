@@ -94,8 +94,10 @@ pub(super) const LEAD_GAIN: f32 = 0.7;
 pub(super) const LEAD_KIND: f32 = 1.2;
 /// A knockback step's kind factor.
 pub(super) const KNOCKBACK_KIND: f32 = 1.0;
-/// A knockback step's length, against the plain step length.
-const KNOCKBACK_LENGTH: f32 = 1.5;
+/// A knockback step's length: (1.5 − 0.3·encumbrance) times the step
+/// length scaled by the leg extension, in double.
+const KNOCKBACK_LENGTH: f64 = 1.5;
+const KNOCKBACK_ENCUMBRANCE: f64 = 0.3;
 /// Direction: (h²/60 + 0.25) · 0.36 · how forward the error is.
 const LEAD_DIR_OVER: f32 = 60.0;
 const LEAD_DIR_BIAS: f32 = 0.25;
@@ -232,6 +234,11 @@ pub(super) struct Trigger {
     /// The footwork's reach (cm): 80·√scale·(1 − 0.2·encumbrance)·
     /// (1 − 0.3·feral), in place of the extension-scaled length.
     pub reach: f32,
+    /// The legs' extension factor (the stance level times the pelvis'
+    /// height share), which a knockback step's length is scaled by.
+    pub extension: f32,
+    /// The body's encumbrance, which shortens a knockback step.
+    pub encumbrance: f32,
     /// The character frame's origin (m).
     pub frame: Vec3,
     pub landings: u32,
@@ -307,6 +314,15 @@ pub fn foot_step_length(reach: f32, crouch: f32) -> f32 {
     reach * crouch_stride(crouch)
 }
 
+/// A knockback step's length (cm), as the feet routine rewrites the scaled
+/// step length each tick of a step of kind 2 or more: the step length times
+/// the leg extension in single precision, then times
+/// (1.5 − 0.3·encumbrance) in double.
+pub fn knockback_length(reach: f32, extension: f32, encumbrance: f32) -> f32 {
+    let scaled = reach * extension;
+    ((KNOCKBACK_LENGTH - f64::from(encumbrance) * KNOCKBACK_ENCUMBRANCE) * f64::from(scaled)) as f32
+}
+
 /// Crouched deeper than this, the footwork's steps are shorter.
 const CROUCH_SHORTENS_FROM: f32 = 0.5;
 /// A crouched step's share of the step length.
@@ -364,8 +380,7 @@ pub(super) fn consider(steps: &mut Steps, t: &Trigger) -> Plan {
             steps.stepping = false;
             return Plan::Ended;
         }
-        // A knockback step's length is one and a half times the step length.
-        let length = foot_step_length(t.reach, 0.0) * KNOCKBACK_LENGTH;
+        let length = knockback_length(t.reach, t.extension, t.encumbrance);
         return Plan::Stepping(stance_origin(steps.target, t.frame, length, t.scale));
     }
     steps.out_of_balance = false;

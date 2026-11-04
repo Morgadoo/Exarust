@@ -68,6 +68,8 @@ card by 200 ms or builds it at once), the card is the original's 268 by 260
 form scaled with the unit, holds the panel manager's icon until it closes,
 prints the page's rows, material/socket gates, rank/points gates and value,
 and fades on the popup's squared curve; leaving the card starts the fade.
+A kit's wear write reaches a card's sentence (`ItemCatalogue::write_wear`), and a kit's own copy takes its template's card under its own id (`copy_card`).
+
 The catalogue now keeps each record's card facts (display name and
 description through `objstrings.rdb`, compact value expanded to copper,
 condition, weapon, apparel and shield sections, the four crystal-socket

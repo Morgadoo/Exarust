@@ -217,7 +217,8 @@ fn panel_double_click(
     // class is applied. Kind 5 closes the card and opens the divination
     // reading with the zero argument that use passes. Kind 7 asks to load
     // the level its header names.
-    if operative.is_some_and(|(class, kind)| class == 0 && kind == player_controls::TAKE_POWERS) {
+    if operative.is_some_and(|(class, kind)| class == 0 && kind == player_controls::TAKE_DIVINATION)
+    {
         let _ = screens.card.close(now as u32);
         divination.write(crate::div_card_screen::OpenDivination { seed: 0 });
     }
@@ -946,6 +947,7 @@ fn apply_kit(
     time: Option<Res<Time<Virtual>>>,
     mut sounds: MessageWriter<exa_audio::PointSounded>,
     mut roll: Local<Option<crate::arena::Mt19937>>,
+    mut catalogue: Option<ResMut<exa_items::catalogue::ItemCatalogue>>,
 ) {
     let now_ms = time.as_ref().map_or(0, |t| t.elapsed().as_millis() as u32);
     let game = game.as_deref();
@@ -995,6 +997,12 @@ fn apply_kit(
                 }
                 if let Some(bytes) = kits.bytes.remove(&subject) {
                     kits.bytes.insert(copy, bytes);
+                }
+                // The shared records take the copy too: the panels, the
+                // card and the worn figure read it under its own id.
+                items.copy_record(subject, copy);
+                if let Some(catalogue) = catalogue.as_mut() {
+                    catalogue.copy_card(subject, copy);
                 }
                 subject = copy;
             }
@@ -1057,20 +1065,34 @@ fn apply_kit(
 }
 
 /// One frame of the kits' timed bytes. A value is written only while it
-/// lowers the section's byte or arrives, apparel first.
+/// lowers the section's byte or arrives, apparel first. Each write reaches
+/// the kits' database and the shared records: the item records the panels
+/// and the worn figure read ([`DollItems`]) and the card's sentence (which
+/// reads the wear byte).
 fn tick_kits(
     time: Option<Res<Time<Virtual>>>,
     mut kits: ResMut<KitConditions>,
     mut objects: ResMut<LiveObjects>,
+    mut items: ResMut<DollItems>,
+    mut catalogue: Option<ResMut<exa_items::catalogue::ItemCatalogue>>,
 ) {
     let now_ms = time.as_ref().map_or(0, |t| t.elapsed().as_millis() as u32);
     let writes = settle_kits(&mut kits, now_ms);
-    if let Some(db) = objects.db.as_mut() {
-        for (id, section, kind, value) in writes {
-            let apparel = section == player_controls::APPAREL_SECTION;
-            let dirt = kind == player_controls::CLEAN;
+    for (id, section, kind, value) in writes {
+        let apparel = section == player_controls::APPAREL_SECTION;
+        let dirt = kind == player_controls::CLEAN;
+        if let Some(db) = objects.db.as_mut() {
             db.write_condition_byte(id, apparel, dirt, value);
         }
+        items.write_condition(id, apparel, dirt, value);
+        if !dirt && let Some(catalogue) = catalogue.as_mut() {
+            catalogue.write_wear(id, apparel, value);
+        }
+        debug!(
+            "kit write: item {id:#x} {} {} = {value:#x}",
+            if apparel { "apparel" } else { "weapon" },
+            if dirt { "dirt" } else { "wear" }
+        );
     }
 }
 

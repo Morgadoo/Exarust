@@ -327,11 +327,21 @@ clock that stops while the game is paused), at most 1. The world's sounds
 fade with it (1 − t), and when it is complete the game pauses (about 4 s
 after the loss, when the player dies and leaves the world).
 
-Exarust (`exa_ui::fade` draws `DeathFade`, `exa_game::fall` starts it):
-the black layer lies over the heartbeat's border and under the bars (Z
-895), its opacity on Bevy's virtual time, remapped for the original's
-gamma-space blend; hidden while a level loads. Not yet: the world sounds'
-fade and the pause at the end (Exarust has no death menu to show then).
+The fade's state goes from running to complete (with the game's pause
+counter raised) once, when the share passes 1; the fade's reset, which
+leaving a session, the story's end-menu exit and the story's respawn call
+first, lowers the counter again if it had been raised and ends the fade.
+The original's frame clock and its simulation clock run on one timeline,
+so the fade completes only after the tick that kills the player.
+
+Exarust (`exa_ui::fade` draws `DeathFade`, `exa_game::fall` starts,
+drives and resets it): the black layer lies over the heartbeat's border
+and under the bars (Z 895), hidden while a level loads. Its clock is the
+body ticks' game clock (12 ms a tick plus the fixed step's gathered share
+of the next), the fade starting at the pit tick's own clock; the world bus
+follows `1 − t` and the virtual clock pauses when the fade completes, and
+`Step::ResetDeathFade` gives it back. The end-of-session menu draws over
+the layer (the GUI canvas moves above the interface while it is open).
 
 ## Compositing
 

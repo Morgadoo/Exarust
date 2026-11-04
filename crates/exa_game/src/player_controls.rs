@@ -784,23 +784,23 @@ impl ObjectInteraction {
 
 /// What the object database's use of a taken kind 0 object does, by its
 /// usable subtype: 7 calls the game's read hook with the record's name, 5
-/// closes the item card and opens the powers screen, 1, 0x11 and every
-/// other subtype nothing.
+/// closes the item card and opens the divination reading, 1, 0x11 and
+/// every other subtype nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TakeUse {
     Nothing,
     NameHook,
-    Powers,
+    Divination,
 }
 
 /// The usable subtypes [`take_use`] reads.
 pub const TAKE_NAME_HOOK: u8 = 7;
-pub const TAKE_POWERS: u8 = 5;
+pub const TAKE_DIVINATION: u8 = 5;
 
 pub fn take_use(subtype: u8) -> TakeUse {
     match subtype {
         TAKE_NAME_HOOK => TakeUse::NameHook,
-        TAKE_POWERS => TakeUse::Powers,
+        TAKE_DIVINATION => TakeUse::Divination,
         _ => TakeUse::Nothing,
     }
 }
@@ -2221,7 +2221,7 @@ mod tests {
         assert!(!ObjectInteraction::Push.takes_object());
         assert!(!ObjectInteraction::UseInHand.takes_object());
         assert_eq!(take_use(7), TakeUse::NameHook);
-        assert_eq!(take_use(5), TakeUse::Powers);
+        assert_eq!(take_use(5), TakeUse::Divination);
         assert_eq!(take_use(1), TakeUse::Nothing);
         assert_eq!(take_use(0x11), TakeUse::Nothing);
         let mut usable = Operative {

@@ -138,56 +138,66 @@ fn note_strike_chests(
     }
 }
 
-/// An unarmed strike whose window is open pushes that hand along the
-/// cursor (the player's aim, otherwise the body's yaw), 10 cm at the
-/// middle of the clip down to nothing from nine tenths. The push is in
-/// centimetres; the part moves in metres, by its origin weights.
+/// While the character's weapon class word is 0, each striker whose window
+/// is open is pushed along the cursor (the player's aim, otherwise the
+/// body's yaw), 10 cm at the middle of the clip down to nothing from nine
+/// tenths ([`exa_combat::strike_body::striking_fist`]). A striker is one of
+/// the swing's held slots; its window is the swing's for that slot, and the
+/// push moves the slot's hand (the right for the first, the left for the
+/// second). The push is in centimetres; the part moves in metres, by its
+/// origin weights.
 type StrikingFist<'a> = (
     &'a exa_combat::Attacking,
+    &'a exa_combat::swing::SwingState,
     Mut<'a, Ragdoll>,
     &'a Animator,
     Option<&'a PlayerBody>,
     Option<&'a exa_physics::body::locomotion::Locomotor>,
 );
 
+/// The hands the two held slots strike with: the skeleton's right and left.
+const SLOT_HANDS: [usize; 2] = [17, 18];
+
 fn push_striking_fists(
+    ticked: Res<TickedCharacter>,
     motions: Option<Res<exa_anim::Motions>>,
     mut bodies: Query<StrikingFist<'_>>,
 ) {
     let Some(motions) = motions else {
         return;
     };
-    for (attack, mut body, anim, player, loco) in &mut bodies {
+    // The ticked character's own swing only: the stage runs once a
+    // character.
+    if let Ok((attack, swing, mut body, anim, player, loco)) = bodies.get_mut(ticked.body) {
+        let open: Vec<usize> = (0..2).filter(|&slot| swing.open[slot]).collect();
+        if open.is_empty() {
+            return;
+        }
         let Some(clip) = motions.clip(anim, &anim.action) else {
-            continue;
+            return;
         };
         let progress = anim.clip_progress(clip);
-        let Some(part) = body.parts.iter().position(|p| p.bone == bone_of(attack)) else {
-            continue;
-        };
-        let window = body.parts[part]
-            .state
-            .has(exa_physics::part::PartState::STRIKE_CHAIN);
         let Some(yaw) = player.map(|p| p.aim).or(loco.map(|l| l.yaw)) else {
-            continue;
+            return;
         };
-        let Some((_, push)) = exa_combat::strike_body::striking_fist(
+        let cursor = exa_physics::body::locomotion::forward(yaw);
+        let mut pushed = 0;
+        for &slot in &open {
+            let Some(push) =
+                exa_combat::strike_body::striking_fist(attack.weapon_class, progress, true, cursor)
+            else {
+                continue;
+            };
+            if let Some(part) = body.parts.iter().position(|p| p.bone == SLOT_HANDS[slot]) {
+                body.push_origin(part, push / 100.0);
+                pushed += 1;
+            }
+        }
+        debug!(
+            "fist nudge: class {:#x} at {progress:.2}, {} striker(s) open, {pushed} pushed",
             attack.weapon_class,
-            attack.motion,
-            progress,
-            window,
-            exa_physics::body::locomotion::forward(yaw),
-        ) else {
-            continue;
-        };
-        body.push_origin(part, push / 100.0);
-    }
-}
-
-fn bone_of(attack: &exa_combat::Attacking) -> usize {
-    match attack.motion {
-        exa_combat::attack::AttackMotion::Other(_) => 18,
-        _ => 17,
+            open.len()
+        );
     }
 }
 

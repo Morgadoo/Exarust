@@ -650,3 +650,5 @@ timer over 1 crackles once the clock is 800 ms past the last draw; yellow
 under 0 after the scaling collapses. `effects` holds a body's power ramp (its
 pulses, the callback's end) and the cast start (the callback's answer, the
 motion, the clinch end, condition 0x20).
+
+The swing's cursor nudge (`strike_body::striking_fist`) pushes a striker only while the character's weapon class word is 0, as the original tests it: the fists (0x80), the claws (0xC0) and two weapons (0x90) are never pushed.

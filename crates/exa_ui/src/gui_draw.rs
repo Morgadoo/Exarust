@@ -472,7 +472,16 @@ pub struct GuiCanvas {
     /// frames again keeps the image instead of rasterising and uploading a
     /// window-sized one every frame.
     last: Vec<GuiFrame>,
+    /// The forms draw over the game's own interface (its bars, heartbeat
+    /// border and death fade): set while a form the original creates after
+    /// the game interface, the end-of-session menu, is open.
+    pub over_hud: bool,
 }
+
+/// The canvas's layer under the game's interface, and over it (below the
+/// transition screen).
+pub const CANVAS_Z: i32 = 200;
+pub const CANVAS_OVER_HUD_Z: i32 = 950;
 
 /// Draws every submitted frame over the 3-D view, once a frame.
 pub struct GuiDrawPlugin;
@@ -483,7 +492,7 @@ impl Plugin for GuiDrawPlugin {
             .init_resource::<GuiTextures>()
             .init_resource::<GuiCanvas>()
             .add_systems(Startup, load_gui_textures)
-            .add_systems(PostUpdate, render_frames);
+            .add_systems(PostUpdate, (render_frames, layer_canvas).chain());
     }
 }
 
@@ -1092,7 +1101,7 @@ fn render_frames(
                         height: Val::Px(logical.1),
                         ..default()
                     },
-                    GlobalZIndex(200),
+                    GlobalZIndex(CANVAS_Z),
                     Visibility::Inherited,
                 ))
                 .id();
@@ -1105,6 +1114,22 @@ fn render_frames(
         node.width = Val::Px(width as f32 / window.scale_factor());
         node.height = Val::Px(height as f32 / window.scale_factor());
         *visibility = Visibility::Inherited;
+    }
+}
+
+/// Keeps the canvas on its layer: under the game's interface, or over it
+/// while [`GuiCanvas::over_hud`] is set.
+fn layer_canvas(canvas: Res<GuiCanvas>, mut layers: Query<&mut GlobalZIndex>) {
+    let Some(mut z) = canvas.entity.and_then(|e| layers.get_mut(e).ok()) else {
+        return;
+    };
+    let want = if canvas.over_hud {
+        CANVAS_OVER_HUD_Z
+    } else {
+        CANVAS_Z
+    };
+    if z.0 != want {
+        z.0 = want;
     }
 }
 

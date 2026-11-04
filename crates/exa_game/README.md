@@ -1795,3 +1795,17 @@ ends by rolling the day's matches. The arena save's company chunk carries
 all thirteen records (the two coin totals as coin words), the day chunk the
 day's spent and earned coin words and the tournament chunk the prize
 history; the week's event rows and the hire list are not yet saved.
+
+The fall to death (`fall`) runs the player's death fade on the body ticks'
+game clock: it completes, and pauses the game, only after the tick that
+kills the player, whose body leaves the scene but stays the session's dead
+player so the story hook opens the end menu; leaving the session, the
+story's end-menu exit and its respawn reset it (`Step::ResetDeathFade`,
+which gives the game time back). A shock-weapon blade's hit takes the full
+shock routine at 0.01 along the striker's tracked swing (`thaum::cast`
+through `thaum::live`'s `ArcShocked`). The unarmed cursor nudge pushes the
+ticked character's open strikers only while its weapon class word is 0
+(`stages`). The kits' dirt and wear writes reach the item records the
+panels and the worn figure read (`doll_view::DollItems`, whose tagged ids
+keep their own copies and container lists) and the card's wear byte
+(`exa_items::catalogue`); they are not saved (no live object database).

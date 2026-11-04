@@ -261,13 +261,18 @@ fn taking_or_dropping_a_weapon_changes_its_shock_arcs() {
     );
 }
 
-/// A blade that still carries shock-weapon arcs shocks the body it hits by
-/// 0.01 and opens a spark. Once those arcs are ended, a later hit does not.
+/// A blade that still carries shock-weapon arcs shocks the body it hits
+/// through the full shock routine at 0.01 and opens a spark: the burn, the
+/// next shock's time and the stagger flag. A second armed hit within the
+/// shock's window is refused. Once those arcs are ended, a later hit does
+/// nothing.
 #[test]
 fn an_armed_blade_shocks_the_body_it_hits() {
     use exa_combat::impact::LimbImpact;
     use exa_formats::weapon_record::{Section, WeaponRecord, flags};
     let mut app = new_app();
+    app.init_resource::<crate::thaum::live::EffectRoll>()
+        .add_systems(FixedUpdate, crate::thaum::live::shock_fighters);
     let caster_entity = caster(&mut app, &[]);
     let record = WeaponRecord::of_one_part(
         flags::TWO_HANDED | flags::BLADED,
@@ -312,7 +317,40 @@ fn an_armed_blade_shocks_the_body_it_hits() {
     }
     let mut fighter = exa_combat::Fighter::default();
     fighter.health.yellow = 1.0;
-    let victim = app.world_mut().spawn(fighter).id();
+    let victim = app
+        .world_mut()
+        .spawn((
+            fighter,
+            exa_combat::Condition::NORMAL,
+            exa_combat::StateFlags::default(),
+        ))
+        .id();
+    app.world_mut().write_message(LimbImpact {
+        target: victim,
+        bone: 0,
+        other: blade,
+        amount: 1.0,
+        point: Vec3::new(1.0, 2.0, 3.0),
+    });
+    app.world_mut().run_schedule(FixedUpdate);
+    let yellow = app
+        .world()
+        .get::<exa_combat::Fighter>(victim)
+        .unwrap()
+        .health
+        .yellow;
+    assert!((yellow - 0.99).abs() < 1e-6, "{yellow}");
+    // The routine's own writes: the next shock 500 ms on (plus its spread)
+    // and the stagger flag.
+    let ready = app
+        .world()
+        .get::<crate::thaum::live::ShockReady>(victim)
+        .unwrap()
+        .0;
+    assert!((500..700).contains(&ready), "{ready}");
+    let flags = app.world().get::<exa_combat::StateFlags>(victim).unwrap().0;
+    assert_ne!(flags & exa_combat::StateFlags::SHOCK_STAGGER, 0);
+    // Within the window the next armed hit is refused.
     app.world_mut().write_message(LimbImpact {
         target: victim,
         bone: 0,

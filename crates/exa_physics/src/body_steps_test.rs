@@ -81,6 +81,31 @@ fn a_knockback_step_keeps_the_blow_target() {
     assert!(!steps.knockback);
 }
 
+/// A knockback step's length: (1.5 − 0.3·encumbrance) times the step length
+/// scaled by the leg extension.
+#[test]
+fn a_knockback_step_shortens_with_encumbrance_and_extension() {
+    assert_eq!(knockback_length(80.0, 1.0, 0.0), 120.0);
+    assert_eq!(knockback_length(80.0, 1.0, 1.0), 96.0);
+    assert_eq!(knockback_length(80.0, 0.5, 0.5), 54.0);
+    // The extended length is taken in single precision first.
+    let scaled = 77.7f32 * 0.81;
+    assert_eq!(
+        knockback_length(77.7, 0.81, 0.25),
+        ((1.5 - 0.25f64 * 0.3) * f64::from(scaled)) as f32
+    );
+    // A fully encumbered body's knockback step stops short of 1 m.
+    let mut steps = Steps::default();
+    begin_knockback(&mut steps, Vec3::new(1.0, 0.0, 0.0));
+    let mut t = trigger(1.0, true, 0.0);
+    t.encumbrance = 1.0;
+    t.extension = 0.8;
+    match consider(&mut steps, &t) {
+        Plan::Stepping(origin) => assert!(origin.x < 1.0, "{origin}"),
+        other => panic!("expected the knockback step, got {other:?}"),
+    }
+}
+
 /// A knockback step reaches half again the plain length: a target 1 m out
 /// stays, where the plain 80 cm step (clamped at 1.1 of it) would stop at
 /// 88 cm.
@@ -109,6 +134,8 @@ fn trigger(balance: f32, supported: bool, h_cm: f32) -> Trigger {
         scale: 1.0,
         bonus: 0.0,
         reach: 80.0,
+        extension: 1.0,
+        encumbrance: 0.0,
         frame: Vec3::ZERO,
         landings: 0,
         shock_stagger: false,
