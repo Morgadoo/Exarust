@@ -1706,3 +1706,10 @@ The system SHALL draw a Vanish or Long Door cast's displacement shell over a cop
 #### Scenario: A released Vanish
 - **WHEN** a player's Vanish is cast at 0 ms and released at 2000 ms
 - **THEN** the body is seen until about 400 ms, hidden from then until the fade-in passes one half, the shell is drawn with `Interior` 1 while the body is hidden, and the shell leaves after the come-back's close
+
+### Requirement: Shock weapon hits
+A hit by a blade that still carries shock-weapon arcs SHALL give the struck body the full shock at strength 0.01 along the striker's tracked swing velocity: the shock's window, its sound, the burn, the stagger and its cry; and a spark burst at the contact. A blade whose arcs were ended SHALL do neither.
+
+#### Scenario: The window refuses a second hit
+- **WHEN** an armed blade hits a body with 1 yellow, and again within 150 ms
+- **THEN** the body is left with 0.99, its next shock is due 500 to 700 ms on and its shock-stagger flag is set; the second hit takes nothing

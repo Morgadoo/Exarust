@@ -392,6 +392,7 @@ pub struct CastPlugin;
 impl Plugin for CastPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<BarCommand>()
+            .add_message::<super::live::ArcShocked>()
             .add_message::<Otherwhere>()
             .add_message::<exa_ai::presence::Entered>()
             .add_message::<AttackAskedHook>()
@@ -463,7 +464,9 @@ impl Plugin for CastPlugin {
                         .before(tick_casters)
                         .after(super::throw_live::sense_throws),
                     super::user_stamp::blame_impacts.after(exa_combat::impact::strike_limbs),
-                    shock_weapon_hits.after(exa_combat::impact::strike_limbs),
+                    shock_weapon_hits
+                        .after(exa_combat::impact::strike_limbs)
+                        .before(super::live::shock_fighters),
                 ),
             )
             .add_systems(
@@ -710,7 +713,14 @@ fn run_bar_commands(
                 if let Some(queued) = entry.queued_slot {
                     debug!("cast queued on slot {queued}");
                 }
-                info!("power cast {asked:#x} from slot {slot}: result {result_code}");
+                info!(
+                    "power cast {asked:#x} from slot {slot}: result {result_code} \
+                     (weapon class {:#x}, focus {:.3}, slots {}, condition {:#x})",
+                    caster.body.weapon_class,
+                    caster.body.focus,
+                    caster.body.slots,
+                    caster.body.condition
+                );
                 let place = CastPlace {
                     now,
                     ragdoll,
@@ -2008,16 +2018,21 @@ fn follow_weapon_changes(
     }
 }
 
-/// A hit from a blade that still carries shock-weapon arcs. The struck body
-/// loses 0.01 yellow and a spark burst is queued at the contact. A blade
-/// whose arcs were ended (put away) does not.
+/// A hit from a blade that still carries shock-weapon arcs: the original's
+/// item hit hook. The struck body takes the full shock routine at strength
+/// 0.01 along the striker's tracked swing velocity (the slot vector the
+/// damage routine hands the hook): its 150 ms gate, the hit sound, the
+/// burn, the stagger step, the walk stop and the cry, through
+/// [`super::live::ArcShocked`]. A spark burst is queued at the contact.
+/// A blade whose arcs were ended (put away) does neither.
 #[allow(clippy::too_many_arguments)]
 fn shock_weapon_hits(
     mut impacts: MessageReader<exa_combat::impact::LimbImpact>,
     casters: Query<&PowerCaster>,
     blades: Query<&exa_combat::Blade>,
+    swings: Query<&exa_combat::swing::SwingState>,
     arcs: Query<&LiveArcs>,
-    mut fighters: Query<&mut exa_combat::Fighter>,
+    mut shocked: MessageWriter<super::live::ArcShocked>,
     mut commands: Commands,
     mut draws: ResMut<EffectDraws>,
 ) {
@@ -2038,10 +2053,20 @@ fn shock_weapon_hits(
         if !armed {
             continue;
         }
-        if let Ok(mut fighter) = fighters.get_mut(hit.target) {
-            let left = fighter.health.yellow - super::arcs::WEAPON_SHOCK;
-            fighter.health.yellow = if left < 0.0 { 0.0 } else { left };
-        }
+        let direction = swings.get(blade.wielder).map_or(Vec3::ZERO, |swing| {
+            swing.tracker[blade.slot.index()].velocity
+        });
+        shocked.write(super::live::ArcShocked {
+            body: hit.target,
+            direction,
+            strength: super::arcs::WEAPON_SHOCK,
+        });
+        info!(
+            "{:?} struck by a shock weapon of {:?}: the shock routine at {} along {direction:?}",
+            hit.target,
+            blade.wielder,
+            super::arcs::WEAPON_SHOCK
+        );
         let at = Some(hit.point * CM);
         let mut burst = super::arcs::spark_burst(&mut draws.0);
         burst.anchor = at;

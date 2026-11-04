@@ -1360,6 +1360,9 @@ pub enum Step {
     },
     /// Show or hide the game's view.
     GameGui(bool),
+    /// The death fade's reset: a fade that paused the game gives the game
+    /// time back, and the fade ends ([`crate::fall::reset_death_fade`]).
+    ResetDeathFade,
     /// Write a wake-up or get-up pose.
     Wake(WakePose),
     /// The motion the player is asked to play.
@@ -2798,6 +2801,8 @@ impl Flow {
             position: portal.position + Vec3::Y * 15.0,
         };
         vec![
+            // The respawn's scene reset starts with the death fade's reset.
+            Step::ResetDeathFade,
             Step::ClearStoryFlag,
             Step::Save {
                 drop_on_low_health: false,
@@ -2865,7 +2870,13 @@ impl Flow {
     /// is saved without the death rule; any other story writes its save with
     /// the death rule, then leaves to the title behind the transition.
     pub fn story_exit(&mut self) -> Vec<Step> {
-        let mut steps = vec![Step::GameGui(false), Step::Controls(false), Step::Dialogue];
+        // The death fade is reset first, as the original's story leave does.
+        let mut steps = vec![
+            Step::ResetDeathFade,
+            Step::GameGui(false),
+            Step::Controls(false),
+            Step::Dialogue,
+        ];
         if self.story.reconstruction == STRIPPED {
             steps.push(Step::ClearStoryFlag);
             steps.push(Step::Save {
@@ -3022,10 +3033,14 @@ impl Flow {
     /// interface go, the prelude closes, the world is torn down and the
     /// player pointers are cleared. A scripted mode's end hook is named.
     pub fn leave_session(&mut self) -> Vec<Step> {
+        // The original's leave resets the death fade third among its calls.
+        // [guess: which of its first two calls Exarust's session task and
+        // game view steps are is not traced]
         let mut steps = vec![
             Step::Hook(Hook::None),
             Step::SessionTask(false),
             Step::GameGui(false),
+            Step::ResetDeathFade,
             Step::Dialogue,
             Step::ClosePrelude,
         ];
@@ -3976,6 +3991,11 @@ fn apply_steps(
                 // The end menu's hide also hides the tips popup.
                 hide_tip(tips.as_deref_mut(), banner.as_deref_mut());
             }
+            Step::ResetDeathFade => {
+                if let Some(fade) = story.fade.as_mut() {
+                    crate::fall::reset_death_fade(fade, story.time.as_deref_mut());
+                }
+            }
             Step::ClosePrelude => {
                 hide_tip(tips.as_deref_mut(), banner.as_deref_mut());
             }
@@ -4433,6 +4453,10 @@ struct StoryParts<'w> {
     /// The loaded level's local database, which the practice kit passes
     /// copy through when the player carries no database of its own.
     level: Option<ResMut<'w, exa_world::LevelLocalRecords>>,
+    /// The death fade a session's leave, the story's exit and its respawn
+    /// reset, and the game time it gives back.
+    fade: Option<ResMut<'w, exa_ui::DeathFade>>,
+    time: Option<ResMut<'w, Time<Virtual>>>,
 }
 
 /// The story start's writes the spawned player takes with the start
@@ -6332,6 +6356,7 @@ mod tests {
         assert_eq!(
             steps,
             vec![
+                Step::ResetDeathFade,
                 Step::GameGui(false),
                 Step::Controls(false),
                 Step::Dialogue,
@@ -6358,6 +6383,19 @@ mod tests {
         }));
         assert!(!steps.contains(&Step::ClearStoryFlag));
         assert!(steps.contains(&Step::Transition));
+    }
+
+    /// The death fade is reset where the original resets it: the session's
+    /// leave, the story's end-menu exit (first) and its respawn (first).
+    #[test]
+    fn the_leaves_and_the_respawn_reset_the_death_fade() {
+        let mut flow = Flow {
+            mode: Mode::Story,
+            ..Default::default()
+        };
+        assert!(flow.leave_session().contains(&Step::ResetDeathFade));
+        assert_eq!(flow.story_exit()[0], Step::ResetDeathFade);
+        assert_eq!(flow.story_respawn(0)[0], Step::ResetDeathFade);
     }
 
     #[test]

@@ -410,7 +410,15 @@ fn draw(
     textures: Option<Res<GuiTextures>>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut frames: ResMut<GuiFrames>,
+    canvas: Option<ResMut<exa_ui::gui_draw::GuiCanvas>>,
 ) {
+    // The end-of-session form is created after the game's interface, so it
+    // draws over the death fade's black and the bars.
+    if let Some(mut canvas) = canvas
+        && canvas.over_hud != screen.open
+    {
+        canvas.over_hud = screen.open;
+    }
     if !screen.open {
         return;
     }

@@ -408,7 +408,7 @@ fn segment_meets(a: Vec3, b: Vec3, c: Vec3, r: f32) -> bool {
 }
 
 #[allow(clippy::type_complexity)]
-fn shock_fighters(
+pub(crate) fn shock_fighters(
     mut shocks: MessageReader<ArcShocked>,
     mut fighters: Query<(
         &mut Fighter,
@@ -699,7 +699,7 @@ fn drive_arc_light(
 
 /// What plays `elechit`. Absent in a test with no game loaded.
 #[derive(bevy::ecs::system::SystemParam)]
-struct ShockAudio<'w> {
+pub(crate) struct ShockAudio<'w> {
     game: Option<Res<'w, exa_assets::Game>>,
     bank: Option<ResMut<'w, exa_audio::SoundBank>>,
     sources: Option<ResMut<'w, bevy::asset::Assets<bevy::audio::AudioSource>>>,

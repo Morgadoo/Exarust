@@ -1,8 +1,8 @@
 //! The fade to black the original's session starts when the player falls
 //! to its death: a black layer over the game's view, under the HUD's bars,
 //! whose opacity rises from 0 to 255 over 3 s of game time and stays. The
-//! game starts it ([`DeathFade`], `exa_game::fall`). Rules: `docs/UI.md`
-//! (Death fade).
+//! game starts it, keeps its clock and resets it ([`DeathFade`],
+//! `exa_game::fall`). Rules: `docs/UI.md` (Death fade).
 
 use bevy::prelude::*;
 
@@ -10,10 +10,22 @@ use crate::LoadingStatus;
 use crate::blend::linear_opacity;
 use crate::hud::DrawHud;
 
-/// When the fade started (game time, seconds), set by the game.
+/// The death fade's state, kept by the game: when it started and the game
+/// clock now (ms of game time, the clock that stops while the game is
+/// paused), and whether it has completed and paused the game (the
+/// original's second state, which only its reset undoes).
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
 pub struct DeathFade {
     pub started: Option<f64>,
+    pub now: f64,
+    pub paused: bool,
+}
+
+impl DeathFade {
+    /// The milliseconds of game time since the fade started, if it runs.
+    pub fn elapsed(&self) -> Option<f64> {
+        self.started.map(|started| self.now - started)
+    }
 }
 
 /// How long the fade takes (ms of game time).
@@ -60,17 +72,13 @@ fn spawn(mut commands: Commands) {
 
 fn draw(
     fade: Res<DeathFade>,
-    time: Res<Time<Virtual>>,
     loading: Option<Res<LoadingStatus>>,
     mut nodes: Query<(&mut BackgroundColor, &mut Visibility), With<FadeNode>>,
 ) {
     let Ok((mut colour, mut visibility)) = nodes.single_mut() else {
         return;
     };
-    let alpha = fade
-        .started
-        .filter(|_| loading.is_none())
-        .map(|s| opacity((time.elapsed_secs_f64() - s) * 1000.0));
+    let alpha = fade.elapsed().filter(|_| loading.is_none()).map(opacity);
     let Some(alpha) = alpha.filter(|&a| a > 0) else {
         if *visibility != Visibility::Hidden {
             *visibility = Visibility::Hidden;

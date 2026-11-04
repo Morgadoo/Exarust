@@ -6,7 +6,7 @@
 //! The swing clock, the strike window and the velocity trackers are in
 //! [`crate::swing`]; the held weapon's own handling forces are in
 //! [`crate::weapon`]. The nudges here return the push (cm) at the striker's
-//! point; the caller applies it with its weights. The fist nudge is applied while an unarmed window is open. The
+//! point; the caller applies it with its weights. The fist nudge is applied to each striker whose window is open while the class word is 0. The
 //! overhead's pull is applied on an armed overhead whose window is open,
 //! the edge turns on the points 20 cm either side of the weapon's origin,
 //! and a side swing homes on [`StrikeChest`] when the engagement target's
@@ -76,30 +76,19 @@ pub fn fist_push(progress: f32, cursor: Vec3) -> Vec3 {
     cursor * ((1.0 - 2.0 * (progress - 0.5).abs()) * FIST_PUSH)
 }
 
-/// The fist nudge of an unarmed strike (class bit 0x80) whose window is
-/// open: the bone of the motion's hand (the right hand, the left for a
-/// combo) and the push along `cursor` (cm). Nothing without the fist
-/// class, a closed window, or from a clock of 0.9.
-pub fn striking_fist(
-    class: u8,
-    motion: crate::attack::AttackMotion,
-    progress: f32,
-    window: bool,
-    cursor: Vec3,
-) -> Option<(usize, Vec3)> {
-    if class & 0x80 == 0 || !window {
+/// The fist nudge of a striker whose window is open, when the character's
+/// weapon class word is exactly 0: the push along `cursor` (cm). The
+/// original tests the class word for zero, not the fists' bit, so the
+/// fists (0x80), the claws (0xC0) and two weapons (0x90) are never pushed;
+/// the word is 0 only with nothing in the hands but a shield or an
+/// off-hand light. Each striker whose window is open takes the push.
+/// Nothing with any other class, a closed window, or from a clock of 0.9.
+pub fn striking_fist(class: u8, progress: f32, window: bool, cursor: Vec3) -> Option<Vec3> {
+    if class != 0 || !window {
         return None;
     }
     let push = fist_push(progress, cursor);
-    if push == Vec3::ZERO {
-        return None;
-    }
-    // The right hand is bone 17 and the left 18, the skeleton's hands.
-    let bone = match motion {
-        crate::attack::AttackMotion::Other(_) => 18,
-        _ => 17,
-    };
-    Some((bone, push))
+    (push != Vec3::ZERO).then_some(push)
 }
 
 /// The edge alignment's inputs: the slot's tracked velocity and the
@@ -448,71 +437,21 @@ mod tests {
         assert!(close(fist_push(0.9, Vec3::Z).z, 2.0));
     }
 
-    /// An unarmed window pushes the motion's hand; a weapon, a closed
-    /// window and a late clock do not.
+    /// Only a class word of 0 pushes: the fists, the claws, two weapons
+    /// and a weapon do not, nor a closed window or a late clock.
     #[test]
-    fn an_unarmed_window_pushes_the_motions_hand() {
+    fn only_a_class_word_of_zero_pushes() {
         let cursor = Vec3::Z;
-        let (bone, push) = striking_fist(
-            0x80,
-            crate::attack::AttackMotion::Main(0),
-            0.5,
-            true,
-            cursor,
-        )
-        .unwrap();
-        assert_eq!(bone, 17);
+        let push = striking_fist(0, 0.5, true, cursor).unwrap();
         assert!(close(push.length(), 10.0));
-        let (bone, _) = striking_fist(
-            0x80,
-            crate::attack::AttackMotion::Other(1),
-            0.5,
-            true,
-            cursor,
-        )
-        .unwrap();
-        assert_eq!(bone, 18);
-        assert_eq!(
-            striking_fist(
-                0x80,
-                crate::attack::AttackMotion::Overhead,
-                0.5,
-                true,
-                cursor
-            )
-            .map(|n| n.0),
-            Some(17)
-        );
-        assert!(
-            striking_fist(
-                0x10,
-                crate::attack::AttackMotion::Main(0),
-                0.5,
-                true,
-                cursor
-            )
-            .is_none()
-        );
-        assert!(
-            striking_fist(
-                0x80,
-                crate::attack::AttackMotion::Main(0),
-                0.5,
-                false,
-                cursor
-            )
-            .is_none()
-        );
-        assert!(
-            striking_fist(
-                0x80,
-                crate::attack::AttackMotion::Main(0),
-                0.91,
-                true,
-                cursor
-            )
-            .is_none()
-        );
+        for class in [0x80, 0xC0, 0x90, 0x10, 0x20, 0x30] {
+            assert!(
+                striking_fist(class, 0.5, true, cursor).is_none(),
+                "{class:#x}"
+            );
+        }
+        assert!(striking_fist(0, 0.5, false, cursor).is_none());
+        assert!(striking_fist(0, 0.91, true, cursor).is_none());
     }
 
     fn edge(velocity: Vec3, flipped: bool, greatsword: bool) -> Edge {

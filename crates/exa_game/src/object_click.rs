@@ -433,7 +433,7 @@ pub fn run_object_clicks(
                         TakeUse::Nothing => {}
                         // Kind 5 closes the card (already done) and opens the
                         // reading with the zero argument the use passes.
-                        TakeUse::Powers => {
+                        TakeUse::Divination => {
                             out.divination.write(OpenDivination { seed: 0 });
                         }
                         // Kind 7 asks to load the level the header names.

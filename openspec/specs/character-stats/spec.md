@@ -348,6 +348,13 @@ Each tick a living body in the falls branch SHALL run the fall check: at −5 cm
 - **WHEN** `exarust --at 0,200,0 play arena` drops the player
 - **THEN** it screams and is lost on the same tick, the pit sounds 84 ticks later and it is gone 334 ticks after the loss
 
+### Requirement: Fallen player
+The player that falls to its death SHALL leave the scene but stay the session's player, dead with no health, so the session's hook opens the end menu.
+
+#### Scenario: The body stays
+- **WHEN** the player dies on the 334th tick after it was lost
+- **THEN** its body is out of the scene and hidden with its root, its condition is dead and its health 0
+
 ### Requirement: Kill plane
 A dead character's body whose root falls below −50 m SHALL lose its health and, unless it is the player's, leave the world with everything it carries; once. A living body, or one already lost to its fall, SHALL not be taken.
 

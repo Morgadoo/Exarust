@@ -267,6 +267,44 @@ impl ItemCatalogue {
         self.cards.get(&id)
     }
 
+    /// A kit's copy `to` of the record `from` takes that record's card.
+    pub fn copy_card(&mut self, from: u32, to: u32) {
+        if from == to {
+            return;
+        }
+        let Some(facts) = self.card_facts(from).cloned() else {
+            return;
+        };
+        if to & !ID_MASK != 0 {
+            self.level_cards.insert(to, facts);
+        } else {
+            self.cards.insert(to, facts);
+        }
+    }
+
+    /// A kit's wear byte written back into the card's sentence source: the
+    /// weapon section's damage byte, or the apparel body's. The card reads
+    /// no dirt byte, and a sentence of the other kind is left alone.
+    pub fn write_wear(&mut self, id: u32, apparel: bool, value: u8) {
+        let facts = if id & !ID_MASK != 0 {
+            self.level_cards.get_mut(&id)
+        } else {
+            self.cards.get_mut(&id)
+        };
+        let Some(facts) = facts else {
+            return;
+        };
+        match facts.sentence.as_mut() {
+            Some(crate::desc_phrase::SentenceSource::Weapon { damage, .. }) if !apparel => {
+                *damage = value;
+            }
+            Some(crate::desc_phrase::SentenceSource::Apparel { damage, .. }) if apparel => {
+                *damage = value;
+            }
+            _ => {}
+        }
+    }
+
     /// What wearing the item adds to its wearer's encumbrance.
     pub fn burden(&self, id: u32) -> Option<Burden> {
         if id & !ID_MASK != 0 {
@@ -678,6 +716,35 @@ pub fn swap_weapon_sets(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A kit's wear write reaches the card's sentence of its own kind, and a
+    /// copy takes the card under its own id.
+    #[test]
+    fn a_kit_wear_write_reaches_the_card() {
+        let mut catalogue = ItemCatalogue::default();
+        catalogue.cards.insert(
+            5,
+            CardFacts {
+                sentence: Some(SentenceSource::Weapon {
+                    seed: 1,
+                    quality: 2,
+                    damage: 0x60,
+                }),
+                ..CardFacts::default()
+            },
+        );
+        catalogue.write_wear(5, true, 0x10);
+        catalogue.write_wear(5, false, 0x20);
+        let damage = |c: &ItemCatalogue, id| match c.card_facts(id).and_then(|f| f.sentence) {
+            Some(SentenceSource::Weapon { damage, .. }) => Some(damage),
+            _ => None,
+        };
+        assert_eq!(damage(&catalogue, 5), Some(0x20));
+        catalogue.copy_card(5, 0x8000_0005);
+        catalogue.write_wear(0x8000_0005, false, 0x08);
+        assert_eq!(damage(&catalogue, 0x8000_0005), Some(0x08));
+        assert_eq!(damage(&catalogue, 5), Some(0x20));
+    }
     use crate::possession::{HELD, Hand};
 
     /// A level's own records take their own model or their template's,

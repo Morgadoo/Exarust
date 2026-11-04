@@ -88,7 +88,6 @@ fn falling_biped() -> Ragdoll {
 fn falling(branch: Branch, player: bool) -> (World, Entity, Entity) {
     let mut world = World::new();
     world.init_resource::<BodyTicks>();
-    world.init_resource::<Time<Virtual>>();
     world.init_resource::<DeathFade>();
     let root = world.spawn(Transform::default()).id();
     let body = world
@@ -136,7 +135,9 @@ fn a_character_dies_3_seconds_after_it_is_lost() {
 }
 
 /// The player hears the pit and its screen starts to fade on the 84th tick
-/// after it is lost, and dies on the 334th (4,008 ms), taken out too.
+/// after it is lost, at that tick's clock, and dies on the 334th (4,008
+/// ms). Its body leaves the scene but stays, dead with no health, for the
+/// session's hook.
 #[test]
 fn the_player_fades_then_dies_4_seconds_after() {
     let (mut world, root, body) = falling(Branch::Falling, true);
@@ -145,12 +146,73 @@ fn the_player_fades_then_dies_4_seconds_after() {
     assert_eq!(world.resource::<DeathFade>().started, None);
     check_at(&mut world, 84);
     assert_eq!(stage(&world, body), FallStage::Fading);
-    assert_eq!(world.resource::<DeathFade>().started, Some(0.0));
+    assert_eq!(world.resource::<DeathFade>().started, Some(1008.0));
     check_at(&mut world, 333);
     let fighter = world.get::<Fighter>(body).unwrap();
     assert!(fighter.health.yellow > 0.0);
     check_at(&mut world, 334);
-    assert!(world.get_entity(root).is_err());
+    assert!(world.get_entity(root).is_ok());
+    assert!(world.get::<OutOfScene>(body).is_some());
+    assert!(world.get::<Condition>(body).unwrap().is_dead());
+    let health = world.get::<Fighter>(body).unwrap().health;
+    assert_eq!((health.yellow, health.red), (0.0, 0.0));
+    assert_eq!(world.get::<Visibility>(root), Some(&Visibility::Hidden));
+}
+
+/// The game clock between ticks: the last tick's clock plus the gathered
+/// share of the next.
+#[test]
+fn the_game_clock_runs_between_the_ticks() {
+    assert_eq!(game_clock_ms(0, 0.5), 6.0);
+    assert_eq!(game_clock_ms(1, 0.0), 0.0);
+    assert_eq!(game_clock_ms(85, 0.0), 1008.0);
+    assert_eq!(game_clock_ms(85, 0.75), 1017.0);
+    assert_eq!(game_clock_ms(85, 2.0), 1020.0);
+}
+
+/// On the ticks' own clock the fade cannot complete before the player's
+/// death: whatever the share of the next tick, the frame that pauses comes
+/// after the tick that kills.
+#[test]
+fn the_fade_pauses_only_after_the_player_dies() {
+    // The pit falls on tick 84 (read 1,008 ms), the death on tick 334.
+    let started = 84.0 * 12.0;
+    for ticks in 85..=335u64 {
+        for overstep in [0.0, 0.25, 0.5, 0.999] {
+            let (_, pause) = death_fade_hold(game_clock_ms(ticks, overstep) - started);
+            // The counter has passed the death tick once it reads 335.
+            assert!(!pause || ticks >= 335, "{ticks} {overstep}");
+        }
+    }
+    assert!(death_fade_hold(game_clock_ms(335, 0.01) - started).1);
+}
+
+/// The fade pauses the game once and its reset gives the time back; a
+/// reset of a fade that has not paused leaves a paused game alone.
+#[test]
+fn the_fade_reset_gives_the_game_time_back() {
+    let mut app = App::new();
+    app.init_resource::<DeathFade>()
+        .init_resource::<BodyTicks>()
+        .init_resource::<Time<Virtual>>()
+        .add_systems(Update, drive_death_fade);
+    app.world_mut().resource_mut::<DeathFade>().started = Some(1008.0);
+    app.world_mut().resource_mut::<BodyTicks>().0 = 334;
+    app.update();
+    assert!(!app.world().resource::<Time<Virtual>>().is_paused());
+    app.world_mut().resource_mut::<BodyTicks>().0 = 336;
+    app.update();
+    assert!(app.world().resource::<Time<Virtual>>().is_paused());
+    assert!(app.world().resource::<DeathFade>().paused);
+    let world = app.world_mut();
+    let mut fade = *world.resource::<DeathFade>();
+    reset_death_fade(&mut fade, Some(&mut world.resource_mut::<Time<Virtual>>()));
+    assert!(!world.resource::<Time<Virtual>>().is_paused());
+    assert_eq!((fade.started, fade.paused), (None, false));
+    // A pause the fade did not make is not its reset's to undo.
+    world.resource_mut::<Time<Virtual>>().pause();
+    reset_death_fade(&mut fade, Some(&mut world.resource_mut::<Time<Virtual>>()));
+    assert!(world.resource::<Time<Virtual>>().is_paused());
 }
 
 /// The player's death tells every other character to forget them: the body

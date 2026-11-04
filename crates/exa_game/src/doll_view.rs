@@ -295,6 +295,11 @@ pub struct DollDrop {
 #[derive(Resource, Default)]
 pub struct DollItems {
     items: HashMap<u32, Item>,
+    /// Records of tagged ids (a kit's own copy, a level's or the
+    /// character's own record) that have been written, by their whole id:
+    /// a copy's dirt, wear and container list are its own, not its
+    /// template's.
+    copies: HashMap<u32, Item>,
     tried: bool,
 }
 
@@ -318,18 +323,64 @@ impl DollItems {
     }
 
     pub fn get(&self, id: u32) -> Option<&Item> {
-        self.items.get(&(id & ID_MASK))
+        self.copies
+            .get(&id)
+            .or_else(|| self.items.get(&(id & ID_MASK)))
     }
 
-    /// Writes a container popup's children back into the item's section.
-    /// An id the database does not hold, or an item with no container, is
-    /// left as it was.
+    /// The record `id` names, to be written: a tagged id gets its own copy
+    /// of its template's record the first time; an untagged id is the
+    /// template's record itself.
+    fn get_mut(&mut self, id: u32) -> Option<&mut Item> {
+        if id & !ID_MASK == 0 {
+            return self.items.get_mut(&id);
+        }
+        if !self.copies.contains_key(&id) {
+            let template = self.items.get(&(id & ID_MASK))?.clone();
+            self.copies.insert(id, template);
+        }
+        self.copies.get_mut(&id)
+    }
+
+    /// A kit's copy `to` of the record `from` takes that record's current
+    /// state as its own.
+    pub fn copy_record(&mut self, from: u32, to: u32) {
+        if from == to {
+            return;
+        }
+        if let Some(item) = self.get(from).cloned() {
+            self.copies.insert(to, item);
+        }
+    }
+
+    /// A kit's byte written back into the record: apparel or weapon, dirt
+    /// or wear. A missing record or section is left alone.
+    pub fn write_condition(&mut self, id: u32, apparel: bool, dirt: bool, value: u8) {
+        let Some(item) = self.get_mut(id) else {
+            return;
+        };
+        if apparel {
+            if let Some(appearance) = item.appearance.as_mut() {
+                if dirt {
+                    appearance.dirt = value;
+                } else {
+                    appearance.damage = value;
+                }
+            }
+        } else if let Some(weapon) = item.weapon.as_mut() {
+            if dirt {
+                weapon.dirt = value;
+            } else {
+                weapon.damage = value;
+            }
+        }
+    }
+
+    /// Writes a container popup's children back into the item's section:
+    /// a tagged id into its own copy. An id the database does not hold, or
+    /// an item with no container, is left as it was.
     pub fn store_container(&mut self, id: u32, record: &crate::item_container::ContainerRecord) {
-        let Some(section) = self
-            .items
-            .get_mut(&(id & ID_MASK))
-            .and_then(|item| item.container.as_mut())
-        else {
+        let Some(section) = self.get_mut(id).and_then(|item| item.container.as_mut()) else {
             return;
         };
         crate::gui_screens::store_record(section, record);
@@ -1412,6 +1463,83 @@ impl Plugin for DollViewPlugin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn weapon_item(id: u32) -> Item {
+        Item {
+            id,
+            name: "blade".into(),
+            parent: 0,
+            model: "BladeA01".into(),
+            model_flags: 0,
+            worn_model: String::new(),
+            appearance: None,
+            slot_layers: [0; exa_formats::objdb::SLOTS],
+            slot_words: [0; exa_formats::objdb::SLOTS],
+            occupancy: [0; exa_formats::objdb::OCCUPANCY_BONES],
+            weapon: Some(exa_formats::objdb::Weapon {
+                dirt: 0x80,
+                damage: 0x60,
+                ..Default::default()
+            }),
+            armour: None,
+            shield: None,
+            door: None,
+            operative: None,
+            burden: None,
+            equip_lock: 0,
+            torch: false,
+            volume: None,
+            volume_script: None,
+            rank_word: 0,
+            body_rank: 0,
+            loadout_rank: 0,
+            armour_weight: 0.0,
+            armour_type: 0,
+            container: Some(exa_formats::containers::Container {
+                width: 4,
+                height: 4,
+                capacity: 16,
+                max_item: 4,
+                children: Vec::new(),
+            }),
+            random_table: None,
+            has_body: false,
+            has_weapon: true,
+            has_shield: false,
+        }
+    }
+
+    /// A kit's writes reach the shared record; a tagged copy keeps its own
+    /// bytes and its own container list, and leaves its template alone.
+    #[test]
+    fn kit_writes_and_copies_keep_their_own_records() {
+        let mut items = DollItems::default();
+        items.items.insert(0x12, weapon_item(0x12));
+        items.write_condition(0x12, false, true, 0x20);
+        assert_eq!(items.get(0x12).unwrap().weapon.unwrap().dirt, 0x20);
+        let copy = 0x8000_0012;
+        items.copy_record(0x12, copy);
+        items.write_condition(copy, false, false, 0x10);
+        assert_eq!(items.get(copy).unwrap().weapon.unwrap().damage, 0x10);
+        assert_eq!(items.get(copy).unwrap().weapon.unwrap().dirt, 0x20);
+        assert_eq!(items.get(0x12).unwrap().weapon.unwrap().damage, 0x60);
+        let record = crate::item_container::ContainerRecord {
+            children: vec![crate::item_container::ContainerChild {
+                id: 0x99,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        items.store_container(copy, &record);
+        let children = |items: &DollItems, id| {
+            items
+                .get(id)
+                .and_then(|item| item.container.as_ref())
+                .map_or(0, |c| c.children.len())
+        };
+        assert_eq!(children(&items, copy), 1);
+        assert_eq!(children(&items, 0x12), 0);
+    }
 
     /// A torch or off-hand root on the figure takes the pick's marker with
     /// its 1-based slot; a striker or the figure's shield does not.

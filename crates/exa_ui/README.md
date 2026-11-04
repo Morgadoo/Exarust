@@ -35,8 +35,10 @@ first cell on a rounded black halo, tinted or outlined at the shared
 pulse, rasterised through `gui_draw` into canvases the size of the halo;
 the game crate says which shows), the low-health heartbeat's border
 (`heartbeat`; the game crate starts it), the fade to black of the
-player's fall to death (`fade`, `DeathFade`: 3 s of game time, under the
-bars; the game crate starts it), and gamma-space compositing for images
+player's fall to death (`fade`, `DeathFade`: 3 s of game time on the
+game clock the game writes, under the bars; the game crate starts,
+completes and resets it), the GUI canvas's layer (under the interface, or
+over it while the end-of-session menu is open, `GuiCanvas::over_hud`), and gamma-space compositing for images
 painted on the CPU (`blend`). The skin (`skin`) now also reads a scheme
 into its five colour groups with their twelve shades, the accent mixes and
 the two alpha ramps, and the constructor's layout metrics. It gathers

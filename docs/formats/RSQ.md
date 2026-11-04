@@ -1382,7 +1382,10 @@ the kill plane, constants read from the executable):
 - **Out of the world**: the character, its body and everything it carries
   are gone (the original takes its node out of the scene and frees its
   items). The original's death here leaves its muscles flag on, but the
-  body leaves with it, so no corpse keeps the living link rules.
+  body leaves with it, so no corpse keeps the living link rules. The
+  player's record stays the session's player, dead with no health, so the
+  session's hook opens the end menu; Exarust keeps the player's body out
+  of the scene and hidden rather than despawning it.
 - The **kill plane**: a body integrated by the plain step (for a character,
   only a dead one) whose root's first particle goes below −5000 cm is taken,
   once: a character loses its health and, unless it is the player, leaves

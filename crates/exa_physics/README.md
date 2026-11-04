@@ -80,7 +80,8 @@ sound's draws (pitch first, then gain), the races that are released into
 the shocked state instead (and that release), race index 1 that only
 rings, and the burn of the others (yellow health, the shock-stagger bit,
 the stagger step along the shock and the pain reaction's part and
-values). The running game's arc shocks (`exa_game::thaum`) apply their
+values). A knockback step's length is (1.5 − 0.3·encumbrance) times the
+step length scaled by the leg extension (`body_steps::knockback_length`). The running game's arc shocks (`exa_game::thaum`) apply their
 own clock and health rule and do not call `shock` yet; the body tick's
 shock stagger and the release of a release race (`Body::force_release`)
 are live, and a staggered body on its feet holds the daze pose

@@ -53,8 +53,9 @@ pub const PRACTICE_TEAM: u32 = 0x10;
 /// milliseconds.
 pub const PRACTICE_REACTION_MS: u32 = 3000;
 /// Where the original's practice spawn places the opponent, in its level
-/// coordinates (metres), with no turn. Not wired: Exarust's duel placement
-/// stands in for it.
+/// coordinates (cm: 5 cm up, 107 cm along z), facing identity. The practice
+/// partner's plan stands it there
+/// ([`crate::scene_bodies::practice_partner_plan`]).
 pub const PRACTICE_SPOT: [f32; 3] = [0.0, 5.0, 107.0];
 
 /// What the popup shows.
