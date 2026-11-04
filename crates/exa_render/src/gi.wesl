@@ -385,13 +385,20 @@ fn write_dark(id: vec3<u32>, dims: vec3<u32>) {
     textureStore(light_next, vec3<i32>(id), vec4(to_srgb(voxel_lights(id, dims)), 0.0));
 }
 
+// The lowest height (m) the sky light's map reaches: the map is drawn once
+// around the world's origin with a depth window of 1600 cm either side, and
+// a voxel at or below it compares at or past the far plane (its reference
+// clamps to 1, which the map's less-than test never passes), so it is dark.
+const SKY_MAP_FLOOR: f32 = -16.0;
+
 // The sky light's visibility at voxel `id`: the original's map looking
 // straight down, taken by its first comparison alone under a sky, is lit
 // where nothing stands above; Exarust reads the column's highest occluder.
 // The voxel's openness then scales it.
-fn sky_light(id: vec3<u32>, occ: f32) -> f32 {
+fn sky_light(id: vec3<u32>, dims: vec3<u32>, occ: f32) -> f32 {
     let floor = textureLoad(sky_floor, vec2<i32>(id.xy), 0).r;
-    return select(0.0, occ, id.z >= floor);
+    let height = params.origin.y + (f32(id.z) + 0.5) / f32(dims.z) * params.extent.y;
+    return select(0.0, occ, id.z >= floor && height > SKY_MAP_FLOOR);
 }
 
 // A neighbour block's margin copy (the original's `gi_blit`): the block
@@ -495,7 +502,7 @@ fn propagate(@builtin(global_invocation_id) id: vec3<u32>) {
         if lt.shaping.w == 1.0 {
             // The sky light: no fall-off, shaded from above (the original's
             // directional `SdwMat` path).
-            rgb += lt.colour_shadow.rgb * sky_light(id, open) * 0.01;
+            rgb += lt.colour_shadow.rgb * sky_light(id, dims, open) * 0.01;
             continue;
         }
         let to = at - lt.position_radius.xyz;

@@ -46,6 +46,7 @@ impl Plugin for GiPlugin {
         let warm_up = GiWarmUp::default();
         let report = WarmUpReport(warm_up.report.clone());
         app.init_resource::<GiLights>()
+            .init_resource::<GiBaseAmbient>()
             .init_resource::<GiSectorLights>()
             .init_resource::<GiTextureCache>()
             .init_resource::<GiNeighbours>()
@@ -54,10 +55,12 @@ impl Plugin for GiPlugin {
             .insert_resource(warm_up)
             .add_plugins((
                 crate::gi_shape::GiShapePlugin,
+                crate::gi_probe::GiProbePlugin,
                 ExtractResourcePlugin::<GiTextures>::default(),
                 ExtractResourcePlugin::<GiPendingTextures>::default(),
                 ExtractResourcePlugin::<GiOccupancyPatches>::default(),
                 ExtractResourcePlugin::<GiLights>::default(),
+                ExtractResourcePlugin::<GiBaseAmbient>::default(),
                 ExtractResourcePlugin::<GiNeighbours>::default(),
                 ExtractResourcePlugin::<GiNeighbourLights>::default(),
             ))
@@ -286,6 +289,16 @@ impl GiTextures {
         self.dims
     }
 
+    /// The voxel edge (metres) and the texture's size (X, Z, Y).
+    pub fn voxel_and_dims(&self) -> (f32, UVec3) {
+        (self.voxel, self.dims)
+    }
+
+    /// The faint light every open voxel gains per step.
+    pub fn base_ambient(&self) -> Vec3 {
+        self.base_ambient
+    }
+
     /// The origin a surface samples the light volume from, for
     /// `texture(p·scale + offset)` with `p` in world metres: the block's
     /// lowest corner, less half a voxel in height. The original's per-object
@@ -409,6 +422,17 @@ pub const SKY_LIGHT_ID: u32 = u32::MAX;
 /// frame; without it the volume has no sky light.
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
 pub struct GiSkyLight(pub Vec3);
+
+/// The faint light every open voxel gains per step while the level is
+/// under an open sky: the environment's current fill (the day record's, as
+/// each sun placement leaves it) × the share [`GiVolume::base_ambient`]
+/// takes from the level record. The original's injection reads the
+/// environment's fill field every frame, and under a sky that field holds
+/// the day record's fill rather than the level record's `0x30`. `None`
+/// keeps the volume's own base.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, ExtractResource)]
+#[extract_app(RenderApp)]
+pub struct GiBaseAmbient(pub Option<Vec3>);
 
 /// The level's open sky as the surface programs see it, set by the world
 /// when a level's lighting is applied. Under a sky (the original's
@@ -830,6 +854,56 @@ pub struct GiLights {
     voxel_lights: Vec<GiVoxelLight>,
     /// The registered shapes drawn into this block, in list order.
     shapes: Vec<GiShapeUniform>,
+}
+
+impl GiLights {
+    /// One line per group and per light it injects, for the debug probe
+    /// (`crate::gi_probe`): the group's floor, each light's per-step colour
+    /// before the fragment's 0.01, and a point light's place and reach in
+    /// texture units.
+    pub fn describe(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        let drawn = self.sector_groups.iter().filter(|&&g| g != u8::MAX).count();
+        out.push(format!(
+            "{} groups over {drawn} sectors, {} voxel lights, {} shapes",
+            self.groups.len(),
+            self.voxel_lights.len(),
+            self.shapes.len()
+        ));
+        for (g, group) in self.groups.iter().enumerate() {
+            out.push(format!(
+                "group {g}: floor {}, {} lights",
+                group.floor, group.count
+            ));
+            let lights = self
+                .lights
+                .iter()
+                .skip(group.first as usize)
+                .take(group.count as usize);
+            for light in lights {
+                let c = light.colour_shadow;
+                if light.shaping.w == 1.0 {
+                    out.push(format!("  sky light ({:.5}, {:.5}, {:.5})", c.x, c.y, c.z));
+                } else {
+                    let p = light.position_radius;
+                    out.push(format!(
+                        "  point light ({:.5}, {:.5}, {:.5}) at ({:.3}, {:.3}, {:.3}), 1/R {:.2}",
+                        c.x, c.y, c.z, p.x, p.y, p.z, p.w
+                    ));
+                }
+            }
+        }
+        for v in &self.voxel_lights {
+            out.push(format!(
+                "voxel light ({:.5}, {:.5}, {:.5}) at {:?}",
+                v.colour.x,
+                v.colour.y,
+                v.colour.z,
+                v.position.truncate()
+            ));
+        }
+        out
+    }
 }
 
 impl Default for GiLights {
@@ -1508,16 +1582,18 @@ pub fn sky_light_active(colour: Vec3) -> bool {
 /// The sky light's reach in a block, one value per column (X fastest, then
 /// Z): the slice above the column's highest voxel of at least
 /// [`SKY_OCCLUDER`], 0 for a column with none. The original shades the
-/// light with its own depth map drawn straight down over the scene and,
-/// under a sky, takes that map's comparison alone, so a voxel is lit when
-/// nothing stands above it; the column's highest occluder is that map at the
-/// volume's resolution [adaptation]. A moving mesh's occupancy patches do
-/// not move these floors.
+/// light with its own depth map drawn straight down over the scene's meshes
+/// and, under a sky, takes that map's comparison alone, so a voxel is lit
+/// when no mesh stands above it; the column's highest occluder is that map
+/// at the volume's resolution [adaptation]. The top slice is left out: its
+/// byte is the block's soft lid (26), which no mesh draws into the map, and
+/// counting it shut the sky out of every column. A moving mesh's occupancy
+/// patches do not move these floors.
 pub fn sky_floors(cells: &[u8], size: UVec3) -> Vec<u16> {
     let (w, d, h) = (size.x as usize, size.y as usize, size.z as usize);
     let mut floors = vec![0u16; w * d];
     for (column, floor) in floors.iter_mut().enumerate() {
-        for y in (0..h).rev() {
+        for y in (0..h.saturating_sub(1)).rev() {
             if cells
                 .get(column + y * w * d)
                 .is_some_and(|&c| c >= SKY_OCCLUDER)
@@ -2836,6 +2912,7 @@ fn prepare_bind_group(
     neighbours: Option<Res<GiNeighbours>>,
     lights: Res<GiLights>,
     neighbour_lights: Option<Res<GiNeighbourLights>>,
+    base: Option<Res<GiBaseAmbient>>,
     pipeline: Option<Res<GiPipeline>>,
     cache: Res<PipelineCache>,
     images: Res<RenderAssets<GpuImage>>,
@@ -2872,6 +2949,7 @@ fn prepare_bind_group(
         residents: &residents,
         copies,
         used,
+        base: base.and_then(|b| b.0),
     };
     // A block being warmed takes no margins until it is bound.
     let Some(active) = context.bind_group(stepping, &lights, buffer, pending.is_none()) else {
@@ -2928,6 +3006,9 @@ struct BlockContext<'a> {
     residents: &'a [&'a GiTextures],
     copies: &'a mut MarginCopies,
     used: &'a mut Vec<(TextureViewId, TextureViewId, i32, i32)>,
+    /// The base ambient under an open sky ([`GiBaseAmbient`]), for every
+    /// block; `None` keeps each block's own.
+    base: Option<Vec3>,
 }
 
 impl BlockContext<'_> {
@@ -2980,7 +3061,7 @@ impl BlockContext<'_> {
         let value = GiParams {
             origin: textures.origin.extend(0.0),
             extent: textures.extent.extend(0.0),
-            base: textures.base_ambient.extend(0.0),
+            base: self.base.unwrap_or(textures.base_ambient).extend(0.0),
             flags: UVec4::new(0, 0, textures.top_slice as u32, 0),
             groups,
             sector_groups,
@@ -3313,9 +3394,23 @@ mod tests {
         cells[1] = 255;
         // Column (0, 1): faint occupancy below the occluder byte only.
         cells[2 + 3 * 4] = SKY_OCCLUDER - 1;
-        // Column (1, 1): the occluder byte at the top slice.
-        cells[3 + 3 * 4] = SKY_OCCLUDER;
-        assert_eq!(sky_floors(&cells, size), vec![0, 3, 0, 4]);
+        // Column (1, 1): the occluder byte in the slice below the top.
+        cells[3 + 2 * 4] = SKY_OCCLUDER;
+        assert_eq!(sky_floors(&cells, size), vec![0, 3, 0, 3]);
+    }
+
+    #[test]
+    fn the_block_s_lid_does_not_shut_the_sky_out() {
+        // The occupancy's soft lid: 26 in the top slice, 5 below it.
+        let size = UVec3::new(2, 1, 4);
+        let mut cells = vec![0u8; 8];
+        for x in 0..2 {
+            cells[x + 3 * 2] = 26;
+            cells[x + 2 * 2] = 5;
+        }
+        // Column 1 has ground at slice 0.
+        cells[1] = 20;
+        assert_eq!(sky_floors(&cells, size), vec![0, 1]);
     }
 
     #[test]
