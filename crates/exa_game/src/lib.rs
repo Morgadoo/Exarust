@@ -81,6 +81,7 @@ pub mod level_transition;
 pub mod light_probe;
 pub mod limp;
 pub mod loadout;
+pub mod loadout_kit;
 pub mod loadout_screen;
 pub mod look_overlay;
 pub mod manage;

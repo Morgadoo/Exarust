@@ -671,6 +671,32 @@ fn story_save_world(
     }
 }
 
+/// The hub's manager as the arena save writes him: the live body's
+/// record with the career's six per-rank loadouts, each the rank's hands
+/// and worn items.
+pub fn arena_manager(
+    mut player: StoryPlayer,
+    career: &crate::hub_windows::ArenaCareer,
+) -> StoryPlayer {
+    player.record.loadouts = career.player.loadouts.to_vec();
+    player
+}
+
+/// A loaded arena save's manager record gives the career its six per-rank
+/// loadouts back; a record with fewer leaves the missing ranks as they
+/// are. Returns how many were taken.
+pub fn restore_manager_loadouts(
+    record: &CharacterRecord,
+    career: &mut crate::hub_windows::ArenaCareer,
+) -> usize {
+    let mut taken = 0;
+    for (slot, loadout) in career.player.loadouts.iter_mut().zip(&record.loadouts) {
+        *slot = loadout.clone();
+        taken += 1;
+    }
+    taken
+}
+
 #[allow(clippy::too_many_arguments)]
 fn save_to_new_slot(
     mut requests: MessageReader<SaveToNewSlot>,
@@ -715,10 +741,15 @@ fn save_to_new_slot(
         .unwrap_or_default()
         .stamp(&mut session);
     let (name, export) = match session.mode {
-        Mode::Arena => (
-            Some(career.player.name.clone()),
-            crate::slots::WorldExport::default(),
-        ),
+        Mode::Arena => {
+            // The manager's record goes into the world character database
+            // with his six per-rank kits, as the arena's save writes every
+            // fighter's record.
+            let player = live_story_player(&players, created.as_deref())
+                .map(|player| arena_manager(player, career));
+            let export = story_save_world(&mut session, player.as_ref());
+            (Some(career.player.name.clone()), export)
+        }
         Mode::Story => {
             stamp_story(&mut session, flow.as_deref());
             stamp_discovery(&mut session, experience.as_deref());
@@ -977,6 +1008,23 @@ pub fn restore_arena(
         );
         stores.staff.employees = crate::arena_tables::employees_from_tables(&tables);
         stores.stash = crate::arena_tables::stash_from_tables(&tables);
+    }
+    let kits = player
+        .as_ref()
+        .map_or(0, |record| restore_manager_loadouts(record, career));
+    if kits > 0 {
+        info!(
+            "save: the manager's {kits} per-rank kits are restored: {:?}",
+            career
+                .player
+                .loadouts
+                .iter()
+                .map(|l| (
+                    l.hands.map(|h| h.id),
+                    l.worn.iter().map(|w| w.id).collect::<Vec<_>>()
+                ))
+                .collect::<Vec<_>>()
+        );
     }
     // The identity reset, then its request to the content stream.
     let request = player.as_mut().map(|record| {
@@ -1481,6 +1529,47 @@ mod tests {
         assert_eq!(live.arsenal.shelves[SHIELDS][0][0].item, 7);
         assert_eq!(live.stash, vec![5]);
         assert_eq!(live.staff.employees[0].kit, vec![7]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_hub_save_keeps_the_managers_six_kits_and_its_load_restores_them() {
+        let dir = folder("arena-kits");
+        let mut lists = SlotLists::new(&dir);
+        let mut career = crate::hub_windows::ArenaCareer::default();
+        career.player.loadouts[0].hands[0] = ItemRef::new(7, 0);
+        career.player.loadouts[2].hands[1] = ItemRef::new(8, 0);
+        career.player.loadouts[2].worn = vec![ItemRef::new(9, 0)];
+        career.player.loadouts[5].word = 3;
+        let stores = ArenaStores::default();
+        let mut session = live_session(Some("arenahub.rfc"), 5, &career, &stores);
+        let player = arena_manager(
+            StoryPlayer {
+                record: CharacterRecord::reset(),
+                position_cm: [0.0; 3],
+                heading: 0.0,
+            },
+            &career,
+        );
+        assert_eq!(player.record.loadouts.len(), 6);
+        let export = story_player_world(&player, &mut session).unwrap();
+        save_new_slot(
+            &mut lists.arena,
+            &session,
+            Some("Manager"),
+            &export.save_world(None, false),
+        )
+        .unwrap()
+        .unwrap();
+        let mut list = SlotList::new(Slots::arena(&dir));
+        assert!(list.any());
+        list.select(0);
+        let loaded = list.load_current(false).unwrap();
+        let mut back = crate::hub_windows::ArenaCareer::default();
+        let mut live = ArenaStores::default();
+        let restored = restore_arena(&loaded, &HashMap::new(), &mut back, &mut live);
+        assert!(restored.player.is_some());
+        assert_eq!(back.player.loadouts, career.player.loadouts);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -977,6 +977,42 @@ pub fn hub_employee_kit_on_load(
     );
 }
 
+/// `--hub-arsenal id,...`: once the hub is entered and the shelf facts are
+/// read, each item is stowed in the arsenal with no flags (on its shelf's
+/// first box), as an item no fighter has taken stands there. A debug tool
+/// for the loadout form's kit; a new career's own arsenal is not stocked.
+#[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
+pub struct HubArsenal {
+    pub items: Vec<u32>,
+    pub done: bool,
+}
+
+/// Runs `--hub-arsenal` once, when the shelf facts are read.
+pub fn hub_arsenal_on_load(
+    ask: Option<ResMut<HubArsenal>>,
+    hub: Res<crate::arena_hub_live::ArenaHub>,
+    stores: Option<ResMut<crate::save_live::ArenaStores>>,
+    kinds: Option<Res<crate::arsenal::ShelfKinds>>,
+) {
+    let (Some(mut ask), Some(mut stores), Some(kinds)) = (ask, stores, kinds) else {
+        return;
+    };
+    if ask.done || !hub.manager_placed || kinds.0.is_empty() {
+        return;
+    }
+    ask.done = true;
+    let stowed: Vec<(u32, Option<usize>)> = ask
+        .items
+        .iter()
+        .map(|&item| {
+            let kind = kinds.kind(item);
+            stores.arsenal.stow(item, kind, 0);
+            (item, crate::arsenal::shelf_of(kind))
+        })
+        .collect();
+    info!("--hub-arsenal: stowed (item, shelf) {stowed:?}");
+}
+
 /// The pointer over the hub's table-built forms: moves, the left press and
 /// release go to the top form and its callbacks run. Manage Company's
 /// Arsenal asks for the arsenal ([`crate::arsenal_view::OpenArsenal`]), and
@@ -1059,6 +1095,23 @@ mod tests {
         for (w, r, f) in windows.forms.input(at, false, true) {
             windows.answer(career, w, r, f);
         }
+    }
+
+    #[test]
+    fn a_shelf_button_switches_the_loadout_forms_arsenal_shelf() {
+        let (mut windows, mut career) = opened();
+        windows.open_loadout(PAGE_ROSTER, &career);
+        assert_eq!(windows.forms.arsenal.unwrap().shelf, 0);
+        // The first shelf button is the rightmost, clothing (its value 4).
+        let form = windows.forms.get(FormWindow::Loadout).unwrap();
+        assert_eq!(form.controls()[loadout::SHELVES[0]].x, 968);
+        click(
+            &mut windows,
+            &mut career,
+            FormWindow::Loadout,
+            loadout::SHELVES[0],
+        );
+        assert_eq!(windows.forms.arsenal.unwrap().shelf, 4);
     }
 
     #[test]

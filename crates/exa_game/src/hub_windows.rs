@@ -1445,6 +1445,10 @@ pub fn draw_hub_windows(
     time: Option<Res<Time>>,
     game_screens: Option<Res<crate::gui_screens::GameScreens>>,
     mut fade: Local<HubFade>,
+    (kit, mut icons): (
+        Option<Res<crate::loadout_kit::KitPanels>>,
+        Option<ResMut<crate::item_panel_draw::PanelIcons>>,
+    ),
 ) {
     let Some(windows) = windows else {
         return;
@@ -1497,8 +1501,22 @@ pub fn draw_hub_windows(
     // The windows stacked over it, bottom to top, drawn shown.
     let shown = Look::new(1.0, unit, textures);
     for open in &windows.forms.forms {
+        if open.window == crate::hub_forms::FormWindow::Loadout {
+            // The loadout form's paint fills it black before the base
+            // form draws ([`exa_ui::loadout::BACKDROP_INK`]).
+            let r = open.form.rect();
+            painted.push(exa_ui::loadout::solid_layer(
+                [r.x, r.y, r.w, r.h],
+                [0, 0, 0, u8::MAX],
+            ));
+        }
         if open.window != crate::hub_forms::FormWindow::Manage {
             crate::hub_forms::paint_form(&mut painted, &open.form, &shown);
+        }
+        if open.window == crate::hub_forms::FormWindow::Loadout
+            && let Some(kit) = kit.as_deref()
+        {
+            crate::loadout_kit::paint_kit(&mut painted, kit, icons.as_deref_mut(), &shown);
         }
     }
     debug!(

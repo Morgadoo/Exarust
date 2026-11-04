@@ -122,6 +122,12 @@ fn setup(
             done: false,
         });
     }
+    if !options.hub_arsenal.is_empty() {
+        commands.insert_resource(exa_game::hub_forms::HubArsenal {
+            items: options.hub_arsenal.clone(),
+            done: false,
+        });
+    }
     if let Some((name, kit)) = &options.hub_employee_kit {
         commands.insert_resource(exa_game::hub_forms::HubEmployeeKit {
             name: name.clone(),

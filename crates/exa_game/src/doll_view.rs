@@ -1031,7 +1031,7 @@ pub fn class_word(main_grip: Option<u32>) -> u32 {
 }
 
 /// The garment an apparel record is worn as.
-fn garment_of(item: &Item) -> Option<Garment> {
+pub(crate) fn garment_of(item: &Item) -> Option<Garment> {
     (!item.worn_model.is_empty()).then(|| Garment {
         model: item.worn_model.clone(),
         appearance: item.appearance,
