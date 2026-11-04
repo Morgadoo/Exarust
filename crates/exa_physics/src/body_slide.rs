@@ -39,8 +39,12 @@
 //! Its sounds go out as the hinged leaf's do (`crate::mechanism_sound`),
 //! the knock on the slam set.
 //!
+//! Its passage flag follows the travel as the hinged leaf's follows the
+//! angle; the original's report of it to the navigation grid changes
+//! nothing there (`crate::body_door`), so it is not made.
+//!
 //! Not reproduced: the hand's drag of a sliding leaf (the press only
-//! records it) and the navigation passage report.
+//! records it).
 //!
 //! Evidence: the door's init (its sliding branch) and sliding step, the
 //! world-link slider law, read in the instructions.

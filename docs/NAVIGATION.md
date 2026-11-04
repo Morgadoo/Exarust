@@ -184,7 +184,31 @@ What queues a rectangle, in the original, is short:
 
 Nothing else reaches the ring or the merge: a door swung open, a crate
 knocked aside, a body that moves or falls asleep queue nothing, through
-the sector's pathfinder, the scene's or the global one. A node's box
+the sector's pathfinder, the scene's or the global one.
+
+**The door's passage report.** A door leaf whose node the grid registered
+(the `0x100` flag above) reports its state to the global pathfinder. At
+set-up the leaf saves its node's navigation word (1 for every node the
+engine makes) and, when it starts shut, writes 4 into it. A hinged leaf
+then checks at the end of each step: while it is shut, held by the hand
+or driven by a toggle, the word becomes 4 (when it is the saved one);
+otherwise the saved word comes back (when it is not). A sliding leaf
+writes 4 when it shuts at the bottom of its travel and the saved word
+when it leaves it. Each write calls the pathfinder's door slot with the
+node and the word replaced. The
+level's pathfinder (`TPathFinder`) does not override that slot's
+behaviour: its entry returns the object itself, and the abstract fallback's
+is an empty call. Nothing else reads a door node's word (the engine copies
+the word only when it clones a node and into a character built on one). So
+the report changes no cell, and in 0.9.5 the grid around a door is the
+one the build gave until a refresh covers it: a door shut at load keeps
+its doorway raised once opened, and one open at load keeps it free once
+shut. What does follow the door is the room route
+(`exa_world::rooms`, `room_view`: a link is open while its leaf's pair
+flag is clear). Exarust keeps no navigation word and makes no call.
+Evidence: the hinged and sliding steps' report blocks and the door's
+init, read in the instructions; the pathfinder classes' method tables
+read from the image (no class derives from `TPathFinder`). A node's box
 gives its rectangle on each ground axis as
 `W/2 + round((c ∓ e)·(1/30) ∓ 2.5)`, the centre `c` the box centre
 through the matrix and the extent `e = (|X|·hx + |Y|·hy) + |Z|·hz` of
@@ -211,7 +235,10 @@ item cursor's let-go writes the held node's box at the lift's saved frame
 `--nav-refresh-moved` is Exarust's debug option: a moving mesh whose node
 has held a new frame for 32 ticks queues where the grid last saw it and
 where it rests (merged, not rung), so a door opened by the hand frees its
-doorway; the original does not.
+doorway; the original does not. `--debug-path` plans again whenever a
+refresh changes a floor (`nav::NavRevision`, Exarust's count of the grid's
+changes), so with the option its path goes through a door once the leaf
+has come to rest open.
 
 ## Cost
 

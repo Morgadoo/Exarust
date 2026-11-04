@@ -304,13 +304,14 @@ fn room_span(lo: i32, hi: i32) -> (i32, i32) {
 /// The ring is drained into the pending list first. The queues are then
 /// empty, except in the frames of the scene-wide countdown, which returns
 /// early. Every pending rectangle is refreshed in the one call: the
-/// original has no per-frame budget.
-pub fn refresh_movers(grid: &mut NavGrid, movers: &mut Movers, bodies: &[MoverPoints]) {
+/// original has no per-frame budget. Returns whether any floor changed
+/// (Exarust's, for the debug tools that replan when the grid does).
+pub fn refresh_movers(grid: &mut NavGrid, movers: &mut Movers, bodies: &[MoverPoints]) -> bool {
     let (width, depth) = grid.size();
     if movers.countdown > 0 {
         movers.countdown -= 1;
         if movers.countdown != 0 {
-            return;
+            return false;
         }
         movers.rects = vec![CellRect {
             x0: 20,
@@ -324,6 +325,7 @@ pub fn refresh_movers(grid: &mut NavGrid, movers: &mut Movers, bodies: &[MoverPo
         movers.read = (movers.read + 1) % SLOTS;
     }
     let rects = std::mem::take(&mut movers.rects);
+    let mut any = false;
     for rect in rects {
         let grown = CellRect {
             x0: rect.x0 - PAD,
@@ -385,7 +387,9 @@ pub fn refresh_movers(grid: &mut NavGrid, movers: &mut Movers, bodies: &[MoverPo
         if changed {
             grid.derive_costs(x0 as usize, z0 as usize, x1 as usize, z1 as usize);
         }
+        any |= changed;
     }
+    any
 }
 
 /// Raise the grid's floors from the moving props' sample points (world,
@@ -997,17 +1001,17 @@ mod tests {
         ring_moved(&mut movers, &grid, rect);
         assert!(!movers_idle(&movers));
         let open = Affine3A::from_translation(door + Vec3::new(0.6, 0.0, 0.0));
-        refresh_movers(
-            &mut grid,
-            &mut movers,
-            &[MoverPoints {
-                at: open,
-                points: &leaf,
-            }],
-        );
+        let moved = [MoverPoints {
+            at: open,
+            points: &leaf,
+        }];
+        assert!(refresh_movers(&mut grid, &mut movers, &moved));
         assert_eq!(grid.cell(14, 14, Layer::Lower).floor, 10);
         assert_eq!(grid.cell(16, 14, Layer::Lower).floor, 25);
         assert!(movers_idle(&movers));
+        // The same rectangle again changes nothing.
+        ring_moved(&mut movers, &grid, rect);
+        assert!(!refresh_movers(&mut grid, &mut movers, &moved));
     }
 
     /// The sample's voxel is `y·0.1 + ½` rounded ties to even: 2.0 m is the

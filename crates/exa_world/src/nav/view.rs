@@ -39,6 +39,7 @@ impl Plugin for NavPlugin {
             .init_resource::<InstalledPathfinder>()
             .init_resource::<NavOverlay>()
             .init_resource::<NavRefreshMoved>()
+            .init_resource::<NavRevision>()
             .add_message::<NavMoved>()
             .add_systems(
                 PostUpdate,
@@ -122,6 +123,13 @@ pub struct NavMovers(pub super::Movers);
 /// grid. The original queues no such body.
 #[derive(Resource, Debug, Clone, Copy, Default)]
 pub struct NavRefreshMoved(pub bool);
+
+/// Exarust's count of the grid's changes in play, for the debug tools
+/// that plan again when the grid does (`--debug-path`): a new grid and
+/// every refresh that changes a floor add one. The original keeps no such
+/// count.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NavRevision(pub u32);
 
 /// Fixed ticks a moved node must hold still before
 /// [`NavRefreshMoved`] queues it (about 0.4 s at 83 Hz).
@@ -247,6 +255,7 @@ fn finish_build(
     build: Option<ResMut<NavBuild>>,
     mut state: ResMut<NavState>,
     mut installed: ResMut<InstalledPathfinder>,
+    mut revision: ResMut<NavRevision>,
 ) {
     let Some(mut build) = build else { return };
     let Some(grid) = block_on(poll_once(&mut build.0)) else {
@@ -262,6 +271,7 @@ fn finish_build(
     commands.insert_resource(NavMovers::default());
     *state = NavState::Built;
     *installed = InstalledPathfinder::install_level();
+    revision.0 = revision.0.wrapping_add(1);
 }
 
 /// Queues the moved nodes and refreshes the grid's rectangles from the
@@ -272,6 +282,7 @@ fn refresh_grid(
     movers: Option<ResMut<NavMovers>>,
     mut moved: MessageReader<NavMoved>,
     bodies: Query<(&GiPoints, &GlobalTransform), With<MovingMesh>>,
+    mut revision: ResMut<NavRevision>,
 ) {
     let (Some(mut grid), Some(mut movers)) = (grid, movers) else {
         moved.clear();
@@ -291,7 +302,10 @@ fn refresh_grid(
             points: points.0.as_slice(),
         })
         .collect();
-    super::refresh_movers(&mut grid, &mut movers.0, &samples);
+    if super::refresh_movers(&mut grid, &mut movers.0, &samples) {
+        revision.0 = revision.0.wrapping_add(1);
+        info!("navigation grid refreshed: revision {}", revision.0);
+    }
 }
 
 /// Where [`watch_moving_meshes`] last saw a node: the frame the grid was
@@ -489,6 +503,7 @@ mod tests {
         assert_eq!(grid.cell(14, 14, Layer::Lower).floor, 25);
         world.insert_resource(grid);
         world.insert_resource(NavMovers::default());
+        world.init_resource::<NavRevision>();
         world.init_resource::<Messages<NavMoved>>();
         (at, points)
     }
@@ -511,6 +526,7 @@ mod tests {
             25,
             "nothing queued, nothing refreshed"
         );
+        assert_eq!(*world.resource::<NavRevision>(), NavRevision(0));
         world.write_message(NavMoved {
             at: Affine3A::from_translation(at),
             centre: Vec3::new(0.0, 1.75, 0.0),
@@ -521,6 +537,7 @@ mod tests {
         assert_eq!(grid.cell(14, 14, Layer::Lower).floor, 10);
         assert_eq!(grid.cell(16, 14, Layer::Lower).floor, 25);
         assert!(super::super::movers_idle(&world.resource::<NavMovers>().0));
+        assert_eq!(*world.resource::<NavRevision>(), NavRevision(1));
     }
 
     /// `--nav-refresh-moved`: a moving mesh that has held a new frame for
@@ -552,5 +569,6 @@ mod tests {
         let grid = world.resource::<NavGrid>();
         assert_eq!(grid.cell(14, 14, Layer::Lower).floor, 10);
         assert_eq!(grid.cell(16, 14, Layer::Lower).floor, 25);
+        assert_eq!(*world.resource::<NavRevision>(), NavRevision(1));
     }
 }

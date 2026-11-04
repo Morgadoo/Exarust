@@ -45,7 +45,16 @@
 //!
 //! The navigation passage follows the angle each tick: a hinge more than
 //! 0.4 rad past closed clears its pair flag and the room route opens, a
-//! shut hinge keeps the flag and the route stays shut. The last-pusher stamp,
+//! shut hinge keeps the flag and the route stays shut. The original also
+//! reports the passage to the navigation grid, for a node it registered
+//! there: the leaf saves its node's navigation word at set-up, and at the
+//! end of each step writes 4 into it while it is shut, held or driven by a
+//! toggle and puts the saved word back otherwise, each change handing the
+//! pathfinder the word it replaced. The level's
+//! pathfinder answers that call by returning itself and the fallback's is
+//! empty, and nothing else reads a door node's word, so the grid's cells
+//! never change with a door (`docs/NAVIGATION.md`): Exarust keeps no word
+//! and makes no call. The last-pusher stamp,
 //! sliding doors (they stay static level geometry unless the loader is
 //! asked for them, `crate::body::slide_body`).
 //!

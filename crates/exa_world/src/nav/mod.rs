@@ -53,8 +53,8 @@ pub use query::{LineHit, line_walk, obstacle, straight_walk};
 pub use source::NavSource;
 pub use stamp::{NavPatch, stamp_line, unstamp_line};
 pub use view::{
-    MovingMesh, NavMoved, NavMovers, NavOverlay, NavPlugin, NavRefreshMoved, NavState, PendingNav,
-    unload_level as unload_nav,
+    MovingMesh, NavMoved, NavMovers, NavOverlay, NavPlugin, NavRefreshMoved, NavRevision, NavState,
+    PendingNav, unload_level as unload_nav,
 };
 pub use walkable::{cost_at, layer_at, nearest_walkable};
 
