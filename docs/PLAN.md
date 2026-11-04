@@ -269,6 +269,8 @@ Round 45 doorrooms: the room behind a shut door is black again (the golem gate t
 
 Round 48 world: the lever light fades and a shut door keeps its route closed.
 
+Round 48b world: mechanism light jobs and sequence relays run, light operatives start their device arcs at load, fire records follow the daylight, and the importer's visibility rules hide lights and fires.
+
 ### Phase 3 — Bodies: skeleton, physics, control (started)
 
 Done (change `add-apparel-painting`): object database items and the
@@ -869,6 +871,8 @@ Round 42 playerctl11: the lift's placement limit and last frame, the world use c
 
 Round 46 checkfig (P3, G6): the checkpoint is a level trigger volume in exanima01 whose routine calls CheckpointSave; the exe never calls it. Also corrected the npc-manager spec: zone kind 2 is the golem alarm and 0x20/0x21 the level exit.
 
+Round 47 redress: characters re-dress live.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
@@ -1239,6 +1243,12 @@ Round 42 motilepart11: held item grip laws and drop and torch words; review reve
 
 Round 44 sweep-items: the golem core drop accepts both crystals live; review restored the palette precision and paint units and reverted a misread item-manager model and a duplicated apparel walk.
 
+Round 47 arsenal (P13): the Arsenal window opens and dismissed kits return.
+
+Round 48b items: the item uses that were only reported now act. Containers open from panels, the deck opens a reading, ladders and trapdoors load their level, salves and elixirs pour, kits clean and repair, and kind 16 and 17 swaps change panel entries. Lifts and the cursor stop at shut doors.
+
+Round 48b parry: armed parries run with the weapon's speed, and the hands lock while a parry holds. The swing nudges and the walk-bit clears are live. The armed grip's strength is still unused.
+
 ### Phase 5 — Visual and audio fidelity (started)
 
 Done: the original's render pipeline (legacy and PBR programs, the
@@ -1467,6 +1477,8 @@ Round 46 dialogue (U1): the dialogue is finished; the player is named from the c
 
 Round 48 shop: the arena shop's baskets are live. A carried item seeds the goods, a purchase joins them, and a sale takes them.
 
+Round 48b gicurve: the outdoor GI shading curve and the open sky's tinted cube are live and the cube faces sit on the original's targets; open arenas are now overbright inside the GI block, cause not found.
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
@@ -1637,6 +1649,10 @@ A live door's passage follows its heading each tick. A shut hinge keeps its pair
 The kinesis aim takes the nearer of the level hit and another prop's mesh. A mesh closer than the floor is the aim; one past the floor is not. The held body is left out of that pick.
 
 Round 48 head: the head tracker runs during a stab. The far variant stays uncalled because its caller was not identified.
+
+Round 47 zones: stay zones and level exits run and the zone kinds are corrected.
+
+Round 48b aitick: the NPC combat tick reads the live body (balance, tone, support, feral, race flags, swing flags, speed) and weighs every contact, a step-led estimate, character switches and force foci, instead of the defaults it had.
 
 ### Phase 7 — Game modes and content
 
@@ -2174,6 +2190,12 @@ Round 44 sweep-ui-a: a UI sweep found most rules present; review fixed the lane'
 Round 44 sweep-ui-b: control draws reuse the existing skin ports and the destination screen's skin colours are live; review fixed nine wrong or duplicated rules (physique NaN, colour picker callbacks, edit-page preview, drop-down band, picture corners, choice list).
 
 Round 46 auras (E3): the displacement shell and the teleporter scan aura draw; the shell only darkens, so a retail side-by-side would confirm its strength.
+
+Round 47 bubble (E4): the teleport bubble draws.
+
+Round 48b misc: script witnesses, ShowInventory and WitnessRole run live. The practice partner stands at the original's spot. Kits redress between fights. Actor templates wear their own items. Story discovery is saved, and the death fade ducks the world bus and pauses the game.
+
+Round 48b shock: shock-weapon arcs arm, follow and end with the held blades, with their hum, voxel and GI lights; device arcs light their point light. Barricades, blasts and waves enter the brains' target pass with a mind-aware relation. A wall impact alerts the hitter. A hard hit ripples the shell, and a dying shaper can teach the player. The kinesis mesh gate (f32678884) is a performance early-out with no change in behaviour.
 
 ### Phase 8 — Polish and release
 
