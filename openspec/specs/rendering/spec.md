@@ -79,7 +79,7 @@ The system SHALL build a level's voxel light volume as the original does. Each m
 - **THEN** its block is 256 × 256 × 128 voxels instead of 256 × 256 × 64
 
 ### Requirement: Voxel GI shading
-The system SHALL light surfaces inside the volume from it. Indoors the ambient is the volume's light g (20 cm along the normal, averaged over the taps) × (the level ambient × 15 × b × openness) with a = |g| and b = (1 − a)²·0.03/(a + 0.016) + (0.47a + 0.53); reflections are the environment cube × that ambient × 8 × 2. Under an open sky the light is lifted by (1 − a)²·0.08/(a + 0.035) + a and the ambient is that × the environment cube at mip 7 × `Ambient.w`·5 with `Ambient.w` 3; the reflections take the cube × the light before that factor × 3 × 2.
+The system SHALL light surfaces inside the volume from it. Indoors the ambient is the volume's light g (20 cm along the normal, averaged over the taps) × (the level ambient × 15 × b × openness) with a = |g| and b = (1 − a)²·0.03/(a + 0.016) + (0.47a + 0.53); reflections are the environment cube × that ambient × 8 × 2.
 
 #### Scenario: Torchlit room
 - **WHEN** a level with torches has been shown for its warm-up
@@ -88,6 +88,13 @@ The system SHALL light surfaces inside the volume from it. Indoors the ambient i
 #### Scenario: Outside the block
 - **WHEN** a surface lies beyond the GI block its object is lit from, or GI is turned off
 - **THEN** it reads the block's clamped edge, or with GI off takes its ambient from the environment cube
+
+### Requirement: Open-sky GI shading
+The system SHALL light surfaces under an open sky from the volume's light g with a = |g| lifted by (1 − a)²·0.08/(a + 0.035) + a. The ambient is that lifted light × the environment cube at mip 7 × `Ambient.w`·5 with `Ambient.w` 3; the reflections take the cube × the light before that factor × 3 × 2.
+
+#### Scenario: Open-sky ambient
+- **WHEN** a surface inside the volume lies under an open sky
+- **THEN** its ambient comes from the lifted volume light and the environment cube's mip 7
 
 ### Requirement: Normal-map orientation
 The system SHALL apply normal maps in the original's tangent frame. The tangent runs along +u and the bitangent along −v of the stored UVs. The map's red and green channels are used as stored, with z rebuilt as √(1 − x² − y²).
