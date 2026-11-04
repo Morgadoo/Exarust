@@ -1268,6 +1268,9 @@ impl Plugin for GameScreensPlugin {
             .init_resource::<DebugGuiForm>()
             .init_resource::<DebugOpenContainer>()
             .init_resource::<GuiFrames>()
+            // The item panel's container popups read and write the item
+            // records; init_resource keeps the table another plugin made.
+            .init_resource::<crate::doll_view::DollItems>()
             .add_message::<ScreenRequest>()
             .add_message::<exa_script::ScriptEffect>()
             .add_message::<ContainerRequest>()
