@@ -235,6 +235,52 @@ fn round_low_word(value: f32) -> i32 {
     }
 }
 
+/// The DPI border metric the client measure adds under a title (2).
+pub const TITLE_GAP: i32 = 2;
+
+/// The base form's client measure with the line skin's lengths (the
+/// measure the show's client refresh runs): the left edge is the border; a
+/// corner-framed form (style bits 0x30) keeps the skin's first length (two
+/// units) as its frame span and a panel-framed one (0xc0) the second (one
+/// unit) as its title span; the right edge is the width less the border,
+/// less the skin's scroll length (two units) with the vertical bar; the
+/// bottom the height less the border (the horizontal bar's case is not
+/// taken here). A titled form (attribute bit 1) starts its client at the
+/// skin's title length (two units) plus the DPI border metric when its
+/// attribute word's 0x800030 bits are exactly 0x20, else plus the title
+/// span; an untitled one at the border.
+pub fn line_client(
+    width: i32,
+    height: i32,
+    border: i32,
+    style: u32,
+    attributes: u32,
+    unit: i32,
+) -> crate::form::ClientRect {
+    let span = if style & 0xc0 != 0 { unit } else { 0 };
+    let right = if attributes & 0x200 == 0x200 {
+        width - border - unit * 2
+    } else {
+        width - border
+    };
+    let top = if attributes & 1 == 1 {
+        unit * 2
+            + if attributes & 0x80_0030 == 0x20 {
+                TITLE_GAP
+            } else {
+                span
+            }
+    } else {
+        border
+    };
+    crate::form::ClientRect {
+        left: border,
+        top,
+        right,
+        bottom: height - border,
+    }
+}
+
 /// What the scroll refresh reads from a bar window and its owner.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LineScrollPlace {
@@ -647,6 +693,19 @@ pub struct LineForm {
     /// (the wide frame, or a scroll bar with no place given); its frame
     /// quads are then missing.
     pub complete: bool,
+    /// The frame quads drawn in the hover ink ([`hover_ink`]) instead of
+    /// the frame's: the scroll bar's upper arrow under the mark -9, its
+    /// lower arrow under -10 and its thumb under -8.
+    pub hot: Vec<usize>,
+    /// The quads the form draw adds after the frame, in the hover ink: the
+    /// close mark under the mark -4.
+    pub late: Vec<SliderQuad>,
+}
+
+/// The hover ink of the line skin's frame marks: 255, 204, 153 at the
+/// GUI's alpha byte (the fade times 255).
+pub fn hover_ink(fade: f32) -> SkinInk {
+    [255, 204, 153, hover_alpha(fade)]
 }
 
 /// The line skin's form draw (the method the game's skin puts in the
@@ -685,6 +744,8 @@ pub fn draw_line_form(unit: i32, place: LineFormPlace) -> LineForm {
         frame: Vec::new(),
         edges: 0,
         complete: true,
+        hot: Vec::new(),
+        late: Vec::new(),
     };
     let u = i64::from(unit);
     let (w, h) = (i64::from(place.width), i64::from(place.height));
@@ -706,6 +767,13 @@ pub fn draw_line_form(unit: i32, place: LineFormPlace) -> LineForm {
                     [(w, 0), (w - four, 0), (w - four, four), (w, four)],
                 ));
             }
+            if close && place.hover_mark == -4 {
+                form.late.push(quad64(
+                    FORM_CLOSE_INK,
+                    [(w, 0), (w - four, 0), (w - four, four), (w, four)],
+                ));
+            }
+            let frame = &mut form.frame;
             frame.push(quad64(
                 if close { FORM_ALT } else { FORM_CORNER },
                 [(w, 0), (w - six, 0), (w - six, six), (w, six)],
@@ -861,6 +929,9 @@ pub fn draw_line_form(unit: i32, place: LineFormPlace) -> LineForm {
     if let Some(bar) = scroll {
         let x = i64::from(bar.client_right) + (f64::from(unit) * 0.15).round_ties_even() as i64;
         let up = i64::from(bar.client_top) + if edges & 5 == 5 { u * 3 } else { u * 2 };
+        if place.hover_mark == -9 {
+            form.hot.push(form.frame.len());
+        }
         form.frame.push(quad64(
             HELD_TAB,
             [
@@ -871,6 +942,9 @@ pub fn draw_line_form(unit: i32, place: LineFormPlace) -> LineForm {
             ],
         ));
         let down = i64::from(bar.client_bottom) - if edges & 0xc == 0xc { u * 3 } else { u * 2 };
+        if place.hover_mark == -10 {
+            form.hot.push(form.frame.len());
+        }
         form.frame.push(quad64(
             HELD_TAB,
             [
@@ -881,6 +955,9 @@ pub fn draw_line_form(unit: i32, place: LineFormPlace) -> LineForm {
             ],
         ));
         let thumb = i64::from(bar.thumb) - u;
+        if place.hover_mark == -8 {
+            form.hot.push(form.frame.len());
+        }
         form.frame.push(quad64(
             HELD_POST,
             [

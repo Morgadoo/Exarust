@@ -339,6 +339,8 @@ pub struct LineFormLayers {
     pub title: Option<GuiLayer>,
     /// The frame quads from the skin atlas.
     pub frame: Option<GuiLayer>,
+    /// The hovered close mark the form draw adds after the frame.
+    pub late: Option<GuiLayer>,
     /// False when the form takes a frame branch that is not ported.
     pub complete: bool,
 }
@@ -353,7 +355,9 @@ impl LineFormLayers {
 
     /// The layers over the form's content and children.
     pub fn over(&mut self) -> impl Iterator<Item = GuiLayer> + use<> {
-        [self.title.take(), self.frame.take()].into_iter().flatten()
+        [self.title.take(), self.frame.take(), self.late.take()]
+            .into_iter()
+            .flatten()
     }
 }
 
@@ -399,6 +403,10 @@ pub struct LineFormAt {
     /// The title's ink when the form's title-ink slot is set (the item
     /// card's tint); else the skin's title ink.
     pub title_ink: Option<[u8; 4]>,
+    /// The frame mark under the pointer (the form's hover word): -4 the
+    /// close mark, -9 and -10 the scroll arrows, -8 the thumb, which the
+    /// form draw inks in the hover colour.
+    pub hover_mark: i32,
 }
 
 impl LineFormAt {
@@ -411,6 +419,7 @@ impl LineFormAt {
             owner_attributes: 0,
             scroll: None,
             title_ink: None,
+            hover_mark: 0,
         }
     }
 
@@ -424,6 +433,7 @@ impl LineFormAt {
             owner_attributes,
             scroll: None,
             title_ink: None,
+            hover_mark: 0,
         }
     }
 }
@@ -458,7 +468,7 @@ pub fn paint_line_form(
             owner_attributes: at.owner_attributes,
             owner_client: at.owner_client,
             title_width: title.map_or(0, |(text, font, _)| font.text_width(text.as_bytes())),
-            hover_mark: 0,
+            hover_mark: at.hover_mark,
             scroll: at.scroll,
         },
     );
@@ -514,8 +524,19 @@ pub fn paint_line_form(
             LineFormInk::Idle => line_control_inks(fade)[1],
             LineFormInk::Hot => palette.highlight[7],
         };
+        let hot = exa_ui::line_skin::hover_ink(fade);
         let mut batch = line_skin_batch();
-        push_line_quads(&mut batch, &form.frame, ink);
+        for (i, quad) in form.frame.iter().enumerate() {
+            let ink = if form.hot.contains(&i) { hot } else { ink };
+            push_line_quads(&mut batch, std::slice::from_ref(quad), ink);
+        }
+        batch.end_quads();
+        offset_batch(&mut batch, rect.left, rect.top);
+        GuiLayer::new(batch, LayerTexture::Named(SKIN_TEXTURE))
+    });
+    let late = (!form.late.is_empty()).then(|| {
+        let mut batch = line_skin_batch();
+        push_line_quads(&mut batch, &form.late, exa_ui::line_skin::hover_ink(fade));
         batch.end_quads();
         offset_batch(&mut batch, rect.left, rect.top);
         GuiLayer::new(batch, LayerTexture::Named(SKIN_TEXTURE))
@@ -525,6 +546,7 @@ pub fn paint_line_form(
         backdrop,
         title,
         frame,
+        late,
         complete: form.complete,
     }
 }
@@ -634,9 +656,11 @@ pub fn paint_held_scrolling(
     fade: f32,
     words: FormWords,
     fraction: f32,
+    hover_mark: i32,
 ) -> LineFormLayers {
     let committed = commit_words(words.style, words.attributes, false);
     let mut at = LineFormAt::child(rect, client, owner_attributes);
+    at.hover_mark = hover_mark;
     let inner = exa_ui::form::client_rect(
         rect.width(),
         rect.height(),
@@ -699,10 +723,28 @@ pub fn paint_top_form(
     words: FormWords,
     title: Option<FormTitle>,
 ) -> (LineFormLayers, LineFormWords) {
+    paint_top_form_marked(rect, unit, palette, fade, words, title, 0)
+}
+
+/// [`paint_top_form`] with the form's hover word: a hovered frame mark
+/// (the close mark -4) takes the skin's hover ink.
+pub fn paint_top_form_marked(
+    rect: GuiRect,
+    unit: i32,
+    palette: &SkinPalette,
+    fade: f32,
+    words: FormWords,
+    title: Option<FormTitle>,
+    hover_mark: i32,
+) -> (LineFormLayers, LineFormWords) {
     let committed = commit_words(words.style, words.attributes, true);
     let title = title.filter(|(text, _, _)| !text.is_empty());
+    let at = LineFormAt {
+        hover_mark,
+        ..LineFormAt::top(rect)
+    };
     (
-        paint_line_form(LineFormAt::top(rect), unit, palette, fade, committed, title),
+        paint_line_form(at, unit, palette, fade, committed, title),
         committed,
     )
 }

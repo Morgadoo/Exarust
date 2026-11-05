@@ -9,9 +9,14 @@
 //! ([`crate::gui_paint`]): their frames, the item pack's panel and the
 //! control records the constructors append (labels and buttons, placed by
 //! the control layout pass). The character view, the item icons, the
-//! journal's entry list and the controls' callbacks are not wired. Escape
-//! closing the focused screen is Exarust's (the original closes them
-//! through their frame marks and the keys again). The skills key's screen
+//! journal's entry list and the controls' callbacks are not wired. The
+//! forms are base forms ([`exa_ui::base_form::BaseForm`]) on a rooted task
+//! the pointer drives ([`crate::form_input`]): a title press drags a window,
+//! a release over its close mark closes it, a pressed window draws on top,
+//! the frame marks and the records take their hover inks and a record that
+//! asks for it shows the default tooltip. Escape closing the focused
+//! screen is Exarust's (the original closes them through their frame marks
+//! and the keys again). The skills key's screen
 //! and the power tree are outside this unit; the technique selector opens
 //! from a power slot, which the HUD does not draw yet.
 //!
@@ -19,6 +24,7 @@
 
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
+use exa_ui::base_form::BaseForm;
 use exa_ui::form::{ClientRect, UNPLACED, place_unset};
 use exa_ui::game_gui::{
     CONTAINER_FAMILY, GameScreen, INVENTORY_PLACE, INVENTORY_TITLE, InventoryInput, JOURNAL_TEXT,
@@ -27,7 +33,7 @@ use exa_ui::game_gui::{
     tagged_container,
 };
 use exa_ui::gui_controls::{Control, LayoutClient, layout_records};
-use exa_ui::gui_core::{FormHost, FormId, GuiRect, GuiTask, NO_CONTROL};
+use exa_ui::gui_core::{FormId, GuiRect, GuiTask, NO_CONTROL};
 use exa_ui::gui_draw::{GuiFrames, GuiTextures};
 use exa_ui::skin::SkinBatch;
 
@@ -570,18 +576,62 @@ pub struct InventoryLayout {
 }
 
 impl InventoryLayout {
-    /// The layout at `unit`; unit 4 is the constructor's design as is.
+    /// The layout at `unit`; unit 4 is the constructor's design, with the
+    /// client's top where the show's client measure puts it under the title
+    /// ([`InventoryLayout::title_shift`]): the character view and the
+    /// records sit that much lower, the pack stays at the client's bottom.
     pub fn at(unit: i32) -> Self {
         let layout = ScreenLayout::inventory(unit);
+        let shift = Self::title_shift(layout.size, layout.border, unit);
+        let mut doll = layout.children[0];
+        doll.top += shift;
+        doll.bottom += shift;
+        let mut controls = layout.controls;
+        for control in &mut controls {
+            control.y += shift;
+        }
         Self {
             unit,
             size: layout.size,
             place: layout.place,
             border: layout.border,
-            doll: layout.children[0],
+            doll,
             pack: layout.children[1],
-            controls: layout.controls,
+            controls,
         }
+    }
+
+    /// How far the title moves the client's top below the border: the
+    /// line skin's client measure ([`exa_ui::line_skin::line_client`]) of
+    /// the committed words starts a titled top-level form at two units and
+    /// the DPI border metric (2), where the constructor's layout counted
+    /// from the border (two units).
+    pub fn title_shift(size: (i32, i32), border: i32, unit: i32) -> i32 {
+        let words =
+            gui_paint::commit_words(gui_paint::SCREEN_STYLE, gui_paint::FORM_ATTRIBUTES, true);
+        let client = exa_ui::line_skin::line_client(
+            size.0,
+            size.1,
+            border,
+            words.style,
+            words.attributes,
+            unit,
+        );
+        (client.top - border).max(0)
+    }
+
+    /// The form's client measure (form-local), as the hit test reads it.
+    pub fn measured_client(&self) -> ClientRect {
+        let words =
+            gui_paint::commit_words(gui_paint::SCREEN_STYLE, gui_paint::FORM_ATTRIBUTES, true);
+        exa_ui::line_skin::line_client(
+            self.size.0,
+            self.size.1,
+            self.border,
+            words.style,
+            words.attributes,
+            self.unit,
+        )
     }
 
     /// The form's client inside `bounds`.
@@ -672,63 +722,6 @@ pub struct DebugGuiForm {
     pub enabled: bool,
 }
 
-/// A screen's form: its rectangle and the controls the window manager
-/// hits, selects, presses and drags. The close marks it doomed; the task
-/// deletes it.
-pub struct ScreenForm {
-    pub parent: Option<FormId>,
-    pub bounds: GuiRect,
-    pub doomed: bool,
-    pub selected: i32,
-    /// Which screen this form is, for the painter.
-    pub kind: GameScreen,
-    /// The form's controls, in record order (1-based in messages).
-    pub controls: Vec<Control>,
-}
-
-impl ScreenForm {
-    /// The 1-based control under a form-local point.
-    pub fn control_at(&self, x: i32, y: i32) -> i32 {
-        for (index, control) in self.controls.iter().enumerate() {
-            if GuiRect::new(control.x, control.y, control.w, control.h).contains(x, y) {
-                return index as i32 + 1;
-            }
-        }
-        0
-    }
-}
-
-impl FormHost for ScreenForm {
-    fn parent(&self) -> Option<FormId> {
-        self.parent
-    }
-    fn bounds(&self) -> GuiRect {
-        self.bounds
-    }
-    fn is_visible(&self) -> bool {
-        true
-    }
-    fn hit_test(&self, x: i32, y: i32) -> i32 {
-        self.control_at(x, y)
-    }
-    fn select(&mut self, control: i32) -> u32 {
-        if self.selected == control {
-            return 0;
-        }
-        self.selected = control;
-        3
-    }
-    fn selected_control(&self) -> i32 {
-        self.selected
-    }
-    fn close(&mut self, _arg: i32) {
-        self.doomed = true;
-    }
-    fn doomed(&self) -> bool {
-        self.doomed
-    }
-}
-
 /// The open screens, the window manager that focuses them and the session
 /// data behind them.
 #[derive(Resource)]
@@ -771,12 +764,21 @@ pub struct GameScreens {
     /// Icon handles freed by a closed panel, waiting for the icon manager
     /// to drop their references (the destroy's sweep).
     pub released_icons: Vec<usize>,
+    /// The default tooltip the task's tick showed, while it is up.
+    pub tooltip: Option<crate::form_input::ShownTooltip>,
 }
 
 impl Default for GameScreens {
     fn default() -> Self {
+        // The task's root form: the screen the windows hang from (the
+        // original's task form); a point on no window hits it.
+        let mut task = GuiTask::new((800, 600));
+        task.add(Box::new(exa_ui::gui_core::PlainForm::new(
+            GuiRect::new(0, 0, 1 << 20, 1 << 20),
+            4,
+        )));
         Self {
-            task: GuiTask::new((800, 600)),
+            task,
             open: Vec::new(),
             journal: Journal::default(),
             containers: OpenContainers::default(),
@@ -793,6 +795,7 @@ impl Default for GameScreens {
             popups: Vec::new(),
             saved_containers: Vec::new(),
             released_icons: Vec::new(),
+            tooltip: None,
         }
     }
 }
@@ -824,24 +827,56 @@ impl GameScreens {
         }
     }
 
-    fn push(&mut self, kind: GameScreen, bounds: GuiRect) -> FormId {
+    fn push(&mut self, kind: GameScreen, bounds: GuiRect, unit: i32) -> FormId {
         let root = self.task.root;
         let controls = match kind {
             GameScreen::Inventory => self.inventory_layout().controls_at(bounds),
             GameScreen::Journal => ScreenLayout::journal(self.journal_unit).controls_at(bounds),
             _ => screen_controls(kind, bounds),
         };
-        let form = self.task.add(Box::new(ScreenForm {
-            parent: root,
+        let (words, border) = match kind {
+            GameScreen::Inventory => (
+                gui_paint::FormWords {
+                    style: gui_paint::SCREEN_STYLE,
+                    attributes: gui_paint::FORM_ATTRIBUTES,
+                },
+                self.inventory_layout().border,
+            ),
+            GameScreen::Journal => (gui_paint::JOURNAL_WORDS, gui_paint::FORM_SPACING),
+            GameScreen::Container => (gui_paint::CONTAINER_WORDS, POPUP_BORDER),
+            _ => (gui_paint::LOOT_WORDS, gui_paint::FORM_SPACING),
+        };
+        let unit = unit.max(1);
+        let committed = gui_paint::commit_words(words.style, words.attributes, true);
+        let client = exa_ui::line_skin::line_client(
+            bounds.width(),
+            bounds.height(),
+            border,
+            committed.style,
+            committed.attributes,
+            unit,
+        );
+        let mut form = BaseForm::new(
             bounds,
-            doomed: false,
-            selected: 0,
-            kind,
-            controls,
-        }));
+            unit,
+            (committed.style, committed.attributes, committed.state),
+            client,
+        );
+        form.parent = root;
+        form.records = controls;
+        let form = self.task.add(Box::new(form));
         self.open.push(OpenScreen { kind, form });
         self.task.focus_set(Some(form), NO_CONTROL);
         form
+    }
+
+    /// The hover word of an open screen's form (its frame mark under the
+    /// pointer, for the skin's hover inks).
+    pub fn hover_mark(&self, form: FormId) -> i32 {
+        self.task
+            .form(form)
+            .and_then(|f| f.base())
+            .map_or(0, |f| f.hover)
     }
 
     /// The open inventory's layout, at the unit it was opened at.
@@ -933,7 +968,11 @@ impl GameScreens {
                 // onto the figure leaves the pack without losing its bulk.
                 self.pack.linked = Some(crate::doll_view::DOLL_PANEL);
                 self.containers.open(tagged_container(owner));
-                self.push(GameScreen::Inventory, GuiRect::new(x, y, width, height));
+                self.push(
+                    GameScreen::Inventory,
+                    GuiRect::new(x, y, width, height),
+                    self.inventory_unit,
+                );
             }
             (ScreenAction::Focused, Some(screen)) => {
                 self.task.focus_set(Some(screen.form), NO_CONTROL);
@@ -984,7 +1023,11 @@ impl GameScreens {
                 self.journal.ensure_entry();
                 self.journal.select(0);
                 self.journal_text = self.journal.entries[0].text.clone();
-                self.push(GameScreen::Journal, GuiRect::new(x, y, width, height));
+                self.push(
+                    GameScreen::Journal,
+                    GuiRect::new(x, y, width, height),
+                    self.journal_unit,
+                );
             }
             (ScreenAction::Focused, Some(screen)) => {
                 self.task.focus_set(Some(screen.form), NO_CONTROL);
@@ -1029,7 +1072,11 @@ impl GameScreens {
                     self.root_client(),
                 );
                 self.containers.open(tagged_container(character));
-                let form = self.push(GameScreen::Loot, GuiRect::new(x, y, width, height));
+                let form = self.push(
+                    GameScreen::Loot,
+                    GuiRect::new(x, y, width, height),
+                    unit.max(1),
+                );
                 self.loot
                     .push(LootWindow::new(form, character, flags, unit.max(1)));
             }
@@ -1089,7 +1136,11 @@ impl GameScreens {
         self.containers.open(id as i32);
         let size = popup_form_size(plan, unit, POPUP_BORDER);
         let (x, y) = popup_place(pointer, size, self.task.screen.0, unit);
-        let form = self.push(GameScreen::Container, GuiRect::new(x, y, size.0, size.1));
+        let form = self.push(
+            GameScreen::Container,
+            GuiRect::new(x, y, size.0, size.1),
+            unit,
+        );
         panel.client = (
             plan.inner.0 - 2 * POPUP_PANEL_BORDER,
             plan.inner.1 - 2 * POPUP_PANEL_BORDER,
@@ -1349,6 +1400,15 @@ impl Plugin for GameScreensPlugin {
                     .chain()
                     .after(crate::hotkeys::HotkeySet)
                     .before(crate::player::player_combat),
+            )
+            .init_resource::<DebugRecordHint>()
+            .add_message::<bevy::input::mouse::MouseWheel>()
+            .add_systems(
+                Update,
+                screens_pointer
+                    .after(open_requested_screens)
+                    .after(close_on_right_release)
+                    .before(draw_screens),
             )
             .add_systems(
                 Update,
@@ -1903,6 +1963,85 @@ fn open_requested_screens(
     }
 }
 
+/// `--debug-hint TEXT`: the inventory's Primary button carries this
+/// tooltip text (the C string a button record keeps for its tooltip),
+/// so the default tooltip can be checked by eye. No retail record of the
+/// running game's screens is known to carry one.
+#[derive(Resource, Debug, Clone, Default)]
+pub struct DebugRecordHint(pub Option<String>);
+
+/// The screens' window manager driven by the pointer: the hover, the
+/// focus and the frame marks follow it, the left button presses and
+/// releases through the forms' own rules (a title press drags the window,
+/// a release over the close mark closes it, the scroll arrows repeat), the
+/// wheel scrolls the focused form, and the task's tick shows the default
+/// tooltip ([`crate::form_input`]). A moved player's inventory keeps its
+/// place for the next open when it closes.
+#[allow(clippy::too_many_arguments)]
+fn screens_pointer(
+    mouse: Option<Res<ButtonInput<MouseButton>>>,
+    mut wheel: MessageReader<bevy::input::mouse::MouseWheel>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+    scripted: Option<Res<exa_ui::ScriptedPointer>>,
+    time: Res<Time<Real>>,
+    menu: Option<Res<MenuScreen>>,
+    hint: Res<DebugRecordHint>,
+    mut screens: ResMut<GameScreens>,
+) {
+    let delta = crate::form_input::wheel_delta(&mut wheel);
+    if screens.open.is_empty() || menu.is_some_and(|menu| menu.open) {
+        return;
+    }
+    let (Some(mouse), Ok(window)) = (mouse, windows.single()) else {
+        return;
+    };
+    if let Some(text) = hint.0.as_deref()
+        && let Some(screen) = screens.find(GameScreen::Inventory)
+        && let Some(form) = screens
+            .task
+            .form_mut(screen.form)
+            .and_then(|f| f.base_mut())
+        && let Some(primary) = form.records.iter_mut().find(|r| r.class == 1)
+        && primary.hint.is_empty()
+    {
+        primary.hint = text.as_bytes().to_vec();
+    }
+    let now = time.elapsed().as_millis() as u32;
+    let frame = crate::form_input::read_pointer(window, scripted.as_deref(), &mouse, delta, now);
+    let screens = &mut *screens;
+    let tick = crate::form_input::drive(&mut screens.task, &frame);
+    crate::form_input::ShownTooltip::follow(
+        &mut screens.tooltip,
+        &tick,
+        frame.at,
+        &mut screens.task,
+        now,
+    );
+    let forms: Vec<(GameScreen, FormId)> = screens.open.iter().map(|s| (s.kind, s.form)).collect();
+    for (kind, form) in forms {
+        let events = screens
+            .task
+            .form_mut(form)
+            .and_then(|f| f.base_mut())
+            .map(|f| std::mem::take(&mut f.events))
+            .unwrap_or_default();
+        for event in events {
+            match event {
+                exa_ui::base_form::BaseEvent::Moved(x, y) => {
+                    info!("gui: {kind:?} moved to {x}, {y}");
+                }
+                exa_ui::base_form::BaseEvent::Close => {
+                    info!("gui: {kind:?} closed by its close mark");
+                    if let Some(index) = screens.open.iter().position(|s| s.form == form) {
+                        screens.close_at(index);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 /// A right-button release over a screen that has the handler closes it
 /// (the inventory's and the loot window's mouse routines); a release over
 /// another form or outside leaves the screens alone.
@@ -2081,6 +2220,7 @@ pub fn panel_client(rect: GuiRect) -> GuiRect {
 /// view draws its figure, the canvas is cleared over the view so the
 /// figure's node shows through, and the colour the canvas had at the
 /// view's centre comes back as the backdrop the view's camera clears to.
+#[allow(clippy::too_many_arguments)]
 fn paint_inventory(
     bounds: GuiRect,
     layout: &InventoryLayout,
@@ -2089,6 +2229,8 @@ fn paint_inventory(
     items: &Container,
     icons: Option<&mut PanelIcons>,
     doll: Option<&crate::doll_view::DollPaint>,
+    hover_mark: i32,
+    records: Option<&[Control]>,
 ) -> (gui_paint::Painted, Option<[u8; 4]>) {
     let palette = gui_paint::palette();
     let level = exa_ui::gui_font::level_for_unit(unit);
@@ -2111,7 +2253,10 @@ fn paint_inventory(
     let outer_words =
         gui_paint::commit_words(gui_paint::SCREEN_STYLE, gui_paint::FORM_ATTRIBUTES, true);
     let mut outer = gui_paint::paint_line_form(
-        LineFormAt::top(bounds),
+        LineFormAt {
+            hover_mark,
+            ..LineFormAt::top(bounds)
+        },
         unit,
         &palette,
         1.0,
@@ -2160,7 +2305,8 @@ fn paint_inventory(
     }
     painted.layers.extend(pack_form.over());
     painted.layers.extend(outer.over());
-    let controls = layout.controls_at(bounds);
+    // The form's own records, with the hover bits the pointer gave them.
+    let controls = records.map_or_else(|| layout.controls_at(bounds), <[Control]>::to_vec);
     paint_controls(&controls, unit, &palette, &font, size, &mut painted);
     // The rating dots draw in the label group's seventh ink.
     if let Some(doll) = doll
@@ -2226,6 +2372,7 @@ fn paint_journal(
     layout: &ScreenLayout,
     unit: i32,
     textures: &GuiTextures,
+    hover_mark: i32,
 ) -> gui_paint::Painted {
     let palette = gui_paint::palette();
     let level = exa_ui::gui_font::level_for_unit(unit);
@@ -2237,13 +2384,14 @@ fn paint_journal(
         client: layout.client(bounds),
         ..Default::default()
     };
-    let (mut form, _) = gui_paint::paint_top_form(
+    let (mut form, _) = gui_paint::paint_top_form_marked(
         bounds,
         unit,
         &palette,
         1.0,
         gui_paint::JOURNAL_WORDS,
         Some((JOURNAL_TITLE, &font, size)),
+        hover_mark,
     );
     painted.layers.extend(form.under());
     let controls = layout.controls_at(bounds);
@@ -2327,6 +2475,7 @@ fn paint_loot(
     textures: &GuiTextures,
     window: &LootWindow,
     mut icons: Option<&mut PanelIcons>,
+    hover_mark: i32,
 ) -> gui_paint::Painted {
     let palette = gui_paint::palette();
     let level = exa_ui::gui_font::level_for_unit(unit);
@@ -2340,13 +2489,14 @@ fn paint_loot(
         client,
         ..Default::default()
     };
-    let (mut outer, outer_words) = gui_paint::paint_top_form(
+    let (mut outer, outer_words) = gui_paint::paint_top_form_marked(
         bounds,
         unit,
         &palette,
         1.0,
         gui_paint::LOOT_WORDS,
         Some((LOOT_TITLE, &font, size)),
+        hover_mark,
     );
     painted.layers.extend(outer.under());
     let (pack, equipment) = (layout.child_at(0, bounds), layout.child_at(1, bounds));
@@ -2391,6 +2541,7 @@ fn paint_container_popup(
     unit: i32,
     popup: &ContainerPopup,
     mut icons: Option<&mut PanelIcons>,
+    hover_mark: i32,
 ) -> gui_paint::Painted {
     // A shown form's draw hands its fade (1) to the skin, which raises the
     // palette's alpha ramps (form group 170, the others 125).
@@ -2404,13 +2555,14 @@ fn paint_container_popup(
         client,
         ..Default::default()
     };
-    let (mut form, form_words) = gui_paint::paint_top_form(
+    let (mut form, form_words) = gui_paint::paint_top_form_marked(
         bounds,
         unit,
         &palette,
         1.0,
         gui_paint::CONTAINER_WORDS,
         None,
+        hover_mark,
     );
     painted.layers.extend(form.under());
     if let Some(icons) = icons.as_deref_mut() {
@@ -2485,11 +2637,17 @@ pub(crate) fn draw_screens(
         .ok()
         .map(|window| exa_ui::scale::gui_scale(window.physical_height(), 0) as i32)
         .unwrap_or(4);
-    for screen in &screens.open {
+    // The windows draw in the task's order, the last raised on top.
+    let order = screens.task.draw_order();
+    let mut open = screens.open.clone();
+    open.sort_by_key(|screen| order.iter().position(|&id| id == screen.form));
+    for screen in &open {
         let Some(form) = screens.task.form(screen.form) else {
             continue;
         };
         let bounds = form.bounds();
+        let hover = screens.hover_mark(screen.form);
+        let records = form.base().map(|f| f.records.clone());
         let painted = match screen.kind {
             GameScreen::Inventory => {
                 let paint = doll.as_deref().map(|doll| crate::doll_view::DollPaint {
@@ -2505,6 +2663,8 @@ pub(crate) fn draw_screens(
                     &screens.pack,
                     Some(&mut icons),
                     paint.as_ref(),
+                    hover,
+                    records.as_deref(),
                 );
                 if let (Some(backdrop), Some(doll)) = (backdrop, doll.as_deref_mut())
                     && doll.backdrop != backdrop
@@ -2519,18 +2679,33 @@ pub(crate) fn draw_screens(
                 &ScreenLayout::journal(screens.journal_unit),
                 unit,
                 textures,
+                hover,
             ),
             GameScreen::Loot => match screens.loot.iter().find(|w| w.form == screen.form) {
-                Some(window) => paint_loot(bounds, unit, textures, window, Some(&mut icons)),
+                Some(window) => paint_loot(bounds, unit, textures, window, Some(&mut icons), hover),
                 None => continue,
             },
             GameScreen::Container => match screens.popups.iter().find(|p| p.form == screen.form) {
-                Some(popup) => paint_container_popup(bounds, unit, popup, Some(&mut icons)),
+                Some(popup) => paint_container_popup(bounds, unit, popup, Some(&mut icons), hover),
                 None => continue,
             },
             _ => continue,
         };
         painted.submit(&mut frames);
+    }
+    // The default tooltip over the windows.
+    if let Some(mut tip) = screens.tooltip.clone() {
+        let level = exa_ui::gui_font::level_for_unit(unit);
+        let (font, atlas) = screen_font(exa_ui::gui_font::gui_level(level).main, textures);
+        let screen = screens.task.screen;
+        let palette = gui_paint::palette();
+        if let Some(layers) = tip.paint(screens.task.clock, screen, &font, atlas, &palette) {
+            let mut painted = gui_paint::Painted::default();
+            for layer in layers {
+                painted.push(layer);
+            }
+            painted.submit(&mut frames);
+        }
     }
     if debug.enabled {
         let rect = GuiRect::new(100, 100, 302, 202);
@@ -2577,21 +2752,29 @@ mod tests {
 
     /// At unit 4 the layout is the constructor's design: 244 × 644 at
     /// (8, 8), the character view 228 × 384 at the client's top, the pack
-    /// 228 × 180 at its bottom, the records where the layout pass puts them.
+    /// 228 × 180 at its bottom, the records where the layout pass puts them;
+    /// the title moves the client's top two pixels below the border (two
+    /// units and the border metric 2), so the view and the records sit two
+    /// lower.
     #[test]
     fn the_inventory_layout_at_unit_four_is_the_constructors() {
         let layout = InventoryLayout::at(4);
         assert_eq!(layout.size, (244, 644));
         assert_eq!(layout.place, (8, 8));
         assert_eq!(layout.border, 8);
-        assert_eq!(layout.doll, GuiRect::new(8, 8, 228, 384));
+        assert_eq!(
+            InventoryLayout::title_shift(layout.size, layout.border, 4),
+            2
+        );
+        assert_eq!(layout.doll, GuiRect::new(8, 10, 228, 384));
         assert_eq!(layout.pack, GuiRect::new(8, 456, 228, 180));
+        assert_eq!(layout.measured_client().top, 10);
         let bounds = GuiRect::new(8, 8, 244, 644);
         assert_eq!(layout.pack_at(bounds), inventory_pack_panel(bounds));
         let design = screen_controls(GameScreen::Inventory, bounds);
         let laid = layout.controls_at(bounds);
         for (a, b) in design.iter().zip(&laid) {
-            assert_eq!((a.x, a.y, a.w, a.h), (b.x, b.y, b.w, b.h));
+            assert_eq!((a.x, a.y + 2, a.w, a.h), (b.x, b.y, b.w, b.h));
         }
     }
 
@@ -2606,7 +2789,7 @@ mod tests {
         assert_eq!(layout.size, (488, 1288));
         assert_eq!(layout.place, (16, 16));
         assert_eq!(layout.border, 16);
-        assert_eq!(layout.doll, GuiRect::new(16, 16, 452, 764));
+        assert_eq!(layout.doll, GuiRect::new(16, 18, 452, 764));
         assert_eq!(layout.pack, GuiRect::new(16, 912, 452, 356));
         let label = &layout.controls[0];
         let button = &layout.controls[2];
@@ -3193,6 +3376,7 @@ mod tests {
             &GuiTextures::default(),
             window,
             None,
+            0,
         );
         // The window's shadow and backdrop, the two held panels' frames
         // (no backdrop of their own) and the window's corner frame.
@@ -3401,8 +3585,17 @@ mod tests {
         let form = screens.find(GameScreen::Inventory)?.form;
         let bounds = screens.task.form(form)?.bounds();
         let layout = screens.inventory_layout();
-        let (painted, _) =
-            paint_inventory(bounds, &layout, unit, &textures, &screens.pack, None, None);
+        let (painted, _) = paint_inventory(
+            bounds,
+            &layout,
+            unit,
+            &textures,
+            &screens.pack,
+            None,
+            None,
+            0,
+            None,
+        );
         let mut frames = GuiFrames::default();
         painted.submit(&mut frames);
         let pixels = exa_ui::gui_draw::rasterise(&frames.frames, &textures, width, height);
@@ -3429,16 +3622,26 @@ mod tests {
             sheet: Some(&sheet),
         };
         let pack = Container::default();
-        let (plain, none) = paint_inventory(bounds, &layout, 4, &textures, &pack, None, None);
+        let (plain, none) =
+            paint_inventory(bounds, &layout, 4, &textures, &pack, None, None, 0, None);
         assert_eq!(none, None);
-        let (painted, backdrop) =
-            paint_inventory(bounds, &layout, 4, &textures, &pack, None, Some(&paint));
+        let (painted, backdrop) = paint_inventory(
+            bounds,
+            &layout,
+            4,
+            &textures,
+            &pack,
+            None,
+            Some(&paint),
+            0,
+            None,
+        );
         // The clearing layer and the dots' layer.
         assert_eq!(painted.layers.len(), plain.layers.len() + 2);
         let view = crate::doll_view::view_rect(layout.doll_at(bounds), DOLL_BORDER);
         assert_eq!(
             (view.left, view.top, view.width(), view.height()),
-            (18, 18, 224, 380)
+            (18, 20, 224, 380)
         );
         let centre = ((view.left + view.right) / 2, (view.top + view.bottom) / 2);
         assert_eq!(
@@ -3541,6 +3744,7 @@ mod tests {
             &ScreenLayout::journal(4),
             4,
             &textures,
+            0,
         );
         let font_layers: Vec<_> = painted
             .layers

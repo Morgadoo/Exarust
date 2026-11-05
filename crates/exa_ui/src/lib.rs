@@ -26,6 +26,7 @@
 //! ordering, fade, traversal, scroll and hit rules in [`form`].
 
 pub mod arena_forms;
+pub mod base_form;
 pub mod blend;
 pub mod character_view;
 pub mod class_select;

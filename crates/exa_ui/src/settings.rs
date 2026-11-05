@@ -1141,6 +1141,9 @@ pub struct FormState {
     /// Whether the Controls page shows its controller view (the Controller
     /// tab lit) rather than the keyboard one.
     pub controller_view: bool,
+    /// The Controls page's frame mark under the pointer (its base form's
+    /// hover word), which the skin's scroll bar inks.
+    pub page_hover: i32,
     held: Option<(Part, usize)>,
     hovered: Option<(Part, usize)>,
 }
@@ -1168,6 +1171,7 @@ impl FormState {
             scroll: 0.0,
             controller_tabs: false,
             controller_view: false,
+            page_hover: 0,
             held: None,
             hovered: None,
         };
