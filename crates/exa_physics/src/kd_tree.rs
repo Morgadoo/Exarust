@@ -45,7 +45,9 @@
 //!   centimetres (see [`TerrainKdTree`]).
 //!
 //! The running game still uses rapier's trimesh broad phase for the level;
-//! this module is not on that path.
+//! the body meshes' trees ([`crate::mesh_tree`]) are this module's game
+//! path. [`KdTree::sphere_leaves`] and [`KdTree::sweep_live`] are the two
+//! tree queries the pair stage walks.
 
 #![allow(
     clippy::neg_cmp_op_on_partial_ord,
@@ -896,6 +898,156 @@ fn ray_any_triangle(tri: &Triangle, origin: Vec3, dir: Vec3, tmax: f32) -> bool 
     let w1 = pb * e2a - pa * e2b;
     let w2 = pa * e1b - pb * e1a;
     !(w1 < 0.0) && !(w2 < 0.0) && w1 + w2 <= 1.0
+}
+
+/// A swept sphere as the original's swept queries keep it: the start and
+/// end of the centre, the radius, the length, the unit direction and its
+/// reciprocal. A query's per-hit callback may move the end; it then
+/// refreshes the record ([`SweptRecord::refresh`]) and the walk goes on with
+/// the new direction and length.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SweptRecord {
+    pub start: Vec3,
+    pub end: Vec3,
+    pub radius: f32,
+    pub length: f32,
+    pub direction: Vec3,
+    pub inverse: Vec3,
+}
+
+impl SweptRecord {
+    /// A record from `start` to `end`.
+    pub fn new(start: Vec3, end: Vec3, radius: f32) -> Self {
+        let mut record = Self {
+            start,
+            end,
+            radius,
+            length: 0.0,
+            direction: Vec3::ZERO,
+            inverse: Vec3::ZERO,
+        };
+        record.refresh();
+        record
+    }
+
+    /// The original's swept refresh: the length, the unit direction (the
+    /// travel times the reciprocal of its length) and the direction's
+    /// reciprocal, taken from the start and end as they now are. A zero
+    /// travel gives a NaN direction, as the original's reciprocal square
+    /// root of zero does.
+    pub fn refresh(&mut self) {
+        let travel = self.end - self.start;
+        let length2 = dot(travel, travel);
+        let reciprocal = 1.0 / length2.sqrt();
+        self.length = length2 * reciprocal;
+        self.direction = travel * reciprocal;
+        self.inverse = Vec3::ONE / self.direction;
+    }
+}
+
+impl KdTree {
+    /// The original's sphere query over a tree: every leaf whose cell the
+    /// sphere's box reaches, the first child before the second. Down from
+    /// a split, a sphere wholly past the plane (`plane < c − r`) goes to the
+    /// second child only, one reaching it (`plane ≤ c + r`) defers the
+    /// second child and goes to the first, and any other goes to the first
+    /// only (so a NaN centre takes the first). Deferred children are taken
+    /// last in, first out. `leaf` gets each non-empty leaf's triangles and
+    /// may move the sphere (the per-hit callback re-reads it), which the
+    /// next descent reads; it returns whether the leaf hit. `scale` turns
+    /// the sphere's units into the tree's. Returns whether any leaf hit.
+    pub fn sphere_leaves(
+        &self,
+        sphere: &mut (Vec3, f32),
+        scale: f32,
+        mut leaf: impl FnMut(&mut (Vec3, f32), &[u32]) -> bool,
+    ) -> bool {
+        if self.nodes.is_empty() {
+            return false;
+        }
+        let mut stack: Vec<usize> = Vec::new();
+        let mut node = 0usize;
+        let mut hit = false;
+        loop {
+            let (c, r) = (sphere.0 * scale, sphere.1 * scale);
+            loop {
+                let n = self.nodes[node];
+                if n.is_leaf() {
+                    break;
+                }
+                let first = node + n.child_offset() / 8;
+                let x = c[n.axis()];
+                if n.value < x - r {
+                    node = first + 1;
+                } else if n.value <= x + r {
+                    stack.push(first + 1);
+                    node = first;
+                } else {
+                    node = first;
+                }
+            }
+            let n = self.nodes[node];
+            if n.triangle_count() != 0 && leaf(sphere, self.leaf_triangles(n)) {
+                hit = true;
+            }
+            match stack.pop() {
+                Some(next) => node = next,
+                None => break,
+            }
+        }
+        hit
+    }
+
+    /// The original's boolean swept query with its record kept live: the
+    /// direction's reciprocal is set up first (a component at or under
+    /// [`SWEEP_TINY`] in size gets plus [`FAR`]), and the walk runs from 0 to
+    /// the record's length. Before each leaf the limit is put back to the
+    /// best so far, the leaf test may refresh the record (a hit that moved
+    /// the end), and a hit makes the record's length the new best; a
+    /// deferred child resumes with its own interval, cut at the best. The
+    /// descent reads the record as it is, so a refreshed direction steers
+    /// the rest of the walk. `scale` turns the record's units into the
+    /// tree's. Returns whether any leaf hit; the record's length is left at
+    /// the best.
+    pub fn sweep_live(
+        &self,
+        record: &mut SweptRecord,
+        scale: f32,
+        mut leaf: impl FnMut(&mut SweptRecord, &[u32]) -> bool,
+    ) -> bool {
+        if self.nodes.is_empty() {
+            return false;
+        }
+        record.inverse = sweep_inverse(record.direction, false);
+        let mut best = record.length * scale;
+        let mut hit = false;
+        let mut w = Walk::new(0.0, best);
+        loop {
+            let s = Sweep {
+                origin: record.start * scale,
+                direction: record.direction,
+                radius: record.radius * scale,
+            };
+            self.descend_sweep(&mut w, &s, record.inverse);
+            w.tmax = best;
+            let n = self.nodes[w.node];
+            if n.triangle_count() != 0 {
+                record.length = best / scale;
+                if leaf(record, self.leaf_triangles(n)) {
+                    hit = true;
+                    best = record.length * scale;
+                }
+            }
+            if !w.pop() {
+                break;
+            }
+            if best < w.tmax {
+                w.tmax = best;
+            }
+        }
+        record.length = best / scale;
+        hit
+    }
 }
 
 /// A terrain block's tree (`TTErrainkdTree`): the cell grid of one block,

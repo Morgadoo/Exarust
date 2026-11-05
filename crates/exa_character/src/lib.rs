@@ -834,7 +834,8 @@ pub fn held_item_bodies(
                 half: n.half_extents,
                 radius: n.bounds.1,
             }),
-            triangles: None,
+            // The node's mesh, queried where the item is the mesh side.
+            triangles: n.triangles.clone(),
         });
     }
     parts
@@ -978,7 +979,11 @@ pub fn assembled_item_body(
             half: half / CM_PER_M,
             radius: half.length() / CM_PER_M,
         }),
-        triangles: None,
+        // The merged node's mesh, which the pair stage queries (through
+        // its kd-tree) where the weapon is the mesh side.
+        triangles: Some(std::sync::Arc::new(
+            triangles.iter().map(|t| t.map(|v| v / CM_PER_M)).collect(),
+        )),
     };
     part.is_solid().then_some(part)
 }
@@ -1926,6 +1931,16 @@ fn equip_outfits(
                     && let Some(part) = parts.first()
                 {
                     log_fitted_body(&held.model, part);
+                }
+                for part in &parts {
+                    if let Some(t) = &part.triangles {
+                        debug!(
+                            "{}: held body mesh, {} triangles (signed volume {:.1} cm³)",
+                            held.model,
+                            t.len(),
+                            exa_physics::mesh_tree::signed_volume(t) * 1e6
+                        );
+                    }
                 }
                 if !parts.is_empty() {
                     commands.entity(holder).insert((

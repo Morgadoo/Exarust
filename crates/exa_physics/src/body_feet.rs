@@ -836,6 +836,8 @@ pub enum FootCue {
         leg: usize,
         loudness: f32,
         contact_cm: f32,
+        /// The contact's world point (m), where the wet step plays.
+        at: Vec3,
     },
 }
 
@@ -859,6 +861,7 @@ pub(super) fn foot_cues(legs: &mut [Leg], ankles: &[Vec3], work: &mut Work) {
                 leg: leg_index,
                 loudness: work.loudness,
                 contact_cm: cm(at.y),
+                at,
             });
         }
         leg.sounded = leg.state;
@@ -1040,13 +1043,7 @@ pub fn wet_release_step(
     p: f32,
     g: f32,
 ) -> Option<GaitStep> {
-    if water_cm.partial_cmp(&foot_cm) != Some(std::cmp::Ordering::Greater) {
-        return None;
-    }
-    let mut depth = (f64::from(-water_cm - 1.0 - foot_cm) * 0.05) as f32;
-    if depth > 1.0 {
-        depth = 1.0;
-    }
+    let depth = wet_depth(water_cm, foot_cm)?;
     let pitch = (f64::from(p) * 0.35 + (f64::from(loudness) * 0.2 + 0.4)) as f32;
     let share = f64::from(g) * 0.01 + 0.02;
     let gain =
@@ -1096,6 +1093,77 @@ pub struct Footstep {
     /// The race's footstep set's name in `Sound.rpk`; none for a race
     /// without one.
     pub set: Option<&'static str>,
+    /// The planted foot's contact height (cm), which the wet step compares
+    /// with the scene's water level ([`gait_wet_step`]).
+    pub contact_cm: f32,
+    /// The body's gait thrust (cm a tick²), which the wet step's pitch and
+    /// gain follow instead of the speed.
+    pub thrust: f32,
+}
+
+/// The scene's water level (cm): the surface the wet steps compare a
+/// foot's contact height with. [`NO_WATER_CM`] when the level has none.
+#[derive(Resource, Debug, Clone, Copy, PartialEq)]
+pub struct WaterLevel(pub f32);
+
+impl Default for WaterLevel {
+    fn default() -> Self {
+        Self(NO_WATER_CM)
+    }
+}
+
+/// The water level of a scene without water, far below every floor.
+pub const NO_WATER_CM: f32 = -100_000.0;
+/// The water level of a wet scene: 25 cm below the floor's zero.
+pub const WET_SCENE_WATER_CM: f32 = -25.0;
+/// The terrain wetness above which the scene has water.
+pub const WET_SCENE_FROM: f64 = 0.4;
+
+/// The scene's water level from the wetness its terrain palette gives the
+/// environment: [`WET_SCENE_WATER_CM`] above [`WET_SCENE_FROM`] (the
+/// comparison in double precision), [`NO_WATER_CM`] at or below it.
+pub fn water_level(terrain_wetness: f32) -> f32 {
+    if f64::from(terrain_wetness) > WET_SCENE_FROM {
+        WET_SCENE_WATER_CM
+    } else {
+        NO_WATER_CM
+    }
+}
+
+/// A foot's depth share under the water: `min(1, 0.05·(−water − 1 −
+/// foot))`, the sum in single precision and the scale in double; `None`
+/// when the foot is not under the surface (or either height is NaN).
+fn wet_depth(water_cm: f32, foot_cm: f32) -> Option<f32> {
+    if water_cm.partial_cmp(&foot_cm) != Some(std::cmp::Ordering::Greater) {
+        return None;
+    }
+    let depth = (f64::from(-water_cm - 1.0 - foot_cm) * 0.05) as f32;
+    Some(if depth > 1.0 { 1.0 } else { depth })
+}
+
+/// The walk's wet step, played after its footstep ([`gait_step`]) at the
+/// same place when the planted foot's contact (`contact_cm`) is under the
+/// water (`water_cm`): the depth share as [`wet_release_step`]'s, then
+/// the pitch `(0.3·p + 0.9)(0.05·thrust + 0.9)` and the gain `gain ·
+/// volume · depth · (0.5·g + 0.2)(0.01·thrust² + 0.01)`, the draw's half
+/// and the thrust's square in single precision and the rest in double,
+/// the pitch's draw first. The walk's footstep follows the speed; its wet
+/// step follows the gait's thrust.
+pub fn gait_wet_step(
+    water_cm: f32,
+    contact_cm: f32,
+    thrust: f32,
+    volume: f32,
+    p: f32,
+    g: f32,
+) -> Option<GaitStep> {
+    let depth = wet_depth(water_cm, contact_cm)?;
+    let pitch = ((f64::from(p) * 0.3 + 0.9) * (f64::from(thrust) * 0.05 + 0.9)) as f32;
+    let share = f64::from(g * 0.5) + 0.2;
+    let loud = f64::from(thrust * thrust) * 0.01 + 0.01;
+    let gain =
+        (f64::from(volume) * f64::from(depth) * f64::from(STEP_GAIN) * (share * loud)) as f32;
+    Some(GaitStep { gain, pitch })
 }
 
 /// A foot's sole floor (cm) from the Ground Query's `hit`: the higher of

@@ -2559,3 +2559,21 @@ A living body whose race hovers SHALL run its balance and feet each tick whateve
 #### Scenario: The wraith stands
 - **WHEN** a legless hovering body's pose puts its pelvis 100 cm over its frame, over a floor at 0 and then at 30 cm
 - **THEN** its target is 90 cm both times, its support and balance stay 1 and its pelvis floats about 92 cm up
+
+### Requirement: Height Query mesh mode
+The ground placement's Height Query SHALL take, besides the level, the body meshes listed in the nine sector cells around its point. It SHALL leave out a body out of the world and a living character's limb, and keep a dead character's limb. Each mesh SHALL be pre-tested by the segment against its box and the swept sphere against its bounding sphere, then swept down its tree's column. The highest surface met SHALL win.
+
+#### Scenario: A crate on the floor
+- **WHEN** a Height Query of radius 10 cm comes down over a 40 cm crate body standing on the floor, and another beside it
+- **THEN** the first finds 40 cm and the second the floor
+
+### Requirement: Walking wet step
+When a walking foot plants under the scene's water (the contact's height below the water level), a wet step SHALL follow the walking footstep at the same place:
+- the depth share is min(1, 0.05·(−water − 1 − contact)), the sum in single precision and the scale in double;
+- the pitch is (0.3·p + 0.9)(0.05·thrust + 0.9);
+- the gain is volume · depth · (0.5·g + 0.2)(0.01·thrust² + 0.01);
+- p and g are unit draws in that order; thrust is the gait's first column.
+
+#### Scenario: A deep plant
+- **WHEN** a foot plants at −30 cm under a −25 cm surface with thrust 2 and draws 0 and 0
+- **THEN** the depth share is 1, the pitch 0.9 and the gain 0.01

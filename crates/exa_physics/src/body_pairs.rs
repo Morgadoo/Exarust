@@ -48,6 +48,7 @@ use super::{CM, PUSH_STRAIN, Part, Ragdoll, SolverStage, equalise_sleep, keep_ri
 use crate::contact::{self, evicted};
 use crate::engine_math::cosine;
 use crate::intersect;
+use crate::kd_tree;
 use crate::part::PartState;
 use crate::sector::{self, Bounds, Meeting};
 
@@ -1046,16 +1047,20 @@ impl Pairs {
 /// sphere against B's mesh box and mesh sphere (or the swept sphere against
 /// the box and B's mesh sphere as a capsule); then B's mesh query, one
 /// triangle at a time, with the sphere re-read after every hit (so later
-/// triangles see the push). The triangles are visited in the file's order
-/// (the original walks its mesh kd-tree, so the order of hits can differ).
-/// A part without triangles (a character part; props get their node mesh
-/// at registration) falls back to B's stored spheres, pre-tested against
-/// their own bound.
+/// triangles see the push). A mesh with a kd-tree (more than ten
+/// triangles) is walked as the original's tree queries walk it: the
+/// leaves the sphere's box reaches, or the leaves along the swept sphere
+/// with its record refreshed after a hit; a smaller mesh is tested
+/// triangle by triangle in the file's order, as the original's own mesh
+/// callbacks do. Props, character limbs and weapons get their node mesh
+/// when the body is built; a part without one falls back to B's stored
+/// spheres, pre-tested against their own bound.
 fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch, placed: Option<bool>) {
     let mut a_now = pa.transform();
     let mut b_now = pb.transform();
     let previous = pb.settled.inverse() * pa.settled;
     let triangles = pb.triangles.clone();
+    let tree = pb.tree.clone();
     // The pre-tests take B's mesh box and sphere. The sphere fallback tests
     // B's spheres instead, so it pre-tests against the bound of those
     // spheres: a node box need not hold every collision sphere, and the
@@ -1103,8 +1108,68 @@ fn collide(pa: &mut Part, pb: &mut Part, pair: &mut Pair, touch: &mut Touch, pla
                 continue;
             }
         }
-        // B's mesh query: every triangle in turn. A hit moves both parts
-        // and the sphere is taken to where it now is in B's frame.
+        // B's mesh query through its kd-tree: the leaves the sphere (or
+        // the swept sphere) reaches, in the tree's order, each leaf's
+        // triangles in turn. A hit moves both parts and the query is taken
+        // to where the sphere now is in B's frame, which the rest of the
+        // walk reads (a swept record is refreshed).
+        if let (Some(tree), Some(triangles)) = (tree.as_deref(), triangles.as_deref()) {
+            let mut react = |q: Vec3, delta: Vec3, pa: &mut Part, pb: &mut Part| -> Option<Vec3> {
+                let took = match placed {
+                    Some(a_placed) => {
+                        on_placed_hit(pa, pb, a_placed, &b_now, c, q, delta, pair, touch)
+                    }
+                    None => on_hit(pa, pb, &b_now, c, q, delta, pair, touch),
+                };
+                took.then(|| {
+                    a_now = pa.transform();
+                    b_now = pb.transform();
+                    (b_now.inverse() * a_now).transform_point3(c)
+                })
+            };
+            if swept {
+                let mut record = kd_tree::SweptRecord::new(start, end, r);
+                tree.sweep(&mut record, |rec, ids| {
+                    let mut hit = false;
+                    for &id in ids {
+                        let Some(t) = triangles.get(id as usize) else {
+                            continue;
+                        };
+                        let Some((q, delta)) = contact::swept_hit(t, rec.start, rec.end, r) else {
+                            continue;
+                        };
+                        hit = true;
+                        if let Some(moved) = react(q, delta, pa, pb) {
+                            rec.end = moved;
+                            rec.refresh();
+                        }
+                    }
+                    hit
+                });
+            } else {
+                let mut sphere = (end, r);
+                tree.sphere(&mut sphere, |s, ids| {
+                    let mut hit = false;
+                    for &id in ids {
+                        let Some(t) = triangles.get(id as usize) else {
+                            continue;
+                        };
+                        let Some((q, delta)) = contact::sphere_hit(t, s.0, r) else {
+                            continue;
+                        };
+                        hit = true;
+                        if let Some(moved) = react(q, delta, pa, pb) {
+                            s.0 = moved;
+                        }
+                    }
+                    hit
+                });
+            }
+            continue;
+        }
+        // B's mesh query without a tree (a mesh of ten triangles or
+        // fewer): every triangle in turn. A hit moves both parts and the
+        // sphere is taken to where it now is in B's frame.
         if let Some(triangles) = triangles.as_deref() {
             for t in triangles {
                 let hit = if swept {

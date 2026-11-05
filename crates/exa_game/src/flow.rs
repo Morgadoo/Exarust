@@ -44,10 +44,12 @@ pub const PRACTICE_MODE: u32 = 2;
 pub const STORY_MODE: u32 = 4;
 /// The arena career (company, matches, the hub).
 pub const ARENA_MODE: u32 = 8;
-/// The bit that makes a game-mode word a scripted mode; its hook table is
-/// outside this component. The versus lobby is `0x1010`.
+/// The bit the session leave tests before it looks a mode up in the
+/// scripted-mode table ([`ScriptModes`]). The versus lobby is `0x1010`.
 pub const SCRIPT_MODE_BIT: u32 = 0x1000;
-/// The versus lobby's mode word.
+/// The versus lobby's mode word. Nothing in Exanima 0.9.5 registers it in
+/// the scripted-mode table, and the flag that shows its menu row is never
+/// set there.
 pub const VERSUS_MODE: u32 = 0x1010;
 
 /// The transition screen is up; the phase that was running is kept.
@@ -1194,12 +1196,68 @@ pub enum BootTask {
     MainMenu,
 }
 
-/// A scripted mode's hook.
+/// A scripted mode's hook: one of the slots of its entry in the original's
+/// game-mode table ([`ScriptModes`]). The end menu's slot is
+/// [`crate::end_menu_screen::ScriptedEnd`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScriptHook {
+    /// The mode switch entered the mode.
     Enter,
+    /// The session start (after the mode's character is committed).
     Begin,
-    End,
+    /// The session leave. The arena's own leave is named with this hook
+    /// too, under [`ARENA_MODE`].
+    Leave,
+    /// The character creator's cancel; the only slot the original tests for
+    /// null before it calls it.
+    Cancel,
+}
+
+/// One registered scripted mode: its word and whether its entry fills the
+/// creator-cancel slot.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScriptModeEntry {
+    pub word: u32,
+    pub cancel: bool,
+}
+
+/// The original's table of scripted game modes: one entry per registered
+/// mode word, each carrying its enter, begin, leave, creator-cancel and
+/// end-menu hooks and the player record it kept when the mode was left.
+/// Every lookup takes the first entry whose word matches.
+///
+/// Exanima 0.9.5 never fills it: the table's count is only ever read, and
+/// nothing in the image holds the table's address. Its lookups are all in
+/// place (the mode switch, the session start and leave, the creator's
+/// cancel and the end menu), so a mode registered here runs where the
+/// original would run it; with the table empty, every scripted-mode branch
+/// does nothing, as in the retail game.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ScriptModes {
+    pub entries: Vec<ScriptModeEntry>,
+}
+
+impl ScriptModes {
+    /// Registers a mode word (a word already present is appended again;
+    /// the first entry keeps winning the lookups).
+    pub fn register(&mut self, word: u32, cancel: bool) {
+        self.entries.push(ScriptModeEntry { word, cancel });
+    }
+
+    /// The first entry for `word`.
+    #[must_use]
+    pub fn find(&self, word: u32) -> Option<(usize, ScriptModeEntry)> {
+        self.entries
+            .iter()
+            .position(|entry| entry.word == word)
+            .map(|index| (index, self.entries[index]))
+    }
+
+    /// The registered words, in order (the end menu's handler lookup).
+    #[must_use]
+    pub fn words(&self) -> Vec<u32> {
+        self.entries.iter().map(|entry| entry.word).collect()
+    }
 }
 
 /// One thing the flow asks the game to do. The original performs these
@@ -1440,9 +1498,13 @@ pub enum Action {
     LeaveToMenuForm,
     /// Load a named level at a spawn point.
     Locale { locale: &'static str, spawn: u32 },
-    /// The class select's cancel: the scripted mode's end hook and the
-    /// return to the title.
+    /// The class select's cancel: the class select form is released and
+    /// the flow goes back to the title. No scripted-mode hook runs.
     ClassCancel,
+    /// The character creator's cancel: the creator form is released, a
+    /// registered mode's creator-cancel hook runs (when its entry has one)
+    /// and the flow goes back to the title.
+    CreatorCancel,
 }
 
 /// The running transition: its action, the screen's mode flags and, once
@@ -1816,8 +1878,11 @@ pub struct Flow {
     pub slot: Option<u32>,
     /// The story and arena saves exist.
     pub has_save: [bool; 2],
-    /// The versus lobby is available.
+    /// The versus lobby is available: the arena page shows VERSUS. Exanima
+    /// 0.9.5 never sets the original's flag; `--versus` sets this one.
     pub versus: bool,
+    /// The scripted game modes registered so far (none in 0.9.5).
+    pub script_modes: ScriptModes,
     /// The end-of-session menu shown, if any.
     pub end_menu: Option<EndMenu>,
     /// A player is alive in each game mode (practice, story, arena), the
@@ -1866,6 +1931,7 @@ impl Default for Flow {
             slot: None,
             has_save: [false; 2],
             versus: false,
+            script_modes: ScriptModes::default(),
             end_menu: None,
             player: [false; 3],
             booted: false,
@@ -2009,12 +2075,17 @@ impl Flow {
                 steps.push(Step::Hook(Hook::None));
             }
             Mode::Other(word) => {
+                // Any other word: the frame hook goes and a registered
+                // mode's enter hook runs. An unregistered word (the versus
+                // lobby in 0.9.5) only becomes the mode word.
                 self.hook = Hook::None;
                 steps.push(Step::Hook(Hook::None));
-                steps.push(Step::ScriptMode {
-                    mode: word,
-                    hook: ScriptHook::Enter,
-                });
+                if self.script_modes.find(word).is_some() {
+                    steps.push(Step::ScriptMode {
+                        mode: word,
+                        hook: ScriptHook::Enter,
+                    });
+                }
             }
         }
         steps
@@ -2416,7 +2487,8 @@ impl Flow {
             Action::Revive => self.revive(now),
             Action::NextPracticeFight => self.practice_next(now),
             Action::LeaveToMenuForm => self.leave_to_menu_form(),
-            Action::ClassCancel => self.class_cancel(),
+            Action::ClassCancel => self.quit_to_menu(),
+            Action::CreatorCancel => self.creator_cancel(),
             Action::Locale { locale, spawn } => {
                 self.phase = Phase::Playing;
                 vec![Step::LoadLevel {
@@ -2950,6 +3022,16 @@ impl Flow {
         // load hides it (see `Step::LoadLevel`).
         self.menu_open = false;
         self.end_menu = None;
+        // A registered scripted mode's begin hook stands where the arena,
+        // story and practice starts stand, before the frame task starts.
+        if let Mode::Other(word) = self.mode
+            && self.script_modes.find(word).is_some()
+        {
+            starter.push(Step::ScriptMode {
+                mode: word,
+                hook: ScriptHook::Begin,
+            });
+        }
         starter.push(Step::SessionTask(true));
         starter.push(Step::EndMenuUnselected(false));
         starter
@@ -3060,12 +3142,18 @@ impl Flow {
         match self.mode {
             Mode::Arena => steps.push(Step::ScriptMode {
                 mode: ARENA_MODE,
-                hook: ScriptHook::End,
+                hook: ScriptHook::Leave,
             }),
-            Mode::Other(word) if word & SCRIPT_MODE_BIT != 0 => steps.push(Step::ScriptMode {
-                mode: word,
-                hook: ScriptHook::End,
-            }),
+            // Another mode with the scripted bit runs its registered leave
+            // hook; the bit is tested first, then the table.
+            Mode::Other(word)
+                if word & SCRIPT_MODE_BIT != 0 && self.script_modes.find(word).is_some() =>
+            {
+                steps.push(Step::ScriptMode {
+                    mode: word,
+                    hook: ScriptHook::Leave,
+                });
+            }
             _ => {}
         }
         // After the mode's end hook: the save package closes and the end
@@ -3153,24 +3241,35 @@ impl Flow {
         self.transition(Action::Locale { locale, spawn: 0 }, false)
     }
 
-    /// The class select's cancel: behind the transition (the music fading
-    /// with it when the caller asks), the class select form is released, a
-    /// scripted mode's end hook runs and the session leaves to the title.
-    /// The original runs all of it as the transition's action, at black.
+    /// The class select's cancel: behind the transition the class select
+    /// form is released and the session leaves to the title. The original
+    /// runs it as the transition's action, at black, and runs no
+    /// scripted-mode hook (the class select is the story's).
     pub fn cancel_class_select(&mut self, fade_audio: bool) -> Vec<Step> {
         self.transition(Action::ClassCancel, fade_audio)
     }
 
-    /// The class cancel's action: the scripted mode's end hook, then back
-    /// to the title.
-    fn class_cancel(&mut self) -> Vec<Step> {
+    /// The character creator's cancel (its first page's BACK and its cancel
+    /// key, outside the arena recruit): behind the transition, with the music
+    /// left playing, the creator form is released, a registered mode's
+    /// creator-cancel hook runs and the session leaves to the title.
+    pub fn cancel_creator(&mut self) -> Vec<Step> {
+        self.transition(Action::CreatorCancel, false)
+    }
+
+    /// The creator cancel's action: the mode's entry is looked up by word
+    /// alone (no scripted-bit test) and its cancel slot runs when the entry
+    /// fills it; then back to the title, whose session leave runs the
+    /// mode's leave hook.
+    fn creator_cancel(&mut self) -> Vec<Step> {
         let mut steps = Vec::new();
-        if let Mode::Other(word) = self.mode
-            && word & SCRIPT_MODE_BIT != 0
+        let word = self.mode.word();
+        if let Some((_, entry)) = self.script_modes.find(word)
+            && entry.cancel
         {
             steps.push(Step::ScriptMode {
                 mode: word,
-                hook: ScriptHook::End,
+                hook: ScriptHook::Cancel,
             });
         }
         steps.extend(self.quit_to_menu());
@@ -3180,23 +3279,6 @@ impl Flow {
     /// The class select's cancel form's final step: back to the title.
     pub fn cancel_to_menu(&mut self) -> Vec<Step> {
         self.quit_to_menu()
-    }
-
-    /// The class select's own cancel (not behind the transition): a scripted
-    /// mode's end hook runs, the selection form closes and the flow goes
-    /// straight back to the title.
-    pub fn class_cancel_direct(&mut self) -> Vec<Step> {
-        let mut steps = Vec::new();
-        if let Mode::Other(word) = self.mode
-            && word & SCRIPT_MODE_BIT != 0
-        {
-            steps.push(Step::ScriptMode {
-                mode: word,
-                hook: ScriptHook::End,
-            });
-        }
-        steps.extend(self.quit_to_menu());
-        steps
     }
 
     /// The splash's hand-over: the title page is built and shown, and the
@@ -3827,7 +3909,9 @@ fn apply_menu_choices(
     mut flow: ResMut<Flow>,
     mut queued: ResMut<FlowSteps>,
     arena_match: Option<Res<crate::arena_match::ArenaMatch>>,
+    ticks: Option<Res<exa_physics::body::BodyTicks>>,
 ) {
+    let now = ticks.as_ref().map_or(0, |ticks| ticks.millis() as u32);
     for MenuChoice(command) in choices.read() {
         let steps = match command {
             MenuCommand::Resume => {
@@ -3845,8 +3929,14 @@ fn apply_menu_choices(
             MenuCommand::NewPractice
             | MenuCommand::Practice { .. }
             | MenuCommand::BeginStory
-            | MenuCommand::NewCareer
-            | MenuCommand::Versus => Vec::new(),
+            | MenuCommand::NewCareer => Vec::new(),
+            // VERSUS switches the mode word to the versus lobby's before the
+            // creator opens: the frame hook goes, and a registered mode's
+            // enter hook would run (none is registered in 0.9.5).
+            MenuCommand::Versus => {
+                info!("game flow: VERSUS: the mode becomes {VERSUS_MODE:#x}");
+                flow.switch_mode(Mode::Other(VERSUS_MODE), now)
+            }
             MenuCommand::ExitArena | MenuCommand::ExitToTitle => flow.quit_to_menu(),
             MenuCommand::QuitStory => flow.story_exit(),
             MenuCommand::FinishMatch { forfeit } => {
@@ -4492,6 +4582,12 @@ fn apply_steps(
             Step::LevelTime => {
                 // The level-6 checkpoint keeps the engine clock.
                 commands.insert_resource(crate::save_live::LevelTime(now));
+            }
+            Step::ScriptMode { mode, hook } => {
+                // A registered scripted mode's hook. Exarust has no script
+                // that registers one (nor does Exanima 0.9.5), so this only
+                // names it.
+                info!("game flow: scripted mode {mode:#x} hook {hook:?}");
             }
             other => {
                 debug!("game flow step not applied by the app: {other:?}");
@@ -5897,12 +5993,24 @@ mod tests {
         assert!(!flow.page_state().new_game);
         // The same mode does nothing.
         assert!(flow.switch_mode(Mode::Story, 1000).is_empty());
-        // A scripted mode runs its enter hook.
+        // An unregistered word (the versus lobby in 0.9.5) only becomes the
+        // mode word: the frame hook goes and no scripted hook runs.
         let steps = flow.switch_mode(Mode::Other(VERSUS_MODE), 1000);
-        assert!(steps.contains(&Step::ScriptMode {
-            mode: VERSUS_MODE,
-            hook: ScriptHook::Enter
-        }));
+        assert_eq!(steps, vec![Step::Hook(Hook::None)]);
+        assert_eq!(flow.mode, Mode::Other(VERSUS_MODE));
+        // A registered one runs its enter hook.
+        flow.script_modes.register(0x1020, false);
+        let steps = flow.switch_mode(Mode::Other(0x1020), 1000);
+        assert_eq!(
+            steps,
+            vec![
+                Step::Hook(Hook::None),
+                Step::ScriptMode {
+                    mode: 0x1020,
+                    hook: ScriptHook::Enter
+                }
+            ]
+        );
     }
 
     #[test]
@@ -6311,41 +6419,190 @@ mod tests {
     }
 
     #[test]
+    fn a_registered_scripted_mode_begins_and_leaves_through_its_hooks() {
+        // 0.9.5: nothing registered, so the versus lobby's begin and leave
+        // run no scripted hook.
+        let mut flow = Flow {
+            mode: Mode::Other(VERSUS_MODE),
+            ..Default::default()
+        };
+        let begun = flow.begin_session(Vec::new());
+        assert_eq!(
+            begun,
+            vec![Step::SessionTask(true), Step::EndMenuUnselected(false)]
+        );
+        assert!(
+            !flow
+                .leave_session()
+                .iter()
+                .any(|step| matches!(step, Step::ScriptMode { .. }))
+        );
+        // Registered: the begin hook comes before the frame task starts, and
+        // the leave hook comes after the dialogue and prelude close, before
+        // the save closes.
+        let mut flow = Flow {
+            mode: Mode::Other(VERSUS_MODE),
+            ..Default::default()
+        };
+        flow.script_modes.register(VERSUS_MODE, false);
+        let begun = flow.begin_session(Vec::new());
+        assert_eq!(
+            begun,
+            vec![
+                Step::ScriptMode {
+                    mode: VERSUS_MODE,
+                    hook: ScriptHook::Begin
+                },
+                Step::SessionTask(true),
+                Step::EndMenuUnselected(false)
+            ]
+        );
+        let left = flow.leave_session();
+        let hook = left
+            .iter()
+            .position(|step| {
+                *step
+                    == Step::ScriptMode {
+                        mode: VERSUS_MODE,
+                        hook: ScriptHook::Leave,
+                    }
+            })
+            .unwrap();
+        let prelude = left
+            .iter()
+            .position(|step| *step == Step::ClosePrelude)
+            .unwrap();
+        let save = left
+            .iter()
+            .position(|step| *step == Step::CloseSave)
+            .unwrap();
+        assert!(prelude < hook && hook < save);
+        // A registered word without the scripted bit begins through its hook
+        // but leaves without it: the leave tests the bit first.
+        let mut flow = Flow {
+            mode: Mode::Other(0x20),
+            ..Default::default()
+        };
+        flow.script_modes.register(0x20, false);
+        assert!(flow.begin_session(Vec::new()).contains(&Step::ScriptMode {
+            mode: 0x20,
+            hook: ScriptHook::Begin
+        }));
+        assert!(
+            !flow
+                .leave_session()
+                .iter()
+                .any(|step| matches!(step, Step::ScriptMode { .. }))
+        );
+        // The arena leaves through its own leave, named under its word.
+        let mut flow = Flow {
+            mode: Mode::Arena,
+            ..Default::default()
+        };
+        assert!(flow.leave_session().contains(&Step::ScriptMode {
+            mode: ARENA_MODE,
+            hook: ScriptHook::Leave
+        }));
+    }
+
+    #[test]
     fn the_class_cancel_and_the_splash_hand_over() {
         let mut flow = Flow {
             mode: Mode::Other(VERSUS_MODE),
             phase: Phase::Playing,
             ..Default::default()
         };
-        // The end hook and the return to the title are the transition's
-        // action, at black.
+        // The class select's cancel returns to the title behind the
+        // transition and runs no scripted hook, registered or not.
+        flow.script_modes.register(VERSUS_MODE, true);
         let steps = flow.cancel_class_select(false);
         assert_eq!(steps, vec![Step::Transition]);
         let steps = run_to_black(&mut flow);
-        assert_eq!(
-            steps.first(),
-            Some(&Step::ScriptMode {
-                mode: VERSUS_MODE,
-                hook: ScriptHook::End
-            })
-        );
+        assert!(!steps.iter().any(|step| matches!(
+            step,
+            Step::ScriptMode {
+                hook: ScriptHook::Cancel,
+                ..
+            }
+        )));
+        assert!(steps.contains(&Step::ShowMenu(Page::Title)));
         assert_eq!(flow.mode, Mode::Menu);
-        // The class select's direct cancel goes back to the title at once,
-        // after the scripted mode's end hook.
+        // The creator's cancel: behind the transition (the music left
+        // playing), the registered mode's cancel hook and then its leave hook
+        // (the title's session leave), then the title.
         let mut flow = Flow {
             mode: Mode::Other(VERSUS_MODE),
-            phase: Phase::ClassSelect,
-            menu_open: true,
+            phase: Phase::Menu,
             ..Default::default()
         };
-        let steps = flow.class_cancel_direct();
-        assert!(steps.contains(&Step::ScriptMode {
-            mode: VERSUS_MODE,
-            hook: ScriptHook::End
-        }));
-        assert!(!steps.contains(&Step::Transition));
+        flow.script_modes.register(VERSUS_MODE, true);
+        assert_eq!(flow.cancel_creator(), vec![Step::Transition]);
+        assert!(!flow.transition.unwrap().flags.fade_audio);
+        let steps = run_to_black(&mut flow);
+        let cancel = steps.iter().position(|step| {
+            *step
+                == Step::ScriptMode {
+                    mode: VERSUS_MODE,
+                    hook: ScriptHook::Cancel,
+                }
+        });
+        let leave = steps.iter().position(|step| {
+            *step
+                == Step::ScriptMode {
+                    mode: VERSUS_MODE,
+                    hook: ScriptHook::Leave,
+                }
+        });
+        assert!(cancel.unwrap() < leave.unwrap());
         assert_eq!(flow.mode, Mode::Menu);
-        assert_eq!(flow.phase, Phase::Menu);
+        // An entry without the cancel slot, or no entry (0.9.5), runs none.
+        for registered in [false, true] {
+            let mut flow = Flow {
+                mode: Mode::Other(VERSUS_MODE),
+                ..Default::default()
+            };
+            if registered {
+                flow.script_modes.register(VERSUS_MODE, false);
+            }
+            flow.cancel_creator();
+            let steps = run_to_black(&mut flow);
+            assert!(!steps.iter().any(|step| matches!(
+                step,
+                Step::ScriptMode {
+                    hook: ScriptHook::Cancel,
+                    ..
+                }
+            )));
+            assert_eq!(
+                steps.iter().any(|step| matches!(
+                    step,
+                    Step::ScriptMode {
+                        hook: ScriptHook::Leave,
+                        ..
+                    }
+                )),
+                registered
+            );
+            assert!(steps.contains(&Step::ShowMenu(Page::Title)));
+        }
+        // The cancel slot is looked up by word alone: a registered word
+        // without the scripted bit runs it too, but its session leave does
+        // not run the leave hook.
+        let mut flow = Flow {
+            mode: Mode::Other(0x20),
+            ..Default::default()
+        };
+        flow.script_modes.register(0x20, true);
+        flow.cancel_creator();
+        let steps = run_to_black(&mut flow);
+        assert!(steps.contains(&Step::ScriptMode {
+            mode: 0x20,
+            hook: ScriptHook::Cancel
+        }));
+        assert!(!steps.contains(&Step::ScriptMode {
+            mode: 0x20,
+            hook: ScriptHook::Leave
+        }));
         // Closing the end menu closes the prelude too and forgets the menu.
         let mut flow = Flow {
             end_menu: Some(end_menu(MENU_WON, Mode::Story)),
@@ -7176,7 +7433,7 @@ mod tests {
             let mut screen = EndMenuScreen::default();
             screen.show(end_menu(MENU_NEXT, Mode::Practice));
             screen.selected = Some(0);
-            assert_eq!(screen.confirm(&mut flow, &[]), vec![Step::Transition]);
+            assert_eq!(screen.confirm(&mut flow), vec![Step::Transition]);
             let input = TransitionInput {
                 clock_ms: 0,
                 music: Some(1.0),

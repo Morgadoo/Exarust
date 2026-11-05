@@ -388,3 +388,21 @@ Each streak fragment SHALL be the frame behind it t, clamped to 1, as 0.75·t + 
 #### Scenario: Bright sky behind a streak
 - **WHEN** a streak with colour 0.1 and alpha 0.5 lies over a frame value of 0.5
 - **THEN** the fragment is 0.955 and the blend leaves 0.7275
+
+### Requirement: Burning blade from a socketed crystal
+Once a game second, each held item whose weapon section names ability type 3 SHALL run the flame row's held check on its first socket word. A Power Crystal C in the socket (kind 4) with a charge below 254 SHALL light the blade when it has no live flame row: a flame row from 30 to 115 cm along the item's +Y with its warm light, the `FireS02` loop, the `_FlameMat01` ribbon, the item's lit flag and the "Flaming" overlay (0x10020000).
+
+#### Scenario: Crystal C into the shipped sword
+- **WHEN** "Sword GSF 01" (socket word 0x0080) takes a Power Crystal C through the item GUI's drop
+- **THEN** its socket word is 0x0084 and the next check lights the blade; with the crystal taken out the check puts it out
+
+#### Scenario: Other crystals
+- **WHEN** the socket holds crystal A, B or AR, or the item's type is not 3
+- **THEN** the check lights nothing
+
+### Requirement: Burning blade out and sizzle
+A cold socket SHALL put a live flame row out, clearing the lit flag and the overlay. A hit struck with a lit blade SHALL play `FireSizzleA` at the contact, at volume 0.3 and pitch 0.8 + 0.2·u.
+
+#### Scenario: The crystal is taken out
+- **WHEN** the Power Crystal C leaves a lit blade's first socket
+- **THEN** the next held check puts the row out and clears the lit flag and the Flaming overlay

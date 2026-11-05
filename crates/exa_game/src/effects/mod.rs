@@ -21,9 +21,8 @@
 //! ([`exa_world::PortalMarker`], `uwportal01`), and the reconstruction
 //! device puts a scan on the player ([`crate::teleporters`]) and the
 //! destination screen's journey a bubble ([`crate::destination`]); the
-//! others wait for the systems that start them in the original (the
-//! powers, the power tree, the scene's weather and a burning item's
-//! ability record), which Exarust does not have yet.
+//! others are started by the systems that start them in the original (a
+//! burning blade's flame row by `crate::item_ability`).
 
 pub mod blast;
 pub mod bubble;

@@ -148,11 +148,15 @@ The search's candidates in the running game SHALL include the level's dead bodie
 - **THEN** the follower gathers the body, looks it over, walks to it, settles and takes the sword: the body's worn list no longer holds it and the follower carries it
 
 ### Requirement: Searching the level's objects in the running game
-The search's candidates in the running game SHALL include every placed object with a model, listed in the 600 cm room cell of its first node's box centre with that box's half-extents and its tagged database id; one straight under the level SHALL be searchable, and a placement word with bit 0x8000 SHALL mark it fixed.
+The search's candidates in the running game SHALL be the placed objects the sector's lists hold. Each room cell SHALL list the objects of its body grid's parts, then those of its static grid's meshes, each object once a cell, with its first node's box and its tagged database id. An object with neither a body nor a static collider SHALL not be gathered. One straight under the level SHALL be searchable; placement bit 0x8000 SHALL mark it fixed.
 
 #### Scenario: A chest and a loose blade
 - **WHEN** a follower stands 1.5 m from the player, with a placed chest holding a better sword 3 m away and a loose blade of another class 2 m away
 - **THEN** the follower takes both: the chest's section no longer holds the sword, the loose blade's object is gone, and the better weapon is in its hand, still listed and marked held
+
+#### Scenario: Placed by the lists
+- **WHEN** the lists hold an object in cells 10 and 11 and another in cell 10
+- **THEN** cell 10 lists the first then the second, and cell 11 the first
 
 ### Requirement: Re-dressing after the search's takes
 A body whose worn list the search changed SHALL lose from its outfit the garments of the items that came off and gain those of the items that went on, which asks the dress for a refit. A dead body that lost a worn item SHALL first get the underwear rule. A body whose hands changed SHALL take its new hands and main-hand weapon model.

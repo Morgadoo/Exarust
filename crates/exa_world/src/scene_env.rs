@@ -1072,12 +1072,12 @@ pub struct Frame {
     /// The clear, the sun, the ambient and the fog uniform are left as they
     /// are.
     pub lightning: f32,
-    /// The scene value the frame sets from the sun's height: −100000 while
-    /// the body is at or below 0.4, −25 above it (the comparison in double
-    /// precision). Guess: a shadow or clip distance in centimetres; the
-    /// scene field's reader is outside this model and the sun height's
-    /// identity is inferred from the load reset.
-    pub shadow_far: f32,
+    /// The scene's water level (cm) the frame sets from the terrain's
+    /// wetness ([`exa_physics::body::water_level`]): −25 above 0.4 (the
+    /// comparison in double precision), −100000 (no water) at or below it.
+    /// The walk's and the footwork's wet steps compare a foot's contact
+    /// height with it.
+    pub water_level: f32,
     /// The rain-driven wind strength the frame publishes (the current rain
     /// times 0.3).
     pub wind: f32,
@@ -1198,8 +1198,10 @@ pub struct SceneEnvironment {
     pub time_speed: f32,
     /// The weather preset's wind strength, 0 indoors.
     pub wind: f32,
-    /// The sun height the shadow distance reads; a load resets it to zero.
-    pub sun_height: f32,
+    /// The wetness of the level's terrain palette (the palette header's
+    /// second float), which the frame turns into the scene's water level;
+    /// a terrain's load sets it and a save's load resets it to zero.
+    pub terrain_wetness: f32,
     /// The frame the environment last produced.
     pub frame: Frame,
     /// Whether colours are worked in linear light (the original's setting).
@@ -1295,7 +1297,7 @@ impl SceneEnvironment {
             far_plane: DEFAULT_FAR_PLANE,
             time_speed: 0.0,
             wind: 0.0,
-            sun_height: 0.0,
+            terrain_wetness: 0.0,
             frame: Frame {
                 background: DEFAULT_BACKGROUND,
                 clear: [0.0, 0.0, 0.0, 1.0],
@@ -1306,7 +1308,7 @@ impl SceneEnvironment {
                 sky_light: [0.0; 3],
                 flash: false,
                 lightning: 0.0,
-                shadow_far: -100_000.0,
+                water_level: exa_physics::body::NO_WATER_CM,
                 wind: 0.0,
                 tint: [1.0; 3],
                 sun_intensity: SUN_INTENSITY,
@@ -1384,12 +1386,12 @@ impl SceneEnvironment {
         self.fog.colour = DEFAULT_FOG_COLOUR;
     }
 
-    /// The scene part of the save load's global reset: the sun height the
-    /// shadow distance reads goes back to zero. The other globals the save
+    /// The scene part of the save load's global reset: the terrain wetness
+    /// the water level reads goes back to zero. The other globals the save
     /// unit clears are the settings chunk's default tag and saved word
     /// (`exa_formats::save_chunk::load_reset`).
     pub fn reset_for_load(&mut self) {
-        self.sun_height = 0.0;
+        self.terrain_wetness = 0.0;
     }
 
     /// The sun light's softness source as the last sun placement left it:
@@ -2144,11 +2146,7 @@ impl SceneEnvironment {
             } else {
                 0.0
             },
-            shadow_far: if (self.sun_height as f64) > 0.4 {
-                -25.0
-            } else {
-                -100_000.0
-            },
+            water_level: exa_physics::body::water_level(self.terrain_wetness),
             wind: (self.weather.rain as f64 * 0.3) as f32,
             tint: [
                 self.tint[0] * self.tint[3],
@@ -2428,11 +2426,11 @@ mod tests {
     }
 
     #[test]
-    fn the_load_reset_clears_the_sun_height() {
+    fn the_load_reset_clears_the_terrain_wetness() {
         let mut env = SceneEnvironment::new(5);
-        env.sun_height = 0.8;
+        env.terrain_wetness = 0.8;
         env.reset_for_load();
-        assert_eq!(env.sun_height, 0.0);
+        assert_eq!(env.terrain_wetness, 0.0);
     }
 
     #[test]
@@ -3046,16 +3044,19 @@ mod tests {
     }
 
     #[test]
-    fn a_frame_publishes_the_shadow_far_plane_the_wind_and_the_tint() {
+    fn a_frame_publishes_the_water_level_the_wind_and_the_tint() {
         let mut env = SceneEnvironment::new(5);
         env.fog.enabled = true;
-        env.sun_height = 0.39;
+        env.terrain_wetness = 0.39;
         let frame = env.apply_frame([0.0, 0.0, 1.0]);
-        // Up to the threshold the far clip is the deep one; at the single
-        // 0.4 (which is a shade above the double 0.4) and past it, the near.
-        assert_eq!(frame.shadow_far, -100_000.0);
-        env.sun_height = 0.4;
-        assert_eq!(env.apply_frame([0.0, 0.0, 1.0]).shadow_far, -25.0);
+        // Up to the threshold the scene is dry; at the single 0.4 (which is
+        // a shade above the double 0.4) and past it, the water lies at −25.
+        assert_eq!(frame.water_level, -100_000.0);
+        env.terrain_wetness = 0.4;
+        assert_eq!(env.apply_frame([0.0, 0.0, 1.0]).water_level, -25.0);
+        // The sewer palette's 0.5.
+        env.terrain_wetness = 0.5;
+        assert_eq!(env.apply_frame([0.0, 0.0, 1.0]).water_level, -25.0);
         // The wind is the rain times 0.3, in double precision.
         env.weather.rain = 0.5;
         assert_eq!(env.apply_frame([0.0, 0.0, 1.0]).wind, 0.15);

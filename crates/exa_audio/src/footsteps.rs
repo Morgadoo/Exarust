@@ -10,8 +10,8 @@ use exa_assets::Game;
 use exa_combat::Fighter;
 use exa_physics::CharacterBody;
 use exa_physics::body::{
-    BodyTicks, FootCue, FootSounded, Footstep, anchor_rustle, gait_step, release_step,
-    release_step_clock, rustle_clock,
+    BodyTicks, FootCue, FootSounded, Footstep, WaterLevel, anchor_rustle, gait_step, gait_wet_step,
+    release_step, release_step_clock, rustle_clock, wet_release_step,
 };
 
 use crate::environment::AudioEnvironment;
@@ -36,6 +36,8 @@ pub(crate) fn footsteps(
     mut sets: Local<[Option<u32>; 2]>,
     mut races: Local<HashMap<&'static str, u32>>,
     mut plants: MessageReader<Footstep>,
+    water: Option<Res<WaterLevel>>,
+    mut wet_set: Local<Option<u32>>,
     mut walkers: Query<(
         Entity,
         &CharacterBody,
@@ -66,6 +68,29 @@ pub(crate) fn footsteps(
         let gain_roll = bank.random_unit();
         let step = gait_step(plant.speed_cm, plant.volume, pitch_roll, gain_roll);
         env.play_set(&mut bank, set, plant.position, step.gain, step.pitch, 0);
+        debug!(
+            "walk step: {name} contact {:.1} cm, speed {:.3}, gain {:.4} pitch {:.3}",
+            plant.contact_cm, plant.speed_cm, step.gain, step.pitch
+        );
+        // Under the scene's water the foot splashes too, at the same place;
+        // the comparison comes before its two draws.
+        let water_cm = water.as_deref().copied().unwrap_or_default().0;
+        if water_cm > plant.contact_cm {
+            let p = bank.random_unit();
+            let g = bank.random_unit();
+            if let Some(wet) =
+                gait_wet_step(water_cm, plant.contact_cm, plant.thrust, plant.volume, p, g)
+            {
+                let id = *wet_set.get_or_insert_with(|| {
+                    bank.load_set(&game, &mut sources, crate::voices::WET_STEP_SET)
+                });
+                env.play_set(&mut bank, id, plant.position, wet.gain, wet.pitch, 0);
+                debug!(
+                    "wet step: contact {:.1} cm under water {water_cm} cm, thrust {:.3}, gain {:.4} pitch {:.3}",
+                    plant.contact_cm, plant.thrust, wet.gain, wet.pitch
+                );
+            }
+        }
     }
     for (e, body, gt, ragdoll, clock) in &mut walkers {
         if ragdoll {
@@ -123,9 +148,10 @@ pub(crate) struct FootClocks {
 ///   the gain's draws ([`release_step`] at the body's step loudness and the
 ///   character's footstep volume), the race's step set (the golem suit's
 ///   when one is worn) played at the body
-///   root's place; the wet step ([`wet_release_step`]) would follow over
-///   water, but Exarust's levels carry no water surface, so it never does;
-///   then its clock 250 ms plus the jitter ([`release_step_clock`]).
+///   root's place; under the scene's water ([`WaterLevel`], set from the
+///   terrain's wetness) the wet step ([`wet_release_step`], `StpWet`)
+///   follows at the contact, its two draws after the comparison; then its
+///   clock 250 ms plus the jitter ([`release_step_clock`]).
 ///
 /// [inf] The original plays the footstep on one of two alternating held
 /// voices; it is a one-shot here. The walking step's own write of the step
@@ -142,6 +168,7 @@ pub(crate) fn foot_sounds(
     mut env: ResMut<AudioEnvironment>,
     mut clocks: Local<HashMap<Entity, FootClocks>>,
     mut sets: Local<HashMap<&'static str, u32>>,
+    water: Option<Res<WaterLevel>>,
 ) {
     let Some(game) = game else {
         cues.clear();
@@ -187,7 +214,12 @@ pub(crate) fn foot_sounds(
                 }
                 clock.rustle = rustle_clock(now, &mut bank.rng().0);
             }
-            FootCue::StepEnd { leg, loudness, .. } => {
+            FootCue::StepEnd {
+                leg,
+                loudness,
+                contact_cm,
+                at,
+            } => {
                 if now <= clock.step {
                     continue;
                 }
@@ -212,6 +244,30 @@ pub(crate) fn foot_sounds(
                     "foot step: {:?} leg {leg} {name} loudness {loudness:.3} gain {:.4} pitch {:.3}",
                     sounded.body, step.gain, step.pitch
                 );
+                // Under the scene's water the contact splashes too.
+                let water_cm = water.as_deref().copied().unwrap_or_default().0;
+                if water_cm > contact_cm {
+                    let p = bank.random_unit();
+                    let g = bank.random_unit();
+                    if let Some(wet) = wet_release_step(
+                        water_cm,
+                        contact_cm,
+                        loudness,
+                        fighter.stats.footstep_volume,
+                        p,
+                        g,
+                    ) {
+                        let wet_name = crate::voices::WET_STEP_SET;
+                        let id = *sets
+                            .entry(wet_name)
+                            .or_insert_with(|| bank.load_set(&game, &mut sources, wet_name));
+                        env.play_set(&mut bank, id, at, wet.gain, wet.pitch, 0);
+                        debug!(
+                            "foot wet step: {:?} leg {leg} contact {contact_cm:.1} cm under water {water_cm} cm, gain {:.4} pitch {:.3}",
+                            sounded.body, wet.gain, wet.pitch
+                        );
+                    }
+                }
                 clock.step = release_step_clock(now, &mut bank.rng().0);
             }
         }

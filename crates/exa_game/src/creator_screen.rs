@@ -1707,7 +1707,8 @@ fn input(
             exa_ui::class_select::ClassKey::Back => {
                 screen.class_select = None;
                 if let (Some(flow), Some(steps)) = (flow.as_mut(), steps.as_mut()) {
-                    steps.steps.extend(flow.class_cancel_direct());
+                    // The class select's cancel runs behind the transition.
+                    steps.steps.extend(flow.cancel_class_select(false));
                 }
             }
             exa_ui::class_select::ClassKey::Move(card) => picker.hover = card,
@@ -1779,15 +1780,28 @@ fn input(
             CreatorAction::Leave(destination) => {
                 info!("creator: leaves to {destination:?}");
                 screen.creator = None;
+                // The creator's cancel runs behind the transition: a
+                // registered mode's cancel hook, then back to the title.
                 if destination == PageDestination::Menu
                     && let (Some(flow), Some(steps)) = (flow.as_mut(), steps.as_mut())
                 {
-                    steps.steps.extend(flow.quit_to_menu());
+                    steps.steps.extend(flow.cancel_creator());
                 }
                 return;
             }
             CreatorAction::Commit { kind, record } => {
                 let entry = creator.entry;
+                if kind == create::CommitKind::Ready {
+                    // The versus lobby's READY hands the record to the lobby
+                    // form a script built; with no lobby form (Exanima 0.9.5
+                    // builds none) the click does nothing and the creator
+                    // stays up.
+                    info!(
+                        "creator: READY of {:?} (game mode {:#x}): no lobby form is registered; the creator stays",
+                        record.name, entry.game_mode
+                    );
+                    continue;
+                }
                 info!(
                     "creator: commit {kind:?} of {:?} (game mode {:#x})",
                     record.name, entry.game_mode

@@ -1135,6 +1135,12 @@ impl TerrainBuild {
         })
     }
 
+    /// The palette's wetness (its header's second float): above 0.4 the
+    /// terrain draws its wet floor and the scene has water.
+    pub fn wetness(&self) -> f32 {
+        self.palette.wetness
+    }
+
     /// The low and high corners of the terrain's tiles on the X/Z plane,
     /// metres (tile centres ± half a tile); `None` without tiles.
     pub fn horizontal_extent(&self) -> Option<(Vec2, Vec2)> {

@@ -885,6 +885,8 @@ Round 55 charinv: only the Golem Boss and Golem Srv carry interaction conditions
 
 Round 56 invframe: the inventory window draws its frame and panels; the Rayform textures are the GUI fonts, embedded in Exanima.exe.
 
+Round 60 kdtrees (S10): body meshes carry the original's kd-trees and the sectors keep body and static lists.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
@@ -1268,6 +1270,8 @@ Round 52 useeffects (P5, P6): the parchment is a map's popup, not a kind 7 use; 
 Round 54 hubrows: the trade window has no rows in the original; its item panels replace the stand-in rows, which removes the label offset by construction.
 
 Round 56 weaponfactory (S6): factory weapons draw as one mesh with one atlas; the mesh-tools ports finally have a caller.
+
+Round 60 itemability (S12, S13): item abilities are crystal sockets, not a record word; the sewer's water level was misread as a sun height.
 
 ### Phase 5 — Visual and audio fidelity (started)
 
@@ -2252,6 +2256,8 @@ Round 52 kinesisfx (E6): the held force shells hum and light, and strikes ripple
 Round 53 mindruntime (S3): Control Mind and Spirit Form move the player between bodies; the other Mind classes do not tick yet.
 
 Round 54 mindclasses: the other Mind powers expire; the spirit screen is a desaturation, not a quad; the mind pick uses light reach, not a ray.
+
+Round 60 scriptmodes (S11): 0.9.5 has no scripted modes and no versus lobby; only story, arena and practice exist.
 
 ### Phase 8 — Polish and release
 

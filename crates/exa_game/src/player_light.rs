@@ -22,9 +22,10 @@
 //!
 //! The second off rule is an item in either hand whose weapon section is of
 //! kind 3 while the player's held part carries its lit flag (one part's
-//! flag, read for either hand). Exarust's bodies do not keep that flag yet,
-//! so the running switch passes it off; the rule is here and tested. Not in Exarust: the Mind power that forces the light on, and the
-//! spectating view's own light.
+//! flag, read for either hand): the first held blade burning
+//! ([`crate::item_ability::LitBlade`]). Its lighting and putting out re-run
+//! the switch. Not in Exarust: the Mind power that forces the light on, and
+//! the spectating view's own light.
 //!
 //! Evidence: the controls' light maker, frame and switch and the
 //! equipment's switch, read in the instructions
@@ -142,23 +143,35 @@ impl Plugin for PlayerLightPlugin {
     }
 }
 
-/// Makes or removes the light when what the player wears or holds changes.
-#[allow(clippy::type_complexity)]
+/// Makes or removes the light when what the player wears or holds changes,
+/// or when a held blade lights or goes out.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn switch_player_light(
     mut commands: Commands,
     catalogue: Option<Res<ItemCatalogue>>,
+    objects: Option<Res<exa_assets::live_objects::LiveObjects>>,
     players: Query<
-        (&Possessions, Option<&Hands>, Has<CarriesTorch>),
         (
-            With<PlayerBody>,
-            Or<(Changed<Possessions>, Changed<Hands>, Added<PlayerBody>)>,
+            Entity,
+            Ref<Possessions>,
+            Option<Ref<Hands>>,
+            Has<CarriesTorch>,
         ),
+        With<PlayerBody>,
     >,
+    lit_blades: Query<&exa_combat::Blade, With<crate::item_ability::LitBlade>>,
+    added: Query<(), Added<crate::item_ability::LitBlade>>,
+    mut removed: RemovedComponents<crate::item_ability::LitBlade>,
     lights: Query<Entity, With<PlayerLight>>,
 ) {
-    let Some((possessions, hands, torch)) = players.iter().next() else {
+    let blade_changed = !added.is_empty() || removed.read().count() > 0;
+    let Some((player, possessions, hands, torch)) = players.iter().next() else {
         return;
     };
+    let changed = possessions.is_changed() || hands.as_ref().is_some_and(|h| h.is_changed());
+    if !changed && !blade_changed {
+        return;
+    }
     let kind = |id: u32| catalogue.as_ref().and_then(|c| c.kind(id));
     let worn = possessions
         .worn
@@ -173,9 +186,22 @@ fn switch_player_light(
     if torch && hands.is_some_and(|h| h.main.is_some_and(|m| m.light) || h.off_light) {
         hands_light[0] = true;
     }
-    // The player's held part keeps no lit flag yet, so the weapon's second
-    // off rule is passed off here.
-    let on = switched_on(worn, hands_light, false);
+    // The second off rule: an item of ability type 3 in either hand while
+    // the player's first held item burns.
+    let ability = |i: usize| {
+        let id = possessions.out[i].id;
+        objects
+            .as_ref()
+            .filter(|_| id != 0)
+            .and_then(|o| o.db().section(id, crate::item_ability::WEAPON_SECTION))
+            .and_then(crate::item_ability::ability_of)
+            .map(|a| a.kind)
+    };
+    let first_lit = lit_blades
+        .iter()
+        .any(|b| b.wielder == player && b.slot == exa_combat::attack::Slot::First);
+    let weapon_lit = crate::item_ability::blade_puts_light_out([ability(0), ability(1)], first_lit);
+    let on = switched_on(worn, hands_light, weapon_lit);
     let made = lights.iter().next();
     match (on, made) {
         (true, None) => {

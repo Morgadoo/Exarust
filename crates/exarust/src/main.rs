@@ -103,6 +103,8 @@
 //!          --trace-all                with --trace: every simulated character body, the player's among them
 //!          --debug-bodies             start with the body overlay and joint readout shown (F3 toggles it)
 //!          --debug-nav                draw the level's navigation grid around the view (F6 toggles it)
+//!          --flame-sword              debug: the player holds "Sword GSF 01" with a Power Crystal C in its first
+//!                                     socket, so its blade lights (the item ability's flame row)
 //!          --no-torch                 play mode: the player starts without the carried torch (a new story then
 //!                                     lays the start's torch beside the player, as the original's start does)
 //!          --floor-torch x,y,z[,rx,ry,rz]  a lit torch lying on the floor here (metres; optionally its frame as X, Y, Z degrees), as the story start has it
@@ -113,6 +115,8 @@
 //!          --static-mechanisms        debug: levers and push surfaces stay static level geometry, as before they became bodies
 //!          --sliding-doors            debug: sliding doors (portcullises) become bodies too; their lift is not reproduced
 //!          --debug-gui-form           open one empty GUI form through the draw skin's path
+//!          --versus                   debug: set the versus lobby's flag (never set in Exanima 0.9.5), so the
+//!                                     arena page shows VERSUS; its creator's READY finds no lobby form
 //!          --open-settings <page>     once loaded, open the menu and the Settings form on its settings or controls page
 //!          --open-creator <mode>      once loaded, open the character creator: story (the background picker),
 //!                                     story-all (the picker with every background unlocked), story:N
@@ -395,6 +399,8 @@ pub struct Options {
     pub debug_nav: bool,
     /// Play mode: the player carries no torch (Exarust's debug option).
     pub no_torch: bool,
+    /// Debug: the player holds the flame sword with a crystal socketed.
+    pub flame_sword: bool,
     /// A lit torch lying on the floor here (metres; Exarust's debug option).
     pub floor_torch: Option<Vec<f32>>,
     /// Log the point lights within this many metres of the player.
@@ -416,6 +422,9 @@ pub struct Options {
     pub sliding_doors: bool,
     /// Open one empty form through the GUI draw path.
     pub debug_gui_form: bool,
+    /// Debug: set the versus lobby's flag, which Exanima 0.9.5 never sets,
+    /// so the arena page shows VERSUS.
+    pub versus: bool,
     /// Open the menu and the Settings form on this page (0 Settings, 1
     /// Controls) once loaded.
     pub open_settings: Option<u8>,
@@ -986,6 +995,10 @@ fn main() -> AppExit {
             "--debug-bodies" => options.debug_bodies = true,
             "--debug-nav" => options.debug_nav = true,
             "--no-torch" => options.no_torch = true,
+            "--flame-sword" => {
+                options.flame_sword = true;
+                options.weapon = Some(exa_game::item_ability::FLAME_SWORD_MODEL.into());
+            }
             "--floor-torch" => {
                 options.floor_torch = args.next().and_then(|v| {
                     let p: Vec<f32> = v.split(',').filter_map(|x| x.parse().ok()).collect();
@@ -999,6 +1012,7 @@ fn main() -> AppExit {
             "--static-mechanisms" => options.static_mechanisms = true,
             "--sliding-doors" => options.sliding_doors = true,
             "--debug-gui-form" => options.debug_gui_form = true,
+            "--versus" => options.versus = true,
             "--open-settings" => {
                 let page = args.next().unwrap_or_default();
                 options.open_settings = match page.as_str() {
@@ -1655,6 +1669,9 @@ fn main() -> AppExit {
     if let Some(blood) = options.weapon_blood {
         app.insert_resource(blood);
     }
+    if options.flame_sword {
+        app.insert_resource(exa_game::item_ability::DebugFlameSword { applied: false });
+    }
     if options.thaum_debug != exa_game::thaum::live::ThaumDebug::default() {
         app.insert_resource(options.thaum_debug);
     }
@@ -1746,6 +1763,11 @@ fn main() -> AppExit {
         .insert_resource(exa_game::settings_form::OpenSettingsOnLoad {
             page: options.open_settings,
             done: false,
+        })
+        .insert_resource({
+            let mut flow = exa_game::flow::Flow::default();
+            flow.versus = options.versus;
+            flow
         })
         .insert_resource(exa_game::creator_screen::OpenCreatorOnLoad {
             word: options.open_creator.clone(),

@@ -74,6 +74,7 @@ pub mod hub_windows;
 pub mod hud;
 pub mod hw_config;
 pub mod idle_orbit;
+pub mod item_ability;
 pub mod item_card;
 pub mod item_container;
 pub mod item_cursor;
@@ -224,6 +225,7 @@ impl Plugin for GamePlugin {
                 teleporters::TeleportPlugin,
                 glow_pulse::GlowPulsePlugin,
                 crystal_drain::CrystalDrainPlugin,
+                item_ability::ItemAbilityPlugin,
             ),
             hw_config::HardwareConfigPlugin,
             destination::DestinationPlugin,
