@@ -592,11 +592,16 @@ bars and their frames are `hud`'s; their show test (`bars_shown`: a
 changed or NaN health, a dropped focus, the power bar, combat mode or the
 unsigned hold clock) and the gauge's (`gauge_shown`: a shield in combat
 mode) are here and the HUD draw calls them every frame, with the power
-bar off because Exarust has none. The counter's and bar control's message
-handlers, the inventory fill's page states and plan, the journal's list
-state, the technique selector's open plan and the deferred fill's answer
-(retry until the generator has the node) are tested rules with no live
-caller yet.
+bar off because Exarust has none. The inventory fill's page states and
+plan, the journal's list state and the deferred fill's answer (retry until
+the generator has the node) are tested rules with no live caller yet. The
+power slot, the counter and bar controls' message handlers and the
+technique selector's open plan are unreachable in 0.9.5 (their classes are
+registered, but the only records naming them form one table no form uses;
+the HUD's centred message waits on a flag nothing sets): kept as read,
+never called. The preview bars (`paint_preview_bars`) pass the record's
+lasting share without the HUD's 0.01 floor (`hud::paint_bars_with`); the
+hub's loadout form draws them over its preview.
 `exa_game::gui_screens` opens the inventory and journal from the I and J
 hotkeys on a `GuiTask` and draws them through `gui_draw` and
 `exa_game::gui_paint`: the frame, the inventory's pack panel and its item

@@ -904,6 +904,9 @@ the body's lit-blade byte (a lit two-hander rests in both hands) and puts
 the player light out; a cold socket puts it out, and its hits sizzle
 (`--ability-item N[,cold][,npc|,npc-only]` hands out an ability item with
 its crystal, `--flame-sword` is `--ability-item 3`). The item card's
+value's coin control draws the coin sheet's gold, silver and copper icons
+(at four units, standing on the count's baseline, white at the card's GUI
+alpha) before each count. The item card's
 socket row takes crystals (`socket_drag`): a crystal dragged from a pack
 onto a socket goes in (the one there goes back to the player), one dragged
 out onto a pack comes out, and the row is written into the item's weapon
@@ -1256,7 +1259,13 @@ roster page the form draws the shown person's kit list (the hub stash for
 the manager, the employee's kit list otherwise, the equipped mark on what
 the shown rank wears or holds), the arsenal box the shelf and box buttons
 chose (the lend bit on what a fighter took) and, between them, the
-creator's view (`creator_view`) showing the person in the rank's kit. Both
+creator's view (`creator_view`) showing the person in the rank's kit,
+with the character view's preview bars switched on by the bind
+(`loadout_kit::preview_bars_layer`: the HUD's health bar from the
+person's health word over 65535 and the focus bar full, at the bottom of
+the view; Exarust's member keeps one word for both pools; the form's
+512 × 384-unit size overflows a 16:9 window, which hides them unless the
+window is taller than the form). Both
 views drag as the item panel does: a left press picks an entry up, its icon
 follows the pointer, and the release decides (`loadout_kit::kit_release`):
 on its own view it only moves, elsewhere it stays. An arsenal entry
@@ -1414,8 +1423,8 @@ a shield, a second weapon and the torch (the carried one too) hang by their
 grips, an emptied hand releases its model, and the figure's held moveset
 follows them. `--doll-drop` drops a list of items, `+` for the near hand. The inventory's second record is the rating-dots control,
 showing ten times the player's encumbrance with the dot sheet's whole and
-half dots. The view draws no preview bars (only character creation and the
-arena switch them on). The
+half dots in the label group's seventh shade. The view draws no preview
+bars (only character creation and the arena switch them on). The
 journal keeps its session entries and stores its text on close. Escape
 closes the focused screen (Exarust's). The rules are `exa_ui::game_gui`'s.
 The screens are base forms (`exa_ui::base_form`) on a rooted window

@@ -621,6 +621,9 @@ pub struct KitState {
     pub snapshot: KitSnapshot,
     /// The drag in flight.
     pub drag: Option<KitDrag>,
+    /// The preview bars' health shares (yellow, lasting), on while a
+    /// person is bound to the preview.
+    pub bars: Option<(f32, f32)>,
 }
 
 /// A drag out of one of the kit's views.
@@ -657,6 +660,11 @@ pub struct KitPanels {
     pub dirty: bool,
     /// The preview's revision counter.
     pub revision: u64,
+    /// The character view's preview-bars switch (the draw callback is
+    /// registered while it is on).
+    pub bars_on: bool,
+    /// The stone texture the bars' frames are multiplied by, loaded once.
+    pub bar_texture: Option<exa_ui::hud::FrameTexture>,
 }
 
 /// What the preview shows: its screen rect, the record and the worn
@@ -738,6 +746,7 @@ pub fn sync_kit(
         if panels.open.take().is_some() {
             info!("loadout kit: the form's item views close");
         }
+        exa_ui::game_gui::preview_bars_toggle(&mut panels.bars_on, false);
         preview.rect = None;
         return;
     };
@@ -850,6 +859,22 @@ pub fn sync_kit(
         centre(&list_panel, rects.kit),
         centre(&stock_panel, rects.stock)
     );
+    // Binding a person to the preview turns its bars on and gives them
+    // the record's two health words over 65535. Exarust's roster member
+    // keeps one health word for both pools. [Exarust stand-in]
+    if exa_ui::game_gui::preview_bars_toggle(&mut panels.bars_on, true).is_some() {
+        info!("loadout kit: the preview's bars are on");
+    }
+    if panels.bar_texture.is_none() {
+        panels.bar_texture = Some(
+            game.as_deref()
+                .and_then(|g| g.0.texture(exa_ui::hud::GUITEX))
+                .and_then(|b| exa_formats::rfi::Rfi::parse(b).ok())
+                .and_then(|rfi| exa_ui::hud::FrameTexture::from_rfi(&rfi))
+                .unwrap_or_else(exa_ui::hud::FrameTexture::flat),
+        );
+    }
+    let bars = exa_ui::game_gui::preview_shares(person.health, person.health);
     panels.open = Some(KitState {
         row,
         tab,
@@ -861,6 +886,7 @@ pub fn sync_kit(
         revision: panels.revision,
         snapshot,
         drag: None,
+        bars: Some(bars),
     });
 }
 
@@ -1282,6 +1308,56 @@ pub fn kit_input(
     panels.dirty = true;
 }
 
+/// The character view's preview bars over its 3D view at `view`: the
+/// health bar with the bound record's shares and the focus bar full, at
+/// the bottom of the view ([`exa_ui::game_gui::paint_preview_bars`]),
+/// painted on the CPU and drawn as one alpha-blended quad.
+pub(crate) fn preview_bars_layer(
+    view: exa_ui::gui_core::GuiRect,
+    shares: (f32, f32),
+    unit: i32,
+    texture: &exa_ui::hud::FrameTexture,
+) -> Option<exa_ui::gui_draw::GuiLayer> {
+    let canvas = exa_ui::game_gui::paint_preview_bars(
+        shares,
+        1.0,
+        unit,
+        (view.width().max(0) as u32, view.height()),
+        texture,
+    );
+    if canvas.width == 0 || canvas.height == 0 {
+        return None;
+    }
+    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    let bytes: Vec<u8> = canvas.pixels.iter().flat_map(|p| p.map(byte)).collect();
+    let image = exa_ui::gui_draw::GuiTexture::from_top_down(
+        canvas.width as u32,
+        canvas.height as u32,
+        &bytes,
+    )?;
+    let (x0, y0) = ((view.left + canvas.x) as f32, (view.top + canvas.y) as f32);
+    let (x1, y1) = (x0 + canvas.width as f32, y0 + canvas.height as f32);
+    let mut batch = exa_ui::skin::SkinBatch::new();
+    batch.select(2, 0, true);
+    batch.blend = exa_ui::gui_draw::BLEND_ALPHA;
+    batch.tex_col = Some(1.0);
+    batch.set_ink([255; 4]);
+    batch.begin();
+    batch.set_uv(0.0, 1.0);
+    batch.vertex(x0, y0);
+    batch.set_uv(0.0, 0.0);
+    batch.vertex(x0, y1);
+    batch.set_uv(1.0, 0.0);
+    batch.vertex(x1, y1);
+    batch.set_uv(1.0, 1.0);
+    batch.vertex(x1, y0);
+    batch.end_quads();
+    Some(exa_ui::gui_draw::GuiLayer::new(
+        batch,
+        exa_ui::gui_draw::LayerTexture::Owned(image),
+    ))
+}
+
 /// Paints the kit's views into the loadout form: the two panels' frames
 /// and icons, and the preview's viewport cleared so the 3D view shows.
 pub(crate) fn paint_kit(
@@ -1299,6 +1375,11 @@ pub(crate) fn paint_kit(
     };
     let rect = |r: [i32; 4]| exa_ui::gui_core::GuiRect::new(r[0], r[1], r[2], r[3]);
     painted.push(crate::gui_screens::clear_layer(rect(rects.preview)));
+    if let (Some(shares), Some(texture)) = (open.bars, panels.bar_texture.as_ref())
+        && let Some(layer) = preview_bars_layer(rect(rects.preview), shares, look.unit, texture)
+    {
+        painted.push(layer);
+    }
     crate::hub_windows::paint_panel(painted, rect(rects.kit), look);
     crate::hub_windows::paint_panel(painted, rect(rects.stock), look);
     if let Some(icons) = icons {
@@ -1341,6 +1422,39 @@ pub(crate) fn paint_kit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_preview_bars_draw_at_the_bottom_of_the_view_the_right_way_up() {
+        let view = exa_ui::gui_core::GuiRect::new(100, 50, 600, 300);
+        let texture = exa_ui::hud::FrameTexture::flat();
+        let layer = preview_bars_layer(view, (1.0, 1.0), 4, &texture).expect("the bars draw");
+        // The canvas the layer samples, painted in the view's own frame.
+        let canvas = exa_ui::game_gui::paint_preview_bars((1.0, 1.0), 1.0, 4, (600, 300), &texture);
+        let mut frame = exa_ui::gui_draw::GuiFrame::new();
+        frame.push(layer);
+        let textures = exa_ui::gui_draw::GuiTextures::default();
+        let image = exa_ui::gui_draw::rasterise(&[frame], &textures, 800, 400);
+        let at = |x: i32, y: i32| {
+            let i = (y as usize * 800 + x as usize) * 4;
+            [image[i], image[i + 1], image[i + 2], image[i + 3]]
+        };
+        // The health bar: 50 units left of the view's middle, 5 units above
+        // its bottom. Its fill's top row and its last row differ (the
+        // gradient), and each lands where the canvas has it.
+        let [health, _] = exa_ui::game_gui::preview_bar_rects(600, 300, 4);
+        let x = health.x + 10;
+        for y in [health.y + 2, health.y + 11] {
+            let want = canvas.get(x, y).expect("inside the canvas");
+            let got = at(view.left + x, view.top + y);
+            let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as i32;
+            assert!(
+                (0..3).all(|c| (i32::from(got[c]) - byte(want[c])).abs() <= 2),
+                "row {y}: {got:?} vs {want:?}"
+            );
+        }
+        // Nothing above the bars' shadow.
+        assert_eq!(at(view.left + x, view.top + health.y - 10)[3], 0);
+    }
     use crate::arsenal::{SHIELDS, WEAPONS};
     use exa_formats::objdb::Weapon;
 
