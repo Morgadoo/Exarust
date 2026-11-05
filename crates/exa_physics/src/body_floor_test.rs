@@ -565,3 +565,56 @@ fn a_fallen_body_kicking_its_legs_stays_where_it_lies() {
     );
     assert!(high - low > 20.0, "the legs kicked only {:.1}°", high - low);
 }
+
+/// Every part's pose, as bits.
+fn pose_bits(body: &Ragdoll) -> Vec<u32> {
+    body.parts
+        .iter()
+        .flat_map(|p| p.transform().to_cols_array())
+        .map(f32::to_bits)
+        .collect()
+}
+
+#[test]
+fn the_simulation_shell_in_lockstep_changes_no_tick() {
+    use crate::sim_app::{LockstepCheck, SimMode, SimShellPlugin};
+    let at = Vec3::new(81.0, 0.0, 39.2);
+    let run = |shell: Option<SimMode>| {
+        let mut app = app(floor(at), 4.0 / BODY_HZ);
+        if let Some(mode) = shell {
+            app.add_plugins(SimShellPlugin { mode });
+        }
+        let (setup, pose) = humanoid(at);
+        let body = app
+            .world_mut()
+            .spawn((Ragdoll::new(&setup).with_drive(), Aim::still(pose)))
+            .id();
+        let mut poses = Vec::new();
+        for f in 0..120 {
+            if f == 30 {
+                app.world_mut().write_message(Shove {
+                    body,
+                    bone: 8,
+                    velocity: Vec3::NEG_Z * 4.0,
+                    daze: 0.5,
+                    step: None,
+                    sag: None,
+                });
+            }
+            app.update();
+            let ticks = app.world().resource::<BodyTicks>().0;
+            poses.push((ticks, pose_bits(app.world().get::<Ragdoll>(body).unwrap())));
+        }
+        let check = app.world().get_resource::<LockstepCheck>().copied();
+        (poses, check)
+    };
+    let (alone, _) = run(None);
+    assert!(alone.last().unwrap().0 > 300);
+    for mode in [SimMode::Inline, SimMode::Thread] {
+        let (shelled, check) = run(Some(mode));
+        assert_eq!(alone, shelled, "{mode:?}");
+        let check = check.unwrap();
+        assert_eq!(check.mismatches, 0);
+        assert_eq!(check.steps, alone.last().unwrap().0);
+    }
+}

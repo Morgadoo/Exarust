@@ -144,6 +144,7 @@
 //!          --perf-log <seconds>       frame profiler on, its report logged every so often
 //!          --schedule-ambiguities     log the fixed step's (and the brains' chain's) pairs of unordered systems that
 //!                                     touch the same data
+//!          --sim-inline               run the simulation's own world on the frame's thread instead of its thread
 //!          --sim-boundary <file>      200 body ticks after the load, write which data the fixed step shares with the frame's
 //!                                     schedules, by direction (the simulation thread's hand-off)
 //! keys:    F9                         level and play views: the map panel (view switches, switch to another level)
@@ -464,6 +465,8 @@ pub struct Options {
     pub profiler: bool,
     /// Log the fixed step's ambiguous system pairs when it is built.
     pub schedule_ambiguities: bool,
+    /// Run the simulation's world on the frame's thread (`--sim-inline`).
+    pub sim_inline: bool,
     /// Write the fixed step's shared data here (`--sim-boundary`).
     pub sim_boundary: Option<PathBuf>,
     /// Write every joint after every tick here (CSV).
@@ -1077,6 +1080,7 @@ fn main() -> AppExit {
             "--perf-log" => options.perf_log = args.next().and_then(|v| v.parse().ok()),
             "--profiler" => options.profiler = true,
             "--schedule-ambiguities" => options.schedule_ambiguities = true,
+            "--sim-inline" => options.sim_inline = true,
             "--sim-boundary" => options.sim_boundary = args.next().map(PathBuf::from),
             "--debug-column" => {
                 options.debug_column = args
@@ -1906,6 +1910,15 @@ fn main() -> AppExit {
             done: false,
         });
     }
+    // The simulation's own world, stepped in lockstep with the fixed step
+    // (it holds only its clock yet: `exa_physics::sim_app`).
+    app.add_plugins(exa_physics::sim_app::SimShellPlugin {
+        mode: if options.sim_inline {
+            exa_physics::sim_app::SimMode::Inline
+        } else {
+            exa_physics::sim_app::SimMode::Thread
+        },
+    });
     if let Some(path) = options.sim_boundary.clone() {
         app.insert_resource(sim_boundary::SimBoundaryPath(path));
     }

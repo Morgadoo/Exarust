@@ -17,6 +17,22 @@ one millisecond short of the next step, at most 100 ms. The frame-coupled
 fixed loop does not use it yet: it is the clock of the simulation thread the
 fixed step is moving to (design: OpenSpec `plan-the-simulation-thread`).
 
+`sim_app` is the simulation's own world, the shell the fixed step moves
+into: `SimShell` owns a Bevy `SubApp` with the `SimStep` schedule, run on a
+thread named `exa-sim` (or inline, `--sim-inline`). `SimInbox` queues the
+frame's commands, run on the simulation's world at the start of the next
+step in post order (the original's deferred-call ring); `SimOutbox` queues
+the simulation's events, run on the frame's world after the step in send
+order; a latest-wins `SnapshotBuffer` hands the frame each step's
+`SimSnapshot`, of which `Snapshots` keeps the last two; `SimId`s, issued by
+`SimIds`, name an object in both worlds through each world's `SimLinks`.
+For now it runs in lockstep: the `SimLockstep` schedule, before `FixedFirst`
+in every pass of `FixedMain`, runs exactly one simulation step and waits
+for it, and `LockstepCheck` counts the steps against the snapshots' ticks
+(logged every 1000 steps). The simulation's world holds only its clock yet,
+so a body's every pose is the same bit for bit with or without the shell
+(`body_floor_test`).
+
 `engine_math` is the one shared implementation of the engine's fast maths,
 checked against the original's instructions: the sign stub, the
 `MINSS`/`MAXSS`/clamp compares, the floor and ceiling conversions (the
