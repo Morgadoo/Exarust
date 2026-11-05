@@ -887,6 +887,10 @@ Round 56 invframe: the inventory window draws its frame and panels; the Rayform 
 
 Round 60 kdtrees (S10): body meshes carry the original's kd-trees and the sectors keep body and static lists.
 
+Round 62 motilepart: an audit of all 120 TMotilePart routines; the held-item re-place and the sole side axis ported.
+
+Round 62 physperf: behaviour-neutral fixed-tick speed-ups; the main cost is structural (ticks on the main thread), approved by the owner to move to its own thread.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
@@ -1710,6 +1714,8 @@ Round 50 spawnsnap (C13): the default spawn follows the original's placement; th
 
 Round 55 wraith: Spirit Form's legless wraith hovers and walks, as the original's balance and feet routines allow.
 
+Round 62 playercontrols: the pad's commands run as the original's per-frame pad routine; the scripted pad now wins over a keyboard node reported as a gamepad.
+
 ### Phase 7 — Game modes and content
 
 Done (change `run-an-arena-career`): a new company starts with 343 copper
@@ -2262,6 +2268,8 @@ Round 53 mindruntime (S3): Control Mind and Spirit Form move the player between 
 Round 54 mindclasses: the other Mind powers expire; the spirit screen is a desaturation, not a quad; the mind pick uses light reach, not a ray.
 
 Round 60 scriptmodes (S11): 0.9.5 has no scripted modes and no versus lobby; only story, arena and practice exist.
+
+Round 62 chargen: the creator's edits take the original's three rebuild paths.
 
 ### Phase 8 — Polish and release
 
