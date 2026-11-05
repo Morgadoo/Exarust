@@ -125,6 +125,10 @@ pub struct CardFacts {
     pub condition: u8,
     pub container: bool,
     pub map: bool,
+    /// A map's image: the texture its own section names (body `0x10`, a
+    /// 16-byte name after the zeroed volume), which the card builder shows
+    /// as a parchment in place of a card.
+    pub map_image: Option<String>,
     pub model: bool,
     /// A weapon's card fields.
     pub weapon: Option<WeaponStats>,
@@ -560,6 +564,7 @@ fn card_facts<'a>(
     let shield_section = section(payload, SHIELD);
     facts.container = section(payload, CONTAINER).is_some();
     facts.map = section(payload, MAP).is_some();
+    facts.map_image = section(payload, MAP).and_then(exa_formats::objdb::map_image);
     facts.model = model.is_some();
     if let Some(model) = model {
         facts.name_id = word(model, NAME_ID);

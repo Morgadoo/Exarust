@@ -103,7 +103,14 @@ impl Plugin for DivinationPlugin {
         app.init_resource::<DivinationScreen>()
             .add_message::<OpenDivination>()
             .add_message::<DivinationClick>()
-            .add_systems(Update, (open_reading, click_reading, paint_reading).chain());
+            // The reading paints after the screens, whose draw starts the
+            // frame's GUI queue afresh.
+            .add_systems(
+                Update,
+                (open_reading, click_reading, paint_reading)
+                    .chain()
+                    .after(crate::gui_screens::draw_screens),
+            );
     }
 }
 
@@ -111,6 +118,8 @@ fn open_reading(
     mut opened: MessageReader<OpenDivination>,
     clock: Res<EffectClock>,
     mut screen: ResMut<DivinationScreen>,
+    game: Option<Res<exa_assets::Game>>,
+    textures: Option<ResMut<GuiTextures>>,
 ) {
     // One reading at a time, as the original finds its form already open.
     if screen.open.is_some() {
@@ -118,6 +127,25 @@ fn open_reading(
     }
     if let Some(message) = opened.read().next() {
         *screen = DivinationScreen::open(clock.now_ms, message.seed);
+        info!("divination: the reading opens (seed {})", message.seed);
+        // The form loads its card sheet when it is made; the interface's
+        // textures keep it after.
+        if let (Some(game), Some(mut textures)) = (game, textures)
+            && !textures.textures.contains_key(SHEET)
+        {
+            match game.load_rgba(SHEET) {
+                Ok(image) => {
+                    if let Some(texture) = exa_ui::gui_draw::GuiTexture::from_bottom_up(
+                        image.width,
+                        image.height,
+                        &image.pixels,
+                    ) {
+                        textures.textures.insert(SHEET.to_string(), texture);
+                    }
+                }
+                Err(error) => warn!("divination: the card sheet {SHEET:?}: {error}"),
+            }
+        }
     }
 }
 

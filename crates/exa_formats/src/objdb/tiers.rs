@@ -237,6 +237,18 @@ impl ObjectDb {
         self.find(id)?.section(tag)
     }
 
+    /// Stores a whole payload as the record `id` names (any tier), as the
+    /// item code writes a record back after editing its copy. Returns
+    /// whether the record was there.
+    pub fn set_payload(&mut self, id: u32, payload: &[u8]) -> bool {
+        let tier = Tier::of(id);
+        let Some(at) = self.store(tier).find_index(Tier::index(id)) else {
+            return false;
+        };
+        self.store_mut(tier).store(at, payload);
+        true
+    }
+
     /// Writes one byte of the record `id` names, at `offset` in the body of
     /// its first section with `tag`. A missing record or section, or an
     /// offset past that body, is left unchanged.
