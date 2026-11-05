@@ -3,7 +3,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Screens from the constructors' words
-The inventory, the journal, the loot window, the container popup, the item card, the hub's windows and tables, the match board's panes, Settings and its pages, the manual, the continue screen and its delete box, the creator and the arsenal SHALL paint through the game skin's form draw with the words their show commits from their constructors' words: each window as a top-level form, its character views, item panels, tables, pages and panes as held children; a held child with no frame style draws nothing of its own. The pack panel SHALL use attributes 0x130032 and style 0x80 as constructed. Control records SHALL be laid out by the two-pass layout inside the client.
+Every game window SHALL paint through the game skin's form draw with the words their show commits from their constructors' words: each window as a top-level form, its views, panels, tables and pages as held children. The pack panel SHALL use attributes 0x130032 and style 0x80 as constructed. Control records SHALL be laid out by the two-pass layout inside the client.
 
 #### Scenario: Inventory records
 - **WHEN** the inventory at unit 4 is laid out
@@ -34,7 +34,7 @@ The inventory, the journal, the loot window, the container popup, the item card,
 - **THEN** the page is held with style 0x88 and attributes 0x302a2 and draws its scroll bar, and the Settings page draws no frame
 
 ### Requirement: Line skin form draw
-A game form SHALL draw a drop shadow, a solid backdrop in the form group's fourth shade, its centred title, and then its frame from the skin atlas: a top-level form's ornamented corners, close mark and edge bars split around the title over a split strip; a free panel's two-unit frame two units in; a held panel's frame on its edges with joints at the corners flush with its owner's client and curled corners elsewhere; a panel with the scroll bar attribute its two arrows past the client's right edge, its thumb at the scroll refresh's place, its right bar beside the bar, a rail outside a right edge not flush with its owner's client, and the scroll bar's own corner pieces on the right. Every sample SHALL take its record's own eight texture coordinates.
+A game form SHALL draw a drop shadow, a solid backdrop in the form group's fourth shade, its centred title, and then its frame from the skin atlas: a top-level form's ornamented corners, close mark and edge bars split around the title over a split strip; a free panel's two-unit frame two units in; a held panel's frame on its edges with joints at the corners flush with its owner's client and curled corners elsewhere. Every sample SHALL take its record's own eight texture coordinates.
 
 #### Scenario: The pack's frame
 - **WHEN** the pack, held at the bottom of the inventory's client at unit 4, is drawn
@@ -48,11 +48,14 @@ A game form SHALL draw a drop shadow, a solid backdrop in the form group's fourt
 - **WHEN** an edge bar takes the sample whose first corners are (0.3, 0.1) and (0.3, 0.2)
 - **THEN** its other corners sample (0.5, 0.2) and (0.5, 0.1)
 
+## ADDED Requirements
+
+### Requirement: Panel scroll bar
+A panel with the scroll bar attribute SHALL draw its two arrows past its client's right edge, its thumb at the line skin's scroll refresh's place, its right bar beside the bar, a rail outside a right edge not flush with its owner's client, and the scroll bar's own corner pieces on the right.
+
 #### Scenario: A held page's scroll bar
 - **WHEN** a 400 × 416 page held at its owner's client's top-left, client right 380, top 2, bottom 414, thumb at 40, is drawn at unit 4
 - **THEN** its arrows are 8 pixels square at x 385, y 10 and y 398, its thumb 16 pixels square at (381, 36), and its right bar runs at x 384 to 392
-
-## ADDED Requirements
 
 ### Requirement: Item card records
 The item card SHALL be built from its builders' template records: a stats card's rows as a caption ending a unit left of x 156 and its value (rating dots, or the weight slider) at x 152, one anchor row apart, and the rows a stats card adds (Sockets, Rank, Points, Price) at x 120 from an absolute row. The records SHALL be laid out at unit 4 and rescaled with the card.
