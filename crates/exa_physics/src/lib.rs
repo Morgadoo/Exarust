@@ -35,6 +35,7 @@ pub mod shape;
 pub mod shock;
 pub mod signal;
 pub mod sim_object;
+pub mod step_driver;
 pub mod volume;
 pub mod voxel;
 pub mod weapon_mass;

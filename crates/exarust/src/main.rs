@@ -144,6 +144,8 @@
 //!          --perf-log <seconds>       frame profiler on, its report logged every so often
 //!          --schedule-ambiguities     log the fixed step's (and the brains' chain's) pairs of unordered systems that
 //!                                     touch the same data
+//!          --sim-boundary <file>      200 body ticks after the load, write which data the fixed step shares with the frame's
+//!                                     schedules, by direction (the simulation thread's hand-off)
 //! keys:    F9                         level and play views: the map panel (view switches, switch to another level)
 //!          --joint-trace <file.csv>   every joint of every simulated body after every 83 Hz tick (degrees, cm)
 //!          --pair-trace <file.csv>    every contact between two body parts found in each 83 Hz tick (cm)
@@ -277,6 +279,7 @@ mod map_panel;
 mod message_box;
 mod offscreen;
 mod profiler;
+mod sim_boundary;
 mod user_settings;
 mod viewer;
 
@@ -461,6 +464,8 @@ pub struct Options {
     pub profiler: bool,
     /// Log the fixed step's ambiguous system pairs when it is built.
     pub schedule_ambiguities: bool,
+    /// Write the fixed step's shared data here (`--sim-boundary`).
+    pub sim_boundary: Option<PathBuf>,
     /// Write every joint after every tick here (CSV).
     pub joint_trace: Option<PathBuf>,
     /// Write every contact between body parts after every tick here (CSV).
@@ -1072,6 +1077,7 @@ fn main() -> AppExit {
             "--perf-log" => options.perf_log = args.next().and_then(|v| v.parse().ok()),
             "--profiler" => options.profiler = true,
             "--schedule-ambiguities" => options.schedule_ambiguities = true,
+            "--sim-boundary" => options.sim_boundary = args.next().map(PathBuf::from),
             "--debug-column" => {
                 options.debug_column = args
                     .next()
@@ -1900,8 +1906,12 @@ fn main() -> AppExit {
             done: false,
         });
     }
+    if let Some(path) = options.sim_boundary.clone() {
+        app.insert_resource(sim_boundary::SimBoundaryPath(path));
+    }
     app.insert_resource(options).add_plugins((
         frame_loop::FrameLoopPlugin,
+        sim_boundary::SimBoundaryPlugin,
         viewer::ViewerPlugin,
         column::ColumnPlugin,
         map_panel::MapPanelPlugin,

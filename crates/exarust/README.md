@@ -35,6 +35,11 @@ record of race byte 14 through the placed-character path and marks the
 body as the caster's spirit, which the mind runtime then hands the player.
 The placed-character path builds the wraith physical with its race's hover
 flag, so the spirit floats on its hovering lift and walks.
+`--sim-boundary <file>` (`src/sim_boundary.rs`) writes, once the level has loaded and the fixed step
+has run 200 ticks, every component and resource type the fixed step's
+schedules share with the frame's, by direction, with each side's readers and
+writers and the whole-world systems: the hand-off the fixed step's own thread
+has to carry.
 `--max-fps <n|auto>` is the original's frame-rate cap (a rate, or `auto`
 for the display's rate) and, like the settings file's `FPSLimit`, is off
 unless given, so no frame is held; `src/frame_loop.rs` applies it from the
