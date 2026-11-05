@@ -4,7 +4,7 @@
 //!
 //! The original keeps its tiles in the scene after the block-until-loaded
 //! wait and then runs two per-frame passes: the frame hook ([`stream`]) that
-//! inserts, uploads or unloads at most one tile, and the block selection
+//! bakes, inserts or uploads at most one tile, and the block selection
 //! ([`composite`]) that ranks every 6 m block and bakes one composite a
 //! frame. The selection drives the block ranks, the set pools and the
 //! per-block composite state; its set assignments are handed to
@@ -137,7 +137,8 @@ impl TerrainStreaming {
     }
 
     /// Takes a tile's blocks out of the selection and hands their sets back,
-    /// as the frame hook's unload does.
+    /// as the original does when a block's node leaves its tile (no live
+    /// caller: Exarust keeps every block node once the level is loaded).
     pub fn drop_tile_blocks(&mut self, tile: usize) {
         let blocks = self.block_indices.get(tile).cloned().unwrap_or_default();
         self.selector.drop_blocks(&blocks);
@@ -215,7 +216,7 @@ impl TerrainStreaming {
     }
 
     /// The frame hook's one-tile step after the load, with the entity the
-    /// insert or unload applies to.
+    /// insert applies to.
     fn entity_for(&self, tile: usize) -> Option<Entity> {
         self.tiles
             .get(tile)
@@ -391,11 +392,10 @@ pub fn drive_terrain_stream(
                 TileAction::Insert => {
                     commands.entity(entity).insert(Visibility::Visible);
                 }
-                TileAction::Unload => {
-                    streaming.drop_tile_blocks(tile);
-                    commands.entity(entity).insert(Visibility::Hidden);
-                }
-                TileAction::Upload | TileAction::None => {}
+                // The bake ran with the tile's build on the worker
+                // (`tile_bake`), so its planes are already in the mesh and
+                // the plants; the hook only keeps the original's order.
+                TileAction::Bake | TileAction::Upload | TileAction::None => {}
             }
         }
     }
@@ -833,7 +833,7 @@ mod tests {
     fn the_block_until_loaded_wait_inserts_every_built_tile() {
         let mut stream = TerrainStream::new(vec![TileStream::raw(); 3]);
         for tile in &mut stream.tiles {
-            tile.mark_built(false);
+            tile.mark_built(0);
         }
         let mut actions = Vec::new();
         let calls = stream.wait_until_inserted(|tile, action| actions.push((tile, action)));
@@ -856,7 +856,7 @@ mod tests {
     fn a_refreshed_terrain_counts_its_delay_down() {
         let mut stream = TerrainStream::new(vec![TileStream::raw(); 2]);
         for tile in &mut stream.tiles {
-            tile.mark_built(false);
+            tile.mark_built(0);
         }
         stream.wait_until_inserted(|_, _| {});
         assert!(stream.all_inserted());

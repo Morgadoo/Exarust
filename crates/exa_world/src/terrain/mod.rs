@@ -21,11 +21,11 @@ pub mod composite;
 pub mod composite_draw;
 pub mod frame;
 pub mod ground;
-pub mod height;
 pub mod live;
 pub mod patch;
 pub mod plugins;
 pub mod stream;
+pub mod tile_bake;
 pub mod vegetation;
 pub mod wireframe;
 
@@ -44,14 +44,14 @@ use exa_formats::terrain::{
     TerrainTile,
 };
 
-use blend::{NoiseMaps, RuleTree, over_alphas};
+use blend::{NoiseMaps, RuleTree};
 use exa_formats::level::LevelGrid;
 
 use crate::room_view::InRoom;
 use crate::rooms::{CELL_TERRAIN, Rooms};
-use height::{HeightLayer, Plane, displacement, vegetation as vegetation_density};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use tile_bake::{BakeLayer, LayerMap, MANAGER_FEATURES};
 
 /// Materials a tile stacks: every one it uses, as the original stacks them
 /// (the shipped tiles use up to 12).
@@ -61,6 +61,8 @@ const SPLAT_CHANNELS: usize = 4;
 /// Texture coordinates advance this much per metre before a material's
 /// tiling factor (4 per 48 m tile).
 const UV_PER_METRE: f32 = 4.0 / 48.0;
+/// Side of the tile bake's mask plane (240 texels, 30 a block).
+const TILE_MASK_SIDE: usize = composite::TILE_MASK_VIEWPORT as usize;
 /// Diffuse colour is texture × tint × this.
 const TINT_GAIN: f32 = 1.5;
 /// Depth of the skirt below each tile's edge, metres.
@@ -730,7 +732,7 @@ impl Plants {
                 }
             }
             let (i, j) = vegetation::density_texel(p);
-            built.density[j * n + i]
+            built.density[j * TILE_MASK_SIDE + i]
         };
         let growth = vegetation::grow(tile.vegetation_seed, &self.variants, density);
         let s = terrain.spacing;
@@ -874,8 +876,10 @@ pub struct TerrainBuild {
     /// The palette's height and mask textures, by lower-case name, for the
     /// tile worker to decode.
     texture_bytes: Arc<HashMap<String, Vec<u8>>>,
-    /// Height and mask planes decoded by the worker, by texture name.
-    plane_cache: Arc<Mutex<HashMap<String, Option<Arc<Plane>>>>>,
+    /// The texture settings the height and mask maps upload with.
+    texture_settings: exa_assets::texture::TextureSettings,
+    /// Height and mask maps decoded by the worker, by texture name.
+    plane_cache: Arc<Mutex<HashMap<String, Option<Arc<LayerMap>>>>>,
     /// A tile's geometry and masks being built on the async pool, with the
     /// tile's index: the next tile, or the one after it while the next
     /// spawns.
@@ -1108,6 +1112,7 @@ impl TerrainBuild {
             environment,
             layer_sampler,
             texture_bytes: Arc::new(texture_bytes),
+            texture_settings: *loader.cache.textures.settings(),
             plane_cache: Arc::new(Mutex::new(HashMap::new())),
             building: None,
             plants,
@@ -1226,7 +1231,8 @@ impl TerrainBuild {
     }
 
     /// Applies one frame-hook action to the tile's entity: an insert shows
-    /// the tile's nodes, an unload hides them.
+    /// the tile's nodes. The bake ran with the tile's build (`tile_bake`),
+    /// so the hook's bake step only keeps the original's order.
     fn apply_tile_action(&self, commands: &mut Commands, tile: usize, action: stream::TileAction) {
         let Some(Some(live)) = self.live_tiles.get(tile) else {
             return;
@@ -1235,10 +1241,7 @@ impl TerrainBuild {
             stream::TileAction::Insert => {
                 commands.entity(live.entity).insert(Visibility::Visible);
             }
-            stream::TileAction::Unload => {
-                commands.entity(live.entity).insert(Visibility::Hidden);
-            }
-            stream::TileAction::Upload | stream::TileAction::None => {}
+            stream::TileAction::Bake | stream::TileAction::Upload | stream::TileAction::None => {}
         }
     }
 
@@ -1338,18 +1341,19 @@ impl TerrainBuild {
         let blocks = self.blocks.as_ref().map(|b| b[index].clone());
         let bytes = self.texture_bytes.clone();
         let cache = self.plane_cache.clone();
+        let settings = self.texture_settings;
         let build = move || {
             let tile = &terrain.tiles[index];
-            let mut planes = cache.lock().unwrap_or_else(|e| e.into_inner());
-            let mut height_layers =
-                |used: &[usize]| height_layers(&palette, &mut planes, &bytes, used);
+            let mut maps = cache.lock().unwrap_or_else(|e| e.into_inner());
+            let mut bake_layers =
+                |used: &[usize]| bake_layers(&palette, &mut maps, &bytes, &settings, used);
             build_tile(
                 &terrain,
                 tile,
                 &palette,
                 &tree,
                 &noise,
-                &mut height_layers,
+                &mut bake_layers,
                 blocks.as_ref(),
             )
         };
@@ -1371,7 +1375,7 @@ impl TerrainBuild {
             if self.blocks.as_ref().is_some_and(|b| !b[self.next].any()) {
                 // A tile with no block has nothing to insert: it is built
                 // and inserted at once, so the block-until-loaded wait ends.
-                self.stream.tiles[self.next].mark_built(false);
+                self.stream.tiles[self.next].mark_built(0);
                 self.stream.tiles[self.next].mark_inserted();
                 self.next += 1;
                 return true;
@@ -1625,7 +1629,7 @@ impl TerrainBuild {
         // once its entity exists: the worker's geometry can finish steps
         // before its textures load and it spawns, and an insert handled in
         // between would find no entity to show and leave the tile hidden.
-        self.stream.tiles[slot].mark_built(false);
+        self.stream.tiles[slot].mark_built(MANAGER_FEATURES);
         self.stats.tiles += 1;
         self.built = None;
         self.next += 1;
@@ -1633,42 +1637,40 @@ impl TerrainBuild {
     }
 }
 
-/// The height layers of the palette materials `used`, their height and mask
-/// planes decoded once by name into the worker's shared cache.
-fn height_layers(
+/// The bake layers of the palette materials `used`: each material's mask
+/// pass and height pass values, with its mask and height maps decoded once by
+/// name (as the GPU holds them: their uploaded levels and sampler) into the
+/// worker's shared cache.
+fn bake_layers(
     palette: &Palette,
-    planes: &mut HashMap<String, Option<Arc<Plane>>>,
+    maps: &mut HashMap<String, Option<Arc<LayerMap>>>,
     bytes: &HashMap<String, Vec<u8>>,
+    settings: &exa_assets::texture::TextureSettings,
     used: &[usize],
-) -> Vec<HeightLayer> {
-    let mut plane = |name: Option<&str>| -> Option<Arc<Plane>> {
+) -> Vec<BakeLayer> {
+    let mut map = |name: Option<&str>| -> Option<Arc<LayerMap>> {
         let name = name?.to_ascii_lowercase();
-        if let Some(plane) = planes.get(&name) {
-            return plane.clone();
+        if let Some(map) = maps.get(&name) {
+            return map.clone();
         }
-        let plane = bytes.get(&name).and_then(|bytes| {
-            let rfi = Rfi::parse(bytes).ok()?;
-            let rgba = rfi.decode_rgba8().ok()?;
-            let (w, h) = (rfi.header.width as usize, rfi.header.height as usize);
-            Plane::from_rgba(w, h, &rgba).map(Arc::new)
-        });
-        planes.insert(name, plane.clone());
-        plane
+        let map = bytes
+            .get(&name)
+            .and_then(|bytes| LayerMap::from_rfi(bytes, settings))
+            .map(Arc::new);
+        maps.insert(name, map.clone());
+        map
     };
     used.iter()
         .map(|&m| {
             let material = &palette.materials[m];
-            let p = |i: usize, d: f32| material.params.get(i).copied().unwrap_or(d);
             let look = Look::of(material);
-            HeightLayer {
-                base: p(16, 0.5),
-                offset: p(17, 0.5),
-                scale: p(18, 0.5),
-                height_map: plane(material.texture(TerrainTexture::Height)),
-                mask: plane(material.texture(TerrainTexture::Mask)),
+            BakeLayer {
+                mask_colour: look.mask_colour,
+                height: look.height,
+                tile: look.tile,
                 sharpness: look.sharpness,
-                tiling: look.tiling,
-                vegetation: p(13, 0.0),
+                mask_map: map(material.texture(TerrainTexture::Mask)),
+                height_map: map(material.texture(TerrainTexture::Height)),
             }
         })
         .collect()
@@ -1815,8 +1817,9 @@ struct BuiltTile {
     /// The tile's 6 m block meshes, each with its room; taken when the tile
     /// spawns.
     blocks: Vec<BuiltBlock>,
-    /// Displaced vertex heights (metres) and vegetation density per vertex.
+    /// Displaced vertex heights (metres).
     heights: Vec<f32>,
+    /// The plant density of each of the mask pass's 240 × 240 texels.
     density: Vec<f32>,
     /// Palette material indices, one per layer, ascending.
     materials: Vec<usize>,
@@ -1835,7 +1838,7 @@ fn build_tile(
     palette: &Palette,
     tree: &RuleTree,
     noise: &NoiseMaps,
-    height_layers: &mut dyn FnMut(&[usize]) -> Vec<HeightLayer>,
+    bake_layers: &mut dyn FnMut(&[usize]) -> Vec<BakeLayer>,
     blocks: Option<&TileBlocks>,
 ) -> BuiltTile {
     let n = TILE_VERTICES;
@@ -1881,7 +1884,6 @@ fn build_tile(
     }
     layers.truncate(keep);
     let m = tree.material_count();
-    let mut weights = vec![0.0f32; n * n * m];
     let mut totals = vec![0.0f32; m];
     // The original's 256 × 256 byte channel per material, of which the
     // tile's 241 × 241 corner is used: vertex (row, column) is at
@@ -1902,7 +1904,6 @@ fn build_tile(
             tree.weigh_bytes(&painted, &inputs, &mut vertex_bytes, &mut totals);
             for (material, &byte) in vertex_bytes.iter().enumerate() {
                 channels[material * plane + j * blend::CHANNEL_SIDE + i] = byte;
-                weights[v * m + material] = f32::from(byte) / 255.0;
             }
         }
     }
@@ -1936,31 +1937,36 @@ fn build_tile(
         None => Vec::new(),
     };
 
-    // Opacities for the shader, and the height pass moving the vertices.
-    let centre = terrain.tile_centre(tile);
-    let lift = height_layers(&used);
-    let mut density = vec![0.0f32; n * n];
+    // The tile bake: the mask and height passes over the merged weights,
+    // read back by the manager's feature word. The height plane becomes the
+    // record's vertex channel, moving each vertex by its byte on its
+    // pre-bake normal; the packed plane's green is the plant density.
+    let layers = bake_layers(&used);
+    let planes: Vec<&[u8]> = merged.iter().map(Vec::as_slice).collect();
+    let bake = tile_bake::bake_tile(MANAGER_FEATURES, &layers, &planes);
+    let mut state = manager::RECORD_READBACK_DUE;
+    manager::queue_readback(&mut state);
+    let readback = manager::take_readback(MANAGER_FEATURES, &mut Some(&mut state));
+    let (lift, packed) =
+        readback.map_or((false, false), |r| (r.height_bytes > 0, r.packed_bytes > 0));
+    let side = TILE_MASK_SIDE;
+    let mut density = vec![tile_bake::density_of(0); side * side];
+    if packed {
+        for j in 0..side {
+            for i in 0..side {
+                density[j * side + i] = tile_bake::density_of(bake.density_byte(i, j));
+            }
+        }
+    }
     let mut splat = vec![0u8; n * n * SPLAT_LAYERS];
     for v in 0..n * n {
-        let w = &weights[v * m..(v + 1) * m];
-        let kept: Vec<f32> = used.iter().map(|&i| w[i]).collect();
-        let alphas = over_alphas(&kept);
-        density[v] = vegetation_density(
-            &lift,
-            &alphas,
-            positions[v][0] + centre[0],
-            positions[v][2] + centre[1],
-        );
-        let p = &mut positions[v];
-        p[1] += displacement(
-            &lift,
-            &alphas,
-            p[0] + centre[0],
-            p[2] + centre[1],
-            normals[v][1],
-        );
+        let (i, j) = (v % n, v / n);
+        if lift {
+            let byte = f32::from(bake.height_byte(i, j));
+            positions[v][1] += manager::detail_offset(byte, normals[v][1]) / 100.0;
+        }
         for k in 0..merged.len() {
-            splat[splat_index(k, v, n)] = merged[k][(v / n) * blend::CHANNEL_SIDE + v % n];
+            splat[splat_index(k, v, n)] = merged[k][j * blend::CHANNEL_SIDE + i];
         }
     }
     let normals = grid_normals(&positions, n);

@@ -276,26 +276,6 @@ impl NoiseMaps {
     }
 }
 
-/// "Over" opacities of materials stacked in order: the first is opaque and
-/// each later one covers what is below by its share of the weight so far.
-pub fn over_alphas(weights: &[f32]) -> Vec<f32> {
-    let mut sum = 0.0;
-    weights
-        .iter()
-        .enumerate()
-        .map(|(k, &w)| {
-            sum += w;
-            if k == 0 {
-                1.0
-            } else if sum > 0.0 {
-                w / sum
-            } else {
-                0.0
-            }
-        })
-        .collect()
-}
-
 /// One entry of the original's name-sorted brush table: the name's 16
 /// bytes with `A`…`Z` lowered, the node it names and its tag (Exarust's:
 /// 0 for a rule, the material index for a material).
@@ -1029,20 +1009,5 @@ mod tests {
         assert_eq!(weights[TILE_VERTICES], 0.0);
         assert_eq!(rest[0][TILE_VERTICES], 9);
         assert_eq!(rest[1][0], 200);
-    }
-
-    #[test]
-    fn over_alphas_reproduce_weights() {
-        let a = over_alphas(&[0.5, 0.25, 0.25]);
-        assert_eq!(a, vec![1.0, 1.0 / 3.0, 0.25]);
-        // Compositing the alphas in order gives back the weights.
-        let mut cover = [1.0f32, 0.0, 0.0];
-        for k in 1..3 {
-            for c in cover.iter_mut().take(k) {
-                *c *= 1.0 - a[k];
-            }
-            cover[k] = a[k];
-        }
-        assert!((cover[0] - 0.5).abs() < 1e-6 && (cover[2] - 0.25).abs() < 1e-6);
     }
 }
