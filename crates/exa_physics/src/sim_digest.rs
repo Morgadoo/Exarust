@@ -180,6 +180,21 @@ fn open_digest(world: &mut World) {
         digesters.len(),
         path.0.display()
     );
+    if world.contains_resource::<crate::sim_bridge::FrameBridge>() {
+        let frame_path = path.0.with_extension("frame.tsv");
+        if let (Ok(file), Some(types)) = (
+            File::create(&frame_path),
+            world.get_resource::<SimBridgeTypes>(),
+        ) {
+            let digest = FrameDigest(SimDigest {
+                out: BufWriter::new(file),
+                digesters: types.digesters(),
+                steps: 0,
+                dump,
+            });
+            world.insert_resource(digest);
+        }
+    }
     world.insert_resource(SimDigest {
         out: BufWriter::new(file),
         digesters,
@@ -192,6 +207,25 @@ fn write_digest(world: &mut World) {
     let Some(mut digest) = world.remove_resource::<SimDigest>() else {
         return;
     };
+    write_into(world, &mut digest);
+    world.insert_resource(digest);
+}
+
+/// Behind the bridge, the frame's own copy of the bridged types after each
+/// step's copy out (`<file>.frame`): what the frame's systems will read.
+#[derive(Resource)]
+pub struct FrameDigest(SimDigest);
+
+/// Writes the frame's digest after a lockstep step (a no-op without one).
+pub fn write_frame_digest(world: &mut World) {
+    let Some(mut digest) = world.remove_resource::<FrameDigest>() else {
+        return;
+    };
+    write_into(world, &mut digest.0);
+    world.insert_resource(digest);
+}
+
+fn write_into(world: &mut World, digest: &mut SimDigest) {
     digest.steps += 1;
     let step = digest.steps;
     let tick = world
@@ -215,7 +249,6 @@ fn write_digest(world: &mut World) {
     if step.is_multiple_of(100) {
         let _ = digest.out.flush();
     }
-    world.insert_resource(digest);
 }
 
 #[cfg(test)]

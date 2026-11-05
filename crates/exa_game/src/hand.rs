@@ -1020,12 +1020,22 @@ fn hip_of(feet: Vec3, body: Option<&Ragdoll>) -> Vec3 {
 }
 
 /// Lets go of every door leaf the hand no longer pulls, however its drag
-/// ended (the release, a fall, a forced release): its link is removed.
-fn let_go_of_doors(hand: Res<Hand>, mut doors: Query<(Entity, &mut DoorBody, &mut Ragdoll)>) {
+/// ended (the release, a fall, a forced release): its link is removed. The
+/// release writes to the leaves' bodies, so it lands at the start of the
+/// next fixed step.
+fn let_go_of_doors(hand: Res<Hand>, mut fixed: ResMut<exa_physics::sim_app::FixedCommands>) {
     let pulled = match hand.holding {
         Holding::Door { body, .. } => Some(body),
         _ => None,
     };
+    fixed.run(release_doors, pulled);
+}
+
+/// Releases every held leaf but `pulled` (run at the start of a fixed step).
+fn release_doors(
+    In(pulled): In<Option<Entity>>,
+    mut doors: Query<(Entity, &mut DoorBody, &mut Ragdoll)>,
+) {
     for (e, mut glue, mut ragdoll) in &mut doors {
         if glue.door.held && Some(e) != pulled {
             glue.let_go(&mut ragdoll);
@@ -1034,12 +1044,22 @@ fn let_go_of_doors(hand: Res<Hand>, mut doors: Query<(Entity, &mut DoorBody, &mu
 }
 
 /// Lets go of every lever the hand no longer turns, however its drag
-/// ended: the hold clears and the lever wakes.
-fn let_go_of_levers(hand: Res<Hand>, mut levers: Query<(Entity, &mut LeverBody, &mut Ragdoll)>) {
+/// ended: the hold clears and the lever wakes (at the start of the next
+/// fixed step).
+fn let_go_of_levers(hand: Res<Hand>, mut fixed: ResMut<exa_physics::sim_app::FixedCommands>) {
     let turned = match hand.holding {
         Holding::Wheel { body, .. } => Some(body),
         _ => None,
     };
+    fixed.run(release_levers, turned);
+}
+
+/// Releases every held lever but `turned` (run at the start of a fixed
+/// step).
+fn release_levers(
+    In(turned): In<Option<Entity>>,
+    mut levers: Query<(Entity, &mut LeverBody, &mut Ragdoll)>,
+) {
     for (e, mut glue, mut ragdoll) in &mut levers {
         if glue.lever.held && Some(e) != turned {
             glue.let_go(&mut ragdoll);

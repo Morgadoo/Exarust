@@ -2561,6 +2561,7 @@ impl Plugin for BodyPlugin {
     fn build(&self, app: &mut App) {
         stages::configure(app);
         crate::sim_app::add_frame_start(app);
+        crate::sim_app::add_fixed_commands(app);
         app.world_mut()
             .resource_mut::<SolverStages>()
             .add(Pairs::default());

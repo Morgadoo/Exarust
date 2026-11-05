@@ -73,6 +73,83 @@ fn run_frame_start(world: &mut World) {
     let _ = world.try_run_schedule(SimFrameStart);
 }
 
+/// Writes the frame hands the fixed step: each runs at the start of the
+/// next fixed step, before `FixedFirst`, on the world that runs the step
+/// (the frame's in one world, the simulation's behind the bridge, where
+/// the queue is lent for the step). A frame system that decides a change to
+/// simulation data posts it here instead of writing it, so the change lands
+/// where the copy used to land it, and a simulation running apart from the
+/// frame (stage 6) can take it in order.
+#[derive(Resource, Default)]
+pub struct FixedCommands {
+    queued: Mutex<Vec<SimCommand>>,
+}
+
+impl FixedCommands {
+    /// Queues `write` for the start of the next fixed step.
+    pub fn post(&mut self, write: impl FnOnce(&mut World) + Send + 'static) {
+        queue(&mut self.queued).push(Box::new(write));
+    }
+
+    /// Queues `system` with `input`, run once at the start of the next
+    /// fixed step (a function system: it is cached in that world).
+    pub fn run<I, M, S>(&mut self, system: S, input: I::Inner<'static>)
+    where
+        I: bevy::ecs::system::SystemInput + Send + 'static,
+        I::Inner<'static>: Send,
+        S: IntoSystem<I, (), M> + Send + 'static,
+    {
+        self.post(move |world| {
+            if let Err(e) = world.run_system_cached_with(system, input) {
+                warn!("fixed command: {e}");
+            }
+        });
+    }
+
+    pub fn len(&mut self) -> usize {
+        queue(&mut self.queued).len()
+    }
+
+    pub fn is_empty(&mut self) -> bool {
+        queue(&mut self.queued).is_empty()
+    }
+}
+
+/// The schedule that runs the [`FixedCommands`], before `FixedFirst`.
+#[derive(ScheduleLabel, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FixedCommandsStep;
+
+fn run_fixed_commands(world: &mut World) {
+    let Some(mut commands) = world.get_resource_mut::<FixedCommands>() else {
+        return;
+    };
+    let queued = std::mem::take(queue(&mut commands.queued));
+    for write in queued {
+        write(world);
+    }
+}
+
+/// Marks an app whose fixed step runs [`FixedCommands`].
+#[derive(Resource)]
+struct FixedCommandsRunner;
+
+/// Adds [`FixedCommands`] and the step that runs them, once (every plugin
+/// that posts calls it).
+pub fn add_fixed_commands(app: &mut App) {
+    if app.world().contains_resource::<FixedCommandsRunner>() {
+        return;
+    }
+    use crate::sim_bridge::SimBridgeAppExt;
+    app.insert_resource(FixedCommandsRunner)
+        .init_resource::<FixedCommands>()
+        .init_schedule(FixedCommandsStep)
+        .add_systems(FixedCommandsStep, run_fixed_commands)
+        .bridge_lend_opaque_resource::<FixedCommands>();
+    app.world_mut()
+        .resource_mut::<FixedMainScheduleOrder>()
+        .insert_before(FixedFirst, FixedCommandsStep);
+}
+
 /// Marks an app whose frame runs [`SimFrameStart`].
 #[derive(Resource)]
 struct FrameStartRunner;
@@ -528,7 +605,10 @@ impl Plugin for SimShellPlugin {
         add_frame_start(app);
         app.world_mut()
             .resource_mut::<FixedMainScheduleOrder>()
-            .insert_before(FixedFirst, SimLockstep);
+            // First of all: the bridge moves the fixed step's schedules in
+            // it, before any of them has run here.
+            .labels
+            .insert(0, SimLockstep.intern());
     }
 }
 
@@ -543,6 +623,7 @@ pub fn step_lockstep(world: &mut World) {
         .step(StepRequest { commands, bridge });
     if let Some(out) = stepped.bridge {
         frame_apply(world, out);
+        crate::sim_digest::write_frame_digest(world);
     }
     for event in stepped.events {
         event(world);

@@ -170,8 +170,9 @@ fn toggle_nearest_door(
     toggle: Res<DoorToggle>,
     level: Option<Res<LevelRooms>>,
     anchors: Query<&GlobalTransform, With<RoomAnchor>>,
-    mut leaves: Query<(Entity, &BoundDoor, &mut DoorBody, &mut Ragdoll)>,
+    leaves: Query<(Entity, &BoundDoor, &DoorBody)>,
     mut state: Local<ToggleState>,
+    mut fixed: ResMut<exa_physics::sim_app::FixedCommands>,
 ) {
     let Some(at_frame) = toggle.at_frame else {
         return;
@@ -187,17 +188,18 @@ fn toggle_nearest_door(
         // nearest the anchor.
         let nearest = leaves
             .iter()
-            .map(|(e, BoundDoor(link), ..)| {
+            .map(|(e, BoundDoor(link), _)| {
                 let own = rooms.cell_centre(link.from);
                 let point = own + (rooms.cell_centre(link.to) - own) * 0.25;
                 (e, point.distance_squared(Vec2::new(feet.x, feet.z)))
             })
             .min_by(|a, b| a.1.total_cmp(&b.1));
         if let Some((leaf, d2)) = nearest
-            && let Ok((_, BoundDoor(link), mut glue, mut body)) = leaves.get_mut(leaf)
+            && let Ok((_, BoundDoor(link), _)) = leaves.get(leaf)
         {
-            glue.door.toggle();
-            body.wake_to(exa_physics::body::WAKE_COUNT);
+            // The toggle writes to the leaf's body: it lands at the start
+            // of the next fixed step.
+            fixed.run(toggle_door, leaf);
             state.leaf = Some(leaf);
             info!(
                 "door toggle: leaf {leaf}, door point {:.2} m away, link {}->{}, open {}",
@@ -214,7 +216,7 @@ fn toggle_nearest_door(
         return;
     };
     if state.frames.saturating_sub(at_frame) % DOOR_LOG_FRAMES == 0
-        && let Ok((_, BoundDoor(link), glue, _)) = leaves.get(leaf)
+        && let Ok((_, BoundDoor(link), glue)) = leaves.get(leaf)
     {
         info!(
             "door toggle: angle {:.3} (shut at {:.3}), pair flag {}, link open {}",
@@ -223,6 +225,14 @@ fn toggle_nearest_door(
             glue.door.both_passable,
             level.tracker.is_open(*link)
         );
+    }
+}
+
+/// `--toggle-door`'s toggle of `leaf` (run at the start of a fixed step).
+fn toggle_door(In(leaf): In<Entity>, mut leaves: Query<(&mut DoorBody, &mut Ragdoll)>) {
+    if let Ok((mut glue, mut body)) = leaves.get_mut(leaf) {
+        glue.door.toggle();
+        body.wake_to(exa_physics::body::WAKE_COUNT);
     }
 }
 
