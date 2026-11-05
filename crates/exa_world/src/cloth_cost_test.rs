@@ -391,10 +391,14 @@ fn the_meshes_take_the_particles_once_a_frame() {
     let instance = app.world().get::<ClothInstance>(hairs[0]).unwrap();
     assert!(instance.stale_mesh);
     app.world_mut()
-        .run_system_cached(write_cloth_meshes)
+        .run_system_cached(publish_cloth_meshes)
         .unwrap();
     let instance = app.world().get::<ClothInstance>(hairs[0]).unwrap();
     assert!(!instance.stale_mesh);
+    app.world_mut()
+        .run_system_cached(write_cloth_meshes)
+        .unwrap();
+    let instance = app.world().get::<ClothInstance>(hairs[0]).unwrap();
     let expected: Vec<[f32; 3]> = instance
         .vertex_particle
         .iter()

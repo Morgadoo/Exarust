@@ -2560,6 +2560,7 @@ pub struct BodyPlugin;
 impl Plugin for BodyPlugin {
     fn build(&self, app: &mut App) {
         stages::configure(app);
+        crate::sim_app::add_frame_start(app);
         app.world_mut()
             .resource_mut::<SolverStages>()
             .add(Pairs::default());
@@ -2575,10 +2576,9 @@ impl Plugin for BodyPlugin {
                 FixedUpdate,
                 crate::sector_lists::rebuild_sector_bodies.after(BodySystems),
             )
-            .add_systems(
-                RunFixedMainLoop,
-                begin_frame.in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop),
-            )
+            // Once a frame, before its ticks: in the simulation's world
+            // behind the bridge (`crate::sim_app::SimFrameStart`).
+            .add_systems(crate::sim_app::SimFrameStart, begin_frame)
             // After every frame system that moves a character or a body
             // root (the drawn controller, turns, a get-up's teleport).
             .add_systems(PostUpdate, draw_bodies.before(TransformSystems::Propagate));
