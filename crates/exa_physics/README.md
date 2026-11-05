@@ -95,10 +95,11 @@ bridge the queue is lent to the simulation for the step). The change lands
 where the copy used to land it, and a simulation running apart from the
 frame can take it in order. Posted so far: the viewer's fells and mechanism
 poke, the door toggle, going limp, finished limb trees, the hand's door and
-lever releases. Coupled writers move into the simulation instead, with their
+lever releases, the grab a hotkey's entry into combat lets go of. Coupled writers move into the simulation instead, with their
 same-frame readers: the rise and its restore run in `SimFrameStart` (the
 original's AI manager frame runs them on its simulation thread, as a hook
-its step calls), and so do the hit chain (wounds, blade tracking, hit
+its step calls), then the golem alarm's zone check (the manager frame's,
+after its rise), and so do the hit chain (wounds, blade tracking, hit
 detection, the reaction and the bites: the original's damage routine takes
 a pending hit in its dynamics' post-step) with the brains' reaction to
 blows and the debug pauses that read it. `SimFrameStart` runs its systems
