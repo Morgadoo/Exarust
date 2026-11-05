@@ -1509,6 +1509,12 @@ Round 57 giwarmth: the warm GI was the 8-bit store's rounding, not the colour pa
 
 Round 57 guifonts: the GUI fonts are module resources inside Exanima.exe, read at run time and never committed; the in-game forms take the original's framed draw.
 
+Round 58 audioefx (S7): the reverb is audible; only sounds within a few metres reverberate, as OpenAL's centimetre-as-metre distances give in the original.
+
+Round 58 firelight: both lighting leads were measurement artefacts (the fire's density above 1 is the original's, and one retail frame's flicker made the menu's direct light look 0.8×); the rendering is unchanged.
+
+Round 58 formsrest: the remaining forms take the original's line-skin draw, and the item card is laid out from its builders' template records (the plain card matches retail at 1600×1080).
+
 ### Phase 6 — AI (started)
 
 Done (change `build-the-navigation-grid`): every level gets the original's
