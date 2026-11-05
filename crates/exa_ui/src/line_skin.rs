@@ -540,6 +540,435 @@ pub fn draw_window_frame(unit: i32, place: WindowFramePlace) -> WindowFrame {
     WindowFrame { ink, quads }
 }
 
+/// The form attribute, style and state bits the line skin's form draw
+/// reads.
+pub mod form_bits {
+    /// The title bar.
+    pub const TITLE: u32 = 1;
+    /// The close mark.
+    pub const CLOSE: u32 = 2;
+    /// A drop shadow around the form.
+    pub const SHADOW: u32 = 0x40;
+    /// The vertical scroll bar.
+    pub const SCROLL: u32 = 0x200;
+    /// The backdrop: one quad over the whole form.
+    pub const BACKDROP: u32 = 0x2_0000;
+    /// The wide frame (the bars outside the form's edges).
+    pub const WIDE: u32 = 0x40_0000;
+    /// An attribute bit that keeps the title strip off a titled form, and
+    /// on an owner lets a child draw its top joints and bar anyway.
+    pub const OPEN_TOP: u32 = 0x80_0000;
+    /// The state bit of a form whose owner is another form, not a task
+    /// (the commit of the words sets it).
+    pub const HELD: u32 = 4;
+    /// The state bit that picks the hot ink.
+    pub const HOT: u32 = 0x40;
+    /// The frame style bits: 0x10 the corner frame, 0x80 the panel frame.
+    pub const CORNER_STYLE: u32 = 0x30;
+    pub const PANEL_STYLE: u32 = 0xc0;
+}
+
+/// What the line skin's form draw reads of one form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineFormPlace {
+    pub width: i32,
+    pub height: i32,
+    /// The form's place in its owner's client.
+    pub x: i32,
+    pub y: i32,
+    /// The attribute word ([`form_bits`]).
+    pub attributes: u32,
+    /// The frame style word.
+    pub style: u32,
+    /// The state word.
+    pub state: u32,
+    /// The owner form's attribute word.
+    pub owner_attributes: u32,
+    /// The owner's client width and height (the room a held panel tests
+    /// its right and bottom edges against).
+    pub owner_client: (i32, i32),
+    /// The title's measured width (read only with the title bit).
+    pub title_width: i32,
+    /// The mark under the pointer (-4 the close mark, which then draws in
+    /// the hover colour after the frame).
+    pub hover_mark: i32,
+}
+
+/// The ink the frame quads take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineFormInk {
+    /// The skin's idle control ink (255, 250, 230 at 104 × fade).
+    Idle,
+    /// The highlight group's eighth shade.
+    Hot,
+}
+
+/// What the line skin's form draw emits, in its order: the shadow and the
+/// backdrop (before the form's content and children), then the title and
+/// the frame quads from the skin atlas (after them).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LineForm {
+    /// The drop shadow: the rounded program's ring eight units out
+    /// ([`crate::skin::rounded_textured_frame`] with 8), in black at the
+    /// form group's fourth shade's alpha.
+    pub shadow: bool,
+    /// The backdrop quad: solid, in the form group's fourth shade, its
+    /// corners (0, 0), (0, h), (w, h), (w, 0).
+    pub backdrop: Option<[(i32, i32); 4]>,
+    /// The title's x (centred in the form's width); its baseline is the
+    /// main font's ascent and its ink the label group's seventh shade.
+    pub title_x: Option<i32>,
+    /// The ink of the panel frame's quads (the corner frame's are idle).
+    pub ink: LineFormInk,
+    /// The frame quads from the skin atlas, in drawing order.
+    pub frame: Vec<SliderQuad>,
+    /// The panel frame's edge mask: 1 top, 2 left, 4 right, 8 bottom for a
+    /// held panel within a unit of its owner's client edge (all four for a
+    /// free one).
+    pub edges: u32,
+    /// False when the form takes a frame branch that is not ported here
+    /// (a scroll bar or the wide frame); its frame quads are then missing.
+    pub complete: bool,
+}
+
+/// The line skin's form draw (the method the game's skin puts in the
+/// form-draw slot): the shadow and the backdrop, the centred title, the
+/// corner frame of a top-level form (style 0x10: ornamented six-unit
+/// corners, the close mark, the edge bars two units thick with a gap for
+/// the title, and the title strip under it) and the panel frame of a child
+/// (style 0x80). A free panel's frame runs two units in from each edge
+/// (the strip on top, bars down the sides and along the bottom, two joint
+/// pieces at each corner); a held one (owned by a form) lies on its edges,
+/// and each corner within a unit of the owner's client edges on both sides
+/// closes with joints, any other with the curled corner piece two units
+/// outside. Every term the original adds is a whole number, so the float
+/// sums are exact.
+pub fn draw_line_form(unit: i32, place: LineFormPlace) -> LineForm {
+    use crate::skin::{FORM_ALT, FORM_CAP, FORM_CLOSE_INK, FORM_CORNER, FORM_EDGE, HELD_FLIP};
+    use form_bits::*;
+    let held = place.state & HELD != 0;
+    let backdrop = (place.attributes & BACKDROP != 0 && !held).then_some([
+        (0, 0),
+        (0, place.height),
+        (place.width, place.height),
+        (place.width, 0),
+    ]);
+    let titled = place.attributes & TITLE == TITLE;
+    let measured = if titled { place.title_width } else { 0 };
+    let mut form = LineForm {
+        shadow: place.attributes & SHADOW == SHADOW,
+        backdrop,
+        title_x: (measured > 0)
+            .then(|| ((i64::from(place.width) - i64::from(measured)) / 2) as i32),
+        ink: LineFormInk::Idle,
+        frame: Vec::new(),
+        edges: 0,
+        complete: true,
+    };
+    let u = i64::from(unit);
+    let (w, h) = (i64::from(place.width), i64::from(place.height));
+    if place.style & CORNER_STYLE == 0x10 {
+        if place.attributes & WIDE != 0 {
+            form.complete = false;
+        } else {
+            let six = u * 6;
+            let four = u << 2;
+            let frame = &mut form.frame;
+            frame.push(quad64(
+                FORM_CORNER,
+                [(0, 0), (0, six), (six, six), (six, 0)],
+            ));
+            let close = place.attributes & CLOSE == CLOSE;
+            if close && place.hover_mark != -4 {
+                frame.push(quad64(
+                    FORM_CLOSE_INK,
+                    [(w, 0), (w - four, 0), (w - four, four), (w, four)],
+                ));
+            }
+            frame.push(quad64(
+                if close { FORM_ALT } else { FORM_CORNER },
+                [(w, 0), (w - six, 0), (w - six, six), (w, six)],
+            ));
+            frame.push(quad64(
+                FORM_CORNER,
+                [(0, h), (six, h), (six, h - six), (0, h - six)],
+            ));
+            frame.push(quad64(
+                FORM_CORNER,
+                [(w, h), (w, h - six), (w - six, h - six), (w - six, h)],
+            ));
+            let two = u << 1;
+            let reach = (f64::from(unit) * 6.6).round_ties_even() as i64;
+            let mut thumb = measured;
+            if measured < 1 {
+                frame.push(quad64(
+                    FORM_EDGE,
+                    [(reach, 0), (reach, two), (w - reach, two), (w - reach, 0)],
+                ));
+            } else {
+                let gap = (w - i64::from(measured) - u * 5) / 2;
+                thumb = gap as i32;
+                frame.push(quad64(
+                    FORM_EDGE,
+                    [(reach, 0), (reach, two), (gap, two), (gap, 0)],
+                ));
+                frame.push(quad64(
+                    FORM_EDGE,
+                    [
+                        (w - gap, 0),
+                        (w - gap, two),
+                        (w - reach, two),
+                        (w - reach, 0),
+                    ],
+                ));
+                frame.push(quad64(
+                    FORM_CAP,
+                    [(gap, 0), (gap, two), (gap + two, two), (gap + two, 0)],
+                ));
+                frame.push(quad64(
+                    FORM_CAP,
+                    [
+                        (w - gap, 0),
+                        (w - gap, two),
+                        (w - gap - two, two),
+                        (w - gap - two, 0),
+                    ],
+                ));
+            }
+            frame.push(quad64(
+                FORM_EDGE,
+                [(0, h - reach), (two, h - reach), (two, reach), (0, reach)],
+            ));
+            frame.push(quad64(
+                FORM_EDGE,
+                [
+                    (reach, h),
+                    (reach, h - two),
+                    (w - reach, h - two),
+                    (w - reach, h),
+                ],
+            ));
+            frame.push(quad64(
+                FORM_EDGE,
+                [
+                    (w, h - reach),
+                    (w - two, h - reach),
+                    (w - two, reach),
+                    (w, reach),
+                ],
+            ));
+            if titled && place.attributes & OPEN_TOP == 0 {
+                frame.extend(draw_line_progress(
+                    unit,
+                    unit.wrapping_shl(1),
+                    unit.wrapping_shl(2),
+                    place.width,
+                    thumb,
+                ));
+            }
+        }
+    }
+    if place.style & PANEL_STYLE != 0x80 {
+        return form;
+    }
+    if place.attributes & (WIDE | SCROLL) != 0 {
+        form.complete = false;
+        return form;
+    }
+    // The free panel lies two units in, the held one on its edges.
+    let (near, far, inner, outer) = if held {
+        let mut edges = 0;
+        if place.y < unit {
+            edges |= 1;
+        }
+        if place.x < unit {
+            edges |= 2;
+        }
+        if i64::from(place.owner_client.0) < u + i64::from(place.x) + w {
+            edges |= 4;
+        }
+        if i64::from(place.owner_client.1) < u + i64::from(place.y) + h {
+            edges |= 8;
+        }
+        form.edges = edges;
+        (0, u << 1, u << 1, (u << 2) + (u << 1))
+    } else {
+        form.edges = 0xf;
+        (u << 1, u << 2, u << 2, u << 3)
+    };
+    let edges = form.edges;
+    let owner_open = place.owner_attributes & OPEN_TOP != 0;
+    let owner_titled = place.owner_attributes & TITLE == TITLE;
+    if held {
+        if place.state & HOT != 0 {
+            form.ink = LineFormInk::Hot;
+        }
+        if edges & 1 == 0 || !owner_titled || owner_open {
+            form.frame.push(quad64(
+                WIDE_BAR,
+                [
+                    (outer, near),
+                    (outer, far),
+                    (w - outer, far),
+                    (w - outer, near),
+                ],
+            ));
+        }
+    } else if !titled {
+        form.frame.extend(draw_line_progress(
+            unit,
+            unit.wrapping_shl(1),
+            unit.wrapping_shl(2),
+            place.width,
+            0,
+        ));
+    }
+    let top_pair = (!titled && !owner_titled) || owner_open;
+    let frame = &mut form.frame;
+    frame.push(quad64(
+        WIDE_BAR,
+        [
+            (near, h - outer),
+            (inner, h - outer),
+            (inner, outer),
+            (near, outer),
+        ],
+    ));
+    if edges & 3 == 3 {
+        frame.push(quad64(
+            LINE_STRIP_CAP,
+            [(near, inner), (far, inner), (far, outer), (near, outer)],
+        ));
+        if top_pair {
+            frame.push(quad64(
+                LINE_STRIP_CAP,
+                [(inner, near), (inner, far), (outer, far), (outer, near)],
+            ));
+        }
+    } else {
+        frame.push(quad64(
+            HELD_FLIP,
+            [
+                (-inner, -inner),
+                (-inner, outer),
+                (outer, outer),
+                (outer, -inner),
+            ],
+        ));
+    }
+    if edges & 5 == 5 {
+        frame.push(quad64(
+            LINE_STRIP_CAP,
+            [
+                (w - near, inner),
+                (w - far, inner),
+                (w - far, outer),
+                (w - near, outer),
+            ],
+        ));
+        if top_pair {
+            frame.push(quad64(
+                LINE_STRIP_CAP,
+                [
+                    (w - inner, near),
+                    (w - inner, far),
+                    (w - outer, far),
+                    (w - outer, near),
+                ],
+            ));
+        }
+    } else {
+        frame.push(quad64(
+            HELD_FLIP,
+            [
+                (w + inner, -inner),
+                (w + inner, outer),
+                (w - outer, outer),
+                (w - outer, -inner),
+            ],
+        ));
+    }
+    frame.push(quad64(
+        WIDE_BAR,
+        [
+            (w - near, h - outer),
+            (w - inner, h - outer),
+            (w - inner, outer),
+            (w - near, outer),
+        ],
+    ));
+    if edges & 10 == 10 {
+        frame.push(quad64(
+            LINE_STRIP_CAP,
+            [
+                (near, h - inner),
+                (far, h - inner),
+                (far, h - outer),
+                (near, h - outer),
+            ],
+        ));
+        frame.push(quad64(
+            LINE_STRIP_CAP,
+            [
+                (inner, h - near),
+                (inner, h - far),
+                (outer, h - far),
+                (outer, h - near),
+            ],
+        ));
+    } else {
+        frame.push(quad64(
+            HELD_FLIP,
+            [
+                (-inner, h + inner),
+                (-inner, h - outer),
+                (outer, h - outer),
+                (outer, h + inner),
+            ],
+        ));
+    }
+    frame.push(quad64(
+        WIDE_BAR,
+        [
+            (outer, h - near),
+            (outer, h - inner),
+            (w - outer, h - inner),
+            (w - outer, h - near),
+        ],
+    ));
+    if edges & 0xc == 0xc {
+        frame.push(quad64(
+            LINE_STRIP_CAP,
+            [
+                (w - near, h - inner),
+                (w - far, h - inner),
+                (w - far, h - outer),
+                (w - near, h - outer),
+            ],
+        ));
+        frame.push(quad64(
+            LINE_STRIP_CAP,
+            [
+                (w - inner, h - near),
+                (w - inner, h - far),
+                (w - outer, h - far),
+                (w - outer, h - near),
+            ],
+        ));
+    } else {
+        frame.push(quad64(
+            HELD_FLIP,
+            [
+                (w + inner, h + inner),
+                (w + inner, h - outer),
+                (w - outer, h - outer),
+                (w - outer, h + inner),
+            ],
+        ));
+    }
+    form
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -870,5 +1299,228 @@ mod shown_tests {
         assert_eq!(line_control_inks(0.5)[1][3], 52);
         assert_eq!(hover_alpha(1.0), 255);
         assert_eq!(hover_alpha(0.5), 128);
+    }
+
+    fn place(width: i32, height: i32) -> LineFormPlace {
+        LineFormPlace {
+            width,
+            height,
+            x: 0,
+            y: 0,
+            attributes: 0x3_0022,
+            style: 0,
+            state: 0x1000,
+            owner_attributes: 0,
+            owner_client: (0, 0),
+            title_width: 0,
+            hover_mark: 0,
+        }
+    }
+
+    #[test]
+    fn a_free_panel_draws_its_backdrop_and_a_two_unit_frame() {
+        use form_bits::*;
+        let free = LineFormPlace {
+            attributes: 0x13_0032,
+            style: 0x80,
+            owner_attributes: 0x3_0022,
+            ..place(228, 180)
+        };
+        let form = draw_line_form(4, free);
+        assert!(form.complete);
+        assert!(!form.shadow);
+        assert_eq!(form.edges, 0xf);
+        assert_eq!(
+            form.backdrop,
+            Some([(0, 0), (0, 180), (228, 180), (228, 0)])
+        );
+        assert_eq!(form.ink, LineFormInk::Idle);
+        // The strip's three quads, then eleven: two side bars, a bottom
+        // bar and eight joint pieces.
+        assert_eq!(form.frame.len(), 14);
+        assert_eq!(form.frame[2].sample, WIDE_BAR);
+        assert_eq!(
+            form.frame[2].corners,
+            [(32, 8), (32, 16), (196, 16), (196, 8)]
+        );
+        assert_eq!(
+            form.frame[3].corners,
+            [(8, 148), (16, 148), (16, 32), (8, 32)]
+        );
+        assert_eq!(form.frame[11].sample, WIDE_BAR);
+        assert_eq!(
+            form.frame[11].corners,
+            [(32, 172), (32, 164), (196, 164), (196, 172)]
+        );
+        assert_eq!(
+            form.frame[13].corners,
+            [(212, 172), (212, 164), (196, 164), (196, 172)]
+        );
+        // A titled owner drops the top pair of joints; its open-top bit
+        // keeps them.
+        let titled = draw_line_form(
+            4,
+            LineFormPlace {
+                owner_attributes: 0x3_0022 | TITLE,
+                ..free
+            },
+        );
+        assert_eq!(titled.frame.len(), 12);
+        let open = draw_line_form(
+            4,
+            LineFormPlace {
+                owner_attributes: 0x3_0022 | TITLE | OPEN_TOP,
+                ..free
+            },
+        );
+        assert_eq!(open.frame.len(), 14);
+    }
+
+    #[test]
+    fn a_held_panel_lies_on_its_edges_and_curls_its_open_corners() {
+        use crate::skin::HELD_FLIP;
+        // The inventory's pack at unit 4: held, flush with the client's
+        // left, right and bottom, under a titled owner.
+        let pack = LineFormPlace {
+            x: 0,
+            y: 448,
+            attributes: 0x11_0032,
+            style: 0x80,
+            state: 0x1004,
+            owner_attributes: 0x3_0063,
+            owner_client: (228, 628),
+            ..place(228, 180)
+        };
+        let form = draw_line_form(4, pack);
+        assert!(form.complete);
+        assert_eq!(form.backdrop, None);
+        assert_eq!(form.edges, 0xe);
+        // The top bar (not flush with the top), the left bar, the curled
+        // top corners, the right bar, the bottom joints and bar.
+        assert_eq!(form.frame[0].sample, WIDE_BAR);
+        assert_eq!(
+            form.frame[0].corners,
+            [(24, 0), (24, 8), (204, 8), (204, 0)]
+        );
+        assert_eq!(
+            form.frame[1].corners,
+            [(0, 156), (8, 156), (8, 24), (0, 24)]
+        );
+        assert_eq!(form.frame[2].sample, HELD_FLIP);
+        assert_eq!(
+            form.frame[2].corners,
+            [(-8, -8), (-8, 24), (24, 24), (24, -8)]
+        );
+        assert_eq!(form.frame[3].sample, HELD_FLIP);
+        assert_eq!(
+            form.frame[3].corners,
+            [(236, -8), (236, 24), (204, 24), (204, -8)]
+        );
+        assert_eq!(form.frame.len(), 10);
+        assert!(form.frame[5..].iter().all(|quad| quad.sample != HELD_FLIP));
+        // The character view: flush with the top, left and right under the
+        // titled owner, so no top bar and no top joint pairs; its bottom
+        // corners curl.
+        let view = LineFormPlace {
+            y: 0,
+            attributes: 0x5_0092,
+            ..pack
+        };
+        let view = draw_line_form(
+            4,
+            LineFormPlace {
+                height: 384,
+                ..view
+            },
+        );
+        assert_eq!(view.edges, 7);
+        assert_eq!(view.frame.len(), 7);
+        assert_eq!(
+            view.frame[0].corners,
+            [(0, 360), (8, 360), (8, 24), (0, 24)]
+        );
+        assert_eq!(view.frame[4].sample, HELD_FLIP);
+        assert_eq!(view.frame[6].sample, HELD_FLIP);
+    }
+
+    #[test]
+    fn a_titled_top_level_form_draws_its_corner_frame_and_title_strip() {
+        use crate::skin::{FORM_ALT, FORM_CAP, FORM_CLOSE_INK, FORM_CORNER, FORM_EDGE};
+        // The inventory after its words are committed under the task.
+        let inventory = LineFormPlace {
+            attributes: 0x3_0063,
+            style: 0x3010,
+            title_width: 60,
+            ..place(244, 644)
+        };
+        let form = draw_line_form(4, inventory);
+        assert!(form.complete);
+        assert!(form.shadow);
+        assert!(form.backdrop.is_some());
+        assert_eq!(form.title_x, Some(92));
+        assert_eq!(form.frame[0].sample, FORM_CORNER);
+        assert_eq!(form.frame[0].corners, [(0, 0), (0, 24), (24, 24), (24, 0)]);
+        assert_eq!(form.frame[1].sample, FORM_CLOSE_INK);
+        assert_eq!(
+            form.frame[1].corners,
+            [(244, 0), (228, 0), (228, 16), (244, 16)]
+        );
+        assert_eq!(form.frame[2].sample, FORM_ALT);
+        // round(4 × 6.6) = 26; the gap is (244 − 60 − 20) / 2 = 82.
+        assert_eq!(form.frame[5].sample, FORM_EDGE);
+        assert_eq!(form.frame[5].corners, [(26, 0), (26, 8), (82, 8), (82, 0)]);
+        assert_eq!(form.frame[7].sample, FORM_CAP);
+        assert_eq!(form.frame[7].corners, [(82, 0), (82, 8), (90, 8), (90, 0)]);
+        // Three side bars, then the strip split at the gap: two caps, two
+        // tracks and the two inner caps.
+        assert_eq!(form.frame.len(), 12 + 6);
+        assert_eq!(form.frame[12].sample, LINE_STRIP_CAP);
+        assert_eq!(
+            form.frame[14].corners,
+            [(32, 8), (32, 16), (82, 16), (82, 8)]
+        );
+        // A hovered close mark is left to the late draw; no title bit, no
+        // title, no gap and no strip.
+        let hovered = draw_line_form(
+            4,
+            LineFormPlace {
+                hover_mark: -4,
+                ..inventory
+            },
+        );
+        assert_eq!(hovered.frame[1].sample, FORM_ALT);
+        let plain = draw_line_form(
+            4,
+            LineFormPlace {
+                attributes: 0x3_0062,
+                ..inventory
+            },
+        );
+        assert_eq!(plain.title_x, None);
+        assert_eq!(plain.frame.len(), 9);
+    }
+
+    #[test]
+    fn a_plain_form_draws_only_its_backdrop_and_scrolling_panels_are_flagged() {
+        let outer = draw_line_form(
+            4,
+            LineFormPlace {
+                style: 0x3000,
+                ..place(244, 644)
+            },
+        );
+        assert!(outer.complete);
+        assert!(outer.frame.is_empty());
+        assert!(outer.backdrop.is_some());
+        let scrolling = draw_line_form(
+            4,
+            LineFormPlace {
+                attributes: 0x3_0222,
+                style: 0x80,
+                ..place(100, 100)
+            },
+        );
+        assert!(!scrolling.complete);
+        assert!(scrolling.frame.is_empty());
     }
 }

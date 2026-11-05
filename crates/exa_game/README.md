@@ -1383,11 +1383,17 @@ half dots. The view draws no preview bars (only character creation and the
 arena switch them on). The
 journal keeps its session entries and stores its text on close. Escape
 closes the focused screen (Exarust's). The rules are `exa_ui::game_gui`'s.
-The screens draw through `gui_paint` and `exa_ui::gui_draw` with the words
-their constructors write: the frame (no title bar, as no shipped form sets
-the title bit), the inventory's 228 × 180 pack panel, and the control
-records laid out by the two-pass layout (the inventory's Encumbrance label
-and Primary button, the journal's New and Erase buttons) with captions
+The screens draw through `gui_paint` and `exa_ui::gui_draw`. The inventory
+draws through the game skin's own form draw (`gui_paint::paint_line_form`
+over `exa_ui::line_skin::draw_line_form`) with the words its show commits
+(`gui_paint::commit_words`): the window titled "Inventory" with its shadow,
+backdrop, ornamented corners, close mark and title strip, the character
+view and the 228 × 180 pack as held panels framed on their edges (curled
+corners where they leave the client's edges). The journal keeps its
+constructor's words through the default background (no title bar). The
+control records are laid out by the two-pass layout (the inventory's
+Encumbrance label and its Primary and Secondary page buttons in one radio
+group, Primary lit, the journal's New and Erase buttons) with captions
 placed by the skin's own rule, and the journal's selected entry through the
 text box. Every window painted through `gui_paint` draws with the line
 skin's palette as a shown form's fade scales it (`gui_paint::palette`, form

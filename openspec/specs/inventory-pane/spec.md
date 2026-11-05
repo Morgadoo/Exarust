@@ -389,3 +389,10 @@ Another character's inventory window SHALL open at the screen width less the win
 #### Scenario: A companion's window
 - **WHEN** the window of a character other than the player opens on a 1600-wide screen at unit 4 while the player's remembered place is (30, 40)
 - **THEN** it opens at (1340, 8), registered under that character's tag; closing it leaves the remembered place at (30, 40)
+
+### Requirement: Inventory page buttons
+The inventory window SHALL show two page buttons, Primary and Secondary, side by side in one radio group, Primary lit when the window opens.
+
+#### Scenario: The window opens
+- **WHEN** the player's inventory opens
+- **THEN** Primary is drawn lit and Secondary unlit beside it

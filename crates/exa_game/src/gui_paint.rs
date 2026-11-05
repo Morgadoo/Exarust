@@ -11,13 +11,12 @@
 //! and icon quads are separate layers sampling the font's atlas through
 //! [`exa_ui::gui_draw::text_batch`].
 //!
-//! The inventory and journal forms draw with the constructors' own words:
-//! the ordinary form attributes, the centred-title frame style and, for the
-//! item pack, its container's attribute word. Neither screen's constructor
-//! sets the title bit, so the frames draw no title bar (the title string the
-//! forms carry is unused until a caller sets the bit). The item icons wait
-//! for the item renderer; the character view and its preview bars are not
-//! drawn.
+//! The inventory draws through the game skin's own form draw
+//! ([`paint_line_form`]) with the words its show commits ([`commit_words`]):
+//! a top-level form gains the title bar, the shadow and the corner frame, a
+//! child is held and framed on its edges. The journal still draws with its
+//! constructor's words through the default background, so it shows no
+//! title bar.
 
 use exa_ui::form::FormMetrics;
 use exa_ui::gui_core::GuiRect;
@@ -41,10 +40,10 @@ pub const JOURNAL_ATTRIBUTES: u32 = FORM_ATTRIBUTES | 0x8000;
 /// The item pack's attribute word: the base word with the two bits the
 /// inventory constructor sets on the pack (0x10 and 0x100000).
 pub const PACK_ATTRIBUTES: u32 = FORM_ATTRIBUTES | 0x10 | 0x10_0000;
-/// The character view's attribute word: the inventory constructor clears
-/// bits 0x4000 and 0x8000 of the view's word and sets 0x90 [guess: the view
-/// starts from the base form's word, as the pack does].
-pub const DOLL_ATTRIBUTES: u32 = (FORM_ATTRIBUTES & 0xffff_3fff) | 0x90;
+/// The character view's attribute word: the 3-D view's constructor clears
+/// bit 0x20 of the base word and sets 0x4c010, and the inventory
+/// constructor clears bits 0x4000 and 0x8000 and sets 0x90 (0x70092).
+pub const DOLL_ATTRIBUTES: u32 = (((FORM_ATTRIBUTES & !0x20) | 0x4_c010) & 0xffff_3fff) | 0x90;
 /// The pack's frame style: the bit the inventory constructor sets on it
 /// (the character view's style takes the same bit).
 pub const PACK_STYLE: u32 = 0x80;
@@ -322,6 +321,196 @@ pub fn paint_child(
     };
     painted.push(GuiLayer::new(batch, LayerTexture::Named(SKIN_TEXTURE)));
     painted
+}
+
+/// A form drawn through the line skin's own form draw
+/// ([`exa_ui::line_skin::draw_line_form`]), the method the game's skin puts
+/// in the form-draw slot in place of the default background: the shadow
+/// and backdrop layers go under the form's content and children, the title
+/// and frame layers over them.
+#[derive(Debug, Default)]
+pub struct LineFormLayers {
+    /// The drop shadow (the rounded program's ring eight units out).
+    pub shadow: Option<GuiLayer>,
+    /// The solid backdrop in the form group's fourth shade.
+    pub backdrop: Option<GuiLayer>,
+    /// The centred title.
+    pub title: Option<GuiLayer>,
+    /// The frame quads from the skin atlas.
+    pub frame: Option<GuiLayer>,
+    /// False when the form takes a frame branch that is not ported.
+    pub complete: bool,
+}
+
+impl LineFormLayers {
+    /// The layers under the form's content and children.
+    pub fn under(&mut self) -> impl Iterator<Item = GuiLayer> + use<> {
+        [self.shadow.take(), self.backdrop.take()]
+            .into_iter()
+            .flatten()
+    }
+
+    /// The layers over the form's content and children.
+    pub fn over(&mut self) -> impl Iterator<Item = GuiLayer> + use<> {
+        [self.title.take(), self.frame.take()].into_iter().flatten()
+    }
+}
+
+/// The words of a form the line skin's form draw reads, after the commit
+/// of its style and attribute words ([`commit_words`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineFormWords {
+    pub attributes: u32,
+    pub style: u32,
+    pub state: u32,
+}
+
+/// The state word the base form constructor writes: the restyle (0x2000)
+/// and layout (0x1000) bits.
+pub const FORM_STATE: u32 = 0x3000;
+
+/// A form's words as the show commits them before its first draw
+/// ([`exa_ui::form::set_style`]): a form whose owner is not the task is
+/// held (state bit 4) and loses its backdrop, a top-level one gains the
+/// corner frame (style 0x10), the title bar and the shadow (0x41); both
+/// only for the constructor's attribute bit 0x10000.
+pub fn commit_words(style: u32, attributes: u32, owner_is_task: bool) -> LineFormWords {
+    let (style, attributes, state) =
+        exa_ui::form::set_style(style, attributes, FORM_STATE, owner_is_task);
+    LineFormWords {
+        attributes,
+        style,
+        state,
+    }
+}
+
+/// Where a form sits for the line skin's form draw: its rectangle on the
+/// screen, its place in its owner's client, the owner's client size and
+/// attribute word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineFormAt {
+    pub rect: GuiRect,
+    pub in_owner: (i32, i32),
+    pub owner_client: (i32, i32),
+    pub owner_attributes: u32,
+}
+
+impl LineFormAt {
+    /// A top-level form at `rect`.
+    pub fn top(rect: GuiRect) -> Self {
+        Self {
+            rect,
+            in_owner: (rect.left, rect.top),
+            owner_client: (0, 0),
+            owner_attributes: 0,
+        }
+    }
+
+    /// A child at `rect` in the client `client` of an owner with the
+    /// attribute word `owner_attributes`.
+    pub fn child(rect: GuiRect, client: GuiRect, owner_attributes: u32) -> Self {
+        Self {
+            rect,
+            in_owner: (rect.left - client.left, rect.top - client.top),
+            owner_client: (client.width(), client.height()),
+            owner_attributes,
+        }
+    }
+}
+
+/// A titled form's title: its text, the GUI level's main font and that
+/// font's texture size.
+pub type FormTitle<'a> = (&'a str, &'a GuiFont, Option<(u16, u16)>);
+
+/// Paints a form through the line skin's form draw with the shown palette
+/// `palette`, the idle control ink at `fade` and, for a titled form, its
+/// title in `font` (the GUI level's main font).
+pub fn paint_line_form(
+    at: LineFormAt,
+    unit: i32,
+    palette: &SkinPalette,
+    fade: f32,
+    words: LineFormWords,
+    title: Option<FormTitle>,
+) -> LineFormLayers {
+    use exa_ui::line_skin::{LineFormInk, LineFormPlace, draw_line_form};
+    let rect = at.rect;
+    let form = draw_line_form(
+        unit,
+        LineFormPlace {
+            width: rect.width(),
+            height: rect.height(),
+            x: at.in_owner.0,
+            y: at.in_owner.1,
+            attributes: words.attributes,
+            style: words.style,
+            state: words.state,
+            owner_attributes: at.owner_attributes,
+            owner_client: at.owner_client,
+            title_width: title.map_or(0, |(text, font, _)| font.text_width(text.as_bytes())),
+            hover_mark: 0,
+        },
+    );
+    let shadow = form.shadow.then(|| {
+        let mut batch = SkinBatch::new();
+        exa_ui::skin::rounded_textured_frame(
+            &mut batch,
+            SkinRect::sized(
+                rect.left as f32,
+                rect.top as f32,
+                rect.width() as f32,
+                rect.height() as f32,
+            ),
+            unit,
+            8,
+            palette.form[3][3],
+        );
+        GuiLayer::new(batch, LayerTexture::None)
+    });
+    let backdrop = form.backdrop.map(|corners| {
+        let mut batch = SkinBatch::new();
+        batch.select(1, 0, false);
+        batch.set_ink(palette.form[3]);
+        batch.begin();
+        for (x, y) in corners {
+            batch.vertex((rect.left + x) as f32, (rect.top + y) as f32);
+        }
+        batch.end_quads();
+        GuiLayer::new(batch, LayerTexture::None)
+    });
+    let title = form
+        .title_x
+        .zip(title)
+        .and_then(|(x, (text, font, texture))| {
+            let texture = texture?;
+            let quads = exa_ui::gui_text::draw_truncated(
+                font,
+                text.as_bytes(),
+                rect.left + x,
+                rect.top + font.ascent,
+                rect.width(),
+            );
+            let batch = text_batch(font, &quads, palette.text[6], texture);
+            Some(GuiLayer::new(batch, LayerTexture::Named(font.texture)))
+        });
+    let frame = (!form.frame.is_empty()).then(|| {
+        let ink = match form.ink {
+            LineFormInk::Idle => line_control_inks(fade)[1],
+            LineFormInk::Hot => palette.highlight[7],
+        };
+        let mut batch = line_skin_batch();
+        push_line_quads(&mut batch, &form.frame, ink);
+        batch.end_quads();
+        offset_batch(&mut batch, rect.left, rect.top);
+        GuiLayer::new(batch, LayerTexture::Named(SKIN_TEXTURE))
+    });
+    LineFormLayers {
+        shadow,
+        backdrop,
+        title,
+        frame,
+        complete: form.complete,
+    }
 }
 
 /// Where a control's caption starts: the skin's own placement from the
