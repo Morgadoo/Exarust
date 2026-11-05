@@ -207,13 +207,14 @@ pub const PLAYER_RECORD_ID: u32 = 1;
 /// world scene on the loaded character and posts it to the content
 /// stream's character ring, so the character is built anew with neither
 /// its AI started nor a saved AI pose restored
-/// ([`exa_assets::content_stream::NO_AI_START`]). Exarust builds the loaded
-/// player synchronously from its record at the next level load (the
-/// player that survived the last session is despawned, [`SavedPlayer`]),
-/// which starts no AI either; the request is kept for that spawn and
-/// logged. The owner key is [`PLAYER_RECORD_ID`] and the class word 0
-/// [Exarust's: the original posts its own character object, whose class
-/// word was not traced].
+/// ([`exa_assets::content_stream::NO_AI_START`]). Exarust posts it with
+/// the player's body ([`LoadedPlayerStream`], [`post_loaded_player`]): the
+/// stream thread builds the body off the main thread, and the next level's
+/// player spawn fetches it, waiting while it is built, as the original's
+/// import spins on the fetch (the player that survived the last session is
+/// despawned, [`SavedPlayer`]). The owner key is [`PLAYER_RECORD_ID`] and
+/// the class word 0 [Exarust's: the original posts its own character
+/// object, whose class word was not traced].
 pub fn loaded_player_request(scene: u64) -> exa_assets::content_stream::CharacterRequest {
     exa_assets::content_stream::CharacterRequest {
         owner: u64::from(PLAYER_RECORD_ID),
@@ -221,6 +222,63 @@ pub fn loaded_player_request(scene: u64) -> exa_assets::content_stream::Characte
         class: 0,
         flags: exa_assets::content_stream::NO_AI_START,
     }
+}
+
+/// The loaded player's request to the content stream, from the story load
+/// until the level's player spawn fetches it.
+#[derive(Resource, Clone, Debug)]
+pub struct LoadedPlayerStream {
+    pub request: exa_assets::content_stream::CharacterRequest,
+    /// The record the body is built for (its physique morphs the body).
+    pub record: CharacterRecord,
+    /// When the request went to the stream; `None` until it is posted.
+    pub posted: Option<std::time::Instant>,
+}
+
+/// The body morph the loaded player's spawn gives its body: the record's
+/// physique (the command line's `--physique` overrides it at the spawn,
+/// which then builds its own).
+pub fn loaded_player_morph(record: &CharacterRecord) -> exa_assets::BodyMorph {
+    exa_assets::BodyMorph::of_model(
+        exa_assets::model::BODY_MODEL,
+        exa_formats::morph::Physique::of_record(record),
+    )
+}
+
+/// Posts the loaded player's request with its body's job (the morphed body
+/// model, parsed here; the stream thread builds it).
+fn post_loaded_player(
+    mut commands: Commands,
+    stream: Option<ResMut<LoadedPlayerStream>>,
+    requests: Option<Res<crate::content_requests::ContentRequests>>,
+    mut assets: crate::gui_drop::DropAssets,
+) {
+    let (Some(mut stream), Some(requests)) = (stream, requests) else {
+        return;
+    };
+    if stream.posted.is_some() {
+        return;
+    }
+    let morph = loaded_player_morph(&stream.record);
+    let Some(mut loader) = assets.loader() else {
+        return;
+    };
+    let Some(job) = loader.morphed_job(
+        exa_assets::PackKind::Resource,
+        exa_assets::model::BODY_MODEL,
+        Some(&morph),
+    ) else {
+        // No body to build: the spawn builds the player as it would.
+        commands.remove_resource::<LoadedPlayerStream>();
+        return;
+    };
+    info!(
+        "content stream: the loaded player {:?} is posted to the character ring (body {})",
+        stream.record.name,
+        job.key()
+    );
+    requests.request_character(stream.request, job);
+    stream.posted = Some(std::time::Instant::now());
 }
 
 /// What the last live save or load did, for the report and the tests.
@@ -263,6 +321,12 @@ impl Plugin for SaveLivePlugin {
                 )
                     .chain()
                     .run_if(resource_exists::<SaveFolder>),
+            )
+            .add_systems(
+                Update,
+                post_loaded_player
+                    .after(load_story_slot)
+                    .run_if(resource_exists::<LoadedPlayerStream>),
             )
             .add_systems(
                 Update,
@@ -1573,10 +1637,11 @@ pub fn restore_story(
         .unwrap_or_else(|_| crate::session::session_from_player_data(&loaded.data));
     let level = story_at(&locale).level();
     let mut player = loaded.player_record();
-    // The identity reset, then its request to the content stream.
+    // The identity reset, then its request to the content stream: the
+    // character goes into the world scene.
     let request = player.as_mut().map(|record| {
         record.reset_loaded_identity();
-        loaded_player_request(0)
+        loaded_player_request(crate::content_requests::WORLD_SCENE)
     });
     let placement = loaded
         .data
@@ -1708,11 +1773,21 @@ fn load_story_slot(
                     commands.remove_resource::<exa_world::SavedLevelSection>();
                 }
             }
-            if let Some(stream) = restored.request {
+            if let (Some(stream), Some(record)) = (restored.request, restored.player.as_ref()) {
                 info!(
                     "save: the loaded player is requested anew (request word {:#x}: no AI start, no saved AI pose)",
                     stream.flags
                 );
+                // The request goes to the content stream's character ring
+                // once its body's job is prepared; the level's player
+                // spawn fetches it.
+                commands.insert_resource(LoadedPlayerStream {
+                    request: stream,
+                    record: record.clone(),
+                    posted: None,
+                });
+            } else {
+                commands.remove_resource::<LoadedPlayerStream>();
             }
             clock.write(crate::world_clock::RestoreWorldClock {
                 saved_seconds: restored.session.clock,

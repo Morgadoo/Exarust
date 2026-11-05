@@ -222,6 +222,8 @@
 //!                                     exanima06 gate's key token)
 //!          --fell-player <frame>      play mode: the player collapses at this frame after the load, as a blow that
 //!                                     empties its yellow health starts it (its red health is kept; a debug tool)
+//!          --sync-content             debug: no content stream thread; the item icons' models and a loaded save's
+//!                                     player body are built on the main thread where they are needed (timings)
 //!          --story-session            play mode: the level runs as a story-mode session (the story hook's knock-out,
 //!                                     revive with its alarm return, and death), not a practice session without one
 //!          --perks a,b,...            play mode: the player's perks (e.g. `remise,feint`: hold to chain the other
@@ -525,6 +527,8 @@ pub struct Options {
     pub give: Vec<u32>,
     /// The play level runs as a story-mode session.
     pub story_session: bool,
+    /// `--sync-content`: no content stream thread.
+    pub sync_content: bool,
     /// The player's perks.
     pub perks: exa_formats::characters::Perks,
     /// Let the low-health heartbeat play in any level.
@@ -1068,6 +1072,7 @@ fn main() -> AppExit {
                 }
             }
             "--story-session" => options.story_session = true,
+            "--sync-content" => options.sync_content = true,
             "--heartbeat" => options.heartbeat = true,
             "--undying" => options.undying = true,
             "--arena-fell" => options.arena_fell = args.next().and_then(|v| v.parse().ok()),
@@ -1772,6 +1777,9 @@ fn main() -> AppExit {
     .insert_resource(exa_game::save_live::ScriptedSaves(options.save_at.clone()));
     if options.story_session {
         app.insert_resource(exa_game::flow::StorySession);
+    }
+    if options.sync_content {
+        app.insert_resource(exa_game::content_requests::ContentStreamOff);
     }
     if let Some(script) = &options.game_events {
         app.insert_resource(script.clone());

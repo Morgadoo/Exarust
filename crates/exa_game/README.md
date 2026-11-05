@@ -1911,6 +1911,21 @@ routines that were read from the original.
   rank's worn items, lit by the view's stand-in light (the level's light
   list leaves the floor scene's lights out); the held items are not drawn.
 
+## Content stream requests
+
+`content_requests` runs the game's content stream
+(`exa_assets::stream_worker`): the stream thread builds a requested model
+on the CPU (`ModelJob::build`) and the main thread adds its assets when the
+caller fetches it. The item icons post an object request (the item's id,
+its variant with the streamed bit `0x10000000`, `ICON_SCENE`) for a model
+the cache does not hold and wait on the fetch, as the original's icon draw
+spins on it; a factory weapon (`@`) is still assembled in place. A story
+load posts the loaded player's character request (`0x1000`,
+`WORLD_SCENE`) with its body morphed by the record's physique
+(`save_live::LoadedPlayerStream`), and the level's player spawn fetches it,
+waiting up to 30 s. `--sync-content` (`ContentStreamOff`) starts no stream,
+so both are built on the main thread (for timing comparisons).
+
 ## Scene bodies and the live arena round
 
 `scene_bodies` is the scene body generator: a `SceneBodyPlan` names the

@@ -29,6 +29,7 @@ pub mod character_use;
 pub mod character_voice;
 pub mod commands;
 pub mod container_fill;
+pub mod content_requests;
 pub mod control_nodes;
 pub mod create;
 pub mod creator_screen;
@@ -246,6 +247,7 @@ impl Plugin for GamePlugin {
         .add_plugins(weather::WeatherPlugin)
         .add_plugins(world_clock::WorldClockPlugin)
         .add_plugins(save_live::SaveLivePlugin)
+        .add_plugins(content_requests::ContentRequestsPlugin)
         .add_plugins(help_live::HelpLivePlugin)
         .add_plugins((
             flow::FlowPlugin,

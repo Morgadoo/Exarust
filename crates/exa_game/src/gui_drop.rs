@@ -262,6 +262,21 @@ pub struct DropAssets<'w> {
     support: Option<Res<'w, CompressedImageFormatSupport>>,
 }
 
+impl DropAssets<'_> {
+    /// A model loader over these assets, once the installation is open.
+    pub fn loader(&mut self) -> Option<ModelLoader<'_>> {
+        let game = self.game.as_deref()?;
+        Some(ModelLoader {
+            game: &game.0,
+            cache: &mut self.cache,
+            meshes: &mut self.meshes,
+            materials: &mut self.materials,
+            images: &mut self.images,
+            bc_supported: model::bc_supported(self.support.as_deref()),
+        })
+    }
+}
+
 /// Runs the drops queued on the previous frame (see the module notes).
 #[allow(clippy::too_many_arguments)]
 pub fn run_gui_drops(
