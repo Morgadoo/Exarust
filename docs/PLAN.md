@@ -881,6 +881,8 @@ Round 52 levelsave (G5): the level's own state is saved and read back from the s
 
 Round 55 charinv: only the Golem Boss and Golem Srv carry interaction conditions; companions open their inventory through markers or the Ally Equipment topic.
 
+Round 56 invframe: the inventory window draws its frame and panels; the Rayform textures are the GUI fonts, embedded in Exanima.exe.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
@@ -1262,6 +1264,8 @@ Round 49 loadout (P12): the loadout form equips and returns kit items and saves 
 Round 52 useeffects (P5, P6): the parchment is a map's popup, not a kind 7 use; shop copies have their own bodies.
 
 Round 54 hubrows: the trade window has no rows in the original; its item panels replace the stand-in rows, which removes the label offset by construction.
+
+Round 56 weaponfactory (S6): factory weapons draw as one mesh with one atlas; the mesh-tools ports finally have a caller.
 
 ### Phase 5 — Visual and audio fidelity (started)
 
@@ -2480,4 +2484,6 @@ Round 44 weather (E1, cl/weather): rain and thunder are live, GPU-checked on are
 Round 49 gibright: the reported outdoor overbright did not reproduce on main; the read-back probe (EXA_GI_PROBE) found the opposite fault, sky light reaching no voxel, and fixed it.
 
 Round 55 arenaweather (S4): no career state reaches the arena's weather draw and the shipped game never drives the time of day; the day was drawn twice per load and now once.
+
+Round 56 nightlook: the night environment already matched the original; the arenao3 moon "octagon" is the tower roofs' real shadow; the warm o3/o4 nights are fire light and GI (a GI warmth calibration question).
 
