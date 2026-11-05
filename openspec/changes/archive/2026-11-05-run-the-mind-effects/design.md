@@ -76,6 +76,6 @@ perception breaks (state 2) ends its power after the tick.
 
 - The pick's line of sight (a ray from eye to eye through the scene): no
   scene query in the running game; taken as clear.
-- The value the hand-over copies at the behaviour's `+0x20`-class word
+- The one word the hand-over copies from the AI behaviour into the new player behaviour (and back)
   (Exarust's player behaviour has no counterpart named yet).
 - The wraith's physical frame (answered by the body work, not here).
