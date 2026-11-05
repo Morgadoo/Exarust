@@ -433,6 +433,53 @@ where
     out
 }
 
+/// The coin control's text baseline in a record at `y` of `height`: the
+/// record's middle with the main font's centring height, `y + (height +
+/// ascent + 2) >> 1`, the sum shifted as an unsigned 64-bit word and kept
+/// to its low 32 bits (the control's draw message).
+pub fn coin_baseline(y: i32, height: i32, ascent: i32) -> i32 {
+    let sum = i64::from(height) + i64::from(ascent) + 2;
+    (((sum as u64) >> 1) as i64 + i64::from(y)) as i32
+}
+
+/// One denomination the coin control draws: its icon (1 gold, 2 silver,
+/// 3 copper) at `icon` (top-left), its count's text at `text_x` on the
+/// control's baseline.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CoinPart {
+    pub icon: u8,
+    pub count: u32,
+    pub icon_at: (f32, f32),
+    pub text_x: f32,
+}
+
+/// The coin manager's cell side: four units (its icons stand on the
+/// baseline, their top `4 · unit` above it).
+pub fn coin_cell(unit: i32) -> i32 {
+    unit << 2
+}
+
+/// The coin control's draw: the texts first, each present denomination's
+/// count four units after its place, the next place two units after the
+/// text's end ([`coin_layout`]); then, in white at the GUI alpha, each
+/// present denomination's icon at its place, its top the coin cell above
+/// the baseline.
+pub fn coin_draw<F>(coins: u32, x: i32, baseline: i32, unit: i32, width: F) -> Vec<CoinPart>
+where
+    F: FnMut(u32) -> f32,
+{
+    let top = baseline - coin_cell(unit);
+    coin_layout(coins, x as f32, unit as f32, width)
+        .into_iter()
+        .map(|(icon, at, count)| CoinPart {
+            icon,
+            count,
+            icon_at: (at, top as f32),
+            text_x: at + 4.0 * unit as f32,
+        })
+        .collect()
+}
+
 /// Where a rating's dots go: whole dots at `x` and every spacing (3 units,
 /// or 2 units and half a unit rounded up above a rating of 7.25), then the
 /// half dot's place when the remainder is above a quarter. A negative
@@ -856,8 +903,9 @@ pub struct LoadedSheet {
 /// pixel format and copies each stored place into it; an image or a place
 /// that does not fit leaves the sheet out. The running inventory reads the
 /// dot sheet for its encumbrance dots (`exa_game::doll_view`); the card
-/// reads the dot and crystal sheets for its socket row
-/// (`exa_game::item_card`) and paints no coins or grip buttons yet.
+/// reads the dot and crystal sheets for its socket row and the coin sheet
+/// for its coin control (`exa_game::item_card`), and paints no grip
+/// buttons yet.
 pub fn load_sheet(sheet: &SpriteSheet, bytes: &[u8]) -> Option<LoadedSheet> {
     let rfi = exa_formats::rfi::Rfi::parse(bytes).ok()?;
     let width = i32::try_from(rfi.header.width).ok()?;
@@ -986,6 +1034,41 @@ mod tests {
         assert_eq!(s.knob, 100);
         assert_eq!((s.left, s.right), (Some((11, 107)), Some((115, 211))));
         assert_eq!(slider(0, 200, 0.0).left, None);
+    }
+
+    #[test]
+    fn the_coin_control_draws_its_icons_on_the_text_baseline() {
+        // A record 0x10 high at y 40, a font centred by 13: (16 + 13 + 2)
+        // >> 1 = 15 below the record's top.
+        assert_eq!(coin_baseline(40, 16, 13), 55);
+        // The sum is shifted unsigned, but only the low 32 bits are kept,
+        // which the shift's top bit never reaches: a negative sum floors.
+        assert_eq!(coin_baseline(0, -20, 0), -9);
+        assert_eq!(coin_baseline(0, -21, 0), -10);
+        assert_eq!(coin_cell(4), 16);
+        // 2 silver 7 copper at x 100, unit 4: no gold, so silver takes the
+        // first place; each count's text sits four units after its icon.
+        let parts = coin_draw(0x0000_0207, 100, 55, 4, |n| {
+            6.0 * n.to_string().len() as f32
+        });
+        assert_eq!(
+            parts,
+            vec![
+                CoinPart {
+                    icon: 2,
+                    count: 2,
+                    icon_at: (100.0, 39.0),
+                    text_x: 116.0
+                },
+                CoinPart {
+                    icon: 3,
+                    count: 7,
+                    icon_at: (130.0, 39.0),
+                    text_x: 146.0
+                },
+            ]
+        );
+        assert!(coin_draw(0, 0, 0, 4, |_| 0.0).is_empty());
     }
 
     #[test]

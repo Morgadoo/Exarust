@@ -12,6 +12,14 @@
 //! [`crate::heartbeat`]. The 3-D character preview, the item panels'
 //! loading and saving and the unit's string tables are not here.
 //!
+//! Unreachable in 0.9.5: the power slot, the segmented counter and the
+//! bar control are registered as control classes, but the only records
+//! naming them are one table (a counter and five power slots) that no form
+//! uses; the power slot's release is the only way the technique selector's
+//! opener ([`selector_open`]) runs, and the HUD's centred message
+//! ([`HudLayer::Message`]) waits on a flag nothing sets. Their rules are
+//! kept here as read, and nothing in the running game calls them.
+//!
 //! Rules: `docs/UI.md` (The in-game GUI unit).
 
 use exa_formats::characters::Skill;
@@ -536,7 +544,15 @@ pub fn paint_preview_bars(
         stamina: 1.0,
         combat: false,
     };
-    crate::hud::paint_bars(&mut canvas, &bars, &layout, fade, texture, window.1 as u32);
+    crate::hud::paint_bars_with(
+        &mut canvas,
+        &bars,
+        &layout,
+        fade,
+        texture,
+        window.1 as u32,
+        false,
+    );
     canvas
 }
 
@@ -679,7 +695,8 @@ impl Journal {
 }
 
 /// A power slot (control class 0xac3): its icon handle (0 for an empty
-/// slot), its count, kind and skill, and its state word.
+/// slot), its count, kind and skill, and its state word. Unreachable in
+/// 0.9.5: no form uses a record of this class (see the module notes).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PowerSlot {
     pub icon: i32,
@@ -843,7 +860,8 @@ impl PowerSlot {
 }
 
 /// The segmented counter control (class 0xac2, 28 × 16): a value shown as a
-/// percentage with one decimal and as blocks.
+/// percentage with one decimal and as blocks. Unreachable in 0.9.5: only
+/// the unused record table names the class.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Counter {
     pub value: f32,
@@ -1017,7 +1035,8 @@ impl Counter {
 }
 
 /// The bar control (class 0xac4, 28 × 16) draws the HUD's two-share bar
-/// two pixels in and one down, four narrower.
+/// two pixels in and one down, four narrower. Unreachable in 0.9.5: no
+/// record of this class exists.
 pub fn bar_control_place(x: i32, y: i32, width: i32) -> (i32, i32, i32) {
     (x + 2, y + 1, width - 4)
 }

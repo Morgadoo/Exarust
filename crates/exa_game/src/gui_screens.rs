@@ -18,7 +18,7 @@
 //! screen is Exarust's (the original closes them through their frame marks
 //! and the keys again). The skills key's screen
 //! and the power tree are outside this unit; the technique selector opens
-//! from a power slot, which the HUD does not draw yet.
+//! only from the unit's power slot, a control no form uses in 0.9.5.
 //!
 //! Rules: `docs/UI.md` (The in-game GUI unit).
 
@@ -2319,7 +2319,7 @@ fn paint_inventory(
             value,
             (record.x, record.y, record.h),
             unit,
-            palette.text[7],
+            palette.text[6],
         )
     {
         painted.push(layer);
