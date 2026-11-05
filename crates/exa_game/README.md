@@ -707,7 +707,7 @@ torch lays the start's torch, item 0x1f, at its pose: `StoryTorch`), the
 tip banner and the manual in play (`help_live`: `Step::Tip` shows the
 prelude's line, the menu's MANUAL rows open `manualkm.fds` over the
 covered menu), the debug light listing around
-the player (`light_probe`, `--debug-lights`), the teleporter and reconstruction devices (`teleporters`: a `UseDevice`
+the player, or the camera in a level view (`light_probe`, `--debug-lights`), the teleporter and reconstruction devices (`teleporters`: a `UseDevice`
 request finds the device's crystal slot and the placed object on it; a
 teleporter asks for the destination screen with its rows and level ids, a
 reconstruction device puts the effects' scan on the player, waiting

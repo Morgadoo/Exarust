@@ -106,7 +106,7 @@
 //!          --no-torch                 play mode: the player starts without the carried torch (a new story then
 //!                                     lays the start's torch beside the player, as the original's start does)
 //!          --floor-torch x,y,z[,rx,ry,rz]  a lit torch lying on the floor here (metres; optionally its frame as X, Y, Z degrees), as the story start has it
-//!          --debug-lights M           log the point lights within M metres of the player, once
+//!          --debug-lights M           log the point lights within M metres of the player (level view: the camera), once
 //!          --nav-refresh-moved        debug: a door or prop that comes to rest somewhere new refreshes the navigation grid
 //!                                     under it (the original refreshes only where a lifted item is let go)
 //!          --static-doors             debug: hinged doors stay static level geometry, as before they became bodies
@@ -1697,6 +1697,8 @@ fn main() -> AppExit {
     } else {
         app.add_plugins(plugins);
     }
+    // `--debug-lights` lists around the camera in a level view.
+    let level_view = matches!(view, View::Level(_));
     app.add_plugins(exa_game::GamePlugin)
         .insert_resource(Game(Arc::new(data)))
         .insert_resource(exa_game::flow::BootToMenu(false))
@@ -1732,6 +1734,7 @@ fn main() -> AppExit {
             on: options.debug_nav,
         })
         .insert_resource(exa_game::light_probe::DebugLights(options.debug_lights))
+        .insert_resource(exa_game::light_probe::DebugLightsAtCamera(level_view))
         .insert_resource(exa_game::torch::FloorTorch(
             options
                 .floor_torch

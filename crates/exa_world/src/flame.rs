@@ -21,10 +21,31 @@ pub struct FlamePlugin;
 
 impl Plugin for FlamePlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
+        app.insert_resource(FireLightPin::from_env()).add_systems(
             Update,
             (load_flame_assets, attach_flames, simulate, build_meshes).chain(),
         );
+    }
+}
+
+/// Debug tool (`EXA_FIRE_LIGHT=<f>`): every fire light's intensity is held
+/// at `f` times its template's intensity instead of following the density
+/// and the flicker (the original's light runs about 1.16 on average, from
+/// 0.7 to 1.6), so a still frame can be compared with a frame average of
+/// the original. The flames themselves keep running.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq)]
+pub struct FireLightPin(pub Option<f32>);
+
+impl FireLightPin {
+    fn from_env() -> Self {
+        let pin = std::env::var("EXA_FIRE_LIGHT")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .filter(|v| v.is_finite());
+        if let Some(v) = pin {
+            info!("fire lights held at {v} x their template intensity (EXA_FIRE_LIGHT)");
+        }
+        Self(pin)
     }
 }
 
@@ -166,6 +187,7 @@ fn attach_flames(
 /// flame is removed.
 fn simulate(
     time: Res<Time>,
+    pin: Res<FireLightPin>,
     mut commands: Commands,
     mut flames: Query<(
         Entity,
@@ -220,7 +242,10 @@ fn simulate(
             emitter.frame(rng)
         };
         if let Some(mut fire) = fire {
-            fire.intensity = frame.intensity;
+            fire.intensity = match pin.0 {
+                Some(scale) => scale * flame.emitter.light.base,
+                None => frame.intensity,
+            };
             fire.softness = frame.softness;
             fire.density = flame.emitter.light.density;
             fire.emissive = frame.emissive;
@@ -308,5 +333,35 @@ mod tests {
         // The density settles a little above the template's full count.
         let density = flame.emitter.light.density;
         assert!(density > 0.7 && density < 1.6, "{density}");
+    }
+
+    #[test]
+    fn a_torch_light_averages_what_the_original_measures() {
+        // The original's two wall torches in its menu scene, read from the
+        // running game over 3000 frames: density means 1.149 to 1.188 (0.72
+        // to 1.49), 28.7 to 29.7 live particles against a normaliser of 25,
+        // so the light runs above its template intensity on average.
+        let p = fire::preset(0.2);
+        for seed in [3, 7, 11] {
+            let emitter = Emitter::new(
+                p.flame.template,
+                p.flame.size,
+                vec![crate::particles::Source::at_node()],
+            );
+            let mut flame = Flame::new(emitter, 0.0, SMALL_TEXTURE, seed);
+            let (mut density, mut live, mut n) = (0.0f64, 0.0f64, 0.0f64);
+            for tick in 0..20_000 {
+                flame.emitter.tick(NodeFrame::default(), &mut flame.rng);
+                if tick >= 1000 {
+                    density += f64::from(flame.emitter.light.density);
+                    live += flame.emitter.live() as f64;
+                    n += 1.0;
+                }
+            }
+            assert_eq!(flame.emitter.params.density_count, 25);
+            let (density, live) = (density / n, live / n);
+            assert!((1.12..1.21).contains(&density), "{density}");
+            assert!((27.5..30.5).contains(&live), "{live}");
+        }
     }
 }
