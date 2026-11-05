@@ -19,6 +19,7 @@
 //! lift holds its pelvis over the ground under its feet.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use bevy::math::Affine3A;
 use bevy::prelude::*;
@@ -65,7 +66,7 @@ impl Plugin for LimpPlugin {
             FixedPreUpdate,
             place_on_ground.after(crate::player::steer_player),
         )
-        .add_systems(Update, pace_swings)
+        .add_systems(Update, (pace_swings, install_limb_trees))
         .add_plugins(CharacterTickPlugin);
     }
 }
@@ -100,6 +101,7 @@ fn build_bodies(
     globals: Query<&GlobalTransform>,
     skinned: Query<&SkinnedPart>,
     meshes: Res<Assets<Mesh>>,
+    mut limb_meshes: Local<LimbMeshes>,
 ) {
     let Some(motions) = motions else { return };
     for (root, mut physical, mut limp, mut placed) in &mut requests {
@@ -161,7 +163,7 @@ fn build_bodies(
                 )
             })
             .collect();
-        let body = if corpse {
+        let mut body = if corpse {
             // A level's dead are already in their saved pose: limp, no
             // muscles, and registered at rest (one tick, then sleep).
             let mut body = Ragdoll::new(&setup);
@@ -191,7 +193,39 @@ fn build_bodies(
             );
             body.place_foot_pitches()
         };
+        // Each limb's node mesh, as the original's limb builder leaves it:
+        // the pair stage queries it where the limb is the mesh side, and
+        // the picks ask it. Its kd-tree is built off the main thread and
+        // installed when done ([`install_limb_trees`]); until then the
+        // mesh's triangles answer one by one.
+        let mut limb_triangles = 0;
+        let mut limb_volume = 0.0;
+        let mut trees = Vec::new();
+        let pool = bevy::tasks::AsyncComputeTaskPool::get();
+        for (i, &(entity, bone, _)) in found.iter().enumerate() {
+            if let Some(mesh) = limb_meshes.of(entity, bone, &children, &skinned, &meshes) {
+                limb_triangles += mesh.len();
+                limb_volume += exa_physics::mesh_tree::signed_volume(&mesh);
+                body.parts[i].triangles = Some(mesh.clone());
+                trees.push((
+                    i,
+                    pool.spawn(async move { exa_physics::mesh_tree::shape_tree(&mesh) }),
+                ));
+            }
+        }
+        debug!(
+            "limb meshes: {root:?} {} parts, {limb_triangles} triangles (signed volume {:.0} cm³), {} trees queued",
+            found.len(),
+            limb_volume * 1e6,
+            trees.len()
+        );
         let mut entity = commands.entity(root);
+        if !trees.is_empty() {
+            entity.insert(PendingLimbTrees {
+                tasks: trees,
+                started: std::time::Instant::now(),
+            });
+        }
         entity
             .insert(body)
             .remove::<Physical>()
@@ -323,7 +357,7 @@ pub struct GroundPlacement {
 /// The controller (the capsule at the feet) stays where it stands: the
 /// original's frame sits at the pelvis, which the parts carry. Logs the
 /// pelvis height it placed at info level.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn place_on_ground(
     mut commands: Commands,
     mut asked: Query<(Entity, &GroundPlacement, &mut Ragdoll, &GlobalTransform)>,
@@ -332,6 +366,8 @@ fn place_on_ground(
     parents: Query<&ChildOf>,
     nodes: Query<(&Transform, Option<&BodyPart>)>,
     physics: Option<Res<exa_physics::Physics>>,
+    sector_bodies: Option<Res<exa_physics::sector_lists::SectorBodies>>,
+    others: Query<(&Ragdoll, Option<&Condition>), Without<GroundPlacement>>,
 ) {
     for (root, placement, mut body, at) in &mut asked {
         commands.entity(root).remove::<GroundPlacement>();
@@ -353,7 +389,46 @@ fn place_on_ground(
         let mut floor = at.affine();
         floor.translation.y = placement.floor;
         let before = body.parts.get(pelvis).map(|p| p.transform().translation.y);
-        match body.place_on_ground(&physics.0, floor, &posed, pelvis) {
+        // The Height Query in its mesh mode, as a grid scene's is: the body
+        // meshes listed in the nine sector cells around the frame (props,
+        // items, dead bodies' limbs; not a living limb) answer besides the
+        // level.
+        let meshes = sector_bodies.as_deref().map_or_else(Vec::new, |grid| {
+            exa_physics::sector_lists::height_meshes(
+                grid,
+                at.translation(),
+                |e| {
+                    others
+                        .get(e)
+                        .is_ok_and(|(_, c)| c.is_some_and(|c| c.is_dead()))
+                },
+                |e| others.get(e).ok().map(|(r, _)| r),
+            )
+        });
+        for m in &meshes {
+            let centre = m.world.transform_point3(m.centre);
+            let across = (centre - at.translation()).with_y(0.0).length();
+            if across < 2.0 {
+                debug!(
+                    "ground placement {root:?}: body mesh {:.0} cm away at ({:.2}, {:.2}, {:.2}), {} triangles, tree {}",
+                    across * CM,
+                    centre.x,
+                    centre.y,
+                    centre.z,
+                    m.triangles.len(),
+                    m.tree.is_some()
+                );
+            }
+        }
+        let level = exa_physics::sector_lists::MeshLevel::new(&physics.0, &meshes);
+        let placed = body.place_on_ground(&level, floor, &posed, pelvis);
+        info!(
+            "ground placement {root:?}: height query over the level and {} body meshes, {} probes on a body mesh above the level, {} at the level's height",
+            meshes.len(),
+            level.body_hits.get(),
+            level.body_ties.get()
+        );
+        match placed {
             Some(height) => info!(
                 "ground placement {root:?}: pelvis {:.1} cm over the floor (was {:.1}), feet at {:.1}, character ground {:.1}",
                 height - placement.floor * CM,
@@ -1355,6 +1430,117 @@ fn current_under(
         }
     }
     placement
+}
+
+/// A shared triangle list.
+type TriangleList = Arc<Vec<[Vec3; 3]>>;
+
+/// A limb tree being built.
+type TreeTask = bevy::tasks::Task<Option<Arc<exa_physics::mesh_tree::MeshTree>>>;
+
+/// A body's limb trees being built ([`build_bodies`]), by part.
+#[derive(Component)]
+pub(crate) struct PendingLimbTrees {
+    tasks: Vec<(usize, TreeTask)>,
+    started: std::time::Instant,
+}
+
+/// Installs each finished limb tree into its part, as the original's frame
+/// hook drains the builder's finished meshes and installs their queries
+/// (only between body steps, which a frame system is).
+fn install_limb_trees(
+    mut commands: Commands,
+    mut pending: Query<(Entity, &mut PendingLimbTrees, &mut Ragdoll)>,
+) {
+    for (root, mut trees, mut body) in &mut pending {
+        trees.tasks.retain_mut(|(part, task)| {
+            let Some(tree) = bevy::tasks::block_on(bevy::tasks::poll_once(task)) else {
+                return true;
+            };
+            body.set_part_tree(*part, tree);
+            false
+        });
+        if trees.tasks.is_empty() {
+            debug!(
+                "limb trees: {root:?} installed after {:.1} ms",
+                trees.started.elapsed().as_secs_f64() * 1000.0
+            );
+            commands.entity(root).remove::<PendingLimbTrees>();
+        }
+    }
+}
+
+/// The limbs' node meshes already read, by mesh and bone, so bodies built
+/// from the same meshes share one triangle list (and one tree).
+#[derive(Default)]
+pub(crate) struct LimbMeshes(HashMap<(AssetId<Mesh>, usize), TriangleList>);
+
+impl LimbMeshes {
+    /// Part `part`'s node mesh in its space (metres): the triangles of the
+    /// same meshes [`part_box`] bounds, in their index order. `None` when
+    /// the part has none.
+    fn of(
+        &mut self,
+        part: Entity,
+        bone: usize,
+        children: &Query<&Children>,
+        skinned: &Query<&SkinnedPart>,
+        meshes: &Assets<Mesh>,
+    ) -> Option<TriangleList> {
+        let mut lists = Vec::new();
+        for child in children.get(part).into_iter().flat_map(|c| c.iter()) {
+            let Ok(s) = skinned.get(child) else {
+                continue;
+            };
+            if s.bone as usize != bone {
+                continue;
+            }
+            let key = (s.mesh.id(), bone);
+            if let Some(list) = self.0.get(&key) {
+                lists.push(list.clone());
+                continue;
+            }
+            let Some(list) = meshes.get(&s.mesh).and_then(mesh_triangles) else {
+                continue;
+            };
+            let list = Arc::new(list);
+            self.0.insert(key, list.clone());
+            lists.push(list);
+        }
+        match lists.len() {
+            0 => None,
+            1 => lists.pop(),
+            _ => Some(Arc::new(
+                lists.iter().flat_map(|l| l.iter().copied()).collect(),
+            )),
+        }
+    }
+}
+
+/// A mesh's triangles (its positions by its index list, or in threes
+/// without one). `None` without positions or triangles.
+fn mesh_triangles(mesh: &Mesh) -> Option<Vec<[Vec3; 3]>> {
+    let positions = mesh
+        .attribute(Mesh::ATTRIBUTE_POSITION)
+        .and_then(|a| a.as_float3())?;
+    let at = |i: usize| positions.get(i).map(|p| Vec3::from(*p));
+    let list: Vec<[Vec3; 3]> = match mesh.indices() {
+        Some(indices) => {
+            let ix: Vec<usize> = indices.iter().collect();
+            ix.as_chunks::<3>()
+                .0
+                .iter()
+                .filter_map(|t| Some([at(t[0])?, at(t[1])?, at(t[2])?]))
+                .collect()
+        }
+        None => positions
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|t| t.map(Vec3::from))
+            .collect(),
+    };
+    (!list.is_empty()).then_some(list)
 }
 
 /// Box of a part's own skinned body meshes, in its space.

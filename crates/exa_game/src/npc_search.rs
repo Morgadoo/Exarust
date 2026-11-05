@@ -36,11 +36,15 @@
 //!   sections. The gathering keeps those whose record has an apparel,
 //!   weapon, operative or container part. A container's take and drop are
 //!   written back into its sections; a loose item that is taken leaves the
-//!   world with its colliders. [Exarust stand-ins: the original walks the
-//!   room grid's body and static-collider lists, which Exarust does not
-//!   keep (S10), so every placed object with a model stands for one in
-//!   them and is listed after the cell's characters; a model-less volume
-//!   or placeholder is left out.]
+//!   world with its colliders. The objects come from the sector's lists,
+//!   as the original's gathering walks the room grid's body and
+//!   static-collider lists: in each cell, the body grid's parts and then
+//!   the static grid's meshes ([`exa_physics::sector_lists`]), each taken
+//!   to the placed object it belongs to, an object once a cell; a placed
+//!   object with neither a body nor a static collider is never gathered.
+//!   [Exarust: a list entry is mapped to its nearest placed-object
+//!   ancestor, where the original tests the listed node itself; the cell's
+//!   characters are still listed before its objects.]
 //! - **Re-dressing** follows every change the search makes to a worn list
 //!   or a main hand: the garments that came off leave the body's outfit and
 //!   the new ones are added, which asks the dress for a refit
@@ -341,9 +345,52 @@ pub struct LevelObjects<'w, 's> {
     >,
     bounds: Query<'w, 's, (&'static exa_world::PartBounds, &'static GlobalTransform)>,
     levels: Query<'w, 's, (), With<exa_world::LevelRoot>>,
+    sector_bodies: Option<Res<'w, exa_physics::sector_lists::SectorBodies>>,
+    statics: Option<Res<'w, exa_physics::StaticColliders>>,
+    parents: Query<'w, 's, &'static ChildOf>,
 }
 
 impl LevelObjects<'_, '_> {
+    /// The placed object `node` belongs to: itself or its nearest
+    /// ancestor that is a placed object.
+    fn placed_of(&self, node: Entity) -> Option<Entity> {
+        std::iter::once(node)
+            .chain(self.parents.iter_ancestors(node))
+            .find(|&e| self.placed.contains(e))
+    }
+
+    /// The placed objects the sector's lists hold, cell by cell of a
+    /// `size` room grid: in each cell, the body grid's parts then the
+    /// static grid's meshes, each mapped to the placed object it belongs
+    /// to, an object once a cell. `None` while the lists are not kept.
+    fn listed(&self, size: exa_ai::rooms::RoomGridSize) -> Option<Vec<(i32, Entity)>> {
+        let (bodies, statics) = (self.sector_bodies.as_deref()?, self.statics.as_deref()?);
+        let mut out = Vec::new();
+        let mut in_cell: Vec<Entity> = Vec::new();
+        for index in 0..size.width.max(0) * size.height.max(0) {
+            let cell = (
+                index % size.width - size.width / 2,
+                index / size.width - size.height / 2,
+            );
+            in_cell.clear();
+            let from_bodies = bodies
+                .at(cell)
+                .iter()
+                .filter_map(|e| self.placed_of(e.node).or_else(|| self.placed_of(e.body)));
+            let from_statics = statics
+                .in_world_cell(cell)
+                .iter()
+                .filter_map(|&id| statics.mesh_of(id).and_then(|m| self.placed_of(m)));
+            for placed in from_bodies.chain(from_statics) {
+                if !in_cell.contains(&placed) {
+                    in_cell.push(placed);
+                    out.push((index, placed));
+                }
+            }
+        }
+        Some(out)
+    }
+
     /// Every placed object with a model: its first node's box (the node's
     /// own place without one).
     fn seen(&self) -> Vec<SeenObject> {
@@ -525,6 +572,28 @@ pub fn room_grid(
     for &(o, at) in objects {
         if let Some(cell) = exa_ai::rooms::cell_index(at, size) {
             grid.objects[cell as usize].push(o);
+        }
+    }
+    grid
+}
+
+/// The search's room grid as [`room_grid`] builds it, with each object
+/// (its index) listed in the cell index given, in the order given: the
+/// sector's lists place an object by its body parts and static meshes,
+/// not by its box. An index off the grid is left out.
+pub fn room_grid_in_cells(
+    size: exa_ai::rooms::RoomGridSize,
+    flags: &[u32],
+    characters: &[Option<Vec3>],
+    objects: &[(usize, i32)],
+) -> search::RoomGrid {
+    let mut grid = room_grid(size, flags, characters, &[]);
+    for &(o, cell) in objects {
+        if let Some(list) = usize::try_from(cell)
+            .ok()
+            .and_then(|c| grid.objects.get_mut(c))
+        {
+            list.push(o);
         }
     }
     grid
@@ -766,6 +835,7 @@ fn refresh_scene(
     world: &mut SearchWorld,
     seen: Vec<Seen>,
     placed: Vec<SeenObject>,
+    listed: Option<Vec<(i32, Entity)>>,
     size: exa_ai::rooms::RoomGridSize,
     level: Option<&exa_world::room_view::LevelRooms>,
     level_changed: bool,
@@ -859,7 +929,21 @@ fn refresh_scene(
         .filter(|(_, o)| o.corpse.is_none() && present(o))
         .map(|(i, o)| (i, o.at))
         .collect();
-    scene.grid = room_grid(size, &world.flags, &characters, &objects);
+    scene.grid = match listed {
+        // The sector's lists: each object in the cells its body parts and
+        // static meshes are listed in, in the lists' order.
+        Some(listed) => {
+            let in_cells: Vec<(usize, i32)> = listed
+                .iter()
+                .filter_map(|(cell, e)| {
+                    let o = *world.objects.get(e)?;
+                    present(&scene.objects[o]).then_some((o, *cell))
+                })
+                .collect();
+            room_grid_in_cells(size, &world.flags, &characters, &in_cells)
+        }
+        None => room_grid(size, &world.flags, &characters, &objects),
+    };
 }
 
 /// The follow state and the search, for every level brain whose roles
@@ -949,11 +1033,24 @@ pub fn follow_and_search(
         let level_changed = level_res.as_ref().is_some_and(|l| l.is_changed());
         let placed = objects.seen();
         let first = world.objects.is_empty() && !placed.is_empty();
+        let grid_size = size.as_deref().copied().unwrap_or_default();
+        let listed = objects.listed(grid_size);
+        if first {
+            let distinct: std::collections::HashSet<Entity> =
+                listed.iter().flatten().map(|&(_, e)| e).collect();
+            info!(
+                "search: the sector lists hold {} placed objects in {} cell entries ({} placed objects with a model)",
+                distinct.len(),
+                listed.as_ref().map_or(0, Vec::len),
+                placed.len()
+            );
+        }
         refresh_scene(
             &mut world,
             seen,
             placed,
-            size.as_deref().copied().unwrap_or_default(),
+            listed,
+            grid_size,
             level,
             level_changed,
         );

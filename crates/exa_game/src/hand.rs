@@ -862,8 +862,12 @@ fn ray_sphere(origin: Vec3, dir: Vec3, centre: Vec3, radius: f32, max: f32) -> O
     (t <= max).then_some(t)
 }
 
-/// The nearest character sphere along the ray: the distance, the body, the
-/// part and whether it is dead.
+/// The nearest character limb along the ray: the distance, the body, the
+/// part and whether it is dead. A limb with its node mesh is asked as the
+/// original's pick asks a mesh node: its kd-tree's nearest front face
+/// within the best distance so far, the ray taken into the limb's frame.
+/// A limb without one (a body built before its meshes were read) is
+/// answered by its collision spheres.
 pub(crate) fn character_hit<'a>(
     origin: Vec3,
     dir: Vec3,
@@ -871,14 +875,44 @@ pub(crate) fn character_hit<'a>(
     characters: impl Iterator<Item = (Entity, &'a Ragdoll, Condition)>,
 ) -> Option<(f32, Hit)> {
     let mut best: Option<(f32, Hit)> = None;
+    let mut face = None;
     for (body, ragdoll, condition) in characters {
         for (part, p) in ragdoll.parts.iter().enumerate() {
             let at = p.transform();
+            if let Some(tree) = p.tree.as_deref() {
+                let to_part = at.inverse();
+                let local = to_part.transform_vector3(dir);
+                let scale = local.length();
+                if scale.is_nan() || scale <= 0.0 {
+                    continue;
+                }
+                let reach = best.map_or(max, |b| b.0);
+                if let Some((f, t)) = tree.ray(
+                    to_part.transform_point3(origin),
+                    local / scale,
+                    reach * scale,
+                ) {
+                    let t = t / scale;
+                    if best.is_none_or(|b| t < b.0) {
+                        face = Some((f, p.bone));
+                        best = Some((
+                            t,
+                            Hit::Character {
+                                body,
+                                part,
+                                dead: condition.is_dead(),
+                            },
+                        ));
+                    }
+                }
+                continue;
+            }
             for &(centre, radius) in p.spheres.iter() {
                 let reach = best.map_or(max, |b| b.0);
                 if let Some(t) = ray_sphere(origin, dir, at.transform_point3(centre), radius, reach)
                     && best.is_none_or(|b| t < b.0)
                 {
+                    face = None;
                     best = Some((
                         t,
                         Hit::Character {
@@ -890,6 +924,13 @@ pub(crate) fn character_hit<'a>(
                 }
             }
         }
+    }
+    if let (Some((t, Hit::Character { body, part, .. })), Some((face, bone))) = (best, face) {
+        debug!(
+            "mesh pick: {body:?} part {part} ({}) face {face} at {:.1} cm",
+            exa_physics::body::inspect::bone_name(bone),
+            t * CM
+        );
     }
     best
 }
@@ -2782,6 +2823,73 @@ mod tests {
             mesh: None,
             triangles: None,
         }])
+    }
+
+    /// A cube of half side `h` about the origin, two triangles a face,
+    /// fronts ((b − a) × (c − a)) facing out.
+    fn cube(h: f32) -> Vec<[Vec3; 3]> {
+        let mut out = Vec::new();
+        for axis in [Vec3::X, Vec3::Y, Vec3::Z] {
+            let (u, v) = (
+                axis.any_orthonormal_vector(),
+                axis.cross(axis.any_orthonormal_vector()),
+            );
+            for n in [axis, -axis] {
+                let c = |a: f32, b: f32| (n + u * a + v * b) * h;
+                for t in [
+                    [c(-1.0, -1.0), c(1.0, -1.0), c(1.0, 1.0)],
+                    [c(-1.0, -1.0), c(1.0, 1.0), c(-1.0, 1.0)],
+                ] {
+                    let front = (t[1] - t[0]).cross(t[2] - t[0]);
+                    out.push(if front.dot(n) > 0.0 {
+                        t
+                    } else {
+                        [t[0], t[2], t[1]]
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// A limb with its node mesh is picked where the ray meets the mesh's
+    /// front face, through its kd-tree, not on its collision spheres: a ray
+    /// through a sphere beside the mesh picks nothing.
+    #[test]
+    fn a_limb_with_its_mesh_is_picked_on_the_mesh() {
+        let e = Entity::from_raw_u32(1).unwrap();
+        let mut body = ball_body(Vec3::Z * 3.0);
+        body.set_limb_mesh(0, std::sync::Arc::new(cube(0.05)));
+        assert!(body.parts[0].tree.is_some());
+        let one = |origin: Vec3| {
+            character_hit(
+                origin,
+                Vec3::Z,
+                10.0,
+                [(e, &body, Condition::NORMAL)].into_iter(),
+            )
+        };
+        let (t, hit) = one(Vec3::ZERO).unwrap();
+        assert!((t - 2.95).abs() < 1e-4, "{t}");
+        assert_eq!(
+            hit,
+            Hit::Character {
+                body: e,
+                part: 0,
+                dead: false
+            }
+        );
+        assert!(one(Vec3::X * 0.12).is_none());
+        // Within reach only.
+        assert!(
+            character_hit(
+                Vec3::ZERO,
+                Vec3::Z,
+                2.9,
+                [(e, &body, Condition::NORMAL)].into_iter()
+            )
+            .is_none()
+        );
     }
 
     /// With nothing fixed along the ray, the nearest character sphere is the

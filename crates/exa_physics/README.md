@@ -132,13 +132,16 @@ between bodies (`body::Pairing` on each part), the more mobile one's
 spheres against the other part's collision mesh (`body::Pairs`, the
 original's mesh query: the swept/static choice on 0.1 cm² of travel, the
 mesh-box and mesh-sphere pre-tests, the one-sided per-triangle tests with
-the sphere re-read after every hit; Exarust visits the triangles in file
-order where the original walks the mesh's kd-tree), or its spheres,
+the sphere re-read after every hit; a mesh with a kd-tree, `Part::tree`, is
+walked leaf by leaf as the original's tree queries walk it, a mesh of ten
+triangles or fewer in file order, see `mesh_tree`), or its spheres,
 pre-tested against their own bound, where the part has no mesh triangles
-(a character part, whose node mesh the character builder does not pass; a
-prop's part gets its node's triangles at registration, from the model's
+(a prop's part gets its node's triangles at registration, from the model's
 mesh, so a prop is the mesh side whenever it is the less mobile part of a
-pair; `Ragdoll::set_part_triangles` sets them by hand; a part with 64
+pair; a character limb gets its node mesh when its body is built, a held
+item its node's and a factory weapon its merged mesh;
+`Ragdoll::set_part_triangles`, `set_part_mesh` and `set_limb_mesh` set them
+by hand; a part with 64
 spheres or more, a door leaf's 1 900, has them bucketed in a grid,
 `body::SphereGrid`, so the sphere fallback visits only the spheres a sphere
 can reach, in their stored order, with the plain loop's results), with an
@@ -1200,6 +1203,27 @@ thigh turns; and `MOTILE_ENVIRONMENT` is the class init's unused
 0.2556/0.15/0.03 environment. `full_tone`/`clear_foot_state` are the
 original's resets.
 
+`mesh_tree` puts a body node's CPU triangles behind the tree as the
+original does: a node mesh of more than 10 and fewer than 100 000 triangles
+gets one (`takes_tree`, the scene loader's queue rule), a shape builder's
+fitted mesh (a limb's or a weapon's) one at any count (`shape_tree`). Trees
+are built in the original's centimetres over the part's frame, shared per
+triangle list, and queried by `KdTree::sphere_leaves` (the sphere's box
+walk: the second child alone when the sphere is past the plane, both, the
+second deferred, when it reaches it, last in first out) and
+`KdTree::sweep_live` (the swept walk with the record, `SweptRecord`,
+refreshed by a hit's callback and read live by the descent), the ray walk
+for picks and the nearest swept column for the Height Query
+(`body_drop`). `sector_lists` keeps the sector's simulation lists in the
+running game: `SectorBodies`, every body part in the 600 cm world cell of
+its mesh box's world centre, rebuilt after each body step, and the static
+grid's records with the mesh each was built from
+(`StaticColliders::mesh_of`, `in_world_cell`). `MeshLevel` is the Height
+Query's mesh mode (a grid scene's): the level's answer and those of the body
+meshes listed in the nine cells around the query (`height_meshes`: not a
+body out of the world, not a living limb, a dead body's limbs kept), the
+highest winning; the player's ground placement uses it.
+
 `kd_tree` is the original's triangle kd-tree (`TkdTree`) and its terrain
 block subclass (`TTErrainkdTree`) as a pure model. The node is the
 original's 8 bytes (a leaf flag plus triangle count, or the axis plus the
@@ -1222,8 +1246,8 @@ of the arrays where the original shares them; the planes are only ever moved
 after the copy). Assumptions (the
 stored triangle normal's orientation and the standalone root box) are in
 the module docs. The game still takes the level's collision from rapier's
-trimesh BVH; this module has tests of its own and no game path yet, apart
-from the terrain manager's block trees.
+trimesh BVH; the body meshes' trees (`mesh_tree`) and the terrain
+manager's block trees are its game paths.
 
 `controller` and `sim_object` are the original's two abstract bases: the
 physics controller (kind word, attached node, flag reset that clears bits 0

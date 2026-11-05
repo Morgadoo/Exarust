@@ -336,6 +336,10 @@ pub struct Part {
     /// original's mesh query). Empty for a part whose mesh was never handed
     /// over; the pair stage then falls back to the part's spheres.
     pub triangles: Option<Arc<Vec<[Vec3; 3]>>>,
+    /// The kd-tree over [`Part::triangles`] when the original would build
+    /// one for the mesh ([`crate::mesh_tree::takes_tree`]); without it the
+    /// mesh queries test every triangle in order.
+    pub tree: Option<Arc<crate::mesh_tree::MeshTree>>,
     /// The spheres bucketed for the pair stage's sphere fallback, for a
     /// part with many of them ([`SphereGrid`]).
     pub sphere_grid: Option<Arc<SphereGrid>>,
@@ -603,6 +607,7 @@ impl Part {
             gravity: [1.0; 4],
             spheres: Arc::new(spheres),
             triangles: None,
+            tree: None,
             sphere_grid: None,
             pairing,
             rest_inverse,
@@ -2532,7 +2537,12 @@ impl Plugin for BodyPlugin {
             .init_resource::<ShoveQueue>()
             .init_resource::<DealtShoves>()
             .init_resource::<BodyTicks>()
+            .init_resource::<crate::sector_lists::SectorBodies>()
             .add_systems(FixedUpdate, step_bodies.in_set(BodySystems))
+            .add_systems(
+                FixedUpdate,
+                crate::sector_lists::rebuild_sector_bodies.after(BodySystems),
+            )
             .add_systems(
                 RunFixedMainLoop,
                 begin_frame.in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop),
@@ -3931,8 +3941,36 @@ impl Ragdoll {
     /// where the original queries a body's node mesh. Empty when the
     /// loader has no triangles for it, which leaves the sphere fallback.
     pub fn set_part_triangles(&mut self, part: usize, triangles: Vec<[Vec3; 3]>) {
+        self.set_part_mesh(part, Arc::new(triangles));
+    }
+
+    /// Hands part `part` a shared collision mesh (as
+    /// [`Ragdoll::set_part_triangles`]) with its kd-tree, built once per
+    /// shared list ([`crate::mesh_tree::shared_tree`]).
+    pub fn set_part_mesh(&mut self, part: usize, triangles: Arc<Vec<[Vec3; 3]>>) {
         if let Some(p) = self.parts.get_mut(part) {
-            p.triangles = Some(Arc::new(triangles));
+            p.tree = crate::mesh_tree::shared_tree(&triangles);
+            p.triangles = Some(triangles);
+        }
+    }
+
+    /// Hands part `part` its mesh's kd-tree once it is built (the
+    /// original's builder thread installs a finished tree into the mesh;
+    /// until then the mesh's own brute-force callbacks answer).
+    pub fn set_part_tree(&mut self, part: usize, tree: Option<Arc<crate::mesh_tree::MeshTree>>) {
+        if let Some(p) = self.parts.get_mut(part) {
+            p.tree = tree;
+        }
+    }
+
+    /// Hands a limb its node mesh as a shape builder leaves it: the
+    /// triangles with a tree whatever their count
+    /// ([`crate::mesh_tree::shape_tree`]), as the original's limb builder
+    /// makes one for the mesh it fits.
+    pub fn set_limb_mesh(&mut self, part: usize, triangles: Arc<Vec<[Vec3; 3]>>) {
+        if let Some(p) = self.parts.get_mut(part) {
+            p.tree = crate::mesh_tree::shape_tree(&triangles);
+            p.triangles = Some(triangles);
         }
     }
 
