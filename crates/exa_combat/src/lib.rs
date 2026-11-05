@@ -80,6 +80,7 @@ pub struct CombatPlugin;
 
 impl Plugin for CombatPlugin {
     fn build(&self, app: &mut App) {
+        bridge_combat_types(app);
         app.init_resource::<remedy::WorldClock>()
             .add_message::<Hit>()
             .add_message::<AttackAskedHook>()
@@ -168,6 +169,34 @@ impl Plugin for CombatPlugin {
                     .after(TransformSystems::Propagate),
             );
     }
+}
+
+/// The data this plugin's fixed-step systems touch, for the simulation's
+/// bridge (`exa_physics::sim_bridge`).
+fn bridge_combat_types(app: &mut App) {
+    use exa_physics::sim_bridge::SimBridgeAppExt;
+    app.bridge_message::<crate::Hit>()
+        .bridge_message::<crate::condition::Awakened>()
+        .bridge_message::<crate::fighter::SecondWindFired>()
+        .bridge_message::<crate::fighter::Weakened>()
+        .bridge_message::<crate::impact::BadFall>()
+        .bridge_message::<crate::impact::CameraHit>()
+        .bridge_message::<crate::impact::ImpactSounded>()
+        .bridge_message::<crate::impact::ShellHit>()
+        .bridge_message::<crate::impact::WeaponSounded>()
+        .bridge_message::<crate::pain::PainSounded>()
+        .bridge_message::<crate::swing_voice::SwingVoiceCue>()
+        .bridge_copy::<crate::PowerFactors>()
+        .bridge_copy::<crate::block::ShieldHold>()
+        .bridge_copy::<crate::burn::Burn>()
+        .bridge_copy::<crate::condition::KnockOut>()
+        .bridge_lend_resource::<crate::fighter::StoryMode>()
+        .bridge_copy::<crate::impact::ImpactBook>()
+        .bridge_lend_resource::<crate::remedy::WorldClock>()
+        .bridge_copy::<crate::stab::StabAim>()
+        .bridge_copy::<crate::strike_body::StrikeChest>()
+        .bridge_copy::<crate::strike_body::TangleCount>()
+        .bridge_copy::<crate::swing_voice::SwingVoice>();
 }
 
 /// The combat's frame systems: wounds counted down, blades tracked, hits

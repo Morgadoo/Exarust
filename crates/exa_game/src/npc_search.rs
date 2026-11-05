@@ -1677,6 +1677,7 @@ pub struct NpcSearchPlugin;
 
 impl Plugin for NpcSearchPlugin {
     fn build(&self, app: &mut App) {
+        bridge_npc_search_types(app);
         app.init_resource::<SearchItems>()
             .init_resource::<SearchWorld>()
             .add_systems(
@@ -1698,6 +1699,26 @@ impl Plugin for NpcSearchPlugin {
                     .after(exa_ai::brain::idle_walk),
             );
     }
+}
+
+/// The data this plugin's fixed-step systems touch, for the simulation's
+/// bridge (`exa_physics::sim_bridge`).
+fn bridge_npc_search_types(app: &mut App) {
+    use exa_physics::sim_bridge::SimBridgeAppExt;
+    app.bridge_lend_resource::<exa_ai::rooms::RoomGridSize>()
+        .bridge_copy::<exa_character::Outfit>()
+        .bridge_lend_resource::<crate::doll_view::DollItems>()
+        .bridge_lend_resource::<crate::gui_screens::GameScreens>()
+        .bridge_lend_resource::<crate::npc_search::SearchItems>()
+        .bridge_lend_resource::<crate::npc_search::SearchWorld>()
+        .bridge_copy::<crate::torch::CarriesTorch>()
+        .bridge_lend_resource::<exa_items::catalogue::ItemCatalogue>()
+        .bridge_copy::<exa_items::possession::Possessions>()
+        .bridge_lend_resource::<exa_physics::ColliderNodes>()
+        .bridge_lend_resource::<exa_world::LevelLocalItems>()
+        .bridge_copy::<exa_world::ObjectSections>()
+        .bridge_copy::<exa_world::PartBounds>()
+        .bridge_copy::<exa_world::PlacedItem>();
 }
 
 #[cfg(test)]

@@ -58,6 +58,7 @@ pub struct AudioPlugin;
 
 impl Plugin for AudioPlugin {
     fn build(&self, app: &mut App) {
+        bridge_audio_types(app);
         exa_physics::mechanism_sound::register(app);
         app.init_resource::<SoundBank>()
             .init_resource::<AudioEnvironment>()
@@ -111,6 +112,13 @@ impl Plugin for AudioPlugin {
                 .add_systems(Startup, efx_bus::spawn_reverb_bus);
         }
     }
+}
+
+/// The data this plugin's fixed-step systems touch, for the simulation's
+/// bridge (`exa_physics::sim_bridge`).
+fn bridge_audio_types(app: &mut App) {
+    use exa_physics::sim_bridge::SimBridgeAppExt;
+    app.bridge_copy::<exa_physics::prop::BodySounds>();
 }
 
 #[cfg(test)]

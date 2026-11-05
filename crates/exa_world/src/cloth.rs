@@ -77,7 +77,7 @@ pub struct ClothSkipped;
 pub const LOOSE_PIN: f32 = cloth::LOOSE_PIN;
 
 /// A cloth simulated over a mesh part.
-#[derive(Component, Debug)]
+#[derive(Component, Debug, Clone)]
 pub struct ClothInstance {
     pub cloth: Cloth,
     /// The mesh whose vertices the cloth drives.
@@ -1169,6 +1169,7 @@ pub struct ClothPlugin;
 
 impl Plugin for ClothPlugin {
     fn build(&self, app: &mut App) {
+        bridge_cloth_types(app);
         app.init_resource::<ClothObjects>()
             .init_resource::<ClothContacts>()
             .insert_resource(ClothDebug::from_env())
@@ -1187,6 +1188,16 @@ impl Plugin for ClothPlugin {
             .add_systems(FixedFirst, start_fixed_timer)
             .add_systems(FixedLast, stop_fixed_timer);
     }
+}
+
+/// The data this plugin's fixed-step systems touch, for the simulation's
+/// bridge (`exa_physics::sim_bridge`).
+fn bridge_cloth_types(app: &mut App) {
+    use exa_physics::sim_bridge::SimBridgeAppExt;
+    app.bridge_lend_resource::<crate::cloth::ClothContacts>()
+        .bridge_lend_resource::<crate::cloth::ClothDebug>()
+        .bridge_copy::<crate::cloth::ClothInstance>()
+        .bridge_lend_resource::<crate::cloth::ClothObjects>();
 }
 
 #[cfg(test)]

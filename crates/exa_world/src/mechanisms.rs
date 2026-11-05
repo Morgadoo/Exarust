@@ -53,6 +53,7 @@ pub struct MechanismPlugin;
 
 impl Plugin for MechanismPlugin {
     fn build(&self, app: &mut App) {
+        bridge_mechanism_types(app);
         if !app.world().contains_resource::<Messages<MechanismSignal>>() {
             app.add_message::<MechanismSignal>();
         }
@@ -69,6 +70,19 @@ impl Plugin for MechanismPlugin {
             )
             .add_systems(FixedUpdate, send_relay_forwards);
     }
+}
+
+/// The data this plugin's fixed-step systems touch, for the simulation's
+/// bridge (`exa_physics::sim_bridge`).
+fn bridge_mechanism_types(app: &mut App) {
+    use exa_physics::sim_bridge::SimBridgeAppExt;
+    app.bridge_message::<exa_physics::mechanism::LockSounded>()
+        .bridge_message::<crate::mechanisms::OpenDoorsUnder>()
+        .bridge_message::<crate::mechanisms::RelayForward>()
+        .bridge_copy::<exa_physics::body::plate_body::PlateBody>()
+        .bridge_copy::<exa_physics::body::slide_body::SlideBody>()
+        .bridge_copy::<crate::arc::ElectricDevice>()
+        .bridge_copy::<crate::mechanisms::MechanismRecords>();
 }
 
 /// An order to open the doors under a placed object's node, as the

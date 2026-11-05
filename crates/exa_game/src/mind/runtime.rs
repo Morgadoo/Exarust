@@ -191,6 +191,7 @@ pub struct MindRuntimePlugin;
 
 impl Plugin for MindRuntimePlugin {
     fn build(&self, app: &mut App) {
+        bridge_mind_runtime_types(app);
         app.init_resource::<MindControl>()
             .init_resource::<MindFadeOverlay>()
             .init_resource::<MindPick>()
@@ -228,6 +229,16 @@ impl Plugin for MindRuntimePlugin {
                 ),
             );
     }
+}
+
+/// The data this plugin's fixed-step systems touch, for the simulation's
+/// bridge (`exa_physics::sim_bridge`).
+fn bridge_mind_runtime_types(app: &mut App) {
+    use exa_physics::sim_bridge::SimBridgeAppExt;
+    app.bridge_message::<exa_audio::PointSounded>()
+        .bridge_message::<exa_combat::BlowNoticed>()
+        .bridge_copy::<exa_ai::combatant::MindPowers>()
+        .bridge_copy::<crate::mind::casts::MindBody>();
 }
 
 /// A body id for an entity: its index, unique among the live entities.

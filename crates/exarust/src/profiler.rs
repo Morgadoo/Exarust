@@ -288,6 +288,9 @@ pub(crate) struct ProfilerPlugin;
 
 impl Plugin for ProfilerPlugin {
     fn build(&self, app: &mut App) {
+        // The fixed step's probes run in the simulation's world under the
+        // bridge: the probes are lent to it for each step.
+        exa_physics::sim_bridge::SimBridgeAppExt::bridge_lend_resource::<Probes>(app);
         let (on, shown) = app
             .world()
             .get_resource::<Options>()

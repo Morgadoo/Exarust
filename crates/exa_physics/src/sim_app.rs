@@ -361,8 +361,27 @@ enum Runner {
     Thread {
         requests: Sender<StepRequest>,
         replies: Receiver<Stepped>,
-        _thread: JoinHandle<()>,
+        thread: Option<JoinHandle<()>>,
     },
+}
+
+/// The thread ends with the shell, its world dropped before the frame's
+/// goes on (the simulation's world holds what the bridge moved there, such
+/// as the trace files, which flush when dropped).
+impl Drop for Runner {
+    fn drop(&mut self) {
+        if let Runner::Thread {
+            requests, thread, ..
+        } = self
+        {
+            // Closing the channel ends the thread's loop.
+            let (closed, _) = channel();
+            *requests = closed;
+            if let Some(thread) = thread.take() {
+                let _ = thread.join();
+            }
+        }
+    }
 }
 
 /// The simulation's world and where it runs (a resource of the frame's
@@ -400,7 +419,7 @@ impl SimShell {
                 Runner::Thread {
                     requests,
                     replies,
-                    _thread: thread,
+                    thread: Some(thread),
                 }
             }
         };

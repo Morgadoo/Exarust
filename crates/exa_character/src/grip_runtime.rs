@@ -415,6 +415,7 @@ pub struct GripRuntimePlugin;
 
 impl Plugin for GripRuntimePlugin {
     fn build(&self, app: &mut App) {
+        bridge_grip_runtime_types(app);
         // After the AI's behaviour (`TickBehaviour`), as after the player's
         // input: a weapon switch or grip the AI asks this tick is taken now.
         use exa_physics::body::TickBehaviour;
@@ -438,6 +439,22 @@ impl Plugin for GripRuntimePlugin {
                     .before(exa_physics::grip_solve::GripSolveSet::Build),
             );
     }
+}
+
+/// The data this plugin's fixed-step systems touch, for the simulation's
+/// bridge (`exa_physics::sim_bridge`).
+fn bridge_grip_runtime_types(app: &mut App) {
+    use exa_physics::sim_bridge::SimBridgeAppExt;
+    app.bridge_message::<crate::grip_runtime::FlipWeaponRequest>()
+        .bridge_copy::<crate::grip_runtime::HeldAbility>()
+        .bridge_copy::<crate::grip_runtime::HeldItemSpec>()
+        .bridge_copy::<crate::grip_runtime::HeldRecord>()
+        .bridge_copy::<crate::grip_runtime::HeldRefresh>()
+        .bridge_copy::<crate::grip_runtime::LastCondition>()
+        .bridge_copy::<crate::grip_runtime::PendingGrip>()
+        .bridge_copy::<crate::held::BurningGrip>()
+        .bridge_copy::<exa_combat::Blade>()
+        .bridge_copy::<exa_physics::grip::HeldGrip>();
 }
 
 #[cfg(test)]

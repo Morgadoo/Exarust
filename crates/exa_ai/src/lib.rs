@@ -77,6 +77,7 @@ pub struct DuelSystems;
 
 impl Plugin for AiPlugin {
     fn build(&self, app: &mut App) {
+        bridge_ai_types(app);
         app.init_resource::<presence::ActivationArea>()
             .init_resource::<rooms::RoomCells>()
             .init_resource::<brain::BrainClock>()
@@ -146,6 +147,33 @@ impl Plugin for AiPlugin {
             // the frame's removals.
             .add_systems(Update, brain::forget_removed);
     }
+}
+
+/// The data this plugin's fixed-step systems touch, for the simulation's
+/// bridge (`exa_physics::sim_bridge`).
+fn bridge_ai_types(app: &mut App) {
+    use exa_physics::sim_bridge::SimBridgeAppExt;
+    app.bridge_message::<crate::brain::StatueByte>()
+        .bridge_message::<crate::presence::Entered>()
+        .bridge_message::<exa_combat::AttackAskedHook>()
+        .bridge_lend_resource::<crate::BrainTickClock>()
+        .bridge_copy::<crate::Duellist>()
+        .bridge_lend_resource::<crate::brain::BrainClock>()
+        .bridge_copy::<crate::brain::CharacterId>()
+        .bridge_copy::<crate::brain::MindWarded>()
+        .bridge_lend_resource::<crate::brain::RoleDatabase>()
+        .bridge_copy::<crate::brain::Unseen>()
+        .bridge_lend_resource::<crate::pass_turn::PassTurn>()
+        .bridge_copy::<crate::presence::Presence>()
+        .bridge_copy::<crate::roles::Relations>()
+        .bridge_copy::<crate::roles::Roles>()
+        .bridge_lend_resource::<crate::rooms::RoomCells>()
+        .bridge_copy::<crate::sense::Mind>()
+        .bridge_copy::<exa_character::record::CharacterData>()
+        .bridge_copy::<exa_combat::AttackHook>()
+        .bridge_lend_resource::<exa_world::nav::NavGrid>()
+        .bridge_lend_resource::<exa_world::nav::footprint::NavFootprints>()
+        .bridge_copy_resource::<exa_world::room_view::LevelRooms>();
 }
 
 /// A debug clock over the brains' tick: while this resource exists, the

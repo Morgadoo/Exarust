@@ -530,11 +530,19 @@ pub struct LightSourcePlugin;
 
 impl Plugin for LightSourcePlugin {
     fn build(&self, app: &mut App) {
+        bridge_light_source_types(app);
         app.init_resource::<FlickerRng>()
             .add_systems(FixedUpdate, fade_from_levers)
             .add_systems(Update, flicker_lights)
             .add_systems(PostUpdate, apply_light_state);
     }
+}
+
+/// The data this plugin's fixed-step systems touch, for the simulation's
+/// bridge (`exa_physics::sim_bridge`).
+fn bridge_light_source_types(app: &mut App) {
+    use exa_physics::sim_bridge::SimBridgeAppExt;
+    app.bridge_copy::<crate::light_source::LightSource>();
 }
 
 /// The parent mesh's first part a light's flicker or lever drives, with the

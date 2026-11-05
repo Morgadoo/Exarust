@@ -88,7 +88,7 @@ pub trait BridgeHalf: Send + Sync + 'static {
     fn drain_removed(&mut self, world: &World);
     /// This world's changes since the last apply (everything when `all`),
     /// with the entities they name and the entities whose removal was seen.
-    fn gather(&mut self, world: &mut World, all: bool) -> Gathered;
+    fn gather(&mut self, world: &mut World, ctx: GatherCtx) -> Gathered;
     /// Applies the other side's changes.
     fn apply(&mut self, world: &mut World, packet: Packet, ctx: ApplyCtx) -> usize;
     /// After an apply: forgets the removals and messages the apply itself
@@ -117,6 +117,15 @@ impl Gathered {
             values: 0,
         }
     }
+}
+
+/// What a gather needs to know.
+#[derive(Debug, Clone, Copy)]
+pub struct GatherCtx {
+    /// Send every value (the frame's first gather).
+    pub all: bool,
+    /// The gathering world is the simulation's.
+    pub sim: bool,
 }
 
 /// What an apply needs to know besides the packet.
@@ -259,7 +268,8 @@ impl<T: Component + Clone> BridgeHalf for CopyComponentHalf<T> {
         }
     }
 
-    fn gather(&mut self, world: &mut World, all: bool) -> Gathered {
+    fn gather(&mut self, world: &mut World, ctx: GatherCtx) -> Gathered {
+        let all = ctx.all;
         self.drain_removed(world);
         let now = world.change_tick();
         let since = self.since;
@@ -353,7 +363,8 @@ impl<T: Component<Mutability = Mutable> + Default> BridgeHalf for LendComponentH
         }
     }
 
-    fn gather(&mut self, world: &mut World, all: bool) -> Gathered {
+    fn gather(&mut self, world: &mut World, ctx: GatherCtx) -> Gathered {
+        let all = ctx.all;
         self.drain_removed(world);
         let now = world.change_tick();
         let since = self.since;
@@ -418,7 +429,12 @@ pub struct LendResource<T>(PhantomData<fn() -> T>);
 
 struct ResourceHalf<T: Resource + Component<Mutability = Mutable>> {
     lend: bool,
-    take: fn(&mut World, bool) -> Option<T>,
+    /// The value to send: a clone, or (lent) the value itself, swapped for
+    /// the spare.
+    take: fn(&mut World, &mut Option<T>) -> Option<T>,
+    /// A lent resource's place holder: the value an apply swapped out,
+    /// swapped back in by the next gather (a default is built only once).
+    spare: Option<T>,
     id: Option<ComponentId>,
     present: bool,
     since: Tick,
@@ -440,6 +456,7 @@ impl<T: Resource + Component<Mutability = Mutable> + Clone> BridgeType for CopyR
         Box::new(ResourceHalf::<T> {
             lend: false,
             take: |world, _| world.get_resource::<T>().cloned(),
+            spare: None,
             id: None,
             present: false,
             since: Tick::new(0),
@@ -455,11 +472,13 @@ impl<T: Resource + Component<Mutability = Mutable> + Default> BridgeType for Len
     fn half(&self) -> Box<dyn BridgeHalf> {
         Box::new(ResourceHalf::<T> {
             lend: true,
-            take: |world, _| {
-                world
-                    .get_resource_mut::<T>()
-                    .map(|mut r| std::mem::take(r.bypass_change_detection()))
+            take: |world, spare| {
+                let mut r = world.get_resource_mut::<T>()?;
+                let mut value = spare.take().unwrap_or_default();
+                std::mem::swap(&mut value, r.bypass_change_detection());
+                Some(value)
             },
+            spare: None,
             id: None,
             present: false,
             since: Tick::new(0),
@@ -480,7 +499,8 @@ impl<T: Resource + Component<Mutability = Mutable>> BridgeHalf for ResourceHalf<
 
     fn drain_removed(&mut self, _: &World) {}
 
-    fn gather(&mut self, world: &mut World, all: bool) -> Gathered {
+    fn gather(&mut self, world: &mut World, ctx: GatherCtx) -> Gathered {
+        let all = ctx.all;
         let now = world.change_tick();
         let changed = world
             .get_resource_ref::<T>()
@@ -489,7 +509,7 @@ impl<T: Resource + Component<Mutability = Mutable>> BridgeHalf for ResourceHalf<
         let packet = match changed {
             None if was => ResourcePacket::Removed,
             None => ResourcePacket::Unchanged,
-            Some(changed) if self.lend || changed => match (self.take)(world, changed) {
+            Some(changed) if self.lend || changed => match (self.take)(world, &mut self.spare) {
                 Some(value) => ResourcePacket::Value(value, changed),
                 None => ResourcePacket::Unchanged,
             },
@@ -517,7 +537,8 @@ impl<T: Resource + Component<Mutability = Mutable>> BridgeHalf for ResourceHalf<
             ResourcePacket::Value(value, changed) => {
                 match world.get_resource_mut::<T>() {
                     Some(mut current) if self.lend => {
-                        *current.bypass_change_detection() = value;
+                        let old = std::mem::replace(current.bypass_change_detection(), value);
+                        self.spare = Some(old);
                         if changed {
                             current.set_changed();
                         }
@@ -579,7 +600,7 @@ impl<M: Message + Clone> BridgeHalf for MessageHalf<M> {
 
     fn drain_removed(&mut self, _: &World) {}
 
-    fn gather(&mut self, world: &mut World, _: bool) -> Gathered {
+    fn gather(&mut self, world: &mut World, _: GatherCtx) -> Gathered {
         let (Some(cursor), Some(messages)) =
             (self.cursor.as_mut(), world.get_resource::<Messages<M>>())
         else {
@@ -619,6 +640,158 @@ impl<M: Message + Clone> BridgeHalf for MessageHalf<M> {
     }
 }
 
+// ---------------------------------------------------------------- children
+
+/// The order of each parent's `Children`: `ChildOf`'s hooks keep the set
+/// on each side, in the order the relationships arrived, so the frame's
+/// order (spawn order) is sent and applied after the relationships.
+pub struct ChildrenOrder;
+
+struct ChildrenOrderHalf {
+    id: Option<ComponentId>,
+    query: Option<ValueQuery<Ref<'static, Children>>>,
+    since: Tick,
+}
+
+impl BridgeType for ChildrenOrder {
+    fn type_id(&self) -> TypeId {
+        TypeId::of::<Children>()
+    }
+
+    fn half(&self) -> Box<dyn BridgeHalf> {
+        Box::new(ChildrenOrderHalf {
+            id: None,
+            query: None,
+            since: Tick::new(0),
+        })
+    }
+}
+
+impl BridgeHalf for ChildrenOrderHalf {
+    fn name(&self) -> &'static str {
+        type_name::<Children>()
+    }
+
+    fn init(&mut self, world: &mut World) -> ComponentId {
+        let id = component_id::<Children>(world, &mut self.id);
+        self.query = Some(world.query_filtered());
+        id
+    }
+
+    fn drain_removed(&mut self, _: &World) {}
+
+    fn gather(&mut self, world: &mut World, ctx: GatherCtx) -> Gathered {
+        let now = world.change_tick();
+        let since = self.since;
+        let Some(query) = self.query.as_mut() else {
+            return Gathered::empty();
+        };
+        let orders: Vec<(Entity, Vec<Entity>)> = query
+            .iter(world)
+            .filter(|(_, c)| ctx.all || c.last_changed().is_newer_than(since, now))
+            .map(|(e, c)| (e, c.to_vec()))
+            .collect();
+        Gathered {
+            values: orders.len(),
+            packet: Box::new(orders),
+            touched: Vec::new(),
+            removed: Vec::new(),
+        }
+    }
+
+    fn apply(&mut self, world: &mut World, packet: Packet, _: ApplyCtx) -> usize {
+        let Ok(orders) = packet.downcast::<Vec<(Entity, Vec<Entity>)>>() else {
+            return 0;
+        };
+        let mut n = 0;
+        for (parent, order) in *orders {
+            let Ok(mut entity) = world.get_entity_mut(parent) else {
+                continue;
+            };
+            let Some(mut children) = entity.get_mut::<Children>() else {
+                continue;
+            };
+            if **children == order[..] {
+                continue;
+            }
+            let at: bevy::ecs::entity::EntityHashMap<usize> =
+                order.iter().enumerate().map(|(i, &e)| (e, i)).collect();
+            children.sort_by_key(|e| at.get(e).copied().unwrap_or(usize::MAX));
+            n += 1;
+        }
+        n
+    }
+
+    fn settle(&mut self, _: &mut World, since: Tick) {
+        self.since = since;
+    }
+}
+
+// ---------------------------------------------------------------- moved
+
+/// A resource only the simulation's systems touch, which the frame inserts
+/// (a trace file opened at start): moved to the simulation once it appears
+/// in the frame's world, never sent back.
+pub struct MoveResource<T>(PhantomData<fn() -> T>);
+
+struct MoveResourceHalf<T: Resource> {
+    id: Option<ComponentId>,
+    _t: PhantomData<fn() -> T>,
+}
+
+impl<T: Resource> BridgeType for MoveResource<T> {
+    fn type_id(&self) -> TypeId {
+        TypeId::of::<T>()
+    }
+
+    fn half(&self) -> Box<dyn BridgeHalf> {
+        Box::new(MoveResourceHalf::<T> {
+            id: None,
+            _t: PhantomData,
+        })
+    }
+}
+
+impl<T: Resource> BridgeHalf for MoveResourceHalf<T> {
+    fn name(&self) -> &'static str {
+        type_name::<T>()
+    }
+
+    fn init(&mut self, world: &mut World) -> ComponentId {
+        component_id::<T>(world, &mut self.id)
+    }
+
+    fn drain_removed(&mut self, _: &World) {}
+
+    fn gather(&mut self, world: &mut World, ctx: GatherCtx) -> Gathered {
+        if ctx.sim {
+            return Gathered::empty();
+        }
+        let moved = world.remove_resource::<T>();
+        Gathered {
+            values: usize::from(moved.is_some()),
+            packet: Box::new(moved),
+            touched: Vec::new(),
+            removed: Vec::new(),
+        }
+    }
+
+    fn apply(&mut self, world: &mut World, packet: Packet, _: ApplyCtx) -> usize {
+        match packet.downcast::<Option<T>>() {
+            Ok(moved) => match *moved {
+                Some(value) => {
+                    world.insert_resource(value);
+                    1
+                }
+                None => 0,
+            },
+            Err(_) => 0,
+        }
+    }
+
+    fn settle(&mut self, _: &mut World, _: Tick) {}
+}
+
 // ---------------------------------------------------------------- sim only
 
 /// Data only the simulation's systems touch (a resource the step inserts
@@ -654,7 +827,7 @@ impl<T: Component> BridgeHalf for SimOnlyHalf<T> {
 
     fn drain_removed(&mut self, _: &World) {}
 
-    fn gather(&mut self, _: &mut World, _: bool) -> Gathered {
+    fn gather(&mut self, _: &mut World, _: GatherCtx) -> Gathered {
         Gathered::empty()
     }
 
@@ -726,9 +899,14 @@ pub trait SimBridgeAppExt {
     ) -> &mut Self;
     /// A message type forwarded both ways.
     fn bridge_message<M: Message + Clone>(&mut self) -> &mut Self;
+    /// The order of `Children` (after `ChildOf`).
+    fn bridge_children_order(&mut self) -> &mut Self;
     /// A component or resource only the simulation's systems touch: not
     /// copied.
     fn bridge_sim_only<T: Component>(&mut self) -> &mut Self;
+    /// A resource the frame inserts and only the simulation's systems
+    /// touch: moved to the simulation when it appears.
+    fn bridge_move_resource<T: Resource>(&mut self) -> &mut Self;
 }
 
 impl SimBridgeAppExt for App {
@@ -774,8 +952,16 @@ impl SimBridgeAppExt for App {
         add_type(self, ForwardMessage::<M>(PhantomData))
     }
 
+    fn bridge_children_order(&mut self) -> &mut Self {
+        add_type(self, ChildrenOrder)
+    }
+
     fn bridge_sim_only<T: Component>(&mut self) -> &mut Self {
         add_type(self, SimOnly::<T>(PhantomData))
+    }
+
+    fn bridge_move_resource<T: Resource>(&mut self) -> &mut Self {
+        add_type(self, MoveResource::<T>(PhantomData))
     }
 }
 
@@ -865,6 +1051,13 @@ pub fn despawn_unfreed(world: &mut World, e: Entity) {
     world.despawn_no_free(e);
 }
 
+/// A debug aid (`EXA_BRIDGE_ALL=1`): every value crosses every step, changed
+/// or not, to tell a change the bridge missed from other differences.
+fn copy_everything() -> bool {
+    static ALL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ALL.get_or_init(|| std::env::var("EXA_BRIDGE_ALL").is_ok_and(|v| v == "1"))
+}
+
 /// One side's gathered changes for a step.
 pub struct SidePacket {
     packets: Vec<Packet>,
@@ -881,6 +1074,10 @@ pub struct BridgeSide {
     halves: Vec<Box<dyn BridgeHalf>>,
     ids: Vec<ComponentId>,
     first: bool,
+    sim: bool,
+    /// Per half: values gathered, values applied, nanoseconds (both).
+    stats: Vec<(u64, u64, u64)>,
+    gathers: u64,
 }
 
 impl BridgeSide {
@@ -891,11 +1088,42 @@ impl BridgeSide {
             halves,
             ids: Vec::new(),
             first,
+            sim: !first,
+            stats: Vec::new(),
+            gathers: 0,
         }
     }
 
     fn init(&mut self, world: &mut World) {
         self.ids = self.halves.iter_mut().map(|h| h.init(world)).collect();
+    }
+
+    /// The costliest types over the last steps (each side's gather and
+    /// apply), then the counters start again.
+    fn log_stats(&mut self) {
+        let side = if self.sim { "simulation" } else { "frame" };
+        let mut top: Vec<(usize, (u64, u64, u64))> =
+            self.stats.iter().copied().enumerate().collect();
+        top.sort_by_key(|(_, s)| std::cmp::Reverse(s.2));
+        let steps = crate::sim_app::LOG_EVERY;
+        let line: Vec<String> = top
+            .iter()
+            .take(10)
+            .map(|&(i, (gathered, applied, ns))| {
+                format!(
+                    "{} {:.0} us ({:.1} out, {:.1} in a step)",
+                    self.halves[i].name(),
+                    ns as f64 / 1000.0 / steps as f64,
+                    gathered as f64 / steps as f64,
+                    applied as f64 / steps as f64
+                )
+            })
+            .collect();
+        info!(
+            "simulation bridge, {side} side, costliest types: {}",
+            line.join("; ")
+        );
+        self.stats.iter_mut().for_each(|s| *s = (0, 0, 0));
     }
 
     fn drain_removed(&mut self, world: &World) {
@@ -905,13 +1133,20 @@ impl BridgeSide {
     }
 
     fn gather(&mut self, world: &mut World) -> SidePacket {
-        let all = std::mem::take(&mut self.first);
+        let ctx = GatherCtx {
+            all: std::mem::take(&mut self.first) || copy_everything(),
+            sim: self.sim,
+        };
         let mut packets = Vec::with_capacity(self.halves.len());
         let mut touched = EntityHashSet::default();
         let mut despawned = EntityHashSet::default();
         let mut values = 0;
-        for half in &mut self.halves {
-            let g = half.gather(world, all);
+        self.stats.resize(self.halves.len(), (0, 0, 0));
+        for (half, stat) in self.halves.iter_mut().zip(&mut self.stats) {
+            let started = Instant::now();
+            let g = half.gather(world, ctx);
+            stat.0 += g.values as u64;
+            stat.2 += started.elapsed().as_nanos() as u64;
             values += g.values;
             touched.extend(g.touched);
             despawned.extend(
@@ -925,6 +1160,10 @@ impl BridgeSide {
         touched.sort_unstable();
         let mut despawned: Vec<Entity> = despawned.into_iter().collect();
         despawned.sort_unstable();
+        self.gathers += 1;
+        if self.gathers.is_multiple_of(crate::sim_app::LOG_EVERY) {
+            self.log_stats();
+        }
         SidePacket {
             packets,
             touched,
@@ -951,8 +1190,21 @@ impl BridgeSide {
             update_messages: packet.update_messages,
         };
         let mut n = 0;
-        for (half, p) in self.halves.iter_mut().zip(packet.packets) {
-            n += half.apply(world, p, ctx);
+        self.stats.resize(self.halves.len(), (0, 0, 0));
+        for ((half, p), stat) in self
+            .halves
+            .iter_mut()
+            .zip(packet.packets)
+            .zip(&mut self.stats)
+        {
+            let started = Instant::now();
+            let applied = half.apply(world, p, ctx);
+            // Relationship hooks queue their `Children` edits: apply them
+            // before the next type (the children's order comes after).
+            world.flush();
+            stat.1 += applied as u64;
+            stat.2 += started.elapsed().as_nanos() as u64;
+            n += applied;
         }
         world.flush();
         let since = world.change_tick();
@@ -1035,6 +1287,9 @@ impl FrameBridge {
 pub struct SimBridge {
     side: BridgeSide,
     pool: IdPool,
+    /// Archetypes already checked for components the bridge does not carry.
+    archetypes_seen: usize,
+    unbridged_seen: HashSet<ComponentId>,
 }
 
 /// The fixed step's schedules, in order, in the simulation's world.
@@ -1097,13 +1352,24 @@ impl Plugin for SimBridgePlugin {
 /// `Children` follow `ChildOf` by its hooks), transforms, names and clocks.
 pub fn bridge_bevy_types(app: &mut App) {
     app.bridge_relationship::<ChildOf>()
+        .bridge_children_order()
         .bridge_copy::<Transform>()
         .bridge_copy::<GlobalTransform>()
         .bridge_copy::<Name>()
         .bridge_copy_resource::<Time>()
         .bridge_copy_resource::<Time<Fixed>>()
         .bridge_copy_resource::<Time<Virtual>>()
-        .bridge_copy_resource::<Time<Real>>();
+        .bridge_copy_resource::<Time<Real>>()
+        .bridge_lend_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::aabb::AabbGizmoConfigGroup, ()>>()
+        .bridge_lend_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::aabb::AabbGizmoConfigGroup, bevy::time::Fixed>>()
+        .bridge_lend_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::config::DefaultGizmoConfigGroup, ()>>()
+        .bridge_lend_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::config::DefaultGizmoConfigGroup, bevy::time::Fixed>>()
+        .bridge_lend_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::frustum::FrustumGizmoConfigGroup, ()>>()
+        .bridge_lend_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::frustum::FrustumGizmoConfigGroup, bevy::time::Fixed>>()
+        .bridge_lend_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::skinned_mesh_bounds::SkinnedMeshBoundsGizmoConfigGroup, ()>>()
+        .bridge_lend_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::gizmos::skinned_mesh_bounds::SkinnedMeshBoundsGizmoConfigGroup, bevy::time::Fixed>>()
+        .bridge_lend_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::light::gizmos::LightGizmoConfigGroup, ()>>()
+        .bridge_lend_resource::<bevy::gizmos::gizmos::GizmoStorage<bevy::light::gizmos::LightGizmoConfigGroup, bevy::time::Fixed>>();
 }
 
 fn count_frame(mut bridge: ResMut<FrameBridge>, order: Option<Res<FixedMainScheduleOrder>>) {
@@ -1262,11 +1528,16 @@ fn install(world: &mut World, setup: BridgeSetup) -> BridgeCoverage {
     world.insert_resource(SimBridge {
         side,
         pool: IdPool::default(),
+        archetypes_seen: 0,
+        unbridged_seen: covered.clone(),
     });
     // Build the moved schedules now, to read what their systems touch.
     for mut schedule in setup.schedules {
         let label = schedule.label();
         coverage.schedules.push(format!("{label:?}"));
+        // The conditions first: the build moves them out of the graph.
+        schedule.graph_mut().initialize(world);
+        read_condition_access(world, &schedule, &covered, &mut coverage);
         match schedule.initialize(world) {
             Err(e) => error!("simulation bridge: {label:?} did not build: {e}"),
             Ok(_) => read_access(world, &schedule, &covered, &mut coverage),
@@ -1290,28 +1561,69 @@ fn read_access(
     for (_, system) in systems {
         coverage.systems += 1;
         let name = format!("{label:?}: {}", system.system().name());
-        if system.access().is_exclusive() {
-            coverage.whole_world.insert(name);
-            continue;
+        note_access(world, name, system.access(), covered, coverage);
+    }
+}
+
+/// Adds what the run conditions of `schedule`'s systems and sets read (a
+/// condition on data no system reads, such as `resource_exists`, would
+/// quietly be false). Read from the graph after it initialized them,
+/// before the build moves them out.
+fn read_condition_access(
+    world: &World,
+    schedule: &Schedule,
+    covered: &HashSet<ComponentId>,
+    coverage: &mut BridgeCoverage,
+) {
+    let label = schedule.label();
+    let graph = schedule.graph();
+    let systems = graph
+        .systems
+        .iter()
+        .map(|(_, s, c)| (s.name().to_string(), c));
+    let sets = graph
+        .system_sets
+        .iter()
+        .map(|(_, s, c)| (format!("{s:?}"), c));
+    for (owner, conditions) in systems.chain(sets) {
+        for condition in conditions {
+            let name = format!(
+                "{label:?}: condition {} of {owner}",
+                condition.condition.name()
+            );
+            note_access(world, name, &condition.access, covered, coverage);
         }
-        let access = system.access().to_filtered_access_set();
-        let Ok(kinds) = access.combined_access().try_iter_access() else {
-            coverage.whole_world.insert(name);
-            continue;
+    }
+}
+
+fn note_access(
+    world: &World,
+    name: String,
+    access: &bevy::ecs::system::SystemAccess,
+    covered: &HashSet<ComponentId>,
+    coverage: &mut BridgeCoverage,
+) {
+    if access.is_exclusive() {
+        coverage.whole_world.insert(name);
+        return;
+    }
+    let set = access.to_filtered_access_set();
+    let Ok(kinds) = set.combined_access().try_iter_access() else {
+        coverage.whole_world.insert(name);
+        return;
+    };
+    for kind in kinds {
+        let id = match kind {
+            ComponentAccessKind::Shared(id)
+            | ComponentAccessKind::Exclusive(id)
+            | ComponentAccessKind::Archetypal(id) => id,
         };
-        for kind in kinds {
-            let id = match kind {
-                ComponentAccessKind::Shared(id)
-                | ComponentAccessKind::Exclusive(id)
-                | ComponentAccessKind::Archetypal(id) => id,
-            };
-            if !covered.contains(&id) {
-                let type_name = world
-                    .components()
-                    .get_name(id)
-                    .map_or_else(|| format!("{id:?}"), |n| n.to_string());
-                coverage.missing.insert(type_name);
-            }
+        if !covered.contains(&id) {
+            let type_name = world
+                .components()
+                .get_name(id)
+                .map_or_else(|| format!("{id:?}"), |n| n.to_string());
+            coverage.missing.insert(type_name);
         }
     }
 }
@@ -1322,6 +1634,7 @@ pub fn sim_gather(world: &mut World) -> (SidePacket, u64, usize) {
     let started = Instant::now();
     let (packet, pool) = world.resource_scope(|world, mut bridge: Mut<SimBridge>| {
         let bridge = &mut *bridge;
+        report_unbridged_components(world, bridge);
         let packet = bridge.side.gather(world);
         // Reserved ids now spawned belong to the simulation's entities;
         // ids it freed this step go back to the pool.
@@ -1337,6 +1650,34 @@ pub fn sim_gather(world: &mut World) -> (SidePacket, u64, usize) {
     });
     world.clear_trackers();
     (packet, started.elapsed().as_micros() as u64, pool)
+}
+
+/// Warns once for each component the simulation's entities carry that the
+/// bridge does not (one its systems insert by command and never read, which
+/// the frame would then never see).
+fn report_unbridged_components(world: &World, bridge: &mut SimBridge) {
+    let archetypes = world.archetypes();
+    if archetypes.len() == bridge.archetypes_seen {
+        return;
+    }
+    bridge.archetypes_seen = archetypes.len();
+    let resource = world.components().component_id::<IsResource>();
+    for archetype in archetypes.iter() {
+        if resource.is_some_and(|r| archetype.contains(r)) {
+            continue;
+        }
+        for &id in archetype.components() {
+            if bridge.unbridged_seen.insert(id) {
+                let name = world
+                    .components()
+                    .get_name(id)
+                    .map_or_else(|| format!("{id:?}"), |n| n.to_string());
+                warn!(
+                    "simulation bridge: the simulation's entities carry {name}, which is not bridged"
+                );
+            }
+        }
+    }
 }
 
 /// Frame side, after the step: applies the simulation's changes, keeps the

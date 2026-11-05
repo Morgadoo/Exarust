@@ -440,6 +440,14 @@ pub struct NavStats {
     pub sky: [usize; 2],
 }
 
+/// An empty grid: the place holder the simulation's bridge leaves while
+/// the grid is lent to the simulation.
+impl Default for NavGrid {
+    fn default() -> Self {
+        Self::empty(0, 0, 0.0)
+    }
+}
+
 impl NavGrid {
     /// A grid with no floors.
     pub fn empty(width: usize, depth: usize, base: f32) -> Self {

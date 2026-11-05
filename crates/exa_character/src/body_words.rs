@@ -151,6 +151,7 @@ pub struct BodyWordsPlugin;
 
 impl Plugin for BodyWordsPlugin {
     fn build(&self, app: &mut App) {
+        bridge_body_words_types(app);
         app.add_systems(
             FixedUpdate,
             (
@@ -164,6 +165,15 @@ impl Plugin for BodyWordsPlugin {
                 .before(exa_physics::grip_solve::GripSolveSet::Sync),
         );
     }
+}
+
+/// The data this plugin's fixed-step systems touch, for the simulation's
+/// bridge (`exa_physics::sim_bridge`).
+fn bridge_body_words_types(app: &mut App) {
+    use exa_physics::sim_bridge::SimBridgeAppExt;
+    app.bridge_copy::<crate::RaceWeaponry>()
+        .bridge_copy::<crate::held::Hands>()
+        .bridge_lend_resource::<crate::spray::BloodSprays>();
 }
 
 #[cfg(test)]

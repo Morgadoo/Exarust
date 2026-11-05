@@ -69,7 +69,7 @@ pub const TORRENT: u32 = 0x10203;
 pub const TORRENT_HOOK: CastHook = CastHook::NEVER_KEEPS;
 
 /// A torrent in the scene.
-#[derive(Component)]
+#[derive(Component, Clone)]
 pub struct LiveTorrent {
     pub torrent: Torrent,
     pub caster: Entity,

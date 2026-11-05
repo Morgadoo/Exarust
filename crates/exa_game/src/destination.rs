@@ -107,6 +107,7 @@ pub struct DestinationPlugin;
 
 impl Plugin for DestinationPlugin {
     fn build(&self, app: &mut App) {
+        bridge_destination_types(app);
         app.init_resource::<PortalScreenState>()
             .add_message::<OpenPortalScreen>()
             .add_message::<PortalInput>()
@@ -119,6 +120,16 @@ impl Plugin for DestinationPlugin {
                 tick_journeys.after(crate::effects::advance_clock),
             );
     }
+}
+
+/// The data this plugin's fixed-step systems touch, for the simulation's
+/// bridge (`exa_physics::sim_bridge`).
+fn bridge_destination_types(app: &mut App) {
+    use exa_physics::sim_bridge::SimBridgeAppExt;
+    app.bridge_message::<crate::destination::JourneySave>()
+        .bridge_message::<crate::destination::TravelToLevel>()
+        .bridge_copy::<crate::destination::TravelJourney>()
+        .bridge_copy::<crate::effects::bubble::BubbleEffect>();
 }
 
 /// Shows the screen a teleporter asks for (one at a time, as the

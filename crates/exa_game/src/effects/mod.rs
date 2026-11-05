@@ -165,6 +165,7 @@ pub struct EffectsPlugin;
 
 impl Plugin for EffectsPlugin {
     fn build(&self, app: &mut App) {
+        bridge_effects_types(app);
         app.init_resource::<EffectClock>().add_systems(
             FixedUpdate,
             (
@@ -187,6 +188,17 @@ impl Plugin for EffectsPlugin {
             ),
         );
     }
+}
+
+/// The data this plugin's fixed-step systems touch, for the simulation's
+/// bridge (`exa_physics::sim_bridge`).
+fn bridge_effects_types(app: &mut App) {
+    use exa_physics::sim_bridge::SimBridgeAppExt;
+    app.bridge_lend_resource::<crate::effects::EffectClock>()
+        .bridge_copy::<crate::effects::fire_row::Attached>()
+        .bridge_copy::<crate::effects::fire_row::Flame>()
+        .bridge_copy::<crate::effects::scan::ScanEffect>()
+        .bridge_copy::<crate::effects::shell::ShellEffect>();
 }
 
 pub(crate) fn advance_clock(time: Res<Time>, mut clock: ResMut<EffectClock>) {

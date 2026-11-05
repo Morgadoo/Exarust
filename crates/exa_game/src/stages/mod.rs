@@ -256,6 +256,9 @@ fn tick_characters(
             .filter(|(_, body, _)| body.drive.is_some())
             .map(|(e, _, player)| (player, e)),
     );
+    // In entity order before the player goes last, whichever world's
+    // tables the query walked.
+    order.sort_unstable_by_key(|&(_, e)| e);
     player_last(&mut order);
     let ticks: Vec<TickedCharacter> = order
         .iter()

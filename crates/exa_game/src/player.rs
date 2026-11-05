@@ -546,6 +546,7 @@ pub struct PlayerPlugin;
 
 impl Plugin for PlayerPlugin {
     fn build(&self, app: &mut App) {
+        bridge_player_types(app);
         app.init_resource::<CursorGround>()
             .init_resource::<AttackButton>()
             .init_resource::<Bindings>()
@@ -597,6 +598,28 @@ impl Plugin for PlayerPlugin {
                     .chain(),
             );
     }
+}
+
+/// The data this plugin's fixed-step systems touch, for the simulation's
+/// bridge (`exa_physics::sim_bridge`).
+fn bridge_player_types(app: &mut App) {
+    use exa_physics::sim_bridge::SimBridgeAppExt;
+    app.bridge_copy_resource::<bevy::input::ButtonInput<bevy::input::keyboard::KeyCode>>()
+        .bridge_copy_resource::<bevy::input::ButtonInput<bevy::input::mouse::MouseButton>>()
+        .bridge_lend_resource::<exa_ai::presence::ActivationArea>()
+        .bridge_copy::<exa_character::Wielded>()
+        .bridge_lend_resource::<crate::bindings::Bindings>()
+        .bridge_lend_resource::<crate::experience_live::StoryExperience>()
+        .bridge_lend_resource::<crate::gamepad::PadStatus>()
+        .bridge_lend_resource::<crate::gamepad::PlayPad>()
+        .bridge_lend_resource::<crate::hand::Hand>()
+        .bridge_lend_resource::<crate::hw_config::HardwareConfig>()
+        .bridge_lend_resource::<crate::idle_orbit::IdleWatch>()
+        .bridge_lend_resource::<crate::player::AimCursor>()
+        .bridge_lend_resource::<crate::player::AttackButton>()
+        .bridge_lend::<crate::player::ChaseCamera>()
+        .bridge_lend_resource::<crate::player_controls::PlaySession>()
+        .bridge_copy::<crate::player_practice::PlayerPractice>();
 }
 
 /// The start of play: the controls run and the AI's activation centre is
