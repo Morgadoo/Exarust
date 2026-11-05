@@ -353,3 +353,84 @@ fn an_unregistered_type_stops_a_debug_build() {
         .add_systems(FixedUpdate, touch);
     app.world_mut().run_schedule(bevy::app::FixedMain);
 }
+
+/// A snapshot: the simulation owns it, the frame reads it.
+#[derive(Component, Clone, Debug, Default, PartialEq)]
+struct Snap(f32);
+
+/// What the fixed step and the frame saw of the snapshot, per step and
+/// per frame.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+struct SnapSeen(Vec<String>);
+
+fn snap_step(mut snaps: Query<&mut Snap>, mut seen: ResMut<SnapSeen>) {
+    for mut s in &mut snaps {
+        seen.0.push(format!("sim {}", s.0));
+        s.0 += 1.0;
+    }
+}
+
+fn snap_app(shell: Option<SimMode>) -> App {
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .insert_resource(Time::<Fixed>::from_hz(crate::STEP_HZ))
+        .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
+            1.0 / crate::STEP_HZ,
+        )))
+        .init_resource::<SnapSeen>()
+        .add_systems(FixedUpdate, snap_step);
+    crate::sim_app::add_fixed_commands(&mut app);
+    if let Some(mode) = shell {
+        app.add_plugins((SimShellPlugin { mode }, SimBridgePlugin { extra: vec![] }))
+            .bridge_snapshot::<Snap>()
+            .bridge_copy_resource::<SnapSeen>();
+    }
+    app
+}
+
+/// The frame's view of the snapshot after each update, with the frame's
+/// posted write at frame 3 (it reads its own write at once) and, at frame
+/// 6, a write the frame did not post.
+fn snap_run(shell: Option<SimMode>, unposted: bool) -> (Vec<String>, Vec<f32>) {
+    let mut app = snap_app(shell);
+    let e = app.world_mut().spawn(Snap(0.0)).id();
+    let mut frame = Vec::new();
+    for f in 0..10 {
+        let world = app.world_mut();
+        if f == 3 {
+            world.resource_scope(|world, mut fixed: Mut<crate::sim_app::FixedCommands>| {
+                let mut snap = world.get_mut::<Snap>(e).unwrap();
+                let read = fixed.write(e, &mut snap, |s| {
+                    s.0 = 100.0;
+                    s.0
+                });
+                assert_eq!(read, 100.0);
+                assert_eq!(snap.0, 100.0);
+            });
+        }
+        if f == 6 && unposted {
+            world.get_mut::<Snap>(e).unwrap().0 = -1.0;
+        }
+        app.update();
+        frame.push(app.world().get::<Snap>(e).unwrap().0);
+    }
+    (app.world().resource::<SnapSeen>().0.clone(), frame)
+}
+
+#[test]
+fn a_snapshot_takes_posted_writes_and_keeps_the_frames_own_home() {
+    let (alone_sim, alone_frame) = snap_run(None, false);
+    assert!(alone_sim.iter().any(|s| s == "sim 100"), "{alone_sim:?}");
+    for mode in [SimMode::Inline, SimMode::Thread] {
+        // The posted write lands at the next step, before the step runs:
+        // both sides see what one world sees.
+        let (sim, frame) = snap_run(Some(mode), false);
+        assert_eq!(alone_sim, sim, "{mode:?}");
+        assert_eq!(alone_frame, frame, "{mode:?}");
+        // A write the frame did not post never reaches the simulation, and
+        // the next copy out replaces it.
+        let (sim, frame) = snap_run(Some(mode), true);
+        assert_eq!(alone_sim, sim, "{mode:?}: an unposted write crossed");
+        assert_eq!(alone_frame, frame, "{mode:?}");
+    }
+}
