@@ -421,7 +421,7 @@ fn the_sole_yaws_toward_its_animated_side() {
     let mut turned = foot.clone();
     let mut standing_leg = leg.clone();
     standing_leg.state = FootState(FootState::TOUCHING);
-    turn_sole(&mut turned, &standing_leg, &full(), turn);
+    turn_sole(&mut turned, &mut standing_leg, &full(), turn);
     let push = moved(&turned);
     let expected = along.normalize() * 1.0;
     assert!(
@@ -434,13 +434,13 @@ fn the_sole_yaws_toward_its_animated_side() {
     let mut closing = foot.clone();
     closing.push(&[1.0; 4], along);
     let held = closing.point(&leg.toe);
-    turn_sole(&mut closing, &standing_leg, &full(), turn);
+    turn_sole(&mut closing, &mut standing_leg, &full(), turn);
     assert_eq!(closing.point(&leg.toe), held);
     // Past a right angle the foot keeps its pose.
     let mut flipped = foot.clone();
     turn_sole(
         &mut flipped,
-        &standing_leg,
+        &mut standing_leg,
         &full(),
         rotation * Quat::from_rotation_y(std::f32::consts::PI),
     );
@@ -450,18 +450,57 @@ fn the_sole_yaws_toward_its_animated_side() {
         ..full()
     };
     let mut untouched = foot.clone();
-    turn_sole(&mut untouched, &standing_leg, &off, turn);
+    turn_sole(&mut untouched, &mut standing_leg, &off, turn);
     assert_eq!(untouched.point(&leg.toe), toe);
     let unsupported = FootDrive {
         has_support: false,
         ..full()
     };
-    turn_sole(&mut untouched, &standing_leg, &unsupported, turn);
+    turn_sole(&mut untouched, &mut standing_leg, &unsupported, turn);
     assert_eq!(untouched.point(&leg.toe), toe);
     // No contact state yet: the settling foot is left where it is.
     let mut unclassified = foot.clone();
-    turn_sole(&mut unclassified, leg, &full(), turn);
+    turn_sole(&mut unclassified, &mut leg.clone(), &full(), turn);
     assert_eq!(unclassified.point(&leg.toe), toe);
+}
+
+/// A moving body's touching foot keeps the side axis it last took: the
+/// turn projects onto it, not onto the pose's current one, and does not
+/// replace it. Standing, or with the foot lifted, the pose's axis is taken
+/// and kept.
+#[test]
+fn a_planted_foot_keeps_its_sole_side() {
+    let (body, _) = footed(Vec3::ZERO);
+    let leg = body.legs[0].clone();
+    let foot = body.parts[leg.foot.unwrap()].clone();
+    let rotation = foot.transform().to_scale_rotation_translation().1;
+    let local = foot.rest_point(&leg.toe);
+    let theta = (0.02 / local.z).asin();
+    let turn = rotation * Quat::from_rotation_y(theta);
+    let moving = FootDrive {
+        moving: true,
+        ..full()
+    };
+    // Standing: the pose's axis is kept.
+    let mut standing = leg.clone();
+    standing.state = FootState(FootState::TOUCHING);
+    turn_sole(&mut foot.clone(), &mut standing, &full(), turn);
+    assert!((standing.sole_side - turn * Vec3::X).length() < 1e-6);
+    // Moving and touching: the kept axis stays, whatever the pose.
+    let kept = Vec3::Z;
+    let mut planted = standing.clone();
+    planted.sole_side = kept;
+    let mut pushed = foot.clone();
+    turn_sole(&mut pushed, &mut planted, &moving, turn);
+    assert_eq!(planted.sole_side, kept);
+    // Its push lies along the kept axis (no x part).
+    let push = pushed.point(&leg.toe) - foot.point(&leg.toe);
+    assert!(push.x.abs() < 1e-7, "pushed {push}");
+    // Moving with the foot lifted: the pose's axis again.
+    let mut lifted = planted.clone();
+    lifted.state = FootState(FootState::TOUCHING | FootState::LIFTED);
+    turn_sole(&mut foot.clone(), &mut lifted, &moving, turn);
+    assert!((lifted.sole_side - turn * Vec3::X).length() < 1e-6);
 }
 
 /// A footwork landing writes the body's later stand-still stamp (the

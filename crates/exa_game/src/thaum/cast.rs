@@ -1919,12 +1919,22 @@ fn attach_visual(
 
 /// Places a vanished body at the destination its Long Door reached. The
 /// shell the vanish dropped keeps its own place; only the body moves, as
-/// the original's place-at call does.
-fn apply_otherwhere(mut moves: MessageReader<Otherwhere>, mut bodies: Query<&mut Ragdoll>) {
+/// the original's place-at call does, and its held items follow it
+/// ([`exa_physics::grip::ReplaceHeld`]).
+fn apply_otherwhere(
+    mut commands: Commands,
+    mut moves: MessageReader<Otherwhere>,
+    mut bodies: Query<&mut Ragdoll>,
+) {
     for Otherwhere { entity, to } in moves.read().copied() {
         if let Ok(mut doll) = bodies.get_mut(entity) {
             let target = otherwhere_root(&doll, to);
             super::visuals::teleport(&mut doll, target, None);
+            // The original's Long Door then puts the body's held items
+            // back in its hands.
+            commands
+                .entity(entity)
+                .insert(exa_physics::grip::ReplaceHeld);
         }
     }
 }

@@ -607,3 +607,135 @@ fn a_shield_item_builds_its_face_pivots() {
     }
     assert_eq!(links.links[3].flags, crate::grip::RUNTIME | DISABLED);
 }
+
+/// The re-place after a move: a body moved a metre leaves its held item
+/// behind; the re-place puts the item back at the place its attach
+/// measured under the hand, at rest, and an armed grip's enabled
+/// second-hand link takes the span it now has as its slack and length.
+#[test]
+fn a_moved_holder_takes_its_held_item_along() {
+    use crate::body::PartSetup;
+    use crate::grip::{ENABLED, GripPoint, GripSpec, HeldGrip, HeldKind, HeldRest, ReplaceHeld};
+
+    let owner = Entity::from_raw_u32(10).unwrap();
+    let hand = Entity::from_raw_u32(11).unwrap();
+    let other = Entity::from_raw_u32(12).unwrap();
+    let item = Entity::from_raw_u32(20).unwrap();
+    let setup = |bone, entity, parent, at| PartSetup {
+        bone,
+        entity,
+        parent,
+        world: Affine3A::from_translation(at),
+        centre: Vec3::ZERO,
+        half: Vec3::splat(0.1),
+        origin: Vec3::ZERO,
+        links: vec![],
+        foot: None,
+        pins: Vec::new(),
+        spheres: None,
+    };
+    let holder = Ragdoll::new(&[
+        setup(1, owner, None, Vec3::ZERO),
+        setup(17, hand, Some(0), Vec3::new(0.2, 0.0, 0.0)),
+        setup(18, other, Some(0), Vec3::new(-0.2, 0.0, 0.0)),
+    ])
+    .with_drive();
+    let item_body = rigid(item, Vec3::new(0.2, 0.4, 0.0), 1.0);
+    let grip = HeldGrip {
+        spec: GripSpec {
+            hand: 0,
+            links: vec![GripPoint {
+                point: Vec3::new(0.0, 20.0, 0.0),
+                slack: 0.0,
+            }],
+            second_hand: None,
+            arm: None,
+            extra: None,
+        },
+        scale: 1.0,
+        size: 1.0,
+        second_hand_factor: 1.0,
+        flip: false,
+        class: 0x30,
+        soft_weld: false,
+        kind: HeldKind::Weapon,
+        holder_key: owner,
+        hands: [Some(hand), Some(other)],
+        arms: [Some(hand), None],
+        links: None,
+        released: false,
+        head_extra: 0.0,
+    };
+    let mut app = App::new();
+    app.add_systems(
+        Update,
+        (
+            crate::grip_solve::build_grips,
+            crate::grip_solve::replace_held,
+        )
+            .chain(),
+    );
+    let holder_e = app.world_mut().spawn(holder).id();
+    let item_e = app.world_mut().spawn((item_body, grip)).id();
+    app.update();
+    let rest = *app.world().get::<HeldRest>(item_e).expect("no rest kept");
+    assert_eq!(rest.hand, 1);
+    assert!(!rest.flipped);
+    // A second-hand link, enabled, from the item's origin to the left hand.
+    {
+        let mut grip = app.world_mut().get_mut::<HeldGrip>(item_e).unwrap();
+        let links = grip.links.as_mut().unwrap();
+        let mut second = links.links[0].clone();
+        second.hand = Some(2);
+        second.on_item = [1.0, 0.0, 0.0, 0.0];
+        second.on_hand = [1.0, 0.0, 0.0, 0.0];
+        second.slack = 0.0;
+        second.flags = ENABLED;
+        links.second = Some(links.links.len());
+        links.links.push(second);
+    }
+    let before = app.world().get::<Ragdoll>(item_e).unwrap().parts[0].transform();
+    app.world_mut()
+        .get_mut::<Ragdoll>(holder_e)
+        .unwrap()
+        .translate(Vec3::new(1.0, 0.0, 0.5));
+    app.world_mut().entity_mut(holder_e).insert(ReplaceHeld);
+    app.update();
+    let body = app.world().get::<Ragdoll>(item_e).unwrap();
+    let after = body.parts[0].transform();
+    let moved = Vec3::from(after.translation - before.translation);
+    assert!(
+        (moved - Vec3::new(1.0, 0.0, 0.5)).length() < 1e-4,
+        "{moved}"
+    );
+    assert_eq!(body.parts[0].positions, body.parts[0].previous);
+    assert!(app.world().get::<ReplaceHeld>(holder_e).is_none());
+    // The second-hand link spans item origin to the left hand now.
+    let holder = app.world().get::<Ragdoll>(holder_e).unwrap();
+    let grip = app.world().get::<HeldGrip>(item_e).unwrap();
+    let links = grip.links.as_ref().unwrap();
+    let link = &links.links[links.second.unwrap()];
+    let a = body.point_at(0, &link.on_item).unwrap();
+    let b = holder.point_at(2, &link.on_hand).unwrap();
+    assert!((link.slack - (a - b).length()).abs() < 1e-5);
+    assert_eq!(link.slack, link.length);
+    assert!(link.slack > 0.1);
+}
+
+/// A flip since the attach turns the re-placed item half a turn about its
+/// own Y axis.
+#[test]
+fn a_flipped_items_rest_turns_half_a_turn() {
+    use crate::grip::HeldRest;
+    let rest = HeldRest {
+        hand: 0,
+        item_in_hand: Affine3A::from_translation(Vec3::new(0.0, 0.1, 0.0)),
+        flipped: false,
+    };
+    let hand = Affine3A::from_translation(Vec3::new(1.0, 0.0, 0.0));
+    let plain = rest.placement(hand, false);
+    let turned = rest.placement(hand, true);
+    assert_eq!(plain.translation, turned.translation);
+    let x = turned.transform_vector3(Vec3::X);
+    assert!((x + Vec3::X).length() < 1e-6);
+}

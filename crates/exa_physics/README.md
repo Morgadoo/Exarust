@@ -434,6 +434,10 @@ hit, or the ground plus the leg's offset where it misses, never over the
 knee (`feet::sole_floor`); a moving foot's ground rises to a higher hit.
 Exarust's level colliders do not carry the floor bit yet
 (`Level::floor_piece` is false), so in the game the query misses.
+The sole turn (`feet::turn_sole`) projects the toe's gap onto the side axis
+the leg keeps (`Leg::sole_side`): the foot's animated side axis, taken each
+iteration, except while the body moves and the foot touches unlifted, when
+the kept one holds.
 The push waits for the feet: each walking leg whose contact trails its
 animated spot along the facing (negated backpedalling) cuts the carry's
 lag factor by `1 − (lead/(60·character size))²`, to nothing at the limit
@@ -723,7 +727,13 @@ all-ones group mask, as `Ragdoll::held_by`). Its generic world weld is the
 stiff origin link, plus the soft (parry) weld when the holder may parry,
 0.3 of the node box's top above the grip (at the grip for a two-hander of
 the exact class 0x30). The character's equip and the torch
-light a held item's body and its `HeldGrip`.
+light a held item's body and its `HeldGrip`. The grip builder keeps where
+the item sits under its holding hand (`grip::HeldRest`); after a move of
+its holder (a `grip::ReplaceHeld` on the holder's body: the player's
+ground placement, a Long Door) `grip_solve::replace_held` puts every item
+back there at rest, turned half a turn if it was flipped since, wakes it,
+and gives an armed weapon's enabled second-hand link its new span as slack
+and held length (logged at info, "held re-place: …").
 
 A link without the runtime pivot flag is a **limit link**
 (`body::MODEL_LINK_PIVOT`, marked through `Ragdoll::set_link_flags`): the
