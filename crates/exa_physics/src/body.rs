@@ -2592,14 +2592,17 @@ impl Plugin for BodyPlugin {
 
 /// The data the bodies' fixed systems touch, for the simulation's bridge
 /// ([`crate::sim_bridge`]): the collision world and the solver's own state are lent for
-/// each step, the level's collision grid copied when it changes. Bodies are
-/// copied when they change: most of a level's bodies sleep and stay home.
+/// each step, the level's collision grid copied when it changes. Bodies and
+/// the mechanisms on them are snapshots: copied out when the simulation
+/// changes them (most of a level's bodies sleep and stay home) and in only
+/// when the frame inserts them; the frame's writes are posted
+/// ([`crate::sim_app::FixedCommands::write`]).
 pub fn bridge_body_types(app: &mut App) {
     use crate::sim_bridge::SimBridgeAppExt;
     app.bridge_copy::<crate::StaticNode>()
         .bridge_copy::<GoLimp>()
         .bridge_copy::<crate::grip::ReplaceHeld>()
-        .bridge_copy::<Ragdoll>()
+        .bridge_snapshot::<Ragdoll>()
         .bridge_copy::<OutOfScene>()
         .bridge_lend_opaque_resource::<Physics>()
         .bridge_copy_resource::<crate::StaticColliders>()
@@ -2620,9 +2623,9 @@ pub fn bridge_body_types(app: &mut App) {
         .bridge_message::<crate::body::lever_body::LightFade>()
         .bridge_message::<crate::mechanism::MechanismSignal>()
         .bridge_message::<crate::mechanism_sound::MechanismSounded>()
-        .bridge_copy::<crate::body::door_body::DoorBody>()
+        .bridge_snapshot::<crate::body::door_body::DoorBody>()
         .bridge_copy::<crate::body::door_body::PendingDoor>()
-        .bridge_copy::<crate::body::lever_body::LeverBody>()
+        .bridge_snapshot::<crate::body::lever_body::LeverBody>()
         .bridge_copy::<crate::body::lever_body::PendingLever>()
         .bridge_copy::<crate::body::plate_body::PendingPlate>()
         .bridge_copy::<crate::body::slide_body::PendingSlide>()

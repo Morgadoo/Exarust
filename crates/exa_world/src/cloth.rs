@@ -1233,7 +1233,10 @@ fn bridge_cloth_types(app: &mut App) {
     app.bridge_lend_resource::<crate::cloth::ClothContacts>()
         .bridge_lend_resource::<crate::cloth::ClothDebug>()
         // The frame builds a cloth; the simulation owns it from then on and
-        // hands the frame its mesh positions ([`ClothMeshUpdate`]).
+        // hands the frame its mesh positions ([`ClothMeshUpdate`]). The
+        // hand's grab and release go as posted writes. Not a snapshot:
+        // copying every awake cloth out each step costs 0.5-0.9 ms in
+        // exanima01 and exanima06.
         .bridge_copy_in::<crate::cloth::ClothInstance>()
         .bridge_message::<ClothMeshUpdate>()
         .bridge_lend_resource::<crate::cloth::ClothObjects>();
