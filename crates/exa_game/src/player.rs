@@ -806,7 +806,8 @@ const HELD_WAKE_STICK2: f64 = 0.1;
 /// The player's behaviour each fixed tick, before its body's tick (as the
 /// original's behaviour runs before its movement decision): on its third
 /// tick with a navigation grid the spawn snap onto the grid's nearest
-/// walkable point (across the ground: its height is the capsule's); the
+/// walkable point (across the ground: its height is the capsule's) and
+/// the request for the placement on the ground from its floor; the
 /// crouch; Shift's sprint latch, the movement request, the cursor and the
 /// exploration steering (`crate::steering`), or in combat mode the cursor,
 /// the combat branch's part and Exarust's interim footwork; then the clip
@@ -816,6 +817,7 @@ const HELD_WAKE_STICK2: f64 = 0.1;
 /// for no move.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(crate) fn steer_player(
+    mut commands: Commands,
     keys: Res<ButtonInput<KeyCode>>,
     buttons: Res<ButtonInput<MouseButton>>,
     bindings: Res<Bindings>,
@@ -885,16 +887,31 @@ pub(crate) fn steer_player(
             // The original's grid exists before its first behaviour tick;
             // Exarust's is built after the level loads, so the snap counts
             // the ticks it has.
+            // The frame's origin is the pelvis's height over where it stands.
+            let pelvis = ragdoll
+                .and_then(|r| r.parts.first())
+                .map_or(standing.y, |p| p.transform().translation.y);
+            // The original's behaviour ticks are its character's, whose body
+            // exists from the spawn on; Exarust's body is built a few frames
+            // after the character, so the count waits for it.
             if nav.is_some()
-                && let Some(by) = pb.steering.snap(state, standing, &nearest)
+                && ragdoll.is_some()
+                && let Some(to) = pb.steering.snap(state, standing.with_y(pelvis), &nearest)
             {
+                let by = (to - standing).with_y(0.0);
                 info!(
-                    "spawn snap: from ({:.3}, {:.3}, {:.3}) {:.3} m across the ground to the nearest walkable point",
+                    "spawn snap: from ({:.3}, {:.3}, {:.3}) {:.3} m across the ground to the nearest walkable point, its floor at {:.3}",
                     standing.x,
                     standing.y,
                     standing.z,
-                    by.length()
+                    by.length(),
+                    to.y
                 );
+                // Then the original places the character on the ground
+                // from the floor ([`crate::limp::GroundPlacement`]).
+                commands
+                    .entity(child)
+                    .insert(crate::limp::GroundPlacement { floor: to.y });
                 if by != Vec3::ZERO {
                     standing += by;
                     at.translation = standing;

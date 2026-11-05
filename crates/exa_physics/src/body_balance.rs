@@ -1472,11 +1472,10 @@ impl Ragdoll {
     /// root's (the pelvis's): the original's frame sits at the pelvis. The
     /// reach is a bent leg's (the 40° triangle, shaped), so the snapped
     /// pelvis can sit under the clip's; the lift then raises it to its
-    /// target. Its parts are logged at debug level. The caller decides
-    /// whether to move the character by it; Exarust's spawn keeps the
-    /// controller's own height. The original also moves each thigh to its
-    /// clip place on the new frame, which Exarust's freshly built body
-    /// already holds.
+    /// target. Its parts are logged at debug level. The ground placement
+    /// ([`Ragdoll::place_on_ground`]) puts the parts on the frame at that
+    /// height; the original also moves each thigh to its clip place on the
+    /// new frame, which that placement's parts then take with the rest.
     pub fn snap_placement<L: Level + ?Sized>(&mut self, level: &L, frame: Affine3A) -> Option<f32> {
         let drive = self.drive.as_ref()?;
         if self.legs.len() != 2 {
@@ -1567,18 +1566,109 @@ impl Ragdoll {
             leg.smoothed = grounds[i] / CM;
             leg.floor = grounds[i] / CM;
         }
-        self.snap_legs(frame);
+        // The IK reads the character frame as it stands: the original's
+        // placement copies the new frame in only after the snap.
+        let ik_frame = self.drive.as_ref().and_then(|d| d.frame).unwrap_or(frame);
+        self.snap_legs(ik_frame);
         Some(height)
     }
 
-    /// Where the character's feet (Exarust's model root) go after a
-    /// placement snap: the character ground the snap averaged under the two
-    /// feet. The original's placement matrix is its character frame, whose
-    /// height the snap writes; Exarust's model root is rooted at the feet,
-    /// so it would take that ground directly [guess: unit mapping]. Nothing
-    /// calls it live: the spawn does not run the snap.
+    /// The character ground the last placement snap averaged under the two
+    /// feet (m). The ground placement ([`Ragdoll::place_on_ground`]) keeps
+    /// the controller where it stands: Exarust's model root is at the
+    /// feet, which the capsule holds on the floor, so only the parts take
+    /// the snap's frame height.
     pub fn placement_feet(&self) -> f32 {
         self.drive.as_ref().map_or(0.0, |d| d.balance.under)
+    }
+
+    /// The pose-only sampler's pelvis target (cm) for the pose `posed`
+    /// (each part's placement in the body root's space, the model root at
+    /// the feet; `pelvis` the root part's index), as the spawn's placement
+    /// at a matrix reads it: the stand height of the posed foot contacts
+    /// ([`super::pose_heights::stand_heights`]) and the not-walking
+    /// target over it ([`super::pose_heights::placement_pelvis_target`]):
+    /// a spawned character's condition word is still 0 and it neither steps
+    /// nor crouches. `unconscious` is the Unconscious 1 clip. The original
+    /// then puts the pelvis at the placement's height plus this target less
+    /// 8 cm ([`super::placement::SPAWN_PELVIS_DROP`]). None without a drive
+    /// or a pelvis.
+    pub fn placement_target(
+        &self,
+        posed: &[Affine3A],
+        pelvis: usize,
+        unconscious: bool,
+    ) -> Option<f32> {
+        use super::pose_heights::{
+            ContactHeight, PelvisAim, placement_pelvis_target, stand_heights,
+        };
+        let drive = self.drive.as_ref()?;
+        let root = posed.get(pelvis)?.translation.y * CM;
+        let contacts: Vec<ContactHeight> = self
+            .legs
+            .iter()
+            .filter_map(|l| {
+                let y = posed.get(l.shin)?.transform_point3(l.point).y * CM;
+                Some(ContactHeight { clip: y, posed: y })
+            })
+            .collect();
+        let heights = stand_heights(root, &contacts, self.sole * CM, drive.race.hovers);
+        let aim = PelvisAim {
+            walking: false,
+            off_feet: false,
+            getting_up: false,
+            unconscious,
+            run: 0.0,
+            scale: drive.stats.scale,
+            stepping: false,
+            crouch: 0.0,
+            progress: 0.0,
+            factor: 1.0,
+        };
+        Some(placement_pelvis_target(heights.stand, root, &aim))
+    }
+
+    /// The original's placement on the ground, as its player behaviour runs
+    /// it on its third tick (after the move to the nearest walkable point)
+    /// and its teleports and summons do: the leg snap from `floor` (the
+    /// character frame put on the walkable floor; [`Ragdoll::snap_placement`]),
+    /// whose frame height then becomes the frame's; every part is put at
+    /// the freshly sampled pose `posed` (body-root space) lowered by the
+    /// pelvis's posed height onto that frame, at rest
+    /// ([`super::placement::placed_parts`]); each foot's anchor is its
+    /// posed contact on the frame less the clip root, unrotated, at its
+    /// ground plus the sole ([`super::placement::ground_foot_anchor`]); and
+    /// every slack link's smoothed length restarts where it is. Returns the
+    /// pelvis height it placed (cm), or None, leaving the body alone, when
+    /// no foot finds ground [Exarust's own: the original then places the
+    /// pelvis at the floor frame's own height, which Exarust's partial
+    /// level queries could reach on ground they do not cover].
+    pub fn place_on_ground<L: Level + ?Sized>(
+        &mut self,
+        level: &L,
+        floor: Affine3A,
+        posed: &[Affine3A],
+        pelvis: usize,
+    ) -> Option<f32> {
+        if posed.len() != self.parts.len() || pelvis >= posed.len() {
+            return None;
+        }
+        let height = self.snap_placement(level, floor)?;
+        let mut frame = floor;
+        frame.translation.y = height / CM;
+        self.place_at(&super::placement::placed_parts(posed, pelvis, frame));
+        let root = Vec3::from(posed[pelvis].translation);
+        let sole = self.sole;
+        for leg in &mut self.legs {
+            let ground = leg.ground.unwrap_or(leg.floor);
+            let contact = posed[leg.shin].transform_point3(leg.point);
+            let at = super::placement::ground_foot_anchor(frame, contact, root, ground, sole);
+            leg.anchor = at;
+            leg.at = at;
+            leg.before = at;
+        }
+        self.reset_link_lengths();
+        Some(height)
     }
 
     /// One leg's clip reach in the placement's height rule (cm): the thigh

@@ -486,13 +486,15 @@ pub(crate) struct Steering {
 impl Steering {
     /// The behaviour tick's spawn snap, as the original's: counting its
     /// first ticks, on the third (unless `condition` is down, getting up or
-    /// dead) the move across the ground (m) from where the character
-    /// stands (`standing`) to `nearest`, the grid's nearest walkable point
-    /// to it; none otherwise.
+    /// dead) `nearest`, the grid's nearest walkable point (m) to the
+    /// character frame's origin `origin` (across the ground where the
+    /// character stands, at its pelvis's height), which the original
+    /// writes in place into the frame's origin before its placement on the
+    /// ground; none otherwise.
     pub(crate) fn snap(
         &mut self,
         condition: Condition,
-        standing: Vec3,
+        origin: Vec3,
         nearest: &dyn Fn(Vec3) -> Vec3,
     ) -> Option<Vec3> {
         if self.ticks >= SNAP_TICK {
@@ -502,7 +504,7 @@ impl Steering {
         if self.ticks < SNAP_TICK || condition.has(SNAP_HELD) {
             return None;
         }
-        Some((nearest(standing) - standing).with_y(0.0))
+        Some(nearest(origin))
     }
 
     /// The behaviour tick's common part: Shift held sets the sprint latch,

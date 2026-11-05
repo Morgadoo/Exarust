@@ -34,12 +34,11 @@ use exa_combat::swing::{Swing, pace_swings};
 use exa_formats::rsq::{BoneBody, Clip};
 use exa_physics::CharacterBody;
 use exa_physics::body::locomotion::{LegMode, Locomotion, Locomotor, half_lean};
-use exa_physics::body::placement::placed_parts;
+use exa_physics::body::placement::{SPAWN_PELVIS_DROP, placed_parts};
 use exa_physics::body::{
     Bearing, BodyStats, Drive, FootState, GoLimp, LimpFoot, PartSetup, Physical, PlacedCorpse,
     RaceMuscles, Ragdoll, limp_anchor_height, limp_foot, limp_pose_height, snap_part,
 };
-use exa_physics::contact::Level;
 
 use crate::stages::CharacterTickPlugin;
 
@@ -61,6 +60,10 @@ impl Plugin for LimpPlugin {
         .add_systems(
             FixedUpdate,
             watch_spawns.after(exa_physics::body::BodySystems),
+        )
+        .add_systems(
+            FixedPreUpdate,
+            place_on_ground.after(crate::player::steer_player),
         )
         .add_systems(Update, pace_swings)
         .add_plugins(CharacterTickPlugin);
@@ -97,10 +100,6 @@ fn build_bodies(
     globals: Query<&GlobalTransform>,
     skinned: Query<&SkinnedPart>,
     meshes: Res<Assets<Mesh>>,
-    (original, physics): (
-        Option<Res<OriginalSpawn>>,
-        Option<Res<exa_physics::Physics>>,
-    ),
 ) {
     let Some(motions) = motions else { return };
     for (root, mut physical, mut limp, mut placed) in &mut requests {
@@ -176,26 +175,20 @@ fn build_bodies(
                 .with_race(race)
                 .with_stats(stats)
                 .with_rest_turns(&rest_turns);
-            // The original places a character by sampling its first clip
-            // and putting the parts where that pose puts them (its
-            // placement routine). The body is built from the model's posed
-            // parts, which are the same clip; sampling it again from the
-            // clip's clock keeps the pose independent of what the frame
-            // sampler last left on the nodes. The placement's leg snap
-            // (`Ragdoll::snap_placement`) that follows in the original is
-            // not run: without its frame height applied to the controller
-            // it left the standing player 4.5 cm lower (105 cm against 110
-            // cm over 2 000 ticks on the RTX 3090 check).
+            // The original's spawn samples the first clip with its
+            // pose-only sampler and places the character at a matrix: the
+            // pose lowered onto a frame at the feet plus the sampler's
+            // pelvis target less 8 cm. The body is built from the model's
+            // posed parts, which are the same clip; sampling it again from
+            // the clip's clock keeps the pose independent of what the frame
+            // sampler last left on the nodes. No leg snap runs here: the
+            // original's level spawn has none; its player behaviour runs
+            // the placement on the ground on its third tick
+            // ([`GroundPlacement`]).
             let frame = globals.get(root).map_or(Affine3A::IDENTITY, |g| g.affine());
-            let level = physics.as_deref().map(|p| &p.0);
-            match (original.is_some(), level) {
-                (true, Some(level)) => original_spawn_pose(
-                    root, frame, &mut body, &found, &motions, &animators, &parents, &nodes, level,
-                ),
-                _ => spawn_pose(
-                    root, frame, &mut body, &found, &motions, &animators, &parents, &nodes,
-                ),
-            }
+            spawn_pose(
+                root, frame, &mut body, &found, &motions, &animators, &parents, &nodes,
+            );
             body.place_foot_pitches()
         };
         let mut entity = commands.entity(root);
@@ -204,13 +197,7 @@ fn build_bodies(
             .remove::<Physical>()
             .remove::<PlacedCorpse>();
         if !corpse {
-            entity.insert((
-                TickedClips,
-                SpawnWatch {
-                    ticks: 0,
-                    original: original.is_some(),
-                },
-            ));
+            entity.insert((TickedClips, SpawnWatch::default()));
         }
     }
 }
@@ -240,12 +227,49 @@ fn placement_pose(
     Some((pose, b))
 }
 
-/// The placement's sampling: the body's clip at its current clock, posed on
-/// `frame`, is put on the parts before the feet are snapped to the ground.
-/// A root without an animator or clip keeps the posed model it was built
-/// from. The original's placement routine runs its living sampler once
-/// before it moves the particles to the placed pose; the first clip is
-/// sampled by the pose-only key pick ([`placement_pose`]).
+/// The motion number of the Unconscious 1 clip, whose stand height the
+/// pose-only sampler's pelvis target leaves out.
+const UNCONSCIOUS_1: usize = 0x1D;
+
+/// The first clip's pose for the body under `root` (each part's placement
+/// in the body root's space, scaled by the stature), the index of its
+/// pelvis among `found`, and the bracket sampled: the pose-only sampler's
+/// key pick ([`placement_pose`]). None without an animator, a clip or a
+/// pelvis.
+#[allow(clippy::type_complexity)]
+fn posed_parts(
+    root: Entity,
+    entities: impl Iterator<Item = (Entity, usize)>,
+    motions: &Motions,
+    animators: &Query<(&Animator, Option<&Stature>)>,
+    parents: &Query<&ChildOf>,
+    nodes: &Query<(&Transform, Option<&BodyPart>)>,
+) -> Option<(Vec<Affine3A>, usize, exa_anim::Bracket, bool)> {
+    let (anim, stature) = animators.get(root).ok()?;
+    let clip = motions.clip(anim, &anim.action)?;
+    let action = motions.0.action_index(&anim.action);
+    let (pose, b) = placement_pose(anim, clip, action)?;
+    let pose = pose.scaled(stature.map_or(1.0, |s| s.0));
+    let mut pelvis = None;
+    let posed: Vec<Affine3A> = entities
+        .enumerate()
+        .map(|(i, (entity, bone))| {
+            if bone == 1 && pelvis.is_none() {
+                pelvis = Some(i);
+            }
+            clip_pose(entity, root, &pose, parents, nodes)
+        })
+        .collect();
+    Some((posed, pelvis?, b, action == Some(UNCONSCIOUS_1)))
+}
+
+/// The spawn's placement at a matrix, as the original's living builder
+/// runs it: the first clip sampled by the pose-only sampler's key pick
+/// ([`placement_pose`]), the pose lowered by the pelvis's posed height
+/// onto a frame at the feet (`frame`, the model root) plus the sampler's
+/// pelvis target less 8 cm ([`Ragdoll::placement_target`],
+/// [`SPAWN_PELVIS_DROP`]), at rest. A root without an animator, a clip or
+/// a pelvis keeps the posed model it was built from.
 #[allow(clippy::too_many_arguments)]
 fn spawn_pose(
     root: Entity,
@@ -257,135 +281,135 @@ fn spawn_pose(
     parents: &Query<&ChildOf>,
     nodes: &Query<(&Transform, Option<&BodyPart>)>,
 ) {
-    let Ok((anim, stature)) = animators.get(root) else {
+    let entities = found.iter().map(|&(e, bone, _)| (e, bone));
+    let Some((posed, pelvis, b, unconscious)) =
+        posed_parts(root, entities, motions, animators, parents, nodes)
+    else {
         return;
     };
-    let Some(clip) = motions.clip(anim, &anim.action) else {
+    let Some(target) = body.placement_target(&posed, pelvis, unconscious) else {
+        // A body without a drive: the pose on its model root.
+        let worlds: Vec<Affine3A> = posed.iter().map(|p| frame * *p).collect();
+        body.place_at(&worlds);
         return;
     };
-    let action = motions.0.action_index(&anim.action);
-    let Some((pose, _)) = placement_pose(anim, clip, action) else {
-        return;
-    };
-    let pose = pose.scaled(stature.map_or(1.0, |s| s.0));
-    let worlds: Vec<Affine3A> = found
-        .iter()
-        .map(|&(entity, _, _)| frame * clip_pose(entity, root, &pose, parents, nodes))
-        .collect();
-    body.place_at(&worlds);
-}
-
-/// Spawns living bodies in the original's order (the play flag
-/// `--original-spawn`): the first clip sampled by the pose-only sampler's
-/// key pick, the pose lowered so that the pelvis lands at the frame's
-/// height, then the placement's leg snap, and the parts placed again on
-/// the frame at the height the snap computes. Without it a body is put
-/// where its clip pose puts it on its model root and no snap runs.
-#[derive(Resource, Debug, Clone, Copy, Default)]
-pub struct OriginalSpawn;
-
-/// A body's first ticks after it spawned: its pelvis height over its model
-/// root (the feet) is logged at debug level each fixed tick for
-/// [`SPAWN_WATCH_TICKS`] ticks, so a run shows how the spawn settles.
-#[derive(Component, Debug, Clone, Copy)]
-pub struct SpawnWatch {
-    ticks: u32,
-    original: bool,
-}
-
-/// How many fixed ticks a spawn is watched.
-pub const SPAWN_WATCH_TICKS: u32 = 120;
-
-/// Logs each watched body's pelvis height over its feet (cm).
-fn watch_spawns(
-    mut commands: Commands,
-    mut watched: Query<(Entity, &Ragdoll, &GlobalTransform, &mut SpawnWatch)>,
-) {
-    for (root, body, at, mut watch) in &mut watched {
-        let Some(pelvis) = body.parts.first() else {
-            continue;
-        };
-        let height = (pelvis.transform().translation.y - at.translation().y) * CM;
-        debug!(
-            "spawn pelvis: {root:?} tick {} {height:.1} cm over the feet ({} spawn)",
-            watch.ticks,
-            if watch.original {
-                "original"
-            } else {
-                "default"
-            }
-        );
-        watch.ticks += 1;
-        if watch.ticks >= SPAWN_WATCH_TICKS {
-            commands.entity(root).remove::<SpawnWatch>();
-        }
-    }
-}
-
-/// The original's spawn order ([`OriginalSpawn`]):
-///
-/// 1. The first clip sampled by the pose-only sampler's key pick
-///    ([`placement_bracket`]: no ease, no clamp; its root from the source
-///    key for the first three gaits, [`placement_root_from_key`]).
-/// 2. The posed parts lowered by the pelvis's posed height and put on the
-///    frame ([`placed_parts`]), the frame first at the model root plus that
-///    height, so the pelvis lands where the default spawn puts it.
-/// 3. The placement's leg snap on that frame
-///    ([`Ragdoll::snap_placement`]); its frame height (the root over its
-///    hip over its ankle over the averaged ground) becomes the frame's,
-///    the parts are placed again on it and the snap runs once more there.
-///    The controller keeps its own place: the model root stays at the
-///    feet. No ground under the feet keeps step 2's placement.
-#[allow(clippy::too_many_arguments)]
-fn original_spawn_pose<L: Level + ?Sized>(
-    root: Entity,
-    frame: Affine3A,
-    body: &mut Ragdoll,
-    found: &[(Entity, usize, GlobalTransform)],
-    motions: &Motions,
-    animators: &Query<(&Animator, Option<&Stature>)>,
-    parents: &Query<&ChildOf>,
-    nodes: &Query<(&Transform, Option<&BodyPart>)>,
-    level: &L,
-) {
-    let Ok((anim, stature)) = animators.get(root) else {
-        return;
-    };
-    let Some(clip) = motions.clip(anim, &anim.action) else {
-        return;
-    };
-    let action = motions.0.action_index(&anim.action);
-    let Some((pose, b)) = placement_pose(anim, clip, action) else {
-        return;
-    };
-    let pose = pose.scaled(stature.map_or(1.0, |s| s.0));
-    let posed: Vec<Affine3A> = found
-        .iter()
-        .map(|&(entity, _, _)| clip_pose(entity, root, &pose, parents, nodes))
-        .collect();
-    let Some(pelvis) = found.iter().position(|f| f.1 == 1) else {
-        return;
-    };
-    let lift = posed[pelvis].translation.y;
     let mut at = frame;
-    at.translation.y += lift;
+    at.translation.y += (target - SPAWN_PELVIS_DROP) / CM;
     body.place_at(&placed_parts(&posed, pelvis, at));
-    let Some(height) = body.snap_placement(level, at) else {
-        debug!("original spawn {root:?}: no ground under the feet, placed at the clip's height");
-        return;
-    };
-    let before = at.translation.y;
-    at.translation.y = height / CM;
-    body.place_at(&placed_parts(&posed, pelvis, at));
-    body.snap_placement(level, at);
     debug!(
-        "original spawn {root:?}: pelvis {:.1} cm over the feet (clip {:.1}), key {}→{} f {:.3}",
-        (at.translation.y - frame.translation.y) * CM,
-        (before - frame.translation.y) * CM,
+        "spawn placement {root:?}: pelvis {:.1} cm over the feet (target {target:.1}, clip {:.1}), key {}→{} f {:.3}",
+        target - SPAWN_PELVIS_DROP,
+        posed[pelvis].translation.y * CM,
         b.src,
         b.dst,
         b.f
     );
+}
+
+/// The original's placement on the ground, asked by the player's
+/// behaviour on its third tick after its move to the nearest walkable
+/// point ([`crate::player`]): `floor` is that point's height (m), which
+/// the character frame's origin takes. The next fixed step places the body
+/// ([`place_on_ground`]).
+#[derive(Component, Debug, Clone, Copy)]
+pub struct GroundPlacement {
+    pub floor: f32,
+}
+
+/// Runs each asked placement on the ground
+/// ([`Ragdoll::place_on_ground`]): the leg snap from the character frame
+/// put on the walkable floor, then the current clip sampled by the
+/// pose-only sampler and every part put on the frame at the snap's height.
+/// The controller (the capsule at the feet) stays where it stands: the
+/// original's frame sits at the pelvis, which the parts carry. Logs the
+/// pelvis height it placed at info level.
+#[allow(clippy::type_complexity)]
+fn place_on_ground(
+    mut commands: Commands,
+    mut asked: Query<(Entity, &GroundPlacement, &mut Ragdoll, &GlobalTransform)>,
+    motions: Option<Res<Motions>>,
+    animators: Query<(&Animator, Option<&Stature>)>,
+    parents: Query<&ChildOf>,
+    nodes: Query<(&Transform, Option<&BodyPart>)>,
+    physics: Option<Res<exa_physics::Physics>>,
+) {
+    for (root, placement, mut body, at) in &mut asked {
+        commands.entity(root).remove::<GroundPlacement>();
+        let (Some(motions), Some(physics)) = (motions.as_deref(), physics.as_deref()) else {
+            continue;
+        };
+        let entities: Vec<(Entity, usize)> =
+            body.parts.iter().map(|p| (p.entity, p.bone)).collect();
+        let Some((posed, pelvis, _, _)) = posed_parts(
+            root,
+            entities.into_iter(),
+            motions,
+            &animators,
+            &parents,
+            &nodes,
+        ) else {
+            continue;
+        };
+        let mut floor = at.affine();
+        floor.translation.y = placement.floor;
+        let before = body.parts.get(pelvis).map(|p| p.transform().translation.y);
+        match body.place_on_ground(&physics.0, floor, &posed, pelvis) {
+            Some(height) => info!(
+                "ground placement {root:?}: pelvis {:.1} cm over the floor (was {:.1}), feet at {:.1}, character ground {:.1}",
+                height - placement.floor * CM,
+                before.map_or(f32::NAN, |b| (b - placement.floor) * CM),
+                at.translation().y * CM,
+                body.placement_feet() * CM
+            ),
+            None => info!("ground placement {root:?}: no ground under the feet, left standing"),
+        }
+    }
+}
+
+/// A body's first ticks after it spawned: its pelvis height over its model
+/// root (the feet) and over its character ground is logged at debug level
+/// each fixed tick for [`SpawnWatch::LENGTH`] ticks (the play flag
+/// `--spawn-watch <ticks>` sets it: [`SpawnWatchTicks`]), so a run shows
+/// how the spawn settles.
+#[derive(Component, Debug, Clone, Copy, Default)]
+pub struct SpawnWatch {
+    ticks: u32,
+}
+
+impl SpawnWatch {
+    /// How many fixed ticks a spawn is watched by default.
+    pub const LENGTH: u32 = 120;
+}
+
+/// How many fixed ticks each spawn is watched ([`SpawnWatch`]), when not
+/// the default.
+#[derive(Resource, Debug, Clone, Copy)]
+pub struct SpawnWatchTicks(pub u32);
+
+/// Logs each watched body's pelvis height over its feet and over its
+/// character ground (cm).
+fn watch_spawns(
+    mut commands: Commands,
+    length: Option<Res<SpawnWatchTicks>>,
+    mut watched: Query<(Entity, &Ragdoll, &GlobalTransform, &mut SpawnWatch)>,
+) {
+    let length = length.map_or(SpawnWatch::LENGTH, |l| l.0);
+    for (root, body, at, mut watch) in &mut watched {
+        let Some(pelvis) = body.parts.first() else {
+            continue;
+        };
+        let y = pelvis.transform().translation.y;
+        debug!(
+            "spawn pelvis: {root:?} tick {} {:.1} cm over the feet, {:.1} over its ground",
+            watch.ticks,
+            (y - at.translation().y) * CM,
+            (y - body.placement_feet()) * CM,
+        );
+        watch.ticks += 1;
+        if watch.ticks >= length {
+            commands.entity(root).remove::<SpawnWatch>();
+        }
+    }
 }
 
 /// What building a part's body needs: its links to its parent as the
@@ -1407,12 +1431,12 @@ pub(crate) mod tests {
         assert_ne!(pose.root, plain.root);
     }
 
-    /// The original spawn's first placement (the pose lowered by the
-    /// pelvis's posed height onto the frame raised by that height) puts every
-    /// part where the default spawn (the frame times the clip pose) does, so
-    /// only the leg snap's height moves the body.
+    /// The spawn's placement at a matrix: the pose lowered by the
+    /// pelvis's posed height onto the feet raised by the pelvis target less
+    /// 8 cm puts the pelvis at that height over the feet and every other
+    /// part at its posed offset from the pelvis.
     #[test]
-    fn the_original_spawns_first_placement_is_the_default_pose() {
+    fn the_spawn_puts_the_pelvis_at_its_target_less_eight_centimetres() {
         let frame = Affine3A::from_rotation_translation(
             Quat::from_rotation_y(0.7),
             Vec3::new(3.0, 0.25, -2.0),
@@ -1424,16 +1448,18 @@ pub(crate) mod tests {
                 Vec3::new(-0.09, 0.9, 0.05),
             ),
         ];
+        let target = 107.7;
         let mut at = frame;
-        at.translation.y += posed[0].translation.y;
+        at.translation.y += (target - SPAWN_PELVIS_DROP) / CM;
         let placed = placed_parts(&posed, 0, at);
-        for (p, q) in placed.iter().zip(&posed) {
-            let want = frame * *q;
-            assert!(
-                (p.translation - want.translation).length() < 1e-5,
-                "{p:?} {want:?}"
-            );
-        }
+        let pelvis = (placed[0].translation.y - frame.translation.y) * CM;
+        assert!((pelvis - 99.7).abs() < 1e-3, "{pelvis}");
+        let offset = placed[1].translation - placed[0].translation;
+        let want = frame.transform_vector3(Vec3::from(posed[1].translation - posed[0].translation));
+        assert!(
+            (Vec3::from(offset) - want).length() < 1e-5,
+            "{offset:?} {want:?}"
+        );
     }
 
     use super::*;
@@ -1523,9 +1549,9 @@ pub(crate) mod tests {
     }
 
     /// The placement's first sample: the body is built from its rest pose,
-    /// and `spawn_pose` puts the clip's pose on it (the pelvis's root height
-    /// and the thigh's swing) before the feet are snapped. A root with no
-    /// clip keeps the pose it was built from.
+    /// and `spawn_pose` puts the clip's pose on it (the thigh's swing) at
+    /// the pelvis target's height. A root with no clip keeps the pose it
+    /// was built from.
     #[test]
     fn the_spawn_samples_the_first_clip_before_placing() {
         use bevy::ecs::system::SystemState;
@@ -1596,10 +1622,12 @@ pub(crate) mod tests {
             &parents,
             &nodes,
         );
-        let (swing, y) = idle_at(15.0);
+        let (swing, _) = idle_at(15.0);
+        // Without feet the stand height is 0: the pelvis target is twice
+        // the scale plus 5 cm, and the pelvis sits 8 cm under it.
         let pelvis_at = body.parts[0].transform();
         assert!(
-            (pelvis_at.translation.y - y).abs() < 1e-5,
+            (pelvis_at.translation.y - (7.0 - SPAWN_PELVIS_DROP) / CM).abs() < 1e-5,
             "{:?}",
             pelvis_at.translation
         );

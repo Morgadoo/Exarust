@@ -2060,7 +2060,7 @@ A foot's floor query SHALL be a point ray from 30 cm over its ground 60 cm down 
 - **THEN** the foot's ground and floor rise to the step top
 
 ### Requirement: Placement leg snap
-A living body placed into the scene SHALL probe each leg 5·scale cm along its shin from its clip ankle with a 10 cm sphere from the frame's height plus the leg's length 300 cm down, a miss 10 000 cm under the frame, and average the hits into the character's ground. Each anchor SHALL be its clip ankle at its ground plus the sole, its ground and floor that ground, and the standing leg IK SHALL write its corrections at once with no rate and no thigh turn.
+A living body placed into the scene SHALL probe each leg 5·scale cm along its shin from its clip ankle with a 10 cm sphere from the frame's height plus the leg's length 300 cm down, a miss 10 000 cm under the frame, and average the hits into the character's ground. Each anchor SHALL be its clip ankle at its ground plus the sole, its ground and floor that ground, and the standing leg IK SHALL write its corrections at once with no rate and no thigh turn, reading the character frame the body stands on.
 
 #### Scenario: A platform
 - **WHEN** a biped is placed over a platform 15 cm up
@@ -2072,6 +2072,20 @@ The placement's frame height SHALL be the root over the chosen thigh plus the ch
 #### Scenario: No ground
 - **WHEN** no probe finds ground
 - **THEN** the body is left as it was and no height is given
+
+### Requirement: Spawn placement at a matrix
+A living character spawned without a saved pose SHALL take its first clip's pose-only sample, lowered by the pelvis's posed height, onto a frame at its placement's yaw and position raised by the pose-only sampler's pelvis target less 8 cm. That target SHALL be the not-walking margin: the stand height of the posed foot contacts (0 under the Unconscious 1 clip) plus twice the body scale plus 5 cm. No leg snap SHALL run at that spawn.
+
+#### Scenario: A standing human
+- **WHEN** a human's first sample stands its pelvis 103 cm over a lowest contact at its sole's height
+- **THEN** its target is 110 cm and its pelvis is placed 102 cm over its placement
+
+### Requirement: Placement on the ground
+A placement on the ground SHALL run the leg snap from its frame, take the snap's frame height as the frame's, put every part at the current clip's pose-only sample lowered by the pelvis's posed height onto that frame at rest, anchor each foot at its posed contact on the frame less the clip root (unrotated) at its ground plus the sole, and restart every slack link's smoothed length. When no foot finds ground the body SHALL be left as it was.
+
+#### Scenario: A platform
+- **WHEN** a biped is placed on the ground over a platform 15 cm up
+- **THEN** its pelvis stands 15 cm higher than over the floor, at the snap's height, every part at rest at its posed offset from the pelvis
 
 ### Requirement: Body tick adapters
 At the top of each body tick the support adapter SHALL be 0.9 + 0.09·S less 0.6·(1 − E) then 0.1·(1 − B), each floored at 0 by the processor's maximum; the rest adapter 1 − 0.01·S plus 0.05·(1 − B) then 0.3·(1 − E), each capped at 1 by its minimum, and 1 while a get-up is under 0.9 of its clip; sums in double, S last tick's support.

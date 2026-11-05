@@ -385,8 +385,14 @@ sampler's pelvis targets) and the placement routines' arithmetic
 (`body::placement`: the pose lowered by the pelvis's posed height and put
 on the frame, the foot anchors on the ground or at a matrix, the matrix
 pins 5 cm lower, the means) are tested against the original's
-instructions and not called: the carry aims the pelvis from the feet, and
-the spawn places the clip pose on the character frame.
+instructions; the carry aims the pelvis from the feet, not from the
+samplers' targets. The spawn's placement at a matrix reads the placement's
+target (`Ragdoll::placement_target`: the stand height of the posed
+contacts plus twice the scale plus 5 cm, the not-walking margin of a
+condition word still 0) and puts the pelvis at the feet plus that target
+less 8 cm (`placement::SPAWN_PELVIS_DROP`), the pose lowered onto it
+(`placed_parts`); the matrix anchors and pins and the means are not
+called.
 A golem's body links are smoothed at 0.995 (`Ragdoll::smooth_golem_links`,
 from `RaceMuscles::golem`); the init's leg order is `legs_swap`. A body
 that stands has no locomotion drive (`stand` clears it). A standing leg bends onto
@@ -489,10 +495,16 @@ needs muscles, never runs for it) or one of two words that nothing in the
 executable writes is set. So no body samples with these rules in 0.9.5,
 whatever knocks it out: the knock-out writes the condition and the wake
 nibble, never the muscles (traced for C8).
-The placement's leg snap (`Ragdoll::snap_placement`) is a tested rule,
-not called by the spawn (run after the first clip sample with the
-controller moved to its ground, it left the player squatting for about a
-second):
+The placement on the ground (`Ragdoll::place_on_ground`, run by the
+player behaviour's third tick from the nearest walkable floor) runs the
+leg snap, takes its frame height as the frame's, puts every part at the
+current clip's pose-only sample lowered onto that frame at rest,
+re-anchors each foot at its posed contact on the frame less the clip root
+at its ground plus the sole (`placement::ground_foot_anchor`) and
+restarts the slack links' smoothed lengths; no ground leaves the body
+alone. The controller keeps its place (its capsule holds the feet on the
+floor; moving it to the snap's ground made the earlier squat). The leg
+snap (`Ragdoll::snap_placement`):
 each probe is the clip ankle plus 5·scale cm
 along the shin, a 10 cm sphere from the frame's height plus the leg's
 length is dropped 300 cm for the ground, the hits average to the
@@ -500,9 +512,9 @@ character's ground, one foot's record (index 1 when leg 0's ground is
 lower) picks the frame height (root over thigh, ground, the reach its
 clip leaves, sole), each anchor
 is the clip ankle at its ground plus the sole, and the standing IK writes
-its corrections at once (`Ragdoll::snap_legs`). `Ragdoll::placement_feet`
-maps that frame height back to the character ground Exarust's model root
-stands at. The placement's resets before its first sample are tested and
+its corrections at once (`Ragdoll::snap_legs`, on the character frame
+the body stands on). `Ragdoll::placement_feet` is the character ground the
+snap averaged. The placement's resets before its first sample are tested and
 not called (a spawned body already starts in that state):
 `Locomotor::placed` drops the twist and the move vector's reach and takes
 the yaw of the matrix's flattened forward by the original's arc cosine;
