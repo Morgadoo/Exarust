@@ -35,6 +35,7 @@ pub struct NavPlugin;
 
 impl Plugin for NavPlugin {
     fn build(&self, app: &mut App) {
+        bridge_nav_types(app);
         app.init_resource::<NavState>()
             .init_resource::<InstalledPathfinder>()
             .init_resource::<NavOverlay>()
@@ -60,6 +61,17 @@ impl Plugin for NavPlugin {
                 (overlay_key, draw_overlay.run_if(|o: Res<NavOverlay>| o.on)).chain(),
             );
     }
+}
+
+/// The data this plugin's fixed-step systems touch, for the simulation's
+/// bridge (`exa_physics::sim_bridge`).
+fn bridge_nav_types(app: &mut App) {
+    use exa_physics::sim_bridge::SimBridgeAppExt;
+    app.bridge_message::<crate::nav::view::NavMoved>()
+        .bridge_copy::<crate::gi_volume::GiPoints>()
+        .bridge_lend_resource::<crate::nav::view::NavMovers>()
+        .bridge_lend_resource::<crate::nav::view::NavRevision>()
+        .bridge_copy_resource::<NavRefreshMoved>();
 }
 
 /// A level waiting for its grid, once its nodes have world transforms.
