@@ -104,13 +104,19 @@ where the copy used to land it, and a simulation running apart from the
 frame can take it in order. Posted so far: the viewer's fells and mechanism
 poke, the door toggle, going limp, finished limb trees, the hand's door and
 lever releases, the grab a hotkey's entry into combat lets go of. Coupled writers move into the simulation instead, with their
-same-frame readers: the rise and its restore run in `SimFrameStart` (the
-original's AI manager frame runs them on its simulation thread, as a hook
-its step calls), then the golem alarm's zone check (the manager frame's,
-after its rise), and so do the hit chain (wounds, blade tracking, hit
-detection, the reaction and the bites: the original's damage routine takes
-a pending hit in its dynamics' post-step) with the brains' reaction to
-blows and the debug pauses that read it.
+same-frame readers: the rise and its restore, then the golem alarm's zone
+check, run in `SimPreStep` before every fixed step (the original installs
+its AI manager's frame routine as its simulation loop's pre-step hook, which
+the loop calls before each 12 ms step; the routine has no rate guard of its
+own, the zone check only its 3 cm movement test). The hit chain (wounds,
+blade tracking, hit detection, the reaction and the bites) with the brains'
+reaction to blows and the debug pauses that read it runs in `SimFrameStart`,
+on the first step of each frame: the original's damage routine takes a
+pending hit in its dynamics' post-step, every step, but Exarust's blade
+tracking reads the blade frames the frame propagates, so it stays once a
+frame until blade frames are taken from the parts within the step. The
+bodies' frame start (the blows queued, the per-frame tick count) also stays
+there, after the hit chain that sends the blows.
 
 The hand stays in the frame, as the original's hand runs on its main thread
 per input event (the GUI's cursor handlers) and writes the bodies directly.
