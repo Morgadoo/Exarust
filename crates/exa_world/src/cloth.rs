@@ -1089,23 +1089,62 @@ fn step_one(
     ClothOutcome { index, after, line }
 }
 
-/// Writes each cloth that stepped since the last frame into its mesh's
-/// positions (the mesh in metres, the cloth in centimetres), once a frame
-/// after the fixed ticks: the renderer takes one copy of the mesh a frame
-/// whatever the ticks, so writing it every tick only repeated the work.
-pub fn write_cloth_meshes(
+/// A stepped cloth's mesh positions (metres, one per mesh vertex), taken
+/// after the step that moved it: the snapshot the fixed step hands the frame
+/// (behind the simulation bridge the cloths stay in the simulation's world).
+#[derive(Message, Debug, Clone, PartialEq)]
+pub struct ClothMeshUpdate {
+    pub mesh: Handle<Mesh>,
+    pub positions: Vec<[f32; 3]>,
+}
+
+/// After each step: every cloth that stepped hands its mesh its particles'
+/// places (the mesh in metres, the cloth in centimetres).
+pub fn publish_cloth_meshes(
     mut instances: Query<&mut ClothInstance>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut debug: ResMut<ClothDebug>,
+    mut updates: MessageWriter<ClothMeshUpdate>,
 ) {
-    let started = debug.on.then(std::time::Instant::now);
-    let mut written = 0u32;
     for mut instance in &mut instances {
         if !instance.stale_mesh {
             continue;
         }
         instance.stale_mesh = false;
-        let Some(mut mesh) = meshes.get_mut(&instance.mesh) else {
+        let particles = &instance.cloth.particles;
+        let positions = instance
+            .vertex_particle
+            .iter()
+            .map(|&p| {
+                particles
+                    .get(p)
+                    .map_or(Vec3::ZERO, |p| p.position * 0.01)
+                    .to_array()
+            })
+            .collect();
+        updates.write(ClothMeshUpdate {
+            mesh: instance.mesh.clone(),
+            positions,
+        });
+    }
+}
+
+/// Writes each mesh's newest cloth positions, once a frame after the fixed
+/// ticks: the renderer takes one copy of the mesh a frame whatever the
+/// ticks, so writing it every tick only repeated the work.
+pub fn write_cloth_meshes(
+    mut updates: MessageReader<ClothMeshUpdate>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut debug: ResMut<ClothDebug>,
+) {
+    let started = debug.on.then(std::time::Instant::now);
+    // The newest of each mesh's updates.
+    let mut newest: bevy::platform::collections::HashMap<AssetId<Mesh>, &ClothMeshUpdate> =
+        bevy::platform::collections::HashMap::default();
+    for update in updates.read() {
+        newest.insert(update.mesh.id(), update);
+    }
+    let mut written = 0u32;
+    for update in newest.values() {
+        let Some(mut mesh) = meshes.get_mut(&update.mesh) else {
             continue;
         };
         let Some(bevy::mesh::VertexAttributeValues::Float32x3(values)) =
@@ -1113,12 +1152,8 @@ pub fn write_cloth_meshes(
         else {
             continue;
         };
-        let particles = &instance.cloth.particles;
-        for (slot, &p) in values.iter_mut().zip(&instance.vertex_particle) {
-            *slot = particles
-                .get(p)
-                .map_or(Vec3::ZERO, |p| p.position * 0.01)
-                .to_array();
+        for (slot, p) in values.iter_mut().zip(&update.positions) {
+            *slot = *p;
         }
         written += 1;
     }
@@ -1185,8 +1220,9 @@ impl Plugin for ClothPlugin {
                 RunFixedMainLoop,
                 write_cloth_meshes.in_set(RunFixedMainLoopSystems::AfterFixedMainLoop),
             )
+            .add_message::<ClothMeshUpdate>()
             .add_systems(FixedFirst, start_fixed_timer)
-            .add_systems(FixedLast, stop_fixed_timer);
+            .add_systems(FixedLast, (publish_cloth_meshes, stop_fixed_timer));
     }
 }
 
@@ -1196,7 +1232,10 @@ fn bridge_cloth_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
     app.bridge_lend_resource::<crate::cloth::ClothContacts>()
         .bridge_lend_resource::<crate::cloth::ClothDebug>()
-        .bridge_lend::<crate::cloth::ClothInstance>()
+        // The frame builds a cloth; the simulation owns it from then on and
+        // hands the frame its mesh positions ([`ClothMeshUpdate`]).
+        .bridge_copy_in::<crate::cloth::ClothInstance>()
+        .bridge_message::<ClothMeshUpdate>()
         .bridge_lend_resource::<crate::cloth::ClothObjects>();
 }
 
