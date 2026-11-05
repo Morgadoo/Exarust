@@ -315,7 +315,9 @@ tested rules of their own.
   weapon, a shield, an off-hand light); `held::choose` turns it into a
   `HeldMoveset`: the original's moveset config (the weapon moveset and the
   Torch overlay, looked up under the race's own moveset), the stance class
-  and the weapon class (the fists `0x80`). Dressing puts a wielded weapon
+  and the weapon class (the fists `0x80`); a body's `HeldModifier` (the
+  game crate's burning blade asks for "Flaming") is ORed into the config.
+  Dressing puts a wielded weapon
   in the main hand, the game crate puts a lit torch in its hand, and a
   system after dressing writes the config into the body's `Animator`
   (whose base stays the race's moveset) whenever the hands change. Only

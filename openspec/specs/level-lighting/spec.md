@@ -68,11 +68,15 @@ The scene environment SHALL start with the engine's built-in six-record day trac
 - **THEN** the third record's away sky red is 0.0139 (0.145 through the sRGB curve, times 0.75) and k's fourth slot stays 6
 
 ### Requirement: Frame environment values
-Each frame the scene environment SHALL publish −25 as its sun-height value when the sun height is above 0.4 in double precision and −100000 otherwise, the current rain times 0.3 as the wind, and the tint colour times the tint's fourth slot.
+Each frame the scene environment SHALL publish its water level: −25 cm when its terrain wetness is above 0.4 in double precision, −100000 otherwise. The terrain wetness SHALL be the palette's header float a terrain load hands it, and the save load's reset SHALL set it to zero. The frame SHALL also publish the current rain times 0.3 as the wind, and the tint colour times the tint's fourth slot.
 
 #### Scenario: Thresholds
-- **WHEN** the sun height is 0.39, then the single-precision 0.4
-- **THEN** the value is −100000, then −25; a rain of 0.5 gives a wind of 0.15 and a tint of (0.5, 0.25, 0.75, 2) gives (1, 0.5, 1.5)
+- **WHEN** the terrain wetness is 0.39, then the single-precision 0.4
+- **THEN** the water level is −100000, then −25; a rain of 0.5 gives a wind of 0.15 and a tint of (0.5, 0.25, 0.75, 2) gives (1, 0.5, 1.5)
+
+#### Scenario: The sewer
+- **WHEN** `exanima05_sw` loads its `UWSwrA1` terrain (wetness 0.5)
+- **THEN** the scene's water level is −25 cm
 
 ### Requirement: Frame scratch and clear colours
 Each frame the scene environment SHALL clear with the level's background under a sky and keep the horizon colour as its scratch colour; without a sky and with fog it SHALL take the fog colour as the scratch and clear with it only when the fog clears, else with the background; during a flash it SHALL clear with the scratch times the flash tint, halved, with an alpha of 1. The rain effect SHALL take the scratch colour.

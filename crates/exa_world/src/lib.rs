@@ -1795,6 +1795,9 @@ pub struct LevelLoad {
     terrain_stats: Option<terrain::TerrainStats>,
     /// The terrain's tiles on the X/Z plane, metres: low and high corners.
     terrain_extent: Option<(Vec2, Vec2)>,
+    /// The terrain palette's wetness, which the scene environment takes
+    /// as the terrain loads (its water level follows it).
+    terrain_wetness: Option<f32>,
     lights: usize,
     min: Vec3,
     max: Vec3,
@@ -1962,6 +1965,7 @@ impl LevelLoad {
             terrain: None,
             terrain_stats: None,
             terrain_extent: None,
+            terrain_wetness: None,
             lights: 0,
             min: Vec3::splat(f32::MAX),
             max: Vec3::splat(f32::MIN),
@@ -2043,6 +2047,8 @@ impl LevelLoad {
                         .terrain
                         .as_ref()
                         .and_then(terrain::TerrainBuild::horizontal_extent);
+                    self.terrain_wetness =
+                        self.terrain.as_ref().map(terrain::TerrainBuild::wetness);
                     if self.terrain.is_none() {
                         commands.remove_resource::<terrain::ground::TerrainGround>();
                     }
@@ -2352,10 +2358,22 @@ impl LevelLoad {
         // The live scene environment keeps ticking the preset's weather and
         // republishes its frame; both of its streams start from the same
         // clock seed the load drew with.
-        commands.insert_resource(environment::SceneEnvRuntime::new(
-            scene_lighting.env,
-            engine_seed,
-        ));
+        // A terrain's load hands its palette's wetness to the scene's
+        // environment, whose frame turns it into the water level.
+        let mut scene_env = scene_lighting.env;
+        if let Some(wetness) = self.terrain_wetness {
+            scene_env.terrain_wetness = wetness;
+            let water = exa_physics::body::water_level(wetness);
+            info!(
+                "scene water: terrain wetness {wetness}, water level {water} cm{}",
+                if water > exa_physics::body::NO_WATER_CM {
+                    " (wet steps under it)"
+                } else {
+                    ""
+                }
+            );
+        }
+        commands.insert_resource(environment::SceneEnvRuntime::new(scene_env, engine_seed));
         let (min, max) = if self.scene.props.is_empty() {
             (Vec3::splat(-10.0), Vec3::splat(10.0))
         } else {

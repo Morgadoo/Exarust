@@ -174,7 +174,10 @@ bus next to the rodio sources) are in.
   the body root's place (`release_step` at the step loudness and footstep
   volume, then its 250 ms clock), each only while its clock is behind the
   game clock; the draws come from the sound bank's generator in that order
-  (`footsteps::foot_sounds`, logged at debug level).
+  (`footsteps::foot_sounds`, logged at debug level). Under the scene's
+  water (`exa_physics::body::WaterLevel`) the step's end and a walking
+  plant are each followed by a `StpWet` splash, two more draws after the
+  comparison.
 - A wound's pain sounds (`exa_combat::pain::PainSounded`, after the damage
   call on flesh only): the character's wound set (`WndFls`, `SkelHit`,
   `HitGlm`) at the blow, and its pain voice through its voice's request

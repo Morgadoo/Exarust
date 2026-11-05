@@ -412,18 +412,21 @@ fn golem_suit(effects: Option<&crate::item_effects::WornEffects>) -> bool {
 
 /// Emits the walk's footstep sounds at the feet the body planted this tick:
 /// at the character's place, `3·speed + 4` cm along its facing, in the
-/// race's set, or the golem suit's set when one is worn. The gain and pitch
-/// are drawn when the sound plays.
+/// race's set, or the golem suit's set when one is worn, with the planted
+/// foot's contact height and the gait's thrust for the wet step. The gain
+/// and pitch are drawn when the sound plays.
+#[allow(clippy::type_complexity)]
 pub(crate) fn gait_footsteps(
     ticked: Res<TickedCharacter>,
     bodies: Query<(
         &Ragdoll,
         Option<&exa_combat::Fighter>,
         Option<&crate::item_effects::WornEffects>,
+        Option<&Locomotor>,
     )>,
     mut steps: MessageWriter<Footstep>,
 ) {
-    let Ok((body, fighter, effects)) = bodies.get(ticked.body) else {
+    let Ok((body, fighter, effects, locomotor)) = bodies.get(ticked.body) else {
         return;
     };
     let Some(drive) = body.drive.as_ref() else {
@@ -438,12 +441,18 @@ pub(crate) fn gait_footsteps(
     let Some(origin) = drive.anchor().or_else(|| drive.root_point()) else {
         return;
     };
-    for _ in body.planted_feet() {
+    // The wet step follows the gait's thrust (the gait table's first column
+    // as the locomotion blended it).
+    let thrust = locomotor.map_or(0.0, |l| l.gait.thrust);
+    for leg in body.planted_feet() {
+        let contact_cm = body.foot_contact(leg).map_or(0.0, |at| at.y * 100.0);
         steps.write(Footstep {
             position: step_position(origin, drive.bearing.facing, drive.bearing.speed),
             speed_cm: drive.bearing.speed,
             volume: fighter.stats.footstep_volume,
             set: Some(set),
+            contact_cm,
+            thrust,
         });
     }
 }

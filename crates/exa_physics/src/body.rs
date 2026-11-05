@@ -84,8 +84,9 @@ pub use feet::{
     rustle_clock, walk_rustle, wet_release_step,
 };
 pub use feet::{
-    FootState, Footstep, FullTone, GaitStep, QueuedStep, StepEnd, WalkedStep, full_tone, gait_step,
-    queued_step, step_end, step_loudness, step_position,
+    FootState, Footstep, FullTone, GaitStep, NO_WATER_CM, QueuedStep, StepEnd, WET_SCENE_FROM,
+    WET_SCENE_WATER_CM, WalkedStep, WaterLevel, full_tone, gait_step, gait_wet_step, queued_step,
+    step_end, step_loudness, step_position, water_level,
 };
 #[path = "body_pins.rs"]
 mod pins;
@@ -2884,6 +2885,12 @@ impl Ragdoll {
             .enumerate()
             .filter(|(_, l)| l.planted)
             .map(|(i, _)| i)
+    }
+
+    /// Leg `leg`'s foot contact's world point (m) in the solver's last
+    /// iteration: where a planted foot's wet step compares the water.
+    pub fn foot_contact(&self, leg: usize) -> Option<Vec3> {
+        self.legs.get(leg).map(|l| l.at)
     }
 
     /// How far (cm) leg `leg`'s contact sits over its ground and sole, as

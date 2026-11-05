@@ -13,8 +13,9 @@
 //! light, and the loop sound's pitch walk only while it has a sound.
 //!
 //! The carried torch is not a flame row: it uses its model's own fire
-//! emitter (`crate::torch`). A flame row needs a held item whose ability
-//! word is a burning one, which Exarust's item records do not carry yet.
+//! emitter (`crate::torch`). A flame row is put on a held blade of ability
+//! type 3 whose first socket holds a Power Crystal C
+//! (`crate::item_ability`).
 //!
 //! Sizes are the original's centimetres and its 83 Hz ticks.
 
@@ -93,7 +94,8 @@ pub const PITCH_MIN: f32 = 0.85;
 pub const PITCH_MAX: f32 = 1.15;
 pub const PITCH_SCALE: f64 = 0.8;
 
-/// The sizzle of a blade being lit: volume 0.3, pitch 0.8–1.0.
+/// The sizzle a burning blade's hit plays at the contact (the name is
+/// loaded when the blade lights): volume 0.3, pitch 0.8–1.0.
 pub const SIZZLE_SOUND: &str = "FireSizzleA";
 pub const SIZZLE_VOLUME: f32 = 0.3;
 pub const SIZZLE_PITCH_BASE: f32 = 0.8;
@@ -725,6 +727,11 @@ impl Flame {
 
     pub fn row(&self) -> &FlameRow {
         &self.0
+    }
+
+    /// Puts the row out: its extinguish flag, so it fades and leaves.
+    pub fn extinguish(&mut self) {
+        self.0.flags |= EXTINGUISHING;
     }
 }
 

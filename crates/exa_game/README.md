@@ -880,7 +880,14 @@ a level load cancels the pulses; `--object-click F#id` aims a scripted
 click at a placed id). Charged crystals lose 2 charge a game second
 (`crystal_drain`: the collect pass at the end of a level load over the
 player's hands, worn and carried items, then the socket and inventory
-sources once a second; the container sources are not wired); the next press of any
+sources once a second; the container sources are not wired). A held
+item's ability runs once a game second (`item_ability`): a blade of
+ability type 3 ("Sword GSF 01") whose first socket holds a Power Crystal
+C lights its flame row (`effects::fire_row`, its warm light at the line's
+middle, its `FireS02` loop and its `_FlameMat01` ribbon), takes the
+"Flaming" moveset overlay and puts the player light out; a cold socket
+puts it out, and its hits sizzle (`--flame-sword` gives the player the
+sword with a crystal socketed); the next press of any
 button ends the cursor and is taken, and the dispatcher's door unlock is
 applied (the other branches are reported in `UseReleased`). A cleaning
 or repair kit reads and writes the record in the live object database

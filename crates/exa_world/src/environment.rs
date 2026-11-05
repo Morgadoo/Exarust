@@ -64,6 +64,7 @@ impl Plugin for EnvironmentPlugin {
     fn build(&self, app: &mut App) {
         // The sun's map size comes from `exa_render` (the original's top
         // shadow detail); do not override it here.
+        app.init_resource::<exa_physics::body::WaterLevel>();
         app.add_systems(
             PostUpdate,
             (live_environment, tint_sky_cube, fog_cameras, sky_cameras)
@@ -728,8 +729,11 @@ fn live_environment(
     mut sky_light: Option<ResMut<exa_render::gi::GiSkyLight>>,
     mut lights: Query<(&mut DirectionalLight, &mut Transform), With<SunLight>>,
     shadow_region: Option<ResMut<crate::sun_shadow::SunShadowRegion>>,
+    mut water: ResMut<exa_physics::body::WaterLevel>,
 ) {
     let Some(mut runtime) = runtime else {
+        // No level: no water.
+        water.set_if_neq(exa_physics::body::WaterLevel::default());
         return;
     };
 
@@ -767,6 +771,8 @@ fn live_environment(
     *events = env.tick(now, weather, &mut draws);
     *tick_now = now;
     let frame = env.apply_frame(forward);
+    // The frame's water level is the scene's, which the wet steps compare.
+    water.set_if_neq(exa_physics::body::WaterLevel(frame.water_level));
     // The sun placement writes its dimmer into the sun light's softness
     // source, which the sun map's update reads each frame.
     if let Some(mut region) = shadow_region {
@@ -1290,6 +1296,7 @@ mod tests {
                 ),
                 true,
             ))
+            .init_resource::<exa_physics::body::WaterLevel>()
             .add_systems(Update, live_environment);
         app.update();
         let region = app.world().resource::<crate::sun_shadow::SunShadowRegion>();

@@ -460,8 +460,11 @@ its spot before the pull toward the other foot, at most 1)
 (`feet::foot_cues`, `FootCue`, `Ragdoll::take_foot_cues`, `FootSounded`);
 `exa_audio` plays them by `anchor_rustle`, `release_step` and their clocks
 (`rustle_clock` 400 ms, `release_step_clock` 250 ms, each plus a jitter).
-The wet step (`wet_release_step`) needs the level's water surface, which
-Exarust's levels do not carry. The
+Under the scene's water (`WaterLevel`, −25 cm when the terrain's wetness
+is above 0.4, `water_level`) the release step is followed by its wet step
+(`wet_release_step`, played at the cue's contact point) and a walking
+plant by the walk's (`gait_wet_step`, from the planted contact's height
+and the gait thrust the `Footstep` carries). The
 post-step advances the walk's travel phase: the pelvis's travel in cm
 times 0.0002, wrapped at 1, with the phase before the tick kept
 (`body::travel_phase`); its consumer, the scene node's draw offset, is not

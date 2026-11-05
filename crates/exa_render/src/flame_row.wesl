@@ -80,5 +80,8 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     r.x = clamp(tex - d, 0.0, 1.0);
     r.y = r.x;
     let rgb = textureSample(grd_texture, grd_sampler, r).rgb;
-    return vec4(rgb, 1.0);
+    // Bevy draws `AlphaMode::Add` with the premultiplied blend (ONE,
+    // ONE_MINUS_SRC_ALPHA): a zero alpha keeps what is behind and adds the
+    // colour.
+    return vec4(rgb, 0.0);
 }
