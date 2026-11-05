@@ -1,6 +1,6 @@
 //! `--debug-lights M` (Exarust's debug option): once, two seconds into
-//! play, the log lists every point light within M metres of the player
-//! with its colour, intensity, range, GI multiplier, vertical shaping and
+//! play, the log lists every point light within M metres of the player (of
+//! the camera in a level view, which has no player) with its colour, intensity, range, GI multiplier, vertical shaping and
 //! light-source state, and the GI's base ambient and the scene's ambient.
 //! It names the level lights that light a spot, as the start room's pool
 //! light and fill (`docs/RENDERING.md`, Lights).
@@ -14,6 +14,7 @@ pub struct LightProbePlugin;
 impl Plugin for LightProbePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<DebugLights>()
+            .init_resource::<DebugLightsAtCamera>()
             .add_systems(Update, log_lights_near_player);
     }
 }
@@ -23,13 +24,20 @@ impl Plugin for LightProbePlugin {
 #[derive(Resource, Debug, Clone, Copy, Default, PartialEq)]
 pub struct DebugLights(pub Option<f32>);
 
+/// `--debug-lights` in a level view, which has no player: the listing is
+/// around the camera instead.
+#[derive(Resource, Debug, Clone, Copy, Default, PartialEq)]
+pub struct DebugLightsAtCamera(pub bool);
+
 /// Logs the lights around the player once, for `--debug-lights`.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn log_lights_near_player(
     mut debug: ResMut<DebugLights>,
+    at_camera: Res<DebugLightsAtCamera>,
     time: Res<Time>,
     mut since: Local<f32>,
     players: Query<&GlobalTransform, With<PlayerBody>>,
+    cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
     volume: Option<Res<exa_render::gi::GiVolume>>,
     env: Option<Res<exa_world::environment::SceneEnvRuntime>>,
     lights: Query<(
@@ -45,7 +53,13 @@ fn log_lights_near_player(
     let Some(reach) = debug.0 else {
         return;
     };
-    let Some(player) = players.iter().next() else {
+    // A level view has no player: the camera stands in for it.
+    let centre = if at_camera.0 {
+        cameras.iter().next()
+    } else {
+        players.iter().next()
+    };
+    let Some(player) = centre else {
         return;
     };
     *since += time.delta_secs();
@@ -63,7 +77,7 @@ fn log_lights_near_player(
         .collect();
     near.sort_by(|a, b| a.0.total_cmp(&b.0));
     info!(
-        "debug lights: {} within {reach} m of the player at {at}; GI base ambient per step {:?}, scene ambient {:?} (linear {:?})",
+        "debug lights: {} within {reach} m of the player (or camera) at {at}; GI base ambient per step {:?}, scene ambient {:?} (linear {:?})",
         near.len(),
         volume.map(|v| v.base_ambient),
         env.as_ref().map(|e| e.env.ambient),

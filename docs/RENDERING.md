@@ -1746,7 +1746,14 @@ direct and GI shares (`EXA_GI_DEBUG=direct|ambient`), the GI needed ×
 (1.04, 1.13, 1.35) per channel in the menu scene and the blue × 1.5 in
 exanima01's start room; with the driver's steps the menu's factors are
 (0.96, 1.00, 1.06), and exanima01's dim periphery (retail's neutral light,
-1.7 × Exarust's before) matches retail to a level.
+1.7 × Exarust's before) matches retail to a level. The same fit read the
+menu's direct light at about 0.8 × retail's, but that came from the
+flicker: the original's staged light uniforms for the menu (colour
+linear·intensity·2/π, inverse range 0.8/radius, shaping 1, shadow radius
+(softness + 1)·0.005, positions) are Exarust's, and with Exarust's fire
+lights held at the original's mean (`EXA_FIRE_LIGHT=1.159`) against 30
+averaged retail frames the fit reads direct × (1.10, 1.05, 1.01) and GI ×
+(1.03, 1.08, 1.14), median errors 2–3 %.
 
 Only slices from a group's lowest sector floor up to the second-highest are
 updated. The manager marks the level cells to draw each frame in two
@@ -2781,7 +2788,13 @@ two thirds (0.35–0.5) and half way (the others) through a particle's life.
   (u − ½)·0.125 in [0.87, 1.15]; density = 0.8·density +
   0.2·live/normaliser. A new peak needs a strictly brighter frame.
   Intensity = density·(1 + 0.05x)·base; softness = 2·jitter; an emissive
-  parent's scale is 0.8·density·(0.9 + 0.2x). Sound: with the motion flag
+  parent's scale is 0.8·density·(0.9 + 0.2x). The density is not clamped
+  and runs above 1: read from the running original, its menu torches
+  average 1.15 to 1.19 (0.72 to 1.49) with about 29 live particles against
+  the normaliser's 25, so their lights average 4.10 to 4.19 (2.6 to 5.6)
+  against the template's 3.58; Exarust's torch averages 1.16 with 29 (a
+  test pins it). A single frame's fire light can be 30 % off its mean, so
+  retail comparisons average frames or hold the light (`EXA_FIRE_LIGHT`). Sound: with the motion flag
   the volume follows the smoothed emitter motion; otherwise it walks
   ±20 % of the template's volume; the pitch walks ±0.005 (or ±0.05) in
   [0.85, 1.15] (or [0.6, 1.4]). Exarust keeps the walks but plays no loop.
