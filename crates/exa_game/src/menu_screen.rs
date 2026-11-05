@@ -366,9 +366,12 @@ fn setup_router(mut commands: Commands) {
     });
 }
 
-/// F1 opens and closes the menu. Opening it in a session shows the in-game
-/// page for the flow's mode and session words, and hides the session hook
-/// behind it, as the original's frame task does while the menu is up.
+/// F1 opens and closes the menu, and so does the pad's pause action (the
+/// player controls' per-frame pad routine calls the same menu toggle on
+/// its bit). Opening it in a session shows the in-game page for the flow's
+/// mode and session words, and hides the session hook behind it, as the
+/// original's frame task does while the menu is up.
+#[allow(clippy::too_many_arguments)]
 fn toggle(
     keys: Res<ButtonInput<KeyCode>>,
     mut menu: ResMut<MenuScreen>,
@@ -376,8 +379,12 @@ fn toggle(
     mut flow: Option<ResMut<Flow>>,
     creator: Option<Res<crate::creator_screen::CreatorScreen>>,
     manual: Option<Res<crate::help_live::ManualScreen>>,
+    pad: Option<Res<crate::gamepad::PlayPad>>,
+    pad_status: Option<Res<crate::gamepad::PadStatus>>,
 ) {
-    if !keys.just_pressed(KeyCode::F1) {
+    let paused = pad_status.is_some_and(|s| s.active())
+        && pad.is_some_and(|p| p.frame().pressed & crate::gamepad::command::PAUSE != 0);
+    if !keys.just_pressed(KeyCode::F1) && !paused {
         return;
     }
     // An open manual takes F1 to close itself, leaving the menu up.

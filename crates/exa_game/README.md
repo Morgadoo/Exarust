@@ -756,8 +756,9 @@ player over 2) and the late-swing check that takes its fighting estimate
 as the practice's lesson, the auto-target (the visible opponent within 500 cm
 maximising `(500 − d)(cos + 0.5)` from a best of zero), the look snap
 strictly beyond 30° (the gap wrapped in double precision), the camera's
-follow step (kept within 0.1π of the body's yaw, on the camera's side),
-and the character nearest the cursor on screen. The
+follow step (kept within 0.1π of the body's yaw, on the camera's side).
+The character nearest the cursor on screen is the Talk key's target query
+(`dialogue_live::talk_target`). The
 gamepad's aim runs through the eased world cursor each behaviour tick
 (`player::AimCursor`, read by `player_combat`), and the combat auto-target
 stores its opponent on the player body each tick for the aim point's bone
@@ -769,9 +770,7 @@ of its clock, once a swing: the swing's state word gains `0x100000` with an
 engaged enemy in front, else `0x200000`) and one practice tick
 (`exa_ai::combat::practise`), keeping the paid practice count on
 `PlayerPractice` (the player has no record). The swing's release is
-`exa_combat::swing::SwingState::release`. The remaining rules have no
-caller yet: the look snap, the camera's follow step and the character
-nearest the cursor. The combat mode word
+`exa_combat::swing::SwingState::release`. The combat mode word
 (`player_behaviour::combat_mode`: down, dazed under 0.85 energy, switching
 or casting idle, the right button's walk, the left button's attack) gates
 the right button's walk to the cursor in combat mode
@@ -1373,7 +1372,11 @@ advances a binding's list was not traced). `exarust` registers `cshd`
 ## In-game screens
 
 `gui_screens` runs the in-game unit's screens for the player: the I and J
-hotkeys (through `hotkeys`, so their permissions apply) send a
+hotkeys (through `hotkeys`, so their permissions apply) and the pad's
+Inventory (through `hotkeys::pad_hotkeys`, the controls' per-frame pad
+routine: Powers, UsePower and the bar's steps, PowerTree, SwapWeapon,
+Inventory and Skills with its own gates; the pad's pause toggles the menu
+as F1 does) send a
 `ScreenRequest`, and the inventory and journal open as forms on an
 `exa_ui::gui_core::GuiTask`, so their focus follows the window manager.
 The inventory toggles when active, is activated otherwise, sits at its
