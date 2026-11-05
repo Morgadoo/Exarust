@@ -2579,7 +2579,10 @@ impl Plugin for BodyPlugin {
             )
             // Once a frame, before its ticks: in the simulation's world
             // behind the bridge (`crate::sim_app::SimFrameStart`).
-            .add_systems(crate::sim_app::SimFrameStart, begin_frame)
+            .add_systems(
+                crate::sim_app::SimFrameStart,
+                begin_frame.in_set(crate::sim_app::SimFrameStartSystems::Bodies),
+            )
             // After every frame system that moves a character or a body
             // root (the drawn controller, turns, a get-up's teleport).
             .add_systems(PostUpdate, draw_bodies.before(TransformSystems::Propagate));

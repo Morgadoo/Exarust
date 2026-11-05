@@ -154,8 +154,13 @@ impl Plugin for CombatPlugin {
                         .after(regen::regenerate_red),
                 ),
             )
+            // The hit chain runs in the simulation's frame start, before
+            // the frame's ticks (on the simulation's thread behind the
+            // bridge): the original's damage routine takes a pending hit in
+            // its dynamics' post-step, on its simulation thread. It reads the
+            // transforms the frame last propagated.
             .add_systems(
-                PostUpdate,
+                exa_physics::sim_app::SimFrameStart,
                 // Wounds struck this frame wait from the next tick on.
                 (
                     wounds::count_down_wounds,
@@ -166,8 +171,9 @@ impl Plugin for CombatPlugin {
                 )
                     .chain()
                     .in_set(CombatSystems)
-                    .after(TransformSystems::Propagate),
+                    .in_set(exa_physics::sim_app::SimFrameStartSystems::Late),
             );
+        exa_physics::sim_app::add_frame_start(app);
     }
 }
 
@@ -176,6 +182,20 @@ impl Plugin for CombatPlugin {
 fn bridge_combat_types(app: &mut App) {
     use exa_physics::sim_bridge::SimBridgeAppExt;
     app.bridge_message::<crate::Hit>()
+        // The hit chain's own (it runs in the simulation's frame start).
+        .bridge_message::<crate::StrikeHooked>()
+        .bridge_message::<crate::bite::BiteTaken>()
+        .bridge_message::<crate::block::ShieldRung>()
+        .bridge_message::<crate::fighter::DamageTaken>()
+        .bridge_message::<crate::pain::BlowFelt>()
+        .bridge_message::<crate::pain::ClashFelt>()
+        .bridge_message::<crate::sounds::LayerSounded>()
+        .bridge_message::<crate::wounds::Bleed>()
+        .bridge_message::<crate::wounds::Spray>()
+        .bridge_copy::<crate::fighter::CombatScore>()
+        .bridge_copy::<crate::wounds::BladeBlood>()
+        .bridge_copy::<crate::wounds::WoundQueue>()
+        .bridge_lend_resource::<crate::weapon_blood::WeaponBlood>()
         .bridge_message::<crate::condition::Awakened>()
         .bridge_message::<crate::fighter::SecondWindFired>()
         .bridge_message::<crate::fighter::Weakened>()

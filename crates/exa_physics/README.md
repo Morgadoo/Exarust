@@ -78,10 +78,9 @@ removals, spawns, children and messages on both sides as one world
 Stage 4 turns the frame's writers of simulation data into work the
 simulation does itself and the copies out into snapshots, group by group.
 `sim_app::SimFrameStart` holds the fixed step's once-a-frame work (the
-bodies' frame start: the frame's blows queued, the tick counts reset): in one
-world it runs before the frame's fixed loop, behind the bridge it moves with
-the fixed step and runs at the first step after a frame began, so the frame
-no longer writes every awake body. Cloths cross as `ClothMeshUpdate`
+bodies' frame start: the frame's blows queued, the tick counts reset), run
+on the first fixed pass of each frame in either world, so the frame no
+longer writes every awake body. Cloths cross as `ClothMeshUpdate`
 snapshots (`exa_world::cloth`); the cloth itself is `bridge_copy_in` (sent
 when the frame builds one, never back). A type a moved system touches that no
 plugin registered stops a debug or test build at the first step; a play
@@ -99,7 +98,15 @@ poke, the door toggle, going limp, finished limb trees, the hand's door and
 lever releases. Coupled writers move into the simulation instead, with their
 same-frame readers: the rise and its restore run in `SimFrameStart` (the
 original's AI manager frame runs them on its simulation thread, as a hook
-its step calls). `SimFrameStart` runs its systems one at a time, in order.
+its step calls), and so do the hit chain (wounds, blade tracking, hit
+detection, the reaction and the bites: the original's damage routine takes
+a pending hit in its dynamics' post-step) with the brains' reaction to
+blows and the debug pauses that read it. `SimFrameStart` runs its systems
+one at a time, in its sets' order (`SimFrameStartSystems`: what the frame
+ran in `Update`, then in `PostUpdate`, then the bodies' frame start), from
+`FrameStartStep`, a step of the fixed order (after the lockstep, before the
+commands) that runs it on the first fixed pass of each frame (Bevy's frame
+count, bridged, tells the frames apart): the same point in both worlds.
 
 `sim_digest` (`--sim-digest <file>`) writes after every fixed step a hash of
 each bridged type's values (entity ids left out, values sorted), in its own

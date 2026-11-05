@@ -57,7 +57,9 @@ impl Plugin for LimpPlugin {
         // simulation's frame start, the restore after it.
         .add_systems(
             exa_physics::sim_app::SimFrameStart,
-            (crate::rise::rise_the_dead, crate::rise::restore_revived).chain(),
+            (crate::rise::rise_the_dead, crate::rise::restore_revived)
+                .chain()
+                .in_set(exa_physics::sim_app::SimFrameStartSystems::Early),
         )
         .add_systems(
             FixedUpdate,
