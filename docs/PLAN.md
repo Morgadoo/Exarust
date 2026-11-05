@@ -891,6 +891,10 @@ Round 62 motilepart: an audit of all 120 TMotilePart routines; the held-item re-
 
 Round 62 physperf: behaviour-neutral fixed-tick speed-ups; the main cost is structural (ticks on the main thread), approved by the owner to move to its own thread.
 
+Round 63 charmove: the original never sweeps a character; retiring the capsule fixed the sewer's 1–3 FPS (now 17–20 FPS under load).
+
+Round 63 simthread (stage 1 of 7): the original's driver ported and the fixed step's shared state mapped; the tick moves off the frame once the simulation has its own sub-app world.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
@@ -2270,6 +2274,8 @@ Round 54 mindclasses: the other Mind powers expire; the spirit screen is a desat
 Round 60 scriptmodes (S11): 0.9.5 has no scripted modes and no versus lobby; only story, arena and practice exist.
 
 Round 62 chargen: the creator's edits take the original's three rebuild paths.
+
+Round 63 creatorfix: the black creator was the surviving player falling through the torn-down world into the death fade, not a regression; offscreen debug shots save from grid quadrants.
 
 ### Phase 8 — Polish and release
 
