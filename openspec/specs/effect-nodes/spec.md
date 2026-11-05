@@ -390,13 +390,7 @@ Each streak fragment SHALL be the frame behind it t, clamped to 1, as 0.75·t + 
 - **THEN** the fragment is 0.955 and the blend leaves 0.7275
 
 ### Requirement: Burning blade from a socketed crystal
-Once a game second, each held item whose weapon section names ability type 3 SHALL run the flame row's held check on its first socket word. A Power Crystal C in the socket (kind 4) with a charge below 254 SHALL light the blade when it has no live flame row:
-- a flame row from 30 to 115 cm along the item's +Y, fading in;
-- the row's warm light at the line's middle;
-- the `FireS02` loop;
-- the `_FlameMat01` ribbon over `flameletsa3`;
-- the item's lit flag;
-- the "Flaming" moveset overlay (0x10020000).
+Once a game second, each held item whose weapon section names ability type 3 SHALL run the flame row's held check on its first socket word. A Power Crystal C in the socket (kind 4) with a charge below 254 SHALL light the blade when it has no live flame row: a flame row from 30 to 115 cm along the item's +Y with its warm light, the `FireS02` loop, the `_FlameMat01` ribbon, the item's lit flag and the "Flaming" overlay (0x10020000).
 
 #### Scenario: Crystal C into the shipped sword
 - **WHEN** "Sword GSF 01" (socket word 0x0080) takes a Power Crystal C through the item GUI's drop
