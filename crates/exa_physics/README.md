@@ -96,7 +96,10 @@ bridge the queue is lent to the simulation for the step). The change lands
 where the copy used to land it, and a simulation running apart from the
 frame can take it in order. Posted so far: the viewer's fells and mechanism
 poke, the door toggle, going limp, finished limb trees, the hand's door and
-lever releases.
+lever releases. Coupled writers move into the simulation instead, with their
+same-frame readers: the rise and its restore run in `SimFrameStart` (the
+original's AI manager frame runs them on its simulation thread, as a hook
+its step calls). `SimFrameStart` runs its systems one at a time, in order.
 
 `sim_digest` (`--sim-digest <file>`) writes after every fixed step a hash of
 each bridged type's values (entity ids left out, values sorted), in its own

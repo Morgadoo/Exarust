@@ -203,3 +203,10 @@ A frame system that changes simulation data SHALL be able to post the change, an
 #### Scenario: Going limp
 - **WHEN** a body is asked to go limp in a frame
 - **THEN** its muscles go at the start of the next fixed step, before that step's systems run, with and without the bridge
+
+### Requirement: Rise in the simulation
+A dead character due to rise SHALL be revived, and its clips and controller given back, in the simulation's once-a-frame work before the frame's ticks, alike with and without the bridge.
+
+#### Scenario: A corpse past its clock
+- **WHEN** a dead body with the rise rule and enough health passes its revival time
+- **THEN** after the next frame's ticks it is down, has its muscles, clips and controller back, and has no death clock, in one world and behind the bridge alike
