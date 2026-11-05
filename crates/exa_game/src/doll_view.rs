@@ -1,7 +1,9 @@
-//! The inventory's character view: the player's dressed figure drawn by a
-//! 3D view of its own inside the window's doll panel, the encumbrance dots
-//! beside the Encumbrance label, and the drop that dresses the player from
-//! a dragged item.
+//! The inventory's character view: the dressed figure of the character the
+//! window is bound to (the player's own, or another character's, see
+//! [`GameScreens::inventory_body`]) drawn by a 3D view of its own inside the
+//! window's doll panel, the encumbrance dots beside the Encumbrance label,
+//! and the drop that dresses that character from a dragged item. Below,
+//! "the player" is that character.
 //!
 //! The figure is a copy of the player's body (its model, physique, skin,
 //! hair and outfit) standing at its own place far from the world, on a render layer no other camera takes. An off-screen
@@ -259,6 +261,8 @@ pub struct DollScene {
     pub light: Entity,
     pub node: Entity,
     pub figure: Option<Entity>,
+    /// The body the figure copies (the inventory's bound character).
+    pub body: Option<Entity>,
     /// The view's rectangle the scene was made for.
     pub view: GuiRect,
     /// The colour the camera clears to.
@@ -495,6 +499,7 @@ fn spawn_scene(
         light,
         node,
         figure: None,
+        body: None,
         view,
         backdrop,
     }
@@ -512,7 +517,8 @@ fn sync_doll(
     mut images: ResMut<Assets<Image>>,
     mut pointer: ResMut<crate::char_view::PreviewPointer>,
     windows: Query<&Window, With<PrimaryWindow>>,
-    players: Query<&exa_combat::Fighter, With<crate::player::PlayerBody>>,
+    players: Query<&exa_combat::Fighter>,
+    player_bodies: Query<Entity, With<crate::player::PlayerBody>>,
     mut nodes: Query<&mut Node>,
     mut cameras: Query<&mut Camera>,
     game: Option<Res<Game>>,
@@ -525,9 +531,9 @@ fn sync_doll(
         doll.dots = None;
         return;
     };
-    doll.dots = players
-        .iter()
-        .next()
+    let bound = screens.inventory_bound(player_bodies.iter().next());
+    doll.dots = bound
+        .and_then(|body| players.get(body).ok())
         .map(|fighter| exa_items::inventory_window::encumbrance_dots(fighter.stats.encumbrance));
     if !doll.sheet_tried
         && let Some(game) = game.as_deref()
@@ -538,7 +544,12 @@ fn sync_doll(
     let resized = doll.scene.as_ref().is_some_and(|scene| {
         (scene.view.width(), scene.view.height()) != (view.width(), view.height())
     });
-    if resized && let Some(scene) = doll.scene.take() {
+    // A window bound to another character makes the scene again, so the
+    // figure is that character's.
+    let rebound = doll.scene.as_ref().is_some_and(|scene| scene.body != bound);
+    if (resized || rebound)
+        && let Some(scene) = doll.scene.take()
+    {
         despawn_scene(&mut commands, scene);
     }
     let backdrop = doll.backdrop;
@@ -546,6 +557,7 @@ fn sync_doll(
         .scene
         .get_or_insert_with(|| spawn_scene(&mut commands, &mut images, view, backdrop));
     scene.view = view;
+    scene.body = bound;
     if scene.backdrop != backdrop
         && let Ok(mut camera) = cameras.get_mut(scene.camera)
     {
@@ -603,7 +615,7 @@ type PlayerLook<'a> = (
 fn dress_doll(
     mut commands: Commands,
     mut doll: ResMut<InventoryDoll>,
-    players: Query<PlayerLook, With<crate::player::PlayerBody>>,
+    players: Query<PlayerLook, Without<DollHands>>,
     game: Option<Res<Game>>,
     cache: Option<ResMut<ModelCache>>,
     meshes: Option<ResMut<Assets<Mesh>>>,
@@ -614,7 +626,9 @@ fn dress_doll(
     let Some(scene) = doll.scene.as_mut() else {
         return;
     };
-    let Some((outfit, body, skin, job, morph, hair, weaponry)) = players.iter().next() else {
+    let Some((outfit, body, skin, job, morph, hair, weaponry)) =
+        scene.body.and_then(|body| players.get(body).ok())
+    else {
         return;
     };
     if let Some(figure) = scene.figure {
@@ -789,8 +803,8 @@ type FigureHands<'a> = (
 fn rebuild_doll_hands(
     mut commands: Commands,
     doll: Res<InventoryDoll>,
-    players: Query<PlayerHands, With<crate::player::PlayerBody>>,
-    mut figures: Query<FigureHands, Without<crate::player::PlayerBody>>,
+    players: Query<PlayerHands, Without<DollHands>>,
+    mut figures: Query<FigureHands, With<DollHands>>,
     (children, parents, locals): (
         Query<&Children>,
         Query<&ChildOf>,
@@ -815,7 +829,12 @@ fn rebuild_doll_hands(
     let (Some(catalogue), Some(game)) = (catalogue.as_deref(), game) else {
         return;
     };
-    let Some((possessions, player_hands, carries, fighter)) = players.iter().next() else {
+    let Some((possessions, player_hands, carries, fighter)) = doll
+        .scene
+        .as_ref()
+        .and_then(|scene| scene.body)
+        .and_then(|body| players.get(body).ok())
+    else {
         return;
     };
     let Ok((mut scene, mut hands, mut animator, race)) = figures.get_mut(figure) else {
@@ -1122,19 +1141,21 @@ fn equip_dropped(
     catalogue: Option<Res<ItemCatalogue>>,
     mut items: ResMut<DollItems>,
     game: Option<Res<Game>>,
-    mut players: Query<
+    mut bodies: Query<
         (
             Entity,
             &mut Possessions,
-            &mut Outfit,
-            &mut Hands,
+            Option<&mut Outfit>,
+            Option<&mut Hands>,
             Has<crate::torch::CarriesTorch>,
             Option<&exa_character::record::CharacterData>,
         ),
-        With<crate::player::PlayerBody>,
+        Without<DollHands>,
     >,
-    mut bodies: Query<(Entity, &mut Possessions), Without<crate::player::PlayerBody>>,
+    player_bodies: Query<Entity, With<crate::player::PlayerBody>>,
 ) {
+    // The character the inventory is bound to: its figure takes the drop.
+    let target = screens.inventory_bound(player_bodies.iter().next());
     for drop in drops.read().copied() {
         items.ensure(game.as_deref());
         let catalogue = catalogue.as_deref();
@@ -1144,12 +1165,14 @@ fn equip_dropped(
             .as_ref()
             .is_some_and(|item| item.burden.is_some() && !item.worn_model.is_empty());
         let insight = drop.right_half
-            && players.iter().next().is_some_and(|entry| {
-                entry.5.is_some_and(|data| {
-                    let skill = &data.record.skills[exa_formats::characters::INSIGHT];
-                    exa_ui::character_view::insight_known(skill.points, &skill.techniques)
-                })
-            });
+            && target
+                .and_then(|t| bodies.get(t).ok())
+                .is_some_and(|entry| {
+                    entry.5.is_some_and(|data| {
+                        let skill = &data.record.skills[exa_formats::characters::INSIGHT];
+                        exa_ui::character_view::insight_known(skill.points, &skill.techniques)
+                    })
+                });
         let plan = figure_drop(DropFacts {
             id: drop.id,
             flags: drop.flags,
@@ -1163,7 +1186,10 @@ fn equip_dropped(
             insight,
             ..DropFacts::default()
         });
-        let Ok((player, mut p, mut outfit, mut hands, torch, _)) = players.single_mut() else {
+        let Some(worn_now) = target
+            .and_then(|t| bodies.get(t).ok())
+            .map(|entry| entry.1.worn.clone())
+        else {
             cancel(&mut screens, drop);
             continue;
         };
@@ -1173,7 +1199,7 @@ fn equip_dropped(
             (FigureDrop::Apparel, Some(item)) => {
                 let mut data = exa_character::record::CharacterData::of_record(
                     exa_formats::characters::CharacterRecord {
-                        worn: p.worn.clone(),
+                        worn: worn_now,
                         ..Default::default()
                     },
                 );
@@ -1202,15 +1228,22 @@ fn equip_dropped(
         let into_hand = matches!(plan.kind, FigureDrop::Weapon | FigureDrop::Shield);
         let flags = match drop.source {
             Panel::PlayerPack if into_hand => Some(drop.flags & !HELD),
-            Panel::PlayerPack => body_inventory::take(&mut p, PanelKind::Pack, drop.id),
+            Panel::PlayerPack => target
+                .and_then(|t| bodies.get_mut(t).ok())
+                .and_then(|mut b| body_inventory::take(&mut b.1, PanelKind::Pack, drop.id)),
             Panel::BodyPack(body) => bodies
                 .iter_mut()
-                .find(|(entity, _)| entity.index().index() as i32 == body)
-                .and_then(|(_, mut b)| body_inventory::take(&mut b, PanelKind::Pack, drop.id)),
+                .find(|entry| entry.0.index().index() as i32 == body)
+                .and_then(|mut b| body_inventory::take(&mut b.1, PanelKind::Pack, drop.id)),
             Panel::BodyEquipment(_) | Panel::Figure => None,
             Panel::Container(_) => Some(drop.flags & !HELD),
         };
         let Some(flags) = flags else {
+            continue;
+        };
+        let Some((player, mut p, mut outfit, mut hands, torch, _)) =
+            target.and_then(|t| bodies.get_mut(t).ok())
+        else {
             continue;
         };
         if plan.charge_panel {
@@ -1233,7 +1266,7 @@ fn equip_dropped(
                 // The displaced pieces go back to the pack (the braies are
                 // dropped), and the outfit loses their garments.
                 for piece in &removed {
-                    if let Some(item) = items.get(piece.id) {
+                    if let (Some(item), Some(outfit)) = (items.get(piece.id), outfit.as_mut()) {
                         outfit.0.retain(|garment| {
                             !garment.model.eq_ignore_ascii_case(&item.worn_model)
                         });
@@ -1261,7 +1294,9 @@ fn equip_dropped(
                 let mut worn = worn;
                 worn.push(ItemRef::new(drop.id, flags));
                 p.worn = worn;
-                if let Some(garment) = record.as_ref().and_then(garment_of) {
+                if let (Some(garment), Some(outfit)) =
+                    (record.as_ref().and_then(garment_of), outfit.as_mut())
+                {
                     outfit.0.push(garment);
                 }
             }
@@ -1304,10 +1339,12 @@ fn equip_dropped(
                     }
                 }
                 let mut next = crate::equip::hands_of(&p, |id| catalogue.and_then(|c| c.kind(id)));
-                if torch {
-                    next = crate::equip::keep_torch(next, &hands);
+                if let Some(hands) = hands.as_mut() {
+                    if torch {
+                        next = crate::equip::keep_torch(next, hands);
+                    }
+                    hands.set_if_neq(next);
                 }
-                hands.set_if_neq(next);
                 let main = p.out[0].id;
                 match catalogue.and_then(|c| c.model(main)).filter(|_| main != 0) {
                     Some(model) => {

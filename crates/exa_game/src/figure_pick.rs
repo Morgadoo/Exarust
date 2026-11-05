@@ -111,7 +111,19 @@ pub struct FigureRelease {
 /// top-left): the camera's position and the unit direction through the
 /// point, at the view's vertical field of view.
 pub fn view_ray(camera: &Transform, at: Vec2, width: f32, height: f32) -> (Vec3, Vec3) {
-    let half = (FIELD_OF_VIEW.to_radians() * 0.5).tan();
+    view_ray_at(camera, FIELD_OF_VIEW, at, width, height)
+}
+
+/// [`view_ray`] for a view with its own vertical field of view (degrees):
+/// the hub forms' preview, which is the creator's view.
+pub fn view_ray_at(
+    camera: &Transform,
+    fov_degrees: f32,
+    at: Vec2,
+    width: f32,
+    height: f32,
+) -> (Vec3, Vec3) {
+    let half = (fov_degrees.to_radians() * 0.5).tan();
     let aspect = width / height.max(1.0);
     let x = (at.x / width.max(1.0)) * 2.0 - 1.0;
     let y = 1.0 - (at.y / height.max(1.0)) * 2.0;
@@ -415,7 +427,8 @@ struct FigurePress<'w, 's> {
     catalogue: Option<Res<'w, ItemCatalogue>>,
     items: ResMut<'w, DollItems>,
     game: Option<Res<'w, exa_assets::Game>>,
-    players: Query<'w, 's, &'static Possessions, With<crate::player::PlayerBody>>,
+    players: Query<'w, 's, &'static Possessions>,
+    player_bodies: Query<'w, 's, Entity, With<crate::player::PlayerBody>>,
     cards: MessageWriter<'w, crate::item_card::FigureCard>,
 }
 
@@ -432,7 +445,12 @@ impl FigurePress<'_, '_> {
         let Some(figure) = self.doll.scene.as_ref().and_then(|scene| scene.figure) else {
             return false;
         };
-        let Ok(p) = self.players.single() else {
+        // The figure is the inventory's bound character's.
+        let Some(p) = self
+            .screens
+            .inventory_bound(self.player_bodies.iter().next())
+            .and_then(|body| self.players.get(body).ok())
+        else {
             return false;
         };
         self.items.ensure(self.game.as_deref());
@@ -705,7 +723,7 @@ fn off_item(
 /// Where a hand's item sits for the take-out: the off hand's light or
 /// shield, else one of the attached weapons (the first when in the main
 /// hand).
-fn held_place(hand: usize, kind: possession::ItemKind) -> HeldPlace {
+pub(crate) fn held_place(hand: usize, kind: possession::ItemKind) -> HeldPlace {
     if hand == 1 && kind.shield {
         HeldPlace::Shield
     } else if hand == 1 && kind.light && kind.weapon.is_none() {
@@ -728,19 +746,23 @@ fn release_figure(
     catalogue: Option<Res<ItemCatalogue>>,
     mut items: ResMut<DollItems>,
     game: Option<Res<exa_assets::Game>>,
-    mut players: Query<
+    mut bodies: Query<
         (
             Entity,
             &mut Possessions,
-            &mut exa_character::Outfit,
-            &mut exa_character::held::Hands,
+            Option<&mut exa_character::Outfit>,
+            Option<&mut exa_character::held::Hands>,
             Has<crate::torch::CarriesTorch>,
             Option<&CharacterData>,
         ),
-        With<crate::player::PlayerBody>,
+        Without<crate::doll_view::DollHands>,
     >,
-    mut bodies: Query<(Entity, &mut Possessions), Without<crate::player::PlayerBody>>,
+    player_bodies: Query<Entity, With<crate::player::PlayerBody>>,
 ) {
+    // The figure is the inventory's bound character's; a body pack the
+    // item lands in takes it after that character's side is done.
+    let target = screens.inventory_bound(player_bodies.iter().next());
+    let mut to_bodies: Vec<(i32, u32, u32, Cell, i32, f32)> = Vec::new();
     for release in releases.read().copied() {
         let drag = release.drag;
         let slot = std::mem::take(&mut *figure_drag).slot;
@@ -773,7 +795,9 @@ fn release_figure(
         };
         items.ensure(game.as_deref());
         let catalogue = catalogue.as_deref();
-        let Ok((player, mut p, mut outfit, mut hands, torch, data)) = players.single_mut() else {
+        let Some((player, mut p, mut outfit, mut hands, torch, data)) =
+            target.and_then(|t| bodies.get_mut(t).ok())
+        else {
             continue;
         };
         if let Some(hand) = plan.hand {
@@ -827,12 +851,8 @@ fn release_figure(
                 if let Some(at) = at {
                     p.carried.remove(at);
                 }
-                if let Panel::BodyPack(body) = destination
-                    && let Some((_, mut b)) = bodies
-                        .iter_mut()
-                        .find(|(entity, _)| entity.index().index() as i32 == body)
-                {
-                    body_inventory::give(&mut b, drag.id, drag.flags & !HELD, cell, unit, vscale);
+                if let Panel::BodyPack(body) = destination {
+                    to_bodies.push((body, drag.id, drag.flags & !HELD, cell, unit, vscale));
                 }
             }
             info!(
@@ -841,10 +861,12 @@ fn release_figure(
                 drag.id, hand, destination, released.promoted, p.out[0].id, p.out[1].id
             );
             let mut next = crate::equip::hands_of(&p, |id| catalogue.and_then(|c| c.kind(id)));
-            if torch {
-                next = crate::equip::keep_torch(next, &hands);
+            if let Some(hands) = hands.as_mut() {
+                if torch {
+                    next = crate::equip::keep_torch(next, hands);
+                }
+                hands.set_if_neq(next);
             }
-            hands.set_if_neq(next);
             let main = p.out[0].id;
             match catalogue.and_then(|c| c.model(main)).filter(|_| main != 0) {
                 Some(model) => {
@@ -880,7 +902,7 @@ fn release_figure(
         if plan.charge_panel {
             screens.pack.used += drag.bulk;
         }
-        if let Some(item) = items.get(drag.id) {
+        if let (Some(item), Some(outfit)) = (items.get(drag.id), outfit.as_mut()) {
             let model = item.worn_model.clone();
             if let Some(at) = outfit
                 .0
@@ -895,12 +917,7 @@ fn release_figure(
                 body_inventory::give(&mut p, drag.id, worn.flags, cell, unit, vscale);
             }
             Panel::BodyPack(body) => {
-                if let Some((_, mut b)) = bodies
-                    .iter_mut()
-                    .find(|(entity, _)| entity.index().index() as i32 == body)
-                {
-                    body_inventory::give(&mut b, drag.id, worn.flags, cell, unit, vscale);
-                }
+                to_bodies.push((body, drag.id, worn.flags, cell, unit, vscale));
             }
             _ => {}
         }
@@ -916,6 +933,14 @@ fn release_figure(
             },
             p.worn.iter().map(|w| w.id).collect::<Vec<_>>()
         );
+    }
+    for (body, id, flags, cell, unit, vscale) in to_bodies {
+        if let Some(mut b) = bodies
+            .iter_mut()
+            .find(|entry| entry.0.index().index() as i32 == body)
+        {
+            body_inventory::give(&mut b.1, id, flags, cell, unit, vscale);
+        }
     }
 }
 

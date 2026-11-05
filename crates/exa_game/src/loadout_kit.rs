@@ -260,34 +260,7 @@ pub fn equip_from_stock(
     if !exa_ui::loadout::may_equip(LoadoutMode::Arena, tab, used, tab_limit(tab), facts) {
         return Err(Refusal::Gate);
     }
-    let item = (lookup.find)(entry.item);
-    let mut removed = Vec::new();
-    let hand_kind = (lookup.kind)(entry.item).unwrap_or_default();
-    if hand_kind.weapon.is_some() || hand_kind.shield {
-        let mut p = Possessions {
-            out: [hand_of(loadout.hands[0]), hand_of(loadout.hands[1])],
-            stowed: [hand_of(loadout.hands[2]), hand_of(loadout.hands[3])],
-            ..Possessions::default()
-        };
-        crate::doll_view::hold_item(&mut p, entry.item, 0, hand_kind, false, |id| {
-            (lookup.kind)(id)
-        });
-        loadout.hands = [p.out[0], p.out[1], p.stowed[0], p.stowed[1]]
-            .map(|hand| ItemRef::new(hand.id, hand.flags));
-    } else if let Some(item) = item {
-        let mut data = CharacterData::of_record(CharacterRecord {
-            worn: loadout.worn.clone(),
-            ..CharacterRecord::default()
-        });
-        let taken = data
-            .equip_conflicts(item, |id| (lookup.find)(id))
-            .ok_or(Refusal::Locked)?;
-        removed = taken.iter().map(|worn| worn.id).collect();
-        loadout.worn = data.record.worn;
-        loadout.worn.push(ItemRef::new(entry.item, 0));
-    } else {
-        return Err(Refusal::Gate);
-    }
+    let removed = dress(loadout, entry.item, lookup)?;
     entries[index].flags |= LENT;
     list.push(entry.item);
     Ok(Equipped {
@@ -295,6 +268,192 @@ pub fn equip_from_stock(
         cost: loadout_cost(loadout, lookup),
         removed,
     })
+}
+
+/// The character view's drop on the preview, on the tab's loadout (the
+/// form's change callback stores the view's record into it): a weapon or
+/// a shield is taken into the hands by the take-in rule, an apparel is
+/// worn after the equip conflict pass (a locked piece in the way refuses
+/// it). The pieces the pass takes off are returned; on the roster page the
+/// form's drop-back callback hands them nowhere (they stay in the kit
+/// list).
+fn dress(loadout: &mut Loadout, id: u32, lookup: &ItemLookup) -> Result<Vec<u32>, Refusal> {
+    let hand_kind = (lookup.kind)(id).unwrap_or_default();
+    if hand_kind.weapon.is_some() || hand_kind.shield {
+        let mut p = loadout_hands(loadout);
+        crate::doll_view::hold_item(&mut p, id, 0, hand_kind, false, |id| (lookup.kind)(id));
+        set_hands(loadout, &p);
+        return Ok(Vec::new());
+    }
+    let Some(item) = (lookup.find)(id) else {
+        return Err(Refusal::Gate);
+    };
+    let mut data = CharacterData::of_record(CharacterRecord {
+        worn: loadout.worn.clone(),
+        ..CharacterRecord::default()
+    });
+    let taken = data
+        .equip_conflicts(item, |id| (lookup.find)(id))
+        .ok_or(Refusal::Locked)?;
+    loadout.worn = data.record.worn;
+    loadout.worn.push(ItemRef::new(id, 0));
+    Ok(taken.iter().map(|worn| worn.id).collect())
+}
+
+/// The loadout's four hands as a possession list's out and stowed sets.
+fn loadout_hands(loadout: &Loadout) -> Possessions {
+    Possessions {
+        out: [hand_of(loadout.hands[0]), hand_of(loadout.hands[1])],
+        stowed: [hand_of(loadout.hands[2]), hand_of(loadout.hands[3])],
+        ..Possessions::default()
+    }
+}
+
+fn set_hands(loadout: &mut Loadout, p: &Possessions) {
+    loadout.hands = [p.out[0], p.out[1], p.stowed[0], p.stowed[1]]
+        .map(|hand| ItemRef::new(hand.id, hand.flags));
+}
+
+/// A kit-list entry dragged onto the preview of `loadout` (tab `tab`): the
+/// preview's accept test for a drag out of the kit list needs a copy the
+/// shown record's two out hands do not already hold (the copies counted in
+/// the kit list), then the rank and points gate; the view's drop dresses
+/// the loadout ([`dress`]). The kit list keeps its entry: the mark pass
+/// gives it the equipped mark.
+pub fn dress_from_kit(
+    list: &[u32],
+    index: usize,
+    loadout: &mut Loadout,
+    tab: i32,
+    lookup: &ItemLookup,
+) -> Result<Equipped, Refusal> {
+    let id = *list.get(index).ok_or(Refusal::Missing)?;
+    let held = u32::from(loadout.hands[0].id == id) + u32::from(loadout.hands[1].id == id);
+    let copies = list.iter().filter(|&&listed| listed == id).count() as u32;
+    let facts = EquipFacts {
+        from_kit: true,
+        held,
+        copies,
+        allowed: true,
+        kind: equip_kind(id, loadout, lookup),
+    };
+    let used = loadout_cost(loadout, lookup);
+    if !exa_ui::loadout::may_equip(LoadoutMode::Arena, tab, used, tab_limit(tab), facts) {
+        return Err(Refusal::Gate);
+    }
+    let removed = dress(loadout, id, lookup)?;
+    Ok(Equipped {
+        id,
+        cost: loadout_cost(loadout, lookup),
+        removed,
+    })
+}
+
+/// What the preview's pick found under the pointer: the item, and the
+/// 0-based hand when it is a held item (else a worn piece).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PreviewItem {
+    pub id: u32,
+    pub flags: u32,
+    pub hand: Option<usize>,
+}
+
+/// The character view's release of a drag off the preview, on the tab's
+/// loadout: a held item comes out of its hand by the scheduled take-out
+/// (an off-hand weapon or light moving up into an emptied main hand); a
+/// worn piece comes off the worn list and the underwear rule runs for a
+/// human (`race` 0). Answers whether anything came off.
+pub fn take_off_preview(
+    loadout: &mut Loadout,
+    item: PreviewItem,
+    race: u8,
+    lookup: &ItemLookup,
+) -> bool {
+    if let Some(hand) = item.hand {
+        let mut p = loadout_hands(loadout);
+        if p.out.get(hand).is_none_or(|h| h.id != item.id) {
+            return false;
+        }
+        let kind = (lookup.kind)(item.id).unwrap_or_default();
+        let mut after = p.clone();
+        after.out[hand] = Hand::default();
+        let off = (hand == 0 && after.out[1].id != 0).then(|| {
+            (
+                after.out[1].id,
+                (lookup.kind)(after.out[1].id).unwrap_or_default(),
+            )
+        });
+        let released = exa_items::doll::take_out(
+            &mut p,
+            &exa_items::doll::TakeOut::scheduled(hand),
+            Some((item.id, crate::figure_pick::held_place(hand, kind))),
+            off,
+        );
+        set_hands(loadout, &p);
+        return released.done;
+    }
+    let Some(at) = loadout.worn.iter().position(|w| w.id == item.id) else {
+        return false;
+    };
+    loadout.worn.remove(at);
+    let mut data = CharacterData::of_record(CharacterRecord {
+        worn: loadout.worn.clone(),
+        race,
+        ..CharacterRecord::default()
+    });
+    if data.ensure_underwear(|id| (lookup.find)(id)) {
+        loadout.worn = data.record.worn;
+    }
+    true
+}
+
+/// A drag off the preview released over the arsenal box: the box's drop.
+/// The arsenal takes the item back as for a kit-list return
+/// ([`arsenal_takes_back`]); the first kit-list copy of the item is
+/// dropped; the view takes the item off the tab's loadout
+/// ([`take_off_preview`]); then every loadout keeps at most `kept` hand
+/// copies, losing its first worn copy. `kept` is the kit list's remaining
+/// copies less one (none when the list had none): the box's count runs
+/// after it has already dropped the copy, and it still takes one off for
+/// the dragged item, as it does for a drag out of the kit list.
+#[allow(clippy::too_many_arguments)]
+pub fn return_from_preview(
+    arsenal: &mut Arsenal,
+    shown: (usize, usize),
+    list: &mut Vec<u32>,
+    loadouts: &mut [Loadout],
+    tab: i32,
+    item: PreviewItem,
+    race: u8,
+    lookup: &ItemLookup,
+) -> ReturnDone {
+    let id = item.id;
+    let went = arsenal_takes_back(arsenal, shown, id, (lookup.shelf)(id));
+    let kept = match list.iter().position(|&listed| listed == id) {
+        Some(at) => {
+            list.remove(at);
+            list.iter()
+                .filter(|&&listed| listed == id)
+                .count()
+                .saturating_sub(1)
+        }
+        None => 0,
+    };
+    if let Some(loadout) = loadouts.get_mut(tab.clamp(0, 5) as usize) {
+        take_off_preview(loadout, item, race, lookup);
+    }
+    let mut tab_changed = false;
+    for (at, loadout) in loadouts.iter_mut().enumerate() {
+        if CharacterData::loadout_remove_item(loadout, id, kept) && at as i32 == tab {
+            tab_changed = true;
+        }
+    }
+    ReturnDone {
+        id,
+        went,
+        kept,
+        tab_changed,
+    }
 }
 
 fn hand_of(slot: ItemRef) -> Hand {
@@ -344,36 +503,7 @@ pub fn return_to_stock(
     lookup: &ItemLookup,
 ) -> Option<ReturnDone> {
     let id = *list.get(index)?;
-    let kind = (lookup.shelf)(id);
-    let shelf = shelf_of(kind);
-    let on_shown = shelf == Some(shown.0);
-    let mut went = None;
-    if on_shown
-        && let Some(entry) = arsenal.shelves[shown.0][shown.1]
-            .iter_mut()
-            .find(|entry| entry.item == id && entry.flags & LENT != 0)
-    {
-        entry.flags &= !LENT;
-        went = Some(Returned::Box);
-    }
-    if went.is_none() && arsenal.release(id, kind, LENT) {
-        went = Some(Returned::Lent);
-    }
-    let went = went.unwrap_or_else(|| {
-        if on_shown {
-            arsenal.shelves[shown.0][shown.1].push(ArsenalEntry {
-                item: id,
-                flags: 0,
-                first: 0x28,
-                second: 4,
-            });
-            Returned::ShownBox
-        } else if arsenal.stow(id, kind, 0) {
-            Returned::Shelf
-        } else {
-            Returned::Nowhere
-        }
-    });
+    let went = arsenal_takes_back(arsenal, shown, id, (lookup.shelf)(id));
     list.remove(index);
     let kept = list.iter().filter(|&&held| held == id).count();
     let mut tab_changed = false;
@@ -389,6 +519,45 @@ pub fn return_to_stock(
         kept,
         tab_changed,
     })
+}
+
+/// The arsenal's side of a return: when the item's shelf is the one shown,
+/// the first box entry lent with the item takes it back; otherwise the
+/// arsenal is asked whether it lent the item; an item neither took back
+/// goes into the shown box with no flags when its shelf is the one shown,
+/// else onto its shelf's first box.
+fn arsenal_takes_back(
+    arsenal: &mut Arsenal,
+    shown: (usize, usize),
+    id: u32,
+    kind: ItemKind,
+) -> Returned {
+    let shelf = shelf_of(kind);
+    let on_shown = shelf == Some(shown.0);
+    if on_shown
+        && let Some(entry) = arsenal.shelves[shown.0][shown.1]
+            .iter_mut()
+            .find(|entry| entry.item == id && entry.flags & LENT != 0)
+    {
+        entry.flags &= !LENT;
+        return Returned::Box;
+    }
+    if arsenal.release(id, kind, LENT) {
+        return Returned::Lent;
+    }
+    if on_shown {
+        arsenal.shelves[shown.0][shown.1].push(ArsenalEntry {
+            item: id,
+            flags: 0,
+            first: 0x28,
+            second: 4,
+        });
+        Returned::ShownBox
+    } else if arsenal.stow(id, kind, 0) {
+        Returned::Shelf
+    } else {
+        Returned::Nowhere
+    }
 }
 
 /// The list entries' flags: the equipped mark on each item the loadout
@@ -457,8 +626,11 @@ pub struct KitState {
 /// A drag out of one of the kit's views.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KitDrag {
-    /// From the arsenal box (else the kit list).
+    /// From the arsenal box (else the kit list, or the preview).
     pub from_stock: bool,
+    /// A drag off the preview: the item its pick found (`index` is unused
+    /// then).
+    pub preview: Option<PreviewItem>,
     pub index: usize,
     pub icon: usize,
     pub grab: Cell,
@@ -714,6 +886,14 @@ fn inside(rect: [i32; 4], at: (i32, i32)) -> bool {
 pub enum KitRelease {
     /// An arsenal entry over the preview: equip it.
     Equip(usize),
+    /// A kit-list entry over the preview: dress the preview in it.
+    Dress(usize),
+    /// A drag off the preview over the kit list: take the item off (the
+    /// kit list keeps its copy).
+    TakeOff(PreviewItem),
+    /// A drag off the preview over the arsenal box: take it off and
+    /// return it.
+    TakeOffReturn(PreviewItem),
     /// A kit-list entry over the arsenal box: return it.
     Return(usize),
     /// Over the entry's own view: move it there.
@@ -724,6 +904,18 @@ pub enum KitRelease {
 
 /// The release of `drag` at screen point `at` over the kit's `rects`.
 pub fn kit_release(drag: KitDrag, rects: KitRects, at: (i32, i32)) -> KitRelease {
+    if let Some(item) = drag.preview {
+        // The view's own drop for a drag it started only charges back a
+        // mind cost; the kit list's drop and the box's drop run the
+        // view's release with the answer -1; anywhere else cancels.
+        return if inside(rects.kit, at) {
+            KitRelease::TakeOff(item)
+        } else if inside(rects.stock, at) {
+            KitRelease::TakeOffReturn(item)
+        } else {
+            KitRelease::Cancel
+        };
+    }
     let own = if drag.from_stock {
         rects.stock
     } else {
@@ -733,6 +925,8 @@ pub fn kit_release(drag: KitDrag, rects: KitRects, at: (i32, i32)) -> KitRelease
         KitRelease::Reposition
     } else if drag.from_stock && inside(rects.preview, at) {
         KitRelease::Equip(drag.index)
+    } else if inside(rects.preview, at) {
+        KitRelease::Dress(drag.index)
     } else if !drag.from_stock && inside(rects.stock, at) {
         KitRelease::Return(drag.index)
     } else {
@@ -740,10 +934,55 @@ pub fn kit_release(drag: KitDrag, rects: KitRects, at: (i32, i32)) -> KitRelease
     }
 }
 
+/// The pick on the hub preview's figure (the creator's view): its picker
+/// and the view's scene.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct PreviewPick<'w, 's> {
+    picker: Option<crate::figure_pick::FigurePicker<'w, 's>>,
+    view: Option<Res<'w, crate::creator_view::CreatorView>>,
+}
+
+impl PreviewPick<'_, '_> {
+    /// The item under a screen point of the preview drawn at `rect`, as the
+    /// character view's hover pick finds it on the figure wearing `p`.
+    pub fn item_at(
+        &self,
+        rect: [i32; 4],
+        at: (i32, i32),
+        p: &Possessions,
+        items: &crate::doll_view::DollItems,
+    ) -> Option<PreviewItem> {
+        let figure = self.view.as_ref()?.scene.as_ref()?.figure?;
+        let local = Vec2::new((at.0 - rect[0]) as f32, (at.1 - rect[1]) as f32);
+        let ray = crate::figure_pick::view_ray_at(
+            &crate::creator_view::camera_transform(),
+            crate::create::PREVIEW_FOV_DEG,
+            local,
+            rect[2] as f32,
+            rect[3] as f32,
+        );
+        let picked = self.picker.as_ref()?.pick(figure, ray, p, items);
+        info!(
+            "hub preview: pick at {at:?}: {:?} (body {:?}, {} meshes, {} runs, {} unread)",
+            picked.hover, picked.body, picked.drawn, picked.runs, picked.unread
+        );
+        let hover = picked.hover;
+        (hover.item != 0).then_some(PreviewItem {
+            id: hover.item,
+            flags: hover.flags,
+            hand: hover.slot.map(|slot| slot - 1),
+        })
+    }
+}
+
 /// The kit's views take the left button as their item panels do: a press
-/// on an entry starts its drag, and the release equips (an arsenal entry
-/// over the preview), returns (a kit-list entry over the arsenal box),
-/// moves it in its own view or cancels ([`kit_release`]).
+/// on an entry starts its drag, and a press on the preview's figure starts
+/// a drag of the item its pick finds there. The release equips (an
+/// arsenal entry over the preview), dresses (a kit-list entry over the
+/// preview), returns (a kit-list entry over the arsenal box), takes off (a
+/// drag off the preview over the kit list, or over the arsenal box, which
+/// also returns it), moves it in its own view or cancels
+/// ([`kit_release`]).
 #[allow(clippy::too_many_arguments)]
 pub fn kit_input(
     mouse: Res<ButtonInput<MouseButton>>,
@@ -757,7 +996,9 @@ pub fn kit_input(
     game: Option<Res<exa_assets::Game>>,
     mut items: ResMut<crate::doll_view::DollItems>,
     mut panels: ResMut<KitPanels>,
-    icons: Option<Res<crate::item_panel_draw::PanelIcons>>,
+    mut icons: Option<ResMut<crate::item_panel_draw::PanelIcons>>,
+    preview: Res<KitPreview>,
+    pick: PreviewPick,
 ) {
     let pressed = mouse.just_pressed(MouseButton::Left);
     let released = mouse.just_released(MouseButton::Left);
@@ -767,10 +1008,15 @@ pub fn kit_input(
     let top = windows.forms.top().map(|f| f.window);
     if top != Some(crate::hub_forms::FormWindow::Loadout) {
         if let Some(open) = panels.open.as_mut()
-            && open.drag.take().is_some()
+            && let Some(drag) = open.drag.take()
         {
             crate::item_container::clear_drags(&mut open.list.entries);
             crate::item_container::clear_drags(&mut open.stock.entries);
+            if drag.preview.is_some()
+                && let Some(icons) = icons.as_deref_mut()
+            {
+                icons.release(drag.icon);
+            }
         }
         return;
     }
@@ -792,6 +1038,7 @@ pub fn kit_input(
     }) else {
         return;
     };
+    let catalogue = catalogue.as_deref();
     if pressed && open.drag.is_none() {
         let hit = entry_at(&open.stock, rects.stock, at)
             .map(|i| (true, i))
@@ -807,6 +1054,7 @@ pub fn kit_input(
             entry.drag |= 1;
             open.drag = Some(KitDrag {
                 from_stock,
+                preview: None,
                 index,
                 icon: entry.icon,
                 grab,
@@ -820,6 +1068,30 @@ pub fn kit_input(
                     "kit list"
                 }
             );
+        } else if inside(rects.preview, at)
+            && let Some(person) = member(&career, open.row)
+        {
+            // A press on the figure: the pick, then the drag of what it
+            // found with the grab at half the icon.
+            items.ensure(game.as_deref());
+            let loadout = &person.loadouts[open.tab.clamp(0, 5) as usize];
+            let p = Possessions {
+                worn: loadout.worn.clone(),
+                ..loadout_hands(loadout)
+            };
+            if let Some(item) = pick.item_at(rects.preview, at, &p, &items) {
+                let (icon, _) = icons.as_deref_mut().map_or((0, (0, 0)), |icons| {
+                    icons.reserve(item.id, item.flags, catalogue)
+                });
+                open.drag = Some(KitDrag {
+                    from_stock: false,
+                    preview: Some(item),
+                    index: 0,
+                    icon,
+                    grab: crate::item_container::drag_grab(open.list.icon_size),
+                });
+                info!("loadout kit: drag of {item:?} off the preview at {at:?}");
+            }
         }
     }
     if !released {
@@ -828,11 +1100,14 @@ pub fn kit_input(
     let Some(drag) = open.drag.take() else {
         return;
     };
+    if drag.preview.is_some()
+        && let Some(icons) = icons.as_deref_mut()
+    {
+        icons.release(drag.icon);
+    }
     let release = kit_release(drag, rects, at);
     info!("loadout kit: the drag ends at {at:?}: {release:?}");
-    let (stock_hit, list_hit) = match release {
-        KitRelease::Equip(index) => (Some(index), None),
-        KitRelease::Return(index) => (None, Some(index)),
+    match release {
         KitRelease::Reposition => {
             let (view, rect) = if drag.from_stock {
                 (&mut open.stock, rects.stock)
@@ -865,13 +1140,13 @@ pub fn kit_input(
             crate::item_container::clear_drags(&mut open.stock.entries);
             return;
         }
-    };
+        _ => {}
+    }
     crate::item_container::clear_drags(&mut open.list.entries);
     crate::item_container::clear_drags(&mut open.stock.entries);
     let (row, tab) = (open.row, open.tab);
     let shown = (open.shelf as usize, open.box_index as usize);
     items.ensure(game.as_deref());
-    let catalogue = catalogue.as_deref();
     let find = |id: u32| items.get(id);
     let kind = |id: u32| catalogue.and_then(|c| c.kind(id));
     let shelf = |id: u32| {
@@ -884,6 +1159,8 @@ pub fn kit_input(
         kind: &kind,
         shelf: &shelf,
     };
+    // The preview's race, for the underwear rule of a take-off.
+    let race = preview.record.as_ref().map_or(0, |record| record.race);
     let Some(person) = member_mut(&mut career, row) else {
         return;
     };
@@ -904,43 +1181,103 @@ pub fn kit_input(
         warn!("loadout kit: row {row} has no kit list on the staff");
         return;
     };
-    if let Some(index) = stock_hit {
-        let entries = &mut arsenal.shelves[shown.0][shown.1];
-        let id = entries.get(index).map_or(0, |e| e.item);
-        let loadout = &mut person.loadouts[tab.clamp(0, 5) as usize];
-        match equip_from_stock(entries, index, list, loadout, tab, &lookup) {
-            Ok(done) => info!(
-                "loadout kit: {} takes {} from shelf {} box {} into rank {tab}: hands {:?}, worn {:?}, points {} of {} (off {:?})",
+    let worn_ids = |loadout: &Loadout| loadout.worn.iter().map(|w| w.id).collect::<Vec<_>>();
+    match release {
+        KitRelease::Equip(index) => {
+            let entries = &mut arsenal.shelves[shown.0][shown.1];
+            let id = entries.get(index).map_or(0, |e| e.item);
+            let loadout = &mut person.loadouts[tab.clamp(0, 5) as usize];
+            match equip_from_stock(entries, index, list, loadout, tab, &lookup) {
+                Ok(done) => info!(
+                    "loadout kit: {} takes {} from shelf {} box {} into rank {tab}: hands {:?}, worn {:?}, points {} of {} (off {:?})",
+                    person.name,
+                    done.id,
+                    shown.0,
+                    shown.1,
+                    loadout.hands.map(|h| h.id),
+                    worn_ids(loadout),
+                    done.cost,
+                    tab_limit(tab),
+                    done.removed
+                ),
+                Err(refusal) => info!(
+                    "loadout kit: {} cannot take {id} into rank {tab}: {refusal:?}",
+                    person.name
+                ),
+            }
+        }
+        KitRelease::Dress(index) => {
+            let id = list.get(index).copied().unwrap_or(0);
+            let loadout = &mut person.loadouts[tab.clamp(0, 5) as usize];
+            match dress_from_kit(list, index, loadout, tab, &lookup) {
+                Ok(done) => info!(
+                    "loadout kit: {} dresses in {} from the kit list at rank {tab}: hands {:?}, worn {:?}, points {} of {} (off {:?})",
+                    person.name,
+                    done.id,
+                    loadout.hands.map(|h| h.id),
+                    worn_ids(loadout),
+                    done.cost,
+                    tab_limit(tab),
+                    done.removed
+                ),
+                Err(refusal) => info!(
+                    "loadout kit: {} cannot dress in {id} at rank {tab}: {refusal:?}",
+                    person.name
+                ),
+            }
+        }
+        KitRelease::TakeOff(item) => {
+            let loadout = &mut person.loadouts[tab.clamp(0, 5) as usize];
+            let off = take_off_preview(loadout, item, race, &lookup);
+            info!(
+                "loadout kit: {} takes {:#x} off the preview into the kit list ({off}): hands {:?}, worn {:?}, points {} of {}",
+                person.name,
+                item.id,
+                loadout.hands.map(|h| h.id),
+                worn_ids(loadout),
+                loadout_cost(loadout, &lookup),
+                tab_limit(tab)
+            );
+        }
+        KitRelease::TakeOffReturn(item) => {
+            let done = return_from_preview(
+                arsenal,
+                shown,
+                list,
+                &mut person.loadouts,
+                tab,
+                item,
+                race,
+                &lookup,
+            );
+            let loadout = &person.loadouts[tab.clamp(0, 5) as usize];
+            info!(
+                "loadout kit: {} takes {:#x} off the preview back to the arsenal ({:?}); each loadout keeps {} hand copies; hands {:?}, worn {:?}",
                 person.name,
                 done.id,
-                shown.0,
-                shown.1,
+                done.went,
+                done.kept,
                 loadout.hands.map(|h| h.id),
-                loadout.worn.iter().map(|w| w.id).collect::<Vec<_>>(),
-                done.cost,
-                tab_limit(tab),
-                done.removed
-            ),
-            Err(refusal) => info!(
-                "loadout kit: {} cannot take {id} into rank {tab}: {refusal:?}",
-                person.name
-            ),
+                worn_ids(loadout)
+            );
         }
-    } else if let Some(index) = list_hit
-        && let Some(done) = return_to_stock(
-            arsenal,
-            shown,
-            list,
-            index,
-            &mut person.loadouts,
-            tab,
-            &lookup,
-        )
-    {
-        info!(
-            "loadout kit: {} returns {} to the arsenal ({:?}); each loadout keeps {} hand copies",
-            person.name, done.id, done.went, done.kept
-        );
+        KitRelease::Return(index) => {
+            if let Some(done) = return_to_stock(
+                arsenal,
+                shown,
+                list,
+                index,
+                &mut person.loadouts,
+                tab,
+                &lookup,
+            ) {
+                info!(
+                    "loadout kit: {} returns {} to the arsenal ({:?}); each loadout keeps {} hand copies",
+                    person.name, done.id, done.went, done.kept
+                );
+            }
+        }
+        KitRelease::Reposition | KitRelease::Cancel => {}
     }
     panels.dirty = true;
 }
@@ -972,7 +1309,25 @@ pub(crate) fn paint_kit(
                 painted.push(layer);
             }
         }
-        if let (Some(drag), Some(pointer)) = (open.drag, pointer) {
+        if let (Some(drag), Some(pointer)) = (open.drag, pointer)
+            && let Some(item) = drag.preview
+        {
+            // A drag off the preview: its item's icon under the pointer.
+            let shown = Container {
+                entries: vec![Entry {
+                    cell: Cell::new(pointer.0 - drag.grab.x, pointer.1 - drag.grab.y),
+                    id: item.id,
+                    icon: drag.icon,
+                    flags: item.flags,
+                    drag: 0,
+                }],
+                icon_size: open.list.icon_size,
+                ..Container::default()
+            };
+            if let Some(layer) = icons.layer(&shown) {
+                painted.push(layer);
+            }
+        } else if let (Some(drag), Some(pointer)) = (open.drag, pointer) {
             let view = if drag.from_stock {
                 &open.stock
             } else {
@@ -1101,6 +1456,7 @@ mod tests {
     fn a_kit_drag_equips_on_the_preview_and_returns_on_the_box() {
         let rects = kit_rects((0, 0), 1024, 768, 4, false);
         let drag = |from_stock| KitDrag {
+            preview: None,
             from_stock,
             index: 2,
             icon: 1,
@@ -1119,12 +1475,110 @@ mod tests {
             kit_release(drag(true), rects, middle(rects.stock)),
             KitRelease::Reposition
         );
-        // A kit item over the preview, or anything over the records: kept.
+        // A kit item over the preview dresses it; anything over the
+        // records is kept.
         assert_eq!(
             kit_release(drag(false), rects, middle(rects.preview)),
-            KitRelease::Cancel
+            KitRelease::Dress(2)
         );
         assert_eq!(kit_release(drag(true), rects, (10, 10)), KitRelease::Cancel);
+        // A drag off the preview: taken off over the kit list, taken off
+        // and returned over the box, cancelled elsewhere (its own view
+        // included).
+        let item = PreviewItem {
+            id: 20,
+            flags: 0,
+            hand: None,
+        };
+        let off = KitDrag {
+            preview: Some(item),
+            ..drag(false)
+        };
+        assert_eq!(
+            kit_release(off, rects, middle(rects.kit)),
+            KitRelease::TakeOff(item)
+        );
+        assert_eq!(
+            kit_release(off, rects, middle(rects.stock)),
+            KitRelease::TakeOffReturn(item)
+        );
+        assert_eq!(
+            kit_release(off, rects, middle(rects.preview)),
+            KitRelease::Cancel
+        );
+    }
+
+    #[test]
+    fn the_kit_list_dresses_the_preview_with_a_copy_the_hands_lack() {
+        let world = World {
+            items: vec![weapon(10, 4, 0x10), apparel(20, 3)],
+        };
+        with_lookup(&world, |lookup| {
+            let list = vec![10, 20];
+            let mut loadout = Loadout::default();
+            let done = dress_from_kit(&list, 0, &mut loadout, 5, lookup).unwrap();
+            assert_eq!(done.id, 10);
+            assert_eq!(loadout.hands[0].id, 10);
+            // The one copy is in a hand already.
+            assert_eq!(
+                dress_from_kit(&list, 0, &mut loadout, 5, lookup),
+                Err(Refusal::Gate)
+            );
+            let done = dress_from_kit(&list, 1, &mut loadout, 5, lookup).unwrap();
+            assert_eq!(done.id, 20);
+            assert_eq!(loadout.worn, vec![ItemRef::new(20, 0)]);
+            assert_eq!(list, vec![10, 20]);
+        });
+    }
+
+    #[test]
+    fn the_preview_takes_off_into_the_kit_and_back_to_the_arsenal() {
+        let world = World {
+            items: vec![weapon(10, 4, 0x10), apparel(20, 3)],
+        };
+        with_lookup(&world, |lookup| {
+            let mut loadout = Loadout::default();
+            loadout.hands[0] = ItemRef::new(10, 0);
+            loadout.worn = vec![ItemRef::new(20, 0)];
+            let worn = PreviewItem {
+                id: 20,
+                flags: 0,
+                hand: None,
+            };
+            // A non-human (race 1) gets no braies.
+            assert!(take_off_preview(&mut loadout, worn, 1, lookup));
+            assert!(loadout.worn.is_empty());
+            assert!(!take_off_preview(&mut loadout, worn, 1, lookup));
+            let held = PreviewItem {
+                id: 10,
+                flags: 0,
+                hand: Some(0),
+            };
+            let mut arsenal = Arsenal::default();
+            arsenal.shelves[WEAPONS][0].push(entry(10, LENT));
+            let mut list = vec![10, 10, 20];
+            let mut loadouts = vec![loadout; 6];
+            loadouts[3].hands[1] = ItemRef::new(10, 0);
+            let done = return_from_preview(
+                &mut arsenal,
+                (WEAPONS, 0),
+                &mut list,
+                &mut loadouts,
+                0,
+                held,
+                1,
+                lookup,
+            );
+            assert_eq!(done.went, Returned::Box);
+            assert_eq!(list, vec![10, 20]);
+            // One copy left, less the dragged one: no hand copies kept;
+            // each pair holding it loses one reference, the second hand
+            // first.
+            assert_eq!(done.kept, 0);
+            assert_eq!(loadouts[0].hands[0].id, 0);
+            assert_eq!(loadouts[3].hands[0].id, 10);
+            assert_eq!(loadouts[3].hands[1].id, 0);
+        });
     }
 
     #[test]

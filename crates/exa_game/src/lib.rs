@@ -129,6 +129,7 @@ pub mod session;
 pub mod settings_form;
 pub mod shell_draw;
 pub mod shop_panels;
+pub mod shop_preview;
 pub mod shop_stock;
 pub mod shop_window;
 pub mod sim_control;

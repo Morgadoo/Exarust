@@ -1084,7 +1084,13 @@ counter plus one), and each panel taking only its side's items (the
 `0x80000000` mask and value). A left press on an icon drags it (the icon
 follows the pointer), the release drops it on a panel that accepts it,
 moves it within its own panel, or leaves it; each basket's change sums its
-items' value words. The shop's new copies are registered with the item
+items' value words. The trade window's character preview (`shop_preview`)
+shows a copy of the player's record through the creator view (the hub
+previews' stand-in view): an item released over it is worn or taken into
+the hands on the copy, the displaced pieces and hand items that are not
+the shop's going to the pack (never the braies); a press on its figure
+picks and drags an item off, which comes off when a panel takes it, or
+anywhere for a shop item. The shop's new copies are registered with the item
 catalogue as the stock is made, so their icons render at once. Not drawn:
 the board's pictures, prize items and reward slots as images, the manage
 report lines and controls, and the trade window's character preview (and
@@ -1229,6 +1235,14 @@ released over the preview is taken onto it through the form's
 gate (the filter, the rank, twice the rank's point limit, a weapon's cost
 less what it displaces): the entry is lent, the item joins the kit list
 and the rank's loadout holds or wears it. A kit-list entry released over
+the preview dresses it (`loadout_kit::dress_from_kit`: a copy the two out
+hands do not hold, then the same gate; the kit list keeps its entry). A
+press on the preview's figure picks the item under the pointer
+(`loadout_kit::PreviewPick`, the inventory figure's pick through the
+creator view's camera) and drags it: over the kit list it comes off the
+rank's loadout, over the arsenal box it comes off and goes back
+(`return_from_preview`: the kit list loses one copy, every loadout keeps
+the remaining copies less one). A kit-list entry released over
 the arsenal box goes back: the shown box's lent entry, else the arsenal's lend query,
 else the shown box or its own shelf with no flags; every loadout then
 keeps at most as many hand copies as the list still holds. The points
@@ -1417,8 +1431,19 @@ Taking a worn item off a corpse does not re-dress its mesh.
 another body, else its roles' interaction condition toward the player runs
 (none fails, empty passes, else `result` above 0 with the character and the
 player as actors 0 and 1), and a failed one still passes for a Loyalty or
-Command Dead marker the player cast; a pass would open the character's
-inventory window, which has no Exarust view (logged).
+Command Dead marker the player cast; a pass opens the character's
+inventory window (the toggling call). The inventory window is bound to a
+character (`GameScreens::inventory_owner` and `inventory_body`): its pack
+is that character's carried list, the character view's figure, hands, drop
+and drag off read that body, and another character's window opens at the
+screen's right edge less its width and four units (only the player's own
+remembers its place). A script's `ShowInventory` opens the named actor's
+window without the toggle. Exarust keeps one inventory window: asking for
+another character's closes the open one [stand-in; the original keeps one
+per character]. Shipped interaction conditions: only the Golem Boss's and
+the Golem Servant's, so a companion's inventory opens through a Loyalty or
+Command Dead marker or the Ally's `Equipment` topic. `--character-use
+ID@FRAME[+]` sends the interaction (`+`: with the player's Loyalty marker).
 `object_click` takes the hand's clicks on anything but a character
 (`ObjectClick`). The single click (outside combat mode) on a placed object
 clears its first-touch bit, runs a device's use (`player_controls::device_use`,
