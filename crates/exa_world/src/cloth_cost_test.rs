@@ -407,3 +407,53 @@ fn the_meshes_take_the_particles_once_a_frame() {
     assert_ne!(expected, at_rest);
     assert_eq!(positions(&app, hairs[0]), expected);
 }
+
+/// Behind the bridge the frame's cloth is the one it built: the mesh
+/// write-back also gives its particles their newest places (for the hand's
+/// grab), without a change mark.
+#[test]
+fn a_bridged_frame_cloth_takes_the_newest_places() {
+    let (mut app, hairs, heads) = hair_scene();
+    let mut fixed = exa_physics::sim_app::FixedCommands::default();
+    fixed.set_bridged(true);
+    app.world_mut().insert_resource(fixed);
+    turn_heads(&mut app, &heads, 1);
+    for _ in 0..4 {
+        app.world_mut().run_schedule(FixedUpdate);
+    }
+    app.world_mut()
+        .run_system_cached(publish_cloth_meshes)
+        .unwrap();
+    let moved: Vec<Vec3> = app
+        .world()
+        .get::<ClothInstance>(hairs[0])
+        .unwrap()
+        .cloth
+        .particles
+        .iter()
+        .map(|p| p.position)
+        .collect();
+    // The frame's copy as it was built (the simulation's moved on).
+    let mut stale = app.world_mut().get_mut::<ClothInstance>(hairs[0]).unwrap();
+    for p in &mut stale.bypass_change_detection().cloth.particles {
+        p.position = Vec3::ZERO;
+    }
+    let tick = app.world_mut().change_tick();
+    app.world_mut()
+        .run_system_cached(write_cloth_meshes)
+        .unwrap();
+    let instance = app.world_mut().entity(hairs[0]);
+    let changed = instance
+        .get_ref::<ClothInstance>()
+        .unwrap()
+        .last_changed()
+        .is_newer_than(tick, app.world().read_change_tick());
+    let instance = app.world().get::<ClothInstance>(hairs[0]).unwrap();
+    let drawn: std::collections::HashSet<usize> =
+        instance.vertex_particle.iter().copied().collect();
+    assert!(!drawn.is_empty());
+    for &p in &drawn {
+        assert!(instance.cloth.particles[p].position.distance(moved[p]) < 1e-3);
+    }
+    assert!(!changed, "the refresh marked the cloth changed");
+}

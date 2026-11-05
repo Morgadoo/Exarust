@@ -1130,10 +1130,17 @@ pub fn publish_cloth_meshes(
 /// Writes each mesh's newest cloth positions, once a frame after the fixed
 /// ticks: the renderer takes one copy of the mesh a frame whatever the
 /// ticks, so writing it every tick only repeated the work.
+///
+/// Behind the simulation bridge the frame's cloth is the one it built; its
+/// particles take the newest places too (without a change mark, so the
+/// copy-in does not send them back), so the hand's grab picks the vertex
+/// where it hangs now.
 pub fn write_cloth_meshes(
     mut updates: MessageReader<ClothMeshUpdate>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut debug: ResMut<ClothDebug>,
+    mut instances: Query<&mut ClothInstance>,
+    fixed: Option<Res<exa_physics::sim_app::FixedCommands>>,
 ) {
     let started = debug.on.then(std::time::Instant::now);
     // The newest of each mesh's updates.
@@ -1156,6 +1163,19 @@ pub fn write_cloth_meshes(
             *slot = *p;
         }
         written += 1;
+    }
+    if fixed.is_some_and(|f| f.bridged()) && !newest.is_empty() {
+        for mut instance in &mut instances {
+            let Some(update) = newest.get(&instance.mesh.id()) else {
+                continue;
+            };
+            let instance = instance.bypass_change_detection();
+            for (&particle, p) in instance.vertex_particle.iter().zip(&update.positions) {
+                if let Some(particle) = instance.cloth.particles.get_mut(particle) {
+                    particle.position = Vec3::from_array(*p) * 100.0;
+                }
+            }
+        }
     }
     if let Some(t) = started {
         debug.frames += 1;
@@ -1233,7 +1253,8 @@ fn bridge_cloth_types(app: &mut App) {
     app.bridge_lend_resource::<crate::cloth::ClothContacts>()
         .bridge_lend_resource::<crate::cloth::ClothDebug>()
         // The frame builds a cloth; the simulation owns it from then on and
-        // hands the frame its mesh positions ([`ClothMeshUpdate`]). The
+        // hands the frame its mesh positions ([`ClothMeshUpdate`]), which
+        // also refresh the frame's particles for the hand's grab. The
         // hand's grab and release go as posted writes. Not a snapshot:
         // copying every awake cloth out each step costs 0.5-0.9 ms in
         // exanima01 and exanima06.
