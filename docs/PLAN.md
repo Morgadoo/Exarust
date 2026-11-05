@@ -875,6 +875,8 @@ Round 46 checkfig (P3, G6): the checkpoint is a level trigger volume in exanima0
 
 Round 47 redress: characters re-dress live.
 
+Round 51 liveobjdb (S2): the live object database replaces the use cursor's private copy and the item workarounds; saved item condition now survives a reload.
+
 ### Phase 4 — Combat and items (started)
 
 Done (change `add-combat-prototype`): held weapons, attacks steered by the
