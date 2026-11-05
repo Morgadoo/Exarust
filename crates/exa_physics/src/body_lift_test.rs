@@ -785,3 +785,64 @@ fn only_a_walking_condition_measures_the_lag() {
     let expected = 2.0 * d.support() * d.support() * 0.5 / CM;
     assert!(close(d.carry().x, expected, 1e-6), "{}", d.carry().x);
 }
+
+/// A legless body whose race hovers (the wraith): its balance routine only
+/// puts the feet centre at the pelvis, its feet routine probes once under
+/// the pelvis and gives full support, and the lift holds it at the clip
+/// root's height over its frame less 10 cm (90 cm here), floating about
+/// 1.7 cm over that. The probe's ground is the character's ground only: a
+/// floor 30 cm higher leaves the target where it was.
+#[test]
+fn a_legless_hovering_body_floats_at_its_clip_height() {
+    use super::super::tests::two_parts;
+    let race = super::super::RaceMuscles {
+        hovers: true,
+        ..super::super::RaceMuscles::HUMAN
+    };
+    let pose = [
+        Affine3A::from_translation(Vec3::new(0.0, 1.0, 0.0)),
+        Affine3A::from_translation(Vec3::new(0.0, 0.6, 0.0)),
+    ];
+    for floor_y in [0.0, 0.3] {
+        let mut body = two_parts(0.0).with_drive().with_race(race);
+        assert!(body.legs().is_empty());
+        let floor = floor_quad(floor_y, 5.0);
+        for _ in 0..600 {
+            stand(&mut body, &pose, &floor);
+        }
+        let d = drive(&body);
+        assert_eq!(d.feet_mode, feet::FeetMode::Hovering);
+        assert_eq!(d.support, 1.0);
+        assert!(d.balance.has_support());
+        assert_eq!(d.balance.value, 1.0);
+        assert!(
+            close(d.lift_target.unwrap(), 0.9, 1e-5),
+            "{:?}",
+            d.lift_target
+        );
+        assert!(
+            close(d.balance.under, floor_y, 1e-3),
+            "ground {}",
+            d.balance.under
+        );
+        let y = pelvis(&body);
+        assert!(close(y, 0.917, 0.02), "floor {floor_y}: pelvis {y}");
+    }
+}
+
+/// Without the hover flag the same legless body has no lift: it falls.
+#[test]
+fn a_legless_body_that_does_not_hover_has_no_lift() {
+    use super::super::tests::two_parts;
+    let pose = [
+        Affine3A::from_translation(Vec3::new(0.0, 1.0, 0.0)),
+        Affine3A::from_translation(Vec3::new(0.0, 0.6, 0.0)),
+    ];
+    let mut body = two_parts(0.0).with_drive();
+    let floor = floor_quad(0.0, 5.0);
+    for _ in 0..600 {
+        stand(&mut body, &pose, &floor);
+    }
+    assert!(drive(&body).lift_target.is_none());
+    assert!(pelvis(&body) < 0.5, "pelvis {}", pelvis(&body));
+}

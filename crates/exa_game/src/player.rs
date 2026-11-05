@@ -143,6 +143,8 @@ pub struct PlayerBody {
     /// The head tracker's two relaxed angles, kept between the stabs that
     /// run it.
     head: HeadTrack,
+    /// The body's race hovers (the spirit's wraith): combat mode stays off.
+    hovers: bool,
 }
 
 impl PlayerBody {
@@ -169,7 +171,16 @@ impl PlayerBody {
             target: None,
             crouch: 0.0,
             head: HeadTrack { yaw, pitch: 0.0 },
+            hovers: false,
         }
+    }
+
+    /// A body whose race hovers (the spirit's wraith): the combat toggle
+    /// keeps it out of combat mode, as the original's does for a player
+    /// body with the hover flag.
+    pub(crate) fn hovering(mut self) -> Self {
+        self.hovers = true;
+        self
     }
 
     /// The opponent the behaviour's auto-target picked this tick (the
@@ -254,8 +265,10 @@ impl PlayerBody {
     /// practice and arena fight) or off. True when this enters combat mode:
     /// the double-click clock is dropped, and the caller clears the
     /// locomotion bits [`Locomotion::entered_combat`] does. A mode already
-    /// on is left as it is, clock included.
+    /// on is left as it is, clock included. A hovering body's request is
+    /// always off.
     pub fn set_combat(&mut self, on: bool) -> bool {
+        let on = on && !self.hovers;
         let entered = on && !self.combat;
         if entered {
             self.attack.last_press = None;

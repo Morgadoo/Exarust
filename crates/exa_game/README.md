@@ -472,8 +472,10 @@ level's light-reach query; the dead powers pick with corpses allowed. The
 casts play their sounds; Spirit Form fades its realm music in and out, and
 its screen drives the post-processing's desaturation. The spirit screen's
 two scene-environment values, its noise texture, a Command Dead body's
-lying down and a physical wraith (a legless, hovering body the balance
-cannot carry yet; the spirit does not walk) are not in.
+lying down are not in. The wraith is built physical (`physical_frame`,
+with its race's hover flag): legless, it floats on its hovering lift and
+the player walks it; a hovering player's combat mode stays off
+(`PlayerBody::hovering`).
 
 The small effect nodes (`effects`) are in, on the original's game clock
 in whole milliseconds: a level portal marker (the `0x3DD0E004` emitter

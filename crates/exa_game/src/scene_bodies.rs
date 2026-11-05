@@ -813,15 +813,19 @@ pub fn human_frame(race: u8) -> bool {
     race <= 2
 }
 
-/// Races Exarust builds a physical body for: those of the human frame and
-/// the golems (race bytes with bit 0x10 other than the skeleton and the
-/// wraith: the Golem Guard, Boss, Suit, BAM and BAF). Their models carry
-/// the shared skeleton's eighteen bones, and the original builds every
-/// race's body with the one character builder, so a golem's parts take the
-/// skeleton's links, its race's stature and the character init's golem
-/// presets ([`character_muscles`]). Only the human frame wears apparel.
+/// Races Exarust builds a physical body for: those of the human frame, the
+/// golems (race bytes with bit 0x10 other than the skeleton and the
+/// wraith: the Golem Guard, Boss, Suit, BAM and BAF) and the wraith. The
+/// golems' models carry the shared skeleton's eighteen bones, and the
+/// original builds every race's body with the one character builder, so a
+/// golem's parts take the skeleton's links, its race's stature and the
+/// character init's golem presets ([`character_muscles`]). The wraith's
+/// model has only the twelve upper parts (pelvis to head, no legs): its
+/// race hovers, so its feet routine holds it up with no feet. Only the
+/// human frame wears apparel.
 pub fn physical_frame(race: u8) -> bool {
-    human_frame(race) || exa_formats::character_stats::golem_byte(race)
+    use exa_formats::character_stats::{WRAITH, golem_byte};
+    human_frame(race) || golem_byte(race) || race == WRAITH
 }
 
 /// The factors a race gives its bodies' muscles.
@@ -1178,12 +1182,12 @@ mod tests {
         assert_eq!(plan.damage, -100.0);
     }
 
-    /// The human frame (bytes 0–2) and the golems (16 Guard, 17 Boss,
-    /// 18 Suit, 19 BAM, 20 BAF) are physical; the ogre (3), the gobbler
-    /// (8), the skeleton-class wraith and the beasts are not.
+    /// The human frame (bytes 0–2), the golems (16 Guard, 17 Boss,
+    /// 18 Suit, 19 BAM, 20 BAF) and the hovering wraith (14) are
+    /// physical; the ogre (3), the gobbler (8) and the beasts are not.
     #[test]
     fn the_golems_take_physical_bodies() {
-        for race in [0, 1, 2, 16, 17, 18, 19, 20] {
+        for race in [0, 1, 2, 14, 16, 17, 18, 19, 20] {
             assert!(physical_frame(race), "{race}");
         }
         for race in [3, 4, 8, 9, 15] {

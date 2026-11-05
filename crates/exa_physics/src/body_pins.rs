@@ -203,11 +203,19 @@ impl Ragdoll {
         if drive.bearing.walking || drive.bearing.off_feet {
             return;
         }
-        if drive.targets.len() != self.parts.len() || self.legs.is_empty() {
+        if drive.targets.len() != self.parts.len() {
             return;
         }
-        let Some(centre) = feet_centre(&self.legs, &self.parts) else {
-            return;
+        // The feet centre; a body with fewer than two legs (the hovering
+        // wraith) clamps around the one its balance routine left, its
+        // pelvis.
+        let centre = if self.legs.len() < 2 && drive.race.hovers {
+            drive.balance.feet_centre()
+        } else {
+            let Some(centre) = feet_centre(&self.legs, &self.parts) else {
+                return;
+            };
+            centre
         };
         let has_support = drive.balance.has_support();
         let support = drive.support;

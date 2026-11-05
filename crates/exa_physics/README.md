@@ -369,7 +369,14 @@ leg's ground is 0, its anchor the sole plus 1 cm, its state 0x4a
 hip-to-contact length, and the lift aims 10 cm under its standing target; a hovering race (the race factors' `hovers`, from the race
 record's hover flag: the wraith) casts one 20 cm sphere 2000 cm down from
 20 cm over its pelvis, 5 cm higher after each miss (`HoverProbe`), its feet
-unprobed and its lift aimed over that ground. Both give full support, skip
+unprobed and its lift aimed at the sampler's hovering standing height as
+it is: the clip root's height over the frame less 10 cm
+(`pose_heights::hover_pelvis_target`), no ground added. A hovering race
+runs its balance and feet with any number of legs: with fewer than two the
+balance routine only puts the feet centre at the pelvis (no lean, score,
+counter, step or footwork, so the balance stays 1), and its standing
+support pins clamp around that centre; so the legless wraith floats about
+92 cm up. Both give full support, skip
 the per-foot probes, the stance's level, the imbalance decay and the legs'
 relaxation (their legs keep the sampler's), and call no leg IK (`bend_legs`
 returns). A walking leg's relaxation (`relax_legs`) is 0.6 − 0.001·| hip to

@@ -156,6 +156,13 @@ pub fn placement_pelvis_target(stand: f32, pelvis: f32, aim: &PelvisAim) -> f32 
     target * aim.factor
 }
 
+/// A hovering body's pelvis target (cm): the clip root's height `root`
+/// less 10, which the feet routine's hovering branch hands the lift as it
+/// is (the body's pelvis-height factor is 1).
+pub fn hover_pelvis_target(root: f32) -> f32 {
+    root - HOVER_DROP
+}
+
 /// The living sampler's pelvis target (cm) from last tick's `previous`.
 /// Hovering (`hover_root` the clip root's height), it is the root less 10.
 /// Walking, s = stand + (2·run + 3) in single precision and the target is
@@ -172,7 +179,7 @@ pub fn living_pelvis_target(
     aim: &PelvisAim,
 ) -> f32 {
     if let Some(root) = hover_root {
-        return (root - HOVER_DROP) * aim.factor;
+        return hover_pelvis_target(root) * aim.factor;
     }
     let target = if aim.walking {
         let s = stand + (2.0 * aim.run + 3.0);

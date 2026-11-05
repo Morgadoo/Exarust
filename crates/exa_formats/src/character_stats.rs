@@ -62,7 +62,8 @@ const GHOUL: u8 = 6;
 const HULKING_GHOUL: u8 = 7;
 const GOBBLER: u8 = 8;
 const MANIPULATOR: u8 = 9;
-const WRAITH: u8 = 14;
+/// The wraith's race byte: its race hovers and its model has no legs.
+pub const WRAITH: u8 = 14;
 const GOLEM_BOSS: u8 = 17;
 /// Race bytes with this bit are golems.
 const GOLEM_BIT: u8 = 0x10;
