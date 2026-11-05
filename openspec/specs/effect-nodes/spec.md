@@ -398,8 +398,6 @@ Once a game second, each held item whose weapon section names ability type 3 SHA
 - the item's lit flag;
 - the "Flaming" moveset overlay (0x10020000).
 
-A cold socket SHALL put a live row out, clearing the lit flag and the overlay. A hit struck with a lit blade SHALL play `FireSizzleA` at the contact, at volume 0.3 and pitch 0.8 + 0.2·u.
-
 #### Scenario: Crystal C into the shipped sword
 - **WHEN** "Sword GSF 01" (socket word 0x0080) takes a Power Crystal C through the item GUI's drop
 - **THEN** its socket word is 0x0084 and the next check lights the blade; with the crystal taken out the check puts it out
@@ -407,3 +405,10 @@ A cold socket SHALL put a live row out, clearing the lit flag and the overlay. A
 #### Scenario: Other crystals
 - **WHEN** the socket holds crystal A, B or AR, or the item's type is not 3
 - **THEN** the check lights nothing
+
+### Requirement: Burning blade out and sizzle
+A cold socket SHALL put a live flame row out, clearing the lit flag and the overlay. A hit struck with a lit blade SHALL play `FireSizzleA` at the contact, at volume 0.3 and pitch 0.8 + 0.2·u.
+
+#### Scenario: The crystal is taken out
+- **WHEN** the Power Crystal C leaves a lit blade's first socket
+- **THEN** the next held check puts the row out and clears the lit flag and the Flaming overlay
