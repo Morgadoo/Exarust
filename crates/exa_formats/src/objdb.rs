@@ -138,6 +138,10 @@ pub struct Item {
     /// words ([`Volume::script`]): the text the zone check runs for a
     /// character that enters it. `None` when the section holds none.
     pub volume_script: Option<Vec<u8>>,
+    /// The use script a scripted device's operative section (class 2, kind
+    /// 3) carries after its fixed words ([`Operative::script`]): the text
+    /// the device's use runs. `None` when the section holds none.
+    pub use_script: Option<Vec<u8>>,
     /// The item's rank word: the body's word at `0x1AB`, else a weapon's at
     /// `0x42`, else a shield's at `0x08` (see `docs/formats/OTHER.md`, Trade
     /// fields). The low five bits are the bulk in points and the low byte's
@@ -561,6 +565,20 @@ impl Operative {
         })
     }
 
+    /// The use script an operative body carries: a length word at body
+    /// offset `0x38` and that many bytes of text from `0x3C`. `None` when the
+    /// length is under 1 or the body is too short for it, as the original's
+    /// script accessor answers no text for a length under 1. (The word at
+    /// `0x38` is also a teleporter's last destination slot; only a scripted
+    /// device's use reads it as a script.)
+    pub fn script(b: &[u8]) -> Option<&[u8]> {
+        let len = i32::from_le_bytes(b.get(0x38..0x3C)?.try_into().expect("4 bytes"));
+        if len < 1 {
+            return None;
+        }
+        b.get(0x3C..0x3C + len as usize)
+    }
+
     /// A lever's auto-return time in milliseconds.
     pub fn return_ms(&self) -> u32 {
         u32::from(self.time) * 100
@@ -897,6 +915,7 @@ impl Item {
             torch: false,
             volume: None,
             volume_script: None,
+            use_script: None,
             rank_word: 0,
             body_rank: 0,
             loadout_rank: 0,
@@ -978,7 +997,10 @@ impl Item {
                     item.shield = ShieldRecord::from_section(body);
                 }
                 DOOR => item.door = Door::parse(body),
-                OPERATIVE => item.operative = Operative::parse(body),
+                OPERATIVE => {
+                    item.operative = Operative::parse(body);
+                    item.use_script = Operative::script(body).map(<[u8]>::to_vec);
+                }
                 TORCH => item.torch = true,
                 VOLUME => {
                     item.volume = Volume::parse(body);
@@ -1376,6 +1398,33 @@ mod tests {
         assert!(!stay.runs_script());
         stay.flags = 0x1102;
         assert!(!stay.runs_script());
+    }
+
+    /// A scripted device's operative section (class 2, kind 3) carries its
+    /// use script after the fixed words: the length at `0x38`, the text from
+    /// `0x3C`, as the shipped Pedestal Hand lays it out (synthetic bytes).
+    #[test]
+    fn a_scripted_device_keeps_its_use_script() {
+        let mut body = vec![0u8; 0x38];
+        body[0] = 2;
+        body[1] = 3;
+        body[0x10..0x19].copy_from_slice(b"DeviceA01");
+        let text = b"WitnessRole(Operative, 31);";
+        body.extend((text.len() as u32).to_le_bytes());
+        body.extend(text);
+        let item = Item::parse(1, &section(OPERATIVE, &body)).unwrap();
+        let operative = item.operative.unwrap();
+        assert_eq!((operative.class, operative.kind), (2, 3));
+        assert_eq!(item.use_script.as_deref(), Some(&text[..]));
+        // A length under 1 (signed) or past the body's end gives none.
+        let mut empty = body.clone();
+        empty[0x38..0x3C].copy_from_slice(&0u32.to_le_bytes());
+        assert_eq!(Operative::script(&empty), None);
+        empty[0x38..0x3C].copy_from_slice(&(-1i32).to_le_bytes());
+        assert_eq!(Operative::script(&empty), None);
+        assert_eq!(Operative::script(&body[..0x3C + 4]), None);
+        // A short operative body (a lever's 16 bytes) has none.
+        assert_eq!(Operative::script(&body[..16]), None);
     }
 
     /// A memory fragment's stay zone (`0x1210`) runs its routine; a level

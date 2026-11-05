@@ -145,7 +145,7 @@ look's wide pan waits 3 s and the sway and narrow pan 0.5 s.
 
 | module | what it holds |
 |---|---|
-| `roles` | role lists (the shared `exa_formats::roles::HeldRole`; adding with inherited parents, newest first and counted; removing explicit roles), the new story character's and the arena fighter's roles, relations (global and per locale, relation roles with values, familiarity, the last attitude, a former level character's move, `migrate_former`), the attitude of one character toward another, encounter scripts, corpse scripts (each role's first entry aimed at the Player), the interaction-condition wrapper, the entry finder, and the `StartDialogue`/`ChangeRole` registration (`start_dialogue` carries the topic the script asked for) |
+| `roles` | role lists (the shared `exa_formats::roles::HeldRole`; adding with inherited parents, newest first and counted; removing explicit roles), the new story character's and the arena fighter's roles, relations (global and per locale, relation roles with values, familiarity, the last attitude, a former level character's move, `migrate_former`), the attitude of one character toward another, encounter scripts, corpse scripts (each role's first entry aimed at the Player), the interaction-condition wrapper, the entry finder, and the `StartDialogue`/`ChangeRole` registration (the conversation start itself is `exa_script`'s, from the encounter context) |
 | `personality` | what the brain derives from the record (skill, confidence, restraint, courage, eagerness, blend, jitter, arousal) and the attach step (contact sense, dead and statue cases) |
 | `activity` | applying roles: the init scripts run through `exa_script`'s interpreter (newest role first, with the role's own variables), the mind-control follow, the idle state per activity, the idle-activity registry (the search as 6, registered by `register_search`), and the activity base's four virtuals (reset and tick answer false, stop and restart do nothing) |
 | `entity` | the AI's perceivable things: the base's position from the linked scene object (the origin when unlinked), its abstract assessment, the zero avoidance hint and the aim point that defaults to the position, and the search's goal entity (weight 5, attraction `1 − d/1200 cm` capped at 0.99, out of reach past 12 m) |
@@ -327,9 +327,10 @@ Not in yet: role init scripts other than Activity and IdleActivity have no
 effect (the interpreter runs them, but the AI's host exposes only those two
 slots); encounter scripts are collected by `roles::encounter` and run by the
 game's `role_scripts` bridge, while corpse scripts run on the player's
-double-click and dialogue and condition scripts are found and modelled but
-not run from the AI; `StartDialogue` returns a `DialogueRequest` rather than
-calling the dialogue engine; the brain feeding the
+double-click, the interaction condition on the player's interaction
+(`exa_game::character_use`), and dialogue scripts are not run from the AI;
+`StartDialogue` is `exa_script`'s builtin, which starts the conversation
+between the encounter context's pair; the brain feeding the
 combatant's mind-power overrides and group blend (they are in `combatant`);
 the roam and patrol choose
 their wander and home points from the level's rooms (`rooms::room_exits`,

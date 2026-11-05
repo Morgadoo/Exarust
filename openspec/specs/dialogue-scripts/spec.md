@@ -134,11 +134,15 @@ The mood of A toward B SHALL be a hostility code (0x600 at an engaging contact l
 - **THEN** the contact's memory of the player has "XAU_Memory" activated under entry Player, key XA_Derrin
 
 ### Requirement: StartDialogue
-`StartDialogue(topic)` SHALL start the named node between the script's first two actors, refused while the first actor's arousal is above 10 or it fills an actor slot of any active conversation, whatever that conversation's state.
+`StartDialogue(topic)`, whichever script calls it, SHALL start the named node between the pair of the roles unit's last encounter (its observer and the partner it met), not the calling script's actors; it SHALL be refused while that observer's arousal is above 10 or it fills an actor slot of any active conversation, whatever that conversation's state, and SHALL start nothing before the first encounter.
 
 #### Scenario: Already talking
-- **WHEN** a script asks to start a dialogue for an actor that is in an ended but still active conversation
+- **WHEN** a script asks to start a dialogue after an encounter whose observer is in an ended but still active conversation
 - **THEN** no dialogue starts
+
+#### Scenario: A used object's script
+- **WHEN** a guard met a traveller and then a script whose only actor is the player asks for `StartDialogue(Hello)`
+- **THEN** the guard's `Hello` node starts toward the traveller; before any encounter the same call starts nothing
 
 ### Requirement: Role-set check
 After a topic event stores a word, or an event node runs a branch, the actor's held roles SHALL be looked up in the role database and an unknown one reported ("Invalid role identifier.", or "Actor n invalid role identifier." for the event node's slot n).
@@ -372,11 +376,11 @@ While a fade runs the panel SHALL draw its box at `round(alpha × 160)` and its 
 - **THEN** its box alpha is 80 and its label ink's alpha is the line skin's scaled by 0.5
 
 ### Requirement: Scripted device use
-A scripted device's use (usable class 2, kind 3) that its 2.4 s clock allows SHALL pulse the placed object with a 1200 ms fade and no hold and play the sound its usable section names (at most 15 characters) at the object at volume 0.3.
+A scripted device's use (usable class 2, kind 3) that its 2.4 s clock allows SHALL first run the device's use script with the player as its one actor slot (none without a player), no running role and the device as the operative, then pulse the placed object with a 1200 ms fade and no hold and play the sound its usable section names (at most 15 characters) at the object at volume 0.3.
 
 #### Scenario: The pedestal hand's use
 - **WHEN** `exanima67`'s PedestalHand is clicked
-- **THEN** it pulses for 2.4 s and its sound `DeviceA01` plays at 0.3
+- **THEN** its script `WitnessRole(Operative, $E1D1);` runs, it pulses for 2.4 s and its sound `DeviceA01` plays at 0.3
 
 ### Requirement: Live glow pulse
 Each frame a pulse SHALL scale the emissive of every part of the object's own mesh, of the first part of each child mesh and the intensity of each child voxel light (its record intensity times the level), and SHALL leave them at level 0 when it ends. A level load SHALL cancel every pulse.
@@ -440,3 +444,10 @@ A script's report of an invalid role identifier SHALL be logged as the engine's 
 #### Scenario: An invalid role set after a branch
 - **WHEN** a branch runs for an actor holding a role the database lacks
 - **THEN** the log carries `Process Event : Actor 0 invalid role identifier.`
+
+### Requirement: Operative witness grant
+`WitnessRole(Operative, role)` in a used object's script SHALL add the role (with the parents it inherits) to every character within 18 m of the object's own place (squared distance at most 3 240 000 cm²) that the level's sight test sees from there. A `WitnessRole` in a script without an operative (a dialogue's or a role's) SHALL grant nothing.
+
+#### Scenario: Measured from the device
+- **WHEN** a device at the origin grants role 31 with characters 10 m and 20 m away and the player 500 m away
+- **THEN** only the character 10 m away holds role 31

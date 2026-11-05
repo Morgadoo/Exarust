@@ -32,12 +32,14 @@
 //! actor 2; the interaction condition of A toward B comes from the same
 //! entry finder the attitude roles use. A role's dialogue toward a key is
 //! `exa_formats::roles::Role::dialogue_for`. The unit registers `StartDialogue`
-//! (which copies the owner, partner, role and matched partner role into the
-//! engine's context and reads the script's first argument as the topic) and
-//! the `ChangeRole` stub that always reports its missing function. In the
-//! running game the scripts run on `exa_script`'s engine (encounter scripts
-//! through `exa_game::role_scripts`), whose own `StartDialogue` builtin
-//! starts the conversation; [`start_dialogue`] is the unit's model of it.
+//! and the `ChangeRole` stub that always reports its missing function. Its
+//! encounter leaves the owner, the partner, the role and the matched partner
+//! role in one static context, and `StartDialogue`, whichever script calls
+//! it, asks the dialogue engine for the named node between that pair. In the
+//! running game the scripts run on `exa_script`'s engine, which keeps that
+//! context (`exa_script::dialogue::EncounterContext`, written by the
+//! encounter scripts `exa_game::role_scripts` runs) and starts the
+//! conversation itself.
 //!
 //! Evidence: the original's role database routines (add, remove, has,
 //! validate, relation tables, add and remove relation, familiarity, the
@@ -49,7 +51,7 @@ use std::collections::BTreeMap;
 use bevy::prelude::Component;
 use exa_formats::characters::CharacterRecord;
 use exa_formats::roles::{
-    ATTITUDE, Name, Role, RoleDb, RoleEntry, SECTION_CORPSE, SECTION_ENCOUNTER, SECTION_INTERACTION,
+    ATTITUDE, Role, RoleDb, RoleEntry, SECTION_CORPSE, SECTION_ENCOUNTER, SECTION_INTERACTION,
 };
 
 /// The Player role.
@@ -698,25 +700,6 @@ pub fn corpse_scripts<'a>(book: &'a RoleDb, corpse: &Roles) -> Vec<CorpseScript<
         .collect()
 }
 
-/// The script context roles hand the engine: the owner, the partner, the
-/// role that held the script and the partner role it matched (0 for one
-/// character or any partner).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct DialogueStart {
-    pub owner: u32,
-    pub partner: u32,
-    pub role: u32,
-    pub partner_role: u32,
-}
-
-/// What `StartDialogue` hands the dialogue engine: the role context and the
-/// topic the script asked for.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct DialogueRequest {
-    pub start: DialogueStart,
-    pub topic: Name,
-}
-
 /// The names the roles unit registers with the script engine, in the order
 /// it registers them.
 pub const SCRIPT_FUNCTIONS: [&str; 2] = ["StartDialogue", "ChangeRole"];
@@ -733,18 +716,6 @@ impl std::fmt::Display for MissingScriptFunction {
 }
 
 impl std::error::Error for MissingScriptFunction {}
-
-/// `StartDialogue(topic)`: copies the calling context and reads the script's
-/// first argument as a 16-byte, NUL-padded topic name (the original copies
-/// the whole argument word), then hands the pair to the dialogue engine.
-/// Exarust returns the request; the live call is `exa_script`'s
-/// `StartDialogue` builtin, which reads the same topic argument.
-pub fn start_dialogue(context: DialogueStart, topic: Name) -> DialogueRequest {
-    DialogueRequest {
-        start: context,
-        topic,
-    }
-}
 
 /// `ChangeRole`: always the original's missing-function error.
 pub fn change_role() -> Result<(), MissingScriptFunction> {

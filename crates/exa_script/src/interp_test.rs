@@ -28,7 +28,7 @@ struct World {
     with: Vec<(u32, u32, Name, u32, u32)>,
     activated: Vec<(Name, i32)>,
     witnessed: Vec<u32>,
-    started: Vec<(Option<u32>, Option<u32>, Name)>,
+    started: Vec<Name>,
     locale: u32,
     zones: HashMap<u32, Vec<builtins::ZoneMarker>>,
 }
@@ -118,8 +118,8 @@ impl Host for World {
     fn witness_role(&mut self, role: u32) {
         self.witnessed.push(role);
     }
-    fn start_dialogue(&mut self, a: Option<u32>, b: Option<u32>, topic: Name) {
-        self.started.push((a, b, topic));
+    fn start_dialogue(&mut self, topic: Name) {
+        self.started.push(topic);
     }
     fn locale(&self) -> u32 {
         self.locale
@@ -564,20 +564,19 @@ fn witness_role_reaches_eighteen_metres() {
     assert!(blocked.is_empty());
 }
 
-/// `StartDialogue` is handed the first two actor slots, as the original
-/// passes the request to the role unit.
+/// `StartDialogue` hands the host only its topic: the original's builtin
+/// takes the pair from the roles unit's encounter context, not from the
+/// calling script's actor slots, so a script with no actors asks too.
 #[test]
-fn start_dialogue_carries_the_first_two_actors() {
+fn start_dialogue_hands_the_host_its_topic() {
     let mut w = World::default();
     let mut c = ctx();
     run(&mut w, &mut c, "StartDialogue(Wake);");
     assert_eq!(w.started.len(), 1);
-    assert_eq!(w.started[0].0, Some(GOLEM));
-    assert_eq!(w.started[0].1, Some(PLAYER));
-    assert_eq!(w.started[0].2.text(), "Wake");
+    assert_eq!(w.started[0].text(), "Wake");
     let mut empty: Context<u32> = Context::new(Vec::new());
-    run(&mut w, &mut empty, "StartDialogue(Wake);");
-    assert_eq!(w.started[1], (None, None, w.started[1].2));
+    run(&mut w, &mut empty, "StartDialogue(Greeting);");
+    assert_eq!(w.started[1].text(), "Greeting");
 }
 
 /// `InZone` checks the locale and then a zone marker of the id within its

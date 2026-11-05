@@ -1209,3 +1209,48 @@ fn a_zone_routine_runs_for_its_character_with_the_zone_id() {
     e.run_zone_script(&mut s, PLAYER, 3, routine);
     assert_eq!(s.effects, [Effect::GameEvent(0xB2)]);
 }
+
+/// `StartDialogue` starts its conversation between the roles unit's last
+/// encounter pair, whichever script calls it: before any encounter it
+/// starts nothing; after the guard met the traveller, a script whose only
+/// actor is the player (a used object's) starts the guard's named node
+/// toward the traveller.
+#[test]
+fn start_dialogue_starts_between_the_last_encounter_pair() {
+    let hello = node(
+        NODE_ENTRY | 0x10,
+        "Hello",
+        &[],
+        vec![branch(0, &[(1, "Hello there.")], "", "", vec![])],
+    );
+    let db = RoleDb {
+        roles: vec![
+            role(100, 0, 0, vec![entry(0x2, 1, Some(graph(1, vec![hello])))]),
+            role(1, 0, 0, vec![]),
+        ],
+    };
+    let mut cast = Cast {
+        characters: vec![
+            person(GUARD, &[100], &db),
+            person(TRAVELLER, &[1], &db),
+            Character::new(PLAYER, "Ermus"),
+        ],
+    };
+    let mut e = Engine::default();
+    let mut s = scene(&db, None, &mut cast, 0);
+    e.use_script(&mut s, Some(PLAYER), b"StartDialogue(Hello);");
+    assert!(e.active.is_empty(), "no encounter yet");
+    assert_eq!(s.effects, [Effect::StartDialogue(name("Hello"))]);
+    let context = dialogue::EncounterContext {
+        owner: GUARD,
+        partner: TRAVELLER,
+        role: 100,
+        partner_role: 0,
+    };
+    e.run_encounter_script(&mut s, context, b"");
+    assert_eq!(e.encounter, Some(context));
+    e.use_script(&mut s, Some(PLAYER), b"StartDialogue(Hello);");
+    assert_eq!(e.active.len(), 1);
+    assert_eq!(e.bubbles.list[0].text, b"Hello there.");
+    assert_eq!(e.bubbles.list[0].speaker, Speaker::Character(GUARD));
+}

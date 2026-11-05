@@ -148,16 +148,11 @@ pub trait Host {
     fn game_event(&mut self, _code: u32) {}
     /// `CheckpointSave(n)` with the script's first actor slot.
     fn checkpoint_save(&mut self, _actor: Option<Self::Actor>) {}
-    /// `StartDialogue(topic)` for the script's first two actor slots (the
-    /// original passes the request to the role unit, which finds a graph
-    /// between them).
-    fn start_dialogue(
-        &mut self,
-        _actor0: Option<Self::Actor>,
-        _actor1: Option<Self::Actor>,
-        _topic: Name,
-    ) {
-    }
+    /// `StartDialogue(topic)`. The original's builtin belongs to the roles
+    /// unit and ignores the calling script's actors: it starts the
+    /// conversation between the pair of the roles unit's last encounter
+    /// (the host keeps that context).
+    fn start_dialogue(&mut self, _topic: Name) {}
     fn end_dialogue(&mut self) {}
     /// The stored use time of `topic` in the running dialogue, 0 when it is
     /// activated or counting.
@@ -651,9 +646,7 @@ pub(crate) fn call_global<H: Host>(
             i32::from(actor.is_some())
         }
         Global::StartDialogue => {
-            let a = ctx.actor_at(0);
-            let b = ctx.actor_at(1);
-            host.start_dialogue(a, b, interp::arg_name(ctx, text, 0));
+            host.start_dialogue(interp::arg_name(ctx, text, 0));
             0
         }
         Global::ChangeRole => {

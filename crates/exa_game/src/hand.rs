@@ -1681,10 +1681,11 @@ fn hold_hand(
         Option<Res<crate::gamepad::PlayPad>>,
         Option<Res<crate::gamepad::PadStatus>>,
     ),
-    (mut clicks, mut objects, rooms): (
+    (mut clicks, mut objects, rooms, mut character_uses): (
         MessageWriter<WorldClick>,
         MessageWriter<ObjectClick>,
         Option<Res<exa_world::room_view::LevelRooms>>,
+        Option<ResMut<Messages<crate::character_use::CharacterUse>>>,
     ),
 ) {
     let released = buttons.just_released(MouseButton::Left);
@@ -1793,12 +1794,12 @@ fn hold_hand(
                         }
                     }
                     if interact {
-                        let interaction = player_controls::interact_character(target, false, false);
+                        let interaction = player_controls::interact_character(target);
                         debug!("double click {target:?}: {interaction:?}");
                         // The player's own body opens Exarust's inventory
-                        // screen; a dead body opens its loot window. The
-                        // talk and dialogue windows have no Exarust form
-                        // yet.
+                        // screen; a dead body opens its loot window; a
+                        // living one runs its roles' interaction condition
+                        // ([`crate::character_use`]).
                         if interaction == CharacterInteraction::Inventory
                             && let Some(messages) = screens.as_deref_mut()
                         {
@@ -1807,6 +1808,12 @@ fn hold_hand(
                                 !condition.dying(),
                                 !condition.is_dead(),
                             ));
+                        }
+                        if interaction == CharacterInteraction::Condition
+                            && let Some(Hit::Character { body, .. }) = picked.map(|p| p.hit)
+                            && let Some(uses) = character_uses.as_deref_mut()
+                        {
+                            uses.write(crate::character_use::CharacterUse { body });
                         }
                         if interaction == CharacterInteraction::Loot
                             && let Some(Hit::Character { body, .. }) = picked.map(|p| p.hit)

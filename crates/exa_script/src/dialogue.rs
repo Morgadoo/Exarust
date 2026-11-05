@@ -382,6 +382,26 @@ pub struct Engine {
     /// The AI event being dispatched: its bits and its subject.
     event_mask: u32,
     event_subject: Option<u32>,
+    /// The roles unit's script context: the pair of the last encounter run
+    /// and its roles. Every `StartDialogue`, whichever script calls it,
+    /// starts its conversation between this pair; `None` before the first
+    /// encounter.
+    pub encounter: Option<EncounterContext>,
+}
+
+/// What the roles unit's encounter leaves for `StartDialogue`: the observer
+/// (the owner), the partner it met, the role whose encounter script runs
+/// and the partner's role that entry matched. The original keeps these in
+/// one static record the encounter writes and never clears: the partner
+/// role is written only when an entry matches one of the partner's roles,
+/// so it keeps the last such match across runs. `StartDialogue` copies the
+/// record into its request, but only the pair reaches the search.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EncounterContext {
+    pub owner: u32,
+    pub partner: u32,
+    pub role: u32,
+    pub partner_role: u32,
 }
 
 /// Who asked, and what for.
@@ -520,8 +540,8 @@ struct SceneHost<'s, 'a> {
     conv: Option<&'s mut Conversation>,
     leaving: &'s mut Vec<u32>,
     end_requested: &'s mut bool,
-    /// `StartDialogue` requests, run once the script returns.
-    start_requests: &'s mut Vec<(Option<u32>, Option<u32>, Name)>,
+    /// `StartDialogue` topics, run once the script returns.
+    start_requests: &'s mut Vec<Name>,
 }
 
 impl SceneHost<'_, '_> {
@@ -703,9 +723,9 @@ impl Host for SceneHost<'_, '_> {
         let player = actor.is_some() && actor == self.scene.player;
         self.scene.effects.push(Effect::CheckpointSave { player });
     }
-    fn start_dialogue(&mut self, a: Option<u32>, b: Option<u32>, topic: Name) {
+    fn start_dialogue(&mut self, topic: Name) {
         self.scene.effects.push(Effect::StartDialogue(topic));
-        self.start_requests.push((a, b, topic));
+        self.start_requests.push(topic);
     }
     fn end_dialogue(&mut self) {
         *self.end_requested = true;
@@ -1222,16 +1242,30 @@ impl Engine {
     }
 
     /// Use a scripted world object: its script runs with the player as the
-    /// one actor slot and the record's role as the running role (the object
-    /// itself is the interpreter's owner).
-    pub fn use_script(
+    /// one actor slot (none without a player) and no running role; the
+    /// object itself is the interpreter's owner, the `Operative` a
+    /// `WitnessRole` measures from (the caller places that grant).
+    pub fn use_script(&mut self, scene: &mut Scene<'_>, player: Option<u32>, script: &[u8]) -> i32 {
+        let actors = player.map_or_else(Vec::new, crate::objects::script_actors);
+        self.run_script(scene, actors, 0, script)
+    }
+
+    /// An encounter script of `context.role`, as the roles unit runs it when
+    /// `context.owner` meets `context.partner`: the pair are actors 0 and 1,
+    /// and the context stays for every later `StartDialogue`.
+    pub fn run_encounter_script(
         &mut self,
         scene: &mut Scene<'_>,
-        player: u32,
-        role: u32,
-        script: &[u8],
+        context: EncounterContext,
+        text: &[u8],
     ) -> i32 {
-        self.run_script(scene, crate::objects::script_actors(player), role, script)
+        self.encounter = Some(context);
+        self.run_script(
+            scene,
+            vec![Some(context.owner), Some(context.partner)],
+            context.role,
+            text,
+        )
     }
 
     /// A script zone's routine, as the AI manager's zone check runs it for
@@ -1316,14 +1350,20 @@ impl Engine {
 
     /// Start the dialogues `StartDialogue` asked for (the original starts
     /// them inside the call; the request runs when the script returns).
-    fn run_start_requests(
-        &mut self,
-        scene: &mut Scene<'_>,
-        requests: Vec<(Option<u32>, Option<u32>, Name)>,
-    ) {
-        for (a, b, topic) in requests {
-            if let (Some(a), Some(b)) = (a, b) {
-                self.start_dialogue(scene, a, b, topic);
+    /// Each starts between the roles unit's encounter pair, not the
+    /// calling script's actors: the original's `StartDialogue` copies the
+    /// encounter's static context whatever script runs it. Before any
+    /// encounter that context is empty (the original would read a null
+    /// owner); Exarust starts nothing.
+    fn run_start_requests(&mut self, scene: &mut Scene<'_>, requests: Vec<Name>) {
+        for topic in requests {
+            match self.encounter {
+                Some(EncounterContext { owner, partner, .. }) => {
+                    self.start_dialogue(scene, owner, partner, topic);
+                }
+                None => {
+                    bevy::log::debug!("StartDialogue({topic:?}): no encounter context yet");
+                }
             }
         }
     }

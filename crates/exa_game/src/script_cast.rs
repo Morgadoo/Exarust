@@ -61,6 +61,7 @@ impl Plugin for ScriptCastPlugin {
             .add_message::<exa_combat::impact::BadFall>()
             .add_message::<exa_combat::DamageTaken>()
             .add_message::<exa_combat::condition::Awakened>()
+            .add_message::<WitnessGrant>()
             .init_resource::<ContactMirror>()
             .add_systems(PreUpdate, sync_contacts)
             .add_systems(
@@ -102,51 +103,68 @@ fn mirror_player(
     }
 }
 
-/// A script's `WitnessRole` grants that role to every character within
-/// 18 m of the player that the level's sight test can see. With no level
-/// grid the sight test answers yes. The role is added with the parents it
-/// inherits; the cast mirror copies the list on afterwards.
+/// A used object's `WitnessRole`: the role and the operative's place (m).
+/// The object click places it ([`crate::object_click`]).
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct WitnessGrant {
+    pub role: u32,
+    pub origin: Vec3,
+}
+
+/// A `WitnessRole` grants that role to every character within 18 m of the
+/// operative, the placed object whose use script runs it, that the level's
+/// sight test can see from there. With no level grid the sight test answers
+/// yes. The role is added with the parents it inherits; the cast mirror
+/// copies the list on afterwards.
 ///
-/// The original measures from the operative, the placed object whose use
-/// script is running, not from the player. Its one shipped caller is the
-/// Pedestal Hand's use script (`WitnessRole(Operative, $E1D1)`), and placed
-/// objects' use scripts do not run in Exarust yet, so nothing raises this
-/// in play; the player's place stands in for the operative's [Exarust
-/// stand-in: the effect carries no place].
+/// The original's builtin only reads its `Operative` argument and takes the
+/// place from the running script's owner. Only a used object's script has
+/// an object as its owner (its one shipped caller is the Pedestal Hand's
+/// `WitnessRole(Operative, $E1D1)`); a dialogue's or a role's script has no
+/// place to give, so its `WitnessRole` effect grants nothing here.
 fn grant_witness_roles(
+    mut grants: MessageReader<WitnessGrant>,
     mut effects: MessageReader<exa_script::ScriptEffect>,
     level: Option<Res<exa_world::room_view::LevelRooms>>,
     scripts: Option<Res<exa_script::Scripts>>,
-    players: Query<&GlobalTransform, With<PlayerBody>>,
-    mut characters: Query<(&GlobalTransform, &mut Roles)>,
+    mut characters: Query<(&GlobalTransform, &mut Roles, Option<&CharacterId>)>,
 ) {
-    let asked: Vec<u32> = effects
-        .read()
-        .filter_map(|effect| match effect.0 {
-            exa_script::dialogue::Effect::WitnessRole(role) => Some(role),
-            _ => None,
-        })
-        .collect();
+    for effect in effects.read() {
+        if let exa_script::dialogue::Effect::WitnessRole(role) = effect.0 {
+            info!(
+                "WitnessRole({role:#x}) outside a used object's script: no operative, nothing granted"
+            );
+        }
+    }
+    let asked: Vec<WitnessGrant> = grants.read().copied().collect();
     if asked.is_empty() {
         return;
     }
-    let (Some(scripts), Some(player)) = (scripts.as_deref(), players.iter().next()) else {
+    let Some(scripts) = scripts.as_deref() else {
         return;
     };
-    let origin = player.translation() * 100.0;
     let level = level.as_deref();
-    for (transform, mut held) in &mut characters {
-        let at = transform.translation() * 100.0;
-        let delta = at - origin;
-        if !exa_script::builtins::witness_range(delta.x, delta.y, delta.z) {
-            continue;
+    for grant in asked {
+        let origin = grant.origin * 100.0;
+        let mut granted = Vec::new();
+        for (transform, mut held, id) in &mut characters {
+            let at = transform.translation() * 100.0;
+            let delta = at - origin;
+            if !exa_script::builtins::witness_range(delta.x, delta.y, delta.z) {
+                continue;
+            }
+            if !exa_ai::rooms::in_sight(level, origin, at) {
+                continue;
+            }
+            held.add(&scripts.roles, grant.role);
+            granted.push(id.map(|i| i.0));
         }
-        if !exa_ai::rooms::in_sight(level, origin, at) {
-            continue;
-        }
-        for &role in &asked {
-            held.add(&scripts.roles, role);
-        }
+        info!(
+            "WitnessRole({:#x}) from the operative at {:?}: granted to {} character(s) {granted:?}",
+            grant.role,
+            grant.origin,
+            granted.len()
+        );
     }
 }
 
@@ -524,22 +542,32 @@ mod tests {
         (GlobalTransform::from_translation(at), Roles::default())
     }
 
-    /// `WitnessRole` grants the role inside 18 m. With no level grid every
-    /// character in range is seen; a grid sees the same room or an open
-    /// door, and not a character merely in range beyond it.
+    /// `WitnessRole` grants the role inside 18 m of the operative. With no
+    /// level grid every character in range is seen; a grid sees the same
+    /// room or an open door, and not a character merely in range beyond
+    /// it. A script's `WitnessRole` effect without an operative grants
+    /// nothing.
     #[test]
-    fn a_witnessed_role_reaches_who_can_see_the_player() {
+    fn a_witnessed_role_reaches_who_can_see_the_operative() {
         let mut app = App::new();
         app.add_message::<exa_script::ScriptEffect>()
+            .add_message::<WitnessGrant>()
             .insert_resource(exa_script::Scripts::default())
             .add_systems(Update, grant_witness_roles);
+        // The player stands far away: the grant measures from the device.
         app.world_mut()
-            .spawn((PlayerBody::new(0.0), body(Vec3::ZERO)));
+            .spawn((PlayerBody::new(0.0), body(Vec3::new(500.0, 0.0, 0.0))));
         let near = app.world_mut().spawn(body(Vec3::new(10.0, 0.0, 0.0))).id();
         let far = app.world_mut().spawn(body(Vec3::new(20.0, 0.0, 0.0))).id();
         app.world_mut().write_message(exa_script::ScriptEffect(
             exa_script::dialogue::Effect::WitnessRole(31),
         ));
+        app.update();
+        assert!(!app.world().get::<Roles>(near).unwrap().has(31));
+        app.world_mut().write_message(WitnessGrant {
+            role: 31,
+            origin: Vec3::ZERO,
+        });
         app.update();
         assert!(app.world().get::<Roles>(near).unwrap().has(31));
         assert!(!app.world().get::<Roles>(far).unwrap().has(31));
@@ -567,12 +595,10 @@ mod tests {
         let mut walled = App::new();
         walled
             .add_message::<exa_script::ScriptEffect>()
+            .add_message::<WitnessGrant>()
             .insert_resource(exa_script::Scripts::default())
             .insert_resource(LevelRooms::new(std::sync::Arc::new(Rooms::flood(&grid))))
             .add_systems(Update, grant_witness_roles);
-        walled
-            .world_mut()
-            .spawn((PlayerBody::new(0.0), body(Vec3::new(-9.0, 0.0, 3.0))));
         let seen = walled
             .world_mut()
             .spawn(body(Vec3::new(3.0, 0.0, 3.0)))
@@ -581,9 +607,10 @@ mod tests {
             .world_mut()
             .spawn(body(Vec3::new(9.0, 0.0, 3.0)))
             .id();
-        walled.world_mut().write_message(exa_script::ScriptEffect(
-            exa_script::dialogue::Effect::WitnessRole(31),
-        ));
+        walled.world_mut().write_message(WitnessGrant {
+            role: 31,
+            origin: Vec3::new(-9.0, 0.0, 3.0),
+        });
         walled.update();
         assert!(walled.world().get::<Roles>(seen).unwrap().has(31));
         assert!(!walled.world().get::<Roles>(hidden).unwrap().has(31));
