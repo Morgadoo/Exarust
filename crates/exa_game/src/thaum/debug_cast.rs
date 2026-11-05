@@ -2,7 +2,8 @@
 //! the load the player casts the power in a bar slot, and at the release
 //! frame uses it again (which lets a held power such as Vanish go). The
 //! cursor's ground point is put 1.5 m beyond the player, away from the
-//! camera, on the cast frame, so a power that needs it (the Long Door) has
+//! camera, on the cast frame (a Mind power's pick aims at the nearest other
+//! character instead, [`crate::mind::runtime::MindAim`]), so a power that needs it (the Long Door) has
 //! a destination. With `--fixed-frames` the runs repeat tick for tick, so a
 //! screenshot can catch an effect at a chosen moment.
 
@@ -62,14 +63,17 @@ pub fn commands_at(casts: &[DebugCast], frame: u32, chosen: Option<usize>) -> Ve
 }
 
 /// Sends the scripted casts' bar commands on their frames.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(crate) fn run_debug_casts(
     casts: Res<DebugCasts>,
     loading: Option<Res<exa_ui::LoadingStatus>>,
-    players: Query<(Entity, &GlobalTransform, &PowerCaster), With<PlayerBody>>,
+    players: Query<(Entity, &GlobalTransform, Option<&PowerCaster>), With<PlayerBody>>,
     cameras: Query<&GlobalTransform, exa_render::supersample::SceneCamera>,
     ground: Option<ResMut<CursorGround>>,
     mut bars: MessageWriter<BarCommand>,
     mut frames: Local<u32>,
+    mut mind_aim: ResMut<crate::mind::runtime::MindAim>,
+    others: Query<(Entity, &GlobalTransform), (With<exa_combat::Fighter>, Without<PlayerBody>)>,
 ) {
     if casts.0.is_empty() || loading.is_some() {
         return;
@@ -79,14 +83,42 @@ pub(crate) fn run_debug_casts(
     let Some((player, at, caster)) = players.iter().next() else {
         return;
     };
-    let chosen = caster
-        .record
-        .slots
-        .iter()
-        .position(|slot| slot & word::CHOSEN != 0);
+    let chosen = caster.and_then(|caster| {
+        caster
+            .record
+            .slots
+            .iter()
+            .position(|slot| slot & word::CHOSEN != 0)
+    });
     let actions = commands_at(&casts.0, frame, chosen);
     if actions.is_empty() {
         return;
+    }
+    // A Mind power picks the character under the cursor: the debug cast
+    // aims it at the nearest other character.
+    let mind_slot = casts.0.iter().any(|cast| {
+        cast.at == frame
+            && caster.is_some_and(|caster| {
+                caster.record.slots.get(cast.slot).is_some_and(|slot| {
+                    super::tree::domain_of(slot & super::casting::ID_MASK)
+                        == super::tree::DOMAIN_MIND
+                })
+            })
+    });
+    if mind_slot {
+        let nearest = others
+            .iter()
+            .filter(|(entity, _)| *entity != player)
+            .min_by(|a, b| {
+                let da = a.1.translation().distance(at.translation());
+                let db = b.1.translation().distance(at.translation());
+                da.total_cmp(&db)
+            });
+        mind_aim.0 = nearest.map(|(_, gt)| gt.translation());
+        info!(
+            "debug cast: the mind pick aims at {:?}",
+            nearest.map(|(e, gt)| (e, gt.translation()))
+        );
     }
     let away = cameras
         .iter()

@@ -10,8 +10,10 @@
 //!   cast entry (`TreeScreen::cast_slot`, which carries the item gate, the
 //!   "not now" queue, the close, flash and last-instant rules) and runs the
 //!   domain's front end by the word's domain byte: Force, Energy or
-//!   Displacement. A Mind id is refused: the Mind casts need a target pick
-//!   the running game does not make.
+//!   Displacement; a Mind word runs the Mind front end and its cast at the
+//!   body the mind pick found ([`crate::mind::runtime::cast_mind`]), and a
+//!   Spirit Form asks for its spirit body. The bar's Use on a body the
+//!   player was handed by Control Mind ends the control.
 //! - **The active list** ([`ActiveEntry`]): a started power becomes the
 //!   class the original's creator makes — the shell, kinesis, throw and
 //!   strikes; shock and shock weapons; vanish, the long door, constant
@@ -409,6 +411,12 @@ impl Plugin for CastPlugin {
             .init_resource::<EffectDraws>()
             .init_resource::<EffectRoll>()
             .init_resource::<super::debug_cast::DebugCasts>()
+            // What the bar's Mind casts read and write (the mind runtime's
+            // plugin runs them).
+            .init_resource::<crate::mind::runtime::MindPick>()
+            .init_resource::<crate::mind::runtime::MindAim>()
+            .init_resource::<crate::mind::runtime::MindControl>()
+            .add_message::<crate::mind::runtime::SpiritBodyAsked>()
             .add_systems(Update, (run_bar_commands, sync_screen_bar).chain())
             .add_message::<exa_script::Narrate>()
             .add_systems(
@@ -559,7 +567,7 @@ struct CastContext {
 
 /// One caster's bar command.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn run_bar_commands(
+pub(crate) fn run_bar_commands(
     mut commands: Commands,
     mut commands_in: MessageReader<BarCommand>,
     mut casters: Query<(
@@ -588,8 +596,24 @@ fn run_bar_commands(
         Option<&Ragdoll>,
         Option<&GlobalTransform>,
     )>,
+    mut mind: MindBar,
 ) {
     for command in commands_in.read().copied() {
+        // The bar on a body the player was handed: its cast entry asks the
+        // caller to end the control, which ends the held body's Control Mind.
+        if !casters.contains(command.caster)
+            && command.action == BarAction::Use
+            && mind
+                .minds
+                .get(command.caster)
+                .is_ok_and(|m| m.cast.status_bits & CONTROLLING != 0)
+        {
+            info!("power cast while controlling another body: the control ends");
+            commands.queue(|world: &mut World| {
+                crate::mind::runtime::end_control(world);
+            });
+            continue;
+        }
         let Ok((
             entity,
             mut caster,
@@ -696,6 +720,15 @@ fn run_bar_commands(
                 tree.bar_open = caster.bar_open;
                 let mut start = None;
                 let mut result_code = 0;
+                let mut mind_outcome = None;
+                let mind_scene = crate::mind::casts::MindScene {
+                    now_ms: now,
+                    real_ms: now,
+                    relation: 0.0,
+                    spirit_screen: mind.control.spirit_screen.map(|s| s.state),
+                    loud_music: false,
+                };
+                let mind_target = mind.pick.0;
                 let entry = tree.cast_slot(
                     &mut caster.record,
                     &mut caster.bar,
@@ -703,6 +736,19 @@ fn run_bar_commands(
                     &mut caster.body,
                     now,
                     |domain, asked, body| {
+                        if domain == DOMAIN_MIND {
+                            let answer = crate::mind::runtime::cast_mind(
+                                asked,
+                                body,
+                                entity,
+                                mind_target,
+                                &mut mind.minds,
+                                &mind_scene,
+                            );
+                            mind_outcome = answer.outcome;
+                            result_code = answer.code;
+                            return answer.code;
+                        }
                         let (result, begun) = dispatch_domain(domain, asked, body, &world, &aim);
                         start = begun;
                         result_code = result;
@@ -715,7 +761,10 @@ fn run_bar_commands(
                     debug!("cast failed: {}", sound.name);
                 }
                 if entry.end_control {
-                    debug!("cast while controlling another body: the control would end");
+                    info!("power cast while controlling another body: the control ends");
+                    commands.queue(|world: &mut World| {
+                        crate::mind::runtime::end_control(world);
+                    });
                 }
                 if let Some(queued) = entry.queued_slot {
                     debug!("cast queued on slot {queued}");
@@ -728,6 +777,21 @@ fn run_bar_commands(
                     caster.body.slots,
                     caster.body.condition
                 );
+                if let Some(outcome) = mind_outcome {
+                    info!(
+                        "mind cast {asked:#x} at {mind_target:?}: code {}, sound {:?}, request {:?}",
+                        outcome.code, outcome.sound, outcome.request
+                    );
+                    if crate::mind::runtime::spirit_asked(&outcome) {
+                        let feet = mind
+                            .places
+                            .get(entity)
+                            .map_or(Vec3::ZERO, GlobalTransform::translation);
+                        let yaw = locomotor.map_or(0.0, |l| l.yaw);
+                        mind.spirits
+                            .write(crate::mind::runtime::spirit_request(feet, yaw, entity));
+                    }
+                }
                 let place = CastPlace {
                     now,
                     ragdoll,
@@ -760,6 +824,18 @@ fn run_bar_commands(
             }
         }
     }
+}
+
+/// What the bar's Mind casts read and write: the bodies' minds, the
+/// mind pick, the runtime's state, the spirit-body request and the bodies'
+/// places.
+#[derive(bevy::ecs::system::SystemParam)]
+pub(crate) struct MindBar<'w, 's> {
+    minds: Query<'w, 's, &'static mut crate::mind::runtime::MindBody>,
+    pick: Res<'w, crate::mind::runtime::MindPick>,
+    control: Res<'w, crate::mind::runtime::MindControl>,
+    spirits: MessageWriter<'w, crate::mind::runtime::SpiritBodyAsked>,
+    places: Query<'w, 's, &'static GlobalTransform>,
 }
 
 /// Where a cast starts: the clock, the caster's body and heading (yaw,
@@ -2205,7 +2281,7 @@ fn reset_entered_casts(
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn tick_casters(
+pub(crate) fn tick_casters(
     mut commands: Commands,
     mut casters: Query<
         (

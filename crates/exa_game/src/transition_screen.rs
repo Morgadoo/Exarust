@@ -10,6 +10,10 @@
 //! under the mouse cursor (the original raises the form above the others
 //! when it opens).
 //!
+//! A mind power's hand-back runs its own screen
+//! ([`crate::mind::runtime::MindFadeOverlay`]); the form shows the darker
+//! of the two.
+//!
 //! Rules: `docs/UI.md` (The transition screen).
 
 use bevy::prelude::*;
@@ -63,18 +67,21 @@ pub fn overlay_colour(alpha: u8) -> Color {
 
 fn draw(
     overlay: Res<TransitionOverlay>,
+    mind: Option<Res<crate::mind::runtime::MindFadeOverlay>>,
     mut nodes: Query<(&mut BackgroundColor, &mut Visibility), With<TransitionNode>>,
 ) {
     let Ok((mut colour, mut visibility)) = nodes.single_mut() else {
         return;
     };
-    if overlay.0 == 0 {
+    // A mind power's hand-back opens the same screen.
+    let alpha = overlay.0.max(mind.map_or(0, |m| m.0));
+    if alpha == 0 {
         if *visibility != Visibility::Hidden {
             *visibility = Visibility::Hidden;
         }
         return;
     }
-    let next = overlay_colour(overlay.0);
+    let next = overlay_colour(alpha);
     if colour.0 != next {
         colour.0 = next;
     }

@@ -5,8 +5,8 @@
 //! - **Pick** ([`pick_target`]): the characters on screen (any, through
 //!   walls, while the player runs Sense Minds; otherwise those the player's
 //!   view can see), not the player, not hidden (rules bit `0x10`), and not
-//!   collapsed unless the dead powers ask. The nearest to the screen centre
-//!   wins inside a radius of `height·zoom·0.5·40/depth` pixels.
+//!   collapsed unless the dead powers ask. The nearest to the pointer (the
+//!   desk's pointer position) wins inside a radius of `height·zoom·0.5·40/depth` pixels.
 //! - **Overlay** ([`Overlay`]): a start shows it for the duration (0 for as
 //!   long as the persistent power runs), a later start extends it; it fades
 //!   in and out over 2 s (by the time since the tracker's last stamp) and
@@ -144,8 +144,9 @@ pub struct PickCandidate {
     pub screen: [f32; 3],
 }
 
-/// The view the pick projects through: the screen centre, the viewport's
-/// height in pixels and the camera's zoom.
+/// The view the pick projects through: the pointer (`centre`, the desk's
+/// pointer position, which the original's control code reads as the
+/// mouse), the viewport's height in pixels and the camera's zoom.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PickView {
     pub centre: [i32; 2],

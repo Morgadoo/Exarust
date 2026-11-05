@@ -87,6 +87,7 @@ impl Plugin for ViewerPlugin {
                     start_fight,
                     launch_arena_match,
                     arena_exit,
+                    spawn_spirit_bodies,
                 ),
             )
             // After the hand's own let-go of what it does not hold.
@@ -1720,7 +1721,7 @@ fn spawn_players(
         player,
         story,
     };
-    spawn_placed_characters(commands, loader, &placing, &corpses);
+    spawn_placed_characters(commands, loader, &placing, &corpses, None);
     // A new story's companion: the unknown background (a new character's
     // here) starts with Derrin in the first level, where the story start's
     // companion step places him.
@@ -1742,9 +1743,10 @@ fn spawn_players(
                 c.name, c.record.id, c.position
             );
         }
-        spawn_placed_characters(commands, loader, &placing, &companion);
+        spawn_placed_characters(commands, loader, &placing, &companion, None);
     }
-    let (spawned, missing) = spawn_placed_characters(commands, loader, &placing, &start.characters);
+    let (spawned, missing) =
+        spawn_placed_characters(commands, loader, &placing, &start.characters, None);
     commands.insert_resource(exa_ai::brain::RoleDatabase {
         book,
         locale,
@@ -2948,6 +2950,7 @@ fn spawn_placed_characters(
     loader: &mut ModelLoader,
     placing: &Placing<'_>,
     placed: &[exa_world::PlacedCharacter],
+    mut built: Option<&mut Vec<Entity>>,
 ) -> (usize, usize) {
     let (races, story) = (placing.races, placing.story);
     let (mut spawned, mut missing) = (0, 0);
@@ -3188,6 +3191,9 @@ fn spawn_placed_characters(
                 insert_duel_powers(commands, model, &c.record, &c.specials);
             }
         }
+        if let Some(built) = built.as_deref_mut() {
+            built.push(model);
+        }
         spawned += 1;
     }
     info!(
@@ -3195,6 +3201,90 @@ fn spawn_placed_characters(
         started.elapsed().as_secs_f32() * 1000.0
     );
     (spawned, missing)
+}
+
+/// Spirit Form's body, as the original's builder makes it: a new record of
+/// race byte 14 (the profession word 0xE00) at the asked point, built as a
+/// level's character is and marked as the spirit of the caster, whose mind
+/// runtime then hands it the player (`exa_game::mind::runtime`).
+#[allow(clippy::too_many_arguments)]
+fn spawn_spirit_bodies(
+    mut commands: Commands,
+    mut asked: MessageReader<exa_game::mind::runtime::SpiritBodyAsked>,
+    game: Res<Game>,
+    db: Option<Res<exa_ai::brain::RoleDatabase>>,
+    story: Option<Res<exa_combat::StoryMode>>,
+    mut cache: ResMut<ModelCache>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<exa_render::material::ExaMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+    support: Option<Res<CompressedImageFormatSupport>>,
+) {
+    let asks: Vec<_> = asked.read().copied().collect();
+    if asks.is_empty() {
+        return;
+    }
+    let Some(db) = db else {
+        warn!("spirit form: no role database, no spirit body");
+        return;
+    };
+    let races = game
+        .0
+        .pack(PackKind::Resource)
+        .and_then(|p| p.get("races.rdb"))
+        .and_then(|b| exa_formats::races::parse(b).ok())
+        .unwrap_or_default();
+    let mut loader = ModelLoader {
+        game: &game.0,
+        cache: &mut cache,
+        meshes: &mut meshes,
+        materials: &mut materials,
+        images: &mut images,
+        bc_supported: model::bc_supported(support.as_deref()),
+    };
+    for ask in asks {
+        let mut record = exa_formats::characters::CharacterRecord::reset();
+        record.set_profession(exa_game::thaum::power::SPIRIT_RACE);
+        let spirit = exa_world::PlacedCharacter {
+            name: "Spirit".into(),
+            position: ask.at,
+            yaw: ask.yaw,
+            dead: false,
+            race: record.race,
+            female: false,
+            worn: Vec::new(),
+            held: None,
+            hands: [const { None }; exa_formats::characters::HANDS],
+            record,
+            encumbrance: 0.0,
+            specials: Default::default(),
+            pose: exa_formats::characters::SavedPose::None,
+            fall: false,
+        };
+        let placing = Placing {
+            races: &races,
+            book: &db.book,
+            player: ask.caster,
+            story: story.as_deref().is_some_and(|s| s.0),
+        };
+        let mut built = Vec::new();
+        spawn_placed_characters(
+            &mut commands,
+            &mut loader,
+            &placing,
+            std::slice::from_ref(&spirit),
+            Some(&mut built),
+        );
+        for model in built {
+            info!(
+                "spirit form: the spirit body {model:?} (race byte {}) at {:?} for {:?}",
+                spirit.race, ask.at, ask.caster
+            );
+            commands
+                .entity(model)
+                .insert(exa_game::mind::runtime::SpiritOf { body: ask.caster });
+        }
+    }
 }
 
 /// The shields `--shield` and `--opponent-shield` hang on the player and

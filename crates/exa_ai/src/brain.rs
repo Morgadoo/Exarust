@@ -662,8 +662,9 @@ pub fn foe_of(
 /// Suit's [`combatant::standard_sense`] or [`combatant::ally_sense`]), with
 /// the observed character's own
 /// contacts, the role-derived attitude, the relations' trust in the threat
-/// estimate and the observer's active mind effects (none in the running
-/// game). It then writes the words the contact integration reads
+/// estimate and the observer's active mind effects (its
+/// [`combatant::MindPowers`], which the game's mind runtime writes from the
+/// body's power list). It then writes the words the contact integration reads
 /// ([`ContactRecord::of`]) and clears this tick's sighting of a character
 /// the brain did not see.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
@@ -709,6 +710,7 @@ pub fn perceive_all(
             Option<&Fighter>,
             Option<&Roles>,
             Option<&mut Relations>,
+            Option<&mut combatant::MindPowers>,
         )>,
     )>,
 ) {
@@ -782,10 +784,26 @@ pub fn perceive_all(
         )
         .collect();
     let player = players.iter().next();
-    let effects: &mut [combatant::Effect] = &mut [];
-    for (entity, mut npc, mut combatant, duellist, flags, gt, fighter, roles, mut relations) in
-        &mut chars.p1()
+    for (
+        entity,
+        mut npc,
+        mut combatant,
+        duellist,
+        flags,
+        gt,
+        fighter,
+        roles,
+        mut relations,
+        mut powers,
+    ) in &mut chars.p1()
     {
+        // The observer's active mind effects: the body's power list, which
+        // the game writes before the tick ([`combatant::MindPowers`]).
+        let mut no_effects: [combatant::Effect; 0] = [];
+        let effects: &mut [combatant::Effect] = match powers.as_mut() {
+            Some(powers) => &mut powers.effects,
+            None => &mut no_effects,
+        };
         // A knocked-out, collapsed or dead brain senses nothing: the
         // original's tick leaves before the target pass that senses (its
         // condition bit 0x800).

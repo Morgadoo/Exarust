@@ -237,6 +237,7 @@ impl Plugin for GamePlugin {
         ))
         .add_plugins(thaum::cast::CastPlugin)
         .add_plugins(mind::draw::MindSightPlugin)
+        .add_plugins(mind::runtime::MindRuntimePlugin)
         .add_plugins(fire_sound::FireSoundPlugin)
         .add_plugins(weather::WeatherPlugin)
         .add_plugins(world_clock::WorldClockPlugin)

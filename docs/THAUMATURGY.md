@@ -195,8 +195,9 @@ plumbing (`casting::reserve`, `release_reserve`, `spend_tick`,
 power bar: `C` opens and stores the bar, a digit picks a slot, the arrows
 step the choice and `Q` hands the picked slot to the bar's cast entry,
 which takes the slot's word as it stands, runs its domain's
-front end by the word's domain byte (Force, Energy or Displacement; a Mind
-id is refused until the Mind target pick is wired) and makes the class the
+front end by the word's domain byte (Force, Energy, Displacement or Mind,
+the Mind casts at the body the mind pick finds; see Mind in the running
+game) and makes the class the
 cast's creator makes. Each body tick walks the active list in the
 original's order, passes control event 0 (event 2 once a power is told to
 end), releases the focus a finished power held and takes it out with the
@@ -448,7 +449,8 @@ What the Mind domain shows is in `exa_game::mind::sight`:
 - **Target pick**: a character on screen, not the player, not hidden (rules
   bit 0x10), not collapsed unless the dead powers ask, seen by the player's
   view unless Sense Minds runs, within `height·zoom·0.5·40/depth` pixels of
-  the screen centre (an unordered compare passes); the nearest share wins.
+  the pointer (the desk's pointer position; an unordered compare passes);
+  the nearest share wins.
 - **Overlay**: a start registers its frame hook when off, shows it for the
   duration (to the end of time for the persistent power) or extends a
   showing one, and restarts its alpha unless it is fading; it fades in and
@@ -478,6 +480,47 @@ What the Mind domain shows is in `exa_game::mind::sight`:
   by half its negated projection on (0, −0.8, 0.2), tapered by `1 − z/100`
   above its middle and lifted 2 cm. The overlay and glow textures are 256²
   noise (four octaves, 0.25), the spirit screen's 512² (0.8).
+
+### Mind in the running game
+
+`exa_game::mind::runtime` runs who owns which body:
+
+- **Owners**: every character carries a mind list and a status word. Bit
+  `0x10_0000` marks the caster of a running Control Mind or Spirit Form
+  (the body the player left), `0x60_0000` the body Control Mind handed the
+  player (bit `0x20_0000` makes its bar cast nothing and end the control),
+  `0x22_0000` the spirit body. The player is the body with the player
+  behaviour under the player root, which the camera, the rooms and the
+  listener follow; the body left behind is held.
+- **Control Mind**: the binding takes 0.002 of focus a tick; past 2000 ms
+  of the scene clock the caster's behaviour is held (its step cleared),
+  the target's AI is set aside, the target takes a new player behaviour
+  with the caster's aim, the control bits and the possession marker, and
+  the player root moves to it. A collapsing target ends the binding. The
+  end (a second cast, the bar's Use in the target, the marker's end or a
+  hit) opens the transition screen (no audio fade, 600 ms out, 500 ms
+  hold, 600 ms in); at black the target's AI returns, its status becomes
+  the caster's less the control bits (the handover bit included, as the
+  original writes it) and the caster loses the handover bit.
+- **Spirit Form**: the cast builds a body of race byte 14 (the wraith)
+  60 cm along the caster's facing; it takes the player, a behaviour whose
+  spawn snap is already counted (4), the caster's powers and mind list and
+  status `0x22_0000`, while the caster's body stands with the handover bit.
+  The form drains the spirit's focus each tick; when it ends (focus under
+  0.001, a second cast, the bar's Use or a hit on the body) the handover
+  bit clears, the spirit screen fades over 1.2 s and the transition screen
+  opens; at black the body takes the focus, reserve and list back and the
+  spirit leaves. The wraith has no physical frame in Exarust, so the
+  spirit does not walk.
+- **The hit's break**: a blow on a body not down, whose AI is not set
+  aside and whose status has the handover bit ends the Spirit Form it is
+  the body of, else the Control Mind it runs.
+- **The perception**: each body's list is the effects its perception
+  applies (bindings, charms, suspicion, frenzy); a hold the perception
+  breaks ends its power.
+- **Debug**: `--powers 0x2010C --debug-cast 0@120~560` casts Control Mind
+  at the nearest character and ends it; `--powers 0x10106 --debug-cast
+  0@120~300` runs Spirit Form and ends it.
 
 ## Force blast and torrent
 

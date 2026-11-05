@@ -202,6 +202,21 @@ impl PlayerBody {
         self
     }
 
+    /// A body whose behaviour has already counted `ticks` toward the spawn
+    /// snap: the spirit body's behaviour starts at 4, past the third tick's
+    /// snap, so it is never snapped onto the grid
+    /// ([`crate::mind::runtime`]).
+    pub(crate) fn with_snap_ticks(mut self, ticks: u8) -> Self {
+        self.steering.ticks = ticks;
+        self
+    }
+
+    /// The behaviour's spawn-snap count.
+    #[cfg(test)]
+    pub(crate) fn snap_ticks(&self) -> u8 {
+        self.steering.ticks
+    }
+
     /// A body crouching by `crouch`.
     #[cfg(test)]
     pub(crate) fn crouching(mut self, crouch: f32) -> Self {
