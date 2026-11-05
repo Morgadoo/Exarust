@@ -185,12 +185,15 @@ type ValueQuery<D> = QueryState<(Entity, D), Without<IsResource>>;
 pub struct CopyComponent<T: Component + Clone> {
     assign: fn(&mut EntityWorldMut, T),
     refs: fn(&T) -> Option<Entity>,
+    /// Sent from the frame only (the simulation owns it once it arrives).
+    inbound: bool,
     _t: PhantomData<fn() -> T>,
 }
 
 struct CopyComponentHalf<T: Component + Clone> {
     assign: fn(&mut EntityWorldMut, T),
     refs: fn(&T) -> Option<Entity>,
+    inbound: bool,
     id: Option<ComponentId>,
     query: Option<ValueQuery<Ref<'static, T>>>,
     /// The values changed since a tick, filtered in the storage's change
@@ -227,6 +230,7 @@ impl<T: Component + Clone> BridgeType for CopyComponent<T> {
         Box::new(CopyComponentHalf::<T> {
             assign: self.assign,
             refs: self.refs,
+            inbound: self.inbound,
             id: None,
             query: None,
             changed: None,
@@ -279,6 +283,10 @@ impl<T: Component + Clone> BridgeHalf for CopyComponentHalf<T> {
     fn gather(&mut self, world: &mut World, ctx: GatherCtx) -> Gathered {
         let all = ctx.all;
         self.drain_removed(world);
+        if self.inbound && ctx.sim {
+            self.removals.take();
+            return Gathered::empty();
+        }
         let now = world.change_tick();
         let since = self.since;
         let values: Vec<(Entity, T, bool)> = if all {
@@ -937,6 +945,12 @@ pub trait SimBridgeAppExt {
     /// A relationship such as `ChildOf` (immutable) copied by re-inserting
     /// it when it changed; its target is spawned on the other side too.
     fn bridge_relationship<T: Relationship + Clone + std::fmt::Debug>(&mut self) -> &mut Self;
+    /// A component the frame builds and the simulation owns from then on:
+    /// copied in when the frame changes it, never sent back (the frame
+    /// reads a snapshot instead).
+    fn bridge_copy_in<T: Component<Mutability = Mutable> + Clone + std::fmt::Debug>(
+        &mut self,
+    ) -> &mut Self;
     /// A component lent to the simulation for each step.
     fn bridge_lend<T: Component<Mutability = Mutable> + Default + std::fmt::Debug>(
         &mut self,
@@ -984,6 +998,22 @@ impl SimBridgeAppExt for App {
             CopyComponent::<T> {
                 assign: assign_mutable::<T>,
                 refs: |_| None,
+                inbound: false,
+                _t: PhantomData,
+            },
+            Some(crate::sim_digest::component::<T>),
+        )
+    }
+
+    fn bridge_copy_in<T: Component<Mutability = Mutable> + Clone + std::fmt::Debug>(
+        &mut self,
+    ) -> &mut Self {
+        add_digested(
+            self,
+            CopyComponent::<T> {
+                assign: assign_mutable::<T>,
+                refs: |_| None,
+                inbound: true,
                 _t: PhantomData,
             },
             Some(crate::sim_digest::component::<T>),
@@ -996,6 +1026,7 @@ impl SimBridgeAppExt for App {
             CopyComponent::<T> {
                 assign: assign_by_insert::<T>,
                 refs: |r| Some(r.get()),
+                inbound: false,
                 _t: PhantomData,
             },
             Some(crate::sim_digest::component::<T>),
@@ -1439,7 +1470,10 @@ impl Plugin for SimBridgePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SimBridgeTypes>()
             .insert_resource(FrameBridge {
-                extra: self.extra.clone(),
+                extra: [crate::sim_app::SimFrameStart.intern()]
+                    .into_iter()
+                    .chain(self.extra.iter().copied())
+                    .collect(),
                 fixed_order: Vec::new(),
                 side: None,
                 frames: 0,
@@ -1578,20 +1612,32 @@ fn take_schedules(
 
 /// Simulation side, before its commands and schedules: installs the setup on
 /// the first step, then applies the frame's changes.
-pub fn sim_apply(world: &mut World, bridge_in: BridgeIn) -> (Option<BridgeCoverage>, u64) {
+/// Applies the frame's changes; returns the coverage (first step), the
+/// time it took, and whether a frame began since the last step.
+pub fn sim_apply(world: &mut World, bridge_in: BridgeIn) -> (Option<BridgeCoverage>, u64, bool) {
     let started = Instant::now();
     let mut coverage = None;
     if let Some(setup) = bridge_in.setup {
         let c = install(world, setup);
         report_coverage(&c);
         if !c.missing.is_empty() {
-            // An incomplete bridge: a system whose data is missing is
-            // skipped with one warning instead of stopping the game.
-            world.insert_resource(bevy::ecs::error::FallbackErrorHandler(warn_once));
+            if cfg!(debug_assertions) {
+                // Debug and test builds stop: a lane that adds a fixed-step
+                // system must register what it touches.
+                panic!(
+                    "simulation bridge: the moved systems touch types no plugin registered: {:?}",
+                    c.missing
+                );
+            } else {
+                // A play build goes on: a system whose data is missing is
+                // skipped with one warning.
+                world.insert_resource(bevy::ecs::error::FallbackErrorHandler(warn_once));
+            }
         }
         coverage = Some(c);
     }
     let BridgeIn { packet, .. } = bridge_in;
+    let frame_began = packet.update_messages;
     world.resource_scope(|world, mut bridge: Mut<SimBridge>| {
         let reserved = packet.reserved.clone();
         if !reserved.is_empty() {
@@ -1600,7 +1646,7 @@ pub fn sim_apply(world: &mut World, bridge_in: BridgeIn) -> (Option<BridgeCovera
         }
         bridge.side.apply(world, packet, true);
     });
-    (coverage, started.elapsed().as_micros() as u64)
+    (coverage, started.elapsed().as_micros() as u64, frame_began)
 }
 
 fn install(world: &mut World, setup: BridgeSetup) -> BridgeCoverage {

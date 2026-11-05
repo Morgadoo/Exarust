@@ -309,3 +309,27 @@ fn ids_are_shared_and_unchanged_values_stay_home() {
     assert_eq!(values_in, 6, "{before:?} -> {after:?}");
     assert_eq!(values_out, 5, "{before:?} -> {after:?}");
 }
+
+/// A type a moved system touches that no plugin registered stops a debug
+/// or test build at the first step.
+#[test]
+#[cfg_attr(
+    debug_assertions,
+    should_panic(expected = "touch types no plugin registered")
+)]
+fn an_unregistered_type_stops_a_debug_build() {
+    #[derive(Component)]
+    struct Unregistered;
+    fn touch(_q: Query<&Tag, With<Unregistered>>) {}
+    let mut app = App::new();
+    app.add_plugins(MinimalPlugins)
+        .add_plugins((
+            SimShellPlugin {
+                mode: SimMode::Inline,
+            },
+            SimBridgePlugin { extra: vec![] },
+        ))
+        .bridge_copy::<Tag>()
+        .add_systems(FixedUpdate, touch);
+    app.world_mut().run_schedule(bevy::app::FixedMain);
+}
