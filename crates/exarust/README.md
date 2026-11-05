@@ -39,12 +39,17 @@ The placed-character path builds the wraith physical with its race's hover
 flag, so the spirit floats on its hovering lift and walks.
 The game adds `exa_physics::sim_app`'s shell: the simulation's own world,
 stepped in lockstep with the fixed step on its `exa-sim` thread, or on the
-frame's thread with `--sim-inline`.
+frame's thread with `--sim-inline`. `--sim-bridge` (opt-in, incomplete) also
+adds `exa_physics::sim_bridge`: the fixed step's schedules, the character
+tick and the brain chain run in the simulation's world, the data they touch
+copied across each step; until every type is bridged the moved systems that
+miss one fail, and the log lists the types not bridged.
 `--sim-boundary <file>` (`src/sim_boundary.rs`) writes, once the level has loaded and the fixed step
 has run 200 ticks, every component and resource type the fixed step's
 schedules share with the frame's, by direction, with each side's readers and
 writers and the whole-world systems: the hand-off the fixed step's own thread
-has to carry.
+has to carry. Its "Bridge coverage" section lists the simulation-side types
+(filters included) that no plugin has registered with the bridge yet.
 `--max-fps <n|auto>` is the original's frame-rate cap (a rate, or `auto`
 for the display's rate) and, like the settings file's `FPSLimit`, is off
 unless given, so no frame is held; `src/frame_loop.rs` applies it from the

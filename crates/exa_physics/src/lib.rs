@@ -35,6 +35,7 @@ pub mod shape;
 pub mod shock;
 pub mod signal;
 pub mod sim_app;
+pub mod sim_bridge;
 pub mod sim_object;
 pub mod step_driver;
 pub mod volume;
@@ -293,7 +294,7 @@ impl ColliderNodes {
 /// simulated object (a cloth) can find the level's triangles around it
 /// without querying the whole physics world. The props' stand-ins and
 /// pick-only geometry are not level collision and are left out.
-#[derive(Resource, Debug)]
+#[derive(Resource, Debug, Clone)]
 pub struct StaticColliders {
     grid: sector::StaticGrid,
     /// Each piece's level mask ([`sector::static_mask`]): 1, or 1|4 for a

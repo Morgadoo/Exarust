@@ -145,6 +145,7 @@
 //!          --schedule-ambiguities     log the fixed step's (and the brains' chain's) pairs of unordered systems that
 //!                                     touch the same data
 //!          --sim-inline               run the simulation's own world on the frame's thread instead of its thread
+//!          --sim-bridge               run the fixed step's schedules in the simulation's world (copy bridge; incomplete)
 //!          --sim-boundary <file>      200 body ticks after the load, write which data the fixed step shares with the frame's
 //!                                     schedules, by direction (the simulation thread's hand-off)
 //! keys:    F9                         level and play views: the map panel (view switches, switch to another level)
@@ -467,6 +468,9 @@ pub struct Options {
     pub schedule_ambiguities: bool,
     /// Run the simulation's world on the frame's thread (`--sim-inline`).
     pub sim_inline: bool,
+    /// Run the fixed step's schedules in the simulation's world behind the
+    /// lockstep copy bridge (`--sim-bridge`).
+    pub sim_bridge: bool,
     /// Write the fixed step's shared data here (`--sim-boundary`).
     pub sim_boundary: Option<PathBuf>,
     /// Write every joint after every tick here (CSV).
@@ -1081,6 +1085,7 @@ fn main() -> AppExit {
             "--profiler" => options.profiler = true,
             "--schedule-ambiguities" => options.schedule_ambiguities = true,
             "--sim-inline" => options.sim_inline = true,
+            "--sim-bridge" => options.sim_bridge = true,
             "--sim-boundary" => options.sim_boundary = args.next().map(PathBuf::from),
             "--debug-column" => {
                 options.debug_column = args
@@ -1919,6 +1924,17 @@ fn main() -> AppExit {
             exa_physics::sim_app::SimMode::Thread
         },
     });
+    if options.sim_bridge {
+        // Stage 3, opt-in while the bridge does not carry every type the
+        // fixed step touches: its schedules run in the simulation's world.
+        use bevy::ecs::schedule::ScheduleLabel;
+        app.add_plugins(exa_physics::sim_bridge::SimBridgePlugin {
+            extra: vec![
+                exa_physics::body::CharacterTick.intern(),
+                exa_ai::BrainChain.intern(),
+            ],
+        });
+    }
     if let Some(path) = options.sim_boundary.clone() {
         app.insert_resource(sim_boundary::SimBoundaryPath(path));
     }

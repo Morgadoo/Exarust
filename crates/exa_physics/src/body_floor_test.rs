@@ -21,6 +21,12 @@ pub(super) fn floor(at: Vec3) -> Physics {
 #[derive(Component)]
 pub(super) struct Aim(pub Box<dyn Fn(u64) -> (Affine3A, Vec<Affine3A>) + Send + Sync>);
 
+impl Default for Aim {
+    fn default() -> Self {
+        Self::still(Vec::new())
+    }
+}
+
 impl Aim {
     /// The same pose every tick, the root at the origin.
     pub(super) fn still(pose: Vec<Affine3A>) -> Self {
@@ -613,6 +619,63 @@ fn the_simulation_shell_in_lockstep_changes_no_tick() {
     for mode in [SimMode::Inline, SimMode::Thread] {
         let (shelled, check) = run(Some(mode));
         assert_eq!(alone, shelled, "{mode:?}");
+        let check = check.unwrap();
+        assert_eq!(check.mismatches, 0);
+        assert_eq!(check.steps, alone.last().unwrap().0);
+    }
+}
+
+#[test]
+fn the_bridged_fixed_step_changes_no_tick() {
+    use crate::sim_app::{LockstepCheck, SimMode, SimShellPlugin};
+    use crate::sim_bridge::{FrameBridge, SimBridgePlugin};
+    let at = Vec3::new(81.0, 0.0, 39.2);
+    let run = |shell: Option<(SimMode, bool)>| {
+        let mut app = app(floor(at), 4.0 / BODY_HZ);
+        if let Some((mode, bridge)) = shell {
+            app.add_plugins(SimShellPlugin { mode });
+            if bridge {
+                use crate::sim_bridge::SimBridgeAppExt;
+                app.add_plugins(SimBridgePlugin { extra: Vec::new() })
+                    .bridge_lend::<Aim>();
+            }
+        }
+        let (setup, pose) = humanoid(at);
+        let body = app
+            .world_mut()
+            .spawn((Ragdoll::new(&setup).with_drive(), Aim::still(pose)))
+            .id();
+        let mut poses = Vec::new();
+        for f in 0..120 {
+            if f == 30 {
+                app.world_mut().write_message(Shove {
+                    body,
+                    bone: 8,
+                    velocity: Vec3::NEG_Z * 4.0,
+                    daze: 0.5,
+                    step: None,
+                    sag: None,
+                });
+            }
+            app.update();
+            let ticks = app.world().resource::<BodyTicks>().0;
+            poses.push((ticks, pose_bits(app.world().get::<Ragdoll>(body).unwrap())));
+        }
+        let check = app.world().get_resource::<LockstepCheck>().copied();
+        let coverage = app
+            .world()
+            .get_resource::<FrameBridge>()
+            .and_then(|b| b.coverage.clone());
+        (poses, check, coverage)
+    };
+    let (alone, ..) = run(None);
+    assert!(alone.last().unwrap().0 > 300);
+    for mode in [SimMode::Inline, SimMode::Thread] {
+        let (bridged, check, coverage) = run(Some((mode, true)));
+        let coverage = coverage.expect("the bridge started");
+        assert!(coverage.missing.is_empty(), "{:?}", coverage.missing);
+        assert!(coverage.already_built.is_empty());
+        assert_eq!(alone, bridged, "{mode:?}");
         let check = check.unwrap();
         assert_eq!(check.mismatches, 0);
         assert_eq!(check.steps, alone.last().unwrap().0);
