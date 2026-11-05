@@ -334,10 +334,23 @@ casting 500 ms after it began. The
 player swap, the spirit body's character generation and the effect meshes
 are descriptions here, not spawned entities. The spirit body's spawn
 descriptor is in `thaum::power::spirit_spawn` and the deferred power calls
-in `thaum::power::{post_deferred, run_deferred}`. The held body's shell hum
-(`thmfrc_knsdr`), the swing
-ripple on a strikes aura and the box lights of the held body and the
-weapon are not wired. A kinesis pick,
+in `thaum::power::{post_deferred, run_deferred}`. A kinesis's shell hums
+`thmfrc_knsdr` (`thaum::shell_hum`: a looping voice at volume 0 and pitch
+1 from `r·0.8` of its length in, then the shell's levels at its node's box
+centre each frame, freed with the shell; no other shell hums). Every held
+shell (a kinesis pick's, a throw's grab) carries a `gi_cuboid` box light:
+the shell's light colour with no manager scale, extent `max(half − 20,
+10)`, in its node's frame, the node's box plus 80 cm. Every strikes aura
+carries a `gi_gradline` line along its weapon node's y axis from `max(c −
+w, bottom)` to `min(c + w, top)` (`w = 2·(c − s)`), its gradient `(c/l,
+((1 − c) + y₀)/w/g, ((1 − y₁) + c)/w/(1 − g))`, attenuation 10000, the
+shell's light colour, and a point light at its first ripple ten times its
+shown amount, in the node's box plus 60 cm
+(`thaum::effect_light::shell_lights`). The striker's hook on a landed blow
+(`exa_combat::StrikeHooked`: a clash or a block with the impact at the
+hit, a wound with its yellow before the 0.75) ripples the strikes aura on
+the caster's primary weapon at half that strength, with `thmfrc_shi`
+(`thaum::effect_draw::ripple_strikes`). A kinesis pick,
 and each tick a throw coasts after its shell drops, stamp the body with
 the caster for 2 s (`thaum::user_stamp`): a limb the body hurts while the
 stamp holds adds the script's concern toward the caster (amount 0.9, gain

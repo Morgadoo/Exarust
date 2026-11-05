@@ -89,6 +89,7 @@ impl Plugin for CombatPlugin {
             .add_message::<pain::BlowFelt>()
             .add_message::<pain::ClashFelt>()
             .add_message::<BlowNoticed>()
+            .add_message::<StrikeHooked>()
             .add_message::<impact::WeaponSounded>()
             .add_message::<sounds::LayerSounded>()
             .add_message::<SecondWindFired>()
@@ -364,6 +365,22 @@ pub struct BlowNoticed {
     /// The struck body was down, collapsing or dead (its condition has a
     /// 0xA00 bit) at the call: a killing wound's collapse counts.
     pub down: bool,
+}
+
+/// The striker's own hook on a landed blow, which a power on the striker
+/// may hold (Force Strikes ripples its primary weapon's aura with it). The
+/// original's damage routine calls it with the striker's primary weapon,
+/// the contact and a strength: right after the struck behaviour's notice
+/// in a clash's and a block's branch, with the impact at the hit; on flesh
+/// at the routine's end, after the damage call, its sounds and the
+/// player's feedback, with the yellow damage before its 0.75. A turned
+/// blow on flesh does not reach it.
+#[derive(Message, Debug, Clone, Copy, PartialEq)]
+pub struct StrikeHooked {
+    pub attacker: Entity,
+    /// The contact (world, m).
+    pub point: Vec3,
+    pub strength: f32,
 }
 
 impl Struck {
@@ -707,7 +724,16 @@ fn react_to_hits(
         MessageWriter<pain::PainSounded>,
         MessageWriter<pain::BlowFelt>,
     ),
-    (mut winds, mut rungs, mut weapon_rings, mut layer_rings, mut clashes, mut notices, mut bites): (
+    (
+        mut winds,
+        mut rungs,
+        mut weapon_rings,
+        mut layer_rings,
+        mut clashes,
+        mut notices,
+        mut bites,
+        mut hooks,
+    ): (
         MessageWriter<SecondWindFired>,
         MessageWriter<block::ShieldRung>,
         MessageWriter<impact::WeaponSounded>,
@@ -715,6 +741,7 @@ fn react_to_hits(
         MessageWriter<pain::ClashFelt>,
         MessageWriter<BlowNoticed>,
         MessageWriter<bite::BiteTaken>,
+        MessageWriter<StrikeHooked>,
     ),
     mut fighters: Query<(
         Entity,
@@ -846,6 +873,15 @@ fn react_to_hits(
                 .as_deref()
                 .and_then(|m| SwingAt::of(now, &anim, m, base));
             let swing = swing.copied().unwrap_or(Swing::FISTS);
+            // A clash or a block calls the striker's hook with the impact
+            // at the hit, after the struck behaviour's notice.
+            if guarded {
+                hooks.write(StrikeHooked {
+                    attacker: hit.attacker,
+                    point: hit.point,
+                    strength: outcome.hit_impact,
+                });
+            }
             match guard {
                 damage::Guard::Open => {}
                 damage::Guard::Parry if flags.has(StateFlags::TURNS_BLOWS) => {
@@ -1110,6 +1146,13 @@ fn react_to_hits(
                     overhead,
                 },
                 direction: hit.velocity * (CM_PER_M / BODY_HZ),
+            });
+            // The striker's hook, at the routine's end: the yellow damage
+            // before its 0.75.
+            hooks.write(StrikeHooked {
+                attacker: hit.attacker,
+                point: hit.point,
+                strength: outcome.yellow_unweighed,
             });
             if taken == Taken::Weakened {
                 answer_low(
@@ -1568,6 +1611,7 @@ mod tests {
             .add_message::<pain::BlowFelt>()
             .add_message::<pain::ClashFelt>()
             .add_message::<BlowNoticed>()
+            .add_message::<StrikeHooked>()
             .add_message::<impact::WeaponSounded>()
             .add_message::<sounds::LayerSounded>()
             .add_message::<SecondWindFired>()
@@ -3173,6 +3217,7 @@ mod tests {
             .add_message::<pain::BlowFelt>()
             .add_message::<pain::ClashFelt>()
             .add_message::<BlowNoticed>()
+            .add_message::<StrikeHooked>()
             .add_message::<impact::WeaponSounded>()
             .add_message::<sounds::LayerSounded>()
             .add_message::<SecondWindFired>()

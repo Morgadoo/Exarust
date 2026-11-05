@@ -280,7 +280,11 @@ the blow, and `react_to_hits` writes `BlowNoticed` (kind 1 a clash and 2 a
 block, first in their branch; kind 0 a wound, after the damage call, its
 sounds and the damage-taken notice; `down` when the struck body is down,
 collapsing or dead, a killing wound included); `exa_ai::struck` runs the AI's
-reaction from it. A turned blow tells nothing.
+reaction from it. A turned blow tells nothing. The routine also calls the
+striker's own hook (`StrikeHooked`, which Force Strikes holds): after a
+clash's or a block's notice with the impact at the hit, and at the end of a
+blow on flesh with the yellow damage before its 0.75; a turned blow on
+flesh does not reach it.
 
 `fighter`: a `Fighter` (health bars, natural armour and armour layers,
 readiness, whether it bleeds, its spawn stats, its record's perks, of

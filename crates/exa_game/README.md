@@ -414,7 +414,15 @@ the node's frame, `effectbarrier_f`/`effectbubble_f` through
 (`thaum::dome_sound`: the cast's `thmfrc_ss`, the looping `thmfrc_bc02`
 hum at the frame's levels, the contacts' `thmfrc_bi` and the Bubble's
 break `thmfrc_brf`); a Barrier cast out of combat mode ends at once (its
-hook answers the controller's out-of-combat ask). A wave cast runs its wave round the caster's body root
+hook answers the controller's out-of-combat ask). A kinesis's shell hums
+(`thaum::shell_hum`: the looping `thmfrc_knsdr` from `r·0.8` of its length
+in, at the shell's levels and its node's box centre, freed with the shell),
+every held shell carries its `gi_cuboid` box light and every strikes aura
+its `gi_gradline` line along the weapon with a point light at its first
+ripple (`thaum::effect_light::shell_lights`), and a strikes caster's landed
+blow ripples its primary weapon's aura at half the hook's strength with
+`thmfrc_shi` (`thaum::effect_draw::ripple_strikes`, from
+`exa_combat::StrikeHooked`). A wave cast runs its wave round the caster's body root
 (`thaum::wave_live`): charging on the blast's hook, paying its drain each
 tick, and thrown into other bodies' limbs. A torrent cast runs its streams from
 the caster's right hand (`thaum::torrent_live`): charging and pouring on

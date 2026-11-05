@@ -11,7 +11,9 @@
 //!   body's bounding radius in cm), which opens, holds while the force
 //!   holds and closes when it lets go. A prop's shell copies its rigid
 //!   meshes ([`RigidAuraOf`]); a dead character's copies its skinned ones
-//!   (`super::effect_draw::ShellAuraOf`).
+//!   (`super::effect_draw::ShellAuraOf`);
+//! - the shell's `gi_cuboid` box light ([`HeldBoxLight`]), and on a
+//!   kinesis's shell its `thmfrc_knsdr` hum ([`ShellHum`]).
 //!
 //! A kinesis that hands its body to a throw hands the shell and the
 //! environment with it; the throw drops the shell 800 ms after its lift and
@@ -25,7 +27,10 @@
 //! brightest at the middle of the weapon's striking part, from its record.
 //! An item put away loses its aura, an item taken gains one while fewer
 //! than four carry one, and every aura closes when the power ends. While
-//! the power runs it steps its auras' ripples itself.
+//! the power runs it steps its auras' ripples itself; its caster's landed
+//! blows ripple its primary weapon's aura
+//! (`super::effect_draw::ripple_strikes`), and each aura carries its
+//! `gi_gradline` light (`super::effect_light::shell_lights`).
 //!
 //! Evidence: the original's kinesis pick and end, the throw's creators,
 //! lift, drop and end, the shared held-body shell creator, the strikes
@@ -123,9 +128,24 @@ pub fn body_radius(
     bounds.map_or(1.0, |(lo, hi)| ((hi - lo) * 0.5 * CM).length().max(1.0))
 }
 
+/// On a held body's shell: its GI box light (`gi_cuboid`), which every
+/// held shell carries ([`super::effect_light::held_lights`]).
+#[derive(Component, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeldBoxLight;
+
+/// On a kinesis's shell: the hum it names (`thmfrc_knsdr`) and the draw its
+/// voice's start takes when the shell joins the scene
+/// ([`super::shell_hum::sound_shell_hums`]).
+#[derive(Component, Debug, Clone, Copy, PartialEq)]
+pub struct ShellHum {
+    pub roll: f64,
+}
+
 /// Puts a held body in the held environment and spawns its shell: a prop's
-/// over its rigid meshes, any other body's over its skinned ones. Returns
-/// the shell's node.
+/// over its rigid meshes, any other body's over its skinned ones, with its
+/// box light. A kinesis's shell also names its hum (`hum`, the effect
+/// stream's draw its voice's start takes). Returns the shell's node.
+#[allow(clippy::too_many_arguments)]
 pub fn grab_body(
     commands: &mut Commands,
     body: Entity,
@@ -134,19 +154,31 @@ pub fn grab_body(
     radius: f32,
     now: u32,
     roll: &mut EffectRoll,
+    hum: Option<f64>,
 ) -> Entity {
     ragdoll.hold_in(Environment::HELD);
     ragdoll.wake();
     let tex_pos = [roll.0.unit(), roll.0.unit()];
-    let shell = ForceShell::held(now, tex_pos, radius);
-    let mut node = commands.spawn((Name::new("_ForceAura01 held"), LiveShellAura(shell)));
+    let mut shell = ForceShell::held(now, tex_pos, radius);
+    shell.voice = hum.is_some();
+    let mut node = commands.spawn((
+        Name::new("_ForceAura01 held"),
+        LiveShellAura(shell),
+        HeldBoxLight,
+    ));
     if prop {
         node.insert(RigidAuraOf(body));
     } else {
         node.insert((ShellAuraOf(body), Transform::default()));
     }
+    if let Some(roll) = hum {
+        node.insert(ShellHum { roll });
+    }
     let shell = node.id();
-    info!("force hold: {body:?} in the held environment, shell {shell:?} (radius {radius:.1} cm)");
+    info!(
+        "force hold: {body:?} in the held environment, shell {shell:?} (radius {radius:.1} cm, hum {})",
+        hum.is_some()
+    );
     shell
 }
 
@@ -211,6 +243,7 @@ pub(super) fn grab_thrown(
                 radius,
                 now,
                 &mut roll,
+                None,
             );
             power.shell = Some(shell.to_bits());
             power.material = Some(body.to_bits());
@@ -350,7 +383,16 @@ mod tests {
         let mut queue = bevy::ecs::world::CommandQueue::default();
         let mut commands = Commands::new(&mut queue, &commands_world);
         let mut roll = EffectRoll::default();
-        let shell = grab_body(&mut commands, body, &mut doll, true, 40.0, 0, &mut roll);
+        let shell = grab_body(
+            &mut commands,
+            body,
+            &mut doll,
+            true,
+            40.0,
+            0,
+            &mut roll,
+            Some(0.5),
+        );
         queue.apply(&mut commands_world);
         let spawned = commands_world.get::<LiveShellAura>(shell).unwrap();
         assert_eq!(spawned.0.colour, 2.8);

@@ -56,6 +56,7 @@ pub mod hold_live;
 pub mod kinesis_live;
 pub mod live;
 pub mod power;
+pub mod shell_hum;
 pub mod throw_live;
 pub mod torrent_live;
 pub mod tree;
@@ -3455,28 +3456,70 @@ impl ForceShell {
     }
 }
 
-/// Where a strikes aura glows brightest and how fast it dims away from
-/// there (the weapon node's frame, cm): `(0, c, 0, 0.5/(c − s))`. With the
-/// weapon's record (`start`, `end` of its striking part as fractions and
-/// its `length`), `c` is the striking part's middle, raised half way to 0.7
-/// when under it, times the length, and `s` half the start times the
-/// length; without one, `c` and `s` are 0.6 and 0.15 of the node box's top
-/// (`centre_y + half_y`).
-pub fn strikes_gradient(record: Option<[f32; 3]>, centre_y: f32, half_y: f32) -> [f32; 4] {
-    let (centre, start) = match record {
+/// Where a strikes aura's glow centres, its start and the length its
+/// gradient line is measured against (the weapon node's frame, cm). With
+/// the weapon's record (`start`, `end` of its striking part as fractions
+/// and its `length`), the centre `c` is the striking part's middle, raised
+/// half way to 0.7 when under it (the compare and the raise in double),
+/// times the length, the start `s` half the start times the length, and the
+/// length the record's; without one, `c` and `s` are 0.6 and 0.15 of the
+/// node box's top (`half_y + centre_y`, each product in double), which is
+/// also the length.
+pub fn strikes_span(record: Option<[f32; 3]>, centre_y: f32, half_y: f32) -> [f32; 3] {
+    match record {
         Some([start, end, length]) => {
             let mut middle = (start + end) * 0.5;
-            if middle < 0.7 {
-                middle = (middle + 0.7) * 0.5;
+            if f64::from(middle) < 0.7 {
+                middle = ((f64::from(middle) + 0.7) * 0.5) as f32;
             }
-            (middle * length, start * 0.5 * length)
+            [middle * length, start * 0.5 * length, length]
         }
         None => {
             let top = half_y + centre_y;
-            (top * 0.6, top * 0.15)
+            [
+                (f64::from(top) * 0.6) as f32,
+                (f64::from(top) * 0.15) as f32,
+                top,
+            ]
         }
-    };
+    }
+}
+
+/// Where a strikes aura glows brightest and how fast it dims away from
+/// there (the weapon node's frame, cm): `(0, c, 0, 0.5/(c − s))` from
+/// [`strikes_span`].
+pub fn strikes_gradient(record: Option<[f32; 3]>, centre_y: f32, half_y: f32) -> [f32; 4] {
+    let [centre, start, _] = strikes_span(record, centre_y, half_y);
     [0.0, centre, 0.0, 0.5 / (centre - start)]
+}
+
+/// A strikes aura's light line on its weapon node (its frame, cm): the two
+/// heights the segment runs between along the node's y axis, and its
+/// gradient (split share and the two end weights).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StrikesLine {
+    pub ends: [f32; 2],
+    pub gradient: [f32; 3],
+}
+
+/// The strikes aura's light line, from [`strikes_span`]'s `c`, `s` and
+/// length `l`, with `w = 2·(c − s)`: the segment from `max(c − w, centre_y −
+/// half_y)` to `min(c + w, centre_y + half_y)` (the engine's MAXSS and
+/// MINSS), split at `g = c/l`, its weights `((1 − c) + y₀)/w/g` and
+/// `((1 − y₁) + c)/w/(1 − g)`, left to right in single precision.
+pub fn strikes_line(record: Option<[f32; 3]>, centre_y: f32, half_y: f32) -> StrikesLine {
+    use exa_physics::engine_math::{max, min};
+    let [centre, start, length] = strikes_span(record, centre_y, half_y);
+    let width = (centre - start) * 2.0;
+    let low = max(centre - width, centre_y - half_y);
+    let high = min(centre + width, centre_y + half_y);
+    let split = centre / length;
+    let near = ((1.0 - centre) + low) / width / split;
+    let far = ((1.0 - high) + centre) / width / (1.0 - split);
+    StrikesLine {
+        ends: [low, high],
+        gradient: [split, near, far],
+    }
 }
 
 /// A strikes aura's fade plane on a rigid weapon node (its frame, cm):
@@ -3587,6 +3630,30 @@ mod kinesis_tests {
         assert!((boxed[1] - 48.0).abs() < 1e-4);
         assert!((boxed[3] - 0.5 / 36.0).abs() < 1e-7);
         assert_eq!((boxed[0], boxed[2]), (0.0, 0.0));
+    }
+
+    #[test]
+    fn the_strikes_line_spans_the_striking_part() {
+        // A record striking from 0.5 to 0.9 of 100 cm: c 70, s 25, w 90;
+        // the box (centre 50, half 50) clips the segment to 0..100.
+        let line = strikes_line(Some([0.5, 0.9, 100.0]), 50.0, 50.0);
+        assert_eq!(line.ends, [0.0, 100.0]);
+        let split = 70.0f32 / 100.0;
+        assert_eq!(line.gradient[0], split);
+        assert_eq!(line.gradient[1], ((1.0 - 70.0f32) + 0.0) / 90.0 / split);
+        assert_eq!(
+            line.gradient[2],
+            ((1.0 - 100.0f32) + 70.0) / 90.0 / (1.0 - split)
+        );
+        // A long box keeps the segment's own ends: c ± w.
+        let wide = strikes_line(Some([0.5, 0.9, 100.0]), 0.0, 500.0);
+        assert_eq!(wide.ends, [70.0 - 90.0, 70.0 + 90.0]);
+        // No record: the box's top is the length, c and s its 0.6 and 0.15.
+        let boxed = strikes_line(None, 40.0, 40.0);
+        let c = (80.0f64 * 0.6) as f32;
+        let s = (80.0f64 * 0.15) as f32;
+        assert_eq!(boxed.gradient[0], c / 80.0);
+        assert_eq!(boxed.ends, [0.0f32.max(c - (c - s) * 2.0), 80.0]);
     }
 
     #[test]
