@@ -1806,6 +1806,8 @@ fn main() -> AppExit {
         .add_plugins(offscreen::OffscreenPlugin {
             path: path.clone(),
             size: UVec2::new(w, h),
+            // A scripted run repeats only without the host's mouse.
+            ignore_input: options.fixed_frames,
         });
     } else {
         app.add_plugins(plugins);
