@@ -2126,123 +2126,34 @@ pub fn paint_sized(
     target: (usize, usize),
 ) -> Painted {
     let (w, h) = (target.0.max(1), target.1.max(1));
-    let mut normal_out = vec![Vec2::ZERO; w * h];
-    let mut out = vec![Vec3::ZERO; w * h];
-    // The original clears the surface target to (0, 0.01, 0).
-    let mut finish_out = vec![Vec3::new(0.0, 0.01, 0.0); w * h];
-    let covers: Vec<Vec<f32>> = layers
-        .iter()
-        .map(|layer| {
-            let s = tiling.uv_scale_for(finish(layer.material));
-            let pattern = layer.pattern.filter(|_| paints_pattern(layer));
-            (0..w * h)
-                .map(|i| {
-                    let (x, y) = (i % w, i / w);
-                    if !tiling.drawn(x, w) {
-                        return 0.0;
-                    }
-                    let mask = sample_stretched(layer.mask, x, y, w, h, s).x;
-                    pattern.map_or(mask, |p| mask * p.at(x, y, w, h))
-                })
-                .collect()
-        })
-        .collect();
-    let texel = |layer: &PaintLayer<'_>, x: usize, y: usize| Texel {
-        shade: sample_stretched(
-            shade,
-            x,
-            y,
-            w,
-            h,
-            tiling.uv_scale_for(finish(layer.material)),
-        )
-        .x,
-        colour: layer.tint,
-        weight: layer.wear,
-        quality: condition.quality,
-        damage: condition.damage,
-        dirt: condition.dirt,
+    let mut canvas = Canvas::cleared(w, h);
+    let job = RegionJob {
+        shade,
+        item_normal,
+        layers,
+        condition,
+        tiling,
+        size: (w, h),
     };
-    for (layer, cover) in layers.iter().zip(&covers) {
-        let family = finish(layer.material);
-        for y in 0..h {
-            for x in 0..w {
-                let cover = cover[y * w + x];
-                if cover <= 0.0 {
-                    continue;
-                }
-                let samples = Samples {
-                    layer,
-                    painted_normal: None,
-                    tiling,
-                    x,
-                    y,
-                    w,
-                    h,
-                };
-                let t = texel(layer, x, y);
-                let c = colour_of(family, layer.material, &t, &samples);
-                let o = &mut out[y * w + x];
-                *o = mix(*o, c.clamp(Vec3::ZERO, Vec3::ONE), cover);
-                if layer.pattern.is_some() {
-                    continue;
-                }
-                if let Some(item) = item_normal {
-                    let s = tiling.uv_scale_for(family);
-                    let item = unit_xy(sample_stretched(item, x, y, w, h, s));
-                    let n = normal_of(family, layer.material, &t, &samples, item);
-                    let o = &mut normal_out[y * w + x];
-                    *o += (n.clamp(Vec2::NEG_ONE, Vec2::ONE) - *o) * cover;
-                }
-            }
-        }
-    }
-    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-    // The normal target stores two channels as bytes; the specular pass
-    // reads them back.
-    let normal_bytes: Vec<[u8; 2]> = normal_out
-        .iter()
-        .map(|n| [byte(n.x * 0.5 + 0.5), byte(n.y * 0.5 + 0.5)])
-        .collect();
+    job.colour_and_normal(&mut canvas.colour, &mut canvas.normal);
+    let normal_bytes: Vec<[u8; 2]> = canvas.normal.iter().map(|&n| normal_byte(n)).collect();
+    // The specular pass reads the normal target back from its bytes.
     let painted_normal: Option<Vec<Vec2>> = item_normal.map(|_| {
         normal_bytes
             .iter()
-            .map(|b| Vec2::new(b[0] as f32, b[1] as f32) * (2.0 / 255.0) - Vec2::ONE)
+            .map(|&[x, y]| normal_texel(x, y))
             .collect()
     });
-    for (layer, cover) in layers.iter().zip(&covers) {
-        if layer.pattern.is_some() {
-            continue;
-        }
-        let family = finish(layer.material);
-        for y in 0..h {
-            for x in 0..w {
-                let cover = cover[y * w + x];
-                if cover <= 0.0 {
-                    continue;
-                }
-                let samples = Samples {
-                    layer,
-                    painted_normal: painted_normal.as_deref(),
-                    tiling,
-                    x,
-                    y,
-                    w,
-                    h,
-                };
-                let t = texel(layer, x, y);
-                let surface = surface_of(family, layer.material, &t, &samples);
-                let f = &mut finish_out[y * w + x];
-                *f = mix(*f, surface.clamp(Vec3::ZERO, Vec3::ONE), cover);
-            }
-        }
-    }
+    job.surface(painted_normal.as_deref(), &mut canvas.surface);
+    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     Painted {
-        colour: out
+        colour: canvas
+            .colour
             .iter()
             .flat_map(|c| [byte(c.x), byte(c.y), byte(c.z), 255])
             .collect(),
-        surface: finish_out
+        surface: canvas
+            .surface
             .iter()
             .flat_map(|c| [byte(c.x), byte(c.y), byte(c.z), 255])
             .collect(),
@@ -2254,6 +2165,173 @@ pub fn paint_sized(
                 .flat_map(|&[x, y]| [x, y, pixel::rebuild_z(x, y), 255])
                 .collect()
         }),
+    }
+}
+
+/// A region's three targets as the passes blend into them: the colour
+/// (0..1), the normal (−1..1, two channels) and the surface (intensity,
+/// gloss, metal).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Canvas {
+    pub colour: Vec<Vec3>,
+    pub normal: Vec<Vec2>,
+    pub surface: Vec<Vec3>,
+}
+
+impl Canvas {
+    /// The targets as the original clears them: colour black, normal
+    /// (½, ½) stored (flat), surface (0, 0.01, 0).
+    pub fn cleared(w: usize, h: usize) -> Self {
+        Self {
+            colour: vec![Vec3::ZERO; w * h],
+            normal: vec![Vec2::ZERO; w * h],
+            surface: vec![Vec3::new(0.0, 0.01, 0.0); w * h],
+        }
+    }
+}
+
+/// The two normal channels stored as bytes.
+pub fn normal_byte(n: Vec2) -> [u8; 2] {
+    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    [byte(n.x * 0.5 + 0.5), byte(n.y * 0.5 + 0.5)]
+}
+
+/// A stored normal texel read back, in −1..1.
+pub fn normal_texel(x: u8, y: u8) -> Vec2 {
+    Vec2::new(x as f32, y as f32) * (2.0 / 255.0) - Vec2::ONE
+}
+
+/// One region's draw: its source maps, layers, condition and tiling, at
+/// its target size. The passes blend into whatever the targets hold, so a
+/// region drawn into a shared atlas keeps the texels its masks leave alone.
+pub struct RegionJob<'a> {
+    pub shade: &'a Texels,
+    pub item_normal: Option<&'a Texels>,
+    pub layers: &'a [PaintLayer<'a>],
+    pub condition: Condition,
+    pub tiling: Tiling,
+    pub size: (usize, usize),
+}
+
+impl RegionJob<'_> {
+    /// Every layer's coverage of every texel: its mask (times the emblem
+    /// picture for a painted pattern), zero past the crop.
+    fn covers(&self) -> Vec<Vec<f32>> {
+        let (w, h) = self.size;
+        let tiling = self.tiling;
+        self.layers
+            .iter()
+            .map(|layer| {
+                let s = tiling.uv_scale_for(finish(layer.material));
+                let pattern = layer.pattern.filter(|_| paints_pattern(layer));
+                (0..w * h)
+                    .map(|i| {
+                        let (x, y) = (i % w, i / w);
+                        if !tiling.drawn(x, w) {
+                            return 0.0;
+                        }
+                        let mask = sample_stretched(layer.mask, x, y, w, h, s).x;
+                        pattern.map_or(mask, |p| mask * p.at(x, y, w, h))
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn texel(&self, layer: &PaintLayer<'_>, x: usize, y: usize) -> Texel {
+        let (w, h) = self.size;
+        Texel {
+            shade: sample_stretched(
+                self.shade,
+                x,
+                y,
+                w,
+                h,
+                self.tiling.uv_scale_for(finish(layer.material)),
+            )
+            .x,
+            colour: layer.tint,
+            weight: layer.wear,
+            quality: self.condition.quality,
+            damage: self.condition.damage,
+            dirt: self.condition.dirt,
+        }
+    }
+
+    /// The colour and normal passes over every layer, blended into `out`
+    /// and `normal_out` (one texel per target texel).
+    pub fn colour_and_normal(&self, out: &mut [Vec3], normal_out: &mut [Vec2]) {
+        let (w, h) = self.size;
+        let covers = self.covers();
+        for (layer, cover) in self.layers.iter().zip(&covers) {
+            let family = finish(layer.material);
+            for y in 0..h {
+                for x in 0..w {
+                    let cover = cover[y * w + x];
+                    if cover <= 0.0 {
+                        continue;
+                    }
+                    let samples = Samples {
+                        layer,
+                        painted_normal: None,
+                        tiling: self.tiling,
+                        x,
+                        y,
+                        w,
+                        h,
+                    };
+                    let t = self.texel(layer, x, y);
+                    let c = colour_of(family, layer.material, &t, &samples);
+                    let o = &mut out[y * w + x];
+                    *o = mix(*o, c.clamp(Vec3::ZERO, Vec3::ONE), cover);
+                    if layer.pattern.is_some() {
+                        continue;
+                    }
+                    if let Some(item) = self.item_normal {
+                        let s = self.tiling.uv_scale_for(family);
+                        let item = unit_xy(sample_stretched(item, x, y, w, h, s));
+                        let n = normal_of(family, layer.material, &t, &samples, item);
+                        let o = &mut normal_out[y * w + x];
+                        *o += (n.clamp(Vec2::NEG_ONE, Vec2::ONE) - *o) * cover;
+                    }
+                }
+            }
+        }
+    }
+
+    /// The specular pass over every layer but the emblem ones, blended into
+    /// `surface`; it reads the painted normal target (`Nrm`) when there is
+    /// one.
+    pub fn surface(&self, painted_normal: Option<&[Vec2]>, surface: &mut [Vec3]) {
+        let (w, h) = self.size;
+        let covers = self.covers();
+        for (layer, cover) in self.layers.iter().zip(&covers) {
+            if layer.pattern.is_some() {
+                continue;
+            }
+            let family = finish(layer.material);
+            for y in 0..h {
+                for x in 0..w {
+                    let cover = cover[y * w + x];
+                    if cover <= 0.0 {
+                        continue;
+                    }
+                    let samples = Samples {
+                        layer,
+                        painted_normal,
+                        tiling: self.tiling,
+                        x,
+                        y,
+                        w,
+                        h,
+                    };
+                    let t = self.texel(layer, x, y);
+                    let v = surface_of(family, layer.material, &t, &samples);
+                    let f = &mut surface[y * w + x];
+                    *f = mix(*f, v.clamp(Vec3::ZERO, Vec3::ONE), cover);
+                }
+            }
+        }
     }
 }
 

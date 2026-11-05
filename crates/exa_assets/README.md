@@ -471,7 +471,8 @@ its packed intensity/gloss/metal target; the normal map is the item's normal
 plus the material's and damage normals, and the specular pass measures its
 creases on that painted normal map. Library textures tile by the original's
 `MatTile`/`DmgTile` rules (`paint::Tiling`). A factory region
-(`model::FactoryPaint`) paints each mask with its area's material (0 as
+(`model::FactoryPaint`, drawn by `paint::RegionJob` into the weapon's
+atlas) paints each mask with its area's material (0 as
 SteelGen), lifted colour bytes and finish level, the factory's condition
 (damage 2/(2 − d) − 1) and the region's atlas tiling with four offsets from
 seed B. An area's emblem adds a colour-only layer over the same mask
@@ -509,12 +510,24 @@ defines, the sampler counts and the uniform lists each pass fetches.
 
 Factory weapons (`weapon`): a `.fty` recipe and an item's seeds choose,
 deform (scale, band, taper, bend, radial), place (by the parent's stored
-node box, scaled by the parent's recipe scale, turned X, Z, Y) and paint
-`Components.rpk` parts, then assemble the striking extent and the stat
-bytes. Item quality, condition and stored choices are honoured. A change of
-condition repaints the assembled node from the same seeds (the area colours
-follow the new quality) and keeps its meshes, as the original's repaint
-does.
+node box, scaled by the parent's recipe scale) and paint `Components.rpk`
+parts. As the original, the parts are merged into one mesh: each
+component's first mesh node, deformed, its texture coordinates mapped into
+the part's atlas rectangle (`atlas::atlas_uv`), is appended at the part's
+frame (`weapon::part_frame`: turned X, Z, Y, each row scaled
+component-wise, so the scale acts along the weapon's axes) into an empty
+editable mesh (`mesh_edit::EditMesh::empty`, `merge::merge_editable`),
+then regrouped, welded and converted to render form with rebuilt normals.
+The weapon is one node with one mesh and one material, whose atlas
+(`atlas::paint`) holds every part's region at its rectangle, blended into
+what earlier regions drew (shipped recipes overlap their regions), in the
+original's pass order: every region's colour and normal passes, then every
+specular pass. The merged mesh's box top is the striking extents'
+denominator. Item quality, condition and stored choices are honoured. A
+change of condition repaints the atlas from the same seeds (the area
+colours follow the new quality) and keeps the mesh, as the original's
+repaint does. `weapon::factory_preview` returns a weapon's merged mesh and
+atlas for inspection (`exa-tool factory`).
 
 Physique (`morph`): `ModelLoader::morphed_model` / `morphed_job` build a
 character's variant of a race body or garment at its `BodyMorph` (race

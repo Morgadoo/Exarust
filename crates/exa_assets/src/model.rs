@@ -14,11 +14,12 @@ use exa_formats::rfi::Rfi;
 use exa_formats::rsq::bone_index;
 use exa_rpk::{Archive, GameData, PackKind};
 
+use crate::atlas::AtlasRegion;
 use crate::mesh_edit::material_split_flags;
 use crate::mesh_smooth::smooth_mesh;
 use crate::morph::{BuiltMorph, JobMorph, MorphCache, model_key};
 use crate::paint::{
-    Condition, Encoding, PaintLayer, Painted, Pattern, Texels, Tiling, apparel_tint,
+    Condition, Encoding, PaintLayer, Painted, Pattern, RegionJob, Texels, Tiling, apparel_tint,
     factory_colour, factory_wear, layer_material, library, normal_library, paint_sized,
     paint_target_size, specular_library,
 };
@@ -401,7 +402,7 @@ pub struct ModelCache {
     /// The composited skin materials by
     /// [`crate::skin_composite::SkinCompositeJob::key`].
     pub(crate) skin_composites: HashMap<String, Option<Handle<ExaMaterial>>>,
-    /// Painted factory regions by [`FactoryPaint::key`].
+    /// Painted factory atlases by their regions' keys and rectangles.
     factory_painted: HashMap<String, Handle<ExaMaterial>>,
     /// Factory weapon stats once its assembled extents are known.
     pub(crate) factory_stats: HashMap<String, exa_formats::weapon_stats::StatBytes>,
@@ -411,6 +412,9 @@ pub struct ModelCache {
     pub(crate) factory_geometry: HashMap<String, Arc<Model>>,
     /// Parsed factory recipes, by lower-case name.
     pub(crate) factories: HashMap<String, Arc<exa_formats::factory::Factory>>,
+    /// Factory components' first mesh node as loaded and its groups' split
+    /// flags, by lower-case name (`None` when the component has no mesh).
+    pub(crate) components: HashMap<String, Option<Arc<crate::weapon::FactoryComponent>>>,
     /// The environment cubes by name, once looked for.
     environment: HashMap<&'static str, Option<Handle<Image>>>,
     /// A material's own environment-cube override, by folded texture name
@@ -584,7 +588,7 @@ impl ModelLoader<'_> {
 
     /// The split flags of every mesh node's groups, from their materials
     /// (the file's own, else the libraries'; none for run-time names).
-    fn split_flags(&self, scene: &Scene) -> Vec<Vec<u32>> {
+    pub(crate) fn split_flags(&self, scene: &Scene) -> Vec<Vec<u32>> {
         scene
             .nodes
             .iter()
@@ -1323,20 +1327,20 @@ impl ModelLoader<'_> {
         }
     }
 
-    /// The material of a factory weapon's component region, painted as the
-    /// original's factory paint job does: each mask with its area's
-    /// material, lifted colour and finish level, the item's condition with
-    /// the factory's remapping, and the region's tiling.
-    pub fn painted_factory(&mut self, paint: &FactoryPaint) -> Handle<ExaMaterial> {
+    /// The draw of one factory weapon component's region, as the original's
+    /// factory paint job draws it: each mask with its area's material,
+    /// lifted colour and finish level, the item's condition with the
+    /// factory's remapping, and the region's tiling, at the region's target
+    /// size. `None` when the component has no shade texture (`<stem>d`):
+    /// the region is then not drawn. [guess] The original's draw with a
+    /// shade texture that does not load was not traced; no shipped
+    /// component lacks one.
+    fn factory_region(&mut self, paint: &FactoryPaint) -> Option<PaintJob> {
         let key = paint.key();
-        if let Some(h) = self.cache.factory_painted.get(&key) {
-            return h.clone();
-        }
         let stem = paint.stem.to_ascii_lowercase();
         let Some(shade) = self.texels(&format!("{stem}d")) else {
-            let handle = self.apparel_material(&stem);
-            self.cache.factory_painted.insert(key, handle.clone());
-            return handle;
+            self.warn_once(format!("factory component {stem}: no shade texture"));
+            return None;
         };
         let mut layers: Vec<OwnedLayer> = Vec::new();
         for layer in &paint.layers {
@@ -1395,7 +1399,7 @@ impl ModelLoader<'_> {
         // (`RegionDraw::uniforms`).
         let painted_size = paint_target_size(paint.region_texels, paint.texture_detail);
         let job = PaintJob {
-            key: PaintKey::Factory(stem, key.clone()),
+            key: PaintKey::Factory(stem, key),
             shade,
             item_normal,
             layers,
@@ -1405,8 +1409,59 @@ impl ModelLoader<'_> {
                 .with_crop(paint.texture_crop),
             target: Some((painted_size.x as usize, painted_size.y as usize)),
         };
-        let painted = job.paint();
-        self.painted_material(painted)
+        Some(job)
+    }
+
+    /// The one material of an assembled factory weapon: the job's targets
+    /// at `size` (the factory's atlas, halved below texture detail 3:
+    /// [`crate::atlas::job_size`]), every part's region drawn into its
+    /// rectangle ([`crate::atlas::compose`]), cached by the regions' keys
+    /// and rectangles. The original
+    /// points the weapon's run-time material (`_procmat1`, or `_procmatr`
+    /// when an area's material has an alpha program) at these targets for
+    /// every sub-object of the merged mesh. A region whose component has no
+    /// shade texture is left cleared.
+    pub fn factory_atlas_material(
+        &mut self,
+        name: &str,
+        size: (usize, usize),
+        regions: &[(FactoryPaint, [f32; 4])],
+    ) -> Handle<ExaMaterial> {
+        let mut key = format!("{}|{}x{}", name.to_ascii_lowercase(), size.0, size.1);
+        for (paint, rect) in regions {
+            key.push_str(&format!("|{}@{:?}", paint.key(), rect));
+        }
+        if let Some(h) = self.cache.factory_painted.get(&key) {
+            return h.clone();
+        }
+        let jobs: Vec<(PaintJob, [f32; 4])> = regions
+            .iter()
+            .filter_map(|(paint, rect)| Some((self.factory_region(paint)?, *rect)))
+            .collect();
+        let layers: Vec<Vec<PaintLayer<'_>>> = jobs.iter().map(|(job, _)| job.layers()).collect();
+        let drawn: Vec<AtlasRegion<'_>> = jobs
+            .iter()
+            .zip(&layers)
+            .map(|((job, rect), layers)| AtlasRegion {
+                job: job.region(layers),
+                rect: *rect,
+            })
+            .collect();
+        let atlas = crate::atlas::paint(size.0, size.1, &drawn);
+        let (w, h) = (atlas.width as u32, atlas.height as u32);
+        // The colour target has no alpha channel (an alpha job's sRGB-alpha
+        // target is not reproduced): the atlas is opaque.
+        let alpha = false;
+        let set = PaintedSet {
+            key: PaintKey::Factory(name.to_ascii_lowercase(), key),
+            colour: painted_image(w, h, atlas.colour, Painted::COLOUR),
+            surface: painted_image(w, h, atlas.surface, Painted::SURFACE),
+            normal: atlas
+                .normal
+                .map(|n| painted_image(w, h, n, Painted::NORMAL)),
+            alpha,
+        };
+        self.painted_material(set)
     }
 
     /// The library textures a material's three passes read, decoded.
@@ -2047,7 +2102,7 @@ pub enum ImageInsert {
 pub struct ModelJob {
     pack: PackKind,
     entry: String,
-    scene: Scene,
+    pub(crate) scene: Scene,
     pub(crate) morph: Option<JobMorph>,
     /// Smooth every mesh node first, with these split flags per node's
     /// groups ([`ModelLoader::smoothed_model`]).
@@ -2710,12 +2765,38 @@ impl PaintedSet {
     }
 }
 
+/// A painted job's texels, before they become images.
+pub(crate) struct PaintedTexels {
+    key: PaintKey,
+    pub(crate) width: usize,
+    pub(crate) height: usize,
+    pub(crate) colour: Vec<u8>,
+    pub(crate) surface: Vec<u8>,
+    pub(crate) normal: Option<Vec<u8>>,
+    /// The shade map cuts the item out.
+    alpha: bool,
+}
+
 impl PaintJob {
     /// Paints the texture set: colour, surface and normal images with their
     /// mip chains.
     pub fn paint(self) -> PaintedSet {
-        let layers: Vec<PaintLayer<'_>> = self
-            .layers
+        let t = self.paint_texels();
+        let (w, h) = (t.width as u32, t.height as u32);
+        // The painter's surface map is already packed as the original's:
+        // intensity, gloss, metal.
+        PaintedSet {
+            colour: painted_image(w, h, t.colour, Painted::COLOUR),
+            surface: painted_image(w, h, t.surface, Painted::SURFACE),
+            normal: t.normal.map(|n| painted_image(w, h, n, Painted::NORMAL)),
+            alpha: t.alpha,
+            key: t.key,
+        }
+    }
+
+    /// The job's layers, borrowed for the painter.
+    fn layers(&self) -> Vec<PaintLayer<'_>> {
+        self.layers
             .iter()
             .map(|l| PaintLayer {
                 mask: &l.mask,
@@ -2730,7 +2811,24 @@ impl PaintJob {
                     position: *position,
                 }),
             })
-            .collect();
+            .collect()
+    }
+
+    /// The job as one region's draw, with `layers` ([`PaintJob::layers`]).
+    fn region<'a>(&'a self, layers: &'a [PaintLayer<'a>]) -> RegionJob<'a> {
+        RegionJob {
+            shade: &self.shade,
+            item_normal: self.item_normal.as_deref(),
+            layers,
+            condition: self.condition,
+            tiling: self.tiling,
+            size: self.target.unwrap_or((self.shade.width, self.shade.height)),
+        }
+    }
+
+    /// Paints the colour, surface and normal texels at the job's target.
+    fn paint_texels(self) -> PaintedTexels {
+        let layers = self.layers();
         let shade = &self.shade;
         let (w, h) = self.target.unwrap_or((shade.width, shade.height));
         let painted = paint_sized(
@@ -2750,18 +2848,14 @@ impl PaintJob {
             o[3] = shade.rgba[(sy * shade.width + sx) * 4 + 3];
         }
         let alpha = shade.rgba.as_chunks::<4>().0.iter().any(|p| p[3] < 128);
-        let (w, h) = (w as u32, h as u32);
-        // The painter's surface map is already packed as the original's:
-        // intensity, gloss, metal.
-        let surface = painted.surface;
-        PaintedSet {
-            colour: painted_image(w, h, rgba, Painted::COLOUR),
-            surface: painted_image(w, h, surface, Painted::SURFACE),
-            normal: painted
-                .normal
-                .map(|n| painted_image(w, h, n, Painted::NORMAL)),
-            alpha,
+        PaintedTexels {
             key: self.key,
+            width: w,
+            height: h,
+            colour: rgba,
+            surface: painted.surface,
+            normal: painted.normal,
+            alpha,
         }
     }
 }
@@ -3048,7 +3142,11 @@ fn group_indices(vertices: usize, local: Vec<u32>) -> Indices {
 }
 
 /// A Bevy mesh holding only the vertices one material group uses.
-fn group_mesh(mesh: &RfcMesh, indices: &[u32], skin: Option<&[VertexSkin]>) -> Option<Mesh> {
+pub(crate) fn group_mesh(
+    mesh: &RfcMesh,
+    indices: &[u32],
+    skin: Option<&[VertexSkin]>,
+) -> Option<Mesh> {
     if indices.is_empty() {
         return None;
     }
