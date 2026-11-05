@@ -39,11 +39,11 @@ The placed-character path builds the wraith physical with its race's hover
 flag, so the spirit floats on its hovering lift and walks.
 The game adds `exa_physics::sim_app`'s shell: the simulation's own world,
 stepped in lockstep with the fixed step on its `exa-sim` thread, or on the
-frame's thread with `--sim-inline`. `--sim-bridge` (opt-in, incomplete) also
+frame's thread with `--sim-inline`. `--sim-bridge` (opt-in) also
 adds `exa_physics::sim_bridge`: the fixed step's schedules, the character
-tick and the brain chain run in the simulation's world, the data they touch
-copied across each step; until every type is bridged the moved systems that
-miss one fail, and the log lists the types not bridged.
+tick and the brain chain run in the simulation's world, every type they
+touch copied across each step (3.6 ms a step in exanima01). The arena duel
+under it does not yet follow the one-world trajectory tick for tick.
 `--sim-boundary <file>` (`src/sim_boundary.rs`) writes, once the level has loaded and the fixed step
 has run 200 ticks, every component and resource type the fixed step's
 schedules share with the frame's, by direction, with each side's readers and
